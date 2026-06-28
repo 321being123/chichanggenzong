@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>仓位管理系统</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<link rel="stylesheet" href="/shared/style.css">
+</head>
+<body>
+
+<div class="nav">
+  <div class="nav-left">
+    <h1>持仓管理</h1>
+    <div class="nav-account">
+      <select id="account-select" onchange="switchAccount(this.value)"></select>
+      <button class="btn-account-add" onclick="addAccount()" title="新增账户">+</button>
+      <button class="btn-account-add" onclick="showAccountMenu()" title="账户设置" style="font-size:13px;">⚙</button>
+    </div>
+    <button class="btn-refresh" onclick="doRefresh()">🔄 刷新</button>
+    <span class="nav-user" id="nav-user"></span>
+    <button class="nav-logout" onclick="logout()">退出</button>
+  </div>
+  <div class="nav-right">
+    <button class="nav-tab active" data-page="dashboard">总览</button>
+    <button class="nav-tab" data-page="positions">持仓</button>
+    <button class="nav-tab" data-page="trades">交易</button>
+    <button class="nav-tab" data-page="ocr">截图识别</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 总览页: 统计卡片 + 图表 + 持仓明细(前10) + 收益走势 -->
+<div class="page active" id="page-dashboard">
+  <div class="stats" id="stats-container"></div>
+  <div class="chart-grid">
+    <div class="chart-box">
+      <div class="chart-title"><h3>资产类别比例</h3><span class="chart-total" id="chart-total-1"></span></div>
+      <div class="chart-canvas-wrap"><canvas id="chart-category"></canvas></div>
+    </div>
+    <div class="chart-box">
+      <div class="chart-title"><h3>细分资产分布</h3><span class="chart-total" id="chart-total-2"></span></div>
+      <div class="chart-canvas-wrap"><canvas id="chart-subtype"></canvas></div>
+    </div>
+  </div>
+  <div id="topn-table"></div>
+  <div id="returns-section"></div>
+</div>
+
+<!-- 持仓页: 全部持仓 (含筛选排序) -->
+<div class="page" id="page-positions">
+  <div id="positions-table"></div>
+</div>
+
+<!-- 交易页 -->
+<div class="page" id="page-trades">
+  <div class="table-wrap">
+    <div class="table-header"><h3>录入交易</h3></div>
+    <div style="padding:20px;">
+      <div class="form-row">
+        <div class="form-group"><label>代码</label><input id="trade-code" placeholder="如 600519" oninput="onTradeCodeInput(this.value)" autocomplete="off"></div>
+        <div class="form-group"><label>名称 <span class="auto-hint">自动</span></label><input id="trade-name" readonly style="background:#f5f5f5;"></div>
+        <div class="form-group"><label>方向</label><select id="trade-dir"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="calcQuick()"></div>
+        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="calcQuick()" placeholder="股/张/份"></div>
+        <div class="form-group"><label>成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option></select></div>
+        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype"><option>A股</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option></select></div>
+        <div class="form-group"><label>备注</label><input id="trade-note" placeholder="可选"></div>
+      </div>
+      <button class="btn btn-primary" onclick="addTrade()">➕ 记录交易</button>
+      <button class="btn btn-outline" onclick="showCashFlowModal()" style="margin-left:8px;">💰 资金转入转出</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <div class="table-header"><h3>交易历史</h3><button class="btn btn-sm btn-danger" onclick="clearTrades()">清空记录</button></div>
+    <div id="trades-table" class="trade-list" style="min-height:80px;"><div class="empty-state"><div class="icon">📄</div>暂无交易记录</div></div>
+  </div>
+</div>
+
+<!-- 截图识别页 -->
+<div class="page" id="page-ocr">
+  <div class="chart-box"><h3 style="margin-bottom:12px;">📷 截图识别交易</h3>
+    <p style="font-size:13px;color:#888;margin-bottom:16px;">上传你的交易截图，系统会自动识别并提取交易信息。识别后填入代码，系统会自动补齐价格和类型。</p>
+    <div class="ocr-zone" id="ocr-zone" onclick="document.getElementById('ocr-input').click()">
+      <div class="icon">📷</div>
+      <p>点击上传截图、拖拽图片，或 Ctrl+V 粘贴</p>
+      <p style="font-size:12px;color:#bbb;margin-top:4px;">支持 PNG / JPG / 剪贴板截图</p>
+      <input type="file" id="ocr-input" class="hidden-input" accept="image/png,image/jpeg,image/jpg" onchange="handleOcrFile(event)">
+    </div>
+    <div id="ocr-result-area">
+      <div id="ocr-loading" style="display:none;text-align:center;padding:20px;">
+        <p style="color:#666;">准备识别...</p>
+      </div>
+      <div id="ocr-result"></div>
+      <div id="ocr-parsed-table"></div>
+      <h3 style="font-size:14px;color:#1a1a2e;" id="ocr-result-hint">建议的识别结果 → 点击确认后自动录入</h3>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑弹窗 -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <h2 id="modal-title">编辑持仓</h2>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-overlay')">取消</button>
+      <button class="btn btn-primary" id="modal-save-btn">更新</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除确认弹窗 -->
+<div class="modal-overlay" id="modal-delete">
+  <div class="modal" style="width:380px;">
+    <h2>确认删除</h2>
+    <p style="font-size:14px;color:#666;margin-bottom:18px;" id="delete-msg">确定要删除该持仓吗？</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-delete')">取消</button>
+      <button class="btn btn-danger" id="delete-confirm-btn">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增/编辑持仓弹窗 -->
+<div class="modal-overlay" id="modal-add">
+  <div class="modal">
+    <h2 id="modal-title">新增持仓</h2>
+    <div class="form-row-2col">
+      <div class="form-group"><label>证券代码</label><input id="modal-code" placeholder="如 601919"></div>
+      <div class="form-group"><label>证券名称</label><input id="modal-name" placeholder="自动获取"></div>
+      <div class="form-group"><label>现价</label><input id="modal-price" type="number" step="0.001" placeholder="0.000"></div>
+      <div class="form-group"><label>数量</label><input id="modal-qty" type="number" step="1" placeholder="0"></div>
+      <div class="form-group"><label>成本价</label><input id="modal-cost" type="number" step="0.001" placeholder="同现价"></div>
+      <div class="form-group"><label>类型</label>
+        <select id="modal-type">
+          <option value="股权">股权</option>
+          <option value="债权">债权</option>
+        </select>
+      </div>
+      <div class="form-group"><label>子类型</label>
+        <select id="modal-subtype">
+          <option value="A股">A股</option>
+          <option value="港股">港股</option>
+          <option value="美股">美股</option>
+          <option value="可转债">可转债</option>
+          <option value="信用债">信用债</option>
+          <option value="ETF">ETF</option>
+          <option value="LOF">LOF</option>
+        </select>
+      </div>
+      <div class="form-group"><label>备注</label><input id="modal-note" placeholder="可选"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-add')">取消</button>
+      <button class="btn btn-primary" id="modal-save-btn" onclick="savePosition()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 账户管理弹窗 -->
+<div class="modal-overlay" id="modal-account">
+  <div class="modal">
+    <h2>账户管理</h2>
+    <div id="account-list"></div>
+    <div style="margin-top:14px;">
+      <div class="form-group"><label>账户名称</label><input id="account-name-input" placeholder="输入账户名称" style="width:100%;"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-account')">取消</button>
+      <button class="btn btn-primary" onclick="saveAccountName()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/utils.js?v=2"></script>
+<script src="/shared/core.js?v=2"></script>
+<script>
+// ============== 数据层（服务端API） ==============
+let data = null;
+let accounts = [];
+let currentAccount = '默认账户';
+let priceChangeMap = {};
+const PRICE_CACHE = {};
+let indexData = {};
+let returnsPeriod = 30;
+let username = null;
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/me');
+    const d = await r.json();
+    if (!d.username) { window.location.href = '/login.html'; return; }
+    username = d.username;
+    document.getElementById('nav-user').textContent = username;
+  } catch(e) {
+    window.location.href = '/login.html';
+  }
+}
+
+async function logout() {
+  await fetch('/api/logout', { method: 'POST' });
+  window.location.href = '/login.html';
+}
+
+async function fetchAccounts() {
+  try {
+    const r = await fetch('/api/accounts');
+    accounts = await r.json();
+    if (!Array.isArray(accounts) || accounts.length === 0) accounts = ['默认账户'];
+  } catch(e) { accounts = ['默认账户']; }
+}
+
+function saveAccounts() {
+  fetch('/api/accounts', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(accounts)
+  }).catch(() => {});
+}
+
+async function loadData(accountName) {
+  try {
+    const r = await fetch(`/api/data/${encodeURIComponent(accountName)}`);
+    data = await r.json();
+  } catch(e) { data = null; }
+  if (!data) {
+    data = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
+  }
+  if (!data.cashFlows) data.cashFlows = [];
+  if (!data.hkRate) data.hkRate = 0.868; // 默认汇率
+  if (data.totalAsset > 0) TOTAL_ASSET = data.totalAsset; // 更新总资产
+  // 恢复上次的涨跌幅缓存
+  if (data.changes) {
+    priceChangeMap = {};
+    Object.keys(data.changes).forEach(function(k) { priceChangeMap[k] = data.changes[k]; });
+  }
+  // 对于有缓存现价但无涨跌幅记录的持仓，用null占位
+  // 这样渲染时能显示缓存价格和 "--"（灰色），而不是转圈 ⟳
+  if (data.positions) {
+    data.positions.forEach(function(p) {
+      if (p.code && p.price != null && p.price > 0 && priceChangeMap[p.code] === undefined) {
+        priceChangeMap[p.code] = null;
+      }
+    });
+  }
+  return data;
+}
+
+function saveData() {
+  fetch(`/api/data/${encodeURIComponent(currentAccount)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  }).catch(() => showToast('数据保存失败'));
+}
+
+function exportExcel() {
+  var url = '/api/export/' + encodeURIComponent(currentAccount);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = currentAccount + '_持仓导出.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('正在下载持仓导出...');
+}
+
+// ============== 启动 ==============
+var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
+
+(async function init() {
+  await checkAuth();
+  await fetchAccounts();
+  currentAccount = accounts[0] || '默认账户';
+  await loadData(currentAccount);
+  // 从服务端加载总市值（如已保存则覆盖默认值）
+  if (data && data.totalAsset > 0) TOTAL_ASSET = data.totalAsset;
+  renderAccountSelect();
+  renderAll();
+  try {
+    await doRefresh();
+  } catch(e) {
+    showToast('行情刷新失败: ' + (e.message || e));
+  }
+  initAutoRefresh();
+  initAutoRefresh();
+  initNav();
+})();
+
+// F5 / Ctrl+R 快捷键刷新行情
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
+    e.preventDefault();
+    doRefresh();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>持仓管理系统</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #3949ab 100%);
+  min-height: 100vh; display:flex; align-items:center; justify-content:center;
+}
+.login-box {
+  background: #fff; border-radius: 16px; padding: 40px; width: 400px; max-width: 92vw;
+  box-shadow: 0 20px 60px rgba(0,0,0,.3);
+}
+.login-box h1 { font-size: 22px; color: #1a237e; text-align:center; margin-bottom:4px; }
+.login-box .sub { font-size: 13px; color: #999; text-align:center; margin-bottom:20px; }
+.form-group { margin-bottom:14px; position:relative; }
+.form-group label { display:block; font-size:13px; color:#666; margin-bottom:4px; font-weight:500; }
+.form-group input {
+  width:100%; padding:12px 14px; border:1px solid #e0e0e0; border-radius:10px;
+  font-size:15px; outline:none; transition:border-color .2s;
+}
+.form-group input:focus { border-color:#1a237e; box-shadow:0 0 0 3px rgba(26,35,126,.08); }
+.pwd-wrap { position:relative; }
+.pwd-wrap input { padding-right:40px; }
+.pwd-toggle {
+  position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  background:none; border:none; cursor:pointer; font-size:18px; color:#999; padding:4px;
+  line-height:1;
+}
+.btn {
+  width:100%; padding:12px; border:none; border-radius:10px; font-size:15px; font-weight:600;
+  cursor:pointer; transition:.2s; margin-bottom:10px;
+}
+.btn-primary { background:#1a237e; color:#fff; }
+.btn-primary:hover { background:#283593; }
+.btn:disabled { background:#aaa; cursor:not-allowed; }
+.error {
+  color:#d93025; font-size:13px; text-align:center; padding:8px 12px; margin-bottom:10px;
+  background:#fef2f2; border-radius:8px; display:none;
+}
+.switch { text-align:center; font-size:13px; color:#999; margin-top:4px; }
+.switch a { color:#1a73e8; cursor:pointer; text-decoration:none; }
+.switch a:hover { text-decoration:underline; }
+.toast {
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+  background:#323232; color:#fff; padding:12px 24px; border-radius:10px;
+  font-size:13px; opacity:0; transition:opacity .35s; pointer-events:none;
+  box-shadow:0 4px 16px rgba(0,0,0,.2); z-index:999;
+}
+.toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="login-box">
+  <h1>📈 持仓管理</h1>
+  <p class="sub" id="subtitle">账号登录</p>
+
+  <div class="error" id="error"></div>
+
+  <div class="form-group">
+    <label>账号</label>
+    <input type="text" id="username" placeholder="输入账号" autocomplete="username">
+  </div>
+
+  <!-- 登录密码 -->
+  <div class="form-group" id="login-pwd-group">
+    <label>密码</label>
+    <div class="pwd-wrap">
+      <input type="password" id="password" placeholder="密码" autocomplete="current-password">
+      <button class="pwd-toggle" onclick="togglePwd('password')" type="button">👁</button>
+    </div>
+  </div>
+
+  <!-- 注册专用 - 确认密码 + 显示密码按钮 -->
+  <div id="register-fields" style="display:none;">
+    <div class="form-group">
+      <label>设置密码</label>
+      <div class="pwd-wrap">
+        <input type="password" id="reg-pwd" placeholder="至少6位密码" autocomplete="new-password">
+        <button class="pwd-toggle" onclick="togglePwd('reg-pwd')" type="button">👁</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>确认密码</label>
+      <div class="pwd-wrap">
+        <input type="password" id="reg-pwd2" placeholder="再次输入密码">
+        <button class="pwd-toggle" onclick="togglePwd('reg-pwd2')" type="button">👁</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group" id="code-group" style="display:none;">
+    <label>邀请码</label>
+    <input type="text" id="code" placeholder="输入邀请码">
+  </div>
+
+  <button class="btn btn-primary" id="submit-btn" onclick="submit()">登 录</button>
+  <div class="switch" id="switch-hint">
+    没有账号？<a onclick="toggleMode()">注册新账号</a>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let isRegister = false;
+let needCode = false;
+let submitting = false;
+
+// 如果已登录，直接跳转到主页
+fetch('/api/me').then(r => r.json()).then(d => {
+  if (d.username) window.location.href = '/';
+}).catch(() => {});
+
+fetch('/api/config').then(r => r.json()).then(cfg => {
+  needCode = cfg.needRegisterCode;
+}).catch(() => {});
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg; el.style.display = 'block';
+}
+function hideError() { document.getElementById('error').style.display = 'none'; }
+
+function togglePwd(id) {
+  const inp = document.getElementById(id);
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function toggleMode() {
+  isRegister = !isRegister;
+  hideError();
+  document.getElementById('subtitle').textContent = isRegister ? '注册新账号' : '账号登录';
+  document.getElementById('submit-btn').textContent = isRegister ? '注 册' : '登 录';
+  document.getElementById('login-pwd-group').style.display = isRegister ? 'none' : 'block';
+  document.getElementById('register-fields').style.display = isRegister ? 'block' : 'none';
+  document.getElementById('code-group').style.display = isRegister && needCode ? 'block' : 'none';
+  document.getElementById('switch-hint').innerHTML = isRegister
+    ? '已有账号？<a onclick="toggleMode()">返回登录</a>'
+    : '没有账号？<a onclick="toggleMode()">注册新账号</a>';
+}
+
+function submit() {
+  if (submitting) return;
+  hideError();
+  const username = document.getElementById('username').value.trim();
+  if (!username) { showError('请输入账号'); return; }
+
+  if (!isRegister) {
+    // === 登录 ===
+    const password = document.getElementById('password').value.trim();
+    if (!password) { showError('请输入密码'); return; }
+    submitting = true;
+    document.getElementById('submit-btn').disabled = true;
+    fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    }).then(r => r.json().then(data => ({ status: r.status, data })))
+    .then(({ status, data }) => {
+      submitting = false;
+      document.getElementById('submit-btn').disabled = false;
+      if (data.ok) { window.location.href = '/'; }
+      else { showError(data.error || '登录失败（' + status + '）'); }
+    }).catch(() => {
+      submitting = false;
+      document.getElementById('submit-btn').disabled = false;
+      showError('连接失败，请检查服务是否运行');
+    });
+    return;
+  }
+
+  // === 注册 ===
+  const pwd = document.getElementById('reg-pwd').value;
+  const pwd2 = document.getElementById('reg-pwd2').value;
+  if (!pwd || pwd.length < 6) { showError('密码至少6位'); return; }
+  if (pwd !== pwd2) { showError('两次密码不一致'); return; }
+
+  const body = { username, password: pwd };
+  if (needCode) {
+    const code = document.getElementById('code').value.trim();
+    if (!code) { showError('请输入邀请码'); return; }
+    body.code = code;
+  }
+
+  submitting = true;
+  document.getElementById('submit-btn').disabled = true;
+  showToast('注册中...');
+  fetch('/api/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(r => r.json().then(data => ({ status: r.status, data })))
+  .then(({ status, data }) => {
+    submitting = false;
+    document.getElementById('submit-btn').disabled = false;
+    if (data.ok) {
+      showToast('🎉 注册成功！正在进入...');
+      setTimeout(() => window.location.href = '/', 800);
+    } else {
+      showError(data.error || '注册失败（' + status + '）');
+    }
+  }).catch(() => {
+    submitting = false;
+    document.getElementById('submit-btn').disabled = false;
+    showError('连接失败，请检查服务是否运行');
+  });
+}
+
+// 回车键
+document.getElementById('username').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    if (isRegister) document.getElementById('reg-pwd').focus();
+    else document.getElementById('password').focus();
+  }
+});
+document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+document.getElementById('reg-pwd').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('reg-pwd2').focus(); });
+document.getElementById('reg-pwd2').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+document.getElementById('code').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+</script>
+</body>
+</html>

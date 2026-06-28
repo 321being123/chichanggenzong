@@ -1,0 +1,15 @@
+version: '3'
+services:
+  portfolio:
+    build: .
+    container_name: portfolio-tracker
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./public:/app/public
+      - ./server.js:/app/server.js
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - DATA_DIR=/app/data

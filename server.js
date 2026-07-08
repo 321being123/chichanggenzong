@@ -5,7 +5,7 @@ const https = require('https');
 const session = require('express-session');
 const XLSX = require('xlsx');
 
-const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, isMarketClosed, DATA_DIR } = require('./server/db');
+const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, DATA_DIR } = require('./server/db');
 // 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
 const classifyCode = require('./public/js/code-classify.js');
 
@@ -390,39 +390,62 @@ app.get('/api/changelog', requireLogin, (req, res) => {
   }
 });
 
-// ========== 自动记录每日收盘价（遍历所有账户） ==========
-async function autoRecordClosingPrices() {
-  if (!isMarketClosed()) return;
-  const today = require('./public/js/utils').todayCN ? 
-    (new Date()).toISOString().split('T')[0] : 
-    new Date().toISOString().split('T')[0];
-  // 获取东八区日期
-  const now = new Date();
-  const cnDate = new Date(now.getTime() + 8 * 3600000).toISOString().split('T')[0];
-  
+// ========== 自动记录每日收盘价（按市场收盘时刻精准触发） ==========
+
+// 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
+const MARKET_CLOSE_TIMES = [
+  { h: 15, m: 0,  label: 'A股',     match: code => /^(00|30|60|68|[48])/.test(code) },
+  { h: 16, m: 0,  label: '港股',    match: code => code.length === 5 },
+  { h: 15, m: 0,  label: '可转债',   match: code => /^(11|12)/.test(code) },
+  { h: 15, m: 0,  label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
+];
+
+// 获取东八区日期
+function cnDateStr() {
+  var d = new Date();
+  d.setHours(d.getHours() + 8);
+  return d.toISOString().split('T')[0];
+}
+
+// 是否为交易日（周一至周五）
+function isTradingDay(d) {
+  var day = (d || new Date()).getDay();
+  return day >= 1 && day <= 5;
+}
+
+// 距离指定时间的毫秒数
+function msUntil(h, m) {
+  var now = new Date();
+  var target = new Date(now);
+  target.setHours(h, m, 0, 0);
+  if (target <= now) target.setDate(target.getDate() + 1);
+  return target - now;
+}
+
+// 为单个市场记录收盘价
+async function recordMarketClose(label, matchFn) {
+  var cnDate = cnDateStr();
   try {
-    const { rows: users } = await pool.query('SELECT username, accounts FROM users');
-    for (const user of users) {
-      const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
-      for (const accountName of accounts) {
+    var { rows: users } = await pool.query('SELECT username, accounts FROM users');
+    for (var user of users) {
+      var accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
+      for (var accountName of accounts) {
         // 今天已记录过就跳过
-        const { rows: existing } = await pool.query(
+        var { rows: existing } = await pool.query(
           'SELECT 1 FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 LIMIT 1',
           [user.username, accountName, cnDate]
         );
         if (existing.length > 0) continue;
 
-        // 加载该账户持仓
-        const result = await loadAccountData(user.username, accountName);
-        const positions = result.positions || [];
+        var result = await loadAccountData(user.username, accountName);
+        var positions = (result.positions || []).filter(p => matchFn(p.code));
         if (positions.length === 0) continue;
 
-        // 拉行情
-        const prices = [];
-        for (const pos of positions) {
+        var prices = [];
+        for (var pos of positions) {
           if (!pos.code) continue;
           try {
-            const quote = await fetchQuoteByCode(pos.code);
+            var quote = await fetchQuoteByCode(pos.code);
             if (quote && quote.price) {
               prices.push({ code: pos.code, name: pos.name || quote.name || '', price: quote.price });
             }
@@ -435,7 +458,35 @@ async function autoRecordClosingPrices() {
       }
     }
   } catch(e) {
-    // 静默失败，不影响主流程
+    // 静默失败
+  }
+}
+
+// 为所有市场分别调度收盘任务
+function scheduleAllMarketCloses() {
+  for (var i = 0; i < MARKET_CLOSE_TIMES.length; i++) {
+    (function(mkt) {
+      function runAndReschedule() {
+        if (isTradingDay()) {
+          recordMarketClose(mkt.label, mkt.match).catch(() => {});
+        }
+        // 安排下一个交易日
+        var delay = msUntil(mkt.h, mkt.m);
+        // 跳过周末：如果下个工作日在周末之后，再加
+        var nextDay = new Date(Date.now() + delay + 60000);
+        while (!isTradingDay(nextDay)) {
+          nextDay.setDate(nextDay.getDate() + 1);
+        }
+        // 重新计算延迟（从now到nextDay的收盘时间）
+        var now = new Date();
+        nextDay.setHours(mkt.h, mkt.m, 0, 0);
+        var nextDelay = nextDay - now;
+        if (nextDelay <= 0) nextDelay = 5000;
+        setTimeout(runAndReschedule, nextDelay);
+      }
+      var initialDelay = msUntil(mkt.h, mkt.m);
+      setTimeout(runAndReschedule, initialDelay);
+    })(MARKET_CLOSE_TIMES[i]);
   }
 }
 
@@ -453,8 +504,8 @@ async function start() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`持仓管理系统已启动: http://0.0.0.0:${PORT}`);
     console.log(`数据目录: ${DATA_DIR}`);
-    // 每10分钟检查一次是否需要记录收盘价
-    setInterval(autoRecordClosingPrices, 10 * 60 * 1000);
+    // 按各市场收盘时刻精准调度收盘价记录
+    scheduleAllMarketCloses();
   });
 }
 start();

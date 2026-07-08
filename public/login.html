@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="base-url" content="">
 <title>持仓管理系统</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -105,17 +106,18 @@ body {
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="js/utils.js"></script>
 <script>
 let isRegister = false;
 let needCode = false;
 let submitting = false;
 
 // 如果已登录，直接跳转到主页
-fetch('/api/me').then(r => r.json()).then(d => {
-  if (d.username) window.location.href = '/';
+fetch(api('/api/me')).then(r => r.json()).then(d => {
+  if (d.username) window.location.href = api('/');
 }).catch(() => {});
 
-fetch('/api/config').then(r => r.json()).then(cfg => {
+fetch(api('/api/config')).then(r => r.json()).then(cfg => {
   needCode = cfg.needRegisterCode;
 }).catch(() => {});
 
@@ -160,7 +162,7 @@ function submit() {
     if (!password) { showError('请输入密码'); return; }
     submitting = true;
     document.getElementById('submit-btn').disabled = true;
-    fetch('/api/login', {
+    fetch(api('/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -168,7 +170,7 @@ function submit() {
     .then(({ status, data }) => {
       submitting = false;
       document.getElementById('submit-btn').disabled = false;
-      if (data.ok) { window.location.href = '/'; }
+      if (data.ok) { window.location.href = api('/'); }
       else { showError(data.error || '登录失败（' + status + '）'); }
     }).catch(() => {
       submitting = false;
@@ -194,7 +196,7 @@ function submit() {
   submitting = true;
   document.getElementById('submit-btn').disabled = true;
   showToast('注册中...');
-  fetch('/api/register', {
+  fetch(api('/api/register'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -204,7 +206,7 @@ function submit() {
     document.getElementById('submit-btn').disabled = false;
     if (data.ok) {
       showToast('🎉 注册成功！正在进入...');
-      setTimeout(() => window.location.href = '/', 800);
+      setTimeout(() => window.location.href = api('/'), 800);
     } else {
       showError(data.error || '注册失败（' + status + '）');
     }

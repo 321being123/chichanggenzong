@@ -1,5 +1,7 @@
 // ============================================================
 // utils.js – 纯工具函数（无 DOM 依赖）
+// 注意: recognizeCode 委托全局 classifyCode（见 /js/code-classify.js），
+//       该脚本须在 utils.js 之前加载（见 index.html）。
 // ============================================================
 
 function escapeHtml(str) {
@@ -46,34 +48,9 @@ function fmtPct(n) {
 }
 
 function recognizeCode(code) {
-  code = code.trim().toUpperCase();
-  if (!code) return null;
-  var clean = code.replace(/\.(SH|SZ|HK|US)$/i, '').replace(/^(SH|SZ|HK|US)/i, '');
-  var num = parseInt(clean);
-  if (isNaN(num)) return null;
-  if (clean.length <= 5) return { type: '股权', subtype: '港股' };
-  var first3 = clean.substring(0, 3);
-  var first2 = clean.substring(0, 2);
-  var first1 = clean.substring(0, 1);
-  if (first3 === '123' || first3 === '127' || first2 === '11' || first2 === '12') return { type: '债权', subtype: '可转债' };
-  if (first2 === '13') return { type: '债权', subtype: '信用债' };
-  if (first3 === '688' || first1 === '6' || first2 === '00' || first2 === '30' || first1 === '8') return { type: '股权', subtype: 'A股' };
-  if (/^[A-Z]{1,4}$/.test(clean)) return { type: '股权', subtype: '美股' };
-  return { type: '股权', subtype: 'A股' };
-}
-
-function getSecId(code) {
-  code = code.trim().toUpperCase().replace(/\.(SH|SZ|HK|US)$/i, '').replace(/^(SH|SZ|HK|US)/i, '');
-  var first1 = code.substring(0, 1);
-  var first3 = code.substring(0, 3);
-  if (code.length <= 5) return { market: 0, secid: '0.' + code + '.hk' };
-  if (first1 === '6' || first1 === '5' ||
-      first3 === '110' || first3 === '113' || first3 === '132' ||
-      first3 === '133' || first3 === '136' || first3 === '137' ||
-      first3 === '155' || first3 === '185') {
-    return { market: first3 === '688' ? 'kcb' : 'sh', secid: '1.' + code };
-  }
-  return { market: 0, secid: '0.' + code };
+  // 委托单一分类函数（public/js/code-classify.js，前后端共用）
+  var c = classifyCode(code);
+  return c ? { type: c.type, subtype: c.subtype } : null;
 }
 
 function getMarketValue(pos) {
@@ -131,4 +108,25 @@ function isMarketOpen() {
     if (hasHK) return hkOpen;
   }
   return aShareOpen;
+}
+
+// ===================== 部署相关（子目录 + 时区） =====================
+
+// 子目录部署：在 index.html / login.html 的 <meta name="base-url" content="/sub"> 设置前缀
+// 留空表示部署在域名根目录（默认）
+var BASE_URL = (function () {
+  var m = document.querySelector('meta[name="base-url"]');
+  return (m && m.content) ? m.content : '';
+})();
+
+// 给接口路径加上部署前缀（如 /sub/api/me）
+function api(path) { return BASE_URL + path; }
+
+// 东八区（北京时间）日期 YYYY-MM-DD
+// 避免服务器时区非东八区时，净值日期 / 交易日期差一天（尤其凌晨）
+function todayCN() {
+  var now = new Date();
+  var cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+  var p = function (n) { return String(n).padStart(2, '0'); };
+  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
 }

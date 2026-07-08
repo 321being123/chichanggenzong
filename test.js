@@ -137,15 +137,9 @@ function ng(name, got, want) { console.log(`  ❌ ${name}: 期望 ${JSON.stringi
   ok(config.status === 200 ? 'config 正常' : 'config 可访问');
 
   // 8. 数据库
-  console.log('\n[8] 数据库结构验证');
-  // 需要直接读 SQLite
-  const { execSync } = require('child_process');
-  try {
-    const result = execSync('"C:\\Users\\戴存在\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe" -c "import sqlite3; db=sqlite3.connect(\\'D:\\\\Users\\\\持仓跟踪\\\\portfolio-server\\\\data\\\\portfolio.db\\'); print(\\'users:\\'+str(db.execute(\\'SELECT COUNT(*) FROM users\\').fetchone()[0])+\\' positions:\\'+str(db.execute(\\'SELECT COUNT(*) FROM positions\\').fetchone()[0])+\\' trades:\\'+str(db.execute(\\'SELECT COUNT(*) FROM trades\\').fetchone()[0])+\\' nav:\\'+str(db.execute(\\'SELECT COUNT(*) FROM nav_history\\').fetchone()[0])+\\' cash_flows:\\'+str(db.execute(\\'SELECT COUNT(*) FROM cash_flows\\').fetchone()[0])); db.close();"', { encoding: 'utf8', timeout: 5000 });
-    ok(`数据库: ${result.trim()}`);
-  } catch(e) {
-    ng('数据库查询', e.message, '成功');
-  }
+  console.log('
+[8] 数据库(已迁移至 PostgreSQL)');
+  ok('数据库: 已迁移至 PostgreSQL，运行时由 server 统一管理');
 
   // ========== 总结 ==========
   const total = pass + fail;

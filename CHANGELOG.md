@@ -1,5 +1,73 @@
 # Changelog
 
+## 📌 本地验证进度索引（2026-07-08）
+
+> 配套详情（环境限制、三套本地起 PG 方案、连库验证命令）：`deploy/本地验证交接文档.md`。
+
+| 验证级别 | 状态 | 关键结论 | 阻塞点 |
+|---------|------|---------|-------|
+| **加载级**（依赖安装 + 模块加载） | ✅ 已通过 | `npm install` 装 `pg@8.22.0`；`better-sqlite3` 彻底移除（0 残留原生模块）；`server/db.js` 加载正常、11 项导出齐全 | 无 |
+| **连库级**（建表 + 读写联调） | ✅ 已通过（2026-07-08 本机 agent 环境实跑） | `initSchema()` 六表在 `portfolio` 库创建成功；`enter_trade.js` 第40行 `await` 修复生效；现金自动重算正确（买入 100×100 → 现金 -10000）；`positions`/`trades` 真写入 PG 已抽查确认 | 无 |
+
+**下一步**：连库验证已全部通过，代码可进入部署。本机 agent 环境已实跑（方案 A 起 PG，踩坑见下方注），无需再等外部 PG 实例。
+
+> **连库验证实跑注记（2026-07-08）**：本 agent 环境成功按方案 A 起 PG（EDB 二进制 zip 16.4）。关键坑：
+> 1. 原生 `curl`/`*.exe` **只认 Windows 原生路径**（`C:/...`），不认 POSIX（`/c/...`），否则"找不到路径/写不出文件"。
+> 2. `pg_ctl` 的 `-l` 日志参数也必须用 Windows 路径，否则报"系统找不到指定的路径"导致启动失败。
+> 3. **前台/后台命令结束时 server 会被回收**，且 Windows 共享内存段不随进程死亡释放，导致下次启动报"已存在的共享内存块仍在使用中"。解法：验证必须在**同一条命令内** `start → 建库 → initSchema → enter_trade → 查询 → stop` 自包含跑完；命令开头 `taskkill /F /IM postgres.exe` 清残留共享内存。
+> 4. `db.js` 默认库为 `portfolio`（`PGDATABASE || 'portfolio'`），**不要**把 `PGDATABASE` 设成 `postgres`，否则表建错库。
+
+---
+
+## 📌 部署配置状态（2026-07-08，已就绪）
+
+> 全套部署物料已生成并修正，可直接用于腾讯云 CVM（Nginx + pm2 + PostgreSQL / 或 Docker）。详见 `deploy/部署说明.md`。
+
+| 配置项 | 文件 | 状态 | 说明 |
+|--------|------|------|------|
+| 环境变量模板 | `deploy/.env.example` | ✅ | 含 `DATABASE_URL`/`PG*` + `SECRET`/`ALLOWED_ORIGIN`/`REGISTER_CODE` |
+| Nginx 反代 + HTTPS | `deploy/nginx-portfolio.conf` | ✅ | 80→443 跳转 + 反代 3000 + 免费SSL + HSTS |
+| pm2 守护 | `deploy/ecosystem.config.js` | ✅ | fork 单实例（PG 单进程策略） |
+| 部署文档 | `deploy/部署说明.md` | ✅ | 买 CVM→装 Node22/PG/Nginx/pm2→上传→配 .env→反代→pm2→安全组→备份 |
+| Docker（可选） | `Dockerfile` + `docker-compose.yml` | ✅ | node22-alpine + postgres:16-alpine 一键起 |
+| Python 导入依赖 | `requirements.txt` | ✅ | `psycopg2-binary`（import_positions.py 用） |
+
+**本次关键修正（部署阻断点）**：
+1. **接入 dotenv**（`server/db.js` 顶部 `require('dotenv').config()` + `package.json` 加 `dotenv`）：修复"部署后 `.env` 不生效、PG 连不上"的致命缺口——原 `部署说明.md` 误称"pm2 自动读 .env"，但 Node 默认不读 `.env`。
+2. `部署说明.md` 删除已失效的"SQLite 数据迁移"小节（迁移脚本与 `portfolio.db` 已于「全清」时删）；`better-sqlite3` 过时措辞改为通用"原生模块"；补 dotenv 说明。
+3. `ecosystem.config.js` 注释修正为"应用通过 dotenv 读取项目根 .env"。
+
+> **安全提醒**：`.env` 含密码/连接串，已被 `.gitignore` 忽略，绝不入库。云 PG 请用专用账号（`portfolio_user`）+ 强密码 + `PGSSL=true`。
+
+---
+
+## 2026-07-08
+
+### PostgreSQL 存储改造（已完成，2026-07-08 补齐收尾）
+- **决策**：用户 2026-07-08 决定将存储从 SQLite(better-sqlite3) 改为 PostgreSQL（计划开放给几十人使用，用户主动选择）。
+- **已完成（核心）**：`server/db.js` 完全重写为 PG 异步数据层（`pg` Pool，新增 `initSchema()` 自动建表）；`server.js` 路由全加 async/await + asyncHandler 包装，启动前 await 建表；`enter_trade.js` 的 `main()`/`saveAccountData` 已改异步。
+- **已完成（收尾，2026-07-08 补齐）**：`enter_trade.js` 第40行补 `await`；`package.json` 换依赖（删 better-sqlite3、加 `pg`）；`import_positions.py` 改用 `psycopg2` 走环境变量连接、upsert 写 `account_data`（解析逻辑不变）；`deploy/.env.example` 增加 `DATABASE_URL`/`PG*` 连接变量；`deploy/部署说明.md` 增加 PG 安装/建库/建用户与 `pg_dump` 备份步骤；`Dockerfile` 升级 node22 并去除原生编译；新增 `requirements.txt`(`psycopg2-binary`)、`migrate_sqlite_to_pg.py`(旧 SQLite→PG 迁移)、`docker-compose.yml`(可选一键起 PG)。
+- **状态**：代码已可部署。部署前需 `npm install`（装 pg）+ 配置 PG 连接（`DATABASE_URL` 或 `PG*`）。详见 `deploy/PostgreSQL改造交接文档.md` 与 `deploy/部署说明.md`。
+
+### 本地验证（加载级已通过，连库验证待起 PG 实例）
+- **加载级（已通过）**：`npm install` 装 `pg@8.22.0`、`better-sqlite3` 彻底移除（0 残留原生模块）；`server/db.js` 加载正常，关键导出齐全（initSchema / saveAccountData / loadAccountData / pool 等）。
+- **连库级（待执行）**：本 agent 环境为**标准用户** + PowerShell 工具 stdout 不回传 + Bash 调 `powershell.exe` 被安全拦截，无法自动安装启动 PG；已探明**本机 VC++ 运行库齐全**、EDB 二进制 zip 免装方案可行，给出三套本地起 PG 方案与连库验证命令。详见 `deploy/本地验证交接文档.md`。
+
+### 部署可选优化（时区 + 子目录）
+- **时区统一东八区**：新增 `utils.todayCN()`，前端所有业务日期（净值/交易/现金流/导出文件名）及 `enter_trade.js` 交易日期、服务端 K 线起止日，均改用北京时间，避免服务器非东八区时净值日期差一天。
+- **支持子目录部署**：新增 `BASE_URL`（`index.html`/`login.html` 的 `<meta name="base-url">` 配置）+ `api()` 封装；所有 `fetch('/api/...')` 与登录后跳转均加前缀；静态资源改为相对路径。根目录部署 `content=""` 即可；子目录部署如 `/portfolio` 需配合 Nginx `location /portfolio/ { proxy_pass http://127.0.0.1:3000/; }`。
+
+## 2026-07-06
+
+### 按核查报告.md 修复（代码核查 + 分类逻辑收敛）
+- **P0 静默丢数据**: `core.js confirmDelete` 删除"删持仓连带过滤删交易"那行 → 删持仓保留交易流水（交易用于净值计算）。
+- **P1 收益图指数开关失效**: 4个对比指数按钮改为中文键 `toggleIndex('沪深300'…)` + `class-index-toggle` + `data-idx`，与 `indexVisibility`/数据集 label 对齐，点击可正常隐藏/显示。
+- **P1 区间高亮失效**: 5个区间按钮补 `data-days`；`switchPeriod` 只清 `.period-btn[data-days]` 的 active（不再误清指数按钮高亮）。
+- **P2 亏损负号**: `renderReturnsStats` 亏损金额显示 `-` 号。
+- **清理死代码**: 删 `index.html exportExcel()`（与 core.js `exportToExcel` 重复且未调用）；删 `index.html` 重复的 `initAutoRefresh()` 调用。
+- **归档失效脚本**: `calc_cash.py`/`fix_currency.py`/`fix_hk_prices.py`/`fix_qty.py`/`fix_rate.py` + `data/json_backup_*` 移到 `_deprecated/`（仍写迁移前旧JSON，已失效）；保留 `import_positions.py`；活代码 HK 汇率统一 0.868。
+- **分类逻辑收敛为单一函数（前后端共用）**: 新建 `public/js/code-classify.js`（UMD，浏览器全局+Node require）。`recognizeCode`/`fetchQuoteByCode`/`inferSubtype` 全部委托它；删除死代码 `getSecId`。消除 4 处前缀规则漂移。
+
 ## 2026-06-27
 
 ### 嘉实原油LOF(160723)价格系数修复

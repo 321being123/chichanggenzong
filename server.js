@@ -5,9 +5,13 @@ const https = require('https');
 const session = require('express-session');
 const XLSX = require('xlsx');
 
-const { db, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, DATA_DIR } = require('./server/db');
+const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, DATA_DIR } = require('./server/db');
+// 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
+const classifyCode = require('./public/js/code-classify.js');
 
 const app = express();
+// 部署在 Nginx 反代后，信任一层代理（用于正确的客户端IP与 X-Forwarded-Proto）
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.SECRET || (function() {
   const sf = path.join(DATA_DIR, '.secret');
@@ -18,16 +22,12 @@ const SECRET = process.env.SECRET || (function() {
   }
 })();
 
-// 执行迁移
-migrateFromJson();
-migrateToStructured();
-
 app.use(express.json({ limit: '10mb' }));
 app.use(session({
   secret: SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000, httpOnly: true, sameSite: 'lax' }
+  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000, httpOnly: true, sameSite: 'lax', secure: 'auto' }
 }));
 
 // 未登录跳转
@@ -38,15 +38,16 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// CSRF 防护
+// CSRF 防护：仅允许指定来源（部署到公网时通过 ALLOWED_ORIGIN 配置，多个用逗号分隔，只写域名如 myapp.com）
+const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || 'localhost,127.0.0.1')
+  .split(',').map(s => s.trim()).filter(Boolean);
 app.use((req, res, next) => {
   if (req.method === 'PUT' || req.method === 'POST' || req.method === 'DELETE') {
     const origin = req.headers['origin'] || '';
     const referer = req.headers['referer'] || '';
     if (!origin && !referer) return next(); // 允许无来源请求
-    if (!origin.includes('://localhost:') && !referer.includes('://localhost:')
-        && !origin.includes('://127.0.0.1:') && !referer.includes('://127.0.0.1:'))
-      return res.status(403).json({ error: '请求来源被拒绝' });
+    const ok = ALLOWED_ORIGIN.some(a => origin.includes('://' + a) || referer.includes('://' + a));
+    if (!ok) return res.status(403).json({ error: '请求来源被拒绝' });
   }
   next();
 });
@@ -73,6 +74,9 @@ function checkRegLimit(ip) {
 }
 const REGISTER_CODE = process.env.REGISTER_CODE;
 
+// 包装异步路由，避免未捕获异常导致请求挂起
+function asyncHandler(fn) { return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next); }
+
 // ========== 中间件 ==========
 function requireLogin(req, res, next) {
   if (!req.session.user) return res.status(401).json({ error: '未登录' });
@@ -80,7 +84,7 @@ function requireLogin(req, res, next) {
 }
 
 // ========== 用户认证 ==========
-app.post('/api/register', (req, res) => {
+app.post('/api/register', asyncHandler(async (req, res) => {
   const { username, password, code } = req.body;
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
   if (username.length < 2) return res.status(400).json({ error: '账号至少2位' });
@@ -88,50 +92,50 @@ app.post('/api/register', (req, res) => {
   if (REGISTER_CODE && code !== REGISTER_CODE) return res.status(400).json({ error: '注册已关闭或邀请码错误' });
   const ip = req.ip || req.connection.remoteAddress;
   if (checkRegLimit(ip)) return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
-  const users = loadUsers();
+  const users = await loadUsers();
   if (users[username]) return res.status(400).json({ error: '该账号已注册，请直接登录' });
   users[username] = { password: hashPwd(password), accounts: ['默认账户'] };
-  saveUsers(users);
+  await saveUsers(users);
   req.session.user = username;
   res.json({ ok: true, username });
-});
+}));
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', asyncHandler(async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
   const ip = req.ip || req.connection.remoteAddress;
   const lockKey = 'login_' + (username || '') + '_' + ip;
   if (checkLocked(lockKey)) return res.status(429).json({ error: '登录尝试过多，已锁定15分钟' });
-  const users = loadUsers();
+  const users = await loadUsers();
   const user = users[username];
   if (!user) { recordFail(lockKey); return res.status(401).json({ error: '账号不存在，请先注册' }); }
   if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '密码错误' }); }
   clearFail(lockKey);
   req.session.user = username;
   res.json({ ok: true, username });
-});
+}));
 
 app.post('/api/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
 app.get('/api/me', (req, res) => { res.json({ username: req.session.user || null }); });
 app.get('/api/config', (req, res) => { res.json({ needRegisterCode: !!REGISTER_CODE }); });
 
 // ========== 数据API ==========
-app.get('/api/accounts', requireLogin, (req, res) => {
-  const users = loadUsers();
+app.get('/api/accounts', requireLogin, asyncHandler(async (req, res) => {
+  const users = await loadUsers();
   res.json((users[req.session.user] || {}).accounts || ['默认账户']);
-});
+}));
 
-app.put('/api/accounts', requireLogin, (req, res) => {
-  const users = loadUsers();
+app.put('/api/accounts', requireLogin, asyncHandler(async (req, res) => {
+  const users = await loadUsers();
   if (!users[req.session.user]) users[req.session.user] = { password: '', accounts: [] };
   users[req.session.user].accounts = req.body;
-  saveUsers(users);
+  await saveUsers(users);
   res.json({ ok: true });
-});
+}));
 
-app.get('/api/data/:name', requireLogin, async (req, res) => {
+app.get('/api/data/:name', requireLogin, asyncHandler(async (req, res) => {
   const name = decodeURIComponent(req.params.name);
-  const result = loadAccountData(req.session.user, name);
+  const result = await loadAccountData(req.session.user, name);
   // 附加当前行情涨跌幅（异步，不阻塞返回）
   if (result.positions && result.positions.length > 0) {
     result.changes = {};
@@ -147,12 +151,12 @@ app.get('/api/data/:name', requireLogin, async (req, res) => {
     }));
   }
   res.json(result);
-});
+}));
 
-app.put('/api/data/:name', requireLogin, (req, res) => {
-  saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body);
+app.put('/api/data/:name', requireLogin, asyncHandler(async (req, res) => {
+  await saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body);
   res.json({ ok: true });
-});
+}));
 
 // ========== 行情代理 ==========
 function httpsGet(url) {
@@ -171,10 +175,11 @@ async function fetchQuoteByCode(code) {
   if (!c) return null;
   if (c === '404002') return { price: null, name: '搜特退债', code: c, change: null };
 
-  const isHK = c.length <= 5;
-  let secids = [];
-  if (isHK) { secids.push('0.' + c + '.hk'); }
-  else { if (c[0] === '6' || c.startsWith('5') || c.startsWith('11')) secids.push('1.' + c); secids.push('0.' + c); }
+  // 委托单一分类函数：isHK / secids / 市场前缀
+  const cls = classifyCode(c);
+  const isHK = cls.isHK;
+  const secids = cls.secids;
+  const prefix = isHK ? 'hk' : (c[0] === '6' || c[0] === '5' || c.startsWith('11') ? 'sh' : 'sz');
 
   let result = null;
   for (const secid of secids) {
@@ -194,7 +199,6 @@ async function fetchQuoteByCode(code) {
   }
 
   if (!result || !result.price) {
-    const prefix = isHK ? 'hk' : (c[0] === '6' || c[0] === '5' || c.startsWith('11') ? 'sh' : 'sz');
     try {
       const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + (isHK ? c.padStart(5,'0') : c));
       const match = text.match(/"(.*)"/);
@@ -208,14 +212,14 @@ async function fetchQuoteByCode(code) {
   return result || null;
 }
 
-app.get('/api/quote/:code', requireLogin, async (req, res) => {
+app.get('/api/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   const code = req.params.code.trim().toUpperCase().replace(/\s/g, '');
   if (!code) return res.json({ price: null });
   res.json(await fetchQuoteByCode(code) || { price: null, code });
-});
+}));
 
 // 港币→人民币汇率代理
-app.get('/api/hkrate', requireLogin, async (req, res) => {
+app.get('/api/hkrate', requireLogin, asyncHandler(async (req, res) => {
   try {
     const text = await httpsGet('https://qt.gtimg.cn/q=szhkdcny');
     const match = text.match(/"(.*)"/);
@@ -226,17 +230,22 @@ app.get('/api/hkrate', requireLogin, async (req, res) => {
     }
   } catch(e) {}
   res.json({ rate: 0.868 });
-});
+}));
+
+// 东八区日期 YYYYMMDD（指数K线起止，避免服务器非东八区时差一天）
+function cnDateStr(d) {
+  const cn = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+  const p = n => String(n).padStart(2, '0');
+  return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
+}
 
 // 指数K线数据代理
-app.get('/api/kline', requireLogin, async (req, res) => {
+app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
   const { secid, days } = req.query;
   if (!secid) return res.json([]);
-  const end = new Date();
-  const start = new Date();
-  start.setDate(start.getDate() - (parseInt(days) || 365));
-  const begStr = start.toISOString().slice(0, 10).replace(/-/g, '');
-  const endStr = end.toISOString().slice(0, 10).replace(/-/g, '');
+  const daysNum = parseInt(days) || 365;
+  const begStr = cnDateStr(new Date(Date.now() - daysNum * 86400000));
+  const endStr = cnDateStr(new Date());
   try {
     const url = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=' +
       secid + '&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1&beg=' +
@@ -252,13 +261,13 @@ app.get('/api/kline', requireLogin, async (req, res) => {
     }
   } catch(e) {}
   res.json([]);
-});
+}));
 
 // 导出持仓为 Excel
-app.get('/api/export/:name', requireLogin, async (req, res) => {
+app.get('/api/export/:name', requireLogin, asyncHandler(async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const result = loadAccountData(req.session.user, name);
+    const result = await loadAccountData(req.session.user, name);
     const positions = result.positions || [];
     const hkRate = result.hkRate || 0.868;
 
@@ -307,9 +316,22 @@ app.get('/api/export/:name', requireLogin, async (req, res) => {
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
-});
+}));
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`持仓管理系统已启动: http://0.0.0.0:${PORT}`);
-  console.log(`数据目录: ${DATA_DIR}`);
-});
+// ========== 启动：先初始化数据库（建表+迁移），再监听端口 ==========
+async function start() {
+  try {
+    await initSchema();
+    await migrateFromJson();
+    await migrateToStructured();
+    console.log('数据库初始化完成');
+  } catch (e) {
+    console.error('数据库初始化失败:', e.message);
+    process.exit(1);
+  }
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`持仓管理系统已启动: http://0.0.0.0:${PORT}`);
+    console.log(`数据目录: ${DATA_DIR}`);
+  });
+}
+start();

@@ -23,7 +23,7 @@ function showToast(msg) {
 
 async function fetchQuoteFromServer(code) {
   try {
-    const r = await fetch('/api/quote/' + encodeURIComponent(code));
+    const r = await fetch(api('/api/quote/' + encodeURIComponent(code)));
     if (r.ok) {
       const data = await r.json();
       if (data && data.price) return data;
@@ -61,7 +61,7 @@ async function fetchQuote(code, forceRefresh) {
 
 async function fetchHKRate() {
   try {
-    const r = await fetch('/api/hkrate');
+    const r = await fetch(api('/api/hkrate'));
     if (r.ok) {
       const d = await r.json();
       if (d && d.rate > 0) return d.rate;
@@ -133,16 +133,13 @@ async function refreshAllPrices() {
  * 供"刷新按钮/F5/自动刷新"统一调用
  */
 async function doRefresh() {
-  await refreshAllPrices();
-  var s = calcSummary();
+  // 总资产持久化（供净值走势展示），须在 refreshAllPrices 之前设置，
+  // 使其内部的统一 saveData 一并保存，避免双重写入/重绘
   if (typeof TOTAL_ASSET !== 'undefined' && TOTAL_ASSET > 0) {
-    data.cash = Math.round((TOTAL_ASSET - (s.equityVal + s.debtVal)) * 100) / 100;
-    data.totalAsset = TOTAL_ASSET; // 持久化总市值
+    data.totalAsset = TOTAL_ASSET;
   }
-  // 有真实数据时才触发保存（只保存用户修改的字段，不保存实时价格）
-  var hasData = data.positions.length > 0 || data.trades.length > 0 || data.navHistory.length > 0;
-  if (hasData) saveData();
-  renderAll();
+  // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
+  await refreshAllPrices();
 }
 
 // ===================== 代码输入处理 =====================
@@ -637,7 +634,13 @@ function renderPositionsTable(targetId, limit) {
 
 function renderTrades() {
   const el = document.getElementById('trades-table');
-  if (data.trades.length === 0) {
+  // 合并股票交易与现金流转出，按日期倒序展示
+  const items = [];
+  (data.trades || []).forEach(t => items.push({ kind: 'trade', created_at: t.created_at || t.date || '', raw: t }));
+  (data.cashFlows || []).forEach(c => items.push({ kind: 'flow', created_at: c.created_at || c.date || '', raw: c }));
+  items.sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+  if (items.length === 0) {
     el.innerHTML = '<div class="empty-state"><div class="icon">📄</div><p>暂无交易记录</p></div>';
     return;
   }
@@ -646,29 +649,76 @@ function renderTrades() {
     '<th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">成交额</th>' +
     '<th>类型</th><th>备注</th><th class="text-center">操作</th>' +
     '</tr></thead><tbody>';
-  [...data.trades].reverse().forEach(t => {
-    const dirLabel = t.direction === 'buy'
-      ? '<span class="tag tag-equity">买入</span>'
-      : '<span class="tag tag-cash">卖出</span>';
-    html += '<tr>' +
-      '<td>' + (t.date || '-') + '</td>' +
-      '<td>' + (t.code || '-') + '</td>' +
-      '<td>' + (t.name || '-') + '</td>' +
-      '<td>' + dirLabel + '</td>' +
-      '<td class="text-right">' + (t.price != null ? Number(t.price).toFixed(3) : '-') + '</td>' +
-      '<td class="text-right ' + (t.direction === 'buy' ? 'positive' : 'negative') + '">' +
-        (t.direction === 'buy' ? '+' : '-') + fmtQty(t.quantity) + '</td>' +
-      '<td class="text-right">' + (t.amount != null ? fmt(t.amount) : '-') + '</td>' +
-      '<td>' + (t.type || '-') + '</td>' +
-      '<td>' + (t.note || '') + '</td>' +
-      '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteTrade(\'' + t.id + '\')">删除</button></td>' +
-      '</tr>';
+  items.forEach(item => {
+    if (item.kind === 'trade') {
+      const t = item.raw;
+      const dirLabel = t.direction === 'buy'
+        ? '<span class="tag tag-equity">买入</span>'
+        : '<span class="tag tag-cash">卖出</span>';
+      html += '<tr>' +
+        '<td>' + (t.created_at || t.date || '-') + '</td>' +
+        '<td>' + (t.code || '-') + '</td>' +
+        '<td>' + (t.name || '-') + '</td>' +
+        '<td>' + dirLabel + '</td>' +
+        '<td class="text-right">' + (t.price != null ? Number(t.price).toFixed(3) : '-') + '</td>' +
+        '<td class="text-right ' + (t.direction === 'buy' ? 'positive' : 'negative') + '">' +
+          (t.direction === 'buy' ? '+' : '-') + fmtQty(t.quantity) + '</td>' +
+        '<td class="text-right">' + (t.amount != null ? fmt(t.amount) : '-') + '</td>' +
+        '<td>' + (t.type || '-') + '</td>' +
+        '<td>' + (t.note || '') + '</td>' +
+        '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteTrade(\'' + t.id + '\')">删除</button></td>' +
+        '</tr>';
+    } else {
+      const c = item.raw;
+      const isIn = c.amount >= 0;
+      const dirLabel = isIn
+        ? '<span class="tag tag-cash">入金</span>'
+        : '<span class="tag tag-equity">出金</span>';
+      html += '<tr>' +
+        '<td>' + (c.created_at || c.date || '-') + '</td>' +
+        '<td>现金</td>' +
+        '<td>现金' + (c.note ? '·' + c.note : '') + '</td>' +
+        '<td>' + dirLabel + '</td>' +
+        '<td class="text-right">-</td>' +
+        '<td class="text-right">-</td>' +
+        '<td class="text-right ' + (isIn ? 'positive' : 'negative') + '">' +
+          (isIn ? '+' : '-') + fmt(Math.abs(c.amount)) + '</td>' +
+        '<td>现金</td>' +
+        '<td>' + (c.note || '') + '</td>' +
+        '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteCashFlow(\'' + c.id + '\')">删除</button></td>' +
+        '</tr>';
+    }
   });
   html += '</tbody></table>';
   el.innerHTML = html;
 }
 
+function deleteCashFlow(id) {
+  if (!id) return;
+  data.cashFlows = (data.cashFlows || []).filter(c => c.id !== id);
+  saveData();
+  renderAll();
+  showToast('现金流记录已删除');
+}
+
 // ===================== 交易录入 =====================
+
+// 本地秒级时间字符串 YYYY-MM-DD HH:MM:SS（用于交易/现金流精确排序，东八区）
+function nowSec() {
+  const now = new Date();
+  const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+  const p = n => String(n).padStart(2, '0');
+  return `${cn.getUTCFullYear()}-${p(cn.getUTCMonth() + 1)}-${p(cn.getUTCDate())} ${p(cn.getUTCHours())}:${p(cn.getUTCMinutes())}:${p(cn.getUTCSeconds())}`;
+}
+
+// 现金自动重算：现金 = 期初本金(cashBase) + 现金流净额 + 交易净额(买入减/卖出加)
+// 与后端 loadAccountData 逻辑一致，是现金唯一真相源，避免刷新/覆盖导致现金丢失
+function recalcCash() {
+  const cfNet = (data.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
+  const tradeNet = (data.trades || []).reduce((s, t) => s + (t.direction === 'buy' ? -(t.amount || 0) : (t.amount || 0)), 0);
+  const base = (typeof data.cashBase === 'number') ? data.cashBase : 0;
+  data.cash = base + cfNet + tradeNet;
+}
 
 function addTrade() {
   const code = document.getElementById('trade-code').value.trim();
@@ -688,7 +738,8 @@ function addTrade() {
 
   const trade = {
     id: uid(),
-    date: new Date().toISOString().slice(0, 10),
+    date: todayCN(),
+    created_at: nowSec(),
     code: code, name: name, direction: direction,
     price: price, quantity: qty, amount: amount,
     type: type, subtype: subtype, note: note
@@ -719,9 +770,8 @@ function addTrade() {
     });
   }
 
-  // 更新现金
-  if (direction === 'buy') data.cash = (data.cash || 0) - amount;
-  else data.cash = (data.cash || 0) + amount;
+  // 现金由系统自动重算，这里仅刷新内存显示
+  recalcCash();
 
   saveData();
   renderAll();
@@ -818,7 +868,7 @@ function deletePosition(id) {
 function confirmDelete() {
   if (deleteTargetId) {
     data.positions = data.positions.filter(p => p.id !== deleteTargetId);
-    data.trades = data.trades.filter(t => data.positions.some(p => p.code === t.code));
+    // 仅删持仓，保留交易流水（交易用于净值计算，删持仓不应抹掉历史）
     deleteTargetId = null;
     saveData();
     renderAll();
@@ -831,10 +881,16 @@ function closeModal(id) {
 }
 
 function updateCash(val) {
-  data.cash = parseFloat(val) || 0;
+  const target = parseFloat(val) || 0;
+  const cfNet = (data.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
+  const tradeNet = (data.trades || []).reduce((s, t) => s + (t.direction === 'buy' ? -(t.amount || 0) : (t.amount || 0)), 0);
+  const current = (data.cashBase || 0) + cfNet + tradeNet;
+  const delta = Math.round((target - current) * 100) / 100;
+  // 调整现金 = 追加一条"校正现金流"，不改期初本金(cashBase)，避免污染净值计算
+  if (!data.cashFlows) data.cashFlows = [];
+  data.cashFlows.push({ id: uid(), date: todayCN(), created_at: nowSec(), amount: delta, note: '现金调整' });
   saveData();
-  renderStats();
-  renderCharts();
+  renderAll();
 }
 
 // ===================== 截图 OCR =====================
@@ -1277,7 +1333,7 @@ function confirmOcrItem(index) {
   const rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
   const trade = {
     id: uid(),
-    date: new Date().toISOString().slice(0, 10),
+    date: todayCN(),
     code: code, name: name, direction: direction,
     price: price, quantity: qty, amount: price * qty,
     type: rec.type, subtype: rec.subtype, note: 'OCR识别录入'
@@ -1307,9 +1363,8 @@ function confirmOcrItem(index) {
     });
   }
 
-  // 更新现金
-  if (direction === 'buy') data.cash = (data.cash || 0) - price * qty;
-  else data.cash = (data.cash || 0) + price * qty;
+  // 现金由系统自动重算，这里仅刷新内存显示
+  recalcCash();
 
   saveData();
   renderAll();
@@ -1327,13 +1382,13 @@ function exportData() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '仓位数据_' + new Date().toISOString().slice(0, 10) + '.json';
+  a.download = '仓位数据_' + todayCN() + '.json';
   a.click();
   URL.revokeObjectURL(url);
 }
 
 function exportToExcel() {
-  var url = '/api/export/' + encodeURIComponent(currentAccount);
+  var url = api('/api/export/' + encodeURIComponent(currentAccount));
   var a = document.createElement('a');
   a.href = url;
   a.download = currentAccount + '_持仓导出.xlsx';
@@ -1415,12 +1470,14 @@ function addCashFlow() {
   }
   if (!data.cashFlows) data.cashFlows = [];
   data.cashFlows.push({
-    date: new Date().toISOString().slice(0, 10),
+    id: uid(),
+    date: todayCN(),
+    created_at: nowSec(),
     amount: cfAmount,
     note: noteInput ? noteInput.value.trim() : ''
   });
-  // 同时更新现金余额
-  data.cash = (data.cash || 0) + cfAmount;
+  // 现金由系统自动重算（cashFlows 已更新），刷新内存显示
+  recalcCash();
   saveData();
   closeCashFlowModal();
   renderAll();
@@ -1446,27 +1503,20 @@ let indexVisibility = {
  *
  * 修正：
  * - 新增 data.cashFlows 数组记录入金（正数）和出金（负数）
- * - 公式：adjustedNav = lastNav.nav * (currentTotal / (lastTotalAsset + todayCashFlow))
- *   其中 todayCashFlow 是当天所有现金流的净额
+ * - 公式：adjustedNav = lastNav.nav * (currentTotal / (lastTotalAsset + periodCashFlow))
+ *   其中 periodCashFlow 是「上次净值记录日之后、到今天为止」的累计净现金流
+ *   （含今天、不含上次净值日，避免漏算未开 App 那几天的出入金，也不重复计入已结算日）
  * - 现金流的金额同时累加到 data.cash 上，确保总资产正确
  */
 function recordNav() {
   if (!data.navHistory) data.navHistory = [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayCN();
   // 如果今天已经记录过，跳过
   if (data.navHistory.length > 0 &&
       data.navHistory[data.navHistory.length - 1].date === today) return;
 
   const s = calcSummary();
   if (s.total <= 0) return;
-
-  // 计算今天的净现金流（入金为正，出金为负）
-  var todayCashFlow = 0;
-  if (data.cashFlows) {
-    data.cashFlows.forEach(function (cf) {
-      if (cf.date === today) todayCashFlow += cf.amount;
-    });
-  }
 
   if (data.navHistory.length === 0) {
     // 第一条 NAV 记录，净值设为 1.0
@@ -1477,10 +1527,18 @@ function recordNav() {
     });
   } else {
     // 修正后的净值计算：
-    // adjustedNav = lastNav * (currentTotal / (lastTotalAsset + todayCashFlow))
-    // 即：剔除今天现金流影响后的真实净值增长
+    // adjustedNav = lastNav * (currentTotal / (lastTotalAsset + periodCashFlow))
+    // 即：剔除「上次净值以来累计现金流」影响后的真实净值增长
     const lastNav = data.navHistory[data.navHistory.length - 1];
-    var baseAsset = lastNav.totalAsset + todayCashFlow;
+    // 自上次净值记录日（不含）到今天（含）的累计净现金流
+    // 修复：原逻辑只算当天，会漏掉未开 App / 收盘后那几天的出入金
+    var periodCashFlow = 0;
+    if (data.cashFlows) {
+      data.cashFlows.forEach(function (cf) {
+        if (cf.date > lastNav.date && cf.date <= today) periodCashFlow += cf.amount;
+      });
+    }
+    var baseAsset = lastNav.totalAsset + periodCashFlow;
     if (baseAsset <= 0) return;
     var nav = lastNav.nav * (s.total / baseAsset);
     data.navHistory.push({
@@ -1502,11 +1560,11 @@ function renderReturnsStats() {
         '<div class="chart-title">' +
           '<h3>收益走势对比</h3>' +
           '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
-            '<button class="period-btn active" onclick="switchPeriod(30)">近1月</button>' +
-            '<button class="period-btn" onclick="switchPeriod(90)">近3月</button>' +
-            '<button class="period-btn" onclick="switchPeriod(180)">近6月</button>' +
-            '<button class="period-btn" onclick="switchPeriod(365)">近1年</button>' +
-            '<button class="period-btn" onclick="switchPeriod(0)">全部</button>' +
+            '<button class="period-btn active" data-days="30" onclick="switchPeriod(30)">近1月</button>' +
+            '<button class="period-btn" data-days="90" onclick="switchPeriod(90)">近3月</button>' +
+            '<button class="period-btn" data-days="180" onclick="switchPeriod(180)">近6月</button>' +
+            '<button class="period-btn" data-days="365" onclick="switchPeriod(365)">近1年</button>' +
+            '<button class="period-btn" data-days="0" onclick="switchPeriod(0)">全部</button>' +
           '</div>' +
         '</div>' +
         '<div style="margin-bottom:10px;font-size:13px;">' +
@@ -1518,10 +1576,10 @@ function renderReturnsStats() {
           '<button class="cashflow-btn" onclick="showCashFlowModal()" style="margin-left:10px;">💰 现金流</button>' +
         '</div>' +
         '<div style="margin-bottom:10px;font-size:12px;color:#888;">对比指数:' +
-          '<button class="period-btn" onclick="toggleIndex(\'sh\')" style="font-size:11px;padding:2px 10px;margin-left:4px;">沪深300</button>' +
-          '<button class="period-btn" onclick="toggleIndex(\'sz\')" style="font-size:11px;padding:2px 10px;">上证指数</button>' +
-          '<button class="period-btn" onclick="toggleIndex(\'zz\')" style="font-size:11px;padding:2px 10px;">中证全指</button>' +
-          '<button class="period-btn" onclick="toggleIndex(\'hs\')" style="font-size:11px;padding:2px 10px;">恒生指数</button>' +
+          '<button class="period-btn index-toggle active" data-idx="沪深300" onclick="toggleIndex(\'沪深300\')" style="font-size:11px;padding:2px 10px;margin-left:4px;">沪深300</button>' +
+          '<button class="period-btn index-toggle active" data-idx="上证指数" onclick="toggleIndex(\'上证指数\')" style="font-size:11px;padding:2px 10px;">上证指数</button>' +
+          '<button class="period-btn index-toggle active" data-idx="中证全指" onclick="toggleIndex(\'中证全指\')" style="font-size:11px;padding:2px 10px;">中证全指</button>' +
+          '<button class="period-btn index-toggle active" data-idx="恒生指数" onclick="toggleIndex(\'恒生指数\')" style="font-size:11px;padding:2px 10px;">恒生指数</button>' +
         '</div>' +
         '<div class="chart-canvas-wrap" style="height:300px;"><canvas id="chart-returns"></canvas></div>' +
       '</div>';
@@ -1560,7 +1618,7 @@ function renderReturnsStats() {
   var totalReturnPct = (last.nav - 1) * 100;
 
   var sign = totalReturn >= 0 ? '+' : '';
-  document.getElementById('ret-total-return').textContent = fmt(Math.abs(totalReturn));
+  document.getElementById('ret-total-return').textContent = (totalReturn < 0 ? '-' : '') + fmt(Math.abs(totalReturn));
   document.getElementById('ret-total-return').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
   document.getElementById('ret-total-return-pct').textContent = sign + totalReturnPct.toFixed(2) + '%';
   document.getElementById('ret-total-return-pct').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
@@ -1574,7 +1632,7 @@ function renderReturnsStats() {
 
 async function fetchIndexKline(secid, days) {
   try {
-    const r = await fetch('/api/kline?secid=' + encodeURIComponent(secid) + '&days=' + (days || 365));
+    const r = await fetch(api('/api/kline?secid=' + encodeURIComponent(secid) + '&days=' + (days || 365)));
     if (r.ok) {
       const data = await r.json();
       if (data && data.length > 0) return data;
@@ -1739,7 +1797,7 @@ async function renderReturnsChart() {
 
 function switchPeriod(days) {
   returnPeriod = days;
-  document.querySelectorAll('.period-btn').forEach(function (b) { b.classList.remove('active'); });
+  document.querySelectorAll('.period-btn[data-days]').forEach(function (b) { b.classList.remove('active'); });
   var btn = document.querySelector('.period-btn[data-days="' + days + '"]');
   if (btn) btn.classList.add('active');
   renderReturnsChart();
@@ -1956,7 +2014,7 @@ async function saveAccountName() {
   
   var oldData = null;
   try {
-    var resp = await fetch('/api/data/' + encodeURIComponent(targetName));
+    var resp = await fetch(api('/api/data/' + encodeURIComponent(targetName)));
     if (resp.ok) oldData = await resp.json();
   } catch(e) {}
   if (!oldData) oldData = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
@@ -1966,7 +2024,7 @@ async function saveAccountName() {
   saveAccounts();
 
   // 保存到新名称下
-  await fetch('/api/data/' + encodeURIComponent(n), {
+  await fetch(api('/api/data/' + encodeURIComponent(n)), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(oldData)

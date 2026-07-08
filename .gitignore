@@ -6,3 +6,15 @@ data/.secret
 *.log
 .DS_Store
 Thumbs.db
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 已弃用代码存档（不入库，本地保留）
+_deprecated/
+
+# SQLite 残留 / 临时备份
+data/json_backup_*/
+data/*.db-shm
+data/*.db-wal

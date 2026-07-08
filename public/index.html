@@ -3,10 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="base-url" content="">
 <title>仓位管理系统</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-<link rel="stylesheet" href="/shared/style.css">
+<link rel="stylesheet" href="shared/style.css">
 </head>
 <body>
 
@@ -180,8 +181,9 @@
   </div>
 </div>
 
-<script src="/js/utils.js?v=2"></script>
-<script src="/shared/core.js?v=2"></script>
+<script src="js/code-classify.js?v=2"></script>
+<script src="js/utils.js?v=2"></script>
+<script src="shared/core.js?v=2"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -195,31 +197,31 @@ let username = null;
 
 async function checkAuth() {
   try {
-    const r = await fetch('/api/me');
+    const r = await fetch(api('/api/me'));
     const d = await r.json();
-    if (!d.username) { window.location.href = '/login.html'; return; }
+    if (!d.username) { window.location.href = api('/login.html'); return; }
     username = d.username;
     document.getElementById('nav-user').textContent = username;
   } catch(e) {
-    window.location.href = '/login.html';
+    window.location.href = api('/login.html');
   }
 }
 
 async function logout() {
-  await fetch('/api/logout', { method: 'POST' });
-  window.location.href = '/login.html';
+  await fetch(api('/api/logout'), { method: 'POST' });
+  window.location.href = api('/login.html');
 }
 
 async function fetchAccounts() {
   try {
-    const r = await fetch('/api/accounts');
+    const r = await fetch(api('/api/accounts'));
     accounts = await r.json();
     if (!Array.isArray(accounts) || accounts.length === 0) accounts = ['默认账户'];
   } catch(e) { accounts = ['默认账户']; }
 }
 
 function saveAccounts() {
-  fetch('/api/accounts', {
+  fetch(api('/api/accounts'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(accounts)
@@ -228,7 +230,7 @@ function saveAccounts() {
 
 async function loadData(accountName) {
   try {
-    const r = await fetch(`/api/data/${encodeURIComponent(accountName)}`);
+    const r = await fetch(api(`/api/data/${encodeURIComponent(accountName)}`));
     data = await r.json();
   } catch(e) { data = null; }
   if (!data) {
@@ -255,22 +257,11 @@ async function loadData(accountName) {
 }
 
 function saveData() {
-  fetch(`/api/data/${encodeURIComponent(currentAccount)}`, {
+  fetch(api(`/api/data/${encodeURIComponent(currentAccount)}`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   }).catch(() => showToast('数据保存失败'));
-}
-
-function exportExcel() {
-  var url = '/api/export/' + encodeURIComponent(currentAccount);
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = currentAccount + '_持仓导出.xlsx';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  showToast('正在下载持仓导出...');
 }
 
 // ============== 启动 ==============
@@ -290,7 +281,6 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   } catch(e) {
     showToast('行情刷新失败: ' + (e.message || e));
   }
-  initAutoRefresh();
   initAutoRefresh();
   initNav();
 })();

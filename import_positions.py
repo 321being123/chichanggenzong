@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
-"""导入券商持仓数据到持仓管理系统（SQLite版）
+"""导入券商持仓数据到持仓管理系统（PostgreSQL版）
 
 用法:
-  python import_positions.py <A股文件> <港股文件> [数据库路径] [--user=用户名]
+  python import_positions.py <A股文件> <港股文件> [--user=用户名]
 
 示例:
   python import_positions.py table.xls tab1le.xls
   python import_positions.py table.xls tab1le.xls --user=daicunzai
-  python import_positions.py /path/to/a_shares.xls /path/to/hk_shares.xls data/portfolio.db --user=张三
+
+数据库连接走环境变量（与 server/db.js 一致）：
+  # 方式A：完整连接串（优先）
+  DATABASE_URL=postgres://postgres:密码@localhost:5432/portfolio
+  # 方式B：分项变量
+  PGHOST=localhost PGHOST=... PGPORT=5432 PGUSER=postgres PGPASSWORD= PGPASSWORD= PGDATABASE=portfolio
+
+解析逻辑（A股/港股/可转债分类、code.zfill(5) 港股前导0）与原 SQLite 版完全一致，仅数据库读写层换成 psycopg2。
 """
 
 import json
@@ -15,20 +22,17 @@ import os
 import sys
 import csv
 import time
-import sqlite3
 
-# 默认用户名（可通过命令行第4个参数覆盖，如 --user=xxx）
+# 默认用户名（可通过 --user=xxx 覆盖）
 DEFAULT_USER = 'daicunzai'
 
 # 默认路径（可通过命令行参数覆盖）
 DEFAULT_A_FILE = os.path.expanduser('~/Desktop/table.xls')
 DEFAULT_HK_FILE = os.path.expanduser('~/Desktop/tab1le.xls')
-DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'portfolio.db')
 
 # 解析命令行参数
 FILE1 = DEFAULT_A_FILE
 FILE2 = DEFAULT_HK_FILE
-DB_PATH = DEFAULT_DB_PATH
 USER = DEFAULT_USER
 for arg in sys.argv[1:]:
     if arg.startswith('--user='):
@@ -39,13 +43,21 @@ for arg in sys.argv[1:]:
         FILE1 = arg
     elif FILE2 == DEFAULT_HK_FILE:
         FILE2 = arg
-    elif DB_PATH == DEFAULT_DB_PATH:
-        DB_PATH = arg
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_conn():
+    """PostgreSQL 连接：优先 DATABASE_URL，否则用 PG* 环境变量（与 server/db.js 一致）。"""
+    url = os.environ.get('DATABASE_URL')
+    if url:
+        import psycopg2
+        return psycopg2.connect(url)
+    import psycopg2
+    return psycopg2.connect(
+        host=os.environ.get('PGHOST', 'localhost'),
+        port=os.environ.get('PGPORT', '5432'),
+        user=os.environ.get('PGUSER', 'postgres'),
+        password=os.environ.get('PGPASSWORD', ''),
+        dbname=os.environ.get('PGDATABASE', 'portfolio'),
+    )
 
 def uid():
     return format(int(time.time() * 1000), 'x') + format(int.from_bytes(os.urandom(4), 'big'), 'x')
@@ -266,30 +278,33 @@ def main():
         'navHistory': []
     }
 
-    # 写入 SQLite 数据库
-    db = get_db()
-    cursor = db.cursor()
+    # 写入 PostgreSQL
+    conn = get_conn()
+    cursor = conn.cursor()
     # 检查用户是否存在
-    cursor.execute("SELECT username FROM users WHERE username = ?", (USER,))
+    cursor.execute("SELECT username FROM users WHERE username = %s", (USER,))
     user = cursor.fetchone()
     if not user:
         print(f"\n错误: 数据库中不存在用户 '{USER}'，请先注册或指定 --user=xxx")
+        conn.close()
         return
     
-    # 写入账户数据
+    # upsert 写入 account_data（与 server/db.js 的 ON CONFLICT 策略一致）
     data_json = json.dumps(data, ensure_ascii=False)
     cursor.execute(
-        "INSERT OR REPLACE INTO account_data (username, account_name, data, updated_at) VALUES (?, ?, ?, datetime('now','localtime'))",
+        "INSERT INTO account_data (username, account_name, data, updated_at) "
+        "VALUES (%s, %s, %s, to_char(now(), 'YYYY-MM-DD HH24:MI:SS')) "
+        "ON CONFLICT (username, account_name) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at",
         (USER, '华泰账户', data_json)
     )
-    db.commit()
-    db.close()
+    conn.commit()
+    conn.close()
 
     print(f"\n=== 汇总 ===")
     print(f"用户: {USER}")
     print(f"持仓数: {len(deduped_positions)} 只")
     print(f"交易数: {len(all_trades)} 笔")
-    print(f"数据库: {DB_PATH}")
+    print(f"数据库: PostgreSQL (PGDATABASE={os.environ.get('PGDATABASE', 'portfolio')})")
 
 if __name__ == '__main__':
     main()

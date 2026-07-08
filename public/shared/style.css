@@ -189,9 +189,11 @@ td.negative { color: #137333; font-weight: 600; }
   background: #1a73e8;
   color: #fff;
   border-color: #1a73e8;
+}
 .trade-mode-btn:hover:not(.active) {
   background: #f0f7ff;
   color: #1a73e8;
+}
 
 /* ===== AI视觉上传区 ===== */
 .vision-row {

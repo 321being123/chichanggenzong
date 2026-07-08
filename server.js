@@ -394,10 +394,10 @@ app.get('/api/changelog', requireLogin, (req, res) => {
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
 const MARKET_CLOSE_TIMES = [
-  { h: 15, m: 0,  label: 'A股',     match: code => /^(00|30|60|68|[48])/.test(code) },
-  { h: 16, m: 0,  label: '港股',    match: code => code.length === 5 },
-  { h: 15, m: 0,  label: '可转债',   match: code => /^(11|12)/.test(code) },
-  { h: 15, m: 0,  label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
+  { h: 15, m: 10, label: 'A股',     match: code => /^(00|30|60|68|[48])/.test(code) },
+  { h: 16, m: 10, label: '港股',    match: code => code.length === 5 },
+  { h: 15, m: 10, label: '可转债',   match: code => /^(11|12)/.test(code) },
+  { h: 15, m: 10, label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
 ];
 
 // 获取东八区日期

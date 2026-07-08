@@ -63,7 +63,9 @@ function calcSummary() {
   var equityVal = 0, debtVal = 0;
   data.positions.forEach(function(p) {
     var mv = getMarketValue(p);
-    if (p.type === '股权') equityVal += mv; else debtVal += mv;
+    if (p.type === '股权') equityVal += mv;
+    else if (p.type === '现金') debtVal += mv;
+    else debtVal += mv;
   });
   var cash = Number(data.cash) || 0;
   var total = equityVal + debtVal + cash;
@@ -76,6 +78,18 @@ function calcSummary() {
 function getSubtypeTag(st) {
   var map = { 'A股': '<span class="tag tag-a">A股</span>', '港股': '<span class="tag tag-hk">港股</span>', '美股': '<span class="tag tag-us">美股</span>', '可转债': '<span class="tag tag-cb">可转债</span>', '信用债': '<span class="tag tag-bond">信用债</span>', '基金/ETF': '<span class="tag tag-etf">基金/ETF</span>' };
   return map[st] || '<span class="tag">' + (st || '-') + '</span>';
+}
+
+function getTypeTag(type) {
+  if (type === '股权') return '<span class="tag tag-equity">股权</span>';
+  if (type === '现金') return '<span class="tag tag-cash">现金</span>';
+  return '<span class="tag tag-debt">债权</span>';
+}
+
+function getTypeTagClass(type) {
+  if (type === '股权') return 'tag-equity';
+  if (type === '现金') return 'tag-cash';
+  return 'tag-debt';
 }
 
 function getSubtypeColor(st) {

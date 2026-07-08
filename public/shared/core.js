@@ -268,7 +268,7 @@ function executePasteImport() {
     if (parts.length < 3) { skipped++; return; }
     const code = parts[0].replace(/[.](SH|SZ|HK|US)$/i, '');
     const type = parts[1] === '债权' ? '债权' : '股权';
-    const subtype = parts[2] || (type === '股权' ? 'A股' : '可转债');
+    const subtype = parts[2] || (type === '股权' ? 'A股' : type === '现金' ? '现金' : '可转债');
     const qty = parseInt(parts[3]) || 0;
     if (data.positions.some(p => p.code === code)) { skipped++; return; }
     data.positions.push({
@@ -351,13 +351,30 @@ function renderCharts() {
     if (typeof Chart === 'undefined') return;
     const ctx1 = chartEl.getContext('2d');
     if (chartCategory) chartCategory.destroy();
+  // 类别饼图：动态聚合持仓类型 + 现金归入其类型
+  var typeMap = {};
+  data.positions.forEach(p => {
+    var mv = getMarketValue(p);
+    var key = p.type || '其他';
+    typeMap[key] = (typeMap[key] || 0) + mv;
+  });
+  // 现金归入其类型
+  var cashAmt = Number(data.cash) || 0;
+  if (cashAmt > 0) {
+    var ct = data.cashType || '现金';
+    typeMap[ct] = (typeMap[ct] || 0) + cashAmt;
+  }
+  var typeLabels = Object.keys(typeMap);
+  var typeValues = typeLabels.map(k => typeMap[k]);
+  var typeColors = ['#d93025', '#1a73e8', '#137333', '#e37400', '#7b1fa2', '#00838f'];
+
   chartCategory = new Chart(ctx1, {
     type: 'doughnut',
     data: {
-      labels: ['股权', '债权', '现金'],
+      labels: typeLabels,
       datasets: [{
-        data: [s.equityVal, s.debtVal, s.cash],
-        backgroundColor: ['#d93025', '#1a73e8', '#137333'],
+        data: typeValues,
+        backgroundColor: typeColors.slice(0, typeLabels.length),
         borderWidth: 3,
         borderColor: '#fff',
         hoverOffset: 8
@@ -385,8 +402,8 @@ function renderCharts() {
           bodyFont: { size: 12 },
           callbacks: {
             label: function (ctx) {
-              const v = ctx.raw;
-              const p = s.total > 0 ? (v / s.total * 100).toFixed(1) : 0;
+              var v = ctx.raw;
+              var p = s.total > 0 ? (v / s.total * 100).toFixed(1) : 0;
               return ' ' + ctx.label + ': ' + fmt(v) + ' (' + p + '%)';
             }
           }
@@ -402,6 +419,11 @@ function renderCharts() {
     const key = p.subtype || (p.type === '股权' ? '股权' : '债权');
     subtypeMap[key] = (subtypeMap[key] || 0) + mv;
   });
+  // 现金归入其细类
+  if (cashAmt > 0) {
+    var cs = data.cashSubtype || '现金';
+    subtypeMap[cs] = (subtypeMap[cs] || 0) + cashAmt;
+  }
   const subtypeLabels = Object.keys(subtypeMap);
   const subtypeValues = subtypeLabels.map(k => subtypeMap[k]);
   const subtypeColors = ['#d93025', '#1a73e8', '#137333', '#e37400', '#7b1fa2', '#00838f', '#c62828', '#283593'];
@@ -521,7 +543,8 @@ function renderPositionsTable(targetId, limit) {
   // limit 截取（用于总览页 topN）
   if (limit) list = list.slice(0, limit);
 
-  if (list.length === 0) {
+  var cashAmt = Number(data.cash) || 0;
+  if (list.length === 0 && cashAmt <= 0) {
     el.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>暂无持仓数据' +
       (filterState.type || filterState.subtype ? '（筛选条件下无结果）' : '') +
       '</p></div>';
@@ -569,9 +592,7 @@ function renderPositionsTable(targetId, limit) {
   list.forEach((p, idx) => {
     const mv = getMarketValue(p);
     const pct = total > 0 ? (mv / total * 100).toFixed(2) : 0;
-    const typeTag = p.type === '股权'
-      ? '<span class="tag tag-equity">股权</span>'
-      : '<span class="tag tag-debt">债权</span>';
+    const typeTag = getTypeTag(p.type);
     const subtypeTag = getSubtypeTag(p.subtype);
 
     // 判断行情数据状态
@@ -623,6 +644,26 @@ function renderPositionsTable(targetId, limit) {
         '</td>') +
       '</tr>';
   });
+  // 现金行
+  if (cashAmt > 0) {
+    var cashPct = total > 0 ? (cashAmt / total * 100).toFixed(2) : 0;
+    var cashTypeTag = getTypeTagClass(data.cashType || '现金');
+    html += '<tr class="cash-row" style="background:#f0fdf4;">' +
+      '<td style="text-align:center;color:#bbb;">-</td>' +
+      '<td style="color:#bbb;">-</td>' +
+      '<td><strong>现金</strong></td>' +
+      '<td class="text-right" style="color:#bbb;">-</td>' +
+      '<td class="text-right" style="color:#bbb;">-</td>' +
+      '<td class="text-right" style="color:#bbb;">-</td>' +
+      '<td class="text-right" style="font-weight:600;">' + fmt(cashAmt) + '</td>' +
+      '<td class="text-right">' + cashPct + '%</td>' +
+      '<td><span class="tag ' + cashTypeTag + '">' + (data.cashType || '现金') + '</span></td>' +
+      '<td><span class="tag tag-cash">' + (data.cashSubtype || '现金') + '</span></td>' +
+      (limit ? '' : '<td class="text-center">' +
+        '<button class="btn btn-outline btn-sm" onclick="editCash()">编辑</button>' +
+        '</td>') +
+      '</tr>';
+  }
   html += '</tbody></table>';
   el.innerHTML = html;
   if (targetId === 'topn-table') {
@@ -723,7 +764,7 @@ function recalcCash() {
 function addTrade() {
   const code = document.getElementById('trade-code').value.trim();
   const name = document.getElementById('trade-name').value.trim() || code;
-  const direction = document.getElementById('trade-direction').value;
+  const direction = document.getElementById('trade-dir').value;
   const price = parseFloat(document.getElementById('trade-price').value);
   const qty = parseInt(document.getElementById('trade-qty').value);
   const amount = parseFloat(document.getElementById('trade-amount').value) || price * qty;
@@ -817,6 +858,10 @@ function editPosition(id) {
   const p = data.positions.find(x => x.id === id);
   if (!p) return;
   editingId = id;
+  // 恢复正常编辑模式，启用所有字段
+  ['modal-code','modal-name','modal-price','modal-qty','modal-cost','modal-note'].forEach(function(fid) {
+    document.getElementById(fid).disabled = false;
+  });
   document.getElementById('modal-title').textContent = '编辑持仓';
   document.getElementById('modal-save-btn').textContent = '更新';
   document.getElementById('modal-code').value = p.code || '';
@@ -830,14 +875,45 @@ function editPosition(id) {
   document.getElementById('modal-add').classList.add('show');
 }
 
+function editCash() {
+  editingId = 'cash';
+  // 禁用非类型/细类字段
+  ['modal-code','modal-name','modal-price','modal-qty','modal-cost','modal-note'].forEach(function(fid) {
+    document.getElementById(fid).disabled = true;
+  });
+  document.getElementById('modal-title').textContent = '编辑现金';
+  document.getElementById('modal-save-btn').textContent = '更新';
+  document.getElementById('modal-code').value = '';
+  document.getElementById('modal-name').value = '现金';
+  document.getElementById('modal-price').value = '';
+  document.getElementById('modal-qty').value = '';
+  document.getElementById('modal-cost').value = '';
+  document.getElementById('modal-note').value = '';
+  document.getElementById('modal-type').value = data.cashType || '现金';
+  document.getElementById('modal-subtype').value = data.cashSubtype || '现金';
+  document.getElementById('modal-add').classList.add('show');
+}
+
 function savePosition() {
+  const type = document.getElementById('modal-type').value;
+  const subtype = document.getElementById('modal-subtype').value;
+
+  // 现金编辑：只更新类型和细类
+  if (editingId === 'cash') {
+    data.cashType = type;
+    data.cashSubtype = subtype;
+    saveData();
+    closeModal('modal-add');
+    renderAll();
+    showToast('现金已更新');
+    return;
+  }
+
   const code = document.getElementById('modal-code').value.trim();
   const name = document.getElementById('modal-name').value.trim();
   const price = parseFloat(document.getElementById('modal-price').value);
   const qty = parseInt(document.getElementById('modal-qty').value);
   const cost = parseFloat(document.getElementById('modal-cost').value) || price;
-  const type = document.getElementById('modal-type').value;
-  const subtype = document.getElementById('modal-subtype').value;
   const note = document.getElementById('modal-note').value.trim();
 
   if (!code || !price || !qty) { showToast('请填写代码、价格和数量'); return; }
@@ -893,486 +969,184 @@ function updateCash(val) {
   renderAll();
 }
 
-// ===================== 截图 OCR =====================
+// ===================== 截图识别（AI视觉） =====================
 
-// 图片预处理：灰度化 + 自适应二值化 + 2x放大（大幅提升Tesseract识别率）
-function preprocessImage(file) {
-  return new Promise(function(resolve, reject) {
-    var img = new Image();
-    img.onload = function() {
-      var scale = 2;
-      var w = img.naturalWidth * scale;
-      var h = img.naturalHeight * scale;
-      var canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      var ctx = canvas.getContext('2d');
-      // 先画白底（防止透明背景影响二值化）
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
+var tradeMode = 'manual';
 
-      var imageData = ctx.getImageData(0, 0, w, h);
-      var data = imageData.data;
-
-      // 自适应阈值：取所有像素的平均亮度
-      var sum = 0, count = data.length / 4;
-      for (var i = 0; i < data.length; i += 4) {
-        sum += 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-      }
-      var threshold = sum / count;
-
-      // 二值化：暗字变黑、背景变白
-      for (var i = 0; i < data.length; i += 4) {
-        var gray = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
-        var val = gray > threshold ? 255 : 0;
-        data[i] = data[i+1] = data[i+2] = val;
-      }
-
-      ctx.putImageData(imageData, 0, 0);
-      canvas.toBlob(function(blob) { resolve(blob); }, 'image/png');
-    };
-    img.onerror = reject;
-    img.src = URL.createObjectURL(file);
-  });
+function switchTradeMode(mode) {
+  tradeMode = mode;
+  document.getElementById('mode-manual').classList.toggle('active', mode === 'manual');
+  document.getElementById('mode-vision').classList.toggle('active', mode === 'vision');
+  document.getElementById('trade-manual-section').style.display = mode === 'manual' ? '' : 'none';
+  document.getElementById('trade-vision-section').style.display = mode === 'vision' ? '' : 'none';
 }
 
-async function handleOcrFile(event) {
-  const file = event.target.files[0];
+async function handleVisionFile(event) {
+  var file = event.target.files[0];
   if (!file) return;
-  await doOcr(file);
+  await doVisionParse(file);
 }
 
-// OCR 区域拖拽事件（在 HTML 的 script 中绑定，这里也提供函数）
-(function initOcrDragDrop() {
-  const ocrZone = document.getElementById('ocr-zone');
-  if (!ocrZone) return;
-  ocrZone.addEventListener('dragover', function (e) {
-    e.preventDefault();
-    ocrZone.classList.add('dragover');
-  });
-  ocrZone.addEventListener('dragleave', function () {
-    ocrZone.classList.remove('dragover');
-  });
-  ocrZone.addEventListener('drop', function (e) {
-    e.preventDefault();
-    ocrZone.classList.remove('dragover');
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) doOcr(file);
-  });
-})();
-// 粘贴支持：Ctrl+V 粘贴截图到 OCR 页面
-(function initOcrPaste() {
-  document.addEventListener('paste', function (e) {
-    var ocrPage = document.getElementById('page-ocr');
-    if (!ocrPage || !ocrPage.classList.contains('active')) return;
+// 粘贴支持
+(function initVisionPaste() {
+  document.addEventListener('paste', function(e) {
+    if (tradeMode !== 'vision') return;
+    var tradesPage = document.getElementById('page-trades');
+    if (!tradesPage || !tradesPage.classList.contains('active')) return;
     var items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (var i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image') !== -1) {
         e.preventDefault();
         var blob = items[i].getAsFile();
-        if (blob) { doOcr(blob); break; }
+        if (blob) { doVisionParse(blob); break; }
       }
     }
   });
 })();
 
-async function doOcr(file) {
-  // 隐藏原提示文字
-  var hint = document.getElementById('ocr-result-hint');
-  if (hint) hint.style.display = 'none';
-  var loading = document.getElementById('ocr-loading');
+// 拖拽支持
+(function initVisionDrag() {
+  var zone = document.getElementById('vision-zone');
+  if (!zone) return;
+  zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', function() { zone.classList.remove('dragover'); });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    var file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) doVisionParse(file);
+  });
+})();
+
+async function doVisionParse(file) {
+  var loading = document.getElementById('vision-loading');
+  var result = document.getElementById('vision-result');
   if (loading) loading.style.display = 'block';
-  var resultEl = document.getElementById('ocr-result');
-  if (resultEl) resultEl.innerHTML = '';
-  var parsedEl = document.getElementById('ocr-parsed-table');
-  if (parsedEl) parsedEl.innerHTML = '';
+  if (result) result.innerHTML = '';
 
   try {
-    // 1. 预处理：灰度 + 二值化 + 放大
-    var p = document.querySelector('#ocr-loading p');
-    if (p) p.textContent = '预处理图片...';
-    var processedBlob = await preprocessImage(file);
-
-    // 2. 预览图用原图
-    const imgUrl = URL.createObjectURL(file);
-    const previewHtml =
-      '<div style="margin-bottom:12px;">' +
-      '<img src="' + imgUrl + '" style="max-width:100%;max-height:300px;border-radius:8px;">' +
-      '</div>';
-
-    // 3. Tesseract 识别（用预处理后的图片）
-    const worker = await Tesseract.createWorker('chi_sim+eng', 1, {
-      logger: function (m) {
-        var lp = document.querySelector('#ocr-loading p');
-        if (!lp) return;
-        if (m.status === 'loading tesseract core') lp.textContent = '加载引擎...';
-        else if (m.status === 'initializing tesseract') lp.textContent = '初始化...';
-        else if (m.status === 'loading language traineddata') lp.textContent = '下载语言包...';
-        else if (m.status === 'initializing api') lp.textContent = '初始化API...';
-        else if (m.status === 'recognizing text')
-          lp.textContent = '识别中... ' + (m.progress * 100).toFixed(0) + '%';
-      }
+    var base64 = await fileToBase64(file);
+    if (loading) loading.textContent = 'AI识别中...';
+    var r = await fetch(api('/api/vision-parse'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64 })
     });
-    // PSM 6 = 假设为统一文本块（适合截图表格）
-    await worker.setParameters({ tessedit_pageseg_mode: '6' });
-    const { data: { text } } = await worker.recognize(processedBlob);
-    await worker.terminate();
+    var d = await r.json();
 
     if (loading) loading.style.display = 'none';
-    if (resultEl) resultEl.innerHTML =
-      previewHtml + '<h3>识别结果</h3><pre>' + (text || '(未识别到文字)') + '</pre>';
 
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    const parsed = parseOcrLines(lines);
-
-    if (parsed.length > 0) {
-      var html = '<table><thead><tr>' +
-        '<th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
-        '<th class="text-right">金额</th><th>方向</th><th>类型</th>' +
-        '<th>确认</th>' +
-        '</tr></thead><tbody>';
-      parsed.forEach(function (item, i) {
-        const rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
-        var dirOptions = '<option value="buy"' +
-          (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
-          '<option value="sell"' +
-          (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>';
-        html += '<tr>' +
-          '<td><input type="text" id="ocr-code-' + i + '" value="' + item.code +
-            '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
-            ' oninput="onOcrCodeChange(' + i + ')"></td>' +
-          '<td><input type="text" id="ocr-name-' + i + '" value="' + item.name +
-            '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-          '<td><input type="number" id="ocr-price-' + i + '" value="' + item.price +
-            '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-          '<td><input type="number" id="ocr-qty-' + i + '" value="' + item.quantity +
-            '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-          '<td class="text-right">' + (item.amount ? fmt(item.amount) : '-') + '</td>' +
-          '<td><select id="ocr-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
-            dirOptions + '</select></td>' +
-          '<td><span class="tag ' + (rec.type === '股权' ? 'tag-equity' : 'tag-debt') + '">' +
-            rec.type + '</span> <span style="font-size:11px;color:#999;">' + rec.subtype + '</span></td>' +
-          '<td><button class="btn btn-success btn-sm" onclick="confirmOcrItem(' + i + ')">确认录入</button></td>' +
-          '</tr>';
-      });
-      html += '</tbody></table>';
-      if (parsedEl) parsedEl.innerHTML = html;
-      window._ocrParsed = parsed;
-    } else {
-      if (parsedEl) parsedEl.innerHTML =
-        '<div class="empty-state"><p>未能自动识别出交易数据，建议手动在"交易"页面录入</p></div>';
+    if (d.error) {
+      if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">识别失败: ' + escapeHtml(d.error) + '</div>';
+      return;
     }
-  } catch (e) {
+
+    if (!d.trades || d.trades.length === 0) {
+      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出交易信息，请手动录入</div>';
+      return;
+    }
+
+    var html = '<table><thead><tr>' +
+      '<th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
+      '<th>方向</th><th>类型</th><th>确认</th>' +
+      '</tr></thead><tbody>';
+    d.trades.forEach(function(item, i) {
+      var rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
+      html += '<tr>' +
+        '<td><input type="text" id="v-code-' + i + '" value="' + (item.code || '') +
+          '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
+          ' oninput="onVisionCodeChange(' + i + ')"></td>' +
+        '<td><input type="text" id="v-name-' + i + '" value="' + (item.name || '') +
+          '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="number" id="v-price-' + i + '" value="' + (item.price || '') +
+          '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="number" id="v-qty-' + i + '" value="' + (item.quantity || '') +
+          '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><select id="v-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+          '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
+          '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
+          '</select></td>' +
+        '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
+        '<td><button class="btn btn-success btn-sm" onclick="confirmVisionItem(' + i + ')">确认录入</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    if (result) result.innerHTML = html;
+    window._visionParsed = d.trades;
+  } catch(e) {
     if (loading) loading.style.display = 'none';
-    var errMsg = '<div class="confirm-box">OCR识别失败: ' + e.message + '</div>';
-    if (hint) { hint.style.display = 'block'; hint.innerHTML = errMsg; }
-    if (resultEl) resultEl.innerHTML = errMsg;
+    if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">识别失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
-function onOcrCodeChange(index) {
-  const code = document.getElementById('ocr-code-' + index).value.trim();
+function onVisionCodeChange(index) {
+  var code = document.getElementById('v-code-' + index).value.trim();
   if (code.length >= 4) {
-    fetchQuote(code).then(function (q) {
+    fetchQuote(code).then(function(q) {
       if (q && q.price) {
-        document.getElementById('ocr-price-' + index).value = q.price;
-        if (q.name) document.getElementById('ocr-name-' + index).value = q.name;
+        document.getElementById('v-price-' + index).value = q.price;
+        if (q.name) document.getElementById('v-name-' + index).value = q.name;
       }
     });
   }
 }
 
-/**
- * 将 OCR 文本按交易块分组
- * 每遇到"买入/卖出"等关键词开始一个新块
- */
-function parseOcrLines(lines) {
-  const results = [];
-  let currentBlock = '';
-  for (const line of lines) {
-    if (/买入|卖出|buy|sell|成交|委托|交易|购入|减持|增持/i.test(line) || currentBlock === '') {
-      if (currentBlock) {
-        const parsed = tryParseBlock(currentBlock);
-        if (parsed) results.push(parsed);
-      }
-      currentBlock = line + '\n';
-    } else {
-      currentBlock += line + '\n';
-    }
-  }
-  if (currentBlock) {
-    const parsed = tryParseBlock(currentBlock);
-    if (parsed) results.push(parsed);
-  }
-  return results;
+function confirmVisionItem(index) {
+  var item = window._visionParsed[index];
+  if (!item) return;
+  addTradeInternal(
+    document.getElementById('v-code-' + index).value.trim(),
+    document.getElementById('v-name-' + index).value.trim(),
+    document.getElementById('v-dir-' + index).value,
+    parseFloat(document.getElementById('v-price-' + index).value) || 0,
+    parseInt(document.getElementById('v-qty-' + index).value) || 0
+  );
+  document.getElementById('v-code-' + index).closest('tr').remove();
+  window._visionParsed.splice(index, 1);
 }
 
-/**
- * 从 OCR 文本块中解析交易数据（价格、数量、金额）
- *
- * 改进的启发式策略：
- * 1. 先识别价格特征：带 2~3 位小数、数值在 0.01~100000 之间的数字
- * 2. 再识别数量特征：整数（或带 0 小数）、数值不太大也不太小的数字
- * 3. 金额 = 价格 × 数量，用这个关系验证
- * 4. 如果 OCR 文本中标有"数量""价格"等中文标签，给予更高权重
- */
-function tryParseBlock(text) {
-  const numbers = text.match(/[0-9]+(?:\.[0-9]+)?/g) || [];
-  const lower = text.toLowerCase();
-  let direction = 'buy';
-  if (/卖出|sell|减持|卖|出/i.test(lower)) direction = 'sell';
+function fileToBase64(file) {
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function() { resolve(reader.result); };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
-  if (numbers.length === 0) return null;
+// ===================== 交易录入增强 =====================
 
-  const floats = numbers.map(Number);
-  let price = null;
-  let quantity = null;
-  let amount = null;
+function addTradeInternal(code, name, direction, price, quantity) {
+  var amount = Math.round(price * quantity * 100) / 100;
+  if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
-  // --- 改进的启发式解析 ---
-
-  // 检测文本中的标签关键词，辅助判断
-  var hasPriceLabel = /价格|单价|成本|现价|price|成交价/i.test(text);
-  var hasQtyLabel = /数量|股数|张数|份数|持有|quantity|qty/i.test(text);
-  var hasAmountLabel = /金额|成交额|总额|总计|合计|amount|total/i.test(text);
-  var hasCodeLabel = /代码|证券代码|股票代码|编号|code/i.test(text);
-
-  // 第一阶段：识别各数字的角色
-  // 收集浮点数及其字符串形式
-  var numberInfo = floats.map(function (v, i) {
-    var str = numbers[i];
-    var decimalPlaces = (str.indexOf('.') >= 0) ? str.length - str.indexOf('.') - 1 : 0;
-    var isInteger = (str.indexOf('.') < 0);
-    return {
-      value: v,
-      str: str,
-      decimalPlaces: decimalPlaces,
-      isInteger: isInteger,
-      // 价格特征：有 2~3 位小数，且在合理价格区间
-      looksLikePrice: (decimalPlaces >= 2 && decimalPlaces <= 3 && v > 0.01 && v < 100000),
-      // 数量特征：整数或只有 0 位小数，且在合理数量区间
-      looksLikeQty: (isInteger || decimalPlaces === 0) && v >= 1 && v < 10000000,
-      // 金额特征：数额较大，可能在 100 以上
-      looksLikeAmount: v >= 100 && v <= 100000000
-    };
+  var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+  data.trades.push({
+    id: uid(), code: code, name: name || code,
+    direction: direction, price: price, quantity: quantity,
+    amount: amount, type: rec.type, subtype: rec.subtype,
+    date: todayCN(), created_at: nowSec()
   });
 
-  // 第二阶段：如果有 3 个或更多数字，尝试用 price * qty ≈ amount 匹配
-  if (numberInfo.length >= 3) {
-    // 尝试找一组 price, qty, amount 满足 price * qty ≈ amount
-    var bestMatch = null;
-    var bestDiff = Infinity;
-    for (var pi = 0; pi < numberInfo.length; pi++) {
-      for (var qi = 0; qi < numberInfo.length; qi++) {
-        if (qi === pi) continue;
-        for (var ai = 0; ai < numberInfo.length; ai++) {
-          if (ai === pi || ai === qi) continue;
-          var pVal = numberInfo[pi].value;
-          var qVal = numberInfo[qi].value;
-          var aVal = numberInfo[ai].value;
-          var product = pVal * qVal;
-          var diff = Math.abs(product - aVal) / Math.max(aVal, 1);
-          if (diff < 0.05 && diff < bestDiff) {
-            // 检查上下文标签匹配
-            var score = 0;
-            if (hasPriceLabel && numberInfo[pi].looksLikePrice) score += 2;
-            if (hasQtyLabel && numberInfo[qi].looksLikeQty) score += 2;
-            if (hasAmountLabel && numberInfo[ai].looksLikeAmount) score += 2;
-            if (numberInfo[pi].looksLikePrice) score += 1;
-            if (numberInfo[qi].looksLikeQty) score += 1;
-            if (numberInfo[ai].looksLikeAmount) score += 1;
-            bestDiff = diff;
-            bestMatch = { price: numberInfo[pi], quantity: numberInfo[qi], amount: numberInfo[ai], score: score };
-          }
-        }
-      }
-    }
-    if (bestMatch && bestMatch.score > 0) {
-      price = bestMatch.price.value;
-      quantity = bestMatch.quantity.value;
-      amount = bestMatch.amount.value;
-    }
-  }
-
-  // 第三阶段：如果上面的匹配没找到，fallback 策略
-  if (price === null) {
-    // 先识别价格：找看起来像价格的数字
-    var priceCandidates = numberInfo.filter(function (n) { return n.looksLikePrice; });
-    var qtyCandidates = numberInfo.filter(function (n) { return n.looksLikeQty; });
-    var amountCandidates = numberInfo.filter(function (n) { return n.looksLikeAmount; });
-
-    // 如果只有 1 个数字，视为价格
-    if (floats.length === 1) {
-      price = floats[0];
-    } else if (floats.length === 2) {
-      // 2 个数字：通常一个价格、一个数量/金额
-      if (priceCandidates.length === 1 && qtyCandidates.length === 1) {
-        price = priceCandidates[0].value;
-        quantity = qtyCandidates[0].value;
-      } else if (amountCandidates.length >= 1 && priceCandidates.length === 1) {
-        price = priceCandidates[0].value;
-        amount = amountCandidates[0].value;
-      } else {
-        // 旧 fallback：小的是价格，大的是数量或金额
-        var sorted2 = [...floats].sort(function (a, b) { return a - b; });
-        if (sorted2[0] < 1000 && sorted2[1] > sorted2[0] * 10) {
-          price = sorted2[0];
-          quantity = Math.round(sorted2[1] / sorted2[0]) > 100
-            ? Math.round(sorted2[1] / sorted2[0])
-            : sorted2[1];
-        } else {
-          price = sorted2[0];
-          quantity = sorted2[1];
-        }
-      }
-    } else if (floats.length >= 3) {
-      // 3 个以上数字：用优化后的规则
-      if (priceCandidates.length >= 1) {
-        // 取最像价格的那个作为价格
-        price = priceCandidates[0].value;
-        // 剩下数字中找数量
-        var remaining = numberInfo.filter(function (n) { return n.value !== price; });
-        var qtyCand = remaining.filter(function (n) { return n.looksLikeQty; });
-        if (qtyCand.length >= 1) {
-          quantity = qtyCand[0].value;
-          var remain2 = remaining.filter(function (n) { return n.value !== quantity; });
-          if (remain2.length >= 1 && remain2[0].looksLikeAmount) {
-            amount = remain2[0].value;
-          }
-        }
-      }
-      // 如果仍然没识别出来，使用旧 fallback
-      if (price === null) {
-        var sorted = [...floats].sort(function (a, b) { return a - b; });
-        // 尝试: 最小的可能是数量(可转债张数通常小)，中间是价格，最大是金额
-        // 但要根据上下文判断
-        if (hasPriceLabel || hasAmountLabel) {
-          // 有标签时，按标签辅助判断
-          quantity = sorted[0];
-          price = sorted[1];
-          amount = sorted[2];
-        } else {
-          // 无标签时，检查数值是否合理
-          var smallest = sorted[0];
-          var middle = sorted[1];
-          var largest = sorted[2];
-          // 如果最小值和中间值相差很大，可能是(数量, 价格)或(价格, 金额)
-          if (middle / smallest > 10 && largest / middle > 2) {
-            // 数量 价格 金额
-            quantity = smallest;
-            price = middle;
-            amount = largest;
-          } else if (largest / middle > 100) {
-            // 价格 数量 金额
-            price = smallest;
-            quantity = middle;
-            amount = largest;
-          } else {
-            // 默认: 最小=数量, 中间=价格, 最大=金额
-            quantity = smallest;
-            price = middle;
-            amount = largest;
-          }
-        }
-      }
-    }
-  }
-
-  // 提取代码（6位数字）
-  let code = '';
-  const codeMatch = text.match(/(?:^|[^0-9])([0-9]{6})(?:$|[^0-9])/);
-  if (codeMatch) code = codeMatch[1];
-  // 如果没找到6位代码，试试5位港股代码
-  if (!code) {
-    const hkMatch = text.match(/(?:^|[^0-9])([0-9]{5})(?:$|[^0-9])/);
-    if (hkMatch) code = hkMatch[1];
-  }
-
-  // 提取名称
-  let name = '';
-  const nameMatch = text.match(/([^\d\s\n\r,.，。、；：()（）\[\]{}]{2,8})/);
-  if (nameMatch) name = nameMatch[1];
-
-  // 修正缺失字段
-  if (!price && !quantity) return null;
-  if (price && quantity && !amount) amount = price * quantity;
-  if (price && !quantity && amount && amount > 0) quantity = Math.round(amount / price);
-  if (!price && quantity && amount && amount > 0) price = amount / quantity;
-  if (!price) return null;
-
-  var result = {
-    code: code,
-    name: name,
-    price: Math.round(price * 1000) / 1000,
-    quantity: Math.round(quantity),
-    amount: amount ? Math.round(amount * 100) / 100 : null,
-    direction: direction
-  };
-
-  // 合理性校验：数量不超过 1000 万，价格不超过 100 万
-  if (result.quantity > 10000000 || result.price > 1000000) return null;
-
-  return result;
-}
-
-function confirmOcrItem(index) {
-  const item = window._ocrParsed[index];
-  if (!item) return;
-  const code = document.getElementById('ocr-code-' + index).value.trim();
-  const name = document.getElementById('ocr-name-' + index).value.trim();
-  const price = parseFloat(document.getElementById('ocr-price-' + index).value);
-  const qty = parseInt(document.getElementById('ocr-qty-' + index).value);
-  const direction = document.getElementById('ocr-dir-' + index).value;
-  if (!code || !name || isNaN(price) || isNaN(qty)) {
-    showToast('请确认代码、名称、价格和数量');
-    return;
-  }
-
-  const rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
-  const trade = {
-    id: uid(),
-    date: todayCN(),
-    code: code, name: name, direction: direction,
-    price: price, quantity: qty, amount: price * qty,
-    type: rec.type, subtype: rec.subtype, note: 'OCR识别录入'
-  };
-  data.trades.push(trade);
-
-  // 更新持仓
-  const existing = data.positions.find(p => p.code === code);
-  const delta = direction === 'buy' ? qty : -qty;
+  var existing = data.positions.find(function(p) { return p.code === code; });
   if (existing) {
-    const oldMv = (existing.price || 0) * (existing.quantity || 0);
-    const newMv = direction === 'buy' ? price * qty : -(price * qty);
-    const totalQty = (existing.quantity || 0) + delta;
-    if (totalQty > 0) {
-      existing.quantity = totalQty;
-      existing.price = (oldMv + newMv) / totalQty;
-      existing.type = rec.type;
-      existing.subtype = rec.subtype;
-    } else {
-      data.positions = data.positions.filter(p => p.id !== existing.id);
-    }
+    existing.price = price;
+    existing.type = existing.type || rec.type;
+    if (direction === 'buy') existing.quantity += quantity;
+    else existing.quantity = Math.max(0, existing.quantity - quantity);
   } else if (direction === 'buy') {
     data.positions.push({
-      id: uid(), code: code, name: name,
-      price: price, quantity: qty,
-      type: rec.type, subtype: rec.subtype, cost: price, note: ''
+      id: uid(), code: code, name: name || code,
+      price: price, quantity: quantity, cost: price,
+      type: rec.type, subtype: rec.subtype, note: ''
     });
   }
 
-  // 现金由系统自动重算，这里仅刷新内存显示
   recalcCash();
-
   saveData();
   renderAll();
-  const btn = document.querySelector(
-    '#ocr-parsed-table button[onclick="confirmOcrItem(' + index + ')"]'
-  );
-  if (btn) { btn.textContent = '已录入'; btn.disabled = true; btn.style.background = '#95a5a6'; }
-  showToast('已录入 ' + name + ' ' + (direction === 'buy' ? '买入' : '卖出'));
+  showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
 }
 
 // ===================== 数据导入导出 =====================
@@ -1827,9 +1601,75 @@ function initNav() {
       tab.classList.add('active');
       var pageId = 'page-' + tab.dataset.page;
       var page = document.getElementById(pageId);
-      if (page) page.classList.add('active');
+      if (page) {
+        page.classList.add('active');
+        if (tab.dataset.page === 'changelog') loadChangelog();
+      }
     });
   });
+}
+
+// ===================== 版本记录 =====================
+
+function loadChangelog() {
+  var el = document.getElementById('changelog-content');
+  if (!el) return;
+  if (el.dataset.loaded) return;
+  el.dataset.loaded = '1';
+  el.innerHTML = getChangelogHtml();
+}
+
+function getChangelogHtml() {
+  var css = 'color:#1a73e8;font-size:16px;font-weight:700;margin:18px 0 8px;border-left:3px solid #1a73e8;padding-left:10px;';
+  var cssItem = 'margin:4px 0 4px 16px;line-height:1.7;';
+
+  var h = '';
+
+  h += '<h3 style="' + css + '">2026-07-08</h3>';
+  h += '<ol>';
+  h += '<li style="' + cssItem + '">存储引擎从 SQLite 迁移到 PostgreSQL，支持多用户并发；数据库六表自动建表、路由全异步化、交易脚本同步改造。</li>';
+  h += '<li style="' + cssItem + '">代码本地验证通过（加载级+连库级），SQLite 残留全部清除，真实数据已迁移并抽查确认。</li>';
+  h += '<li style="' + cssItem + '">时区统一为北京时间（东八区），前端/脚本/服务端日期全部改用 <code>todayCN()</code>。</li>';
+  h += '<li style="' + cssItem + '">支持子目录部署，新增 <code>BASE_URL</code> 配置，静态资源和 API 请求自动加前缀。</li>';
+  h += '<li style="' + cssItem + '">接入 dotenv 自动读取 <code>.env</code>，修复部署后数据库连接为空的致命缺陷。</li>';
+  h += '<li style="' + cssItem + '">Git 版本管理规范建立，代码推送至 GitHub，配置 <code>.gitignore</code> 排除敏感文件。</li>';
+  h += '<li style="' + cssItem + '">腾讯云 CVM 一键部署脚本完成（Node22+PG+Nginx+pm2），SSH 实跑成功，服务上线运行。</li>';
+  h += '<li style="' + cssItem + '">持仓表格新增现金行：显示余额和占比，可编辑类型/细类，图表动态聚合持仓类别。</li>';
+  h += '<li style="' + cssItem + '">类型下拉增加"现金"选项，细类下拉增加"现金"选项。</li>';
+  h += '<li style="' + cssItem + '">自动刷新间隔从 60 秒改为 15 分钟，降低行情查询频率。</li>';
+  h += '<li style="' + cssItem + '">新增"版本记录"页面，按日期汇总系统更新内容。</li>';
+  h += '</ol>';
+
+  h += '<h3 style="' + css + '">2026-07-06</h3>';
+  h += '<ol>';
+  h += '<li style="' + cssItem + '">修复静默丢数据缺陷：删除持仓时保留交易流水（交易用于净值计算）。</li>';
+  h += '<li style="' + cssItem + '">修复收益走势图指数开关和区间高亮失效问题。</li>';
+  h += '<li style="' + cssItem + '">亏损金额增加负号显示。</li>';
+  h += '<li style="' + cssItem + '">清理无效死代码和归档失效脚本。</li>';
+  h += '<li style="' + cssItem + '">前后端分类逻辑统一收敛为 <code>code-classify.js</code> 单一函数，消除代码前缀规则不一致。</li>';
+  h += '</ol>';
+
+  h += '<h3 style="' + css + '">2026-06-27</h3>';
+  h += '<ol>';
+  h += '<li style="' + cssItem + '">修复嘉实原油LOF(160723)价格系数错误（1.715 → 原错误显示 17.15）。</li>';
+  h += '<li style="' + cssItem + '">全面重构价格系数逻辑：默认千分位，仅A股用百分位，避免新增品种遗漏。</li>';
+  h += '<li style="' + cssItem + '">统一数量/价格/市值格式约定（万位逗号、3位小数价格、¥前缀金额）。</li>';
+  h += '<li style="' + cssItem + '">建立港股价格（存港币）、汇率（hkRate=0.868）和代码五位的系统级别规则。</li>';
+  h += '<li style="' + cssItem + '">新增交易时间感知（A股/港股开盘判断），收盘后不自动刷新。</li>';
+  h += '<li style="' + cssItem + '">从 JSON 文件迁移到 SQLite 数据库，新增持仓/交易/净值/现金流四张独立表。</li>';
+  h += '<li style="' + cssItem + '">后端分层（server.js 路由 + db.js 数据层）、前端模块化（utils.js 工具函数）。</li>';
+  h += '<li style="' + cssItem + '">行情统一走服务端代理，移除前端直接请求，增加安全加固（CSRF 防护）。</li>';
+  h += '<li style="' + cssItem + '">新增港币汇率代理 API 和指数 K 线 API。</li>';
+  h += '<li style="' + cssItem + '">修复上交所可转债(11xxxx)行情查询 Bug，secid 构造缺前缀。</li>';
+  h += '</ol>';
+
+  h += '<h3 style="' + css + '">2026-06-26</h3>';
+  h += '<ol>';
+  h += '<li style="' + cssItem + '">项目初始化：从券商 CSV 导入 A 股和港股通持仓数据。</li>';
+  h += '<li style="' + cssItem + '">初始持仓 43 只（17 A股 + 7 可转债 + 19 港股），47 笔交易。</li>';
+  h += '</ol>';
+
+  return h;
 }
 
 // ===================== 全量渲染 =====================
@@ -1850,7 +1690,7 @@ var _autoRefreshTimer = null;
 
 function initAutoRefresh() {
   if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
-  // 每 60 秒自动刷新行情（收盘后且有价格则跳过）
+  // 每 15 分钟自动刷新行情（收盘后且有价格则跳过，实时查看请手动刷新）
   _autoRefreshTimer = setInterval(function () {
     if (data && data.positions && data.positions.length > 0) {
       // 收盘后且已有报价 → 不再自动刷新
@@ -1860,7 +1700,7 @@ function initAutoRefresh() {
       }
       doRefresh();
     }
-  }, 60000);
+  }, 900000);
 }
 
 // ===================== 账户管理 =====================

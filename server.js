@@ -318,6 +318,65 @@ app.get('/api/export/:name', requireLogin, asyncHandler(async (req, res) => {
   }
 }));
 
+// ========== AI视觉识别交易截图 ==========
+app.post('/api/vision-parse', requireLogin, asyncHandler(async (req, res) => {
+  try {
+    const { image, apiUrl, apiKey, model } = req.body;
+    if (!image) return res.status(400).json({ error: '请上传图片' });
+
+    const endpoint = apiUrl || process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
+    const visionModel = model || process.env.VISION_MODEL || 'agnes-1.5-flash';
+    const key = apiKey || process.env.VISION_API_KEY;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + key
+      },
+      body: JSON.stringify({
+        model: visionModel,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: '请从这张交易截图中提取所有交易信息。对每笔交易返回：code(证券代码)、name(证券名称)、price(成交价格，数字)、quantity(成交数量，数字)、direction(buy或sell)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","price":12.34,"quantity":100,"direction":"buy"}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。' },
+            { type: 'image_url', image_url: { url: image } }
+          ]
+        }],
+        max_tokens: 2000,
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
+    }
+
+    const result = await response.json();
+    const content = result.choices?.[0]?.message?.content || '[]';
+
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return res.json({ trades: [] });
+
+    const trades = JSON.parse(jsonMatch[0]);
+    res.json({ trades: trades });
+  } catch(e) {
+    res.json({ error: '识别失败: ' + e.message });
+  }
+}));
+
+// ========== 版本更新日志 ==========
+app.get('/api/changelog', requireLogin, (req, res) => {
+  try {
+    const content = require('fs').readFileSync(path.join(__dirname, 'CHANGELOG.md'), 'utf-8');
+    res.json({ content: content });
+  } catch(e) {
+    res.status(500).json({ error: '无法加载更新日志' });
+  }
+});
+
 // ========== 启动：先初始化数据库（建表+迁移），再监听端口 ==========
 async function start() {
   try {

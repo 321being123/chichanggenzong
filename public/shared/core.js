@@ -1638,6 +1638,12 @@ function getChangelogHtml() {
   h += '<li style="' + cssItem + '">类型下拉增加"现金"选项，细类下拉增加"现金"选项。</li>';
   h += '<li style="' + cssItem + '">自动刷新间隔从 60 秒改为 15 分钟，降低行情查询频率。</li>';
   h += '<li style="' + cssItem + '">新增"版本记录"页面，按日期汇总系统更新内容。</li>';
+  h += '<li style="' + cssItem + '">截图识别并入交易页（手动/图片两种录入方式），用 Agnes AI 视觉模型替代 Tesseract OCR。</li>';
+  h += '<li style="' + cssItem + '">AI 视觉模型支持环境变量配置（VISION_API_KEY），默认 Agnes AI 1.5-flash。</li>';
+  h += '<li style="' + cssItem + '">类型标签统一用 getTypeTag() 处理（股权/债权/现金三种颜色），消除多处二元判断遗漏。</li>';
+  h += '<li style="' + cssItem + '">修复页面切换时右侧滚动条抖动（body overflow-y:scroll）。</li>';
+  h += '<li style="' + cssItem + '">修复交易录入方向下拉 ID 不匹配（trade-dir vs trade-direction）。</li>';
+  h += '<li style="' + cssItem + '">服务器建立 Git 仓库并同步至 GitHub，后续支持 git pull 一键升级。</li>';
   h += '</ol>';
 
   h += '<h3 style="' + css + '">2026-07-06</h3>';

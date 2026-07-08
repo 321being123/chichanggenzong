@@ -146,6 +146,9 @@ async function doRefresh() {
 
 async function saveDailyPricesToDB() {
   try {
+    // 只在收盘后才记录（A股15:00 / 港股16:00），且今天已记录过就跳过
+    if (isMarketOpen()) return;
+    if (data._dailyPricesSaved === todayCN()) return;
     var prices = data.positions.map(function(p) {
       return { code: p.code, name: p.name, price: p.price || 0 };
     }).filter(function(p) { return p.code && p.price > 0; });
@@ -155,6 +158,8 @@ async function saveDailyPricesToDB() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prices: prices, date: todayCN() })
     });
+    data._dailyPricesSaved = todayCN();
+    saveData();
   } catch(e) {}
 }
 

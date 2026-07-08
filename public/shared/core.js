@@ -286,16 +286,26 @@ function executePasteImport() {
 // ===================== 统计卡片渲染 =====================
 
 function renderStats() {
-  const s = calcSummary();
+  var s = calcSummary();
   var container = document.getElementById('stats-container');
   if (!container) return;
+  
+  // 计算今日涨跌（对比 nav_history 最近两条记录）
+  var changeAmt = 0, changePct = 0, hasChange = false;
+  if (data.navHistory && data.navHistory.length >= 2) {
+    var last = data.navHistory[data.navHistory.length - 1];
+    var prev = data.navHistory[data.navHistory.length - 2];
+    changeAmt = s.total - prev.totalAsset;
+    changePct = prev.totalAsset > 0 ? (changeAmt / prev.totalAsset * 100) : 0;
+    hasChange = true;
+  }
   
   // 首次渲染生成卡片结构
   if (!container.querySelector('.stat-card')) {
     container.innerHTML = 
       '<div class="stat-card">' +
         '<div class="stat-top">' +
-          '<div><div class="label">总资产</div><div class="value" id="stat-total"></div><div class="sub" id="stat-total-sub"></div></div>' +
+          '<div><div class="label">总资产</div><div class="value" id="stat-total"></div><div class="sub" id="stat-total-sub"></div><div class="sub" id="stat-change" style="font-size:13px;"></div></div>' +
           '<div class="stat-icon icon-bg-blue">💰</div>' +
         '</div>' +
         '<div class="bar-wrap"><div class="bar-fill" id="bar-total" style="width:100%;background:#1a73e8;"></div></div>' +
@@ -325,8 +335,24 @@ function renderStats() {
   
   // 更新数值
   var el = function(id) { return document.getElementById(id); };
-  if (el('stat-total')) el('stat-total').textContent = fmt(s.total);
+  if (el('stat-total')) {
+    el('stat-total').textContent = fmt(s.total);
+    // 涨跌颜色
+    if (hasChange) {
+      var isUp = changeAmt >= 0;
+      el('stat-total').style.color = isUp ? '#d93025' : '#137333';
+    }
+  }
   if (el('stat-total-sub')) el('stat-total-sub').textContent = '持仓市值 ' + fmt(s.total - s.cash) + ' + 现金 ' + fmt(s.cash);
+  if (el('stat-change')) {
+    if (hasChange) {
+      var arrow = changeAmt >= 0 ? '▲' : '▼';
+      var color = changeAmt >= 0 ? '#d93025' : '#137333';
+      el('stat-change').innerHTML = '<span style="color:' + color + ';">' + arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)</span>';
+    } else {
+      el('stat-change').textContent = '';
+    }
+  }
   if (el('stat-equity')) el('stat-equity').textContent = fmt(s.equityVal);
   if (el('stat-equity-pct')) el('stat-equity-pct').textContent = '占比 ' + fmtPct(s.equityPct);
   if (el('stat-debt')) el('stat-debt').textContent = fmt(s.debtVal);
@@ -1644,6 +1670,7 @@ function getChangelogHtml() {
   h += '<li style="' + cssItem + '">修复页面切换时右侧滚动条抖动（body overflow-y:scroll）。</li>';
   h += '<li style="' + cssItem + '">修复交易录入方向下拉 ID 不匹配（trade-dir vs trade-direction）。</li>';
   h += '<li style="' + cssItem + '">服务器建立 Git 仓库并同步至 GitHub，后续支持 git pull 一键升级。</li>';
+  h += '<li style="' + cssItem + '">总资产卡片增加今日涨跌（▲红色涨 / ▼绿色跌），对比上一条净值记录。</li>';
   h += '</ol>';
 
   h += '<h3 style="' + css + '">2026-07-06</h3>';

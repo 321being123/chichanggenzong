@@ -1183,10 +1183,8 @@ function initVisionQr() {
     .then(function(r) { return r.json(); })
     .then(function(d) {
       _qrToken = d.token;
-      var url = window.location.origin + '/m/upload/' + d.token;
-      var qrSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(url);
       var img = document.getElementById('qr-image');
-      if (img) img.src = qrSrc;
+      if (img) img.src = d.qr || '';
 
       if (_qrPollTimer) clearInterval(_qrPollTimer);
       _qrPollTimer = setInterval(function() {

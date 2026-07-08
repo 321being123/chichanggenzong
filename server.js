@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const https = require('https');
 const session = require('express-session');
 const XLSX = require('xlsx');
+const QRCode = require('qrcode');
 
 const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, DATA_DIR } = require('./server/db');
 // 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
@@ -410,10 +411,16 @@ input.addEventListener('change', async function() {
 }
 
 // 生成上传token
-app.post('/api/vision-token', requireLogin, (req, res) => {
-  const token = crypto.randomBytes(16).toString('hex');
-  visionUploadTokens.set(token, { image: null, timestamp: Date.now() });
-  res.json({ token: token });
+app.post('/api/vision-token', requireLogin, async (req, res) => {
+  try {
+    const token = crypto.randomBytes(16).toString('hex');
+    visionUploadTokens.set(token, { image: null, timestamp: Date.now() });
+    const url = `${req.protocol}://${req.get('host')}/m/upload/${token}`;
+    const qr = await QRCode.toDataURL(url, { width: 160, margin: 1 });
+    res.json({ token, qr });
+  } catch (e) {
+    res.status(500).json({ error: '生成二维码失败: ' + e.message });
+  }
 });
 
 // 手机上传页面

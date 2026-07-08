@@ -60,14 +60,14 @@ function getMarketValue(pos) {
 }
 
 function calcSummary() {
-  var equityVal = 0, debtVal = 0;
+  var equityVal = 0, debtVal = 0, cashPosVal = 0;
   data.positions.forEach(function(p) {
     var mv = getMarketValue(p);
     if (p.type === '股权') equityVal += mv;
-    else if (p.type === '现金') debtVal += mv;
+    else if (p.type === '现金') cashPosVal += mv;
     else debtVal += mv;
   });
-  var cash = Number(data.cash) || 0;
+  var cash = (Number(data.cash) || 0) + cashPosVal;
   var total = equityVal + debtVal + cash;
   return { total: total, equityVal: equityVal, debtVal: debtVal, cash: cash,
     equityPct: total > 0 ? equityVal / total : 0,

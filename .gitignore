@@ -18,3 +18,6 @@ _deprecated/
 data/json_backup_*/
 data/*.db-shm
 data/*.db-wal
+
+# 测试脚本（含敏感信息风险，不入库）
+test_verify.js

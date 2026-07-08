@@ -331,6 +331,124 @@ app.post('/api/daily-prices/:name', requireLogin, asyncHandler(async (req, res) 
   }
 }));
 
+// ========== 手机扫码上传（in-memory token store）==========
+const visionUploadTokens = new Map(); // token → { image, timestamp }
+const TOKEN_TTL = 5 * 60 * 1000; // 5分钟过期
+
+// 定期清理过期token
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of visionUploadTokens) {
+    if (now - v.timestamp > TOKEN_TTL) visionUploadTokens.delete(k);
+  }
+}, 60 * 1000);
+
+// 手机上传页面HTML
+function mobileUploadHtml(token) {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>上传交易截图</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f5f5f5;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px}
+.card{background:#fff;border-radius:16px;padding:32px 24px;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.08);max-width:340px;width:100%}
+.icon{font-size:48px;margin-bottom:16px}
+h2{font-size:18px;color:#1a1a2e;margin-bottom:8px}
+p{font-size:13px;color:#888;margin-bottom:24px}
+.upload-btn{display:inline-block;background:#1a73e8;color:#fff;border:none;padding:14px 40px;border-radius:10px;font-size:16px;cursor:pointer;width:100%}
+.upload-btn:active{background:#1557b0}
+#status{margin-top:16px;font-size:14px;color:#137333;display:none}
+input[type=file]{display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">📷</div>
+  <h2>上传交易截图</h2>
+  <p>拍照或从相册选择交易记录截图</p>
+  <input type="file" id="fileInput" accept="image/*" capture="environment">
+  <button class="upload-btn" onclick="document.getElementById('fileInput').click()">📸 拍照 / 选图</button>
+  <div id="status"></div>
+</div>
+<script>
+var input = document.getElementById('fileInput');
+var status = document.getElementById('status');
+input.addEventListener('change', async function() {
+  var file = input.files[0];
+  if (!file) return;
+  status.style.display = 'block';
+  status.textContent = '上传中...';
+  var reader = new FileReader();
+  reader.onload = async function() {
+    try {
+      var r = await fetch('/api/vision-upload/${token}', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({image: reader.result})
+      });
+      var d = await r.json();
+      if (d.ok) {
+        status.textContent = '✅ 上传成功！请返回电脑端查看识别结果';
+        status.style.color = '#137333';
+      } else {
+        status.textContent = '❌ 上传失败: ' + (d.error || '未知错误');
+        status.style.color = '#d93025';
+      }
+    } catch(e) {
+      status.textContent = '❌ 网络错误，请重试';
+      status.style.color = '#d93025';
+    }
+  };
+  reader.readAsDataURL(file);
+});
+</script>
+</body>
+</html>`;
+}
+
+// 生成上传token
+app.post('/api/vision-token', requireLogin, (req, res) => {
+  const token = crypto.randomBytes(16).toString('hex');
+  visionUploadTokens.set(token, { image: null, timestamp: Date.now() });
+  res.json({ token: token });
+});
+
+// 手机上传页面
+app.get('/m/upload/:token', (req, res) => {
+  const { token } = req.params;
+  if (!visionUploadTokens.has(token)) {
+    return res.status(404).send('<h2 style="text-align:center;padding:40px;color:#d93025;">二维码已过期，请刷新电脑端页面重新生成</h2>');
+  }
+  res.set('Content-Type', 'text/html; charset=utf-8').send(mobileUploadHtml(token));
+});
+
+// 手机端上传图片
+app.post('/api/vision-upload/:token', (req, res) => {
+  const { token } = req.params;
+  const { image } = req.body;
+  const entry = visionUploadTokens.get(token);
+  if (!entry) return res.status(404).json({ ok: false, error: 'token已过期' });
+  if (!image) return res.status(400).json({ ok: false, error: '缺少图片' });
+  entry.image = image;
+  entry.timestamp = Date.now();
+  res.json({ ok: true });
+});
+
+// 电脑端轮询检测
+app.get('/api/vision-check/:token', requireLogin, (req, res) => {
+  const { token } = req.params;
+  const entry = visionUploadTokens.get(token);
+  if (!entry) return res.json({ image: null, expired: true });
+  if (Date.now() - entry.timestamp > TOKEN_TTL) {
+    visionUploadTokens.delete(token);
+    return res.json({ image: null, expired: true });
+  }
+  res.json({ image: entry.image, expired: false });
+});
+
 // ========== AI视觉识别交易截图 ==========
 app.post('/api/vision-parse', requireLogin, asyncHandler(async (req, res) => {
   try {

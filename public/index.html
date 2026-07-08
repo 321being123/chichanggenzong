@@ -94,8 +94,26 @@
           <p style="font-size:12px;color:#bbb;margin-top:4px;">支持 PNG / JPG，AI 自动识别交易信息</p>
           <input type="file" id="vision-input" class="hidden-input" accept="image/png,image/jpeg,image/jpg" onchange="handleVisionFile(event)">
         </div>
+        <div style="text-align:center;margin-top:10px;">
+          <button class="btn btn-outline" onclick="openQrUpload()" style="font-size:12px;">📱 手机扫码上传</button>
+        </div>
         <div id="vision-loading" style="display:none;text-align:center;padding:20px;color:#666;">正在识别...</div>
         <div id="vision-result" style="margin-top:16px;"></div>
+      </div>
+
+      <!-- 手机扫码上传弹窗 -->
+      <div class="modal-overlay" id="modal-qr">
+        <div class="modal" style="width:360px;text-align:center;">
+          <h2>📱 手机扫码上传</h2>
+          <p style="color:#888;font-size:13px;margin-bottom:16px;">用手机扫描二维码，拍照上传交易截图</p>
+          <img id="qr-image" src="" alt="二维码" style="width:220px;height:220px;display:block;margin:0 auto;">
+          <div id="qr-status" style="margin-top:16px;font-size:13px;color:#137333;display:none;">
+            等待手机上传...
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeQrModal()">关闭</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

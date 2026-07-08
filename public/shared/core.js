@@ -1162,6 +1162,68 @@ function fileToBase64(file) {
   });
 }
 
+// 将 base64 data URL 转为 File 对象（URL → Blob → File）
+function base64ToFile(base64, filename) {
+  var arr = base64.split(',');
+  var mime = arr[0].match(/:(.*?);/)[1];
+  var bstr = atob(arr[1]);
+  var n = bstr.length;
+  var u8arr = new Uint8Array(n);
+  while (n--) { u8arr[n] = bstr.charCodeAt(n); }
+  return new File([u8arr], filename || 'upload.png', { type: mime });
+}
+
+// ===================== 手机扫码上传 =====================
+var _qrPollTimer = null;
+
+function openQrUpload() {
+  fetch(api('/api/vision-token'), { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var url = window.location.origin + '/m/upload/' + d.token;
+      var qrSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+      var img = document.getElementById('qr-image');
+      var status = document.getElementById('qr-status');
+      if (img) img.src = qrSrc;
+      if (status) { status.style.display = 'block'; status.textContent = '等待手机上传...'; }
+
+      var modal = document.getElementById('modal-qr');
+      if (modal) modal.classList.add('show');
+
+      // 轮询检测
+      if (_qrPollTimer) clearInterval(_qrPollTimer);
+      _qrPollTimer = setInterval(function() {
+        fetch(api('/api/vision-check/' + d.token))
+          .then(function(r) { return r.json(); })
+          .then(function(result) {
+            if (result.expired) {
+              clearInterval(_qrPollTimer);
+              _qrPollTimer = null;
+              if (status) { status.textContent = '二维码已过期，请关闭后重新生成'; status.style.color = '#d93025'; }
+              return;
+            }
+            if (result.image) {
+              clearInterval(_qrPollTimer);
+              _qrPollTimer = null;
+              closeQrModal();
+              var file = base64ToFile(result.image, 'phone_upload.png');
+              doVisionParse(file);
+            }
+          });
+      }, 2000);
+    });
+}
+
+function closeQrModal() {
+  if (_qrPollTimer) { clearInterval(_qrPollTimer); _qrPollTimer = null; }
+  var modal = document.getElementById('modal-qr');
+  if (modal) modal.classList.remove('show');
+  var img = document.getElementById('qr-image');
+  if (img) img.src = '';
+  var status = document.getElementById('qr-status');
+  if (status) { status.style.display = 'none'; status.style.color = '#137333'; }
+}
+
 // ===================== 交易录入增强 =====================
 
 function addTradeInternal(code, name, direction, price, quantity) {

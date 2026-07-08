@@ -126,6 +126,8 @@ async function refreshAllPrices() {
   } else {
     showToast('行情刷新完成: ' + ok + ' 只全部成功');
   }
+  // 记录每日收盘价
+  saveDailyPricesToDB();
 }
 
 /**
@@ -140,6 +142,20 @@ async function doRefresh() {
   }
   // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
   await refreshAllPrices();
+}
+
+async function saveDailyPricesToDB() {
+  try {
+    var prices = data.positions.map(function(p) {
+      return { code: p.code, name: p.name, price: p.price || 0 };
+    }).filter(function(p) { return p.code && p.price > 0; });
+    if (prices.length === 0) return;
+    await fetch(api('/api/daily-prices/' + encodeURIComponent(currentAccount)), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prices: prices, date: todayCN() })
+    });
+  } catch(e) {}
 }
 
 // ===================== 代码输入处理 =====================

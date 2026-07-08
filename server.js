@@ -5,7 +5,7 @@ const https = require('https');
 const session = require('express-session');
 const XLSX = require('xlsx');
 
-const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, DATA_DIR } = require('./server/db');
+const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, DATA_DIR } = require('./server/db');
 // 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
 const classifyCode = require('./public/js/code-classify.js');
 
@@ -313,6 +313,19 @@ app.get('/api/export/:name', requireLogin, asyncHandler(async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="export.xlsx"');
     res.send(buf);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+}));
+
+// ========== 每日收盘价记录 ==========
+app.post('/api/daily-prices/:name', requireLogin, asyncHandler(async (req, res) => {
+  try {
+    const name = decodeURIComponent(req.params.name);
+    const { prices, date } = req.body;
+    if (!prices || !prices.length) return res.json({ ok: true });
+    await saveDailyPrices(req.session.user, name, date || todayCN(), prices);
+    res.json({ ok: true });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }

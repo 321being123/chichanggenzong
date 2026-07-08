@@ -87,6 +87,15 @@ async function initSchema() {
       note TEXT DEFAULT '',
       PRIMARY KEY (id, username, account_name)
     );
+    CREATE TABLE IF NOT EXISTS daily_prices (
+      username TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      date TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT DEFAULT '',
+      price double precision DEFAULT 0,
+      PRIMARY KEY (username, account_name, date, code)
+    );
   `);
 }
 
@@ -282,5 +291,23 @@ async function saveAccountData(username, accountName, data) {
   );
 }
 
+// ====== 每日收盘价 ======
+async function saveDailyPrices(username, accountName, date, prices) {
+  for (const p of prices) {
+    await pool.query(
+      'INSERT INTO daily_prices (username, account_name, date, code, name, price) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date, code) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price',
+      [username, accountName, date, p.code, p.name || '', p.price || 0]
+    );
+  }
+}
+
+async function loadDailyPrices(username, accountName, date) {
+  const { rows } = await pool.query(
+    'SELECT code, name, price FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3',
+    [username, accountName, date]
+  );
+  return rows;
+}
+
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, uid, DATA_DIR };

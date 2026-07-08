@@ -1744,6 +1744,9 @@ function getChangelogHtml() {
   h += '<li style="' + cssItem + '">修复交易录入方向下拉 ID 不匹配（trade-dir vs trade-direction）。</li>';
   h += '<li style="' + cssItem + '">服务器建立 Git 仓库并同步至 GitHub，后续支持 git pull 一键升级。</li>';
   h += '<li style="' + cssItem + '">总资产卡片增加今日涨跌（▲红色涨 / ▼绿色跌），对比上一条净值记录。</li>';
+  h += '<li style="' + cssItem + '"><strong>手机扫码上传：</strong>图片识别区左右布局（左边拖拽上传 + 右边二维码），手机扫码自动调起相机，拍照后电脑端自动接收并 AI 识别。</li>';
+  h += '<li style="' + cssItem + '">每日收盘价自动记录，按各市场收盘时刻精准触发（A股 15:10 / 港股 16:10）。</li>';
+  h += '<li style="' + cssItem + '">招商证券账户数据清理，修复迁移后两账户数据重复问题。</li>';
   h += '</ol>';
 
   h += '<h3 style="' + css + '">2026-07-06</h3>';

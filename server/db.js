@@ -292,6 +292,18 @@ async function saveAccountData(username, accountName, data) {
 }
 
 // ====== 每日收盘价 ======
+
+// 判断当前是否所有市场均已收盘（A股15:00 / 港股16:00）
+function isMarketClosed() {
+  var now = new Date();
+  var day = now.getDay();
+  if (day === 0 || day === 6) return false; // 周末不算交易日，不记录
+  var h = now.getHours(), m = now.getMinutes();
+  var t = h * 100 + m;
+  // A股收盘: 15:00, 港股收盘: 16:00。取两者最大值之后。
+  return t >= 1600;
+}
+
 async function saveDailyPrices(username, accountName, date, prices) {
   for (const p of prices) {
     await pool.query(
@@ -310,4 +322,4 @@ async function loadDailyPrices(username, accountName, date) {
 }
 
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, isMarketClosed, uid, DATA_DIR };

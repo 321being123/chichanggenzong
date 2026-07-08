@@ -194,15 +194,45 @@ td.negative { color: #137333; font-weight: 600; }
   color: #1a73e8;
 
 /* ===== AI视觉上传区 ===== */
+.vision-row {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
 .vision-zone {
+  flex: 1;
   border: 2px dashed #e0e0e0;
   border-radius: 12px;
   padding: 40px 20px;
   text-align: center;
-  font-size: 14px;
+  cursor: pointer;
+  transition: .2s;
+  background: #fafbfc;
+}
 .vision-zone:hover, .vision-zone.dragover {
+  border-color: #1a237e;
+  background: #f0f1ff;
+}
 .vision-zone .icon { font-size: 40px; margin-bottom: 8px; }
 .vision-zone .hidden-input { display: none; }
+.vision-qr {
+  width: 180px;
+  flex-shrink: 0;
+  border: 2px dashed #e0e0e0;
+  border-radius: 12px;
+  padding: 20px 10px;
+  text-align: center;
+  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.vision-qr img {
+  width: 140px;
+  height: 140px;
+  display: block;
+}
 
 /* ===== 响应式 ===== */
 @media (max-width: 900px) {

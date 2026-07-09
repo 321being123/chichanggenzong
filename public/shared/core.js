@@ -1028,32 +1028,28 @@ var tradeMode = 'manual';
 function switchTradeMode(mode) {
   tradeMode = mode;
   document.getElementById('mode-manual').classList.toggle('active', mode === 'manual');
-  document.getElementById('mode-excel').classList.toggle('active', mode === 'excel');
-  document.getElementById('mode-position').classList.toggle('active', mode === 'position');
-  document.getElementById('mode-vision').classList.toggle('active', mode === 'vision');
+  document.getElementById('mode-smart').classList.toggle('active', mode === 'smart');
   document.getElementById('trade-manual-section').style.display = mode === 'manual' ? '' : 'none';
-  document.getElementById('trade-excel-section').style.display = mode === 'excel' ? '' : 'none';
-  document.getElementById('trade-position-section').style.display = mode === 'position' ? '' : 'none';
-  document.getElementById('trade-vision-section').style.display = mode === 'vision' ? '' : 'none';
-  if (mode === 'vision') { initVisionQr(); } else { stopVisionQr(); }
+  document.getElementById('trade-smart-section').style.display = mode === 'smart' ? '' : 'none';
+  if (mode === 'smart') { initVisionQr(); } else { stopVisionQr(); }
 }
 
 async function handleVisionFile(event) {
   var file = event.target.files[0];
   if (!file) return;
-  await doVisionParse(file);
+  await doSmartParse(file, 'vision');
 }
 
 async function handleExcelFile(event) {
   var file = event.target.files[0];
   if (!file) return;
-  await doExcelParse(file);
+  await doSmartParse(file, 'excel');
 }
 
 // 粘贴支持
 (function initVisionPaste() {
   document.addEventListener('paste', function(e) {
-    if (tradeMode !== 'vision') return;
+    if (tradeMode !== 'smart') return;
     var tradesPage = document.getElementById('page-trades');
     if (!tradesPage || !tradesPage.classList.contains('active')) return;
     var items = e.clipboardData && e.clipboardData.items;
@@ -1062,7 +1058,7 @@ async function handleExcelFile(event) {
       if (items[i].type.indexOf('image') !== -1) {
         e.preventDefault();
         var blob = items[i].getAsFile();
-        if (blob) { doVisionParse(blob); break; }
+        if (blob) { doSmartParse(blob, 'vision'); break; }
       }
     }
   });
@@ -1078,25 +1074,36 @@ async function handleExcelFile(event) {
     e.preventDefault();
     zone.classList.remove('dragover');
     var file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) doVisionParse(file);
+    if (file && file.type.startsWith('image/')) doSmartParse(file, 'vision');
   });
 })();
 
-async function doVisionParse(file) {
-  var loading = document.getElementById('vision-loading');
-  var result = document.getElementById('vision-result');
+async function doSmartParse(file, source) {
+  var loading = document.getElementById('smart-loading');
+  var result = document.getElementById('smart-result');
   if (loading) loading.style.display = 'block';
   if (result) result.innerHTML = '';
 
   try {
     var base64 = await fileToBase64(file);
     if (loading) loading.innerHTML = '<span class="spinner"></span>AI识别中...';
-    var r = await fetch(api('/api/vision-parse'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64 })
-    });
-    var d = await r.json();
+
+    var d;
+    if (source === 'vision') {
+      var r = await fetch(api('/api/vision-parse'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64 })
+      });
+      d = await r.json();
+    } else {
+      var r2 = await fetch(api('/api/excel-parse'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: base64 })
+      });
+      d = await r2.json();
+    }
 
     if (loading) loading.style.display = 'none';
 
@@ -1105,53 +1112,67 @@ async function doVisionParse(file) {
       return;
     }
 
-    if (!d.trades || d.trades.length === 0) {
-      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出交易信息，请手动录入</div>';
+    if (!d.items || d.items.length === 0) {
+      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出交易或持仓信息，请检查内容后重试</div>';
       return;
     }
 
-    var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllVisionItems()">✅ 全部录入</button></div>' +
-      '<table><thead><tr>' +
-      '<th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
-      '<th>方向</th><th>类型</th><th>确认</th>' +
-      '</tr></thead><tbody>';
-    d.trades.forEach(function(item, i) {
-      var rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
-      html += '<tr>' +
-        '<td><input type="text" id="v-code-' + i + '" value="' + (item.code || '') +
-          '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
-          ' oninput="onVisionCodeChange(' + i + ')"></td>' +
-        '<td><input type="text" id="v-name-' + i + '" value="' + (item.name || '') +
-          '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="number" id="v-price-' + i + '" value="' + (item.price || '') +
-          '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="number" id="v-qty-' + i + '" value="' + (item.quantity || '') +
-          '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><select id="v-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
-          '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
-          '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
-          '</select></td>' +
-        '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
-        '<td><button class="btn btn-success btn-sm" onclick="confirmVisionItem(' + i + ')">确认录入</button></td>' +
-        '</tr>';
+    window._smartParsed = d.items.map(function(item) {
+      item.code = classifyCode.normalizeCode(item.code || '');
+      return item;
     });
-    html += '</tbody></table>';
-    if (result) result.innerHTML = html;
-    window._visionParsed = d.trades;
-    window._visionParsed.forEach(function(item) { item.code = classifyCode.normalizeCode(item.code); });
+    renderSmartItems();
   } catch(e) {
     if (loading) loading.style.display = 'none';
     if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">识别失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
-function onVisionCodeChange(index) {
-  var code = document.getElementById('v-code-' + index).value.trim();
+function renderSmartItems() {
+  var result = document.getElementById('smart-result');
+  if (!result) return;
+  var items = window._smartParsed || [];
+  if (items.length === 0) { result.innerHTML = ''; return; }
+
+  var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllSmartItems()">✅ 全部录入</button></div>' +
+    '<table><thead><tr>' +
+    '<th>类型</th><th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
+    '<th>方向</th><th>品种</th><th>确认</th>' +
+    '</tr></thead><tbody>';
+  items.forEach(function(item, i) {
+    var code = item.code || '';
+    var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+    var isTrade = item.kind === 'trade';
+    html += '<tr>' +
+      '<td>' + (isTrade ? '<span class="tag tag-equity">交易</span>' : '<span class="tag tag-cash">持仓</span>') + '</td>' +
+      '<td>' + (isTrade ? '<input type="date" id="s-date-' + i + '" value="' + (item.date || '') + '" style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' : '-') + '</td>' +
+      '<td><input type="text" id="s-code-' + i + '" value="' + code + '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;" oninput="onSmartCodeChange(' + i + ')"></td>' +
+      '<td><input type="text" id="s-name-' + i + '" value="' + (item.name || '') + '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td><input type="number" id="s-price-' + i + '" value="' + (item.price || '') + '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td><input type="number" id="s-qty-' + i + '" value="' + (item.quantity || '') + '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td>' + (isTrade ? '<select id="s-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+        '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
+        '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
+        '</select>' : '-') + '</td>' +
+      '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
+      '<td><button class="btn btn-success btn-sm" onclick="confirmSmartItem(' + i + ')">确认' + (isTrade ? '录入' : '导入') + '</button></td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  result.innerHTML = html;
+}
+
+function onSmartCodeChange(index) {
+  var code = document.getElementById('s-code-' + index).value.trim();
   if (code.length >= 4) {
     fetchQuote(code).then(function(q) {
       if (q && q.price) {
-        document.getElementById('v-price-' + index).value = q.price;
-        if (q.name) document.getElementById('v-name-' + index).value = q.name;
+        var priceEl = document.getElementById('s-price-' + index);
+        if (priceEl && !priceEl.value) priceEl.value = q.price;
+        if (q.name) {
+          var nameEl = document.getElementById('s-name-' + index);
+          if (nameEl && !nameEl.value) nameEl.value = q.name;
+        }
       }
     });
   }
@@ -1168,250 +1189,52 @@ async function ensureName(code, currentName) {
   return currentName || code;
 }
 
-async function confirmVisionItem(index) {
-  var item = window._visionParsed[index];
-  if (!item) return;
-  var code = document.getElementById('v-code-' + index).value.trim();
-  var name = await ensureName(code, document.getElementById('v-name-' + index).value.trim());
-  addTradeInternal(
-    code,
-    name,
-    document.getElementById('v-dir-' + index).value,
-    parseFloat(document.getElementById('v-price-' + index).value) || 0,
-    parseInt(document.getElementById('v-qty-' + index).value) || 0
-  );
-  document.getElementById('v-code-' + index).closest('tr').remove();
-  window._visionParsed.splice(index, 1);
-}
-
-async function confirmAllVisionItems() {
-  if (!window._visionParsed || window._visionParsed.length === 0) return;
-  for (var i = window._visionParsed.length - 1; i >= 0; i--) {
-    await confirmVisionItem(i);
-  }
-}
-
-async function doExcelParse(file) {
-  var loading = document.getElementById('excel-loading');
-  var result = document.getElementById('excel-result');
-  if (loading) loading.style.display = 'block';
-  if (result) result.innerHTML = '';
-
-  try {
-    var base64 = await fileToBase64(file);
-    if (loading) loading.innerHTML = '<span class="spinner"></span>AI解析中...';
-    var r = await fetch(api('/api/excel-parse'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: base64 })
-    });
-    var d = await r.json();
-
-    if (loading) loading.style.display = 'none';
-
-    if (d.error) {
-      if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(d.error) + '</div>';
-      return;
-    }
-
-    if (!d.trades || d.trades.length === 0) {
-      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出交易信息，请检查 Excel 格式后重试</div>';
-      return;
-    }
-
-    var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllExcelItems()">✅ 全部录入</button></div>' +
-      '<table><thead><tr>' +
-      '<th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
-      '<th>方向</th><th>类型</th><th>确认</th>' +
-      '</tr></thead><tbody>';
-    d.trades.forEach(function(item, i) {
-      var rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
-      html += '<tr>' +
-        '<td><input type="date" id="e-date-' + i + '" value="' + (item.date || '') +
-          '" style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="text" id="e-code-' + i + '" value="' + (item.code || '') +
-          '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
-          ' oninput="onExcelCodeChange(' + i + ')"></td>' +
-        '<td><input type="text" id="e-name-' + i + '" value="' + (item.name || '') +
-          '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="number" id="e-price-' + i + '" value="' + (item.price || '') +
-          '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="number" id="e-qty-' + i + '" value="' + (item.quantity || '') +
-          '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><select id="e-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
-          '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
-          '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
-          '</select></td>' +
-        '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
-        '<td><button class="btn btn-success btn-sm" onclick="confirmExcelItem(' + i + ')">确认录入</button></td>' +
-        '</tr>';
-    });
-    html += '</tbody></table>';
-    if (result) result.innerHTML = html;
-    window._excelParsed = d.trades;
-    window._excelParsed.forEach(function(item) { item.code = classifyCode.normalizeCode(item.code); });
-  } catch(e) {
-    if (loading) loading.style.display = 'none';
-    if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(e.message) + '</div>';
-  }
-}
-
-function onExcelCodeChange(index) {
-  var code = document.getElementById('e-code-' + index).value.trim();
-  if (code.length >= 4) {
-    fetchQuote(code).then(function(q) {
-      if (q && q.price) {
-        document.getElementById('e-price-' + index).value = q.price;
-        if (q.name) document.getElementById('e-name-' + index).value = q.name;
-      }
-    });
-  }
-}
-
-async function confirmExcelItem(index) {
-  var item = window._excelParsed[index];
-  if (!item) return;
-  var code = document.getElementById('e-code-' + index).value.trim();
-  var name = await ensureName(code, document.getElementById('e-name-' + index).value.trim());
-  addTradeInternal(
-    code,
-    name,
-    document.getElementById('e-dir-' + index).value,
-    parseFloat(document.getElementById('e-price-' + index).value) || 0,
-    parseInt(document.getElementById('e-qty-' + index).value) || 0,
-    document.getElementById('e-date-' + index).value
-  );
-  document.getElementById('e-code-' + index).closest('tr').remove();
-  window._excelParsed.splice(index, 1);
-}
-
-async function confirmAllExcelItems() {
-  if (!window._excelParsed || window._excelParsed.length === 0) return;
-  for (var i = window._excelParsed.length - 1; i >= 0; i--) {
-    await confirmExcelItem(i);
-  }
-}
-
-async function handlePositionFile(event) {
-  var file = event.target.files[0];
-  if (!file) return;
-  await doPositionImport(file);
-}
-
-async function doPositionImport(file) {
-  var loading = document.getElementById('position-loading');
-  var result = document.getElementById('position-result');
-  if (loading) loading.style.display = 'block';
-  if (result) result.innerHTML = '';
-
-  try {
-    var base64 = await fileToBase64(file);
-    if (loading) loading.innerHTML = '<span class="spinner"></span>AI解析中...';
-    var r = await fetch(api('/api/excel-positions'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: base64 })
-    });
-    var d = await r.json();
-
-    if (loading) loading.style.display = 'none';
-
-    if (d.error) {
-      if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(d.error) + '</div>';
-      return;
-    }
-
-    if (!d.positions || d.positions.length === 0) {
-      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出持仓信息，请检查 Excel 格式后重试</div>';
-      return;
-    }
-
-    var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllPositionItems()">✅ 全部导入</button></div>' +
-      '<table><thead><tr>' +
-      '<th>代码</th><th>名称</th><th class="text-right">成本价</th><th class="text-right">数量</th>' +
-      '<th>类型</th><th>确认</th>' +
-      '</tr></thead><tbody>';
-    d.positions.forEach(function(item, i) {
-      var rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
-      html += '<tr>' +
-        '<td><input type="text" id="p-code-' + i + '" value="' + (item.code || '') +
-          '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
-          ' oninput="onPositionCodeChange(' + i + ')"></td>' +
-        '<td><input type="text" id="p-name-' + i + '" value="' + (item.name || '') +
-          '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="number" id="p-price-' + i + '" value="' + (item.price || '') +
-          '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td><input type="number" id="p-qty-' + i + '" value="' + (item.quantity || '') +
-          '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-        '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
-        '<td><button class="btn btn-success btn-sm" onclick="confirmPositionItem(' + i + ')">确认导入</button></td>' +
-        '</tr>';
-    });
-    html += '</tbody></table>';
-    if (result) result.innerHTML = html;
-    window._positionParsed = d.positions;
-    window._positionParsed.forEach(function(item) { item.code = classifyCode.normalizeCode(item.code); });
-  } catch(e) {
-    if (loading) loading.style.display = 'none';
-    if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(e.message) + '</div>';
-  }
-}
-
-function onPositionCodeChange(index) {
-  var code = document.getElementById('p-code-' + index).value.trim();
-  if (code.length >= 4) {
-    fetchQuote(code).then(function(q) {
-      if (q && q.price) {
-        var priceEl = document.getElementById('p-price-' + index);
-        if (priceEl && !priceEl.value) priceEl.value = q.price;
-        if (q.name) {
-          var nameEl = document.getElementById('p-name-' + index);
-          if (nameEl && !nameEl.value) nameEl.value = q.name;
-        }
-      }
-    });
-  }
-}
-
-async function confirmPositionItem(index) {
-  var item = window._positionParsed[index];
+async function confirmSmartItem(index) {
+  var item = window._smartParsed[index];
   if (!item) return;
 
-  var code = classifyCode.normalizeCode(document.getElementById('p-code-' + index).value.trim());
-  var name = await ensureName(code, document.getElementById('p-name-' + index).value.trim());
-  var price = parseFloat(document.getElementById('p-price-' + index).value) || 0;
-  var quantity = parseInt(document.getElementById('p-qty-' + index).value) || 0;
+  var code = classifyCode.normalizeCode(document.getElementById('s-code-' + index).value.trim());
+  var name = await ensureName(code, document.getElementById('s-name-' + index).value.trim());
+  var price = parseFloat(document.getElementById('s-price-' + index).value) || 0;
+  var quantity = parseInt(document.getElementById('s-qty-' + index).value) || 0;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
-  var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
-  var existing = data.positions.find(function(p) { return p.code === code; });
-  if (existing) {
-    existing.name = name || code;
-    existing.price = price;
-    existing.quantity = quantity;
-    existing.cost = price;
-    existing.type = existing.type || rec.type;
-    existing.subtype = existing.subtype || rec.subtype;
+  if (item.kind === 'trade') {
+    var direction = document.getElementById('s-dir-' + index).value;
+    var date = document.getElementById('s-date-' + index).value;
+    addTradeInternal(code, name, direction, price, quantity, date);
   } else {
-    data.positions.push({
-      id: uid(), code: code, name: name || code,
-      price: price, quantity: quantity, cost: price,
-      type: rec.type, subtype: rec.subtype, note: ''
-    });
+    var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+    var existing = data.positions.find(function(p) { return p.code === code; });
+    if (existing) {
+      existing.name = name || code;
+      existing.price = price;
+      existing.quantity = quantity;
+      existing.cost = price;
+      existing.type = existing.type || rec.type;
+      existing.subtype = existing.subtype || rec.subtype;
+    } else {
+      data.positions.push({
+        id: uid(), code: code, name: name || code,
+        price: price, quantity: quantity, cost: price,
+        type: rec.type, subtype: rec.subtype, note: ''
+      });
+    }
+    recalcCash();
+    saveData();
+    renderAll();
+    showToast('已导入持仓 ' + (name || code));
   }
 
-  recalcCash();
-  saveData();
-  renderAll();
-  document.getElementById('p-code-' + index).closest('tr').remove();
-  window._positionParsed.splice(index, 1);
-  showToast('已导入持仓 ' + (name || code));
+  var row = document.getElementById('s-code-' + index);
+  if (row && row.closest('tr')) row.closest('tr').remove();
+  window._smartParsed.splice(index, 1);
 }
 
-async function confirmAllPositionItems() {
-  if (!window._positionParsed || window._positionParsed.length === 0) return;
-  for (var i = window._positionParsed.length - 1; i >= 0; i--) {
-    await confirmPositionItem(i);
+async function confirmAllSmartItems() {
+  if (!window._smartParsed || window._smartParsed.length === 0) return;
+  for (var i = window._smartParsed.length - 1; i >= 0; i--) {
+    await confirmSmartItem(i);
   }
 }
 
@@ -1461,7 +1284,7 @@ function initVisionQr() {
               clearInterval(_qrPollTimer);
               _qrPollTimer = null;
               var file = base64ToFile(result.image, 'phone_upload.png');
-              doVisionParse(file);
+              doSmartParse(file, 'vision');
             }
           });
       }, 2000);

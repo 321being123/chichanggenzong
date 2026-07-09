@@ -457,7 +457,7 @@ app.get('/api/vision-check/:token', requireLogin, (req, res) => {
   res.json({ image: entry.image, expired: false });
 });
 
-// ========== AI视觉识别交易截图 ==========
+// ========== AI视觉识别截图（交易/持仓自动识别） ==========
 app.post('/api/vision-parse', requireLogin, asyncHandler(async (req, res) => {
   try {
     const { image, apiUrl, apiKey, model } = req.body;
@@ -478,7 +478,7 @@ app.post('/api/vision-parse', requireLogin, asyncHandler(async (req, res) => {
         messages: [{
           role: 'user',
           content: [
-            { type: 'text', text: '请从这张交易截图中提取所有交易信息。对每笔交易返回：code(证券代码)、name(证券名称)、price(成交价格，数字)、quantity(成交数量，数字)、direction(buy或sell)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","price":12.34,"quantity":100,"direction":"buy"}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。' },
+            { type: 'text', text: '请分析这张图片。如果是交易截图，提取所有交易记录；如果是持仓截图，提取所有持仓记录。请判断每一行是交易还是持仓，返回统一JSON数组。每个元素必须包含 kind 字段：交易为 "trade"，持仓为 "position"。交易字段：code(证券代码，字符串保留前导零)、name(证券名称)、price(成交价格数字)、quantity(成交数量整数)、direction(buy或sell)、date(交易日期YYYY-MM-DD，没有则留空)。持仓字段：code(证券代码，字符串保留前导零)、name(证券名称)、price(成本价或当前价数字)、quantity(持仓数量整数)。格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"},{"kind":"position","code":"000001","name":"平安银行","price":12.34,"quantity":100}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。' },
             { type: 'image_url', image_url: { url: image } }
           ]
         }],
@@ -497,16 +497,17 @@ app.post('/api/vision-parse', requireLogin, asyncHandler(async (req, res) => {
     const content = result.choices?.[0]?.message?.content || '[]';
 
     const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return res.json({ trades: [] });
+    if (!jsonMatch) return res.json({ items: [] });
 
-    const trades = JSON.parse(jsonMatch[0]);
-    res.json({ trades: trades });
+    const items = JSON.parse(jsonMatch[0]);
+    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code); });
+    res.json({ items: items });
   } catch(e) {
     res.json({ error: '识别失败: ' + e.message });
   }
 }));
 
-// ========== Excel 导入解析（大模型）==========
+// ========== Excel 导入解析（大模型，交易/持仓自动识别）==========
 app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
   try {
     const { file, apiUrl, apiKey, model } = req.body;
@@ -520,7 +521,7 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
 
     if (!rows || rows.length === 0) {
-      return res.json({ trades: [] });
+      return res.json({ items: [] });
     }
 
     const endpoint = apiUrl || process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
@@ -537,7 +538,7 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
         model: chatModel,
         messages: [{
           role: 'user',
-          content: '以下是从Excel交易明细表中提取的原始数据（第一行为表头）。请识别其中的交易记录，对每笔交易返回：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、price(成交价格，数字)、quantity(成交数量，数字)、direction(buy或sell)、date(交易日期，格式YYYY-MM-DD，如原始数据没有则留空)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
+          content: '以下是从Excel中提取的原始数据（第一行为表头）。请先判断这是交易明细表还是持仓表，然后逐行识别。对每一行，必须返回 kind 字段：交易为 "trade"，持仓为 "position"。交易字段：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、price(成交价格数字)、quantity(成交数量整数)、direction(buy或sell)、date(交易日期YYYY-MM-DD，没有则留空)。持仓字段：code(证券代码，必须作为字符串返回并保留前导零)、name(证券名称)、quantity(持仓数量整数，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价数字；没有成本价则填市价，必须大于0)。格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"},{"kind":"position","code":"000001","name":"平安银行","price":12.34,"quantity":100}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。\n\n' + JSON.stringify(rows)
         }],
         max_tokens: 4000,
         temperature: 0
@@ -554,69 +555,11 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
     const content = result.choices?.[0]?.message?.content || '[]';
 
     const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return res.json({ trades: [] });
+    if (!jsonMatch) return res.json({ items: [] });
 
-    const trades = JSON.parse(jsonMatch[0]);
-    trades.forEach(t => { if (t && t.code) t.code = normalizeCode(t.code); });
-    res.json({ trades: trades });
-  } catch(e) {
-    res.json({ error: '解析失败: ' + e.message });
-  }
-}));
-
-// ========== Excel 持仓导入解析（大模型）==========
-app.post('/api/excel-positions', requireLogin, asyncHandler(async (req, res) => {
-  try {
-    const { file, apiUrl, apiKey, model } = req.body;
-    if (!file) return res.status(400).json({ error: '请上传Excel文件' });
-
-    const base64Data = file.split(',')[1] || file;
-    const buffer = Buffer.from(base64Data, 'base64');
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-
-    if (!rows || rows.length === 0) {
-      return res.json({ positions: [] });
-    }
-
-    const endpoint = apiUrl || process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
-    const chatModel = model || process.env.VISION_MODEL || 'agnes-1.5-flash';
-    const key = apiKey || process.env.VISION_API_KEY;
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify({
-        model: chatModel,
-        messages: [{
-          role: 'user',
-          content: '以下是从Excel持仓表中提取的原始数据（第一行为表头）。请识别每行对应的持仓记录，对每笔返回：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、quantity(持仓数量，数字，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价，数字；没有成本价则填市价，必须大于0)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","quantity":100,"price":12.34}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
-        }],
-        max_tokens: 4000,
-        temperature: 0
-      }),
-      signal: AbortSignal.timeout(60000)
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
-    }
-
-    const result = await response.json();
-    const content = result.choices?.[0]?.message?.content || '[]';
-
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return res.json({ positions: [] });
-
-    const positions = JSON.parse(jsonMatch[0]);
-    positions.forEach(p => { if (p && p.code) p.code = normalizeCode(p.code); });
-    res.json({ positions: positions });
+    const items = JSON.parse(jsonMatch[0]);
+    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code); });
+    res.json({ items: items });
   } catch(e) {
     res.json({ error: '解析失败: ' + e.message });
   }

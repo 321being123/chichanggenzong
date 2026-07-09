@@ -2,6 +2,20 @@
 
 ## 2026-07-09
 
+### 重构：合并 Excel/图片导入入口，统一识别交易与持仓
+- **变更**：
+  - 前端「录入交易」区由 4 个标签（手动/Excel/持仓/图片）简化为 2 个标签：**手动录入 / 智能导入**。
+  - 「智能导入」内同时提供图片上传和 Excel 上传两个入口。
+- **后端**：
+  - `/api/vision-parse` 和 `/api/excel-parse` 返回统一格式 `{ items: [{ kind: 'trade'|'position', code, name, price, quantity, ... }] }`。
+  - LLM 提示词要求同时识别交易记录和持仓记录，并由模型自行判断每行类型。
+  - 删除独立的 `/api/excel-positions` 接口（功能已合并）。
+- **前端**：
+  - `public/shared/core.js` 新增 `doSmartParse(file, source)`、`renderSmartItems()`、`confirmSmartItem(index)`、`confirmAllSmartItems()`。
+  - 结果表格混合展示交易行与持仓行，交易行显示日期/方向，持仓行显示为持仓类型。
+  - 确认时根据 `kind` 自动调用交易录入或持仓导入逻辑。
+  - 粘贴/拖拽/手机扫码上传均统一进入新的智能解析流程。
+
 ### 修复：涨跌排序时 0% 排第一
 - **根因**：持仓表按「涨跌」排序时，`priceChangeMap[code] || -999` 把 0% 当成缺失数据，导致 0% 被排到最前面。
 - **解决**：排序判断改为 `priceChangeMap[code] != null ? ... : -999`，0% 作为有效值参与正常升降序。

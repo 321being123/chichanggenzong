@@ -76,6 +76,13 @@ async function refreshAllPrices() {
   showToast('正在获取 ' + codes.length + ' 只行情...');
   let ok = 0, fail = 0;
 
+  // 批量拉取行情（A股走Tushare实时，港股走腾讯）
+  let allQuotes = {};
+  try {
+    const rr = await fetch(api('/api/quotes?codes=' + encodeURIComponent(codes.join(','))));
+    if (rr.ok) allQuotes = await rr.json() || {};
+  } catch (e) {}
+
   // 获取港币→人民币汇率（港股通用）
   var hkRate = await fetchHKRate();
   if (!hkRate || hkRate <= 0) hkRate = 0.868;
@@ -85,7 +92,10 @@ async function refreshAllPrices() {
   const concurrency = 10;
   for (let i = 0; i < codes.length; i += concurrency) {
     const batch = codes.slice(i, i + concurrency);
-    const results = await Promise.all(batch.map(c => fetchQuote(c, true)));
+    const results = await Promise.all(batch.map(async (c) => {
+      if (allQuotes[c] && allQuotes[c].price) return allQuotes[c];
+      return await fetchQuote(c, true);
+    }));
     results.forEach((result, idx) => {
       const c = batch[idx];
       const pos = data.positions.find(p => p.code === c);

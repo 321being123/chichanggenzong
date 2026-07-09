@@ -223,57 +223,196 @@ function httpsGet(url, encoding) {
   });
 }
 
-// 可复用的行情查询函数
+// ===================== Tushare 数据层（A股优先数据源） =====================
+// 港股实时 / 恒生指数 / 汇率：Tushare 2000积分无权限，仍走腾讯
+const TUSHARE_TOKEN = process.env.TUSHARE_TOKEN || '';
+const TS_API = 'https://api.tushare.pro';
+
+// 调 Tushare HTTP API（POST JSON），返回 {fields,items} 或 null
+function tushareQuery(apiName, params, fields) {
+  return new Promise((resolve) => {
+    if (!TUSHARE_TOKEN) return resolve(null);
+    const payload = JSON.stringify({ api_name: apiName, token: TUSHARE_TOKEN, params: params || {}, fields: fields || '' });
+    const body = Buffer.from(payload, 'utf8');
+    const req = https.request(TS_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': body.length }
+    }, (resp) => {
+      let data = '';
+      resp.on('data', c => data += c);
+      resp.on('end', () => {
+        try { const j = JSON.parse(data); resolve(j && j.code === 0 && j.data ? j.data : null); }
+        catch (e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(10000, () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
+}
+
+// Tushare items 二维数组 → 行对象数组
+function tsRows(data) {
+  if (!data || !Array.isArray(data.items)) return [];
+  const fields = data.fields || [];
+  return data.items.map((it) => { const o = {}; fields.forEach((f, i) => o[f] = it[i]); return o; });
+}
+
+// 任意代码 → Tushare ts_code（A股/港股/可转债/ETF/REITs）
+function toTsCode(code) {
+  const c = (code || '').trim().toUpperCase().replace(/\s/g, '');
+  if (c.endsWith('.HK')) return c;
+  if (c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ')) return c;
+  if (/^\d{6}$/.test(c)) {
+    if (c[0] === '6' || c[0] === '5' || c.startsWith('11') || c.startsWith('12')) return c + '.SH';
+    if (c[0] === '8' || c[0] === '4' || c.startsWith('20') || c.startsWith('92')) return c + '.BJ';
+    return c + '.SZ';
+  }
+  if (/^\d{5}$/.test(c)) return c + '.HK';
+  return c;
+}
+
+// 缓存：全市场名称 ts_code→name（首次拉取）
+let TS_NAMES = null;
+function ensureTsNames() {
+  return new Promise(async (resolve) => {
+    if (TS_NAMES) return resolve(TS_NAMES);
+    TS_NAMES = new Map();
+    const d = await tushareQuery('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,name');
+    tsRows(d).forEach(r => { if (r.ts_code) TS_NAMES.set(r.ts_code, r.name); });
+    resolve(TS_NAMES);
+  });
+}
+
+// 缓存：日线（每日批量一次）ts_code→{close,pre_close,pct_chg}
+let TS_DAILY = { ts: 0, map: new Map() };
+function ensureTsDaily() {
+  return new Promise(async (resolve) => {
+    const now = Date.now();
+    if (TS_DAILY.map.size && now - TS_DAILY.ts < 12 * 3600 * 1000) return resolve(TS_DAILY.map);
+    const td = tsDateStr(new Date());
+    const d = await tushareQuery('daily', { trade_date: td }, 'ts_code,close,pre_close,pct_chg');
+    const map = new Map();
+    tsRows(d).forEach(r => { if (r.ts_code) map.set(r.ts_code, { close: parseFloat(r.close), pre_close: parseFloat(r.pre_close), pct_chg: parseFloat(r.pct_chg) }); });
+    TS_DAILY = { ts: now, map };
+    resolve(map);
+  });
+}
+
+// 缓存：实时价（60秒）ts_code→close（rt_min 批量；可转债无实时，回落日线）
+let TS_RT = { ts: 0, map: new Map() };
+function ensureTsRealtime(codes) {
+  return new Promise(async (resolve) => {
+    const now = Date.now();
+    if (TS_RT.map.size && now - TS_RT.ts < 60000) return resolve(TS_RT.map);
+    const aShare = [...new Set((codes || []).map(toTsCode))]
+      .filter(c => c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ')).slice(0, 1000);
+    if (aShare.length) {
+      const d = await tushareQuery('rt_min', { ts_code: aShare.join(','), freq: '1MIN' }, 'ts_code,close');
+      const map = new Map();
+      tsRows(d).forEach(r => { if (r.ts_code && r.close != null) map.set(r.ts_code, parseFloat(r.close)); });
+      TS_RT = { ts: now, map };
+    }
+    resolve(TS_RT.map);
+  });
+}
+
+// 可复用的行情查询函数（单只：A股走Tushare日线，港股走腾讯实时）
 async function fetchQuoteByCode(code) {
   const c = code.trim().toUpperCase().replace(/\s/g, '');
   if (!c) return null;
   if (c === '404002') return { price: null, name: '搜特退债', code: c, change: null };
 
-  // 委托单一分类函数：isHK / secids / 市场前缀
-  const cls = classifyCode(c);
-  const isHK = cls.isHK;
-  const secids = cls.secids;
-  const prefix = isHK ? 'hk' : (c[0] === '6' || c[0] === '5' || c.startsWith('11') ? 'sh' : 'sz');
-
-  let result = null;
-
-  // 首选：腾讯 qt.gtimg（腾讯云服务器可正常访问；parts[3] 已是元价，无需价格系数）
-  // 注：东方财富对腾讯云 IP 段做了 API 级封禁，服务端调东财必失败，故降为兜底
-  try {
-    const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + (isHK ? c.padStart(5,'0') : c), 'gbk');
-    const match = text.match(/"(.*)"/);
-    if (match) {
-      const parts = match[1].split('~');
-      const price = parseFloat(parts[3]);
-      if (!isNaN(price) && price > 0) result = { price, name: parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
-    }
-  } catch(e) {}
-
-  // 兜底：东方财富（本地开发环境可用；腾讯云服务器被封时会快速失败）
-  if (!result || !result.price) {
-    for (const secid of secids) {
-      try {
-        const text = await httpsGet('https://push2.eastmoney.com/api/qt/stock/get?secid=' + secid + '&fields=f43,f57,f58,f60');
-        const d = JSON.parse(text);
-        if (d && d.data && d.data.f43 != null && d.data.f60 != null) {
-          const dd = d.data;
-          var factor = 1000;
-          var cc = dd.f57 || c;
-          // 价格系数：东方财富API中A股股票用分(/100)，其他品种(基金/ETF/LOF/REITs/可转债)用厘(/1000)
-          if (cc.length >= 6) { var p2 = cc.substring(0,2); if (p2 === '00' || p2 === '30' || p2 === '60' || p2 === '68' || cc[0] === '4' || cc[0] === '8') factor = 100; }
-          result = { price: dd.f43 / factor, name: dd.f58 || '', code: cc, change: dd.f60 ? ((dd.f43 - dd.f60) / dd.f60 * 100) : null };
-          break;
-        }
-      } catch(e) {}
-    }
+  const tsCode = toTsCode(c);
+  if (tsCode.endsWith('.HK')) {
+    // 港股实时：腾讯 qt.gtimg（Tushare 无港股实时）
+    try {
+      const text = await httpsGet('https://qt.gtimg.cn/q=hk' + c.padStart(5, '0'), 'gbk');
+      const match = text.match(/"(.*)"/);
+      if (match) {
+        const parts = match[1].split('~');
+        const price = parseFloat(parts[3]);
+        if (!isNaN(price) && price > 0) return { price, name: parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
+      }
+    } catch (e) {}
+    return null;
   }
-  return result || null;
+
+  // A股：Tushare 日线（close=最新价/盘中=昨收，pct_chg=涨跌幅）+ 名称缓存
+  try {
+    const [names, daily] = await Promise.all([ensureTsNames(), ensureTsDaily()]);
+    const d = daily.get(tsCode);
+    const name = names.get(tsCode) || '';
+    if (d && d.close != null && !isNaN(d.close)) {
+      return { price: d.close, name, code: c, change: (d.pct_chg != null && !isNaN(d.pct_chg)) ? d.pct_chg : null };
+    }
+    // daily 无（如新股）：fallback 腾讯实时
+    const prefix = (c[0] === '6' || c[0] === '5' || c.startsWith('11')) ? 'sh' : 'sz';
+    try {
+      const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + c, 'gbk');
+      const match = text.match(/"(.*)"/);
+      if (match) {
+        const parts = match[1].split('~');
+        const price = parseFloat(parts[3]);
+        if (!isNaN(price) && price > 0) return { price, name: name || parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
+      }
+    } catch (e) {}
+  } catch (e) {}
+  return null;
 }
 
 app.get('/api/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   const code = req.params.code.trim().toUpperCase().replace(/\s/g, '');
   if (!code) return res.json({ price: null });
   res.json(await fetchQuoteByCode(code) || { price: null, code });
+}));
+
+// 批量行情（刷新用）：A股走Tushare(rt_min实时+daily涨跌)，港股走腾讯实时
+app.get('/api/quotes', requireLogin, asyncHandler(async (req, res) => {
+  const codes = (req.query.codes || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  const result = {};
+  if (!codes.length) return res.json(result);
+
+  const aCodes = [], hkCodes = [];
+  codes.forEach(c => { (toTsCode(c).endsWith('.HK') ? hkCodes : aCodes).push(c); });
+
+  // A股：批量 rt_min(实时价) + daily(涨跌/昨收) + 名称缓存
+  const [names, daily, rt] = await Promise.all([ensureTsNames(), ensureTsDaily(), ensureTsRealtime(aCodes)]);
+  aCodes.forEach(c => {
+    const ts = toTsCode(c);
+    const d = daily.get(ts);
+    const r = rt.get(ts);
+    const price = (r != null) ? r : (d ? d.close : null);
+    let change = null;
+    if (d) change = (r != null && d.pre_close) ? (r - d.pre_close) / d.pre_close * 100 : d.pct_chg;
+    result[c] = {
+      price: (price != null && !isNaN(price)) ? price : null,
+      name: names.get(ts) || '',
+      code: c,
+      change: (change != null && !isNaN(change)) ? change : null
+    };
+  });
+
+  // 港股：腾讯 qt.gtimg 批量
+  if (hkCodes.length) {
+    try {
+      const q = hkCodes.map(c => 'hk' + c.padStart(5, '0')).join(',');
+      const text = await httpsGet('https://qt.gtimg.cn/q=' + q, 'gbk');
+      text.split(';').forEach(seg => {
+        const m = seg.match(/"(.*)"/);
+        if (!m) return;
+        const parts = m[1].split('~');
+        const hk = (parts[2] || '').trim();
+        const price = parseFloat(parts[3]);
+        if (hk && price && !isNaN(price)) {
+          const orig = hkCodes.find(x => x.padStart(5, '0') === hk);
+          if (orig) result[orig] = { price, name: parts[1] || orig, code: orig, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
+        }
+      });
+    } catch (e) {}
+  }
+
+  res.json(result);
 }));
 
 // 港币→人民币汇率代理
@@ -290,8 +429,8 @@ app.get('/api/hkrate', requireLogin, asyncHandler(async (req, res) => {
   res.json({ rate: 0.868 });
 }));
 
-// 东八区日期 YYYYMMDD（指数K线起止，避免服务器非东八区时差一天）
-function cnDateStr(d) {
+// 东八区日期 YYYYMMDD（Tushare 参数专用，避免服务器非东八区时差一天）
+function tsDateStr(d) {
   const cn = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
   const p = n => String(n).padStart(2, '0');
   return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
@@ -327,7 +466,19 @@ app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
       }
       return res.json([]);
     }
-    // A股三指数：新浪历史K线
+    // A股指数：Tushare index_daily（优先）
+    if (/^s[hz]\d{6}$/i.test(secid)) {
+      const tsCode = secid.slice(2) + (secid.slice(0, 2).toLowerCase() === 'sh' ? '.SH' : '.SZ');
+      const daysN = Math.min(parseInt(days) || 365, 800);
+      const end = tsDateStr(new Date());
+      const dt = new Date(); dt.setDate(dt.getDate() - daysN);
+      const start = tsDateStr(dt);
+      const data = await tushareQuery('index_daily', { ts_code: tsCode, start_date: start, end_date: end }, 'trade_date,close');
+      const rows = tsRows(data).map(r => ({ date: r.trade_date, close: parseFloat(r.close) }))
+        .filter(r => r.date && !isNaN(r.close) && r.close > 0);
+      return res.json(rows);
+    }
+    // A股三指数兜底：新浪历史K线
     const datalen = Math.min(parseInt(days) || 365, 500);
     const sinaText = await new Promise((resolve, reject) => {
       https.get('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' + secid + '&scale=240&ma=no&datalen=' + datalen, {

@@ -137,8 +137,7 @@ function ng(name, got, want) { console.log(`  ❌ ${name}: 期望 ${JSON.stringi
   ok(config.status === 200 ? 'config 正常' : 'config 可访问');
 
   // 8. 数据库
-  console.log('
-[8] 数据库(已迁移至 PostgreSQL)');
+  console.log('\n[8] 数据库(已迁移至 PostgreSQL)');
   ok('数据库: 已迁移至 PostgreSQL，运行时由 server 统一管理');
 
   // ========== 总结 ==========

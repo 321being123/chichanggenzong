@@ -11,6 +11,10 @@
 //   isHK    boolean
 //   secids  东方财富行情 secid 候选列表（fetchQuoteByCode 使用）
 //
+// 额外工具: classifyCode.normalizeCode(rawCode)
+//   根据分类结果补齐证券代码前导零：A股/基金/可转债 6位，港股 5位，美股不变。
+//   用于 Excel/图片导入时恢复被读取成数字后丢失的前导零。
+//
 // 这是代码分类的唯一真相源，recognizeCode / fetchQuoteByCode /
 // inferSubtype 全部委托本函数，避免 4 处前缀规则漂移。
 // ============================================================
@@ -66,6 +70,27 @@
 
     return { type: type, subtype: subtype, market: market, isHK: isHK, secids: secids };
   }
+
+  function normalizeCode(rawCode) {
+    if (!rawCode) return rawCode;
+    var code = String(rawCode).trim().toUpperCase()
+      .replace(/\.(SH|SZ|HK|US)$/i, '')
+      .replace(/^(SH|SZ|HK|US)/i, '');
+    if (!code) return code;
+
+    var info = classifyCode(code);
+    if (!info) return code;
+
+    // 美股代码保持原样（字母）
+    if (info.subtype === '美股') return code;
+    // 港股固定 5 位
+    if (info.subtype === '港股') return code.padStart(5, '0');
+    // 其他数字代码（A股/基金/ETF/可转债/信用债等）统一 6 位
+    if (/^\d+$/.test(code)) return code.padStart(6, '0');
+    return code;
+  }
+
+  classifyCode.normalizeCode = normalizeCode;
 
   return classifyCode;
 });

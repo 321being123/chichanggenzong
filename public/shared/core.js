@@ -242,7 +242,7 @@ function calcQuick() {
 }
 
 function addQuickPosition() {
-  const code = document.getElementById('quick-code').value.trim();
+  const code = classifyCode.normalizeCode(document.getElementById('quick-code').value.trim());
   const name = document.getElementById('quick-name').value.trim();
   const qty = parseInt(document.getElementById('quick-qty').value);
   const priceVal = document.getElementById('quick-price').value.replace('¥', '').trim();
@@ -809,7 +809,7 @@ function recalcCash() {
 }
 
 function addTrade() {
-  const code = document.getElementById('trade-code').value.trim();
+  const code = classifyCode.normalizeCode(document.getElementById('trade-code').value.trim());
   const name = document.getElementById('trade-name').value.trim() || code;
   const direction = document.getElementById('trade-dir').value;
   const price = parseFloat(document.getElementById('trade-price').value);
@@ -956,7 +956,7 @@ function savePosition() {
     return;
   }
 
-  const code = document.getElementById('modal-code').value.trim();
+  const code = classifyCode.normalizeCode(document.getElementById('modal-code').value.trim());
   const name = document.getElementById('modal-name').value.trim();
   const price = parseFloat(document.getElementById('modal-price').value);
   const qty = parseInt(document.getElementById('modal-qty').value);
@@ -1133,6 +1133,7 @@ async function doVisionParse(file) {
     html += '</tbody></table>';
     if (result) result.innerHTML = html;
     window._visionParsed = d.trades;
+    window._visionParsed.forEach(function(item) { item.code = classifyCode.normalizeCode(item.code); });
   } catch(e) {
     if (loading) loading.style.display = 'none';
     if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">识别失败: ' + escapeHtml(e.message) + '</div>';
@@ -1230,6 +1231,7 @@ async function doExcelParse(file) {
     html += '</tbody></table>';
     if (result) result.innerHTML = html;
     window._excelParsed = d.trades;
+    window._excelParsed.forEach(function(item) { item.code = classifyCode.normalizeCode(item.code); });
   } catch(e) {
     if (loading) loading.style.display = 'none';
     if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(e.message) + '</div>';
@@ -1328,6 +1330,7 @@ async function doPositionImport(file) {
     html += '</tbody></table>';
     if (result) result.innerHTML = html;
     window._positionParsed = d.positions;
+    window._positionParsed.forEach(function(item) { item.code = classifyCode.normalizeCode(item.code); });
   } catch(e) {
     if (loading) loading.style.display = 'none';
     if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(e.message) + '</div>';
@@ -1354,7 +1357,7 @@ function confirmPositionItem(index) {
   var item = window._positionParsed[index];
   if (!item) return;
 
-  var code = document.getElementById('p-code-' + index).value.trim();
+  var code = classifyCode.normalizeCode(document.getElementById('p-code-' + index).value.trim());
   var name = document.getElementById('p-name-' + index).value.trim();
   var price = parseFloat(document.getElementById('p-price-' + index).value) || 0;
   var quantity = parseInt(document.getElementById('p-qty-' + index).value) || 0;
@@ -1455,6 +1458,7 @@ function stopVisionQr() {
 // ===================== 交易录入增强 =====================
 
 function addTradeInternal(code, name, direction, price, quantity, date) {
+  code = classifyCode.normalizeCode(code);
   var amount = Math.round(price * quantity * 100) / 100;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 

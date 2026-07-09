@@ -9,6 +9,7 @@ const QRCode = require('qrcode');
 const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, DATA_DIR } = require('./server/db');
 // 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
 const classifyCode = require('./public/js/code-classify.js');
+const normalizeCode = classifyCode.normalizeCode;  // 补齐证券代码前导零
 
 const app = express();
 // 部署在 Nginx 反代后，信任一层代理（用于正确的客户端IP与 X-Forwarded-Proto）
@@ -536,7 +537,7 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
         model: chatModel,
         messages: [{
           role: 'user',
-          content: '以下是从Excel交易明细表中提取的原始数据（第一行为表头）。请识别其中的交易记录，对每笔交易返回：code(证券代码)、name(证券名称)、price(成交价格，数字)、quantity(成交数量，数字)、direction(buy或sell)、date(交易日期，格式YYYY-MM-DD，如原始数据没有则留空)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
+          content: '以下是从Excel交易明细表中提取的原始数据（第一行为表头）。请识别其中的交易记录，对每笔交易返回：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、price(成交价格，数字)、quantity(成交数量，数字)、direction(buy或sell)、date(交易日期，格式YYYY-MM-DD，如原始数据没有则留空)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
         }],
         max_tokens: 4000,
         temperature: 0
@@ -556,6 +557,7 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
     if (!jsonMatch) return res.json({ trades: [] });
 
     const trades = JSON.parse(jsonMatch[0]);
+    trades.forEach(t => { if (t && t.code) t.code = normalizeCode(t.code); });
     res.json({ trades: trades });
   } catch(e) {
     res.json({ error: '解析失败: ' + e.message });
@@ -593,7 +595,7 @@ app.post('/api/excel-positions', requireLogin, asyncHandler(async (req, res) => 
         model: chatModel,
         messages: [{
           role: 'user',
-          content: '以下是从Excel持仓表中提取的原始数据（第一行为表头）。请识别每行对应的持仓记录，对每笔返回：code(证券代码)、name(证券名称)、quantity(持仓数量，数字，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价，数字；没有成本价则填市价，必须大于0)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","quantity":100,"price":12.34}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
+          content: '以下是从Excel持仓表中提取的原始数据（第一行为表头）。请识别每行对应的持仓记录，对每笔返回：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、quantity(持仓数量，数字，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价，数字；没有成本价则填市价，必须大于0)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","quantity":100,"price":12.34}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
         }],
         max_tokens: 4000,
         temperature: 0
@@ -613,6 +615,7 @@ app.post('/api/excel-positions', requireLogin, asyncHandler(async (req, res) => 
     if (!jsonMatch) return res.json({ positions: [] });
 
     const positions = JSON.parse(jsonMatch[0]);
+    positions.forEach(p => { if (p && p.code) p.code = normalizeCode(p.code); });
     res.json({ positions: positions });
   } catch(e) {
     res.json({ error: '解析失败: ' + e.message });

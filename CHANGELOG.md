@@ -2,6 +2,14 @@
 
 ## 2026-07-09
 
+### 修复：导入证券代码前导 0 被删除
+- **根因**：券商 Excel 把代码存为数字，`xlsx` 读取后 000001 变成 1，LLM 返回短代码，前端保存时丢失前导零。
+- **解决**：
+  - `public/js/code-classify.js` 新增 `classifyCode.normalizeCode(code)`：A股/基金/可转债/信用债等数字代码统一补 6 位，港股补 5 位，美股不变。
+  - 后端 `/api/excel-parse`、`/api/excel-positions` 解析 LLM 结果后统一调用 `normalizeCode` 恢复代码。
+  - 前端所有录入入口（手动交易、快速添加、持仓编辑、Excel/图片/持仓导入确认）统一在保存前调用 `classifyCode.normalizeCode`。
+  - LLM 提示词中明确强调证券代码作为字符串返回并保留前导零。
+
 ### 新增：Excel 导入持仓表（大模型解析）
 - **前端**：交易录入区新增「持仓导入」标签页，支持上传券商导出的 `.xlsx`/`.xls`/`.csv` 持仓表。
 - **后端**：新增 `POST /api/excel-positions`，用 `xlsx` 读取首工作表后调用 LLM 解析，返回 `positions` 数组（`code/name/quantity/price`）。

@@ -299,13 +299,12 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   if (data && data.totalAsset > 0) TOTAL_ASSET = data.totalAsset;
   renderAccountSelect();
   renderAll();
-  try {
-    await doRefresh();
-  } catch(e) {
-    showToast('行情刷新失败: ' + (e.message || e));
-  }
-  initAutoRefresh();
+  // 先绑定 tab 切换事件，再异步刷新行情，
+  // 避免 doRefresh() 同步阻塞期间用户点 tab 按钮没反应
   initNav();
+  // 行情刷新改为后台异步执行，不阻塞 UI 交互
+  doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
+  initAutoRefresh();
 })();
 
 // F5 / Ctrl+R 快捷键刷新行情

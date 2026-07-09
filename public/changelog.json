@@ -2,6 +2,7 @@
   {
     "date": "2026-07-09",
     "items": [
+      "修复：登录后点击 tab 按钮没反应，必须等行情刷新完才能点。把 <code>initNav()</code> 提前到 <code>doRefresh()</code> 之前，行情刷新改为后台异步执行（<code>doRefresh().catch(...)</code>），不再阻塞 UI 交互。",
       "修复：手机扫码上传无法选相册。去掉 <code>capture=\"environment\"</code>，iOS 弹「拍照或选照片」、安卓 Chrome 提供拍照/相册选择。",
       "优化：网站图标换成股市上涨主题（深蓝底 + 红色 K 线 + 黄色上升箭头），A 股红涨惯例。",
       "重构：合并 Excel/图片导入入口为「智能导入」，统一识别交易与持仓；删除独立 <code>/api/excel-positions</code> 接口。",

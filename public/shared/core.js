@@ -579,8 +579,8 @@ function renderPositionsTable(targetId, limit) {
       else if (col === 'type') { va = a.type || ''; vb = b.type || ''; }
       else if (col === 'subtype') { va = a.subtype || ''; vb = b.subtype || ''; }
       else if (col === 'chg') {
-        va = priceChangeMap[a.code] || -999;
-        vb = priceChangeMap[b.code] || -999;
+        va = priceChangeMap[a.code] != null ? priceChangeMap[a.code] : -999;
+        vb = priceChangeMap[b.code] != null ? priceChangeMap[b.code] : -999;
       }
       const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb));
       return sortState.dir === 'asc' ? cmp : -cmp;
@@ -743,10 +743,15 @@ function renderTrades() {
       const dirLabel = t.direction === 'buy'
         ? '<span class="tag tag-equity">买入</span>'
         : '<span class="tag tag-cash">卖出</span>';
+      var displayName = t.name;
+      if (!displayName || displayName === t.code) {
+        var pos = data.positions.find(function(p) { return p.code === t.code; });
+        if (pos && pos.name && pos.name !== t.code) displayName = pos.name;
+      }
       html += '<tr>' +
         '<td>' + (t.created_at || t.date || '-') + '</td>' +
         '<td>' + (t.code || '-') + '</td>' +
-        '<td>' + (t.name || '-') + '</td>' +
+        '<td>' + (displayName || '-') + '</td>' +
         '<td>' + dirLabel + '</td>' +
         '<td class="text-right">' + (t.price != null ? Number(t.price).toFixed(3) : '-') + '</td>' +
         '<td class="text-right ' + (t.direction === 'buy' ? 'positive' : 'negative') + '">' +
@@ -1085,7 +1090,7 @@ async function doVisionParse(file) {
 
   try {
     var base64 = await fileToBase64(file);
-    if (loading) loading.textContent = 'AI识别中...';
+    if (loading) loading.innerHTML = '<span class="spinner"></span>AI识别中...';
     var r = await fetch(api('/api/vision-parse'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1152,12 +1157,25 @@ function onVisionCodeChange(index) {
   }
 }
 
-function confirmVisionItem(index) {
+async function ensureName(code, currentName) {
+  if (currentName && currentName !== code) return currentName;
+  var pos = data.positions.find(function(p) { return p.code === code; });
+  if (pos && pos.name && pos.name !== code) return pos.name;
+  try {
+    var q = await fetchQuote(code);
+    if (q && q.name) return q.name;
+  } catch(e) {}
+  return currentName || code;
+}
+
+async function confirmVisionItem(index) {
   var item = window._visionParsed[index];
   if (!item) return;
+  var code = document.getElementById('v-code-' + index).value.trim();
+  var name = await ensureName(code, document.getElementById('v-name-' + index).value.trim());
   addTradeInternal(
-    document.getElementById('v-code-' + index).value.trim(),
-    document.getElementById('v-name-' + index).value.trim(),
+    code,
+    name,
     document.getElementById('v-dir-' + index).value,
     parseFloat(document.getElementById('v-price-' + index).value) || 0,
     parseInt(document.getElementById('v-qty-' + index).value) || 0
@@ -1166,10 +1184,10 @@ function confirmVisionItem(index) {
   window._visionParsed.splice(index, 1);
 }
 
-function confirmAllVisionItems() {
+async function confirmAllVisionItems() {
   if (!window._visionParsed || window._visionParsed.length === 0) return;
   for (var i = window._visionParsed.length - 1; i >= 0; i--) {
-    confirmVisionItem(i);
+    await confirmVisionItem(i);
   }
 }
 
@@ -1181,7 +1199,7 @@ async function doExcelParse(file) {
 
   try {
     var base64 = await fileToBase64(file);
-    if (loading) loading.textContent = 'AI解析中...';
+    if (loading) loading.innerHTML = '<span class="spinner"></span>AI解析中...';
     var r = await fetch(api('/api/excel-parse'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1250,12 +1268,14 @@ function onExcelCodeChange(index) {
   }
 }
 
-function confirmExcelItem(index) {
+async function confirmExcelItem(index) {
   var item = window._excelParsed[index];
   if (!item) return;
+  var code = document.getElementById('e-code-' + index).value.trim();
+  var name = await ensureName(code, document.getElementById('e-name-' + index).value.trim());
   addTradeInternal(
-    document.getElementById('e-code-' + index).value.trim(),
-    document.getElementById('e-name-' + index).value.trim(),
+    code,
+    name,
     document.getElementById('e-dir-' + index).value,
     parseFloat(document.getElementById('e-price-' + index).value) || 0,
     parseInt(document.getElementById('e-qty-' + index).value) || 0,
@@ -1265,10 +1285,10 @@ function confirmExcelItem(index) {
   window._excelParsed.splice(index, 1);
 }
 
-function confirmAllExcelItems() {
+async function confirmAllExcelItems() {
   if (!window._excelParsed || window._excelParsed.length === 0) return;
   for (var i = window._excelParsed.length - 1; i >= 0; i--) {
-    confirmExcelItem(i);
+    await confirmExcelItem(i);
   }
 }
 
@@ -1286,7 +1306,7 @@ async function doPositionImport(file) {
 
   try {
     var base64 = await fileToBase64(file);
-    if (loading) loading.textContent = 'AI解析中...';
+    if (loading) loading.innerHTML = '<span class="spinner"></span>AI解析中...';
     var r = await fetch(api('/api/excel-positions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1353,12 +1373,12 @@ function onPositionCodeChange(index) {
   }
 }
 
-function confirmPositionItem(index) {
+async function confirmPositionItem(index) {
   var item = window._positionParsed[index];
   if (!item) return;
 
   var code = classifyCode.normalizeCode(document.getElementById('p-code-' + index).value.trim());
-  var name = document.getElementById('p-name-' + index).value.trim();
+  var name = await ensureName(code, document.getElementById('p-name-' + index).value.trim());
   var price = parseFloat(document.getElementById('p-price-' + index).value) || 0;
   var quantity = parseInt(document.getElementById('p-qty-' + index).value) || 0;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
@@ -1388,10 +1408,10 @@ function confirmPositionItem(index) {
   showToast('已导入持仓 ' + (name || code));
 }
 
-function confirmAllPositionItems() {
+async function confirmAllPositionItems() {
   if (!window._positionParsed || window._positionParsed.length === 0) return;
   for (var i = window._positionParsed.length - 1; i >= 0; i--) {
-    confirmPositionItem(i);
+    await confirmPositionItem(i);
   }
 }
 

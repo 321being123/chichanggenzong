@@ -2,6 +2,22 @@
 
 ## 2026-07-09
 
+### 修复：涨跌排序时 0% 排第一
+- **根因**：持仓表按「涨跌」排序时，`priceChangeMap[code] || -999` 把 0% 当成缺失数据，导致 0% 被排到最前面。
+- **解决**：排序判断改为 `priceChangeMap[code] != null ? ... : -999`，0% 作为有效值参与正常升降序。
+
+### 修复：导入交易名称显示为代码
+- **根因**：Excel/图片/持仓导入时，如果解析结果没有名称，保存后交易历史名称列直接显示代码。
+- **解决**：
+  - `public/shared/core.js` 新增 `ensureName(code, currentName)`：优先取现有持仓中的名称，否则调用行情接口自动获取。
+  - 三个导入确认函数（`confirmVisionItem`/`confirmExcelItem`/`confirmPositionItem`）改为 async，确认前自动补全名称。
+  - 三个「全部导入」函数同步改为 async 顺序执行。
+  - `renderTrades` 增加兜底：若交易名称为空或等于代码，从当前持仓中查找显示名称。
+
+### 优化：AI 解析加载动画
+- 图片识别、Excel 导入、持仓导入的解析等待阶段增加转圈 spinner（`.spinner` CSS）。
+- 更新 `public/index.html` 三个 loading 容器，以及 `public/shared/core.js` 中动态设置 loading 文本的逻辑，使 spinner 和文字同时显示。
+
 ### 修复：导入证券代码前导 0 被删除
 - **根因**：券商 Excel 把代码存为数字，`xlsx` 读取后 000001 变成 1，LLM 返回短代码，前端保存时丢失前导零。
 - **解决**：

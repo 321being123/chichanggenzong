@@ -1809,6 +1809,20 @@ function getChangelogHtml() {
 
   var h = '';
 
+  h += '<h3 style="' + css + '">2026-07-09</h3>';
+  h += '<ol>';
+  h += '<li style="' + cssItem + '">修复：手机扫码上传无法选相册。去掉 <code>capture="environment"</code>，iOS 弹「拍照或选照片」、安卓 Chrome 提供拍照/相册选择。</li>';
+  h += '<li style="' + cssItem + '">优化：网站图标换成股市上涨主题（深蓝底 + 红色 K 线 + 黄色上升箭头），A 股红涨惯例。</li>';
+  h += '<li style="' + cssItem + '">重构：合并 Excel/图片导入入口为「智能导入」，统一识别交易与持仓；删除独立 <code>/api/excel-positions</code> 接口。</li>';
+  h += '<li style="' + cssItem + '">新增：Excel 导入交易明细（大模型解析），支持单条和「✅ 全部录入」，Excel 行可改日期。</li>';
+  h += '<li style="' + cssItem + '">新增：Excel 导入持仓表（大模型解析），已存在 code 更新、不存在追加，不影响交易和现金。</li>';
+  h += '<li style="' + cssItem + '">修复：导入证券代码前导 0 被删除。新增 <code>classifyCode.normalizeCode()</code>，A 股 6 位 / 港股 5 位 / 美股不变。</li>';
+  h += '<li style="' + cssItem + '">修复：涨跌排序时 0% 排第一。排序判断改为 <code>!= null</code>，0% 作为有效值参与升降序。</li>';
+  h += '<li style="' + cssItem + '">修复：导入交易名称显示为代码。新增 <code>ensureName()</code>，优先从持仓取名，否则调行情接口自动补全。</li>';
+  h += '<li style="' + cssItem + '">优化：AI 解析加载动画。图片识别、Excel 导入增加转圈 spinner（<code>.spinner</code> CSS）。</li>';
+  h += '<li style="' + cssItem + '">优化：图片识别增加「✅ 全部录入」按钮，避免逐条点击。</li>';
+  h += '</ol>';
+
   h += '<h3 style="' + css + '">2026-07-08</h3>';
   h += '<ol>';
   h += '<li style="' + cssItem + '">存储引擎从 SQLite 迁移到 PostgreSQL，支持多用户并发；数据库六表自动建表、路由全异步化、交易脚本同步改造。</li>';

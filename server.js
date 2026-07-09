@@ -205,12 +205,20 @@ app.put('/api/data/:name', requireLogin, asyncHandler(async (req, res) => {
 }));
 
 // ========== 行情代理 ==========
-function httpsGet(url) {
+function httpsGet(url, encoding) {
   return new Promise((resolve, reject) => {
     https.get(url, { timeout: 6000 }, (resp) => {
-      let data = '';
-      resp.on('data', chunk => data += chunk);
-      resp.on('end', () => resolve(data));
+      const chunks = [];
+      resp.on('data', chunk => chunks.push(chunk));
+      resp.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        if (encoding === 'gbk') {
+          try { resolve(new TextDecoder('gbk').decode(buf)); }
+          catch (e) { resolve(buf.toString('utf8')); }
+        } else {
+          resolve(buf.toString('utf8'));
+        }
+      });
     }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
   });
 }
@@ -228,32 +236,36 @@ async function fetchQuoteByCode(code) {
   const prefix = isHK ? 'hk' : (c[0] === '6' || c[0] === '5' || c.startsWith('11') ? 'sh' : 'sz');
 
   let result = null;
-  for (const secid of secids) {
-    try {
-      const text = await httpsGet('https://push2.eastmoney.com/api/qt/stock/get?secid=' + secid + '&fields=f43,f57,f58,f60');
-      const d = JSON.parse(text);
-      if (d && d.data && d.data.f43 != null && d.data.f60 != null) {
-        const dd = d.data;
-        var factor = 1000;
-        var cc = dd.f57 || c;
-        // 价格系数：东方财富API中A股股票用分(/100)，其他品种(基金/ETF/LOF/REITs/可转债)用厘(/1000)
-        if (cc.length >= 6) { var p2 = cc.substring(0,2); if (p2 === '00' || p2 === '30' || p2 === '60' || p2 === '68' || cc[0] === '4' || cc[0] === '8') factor = 100; }
-        result = { price: dd.f43 / factor, name: dd.f58 || '', code: cc, change: dd.f60 ? ((dd.f43 - dd.f60) / dd.f60 * 100) : null };
-        break;
-      }
-    } catch(e) {}
-  }
 
+  // 首选：腾讯 qt.gtimg（腾讯云服务器可正常访问；parts[3] 已是元价，无需价格系数）
+  // 注：东方财富对腾讯云 IP 段做了 API 级封禁，服务端调东财必失败，故降为兜底
+  try {
+    const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + (isHK ? c.padStart(5,'0') : c), 'gbk');
+    const match = text.match(/"(.*)"/);
+    if (match) {
+      const parts = match[1].split('~');
+      const price = parseFloat(parts[3]);
+      if (!isNaN(price) && price > 0) result = { price, name: parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
+    }
+  } catch(e) {}
+
+  // 兜底：东方财富（本地开发环境可用；腾讯云服务器被封时会快速失败）
   if (!result || !result.price) {
-    try {
-      const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + (isHK ? c.padStart(5,'0') : c));
-      const match = text.match(/"(.*)"/);
-      if (match) {
-        const parts = match[1].split('~');
-        const price = parseFloat(parts[3]);
-        if (!isNaN(price) && price > 0) result = { price, name: parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
-      }
-    } catch(e) {}
+    for (const secid of secids) {
+      try {
+        const text = await httpsGet('https://push2.eastmoney.com/api/qt/stock/get?secid=' + secid + '&fields=f43,f57,f58,f60');
+        const d = JSON.parse(text);
+        if (d && d.data && d.data.f43 != null && d.data.f60 != null) {
+          const dd = d.data;
+          var factor = 1000;
+          var cc = dd.f57 || c;
+          // 价格系数：东方财富API中A股股票用分(/100)，其他品种(基金/ETF/LOF/REITs/可转债)用厘(/1000)
+          if (cc.length >= 6) { var p2 = cc.substring(0,2); if (p2 === '00' || p2 === '30' || p2 === '60' || p2 === '68' || cc[0] === '4' || cc[0] === '8') factor = 100; }
+          result = { price: dd.f43 / factor, name: dd.f58 || '', code: cc, change: dd.f60 ? ((dd.f43 - dd.f60) / dd.f60 * 100) : null };
+          break;
+        }
+      } catch(e) {}
+    }
   }
   return result || null;
 }

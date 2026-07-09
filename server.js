@@ -76,6 +76,18 @@ function checkRegLimit(ip) {
 }
 const REGISTER_CODE = process.env.REGISTER_CODE;
 
+// 邮箱验证码（nodemailer）
+let mailer = null;
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+  const nodemailer = require('nodemailer');
+  mailer = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: false,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+  });
+}
+
 // 包装异步路由，避免未捕获异常导致请求挂起
 function asyncHandler(fn) { return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next); }
 
@@ -87,16 +99,27 @@ function requireLogin(req, res, next) {
 
 // ========== 用户认证 ==========
 app.post('/api/register', asyncHandler(async (req, res) => {
-  const { username, password, code } = req.body;
+  const { username, password, code, email, emailCode } = req.body;
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
   if (username.length < 2) return res.status(400).json({ error: '账号至少2位' });
   if (password.length < 6) return res.status(400).json({ error: '密码至少6位' });
   if (REGISTER_CODE && code !== REGISTER_CODE) return res.status(400).json({ error: '注册已关闭或邀请码错误' });
+  // 邮箱验证码校验
+  if (mailer) {
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '请输入正确的邮箱' });
+    if (!emailCode) return res.status(400).json({ error: '请输入邮箱验证码' });
+    const sess = req.session;
+    if (!sess.emailCode || sess.emailCode.email !== email || sess.emailCode.code !== emailCode) {
+      return res.status(400).json({ error: '验证码错误' });
+    }
+    if (Date.now() > sess.emailCode.expires) return res.status(400).json({ error: '验证码已过期，请重新获取' });
+    delete sess.emailCode;
+  }
   const ip = req.ip || req.connection.remoteAddress;
   if (checkRegLimit(ip)) return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
   const users = await loadUsers();
   if (users[username]) return res.status(400).json({ error: '该账号已注册，请直接登录' });
-  users[username] = { password: hashPwd(password), accounts: ['默认账户'] };
+  users[username] = { password: hashPwd(password), email, accounts: ['默认账户'] };
   await saveUsers(users);
   req.session.user = username;
   res.json({ ok: true, username });
@@ -120,6 +143,27 @@ app.post('/api/login', asyncHandler(async (req, res) => {
 app.post('/api/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
 app.get('/api/me', (req, res) => { res.json({ username: req.session.user || null }); });
 app.get('/api/config', (req, res) => { res.json({ needRegisterCode: !!REGISTER_CODE }); });
+
+// 发送邮箱验证码
+app.post('/api/send-code', asyncHandler(async (req, res) => {
+  if (!mailer) return res.status(500).json({ error: '邮件服务未配置' });
+  const { email } = req.body;
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '邮箱格式不正确' });
+  // 60秒内限制同一邮箱重复发送
+  const sess = req.session;
+  if (sess.emailCode && sess.emailCode.lastSend && Date.now() - sess.emailCode.lastSend < 60000) {
+    return res.status(429).json({ error: '发送太频繁，请60秒后再试' });
+  }
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  sess.emailCode = { code, email, expires: Date.now() + 300000, lastSend: Date.now() };
+  await mailer.sendMail({
+    from: process.env.SMTP_USER,
+    to: email,
+    subject: '持仓管理系统 - 注册验证码',
+    text: `您的验证码是：${code}，5分钟内有效。请勿泄露给他人。`
+  });
+  res.json({ ok: true });
+}));
 
 // ========== 数据API ==========
 app.get('/api/accounts', requireLogin, asyncHandler(async (req, res) => {

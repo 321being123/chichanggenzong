@@ -1023,8 +1023,10 @@ var tradeMode = 'manual';
 function switchTradeMode(mode) {
   tradeMode = mode;
   document.getElementById('mode-manual').classList.toggle('active', mode === 'manual');
+  document.getElementById('mode-excel').classList.toggle('active', mode === 'excel');
   document.getElementById('mode-vision').classList.toggle('active', mode === 'vision');
   document.getElementById('trade-manual-section').style.display = mode === 'manual' ? '' : 'none';
+  document.getElementById('trade-excel-section').style.display = mode === 'excel' ? '' : 'none';
   document.getElementById('trade-vision-section').style.display = mode === 'vision' ? '' : 'none';
   if (mode === 'vision') { initVisionQr(); } else { stopVisionQr(); }
 }
@@ -1033,6 +1035,12 @@ async function handleVisionFile(event) {
   var file = event.target.files[0];
   if (!file) return;
   await doVisionParse(file);
+}
+
+async function handleExcelFile(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  await doExcelParse(file);
 }
 
 // 粘贴支持
@@ -1095,7 +1103,8 @@ async function doVisionParse(file) {
       return;
     }
 
-    var html = '<table><thead><tr>' +
+    var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllVisionItems()">✅ 全部录入</button></div>' +
+      '<table><thead><tr>' +
       '<th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
       '<th>方向</th><th>类型</th><th>确认</th>' +
       '</tr></thead><tbody>';
@@ -1152,6 +1161,111 @@ function confirmVisionItem(index) {
   );
   document.getElementById('v-code-' + index).closest('tr').remove();
   window._visionParsed.splice(index, 1);
+}
+
+function confirmAllVisionItems() {
+  if (!window._visionParsed || window._visionParsed.length === 0) return;
+  for (var i = window._visionParsed.length - 1; i >= 0; i--) {
+    confirmVisionItem(i);
+  }
+}
+
+async function doExcelParse(file) {
+  var loading = document.getElementById('excel-loading');
+  var result = document.getElementById('excel-result');
+  if (loading) loading.style.display = 'block';
+  if (result) result.innerHTML = '';
+
+  try {
+    var base64 = await fileToBase64(file);
+    if (loading) loading.textContent = 'AI解析中...';
+    var r = await fetch(api('/api/excel-parse'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: base64 })
+    });
+    var d = await r.json();
+
+    if (loading) loading.style.display = 'none';
+
+    if (d.error) {
+      if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(d.error) + '</div>';
+      return;
+    }
+
+    if (!d.trades || d.trades.length === 0) {
+      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出交易信息，请检查 Excel 格式后重试</div>';
+      return;
+    }
+
+    var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllExcelItems()">✅ 全部录入</button></div>' +
+      '<table><thead><tr>' +
+      '<th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
+      '<th>方向</th><th>类型</th><th>确认</th>' +
+      '</tr></thead><tbody>';
+    d.trades.forEach(function(item, i) {
+      var rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
+      html += '<tr>' +
+        '<td><input type="date" id="e-date-' + i + '" value="' + (item.date || '') +
+          '" style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="text" id="e-code-' + i + '" value="' + (item.code || '') +
+          '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
+          ' oninput="onExcelCodeChange(' + i + ')"></td>' +
+        '<td><input type="text" id="e-name-' + i + '" value="' + (item.name || '') +
+          '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="number" id="e-price-' + i + '" value="' + (item.price || '') +
+          '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="number" id="e-qty-' + i + '" value="' + (item.quantity || '') +
+          '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><select id="e-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+          '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
+          '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
+          '</select></td>' +
+        '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
+        '<td><button class="btn btn-success btn-sm" onclick="confirmExcelItem(' + i + ')">确认录入</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    if (result) result.innerHTML = html;
+    window._excelParsed = d.trades;
+  } catch(e) {
+    if (loading) loading.style.display = 'none';
+    if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function onExcelCodeChange(index) {
+  var code = document.getElementById('e-code-' + index).value.trim();
+  if (code.length >= 4) {
+    fetchQuote(code).then(function(q) {
+      if (q && q.price) {
+        document.getElementById('e-price-' + index).value = q.price;
+        if (q.name) document.getElementById('e-name-' + index).value = q.name;
+      }
+    });
+  }
+}
+
+function confirmExcelItem(index) {
+  var item = window._excelParsed[index];
+  if (!item) return;
+  addTradeInternal(
+    document.getElementById('e-code-' + index).value.trim(),
+    document.getElementById('e-name-' + index).value.trim(),
+    document.getElementById('e-dir-' + index).value,
+    parseFloat(document.getElementById('e-price-' + index).value) || 0,
+    parseInt(document.getElementById('e-qty-' + index).value) || 0,
+    document.getElementById('e-date-' + index).value
+  );
+  document.getElementById('e-code-' + index).closest('tr').remove();
+  window._excelParsed.splice(index, 1);
+}
+
+function confirmAllExcelItems() {
+  if (!window._excelParsed || window._excelParsed.length === 0) return;
+  for (var i = window._excelParsed.length - 1; i >= 0; i--) {
+    confirmExcelItem(i);
+  }
 }
 
 function fileToBase64(file) {
@@ -1216,7 +1330,7 @@ function stopVisionQr() {
 
 // ===================== 交易录入增强 =====================
 
-function addTradeInternal(code, name, direction, price, quantity) {
+function addTradeInternal(code, name, direction, price, quantity, date) {
   var amount = Math.round(price * quantity * 100) / 100;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
@@ -1225,7 +1339,7 @@ function addTradeInternal(code, name, direction, price, quantity) {
     id: uid(), code: code, name: name || code,
     direction: direction, price: price, quantity: quantity,
     amount: amount, type: rec.type, subtype: rec.subtype,
-    date: todayCN(), created_at: nowSec()
+    date: date || todayCN(), created_at: nowSec()
   });
 
   var existing = data.positions.find(function(p) { return p.code === code; });

@@ -63,6 +63,7 @@
       <!-- 录入方式切换 -->
       <div style="margin-bottom:16px;">
         <button class="btn trade-mode-btn active" id="mode-manual" onclick="switchTradeMode('manual')" style="border-radius:8px 0 0 8px;">手动录入</button>
+        <button class="btn trade-mode-btn" id="mode-excel" onclick="switchTradeMode('excel')" style="border-radius:0;margin-left:-1px;">Excel导入</button>
         <button class="btn trade-mode-btn" id="mode-vision" onclick="switchTradeMode('vision')" style="border-radius:0 8px 8px 0;margin-left:-1px;">图片识别</button>
       </div>
 
@@ -103,6 +104,18 @@
         </div>
         <div id="vision-loading" style="display:none;text-align:center;padding:20px;color:#666;">正在识别...</div>
         <div id="vision-result" style="margin-top:16px;"></div>
+      </div>
+
+      <!-- Excel 导入区域 -->
+      <div id="trade-excel-section" style="display:none;">
+        <div class="vision-zone" id="excel-zone" onclick="document.getElementById('excel-input').click()">
+          <div class="icon">📊</div>
+          <p>点击上传 Excel 交易明细</p>
+          <p style="font-size:12px;color:#bbb;margin-top:4px;">支持 .xlsx / .xls / .csv，AI 自动识别</p>
+          <input type="file" id="excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" onchange="handleExcelFile(event)">
+        </div>
+        <div id="excel-loading" style="display:none;text-align:center;padding:20px;color:#666;">正在解析...</div>
+        <div id="excel-result" style="margin-top:16px;"></div>
       </div>
     </div>
   </div>

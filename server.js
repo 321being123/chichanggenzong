@@ -505,6 +505,63 @@ app.post('/api/vision-parse', requireLogin, asyncHandler(async (req, res) => {
   }
 }));
 
+// ========== Excel 导入解析（大模型）==========
+app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
+  try {
+    const { file, apiUrl, apiKey, model } = req.body;
+    if (!file) return res.status(400).json({ error: '请上传Excel文件' });
+
+    const base64Data = file.split(',')[1] || file;
+    const buffer = Buffer.from(base64Data, 'base64');
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+    if (!rows || rows.length === 0) {
+      return res.json({ trades: [] });
+    }
+
+    const endpoint = apiUrl || process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
+    const chatModel = model || process.env.VISION_MODEL || 'agnes-1.5-flash';
+    const key = apiKey || process.env.VISION_API_KEY;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + key
+      },
+      body: JSON.stringify({
+        model: chatModel,
+        messages: [{
+          role: 'user',
+          content: '以下是从Excel交易明细表中提取的原始数据（第一行为表头）。请识别其中的交易记录，对每笔交易返回：code(证券代码)、name(证券名称)、price(成交价格，数字)、quantity(成交数量，数字)、direction(buy或sell)、date(交易日期，格式YYYY-MM-DD，如原始数据没有则留空)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
+        }],
+        max_tokens: 4000,
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
+    }
+
+    const result = await response.json();
+    const content = result.choices?.[0]?.message?.content || '[]';
+
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return res.json({ trades: [] });
+
+    const trades = JSON.parse(jsonMatch[0]);
+    res.json({ trades: trades });
+  } catch(e) {
+    res.json({ error: '解析失败: ' + e.message });
+  }
+}));
+
 // ========== 版本更新日志 ==========
 app.get('/api/changelog', requireLogin, (req, res) => {
   try {

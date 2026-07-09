@@ -285,27 +285,54 @@ function cnDateStr(d) {
   return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
 }
 
-// 指数K线数据代理
+// 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯实时）
+// 注：东方财富(push2his)对腾讯云IP封禁，故改用新浪/腾讯源
 app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
   const { secid, days } = req.query;
   if (!secid) return res.json([]);
-  const daysNum = parseInt(days) || 365;
-  const begStr = cnDateStr(new Date(Date.now() - daysNum * 86400000));
-  const endStr = cnDateStr(new Date());
   try {
-    const url = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=' +
-      secid + '&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1&beg=' +
-      begStr + '&end=' + endStr;
-    const text = await httpsGet(url);
-    const d = JSON.parse(text);
-    if (d && d.data && d.data.klines) {
-      const result = d.data.klines.map(function(line) {
-        const parts = line.split(',');
-        return { date: parts[0], close: parseFloat(parts[2]) };
-      }).filter(function(item) { return !isNaN(item.close) && item.close > 0; });
+    if (secid === 'hkHSI') {
+      // 恒生指数：腾讯实时点位（无历史K线接口，历史靠前端每日快照积累）
+      const hkText = await new Promise((resolve, reject) => {
+        https.get('https://qt.gtimg.cn/q=hkHSI', {
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        }, (resp) => {
+          let data = '';
+          resp.on('data', chunk => data += chunk);
+          resp.on('end', () => resolve(data));
+        }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
+      });
+      const m = hkText.match(/v_hkHSI="([^"]+)"/);
+      if (m) {
+        const parts = m[1].split('~');
+        const close = parseFloat(parts[3]);
+        if (!isNaN(close)) {
+          return res.json([{ date: cnDateStr(new Date()), close }]);
+        }
+      }
+      return res.json([]);
+    }
+    // A股三指数：新浪历史K线
+    const datalen = Math.min(parseInt(days) || 365, 500);
+    const sinaText = await new Promise((resolve, reject) => {
+      https.get('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' + secid + '&scale=240&ma=no&datalen=' + datalen, {
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn' }
+      }, (resp) => {
+        let data = '';
+        resp.on('data', chunk => data += chunk);
+        resp.on('end', () => resolve(data));
+      }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
+    });
+    const arr = JSON.parse(sinaText);
+    if (Array.isArray(arr)) {
+      const result = arr.map(function (it) {
+        return { date: it.day, close: parseFloat(it.close) };
+      }).filter(function (it) { return it.date && !isNaN(it.close) && it.close > 0; });
       return res.json(result);
     }
-  } catch(e) {}
+  } catch (e) {}
   res.json([]);
 }));
 

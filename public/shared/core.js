@@ -1602,10 +1602,10 @@ async function fetchIndexKline(secid, days) {
 
 // 指数 secid 映射（东方财富格式；A股15:00收盘 / 港股16:00收盘，kline 自动取已收盘日）
 const INDEX_SECID = {
-  '沪深300': '1.000300',
-  '上证指数': '1.000001',
-  '中证全指': '1.000985',
-  '恒生指数': '100.HSI'
+  '沪深300': 'sh000300',
+  '上证指数': 'sh000001',
+  '中证500': 'sh000905',
+  '恒生指数': 'hkHSI'
 };
 
 // 刷新行情时同步指数收盘点位快照（对齐股票每日价格逻辑）
@@ -1678,16 +1678,16 @@ async function renderReturnsChart() {
   // 指数序列：优先本地快照（按交易日连续、平滑），缺失时实时拉取兜底
   var hs300Data = getIndexSeries('沪深300', navData) || [];
   var shData = getIndexSeries('上证指数', navData) || [];
-  var zzData = getIndexSeries('中证全指', navData) || [];
+  var zzData = getIndexSeries('中证500', navData) || [];
   var hsidata = getIndexSeries('恒生指数', navData) || [];
   if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
     try {
       const days = returnPeriod > 0 ? returnPeriod : Math.max(90, navData.length * 2);
       const results = await Promise.all([
-        fetchIndexKline('1.000300', days + 30),
-        fetchIndexKline('1.000001', days + 30),
-        fetchIndexKline('1.000985', days + 30),
-        fetchIndexKline('100.HSI', days + 30)
+        fetchIndexKline('sh000300', days + 30),
+        fetchIndexKline('sh000001', days + 30),
+        fetchIndexKline('sh000905', days + 30),
+        fetchIndexKline('hkHSI', days + 30)
       ]);
       if (!hs300Data.length) hs300Data = normalizeIndexData(results[0], navData);
       if (!shData.length) shData = normalizeIndexData(results[1], navData);

@@ -562,6 +562,63 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
   }
 }));
 
+// ========== Excel 持仓导入解析（大模型）==========
+app.post('/api/excel-positions', requireLogin, asyncHandler(async (req, res) => {
+  try {
+    const { file, apiUrl, apiKey, model } = req.body;
+    if (!file) return res.status(400).json({ error: '请上传Excel文件' });
+
+    const base64Data = file.split(',')[1] || file;
+    const buffer = Buffer.from(base64Data, 'base64');
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+    if (!rows || rows.length === 0) {
+      return res.json({ positions: [] });
+    }
+
+    const endpoint = apiUrl || process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
+    const chatModel = model || process.env.VISION_MODEL || 'agnes-1.5-flash';
+    const key = apiKey || process.env.VISION_API_KEY;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + key
+      },
+      body: JSON.stringify({
+        model: chatModel,
+        messages: [{
+          role: 'user',
+          content: '以下是从Excel持仓表中提取的原始数据（第一行为表头）。请识别每行对应的持仓记录，对每笔返回：code(证券代码)、name(证券名称)、quantity(持仓数量，数字，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价，数字；没有成本价则填市价，必须大于0)。以JSON数组格式返回，格式：[{"code":"xxx","name":"xxx","quantity":100,"price":12.34}]。如果无法识别返回空数组[]。只返回JSON，不要任何其他文字。\n\n' + JSON.stringify(rows)
+        }],
+        max_tokens: 4000,
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
+    }
+
+    const result = await response.json();
+    const content = result.choices?.[0]?.message?.content || '[]';
+
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return res.json({ positions: [] });
+
+    const positions = JSON.parse(jsonMatch[0]);
+    res.json({ positions: positions });
+  } catch(e) {
+    res.json({ error: '解析失败: ' + e.message });
+  }
+}));
+
 // ========== 版本更新日志 ==========
 app.get('/api/changelog', requireLogin, (req, res) => {
   try {

@@ -1024,9 +1024,11 @@ function switchTradeMode(mode) {
   tradeMode = mode;
   document.getElementById('mode-manual').classList.toggle('active', mode === 'manual');
   document.getElementById('mode-excel').classList.toggle('active', mode === 'excel');
+  document.getElementById('mode-position').classList.toggle('active', mode === 'position');
   document.getElementById('mode-vision').classList.toggle('active', mode === 'vision');
   document.getElementById('trade-manual-section').style.display = mode === 'manual' ? '' : 'none';
   document.getElementById('trade-excel-section').style.display = mode === 'excel' ? '' : 'none';
+  document.getElementById('trade-position-section').style.display = mode === 'position' ? '' : 'none';
   document.getElementById('trade-vision-section').style.display = mode === 'vision' ? '' : 'none';
   if (mode === 'vision') { initVisionQr(); } else { stopVisionQr(); }
 }
@@ -1265,6 +1267,128 @@ function confirmAllExcelItems() {
   if (!window._excelParsed || window._excelParsed.length === 0) return;
   for (var i = window._excelParsed.length - 1; i >= 0; i--) {
     confirmExcelItem(i);
+  }
+}
+
+async function handlePositionFile(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  await doPositionImport(file);
+}
+
+async function doPositionImport(file) {
+  var loading = document.getElementById('position-loading');
+  var result = document.getElementById('position-result');
+  if (loading) loading.style.display = 'block';
+  if (result) result.innerHTML = '';
+
+  try {
+    var base64 = await fileToBase64(file);
+    if (loading) loading.textContent = 'AI解析中...';
+    var r = await fetch(api('/api/excel-positions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: base64 })
+    });
+    var d = await r.json();
+
+    if (loading) loading.style.display = 'none';
+
+    if (d.error) {
+      if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(d.error) + '</div>';
+      return;
+    }
+
+    if (!d.positions || d.positions.length === 0) {
+      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出持仓信息，请检查 Excel 格式后重试</div>';
+      return;
+    }
+
+    var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllPositionItems()">✅ 全部导入</button></div>' +
+      '<table><thead><tr>' +
+      '<th>代码</th><th>名称</th><th class="text-right">成本价</th><th class="text-right">数量</th>' +
+      '<th>类型</th><th>确认</th>' +
+      '</tr></thead><tbody>';
+    d.positions.forEach(function(item, i) {
+      var rec = recognizeCode(item.code) || { type: '股权', subtype: 'A股' };
+      html += '<tr>' +
+        '<td><input type="text" id="p-code-' + i + '" value="' + (item.code || '') +
+          '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"' +
+          ' oninput="onPositionCodeChange(' + i + ')"></td>' +
+        '<td><input type="text" id="p-name-' + i + '" value="' + (item.name || '') +
+          '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="number" id="p-price-' + i + '" value="' + (item.price || '') +
+          '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td><input type="number" id="p-qty-' + i + '" value="' + (item.quantity || '') +
+          '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+        '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
+        '<td><button class="btn btn-success btn-sm" onclick="confirmPositionItem(' + i + ')">确认导入</button></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    if (result) result.innerHTML = html;
+    window._positionParsed = d.positions;
+  } catch(e) {
+    if (loading) loading.style.display = 'none';
+    if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">解析失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function onPositionCodeChange(index) {
+  var code = document.getElementById('p-code-' + index).value.trim();
+  if (code.length >= 4) {
+    fetchQuote(code).then(function(q) {
+      if (q && q.price) {
+        var priceEl = document.getElementById('p-price-' + index);
+        if (priceEl && !priceEl.value) priceEl.value = q.price;
+        if (q.name) {
+          var nameEl = document.getElementById('p-name-' + index);
+          if (nameEl && !nameEl.value) nameEl.value = q.name;
+        }
+      }
+    });
+  }
+}
+
+function confirmPositionItem(index) {
+  var item = window._positionParsed[index];
+  if (!item) return;
+
+  var code = document.getElementById('p-code-' + index).value.trim();
+  var name = document.getElementById('p-name-' + index).value.trim();
+  var price = parseFloat(document.getElementById('p-price-' + index).value) || 0;
+  var quantity = parseInt(document.getElementById('p-qty-' + index).value) || 0;
+  if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
+
+  var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+  var existing = data.positions.find(function(p) { return p.code === code; });
+  if (existing) {
+    existing.name = name || code;
+    existing.price = price;
+    existing.quantity = quantity;
+    existing.cost = price;
+    existing.type = existing.type || rec.type;
+    existing.subtype = existing.subtype || rec.subtype;
+  } else {
+    data.positions.push({
+      id: uid(), code: code, name: name || code,
+      price: price, quantity: quantity, cost: price,
+      type: rec.type, subtype: rec.subtype, note: ''
+    });
+  }
+
+  recalcCash();
+  saveData();
+  renderAll();
+  document.getElementById('p-code-' + index).closest('tr').remove();
+  window._positionParsed.splice(index, 1);
+  showToast('已导入持仓 ' + (name || code));
+}
+
+function confirmAllPositionItems() {
+  if (!window._positionParsed || window._positionParsed.length === 0) return;
+  for (var i = window._positionParsed.length - 1; i >= 0; i--) {
+    confirmPositionItem(i);
   }
 }
 

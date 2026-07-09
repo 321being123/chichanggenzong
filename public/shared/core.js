@@ -1795,88 +1795,32 @@ function initNav() {
 
 // ===================== 版本记录 =====================
 
-function loadChangelog() {
+async function loadChangelog() {
   var el = document.getElementById('changelog-content');
   if (!el) return;
-  if (el.dataset.loaded) return;
-  el.dataset.loaded = '1';
-  el.innerHTML = getChangelogHtml();
+  try {
+    var resp = await fetch('changelog.json');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var data = await resp.json();
+    el.innerHTML = renderChangelogHtml(data);
+  } catch (err) {
+    el.innerHTML = '<p style="color:#c00;text-align:center;">版本记录加载失败：' + (err.message || err) + '</p>';
+  }
 }
 
-function getChangelogHtml() {
+function renderChangelogHtml(data) {
   var css = 'color:#1a73e8;font-size:16px;font-weight:700;margin:18px 0 8px;border-left:3px solid #1a73e8;padding-left:10px;';
   var cssItem = 'margin:4px 0 4px 16px;line-height:1.7;';
-
   var h = '';
-
-  h += '<h3 style="' + css + '">2026-07-09</h3>';
-  h += '<ol>';
-  h += '<li style="' + cssItem + '">修复：手机扫码上传无法选相册。去掉 <code>capture="environment"</code>，iOS 弹「拍照或选照片」、安卓 Chrome 提供拍照/相册选择。</li>';
-  h += '<li style="' + cssItem + '">优化：网站图标换成股市上涨主题（深蓝底 + 红色 K 线 + 黄色上升箭头），A 股红涨惯例。</li>';
-  h += '<li style="' + cssItem + '">重构：合并 Excel/图片导入入口为「智能导入」，统一识别交易与持仓；删除独立 <code>/api/excel-positions</code> 接口。</li>';
-  h += '<li style="' + cssItem + '">新增：Excel 导入交易明细（大模型解析），支持单条和「✅ 全部录入」，Excel 行可改日期。</li>';
-  h += '<li style="' + cssItem + '">新增：Excel 导入持仓表（大模型解析），已存在 code 更新、不存在追加，不影响交易和现金。</li>';
-  h += '<li style="' + cssItem + '">修复：导入证券代码前导 0 被删除。新增 <code>classifyCode.normalizeCode()</code>，A 股 6 位 / 港股 5 位 / 美股不变。</li>';
-  h += '<li style="' + cssItem + '">修复：涨跌排序时 0% 排第一。排序判断改为 <code>!= null</code>，0% 作为有效值参与升降序。</li>';
-  h += '<li style="' + cssItem + '">修复：导入交易名称显示为代码。新增 <code>ensureName()</code>，优先从持仓取名，否则调行情接口自动补全。</li>';
-  h += '<li style="' + cssItem + '">优化：AI 解析加载动画。图片识别、Excel 导入增加转圈 spinner（<code>.spinner</code> CSS）。</li>';
-  h += '<li style="' + cssItem + '">优化：图片识别增加「✅ 全部录入」按钮，避免逐条点击。</li>';
-  h += '</ol>';
-
-  h += '<h3 style="' + css + '">2026-07-08</h3>';
-  h += '<ol>';
-  h += '<li style="' + cssItem + '">存储引擎从 SQLite 迁移到 PostgreSQL，支持多用户并发；数据库六表自动建表、路由全异步化、交易脚本同步改造。</li>';
-  h += '<li style="' + cssItem + '">代码本地验证通过（加载级+连库级），SQLite 残留全部清除，真实数据已迁移并抽查确认。</li>';
-  h += '<li style="' + cssItem + '">时区统一为北京时间（东八区），前端/脚本/服务端日期全部改用 <code>todayCN()</code>。</li>';
-  h += '<li style="' + cssItem + '">支持子目录部署，新增 <code>BASE_URL</code> 配置，静态资源和 API 请求自动加前缀。</li>';
-  h += '<li style="' + cssItem + '">接入 dotenv 自动读取 <code>.env</code>，修复部署后数据库连接为空的致命缺陷。</li>';
-  h += '<li style="' + cssItem + '">Git 版本管理规范建立，代码推送至 GitHub，配置 <code>.gitignore</code> 排除敏感文件。</li>';
-  h += '<li style="' + cssItem + '">腾讯云 CVM 一键部署脚本完成（Node22+PG+Nginx+pm2），SSH 实跑成功，服务上线运行。</li>';
-  h += '<li style="' + cssItem + '">持仓表格新增现金行：显示余额和占比，可编辑类型/细类，图表动态聚合持仓类别。</li>';
-  h += '<li style="' + cssItem + '">类型下拉增加"现金"选项，细类下拉增加"现金"选项。</li>';
-  h += '<li style="' + cssItem + '">自动刷新间隔从 60 秒改为 15 分钟，降低行情查询频率。</li>';
-  h += '<li style="' + cssItem + '">新增"版本记录"页面，按日期汇总系统更新内容。</li>';
-  h += '<li style="' + cssItem + '">截图识别并入交易页（手动/图片两种录入方式），用 Agnes AI 视觉模型替代 Tesseract OCR。</li>';
-  h += '<li style="' + cssItem + '">AI 视觉模型支持环境变量配置（VISION_API_KEY），默认 Agnes AI 1.5-flash。</li>';
-  h += '<li style="' + cssItem + '">类型标签统一用 getTypeTag() 处理（股权/债权/现金三种颜色），消除多处二元判断遗漏。</li>';
-  h += '<li style="' + cssItem + '">修复页面切换时右侧滚动条抖动（body overflow-y:scroll）。</li>';
-  h += '<li style="' + cssItem + '">修复交易录入方向下拉 ID 不匹配（trade-dir vs trade-direction）。</li>';
-  h += '<li style="' + cssItem + '">服务器建立 Git 仓库并同步至 GitHub，后续支持 git pull 一键升级。</li>';
-  h += '<li style="' + cssItem + '">总资产卡片增加今日涨跌（▲红色涨 / ▼绿色跌），对比上一条净值记录。</li>';
-  h += '<li style="' + cssItem + '"><strong>手机扫码上传：</strong>图片识别区左右布局（左边拖拽上传 + 右边二维码），手机扫码自动调起相机，拍照后电脑端自动接收并 AI 识别。</li>';
-  h += '<li style="' + cssItem + '">每日收盘价自动记录，按各市场收盘时刻精准触发（A股 15:10 / 港股 16:10）。</li>';
-  h += '<li style="' + cssItem + '">招商证券账户数据清理，修复迁移后两账户数据重复问题。</li>';
-  h += '</ol>';
-
-  h += '<h3 style="' + css + '">2026-07-06</h3>';
-  h += '<ol>';
-  h += '<li style="' + cssItem + '">修复静默丢数据缺陷：删除持仓时保留交易流水（交易用于净值计算）。</li>';
-  h += '<li style="' + cssItem + '">修复收益走势图指数开关和区间高亮失效问题。</li>';
-  h += '<li style="' + cssItem + '">亏损金额增加负号显示。</li>';
-  h += '<li style="' + cssItem + '">清理无效死代码和归档失效脚本。</li>';
-  h += '<li style="' + cssItem + '">前后端分类逻辑统一收敛为 <code>code-classify.js</code> 单一函数，消除代码前缀规则不一致。</li>';
-  h += '</ol>';
-
-  h += '<h3 style="' + css + '">2026-06-27</h3>';
-  h += '<ol>';
-  h += '<li style="' + cssItem + '">修复嘉实原油LOF(160723)价格系数错误（1.715 → 原错误显示 17.15）。</li>';
-  h += '<li style="' + cssItem + '">全面重构价格系数逻辑：默认千分位，仅A股用百分位，避免新增品种遗漏。</li>';
-  h += '<li style="' + cssItem + '">统一数量/价格/市值格式约定（万位逗号、3位小数价格、¥前缀金额）。</li>';
-  h += '<li style="' + cssItem + '">建立港股价格（存港币）、汇率（hkRate=0.868）和代码五位的系统级别规则。</li>';
-  h += '<li style="' + cssItem + '">新增交易时间感知（A股/港股开盘判断），收盘后不自动刷新。</li>';
-  h += '<li style="' + cssItem + '">从 JSON 文件迁移到 SQLite 数据库，新增持仓/交易/净值/现金流四张独立表。</li>';
-  h += '<li style="' + cssItem + '">后端分层（server.js 路由 + db.js 数据层）、前端模块化（utils.js 工具函数）。</li>';
-  h += '<li style="' + cssItem + '">行情统一走服务端代理，移除前端直接请求，增加安全加固（CSRF 防护）。</li>';
-  h += '<li style="' + cssItem + '">新增港币汇率代理 API 和指数 K 线 API。</li>';
-  h += '<li style="' + cssItem + '">修复上交所可转债(11xxxx)行情查询 Bug，secid 构造缺前缀。</li>';
-  h += '</ol>';
-
-  h += '<h3 style="' + css + '">2026-06-26</h3>';
-  h += '<ol>';
-  h += '<li style="' + cssItem + '">项目初始化：从券商 CSV 导入 A 股和港股通持仓数据。</li>';
-  h += '<li style="' + cssItem + '">初始持仓 43 只（17 A股 + 7 可转债 + 19 港股），47 笔交易。</li>';
-  h += '</ol>';
-
+  for (var i = 0; i < data.length; i++) {
+    var entry = data[i];
+    h += '<h3 style="' + css + '">' + entry.date + '</h3>';
+    h += '<ol>';
+    for (var j = 0; j < entry.items.length; j++) {
+      h += '<li style="' + cssItem + '">' + entry.items[j] + '</li>';
+    }
+    h += '</ol>';
+  }
   return h;
 }
 

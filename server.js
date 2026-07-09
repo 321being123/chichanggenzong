@@ -370,7 +370,7 @@ input[type=file]{display:none}
   <div class="icon">📷</div>
   <h2>上传交易截图</h2>
   <p>拍照或从相册选择交易记录截图</p>
-  <input type="file" id="fileInput" accept="image/*" capture="environment">
+  <input type="file" id="fileInput" accept="image/*">
   <button class="upload-btn" onclick="document.getElementById('fileInput').click()">📸 拍照 / 选图</button>
   <div id="status"></div>
 </div>

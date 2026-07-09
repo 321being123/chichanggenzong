@@ -2,6 +2,14 @@
 
 ## 2026-07-09
 
+### 修复：手机扫码上传无法选相册
+- **根因**：`server.js` 内嵌的手机上传页 `mobileUploadHtml()` 中 `<input type="file" accept="image/*" capture="environment">` 带了 `capture="environment"`，强制调起摄像头，iOS/部分安卓无法选相册。
+- **修复**：去掉 `capture="environment"` 属性。`accept="image/*"` 不带 capture 时，iOS 弹「拍照或选照片」、安卓 Chrome 提供拍照/相册选择，同时保留拍照能力。
+
+### 优化：网站图标换成股市上涨主题
+- **变更**：`public/favicon.svg` 改为深蓝底 + 红色上涨 K 线 + 黄色上升箭头（A 股红涨惯例）。
+- **引用**：在 `public/index.html` 和 `public/login.html` 的 `<head>` 中加入 `<link rel="icon" type="image/svg+xml" href="/favicon.svg">`，使浏览器正确加载新图标。
+
 ### 重构：合并 Excel/图片导入入口，统一识别交易与持仓
 - **变更**：
   - 前端「录入交易」区由 4 个标签（手动/Excel/持仓/图片）简化为 2 个标签：**手动录入 / 智能导入**。

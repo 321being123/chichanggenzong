@@ -114,6 +114,7 @@ async function refreshAllPrices() {
   }
   // 保存涨跌幅到数据文件，页面刷新后自动恢复
   data.changes = {}; Object.keys(priceChangeMap).forEach(function(k) { data.changes[k] = priceChangeMap[k]; });
+  await syncIndexPoints();
   saveData(); renderAll(); recordNav(); renderReturnsChart();
   const failedCodes = codes.filter(c => {
     const p = data.positions.find(x => x.code === c);
@@ -1599,9 +1600,55 @@ async function fetchIndexKline(secid, days) {
   return [];
 }
 
+// 指数 secid 映射（东方财富格式；A股15:00收盘 / 港股16:00收盘，kline 自动取已收盘日）
+const INDEX_SECID = {
+  '沪深300': '1.000300',
+  '上证指数': '1.000001',
+  '中证全指': '1.000985',
+  '恒生指数': '100.HSI'
+};
+
+// 刷新行情时同步指数收盘点位快照（对齐股票每日价格逻辑）
+// 一次拉取较长区间补齐历史交易日，使对比曲线按交易日连续、平滑
+async function syncIndexPoints() {
+  try {
+    if (!data.indexHistory) data.indexHistory = [];
+    const days = Math.max(120, (data.navHistory ? data.navHistory.length : 0) * 2);
+    const names = Object.keys(INDEX_SECID);
+    const results = await Promise.all(names.map(function (n) {
+      return fetchIndexKline(INDEX_SECID[n], days + 5);
+    }));
+    var byDate = {};
+    data.indexHistory.forEach(function (h) { byDate[h.date] = h; });
+    names.forEach(function (n, i) {
+      (results[i] || []).forEach(function (pt) {
+        if (!byDate[pt.date]) byDate[pt.date] = { date: pt.date };
+        byDate[pt.date][n] = pt.close;
+      });
+    });
+    data.indexHistory = Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
+  } catch (e) { /* 指数快照失败不影响主流程 */ }
+}
+
+// 优先用本地快照构造指数序列（按交易日对齐，基准=净值第一天对应点位）
+function getIndexSeries(name, navData) {
+  if (!data.indexHistory || !data.indexHistory.length) return null;
+  var map = {};
+  data.indexHistory.forEach(function (h) { if (h[name] != null) map[h.date] = h[name]; });
+  var firstClose = map[navData[0].date];
+  if (firstClose == null) return null;
+  return navData
+    .filter(function (d) { return map[d.date] != null; })
+    .map(function (d) { return { date: d.date, val: map[d.date] / firstClose }; });
+}
+
+// 实时 kline 兜底归一化（修复：基准用净值第一天对应点位，而非拉取区间第一天）
 function normalizeIndexData(indexData, navData) {
   if (indexData.length === 0 || navData.length === 0) return [];
-  const firstClose = indexData[0].close;
+  const map = {};
+  indexData.forEach(function (d) { map[d.date] = d.close; });
+  const firstClose = map[navData[0].date];
+  if (firstClose == null) return [];
   const dateSet = new Set(navData.map(function (d) { return d.date; }));
   return indexData
     .filter(function (d) { return dateSet.has(d.date); })
@@ -1628,20 +1675,26 @@ async function renderReturnsChart() {
   const labels = navData.map(function (d) { return d.date.slice(5); });
   const navVals = navData.map(function (d) { return +(d.nav.toFixed(4)); });
 
-  var hs300Data = [], shData = [], zzData = [], hsidata = [];
-  try {
-    const days = returnPeriod > 0 ? returnPeriod : Math.max(90, navData.length * 2);
-    const results = await Promise.all([
-      fetchIndexKline('1.000300', days + 30),
-      fetchIndexKline('1.000001', days + 30),
-      fetchIndexKline('1.000985', days + 30),
-      fetchIndexKline('0.^HSI', days + 30)
-    ]);
-    hs300Data = normalizeIndexData(results[0], navData);
-    shData = normalizeIndexData(results[1], navData);
-    zzData = normalizeIndexData(results[2], navData);
-    hsidata = normalizeIndexData(results[3], navData);
-  } catch (e) { /* 指数数据加载失败不阻塞 */ }
+  // 指数序列：优先本地快照（按交易日连续、平滑），缺失时实时拉取兜底
+  var hs300Data = getIndexSeries('沪深300', navData) || [];
+  var shData = getIndexSeries('上证指数', navData) || [];
+  var zzData = getIndexSeries('中证全指', navData) || [];
+  var hsidata = getIndexSeries('恒生指数', navData) || [];
+  if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
+    try {
+      const days = returnPeriod > 0 ? returnPeriod : Math.max(90, navData.length * 2);
+      const results = await Promise.all([
+        fetchIndexKline('1.000300', days + 30),
+        fetchIndexKline('1.000001', days + 30),
+        fetchIndexKline('1.000985', days + 30),
+        fetchIndexKline('100.HSI', days + 30)
+      ]);
+      if (!hs300Data.length) hs300Data = normalizeIndexData(results[0], navData);
+      if (!shData.length) shData = normalizeIndexData(results[1], navData);
+      if (!zzData.length) zzData = normalizeIndexData(results[2], navData);
+      if (!hsidata.length) hsidata = normalizeIndexData(results[3], navData);
+    } catch (e) { /* 指数数据加载失败不阻塞 */ }
+  }
 
   var datasets = [{
     label: '持仓净值',

@@ -285,16 +285,18 @@ function cnDateStr(d) {
   return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
 }
 
-// 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯实时）
+// 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯 web.ifzq 历史日K）
 // 注：东方财富(push2his)对腾讯云IP封禁，故改用新浪/腾讯源
 app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
   const { secid, days } = req.query;
   if (!secid) return res.json([]);
   try {
     if (secid === 'hkHSI') {
-      // 恒生指数：腾讯实时点位（无历史K线接口，历史靠前端每日快照积累）
+      // 恒生指数：腾讯 web.ifzq hkfqkline 历史日K（服务器实测可用，替代原 qt.gtimg 实时单点）
+      // 返回 data.hkHSI.day：每条 [日期,开,收,高,低,...]，收盘价在 index 2
+      const lim = Math.min(Math.max(parseInt(days) || 365, 250), 800);
       const hkText = await new Promise((resolve, reject) => {
-        https.get('https://qt.gtimg.cn/q=hkHSI', {
+        https.get('https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,,,' + lim + ',qfq', {
           timeout: 10000,
           headers: { 'User-Agent': 'Mozilla/5.0' }
         }, (resp) => {
@@ -303,13 +305,13 @@ app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
           resp.on('end', () => resolve(data));
         }).on('error', reject).on('timeout', function() { this.destroy(); reject(new Error('timeout')); });
       });
-      const m = hkText.match(/v_hkHSI="([^"]+)"/);
-      if (m) {
-        const parts = m[1].split('~');
-        const close = parseFloat(parts[3]);
-        if (!isNaN(close)) {
-          return res.json([{ date: cnDateStr(new Date()), close }]);
-        }
+      const json = JSON.parse(hkText);
+      const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
+      if (Array.isArray(dayArr)) {
+        const result = dayArr.map(function (it) {
+          return { date: it[0], close: parseFloat(it[2]) };
+        }).filter(function (it) { return it.date && !isNaN(it.close) && it.close > 0; });
+        return res.json(result);
       }
       return res.json([]);
     }

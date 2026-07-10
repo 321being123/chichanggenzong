@@ -2607,46 +2607,54 @@ async function renderEarningsReturnsChart() {
   }
   const navData = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   const cmp = findComparisonStart(navData);
-  const labels = navData.map(function (d) { return d.date; });
-  // 净值以自身首日为基准归一到 1.0（满足“净值起始为 1”）；指数另以各自首个有数据日为基准
+  // --- 以 indexHistory 完整日期为 X 轴（指数每日连续，不再受 NAV 稀疏日期拖累）---
+  var idxDates = [];
+  if (data.indexHistory && data.indexHistory.length) {
+    var seen = {};
+    data.indexHistory.forEach(function (h) { if (!seen[h.date]) { seen[h.date] = true; idxDates.push(h.date); } });
+    idxDates.sort();
+  }
+  if (!idxDates.length) idxDates = navData.map(function (d) { return d.date; });
+
+  // 截取：只保留对比基准日之后（此前指数不全不画）
+  var startIdx = 0;
+  if (cmp) { for (var si = 0; si < idxDates.length; si++) { if (idxDates[si] >= cmp) { startIdx = si; break; } } }
+  const labels = idxDates.slice(startIdx);
+
+  // 净值归一(首日=1.0)，在密集日期轴上前值填充(阶梯线)
   const rawNav = navData.map(function (d) { return +(Number(d.nav).toFixed(4)); });
   const navBase = rawNav[0] || 1;
-  const navVals = rawNav.map(function (v) { return +(v / navBase).toFixed(4); });
+  var ni = 0, lastNavVal = null;
+  var navVals = labels.map(function (date) {
+    while (ni < navData.length && navData[ni].date <= date) { lastNavVal = rawNav[ni] / navBase; ni++; }
+    return lastNavVal != null ? +(lastNavVal.toFixed(4)) : null;
+  });
 
-  var hs300Data = getEarnIndex('沪深300', navData) || [];
-  var shData = getEarnIndex('上证指数', navData) || [];
-  var zzData = getEarnIndex('中证500', navData) || [];
-  var hsidata = getEarnIndex('恒生指数', navData) || [];
-  if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
-    try {
-      const days = cmp ? daysBetween(cmp) : Math.max(250, daysBetween(navData[0].date));
-      const results = await Promise.all([
-        fetchIndexKline('sh000300', days + 30),
-        fetchIndexKline('sh000001', days + 30),
-        fetchIndexKline('sh000905', days + 30),
-        fetchIndexKline('hkHSI', days + 30)
-      ]);
-      if (!hs300Data.length) hs300Data = normalizeIndexFrom(results[0], navData, cmp);
-      if (!shData.length) shData = normalizeIndexFrom(results[1], navData, cmp);
-      if (!zzData.length) zzData = normalizeIndexFrom(results[2], navData, cmp);
-      if (!hsidata.length) hsidata = normalizeIndexFrom(results[3], navData, cmp);
-    } catch (e) { /* 指数数据加载失败不阻塞 */ }
-  }
-
+  // 指数序列：直接从宽表取值(连续)，以各自首个有数据日的当日净值对齐
   var datasets = [{
     label: '持仓净值', data: navVals, borderColor: '#1a237e',
-    backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5
+    backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0, pointRadius: 0, borderWidth: 2.5, stepped: true
   }];
-  function pushIndex(label, color, series) {
-    if (!series || !series.length) return;
-    var m = {}; series.forEach(function (d) { m[d.date] = d.val; });
-    var vals = navData.map(function (d) { return m[d.date] || null; });
-    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 1.5 });
+  function pushIndex(label, color, name) {
+    if (!data.indexHistory || !data.indexHistory.length) return;
+    var closeMap = {}, hasAny = false;
+    data.indexHistory.forEach(function (h) { if (h[name] != null) { closeMap[h.date] = h[name]; hasAny = true; } });
+    if (!hasAny) return;
+    var baseDate = null, navAtBase = null;
+    for (var i = 0; i < labels.length; i++) {
+      if (closeMap[labels[i]] != null) { baseDate = labels[i]; navAtBase = navVals[i]; break; }
+    }
+    if (!baseDate || navAtBase == null) return;
+    var firstClose = closeMap[baseDate];
+    var vals = labels.map(function (d) {
+      return closeMap[d] != null ? +((closeMap[d] / firstClose * navAtBase).toFixed(4)) : null;
+    });
+    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0, pointRadius: 0, borderWidth: 1.5 });
   }
-  pushIndex('沪深300', '#d93025', hs300Data);
-  pushIndex('上证指数', '#e37400', shData);
-  pushIndex('中证全指', '#7b1fa2', zzData);
-  pushIndex('恒生指数', '#00838f', hsidata);
+  pushIndex('沪深300', '#d93025', '沪深300');
+  pushIndex('上证指数', '#e37400', '上证指数');
+  pushIndex('中证全指', '#7b1fa2', '中证500');
+  pushIndex('恒生指数', '#00838f', '恒生指数');
 
   if (chartEarningsReturns) chartEarningsReturns.destroy();
   chartEarningsReturns = new Chart(ctx.getContext('2d'), {

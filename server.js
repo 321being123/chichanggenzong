@@ -436,6 +436,14 @@ function tsDateStr(d) {
   return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
 }
 
+// 统一日期格式为 YYYY-MM-DD：Tushare 的 trade_date 为 20230101(8位无横线)，
+// 新浪/腾讯已是横线格式。净值日期为 YYYY-MM-DD，必须统一否则索引线整条匹配失败。
+function normDate(s) {
+  s = String(s == null ? '' : s);
+  if (/^\d{8}$/.test(s)) return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+  return s;
+}
+
 // 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯 web.ifzq 历史日K）
 // 注：东方财富(push2his)对腾讯云IP封禁，故改用新浪/腾讯源
 app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
@@ -445,7 +453,7 @@ app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
     if (secid === 'hkHSI') {
       // 恒生指数：腾讯 web.ifzq hkfqkline 历史日K（服务器实测可用，替代原 qt.gtimg 实时单点）
       // 返回 data.hkHSI.day：每条 [日期,开,收,高,低,...]，收盘价在 index 2
-      const lim = Math.min(Math.max(parseInt(days) || 365, 250), 800);
+      const lim = Math.min(Math.max(parseInt(days) || 365, 250), 1500);
       const hkText = await new Promise((resolve, reject) => {
         https.get('https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,,,' + lim + ',qfq', {
           timeout: 10000,
@@ -460,7 +468,7 @@ app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
       const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
       if (Array.isArray(dayArr)) {
         const result = dayArr.map(function (it) {
-          return { date: it[0], close: parseFloat(it[2]) };
+          return { date: normDate(it[0]), close: parseFloat(it[2]) };
         }).filter(function (it) { return it.date && !isNaN(it.close) && it.close > 0; });
         return res.json(result);
       }
@@ -469,12 +477,12 @@ app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
     // A股指数：Tushare index_daily（优先）
     if (/^s[hz]\d{6}$/i.test(secid)) {
       const tsCode = secid.slice(2) + (secid.slice(0, 2).toLowerCase() === 'sh' ? '.SH' : '.SZ');
-      const daysN = Math.min(parseInt(days) || 365, 800);
+      const daysN = Math.min(parseInt(days) || 365, 2500);
       const end = tsDateStr(new Date());
       const dt = new Date(); dt.setDate(dt.getDate() - daysN);
       const start = tsDateStr(dt);
       const data = await tushareQuery('index_daily', { ts_code: tsCode, start_date: start, end_date: end }, 'trade_date,close');
-      const rows = tsRows(data).map(r => ({ date: r.trade_date, close: parseFloat(r.close) }))
+      const rows = tsRows(data).map(r => ({ date: normDate(r.trade_date), close: parseFloat(r.close) }))
         .filter(r => r.date && !isNaN(r.close) && r.close > 0);
       if (rows.length > 0) return res.json(rows);
       // Tushare 无数据（如 token 失效/无权限）→ 落到下方新浪兜底，避免指数线空白

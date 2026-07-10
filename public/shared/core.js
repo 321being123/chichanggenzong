@@ -1618,12 +1618,34 @@ const INDEX_SECID = {
   '恒生指数': 'hkHSI'
 };
 
+// 日期跨度（天）：从给定日期到今天，用于按真实时间区间拉取指数K线
+// （旧逻辑用 navHistory.length*2，稀疏或跨多年的净值历史会拉不到足够的指数区间）
+function daysBetween(dateStr) {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return Math.max(1, Math.ceil((now - d) / 86400000));
+}
+
+// 基准日解析：净值首日若为非交易日(周末/节假日)，回退到最近的前一个交易日
+// （含该周周五），保证指数归一化基准有对应收盘点位，避免整条指数线被丢弃
+function resolveBaselineDate(navFirstDate, indexMap) {
+  if (indexMap[navFirstDate] != null) return navFirstDate;
+  const d = new Date(navFirstDate);
+  for (let i = 0; i < 10; i++) {
+    d.setDate(d.getDate() - 1);
+    const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    if (indexMap[ds] != null) return ds;
+  }
+  return null;
+}
+
 // 刷新行情时同步指数收盘点位快照（对齐股票每日价格逻辑）
 // 一次拉取较长区间补齐历史交易日，使对比曲线按交易日连续、平滑
 async function syncIndexPoints() {
   try {
     if (!data.indexHistory) data.indexHistory = [];
-    const days = Math.max(120, (data.navHistory ? data.navHistory.length : 0) * 2);
+    const firstNavDate = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
+    const days = Math.max(250, firstNavDate ? daysBetween(firstNavDate) : 250);
     const names = Object.keys(INDEX_SECID);
     const results = await Promise.all(names.map(function (n) {
       return fetchIndexKline(INDEX_SECID[n], days + 5);
@@ -1645,10 +1667,8 @@ function getIndexSeries(name, navData) {
   if (!data.indexHistory || !data.indexHistory.length) return null;
   var map = {};
   data.indexHistory.forEach(function (h) { if (h[name] != null) map[h.date] = h[name]; });
-  // 基准日：navData 中第一个在指数数据里有对应点位（交易日）的日期，
-  // 避免净值首日恰为非交易日导致 map[首日] 缺失、整条指数线被丢弃
-  var baseDate = null;
-  for (var i = 0; i < navData.length; i++) { if (map[navData[i].date] != null) { baseDate = navData[i].date; break; } }
+  // 基准日：净值首日若为非交易日(周末/节假日)，回退到最近的前一个交易日(含该周周五)
+  var baseDate = resolveBaselineDate(navData[0].date, map);
   if (baseDate == null) return null;
   var firstClose = map[baseDate];
   return navData
@@ -1661,9 +1681,8 @@ function normalizeIndexData(indexData, navData) {
   if (indexData.length === 0 || navData.length === 0) return [];
   const map = {};
   indexData.forEach(function (d) { map[d.date] = d.close; });
-  // 基准日：navData 中第一个在指数数据里有对应点位（交易日）的日期
-  let baseDate = null;
-  for (const d of navData) { if (map[d.date] != null) { baseDate = d.date; break; } }
+  // 基准日：净值首日若为非交易日(周末/节假日)，回退到最近的前一个交易日(含该周周五)
+  const baseDate = resolveBaselineDate(navData[0].date, map);
   if (baseDate == null) return [];
   const firstClose = map[baseDate];
   const dateSet = new Set(navData.map(function (d) { return d.date; }));
@@ -1699,7 +1718,7 @@ async function renderReturnsChart() {
   var hsidata = getIndexSeries('恒生指数', navData) || [];
   if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
     try {
-      const days = returnPeriod > 0 ? returnPeriod : Math.max(90, navData.length * 2);
+      const days = returnPeriod > 0 ? returnPeriod : Math.max(250, daysBetween(navData[0].date));
       const results = await Promise.all([
         fetchIndexKline('sh000300', days + 30),
         fetchIndexKline('sh000001', days + 30),

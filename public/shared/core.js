@@ -1374,10 +1374,14 @@ function showCashFlowModal() {
   var html =
     '<div class="modal-overlay show" id="modal-cashflow" style="z-index:1001;">' +
     '<div class="modal" style="width:400px;">' +
-    '<h2>入金 / 出金</h2>' +
+    '<h2>资金转入 / 转出</h2>' +
+    '<div style="display:flex;gap:10px;margin-bottom:14px;">' +
+    '<button type="button" id="cf-btn-in" class="btn btn-primary" style="flex:1;" onclick="setCfDir(\'in\')">💰 资金转入（入金）</button>' +
+    '<button type="button" id="cf-btn-out" class="btn btn-outline" style="flex:1;" onclick="setCfDir(\'out\')">📤 资金转出（出金）</button>' +
+    '</div>' +
     '<div class="form-group" style="margin-bottom:14px;">' +
-    '<label style="display:block;font-size:12px;color:#888;margin-bottom:4px;">金额 (¥)</label>' +
-    '<input type="number" id="cf-amount" step="0.01" placeholder="正数=入金, 负数=出金" ' +
+    '<label style="display:block;font-size:12px;color:#888;margin-bottom:4px;">金额 (¥，填正数即可)</label>' +
+    '<input type="number" id="cf-amount" step="0.01" placeholder="请输入金额" ' +
     'style="width:100%;padding:9px 12px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px;">' +
     '</div>' +
     '<div class="form-group" style="margin-bottom:14px;">' +
@@ -1396,6 +1400,23 @@ function showCashFlowModal() {
   div.id = 'cashflow-modal-container';
   div.innerHTML = html;
   document.body.appendChild(div);
+  setCfDir('in');
+}
+
+// 切换 入金/出金（不再用正负数，改用按钮）
+function setCfDir(dir) {
+  window.__cfDir = dir;
+  var inBtn = document.getElementById('cf-btn-in');
+  var outBtn = document.getElementById('cf-btn-out');
+  if (inBtn && outBtn) {
+    if (dir === 'in') {
+      inBtn.className = 'btn btn-primary';
+      outBtn.className = 'btn btn-outline';
+    } else {
+      inBtn.className = 'btn btn-outline';
+      outBtn.className = 'btn btn-primary';
+    }
+  }
 }
 
 function closeCashFlowModal() {
@@ -1406,11 +1427,13 @@ function closeCashFlowModal() {
 function addCashFlow() {
   var amountInput = document.getElementById('cf-amount');
   var noteInput = document.getElementById('cf-note');
-  var cfAmount = parseFloat(amountInput ? amountInput.value : 0);
-  if (!cfAmount || isNaN(cfAmount) || cfAmount === 0) {
-    showToast('请输入有效金额（正数入金，负数出金）');
+  var abs = parseFloat(amountInput ? amountInput.value : 0);
+  if (!abs || isNaN(abs) || abs <= 0) {
+    showToast('请输入有效金额');
     return;
   }
+  var dir = window.__cfDir || 'in';
+  var cfAmount = dir === 'in' ? abs : -abs;
   if (!data.cashFlows) data.cashFlows = [];
   data.cashFlows.push({
     id: uid(),
@@ -1454,12 +1477,8 @@ let indexVisibility = {
 function recordNav() {
   if (!data.navHistory) data.navHistory = [];
   const today = todayCN();
-  // 截至今日的累计投入本金 = 期初本金(cashBase) + Σ 入金净额(截至今日)
-  const cashBase = Number(data.cashBase) || 0;
-  let invested = cashBase;
-  if (data.cashFlows) {
-    data.cashFlows.forEach(function (cf) { if (cf.date <= today) invested += (cf.amount || 0); });
-  }
+  // 投入本金：优先用导入数据，导入数据最后一列日期之后按出入金延续（见 investedAt）
+  const invested = investedAt(today);
 
   const s = calcSummary();
   if (s.total <= 0) return;
@@ -1929,6 +1948,7 @@ function renderChangelogHtml(data) {
 // ===================== 收益页（投资实验记录） =====================
 
 let chartEarnings = null;
+let chartEarningsReturns = null;
 
 // 导入历史净值 Excel（大模型识别）→ 回填 navHistory 历史段
 // ===================== 收益 tab 数据源：真实持仓自动算出的净值序列 =====================
@@ -1949,6 +1969,18 @@ function mondayOf(dateStr) {
   d.setDate(d.getDate() + diff);
   return ymd(d);
 }
+// 返回该日期「上一个周五」(YYYY-MM-DD)，作为本周涨跌基准起点
+function lastFridayOf(dateStr) {
+  const dt = new Date(dateStr + 'T00:00:00');
+  const day = dt.getDay(); // 0 周日 .. 6 周六
+  let daysToFri = 5 - day;
+  if (daysToFri < 0) daysToFri += 7;
+  const thisFri = new Date(dt);
+  thisFri.setDate(dt.getDate() + daysToFri);
+  const lastFri = new Date(thisFri);
+  lastFri.setDate(thisFri.getDate() - 7);
+  return ymd(lastFri);
+}
 // Excel 日期归一化 → YYYY-MM-DD
 function normalizeDate(v) {
   if (v == null || v === '') return '';
@@ -1968,23 +2000,51 @@ function normalizeDate(v) {
   return s;
 }
 
+// 投入本金计算（统一规则，三处共用）：
+// - 优先使用导入数据（navHistory 中存储的 invested）
+// - 导入数据最后一列日期之后，投入本金 = 最后导入值 + 该日期之后的累计出入金(入金+, 出金-)
+// - 完全没有导入数据时，投入本金 = 期初本金(cashBase) + 截至该日累计出入金
+function investedAt(date) {
+  const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+  const cf = (data.cashFlows || []);
+  // 最后一条带 invested 的导入记录
+  let lastImpDate = null, lastImpInvested = 0;
+  navs.forEach(function (n) {
+    if (n.invested != null && n.invested !== '') { lastImpDate = n.date; lastImpInvested = Number(n.invested); }
+  });
+  if (!lastImpDate) {
+    let s = Number(data.cashBase) || 0;
+    cf.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); });
+    return s;
+  }
+  if (date <= lastImpDate) {
+    // 导入覆盖区间内：取 ≤ date 的最后一条导入 invested
+    let val = null;
+    navs.forEach(function (n) { if (n.invested != null && n.invested !== '' && n.date <= date) val = Number(n.invested); });
+    if (val != null) return val;
+    let s = Number(data.cashBase) || 0;
+    cf.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); });
+    return s;
+  }
+  // 导入数据之后：最后导入值 + 之后新增出入金
+  let s = lastImpInvested;
+  cf.forEach(function (c) { if (c.date > lastImpDate && c.date <= date) s += (c.amount || 0); });
+  return s;
+}
+
 // 把真实数据(navHistory + cashFlows + cashBase)转换为收益 tab 渲染器吃的标准行结构
 function buildRealReturnsSeries() {
   if (!data.navHistory || data.navHistory.length === 0) return [];
   const navs = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   const firstDate = navs[0].date;
-  const cashBase = Number(data.cashBase) || 0;
   const cf = (data.cashFlows || []);
-  function investedFallback(date) {
-    let sum = cashBase;
-    cf.forEach(function (c) { if (c.date <= date) sum += (c.amount || 0); });
-    return sum;
-  }
 
   let peak = -Infinity;
   let maxDD = 0;
   const rows = navs.map(function (n) {
-    const invested = (n.invested != null) ? n.invested : investedFallback(n.date);
+    // invested 优先取 navHistory 存储值（导入数据或 recordNav 写入的累计值），
+    // 仅当存储值为 null 时才走 fallback（cashBase + 现金流累加）
+    const invested = investedAt(n.date);
     const nav = n.nav;
     const totalAsset = (n.totalAsset != null) ? n.totalAsset : 0;
     const totalReturn = nav - 1;
@@ -2017,18 +2077,21 @@ function buildRealReturnsSeries() {
     r.yearReturn = yStart ? r.nav / yStart.nav - 1 : 0;
   });
 
-  // 本周涨跌（周一为一周起点）
-  const navByDate = {};
-  rows.forEach(function (r) { navByDate[r.date] = r.nav; });
-  rows.forEach(function (r) {
-    const monday = mondayOf(r.date);
-    let ws = (navByDate[monday] != null) ? navByDate[monday] : null;
-    if (ws == null) {
-      // 周一当天无数据 → 取该周内最早一条
-      const inWeek = rows.filter(function (x) { return x.date >= monday && x.date <= r.date; });
-      if (inWeek.length) ws = inWeek[0].nav;
+  // 本周涨跌：基准 = 相对该记录日期的「上周五收盘净值」
+  // 周五收盘刷新后，最新一条即「上周五→本周五」完整周涨跌；
+  // 周内(如周二)最新一条即「上周五→今日」本周至今涨跌（盘中刷新即按交易时间算）
+  function navAtOrBefore(targetDate) {
+    let best = null;
+    for (let i = 0; i < navs.length; i++) {
+      if (navs[i].date <= targetDate) best = navs[i].nav;
+      else break;
     }
-    r.weekChange = (ws != null && ws !== 0) ? (r.nav - ws) / ws : 0;
+    return best;
+  }
+  rows.forEach(function (r) {
+    const lf = lastFridayOf(r.date);
+    const base = navAtOrBefore(lf);
+    r.weekChange = (base != null && base !== 0) ? (r.nav - base) / base : 0;
   });
 
   return rows;
@@ -2046,17 +2109,12 @@ function applyHistoryRecords(parsed, mode) {
 
   if (realStart) data.navHistory = data.navHistory.filter(function (n) { return n.date >= realStart; });
 
-  function investedFallback(date) {
-    let sum = Number(data.cashBase) || 0;
-    (data.cashFlows || []).forEach(function (c) { if (c.date <= date) sum += (c.amount || 0); });
-    return sum;
-  }
   function pushRecord(p) {
     data.navHistory.push({
       date: p.date,
       nav: p.nav,
       totalAsset: (p.totalAsset == null ? null : p.totalAsset),
-      invested: (p.invested == null ? investedFallback(p.date) : p.invested)
+      invested: (p.invested == null ? investedAt(p.date) : p.invested)
     });
   }
 
@@ -2096,57 +2154,313 @@ function showConflictModal() {
   });
 }
 
+// 精确匹配表头：仅当表头"完全等于"已知集合中的某一项（忽略大小写与空格）才自动识别，
+// 否则返回 -1，交由用户手动匹配，避免"净值增长率"之类被误判为净值列。
+function detectMappingExact(headers) {
+  const norm = function (s) { return (s == null ? '' : String(s)).trim().toLowerCase(); };
+  const sets = {
+    date: ['日期', '时间', '交易日期', '记账日期', '日期时间', '净值日期', 'date'],
+    nav: ['净值', '单位净值', '累计净值', '当日净值', '最新净值', '收盘净值', 'nav'],
+    total: ['总资产', '总市值', '市值', '资产总额', '资产总值', 'total'],
+    invested: ['本金', '投入', '投入本金', '累计投入', '资金', '投入资金', '实缴本金', 'invest']
+  };
+  const find = function (key) {
+    for (let i = 0; i < headers.length; i++) {
+      if (sets[key].indexOf(norm(headers[i])) >= 0) return i;
+    }
+    return -1;
+  };
+  return { date: find('date'), nav: find('nav'), total: find('total'), invested: find('invested') };
+}
+
 async function importFundExcel(event) {
   const file = event.target.files[0];
   if (!file) return;
   try {
-    showToast('正在解析 Excel...');
+    openImportProgress();
     const base64 = await fileToBase64(file);
     const r = await fetch(api('/api/excel-history-parse'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file: base64 })
     });
-    const d = await r.json();
-    if (d.error) { showToast('AI 解析失败: ' + d.error); return; }
-    if (!d.records || d.records.length === 0) { showToast('未识别到净值记录'); return; }
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok || d.error) { showImportError(d.error || ('请求失败：HTTP ' + r.status)); return; }
+    if (!d.headers || !d.rows || d.rows.length === 0) { closeImportProgress(); showToast('Excel 中没有可识别的数据行'); return; }
 
-    // 归一化日期 + 校验必填(date/nav)
-    const parsed = [];
-    const badRows = [];
-    d.records.forEach(function (rec, i) {
-      const date = normalizeDate(rec.date);
-      const nav = (rec.nav == null || rec.nav === '') ? null : Number(rec.nav);
-      if (!date || isNaN(nav)) { badRows.push(i + 1); return; }
-      parsed.push({
-        date: date,
-        nav: nav,
-        totalAsset: (rec.totalAsset == null || rec.totalAsset === '') ? null : Number(rec.totalAsset),
-        invested: (rec.invested == null || rec.invested === '') ? null : Number(rec.invested)
-      });
-    });
-    if (parsed.length === 0) {
-      showToast('没有可用数据' + (badRows.length ? ('（' + badRows.length + ' 行因缺日期/净值被跳过）') : ''));
-      return;
+    const auto = detectMappingExact(d.headers);
+    if (auto.date >= 0 && auto.nav >= 0) {
+      // 精确匹配成功，直接导入
+      closeImportProgress();
+      await finishImport(d.rows, auto);
+    } else {
+      // 无法精确匹配 → 弹框让用户手动选列
+      closeImportProgress();
+      openMappingModal(d.headers, d.rows, auto);
     }
-
-    // 冲突检测：导入中存在日期落在线上段 [首条, 末条] 内
-    const realStart = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
-    const realEnd = (data.navHistory && data.navHistory.length) ? data.navHistory[data.navHistory.length - 1].date : null;
-    const hasConflict = realStart && parsed.some(function (p) { return p.date >= realStart && p.date <= realEnd; });
-    const choice = hasConflict ? await showConflictModal() : 'online';
-    applyHistoryRecords(parsed, choice);
-
-    saveData();
-    renderEarnings();
-    let msg = '已导入 ' + parsed.length + ' 条历史净值';
-    if (badRows.length) msg += '（' + badRows.length + ' 行因缺日期/净值未导入）';
-    showToast(msg);
   } catch (e) {
-    showToast('导入失败: ' + (e.message || e));
+    showImportError('导入失败: ' + (e.message || e));
   } finally {
     event.target.value = '';
   }
+}
+
+// 按列映射从数据行提取记录并合并进 navHistory（共享：自动匹配与手动匹配都会走到这）
+async function finishImport(rows, mapping) {
+  const parsed = [];
+  const badRows = [];
+  rows.forEach(function (row, i) {
+    const date = normalizeDate(row[mapping.date]);
+    const navRaw = row[mapping.nav];
+    const nav = (navRaw == null || navRaw === '') ? null : Number(navRaw);
+    if (!date || nav === null || isNaN(nav)) { badRows.push(i + 1); return; }
+    parsed.push({
+      date: date,
+      nav: nav,
+      totalAsset: (mapping.total >= 0 && row[mapping.total] != null && row[mapping.total] !== '') ? Number(row[mapping.total]) : null,
+      invested: (mapping.invested >= 0 && row[mapping.invested] != null && row[mapping.invested] !== '') ? Number(row[mapping.invested]) : null
+    });
+  });
+  if (parsed.length === 0) {
+    showToast('没有可用数据' + (badRows.length ? ('（' + badRows.length + ' 行因缺日期/净值被跳过）') : ''));
+    return;
+  }
+
+  // 冲突检测：导入中存在日期落在线上段 [首条, 末条] 内
+  const realStart = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
+  const realEnd = (data.navHistory && data.navHistory.length) ? data.navHistory[data.navHistory.length - 1].date : null;
+  const hasConflict = realStart && parsed.some(function (p) { return p.date >= realStart && p.date <= realEnd; });
+  const choice = hasConflict ? await showConflictModal() : 'online';
+  applyHistoryRecords(parsed, choice);
+
+  saveData();
+  renderEarnings();
+  let msg = '已导入 ' + parsed.length + ' 条历史净值';
+  if (badRows.length) msg += '（' + badRows.length + ' 行因缺日期/净值未导入）';
+  showToast(msg);
+}
+
+// ===================== 列手动匹配弹框 =====================
+let pendingMapping = null;
+
+function openMappingModal(headers, rows, auto) {
+  pendingMapping = { headers: headers, rows: rows };
+  const fields = [
+    { key: 'date', label: '日期列 *', def: auto.date },
+    { key: 'nav', label: '净值列 *', def: auto.nav },
+    { key: 'total', label: '总市值/总资产列', def: auto.total },
+    { key: 'invested', label: '本金/投入列', def: auto.invested }
+  ];
+  const optsHtml = '<option value="-1">— 请选择 —</option>' +
+    headers.map(function (h, i) { return '<option value="' + i + '">' + (h || '(空表头' + (i + 1) + ')') + '</option>'; }).join('');
+  const cont = document.getElementById('mapping-fields');
+  cont.innerHTML = fields.map(function (f) {
+    return '<div style="display:flex;align-items:center;margin-bottom:10px;gap:10px;">' +
+      '<label style="width:150px;font-size:13px;color:#333;">' + f.label + '</label>' +
+      '<select id="map-' + f.key + '" style="flex:1;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;outline:none;" onchange="renderMappingPreview()">' + optsHtml + '</select>' +
+      '</div>';
+  }).join('');
+  fields.forEach(function (f) {
+    const sel = document.getElementById('map-' + f.key);
+    if (sel && f.def >= 0) sel.value = String(f.def);
+  });
+  renderMappingPreview();
+  document.getElementById('modal-mapping').classList.add('show');
+}
+
+function renderMappingPreview() {
+  if (!pendingMapping) return;
+  const map = {
+    date: parseInt(document.getElementById('map-date').value, 10),
+    nav: parseInt(document.getElementById('map-nav').value, 10),
+    total: parseInt(document.getElementById('map-total').value, 10),
+    invested: parseInt(document.getElementById('map-invested').value, 10)
+  };
+  const rows = pendingMapping.rows.slice(0, 5);
+  let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:#f7f7f9;color:#666;">' +
+    '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总市值</th><th style="padding:6px;text-align:left;">本金</th></tr></thead><tbody>';
+  rows.forEach(function (row) {
+    html += '<tr>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.date >= 0 ? row[map.date] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.nav >= 0 ? row[map.nav] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.total >= 0 ? row[map.total] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.invested >= 0 ? row[map.invested] : '') + '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  document.getElementById('mapping-preview').innerHTML = html;
+}
+
+function confirmMapping() {
+  const map = {
+    date: parseInt(document.getElementById('map-date').value, 10),
+    nav: parseInt(document.getElementById('map-nav').value, 10),
+    total: parseInt(document.getElementById('map-total').value, 10),
+    invested: parseInt(document.getElementById('map-invested').value, 10)
+  };
+  if (map.date < 0 || map.nav < 0) { showToast('请先选择「日期列」和「净值列」'); return; }
+  const pm = pendingMapping;
+  closeMappingModal();
+  finishImport(pm.rows, map);
+}
+
+function closeMappingModal() {
+  const m = document.getElementById('modal-mapping');
+  if (m) m.classList.remove('show');
+  pendingMapping = null;
+}
+
+function openImportProgress() {
+  const ov = document.getElementById('modal-import-progress');
+  if (!ov) return;
+  document.getElementById('import-progress-body').style.display = '';
+  document.getElementById('import-error-body').style.display = 'none';
+  if (document.getElementById('import-spinner')) document.getElementById('import-spinner').style.display = '';
+  document.getElementById('import-close-btn').style.display = 'none';
+  document.getElementById('import-copy-btn').style.display = 'none';
+  document.getElementById('import-progress-fill').style.width = '0%';
+  document.getElementById('import-progress-text').textContent = '正在解析 Excel...';
+  document.getElementById('import-progress-sub').textContent = '';
+  ov.classList.add('show');
+}
+function closeImportProgress() {
+  const ov = document.getElementById('modal-import-progress');
+  if (ov) ov.classList.remove('show');
+}
+function updateImportProgress(batch, total, text) {
+  const fill = document.getElementById('import-progress-fill');
+  const txt = document.getElementById('import-progress-text');
+  const sub = document.getElementById('import-progress-sub');
+  if (fill) fill.style.width = (total ? Math.round(batch / total * 100) : 0) + '%';
+  if (txt) txt.textContent = text;
+  if (sub) sub.textContent = '已解析 ' + batch + ' / ' + total + ' 批';
+}
+function showImportError(message) {
+  const ov = document.getElementById('modal-import-progress');
+  if (!ov) { showToast('导入失败: ' + message); return; }
+  const body = document.getElementById('import-progress-body');
+  const errBody = document.getElementById('import-error-body');
+  const errTxt = document.getElementById('import-error-text');
+  if (body) body.style.display = 'none';
+  if (errBody) errBody.style.display = '';
+  if (errTxt) errTxt.textContent = message;
+  if (document.getElementById('import-spinner')) document.getElementById('import-spinner').style.display = 'none';
+  document.getElementById('import-close-btn').style.display = '';
+  document.getElementById('import-copy-btn').style.display = '';
+  ov.classList.add('show');
+}
+function copyImportError() {
+  const txt = document.getElementById('import-error-text');
+  if (!txt) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt.textContent).then(function () { showToast('错误已复制，可发给我定位'); }, function () { showToast('复制失败，请手动选择文本复制'); });
+  } else {
+    showToast('当前环境不支持自动复制，请手动选择');
+  }
+}
+
+// ===================== 历史净值记录 新增/编辑/删除（与持仓一致） =====================
+let navEditIndex = -1;   // -1 表示新增；否则为 navManageList 中的索引
+let navManageList = [];
+
+function openNavManage() {
+  if (!data.navHistory) data.navHistory = [];
+  navManageList = data.navHistory.slice().sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
+  renderNavManage();
+  document.getElementById('modal-nav-manage').classList.add('show');
+}
+
+function renderNavManage() {
+  const el = document.getElementById('nav-manage-list');
+  if (!el) return;
+  if (navManageList.length === 0) {
+    el.innerHTML = '<p style="color:#999;font-size:13px;padding:12px 0;">暂无记录，点「＋ 新增记录」添加一条历史净值。</p>';
+    return;
+  }
+  let html = '<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead><tr style="background:#f7f7f9;color:#666;">' +
+    '<th style="padding:8px;text-align:left;">日期</th>' +
+    '<th style="padding:8px;text-align:right;">净值</th>' +
+    '<th style="padding:8px;text-align:right;">总市值</th>' +
+    '<th style="padding:8px;text-align:right;">本金</th>' +
+    '<th style="padding:8px;text-align:center;">操作</th></tr></thead><tbody>';
+  navManageList.forEach(function (n, idx) {
+    html += '<tr>' +
+      '<td style="padding:8px;border-top:1px solid #f0f0f0;">' + (n.date || '-') + '</td>' +
+      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:right;">' + (n.nav != null ? Number(n.nav).toFixed(4) : '-') + '</td>' +
+      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:right;">' + (n.totalAsset != null ? fmt(n.totalAsset) : '-') + '</td>' +
+      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:right;">' + (n.invested != null ? fmt(n.invested) : '-') + '</td>' +
+      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:center;white-space:nowrap;">' +
+        '<button class="btn btn-outline btn-sm" onclick="openNavEdit(' + idx + ')">编辑</button> ' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteNav(' + idx + ')">删除</button>' +
+      '</td></tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function openNavEdit(idx) {
+  navEditIndex = (idx == null ? -1 : idx);
+  const t = document.getElementById('nav-edit-title');
+  const d = document.getElementById('nav-edit-date');
+  const v = document.getElementById('nav-edit-nav');
+  const tt = document.getElementById('nav-edit-total');
+  const iv = document.getElementById('nav-edit-invested');
+  if (idx != null && idx >= 0 && navManageList[idx]) {
+    const n = navManageList[idx];
+    if (t) t.textContent = '编辑净值记录';
+    if (d) d.value = n.date || '';
+    if (v) v.value = (n.nav != null ? n.nav : '');
+    if (tt) tt.value = (n.totalAsset != null ? n.totalAsset : '');
+    if (iv) iv.value = (n.invested != null ? n.invested : '');
+  } else {
+    if (t) t.textContent = '新增净值记录';
+    if (d) d.value = ''; if (v) v.value = ''; if (tt) tt.value = ''; if (iv) iv.value = '';
+  }
+  document.getElementById('modal-nav-edit').classList.add('show');
+}
+
+function saveNavEdit() {
+  const date = normalizeDate(document.getElementById('nav-edit-date').value);
+  const navRaw = document.getElementById('nav-edit-nav').value;
+  const totalRaw = document.getElementById('nav-edit-total').value;
+  const invRaw = document.getElementById('nav-edit-invested').value;
+  if (!date) { showToast('请填写有效的日期（YYYY-MM-DD）'); return; }
+  const nav = parseFloat(navRaw);
+  if (isNaN(nav)) { showToast('请填写有效的净值'); return; }
+  const rec = {
+    date: date,
+    nav: nav,
+    totalAsset: (totalRaw === '' || totalRaw == null) ? null : parseFloat(totalRaw),
+    invested: (invRaw === '' || invRaw == null) ? null : parseFloat(invRaw)
+  };
+  if (!data.navHistory) data.navHistory = [];
+  if (navEditIndex >= 0 && navManageList[navEditIndex]) {
+    const orig = navManageList[navEditIndex];
+    const target = data.navHistory.find(function (n) { return n.date === orig.date; });
+    if (target) { target.date = rec.date; target.nav = rec.nav; target.totalAsset = rec.totalAsset; target.invested = rec.invested; }
+  } else {
+    const exist = data.navHistory.find(function (n) { return n.date === rec.date; });
+    if (exist) { exist.nav = rec.nav; exist.totalAsset = rec.totalAsset; exist.invested = rec.invested; }
+    else data.navHistory.push(rec);
+  }
+  data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
+  saveData();
+  renderEarnings();
+  closeModal('modal-nav-edit');
+  openNavManage();
+  showToast('已保存');
+}
+
+function deleteNav(idx) {
+  if (idx == null || !navManageList[idx]) return;
+  const orig = navManageList[idx];
+  if (!confirm('确定删除 ' + (orig.date || '') + ' 这条净值记录？')) return;
+  data.navHistory = data.navHistory.filter(function (n) { return n.date !== orig.date; });
+  data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
+  saveData();
+  renderEarnings();
+  openNavManage();
+  showToast('已删除');
 }
 
 let earningsSorted = [];
@@ -2187,6 +2501,7 @@ function renderEarnings() {
   }).join('');
 
   earningsPage = 1;
+  renderEarningsReturnsChart();
   renderEarningsChart(sorted);
   renderEarningsTable(sorted);
 }
@@ -2194,7 +2509,7 @@ function renderEarnings() {
 function renderEarningsChart(sorted) {
   const ctx = document.getElementById('chart-earnings');
   if (!ctx) return;
-  const labels = sorted.map(function (r) { return (r.date || '').slice(5); });
+  const labels = sorted.map(function (r) { return (r.date || ''); });
   const mv = sorted.map(function (r) { return r.totalMarketValue || 0; });
   const inv = sorted.map(function (r) { return r.totalInvested || 0; });
   if (chartEarnings) chartEarnings.destroy();
@@ -2220,6 +2535,81 @@ function renderEarningsChart(sorted) {
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' } },
         y: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 }, color: '#999', callback: function (v) { return '¥' + (v / 10000).toFixed(0) + '万'; } } }
+      }
+    }
+  });
+}
+
+async function renderEarningsReturnsChart() {
+  const ctx = document.getElementById('chart-earnings-returns');
+  if (!ctx) return;
+  if (!data.navHistory || data.navHistory.length < 2) {
+    if (chartEarningsReturns) { chartEarningsReturns.destroy(); chartEarningsReturns = null; }
+    return;
+  }
+  const navData = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+  const labels = navData.map(function (d) { return d.date; });
+  const navVals = navData.map(function (d) { return +(Number(d.nav).toFixed(4)); });
+
+  var hs300Data = getIndexSeries('沪深300', navData) || [];
+  var shData = getIndexSeries('上证指数', navData) || [];
+  var zzData = getIndexSeries('中证500', navData) || [];
+  var hsidata = getIndexSeries('恒生指数', navData) || [];
+  if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
+    try {
+      const days = Math.max(250, daysBetween(navData[0].date));
+      const results = await Promise.all([
+        fetchIndexKline('sh000300', days + 30),
+        fetchIndexKline('sh000001', days + 30),
+        fetchIndexKline('sh000905', days + 30),
+        fetchIndexKline('hkHSI', days + 30)
+      ]);
+      if (!hs300Data.length) hs300Data = normalizeIndexData(results[0], navData);
+      if (!shData.length) shData = normalizeIndexData(results[1], navData);
+      if (!zzData.length) zzData = normalizeIndexData(results[2], navData);
+      if (!hsidata.length) hsidata = normalizeIndexData(results[3], navData);
+    } catch (e) { /* 指数数据加载失败不阻塞 */ }
+  }
+
+  var datasets = [{
+    label: '持仓净值', data: navVals, borderColor: '#1a237e',
+    backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5
+  }];
+  function pushIndex(storageName, label, color, dash, series) {
+    if (!series || !series.length) return;
+    var m = {}; series.forEach(function (d) { m[d.date] = d.val; });
+    var vals = navData.map(function (d) { return m[d.date] || null; });
+    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', borderDash: dash, tension: 0.3, pointRadius: 0, borderWidth: 1.5 });
+  }
+  pushIndex('沪深300', '沪深300', '#d93025', [5, 3], hs300Data);
+  pushIndex('上证指数', '上证指数', '#e37400', [3, 3], shData);
+  pushIndex('中证500', '中证全指', '#7b1fa2', [4, 4], zzData);
+  pushIndex('恒生指数', '恒生指数', '#00838f', [2, 4], hsidata);
+
+  if (chartEarningsReturns) chartEarningsReturns.destroy();
+  chartEarningsReturns = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { padding: 16, font: { size: 12, weight: '500' }, usePointStyle: true } },
+        tooltip: {
+          backgroundColor: '#323232', cornerRadius: 8, padding: 12,
+          callbacks: { label: function (c) {
+            if (c.raw == null) return '';
+            var pct = ((c.raw - 1) * 100).toFixed(2);
+            var prefix = parseFloat(pct) >= 0 ? '+' : '';
+            return ' ' + c.dataset.label + ': ' + prefix + pct + '%';
+          } }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' } },
+        y: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 }, color: '#999', callback: function (v) {
+          var pct = (v - 1) * 100; return pct >= 0 ? '+' + pct.toFixed(1) + '%' : pct.toFixed(1) + '%';
+        } } }
       }
     }
   });

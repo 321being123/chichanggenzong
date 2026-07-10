@@ -70,11 +70,16 @@
       <h3>投资收益记录</h3>
       <div>
         <input type="file" id="fund-excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" onchange="importFundExcel(event)">
+        <button class="btn btn-outline btn-sm" onclick="openNavManage()">📝 管理记录</button>
         <button class="btn btn-primary btn-sm" onclick="document.getElementById('fund-excel-input').click()">📥 导入历史数据</button>
       </div>
     </div>
     <div style="padding:18px;">
       <div id="earnings-stats" class="stats"></div>
+      <div class="chart-box" style="margin-bottom:18px;">
+        <div class="chart-title"><h3>收益走势对比（净值 vs 指数）</h3></div>
+        <div class="chart-canvas-wrap" style="height:320px;"><canvas id="chart-earnings-returns"></canvas></div>
+      </div>
       <div class="chart-box" style="margin-bottom:18px;">
         <div class="chart-title"><h3>资产与收益走势</h3></div>
         <div class="chart-canvas-wrap" style="height:320px;"><canvas id="chart-earnings"></canvas></div>
@@ -186,6 +191,72 @@
     <div class="modal-actions" style="flex-direction:column;gap:10px;">
       <button class="btn btn-primary" id="conflict-import-btn">导入数据覆盖线上（用 Excel 净值替换冲突日）</button>
       <button class="btn btn-outline" id="conflict-online-btn">线上覆盖导入（保留线上真实记录，仅补早于首条的历史）</button>
+    </div>
+  </div>
+</div>
+
+<!-- 历史净值 AI 解析进度弹窗（导入过程中显示批次进度，失败展示完整错误） -->
+<div class="modal-overlay" id="modal-import-progress" style="z-index:2000;">
+  <div class="modal" style="width:440px;">
+    <h2 id="import-progress-title">正在导入历史净值</h2>
+    <div id="import-progress-body">
+      <div style="display:flex;align-items:center;margin-bottom:14px;">
+        <div class="spinner" id="import-spinner"></div>
+        <span id="import-progress-text" style="font-size:14px;color:#333;">正在解析 Excel...</span>
+      </div>
+      <div class="refresh-bar"><div class="refresh-bar-fill" id="import-progress-fill"></div></div>
+      <p id="import-progress-sub" style="font-size:12px;color:#888;margin-top:10px;"></p>
+    </div>
+    <div id="import-error-body" style="display:none;">
+      <p id="import-error-text" style="font-size:13px;color:#d93025;line-height:1.6;white-space:pre-wrap;word-break:break-all;"></p>
+    </div>
+    <div class="modal-actions" id="import-progress-actions">
+      <button class="btn btn-outline" id="import-close-btn" style="display:none;" onclick="closeImportProgress()">关闭</button>
+      <button class="btn btn-primary" id="import-copy-btn" style="display:none;" onclick="copyImportError()">复制错误</button>
+    </div>
+  </div>
+</div>
+
+<!-- 列手动匹配弹窗（无法自动识别表头时，由用户手动指定每列对应字段） -->
+<div class="modal-overlay" id="modal-mapping" style="z-index:2100;">
+  <div class="modal" style="width:520px;">
+    <h2>请匹配 Excel 列</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">未能自动识别「日期」或「净值」列，请手动选择每一列对应的字段（带 * 为必填）。</p>
+    <div id="mapping-fields"></div>
+    <div style="margin:14px 0 6px;font-size:13px;color:#333;">预览（前 5 行）：</div>
+    <div id="mapping-preview" style="max-height:180px;overflow:auto;border:1px solid #eee;border-radius:8px;"></div>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn btn-outline" id="mapping-cancel-btn" onclick="closeMappingModal()">取消</button>
+      <button class="btn btn-primary" id="mapping-ok-btn" onclick="confirmMapping()">确认导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- 历史净值记录列表（新增/编辑/删除，与持仓一致） -->
+<div class="modal-overlay" id="modal-nav-manage" style="z-index:2100;">
+  <div class="modal" style="width:640px;max-width:94vw;">
+    <h2>历史净值记录</h2>
+    <div style="margin-bottom:12px;text-align:right;">
+      <button class="btn btn-primary btn-sm" onclick="openNavEdit(null)">＋ 新增记录</button>
+    </div>
+    <div id="nav-manage-list" style="max-height:50vh;overflow:auto;"></div>
+    <div class="modal-actions" style="margin-top:14px;">
+      <button class="btn btn-outline" onclick="closeModal('modal-nav-manage')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增/编辑单条净值记录 -->
+<div class="modal-overlay" id="modal-nav-edit" style="z-index:2200;">
+  <div class="modal" style="width:420px;">
+    <h2 id="nav-edit-title">新增净值记录</h2>
+    <div class="form-group"><label>日期 *（YYYY-MM-DD）</label><input id="nav-edit-date" placeholder="如 2024-01-01"></div>
+    <div class="form-group"><label>净值 *（以 1.0000 为基准）</label><input id="nav-edit-nav" type="number" step="0.0001" placeholder="1.0000"></div>
+    <div class="form-group"><label>总市值（可选）</label><input id="nav-edit-total" type="number" step="0.01" placeholder="留空则不计"></div>
+    <div class="form-group"><label>本金/投入（可选）</label><input id="nav-edit-invested" type="number" step="0.01" placeholder="留空则用现金流累加"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-nav-edit')">取消</button>
+      <button class="btn btn-primary" onclick="saveNavEdit()">保存</button>
     </div>
   </div>
 </div>

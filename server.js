@@ -815,63 +815,19 @@ app.post('/api/excel-history-parse', requireLogin, asyncHandler(async (req, res)
   try {
     const { file } = req.body;
     if (!file) return res.status(400).json({ error: '请上传Excel文件' });
-
     const base64Data = file.split(',')[1] || file;
     const buffer = Buffer.from(base64Data, 'base64');
     const workbook = XLSX.read(buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames.find(n => n.includes('资金')) || workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-    if (!rows || rows.length < 2) return res.json({ records: [] });
-
-    const endpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
-    const chatModel = process.env.VISION_MODEL || 'agnes-1.5-flash';
-    const key = process.env.VISION_API_KEY;
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify({
-        model: chatModel,
-        messages: [{
-          role: 'user',
-          content: '以下是从Excel《投资实验记录》中提取的原始数据（第一行为表头）。请逐行识别净值记录，返回JSON数组，每个元素形如 {"date":"YYYY-MM-DD","nav":数字,"totalAsset":数字,"invested":数字}。说明：date为日期(YYYY-MM-DD，可空字符串)；nav为当前净值(数字，可空)；totalAsset为当前总市值/总资产(数字，可空)；invested为累计投入本金(数字，可空)。各列可能使用不同表头（如 时间/日期/净值/累计净值/总资产/市值/投入/本金/资金 等），请自适应匹配；无法识别的字段填 null 或空字符串。只返回JSON数组，不要任何其他文字。\n\n' + JSON.stringify(rows)
-        }],
-        max_tokens: 4000,
-        temperature: 0
-      }),
-      signal: AbortSignal.timeout(60000)
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
-    }
-
-    const result = await response.json();
-    const content = result.choices?.[0]?.message?.content || '[]';
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return res.json({ records: [] });
-    const items = JSON.parse(jsonMatch[0]);
-    const records = (Array.isArray(items) ? items : []).map(function (it) {
-      const num = v => {
-        if (v == null || v === '') return null;
-        const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[,%]/g, ''));
-        return isNaN(n) ? null : n;
-      };
-      return {
-        date: it && it.date ? String(it.date) : '',
-        nav: num(it && it.nav),
-        totalAsset: num(it && it.totalAsset),
-        invested: num(it && it.invested)
-      };
-    });
-    res.json({ records: records });
+    if (!rows || rows.length < 2) return res.json({ headers: [], rows: [], total: 0 });
+    // 返回原始表头与数据行，由前端做"精确匹配/手动匹配"，避免任何猜测导致数据错配或丢行
+    const headerCells = (rows[0] || []).map(function (h) { return String(h == null ? '' : h).trim(); });
+    const dataRows = rows.slice(1).filter(function (r) { return r && r.some(function (c) { return c !== '' && c != null; }); });
+    res.json({ headers: headerCells, rows: dataRows, total: dataRows.length });
   } catch (e) {
-    res.json({ error: '解析失败: ' + e.message });
+    res.status(400).json({ error: '解析失败: ' + e.message });
   }
 }));
 

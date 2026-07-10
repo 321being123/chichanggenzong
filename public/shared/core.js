@@ -2621,19 +2621,32 @@ async function renderEarningsReturnsChart() {
   if (cmp) { for (var si = 0; si < idxDates.length; si++) { if (idxDates[si] >= cmp) { startIdx = si; break; } } }
   const labels = idxDates.slice(startIdx);
 
-  // 净值归一(首日=1.0)，在密集日期轴上前值填充(阶梯线)
+  // 净值归一(首日=1.0)；周频净值在每日轴上做线性插值，消除阶梯锯齿、曲线平滑连续
   const rawNav = navData.map(function (d) { return +(Number(d.nav).toFixed(4)); });
   const navBase = rawNav[0] || 1;
-  var ni = 0, lastNavVal = null;
+  const navDateMap = {};
+  navData.forEach(function (d, i) { navDateMap[d.date] = rawNav[i] / navBase; });
+  const navDatesSorted = navData.map(function (d) { return d.date; });
   var navVals = labels.map(function (date) {
-    while (ni < navData.length && navData[ni].date <= date) { lastNavVal = rawNav[ni] / navBase; ni++; }
-    return lastNavVal != null ? +(lastNavVal.toFixed(4)) : null;
+    if (navDateMap[date] != null) return +(navDateMap[date].toFixed(4));
+    var lo = null, hi = null;
+    for (var i = 0; i < navDatesSorted.length; i++) {
+      if (navDatesSorted[i] < date) lo = i;
+      else if (navDatesSorted[i] > date) { hi = i; break; }
+    }
+    if (lo != null && hi != null) {
+      var dLo = navDatesSorted[lo], dHi = navDatesSorted[hi];
+      var t = (new Date(date) - new Date(dLo)) / (new Date(dHi) - new Date(dLo));
+      return +((navDateMap[dLo] + (navDateMap[dHi] - navDateMap[dLo]) * t).toFixed(4));
+    }
+    if (lo != null) return +(navDateMap[navDatesSorted[lo]].toFixed(4));
+    return null;
   });
 
   // 指数序列：直接从宽表取值(连续)，以各自首个有数据日的当日净值对齐
   var datasets = [{
     label: '持仓净值', data: navVals, borderColor: '#1a237e',
-    backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0, pointRadius: 0, borderWidth: 2.5, stepped: true
+    backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2.5, spanGaps: true
   }];
   function pushIndex(label, color, name) {
     if (!data.indexHistory || !data.indexHistory.length) return;
@@ -2649,7 +2662,7 @@ async function renderEarningsReturnsChart() {
     var vals = labels.map(function (d) {
       return closeMap[d] != null ? +((closeMap[d] / firstClose * navAtBase).toFixed(4)) : null;
     });
-    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0, pointRadius: 0, borderWidth: 1.5 });
+    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0.25, pointRadius: 0, borderWidth: 1.5, spanGaps: true });
   }
   pushIndex('沪深300', '#d93025', '沪深300');
   pushIndex('上证指数', '#e37400', '上证指数');

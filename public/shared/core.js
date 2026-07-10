@@ -904,17 +904,6 @@ function clearTrades() {
 let editingId = null;
 let deleteTargetId = null;
 
-function showAddModal() {
-  editingId = null;
-  document.getElementById('modal-title').textContent = '新增持仓';
-  document.getElementById('modal-save-btn').textContent = '保存';
-  ['modal-code', 'modal-name', 'modal-price', 'modal-qty', 'modal-cost', 'modal-note']
-    .forEach(id => document.getElementById(id).value = '');
-  document.getElementById('modal-type').value = '股权';
-  document.getElementById('modal-subtype').value = 'A股';
-  document.getElementById('modal-add').classList.add('show');
-}
-
 function editPosition(id) {
   const p = data.positions.find(x => x.id === id);
   if (!p) return;
@@ -982,8 +971,6 @@ function savePosition() {
   if (editingId) {
     const p = data.positions.find(x => x.id === editingId);
     if (p) Object.assign(p, { code, name, price, quantity: qty, cost, type, subtype, note });
-  } else {
-    data.positions.push({ id: uid(), code, name, price, quantity: qty, cost, type, subtype, note });
   }
 
   saveData();

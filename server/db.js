@@ -149,36 +149,37 @@ async function migrateFromJson() {
 async function migrateToStructured() {
   const { rows } = await pool.query('SELECT username, account_name, data FROM account_data');
   if (rows.length === 0) return;
-  const { rows: posRows } = await pool.query('SELECT COUNT(*)::int AS cnt FROM positions');
-  if (posRows[0].cnt > 0) return;
   for (const r of rows) {
-    let d; try { d = JSON.parse(r.data); } catch (e) { continue; }
-    for (const p of (d.positions || [])) {
-      await pool.query(
-        'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-        [p.id, r.username, r.account_name, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
-      );
-    }
-    for (const t of (d.trades || [])) {
-      await pool.query(
-        'INSERT INTO trades (id, username, account_name, date, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
-        [t.id, r.username, r.account_name, t.date || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '']
-      );
-    }
-    for (const n of (d.navHistory || [])) {
-      await pool.query(
-        'INSERT INTO nav_history (username, account_name, date, nav, total_asset) VALUES ($1,$2,$3,$4,$5)',
-        [r.username, r.account_name, n.date || '', n.nav || 1.0, n.totalAsset || 0]
-      );
-    }
-    for (const c of (d.cashFlows || [])) {
-      await pool.query(
-        'INSERT INTO cash_flows (id, username, account_name, date, amount, note) VALUES ($1,$2,$3,$4,$5,$6)',
-        [c.id, r.username, r.account_name, c.date || '', c.amount || 0, c.note || '']
-      );
-    }
+    let d;
+    try { d = JSON.parse(r.data); } catch (e) { continue; }
+    try {
+      for (const p of (d.positions || [])) {
+        await pool.query(
+          'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [p.id, r.username, r.account_name, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
+        );
+      }
+      for (const t of (d.trades || [])) {
+        await pool.query(
+          'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [t.id, r.username, r.account_name, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '']
+        );
+      }
+      for (const n of (d.navHistory || [])) {
+        await pool.query(
+          'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date) DO NOTHING',
+          [r.username, r.account_name, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested)]
+        );
+      }
+      for (const c of (d.cashFlows || [])) {
+        await pool.query(
+          'INSERT INTO cash_flows (id, username, account_name, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [c.id || uid(), r.username, r.account_name, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
+        );
+      }
+    } catch (e) { console.error('迁移账户失败 ' + r.username + '/' + r.account_name + ':', e.message); }
   }
-  console.log('已迁移到结构化表');
+  console.log('已按需合并 JSON → 结构化表（幂等，不覆盖已有记录）');
 }
 
 // ====== 用户 ======

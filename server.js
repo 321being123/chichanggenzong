@@ -204,6 +204,12 @@ app.put('/api/data/:name', requireLogin, asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// 一次性手动触发：把 account_data JSON 里残留的净值/持仓/交易/现金流合并进结构化表（幂等，不覆盖已有）。平时不用，仅历史数据还在 JSON 里时才点一次。
+app.post('/api/migrate-json', requireLogin, asyncHandler(async (req, res) => {
+  await migrateToStructured();
+  res.json({ ok: true });
+}));
+
 // ========== 行情代理 ==========
 function httpsGet(url, encoding) {
   return new Promise((resolve, reject) => {
@@ -1024,12 +1030,11 @@ async function ensureIndexBaseline() {
   }
 }
 
-// ========== 启动：先初始化数据库（建表+迁移），再监听端口 ==========
+// ========== 启动：先初始化数据库（建表+首启文件迁移），再监听端口 ==========
 async function start() {
   try {
     await initSchema();
     await migrateFromJson();
-    await migrateToStructured();
     console.log('数据库初始化完成');
   } catch (e) {
     console.error('数据库初始化失败:', e.message);

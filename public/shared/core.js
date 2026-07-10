@@ -2135,6 +2135,34 @@ function applyHistoryRecords(parsed, mode) {
   data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
 }
 
+// 导入后自动重算：以「导入的最后一条」为锚点，其后的净值按链式公式接续计算
+// nav_t = nav_{t-1} * 当日总市值 / (前一日总市值 + 当日现金流)  —— 剔除入金影响，与 recordNav 同源
+function recalcNavAfterImport(parsed) {
+  if (!data.navHistory || data.navHistory.length === 0) return;
+  const cf = (data.cashFlows || []);
+  let lastImportDate = null;
+  (parsed || []).forEach(function (p) { if (!lastImportDate || p.date > lastImportDate) lastImportDate = p.date; });
+  if (!lastImportDate) return;
+  const sorted = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+  let anchor = null;
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].date <= lastImportDate && sorted[i].nav != null) anchor = sorted[i];
+  }
+  if (!anchor) return;
+  let prevNav = anchor.nav;
+  let prevTotal = (anchor.totalAsset != null) ? anchor.totalAsset : 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const n = sorted[i];
+    if (n.date <= anchor.date) continue; // 锚点及之前保持导入值不动
+    const cfToday = cf.filter(function (c) { return c.date === n.date; }).reduce(function (s, c) { return s + (c.amount || 0); }, 0);
+    const base = prevTotal + cfToday;
+    if (base > 0 && n.totalAsset != null) n.nav = prevNav * (n.totalAsset / base);
+    prevNav = (n.nav != null) ? n.nav : prevNav;
+    prevTotal = (n.totalAsset != null) ? n.totalAsset : prevTotal;
+  }
+  data.navHistory = sorted;
+}
+
 // 冲突确认弹框（返回 Promise：'import' 导入覆盖 / 'online' 线上覆盖）
 function showConflictModal() {
   return new Promise(function (resolve) {
@@ -2232,6 +2260,7 @@ async function finishImport(rows, mapping) {
   const hasConflict = realStart && parsed.some(function (p) { return p.date >= realStart && p.date <= realEnd; });
   const choice = hasConflict ? await showConflictModal() : 'online';
   applyHistoryRecords(parsed, choice);
+  recalcNavAfterImport(parsed); // 以导入最后一条为锚，其后净值自动接续重算
 
   saveData();
   renderEarnings();

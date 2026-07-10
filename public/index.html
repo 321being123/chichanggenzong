@@ -382,12 +382,33 @@ async function loadData(accountName) {
   return data;
 }
 
+// 保存数据：串行化 + 失败重试，从根本上杜绝「请求没落库 / 并发旧快照覆盖新数据」的丢失
+var _saveInFlight = false;
+var _savePending = false;
 function saveData() {
-  fetch(api(`/api/data/${encodeURIComponent(currentAccount)}`), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  }).catch(() => showToast('数据保存失败'));
+  // 已有保存在进行中：标记待保存，等当前保存完成后用最新数据再存一次（保证最终落库的是最新内存状态）
+  if (_saveInFlight) { _savePending = true; return; }
+  _saveInFlight = true;
+  saveDataNow().finally(function () {
+    _saveInFlight = false;
+    if (_savePending) { _savePending = false; saveData(); }
+  });
+}
+async function saveDataNow() {
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return; // 成功落库
+    } catch (e) {
+      if (attempt < 2) { await new Promise(function (res) { setTimeout(res, 500); }); }
+      else showToast('数据保存失败，请稍后刷新页面重试');
+    }
+  }
 }
 
 // ============== 启动 ==============

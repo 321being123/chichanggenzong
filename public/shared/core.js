@@ -2023,7 +2023,7 @@ function renderEarningsTable(sorted) {
 function renderAll() {
   try { renderStats(); } catch(e) {}
   try { renderCharts(); } catch(e) {}
-  try { renderPositionsTable('topn-table', 10); } catch(e) {}
+  try { renderPositionsTable('topn-table'); } catch(e) {}
   try { renderPositionsTable('positions-table'); } catch(e) {}
   try { renderTrades(); } catch(e) {}
   try { renderReturnsStats(); } catch(e) {}

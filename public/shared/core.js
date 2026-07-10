@@ -2554,38 +2554,48 @@ function findComparisonStart(navData) {
   return null;
 }
 
-// 用本地指数快照构造序列：基准取“首个有该指数的净值日期”，归一到 1.0
+// 用本地指数快照构造序列：以“首个有该指数的净值日期”为对齐基准，
+// 使指数在首个可比日的值 = 当日净值（已归一到1.0系）的值，实现“起点一致”对比
 function getEarnIndex(name, navData) {
   if (!data.indexHistory || !data.indexHistory.length) return null;
   var map = {};
   data.indexHistory.forEach(function (h) { if (h[name] != null) map[h.date] = h[name]; });
-  var baseDate = null;
+  var navBase = Number(navData[0].nav) || 1; // 净值归一基准（首日）
+  var baseDate = null, navAtBase = null;
   for (var i = 0; i < navData.length; i++) {
-    if (map[navData[i].date] != null) { baseDate = navData[i].date; break; }
+    if (map[navData[i].date] != null) {
+      baseDate = navData[i].date;
+      navAtBase = Number(navData[i].nav) / navBase; // 该日净值在“1.0系”中的值
+      break;
+    }
   }
   if (!baseDate) return null;
   var firstClose = map[baseDate];
   return navData
     .filter(function (d) { return map[d.date] != null; })
-    .map(function (d) { return { date: d.date, val: map[d.date] / firstClose }; });
+    .map(function (d) { return { date: d.date, val: (map[d.date] / firstClose) * navAtBase }; });
 }
 
-// 实时拉取兜底归一化：基准同样取“首个有数据的净值日期”，无则取首个有数据的拉取日
+// 实时拉取兜底归一化：同样以“首个有数据的净值日期”为对齐基准，使指数起点 = 当日净值
 function normalizeIndexFrom(indexData, navData, base) {
   if (!indexData || !indexData.length || !navData.length) return [];
   var map = {};
   indexData.forEach(function (d) { map[d.date] = d.close; });
+  var navBase = Number(navData[0].nav) || 1;
   var baseDate = (base && map[base] != null) ? base : null;
   if (!baseDate) {
     for (var i = 0; i < navData.length; i++) { if (map[navData[i].date] != null) { baseDate = navData[i].date; break; } }
   }
   if (!baseDate) return [];
   var firstClose = map[baseDate];
+  var navAtBase = null;
+  for (var j = 0; j < navData.length; j++) { if (navData[j].date === baseDate) { navAtBase = Number(navData[j].nav) / navBase; break; } }
+  if (navAtBase == null) navAtBase = 1;
   var dateSet = {};
   navData.forEach(function (d) { dateSet[d.date] = true; });
   return indexData
     .filter(function (d) { return dateSet[d.date]; })
-    .map(function (d) { return { date: d.date, val: d.close / firstClose }; });
+    .map(function (d) { return { date: d.date, val: (d.close / firstClose) * navAtBase }; });
 }
 
 async function renderEarningsReturnsChart() {
@@ -2651,9 +2661,13 @@ async function renderEarningsReturnsChart() {
           backgroundColor: '#323232', cornerRadius: 8, padding: 12,
           callbacks: { label: function (c) {
             if (c.raw == null) return '';
-            var pct = ((c.raw - 1) * 100).toFixed(2);
+            var ds = c.dataset;
+            var first = null;
+            for (var k = 0; k < ds.data.length; k++) { if (ds.data[k] != null) { first = ds.data[k]; break; } }
+            if (first == null || first === 0) return ' ' + ds.label + ': ' + c.raw.toFixed(2);
+            var pct = ((c.raw / first - 1) * 100).toFixed(2);
             var prefix = parseFloat(pct) >= 0 ? '+' : '';
-            return ' ' + c.dataset.label + ': ' + prefix + pct + '%';
+            return ' ' + ds.label + ': ' + c.raw.toFixed(2) + ' (' + prefix + pct + '%)';
           } }
         }
       },

@@ -963,6 +963,9 @@ const INDEX_BACKFILL_DEFS = [
   { name: '恒生指数', src: 'tencent' } // 恒生无 Tushare 权限，沿用腾讯策略
 ];
 
+// 记录“已确认数据源最早只能拉到这”的指数，避免每次启动重复联网拉取
+const settledIndexBaselines = new Set();
+
 // 恒生历史日K：腾讯 web.ifzq hkfqkline（日期范围，结束日期须<=今天，否则返回空）
 async function fetchHsiHistory(fromDate, toDate) {
   const url = `https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,${fromDate},${toDate},4000,qfq`;
@@ -987,8 +990,11 @@ async function ensureIndexBaseline() {
       const startTs = baseline.replace(/-/g, '');
       const endTs = tsDateStr(new Date());
       const endDash = normDate(endTs);
+      const accountKey = acc.username + '|' + acc.account_name;
       const points = [];
       for (const def of INDEX_BACKFILL_DEFS) {
+        const key = accountKey + '|' + def.name;
+        if (settledIndexBaselines.has(key)) continue; // 已确认数据源最早只能拉到这，跳过
         // 已覆盖到基线（指数最早日期 <= 净值起点）则跳过，避免重复联网
         const minR = await pool.query('SELECT MIN(date) AS d FROM index_history WHERE username=$1 AND account_name=$2 AND name=$3', [acc.username, acc.account_name, def.name]);
         const minD = minR.rows[0] && minR.rows[0].d ? String(minR.rows[0].d) : null;
@@ -999,6 +1005,11 @@ async function ensureIndexBaseline() {
           if (rows) series = tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
         } else {
           series = await fetchHsiHistory(baseline, endDash);
+        }
+        // 取到了数据但最早日并未早于已有最早日 → 说明数据源最早只能拉到这，记录以避免重复拉取
+        if (series.length) {
+          const earliest = series.reduce(function (a, b) { return a.date < b.date ? a : b; }).date;
+          if (minD == null || earliest >= minD) settledIndexBaselines.add(key);
         }
         series.forEach(function (p) { points.push({ date: p.date, name: def.name, close: p.close }); });
       }

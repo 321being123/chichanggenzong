@@ -2540,6 +2540,54 @@ function renderEarningsChart(sorted) {
   });
 }
 
+// 找首个“净值与指数快照都有”的日期作为对比基准
+// （指数历史数据通常晚于净值起始，此前无指数可对比，按用户要求该时间段不画指数线）
+function findComparisonStart(navData) {
+  if (!data.indexHistory || !data.indexHistory.length) return null;
+  for (var i = 0; i < navData.length; i++) {
+    var has = data.indexHistory.some(function (h) {
+      return h.date === navData[i].date &&
+        (h['沪深300'] != null || h['上证指数'] != null || h['中证500'] != null || h['恒生指数'] != null);
+    });
+    if (has) return navData[i].date;
+  }
+  return null;
+}
+
+// 用本地指数快照构造序列：基准取“首个有该指数的净值日期”，归一到 1.0
+function getEarnIndex(name, navData) {
+  if (!data.indexHistory || !data.indexHistory.length) return null;
+  var map = {};
+  data.indexHistory.forEach(function (h) { if (h[name] != null) map[h.date] = h[name]; });
+  var baseDate = null;
+  for (var i = 0; i < navData.length; i++) {
+    if (map[navData[i].date] != null) { baseDate = navData[i].date; break; }
+  }
+  if (!baseDate) return null;
+  var firstClose = map[baseDate];
+  return navData
+    .filter(function (d) { return map[d.date] != null; })
+    .map(function (d) { return { date: d.date, val: map[d.date] / firstClose }; });
+}
+
+// 实时拉取兜底归一化：基准同样取“首个有数据的净值日期”，无则取首个有数据的拉取日
+function normalizeIndexFrom(indexData, navData, base) {
+  if (!indexData || !indexData.length || !navData.length) return [];
+  var map = {};
+  indexData.forEach(function (d) { map[d.date] = d.close; });
+  var baseDate = (base && map[base] != null) ? base : null;
+  if (!baseDate) {
+    for (var i = 0; i < navData.length; i++) { if (map[navData[i].date] != null) { baseDate = navData[i].date; break; } }
+  }
+  if (!baseDate) return [];
+  var firstClose = map[baseDate];
+  var dateSet = {};
+  navData.forEach(function (d) { dateSet[d.date] = true; });
+  return indexData
+    .filter(function (d) { return dateSet[d.date]; })
+    .map(function (d) { return { date: d.date, val: d.close / firstClose }; });
+}
+
 async function renderEarningsReturnsChart() {
   const ctx = document.getElementById('chart-earnings-returns');
   if (!ctx) return;
@@ -2548,26 +2596,30 @@ async function renderEarningsReturnsChart() {
     return;
   }
   const navData = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+  const cmp = findComparisonStart(navData);
   const labels = navData.map(function (d) { return d.date; });
-  const navVals = navData.map(function (d) { return +(Number(d.nav).toFixed(4)); });
+  // 净值以自身首日为基准归一到 1.0（满足“净值起始为 1”）；指数另以各自首个有数据日为基准
+  const rawNav = navData.map(function (d) { return +(Number(d.nav).toFixed(4)); });
+  const navBase = rawNav[0] || 1;
+  const navVals = rawNav.map(function (v) { return +(v / navBase).toFixed(4); });
 
-  var hs300Data = getIndexSeries('沪深300', navData) || [];
-  var shData = getIndexSeries('上证指数', navData) || [];
-  var zzData = getIndexSeries('中证500', navData) || [];
-  var hsidata = getIndexSeries('恒生指数', navData) || [];
+  var hs300Data = getEarnIndex('沪深300', navData) || [];
+  var shData = getEarnIndex('上证指数', navData) || [];
+  var zzData = getEarnIndex('中证500', navData) || [];
+  var hsidata = getEarnIndex('恒生指数', navData) || [];
   if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
     try {
-      const days = Math.max(250, daysBetween(navData[0].date));
+      const days = cmp ? daysBetween(cmp) : Math.max(250, daysBetween(navData[0].date));
       const results = await Promise.all([
         fetchIndexKline('sh000300', days + 30),
         fetchIndexKline('sh000001', days + 30),
         fetchIndexKline('sh000905', days + 30),
         fetchIndexKline('hkHSI', days + 30)
       ]);
-      if (!hs300Data.length) hs300Data = normalizeIndexData(results[0], navData);
-      if (!shData.length) shData = normalizeIndexData(results[1], navData);
-      if (!zzData.length) zzData = normalizeIndexData(results[2], navData);
-      if (!hsidata.length) hsidata = normalizeIndexData(results[3], navData);
+      if (!hs300Data.length) hs300Data = normalizeIndexFrom(results[0], navData, cmp);
+      if (!shData.length) shData = normalizeIndexFrom(results[1], navData, cmp);
+      if (!zzData.length) zzData = normalizeIndexFrom(results[2], navData, cmp);
+      if (!hsidata.length) hsidata = normalizeIndexFrom(results[3], navData, cmp);
     } catch (e) { /* 指数数据加载失败不阻塞 */ }
   }
 
@@ -2575,16 +2627,16 @@ async function renderEarningsReturnsChart() {
     label: '持仓净值', data: navVals, borderColor: '#1a237e',
     backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5
   }];
-  function pushIndex(storageName, label, color, dash, series) {
+  function pushIndex(label, color, series) {
     if (!series || !series.length) return;
     var m = {}; series.forEach(function (d) { m[d.date] = d.val; });
     var vals = navData.map(function (d) { return m[d.date] || null; });
-    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', borderDash: dash, tension: 0.3, pointRadius: 0, borderWidth: 1.5 });
+    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 1.5 });
   }
-  pushIndex('沪深300', '沪深300', '#d93025', [5, 3], hs300Data);
-  pushIndex('上证指数', '上证指数', '#e37400', [3, 3], shData);
-  pushIndex('中证500', '中证全指', '#7b1fa2', [4, 4], zzData);
-  pushIndex('恒生指数', '恒生指数', '#00838f', [2, 4], hsidata);
+  pushIndex('沪深300', '#d93025', hs300Data);
+  pushIndex('上证指数', '#e37400', shData);
+  pushIndex('中证全指', '#7b1fa2', zzData);
+  pushIndex('恒生指数', '#00838f', hsidata);
 
   if (chartEarningsReturns) chartEarningsReturns.destroy();
   chartEarningsReturns = new Chart(ctx.getContext('2d'), {

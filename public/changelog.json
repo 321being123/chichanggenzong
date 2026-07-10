@@ -2,7 +2,8 @@
   {
     "date": "2026-07-10",
     "items": [
-      "修复：收益走势对比的 A股三指数线（沪深300/上证/中证500）在线上空白。根因：server.js /api/kline 把 A股指数优先走 Tushare index_daily，而服务器 TUSHARE_TOKEN 实际无效（Tushare 返回 40101「token不对」），原代码在 Tushare 分支内直接 return 空数组，导致下方新浪兜底永远走不到。改为 Tushare 取不到数据时落到新浪历史K线兜底（服务器实测新浪/腾讯恒生均可达），A股指数对比线恢复正常。"
+      "修复（真正根因）：收益走势对比的指数线（沪深300/上证/中证500/恒生）在线上全部空白。前端 getIndexSeries / normalizeIndexData 把归一化基准日写死成 navData[0].date（净值历史首日，恰为 2026-06-28 周日非交易日），而指数数据只有交易日，导致基准缺失、整条指数线被 return 丢弃。改为取 navData 中第一个在指数数据里有对应点位（交易日）的日期作基准，指数对比线恢复正常。",
+      "健壮性：server.js /api/kline 的 A股指数分支，Tushare index_daily 取不到数据时不再直接 return 空数组，而是落到新浪历史K线兜底（服务器实测新浪/腾讯恒生均可达）。注：经服务器实测 TUSHARE_TOKEN（67a964ea…73b313）实际有效，Tushare 能正常返回数据，此改为冗余保险而非问题根因。"
     ]
   },
   {

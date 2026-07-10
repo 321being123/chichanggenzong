@@ -1645,8 +1645,12 @@ function getIndexSeries(name, navData) {
   if (!data.indexHistory || !data.indexHistory.length) return null;
   var map = {};
   data.indexHistory.forEach(function (h) { if (h[name] != null) map[h.date] = h[name]; });
-  var firstClose = map[navData[0].date];
-  if (firstClose == null) return null;
+  // 基准日：navData 中第一个在指数数据里有对应点位（交易日）的日期，
+  // 避免净值首日恰为非交易日导致 map[首日] 缺失、整条指数线被丢弃
+  var baseDate = null;
+  for (var i = 0; i < navData.length; i++) { if (map[navData[i].date] != null) { baseDate = navData[i].date; break; } }
+  if (baseDate == null) return null;
+  var firstClose = map[baseDate];
   return navData
     .filter(function (d) { return map[d.date] != null; })
     .map(function (d) { return { date: d.date, val: map[d.date] / firstClose }; });
@@ -1657,8 +1661,11 @@ function normalizeIndexData(indexData, navData) {
   if (indexData.length === 0 || navData.length === 0) return [];
   const map = {};
   indexData.forEach(function (d) { map[d.date] = d.close; });
-  const firstClose = map[navData[0].date];
-  if (firstClose == null) return [];
+  // 基准日：navData 中第一个在指数数据里有对应点位（交易日）的日期
+  let baseDate = null;
+  for (const d of navData) { if (map[d.date] != null) { baseDate = d.date; break; } }
+  if (baseDate == null) return [];
+  const firstClose = map[baseDate];
   const dateSet = new Set(navData.map(function (d) { return d.date; }));
   return indexData
     .filter(function (d) { return dateSet.has(d.date); })

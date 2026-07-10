@@ -75,6 +75,7 @@ async function initSchema() {
       date TEXT NOT NULL,
       nav double precision DEFAULT 1.0,
       total_asset double precision DEFAULT 0,
+      invested double precision DEFAULT NULL,
       PRIMARY KEY (username, account_name, date)
     );
     CREATE TABLE IF NOT EXISTS cash_flows (
@@ -96,7 +97,17 @@ async function initSchema() {
       price double precision DEFAULT 0,
       PRIMARY KEY (username, account_name, date, code)
     );
+    CREATE TABLE IF NOT EXISTS index_history (
+      username TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      date TEXT NOT NULL,
+      name TEXT NOT NULL,
+      close double precision DEFAULT 0,
+      PRIMARY KEY (username, account_name, date, name)
+    );
   `);
+  // 旧库已存在 nav_history（无 invested 列）时补列；幂等，可重复执行
+  await pool.query('ALTER TABLE nav_history ADD COLUMN IF NOT EXISTS invested double precision DEFAULT NULL');
 }
 
 // ====== 迁移（仅本地遗留 JSON 文件时触发；云上全新部署一般为空，不会执行） ======
@@ -217,7 +228,7 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
-    'SELECT date, nav, total_asset AS "totalAsset" FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, nav, total_asset AS "totalAsset", invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   const { rows: cashFlows } = await pool.query(
@@ -226,17 +237,28 @@ async function loadAccountData(username, accountName) {
   );
   var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0 };
   // 从 account_data JSON 恢复 totalAsset / cashBase（cashBase=期初本金基准，cash 仅作兜底）
+  let jsonData = null;
   try {
     const { rows } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     if (rows[0]) {
       const d = JSON.parse(rows[0].data);
+      jsonData = d;
       if (d.totalAsset) result.totalAsset = d.totalAsset;
       if (typeof d.cashBase === 'number') result.cashBase = d.cashBase;
       if (typeof d.cash === 'number') result.cash = d.cash;
-      if (Array.isArray(d.indexHistory)) result.indexHistory = d.indexHistory;
       if (Array.isArray(d.fundRecord)) result.fundRecord = d.fundRecord;
     }
   } catch (e) {}
+  // 指数历史：优先读独立表；表为空则用旧 JSON 快照并一次性迁移进表（消除 JSON 读写放大）
+  const tableIndex = await loadIndexPoints(username, accountName);
+  if (tableIndex.length > 0) {
+    result.indexHistory = tableIndex;
+  } else if (jsonData && Array.isArray(jsonData.indexHistory) && jsonData.indexHistory.length > 0) {
+    result.indexHistory = jsonData.indexHistory;
+    try { await upsertIndexPoints(username, accountName, jsonData.indexHistory); } catch (e) {}
+  } else {
+    result.indexHistory = [];
+  }
   if (positions.length === 0 && trades.length === 0 && navHistory.length === 0 && cashFlows.length === 0) {
     const { rows } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     if (rows[0]) {
@@ -274,8 +296,8 @@ async function saveAccountData(username, accountName, data) {
   await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
   for (const n of (data.navHistory || [])) {
     await pool.query(
-      'INSERT INTO nav_history (username, account_name, date, nav, total_asset) VALUES ($1,$2,$3,$4,$5)',
-      [username, accountName, n.date || '', n.nav || 1.0, n.totalAsset || 0]
+      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6)',
+      [username, accountName, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested)]
     );
   }
   // cash_flows
@@ -286,10 +308,11 @@ async function saveAccountData(username, accountName, data) {
       [c.id || uid(), username, accountName, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
     );
   }
-  // account_data（保留 totalAsset/cashBase 供现金重算兜底；updated_at 自动更新）
+  // account_data（保留 totalAsset/cashBase 供现金重算兜底；indexHistory 已独立成表，不再写入 JSON 避免读写放大；updated_at 自动更新）
+  const { indexHistory, ...dataForJson } = data;
   await pool.query(
     'INSERT INTO account_data (username, account_name, data, updated_at) VALUES ($1,$2,$3, to_char(now(), \'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at',
-    [username, accountName, JSON.stringify(data)]
+    [username, accountName, JSON.stringify(dataForJson)]
   );
 }
 
@@ -312,5 +335,31 @@ async function loadDailyPrices(username, accountName, date) {
   return rows;
 }
 
+// ====== 指数历史（独立表，增量 upsert，避免 JSON 读写放大） ======
+
+async function upsertIndexPoints(username, accountName, points) {
+  for (const p of (points || [])) {
+    if (!p || !p.date || !p.name) continue;
+    await pool.query(
+      'INSERT INTO index_history (username, account_name, date, name, close) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (username, account_name, date, name) DO UPDATE SET close = EXCLUDED.close',
+      [username, accountName, p.date, p.name, p.close || 0]
+    );
+  }
+}
+
+async function loadIndexPoints(username, accountName) {
+  const { rows } = await pool.query(
+    'SELECT date, name, close FROM index_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    [username, accountName]
+  );
+  // 转换为 [{ date, 沪深300: close, ... }] 形状，与旧 indexHistory 快照一致
+  const byDate = {};
+  rows.forEach(function (r) {
+    if (!byDate[r.date]) byDate[r.date] = { date: r.date };
+    byDate[r.date][r.name] = r.close;
+  });
+  return Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
+}
+
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertIndexPoints, loadIndexPoints, uid, DATA_DIR };

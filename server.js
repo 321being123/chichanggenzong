@@ -6,7 +6,7 @@ const session = require('express-session');
 const XLSX = require('xlsx');
 const QRCode = require('qrcode');
 
-const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, DATA_DIR } = require('./server/db');
+const { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertIndexPoints, loadIndexPoints, DATA_DIR } = require('./server/db');
 // 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
 const classifyCode = require('./public/js/code-classify.js');
 const normalizeCode = classifyCode.normalizeCode;  // 补齐证券代码前导零
@@ -810,8 +810,8 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
   }
 }));
 
-// ========== 导入《投资实验记录》Excel → 结构化收益记录 ==========
-app.post('/api/import-fund-record', requireLogin, asyncHandler(async (req, res) => {
+// ========== 导入历史净值数据（大模型识别，允许缺字段） → 回填 navHistory 历史段 ==========
+app.post('/api/excel-history-parse', requireLogin, asyncHandler(async (req, res) => {
   try {
     const { file } = req.body;
     if (!file) return res.status(400).json({ error: '请上传Excel文件' });
@@ -819,63 +819,71 @@ app.post('/api/import-fund-record', requireLogin, asyncHandler(async (req, res) 
     const base64Data = file.split(',')[1] || file;
     const buffer = Buffer.from(base64Data, 'base64');
     const workbook = XLSX.read(buffer, { type: 'buffer' });
-    // 优先含"资金"的表，否则取第一张
     const sheetName = workbook.SheetNames.find(n => n.includes('资金')) || workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
     if (!rows || rows.length < 2) return res.json({ records: [] });
 
-    // 表头去括号（如"当前净值(公式)"→"当前净值"）后精确匹配
-    const norm = h => String(h).replace(/[（(][^（）()]*[)）]/g, '').trim();
-    const header = rows[0].map(h => String(h).trim());
-    const headerNorm = header.map(norm);
-    const idx = name => headerNorm.findIndex(h => h === name);
+    const endpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
+    const chatModel = process.env.VISION_MODEL || 'agnes-1.5-flash';
+    const key = process.env.VISION_API_KEY;
 
-    const colMap = {
-      date: idx('时间'),
-      totalMarketValue: idx('当前总市值'),
-      nav: idx('当前净值'),
-      totalInvested: idx('当前总投入资金'),
-      capitalGain: idx('资金总收益'),
-      totalReturn: idx('总收益'),
-      yearReturn: idx('当年收益'),
-      annualizedReturn: idx('年化收益'),
-      currentDrawdown: idx('当前回撤'),
-      maxDrawdown: idx('最大回撤'),
-      newCapital: idx('新增资金'),
-      hs300Index: idx('沪深300全收益指数点数'),
-      convertibleBond: idx('可转债')
-    };
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + key
+      },
+      body: JSON.stringify({
+        model: chatModel,
+        messages: [{
+          role: 'user',
+          content: '以下是从Excel《投资实验记录》中提取的原始数据（第一行为表头）。请逐行识别净值记录，返回JSON数组，每个元素形如 {"date":"YYYY-MM-DD","nav":数字,"totalAsset":数字,"invested":数字}。说明：date为日期(YYYY-MM-DD，可空字符串)；nav为当前净值(数字，可空)；totalAsset为当前总市值/总资产(数字，可空)；invested为累计投入本金(数字，可空)。各列可能使用不同表头（如 时间/日期/净值/累计净值/总资产/市值/投入/本金/资金 等），请自适应匹配；无法识别的字段填 null 或空字符串。只返回JSON数组，不要任何其他文字。\n\n' + JSON.stringify(rows)
+        }],
+        max_tokens: 4000,
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(60000)
+    });
 
-    const num = (row, i) => {
-      if (i == null || i < 0) return null;
-      const v = row[i];
-      if (v === '' || v == null) return null;
-      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[,%]/g, ''));
-      return isNaN(n) ? null : n;
-    };
-    const excelSerialToDate = v => {
-      if (v == null || v === '') return '';
-      if (v instanceof Date) return v.toISOString().slice(0, 10);
-      if (typeof v === 'number' && v > 20000 && v < 60000) {
-        return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
-      }
-      return String(v);
-    };
-
-    const records = [];
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row.every(c => c === '' || c == null)) continue;
-      const rec = {};
-      Object.keys(colMap).forEach(k => { rec[k] = num(row, colMap[k]); });
-      rec.date = excelSerialToDate(row[colMap.date]);
-      if (!rec.date) continue;
-      records.push(rec);
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
     }
+
+    const result = await response.json();
+    const content = result.choices?.[0]?.message?.content || '[]';
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return res.json({ records: [] });
+    const items = JSON.parse(jsonMatch[0]);
+    const records = (Array.isArray(items) ? items : []).map(function (it) {
+      const num = v => {
+        if (v == null || v === '') return null;
+        const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[,%]/g, ''));
+        return isNaN(n) ? null : n;
+      };
+      return {
+        date: it && it.date ? String(it.date) : '',
+        nav: num(it && it.nav),
+        totalAsset: num(it && it.totalAsset),
+        invested: num(it && it.invested)
+      };
+    });
     res.json({ records: records });
   } catch (e) {
     res.json({ error: '解析失败: ' + e.message });
+  }
+}));
+
+// ========== 指数历史点增量写入（前端 syncIndexPoints 调用） ==========
+app.post('/api/index-history', requireLogin, asyncHandler(async (req, res) => {
+  try {
+    const { account, points } = req.body;
+    if (!account || !Array.isArray(points)) return res.status(400).json({ error: '无效数据' });
+    await upsertIndexPoints(req.session.user, account, points);
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ error: '保存指数历史失败: ' + e.message });
   }
 }));
 

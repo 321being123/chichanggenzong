@@ -1,5 +1,11 @@
 [
   {
+    "date": "2026-07-10",
+    "items": [
+      "修复：收益走势对比的 A股三指数线（沪深300/上证/中证500）在线上空白。根因：server.js /api/kline 把 A股指数优先走 Tushare index_daily，而服务器 TUSHARE_TOKEN 实际无效（Tushare 返回 40101「token不对」），原代码在 Tushare 分支内直接 return 空数组，导致下方新浪兜底永远走不到。改为 Tushare 取不到数据时落到新浪历史K线兜底（服务器实测新浪/腾讯恒生均可达），A股指数对比线恢复正常。"
+    ]
+  },
+  {
     "date": "2026-07-09",
     "items": [
       "修复：Tushare 日期参数失效的致命 bug——server.js 存在两个同名 cnDateStr 函数（带参版返回 YYYYMMDD 用于 Tushare 接口，无参版返回 2026-07-09 用于记录收盘价），函数提升导致带参版被无参版覆盖，使得 A股日线/指数K线传给 Tushare 的日期参数全部变成「带横杠的当天」，返回 0 条后静默回退腾讯。已将 Tushare 专用函数改名为 tsDateStr 修复，A股报价与指数K线现已真正走 Tushare。",

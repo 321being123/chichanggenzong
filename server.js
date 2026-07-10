@@ -476,7 +476,8 @@ app.get('/api/kline', requireLogin, asyncHandler(async (req, res) => {
       const data = await tushareQuery('index_daily', { ts_code: tsCode, start_date: start, end_date: end }, 'trade_date,close');
       const rows = tsRows(data).map(r => ({ date: r.trade_date, close: parseFloat(r.close) }))
         .filter(r => r.date && !isNaN(r.close) && r.close > 0);
-      return res.json(rows);
+      if (rows.length > 0) return res.json(rows);
+      // Tushare 无数据（如 token 失效/无权限）→ 落到下方新浪兜底，避免指数线空白
     }
     // A股三指数兜底：新浪历史K线
     const datalen = Math.min(parseInt(days) || 365, 500);

@@ -810,6 +810,75 @@ app.post('/api/excel-parse', requireLogin, asyncHandler(async (req, res) => {
   }
 }));
 
+// ========== 导入《投资实验记录》Excel → 结构化收益记录 ==========
+app.post('/api/import-fund-record', requireLogin, asyncHandler(async (req, res) => {
+  try {
+    const { file } = req.body;
+    if (!file) return res.status(400).json({ error: '请上传Excel文件' });
+
+    const base64Data = file.split(',')[1] || file;
+    const buffer = Buffer.from(base64Data, 'base64');
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    // 优先含"资金"的表，否则取第一张
+    const sheetName = workbook.SheetNames.find(n => n.includes('资金')) || workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    if (!rows || rows.length < 2) return res.json({ records: [] });
+
+    // 表头去括号（如"当前净值(公式)"→"当前净值"）后精确匹配
+    const norm = h => String(h).replace(/[（(][^（）()]*[)）]/g, '').trim();
+    const header = rows[0].map(h => String(h).trim());
+    const headerNorm = header.map(norm);
+    const idx = name => headerNorm.findIndex(h => h === name);
+
+    const colMap = {
+      date: idx('时间'),
+      totalMarketValue: idx('当前总市值'),
+      nav: idx('当前净值'),
+      totalInvested: idx('当前总投入资金'),
+      capitalGain: idx('资金总收益'),
+      totalReturn: idx('总收益'),
+      yearReturn: idx('当年收益'),
+      annualizedReturn: idx('年化收益'),
+      currentDrawdown: idx('当前回撤'),
+      maxDrawdown: idx('最大回撤'),
+      newCapital: idx('新增资金'),
+      hs300Index: idx('沪深300全收益指数点数'),
+      convertibleBond: idx('可转债')
+    };
+
+    const num = (row, i) => {
+      if (i == null || i < 0) return null;
+      const v = row[i];
+      if (v === '' || v == null) return null;
+      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[,%]/g, ''));
+      return isNaN(n) ? null : n;
+    };
+    const excelSerialToDate = v => {
+      if (v == null || v === '') return '';
+      if (v instanceof Date) return v.toISOString().slice(0, 10);
+      if (typeof v === 'number' && v > 20000 && v < 60000) {
+        return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+      }
+      return String(v);
+    };
+
+    const records = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.every(c => c === '' || c == null)) continue;
+      const rec = {};
+      Object.keys(colMap).forEach(k => { rec[k] = num(row, colMap[k]); });
+      rec.date = excelSerialToDate(row[colMap.date]);
+      if (!rec.date) continue;
+      records.push(rec);
+    }
+    res.json({ records: records });
+  } catch (e) {
+    res.json({ error: '解析失败: ' + e.message });
+  }
+}));
+
 // ========== 版本更新日志 ==========
 app.get('/api/changelog', requireLogin, (req, res) => {
   try {

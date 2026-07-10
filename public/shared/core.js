@@ -533,117 +533,33 @@ function renderCharts() {
   } catch(e) {}
 }
 
-// ===================== 持仓表格渲染 =====================
-
-// 排序状态（全局）
-let sortState = { col: null, dir: 'asc' };
-// 筛选状态（全局）
-let filterState = { type: '', subtype: '' };
-
-function setSort(col) {
-  if (sortState.col === col) {
-    sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
-  } else {
-    sortState.col = col;
-    sortState.dir = 'asc';
-  }
-  renderPositionsTable('positions-table');
-  renderPositionsTable('topn-table');
-}
-
-function setFilter(type, val) {
-  filterState[type] = val;
-  renderPositionsTable('positions-table');
-  renderPositionsTable('topn-table');
-}
+// ===================== 持仓表格渲染（总览只读展示） =====================
 
 function renderPositionsTable(targetId, limit) {
   const el = document.getElementById(targetId);
   if (!el) return;
   let list = [...data.positions];
 
-  // 筛选（仅全量表格，topN 不筛选）
-  if (!limit) {
-    if (filterState.type) list = list.filter(p => p.type === filterState.type);
-    if (filterState.subtype) list = list.filter(p => p.subtype === filterState.subtype);
-  }
-
-  // 排序
-  if (sortState.col) {
-    const col = sortState.col;
-    list.sort((a, b) => {
-      let va, vb;
-      if (col === 'xh') { va = list.indexOf(a); vb = list.indexOf(b); }
-      else if (col === 'code') { va = a.code || ''; vb = b.code || ''; }
-      else if (col === 'name') { va = a.name || ''; vb = b.name || ''; }
-      else if (col === 'price') { va = a.price || 0; vb = b.price || 0; }
-      else if (col === 'qty') { va = a.quantity || 0; vb = b.quantity || 0; }
-      else if (col === 'mv') {
-        va = getMarketValue(a);
-        vb = getMarketValue(b);
-      }
-      else if (col === 'pct') {
-        const t = calcSummary().total;
-        va = t > 0 ? getMarketValue(a) / t : 0;
-        vb = t > 0 ? getMarketValue(b) / t : 0;
-      }
-      else if (col === 'type') { va = a.type || ''; vb = b.type || ''; }
-      else if (col === 'subtype') { va = a.subtype || ''; vb = b.subtype || ''; }
-      else if (col === 'chg') {
-        va = priceChangeMap[a.code] != null ? priceChangeMap[a.code] : -999;
-        vb = priceChangeMap[b.code] != null ? priceChangeMap[b.code] : -999;
-      }
-      const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb));
-      return sortState.dir === 'asc' ? cmp : -cmp;
-    });
-  }
-
-  // limit 截取（用于总览页 topN）
+  // limit 截取（用于总览页 topN，只读展示）
   if (limit) list = list.slice(0, limit);
 
   var cashAmt = Number(data.cash) || 0;
   if (list.length === 0 && cashAmt <= 0) {
-    el.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>暂无持仓数据' +
-      (filterState.type || filterState.subtype ? '（筛选条件下无结果）' : '') +
-      '</p></div>';
+    el.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>暂无持仓数据</p></div>';
     return;
   }
 
-  // 筛选栏（仅全量表格）
-  let filterBar = '';
-  if (!limit) {
-    const types = [...new Set(data.positions.map(p => p.type).filter(Boolean))];
-    const subtypes = [...new Set(data.positions.map(p => p.subtype).filter(Boolean))];
-    filterBar = '<div class="filter-bar">' +
-      '<span class="filter-label">筛选:</span>' +
-      '<select onchange="setFilter(\'type\',this.value)">' +
-      '<option value="">全部类型</option>' +
-      types.map(t => '<option value="' + t + '"' + (filterState.type === t ? ' selected' : '') + '>' + t + '</option>').join('') +
-      '</select>' +
-      '<select onchange="setFilter(\'subtype\',this.value)">' +
-      '<option value="">全部细类</option>' +
-      subtypes.map(s => '<option value="' + s + '"' + (filterState.subtype === s ? ' selected' : '') + '>' + s + '</option>').join('') +
-      '</select>' +
-      ((filterState.type || filterState.subtype)
-        ? '<button class="btn btn-outline btn-sm" onclick="filterState={type:\'\',subtype:\'\'};renderPositionsTable(\'positions-table\');renderPositionsTable(\'topn-table\')">清除筛选</button>'
-        : '') +
-      '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="exportToExcel()">导出EXCEL</button>' +
-      '<span style="color:#bbb;">' + list.length + ' / ' + data.positions.length + ' 只</span>' +
-      '</div>';
-  }
-
-  var html = filterBar + '<table><thead><tr>' +
-    '<th style="width:40px;" class="sortable" onclick="setSort(\'xh\')">序号' + sortArrow('xh') + '</th>' +
-    '<th class="sortable" onclick="setSort(\'code\')">代码' + sortArrow('code') + '</th>' +
-    '<th class="sortable" onclick="setSort(\'name\')">名称' + sortArrow('name') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(\'price\')">现价' + sortArrow('price') + '</th>' +
-    '<th class="text-right sortable" style="width:70px;" onclick="setSort(\'chg\')">涨跌' + sortArrow('chg') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(\'qty\')">数量' + sortArrow('qty') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(\'mv\')">市值' + sortArrow('mv') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(\'pct\')">比例' + sortArrow('pct') + '</th>' +
-    '<th class="sortable" onclick="setSort(\'type\')">类型' + sortArrow('type') + '</th>' +
-    '<th class="sortable" onclick="setSort(\'subtype\')">细类' + sortArrow('subtype') + '</th>' +
-    (limit ? '' : '<th class="text-center">操作</th>') +
+  var html = '<table><thead><tr>' +
+    '<th style="width:40px;">序号</th>' +
+    '<th>代码</th>' +
+    '<th>名称</th>' +
+    '<th class="text-right">现价</th>' +
+    '<th class="text-right" style="width:70px;">涨跌</th>' +
+    '<th class="text-right">数量</th>' +
+    '<th class="text-right">市值</th>' +
+    '<th class="text-right">比例</th>' +
+    '<th>类型</th>' +
+    '<th>细类</th>' +
     '</tr></thead><tbody>';
 
   const total = calcSummary().total;
@@ -696,10 +612,6 @@ function renderPositionsTable(targetId, limit) {
       '<td class="text-right">' + pct + '%</td>' +
       '<td>' + typeTag + '</td>' +
       '<td>' + subtypeTag + '</td>' +
-      (limit ? '' : '<td class="text-center">' +
-        '<button class="btn btn-outline btn-sm" onclick="editPosition(\'' + p.id + '\')">编辑</button> ' +
-        '<button class="btn btn-danger btn-sm" onclick="deletePosition(\'' + p.id + '\')">删除</button>' +
-        '</td>') +
       '</tr>';
   });
   // 现金行
@@ -717,9 +629,6 @@ function renderPositionsTable(targetId, limit) {
       '<td class="text-right">' + cashPct + '%</td>' +
       '<td><span class="tag ' + cashTypeTag + '">' + (data.cashType || '现金') + '</span></td>' +
       '<td><span class="tag tag-cash">' + (data.cashSubtype || '现金') + '</span></td>' +
-      (limit ? '' : '<td class="text-center">' +
-        '<button class="btn btn-outline btn-sm" onclick="editCash()">编辑</button>' +
-        '</td>') +
       '</tr>';
   }
   html += '</tbody></table>';
@@ -898,138 +807,10 @@ function clearTrades() {
   renderAll();
 }
 
-// ===================== 持仓增删改 =====================
-
-let editingId = null;
-let deleteTargetId = null;
-
-function showAddModal() {
-  editingId = null;
-  document.getElementById('modal-title').textContent = '新增持仓';
-  document.getElementById('modal-save-btn').textContent = '保存';
-  ['modal-code', 'modal-name', 'modal-price', 'modal-qty', 'modal-cost', 'modal-note']
-    .forEach(id => document.getElementById(id).value = '');
-  document.getElementById('modal-type').value = '股权';
-  document.getElementById('modal-subtype').value = 'A股';
-  document.getElementById('modal-type-hint').textContent = '自动识别';
-  document.getElementById('modal-subtype-hint').textContent = '自动识别';
-  document.getElementById('modal-price-hint').textContent = '输入代码后自动获取';
-  document.getElementById('modal-add').classList.add('show');
-}
-
-function editPosition(id) {
-  const p = data.positions.find(x => x.id === id);
-  if (!p) return;
-  editingId = id;
-  // 恢复正常编辑模式，启用所有字段
-  ['modal-code','modal-name','modal-price','modal-qty','modal-cost','modal-note'].forEach(function(fid) {
-    document.getElementById(fid).disabled = false;
-  });
-  document.getElementById('modal-title').textContent = '编辑持仓';
-  document.getElementById('modal-save-btn').textContent = '更新';
-  document.getElementById('modal-code').value = p.code || '';
-  document.getElementById('modal-name').value = p.name || '';
-  document.getElementById('modal-price').value = p.price || '';
-  document.getElementById('modal-qty').value = p.quantity || '';
-  document.getElementById('modal-cost').value = p.cost || '';
-  document.getElementById('modal-note').value = p.note || '';
-  document.getElementById('modal-type').value = p.type || '股权';
-  document.getElementById('modal-subtype').value = p.subtype || 'A股';
-  document.getElementById('modal-add').classList.add('show');
-}
-
-function editCash() {
-  editingId = 'cash';
-  // 禁用非类型/细类字段
-  ['modal-code','modal-name','modal-price','modal-qty','modal-cost','modal-note'].forEach(function(fid) {
-    document.getElementById(fid).disabled = true;
-  });
-  document.getElementById('modal-title').textContent = '编辑现金';
-  document.getElementById('modal-save-btn').textContent = '更新';
-  document.getElementById('modal-code').value = '';
-  document.getElementById('modal-name').value = '现金';
-  document.getElementById('modal-price').value = '';
-  document.getElementById('modal-qty').value = '';
-  document.getElementById('modal-cost').value = '';
-  document.getElementById('modal-note').value = '';
-  document.getElementById('modal-type').value = data.cashType || '现金';
-  document.getElementById('modal-subtype').value = data.cashSubtype || '现金';
-  document.getElementById('modal-add').classList.add('show');
-}
-
-function savePosition() {
-  const type = document.getElementById('modal-type').value;
-  const subtype = document.getElementById('modal-subtype').value;
-
-  // 现金编辑：只更新类型和细类
-  if (editingId === 'cash') {
-    data.cashType = type;
-    data.cashSubtype = subtype;
-    saveData();
-    closeModal('modal-add');
-    renderAll();
-    showToast('现金已更新');
-    return;
-  }
-
-  const code = classifyCode.normalizeCode(document.getElementById('modal-code').value.trim());
-  const name = document.getElementById('modal-name').value.trim();
-  const price = parseFloat(document.getElementById('modal-price').value);
-  const qty = parseInt(document.getElementById('modal-qty').value);
-  const cost = parseFloat(document.getElementById('modal-cost').value) || price;
-  const note = document.getElementById('modal-note').value.trim();
-
-  if (!code || !price || !qty) { showToast('请填写代码、价格和数量'); return; }
-
-  if (editingId) {
-    const p = data.positions.find(x => x.id === editingId);
-    if (p) Object.assign(p, { code, name, price, quantity: qty, cost, type, subtype, note });
-  } else {
-    data.positions.push({ id: uid(), code, name, price, quantity: qty, cost, type, subtype, note });
-  }
-
-  saveData();
-  closeModal('modal-add');
-  renderAll();
-  showToast('已保存 ' + (name || code));
-}
-
-function deletePosition(id) {
-  const p = data.positions.find(x => x.id === id);
-  if (!p) return;
-  deleteTargetId = id;
-  document.getElementById('delete-msg').textContent =
-    '确定删除「' + (p.name || p.code) + '」的持仓记录吗？';
-  document.getElementById('delete-confirm-btn').onclick = confirmDelete;
-  document.getElementById('modal-delete').classList.add('show');
-}
-
-function confirmDelete() {
-  if (deleteTargetId) {
-    data.positions = data.positions.filter(p => p.id !== deleteTargetId);
-    // 仅删持仓，保留交易流水（交易用于净值计算，删持仓不应抹掉历史）
-    deleteTargetId = null;
-    saveData();
-    renderAll();
-  }
-  closeModal('modal-delete');
-}
+// ===================== 弹窗通用 =====================
 
 function closeModal(id) {
   document.getElementById(id).classList.remove('show');
-}
-
-function updateCash(val) {
-  const target = parseFloat(val) || 0;
-  const cfNet = (data.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
-  const tradeNet = (data.trades || []).reduce((s, t) => s + (t.direction === 'buy' ? -(t.amount || 0) : (t.amount || 0)), 0);
-  const current = (data.cashBase || 0) + cfNet + tradeNet;
-  const delta = Math.round((target - current) * 100) / 100;
-  // 调整现金 = 追加一条"校正现金流"，不改期初本金(cashBase)，避免污染净值计算
-  if (!data.cashFlows) data.cashFlows = [];
-  data.cashFlows.push({ id: uid(), date: todayCN(), created_at: nowSec(), amount: delta, note: '现金调整' });
-  saveData();
-  renderAll();
 }
 
 // ===================== 截图识别（AI视觉） =====================
@@ -1877,6 +1658,8 @@ function initNav() {
       if (page) {
         page.classList.add('active');
         if (tab.dataset.page === 'changelog') loadChangelog();
+        // 收益页图表在隐藏 tab 中初始尺寸为 0，切到该 tab 时重绘
+        if (tab.dataset.page === 'earnings') renderEarnings();
       }
     });
   });
@@ -1913,16 +1696,144 @@ function renderChangelogHtml(data) {
   return h;
 }
 
+// ===================== 收益页（投资实验记录） =====================
+
+let chartEarnings = null;
+
+// 导入《投资实验记录》Excel → 服务端解析 → 存入 data.fundRecord
+async function importFundExcel(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    showToast('正在解析 Excel...');
+    const base64 = await fileToBase64(file);
+    const r = await fetch(api('/api/import-fund-record'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: base64 })
+    });
+    const d = await r.json();
+    if (d.error) { showToast('导入失败: ' + d.error); return; }
+    if (!d.records || d.records.length === 0) { showToast('未识别到收益记录'); return; }
+    data.fundRecord = d.records;
+    saveData();
+    renderEarnings();
+    showToast('已导入 ' + d.records.length + ' 条收益记录');
+  } catch (e) {
+    showToast('导入失败: ' + (e.message || e));
+  } finally {
+    event.target.value = '';
+  }
+}
+
+function renderEarnings() {
+  const el = document.getElementById('earnings-stats');
+  if (!el) return;
+  const records = (data.fundRecord && data.fundRecord.length) ? data.fundRecord : [];
+  if (records.length === 0) {
+    el.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="icon">📊</div><p>暂无收益记录，请点击右上角「导入Excel」上传《投资实验记录》</p></div>';
+    const tbl = document.getElementById('earnings-table');
+    if (tbl) tbl.innerHTML = '';
+    if (chartEarnings) { chartEarnings.destroy(); chartEarnings = null; }
+    return;
+  }
+
+  // 按日期升序
+  const sorted = records.slice().sort(function (a, b) { return (a.date || '').localeCompare(b.date || ''); });
+  const last = sorted[sorted.length - 1];
+
+  const pct = function (v) { return (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%'; };
+  const col = function (v) { return v >= 0 ? '#137333' : '#d93025'; };
+
+  const cards = [
+    { label: '当前总市值', value: fmt(last.totalMarketValue || 0), sub: '投入本金 ' + fmt(last.totalInvested || 0) },
+    { label: '当前净值', value: (last.nav || 1).toFixed(4), sub: '基准 1.0000', color: col((last.nav || 1) - 1) },
+    { label: '总收益率', value: pct(last.totalReturn || 0), sub: '资金总收益 ' + pct(last.capitalGain || 0), color: col(last.totalReturn || 0) },
+    { label: '年化收益', value: pct(last.annualizedReturn || 0), sub: '当年收益 ' + pct(last.yearReturn || 0), color: col(last.annualizedReturn || 0) },
+    { label: '当前回撤', value: (last.currentDrawdown != null ? (last.currentDrawdown * 100).toFixed(2) : '0.00') + '%', sub: '当日', color: '#d93025' },
+    { label: '最大回撤', value: (last.maxDrawdown != null ? (last.maxDrawdown * 100).toFixed(2) : '0.00') + '%', sub: '历史', color: '#d93025' }
+  ];
+  el.innerHTML = cards.map(function (c) {
+    return '<div class="stat-card"><div class="stat-top"><div><div class="label">' + c.label + '</div>' +
+      '<div class="value" style="color:' + (c.color || '#1a1a2e') + '">' + c.value + '</div></div></div>' +
+      '<div class="sub">' + (c.sub || '') + '</div></div>';
+  }).join('');
+
+  renderEarningsChart(sorted);
+  renderEarningsTable(sorted);
+}
+
+function renderEarningsChart(sorted) {
+  const ctx = document.getElementById('chart-earnings');
+  if (!ctx) return;
+  const labels = sorted.map(function (r) { return (r.date || '').slice(5); });
+  const mv = sorted.map(function (r) { return r.totalMarketValue || 0; });
+  const inv = sorted.map(function (r) { return r.totalInvested || 0; });
+  if (chartEarnings) chartEarnings.destroy();
+  chartEarnings = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        { label: '总市值', data: mv, borderColor: '#1a237e', backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2.5 },
+        { label: '投入本金', data: inv, borderColor: '#d93025', backgroundColor: 'transparent', borderDash: [5, 3], tension: 0.3, pointRadius: 0, borderWidth: 1.5 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { padding: 16, font: { size: 12, weight: '500' }, usePointStyle: true } },
+        tooltip: {
+          backgroundColor: '#323232', cornerRadius: 8, padding: 12,
+          callbacks: { label: function (c) { return ' ' + c.dataset.label + ': ' + fmt(c.raw); } }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' } },
+        y: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 }, color: '#999', callback: function (v) { return '¥' + (v / 10000).toFixed(0) + '万'; } } }
+      }
+    }
+  });
+}
+
+function renderEarningsTable(sorted) {
+  const el = document.getElementById('earnings-table');
+  if (!el) return;
+  const cols = [
+    { t: '日期', get: function (r) { return r.date || '-'; } },
+    { t: '总市值', get: function (r) { return fmt(r.totalMarketValue || 0); } },
+    { t: '投入本金', get: function (r) { return fmt(r.totalInvested || 0); } },
+    { t: '净值', get: function (r) { return (r.nav || 1).toFixed(4); } },
+    { t: '总收益率', right: true, color: function (r) { return (r.totalReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.totalReturn || 0) >= 0 ? '+' : '') + ((r.totalReturn || 0) * 100).toFixed(2) + '%'; } },
+    { t: '年化', right: true, color: function (r) { return (r.annualizedReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
+    { t: '当前回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.currentDrawdown || 0) * 100).toFixed(2) + '%'; } },
+    { t: '最大回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.maxDrawdown || 0) * 100).toFixed(2) + '%'; } },
+    { t: '新增资金', right: true, get: function (r) { return fmt(r.newCapital || 0); } }
+  ];
+  const rows = sorted.slice().reverse();
+  let html = '<table><thead><tr>' + cols.map(function (c) { return '<th' + (c.right ? ' class="text-right"' : '') + '>' + c.t + '</th>'; }).join('') + '</tr></thead><tbody>';
+  rows.forEach(function (r) {
+    html += '<tr>' + cols.map(function (c) {
+      if (c.right) {
+        return '<td class="text-right" style="font-weight:600;color:' + (c.color ? c.color(r) : '#1a1a2e') + '">' + c.get(r) + '</td>';
+      }
+      return '<td>' + c.get(r) + '</td>';
+    }).join('') + '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
 // ===================== 全量渲染 =====================
 
 function renderAll() {
   try { renderStats(); } catch(e) {}
   try { renderCharts(); } catch(e) {}
-  try { renderPositionsTable('positions-table'); } catch(e) {}
-  try { renderPositionsTable('topn-table'); } catch(e) {}
+  try { renderPositionsTable('topn-table', 10); } catch(e) {}
   try { renderTrades(); } catch(e) {}
   try { renderReturnsStats(); } catch(e) {}
-  try { var cashInput = document.querySelector('#page-positions .form-row #cash-input'); if (cashInput) cashInput.value = data.cash || ''; } catch(e) {}
+  try { renderEarnings(); } catch(e) {}
 }
 
 // ===================== 自动刷新 =====================

@@ -234,6 +234,7 @@ async function loadAccountData(username, accountName) {
       if (typeof d.cashBase === 'number') result.cashBase = d.cashBase;
       if (typeof d.cash === 'number') result.cash = d.cash;
       if (Array.isArray(d.indexHistory)) result.indexHistory = d.indexHistory;
+      if (Array.isArray(d.fundRecord)) result.fundRecord = d.fundRecord;
     }
   } catch (e) {}
   if (positions.length === 0 && trades.length === 0 && navHistory.length === 0 && cashFlows.length === 0) {

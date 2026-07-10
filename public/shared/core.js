@@ -634,7 +634,8 @@ function renderPositionsTable(targetId, limit) {
   html += '</tbody></table>';
   el.innerHTML = html;
   if (targetId === 'topn-table') {
-    document.getElementById('topn-summary').textContent = '共 ' + data.positions.length + ' 只持仓';
+    const sumEl = document.getElementById('topn-summary');
+    if (sumEl) sumEl.textContent = '共 ' + data.positions.length + ' 只持仓';
   }
 }
 

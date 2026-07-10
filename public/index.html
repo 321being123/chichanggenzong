@@ -25,6 +25,7 @@
   </div>
   <div class="nav-right">
     <button class="nav-tab active" data-page="dashboard">总览</button>
+    <button class="nav-tab" data-page="positions">持仓</button>
     <button class="nav-tab" data-page="earnings">收益</button>
     <button class="nav-tab" data-page="trades">交易</button>
     <button class="nav-tab" data-page="changelog">版本记录</button>
@@ -48,6 +49,19 @@
   </div>
   <div id="topn-table"></div>
   <div id="returns-section"></div>
+</div>
+
+<!-- 持仓页: 全部持仓 (含筛选排序) -->
+<div class="page" id="page-positions">
+  <div class="table-wrap">
+    <div class="table-header">
+      <h3>持仓明细</h3>
+      <button class="btn btn-primary btn-sm" onclick="showAddModal()">➕ 新增持仓</button>
+    </div>
+    <div style="padding:18px;">
+      <div id="positions-table"></div>
+    </div>
+  </div>
 </div>
 
 <!-- 收益页: 投资实验记录（来自 Excel《投资实验记录》） -->
@@ -161,6 +175,44 @@
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-delete')">取消</button>
       <button class="btn btn-danger" id="delete-confirm-btn">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增/编辑持仓弹窗 -->
+<div class="modal-overlay" id="modal-add">
+  <div class="modal">
+    <h2 id="modal-title">新增持仓</h2>
+    <div class="form-row-2col">
+      <div class="form-group"><label>证券代码</label><input id="modal-code" placeholder="如 601919"></div>
+      <div class="form-group"><label>证券名称</label><input id="modal-name" placeholder="自动获取"></div>
+      <div class="form-group"><label>现价</label><input id="modal-price" type="number" step="0.001" placeholder="0.000"></div>
+      <div class="form-group"><label>数量</label><input id="modal-qty" type="number" step="1" placeholder="0"></div>
+      <div class="form-group"><label>成本价</label><input id="modal-cost" type="number" step="0.001" placeholder="同现价"></div>
+      <div class="form-group"><label>类型</label>
+        <select id="modal-type">
+          <option value="股权">股权</option>
+          <option value="债权">债权</option>
+          <option value="现金">现金</option>
+        </select>
+      </div>
+      <div class="form-group"><label>子类型</label>
+        <select id="modal-subtype">
+          <option value="A股">A股</option>
+          <option value="港股">港股</option>
+          <option value="美股">美股</option>
+          <option value="可转债">可转债</option>
+          <option value="信用债">信用债</option>
+          <option value="ETF">ETF</option>
+          <option value="LOF">LOF</option>
+          <option value="现金">现金</option>
+        </select>
+      </div>
+      <div class="form-group"><label>备注</label><input id="modal-note" placeholder="可选"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-add')">取消</button>
+      <button class="btn btn-primary" id="modal-save-btn" onclick="savePosition()">保存</button>
     </div>
   </div>
 </div>

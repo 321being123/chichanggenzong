@@ -2677,7 +2677,7 @@ async function renderEarningsReturnsChart() {
   const datasets = [{
     label: '持仓净值', data: navVals, borderColor: '#1a237e',
     backgroundColor: 'rgba(26,35,126,.08)', fill: true,
-    stepped: true, pointRadius: 0, borderWidth: 2.5, spanGaps: true
+    tension: 0.3, pointRadius: 0, borderWidth: 2.5, spanGaps: true
   }];
   function pushIndex(label, color, name) {
     const entries = idxEntries[name];
@@ -2692,7 +2692,7 @@ async function renderEarningsReturnsChart() {
     const vals = labels.map(function (fri, i) {
       return closes[i] != null ? +((closes[i] / firstClose) * navAtBase).toFixed(4) : null;
     });
-    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', stepped: true, pointRadius: 0, borderWidth: 1.5, spanGaps: true });
+    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 1.5, spanGaps: true });
   }
   pushIndex('沪深300', '#d93025', '沪深300');
   pushIndex('上证指数', '#e37400', '上证指数');

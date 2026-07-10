@@ -67,10 +67,9 @@
 <div class="page" id="page-earnings">
   <div class="table-wrap">
     <div class="table-header">
-      <h3>投资收益记录</h3>
+      <h3>投资概览</h3>
       <div>
         <input type="file" id="fund-excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" onchange="importFundExcel(event)">
-        <button class="btn btn-outline btn-sm" onclick="openNavManage()">📝 管理记录</button>
         <button class="btn btn-primary btn-sm" onclick="document.getElementById('fund-excel-input').click()">📥 导入历史数据</button>
       </div>
     </div>
@@ -83,6 +82,12 @@
       <div class="chart-box" style="margin-bottom:18px;">
         <div class="chart-title"><h3>资产与收益走势</h3></div>
         <div class="chart-canvas-wrap" style="height:320px;"><canvas id="chart-earnings"></canvas></div>
+      </div>
+      <div class="table-header" style="margin-bottom:12px;">
+        <h3>投资收益记录</h3>
+        <div>
+          <button class="btn btn-primary btn-sm" onclick="openNavEdit()">＋ 新增记录</button>
+        </div>
       </div>
       <div id="earnings-table"></div>
     </div>
@@ -228,20 +233,6 @@
     <div class="modal-actions" style="margin-top:16px;">
       <button class="btn btn-outline" id="mapping-cancel-btn" onclick="closeMappingModal()">取消</button>
       <button class="btn btn-primary" id="mapping-ok-btn" onclick="confirmMapping()">确认导入</button>
-    </div>
-  </div>
-</div>
-
-<!-- 历史净值记录列表（新增/编辑/删除，与持仓一致） -->
-<div class="modal-overlay" id="modal-nav-manage" style="z-index:2100;">
-  <div class="modal" style="width:640px;max-width:94vw;">
-    <h2>历史净值记录</h2>
-    <div style="margin-bottom:12px;text-align:right;">
-      <button class="btn btn-primary btn-sm" onclick="openNavEdit(null)">＋ 新增记录</button>
-    </div>
-    <div id="nav-manage-list" style="max-height:50vh;overflow:auto;"></div>
-    <div class="modal-actions" style="margin-top:14px;">
-      <button class="btn btn-outline" onclick="closeModal('modal-nav-manage')">关闭</button>
     </div>
   </div>
 </div>

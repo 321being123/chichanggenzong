@@ -77,8 +77,10 @@ td.positive { color: #d93025; font-weight: 600; }
 td.negative { color: #137333; font-weight: 600; }
 .text-right { text-align: right; }
 .text-center { text-align: center; }
-.earnings-pager { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 4px; }
+.earnings-pager { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 0 4px; flex-wrap: wrap; }
 .earnings-pager .pager-info { font-size: 12px; color: #888; white-space: nowrap; }
+.earnings-pager .pager-jump { font-size: 12px; color: #888; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.earnings-pager .pager-jump input { width: 52px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; text-align: center; }
 
 /* ===== 标签 ===== */
 .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }

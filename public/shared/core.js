@@ -2360,59 +2360,25 @@ function copyImportError() {
 }
 
 // ===================== 历史净值记录 新增/编辑/删除（与持仓一致） =====================
-let navEditIndex = -1;   // -1 表示新增；否则为 navManageList 中的索引
-let navManageList = [];
+let navEditIndex = -1;   // -1 表示新增；否则为 data.navHistory 中的索引
 
-function openNavManage() {
-  if (!data.navHistory) data.navHistory = [];
-  navManageList = data.navHistory.slice().sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
-  renderNavManage();
-  document.getElementById('modal-nav-manage').classList.add('show');
-}
-
-function renderNavManage() {
-  const el = document.getElementById('nav-manage-list');
-  if (!el) return;
-  if (navManageList.length === 0) {
-    el.innerHTML = '<p style="color:#999;font-size:13px;padding:12px 0;">暂无记录，点「＋ 新增记录」添加一条历史净值。</p>';
-    return;
-  }
-  let html = '<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead><tr style="background:#f7f7f9;color:#666;">' +
-    '<th style="padding:8px;text-align:left;">日期</th>' +
-    '<th style="padding:8px;text-align:right;">净值</th>' +
-    '<th style="padding:8px;text-align:right;">总市值</th>' +
-    '<th style="padding:8px;text-align:right;">本金</th>' +
-    '<th style="padding:8px;text-align:center;">操作</th></tr></thead><tbody>';
-  navManageList.forEach(function (n, idx) {
-    html += '<tr>' +
-      '<td style="padding:8px;border-top:1px solid #f0f0f0;">' + (n.date || '-') + '</td>' +
-      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:right;">' + (n.nav != null ? Number(n.nav).toFixed(4) : '-') + '</td>' +
-      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:right;">' + (n.totalAsset != null ? fmt(n.totalAsset) : '-') + '</td>' +
-      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:right;">' + (n.invested != null ? fmt(n.invested) : '-') + '</td>' +
-      '<td style="padding:8px;border-top:1px solid #f0f0f0;text-align:center;white-space:nowrap;">' +
-        '<button class="btn btn-outline btn-sm" onclick="openNavEdit(' + idx + ')">编辑</button> ' +
-        '<button class="btn btn-danger btn-sm" onclick="deleteNav(' + idx + ')">删除</button>' +
-      '</td></tr>';
-  });
-  html += '</tbody></table>';
-  el.innerHTML = html;
-}
-
-function openNavEdit(idx) {
-  navEditIndex = (idx == null ? -1 : idx);
+function openNavEdit(date) {
   const t = document.getElementById('nav-edit-title');
   const d = document.getElementById('nav-edit-date');
   const v = document.getElementById('nav-edit-nav');
   const tt = document.getElementById('nav-edit-total');
   const iv = document.getElementById('nav-edit-invested');
-  if (idx != null && idx >= 0 && navManageList[idx]) {
-    const n = navManageList[idx];
+  let rec = null;
+  if (date != null && data.navHistory) rec = data.navHistory.find(function (n) { return n.date === date; });
+  if (rec) {
+    navEditIndex = data.navHistory.indexOf(rec);
     if (t) t.textContent = '编辑净值记录';
-    if (d) d.value = n.date || '';
-    if (v) v.value = (n.nav != null ? n.nav : '');
-    if (tt) tt.value = (n.totalAsset != null ? n.totalAsset : '');
-    if (iv) iv.value = (n.invested != null ? n.invested : '');
+    if (d) d.value = rec.date || '';
+    if (v) v.value = (rec.nav != null ? rec.nav : '');
+    if (tt) tt.value = (rec.totalAsset != null ? rec.totalAsset : '');
+    if (iv) iv.value = (rec.invested != null ? rec.invested : '');
   } else {
+    navEditIndex = -1;
     if (t) t.textContent = '新增净值记录';
     if (d) d.value = ''; if (v) v.value = ''; if (tt) tt.value = ''; if (iv) iv.value = '';
   }
@@ -2434,10 +2400,9 @@ function saveNavEdit() {
     invested: (invRaw === '' || invRaw == null) ? null : parseFloat(invRaw)
   };
   if (!data.navHistory) data.navHistory = [];
-  if (navEditIndex >= 0 && navManageList[navEditIndex]) {
-    const orig = navManageList[navEditIndex];
-    const target = data.navHistory.find(function (n) { return n.date === orig.date; });
-    if (target) { target.date = rec.date; target.nav = rec.nav; target.totalAsset = rec.totalAsset; target.invested = rec.invested; }
+  if (navEditIndex >= 0 && data.navHistory[navEditIndex]) {
+    const target = data.navHistory[navEditIndex];
+    target.date = rec.date; target.nav = rec.nav; target.totalAsset = rec.totalAsset; target.invested = rec.invested;
   } else {
     const exist = data.navHistory.find(function (n) { return n.date === rec.date; });
     if (exist) { exist.nav = rec.nav; exist.totalAsset = rec.totalAsset; exist.invested = rec.invested; }
@@ -2447,19 +2412,16 @@ function saveNavEdit() {
   saveData();
   renderEarnings();
   closeModal('modal-nav-edit');
-  openNavManage();
   showToast('已保存');
 }
 
-function deleteNav(idx) {
-  if (idx == null || !navManageList[idx]) return;
-  const orig = navManageList[idx];
-  if (!confirm('确定删除 ' + (orig.date || '') + ' 这条净值记录？')) return;
-  data.navHistory = data.navHistory.filter(function (n) { return n.date !== orig.date; });
+function deleteNav(date) {
+  if (!data.navHistory) return;
+  if (!confirm('确定删除 ' + (date || '') + ' 这条净值记录？')) return;
+  data.navHistory = data.navHistory.filter(function (n) { return n.date !== date; });
   data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
   saveData();
   renderEarnings();
-  openNavManage();
   showToast('已删除');
 }
 
@@ -2736,17 +2698,21 @@ function renderEarningsTable(sorted) {
   const el = document.getElementById('earnings-table');
   if (!el) return;
   earningsSorted = sorted;
+  const wan = function (v) { return (Number(v || 0) / 10000).toFixed(2) + '万'; };
   const cols = [
     { t: '日期', get: function (r) { return r.date || '-'; } },
-    { t: '总市值', get: function (r) { return fmt(r.totalMarketValue || 0); } },
-    { t: '投入本金', get: function (r) { return fmt(r.totalInvested || 0); } },
+    { t: '总市值(万元)', get: function (r) { return wan(r.totalMarketValue); } },
+    { t: '投入本金(万元)', get: function (r) { return wan(r.totalInvested); } },
     { t: '净值', get: function (r) { return (r.nav || 1).toFixed(4); } },
     { t: '总收益率', right: true, color: function (r) { return (r.totalReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.totalReturn || 0) >= 0 ? '+' : '') + ((r.totalReturn || 0) * 100).toFixed(2) + '%'; } },
     { t: '本周涨跌', right: true, color: function (r) { return (r.weekChange || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.weekChange || 0) >= 0 ? '+' : '') + ((r.weekChange || 0) * 100).toFixed(2) + '%'; } },
     { t: '年化', right: true, color: function (r) { return (r.annualizedReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
     { t: '当前回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.currentDrawdown || 0) * 100).toFixed(2) + '%'; } },
     { t: '最大回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.maxDrawdown || 0) * 100).toFixed(2) + '%'; } },
-    { t: '新增资金', right: true, get: function (r) { return fmt(r.newCapital || 0); } }
+    { t: '操作', center: true, get: function (r) {
+        return '<button class="btn btn-outline btn-sm" onclick="openNavEdit(\'' + r.date + '\')">编辑</button> ' +
+               '<button class="btn btn-danger btn-sm" onclick="deleteNav(\'' + r.date + '\')">删除</button>';
+      } }
   ];
   const total = sorted.length;
   const totalPages = Math.max(1, Math.ceil(total / EARNINGS_PAGE_SIZE));
@@ -2755,26 +2721,52 @@ function renderEarningsTable(sorted) {
   const reversed = sorted.slice().reverse();
   const start = (earningsPage - 1) * EARNINGS_PAGE_SIZE;
   const pageRows = reversed.slice(start, start + EARNINGS_PAGE_SIZE);
-  let html = '<table><thead><tr>' + cols.map(function (c) { return '<th' + (c.right ? ' class="text-right"' : '') + '>' + c.t + '</th>'; }).join('') + '</tr></thead><tbody>';
+  let html = '<table><thead><tr>';
+  cols.forEach(function (c) {
+    const cls = c.right ? ' class="text-right"' : (c.center ? ' class="text-center"' : '');
+    html += '<th' + cls + '>' + c.t + '</th>';
+  });
+  html += '</tr></thead><tbody>';
   pageRows.forEach(function (r) {
     html += '<tr>' + cols.map(function (c) {
       if (c.right) {
         return '<td class="text-right" style="font-weight:600;color:' + (c.color ? c.color(r) : '#1a1a2e') + '">' + c.get(r) + '</td>';
+      }
+      if (c.center) {
+        return '<td class="text-center">' + c.get(r) + '</td>';
       }
       return '<td>' + c.get(r) + '</td>';
     }).join('') + '</tr>';
   });
   html += '</tbody></table>';
   html += '<div class="earnings-pager">' +
+    '<button class="btn btn-sm btn-outline" onclick="earningsToPage(1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>首页</button>' +
     '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(-1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
     '<span class="pager-info">第 ' + earningsPage + ' / ' + totalPages + ' 页　共 ' + total + ' 条</span>' +
     '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(1)"' + (earningsPage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
+    '<button class="btn btn-sm btn-outline" onclick="earningsToPage(' + totalPages + ')"' + (earningsPage >= totalPages ? ' disabled' : '') + '>尾页</button>' +
+    '<span class="pager-jump">跳至 <input type="number" id="earnings-jump-input" min="1" max="' + totalPages + '" value="' + earningsPage + '" onkeydown="if(event.key===\'Enter\')earningsJump()"> 页 ' +
+    '<button class="btn btn-sm btn-outline" onclick="earningsJump()">跳转</button></span>' +
     '</div>';
   el.innerHTML = html;
 }
 
 function earningsGoPage(delta) {
   earningsPage += delta;
+  renderEarningsTable(earningsSorted);
+}
+
+function earningsToPage(page) {
+  earningsPage = page;
+  renderEarningsTable(earningsSorted);
+}
+
+function earningsJump() {
+  const inp = document.getElementById('earnings-jump-input');
+  if (!inp) return;
+  const p = parseInt(inp.value, 10);
+  if (isNaN(p)) return;
+  earningsPage = p;
   renderEarningsTable(earningsSorted);
 }
 

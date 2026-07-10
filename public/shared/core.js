@@ -1919,6 +1919,10 @@ async function importFundExcel(event) {
   }
 }
 
+let earningsSorted = [];
+let earningsPage = 1;
+const EARNINGS_PAGE_SIZE = 20;
+
 function renderEarnings() {
   const el = document.getElementById('earnings-stats');
   if (!el) return;
@@ -1952,6 +1956,7 @@ function renderEarnings() {
       '<div class="sub">' + (c.sub || '') + '</div></div>';
   }).join('');
 
+  earningsPage = 1;
   renderEarningsChart(sorted);
   renderEarningsTable(sorted);
 }
@@ -1993,6 +1998,7 @@ function renderEarningsChart(sorted) {
 function renderEarningsTable(sorted) {
   const el = document.getElementById('earnings-table');
   if (!el) return;
+  earningsSorted = sorted;
   const cols = [
     { t: '日期', get: function (r) { return r.date || '-'; } },
     { t: '总市值', get: function (r) { return fmt(r.totalMarketValue || 0); } },
@@ -2004,9 +2010,15 @@ function renderEarningsTable(sorted) {
     { t: '最大回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.maxDrawdown || 0) * 100).toFixed(2) + '%'; } },
     { t: '新增资金', right: true, get: function (r) { return fmt(r.newCapital || 0); } }
   ];
-  const rows = sorted.slice().reverse();
+  const total = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / EARNINGS_PAGE_SIZE));
+  if (earningsPage > totalPages) earningsPage = totalPages;
+  if (earningsPage < 1) earningsPage = 1;
+  const reversed = sorted.slice().reverse();
+  const start = (earningsPage - 1) * EARNINGS_PAGE_SIZE;
+  const pageRows = reversed.slice(start, start + EARNINGS_PAGE_SIZE);
   let html = '<table><thead><tr>' + cols.map(function (c) { return '<th' + (c.right ? ' class="text-right"' : '') + '>' + c.t + '</th>'; }).join('') + '</tr></thead><tbody>';
-  rows.forEach(function (r) {
+  pageRows.forEach(function (r) {
     html += '<tr>' + cols.map(function (c) {
       if (c.right) {
         return '<td class="text-right" style="font-weight:600;color:' + (c.color ? c.color(r) : '#1a1a2e') + '">' + c.get(r) + '</td>';
@@ -2015,7 +2027,17 @@ function renderEarningsTable(sorted) {
     }).join('') + '</tr>';
   });
   html += '</tbody></table>';
+  html += '<div class="earnings-pager">' +
+    '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(-1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
+    '<span class="pager-info">第 ' + earningsPage + ' / ' + totalPages + ' 页　共 ' + total + ' 条</span>' +
+    '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(1)"' + (earningsPage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
+    '</div>';
   el.innerHTML = html;
+}
+
+function earningsGoPage(delta) {
+  earningsPage += delta;
+  renderEarningsTable(earningsSorted);
 }
 
 // ===================== 全量渲染 =====================

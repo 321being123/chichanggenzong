@@ -2598,6 +2598,35 @@ function normalizeIndexFrom(indexData, navData, base) {
     .map(function (d) { return { date: d.date, val: (d.close / firstClose) * navAtBase }; });
 }
 
+// 周频采样：生成 [start, end] 内所有每周五(UTC 周五=5)的 ISO 日期
+function weeklyFridayLabels(startStr, endStr) {
+  const labels = [];
+  const d = new Date(startStr + 'T00:00:00Z');
+  const diff = (5 - d.getUTCDay() + 7) % 7;
+  d.setUTCDate(d.getUTCDate() + diff);
+  const end = new Date(endStr + 'T00:00:00Z');
+  while (d <= end) {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    labels.push(y + '-' + m + '-' + dd);
+    d.setUTCDate(d.getUTCDate() + 7);
+  }
+  return labels;
+}
+
+// 对每个周五取“该日或之前最近一个交易日”的收盘，返回与 fridays 对齐的收盘价数组
+function fridayCarryForward(sortedEntries, fridays) {
+  const res = [];
+  let p = 0;
+  const n = sortedEntries.length;
+  fridays.forEach(function (fri) {
+    while (p < n && sortedEntries[p].date <= fri) p++;
+    res.push(p > 0 ? sortedEntries[p - 1].close : null);
+  });
+  return res;
+}
+
 async function renderEarningsReturnsChart() {
   const ctx = document.getElementById('chart-earnings-returns');
   if (!ctx) return;
@@ -2607,62 +2636,63 @@ async function renderEarningsReturnsChart() {
   }
   const navData = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   const cmp = findComparisonStart(navData);
-  // --- 以 indexHistory 完整日期为 X 轴（指数每日连续，不再受 NAV 稀疏日期拖累）---
-  var idxDates = [];
+
+  // ---------- 周频采样：只取每周五收盘，绘制真实周频台阶 ----------
+  // 范围起点 = 对比基准日(或净值首日)，终点 = 净值与指数数据的最晚日期
+  const lastNavDate = navData[navData.length - 1].date;
+  let lastIdxDate = lastNavDate;
   if (data.indexHistory && data.indexHistory.length) {
-    var seen = {};
-    data.indexHistory.forEach(function (h) { if (!seen[h.date]) { seen[h.date] = true; idxDates.push(h.date); } });
-    idxDates.sort();
+    data.indexHistory.forEach(function (h) { if (h.date > lastIdxDate) lastIdxDate = h.date; });
   }
-  if (!idxDates.length) idxDates = navData.map(function (d) { return d.date; });
+  const rangeStart = cmp || navData[0].date;
+  const labels = weeklyFridayLabels(rangeStart, lastIdxDate);
+  if (!labels.length) {
+    if (chartEarningsReturns) { chartEarningsReturns.destroy(); chartEarningsReturns = null; }
+    return;
+  }
 
-  // 截取：只保留对比基准日之后（此前指数不全不画）
-  var startIdx = 0;
-  if (cmp) { for (var si = 0; si < idxDates.length; si++) { if (idxDates[si] >= cmp) { startIdx = si; break; } } }
-  const labels = idxDates.slice(startIdx);
+  // 净值周频：每个周五取“周五或之前最近一次净值”作为该周五收盘净值
+  const navFridayVals = labels.map(function (fri) {
+    let v = null;
+    for (let i = navData.length - 1; i >= 0; i--) {
+      if (navData[i].date <= fri) { v = Number(navData[i].nav); break; }
+    }
+    return v == null ? null : +(v.toFixed(4));
+  });
+  // 归一：首个有净值的周五 = 1.0
+  let navBase = 1;
+  for (let i = 0; i < navFridayVals.length; i++) { if (navFridayVals[i] != null) { navBase = navFridayVals[i]; break; } }
+  const navVals = navFridayVals.map(function (v) { return v == null ? null : +(v / navBase).toFixed(4); });
 
-  // 净值归一(首日=1.0)；周频净值在每日轴上做线性插值，消除阶梯锯齿、曲线平滑连续
-  const rawNav = navData.map(function (d) { return +(Number(d.nav).toFixed(4)); });
-  const navBase = rawNav[0] || 1;
-  const navDateMap = {};
-  navData.forEach(function (d, i) { navDateMap[d.date] = rawNav[i] / navBase; });
-  const navDatesSorted = navData.map(function (d) { return d.date; });
-  var navVals = labels.map(function (date) {
-    if (navDateMap[date] != null) return +(navDateMap[date].toFixed(4));
-    var lo = null, hi = null;
-    for (var i = 0; i < navDatesSorted.length; i++) {
-      if (navDatesSorted[i] < date) lo = i;
-      else if (navDatesSorted[i] > date) { hi = i; break; }
-    }
-    if (lo != null && hi != null) {
-      var dLo = navDatesSorted[lo], dHi = navDatesSorted[hi];
-      var t = (new Date(date) - new Date(dLo)) / (new Date(dHi) - new Date(dLo));
-      return +((navDateMap[dLo] + (navDateMap[dHi] - navDateMap[dLo]) * t).toFixed(4));
-    }
-    if (lo != null) return +(navDateMap[navDatesSorted[lo]].toFixed(4));
-    return null;
+  // 指数周频：每个周五取收盘(或之前最近交易日)，按各自首个可比周五对齐当日净值
+  // 预构建每个指数的有序 [{date, close}]
+  const idxEntries = {};
+  ['沪深300', '上证指数', '中证500', '恒生指数'].forEach(function (name) {
+    const arr = [];
+    data.indexHistory.forEach(function (h) { if (h[name] != null) arr.push({ date: h.date, close: h[name] }); });
+    arr.sort(function (a, b) { return a.date.localeCompare(b.date); });
+    idxEntries[name] = arr;
   });
 
-  // 指数序列：直接从宽表取值(连续)，以各自首个有数据日的当日净值对齐
-  var datasets = [{
+  const datasets = [{
     label: '持仓净值', data: navVals, borderColor: '#1a237e',
-    backgroundColor: 'rgba(26,35,126,.08)', fill: true, tension: 0.25, pointRadius: 0, borderWidth: 2.5, spanGaps: true
+    backgroundColor: 'rgba(26,35,126,.08)', fill: true,
+    stepped: true, pointRadius: 0, borderWidth: 2.5, spanGaps: true
   }];
   function pushIndex(label, color, name) {
-    if (!data.indexHistory || !data.indexHistory.length) return;
-    var closeMap = {}, hasAny = false;
-    data.indexHistory.forEach(function (h) { if (h[name] != null) { closeMap[h.date] = h[name]; hasAny = true; } });
-    if (!hasAny) return;
-    var baseDate = null, navAtBase = null;
-    for (var i = 0; i < labels.length; i++) {
-      if (closeMap[labels[i]] != null) { baseDate = labels[i]; navAtBase = navVals[i]; break; }
+    const entries = idxEntries[name];
+    if (!entries || !entries.length) return;
+    const closes = fridayCarryForward(entries, labels);
+    // 对齐基准：首个“既有净值又有指数收盘”的周五，使指数起点 = 当日净值
+    let baseIdx = -1, navAtBase = null, firstClose = null;
+    for (let i = 0; i < labels.length; i++) {
+      if (navVals[i] != null && closes[i] != null) { baseIdx = i; navAtBase = navVals[i]; firstClose = closes[i]; break; }
     }
-    if (!baseDate || navAtBase == null) return;
-    var firstClose = closeMap[baseDate];
-    var vals = labels.map(function (d) {
-      return closeMap[d] != null ? +((closeMap[d] / firstClose * navAtBase).toFixed(4)) : null;
+    if (baseIdx < 0) return;
+    const vals = labels.map(function (fri, i) {
+      return closes[i] != null ? +((closes[i] / firstClose) * navAtBase).toFixed(4) : null;
     });
-    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0.25, pointRadius: 0, borderWidth: 1.5, spanGaps: true });
+    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', stepped: true, pointRadius: 0, borderWidth: 1.5, spanGaps: true });
   }
   pushIndex('沪深300', '#d93025', '沪深300');
   pushIndex('上证指数', '#e37400', '上证指数');

@@ -9,7 +9,7 @@ let pass = 0, fail = 0;
 
 function req(method, path, body) {
   return new Promise((resolve, reject) => {
-    const opts = { hostname: 'localhost', port: 3000, path, method, headers: { 'Content-Type': 'application/json' } };
+    const opts = { hostname: 'localhost', port: 3000, path, method, headers: { 'Content-Type': 'application/json', 'Origin': 'http://localhost:3000' } };
     if (sessionCookie) opts.headers['Cookie'] = sessionCookie;
     const r = http.request(opts, (res) => {
       let data = '';
@@ -84,7 +84,8 @@ function ng(name, got, want) { console.log(`  ❌ ${name}: 期望 ${JSON.stringi
   const accounts = await req('GET', '/api/accounts');
   ok(accounts.status === 200 && Array.isArray(accounts.body) ? `账户列表: ${accounts.body.join(', ')}` : 'accounts 正常');
 
-  const dataResp = await req('GET', '/api/data/' + encodeURIComponent('华泰账户'));
+  const acctName = (accounts.body && accounts.body[0]) || '默认账户';
+  const dataResp = await req('GET', '/api/data/' + encodeURIComponent(acctName));
   if (dataResp.status === 200) {
     const d = dataResp.body;
     ok(`持仓 ${d.positions.length} 只`);
@@ -109,7 +110,7 @@ function ng(name, got, want) { console.log(`  ❌ ${name}: 期望 ${JSON.stringi
   if (q2.status === 200 && q2.body.price) ok(`123175 百畅转债: ¥${q2.body.price}, 涨跌=${q2.body.change}%`);
   else ng('可转债行情', q2.body, '含 price');
 
-  const q3 = await req('GET', '/api/quote/152');
+  const q3 = await req('GET', '/api/quote/00152');
   if (q3.status === 200 && q3.body.price) ok(`152 深圳国际(港股): HK$${q3.body.price}, 涨跌=${q3.body.change}%`);
   else ng('港股行情', q3.body, '含 price');
 
@@ -123,7 +124,7 @@ function ng(name, got, want) { console.log(`  ❌ ${name}: 期望 ${JSON.stringi
   if (hkRate.status === 200 && hkRate.body.rate) ok(`港币汇率: ${hkRate.body.rate}`);
   else ng('hkrate', hkRate.body, '含 rate');
 
-  const kline = await req('GET', '/api/kline?secid=1.000001&days=30');
+  const kline = await req('GET', '/api/kline?secid=hkHSI&days=30');
   if (kline.status === 200 && Array.isArray(kline.body) && kline.body.length > 0) ok(`上证指数K线: ${kline.body.length} 条`);
   else ng('kline', `status=${kline.status} len=${kline.body?.length}`, '有数据');
 

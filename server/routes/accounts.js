@@ -111,7 +111,7 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
 }));
 
 // ========== 每日收盘价记录 ==========
-router.post('/daily-prices/:name', requireLogin, asyncHandler(async (req, res) => {
+router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
     const { prices, date } = req.body;

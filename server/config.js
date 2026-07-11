@@ -33,7 +33,8 @@ const redis = { client: null, store: undefined, ready: false };
 if (process.env.REDIS_URL) {
   try {
     const { createClient } = require('redis');
-    const RedisStore = require('connect-redis')(require('express-session'));
+    const connectRedis = require('connect-redis');
+    const RedisStore = connectRedis.default || connectRedis;
     redis.client = createClient({ url: process.env.REDIS_URL });
     redis.client.on('error', (e) => console.warn('[Redis] 连接错误:', e.message));
     redis.client.on('ready', () => { redis.ready = true; });

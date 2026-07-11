@@ -23,7 +23,7 @@ const pool = process.env.DATABASE_URL
       max: 10,
     });
 
-// 首次启动自动建表（PostgreSQL 无 WAL pragma，ACID 天然保证；double precision 等价于 SQLite REAL）
+// 首次启动自动建表（PostgreSQL，ACID 天然保证；double precision 用于金额/净值字段）
 async function initSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (

@@ -276,45 +276,56 @@ async function loadAccountData(username, accountName) {
   return result;
 }
 
+// 单连接事务：DELETE+INSERT 全成功或全回滚，避免中途异常留下半成品数据
 async function saveAccountData(username, accountName, data) {
-  // positions
-  await pool.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
-  for (const p of (data.positions || [])) {
-    await pool.query(
-      'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-      [p.id, username, accountName, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // positions
+    await client.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
+    for (const p of (data.positions || [])) {
+      await client.query(
+        'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        [p.id, username, accountName, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
+      );
+    }
+    // trades
+    await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
+    for (const t of (data.trades || [])) {
+      await client.query(
+        'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
+        [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '']
+      );
+    }
+    // nav_history
+    await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+    for (const n of (data.navHistory || [])) {
+      await client.query(
+        'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6)',
+        [username, accountName, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested)]
+      );
+    }
+    // cash_flows
+    await client.query('DELETE FROM cash_flows WHERE username=$1 AND account_name=$2', [username, accountName]);
+    for (const c of (data.cashFlows || [])) {
+      await client.query(
+        'INSERT INTO cash_flows (id, username, account_name, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [c.id || uid(), username, accountName, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
+      );
+    }
+    // account_data（保留 totalAsset/cashBase 供现金重算兜底；indexHistory 已独立成表，不再写入 JSON 避免读写放大；updated_at 自动更新）
+    const { indexHistory, ...dataForJson } = data;
+    await client.query(
+      'INSERT INTO account_data (username, account_name, data, updated_at) VALUES ($1,$2,$3, to_char(now(), \'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at',
+      [username, accountName, JSON.stringify(dataForJson)]
     );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
   }
-  // trades
-  await pool.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
-  for (const t of (data.trades || [])) {
-    await pool.query(
-      'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
-      [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '']
-    );
-  }
-  // nav_history
-  await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
-  for (const n of (data.navHistory || [])) {
-    await pool.query(
-      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6)',
-      [username, accountName, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested)]
-    );
-  }
-  // cash_flows
-  await pool.query('DELETE FROM cash_flows WHERE username=$1 AND account_name=$2', [username, accountName]);
-  for (const c of (data.cashFlows || [])) {
-    await pool.query(
-      'INSERT INTO cash_flows (id, username, account_name, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-      [c.id || uid(), username, accountName, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
-    );
-  }
-  // account_data（保留 totalAsset/cashBase 供现金重算兜底；indexHistory 已独立成表，不再写入 JSON 避免读写放大；updated_at 自动更新）
-  const { indexHistory, ...dataForJson } = data;
-  await pool.query(
-    'INSERT INTO account_data (username, account_name, data, updated_at) VALUES ($1,$2,$3, to_char(now(), \'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at',
-    [username, accountName, JSON.stringify(dataForJson)]
-  );
 }
 
 // ====== 每日收盘价 ======

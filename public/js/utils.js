@@ -77,7 +77,7 @@ function calcSummary() {
 
 function getSubtypeTag(st) {
   var map = { 'A股': '<span class="tag tag-a">A股</span>', '港股': '<span class="tag tag-hk">港股</span>', '美股': '<span class="tag tag-us">美股</span>', '可转债': '<span class="tag tag-cb">可转债</span>', '信用债': '<span class="tag tag-bond">信用债</span>', '基金/ETF': '<span class="tag tag-etf">基金/ETF</span>' };
-  return map[st] || '<span class="tag">' + (st || '-') + '</span>';
+  return map[st] || '<span class="tag">' + escapeHtml(st || '-') + '</span>';
 }
 
 function getTypeTag(type) {

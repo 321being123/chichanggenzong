@@ -687,8 +687,8 @@ function renderPositionsTable(targetId, limit) {
 
     html += '<tr>' +
       '<td style="text-align:center;color:#bbb;">' + (idx + 1) + '</td>' +
-      '<td style="font-weight:600;color:' + getSubtypeColor(p.subtype) + ';">' + (p.code || '-') + '</td>' +
-      '<td><strong>' + (p.name || '未知') + '</strong></td>' +
+      '<td style="font-weight:600;color:' + getSubtypeColor(p.subtype) + ';">' + escapeHtml(p.code || '-') + '</td>' +
+      '<td><strong>' + escapeHtml(p.name || '未知') + '</strong></td>' +
       '<td class="text-right" style="font-weight:600;' + priceStyle + '">' + priceDisplay + '</td>' +
       '<td class="text-right" style="font-weight:600;font-size:13px;' + chgStyle + '">' + chgDisplay + '</td>' +
       '<td class="text-right">' + (p.quantity != null ? fmtQty(p.quantity) : 0) + '</td>' +
@@ -762,15 +762,15 @@ function renderTrades() {
       }
       html += '<tr>' +
         '<td>' + (t.created_at || t.date || '-') + '</td>' +
-        '<td>' + (t.code || '-') + '</td>' +
-        '<td>' + (displayName || '-') + '</td>' +
+        '<td>' + escapeHtml(t.code || '-') + '</td>' +
+        '<td>' + escapeHtml(displayName || '-') + '</td>' +
         '<td>' + dirLabel + '</td>' +
         '<td class="text-right">' + (t.price != null ? Number(t.price).toFixed(3) : '-') + '</td>' +
         '<td class="text-right ' + (t.direction === 'buy' ? 'positive' : 'negative') + '">' +
           (t.direction === 'buy' ? '+' : '-') + fmtQty(t.quantity) + '</td>' +
         '<td class="text-right">' + (t.amount != null ? fmt(t.amount) : '-') + '</td>' +
-        '<td>' + (t.type || '-') + '</td>' +
-        '<td>' + (t.note || '') + '</td>' +
+        '<td>' + escapeHtml(t.type || '-') + '</td>' +
+        '<td>' + escapeHtml(t.note || '') + '</td>' +
         '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteTrade(\'' + t.id + '\')">删除</button></td>' +
         '</tr>';
     } else {
@@ -782,14 +782,14 @@ function renderTrades() {
       html += '<tr>' +
         '<td>' + (c.created_at || c.date || '-') + '</td>' +
         '<td>现金</td>' +
-        '<td>现金' + (c.note ? '·' + c.note : '') + '</td>' +
+        '<td>现金' + (c.note ? '·' + escapeHtml(c.note) : '') + '</td>' +
         '<td>' + dirLabel + '</td>' +
         '<td class="text-right">-</td>' +
         '<td class="text-right">-</td>' +
         '<td class="text-right ' + (isIn ? 'positive' : 'negative') + '">' +
           (isIn ? '+' : '-') + fmt(Math.abs(c.amount)) + '</td>' +
         '<td>现金</td>' +
-        '<td>' + (c.note || '') + '</td>' +
+        '<td>' + escapeHtml(c.note || '') + '</td>' +
         '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteCashFlow(\'' + c.id + '\')">删除</button></td>' +
         '</tr>';
     }
@@ -1130,16 +1130,16 @@ function renderSmartItems() {
     var isTrade = item.kind === 'trade';
     html += '<tr>' +
       '<td>' + (isTrade ? '<span class="tag tag-equity">交易</span>' : '<span class="tag tag-cash">持仓</span>') + '</td>' +
-      '<td>' + (isTrade ? '<input type="date" id="s-date-' + i + '" value="' + (item.date || '') + '" style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' : '-') + '</td>' +
-      '<td><input type="text" id="s-code-' + i + '" value="' + code + '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;" oninput="onSmartCodeChange(' + i + ')"></td>' +
-      '<td><input type="text" id="s-name-' + i + '" value="' + (item.name || '') + '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-      '<td><input type="number" id="s-price-' + i + '" value="' + (item.price || '') + '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-      '<td><input type="number" id="s-qty-' + i + '" value="' + (item.quantity || '') + '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td>' + (isTrade ? '<input type="date" id="s-date-' + i + '" value="' + escapeHtml(item.date || '') + '" style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' : '-') + '</td>' +
+      '<td><input type="text" id="s-code-' + i + '" value="' + escapeHtml(code) + '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;" oninput="onSmartCodeChange(' + i + ')"></td>' +
+      '<td><input type="text" id="s-name-' + i + '" value="' + escapeHtml(item.name || '') + '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td><input type="number" id="s-price-' + i + '" value="' + escapeHtml(item.price || '') + '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
+      '<td><input type="number" id="s-qty-' + i + '" value="' + escapeHtml(item.quantity || '') + '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
       '<td>' + (isTrade ? '<select id="s-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
         '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
         '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
         '</select>' : '-') + '</td>' +
-      '<td>' + getTypeTag(rec.type) + ' ' + (rec.subtype || '') + '</td>' +
+      '<td>' + getTypeTag(rec.type) + ' ' + escapeHtml(rec.subtype || '') + '</td>' +
       '<td><button class="btn btn-success btn-sm" onclick="confirmSmartItem(' + i + ')">确认' + (isTrade ? '录入' : '导入') + '</button></td>' +
       '</tr>';
   });
@@ -2281,7 +2281,7 @@ function openMappingModal(headers, rows, auto) {
     { key: 'invested', label: '本金/投入列', def: auto.invested }
   ];
   const optsHtml = '<option value="-1">— 请选择 —</option>' +
-    headers.map(function (h, i) { return '<option value="' + i + '">' + (h || '(空表头' + (i + 1) + ')') + '</option>'; }).join('');
+    headers.map(function (h, i) { return '<option value="' + i + '">' + escapeHtml(h || '(空表头' + (i + 1) + ')') + '</option>'; }).join('');
   const cont = document.getElementById('mapping-fields');
   cont.innerHTML = fields.map(function (f) {
     return '<div style="display:flex;align-items:center;margin-bottom:10px;gap:10px;">' +
@@ -2310,10 +2310,10 @@ function renderMappingPreview() {
     '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总市值</th><th style="padding:6px;text-align:left;">本金</th></tr></thead><tbody>';
   rows.forEach(function (row) {
     html += '<tr>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.date >= 0 ? row[map.date] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.nav >= 0 ? row[map.nav] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.total >= 0 ? row[map.total] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + (map.invested >= 0 ? row[map.invested] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.date >= 0 ? row[map.date] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.nav >= 0 ? row[map.nav] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.total >= 0 ? row[map.total] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.invested >= 0 ? row[map.invested] : '') + '</td>' +
       '</tr>';
   });
   html += '</tbody></table>';

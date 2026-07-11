@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # 仅对仓库内受版本管理的 JS 做语法检查（node_modules 不入库，自动排除）
+      # 不连接数据库/Redis/外部行情，避免 CI 因环境缺失而失败
+      - name: Node 语法检查
+        run: |
+          fail=0
+          for f in $(git ls-files '*.js'); do
+            if ! node --check "$f"; then
+              echo "语法错误: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "存在语法错误，CI 失败"
+            exit 1
+          fi
+          echo "全部 JS 语法检查通过"

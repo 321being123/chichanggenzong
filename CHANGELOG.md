@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-11
+
+### 安全整改：P0/P1/P2 全批次落地
+- **变更**：
+  - P0：扫码上传 token 改为「图片已上传且属于当前登录用户」才能消费并删除，未上传只返回空、不提前作废；服务端对所有用户文本字段（账户名、记录ID、日期、类型、子类型、备注等）做白名单校验，拒绝含 HTML/脚本元字符的内容；前端移除内联 `onclick`，改用 `data-*` 属性 + 统一事件委托分发。
+  - P1：生产环境未配会话存储时打印明确告警；Excel/图片导入加 MIME、大小、sheet/行/列/单元格上限与 AI 输入截断；数据保存加乐观锁版本号（冲突返回 409）；数据迁移接口收敛为管理员专属；新增安全单测（45 项）。
+  - P2：金额/数量/净值等改用 `numeric` 高精度存储并四舍五入；新增 `accounts` 结构化表作为账户列表权威源（JSON 兜底保留）；任务调度（收盘记价/指数基线）支持独立 worker 进程（咨询锁 + `job_runs` 表）；统一错误处理、`/health` 与 `/ready` 探针、优雅停机；CSP 收紧（`base-uri`/`form-action 'self'`）。
+- **文件**：`server/services/vision.js`、`server/routes/import.js`、`server/middleware/validate.js`、`server/routes/accounts.js`、`server/db.js`、`server/app.js`、`server/worker.js`（新）、`server/jobs/marketClose.js`、`server/jobs/indexBaseline.js`、`server/middleware/errorHandler.js`、`server/middleware/security.js`、`server/config.js`、`test-security.js`、`test-integration.js`（新）、`package.json`、`.github/workflows/ci.yml`。
+
+### 修复：Redis 会话持久化（connect-redis v7 兼容性）
+- **根因**：`server/config.js` 使用 `require('connect-redis')(require('express-session'))`（v6 写法），但依赖为 `connect-redis@^7`，v7 改为对象导出（`connectRedis.default`），旧写法立即调用抛「require(...) is not a function」，被 try/catch 捕获后退回内存存储，导致配了 `REDIS_URL` 仍 `redis:false`。本地未配 `REDIS_URL` 一直走降级分支，故此前未暴露。
+- **修复**：改为 `const connectRedis = require('connect-redis'); const RedisStore = connectRedis.default || connectRedis;` 并 `new RedisStore({ client, prefix })`。服务器安装 redis-server 并写入 `REDIS_URL` 后，`/ready` 返回 `redis:true`，重启不再丢失登录态。
+- **文件**：`server/config.js`。
+
 ## 2026-07-10
 
 ### 改版：收益页与真实持仓打通

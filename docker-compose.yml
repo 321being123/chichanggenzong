@@ -1,19 +1,22 @@
 # 本地开发一键起 PostgreSQL + 应用（可选）
-# 用法：docker compose up -d
+# 用法：先复制 deploy/.env.example 为 .env 并填好 PGPASSWORD，再 docker compose up -d
 # 应用容器通过 DATABASE_URL 连到同网络下的 postgres 服务
+# 说明：数据库密码/用户/库名统一从 .env 读取（不再硬编码），且默认不对外暴露 5432
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: portfolio
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${PGUSER:-postgres}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?PGPASSWORD 未设置：请在 .env 里填一个强密码}
+      POSTGRES_DB: ${PGDATABASE:-portfolio}
+    # 默认不对外暴露 5432：同一 compose 网络内的 app 用服务名 postgres:5432 直连即可。
+    # 如需本机调试连库，取消下面注释（仅绑回环，不暴露公网）：
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d portfolio"]
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-postgres} -d ${PGDATABASE:-portfolio}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -24,9 +27,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/portfolio
+      DATABASE_URL: postgres://${PGUSER:-postgres}:${PGPASSWORD}@postgres:5432/${PGDATABASE:-portfolio}
       PORT: "3000"
-      ALLOWED_ORIGIN: localhost,127.0.0.1
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-localhost,127.0.0.1}
     ports:
       - "3000:3000"
 

@@ -50,10 +50,12 @@ function securityHeaders(req, res, next) {
   }
   const csp = [
     "default-src 'self'",
+    "base-uri 'self'",
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: https:",
     "connect-src 'self'",
+    "form-action 'self'",
     "frame-ancestors 'none'"
   ].join('; ');
   res.setHeader('Content-Security-Policy', csp);

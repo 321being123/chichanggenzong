@@ -1,5 +1,5 @@
 // ========== 自动记录每日收盘价（按市场收盘时刻精准触发） ==========
-const { pool, loadAccountData, saveDailyPrices } = require('../db');
+const { pool, loadAccountData, saveDailyPrices, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { fetchQuoteByCode } = require('../services/market');
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
@@ -72,13 +72,27 @@ async function recordMarketClose(label, matchFn) {
   }
 }
 
+// 带幂等锁与执行记录的收盘任务（跨实例单跑，失败留痕供告警）
+async function runMarketCloseJob(label, matchFn) {
+  if (!(await tryClaimJob('market_close:' + label))) return; // 其他实例已在跑，跳过
+  const runId = await startJobRun('market_close:' + label);
+  try {
+    await recordMarketClose(label, matchFn);
+    await finishJobRun(runId, true, '');
+  } catch (e) {
+    await finishJobRun(runId, false, e.message || String(e));
+  } finally {
+    await releaseJob('market_close:' + label);
+  }
+}
+
 // 为所有市场分别调度收盘任务
 function scheduleAllMarketCloses() {
   for (var i = 0; i < MARKET_CLOSE_TIMES.length; i++) {
     (function (mkt) {
       function runAndReschedule() {
         if (isTradingDay()) {
-          recordMarketClose(mkt.label, mkt.match).catch(() => {});
+          runMarketCloseJob(mkt.label, mkt.match).catch(() => {});
         }
         // 安排下一个交易日
         var delay = msUntil(mkt.h, mkt.m);

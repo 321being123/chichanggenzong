@@ -14,6 +14,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # 按 lockfile 精确安装依赖（验证 package-lock.json 与 package.json 一致，含 redis/connect-redis）
+      - name: 安装依赖（npm ci）
+        run: npm ci
+      # 安全专项测试：零依赖，不连数据库/Redis/外部 API，避免环境缺失导致失败
+      - name: 安全专项测试
+        run: npm run test:security
       # 仅对仓库内受版本管理的 JS 做语法检查（node_modules 不入库，自动排除）
       # 不连接数据库/Redis/外部行情，避免 CI 因环境缺失而失败
       - name: Node 语法检查
@@ -30,3 +36,36 @@ jobs:
             exit 1
           fi
           echo "全部 JS 语法检查通过"
+
+  # 集成测试：在临时 PostgreSQL 上验证 schema 迁移、numeric 精度、账户模型、任务锁
+  integration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: portfolio
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: portfolio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖（npm ci）
+        run: npm ci
+      - name: 集成测试
+        run: npm run test:integration

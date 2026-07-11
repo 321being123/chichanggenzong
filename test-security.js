@@ -29,8 +29,10 @@ vm.runInContext(utilsCode, sandbox);
 const escapeHtml = sandbox.escapeHtml;
 
 const { assertSafeUrl } = require('./server/services/ai');
-const validateAccountData = require('./server/middleware/validate');
-const { isAllowedOrigin, csrfMiddleware } = require('./server/middleware/security');
+const { validateAccountData, isValidAccountName } = require('./server/middleware/validate');
+const { visionUploadTokens, TOKEN_TTL, consumeVisionToken } = require('./server/services/vision');
+const { isAllowedOrigin, csrfMiddleware, securityHeaders } = require('./server/middleware/security');
+const { requestId, accessLog, errorHandler } = require('./server/middleware/errorHandler');
 const rateLimit = require('./server/middleware/rateLimit');
 
 // assertOwnership 依赖 db 的 loadUsers/loadAccountData：先 monkeypatch 再加载 auth（解构会拿到 mock）
@@ -183,9 +185,155 @@ const next = () => {}; // 占位，实际测试用闭包捕获
     assert.ok(src.includes('BEGIN') && src.includes('COMMIT') && src.includes('ROLLBACK'));
   });
 
+  console.log('\n[8] 扫码上传 token 生命周期 (consumeVisionToken)');
+  await test('未上传图片时轮询不删除 token，上传后被所属用户消费即删除', () => {
+    visionUploadTokens.clear();
+    const tk = 'tok-not-ready';
+    visionUploadTokens.set(tk, { image: null, timestamp: Date.now(), username: 'u1' });
+    const r1 = consumeVisionToken(tk, 'u1');
+    assert.strictEqual(r1.image, null);
+    assert.strictEqual(r1.expired, false);
+    assert.ok(visionUploadTokens.has(tk), '图片未上传时 token 不应被删除');
+    visionUploadTokens.get(tk).image = 'data:image/png;base64,xxx';
+    const r2 = consumeVisionToken(tk, 'u1');
+    assert.strictEqual(r2.image, 'data:image/png;base64,xxx');
+    assert.ok(!visionUploadTokens.has(tk), '图片被所属用户拉取后 token 应删除');
+  });
+  await test('非所属用户访问返回 forbidden 且不删除', () => {
+    visionUploadTokens.clear();
+    const tk = 'tok-owner';
+    visionUploadTokens.set(tk, { image: 'data:image/png;base64,zzz', timestamp: Date.now(), username: 'u1' });
+    const r = consumeVisionToken(tk, 'u2');
+    assert.strictEqual(r.forbidden, true);
+    assert.ok(visionUploadTokens.has(tk), '不应删除他人 token');
+  });
+  await test('过期 token 返回 expired 并清理', () => {
+    visionUploadTokens.clear();
+    const tk = 'tok-exp';
+    visionUploadTokens.set(tk, { image: 'x', timestamp: Date.now() - TOKEN_TTL - 1, username: 'u1' });
+    const r = consumeVisionToken(tk, 'u1');
+    assert.strictEqual(r.expired, true);
+    assert.ok(!visionUploadTokens.has(tk), '过期 token 应被清理');
+  });
+
+  console.log('\n[9] 持久型 XSS schema 防御 (validateAccountData / isValidAccountName)');
+  const xssPayloads = ['<img src=x onerror=alert(1)>', '"><script>alert(1)</script>', "'\"><&"];
+  await test('拒绝含脚本的持仓 ID', () => {
+    for (const x of xssPayloads) {
+      assert.ok(!validateAccountData({ positions: [{ code: '1', name: 'a', price: 1, quantity: 1, id: x }] }).ok);
+    }
+  });
+  await test('拒绝含脚本的持仓/交易 名称', () => {
+    for (const x of xssPayloads) {
+      assert.ok(!validateAccountData({ positions: [{ code: '1', name: x, price: 1, quantity: 1 }] }).ok);
+      assert.ok(!validateAccountData({ trades: [{ date: '2024-01-01', direction: 'buy', price: 1, quantity: 1, amount: 1, name: x }] }).ok);
+    }
+  });
+  await test('拒绝含脚本的 type/subtype', () => {
+    for (const x of xssPayloads) {
+      assert.ok(!validateAccountData({ positions: [{ code: '1', name: 'a', price: 1, quantity: 1, type: x, subtype: x }] }).ok);
+    }
+  });
+  await test('拒绝含脚本的 created_at', () => {
+    for (const x of xssPayloads) {
+      assert.ok(!validateAccountData({ trades: [{ date: '2024-01-01', direction: 'buy', price: 1, quantity: 1, amount: 1, created_at: x }] }).ok);
+    }
+  });
+  await test('拒绝含脚本的 cashType/cashSubtype', () => {
+    for (const x of xssPayloads) {
+      assert.ok(!validateAccountData({ positions: [], trades: [], navHistory: [], cashFlows: [], cashType: x, cashSubtype: x }).ok);
+    }
+  });
+  await test('拒绝含脚本的现金流 note', () => {
+    for (const x of xssPayloads) {
+      assert.ok(!validateAccountData({ cashFlows: [{ date: '2024-01-01', amount: 1, note: x }] }).ok);
+    }
+  });
+  await test('拒绝含非法字符的账户名（空/超长/脚本）', () => {
+    for (const x of xssPayloads) assert.ok(!isValidAccountName(x));
+    assert.ok(!isValidAccountName(''));
+    assert.ok(!isValidAccountName('x'.repeat(51)));
+  });
+  await test('放行合法账户名与类型', () => {
+    assert.ok(isValidAccountName('华泰账户'));
+    assert.ok(validateAccountData({ positions: [{ code: '601919', name: '中远海控', price: 10, quantity: 100, cost: 9, type: '股权', subtype: 'A股', id: 'abc123' }] }).ok);
+  });
+
+  console.log('\n[10] 图片上传校验 (validateImage) — P1-5 资源/成本限制');
+  const { validateImage } = require('./server/routes/import');
+  await test('拒绝空图片', () => {
+    assert.strictEqual(validateImage(null), '缺少图片');
+    assert.strictEqual(validateImage(''), '缺少图片');
+  });
+  await test('拒绝非图片 MIME（防直接调用绕过上传校验）', () => {
+    assert.strictEqual(validateImage('data:text/plain;base64,YWJj'), '仅支持图片文件');
+  });
+  await test('拒绝超过 10MB 的图片', () => {
+    const big = 'data:image/png;base64,' + 'A'.repeat(15 * 1024 * 1024);
+    assert.strictEqual(validateImage(big), '图片过大（上限 10MB）');
+  });
+  await test('放行正常图片 dataURL', () => {
+    assert.strictEqual(validateImage('data:image/png;base64,iVBORw0KGgo='), null);
+    assert.strictEqual(validateImage('data:image/jpeg;base64,/9j/4AAQ'), null);
+  });
+
+  console.log('\n[11] 迁移接口管理员收敛 (isAdmin) — P1-4');
+  const { isAdmin } = require('./server/routes/accounts');
+  const _prevAdmin = process.env.ADMIN_USERS;
+  try {
+    process.env.ADMIN_USERS = 'admin1,admin2';
+    assert.ok(isAdmin('admin1'), '名单内应放行');
+    assert.ok(isAdmin('admin2'), '名单内应放行');
+    assert.ok(!isAdmin('daicunzai'), '名单外应拒绝');
+    process.env.ADMIN_USERS = '';
+    assert.ok(!isAdmin('admin1'), '未配置 ADMIN_USERS 应一律拒绝');
+  } finally {
+    if (_prevAdmin === undefined) delete process.env.ADMIN_USERS; else process.env.ADMIN_USERS = _prevAdmin;
+  }
+
+  console.log('\n[12] 统一错误处理 (errorHandler) — P2-2');
+  await test('模块导出三个处理函数', () => {
+    assert.strictEqual(typeof requestId, 'function');
+    assert.strictEqual(typeof accessLog, 'function');
+    assert.strictEqual(typeof errorHandler, 'function');
+  });
+  await test('业务冲突错误映射为 409', () => {
+    const err = Object.assign(new Error('数据已被修改'), { conflict: true });
+    const req = { id: 'r-1', method: 'PUT', path: '/api/data/a', originalUrl: '/api/data/a' };
+    const res = { statusCode: 200, headersSent: false, status(c) { this.statusCode = c; return this; }, json(o) { this.body = o; return this; } };
+    let calledNext = false;
+    errorHandler(err, req, res, () => { calledNext = true; });
+    assert.strictEqual(res.statusCode, 409, '冲突应返回 409');
+    assert.strictEqual(res.body.error, '服务器内部错误');
+    assert.strictEqual(res.body.rid, 'r-1');
+    assert.strictEqual(calledNext, false, '未发送响应时才处理');
+  });
+  await test('headersSent 时不再处理，转交 next', () => {
+    const err = new Error('x');
+    const req = { id: 'r-2', method: 'GET', path: '/x' };
+    const res = { statusCode: 200, headersSent: true, status() { return this; }, json() { return this; } };
+    let calledNext = false;
+    errorHandler(err, req, res, () => { calledNext = true; });
+    assert.strictEqual(calledNext, true, '响应已发出应转交 next');
+  });
+
+  console.log('\n[13] 安全响应头 CSP 收口 (securityHeaders) — P2-1');
+  await test('CSP 含 base-uri 与 form-action 收紧指令', () => {
+    const headers = {};
+    const req = { secure: false, headers: {}, get() { return undefined; } };
+    const res = { setHeader(k, v) { headers[k] = v; }, getHeader(k) { return headers[k]; } };
+    securityHeaders(req, res, () => {});
+    const csp = headers['Content-Security-Policy'] || '';
+    assert.ok(csp.includes("base-uri 'self'"), '应约束 base-uri');
+    assert.ok(csp.includes("form-action 'self'"), '应约束 form-action');
+    assert.ok(csp.includes("frame-ancestors 'none'"), '应保持 frame-ancestors');
+    assert.ok(headers['X-Frame-Options'] === 'DENY', '应保持 X-Frame-Options');
+  });
+
   // ---------- 总结 ----------
   const total = pass + fail;
   console.log(`\n========== ${total} 项测试完成 ==========`);
   console.log(`通过: ${pass}  失败: ${fail}`);
   if (fail > 0) process.exit(1);
+  process.exit(0);
 })();

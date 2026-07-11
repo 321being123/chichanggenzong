@@ -6,10 +6,14 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const validateAccountData = require('../middleware/validate');
-const { loadUsers, saveUsers, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices } = require('../db');
+const { isValidAccountName } = require('../middleware/validate');
+const { loadUsers, saveUsers, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, pool } = require('../db');
 const { fetchQuoteByCode, todayCN } = require('../services/market');
 
 router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
+  // P2-3：账户列表优先读结构化 accounts 表；该用户尚无结构化记录时回退 users.accounts
+  const { rows } = await pool.query('SELECT account_name FROM accounts WHERE username=$1 ORDER BY created_at', [req.session.user]);
+  if (rows.length > 0) return res.json(rows.map(r => r.account_name));
   const users = await loadUsers();
   res.json((users[req.session.user] || {}).accounts || ['默认账户']);
 }));
@@ -17,8 +21,15 @@ router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
 router.put('/accounts', requireLogin, asyncHandler(async (req, res) => {
   const users = await loadUsers();
   if (!users[req.session.user]) users[req.session.user] = { password: '', accounts: [] };
+  if (!Array.isArray(req.body)) return res.status(400).json({ error: '账户列表格式错误' });
+  if (req.body.length > 50) return res.status(400).json({ error: '账户数量超限' });
+  for (const name of req.body) {
+    if (!isValidAccountName(name)) return res.status(400).json({ error: '账户名含非法字符或长度不合法' });
+  }
   users[req.session.user].accounts = req.body;
   await saveUsers(users);
+  // P2-3：同步结构化 accounts 表（新增补行、移除删除行），作为列表权威来源
+  await syncUserAccounts(req.session.user, req.body);
   res.json({ ok: true });
 }));
 
@@ -45,12 +56,31 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
 router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const v = validateAccountData(req.body);
   if (!v.ok) return res.status(400).json({ error: '数据校验失败：' + v.msg });
-  await saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body);
-  res.json({ ok: true });
+  // 乐观锁：前端带回加载时的版本号（?version=）；缺失则不强制（兼容旧客户端）
+  const expectedVersion = req.query.version != null ? parseInt(req.query.version, 10) : null;
+  try {
+    const newVersion = await saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body, expectedVersion);
+    res.json({ ok: true, version: newVersion });
+  } catch (e) {
+    if (e && e.conflict) return res.status(409).json({ error: e.message });
+    throw e;
+  }
 }));
 
-// 一次性手动触发：把 account_data JSON 里残留的净值/持仓/交易/现金流合并进结构化表（幂等，不覆盖已有）。平时不用，仅历史数据还在 JSON 里时才点一次。
-router.post('/migrate-json', requireLogin, asyncHandler(async (req, res) => {
+// 管理员判定：仅 ADMIN_USERS 环境变量中的用户名可触发运维类操作；未配置则一律拒绝
+function isAdmin(username) {
+  const admins = (process.env.ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+  return admins.includes(username);
+}
+function requireAdmin(req, res, next) {
+  if (!isAdmin(req.session.user)) return res.status(403).json({ error: '无权限：该操作仅限管理员执行' });
+  next();
+}
+
+// 一次性手动触发：把 account_data JSON 里残留的净值/持仓/交易/现金流合并进结构化表（幂等，不覆盖已有）。
+// 属全局数据运维任务，收敛为仅管理员可调，并记录操作人。
+router.post('/migrate-json', requireLogin, requireAdmin, asyncHandler(async (req, res) => {
+  console.log('[migrate-json] 操作人:', req.session.user, '时间:', new Date().toISOString());
   await migrateToStructured();
   res.json({ ok: true });
 }));
@@ -122,5 +152,8 @@ router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), 
     res.status(500).json({ error: e.message });
   }
 }));
+
+// 暴露 isAdmin 供测试与安全审计使用（不改变 router 导出，app.js 仍以 router 挂载）
+router.isAdmin = isAdmin;
 
 module.exports = router;

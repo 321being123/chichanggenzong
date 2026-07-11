@@ -1,7 +1,7 @@
 // ========== 自动补齐指数基线（启动后自动拉取“基准日期”的数据） ==========
 // 基准日期 = 该账户净值最早日期；确保四指数（A股走Tushare，恒生走腾讯）都覆盖到该日期。
 // 幂等：已覆盖到基线的指数跳过，仅在缺失时联网补齐；可随 deploy 自动自愈指数缺口。
-const { pool, upsertIndexPoints } = require('../db');
+const { pool, upsertIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, tsDateStr, normDate } = require('../services/market');
 
 const INDEX_BACKFILL_DEFS = [
@@ -78,4 +78,18 @@ async function ensureIndexBaseline() {
   }
 }
 
-module.exports = { ensureIndexBaseline };
+// 带幂等锁与执行记录的指数基线任务（跨实例单跑，失败留痕）
+async function runIndexBaselineJob() {
+  if (!(await tryClaimJob('index_baseline'))) return;
+  const runId = await startJobRun('index_baseline');
+  try {
+    await ensureIndexBaseline();
+    await finishJobRun(runId, true, '');
+  } catch (e) {
+    await finishJobRun(runId, false, e.message || String(e));
+  } finally {
+    await releaseJob('index_baseline');
+  }
+}
+
+module.exports = { ensureIndexBaseline, runIndexBaselineJob };

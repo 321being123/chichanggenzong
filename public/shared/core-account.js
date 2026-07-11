@@ -349,9 +349,9 @@ function renderEarningsTable(sorted) {
     { t: '年化', right: true, color: function (r) { return (r.annualizedReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
     { t: '当前回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.currentDrawdown || 0) * 100).toFixed(2) + '%'; } },
     { t: '最大回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.maxDrawdown || 0) * 100).toFixed(2) + '%'; } },
-    { t: '操作', center: true, get: function (r) {
-        return '<button class="btn btn-outline btn-sm" onclick="openNavEdit(\'' + r.date + '\')">编辑</button> ' +
-               '<button class="btn btn-danger btn-sm" onclick="deleteNav(\'' + r.date + '\')">删除</button>';
+    { t: '操作', center: true,       get: function (r) {
+        return '<button class="btn btn-outline btn-sm" data-act="openNavEdit" data-date="' + escapeHtml(r.date) + '">编辑</button> ' +
+               '<button class="btn btn-danger btn-sm" data-act="deleteNav" data-date="' + escapeHtml(r.date) + '">删除</button>';
       } }
   ];
   const total = sorted.length;
@@ -499,9 +499,9 @@ function showAccountMenu() {
           (isCurrent ? ' <span style="display:inline-block;padding:1px 8px;border-radius:3px;background:#e8f0fe;color:#1a73e8;font-size:11px;font-weight:500;">当前</span>' : '') +
         '</div>' +
         '<div style="display:flex;gap:6px;">' +
-          '<button class="btn btn-outline btn-sm" onclick="editAccount(\'' + escapeHtml(a) + '\')" style="font-size:11px;">✏️ 修改名称</button>' +
+          '<button class="btn btn-outline btn-sm" data-act="editAccount" data-account="' + escapeHtml(a) + '" style="font-size:11px;">✏️ 修改名称</button>' +
           (canDelete
-            ? '<button class="btn btn-danger btn-sm" onclick="promptDeleteAccount(\'' + escapeHtml(a) + '\')" style="font-size:11px;">🗑 删除</button>'
+            ? '<button class="btn btn-danger btn-sm" data-act="promptDeleteAccount" data-account="' + escapeHtml(a) + '" style="font-size:11px;">🗑 删除</button>'
             : '') +
         '</div>' +
       '</div>';

@@ -365,6 +365,7 @@ async function loadData(accountName) {
   if (!data) {
     data = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
   }
+  dataVersion = (data && typeof data.version === 'number') ? data.version : 0;
   if (!data.cashFlows) data.cashFlows = [];
   if (!data.hkRate) data.hkRate = 0.868; // 默认汇率
   if (!data.cashType) data.cashType = '现金';
@@ -390,6 +391,7 @@ async function loadData(accountName) {
 // 保存数据：串行化 + 失败重试，从根本上杜绝「请求没落库 / 并发旧快照覆盖新数据」的丢失
 var _saveInFlight = false;
 var _savePending = false;
+var dataVersion = 0; // 乐观锁：加载时记下的账户版本号，保存时带回供服务端冲突检测
 function saveData() {
   // 已有保存在进行中：标记待保存，等当前保存完成后用最新数据再存一次（保证最终落库的是最新内存状态）
   if (_saveInFlight) { _savePending = true; return; }
@@ -402,12 +404,15 @@ function saveData() {
 async function saveDataNow() {
   for (var attempt = 0; attempt < 3; attempt++) {
     try {
-      var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount)), {
+      var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '?version=' + dataVersion), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
+      if (r.status === 409) { showToast('数据已在其他设备被修改，请刷新页面后再保存'); return; }
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json().catch(() => ({}));
+      if (j && typeof j.version === 'number') dataVersion = j.version; // 更新乐观锁基准，避免下次保存误判冲突
       return; // 成功落库
     } catch (e) {
       if (attempt < 2) { await new Promise(function (res) { setTimeout(res, 500); }); }

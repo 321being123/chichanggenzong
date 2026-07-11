@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test.js"
+    "test": "node test-security.js",
+    "test:security": "node test-security.js",
+    "test:unit": "node test.js",
+    "test:integration": "node test-integration.js"
   },
   "dependencies": {
     "connect-redis": "^7.1.1",

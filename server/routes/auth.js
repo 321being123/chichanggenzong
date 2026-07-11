@@ -4,7 +4,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { loadUsers, saveUsers, hashPwd, verifyPwd } = require('../db');
+const { loadUsers, saveUsers, hashPwd, verifyPwd, syncUserAccounts } = require('../db');
 
 router.post('/register', asyncHandler(async (req, res) => {
   const { username, password, code, email, emailCode } = req.body;
@@ -29,6 +29,8 @@ router.post('/register', asyncHandler(async (req, res) => {
   if (users[username]) return res.status(400).json({ error: '该账号已注册，请直接登录' });
   users[username] = { password: hashPwd(password), email, accounts: ['默认账户'] };
   await saveUsers(users);
+  // P2-3：同步结构化 accounts 表，新用户即拥有账户元数据行（cash_base/hk_rate 用默认）
+  await syncUserAccounts(username, ['默认账户']).catch(() => {});
   req.session.user = username;
   res.json({ ok: true, username });
 }));

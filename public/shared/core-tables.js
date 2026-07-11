@@ -302,11 +302,11 @@ function renderPositionsTable(targetId, limit) {
       '<span class="filter-label">筛选:</span>' +
       '<select onchange="setFilter(&quot;type&quot;,this.value)">' +
       '<option value="">全部类型</option>' +
-      types.map(t => '<option value="' + t + '"' + (filterState.type === t ? ' selected' : '') + '>' + t + '</option>').join('') +
+      types.map(t => '<option value="' + escapeHtml(t) + '"' + (filterState.type === t ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('') +
       '</select>' +
       '<select onchange="setFilter(&quot;subtype&quot;,this.value)">' +
       '<option value="">全部细类</option>' +
-      subtypes.map(s => '<option value="' + s + '"' + (filterState.subtype === s ? ' selected' : '') + '>' + s + '</option>').join('') +
+      subtypes.map(s => '<option value="' + escapeHtml(s) + '"' + (filterState.subtype === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('') +
       '</select>' +
       ((filterState.type || filterState.subtype)
         ? '<button class="btn btn-outline btn-sm" onclick="filterState={type:&quot;&quot;,subtype:&quot;&quot;};renderPositionsTable(&quot;positions-table&quot;);renderPositionsTable(&quot;topn-table&quot;)">清除筛选</button>'
@@ -381,8 +381,8 @@ function renderPositionsTable(targetId, limit) {
       '<td>' + typeTag + '</td>' +
       '<td>' + subtypeTag + '</td>' +
       (limit ? '' : '<td class="text-center">' +
-        '<button class="btn btn-outline btn-sm" onclick="editPosition(&quot;' + p.id + '&quot;)">编辑</button> ' +
-        '<button class="btn btn-danger btn-sm" onclick="deletePosition(&quot;' + p.id + '&quot;)">删除</button>' +
+        '<button class="btn btn-outline btn-sm" data-act="editPosition" data-id="' + escapeHtml(p.id) + '">编辑</button> ' +
+        '<button class="btn btn-danger btn-sm" data-act="deletePosition" data-id="' + escapeHtml(p.id) + '">删除</button>' +
         '</td>') +
       '</tr>';
   });
@@ -399,8 +399,8 @@ function renderPositionsTable(targetId, limit) {
       '<td class="text-right" style="color:#bbb;">-</td>' +
       '<td class="text-right" style="font-weight:600;">' + fmt(cashAmt) + '</td>' +
       '<td class="text-right">' + cashPct + '%</td>' +
-      '<td><span class="tag ' + cashTypeTag + '">' + (data.cashType || '现金') + '</span></td>' +
-      '<td><span class="tag tag-cash">' + (data.cashSubtype || '现金') + '</span></td>' +
+      '<td><span class="tag ' + cashTypeTag + '">' + escapeHtml(data.cashType || '现金') + '</span></td>' +
+      '<td><span class="tag tag-cash">' + escapeHtml(data.cashSubtype || '现金') + '</span></td>' +
       (limit ? '' : '<td class="text-center">' +
         '<button class="btn btn-outline btn-sm" onclick="editCash()">编辑</button>' +
         '</td>') +
@@ -445,7 +445,7 @@ function renderTrades() {
         if (pos && pos.name && pos.name !== t.code) displayName = pos.name;
       }
       html += '<tr>' +
-        '<td>' + (t.created_at || t.date || '-') + '</td>' +
+        '<td>' + escapeHtml(t.created_at || t.date || '-') + '</td>' +
         '<td>' + escapeHtml(t.code || '-') + '</td>' +
         '<td>' + escapeHtml(displayName || '-') + '</td>' +
         '<td>' + dirLabel + '</td>' +
@@ -455,7 +455,7 @@ function renderTrades() {
         '<td class="text-right">' + (t.amount != null ? fmt(t.amount) : '-') + '</td>' +
         '<td>' + escapeHtml(t.type || '-') + '</td>' +
         '<td>' + escapeHtml(t.note || '') + '</td>' +
-        '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteTrade(\'' + t.id + '\')">删除</button></td>' +
+        '<td class="text-center"><button class="btn btn-danger btn-sm" data-act="deleteTrade" data-id="' + escapeHtml(t.id) + '">删除</button></td>' +
         '</tr>';
     } else {
       const c = item.raw;
@@ -464,7 +464,7 @@ function renderTrades() {
         ? '<span class="tag tag-cash">入金</span>'
         : '<span class="tag tag-equity">出金</span>';
       html += '<tr>' +
-        '<td>' + (c.created_at || c.date || '-') + '</td>' +
+        '<td>' + escapeHtml(c.created_at || c.date || '-') + '</td>' +
         '<td>现金</td>' +
         '<td>现金' + (c.note ? '·' + escapeHtml(c.note) : '') + '</td>' +
         '<td>' + dirLabel + '</td>' +
@@ -474,7 +474,7 @@ function renderTrades() {
           (isIn ? '+' : '-') + fmt(Math.abs(c.amount)) + '</td>' +
         '<td>现金</td>' +
         '<td>' + escapeHtml(c.note || '') + '</td>' +
-        '<td class="text-center"><button class="btn btn-danger btn-sm" onclick="deleteCashFlow(\'' + c.id + '\')">删除</button></td>' +
+        '<td class="text-center"><button class="btn btn-danger btn-sm" data-act="deleteCashFlow" data-id="' + escapeHtml(c.id) + '">删除</button></td>' +
         '</tr>';
     }
   });
@@ -489,3 +489,27 @@ function deleteCashFlow(id) {
   renderAll();
   showToast('现金流记录已删除');
 }
+
+// ===================== 事件委托：替代“把用户数据拼进内联 onclick” =====================
+// 把账户名 / 记录 ID / 日期等用户可控数据通过 data-* 属性传递，点击时由委托统一分发，
+// 避免将数据嵌入 JS 源码字符串导致持久型 XSS。
+(function initActionDelegation() {
+  if (window.__actionDelegated) return;
+  window.__actionDelegated = true;
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    var id = btn.getAttribute('data-id');
+    var name = btn.getAttribute('data-account');
+    var date = btn.getAttribute('data-date');
+    if (act === 'editPosition') editPosition(id);
+    else if (act === 'deletePosition') deletePosition(id);
+    else if (act === 'deleteTrade') deleteTrade(id);
+    else if (act === 'deleteCashFlow') deleteCashFlow(id);
+    else if (act === 'editAccount') editAccount(name);
+    else if (act === 'promptDeleteAccount') promptDeleteAccount(name);
+    else if (act === 'openNavEdit') openNavEdit(date);
+    else if (act === 'deleteNav') deleteNav(date);
+  });
+})();

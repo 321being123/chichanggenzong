@@ -108,6 +108,60 @@ async function initSchema() {
   `);
   // 旧库已存在 nav_history（无 invested 列）时补列；幂等，可重复执行
   await pool.query('ALTER TABLE nav_history ADD COLUMN IF NOT EXISTS invested double precision DEFAULT NULL');
+  // 乐观锁版本号：每次整包保存自增；并发保存靠条件更新检测到冲突（默认 0，旧数据不受影响）
+  await pool.query('ALTER TABLE account_data ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0');
+
+  // ===== P2-4：金额/价格/净值由 double precision 改为 numeric(p,s)，消除浮点累计误差 =====
+  // 旧列为 double，USING 表达式可无损转换；重复执行幂等（已是 numeric 则 no-op）
+  const numericAlters = [
+    'ALTER TABLE positions ALTER COLUMN price TYPE numeric(20,4) USING price::numeric(20,4)',
+    'ALTER TABLE positions ALTER COLUMN quantity TYPE numeric(20,4) USING quantity::numeric(20,4)',
+    'ALTER TABLE positions ALTER COLUMN cost TYPE numeric(20,4) USING cost::numeric(20,4)',
+    'ALTER TABLE trades ALTER COLUMN price TYPE numeric(20,4) USING price::numeric(20,4)',
+    'ALTER TABLE trades ALTER COLUMN quantity TYPE numeric(20,4) USING quantity::numeric(20,4)',
+    'ALTER TABLE trades ALTER COLUMN amount TYPE numeric(20,4) USING amount::numeric(20,4)',
+    'ALTER TABLE nav_history ALTER COLUMN nav TYPE numeric(30,6) USING nav::numeric(30,6)',
+    'ALTER TABLE nav_history ALTER COLUMN total_asset TYPE numeric(20,2) USING total_asset::numeric(20,2)',
+    'ALTER TABLE nav_history ALTER COLUMN invested TYPE numeric(20,2) USING invested::numeric(20,2)',
+    'ALTER TABLE cash_flows ALTER COLUMN amount TYPE numeric(20,2) USING amount::numeric(20,2)',
+    'ALTER TABLE daily_prices ALTER COLUMN price TYPE numeric(20,4) USING price::numeric(20,4)',
+    'ALTER TABLE index_history ALTER COLUMN close TYPE numeric(20,4) USING close::numeric(20,4)'
+  ];
+  for (const sql of numericAlters) {
+    try { await pool.query(sql); } catch (e) { console.warn('[schema] numeric 转换跳过:', e.message); }
+  }
+
+  // ===== P2-3：账户元数据表（cash_base/hk_rate 结构化，FK 指向 users）=====
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL REFERENCES users(username),
+      account_name TEXT NOT NULL,
+      cash_base numeric(20,2) NOT NULL DEFAULT 0,
+      hk_rate numeric(10,6) NOT NULL DEFAULT 0.868,
+      version INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+      UNIQUE (username, account_name)
+    );
+  `);
+
+  // ===== P2-5：任务执行记录表（worker 幂等锁 + 执行历史 + 告警依据）=====
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS job_runs (
+      id SERIAL PRIMARY KEY,
+      job TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      started_at TIMESTAMPTZ DEFAULT now(),
+      finished_at TIMESTAMPTZ,
+      detail TEXT DEFAULT ''
+    );
+  `);
+  // 兼容早期残留表（缺 locked_until 列）：补齐，保证幂等可重复执行
+  await pool.query('ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ');
+
+  // 账户元数据表幂等迁移（从旧 users.accounts JSON + account_data JSON 填充，不覆盖已有）
+  await migrateAccountsTable();
 }
 
 // ====== 迁移（仅本地遗留 JSON 文件时触发；云上全新部署一般为空，不会执行） ======
@@ -219,28 +273,36 @@ function uid() {
   return Date.now().toString(16) + Math.floor(Math.random() * 0x100000000).toString(16);
 }
 
+// 金额按精度四舍五入（P2-4：写入 numeric 前列，杜绝浮点尾差入库）
+function round(x, d) {
+  const n = Number(x);
+  if (!isFinite(n)) return 0;
+  const f = Math.pow(10, d);
+  return Math.round(n * f) / f;
+}
+
 async function loadAccountData(username, accountName) {
   const { rows: positions } = await pool.query(
-    'SELECT id, code, name, price, quantity, cost, type, subtype, note FROM positions WHERE username=$1 AND account_name=$2',
+    'SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity, cost::float8 AS cost, type, subtype, note FROM positions WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   const { rows: trades } = await pool.query(
-    'SELECT id, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note FROM trades WHERE username=$1 AND account_name=$2',
+    'SELECT id, date, created_at, code, name, direction, price::float8 AS price, quantity::float8 AS quantity, amount::float8 AS amount, type, subtype, note FROM trades WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
-    'SELECT date, nav, total_asset AS "totalAsset", invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   const { rows: cashFlows } = await pool.query(
-    'SELECT id, date, created_at, amount, note FROM cash_flows WHERE username=$1 AND account_name=$2',
+    'SELECT id, date, created_at, amount::float8 AS amount, note FROM cash_flows WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0 };
   // 从 account_data JSON 恢复 totalAsset / cashBase（cashBase=期初本金基准，cash 仅作兜底）
   let jsonData = null;
   try {
-    const { rows } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
+    const { rows } = await pool.query('SELECT data, version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     if (rows[0]) {
       const d = JSON.parse(rows[0].data);
       jsonData = d;
@@ -248,6 +310,18 @@ async function loadAccountData(username, accountName) {
       if (typeof d.cashBase === 'number') result.cashBase = d.cashBase;
       if (typeof d.cash === 'number') result.cash = d.cash;
       if (Array.isArray(d.fundRecord)) result.fundRecord = d.fundRecord;
+      if (typeof rows[0].version === 'number') result.version = rows[0].version;
+    }
+  } catch (e) {}
+  // P2-3：账户元数据优先读结构化 accounts 表（cash_base/hk_rate），JSON 仅作兜底
+  try {
+    const { rows: am } = await pool.query(
+      'SELECT cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name=$2',
+      [username, accountName]
+    );
+    if (am[0]) {
+      if (typeof am[0].cash_base === 'number') result.cashBase = am[0].cash_base;
+      if (typeof am[0].hk_rate === 'number' && am[0].hk_rate > 0) result.hkRate = am[0].hk_rate;
     }
   } catch (e) {}
   // 指数历史：优先读独立表；表为空则用旧 JSON 快照并一次性迁移进表（消除 JSON 读写放大）
@@ -261,11 +335,12 @@ async function loadAccountData(username, accountName) {
     result.indexHistory = [];
   }
   if (positions.length === 0 && trades.length === 0 && navHistory.length === 0 && cashFlows.length === 0) {
-    const { rows } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
+    const { rows } = await pool.query('SELECT data, version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     if (rows[0]) {
       try {
         const d = JSON.parse(rows[0].data);
         result = { ...d, positions: d.positions || [], trades: d.trades || [], navHistory: d.navHistory || [], cashFlows: d.cashFlows || [] };
+        if (typeof rows[0].version === 'number') result.version = rows[0].version;
       } catch (e) {}
     }
   }
@@ -277,7 +352,8 @@ async function loadAccountData(username, accountName) {
 }
 
 // 单连接事务：DELETE+INSERT 全成功或全回滚，避免中途异常留下半成品数据
-async function saveAccountData(username, accountName, data) {
+// expectedVersion：前端带回加载时的版本号（乐观锁）；为 null 时不强制（兼容旧客户端/测试）
+async function saveAccountData(username, accountName, data, expectedVersion = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -286,7 +362,7 @@ async function saveAccountData(username, accountName, data) {
     for (const p of (data.positions || [])) {
       await client.query(
         'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-        [p.id, username, accountName, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
+        [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '']
       );
     }
     // trades
@@ -294,7 +370,7 @@ async function saveAccountData(username, accountName, data) {
     for (const t of (data.trades || [])) {
       await client.query(
         'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
-        [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '']
+        [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '']
       );
     }
     // nav_history
@@ -302,7 +378,7 @@ async function saveAccountData(username, accountName, data) {
     for (const n of (data.navHistory || [])) {
       await client.query(
         'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6)',
-        [username, accountName, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested)]
+        [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))]
       );
     }
     // cash_flows
@@ -310,16 +386,44 @@ async function saveAccountData(username, accountName, data) {
     for (const c of (data.cashFlows || [])) {
       await client.query(
         'INSERT INTO cash_flows (id, username, account_name, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [c.id || uid(), username, accountName, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
+        [c.id || uid(), username, accountName, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
       );
     }
-    // account_data（保留 totalAsset/cashBase 供现金重算兜底；indexHistory 已独立成表，不再写入 JSON 避免读写放大；updated_at 自动更新）
-    const { indexHistory, ...dataForJson } = data;
+    // account_data：仅显式挑选允许的顶层字段写入（杜绝未知字段持久化，满足 schema 白名单）；
+    // indexHistory 已独立成表、changes/version 为瞬时字段，均不写入 JSON。
+    const { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord } = data;
+    const dataForJson = { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord };
+    const json = JSON.stringify(dataForJson);
+    // 乐观锁：前端带回加载时的 version；冲突（已被其他设备修改）抛 conflict 错误由路由返回 409
+    if (expectedVersion != null) {
+      const up = await client.query(
+        'UPDATE account_data SET data=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), version=version+1 WHERE username=$1 AND account_name=$2 AND version=$4',
+        [username, accountName, json, expectedVersion]
+      );
+      if (up.rowCount === 0) {
+        const ex = await client.query('SELECT 1 FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
+        if (ex.rowCount > 0) throw Object.assign(new Error('数据已在其他位置被修改，请刷新页面后重试'), { conflict: true });
+        // 新账户首次保存：行尚不存在，插入初版
+        await client.query(
+          'INSERT INTO account_data (username, account_name, data, version, updated_at) VALUES ($1,$2,$3,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at, version=account_data.version+1',
+          [username, accountName, json]
+        );
+      }
+    } else {
+      await client.query(
+        'INSERT INTO account_data (username, account_name, data, version, updated_at) VALUES ($1,$2,$3,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at, version=account_data.version+1',
+        [username, accountName, json]
+      );
+    }
+    // P2-3：账户元数据（cash_base/hk_rate）结构化落库，作为权威来源（JSON 仅兜底）
+    const acctId = crypto.createHash('sha256').update(username + '\n' + accountName).digest('hex');
     await client.query(
-      'INSERT INTO account_data (username, account_name, data, updated_at) VALUES ($1,$2,$3, to_char(now(), \'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at',
-      [username, accountName, JSON.stringify(dataForJson)]
+      'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,$4,$5,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, version=accounts.version+1, updated_at=EXCLUDED.updated_at',
+      [acctId, username, accountName, round(data.cashBase || 0, 2), round(data.hkRate || 0.868, 6)]
     );
+    const { rows: vr } = await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     await client.query('COMMIT');
+    return vr[0] ? vr[0].version : 1; // 返回新版本号，供前端更新乐观锁基准
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -334,14 +438,14 @@ async function saveDailyPrices(username, accountName, date, prices) {
   for (const p of prices) {
     await pool.query(
       'INSERT INTO daily_prices (username, account_name, date, code, name, price) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date, code) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price',
-      [username, accountName, date, p.code, p.name || '', p.price || 0]
+      [username, accountName, date, p.code, p.name || '', round(p.price, 4)]
     );
   }
 }
 
 async function loadDailyPrices(username, accountName, date) {
   const { rows } = await pool.query(
-    'SELECT code, name, price FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3',
+    'SELECT code, name, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3',
     [username, accountName, date]
   );
   return rows;
@@ -361,7 +465,7 @@ async function upsertIndexPoints(username, accountName, points) {
 
 async function loadIndexPoints(username, accountName) {
   const { rows } = await pool.query(
-    'SELECT date, name, close FROM index_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, name, close::float8 AS close FROM index_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   // 转换为 [{ date, 沪深300: close, ... }] 形状，与旧 indexHistory 快照一致
@@ -373,5 +477,105 @@ async function loadIndexPoints(username, accountName) {
   return Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
 }
 
+// ====== P2-3：账户元数据表迁移与读写 ======
+// 幂等：从 users.accounts JSON + account_data JSON 补全 accounts 表；ON CONFLICT DO NOTHING 不覆盖已有
+async function migrateAccountsTable() {
+  try {
+    const users = await loadUsers();
+    for (const [username, u] of Object.entries(users)) {
+      for (const name of (u.accounts || [])) {
+        let cashBase = 0, hkRate = 0.868;
+        try {
+          const { rows } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, name]);
+          if (rows[0]) {
+            const d = JSON.parse(rows[0].data);
+            if (typeof d.cashBase === 'number') cashBase = d.cashBase;
+            if (typeof d.hkRate === 'number' && d.hkRate > 0) hkRate = d.hkRate;
+          }
+        } catch (e) {}
+        const acctId = crypto.createHash('sha256').update(username + '\n' + name).digest('hex');
+        await pool.query(
+          'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,$4,$5,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
+          [acctId, username, name, round(cashBase, 2), round(hkRate, 6)]
+        );
+      }
+    }
+  } catch (e) { console.warn('[migrate] accounts 表迁移跳过:', e.message); }
+}
+
+// 读取账户元数据（结构化表优先；无则返回 null，由调用方回退 JSON）
+async function getAccountMeta(username, accountName) {
+  const { rows } = await pool.query(
+    'SELECT cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate, version FROM accounts WHERE username=$1 AND account_name=$2',
+    [username, accountName]
+  );
+  return rows[0] ? { cashBase: rows[0].cash_base, hkRate: rows[0].hk_rate, version: rows[0].version } : null;
+}
+
+// 同步账户列表到结构化 accounts 表：新增补行、删除已移除的行（仅元数据，不动 account_data）
+async function syncUserAccounts(username, names) {
+  if (!Array.isArray(names)) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const name of names) {
+      const acctId = crypto.createHash('sha256').update(username + '\n' + name).digest('hex');
+      await client.query(
+        'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,0,0.868,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
+        [acctId, username, name]
+      );
+    }
+    await client.query('DELETE FROM accounts WHERE username=$1 AND account_name <> ALL($2::text[])', [username, names]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
+}
+
+// ====== P2-5：任务幂等锁（跨实例单跑）+ 执行记录 ======
+function hashString(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+// 咨询锁必须占住一条专用连接，否则连接归还连接池即释放。用 Map 持有直到 releaseJob。
+const _jobClients = {};
+// 抢占数据库级咨询锁：抢到返回 true（锁在该连接上一直持有，直到 releaseJob 才释放，
+// 因此多实例/多 worker 同时只有一方能跑同一任务）
+async function tryClaimJob(job) {
+  const client = await pool.connect();
+  const key = hashString(job);
+  try {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [key]);
+    if (rows[0] && rows[0].ok) {
+      _jobClients[job] = client;
+      return true;
+    }
+  } catch (e) {}
+  client.release();
+  return false;
+}
+async function releaseJob(job) {
+  const client = _jobClients[job];
+  if (!client) return;
+  const key = hashString(job);
+  await client.query('SELECT pg_advisory_unlock($1)', [key]).catch(() => {});
+  client.release();
+  delete _jobClients[job];
+}
+async function startJobRun(job) {
+  const { rows } = await pool.query(
+    "INSERT INTO job_runs (job, status, started_at, locked_until) VALUES ($1, 'running', now(), now() + interval '1 hour') RETURNING id",
+    [job]
+  );
+  return rows[0] ? rows[0].id : null;
+}
+async function finishJobRun(id, ok, detail) {
+  if (!id) return;
+  await pool.query(
+    "UPDATE job_runs SET status=$2, finished_at=now(), detail=COALESCE($3,'') WHERE id=$1",
+    [id, ok ? 'done' : 'failed', detail || '']
+  );
+}
+
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertIndexPoints, loadIndexPoints, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };

@@ -10,6 +10,22 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
+// 消费上传 token：仅在图片存在且属于当前登录用户时返回并销毁 token；
+// 未上传只返回 image:null（不删除，等待后续轮询）；其他用户访问返回 forbidden（不删除）。
+// 返回 { image, expired, forbidden }
+function consumeVisionToken(token, username) {
+  const entry = visionUploadTokens.get(token);
+  if (!entry) return { image: null, expired: true, forbidden: false };
+  if (Date.now() - entry.timestamp > TOKEN_TTL) {
+    visionUploadTokens.delete(token);
+    return { image: null, expired: true, forbidden: false };
+  }
+  if (!entry.image) return { image: null, expired: false, forbidden: false };
+  if (entry.username !== username) return { image: null, expired: false, forbidden: true };
+  visionUploadTokens.delete(token);
+  return { image: entry.image, expired: false, forbidden: false };
+}
+
 // 手机上传页面HTML
 function mobileUploadHtml(token) {
   return `<!DOCTYPE html>
@@ -76,4 +92,4 @@ input.addEventListener('change', async function() {
 </html>`;
 }
 
-module.exports = { visionUploadTokens, TOKEN_TTL, mobileUploadHtml };
+module.exports = { visionUploadTokens, TOKEN_TTL, mobileUploadHtml, consumeVisionToken };

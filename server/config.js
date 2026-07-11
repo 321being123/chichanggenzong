@@ -46,6 +46,12 @@ if (process.env.REDIS_URL) {
   }
 }
 
+// 生产环境但未配置 Redis：会话/限流退回内存，多实例与重启会丢状态，并发可能相互覆盖。
+// 不静默默认，明确告警，提醒运维配置 REDIS_URL。
+if (process.env.NODE_ENV === 'production' && !process.env.REDIS_URL) {
+  console.warn('[Redis][告警] 生产环境未配置 REDIS_URL：会话与限流将使用内存存储，多实例部署/重启会丢失登录态与限流计数，多用户并发保存可能相互覆盖。请配置 Redis 以启用共享会话与限流。');
+}
+
 // 邮箱验证码（nodemailer）
 let mailer = null;
 if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {

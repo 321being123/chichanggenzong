@@ -44,8 +44,8 @@ function ng(name, got, want) { console.log(`  ❌ ${name}: 期望 ${JSON.stringi
   const utilsJs = await req('GET', '/js/utils.js');
   ok(utilsJs.status === 200 && utilsJs.body.includes('escapeHtml') ? 'utils.js 加载正常' : 'utils.js 可访问');
 
-  const coreJs = await req('GET', '/shared/core.js');
-  ok(coreJs.status === 200 && coreJs.body.includes('fetchQuote') ? 'core.js 加载正常' : 'core.js 可访问');
+  const coreJs = await req('GET', '/shared/core-quote.js');
+  ok(coreJs.status === 200 && coreJs.body.includes('fetchQuote') ? 'core.js(拆分后 core-quote.js) 加载正常' : 'core.js 可访问');
 
   const favicon = await req('GET', '/favicon.svg');
   ok(favicon.status === 200 ? 'favicon.svg 正常' : 'favicon.svg 可访问');

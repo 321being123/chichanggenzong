@@ -131,12 +131,27 @@ async function initSchema() {
     try { await pool.query(sql); } catch (e) { console.warn('[schema] numeric 转换跳过:', e.message); }
   }
 
+  // ===== 费用列：trades 增加 commission/stamp_tax/transfer_fee/other_fee =====
+  const feeAlters = [
+    'ALTER TABLE trades ADD COLUMN IF NOT EXISTS commission numeric(20,4) DEFAULT 0',
+    'ALTER TABLE trades ADD COLUMN IF NOT EXISTS stamp_tax numeric(20,4) DEFAULT 0',
+    'ALTER TABLE trades ADD COLUMN IF NOT EXISTS transfer_fee numeric(20,4) DEFAULT 0',
+    'ALTER TABLE trades ADD COLUMN IF NOT EXISTS other_fee numeric(20,4) DEFAULT 0'
+  ];
+  for (const sql of feeAlters) {
+    try { await pool.query(sql); } catch (e) { console.warn('[schema] 费用列跳过:', e.message); }
+  }
+
+  // ===== 券商字段：accounts 表补 broker 列（已存在则幂等跳过）=====
+  try { await pool.query('ALTER TABLE accounts ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT \'other\''); } catch (e) { console.warn('[schema] broker 列跳过:', e.message); }
+
   // ===== P2-3：账户元数据表（cash_base/hk_rate 结构化，FK 指向 users）=====
   await pool.query(`
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL REFERENCES users(username),
       account_name TEXT NOT NULL,
+      broker TEXT NOT NULL DEFAULT 'other',
       cash_base numeric(20,2) NOT NULL DEFAULT 0,
       hk_rate numeric(10,6) NOT NULL DEFAULT 0.868,
       version INTEGER NOT NULL DEFAULT 0,
@@ -145,6 +160,17 @@ async function initSchema() {
       UNIQUE (username, account_name)
     );
   `);
+
+  // ===== 券商字典表：A股/港股/美股券商清单（市场用 market 区分，方便日后扩展）=====
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS brokers (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      market TEXT NOT NULL DEFAULT 'A',
+      sort_order INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  await seedBrokers();
 
   // ===== P2-5：任务执行记录表（worker 幂等锁 + 执行历史 + 告警依据）=====
   await pool.query(`
@@ -215,8 +241,8 @@ async function migrateToStructured() {
       }
       for (const t of (d.trades || [])) {
         await pool.query(
-          'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (id, username, account_name) DO NOTHING',
-          [t.id, r.username, r.account_name, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '']
+          'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note, commission, stamp_tax, transfer_fee, other_fee) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [t.id, r.username, r.account_name, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '', t.commission || 0, t.stamp_tax || 0, t.transfer_fee || 0, t.other_fee || 0]
         );
       }
       for (const n of (d.navHistory || [])) {
@@ -287,7 +313,7 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: trades } = await pool.query(
-    'SELECT id, date, created_at, code, name, direction, price::float8 AS price, quantity::float8 AS quantity, amount::float8 AS amount, type, subtype, note FROM trades WHERE username=$1 AND account_name=$2',
+    'SELECT id, date, created_at, code, name, direction, price::float8 AS price, quantity::float8 AS quantity, amount::float8 AS amount, type, subtype, note, commission::float8 AS commission, stamp_tax::float8 AS stamp_tax, transfer_fee::float8 AS transfer_fee, other_fee::float8 AS other_fee FROM trades WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
@@ -346,7 +372,11 @@ async function loadAccountData(username, accountName) {
   }
   // 现金自动重算：现金 = 期初本金(cashBase) + 现金流净额 + 交易净额(买入减/卖出加)
   const cfNet = (result.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
-  const tradeNet = (result.trades || []).reduce((s, t) => s + (t.direction === 'buy' ? -(t.amount || 0) : (t.amount || 0)), 0);
+  // 交易净额：买入 -(成交额+费用)，卖出 +(成交额-费用)；费用从 trades 表读取
+  const tradeNet = (result.trades || []).reduce((s, t) => {
+    const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
+    return s + (t.direction === 'buy' ? -(t.amount || 0) - fee : (t.amount || 0) - fee);
+  }, 0);
   result.cash = (result.cashBase || 0) + cfNet + tradeNet;
   return result;
 }
@@ -369,15 +399,15 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
     for (const t of (data.trades || [])) {
       await client.query(
-        'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',
-        [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '']
+        'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note, commission, stamp_tax, transfer_fee, other_fee) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)',
+        [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
       );
     }
     // nav_history
     await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
     for (const n of (data.navHistory || [])) {
       await client.query(
-        'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6)',
+        'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
         [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))]
       );
     }
@@ -451,6 +481,15 @@ async function loadDailyPrices(username, accountName, date) {
   return rows;
 }
 
+// 幂等写入单条净值快照（回填/重算用）：冲突则覆盖 nav / total_asset / invested
+async function upsertNav(username, accountName, rec) {
+  await pool.query(
+    'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
+    'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
+    [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2))]
+  );
+}
+
 // ====== 指数历史（独立表，增量 upsert，避免 JSON 读写放大） ======
 
 async function upsertIndexPoints(username, accountName, points) {
@@ -512,6 +551,102 @@ async function getAccountMeta(username, accountName) {
   return rows[0] ? { cashBase: rows[0].cash_base, hkRate: rows[0].hk_rate, version: rows[0].version } : null;
 }
 
+// 券商字典种子（A股主流券商；code 与 inferBroker 保持一致：华泰=huatai、招商=cms）。
+// 幂等：ON CONFLICT DO UPDATE 使名称/排序随代码更新为准，不会重复插入。
+const BROKER_SEED = [
+  ['other', '其他/未指定', 'A', 0],
+  ['huatai', '华泰证券', 'A', 10],
+  ['cms', '招商证券', 'A', 20],
+  ['citic', '中信证券', 'A', 30],
+  ['citics', '中信建投', 'A', 40],
+  ['gtja', '国泰君安', 'A', 50],
+  ['galaxy', '中国银河', 'A', 60],
+  ['gf', '广发证券', 'A', 70],
+  ['htsec', '海通证券', 'A', 80],
+  ['swhy', '申万宏源', 'A', 90],
+  ['guosen', '国信证券', 'A', 100],
+  ['eastmoney', '东方财富证券', 'A', 110],
+  ['cicc', '中金公司', 'A', 120],
+  ['ebscn', '光大证券', 'A', 130],
+  ['foundersc', '方正证券', 'A', 140],
+  ['pingan', '平安证券', 'A', 150],
+  ['cib', '兴业证券', 'A', 160],
+  ['cjsc', '长江证券', 'A', 170],
+  ['zts', '中泰证券', 'A', 180],
+  ['gjzq', '国金证券', 'A', 190],
+  ['dwzq', '东吴证券', 'A', 200],
+  ['minsheng', '民生证券', 'A', 210],
+  ['orient', '东方证券', 'A', 220],
+  ['cszc', '浙商证券', 'A', 230],
+  ['ctsec', '财通证券', 'A', 240],
+  ['tfzq', '天风证券', 'A', 250],
+  ['huaan', '华安证券', 'A', 260],
+  ['swsc', '西南证券', 'A', 270],
+  ['gyzq', '国元证券', 'A', 280],
+  ['ccb', '中银证券', 'A', 290],
+  ['huaxi', '华西证券', 'A', 300],
+  ['gszq', '长城证券', 'A', 310],
+  ['sxzq', '山西证券', 'A', 320],
+  ['njzq', '南京证券', 'A', 330],
+  ['sczq', '首创证券', 'A', 340],
+  ['hongta', '红塔证券', 'A', 350],
+  ['hlzq', '华林证券', 'A', 360],
+  ['dbzq', '德邦证券', 'A', 370],
+  ['gdzq', '粤开证券', 'A', 380],
+  ['cindasc', '信达证券', 'A', 390],
+  ['gxzq', '国海证券', 'A', 400],
+  ['zyzq', '中原证券', 'A', 410],
+  ['hczq', '华创证券', 'A', 420],
+  ['xszq', '湘财证券', 'A', 430]
+];
+async function seedBrokers() {
+  for (const [code, name, market, sortOrder] of BROKER_SEED) {
+    await pool.query(
+      'INSERT INTO brokers (code, name, market, sort_order) VALUES ($1,$2,$3,$4) ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, market=EXCLUDED.market, sort_order=EXCLUDED.sort_order',
+      [code, name, market, sortOrder]
+    );
+  }
+}
+
+// 券商字典：按市场返回券商列表（供前端下拉），已按 sort_order 排序
+async function loadBrokers(market) {
+  const { rows } = market
+    ? await pool.query('SELECT code, name, market FROM brokers WHERE market=$1 ORDER BY sort_order, name', [market])
+    : await pool.query('SELECT code, name, market FROM brokers ORDER BY market, sort_order, name');
+  return rows;
+}
+
+// 校验 broker code 是否为字典内合法值（防脏数据写入 accounts.broker）
+async function isValidBroker(code) {
+  const { rows } = await pool.query('SELECT 1 FROM brokers WHERE code=$1', [code]);
+  return rows.length > 0;
+}
+
+// 返回某用户所有账户的当前券商映射 { 账户名: broker code }
+async function getAccountBrokers(username) {
+  const { rows } = await pool.query('SELECT account_name, broker FROM accounts WHERE username=$1', [username]);
+  const map = {};
+  for (const r of rows) map[r.account_name] = r.broker || 'other';
+  return map;
+}
+
+// 更新单个账户的券商（用户在账户管理里显式选择）；返回受影响行数
+async function updateAccountBroker(username, accountName, broker) {
+  const { rowCount } = await pool.query(
+    'UPDATE accounts SET broker=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2',
+    [username, accountName, broker]
+  );
+  return rowCount;
+}
+
+// 根据账户名推断券商（仅作默认值，用户可后续手动改）
+function inferBroker(accountName) {
+  const n = (accountName || '').toLowerCase();
+  if (n.indexOf('华泰') >= 0) return 'huatai';
+  if (n.indexOf('招商') >= 0) return 'cms';
+  return 'other';
+}
+
 // 同步账户列表到结构化 accounts 表：新增补行、删除已移除的行（仅元数据，不动 account_data）
 async function syncUserAccounts(username, names) {
   if (!Array.isArray(names)) return;
@@ -520,9 +655,15 @@ async function syncUserAccounts(username, names) {
     await client.query('BEGIN');
     for (const name of names) {
       const acctId = crypto.createHash('sha256').update(username + '\n' + name).digest('hex');
+      const broker = inferBroker(name);
       await client.query(
-        'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,0,0.868,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
-        [acctId, username, name]
+        'INSERT INTO accounts (id, username, account_name, broker, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,$4,0,0.868,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
+        [acctId, username, name, broker]
+      );
+      // 已有行也补 broker（幂等：已有非 other 值不被覆盖）
+      await client.query(
+        "UPDATE accounts SET broker=$2 WHERE username=$1 AND account_name=$3 AND (broker IS NULL OR broker='other' OR broker='')",
+        [username, broker, name]
       );
     }
     await client.query('DELETE FROM accounts WHERE username=$1 AND account_name <> ALL($2::text[])', [username, names]);
@@ -578,4 +719,4 @@ async function finishJobRun(id, ok, detail) {
 }
 
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };

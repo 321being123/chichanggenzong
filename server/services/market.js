@@ -143,7 +143,22 @@ async function fetchQuoteByCode(code) {
     if (d && d.close != null && !isNaN(d.close)) {
       return { price: d.close, name, code: c, change: (d.pct_chg != null && !isNaN(d.pct_chg)) ? d.pct_chg : null };
     }
-    // daily 无（如新股）：fallback 腾讯实时
+    // 有名称但无价格（停牌/数据延迟）：尝试腾讯 fallback
+    if (name) {
+      try {
+        const prefix = (c[0] === '6' || c[0] === '5' || c.startsWith('11')) ? 'sh' : 'sz';
+        const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + c, 'gbk');
+        const match = text.match(/"(.*)"/);
+        if (match) {
+          const parts = match[1].split('~');
+          const price = parseFloat(parts[3]);
+          if (!isNaN(price) && price > 0) return { price, name: name || parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
+        }
+      } catch (e) {}
+      // fallback 也拿不到价格：仅返回名称（供前端自动填充）
+      return { price: null, name, code: c, change: null };
+    }
+    // 无数据（如新股）：fallback 腾讯实时
     const prefix = (c[0] === '6' || c[0] === '5' || c.startsWith('11')) ? 'sh' : 'sz';
     try {
       const text = await httpsGet('https://qt.gtimg.cn/q=' + prefix + c, 'gbk');
@@ -151,7 +166,7 @@ async function fetchQuoteByCode(code) {
       if (match) {
         const parts = match[1].split('~');
         const price = parseFloat(parts[3]);
-        if (!isNaN(price) && price > 0) return { price, name: name || parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
+        if (!isNaN(price) && price > 0) return { price, name: parts[1] || c, code: c, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
       }
     } catch (e) {}
   } catch (e) {}

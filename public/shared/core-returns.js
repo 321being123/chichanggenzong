@@ -87,8 +87,8 @@ function addCashFlow() {
 
 // ===================== 基金净值法收益（已修正现金流） =====================
 
-let chartReturns = null;
-let returnPeriod = 0;
+const chartMap = {};
+let returnMode = '1y';
 let indexVisibility = {
   '沪深300': true,
   '上证指数': true,
@@ -181,11 +181,12 @@ function renderReturnsStats() {
         '<div class="chart-title">' +
           '<h3>收益走势对比</h3>' +
           '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
-            '<button class="period-btn active" data-days="30" onclick="switchPeriod(30)">近1月</button>' +
-            '<button class="period-btn" data-days="90" onclick="switchPeriod(90)">近3月</button>' +
-            '<button class="period-btn" data-days="180" onclick="switchPeriod(180)">近6月</button>' +
-            '<button class="period-btn" data-days="365" onclick="switchPeriod(365)">近1年</button>' +
-            '<button class="period-btn" data-days="0" onclick="switchPeriod(0)">全部</button>' +
+            '<button class="period-btn" data-mode="mtd" onclick="switchReturnMode(\'mtd\')">本月</button>' +
+            '<button class="period-btn" data-mode="q3" onclick="switchReturnMode(\'q3\')">近三个月</button>' +
+            '<button class="period-btn" data-mode="ytd" onclick="switchReturnMode(\'ytd\')">今年</button>' +
+            '<button class="period-btn active" data-mode="1y" onclick="switchReturnMode(\'1y\')">近一年</button>' +
+            '<button class="period-btn" data-mode="2y" onclick="switchReturnMode(\'2y\')">近两年</button>' +
+            '<button class="period-btn" data-mode="all" onclick="switchReturnMode(\'all\')">全部</button>' +
           '</div>' +
         '</div>' +
         '<div style="margin-bottom:10px;font-size:13px;">' +
@@ -194,7 +195,6 @@ function renderReturnsStats() {
           '<span style="margin-left:14px;color:#888;">📊 净值 <span id="ret-nav">1.0000</span></span>' +
           '<span style="margin-left:10px;color:#888;">📅 <span id="ret-nav-date">无记录</span></span>' +
           '<span style="margin-left:10px;color:#888;">记录 <span id="ret-days">0</span> 天</span>' +
-          '<button class="cashflow-btn" onclick="showCashFlowModal()" style="margin-left:10px;">💰 现金流</button>' +
         '</div>' +
         '<div style="margin-bottom:10px;font-size:12px;color:#888;">对比指数:' +
           '<button class="period-btn index-toggle active" data-idx="沪深300" onclick="toggleIndex(\'沪深300\')" style="font-size:11px;padding:2px 10px;margin-left:4px;">沪深300</button>' +
@@ -245,7 +245,7 @@ function renderReturnsStats() {
   document.getElementById('ret-total-return-pct').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
 
   var navEl = document.getElementById('ret-nav');
-  navEl.textContent = last.nav.toFixed(4);
+  navEl.textContent = Number(last.nav || 1).toFixed(4);
   navEl.style.color = last.nav >= 1 ? '#137333' : '#d93025';
   document.getElementById('ret-nav-date').textContent = last.date;
   document.getElementById('ret-days').textContent = data.navHistory.length;
@@ -327,7 +327,18 @@ async function syncIndexPoints() {
   } catch (e) { /* 指数快照失败不影响主流程 */ }
 }
 
-// 优先用本地快照构造指数序列（按交易日对齐，基准=净值第一天对应点位）
+// 从指定日期往前（含当天）找第一个有值的交易日收盘，用于把指数对齐到净值（可能落在周末）的日期
+function carryBackward(map, dateStr) {
+  const d = new Date(dateStr);
+  for (let i = 0; i < 14; i++) {
+    const ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    if (map[ds] != null) return map[ds];
+    d.setDate(d.getDate() - 1);
+  }
+  return null;
+}
+
+// 优先用本地快照构造指数序列（按净值日期对齐，周日/非交易日 carry-forward 到之前最近交易日收盘）
 function getIndexSeries(name, navData) {
   if (!data.indexHistory || !data.indexHistory.length) return null;
   var map = {};
@@ -336,9 +347,10 @@ function getIndexSeries(name, navData) {
   var baseDate = resolveBaselineDate(navData[0].date, map);
   if (baseDate == null) return null;
   var firstClose = map[baseDate];
-  return navData
-    .filter(function (d) { return map[d.date] != null; })
-    .map(function (d) { return { date: d.date, val: map[d.date] / firstClose }; });
+  return navData.map(function (d) {
+    var v = carryBackward(map, d.date);
+    return { date: d.date, val: v == null ? null : v / firstClose };
+  });
 }
 
 // 实时 kline 兜底归一化（修复：基准用净值第一天对应点位，而非拉取区间第一天）
@@ -350,31 +362,85 @@ function normalizeIndexData(indexData, navData) {
   const baseDate = resolveBaselineDate(navData[0].date, map);
   if (baseDate == null) return [];
   const firstClose = map[baseDate];
-  const dateSet = new Set(navData.map(function (d) { return d.date; }));
-  return indexData
-    .filter(function (d) { return dateSet.has(d.date); })
-    .map(function (d) {
-      return { date: d.date, val: d.close / firstClose };
-    });
+  return navData.map(function (d) {
+    var v = carryBackward(map, d.date);
+    return { date: d.date, val: v == null ? null : v / firstClose };
+  });
 }
 
-async function renderReturnsChart() {
-  renderReturnsStats();
+// 共享：净值 vs 宽基指数 走势对比图（总览页与收益页共用，改一处两处同步）
+// 周期模式 → 起点日期(YYYY-MM-DD)：本月=本月初，今年=今年初，近三个月/近一年/近两年=近N天
+function periodStart(mode) {
+  const t = new Date();
+  const y = t.getFullYear(), m = t.getMonth();
+  if (mode === 'mtd') return y + '-' + String(m + 1).padStart(2, '0') + '-01';
+  if (mode === 'ytd') return y + '-01-01';
+  const back = { q3: 90, '1y': 365, '2y': 730 }[mode];
+  if (back) {
+    const s = new Date(t);
+    s.setDate(s.getDate() - back);
+    return s.getFullYear() + '-' + String(s.getMonth() + 1).padStart(2, '0') + '-' + String(s.getDate()).padStart(2, '0');
+  }
+  return '';
+}
+
+// 生成 [start, end] 内所有周五(UTC 周五=5)的 ISO 日期（升序）—— 用于走势图「周五稀疏显示」
+function genFridayLabels(startStr, endStr) {
+  const labels = [];
+  const d = new Date(startStr + 'T00:00:00Z');
+  const diff = (5 - d.getUTCDay() + 7) % 7;
+  d.setUTCDate(d.getUTCDate() + diff);
+  const end = new Date(endStr + 'T00:00:00Z');
+  while (d <= end) {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    labels.push(y + '-' + m + '-' + dd);
+    d.setUTCDate(d.getUTCDate() + 7);
+  }
+  return labels;
+}
+
+// 从每日全量序列（升序 [{date, value}]，value 非空）中，对每个展示标签取「该日或之前最近有值日」的值
+// —— 走势图按周五显示，但取值仍用每日全量真实数据（缺口向前补齐，避免凭空插值）
+function carryForwardTo(entries, labels) {
+  const res = [];
+  let p = 0;
+  const n = entries.length;
+  labels.forEach(function (label) {
+    while (p < n && entries[p].date <= label) p++;
+    res.push(p > 0 ? entries[p - 1].value : null);
+  });
+  return res;
+}
+
+async function renderNavVsIndexChart(canvasId, opts) {
+  opts = opts || {};
+  const period = opts.period || 0;
+  const mode = opts.mode || '';
   if (!data.navHistory || data.navHistory.length < 2) {
-    if (chartReturns) { chartReturns.destroy(); chartReturns = null; }
+    if (chartMap[canvasId]) { chartMap[canvasId].destroy(); chartMap[canvasId] = null; }
     return;
   }
 
   let navData = data.navHistory;
-  if (returnPeriod > 0) {
+  if (mode) {
+    const start = periodStart(mode);
+    if (start) navData = navData.filter(function (d) { return d.date >= start; });
+  } else if (period > 0) {
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - returnPeriod);
+    cutoff.setDate(cutoff.getDate() - period);
     navData = navData.filter(function (d) { return new Date(d.date) >= cutoff; });
   }
   if (navData.length < 2) return;
 
-  const labels = navData.map(function (d) { return d.date.slice(5); });
-  const navVals = navData.map(function (d) { return +(d.nav.toFixed(4)); });
+  // 每日全量显示（曲线细密真实），X 轴靠 maxTicksLimit:12 控制标签密度
+  const labels = navData.map(function (d) { return d.date; });
+  // 归一：首日净值 = 1.0
+  var navBaseVal = +(Number(navData[0].nav || 1).toFixed(4));
+  var navVals = navData.map(function (d) {
+    return navBaseVal !== 0 ? +(Number(d.nav || 1) / navBaseVal).toFixed(4) : null;
+  });
 
   // 指数序列：优先本地快照（按交易日连续、平滑），缺失时实时拉取兜底
   var hs300Data = getIndexSeries('沪深300', navData) || [];
@@ -383,7 +449,7 @@ async function renderReturnsChart() {
   var hsidata = getIndexSeries('恒生指数', navData) || [];
   if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
     try {
-      const days = returnPeriod > 0 ? returnPeriod : Math.max(250, daysBetween(navData[0].date));
+      const days = period > 0 ? period : Math.max(250, daysBetween(navData[0].date));
       const results = await Promise.all([
         fetchIndexKline('sh000300', days + 30),
         fetchIndexKline('sh000001', days + 30),
@@ -405,7 +471,8 @@ async function renderReturnsChart() {
     fill: true,
     tension: 0.3,
     pointRadius: 0,
-    borderWidth: 2.5
+    borderWidth: 2.5,
+    spanGaps: true
   }];
 
   // 沪深300
@@ -416,8 +483,8 @@ async function renderReturnsChart() {
     datasets.push({
       label: '沪深300', data: hs300Vals,
       borderColor: '#d93025', backgroundColor: 'transparent',
-      borderDash: [5, 3], tension: 0.3, pointRadius: 0, borderWidth: 1.5,
-      hidden: !indexVisibility['沪深300']
+      tension: 0.3, pointRadius: 0, borderWidth: 1.5,
+      spanGaps: true, hidden: !indexVisibility['沪深300']
     });
   }
   // 上证指数
@@ -428,8 +495,8 @@ async function renderReturnsChart() {
     datasets.push({
       label: '上证指数', data: shVals,
       borderColor: '#e37400', backgroundColor: 'transparent',
-      borderDash: [3, 3], tension: 0.3, pointRadius: 0, borderWidth: 1.5,
-      hidden: !indexVisibility['上证指数']
+      tension: 0.3, pointRadius: 0, borderWidth: 1.5,
+      spanGaps: true, hidden: !indexVisibility['上证指数']
     });
   }
   // 中证全指
@@ -440,8 +507,8 @@ async function renderReturnsChart() {
     datasets.push({
       label: '中证全指', data: zzVals,
       borderColor: '#7b1fa2', backgroundColor: 'transparent',
-      borderDash: [4, 4], tension: 0.3, pointRadius: 0, borderWidth: 1.5,
-      hidden: !indexVisibility['中证全指']
+      tension: 0.3, pointRadius: 0, borderWidth: 1.5,
+      spanGaps: true, hidden: !indexVisibility['中证全指']
     });
   }
   // 恒生指数
@@ -452,15 +519,17 @@ async function renderReturnsChart() {
     datasets.push({
       label: '恒生指数', data: hsiVals,
       borderColor: '#00838f', backgroundColor: 'transparent',
-      borderDash: [2, 4], tension: 0.3, pointRadius: 0, borderWidth: 1.5,
-      hidden: !indexVisibility['恒生指数']
+      tension: 0.3, pointRadius: 0, borderWidth: 1.5,
+      spanGaps: true, hidden: !indexVisibility['恒生指数']
     });
   }
 
-  const ctx = document.getElementById('chart-returns').getContext('2d');
-  if (chartReturns) chartReturns.destroy();
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+  const ctx = el.getContext('2d');
+  if (chartMap[canvasId]) chartMap[canvasId].destroy();
 
-  chartReturns = new Chart(ctx, {
+  chartMap[canvasId] = new Chart(ctx, {
     type: 'line',
     data: { labels: labels, datasets: datasets },
     options: {
@@ -507,10 +576,16 @@ async function renderReturnsChart() {
   });
 }
 
-function switchPeriod(days) {
-  returnPeriod = days;
-  document.querySelectorAll('.period-btn[data-days]').forEach(function (b) { b.classList.remove('active'); });
-  var btn = document.querySelector('.period-btn[data-days="' + days + '"]');
+// 总览页包装：带统计数字 + 周期切换
+function renderReturnsChart() {
+  renderReturnsStats();
+  renderNavVsIndexChart('chart-returns', { mode: returnMode });
+}
+
+function switchReturnMode(mode) {
+  returnMode = mode;
+  document.querySelectorAll('#returns-section [data-mode]').forEach(function (b) { b.classList.remove('active'); });
+  var btn = document.querySelector('#returns-section [data-mode="' + mode + '"]');
   if (btn) btn.classList.add('active');
   renderReturnsChart();
 }
@@ -522,9 +597,9 @@ function toggleIndex(name) {
     btn.classList.toggle('active');
     btn.style.opacity = indexVisibility[name] ? '1' : '.35';
   }
-  if (chartReturns) {
-    var ds = chartReturns.data.datasets.find(function (d) { return d.label === name; });
+  if (chartMap['chart-returns']) {
+    var ds = chartMap['chart-returns'].data.datasets.find(function (d) { return d.label === name; });
     if (ds) ds.hidden = !indexVisibility[name];
-    chartReturns.update();
+    chartMap['chart-returns'].update();
   }
 }

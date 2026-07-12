@@ -121,9 +121,79 @@ td.negative { color: #137333; font-weight: 600; }
 /* ===== 弹窗 ===== */
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
 .modal-overlay.show { display: flex; }
-.modal { background: #fff; border-radius: 12px; padding: 24px; width: 520px; max-width: 92vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.15); }
-.modal h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: #1a1a2e; }
+.modal { background: #fff; border-radius: 12px; padding: 24px; width: 520px; max-width: 92vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.15); position: relative; }
+.modal h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: #1a1a2e; padding-right: 28px; }
+.modal-close { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border: none; background: none; cursor: pointer; font-size: 22px; line-height: 1; color: #999; display:flex; align-items:center; justify-content:center; border-radius: 6px; transition: .15s; }
+.modal-close:hover { color: #333; background: #f0f0f0; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+
+/* ===== 账户管理弹窗 ===== */
+.acct-section { margin-top: 4px; margin-bottom: 20px; }
+.acct-section:last-child { margin-bottom: 0; }
+.acct-section-title {
+  font-size: 12px; font-weight: 600; color: #888;
+  margin-bottom: 10px; padding-bottom: 6px; letter-spacing: .5px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.acct-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px; border: 1px solid #eee; border-radius: 10px;
+  margin-bottom: 10px; background: #fff;
+  transition: border-color .15s, box-shadow .15s;
+}
+.acct-card:last-child { margin-bottom: 0; }
+.acct-card:hover { border-color: #d6d6e0; box-shadow: 0 2px 8px rgba(26,35,126,.05); }
+.acct-card.is-current { border-color: #1a237e; background: #f6f7ff; }
+.acct-avatar {
+  width: 36px; height: 36px; border-radius: 9px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; color: #fff;
+  background: linear-gradient(135deg,#283593,#1a237e);
+}
+.acct-card.is-current .acct-avatar { background: linear-gradient(135deg,#1a237e,#0d1640); }
+.acct-body { flex: 1; min-width: 0; }
+.acct-name-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.acct-name {
+  font-size: 14px; font-weight: 600; color: #1a1a2e;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acct-badge {
+  font-size: 11px; font-weight: 600; color: #1a237e;
+  background: #e8f0fe; padding: 2px 9px; border-radius: 20px; flex-shrink: 0;
+}
+.acct-broker { display: flex; align-items: center; gap: 8px; }
+.acct-broker label { font-size: 12px; color: #888; white-space: nowrap; }
+.acct-broker select {
+  flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px;
+  border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; color: #333;
+  outline: none; transition: border-color .2s, box-shadow .2s; cursor: pointer;
+}
+.acct-broker select:focus { border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
+.acct-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+.acct-empty { color: #999; font-size: 13px; text-align: center; padding: 16px 0; }
+.acct-add { display: flex; gap: 8px; align-items: stretch; }
+.acct-add input {
+  flex: 1; min-width: 0; padding: 8px 10px; font-size: 13px;
+  border: 1px solid #e0e0e0; border-radius: 6px; outline: none;
+  transition: border-color .2s, box-shadow .2s;
+}
+.acct-add input:focus { border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
+.acct-add-hint { font-size: 11px; color: #aaa; margin-top: 8px; line-height: 1.5; }
+.acct-idle {
+  border: 1px dashed #ddd; border-radius: 10px;
+  padding: 18px; text-align: center; color: #bbb;
+  background: #fafbfc; cursor: pointer; transition: .15s;
+}
+.acct-idle:hover { border-color: #c0c0cc; color: #999; background: #f0f2f5; }
+.acct-idle-icon { font-size: 20px; margin-bottom: 6px; }
+.acct-idle-text { font-size: 13px; font-weight: 500; }
+/* 税费设置 Tab 切换 */
+.fee-tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+.fee-tab { padding:6px 14px; border:1px solid #ddd; border-radius:20px; background:#fff; font-size:13px; cursor:pointer; color:#555; transition:.15s; }
+.fee-tab:hover { border-color:#1a237e; color:#1a237e; }
+.fee-tab.active { background:#1a237e; border-color:#1a237e; color:#fff; }
+.fee-panel { display:none; }
+.fee-panel.active { display:block; }
 .form-row-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
 
 /* ===== 交易列表 ===== */

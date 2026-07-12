@@ -5,10 +5,10 @@ const XLSX = require('xlsx');
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
-const validateAccountData = require('../middleware/validate');
-const { isValidAccountName } = require('../middleware/validate');
-const { loadUsers, saveUsers, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, pool } = require('../db');
+const { validateAccountData, isValidAccountName } = require('../middleware/validate');
+const { loadUsers, saveUsers, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool } = require('../db');
 const { fetchQuoteByCode, todayCN } = require('../services/market');
+const { recomputeNav } = require('../jobs/replayNav');
 
 router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
   // P2-3：账户列表优先读结构化 accounts 表；该用户尚无结构化记录时回退 users.accounts
@@ -33,9 +33,36 @@ router.put('/accounts', requireLogin, asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// 券商字典：返回券商清单供前端下拉（?market=A/HK/US 可选，默认全部）
+router.get('/brokers', requireLogin, asyncHandler(async (req, res) => {
+  const market = req.query.market || null;
+  res.json(await loadBrokers(market));
+}));
+
+// 当前用户各账户的券商映射 { 账户名: broker code }（供账户管理弹窗回填下拉）
+router.get('/accounts/broker', requireLogin, asyncHandler(async (req, res) => {
+  res.json(await getAccountBrokers(req.session.user));
+}));
+
+// 更新单个账户的券商（用户在账户管理里显式选择）。UPDATE 限定本人 username，天然隔离越权。
+router.put('/accounts/broker', requireLogin, asyncHandler(async (req, res) => {
+  const { account_name, broker } = req.body || {};
+  if (!account_name || !broker) return res.status(400).json({ error: '缺少 account_name 或 broker' });
+  if (!(await isValidBroker(broker))) return res.status(400).json({ error: '券商代码不合法' });
+  const n = await updateAccountBroker(req.session.user, account_name, broker);
+  if (n === 0) return res.status(404).json({ error: '账户不存在' });
+  res.json({ ok: true });
+}));
+
 router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   const name = decodeURIComponent(req.params.name);
   const result = await loadAccountData(req.session.user, name);
+  // 附加券商信息（供前端判断交易数量单位转换）
+  const { rows: acctRows } = await pool.query(
+    "SELECT broker FROM accounts WHERE username=$1 AND account_name=$2",
+    [req.session.user, name]
+  );
+  if (acctRows.length > 0) result._broker = acctRows[0].broker || 'other';
   // 附加当前行情涨跌幅（异步，不阻塞返回）
   if (result.positions && result.positions.length > 0) {
     result.changes = {};
@@ -65,6 +92,19 @@ router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit
     if (e && e.conflict) return res.status(409).json({ error: e.message });
     throw e;
   }
+}));
+
+// 晚录入交易 → 历史净值精确回填：从 fromDate 起重算该账户 nav_history（幂等 upsert）。
+// 鉴权：本人账户归属校验；限频：每分钟最多 10 次，防误刷。
+router.post('/data/:name/recompute-nav', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'recompute', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '回填过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const fromDate = req.body && req.body.fromDate;
+  if (!fromDate || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
+    return res.status(400).json({ error: 'fromDate 格式应为 YYYY-MM-DD' });
+  }
+  const r = await recomputeNav(req.session.user, name, fromDate);
+  if (!r.ok) return res.status(400).json({ error: r.error || '回填失败' });
+  res.json({ ok: true, days: r.days || 0 });
 }));
 
 // 管理员判定：仅 ADMIN_USERS 环境变量中的用户名可触发运维类操作；未配置则一律拒绝

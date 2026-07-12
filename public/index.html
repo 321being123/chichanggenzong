@@ -77,6 +77,14 @@
       <div id="earnings-stats" class="stats"></div>
       <div class="chart-box" style="margin-bottom:18px;">
         <div class="chart-title"><h3>收益走势对比（净值 vs 指数）</h3></div>
+        <div id="earnings-returns-period" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <button class="period-btn" data-mode="mtd" onclick="switchEarnPeriod('mtd')">本月</button>
+          <button class="period-btn" data-mode="q3" onclick="switchEarnPeriod('q3')">近三个月</button>
+          <button class="period-btn" data-mode="ytd" onclick="switchEarnPeriod('ytd')">今年</button>
+          <button class="period-btn active" data-mode="1y" onclick="switchEarnPeriod('1y')">近一年</button>
+          <button class="period-btn" data-mode="2y" onclick="switchEarnPeriod('2y')">近两年</button>
+          <button class="period-btn" data-mode="all" onclick="switchEarnPeriod('all')">全部</button>
+        </div>
         <div class="chart-canvas-wrap" style="height:320px;"><canvas id="chart-earnings-returns"></canvas></div>
       </div>
       <div class="chart-box" style="margin-bottom:18px;">
@@ -108,22 +116,34 @@
       <!-- 手动录入表单 -->
       <div id="trade-manual-section">
       <div class="form-row">
-        <div class="form-group"><label>代码</label><input id="trade-code" placeholder="如 600519" oninput="onTradeCodeInput(this.value)" autocomplete="off"></div>
-        <div class="form-group"><label>名称 <span class="auto-hint">自动</span></label><input id="trade-name" readonly style="background:#f5f5f5;"></div>
-        <div class="form-group"><label>方向</label><select id="trade-dir"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
+        <div class="form-group"><label>日期</label><input type="date" id="trade-date"></div>
+        <div class="form-group"><label>时间</label><input type="time" id="trade-time" value="09:30"></div>
+        <div class="form-group"><label></label></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="calcQuick()"></div>
-        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="calcQuick()" placeholder="股/张/份"></div>
+        <div class="form-group"><label>代码</label><input id="trade-code" placeholder="如 600519" oninput="onTradeCodeInput(this.value)" autocomplete="off"></div>
+        <div class="form-group"><label>名称 <span class="auto-hint">自动</span></label><input id="trade-name" readonly style="background:#f5f5f5;"></div>
+        <div class="form-group"><label>方向</label><select id="trade-dir" onchange="autoCalcTrade()"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="autoCalcTrade()"></div>
+        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="autoCalcTrade()" placeholder="股/张/份"><span id="trade-qty-hint" style="display:none;font-size:11px;color:#e65100;margin-left:4px;">⚠ 华泰/招商证券上交所债券：1手=10张，自动转换</span></div>
         <div class="form-group"><label>成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;"></div>
       </div>
       <div class="form-row">
+        <div class="form-group"><label>手续费 (¥) <span class="auto-hint">自动</span></label><input id="trade-commission" type="number" step="any" placeholder="自动算"></div>
+        <div class="form-group"><label>印花税 (¥)</label><input id="trade-stamp" type="number" step="any" placeholder="自动算"></div>
+        <div class="form-group"><label>过户费 (¥)</label><input id="trade-transfer" type="number" step="any" placeholder="自动算"></div>
+        <div class="form-group"><label>其他费 (¥)</label><input id="trade-other" type="number" step="any" placeholder="自动算"></div>
+      </div>
+      <div class="form-row">
         <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option><option value="现金">现金</option></select></div>
-        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype"><option>A股</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option></select></div>
+        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" onchange="autoCalcTrade()"><option>A股</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>场外基金</option></select></div>
         <div class="form-group"><label>备注</label><input id="trade-note" placeholder="可选"></div>
       </div>
       <button class="btn btn-primary" onclick="addTrade()">➕ 记录交易</button>
       <button class="btn btn-outline" onclick="showCashFlowModal()" style="margin-left:8px;">💰 资金转入转出</button>
+      <button class="btn btn-outline" onclick="openFeeSettings()" style="margin-left:8px;">⚙ 税费设置</button>
       </div>
 
       <!-- 智能导入区域（图片 + Excel，自动识别交易/持仓） -->
@@ -168,6 +188,7 @@
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal">
     <h2 id="modal-title">编辑持仓</h2>
+    <span class="modal-close" onclick="closeModal('modal-overlay')">&times;</span>
     <div id="modal-body"></div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-overlay')">取消</button>
@@ -180,6 +201,7 @@
 <div class="modal-overlay" id="modal-delete">
   <div class="modal" style="width:380px;">
     <h2>确认删除</h2>
+    <span class="modal-close" onclick="closeModal('modal-delete')">&times;</span>
     <p style="font-size:14px;color:#666;margin-bottom:18px;" id="delete-msg">确定要删除该持仓吗？</p>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-delete')">取消</button>
@@ -192,6 +214,7 @@
 <div class="modal-overlay" id="modal-conflict" style="z-index:2000;">
   <div class="modal" style="width:420px;">
     <h2>导入数据冲突</h2>
+    <span class="modal-close" onclick="closeModal('modal-conflict')">&times;</span>
     <p style="font-size:14px;color:#666;margin-bottom:18px;line-height:1.6;">导入的 Excel 中有日期与线上净值记录重叠。请选择处理方式：</p>
     <div class="modal-actions" style="flex-direction:column;gap:10px;">
       <button class="btn btn-primary" id="conflict-import-btn">导入数据覆盖线上（用 Excel 净值替换冲突日）</button>
@@ -204,6 +227,7 @@
 <div class="modal-overlay" id="modal-import-progress" style="z-index:2000;">
   <div class="modal" style="width:440px;">
     <h2 id="import-progress-title">正在导入历史净值</h2>
+    <span class="modal-close" onclick="closeModal('modal-import-progress')">&times;</span>
     <div id="import-progress-body">
       <div style="display:flex;align-items:center;margin-bottom:14px;">
         <div class="spinner" id="import-spinner"></div>
@@ -226,6 +250,7 @@
 <div class="modal-overlay" id="modal-mapping" style="z-index:2100;">
   <div class="modal" style="width:520px;">
     <h2>请匹配 Excel 列</h2>
+    <span class="modal-close" onclick="closeMappingModal()">&times;</span>
     <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">未能自动识别「日期」或「净值」列，请手动选择每一列对应的字段（带 * 为必填）。</p>
     <div id="mapping-fields"></div>
     <div style="margin:14px 0 6px;font-size:13px;color:#333;">预览（前 5 行）：</div>
@@ -241,6 +266,7 @@
 <div class="modal-overlay" id="modal-nav-edit" style="z-index:2200;">
   <div class="modal" style="width:420px;">
     <h2 id="nav-edit-title">新增净值记录</h2>
+    <span class="modal-close" onclick="closeModal('modal-nav-edit')">&times;</span>
     <div class="form-group"><label>日期 *（YYYY-MM-DD）</label><input id="nav-edit-date" placeholder="如 2024-01-01"></div>
     <div class="form-group"><label>净值 *（以 1.0000 为基准）</label><input id="nav-edit-nav" type="number" step="0.0001" placeholder="1.0000"></div>
     <div class="form-group"><label>总市值（可选）</label><input id="nav-edit-total" type="number" step="0.01" placeholder="留空则不计"></div>
@@ -256,6 +282,7 @@
 <div class="modal-overlay" id="modal-add">
   <div class="modal">
     <h2 id="modal-title">新增持仓</h2>
+    <span class="modal-close" onclick="closeModal('modal-add')">&times;</span>
     <div class="form-row-2col">
       <div class="form-group"><label>证券代码</label><input id="modal-code" placeholder="如 601919"></div>
       <div class="form-group"><label>证券名称</label><input id="modal-name" placeholder="自动获取"></div>
@@ -290,29 +317,46 @@
   </div>
 </div>
 
+<!-- 税费设置弹窗 -->
+<div class="modal-overlay" id="modal-feesettings">
+  <div class="modal" style="width:640px;max-width:94vw;">
+    <h2>⚙ 税费设置</h2>
+    <span class="modal-close" onclick="closeModal('modal-feesettings')">&times;</span>
+    <p style="font-size:12px;color:#888;margin:-6px 0 12px;">佣金费率、最低佣金可自行设定；印花税、过户费等为交易所默认规则（一般无需改动，交易所调整时可自动更新）。</p>
+    <div id="fee-settings-body"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('modal-feesettings')">取消</button>
+      <button class="btn btn-primary" onclick="saveFeeSettings()">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- 账户管理弹窗 -->
 <div class="modal-overlay" id="modal-account">
   <div class="modal">
     <h2>账户管理</h2>
-    <div id="account-list"></div>
-    <div style="margin-top:14px;">
-      <div class="form-group"><label>账户名称</label><input id="account-name-input" placeholder="输入账户名称" style="width:100%;"></div>
+    <span class="modal-close" onclick="closeModal('modal-account')">&times;</span>
+
+    <div class="acct-section">
+      <div class="acct-section-title">我的账户</div>
+      <div id="account-list"></div>
     </div>
-    <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal('modal-account')">取消</button>
-      <button class="btn btn-primary" onclick="saveAccountName()">保存</button>
+
+    <div class="acct-section" id="account-form-section">
+      <!-- 由 core-account.js renderAccountForm() 动态渲染：新建 / 重命名 / 空闲引导 -->
     </div>
   </div>
 </div>
 
 <script src="js/code-classify.js?v=2"></script>
 <script src="js/utils.js?v=2"></script>
-<script src="shared/core-quote.js?v=3"></script>
+<script src="shared/core-quote.js?v=20260712"></script>
 <script src="shared/core-tables.js?v=3"></script>
-<script src="shared/core-trade.js?v=3"></script>
+<script src="shared/core-fees.js?v=1"></script>
+<script src="shared/core-trade.js?v=20260712"></script>
 <script src="shared/core-returns.js?v=3"></script>
-<script src="shared/core-earnings.js?v=3"></script>
-<script src="shared/core-account.js?v=3"></script>
+<script src="shared/core-earnings.js?v=20260712c"></script>
+<script src="shared/core-account.js?v=20260712e"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -361,6 +405,37 @@ async function loadData(accountName) {
   try {
     const r = await fetch(api(`/api/data/${encodeURIComponent(accountName)}`));
     data = await r.json();
+    // pg 驱动可能把 numeric 返回为字符串，统一转 number（否则图表 .toFixed 报错 + 保存校验 400）
+    if (data && Array.isArray(data.navHistory)) {
+      data.navHistory.forEach(function (n) {
+        if (n.nav != null) n.nav = Number(n.nav);
+        if (n.totalAsset != null) n.totalAsset = Number(n.totalAsset);
+        if (n.invested != null) n.invested = Number(n.invested);
+      });
+    }
+    if (data && Array.isArray(data.positions)) {
+      data.positions.forEach(function (p) {
+        if (p.price != null) p.price = Number(p.price);
+        if (p.quantity != null) p.quantity = Number(p.quantity);
+        if (p.cost != null) p.cost = Number(p.cost);
+      });
+    }
+    if (data && Array.isArray(data.trades)) {
+      data.trades.forEach(function (t) {
+        if (t.price != null) t.price = Number(t.price);
+        if (t.quantity != null) t.quantity = Number(t.quantity);
+        if (t.amount != null) t.amount = Number(t.amount);
+        if (t.commission != null) t.commission = Number(t.commission);
+        if (t.stamp_tax != null) t.stamp_tax = Number(t.stamp_tax);
+        if (t.transfer_fee != null) t.transfer_fee = Number(t.transfer_fee);
+        if (t.other_fee != null) t.other_fee = Number(t.other_fee);
+      });
+    }
+    if (data && Array.isArray(data.cashFlows)) {
+      data.cashFlows.forEach(function (c) {
+        if (c.amount != null) c.amount = Number(c.amount);
+      });
+    }
   } catch(e) { data = null; }
   if (!data) {
     data = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
@@ -402,6 +477,7 @@ function saveData() {
   });
 }
 async function saveDataNow() {
+  var lastError = '';
   for (var attempt = 0; attempt < 3; attempt++) {
     try {
       var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '?version=' + dataVersion), {
@@ -410,15 +486,20 @@ async function saveDataNow() {
         body: JSON.stringify(data)
       });
       if (r.status === 409) { showToast('数据已在其他设备被修改，请刷新页面后再保存'); return; }
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) {
+        var errBody = {};
+        try { errBody = await r.json(); } catch (ee) {}
+        throw new Error('HTTP ' + r.status + (errBody.error ? ': ' + errBody.error : ''));
+      }
       const j = await r.json().catch(() => ({}));
-      if (j && typeof j.version === 'number') dataVersion = j.version; // 更新乐观锁基准，避免下次保存误判冲突
-      return; // 成功落库
+      if (j && typeof j.version === 'number') dataVersion = j.version;
+      return;
     } catch (e) {
+      lastError = e.message || String(e);
       if (attempt < 2) { await new Promise(function (res) { setTimeout(res, 500); }); }
-      else showToast('数据保存失败，请稍后刷新页面重试');
     }
   }
+  showToast('保存失败：' + lastError);
 }
 
 // ============== 启动 ==============

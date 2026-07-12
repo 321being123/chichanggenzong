@@ -6,14 +6,18 @@ function renderStats() {
   var container = document.getElementById('stats-container');
   if (!container) return;
   
-  // 计算今日涨跌（对比 nav_history 最近两条记录）
+  // 计算今日涨跌（对比 nav_history 最近两条记录）；若最近两条间隔过大（如导入的历史快照），
+  // 则无真实日涨跌，置 hasChange=false 由渲染端显示"-"
   var changeAmt = 0, changePct = 0, hasChange = false;
   if (data.navHistory && data.navHistory.length >= 2) {
     var last = data.navHistory[data.navHistory.length - 1];
     var prev = data.navHistory[data.navHistory.length - 2];
-    changeAmt = s.total - prev.totalAsset;
-    changePct = prev.totalAsset > 0 ? (changeAmt / prev.totalAsset * 100) : 0;
-    hasChange = true;
+    var gapDays = daysBetweenDates(prev.date, last.date);
+    if (gapDays != null && gapDays <= 4) {
+      changeAmt = s.total - prev.totalAsset;
+      changePct = prev.totalAsset > 0 ? (changeAmt / prev.totalAsset * 100) : 0;
+      hasChange = true;
+    }
   }
   
   // 首次渲染生成卡片结构
@@ -66,7 +70,7 @@ function renderStats() {
       var color = changeAmt >= 0 ? '#d93025' : '#137333';
       el('stat-change').innerHTML = '<span style="color:' + color + ';">' + arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)</span>';
     } else {
-      el('stat-change').textContent = '';
+      el('stat-change').textContent = '-';
     }
   }
   if (el('stat-equity')) el('stat-equity').textContent = fmt(s.equityVal);
@@ -430,7 +434,7 @@ function renderTrades() {
   }
   var html = '<table><thead><tr>' +
     '<th>时间</th><th>代码</th><th>名称</th><th>方向</th>' +
-    '<th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">成交额</th>' +
+    '<th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">成交额</th><th class="text-right">费用</th>' +
     '<th>类型</th><th>备注</th><th class="text-center">操作</th>' +
     '</tr></thead><tbody>';
   items.forEach(item => {
@@ -453,6 +457,7 @@ function renderTrades() {
         '<td class="text-right ' + (t.direction === 'buy' ? 'positive' : 'negative') + '">' +
           (t.direction === 'buy' ? '+' : '-') + fmtQty(t.quantity) + '</td>' +
         '<td class="text-right">' + (t.amount != null ? fmt(t.amount) : '-') + '</td>' +
+        '<td class="text-right">' + (tradeFeeTotal(t) ? fmt(tradeFeeTotal(t)) : '-') + '</td>' +
         '<td>' + escapeHtml(t.type || '-') + '</td>' +
         '<td>' + escapeHtml(t.note || '') + '</td>' +
         '<td class="text-center"><button class="btn btn-danger btn-sm" data-act="deleteTrade" data-id="' + escapeHtml(t.id) + '">删除</button></td>' +
@@ -472,6 +477,7 @@ function renderTrades() {
         '<td class="text-right">-</td>' +
         '<td class="text-right ' + (isIn ? 'positive' : 'negative') + '">' +
           (isIn ? '+' : '-') + fmt(Math.abs(c.amount)) + '</td>' +
+        '<td class="text-right">-</td>' +
         '<td>现金</td>' +
         '<td>' + escapeHtml(c.note || '') + '</td>' +
         '<td class="text-center"><button class="btn btn-danger btn-sm" data-act="deleteCashFlow" data-id="' + escapeHtml(c.id) + '">删除</button></td>' +

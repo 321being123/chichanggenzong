@@ -1,6 +1,7 @@
-// ========== 自动记录每日收盘价（按市场收盘时刻精准触发） ==========
+// ========== 自动记录每日收盘价（按市场收盘时刻精准触发 + 休市识别 + 缺失补漏） ==========
 const { pool, loadAccountData, saveDailyPrices, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { fetchQuoteByCode } = require('../services/market');
+const { isCnHoliday } = require('../config/holidays');
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
 const MARKET_CLOSE_TIMES = [
@@ -10,17 +11,22 @@ const MARKET_CLOSE_TIMES = [
   { h: 15, m: 10, label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
 ];
 
-// 获取东八区日期
-function cnDateStr() {
-  var d = new Date();
-  d.setHours(d.getHours() + 8);
-  return d.toISOString().split('T')[0];
+// 东八区日期 YYYY-MM-DD（兼容任意 Date）
+function fmtCN(d) {
+  const x = new Date(d);
+  const cn = new Date(x.getTime() + (x.getTimezoneOffset() + 480) * 60000);
+  const p = n => String(n).padStart(2, '0');
+  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
 }
 
-// 是否为交易日（周一至周五）
+// 今天（东八区）
+function cnDateStr() { return fmtCN(new Date()); }
+
+// 是否为交易日：周一至周五 且 非法定节假日
 function isTradingDay(d) {
-  var day = (d || new Date()).getDay();
-  return day >= 1 && day <= 5;
+  const day = (d || new Date()).getDay();
+  if (day < 1 || day > 5) return false;
+  return !isCnHoliday(fmtCN(d || new Date()));
 }
 
 // 距离指定时间的毫秒数
@@ -32,43 +38,91 @@ function msUntil(h, m) {
   return target - now;
 }
 
-// 为单个市场记录收盘价
-async function recordMarketClose(label, matchFn) {
-  var cnDate = cnDateStr();
-  try {
-    var { rows: users } = await pool.query('SELECT username, accounts FROM users');
-    for (var user of users) {
-      var accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
-      for (var accountName of accounts) {
-        // 今天已记录过就跳过
-        var { rows: existing } = await pool.query(
+// 带重试的行情抓取：Tushare 偶发 null / 港股腾讯抖动 → 重试 2 次，间隔 1s
+async function fetchWithRetry(code, tries) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const q = await fetchQuoteByCode(code);
+      if (q && q.price) return q;
+    } catch (e) {}
+    if (i < tries - 1) await new Promise(r => setTimeout(r, 1000));
+  }
+  return null;
+}
+
+// 为单个账户记录某交易日收盘价（幂等：已记录则跳过）
+// 返回 { recorded, failed, error }；error=true 表示有持仓却全部抓取失败
+async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
+  const cnDate = dateStr || cnDateStr();
+  const { rows: existing } = await pool.query(
+    'SELECT 1 FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 LIMIT 1',
+    [username, accountName, cnDate]
+  );
+  if (existing.length > 0) return { recorded: 0, failed: 0 };
+
+  const result = await loadAccountData(username, accountName);
+  const positions = (result.positions || []).filter(p => matchFn(p.code));
+  if (positions.length === 0) return { recorded: 0, failed: 0 };
+
+  let recorded = 0, failed = 0;
+  const prices = [];
+  for (const pos of positions) {
+    if (!pos.code) continue;
+    const q = await fetchWithRetry(pos.code, 2);
+    if (q && q.price) {
+      prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price });
+      recorded++;
+    } else {
+      failed++;
+    }
+  }
+  if (prices.length > 0) await saveDailyPrices(username, accountName, cnDate, prices);
+  const error = recorded === 0 && failed > 0;
+  return { recorded, failed, error };
+}
+
+// 为所有账户记录某市场某交易日收盘价（聚合判断「全部失败」才抛出，供任务留痕）
+async function recordMarketClose(label, matchFn, dateStr) {
+  const cnDate = dateStr || cnDateStr();
+  const { rows: users } = await pool.query('SELECT username, accounts FROM users');
+  let anyRecorded = false, anyError = false;
+  for (const user of users) {
+    const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
+    for (const accountName of accounts) {
+      const r = await recordCloseOne(user.username, accountName, label, matchFn, cnDate)
+        .catch(e => { anyError = true; return { recorded: 0, failed: 1, error: true }; });
+      if (r && r.recorded > 0) anyRecorded = true;
+      if (r && r.error) anyError = true;
+    }
+  }
+  if (!anyRecorded && anyError) throw new Error('收盘记录全部失败 (' + label + ' ' + cnDate + ')');
+}
+
+// 缺失补漏：回看最近若干交易日，某账户某交易日 daily_prices 为 0 行则重抓落库（幂等）
+async function backfillMissingCloses() {
+  const days = [];
+  const now = new Date();
+  for (let i = 1; i <= 12 && days.length < 6; i++) {
+    const dd = new Date(now.getTime() - i * 86400000);
+    if (isTradingDay(dd)) days.push(fmtCN(dd));
+  }
+  if (days.length === 0) return;
+  const { rows: users } = await pool.query('SELECT username, accounts FROM users');
+  for (const user of users) {
+    const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
+    for (const accountName of accounts) {
+      for (const day of days) {
+        const { rows } = await pool.query(
           'SELECT 1 FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 LIMIT 1',
-          [user.username, accountName, cnDate]
+          [user.username, accountName, day]
         );
-        if (existing.length > 0) continue;
-
-        var result = await loadAccountData(user.username, accountName);
-        var positions = (result.positions || []).filter(p => matchFn(p.code));
-        if (positions.length === 0) continue;
-
-        var prices = [];
-        for (var pos of positions) {
-          if (!pos.code) continue;
-          try {
-            var quote = await fetchQuoteByCode(pos.code);
-            if (quote && quote.price) {
-              prices.push({ code: pos.code, name: pos.name || quote.name || '', price: quote.price });
-            }
-          } catch (e) {}
-        }
-
-        if (prices.length > 0) {
-          await saveDailyPrices(user.username, accountName, cnDate, prices);
+        if (rows.length > 0) continue;
+        for (const mkt of MARKET_CLOSE_TIMES) {
+          await recordCloseOne(user.username, accountName, mkt.label, mkt.match, day)
+            .catch(e => console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message));
         }
       }
     }
-  } catch (e) {
-    // 静默失败
   }
 }
 
@@ -81,27 +135,32 @@ async function runMarketCloseJob(label, matchFn) {
     await finishJobRun(runId, true, '');
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
+    console.error('[market_close:' + label + '] 失败:', e.message || e);
   } finally {
     await releaseJob('market_close:' + label);
   }
 }
 
-// 为所有市场分别调度收盘任务
+// 为所有市场分别调度收盘任务（含休市识别 + 每日缺失补漏）
 function scheduleAllMarketCloses() {
-  for (var i = 0; i < MARKET_CLOSE_TIMES.length; i++) {
+  let lastBackfill = '';
+  for (let i = 0; i < MARKET_CLOSE_TIMES.length; i++) {
     (function (mkt) {
       function runAndReschedule() {
         if (isTradingDay()) {
+          // 每日仅补一次「前一交易日」的漏（不论哪个市场先触发）
+          const today = cnDateStr();
+          if (today !== lastBackfill) {
+            lastBackfill = today;
+            backfillMissingCloses().catch(e => console.error('[worker] 补漏失败:', e.message));
+          }
           runMarketCloseJob(mkt.label, mkt.match).catch(() => {});
         }
-        // 安排下一个交易日
         var delay = msUntil(mkt.h, mkt.m);
-        // 跳过周末：如果下个工作日在周末之后，再加
         var nextDay = new Date(Date.now() + delay + 60000);
         while (!isTradingDay(nextDay)) {
           nextDay.setDate(nextDay.getDate() + 1);
         }
-        // 重新计算延迟（从now到nextDay的收盘时间）
         var now = new Date();
         nextDay.setHours(mkt.h, mkt.m, 0, 0);
         var nextDelay = nextDay - now;
@@ -114,4 +173,4 @@ function scheduleAllMarketCloses() {
   }
 }
 
-module.exports = { scheduleAllMarketCloses };
+module.exports = { scheduleAllMarketCloses, backfillMissingCloses, isTradingDay, fmtCN };

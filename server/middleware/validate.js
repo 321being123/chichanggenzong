@@ -5,8 +5,11 @@ function validateAccountData(d) {
   if (!d || typeof d !== 'object') return { ok: false, msg: '数据格式错误' };
   const isNum = (x) => typeof x === 'number' && isFinite(x);
   const isStr = (x) => typeof x === 'string';
-  const dateOk = (x) => isStr(x) && /^\d{4}-\d{2}-\d{2}$/.test(x);
-  const dateTimeOk = (x) => isStr(x) && /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$/.test(x);
+  // 净值/现金流日期：兼容 YYYY-MM-DD 和 ISO 带时间格式（SheetJS cellDates:true 序列化结果）
+  const dateOk = (x) => isStr(x) && /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z?)?$/.test(x);
+  // 兼容两种时间格式：YYYY-MM-DD | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM:SS
+  // 前端交易录入用 HH:MM，created_at 等内部时间戳用 HH:MM:SS
+  const dateTimeOk = (x) => isStr(x) && /^\d{4}-\d{2}-\d{2}( (\d{2}:\d{2}(:\d{2})?)?)?$/.test(x);
   const MAX = 5000;
   const len = (x, n) => x == null || (isStr(x) && x.length <= n);
   // 文本内容白名单：禁止 < > " ' & 等可构成 HTML/脚本的字符
@@ -29,7 +32,7 @@ function validateAccountData(d) {
   const ts = d.trades || [];
   if (!Array.isArray(ts) || ts.length > MAX) return { ok: false, msg: '交易数量超限' };
   for (const t of ts) {
-    if (!dateOk(t.date)) return { ok: false, msg: '交易日期格式错误' };
+    if (!dateTimeOk(t.date)) return { ok: false, msg: '交易日期格式错误' };
     if (t.direction && t.direction !== 'buy' && t.direction !== 'sell') return { ok: false, msg: '交易方向非法' };
     if (!isNum(t.price) || t.price < 0) return { ok: false, msg: '交易价格非法' };
     if (!isNum(t.quantity)) return { ok: false, msg: '交易数量非法' };
@@ -45,8 +48,8 @@ function validateAccountData(d) {
   if (!Array.isArray(ns) || ns.length > MAX) return { ok: false, msg: '净值记录超限' };
   for (const n of ns) {
     if (!dateOk(n.date)) return { ok: false, msg: '净值日期格式错误' };
-    if (!isNum(n.nav) || n.nav <= 0) return { ok: false, msg: '净值非法' };
-    if (!isNum(n.totalAsset) || n.totalAsset < 0) return { ok: false, msg: '总市值非法' };
+    if (!isNum(n.nav) || n.nav < 0) return { ok: false, msg: '净值非法' };
+    if (n.totalAsset != null && (!isNum(n.totalAsset) || n.totalAsset < 0)) return { ok: false, msg: '总市值非法' };
     if (n.invested != null && !isNum(n.invested)) return { ok: false, msg: '投入金额非法' };
   }
   const cs = d.cashFlows || [];

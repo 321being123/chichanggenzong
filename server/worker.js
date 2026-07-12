@@ -4,14 +4,23 @@
 // Web 进程需设 DISABLE_SCHEDULER=1 以防重复执行；本进程默认运行调度。
 require('dotenv').config();
 const { initSchema, pool } = require('./db');
-const { scheduleAllMarketCloses } = require('./jobs/marketClose');
+const { scheduleAllMarketCloses, backfillMissingCloses } = require('./jobs/marketClose');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
+const { ensureHolidaysCurrent } = require('./jobs/holidaySync');
 
 async function main() {
   await initSchema();
   console.log('[worker] 后台任务调度已启动（独立进程）');
-  // 收盘记录按市场时刻精准调度
+  // 启动即核对休市日（年度自愈，确保日历最新再调度）
+  await ensureHolidaysCurrent().catch(e => console.warn('[worker] 休市日核对失败:', e.message));
+  // 收盘记录按市场时刻精准调度（含休市识别 + 每日缺失补漏）
   scheduleAllMarketCloses();
+  // 启动即补齐缺失的每日收盘价（崩溃/报错/节假日空档自愈）
+  backfillMissingCloses().catch(e => console.error('[worker] 补漏失败:', e.message));
+  // 每月核对一次休市日（本地短路：未跨年且 30 天内已核对则跳过联网）
+  setInterval(() => {
+    ensureHolidaysCurrent().catch(e => console.warn('[worker] 休市日核对失败:', e.message));
+  }, 30 * 24 * 3600 * 1000);
   // 启动即补齐指数基线（带幂等锁，多实例仅一个执行）
   runIndexBaselineJob().catch(e => console.error('[worker] 指数基线失败:', e.message));
 }

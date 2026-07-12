@@ -20,6 +20,13 @@ function showToast(msg) {
   setTimeout(() => el.classList.remove('show'), 3500);
 }
 
+// 安全设置提示文本：元素可能不存在（部分 hint 仅在部分录入区渲染），不存在则静默跳过，
+// 避免对 null 赋值抛 TypeError 中断后续逻辑（如 onTradeCodeInput 中 fillQuote 前的类型提示）
+function setHint(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
 // ===================== 行情 API =====================
 
 async function fetchQuoteFromServer(code) {
@@ -27,7 +34,8 @@ async function fetchQuoteFromServer(code) {
     const r = await fetch(api('/api/quote/' + encodeURIComponent(code)));
     if (r.ok) {
       const data = await r.json();
-      if (data && data.price) return data;
+      // 即使 price 为 null（停牌/无行情），只要有 name 就返回（用于自动填充名称）
+      if (data && (data.price || data.name)) return data;
     }
   } catch(e) {}
   return null;
@@ -53,9 +61,11 @@ async function fetchQuote(code, forceRefresh) {
 
   // 统一走服务端行情代理
   let result = await fetchQuoteFromServer(key);
-  if (result && result.price) {
+  if (result) {
     PRICE_CACHE[key] = { data: result, time: now };
-    return result;
+    // 有 price 正常返回；仅有 name（停牌等）也返回供自动填充名称
+    if (result.price) return result;
+    return { price: null, name: result.name || null, code: key, change: null };
   }
   return null;
 }
@@ -152,6 +162,13 @@ async function doRefresh() {
   if (typeof TOTAL_ASSET !== 'undefined' && TOTAL_ASSET > 0) {
     data.totalAsset = TOTAL_ASSET;
   }
+  // 休市（周末 / 法定节假日 / 非交易时段）：不抓实时行情，
+  // 直接渲染已加载的「最近交易日收盘价」（DB 在节假日前一天收盘后已存好），静默不弹提醒。
+  if (!isMarketOpen()) {
+    renderAll();
+    renderReturnsChart();  // 休市时也用已加载的净值历史渲染走势对比图（避免默认空白）
+    return;
+  }
   // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
   await refreshAllPrices();
 }
@@ -193,7 +210,7 @@ function onCodeInput(code) {
       document.getElementById('quick-name').value = quote.name || '';
       document.getElementById('quick-price').value = quote.price
         ? '¥' + quote.price.toFixed(3) : '获取中...';
-      document.getElementById('quick-name-hint').textContent = '已获取';
+      setHint('quick-name-hint', '已获取');
       document.getElementById('quick-price').readOnly = false;
     }
     document.getElementById('quick-detail').style.display = 'grid';
@@ -205,20 +222,34 @@ function onTradeCodeInput(code) {
   clearTimeout(codeInputTimer);
   if (code.length < 4) return;
   codeInputTimer = setTimeout(async () => {
-    const rec = recognizeCode(code);
-    if (rec) {
-      document.getElementById('trade-type').value = rec.type;
-      document.getElementById('trade-subtype').value = rec.subtype;
-      document.getElementById('trade-type-hint').textContent = rec.type;
-      document.getElementById('trade-subtype-hint').textContent = rec.subtype;
-    }
-    const quote = await fetchQuote(code);
-    if (quote) {
-      document.getElementById('trade-name').value = quote.name || '';
-      document.getElementById('trade-name-hint').textContent = '已获取';
-      if (!document.getElementById('trade-price').value) {
-        document.getElementById('trade-price').value = quote.price || '';
+    try {
+      const rec = recognizeCode(code);
+      if (rec) {
+        document.getElementById('trade-type').value = rec.type;
+        document.getElementById('trade-subtype').value = rec.subtype;
+        setHint('trade-type-hint', rec.type);
+        setHint('trade-subtype-hint', rec.subtype);
+        // 华泰上交所债券：显示数量单位提示
+        if (typeof updateQtyHint === 'function') updateQtyHint(code);
+      } else {
+        if (typeof updateQtyHint === 'function') updateQtyHint(null);
       }
+      console.log('[onTradeCodeInput] 正在获取行情:', code);
+      const quote = await fetchQuote(code);
+      console.log('[onTradeCodeInput] 行情结果:', JSON.stringify(quote));
+      if (quote) {
+        document.getElementById('trade-name').value = quote.name || '';
+        setHint('trade-name-hint', '已获取');
+        if (!document.getElementById('trade-price').value) {
+          document.getElementById('trade-price').value = quote.price || '';
+          // 价格被自动填入后，若数量也已填写则重新计算费用
+          if (typeof autoCalcTrade === 'function') autoCalcTrade();
+        }
+      } else {
+        console.warn('[onTradeCodeInput] 未获取到行情数据, code=', code);
+      }
+    } catch(e) {
+      console.error('[onTradeCodeInput] 异常:', e);
     }
   }, 500);
 }
@@ -231,15 +262,14 @@ function onModalCodeInput(code) {
     if (rec) {
       document.getElementById('modal-type').value = rec.type;
       document.getElementById('modal-subtype').value = rec.subtype;
-      document.getElementById('modal-type-hint').textContent = '自动: ' + rec.type;
-      document.getElementById('modal-subtype-hint').textContent = '自动: ' + rec.subtype;
+      setHint('modal-type-hint', '自动: ' + rec.type);
+      setHint('modal-subtype-hint', '自动: ' + rec.subtype);
     }
     const quote = await fetchQuote(code);
     if (quote) {
       document.getElementById('modal-name').value = quote.name || '';
       document.getElementById('modal-price').value = quote.price || '';
-      document.getElementById('modal-price-hint').textContent =
-        '实时: ¥' + quote.price.toFixed(3);
+      setHint('modal-price-hint', '实时: ¥' + quote.price.toFixed(3));
     }
   }, 500);
 }
@@ -256,11 +286,14 @@ function calcQuick() {
 function addQuickPosition() {
   const code = classifyCode.normalizeCode(document.getElementById('quick-code').value.trim());
   const name = document.getElementById('quick-name').value.trim();
-  const qty = parseInt(document.getElementById('quick-qty').value);
+  var qty = parseInt(document.getElementById('quick-qty').value);
   const priceVal = document.getElementById('quick-price').value.replace('¥', '').trim();
   const price = parseFloat(priceVal);
   const type = document.getElementById('quick-type').value;
   const subtype = document.getElementById('quick-subtype').value;
+
+  // 华泰/招商证券上交所债券：手→张自动转换
+  if (typeof normalizeQuantity === 'function') qty = normalizeQuantity(qty, code);
 
   if (!code || !qty || qty <= 0) { showToast('请填写代码和数量'); return; }
   if (isNaN(price) || price <= 0) { showToast('请输入有效价格（可手动填写）'); return; }
@@ -282,7 +315,7 @@ function addQuickPosition() {
   document.getElementById('quick-subtype').value = '';
   document.getElementById('quick-mv').value = '';
   document.getElementById('quick-detail').style.display = 'none';
-  document.getElementById('quick-name-hint').textContent = '自动获取';
+  setHint('quick-name-hint', '自动获取');
 }
 
 // ===================== 粘贴导入 =====================

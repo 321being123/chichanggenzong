@@ -144,7 +144,7 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
     if (workbook.SheetNames.length > 20) return res.status(400).json({ error: 'Excel 工作表过多' });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    let rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    let rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', cellDates: true });
     rows = trimSheetRows(rows, 2000, 60, 300); // 限行/列/单元格，防撑爆与 AI token 放大
 
     if (!rows || rows.length === 0) {
@@ -210,7 +210,7 @@ router.post('/api/excel-history-parse', requireLogin, rateLimit({ prefix: 'ai', 
     if (workbook.SheetNames.length > 20) return res.status(400).json({ error: 'Excel 工作表过多' });
     const sheetName = workbook.SheetNames.find(n => n.includes('资金')) || workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', cellDates: true });
     if (!rows || rows.length < 2) return res.json({ headers: [], rows: [], total: 0 });
     // 限制规模后返回原始表头与数据行，由前端做"精确匹配/手动匹配"，避免任何猜测导致数据错配或丢行
     const headerCells = (rows[0] || []).map(function (h) { return String(h == null ? '' : h).trim(); });

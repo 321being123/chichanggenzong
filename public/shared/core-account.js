@@ -86,7 +86,7 @@ function renderEarnings() {
   const last = sorted[sorted.length - 1];
 
   const pct = function (v) { return (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%'; };
-  const col = function (v) { return v >= 0 ? '#137333' : '#d93025'; };
+  const col = function (v) { return v >= 0 ? '#d93025' : '#137333'; };
 
   const cards = [
     { label: '当前总市值', value: fmt(last.totalMarketValue || 0), sub: '投入本金 ' + fmt(last.totalInvested || 0) },
@@ -142,196 +142,19 @@ function renderEarningsChart(sorted) {
   });
 }
 
-// 找首个“净值与指数快照都有”的日期作为对比基准
-// （指数历史数据通常晚于净值起始，此前无指数可对比，按用户要求该时间段不画指数线）
-function findComparisonStart(navData) {
-  if (!data.indexHistory || !data.indexHistory.length) return null;
-  for (var i = 0; i < navData.length; i++) {
-    var has = data.indexHistory.some(function (h) {
-      return h.date === navData[i].date &&
-        (h['沪深300'] != null || h['上证指数'] != null || h['中证500'] != null || h['恒生指数'] != null);
-    });
-    if (has) return navData[i].date;
-  }
-  return null;
+// 收益页包装：复用总览页共享走势图（统一全量 + spanGaps，两页一致）
+let earnReturnMode = '1y';
+
+function switchEarnPeriod(mode) {
+  earnReturnMode = mode;
+  document.querySelectorAll('#earnings-returns-period [data-mode]').forEach(function (b) { b.classList.remove('active'); });
+  var btn = document.querySelector('#earnings-returns-period [data-mode="' + mode + '"]');
+  if (btn) btn.classList.add('active');
+  renderEarningsReturnsChart();
 }
 
-// 用本地指数快照构造序列：以“首个有该指数的净值日期”为对齐基准，
-// 使指数在首个可比日的值 = 当日净值（已归一到1.0系）的值，实现“起点一致”对比
-function getEarnIndex(name, navData) {
-  if (!data.indexHistory || !data.indexHistory.length) return null;
-  var map = {};
-  data.indexHistory.forEach(function (h) { if (h[name] != null) map[h.date] = h[name]; });
-  var navBase = Number(navData[0].nav) || 1; // 净值归一基准（首日）
-  var baseDate = null, navAtBase = null;
-  for (var i = 0; i < navData.length; i++) {
-    if (map[navData[i].date] != null) {
-      baseDate = navData[i].date;
-      navAtBase = Number(navData[i].nav) / navBase; // 该日净值在“1.0系”中的值
-      break;
-    }
-  }
-  if (!baseDate) return null;
-  var firstClose = map[baseDate];
-  return navData
-    .filter(function (d) { return map[d.date] != null; })
-    .map(function (d) { return { date: d.date, val: (map[d.date] / firstClose) * navAtBase }; });
-}
-
-// 实时拉取兜底归一化：同样以“首个有数据的净值日期”为对齐基准，使指数起点 = 当日净值
-function normalizeIndexFrom(indexData, navData, base) {
-  if (!indexData || !indexData.length || !navData.length) return [];
-  var map = {};
-  indexData.forEach(function (d) { map[d.date] = d.close; });
-  var navBase = Number(navData[0].nav) || 1;
-  var baseDate = (base && map[base] != null) ? base : null;
-  if (!baseDate) {
-    for (var i = 0; i < navData.length; i++) { if (map[navData[i].date] != null) { baseDate = navData[i].date; break; } }
-  }
-  if (!baseDate) return [];
-  var firstClose = map[baseDate];
-  var navAtBase = null;
-  for (var j = 0; j < navData.length; j++) { if (navData[j].date === baseDate) { navAtBase = Number(navData[j].nav) / navBase; break; } }
-  if (navAtBase == null) navAtBase = 1;
-  var dateSet = {};
-  navData.forEach(function (d) { dateSet[d.date] = true; });
-  return indexData
-    .filter(function (d) { return dateSet[d.date]; })
-    .map(function (d) { return { date: d.date, val: (d.close / firstClose) * navAtBase }; });
-}
-
-// 周频采样：生成 [start, end] 内所有每周五(UTC 周五=5)的 ISO 日期
-function weeklyFridayLabels(startStr, endStr) {
-  const labels = [];
-  const d = new Date(startStr + 'T00:00:00Z');
-  const diff = (5 - d.getUTCDay() + 7) % 7;
-  d.setUTCDate(d.getUTCDate() + diff);
-  const end = new Date(endStr + 'T00:00:00Z');
-  while (d <= end) {
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-    labels.push(y + '-' + m + '-' + dd);
-    d.setUTCDate(d.getUTCDate() + 7);
-  }
-  return labels;
-}
-
-// 对每个周五取“该日或之前最近一个交易日”的收盘，返回与 fridays 对齐的收盘价数组
-function fridayCarryForward(sortedEntries, fridays) {
-  const res = [];
-  let p = 0;
-  const n = sortedEntries.length;
-  fridays.forEach(function (fri) {
-    while (p < n && sortedEntries[p].date <= fri) p++;
-    res.push(p > 0 ? sortedEntries[p - 1].close : null);
-  });
-  return res;
-}
-
-async function renderEarningsReturnsChart() {
-  const ctx = document.getElementById('chart-earnings-returns');
-  if (!ctx) return;
-  if (!data.navHistory || data.navHistory.length < 2) {
-    if (chartEarningsReturns) { chartEarningsReturns.destroy(); chartEarningsReturns = null; }
-    return;
-  }
-  const navData = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
-  const cmp = findComparisonStart(navData);
-
-  // ---------- 周频采样：只取每周五收盘，绘制真实周频台阶 ----------
-  // 范围起点 = 对比基准日(或净值首日)，终点 = 净值与指数数据的最晚日期
-  const lastNavDate = navData[navData.length - 1].date;
-  let lastIdxDate = lastNavDate;
-  if (data.indexHistory && data.indexHistory.length) {
-    data.indexHistory.forEach(function (h) { if (h.date > lastIdxDate) lastIdxDate = h.date; });
-  }
-  const rangeStart = cmp || navData[0].date;
-  const labels = weeklyFridayLabels(rangeStart, lastIdxDate);
-  if (!labels.length) {
-    if (chartEarningsReturns) { chartEarningsReturns.destroy(); chartEarningsReturns = null; }
-    return;
-  }
-
-  // 净值周频：每个周五取“周五或之前最近一次净值”作为该周五收盘净值
-  const navFridayVals = labels.map(function (fri) {
-    let v = null;
-    for (let i = navData.length - 1; i >= 0; i--) {
-      if (navData[i].date <= fri) { v = Number(navData[i].nav); break; }
-    }
-    return v == null ? null : +(v.toFixed(4));
-  });
-  // 归一：首个有净值的周五 = 1.0
-  let navBase = 1;
-  for (let i = 0; i < navFridayVals.length; i++) { if (navFridayVals[i] != null) { navBase = navFridayVals[i]; break; } }
-  const navVals = navFridayVals.map(function (v) { return v == null ? null : +(v / navBase).toFixed(4); });
-
-  // 指数周频：每个周五取收盘(或之前最近交易日)，按各自首个可比周五对齐当日净值
-  // 预构建每个指数的有序 [{date, close}]
-  const idxEntries = {};
-  ['沪深300', '上证指数', '中证500', '恒生指数'].forEach(function (name) {
-    const arr = [];
-    data.indexHistory.forEach(function (h) { if (h[name] != null) arr.push({ date: h.date, close: h[name] }); });
-    arr.sort(function (a, b) { return a.date.localeCompare(b.date); });
-    idxEntries[name] = arr;
-  });
-
-  const datasets = [{
-    label: '持仓净值', data: navVals, borderColor: '#1a237e',
-    backgroundColor: 'rgba(26,35,126,.08)', fill: true,
-    tension: 0.3, pointRadius: 0, borderWidth: 2.5, spanGaps: true
-  }];
-  function pushIndex(label, color, name) {
-    const entries = idxEntries[name];
-    if (!entries || !entries.length) return;
-    const closes = fridayCarryForward(entries, labels);
-    // 对齐基准：首个“既有净值又有指数收盘”的周五，使指数起点 = 当日净值
-    let baseIdx = -1, navAtBase = null, firstClose = null;
-    for (let i = 0; i < labels.length; i++) {
-      if (navVals[i] != null && closes[i] != null) { baseIdx = i; navAtBase = navVals[i]; firstClose = closes[i]; break; }
-    }
-    if (baseIdx < 0) return;
-    const vals = labels.map(function (fri, i) {
-      return closes[i] != null ? +((closes[i] / firstClose) * navAtBase).toFixed(4) : null;
-    });
-    datasets.push({ label: label, data: vals, borderColor: color, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 1.5, spanGaps: true });
-  }
-  pushIndex('沪深300', '#d93025', '沪深300');
-  pushIndex('上证指数', '#e37400', '上证指数');
-  pushIndex('中证全指', '#7b1fa2', '中证500');
-  pushIndex('恒生指数', '#00838f', '恒生指数');
-
-  if (chartEarningsReturns) chartEarningsReturns.destroy();
-  chartEarningsReturns = new Chart(ctx.getContext('2d'), {
-    type: 'line',
-    data: { labels: labels, datasets: datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'top', labels: { padding: 16, font: { size: 12, weight: '500' }, usePointStyle: true } },
-        tooltip: {
-          backgroundColor: '#323232', cornerRadius: 8, padding: 12,
-          callbacks: { label: function (c) {
-            if (c.raw == null) return '';
-            var ds = c.dataset;
-            var first = null;
-            for (var k = 0; k < ds.data.length; k++) { if (ds.data[k] != null) { first = ds.data[k]; break; } }
-            if (first == null || first === 0) return ' ' + ds.label + ': ' + c.raw.toFixed(2);
-            var pct = ((c.raw / first - 1) * 100).toFixed(2);
-            var prefix = parseFloat(pct) >= 0 ? '+' : '';
-            return ' ' + ds.label + ': ' + c.raw.toFixed(2) + ' (' + prefix + pct + '%)';
-          } }
-        }
-      },
-      scales: {
-        x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' } },
-        y: { grid: { color: '#f0f0f0' }, ticks: { font: { size: 11 }, color: '#999', callback: function (v) {
-          var pct = (v - 1) * 100; return pct >= 0 ? '+' + pct.toFixed(1) + '%' : pct.toFixed(1) + '%';
-        } } }
-      }
-    }
-  });
+function renderEarningsReturnsChart() {
+  renderNavVsIndexChart('chart-earnings-returns', { mode: earnReturnMode });
 }
 
 function renderEarningsTable(sorted) {
@@ -343,12 +166,13 @@ function renderEarningsTable(sorted) {
     { t: '日期', get: function (r) { return r.date || '-'; } },
     { t: '总市值(万元)', get: function (r) { return wan(r.totalMarketValue); } },
     { t: '投入本金(万元)', get: function (r) { return wan(r.totalInvested); } },
-    { t: '净值', get: function (r) { return (r.nav || 1).toFixed(4); } },
-    { t: '总收益率', right: true, color: function (r) { return (r.totalReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.totalReturn || 0) >= 0 ? '+' : '') + ((r.totalReturn || 0) * 100).toFixed(2) + '%'; } },
-    { t: '本周涨跌', right: true, color: function (r) { return (r.weekChange || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.weekChange || 0) >= 0 ? '+' : '') + ((r.weekChange || 0) * 100).toFixed(2) + '%'; } },
-    { t: '年化', right: true, color: function (r) { return (r.annualizedReturn || 0) >= 0 ? '#137333' : '#d93025'; }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
+    { t: '净值', get: function (r) { return Number(r.nav || 1).toFixed(4); } },
+    { t: '总收益率', right: true, color: function (r) { return (r.totalReturn || 0) >= 0 ? '#d93025' : '#137333'; }, get: function (r) { return ((r.totalReturn || 0) >= 0 ? '+' : '') + ((r.totalReturn || 0) * 100).toFixed(2) + '%'; } },
+    { t: '本周涨跌', right: true, color: function (r) { return (r.weekChange || 0) >= 0 ? '#d93025' : '#137333'; }, get: function (r) { return ((r.weekChange || 0) >= 0 ? '+' : '') + ((r.weekChange || 0) * 100).toFixed(2) + '%'; } },
+    { t: '今日涨跌', right: true, color: function (r) { return (r.dayChange == null) ? '#888' : ((r.dayChange >= 0) ? '#d93025' : '#137333'); }, get: function (r) { return (r.dayChange == null) ? '-' : ((r.dayChange >= 0) ? '+' : '') + ((r.dayChange || 0) * 100).toFixed(2) + '%'; } },
+    { t: '年化', right: true, color: function (r) { return (r.annualizedReturn || 0) >= 0 ? '#d93025' : '#137333'; }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
     { t: '当前回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.currentDrawdown || 0) * 100).toFixed(2) + '%'; } },
-    { t: '最大回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.maxDrawdown || 0) * 100).toFixed(2) + '%'; } },
+    { t: '今年收益', right: true, color: function (r) { return (r.yearReturn == null) ? '#888' : ((r.yearReturn >= 0) ? '#d93025' : '#137333'); }, get: function (r) { return (r.yearReturn == null) ? '-' : ((r.yearReturn >= 0 ? '+' : '') + ((r.yearReturn) * 100).toFixed(2) + '%'); } },
     { t: '操作', center: true,       get: function (r) {
         return '<button class="btn btn-outline btn-sm" data-act="openNavEdit" data-date="' + escapeHtml(r.date) + '">编辑</button> ' +
                '<button class="btn btn-danger btn-sm" data-act="deleteNav" data-date="' + escapeHtml(r.date) + '">删除</button>';
@@ -474,50 +298,175 @@ let accountActionTarget = null;
 function addAccount() {
   accountIsNew = true;
   accountActionTarget = null;
-  var input = document.getElementById('account-name-input');
-  if (input) input.value = '';
   var modal = document.getElementById('modal-account');
   if (modal) modal.classList.add('show');
-  if (input) input.focus();
+  renderAccountForm();
 }
 
-function showAccountMenu() {
+// 券商字典缓存（进程内只拉一次，避免每次开弹窗都请求）
+var _brokerDictCache = null;
+async function loadBrokerDict() {
+  if (_brokerDictCache) return _brokerDictCache;
+  try {
+    var r = await fetch(api('/api/brokers?market=A'));
+    _brokerDictCache = r.ok ? await r.json() : [];
+  } catch (e) { _brokerDictCache = []; }
+  return _brokerDictCache;
+}
+
+// 用户在账户管理里为某账户选择券商 → 落库；若为当前账户则同步 data._broker，交易录入单位换算即时生效
+async function saveAccountBroker(name, broker) {
+  try {
+    var r = await fetch(api('/api/accounts/broker'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account_name: name, broker: broker })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (name === currentAccount && data) data._broker = broker;
+    showToast('已设置「' + name + '」券商');
+  } catch (e) { showToast('券商保存失败，请重试'); }
+}
+
+// 根据当前状态（新建/重命名/空闲）动态渲染底部表单区
+function renderAccountForm() {
+  var el = document.getElementById('account-form-section');
+  if (!el) return;
+
+  // 空闲态：点 ⚙ 打开、尚未操作 → 显示虚线引导框
+  if (!accountIsNew && !accountActionTarget) {
+    el.innerHTML =
+      '<div class="acct-idle" onclick="addAccount();renderAccountForm();">' +
+        '<div class="acct-idle-icon">+</div>' +
+        '<div class="acct-idle-text">点击新建账户</div>' +
+      '</div>';
+    return;
+  }
+
+  // 新建态
+  if (accountIsNew) {
+    var titleHtml = '新建账户';
+    var placeHolder = '请输入新账户名称';
+    var btnLabel = '创建';
+    var btnClass = 'btn-primary';
+    var val = '';
+    el.innerHTML =
+      '<div class="acct-section-title">' + titleHtml + '</div>' +
+      '<div class="acct-add">' +
+        '<input id="account-name-input" placeholder="' + placeHolder + '" value="' + escapeHtml(val) + '">' +
+        '<button class="btn ' + btnClass + '" onclick="saveAccountName()">' + btnLabel + '</button>' +
+        '<button class="btn btn-outline" onclick="showAccountMenu()">取消</button>' +
+      '</div>';
+    setTimeout(function () {
+      var inp = document.getElementById('account-name-input');
+      if (inp) { inp.focus(); inp.select(); }
+    }, 50);
+    return;
+  }
+
+  // 重命名态
+  if (accountActionTarget) {
+    var oldName = accountActionTarget || '';
+    el.innerHTML =
+      '<div class="acct-section-title">重命名「' + escapeHtml(oldName) + '」</div>' +
+      '<div class="acct-add">' +
+        '<input id="account-name-input" placeholder="请输入新名称" value="' + escapeHtml(oldName) + '">' +
+        '<button class="btn btn-primary" onclick="saveAccountName()">确认重命名</button>' +
+        '<button class="btn btn-outline" onclick="showAccountMenu()">取消</button>' +
+      '</div>';
+    setTimeout(function () {
+      var inp = document.getElementById('account-name-input');
+      if (inp) { inp.focus(); inp.select(); }
+    }, 50);
+    return;
+  }
+}
+
+// 券商下拉的 change 事件委托（下拉动态生成，用委托统一处理）
+(function initBrokerChangeDelegation() {
+  if (window.__brokerChangeDelegated) return;
+  window.__brokerChangeDelegated = true;
+  document.addEventListener('change', function (e) {
+    var sel = e.target.closest ? e.target.closest('[data-broker-account]') : null;
+    if (!sel) return;
+    saveAccountBroker(sel.getAttribute('data-broker-account'), sel.value);
+  });
+})();
+
+// 账户卡片点击切换（点卡片 = 切换当前账户，蓝边框跟随移动）
+(function initAccountSwitchDelegation() {
+  if (window.__accountSwitchDelegated) return;
+  window.__accountSwitchDelegated = true;
+  document.addEventListener('click', function (e) {
+    // 排除：点击按钮/下拉框时不触发切换（它们有自己的处理逻辑）
+    if (e.target.closest('button, select, [data-act]')) return;
+    var card = e.target.closest ? e.target.closest('[data-account-switch]') : null;
+    if (!card) return;
+    var name = card.getAttribute('data-account-switch');
+    if (name && name !== currentAccount) {
+      switchAccount(name);
+      // 切换后重渲染卡片列表，让 is-current 蓝边框跟随更新
+      showAccountMenu();
+    }
+  });
+})();
+
+async function showAccountMenu() {
   accountIsNew = false;
   accountActionTarget = null;
-  var input = document.getElementById('account-name-input');
-  if (input) input.value = currentAccount;
-  
-  // 渲染账户列表，每个账户都显示操作按钮
+
+  // 券商字典 + 各账户当前券商（供每行下拉回填）
+  var brokerDict = await loadBrokerDict();
+  var acctBrokers = {};
+  try {
+    var rb = await fetch(api('/api/accounts/broker'));
+    if (rb.ok) acctBrokers = await rb.json();
+  } catch (e) {}
+
+  // 渲染账户列表，每个账户都显示券商下拉 + 操作按钮
   var listEl = document.getElementById('account-list');
   if (listEl) {
     listEl.innerHTML = accounts.map(function(a) {
       var isCurrent = a === currentAccount;
       var canDelete = accounts.length > 1;
-      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #eee;">' +
-        '<div>' +
-          '<span style="font-weight:600;font-size:14px;">' + escapeHtml(a) + '</span>' +
-          (isCurrent ? ' <span style="display:inline-block;padding:1px 8px;border-radius:3px;background:#e8f0fe;color:#1a73e8;font-size:11px;font-weight:500;">当前</span>' : '') +
-        '</div>' +
-        '<div style="display:flex;gap:6px;">' +
-          '<button class="btn btn-outline btn-sm" data-act="editAccount" data-account="' + escapeHtml(a) + '" style="font-size:11px;">✏️ 修改名称</button>' +
-          (canDelete
-            ? '<button class="btn btn-danger btn-sm" data-act="promptDeleteAccount" data-account="' + escapeHtml(a) + '" style="font-size:11px;">🗑 删除</button>'
-            : '') +
-        '</div>' +
-      '</div>';
-    }).join('') || '<div style="color:#999;padding:12px 0;text-align:center;">暂无账户</div>';
+      var cur = acctBrokers[a] || 'other';
+      var initial = (a || '?').trim().charAt(0);
+      var opts = brokerDict.map(function(b) {
+        return '<option value="' + escapeHtml(b.code) + '"' + (b.code === cur ? ' selected' : '') + '>' + escapeHtml(b.name) + '</option>';
+      }).join('');
+      return '<div class="acct-card' + (isCurrent ? ' is-current' : '') + '" data-account-switch="' + escapeHtml(a) + '">' +
+          '<div class="acct-avatar">' + escapeHtml(initial) + '</div>' +
+          '<div class="acct-body">' +
+            '<div class="acct-name-row">' +
+              '<span class="acct-name">' + escapeHtml(a) + '</span>' +
+              (isCurrent ? '<span class="acct-badge">当前</span>' : '') +
+            '</div>' +
+            '<div class="acct-broker">' +
+              '<label>券商</label>' +
+              '<select data-broker-account="' + escapeHtml(a) + '">' + opts + '</select>' +
+            '</div>' +
+          '</div>' +
+          '<div class="acct-actions">' +
+            '<button class="btn btn-outline btn-sm" data-act="editAccount" data-account="' + escapeHtml(a) + '">修改名称</button>' +
+            (canDelete
+              ? '<button class="btn btn-danger btn-sm" data-act="promptDeleteAccount" data-account="' + escapeHtml(a) + '">删除</button>'
+              : '') +
+          '</div>' +
+        '</div>';
+    }).join('') || '<div class="acct-empty">暂无账户，点左上角「+」新建一个吧</div>';
   }
-  
+
   var modal = document.getElementById('modal-account');
   if (modal) modal.classList.add('show');
-  if (input) input.focus();
+  renderAccountForm();
 }
 
 function editAccount(name) {
   accountIsNew = false;
   accountActionTarget = name;
-  var input = document.getElementById('account-name-input');
-  if (input) { input.value = name; input.focus(); input.select(); }
+  var modal = document.getElementById('modal-account');
+  if (modal) modal.classList.add('show');
+  renderAccountForm();
 }
 
 function promptDeleteAccount(name) {

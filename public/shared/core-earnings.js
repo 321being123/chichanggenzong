@@ -14,6 +14,10 @@ function initNav() {
         if (tab.dataset.page === 'changelog') loadChangelog();
         // 收益页图表在隐藏 tab 中初始尺寸为 0，切到该 tab 时重绘
         if (tab.dataset.page === 'earnings') renderEarnings();
+        // 交易页：初始化日期时间为当前
+        if (tab.dataset.page === 'trades' && typeof initTradeDateTime === 'function') initTradeDateTime();
+        // 总览页：切回时重绘收益走势对比图（导入新数据后切回能立即显示，无需再点周期切换）
+        if (tab.dataset.page === 'dashboard' && typeof renderReturnsChart === 'function') renderReturnsChart();
       }
     });
   });
@@ -53,7 +57,6 @@ function renderChangelogHtml(data) {
 // ===================== 收益页（投资实验记录） =====================
 
 let chartEarnings = null;
-let chartEarningsReturns = null;
 
 // 导入历史净值 Excel（大模型识别）→ 回填 navHistory 历史段
 // ===================== 收益 tab 数据源：真实持仓自动算出的净值序列 =====================
@@ -75,35 +78,87 @@ function mondayOf(dateStr) {
   return ymd(d);
 }
 // 返回该日期「上一个周五」(YYYY-MM-DD)，作为本周涨跌基准起点
+// 周一~周五：基准 = 上周五（本周至今涨跌）；周六/周日：基准也回退到上周五，
+// 使周末显示「本周五收盘 vs 上周五」的整周涨跌（按用户要求周六周日沿用周五收盘价）
 function lastFridayOf(dateStr) {
   const dt = new Date(dateStr + 'T00:00:00');
   const day = dt.getDay(); // 0 周日 .. 6 周六
-  let daysToFri = 5 - day;
-  if (daysToFri < 0) daysToFri += 7;
+  let d = 5 - day;
+  if (d < 0) d += 7;
   const thisFri = new Date(dt);
-  thisFri.setDate(dt.getDate() + daysToFri);
-  const lastFri = new Date(thisFri);
-  lastFri.setDate(thisFri.getDate() - 7);
-  return ymd(lastFri);
+  thisFri.setDate(dt.getDate() + d); // 本周五（或周六周日所在周的下周五）
+  if (day === 0 || day === 6) {
+    thisFri.setDate(thisFri.getDate() - 14); // 周末：下周五 → 上周五
+  } else {
+    thisFri.setDate(thisFri.getDate() - 7); // 工作日：本周五 → 上周五
+  }
+  return ymd(thisFri);
 }
 // Excel 日期归一化 → YYYY-MM-DD
+// 兼容 SheetJS 可能返回的所有形态：
+//   1. Date 对象（cellDates:true 时）  2. 数字序列号（Excel serial）
+//   3. 标准格式 YYYY-MM-DD           4. 紧凑数字 YYYYMMDD
+//   5. 斜杠分隔 2024/01/15 / 2024/1/5
+//   6. 点分隔   2024.01.15
+//   7. 中文     2024年1月15日
+//   8. 自定义格式文本 +046207-12 等（SheetJS 未解析时返回的显示文本）
 function normalizeDate(v) {
   if (v == null || v === '') return '';
+  // ── 已是 Date 对象（cellDates: true 时 SheetJS 直接返回）──
   if (v instanceof Date) return v.toISOString().slice(0, 10);
-  if (typeof v === 'number') {
-    if (v > 20000 && v < 60000) {
-      return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
-    }
-    const s = String(v);
-    if (/^\d{8}$/.test(s)) return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+
+  var s = String(v).trim();
+  if (s === '') return '';
+
+  // ── 数字类型（含 Excel 序列号）──
+  if (typeof v === 'number' || /^\d+$/.test(s)) {
+    var n = typeof v === 'number' ? v : parseInt(s, 10);
+    // Excel 序列号范围：1900-01-01 ≈ 1, 2099-12-31 ≈ 54000+
+    if (n > 20000 && n < 60000)
+      return new Date(Math.round((n - 25569) * 86400000)).toISOString().slice(0, 10);
+    // 8 位紧凑日期 20260709 → 2026-07-09
+    if (/^\d{8}$/.test(s))
+      return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
     return '';
   }
-  const s = String(v).trim();
+
+  // ── 标准 ISO 格式 ──
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const dt = new Date(s);
+
+  // ── 斜杠分隔：2024/01/15 或 2024/1/5（兼容中/美式）──
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(s)) {
+    var p1 = s.split('/');
+    return p1[0] + '-' + pad2(p1[1]) + '-' + pad2(p1[2]);
+  }
+  // 美式/欧式短年或无年：1/15/2024、15/1/2024 → 交给 new Date 兜底
+
+  // ── 点分隔：2024.01.15 ──
+  if (/^\d{4}\.\d{1,2}\.\d{1,2}$/.test(s)) {
+    var p2 = s.split('.');
+    return p2[0] + '-' + pad2(p2[1]) + '-' + pad2(p2[2]);
+  }
+
+  // ── 中文日期：2024年1月15日 / 2024年01月15日 ──
+  var cn = s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日?$/);
+  if (cn) return cn[1] + '-' + pad2(cn[2]) + '-' + pad2(cn[3]);
+
+  // ── Excel 自定义格式文本（序列号被格式化后的显示文本）──
+  // 模式如 "+046207-12" / "046207-12" / "46207-12" —— 前半部分是序列号，后半是月或日
+  var mangled = s.match(/^[\+\.0]*(\d{5,})[^\d](\d{1,2})$/);
+  if (mangled) {
+    var serial = parseInt(mangled[1], 10);
+    if (serial > 20000 && serial < 60000)
+      return new Date(Math.round((serial - 25569) * 86400000)).toISOString().slice(0, 10);
+  }
+
+  // ── 最终兜底：交给 JS Date 解析（覆盖英文 Jan 15, 2024 等）──
+  var dt = new Date(s);
   if (!isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
-  return s;
+  return s; // 实在无法识别则原样保留
 }
+
+/** 补零辅助 */
+function pad2(n) { return String(n).padStart(2, '0'); }
 
 // 投入本金计算（统一规则，三处共用）：
 // - 优先使用导入数据（navHistory 中存储的 invested）
@@ -176,10 +231,22 @@ function buildRealReturnsSeries() {
     };
   });
 
-  // 当年收益（每行按其所属年初第一条 nav 计算）
+  // 当年/历年收益：基准 = 上一年年底净值，对比 = 该行当日净值
+  // 例如 2022 年任意一行 = 该行 nav / 2021 年底 nav - 1（每行值不同，随时间变化）
+  // 首年(无上一年底数据) → 改用「首年第一个净值」作基准；缺口年(中间断档)同理
+  const yearEndNav = {};
+  const firstNavOfYear = {};
   rows.forEach(function (r) {
-    const yStart = rows.find(function (x) { return x.date.slice(0, 4) === r.date.slice(0, 4); });
-    r.yearReturn = yStart ? r.nav / yStart.nav - 1 : 0;
+    const Y = r.date.slice(0, 4);
+    yearEndNav[Y] = r.nav;                          // rows 升序，同一年最后一条覆盖为该年底
+    if (firstNavOfYear[Y] == null) firstNavOfYear[Y] = r.nav; // 同一年首条为该年第一个净值
+  });
+  rows.forEach(function (r) {
+    const Y = r.date.slice(0, 4);
+    const prevBase = yearEndNav[String(Number(Y) - 1)];
+    const base = (prevBase != null) ? prevBase : firstNavOfYear[Y]; // 有去年底用去年底；否则用首年首净值
+    const cur = r.nav;                                              // 用该行自身净值（非当年底），使每行值不同
+    r.yearReturn = (base != null && base > 0 && cur != null) ? cur / base - 1 : null;
   });
 
   // 本周涨跌：基准 = 相对该记录日期的「上周五收盘净值」
@@ -197,6 +264,22 @@ function buildRealReturnsSeries() {
     const lf = lastFridayOf(r.date);
     const base = navAtOrBefore(lf);
     r.weekChange = (base != null && base !== 0) ? (r.nav - base) / base : 0;
+  });
+
+  // 今日涨跌判定规则：
+  // ① 首行无前一日 → null（"-"）
+  // ② 与上一记录间隔>4天（导入的历史快照往往不连续）→ null（"-"）
+  // ③ 连续的周末（市场休市）→ 0%
+  // ④ 其余（连续交易日）→ 按「当日总资产 vs 前一交易日总资产」计算真实涨跌
+  rows.forEach(function (r, i) {
+    if (i === 0) { r.dayChange = null; return; }
+    const dt = new Date(r.date + 'T00:00:00');
+    const isWeekend = (dt.getDay() === 0 || dt.getDay() === 6);
+    const prev = rows[i - 1];
+    const gap = daysBetweenDates(prev.date, r.date);
+    if (gap == null || gap > 4) { r.dayChange = null; return; }
+    if (isWeekend) { r.dayChange = 0; return; }
+    r.dayChange = (prev.totalMarketValue > 0) ? (r.totalMarketValue - prev.totalMarketValue) / prev.totalMarketValue : 0;
   });
 
   return rows;

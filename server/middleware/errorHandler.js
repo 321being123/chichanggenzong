@@ -43,7 +43,7 @@ function errorHandler(err, req, res, next) {
   if (res.headersSent) return next(err);
   // 业务冲突（乐观锁）映射为 409；否则 500
   const status = err.status || (err.conflict ? 409 : 500);
-  res.status(status).json({ error: '服务器内部错误', rid });
+  res.status(status).json({ error: (err && err.message ? err.message : '服务器内部错误'), rid });
 }
 
 module.exports = { requestId, accessLog, errorHandler };

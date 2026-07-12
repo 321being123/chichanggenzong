@@ -13,9 +13,47 @@ function nowSec() {
 // 与后端 loadAccountData 逻辑一致，是现金唯一真相源，避免刷新/覆盖导致现金丢失
 function recalcCash() {
   const cfNet = (data.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
-  const tradeNet = (data.trades || []).reduce((s, t) => s + (t.direction === 'buy' ? -(t.amount || 0) : (t.amount || 0)), 0);
+  // 交易净额：买入 -(成交额+费用)，卖出 +(成交额-费用)
+  const tradeNet = (data.trades || []).reduce((s, t) => {
+    const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
+    return s + (t.direction === 'buy' ? -(t.amount || 0) - fee : (t.amount || 0) - fee);
+  }, 0);
   const base = (typeof data.cashBase === 'number') ? data.cashBase : 0;
   data.cash = base + cfNet + tradeNet;
+}
+
+// 初始化交易录入日期/时间为当前北京时间（打开页面或保存后调用）
+function initTradeDateTime() {
+  const dateEl = document.getElementById('trade-date');
+  const timeEl = document.getElementById('trade-time');
+  if (!dateEl || !timeEl) return;
+  const now = new Date();
+  const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+  const p = n => String(n).padStart(2, '0');
+  dateEl.value = cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  // 时间默认填当前时分，但仅在值为空时（避免用户已手动改过被覆盖）
+  if (!timeEl.value) timeEl.value = p(cn.getUTCHours()) + ':' + p(cn.getUTCMinutes());
+}
+
+// 价格/数量/方向/细类变化时：自动算成交额 + 四费用并填充（手续费/印花税/过户费/其他费可手动改）
+function autoCalcTrade() {
+  const priceEl = document.getElementById('trade-price');
+  const qtyEl = document.getElementById('trade-qty');
+  const dirEl = document.getElementById('trade-dir');
+  const subEl = document.getElementById('trade-subtype');
+  const amtEl = document.getElementById('trade-amount');
+  if (!priceEl || !qtyEl || !dirEl || !subEl || !amtEl) return;
+  const price = parseFloat(priceEl.value) || 0;
+  const qty = parseInt(qtyEl.value) || 0;
+  const amount = Math.round(price * qty * 100) / 100;
+  amtEl.value = amount > 0 ? amount : '';
+  if (amount <= 0) return;
+  const f = calcTradeFees(dirEl.value, amount, subEl.value);
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  setVal('trade-commission', f.commission);
+  setVal('trade-stamp', f.stamp_tax);
+  setVal('trade-transfer', f.transfer_fee);
+  setVal('trade-other', f.other_fee);
 }
 
 function addTrade() {
@@ -24,22 +62,36 @@ function addTrade() {
   const direction = document.getElementById('trade-dir').value;
   const price = parseFloat(document.getElementById('trade-price').value);
   const qty = parseInt(document.getElementById('trade-qty').value);
-  const amount = parseFloat(document.getElementById('trade-amount').value) || price * qty;
   const type = document.getElementById('trade-type').value;
   const subtype = document.getElementById('trade-subtype').value;
   const note = document.getElementById('trade-note').value.trim();
+  // 保存前强制重算费用（双保险：即使前面交互未触发也保证印花税/佣金等正确）
+  autoCalcTrade();
+  const amount = parseFloat(document.getElementById('trade-amount').value) || price * qty;
+  const commission = parseFloat(document.getElementById('trade-commission').value) || 0;
+  const stamp_tax = parseFloat(document.getElementById('trade-stamp').value) || 0;
+  const transfer_fee = parseFloat(document.getElementById('trade-transfer').value) || 0;
+  const other_fee = parseFloat(document.getElementById('trade-other').value) || 0;
 
   if (!code || isNaN(price) || isNaN(qty) || qty <= 0) {
     showToast('请填写代码、价格和数量');
     return;
   }
 
+  // 从日期+时间选择器取值，缺省当前时间
+  const dateEl = document.getElementById('trade-date');
+  const timeEl = document.getElementById('trade-time');
+  const pickedDate = dateEl && dateEl.value ? dateEl.value : todayCN();
+  const pickedTime = timeEl && timeEl.value ? timeEl.value : '';
+  const tradeDate = pickedTime ? (pickedDate + ' ' + pickedTime) : pickedDate;
+
   const trade = {
     id: uid(),
-    date: todayCN(),
+    date: tradeDate,
     created_at: nowSec(),
     code: code, name: name, direction: direction,
     price: price, quantity: qty, amount: amount,
+    commission: commission, stamp_tax: stamp_tax, transfer_fee: transfer_fee, other_fee: other_fee,
     type: type, subtype: subtype, note: note
   };
   data.trades.push(trade);
@@ -73,10 +125,17 @@ function addTrade() {
 
   saveData();
   renderAll();
+  document.getElementById('trade-code').value = '';
+  document.getElementById('trade-name').value = '';
   document.getElementById('trade-price').value = '';
   document.getElementById('trade-qty').value = '';
   document.getElementById('trade-amount').value = '';
   document.getElementById('trade-note').value = '';
+  document.getElementById('trade-commission').value = '';
+  document.getElementById('trade-stamp').value = '';
+  document.getElementById('trade-transfer').value = '';
+  document.getElementById('trade-other').value = '';
+  initTradeDateTime(); // 重置日期时间为当前
 }
 
 function deleteTrade(id) {
@@ -478,16 +537,40 @@ function stopVisionQr() {
 
 // ===================== 交易录入增强 =====================
 
-function addTradeInternal(code, name, direction, price, quantity, date) {
+// 交易数量单位转换：华泰/招商证券上交所债券（可转债/信用债）以"手"为单位录入，1手=10张
+// 其他券商/其他品种不需要转换（已直接用张/股）
+function normalizeQuantity(quantity, code) {
+  if (!quantity || !code || !data || !data._broker) return quantity;
+  if (data._broker !== 'huatai' && data._broker !== 'cms') return quantity;
+  const info = classifyCode(code);
+  // 上交所(sh) + 债权类(可转债11x/113x + 信用债13x) → 手→张(×10)
+  if (info && info.market === 'sh' && info.type === '债权') return quantity * 10;
+  return quantity;
+}
+
+// 显示/隐藏数量单位提示（华泰+上交所债券时提示用户）
+function updateQtyHint(code) {
+  var el = document.getElementById('trade-qty-hint');
+  if (!el || !code || !data || (data._broker !== 'huatai' && data._broker !== 'cms')) { if (el) el.style.display = 'none'; return; }
+  var info = classifyCode(code);
+  el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
+}
+
+async function addTradeInternal(code, name, direction, price, quantity, date) {
   code = classifyCode.normalizeCode(code);
+  // 华泰/招商证券上交所债券：手→张自动转换
+  quantity = normalizeQuantity(quantity, code);
   var amount = Math.round(price * quantity * 100) / 100;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
   var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+  var f = calcTradeFees(direction, amount, rec.subtype);
   data.trades.push({
     id: uid(), code: code, name: name || code,
     direction: direction, price: price, quantity: quantity,
-    amount: amount, type: rec.type, subtype: rec.subtype,
+    amount: amount,
+    commission: f.commission, stamp_tax: f.stamp_tax, transfer_fee: f.transfer_fee, other_fee: f.other_fee,
+    type: rec.type, subtype: rec.subtype,
     date: date || todayCN(), created_at: nowSec()
   });
 
@@ -506,9 +589,82 @@ function addTradeInternal(code, name, direction, price, quantity, date) {
   }
 
   recalcCash();
-  saveData();
+  await saveDataNow(); // 确保 PUT 落库后再回填，避免读库早于保存
+  // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
+  if (date && date < todayCN()) {
+    try {
+      const r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromDate: date })
+      });
+      const j = await r.json().catch(function () { return {}; });
+      if (j && j.ok) data = await loadData(currentAccount); // 刷新 navHistory
+    } catch (e) {}
+  }
   renderAll();
   showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
+}
+
+// ===================== 税费设置 =====================
+function openFeeSettings() {
+  renderFeeSettings();
+  const m = document.getElementById('modal-feesettings');
+  if (m) m.classList.add('show');
+}
+function feeField(label, id, val) {
+  return '<div class="form-group"><label>' + label + '</label>' +
+    '<input id="' + id + '" type="number" step="any" value="' + val + '"></div>';
+}
+var currentFeeTab = 'ashare_stock';
+function switchFeeTab(key) {
+  currentFeeTab = key;
+  document.querySelectorAll('.fee-tab').forEach(function(t) { t.classList.toggle('active', t.dataset.key === key); });
+  document.querySelectorAll('.fee-panel').forEach(function(p) { p.classList.toggle('active', p.dataset.key === key); });
+}
+function renderFeeSettings() {
+  const s = getFeeSettings();
+  const curAcc = (document.getElementById('account-select') && document.getElementById('account-select').value) || '';
+  let html = '<div style="margin-bottom:12px;padding:8px;background:#eef3ff;border-radius:6px;font-size:14px;color:#333;">⚙ 当前账户：<b>' + escapeHtml(curAcc) + '</b>（各账户费率独立保存）</div>';
+  // Tab 按钮行
+  html += '<div class="fee-tabs">';
+  FEE_GROUPS.forEach(function(g) {
+    html += '<span class="fee-tab' + (g.key === currentFeeTab ? ' active' : '') + '" data-key="' + g.key + '" onclick="switchFeeTab(\'' + g.key + '\')">' + g.label + '</span>';
+  });
+  html += '</div>';
+    // 各组面板（可见性交给 CSS：.fee-panel 默认隐藏，.active 才显示）
+  FEE_GROUPS.forEach(function(g) {
+    const cfg = s[g.key];
+    html += '<div class="fee-panel' + (g.key === currentFeeTab ? ' active' : '') + '" data-key="' + g.key + '">';
+    html += feeField('佣金费率(%)', 'fs-' + g.key + '-commission', pctShow(cfg.commissionRate));
+    html += feeField('最低佣金(元)', 'fs-' + g.key + '-min', cfg.commissionMin || 0);
+    if (g.fields.indexOf('stamp') >= 0) html += feeField('印花税率(%)', 'fs-' + g.key + '-stamp', pctShow(cfg.stampTaxRate));
+    if (g.fields.indexOf('transfer') >= 0) {
+      html += feeField('过户费率(%)', 'fs-' + g.key + '-transfer', pctShow(cfg.transferRate));
+      if (g.key === 'hk_stock') html += feeField('结算费上限(港币)', 'fs-' + g.key + '-cap', cfg.transferCap || 0);
+    }
+    if (g.fields.indexOf('other') >= 0) html += feeField('其他费率(%) 征费+交易费', 'fs-' + g.key + '-other', pctShow(cfg.otherRate));
+    html += '</div>';
+  });
+  const body = document.getElementById('fee-settings-body');
+  if (body) body.innerHTML = html;
+}
+function saveFeeSettings() {
+  const groups = {};
+  FEE_GROUPS.forEach(function (g) {
+    const o = {};
+    o.commissionRate = pctToRate(document.getElementById('fs-' + g.key + '-commission').value);
+    o.commissionMin = parseFloat(document.getElementById('fs-' + g.key + '-min').value) || 0;
+    if (g.fields.indexOf('stamp') >= 0) o.stampTaxRate = pctToRate(document.getElementById('fs-' + g.key + '-stamp').value);
+    if (g.fields.indexOf('transfer') >= 0) {
+      o.transferRate = pctToRate(document.getElementById('fs-' + g.key + '-transfer').value);
+      if (g.key === 'hk_stock') o.transferCap = parseFloat(document.getElementById('fs-' + g.key + '-cap').value) || 0;
+    }
+    if (g.fields.indexOf('other') >= 0) o.otherRate = pctToRate(document.getElementById('fs-' + g.key + '-other').value);
+    groups[g.key] = o;
+  });
+  data.feeSettings = groups;
+  saveData();
+  closeModal('modal-feesettings');
+  showToast('税费设置已保存');
 }
 
 // ===================== 数据导入导出 =====================

@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-07-12
+
+### 新增：券商字典 + 账户管理券商选择
+- **变更**：`server/db.js` 新增券商字典表（code/name/market/sort_order）+ 内置 44 家 A股券商种子，随 `initSchema` 自动建表与首次播种；导出 `loadBrokers(market)`/`getAccountBrokers(username)`/`updateAccountBroker(username,name,broker)`/`isValidBroker(code)`。`server/routes/accounts.js` 新增 `GET /api/brokers`、`GET /api/accounts/broker`、`PUT /api/accounts/broker`。前端账户管理弹窗改为「我的账户 / 添加重命名」双分区，添加/重命名由 `renderAccountForm()` 动态三态渲染（空闲/新建/重命名），券商下拉从接口拉取；账户卡片点击委托 `switchAccount` 切换。
+- **文件**：`server/db.js`、`server/routes/accounts.js`、`public/shared/core-account.js`、`public/index.html`、`public/shared/style.css`。
+
+### 修复：收益页 Excel 导入日期乱码（+046207-12）
+- **根因**：`server/routes/import.js` 调 `sheet_to_json` 未加 `cellDates: true`，日期序列号被序列化为文本；前端 `normalizeDate` 仅覆盖少数格式，对 mangled 文本无兜底。
+- **修复**：两处 `sheet_to_json` 加 `cellDates: true`；`public/shared/core-earnings.js` 的 `normalizeDate` 全面重写，覆盖 Date 对象 / Excel 序列号 / 8位 / ISO / 斜杠 / 点 / 中文 / mangled 文本等 12+ 格式，非法输入不崩溃。
+- **文件**：`server/routes/import.js`、`public/shared/core-earnings.js`、`public/js/utils.js`。
+
+### 修复：validate.js 校验过严导致导入保存失败
+- **根因**：`totalAsset == null` 被当成非法、`nav <= 0` 误杀净值基准 0、ISO 带时分秒的日期被正则拒。
+- **修复**：`totalAsset` 加 `!= null` 前置；`nav` 阈值改 `< 0`；日期正则兼容 `T..Z` 后缀。负数净值仍拦截。
+- **文件**：`server/middleware/validate.js`。
+
+### 修复：nav_history 重复键 500（唯一约束冲突）
+- **根因**：`saveAccountData` 对净值历史纯 `INSERT`，同一天两条记录撞主键抛 500。
+- **修复**：改为 `INSERT ... ON CONFLICT (username,account_name,date) DO UPDATE`，幂等 upsert；同日期重复写入自动折叠/更新。
+- **文件**：`server/db.js`。
+
+### 修复：导入后总览收益走势对比图为空
+- **根因**：切到 dashboard 时 `initNav()` 未触发重绘。
+- **修复**：`initNav()` 切 dashboard 补 `renderReturnsChart()` 调用。
+- **文件**：`public/shared/core-earnings.js`。
+
+### 新增：交易费用引擎（六类费率 + 账户级覆盖）
+- **变更**：新增 `public/shared/core-fees.js` 作为费用计算单一真相源，含 `DEFAULT_FEE_SETTINGS`（A股股票/可转债/基金ETF/港股/美股/场外基金六组）与 `calcTradeFees(direction,amount,subtype)`（佣金、印花税、过户费、其他费）。`trades` 表幂等新增四费列；`enter_trade.js` 经 eval 载入引擎算费并落库；前端录入/现金重算与后端 `loadAccountData` 一致（买入扣额+费、卖出加额-费）；账户可在税费设置弹窗覆盖费率。
+- **文件**：`public/shared/core-fees.js`(新)、`server/db.js`、`enter_trade.js`、`public/shared/core-trade.js`、`public/shared/core-tables.js`、`public/shared/core-quote.js`、`public/shared/core-returns.js`。
+
+### 优化：休市日 + 定时任务健壮性 + 每年自动核对
+- **变更**：新增 `server/config/holidays.js`（loadHolidays 当日缓存 / isCnHoliday / getCoveredYear / saveHolidays）+ `server/config/holidays.json`（2026 全年 19 天，剔除周末）。`server/jobs/holidaySync.js` 的 `ensureHolidaysCurrent()` 本地短路（覆盖年份≥今年且 30 天内已核对则跳过联网）、否则调 Tushare trade_cal 重写 json（仅写本机文件、零部署、不碰 git/不重启）、12 月预拉明年、联网失败保留旧 json + 告警。`server/jobs/marketClose.js` 重写：去除静默 catch、失败重试 2 次/1s、聚合记录、真写失败落 `job_runs`、交易日判定升级为「工作日 && !isCnHoliday」、回看最近 6 交易日补记漏抓收盘价（幂等）。`server/worker.js` 启动跑 `ensureHolidaysCurrent` + `backfillMissingCloses`，每月定时核对休市日。新增 `server/jobs/replayNav.js`：晚录入交易（交易日在录入日前）用 daily_prices 重放 trades 重算历史净值，Tushare 历史收盘回补缺口日（拉不到的缺口日跳过，不近似）。`server/services/market.js` 暴露 Tushare 历史查询供回补。`server/middleware/errorHandler.js` 500 改为暴露真实错误便于定位。
+- **文件**：`server/config/holidays.js`(新)、`server/config/holidays.json`(新)、`server/jobs/holidaySync.js`(新)、`server/jobs/replayNav.js`(新)、`server/jobs/marketClose.js`、`server/worker.js`、`server/services/market.js`、`server/middleware/errorHandler.js`。
+
 ## 2026-07-11
 
 ### 安全整改：P0/P1/P2 全批次落地

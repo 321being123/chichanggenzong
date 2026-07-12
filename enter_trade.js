@@ -1,9 +1,11 @@
 // 交易录入脚本 — 走系统标准 saveAccountData 流程，自动处理所有表
 // 用法: node enter_trade.js <账户名> <代码> <名称> <方向buy/sell> <价格> <数量> [日期]
 // 例:   node enter_trade.js 华泰账户 601766 中国中车 buy 5.14 4500
-const { loadAccountData, saveAccountData, uid } = require('./server/db');
+const { loadAccountData, saveAccountData, uid, pool } = require('./server/db');
 // 代码→品种 单一分类函数（与前端共用，见 public/js/code-classify.js）
 const classifyCode = require('./public/js/code-classify.js');
+const fs = require('fs');
+const { recomputeNav } = require('./server/jobs/replayNav');
 
 const USER = 'daicunzai';
 
@@ -38,6 +40,20 @@ async function main() {
   }
 
   const data = await loadAccountData(USER, account);
+  // 查询账户券商（用于数量单位转换：华泰/招商上交所债券 手→张）
+  let broker = 'other';
+  try {
+    const br = await pool.query("SELECT broker FROM accounts WHERE username=$1 AND account_name=$2", [USER, account]);
+    if (br.rows.length > 0) broker = br.rows[0].broker || 'other';
+  } catch(e) { /* 查不到则默认不转换 */ }
+  // 华泰/招商 + 上交所债券 → 数量 ×10（手→张）
+  const codeInfo = classifyCode(code);
+  if ((broker === 'huatai' || broker === 'cms') && codeInfo && codeInfo.market === 'sh' && codeInfo.type === '债权') {
+    console.log('   ⚠ 华泰/招商上交所债券：数量 ' + qty + '手 → ' + (qty*10) + '张');
+    qty = qty * 10;
+  }
+  // 载入费用引擎（单一真相源）；data 已加载，引擎可读取账户级 feeSettings 覆盖
+  eval(fs.readFileSync('./public/shared/core-fees.js', 'utf8') + '\n;global.__calcTradeFees = calcTradeFees;');
   const tradeName = name || code;
   const amount = price * qty;
   const tradeDate = date || (function () {
@@ -49,9 +65,12 @@ async function main() {
 
   // 1. 加交易记录
   const inferredSubtype = inferSubtype(code);
+  const fees = global.__calcTradeFees(direction, amount, inferredSubtype);
   data.trades.push({
     id: uid(), date: tradeDate, created_at: nowSec(), code, name: tradeName, direction,
-    price, quantity: qty, amount, type: '股权', subtype: inferredSubtype, note: ''
+    price, quantity: qty, amount,
+    commission: fees.commission, stamp_tax: fees.stamp_tax, transfer_fee: fees.transfer_fee, other_fee: fees.other_fee,
+    type: '股权', subtype: inferredSubtype, note: ''
   });
 
   // 2. 更新持仓（加权成本价）
@@ -80,12 +99,31 @@ async function main() {
 
   // 3. 现金由系统自动重算（现金 = 期初本金 + 现金流 + 交易净额），与后端 loadAccountData 一致
   const cfNet = (data.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
-  const tradeNet = (data.trades || []).reduce((s, t) => s + (t.direction === 'buy' ? -(t.amount || 0) : (t.amount || 0)), 0);
+  const tradeNet = (data.trades || []).reduce((s, t) => {
+    const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
+    return s + (t.direction === 'buy' ? -(t.amount || 0) - fee : (t.amount || 0) - fee);
+  }, 0);
   const base = (typeof data.cashBase === 'number') ? data.cashBase : 0;
   data.cash = base + cfNet + tradeNet;
 
   // 4. 走标准流程写入（自动处理 positions/trades/cash_flows/account_data 所有表）
   await saveAccountData(USER, account, data);
+
+  // 5. 过去日期交易 → 触发历史净值精确回填（Tushare 历史回补，不近似）
+  const today = (function () {
+    const now = new Date();
+    const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+    const p = n => String(n).padStart(2, '0');
+    return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  })();
+  if (tradeDate < today) {
+    try {
+      const rr = await recomputeNav(USER, account, tradeDate);
+      console.log('   历史净值回填: ' + (rr.days || 0) + ' 天' + (rr.note ? ' (' + rr.note + ')' : ''));
+    } catch (e) {
+      console.warn('   ⚠ 历史净值回填失败(交易已录入): ' + e.message);
+    }
+  }
 
   console.log('✅ 已录入: ' + tradeName + ' ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + qty + ' 股 @ ' + price);
   console.log('   现金余额: ' + data.cash.toFixed(2));

@@ -114,8 +114,9 @@ const next = () => {}; // 占位，实际测试用闭包捕获
   await test('拒绝非法交易方向', () => {
     assert.ok(!validateAccountData({ trades: [{ date: '2024-01-01', direction: 'hack', price: 1, quantity: 1, amount: 1 }] }).ok);
   });
-  await test('拒绝非正净值', () => {
-    assert.ok(!validateAccountData({ navHistory: [{ date: '2024-01-01', nav: 0, totalAsset: 1 }] }).ok);
+  await test('拒绝负净值(nav<0),允许nav=0', () => {
+    assert.ok(validateAccountData({ navHistory: [{ date: '2024-01-01', nav: 0, totalAsset: 1 }] }).ok);  // nav=0 合法
+    assert.ok(!validateAccountData({ navHistory: [{ date: '2024-01-01', nav: -1, totalAsset: 1 }] }).ok); // 负数仍拦截
   });
   await test('拒绝超大持仓数组(>5000)', () => {
     assert.ok(!validateAccountData({ positions: Array(5001).fill({ code: '1', name: 'a', price: 1, quantity: 1 }) }).ok);
@@ -304,7 +305,7 @@ const next = () => {}; // 占位，实际测试用闭包捕获
     let calledNext = false;
     errorHandler(err, req, res, () => { calledNext = true; });
     assert.strictEqual(res.statusCode, 409, '冲突应返回 409');
-    assert.strictEqual(res.body.error, '服务器内部错误');
+    assert.strictEqual(res.body.error, '数据已被修改');  // errorHandler 透传原始 err.message
     assert.strictEqual(res.body.rid, 'r-1');
     assert.strictEqual(calledNext, false, '未发送响应时才处理');
   });

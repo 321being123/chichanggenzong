@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-07-12（个人中心与顶层导航重构）
+## 2026-07-12
 
 ### 新增：个人中心（头像 / 昵称 / 简介 / 改密码）
 - **变更**：`users` 表幂等补齐 `nickname/bio/avatar/email/last_login` 五列；新增 `server/routes/profile.js`（`GET /api/profile` 含账户列表、`PUT /api/profile` 头像≤300KB 且须 `data:image/` 前缀、昵称≤30、简介≤200、`POST /api/profile/password`），`server/db.js` 导出 `getUserProfile/updateUserProfile/changePassword/updateLastLogin`；`server/routes/auth.js` 登录后写 `last_login`、`/api/me` 返回 nickname/avatar、注册写 email；`server/app.js` 挂载 profile 路由。前端新增个人中心页：头像用 canvas 裁 256×256 JPEG 0.82 上传、昵称/简介编辑、密码独立折叠卡片、退出登录按钮。
@@ -14,8 +14,6 @@
 - **根因**：`POST /api/profile/password` 用 `getUserProfile()`（SELECT 不含 password 列）取密码校验，导致 undefined 报错；测试清理先删 users 触发 accounts 外键约束。
 - **修复**：password 路由改 `loadUsers()` 取 `user.password`；测试清理改为先删 accounts 再删 users。新增 `test-profile.js` 覆盖个人中心 14 项（资料字段/保存持久化/校验/改密码/未登录 401），与基线 test.js(25)、test-regression.js(27) 共 66 项全绿。
 - **文件**：`server/routes/profile.js`、`test-profile.js`(新)。
-
-## 2026-07-12
 
 ### 新增：券商字典 + 账户管理券商选择
 - **变更**：`server/db.js` 新增券商字典表（code/name/market/sort_order）+ 内置 44 家 A股券商种子，随 `initSchema` 自动建表与首次播种；导出 `loadBrokers(market)`/`getAccountBrokers(username)`/`updateAccountBroker(username,name,broker)`/`isValidBroker(code)`。`server/routes/accounts.js` 新增 `GET /api/brokers`、`GET /api/accounts/broker`、`PUT /api/accounts/broker`。前端账户管理弹窗改为「我的账户 / 添加重命名」双分区，添加/重命名由 `renderAccountForm()` 动态三态渲染（空闲/新建/重命名），券商下拉从接口拉取；账户卡片点击委托 `switchAccount` 切换。

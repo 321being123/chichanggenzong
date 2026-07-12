@@ -11,6 +11,7 @@ const accountsRouter = require('./routes/accounts');
 const marketRouter = require('./routes/market');
 const importRouter = require('./routes/import');
 const metaRouter = require('./routes/meta');
+const profileRouter = require('./routes/profile');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
 
@@ -45,6 +46,7 @@ app.use('/api', accountsRouter);
 app.use('/api', marketRouter);
 app.use('/', importRouter);   // 同时承接 /api/* 与 /m/*
 app.use('/api', metaRouter);
+app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
 
 // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));

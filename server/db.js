@@ -31,6 +31,12 @@ async function initSchema() {
       password TEXT NOT NULL,
       accounts TEXT NOT NULL DEFAULT '[]'
     );
+    -- 用户资料列（头像/昵称/简介/邮箱/最后登录），幂等补齐，可重复执行
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname text;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS bio text;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar text;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login timestamptz;
     CREATE TABLE IF NOT EXISTS account_data (
       username TEXT NOT NULL,
       account_name TEXT NOT NULL,
@@ -278,6 +284,46 @@ async function saveUsers(users) {
       [u, v.password, JSON.stringify(v.accounts || [])]
     );
   }
+}
+
+// ====== 用户资料（头像/昵称/简介/邮箱/最后登录）=====
+
+async function getUserProfile(username) {
+  const { rows } = await pool.query(
+    'SELECT username, nickname, bio, avatar, email, last_login, accounts FROM users WHERE username=$1',
+    [username]
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    username: r.username,
+    nickname: r.nickname || '',
+    bio: r.bio || '',
+    avatar: r.avatar || '',
+    email: r.email || '',
+    last_login: r.last_login || null,
+    accounts: JSON.parse(r.accounts || '[]')
+  };
+}
+
+async function updateUserProfile(username, fields) {
+  const sets = [];
+  const vals = [username];
+  let i = 2;
+  if (fields.nickname !== undefined) { sets.push('nickname=$' + (i++)); vals.push(fields.nickname); }
+  if (fields.bio !== undefined) { sets.push('bio=$' + (i++)); vals.push(fields.bio); }
+  if (fields.avatar !== undefined) { sets.push('avatar=$' + (i++)); vals.push(fields.avatar); }
+  if (fields.email !== undefined) { sets.push('email=$' + (i++)); vals.push(fields.email); }
+  if (sets.length === 0) return;
+  await pool.query('UPDATE users SET ' + sets.join(', ') + ' WHERE username=$1', vals);
+}
+
+async function changePassword(username, newHash) {
+  await pool.query('UPDATE users SET password=$2 WHERE username=$1', [username, newHash]);
+}
+
+async function updateLastLogin(username) {
+  await pool.query('UPDATE users SET last_login=now() WHERE username=$1', [username]);
 }
 
 // ====== 密码 ======
@@ -719,4 +765,4 @@ async function finishJobRun(id, ok, detail) {
 }
 
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, saveUsers, hashPwd, verifyPwd, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, saveUsers, hashPwd, verifyPwd, getUserProfile, updateUserProfile, changePassword, updateLastLogin, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };

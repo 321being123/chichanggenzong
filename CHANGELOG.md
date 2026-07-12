@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-12（个人中心与顶层导航重构）
+
+### 新增：个人中心（头像 / 昵称 / 简介 / 改密码）
+- **变更**：`users` 表幂等补齐 `nickname/bio/avatar/email/last_login` 五列；新增 `server/routes/profile.js`（`GET /api/profile` 含账户列表、`PUT /api/profile` 头像≤300KB 且须 `data:image/` 前缀、昵称≤30、简介≤200、`POST /api/profile/password`），`server/db.js` 导出 `getUserProfile/updateUserProfile/changePassword/updateLastLogin`；`server/routes/auth.js` 登录后写 `last_login`、`/api/me` 返回 nickname/avatar、注册写 email；`server/app.js` 挂载 profile 路由。前端新增个人中心页：头像用 canvas 裁 256×256 JPEG 0.82 上传、昵称/简介编辑、密码独立折叠卡片、退出登录按钮。
+- **文件**：`server/db.js`、`server/routes/profile.js`(新)、`server/routes/auth.js`、`server/app.js`、`public/index.html`、`public/shared/style.css`、`public/shared/core-account.js`。
+
+### 新增：顶层多页导航（首页 / 持仓管理 / 个人中心 / 版本记录）
+- **变更**：`public/index.html` 顶部改一级导航 `.main-tab`（首页/持仓管理/个人中心/版本记录），原来持仓管理的 5 个 tab 降为 `#main-holdings` 内的二级 `.sub-nav`（总览/持仓/收益/交易），版本记录 tab 从二级上移到一级；首页改为「投资小站」介绍页；一级导航全宽、二级栏吸顶且全宽铺满、实色中靛蓝与一级深蓝区分层级；账户切换/设置保留在二级栏右侧，退出登录移到个人中心。
+- **文件**：`public/index.html`、`public/shared/style.css`、`public/shared/core-trade.js`（费率弹窗当前账户展示改读全局变量）。
+
+### 修复：改密码接口 500 + 测试清理外键冲突（回归测试抓出）
+- **根因**：`POST /api/profile/password` 用 `getUserProfile()`（SELECT 不含 password 列）取密码校验，导致 undefined 报错；测试清理先删 users 触发 accounts 外键约束。
+- **修复**：password 路由改 `loadUsers()` 取 `user.password`；测试清理改为先删 accounts 再删 users。新增 `test-profile.js` 覆盖个人中心 14 项（资料字段/保存持久化/校验/改密码/未登录 401），与基线 test.js(25)、test-regression.js(27) 共 66 项全绿。
+- **文件**：`server/routes/profile.js`、`test-profile.js`(新)。
+
 ## 2026-07-12
 
 ### 新增：券商字典 + 账户管理券商选择

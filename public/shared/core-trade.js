@@ -622,7 +622,7 @@ function switchFeeTab(key) {
 }
 function renderFeeSettings() {
   const s = getFeeSettings();
-  const curAcc = (document.getElementById('account-select') && document.getElementById('account-select').value) || '';
+  const curAcc = (typeof currentAccount !== 'undefined' && currentAccount) ? currentAccount : '';
   let html = '<div style="margin-bottom:12px;padding:8px;background:#eef3ff;border-radius:6px;font-size:14px;color:#333;">⚙ 当前账户：<b>' + escapeHtml(curAcc) + '</b>（各账户费率独立保存）</div>';
   // Tab 按钮行
   html += '<div class="fee-tabs">';

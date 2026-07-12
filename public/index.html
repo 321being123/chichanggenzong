@@ -7,32 +7,82 @@
 <title>仓位管理系统</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="shared/style.css?v=3">
+<link rel="stylesheet" href="shared/style.css?v=7">
 </head>
 <body>
 
 <div class="nav">
-  <div class="nav-left">
-    <h1>持仓管理</h1>
-    <div class="nav-account">
-      <select id="account-select" onchange="switchAccount(this.value)"></select>
-      <button class="btn-account-add" onclick="addAccount()" title="新增账户">+</button>
-      <button class="btn-account-add" onclick="showAccountMenu()" title="账户设置" style="font-size:13px;">⚙</button>
+  <div class="nav-inner">
+    <div class="nav-left">
+      <h1>投资小站</h1>
+      <nav class="main-nav">
+        <button class="main-tab active" data-main="home">首页</button>
+        <button class="main-tab" data-main="holdings">持仓管理</button>
+        <button class="main-tab" data-main="profile">个人中心</button>
+        <button class="main-tab" data-main="changelog">版本记录</button>
+      </nav>
     </div>
-    <button class="btn-refresh" onclick="doRefresh()">🔄 刷新</button>
-    <span class="nav-user" id="nav-user"></span>
-    <button class="nav-logout" onclick="logout()">退出</button>
-  </div>
-  <div class="nav-right">
-    <button class="nav-tab active" data-page="dashboard">总览</button>
-    <button class="nav-tab" data-page="positions">持仓</button>
-    <button class="nav-tab" data-page="earnings">收益</button>
-    <button class="nav-tab" data-page="trades">交易</button>
-    <button class="nav-tab" data-page="changelog">版本记录</button>
+    <div class="nav-right">
+      <div id="top-user"></div>
+    </div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 首页：持仓管理简单介绍，后续功能再接入 -->
+<div class="main-page active" id="main-home">
+  <div class="home-hero">
+    <h1>你的个人投资持仓跟踪工具</h1>
+    <p>轻量记录持仓、交易与收益，让每一笔投资都清晰可见。</p>
+  </div>
+  <div class="feature-cards">
+    <div class="feature-card" onclick="goHoldings('dashboard')">
+      <div class="fc-icon icon-bg-blue">📊</div>
+      <h3>总览</h3>
+      <p>资产分布、净值走势一目了然</p>
+    </div>
+    <div class="feature-card" onclick="goHoldings('positions')">
+      <div class="fc-icon icon-bg-red">📈</div>
+      <h3>持仓</h3>
+      <p>全部持仓明细与实时涨跌</p>
+    </div>
+    <div class="feature-card" onclick="goHoldings('earnings')">
+      <div class="fc-icon icon-bg-green">💰</div>
+      <h3>收益</h3>
+      <p>净值对比、收益走势与记录</p>
+    </div>
+    <div class="feature-card" onclick="goHoldings('trades')">
+      <div class="fc-icon icon-bg-orange">🔁</div>
+      <h3>交易</h3>
+      <p>录入与导入每笔买卖</p>
+    </div>
+  </div>
+  <div class="home-placeholder">
+    <h3>更多功能正在路上</h3>
+    <p>首页将持续接入更多模块，敬请期待。</p>
+  </div>
+</div>
+
+<!-- 持仓管理：二级导航 + 账户工具栏 + 原有5个二级页 -->
+<div class="main-page" id="main-holdings">
+  <div class="holdings-header">
+    <div class="sub-nav">
+      <div class="sub-nav-tabs">
+        <button class="nav-tab active" data-page="dashboard">总览</button>
+        <button class="nav-tab" data-page="positions">持仓</button>
+        <button class="nav-tab" data-page="earnings">收益</button>
+        <button class="nav-tab" data-page="trades">交易</button>
+      </div>
+      <div class="sub-nav-right">
+        <div class="nav-account">
+          <select id="account-select" onchange="switchAccount(this.value)"></select>
+          <button class="btn-account-add" onclick="addAccount()" title="新增账户">+</button>
+          <button class="btn-account-add" onclick="showAccountMenu()" title="账户设置" style="font-size:13px;">⚙</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
 <!-- 总览页: 统计卡片 + 图表 + 持仓明细(全部) + 收益走势 -->
 <div class="page active" id="page-dashboard">
@@ -181,6 +231,63 @@
 <div class="page" id="page-changelog">
   <div class="chart-box" id="changelog-content" style="padding:20px;font-size:13px;line-height:1.8;">
     <p style="color:#888;text-align:center;">加载中...</p>
+  </div>
+</div>
+</div><!-- /main-holdings -->
+
+<!-- 版本记录（一级页） -->
+<div class="main-page" id="main-changelog">
+  <div class="chart-box" id="changelog-main-content" style="padding:20px;font-size:13px;line-height:1.8;">
+    <p style="color:#888;text-align:center;">加载中...</p>
+  </div>
+</div>
+
+<!-- 个人中心 -->
+<div class="main-page" id="main-profile">
+  <div class="profile-wrap">
+    <div class="profile-card">
+      <div class="profile-head">
+        <div class="avatar-wrap" onclick="document.getElementById('avatar-input').click()">
+          <img id="profile-avatar" class="avatar-img" src="" alt="头像">
+          <div class="avatar-mask">修改</div>
+        </div>
+        <input type="file" id="avatar-input" accept="image/*" class="hidden-input" onchange="onAvatarChange(event)">
+        <div class="profile-name">
+          <input id="profile-nickname" class="profile-nick-input" placeholder="昵称" maxlength="30">
+          <div class="profile-username" id="profile-username"></div>
+        </div>
+      </div>
+      <div class="form-group"><label>简介</label><textarea id="profile-bio" maxlength="200" placeholder="介绍一下自己..."></textarea></div>
+      <div class="form-group"><label>邮箱</label><input id="profile-email" type="email" placeholder="用于接收通知"></div>
+      <button class="btn btn-primary" onclick="saveProfile()">保存资料</button>
+    </div>
+
+    <div class="profile-card profile-card-pwd">
+      <div class="pwd-toggle" onclick="togglePwdCard()">
+        <h3 style="margin:0;cursor:pointer;">修改密码 <span id="pwd-arrow">▶</span></h3>
+      </div>
+      <div id="pwd-body" style="display:none;">
+        <div class="form-group"><label>旧密码</label><input id="pwd-old" type="password" autocomplete="current-password"></div>
+        <div class="form-group"><label>新密码</label><input id="pwd-new" type="password" autocomplete="new-password"></div>
+        <div class="form-group"><label>确认新密码</label><input id="pwd-new2" type="password" autocomplete="new-password"></div>
+        <button class="btn btn-primary" onclick="changePwd()">更新密码</button>
+      </div>
+    </div>
+
+    <div class="profile-card">
+      <div class="profile-card-head">
+        <h3>我的券商账户</h3>
+        <button class="btn btn-ghost" onclick="showAccountMenu()">管理账户</button>
+      </div>
+      <div id="profile-accounts" class="profile-acct-list"></div>
+    </div>
+
+    <div class="profile-card">
+      <h3>账号信息</h3>
+      <div class="info-row"><span>登录账号</span><span id="info-username"></span></div>
+      <div class="info-row"><span>最后登录</span><span id="info-lastlogin"></span></div>
+      <button class="btn btn-primary btn-logout" onclick="logout()">退出登录</button>
+    </div>
   </div>
 </div>
 
@@ -367,6 +474,7 @@ const PRICE_CACHE = {};
 let indexData = {};
 let returnsPeriod = 30;
 let username = null;
+let myProfile = null;   // 个人中心资料缓存（nickname/avatar/email/last_login/accounts）
 
 async function checkAuth() {
   try {
@@ -374,10 +482,184 @@ async function checkAuth() {
     const d = await r.json();
     if (!d.username) { window.location.href = api('/login.html'); return; }
     username = d.username;
-    document.getElementById('nav-user').textContent = username;
+    myProfile = d;
+    const nu0 = document.getElementById('nav-user');
+    if (nu0) nu0.textContent = d.nickname || username;
+    renderTopUser(d);
   } catch(e) {
     window.location.href = api('/login.html');
   }
+}
+
+// 顶部右侧：登录态显示头像（点击进个人中心），未登录显示「登录/注册」
+function renderTopUser(p) {
+  const el = document.getElementById('top-user');
+  if (!el) return;
+  if (!p || !p.username) {
+    el.innerHTML = '<a class="top-login-link" href="' + api('/login.html') + '">登录/注册</a>';
+    return;
+  }
+  const src = p.avatar || '';
+  const initial = (p.nickname || p.username || '?').charAt(0).toUpperCase();
+  el.innerHTML = '<button class="nav-avatar" onclick="switchMain(\'profile\')" title="个人中心">' +
+    (src ? '<img src="' + src + '" alt="头像">' : escapeHtml(initial)) + '</button>';
+}
+
+// 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
+function switchMain(main) {
+  document.querySelectorAll('.main-tab').forEach(function (t) { t.classList.toggle('active', t.dataset.main === main); });
+  document.querySelectorAll('.main-page').forEach(function (p) { p.classList.remove('active'); });
+  const mp = document.getElementById('main-' + main);
+  if (mp) mp.classList.add('active');
+  if (main === 'profile') loadProfile();
+  if (main === 'changelog') loadChangelogPage();
+}
+
+// 加载版本记录页
+async function loadChangelogPage() {
+  const el = document.getElementById('changelog-main-content');
+  if (!el) return;
+  try {
+    const r = await fetch('/changelog.json');
+    const data = await r.json();
+    let html = '';
+    (data || []).forEach(function(item) {
+      html += '<div style="margin-bottom:18px;"><div style="font-weight:700;color:#1a1a2e;margin-bottom:6px;">' + escapeHtml(item.date || '') + '</div><ul style="padding-left:18px;margin:0;">';
+      (item.items || []).forEach(function(it) {
+        html += '<li style="margin-bottom:4px;color:#444;">' + escapeHtml(it) + '</li>';
+      });
+      html += '</ul></div>';
+    });
+    el.innerHTML = html || '<p style="color:#888;">暂无记录</p>';
+  } catch(e) {
+    el.innerHTML = '<p style="color:#888;">加载失败</p>';
+  }
+}
+
+// 修改密码折叠/展开
+function togglePwdCard() {
+  const body = document.getElementById('pwd-body');
+  const arrow = document.getElementById('pwd-arrow');
+  if (!body || !arrow) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  arrow.textContent = isOpen ? '▶' : '▼';
+}
+
+function setupMainNav() {
+  document.querySelectorAll('.main-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () { switchMain(tab.dataset.main); });
+  });
+}
+
+// 从首页功能卡跳转到持仓管理指定二级页
+function goHoldings(page) {
+  switchMain('holdings');
+  const tab = document.querySelector('.sub-nav .nav-tab[data-page="' + page + '"]');
+  if (tab) tab.click();
+}
+
+// 加载个人中心资料
+async function loadProfile() {
+  try {
+    const r = await fetch(api('/api/profile'));
+    if (!r.ok) return;
+    const p = await r.json();
+    myProfile = Object.assign({}, myProfile, p);
+    const av = document.getElementById('profile-avatar');
+    if (av) av.src = p.avatar || '';
+    const nick = document.getElementById('profile-nickname');
+    if (nick) nick.value = p.nickname || '';
+    const bio = document.getElementById('profile-bio');
+    if (bio) bio.value = p.bio || '';
+    const email = document.getElementById('profile-email');
+    if (email) email.value = p.email || '';
+    const pu = document.getElementById('profile-username');
+    if (pu) pu.textContent = '@' + p.username;
+    const iu = document.getElementById('info-username');
+    if (iu) iu.textContent = p.username;
+    const il = document.getElementById('info-lastlogin');
+    if (il) il.textContent = p.last_login ? String(p.last_login).replace('T', ' ').slice(0, 19) : '—';
+    const list = document.getElementById('profile-accounts');
+    if (list) {
+      const accts = (p.accounts || []);
+      list.innerHTML = accts.length
+        ? accts.map(function (a) { return '<div class="profile-acct">' + escapeHtml(a) + '</div>'; }).join('')
+        : '<div class="acct-empty">暂无账户</div>';
+    }
+  } catch (e) {}
+}
+
+// 保存个人资料（头像取当前 myProfile.avatar，未上传则保留服务端值）
+async function saveProfile() {
+  const payload = {
+    nickname: (document.getElementById('profile-nickname').value || '').trim(),
+    bio: document.getElementById('profile-bio').value,
+    avatar: (myProfile && myProfile.avatar) || '',
+    email: (document.getElementById('profile-email').value || '').trim()
+  };
+  try {
+    const r = await fetch(api('/api/profile'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '保存失败'); return; }
+    showToast('资料已保存');
+    const nu1 = document.getElementById('nav-user');
+    if (nu1 && payload.nickname) nu1.textContent = payload.nickname;
+    renderTopUser({ username: username, nickname: payload.nickname, avatar: payload.avatar });
+  } catch (e) { showToast('保存失败，请重试'); }
+}
+
+// 修改密码
+async function changePwd() {
+  const oldP = document.getElementById('pwd-old').value;
+  const newP = document.getElementById('pwd-new').value;
+  const newP2 = document.getElementById('pwd-new2').value;
+  if (!oldP || !newP) { showToast('请填写旧密码和新密码'); return; }
+  if (newP.length < 6) { showToast('新密码至少 6 位'); return; }
+  if (newP !== newP2) { showToast('两次新密码不一致'); return; }
+  try {
+    const r = await fetch(api('/api/profile/password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword: oldP, newPassword: newP })
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '修改失败'); return; }
+    showToast('密码已更新');
+    document.getElementById('pwd-old').value = '';
+    document.getElementById('pwd-new').value = '';
+    document.getElementById('pwd-new2').value = '';
+  } catch (e) { showToast('修改失败，请重试'); }
+}
+
+// 头像上传：canvas 居中裁剪为 256×256 正方形，导出 JPEG(0.82) 存 myProfile.avatar
+function onAvatarChange(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function () {
+    const img = new Image();
+    img.onload = function () {
+      const size = 256;
+      const canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const min = Math.min(img.width, img.height);
+      const sx = (img.width - min) / 2, sy = (img.height - min) / 2;
+      ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      if (myProfile) myProfile.avatar = dataUrl;
+      const av = document.getElementById('profile-avatar');
+      if (av) av.src = dataUrl;
+      renderTopUser({ username: username, nickname: (myProfile && myProfile.nickname) || '', avatar: dataUrl });
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
 }
 
 async function logout() {
@@ -517,6 +799,9 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   // 先绑定 tab 切换事件，再异步刷新行情，
   // 避免 doRefresh() 同步阻塞期间用户点 tab 按钮没反应
   initNav();
+  // 一级导航（首页/持仓管理/个人中心）绑定，默认显示首页
+  setupMainNav();
+  switchMain('home');
   // 行情刷新改为后台异步执行，不阻塞 UI 交互
   doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
   initAutoRefresh();

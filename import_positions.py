@@ -122,11 +122,7 @@ def parse_a_shares(path):
             if name in SKIP_ZERO_QTY_NAMES:
                 print(f'  跳过打新临时项: {code} {name}')
                 continue
-            # 成本价为负数的股票（除权除息导致），用0替代
-            if cost < 0:
-                print(f'  注意: {code} {name} 成本价为负({cost})，设为0')
-                cost = 0
-            
+            # 成本价为负数属正常（反复做T摊薄后 cost<0），保留原值不强制归零
             type_, subtype = classify(code)
             # 如果市场类别包含"股转"，标记为新三板
             if '股转' in market:

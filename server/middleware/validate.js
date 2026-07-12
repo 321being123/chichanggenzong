@@ -24,7 +24,7 @@ function validateAccountData(d) {
     if (!safeText(p.name, 100)) return { ok: false, msg: '持仓名称含非法字符' };
     if (!isNum(p.price) || p.price < 0) return { ok: false, msg: '持仓价格非法' };
     if (!isNum(p.quantity)) return { ok: false, msg: '持仓数量非法' };
-    if (!isNum(p.cost) || p.cost < 0) return { ok: false, msg: '持仓成本非法' };
+    if (!isNum(p.cost)) return { ok: false, msg: '持仓成本非法' };
     if (!safeText(p.type, 20)) return { ok: false, msg: '持仓类型非法' };
     if (!safeText(p.subtype, 20)) return { ok: false, msg: '持仓细类非法' };
     if (!safeText(p.note, 500)) return { ok: false, msg: '持仓备注含非法字符' };

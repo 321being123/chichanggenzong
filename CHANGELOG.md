@@ -34,6 +34,11 @@
 - **变更**：新增 `server/config/holidays.js`（loadHolidays 当日缓存 / isCnHoliday / getCoveredYear / saveHolidays）+ `server/config/holidays.json`（2026 全年 19 天，剔除周末）。`server/jobs/holidaySync.js` 的 `ensureHolidaysCurrent()` 本地短路（覆盖年份≥今年且 30 天内已核对则跳过联网）、否则调 Tushare trade_cal 重写 json（仅写本机文件、零部署、不碰 git/不重启）、12 月预拉明年、联网失败保留旧 json + 告警。`server/jobs/marketClose.js` 重写：去除静默 catch、失败重试 2 次/1s、聚合记录、真写失败落 `job_runs`、交易日判定升级为「工作日 && !isCnHoliday」、回看最近 6 交易日补记漏抓收盘价（幂等）。`server/worker.js` 启动跑 `ensureHolidaysCurrent` + `backfillMissingCloses`，每月定时核对休市日。新增 `server/jobs/replayNav.js`：晚录入交易（交易日在录入日前）用 daily_prices 重放 trades 重算历史净值，Tushare 历史收盘回补缺口日（拉不到的缺口日跳过，不近似）。`server/services/market.js` 暴露 Tushare 历史查询供回补。`server/middleware/errorHandler.js` 500 改为暴露真实错误便于定位。
 - **文件**：`server/config/holidays.js`(新)、`server/config/holidays.json`(新)、`server/jobs/holidaySync.js`(新)、`server/jobs/replayNav.js`(新)、`server/jobs/marketClose.js`、`server/worker.js`、`server/services/market.js`、`server/middleware/errorHandler.js`。
 
+### 修复：持仓成本强制 ≥0 误拒合法负成本（导入交易失败）
+- **根因**：安全整改期间在 `server/middleware/validate.js` 新增「持仓成本必须 ≥ 0」校验。但反复做T、成本摊薄后的持仓成本可合法为负（如港股江西铜业股份），触发该规则的账户任何保存（含 AI 导入交易记录的 `PUT /api/data`）都会被 400「数据校验失败」整包拒绝。
+- **修复**：移除 `validate.js` 中 `cost >= 0` 强制校验，仅保留「cost 为有限数字」的类型检查（非数字/NaN 仍拦截）；`price` 仍要求 ≥ 0（市价不可能为负）。同步移除 `import_positions.py` 将负成本归零的逻辑，保留原始成本值。
+- **文件**：`server/middleware/validate.js`、`import_positions.py`。
+
 ## 2026-07-11
 
 ### 安全整改：P0/P1/P2 全批次落地

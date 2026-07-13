@@ -57,12 +57,15 @@ router.put('/accounts/broker', requireLogin, asyncHandler(async (req, res) => {
 router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   const name = decodeURIComponent(req.params.name);
   const result = await loadAccountData(req.session.user, name);
-  // 附加券商信息（供前端判断交易数量单位转换）
+  // 附加券商信息（供前端判断交易数量单位转换：华泰等券商上交所债券以「手」录入需×10）
   const { rows: acctRows } = await pool.query(
-    "SELECT broker FROM accounts WHERE username=$1 AND account_name=$2",
+    "SELECT a.broker, b.import_unit FROM accounts a LEFT JOIN brokers b ON a.broker=b.code WHERE a.username=$1 AND a.account_name=$2",
     [req.session.user, name]
   );
-  if (acctRows.length > 0) result._broker = acctRows[0].broker || 'other';
+  if (acctRows.length > 0) {
+    result._broker = acctRows[0].broker || 'other';
+    result._brokerImportUnit = acctRows[0].import_unit || 'sheet';
+  }
   // 附加当前行情涨跌幅（异步，不阻塞返回）
   if (result.positions && result.positions.length > 0) {
     result.changes = {};

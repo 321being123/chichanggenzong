@@ -40,16 +40,16 @@ async function main() {
   }
 
   const data = await loadAccountData(USER, account);
-  // 查询账户券商（用于数量单位转换：华泰/招商上交所债券 手→张）
-  let broker = 'other';
+  // 查询账户券商的导入单位（用于数量单位转换：券商以「手」录入的上交所债券 手→张）
+  let importUnit = 'sheet';
   try {
-    const br = await pool.query("SELECT broker FROM accounts WHERE username=$1 AND account_name=$2", [USER, account]);
-    if (br.rows.length > 0) broker = br.rows[0].broker || 'other';
+    const br = await pool.query("SELECT b.import_unit FROM accounts a LEFT JOIN brokers b ON a.broker=b.code WHERE a.username=$1 AND a.account_name=$2", [USER, account]);
+    if (br.rows.length > 0) importUnit = br.rows[0].import_unit || 'sheet';
   } catch(e) { /* 查不到则默认不转换 */ }
-  // 华泰/招商 + 上交所债券 → 数量 ×10（手→张）
+  // 券商以「手」录入 + 上交所债券 → 数量 ×10（手→张）
   const codeInfo = classifyCode(code);
-  if ((broker === 'huatai' || broker === 'cms') && codeInfo && codeInfo.market === 'sh' && codeInfo.type === '债权') {
-    console.log('   ⚠ 华泰/招商上交所债券：数量 ' + qty + '手 → ' + (qty*10) + '张');
+  if (importUnit === 'lot' && codeInfo && codeInfo.market === 'sh' && codeInfo.type === '债权') {
+    console.log('   ⚠ 该券商上交所债券以「手」录入：数量 ' + qty + '手 → ' + (qty*10) + '张');
     qty = qty * 10;
   }
   // 载入费用引擎（单一真相源）；data 已加载，引擎可读取账户级 feeSettings 覆盖

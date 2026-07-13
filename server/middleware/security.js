@@ -1,9 +1,11 @@
 // ========== 安全相关中间件（原 server.js 中的 CSRF / 安全响应头 / 未登录跳转） ==========
 const { ALLOWED_HOSTS } = require('../config');
 
-// 未登录跳转（仅拦截首页与 index.html）
+// 未登录跳转（拦截首页、index.html 与管理后台 admin.html）
 function redirectUnauthenticated(req, res, next) {
   if ((req.path === '/' || req.path === '/index.html') && !req.session.user) return res.redirect('/login.html');
+  // 后台需回跳参数，避免登录后落回前台
+  if (req.path === '/admin.html' && !req.session.user) return res.redirect('/login.html?redirect=' + encodeURIComponent(req.originalUrl || '/admin.html'));
   next();
 }
 

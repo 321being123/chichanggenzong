@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="base-url" content="">
+<title>管理后台 - 持仓管理系统</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="shared/style.css?v=7">
+</head>
+<body>
+
+<div class="admin-shell">
+  <!-- 左侧菜单 -->
+  <aside class="admin-sidebar">
+    <div class="admin-brand">📊 管理后台</div>
+    <nav class="admin-menu" id="admin-menu">
+      <button class="admin-menu-item active" data-view="overview">概览仪表盘</button>
+      <button class="admin-menu-item" data-view="users">用户管理</button>
+      <button class="admin-menu-item" data-view="brokers">券商管理</button>
+      <button class="admin-menu-item" data-view="jobs">定时任务</button>
+      <button class="admin-menu-item" data-view="announce">公告与更新</button>
+      <button class="admin-menu-item" data-view="settings">全局参数</button>
+      <button class="admin-menu-item" data-view="holidays">休市日历</button>
+      <button class="admin-menu-item" data-view="audit">操作审计</button>
+    </nav>
+    <div class="admin-sidebar-foot">
+      <span id="admin-user"></span>
+      <a class="admin-link" href="/">返回前台</a>
+      <button class="admin-link" onclick="adminLogout()">退出</button>
+    </div>
+  </aside>
+
+  <!-- 右侧内容 -->
+  <main class="admin-main">
+    <header class="admin-topbar">
+      <h1 id="admin-title">概览仪表盘</h1>
+    </header>
+    <div class="admin-content">
+      <section class="admin-view active" id="view-overview"></section>
+      <section class="admin-view" id="view-users"></section>
+      <section class="admin-view" id="view-brokers"></section>
+      <section class="admin-view" id="view-jobs"></section>
+      <section class="admin-view" id="view-announce"></section>
+      <section class="admin-view" id="view-settings"></section>
+      <section class="admin-view" id="view-holidays"></section>
+      <section class="admin-view" id="view-audit"></section>
+    </div>
+  </main>
+</div>
+
+<!-- 后台通用弹窗（所有模块复用） -->
+<div class="modal-overlay" id="admin-modal">
+  <div class="modal" id="admin-modal-box">
+    <h2 id="admin-modal-title">提示</h2>
+    <span class="modal-close" onclick="closeAdminModal()">&times;</span>
+    <div id="admin-modal-body"></div>
+    <div class="modal-actions" id="admin-modal-actions"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/utils.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>

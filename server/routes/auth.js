@@ -4,16 +4,21 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { loadUsers, saveUsers, hashPwd, verifyPwd, syncUserAccounts, getUserProfile, updateUserProfile, updateLastLogin } = require('../db');
+const { loadUsers, saveUsers, hashPwd, verifyPwd, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
 router.post('/register', asyncHandler(async (req, res) => {
   const { username, password, code, email, emailCode } = req.body;
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
   if (username.length < 2) return res.status(400).json({ error: '账号至少2位' });
   if (password.length < 6) return res.status(400).json({ error: '密码至少6位' });
-  if (REGISTER_CODE && code !== REGISTER_CODE) return res.status(400).json({ error: '注册已关闭或邀请码错误' });
-  // 邮箱验证码校验
-  if (mailer) {
+  // 注册总开关（DB 优先，默认开放）
+  if ((await getConfig('register_open', '1')) !== '1') return res.status(403).json({ error: '注册已关闭' });
+  // 邀请码（DB 优先于 env REGISTER_CODE）
+  const regCode = (await getConfig('register_code', REGISTER_CODE || '')) || '';
+  if (regCode && code !== regCode) return res.status(400).json({ error: '注册已关闭或邀请码错误' });
+  // 邮箱验证开关（同时需服务端配置了邮件服务才生效）
+  const needEmail = (await getConfig('require_email', '0')) === '1';
+  if (needEmail && mailer) {
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '请输入正确的邮箱' });
     if (!emailCode) return res.status(400).json({ error: '请输入邮箱验证码' });
     const sess = req.session;
@@ -43,23 +48,23 @@ router.post('/login', asyncHandler(async (req, res) => {
   const ip = req.ip || req.connection.remoteAddress;
   const lockKey = 'login_' + (username || '') + '_' + ip;
   if (checkLocked(lockKey)) return res.status(429).json({ error: '登录尝试过多，已锁定15分钟' });
-  const users = await loadUsers();
-  const user = users[username];
+  const user = await getUserAuth(username);
   if (!user) { recordFail(lockKey); return res.status(401).json({ error: '账号不存在，请先注册' }); }
+  if (user.status && user.status !== 'active') { recordFail(lockKey); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
   if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '密码错误' }); }
   clearFail(lockKey);
   req.session.user = username;
   await updateLastLogin(username).catch(() => {});
-  res.json({ ok: true, username });
+  res.json({ ok: true, username, role: user.role || 'user' });
 }));
 
 router.post('/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
 router.get('/me', asyncHandler(async (req, res) => {
   if (!req.session.user) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
-  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '' });
+  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role: p.role || 'user', status: p.status || 'active' });
 }));
-router.get('/config', (req, res) => { res.json({ needRegisterCode: !!REGISTER_CODE }); });
+router.get('/config', asyncHandler(async (req, res) => { res.json({ needRegisterCode: !!(await getConfig('register_code', REGISTER_CODE || '')) }); }));
 
 // 发送邮箱验证码
 router.post('/send-code', asyncHandler(async (req, res) => {

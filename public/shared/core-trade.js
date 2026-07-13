@@ -537,21 +537,20 @@ function stopVisionQr() {
 
 // ===================== 交易录入增强 =====================
 
-// 交易数量单位转换：华泰/招商证券上交所债券（可转债/信用债）以"手"为单位录入，1手=10张
-// 其他券商/其他品种不需要转换（已直接用张/股）
+// 交易数量单位转换：券商以「手」为单位录入的上交所债券（可转债/信用债），1手=10张
+// 是否按「手」录入由券商的 import_unit 决定（后台券商管理可配置，华泰默认「手」）；其他券商/品种不转换
 function normalizeQuantity(quantity, code) {
-  if (!quantity || !code || !data || !data._broker) return quantity;
-  if (data._broker !== 'huatai' && data._broker !== 'cms') return quantity;
+  if (!quantity || !code || !data || data._brokerImportUnit !== 'lot') return quantity;
   const info = classifyCode(code);
   // 上交所(sh) + 债权类(可转债11x/113x + 信用债13x) → 手→张(×10)
   if (info && info.market === 'sh' && info.type === '债权') return quantity * 10;
   return quantity;
 }
 
-// 显示/隐藏数量单位提示（华泰+上交所债券时提示用户）
+// 显示/隐藏数量单位提示（该券商以「手」录入 + 上交所债券时提示用户）
 function updateQtyHint(code) {
   var el = document.getElementById('trade-qty-hint');
-  if (!el || !code || !data || (data._broker !== 'huatai' && data._broker !== 'cms')) { if (el) el.style.display = 'none'; return; }
+  if (!el || !code || !data || data._brokerImportUnit !== 'lot') { if (el) el.style.display = 'none'; return; }
   var info = classifyCode(code);
   el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
 }

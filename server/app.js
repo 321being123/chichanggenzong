@@ -3,7 +3,7 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 const { SECRET, PORT, redis } = require('./config');
-const { initSchema, migrateFromJson, DATA_DIR, pool } = require('./db');
+const { initSchema, migrateFromJson, ensureAdmin, DATA_DIR, pool } = require('./db');
 const { redirectUnauthenticated, csrfMiddleware, securityHeaders } = require('./middleware/security');
 const { requestId, accessLog, errorHandler } = require('./middleware/errorHandler');
 const authRouter = require('./routes/auth');
@@ -12,6 +12,7 @@ const marketRouter = require('./routes/market');
 const importRouter = require('./routes/import');
 const metaRouter = require('./routes/meta');
 const profileRouter = require('./routes/profile');
+const adminRouter = require('./routes/admin');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
 
@@ -47,6 +48,7 @@ app.use('/api', marketRouter);
 app.use('/', importRouter);   // 同时承接 /api/* 与 /m/*
 app.use('/api', metaRouter);
 app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
+app.use('/api/admin', adminRouter);   // 管理后台：统一 /api/admin 前缀，路由内已 requireAdmin
 
 // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
@@ -65,6 +67,7 @@ let server = null;
 async function start() {
   try {
     await initSchema();
+    await ensureAdmin();
     await migrateFromJson();
     console.log('数据库初始化完成');
   } catch (e) {

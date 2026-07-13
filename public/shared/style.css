@@ -120,6 +120,34 @@ td.negative { color: #137333; font-weight: 600; }
 .form-group label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; font-weight: 500; }
 .form-group input, .form-group select { width: 100%; padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 6px; font-size: 13px; outline: none; transition: border-color .2s; }
 .form-group input:focus, .form-group select:focus { border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
+.form-group { margin-bottom: 14px; }
+.form-group:last-child { margin-bottom: 0; }
+
+/* 定时任务说明卡片 */
+.job-help { background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+.job-help-title { font-size: 15px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+.job-help-sub { font-size: 12px; color: #888; margin-bottom: 12px; }
+.job-help-group { margin-bottom: 10px; }
+.job-help-group > b { display: block; font-size: 13px; color: #4f6ef7; margin-bottom: 6px; }
+.job-help-item { display: flex; gap: 10px; font-size: 12.5px; color: #555; line-height: 1.6; padding: 4px 0; border-top: 1px dashed #f0f0f0; }
+.job-help-item:first-child { border-top: none; }
+.job-help-name { flex: 0 0 150px; font-weight: 600; color: #333; }
+.job-help-item i { color: #999; font-style: normal; }
+
+/* 休市日历（日历视图） */
+.holiday-calendar { margin-top: 4px; }
+.holiday-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.holiday-month { background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+.holiday-month-title { font-size: 13px; font-weight: 700; color: #1a1a2e; text-align: center; margin-bottom: 8px; }
+.holiday-week { display: grid; grid-template-columns: repeat(7, 1fr); font-size: 11px; color: #999; text-align: center; margin-bottom: 4px; }
+.holiday-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.holiday-cell { aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 6px; cursor: pointer; color: #444; user-select: none; position: relative; }
+.holiday-cell.empty { visibility: hidden; cursor: default; }
+.holiday-cell:hover { background: #f0f2f5; }
+.holiday-weekend { color: #bbb; }
+.holiday-on { background: #fff3e0; color: #e08800; font-weight: 600; border: 1px solid #ffd9a0; }
+.holiday-on:hover { background: #ffe6c2; }
+.holiday-x { position: absolute; top: -2px; right: 1px; font-style: normal; font-size: 11px; line-height: 1; }
 
 /* ===== 弹窗 ===== */
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
@@ -459,4 +487,49 @@ td.negative { color: #137333; font-weight: 600; }
   .feature-cards { grid-template-columns: repeat(2, 1fr); }
   .main-nav { margin-left: 8px; }
   .main-tab { padding: 0 8px; font-size: 12px; }
+}
+
+/* ===== 管理后台（左菜单 + 右内容区，控制台风格）===== */
+.admin-shell { display: flex; min-height: 100vh; }
+.admin-sidebar {
+  width: 220px; flex-shrink: 0; background: linear-gradient(180deg, #1a237e 0%, #283593 100%);
+  color: #fff; display: flex; flex-direction: column; position: fixed; top: 0; bottom: 0; left: 0;
+  box-shadow: 2px 0 8px rgba(26,35,126,.2); z-index: 100;
+}
+.admin-brand { font-size: 16px; font-weight: 700; padding: 18px 20px; border-bottom: 1px solid rgba(255,255,255,.1); letter-spacing: .5px; }
+.admin-menu { flex: 1; padding: 10px 0; overflow-y: auto; }
+.admin-menu-item {
+  display: block; width: 100%; text-align: left; background: transparent; border: none;
+  color: rgba(255,255,255,.75); padding: 12px 22px; font-size: 14px; cursor: pointer;
+  transition: .15s; border-left: 3px solid transparent;
+}
+.admin-menu-item:hover { background: rgba(255,255,255,.08); color: #fff; }
+.admin-menu-item.active { background: rgba(255,255,255,.14); color: #fff; border-left-color: #ffc107; font-weight: 600; }
+.admin-sidebar-foot { padding: 14px 20px; border-top: 1px solid rgba(255,255,255,.1); font-size: 12px; }
+.admin-sidebar-foot #admin-user { display: block; margin-bottom: 8px; color: rgba(255,255,255,.85); word-break: break-all; }
+.admin-link { color: rgba(255,255,255,.7); cursor: pointer; text-decoration: none; font-size: 12px; margin-right: 10px; background: none; border: none; padding: 0; }
+.admin-link:hover { color: #fff; }
+.admin-main { flex: 1; margin-left: 220px; background: #f0f2f5; min-height: 100vh; }
+.admin-topbar { height: 56px; background: #fff; border-bottom: 1px solid #eee; display: flex; align-items: center; padding: 0 24px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.admin-topbar h1 { font-size: 18px; color: #1a1a2e; font-weight: 700; }
+.admin-content { padding: 24px; max-width: 1100px; }
+.admin-view { display: none; }
+.admin-view.active { display: block; }
+.admin-placeholder { background: #fff; border: 1px dashed #dcdcdc; border-radius: 10px; padding: 60px 20px; text-align: center; color: #aaa; margin-top: 8px; }
+.admin-placeholder .icon { font-size: 40px; margin-bottom: 10px; }
+
+/* 后台页面通用小标题 */
+.admin-section-title { font-size: 15px; font-weight: 600; color: #1a1a2e; margin: 4px 0 14px; }
+.admin-table-wrap { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.05); overflow: hidden; margin-bottom: 18px; }
+
+@media (max-width: 720px) {
+  .admin-sidebar { width: 64px; }
+  .admin-brand { font-size: 0; padding: 18px 0; text-align: center; }
+  .admin-brand::first-letter { font-size: 18px; }
+  .admin-menu-item { font-size: 0; padding: 14px 0; text-align: center; }
+  .admin-menu-item::first-letter { font-size: 16px; }
+  .admin-sidebar-foot #admin-user, .admin-sidebar-foot .admin-link { font-size: 0; }
+  .admin-sidebar-foot .admin-link::first-letter { font-size: 14px; }
+  .admin-main { margin-left: 64px; }
+  .admin-content { padding: 16px; }
 }

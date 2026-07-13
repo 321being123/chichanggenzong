@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-07-13
+
+### 新增：平台管理后台（用户 / 券商 / 定时任务 / 公告 / 版本 / 休市 / 审计）
+- **变更**：新增 `public/admin.html` + `public/js/admin.js` 控制台页（左侧菜单 9 视图：概览/用户/券商/定时任务/公告/版本记录/休市日历/全局参数/审计），`server/routes/admin.js` 统一 `/api/admin/*` 前缀并全路由 `requireAdmin` 守卫；`server/middleware/auth.js` 新增异步 `requireAdmin`（数据库 role=admin 或 `ADMIN_USERS` 白名单双认）；`server/db.js` 加 `users` 表 role/status 列及用户/券商/公告/版本/休市/参数/审计全套读写函数；`server/app.js` 启动 `ensureAdmin()` 建管理员并挂载 admin 路由。
+- **文件**：`public/admin.html`(新)、`public/js/admin.js`(新)、`server/routes/admin.js`(新)、`server/middleware/auth.js`、`server/db.js`、`server/app.js`、`server/middleware/security.js`、`public/login.html`。
+
+### 新增：券商导入数量单位（手 / 张）可配
+- **变更**：`brokers` 表加 `import_unit` 列（默认 sheet=张，华泰 lot=手），种子随写入；`core-trade.js` 的 `normalizeQuantity`/`updateQtyHint` 与 `enter_trade.js` 由「硬编码华泰/招商」改为读取券商 `import_unit`；`server/routes/accounts.js` 的 `/data` 经 JOIN 回传 `_brokerImportUnit`，保留「仅上交所债券 ×10 转张」正确性。
+- **文件**：`server/db.js`、`server/routes/accounts.js`、`server/routes/admin.js`、`public/shared/core-trade.js`、`enter_trade.js`、`public/js/admin.js`、`public/shared/style.css`。
+
+### 取消：平台级统一费率配置
+- **根因**：费率实为「每账户各自设置」，平台统一配置层多余且易混淆。
+- **修复**：删除后台费率菜单/视图、`/api/admin/fees`、`/api/admin/fees-config`、`/api/admin/fees/:group`，`db.js` 的 `getPlatformFeeSettings`/`upsertPlatformFee` 与 `fee_settings` 建表、`core-fees.js` 平台费率拉取；保留各账户独立费率设置（不受影响）。
+- **文件**：`public/admin.html`、`public/js/admin.js`、`server/routes/admin.js`、`server/db.js`、`public/shared/core-fees.js`、`test-admin.js`。
+
+### 优化：定时任务说明 + 休市日历改日历视图 + 全局参数样式
+- **变更**：`renderJobs` 增加自动/手动任务中文说明卡片；`renderHolidays` 由 chip 列表改为 12 月网格日历（周末置灰、休市日高亮、点格增删）；`renderSettings` 重写布局（避开全局 `.form-group input{width:100%}` 冲突，checkbox 固定 18×18 左对齐）；`style.css` 补 `.form-group{margin-bottom:14px}` + `.job-help` + `.cal-*` 日历样式。
+- **文件**：`public/js/admin.js`、`public/shared/style.css`。
+
+### 修复：登录后回跳后台地址
+- **根因**：`login.html` 登录成功硬编码跳前台 `/`，访问后台被踢登录后又回前台。
+- **修复**：`security.js` 未登录访问 `/admin.html` 跳 `/login.html?redirect=/admin.html`；`login.html` 登录/注册成功读 `?redirect` 回跳；`admin.js` 未登录带 redirect。
+- **文件**：`server/middleware/security.js`、`public/login.html`、`public/js/admin.js`。
+
+### 数据：休市日历按交易所官方日历校正
+- **变更**：经 Tushare `trade_cal`（SSE）实时重拉 2026 年法定休市日，与本地 `holidays.json` 逐项一致（19 天），确认无偏差；仅改本机文件，未动 git。
+- **文件**：`server/config/holidays.json`。
+
 ## 2026-07-12
 
 ### 新增：个人中心（头像 / 昵称 / 简介 / 改密码）

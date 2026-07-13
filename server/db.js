@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+// 平台费率默认值的单一真相源（与前端 core-fees.js 保持一致，后端 /api/fees 用其补全6组）
+const { DEFAULT_FEE_SETTINGS } = require('../public/shared/core-fees');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -37,6 +39,10 @@ async function initSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar text;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login timestamptz;
+    -- 平台管理后台：用户角色/状态/注册时间（默认普通用户、正常状态）
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'user';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
     CREATE TABLE IF NOT EXISTS account_data (
       username TEXT NOT NULL,
       account_name TEXT NOT NULL,
@@ -173,9 +179,12 @@ async function initSchema() {
       code TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       market TEXT NOT NULL DEFAULT 'A',
-      sort_order INTEGER NOT NULL DEFAULT 0
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      import_unit TEXT NOT NULL DEFAULT 'sheet'
     );
   `);
+  // 兼容已存在表：补齐 import_unit 列（导入持仓时数量按「手」还是「张」换算的依据）
+  await pool.query("ALTER TABLE brokers ADD COLUMN IF NOT EXISTS import_unit TEXT NOT NULL DEFAULT 'sheet'");
   await seedBrokers();
 
   // ===== P2-5：任务执行记录表（worker 幂等锁 + 执行历史 + 告警依据）=====
@@ -191,6 +200,37 @@ async function initSchema() {
   `);
   // 兼容早期残留表（缺 locked_until 列）：补齐，保证幂等可重复执行
   await pool.query('ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ');
+
+  // ===== 后台：平台配置（注册开关/邀请码/邮箱验证等，DB 优先于 env）=====
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS platform_config (
+      key TEXT PRIMARY KEY,
+      value TEXT DEFAULT '',
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  // ===== 后台：平台公告 =====
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      content TEXT DEFAULT '',
+      pinned BOOLEAN NOT NULL DEFAULT false,
+      published_at TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  // ===== 后台：操作审计日志 =====
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_audit_log (
+      id SERIAL PRIMARY KEY,
+      actor TEXT NOT NULL DEFAULT '',
+      action TEXT NOT NULL DEFAULT '',
+      target TEXT NOT NULL DEFAULT '',
+      detail TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
 
   // 账户元数据表幂等迁移（从旧 users.accounts JSON + account_data JSON 填充，不覆盖已有）
   await migrateAccountsTable();
@@ -290,7 +330,7 @@ async function saveUsers(users) {
 
 async function getUserProfile(username) {
   const { rows } = await pool.query(
-    'SELECT username, nickname, bio, avatar, email, last_login, accounts FROM users WHERE username=$1',
+    'SELECT username, nickname, bio, avatar, email, last_login, role, status, accounts FROM users WHERE username=$1',
     [username]
   );
   const r = rows[0];
@@ -302,8 +342,100 @@ async function getUserProfile(username) {
     avatar: r.avatar || '',
     email: r.email || '',
     last_login: r.last_login || null,
+    role: r.role || 'user',
+    status: r.status || 'active',
     accounts: JSON.parse(r.accounts || '[]')
   };
+}
+
+// ====== 登录鉴权（精简记录，含密码/角色/状态，避免 loadUsers 全表）======
+async function getUserAuth(username) {
+  const { rows } = await pool.query(
+    'SELECT username, password, role, status, email FROM users WHERE username=$1',
+    [username]
+  );
+  return rows[0] || null;
+}
+
+// ====== 平台管理后台：用户列表/详情/状态/角色/删除 ======
+async function countUsers(search) {
+  const { rows } = search
+    ? await pool.query('SELECT COUNT(*)::int AS c FROM users WHERE username ILIKE $1', ['%' + search + '%'])
+    : await pool.query('SELECT COUNT(*)::int AS c FROM users');
+  return rows[0].c;
+}
+
+async function listUsers({ search, limit, offset }) {
+  const params = [];
+  let where = '';
+  if (search) { params.push('%' + search + '%'); where = 'WHERE username ILIKE $1'; }
+  let sql = `SELECT username, role, status, email, created_at, last_login,
+      (SELECT COUNT(*) FROM accounts a WHERE a.username = users.username) AS account_count
+    FROM users ${where} ORDER BY created_at DESC, username`;
+  params.push(limit, offset);
+  sql += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
+
+async function setUserRole(username, role) {
+  await pool.query('UPDATE users SET role=$2 WHERE username=$1', [username, role]);
+}
+async function setUserStatus(username, status) {
+  await pool.query('UPDATE users SET status=$2 WHERE username=$1', [username, status]);
+}
+async function adminSetPassword(username, newHash) {
+  await pool.query('UPDATE users SET password=$2 WHERE username=$1', [username, newHash]);
+}
+async function deleteUser(username) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM account_data WHERE username=$1', [username]);
+    await client.query('DELETE FROM accounts WHERE username=$1', [username]);
+    await client.query('DELETE FROM positions WHERE username=$1', [username]);
+    await client.query('DELETE FROM trades WHERE username=$1', [username]);
+    await client.query('DELETE FROM nav_history WHERE username=$1', [username]);
+    await client.query('DELETE FROM cash_flows WHERE username=$1', [username]);
+    await client.query('DELETE FROM daily_prices WHERE username=$1', [username]);
+    await client.query('DELETE FROM index_history WHERE username=$1', [username]);
+    await client.query('DELETE FROM users WHERE username=$1', [username]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
+}
+async function getUserDetail(username) {
+  const { rows: u } = await pool.query(
+    'SELECT username, role, status, email, created_at, last_login, nickname, bio, avatar FROM users WHERE username=$1',
+    [username]
+  );
+  if (!u[0]) return null;
+  const { rows: accts } = await pool.query(
+    'SELECT account_name, broker, cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 ORDER BY created_at',
+    [username]
+  );
+  return { ...u[0], accounts: accts };
+}
+
+// 自动初始化管理员：读 .env 的 ADMIN_USERNAME/ADMIN_PASSWORD，无则跳过；
+// 库内无该账号则创建（role=admin，无投资账户），已有则确保为 admin。幂等可重复执行。
+async function ensureAdmin() {
+  const uname = process.env.ADMIN_USERNAME;
+  const pwd = process.env.ADMIN_PASSWORD;
+  if (!uname || !pwd) return;
+  try {
+    const { rows } = await pool.query('SELECT username, role FROM users WHERE username=$1', [uname]);
+    if (rows.length === 0) {
+      await pool.query(
+        "INSERT INTO users (username, password, accounts, role, status, created_at) VALUES ($1,$2,$3,'admin','active',now())",
+        [uname, hashPwd(pwd), '[]']
+      );
+      console.log('[seed] 已创建管理员账号:', uname);
+    } else if (rows[0].role !== 'admin') {
+      await pool.query("UPDATE users SET role='admin' WHERE username=$1", [uname]);
+      console.log('[seed] 已将账号提升为管理员:', uname);
+    }
+  } catch (e) { console.warn('[seed] 管理员初始化跳过:', e.message); }
 }
 
 async function updateUserProfile(username, fields) {
@@ -647,9 +779,11 @@ const BROKER_SEED = [
 ];
 async function seedBrokers() {
   for (const [code, name, market, sortOrder] of BROKER_SEED) {
+    // 华泰（上交所债券）以「手」为单位录入，1手=10张；其余券商默认「张」
+    const importUnit = code === 'huatai' ? 'lot' : 'sheet';
     await pool.query(
-      'INSERT INTO brokers (code, name, market, sort_order) VALUES ($1,$2,$3,$4) ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, market=EXCLUDED.market, sort_order=EXCLUDED.sort_order',
-      [code, name, market, sortOrder]
+      'INSERT INTO brokers (code, name, market, sort_order, import_unit) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, market=EXCLUDED.market, sort_order=EXCLUDED.sort_order, import_unit=EXCLUDED.import_unit',
+      [code, name, market, sortOrder, importUnit]
     );
   }
 }
@@ -657,8 +791,8 @@ async function seedBrokers() {
 // 券商字典：按市场返回券商列表（供前端下拉），已按 sort_order 排序
 async function loadBrokers(market) {
   const { rows } = market
-    ? await pool.query('SELECT code, name, market FROM brokers WHERE market=$1 ORDER BY sort_order, name', [market])
-    : await pool.query('SELECT code, name, market FROM brokers ORDER BY market, sort_order, name');
+    ? await pool.query('SELECT code, name, market, import_unit FROM brokers WHERE market=$1 ORDER BY sort_order, name', [market])
+    : await pool.query('SELECT code, name, market, import_unit FROM brokers ORDER BY market, sort_order, name');
   return rows;
 }
 
@@ -691,6 +825,42 @@ function inferBroker(accountName) {
   if (n.indexOf('华泰') >= 0) return 'huatai';
   if (n.indexOf('招商') >= 0) return 'cms';
   return 'other';
+}
+
+// ===== 券商字典管理（管理员后台用）=====
+// 列表：支持按名称/代码模糊搜索 + 市场筛选，返回全字段含 sort_order
+async function adminListBrokers({ search = '', market = '' } = {}) {
+  const conds = [];
+  const params = [];
+  if (market) { params.push(market); conds.push('market=$' + params.length); }
+  if (search) {
+    params.push('%' + search + '%');
+    conds.push('(name ILIKE $' + params.length + ' OR code ILIKE $' + params.length + ')');
+  }
+  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+  const { rows } = await pool.query(
+    'SELECT code, name, market, sort_order, import_unit FROM brokers ' + where + ' ORDER BY market, sort_order, name',
+    params
+  );
+  return rows;
+}
+
+async function createBroker({ code, name, market, sort_order, import_unit }) {
+  await pool.query(
+    'INSERT INTO brokers (code, name, market, sort_order, import_unit) VALUES ($1,$2,$3,$4,$5)',
+    [code, name, market, sort_order || 0, import_unit || 'sheet']
+  );
+}
+
+async function updateBroker(code, { name, market, sort_order, import_unit }) {
+  await pool.query(
+    'UPDATE brokers SET name=$2, market=$3, sort_order=$4, import_unit=$5 WHERE code=$1',
+    [code, name, market, sort_order || 0, import_unit || 'sheet']
+  );
+}
+
+async function deleteBroker(code) {
+  await pool.query('DELETE FROM brokers WHERE code=$1', [code]);
 }
 
 // 同步账户列表到结构化 accounts 表：新增补行、删除已移除的行（仅元数据，不动 account_data）
@@ -764,5 +934,111 @@ async function finishJobRun(id, ok, detail) {
   );
 }
 
+// ====== 管理后台：定时任务执行记录（监控用）======
+// 返回最近若干条执行记录 + 每个任务的最近一次状态汇总
+async function adminJobRuns(limit = 50) {
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+  const recent = await pool.query(
+    'SELECT id, job, status, started_at, finished_at, detail FROM job_runs ORDER BY id DESC LIMIT $1',
+    [lim]
+  );
+  const summary = await pool.query(
+    'SELECT DISTINCT ON (job) job, status, started_at, finished_at FROM job_runs ORDER BY job, id DESC'
+  );
+  return { recent: recent.rows, summary: summary.rows };
+}
+
+// ====== 管理后台：平台概览聚合（供后台仪表盘）======
+async function adminOverview() {
+  const [u, admin, dis, acct, today, asset] = await Promise.all([
+    pool.query('SELECT COUNT(*)::int AS c FROM users'),
+    pool.query("SELECT COUNT(*)::int AS c FROM users WHERE role='admin'"),
+    pool.query("SELECT COUNT(*)::int AS c FROM users WHERE status<>'active'"),
+    pool.query('SELECT COUNT(*)::int AS c FROM accounts'),
+    pool.query('SELECT COUNT(*)::int AS c FROM users WHERE created_at::date = CURRENT_DATE'),
+    pool.query(`SELECT COALESCE(SUM(total_asset),0)::float8 AS s FROM (
+      SELECT total_asset, ROW_NUMBER() OVER (PARTITION BY username, account_name ORDER BY date DESC) rn
+      FROM nav_history
+    ) t WHERE rn=1`)
+  ]);
+  return {
+    totalUsers: u.rows[0].c,
+    adminUsers: admin.rows[0].c,
+    disabledUsers: dis.rows[0].c,
+    totalAccounts: acct.rows[0].c,
+    todayNewUsers: today.rows[0].c,
+    totalAsset: Number(asset.rows[0].s || 0)
+  };
+}
+
+// ====== 后台：平台配置（key/value，DB 优先于 env）======
+async function getConfig(key, def) {
+  try {
+    const { rows } = await pool.query('SELECT value FROM platform_config WHERE key=$1', [key]);
+    if (rows.length) return rows[0].value;
+  } catch (e) {}
+  return def;
+}
+async function setConfig(key, value) {
+  await pool.query(
+    'INSERT INTO platform_config (key, value, updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()',
+    [key, value == null ? '' : String(value)]
+  );
+}
+
+// ====== 后台：平台公告 ======
+async function listAnnouncements() {
+  const { rows } = await pool.query("SELECT id, title, content, pinned, published_at, to_char(created_at,'YYYY-MM-DD HH24:MI:SS') AS created_at FROM announcements ORDER BY pinned DESC, created_at DESC");
+  return rows;
+}
+async function createAnnouncement(o) {
+  const id = 'a_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+  await pool.query(
+    'INSERT INTO announcements (id, title, content, pinned, published_at, created_at) VALUES ($1,$2,$3,$4,$5,now())',
+    [id, o.title || '', o.content || '', o.pinned ? true : false, o.published_at || '']
+  );
+  return id;
+}
+async function updateAnnouncement(id, o) {
+  await pool.query(
+    'UPDATE announcements SET title=$2, content=$3, pinned=$4, published_at=$5 WHERE id=$1',
+    [id, o.title || '', o.content || '', o.pinned ? true : false, o.published_at || '']
+  );
+}
+async function deleteAnnouncement(id) {
+  await pool.query('DELETE FROM announcements WHERE id=$1', [id]);
+}
+
+// ====== 后台：版本记录 changelog.json 读写（一天一条合并）======
+function getChangelog() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'public', 'changelog.json'), 'utf8'));
+  } catch (e) { return []; }
+}
+function addChangelogItem(date, item) {
+  const list = getChangelog();
+  let entry = list.find(function (x) { return x.date === date; });
+  if (!entry) { entry = { date: date, items: [] }; list.unshift(entry); }
+  else if (list.indexOf(entry) !== 0) { list.splice(list.indexOf(entry), 1); list.unshift(entry); }
+  entry.items.push(item);
+  fs.writeFileSync(path.join(__dirname, '..', 'public', 'changelog.json'), JSON.stringify(list, null, 2));
+  return list;
+}
+
+// ====== 后台：操作审计日志 ======
+async function auditLog(actor, action, target, detail) {
+  try {
+    await pool.query(
+      'INSERT INTO admin_audit_log (actor, action, target, detail, created_at) VALUES ($1,$2,$3,$4,now())',
+      [actor || '', action || '', target || '', detail || '']
+    );
+  } catch (e) {}
+}
+async function listAudit(limit) {
+  const lim = Math.min(parseInt(limit, 10) || 50, 200);
+  const { rows } = await pool.query('SELECT id, actor, action, target, detail, to_char(created_at,\'YYYY-MM-DD HH24:MI:SS\') AS created_at FROM admin_audit_log ORDER BY id DESC LIMIT $1', [lim]);
+  return rows;
+}
+
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, saveUsers, hashPwd, verifyPwd, getUserProfile, updateUserProfile, changePassword, updateLastLogin, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, saveUsers, hashPwd, verifyPwd, getUserProfile, getUserAuth, countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, deleteUser, getUserDetail, updateUserProfile, changePassword, updateLastLogin, ensureAdmin, adminOverview, adminJobRuns, adminListBrokers, createBroker, updateBroker, deleteBroker, getConfig, setConfig, listAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getChangelog, addChangelogItem, auditLog, listAudit, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };

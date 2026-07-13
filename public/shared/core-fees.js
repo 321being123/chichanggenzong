@@ -3,6 +3,8 @@
 // 纯逻辑，不碰 DOM；与 db.js 的 trades 四费用列一一对应。
 
 // 内置默认费率（rate 以小数存储，= 百分比/100）。交易所真调了，改这里或走自动更新任务。
+// 费用按「账户各自设置」优先（data.feeSettings），其次回退内置默认；无平台级覆盖层。
+let PLATFORM_FEE = {};
 const DEFAULT_FEE_SETTINGS = {
   // A股股票：佣金万2.5 + 最低5元；印花税卖出0.05%；过户费0.001%双边
   ashare_stock: { commissionRate: 0.00025, commissionMin: 5, stampTaxRate: 0.0005, transferRate: 0.00001, otherRate: 0 },
@@ -48,7 +50,7 @@ function getFeeSettings() {
   const out = {};
   const user = (data && data.feeSettings) || {};
   for (const k in DEFAULT_FEE_SETTINGS) {
-    out[k] = Object.assign({}, DEFAULT_FEE_SETTINGS[k], user[k] || {});
+    out[k] = Object.assign({}, DEFAULT_FEE_SETTINGS[k], PLATFORM_FEE[k] || {}, user[k] || {});
   }
   return out;
 }
@@ -57,7 +59,7 @@ function getFeeSettings() {
 function calcTradeFees(direction, amount, subtype) {
   const g = getFeeGroup(subtype);
   const s = (data && data.feeSettings && data.feeSettings[g]) || {};
-  const cfg = Object.assign({}, DEFAULT_FEE_SETTINGS[g], s);
+  const cfg = Object.assign({}, DEFAULT_FEE_SETTINGS[g], PLATFORM_FEE[g] || {}, s);
   let commission = 0, stamp_tax = 0, transfer_fee = 0, other_fee = 0;
 
   if (cfg.commissionRate) {
@@ -92,3 +94,8 @@ function round4(x) { const n = Number(x); return Math.round((isFinite(n) ? n : 0
 // 百分比显示值：去尾零，避免 0.0250
 function pctShow(rate) { return rate != null ? (+round4(rate * 100).toFixed(4)).toString() : '0'; }
 function pctToRate(v) { const n = parseFloat(v); return isFinite(n) ? n / 100 : 0; }
+
+// 同时支持 Node 端 require（后端 db.js 取 DEFAULT_FEE_SETTINGS 作为单一真相源）；浏览器端 module 未定义则跳过
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { DEFAULT_FEE_SETTINGS, FEE_GROUPS, getFeeGroup, getFeeSettings, calcTradeFees, tradeFeeTotal, pctShow, pctToRate };
+}

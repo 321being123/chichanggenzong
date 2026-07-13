@@ -124,9 +124,17 @@ let isRegister = false;
 let needCode = false;
 let submitting = false;
 
-// 如果已登录，直接跳转到主页
+// 回跳目标：登录后回到原页面（如后台 /admin.html），默认前台首页
+function getParam(name) {
+  const m = new URLSearchParams(window.location.search).get(name);
+  return m || '';
+}
+let REDIRECT = getParam('redirect') || '/';
+if (!REDIRECT.startsWith('/') || REDIRECT.startsWith('//')) REDIRECT = '/'; // 仅允许站内相对路径
+
+// 如果已登录，直接跳转到回跳页
 fetch(api('/api/me')).then(r => r.json()).then(d => {
-  if (d.username) window.location.href = api('/');
+  if (d.username) window.location.href = api(REDIRECT);
 }).catch(() => {});
 
 fetch(api('/api/config')).then(r => r.json()).then(cfg => {
@@ -216,7 +224,7 @@ function submit() {
     .then(({ status, data }) => {
       submitting = false;
       document.getElementById('submit-btn').disabled = false;
-      if (data.ok) { window.location.href = api('/'); }
+      if (data.ok) { window.location.href = api(REDIRECT); }
       else { showError(data.error || '登录失败（' + status + '）'); }
     }).catch(() => {
       submitting = false;
@@ -261,7 +269,7 @@ function submit() {
     document.getElementById('submit-btn').disabled = false;
     if (data.ok) {
       showToast('🎉 注册成功！正在进入...');
-      setTimeout(() => window.location.href = api('/'), 800);
+      setTimeout(() => window.location.href = api(REDIRECT), 800);
     } else {
       showError(data.error || '注册失败（' + status + '）');
     }

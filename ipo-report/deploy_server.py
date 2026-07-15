@@ -140,7 +140,15 @@ def main():
             print("STDERR:", err)
         print("      server_bond_sync.sql:", "成功" if st == 0 else f"返回{st}")
 
-        # 5c. 中签率精确化（依赖 ipo_history）
+        # 5c. ipo_history 全量同步（含精确中签率），使「新股中签率精确化」在服务器生效
+        remote_ipo = f"{REMOTE_DIR}/ipo-report/ipo_server_sync.sql"
+        st_i, out_i, err_i = ssh_run(client, build_psql_cmd(cfg, remote_ipo), sudo=True, timeout=200)
+        print(out_i)
+        if err_i.strip():
+            print("STDERR(ipo):", err_i)
+        print("      ipo_server_sync.sql:", "成功" if st_i == 0 else f"返回{st_i}")
+
+        # 5d. 中签率精确化 UPDATE（幂等，对已同步的 ipo_history 再保险）
         if remote_lottery and "MISSING" not in out2:
             psql_cmd2 = build_psql_cmd(cfg, remote_lottery)
             st2, out2b, err2 = ssh_run(client, psql_cmd2, sudo=True, timeout=120)

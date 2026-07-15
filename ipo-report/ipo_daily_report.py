@@ -4435,6 +4435,8 @@ def main():
 
     date_str = target_date.strftime("%Y%m%d")
 
+    # 确保输出目录存在（服务器 Linux 路径，避免 open 因目录缺失崩溃）
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     # 保存Markdown
     md_path = os.path.join(OUTPUT_DIR, f"打新日报_{date_str}.md")
     with open(md_path, "w", encoding="utf-8") as f:

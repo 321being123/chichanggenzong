@@ -1,0 +1,8 @@
+# 打新日历模块 Python 依赖（运行于腾讯云 CVM venv）
+# 安装: pip install -r requirements.txt
+requests
+numpy
+xgboost
+PyMuPDF
+psycopg2-binary
+tushare

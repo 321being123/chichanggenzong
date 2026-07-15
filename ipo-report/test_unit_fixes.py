@@ -59,6 +59,19 @@ zhang = mod._parse_bond_top10_holders(zhang_text)
 ctrl_zhang = [a for n, a, _ in zhang if "宝钛" in n][0]
 check("张单位不折算", ctrl_zhang == 1_800_000, f"ctrl_zhang={ctrl_zhang}")
 
+# 单位换行书写（宝钛真实格式：持有数量 与 （手） 分两行）
+hand_nl = """二、前十名可转换公司债券持有人
+序号  持有人名称            持有数量
+（手）  持有比例
+1
+宝钛集团有限公司
+1,800,000
+8.50%
+"""
+hands_nl = mod._parse_bond_top10_holders(hand_nl)
+ctrl_nl = [a for n, a, _ in hands_nl if "宝钛" in n][0]
+check("单位换行(持有数量\\n（手）)仍×10", ctrl_nl == 18_000_000, f"ctrl_nl={ctrl_nl}")
+
 # ---------- 测试3：流通规模量级合理（手单位修正后） ----------
 issue_scale = 25.0  # 亿，合成发行规模，确保大于持有人合计
 total_zhang = int(issue_scale * 100000000 / 100)

@@ -484,7 +484,8 @@ def _parse_bond_top10_holders(text):
 
     # 判定数量列单位：公告书表格"持有数量"列常用"（张）"或"（手）"。
     # 1 手 = 10 张；若单位为手却按张计，控股股东配售量会缩小 10 倍，流通规模失真。
-    _unit = 10 if re.search(r'持有数量[（(]?\s*手', section) else 1
+    # 注意：表头单位常换行书写（"持有数量" 与 "（手）" 分两行），故允许中间有空白/换行。
+    _unit = 10 if re.search(r'持有数量[ \t\r\n]*[（(][ \t\r\n]*手', section) else 1
 
     entries = []
     lines = section.split('\n')

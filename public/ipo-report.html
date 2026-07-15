@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>打新日报 · 报告详情</title>
+<script src="vendor/marked.min.js"></script>
+<style>
+  :root { --red:#d93025; --green:#137333; --ink:#1a1a2e; --muted:#888; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+         background:#f5f6f8; color:#333; line-height:1.7; }
+  .topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:12px;
+            background:#fff; border-bottom:1px solid #eaeaea; padding:12px 20px; box-shadow:0 1px 4px rgba(0,0,0,.04); }
+  .topbar .title { font-size:15px; font-weight:700; color:var(--ink); }
+  .topbar .date { font-size:12px; color:var(--muted); }
+  .btn-back { cursor:pointer; border:1px solid #ddd; background:#fff; border-radius:6px;
+              padding:5px 12px; font-size:13px; color:#333; }
+  .btn-back:hover { background:#f5f5f5; }
+  .wrap { max-width:880px; margin:0 auto; padding:24px 20px 60px; }
+  .md { background:#fff; border-radius:12px; padding:28px 32px; box-shadow:0 2px 10px rgba(0,0,0,.05);
+         font-size:14px; word-break:break-word; }
+  .md h1 { font-size:24px; color:var(--ink); margin:0 0 12px; border-bottom:3px solid var(--red); padding-bottom:10px; }
+  .md h2 { font-size:20px; color:#c0392b; margin:26px 0 10px; border-bottom:1px solid #f0f0f0; padding-bottom:6px; }
+  .md h3 { font-size:17px; color:#2c3e50; margin:20px 0 8px; }
+  .md h4 { font-size:15px; color:#34495e; margin:16px 0 6px; }
+  .md blockquote { margin:12px 0; padding:8px 14px; background:#f8f9fa; border-left:4px solid #d0d0d0;
+                   color:#555; border-radius:0 6px 6px 0; }
+  .md blockquote p { margin:2px 0; }
+  .md table { width:100%; border-collapse:collapse; margin:14px 0; font-size:13px; }
+  .md th { background:#2c3e50; color:#fff; padding:9px 10px; text-align:left; white-space:nowrap; }
+  .md td { padding:8px 10px; border-bottom:1px solid #eee; }
+  .md tr:nth-child(even) td { background:#fafafa; }
+  .md ul, .md ol { padding-left:22px; margin:10px 0; }
+  .md li { margin:4px 0; }
+  .md code { background:#f0f0f0; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .md hr { border:none; border-top:1px solid #e8e8e8; margin:22px 0; }
+  .md strong { color:#111; }
+  .state { text-align:center; color:var(--muted); padding:60px 0; font-size:14px; }
+  .state.err { color:var(--red); }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <button class="btn-back" onclick="history.length>1?history.back():window.close()">← 返回</button>
+    <span class="title">📰 打新日报</span>
+    <span class="date" id="rpt-date"></span>
+  </div>
+  <div class="wrap">
+    <div class="md" id="md-content"><div class="state">加载中…</div></div>
+  </div>
+
+<script>
+  function getParam(name) {
+    var m = new RegExp('[?&]' + name + '=([^&]*)').exec(window.location.search);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  function api(path) {
+    // 与 app 同源，登录态 cookie 自动携带
+    return path;
+  }
+  async function init() {
+    var date = getParam('date');
+    var code = getParam('code');
+    var content = document.getElementById('md-content');
+    var dateEl = document.getElementById('rpt-date');
+    try {
+      var url;
+      if (code) {
+        url = '/api/ipo/report/code?code=' + encodeURIComponent(code);
+      } else {
+        url = '/api/ipo/report' + (date ? ('?date=' + encodeURIComponent(date)) : '');
+      }
+      var r = await fetch(api(url), { credentials: 'same-origin' });
+      if (r.status === 401) {
+        content.innerHTML = '<div class="state err">未登录或登录已过期，请先在系统主页面登录后再打开本报告。</div>';
+        return;
+      }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var d = await r.json();
+      if (!d || !d.md) {
+        content.innerHTML = '<div class="state">暂无' + (code ? '个股' : '') + '报告内容。</div>';
+        return;
+      }
+      if (code) {
+        dateEl.textContent = '个股 ' + code;
+      } else if (d.report_date) {
+        dateEl.textContent = '报告日期 ' + d.report_date;
+      }
+      content.innerHTML = marked.parse(d.md || '');
+    } catch (e) {
+      content.innerHTML = '<div class="state err">加载失败：' + (e.message || e) + '</div>';
+    }
+  }
+  init();
+</script>
+</body>
+</html>

@@ -13,6 +13,7 @@ const importRouter = require('./routes/import');
 const metaRouter = require('./routes/meta');
 const profileRouter = require('./routes/profile');
 const adminRouter = require('./routes/admin');
+const ipoRouter = require('./routes/ipo');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
 
@@ -49,6 +50,7 @@ app.use('/', importRouter);   // 同时承接 /api/* 与 /m/*
 app.use('/api', metaRouter);
 app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
 app.use('/api/admin', adminRouter);   // 管理后台：统一 /api/admin 前缀，路由内已 requireAdmin
+app.use('/api/ipo', ipoRouter);       // 打新日历：报告/历史列表/已上市表现
 
 // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
@@ -88,6 +90,15 @@ async function start() {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }
   });
+  // 同时监听 IPv6 回环地址 ::1：现代浏览器打开 localhost 常先解析到 ::1，
+  // 若仅监听 IPv4 会导致"本地打不开"(连接被拒)。双栈监听，::1 失败不影响 IPv4。
+  try {
+    app.listen(PORT, '::1', () => {
+      console.log(`持仓管理系统已启动(IPv6): http://[::1]:${PORT}`);
+    });
+  } catch (e) {
+    console.log('[listen] IPv6(::1) 监听跳过:', e.message);
+  }
 }
 
 // 优雅停机：停止接收新请求并关闭 DB/Redis 连接池（P2-2）

@@ -19,5 +19,10 @@ data/json_backup_*/
 data/*.db-shm
 data/*.db-wal
 
+# 打新日历模块：SQLite 迁移源（仅本地迁移用，不入库）
+ipo-report/data/*.db
+ipo-report/data/*.db-shm
+ipo-report/data/*.db-wal
+
 # 测试脚本（含敏感信息风险，不入库）
 test_verify.js

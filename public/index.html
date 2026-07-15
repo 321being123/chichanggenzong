@@ -14,11 +14,10 @@
 <div class="nav">
   <div class="nav-inner">
     <div class="nav-left">
-      <h1>投资小站</h1>
+      <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">投资小站</h1>
       <nav class="main-nav">
-        <button class="main-tab active" data-main="home">首页</button>
+        <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
-        <button class="main-tab" data-main="profile">个人中心</button>
         <button class="main-tab" data-main="changelog">版本记录</button>
       </nav>
     </div>
@@ -239,6 +238,38 @@
 <div class="main-page" id="main-changelog">
   <div class="chart-box" id="changelog-main-content" style="padding:20px;font-size:13px;line-height:1.8;">
     <p style="color:#888;text-align:center;">加载中...</p>
+  </div>
+</div>
+
+<!-- 打新日历（一级页） -->
+<div class="main-page" id="main-ipo">
+  <div style="max-width:1240px;margin:0 auto;padding:20px;">
+
+    <!-- 打新建议（取自最新日报「结论」段） -->
+    <div id="ipo-advice"></div>
+
+    <!-- 打新日历（中间，按日历形式列出未来申购/上市日） -->
+    <div class="table-wrap" style="margin-top:18px;">
+      <div class="table-header">
+        <h3>打新日历</h3>
+      </div>
+      <div style="padding:18px;">
+        <div id="ipo-calendar"></div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <h3>打新历史</h3>
+        <div style="display:flex;gap:6px;">
+          <button class="period-btn active" data-ipo-hist="stock" onclick="ipoSwitchHist('stock')">新股</button>
+          <button class="period-btn" data-ipo-hist="bond" onclick="ipoSwitchHist('bond')">新债</button>
+        </div>
+      </div>
+      <div style="padding:18px;">
+        <div id="ipo-history"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -464,6 +495,8 @@
 <script src="shared/core-returns.js?v=3"></script>
 <script src="shared/core-earnings.js?v=20260712c"></script>
 <script src="shared/core-account.js?v=20260712e"></script>
+<script src="vendor/marked.min.js"></script>
+<script src="js/ipo.js?v=8"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -513,6 +546,7 @@ function switchMain(main) {
   if (mp) mp.classList.add('active');
   if (main === 'profile') loadProfile();
   if (main === 'changelog') loadChangelogPage();
+  if (main === 'ipo') loadIpo();
 }
 
 // 加载版本记录页
@@ -656,10 +690,26 @@ function onAvatarChange(e) {
       const av = document.getElementById('profile-avatar');
       if (av) av.src = dataUrl;
       renderTopUser({ username: username, nickname: (myProfile && myProfile.nickname) || '', avatar: dataUrl });
+      // 上传完成后立即自动保存到数据库，无需再点「保存资料」，避免「上传了却没存住」的困惑
+      autoSaveAvatar(dataUrl);
     };
     img.src = reader.result;
   };
   reader.readAsDataURL(file);
+}
+
+// 仅保存头像（上传即落库）；失败提示用户手动点「保存资料」兜底
+async function autoSaveAvatar(dataUrl) {
+  try {
+    const r = await fetch(api('/api/profile'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ avatar: dataUrl })
+    });
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok) { showToast(d.error || '头像保存失败，请点「保存资料」'); return; }
+    showToast('头像已保存');
+  } catch (e) { showToast('头像保存失败，请点「保存资料」'); }
 }
 
 async function logout() {

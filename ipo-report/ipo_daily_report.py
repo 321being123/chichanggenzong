@@ -482,6 +482,10 @@ def _parse_bond_top10_holders(text):
             end_pos = min(end_pos, pos)
     section = section[:end_pos]
 
+    # 判定数量列单位：公告书表格"持有数量"列常用"（张）"或"（手）"。
+    # 1 手 = 10 张；若单位为手却按张计，控股股东配售量会缩小 10 倍，流通规模失真。
+    _unit = 10 if re.search(r'持有数量[（(]?\s*手', section) else 1
+
     entries = []
     lines = section.split('\n')
     i = 0
@@ -514,7 +518,7 @@ def _parse_bond_top10_holders(text):
                             pass
                         i += 1
                     name = ''.join(name_parts).strip()
-                    entries.append((name, amount, pct))
+                    entries.append((name, amount * _unit, pct))
                     break
                 else:
                     name_parts.append(l)
@@ -557,9 +561,15 @@ def _extract_controller_names(text):
 
     # 企业名称中出现的"有限公司"或"咨询"等关键词的实体
     # 从"实际控制人为XXX"段落后上下文找企业名
-    for m in re.finditer(r'(.{2,30})(有限|咨询|投资|合伙)', text):
+    # 收紧：排除 ETF/指数基金/公募私募/资管等财务投资主体（名称常含"投资"易被误判为一致行动人）
+    _FUND_EXCLUDE = re.compile(r'基金|ETF|指数|资产管理|资管|公募|私募')
+    # 公司名字符类（中文/字母/数字/括号/·，排除 、，。 等标点），避免把前导"基金、"等
+    # 无关文本吞入实体；仅检查匹配关键词尾随12字符是否为基金/资管类，排除财务投资主体。
+    _NAME = r'[\u4e00-\u9fa5A-Za-z0-9（）()·.\-]{2,30}'
+    for m in re.finditer(r'(' + _NAME + r')(有限|咨询|投资|合伙)', text):
         entity = m.group(1).strip() + m.group(2).strip()
-        if entity and len(entity) >= 4:
+        window = text[m.start():m.end() + 12]
+        if entity and len(entity) >= 4 and not _FUND_EXCLUDE.search(window):
             controlled_entities.add(entity)
 
     return controllers, controlled_entities
@@ -734,12 +744,12 @@ def fetch_placing_result(stock_code, issue_scale):
             ps_zhang = None
             m = re.search(r"原股东.{0,20}[配售].*?(\d[\d,]*)\s*手", text)
             if m:
-                ps_zhang = int(m.group(1).replace(",", ""))
+                ps_zhang = int(m.group(1).replace(",", "")) * 10  # 手→张
 
             web_zhang = None
             m = re.search(r"网上社会公众投资者.{0,20}认购.*?(\d[\d,]*)\s*手", text)
             if m:
-                web_zhang = int(m.group(1).replace(",", ""))
+                web_zhang = int(m.group(1).replace(",", "")) * 10  # 手→张
 
             return {"status": "error", "error": f"仅找到发行结果公告，该公告仅有原股东配售总量(ps_zhang={ps_zhang}手)，无法区分控股股东/实控人的具体配售量，需等待上市公告书发布"}
 

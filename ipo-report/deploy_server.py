@@ -3,7 +3,7 @@
   2) pm2 restart portfolio-server --update-env
   3) sftp 上传本地 server_bond_sync.sql 到服务器
   4) 在服务器读取 .env 的 DB 配置后执行 psql -f server_bond_sync.sql
-  5) 同时执行 backfill_lottery_rate.sql（中签率精确化，幂等 UPDATE）
+  5) 依次执行：中签率精确化 UPDATE、ipo_history 同步、ipo_reports 同步（打新日历/打新建议数据）
 
 依赖：paramiko（已在 ipo_test venv 安装）
 用法：python deploy_server.py
@@ -158,6 +158,14 @@ def main():
             print("      backfill_lottery_rate.sql:", "成功" if st2 == 0 else f"返回{st2}")
         else:
             print("      backfill_lottery_rate.sql: 服务器缺失，跳过")
+
+        # 5e. ipo_reports 同步（打新日历 / 打新建议数据；此前未建表导致线上为空）
+        remote_reports = f"{REMOTE_DIR}/ipo-report/server_ipo_reports_sync.sql"
+        st_r, out_r, err_r = ssh_run(client, build_psql_cmd(cfg, remote_reports), sudo=True, timeout=120)
+        print(out_r)
+        if err_r.strip():
+            print("STDERR(reports):", err_r)
+        print("      server_ipo_reports_sync.sql:", "成功" if st_r == 0 else f"返回{st_r}")
 
     sftp.close()
     client.close()

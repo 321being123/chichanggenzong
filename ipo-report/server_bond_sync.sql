@@ -1,6 +1,7 @@
--- bond_history 服务器同步：扩展列 + 全量 upsert（本地已验证，幂等可重跑）
+-- bond_history 服务器同步：建表(若不存在) + 扩展列 + 全量 upsert（本地已验证，幂等可重跑）
 -- 服务器执行: psql -h 127.0.0.1 -U postgres -d portfolio -f server_bond_sync.sql
 BEGIN;
+CREATE TABLE IF NOT EXISTS bond_history (security_code TEXT, security_name TEXT, listing_date TEXT, first_day_return REAL, updated_at TEXT, ann_date TEXT, res_ann_date TEXT, issue_size REAL, issue_type TEXT, rating TEXT, shd_ration_ratio REAL, issue_price REAL, shd_ration_record_date TEXT, onl_date TEXT, onl_size REAL, onl_pch_num REAL, offl_size REAL, shd_ration_size REAL, conv_price REAL, stk_code TEXT, stk_name TEXT, PRIMARY KEY (security_code));
 ALTER TABLE bond_history ADD COLUMN IF NOT EXISTS ann_date TEXT;
 ALTER TABLE bond_history ADD COLUMN IF NOT EXISTS res_ann_date TEXT;
 ALTER TABLE bond_history ADD COLUMN IF NOT EXISTS issue_size REAL;

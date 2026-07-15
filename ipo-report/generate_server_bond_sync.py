@@ -45,9 +45,10 @@ def sql_val(v, t):
 
 
 lines = [
-    "-- bond_history 服务器同步：扩展列 + 全量 upsert（本地已验证，幂等可重跑）",
+    "-- bond_history 服务器同步：建表(若不存在) + 扩展列 + 全量 upsert（本地已验证，幂等可重跑）",
     "-- 服务器执行: psql -h 127.0.0.1 -U postgres -d portfolio -f server_bond_sync.sql",
     "BEGIN;",
+    f"CREATE TABLE IF NOT EXISTS bond_history ({', '.join(f'{c} ' + ('TEXT' if t=='text' else 'REAL') for c,t in cols)}, PRIMARY KEY (security_code));",
 ]
 for c, t in new_cols:
     pgtype = 'TEXT' if t == 'text' else 'REAL'

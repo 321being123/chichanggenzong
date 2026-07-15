@@ -50,6 +50,12 @@ def parse_env(text):
         cfg[k] = v
         if k == "DATABASE_URL":
             url = v
+    # 兼容服务器 .env 的 PG* 命名
+    pg_map = {'PGHOST': 'DB_HOST', 'PGPORT': 'DB_PORT', 'PGUSER': 'DB_USER',
+              'PGPASSWORD': 'DB_PASSWORD', 'PGDATABASE': 'DB_NAME'}
+    for pk, dk in pg_map.items():
+        if pk in cfg and dk not in cfg:
+            cfg[dk] = cfg[pk]
     if url and "DB_HOST" not in cfg:
         m = re.match(r"postgres(?:ql)?://([^:]+):([^@]+)@([^:/]+):?(\d*)/(\w+)", url)
         if m:
@@ -62,19 +68,17 @@ def parse_env(text):
 
 
 def read_env_db(client):
-    status, out, err = ssh_run(client, f"cat {REMOTE_DIR}/.env")
+    status, out, err = ssh_run(client, f"cat {REMOTE_DIR}/.env", sudo=True)
     if status != 0:
+        print("      cat .env 失败:", err.strip())
         return {}
     return parse_env(out)
 
 
-def build_psql_cmd(cfg, sql_path):
-    host = cfg.get("DB_HOST", "127.0.0.1")
-    port = cfg.get("DB_PORT", "5432")
-    user = cfg.get("DB_USER", "postgres")
-    db = cfg.get("DB_NAME", "portfolio")
-    pw = cfg.get("DB_PASSWORD", "")
-    return f"PGPASSWORD={shlex_quote(pw)} psql -h {shlex_quote(host)} -p {port} -U {shlex_quote(user)} -d {shlex_quote(db)} -f {shlex_quote(sql_path)}"
+def build_psql_cmd(cfg, sql_path, env_file=f"{REMOTE_DIR}/.env"):
+    # 在远程 source .env（含 PG* 变量）后直接用 PGPASSWORD 连接，避免密码内联注入失败
+    return (f"set -a; source {shlex_quote(env_file)}; "
+            f"PGPASSWORD=\"$PGPASSWORD\" psql -h \"$PGHOST\" -p \"$PGPORT\" -U \"$PGUSER\" -d \"$PGDATABASE\" -f {shlex_quote(sql_path)}")
 
 
 def main():
@@ -102,23 +106,33 @@ def main():
     if err.strip():
         print("STDERR:", err)
 
-    print("[4/5] sftp 上传 SQL ...")
+    print("[4/5] SQL 文件已随 git pull 落到服务器，确认路径（/opt/portfolio 属 root，用 sudo 校验）...")
     remote_sql = f"{REMOTE_DIR}/ipo-report/server_bond_sync.sql"
-    sftp.put(LOCAL_SQL, remote_sql)
-    print(f"      -> {remote_sql}")
-    remote_lottery = None
-    if os.path.exists(LOCAL_LOTTERY):
-        remote_lottery = f"{REMOTE_DIR}/ipo-report/backfill_lottery_rate.sql"
-        sftp.put(LOCAL_LOTTERY, remote_lottery)
-        print(f"      -> {remote_lottery}")
-    else:
-        print("      (本地无 backfill_lottery_rate.sql，跳过)")
+    remote_lottery = f"{REMOTE_DIR}/ipo-report/backfill_lottery_rate.sql"
+    st, out, err = ssh_run(client, f"test -f {remote_sql} && echo EXISTS || echo MISSING", sudo=True)
+    print(f"      server_bond_sync.sql: {out.strip()}")
+    st2, out2, err2 = ssh_run(client, f"test -f {remote_lottery} && echo EXISTS || echo MISSING", sudo=True)
+    print(f"      backfill_lottery_rate.sql: {out2.strip()}")
+    if "MISSING" in out:
+        print("      server_bond_sync.sql 缺失，回退 sftp 上传 ...")
+        sftp.put(LOCAL_SQL, remote_sql)
+        ssh_run(client, f"chmod 644 {remote_sql}", sudo=True)
 
-    print("[5/5] 读取服务器 .env 并执行 psql 同步 ...")
+    print("[5/5] 读取服务器 .env 并执行 psql（建表 + 同步）...")
     cfg = read_env_db(client)
-    if not cfg or "DB_PASSWORD" not in cfg:
+    print(f"      解析到 DB 配置键: {sorted(cfg.keys())}")
+    if not cfg:
         print("ERROR: 无法从服务器 .env 解析 DB 配置，停止 psql（请手动执行）")
     else:
+        # 5a. 先建表（bond_history / ipo_history 若不存在）
+        schema_path = f"{REMOTE_DIR}/ipo-report/server_schema.sql"
+        st_s, out_s, err_s = ssh_run(client, build_psql_cmd(cfg, schema_path), sudo=True, timeout=120)
+        print(out_s)
+        if err_s.strip():
+            print("STDERR(schema):", err_s)
+        print("      server_schema.sql:", "成功" if st_s == 0 else f"返回{st_s}")
+
+        # 5b. bond_history 全量 upsert
         psql_cmd = build_psql_cmd(cfg, remote_sql)
         st, out, err = ssh_run(client, psql_cmd, sudo=True, timeout=300)
         print(out)
@@ -126,13 +140,16 @@ def main():
             print("STDERR:", err)
         print("      server_bond_sync.sql:", "成功" if st == 0 else f"返回{st}")
 
-        if remote_lottery:
+        # 5c. 中签率精确化（依赖 ipo_history）
+        if remote_lottery and "MISSING" not in out2:
             psql_cmd2 = build_psql_cmd(cfg, remote_lottery)
-            st2, out2, err2 = ssh_run(client, psql_cmd2, sudo=True, timeout=120)
-            print(out2)
+            st2, out2b, err2 = ssh_run(client, psql_cmd2, sudo=True, timeout=120)
+            print(out2b)
             if err2.strip():
                 print("STDERR:", err2)
             print("      backfill_lottery_rate.sql:", "成功" if st2 == 0 else f"返回{st2}")
+        else:
+            print("      backfill_lottery_rate.sql: 服务器缺失，跳过")
 
     sftp.close()
     client.close()

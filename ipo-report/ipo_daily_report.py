@@ -683,7 +683,13 @@ def fetch_placing_result(stock_code, issue_scale):
 
             # 匹配：控股股东/实控人/控制企业 vs 前十名持有人
             locked_holders = []
+            # 直接排除 ETF/指数基金/资管等财务投资主体：其持有人名常带券商 custodian 前缀
+            # （如"中国银河证券股份有限公司－XXX证券投资基金"），易被控股股东实体子串命中而
+            # 混入限售；按用户要求在此彻底排除，与 _extract_controller_names 的收紧保持一致。
+            _FUND_RE = re.compile(r'基金|ETF|指数|资产管理|资管|公募|私募')
             for name, amount, pct in holders:
+                if _FUND_RE.search(name):
+                    continue
                 is_locked = False
                 # 检查是否为控股股东
                 for ctrl in controller_names:

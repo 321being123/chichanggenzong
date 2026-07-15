@@ -47,13 +47,12 @@ def sql_val(v, t):
 lines = [
     "-- bond_history 服务器同步：建表(若不存在) + 扩展列 + 全量 upsert（本地已验证，幂等可重跑）",
     "-- 服务器执行: psql -h 127.0.0.1 -U postgres -d portfolio -f server_bond_sync.sql",
-    "BEGIN;",
+    "-- 注：主键由 CREATE TABLE / server_schema.sql 建立；不包事务以单条独立提交，避免一行出错全滚。",
     f"CREATE TABLE IF NOT EXISTS bond_history ({', '.join(f'{c} ' + ('TEXT' if t=='text' else 'REAL') for c,t in cols)}, PRIMARY KEY (security_code));",
 ]
 for c, t in new_cols:
     pgtype = 'TEXT' if t == 'text' else 'REAL'
     lines.append(f"ALTER TABLE bond_history ADD COLUMN IF NOT EXISTS {c} {pgtype};")
-lines.append("ALTER TABLE bond_history ADD CONSTRAINT IF NOT EXISTS bond_history_pkey PRIMARY KEY (security_code);")
 
 col_names = [c for c, _ in cols]
 set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in col_names if c != 'security_code')
@@ -67,7 +66,7 @@ for r in rows:
         f"VALUES ({', '.join(vals)}) ON CONFLICT (security_code) DO UPDATE SET {set_clause};"
     )
 
-lines.append("COMMIT;")
+
 with open('server_bond_sync.sql', 'w', encoding='utf-8') as f:
     f.write("\n".join(lines))
 

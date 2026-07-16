@@ -37,6 +37,22 @@ jobs:
           fi
           echo "全部 JS 语法检查通过"
 
+      # Python 语法检查：纯标准库编译，防止语法错误进入主干（不安装依赖）
+      - name: Python 语法检查
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! python3 -m py_compile "$f"; then
+              echo "Python 语法错误: $f"
+              fail=1
+            fi
+          done < <(git ls-files '*.py')
+          if [ "$fail" -ne 0 ]; then
+            echo "存在 Python 语法错误，CI 失败"
+            exit 1
+          fi
+          echo "全部 Python 语法检查通过"
+
   # 集成测试：在临时 PostgreSQL 上验证 schema 迁移、numeric 精度、账户模型、任务锁
   integration-test:
     runs-on: ubuntu-latest
@@ -69,3 +85,16 @@ jobs:
         run: npm ci
       - name: 集成测试
         run: npm run test:integration
+
+  # 依赖漏洞审计：仅报告高危漏洞，不阻断构建（避免无关告警阻塞合并）
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖（npm ci）
+        run: npm ci
+      - name: npm 依赖审计
+        run: npm audit --audit-level=high || true

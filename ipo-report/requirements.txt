@@ -6,3 +6,7 @@ xgboost
 PyMuPDF
 psycopg2-binary
 tushare
+# 以下为实际脚本 import 但此前遗漏的依赖（部署到服务器 venv 会 ImportError）
+pandas
+akshare
+paramiko

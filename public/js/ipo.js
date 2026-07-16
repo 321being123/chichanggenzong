@@ -75,7 +75,8 @@ function _ipoProgress(it) {
   var od = ymd(it.onl_date);
   var ad = ymd(it.ann_date);
   if (ld) return { stage: '上市日', date: ld, color: '#137333' };
-  if (od && od.replace(/-/g, '') <= today) return { stage: '申购日', date: od, color: '#d93025' };
+  // 已有申购日且未上市 → 当前处于「申购」阶段（含即将申购），显示申购日而非发行公告
+  if (od) return { stage: '申购日', date: od, color: '#d93025' };
   if (ad) return { stage: '发行公告', date: ad, color: '#1a73e8' };
   return { stage: '董事会预案', date: ad, color: '#5f6368' };
 }
@@ -324,7 +325,7 @@ function ipoRenderHistory(type, rows) {
     var headers = [
       '代码', '名称', '方案进展', '进展公告日', '发行规模(亿)', '评级',
       '股东配售率', '配售10张所需股数', '股权登记日',
-      '网上上限(亿)', '申请户数(万)', '网下顶格(亿)',
+      '网上上限(亿)', '申请户数(万)',
       '上市涨幅%'
     ];
     var r2 = rows.map(function (it) {
@@ -351,7 +352,6 @@ function ipoRenderHistory(type, rows) {
         shdRecDate,                                // 股权登记日
         announced ? ipoFmt(it.onl_size) : '-',     // 网上上限(亿)：仅公告后
         ipoFmt(it.onl_pch_num),                    // 申请户数(万)
-        ipoFmt(it.offl_size),                      // 网下顶格(亿)
         ipoPctCell(it.first_day_return)            // 上市涨幅% = 上市首日收盘 - 100
       ];
     });

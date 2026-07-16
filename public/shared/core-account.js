@@ -252,14 +252,10 @@ var _autoRefreshTimer = null;
 
 function initAutoRefresh() {
   if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
-  // 每 15 分钟自动刷新行情（收盘后且有价格则跳过，实时查看请手动刷新）
+  // 每 15 分钟自动刷新行情：休市时也刷新（接口回落最近交易日收盘价），
+  // 保证总资产始终按持仓现值实时计算，页面常开时无需手动刷新。
   _autoRefreshTimer = setInterval(function () {
     if (data && data.positions && data.positions.length > 0) {
-      // 收盘后且已有报价 → 不再自动刷新
-      if (!isMarketOpen()) {
-        var hasAnyPrice = data.positions.some(function(p) { return p.price > 0; });
-        if (hasAnyPrice) return;
-      }
       doRefresh();
     }
   }, 900000);

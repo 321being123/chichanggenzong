@@ -162,13 +162,8 @@ async function doRefresh() {
   if (typeof TOTAL_ASSET !== 'undefined' && TOTAL_ASSET > 0) {
     data.totalAsset = TOTAL_ASSET;
   }
-  // 休市（周末 / 法定节假日 / 非交易时段）：不抓实时行情，
-  // 直接渲染已加载的「最近交易日收盘价」（DB 在节假日前一天收盘后已存好），静默不弹提醒。
-  if (!isMarketOpen()) {
-    renderAll();
-    renderReturnsChart();  // 休市时也用已加载的净值历史渲染走势对比图（避免默认空白）
-    return;
-  }
+  // 休市（周末 / 法定节假日 / 非交易时段）也拉取最新可用价（= 最近交易日收盘价），
+  // 保证总资产按持仓现值实时计算；实时接口收盘后回落日线收盘价，与“最近交易日收盘”一致。
   // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
   await refreshAllPrices();
 }

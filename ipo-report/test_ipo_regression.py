@@ -81,10 +81,10 @@ except Exception as e:
     traceback.print_exc()
 
 
-# ===== 3. fetch_calendar（修复：日期字段 nan 污染）=====
-print("== 3. fetch_calendar ==")
+# ===== 3. fetch_calendar_entries（修复：日期字段 nan 污染）=====
+print("== 3. fetch_calendar_entries ==")
 try:
-    cal = m.fetch_calendar()
+    cal = m.fetch_calendar_entries()
     check("返回列表", isinstance(cal, list))
     bad = [x for x in cal if x.get("TRADE_DATE") == "nan"]
     check("无 'nan' 日期", len(bad) == 0, "污染数=%d" % len(bad))

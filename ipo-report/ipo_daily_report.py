@@ -17,6 +17,9 @@ from datetime import datetime, timedelta
 
 import db_pg  # PostgreSQL 数据层（替代 SQLite）
 
+# 日历核心逻辑统一收口（避免与 refresh_calendar.py 重复分叉）
+from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
+
 # ============ 加载 .env 环境变量 ============
 # 优先脚本同级 .env，其次父目录（portfolio-server 根）.env
 def _load_env():
@@ -63,169 +66,7 @@ def _get_session():
     return _session
 
 
-def fetch_calendar():
-    """获取新股/新债日历数据（Tushare: new_share + cb_issue + cb_basic）
-
-    返回与东财同构的字典列表，键保持：
-    TRADE_DATE, DATE_TYPE(申购/上市), SECURITY_TYPE(0=股票,1=债券),
-    SECURITY_NAME_ABBR, SECURITY_CODE(6位), SECUCODE(ts_code)
-    """
-    pro = _get_tushare_pro()
-    if not pro:
-        print("[日历] Tushare 未配置，无法获取日历")
-        return []
-    all_data = []
-
-    # 1. 新股：new_share 含申购日(ipo_date)与上市日(issue_date)
-    try:
-        df = pro.new_share()
-        if df is not None and not df.empty:
-            for _, r in df.iterrows():
-                ts_code = str(r.get("ts_code", "") or "")
-                if not ts_code:
-                    continue
-                code6 = ts_code.split(".")[0]
-                abbr = str(r.get("name") or "")
-                ipo = r.get("ipo_date")
-                issue = r.get("issue_date")
-                if ipo:
-                    all_data.append({
-                        "TRADE_DATE": _str_date(ipo), "DATE_TYPE": "申购", "SECURITY_TYPE": "0",
-                        "SECURITY_NAME_ABBR": abbr, "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                    })
-                if issue:
-                    all_data.append({
-                        "TRADE_DATE": _str_date(issue), "DATE_TYPE": "上市", "SECURITY_TYPE": "0",
-                        "SECURITY_NAME_ABBR": abbr, "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                    })
-    except Exception as e:
-        print(f"[日历] 获取新股日历失败: {e}")
-
-    # 2. 新债申购：cb_issue 含网上申购日(onl_date)
-    try:
-        df2 = pro.cb_issue(fields="ts_code,onl_name,onl_date")
-        if df2 is not None and not df2.empty:
-            for _, r in df2.iterrows():
-                ts_code = str(r.get("ts_code", "") or "")
-                if not ts_code:
-                    continue
-                code6 = ts_code.split(".")[0]
-                abbr = str(r.get("onl_name") or "")
-                onl = r.get("onl_date")
-                if onl:
-                    all_data.append({
-                        "TRADE_DATE": _str_date(onl), "DATE_TYPE": "申购", "SECURITY_TYPE": "1",
-                        "SECURITY_NAME_ABBR": abbr, "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                    })
-    except Exception as e:
-        print(f"[日历] 获取新债申购日历失败: {e}")
-
-    # 3. 新债上市：cb_basic 含上市日(list_date)
-    try:
-        df3 = pro.cb_basic(fields="ts_code,bond_short_name,list_date")
-        if df3 is not None and not df3.empty:
-            for _, r in df3.iterrows():
-                ts_code = str(r.get("ts_code", "") or "")
-                if not ts_code:
-                    continue
-                ld = r.get("list_date")
-                if not ld:
-                    continue
-                code6 = ts_code.split(".")[0]
-                abbr = str(r.get("bond_short_name") or "")
-                all_data.append({
-                        "TRADE_DATE": _str_date(ld), "DATE_TYPE": "上市", "SECURITY_TYPE": "1",
-                    "SECURITY_NAME_ABBR": abbr, "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                })
-    except Exception as e:
-        print(f"[日历] 获取新债上市日历失败: {e}")
-
-    return all_data
-
-
-def build_upcoming_calendar(calendar, days=90, apply_stocks=None, apply_bonds=None):
-    """从全量日历筛选今天起未来 days 天的申购/上市事件，按日期分组。
-
-    用于前端『打新日历』：列出还没过申购的申购日、还没上市的上市日。
-    只展示已有明确日期的标的；没有明确日期的已公告标的（如尚未公布申购日的新股）不在日历中显示。
-    """
-    try:
-        today = datetime.now().date()
-    except Exception:
-        today = datetime.today().date()
-    end = today + timedelta(days=days)
-    end_str = end.strftime("%Y-%m-%d")
-    today_str = today.strftime("%Y-%m-%d")
-    groups = {}
-    order = []
-
-    def _ensure_group(td_k):
-        if td_k not in groups:
-            try:
-                dd = datetime.strptime(td_k, "%Y-%m-%d").date()
-            except Exception:
-                return None
-            groups[td_k] = {
-                "date": td_k,
-                "weekday": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][dd.weekday()],
-                "apply_stocks": [], "apply_bonds": [], "list_stocks": [], "list_bonds": [],
-            }
-            order.append(td_k)
-        return groups[td_k]
-
-    for item in calendar:
-        td = (item.get("TRADE_DATE") or "")[:10]
-        if not td:
-            continue
-        try:
-            d = datetime.strptime(td, "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if d < today or d > end:
-            continue
-        g = _ensure_group(td)
-        secu_type = item.get("SECURITY_TYPE", "0")
-        name = item.get("SECURITY_NAME_ABBR", "")
-        code = item.get("SECURITY_CODE", "")
-        ent = {"name": name, "code": code}
-        if item.get("DATE_TYPE") == "申购":
-            if secu_type == "1":
-                g["apply_bonds"].append(ent)
-            else:
-                g["apply_stocks"].append(ent)
-        else:
-            if secu_type == "1":
-                g["list_bonds"].append(ent)
-            else:
-                g["list_stocks"].append(ent)
-
-    # 补充：申购建议中已公告且明确了申购日(online_date)的标的，补入对应日期组。
-    # 无明确日期的标的按用户要求不在日历显示。
-    def _add_dated(items, group_key):
-        if not items:
-            return
-        for s in items:
-            c = s.get("code", "")
-            if not c:
-                continue
-            d = s.get("detail") or {}
-            od = d.get("online_date", "")
-            if not od:
-                continue
-            td_k = od[:10]
-            if td_k < today_str or td_k > end_str:
-                continue
-            g = _ensure_group(td_k)
-            if not g:
-                continue
-            ent = {"name": s.get("name", ""), "code": c}
-            if ent not in g[group_key]:
-                g[group_key].append(ent)
-
-    _add_dated(apply_stocks, "apply_stocks")
-    _add_dated(apply_bonds, "apply_bonds")
-
-    return [groups[k] for k in sorted(order)]
+# （日历数据拉取与分组逻辑已统一收口到 calendar_core.py，避免与 refresh_calendar.py 重复分叉）
 
 
 def fetch_stock_detail(secu_code):
@@ -875,21 +716,7 @@ def _ts_float(val):
         return None
 
 
-def _str_date(val):
-    """Tushare 日期可能为 None/NaN，安全转为 YYYY-MM-DD 或空串。
-    兼容两种格式：横杠 YYYY-MM-DD 与无横杠 YYYYMMDD。"""
-    if val is None:
-        return ""
-    try:
-        if float(val) != float(val):  # NaN
-            return ""
-    except (ValueError, TypeError):
-        pass
-    s = str(val).strip()
-    # 无横杠格式 YYYYMMDD → YYYY-MM-DD（新股申购/上市、转债上市用这种）
-    if re.match(r"^\d{8}$", s):
-        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
-    return s[:10] if re.match(r"^\d{4}-\d{2}-\d{2}$", s[:10]) else ""
+# （日期解析已统一收口到 calendar_core._str_date）
 
 
 def _to_ts_code(code):
@@ -3707,7 +3534,7 @@ def build_report(target_date):
     print(f"正在生成 {date_display} {weekday} 的打新日报...")
 
     # 1. 获取日历数据
-    calendar = fetch_calendar()
+    calendar = fetch_calendar_entries()
     print(f"获取到 {len(calendar)} 条日历记录")
 
     # 2. 筛选目标日期的申购和上市

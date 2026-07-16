@@ -15,7 +15,10 @@ const profileRouter = require('./routes/profile');
 const adminRouter = require('./routes/admin');
 const ipoRouter = require('./routes/ipo');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
+const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
+const { runIndexRecentJob } = require('./jobs/indexBaseline');
+const { runHkRateJob } = require('./jobs/hkRate');
 
 const app = express();
 // 部署在 Nginx 反代后，信任一层代理（用于正确的客户端IP与 X-Forwarded-Proto）
@@ -84,8 +87,14 @@ async function start() {
     if (process.env.DISABLE_SCHEDULER !== '1') {
       // 按各市场收盘时刻精准调度收盘价记录
       scheduleAllMarketCloses();
+      // 启动即补齐缺失的每日净值/总资产快照（历史空档自愈，幂等只补缺失日）
+      runNavSnapshotJob().catch(function (e) { console.error('净值快照补齐失败:', e.message); });
       // 启动后自动补齐指数基线（A股走Tushare，恒生走腾讯），缺失才联网，幂等自愈+执行记录
       runIndexBaselineJob().catch(function (e) { console.error('指数基线补齐失败:', e.message); });
+      // 每日指数点位增量补齐（收市后持续新增，避免不开网页时对比曲线断档）
+      runIndexRecentJob().catch(function (e) { console.error('指数每日补齐失败:', e.message); });
+      // 每日港币汇率自动更新（避免不开网页时港股估值沿用旧汇率）
+      runHkRateJob().catch(function (e) { console.error('汇率更新失败:', e.message); });
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }

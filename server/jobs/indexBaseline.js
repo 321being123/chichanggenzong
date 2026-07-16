@@ -92,4 +92,55 @@ async function runIndexBaselineJob() {
   }
 }
 
-module.exports = { ensureIndexBaseline, runIndexBaselineJob };
+// 每日增量补齐：只拉最近 days 天的四指数点位（默认 10），增量 upsert。
+// 与 ensureIndexBaseline（启动补齐基线→今天全段）互补：本函数负责“持续每日新增”，
+// 解决进程长期运行期间若不开网页、每日指数点位不落库导致对比曲线断档的问题。
+async function ensureIndexRecent(days) {
+  try {
+    const n = Math.max(5, Math.min(days || 10, 30));
+    const accs = await pool.query('SELECT DISTINCT username, account_name FROM nav_history');
+    const endTs = tsDateStr(new Date());
+    const endDash = normDate(endTs);
+    const startD = new Date();
+    startD.setDate(startD.getDate() - n);
+    const startTs = tsDateStr(startD);
+    const startDash = normDate(startTs);
+    let total = 0;
+    for (const acc of accs.rows) {
+      const points = [];
+      for (const def of INDEX_BACKFILL_DEFS) {
+        let series = [];
+        if (def.src === 'tushare') {
+          const rows = await tushareQuery('index_daily', { ts_code: def.ts, start_date: startTs, end_date: endTs }, 'trade_date,close');
+          if (rows) series = tsRows(rows).map(function (r) { return { date: normDate(r.trade_date), close: parseFloat(r.close) }; }).filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
+        } else {
+          series = await fetchHsiHistory(startDash, endDash);
+        }
+        series.forEach(function (p) { points.push({ date: p.date, name: def.name, close: p.close }); });
+      }
+      if (points.length) {
+        await upsertIndexPoints(acc.username, acc.account_name, points);
+        total += points.length;
+      }
+    }
+    console.log('指数每日补齐完成，新增 ' + total + ' 点');
+  } catch (e) {
+    console.error('指数每日补齐失败:', e.message);
+  }
+}
+
+// 带幂等锁与执行记录的每日指数任务
+async function runIndexRecentJob() {
+  if (!(await tryClaimJob('index_recent'))) return;
+  const runId = await startJobRun('index_recent');
+  try {
+    await ensureIndexRecent(10);
+    await finishJobRun(runId, true, '');
+  } catch (e) {
+    await finishJobRun(runId, false, e.message || String(e));
+  } finally {
+    await releaseJob('index_recent');
+  }
+}
+
+module.exports = { ensureIndexBaseline, runIndexBaselineJob, ensureIndexRecent, runIndexRecentJob };

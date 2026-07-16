@@ -2,6 +2,9 @@
 const { pool, loadAccountData, saveDailyPrices, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { fetchQuoteByCode } = require('../services/market');
 const { isCnHoliday } = require('../config/holidays');
+const { runNavSnapshotJob } = require('./navSnapshot');
+const { runIndexRecentJob } = require('./indexBaseline');
+const { runHkRateJob } = require('./hkRate');
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
 const MARKET_CLOSE_TIMES = [
@@ -154,7 +157,15 @@ function scheduleAllMarketCloses() {
             lastBackfill = today;
             backfillMissingCloses().catch(e => console.error('[worker] 补漏失败:', e.message));
           }
-          runMarketCloseJob(mkt.label, mkt.match).catch(() => {});
+          // 港股 16:10 是最晚收盘：待其收盘价落库后，依次生成当日净值/总资产快照、指数点位、港币汇率
+          runMarketCloseJob(mkt.label, mkt.match)
+            .then(() => {
+              if (mkt.label !== '港股') return;
+              return runNavSnapshotJob()
+                .then(() => runIndexRecentJob())
+                .then(() => runHkRateJob());
+            })
+            .catch(() => {});
         }
         var delay = msUntil(mkt.h, mkt.m);
         var nextDay = new Date(Date.now() + delay + 60000);

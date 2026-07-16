@@ -68,23 +68,11 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-// 港币→人民币汇率代理
+// 港币→人民币汇率代理（抓取逻辑见 server/jobs/hkRate.js，单点真相，供路由与定时任务共用）
+const { fetchHkRate } = require('../jobs/hkRate');
 router.get('/hkrate', requireLogin, asyncHandler(async (req, res) => {
-  try {
-    const text = await new Promise((resolve, reject) => {
-      https.get('https://qt.gtimg.cn/q=szhkdcny', { timeout: 6000 }, (resp) => {
-        let data = ''; resp.on('data', c => data += c);
-        resp.on('end', () => resolve(data));
-      }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    });
-    const match = text.match(/"(.*)"/);
-    if (match) {
-      const parts = match[1].split('~');
-      const rate = parseFloat(parts[3]);
-      if (!isNaN(rate) && rate > 0) return res.json({ rate });
-    }
-  } catch (e) {}
-  res.json({ rate: 0.868 });
+  const rate = await fetchHkRate();
+  res.json({ rate: rate || 0.868 });
 }));
 
 // 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯 web.ifzq 历史日K）

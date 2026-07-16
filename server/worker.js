@@ -5,7 +5,10 @@
 require('dotenv').config();
 const { initSchema, pool } = require('./db');
 const { scheduleAllMarketCloses, backfillMissingCloses } = require('./jobs/marketClose');
+const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
+const { runIndexRecentJob } = require('./jobs/indexBaseline');
+const { runHkRateJob } = require('./jobs/hkRate');
 const { ensureHolidaysCurrent } = require('./jobs/holidaySync');
 
 async function main() {
@@ -15,8 +18,12 @@ async function main() {
   await ensureHolidaysCurrent().catch(e => console.warn('[worker] 休市日核对失败:', e.message));
   // 收盘记录按市场时刻精准调度（含休市识别 + 每日缺失补漏）
   scheduleAllMarketCloses();
-  // 启动即补齐缺失的每日收盘价（崩溃/报错/节假日空档自愈）
-  backfillMissingCloses().catch(e => console.error('[worker] 补漏失败:', e.message));
+  // 启动即补齐缺失的每日收盘价（崩溃/报错/节假日空档自愈），随后补齐净值/总资产快照、指数点位、港币汇率
+  backfillMissingCloses()
+    .then(() => runNavSnapshotJob())
+    .then(() => runIndexRecentJob())
+    .then(() => runHkRateJob())
+    .catch(e => console.error('[worker] 补漏/快照失败:', e.message));
   // 每月核对一次休市日（本地短路：未跨年且 30 天内已核对则跳过联网）
   setInterval(() => {
     ensureHolidaysCurrent().catch(e => console.warn('[worker] 休市日核对失败:', e.message));

@@ -42,7 +42,7 @@ try:
     check("None->空串", m._str_date(None) == "")
     check("NaN(float)->空串", m._str_date(float("nan")) == "")
     check("标准日期透传", m._str_date("2026-07-20") == "2026-07-20")
-    check("无横线日期->空串", m._str_date("20260720") == "")
+    check("无横线日期->YYYY-MM-DD", m._str_date("20260720") == "2026-07-20")
     check("空串->空串", m._str_date("") == "")
 except Exception as e:
     ERR.append("_str_date: " + str(e))

@@ -8,6 +8,7 @@
 //   - 某交易日有持仓却缺收盘价 → 跳过那天，不近似。
 const { pool, loadAccountData, upsertNav, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { isCnHoliday } = require('../config/holidays');
+const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -51,21 +52,7 @@ async function recordNavSnapshots(username, accountName) {
   const navByDate = new Map();
   navs.forEach(function (n) { navByDate.set(n.date, n); });
 
-  // 投入本金（复刻 core-earnings.js:investedAt / replayNav 同款）
-  function investedAt(date) {
-    let lastImpDate = null, lastImp = 0;
-    navs.forEach(function (n) { if (n.invested != null && n.invested !== '') { lastImpDate = n.date; lastImp = Number(n.invested); } });
-    if (!lastImpDate) {
-      let s = cashBase; cfs.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); }); return s;
-    }
-    if (date <= lastImpDate) {
-      let val = null;
-      navs.forEach(function (n) { if (n.invested != null && n.invested !== '' && n.date <= date) val = Number(n.invested); });
-      if (val != null) return val;
-      let s = cashBase; cfs.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); }); return s;
-    }
-    let s = lastImp; cfs.forEach(function (c) { if (c.date > lastImpDate && c.date <= date) s += (c.amount || 0); }); return s;
-  }
+  // 投入本金 investedAt() 已收口到 public/shared/nav-math.js（前后端共用）
   // 持仓-as-of 某日
   function heldQty(date) {
     const m = new Map();
@@ -125,7 +112,7 @@ async function recordNavSnapshots(username, accountName) {
     if (incomplete) continue; // 仍无任何可用价 → 跳过那天
 
     const totalAsset = cashAsOf(d) + mvs.reduce(function (s, v) { return s + v; }, 0);
-    const invested = investedAt(d);
+    const invested = investedAt(navs, cfs, cashBase, d);
 
     if (!prev) {
       await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested });
@@ -135,7 +122,7 @@ async function recordNavSnapshots(username, accountName) {
     cfs.forEach(function (f) { if (f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
     const baseAsset = prev.totalAsset + pcf;
     if (baseAsset <= 0) continue; // 无法续链，跳过
-    const nav = prev.nav * (totalAsset / baseAsset);
+    const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
     await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested });
     prev = { date: d, nav: nav, totalAsset: totalAsset }; affected++;
   }

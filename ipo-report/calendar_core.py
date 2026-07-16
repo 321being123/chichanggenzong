@@ -15,24 +15,9 @@ import json
 import urllib.request
 from datetime import datetime, timedelta
 
-
-# ============ 加载 .env 环境变量（幂等，供 Tushare token） ============
-def _load_env():
-    cand = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"),
-    ]
-    for p in cand:
-        if os.path.exists(p):
-            for line in open(p, encoding="utf-8"):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-
+from _common import _load_env, _tushare, TUSHARE_TOKEN
 
 _load_env()
-TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 
 def _str_date(val):
@@ -55,26 +40,7 @@ def _str_date(val):
     return s[:10] if re.match(r"^\d{4}-\d{2}-\d{2}$", s[:10]) else ""
 
 
-# ============ Tushare REST 调用（零依赖，不依赖 tushare 库） ============
-def _tushare(api_name, params, fields):
-    body = json.dumps({
-        "api_name": api_name,
-        "token": TUSHARE_TOKEN,
-        "params": params,
-        "fields": fields,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "http://api.tushare.pro",
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-    resp = urllib.request.urlopen(req, timeout=30)
-    d = json.loads(resp.read().decode("utf-8"))
-    if d.get("code") != 0:
-        raise RuntimeError(f"Tushare {api_name} 错误: {d.get('msg')}")
-    f = d["data"]["fields"]
-    rows = d["data"]["items"]
-    return [dict(zip(f, r)) for r in rows]
+# ============ Tushare REST 调用（零依赖，不依赖 tushare 库）—— 已收口到 _common.py ============
 
 
 def fetch_calendar_entries():

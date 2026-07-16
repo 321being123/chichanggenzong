@@ -160,37 +160,7 @@ function normalizeDate(v) {
 /** 补零辅助 */
 function pad2(n) { return String(n).padStart(2, '0'); }
 
-// 投入本金计算（统一规则，三处共用）：
-// - 优先使用导入数据（navHistory 中存储的 invested）
-// - 导入数据最后一列日期之后，投入本金 = 最后导入值 + 该日期之后的累计出入金(入金+, 出金-)
-// - 完全没有导入数据时，投入本金 = 期初本金(cashBase) + 截至该日累计出入金
-function investedAt(date) {
-  const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
-  const cf = (data.cashFlows || []);
-  // 最后一条带 invested 的导入记录
-  let lastImpDate = null, lastImpInvested = 0;
-  navs.forEach(function (n) {
-    if (n.invested != null && n.invested !== '') { lastImpDate = n.date; lastImpInvested = Number(n.invested); }
-  });
-  if (!lastImpDate) {
-    let s = Number(data.cashBase) || 0;
-    cf.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); });
-    return s;
-  }
-  if (date <= lastImpDate) {
-    // 导入覆盖区间内：取 ≤ date 的最后一条导入 invested
-    let val = null;
-    navs.forEach(function (n) { if (n.invested != null && n.invested !== '' && n.date <= date) val = Number(n.invested); });
-    if (val != null) return val;
-    let s = Number(data.cashBase) || 0;
-    cf.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); });
-    return s;
-  }
-  // 导入数据之后：最后导入值 + 之后新增出入金
-  let s = lastImpInvested;
-  cf.forEach(function (c) { if (c.date > lastImpDate && c.date <= date) s += (c.amount || 0); });
-  return s;
-}
+// 投入本金 investedAt() 已收口到 shared/nav-math.js（前后端共用），此处不再重复定义
 
 // 把真实数据(navHistory + cashFlows + cashBase)转换为收益 tab 渲染器吃的标准行结构
 function buildRealReturnsSeries() {
@@ -204,7 +174,7 @@ function buildRealReturnsSeries() {
   const rows = navs.map(function (n) {
     // invested 优先取 navHistory 存储值（导入数据或 recordNav 写入的累计值），
     // 仅当存储值为 null 时才走 fallback（cashBase + 现金流累加）
-    const invested = investedAt(n.date);
+    const invested = investedAt(data.navHistory, data.cashFlows, data.cashBase, n.date);
     const nav = n.nav;
     const totalAsset = (n.totalAsset != null) ? n.totalAsset : 0;
     const totalReturn = nav - 1;
@@ -302,7 +272,7 @@ function applyHistoryRecords(parsed, mode) {
       date: p.date,
       nav: p.nav,
       totalAsset: (p.totalAsset == null ? null : p.totalAsset),
-      invested: (p.invested == null ? investedAt(p.date) : p.invested)
+      invested: (p.invested == null ? investedAt(data.navHistory, data.cashFlows, data.cashBase, p.date) : p.invested)
     });
   }
 
@@ -344,7 +314,7 @@ function recalcNavAfterImport(parsed) {
     if (n.date <= anchor.date) continue; // 锚点及之前保持导入值不动
     const cfToday = cf.filter(function (c) { return c.date === n.date; }).reduce(function (s, c) { return s + (c.amount || 0); }, 0);
     const base = prevTotal + cfToday;
-    if (base > 0 && n.totalAsset != null) n.nav = prevNav * (n.totalAsset / base);
+    if (base > 0 && n.totalAsset != null) n.nav = chainNav(prevNav, prevTotal, n.totalAsset, cfToday);
     prevNav = (n.nav != null) ? n.nav : prevNav;
     prevTotal = (n.totalAsset != null) ? n.totalAsset : prevTotal;
   }

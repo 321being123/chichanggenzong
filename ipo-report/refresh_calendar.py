@@ -16,71 +16,17 @@
 import os
 import sys
 import json
-import subprocess
-import urllib.request
 from datetime import datetime, timedelta
 
 # ── 日历核心逻辑统一收口（避免与 ipo_daily_report.py 重复分叉） ──
 from calendar_core import (
     _str_date,
-    _tushare,
     fetch_calendar_entries,
     build_upcoming_calendar,
 )
 
-# ── 加载 .env ──
-def _load_env():
-    cand = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"),
-    ]
-    for p in cand:
-        if os.path.exists(p):
-            for line in open(p, encoding="utf-8"):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
-
-_load_env()
-
-TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
-PSQL = os.environ.get("PSQL_EXE", r"C:\pgsql\bin\psql.exe")
-PGHOST = os.environ.get("PGHOST", "127.0.0.1")
-PGPORT = os.environ.get("PGPORT", "5432")
-PGUSER = os.environ.get("PGUSER", "postgres")
-PGPASSWORD = os.environ.get("PGPASSWORD", "")
-PGDATABASE = os.environ.get("PGDATABASE", "portfolio")
-
-
-# （日历核心逻辑已统一收口到 calendar_core.py，本文件仅保留本地数据写回与 .env 加载）
-
-
-# ── psql 执行 ──
-def psql_run(sql, ignore_error=False):
-    # 写 UTF-8 临时文件，避免 Windows GBK 命令行参数截断/乱码
-    import tempfile
-    fd, path = tempfile.mkstemp(suffix=".sql", prefix="ipo_refresh_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(sql)
-        env = os.environ.copy()
-        env["PGPASSWORD"] = PGPASSWORD
-        env["PGCLIENTENCODING"] = "UTF8"  # 关键：强制 UTF-8 客户端编码
-        p = subprocess.run(
-            [PSQL, "-h", PGHOST, "-p", PGPORT, "-U", PGUSER, "-d", PGDATABASE,
-             "-v", "ON_ERROR_STOP=1", "-f", path],
-            capture_output=True, text=True, env=env, encoding="utf-8",
-        )
-    finally:
-        try:
-            os.remove(path)
-        except Exception:
-            pass
-    if p.returncode != 0 and not ignore_error:
-        print("PSQL 失败:", p.stderr)
-        raise RuntimeError(p.stderr)
-    return p
+# ── 共用样板收口（_load_env / _tushare / psql_run 统一到 _common.py） ──
+from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN
 
 
 def main():

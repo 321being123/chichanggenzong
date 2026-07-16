@@ -11,6 +11,7 @@
 import os, sys, re
 sys.path.insert(0, os.path.dirname(__file__))
 import paramiko
+from _common import shlex_quote
 
 HOST = "82.156.125.47"
 PORT = 22
@@ -19,10 +20,6 @@ PASS = "***REDACTED***"
 REMOTE_DIR = "/opt/portfolio"
 LOCAL_SQL = os.path.join(os.path.dirname(__file__), "server_bond_sync.sql")
 LOCAL_LOTTERY = os.path.join(os.path.dirname(__file__), "backfill_lottery_rate.sql")
-
-
-def shlex_quote(s):
-    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def ssh_run(client, cmd, timeout=300, sudo=False):

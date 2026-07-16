@@ -2,11 +2,8 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import paramiko
 HOST="82.156.125.47"; PORT=22; USER="ubuntu"; PASS="***REDACTED***"
-def shlex_quote(s): return "'" + s.replace("'", "'\\''") + "'"
-def ssh_run(client, cmd, sudo=False, timeout=120):
-    full = f"echo {PASS} | sudo -S bash -c {shlex_quote(cmd)}" if sudo else f"bash -c {shlex_quote(cmd)}"
-    i,o,e = client.exec_command(full, timeout=timeout)
-    return o.read().decode('utf-8','replace'), e.read().decode('utf-8','replace'), o.channel.recv_exit_status()
+os.environ["SERVER_PASS"] = PASS  # 供 _common.ssh_run 提权使用
+from _common import shlex_quote, ssh_run
 
 client = paramiko.SSHClient(); client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 client.connect(HOST, port=PORT, username=USER, password=PASS, timeout=30, look_for_keys=False, allow_agent=False)

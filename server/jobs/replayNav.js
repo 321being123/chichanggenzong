@@ -6,6 +6,7 @@
 const { pool, loadAccountData, saveDailyPrices, upsertNav } = require('../db');
 const { tushareQuery, tsRows, toTsCode, normDate } = require('../services/market');
 const { isCnHoliday } = require('../config/holidays');
+const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -73,23 +74,7 @@ async function recomputeNav(username, accountName, fromDate) {
   dpRows.forEach(function (r) { dpMap.set(r.code + '|' + r.date, r.price); });
   const backfilled = new Set(); // 本run已回填过的代码，避免重复拉 Tushare
 
-  // 复刻 investedAt(date)（与前端 core-earnings.js:116 一致）
-  function investedAt(date) {
-    let lastImpDate = null, lastImp = 0;
-    navs.forEach(function (n) {
-      if (n.invested != null && n.invested !== '') { lastImpDate = n.date; lastImp = Number(n.invested); }
-    });
-    if (!lastImpDate) {
-      let s = cashBase; cfs.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); }); return s;
-    }
-    if (date <= lastImpDate) {
-      let val = null;
-      navs.forEach(function (n) { if (n.invested != null && n.invested !== '' && n.date <= date) val = Number(n.invested); });
-      if (val != null) return val;
-      let s = cashBase; cfs.forEach(function (c) { if (c.date <= date) s += (c.amount || 0); }); return s;
-    }
-    let s = lastImp; cfs.forEach(function (c) { if (c.date > lastImpDate && c.date <= date) s += (c.amount || 0); }); return s;
-  }
+  // 复刻 investedAt(date)（与前端 core-earnings.js:116 一致）—— 已收口到 public/shared/nav-math.js
 
   // 持仓-as-of 某日：重放 date<=d 的 trades（买加/卖减）
   function heldQty(date) {
@@ -163,7 +148,7 @@ async function recomputeNav(username, accountName, fromDate) {
     }
 
     const totalAsset = cashAsOf(d) + mvList.reduce(function (s, v) { return s + v; }, 0);
-    const invested = investedAt(d);
+    const invested = investedAt(navs, cfs, cashBase, d);
 
     if (i === 0 && idx0 === 0 && !prev) {
       // 整体首条：nav 固定 1.0（与 recordNav 一致）
@@ -183,7 +168,7 @@ async function recomputeNav(username, accountName, fromDate) {
       prev = { date: d, nav: orig.nav, totalAsset: (orig.totalAsset != null ? orig.totalAsset : prev.totalAsset) };
       continue;
     }
-    const nav = prev.nav * (totalAsset / baseAsset);
+    const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
     await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested });
     prev = { date: d, nav: nav, totalAsset: totalAsset };
     affected++;

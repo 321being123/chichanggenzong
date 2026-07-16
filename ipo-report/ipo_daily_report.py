@@ -19,21 +19,10 @@ import db_pg  # PostgreSQL 数据层（替代 SQLite）
 
 # 日历核心逻辑统一收口（避免与 refresh_calendar.py 重复分叉）
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
+from _classify import _is_bj_stock, _market_type_to_board_key
 
-# ============ 加载 .env 环境变量 ============
-# 优先脚本同级 .env，其次父目录（portfolio-server 根）.env
-def _load_env():
-    for _cand in [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'),
-    ]:
-        if os.path.exists(_cand):
-            with open(_cand, 'r', encoding='utf-8') as _f:
-                for _line in _f:
-                    _line = _line.strip()
-                    if _line and not _line.startswith('#') and '=' in _line:
-                        _k, _, _v = _line.partition('=')
-                        os.environ.setdefault(_k.strip(), _v.strip())
+# ============ 加载 .env 环境变量（收口到 _common.py） ============
+from _common import _load_env
 _load_env()
 
 # ============ 配置 ============
@@ -1890,24 +1879,7 @@ BOARD_BASE = {
 # 东财接口 MARKET_TYPE 到 BOARD_BASE 键的映射（前缀匹配）
 # 东财实际返回值：科创板、北交所、非科创板（含创业板+深市主板+沪市主板）
 # 需要根据股票代码前缀进一步细分
-_MARKET_TYPE_MAP = {
-    "科创板": "科创板",
-    "北交所": "北交所",
-    "非科创板": None,  # 需要根据代码细分
-}
-def _market_type_to_board_key(mt, code):
-    """将东财 MARKET_TYPE + 股票代码 映射到 BOARD_BASE 的板块键"""
-    board_key = _MARKET_TYPE_MAP.get(mt)
-    if board_key is not None:
-        return board_key
-    # 非科创板需要按代码细分
-    code_str = str(code)
-    if code_str.startswith(("300", "301")):
-        return "创业板"
-    elif code_str.startswith(("000", "001", "002", "003")):
-        return "深市主板"
-    else:
-        return "沪市主板"
+# 板块分类统一收口（避免与 expand_data.py 重复分叉）：见 _classify.py
 
 # 最近N个月用于校准的数据范围
 _CALIBRATE_MONTHS = 12
@@ -1917,12 +1889,6 @@ _BOARD_CALIBRATED = False
 
 # SQLite 数据库路径（存放新股历史首日涨幅）
 _IPO_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_history.db")
-
-
-def _is_bj_stock(code):
-    """判断是否是北交所股票（北交所暂不参与每日推荐）"""
-    code_str = str(code)
-    return code_str.startswith(("920", "82", "83", "87", "43"))
 
 
 def _init_ipo_db():

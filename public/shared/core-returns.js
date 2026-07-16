@@ -113,7 +113,7 @@ function recordNav() {
   if (!data.navHistory) data.navHistory = [];
   const today = todayCN();
   // 投入本金：优先用导入数据，导入数据最后一列日期之后按出入金延续（见 investedAt）
-  const invested = investedAt(today);
+  const invested = investedAt(data.navHistory, data.cashFlows, data.cashBase, today);
 
   const s = calcSummary();
   if (s.total <= 0) return;
@@ -130,7 +130,7 @@ function recordNav() {
     }
     var baseAsset = lastNav.totalAsset + periodCashFlow;
     if (baseAsset > 0) {
-      lastNav.nav = lastNav.nav * (s.total / baseAsset);
+      lastNav.nav = chainNav(lastNav.nav, lastNav.totalAsset, s.total, periodCashFlow);
       lastNav.totalAsset = s.total;
       lastNav.invested = invested;
     }
@@ -160,7 +160,7 @@ function recordNav() {
     }
     var baseAsset2 = lastNav.totalAsset + periodCashFlow2;
     if (baseAsset2 <= 0) return;
-    var nav = lastNav.nav * (s.total / baseAsset2);
+    var nav = chainNav(lastNav.nav, lastNav.totalAsset, s.total, periodCashFlow2);
     data.navHistory.push({
       date: today,
       nav: nav,

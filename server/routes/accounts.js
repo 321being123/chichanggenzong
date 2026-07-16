@@ -6,28 +6,26 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
-const { loadUsers, saveUsers, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool } = require('../db');
+const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool } = require('../db');
 const { fetchQuoteByCode, todayCN } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 
 router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
-  // P2-3：账户列表优先读结构化 accounts 表；该用户尚无结构化记录时回退 users.accounts
+  // P2-3：账户列表优先读结构化 accounts 表；该用户尚无结构化记录时回退 users.accounts（单用户读取，不暴露全量密码哈希）
   const { rows } = await pool.query('SELECT account_name FROM accounts WHERE username=$1 ORDER BY created_at', [req.session.user]);
   if (rows.length > 0) return res.json(rows.map(r => r.account_name));
-  const users = await loadUsers();
-  res.json((users[req.session.user] || {}).accounts || ['默认账户']);
+  const u = await loadUser(req.session.user);
+  res.json((u && u.accounts) || ['默认账户']);
 }));
 
 router.put('/accounts', requireLogin, asyncHandler(async (req, res) => {
-  const users = await loadUsers();
-  if (!users[req.session.user]) users[req.session.user] = { password: '', accounts: [] };
   if (!Array.isArray(req.body)) return res.status(400).json({ error: '账户列表格式错误' });
   if (req.body.length > 50) return res.status(400).json({ error: '账户数量超限' });
   for (const name of req.body) {
     if (!isValidAccountName(name)) return res.status(400).json({ error: '账户名含非法字符或长度不合法' });
   }
-  users[req.session.user].accounts = req.body;
-  await saveUsers(users);
+  // 单用户原子更新账户列表，杜绝全表快照并发覆盖
+  await updateUserAccounts(req.session.user, req.body);
   // P2-3：同步结构化 accounts 表（新增补行、移除删除行），作为列表权威来源
   await syncUserAccounts(req.session.user, req.body);
   res.json({ ok: true });
@@ -86,8 +84,14 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
 router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const v = validateAccountData(req.body);
   if (!v.ok) return res.status(400).json({ error: '数据校验失败：' + v.msg });
-  // 乐观锁：前端带回加载时的版本号（?version=）；缺失则不强制（兼容旧客户端）
-  const expectedVersion = req.query.version != null ? parseInt(req.query.version, 10) : null;
+  // 乐观锁（P1-3）：version 必填且必须为整数；缺失/非整数/越界直接拒绝，不再保留绕过路径
+  if (req.query.version == null || req.query.version === '') {
+    return res.status(400).json({ error: '缺少版本号（version），请刷新页面后重试' });
+  }
+  const expectedVersion = parseInt(req.query.version, 10);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 0 || expectedVersion > 1e9) {
+    return res.status(400).json({ error: '版本号（version）非法' });
+  }
   try {
     const newVersion = await saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body, expectedVersion);
     res.json({ ok: true, version: newVersion });

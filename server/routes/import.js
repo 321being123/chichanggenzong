@@ -3,24 +3,38 @@
 const express = require('express');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
-const XLSX = require('xlsx');
 const router = express.Router();
+const { safeParseExcel } = require('../services/excelSafe');
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { assertSafeUrl } = require('../services/ai');
-const { visionUploadTokens, TOKEN_TTL, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
+const { ALLOWED_VISION_MODELS } = require('../config');
+const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
 const { upsertIndexPoints } = require('../db');
 const normalizeCode = require('../../public/js/code-classify.js').normalizeCode;
 
-// 图片校验：仅接受图片 MIME，解码后不超过 10MB；返回错误信息字符串或 null
+// 图片校验：仅接受图片 MIME + 文件魔数，解码后不超过 10MB；返回错误信息字符串或 null
 function validateImage(image) {
   if (!image) return '缺少图片';
   const m = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(image);
   if (!m) return '仅支持图片文件';
-  const size = Math.floor(m[2].length * 3 / 4);
-  if (size > 10 * 1024 * 1024) return '图片过大（上限 10MB）';
+  let buf;
+  try { buf = Buffer.from(m[2], 'base64'); } catch (e) { return '图片数据损坏'; }
+  if (buf.length > 10 * 1024 * 1024) return '图片过大（上限 10MB）';
+  // 魔数校验：仅放行 PNG / JPEG / GIF，拒绝伪造 MIME 的非图片内容（P1-7）
+  const ok = (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) // PNG
+    || (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) // JPEG
+    || (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46); // GIF
+  if (!ok) return '不支持的图片格式';
   return null;
+}
+
+// 模型白名单（P1-7）：客户端不得任意指定高成本模型，仅放行服务端许可者，否则用默认模型
+function pickVisionModel(model) {
+  const fallback = process.env.VISION_MODEL || 'agnes-1.5-flash';
+  if (model && ALLOWED_VISION_MODELS.includes(model)) return model;
+  return fallback;
 }
 
 // 限制解析后的表格规模，防止超大表格撑爆内存 / AI token
@@ -35,11 +49,11 @@ function trimSheetRows(rows, maxRows, maxCols, maxCell) {
   });
 }
 
-// 生成上传token
-router.post('/api/vision-token', requireLogin, async (req, res) => {
+// 生成上传token（限流，防止二维码被频繁刷取）
+router.post('/api/vision-token', requireLogin, rateLimit({ prefix: 'vtoken', windowMs: 60000, max: 10, message: '生成二维码过于频繁，请稍后再试' }), async (req, res) => {
   try {
     const token = crypto.randomBytes(16).toString('hex');
-    visionUploadTokens.set(token, { image: null, timestamp: Date.now(), username: req.session.user });
+    setVisionToken(token, { image: null, timestamp: Date.now(), username: req.session.user });
     const url = `${req.protocol}://${req.get('host')}/m/upload/${token}`;
     const qr = await QRCode.toDataURL(url, { width: 160, margin: 1 });
     res.json({ token, qr });
@@ -57,8 +71,8 @@ router.get('/m/upload/:token', (req, res) => {
   res.set('Content-Type', 'text/html; charset=utf-8').send(mobileUploadHtml(token));
 });
 
-// 手机端上传图片
-router.post('/api/vision-upload/:token', (req, res) => {
+// 手机端上传图片（限流：按 token/IP，防止重复刷传）
+router.post('/api/vision-upload/:token', rateLimit({ prefix: 'vupload', windowMs: 60000, max: 30, getKey: (r) => r.params.token || r.ip, message: '上传过于频繁，请稍后再试' }), (req, res) => {
   const { token } = req.params;
   const { image } = req.body;
   const entry = visionUploadTokens.get(token);
@@ -87,7 +101,7 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
 
     const endpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
     assertSafeUrl(endpoint);
-    const visionModel = model || process.env.VISION_MODEL || 'agnes-1.5-flash';
+    const visionModel = pickVisionModel(model);
     const key = process.env.VISION_API_KEY;
 
     const response = await fetch(endpoint, {
@@ -139,13 +153,11 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
     const base64Data = file.split(',')[1] || file;
     const buffer = Buffer.from(base64Data, 'base64');
     if (buffer.length > 10 * 1024 * 1024) return res.status(413).json({ error: 'Excel 文件过大（解压上限 10MB）' });
-    let workbook;
-    try { workbook = XLSX.read(buffer, { type: 'buffer' }); } catch (e) { return res.status(400).json({ error: 'Excel 解析失败：文件可能已损坏' }); }
-    if (workbook.SheetNames.length > 20) return res.status(400).json({ error: 'Excel 工作表过多' });
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    let rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', cellDates: true });
-    rows = trimSheetRows(rows, 2000, 60, 300); // 限行/列/单元格，防撑爆与 AI token 放大
+    // 在隔离子进程中解析（魔数/ZipBomb/超时已在 worker 内防护）
+    let parsed;
+    try { parsed = await safeParseExcel(base64Data, { mode: 'first' }); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+    const rows = parsed.rows;
 
     if (!rows || rows.length === 0) {
       return res.json({ items: [] });
@@ -157,7 +169,7 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
 
     const endpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
     assertSafeUrl(endpoint);
-    const chatModel = model || process.env.VISION_MODEL || 'agnes-1.5-flash';
+    const chatModel = pickVisionModel(model);
     const key = process.env.VISION_API_KEY;
 
     const response = await fetch(endpoint, {
@@ -205,12 +217,11 @@ router.post('/api/excel-history-parse', requireLogin, rateLimit({ prefix: 'ai', 
     const base64Data = file.split(',')[1] || file;
     const buffer = Buffer.from(base64Data, 'base64');
     if (buffer.length > 10 * 1024 * 1024) return res.status(413).json({ error: 'Excel 文件过大（解压上限 10MB）' });
-    let workbook;
-    try { workbook = XLSX.read(buffer, { type: 'buffer' }); } catch (e) { return res.status(400).json({ error: 'Excel 解析失败：文件可能已损坏' }); }
-    if (workbook.SheetNames.length > 20) return res.status(400).json({ error: 'Excel 工作表过多' });
-    const sheetName = workbook.SheetNames.find(n => n.includes('资金')) || workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', cellDates: true });
+    // 在隔离子进程中解析（魔数/ZipBomb/超时已在 worker 内防护）
+    let parsed;
+    try { parsed = await safeParseExcel(base64Data, { mode: 'contains', contains: '资金' }); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+    const { sheetNames, rows } = parsed;
     if (!rows || rows.length < 2) return res.json({ headers: [], rows: [], total: 0 });
     // 限制规模后返回原始表头与数据行，由前端做"精确匹配/手动匹配"，避免任何猜测导致数据错配或丢行
     const headerCells = (rows[0] || []).map(function (h) { return String(h == null ? '' : h).trim(); });
@@ -234,7 +245,8 @@ router.post('/api/index-history', requireLogin, asyncHandler(assertOwnership), r
   }
 }));
 
-// 暴露 validateImage 供测试使用（不改变 router 导出）
+// 暴露 validateImage / pickVisionModel 供测试使用（不改变 router 导出）
 router.validateImage = validateImage;
+router.pickVisionModel = pickVisionModel;
 
 module.exports = router;

@@ -1,7 +1,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import paramiko
-HOST="82.156.125.47"; PORT=22; USER="ubuntu"; PASS="***REDACTED***"
+HOST="82.156.125.47"; PORT=22; USER="ubuntu"; PASS=os.environ.get("SERVER_PASS", "")
 os.environ["SERVER_PASS"] = PASS  # 供 _common.ssh_run 提权使用
 from _common import shlex_quote, ssh_run
 

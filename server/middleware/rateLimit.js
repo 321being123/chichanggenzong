@@ -24,4 +24,13 @@ function rateLimit({ prefix, windowMs, max, getKey, message }) {
   };
 }
 
+// TTL 清理（P1-6）：内存兜底桶长期不清理会无限增长，定期清除已过期条目避免内存泄漏
+if (typeof setInterval === 'function') {
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [k, b] of memBuckets) { if (b.reset < now) memBuckets.delete(k); }
+  }, 5 * 60 * 1000);
+  if (sweep.unref) sweep.unref();
+}
+
 module.exports = rateLimit;

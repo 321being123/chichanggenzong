@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>打新日报 · 报告详情</title>
 <script src="vendor/marked.min.js"></script>
+<script src="vendor/dompurify.min.js"></script>
 <style>
   :root { --red:#d93025; --green:#137333; --ink:#1a1a2e; --muted:#888; }
   * { box-sizing: border-box; }
@@ -59,6 +60,14 @@
     // 与 app 同源，登录态 cookie 自动携带
     return path;
   }
+  // 安全输出状态/错误信息：用 textContent，绝不拼接进 innerHTML（防 XSS）
+  function setState(msg, isErr) {
+    var div = document.createElement('div');
+    div.className = 'state' + (isErr ? ' err' : '');
+    div.textContent = msg;
+    content.innerHTML = '';
+    content.appendChild(div);
+  }
   async function init() {
     var date = getParam('date');
     var code = getParam('code');
@@ -73,13 +82,13 @@
       }
       var r = await fetch(api(url), { credentials: 'same-origin' });
       if (r.status === 401) {
-        content.innerHTML = '<div class="state err">未登录或登录已过期，请先在系统主页面登录后再打开本报告。</div>';
+        setState('未登录或登录已过期，请先在系统主页面登录后再打开本报告。', true);
         return;
       }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       var d = await r.json();
       if (!d || !d.md) {
-        content.innerHTML = '<div class="state">暂无' + (code ? '个股' : '') + '报告内容。</div>';
+        setState('暂无' + (code ? '个股' : '') + '报告内容。', false);
         return;
       }
       if (code) {
@@ -87,9 +96,10 @@
       } else if (d.report_date) {
         dateEl.textContent = '报告日期 ' + d.report_date;
       }
-      content.innerHTML = marked.parse(d.md || '');
+      // Markdown 渲染结果经 DOMPurify 白名单净化后再写入，杜绝存储型 XSS
+      content.innerHTML = DOMPurify.sanitize(marked.parse(d.md || ''), { USE_PROFILES: { html: true } });
     } catch (e) {
-      content.innerHTML = '<div class="state err">加载失败：' + (e.message || e) + '</div>';
+      setState('加载失败：' + (e.message || e), true);
     }
   }
   init();

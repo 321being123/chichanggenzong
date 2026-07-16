@@ -10,10 +10,12 @@ Usage: python generate_server_bond_sync.py   ->  writes server_bond_sync.sql
 The output is safe to re-run (idempotent). Execute on the server with:
   psql -h 127.0.0.1 -U postgres -d portfolio -f server_bond_sync.sql
 """
-import psycopg2
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db_pg
 
-conn = psycopg2.connect(host='127.0.0.1', port=5432, dbname='portfolio',
-                        user='postgres', password=***REDACTED***)
+# 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
+conn = db_pg.connect()
 cur = conn.cursor()
 
 cur.execute("""SELECT column_name, data_type

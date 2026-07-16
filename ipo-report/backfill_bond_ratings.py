@@ -5,7 +5,7 @@ Usage: python backfill_bond_ratings.py [--dry]
 """
 import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
-import psycopg2
+import db_pg
 from ipo_daily_report import _get_tushare_pro
 
 pro = _get_tushare_pro()
@@ -15,7 +15,8 @@ if not pro:
 
 dry = '--dry' in sys.argv
 
-conn = psycopg2.connect(host='127.0.0.1', port=5432, dbname='portfolio', user='postgres', password=***REDACTED***)
+# 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
+conn = db_pg.connect()
 cur = conn.cursor()
 
 # 取全部 ts_code（含交易所后缀），避免自己猜交易所

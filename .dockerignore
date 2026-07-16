@@ -1,0 +1,45 @@
+# 版本控制与 CI
+.git
+.github
+.gitignore
+
+# 密钥与环境配置（绝不能进镜像）
+.env
+.env.*
+*.key
+*.pem
+
+# 依赖（用 npm ci 重新安装，避免把本机 node_modules 打进去）
+node_modules
+
+# 日志与运行时数据
+*.log
+logs
+data
+__pycache__
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+
+# Python 报告产物与调试文件
+ipo-report/history_reports
+ipo-report/individual
+ipo-report/data
+ipo-report/__pycache__
+debug_*
+nul
+
+# 测试与脚手架
+test*.js
+test-*.js
+*.test.js
+iprobe
+_probe
+
+# 编辑器/系统
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+nul

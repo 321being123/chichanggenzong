@@ -26,3 +26,15 @@ ipo-report/data/*.db-wal
 
 # 测试脚本（含敏感信息风险，不入库）
 test_verify.js
+
+# Windows 保留设备名文件（误生成会导致 rg 等工具报错，禁止入库）
+nul
+nul.*
+
+# 本地调试脚本 / 临时产物（不入库）
+debug_*.js
+debug_*.html
+tp.log
+tp_out.log
+_探针_*
+_probe/

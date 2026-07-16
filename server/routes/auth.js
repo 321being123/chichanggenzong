@@ -1,24 +1,30 @@
 // ========== 用户认证路由 ==========
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { loadUsers, saveUsers, hashPwd, verifyPwd, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+const { registerUser, hashPwd, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
 router.post('/register', asyncHandler(async (req, res) => {
-  const { username, password, code, email, emailCode } = req.body;
+  const username = (req.body && req.body.username || '').normalize('NFC').trim();
+  const password = (req.body && req.body.password || '').normalize('NFC');
+  const { code, email, emailCode } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
-  if (username.length < 2) return res.status(400).json({ error: '账号至少2位' });
-  if (password.length < 6) return res.status(400).json({ error: '密码至少6位' });
+  if (username.length < 2 || username.length > 64) return res.status(400).json({ error: '账号需为 2~64 位' });
+  if (password.length < 6 || password.length > 128) return res.status(400).json({ error: '密码需为 6~128 位' });
+  // 仅允许常见字符，拒绝控制字符等异常输入
+  if (!/^[\w.\-@]+$/.test(username)) return res.status(400).json({ error: '账号含非法字符' });
   // 注册总开关（DB 优先，默认开放）
   if ((await getConfig('register_open', '1')) !== '1') return res.status(403).json({ error: '注册已关闭' });
   // 邀请码（DB 优先于 env REGISTER_CODE）
   const regCode = (await getConfig('register_code', REGISTER_CODE || '')) || '';
   if (regCode && code !== regCode) return res.status(400).json({ error: '注册已关闭或邀请码错误' });
-  // 邮箱验证开关（同时需服务端配置了邮件服务才生效）
+  // 邮箱验证开关：开启后必须配置邮件服务，否则拒绝注册（P1-1：禁止静默绕过）
   const needEmail = (await getConfig('require_email', '0')) === '1';
-  if (needEmail && mailer) {
+  if (needEmail) {
+    if (!mailer) return res.status(503).json({ error: '邮箱验证服务暂不可用，无法完成注册' });
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '请输入正确的邮箱' });
     if (!emailCode) return res.status(400).json({ error: '请输入邮箱验证码' });
     const sess = req.session;
@@ -30,35 +36,47 @@ router.post('/register', asyncHandler(async (req, res) => {
   }
   const ip = req.ip || req.connection.remoteAddress;
   if (checkRegLimit(ip)) return res.status(429).json({ error: '注册过于频繁，请稍后再试' });
-  const users = await loadUsers();
-  if (users[username]) return res.status(400).json({ error: '该账号已注册，请直接登录' });
-  users[username] = { password: hashPwd(password), email, accounts: ['默认账户'] };
-  await saveUsers(users);
-  // 顺手把注册邮箱写入 users.email 列（saveUsers 只持久化 username/password/accounts，否则邮箱会丢）
-  await updateUserProfile(username, { email }).catch(() => {});
+  // 原子注册：唯一约束判重，并发不会互相覆盖快照；rowCount=0 表示已存在
+  const inserted = await registerUser(username, hashPwd(password), ['默认账户']);
+  if (!inserted) return res.status(400).json({ error: '该账号已注册，请直接登录' });
+  // 顺手把注册邮箱写入 users.email 列（registerUser 只持久化 username/password/accounts，否则邮箱会丢）
+  if (email) await updateUserProfile(username, { email }).catch(() => {});
   // P2-3：同步结构化 accounts 表，新用户即拥有账户元数据行（cash_base/hk_rate 用默认）
   await syncUserAccounts(username, ['默认账户']).catch(() => {});
   req.session.user = username;
   res.json({ ok: true, username });
 }));
 
-router.post('/login', asyncHandler(async (req, res) => {
-  const { username, password } = req.body;
+router.post('/login', asyncHandler(async (req, res, next) => {
+  const username = (req.body && req.body.username || '').normalize('NFC').trim();
+  const password = (req.body && req.body.password || '').normalize('NFC');
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
+  if (username.length > 64 || password.length > 128) return res.status(400).json({ error: '账号或密码格式错误' });
   const ip = req.ip || req.connection.remoteAddress;
-  const lockKey = 'login_' + (username || '') + '_' + ip;
+  const lockKey = 'login_' + username + '_' + ip;
   if (checkLocked(lockKey)) return res.status(429).json({ error: '登录尝试过多，已锁定15分钟' });
   const user = await getUserAuth(username);
-  if (!user) { recordFail(lockKey); return res.status(401).json({ error: '账号不存在，请先注册' }); }
+  // 统一模糊错误（P1-1）：账号不存在与密码错误返回相同提示，避免枚举账号
+  if (!user) { recordFail(lockKey); return res.status(401).json({ error: '账号或密码错误' }); }
   if (user.status && user.status !== 'active') { recordFail(lockKey); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
-  if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '密码错误' }); }
+  if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '账号或密码错误' }); }
   clearFail(lockKey);
-  req.session.user = username;
-  await updateLastLogin(username).catch(() => {});
-  res.json({ ok: true, username, role: user.role || 'user' });
+  // 会话固定防护（P1-1）：登录成功后重建会话，丢弃旧会话ID，防会话固定攻击
+  req.session.regenerate((err) => {
+    if (err) return next(err);
+    req.session.user = username;
+    updateLastLogin(username).catch(() => {});
+    res.json({ ok: true, username, role: user.role || 'user' });
+  });
 }));
 
-router.post('/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
+router.post('/logout', (req, res) => {
+  // 等待 destroy 回调完成后再响应（P1-1），确保会话确实清除
+  req.session.destroy((err) => {
+    if (err) return res.status(500).json({ error: '登出失败，请重试' });
+    res.json({ ok: true });
+  });
+});
 router.get('/me', asyncHandler(async (req, res) => {
   if (!req.session.user) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
@@ -76,7 +94,7 @@ router.post('/send-code', asyncHandler(async (req, res) => {
   if (sess.emailCode && sess.emailCode.lastSend && Date.now() - sess.emailCode.lastSend < 60000) {
     return res.status(429).json({ error: '发送太频繁，请60秒后再试' });
   }
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const code = String(crypto.randomInt(100000, 1000000));
   sess.emailCode = { code, email, expires: Date.now() + 300000, lastSend: Date.now() };
   await mailer.sendMail({
     from: process.env.SMTP_USER,

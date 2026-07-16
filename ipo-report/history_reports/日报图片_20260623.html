@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>打新日报 20260623</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 375px;
+    min-height: 812px;
+    font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #f5f6fa;
+    padding: 16px;
+  }
+
+  /* 卡片通用 */
+  .card {
+    background: #fff;
+    border-radius: 16px;
+    padding: 20px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+
+  /* 头部 */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .logo {
+    width: 36px; height: 36px;
+    background: #2c5cff;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 14px; font-weight: 700;
+  }
+  .title {
+    font-size: 20px; font-weight: 700; color: #1a1a2e;
+  }
+  .header-date {
+    font-size: 14px; color: #999;
+  }
+  .header-meta {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 12px; color: #bbb;
+    margin-top: 4px;
+  }
+  .header-meta span {
+    display: flex; align-items: center; gap: 4px;
+  }
+
+  /* 市场温度 */
+  .section-title {
+    font-size: 17px; font-weight: 700; color: #1a1a2e;
+    margin-bottom: 14px;
+  }
+  .temp-tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: #fff5f0;
+    border: 1px solid #ffd4c7;
+    color: #e74c3c;
+    font-size: 15px; font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .temp-stats {
+    display: flex; gap: 24px;
+  }
+  .temp-stat-item {}
+  .temp-stat-item .label {
+    font-size: 12px; color: #999; margin-bottom: 4px;
+  }
+  .temp-stat-item .value {
+    font-size: 22px; font-weight: 700;
+  }
+  .value-green { color: #27ae60; }
+  .value-red { color: #e74c3c; }
+
+  /* 申购板块 */
+  .subsection-title {
+    font-size: 14px; font-weight: 600; color: #666;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .stock-card, .bond-card {
+    border: 1px solid #e8ecf4;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+  .stock-card:last-child, .bond-card:last-child { margin-bottom: 0; }
+  .card-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 10px;
+  }
+  .card-name {
+    font-size: 16px; font-weight: 600; color: #1a1a2e;
+  }
+  .card-code {
+    font-size: 13px; color: #999; margin-left: 4px;
+  }
+  .card-tag {
+    font-size: 13px; font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 4px;
+  }
+  .tag-buy { background: #fff5f0; color: #e74c3c; }
+  .tag-normal { background: #f0f7ff; color: #2c5cff; }
+  .tag-skip { background: #f5f5f5; color: #999; }
+
+  .card-stats {
+    display: flex; gap: 16px;
+  }
+  .card-stat-item {
+    text-align: center;
+  }
+  .card-stat-item .label {
+    font-size: 11px; color: #bbb; margin-bottom: 2px;
+  }
+  .card-stat-item .value {
+    font-size: 15px; font-weight: 600; color: #1a1a2e;
+  }
+
+  /* 评分说明 */
+  .rating-note {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: #2c5cff;
+    background: #f0f7ff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    margin-top: 12px;
+  }
+
+  /* 空状态 */
+  .empty-state {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14px; color: #999;
+    padding: 8px 0;
+  }
+
+  /* 底部 */
+  .footer {
+    font-size: 11px; color: #bbb;
+    line-height: 1.6;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<!-- 头部 -->
+<div class="card">
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">DP</div>
+      <div class="title">打新日报</div>
+    </div>
+    <div class="header-date">2026/06/23 周二</div>
+  </div>
+  <div class="header-meta">
+    <span>📅 2026-06-22 20:49</span>
+    <span>⚠️ 不构成投资建议</span>
+  </div>
+</div>
+
+<!-- 市场温度 -->
+<div class="card">
+  <div class="section-title">新股温度</div>
+  <div class="temp-tag">🔥 热市</div>
+  <div class="temp-stats">
+    <div class="temp-stat-item">
+      <div class="label">近6月破发率</div>
+      <div class="value value-green">0.0%</div>
+    </div>
+    <div class="temp-stat-item">
+      <div class="label">近6月均涨幅</div>
+      <div class="value value-red">268.2%</div>
+    </div>
+  </div>
+</div>
+
+<!-- 新债温度 -->
+<div class="card">
+  <div class="section-title">新债温度</div>
+  <div class="temp-tag" style="background:#fff5f0;border-color:#ffd4c7;color:#e74c3c;">🔥 热市</div>
+  <div class="temp-stats">
+    <div class="temp-stat-item">
+      <div class="label">近6月破发率</div>
+      <div class="value value-green">0.0%</div>
+    </div>
+    <div class="temp-stat-item">
+      <div class="label">近6月均涨幅</div>
+      <div class="value value-red">70.2%</div>
+    </div>
+  </div>
+</div>
+
+<!-- 明日可申购 -->
+<div class="card">
+  <div class="section-title">一、明日可申购</div>
+
+  <div class="subsection-title">📈 新债申购</div>
+  <div class="bond-card">
+    <div class="card-header">
+      <div>
+        <span class="card-name">华峰转债</span>
+        <span class="card-code">118071</span>
+      </div>
+      <div class="card-tag tag-buy">顶格申购</div>
+    </div>
+    <div class="card-stats">
+      <div class="card-stat-item">
+        <div class="label">转股价值</div>
+        <div class="value" style="color:#e74c3c;">121.36</div>
+      </div>
+      <div class="card-stat-item">
+        <div class="label">溢价率</div>
+        <div class="value" style="color:#27ae60;">-17.6%</div>
+      </div>
+      <div class="card-stat-item">
+        <div class="label">评级</div>
+        <div class="value">AA</div>
+      </div>
+      <div class="card-stat-item">
+        <div class="label">规模</div>
+        <div class="value">7.49亿</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rating-note">
+    <span>⚙️</span>
+    <span>评分三档：顶格申购 / 可以申购 / 放弃申购</span>
+  </div>
+</div>
+
+<!-- 明日上市 -->
+<div class="card">
+  <div class="section-title">二、明日上市</div>
+  <div class="empty-state">
+    <span>📭</span>
+    <span>明日无新股或新债上市</span>
+  </div>
+</div>
+
+<!-- 底部 -->
+<div class="footer">
+  数据来源：东方财富网、巨潮资讯网<br>
+  ⚠️ 打新有风险，投资需谨慎<br>
+  2026年06月23日 周二
+</div>
+
+</body>
+</html>

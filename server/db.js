@@ -317,13 +317,27 @@ async function loadUsers() {
   return users;
 }
 
-async function saveUsers(users) {
-  for (const [u, v] of Object.entries(users)) {
-    await pool.query(
-      'INSERT INTO users (username, password, accounts) VALUES ($1,$2,$3) ON CONFLICT (username) DO UPDATE SET password = EXCLUDED.password, accounts = EXCLUDED.accounts',
-      [u, v.password, JSON.stringify(v.accounts || [])]
-    );
-  }
+// 单用户读取（P1-2）：仅取指定用户，避免普通业务流程读取全量用户名+密码哈希
+async function loadUser(username) {
+  const { rows } = await pool.query('SELECT username, password, accounts FROM users WHERE username=$1', [username]);
+  const r = rows[0];
+  if (!r) return null;
+  return { password: r.password, accounts: JSON.parse(r.accounts || '[]') };
+}
+
+// 原子注册（P1-2）：唯一键冲突即不插入；返回是否新插入（rowCount=1 成功，0 表示已存在）
+// 用数据库唯一约束完成判重，并发注册不会互相覆盖快照。
+async function registerUser(username, passwordHash, accounts) {
+  const r = await pool.query(
+    'INSERT INTO users (username, password, accounts) VALUES ($1,$2,$3) ON CONFLICT (username) DO NOTHING',
+    [username, passwordHash, JSON.stringify(accounts || [])]
+  );
+  return r.rowCount === 1;
+}
+
+// 单用户账户列表更新（P1-2）：只更新当前用户一行，杜绝全表快照并发覆盖
+async function updateUserAccounts(username, accountsList) {
+  await pool.query('UPDATE users SET accounts=$2 WHERE username=$1', [username, JSON.stringify(accountsList || [])]);
 }
 
 // ====== 用户资料（头像/昵称/简介/邮箱/最后登录）=====
@@ -465,10 +479,19 @@ function hashPwd(pwd) {
   return salt + ':' + crypto.pbkdf2Sync(pwd, salt, 10000, 32, 'sha512').toString('hex');
 }
 
+// 时序安全比较：避免被计时攻击猜出哈希（P1-1）
+function safeEqual(a, b) {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 function verifyPwd(pwd, stored) {
-  if (!stored.includes(':')) return crypto.createHash('sha256').update(pwd).digest('hex').slice(0, 16) === stored;
+  if (!stored.includes(':')) return safeEqual(crypto.createHash('sha256').update(pwd).digest('hex').slice(0, 16), stored);
   const [salt, hash] = stored.split(':');
-  return crypto.pbkdf2Sync(pwd, salt, 10000, 32, 'sha512').toString('hex') === hash;
+  const computed = crypto.pbkdf2Sync(pwd, salt, 10000, 32, 'sha512').toString('hex');
+  return safeEqual(computed, hash);
 }
 
 // ====== 账户数据 ======
@@ -602,22 +625,16 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     const { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord } = data;
     const dataForJson = { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord };
     const json = JSON.stringify(dataForJson);
-    // 乐观锁：前端带回加载时的 version；冲突（已被其他设备修改）抛 conflict 错误由路由返回 409
-    if (expectedVersion != null) {
-      const up = await client.query(
-        'UPDATE account_data SET data=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), version=version+1 WHERE username=$1 AND account_name=$2 AND version=$4',
-        [username, accountName, json, expectedVersion]
-      );
-      if (up.rowCount === 0) {
-        const ex = await client.query('SELECT 1 FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
-        if (ex.rowCount > 0) throw Object.assign(new Error('数据已在其他位置被修改，请刷新页面后重试'), { conflict: true });
-        // 新账户首次保存：行尚不存在，插入初版
-        await client.query(
-          'INSERT INTO account_data (username, account_name, data, version, updated_at) VALUES ($1,$2,$3,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at, version=account_data.version+1',
-          [username, accountName, json]
-        );
-      }
-    } else {
+    // 乐观锁（P1-3）：version 必填且已在路由层校验为整数；冲突（已被其他设备修改）抛 conflict 错误由路由返回 409。
+    // 不再保留 expectedVersion==null 的绕过路径，杜绝乐观锁被静默跳过。
+    const up = await client.query(
+      'UPDATE account_data SET data=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), version=version+1 WHERE username=$1 AND account_name=$2 AND version=$4',
+      [username, accountName, json, expectedVersion]
+    );
+    if (up.rowCount === 0) {
+      const ex = await client.query('SELECT 1 FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
+      if (ex.rowCount > 0) throw Object.assign(new Error('数据已在其他位置被修改，请刷新页面后重试'), { conflict: true });
+      // 新账户首次保存：行尚不存在，插入初版（前端首存带 version=0，UPDATE 命中 0 行后走此分支）
       await client.query(
         'INSERT INTO account_data (username, account_name, data, version, updated_at) VALUES ($1,$2,$3,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at, version=account_data.version+1',
         [username, accountName, json]
@@ -1041,4 +1058,4 @@ async function listAudit(limit) {
 }
 
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, saveUsers, hashPwd, verifyPwd, getUserProfile, getUserAuth, countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, deleteUser, getUserDetail, updateUserProfile, changePassword, updateLastLogin, ensureAdmin, adminOverview, adminJobRuns, adminListBrokers, createBroker, updateBroker, deleteBroker, getConfig, setConfig, listAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getChangelog, addChangelogItem, auditLog, listAudit, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };
+module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, loadUser, registerUser, updateUserAccounts, hashPwd, verifyPwd, getUserProfile, getUserAuth, countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, deleteUser, getUserDetail, updateUserProfile, changePassword, updateLastLogin, ensureAdmin, adminOverview, adminJobRuns, adminListBrokers, createBroker, updateBroker, deleteBroker, getConfig, setConfig, listAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getChangelog, addChangelogItem, auditLog, listAudit, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };

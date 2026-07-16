@@ -43,7 +43,10 @@ function errorHandler(err, req, res, next) {
   if (res.headersSent) return next(err);
   // 业务冲突（乐观锁）映射为 409；否则 500
   const status = err.status || (err.conflict ? 409 : 500);
-  res.status(status).json({ error: (err && err.message ? err.message : '服务器内部错误'), rid });
+  let message = (err && err.message) ? err.message : '服务器内部错误';
+  // 生产环境：500 不向客户端暴露原始数据库/内部错误细节，仅返回通用提示（P1-6）
+  if (status === 500 && process.env.NODE_ENV === 'production') message = '服务器内部错误，请稍后重试';
+  res.status(status).json({ error: message, rid });
 }
 
 module.exports = { requestId, accessLog, errorHandler };

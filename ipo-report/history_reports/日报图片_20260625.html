@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=375, initial-scale=1.0">
+<title>打新日报 2026-06-25</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  width: 375px;
+  margin: 0 auto;
+  background: #f5f6fa;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+  padding: 16px 12px;
+  color: #1a1a2e;
+}
+.card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+/* 头部 */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.header-logo {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #1a73e8, #0d47a1);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 18px;
+  font-weight: bold;
+}
+.header-text h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1a2e;
+  line-height: 1.3;
+}
+.header-text .date {
+  font-size: 12px;
+  color: #888;
+  line-height: 1.3;
+}
+/* 温度标签 */
+.temp-label {
+  display: inline-block;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.temp-hot { color: #e53935; }
+.temp-warm { color: #fb8c00; }
+.temp-cold { color: #1e88e5; }
+.stats {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+.stat-item {
+  background: #f5f6fa;
+  border-radius: 8px;
+  padding: 6px 12px;
+  text-align: center;
+  flex: 1;
+}
+.stat-item .num {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+.stat-item .label {
+  font-size: 10px;
+  color: #888;
+  margin-top: 2px;
+}
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin-bottom: 8px;
+  padding-left: 10px;
+  border-left: 3px solid #1a73e8;
+}
+/* 转债卡片 */
+.bond-card {
+  background: #f5f6fa;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.bond-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.bond-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+.bond-code {
+  font-size: 11px;
+  color: #888;
+}
+.tag-suggest {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tag-max { background: #e8f5e9; color: #2e7d32; }
+.tag-ok { background: #fff8e1; color: #f57f17; }
+.tag-skip { background: #ffebee; color: #c62828; }
+.info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: #555;
+  margin-top: 6px;
+}
+.info-grid .info-item {
+  display: flex;
+  justify-content: space-between;
+}
+.info-grid .info-item .val {
+  color: #1a1a2e;
+  font-weight: 500;
+}
+.footer {
+  font-size: 10px;
+  color: #aaa;
+  text-align: center;
+  padding: 8px 0;
+  line-height: 1.6;
+}
+.empty-box {
+  text-align: center;
+  padding: 20px 0;
+  font-size: 14px;
+  color: #999;
+}
+.scoring-note {
+  font-size: 11px;
+  color: #888;
+  background: #f5f6fa;
+  border-radius: 8px;
+  padding: 8px;
+  margin-top: 8px;
+}
+.scoring-note span {
+  display: inline-block;
+  margin-right: 8px;
+  margin-bottom: 4px;
+}
+</style>
+</head>
+<body>
+
+<!-- 头部 -->
+<div class="card">
+  <div class="header">
+    <div class="header-logo">DP</div>
+    <div class="header-text">
+      <h1>打新日报</h1>
+      <div class="date">2026年06月25日 周四</div>
+    </div>
+  </div>
+</div>
+
+<!-- 新股温度 -->
+<div class="card">
+  <div class="temp-label temp-hot">🔥 热市</div>
+  <div class="stats">
+    <div class="stat-item">
+      <div class="num">0.0%</div>
+      <div class="label">近6月破发率</div>
+    </div>
+    <div class="stat-item">
+      <div class="num">+291.5%</div>
+      <div class="label">近6月均涨幅</div>
+    </div>
+  </div>
+  <div style="font-size:11px;color:#999;margin-top:4px;">🏷️ 新股温度</div>
+</div>
+
+<!-- 新债温度 -->
+<div class="card">
+  <div class="temp-label" style="color:#0d47a1;">🔥 热市</div>
+  <div class="stats">
+    <div class="stat-item">
+      <div class="num" style="color:#0d47a1;">0.0%</div>
+      <div class="label">近6月破发率</div>
+    </div>
+    <div class="stat-item">
+      <div class="num" style="color:#0d47a1;">+70.2%</div>
+      <div class="label">近6月均涨幅</div>
+    </div>
+  </div>
+  <div style="font-size:11px;color:#999;margin-top:4px;">🏷️ 新债温度</div>
+</div>
+
+<!-- 明日可申购 -->
+<div class="card">
+  <div class="section-title">明日可申购</div>
+
+  <div style="font-size:13px;font-weight:600;color:#1a73e8;margin-bottom:6px;">💳 新债申购</div>
+  <div class="bond-card">
+    <div class="bond-header">
+      <div>
+        <div class="bond-name">圣泉转债</div>
+        <div class="bond-code">111025</div>
+      </div>
+      <div class="tag-suggest tag-max">顶格申购</div>
+    </div>
+    <div class="info-grid">
+      <div class="info-item"><span>转股价值</span><span class="val">93.69</span></div>
+      <div class="info-item"><span>溢价率</span><span class="val">6.73%</span></div>
+      <div class="info-item"><span>评级</span><span class="val">AA+</span></div>
+      <div class="info-item"><span>规模</span><span class="val">25亿</span></div>
+    </div>
+  </div>
+
+  <div style="font-size:13px;font-weight:600;color:#1a73e8;margin-bottom:6px;">📈 新股申购</div>
+  <div class="empty-box">📭 明日无新股申购</div>
+
+  <div class="scoring-note">
+    <span>⚙️ 评分三档：</span>
+    <span style="color:#2e7d32;">顶格申购</span>
+    <span style="color:#f57f17;">可以申购</span>
+    <span style="color:#c62828;">放弃申购</span>
+  </div>
+</div>
+
+<!-- 明日上市 -->
+<div class="card">
+  <div class="section-title">明日上市</div>
+  <div class="empty-box">📭 明日无新股或新债上市</div>
+</div>
+
+<!-- 底部 -->
+<div class="footer">
+  ⚠️ 以上内容仅供参考，不构成投资建议<br>
+  打新有风险，投资需谨慎<br>
+  数据来源：东方财富网、巨潮资讯网
+</div>
+
+</body>
+</html>

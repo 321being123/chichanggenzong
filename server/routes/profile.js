@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin } = require('../middleware/auth');
-const { getUserProfile, updateUserProfile, changePassword, hashPwd, verifyPwd, loadUsers } = require('../db');
+const { getUserProfile, getUserAuth, updateUserProfile, changePassword, hashPwd, verifyPwd } = require('../db');
 
 // 资料读取：昵称/简介/头像/邮箱/最后登录 + 我的券商账户
 router.get('/profile', requireLogin, asyncHandler(async (req, res) => {
@@ -38,8 +38,7 @@ router.post('/profile/password', requireLogin, asyncHandler(async (req, res) => 
   const { oldPassword, newPassword } = req.body || {};
   if (!oldPassword || !newPassword) return res.status(400).json({ error: '请填写旧密码和新密码' });
   if (typeof newPassword !== 'string' || newPassword.length < 6) return res.status(400).json({ error: '新密码至少 6 位' });
-  const users = await loadUsers();
-  const user = users[req.session.user];
+  const user = await getUserAuth(req.session.user);
   if (!user) return res.status(404).json({ error: '用户不存在' });
   if (!verifyPwd(oldPassword, user.password)) return res.status(400).json({ error: '旧密码错误' });
   await changePassword(req.session.user, hashPwd(newPassword));

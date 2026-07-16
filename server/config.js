@@ -25,25 +25,38 @@ const ALLOWED_HOSTS = (process.env.ALLOWED_ORIGIN || 'localhost,127.0.0.1')
 const AI_ALLOWED_HOSTS = (process.env.AI_ALLOWED_HOSTS || 'apihub.agnes-ai.com')
   .split(',').map(s => s.trim()).filter(Boolean);
 
+// AI 视觉模型白名单（P1-7）：禁止客户端任意指定高成本模型，仅放行服务端许可的模型
+const ALLOWED_VISION_MODELS = (process.env.VISION_ALLOWED_MODELS || 'agnes-1.5-flash,agnes-1.5-pro')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
 const REGISTER_CODE = process.env.REGISTER_CODE;
 
 // ========= 可选 Redis：配置 REDIS_URL 后启用会话共享+限流；未配置则退回内存（与现状一致）==========
 // 用可变对象持有状态，供限流中间件实时读取（避免 let 导出被快照为初始值）
 const redis = { client: null, store: undefined, ready: false };
-if (process.env.REDIS_URL) {
+
+// 异步初始化 Redis（P1-5）：必须先「等待连接确认」再创建 Session Store，
+// 避免连接尚未成功就把不可用的 Store 挂到会话、造成静默降级。
+// 生产环境若设 REDIS_REQUIRED=1，连接失败直接启动失败，拒绝带病上线。
+async function initRedis() {
+  if (!process.env.REDIS_URL) return;
   try {
     const { createClient } = require('redis');
     const connectRedis = require('connect-redis');
     const RedisStore = connectRedis.default || connectRedis;
-    redis.client = createClient({ url: process.env.REDIS_URL });
-    redis.client.on('error', (e) => console.warn('[Redis] 连接错误:', e.message));
-    redis.client.on('ready', () => { redis.ready = true; });
-    redis.client.connect().catch((e) => console.warn('[Redis] 连接失败，退回内存存储:', e.message));
-    redis.store = new RedisStore({ client: redis.client, prefix: 'sess:' });
+    const client = createClient({ url: process.env.REDIS_URL });
+    client.on('error', (e) => console.warn('[Redis] 连接错误:', e.message));
+    await client.connect(); // 阻塞直到连接确认
+    redis.client = client;
+    redis.store = new RedisStore({ client, prefix: 'sess:' });
+    redis.ready = true;
     console.log('[Redis] 会话存储已启用');
   } catch (e) {
-    console.warn('[Redis] 初始化失败，退回内存存储:', e.message);
-    redis.client = null; redis.store = undefined;
+    redis.client = null; redis.store = undefined; redis.ready = false;
+    if (process.env.NODE_ENV === 'production' && process.env.REDIS_REQUIRED === '1') {
+      throw new Error('[Redis] 生产环境要求 Redis 但连接失败：' + e.message);
+    }
+    console.warn('[Redis] 连接失败，退回内存存储:', e.message);
   }
 }
 
@@ -65,4 +78,4 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
   });
 }
 
-module.exports = { PORT, SECRET, ALLOWED_HOSTS, AI_ALLOWED_HOSTS, REGISTER_CODE, redis, mailer };
+module.exports = { PORT, SECRET, ALLOWED_HOSTS, AI_ALLOWED_HOSTS, ALLOWED_VISION_MODELS, REGISTER_CODE, redis, mailer, initRedis };

@@ -14,10 +14,13 @@ const MARKET_CLOSE_TIMES = [
   { h: 15, m: 10, label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
 ];
 
-// 东八区日期 YYYY-MM-DD（兼容任意 Date）
+// 固定东八区偏移（毫秒）：显式使用 Asia/Shanghai，不依赖容器本地时区，避免 UTC 容器下任务错时
+const CN_OFFSET_MS = 8 * 3600 * 1000;
+
+// 东八区日期 YYYY-MM-DD（任意输入 Date 都按北京时间解释，不受容器时区影响）
 function fmtCN(d) {
   const x = new Date(d);
-  const cn = new Date(x.getTime() + (x.getTimezoneOffset() + 480) * 60000);
+  const cn = new Date(x.getTime() + CN_OFFSET_MS);
   const p = n => String(n).padStart(2, '0');
   return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
 }
@@ -25,20 +28,28 @@ function fmtCN(d) {
 // 今天（东八区）
 function cnDateStr() { return fmtCN(new Date()); }
 
-// 是否为交易日：周一至周五 且 非法定节假日
+// 北京时间的星期几（0=周日），不依赖容器本地时区
+function cnWeekday(d) {
+  const ds = fmtCN(d || new Date());
+  return new Date(ds + 'T00:00:00Z').getUTCDay();
+}
+
+// 是否为交易日：周一至周五 且 非法定节假日（按北京时间判断）
 function isTradingDay(d) {
-  const day = (d || new Date()).getDay();
+  const day = cnWeekday(d || new Date());
   if (day < 1 || day > 5) return false;
   return !isCnHoliday(fmtCN(d || new Date()));
 }
 
-// 距离指定时间的毫秒数
+// 距离「北京时间 h:m」还有多少毫秒（显式东八区，不依赖容器时区）
 function msUntil(h, m) {
-  var now = new Date();
-  var target = new Date(now);
-  target.setHours(h, m, 0, 0);
-  if (target <= now) target.setDate(target.getDate() + 1);
-  return target - now;
+  const now = new Date();
+  const cnNow = new Date(now.getTime() + CN_OFFSET_MS);
+  const target = new Date(cnNow);
+  target.setUTCHours(h, m, 0, 0); // cnNow 的内部 UTC 字段即北京时间，用 UTC 访问器设时分
+  if (target <= cnNow) target.setUTCDate(target.getUTCDate() + 1);
+  const targetEpoch = target.getTime() - CN_OFFSET_MS; // 转回真实 epoch
+  return targetEpoch - now.getTime();
 }
 
 // 带重试的行情抓取：Tushare 偶发 null / 港股腾讯抖动 → 重试 2 次，间隔 1s
@@ -53,24 +64,42 @@ async function fetchWithRetry(code, tries) {
   return null;
 }
 
-// 为单个账户记录某交易日收盘价（幂等：已记录则跳过）
+// 纯函数：从持仓中挑出「属于该市场(matchFn)且当日尚无价格」的代码。
+// 这是 P0-3 修复的核心：以「代码」而非「账户当天任意一条记录」判断缺失，
+// 保证 A 股已写入时，可转债/ETF 仍会被抓取，部分缺失也能补齐。
+function pickMissingCodes(positions, existingCodes, matchFn) {
+  return (positions || [])
+    .filter(p => p && p.code && matchFn(p.code) && !existingCodes.has(p.code))
+    .map(p => p.code);
+}
+
+// 为单个账户记录某交易日某市场收盘价。
+// 幂等到「代码」级别：只抓取当日该市场持仓中【尚未记录】的代码，
+// 因此 A 股先写入后，可转债/ETF 不会被整体跳过；部分缺失也能补齐。
 // 返回 { recorded, failed, error }；error=true 表示有持仓却全部抓取失败
 async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
   const cnDate = dateStr || cnDateStr();
-  const { rows: existing } = await pool.query(
-    'SELECT 1 FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 LIMIT 1',
-    [username, accountName, cnDate]
-  );
-  if (existing.length > 0) return { recorded: 0, failed: 0 };
 
   const result = await loadAccountData(username, accountName);
-  const positions = (result.positions || []).filter(p => matchFn(p.code));
+  const positions = (result.positions || []);
   if (positions.length === 0) return { recorded: 0, failed: 0 };
+
+  // 已有价格代码集合（按代码去重，而非「账户当天任意一条」）
+  const { rows: existingRows } = await pool.query(
+    'SELECT code FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3',
+    [username, accountName, cnDate]
+  );
+  const existingCodes = new Set(existingRows.map(r => r.code));
+
+  // 仅抓取缺失代码
+  const missingCodes = pickMissingCodes(positions, existingCodes, matchFn);
+  if (missingCodes.length === 0) return { recorded: 0, failed: 0 };
+  const missingSet = new Set(missingCodes);
+  const missing = positions.filter(p => missingSet.has(p.code));
 
   let recorded = 0, failed = 0;
   const prices = [];
-  for (const pos of positions) {
-    if (!pos.code) continue;
+  for (const pos of missing) {
     const q = await fetchWithRetry(pos.code, 2);
     if (q && q.price) {
       prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price });
@@ -115,11 +144,8 @@ async function backfillMissingCloses() {
     const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
     for (const accountName of accounts) {
       for (const day of days) {
-        const { rows } = await pool.query(
-          'SELECT 1 FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 LIMIT 1',
-          [user.username, accountName, day]
-        );
-        if (rows.length > 0) continue;
+        // 不再用「当天任意一条记录」判断是否跳过：recordCloseOne 内部按代码幂等，
+        // 只补齐缺失代码，已完整的市场不会重复抓取，缺失的市场会被补上。
         for (const mkt of MARKET_CLOSE_TIMES) {
           await recordCloseOne(user.username, accountName, mkt.label, mkt.match, day)
             .catch(e => console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message));
@@ -184,4 +210,4 @@ function scheduleAllMarketCloses() {
   }
 }
 
-module.exports = { scheduleAllMarketCloses, backfillMissingCloses, isTradingDay, fmtCN };
+module.exports = { scheduleAllMarketCloses, backfillMissingCloses, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil };

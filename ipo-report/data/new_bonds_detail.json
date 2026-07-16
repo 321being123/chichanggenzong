@@ -1,0 +1,242 @@
+[
+  {
+    "issue": 5.22,
+    "lock": 1.546,
+    "remain": 5.219,
+    "code": "123271",
+    "name": "通合科技",
+    "circulation": 3.674,
+    "premium": 61.09,
+    "tv": 117.18
+  },
+  {
+    "issue": 4.05,
+    "lock": 2.956,
+    "remain": 4.05,
+    "code": "123270",
+    "name": "盛德鑫泰",
+    "circulation": 1.094,
+    "premium": 148.58,
+    "tv": 80.05
+  },
+  {
+    "issue": 7.5,
+    "lock": 4.943,
+    "remain": 7.5,
+    "code": "123267",
+    "name": "珂玛科技",
+    "circulation": 2.557,
+    "premium": 117.8,
+    "tv": 124.93
+  },
+  {
+    "issue": 9.8,
+    "lock": 6.083,
+    "remain": 9.8,
+    "code": "123269",
+    "name": "金杨精密",
+    "circulation": 3.717,
+    "premium": 54.63,
+    "tv": 112.18
+  },
+  {
+    "issue": 15,
+    "lock": 7.992,
+    "remain": 15,
+    "code": "113702",
+    "name": "斯达半导",
+    "circulation": 7.008,
+    "premium": 70.57,
+    "tv": 124.92
+  },
+  {
+    "issue": 4.69,
+    "lock": 2.476,
+    "remain": 4.69,
+    "code": "123268",
+    "name": "本川智能",
+    "circulation": 2.214,
+    "premium": 66.59,
+    "tv": 151.89
+  },
+  {
+    "issue": 3.25,
+    "lock": 1.405,
+    "remain": 3.25,
+    "code": "118067",
+    "name": "上声电子",
+    "circulation": 1.845,
+    "premium": 92.92,
+    "tv": 71.01
+  },
+  {
+    "issue": 3.75,
+    "lock": 1.528,
+    "remain": 3.75,
+    "code": "123266",
+    "name": "博士眼镜",
+    "circulation": 2.222,
+    "premium": 96.07,
+    "tv": 71.59
+  },
+  {
+    "issue": 7.59,
+    "lock": 1.581,
+    "remain": 7.586,
+    "code": "127113",
+    "name": "长高电气",
+    "circulation": 6.009,
+    "premium": 55.73,
+    "tv": 101.19
+  },
+  {
+    "issue": 4,
+    "lock": 2.103,
+    "remain": 4,
+    "code": "113701",
+    "name": "祥和实业",
+    "circulation": 1.897,
+    "premium": 86.6,
+    "tv": 103.75
+  },
+  {
+    "issue": 5.76,
+    "lock": 1.222,
+    "remain": 5.76,
+    "code": "118066",
+    "name": "统联精密",
+    "circulation": 4.538,
+    "premium": 77.41,
+    "tv": 80.53
+  },
+  {
+    "issue": 8.01,
+    "lock": 4.967,
+    "remain": 8.01,
+    "code": "113700",
+    "name": "海天股份",
+    "circulation": 3.043,
+    "premium": 122.74,
+    "tv": 57.99
+  },
+  {
+    "issue": 19.01,
+    "lock": 9.986,
+    "remain": 19.01,
+    "code": "118065",
+    "name": "艾为电子",
+    "circulation": 9.024,
+    "premium": 73.19,
+    "tv": 89.46
+  },
+  {
+    "issue": 10,
+    "lock": 4.4,
+    "remain": 10,
+    "code": "110100",
+    "name": "龙建股份",
+    "circulation": 5.6,
+    "premium": 80.74,
+    "tv": 69.55
+  },
+  {
+    "issue": 17.34,
+    "lock": 6.365,
+    "remain": 17.34,
+    "code": "127112",
+    "name": "尚太科技",
+    "circulation": 10.975,
+    "premium": 56.84,
+    "tv": 104.71
+  },
+  {
+    "issue": 4.5,
+    "lock": 2.092,
+    "remain": 4.5,
+    "code": "123265",
+    "name": "耐普矿机",
+    "circulation": 2.408,
+    "premium": 87.5,
+    "tv": 75.93
+  },
+  {
+    "issue": 6.95,
+    "lock": 4.296,
+    "remain": 6.95,
+    "code": "118064",
+    "name": "联瑞新材",
+    "circulation": 2.654,
+    "premium": 40.55,
+    "tv": 428.98
+  },
+  {
+    "issue": 5.8,
+    "lock": 0,
+    "remain": 5.8,
+    "code": "111024",
+    "name": "澳弘电子",
+    "circulation": 5.8,
+    "premium": 53.4,
+    "tv": 122.24
+  },
+  {
+    "issue": 8,
+    "lock": 4.362,
+    "remain": 8,
+    "code": "123264",
+    "name": "双乐股份",
+    "circulation": 3.638,
+    "premium": 107.24,
+    "tv": 62.09
+  },
+  {
+    "issue": 16.71,
+    "lock": 8.107,
+    "remain": 16.71,
+    "code": "118063",
+    "name": "金盘科技",
+    "circulation": 8.603,
+    "premium": 78.05,
+    "tv": 104.4
+  },
+  {
+    "issue": 8.28,
+    "lock": 0,
+    "remain": 8.277,
+    "code": "123263",
+    "name": "鼎捷数智",
+    "circulation": 8.28,
+    "premium": 69.74,
+    "tv": 87.89
+  },
+  {
+    "issue": 8.72,
+    "lock": 0,
+    "remain": 8.719,
+    "code": "118062",
+    "name": "天准科技",
+    "circulation": 8.72,
+    "premium": 47.99,
+    "tv": 225.28
+  },
+  {
+    "issue": 5,
+    "lock": 0,
+    "remain": 4.999,
+    "code": "123262",
+    "name": "神宇股份",
+    "circulation": 5,
+    "premium": 85.12,
+    "tv": 75.66
+  },
+  {
+    "issue": 2.43,
+    "lock": 0,
+    "remain": 2.429,
+    "code": "123261",
+    "name": "普联软件",
+    "circulation": 2.43,
+    "premium": 67.97,
+    "tv": 87.12
+  }
+]

@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=375, initial-scale=1.0">
+<title>打新日报 2026.06.24</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  width: 375px;
+  background: #f5f6fa;
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  padding: 12px;
+  color: #1a1a2e;
+}
+.container { width: 100%; }
+
+/* 头部 */
+.header {
+  background: linear-gradient(135deg, #1a237e 0%, #283593 100%);
+  border-radius: 16px;
+  padding: 20px 18px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-logo {
+  width: 40px; height: 40px;
+  background: #fff;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 900;
+  color: #1a237e;
+  flex-shrink: 0;
+}
+.header-text { flex: 1; }
+.header-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 1px;
+}
+.header-date {
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+  margin-top: 2px;
+}
+
+/* 温度卡片 */
+.temp-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.temp-card .temp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.temp-card .temp-label {
+  font-size: 15px;
+  font-weight: 600;
+}
+.temp-card .temp-badge {
+  display: inline-block;
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.temp-badge.hot {
+  background: #ffe8e8;
+  color: #e53935;
+}
+.temp-badge.cool {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+.temp-badge.cold {
+  background: #e8eaf6;
+  color: #3949ab;
+}
+.temp-stats {
+  display: flex;
+  gap: 12px;
+}
+.temp-stat {
+  flex: 1;
+  background: #f8f9fc;
+  border-radius: 10px;
+  padding: 10px;
+  text-align: center;
+}
+.temp-stat .stat-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+.temp-stat .stat-label {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+.temp-stat .stat-value.red { color: #e53935; }
+.temp-stat .stat-value.blue { color: #1565c0; }
+.temp-stat .stat-value.green { color: #43a047; }
+
+/* 蓝色系新债温度 */
+.temp-card.blue-theme .temp-badge.hot {
+  background: #e3f2fd;
+  color: #0d47a1;
+}
+.temp-card.blue-theme .temp-stat .stat-value {
+  color: #1565c0;
+}
+
+/* 标题区 */
+.section-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 可申购卡片 */
+.bond-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.bond-card .bond-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.bond-card .bond-name {
+  font-size: 16px;
+  font-weight: 700;
+}
+.bond-card .bond-code {
+  font-size: 11px;
+  color: #999;
+}
+.bond-card .bond-tag {
+  display: inline-block;
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bond-tag.top {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.bond-tag.ok {
+  background: #fff3e0;
+  color: #e65100;
+}
+.bond-tag.skip {
+  background: #ffebee;
+  color: #c62828;
+}
+.bond-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+.bond-detail-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+.bond-detail-item .label {
+  color: #999;
+}
+.bond-detail-item .value {
+  font-weight: 500;
+  color: #333;
+}
+
+/* 评分说明 */
+.score-note {
+  background: #fff;
+  border-radius: 14px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.score-note .score-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 2px;
+}
+.score-note .score-dot.green { background: #2e7d32; }
+.score-note .score-dot.orange { background: #e65100; }
+.score-note .score-dot.red { background: #c62828; }
+
+/* 上市卡片 */
+.listing-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.listing-card .listing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.listing-card .listing-name {
+  font-size: 16px;
+  font-weight: 700;
+}
+.listing-card .listing-code {
+  font-size: 11px;
+  color: #999;
+}
+.listing-price {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e53935;
+  margin-bottom: 6px;
+}
+.listing-detail {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.6;
+}
+.empty-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 14px;
+  color: #999;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+/* 免责 */
+.footer {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  font-size: 10px;
+  color: #bbb;
+  line-height: 1.6;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 头部 -->
+  <div class="header">
+    <div class="header-logo">DP</div>
+    <div class="header-text">
+      <div class="header-title">打新日报</div>
+      <div class="header-date">2026年06月24日 周三</div>
+    </div>
+  </div>
+
+  <!-- 新股温度 -->
+  <div class="temp-card">
+    <div class="temp-header">
+      <span class="temp-label">📈 新股温度</span>
+      <span class="temp-badge hot">🔥 热市</span>
+    </div>
+    <div class="temp-stats">
+      <div class="temp-stat">
+        <div class="stat-value red">0.0%</div>
+        <div class="stat-label">近6月破发率</div>
+      </div>
+      <div class="temp-stat">
+        <div class="stat-value red">+291.5%</div>
+        <div class="stat-label">近6月均涨幅</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新债温度 -->
+  <div class="temp-card blue-theme">
+    <div class="temp-header">
+      <span class="temp-label">🏷️ 新债温度</span>
+      <span class="temp-badge hot">🔥 热市</span>
+    </div>
+    <div class="temp-stats">
+      <div class="temp-stat">
+        <div class="stat-value blue">0.0%</div>
+        <div class="stat-label">近6月破发率</div>
+      </div>
+      <div class="temp-stat">
+        <div class="stat-value blue">+70.2%</div>
+        <div class="stat-label">近6月均涨幅</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 明日可申购 -->
+  <div class="section-title">📋 明日可申购</div>
+
+  <!-- 评分说明 -->
+  <div class="score-note">
+    ⚙️ 评分三档：
+    <span><span class="score-dot green"></span>顶格申购</span>
+    <span><span class="score-dot orange"></span>可以申购</span>
+    <span><span class="score-dot red"></span>放弃申购</span>
+  </div>
+
+  <!-- 宝钛转债 -->
+  <div class="bond-card">
+    <div class="bond-header">
+      <div>
+        <span class="bond-name">宝钛转债</span>
+        <span class="bond-code">110101</span>
+      </div>
+      <span class="bond-tag top">顶格申购</span>
+    </div>
+    <div class="bond-details">
+      <div class="bond-detail-item"><span class="label">转股价值</span><span class="value">101.9</span></div>
+      <div class="bond-detail-item"><span class="label">溢价率</span><span class="value">-1.86%</span></div>
+      <div class="bond-detail-item"><span class="label">评级</span><span class="value">AAA</span></div>
+      <div class="bond-detail-item"><span class="label">规模</span><span class="value">35亿</span></div>
+    </div>
+  </div>
+
+  <!-- 鼎通转债 -->
+  <div class="bond-card">
+    <div class="bond-header">
+      <div>
+        <span class="bond-name">鼎通转债</span>
+        <span class="bond-code">118072</span>
+      </div>
+      <span class="bond-tag ok">可以申购</span>
+    </div>
+    <div class="bond-details">
+      <div class="bond-detail-item"><span class="label">转股价值</span><span class="value">93.23</span></div>
+      <div class="bond-detail-item"><span class="label">溢价率</span><span class="value">7.26%</span></div>
+      <div class="bond-detail-item"><span class="label">评级</span><span class="value">A+</span></div>
+      <div class="bond-detail-item"><span class="label">规模</span><span class="value">9.3亿</span></div>
+    </div>
+  </div>
+
+  <!-- 明日上市 -->
+  <div class="section-title">📌 明日上市</div>
+
+  <!-- 臻宝科技 -->
+  <div class="listing-card">
+    <div class="listing-header">
+      <div>
+        <span class="listing-name">臻宝科技</span>
+        <span class="listing-code">688797</span>
+      </div>
+    </div>
+    <div class="listing-price">发行价 44.56 元</div>
+    <div class="listing-detail">
+      科创板新股 · 半导体赛道<br>
+      XGBoost预估首日涨幅约204%，收益可观<br>
+      发行PE: 31.31 · 中签率0.02%
+    </div>
+  </div>
+
+  <!-- 底部 -->
+  <div class="footer">
+    本报告由打新日报系统自动生成<br>
+    数据来源：东方财富网、巨潮资讯网<br>
+    以上内容仅供参考，不构成投资建议<br>
+    打新有风险，投资需谨慎
+  </div>
+
+</div>
+</body>
+</html>

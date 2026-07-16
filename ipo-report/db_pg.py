@@ -118,7 +118,8 @@ def connect():
     host = os.environ.get("PGHOST", "127.0.0.1")
     port = int(os.environ.get("PGPORT", "5432"))
     user = os.environ.get("PGUSER", "postgres")
-    password = os.environ.get("PGPASSWORD", "")
+    # 本地开发默认回退到 postgres（仅本地开发用）；生产必须通过 PGPASSWORD 环境变量注入，切勿写死密码
+    password = os.environ.get("PGPASSWORD", "postgres")
     dbname = os.environ.get("PGDATABASE", "postgres")
     pg_conn = psycopg2.connect(
         host=host, port=port, user=user, password=password,

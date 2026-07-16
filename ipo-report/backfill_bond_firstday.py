@@ -11,14 +11,14 @@ Usage: python backfill_bond_firstday.py [--dry]
 """
 import sys, os, time, datetime
 sys.path.insert(0, os.path.dirname(__file__))
-import psycopg2
+import db_pg
 import requests
 from ipo_daily_report import _get_qt_prefix, _init_ipo_db
 
-PG = dict(host='127.0.0.1', port=5432, dbname='portfolio', user='postgres', password=***REDACTED***)
 dry = '--dry' in sys.argv
 
-conn = psycopg2.connect(**PG)
+# 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
+conn = db_pg.connect()
 cur = conn.cursor()
 
 # 取所有已上市债券（listing_date 非空）

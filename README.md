@@ -42,6 +42,7 @@ docker compose up -d
 配合 Nginx 反向代理 + 域名，可配置 HTTPS。
 
 ## 数据存储
-- 用户账号存在 `data/__users__.json`
-- 每个用户的持仓数据存在 `data/{用户名}__{账户名}.json`
-- 重启容器不会丢失数据
+- 数据统一存储在 **PostgreSQL** 数据库（用户、账户、持仓、交易、净值、现金流、收盘价等均为结构化表）。
+- 通过环境变量 `DATABASE_URL` 或 `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE` 连接，详见 `.env` 示例。
+- 会话密钥等敏感配置仅存于 `.env`，不进入仓库；数据库连接密码绝不明文写入代码。
+- 重启服务（含容器/PM2）不会丢失数据，备份请用 `pg_dump`。

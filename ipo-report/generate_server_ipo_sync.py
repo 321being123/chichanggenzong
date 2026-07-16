@@ -2,8 +2,11 @@
 本地 ipo_history 含精确中签率(oneline_lottery_rate 等)，同步到服务器使 IPO 中签率精确化生效。
 Usage: python generate_server_ipo_sync.py -> ipo_server_sync.sql
 """
-import psycopg2
-conn = psycopg2.connect(host='127.0.0.1', port=5432, dbname='portfolio', user='postgres', password=***REDACTED***)
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db_pg
+# 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
+conn = db_pg.connect()
 cur = conn.cursor()
 cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name='ipo_history' ORDER BY ordinal_position")
 cols = [(r[0], r[1]) for r in cur.fetchall()]

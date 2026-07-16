@@ -15,7 +15,7 @@
 """
 import os, sys, re, time, json, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import psycopg2
+import db_pg
 
 try:
     import fitz
@@ -24,14 +24,14 @@ except Exception as e:
 
 import requests
 
-DB = dict(host="127.0.0.1", port=5432, user="postgres", password=***REDACTED***, dbname="portfolio")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
            "Referer": "https://data.eastmoney.com/"}
 _org_id_cache = {}
 
 
 def get_conn():
-    return psycopg2.connect(**DB)
+    # 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
+    return db_pg.connect()
 
 
 def get_org_id(code):

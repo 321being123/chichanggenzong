@@ -16,7 +16,7 @@ from _common import shlex_quote
 HOST = "82.156.125.47"
 PORT = 22
 USER = "ubuntu"
-PASS = "***REDACTED***"
+PASS = os.environ.get("SERVER_PASS", "")
 REMOTE_DIR = "/opt/portfolio"
 LOCAL_SQL = os.path.join(os.path.dirname(__file__), "server_bond_sync.sql")
 LOCAL_LOTTERY = os.path.join(os.path.dirname(__file__), "backfill_lottery_rate.sql")

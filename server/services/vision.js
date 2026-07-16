@@ -1,14 +1,31 @@
 // ========== 手机扫码上传（in-memory token store + 页面模板） ==========
 const visionUploadTokens = new Map(); // token → { image, timestamp, username }
 const TOKEN_TTL = 5 * 60 * 1000; // 5分钟过期
+const MAX_VISION_TOKENS = 50; // 全局上限，避免多张大图长期驻留 Web 进程内存（P1-7）
 
-// 定期清理过期token
-setInterval(() => {
+// 写入上传 token：同一用户只允许一个待上传 token（覆盖旧的），超出全局上限时淘汰最旧者
+function setVisionToken(token, value) {
+  for (const [k, v] of visionUploadTokens) {
+    if (v.username === value.username) { visionUploadTokens.delete(k); break; }
+  }
+  if (visionUploadTokens.size >= MAX_VISION_TOKENS) {
+    let oldestKey = null, oldestTs = Infinity;
+    for (const [k, v] of visionUploadTokens) {
+      if (v.timestamp < oldestTs) { oldestTs = v.timestamp; oldestKey = k; }
+    }
+    if (oldestKey) visionUploadTokens.delete(oldestKey);
+  }
+  visionUploadTokens.set(token, value);
+}
+
+// 定期清理过期token（unref：不阻止进程退出，避免内存泄漏，与 rateLimit 一致 P1-6）
+const tokenSweep = setInterval(() => {
   const now = Date.now();
   for (const [k, v] of visionUploadTokens) {
     if (now - v.timestamp > TOKEN_TTL) visionUploadTokens.delete(k);
   }
 }, 60 * 1000);
+if (tokenSweep.unref) tokenSweep.unref();
 
 // 消费上传 token：仅在图片存在且属于当前登录用户时返回并销毁 token；
 // 未上传只返回 image:null（不删除，等待后续轮询）；其他用户访问返回 forbidden（不删除）。
@@ -92,4 +109,4 @@ input.addEventListener('change', async function() {
 </html>`;
 }
 
-module.exports = { visionUploadTokens, TOKEN_TTL, mobileUploadHtml, consumeVisionToken };
+module.exports = { visionUploadTokens, TOKEN_TTL, MAX_VISION_TOKENS, setVisionToken, mobileUploadHtml, consumeVisionToken };

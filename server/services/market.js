@@ -69,48 +69,71 @@ function toTsCode(code) {
   return c;
 }
 
-// 缓存：全市场名称 ts_code→name（首次拉取）
-let TS_NAMES = null;
+// ============ 行情缓存 single-flight（P1-4）============
+// 冷缓存并发时，多个请求会各自打穿上游 Tushare（刷新期间 map 仍为空）。
+// 用 single-flight：同一刷新期间所有调用复用同一个 Promise；上游失败设短时负缓存，
+// 避免失败风暴反复打穿。state 结构：{ map, ts, inflight, failedAt }
+const NEG_TTL_MS = 60 * 1000; // 失败负缓存：1 分钟内不再重试
+function withSingleFlight(state, ttlMs, loader) {
+  const now = Date.now();
+  // 命中有效缓存
+  if (state.map && state.map.size && now - state.ts < ttlMs) return Promise.resolve(state.map);
+  // 短时负缓存：上次刷新失败未久，直接复用空结果，避免重复打穿上游
+  if (state.failedAt && now - state.failedAt < NEG_TTL_MS) return Promise.resolve(state.map || new Map());
+  // 已有在途刷新：复用同一 Promise（single-flight 核心）
+  if (state.inflight) return state.inflight;
+  state.inflight = (async () => {
+    try {
+      const map = await loader();
+      state.map = map;
+      state.ts = Date.now();
+      state.failedAt = 0;
+      return map;
+    } catch (e) {
+      state.failedAt = Date.now();
+      return state.map || new Map();
+    } finally {
+      state.inflight = null;
+    }
+  })();
+  return state.inflight;
+}
+
+// 缓存：全市场名称 ts_code→name（加载一次后长期有效）
+let TS_NAMES = { map: null, ts: 0, inflight: null, failedAt: 0 };
 function ensureTsNames() {
-  return new Promise(async (resolve) => {
-    if (TS_NAMES) return resolve(TS_NAMES);
-    TS_NAMES = new Map();
+  if (TS_NAMES.map) return Promise.resolve(TS_NAMES.map);
+  return withSingleFlight(TS_NAMES, 30 * 24 * 3600 * 1000, async () => {
+    const m = new Map();
     const d = await tushareQuery('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,name');
-    tsRows(d).forEach(r => { if (r.ts_code) TS_NAMES.set(r.ts_code, r.name); });
-    resolve(TS_NAMES);
+    tsRows(d).forEach(r => { if (r.ts_code) m.set(r.ts_code, r.name); });
+    return m;
   });
 }
 
 // 缓存：日线（每日批量一次）ts_code→{close,pre_close,pct_chg}
-let TS_DAILY = { ts: 0, map: new Map() };
+let TS_DAILY = { map: null, ts: 0, inflight: null, failedAt: 0 };
 function ensureTsDaily() {
-  return new Promise(async (resolve) => {
-    const now = Date.now();
-    if (TS_DAILY.map.size && now - TS_DAILY.ts < 12 * 3600 * 1000) return resolve(TS_DAILY.map);
+  return withSingleFlight(TS_DAILY, 12 * 3600 * 1000, async () => {
     const td = tsDateStr(new Date());
     const d = await tushareQuery('daily', { trade_date: td }, 'ts_code,close,pre_close,pct_chg');
     const map = new Map();
     tsRows(d).forEach(r => { if (r.ts_code) map.set(r.ts_code, { close: parseFloat(r.close), pre_close: parseFloat(r.pre_close), pct_chg: parseFloat(r.pct_chg) }); });
-    TS_DAILY = { ts: now, map };
-    resolve(map);
+    return map;
   });
 }
 
 // 缓存：实时价（60秒）ts_code→close（rt_min 批量；可转债无实时，回落日线）
-let TS_RT = { ts: 0, map: new Map() };
+let TS_RT = { map: null, ts: 0, inflight: null, failedAt: 0 };
 function ensureTsRealtime(codes) {
-  return new Promise(async (resolve) => {
-    const now = Date.now();
-    if (TS_RT.map.size && now - TS_RT.ts < 60000) return resolve(TS_RT.map);
+  return withSingleFlight(TS_RT, 60000, async () => {
     const aShare = [...new Set((codes || []).map(toTsCode))]
       .filter(c => c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ')).slice(0, 1000);
-    if (aShare.length) {
-      const d = await tushareQuery('rt_min', { ts_code: aShare.join(','), freq: '1MIN' }, 'ts_code,close');
-      const map = new Map();
-      tsRows(d).forEach(r => { if (r.ts_code && r.close != null) map.set(r.ts_code, parseFloat(r.close)); });
-      TS_RT = { ts: now, map };
-    }
-    resolve(TS_RT.map);
+    if (!aShare.length) return TS_RT.map || new Map();
+    const d = await tushareQuery('rt_min', { ts_code: aShare.join(','), freq: '1MIN' }, 'ts_code,close');
+    const map = new Map();
+    tsRows(d).forEach(r => { if (r.ts_code && r.close != null) map.set(r.ts_code, parseFloat(r.close)); });
+    return map;
   });
 }
 
@@ -201,5 +224,6 @@ function todayCN() {
 module.exports = {
   httpsGet, tushareQuery, tsRows, toTsCode,
   ensureTsNames, ensureTsDaily, ensureTsRealtime,
+  withSingleFlight, NEG_TTL_MS,
   fetchQuoteByCode, tsDateStr, normDate, todayCN
 };

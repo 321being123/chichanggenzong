@@ -2,7 +2,7 @@
 # 局部单元验证：桩掉重型依赖后导入真实脚本，测试本次两处修复（隔离样本，避免无关规则干扰）
 import sys, types
 
-for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2"):
+for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2", "requests"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 import importlib.util
@@ -79,6 +79,28 @@ ctrl_zhang = sum(a for _, a, _ in hands)  # 18M + 2M = 20M 张
 circulation = round((total_zhang - ctrl_zhang) * 100 / 100000000, 4)
 check("流通规模量级合理(>0 且 <发行规模)",
       0 < circulation < issue_scale, f"circulation={circulation}亿")
+
+# ---------- 测试4：发行总张数从公告书表格推导（宝钛真实口径） ----------
+# 宝钛集团持有 16,996,090 张，占比 48.56% → 反推总规模 ≈ 35 亿 → 流通 ≈ 18 亿
+baotai_ctrl = 16_996_090
+baotai_pct = 48.56
+derived = mod._derive_total_zhang(baotai_ctrl, baotai_pct, issue_scale)
+check("宝钛: 总规模从占比反推≈35亿(非25亿)",
+      34_000_000 <= derived <= 36_000_000,
+      f"total_zhang={derived}张(≈{derived*100/100000000:.2f}亿)")
+baotai_circ = round((derived - baotai_ctrl) * 100 / 100000000, 4)
+check("宝钛: 流通规模≈18亿(非8亿)",
+      17.0 < baotai_circ < 19.0, f"circulation={baotai_circ}亿")
+
+# ---------- 测试5：一致性兜底（表格占比异常时退回 issue_scale） ----------
+# 占比过小导致反推值远超 issue_scale → 应退回 scale_total
+wild = mod._derive_total_zhang(baotai_ctrl, 2.0, issue_scale)
+check("占比异常时退回 issue_scale 兜底",
+      wild == 25_000_000, f"total_zhang={wild}")
+# 占比缺失（None/0）→ 退回 scale_total
+no_pct = mod._derive_total_zhang(baotai_ctrl, 0, issue_scale)
+check("占比缺失时退回 issue_scale 兜底",
+      no_pct == 25_000_000, f"total_zhang={no_pct}")
 
 print("\n结果:", "ALL PASS" if all(PASS) else f"{PASS.count(False)} FAILED")
 sys.exit(0 if all(PASS) else 1)

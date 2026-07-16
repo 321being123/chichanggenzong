@@ -588,6 +588,24 @@ def _get_cninfo_session():
     return s
 
 
+def _derive_total_zhang(ctrl_zhang, ctrl_pct, issue_scale):
+    """
+    从公告书表格推导可转债发行总张数。
+
+    优先用 控股股东/实控人持有量 ÷ 其占比% 反推（公告书自身数字，比 cb_issue 的
+    issue_scale 更准，个别债券 cb_issue 发行规模与公告书不符）；issue_scale 仅作
+    一致性兜底：若推导值与 issue_scale 偏离过大（>2倍或<0.5倍），说明表格占比解析
+    异常，退回 issue_scale 推算值。
+    """
+    scale_total = int(issue_scale * 100000000 / 100)
+    if ctrl_pct and ctrl_pct > 0:
+        total_zhang = int(ctrl_zhang / (ctrl_pct / 100))
+        if scale_total > 0 and not (0.5 * scale_total <= total_zhang <= 2.0 * scale_total):
+            total_zhang = scale_total
+        return total_zhang
+    return scale_total
+
+
 def fetch_placing_result(stock_code, issue_scale):
     """
     从巨潮资讯网获取可转债**上市公告书**，提取精确限售数据。
@@ -712,21 +730,26 @@ def fetch_placing_result(stock_code, issue_scale):
 
             # 计算
             ctrl_zhang = sum(a for _, a, _ in locked_holders)
-            # 发行总张数：从issuse_scale推算（亿→元→张）
-            total_zhang = int(issue_scale * 100000000 / 100)
+            ctrl_pct = sum(p for _, _, p in locked_holders if p is not None)
+            # 发行总张数（兜底）：从 issue_scale 推算（亿→元→张）
+            scale_total = int(issue_scale * 100000000 / 100)
 
             # 合理性校验：控股股东/实控人配售量为全体持有人的子集，不可能超过发行总量。
             # 若超过，通常是PDF把"持有金额(元)"误读为"持有数量(张)"（面值100元/张，差100倍），
             # 按100元面值折算自动修正；若折算后仍超过，则数据不可信，报错交由报告标注失败。
             corrected_note = ""
-            if ctrl_zhang > total_zhang:
-                if ctrl_zhang / 100 <= total_zhang:
+            if ctrl_zhang > scale_total:
+                if ctrl_zhang / 100 <= scale_total:
                     locked_holders = [(n, int(a / 100), p) for n, a, p in locked_holders]
                     ctrl_zhang = sum(a for _, a, _ in locked_holders)
                     corrected_note = "（金额列已按100元面值折算修正）"
                 else:
                     return {"status": "error",
-                            "error": f"控股股东/实控人配售量({ctrl_zhang:,}张)超过发行总量({total_zhang:,}张)，公告书表格解析异常，流通规模不可信"}
+                            "error": f"控股股东/实控人配售量({ctrl_zhang:,}张)超过发行总量({scale_total:,}张)，公告书表格解析异常，流通规模不可信"}
+
+            # 发行总张数：优先从公告书表格自身推导（控股股东持有量 ÷ 其占比%），
+            # 比 cb_issue 的 issue_scale 更准；issue_scale 仅作一致性兜底（见 _derive_total_zhang）。
+            total_zhang = _derive_total_zhang(ctrl_zhang, ctrl_pct, issue_scale)
 
             lock_scale = round(ctrl_zhang * 100 / 100000000, 4)
             circulation_scale = round((total_zhang - ctrl_zhang) * 100 / 100000000, 4)

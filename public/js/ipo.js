@@ -9,6 +9,14 @@ function ipoFmt(v, unit) {
   return unit ? (v + unit) : v;
 }
 
+// 数字保留固定小数位（如发行规模保留3位）
+function ipoNumFixed(v, d) {
+  if (v === null || v === undefined || v === '') return '-';
+  var n = Number(v);
+  if (isNaN(n) || !isFinite(n)) return '-';
+  return n.toFixed(d);
+}
+
 // 交易所标识：北交所=京 / 上交所=沪 / 深交所=深（用于名称前缀）
 function ipoExchange(code) {
   var c = String(code || '').trim();
@@ -39,17 +47,14 @@ function ipoPctCell(val, decimals) {
   return '<span class="' + cls + '">' + s + '</span>';
 }
 
-// 中签率：数据单位为百分比(如 0.05 表示 0.05%)，转为"万分之几" = 值×100
-// 精确值来自交易所《发行结果公告》(含多位小数)，故最多显示6位小数并去掉末尾无效的0，
-// 避免使用 toFixed(2) 把 0.0152610521% 错显成 万分之2.00。
+// 中签率：数据单位为百分比(如 0.05 表示 0.05%)，转为"万分之几" = 值×100，保留3位小数。
 function ipoWanfenCell(v) {
   if (v === null || v === undefined || v === '') return '<span>-</span>';
   var n = Number(v);
   if (isNaN(n)) return '<span>-</span>';
   var wan = n * 100; // 万分之
   if (wan === 0) return '<span>0</span>';
-  // 最多6位小数，去掉末尾0
-  var s = wan.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  var s = wan.toFixed(3);
   return '<span>' + s + '</span>';
 }
 
@@ -339,7 +344,7 @@ function ipoRenderHistory(type, rows) {
         ipoNameCell(it.security_name, it.security_code),
         ipoCurrentStage(it),                       // 方案进展：当前所处的一个阶段
         progDate,                                  // 进展公告日 = 当前阶段日期
-        ipoFmt(it.issue_size),                     // 发行规模(亿元)
+        ipoNumFixed(it.issue_size, 3),             // 发行规模(亿元)，保留3位小数
         it.rating ? escapeHtml(it.rating) : '-',   // 评级（已知则显示，无则 -）
         shdPct,                                    // 股东配售率(%)：仅公告后且有真实配售规模才显示
         ipoShdShares(it),                          // 配售10张所需股数 = 1000/每股配售(元)

@@ -4,7 +4,9 @@
     "items": [
       "可转债流通规模解析第3处修复：新增 _derive_total_zhang()，优先用「控股股东/实控人持有量 ÷ 其占比%」反推发行总张数（上市公告书自洽数字，比 Tushare cb_issue 的 issue_scale 更准；个别债券 cb_issue 发行规模与公告书不符）；仅当推导值与 issue_scale 偏离过大（>2倍或<0.5倍，说明表格占比解析异常）时才退回 issue_scale 兜底。修复宝钛转债流通规模线上显示 ≈8亿（错误）现修正为 ≈18亿。新增 test_unit_fixes.py 回归测试覆盖（宝钛真实口径 + 兜底分支）。",
       "每日数据自动记录补全（解决「只靠前端打开网页才记录、后端定时任务缺失」的断档）：①指数点位（index_history）新增每日增量补齐任务（server/jobs/indexBaseline.js 的 runIndexRecentJob，复用腾讯/Tushare 拉取，仅补最近 N 天、增量 upsert），收市后每日自动落库，对比曲线不再因不开网页断档。②港币汇率（accounts.hk_rate）新增每日自动更新任务（server/jobs/hkRate.js 的 runHkRateJob，复用 /api/hkrate 同源抓取 qt.gtimg.cn），每日刷新所有账户汇率，港股估值不再沿用旧汇率。两任务经收盘链 marketClose 港股16:10后及 app/worker 启动自愈触发，幂等带锁。",
-      "总资产/投资收益每日快照（nav_history）：新增 server/jobs/navSnapshot.js，收市后自动把收盘价→总资产/净值写进 nav_history（此前仅靠前端打开网页 recordNav 才记录，没开网页那天总资产与投资收益断档；投资收益从净值派生，一并解决）。只填补缺失交易日，绝不覆盖已有记录；启动即自愈补齐历史空档。"
+      "总资产/投资收益每日快照（nav_history）：新增 server/jobs/navSnapshot.js，收市后自动把收盘价→总资产/净值写进 nav_history（此前仅靠前端打开网页 recordNav 才记录，没开网页那天总资产与投资收益断档；投资收益从净值派生，一并解决）。只填补缺失交易日，绝不覆盖已有记录；启动即自愈补齐历史空档。",
+      "修正（同日补充部署）：此前 server/jobs/navSnapshot.js 未纳入 git 提交，导致服务器 git pull 后缺失该文件、app.js 顶层 require 失败使进程启动崩溃、全部后台任务（指数/汇率/快照）均未注册执行。本次已补交 navSnapshot.js 并重新部署，进程恢复正常、三项每日任务生效。",
+      "汇率源切换：港币→人民币抓取原 qt.gtimg.cn/q=szhkdcny 已失效（返回 v_pv_none_match），server/jobs/hkRate.js 的 fetchHkRate 改用 open.er-api.com/v6/latest/HKD（免费无需 key，返回 rates.CNY），/api/hkrate 路由复用同一函数一并生效。"
     ]
   },
   {

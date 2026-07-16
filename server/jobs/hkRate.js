@@ -1,23 +1,23 @@
 // ========== 港币→人民币汇率：每日自动更新 accounts.hk_rate ==========
 // 背景：前端 refreshAllPrices 每次打开网页才调 /api/hkrate 抓取并写回 hk_rate，
 //   若长期不开网页，港股持仓估值会沿用旧汇率（偏差有限但会过期）。本任务每日自动抓取最新汇率写回。
-// 抓取源与 /api/hkrate 路由一致（qt.gtimg.cn），fetchHkRate 为单点真相，两者共用。
+// 抓取源与 /api/hkrate 路由一致（open.er-api.com），fetchHkRate 为单点真相，两者共用。
 const https = require('https');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 
 // 抓取港币→人民币汇率（成功返回 number，失败返回 null）
+// 数据源 open.er-api.com：免费、无需 key，返回 rates.CNY = 1 HKD 兑多少人民币（约 0.865）
 async function fetchHkRate() {
   try {
     const text = await new Promise((resolve, reject) => {
-      https.get('https://qt.gtimg.cn/q=szhkdcny', { timeout: 6000 }, (resp) => {
+      https.get('https://open.er-api.com/v6/latest/HKD', { timeout: 8000 }, (resp) => {
         let data = ''; resp.on('data', c => data += c);
         resp.on('end', () => resolve(data));
       }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
     });
-    const match = text.match(/"(.*)"/);
-    if (match) {
-      const parts = match[1].split('~');
-      const rate = parseFloat(parts[3]);
+    const json = JSON.parse(text);
+    if (json && json.result === 'success' && json.rates && json.rates.CNY) {
+      const rate = parseFloat(json.rates.CNY);
       if (!isNaN(rate) && rate > 0) return rate;
     }
   } catch (e) {}

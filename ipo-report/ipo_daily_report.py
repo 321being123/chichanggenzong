@@ -2730,48 +2730,64 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
 
 
 def backfill_prediction_actuals():
-    """回填已上市预测的实际结果"""
-    import sqlite3
+    """补全已上市的预测记录，并回填实际结果"""
     from datetime import datetime
 
     conn = _init_ipo_db()
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 找出已到上市日期的待回填预测
+    # ── 1. 补全：bond_history / ipo_history 已上市但 predictions 缺记录的 ──
+    bond_rows = conn.execute(
+        "SELECT security_code, security_name, listing_date, first_day_return FROM bond_history WHERE first_day_return IS NOT NULL"
+    ).fetchall()
+    for code, name, ldate, fdr in bond_rows:
+        if not conn.execute("SELECT 1 FROM predictions WHERE code=?", (code,)).fetchone():
+            ld = str(ldate)[:10] if ldate else None
+            conn.execute(
+                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,status,updated_at) VALUES ('bond',?,?,?,?,?,'fulfilled',?)",
+                (code, name, ld, ld, fdr, now),
+            )
+    stock_rows = conn.execute(
+        "SELECT security_code, security_name, listing_date, ld_close_change FROM ipo_history WHERE ld_close_change IS NOT NULL"
+    ).fetchall()
+    for code, name, ldate, ldc in stock_rows:
+        if not conn.execute("SELECT 1 FROM predictions WHERE code=?", (code,)).fetchone():
+            ld = str(ldate)[:10] if ldate else None
+            conn.execute(
+                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,status,updated_at) VALUES ('stock',?,?,?,?,?,'fulfilled',?)",
+                (code, name, ld, ld, ldc, now),
+            )
+    conn.commit()
+
+    # ── 2. 回填 pending 中已上市的实际结果（按 code 匹配首日数据） ──
     pending = conn.execute(
         "SELECT id, type, code, name, listing_date FROM predictions WHERE status='pending' AND listing_date <= ?",
-        (today_str,),
+        (datetime.now().strftime("%Y-%m-%d"),),
     ).fetchall()
-
-    if not pending:
-        conn.close()
-        return
 
     updated = 0
     for pid, ptype, code, name, listing_date in pending:
         try:
             if ptype == "stock":
-                # 从 ipo_history 取实际首日涨幅
                 row = conn.execute(
-                    "SELECT ld_close_change FROM ipo_history WHERE security_code=? AND listing_date=? AND ld_close_change IS NOT NULL",
-                    (code, listing_date),
+                    "SELECT ld_close_change FROM ipo_history WHERE security_code=? AND ld_close_change IS NOT NULL",
+                    (code,),
                 ).fetchone()
                 if row:
                     conn.execute(
                         "UPDATE predictions SET actual_return=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (row[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), pid),
+                        (row[0], now, pid),
                     )
                     updated += 1
             else:
-                # bond: 从 bond_history 取 first_day_return
                 row = conn.execute(
-                    "SELECT first_day_return FROM bond_history WHERE security_code=? AND listing_date=? AND first_day_return IS NOT NULL",
-                    (code, listing_date),
+                    "SELECT first_day_return FROM bond_history WHERE security_code=? AND first_day_return IS NOT NULL",
+                    (code,),
                 ).fetchone()
                 if row:
                     conn.execute(
                         "UPDATE predictions SET actual_return=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (row[0], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), pid),
+                        (row[0], now, pid),
                     )
                     updated += 1
         except Exception:
@@ -2796,15 +2812,17 @@ def get_prediction_accuracy(days=90):
 
     for ptype in ("stock", "bond"):
         rows = conn.execute(
-            "SELECT pred_return, actual_return FROM predictions WHERE type=? AND status='fulfilled' AND actual_return IS NOT NULL AND pred_return IS NOT NULL AND pred_date >= ?",
+            "SELECT pred_return, actual_return FROM predictions WHERE type=? AND status='fulfilled' AND actual_return IS NOT NULL AND pred_date >= ?",
             (ptype, cutoff),
         ).fetchall()
         if rows:
-            results[ptype]["total"] = len(rows)
             results[ptype]["fulfilled"] = len(rows)
-            errors = [abs(round(p - a, 1)) for p, a in rows]
-            results[ptype]["errors"] = errors
-            results[ptype]["mae"] = round(sum(errors) / len(errors), 1)
+            pred_rows = [r for r in rows if r[0] is not None]
+            results[ptype]["total"] = len(pred_rows)
+            if pred_rows:
+                errors = [abs(round(p - a, 1)) for p, a in pred_rows]
+                results[ptype]["errors"] = errors
+                results[ptype]["mae"] = round(sum(errors) / len(errors), 1)
 
     conn.close()
     return results

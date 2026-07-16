@@ -876,7 +876,8 @@ def _ts_float(val):
 
 
 def _str_date(val):
-    """Tushare 日期可能为 None/NaN，安全转为 YYYY-MM-DD 或空串"""
+    """Tushare 日期可能为 None/NaN，安全转为 YYYY-MM-DD 或空串。
+    兼容两种格式：横杠 YYYY-MM-DD 与无横杠 YYYYMMDD。"""
     if val is None:
         return ""
     try:
@@ -884,8 +885,11 @@ def _str_date(val):
             return ""
     except (ValueError, TypeError):
         pass
-    s = str(val)[:10]
-    return s if re.match(r"^\d{4}-\d{2}-\d{2}$", s) else ""
+    s = str(val).strip()
+    # 无横杠格式 YYYYMMDD → YYYY-MM-DD（新股申购/上市、转债上市用这种）
+    if re.match(r"^\d{8}$", s):
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s[:10] if re.match(r"^\d{4}-\d{2}-\d{2}$", s[:10]) else ""
 
 
 def _to_ts_code(code):

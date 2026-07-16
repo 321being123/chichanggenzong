@@ -362,7 +362,7 @@ function ipoRenderHistory(type, rows) {
   var headers = [
     '代码', '名称', '申购日期', '上市日', '发行价', '发行PE', '行业PE', '行业',
     '发行总数(万股)', '顶格申购上限(万股)', '顶格申购需配市值(万)',
-    '中签率(万分之)', '募资(亿)', '首日涨幅%', '单签收益(元)'
+    '中签率(万分之)', '募资(亿)', '公开发行市值(亿)', '首日涨幅%', '单签收益(元)'
   ];
   var r3 = rows.map(function (it) {
     // 单签收益 = 500股 × 发行价 × 首日涨幅%
@@ -393,6 +393,7 @@ function ipoRenderHistory(type, rows) {
       ipoFmt(mvWan),
       ipoWanfenCell(it.online_lottery_rate),
       ipoFmt(it.fund_raised),
+      ipoFmt(it.circulation_mv),
       ipoPctCell(it.ld_close_change),
       ipoFmt(profit)
     ];

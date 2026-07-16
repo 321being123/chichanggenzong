@@ -552,6 +552,27 @@ function round(x, d) {
   return Math.round(n * f) / f;
 }
 
+// P2-4：批量写入——把多行用一条 INSERT 完成，大幅减少数据库往返；
+// 超长自动分块（默认 500 行/批）避免超过 PostgreSQL 单次参数上限（默认 65535）。
+async function bulkInsert(client, table, columns, rows, buildParams, conflictClause = '', chunkSize = 500) {
+  if (!rows || !rows.length) return;
+  const colList = columns.join(', ');
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const placeholders = [];
+    const values = [];
+    let idx = 1;
+    for (const row of chunk) {
+      const rp = buildParams(row);
+      const ph = rp.map(() => '$' + (idx++)).join(', ');
+      placeholders.push('(' + ph + ')');
+      values.push(...rp);
+    }
+    const sql = `INSERT INTO ${table} (${colList}) VALUES ${placeholders.join(', ')} ${conflictClause}`;
+    await client.query(sql, values);
+  }
+}
+
 async function loadAccountData(username, accountName) {
   const { rows: positions } = await pool.query(
     'SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity, cost::float8 AS cost, type, subtype, note FROM positions WHERE username=$1 AND account_name=$2',
@@ -632,38 +653,35 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // positions
+    // positions（P2-4：批量写入，原单条 INSERT 循环改为一次性批量）
     await client.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
-    for (const p of (data.positions || [])) {
-      await client.query(
-        'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-        [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '']
-      );
-    }
+    await bulkInsert(client, 'positions',
+      ['id', 'username', 'account_name', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note'],
+      data.positions || [],
+      (p) => [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '']
+    );
     // trades
     await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
-    for (const t of (data.trades || [])) {
-      await client.query(
-        'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note, commission, stamp_tax, transfer_fee, other_fee) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)',
-        [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
-      );
-    }
+    await bulkInsert(client, 'trades',
+      ['id', 'username', 'account_name', 'date', 'created_at', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
+      data.trades || [],
+      (t) => [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
+    );
     // nav_history
     await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
-    for (const n of (data.navHistory || [])) {
-      await client.query(
-        'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
-        [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))]
-      );
-    }
+    await bulkInsert(client, 'nav_history',
+      ['username', 'account_name', 'date', 'nav', 'total_asset', 'invested'],
+      data.navHistory || [],
+      (n) => [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))],
+      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested'
+    );
     // cash_flows
     await client.query('DELETE FROM cash_flows WHERE username=$1 AND account_name=$2', [username, accountName]);
-    for (const c of (data.cashFlows || [])) {
-      await client.query(
-        'INSERT INTO cash_flows (id, username, account_name, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [c.id || uid(), username, accountName, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
-      );
-    }
+    await bulkInsert(client, 'cash_flows',
+      ['id', 'username', 'account_name', 'date', 'created_at', 'amount', 'note'],
+      data.cashFlows || [],
+      (c) => [c.id || uid(), username, accountName, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
+    );
     // account_data：仅显式挑选允许的顶层字段写入（杜绝未知字段持久化，满足 schema 白名单）；
     // indexHistory 已独立成表、changes/version 为瞬时字段，均不写入 JSON。
     const { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord } = data;
@@ -1102,4 +1120,4 @@ async function listAudit(limit) {
 }
 
 // ====== 导出 ======
-module.exports = { pool, initSchema, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, loadUser, registerUser, updateUserAccounts, hashPwd, verifyPwd, getUserProfile, getUserAuth, countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, deleteUser, getUserDetail, updateUserProfile, changePassword, updateLastLogin, ensureAdmin, adminOverview, adminJobRuns, adminListBrokers, createBroker, updateBroker, deleteBroker, getConfig, setConfig, listAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getChangelog, addChangelogItem, auditLog, listAudit, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };
+module.exports = { pool, initSchema, runMigrations, migrateFromJson, migrateToStructured, migrateAccountsTable, getAccountMeta, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, loadUsers, loadUser, registerUser, updateUserAccounts, hashPwd, verifyPwd, getUserProfile, getUserAuth, countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, deleteUser, getUserDetail, updateUserProfile, changePassword, updateLastLogin, ensureAdmin, adminOverview, adminJobRuns, adminListBrokers, createBroker, updateBroker, deleteBroker, getConfig, setConfig, listAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement, getChangelog, addChangelogItem, auditLog, listAudit, loadAccountData, saveAccountData, saveDailyPrices, loadDailyPrices, upsertNav, upsertIndexPoints, loadIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun, uid, DATA_DIR };

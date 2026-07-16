@@ -32,12 +32,6 @@ pm2 startup
 # 腾讯云安全组放行 3000 端口
 ```
 
-### Docker 部署（绿联云）
-
-```bash
-docker compose up -d
-```
-
 ### 外网访问
 配合 Nginx 反向代理 + 域名，可配置 HTTPS。
 

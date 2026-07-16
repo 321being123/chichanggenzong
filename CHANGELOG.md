@@ -6,6 +6,7 @@
 - 总资产/投资收益每日快照（nav_history）：新增 server/jobs/navSnapshot.js，收市后自动把收盘价→总资产/净值写进 nav_history（此前仅靠前端打开网页 recordNav 才记录，没开网页那天总资产与投资收益断档；投资收益从净值派生，一并解决）。只填补缺失交易日，绝不覆盖已有记录；启动即自愈补齐历史空档。
 - **修正（同日补充部署）**：此前 `server/jobs/navSnapshot.js` 未纳入 git 提交，导致服务器 `git pull` 后缺失该文件、`app.js` 顶层 `require` 失败使进程启动崩溃、全部后台任务（指数/汇率/快照）均未注册执行。本次已补交 `navSnapshot.js` 并重新部署，进程恢复正常、三项每日任务生效。
 - **汇率源切换**：港币→人民币抓取原 `qt.gtimg.cn/q=szhkdcny` 已失效（返回 `v_pv_none_match`），`server/jobs/hkRate.js` 的 `fetchHkRate` 改用 `open.er-api.com/v6/latest/HKD`（免费无需 key，返回 `rates.CNY`），`/api/hkrate` 路由复用同一函数一并生效。
+- **navSnapshot 前向填充兜底**：`daily_prices` 在服务器崩溃期间（07-13~07-15）收盘任务未抓全，部分交易日部分持仓缺价；原 `navSnapshot` 遇任一持仓缺价即整日跳过，导致历史 `nav_history` 补不满。现改为缺价持仓用该 code 最近交易日的收盘价前向填充（真实历史价兜底），保证快照连续；仍完全无价的天才跳过。
 
 ## 2026-07-15
 - 打新日历「进展公告日」修正：不再误把申购日之后的「发行结果公告日」当进展公告日，改为展示当前所处阶段真实日期（上市日 / 申购日 / 发行公告日）。

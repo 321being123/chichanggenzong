@@ -37,6 +37,16 @@ async function recordNavSnapshots(username, accountName) {
   const priceDates = new Set();
   dpRows.forEach(function (r) { dpMap.set(r.code + '|' + r.date, r.price); priceDates.add(r.date); });
   if (priceDates.size === 0) return { ok: true, days: 0 };
+  // 前向填充：返回某 code 在目标日及之前最近一个交易日的有价收盘价（缺价持仓兜底，保证快照连续）
+  function recentPrice(code, d) {
+    let best = null;
+    for (const [k, v] of dpMap) {
+      const idx = k.indexOf('|');
+      const c = k.slice(0, idx); const dt = k.slice(idx + 1);
+      if (c === code && dt <= d) { if (best === null || dt > best.dt) best = { dt: dt, price: v }; }
+    }
+    return best ? best.price : null;
+  }
 
   const navByDate = new Map();
   navs.forEach(function (n) { navByDate.set(n.date, n); });
@@ -107,11 +117,12 @@ async function recordNavSnapshots(username, accountName) {
     const mvs = [];
     for (const [code, info] of held) {
       if (info.qty === 0) continue;
-      const price = code ? dpMap.get(code + '|' + d) : null;
+      let price = code ? dpMap.get(code + '|' + d) : null;
+      if (price == null) price = recentPrice(code, d); // 当日缺价 → 前向填充最近交易日收盘价（兜底，保证连续）
       if (price == null) { incomplete = true; break; }
       mvs.push(price * info.qty * (info.subtype === '港股' ? hkRate : 1));
     }
-    if (incomplete) continue; // 有持仓缺价 → 跳过那天，不近似
+    if (incomplete) continue; // 仍无任何可用价 → 跳过那天
 
     const totalAsset = cashAsOf(d) + mvs.reduce(function (s, v) { return s + v; }, 0);
     const invested = investedAt(d);

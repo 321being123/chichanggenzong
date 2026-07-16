@@ -26,7 +26,7 @@ const pool = process.env.DATABASE_URL
     });
 
 // 首次启动自动建表（PostgreSQL，ACID 天然保证；double precision 用于金额/净值字段）
-async function initSchema() {
+async function migration001Init() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       username TEXT PRIMARY KEY,
@@ -234,6 +234,50 @@ async function initSchema() {
 
   // 账户元数据表幂等迁移（从旧 users.accounts JSON + account_data JSON 填充，不覆盖已有）
   await migrateAccountsTable();
+}
+
+// ====== 版本化迁移机制（P2-3）======
+// 记录已执行的升级步骤，避免每次启动重复跑大量 ALTER
+async function ensureMigrationsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+}
+
+// 执行单个迁移步骤；单步失败记录日志，下次启动会重试（SQL 均幂等可重跑）
+async function runMigration(up, version) {
+  try {
+    await up();
+    await pool.query('INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING', [version]);
+  } catch (e) {
+    console.warn('[migrate] 步骤', version, '执行失败，下次启动将重试:', e.message);
+    throw e;
+  }
+}
+
+// 已登记的升级步骤（按数组顺序执行；新增表/字段时追加 002、003… 步骤，勿往 001 堆 SQL）
+const MIGRATIONS = [
+  { version: '001_init', up: migration001Init },
+];
+
+// 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤
+async function runMigrations() {
+  await ensureMigrationsTable();
+  const { rows } = await pool.query('SELECT version FROM schema_migrations');
+  const applied = new Set(rows.map(r => r.version));
+  for (const m of MIGRATIONS) {
+    if (applied.has(m.version)) continue;
+    console.log('[migrate] 执行升级步骤', m.version);
+    await runMigration(m.up, m.version);
+  }
+}
+
+// 兼容旧调用点（server/app.js、server/worker.js、test-integration.js）：语义不变，改走版本化迁移
+async function initSchema() {
+  await runMigrations();
 }
 
 // ====== 迁移（仅本地遗留 JSON 文件时触发；云上全新部署一般为空，不会执行） ======

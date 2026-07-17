@@ -3,7 +3,7 @@
 // 验证：正常 xlsx 能解析；非 xlsx(魔数错)被拒；声明解压体积巨大的压缩炸弹被拒；
 // 解析在独立子进程完成（超时/异常不拖垮主进程由 excelSafe 保证，本测试覆盖解析结果正确性）。
 const assert = require('assert');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const { safeParseExcel } = require('../services/excelSafe');
 
 const results = [];
@@ -19,10 +19,10 @@ function check(name, fn) {
 
 console.log('A. 正常 xlsx 应解析出表头与数据行');
 check('构造小表并解析', async () => {
-  const ws = XLSX.utils.aoa_to_sheet([['code', 'name', 'price'], ['600000', '浦发银行', 10.5], ['000001', '平安银行', 12.3]]);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Sheet1');
+  ws.addRows([['code', 'name', 'price'], ['600000', '浦发银行', 10.5], ['000001', '平安银行', 12.3]]);
+  const buf = await wb.xlsx.writeBuffer();
   const b64 = buf.toString('base64');
   const r = await safeParseExcel(b64, { mode: 'first' });
   assert.ok(Array.isArray(r.rows) && r.rows.length >= 2, '行数异常');

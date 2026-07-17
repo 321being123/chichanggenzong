@@ -1,7 +1,7 @@
 // ========== 账户与数据 API 路由 ==========
 const express = require('express');
 const router = express.Router();
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
@@ -173,12 +173,12 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
     var cashPct = totalWithCash > 0 ? Math.round(cash / totalWithCash * 10000) / 10000 : 0;
     rows.push([null, null, null, null, null, Math.round(cash * 100) / 100, cashPct, '债权', '现金']);
 
-    var ws = XLSX.utils.aoa_to_sheet(rows);
-    ws['!cols'] = [{ wch: 10 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 10 }];
-    var wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    var wb = new ExcelJS.Workbook();
+    var ws = wb.addWorksheet('Sheet1');
+    ws.columns = [{ width: 10 }, { width: 14 }, { width: 20 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 10 }, { width: 8 }, { width: 10 }];
+    ws.addRows(rows);
 
-    var buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    var buf = await wb.xlsx.writeBuffer();
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="export.xlsx"');
     res.send(buf);

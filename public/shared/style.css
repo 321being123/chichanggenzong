@@ -32,7 +32,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .nav-tab.active::after { content: ''; position: absolute; bottom: 0; left: 10px; right: 10px; height: 3px; background: #ffc107; border-radius: 3px 3px 0 0; }
 
 /* ===== 页面容器 ===== */
-.page { display: none; padding: 20px; max-width: 1240px; margin: 0 auto; }
+.feature-page-shell, .page { width: 100%; max-width: 1240px; margin: 0 auto; }
+.feature-page-shell { padding: 20px; }
+.page { display: none; padding: 20px; }
 .page.active { display: block; }
 
 /* ===== 统计卡片 ===== */
@@ -414,6 +416,7 @@ td.negative { color: #137333; font-weight: 600; }
   padding: 5px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
 }
 .top-login-link:hover { background: rgba(255,255,255,.12); }
+.guest-avatar { display:flex; align-items:center; justify-content:center; text-decoration:none; font-size:17px; }
 
 /* ===== 首页介绍 ===== */
 .home-hero {
@@ -439,6 +442,33 @@ td.negative { color: #137333; font-weight: 600; }
   padding: 24px; text-align: center; color: #aaa;
 }
 .home-placeholder h3 { font-size: 15px; color: #666; margin-bottom: 6px; }
+.home-dashboard-shell { max-width: 1280px; margin: 0 auto; }
+.home-overview-hero { display:flex; justify-content:space-between; align-items:flex-end; }
+.home-overview-hero #home-updated { font-size:12px; opacity:.8; white-space:nowrap; }
+.home-module-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:18px 0; }
+.home-module-card { background:#fff; border:1px solid #e8ebf2; border-radius:12px; padding:18px; cursor:pointer; transition:.18s ease; box-shadow:0 2px 8px rgba(30,42,90,.04); }
+.home-module-card:hover { transform:translateY(-2px); box-shadow:0 8px 22px rgba(30,42,90,.10); }
+.home-module-head { display:flex; align-items:center; gap:8px; color:#30364a; font-size:14px; font-weight:650; }
+.home-module-head b { margin-left:auto; color:#6b73a5; font-size:12px; font-weight:500; }
+.home-module-icon { font-size:18px; }
+.home-module-card > strong { display:block; margin-top:20px; color:#171b2e; font-size:27px; line-height:1; }
+.home-module-card > small { display:block; color:#8a90a2; margin-top:7px; }
+.home-module-meta { display:flex; justify-content:space-between; gap:8px; border-top:1px solid #f0f1f5; padding-top:12px; margin-top:14px; color:#656c80; font-size:12px; }
+.home-detail-grid { display:grid; grid-template-columns:1.35fr 1fr; gap:16px; }
+.home-detail-card { background:#fff; border:1px solid #e8ebf2; border-radius:12px; padding:18px; min-height:210px; }
+.home-detail-title { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.home-detail-title h3 { font-size:15px; color:#24293a; }
+.home-detail-title button { border:0; background:none; color:#4f5fae; cursor:pointer; font-size:12px; }
+.home-overview-row { display:grid; grid-template-columns:90px 1fr auto; align-items:center; gap:12px; padding:11px 0; border-top:1px solid #f1f2f5; font-size:13px; }
+.home-overview-row:first-child { border-top:0; }
+.home-date { color:#61697d; }
+.home-event-name { color:#252a3b; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.home-event-tag { border-radius:999px; padding:3px 8px; font-size:11px; background:#eef1ff; color:#4253a7; }
+.home-risk-row { display:grid; grid-template-columns:58px 1fr 42px; gap:10px; align-items:center; margin:14px 0; font-size:12px; color:#555d71; }
+.home-risk-track { height:8px; border-radius:8px; overflow:hidden; background:#f0f1f5; }
+.home-risk-fill { height:100%; border-radius:8px; }
+.home-loading,.home-overview-empty { color:#9298a8; font-size:13px; text-align:center; padding:44px 0; }
+@media (max-width:900px) { .home-module-grid { grid-template-columns:1fr; } .home-detail-grid { grid-template-columns:1fr; } .home-overview-hero { align-items:flex-start; gap:12px; flex-direction:column; } }
 
 /* ===== 个人中心 ===== */
 .profile-wrap { display: grid; grid-template-columns: 1fr; gap: 16px; max-width: 640px; margin: 0 auto; }

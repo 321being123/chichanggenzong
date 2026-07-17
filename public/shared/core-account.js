@@ -237,6 +237,7 @@ function earningsJump() {
 // ===================== 全量渲染 =====================
 
 function renderAll() {
+  try { if (typeof renderHomeHoldings === 'function') renderHomeHoldings(); } catch(e) {}
   try { renderStats(); } catch(e) {}
   try { renderCharts(); } catch(e) {}
   try { renderPositionsTable('topn-table'); } catch(e) {}

@@ -8,34 +8,36 @@ function requireLogin(req, res, next) {
 }
 
 // ========== 防暴力破解 ==========
-const failMap = {};
+const failMap = new Map();
 function checkLocked(key) {
-  const f = failMap[key];
+  const f = failMap.get(key);
   if (!f) return false;
   if (f.lockedUntil && Date.now() < f.lockedUntil) return true;
-  if (f.lockedUntil && Date.now() >= f.lockedUntil) delete failMap[key];
+  if (f.lockedUntil && Date.now() >= f.lockedUntil) failMap.delete(key);
   return false;
 }
 function recordFail(key) {
-  if (!failMap[key]) failMap[key] = { count: 0, at: Date.now() };
-  if (++failMap[key].count >= 5) { failMap[key].lockedUntil = Date.now() + 15 * 60 * 1000; failMap[key].count = 0; }
+  const failure = failMap.get(key) || { count: 0, at: Date.now() };
+  if (++failure.count >= 5) { failure.lockedUntil = Date.now() + 15 * 60 * 1000; failure.count = 0; }
+  failMap.set(key, failure);
 }
-function clearFail(key) { delete failMap[key]; }
-const regIpMap = {};
+function clearFail(key) { failMap.delete(key); }
+const regIpMap = new Map();
 function checkRegLimit(ip) {
   const now = Date.now();
-  if (regIpMap[ip] && now - regIpMap[ip] < 60000) return true;
-  regIpMap[ip] = now; return false;
+  const last = regIpMap.get(ip);
+  if (last && now - last < 60000) return true;
+  regIpMap.set(ip, now); return false;
 }
 
 // TTL 清理（P1-6）：登录失败 / 注册 IP 的限流 Map 长期不清理会无限增长，定期清除陈旧记录
 const MAP_TTL_MS = 60 * 60 * 1000; // 1 小时
+function sweepAuthMaps(now = Date.now()) {
+  for (const [k, v] of failMap) if (!v.lockedUntil && now - (v.at || 0) > MAP_TTL_MS) failMap.delete(k);
+  for (const [k, t] of regIpMap) if (now - t > MAP_TTL_MS) regIpMap.delete(k);
+}
 if (typeof setInterval === 'function') {
-  const sweep = setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of failMap) if (!v.lockedUntil && now - (v.at || 0) > MAP_TTL_MS) failMap.delete(k);
-    for (const [k, t] of regIpMap) if (now - t > MAP_TTL_MS) regIpMap.delete(k);
-  }, 10 * 60 * 1000);
+  const sweep = setInterval(sweepAuthMaps, 10 * 60 * 1000);
   if (sweep.unref) sweep.unref();
 }
 
@@ -79,4 +81,4 @@ async function requireAdmin(req, res, next) {
   return res.status(403).json({ error: '无权限：该操作仅限管理员执行' });
 }
 
-module.exports = { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin };
+module.exports = { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, sweepAuthMaps };

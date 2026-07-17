@@ -8,6 +8,7 @@ const {
   fetchQuoteByCode, tushareQuery, tsRows, toTsCode,
   tsDateStr, normDate, ensureTsNames, ensureTsDaily, ensureTsRealtime
 } = require('../services/market');
+const { fetchTencentQuotes, isConvertibleBondCode, normalizeCode } = require('../services/tencentQuote');
 
 router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   const code = req.params.code.trim().toUpperCase().replace(/\s/g, '');
@@ -21,12 +22,21 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   const result = {};
   if (!codes.length) return res.json(result);
 
-  const aCodes = [], hkCodes = [];
-  codes.forEach(c => { (toTsCode(c).endsWith('.HK') ? hkCodes : aCodes).push(c); });
+  const stockCodes = [], bondCodes = [], hkCodes = [];
+  codes.forEach(c => {
+    if (toTsCode(c).endsWith('.HK')) hkCodes.push(c);
+    else if (isConvertibleBondCode(c)) bondCodes.push(c);
+    else stockCodes.push(c);
+  });
 
-  // A股：批量 rt_min(实时价) + daily(涨跌/昨收) + 名称缓存
-  const [names, daily, rt] = await Promise.all([ensureTsNames(), ensureTsDaily(), ensureTsRealtime(aCodes)]);
-  aCodes.forEach(c => {
+  // 股票走 Tushare；没有股票代码时完全不调用 Tushare。
+  const [names, daily, rt, tencent] = await Promise.all([
+    stockCodes.length ? ensureTsNames() : Promise.resolve(new Map()),
+    stockCodes.length ? ensureTsDaily() : Promise.resolve(new Map()),
+    stockCodes.length ? ensureTsRealtime(stockCodes) : Promise.resolve(new Map()),
+    fetchTencentQuotes(bondCodes.concat(hkCodes)),
+  ]);
+  stockCodes.forEach(c => {
     const ts = toTsCode(c);
     const d = daily.get(ts);
     const r = rt.get(ts);
@@ -41,29 +51,18 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
     };
   });
 
-  // 港股：腾讯 qt.gtimg 批量
-  if (hkCodes.length) {
-    try {
-      const q = hkCodes.map(c => 'hk' + c.padStart(5, '0')).join(',');
-      const text = await new Promise((resolve, reject) => {
-        https.get('https://qt.gtimg.cn/q=' + q, { timeout: 6000 }, (resp) => {
-          let data = ''; resp.on('data', c => data += c);
-          resp.on('end', () => resolve(data));
-        }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-      });
-      text.split(';').forEach(seg => {
-        const m = seg.match(/"(.*)"/);
-        if (!m) return;
-        const parts = m[1].split('~');
-        const hk = (parts[2] || '').trim();
-        const price = parseFloat(parts[3]);
-        if (hk && price && !isNaN(price)) {
-          const orig = hkCodes.find(x => x.padStart(5, '0') === hk);
-          if (orig) result[orig] = { price, name: parts[1] || orig, code: orig, change: parts[32] !== undefined && parts[32] !== '' ? parseFloat(parts[32]) : null };
-        }
-      });
-    } catch (e) {}
-  }
+  // 可转债和港股统一走腾讯批量接口；缓存命中时不访问上游。
+  bondCodes.concat(hkCodes).forEach(c => {
+    const quote = tencent.get(normalizeCode(c));
+    result[c] = quote ? {
+      price: quote.price,
+      name: quote.name || c,
+      code: normalizeCode(c),
+      change: quote.change,
+      quote_time: quote.quote_time,
+      source: quote.source,
+    } : { price: null, name: '', code: c, change: null };
+  });
 
   res.json(result);
 }));

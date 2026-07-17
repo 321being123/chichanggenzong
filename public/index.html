@@ -4,20 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="base-url" content="">
-<title>仓位管理系统</title>
+<title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="shared/style.css?v=7">
+<link rel="stylesheet" href="shared/style.css?v=10">
+<link rel="stylesheet" href="css/bond-safety.css?v=6">
 </head>
 <body>
 
 <div class="nav">
   <div class="nav-inner">
     <div class="nav-left">
-      <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">投资小站</h1>
+      <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">存在小站</h1>
       <nav class="main-nav">
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
+        <button class="main-tab" data-main="bond-safety">转债安全性</button>
         <button class="main-tab" data-main="changelog">版本记录</button>
       </nav>
     </div>
@@ -29,37 +31,19 @@
 
 <div class="toast" id="toast"></div>
 
-<!-- 首页：持仓管理简单介绍，后续功能再接入 -->
+<!-- 首页：三大核心模块统一工作台 -->
 <div class="main-page active" id="main-home">
-  <div class="home-hero">
-    <h1>你的个人投资持仓跟踪工具</h1>
-    <p>轻量记录持仓、交易与收益，让每一笔投资都清晰可见。</p>
-  </div>
-  <div class="feature-cards">
-    <div class="feature-card" onclick="goHoldings('dashboard')">
-      <div class="fc-icon icon-bg-blue">📊</div>
-      <h3>总览</h3>
-      <p>资产分布、净值走势一目了然</p>
+  <div class="home-dashboard-shell">
+    <div class="home-hero home-overview-hero"><div><h1>投资工作台</h1><p>持仓、打新与可转债安全性，在一个页面快速掌握。</p></div><span id="home-updated">正在更新...</span></div>
+    <div class="home-module-grid">
+      <div class="home-module-card" onclick="goHoldings('dashboard')"><div class="home-module-head"><span class="home-module-icon">📊</span><span>持仓管理</span><b>进入 →</b></div><strong id="home-total-asset">--</strong><small>总资产</small><div class="home-module-meta"><span id="home-position-count">-- 项持仓</span><span id="home-cash-value">现金 --</span></div></div>
+      <div class="home-module-card" onclick="switchMain('ipo')"><div class="home-module-head"><span class="home-module-icon">📅</span><span>打新日历</span><b>进入 →</b></div><strong id="home-ipo-count">--</strong><small>近期申购 / 上市事件</small><div class="home-module-meta" id="home-ipo-next"><span>正在读取排期</span></div></div>
+      <div class="home-module-card" onclick="switchMain('bond-safety')"><div class="home-module-head"><span class="home-module-icon">🛡️</span><span>可转债安全性</span><b>进入 →</b></div><strong id="home-bond-count">--</strong><small>在市可转债</small><div class="home-module-meta"><span id="home-bond-safe">安全 --</span><span id="home-bond-risk">高风险 --</span></div></div>
     </div>
-    <div class="feature-card" onclick="goHoldings('positions')">
-      <div class="fc-icon icon-bg-red">📈</div>
-      <h3>持仓</h3>
-      <p>全部持仓明细与实时涨跌</p>
+    <div class="home-detail-grid">
+      <section class="home-detail-card"><div class="home-detail-title"><h3>近期打新安排</h3><button onclick="switchMain('ipo')">查看全部</button></div><div id="home-ipo-list" class="home-overview-list"><div class="home-loading">正在加载...</div></div></section>
+      <section class="home-detail-card"><div class="home-detail-title"><h3>可转债风险分布</h3><button onclick="switchMain('bond-safety')">查看全部</button></div><div id="home-bond-distribution" class="home-risk-list"><div class="home-loading">正在加载...</div></div></section>
     </div>
-    <div class="feature-card" onclick="goHoldings('earnings')">
-      <div class="fc-icon icon-bg-green">💰</div>
-      <h3>收益</h3>
-      <p>净值对比、收益走势与记录</p>
-    </div>
-    <div class="feature-card" onclick="goHoldings('trades')">
-      <div class="fc-icon icon-bg-orange">🔁</div>
-      <h3>交易</h3>
-      <p>录入与导入每笔买卖</p>
-    </div>
-  </div>
-  <div class="home-placeholder">
-    <h3>更多功能正在路上</h3>
-    <p>首页将持续接入更多模块，敬请期待。</p>
   </div>
 </div>
 
@@ -243,7 +227,7 @@
 
 <!-- 打新日历（一级页） -->
 <div class="main-page" id="main-ipo">
-  <div style="max-width:1240px;margin:0 auto;padding:20px;">
+  <div class="feature-page-shell">
 
     <!-- 打新建议（取自最新日报「结论」段） -->
     <div id="ipo-advice"></div>
@@ -269,6 +253,39 @@
       <div style="padding:18px;">
         <div id="ipo-history"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
+<div class="main-page" id="main-bond-safety">
+  <div class="bond-safety-shell feature-page-shell">
+    <div class="bond-safety-hero">
+      <div>
+        <h2>可转债安全性</h2>
+        <p>基于利息保障、短期偿债能力和负债水平的三指标评级。行情仅供研究参考，不构成投资建议。</p>
+      </div>
+      <div class="bond-safety-updated" id="bond-safety-updated">正在读取数据...</div>
+    </div>
+    <div class="bond-safety-stats">
+      <div class="bond-safety-stat"><span>安全</span><strong data-bond-rating-count="安全">0</strong></div>
+      <div class="bond-safety-stat"><span>低风险</span><strong data-bond-rating-count="低风险">0</strong></div>
+      <div class="bond-safety-stat"><span>中风险</span><strong data-bond-rating-count="中风险">0</strong></div>
+      <div class="bond-safety-stat"><span>高风险</span><strong data-bond-rating-count="高风险">0</strong></div>
+    </div>
+    <div class="table-wrap">
+      <div class="bond-safety-toolbar">
+        <input id="bond-safety-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondSafetyApplyFilters()">
+        <select id="bond-safety-rating" onchange="bondSafetyApplyFilters()" aria-label="按安全性筛选">
+          <option value="">全部评级</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option>
+        </select>
+        <span class="bond-safety-quality" id="bond-safety-visible"></span>
+        <span class="bond-safety-spacer"></span>
+        <span class="bond-safety-quality" id="bond-safety-quality"></span>
+        <button class="btn btn-outline btn-sm" id="bond-safety-export" onclick="exportBondSafety()">导出Excel</button>
+        <button class="btn btn-primary btn-sm" id="bond-safety-refresh" onclick="refreshBondSafety()" style="display:none;">刷新数据</button>
+      </div>
+      <div id="bond-safety-table"><div class="bond-safety-empty">正在加载安全性数据...</div></div>
     </div>
   </div>
 </div>
@@ -498,6 +515,8 @@
 <script src="shared/core-account.js?v=20260712e"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
+<script src="js/bond-safety.js?v=6"></script>
+<script src="js/home-dashboard.js?v=2"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -514,14 +533,15 @@ async function checkAuth() {
   try {
     const r = await fetch(api('/api/me'));
     const d = await r.json();
-    if (!d.username) { window.location.href = api('/login.html'); return; }
+    if (!d.username) { username = null; myProfile = null; renderTopUser(null); return false; }
     username = d.username;
     myProfile = d;
     const nu0 = document.getElementById('nav-user');
     if (nu0) nu0.textContent = d.nickname || username;
     renderTopUser(d);
+    return true;
   } catch(e) {
-    window.location.href = api('/login.html');
+    username = null; myProfile = null; renderTopUser(null); return false;
   }
 }
 
@@ -530,7 +550,7 @@ function renderTopUser(p) {
   const el = document.getElementById('top-user');
   if (!el) return;
   if (!p || !p.username) {
-    el.innerHTML = '<a class="top-login-link" href="' + api('/login.html') + '">登录/注册</a>';
+    el.innerHTML = '<a class="nav-avatar guest-avatar" href="' + api('/login.html') + '" title="登录/注册">👤</a>';
     return;
   }
   const src = p.avatar || '';
@@ -541,6 +561,10 @@ function renderTopUser(p) {
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
 function switchMain(main) {
+  if (!username && (main === 'holdings' || main === 'profile')) {
+    window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
+    return;
+  }
   document.querySelectorAll('.main-tab').forEach(function (t) { t.classList.toggle('active', t.dataset.main === main); });
   document.querySelectorAll('.main-page').forEach(function (p) { p.classList.remove('active'); });
   const mp = document.getElementById('main-' + main);
@@ -548,6 +572,8 @@ function switchMain(main) {
   if (main === 'profile') loadProfile();
   if (main === 'changelog') loadChangelogPage();
   if (main === 'ipo') loadIpo();
+  if (main === 'bond-safety') loadBondSafety();
+  if (main === 'home') loadHomeDashboard();
 }
 
 // 加载版本记录页
@@ -839,23 +865,28 @@ async function saveDataNow() {
 var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
 
 (async function init() {
-  await checkAuth();
-  await fetchAccounts();
-  currentAccount = accounts[0] || '默认账户';
-  await loadData(currentAccount);
-  // 从服务端加载总市值（如已保存则覆盖默认值）
-  if (data && data.totalAsset > 0) TOTAL_ASSET = data.totalAsset;
-  renderAccountSelect();
-  renderAll();
+  var loggedIn = await checkAuth();
+  if (loggedIn) {
+    await fetchAccounts();
+    currentAccount = accounts[0] || '默认账户';
+    await loadData(currentAccount);
+    if (data && data.totalAsset > 0) TOTAL_ASSET = data.totalAsset;
+    renderAccountSelect();
+    renderAll();
+  } else {
+    data = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [], hkRate: 0.868 };
+  }
   // 先绑定 tab 切换事件，再异步刷新行情，
   // 避免 doRefresh() 同步阻塞期间用户点 tab 按钮没反应
   initNav();
   // 一级导航（首页/持仓管理/个人中心）绑定，默认显示首页
   setupMainNav();
-  switchMain('home');
-  // 行情刷新改为后台异步执行，不阻塞 UI 交互
-  doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
-  initAutoRefresh();
+  var requestedMain = new URLSearchParams(window.location.search).get('main');
+  switchMain(loggedIn && requestedMain === 'holdings' ? 'holdings' : 'home');
+  if (loggedIn) {
+    doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
+    initAutoRefresh();
+  }
 })();
 
 // F5 / Ctrl+R 快捷键刷新行情

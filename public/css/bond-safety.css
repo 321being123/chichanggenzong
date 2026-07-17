@@ -1,0 +1,46 @@
+.bond-safety-shell { width:100%; }
+.bond-safety-hero { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; margin-bottom:18px; }
+.bond-safety-hero h2 { margin:0 0 6px; font-size:24px; color:#152033; }
+.bond-safety-hero p { margin:0; color:#697386; font-size:13px; line-height:1.7; }
+.bond-safety-updated { color:#697386; font-size:12px; text-align:right; white-space:nowrap; }
+.bond-safety-stats { display:grid; grid-template-columns:repeat(4,minmax(100px,1fr)); gap:10px; margin-bottom:16px; }
+.bond-safety-stat { background:#fff; border:1px solid #e7ebf0; border-radius:10px; padding:12px 14px; box-shadow:0 2px 8px rgba(24,39,75,.04); }
+.bond-safety-stat span { color:#7a8495; font-size:12px; }
+.bond-safety-stat strong { display:block; margin-top:4px; font-size:22px; color:#172033; }
+.bond-safety-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; }
+.bond-safety-toolbar input,.bond-safety-toolbar select { height:36px; border:1px solid #d8dee8; border-radius:7px; background:#fff; padding:0 10px; color:#273142; }
+.bond-safety-toolbar input { min-width:220px; }
+.bond-safety-spacer { flex:1; }
+.bond-safety-quality { font-size:12px; color:#7a8495; }
+.bond-safety-scroll { overflow:auto; max-height:calc(100vh - 330px); min-height:280px; }
+.bond-safety-table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; }
+.bond-safety-table th { position:sticky; top:0; z-index:2; background:#fafbfc; color:#555; font-weight:700; text-align:center; padding:10px 9px; white-space:nowrap; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+.bond-safety-table th:hover { background:#f0f1ff; color:#1a237e; }
+.bond-safety-table td { padding:9px; border-bottom:1px solid #eef1f5; white-space:nowrap; color:#303a49; text-align:center; }
+.bond-safety-table tbody tr:hover td { background:#f7fbff; }
+.bond-safety-code { color:#1769aa; font-variant-numeric:tabular-nums; }
+.bond-safety-number { text-align:center; font-variant-numeric:tabular-nums; }
+.bond-change-up { color:#d93025; font-weight:600; }
+.bond-change-down { color:#137333; font-weight:600; }
+.bond-rating { display:inline-flex; align-items:center; justify-content:center; min-width:52px; padding:3px 8px; border-radius:999px; font-weight:700; color:#102218; }
+.bond-rating-safe { background:#00b050; color:#fff; }
+.bond-rating-low { background:#92d050; }
+.bond-rating-medium { background:#ffff00; }
+.bond-rating-high { background:#ffc000; }
+.bond-rating-none { background:#f0f2f5; color:#697386; }
+.bond-indicator { display:inline-flex; align-items:center; justify-content:center; min-width:58px; padding:3px 8px; border-radius:999px; font-weight:600; }
+.bond-indicator-pass { background:#e6f4ea; color:#137333; }
+.bond-indicator-fail { background:#fce8e6; color:#d93025; }
+.bond-indicator-missing { background:#f0f2f5; color:#697386; }
+.bond-indicator-exempt { background:#e8eaf6; color:#283593; }
+.bond-safety-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }
+.bond-safety-error { color:#b3261e; }
+@media (max-width:760px) {
+  .bond-safety-shell { padding:12px; }
+  .bond-safety-hero { display:block; }
+  .bond-safety-updated { text-align:left; margin-top:8px; white-space:normal; }
+  .bond-safety-stats { grid-template-columns:repeat(2,1fr); }
+  .bond-safety-toolbar input { min-width:0; flex:1 1 170px; }
+  .bond-safety-spacer { display:none; }
+  .bond-safety-scroll { max-height:calc(100vh - 390px); }
+}

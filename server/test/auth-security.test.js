@@ -19,6 +19,13 @@ function check(name, fn) {
   catch (e) { results.push(['FAIL', name + ' :: ' + e.message]); console.log('  [FAIL] ' + name + ' :: ' + e.message); }
 }
 
+check('登录限流缓存定时清理不会导致服务崩溃', () => {
+  const auth = require('../middleware/auth');
+  auth.recordFail('test-user');
+  auth.checkRegLimit('127.0.0.1');
+  assert.doesNotThrow(() => auth.sweepAuthMaps(Date.now() + 2 * 60 * 60 * 1000));
+});
+
 check('hashPwd 产出 scrypt:salt:hash 格式', () => {
   const h = db.hashPwd('secret123');
   assert.ok(/^scrypt:[0-9a-f]+:[0-9a-f]+$/.test(h), '应为 scrypt:salt:hash 形式，实际: ' + h);

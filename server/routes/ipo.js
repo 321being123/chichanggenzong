@@ -7,7 +7,7 @@ const { pool } = require('../db');
 const { requireLogin } = require('../middleware/auth');
 
 // 最新报告（或指定日期 YYYYMMDD）：返回摘要 + Markdown + HTML
-router.get('/report', requireLogin, async (req, res) => {
+router.get('/report', async (req, res) => {
   try {
     const date = req.query.date;
     let row;
@@ -34,7 +34,7 @@ router.get('/report', requireLogin, async (req, res) => {
 });
 
 // 历史报告日期列表（前端历史下拉）
-router.get('/reports', requireLogin, async (req, res) => {
+router.get('/reports', async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT report_date,
@@ -49,7 +49,7 @@ router.get('/reports', requireLogin, async (req, res) => {
 });
 
 // 打新历史（集思录式列表）
-router.get('/history', requireLogin, async (req, res) => {
+router.get('/history', async (req, res) => {
   try {
     const type = req.query.type === 'bond' ? 'bond' : 'stock';
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 200);
@@ -89,7 +89,7 @@ router.get('/history', requireLogin, async (req, res) => {
 });
 
 // 打新日历：未来 N 天申购/上市日（来自最新报告的 summary_json.calendar）
-router.get('/calendar', requireLogin, async (req, res) => {
+router.get('/calendar', async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days || '30', 10) || 30, 90);
     const r = await pool.query(
@@ -107,7 +107,7 @@ router.get('/calendar', requireLogin, async (req, res) => {
 });
 
 // 个股单独分析日报：从 ipo-report/individual/<code>.md 读取
-router.get('/report/code', requireLogin, async (req, res) => {
+router.get('/report/code', async (req, res) => {
   try {
     const code = String(req.query.code || '');
     if (!/^[0-9A-Za-z]+$/.test(code)) {

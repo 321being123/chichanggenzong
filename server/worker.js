@@ -10,6 +10,8 @@ const { runIndexBaselineJob } = require('./jobs/indexBaseline');
 const { runIndexRecentJob } = require('./jobs/indexBaseline');
 const { runHkRateJob } = require('./jobs/hkRate');
 const { ensureHolidaysCurrent } = require('./jobs/holidaySync');
+const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
+const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 
 async function main() {
   await initSchema();
@@ -30,6 +32,9 @@ async function main() {
   }, 30 * 24 * 3600 * 1000);
   // 启动即补齐指数基线（带幂等锁，多实例仅一个执行）
   runIndexBaselineJob().catch(e => console.error('[worker] 指数基线失败:', e.message));
+  // 每日可转债安全性快照（与 Web 进程的 DISABLE_SCHEDULER 约定一致）
+  scheduleBondSafetyRefresh();
+  scheduleIpoCalendarRefresh();
 }
 
 main().catch(e => { console.error('[worker] 启动失败:', e.message); process.exit(1); });

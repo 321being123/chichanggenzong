@@ -214,6 +214,69 @@ async function migration001Init() {
   await migrateAccountsTable();
 }
 
+// 可转债安全性：只写入“成功刷新”的不可变快照。
+// 上游失败或数据校验失败时不落库，读取端会自然回退到最后一份有效数据。
+async function migration002BondSafetySnapshots() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bond_safety_snapshots (
+      id BIGSERIAL PRIMARY KEY,
+      refreshed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      source_updated_at TIMESTAMPTZ,
+      row_count INTEGER NOT NULL CHECK (row_count >= 0),
+      data JSONB NOT NULL,
+      diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      refresh_reason TEXT NOT NULL DEFAULT 'scheduled'
+    );
+    CREATE INDEX IF NOT EXISTS idx_bond_safety_snapshots_refreshed
+      ON bond_safety_snapshots (refreshed_at DESC);
+  `);
+}
+
+// 上游市场数据共享缓存：跨用户、跨 Web/worker 进程复用，刷新失败时保留最后成功值。
+async function migration003MarketDataCache() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market_instruments (
+      ts_code TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'tushare',
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_instruments_fetched
+      ON market_instruments (fetched_at DESC);
+
+    CREATE TABLE IF NOT EXISTS market_quote_cache (
+      symbol TEXT NOT NULL,
+      source TEXT NOT NULL,
+      code TEXT NOT NULL,
+      market TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT '',
+      price NUMERIC(20,4),
+      change_pct NUMERIC(20,6),
+      quote_time TIMESTAMPTZ,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (symbol, source)
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_quote_cache_fetched
+      ON market_quote_cache (source, fetched_at DESC);
+  `);
+}
+
+// Tushare 2000积分财务接口需逐只股票读取；结果持久化，后续仅按 TTL 增量更新。
+async function migration004BondSafetyFinancialCache() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bond_safety_financial_cache (
+      ts_code TEXT PRIMARY KEY,
+      stock_name TEXT NOT NULL DEFAULT '',
+      report_end_date TEXT,
+      announced_at TEXT,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_bond_safety_financial_fetched
+      ON bond_safety_financial_cache (fetched_at DESC);
+  `);
+}
+
 // ====== 版本化迁移机制（P2-3）======
 // 记录已执行的升级步骤，避免每次启动重复跑大量 ALTER
 async function ensureMigrationsTable() {
@@ -239,6 +302,9 @@ async function runMigration(up, version) {
 // 已登记的升级步骤（按数组顺序执行；新增表/字段时追加 002、003… 步骤，勿往 001 堆 SQL）
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
+  { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
+  { version: '003_market_data_cache', up: migration003MarketDataCache },
+  { version: '004_bond_safety_financial_cache', up: migration004BondSafetyFinancialCache },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤
@@ -334,6 +400,9 @@ async function migrateToStructured() {
 
 module.exports = {
   migration001Init,
+  migration002BondSafetySnapshots,
+  migration003MarketDataCache,
+  migration004BondSafetyFinancialCache,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

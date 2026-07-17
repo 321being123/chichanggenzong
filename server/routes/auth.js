@@ -112,7 +112,7 @@ router.post('/send-code',
   await mailer.sendMail({
     from: process.env.SMTP_USER,
     to: email,
-    subject: '持仓管理系统 - 注册验证码',
+    subject: '存在小站 - 注册验证码',
     text: `您的验证码是：${code}，5分钟内有效。请勿泄露给他人。`
   });
   res.json({ ok: true });

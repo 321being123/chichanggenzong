@@ -14,11 +14,14 @@ const metaRouter = require('./routes/meta');
 const profileRouter = require('./routes/profile');
 const adminRouter = require('./routes/admin');
 const ipoRouter = require('./routes/ipo');
+const bondSafetyRouter = require('./routes/bondSafety');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
 const { runIndexRecentJob } = require('./jobs/indexBaseline');
 const { runHkRateJob } = require('./jobs/hkRate');
+const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
+const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 
 const app = express();
 // 安全默认：不信任上游代理（避免伪造 X-Forwarded-For 绕过限流/IP 识别）。
@@ -84,6 +87,7 @@ async function start() {
   app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
   app.use('/api/admin', adminRouter);   // 管理后台：统一 /api/admin 前缀，路由内已 requireAdmin
   app.use('/api/ipo', ipoRouter);       // 打新日历：报告/历史列表/已上市表现
+  app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：数据库快照读取/管理员刷新
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
@@ -97,7 +101,7 @@ async function start() {
   app.use(errorHandler);
 
   server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`持仓管理系统已启动: http://0.0.0.0:${PORT}`);
+    console.log(`存在小站已启动: http://0.0.0.0:${PORT}`);
     console.log(`数据目录: ${DATA_DIR}`);
     // 任务调度默认在 Web 进程内运行（向后兼容）。若拆分独立 worker，请给 Web 进程设
     // DISABLE_SCHEDULER=1 并另起 worker 进程（见 server/worker.js），避免重复执行。
@@ -112,6 +116,8 @@ async function start() {
       runIndexRecentJob().catch(function (e) { console.error('指数每日补齐失败:', e.message); });
       // 每日港币汇率自动更新（避免不开网页时港股估值沿用旧汇率）
       runHkRateJob().catch(function (e) { console.error('汇率更新失败:', e.message); });
+      scheduleBondSafetyRefresh();
+      scheduleIpoCalendarRefresh();
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }
@@ -120,7 +126,7 @@ async function start() {
   // 若仅监听 IPv4 会导致"本地打不开"(连接被拒)。双栈监听，::1 失败不影响 IPv4。
   try {
     app.listen(PORT, '::1', () => {
-      console.log(`持仓管理系统已启动(IPv6): http://[::1]:${PORT}`);
+      console.log(`存在小站已启动(IPv6): http://[::1]:${PORT}`);
     });
   } catch (e) {
     console.log('[listen] IPv6(::1) 监听跳过:', e.message);

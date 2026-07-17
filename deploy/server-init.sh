@@ -34,14 +34,14 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -d. -f1 | tr -d v)" -
 fi
 echo "Node 版本: $(node -v)"
 
-# --- 3. PostgreSQL / Nginx / git / curl ---
-echo "[2/9] 安装 PostgreSQL / Nginx / git ..."
+# --- 3. PostgreSQL / Nginx / git / curl / Python ---
+echo "[2/9] 安装 PostgreSQL / Nginx / git / Python ..."
 if [ "$PKG" = apt ]; then
   apt-get update
-  apt-get install -y postgresql postgresql-contrib nginx git curl
+  apt-get install -y postgresql postgresql-contrib nginx git curl python3 python3-venv python3-pip
   PG_SVC="postgresql"
 else
-  "$PKG" install -y postgresql-server postgresql nginx git curl
+  "$PKG" install -y postgresql-server postgresql nginx git curl python3 python3-pip
   PG_SVC="postgresql"
 fi
 systemctl enable "$PG_SVC"
@@ -105,6 +105,8 @@ systemctl restart nginx
 echo "[7/9] 安装依赖并启动 ..."
 cd "$APP_DIR"
 npm install
+python3 -m venv ipo-report/venv
+ipo-report/venv/bin/pip install -r requirements.txt
 pm2 start deploy/ecosystem.config.js --update-env 2>/dev/null || pm2 restart portfolio-server 2>/dev/null || pm2 start server.js --name portfolio-server
 pm2 save
 pm2 startup >/dev/null 2>&1 || true

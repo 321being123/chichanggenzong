@@ -3,6 +3,9 @@
 //   2) test-security.js             —— 零依赖安全专项测试
 //   3) ipo-report/test_ipo_frontend.js —— IPO 前端纯函数测试
 //   4) ipo-report/*.py 功能测试      —— Python 功能回归（需 venv 依赖）
+//      注：此处只跑「确定性单元 + PostgreSQL 集成」两类（CI 门禁）。
+//          外部行情合约测试见 ipo-report/test_ipo_contract.py，由 CI 单独步骤
+//          以 continue-on-error 运行，不阻断普通 PR。
 // 每个文件进程隔离（互不污染状态），汇总通过/失败数量并给出非零退出码。
 // 用法：node server/test/run-all.js
 const { spawnSync } = require('child_process');
@@ -69,7 +72,8 @@ function runPython() {
   const py = findPython();
   if (!py) { skip++; console.log('  ⊘ 未找到 Python 解释器，跳过 Python 功能测试'); return; }
   const pyFiles = [
-    path.join(rootDir, 'ipo-report', 'test_ipo_regression.py'),
+    path.join(rootDir, 'ipo-report', 'test_ipo_unit.py'),
+    path.join(rootDir, 'ipo-report', 'test_ipo_integration.py'),
     path.join(rootDir, 'ipo-report', 'test_unit_fixes.py'),
   ].filter(f => fs.existsSync(f));
   if (pyFiles.length === 0) { skip++; console.log('  ⊘ 未找到 Python 测试文件，跳过'); return; }

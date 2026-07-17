@@ -73,6 +73,13 @@ jobs:
       - name: 统一测试入口（test:all 含单元/集成/安全/IPO前端/Python功能）
         run: npm run test:all
 
+      # 外部行情合约测试：依赖 Tushare / 真实数据，网络或限流不稳定。
+      # 以 continue-on-error 运行，失败仅告警、不阻断普通 PR。
+      - name: 外部行情合约测试（Tushare，不阻断 PR）
+        continue-on-error: true
+        run: |
+          ipo-report/venv/bin/python ipo-report/test_ipo_contract.py
+
   # 依赖漏洞审计：高危即阻断构建（不再用 || true 放行）
   dependency-audit:
     runs-on: ubuntu-latest

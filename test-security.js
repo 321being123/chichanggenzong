@@ -182,7 +182,10 @@ const next = () => {}; // 占位，实际测试用闭包捕获
 
   console.log('\n[7] 事务保存结构 (saveAccountData 源码含 BEGIN/COMMIT/ROLLBACK)');
   await test('源码含事务三关键字', () => {
-    const src = fs.readFileSync(path.join(__dirname, 'server/db.js'), 'utf8');
+    const dbDir = path.join(__dirname, 'server/db');
+    const files = fs.readdirSync(dbDir, { recursive: true })
+      .filter(f => String(f).endsWith('.js'));
+    const src = files.map(f => fs.readFileSync(path.join(dbDir, f), 'utf8')).join('\n');
     assert.ok(src.includes('BEGIN') && src.includes('COMMIT') && src.includes('ROLLBACK'));
   });
 

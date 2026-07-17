@@ -5,7 +5,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { registerUser, hashPwd, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+const { registerUser, hashPwd, verifyPwd, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
 router.post('/register', asyncHandler(async (req, res) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();

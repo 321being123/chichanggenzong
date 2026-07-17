@@ -1,5 +1,7 @@
 # PostgreSQL 存储改造 — 交接文档
 
+> ⚠️ **Docker 已废弃**：本项目当前使用腾讯云裸机 + pm2 + Nginx 部署，**不支持 Docker 部署**。Dockerfile / docker-compose.yml / .dockerignore 已删除，文末涉及 Docker 的条目仅供历史参考。
+
 > 生成时间：2026-07-08
 > 负责人：戴存在（daicunzai）
 > 关联：原方案为 SQLite（better-sqlite3，单文件 `data/portfolio.db`）

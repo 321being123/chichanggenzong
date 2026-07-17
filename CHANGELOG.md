@@ -1,5 +1,7 @@
 # Changelog
 
+> ⚠️ **Docker 已废弃**：本项目生产环境使用腾讯云裸机 + pm2 + Nginx，**当前不支持 Docker 部署**。Dockerfile / docker-compose.yml / .dockerignore 已删除；下方历史条目中涉及 Docker 的内容仅供回顾，请勿按此部署。
+
 ## 2026-07-17
 - 清理未使用的 Docker 配置：项目生产环境用腾讯云裸机 + pm2 + Nginx，从未使用 Docker，已删除 Dockerfile、docker-compose.yml、.dockerignore 以及说明文档里的 Docker 部署段落，保持仓库整洁。
 - 工程质量加固（不影响日常使用）：补全了打新脚本此前漏写的 Python 依赖清单，避免部署到服务器时缺少库而报错；代码自动检查流程新增 Python 语法检查和依赖漏洞扫描；并新增数据库自动备份脚本，可每天定时把数据库导出压缩留存。

@@ -10,11 +10,15 @@ let pass = 0, fail = 0;
 function ok(name, cond) { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name); } }
 
 (async () => {
+  // 运行前无条件清理 p2test_user 全部数据，保证可重复运行（不依赖上次 cleanup 是否跑完）
+  for (const t of ['accounts', 'account_data', 'positions', 'trades', 'nav_history', 'cash_flows', 'users']) {
+    try { await db.pool.query(`DELETE FROM ${t} WHERE username=$1`, [U]); } catch (e) {}
+  }
   console.log('[initSchema] 建表 + numeric 转换 + accounts/job_runs 表');
   await db.initSchema();
 
   console.log('[P2-3] 账户元数据表 + 列表同步');
-  await db.saveUsers({ [U]: { password: 'x', accounts: [A] } });
+  await db.registerUser(U, 'x', [A]);
   await db.syncUserAccounts(U, [A]);
   const meta = await db.getAccountMeta(U, A);
   ok('新建账户有结构化元数据行', meta && typeof meta.cashBase === 'number');

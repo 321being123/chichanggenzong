@@ -14,16 +14,18 @@ const metaRouter = require('./routes/meta');
 const profileRouter = require('./routes/profile');
 const adminRouter = require('./routes/admin');
 const ipoRouter = require('./routes/ipo');
+const bondSafetyRouter = require('./routes/bondSafety');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
 const { runIndexRecentJob } = require('./jobs/indexBaseline');
 const { runHkRateJob } = require('./jobs/hkRate');
+const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
 
 const app = express();
-// 部署在 Nginx 反代后需信任一层代理（用于正确的客户端IP与 X-Forwarded-Proto）。
-// 通过环境变量控制，避免在所有部署模式（如直连）固定启用（P1-6）。默认信任一层（与现有 Nginx 部署一致）。
-app.set('trust proxy', process.env.TRUST_PROXY === '0' ? 0 : 1);
+// 安全默认：不信任上游代理（避免伪造 X-Forwarded-For 绕过限流/IP 识别）。
+// 生产若确在反向代理后，需在 .env 显式设置 TRUST_PROXY=1（P1-5）。
+app.set('trust proxy', process.env.TRUST_PROXY === '1');
 
 // 启动前的基础中间件（不依赖 Redis）：请求体解析 + 请求追踪/访问日志
 // 上限 15mb：10MB 图片经 Base64 后约 13.3MB，超过原 10mb 会被 body-parser 直接拒绝（P1-7）
@@ -84,6 +86,7 @@ async function start() {
   app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
   app.use('/api/admin', adminRouter);   // 管理后台：统一 /api/admin 前缀，路由内已 requireAdmin
   app.use('/api/ipo', ipoRouter);       // 打新日历：报告/历史列表/已上市表现
+  app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：快照列表/管理员刷新
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
@@ -112,6 +115,8 @@ async function start() {
       runIndexRecentJob().catch(function (e) { console.error('指数每日补齐失败:', e.message); });
       // 每日港币汇率自动更新（避免不开网页时港股估值沿用旧汇率）
       runHkRateJob().catch(function (e) { console.error('汇率更新失败:', e.message); });
+      // 每日 06:30（Asia/Shanghai）更新可转债安全性；首次无快照时自动补齐
+      scheduleBondSafetyRefresh();
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }

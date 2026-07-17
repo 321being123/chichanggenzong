@@ -1,9 +1,14 @@
 // 工具函数（由 server/db.js 物理拆分而来，函数体未改动）
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 
+const SCRYPT_KEYLEN = 64;
+const SCRYPT_OPTS = { N: 16384, r: 8, p: 1 };
+
 function hashPwd(pwd) {
+  // 渐进迁移：新密码统一用内置 crypto.scrypt（无新依赖），强于原 PBKDF2 1万次
   const salt = crypto.randomBytes(16).toString('hex');
-  return salt + ':' + crypto.pbkdf2Sync(pwd, salt, 10000, 32, 'sha512').toString('hex');
+  const hash = crypto.scryptSync(pwd, Buffer.from(salt, 'hex'), SCRYPT_KEYLEN, SCRYPT_OPTS).toString('hex');
+  return 'scrypt:' + salt + ':' + hash;
 }
 
 // 时序安全比较：避免被计时攻击猜出哈希（P1-1）
@@ -15,10 +20,26 @@ function safeEqual(a, b) {
 }
 
 function verifyPwd(pwd, stored) {
-  if (!stored.includes(':')) return safeEqual(crypto.createHash('sha256').update(pwd).digest('hex').slice(0, 16), stored);
-  const [salt, hash] = stored.split(':');
-  const computed = crypto.pbkdf2Sync(pwd, salt, 10000, 32, 'sha512').toString('hex');
-  return safeEqual(computed, hash);
+  if (!stored || typeof stored !== 'string') return false;
+  // 新格式：scrypt:<salt>:<hash>
+  if (stored.startsWith('scrypt:')) {
+    const [, salt, hash] = stored.split(':');
+    const computed = crypto.scryptSync(pwd, Buffer.from(salt, 'hex'), SCRYPT_KEYLEN, SCRYPT_OPTS).toString('hex');
+    return safeEqual(computed, hash);
+  }
+  // 遗留格式1：pbkdf2 1万次（含 ':' 分隔）
+  if (stored.includes(':')) {
+    const [salt, hash] = stored.split(':');
+    const computed = crypto.pbkdf2Sync(pwd, salt, 10000, 32, 'sha512').toString('hex');
+    return safeEqual(computed, hash);
+  }
+  // 遗留格式2：早期 sha256 截断（无 ':'）
+  return safeEqual(crypto.createHash('sha256').update(pwd).digest('hex').slice(0, 16), stored);
+}
+
+// 是否为旧哈希格式（需在登录成功后透明升级为 scrypt）
+function isLegacyHash(stored) {
+  return typeof stored === 'string' && !stored.startsWith('scrypt:');
 }
 
 // ====== 账户数据 ======
@@ -69,6 +90,7 @@ module.exports = {
   hashPwd,
   safeEqual,
   verifyPwd,
+  isLegacyHash,
   uid,
   round,
   bulkInsert,

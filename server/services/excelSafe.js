@@ -18,15 +18,21 @@ function safeParseExcel(b64, opts) {
     });
 
     const MAX_OUT = 16 * 1024 * 1024; // 子进程输出上限 16MB，超出直接强杀，防止输出撑爆主进程
+    const MAX_ERR = 64 * 1024; // 子进程 stderr 上限 64KB，超出停止收集并强杀，防异常刷屏撑爆主进程
     let out = '';
     let err = '';
     let outCapped = false;
+    let errCapped = false;
     child.stdout.on('data', d => {
       if (outCapped) return;
       out += d;
       if (out.length > MAX_OUT) { outCapped = true; try { child.kill('SIGKILL'); } catch (e) { /* ignore */ } }
     });
-    child.stderr.on('data', d => { err += d; });
+    child.stderr.on('data', d => {
+      if (errCapped) return;
+      err += d;
+      if (err.length > MAX_ERR) { errCapped = true; err = err.slice(0, MAX_ERR); try { child.kill('SIGKILL'); } catch (e) { /* ignore */ } }
+    });
 
     const timeoutMs = opts.timeoutMs || 15000;
     const timer = setTimeout(() => {

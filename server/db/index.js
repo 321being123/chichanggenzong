@@ -27,6 +27,7 @@ module.exports = {
   updateUserAccounts: users.updateUserAccounts,
   hashPwd: util.hashPwd,
   verifyPwd: util.verifyPwd,
+  isLegacyHash: util.isLegacyHash,
   getUserProfile: users.getUserProfile,
   getUserAuth: users.getUserAuth,
   countUsers: users.countUsers,

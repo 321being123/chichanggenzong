@@ -3,9 +3,10 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
+const rateLimit = require('../middleware/rateLimit');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { registerUser, hashPwd, verifyPwd, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
 router.post('/register', asyncHandler(async (req, res) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();
@@ -61,6 +62,10 @@ router.post('/login', asyncHandler(async (req, res, next) => {
   if (user.status && user.status !== 'active') { recordFail(lockKey); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
   if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '账号或密码错误' }); }
   clearFail(lockKey);
+  // 渐进迁移：旧哈希格式（pbkdf2/sha256）登录成功后，透明升级为新 scrypt 哈希（P1-5）
+  if (isLegacyHash(user.password)) {
+    changePassword(username, hashPwd(password)).catch(() => {});
+  }
   // 会话固定防护（P1-1）：登录成功后重建会话，丢弃旧会话ID，防会话固定攻击
   req.session.regenerate((err) => {
     if (err) return next(err);
@@ -84,8 +89,16 @@ router.get('/me', asyncHandler(async (req, res) => {
 }));
 router.get('/config', asyncHandler(async (req, res) => { res.json({ needRegisterCode: !!(await getConfig('register_code', REGISTER_CODE || '')) }); }));
 
-// 发送邮箱验证码
-router.post('/send-code', asyncHandler(async (req, res) => {
+// 发送邮箱验证码（IP+邮箱 联合限流，复用现有内存/Redis 限流中间件）
+router.post('/send-code',
+  rateLimit({
+    prefix: 'emailcode',
+    windowMs: 60000,
+    max: 5,
+    getKey: (req) => (req.ip || '0.0.0.0') + ':' + ((req.body && req.body.email) || ''),
+    message: '发送验证码过于频繁，请稍后再试'
+  }),
+  asyncHandler(async (req, res) => {
   if (!mailer) return res.status(500).json({ error: '邮件服务未配置' });
   const { email } = req.body;
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: '邮箱格式不正确' });

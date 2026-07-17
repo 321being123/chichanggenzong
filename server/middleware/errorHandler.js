@@ -44,8 +44,9 @@ function errorHandler(err, req, res, next) {
   // 业务冲突（乐观锁）映射为 409；否则 500
   const status = err.status || (err.conflict ? 409 : 500);
   let message = (err && err.message) ? err.message : '服务器内部错误';
-  // 生产环境：500 不向客户端暴露原始数据库/内部错误细节，仅返回通用提示（P1-6）
-  if (status === 500 && process.env.NODE_ENV === 'production') message = '服务器内部错误，请稍后重试';
+  // 500 错误一律不向客户端暴露内部细节（数据库/堆栈等），仅返回通用提示；
+  // 完整信息已记入服务端日志。防止敏感信息泄露（P1-5）。
+  if (status === 500) message = '服务器内部错误，请稍后重试';
   res.status(status).json({ error: message, rid });
 }
 

@@ -19,9 +19,9 @@ function check(name, fn) {
   catch (e) { results.push(['FAIL', name + ' :: ' + e.message]); console.log('  [FAIL] ' + name + ' :: ' + e.message); }
 }
 
-check('hashPwd 产出 salt:hash 格式', () => {
+check('hashPwd 产出 scrypt:salt:hash 格式', () => {
   const h = db.hashPwd('secret123');
-  assert.ok(/^[0-9a-f]+:[0-9a-f]+$/.test(h), '应为 salt:hash 形式，实际: ' + h);
+  assert.ok(/^scrypt:[0-9a-f]+:[0-9a-f]+$/.test(h), '应为 scrypt:salt:hash 形式，实际: ' + h);
 });
 check('verifyPwd 正确密码返回 true（时序安全比较不破坏正确性）', () => {
   const h = db.hashPwd('secret123');
@@ -36,6 +36,23 @@ check('verifyPwd 兼容旧 sha256 切片格式', () => {
   const legacy = crypto.createHash('sha256').update('oldpw').digest('hex').slice(0, 16);
   assert.strictEqual(db.verifyPwd('oldpw', legacy), true);
   assert.strictEqual(db.verifyPwd('other', legacy), false);
+});
+check('verifyPwd 兼容旧 pbkdf2 格式（渐进迁移来源）', () => {
+  const crypto = require('crypto');
+  const salt = '0123456789abcdef';
+  const hash = crypto.pbkdf2Sync('oldpw', salt, 10000, 32, 'sha512').toString('hex');
+  const legacy = salt + ':' + hash;
+  assert.strictEqual(db.verifyPwd('oldpw', legacy), true);
+  assert.strictEqual(db.verifyPwd('other', legacy), false);
+});
+check('isLegacyHash 正确识别旧/新格式', () => {
+  const crypto = require('crypto');
+  const salt = '0123456789abcdef';
+  const pbkdf2 = salt + ':' + crypto.pbkdf2Sync('x', salt, 10000, 32, 'sha512').toString('hex');
+  const sha256 = crypto.createHash('sha256').update('x').digest('hex').slice(0, 16);
+  assert.strictEqual(db.isLegacyHash(pbkdf2), true);
+  assert.strictEqual(db.isLegacyHash(sha256), true);
+  assert.strictEqual(db.isLegacyHash(db.hashPwd('x')), false);
 });
 
 // 验证码范围：crypto.randomInt(100000, 1000000) 必为 6 位

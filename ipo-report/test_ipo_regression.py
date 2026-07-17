@@ -243,8 +243,12 @@ except Exception as e:
 print("\n== 9. 可转债预测：发行规模折扣 + 区间带 ==")
 try:
     # 隔离外部依赖：强制用固定市场热度与基础溢价率，使结果可断言
-    m._fetch_all_bonds_market = lambda: []              # 空列表 -> 走 fallback: base_premium = market['avg_premium']
-    m.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
+    # 注意：estimate_bond_listing_price 定义在 ipo_lib_valuation，其引用的
+    #       _fetch_all_bonds_market / fetch_market_heat 经 `from ... import *`
+    #       进入 ipo_lib_valuation 命名空间，故桩必须打到该模块才生效。
+    import ipo_lib_valuation as _val
+    _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']
+    _val.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
 
     # 9.1 发行规模(总募资)折扣档位：TV=100 / 流通20亿(巨盘,-0.05) / AAA(+0.05)
     #     总溢价率 = 0.30(基础) -0.05(流通) + 发行折扣 + 0.05(AAA)

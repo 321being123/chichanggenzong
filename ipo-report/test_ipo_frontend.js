@@ -68,10 +68,10 @@ check("已上市->日期", sandbox.ipoProgressDate(it1) === "2026-07-10");
 let it2 = { onl_date: "2026-07-15", ann_date: "2026-07-14" };
 check("申购日=今天->申购日", sandbox.ipoCurrentStage(it2).indexOf("申购日") >= 0);
 
-// D3 申购日未来 + 发行公告日存在 -> 发行公告日（非申购日、非结果公告日）
+// D3 申购日未来 + 发行公告日存在 -> 申购日（按用户拍板：申购日未到也显示"申购日"，不与发行公告混淆）
 let it3 = { onl_date: "2026-07-17", ann_date: "2026-07-15" };
-check("申购日未来->发行公告", sandbox.ipoCurrentStage(it3).indexOf("发行公告") >= 0);
-check("进展公告日=发行公告日(非未来)", sandbox.ipoProgressDate(it3) === "2026-07-15");
+check("申购日未来->申购日", sandbox.ipoCurrentStage(it3).indexOf("申购日") >= 0);
+check("进展公告日=申购日(非发行公告日)", sandbox.ipoProgressDate(it3) === "2026-07-17");
 
 // D4 关键回归：res_ann_date 是未来(7/21)但 onl_date=今天 -> 必须显示 申购日，不得显示发行结果公告日
 let it4 = { onl_date: "2026-07-15", res_ann_date: "2026-07-21" };

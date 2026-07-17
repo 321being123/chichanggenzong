@@ -43,3 +43,9 @@ tp.log
 tp_out.log
 _探针_*
 _probe/
+
+# 数据库备份产物（含加密/校验文件，禁止入库）
+backups/
+*.sql.gz
+*.gpg
+*.sha256

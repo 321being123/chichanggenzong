@@ -64,9 +64,9 @@ function pgConfig(dbName) {
     check('二次迁移不重复登记（仍为1）', () => { assert.strictEqual(m2.rows[0].c, 1); });
   } catch (e) {
     if (!tmpDb) {
-      // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（不影响通过）
+      // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）
       console.log('  [SKIP] 无可用 PostgreSQL / 无 CREATEDB 权限，跳过空库迁移测试');
-      results.push(['PASS', 'SKIP-空库迁移']);
+      results.push(['SKIP', 'SKIP-空库迁移']);
     } else {
       results.push(['FAIL', '异常: ' + (e && e.message ? e.message : e)]);
       console.log('  [FAIL] 异常: ' + (e && e.stack ? e.stack : e));
@@ -89,8 +89,14 @@ function pgConfig(dbName) {
 
   const pass = results.filter(r => r[0] === 'PASS').length;
   const fail = results.filter(r => r[0] === 'FAIL').length;
+  const skip = results.filter(r => r[0] === 'SKIP').length;
   console.log('\n===== 空库迁移回归汇总 =====');
-  console.log('PASS=' + pass + '  FAIL=' + fail);
+  console.log('PASS=' + pass + '  FAIL=' + fail + '  SKIP=' + skip);
   if (fail > 0) { console.log('HAS_ISSUES'); process.exit(1); }
-  else { console.log('ALL PASS'); }
+  if (skip > 0) {
+    if (process.env.CI === '1') { console.log('CI 模式下不允许跳过关键测试'); process.exit(1); }
+    console.log('SKIPPED');   // 本地：跳过不视为失败
+    process.exit(0);
+  }
+  console.log('ALL PASS');
 })();

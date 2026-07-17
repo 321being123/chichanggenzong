@@ -15,13 +15,17 @@ const rootDir = path.join(__dirname, '..', '..');
 
 let pass = 0, fail = 0, skip = 0;
 const failed = [];
+const isCI = process.env.CI === '1';
 
 function runNode(file) {
   const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const out = (r.stdout || '') + (r.stderr || '');
   const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
   const last = lines[lines.length - 1] || '(无输出)';
-  if (r.status === 0) { pass++; console.log('  ✓ ' + file + '  ——  ' + last); }
+  // 识别测试自身标记的跳过（如空库迁移在无 PG 时打印 [SKIP]），不计入通过
+  if (/\[SKIP\]|SKIP-/.test(out)) {
+    skip++; console.log('  ⊘ ' + file + '  (跳过)  ——  ' + last);
+  } else if (r.status === 0) { pass++; console.log('  ✓ ' + file + '  ——  ' + last); }
   else { fail++; failed.push(file); console.log('  ✗ ' + file + '  (退出码 ' + r.status + ')  ——  ' + last); }
 }
 
@@ -74,9 +78,13 @@ function runPython() {
     const out = (r.stdout || '') + (r.stderr || '');
     const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
     const last = lines[lines.length - 1] || '(无输出)';
-    // 缺依赖/解释器环境异常：标注 SKIP 而非失败，便于本地与 CI 区分
+    // 缺依赖/解释器环境异常：本地标 SKIP；CI 模式下视为失败（不允许关键测试跳过）
     const envErr = /ModuleNotFoundError|No module named|ImportError|Can't open file/.test(out);
-    if (envErr) { skip++; console.log('  ⊘ ' + path.basename(file) + '  (环境/依赖缺失，跳过)  ——  ' + last); continue; }
+    if (envErr) {
+      if (isCI) { fail++; failed.push(path.basename(file)); console.log('  ✗ ' + path.basename(file) + '  (CI 模式下环境缺失视为失败)  ——  ' + last); }
+      else { skip++; console.log('  ⊘ ' + path.basename(file) + '  (环境/依赖缺失，跳过)  ——  ' + last); }
+      continue;
+    }
     // 解析测试自身汇总行「PASS=x  FAIL=y  ERROR=z」，避免退出码为 0 却内部失败被误判通过
     const m = out.match(/PASS=(\d+)\s+FAIL=(\d+)\s+ERROR=(\d+)/);
     const hasIssues = /HAS_ISSUES/.test(out) || (m && (Number(m[2]) > 0 || Number(m[3]) > 0));
@@ -92,4 +100,8 @@ runPython();
 console.log('\n========================================');
 console.log('通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
   (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
+if (isCI && skip > 0) {
+  console.log('CI 模式下不允许跳过关键测试（共跳过 ' + skip + ' 项），判定失败');
+  process.exit(1);
+}
 process.exit(fail ? 1 : 0);

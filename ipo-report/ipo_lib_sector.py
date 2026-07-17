@@ -397,7 +397,8 @@ def detect_market_temperature():
 
     if not rows:
         print("[市场温度] 数据不足，默认热市")
-        _MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_3m": 250}
+        _MARKET_TEMP.clear()
+        _MARKET_TEMP.update({"level": "热市", "break_rate": 0, "avg_gain_3m": 250})
         _TEMP_CALIBRATED = True
         return _MARKET_TEMP
 
@@ -414,7 +415,8 @@ def detect_market_temperature():
     else:
         level = "冷市"
 
-    _MARKET_TEMP = {"level": level, "break_rate": round(break_rate * 100, 1), "avg_gain_3m": round(avg_gain, 1)}
+    _MARKET_TEMP.clear()
+    _MARKET_TEMP.update({"level": level, "break_rate": round(break_rate * 100, 1), "avg_gain_3m": round(avg_gain, 1)})
     _TEMP_CALIBRATED = True
 
     print(f"[市场温度] {level}（破发率{_MARKET_TEMP['break_rate']}%，6月均涨幅{_MARKET_TEMP['avg_gain_3m']}%）")
@@ -469,7 +471,8 @@ def detect_bond_market_temperature():
 
     if not rows:
         print("[新债市场温度] 数据不足，默认热市")
-        _BOND_MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_6m": 30}
+        _BOND_MARKET_TEMP.clear()
+        _BOND_MARKET_TEMP.update({"level": "热市", "break_rate": 0, "avg_gain_6m": 30})
         return _BOND_MARKET_TEMP
 
     gains = rows
@@ -485,7 +488,8 @@ def detect_bond_market_temperature():
     else:
         level = "冷市"
 
-    _BOND_MARKET_TEMP = {"level": level, "break_rate": round(break_rate * 100, 1), "avg_gain_6m": round(avg_gain, 1)}
+    _BOND_MARKET_TEMP.clear()
+    _BOND_MARKET_TEMP.update({"level": level, "break_rate": round(break_rate * 100, 1), "avg_gain_6m": round(avg_gain, 1)})
     print(f"[新债市场温度] {level}（破发率{_BOND_MARKET_TEMP['break_rate']}%，6月均涨幅{_BOND_MARKET_TEMP['avg_gain_6m']}%）")
     return _BOND_MARKET_TEMP
 

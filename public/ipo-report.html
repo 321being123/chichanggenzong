@@ -61,18 +61,21 @@
     return path;
   }
   // 安全输出状态/错误信息：用 textContent，绝不拼接进 innerHTML（防 XSS）
+  // 自行获取容器元素，避免依赖外部作用域变量（修复 ReferenceError）
   function setState(msg, isErr) {
+    var el = document.getElementById('md-content');
+    if (!el) return;
     var div = document.createElement('div');
     div.className = 'state' + (isErr ? ' err' : '');
     div.textContent = msg;
-    content.innerHTML = '';
-    content.appendChild(div);
+    el.innerHTML = '';
+    el.appendChild(div);
   }
   async function init() {
     var date = getParam('date');
     var code = getParam('code');
-    var content = document.getElementById('md-content');
     var dateEl = document.getElementById('rpt-date');
+    var content = document.getElementById('md-content');
     try {
       var url;
       if (code) {
@@ -85,8 +88,26 @@
         setState('未登录或登录已过期，请先在系统主页面登录后再打开本报告。', true);
         return;
       }
+      if (r.status === 403) {
+        setState('没有查看该报告的权限。', true);
+        return;
+      }
+      if (r.status === 404) {
+        setState('未找到' + (code ? ('代码 ' + code + ' 的') : (date ? ('日期 ' + date + ' 的') : '')) + '报告。', false);
+        return;
+      }
+      if (r.status >= 500) {
+        setState('服务器开小差了（' + r.status + '），请稍后重试。', true);
+        return;
+      }
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      var d = await r.json();
+      var d;
+      try {
+        d = await r.json();
+      } catch (e) {
+        setState('返回的数据格式异常，无法解析。', true);
+        return;
+      }
       if (!d || !d.md) {
         setState('暂无' + (code ? '个股' : '') + '报告内容。', false);
         return;
@@ -97,7 +118,7 @@
         dateEl.textContent = '报告日期 ' + d.report_date;
       }
       // Markdown 渲染结果经 DOMPurify 白名单净化后再写入，杜绝存储型 XSS
-      content.innerHTML = DOMPurify.sanitize(marked.parse(d.md || ''), { USE_PROFILES: { html: true } });
+      if (content) content.innerHTML = DOMPurify.sanitize(marked.parse(d.md || ''), { USE_PROFILES: { html: true } });
     } catch (e) {
       setState('加载失败：' + (e.message || e), true);
     }

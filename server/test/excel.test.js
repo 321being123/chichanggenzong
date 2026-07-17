@@ -42,13 +42,22 @@ console.log('C. 压缩炸弹（声明解压体积巨大）应被拒绝');
 check('伪造 ZIP 本地头声明 300MB 解压', async () => {
   const b = Buffer.alloc(40);
   b[0] = 0x50; b[1] = 0x4B; b[2] = 0x03; b[3] = 0x04; // PK\x03\x04
-  b.writeUInt32LE(300 * 1024 * 1024, 18); // 解压后 300MB
-  b.writeUInt32LE(10, 22);                // 压缩后很小（典型的炸弹特征）
+  b.writeUInt32LE(10, 18);                 // 偏移18 = 压缩后很小（典型的炸弹特征）
+  b.writeUInt32LE(300 * 1024 * 1024, 22);  // 偏移22 = 解压后 300MB
   b.writeUInt16LE(0, 26); b.writeUInt16LE(0, 28);
   let threw = false;
   try { await safeParseExcel(b.toString('base64'), { mode: 'first' }); }
   catch (e) { threw = true; assert.ok(/体积过大|压缩炸弹/.test(e.message), '错误提示不符: ' + e.message); }
   assert.ok(threw, '压缩炸弹未被拒绝');
+});
+
+console.log('D. 超大输入应被直接拒绝（不启动子进程）');
+check('传入 >64MB base64 被拒', async () => {
+  const huge = 'A'.repeat(65 * 1024 * 1024);
+  let threw = false;
+  try { await safeParseExcel(huge, { mode: 'first' }); }
+  catch (e) { threw = true; assert.ok(/过大/.test(e.message), '错误提示不符: ' + e.message); }
+  assert.ok(threw, '超大输入未被拒绝');
 });
 
 Promise.all(promises).then(() => {

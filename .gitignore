@@ -1,6 +1,7 @@
 ﻿node_modules/
 data/portfolio.db
 data/.secret
+server/data/
 .env
 .env.local
 *.log
@@ -10,6 +11,10 @@ Thumbs.db
 # Python 缓存
 __pycache__/
 *.pyc
+
+# Python 虚拟环境（本地/CI 生成，不入库）
+ipo-report/venv/
+venv/
 
 # 已弃用代码存档（不入库，本地保留）
 _deprecated/

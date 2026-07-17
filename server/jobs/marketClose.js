@@ -52,6 +52,18 @@ function msUntil(h, m) {
   return targetEpoch - now.getTime();
 }
 
+// 计算到「下一个交易日北京时间 h:m」的毫秒数（显式东八区，不依赖容器本地时区）
+// 复用 msUntil 得到下一个北京时间 h:m 的落点，再按北京时间日期跳过非交易日。
+function nextRunDelay(h, m) {
+  let epoch = Date.now() + msUntil(h, m) + 60000; // +1 分钟缓冲，避开当前执行点
+  let guard = 0;
+  while (!isTradingDay(new Date(epoch)) && guard < 14) {
+    epoch += 86400000; // 顺延一天（毫秒，跨时区安全）
+    guard++;
+  }
+  return Math.max(epoch - Date.now(), 5000);
+}
+
 // 带重试的行情抓取：Tushare 偶发 null / 港股腾讯抖动 → 重试 2 次，间隔 1s
 async function fetchWithRetry(code, tries) {
   for (let i = 0; i < tries; i++) {
@@ -91,11 +103,14 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
   );
   const existingCodes = new Set(existingRows.map(r => r.code));
 
-  // 仅抓取缺失代码
+  // 仅抓取缺失代码（按代码去重，避免同一代码因多条持仓记录而重复抓取）
   const missingCodes = pickMissingCodes(positions, existingCodes, matchFn);
   if (missingCodes.length === 0) return { recorded: 0, failed: 0 };
-  const missingSet = new Set(missingCodes);
-  const missing = positions.filter(p => missingSet.has(p.code));
+  const seen = new Set();
+  const missing = positions.filter(p => {
+    if (missingCodes.includes(p.code) && !seen.has(p.code)) { seen.add(p.code); return true; }
+    return false;
+  });
 
   let recorded = 0, failed = 0;
   const prices = [];
@@ -193,15 +208,7 @@ function scheduleAllMarketCloses() {
             })
             .catch(() => {});
         }
-        var delay = msUntil(mkt.h, mkt.m);
-        var nextDay = new Date(Date.now() + delay + 60000);
-        while (!isTradingDay(nextDay)) {
-          nextDay.setDate(nextDay.getDate() + 1);
-        }
-        var now = new Date();
-        nextDay.setHours(mkt.h, mkt.m, 0, 0);
-        var nextDelay = nextDay - now;
-        if (nextDelay <= 0) nextDelay = 5000;
+        var nextDelay = nextRunDelay(mkt.h, mkt.m);
         setTimeout(runAndReschedule, nextDelay);
       }
       var initialDelay = msUntil(mkt.h, mkt.m);
@@ -210,4 +217,4 @@ function scheduleAllMarketCloses() {
   }
 }
 
-module.exports = { scheduleAllMarketCloses, backfillMissingCloses, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil };
+module.exports = { scheduleAllMarketCloses, backfillMissingCloses, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil, nextRunDelay };

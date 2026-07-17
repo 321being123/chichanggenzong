@@ -12,15 +12,16 @@
 ### 服务器部署（腾讯云/NAS）
 
 ```bash
-# 1. 安装 Node.js 18+
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+# 1. 安装 Node.js 22+
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
 
 # 2. 上传项目并安装
 cd /opt
 # scp -r portfolio-server root@IP:/opt/portfolio
 cd portfolio
-npm install --production
+# 按 lockfile 精确安装（与 package-lock.json 一致；去掉 --omit=dev 可装开发依赖以跑测试）
+npm ci --omit=dev
 
 # 3. 用 PM2 保活运行
 npm install -g pm2
@@ -29,7 +30,7 @@ pm2 save
 pm2 startup
 
 # 4. 开放端口
-# 腾讯云安全组放行 3000 端口
+# 腾讯云安全组只放行 80/443/22 端口（3000 仅内网 Nginx 反代使用，不对公网开放）
 ```
 
 ### 外网访问
@@ -39,4 +40,4 @@ pm2 startup
 - 数据统一存储在 **PostgreSQL** 数据库（用户、账户、持仓、交易、净值、现金流、收盘价等均为结构化表）。
 - 通过环境变量 `DATABASE_URL` 或 `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE` 连接，详见 `.env` 示例。
 - 会话密钥等敏感配置仅存于 `.env`，不进入仓库；数据库连接密码绝不明文写入代码。
-- 重启服务（含容器/PM2）不会丢失数据，备份请用 `pg_dump`。
+- 重启服务（含 PM2）不会丢失数据，备份请用 `pg_dump`。

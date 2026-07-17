@@ -7,54 +7,33 @@ on:
     branches: [master]
 
 jobs:
+  # 快速语法检查（不连数据库/外部服务）
   syntax-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4
         with:
           node-version: '22'
-      # 按 lockfile 精确安装依赖（验证 package-lock.json 与 package.json 一致，含 redis/connect-redis）
       - name: 安装依赖（npm ci）
         run: npm ci
-      # 安全专项测试：零依赖，不连数据库/Redis/外部 API，避免环境缺失导致失败
-      - name: 安全专项测试
-        run: npm run test:security
-      # 仅对仓库内受版本管理的 JS 做语法检查（node_modules 不入库，自动排除）
-      # 不连接数据库/Redis/外部行情，避免 CI 因环境缺失而失败
       - name: Node 语法检查
         run: |
           fail=0
           for f in $(git ls-files '*.js'); do
-            if ! node --check "$f"; then
-              echo "语法错误: $f"
-              fail=1
-            fi
+            if ! node --check "$f"; then echo "语法错误: $f"; fail=1; fi
           done
-          if [ "$fail" -ne 0 ]; then
-            echo "存在语法错误，CI 失败"
-            exit 1
-          fi
-          echo "全部 JS 语法检查通过"
-
-      # Python 语法检查：纯标准库编译，防止语法错误进入主干（不安装依赖）
+          [ "$fail" -eq 0 ] && echo "全部 JS 语法检查通过" || { echo "存在语法错误，CI 失败"; exit 1; }
       - name: Python 语法检查
         run: |
           fail=0
           while IFS= read -r f; do
-            if ! python3 -m py_compile "$f"; then
-              echo "Python 语法错误: $f"
-              fail=1
-            fi
+            if ! python3 -m py_compile "$f"; then echo "Python 语法错误: $f"; fail=1; fi
           done < <(git ls-files '*.py')
-          if [ "$fail" -ne 0 ]; then
-            echo "存在 Python 语法错误，CI 失败"
-            exit 1
-          fi
-          echo "全部 Python 语法检查通过"
+          [ "$fail" -eq 0 ] && echo "全部 Python 语法检查通过" || { echo "存在 Python 语法错误，CI 失败"; exit 1; }
 
-  # 集成测试：在临时 PostgreSQL 上验证 schema 迁移、numeric 精度、账户模型、任务锁
-  integration-test:
+  # 统一测试入口：单元/集成（PostgreSQL）/安全专项/IPO前端/Python功能，全部纳入
+  full-test:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -76,25 +55,44 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: portfolio
+      AI_ALLOWED_HOSTS: 'api.openai.com'
+      ALLOWED_ORIGIN: 'localhost,127.0.0.1'
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4
         with:
           node-version: '22'
       - name: 安装依赖（npm ci）
         run: npm ci
-      - name: 集成测试
-        run: npm run test:integration
+      - name: 准备 Python venv 并安装依赖（用于 Python 功能测试）
+        run: |
+          python3 -m venv ipo-report/venv
+          ipo-report/venv/bin/pip install -r requirements.txt
+      - name: 统一测试入口（test:all 含单元/集成/安全/IPO前端/Python功能）
+        run: npm run test:all
 
-  # 依赖漏洞审计：仅报告高危漏洞，不阻断构建（避免无关告警阻塞合并）
+  # 依赖漏洞审计：高危即阻断构建（不再用 || true 放行）
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4
         with:
           node-version: '22'
       - name: 安装依赖（npm ci）
         run: npm ci
-      - name: npm 依赖审计
-        run: npm audit --audit-level=high || true
+      - name: npm 依赖审计（高危即阻断）
+        run: npm audit --audit-level=high
+
+  # 秘密扫描：检测仓库历史与当前代码中泄露的密钥/密码
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks 秘密扫描
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"

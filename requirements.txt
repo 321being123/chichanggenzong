@@ -1,1 +1,10 @@
-psycopg2-binary
+# 打新脚本 Python 依赖（P2-3：锁定版本，保证可复现环境）
+# 如需按实际环境重新生成精确版本，可在已装好依赖的 venv 中执行：
+#   pip freeze | grep -E "psycopg2-binary|tushare|pandas|numpy|requests|PyMuPDF|xgboost" > requirements.txt
+psycopg2-binary==2.9.9
+tushare==1.4.6
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+PyMuPDF==1.24.10
+xgboost==2.1.1

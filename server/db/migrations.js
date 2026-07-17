@@ -1,6 +1,8 @@
 // 本文件由 server/db.js 物理拆分而来，函数体未改动，仅调整文件归属。
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
+const { seedBrokers } = require('./brokers');
+const { migrateAccountsTable } = require('./accounts');
 
 async function migration001Init() {
   await pool.query(`

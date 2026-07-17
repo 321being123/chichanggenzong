@@ -6,7 +6,8 @@ const crypto = require('crypto');
 const { Pool } = require('pg');
 const { DEFAULT_FEE_SETTINGS } = require('../../public/shared/core-fees');
 
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+// DATA_DIR 指向项目根目录下的 data/（本文件位于 server/db，故需上溯两级）
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const pool = process.env.DATABASE_URL

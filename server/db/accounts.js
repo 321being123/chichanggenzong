@@ -1,6 +1,7 @@
 // 本文件由 server/db.js 物理拆分而来，函数体未改动，仅调整文件归属。
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
+const { loadUsers } = require('./users');
 
 async function loadAccountData(username, accountName) {
   const { rows: positions } = await pool.query(
@@ -237,54 +238,6 @@ async function getAccountMeta(username, accountName) {
   return rows[0] ? { cashBase: rows[0].cash_base, hkRate: rows[0].hk_rate, version: rows[0].version } : null;
 }
 
-// 券商字典种子（A股主流券商；code 与 inferBroker 保持一致：华泰=huatai、招商=cms）。
-// 幂等：ON CONFLICT DO UPDATE 使名称/排序随代码更新为准，不会重复插入。
-const BROKER_SEED = [
-  ['other', '其他/未指定', 'A', 0],
-  ['huatai', '华泰证券', 'A', 10],
-  ['cms', '招商证券', 'A', 20],
-  ['citic', '中信证券', 'A', 30],
-  ['citics', '中信建投', 'A', 40],
-  ['gtja', '国泰君安', 'A', 50],
-  ['galaxy', '中国银河', 'A', 60],
-  ['gf', '广发证券', 'A', 70],
-  ['htsec', '海通证券', 'A', 80],
-  ['swhy', '申万宏源', 'A', 90],
-  ['guosen', '国信证券', 'A', 100],
-  ['eastmoney', '东方财富证券', 'A', 110],
-  ['cicc', '中金公司', 'A', 120],
-  ['ebscn', '光大证券', 'A', 130],
-  ['foundersc', '方正证券', 'A', 140],
-  ['pingan', '平安证券', 'A', 150],
-  ['cib', '兴业证券', 'A', 160],
-  ['cjsc', '长江证券', 'A', 170],
-  ['zts', '中泰证券', 'A', 180],
-  ['gjzq', '国金证券', 'A', 190],
-  ['dwzq', '东吴证券', 'A', 200],
-  ['minsheng', '民生证券', 'A', 210],
-  ['orient', '东方证券', 'A', 220],
-  ['cszc', '浙商证券', 'A', 230],
-  ['ctsec', '财通证券', 'A', 240],
-  ['tfzq', '天风证券', 'A', 250],
-  ['huaan', '华安证券', 'A', 260],
-  ['swsc', '西南证券', 'A', 270],
-  ['gyzq', '国元证券', 'A', 280],
-  ['ccb', '中银证券', 'A', 290],
-  ['huaxi', '华西证券', 'A', 300],
-  ['gszq', '长城证券', 'A', 310],
-  ['sxzq', '山西证券', 'A', 320],
-  ['njzq', '南京证券', 'A', 330],
-  ['sczq', '首创证券', 'A', 340],
-  ['hongta', '红塔证券', 'A', 350],
-  ['hlzq', '华林证券', 'A', 360],
-  ['dbzq', '德邦证券', 'A', 370],
-  ['gdzq', '粤开证券', 'A', 380],
-  ['cindasc', '信达证券', 'A', 390],
-  ['gxzq', '国海证券', 'A', 400],
-  ['zyzq', '中原证券', 'A', 410],
-  ['hczq', '华创证券', 'A', 420],
-  ['xszq', '湘财证券', 'A', 430]
-];
 module.exports = {
   loadAccountData,
   saveAccountData,

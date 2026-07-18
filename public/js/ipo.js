@@ -131,11 +131,6 @@ function ipoTable(headers, rows, opts) {
   return h;
 }
 
-// 缓存最新报告（给打新高报用）
-var _ipoLatestReport = null;
-// 已生成报告的日期集合（YYYY-MM-DD），用于日历"查看详情"可用/禁用判断
-var _ipoReportDates = new Set();
-
 // 主入口
 async function loadIpo() {
   var calendar = document.getElementById('ipo-calendar');
@@ -143,15 +138,8 @@ async function loadIpo() {
   try {
     var rr = await fetch(api('/api/ipo/report'));
     var rep = await rr.json();
-    _ipoLatestReport = rep;  // 缓存
     var adv = document.getElementById('ipo-advice');
     if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md);
-    // 已生成报告日期集合（用于日历"查看详情"可用/禁用判断）
-    try {
-      var rrep = await fetch(api('/api/ipo/reports'));
-      var repRows = await rrep.json();
-      _ipoReportDates = new Set((repRows || []).map(function (x) { return x.report_date; }));
-    } catch (e2) { _ipoReportDates = new Set(); }
     var rc = await fetch(api('/api/ipo/calendar?days=90'));
     var cal = await rc.json();
     if (calendar) calendar.innerHTML = ipoRenderCalendar(cal.calendar || []);
@@ -159,23 +147,6 @@ async function loadIpo() {
   } catch (e) {
     if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
-}
-
-// 从最新报告 summary 构建 名称->代码 映射（用于打新建议每支的「查看详情」）
-function _ipoNameCodeMap() {
-  var m = {};
-  var rep = _ipoLatestReport;
-  if (!rep || !rep.summary) return m;
-  var s = rep.summary;
-  ['apply_stocks', 'apply_bonds', 'list_stocks', 'list_bonds'].forEach(function (k) {
-    (s[k] || []).forEach(function (it) {
-      if (it && it.code && it.name) {
-        var base = String(it.name).replace(/[（(].*$/, '').split('-')[0].trim();
-        if (base) m[base] = it.code;
-      }
-    });
-  });
-  return m;
 }
 
 // 打新建议：从日报 md 的「📋 结论」段解析 **上市**/**打新** 两组条目
@@ -199,43 +170,20 @@ function ipoRenderAdvice(md) {
     if (mItem && cur) { cur.items.push(mItem[1]); }
   }
   if (!groups.length) return '';
-  var nameCode = _ipoNameCodeMap();
   var html = '<div class="table-wrap" style="margin-top:18px;">';
   html += '<div class="table-header"><h3>打新建议</h3></div>';
   html += '<div style="padding:14px 18px;">';
   groups.forEach(function (g) {
-    var isList = g.head.indexOf('上市') >= 0;
-    if (isList) {
-      // 「上市」保留绿色底色徽标
-      html += '<div style="margin-bottom:8px;"><span style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:#137333;border-radius:4px;padding:1px 6px;font-weight:600;">' + escapeHtml(g.head) + '</span></div>';
-    } else {
-      // 「打新」不加底色、不加粗（用户要求）
-      html += '<div style="margin-bottom:8px;"><span style="font-size:13px;color:#d93025;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';
-    }
+    html += '<div style="margin-bottom:8px;"><span style="font-size:13px;color:#333;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';
     html += '<ul style="margin:0 0 10px;padding-left:22px;">';
     g.items.forEach(function (it) {
-      var base = String(it).replace(/[（(].*$/, '').split('-')[0].trim();
-      var code = nameCode[base];
       html += '<li style="margin-bottom:4px;color:#333;font-size:13px;">' + escapeHtml(it);
-      if (code) {
-        html += ' <a href="ipo-report.html?code=' + encodeURIComponent(code) +
-          '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;">查看详情</a>';
-      }
       html += '</li>';
     });
     html += '</ul>';
   });
   html += '</div></div>';
   return html;
-}
-
-// “打新报告”查看详情链接：已生成报告(dateStr 在 _ipoReportDates 中)→可点击；否则禁用
-function ipoReportLink(dateStr, hasReport) {
-  if (hasReport && dateStr) {
-    return '<a href="ipo-report.html?date=' + encodeURIComponent(dateStr) +
-      '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;">查看详情</a>';
-  }
-  return '<span style="color:#bbb;cursor:not-allowed;white-space:nowrap;" title="报告未生成">查看详情</span>';
 }
 
 // ========== 打新日历（中间区域，按日期分组） ==========
@@ -250,9 +198,6 @@ function ipoRenderCalendar(calendar) {
     var applyN = (day.apply_stocks || []).length + (day.apply_bonds || []).length;
     var listN = (day.list_stocks || []).length + (day.list_bonds || []).length;
     if (applyN === 0 && listN === 0) return;
-
-    // 该日期是否已生成打新报告（用于"查看详情"可用/禁用）
-    var hasReport = !!(_ipoReportDates && _ipoReportDates.has(day.date));
 
     var isToday = (day.date === todayStr);
     var dateStyle = isToday
@@ -269,13 +214,13 @@ function ipoRenderCalendar(calendar) {
       var applyItems = [];
       (day.apply_stocks || []).forEach(function (it) { applyItems.push({ type: '新股', name: it.name, code: it.code }); });
       (day.apply_bonds || []).forEach(function (it) { applyItems.push({ type: '新债', name: it.name, code: it.code }); });
-      html += ipoCalendarRow('申购', applyItems, '#d93025', day.date, hasReport);
+      html += ipoCalendarRow('申购', applyItems, '#d93025');
     }
     if (listN > 0) {
       var listItems = [];
       (day.list_stocks || []).forEach(function (it) { listItems.push({ type: '新股', name: it.name, code: it.code }); });
       (day.list_bonds || []).forEach(function (it) { listItems.push({ type: '新债', name: it.name, code: it.code }); });
-      html += ipoCalendarRow('上市', listItems, '#137333', day.date, hasReport);
+      html += ipoCalendarRow('上市', listItems, '#137333');
     }
   });
   return html;
@@ -289,17 +234,17 @@ function _ipoTodayStr() {
   return d.getFullYear() + '-' + m + '-' + day;
 }
 
-function ipoCalendarRow(label, items, color, dateStr, hasReport) {
-  // 申购/上市行相对日期标题首行缩进，并用左侧细线区分
-  var html = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 0 5px 18px;border-left:3px solid #eef1f6;margin-left:4px;font-size:13px;">';
+function ipoCalendarRow(label, items, color) {
+  // 每只股票或转债单独一行，避免同一天多只横向挤在一起
+  var html = '<div style="padding:5px 0 5px 18px;border-left:3px solid #eef1f6;margin-left:4px;font-size:13px;">';
+  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
   html += '<span style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:' + color + ';border-radius:4px;padding:1px 4px;">' + escapeHtml(label) + '</span>';
-  html += '<span style="color:#666;font-size:12px;">' + items.length + ' 只：</span>';
-    items.forEach(function (it, i) {
-      if (i > 0) html += '<span style="color:#ddd;margin:0 2px;">｜</span>';
-      html += '<span>' + ipoExBadge(it.code) + '<b>' + escapeHtml(it.name || '-') + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
-      html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span></span>';
-    });
-  html += ' <span style="margin-left:6px;">' + ipoReportLink(dateStr, hasReport) + '</span>';
+  html += '<span style="color:#666;font-size:12px;">' + items.length + ' 只</span></div>';
+  items.forEach(function (it) {
+    html += '<div style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(it.name || '-') + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
+    html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
+    html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';
+  });
   html += '</div>';
   return html;
 }
@@ -393,7 +338,7 @@ function ipoRenderHistory(type, rows) {
       ipoFmt(mvWan),
       ipoWanfenCell(it.online_lottery_rate),
       ipoFmt(it.fund_raised),
-      ipoFmt(it.circulation_mv),
+      ipoNumFixed(it.circulation_mv, 2),
       ipoPctCell(it.ld_close_change),
       ipoFmt(profit)
     ];

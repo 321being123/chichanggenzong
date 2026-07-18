@@ -763,8 +763,13 @@ def generate_individual_reports(md, data):
     codes = {}
     for key in ("apply_stocks", "apply_bonds", "list_stocks", "list_bonds"):
         for it in (data.get(key) or []):
-            if it.get("has_detail") and it.get("code"):
+            if it.get("code"):
                 codes[it["code"]] = it.get("name", "")
+    for code, sec in sections.items():
+        if code not in codes:
+            first_line = sec.split("\n", 1)[0]
+            match = re.match(r"^####\s+(.+?)[（(]", first_line)
+            codes[code] = match.group(1).strip() if match else code
     written = 0
     for code, name in codes.items():
         sec = sections.get(code)
@@ -811,6 +816,8 @@ def main():
     """主函数 - 支持命令行传参指定日期"""
     # 上市后回填：从K线补全实际首日涨跌幅
     _fetch_stock_listing_actuals()
+    # 先刷新新债上市行情，再回填预测结果，避免实际涨幅永远落后一轮。
+    detect_bond_market_temperature()
     # 预测跟踪：回填已上市的实际结果
     backfill_prediction_actuals()
     # 预测误差日志
@@ -821,7 +828,6 @@ def main():
     calibrate_sector_boost()
     # 检测市场温度
     detect_market_temperature()
-    detect_bond_market_temperature()
 
 
     import sys

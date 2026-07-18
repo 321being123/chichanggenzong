@@ -173,7 +173,7 @@ function editPosition(id) {
   document.getElementById('modal-cost').value = p.cost || '';
   document.getElementById('modal-note').value = p.note || '';
   document.getElementById('modal-type').value = p.type || '股权';
-  document.getElementById('modal-subtype').value = p.subtype || 'A股';
+  document.getElementById('modal-subtype').value = p.subtype || '深市';
   document.getElementById('modal-add').classList.add('show');
 }
 
@@ -371,14 +371,16 @@ function renderSmartItems() {
   var items = window._smartParsed || [];
   if (items.length === 0) { result.innerHTML = ''; return; }
 
-  var html = '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllSmartItems()">✅ 全部录入</button></div>' +
+  window._smartFeeRates = buildSmartFeeRates(items);
+  var html = renderSmartFeeRates(window._smartFeeRates) +
+    '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllSmartItems()">✅ 全部录入</button></div>' +
     '<table><thead><tr>' +
     '<th>类型</th><th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
     '<th>方向</th><th>品种</th><th>确认</th>' +
     '</tr></thead><tbody>';
   items.forEach(function(item, i) {
     var code = item.code || '';
-    var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+    var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
     var isTrade = item.kind === 'trade';
     html += '<tr>' +
       '<td>' + (isTrade ? '<span class="tag tag-equity">交易</span>' : '<span class="tag tag-cash">持仓</span>') + '</td>' +
@@ -397,6 +399,118 @@ function renderSmartItems() {
   });
   html += '</tbody></table>';
   result.innerHTML = html;
+}
+
+function buildSmartFeeRates(items) {
+  var current = getFeeSettings();
+  var result = {};
+  var rateFields = [
+    { fee: 'commission', direct: 'commission_rate', setting: 'commissionRate' },
+    { fee: 'stamp_tax', direct: 'stamp_tax_rate', setting: 'stampTaxRate' },
+    { fee: 'transfer_fee', direct: 'transfer_fee_rate', setting: 'transferRate' },
+    { fee: 'other_fee', direct: 'other_fee_rate', setting: 'otherRate' }
+  ];
+  (items || []).forEach(function(item) {
+    if (item.kind !== 'trade') return;
+    var code = item.code || '';
+    var rec = recognizeCode(code) || { subtype: '深市' };
+    var group = getFeeGroup(rec.subtype);
+    if (!result[group]) result[group] = { config: Object.assign({}, current[group]), sums: {}, direct: {} };
+    var summary = result[group];
+    var quantity = normalizeQuantity(Number(item.quantity) || 0, code);
+    var amount = Number(item.amount) || ((Number(item.price) || 0) * quantity);
+    rateFields.forEach(function(field) {
+      var directRate = Number(item[field.direct]);
+      if (isFinite(directRate) && directRate >= 0 && item[field.direct] !== null && item[field.direct] !== '') {
+        summary.direct[field.setting] = summary.direct[field.setting] || [];
+        summary.direct[field.setting].push(directRate / 100);
+        return;
+      }
+      var fee = Number(item[field.fee]);
+      if (!isFinite(fee) || fee <= 0 || amount <= 0) return;
+      if (field.fee === 'commission' && fee <= (summary.config.commissionMin || 0)) return;
+      summary.sums[field.setting] = summary.sums[field.setting] || { fee: 0, amount: 0 };
+      summary.sums[field.setting].fee += fee;
+      summary.sums[field.setting].amount += amount;
+    });
+    var directMin = Number(item.commission_min);
+    if (isFinite(directMin) && directMin >= 0 && item.commission_min !== null && item.commission_min !== '') {
+      summary.config.commissionMin = directMin;
+    }
+  });
+  Object.keys(result).forEach(function(group) {
+    var summary = result[group];
+    rateFields.forEach(function(field) {
+      var direct = summary.direct[field.setting];
+      var sum = summary.sums[field.setting];
+      if (direct && direct.length) summary.config[field.setting] = direct.reduce(function(a, b) { return a + b; }, 0) / direct.length;
+      else if (sum && sum.amount > 0) summary.config[field.setting] = sum.fee / sum.amount;
+    });
+  });
+  return result;
+}
+
+function renderSmartFeeRates(summaries) {
+  var groups = Object.keys(summaries || {});
+  var html = '<div style="margin-bottom:10px;padding:10px;border:1px solid #d9e2ff;border-radius:8px;background:#f7f9ff;">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><strong>交易税费明细</strong>' +
+    '<button class="btn btn-primary btn-sm" onclick="saveSmartFeeRates()">保存税费明细</button></div>';
+  if (groups.length === 0) return html + '<span style="font-size:12px;color:#888;">未识别到可计算费率的交易明细</span></div>';
+  groups.forEach(function(group) {
+    var cfg = summaries[group].config;
+    var meta = FEE_GROUPS.find(function(g) { return g.key === group; });
+    var fields = (meta && meta.fields) || ['commission'];
+    html += '<div style="display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-top:6px;"><b style="font-size:12px;min-width:72px;">' + escapeHtml(meta ? meta.label : group) + '</b>';
+    html += feeRateInput('佣金费率(%)', 'smart-' + group + '-commission', pctShow(cfg.commissionRate));
+    html += feeRateInput('最低佣金(元)', 'smart-' + group + '-min', cfg.commissionMin || 0);
+    if (fields.indexOf('stamp') >= 0) html += feeRateInput('印花税率(%)', 'smart-' + group + '-stamp', pctShow(cfg.stampTaxRate));
+    if (fields.indexOf('transfer') >= 0) html += feeRateInput('过户费率(%)', 'smart-' + group + '-transfer', pctShow(cfg.transferRate));
+    if (fields.indexOf('other') >= 0) html += feeRateInput('其他费率(%)', 'smart-' + group + '-other', pctShow(cfg.otherRate));
+    html += '</div>';
+  });
+  return html + '</div>';
+}
+
+function feeRateInput(label, id, value) {
+  return '<label style="font-size:11px;color:#666;">' + label + '<input id="' + id + '" type="number" step="any" value="' + value + '" style="display:block;width:100px;padding:5px 7px;margin-top:2px;border:1px solid #d8dce8;border-radius:5px;"></label>';
+}
+
+async function saveSmartFeeRates() {
+  var summaries = window._smartFeeRates || {};
+  var settings = Object.assign({}, data.feeSettings || {});
+  Object.keys(summaries).forEach(function(group) {
+    var cfg = Object.assign({}, getFeeSettings()[group]);
+    var meta = FEE_GROUPS.find(function(g) { return g.key === group; });
+    var fields = (meta && meta.fields) || ['commission'];
+    cfg.commissionRate = pctToRate(document.getElementById('smart-' + group + '-commission').value);
+    cfg.commissionMin = Math.max(0, parseFloat(document.getElementById('smart-' + group + '-min').value) || 0);
+    if (fields.indexOf('stamp') >= 0) cfg.stampTaxRate = pctToRate(document.getElementById('smart-' + group + '-stamp').value);
+    if (fields.indexOf('transfer') >= 0) cfg.transferRate = pctToRate(document.getElementById('smart-' + group + '-transfer').value);
+    if (fields.indexOf('other') >= 0) cfg.otherRate = pctToRate(document.getElementById('smart-' + group + '-other').value);
+    settings[group] = cfg;
+  });
+  data.feeSettings = settings;
+  var saved = await saveDataAndWait();
+  if (!saved) return;
+  autoCalcTrade();
+  showToast('税费费率已保存并更新到税费设置');
+}
+
+function getSmartItemFees(item, code) {
+  var fields = ['commission', 'stamp_tax', 'transfer_fee', 'other_fee'];
+  var hasRecognizedFee = fields.some(function(key) { return item[key] !== undefined && item[key] !== null && item[key] !== ''; });
+  if (hasRecognizedFee) {
+    return {
+      commission: Math.max(0, Number(item.commission) || 0),
+      stamp_tax: Math.max(0, Number(item.stamp_tax) || 0),
+      transfer_fee: Math.max(0, Number(item.transfer_fee) || 0),
+      other_fee: Math.max(0, Number(item.other_fee) || 0)
+    };
+  }
+  var rec = recognizeCode(code) || { subtype: '深市' };
+  var quantity = normalizeQuantity(Number(item.quantity) || 0, code);
+  var amount = (Number(item.price) || 0) * quantity;
+  return calcTradeFees(item.direction || 'buy', amount, rec.subtype);
 }
 
 function onSmartCodeChange(index) {
@@ -439,9 +553,10 @@ async function confirmSmartItem(index) {
   if (item.kind === 'trade') {
     var direction = document.getElementById('s-dir-' + index).value;
     var date = document.getElementById('s-date-' + index).value;
-    addTradeInternal(code, name, direction, price, quantity, date);
+    var fees = getSmartItemFees(item, code);
+    await addTradeInternal(code, name, direction, price, quantity, date, fees);
   } else {
-    var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
+    var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
     var existing = data.positions.find(function(p) { return p.code === code; });
     if (existing) {
       existing.name = name || code;
@@ -555,15 +670,15 @@ function updateQtyHint(code) {
   el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
 }
 
-async function addTradeInternal(code, name, direction, price, quantity, date) {
+async function addTradeInternal(code, name, direction, price, quantity, date, importedFees) {
   code = classifyCode.normalizeCode(code);
   // 华泰/招商证券上交所债券：手→张自动转换
   quantity = normalizeQuantity(quantity, code);
   var amount = Math.round(price * quantity * 100) / 100;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
-  var rec = recognizeCode(code) || { type: '股权', subtype: 'A股' };
-  var f = calcTradeFees(direction, amount, rec.subtype);
+  var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
+  var f = importedFees || calcTradeFees(direction, amount, rec.subtype);
   data.trades.push({
     id: uid(), code: code, name: name || code,
     direction: direction, price: price, quantity: quantity,
@@ -646,7 +761,7 @@ function renderFeeSettings() {
   const body = document.getElementById('fee-settings-body');
   if (body) body.innerHTML = html;
 }
-function saveFeeSettings() {
+async function saveFeeSettings() {
   const groups = {};
   FEE_GROUPS.forEach(function (g) {
     const o = {};
@@ -661,7 +776,9 @@ function saveFeeSettings() {
     groups[g.key] = o;
   });
   data.feeSettings = groups;
-  saveData();
+  const saved = await saveDataAndWait();
+  if (!saved) return;
+  autoCalcTrade();
   closeModal('modal-feesettings');
   showToast('税费设置已保存');
 }

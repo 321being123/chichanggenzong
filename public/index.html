@@ -59,6 +59,7 @@
       </div>
       <div class="sub-nav-right">
         <div class="nav-account">
+          <button class="btn-refresh" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新</button>
           <select id="account-select" onchange="switchAccount(this.value)"></select>
           <button class="btn-account-add" onclick="addAccount()" title="新增账户">+</button>
           <button class="btn-account-add" onclick="showAccountMenu()" title="账户设置" style="font-size:13px;">⚙</button>
@@ -171,7 +172,7 @@
       </div>
       <div class="form-row">
         <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option><option value="现金">现金</option></select></div>
-        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" onchange="autoCalcTrade()"><option>A股</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>场外基金</option></select></div>
+        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" onchange="autoCalcTrade()"><option>沪市</option><option>深市</option><option>京市</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>场外基金</option></select></div>
         <div class="form-group"><label>备注</label><input id="trade-note" placeholder="可选"></div>
       </div>
       <button class="btn btn-primary" onclick="addTrade()">➕ 记录交易</button>
@@ -453,7 +454,9 @@
       </div>
       <div class="form-group"><label>子类型</label>
         <select id="modal-subtype">
-          <option value="A股">A股</option>
+          <option value="沪市">沪市</option>
+          <option value="深市">深市</option>
+          <option value="京市">京市</option>
           <option value="港股">港股</option>
           <option value="美股">美股</option>
           <option value="可转债">可转债</option>
@@ -777,6 +780,10 @@ async function loadData(accountName) {
         if (p.price != null) p.price = Number(p.price);
         if (p.quantity != null) p.quantity = Number(p.quantity);
         if (p.cost != null) p.cost = Number(p.cost);
+        if (p.subtype === 'A股') {
+          var positionClass = classifyCode(p.code);
+          if (positionClass) p.subtype = positionClass.subtype;
+        }
       });
     }
     if (data && Array.isArray(data.trades)) {
@@ -788,6 +795,10 @@ async function loadData(accountName) {
         if (t.stamp_tax != null) t.stamp_tax = Number(t.stamp_tax);
         if (t.transfer_fee != null) t.transfer_fee = Number(t.transfer_fee);
         if (t.other_fee != null) t.other_fee = Number(t.other_fee);
+        if (t.subtype === 'A股') {
+          var tradeClass = classifyCode(t.code);
+          if (tradeClass) t.subtype = tradeClass.subtype;
+        }
       });
     }
     if (data && Array.isArray(data.cashFlows)) {
@@ -825,6 +836,7 @@ async function loadData(accountName) {
 // 保存数据：串行化 + 失败重试，从根本上杜绝「请求没落库 / 并发旧快照覆盖新数据」的丢失
 var _saveInFlight = false;
 var _savePending = false;
+var _lastSaveOk = true;
 var dataVersion = 0; // 乐观锁：加载时记下的账户版本号，保存时带回供服务端冲突检测
 function saveData() {
   // 已有保存在进行中：标记待保存，等当前保存完成后用最新数据再存一次（保证最终落库的是最新内存状态）
@@ -844,7 +856,7 @@ async function saveDataNow() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (r.status === 409) { showToast('数据已在其他设备被修改，请刷新页面后再保存'); return; }
+      if (r.status === 409) { _lastSaveOk = false; showToast('数据已在其他设备被修改，请刷新页面后再保存'); return false; }
       if (!r.ok) {
         var errBody = {};
         try { errBody = await r.json(); } catch (ee) {}
@@ -852,13 +864,27 @@ async function saveDataNow() {
       }
       const j = await r.json().catch(() => ({}));
       if (j && typeof j.version === 'number') dataVersion = j.version;
-      return;
+      _lastSaveOk = true;
+      return true;
     } catch (e) {
       lastError = e.message || String(e);
       if (attempt < 2) { await new Promise(function (res) { setTimeout(res, 500); }); }
     }
   }
+  _lastSaveOk = false;
   showToast('保存失败：' + lastError);
+  return false;
+}
+
+function saveDataAndWait() {
+  saveData();
+  return new Promise(function(resolve) {
+    function check() {
+      if (!_saveInFlight && !_savePending) return resolve(_lastSaveOk);
+      setTimeout(check, 50);
+    }
+    check();
+  });
 }
 
 // ============== 启动 ==============

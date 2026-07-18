@@ -948,7 +948,7 @@ def _fetch_all_a_stock_list():
     return all_stocks
 
 def _fetch_bond_listing_data_from_api(cutoff_date):
-    """从东财获取近6个月上市新债，再从腾讯K线获取上市首日收盘价计算涨幅"""
+    """从Tushare获取近6个月上市新债，再从腾讯K线获取首个非涨停日涨幅。"""
     import re as _re
     from datetime import datetime
 
@@ -968,8 +968,12 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
                     if not ld:
                         continue
                     try:
-                        ld_str = str(ld)[:10]
-                        listing_dt = datetime.strptime(ld_str, "%Y-%m-%d")
+                        ld_raw = str(ld).strip()
+                        if re.fullmatch(r"\d{8}", ld_raw):
+                            listing_dt = datetime.strptime(ld_raw, "%Y%m%d")
+                        else:
+                            listing_dt = datetime.strptime(ld_raw[:10], "%Y-%m-%d")
+                        ld_str = listing_dt.strftime("%Y-%m-%d")
                     except (ValueError, TypeError):
                         continue
                     if (now - listing_dt).days > 180:
@@ -1008,7 +1012,7 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
                     listing_found = True
                     prev_close = float(d[2])
                     # D1涨停→跳过，否则直接取D1
-                    if prev_close < 157.0:
+                    if abs(prev_close - 157.3) > 0.05:
                         day2_close = prev_close
                         break
                     continue
@@ -1023,12 +1027,7 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
                     # 涨停了→记录暂存，继续看下一天
                     prev_close = close
                     day2_close = close
-            if day2_close is None:
-                # 所有天都涨停，fallback到首日收盘
-                for d in days:
-                    if d[0] == ld and len(d) >= 3:
-                        day2_close = float(d[2])
-                        break
+            # 还没有出现非涨停日时不写入首日临时值，后续每日继续回补。
             if day2_close is None:
                 continue
             first_day_return = day2_close - 100  # 百分比值
@@ -1047,7 +1046,7 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
         except Exception:
             continue
 
-    print(f"[新债温度] 从K线获取到 {len(gains)} 只新债首日涨幅")
+    print(f"[新债温度] 从K线获取到 {len(gains)} 只新债首个非涨停日涨幅")
     return gains
 
 _BONDS_MARKET_CACHE = None  # list of (code, bond_price, transfer_value, premium_pct, stock_code)

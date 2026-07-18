@@ -279,6 +279,7 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     # ── 5. 计算预估价格 ──
     total_premium = base_premium + scale_adj + rating_adj + sector_boost + issue_adj
     estimated_price = round(tv * (1 + total_premium), 2)
+    tracking_price = estimated_price  # 首个非涨停日理论价格，不受上市首日157.3元限制
 
     # 上市首日沪深两市顶格均为 157.3元，模型估值超过则封顶
     capped = False
@@ -286,7 +287,11 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     if estimated_price > 157.3:
         estimated_price = 157.3
         capped = True
-        cap_reason = "⚠️ 受上市首日157.3元上限限制（实际市场可能通过次日连板继续上涨）"
+    second_day_limit = capped and tracking_price >= round(157.3 * 1.2, 1)
+    if capped:
+        cap_reason = "⚠️ 受上市首日157.3元上限限制"
+        if second_day_limit:
+            cap_reason += "，预计次日继续涨停"
 
     # ── 6.5 预测区间带（规模越大不确定性越大，带宽越宽）──
     ref_size = issue_scale if issue_scale is not None else circulation_scale
@@ -338,29 +343,27 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     if capped:
         detail_parts.append(cap_reason)
 
-    # 生成简洁摘要（区间带：规模越大带宽越宽；妖债/封顶保持单点）
-    rounded_price = round(estimated_price / 5) * 5
-    low_r = round(low_price)
-    high_r = round(high_price)
-    if is_yaozhai:
-        if estimated_price >= 157:
-            range_text = "🔥 妖债，大概率顶格157.3元，次日有望继续涨停"
-        else:
-            range_text = f"🔥 妖债，预估{rounded_price}元左右"
-    elif capped:
-        range_text = "预估157.3元（顶格）"
+    # 生成简洁摘要：非封顶预测统一取最接近的 5 元整数，并用“左右”表达模糊区间。
+    rounded_price = int((estimated_price + 2.5) // 5 * 5)
+    if capped:
+        range_text = "预估157.3元"
+        if second_day_limit:
+            range_text += "（预计次日继续涨停）"
     else:
         suffix = "，注意破发风险" if estimated_price < 105 else ""
-        range_text = f"预估{low_r}–{high_r}元{suffix}"
+        prefix = "🔥 妖债，" if is_yaozhai else ""
+        range_text = f"{prefix}预估{rounded_price}元左右{suffix}"
 
     return {
         "price": estimated_price,
+        "tracking_price": tracking_price,
         "premium": premium_pct,
         "detail": "\n".join(detail_parts),
         "summary": range_text,
         "low": low_price,
         "high": high_price,
         "capped": capped,
+        "second_day_limit": second_day_limit,
         "is_yaozhai": is_yaozhai,
         "market_level": market_level,
     }, None

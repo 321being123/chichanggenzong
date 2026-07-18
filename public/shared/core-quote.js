@@ -136,7 +136,9 @@ async function refreshAllPrices() {
   // 保存涨跌幅到数据文件，页面刷新后自动恢复
   data.changes = {}; Object.keys(priceChangeMap).forEach(function(k) { data.changes[k] = priceChangeMap[k]; });
   await syncIndexPoints();
-  saveData(); renderAll(); recordNav(); renderReturnsChart();
+  data.totalAsset = calcSummary().total;
+  recordNav();
+  saveData(); renderAll(); renderReturnsChart();
   const failedCodes = codes.filter(c => {
     const p = data.positions.find(x => x.code === c);
     return p && (!p.price || !p.name);
@@ -329,7 +331,8 @@ function executePasteImport() {
     if (parts.length < 3) { skipped++; return; }
     const code = parts[0].replace(/[.](SH|SZ|HK|US)$/i, '');
     const type = parts[1] === '债权' ? '债权' : '股权';
-    const subtype = parts[2] || (type === '股权' ? 'A股' : type === '现金' ? '现金' : '可转债');
+    const recognized = recognizeCode(code);
+    const subtype = parts[2] || (type === '股权' ? (recognized ? recognized.subtype : '深市') : type === '现金' ? '现金' : '可转债');
     const qty = parseInt(parts[3]) || 0;
     if (data.positions.some(p => p.code === code)) { skipped++; return; }
     data.positions.push({

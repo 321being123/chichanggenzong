@@ -63,6 +63,18 @@ function validateAccountData(d) {
   }
   if (d.cashType != null && !safeText(d.cashType, 20)) return { ok: false, msg: '现金类型非法' };
   if (d.cashSubtype != null && !safeText(d.cashSubtype, 20)) return { ok: false, msg: '现金细类非法' };
+  if (d.feeSettings != null) {
+    if (!d.feeSettings || typeof d.feeSettings !== 'object' || Array.isArray(d.feeSettings)) return { ok: false, msg: '税费设置格式错误' };
+    const feeGroups = ['ashare_stock', 'ashare_bond', 'ashare_fund', 'hk_stock', 'us_stock', 'otc_fund'];
+    const feeFields = ['commissionRate', 'commissionMin', 'stampTaxRate', 'transferRate', 'transferCap', 'otherRate'];
+    for (const group of Object.keys(d.feeSettings)) {
+      if (!feeGroups.includes(group) || !d.feeSettings[group] || typeof d.feeSettings[group] !== 'object') return { ok: false, msg: '税费设置分组非法' };
+      for (const field of Object.keys(d.feeSettings[group])) {
+        const value = d.feeSettings[group][field];
+        if (!feeFields.includes(field) || !isNum(value) || value < 0) return { ok: false, msg: '税费设置数值非法' };
+      }
+    }
+  }
   // 顶层标量字段边界（P1-3）：汇率/本金/总市值/基金记录必须合法，杜绝负汇率、负本金等畸形值落库
   if (d.cashBase != null && (!isNum(d.cashBase) || d.cashBase < 0)) return { ok: false, msg: '期初本金（cashBase）必须为非负数' };
   // 港币汇率必须为正（负汇率或 0 会让港股市值归零/反转，属高危畸形值）

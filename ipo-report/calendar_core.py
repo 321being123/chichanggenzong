@@ -136,6 +136,9 @@ def build_upcoming_calendar(calendar, days=90, apply_stocks=None, apply_bonds=No
     groups = {}
     order = []
 
+    def _is_bj_stock(code, secucode=""):
+        return str(secucode).upper().endswith(".BJ") or str(code).startswith(("920", "82", "83", "87", "43"))
+
     def _ensure_group(td_k):
         if td_k not in groups:
             try:
@@ -164,6 +167,8 @@ def build_upcoming_calendar(calendar, days=90, apply_stocks=None, apply_bonds=No
         secu_type = item.get("SECURITY_TYPE", "0")
         name = item.get("SECURITY_NAME_ABBR", "")
         code = item.get("SECURITY_CODE", "")
+        if secu_type != "1" and _is_bj_stock(code, item.get("SECUCODE", "")):
+            continue
         ent = {"name": name, "code": code}
         if item.get("DATE_TYPE") == "申购":
             if secu_type == "1":
@@ -184,6 +189,8 @@ def build_upcoming_calendar(calendar, days=90, apply_stocks=None, apply_bonds=No
         for s in items:
             c = s.get("code", "")
             if not c:
+                continue
+            if group_key == "apply_stocks" and _is_bj_stock(c):
                 continue
             d = s.get("detail") or {}
             od = d.get("online_date", "")

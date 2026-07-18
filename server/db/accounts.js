@@ -32,6 +32,7 @@ async function loadAccountData(username, accountName) {
       if (typeof d.cashBase === 'number') result.cashBase = d.cashBase;
       if (typeof d.cash === 'number') result.cash = d.cash;
       if (Array.isArray(d.fundRecord)) result.fundRecord = d.fundRecord;
+      if (d.feeSettings && typeof d.feeSettings === 'object') result.feeSettings = d.feeSettings;
       if (typeof rows[0].version === 'number') result.version = rows[0].version;
     }
   } catch (e) {}
@@ -114,8 +115,8 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     );
     // account_data：仅显式挑选允许的顶层字段写入（杜绝未知字段持久化，满足 schema 白名单）；
     // indexHistory 已独立成表、changes/version 为瞬时字段，均不写入 JSON。
-    const { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord } = data;
-    const dataForJson = { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord };
+    const { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord, feeSettings } = data;
+    const dataForJson = { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord, feeSettings };
     const json = JSON.stringify(dataForJson);
     // 乐观锁（P1-3）：version 必填且已在路由层校验为整数；冲突（已被其他设备修改）抛 conflict 错误由路由返回 409。
     // 不再保留 expectedVersion==null 的绕过路径，杜绝乐观锁被静默跳过。

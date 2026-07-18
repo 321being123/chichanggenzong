@@ -6,8 +6,8 @@
 //
 // 返回: { type, subtype, market, isHK, secids }
 //   type    '股权' | '债权'
-//   subtype 'A股' | '港股' | '美股' | '可转债' | '信用债'
-//   market  'sh' | 'sz' | 'hk' | 'kcb' | 'us'
+//   subtype '沪市' | '深市' | '京市' | '港股' | '美股' | '可转债' | '信用债'
+//   market  'sh' | 'sz' | 'bj' | 'hk' | 'kcb' | 'us'
 //   isHK    boolean
 //   secids  东方财富行情 secid 候选列表（fetchQuoteByCode 使用）
 //
@@ -38,7 +38,7 @@
     var first3 = code.substring(0, 3);
     var isHK = len <= 5;
 
-    var type = '股权', subtype = 'A股', market = 'sz';
+    var type = '股权', subtype = '深市', market = 'sz';
 
     if (isHK) {
       type = '股权'; subtype = '港股'; market = 'hk';
@@ -51,12 +51,14 @@
     } else if (first2 === '13') {
       type = '债权'; subtype = '信用债'; market = 'sh';
     } else if (first3 === '688' || first1 === '6') {
-      type = '股权'; subtype = 'A股'; market = (first3 === '688') ? 'kcb' : 'sh';
-    } else if (first2 === '00' || first2 === '30' || first1 === '8') {
-      type = '股权'; subtype = 'A股'; market = 'sz';
+      type = '股权'; subtype = '沪市'; market = (first3 === '688') ? 'kcb' : 'sh';
+    } else if (first2 === '00' || first2 === '30') {
+      type = '股权'; subtype = '深市'; market = 'sz';
+    } else if (first3 === '920' || first1 === '4' || first1 === '8') {
+      type = '股权'; subtype = '京市'; market = 'bj';
     } else {
-      // 其他 6 位数字（基金/ETF/5 开头等）默认视作 A股，双市场尝试
-      type = '股权'; subtype = 'A股'; market = 'sh';
+      // 其他 6 位数字（基金/ETF/5 开头等）默认归入沪市，双市场尝试
+      type = '股权'; subtype = '沪市'; market = 'sh';
     }
 
     // 东方财富行情 secid 候选列表（与原 fetchQuoteByCode 逻辑一致）

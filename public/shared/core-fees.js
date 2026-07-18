@@ -40,7 +40,10 @@ function getFeeGroup(subtype) {
     case 'ETF':
     case 'LOF': return 'ashare_fund';
     case '场外基金': return 'otc_fund';
-    case 'A股':
+    case '沪市':
+    case '深市':
+    case '京市':
+    case 'A股': // 兼容历史数据
     default: return 'ashare_stock';
   }
 }

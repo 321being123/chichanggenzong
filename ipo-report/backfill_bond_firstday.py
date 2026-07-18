@@ -1,4 +1,4 @@
-"""Backfill: 上市涨幅(first_day_return) 按旧逻辑回写 Postgres bond_history。
+"""Backfill: 首个非涨停日涨幅（历史字段名 first_day_return）回写 PostgreSQL bond_history。
 
 旧逻辑（用户确认保留）：上市涨幅 = 上市后首个「非涨停日」收盘 - 100（百分比）。
 即：上市日若未涨停(D1收盘<157)直接取D1；若涨停则顺延，取首个未触及±20%涨停的交易日收盘。
@@ -49,7 +49,7 @@ for code, name, ld in rows:
         if d[0] == ld:
             listing_found = True
             prev_close = float(d[2])
-            if prev_close < 157.0:
+            if abs(prev_close - 157.3) > 0.05:
                 day2_close = prev_close
                 break
             continue
@@ -61,12 +61,7 @@ for code, name, ld in rows:
                 break
             prev_close = close
             day2_close = close
-    if day2_close is None:
-        # 所有天都涨停，fallback 到首日收盘
-        for d in days:
-            if d[0] == ld and len(d) >= 3:
-                day2_close = float(d[2])
-                break
+    # 还没有出现非涨停日时不写入首日临时值，留待后续继续回补。
     if day2_close is None:
         skip += 1
         continue

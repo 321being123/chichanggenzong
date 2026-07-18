@@ -14,6 +14,18 @@ from _common import _load_env
 from ipo_lib_common import *
 from ipo_lib_fetch import *
 
+def _bond_predicted_return(pred_price, fallback=None):
+    """新债首个非涨停日预测涨幅，统一按发行价100元计算。"""
+    if pred_price is not None:
+        return round(float(pred_price) - 100, 2)
+    return fallback
+
+def _bond_first_non_limit_return(stored_return):
+    """bond_history与预测准确率统一使用首个非涨停日涨幅。"""
+    if stored_return is None:
+        return None
+    return round(float(stored_return), 2)
+
 def _log_prediction_errors():
     """
     统计预测 vs 实际误差，输出到日志供参考
@@ -71,10 +83,15 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
         pred_price = None
         pred_return = None
         if isinstance(analysis, dict):
-            pred_price = analysis.get("price")
-            pred_return = analysis.get("premium")
+            # tracking_price是不受首日157.3元涨停限制的理论价格，用于预测首个非涨停日。
+            pred_price = analysis.get("tracking_price", analysis.get("price"))
+            pred_return = _bond_predicted_return(pred_price)
         advice = b.get("advice", "")
         listing_date = pred_date
+
+        # 申购日通常还没有上市价预测，不写入无预测值的跟踪记录。
+        if pred_return is None:
+            continue
 
         rows.append(("bond", b["code"], b["name"], listing_date,
                       pred_date, pred_return, pred_price, advice,
@@ -124,14 +141,16 @@ def backfill_prediction_actuals():
             )
     conn.commit()
 
-    # ── 2. 回填 pending 中已上市的实际结果（按 code 匹配首日数据） ──
-    pending = conn.execute(
-        "SELECT id, type, code, name, listing_date FROM predictions WHERE status='pending' AND listing_date <= ?",
+    # ── 2. 刷新所有有预测值且已上市的实际结果 ──
+    # 不只更新 pending：历史行情可能在后续任务中被修正，fulfilled 也必须同步刷新。
+    tracked = conn.execute(
+        "SELECT id, type, code, name, listing_date, pred_price FROM predictions "
+        "WHERE (pred_return IS NOT NULL OR pred_price IS NOT NULL) AND listing_date <= ?",
         (datetime.now().strftime("%Y-%m-%d"),),
     ).fetchall()
 
     updated = 0
-    for pid, ptype, code, name, listing_date in pending:
+    for pid, ptype, code, name, listing_date, pred_price in tracked:
         try:
             if ptype == "stock":
                 row = conn.execute(
@@ -150,9 +169,11 @@ def backfill_prediction_actuals():
                     (code,),
                 ).fetchone()
                 if row:
+                    actual_return = _bond_first_non_limit_return(row[0])
+                    pred_return = _bond_predicted_return(pred_price)
                     conn.execute(
-                        "UPDATE predictions SET actual_return=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (row[0], now, pid),
+                        "UPDATE predictions SET pred_return=COALESCE(?, pred_return), actual_return=?, status='fulfilled', updated_at=? WHERE id=?",
+                        (pred_return, actual_return, now, pid),
                     )
                     updated += 1
         except Exception:
@@ -180,8 +201,8 @@ def get_prediction_accuracy(days=90):
             (ptype, cutoff),
         ).fetchall()
         if rows:
-            results[ptype]["fulfilled"] = len(rows)
             pred_rows = [r for r in rows if r[0] is not None]
+            results[ptype]["fulfilled"] = len(pred_rows)
             results[ptype]["total"] = len(pred_rows)
             if pred_rows:
                 errors = [abs(round(p - a, 1)) for p, a in pred_rows]
@@ -207,7 +228,7 @@ def _build_accuracy_lines(days=90):
         s = stats[key]
         if s["fulfilled"] > 0:
             has_data = True
-            lines.append(f"**{label}**：已上市 {s['fulfilled']} 只，平均偏差 {s['mae']}pp")
+            lines.append(f"**{label}**：有效预测样本 {s['fulfilled']} 只，平均绝对偏差 {s['mae']}pp")
         else:
             lines.append(f"**{label}**：暂无已上市数据")
     if not has_data:
@@ -338,4 +359,4 @@ def estimate_board_base(stock_code):
     else:
         return BOARD_BASE["沪市主板"]
 
-__all__ = ['_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base']
+__all__ = ['_bond_predicted_return', '_bond_first_non_limit_return', '_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base']

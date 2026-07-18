@@ -37,6 +37,26 @@ function pickVisionModel(model) {
   return fallback;
 }
 
+const RETRYABLE_AI_STATUS = new Set([502, 503, 504]);
+
+async function fetchAiWithRetry(endpoint, options, fetchImpl = fetch, delays = [1000, 2500]) {
+  let lastError;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const response = await fetchImpl(endpoint, {
+        ...options,
+        signal: AbortSignal.timeout(60000)
+      });
+      if (!RETRYABLE_AI_STATUS.has(response.status) || attempt === delays.length) return response;
+    } catch (e) {
+      lastError = e;
+      if (attempt === delays.length) throw e;
+    }
+    await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+  }
+  throw lastError || new Error('AI服务暂不可用');
+}
+
 // 限制解析后的表格规模，防止超大表格撑爆内存 / AI token
 function trimSheetRows(rows, maxRows, maxCols, maxCell) {
   if (!Array.isArray(rows)) return [];
@@ -104,7 +124,7 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
     const visionModel = pickVisionModel(model);
     const key = process.env.VISION_API_KEY;
 
-    const response = await fetch(endpoint, {
+    const response = await fetchAiWithRetry(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -121,12 +141,14 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
         }],
         max_tokens: 2000,
         temperature: 0
-      }),
-      signal: AbortSignal.timeout(60000)
+      })
     });
 
     if (!response.ok) {
       const errText = await response.text();
+      if (RETRYABLE_AI_STATUS.has(response.status)) {
+        return res.json({ error: 'AI识图服务暂时繁忙，已自动重试3次，请稍后再试' });
+      }
       return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
     }
 
@@ -248,5 +270,6 @@ router.post('/api/index-history', requireLogin, asyncHandler(assertOwnership), r
 // 暴露 validateImage / pickVisionModel 供测试使用（不改变 router 导出）
 router.validateImage = validateImage;
 router.pickVisionModel = pickVisionModel;
+router.fetchAiWithRetry = fetchAiWithRetry;
 
 module.exports = router;

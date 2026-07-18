@@ -54,6 +54,26 @@ async function main() {
     assert.strictEqual(router.pickVisionModel(''), process.env.VISION_MODEL || 'agnes-1.5-flash');
   });
 
+  await check('AI 503 自动重试后成功', async () => {
+    let calls = 0;
+    const response = await router.fetchAiWithRetry('https://example.com', {}, async () => {
+      calls++;
+      return { status: calls < 3 ? 503 : 200, ok: calls === 3 };
+    }, [0, 0]);
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(calls, 3);
+  });
+
+  await check('AI 非临时错误不重试', async () => {
+    let calls = 0;
+    const response = await router.fetchAiWithRetry('https://example.com', {}, async () => {
+      calls++;
+      return { status: 400, ok: false };
+    }, [0, 0]);
+    assert.strictEqual(response.status, 400);
+    assert.strictEqual(calls, 1);
+  });
+
   console.log('\n通过 ' + passed + ' 项');
 }
 

@@ -22,7 +22,9 @@ function isActiveBond(row, today, listedStocks) {
     (!listedStocks || listedStocks.has(row.stk_code)));
 }
 
-function selectFinancialReport(indicators, balances, today) {
+function selectFinancialReport(indicators, balances, incomes, today) {
+  // 兼容旧的三参数调用 selectFinancialReport(indicators, balances, today)。
+  if (typeof incomes === 'string' && today === undefined) { today = incomes; incomes = []; }
   const indicatorByPeriod = new Map();
   (indicators || []).filter(row => row.end_date && (!row.ann_date || row.ann_date <= today))
     .sort((a, b) => String(b.ann_date || '').localeCompare(String(a.ann_date || '')))
@@ -37,10 +39,15 @@ function selectFinancialReport(indicators, balances, today) {
   const period = Array.from(indicatorByPeriod.keys()).filter(value => balanceByPeriod.has(value)).sort().reverse()[0];
   if (!period) return null;
   const fi = indicatorByPeriod.get(period), bs = balanceByPeriod.get(period);
+  const income = (incomes || []).filter(row => row.end_date === period && (!row.f_ann_date || row.f_ann_date <= today))
+    .sort((a, b) => String(b.f_ann_date || b.ann_date || '').localeCompare(String(a.f_ann_date || a.ann_date || '')))[0] || {};
+  const directInterest = finite(income.fin_exp_int_exp) != null ? finite(income.fin_exp_int_exp) : finite(income.int_exp);
+  const derivedInterest = finite(fi.ebit_to_interest) && finite(fi.ebit) != null
+    ? finite(fi.ebit) / finite(fi.ebit_to_interest) : null;
   return {
     report_end_date: period,
     announced_at: [fi.ann_date, bs.f_ann_date].filter(Boolean).sort().reverse()[0] || null,
-    interest_expense: finite(fi.interst_income),
+    interest_expense: directInterest != null ? directInterest : derivedInterest,
     ebit: finite(fi.ebit),
     cash: finite(bs.money_cap),
     trading_fin_assets: finite(bs.trad_asset),
@@ -73,11 +80,12 @@ async function saveFinancialCache(tsCode, stockName, data) {
 }
 
 async function fetchOneFinancial(stock, today) {
-  const [fiData, bsData] = await Promise.all([
-    tushareQuery('fina_indicator', { ts_code: stock.stk_code }, 'ts_code,ann_date,end_date,ebit,interst_income,interestdebt'),
+  const [fiData, bsData, incomeData] = await Promise.all([
+    tushareQuery('fina_indicator', { ts_code: stock.stk_code }, 'ts_code,ann_date,end_date,ebit,ebit_to_interest,interestdebt'),
     tushareQuery('balancesheet', { ts_code: stock.stk_code }, 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
+    tushareQuery('income', { ts_code: stock.stk_code }, 'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
   ]);
-  return selectFinancialReport(tsRows(fiData), tsRows(bsData), today);
+  return selectFinancialReport(tsRows(fiData), tsRows(bsData), tsRows(incomeData), today);
 }
 
 function derivePb(totalMvWan, shareholderEquity) {

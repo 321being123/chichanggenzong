@@ -12,6 +12,7 @@ const { runHkRateJob } = require('./jobs/hkRate');
 const { ensureHolidaysCurrent } = require('./jobs/holidaySync');
 const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
 const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
+const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 
 async function main() {
   await initSchema();
@@ -34,6 +35,7 @@ async function main() {
   runIndexBaselineJob().catch(e => console.error('[worker] 指数基线失败:', e.message));
   // 每日可转债安全性快照（与 Web 进程的 DISABLE_SCHEDULER 约定一致）
   scheduleBondSafetyRefresh();
+  scheduleStockAnalysisRefresh();
   scheduleIpoCalendarRefresh();
 }
 

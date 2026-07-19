@@ -47,7 +47,8 @@ function pgConfig(dbName) {
     const t = await db.pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
     const tables = t.rows.map(r => r.table_name).sort();
     check('生成全部核心表', () => {
-      for (const need of ['accounts', 'brokers', 'users', 'positions', 'trades', 'schema_migrations', 'job_runs']) {
+      for (const need of ['accounts', 'brokers', 'users', 'positions', 'trades', 'schema_migrations', 'job_runs',
+        'stock_watchlist']) {
         assert.ok(tables.includes(need), '缺少表: ' + need + '（现有: ' + tables.join(',') + '）');
       }
     });
@@ -56,12 +57,22 @@ function pgConfig(dbName) {
     check('券商种子数据已写入（>0）', () => { assert.ok(b.rows[0].c > 0, 'brokers 种子为空'); });
 
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('迁移记录已登记 001_init', () => { assert.strictEqual(m.rows[0].c, 1); });
+    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 9); });
+
+    const schemasResult = await db.pool.query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = ANY($1)", [['ops','core','market','fundamental','event','analytics']]);
+    check('股票分析分层数据库已创建', () => { assert.strictEqual(schemasResult.rows.length, 6); });
+
+    const architectureTables = await db.pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema = ANY($1)", [['ops','core','market','fundamental','event','analytics']]);
+    const architectureNames = new Set(architectureTables.rows.map(row => `${row.table_schema}.${row.table_name}`));
+    check('分层数据库核心表已创建', () => {
+      for (const name of ['core.instruments','market.daily_valuations','fundamental.financial_reports','fundamental.corporate_actions','event.company_events','analytics.metric_values','analytics.stock_overview_latest','ops.sync_cursors']) assert.ok(architectureNames.has(name), '缺少表 ' + name);
+    });
+    check('股票分析旧表已删除', () => { for (const name of ['stock_analysis_stocks','stock_income_statements','stock_balance_sheets','stock_cashflow_statements','stock_financial_indicators','stock_dividends','stock_forecasts','stock_daily_valuations','stock_events','stock_analysis_snapshots','stock_data_sync_state']) assert.ok(!tables.includes(name), '旧表仍存在 '+name); });
 
     console.log('B. 二次 initSchema（幂等）');
     await db.initSchema();
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('二次迁移不重复登记（仍为1）', () => { assert.strictEqual(m2.rows[0].c, 1); });
+    check('二次迁移不重复登记（仍为9）', () => { assert.strictEqual(m2.rows[0].c, 9); });
   } catch (e) {
     if (!tmpDb) {
       // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）

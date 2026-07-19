@@ -1,0 +1,48 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const root = path.join(__dirname, '..', '..');
+const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
+const script = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
+const chartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-chart.js'), 'utf8');
+const valuationChartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-valuation-chart.js'), 'utf8');
+const statementsScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-statements.js'), 'utf8');
+const dateRangeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'date-range-control.js'), 'utf8');
+
+const stockTab = html.indexOf('data-main="stock-analysis"');
+const ipoTab = html.indexOf('data-main="ipo"');
+assert.ok(stockTab >= 0, '缺少股票分析一级导航');
+assert.ok(ipoTab >= 0, '缺少打新日历一级导航');
+assert.ok(stockTab < ipoTab, '股票分析必须位于打新日历前');
+assert.ok(html.includes('id="main-stock-analysis"'), '缺少股票分析一级页面');
+assert.ok(html.includes('js/stock-analysis.js'), '缺少股票分析脚本引用');
+assert.ok(html.includes('js/stock-analysis-statements.js'), '缺少三表脚本引用');
+assert.ok(html.indexOf('id="stock-analysis-summary"') < html.indexOf('id="stock-analysis-view-analysis"'), '三表切换必须位于股票名称下方');
+assert.ok(html.indexOf('data-statement-view="balance"') < html.indexOf('股票基本信息'), '财务报表切换必须位于股票基本信息上方');
+for (const type of ['balance','income','cashflow']) assert.ok(html.includes(`data-statement-view="${type}"`), `缺少${type}顶部标签`);
+assert.ok(statementsScript.includes('/statements?type=') && statementsScript.includes('同比'), '三表页面未接入年度原值和同比数据');
+assert.ok(statementsScript.includes('statement-section-'), '财务报表缺少分区展示');
+assert.ok(html.includes('css/stock-analysis.css'), '缺少股票分析样式引用');
+assert.ok(script.includes('PE为负通常代表公司亏损') === false, '分位点固定说明应由后端统一返回');
+assert.ok(script.includes("/api/stock-analysis/"), '前端未接入股票分析接口');
+assert.ok(html.includes('js/stock-analysis-chart.js'), '缺少盈利分红图表脚本引用');
+assert.ok(chartScript.includes('dividend_history'), '缺少历史分红记录渲染');
+assert.ok(html.includes('shared/date-range-control.js'), '缺少公共时间范围组件引用');
+assert.ok(dateRangeScript.includes('is-active'), '公共时间范围组件缺少选中状态');
+assert.ok(chartScript.includes('未分红'), '历史分红列表未补齐未分红年度');
+assert.ok(chartScript.includes('historyMap') && chartScript.includes('股东大会通过'), '历史分红缺少同方案生命周期去重');
+assert.ok(html.includes('js/stock-analysis-valuation-chart.js'), '缺少股价估值分位图表脚本引用');
+assert.ok(valuationChartScript.includes("data-mode=\"price\""), '分位图缺少股价切换');
+assert.ok(valuationChartScript.includes("data-mode=\"pe\""), '分位图缺少PE切换');
+assert.ok(valuationChartScript.includes("data-mode=\"pb\""), '分位图缺少PB切换');
+assert.ok(valuationChartScript.includes('band80'), '分位图缺少历史分位线');
+assert.ok(valuationChartScript.includes('DateRangeControl.render'), '分位图缺少公共时间范围控件');
+assert.ok(valuationChartScript.includes('presets:[30,20,10,5,3,1]'), '分位图缺少年份快捷选项');
+assert.ok(valuationChartScript.includes('valuation-outlier'), '分位图缺少异常极值标识');
+assert.ok(valuationChartScript.includes('valuation-negative'), '分位图缺少负值标识');
+for (const title of ['公司与证券资料','估值水平','收益、盈利与分红','市值结构','报告与业绩预期']) assert.ok(script.includes(title), '股票基本信息缺少分类：'+title);
+assert.ok(script.includes('历史累计分红') && script.includes('历史累计盈利'), '累计分红率缺少分子分母说明');
+assert.ok(script.includes('平均股息率') && script.includes('最近12个月归母净利润'), '缺少平均股息率及公式说明');
+
+console.log('stock-analysis frontend tests passed');

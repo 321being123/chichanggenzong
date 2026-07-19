@@ -7,8 +7,9 @@
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="shared/style.css?v=10">
+<link rel="stylesheet" href="shared/style.css?v=11">
 <link rel="stylesheet" href="css/bond-safety.css?v=6">
+<link rel="stylesheet" href="css/stock-analysis.css?v=7">
 </head>
 <body>
 
@@ -17,6 +18,7 @@
     <div class="nav-left">
       <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">存在小站</h1>
       <nav class="main-nav">
+        <button class="main-tab" data-main="stock-analysis">股票分析</button>
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
         <button class="main-tab" data-main="bond-safety">转债安全性</button>
@@ -223,6 +225,52 @@
 <div class="main-page" id="main-changelog">
   <div class="chart-box" id="changelog-main-content" style="padding:20px;font-size:13px;line-height:1.8;">
     <p style="color:#888;text-align:center;">加载中...</p>
+  </div>
+</div>
+
+<!-- 股票分析（一级页，位于打新日历前） -->
+<div class="main-page" id="main-stock-analysis">
+  <div class="stock-analysis-shell feature-page-shell">
+    <div class="stock-analysis-hero">
+      <div><h2>股票分析</h2><p>基于上市以来财报、历史估值和公司公告的基本面分析。数据仅供研究参考。</p></div>
+      <span id="stock-analysis-updated">请选择股票</span>
+    </div>
+    <div class="stock-analysis-toolbar table-wrap">
+      <select id="stock-analysis-select" aria-label="选择持仓或自选股" onchange="stockAnalysisSelect(this.value)"><option value="">选择持仓或自选股</option></select>
+      <input id="stock-analysis-code" inputmode="numeric" maxlength="9" placeholder="输入A股代码，如 600519">
+      <button class="btn btn-outline btn-sm" onclick="stockAnalysisAddWatchlist()">加入自选</button>
+      <button class="btn btn-outline btn-sm" id="stock-analysis-remove" onclick="stockAnalysisRemoveWatchlist()" style="display:none;">移出自选</button>
+      <button class="btn btn-primary btn-sm" id="stock-analysis-refresh" onclick="stockAnalysisRefresh()">刷新分析</button>
+    </div>
+    <div id="stock-analysis-message" class="stock-analysis-message">从持仓或自选股中选择一只股票开始分析。</div>
+    <div id="stock-analysis-content" style="display:none;">
+      <div class="stock-analysis-summary" id="stock-analysis-summary"></div>
+      <div class="stock-analysis-view-tabs" role="tablist" aria-label="个股数据视图">
+        <button class="selected" id="stock-analysis-view-analysis" role="tab" aria-selected="true" onclick="stockAnalysisSwitchView('analysis')">个股分析</button>
+        <button data-statement-view="balance" role="tab" aria-selected="false" onclick="stockAnalysisSwitchView('balance')">资产负债表</button>
+        <button data-statement-view="income" role="tab" aria-selected="false" onclick="stockAnalysisSwitchView('income')">利润表</button>
+        <button data-statement-view="cashflow" role="tab" aria-selected="false" onclick="stockAnalysisSwitchView('cashflow')">现金流量表</button>
+      </div>
+      <div id="stock-analysis-analysis-pane">
+        <section class="stock-analysis-section"><h3>股票基本信息</h3><div id="stock-analysis-valuation"></div></section>
+        <section class="stock-analysis-section"><h3>盈利与分红稳定性</h3><div id="stock-analysis-stability"></div></section>
+        <section class="stock-analysis-section"><h3>股价及估值分位</h3><div class="stock-analysis-note" id="stock-analysis-percentile-note"></div><div class="stock-analysis-grid" id="stock-analysis-percentiles"></div></section>
+        <section class="stock-analysis-section"><h3>盈利增长</h3><div id="stock-analysis-growth"></div></section>
+        <section class="stock-analysis-section"><h3>财务安全性</h3><div class="stock-analysis-grid" id="stock-analysis-safety"></div></section>
+        <section class="stock-analysis-section"><h3>经营现金流与自由现金流</h3><div class="stock-analysis-grid" id="stock-analysis-cashflow"></div></section>
+        <section class="stock-analysis-section"><h3>最近一年公司大事</h3><div id="stock-analysis-events"></div></section>
+        <div class="stock-analysis-foot" id="stock-analysis-quality"></div>
+      </div>
+      <div id="stock-analysis-statements-pane" style="display:none;">
+        <section class="stock-analysis-section">
+          <div class="stock-analysis-statements-head">
+            <h3 id="stock-analysis-statements-title">资产负债表</h3>
+          </div>
+          <div id="stock-analysis-statements-message" class="stock-analysis-chart-empty">请选择三表查看。</div>
+          <div class="stock-analysis-statements-wrap" id="stock-analysis-statements-wrap" style="display:none;"></div>
+        </section>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -516,9 +564,14 @@
 <script src="shared/core-returns.js?v=3"></script>
 <script src="shared/core-earnings.js?v=20260712c"></script>
 <script src="shared/core-account.js?v=20260712e"></script>
+<script src="shared/date-range-control.js?v=1"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=6"></script>
+<script src="js/stock-analysis.js?v=8"></script>
+<script src="js/stock-analysis-statements.js?v=2"></script>
+<script src="js/stock-analysis-chart.js?v=11"></script>
+<script src="js/stock-analysis-valuation-chart.js?v=4"></script>
 <script src="js/home-dashboard.js?v=2"></script>
 <script>
 // ============== 数据层（服务端API） ==============
@@ -564,7 +617,7 @@ function renderTopUser(p) {
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
 function switchMain(main) {
-  if (!username && (main === 'holdings' || main === 'profile')) {
+  if (!username && (main === 'holdings' || main === 'profile' || main === 'stock-analysis')) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return;
   }
@@ -576,6 +629,7 @@ function switchMain(main) {
   if (main === 'changelog') loadChangelogPage();
   if (main === 'ipo') loadIpo();
   if (main === 'bond-safety') loadBondSafety();
+  if (main === 'stock-analysis') loadStockAnalysis();
   if (main === 'home') loadHomeDashboard();
 }
 
@@ -908,7 +962,8 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   // 一级导航（首页/持仓管理/个人中心）绑定，默认显示首页
   setupMainNav();
   var requestedMain = new URLSearchParams(window.location.search).get('main');
-  switchMain(loggedIn && requestedMain === 'holdings' ? 'holdings' : 'home');
+  var allowedMain = ['home','holdings','stock-analysis','ipo','bond-safety','changelog','profile'];
+  switchMain(loggedIn && allowedMain.includes(requestedMain) ? requestedMain : 'home');
   if (loggedIn) {
     doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
     initAutoRefresh();

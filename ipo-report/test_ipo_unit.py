@@ -9,6 +9,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_daily_report as m
+import _common as common
 
 PASS, FAIL, ERR = [], [], []
 
@@ -20,6 +21,9 @@ def check(name, cond, detail=""):
     else:
         FAIL.append(name)
         print("  [FAIL] %s %s" % (name, detail))
+
+
+check("psql 路径适配当前系统", os.name == "nt" or not common.PSQL.lower().startswith("c:\\"), common.PSQL)
 
 
 # ===== 1. _str_date 单元（修复：NaN 污染为 'nan'）=====

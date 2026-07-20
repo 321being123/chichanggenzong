@@ -52,16 +52,16 @@ function runWith(executable) {
 async function runIpoCalendarRefresh(reason = 'scheduled') {
   if (running) return { skipped: true };
   running = true;
-  let lastError;
+  const errors = [];
   try {
     for (const executable of pythonCandidates()) {
       try {
         const output = await runWith(executable);
         console.log(`[ipo-calendar] ${reason} 更新完成 (${executable})`);
         return { ok: true, executable, output };
-      } catch (error) { lastError = error; }
+      } catch (error) { errors.push(`${executable}: ${error.message}`); }
     }
-    throw lastError || new Error('未找到可用的 Python 解释器');
+    throw new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
   } finally { running = false; }
 }
 

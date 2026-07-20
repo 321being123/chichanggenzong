@@ -69,7 +69,9 @@ function stockAnalysisRenderStatements(data) {
       var yoyClass = item.yoy != null && item.yoy < 0 ? ' class="negative"' : '';
       return '<td class="statement-value">' + escapeHtml(value) + '</td><td' + yoyClass + '>' + escapeHtml(yoy) + '</td>';
     }).join('');
-    return sectionRow + '<tr><th>' + escapeHtml(field.label) + (field.unit ? '<small>' + escapeHtml(field.unit) + '</small>' : '') + '</th>' + cells + '</tr>';
+    var rowClass = 'statement-item statement-level-' + (field.level || 0) + (field.is_parent ? ' statement-parent' : '');
+    var branch = field.level ? '<span class="statement-branch">└</span>' : '';
+    return sectionRow + '<tr class="' + rowClass + '"><th>' + branch + '<span>' + escapeHtml(field.label) + '</span>' + (field.unit ? '<small>' + escapeHtml(field.unit) + '</small>' : '') + '</th>' + cells + '</tr>';
   }).join('');
   wrap.innerHTML = '<table class="stock-analysis-statements-table"><thead><tr><th rowspan="2">默认单位：亿元</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';

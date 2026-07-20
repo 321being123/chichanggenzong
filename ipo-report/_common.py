@@ -12,6 +12,7 @@ import json
 import urllib.request
 import tempfile
 import subprocess
+import shutil
 
 # ============ 引号转义（4 份脚本完全一致） ============
 def shlex_quote(s):
@@ -75,7 +76,7 @@ def _tushare(api_name, params, fields):
 
 
 # ============ 本地 psql 执行（收口 2 份，临时文件避免 Windows GBK 截断） ============
-PSQL = os.environ.get("PSQL_EXE", r"C:\pgsql\bin\psql.exe")
+PSQL = os.environ.get("PSQL_EXE") or shutil.which("psql") or (r"C:\pgsql\bin\psql.exe" if os.name == "nt" else "psql")
 PGHOST = os.environ.get("PGHOST", "127.0.0.1")
 PGPORT = os.environ.get("PGPORT", "5432")
 PGUSER = os.environ.get("PGUSER", "postgres")

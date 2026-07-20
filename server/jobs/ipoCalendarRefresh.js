@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
-const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'refresh_calendar.py');
+const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_daily_report.py');
 let running = false;
 
 function shanghaiParts(date = new Date()) {
@@ -79,4 +79,4 @@ function scheduleIpoCalendarRefresh() {
   console.log('[ipo-calendar] 已调度：工作日 18:00（上海时间）');
 }
 
-module.exports = { nextIpoRefreshDelay, runIpoCalendarRefresh, scheduleIpoCalendarRefresh, pythonCandidates };
+module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, scheduleIpoCalendarRefresh, pythonCandidates };

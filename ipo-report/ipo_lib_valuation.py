@@ -775,6 +775,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
 
     # ── 回退：改进版线性模型 ──
     unified_base = _MARKET_TEMP.get("avg_gain_3m", 250)
+    estimated = unified_base
 
     # 发行价修正
     if issue_price:

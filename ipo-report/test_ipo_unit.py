@@ -59,6 +59,11 @@ try:
     import ipo_lib_valuation as _val
     _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']
     _val.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
+    _old_xgb = _val._xgb_predict_listing
+    _val._xgb_predict_listing = lambda *args, **kwargs: None
+    fallback = _val.get_listing_analysis("stock", 10, None, None, stock_detail={"stock_code": "001234"})
+    check("新股线性模型回退已初始化", fallback.get("predicted_return") is not None)
+    _val._xgb_predict_listing = _old_xgb
 
     # 3.1 发行规模(总募资)折扣档位：TV=100 / 流通20亿(巨盘,-0.05) / AAA(+0.05)
     #     总溢价率 = 0.30(基础) -0.05(流通) + 发行折扣 + 0.05(AAA)

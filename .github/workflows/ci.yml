@@ -74,6 +74,7 @@ jobs:
         run: |
           node -e "const db=require('./server/db'); db.initSchema().then(()=>db.pool.end())"
           psql -v ON_ERROR_STOP=1 -f ipo-report/server_schema.sql
+          psql -v ON_ERROR_STOP=1 -f ipo-report/sql/schema.sql
       - name: 统一测试入口（test:all 含单元/集成/安全/IPO前端/Python功能）
         run: npm run test:all
 

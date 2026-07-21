@@ -35,11 +35,11 @@ const { isAllowedOrigin, csrfMiddleware, securityHeaders } = require('./server/m
 const { requestId, accessLog, errorHandler } = require('./server/middleware/errorHandler');
 const rateLimit = require('./server/middleware/rateLimit');
 
-// assertOwnership 依赖 db 的 loadUsers/loadAccountData：先 monkeypatch 再加载 auth（解构会拿到 mock）
+// assertOwnership 依赖 db 的 loadUser/loadAccountData：先 monkeypatch 再加载 auth（解构会拿到 mock）
 const db = require('./server/db');
-db.loadUsers = async () => ({ daicunzai: { accounts: ['华泰账户'] } });
+db.loadUser = async username => username === 'daicunzai' ? { accounts: ['华泰账户'] } : null;
 db.loadAccountData = async () => ({ positions: [], trades: [], navHistory: [], cashFlows: [] });
-db.saveUsers = async () => {};
+db.updateUserAccounts = async () => {};
 const { assertOwnership } = require('./server/middleware/auth');
 
 // ---------- mock 辅助 ----------

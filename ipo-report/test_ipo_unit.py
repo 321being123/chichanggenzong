@@ -97,9 +97,8 @@ try:
     check("区间带 流通2亿 ±3 (low)", abs(r3cs["low"] - 152.0) < 0.01, "low=%s" % r3cs["low"])
     check("区间带 流通2亿 ±3 (high<=157.3)", abs(r3cs["high"] - 157.3) < 0.01, "high=%s" % r3cs["high"])
 
-    # 3.3 摘要格式：非妖债/非封顶 显示区间「预估X–Y元」，不再单点「XXX元左右」
-    check("summary 含区间 '–'", "–" in r500["summary"], "summary=%r" % r500["summary"])
-    check("summary 不含旧式 '元左右'", "元左右" not in r500["summary"], "summary=%r" % r500["summary"])
+    # 3.3 摘要格式：按当前产品规则取最接近的整数并显示「预估XXX元左右」
+    check("summary 显示整数元左右", r500["summary"] == "预估110元左右", "summary=%r" % r500["summary"])
 
     # 3.4 返回结构含 low/high 区间键
     check("返回含 low 键", "low" in r500)

@@ -65,6 +65,27 @@ try:
     check("新股线性模型回退已初始化", fallback.get("predicted_return") is not None)
     _val._xgb_predict_listing = _old_xgb
 
+    sample_md = "#### 测试新股（688001）\n- **首日预估**：100%\n\n### 💰 新债申购\n\n| 债券 | 内容 |"
+    stock_section = m._extract_code_sections(sample_md).get("688001", "")
+    check("新股单独报告不混入新债", "新债申购" not in stock_section)
+
+    _old_temp = dict(_val._MARKET_TEMP)
+    _old_board = dict(_val.BOARD_BASE)
+    _val._MARKET_TEMP.update({"level": "热市", "break_rate": 0, "avg_gain_3m": 350})
+    _val.BOARD_BASE["科创板"] = 300
+    _val._xgb_predict_listing = lambda *args, **kwargs: None
+    common_detail = {"stock_code": "688001", "circulation_mv": 8}
+    profitable = _val.get_listing_analysis("stock", 20, 30, 35, stock_detail=common_detail)
+    loss_making = _val.get_listing_analysis("stock", 20, 0, 35, stock_detail=common_detail)
+    check("未盈利新股预测执行折价",
+          loss_making["predicted_return"] < profitable["predicted_return"],
+          "盈利=%s%% 未盈利=%s%%" % (profitable["predicted_return"], loss_making["predicted_return"]))
+    _val._MARKET_TEMP.clear()
+    _val._MARKET_TEMP.update(_old_temp)
+    _val.BOARD_BASE.clear()
+    _val.BOARD_BASE.update(_old_board)
+    _val._xgb_predict_listing = _old_xgb
+
     # 3.1 发行规模(总募资)折扣档位：TV=100 / 流通20亿(巨盘,-0.05) / AAA(+0.05)
     #     总溢价率 = 0.30(基础) -0.05(流通) + 发行折扣 + 0.05(AAA)
     discount_cases = [

@@ -740,7 +740,7 @@ def _extract_code_sections(md):
                 sections[cur_code] = "\n".join(buf).strip()
             cur_code = m.group(1)
             buf = [ln]
-        elif ln.startswith("## ") and cur_code is not None:
+        elif re.match(r"^#{2,4}\s+", ln) and cur_code is not None:
             sections[cur_code] = "\n".join(buf).strip()
             cur_code = None
             buf = []

@@ -774,8 +774,9 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         return {"summary": summary, "detail": "\n".join(detail_parts), "price": None, "predicted_return": estimated}
 
     # ── 回退：改进版线性模型 ──
-    unified_base = _MARKET_TEMP.get("avg_gain_3m", 250)
-    estimated = unified_base
+    # 使用板块中位数，避免全市场少数千倍涨幅样本拉高预测。
+    board_base = estimate_board_base(stock_code)
+    estimated = board_base
 
     # 发行价修正
     if issue_price:
@@ -783,6 +784,10 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             estimated = estimated * 1.1
         elif issue_price > 50:
             estimated = estimated * 0.90
+
+    # 发行市盈率为 0/负数通常代表尚未盈利，按更保守口径折价。
+    if issue_pe is not None and issue_pe <= 0:
+        estimated = estimated * 0.65
 
     # 募资规模修正
     fund_raised = stock_detail.get("fund_raised")
@@ -848,7 +853,9 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
 
     detail_parts = []
     detail_parts.append(f"📊 预估首日涨幅: {estimated}%")
-    detail_parts.append(f"🏢 市场基准: {unified_base}%（近3月均值）")
+    detail_parts.append(f"🏢 板块基准: {board_base}%（近12月中位数）")
+    if issue_pe is not None and issue_pe <= 0:
+        detail_parts.append("⚠️ 未盈利新股折价: ×0.65")
     detail_parts.append(f"🌡️ 市场温度: {temp}（衰减系数×{temp_mult}）")
     if sector_label:
         detail_parts.append(f"🚀 热门赛道: {sector_label}（加成系数×{1+sector_boost*0.15:.1f}）")

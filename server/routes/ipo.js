@@ -25,7 +25,7 @@ function extractCodeReport(md, code) {
   if (start < 0) return '';
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i += 1) {
-    if (/^####\s+/.test(lines[i]) || /^##\s+/.test(lines[i])) {
+    if (/^#{2,4}\s+/.test(lines[i])) {
       end = i;
       break;
     }

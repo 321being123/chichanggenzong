@@ -331,11 +331,17 @@ def calibrate_board_base():
     for board_key in BOARD_BASE:
         gains = db_gains.get(board_key, [])
         if len(gains) >= 3:
-            avg_gain = sum(gains) / len(gains)
-            avg_gain = int(round(avg_gain))
+            # 少量千倍涨幅会把算术平均严重拉高，使用中位数作为稳健板块基准。
+            sorted_gains = sorted(gains)
+            mid = len(sorted_gains) // 2
+            if len(sorted_gains) % 2:
+                robust_gain = sorted_gains[mid]
+            else:
+                robust_gain = (sorted_gains[mid - 1] + sorted_gains[mid]) / 2
+            robust_gain = int(round(robust_gain))
             old = BOARD_BASE[board_key]
-            BOARD_BASE[board_key] = avg_gain
-            updated.append(f"{board_key}: {old}→{avg_gain}% ({len(gains)}只)")
+            BOARD_BASE[board_key] = robust_gain
+            updated.append(f"{board_key}: {old}→{robust_gain}% ({len(gains)}只，中位数)")
         else:
             updated.append(f"{board_key}: 样本不足({len(gains)}只), 保留{BOARD_BASE[board_key]}%")
 

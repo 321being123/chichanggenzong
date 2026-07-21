@@ -70,6 +70,8 @@ jobs:
         run: |
           python3 -m venv ipo-report/venv
           ipo-report/venv/bin/pip install -r requirements.txt
+      - name: 初始化测试数据库
+        run: node -e "const db=require('./server/db'); db.initSchema().then(()=>db.pool.end())"
       - name: 统一测试入口（test:all 含单元/集成/安全/IPO前端/Python功能）
         run: npm run test:all
 

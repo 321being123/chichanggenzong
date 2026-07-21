@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # 局部单元验证：桩掉重型依赖后导入真实脚本，测试本次两处修复（隔离样本，避免无关规则干扰）
 import sys, types
+from pathlib import Path
 
 for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2", "requests"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
@@ -8,7 +9,7 @@ for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2",
 import importlib.util
 spec = importlib.util.spec_from_file_location(
     "ipo_daily_report_fix",
-    r"D:\Users\持仓跟踪\portfolio-server\ipo-report\ipo_daily_report.py",
+    Path(__file__).resolve().parent / "ipo_daily_report.py",
 )
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)

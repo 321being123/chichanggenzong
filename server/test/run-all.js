@@ -29,7 +29,11 @@ function runNode(file) {
   if (/\[SKIP\]|SKIP-/.test(out)) {
     skip++; console.log('  ⊘ ' + file + '  (跳过)  ——  ' + last);
   } else if (r.status === 0) { pass++; console.log('  ✓ ' + file + '  ——  ' + last); }
-  else { fail++; failed.push(file); console.log('  ✗ ' + file + '  (退出码 ' + r.status + ')  ——  ' + last); }
+  else {
+    fail++; failed.push(file);
+    console.log('  ✗ ' + file + '  (退出码 ' + r.status + ')  ——  ' + last);
+    console.log(out);
+  }
 }
 
 function runNodeGlob() {
@@ -92,7 +96,11 @@ function runPython() {
     // 解析测试自身汇总行「PASS=x  FAIL=y  ERROR=z」，避免退出码为 0 却内部失败被误判通过
     const m = out.match(/PASS=(\d+)\s+FAIL=(\d+)\s+ERROR=(\d+)/);
     const hasIssues = /HAS_ISSUES/.test(out) || (m && (Number(m[2]) > 0 || Number(m[3]) > 0));
-    if (hasIssues || r.status !== 0) { fail++; failed.push(path.basename(file)); console.log('  ✗ ' + path.basename(file) + '  ——  ' + last); }
+    if (hasIssues || r.status !== 0) {
+      fail++; failed.push(path.basename(file));
+      console.log('  ✗ ' + path.basename(file) + '  ——  ' + last);
+      console.log(out);
+    }
     else { pass++; console.log('  ✓ ' + path.basename(file) + '  ——  ' + last); }
   }
 }

@@ -57,6 +57,13 @@ try:
     # _fetch_all_bonds_market / fetch_market_heat 经 `from ... import *`
     # 进入 ipo_lib_valuation 命名空间，故桩必须打到该模块才生效。
     import ipo_lib_valuation as _val
+    check("XGBoost模型文件可加载", _val._load_xgb_model())
+    model_prediction = _val._xgb_predict_listing({
+        "stock_code": "688001", "issue_price": 20, "issue_pe": 30,
+        "industry_pe": 35, "fund_raised": 10, "online_lottery_rate": 0.03,
+        "circulation_mv": 5,
+    })
+    check("XGBoost可完成新股预测", model_prediction is not None)
     _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']
     _val.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
     _old_xgb = _val._xgb_predict_listing

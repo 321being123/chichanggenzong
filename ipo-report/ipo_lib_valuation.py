@@ -556,8 +556,9 @@ def _load_xgb_model():
     import numpy as np
     import xgboost as xgb
 
-    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_xgb_model.json")
-    feat_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_xgb_features.json")
+    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    model_path = os.path.join(model_dir, "ipo_xgb_model.json")
+    feat_path = os.path.join(model_dir, "ipo_xgb_features.json")
 
     if not os.path.exists(model_path) or not os.path.exists(feat_path):
         print("[XGBoost] 模型文件不存在，使用线性模型")

@@ -1,7 +1,7 @@
 """
 训练XGBoost新股首日涨幅预测模型（无pandas依赖）
 数据来源：ipo_history.db
-模型输出：ipo_xgb_model.json
+模型输出：data/ipo_xgb_model.json
 """
 import sqlite3
 import os
@@ -10,9 +10,11 @@ import warnings
 import numpy as np
 warnings.filterwarnings("ignore")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_history.db")
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_xgb_model.json")
-FEATURES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_xgb_features.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "ipo_history.db")
+MODEL_PATH = os.path.join(DATA_DIR, "ipo_xgb_model.json")
+FEATURES_PATH = os.path.join(DATA_DIR, "ipo_xgb_features.json")
 
 # ── 1. 加载数据 ──
 conn = sqlite3.connect(DB_PATH)

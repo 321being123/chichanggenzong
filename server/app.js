@@ -1,5 +1,6 @@
 // ========== 应用组装与启动（原 server.js 的入口职责集中于此） ==========
 const express = require('express');
+const { appVersion } = require('../package.json');
 const session = require('express-session');
 const path = require('path');
 const { SECRET, PORT, redis, initRedis } = require('./config');
@@ -93,7 +94,7 @@ async function start() {
   app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：数据库快照读取/管理员刷新
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
-  app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }));
+  app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));
   app.get('/ready', async (req, res) => {
     const checks = { db: false, redis: redis.ready };
     try { await pool.query('SELECT 1'); checks.db = true; } catch (e) {}

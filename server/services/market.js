@@ -246,8 +246,15 @@ async function fetchQuoteByCode(code) {
     return quote ? { price: quote.price, name: quote.name || normalizeCode(c), code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source } : null;
   }
 
-  // A股：Tushare 日线（close=最新价/盘中=昨收，pct_chg=涨跌幅）+ 名称缓存
+  // A股实时价格和涨跌幅必须来自同一条腾讯行情，避免用盘中价搭配旧日线 pre_close 算错方向。
   try {
+    const liveQuotes = await fetchTencentQuotes([c]);
+    const liveQuote = liveQuotes.get(normalizeCode(c));
+    if (liveQuote) {
+      return { price: liveQuote.price, name: liveQuote.name || c, code: normalizeCode(c), change: liveQuote.change, quote_time: liveQuote.quote_time, source: liveQuote.source };
+    }
+
+    // 腾讯临时不可用时，保留原 Tushare 日线回退。
     const [names, daily] = await Promise.all([ensureTsNames(), ensureTsDaily()]);
     const d = daily.get(tsCode);
     const name = names.get(tsCode) || '';

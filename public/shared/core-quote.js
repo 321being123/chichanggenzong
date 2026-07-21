@@ -158,7 +158,11 @@ async function refreshAllPrices() {
  * 完整刷新：拉行情 + 反推现金 + 保存 + 重渲染
  * 供"刷新按钮/F5/自动刷新"统一调用
  */
+var _priceRefreshInFlight = null;
+
 async function doRefresh() {
+  if (_priceRefreshInFlight) return _priceRefreshInFlight;
+  _priceRefreshInFlight = (async function () {
   // 总资产持久化（供净值走势展示），须在 refreshAllPrices 之前设置，
   // 使其内部的统一 saveData 一并保存，避免双重写入/重绘
   if (typeof TOTAL_ASSET !== 'undefined' && TOTAL_ASSET > 0) {
@@ -167,7 +171,13 @@ async function doRefresh() {
   // 休市（周末 / 法定节假日 / 非交易时段）也拉取最新可用价（= 最近交易日收盘价），
   // 保证总资产按持仓现值实时计算；实时接口收盘后回落日线收盘价，与“最近交易日收盘”一致。
   // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
-  await refreshAllPrices();
+    await refreshAllPrices();
+  })();
+  try {
+    return await _priceRefreshInFlight;
+  } finally {
+    _priceRefreshInFlight = null;
+  }
 }
 
 async function saveDailyPricesToDB() {

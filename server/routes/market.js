@@ -29,25 +29,29 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
     else stockCodes.push(c);
   });
 
-  // 股票走 Tushare；没有股票代码时完全不调用 Tushare。
+  // A 股实时价格和涨跌幅优先使用腾讯同一条行情，Tushare 只作回退。
   const [names, daily, rt, tencent] = await Promise.all([
     stockCodes.length ? ensureTsNames() : Promise.resolve(new Map()),
     stockCodes.length ? ensureTsDaily() : Promise.resolve(new Map()),
     stockCodes.length ? ensureTsRealtime(stockCodes) : Promise.resolve(new Map()),
-    fetchTencentQuotes(bondCodes.concat(hkCodes)),
+    fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes)),
   ]);
   stockCodes.forEach(c => {
     const ts = toTsCode(c);
     const d = daily.get(ts);
     const r = rt.get(ts);
-    const price = (r != null) ? r : (d ? d.close : null);
+    const quote = tencent.get(normalizeCode(c));
+    const price = quote ? quote.price : ((r != null) ? r : (d ? d.close : null));
     let change = null;
-    if (d) change = (r != null && d.pre_close) ? (r - d.pre_close) / d.pre_close * 100 : d.pct_chg;
+    if (quote && quote.change != null) change = quote.change;
+    else if (d) change = (r != null && d.pre_close) ? (r - d.pre_close) / d.pre_close * 100 : d.pct_chg;
     result[c] = {
       price: (price != null && !isNaN(price)) ? price : null,
-      name: names.get(ts) || '',
+      name: names.get(ts) || (quote && quote.name) || '',
       code: c,
-      change: (change != null && !isNaN(change)) ? change : null
+      change: (change != null && !isNaN(change)) ? change : null,
+      quote_time: quote ? quote.quote_time : null,
+      source: quote ? quote.source : 'tushare'
     };
   });
 

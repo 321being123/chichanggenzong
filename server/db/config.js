@@ -49,9 +49,13 @@ function getChangelog() {
 function addChangelogItem(date, item) {
   const list = getChangelog();
   let entry = list.find(function (x) { return x.date === date; });
-  if (!entry) { entry = { date: date, version: appVersion, items: [] }; list.unshift(entry); }
-  else { entry.version = appVersion; }
-  else if (list.indexOf(entry) !== 0) { list.splice(list.indexOf(entry), 1); list.unshift(entry); }
+  if (!entry) {
+    entry = { date: date, version: appVersion, items: [] };
+    list.unshift(entry);
+  } else {
+    entry.version = appVersion;
+    if (list.indexOf(entry) !== 0) { list.splice(list.indexOf(entry), 1); list.unshift(entry); }
+  }
   entry.items.push(item);
   fs.writeFileSync(path.join(__dirname, '..', 'public', 'changelog.json'), JSON.stringify(list, null, 2));
   return list;

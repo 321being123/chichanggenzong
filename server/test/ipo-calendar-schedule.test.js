@@ -12,5 +12,5 @@ assert.strictEqual(nextIpoRefreshDelay(shanghaiDate('2026-07-17T10:30:00Z')), 71
 assert(pythonCandidates().length > 0);
 assert.strictEqual(path.basename(SCRIPT), 'ipo_daily_report.py');
 const valuationSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_valuation.py'), 'utf8');
-assert.ok(valuationSource.includes('estimated = unified_base'), '新股线性回退模型未初始化 estimated');
+assert.ok(valuationSource.includes('estimated = board_base'), '新股线性回退模型未使用板块稳健基准');
 console.log('PASS=5 FAIL=0');

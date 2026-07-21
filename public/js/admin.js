@@ -602,7 +602,8 @@ async function loadChangelog() {
     const list = (d.list || []).slice(0, 3);
     if (!list.length) { box.innerHTML = '<div style="color:#999;font-size:13px;">暂无更新记录</div>'; return; }
     box.innerHTML = list.map(function (e) {
-      return '<div style="border-left:3px solid #4f6ef7;padding:6px 10px;margin-bottom:8px;background:#f8f9ff;border-radius:0 6px 6px 0;"><div style="font-weight:600;font-size:13px;color:#333;">' + escapeHtml(e.date) + '</div>' + e.items.slice(0, 3).map(function (it) { return '<div style="font-size:12px;color:#666;">· ' + escapeHtml(it) + '</div>'; }).join('') + (e.items.length > 3 ? '<div style="font-size:12px;color:#999;">…共' + e.items.length + '条</div>' : '') + '</div>';
+      var title = e.date + (e.version ? '（' + e.version + '）' : '');
+      return '<div style="border-left:3px solid #4f6ef7;padding:6px 10px;margin-bottom:8px;background:#f8f9ff;border-radius:0 6px 6px 0;"><div style="font-weight:600;font-size:13px;color:#333;">' + escapeHtml(title) + '</div>' + e.items.slice(0, 3).map(function (it) { return '<div style="font-size:12px;color:#666;">· ' + escapeHtml(it) + '</div>'; }).join('') + (e.items.length > 3 ? '<div style="font-size:12px;color:#999;">…共' + e.items.length + '条</div>' : '') + '</div>';
     }).join('');
   } catch (e) { box.innerHTML = '<div style="color:#d93025;font-size:13px;">网络错误</div>'; }
 }

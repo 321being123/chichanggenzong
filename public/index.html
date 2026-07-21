@@ -645,7 +645,8 @@ async function loadChangelogPage() {
     const data = await r.json();
     let html = '';
     (data || []).forEach(function(item) {
-      html += '<div style="margin-bottom:18px;"><div style="font-weight:700;color:#1a1a2e;margin-bottom:6px;">' + escapeHtml(item.date || '') + '</div><ul style="padding-left:18px;margin:0;">';
+      var title = (item.date || '') + (item.version ? '（' + item.version + '）' : '');
+      html += '<div style="margin-bottom:18px;"><div style="font-weight:700;color:#1a1a2e;margin-bottom:6px;">' + escapeHtml(title) + '</div><ul style="padding-left:18px;margin:0;">';
       (item.items || []).forEach(function(it) {
         html += '<li style="margin-bottom:4px;color:#444;">' + escapeHtml(it) + '</li>';
       });

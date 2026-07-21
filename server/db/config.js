@@ -1,6 +1,7 @@
 // 本文件由 server/db.js 物理拆分而来，函数体未改动，仅调整文件归属。
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
+const { appVersion } = require('../../package.json');
 
 async function getConfig(key, def) {
   try {
@@ -48,7 +49,8 @@ function getChangelog() {
 function addChangelogItem(date, item) {
   const list = getChangelog();
   let entry = list.find(function (x) { return x.date === date; });
-  if (!entry) { entry = { date: date, items: [] }; list.unshift(entry); }
+  if (!entry) { entry = { date: date, version: appVersion, items: [] }; list.unshift(entry); }
+  else { entry.version = appVersion; }
   else if (list.indexOf(entry) !== 0) { list.splice(list.indexOf(entry), 1); list.unshift(entry); }
   entry.items.push(item);
   fs.writeFileSync(path.join(__dirname, '..', 'public', 'changelog.json'), JSON.stringify(list, null, 2));

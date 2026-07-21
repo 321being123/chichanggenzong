@@ -785,10 +785,6 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         elif issue_price > 50:
             estimated = estimated * 0.90
 
-    # 发行市盈率为 0/负数通常代表尚未盈利，按更保守口径折价。
-    if issue_pe is not None and issue_pe <= 0:
-        estimated = estimated * 0.65
-
     # 募资规模修正
     fund_raised = stock_detail.get("fund_raised")
     if fund_raised and fund_raised > 50:
@@ -854,8 +850,6 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     detail_parts = []
     detail_parts.append(f"📊 预估首日涨幅: {estimated}%")
     detail_parts.append(f"🏢 板块基准: {board_base}%（近12月中位数）")
-    if issue_pe is not None and issue_pe <= 0:
-        detail_parts.append("⚠️ 未盈利新股折价: ×0.65")
     detail_parts.append(f"🌡️ 市场温度: {temp}（衰减系数×{temp_mult}）")
     if sector_label:
         detail_parts.append(f"🚀 热门赛道: {sector_label}（加成系数×{1+sector_boost*0.15:.1f}）")

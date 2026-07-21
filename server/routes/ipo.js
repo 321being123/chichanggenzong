@@ -225,7 +225,7 @@ router.get('/report/code', async (req, res) => {
     const file = path.join(__dirname, '..', '..', 'ipo-report', 'individual', code + '.md');
     if (fs.existsSync(file)) {
       const md = fs.readFileSync(file, 'utf-8');
-      return res.json({ code, md });
+      return res.json({ code, md: extractCodeReport(md, code) || md });
     }
     const reports = await pool.query(
       'SELECT md FROM ipo_reports WHERE md LIKE $1 ORDER BY report_date DESC',

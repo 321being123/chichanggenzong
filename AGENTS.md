@@ -2,7 +2,7 @@
 
 ## 固定部署登录流程
 
-- 项目采用四位应用版本号，当前版本为 `0.2.0.1`。统一以 `package.json` 的 `appVersion` 为线上代码版本和程序版本；npm 必需的 `version` 使用兼容写法 `0.2.0-1`。以后每次部署都必须更新 `appVersion`，用户未指定新版本时默认递增最后一位，并在部署后核对 `/health` 返回的版本号。
+- 项目采用四位应用版本号，当前版本为 `0.2.0.2`。统一以 `package.json` 的 `appVersion` 为线上代码版本和程序版本；npm 必需的 `version` 使用兼容写法 `0.2.0-2`。以后每次部署都必须更新 `appVersion`，用户未指定新版本时默认递增最后一位，并在部署后核对 `/health` 返回的版本号。
 
 - 腾讯云生产服务器：`ubuntu@82.156.125.47`。`root` 账号不允许直接登录，不要再次尝试。固定读取项目根目录 `.env` 中的 `DEPLOY_SSH_PASSWORD`，通过 Paramiko 使用账号密码认证；执行部署命令时用同一密码通过标准输入完成 `sudo -S` 提权。不使用本机 SSH 私钥，也不把密码拼进命令参数。严禁输出密码，或将密码写入代码、文档及提交记录。
 - GitHub：仓库 `git@github.com:321being123/chichanggenzong.git`，使用本机 `~/.ssh/id_ed25519` 和 `~/.ssh/known_hosts`。若直接 `git push` 出现主机密钥校验失败，使用：

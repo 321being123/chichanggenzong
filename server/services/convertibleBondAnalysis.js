@@ -16,6 +16,7 @@ const PROFILE_FIELDS = [
 ].join(',');
 const DAILY_FIELDS = 'ts_code,trade_date,pre_close,open,high,low,close,change,pct_chg,vol,amount,bond_value,bond_over_rate,cb_value,cb_over_rate';
 const FORMULA_VERSION = '2';
+const CN_OFFSET_MS = 8 * 3600 * 1000;
 
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -30,7 +31,8 @@ function yuanToHundredMillion(value) {
 
 function isoDate(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return `${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}-${String(value.getDate()).padStart(2,'0')}`;
+    const cn = new Date(value.getTime() + CN_OFFSET_MS);
+    return `${cn.getUTCFullYear()}-${String(cn.getUTCMonth()+1).padStart(2,'0')}-${String(cn.getUTCDate()).padStart(2,'0')}`;
   }
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
   return /^\d{8}$/.test(text) ? `${text.slice(0,4)}-${text.slice(4,6)}-${text.slice(6,8)}` : null;
@@ -97,8 +99,7 @@ function currentPutPeriod(maturityDate, clause, today = isoDate(tsDateStr(new Da
     periodStart = next;
   }
   const nextPeriod = isoDate(addYears(new Date(`${periodStart}T00:00:00+08:00`), 1));
-  const endDate = new Date(`${(nextPeriod && nextPeriod < maturity) ? nextPeriod : maturity}T00:00:00+08:00`);
-  endDate.setDate(endDate.getDate() - 1);
+  const endDate = addDays(new Date(`${(nextPeriod && nextPeriod < maturity) ? nextPeriod : maturity}T00:00:00+08:00`), -1);
   return { active: current >= periodStart && current <= maturity, eligible_from: eligibleFrom,
     period_start: periodStart, period_end: isoDate(endDate) };
 }
@@ -200,10 +201,10 @@ function futureTradeCalendar(rows, today = isoDate(tsDateStr(new Date())), horiz
   const official = (rows || []).map(row => ({ date: isoDate(row.cal_date), open: String(row.is_open) === '1' })).filter(row => row.date).sort((a,b) => a.date.localeCompare(b.date));
   const dates = new Set(official.filter(row => row.open).map(row => row.date));
   const lastOfficial = official.length ? official[official.length - 1].date : isoDate(today);
-  const cursor = new Date(`${lastOfficial}T00:00:00+08:00`);
-  const end = new Date(`${isoDate(today)}T00:00:00+08:00`); end.setDate(end.getDate() + horizonDays);
+  let cursor = new Date(`${lastOfficial}T00:00:00+08:00`);
+  const end = addDays(new Date(`${isoDate(today)}T00:00:00+08:00`), horizonDays);
   while (cursor < end) {
-    cursor.setDate(cursor.getDate() + 1);
+    cursor = addDays(cursor, 1);
     if (cursor.getDay() !== 0 && cursor.getDay() !== 6) dates.add(isoDate(cursor));
   }
   return [...dates].sort();
@@ -221,7 +222,15 @@ function parseMoney(text, fallback = null) {
 }
 
 function addYears(date, years) {
-  const copy = new Date(date.getTime()); copy.setFullYear(copy.getFullYear() + years); return copy;
+  const cn = new Date(date.getTime() + CN_OFFSET_MS);
+  cn.setUTCFullYear(cn.getUTCFullYear() + years);
+  return new Date(cn.getTime() - CN_OFFSET_MS);
+}
+
+function addDays(date, days) {
+  const cn = new Date(date.getTime() + CN_OFFSET_MS);
+  cn.setUTCDate(cn.getUTCDate() + days);
+  return new Date(cn.getTime() - CN_OFFSET_MS);
 }
 
 function cashflowsToDate(profile, coupons, targetDate, afterTax, finalValue) {
@@ -271,7 +280,7 @@ function currentInterestYear(valueDate, maturityDate, today = isoDate(tsDateStr(
 function derivedDividendYield(rows, stockPrice, today = isoDate(tsDateStr(new Date()))) {
   const price = finite(stockPrice), current = isoDate(today);
   if (!(price > 0)) return null;
-  const startDate = new Date(`${current}T00:00:00+08:00`); startDate.setFullYear(startDate.getFullYear() - 1);
+  const startDate = addYears(new Date(`${current}T00:00:00+08:00`), -1);
   const start = isoDate(startDate);
   const paid = (rows || []).filter(row => isoDate(row.ex_date) && isoDate(row.ex_date) >= start && isoDate(row.ex_date) <= current);
   if (paid.length) return paid.reduce((sum,row) => sum + (finite(row.cash_div_tax) || 0), 0) / price;
@@ -764,7 +773,7 @@ async function saveProspectusDetails(client, instrumentId, profile, details, sou
     if (!interestYear || rate == null) continue;
     const valueDate = isoDate(profile.value_date);
     const payDate = valueDate ? addYears(new Date(`${valueDate}T00:00:00+08:00`), interestYear) : null;
-    const payDateText = payDate ? `${payDate.getFullYear()}-${String(payDate.getMonth()+1).padStart(2,'0')}-${String(payDate.getDate()).padStart(2,'0')}` : null;
+    const payDateText = payDate ? isoDate(payDate) : null;
     await client.query(
       `INSERT INTO fundamental.convertible_bond_coupon_schedule
        (instrument_id,interest_year,coupon_rate,pay_date,pre_tax_interest,after_tax_interest,source_id)
@@ -852,7 +861,7 @@ async function saveTriggerProgress(client, instrumentId, tradeDate, progresses) 
 
 async function latestTradeDates() {
   const end = tsDateStr(new Date());
-  const start = new Date(); start.setDate(start.getDate() - 20);
+  const start = addDays(new Date(), -20);
   const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: tsDateStr(start), end_date: end, is_open: '1' }, 'cal_date,is_open');
   return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
 }
@@ -1001,7 +1010,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) throw new Error('请输入有效的可转债代码');
   const end = tsDateStr(new Date());
-  const startDate = new Date(); startDate.setDate(startDate.getDate() - 500);
+  const startDate = addDays(new Date(), -500);
   const start = tsDateStr(startDate);
   const couponPromise = process.env.TUSHARE_ENABLE_5000_ENDPOINTS === '1'
     ? tushareQuery('cb_rate', { ts_code: tsCode }, 'ts_code,rate_freq,rate_start_date,rate_end_date,coupon_rate')
@@ -1023,10 +1032,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   if (!bondDaily.length) throw new Error('该可转债暂无行情数据');
   const stockCode = profile.stk_code;
   const announcementStart = String(profile.list_date || '').replace(/-/g,'') || start;
-  const prospectusStartDate = new Date(`${isoDate(profile.list_date) || isoDate(profile.value_date) || isoDate(start)}T00:00:00+08:00`);
-  prospectusStartDate.setFullYear(prospectusStartDate.getFullYear() - 1);
+  const prospectusStartDate = addYears(new Date(`${isoDate(profile.list_date) || isoDate(profile.value_date) || isoDate(start)}T00:00:00+08:00`), -1);
   const prospectusStart = tsDateStr(prospectusStartDate);
-  const futureCalendarEnd = new Date(); futureCalendarEnd.setDate(futureCalendarEnd.getDate() + 400);
+  const futureCalendarEnd = addDays(new Date(), 400);
   const prospectusCache = await loadProspectusCache(tsCode);
   const noRevisionCache = await loadNoRevisionCache(tsCode);
   const priceChangeCache = await loadPriceChangeCache(tsCode);

@@ -4,6 +4,7 @@ const {
   earliestPutDate, currentPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates,
   yieldToMaturity, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
 } = require('../services/convertibleBondAnalysis');
+const { tsDateStr } = require('../services/market');
 
 assert.strictEqual(normalizeBondCode('113001'), '113001.SH');
 assert.strictEqual(normalizeBondCode('123001.SZ'), '123001.SZ');
@@ -11,6 +12,10 @@ assert.strictEqual(normalizeBondCode('600519'), null);
 assert.strictEqual(yuanToHundredMillion(2449880700), 24.498807);
 assert.strictEqual(isoDate('2026-07-22'), '2026-07-22');
 assert.strictEqual(isoDate('20260722'), '2026-07-22');
+assert.strictEqual(isoDate(new Date('2026-07-14T16:00:00Z')), '2026-07-15');
+assert.strictEqual(isoDate(new Date('2026-07-14T15:59:59Z')), '2026-07-14');
+assert.strictEqual(tsDateStr(new Date('2026-07-14T16:00:00Z')), '20260715');
+assert.strictEqual(tsDateStr(new Date('2026-07-14T15:59:59Z')), '20260714');
 assert.strictEqual(parseTriggerRatio('连续30个交易日中至少15个交易日高于转股价格的130%'), 1.3);
 assert.deepStrictEqual(parseWindow('连续30个交易日中至少15个交易日'), { observation_days:30, required_days:15 });
 assert.deepStrictEqual(parseWindow('连续三十个交易日中至少十五个交易日'), { observation_days:30, required_days:15 });

@@ -279,7 +279,7 @@ async function fetchQuoteByCode(code) {
 
 // 东八区日期 YYYYMMDD（Tushare 参数专用，避免服务器非东八区时差一天）
 function tsDateStr(d) {
-  const cn = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+  const cn = new Date(d.getTime() + 8 * 3600 * 1000);
   const p = n => String(n).padStart(2, '0');
   return '' + cn.getUTCFullYear() + p(cn.getUTCMonth() + 1) + p(cn.getUTCDate());
 }
@@ -297,7 +297,7 @@ function normDate(s) {
 // 与原前端 public/js/utils.js 的 todayCN 保持一致（修复原 server.js 调用未定义 todayCN 的缺陷）
 function todayCN() {
   const now = new Date();
-  const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+  const cn = new Date(now.getTime() + 8 * 3600 * 1000);
   const p = n => String(n).padStart(2, '0');
   return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
 }

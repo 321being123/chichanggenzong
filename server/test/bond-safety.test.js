@@ -22,6 +22,11 @@ function company(overrides) {
 console.log('A. 旧脚本清洗与三指标评级口径');
 check('清除 = 前缀并转换数字', () => assert.strictEqual(cleanValue('=53.11'), 53.11));
 check('三个指标均达标 => 安全', () => assert.deepStrictEqual(rateCompany(company()).rating, '安全'));
+check('优先使用Tushare直接利息保障倍数', () => {
+  const result = rateCompany(company({ interest_coverage: 0.2458, interest_expense: null }));
+  assert.strictEqual(result.metrics.interest, 0.2458);
+  assert(!result.missing_fields.includes('interest_expense'));
+});
 check('2/1/0 分映射正确', () => {
   assert.strictEqual(rateCompany(company({ ebit: 600 })).rating, '低风险');
   assert.strictEqual(rateCompany(company({ ebit: 600, cash: 0, trading_fin_assets: 0 })).rating, '中风险');

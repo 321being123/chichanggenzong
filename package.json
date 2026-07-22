@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.1.0-1",
-  "appVersion": "0.1.0.1",
+  "version": "0.1.0-2",
+  "appVersion": "0.1.0.2",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
@@ -10,7 +10,8 @@
     "test:security": "node test-security.js",
     "test:unit": "node test.js",
     "test:integration": "node test-integration.js",
-    "test:all": "node server/test/run-all.js"
+    "test:all": "node server/test/run-all.js",
+    "audit:bonds": "node server/scripts/auditHeldConvertibleBondNoRevision.js"
   },
   "dependencies": {
     "connect-redis": "^7.1.1",

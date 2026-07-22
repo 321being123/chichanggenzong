@@ -162,17 +162,18 @@ function renderEarningsTable(sorted) {
   if (!el) return;
   earningsSorted = sorted;
   const wan = function (v) { return (Number(v || 0) / 10000).toFixed(2) + '万'; };
+  const trendColor = function (v) { return v > 0 ? '#d93025' : (v < 0 ? '#137333' : '#888'); };
   const cols = [
     { t: '日期', get: function (r) { return r.date || '-'; } },
     { t: '总市值(万元)', get: function (r) { return wan(r.totalMarketValue); } },
     { t: '投入本金(万元)', get: function (r) { return wan(r.totalInvested); } },
     { t: '净值', get: function (r) { return Number(r.nav || 1).toFixed(4); } },
-    { t: '总收益率', right: true, color: function (r) { return (r.totalReturn || 0) >= 0 ? '#d93025' : '#137333'; }, get: function (r) { return ((r.totalReturn || 0) >= 0 ? '+' : '') + ((r.totalReturn || 0) * 100).toFixed(2) + '%'; } },
-    { t: '本周涨跌', right: true, color: function (r) { return (r.weekChange || 0) >= 0 ? '#d93025' : '#137333'; }, get: function (r) { return ((r.weekChange || 0) >= 0 ? '+' : '') + ((r.weekChange || 0) * 100).toFixed(2) + '%'; } },
-    { t: '今日涨跌', right: true, color: function (r) { return (r.dayChange == null) ? '#888' : ((r.dayChange >= 0) ? '#d93025' : '#137333'); }, get: function (r) { return (r.dayChange == null) ? '-' : ((r.dayChange >= 0) ? '+' : '') + ((r.dayChange || 0) * 100).toFixed(2) + '%'; } },
-    { t: '年化', right: true, color: function (r) { return (r.annualizedReturn || 0) >= 0 ? '#d93025' : '#137333'; }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
-    { t: '当前回撤', right: true, color: function () { return '#d93025'; }, get: function (r) { return ((r.currentDrawdown || 0) * 100).toFixed(2) + '%'; } },
-    { t: '今年收益', right: true, color: function (r) { return (r.yearReturn == null) ? '#888' : ((r.yearReturn >= 0) ? '#d93025' : '#137333'); }, get: function (r) { return (r.yearReturn == null) ? '-' : ((r.yearReturn >= 0 ? '+' : '') + ((r.yearReturn) * 100).toFixed(2) + '%'); } },
+    { t: '总收益率', right: true, color: function (r) { return trendColor(r.totalReturn || 0); }, get: function (r) { return ((r.totalReturn || 0) >= 0 ? '+' : '') + ((r.totalReturn || 0) * 100).toFixed(2) + '%'; } },
+    { t: '本周涨跌', right: true, color: function (r) { return trendColor(r.weekChange || 0); }, get: function (r) { return ((r.weekChange || 0) >= 0 ? '+' : '') + ((r.weekChange || 0) * 100).toFixed(2) + '%'; } },
+    { t: '今日涨跌', right: true, color: function (r) { return (r.dayChange == null) ? '#888' : trendColor(r.dayChange); }, get: function (r) { return (r.dayChange == null) ? '-' : ((r.dayChange >= 0) ? '+' : '') + ((r.dayChange || 0) * 100).toFixed(2) + '%'; } },
+    { t: '年化', right: true, color: function (r) { return trendColor(r.annualizedReturn || 0); }, get: function (r) { return ((r.annualizedReturn || 0) >= 0 ? '+' : '') + ((r.annualizedReturn || 0) * 100).toFixed(2) + '%'; } },
+    { t: '当前回撤', right: true, color: function (r) { return trendColor(r.currentDrawdown || 0); }, get: function (r) { return ((r.currentDrawdown || 0) * 100).toFixed(2) + '%'; } },
+    { t: '今年收益', right: true, color: function (r) { return (r.yearReturn == null) ? '#888' : trendColor(r.yearReturn); }, get: function (r) { return (r.yearReturn == null) ? '-' : ((r.yearReturn >= 0 ? '+' : '') + ((r.yearReturn) * 100).toFixed(2) + '%'); } },
     { t: '操作', center: true,       get: function (r) {
         return '<button class="btn btn-outline btn-sm" data-act="openNavEdit" data-date="' + escapeHtml(r.date) + '">编辑</button> ' +
                '<button class="btn btn-danger btn-sm" data-act="deleteNav" data-date="' + escapeHtml(r.date) + '">删除</button>';

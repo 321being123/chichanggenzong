@@ -28,3 +28,31 @@
 #stock-analysis-percentiles .date-range-control{margin-bottom:12px}.stock-analysis-valuation-legend .outlier{border-color:#ed8a27}.stock-analysis-valuation-legend .negative{border-color:#d83a3a}.valuation-outlier{fill:#ed8a27}.valuation-negative{fill:#d83a3a}
 .stock-analysis-statements-table .statement-parent th{font-weight:700;color:#263445;background:#f4f7fa}.stock-analysis-statements-table .statement-level-1 th{padding-left:30px;font-weight:400;color:#5d6978;background:#fff}.stock-analysis-statements-table .statement-branch{display:inline-block;margin-right:7px;color:#a1aab6;font-size:12px}.stock-analysis-statements-table .statement-level-1 .statement-value{color:#258f89}
 @media(max-width:720px){.stock-analysis-hero{display:block}.stock-analysis-hero #stock-analysis-updated{display:block;margin-top:12px}.stock-analysis-toolbar select,.stock-analysis-toolbar input{width:100%;min-width:0}.stock-analysis-chart svg{height:290px}.stock-analysis-period-summary{grid-template-columns:repeat(2,1fr)}}
+
+.bond-analysis-content{background:#fff;border:1px solid #e2e6ec;border-radius:10px;overflow:hidden}
+.bond-analysis-summary{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding:16px 18px;background:#f5f7fa;border-bottom:1px solid #dfe4ea}
+.bond-analysis-summary strong{font-size:21px}.bond-analysis-summary span{font-size:13px;color:#667085}
+.bond-analysis-section{padding:0 18px 18px;margin:0;background:#fff}
+.bond-analysis-section h3{margin:0 -18px 12px;padding:11px 18px;background:#eef2f6;border-top:1px solid #dfe4ea;border-bottom:1px solid #dfe4ea;font-size:15px;color:#263447}
+.bond-analysis-method{display:block;margin:-3px 0 10px;color:#7b8493;line-height:1.55}
+.bond-analysis-table-wrap{overflow-x:auto}
+.bond-analysis-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+.bond-analysis-table th,.bond-analysis-table td{padding:9px 11px;border:1px solid #e3e7ed;text-align:left;vertical-align:top;line-height:1.55;word-break:break-word}
+.bond-analysis-table th{width:18%;background:#f8fafc;color:#596579;font-weight:600}
+.bond-analysis-table td{width:32%;color:#202636}
+.bond-analysis-table tr:last-child th,.bond-analysis-table tr:last-child td{border-bottom:1px solid #e3e7ed}
+.bond-analysis-table thead th{width:auto;text-align:center;background:#eef2f6}
+.bond-analysis-empty{padding:18px;text-align:center;color:#8a94a4;border:1px solid #e3e7ed}
+.bond-analysis-status{padding:12px 18px;color:#7b8493;font-size:12px;border-top:1px solid #e3e7ed;background:#fafbfc}
+.bond-analysis-up{color:#c63838!important}.bond-analysis-down{color:#16855b!important}
+.bond-analysis-revision-down{color:#16855b;font-weight:700}
+.bond-analysis-purpose{white-space:pre-line;line-height:1.75;margin-bottom:4px}
+.bond-analysis-current-coupon{display:inline-block;padding:3px 8px;border-radius:10px;background:#fff1d6;color:#a65b00;font-weight:700}
+#bond-analysis-price-history .bond-analysis-table th,#bond-analysis-price-history .bond-analysis-table td,#bond-analysis-no-revision .bond-analysis-table th,#bond-analysis-no-revision .bond-analysis-table td{text-align:center;vertical-align:middle}
+#bond-analysis-price-history .bond-analysis-table th:nth-child(7),#bond-analysis-price-history .bond-analysis-table td:nth-child(7),#bond-analysis-no-revision .bond-analysis-table th:nth-child(3),#bond-analysis-no-revision .bond-analysis-table td:nth-child(3){text-align:left}
+#bond-analysis-price-history .bond-analysis-table th:nth-child(1),#bond-analysis-price-history .bond-analysis-table th:nth-child(2){width:11%}
+#bond-analysis-price-history .bond-analysis-table th:nth-child(3),#bond-analysis-price-history .bond-analysis-table th:nth-child(4){width:10%}
+#bond-analysis-price-history .bond-analysis-table th:nth-child(5),#bond-analysis-price-history .bond-analysis-table th:nth-child(6){width:7%}
+#bond-analysis-price-history .bond-analysis-table th:nth-child(7){width:36%}
+#bond-analysis-price-history .bond-analysis-table th:nth-child(8){width:8%}
+@media(max-width:720px){.bond-analysis-table{min-width:680px}.bond-analysis-section{padding-left:10px;padding-right:10px}.bond-analysis-section h3{margin-left:-10px;margin-right:-10px}}

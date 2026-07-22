@@ -42,8 +42,8 @@ function isTradingDay(d) {
 }
 
 // 距离「北京时间 h:m」还有多少毫秒（显式东八区，不依赖容器时区）
-function msUntil(h, m) {
-  const now = new Date();
+function msUntil(h, m, nowInput) {
+  const now = nowInput ? new Date(nowInput) : new Date();
   const cnNow = new Date(now.getTime() + CN_OFFSET_MS);
   const target = new Date(cnNow);
   target.setUTCHours(h, m, 0, 0); // cnNow 的内部 UTC 字段即北京时间，用 UTC 访问器设时分

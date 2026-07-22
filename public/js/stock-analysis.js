@@ -32,6 +32,7 @@ function stockAnalysisSetMessage(text, error) {
 }
 
 async function loadStockAnalysis(force) {
+  if (window.securityAnalysisLoadList) window.securityAnalysisLoadList(force);
   if (stockAnalysisState.loaded && !force) return;
   try {
     var response = await fetch(api('/api/stock-analysis/stocks'));
@@ -84,7 +85,7 @@ async function stockAnalysisRefresh() {
     if (analysis) stockAnalysisRender(analysis);
     if (!response.ok && payload.error) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
   } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
-  finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新分析'; } }
+  finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新数据'; } }
 }
 
 async function stockAnalysisAddWatchlist() {
@@ -119,6 +120,7 @@ async function stockAnalysisRemoveWatchlist() {
 
 function stockAnalysisRender(d) {
   stockAnalysisState.data = d; stockAnalysisSetMessage('');
+  var bondContent = document.getElementById('bond-analysis-content'); if (bondContent) bondContent.style.display = 'none';
   var content = document.getElementById('stock-analysis-content'); if (content) content.style.display = 'block';
   var updated = document.getElementById('stock-analysis-updated');
   if (updated) updated.textContent = '数据日期：' + (d.as_of || '--') + (d.quote && d.quote.quote_time ? ' · 行情：' + String(d.quote.quote_time).replace('T',' ').slice(0,19) : '');

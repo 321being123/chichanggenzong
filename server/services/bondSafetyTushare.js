@@ -47,12 +47,14 @@ function selectFinancialReport(indicators, balances, incomes, today) {
   return {
     report_end_date: period,
     announced_at: [fi.ann_date, bs.f_ann_date].filter(Boolean).sort().reverse()[0] || null,
+    interest_coverage: finite(fi.ebit_to_interest),
     interest_expense: directInterest != null ? directInterest : derivedInterest,
     ebit: finite(fi.ebit),
     cash: finite(bs.money_cap),
     trading_fin_assets: finite(bs.trad_asset),
-    interest_bearing_debt: finite(fi.interestdebt),
-    total_liability: finite(bs.total_liab),
+      interest_bearing_debt: finite(fi.interestdebt),
+      total_assets: finite(bs.total_assets),
+      total_liability: finite(bs.total_liab),
     current_liability: finite(bs.total_cur_liab),
     shareholder_equity: finite(bs.total_hldr_eqy_exc_min_int),
   };
@@ -82,7 +84,7 @@ async function saveFinancialCache(tsCode, stockName, data) {
 async function fetchOneFinancial(stock, today) {
   const [fiData, bsData, incomeData] = await Promise.all([
     tushareQuery('fina_indicator', { ts_code: stock.stk_code }, 'ts_code,ann_date,end_date,ebit,ebit_to_interest,interestdebt'),
-    tushareQuery('balancesheet', { ts_code: stock.stk_code }, 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
+      tushareQuery('balancesheet', { ts_code: stock.stk_code }, 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_assets,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
     tushareQuery('income', { ts_code: stock.stk_code }, 'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
   ]);
   return selectFinancialReport(tsRows(fiData), tsRows(bsData), tsRows(incomeData), today);
@@ -125,7 +127,7 @@ async function refreshFinancials(stocks, today) {
   const ttl = Math.max(1, Number(process.env.BOND_SAFETY_FINANCIAL_TTL_DAYS) || FINANCIAL_TTL_DAYS) * 86400000;
   const pending = stocks.filter(stock => {
     const cached = cache.get(stock.stk_code);
-    return !cached || !cached.data || Date.now() - cached.fetched_at >= ttl;
+    return !cached || !cached.data || finite(cached.data.interest_coverage) == null || Date.now() - cached.fetched_at >= ttl;
   });
   const concurrency = Math.max(1, Math.min(6, Number(process.env.BOND_SAFETY_TUSHARE_CONCURRENCY) || 3));
   let cursor = 0;

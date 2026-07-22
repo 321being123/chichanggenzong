@@ -320,12 +320,13 @@ function renderPositionsTable(targetId, limit) {
       '</div>';
   }
 
-  var html = filterBar + '<table><thead><tr>' +
+  var html = filterBar + '<table class="positions-data-table"><thead><tr>' +
     '<th style="width:40px;" class="sortable" onclick="setSort(&quot;xh&quot;)">序号' + sortArrow('xh') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;code&quot;)">代码' + sortArrow('code') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;name&quot;)">名称' + sortArrow('name') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;price&quot;)">现价' + sortArrow('price') + '</th>' +
     '<th class="text-right sortable" style="width:70px;" onclick="setSort(&quot;chg&quot;)">涨跌' + sortArrow('chg') + '</th>' +
+    '<th>今日盈亏（元）</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;qty&quot;)">数量' + sortArrow('qty') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;mv&quot;)">市值' + sortArrow('mv') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;pct&quot;)">比例' + sortArrow('pct') + '</th>' +
@@ -372,6 +373,16 @@ function renderPositionsTable(targetId, limit) {
     var chgDisplay = hasRealTime
       ? chgText
       : (hasCachedPrice ? '<span style="color:#bbb;">--</span>' : '<span style="color:#ccc;font-size:16px;" title="无涨跌数据">⟳</span>');
+    var todayProfit = null;
+    if (hasRealTime && hasCachedPrice && chgVal > -100) {
+      var previousClose = Number(p.price) / (1 + chgVal / 100);
+      var exchangeRate = p.subtype === '港股' ? (Number(data.hkRate) || 0.868) : 1;
+      todayProfit = (Number(p.price) - previousClose) * (Number(p.quantity) || 0) * exchangeRate;
+    }
+    var todayProfitDisplay = todayProfit == null
+      ? '<span style="color:#bbb;">--</span>'
+      : (todayProfit >= 0 ? '+' : '') + fmt(todayProfit);
+    var todayProfitStyle = todayProfit == null ? 'color:#bbb;' : (todayProfit >= 0 ? 'color:#d93025;' : 'color:#137333;');
 
     html += '<tr>' +
       '<td style="text-align:center;color:#bbb;">' + (idx + 1) + '</td>' +
@@ -379,6 +390,7 @@ function renderPositionsTable(targetId, limit) {
       '<td><strong>' + escapeHtml(p.name || '未知') + '</strong></td>' +
       '<td class="text-right" style="font-weight:600;' + priceStyle + '">' + priceDisplay + '</td>' +
       '<td class="text-right" style="font-weight:600;font-size:13px;' + chgStyle + '">' + chgDisplay + '</td>' +
+      '<td style="font-weight:600;' + todayProfitStyle + '">' + todayProfitDisplay + '</td>' +
       '<td class="text-right">' + (p.quantity != null ? fmtQty(p.quantity) : 0) + '</td>' +
       '<td class="text-right" style="font-weight:600;">' + fmt(mv) + '</td>' +
       '<td class="text-right">' + pct + '%</td>' +
@@ -400,6 +412,7 @@ function renderPositionsTable(targetId, limit) {
       '<td><strong>现金</strong></td>' +
       '<td class="text-right" style="color:#bbb;">-</td>' +
       '<td class="text-right" style="color:#bbb;">-</td>' +
+      '<td style="color:#bbb;">-</td>' +
       '<td class="text-right" style="color:#bbb;">-</td>' +
       '<td class="text-right" style="font-weight:600;">' + fmt(cashAmt) + '</td>' +
       '<td class="text-right">' + cashPct + '%</td>' +

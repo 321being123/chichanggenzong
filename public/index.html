@@ -7,9 +7,9 @@
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="shared/style.css?v=11">
+<link rel="stylesheet" href="shared/style.css?v=12">
 <link rel="stylesheet" href="css/bond-safety.css?v=6">
-<link rel="stylesheet" href="css/stock-analysis.css?v=8">
+<link rel="stylesheet" href="css/stock-analysis.css?v=9">
 </head>
 <body>
 
@@ -18,7 +18,7 @@
     <div class="nav-left">
       <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">存在小站</h1>
       <nav class="main-nav">
-        <button class="main-tab" data-main="stock-analysis">股票分析</button>
+        <button class="main-tab" data-main="stock-analysis">股债分析</button>
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
         <button class="main-tab" data-main="bond-safety">转债安全性</button>
@@ -228,21 +228,20 @@
   </div>
 </div>
 
-<!-- 股票分析（一级页，位于打新日历前） -->
+<!-- 股债分析（一级页，位于打新日历前） -->
 <div class="main-page" id="main-stock-analysis">
   <div class="stock-analysis-shell feature-page-shell">
     <div class="stock-analysis-hero">
-      <div><h2>股票分析</h2><p>基于上市以来财报、历史估值和公司公告的基本面分析。数据仅供研究参考。</p></div>
-      <span id="stock-analysis-updated">请选择股票</span>
+      <div><h2>股债分析</h2><p>输入股票或可转债代码，读取已入库数据并生成分析结果。数据仅供研究参考。</p></div>
+      <span id="stock-analysis-updated">请输入代码</span>
     </div>
     <div class="stock-analysis-toolbar table-wrap">
-      <select id="stock-analysis-select" aria-label="选择持仓或自选股" onchange="stockAnalysisSelect(this.value)"><option value="">选择持仓或自选股</option></select>
-      <input id="stock-analysis-code" inputmode="numeric" maxlength="9" placeholder="输入A股代码，如 600519">
-      <button class="btn btn-outline btn-sm" onclick="stockAnalysisAddWatchlist()">加入自选</button>
-      <button class="btn btn-outline btn-sm" id="stock-analysis-remove" onclick="stockAnalysisRemoveWatchlist()" style="display:none;">移出自选</button>
-      <button class="btn btn-primary btn-sm" id="stock-analysis-refresh" onclick="stockAnalysisRefresh()">刷新分析</button>
+      <select id="security-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value)"><option value="">选择持仓或自选</option></select>
+      <input id="stock-analysis-code" inputmode="numeric" maxlength="9" placeholder="股票或可转债代码，如 600519 / 113xxx" onkeydown="if(event.key==='Enter')securityAnalysisSubmit()">
+      <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit()">开始分析</button>
+      <button class="btn btn-outline btn-sm" id="stock-analysis-refresh" onclick="securityAnalysisRefresh()">刷新数据</button>
     </div>
-    <div id="stock-analysis-message" class="stock-analysis-message">从持仓或自选股中选择一只股票开始分析。</div>
+    <div id="stock-analysis-message" class="stock-analysis-message">请输入股票或可转债代码开始分析。</div>
     <div id="stock-analysis-content" style="display:none;">
       <div class="stock-analysis-summary" id="stock-analysis-summary"></div>
       <div class="stock-analysis-view-tabs" role="tablist" aria-label="个股数据视图">
@@ -270,6 +269,21 @@
           <div class="stock-analysis-statements-wrap" id="stock-analysis-statements-wrap" style="display:none;"></div>
         </section>
       </div>
+    </div>
+    <div id="bond-analysis-content" class="bond-analysis-content" style="display:none;">
+      <div class="bond-analysis-summary" id="bond-analysis-summary"></div>
+      <section class="bond-analysis-section"><h3>可转债基本信息</h3><div id="bond-analysis-basic"></div></section>
+      <section class="bond-analysis-section"><h3>触发价格与计数</h3><div id="bond-analysis-triggers"></div></section>
+      <section class="bond-analysis-section"><h3>募集用途与条款</h3><div id="bond-analysis-terms"></div></section>
+      <section class="bond-analysis-section"><h3>转股价调整历史</h3><div id="bond-analysis-price-history"></div></section>
+      <section class="bond-analysis-section"><h3>转股价不下修历史</h3><div id="bond-analysis-no-revision"></div></section>
+      <section class="bond-analysis-section"><h3>可转债安全性</h3><div id="bond-analysis-safety"></div></section>
+      <section class="bond-analysis-section"><h3>债券基本信息</h3><div id="bond-analysis-bond"></div></section>
+      <section class="bond-analysis-section"><h3>债券利息明细</h3><div id="bond-analysis-coupons"></div></section>
+      <section class="bond-analysis-section"><h3>期权价值</h3><small class="bond-analysis-method" id="bond-analysis-option-method"></small><div id="bond-analysis-option"></div></section>
+      <section class="bond-analysis-section"><h3>正股相关</h3><div id="bond-analysis-stock"></div></section>
+      <section class="bond-analysis-section"><h3>评级历史</h3><div id="bond-analysis-ratings"></div></section>
+      <div class="bond-analysis-status" id="bond-analysis-status"></div>
     </div>
   </div>
 </div>
@@ -557,18 +571,19 @@
 <script src="js/code-classify.js?v=2"></script>
 <script src="js/utils.js?v=2"></script>
 <script src="shared/core-quote.js?v=20260712"></script>
-<script src="shared/core-tables.js?v=3"></script>
+<script src="shared/core-tables.js?v=4"></script>
 <script src="shared/core-fees.js?v=1"></script>
 <script src="shared/core-trade.js?v=20260712"></script>
 <script src="shared/nav-math.js?v=1"></script>
 <script src="shared/core-returns.js?v=3"></script>
 <script src="shared/core-earnings.js?v=20260712c"></script>
-<script src="shared/core-account.js?v=20260712e"></script>
+<script src="shared/core-account.js?v=20260722a"></script>
 <script src="shared/date-range-control.js?v=1"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=6"></script>
-<script src="js/stock-analysis.js?v=8"></script>
+<script src="js/stock-analysis.js?v=9"></script>
+<script src="js/bond-analysis.js?v=1"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>
 <script src="js/stock-analysis-chart.js?v=11"></script>
 <script src="js/stock-analysis-valuation-chart.js?v=4"></script>

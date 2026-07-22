@@ -11,11 +11,9 @@ const { getStockStatements } = require('../services/stockStatements');
 
 router.use(requireLogin);
 
-async function userStock(req, res, next) {
+async function validStock(req, res, next) {
   const tsCode = normalizeStockCode(req.params.ts_code);
   if (!tsCode || !isOrdinaryAStock(tsCode)) return res.status(400).json({ error: '仅支持A股普通股票' });
-  const stocks = await listUserStocks(req.session.user);
-  if (!stocks.some(row => row.ts_code === tsCode)) return res.status(403).json({ error: '该股票不在你的持仓或自选股中' });
   req.stockTsCode = tsCode;
   next();
 }
@@ -57,11 +55,11 @@ router.delete('/watchlist/:ts_code', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-router.get('/:ts_code/statements', asyncHandler(userStock), asyncHandler(async(req,res)=>{
+router.get('/:ts_code/statements', asyncHandler(validStock), asyncHandler(async(req,res)=>{
   res.json(await getStockStatements(req.stockTsCode,String(req.query.type||'balance'),req.query.limit));
 }));
 
-router.get('/:ts_code', asyncHandler(userStock), asyncHandler(async (req, res) => {
+router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) => {
   const snapshot = await getSnapshot(req.stockTsCode);
   if (!snapshot) return res.status(404).json({ error: '尚未建档，请刷新该股票' });
   try {
@@ -73,7 +71,7 @@ router.get('/:ts_code', asyncHandler(userStock), asyncHandler(async (req, res) =
 }));
 
 router.post('/:ts_code/refresh', rateLimit({ prefix: 'stock-analysis-refresh', windowMs: 60 * 60 * 1000, max: 10,
-  getKey: req => req.session.user, message: '刷新过于频繁，请稍后再试' }), asyncHandler(userStock), asyncHandler(async (req, res) => {
+  getKey: req => req.session.user, message: '刷新过于频繁，请稍后再试' }), asyncHandler(validStock), asyncHandler(async (req, res) => {
   try {
     const analysis = await refreshStockAnalysis(req.stockTsCode, `manual:${req.session.user}`);
     res.json({ ok: true, analysis });

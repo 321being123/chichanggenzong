@@ -229,16 +229,16 @@ function eventCategory(title) {
   return found ? found[0] : '其他';
 }
 
-async function fetchCninfoEvents(tsCode, startDate, endDate) {
+async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
   const code = tsCode.slice(0, 6);
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://www.cninfo.com.cn/', 'X-Requested-With': 'XMLHttpRequest' };
   const searchBody = new URLSearchParams({ keyWord: code, maxNum: '10' }).toString();
   const matches = await requestJson('https://www.cninfo.com.cn/new/information/topSearch/query', { method: 'POST', headers, body: searchBody });
-  const stock = (Array.isArray(matches) ? matches : []).find(item => String(item.code) === code);
+  const stock = (Array.isArray(matches) ? matches : [matches]).find(item => item && String(item.code) === code);
   if (!stock || !stock.orgId) return [];
   const events = [];
   for (let page = 1; page <= 5; page++) {
-    const body = new URLSearchParams({ pageNum: String(page), pageSize: '100', stock: `${code},${stock.orgId}`,
+    const body = new URLSearchParams({ pageNum: String(page), pageSize: '100', stock: `${code},${stock.orgId}`, searchkey: searchKey,
       tabName: 'fulltext', column: 'szse', plate: tsCode.endsWith('.SH') ? 'sh' : 'sz',
       seDate: `${isoDate(startDate)}~${isoDate(endDate)}` }).toString();
     const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
@@ -249,9 +249,73 @@ async function fetchCninfoEvents(tsCode, startDate, endDate) {
       const url = row.adjunctUrl ? `https://static.cninfo.com.cn/${String(row.adjunctUrl).replace(/^\//, '')}` : '';
       events.push({ source: 'cninfo', event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
     }
-    if (!payload.hasMore || rows.length < 100) break;
+    if (!payload.hasMore || rows.length === 0) break;
   }
-  return events;
+  if (searchKey && !events.length) {
+    const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '');
+    return allEvents.filter(event => String(event.title || '').includes(searchKey));
+  }
+  return [...new Map(events.map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+}
+
+async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey) {
+  const startYear = Number(String(startDate || '').slice(0, 4));
+  const endYear = Number(String(endDate || '').slice(0, 4));
+  if (!startYear || !endYear) return fetchCninfoEvents(tsCode, startDate, endDate, searchKey);
+  const groups = await Promise.all(Array.from({ length: endYear - startYear + 1 }, (_, index) => {
+    const year = startYear + index;
+    return fetchCninfoEvents(tsCode, year === startYear ? startDate : `${year}0101`,
+      year === endYear ? endDate : `${year}1231`, searchKey).catch(() => []);
+  }));
+  return groups.flat();
+}
+
+async function fetchSseLatestReport(tsCode) {
+  if (!String(tsCode || '').endsWith('.SH')) return null;
+  const params = new URLSearchParams({ isPagination: 'true', productId: tsCode.slice(0, 6), keyWord: '',
+    securityType: '0101,120100,020100,020200,120200', reportType2: 'DQBG', reportType: 'ALL',
+    'pageHelp.pageSize': '25', 'pageHelp.pageNo': '1', 'pageHelp.beginPage': '1', 'pageHelp.endPage': '1' });
+  const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
+    { headers: { Referer: 'https://www.sse.com.cn/' } });
+  const rows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
+  const report = rows.filter(row => /(?:年报|半年报)$/.test(String(row.BULLETIN_TYPE || '')) && !/摘要/.test(String(row.TITLE || '')) && row.URL)
+    .sort((a,b) => String(b.SSEDATE || '').localeCompare(String(a.SSEDATE || '')))[0];
+  if (!report) return null;
+  return { source: 'sse', event_date: String(report.SSEDATE || '').replace(/-/g, ''), title: report.TITLE,
+    url: `https://big5.sse.com.cn/site/cht/www.sse.com.cn${report.URL}`, category: '定期报告', is_official: true, raw: report };
+}
+
+async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
+  if (!String(tsCode || '').endsWith('.SH')) return [];
+  const params = new URLSearchParams({ isPagination: 'true', productId: tsCode.slice(0, 6), keyWord: keyword,
+    securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
+    'pageHelp.pageSize': '100', 'pageHelp.pageNo': '1', 'pageHelp.beginPage': '1', 'pageHelp.endPage': '1' });
+  const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
+    { headers: { Referer: 'https://www.sse.com.cn/' } });
+  const rows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
+  const start = isoDate(startDate), end = isoDate(endDate);
+  return rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(row => ({
+    source: 'sse', event_date: String(row.SSEDATE || '').replace(/-/g, ''), title: row.TITLE || '',
+    url: `https://big5.sse.com.cn/site/cht/www.sse.com.cn${row.URL}`, category: eventCategory(row.TITLE || ''), is_official: true, raw: row,
+  }));
+}
+
+async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
+  if (!String(tsCode || '').endsWith('.SZ')) return [];
+  const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [tsCode.slice(0, 6)],
+    channelCode: ['fixed_disc'], pageSize: 100, pageNum: 1 });
+  const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Referer: 'https://www.szse.cn/disclosure/listed/fixed/index.html',
+      'X-Requested-With': 'XMLHttpRequest' }, body });
+  return (payload.data || []).filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(row => ({
+    source: 'szse', event_date: String(row.publishTime || '').slice(0, 10).replace(/-/g, ''), title: row.title || '',
+    url: `https://disc.static.szse.cn/download${row.attachPath}`, category: eventCategory(row.title || ''), is_official: true, raw: row,
+  }));
+}
+
+async function fetchSzseLatestReport(tsCode, startDate, endDate) {
+  const reports = await fetchSzseEvents(tsCode, startDate, endDate, '年度报告');
+  return reports.filter(row => !/摘要/.test(row.title)).sort((a,b) => String(b.event_date).localeCompare(String(a.event_date)))[0] || null;
 }
 
 async function fetchXueqiuEvents(tsCode, startDate, endDate) {
@@ -646,4 +710,5 @@ async function listUserStocks(username) {
 }
 
 module.exports = { finite, normalizeStockCode, isOrdinaryAStock, growthMetric, percentile, selectDividendPlans, selectLatestByPeriod,
-  refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks };
+  refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
+  fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport };

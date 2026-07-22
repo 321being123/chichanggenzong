@@ -68,7 +68,7 @@ check('cnWeekday 返回北京时间星期几', () => {
 check('msUntil 落点固定为北京时间 h:m（不受主机时区影响）', () => {
   for (const [h, m] of [[15, 10], [16, 10]]) {
     const now = new Date();
-    const ms = mc.msUntil(h, m);
+    const ms = mc.msUntil(h, m, now);
     assert.ok(ms > 0 && ms < 48 * 3600 * 1000, `msUntil(${h},${m}) 区间异常: ${ms}`);
     const at = new Date(now.getTime() + ms);
     const beijing = new Date(at.getTime() + 8 * 3600 * 1000);

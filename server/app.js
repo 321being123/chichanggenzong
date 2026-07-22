@@ -17,6 +17,7 @@ const adminRouter = require('./routes/admin');
 const ipoRouter = require('./routes/ipo');
 const bondSafetyRouter = require('./routes/bondSafety');
 const stockAnalysisRouter = require('./routes/stockAnalysis');
+const bondAnalysisRouter = require('./routes/bondAnalysis');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
@@ -25,6 +26,7 @@ const { runHkRateJob } = require('./jobs/hkRate');
 const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
 const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
+const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
 
 const app = express();
 // 安全默认：不信任上游代理（避免伪造 X-Forwarded-For 绕过限流/IP 识别）。
@@ -90,6 +92,7 @@ async function start() {
   app.use('/api', profileRouter);   // 个人中心：资料读取/更新/改密
   app.use('/api/admin', adminRouter);   // 管理后台：统一 /api/admin 前缀，路由内已 requireAdmin
   app.use('/api/stock-analysis', stockAnalysisRouter); // 股票分析：持仓/自选、三表快照和单股刷新
+  app.use('/api/bond-analysis', bondAnalysisRouter); // 可转债分析：数据库快照读取和单债刷新
   app.use('/api/ipo', ipoRouter);       // 打新日历：报告/历史列表/已上市表现
   app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：数据库快照读取/管理员刷新
 
@@ -122,6 +125,7 @@ async function start() {
       runHkRateJob().catch(function (e) { console.error('汇率更新失败:', e.message); });
       scheduleBondSafetyRefresh();
       scheduleStockAnalysisRefresh();
+      scheduleConvertibleBondRefresh();
       scheduleIpoCalendarRefresh();
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');

@@ -82,6 +82,8 @@ td.negative { color: #137333; font-weight: 600; }
 .negative { color: #137333; font-weight: 600; }
 .text-right { text-align: right; }
 .text-center { text-align: center; }
+.positions-data-table th,
+.positions-data-table td { text-align: center !important; }
 .earnings-pager { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 0 4px; flex-wrap: wrap; }
 .earnings-pager .pager-info { font-size: 12px; color: #888; white-space: nowrap; }
 .earnings-pager .pager-jump { font-size: 12px; color: #888; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }

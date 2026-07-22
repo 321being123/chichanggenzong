@@ -41,13 +41,15 @@ function rateCompany(row) {
     current_liability: finiteNumber(row.current_liability),
     market_cap: finiteNumber(row.market_cap),
   };
-  const missingFields = Object.keys(fields).filter(key => fields[key] === null);
+  const directInterestRatio = finiteNumber(row.interest_coverage);
+  const missingFields = Object.keys(fields).filter(key => fields[key] === null &&
+    !(directInterestRatio !== null && (key === 'ebit' || key === 'interest_expense')));
 
   let score = 0;
   let interestPassed = false;
   let interestRatio = null;
-  if (fields.ebit !== null && fields.interest_expense !== null && fields.interest_expense !== 0) {
-    interestRatio = fields.ebit / fields.interest_expense;
+  if (directInterestRatio !== null || (fields.ebit !== null && fields.interest_expense !== null && fields.interest_expense !== 0)) {
+    interestRatio = directInterestRatio !== null ? directInterestRatio : fields.ebit / fields.interest_expense;
     if (interestRatio >= 7) { score += 1; interestPassed = true; }
   }
 

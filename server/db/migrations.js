@@ -828,6 +828,72 @@ async function migration009ValuationDataQuality() {
     );`);
 }
 
+async function migration010ConvertibleBondAnalysis() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_profiles (
+      instrument_id BIGINT PRIMARY KEY REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      stock_instrument_id BIGINT REFERENCES core.instruments(instrument_id),
+      bond_full_name TEXT NOT NULL DEFAULT '',bond_short_name TEXT NOT NULL DEFAULT '',cb_type TEXT NOT NULL DEFAULT 'CB',
+      par_value NUMERIC(24,8),issue_price NUMERIC(24,8),issue_size NUMERIC(30,4),remain_size NUMERIC(30,4),
+      value_date DATE,maturity_date DATE,conv_start_date DATE,conv_end_date DATE,conv_stop_date DATE,
+      first_conv_price NUMERIC(24,8),current_conv_price NUMERIC(24,8),coupon_rate NUMERIC(20,8),add_rate NUMERIC(20,8),
+      pay_per_year INTEGER,rate_type TEXT NOT NULL DEFAULT '',rate_clause TEXT NOT NULL DEFAULT '',
+      maturity_call_price TEXT NOT NULL DEFAULT '',guarantor TEXT NOT NULL DEFAULT '',guarantee_type TEXT NOT NULL DEFAULT '',
+      issue_rating TEXT NOT NULL DEFAULT '',newest_rating TEXT NOT NULL DEFAULT '',rating_company TEXT NOT NULL DEFAULT '',
+      fundraising_purpose TEXT NOT NULL DEFAULT '',source_id SMALLINT REFERENCES ops.data_sources(source_id),
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,source_updated_at TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_terms (
+      term_id BIGSERIAL PRIMARY KEY,instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      term_type TEXT NOT NULL,effective_from DATE NOT NULL DEFAULT DATE '0001-01-01',effective_to DATE,
+      clause_text TEXT NOT NULL DEFAULT '',trigger_ratio NUMERIC(20,8),observation_days INTEGER,required_days INTEGER,
+      source_id SMALLINT REFERENCES ops.data_sources(source_id),document_id BIGINT REFERENCES event.documents(document_id),
+      source_key TEXT NOT NULL,raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(instrument_id,term_type,effective_from,source_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_terms_current ON fundamental.convertible_bond_terms(instrument_id,term_type,effective_from DESC);
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_coupon_schedule (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      interest_year SMALLINT NOT NULL,coupon_rate NUMERIC(20,8),pay_date DATE,
+      pre_tax_interest NUMERIC(24,8),after_tax_interest NUMERIC(24,8),source_id SMALLINT REFERENCES ops.data_sources(source_id),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(instrument_id,interest_year)
+    );
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_price_changes (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      publish_date DATE NOT NULL DEFAULT DATE '0001-01-01',change_date DATE NOT NULL,
+      initial_price NUMERIC(24,8),price_before NUMERIC(24,8),price_after NUMERIC(24,8),reason TEXT NOT NULL DEFAULT '',
+      source_id SMALLINT REFERENCES ops.data_sources(source_id),document_id BIGINT REFERENCES event.documents(document_id),
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,PRIMARY KEY(instrument_id,change_date)
+    );
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_no_revision_history (
+      history_id BIGSERIAL PRIMARY KEY,instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      announced_at DATE NOT NULL,valid_until DATE,next_eligible_date DATE,summary TEXT NOT NULL DEFAULT '',
+      source_id SMALLINT REFERENCES ops.data_sources(source_id),document_id BIGINT REFERENCES event.documents(document_id),
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,UNIQUE(instrument_id,announced_at)
+    );
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_ratings (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      rating_date DATE NOT NULL,announced_at DATE,rating_company TEXT NOT NULL DEFAULT '',rating_method TEXT NOT NULL DEFAULT '',
+      rating_type TEXT NOT NULL DEFAULT '',rating TEXT NOT NULL DEFAULT '',rating_outlook TEXT NOT NULL DEFAULT '',
+      source_id SMALLINT REFERENCES ops.data_sources(source_id),raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      PRIMARY KEY(instrument_id,rating_date,rating_company)
+    );
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_fund_holdings (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      report_date DATE NOT NULL,fund_count INTEGER,holding_quantity NUMERIC(30,4),holding_market_value NUMERIC(30,4),
+      remain_size_ratio NUMERIC(20,10),source_id SMALLINT REFERENCES ops.data_sources(source_id),
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,PRIMARY KEY(instrument_id,report_date)
+    );
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_trigger_daily (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      trade_date DATE NOT NULL,trigger_type TEXT NOT NULL,trigger_price NUMERIC(24,8),close_price NUMERIC(24,8),
+      matched_days INTEGER,required_days INTEGER,observation_days INTEGER,status TEXT NOT NULL DEFAULT 'unknown',
+      formula_version TEXT NOT NULL DEFAULT '1',diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(instrument_id,trade_date,trigger_type,formula_version)
+    );
+  `);
+}
+
 // ====== 版本化迁移机制（P2-3）======
 // 记录已执行的升级步骤，避免每次启动重复跑大量 ALTER
 async function ensureMigrationsTable() {
@@ -861,6 +927,7 @@ const MIGRATIONS = [
   { version: '007_financial_data_architecture', up: migration007FinancialDataArchitecture },
   { version: '008_drop_legacy_stock_analysis_tables', up: migration008DropLegacyStockAnalysisTables },
   { version: '009_valuation_data_quality', up: migration009ValuationDataQuality },
+  { version: '010_convertible_bond_analysis', up: migration010ConvertibleBondAnalysis },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

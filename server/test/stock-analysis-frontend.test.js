@@ -7,8 +7,10 @@ const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
 const chartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-chart.js'), 'utf8');
 const valuationChartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-valuation-chart.js'), 'utf8');
+const bondScript = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
 const statementsScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-statements.js'), 'utf8');
 const dateRangeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'date-range-control.js'), 'utf8');
+const analysisCss = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
 
 const stockTab = html.indexOf('data-main="stock-analysis"');
 const ipoTab = html.indexOf('data-main="ipo"');
@@ -38,12 +40,21 @@ assert.ok(valuationChartScript.includes("data-mode=\"price\""), '分位图缺少
 assert.ok(valuationChartScript.includes("data-mode=\"pe\""), '分位图缺少PE切换');
 assert.ok(valuationChartScript.includes("data-mode=\"pb\""), '分位图缺少PB切换');
 assert.ok(valuationChartScript.includes('band80'), '分位图缺少历史分位线');
+assert.ok(valuationChartScript.includes('evolvingBands') && valuationChartScript.includes("'<path class=\"'+b.c"), '历史分位必须按时间累计绘制为曲线');
 assert.ok(valuationChartScript.includes('DateRangeControl.render'), '分位图缺少公共时间范围控件');
 assert.ok(valuationChartScript.includes('presets:[30,20,10,5,3,1]'), '分位图缺少年份快捷选项');
 assert.ok(valuationChartScript.includes('valuation-outlier'), '分位图缺少异常极值标识');
 assert.ok(valuationChartScript.includes('valuation-negative'), '分位图缺少负值标识');
+assert.ok(valuationChartScript.includes('mainPath=rows.map') && valuationChartScript.includes('markerRuns(function(v){return v>max}') && !valuationChartScript.includes("'<circle class=\"'+(v<=0"), '正常曲线必须连续，极值颜色只能标在坐标边界');
+assert.ok(valuationChartScript.includes('min=Math.min.apply(null,normals),max=Math.max.apply(null,normals)') && !valuationChartScript.includes('normals.concat(bandValues)'), '异常值和历史分位高值不能拉伸纵坐标');
+assert.ok(valuationChartScript.includes("markerRuns(function(v){return v>max},'valuation-outlier-line',T)") && valuationChartScript.includes("v>max?'异常高值，超出纵坐标范围'"), '只有超出纵坐标最高值的数据才能标为异常高值');
 for (const title of ['公司与证券资料','估值水平','收益、盈利与分红','市值结构','报告与业绩预期']) assert.ok(script.includes(title), '股票基本信息缺少分类：'+title);
 assert.ok(script.includes('历史累计分红') && script.includes('历史累计盈利'), '累计分红率缺少分子分母说明');
 assert.ok(script.includes('平均股息率') && script.includes('最近12个月归母净利润'), '缺少平均股息率及公式说明');
+assert.ok(script.includes('(late-early)/early') && script.includes('近期三年均值－十年前三年均值'), '十年三年均值增长必须按两组三年均值的总增长率计算');
+assert.ok(script.includes('analysisHelp(label, stockAnalysisLabelHelp(label))'), '股票分析指标缺少算法说明入口');
+assert.ok(bondScript.includes('analysisHelp(row[0],bondAnalysisLabelHelp(row[0]))'), '可转债分析指标缺少算法说明入口');
+assert.ok(analysisCss.includes('.analysis-help{') && analysisCss.includes('border-bottom:1px dashed') && analysisCss.includes('.analysis-help-tooltip{'), '算法说明缺少虚线下划线或悬浮弹框样式');
+assert.ok(html.includes('data-help="分位点从所选起始日累计计算') && html.includes('data-help="实际期权价值＝转债市价－纯债价值'), '股债分析模块标题缺少算法说明');
 
 console.log('stock-analysis frontend tests passed');

@@ -228,6 +228,15 @@ let sortState = { col: null, dir: 'asc' };
 // 筛选状态（全局）
 let filterState = { type: '', subtype: '' };
 
+function getTodayProfit(position) {
+  var change = priceChangeMap[position.code];
+  var price = Number(position.price);
+  if (change == null || !(price > 0) || change <= -100) return null;
+  var previousClose = price / (1 + change / 100);
+  var exchangeRate = position.subtype === '港股' ? (Number(data.hkRate) || 0.868) : 1;
+  return (price - previousClose) * (Number(position.quantity) || 0) * exchangeRate;
+}
+
 function setSort(col) {
   if (sortState.col === col) {
     sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
@@ -281,6 +290,14 @@ function renderPositionsTable(targetId, limit) {
         va = priceChangeMap[a.code] != null ? priceChangeMap[a.code] : -999;
         vb = priceChangeMap[b.code] != null ? priceChangeMap[b.code] : -999;
       }
+      else if (col === 'todayProfit') {
+        va = getTodayProfit(a);
+        vb = getTodayProfit(b);
+        if (va == null || vb == null) {
+          if (va == null && vb == null) return 0;
+          return va == null ? 1 : -1;
+        }
+      }
       const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb));
       return sortState.dir === 'asc' ? cmp : -cmp;
     });
@@ -326,7 +343,7 @@ function renderPositionsTable(targetId, limit) {
     '<th class="sortable" onclick="setSort(&quot;name&quot;)">名称' + sortArrow('name') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;price&quot;)">现价' + sortArrow('price') + '</th>' +
     '<th class="text-right sortable" style="width:70px;" onclick="setSort(&quot;chg&quot;)">涨跌' + sortArrow('chg') + '</th>' +
-    '<th>今日盈亏（元）</th>' +
+    '<th class="sortable" onclick="setSort(&quot;todayProfit&quot;)">今日盈亏（元）' + sortArrow('todayProfit') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;qty&quot;)">数量' + sortArrow('qty') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;mv&quot;)">市值' + sortArrow('mv') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;pct&quot;)">比例' + sortArrow('pct') + '</th>' +
@@ -373,12 +390,7 @@ function renderPositionsTable(targetId, limit) {
     var chgDisplay = hasRealTime
       ? chgText
       : (hasCachedPrice ? '<span style="color:#bbb;">--</span>' : '<span style="color:#ccc;font-size:16px;" title="无涨跌数据">⟳</span>');
-    var todayProfit = null;
-    if (hasRealTime && hasCachedPrice && chgVal > -100) {
-      var previousClose = Number(p.price) / (1 + chgVal / 100);
-      var exchangeRate = p.subtype === '港股' ? (Number(data.hkRate) || 0.868) : 1;
-      todayProfit = (Number(p.price) - previousClose) * (Number(p.quantity) || 0) * exchangeRate;
-    }
+    var todayProfit = getTodayProfit(p);
     var todayProfitDisplay = todayProfit == null
       ? '<span style="color:#bbb;">--</span>'
       : (todayProfit >= 0 ? '+' : '') + fmt(todayProfit);

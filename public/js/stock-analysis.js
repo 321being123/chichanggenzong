@@ -1,5 +1,55 @@
 var stockAnalysisState = { loaded:false, stocks:[], selected:'', data:null, loading:false };
 
+var stockAnalysisHelpTexts = {
+  '滚动市盈率':'当前总市值 ÷ 最近12个月归母净利润。',
+  '静态市盈率':'当前总市值 ÷ 最新完整年报归母净利润。',
+  '动态市盈率':'当前总市值 ÷ 最新业绩预告归母净利润区间中值。',
+  '三年平均市盈率':'当前总市值 ÷ 最近三个完整年度归母净利润均值。',
+  '市净率':'当前总市值 ÷ 最新归母净资产。',
+  '扣除商誉市净率':'当前总市值 ÷（最新归母净资产－商誉）。',
+  '股息率':'最近12个月税前现金分红 ÷ 当前总市值。',
+  '分红率':'最新年度现金分红 ÷ 最新年度归母净利润。',
+  '累计分红率':'历史累计现金分红 ÷ 历史累计归母净利润。',
+  '平均股息率':'累计分红率 × 最近12个月归母净利润 ÷ 当前总市值。',
+  'ROE':'最新完整年度归母净利润 ÷ 平均归母净资产；优先使用数据源财务指标。',
+  'ROA':'最新完整年度归母净利润 ÷ 平均总资产；优先使用数据源财务指标。',
+  '上市至今年化收益率':'（当前前复权股价 ÷ 上市初期前复权股价）的持有年限次方根－1。',
+  '总市值':'当前股价 × 总股本。',
+  'A股市值':'当前A股股价 × A股总股本。',
+  '流通市值':'当前股价 × 流通股本。',
+  '自由流通市值':'当前股价 × 自由流通股本。',
+  '最近十年持续盈利':'检查最近十个完整年度的归母净利润是否每年都大于0。',
+  '最近十年持续现金分红':'检查最近十个完整年度是否每年都有已实施的现金分红。',
+  '十年三年均值增长':'（近期三年归母净利润均值－十年前三年归母净利润均值）÷ 十年前三年归母净利润均值。',
+  '最新报告期归母同比':'（本期归母净利润－上年同期归母净利润）÷ 上年同期归母净利润绝对值。',
+  '最新报告期扣非同比':'（本期扣非净利润－上年同期扣非净利润）÷ 上年同期扣非净利润绝对值。',
+  '净现金安全额':'货币资金＋交易性金融资产－有息负债。',
+  '利息保障倍数':'息税前利润（EBIT）÷ 利息费用。',
+  '市值 / 总负债':'当前总市值 ÷ 最新总负债。',
+  '最近一年自由现金流':'最近完整年度经营现金流－资本开支。',
+  '近三年平均自由现金流':'最近三个完整年度自由现金流的算术平均值。',
+  '近五年平均自由现金流':'最近五个完整年度自由现金流的算术平均值。'
+};
+function analysisHelp(label, help) {
+  return help ? '<span class="analysis-help" tabindex="0" data-help="'+escapeHtml(help)+'">'+escapeHtml(label)+'</span>' : escapeHtml(label);
+}
+function stockAnalysisLabelHelp(label) {
+  if (stockAnalysisHelpTexts[label]) return stockAnalysisHelpTexts[label];
+  if (/^(归母|扣非)净利润近(3|5|10)年$/.test(label)) return '起点和终点均为正数时按复合年增长率计算；存在负数时按带符号变化率计算。';
+  if (/^近(三|五)年平均经营现金流$/.test(label)) return '对应最近三个或五个完整年度经营现金流的算术平均值。';
+  return '';
+}
+(function(){
+  var tip;
+  function hide(){if(tip)tip.style.display='none'}
+  function show(target,x,y){if(!tip){tip=document.createElement('div');tip.className='analysis-help-tooltip';document.body.appendChild(tip)}tip.textContent=target.getAttribute('data-help')||'';tip.style.display='block';var left=Math.min(x+12,window.innerWidth-tip.offsetWidth-8),top=y-tip.offsetHeight-12;if(top<8)top=Math.min(y+18,window.innerHeight-tip.offsetHeight-8);tip.style.left=Math.max(8,left)+'px';tip.style.top=Math.max(8,top)+'px'}
+  document.addEventListener('mouseover',function(e){var target=e.target.closest&&e.target.closest('.analysis-help');if(target)show(target,e.clientX,e.clientY)});
+  document.addEventListener('mousemove',function(e){var target=e.target.closest&&e.target.closest('.analysis-help');if(target)show(target,e.clientX,e.clientY)});
+  document.addEventListener('mouseout',function(e){if(e.target.closest&&e.target.closest('.analysis-help'))hide()});
+  document.addEventListener('focusin',function(e){if(e.target.classList&&e.target.classList.contains('analysis-help')){var r=e.target.getBoundingClientRect();show(e.target,r.left,r.top)}});
+  document.addEventListener('focusout',function(e){if(e.target.classList&&e.target.classList.contains('analysis-help'))hide()});
+})();
+
 function stockAnalysisNumber(value, digits) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '--';
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: digits == null ? 2 : digits });
@@ -20,7 +70,7 @@ function stockAnalysisDate(value) {
 }
 function stockAnalysisMetric(label, value, note, negative) {
   var cls = negative ? ' class="stock-analysis-negative"' : '';
-  return '<div class="stock-analysis-metric"><span>' + escapeHtml(label) + '</span><strong' + cls + '>' + escapeHtml(String(value)) + '</strong>' +
+  return '<div class="stock-analysis-metric"><span>' + analysisHelp(label, stockAnalysisLabelHelp(label)) + '</span><strong' + cls + '>' + escapeHtml(String(value)) + '</strong>' +
     (note ? '<small>' + escapeHtml(note) + '</small>' : '') + '</div>';
 }
 function stockAnalysisSetMessage(text, error) {
@@ -173,9 +223,9 @@ function stockAnalysisRender(d) {
   if(quality) quality.textContent='利润表 '+(q.income_rows||0)+' 条 · 资产负债表 '+(q.balance_rows||0)+' 条 · 现金流量表 '+(q.cashflow_rows||0)+' 条 · 估值 '+(q.valuation_rows||0)+' 日。'+(q.research_notice||'');
 }
 
-function stockAnalysisRenderStability(s){var el=document.getElementById('stock-analysis-stability');if(!el)return;var reason=escapeHtml(s.reason||'');if(s.reason_url)reason+=' <a href="'+escapeHtml(s.reason_url)+'" target="_blank" rel="noopener noreferrer">查看公告</a>';el.innerHTML='<table class="stock-analysis-table"><thead><tr><th>项目</th><th>结论</th><th>异常年度</th><th>说明</th></tr></thead><tbody><tr><td>最近十年持续盈利</td><td>'+(s.profitable_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_profit_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr><tr><td>最近十年持续现金分红</td><td>'+(s.dividend_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_dividend_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr></tbody></table>'}
+function stockAnalysisRenderStability(s){var el=document.getElementById('stock-analysis-stability');if(!el)return;var reason=escapeHtml(s.reason||'');if(s.reason_url)reason+=' <a href="'+escapeHtml(s.reason_url)+'" target="_blank" rel="noopener noreferrer">查看公告</a>';el.innerHTML='<table class="stock-analysis-table"><thead><tr><th>项目</th><th>结论</th><th>异常年度</th><th>说明</th></tr></thead><tbody><tr><td>'+analysisHelp('最近十年持续盈利',stockAnalysisLabelHelp('最近十年持续盈利'))+'</td><td>'+(s.profitable_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_profit_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr><tr><td>'+analysisHelp('最近十年持续现金分红',stockAnalysisLabelHelp('最近十年持续现金分红'))+'</td><td>'+(s.dividend_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_dividend_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr></tbody></table>'}
 function stockAnalysisRenderPercentiles(p){var note=document.getElementById('stock-analysis-percentile-note');if(note)note.textContent=p.note||'';if(window.stockAnalysisRenderValuationChart)window.stockAnalysisRenderValuationChart(p)}
-function stockAnalysisRenderGrowth(g){var el=document.getElementById('stock-analysis-growth');if(!el)return;var rows=[];var t=g.ten_year_average||{};rows.push(['十年三年均值增长',stockAnalysisPercent(t.value),t.method||'']);[3,5,10].forEach(function(n){var p=(g.periods||{})[n]||{};rows.push(['归母净利润近'+n+'年',stockAnalysisPercent(p.parent&&p.parent.value),p.parent&&p.parent.method||'']);rows.push(['扣非净利润近'+n+'年',stockAnalysisPercent(p.deducted&&p.deducted.value),p.deducted&&p.deducted.method||''])});var i=g.latest_interim_yoy;if(i){rows.push(['最新报告期归母同比',stockAnalysisPercent(i.parent),i.end_date||'']);rows.push(['最新报告期扣非同比',stockAnalysisPercent(i.deducted),i.end_date||''])}el.innerHTML='<table class="stock-analysis-table"><thead><tr><th>项目</th><th>结果</th><th>口径</th></tr></thead><tbody>'+rows.map(function(r){return '<tr><td>'+escapeHtml(r[0])+'</td><td>'+escapeHtml(r[1])+'</td><td>'+escapeHtml(r[2])+'</td></tr>'}).join('')+'</tbody></table>'}
+function stockAnalysisRenderGrowth(g){var el=document.getElementById('stock-analysis-growth');if(!el)return;var rows=[];var t=g.ten_year_average||{},early=Number(t.early_average),late=Number(t.late_average),hasAverages=Number.isFinite(early)&&Number.isFinite(late)&&early!==0,averageGrowth=hasAverages?(late-early)/early:t.value;rows.push(['十年三年均值增长',stockAnalysisPercent(averageGrowth),hasAverages?'（近期三年均值－十年前三年均值）÷十年前三年均值':(t.method||'')]);[3,5,10].forEach(function(n){var p=(g.periods||{})[n]||{};rows.push(['归母净利润近'+n+'年',stockAnalysisPercent(p.parent&&p.parent.value),p.parent&&p.parent.method||'']);rows.push(['扣非净利润近'+n+'年',stockAnalysisPercent(p.deducted&&p.deducted.value),p.deducted&&p.deducted.method||''])});var i=g.latest_interim_yoy;if(i){rows.push(['最新报告期归母同比',stockAnalysisPercent(i.parent),i.end_date||'']);rows.push(['最新报告期扣非同比',stockAnalysisPercent(i.deducted),i.end_date||''])}el.innerHTML='<table class="stock-analysis-table"><thead><tr><th>项目</th><th>结果</th><th>口径</th></tr></thead><tbody>'+rows.map(function(r){return '<tr><td>'+analysisHelp(r[0],stockAnalysisLabelHelp(r[0]))+'</td><td>'+escapeHtml(r[1])+'</td><td>'+escapeHtml(r[2])+'</td></tr>'}).join('')+'</tbody></table>'}
 function stockAnalysisRenderSafety(s){var el=document.getElementById('stock-analysis-safety');if(el)el.innerHTML=stockAnalysisMetric('净现金安全额',stockAnalysisMoney(s.net_cash),s.report_end_date||'')+stockAnalysisMetric('利息保障倍数',stockAnalysisNumber(s.interest_coverage,2),'EBIT ÷ 利息费用',s.interest_coverage<0)+stockAnalysisMetric('市值 / 总负债',stockAnalysisNumber(s.market_cap_to_liability,2),s.industry_note||'',s.market_cap_to_liability<0)}
 function stockAnalysisRenderCashflow(c){var el=document.getElementById('stock-analysis-cashflow');if(!el)return;var y=c.latest_year||{},a3=c.average_3y||{},a5=c.average_5y||{};el.innerHTML=stockAnalysisMetric('最近一年经营现金流',stockAnalysisMoney(y.operating),y.end_date||'')+stockAnalysisMetric('最近一年自由现金流',stockAnalysisMoney(y.free),'经营现金流－资本开支')+stockAnalysisMetric('近三年平均经营现金流',stockAnalysisMoney(a3.operating),'')+stockAnalysisMetric('近三年平均自由现金流',stockAnalysisMoney(a3.free),'')+stockAnalysisMetric('近五年平均经营现金流',stockAnalysisMoney(a5.operating),'')+stockAnalysisMetric('近五年平均自由现金流',stockAnalysisMoney(a5.free),'')}
-function stockAnalysisRenderEvents(events){var el=document.getElementById('stock-analysis-events');if(!el)return;if(!events.length){el.innerHTML='<div style="color:#888;">最近一年暂无已抓取事项</div>';return}el.innerHTML=events.map(function(e){var title=escapeHtml(e.title||'');var link=e.url?'<a href="'+escapeHtml(e.url)+'" target="_blank" rel="noopener noreferrer">'+title+'</a>':title;return '<div class="stock-analysis-event"><small>'+escapeHtml(e.event_date||'')+'</small><span class="stock-analysis-tag">'+escapeHtml(e.is_official?'正式公告':'市场讨论')+'</span><span class="stock-analysis-tag">'+escapeHtml(e.category||e.source||'')+'</span>'+link+'</div>'}).join('')}
+function stockAnalysisRenderEvents(events){var el=document.getElementById('stock-analysis-events');if(!el)return;if(!events.length){el.innerHTML='<div style="color:#888;">最近一年暂无公司公告</div>';return}el.innerHTML=events.map(function(e){var title=escapeHtml(e.title||'');var link=e.url?'<a href="'+escapeHtml(e.url)+'" target="_blank" rel="noopener noreferrer">'+title+'</a>':title;return '<div class="stock-analysis-event"><small>'+escapeHtml(e.event_date||'')+'</small><span class="stock-analysis-tag">'+escapeHtml(e.category||e.source||'')+'</span>'+link+'</div>'}).join('')}

@@ -9,7 +9,7 @@
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
 <link rel="stylesheet" href="shared/style.css?v=12">
 <link rel="stylesheet" href="css/bond-safety.css?v=6">
-<link rel="stylesheet" href="css/stock-analysis.css?v=9">
+<link rel="stylesheet" href="css/stock-analysis.css?v=11">
 </head>
 <body>
 
@@ -263,11 +263,11 @@
       <div id="stock-analysis-analysis-pane">
         <section class="stock-analysis-section"><h3>股票基本信息</h3><div id="stock-analysis-valuation"></div></section>
         <section class="stock-analysis-section"><h3>盈利与分红稳定性</h3><div id="stock-analysis-stability"></div></section>
-        <section class="stock-analysis-section"><h3>股价及估值分位</h3><div class="stock-analysis-note" id="stock-analysis-percentile-note"></div><div class="stock-analysis-grid" id="stock-analysis-percentiles"></div></section>
-        <section class="stock-analysis-section"><h3>盈利增长</h3><div id="stock-analysis-growth"></div></section>
-        <section class="stock-analysis-section"><h3>财务安全性</h3><div class="stock-analysis-grid" id="stock-analysis-safety"></div></section>
-        <section class="stock-analysis-section"><h3>经营现金流与自由现金流</h3><div class="stock-analysis-grid" id="stock-analysis-cashflow"></div></section>
-        <section class="stock-analysis-section"><h3>最近一年公司大事</h3><div id="stock-analysis-events"></div></section>
+        <section class="stock-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="分位点从所选起始日累计计算，每个日期只使用当日及之前的数据；当前分位＝（当前排名－1）÷（有效样本数－1）。">股价及估值分位</span></h3><div class="stock-analysis-note" id="stock-analysis-percentile-note"></div><div class="stock-analysis-grid" id="stock-analysis-percentiles"></div></section>
+        <section class="stock-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="展示归母净利润、扣非净利润的分期增长，以及两组三年均值的总增长率。">盈利增长</span></h3><div id="stock-analysis-growth"></div></section>
+        <section class="stock-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="通过净现金、利息保障倍数和市值负债比观察企业偿债安全性。">财务安全性</span></h3><div class="stock-analysis-grid" id="stock-analysis-safety"></div></section>
+        <section class="stock-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="自由现金流＝经营现金流－资本开支；同时展示最近年度及三年、五年平均值。">经营现金流与自由现金流</span></h3><div class="stock-analysis-grid" id="stock-analysis-cashflow"></div></section>
+        <section class="stock-analysis-section"><h3>公司公告</h3><div id="stock-analysis-events"></div></section>
         <div class="stock-analysis-foot" id="stock-analysis-quality"></div>
       </div>
       <div id="stock-analysis-statements-pane" style="display:none;">
@@ -283,14 +283,14 @@
     <div id="bond-analysis-content" class="bond-analysis-content" style="display:none;">
       <div class="bond-analysis-summary" id="bond-analysis-summary"></div>
       <section class="bond-analysis-section"><h3>可转债基本信息</h3><div id="bond-analysis-basic"></div></section>
-      <section class="bond-analysis-section"><h3>触发价格与计数</h3><div id="bond-analysis-triggers"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="根据募集说明书中的强赎、下修和回售条款，计算触发价格及观察窗口内满足条件的交易日数量。">触发价格与计数</span></h3><div id="bond-analysis-triggers"></div></section>
       <section class="bond-analysis-section"><h3>募集用途与条款</h3><div id="bond-analysis-terms"></div></section>
       <section class="bond-analysis-section"><h3>转股价调整历史</h3><div id="bond-analysis-price-history"></div></section>
       <section class="bond-analysis-section"><h3>转股价不下修历史</h3><div id="bond-analysis-no-revision"></div></section>
-      <section class="bond-analysis-section"><h3>可转债安全性</h3><div id="bond-analysis-safety"></div></section>
-      <section class="bond-analysis-section"><h3>债券基本信息</h3><div id="bond-analysis-bond"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="综合利息保障倍数、现金覆盖率、负债市值比和信用评级观察可转债偿债风险。">可转债安全性</span></h3><div id="bond-analysis-safety"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="展示纯债价值、债底溢价率、票息及按未来现金流计算的到期收益率。">债券基本信息</span></h3><div id="bond-analysis-bond"></div></section>
       <section class="bond-analysis-section"><h3>债券利息明细</h3><div id="bond-analysis-coupons"></div></section>
-      <section class="bond-analysis-section"><h3>期权价值</h3><small class="bond-analysis-method" id="bond-analysis-option-method"></small><div id="bond-analysis-option"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="实际期权价值＝转债市价－纯债价值；理论期权价值使用Black-Scholes模型估算。">期权价值</span></h3><small class="bond-analysis-method" id="bond-analysis-option-method"></small><div id="bond-analysis-option"></div></section>
       <section class="bond-analysis-section"><h3>正股相关</h3><div id="bond-analysis-stock"></div></section>
       <section class="bond-analysis-section"><h3>评级历史</h3><div id="bond-analysis-ratings"></div></section>
       <div class="bond-analysis-status" id="bond-analysis-status"></div>
@@ -591,9 +591,9 @@
 <script src="shared/date-range-control.js?v=1"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
-<script src="js/bond-safety.js?v=6"></script>
-<script src="js/stock-analysis.js?v=9"></script>
-<script src="js/bond-analysis.js?v=1"></script>
+<script src="js/bond-safety.js?v=7"></script>
+<script src="js/stock-analysis.js?v=11"></script>
+<script src="js/bond-analysis.js?v=3"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>
 <script src="js/stock-analysis-chart.js?v=11"></script>
 <script src="js/stock-analysis-valuation-chart.js?v=4"></script>

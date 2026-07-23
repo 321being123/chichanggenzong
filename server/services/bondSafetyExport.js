@@ -14,7 +14,7 @@ const COLUMNS = [
   { header: '转股价', key: 'convert_price', width: 12 },
   { header: '转股价值', key: 'convert_value', width: 14 },
   { header: '利息保障≥7倍', key: 'indicator_interest', width: 17 },
-  { header: '现金覆盖负债>=1', key: 'indicator_liquidity', width: 19 },
+  { header: '现金覆盖任一负债≥1', key: 'indicator_liquidity', width: 21 },
   { header: '负债/市值≤1.5', key: 'indicator_leverage', width: 17 },
   { header: '安全性', key: 'safety', width: 12 },
 ];

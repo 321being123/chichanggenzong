@@ -351,21 +351,35 @@ async function saveEvents(tsCode, events) {
   await saveCollectedEvents(tsCode, events.filter(row => /^\d{8}$/.test(row.event_date || '')));
 }
 
+function eventRefreshStart(lastSuccessDate, today) {
+  const end = new Date(`${isoDate(today)}T00:00:00+08:00`);
+  const oneYearAgo = tsDateStr(new Date(end.getTime() - 365 * DAY));
+  if (!lastSuccessDate) return oneYearAgo;
+  const last = dateText(lastSuccessDate);
+  const overlap = tsDateStr(new Date(Date.UTC(Number(last.slice(0,4)), Number(last.slice(4,6))-1, Number(last.slice(6,8))-7)));
+  return overlap > oneYearAgo ? overlap : oneYearAgo;
+}
+
 async function refreshEvents(tsCode, today) {
   const state = await pool.query(`SELECT c.last_success_date FROM ops.sync_cursors c JOIN core.instruments i ON i.instrument_id=c.instrument_id WHERE i.canonical_code=$1 AND c.dataset_code='events'`, [tsCode]);
   const last = state.rows[0] && dateText(state.rows[0].last_success_date);
-  const start = last ? tsDateStr(new Date(Date.UTC(Number(last.slice(0, 4)), Number(last.slice(4, 6)) - 1, Number(last.slice(6, 8)) + 1))) : yearsAgo(365);
-  if (start > today) return;
+  const start = eventRefreshStart(last, today);
   try {
-    const [official, xueqiu, guba] = await Promise.all([
-      fetchCninfoEvents(tsCode, start, today), fetchXueqiuEvents(tsCode, start, today), fetchGubaEvents(tsCode, start, today)
+    const sources = await Promise.allSettled([
+      fetchCninfoEvents(tsCode, start, today),
+      tsCode.endsWith('.SH') ? fetchSseEvents(tsCode, start, today) : fetchSzseEvents(tsCode, start, today)
     ]);
-    await saveEvents(tsCode, [...official, ...xueqiu, ...guba]);
+    const successful = sources.filter(result => result.status === 'fulfilled');
+    if (!successful.length) throw new Error(sources.map(result => result.reason && result.reason.message).filter(Boolean).join('；') || '公告源均不可用');
+    const official = successful.flatMap(result => result.value || []).filter(event => event.is_official);
+    const unique = [...new Map(official.map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+    await saveEvents(tsCode, unique);
     await pool.query(`INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_attempt_at,last_error)
       SELECT i.instrument_id,ci.company_id,i.instrument_id||':'||ci.company_id,'events',$2,now(),'' FROM core.instruments i JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id WHERE i.canonical_code=$1
       ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=EXCLUDED.last_success_date,last_attempt_at=now(),last_error='',updated_at=now()`,[tsCode,isoDate(today)]);
   } catch (error) {
     console.warn(`[stock-analysis] 公司事件刷新失败 ${tsCode}:`,error.message);
+    throw new Error(`公司公告刷新失败：${error.message}`);
   }
 }
 
@@ -391,11 +405,35 @@ function growthMetric(start, end, years) {
   return { value: (b - a) / Math.abs(a), method: '带符号变化率，非CAGR' };
 }
 
-function percentile(current, values) {
-  const valid = values.map(finite).filter(v => v != null && v > 0).sort((a, b) => a - b);
+function threeYearAverageGrowth(start, end) {
+  const a = finite(start), b = finite(end);
+  if (a == null || b == null || a === 0) return { value: null, method: a === 0 ? '早期三年均值为0，无法计算' : '数据不足' };
+  return { value: (b - a) / a, method: '（近期三年均值－十年前三年均值）÷十年前三年均值' };
+}
+
+function valuationComparator(mode) {
+  if (mode !== 'pe') return (a, b) => a - b;
+  return (a, b) => {
+    const aNegative = a < 0, bNegative = b < 0;
+    if (aNegative !== bNegative) return aNegative ? 1 : -1;
+    return a - b;
+  };
+}
+
+function valuationSamples(values, mode) {
+  return values.map(finite).filter(v => v != null && (mode === 'pe' ? v !== 0 : v > 0)).sort(valuationComparator(mode));
+}
+
+function percentile(current, values, mode) {
+  const valid = valuationSamples(values, mode);
   const c = finite(current);
-  if (c == null || c <= 0) return { value: null, samples: valid.length, reason: '当前值小于等于零，不参与估值分位点计算' };
-  return { value: valid.length ? valid.filter(v => v <= c).length / valid.length : null, samples: valid.length, reason: valid.length ? '' : '没有有效正数样本' };
+  const currentValid = c != null && (mode === 'pe' ? c !== 0 : c > 0);
+  if (!currentValid) return { value: null, samples: valid.length, reason: '当前值无效，不参与估值分位点计算' };
+  if (!valid.length) return { value: null, samples: 0, reason: '没有有效样本' };
+  if (valid.length === 1) return { value: 0, samples: 1, reason: '' };
+  const compare = valuationComparator(mode);
+  const rank = valid.filter(v => compare(v, c) < 0).length;
+  return { value: Math.max(0, Math.min(1, rank / (valid.length - 1))), samples: valid.length, reason: '' };
 }
 
 function selectDividendPlans(rows) {
@@ -405,11 +443,11 @@ function selectDividendPlans(rows) {
   return [...map.values()];
 }
 
-function quantile(values, ratio) {
-  const valid=values.map(finite).filter(v=>v!=null&&v>0).sort((a,b)=>a-b);
+function quantile(values, ratio, mode) {
+  const valid=valuationSamples(values,mode);
   if(!valid.length)return null;
-  const position=(valid.length-1)*ratio,lower=Math.floor(position),upper=Math.ceil(position);
-  return lower===upper?valid[lower]:valid[lower]+(valid[upper]-valid[lower])*(position-lower);
+  const index=Math.max(0,Math.min(valid.length-1,Math.floor((valid.length-1)*ratio)));
+  return valid[index];
 }
 
 function average(values) {
@@ -459,7 +497,7 @@ async function loadData(tsCode) {
     pool.query(`SELECT ds.source_code source,to_char(e.event_date,'YYYYMMDD') event_date,e.title,d.url,e.event_type category,e.is_official
       FROM event.company_events e JOIN ops.data_sources ds ON ds.source_id=e.source_id LEFT JOIN event.documents d ON d.document_id=e.document_id
       JOIN core.company_instruments ci ON ci.company_id=e.company_id JOIN core.instruments i ON i.instrument_id=ci.instrument_id
-      WHERE i.canonical_code=$1 AND e.event_date>=CURRENT_DATE-interval '1 year' ORDER BY e.event_date DESC,e.is_official DESC LIMIT 200`,[tsCode])
+      WHERE i.canonical_code=$1 AND e.is_official=true AND e.event_date>=CURRENT_DATE-interval '1 year' ORDER BY e.event_date DESC LIMIT 200`,[tsCode])
   ]);
   return { meta: meta.rows[0], income: income.rows.map(r => r.data), balance: balance.rows.map(r => r.data),
     cashflow: cashflow.rows.map(r => r.data), indicators: indicators.rows.map(r => r.data),
@@ -512,7 +550,7 @@ async function buildAnalysis(tsCode) {
   });
   const chartQfqPrices=chartValuations.map(row=>{const close=finite(row.close),factor=finite(row.adj_factor);return close!=null&&factor!=null&&latestFactor?close*factor/latestFactor:close;});
   const valuationHistory=chartValuations.map((row,index)=>({date:isoDate(row.trade_date),price:finite(chartQfqPrices[index]),pe:finite(row.pe_ttm),pb:finite(row.pb)})).filter((row,index)=>index%5===0||index===chartValuations.length-1);
-  const percentileBands={price:[.2,.5,.8].map(x=>quantile(qfqPrices,x)),pe:[.2,.5,.8].map(x=>quantile(positiveValuations.map(row=>row.pe_ttm),x)),pb:[.2,.5,.8].map(x=>quantile(positiveValuations.map(row=>row.pb),x))};
+  const percentileBands={price:[.2,.5,.8].map(x=>quantile(qfqPrices,x)),pe:[.2,.5,.8].map(x=>quantile(positiveValuations.map(row=>row.pe_ttm),x,'pe')),pb:[.2,.5,.8].map(x=>quantile(positiveValuations.map(row=>row.pb),x))};
   const earliestValuation = data.valuations.find(row => finite(row.close) != null && finite(row.adj_factor) != null);
   const earliestAdjustedPrice = earliestValuation && latestFactor ? finite(earliestValuation.close) * finite(earliestValuation.adj_factor) / latestFactor : null;
   const listedDays = earliestValuation ? Math.max(1, (Date.now() - new Date(`${isoDate(earliestValuation.trade_date)}T00:00:00+08:00`).getTime()) / DAY) : null;
@@ -610,11 +648,11 @@ async function buildAnalysis(tsCode) {
       dividend_each_year: noDividendYears.length === 0, no_dividend_years: noDividendYears,
       reason: reasonYear ? '待人工核实，请查看对应年度公告' : '', reason_url: reasonEvent ? reasonEvent.url : '' },
     percentiles: {
-      price: percentile(currentPrice, qfqPrices), pe: percentile(peTtm, positiveValuations.map(row => row.pe_ttm)), pb: percentile(pb, positiveValuations.map(row => row.pb)),
+      price: percentile(currentPrice, qfqPrices), pe: percentile(peTtm, positiveValuations.map(row => row.pe_ttm), 'pe'), pb: percentile(pb, positiveValuations.map(row => row.pb)),
       history: valuationHistory,bands:percentileBands,current:{price:currentPrice,pe:peTtm,pb},
-      note: '分位点按所选时间内有效交易日计算：当前分位＝小于等于当前值的有效样本数÷有效样本总数；股价使用前复权价格，PE、PB只使用正数样本。负值和异常极值保留显示但不拉伸坐标轴，并用不同颜色标识。'
+      note: '分位点曲线从所选起始日开始累计计算，每个日期只使用该日及之前的有效样本。当前分位＝（当前排名－1）÷（有效样本数－1），最低为0%，最高为100%。股价使用前复权价格；PE正数从小到大排在前，负数按-100、-80……-5的顺序排在后。'
     },
-    growth: { ten_year_average: Object.assign(growthMetric(earlyAvg, lateAvg, 10), { early_average: earlyAvg, late_average: lateAvg }), periods: growths,
+    growth: { ten_year_average: Object.assign(threeYearAverageGrowth(earlyAvg, lateAvg), { early_average: earlyAvg, late_average: lateAvg }), periods: growths,
       latest_interim_yoy: interim && priorInterim ? { end_date: interim.end_date,
         parent: signedRatio(finite(interim.n_income_attr_p) - finite(priorInterim.n_income_attr_p), Math.abs(finite(priorInterim.n_income_attr_p))),
         deducted: signedRatio(finite(indicatorMap.get(interim.end_date)?.profit_dedt) - finite(indicatorMap.get(priorInterim.end_date)?.profit_dedt), Math.abs(finite(indicatorMap.get(priorInterim.end_date)?.profit_dedt)))} : null },
@@ -709,6 +747,6 @@ async function listUserStocks(username) {
   return rows.filter(row => isOrdinaryAStock(row.ts_code));
 }
 
-module.exports = { finite, normalizeStockCode, isOrdinaryAStock, growthMetric, percentile, selectDividendPlans, selectLatestByPeriod,
+module.exports = { finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart,
   refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
   fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport };

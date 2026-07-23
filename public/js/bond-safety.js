@@ -6,7 +6,7 @@ var BOND_SAFETY_COLUMNS = [
   ['pe_ttm', 'PE-TTM'], ['pb', 'PB'], ['dividend_yield', '股息率'],
   ['bond_price', '最新债券价格'],
   ['change_pct', '涨跌幅'], ['double_low', '双低'], ['convert_premium', '最近转股溢价率'],
-  ['indicator_interest', '利息保障≥7倍'], ['indicator_liquidity', '现金覆盖负债>=1'],
+  ['indicator_interest', '利息保障≥7倍'], ['indicator_liquidity', '现金覆盖任一负债≥1'],
   ['indicator_leverage', '负债/市值≤1.5'], ['safety', '安全性'],
   ['convert_price', '最近转股价'], ['convert_value', '最近转股价值']
 ];

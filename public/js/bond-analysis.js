@@ -31,6 +31,41 @@ function bondAnalysisNumber(value, digits, suffix) {
 function bondAnalysisPercent(value) {
   return value === null || value === undefined || !Number.isFinite(Number(value)) ? '暂无数据' : bondAnalysisNumber(Number(value) * 100, 2, '%');
 }
+var bondAnalysisHelpTexts = {
+  '转股价值':'正股价 ÷ 转股价 × 100。',
+  '转股溢价率':'转债现价 ÷ 转股价值－1。',
+  '基金持仓':'基金持有该转债的数量及占当前剩余规模的比例。',
+  '剩余年限':'到期日距离当前日期的实际天数 ÷ 365.25。',
+  '最快回售触发日':'未到回售期时从回售期起算；已到回售期时先检查本计息年度是否已回售，再从下一有效回售期计算满足条款所需的最早日期。',
+  '最快回售剩余年限':'最快回售触发日距离当前日期的实际天数 ÷ 365.25。',
+  '预期回售到账日':'按当前正股价格和回售计数进度估算触发日，再加上预计到账时间。',
+  '回售到账税前收益率':'（预计回售价 ÷ 转债现价）的最快回售剩余年限次方根－1；预计回售价含本金和应计利息。',
+  '回售到账税后收益率':'仅对预计回售价中高于100元的利息部分扣除20%税，再按最快回售剩余年限计算年化收益率。',
+  '转债/总市值':'可转债剩余规模 ÷ 正股总市值。',
+  '强赎触发价':'当前转股价 × 强赎条款规定的价格比例。',
+  '强赎天计数':'在强赎条款观察窗口内，正股收盘价达到强赎触发价的交易日数量。',
+  '下修触发价':'当前转股价 × 下修条款规定的价格比例。',
+  '下修天计数':'在下修条款观察窗口内，正股收盘价低于下修触发价的交易日数量；不下修锁定期内暂停计数。',
+  '回售触发价':'当前转股价 × 回售条款规定的价格比例。',
+  '回售天计数':'进入有效回售期后，在条款观察窗口内正股收盘价低于回售触发价的交易日数量。',
+  '可转债安全性':'根据利息保障倍数、现金覆盖率和负债市值比等指标综合划分。',
+  '利息保障倍数（符合：≥7）':'息税前利润（EBIT）÷ 利息费用。',
+  '现金覆盖率（任一≥1）':'分别计算（货币资金＋交易性金融资产）÷流动负债、（货币资金＋交易性金融资产）÷有息负债；任一结果≥1即满足，页面展示两者中的较高值。',
+  '负债/市值（符合：≤150%）':'正股总负债 ÷ 正股总市值。',
+  '纯债价值':'优先使用数据源纯债价值；缺失时将剩余利息和到期兑付款按信用评级对应折现率折现。',
+  '债底溢价率':'转债现价 ÷ 纯债价值－1。',
+  '到期税前收益率（YTM）':'使未来税前利息和到期兑付款现值等于转债现价的年化内部收益率。',
+  '到期税后收益率':'利息按20%税率扣税后，使未来现金流现值等于转债现价的年化内部收益率。',
+  '税后利息':'票面利息 ×（1－20%）。',
+  '期权价值（市价－纯债）':'转债现价－纯债价值。',
+  'BS理论期权价值':'使用Black-Scholes模型，根据正股价、转股价、剩余期限、波动率、无风险利率和股息率计算。',
+  '理论价值':'纯债价值＋Black-Scholes理论期权价值。',
+  '理论偏离度':'转债现价 ÷ 理论价值－1。',
+  '无风险利率':'Black-Scholes模型使用的年化无风险利率，默认读取服务端配置。',
+  '正股年化波动率':'根据正股历史日收益率标准差 × √252计算。',
+  '资产负债率':'总负债 ÷ 总资产。'
+};
+function bondAnalysisLabelHelp(label) { return bondAnalysisHelpTexts[label] || ''; }
 function bondAnalysisSourceLink(url,label) {
   return /^https:\/\/static\.cninfo\.com\.cn\//.test(String(url||'')) ? '<a href="'+escapeHtml(url)+'" target="_blank" rel="noopener">'+escapeHtml(label||'查看公告')+'</a>' : '';
 }
@@ -65,14 +100,14 @@ function bondAnalysisDate(value) {
   return escapeHtml(text.slice(0,10));
 }
 function bondAnalysisTable(rows) {
-  var cells = rows.map(function(row) { return '<th>' + escapeHtml(row[0]) + '</th><td>' + (row[1] || '暂无数据') + '</td>'; });
+  var cells = rows.map(function(row) { return '<th>' + analysisHelp(row[0],bondAnalysisLabelHelp(row[0])) + '</th><td>' + (row[1] || '暂无数据') + '</td>'; });
   var body = '';
   for (var i = 0; i < cells.length; i += 2) body += '<tr>' + cells[i] + (cells[i + 1] || '<th></th><td></td>') + '</tr>';
   return '<div class="bond-analysis-table-wrap"><table class="bond-analysis-table"><tbody>' + body + '</tbody></table></div>';
 }
 function bondAnalysisListTable(headers, rows) {
   if (!rows || !rows.length) return '<div class="bond-analysis-empty">暂无数据</div>';
-  return '<div class="bond-analysis-table-wrap"><table class="bond-analysis-table"><thead><tr>' + headers.map(function(h){return '<th>'+escapeHtml(h)+'</th>';}).join('') +
+  return '<div class="bond-analysis-table-wrap"><table class="bond-analysis-table"><thead><tr>' + headers.map(function(h){return '<th>'+analysisHelp(h,bondAnalysisLabelHelp(h))+'</th>';}).join('') +
     '</tr></thead><tbody>' + rows.map(function(row){return '<tr>'+row.map(function(value){return '<td>'+(value || '暂无数据')+'</td>';}).join('')+'</tr>';}).join('') + '</tbody></table></div>';
 }
 function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) el.innerHTML=html; }
@@ -149,7 +184,7 @@ function bondAnalysisRender(d) {
   bondAnalysisSet('bond-analysis-no-revision',bondAnalysisListTable(['决议日','重新起算日','说明','公告'],(history.no_revision||[]).map(function(r){return [bondAnalysisDate(r.announced_at),r.next_eligible_date?bondAnalysisDate(r.next_eligible_date):'次一交易日',bondAnalysisText(r.summary||'本次不下修'),bondAnalysisSourceLink(r.source_url,'查看')];})));
   bondAnalysisSet('bond-analysis-safety',bondAnalysisTable([
     ['可转债安全性',bondAnalysisText(safety.rating)],['利息保障倍数（符合：≥7）',bondAnalysisNumber(safety.interest_coverage,2,' 倍')],
-    ['现金覆盖率（符合：≥1）',bondAnalysisNumber(safety.cash_coverage,2,' 倍')],['负债/市值（符合：≤150%）',bondAnalysisPercent(safety.liability_to_market_cap)],
+    ['现金覆盖率（任一≥1）',bondAnalysisNumber(safety.cash_coverage,2,' 倍')],['负债/市值（符合：≤150%）',bondAnalysisPercent(safety.liability_to_market_cap)],
     ['可转债评级',bondAnalysisText(credit.newest_rating||credit.issue_rating)],['评级机构',bondAnalysisText(credit.rating_company)]
   ]));
   bondAnalysisSet('bond-analysis-bond',bondAnalysisTable([

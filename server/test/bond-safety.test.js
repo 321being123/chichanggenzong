@@ -36,10 +36,21 @@ check('银行与非银金融强制安全', () => {
   assert.strictEqual(rateCompany(company({ industry: '银行', ebit: null })).rating, '安全');
   assert.strictEqual(rateCompany(company({ industry: '非银金融', ebit: null })).rating, '安全');
 });
-check('缺失字段被诊断，同时保持旧脚本指标二缺失按 0 的行为', () => {
+check('缺失字段被诊断，缺少两类负债时现金覆盖率不得分', () => {
   const result = rateCompany(company({ cash: null, trading_fin_assets: null, current_liability: null, interest_bearing_debt: null }));
   assert(result.missing_fields.includes('cash'));
-  assert.strictEqual(result.score, 3);
+  assert.strictEqual(result.score, 2);
+  assert.strictEqual(result.metrics.liquidity, null);
+});
+check('现金覆盖流动负债或有息负债任一达到1即可得分', () => {
+  const currentPassed = rateCompany(company({ cash: 600, trading_fin_assets: 0, current_liability: 500, interest_bearing_debt: 800 }));
+  const interestPassed = rateCompany(company({ cash: 600, trading_fin_assets: 0, current_liability: 800, interest_bearing_debt: 500 }));
+  const neitherPassed = rateCompany(company({ cash: 400, trading_fin_assets: 0, current_liability: 500, interest_bearing_debt: 800 }));
+  assert.strictEqual(currentPassed.checks.liquidity, true);
+  assert.strictEqual(interestPassed.checks.liquidity, true);
+  assert.strictEqual(neitherPassed.checks.liquidity, false);
+  assert.strictEqual(currentPassed.metrics.liquidity, 1.2);
+  assert.strictEqual(interestPassed.metrics.liquidity, 1.2);
 });
 
 console.log('B. 合并、未评级、过滤与排序');

@@ -53,15 +53,12 @@ function rateCompany(row) {
     if (interestRatio >= 7) { score += 1; interestPassed = true; }
   }
 
-  // 与旧脚本一致：指标二的缺失数字按 0 处理。missing_fields 会显式暴露这种数据质量风险。
   const cashSum = (fields.cash || 0) + (fields.trading_fin_assets || 0);
-  const currentLiability = fields.current_liability || 0;
-  const interestDebt = fields.interest_bearing_debt || 0;
-  const liquidityPassed = cashSum >= currentLiability || cashSum >= interestDebt;
-  const coverageRatios = [currentLiability, interestDebt]
-    .filter(value => value > 0)
+  const coverageRatios = [fields.current_liability, fields.interest_bearing_debt]
+    .filter(value => value !== null && value > 0)
     .map(value => cashSum / value);
   const liquidityRatio = coverageRatios.length ? Math.max(...coverageRatios) : null;
+  const liquidityPassed = coverageRatios.some(value => value >= 1);
   if (liquidityPassed) score += 1;
 
   let leveragePassed = false;

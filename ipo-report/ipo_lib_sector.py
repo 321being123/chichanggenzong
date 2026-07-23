@@ -154,9 +154,28 @@ def _fetch_sector_stock_names(conn):
 def _fetch_stock_60d_gain(stock_code):
     """
     获取某只股票60日涨跌幅
-    从东财K线接口获取近60个交易日的收盘价，计算涨跌幅
-    支持批量获取（同一板块的股票）
+    优先从 Tushare 获取近60个交易日收盘价，东财K线作为备用。
     """
+    try:
+        pro = _get_tushare_pro()
+        if pro:
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=150)).strftime("%Y%m%d")
+            df = pro.daily(
+                ts_code=_to_ts_code(stock_code),
+                start_date=start_date,
+                end_date=end_date,
+                fields="trade_date,close",
+            )
+            if df is not None and len(df) >= 2:
+                df = df.sort_values("trade_date")
+                closes = [float(v) for v in df["close"].tolist() if v is not None]
+                closes = closes[-61:]
+                if len(closes) >= 2 and closes[0] > 0:
+                    return round((closes[-1] / closes[0] - 1) * 100, 2)
+    except Exception:
+        pass
+
     try:
         code_int = int(stock_code)
         if code_int >= 600000:

@@ -33,6 +33,21 @@ function extractCodeReport(md, code) {
   return lines.slice(start, end).join('\n').trim();
 }
 
+function extractReportFooter(md) {
+  const text = String(md || '');
+  let start = text.indexOf('## 📊 预测跟踪统计');
+  if (start < 0) start = text.indexOf('## 📊 当前赛道热度系数');
+  if (start < 0) return '';
+  const footer = text.indexOf('*本报告由打新日报系统自动生成', start);
+  return text.slice(start, footer >= 0 ? footer : text.length).trim();
+}
+
+function codeReportWithFooter(md, code) {
+  const section = extractCodeReport(md, code);
+  if (!section) return String(md || '');
+  return [section, extractReportFooter(md)].filter(Boolean).join('\n\n---\n\n');
+}
+
 function valueOrDash(value, suffix = '') {
   return value === null || value === undefined || value === '' ? '暂无' : `${value}${suffix}`;
 }
@@ -225,7 +240,7 @@ router.get('/report/code', async (req, res) => {
     const file = path.join(__dirname, '..', '..', 'ipo-report', 'individual', code + '.md');
     if (fs.existsSync(file)) {
       const md = fs.readFileSync(file, 'utf-8');
-      return res.json({ code, md: extractCodeReport(md, code) || md });
+      return res.json({ code, md: codeReportWithFooter(md, code) });
     }
     const reports = await pool.query(
       'SELECT md FROM ipo_reports WHERE md LIKE $1 ORDER BY report_date DESC',
@@ -234,7 +249,7 @@ router.get('/report/code', async (req, res) => {
     for (const row of reports.rows) {
       const section = extractCodeReport(row.md, code);
       if (section) {
-        return res.json({ code, md: section });
+        return res.json({ code, md: codeReportWithFooter(row.md, code) });
       }
     }
     const calendarReport = await buildCalendarReport(code);

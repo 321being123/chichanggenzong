@@ -83,6 +83,14 @@ async function main() {
     check('listing_date 无 nan', () => assert.strictEqual(nan.length, 0));
   }
 
+  // 5. 单独分析详情保留报告底部公共统计
+  console.log('== 5. GET /api/ipo/report/code ==');
+  r = await fetch(base + '/api/ipo/report/code?code=118073');
+  check('HTTP 200', () => assert.strictEqual(r.status, 200));
+  j = await r.json();
+  check('详情包含预测跟踪统计', () => assert.ok(j.md.includes('预测跟踪统计')));
+  check('详情包含当前赛道热度系数', () => assert.ok(j.md.includes('当前赛道热度系数')));
+
   server.close();
 
   const fails = results.filter(x => x[0] === 'FAIL');

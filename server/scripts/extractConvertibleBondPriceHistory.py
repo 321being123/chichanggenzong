@@ -32,7 +32,7 @@ def extract_history(url, initial_price=None, bond_name=None):
     if start < 0:
         return {"source_url": url, "price_changes": [], "rating_outlook": rating_outlook}
     section = text[start:start + 12000]
-    stop = re.search(r"(?:报告期末公司的负债情况|公司的负债情况、资信变化情况|五、\s*报告期内合并报表范围亏损)", section)
+    stop = re.search(r"(?:报告期末公司的负债情况|公司的负债情况、资信变化情况|五、\s*报告期内合并报表范围亏损|（五）)", section)
     if stop:
         section = section[:stop.start()]
     section = re.sub(r"(20\d{2})-(\d{2})-(\d{2})", r"\1年\2月\3日", section)
@@ -50,6 +50,7 @@ def extract_history(url, initial_price=None, bond_name=None):
             continue
         after = float(match.group(5))
         reason = re.sub(r"\s+", "", match.group(9)).strip("，。;； ")
+        reason = reason.split("截至本报告期末最新转股价格", 1)[0]
         reason = re.sub(r"(?:[\u4e00-\u9fa5]{1,8}转(?:债|\d+)[、,，]*)+$", "", reason)
         reason = re.sub(r"\d+(?:\.\d+)?$", "", reason)
         concise_reason = re.search(r"(因[^，。]{0,40}(?:调整转股价格|修正转股价格))", reason)
@@ -64,6 +65,25 @@ def extract_history(url, initial_price=None, bond_name=None):
             "source_url": url,
         })
         previous = after
+    if not rows and (not bond_name or bond_name in section):
+        fallback_pattern = re.compile(
+            DATE_PATTERN + r"\s+(\d+(?:\.\d+)?)\s+" + DATE_PATTERN
+            + r"\s+(?:《[^》]+》)?\s*(.*?)(?=" + DATE_PATTERN + r"\s+\d+(?:\.\d+)?|$)"
+        )
+        for match in fallback_pattern.finditer(section):
+            after = float(match.group(4))
+            reason = re.sub(r"\s+", "", match.group(8)).strip("，。;； ")
+            reason = reason.split("截至本报告期末最新转股价格", 1)[0]
+            reason = re.sub(r"\d+(?:\.\d+)?$", "", reason)
+            rows.append({
+                "publish_date": format_date(match.groups()[4:7]),
+                "change_date": format_date(match.groups()[0:3]),
+                "convertprice_bef": previous,
+                "convertprice_aft": after,
+                "reason": reason,
+                "source_url": url,
+            })
+            previous = after
     return {"source_url": url, "price_changes": rows, "rating_outlook": rating_outlook}
 
 

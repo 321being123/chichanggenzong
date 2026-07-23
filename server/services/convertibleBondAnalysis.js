@@ -560,7 +560,7 @@ function runPriceHistoryExtractor(executable, url, initialPrice, bondName) {
 
 async function extractReportPriceHistory(events, initialPrice, bondName, cachedReportUrl, cachedParserVersion) {
   const report = latestFullReport(events);
-  if (!report || (report.url === cachedReportUrl && cachedParserVersion === '8')) return null;
+  if (!report || (report.url === cachedReportUrl && cachedParserVersion === '9')) return null;
   let lastError;
   for (const executable of pythonCandidates()) {
     try {
@@ -1141,7 +1141,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
       }
       await client.query(
         `UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload || jsonb_build_object(
-          'price_history_report_url',$2::text,'price_history_parser_version','8') WHERE instrument_id=$1`,
+          'price_history_report_url',$2::text,'price_history_parser_version','9') WHERE instrument_id=$1`,
         [ids.bondId, reportPriceHistory.source_url]
       );
     }

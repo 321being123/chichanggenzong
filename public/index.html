@@ -661,6 +661,22 @@ function switchMain(main) {
   }
 }
 
+function mergeChangelogByDate(list) {
+  var merged = [];
+  var byDate = {};
+  (list || []).forEach(function(item) {
+    var date = item.date || '';
+    if (!byDate[date]) {
+      byDate[date] = { date: date, version: item.version || '', items: [] };
+      merged.push(byDate[date]);
+    }
+    (item.items || []).forEach(function(text) {
+      if (byDate[date].items.indexOf(text) === -1) byDate[date].items.push(text);
+    });
+  });
+  return merged;
+}
+
 // 加载版本记录页
 async function loadChangelogPage() {
   const el = document.getElementById('changelog-main-content');
@@ -669,7 +685,7 @@ async function loadChangelogPage() {
     const r = await fetch('/changelog.json');
     const data = await r.json();
     let html = '';
-    (data || []).forEach(function(item) {
+    mergeChangelogByDate(data).forEach(function(item) {
       var title = (item.date || '') + (item.version ? '（' + item.version + '）' : '');
       html += '<div style="margin-bottom:18px;"><div style="font-weight:700;color:#1a1a2e;margin-bottom:6px;">' + escapeHtml(title) + '</div><ul style="padding-left:18px;margin:0;">';
       (item.items || []).forEach(function(it) {

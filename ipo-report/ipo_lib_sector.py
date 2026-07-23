@@ -271,7 +271,7 @@ def _refresh_sector_heat(conn):
 
     for sector_key, (avg_gain, count) in sector_avg_gains.items():
         # 归一化: boost = (avg_gain / max_avg) * 3.0
-        boost = round((avg_gain / max_avg) * 3.0, 2) if max_avg > 0 else 0
+        boost = round(max(0, min(3, (avg_gain / max_avg) * 3.0)), 2) if max_avg > 0 else 0
         conn.execute(
             "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
             (sector_key, round(avg_gain, 2), count, boost, now_str),
@@ -366,7 +366,7 @@ def calibrate_sector_boost():
                 if not gains:
                     continue
                 avg_gain = sum(gains) / len(gains)
-                boost = round((avg_gain / max_avg) * 3.0, 2) if max_avg > 0 else 0
+                boost = round(max(0, min(3, (avg_gain / max_avg) * 3.0)), 2) if max_avg > 0 else 0
                 conn.execute(
                     "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
                     (sector_key, round(avg_gain, 2), len(gains), boost, now_str),

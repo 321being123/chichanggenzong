@@ -23,6 +23,10 @@ def check(name, cond, detail=""):
         print("  [FAIL] %s %s" % (name, detail))
 
 
+check("新股预测价格入库换算", m._price_from_return(84.46, 100) == 168.92)
+check("新债实际价格入库换算", m._price_from_return(100, 23.5) == 123.5)
+
+
 check("psql 路径适配当前系统", os.name == "nt" or not common.PSQL.lower().startswith("c:\\"), common.PSQL)
 
 
@@ -57,6 +61,16 @@ try:
     # _fetch_all_bonds_market / fetch_market_heat 经 `from ... import *`
     # 进入 ipo_lib_valuation 命名空间，故桩必须打到该模块才生效。
     import ipo_lib_valuation as _val
+    _old_market_temp = dict(_val._MARKET_TEMP)
+    _val._MARKET_TEMP.clear()
+    _val._MARKET_TEMP.update({"level": "热市", "break_rate": 0, "avg_gain_3m": 0})
+    hot_zero_advice = _val.get_valuation_advice(
+        "stock", 38.19, None,
+        stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
+    )
+    check("新股热市且零破发一律顶格申购", hot_zero_advice[0] == "顶格申购", "实得=%s" % (hot_zero_advice,))
+    _val._MARKET_TEMP.clear()
+    _val._MARKET_TEMP.update(_old_market_temp)
     check("XGBoost模型文件可加载", _val._load_xgb_model())
     model_prediction = _val._xgb_predict_listing({
         "stock_code": "688001", "issue_price": 20, "issue_pe": 30,

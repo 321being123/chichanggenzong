@@ -896,6 +896,53 @@ async function migration010ConvertibleBondAnalysis() {
 
 // ====== 版本化迁移机制（P2-3）======
 // 记录已执行的升级步骤，避免每次启动重复跑大量 ALTER
+async function migration011IpoTrackingStorage() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS predictions (
+      id SERIAL PRIMARY KEY,
+      type TEXT NOT NULL,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      listing_date TEXT NOT NULL,
+      pred_date TEXT NOT NULL,
+      pred_return REAL,
+      pred_price REAL,
+      pred_advice TEXT,
+      actual_return REAL,
+      actual_price REAL,
+      actual_date TEXT,
+      status TEXT DEFAULT 'pending',
+      updated_at TEXT,
+      UNIQUE(type, code, pred_date)
+    );
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS pred_price REAL;
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS actual_price REAL;
+    ALTER TABLE predictions ADD COLUMN IF NOT EXISTS actual_date TEXT;
+    CREATE INDEX IF NOT EXISTS idx_predictions_accuracy
+      ON predictions(type, status, pred_date) WHERE actual_return IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS sector_heat (
+      sector_key TEXT PRIMARY KEY,
+      avg_gain_60d REAL,
+      stock_count INTEGER,
+      boost REAL,
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS stock_gain (
+      stock_code TEXT PRIMARY KEY,
+      gain_60d REAL,
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS stock_sector (
+      stock_code TEXT,
+      sector_key TEXT,
+      stock_name TEXT,
+      PRIMARY KEY(stock_code, sector_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stock_sector_key ON stock_sector(sector_key);
+  `);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -928,6 +975,7 @@ const MIGRATIONS = [
   { version: '008_drop_legacy_stock_analysis_tables', up: migration008DropLegacyStockAnalysisTables },
   { version: '009_valuation_data_quality', up: migration009ValuationDataQuality },
   { version: '010_convertible_bond_analysis', up: migration010ConvertibleBondAnalysis },
+  { version: '011_ipo_tracking_storage', up: migration011IpoTrackingStorage },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

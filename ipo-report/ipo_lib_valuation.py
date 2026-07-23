@@ -389,6 +389,9 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     if stock_detail is None:
         stock_detail = {}
 
+    if item_type == "stock" and _MARKET_TEMP.get("level") == "热市" and _MARKET_TEMP.get("break_rate") == 0:
+        return "顶格申购", "当前新股市场为热市且零破发，中签即赚"
+
     stock_code = stock_detail.get("stock_code", "")
     stock_name = stock_detail.get("stock_name", "")
     main_business = stock_detail.get("main_business", "")

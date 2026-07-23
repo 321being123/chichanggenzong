@@ -26,6 +26,18 @@ def _bond_first_non_limit_return(stored_return):
         return None
     return round(float(stored_return), 2)
 
+def _price_from_return(base_price, return_pct):
+    if base_price is None or return_pct is None:
+        return None
+    try:
+        base = float(base_price)
+        result = float(return_pct)
+    except (TypeError, ValueError):
+        return None
+    if base <= 0:
+        return None
+    return round(base * (1 + result / 100), 2)
+
 def _log_prediction_errors():
     """
     统计预测 vs 实际误差，输出到日志供参考
@@ -69,13 +81,17 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
     for s in apply_stocks + list_stocks:
         analysis = s.get("listing_analysis", {})
         pred_return = None
+        pred_price = None
         if isinstance(analysis, dict):
-            pred_return = analysis.get("predicted_return") or analysis.get("price")
+            pred_return = analysis.get("predicted_return")
+            pred_price = analysis.get("price")
+            if pred_price is None:
+                pred_price = _price_from_return((s.get("detail") or {}).get("issue_price"), pred_return)
         advice = s.get("advice", "")
         listing_date = pred_date
 
         rows.append(("stock", s["code"], s["name"], listing_date,
-                      pred_date, pred_return, None, advice,
+                      pred_date, pred_return, pred_price, advice,
                       today_str))
 
     for b in apply_bonds + list_bonds:
@@ -126,18 +142,38 @@ def backfill_prediction_actuals():
         if not conn.execute("SELECT 1 FROM predictions WHERE code=?", (code,)).fetchone():
             ld = str(ldate)[:10] if ldate else None
             conn.execute(
-                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,status,updated_at) VALUES ('bond',?,?,?,?,?,'fulfilled',?)",
-                (code, name, ld, ld, fdr, now),
+                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,actual_price,actual_date,status,updated_at) VALUES ('bond',?,?,?,?,?,?,?,'fulfilled',?)",
+                (code, name, ld, ld, fdr, _price_from_return(100, fdr), ld, now),
             )
     stock_rows = conn.execute(
-        "SELECT security_code, security_name, listing_date, ld_close_change FROM ipo_history WHERE ld_close_change IS NOT NULL"
+        "SELECT security_code, security_name, listing_date, ld_close_change, issue_price FROM ipo_history WHERE ld_close_change IS NOT NULL"
     ).fetchall()
-    for code, name, ldate, ldc in stock_rows:
+    for code, name, ldate, ldc, issue_price in stock_rows:
         if not conn.execute("SELECT 1 FROM predictions WHERE code=?", (code,)).fetchone():
             ld = str(ldate)[:10] if ldate else None
             conn.execute(
-                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,status,updated_at) VALUES ('stock',?,?,?,?,?,'fulfilled',?)",
-                (code, name, ld, ld, ldc, now),
+                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,actual_price,actual_date,status,updated_at) VALUES ('stock',?,?,?,?,?,?,?,'fulfilled',?)",
+                (code, name, ld, ld, ldc, _price_from_return(issue_price, ldc), ld, now),
+            )
+
+    # 补齐旧记录中尚未保存的预测价格，避免后续准确率统计缺少价格口径。
+    missing_prices = conn.execute(
+        "SELECT id, type, code, pred_return FROM predictions "
+        "WHERE pred_price IS NULL AND pred_return IS NOT NULL"
+    ).fetchall()
+    for pid, ptype, code, pred_return in missing_prices:
+        if ptype == "bond":
+            pred_price = _price_from_return(100, pred_return)
+        else:
+            issue_row = conn.execute(
+                "SELECT issue_price FROM ipo_history WHERE security_code=? AND issue_price IS NOT NULL",
+                (code,),
+            ).fetchone()
+            pred_price = _price_from_return(issue_row[0], pred_return) if issue_row else None
+        if pred_price is not None:
+            conn.execute(
+                "UPDATE predictions SET pred_price=?, updated_at=? WHERE id=?",
+                (pred_price, now, pid),
             )
     conn.commit()
 
@@ -154,26 +190,28 @@ def backfill_prediction_actuals():
         try:
             if ptype == "stock":
                 row = conn.execute(
-                    "SELECT ld_close_change FROM ipo_history WHERE security_code=? AND ld_close_change IS NOT NULL",
+                    "SELECT ld_close_change, issue_price, listing_date FROM ipo_history WHERE security_code=? AND ld_close_change IS NOT NULL",
                     (code,),
                 ).fetchone()
                 if row:
+                    actual_price = _price_from_return(row[1], row[0])
                     conn.execute(
-                        "UPDATE predictions SET actual_return=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (row[0], now, pid),
+                        "UPDATE predictions SET actual_return=?, actual_price=?, actual_date=?, status='fulfilled', updated_at=? WHERE id=?",
+                        (row[0], actual_price, row[2], now, pid),
                     )
                     updated += 1
             else:
                 row = conn.execute(
-                    "SELECT first_day_return FROM bond_history WHERE security_code=? AND first_day_return IS NOT NULL",
+                    "SELECT first_day_return, listing_date FROM bond_history WHERE security_code=? AND first_day_return IS NOT NULL",
                     (code,),
                 ).fetchone()
                 if row:
                     actual_return = _bond_first_non_limit_return(row[0])
                     pred_return = _bond_predicted_return(pred_price)
+                    actual_price = _price_from_return(100, actual_return)
                     conn.execute(
-                        "UPDATE predictions SET pred_return=COALESCE(?, pred_return), actual_return=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (pred_return, actual_return, now, pid),
+                        "UPDATE predictions SET pred_return=COALESCE(?, pred_return), actual_return=?, actual_price=?, actual_date=?, status='fulfilled', updated_at=? WHERE id=?",
+                        (pred_return, actual_return, actual_price, row[1], now, pid),
                     )
                     updated += 1
         except Exception:
@@ -365,4 +403,4 @@ def estimate_board_base(stock_code):
     else:
         return BOARD_BASE["沪市主板"]
 
-__all__ = ['_bond_predicted_return', '_bond_first_non_limit_return', '_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base']
+__all__ = ['_bond_predicted_return', '_bond_first_non_limit_return', '_price_from_return', '_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base']

@@ -114,44 +114,41 @@ def _fetch_sector_stock_names(conn):
     同时从东财获取股票的行业信息，用行业名辅助匹配
     新增的插入stock_sector表
     """
-    stocks = _fetch_all_a_stock_list()
-    new_mappings = 0
-    # 对每只股票获取行业信息（批量方式：只获取名称匹配不上的）
-    # 先按简称匹配
-    for code, name in stocks:
-        matched = _match_sector_by_keywords(name)
-        if matched:
-            for sector_key in matched:
-                cur = conn.execute(
-                    "SELECT 1 FROM stock_sector WHERE stock_code=? AND sector_key=?",
-                    (code, sector_key),
-                )
-                if not cur.fetchone():
-                    conn.execute(
-                        "INSERT INTO stock_sector (stock_code, sector_key, stock_name) VALUES (?,?,?)",
-                        (code, sector_key, name),
-                    )
-                    new_mappings += 1
-            continue  # 名称匹配到的不用再查行业
+    stocks = []
+    pro = _get_tushare_pro()
+    if pro:
+        try:
+            df = pro.stock_basic(
+                exchange="", list_status="L",
+                fields="ts_code,symbol,name,industry",
+            )
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    raw_code = row.get("symbol") or str(row.get("ts_code") or "").split(".")[0]
+                    code = str(raw_code or "").zfill(6)
+                    if code and code != "000000":
+                        stocks.append((code, str(row.get("name") or ""), str(row.get("industry") or "")))
+        except Exception as e:
+            print(f"[赛道热度] Tushare stock_basic 获取失败: {e}")
+    if not stocks:
+        stocks = [(code, name, "") for code, name in _fetch_all_a_stock_list()]
 
-        # 名称没匹配到，查行业信息
-        industry = _fetch_stock_industry(code)
-        if industry:
-            matched2 = _match_sector_by_keywords(industry)
-            for sector_key in matched2:
-                cur = conn.execute(
-                    "SELECT 1 FROM stock_sector WHERE stock_code=? AND sector_key=?",
-                    (code, sector_key),
+    new_mappings = 0
+    for code, name, industry in stocks:
+        for sector_key in _match_sector_by_keywords(f"{name} {industry}"):
+            cur = conn.execute(
+                "SELECT 1 FROM stock_sector WHERE stock_code=? AND sector_key=?",
+                (code, sector_key),
+            )
+            if not cur.fetchone():
+                conn.execute(
+                    "INSERT INTO stock_sector (stock_code, sector_key, stock_name) VALUES (?,?,?)",
+                    (code, sector_key, name),
                 )
-                if not cur.fetchone():
-                    conn.execute(
-                        "INSERT INTO stock_sector (stock_code, sector_key, stock_name) VALUES (?,?,?)",
-                        (code, sector_key, name),
-                    )
-                    new_mappings += 1
-        time.sleep(0.05)  # 避免请求过快
+                new_mappings += 1
 
     conn.commit()
+    print(f"[赛道热度] 已持久化 {new_mappings} 条新增成分股映射")
     return new_mappings
 
 def _fetch_stock_60d_gain(stock_code):
@@ -265,9 +262,8 @@ def _refresh_sector_heat(conn):
 def calibrate_sector_boost():
     """
     自动校准赛道热度系数
-    数据来源：理杏仁手动导出的一次性CSV -> stock_sector + stock_gain 表
-    日常运行只从本地数据库读取，不请求外部接口
-    如需刷新涨幅数据：读取DB已有股票列表，逐只从东财K线接口获取最新60日涨幅
+    每次运行从 Tushare 增量补充股票赛道映射，并持久化到 stock_sector。
+    每24小时从东财K线刷新60日涨跌幅，写入 stock_gain 和 sector_heat。
     """
     from datetime import datetime
 
@@ -278,10 +274,18 @@ def calibrate_sector_boost():
     stock_sector_count = conn.execute("SELECT COUNT(*) FROM stock_sector").fetchone()[0]
 
     if stock_sector_count == 0:
-        print("[赛道热度] 数据库无数据（请先运行 import_lixinger_csv.py 导入理杏仁CSV）")
-        print("[赛道热度] 使用默认赛道系数")
+        print("[赛道热度] 成分股映射为空，开始从 Tushare 重建")
+    _fetch_sector_stock_names(conn)
+    stock_sector_count = conn.execute("SELECT COUNT(*) FROM stock_sector").fetchone()[0]
+    if stock_sector_count == 0:
+        print("[赛道热度] 未匹配到赛道成分股，保留上一份系数")
         conn.close()
         return
+
+    if sector_count == 0:
+        print("[赛道热度] 系数为空，开始计算60日涨跌幅")
+        _refresh_sector_heat(conn)
+        sector_count = conn.execute("SELECT COUNT(*) FROM sector_heat").fetchone()[0]
 
     # 检查是否需要刷新涨幅数据（>24h 且 距上次刷新>1天）
     cur = conn.execute("SELECT MAX(updated_at) FROM sector_heat")

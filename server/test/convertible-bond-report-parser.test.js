@@ -4,10 +4,11 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..', '..');
-const python = process.platform === 'win32'
-  ? path.join(root, 'venv', 'Scripts', 'python.exe')
-  : path.join(root, 'venv', 'bin', 'python');
-if (!fs.existsSync(python)) {
+const python = (process.platform === 'win32'
+  ? [path.join(root, 'venv', 'Scripts', 'python.exe'), path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe')]
+  : [path.join(root, 'venv', 'bin', 'python'), path.join(root, 'ipo-report', 'venv', 'bin', 'python')])
+  .find(candidate => fs.existsSync(candidate));
+if (!python) {
   console.log('[SKIP] convertible bond report parser: Python venv 不存在');
   process.exit(0);
 }

@@ -13,7 +13,7 @@ def format_date(groups):
     return f"{int(groups[0]):04d}-{int(groups[1]):02d}-{int(groups[2]):02d}"
 
 
-def extract_history(url, initial_price=None):
+def extract_history(url, initial_price=None, bond_name=None):
     if not (url.startswith("https://static.cninfo.com.cn/") or url.startswith("https://www.sse.com.cn/")
             or url.startswith("https://big5.sse.com.cn/") or url.startswith("https://disc.static.szse.cn/")):
         raise ValueError("仅允许读取巨潮资讯或交易所官方 PDF")
@@ -32,27 +32,32 @@ def extract_history(url, initial_price=None):
     if start < 0:
         return {"source_url": url, "price_changes": [], "rating_outlook": rating_outlook}
     section = text[start:start + 12000]
-    stop = re.search(r"(?:报告期末公司的负债情况|公司的负债情况、资信变化情况)", section)
+    stop = re.search(r"(?:报告期末公司的负债情况|公司的负债情况、资信变化情况|五、\s*报告期内合并报表范围亏损)", section)
     if stop:
         section = section[:stop.start()]
     section = re.sub(r"(20\d{2})-(\d{2})-(\d{2})", r"\1年\2月\3日", section)
     section = re.sub(r"(20\d{2})/(\d{1,2})/(\d{1,2})", r"\1年\2月\3日", section)
     section = re.sub(r"\s+", " ", section)
     pattern = re.compile(
-        DATE_PATTERN + r"\s+(\d+(?:\.\d+)?)\s+" + DATE_PATTERN
-        + r"\s+(?:《[^》]+》)?\s*(.*?)(?=" + DATE_PATTERN + r"\s+\d+(?:\.\d+)?|$)"
+        r"([^\s]{2,20}?)\s+" + DATE_PATTERN + r"\s+(\d+(?:\.\d+)?)\s+" + DATE_PATTERN
+        + r"\s+(?:《[^》]+》)?\s*(.*?)(?=[^\s]{2,20}?\s+" + DATE_PATTERN + r"\s+\d+(?:\.\d+)?|$)"
     )
     rows = []
     previous = float(initial_price) if initial_price is not None else None
     for match in pattern.finditer(section):
-        after = float(match.group(4))
-        reason = re.sub(r"\s+", "", match.group(8)).strip("，。;； ")
+        row_bond_name = re.sub(r"\s+", "", match.group(1))
+        if bond_name and bond_name not in row_bond_name.split("、"):
+            continue
+        after = float(match.group(5))
+        reason = re.sub(r"\s+", "", match.group(9)).strip("，。;； ")
+        reason = re.sub(r"(?:[\u4e00-\u9fa5]{1,8}转(?:债|\d+)[、,，]*)+$", "", reason)
+        reason = re.sub(r"\d+(?:\.\d+)?$", "", reason)
         concise_reason = re.search(r"(因[^，。]{0,40}(?:调整转股价格|修正转股价格))", reason)
         if concise_reason:
             reason = concise_reason.group(1)
         rows.append({
-            "publish_date": format_date(match.groups()[4:7]),
-            "change_date": format_date(match.groups()[0:3]),
+            "publish_date": format_date(match.groups()[5:8]),
+            "change_date": format_date(match.groups()[1:4]),
             "convertprice_bef": previous,
             "convertprice_aft": after,
             "reason": reason,
@@ -66,8 +71,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
     parser.add_argument("--initial-price", type=float, default=None)
+    parser.add_argument("--bond-name", default=None)
     args = parser.parse_args()
-    print(json.dumps(extract_history(args.url, args.initial_price), ensure_ascii=False))
+    print(json.dumps(extract_history(args.url, args.initial_price, args.bond_name), ensure_ascii=False))
 
 
 if __name__ == "__main__":

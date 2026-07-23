@@ -1,7 +1,7 @@
 const assert = require('assert');
 const {
   normalizeBondCode, isoDate, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
-  earliestPutDate, currentPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates,
+  earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates,
   yieldToMaturity, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
@@ -22,6 +22,9 @@ assert.deepStrictEqual(parseWindow('连续三十个交易日中至少十五个�
 assert.strictEqual(earliestPutDate('2030-01-01', '最后两个计息年度'), '2028-01-01');
 assert.deepStrictEqual(currentPutPeriod('2027-07-15', '最后两个计息年度', '2026-07-22'), {
   active:true, eligible_from:'2025-07-15', period_start:'2026-07-15', period_end:'2027-07-14',
+});
+assert.deepStrictEqual(nextPutPeriod({ eligible_from:'2025-07-15', period_start:'2025-07-15' }, '2027-07-15'), {
+  active:false, eligible_from:'2025-07-15', period_start:'2026-07-15', period_end:'2027-07-14',
 });
 assert.strictEqual(putOpportunityState([
   {event_date:'2026-07-20',title:'关于太平转债回售结果的公告'},

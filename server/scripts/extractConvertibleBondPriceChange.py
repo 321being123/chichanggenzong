@@ -28,7 +28,7 @@ def extract_one(url):
         text,
     ))
     current_change = current_changes[-1] if current_changes else None
-    changes = list(re.finditer(r"转股价格由(?:人民币)?(\d+(?:\.\d+)?)元/股(?:调整|向下修正)为(?:人民币)?(\d+(?:\.\d+)?)元/股", text))
+    changes = list(re.finditer(r"转股价格由(?:原来(?:的)?|人民币)?(\d+(?:\.\d+)?)元/股(?:调整|向下修正)为(?:人民币)?(\d+(?:\.\d+)?)元/股", text))
     changed = changes[-1] if changes else None
     before = changed or re.search(r"(?:调整|修正)前.{0,30}?转股价格[：:为]*人民币?(\d+(?:\.\d+)?)元/股", text)
     after = changed or re.search(r"(?:调整|修正)后.{0,30}?转股价格[：:为]*人民币?(\d+(?:\.\d+)?)元/股", text)
@@ -63,7 +63,7 @@ def extract_one(url):
         "price_after": price_after,
         "change_date": date_text(effective) if effective else None,
         "revision_floor_price": floor_price,
-        "parser_version": "2",
+        "parser_version": "3",
     }
 
 

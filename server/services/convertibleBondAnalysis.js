@@ -104,6 +104,17 @@ function currentPutPeriod(maturityDate, clause, today = isoDate(tsDateStr(new Da
     period_start: periodStart, period_end: isoDate(endDate) };
 }
 
+function nextPutPeriod(period, maturityDate) {
+  const maturity = isoDate(maturityDate);
+  if (!period || !period.period_start || !maturity) return null;
+  const start = isoDate(addYears(new Date(`${period.period_start}T00:00:00+08:00`), 1));
+  if (!start || start >= maturity) return null;
+  const following = isoDate(addYears(new Date(`${start}T00:00:00+08:00`), 1));
+  const boundary = following && following < maturity ? following : maturity;
+  return { active: false, eligible_from: period.eligible_from, period_start: start,
+    period_end: isoDate(addDays(new Date(`${boundary}T00:00:00+08:00`), -1)) };
+}
+
 function putOpportunityState(events, periodStart, periodEnd) {
   const start = isoDate(periodStart), end = isoDate(periodEnd);
   const relevant = (events || []).filter(event => {
@@ -526,10 +537,11 @@ async function extractReportFundHolding(events) {
   return null;
 }
 
-function runPriceHistoryExtractor(executable, url, initialPrice) {
+function runPriceHistoryExtractor(executable, url, initialPrice, bondName) {
   const script = path.resolve(__dirname, '..', 'scripts', 'extractConvertibleBondPriceHistory.py');
   const scriptArgs = [script, url];
   if (finite(initialPrice) != null) scriptArgs.push('--initial-price', String(finite(initialPrice)));
+  if (bondName) scriptArgs.push('--bond-name', String(bondName));
   const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', ...scriptArgs] : scriptArgs;
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
@@ -546,13 +558,13 @@ function runPriceHistoryExtractor(executable, url, initialPrice) {
   });
 }
 
-async function extractReportPriceHistory(events, initialPrice, cachedReportUrl, cachedParserVersion) {
+async function extractReportPriceHistory(events, initialPrice, bondName, cachedReportUrl, cachedParserVersion) {
   const report = latestFullReport(events);
-  if (!report || (report.url === cachedReportUrl && cachedParserVersion === '6')) return null;
+  if (!report || (report.url === cachedReportUrl && cachedParserVersion === '8')) return null;
   let lastError;
   for (const executable of pythonCandidates()) {
     try {
-      const result = await runPriceHistoryExtractor(executable, report.url, initialPrice);
+      const result = await runPriceHistoryExtractor(executable, report.url, initialPrice, bondName);
       if (!result || (!(result.price_changes || []).length && !result.rating_outlook)) return null;
       return Object.assign(result, { report_title: report.title });
     } catch (error) { lastError = error; }
@@ -745,7 +757,7 @@ function runPriceChangeExtractor(executable, events) {
 }
 
 async function extractPriceChangeDetails(events, cachedRows) {
-  const cachedUrls = new Set((cachedRows || []).filter(row => finite(row.price_after) != null && row.source_url && row.parser_version === '2').map(row => row.source_url));
+  const cachedUrls = new Set((cachedRows || []).filter(row => finite(row.price_after) != null && row.source_url && row.parser_version === '3').map(row => row.source_url));
   const candidates = (events || []).filter(event => ['revised','adjusted'].includes(revisionDecision(event.title)) &&
     event.url && !cachedUrls.has(event.url)).slice(0, 10);
   if (!candidates.length) return [];
@@ -787,6 +799,8 @@ async function saveProspectusDetails(client, instrumentId, profile, details, sou
 
 function announcementMatchesBond(event, profile) {
   const title = String(event.title || ''), name = String(profile.bond_short_name || '');
+  const numbered = name.match(/^(.*)转\d+$/);
+  if (numbered && title.includes(`${numbered[1]}转债`) && !title.includes(name)) return false;
   return (name && title.includes(name)) || title.includes(String(profile.ts_code || '').slice(0,6)) || /可转换公司债券|可转债|转债/.test(title);
 }
 
@@ -836,7 +850,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
         [instrumentId, announced, changeDate, finite(detail.price_before), finite(detail.price_after), title, sourceId,
           JSON.stringify(Object.assign({}, event, {
             revision_floor_price: finite(detail.revision_floor_price),
-            price_change_parser_version: detail.parser_version || '2',
+            price_change_parser_version: detail.parser_version || '3',
           }))]
       );
     }
@@ -1038,7 +1052,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const prospectusCache = await loadProspectusCache(tsCode);
   const noRevisionCache = await loadNoRevisionCache(tsCode);
   const priceChangeCache = await loadPriceChangeCache(tsCode);
-  const needsPriceDetails = priceChangeCache.some(row => row.parser_version !== '2');
+  const needsPriceDetails = priceChangeCache.some(row => row.parser_version !== '3');
   const ratingSourceCache = await loadRatingSourceCache(tsCode);
   const needsProspectus = !prospectusCache.fundraising_purpose || Number(prospectusCache.coupon_count) === 0 || prospectusCache.parser_version !== '4';
   const [stockDailyData, valuationData, incomeData, balanceData, dividendData, liveQuotes, announcements, futureCalendarData] = await Promise.all([
@@ -1066,7 +1080,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
     tushareQuery('trade_cal', { exchange: 'SSE', start_date: end, end_date: tsDateStr(futureCalendarEnd) }, 'cal_date,is_open').catch(() => null),
   ]);
   const reportHolding = holderData ? null : await extractReportFundHolding(announcements);
-  const reportPriceHistory = await extractReportPriceHistory(announcements, profile.first_conv_price,
+  const reportPriceHistory = await extractReportPriceHistory(announcements, profile.first_conv_price, profile.bond_short_name,
     prospectusCache.price_history_report_url, prospectusCache.price_history_parser_version);
   const ratingOutlooks = await extractRatingOutlooks(announcements, ratingSourceCache.urls);
   const prospectusEvents = prospectusCache.source_url ? announcements.concat([{
@@ -1104,15 +1118,22 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
     if (holderData) await saveFundHolding(client, ids.bondId, tsRows(holderData), sources.tushare);
     if (reportHolding) await saveReportFundHolding(client, ids.bondId, reportHolding, sources.cninfo || sources.calculated);
     if (prospectusDetails) await saveProspectusDetails(client, ids.bondId, profile, prospectusDetails, sources.cninfo || sources.calculated);
+    await saveAnnouncementHistories(client, ids.bondId, announcements, profile, sources.cninfo || sources.calculated,
+      noRevisionPeriods, priceChangeDetails);
     if (reportPriceHistory) {
       if (reportPriceHistory.price_changes.length) {
         const reportDates = reportPriceHistory.price_changes.map(row => isoDate(row.change_date)).filter(Boolean).sort();
         const firstReportChange = reportPriceHistory.price_changes.find(row => isoDate(row.change_date) === reportDates[0]);
         await client.query(
+          `DELETE FROM fundamental.convertible_bond_price_changes
+            WHERE instrument_id=$1 AND raw_payload->>'source_url'=$2`,
+          [ids.bondId, reportPriceHistory.source_url]
+        );
+        await client.query(
           `DELETE FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1 AND
             ((change_date BETWEEN $2 AND $3) OR price_before IS NULL OR price_after IS NULL OR
              (change_date<$2 AND price_before=$4 AND price_after=$5))
-            AND COALESCE(raw_payload->>'price_change_parser_version','')<>'2'`,
+            AND COALESCE(raw_payload->>'price_change_parser_version','')<>'3'`,
           [ids.bondId, reportDates[0], reportDates[reportDates.length - 1],
             finite(firstReportChange.convertprice_bef), finite(firstReportChange.convertprice_aft)]
         );
@@ -1120,12 +1141,10 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
       }
       await client.query(
         `UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload || jsonb_build_object(
-          'price_history_report_url',$2::text,'price_history_parser_version','6') WHERE instrument_id=$1`,
+          'price_history_report_url',$2::text,'price_history_parser_version','8') WHERE instrument_id=$1`,
         [ids.bondId, reportPriceHistory.source_url]
       );
     }
-    await saveAnnouncementHistories(client, ids.bondId, announcements, profile, sources.cninfo || sources.calculated,
-      noRevisionPeriods, priceChangeDetails);
     const simplifiedTerms = { call: simplifyClause('call', profile.call_clause), reset: simplifyClause('reset', profile.reset_clause), put: simplifyClause('put', profile.put_clause) };
     const putActive = putPeriod.active && !putOpportunity.used;
     const progresses = {
@@ -1152,8 +1171,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const financial = await latestFinancial(stockCode);
   const extras = await loadExtraData(ids.bondId);
   const termDetails = { call: simplifyClause('call', profile.call_clause), reset: simplifyClause('reset', profile.reset_clause), put: simplifyClause('put', profile.put_clause) };
-  const putStartDate = putPeriod.period_start || putPeriod.eligible_from;
-  const putActive = putPeriod.active && !putOpportunity.used;
+  const targetPutPeriod = putOpportunity.used ? (nextPutPeriod(putPeriod, profile.maturity_date) || putPeriod) : putPeriod;
+  const putStartDate = targetPutPeriod.period_start || targetPutPeriod.eligible_from;
+  const putActive = targetPutPeriod.active && !putOpportunity.used;
   const resetWindow = resetWindowState(extras.no_revision_history);
   const triggerState = {
     call: triggerProgress(stockDaily, termDetails.call, convPrice),
@@ -1161,9 +1181,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
     put: triggerProgress(stockDaily, termDetails.put, convPrice, putActive, putStartDate),
   };
   const futureTradeDates = futureTradeCalendar(tsRows(futureCalendarData));
-  const putTimeline = putOpportunity.used
-    ? { status: 'opportunity_used', trigger_date: null, payment_date: null, remaining_days: null }
-    : estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate, futureTradeDates, stockPrice);
+  const putTimeline = estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate, futureTradeDates, stockPrice);
+  const earliestPutTimeline = estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate,
+    futureTradeDates, convPrice * termDetails.put.ratio * 0.5);
   const maturityFinal = parseMoney(profile.maturity_call_price, 100 + (finite(profile.coupon_rate) || 0));
   const discountRate = creditDiscountRate(profile.newest_rating || profile.issue_rating);
   const interestYear = currentInterestYear(profile.value_date, profile.maturity_date, end);
@@ -1212,10 +1232,12 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
       maturity_date: isoDate(profile.maturity_date), remaining_years: remainingYears(profile.maturity_date), issue_size: yuanToHundredMillion(profile.issue_size),
       remain_size: yuanToHundredMillion(remainSizeYuan), bond_to_market_cap: remainSizeYuan != null && marketCap > 0 ? remainSizeYuan / marketCap : null,
       conv_start_date: isoDate(profile.conv_start_date), conv_end_date: isoDate(profile.conv_end_date),
-      earliest_put_trigger_date: putStartDate, earliest_put_remaining_years: remainingYears(putStartDate),
+      earliest_put_trigger_date: earliestPutTimeline && earliestPutTimeline.trigger_date,
+      earliest_put_remaining_years: remainingYears(earliestPutTimeline && earliestPutTimeline.trigger_date),
       expected_put_trigger_date: putTimeline && putTimeline.trigger_date, expected_put_payment_date: putTimeline && putTimeline.payment_date,
       expected_put_remaining_days: putTimeline && putTimeline.remaining_days, expected_put_assumption: putTimeline && putTimeline.assumption,
-      expected_put_status: putTimeline && putTimeline.status,
+      expected_put_status: putOpportunity.used && !nextPutPeriod(putPeriod, profile.maturity_date)
+        ? 'opportunity_used' : (putTimeline && putTimeline.status),
       put_yield_pre_tax: putPreTax, put_yield_after_tax: putAfterTax,
       fundraising_purpose: profile.fundraising_purpose || null, fundraising_source_url: profile.prospectus_source_url || null,
       fund_holding: fundHolding,
@@ -1277,7 +1299,7 @@ async function getConvertibleBondSnapshot(value) {
 }
 
 module.exports = {
-  finite, yuanToHundredMillion, isoDate, normalizeBondCode, remainingYears, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, putOpportunityState,
+  finite, yuanToHundredMillion, isoDate, normalizeBondCode, remainingYears, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState,
   annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, yieldToMaturity,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,

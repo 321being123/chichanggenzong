@@ -39,6 +39,7 @@ function bondAnalysisRevisionType(row) {
   var before=Number(row&&row.price_before), after=Number(row&&row.price_after), floor=Number(row&&row.revision_floor_price);
   if(/送股|转增|派发新股|增发|配股|非公开发行股票|授予.{0,12}股票/.test(reason)) return '派发新股';
   if(/分红|利润分配|权益分派|派息/.test(reason)) return '分红';
+  if(/回购注销/.test(reason)) return '回购注销';
   if(/向下修正|下修/.test(reason)||Number.isFinite(before)&&Number.isFinite(after)&&after<before){
     var floorTick=Math.ceil((floor-0.00000001)*100)/100;
     if(Number.isFinite(after)&&Number.isFinite(floor)) return '<span class="bond-analysis-revision-down">'+(Math.abs(after-floorTick)<=0.005?'下修到底':'下修不到底')+'</span>';
@@ -50,6 +51,7 @@ function bondAnalysisRevisionNote(row) {
   var reason=String(row&&row.reason||'');
   if(/送股|转增|派发新股|增发|配股|非公开发行股票|授予.{0,12}股票/.test(reason)) return '派发新股';
   if(/分红|利润分配|权益分派|派息/.test(reason)) return '分红';
+  if(/回购注销/.test(reason)) return '回购注销股票导致转股价上调';
   if(reason) return bondAnalysisText(reason);
   return Number(row&&row.price_after)<Number(row&&row.price_before)?'转股价调整':'转股价变更';
 }

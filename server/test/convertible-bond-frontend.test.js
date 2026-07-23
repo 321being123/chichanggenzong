@@ -19,6 +19,7 @@ assert.ok(script.includes('bondAnalysisTable') && script.includes('bondAnalysisL
 assert.ok(!script.includes("['转股条款'"), '可转债页面不应继续展示转股条款');
 for (const text of ['利息保障倍数（符合：≥7）','到期税前收益率（YTM）','尚未进入回售期']) assert.ok(script.includes(text), '缺少计算说明：'+text);
 for (const text of ['原转股价','下修到底','下修不到底','占剩余规模：']) assert.ok(script.includes(text), '缺少转债新增展示：'+text);
+assert.ok(script.includes("if(/回购注销/.test(reason)) return '回购注销';"), '回购注销导致转股价上调未单独分类');
 assert.ok(service.includes("model: 'Black-Scholes'") && script.includes('option.model'), '缺少Black-Scholes模型或前端展示');
 assert.ok(css.includes('.bond-analysis-table tr:last-child th,.bond-analysis-table tr:last-child td{border-bottom:'), '可转债表格末行边框缺失');
 assert.ok(script.includes('put_opportunity_used'), '回售展示未处理本计息年度机会已使用状态');

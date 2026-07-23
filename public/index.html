@@ -33,11 +33,12 @@
 
 <div class="toast" id="toast"></div>
 
-<!-- 首页：三大核心模块统一工作台 -->
+<!-- 首页：核心模块统一工作台 -->
 <div class="main-page active" id="main-home">
   <div class="home-dashboard-shell">
-    <div class="home-hero home-overview-hero"><div><h1>投资工作台</h1><p>持仓、打新与可转债安全性，在一个页面快速掌握。</p></div><span id="home-updated">正在更新...</span></div>
+    <div class="home-hero home-overview-hero"><div><h1>存在小站 · 投资工作台</h1><p>集中管理持仓与收益，研究股票、可转债和打新机会。</p></div><span id="home-updated">正在更新...</span></div>
     <div class="home-module-grid">
+      <div class="home-module-card" onclick="switchMain('stock-analysis')"><div class="home-module-head"><span class="home-module-icon">🔎</span><span>股债分析</span><b>进入 →</b></div><strong>股票 + 转债</strong><small>估值、财务、条款与触发进度</small><div class="home-module-meta"><span>股票三表分析</span><span>转债价值分析</span></div></div>
       <div class="home-module-card" onclick="goHoldings('dashboard')"><div class="home-module-head"><span class="home-module-icon">📊</span><span>持仓管理</span><b>进入 →</b></div><strong id="home-total-asset">--</strong><small>总资产</small><div class="home-module-meta"><span id="home-position-count">-- 项持仓</span><span id="home-cash-value">现金 --</span></div></div>
       <div class="home-module-card" onclick="switchMain('ipo')"><div class="home-module-head"><span class="home-module-icon">📅</span><span>打新日历</span><b>进入 →</b></div><strong id="home-ipo-count">--</strong><small>近期申购 / 上市事件</small><div class="home-module-meta" id="home-ipo-next"><span>正在读取排期</span></div></div>
       <div class="home-module-card" onclick="switchMain('bond-safety')"><div class="home-module-head"><span class="home-module-icon">🛡️</span><span>可转债安全性</span><b>进入 →</b></div><strong id="home-bond-count">--</strong><small>在市可转债</small><div class="home-module-meta"><span id="home-bond-safe">安全 --</span><span id="home-bond-risk">高风险 --</span></div></div>
@@ -46,6 +47,15 @@
       <section class="home-detail-card"><div class="home-detail-title"><h3>近期打新安排</h3><button onclick="switchMain('ipo')">查看全部</button></div><div id="home-ipo-list" class="home-overview-list"><div class="home-loading">正在加载...</div></div></section>
       <section class="home-detail-card"><div class="home-detail-title"><h3>可转债风险分布</h3><button onclick="switchMain('bond-safety')">查看全部</button></div><div id="home-bond-distribution" class="home-risk-list"><div class="home-loading">正在加载...</div></div></section>
     </div>
+    <section class="home-capabilities">
+      <div class="home-detail-title"><h3>已上线功能</h3></div>
+      <div class="home-capability-grid">
+        <div class="home-capability-card"><b>股债深度分析</b><p>股票估值分位、盈利分红、增长、现金流、公司大事和财务三表；可转债覆盖强赎、下修、回售、转股价历史、纯债与期权价值。</p></div>
+        <div class="home-capability-card"><b>持仓与收益</b><p>支持多账户、股票、基金、可转债和现金管理，实时更新资产、今日盈亏、历史净值与投资收益。</p></div>
+        <div class="home-capability-card"><b>智能导入</b><p>支持图片和 Excel 识别交易与持仓，自动读取佣金、印花税、过户费等交易费用。</p></div>
+        <div class="home-capability-card"><b>打新研究</b><p>集中查看新股、新债申购与上市日历、打新建议、历史表现、预测结果和日报详情。</p></div>
+      </div>
+    </section>
   </div>
 </div>
 

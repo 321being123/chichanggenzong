@@ -142,7 +142,7 @@ function bondAnalysisRender(d) {
   bondAnalysisSet('bond-analysis-terms',bondAnalysisTable([
     ['募资用途','<div class="bond-analysis-purpose">'+bondAnalysisText(b.fundraising_purpose)+'</div>'+(b.fundraising_source_url?'<small>'+bondAnalysisSourceLink(b.fundraising_source_url,'查看募集说明书')+'</small>':'')],['下修条款',bondAnalysisText(terms.reset&&terms.reset.text)+(terms.reset&&terms.reset.note?'<br><small>注：'+bondAnalysisText(terms.reset.note)+'</small>':'')],
     ['强赎条款',bondAnalysisText(terms.call&&terms.call.text)],['回售条款',bondAnalysisText(terms.put&&terms.put.text)],
-    ['到期赎回价',bondAnalysisText(terms.maturity_call_price)]
+    ['到期赎回价',bondAnalysisText(terms.maturity_call_price)],['回售价',bondAnalysisNumber(b.put_redemption_price,3,' 元')]
   ]));
   var history=d.history||{};
   bondAnalysisSet('bond-analysis-price-history',bondAnalysisListTable(['决议/公告日','生效日期','原转股价','新转股价','类型','状态','说明','公告'],(history.price_changes||[]).map(function(r){return [bondAnalysisDate(r.publish_date),bondAnalysisDate(r.change_date),bondAnalysisNumber(r.price_before,3,' 元'),bondAnalysisNumber(r.price_after,3,' 元'),bondAnalysisRevisionType(r),'成功',bondAnalysisRevisionNote(r),bondAnalysisSourceLink(r.source_url,'查看')];})));

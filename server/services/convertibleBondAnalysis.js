@@ -307,6 +307,32 @@ function yieldToMaturity(price, cashflows) {
   return (low + high) / 2;
 }
 
+function annualizedRedemptionYield(price, redemptionPrice, years, interestTaxRate = 0) {
+  const market = finite(price), redemption = finite(redemptionPrice), duration = finite(years);
+  if (!(market > 0) || !(redemption > 0) || !(duration > 0)) return null;
+  const netRedemption = Math.min(100, redemption)
+    + Math.max(0, redemption - 100) * (1 - interestTaxRate);
+  return Math.pow(netRedemption / market, 1 / duration) - 1;
+}
+
+function accruedPutPrice(profile, coupons, targetDate) {
+  const target = isoDate(targetDate), valueDate = isoDate(profile && profile.value_date);
+  if (!target || !valueDate) return null;
+  const explicit = String(profile.put_clause || '').match(/(?:回售价格|回售给公司)[^。；]{0,20}?(?:为|按)(?:人民币)?(\d+(?:\.\d+)?)元/);
+  if (explicit) return Number(explicit[1]);
+  const interestYear = currentInterestYear(valueDate, profile.maturity_date, target);
+  if (!interestYear) return null;
+  const coupon = (coupons || []).find(row => Number(row.interest_year) === interestYear);
+  const rate = finite(coupon && coupon.coupon_rate) == null
+    ? finite(profile.coupon_rate) : finite(coupon.coupon_rate);
+  if (rate == null) return null;
+  const periodStart = addYears(new Date(`${valueDate}T00:00:00+08:00`), interestYear - 1);
+  const elapsedDays = Math.max(0, Math.floor(
+    (new Date(`${target}T00:00:00+08:00`).getTime() - periodStart.getTime()) / 86400000
+  ));
+  return 100 + rate * elapsedDays / 365;
+}
+
 function normalCdf(value) {
   const sign = value < 0 ? -1 : 1, x = Math.abs(value) / Math.sqrt(2);
   const t = 1 / (1 + 0.3275911 * x);
@@ -1193,9 +1219,11 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const optionValue = bondPrice != null && pureBond != null ? bondPrice - pureBond : null;
   const maturityPreTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, false, maturityFinal));
   const maturityAfterTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, true, maturityFinal));
-  const putFinal = parseMoney(profile.put_clause, 100 + (finite(profile.coupon_rate) || 0));
-  const putPreTax = putStartDate ? yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, putStartDate, false, putFinal)) : null;
-  const putAfterTax = putStartDate ? yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, putStartDate, true, putFinal)) : null;
+  const earliestPutDate = earliestPutTimeline && earliestPutTimeline.trigger_date;
+  const earliestPutYears = remainingYears(earliestPutDate);
+  const putFinal = accruedPutPrice(profile, extras.coupons, earliestPutDate);
+  const putPreTax = annualizedRedemptionYield(bondPrice, putFinal, earliestPutYears);
+  const putAfterTax = annualizedRedemptionYield(bondPrice, putFinal, earliestPutYears, 0.2);
   const volatility = annualizedVolatility(stockDaily), riskFreeRate = finite(process.env.CB_RISK_FREE_RATE) == null ? 0.015 : finite(process.env.CB_RISK_FREE_RATE);
   const stockDividendYield = finite(valuation.dv_ttm) == null ? derivedDividendYield(dividendRows, stockPrice, end) : finite(valuation.dv_ttm) / 100;
   const dividendYield = stockDividendYield == null ? 0 : stockDividendYield;
@@ -1232,12 +1260,13 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
       maturity_date: isoDate(profile.maturity_date), remaining_years: remainingYears(profile.maturity_date), issue_size: yuanToHundredMillion(profile.issue_size),
       remain_size: yuanToHundredMillion(remainSizeYuan), bond_to_market_cap: remainSizeYuan != null && marketCap > 0 ? remainSizeYuan / marketCap : null,
       conv_start_date: isoDate(profile.conv_start_date), conv_end_date: isoDate(profile.conv_end_date),
-      earliest_put_trigger_date: earliestPutTimeline && earliestPutTimeline.trigger_date,
-      earliest_put_remaining_years: remainingYears(earliestPutTimeline && earliestPutTimeline.trigger_date),
+      earliest_put_trigger_date: earliestPutDate,
+      earliest_put_remaining_years: earliestPutYears,
       expected_put_trigger_date: putTimeline && putTimeline.trigger_date, expected_put_payment_date: putTimeline && putTimeline.payment_date,
       expected_put_remaining_days: putTimeline && putTimeline.remaining_days, expected_put_assumption: putTimeline && putTimeline.assumption,
       expected_put_status: putOpportunity.used && !nextPutPeriod(putPeriod, profile.maturity_date)
         ? 'opportunity_used' : (putTimeline && putTimeline.status),
+      put_redemption_price: putFinal,
       put_yield_pre_tax: putPreTax, put_yield_after_tax: putAfterTax,
       fundraising_purpose: profile.fundraising_purpose || null, fundraising_source_url: profile.prospectus_source_url || null,
       fund_holding: fundHolding,
@@ -1301,6 +1330,7 @@ async function getConvertibleBondSnapshot(value) {
 module.exports = {
   finite, yuanToHundredMillion, isoDate, normalizeBondCode, remainingYears, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState,
   annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, yieldToMaturity,
+  annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
 };

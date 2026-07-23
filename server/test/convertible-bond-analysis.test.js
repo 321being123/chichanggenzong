@@ -2,7 +2,7 @@ const assert = require('assert');
 const {
   normalizeBondCode, isoDate, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
   earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates,
-  yieldToMaturity, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
+  yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
 
@@ -58,6 +58,16 @@ assert.strictEqual(timeline.remaining_days, 14);
 assert.ok(timeline.trigger_date);
 assert.deepStrictEqual(parseCouponRates('第一年0.3%、第二年0.5%、第三年1.0%'), [0.3,0.5,1]);
 assert.ok(Math.abs(yieldToMaturity(95,[{years:1,amount:5},{years:2,amount:105}])-0.078)<0.002);
+assert.ok(Math.abs(annualizedRedemptionYield(95,101,2) - (Math.sqrt(101/95)-1)) < 1e-10);
+assert.ok(Math.abs(annualizedRedemptionYield(95,101,2,0.2) - (Math.sqrt(100.8/95)-1)) < 1e-10);
+assert.ok(Math.abs(accruedPutPrice(
+  {value_date:'2025-01-01',maturity_date:'2030-01-01',put_clause:'按债券面值加当期应计利息回售'},
+  [{interest_year:2,coupon_rate:1.5}], '2026-07-02'
+) - (100 + 1.5 * 182 / 365)) < 1e-10);
+assert.ok(Math.abs(accruedPutPrice(
+  {value_date:'2025-01-01',maturity_date:'2030-01-01',coupon_rate:1.5,put_clause:'按债券面值加当期应计利息回售'},
+  [], '2026-07-02'
+) - (100 + 1.5 * 182 / 365)) < 1e-10);
 assert.ok(blackScholesConvertible(10,10,2,0.25,0.015,0)>0);
 assert.strictEqual(currentInterestYear('2023-02-22','2029-02-22','2026-07-22'), 4);
 assert.ok(presentValue([{years:1,amount:5},{years:2,amount:105}],0.05)>99);

@@ -447,7 +447,7 @@ td.negative { color: #137333; font-weight: 600; }
 .home-dashboard-shell { max-width: 1280px; margin: 0 auto; }
 .home-overview-hero { display:flex; justify-content:space-between; align-items:flex-end; }
 .home-overview-hero #home-updated { font-size:12px; opacity:.8; white-space:nowrap; }
-.home-module-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:18px 0; }
+.home-module-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin:18px 0; }
 .home-module-card { background:#fff; border:1px solid #e8ebf2; border-radius:12px; padding:18px; cursor:pointer; transition:.18s ease; box-shadow:0 2px 8px rgba(30,42,90,.04); }
 .home-module-card:hover { transform:translateY(-2px); box-shadow:0 8px 22px rgba(30,42,90,.10); }
 .home-module-head { display:flex; align-items:center; gap:8px; color:#30364a; font-size:14px; font-weight:650; }
@@ -469,8 +469,15 @@ td.negative { color: #137333; font-weight: 600; }
 .home-risk-row { display:grid; grid-template-columns:58px 1fr 42px; gap:10px; align-items:center; margin:14px 0; font-size:12px; color:#555d71; }
 .home-risk-track { height:8px; border-radius:8px; overflow:hidden; background:#f0f1f5; }
 .home-risk-fill { height:100%; border-radius:8px; }
+.home-capabilities { margin-top:16px; padding:18px; background:#fff; border:1px solid #e8ebf2; border-radius:12px; }
+.home-capability-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.home-capability-card { padding:15px; border-radius:10px; background:#f7f8fc; }
+.home-capability-card b { display:block; margin-bottom:7px; color:#252a3b; font-size:14px; }
+.home-capability-card p { color:#6d7487; font-size:12px; line-height:1.65; }
 .home-loading,.home-overview-empty { color:#9298a8; font-size:13px; text-align:center; padding:44px 0; }
-@media (max-width:900px) { .home-module-grid { grid-template-columns:1fr; } .home-detail-grid { grid-template-columns:1fr; } .home-overview-hero { align-items:flex-start; gap:12px; flex-direction:column; } }
+@media (max-width:1100px) { .home-module-grid,.home-capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:900px) { .home-detail-grid { grid-template-columns:1fr; } .home-overview-hero { align-items:flex-start; gap:12px; flex-direction:column; } }
+@media (max-width:600px) { .home-module-grid,.home-capability-grid { grid-template-columns:1fr; } }
 
 /* ===== 个人中心 ===== */
 .profile-wrap { display: grid; grid-template-columns: 1fr; gap: 16px; max-width: 640px; margin: 0 auto; }

@@ -1,6 +1,6 @@
 const assert = require('assert');
 const {
-  finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart,
+  finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
 } = require('../services/stockAnalysis');
 
 function close(actual, expected, epsilon = 1e-9) {
@@ -30,6 +30,13 @@ close(threeYearAverageGrowth(-10, -5).value, -0.5);
 assert.strictEqual(threeYearAverageGrowth(0, 20).value, null);
 assert.strictEqual(eventRefreshStart('20260723','20260723'), '20260716');
 assert.strictEqual(eventRefreshStart(null,'20260723'), '20250723');
+assert.throws(() => mergeOfficialEventSources([
+  {status:'rejected',reason:new Error('巨潮失败')},{status:'fulfilled',value:[]}
+]), /部分失败且未返回公告/);
+assert.strictEqual(mergeOfficialEventSources([
+  {status:'rejected',reason:new Error('交易所失败')},
+  {status:'fulfilled',value:[{is_official:true,event_date:'20260723',title:'公告',url:'u'}]}
+]).length, 1);
 
 const positive = percentile(3, [-1, 1, 2, 3, 4, null]);
 close(positive.value, 2 / 3);

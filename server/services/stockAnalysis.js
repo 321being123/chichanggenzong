@@ -360,6 +360,16 @@ function eventRefreshStart(lastSuccessDate, today) {
   return overlap > oneYearAgo ? overlap : oneYearAgo;
 }
 
+function mergeOfficialEventSources(results) {
+  const successful = results.filter(result => result.status === 'fulfilled');
+  const errors = results.filter(result => result.status === 'rejected')
+    .map(result => result.reason && result.reason.message).filter(Boolean);
+  if (!successful.length) throw new Error(errors.join('；') || '公告源均不可用');
+  const official = successful.flatMap(result => result.value || []).filter(event => event.is_official);
+  if (!official.length && errors.length) throw new Error(`公告源部分失败且未返回公告：${errors.join('；')}`);
+  return [...new Map(official.map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+}
+
 async function refreshEvents(tsCode, today) {
   const state = await pool.query(`SELECT c.last_success_date FROM ops.sync_cursors c JOIN core.instruments i ON i.instrument_id=c.instrument_id WHERE i.canonical_code=$1 AND c.dataset_code='events'`, [tsCode]);
   const last = state.rows[0] && dateText(state.rows[0].last_success_date);
@@ -369,10 +379,7 @@ async function refreshEvents(tsCode, today) {
       fetchCninfoEvents(tsCode, start, today),
       tsCode.endsWith('.SH') ? fetchSseEvents(tsCode, start, today) : fetchSzseEvents(tsCode, start, today)
     ]);
-    const successful = sources.filter(result => result.status === 'fulfilled');
-    if (!successful.length) throw new Error(sources.map(result => result.reason && result.reason.message).filter(Boolean).join('；') || '公告源均不可用');
-    const official = successful.flatMap(result => result.value || []).filter(event => event.is_official);
-    const unique = [...new Map(official.map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+    const unique = mergeOfficialEventSources(sources);
     await saveEvents(tsCode, unique);
     await pool.query(`INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_attempt_at,last_error)
       SELECT i.instrument_id,ci.company_id,i.instrument_id||':'||ci.company_id,'events',$2,now(),'' FROM core.instruments i JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id WHERE i.canonical_code=$1
@@ -747,6 +754,6 @@ async function listUserStocks(username) {
   return rows.filter(row => isOrdinaryAStock(row.ts_code));
 }
 
-module.exports = { finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart,
+module.exports = { finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
   refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
   fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport };

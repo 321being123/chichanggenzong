@@ -54,6 +54,16 @@ def _date8(v):
     return None
 
 
+def _date10(v):
+    """Return YYYY-MM-DD 字符串或 None（NaN/NaT/空 -> None）。"""
+    if v is None:
+        return None
+    s = str(v)[:10].replace('-', '')
+    if len(s) == 8 and s.isdigit() and s.lower() not in ('nan', 'nat'):
+        return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+    return None
+
+
 # 1. Fetch cb_issue（全字段，单次拉取）
 print("[1/3] Fetching cb_issue...")
 try:
@@ -70,15 +80,17 @@ except Exception as e:
 print("[2/3] Fetching cb_basic + cb_rating...")
 basic_map = {}
 try:
-    dfb = pro.cb_basic(fields='ts_code,bond_short_name,stk_code,stk_short_name,conv_price,first_conv_price')
+    dfb = pro.cb_basic(fields='ts_code,bond_short_name,stk_code,stk_short_name,conv_price,first_conv_price,list_date')
     if dfb is not None:
         for _, r in dfb.iterrows():
             tc = str(r.get('ts_code', '') or '')
             cp = _num(r.get('conv_price'))
             basic_map[tc] = {
+                'bond_short_name': str(r.get('bond_short_name', '') or ''),
                 'conv_price': cp,
                 'stk_code': str(r.get('stk_code', '') or ''),
                 'stk_name': str(r.get('stk_short_name', '') or ''),
+                'list_date': _date10(r.get('list_date')),
             }
         print(f"  cb_basic: {len(basic_map)} entries")
 except Exception as e:
@@ -105,9 +117,10 @@ for _, r in df.iterrows():
     if not ts_code:
         continue
     code6 = ts_code.split('.')[0]
-    name = str(r.get('onl_name', '') or '')
-
     basic = basic_map.get(ts_code, {})
+    name = str(r.get('onl_name', '') or '')
+    if not name or name.lower() in ('nan', 'none', 'nat'):
+        name = basic.get('bond_short_name') or ''
     rating = rating_map.get(ts_code)
     if not rating:
         for _attempt in range(3):
@@ -141,14 +154,15 @@ for _, r in df.iterrows():
     shd_size = _num(r.get('shd_ration_size'))                   # 股东优先配售总规模（张）
     issue_price = _num(r.get('issue_price'))
 
-    sql = """INSERT INTO bond_history (security_code, security_name,
+    sql = """INSERT INTO bond_history (security_code, security_name, listing_date,
         ann_date, res_ann_date, issue_size, issue_type, rating,
         shd_ration_ratio, issue_price, shd_ration_record_date,
         onl_date, onl_size, onl_pch_num, offl_size, shd_ration_size,
         conv_price, stk_code, stk_name)
-      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
       ON CONFLICT (security_code) DO UPDATE SET
         security_name=EXCLUDED.security_name,
+        listing_date=EXCLUDED.listing_date,
         ann_date=EXCLUDED.ann_date,
         res_ann_date=EXCLUDED.res_ann_date,
         issue_size=EXCLUDED.issue_size,
@@ -168,7 +182,7 @@ for _, r in df.iterrows():
         updated_at=NOW()"""
 
     vals = (
-        code6, name,
+        code6, name, basic.get('list_date'),
         ann_date, res_ann_date, issue_sz, str(r.get('issue_type') or ''), rating,
         shd_ratio, issue_price, shd_rec_date,
         onl_d, onl_sz, onl_pch, offl_sz, shd_size,

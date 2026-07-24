@@ -2,12 +2,12 @@
 
 ## 固定部署登录流程
 
-- 项目采用四位应用版本号，当前版本为 `0.2.0.2`。统一以 `package.json` 的 `appVersion` 为线上代码版本和程序版本；npm 必需的 `version` 使用兼容写法 `0.2.0-2`。以后每次部署都必须更新 `appVersion`，用户未指定新版本时默认递增最后一位，并在部署后核对 `/health` 返回的版本号。
+- 项目采用四位应用版本号，当前版本为 `0.2.0.10`。统一以 `package.json` 的 `appVersion` 为线上代码版本和程序版本；npm 必需的 `version` 使用兼容写法 `0.2.0-10`。以后每次部署都必须更新 `appVersion`，用户未指定新版本时默认递增最后一位，并在部署后核对 `/health` 返回的版本号。
 
 - 腾讯云生产服务器：`ubuntu@82.156.125.47`。`root` 账号不允许直接登录，不要再次尝试。固定读取项目根目录 `.env` 中的 `DEPLOY_SSH_PASSWORD`，通过 Paramiko 使用账号密码认证；执行部署命令时用同一密码通过标准输入完成 `sudo -S` 提权。不使用本机 SSH 私钥，也不把密码拼进命令参数。严禁输出密码，或将密码写入代码、文档及提交记录。
 - GitHub：仓库 `git@github.com:321being123/chichanggenzong.git`，使用本机 `~/.ssh/id_ed25519` 和 `~/.ssh/known_hosts`。若直接 `git push` 出现主机密钥校验失败，使用：
   `GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=accept-new -o BatchMode=yes' git push origin master`
-- 部署时先推送 GitHub，再按上述方式登录腾讯云，进入 `/opt/portfolio`，依次执行 `git pull --ff-only origin master`、`npm ci --omit=dev`、`pm2 restart portfolio-server --update-env`、`pm2 save`。重启后等待服务完成启动，再检查提交版本、PM2、`http://127.0.0.1:3000/health` 和本次相关接口。不要再尝试 `root`、私钥登录或要求用户重复输入密码。
+- 部署时先推送 GitHub，再按上述方式登录腾讯云，进入 `/opt/portfolio`，依次执行 `sudo git fetch origin && sudo git reset --hard origin/master`（仓库早年清密已与 GitHub 分叉，不能用 `git pull`，会报 divergent branches 失败）、`sudo npm ci --omit=dev`、`sudo pm2 restart portfolio-server --update-env`、`sudo pm2 save`。重启后等待服务完成启动，再检查提交版本、PM2、`http://127.0.0.1:3000/health` 和本次相关接口。不要再尝试 `root`、私钥登录或要求用户重复输入密码。
 
 以后新增或修改金融数据、数据库及产品功能时，必须同时满足以下要求：
 

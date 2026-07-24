@@ -57,7 +57,7 @@ function pgConfig(dbName) {
     check('券商种子数据已写入（>0）', () => { assert.ok(b.rows[0].c > 0, 'brokers 种子为空'); });
 
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 10); });
+    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 11); });
 
     const schemasResult = await db.pool.query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = ANY($1)", [['ops','core','market','fundamental','event','analytics']]);
     check('股票分析分层数据库已创建', () => { assert.strictEqual(schemasResult.rows.length, 6); });
@@ -72,7 +72,7 @@ function pgConfig(dbName) {
     console.log('B. 二次 initSchema（幂等）');
     await db.initSchema();
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('二次迁移不重复登记（仍为10）', () => { assert.strictEqual(m2.rows[0].c, 10); });
+    check('二次迁移不重复登记（仍为11）', () => { assert.strictEqual(m2.rows[0].c, 11); });
   } catch (e) {
     if (!tmpDb) {
       // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）

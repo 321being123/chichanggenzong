@@ -742,19 +742,20 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
 
     # 尝试XGBoost预测
     xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
-    if xgb_result is not None:
+    # 自动纠正：XGB对极端样本（如超大盘股）偶发输出<=0%，强制重加载模型重试一次；
+    # 若重试仍异常或不可用，则落入下方线性模型兜底（不会写出误导性的0%）
+    if xgb_result is not None and xgb_result[0] <= 0:
+        _XGB_MODEL = None
+        xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
+    if xgb_result is not None and xgb_result[0] > 0:
         estimated, detail_parts = xgb_result
         # 叠加赛道热度修正
         if sector_label:
             if sector_boost >= 2:
-                # 顶级热门赛道龙头：非线性高加成 + 板块基准软下限
-                bkey = _get_board_key_from_code(stock_code)
-                bbase = BOARD_BASE.get(bkey, 200)
+                # 顶级热门赛道龙头：非线性高加成（不再设板块保底下限）
                 sector_mult = 1 + (sector_boost ** 1.6) * 0.35
-                new_est = int(round(estimated * sector_mult))
-                floor = int(round(bbase * (1.0 + sector_boost * 0.25)))
-                estimated = max(new_est, floor)
-                detail_parts.append(f"🚀 顶级赛道修正: {sector_label}（×{sector_mult:.2f}，下限{floor}%）→{estimated}%")
+                estimated = int(round(estimated * sector_mult))
+                detail_parts.append(f"🚀 顶级赛道修正: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
             else:
                 sector_mult = 1 + sector_boost * 0.10
                 estimated = int(round(estimated * sector_mult))

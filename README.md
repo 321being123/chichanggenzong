@@ -25,7 +25,7 @@ npm ci --omit=dev
 
 # 3. 用 PM2 保活运行
 npm install -g pm2
-pm2 start server.js --name portfolio
+pm2 start server.js --name portfolio-server
 pm2 save
 pm2 startup
 

@@ -280,8 +280,10 @@ function ipoRenderHistory(type, rows) {
       if (/^\d{8}$/.test(shdRecDate)) shdRecDate = shdRecDate.slice(0,4)+'-'+shdRecDate.slice(4,6)+'-'+shdRecDate.slice(6);
       else shdRecDate = '';
 
-      // 发行结果公告是否已出：股东配售率、网上上限此时才公布；且股东配售规模须为真实值(>100张)
+      // 发行结果公告是否已出：网上上限此时才公布
       var announced = ipoAnnounced(it);
+      // 股东配售率(%)：已公告(res_ann_date<=今天)且 shd_ration_size 为真实张数(>100)时显示；
+      // 真实值来自巨潮《发行结果公告》回填（placeholder 占位值不显示）
       var shdReal = Number(it.shd_ration_size);
       var shdPct = (announced && isFinite(shdReal) && shdReal > 100) ? ipoShdRatioPct(it) : '-';
 
@@ -292,11 +294,11 @@ function ipoRenderHistory(type, rows) {
         progDate,                                  // 进展公告日 = 当前阶段日期
         ipoNumFixed(it.issue_size, 3),             // 发行规模(亿元)，保留3位小数
         it.rating ? escapeHtml(it.rating) : '-',   // 评级（已知则显示，无则 -）
-        shdPct,                                    // 股东配售率(%)：仅公告后且有真实配售规模才显示
-        ipoShdShares(it),                          // 配售10张所需股数 = 1000/每股配售(元)
+        shdPct,                                   // 股东配售率(%)：= shd_ration_size/(issue_size×1e6)×100
+        ipoShdShares(it),                          // 配售10张所需股数 = 1000/每股配售额(元)
         shdRecDate,                                // 股权登记日
         announced ? ipoFmt(it.onl_size) : '-',     // 网上上限(亿)：仅公告后
-        ipoFmt(it.onl_pch_num),                    // 申请户数(万)
+        it.onl_pch_num != null ? ipoFmt(it.onl_pch_num) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '') : '-',  // 申请户数(万)：深市公告只给配号总数，按1000配号/户估算，标注(估算)；沪市为公告真户数
         ipoPctCell(it.first_day_return)            // 上市涨幅% = 上市首日收盘 - 100
       ];
     });

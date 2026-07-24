@@ -62,7 +62,7 @@ for code, name, ld in rows:
     for _, r in df.iterrows():
         td = str(r['trade_date'])
         close = float(r['close'])
-        if td == ld:
+        if td == ldd:
             listing_found = True
             prev_close = close
             if abs(prev_close - 157.3) > 0.05:  # 首日未触及 +57.3% 限制

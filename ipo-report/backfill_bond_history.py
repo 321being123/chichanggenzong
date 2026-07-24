@@ -118,9 +118,9 @@ for _, r in df.iterrows():
         continue
     code6 = ts_code.split('.')[0]
     basic = basic_map.get(ts_code, {})
-    name = str(r.get('onl_name', '') or '')
+    name = basic.get('bond_short_name') or ''
     if not name or name.lower() in ('nan', 'none', 'nat'):
-        name = basic.get('bond_short_name') or ''
+        name = str(r.get('onl_name', '') or '')
     rating = rating_map.get(ts_code)
     if not rating:
         for _attempt in range(3):

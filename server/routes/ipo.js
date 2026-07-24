@@ -181,6 +181,7 @@ router.get('/history', async (req, res) => {
            conv_price, stk_code, stk_name,
            listing_date, first_day_return
          FROM bond_history
+         WHERE issue_type NOT IN ('定向', '私募')
          ORDER BY COALESCE(res_ann_date, ann_date, listing_date) DESC NULLS LAST LIMIT $1`,
         [limit]
       );

@@ -74,6 +74,8 @@ def fetch_stock_detail(secu_code):
         if not ind:
             ind = _fetch_stock_industry(secu_code)   # 回退用 stock_basic 行业
         info["industry"] = ind or ""
+        if not info["main_business"]:
+            info["main_business"] = _fetch_stock_main_business(secu_code)  # 回退用 stock_company 主营业务
         # 行业PE：用全市场行业中位数PE映射补全
         info["industry_pe"] = _get_industry_pe_map().get(ind) if ind else None
         return info if info else None
@@ -658,6 +660,76 @@ def _fetch_stock_industry(stock_code):
     except Exception:
         pass
     return ""
+
+def _extract_main_business(text):
+    """从招股书PDF全文提取主营业务描述（启发式，取首个匹配句）"""
+    for pat in [
+        r'公司主营业务[为:：是]?\s*([^\n。；]{4,200})',
+        r'公司主要从事([^\n。；]{4,200})',
+        r'主营业务[为:：]\s*([^\n。；]{4,200})',
+        r'发行人主营业务[为:：]?\s*([^\n。；]{4,200})',
+    ]:
+        m = re.search(pat, text)
+        if m:
+            return m.group(1).strip().lstrip('：:')
+    return None
+
+
+def fetch_prospectus_main_business(stock_code):
+    """从巨潮招股说明书PDF提取主营业务（stock_company 为空时的权威回退）"""
+    try:
+        import backfill_lottery_rate as blr
+        code = str(stock_code).split('.')[0]
+        org = blr.get_org_id(code)
+        if not org:
+            return ""
+        s = requests.Session()
+        s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                          "Accept": "application/json", "X-Requested-With": "XMLHttpRequest",
+                          "Referer": "http://www.cninfo.com.cn/"})
+        plate = "sz" if code[0] in ('0', '3') else "sh"
+        column = "szse" if code[0] in ('0', '3') else "shse"
+        d = datetime.now()
+        start = (d - timedelta(days=365 * 5)).strftime("%Y-%m-%d")
+        end = d.strftime("%Y-%m-%d")
+        for page in range(1, 7):
+            data = {"pageNum": page, "pageSize": 30, "stock": "%s,%s" % (code, org),
+                    "tabName": "fulltext", "column": column, "plate": plate,
+                    "seDate": "%s~%s" % (start, end)}
+            try:
+                r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
+                anns = r.json().get("announcements") or []
+            except Exception:
+                break
+            if not anns:
+                break
+            for a in anns:
+                if "招股说明书" in a.get("announcementTitle", ""):
+                    text = blr._download_pdf_text(s, a)
+                    if text:
+                        mb = _extract_main_business(text)
+                        if mb:
+                            return mb
+        return ""
+    except Exception:
+        return ""
+
+
+def _fetch_stock_main_business(stock_code):
+    """主营业务回退链：Tushare stock_company -> 巨潮招股说明书PDF（权威）"""
+    try:
+        pro = _get_tushare_pro()
+        if pro:
+            ts_code = _to_ts_code(stock_code)
+            df = pro.stock_company(ts_code=ts_code, fields="ts_code,main_business")
+            if df is not None and not df.empty:
+                biz = df.iloc[0].get("main_business")
+                if biz:
+                    return str(biz).strip()
+    except Exception:
+        pass
+    # stock_company 为空：回退招股书PDF（权威，含真实主营业务）
+    return fetch_prospectus_main_business(stock_code)
 
 _INDUSTRY_PE_MAP = None
 

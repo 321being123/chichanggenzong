@@ -29,6 +29,11 @@ ipo-report/data/*.db
 ipo-report/data/*.db-shm
 ipo-report/data/*.db-wal
 
+# 赛道热度模块运行时生成的 SQLite 数据库
+ipo-report/sector_heat.db
+ipo-report/sector_heat.db-shm
+ipo-report/sector_heat.db-wal
+
 # 测试脚本（含敏感信息风险，不入库）
 test_verify.js
 

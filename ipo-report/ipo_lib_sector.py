@@ -4,7 +4,6 @@ import json
 import os
 import re
 from collections import defaultdict
-import time
 from datetime import datetime, timedelta
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
@@ -43,6 +42,11 @@ NEW_STOCK_HOT_SECTORS = {
     "消费电子": 0.3, "汽车电子": 0.5,
 }
 
+def _default_sector_boost(sector_key):
+    """源码中写死的默认赛道热度系数（动态计算异常/归零时回退用）"""
+    return NEW_STOCK_HOT_SECTORS.get(sector_key, 0)
+
+
 _SECTOR_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sector_heat.db")
 
 def _init_sector_db():
@@ -79,313 +83,60 @@ def _init_sector_db():
     conn.commit()
     return conn
 
-def _match_sector_by_keywords(search_text):
-    """
-    对一段文本匹配所有赛道关键词
-    返回 [(sector_key, boost), ...]
-    """
-    matches = []
-    for keyword in NEW_STOCK_HOT_SECTORS:
-        if keyword in search_text:
-            matches.append(keyword)
-    return matches
-
-def _build_sector_stock_map(conn):
-    """
-    构建赛道->股票列表映射
-    从所有A股中筛选匹配赛道关键词的股票
-    用腾讯行情API批量获取，按行业代码批量处理
-    """
-    # 先读已有映射
-    existing = conn.execute(
-        "SELECT stock_code, sector_key FROM stock_sector"
-    ).fetchall()
-    stock_sectors = {}
-    for code, sk in existing:
-        if sk not in stock_sectors:
-            stock_sectors[sk] = []
-        stock_sectors[sk].append(code)
-
-    return stock_sectors
-
-def _fetch_sector_stock_names(conn):
-    """
-    获取所有已上市A股，通过股票名称匹配赛道关键词
-    同时从东财获取股票的行业信息，用行业名辅助匹配
-    新增的插入stock_sector表
-    """
-    stocks = []
-    pro = _get_tushare_pro()
-    if pro:
-        try:
-            df = pro.stock_basic(
-                exchange="", list_status="L",
-                fields="ts_code,symbol,name,industry",
-            )
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    raw_code = row.get("symbol") or str(row.get("ts_code") or "").split(".")[0]
-                    code = str(raw_code or "").zfill(6)
-                    if code and code != "000000":
-                        stocks.append((code, str(row.get("name") or ""), str(row.get("industry") or "")))
-        except Exception as e:
-            print(f"[赛道热度] Tushare stock_basic 获取失败: {e}")
-    if not stocks:
-        stocks = [(code, name, "") for code, name in _fetch_all_a_stock_list()]
-
-    new_mappings = 0
-    for code, name, industry in stocks:
-        for sector_key in _match_sector_by_keywords(f"{name} {industry}"):
-            cur = conn.execute(
-                "SELECT 1 FROM stock_sector WHERE stock_code=? AND sector_key=?",
-                (code, sector_key),
-            )
-            if not cur.fetchone():
-                conn.execute(
-                    "INSERT INTO stock_sector (stock_code, sector_key, stock_name) VALUES (?,?,?)",
-                    (code, sector_key, name),
-                )
-                new_mappings += 1
-
-    conn.commit()
-    print(f"[赛道热度] 已持久化 {new_mappings} 条新增成分股映射")
-    return new_mappings
-
-def _fetch_stock_60d_gain(stock_code):
-    """
-    获取某只股票60日涨跌幅
-    优先从 Tushare 获取近60个交易日收盘价，东财K线作为备用。
-    """
-    try:
-        pro = _get_tushare_pro()
-        if pro:
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=150)).strftime("%Y%m%d")
-            df = pro.daily(
-                ts_code=_to_ts_code(stock_code),
-                start_date=start_date,
-                end_date=end_date,
-                fields="trade_date,close",
-            )
-            if df is not None and len(df) >= 2:
-                df = df.sort_values("trade_date")
-                closes = [float(v) for v in df["close"].tolist() if v is not None]
-                closes = closes[-61:]
-                if len(closes) >= 2 and closes[0] > 0:
-                    return round((closes[-1] / closes[0] - 1) * 100, 2)
-    except Exception:
-        pass
-
-    try:
-        code_int = int(stock_code)
-        if code_int >= 600000:
-            secid = f"1.{stock_code}"
-        elif code_int >= 400000:
-            secid = f"0.{stock_code}"
-        else:
-            secid = f"0.{stock_code}"
-
-        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-        params = {
-            "secid": secid,
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "klt": "101",
-            "fqt": 1,
-            "end": "20500101",
-            "lmt": 65,
-        }
-        resp = _get_session().get(url, params=params, timeout=10)
-        data = resp.json()
-        if data.get("data") and data["data"].get("klines"):
-            klines = data["data"]["klines"]
-            if len(klines) >= 2:
-                last_close = float(klines[-1].split(",")[2])
-                # 找60个交易日前的收盘价（取最早可用的）
-                target_idx = min(60, len(klines) - 1)
-                first_close = float(klines[-target_idx].split(",")[2])
-                if first_close > 0:
-                    return round((last_close - first_close) / first_close * 100, 2)
-        return None
-    except Exception:
-        return None
-
-def _refresh_sector_heat(conn):
-    """
-    刷新赛道热度数据：
-    1. 对每个赛道下的股票获取60日涨跌幅
-    2. 算平均值，归一化到0~3.0系数
-    3. 写入sector_heat表
-    """
-    from datetime import datetime
-
-    # 获取所有赛道-股票映射
-    rows = conn.execute(
-        "SELECT sector_key, stock_code FROM stock_sector"
-    ).fetchall()
-
-    sector_stocks = {}
-    for sk, code in rows:
-        if sk not in sector_stocks:
-            sector_stocks[sk] = []
-        sector_stocks[sk].append(code)
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # 获取所有赛道的60日涨幅均值
-    sector_avg_gains = {}
-    for sector_key, codes in sector_stocks.items():
-        gains = []
-        for code in codes:
-            # 先查缓存
-            cur = conn.execute(
-                "SELECT gain_60d FROM stock_gain WHERE stock_code=?",
-                (code,),
-            )
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                gains.append(row[0])
-            else:
-                gain = _fetch_stock_60d_gain(code)
-                if gain is not None:
-                    gains.append(gain)
-                    conn.execute(
-                        "INSERT OR REPLACE INTO stock_gain (stock_code, gain_60d, updated_at) VALUES (?,?,?)",
-                        (code, gain, now_str),
-                    )
-                # 避免请求太快
-                time.sleep(0.05)
-
-        if gains:
-            avg_gain = sum(gains) / len(gains)
-            sector_avg_gains[sector_key] = (avg_gain, len(gains))
-
-    conn.commit()
-
-    # 归一化到0~3.0系数
-    # 取所有赛道中最大avg_gain作为基准
-    if not sector_avg_gains:
-        return
-
-    max_avg = max(v[0] for v in sector_avg_gains.values())
-
-    for sector_key, (avg_gain, count) in sector_avg_gains.items():
-        # 归一化: boost = (avg_gain / max_avg) * 3.0
-        boost = round(max(0, min(3, (avg_gain / max_avg) * 3.0)), 2) if max_avg > 0 else 0
-        conn.execute(
-            "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
-            (sector_key, round(avg_gain, 2), count, boost, now_str),
-        )
-    conn.commit()
-
 def calibrate_sector_boost():
     """
-    自动校准赛道热度系数
-    每次运行从 Tushare 增量补充股票赛道映射，并持久化到 stock_sector。
-    每24小时从东财K线刷新60日涨跌幅，写入 stock_gain 和 sector_heat。
+    用已上市新股的首日涨幅重算赛道热度系数（数据驱动，非全市场板块涨幅）。
+    数据来源：ipo_history 表（security_code, security_name, main_business, industry, ld_close_change）。
+    样本数 = 该赛道新股只数；系数 = 新股首日涨幅均值的归一化（0~3，平均150%->1.0，450%+封顶）。
     """
+    from collections import defaultdict
     from datetime import datetime
 
     conn = _init_sector_db()
 
-    # 检查数据库是否有数据
-    sector_count = conn.execute("SELECT COUNT(*) FROM sector_heat").fetchone()[0]
-    stock_sector_count = conn.execute("SELECT COUNT(*) FROM stock_sector").fetchone()[0]
+    # 清空旧的全市场板块数据，只保留基于新股首日涨幅重算的结果
+    conn.execute("DELETE FROM sector_heat")
 
-    if stock_sector_count == 0:
-        print("[赛道热度] 成分股映射为空，开始从 Tushare 重建")
-    _fetch_sector_stock_names(conn)
-    stock_sector_count = conn.execute("SELECT COUNT(*) FROM stock_sector").fetchone()[0]
-    if stock_sector_count == 0:
-        print("[赛道热度] 未匹配到赛道成分股，保留上一份系数")
-        conn.close()
-        return
+    # 已上市新股：主营业务 / 行业 / 上市首日涨跌幅
+    rows = conn.execute(
+        "SELECT security_code, security_name, main_business, industry, ld_close_change FROM ipo_history"
+    ).fetchall()
 
-    if sector_count == 0:
-        print("[赛道热度] 系数为空，开始计算60日涨跌幅")
-        _refresh_sector_heat(conn)
-        sector_count = conn.execute("SELECT COUNT(*) FROM sector_heat").fetchone()[0]
+    sector_gains = defaultdict(list)
+    for code, name, mb, ind, ld in rows:
+        if ld is None:
+            continue
+        text = f"{name} {mb or ''} {ind or ''}"
+        best, best_boost = None, 0
+        for kw, boost in NEW_STOCK_HOT_SECTORS.items():
+            if kw in text and boost > best_boost:
+                best_boost = boost
+                best = kw
+        if best:
+            sector_gains[best].append(ld)
 
-    # 检查是否需要刷新涨幅数据（>24h 且 距上次刷新>1天）
-    cur = conn.execute("SELECT MAX(updated_at) FROM sector_heat")
-    last_update = cur.fetchone()[0]
-    need_refresh = True
-    if last_update:
-        try:
-            last_dt = datetime.strptime(last_update, "%Y-%m-%d %H:%M:%S")
-            if (datetime.now() - last_dt).total_seconds() < 86400:
-                need_refresh = False
-                print(f"[赛道热度] 数据上次更新 {last_update}，24小时内无需刷新")
-        except ValueError:
-            pass
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for sector_key, gains in sector_gains.items():
+        if not gains:
+            continue
+        avg = sum(gains) / len(gains)
+        boost = round(min(3.0, avg / 150.0), 2)
+        conn.execute(
+            "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
+            (sector_key, round(avg, 2), len(gains), boost, now_str),
+        )
+    conn.commit()
 
-    if need_refresh and sector_count > 0:
-        print("[赛道热度] 正在刷新股票60日涨跌幅（增量）...")
-        # 只对 stock_sector 表中已有的股票刷新涨跌幅
-        stock_codes = conn.execute(
-            "SELECT DISTINCT stock_code FROM stock_sector"
-        ).fetchall()
-        stock_codes = [r[0] for r in stock_codes]
-
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        updated_count = 0
-        sector_gains = {}  # sector_key -> [gain, ...]
-
-        for i, code in enumerate(stock_codes):
-            # 从东财K线获取60日涨幅
-            gain = _fetch_stock_60d_gain(code)
-            if gain is not None:
-                conn.execute(
-                    "INSERT OR REPLACE INTO stock_gain (stock_code, gain_60d, updated_at) VALUES (?,?,?)",
-                    (code, gain, now_str),
-                )
-                updated_count += 1
-                # 同时收集用于计算
-                sector_keys = conn.execute(
-                    "SELECT sector_key FROM stock_sector WHERE stock_code=?",
-                    (code,),
-                ).fetchall()
-                for (sk,) in sector_keys:
-                    if sk not in sector_gains:
-                        sector_gains[sk] = []
-                    sector_gains[sk].append(gain)
-            time.sleep(0.03)  # 间隔
-
-        print(f"[赛道热度] 已刷新 {updated_count}/{len(stock_codes)} 只股票的60日涨跌幅")
-
-        # 计算新的赛道热度系数
-        if sector_gains:
-            max_avg = 1
-            for gains in sector_gains.values():
-                if gains:
-                    avg = sum(gains) / len(gains)
-                    if avg > max_avg:
-                        max_avg = avg
-
-            for sector_key, gains in sector_gains.items():
-                if not gains:
-                    continue
-                avg_gain = sum(gains) / len(gains)
-                boost = round(max(0, min(3, (avg_gain / max_avg) * 3.0)), 2) if max_avg > 0 else 0
-                conn.execute(
-                    "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
-                    (sector_key, round(avg_gain, 2), len(gains), boost, now_str),
-                )
-            conn.commit()
-            print("[赛道热度] 赛道系数已刷新")
-
-    # 从数据库读取热度系数
     rows = conn.execute(
         "SELECT sector_key, boost, avg_gain_60d, stock_count FROM sector_heat ORDER BY boost DESC"
     ).fetchall()
     conn.close()
 
-    # 更新全局 NEW_STOCK_HOT_SECTORS
     updated = []
     for sector_key, boost, avg_gain, count in rows:
         old = NEW_STOCK_HOT_SECTORS.get(sector_key, "?")
-        NEW_STOCK_HOT_SECTORS[sector_key] = boost
-        updated.append(f"{sector_key}: {old}→{boost}（{count}只, 60日均值{avg_gain}%）")
+        NEW_STOCK_HOT_SECTORS[sector_key] = boost or _default_sector_boost(sector_key)
+        updated.append(f"{sector_key}: {old}→{boost}（{count}只新股, 首日均值{avg_gain}%）")
 
     if updated:
         print(f"[赛道热度] 赛道系数已更新（共{len(rows)}个赛道）")
@@ -393,6 +144,7 @@ def calibrate_sector_boost():
             print(f"  {line}")
         if len(updated) > 10:
             print(f"  ... 还有{len(updated)-10}个赛道")
+    return updated
 
 _MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_3m": 0}
 
@@ -596,9 +348,10 @@ def _sync_sector_boost_from_db():
         conn = _init_sector_db()
         rows = conn.execute("SELECT sector_key, boost FROM sector_heat").fetchall()
         for sector_key, boost in rows:
-            NEW_STOCK_HOT_SECTORS[sector_key] = boost
+            # DB 中异常归零时，回退源码静态默认值
+            NEW_STOCK_HOT_SECTORS[sector_key] = boost or _default_sector_boost(sector_key)
         conn.close()
     except Exception:
         pass  # DB缺失或无数据时保留源码默认系数
 
-__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', '_SECTOR_DB_PATH', '_init_sector_db', '_match_sector_by_keywords', '_build_sector_stock_map', '_fetch_sector_stock_names', '_fetch_stock_60d_gain', '_refresh_sector_heat', 'calibrate_sector_boost', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']
+__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']

@@ -340,7 +340,7 @@ async function loadBrokersData() {
   try {
     const qs = 'search=' + encodeURIComponent(brokersSearch) + '&market=' + encodeURIComponent(brokersMarket);
     const r = await fetch(api('/api/admin/brokers?' + qs));
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
     const d = await r.json();
     if (!d.list.length) {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无券商</td></tr>';
@@ -360,7 +360,7 @@ async function loadBrokersData() {
       }).join('');
     }
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
   }
 }
 
@@ -431,10 +431,32 @@ function jobLabel(job) {
   if (!job) return '—';
   if (job.indexOf('market_close:') === 0) return '收盘数据（' + job.slice('market_close:'.length) + '）';
   const map = {
-    index_baseline: '指数基线', manual_backfill: '手动补漏',
-    manual_holiday_sync: '手动休市核对', holiday_sync: '休市日历同步'
+    index_baseline: '指数基线', index_recent: '指数每日补齐',
+    manual_backfill: '手动补漏', manual_holiday_sync: '手动休市核对',
+    holiday_sync: '休市日历同步'
   };
   return map[job] || job;
+}
+function jobDescription(job) {
+  if (!job) return '';
+  if (job.indexOf('market_close:') === 0) {
+    const market = job.slice('market_close:'.length);
+    return '每个交易日收盘后，自动抓取' + market + '持仓的当日收盘价与市值并落库，用于计算收益与净值。';
+  }
+  const map = {
+    bond_safety_refresh: '每日早 6:30 刷新可转债安全评分快照，供转债筛选与风险面板使用。',
+    convertible_bond_universe_refresh: '每日 16:40 增量同步可转债全量数据（含价格、条款、评级、正股等）。',
+    hk_rate: '每日自动抓取港币兑人民币汇率并写入所有账户，用于港股持仓的人民币估值。',
+    index_baseline: '首次启动或新增账户时，自动补齐净值起点之前的沪深300/上证/中证500/恒生等指数基准点位。',
+    index_recent: '每日补齐最近交易日的指数点位，确保收益对比图数据连续。',
+    nav_snapshot: '收盘后根据当日收盘价自动计算并补齐每个账户的总资产与净值记录（nav_history）。',
+    stock_analysis_refresh: '每日 20:30 刷新用户关注个股的深度分析数据（估值、财务、情绪等）。',
+    ipo_calendar_refresh: '工作日 18:00 自动更新 IPO/打新日历与每日打新日报数据。',
+    holiday_sync: '每月自动核对交易所法定休市日，确保「是否交易日」判断准确。',
+    manual_backfill: '手动触发：检查最近 6 个交易日是否缺失收盘价/市值，缺失则重新抓取补齐。',
+    manual_holiday_sync: '手动触发：立即从交易所日历重新拉取并校正当年休市日。'
+  };
+  return map[job] || '系统自动后台任务。';
 }
 function jobStatusTag(status) {
   if (status === 'done') return '<span class="tag tag-ok">成功</span>';
@@ -471,8 +493,8 @@ function renderJobs() {
     '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
     '<div class="acct-section-title">最近执行记录</div>' +
     '<div class="admin-table-wrap"><table>' +
-      '<thead><tr><th>任务</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>详情</th></tr></thead>' +
-      '<tbody id="jobs-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
+      '<thead><tr><th>任务</th><th>说明</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>详情</th></tr></thead>' +
+      '<tbody id="jobs-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
     '</table></div>';
   loadJobsData();
 }
@@ -482,13 +504,14 @@ async function loadJobsData() {
   const summary = document.getElementById('jobs-summary');
   try {
     const r = await fetch(api('/api/admin/jobs?limit=50'));
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
     const d = await r.json();
     // 各任务最近状态卡片
     if (summary) {
       summary.innerHTML = (d.summary && d.summary.length)
         ? '<div class="stats">' + d.summary.map(function (s) {
-            return '<div class="stat-card"><div class="stat-top"><div>' +
+            const desc = escapeHtml(jobDescription(s.job));
+            return '<div class="stat-card" title="' + desc + '"><div class="stat-top"><div>' +
               '<div class="label">' + escapeHtml(jobLabel(s.job)) + '</div>' +
               '<div style="margin-top:6px;">' + jobStatusTag(s.status) + '</div></div></div>' +
               '<div class="sub">最近：' + fmtTime(s.finished_at || s.started_at) + '</div></div>';
@@ -497,20 +520,21 @@ async function loadJobsData() {
     }
     // 执行记录表
     if (!d.recent || !d.recent.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无执行记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无执行记录</td></tr>';
     } else {
       tbody.innerHTML = d.recent.map(function (j) {
         return '<tr>' +
           '<td>' + escapeHtml(jobLabel(j.job)) + '</td>' +
+          '<td style="max-width:260px;color:#666;font-size:12px;line-height:1.5;">' + escapeHtml(jobDescription(j.job)) + '</td>' +
           '<td>' + jobStatusTag(j.status) + '</td>' +
           '<td>' + fmtTime(j.started_at) + '</td>' +
           '<td>' + fmtTime(j.finished_at) + '</td>' +
-          '<td style="max-width:320px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td>' +
+          '<td style="max-width:260px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td>' +
         '</tr>';
       }).join('');
     }
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
   }
 }
 

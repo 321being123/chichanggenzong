@@ -98,6 +98,33 @@ jobs:
       - name: npm 依赖审计（高危即阻断）
         run: npm audit --audit-level=high
 
+  # JSON 格式校验：任何 JSON 文件（含 changelog.json / package.json）损坏即阻断推送
+  validate-json:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+      - name: 校验所有 JSON 文件格式
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          bad = []
+          for root, dirs, files in os.walk('.'):
+              if 'node_modules' in dirs: dirs.remove('node_modules')
+              if '.git' in dirs: dirs.remove('.git')
+              for fn in files:
+                  if fn.endswith('.json'):
+                      p = os.path.join(root, fn)
+                      try:
+                          json.load(open(p, encoding='utf-8'))
+                      except Exception as e:
+                          bad.append((p, str(e)))
+          if bad:
+              for p, e in bad:
+                  print(f'JSON 非法: {p}: {e}')
+              sys.exit(1)
+          print('全部 JSON 文件格式合法')
+          PY
+
   # 秘密扫描：检测仓库历史与当前代码中泄露的密钥/密码
   secret-scan:
     runs-on: ubuntu-latest

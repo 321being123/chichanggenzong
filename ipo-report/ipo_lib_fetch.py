@@ -69,13 +69,18 @@ def fetch_stock_detail(secu_code):
             # 沪深/京规则统一：每1万市值可申1000股 → 需配市值(万元)=顶格股数/1000=limit_amount*10
             info["subscribe_mv"] = round(limit_amount * 10, 1)             # 需配市值(万元)
         biz = r.get("main_business")
-        info["main_business"] = (biz[:200] if isinstance(biz, str) and len(biz) > 200 else biz) or ""
+        biz = (biz[:200] if isinstance(biz, str) and len(biz) > 200 else biz) or ""
+        # new_share 对未上市新股常返回占位/截断文本（不含赛道关键词），
+        # 招股书为权威源：仅当招股书能取到含赛道关键词的主营业务时才覆盖。
+        if not _has_sector_keyword(biz):
+            pb = _fetch_stock_main_business(secu_code)
+            if pb:
+                biz = pb
+        info["main_business"] = biz
         ind = (r.get("industry") or "").strip()
         if not ind:
             ind = _fetch_stock_industry(secu_code)   # 回退用 stock_basic 行业
         info["industry"] = ind or ""
-        if not info["main_business"]:
-            info["main_business"] = _fetch_stock_main_business(secu_code)  # 回退用 stock_company 主营业务
         # 行业PE：用全市场行业中位数PE映射补全
         info["industry_pe"] = _get_industry_pe_map().get(ind) if ind else None
         return info if info else None
@@ -661,22 +666,64 @@ def _fetch_stock_industry(stock_code):
         pass
     return ""
 
+# 赛道判定用关键词（与 ipo_lib_sector 中的 NEW_STOCK_HOT_SECTORS/HOT_SECTOR_KEYWORDS 对应，
+# 此处本地复制一份以避免与 ipo_lib_fetch 形成循环导入）。
+_SECTOR_KW = set(
+    "半导体 芯片 集成电路 先进封装 光子 光通信 光纤 AI 人工智能 算力 GPU 机器人 "
+    "人形机器人 具身智能 低空经济 飞行汽车 航天 航空 储能 新能源 光伏 锂电池 "
+    "创新药 医疗器械 生物医药 新材料 高端装备 精密制造 军工 自动驾驶 智能驾驶 "
+    "电力设备 轨道交通 核电 数字经济 数据要素 云计算 氢能 钠离子 固态电池 "
+    "消费电子 汽车电子".split()
+)
+
+
+def _has_sector_keyword(text):
+    """文本是否含赛道关键词（用于判断主营业务是否足以做赛道判定）。"""
+    if not text:
+        return False
+    return any(k in text for k in _SECTOR_KW)
+
+
 def _extract_main_business(text):
-    """从招股书PDF全文提取主营业务描述（启发式，取首个匹配句）"""
+    """从招股书PDF全文提取主营业务描述与所属行业（启发式）。
+
+    优先取『公司主要从事/主营业务为』整句，并附『所属行业』分类，
+    确保含半导体/集成电路/芯片等赛道关键词，供赛道判定使用。
+    """
+    # PyMuPDF 常在句子中间插入换行，先折叠换行让句子连续，避免正则截断。
+    text = text.replace("\r", " ").replace("\n", " ")
+    biz = None
+    ind = None
     for pat in [
-        r'公司主营业务[为:：是]?\s*([^\n。；]{4,200})',
-        r'公司主要从事([^\n。；]{4,200})',
-        r'主营业务[为:：]\s*([^\n。；]{4,200})',
-        r'发行人主营业务[为:：]?\s*([^\n。；]{4,200})',
+        r'公司主要从事([^。]{6,200})',
+        r'发行人主营业务[为:：]?\s*([^。]{6,200})',
+        r'公司主营业务[为:：是]?\s*([^。]{6,200})',
+        r'主营业务[为:：]\s*([^。]{6,200})',
     ]:
         m = re.search(pat, text)
         if m:
-            return m.group(1).strip().lstrip('：:')
-    return None
+            biz = m.group(1).strip().lstrip('：:')
+            break
+    # 所属行业：招股书有多处“所属行业”，需避开“所属行业及市场发展情况良好”等套话，
+    # 优先取含赛道关键词的那一句（如“…集成电路制造”），并取最短者让展示更干净。
+    ind_cands = []
+    for m in re.finditer(r'所属行业[为:：]?\s*([^。]{2,120})', text):
+        cand = m.group(1).strip().lstrip('：:')
+        if _has_sector_keyword(cand):
+            # 截到第一个逗号，让行业名称更干净（如“半导体和集成电路行业”）
+            comma = cand.find("，")
+            if comma > 0:
+                cand = cand[:comma]
+            ind_cands.append(cand)
+    if ind_cands:
+        ind = min(ind_cands, key=len)
+    if biz and ind:
+        return f"{biz}；所属行业：{ind}"
+    return biz or ind or None
 
 
 def fetch_prospectus_main_business(stock_code):
-    """从巨潮招股说明书PDF提取主营业务（stock_company 为空时的权威回退）"""
+    """从巨潮招股说明书PDF提取主营业务（权威源，含真实主营业务与所属行业）。"""
     try:
         import backfill_lottery_rate as blr
         code = str(stock_code).split('.')[0]
@@ -692,31 +739,52 @@ def fetch_prospectus_main_business(stock_code):
         d = datetime.now()
         start = (d - timedelta(days=365 * 5)).strftime("%Y-%m-%d")
         end = d.strftime("%Y-%m-%d")
-        for page in range(1, 7):
-            data = {"pageNum": page, "pageSize": 30, "stock": "%s,%s" % (code, org),
-                    "tabName": "fulltext", "column": column, "plate": plate,
-                    "seDate": "%s~%s" % (start, end)}
-            try:
-                r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
-                anns = r.json().get("announcements") or []
-            except Exception:
-                break
-            if not anns:
-                break
-            for a in anns:
-                if "招股说明书" in a.get("announcementTitle", ""):
+
+        def _scan(skip_notice):
+            for page in range(1, 7):
+                data = {"pageNum": page, "pageSize": 30, "stock": "%s,%s" % (code, org),
+                        "tabName": "fulltext", "column": column, "plate": plate,
+                        "seDate": "%s~%s" % (start, end)}
+                try:
+                    r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
+                    anns = r.json().get("announcements") or []
+                except Exception:
+                    break
+                if not anns:
+                    break
+                for a in anns:
+                    t = a.get("announcementTitle", "")
+                    if "招股说明书" not in t:
+                        continue
+                    # 跳过“提示性公告”等简短通知，只取完整招股说明书
+                    if skip_notice and ("提示性" in t or "提示" in t):
+                        continue
                     text = blr._download_pdf_text(s, a)
                     if text:
                         mb = _extract_main_business(text)
                         if mb:
                             return mb
-        return ""
+            return ""
+
+        # 优先完整招股说明书；实在没有再退而求其次（避免取到提示性公告的占位文本）
+        mb = _scan(skip_notice=True)
+        if mb:
+            return mb
+        return _scan(skip_notice=False)
     except Exception:
         return ""
 
 
 def _fetch_stock_main_business(stock_code):
-    """主营业务回退链：Tushare stock_company -> 巨潮招股说明书PDF（权威）"""
+    """主营业务：优先巨潮招股书PDF（权威，含真实主营业务与行业），Tushare stock_company 作回退。"""
+    # 招股书为权威源：对未上市新股，Tushare stock_company 常返回占位/截断文本，
+    # 故优先取招股书；取不到再回退 Tushare。
+    try:
+        mb = fetch_prospectus_main_business(stock_code)
+        if mb:
+            return mb
+    except Exception:
+        pass
     try:
         pro = _get_tushare_pro()
         if pro:
@@ -728,8 +796,7 @@ def _fetch_stock_main_business(stock_code):
                     return str(biz).strip()
     except Exception:
         pass
-    # stock_company 为空：回退招股书PDF（权威，含真实主营业务）
-    return fetch_prospectus_main_business(stock_code)
+    return ""
 
 _INDUSTRY_PE_MAP = None
 

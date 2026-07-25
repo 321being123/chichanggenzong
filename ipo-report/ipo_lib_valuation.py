@@ -749,17 +749,12 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
     if xgb_result is not None and xgb_result[0] > 0:
         estimated, detail_parts = xgb_result
-        # 叠加赛道热度修正
+        # 叠加赛道热度修正：真实基础 × 赛道系数（乘一次，线性可预期，不用非线性放大公式）
         if sector_label:
-            if sector_boost >= 2:
-                # 顶级热门赛道龙头：非线性高加成（不再设板块保底下限）
-                sector_mult = 1 + (sector_boost ** 1.6) * 0.35
-                estimated = int(round(estimated * sector_mult))
-                detail_parts.append(f"🚀 顶级赛道修正: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
-            else:
-                sector_mult = 1 + sector_boost * 0.10
-                estimated = int(round(estimated * sector_mult))
-                detail_parts.append(f"🚀 赛道修正: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
+            sector_mult = sector_boost
+            estimated = int(round(estimated * sector_mult))
+            tag = "顶级赛道修正" if sector_boost >= 2 else "赛道修正"
+            detail_parts.append(f"🚀 {tag}: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
         # 市场温度衰减
         temp_mult = get_temp_listing_multiplier()
         estimated = int(round(estimated * temp_mult))
@@ -835,6 +830,9 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         elif cmv > 20:
             estimated = estimated * 0.88
 
+    # 赛道热度修正：真实基础 × 赛道系数（乘一次，与 XGBoost 路径口径一致）
+    if sector_label:
+        estimated = int(round(estimated * sector_boost))
     # 市场温度整体衰减
     temp = _MARKET_TEMP["level"]
     temp_mult = get_temp_listing_multiplier()
@@ -857,7 +855,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     detail_parts.append(f"🏢 板块基准: {board_base}%（近12月中位数）")
     detail_parts.append(f"🌡️ 市场温度: {temp}（衰减系数×{temp_mult}）")
     if sector_label:
-        detail_parts.append(f"🚀 热门赛道: {sector_label}（加成系数×{1+sector_boost*0.15:.1f}）")
+        detail_parts.append(f"🚀 热门赛道: {sector_label}（赛道系数×{sector_boost:.2f}）")
     if lottery_rate is not None:
         detail_parts.append(f"📋 中签率: {lottery_rate}%")
     if cmv is not None:

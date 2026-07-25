@@ -13,6 +13,7 @@
          background:#f5f6f8; color:#333; line-height:1.7; }
   .topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:12px;
             background:#fff; border-bottom:1px solid #eaeaea; padding:12px 20px; box-shadow:0 1px 4px rgba(0,0,0,.04); }
+  .topbar-logo { width:26px; height:26px; border-radius:5px; flex-shrink:0; }
   .topbar .title { font-size:15px; font-weight:700; color:var(--ink); }
   .topbar .date { font-size:12px; color:var(--muted); }
   .btn-back { cursor:pointer; border:1px solid #ddd; background:#fff; border-radius:6px;
@@ -44,7 +45,8 @@
 <body>
   <div class="topbar">
     <button class="btn-back" onclick="history.length>1?history.back():window.close()">← 返回</button>
-    <span class="title">📰 打新日报</span>
+    <img class="topbar-logo" src="/favicon.svg" alt="">
+    <span class="title">打新日报</span>
     <span class="date" id="rpt-date"></span>
   </div>
   <div class="wrap">

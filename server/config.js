@@ -26,7 +26,7 @@ const AI_ALLOWED_HOSTS = (process.env.AI_ALLOWED_HOSTS || 'apihub.agnes-ai.com')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 // AI 视觉模型白名单（P1-7）：禁止客户端任意指定高成本模型，仅放行服务端许可的模型
-const ALLOWED_VISION_MODELS = (process.env.VISION_ALLOWED_MODELS || 'agnes-1.5-flash,agnes-1.5-pro')
+const ALLOWED_VISION_MODELS = (process.env.VISION_ALLOWED_MODELS || 'agnes-2.0-flash,agnes-2.5-pro-alpha')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const REGISTER_CODE = process.env.REGISTER_CODE;

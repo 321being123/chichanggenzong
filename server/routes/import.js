@@ -32,7 +32,7 @@ function validateImage(image) {
 
 // 模型白名单（P1-7）：客户端不得任意指定高成本模型，仅放行服务端许可者，否则用默认模型
 function pickVisionModel(model) {
-  const fallback = process.env.VISION_MODEL || 'agnes-1.5-flash';
+  const fallback = process.env.VISION_MODEL || 'agnes-2.0-flash';
   if (model && ALLOWED_VISION_MODELS.includes(model)) return model;
   return fallback;
 }

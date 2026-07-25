@@ -2,7 +2,8 @@
 // 仅允许向服务端白名单内的 HTTPS 公网地址发起请求，拒绝私网/回环/非常规协议
 const { AI_ALLOWED_HOSTS } = require('../config');
 
-function assertSafeUrl(url) {
+// extraHosts：后台大模型配置中管理员录入的额外放行域名（仅扩展白名单，HTTPS/私网/回环校验不变）
+function assertSafeUrl(url, extraHosts) {
   let u;
   try { u = new URL(url); } catch (e) { throw new Error('AI 服务地址非法'); }
   if (u.protocol !== 'https:') throw new Error('AI 服务仅允许 HTTPS');
@@ -19,7 +20,8 @@ function assertSafeUrl(url) {
     );
     if (host === 'localhost' || host === '[::1]' || host === '::1' || priv) throw new Error('AI 服务地址被拒绝');
   }
-  if (!AI_ALLOWED_HOSTS.includes(host)) throw new Error('AI 服务地址不在白名单');
+  const extra = Array.isArray(extraHosts) ? extraHosts.map(function (h) { return String(h || '').toLowerCase(); }) : [];
+  if (!AI_ALLOWED_HOSTS.includes(host) && !extra.includes(host)) throw new Error('AI 服务地址不在白名单');
   return true;
 }
 

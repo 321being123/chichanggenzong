@@ -15,6 +15,7 @@ const {
 const { backfillMissingCloses } = require('../jobs/marketClose');
 const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
 const { loadHolidays, saveHolidays } = require('../config/holidays');
+const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
 
 // 该路由下其余接口均需管理员鉴权（数据库 role=admin 或 ADMIN_USERS 白名单）
 router.use(requireAdmin);
@@ -183,6 +184,137 @@ router.put('/holidays', asyncHandler(async (req, res) => {
   saveHolidays(obj);
   await auditLog(req.session.user, 'holiday_edit', y, '维护' + y + '年休市日，共' + obj.years[y].length + '天').catch(() => {});
   res.json({ ok: true });
+}));
+
+// ====== 大模型配置（图片/Excel识别所用模型，支持多模型兜底）======
+// 地址仅要求 HTTPS 合法 URL（管理员录入受信任，识别调用时仍走 SSRF 校验并放行已配置域名）
+function isValidModelUrl(u) {
+  try { return new URL(u).protocol === 'https:'; } catch (e) { return false; }
+}
+
+router.get('/models', asyncHandler(async (req, res) => {
+  const list = await getModels();
+  list.sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+  res.json({
+    list: list.map(function (m) {
+      return {
+        id: m.id, name: m.name, model: m.model, apiUrl: m.apiUrl,
+        apiKey: maskKey(m.apiKey), enabled: m.enabled !== false,
+        order: m.order || 0, status: getStatus(m.id)
+      };
+    })
+  });
+}));
+
+router.post('/models', asyncHandler(async (req, res) => {
+  const { name, model, apiUrl, apiKey, enabled } = req.body || {};
+  if (!name || !model || !apiUrl || !apiKey) return res.status(400).json({ error: '名称、模型名、API地址、API Key 均必填' });
+  if (!isValidModelUrl(apiUrl)) return res.status(400).json({ error: 'API 地址必须是合法的 HTTPS 网址' });
+  const list = await getModels();
+  const id = 'm_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+  const maxOrder = list.reduce(function (mx, m) { return Math.max(mx, m.order || 0); }, -1);
+  list.push({
+    id: id, name: String(name).trim(), model: String(model).trim(),
+    apiUrl: String(apiUrl).trim(), apiKey: String(apiKey).trim(),
+    enabled: enabled !== false, order: maxOrder + 1
+  });
+  await saveModels(list);
+  await auditLog(req.session.user, 'model_create', id, '新增大模型 ' + name).catch(() => {});
+  res.json({ ok: true, id });
+}));
+
+router.put('/models/:id', asyncHandler(async (req, res) => {
+  const { name, model, apiUrl, apiKey, enabled } = req.body || {};
+  if (!name || !model || !apiUrl) return res.status(400).json({ error: '名称、模型名、API地址均必填' });
+  if (!isValidModelUrl(apiUrl)) return res.status(400).json({ error: 'API 地址必须是合法的 HTTPS 网址' });
+  const list = await getModels();
+  const m = list.find(function (x) { return x.id === req.params.id; });
+  if (!m) return res.status(404).json({ error: '模型不存在' });
+  m.name = String(name).trim();
+  m.model = String(model).trim();
+  m.apiUrl = String(apiUrl).trim();
+  m.enabled = enabled !== false;
+  // 前端回传的打码 Key（含 ***）表示未改动，保留库中原值；否则更新
+  if (apiKey && String(apiKey).indexOf('***') < 0) m.apiKey = String(apiKey).trim();
+  await saveModels(list);
+  await auditLog(req.session.user, 'model_update', m.id, '编辑大模型 ' + m.name).catch(() => {});
+  res.json({ ok: true });
+}));
+
+router.delete('/models/:id', asyncHandler(async (req, res) => {
+  const list = await getModels();
+  const m = list.find(function (x) { return x.id === req.params.id; });
+  if (!m) return res.status(404).json({ error: '模型不存在' });
+  await saveModels(list.filter(function (x) { return x.id !== req.params.id; }));
+  await auditLog(req.session.user, 'model_delete', m.id, '删除大模型 ' + m.name).catch(() => {});
+  res.json({ ok: true });
+}));
+
+// 设为默认：排到最前并整体重新编号
+router.post('/models/:id/default', asyncHandler(async (req, res) => {
+  const list = await getModels();
+  const m = list.find(function (x) { return x.id === req.params.id; });
+  if (!m) return res.status(404).json({ error: '模型不存在' });
+  list.sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+  const rest = list.filter(function (x) { return x.id !== m.id; });
+  const ordered = [m].concat(rest);
+  ordered.forEach(function (x, i) { x.order = i; });
+  await saveModels(ordered);
+  await auditLog(req.session.user, 'model_default', m.id, '设为默认大模型 ' + m.name).catch(() => {});
+  res.json({ ok: true });
+}));
+
+// 上移/下移：与相邻模型交换顺序
+router.post('/models/:id/move', asyncHandler(async (req, res) => {
+  const dir = req.body && req.body.dir;
+  if (dir !== 'up' && dir !== 'down') return res.status(400).json({ error: '方向非法' });
+  const list = await getModels();
+  list.sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+  const idx = list.findIndex(function (x) { return x.id === req.params.id; });
+  if (idx < 0) return res.status(404).json({ error: '模型不存在' });
+  const swap = dir === 'up' ? idx - 1 : idx + 1;
+  if (swap < 0 || swap >= list.length) return res.json({ ok: true });
+  const tmp = list[idx]; list[idx] = list[swap]; list[swap] = tmp;
+  list.forEach(function (x, i) { x.order = i; });
+  await saveModels(list);
+  await auditLog(req.session.user, 'model_move', req.params.id, '调整大模型顺序').catch(() => {});
+  res.json({ ok: true });
+}));
+
+// 测试连通性：发一次真实小请求（纯文本、极小 token），返回耗时与结果
+router.post('/models/:id/test', asyncHandler(async (req, res) => {
+  const list = await getModels();
+  const m = list.find(function (x) { return x.id === req.params.id; });
+  if (!m) return res.status(404).json({ error: '模型不存在' });
+  const t0 = Date.now();
+  try {
+    const r = await fetch(m.apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + m.apiKey },
+      body: JSON.stringify({
+        model: m.model,
+        messages: [{ role: 'user', content: '只回复OK两个字母' }],
+        max_tokens: 5,
+        temperature: 0
+      }),
+      signal: AbortSignal.timeout(20000)
+    });
+    const ms = Date.now() - t0;
+    if (!r.ok) {
+      const t = await r.text();
+      const err = 'HTTP ' + r.status + ' ' + String(t).slice(0, 150);
+      recordStatus(m.id, false, err, ms);
+      return res.json({ ok: false, ms: ms, error: err });
+    }
+    const d = await r.json();
+    const reply = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    recordStatus(m.id, true, '', ms);
+    res.json({ ok: true, ms: ms, reply: String(reply).slice(0, 50) });
+  } catch (e) {
+    const ms = Date.now() - t0;
+    recordStatus(m.id, false, e.message, ms);
+    res.json({ ok: false, ms: ms, error: e.message });
+  }
 }));
 
 // ====== 操作审计 ======

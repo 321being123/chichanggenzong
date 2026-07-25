@@ -5,6 +5,7 @@ const session = require('express-session');
 const path = require('path');
 const { SECRET, PORT, redis, initRedis } = require('./config');
 const { initSchema, migrateFromJson, ensureAdmin, DATA_DIR, pool } = require('./db');
+const { ensureAiModelsInit } = require('./services/aiModels');
 const { redirectUnauthenticated, csrfMiddleware, securityHeaders } = require('./middleware/security');
 const { requestId, accessLog, errorHandler } = require('./middleware/errorHandler');
 const authRouter = require('./routes/auth');
@@ -50,6 +51,7 @@ async function start() {
     await initSchema();
     await ensureAdmin();
     await migrateFromJson();
+    await ensureAiModelsInit();
     console.log('数据库初始化完成');
   } catch (e) {
     console.error('数据库初始化失败:', e.message);

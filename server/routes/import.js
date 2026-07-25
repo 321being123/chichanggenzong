@@ -10,6 +10,7 @@ const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { assertSafeUrl } = require('../services/ai');
 const { ALLOWED_VISION_MODELS } = require('../config');
+const { getActiveSorted, recordStatus } = require('../services/aiModels');
 const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
 const { upsertIndexPoints } = require('../db');
 const normalizeCode = require('../../public/js/code-classify.js').normalizeCode;
@@ -55,6 +56,51 @@ async function fetchAiWithRetry(endpoint, options, fetchImpl = fetch, delays = [
     await new Promise(resolve => setTimeout(resolve, delays[attempt]));
   }
   throw lastError || new Error('AI服务暂不可用');
+}
+
+// ========== 多模型兜底调用 ==========
+// 按后台配置（platform_config.ai_models）的顺序依次尝试，失败自动换下一个，全部失败才抛错；
+// 后台无配置时回退 .env 的 VISION_*（保持旧行为）。clientModel 仅在 .env 回退时经白名单生效。
+async function callAiFallback(messages, maxTokens, clientModel) {
+  const envEndpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
+  let models = [];
+  try { models = await getActiveSorted(); } catch (e) { /* DB 异常时走 .env 回退 */ }
+  if (!models.length) {
+    models = [{ id: '', model: pickVisionModel(clientModel), apiUrl: envEndpoint, apiKey: process.env.VISION_API_KEY }];
+  }
+  // 后台配置的域名并入 SSRF 白名单（HTTPS/私网/回环校验仍然生效）
+  const dbHosts = models.map(function (m) {
+    try { return new URL(m.apiUrl || envEndpoint).hostname.toLowerCase(); } catch (e) { return ''; }
+  }).filter(Boolean);
+
+  let lastErr = null;
+  for (const m of models) {
+    const endpoint = m.apiUrl || envEndpoint;
+    const t0 = Date.now();
+    try {
+      assertSafeUrl(endpoint, dbHosts);
+      const response = await fetchAiWithRetry(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (m.apiKey || process.env.VISION_API_KEY)
+        },
+        body: JSON.stringify({ model: m.model, messages: messages, max_tokens: maxTokens, temperature: 0 })
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(response.status + ' ' + String(errText).slice(0, 200));
+      }
+      const result = await response.json();
+      const content = result.choices?.[0]?.message?.content || '[]';
+      if (m.id) recordStatus(m.id, true, '', Date.now() - t0);
+      return content;
+    } catch (e) {
+      lastErr = e;
+      if (m.id) recordStatus(m.id, false, e.message, Date.now() - t0);
+    }
+  }
+  throw new Error('所有大模型暂不可用（已尝试 ' + models.length + ' 个），请在管理后台「大模型配置」检查。最后错误: ' + (lastErr ? lastErr.message : '未知'));
 }
 
 // 限制解析后的表格规模，防止超大表格撑爆内存 / AI token
@@ -119,41 +165,13 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
     const imgErr = validateImage(image);
     if (imgErr) return res.status(400).json({ error: imgErr });
 
-    const endpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
-    assertSafeUrl(endpoint);
-    const visionModel = pickVisionModel(model);
-    const key = process.env.VISION_API_KEY;
-
-    const response = await fetchAiWithRetry(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify({
-        model: visionModel,
-        messages: [{
+    const content = await callAiFallback([{
           role: 'user',
           content: [
             { type: 'text', text: '请分析这张图片。如果是交易截图，提取所有交易记录及每笔交易对应的税费明细；如果是持仓截图，提取所有持仓记录。请判断每一行是交易还是持仓，返回统一JSON数组。每个元素必须包含 kind 字段：交易为 "trade"，持仓为 "position"。交易字段：code(证券代码，字符串保留前导零)、name(证券名称)、price(成交价格数字)、quantity(成交数量整数)、amount(成交金额数字，没有则用price乘quantity)、direction(buy或sell)、date(交易日期YYYY-MM-DD，没有则留空)、commission(手续费或佣金金额，截图未显示则为null)、stamp_tax(印花税金额，截图未显示则为null)、transfer_fee(过户费金额，截图未显示则为null)、other_fee(其他交易费用金额；截图只有合计费用且无法拆分时填这里，未显示则为null)。如果截图直接显示费率，还要返回 commission_rate、stamp_tax_rate、transfer_fee_rate、other_fee_rate，数值使用百分比显示值（例如万1.3返回0.013），未显示为null；截图显示最低佣金时返回commission_min，否则为null。持仓字段：code、name、price、quantity。格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"amount":1234,"direction":"buy","date":"2026-07-09","commission":5,"stamp_tax":0,"transfer_fee":0.01,"other_fee":0,"commission_rate":null,"stamp_tax_rate":null,"transfer_fee_rate":null,"other_fee_rate":null,"commission_min":null}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。' },
             { type: 'image_url', image_url: { url: image } }
           ]
-        }],
-        max_tokens: 2000,
-        temperature: 0
-      })
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      if (RETRYABLE_AI_STATUS.has(response.status)) {
-        return res.json({ error: 'AI识图服务暂时繁忙，已自动重试3次，请稍后再试' });
-      }
-      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
-    }
-
-    const result = await response.json();
-    const content = result.choices?.[0]?.message?.content || '[]';
+        }], 2000, model);
 
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return res.json({ items: [] });
@@ -189,36 +207,10 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
     const rowsJson = JSON.stringify(rows);
     const rowsPayload = rowsJson.length > 50000 ? rowsJson.slice(0, 50000) : rowsJson;
 
-    const endpoint = process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions';
-    assertSafeUrl(endpoint);
-    const chatModel = pickVisionModel(model);
-    const key = process.env.VISION_API_KEY;
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify({
-        model: chatModel,
-        messages: [{
+    const content = await callAiFallback([{
           role: 'user',
           content: '以下是从Excel中提取的原始数据（第一行为表头）。请先判断这是交易明细表还是持仓表，然后逐行识别。对每一行，必须返回 kind 字段：交易为 "trade"，持仓为 "position"。交易字段：code(证券代码，必须作为字符串返回并保留前导零，如 000001)、name(证券名称)、price(成交价格数字)、quantity(成交数量整数)、direction(buy或sell)、date(交易日期YYYY-MM-DD，没有则留空)。持仓字段：code(证券代码，必须作为字符串返回并保留前导零)、name(证券名称)、quantity(持仓数量整数，优先取"股票余额/持仓数量/总余额")、price(成本价或买入均价数字；没有成本价则填市价，必须大于0)。格式示例：[{"kind":"trade","code":"000001","name":"平安银行","price":12.34,"quantity":100,"direction":"buy","date":"2026-07-09"},{"kind":"position","code":"000001","name":"平安银行","price":12.34,"quantity":100}]。如果无法识别返回空数组[]。只返回JSON数组，不要任何其他文字。\n\n' + rowsPayload
-        }],
-        max_tokens: 4000,
-        temperature: 0
-      }),
-      signal: AbortSignal.timeout(60000)
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.json({ error: 'AI服务返回错误: ' + (response.status + ' ' + errText).substring(0, 200) });
-    }
-
-    const result = await response.json();
-    const content = result.choices?.[0]?.message?.content || '[]';
+        }], 4000, model);
 
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return res.json({ items: [] });

@@ -14,7 +14,8 @@ const VIEW_TITLES = {
   announce: '公告与更新',
   settings: '全局参数',
   holidays: '休市日历',
-  audit: '操作审计'
+  audit: '操作审计',
+  aimodels: '大模型配置'
 };
 
 // Toast（复用风格，utils.js 未提供）
@@ -88,6 +89,7 @@ function switchView(view) {
   else if (view === 'settings') renderSettings();
   else if (view === 'holidays') renderHolidays();
   else if (view === 'audit') renderAudit();
+  else if (view === 'aimodels') renderAimodels();
   else renderPlaceholder(view);
 }
 
@@ -760,6 +762,170 @@ async function loadAuditData() {
       return '<tr><td>' + escapeHtml(a.created_at || '') + '</td><td>' + escapeHtml(a.actor || '') + '</td><td><span class="tag">' + escapeHtml(a.action || '') + '</span></td><td>' + escapeHtml(a.target || '') + '</td><td style="max-width:360px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(a.detail || '') + '</td></tr>';
     }).join('');
   } catch (e) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
+}
+
+// ====== 大模型配置 ======
+function renderAimodels() {
+  const el = document.getElementById('view-aimodels'); if (!el) return;
+  el.innerHTML =
+    '<div style="font-size:12px;color:#888;background:#f6f8fa;padding:8px 10px;border-radius:6px;margin-bottom:12px;">图片/Excel 识别会按顺序依次调用已启用的模型：排在最前的是<b>默认模型</b>，上一个失效自动切换到下一个（用户无感知）。状态灯反映后台最近一次真实调用的结果。</div>' +
+    '<div class="filter-bar">' +
+      '<button class="btn btn-outline btn-sm" onclick="loadAimodelsData()">刷新</button>' +
+      '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="openModelForm()">+ 新增模型</button>' +
+    '</div>' +
+    '<div class="admin-table-wrap"><table>' +
+      '<thead><tr><th>名称</th><th>模型名</th><th>API 地址</th><th>API Key</th><th>状态</th><th>操作</th></tr></thead>' +
+      '<tbody id="aimodels-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
+    '</table></div>';
+  const tb = document.getElementById('aimodels-tbody');
+  if (tb) tb.addEventListener('click', function (e) {
+    const btn = e.target.closest('button[data-action]'); if (!btn) return;
+    const id = btn.dataset.id;
+    const action = btn.dataset.action;
+    if (action === 'edit') openModelForm(id);
+    else if (action === 'del') deleteModelConfirm(id);
+    else if (action === 'test') testModel(id, btn);
+    else if (action === 'default') setDefaultModel(id);
+    else if (action === 'up') moveModel(id, 'up');
+    else if (action === 'down') moveModel(id, 'down');
+  });
+  loadAimodelsData();
+}
+
+function aimodelStatusHtml(st) {
+  if (!st) return '<span class="tag">未调用</span>';
+  const dot = st.ok ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2e7d32;margin-right:6px;"></span>' : '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#d93025;margin-right:6px;"></span>';
+  const time = st.at ? new Date(st.at).toLocaleString('zh-CN', { hour12: false }) : '';
+  const detail = st.ok ? ('耗时 ' + (st.ms || 0) + 'ms') : ('失败：' + escapeHtml((st.error || '').slice(0, 40)));
+  return '<div style="font-size:12px;line-height:1.5;">' + dot + (st.ok ? '正常' : '异常') + '<div style="color:#999;">' + time + ' · ' + detail + '</div></div>';
+}
+
+async function loadAimodelsData() {
+  const tb = document.getElementById('aimodels-tbody'); if (!tb) return;
+  try {
+    const r = await fetch(api('/api/admin/models'));
+    if (!r.ok) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    const d = await r.json();
+    const list = d.list || [];
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无模型，点击右上角「新增模型」</td></tr>'; return; }
+    const minOrder = Math.min.apply(null, list.map(function (m) { return m.order || 0; }));
+    tb.innerHTML = list.map(function (m) {
+      const isDefault = (m.order || 0) === minOrder;
+      const defTag = isDefault ? '<span class="tag tag-a">默认</span> ' : '';
+      const enTag = m.enabled ? '<span class="tag tag-ok">启用</span>' : '<span class="tag tag-over">停用</span>';
+      return '<tr>' +
+        '<td>' + defTag + escapeHtml(m.name) + '</td>' +
+        '<td>' + escapeHtml(m.model) + '</td>' +
+        '<td style="max-width:240px;word-break:break-all;">' + escapeHtml(m.apiUrl) + '</td>' +
+        '<td style="font-family:monospace;color:#555;">' + escapeHtml(m.apiKey || '') + '</td>' +
+        '<td>' + enTag + '<div style="margin-top:4px;">' + aimodelStatusHtml(m.status) + '</div></td>' +
+        '<td style="white-space:nowrap;">' +
+          '<button class="btn btn-sm btn-info" data-action="test" data-id="' + escapeHtml(m.id) + '">测试</button> ' +
+          '<button class="btn btn-sm btn-outline" data-action="edit" data-id="' + escapeHtml(m.id) + '">编辑</button> ' +
+          (isDefault ? '' : '<button class="btn btn-sm btn-ghost" data-action="default" data-id="' + escapeHtml(m.id) + '">设默认</button> ') +
+          (isDefault ? '' : '<button class="btn btn-sm btn-ghost" data-action="up" data-id="' + escapeHtml(m.id) + '" title="上移">↑</button> ') +
+          '<button class="btn btn-sm btn-ghost" data-action="down" data-id="' + escapeHtml(m.id) + '" title="下移">↓</button> ' +
+          '<button class="btn btn-sm btn-danger" data-action="del" data-id="' + escapeHtml(m.id) + '">删除</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  } catch (e) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>'; }
+}
+
+// 在全部模型里找出指定 id 的记录（含打码 Key，用于编辑回显；后端遇打码串保留原值）
+function findModel(list, id) {
+  return (list || []).find(function (m) { return m.id === id; }) || null;
+}
+
+function openModelForm(id) {
+  const isEdit = !!id;
+  let body = '<input type="hidden" id="model-id" value="' + (isEdit ? escapeHtml(id) : '') + '">' +
+    '<div class="form-group"><label>名称（便于区分，如「默认模型」）</label><input id="model-name" placeholder="如 默认模型" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
+    '<div class="form-group"><label>模型名（如 agnes-2.0-flash）</label><input id="model-model" placeholder="如 agnes-2.0-flash" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
+    '<div class="form-group"><label>API 地址（必须是 HTTPS，如 https://apihub.agnes-ai.com/v1/chat/completions）</label><input id="model-url" placeholder="https://..." style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
+    '<div class="form-group"><label>API Key' + (isEdit ? '（留空或显示打码串表示不修改）' : '') + '</label><input id="model-key" type="password" placeholder="粘贴 API Key" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
+    '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;"><input type="checkbox" id="model-enabled" checked> 启用（参与识别兜底）</label>';
+  openAdminModal(isEdit ? '编辑模型' : '新增模型', body,
+    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
+    '<button class="btn btn-primary" onclick="submitModel()">保存</button>'
+  );
+  if (isEdit) {
+    fetch(api('/api/admin/models')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      const m = findModel(d && d.list, id); if (!m) return;
+      const n = document.getElementById('model-name'); if (n) n.value = m.name || '';
+      const md = document.getElementById('model-model'); if (md) md.value = m.model || '';
+      const u = document.getElementById('model-url'); if (u) u.value = m.apiUrl || '';
+      const k = document.getElementById('model-key'); if (k) k.value = m.apiKey || ''; // 打码串回显，留空即不修改
+      const en = document.getElementById('model-enabled'); if (en) en.checked = m.enabled !== false;
+    }).catch(function () {});
+  }
+}
+
+async function submitModel() {
+  const id = document.getElementById('model-id').value;
+  const isEdit = !!id;
+  const name = (document.getElementById('model-name').value || '').trim();
+  const model = (document.getElementById('model-model').value || '').trim();
+  const apiUrl = (document.getElementById('model-url').value || '').trim();
+  const apiKey = (document.getElementById('model-key').value || '').trim();
+  const enabled = document.getElementById('model-enabled').checked;
+  if (!name || !model || !apiUrl) { showToast('名称、模型名、API 地址均必填'); return; }
+  if (!isEdit && !apiKey) { showToast('新增时 API Key 必填'); return; }
+  const url = isEdit ? '/api/admin/models/' + encodeURIComponent(id) : '/api/admin/models';
+  const method = isEdit ? 'PUT' : 'POST';
+  const body = { name: name, model: model, apiUrl: apiUrl, apiKey: apiKey, enabled: enabled };
+  try {
+    const r = await fetch(api(url), { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '保存失败'); return; }
+    showToast('已保存'); closeAdminModal(); loadAimodelsData();
+  } catch (e) { showToast('网络错误'); }
+}
+
+function deleteModelConfirm(id) {
+  openAdminModal('删除模型', '<p style="font-size:14px;color:#666;line-height:1.6;">确定删除该模型吗？删除后它将不参与识别兜底。</p>',
+    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
+    '<button class="btn btn-danger" onclick="doDeleteModel(\'' + escapeHtml(id) + '\')">确认删除</button>'
+  );
+}
+async function doDeleteModel(id) {
+  try {
+    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id)), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '删除失败'); return; }
+    showToast('已删除'); closeAdminModal(); loadAimodelsData();
+  } catch (e) { showToast('网络错误'); }
+}
+
+async function testModel(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  try {
+    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id) + '/test'), { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '测试失败'); }
+    else if (d.ok) { showToast('测试成功（耗时 ' + (d.ms || 0) + 'ms）'); }
+    else { showToast('测试失败：' + (d.error || '未知错误')); }
+  } catch (e) { showToast('网络错误'); }
+  if (btn) { btn.disabled = false; btn.textContent = '测试'; }
+  loadAimodelsData();
+}
+
+async function setDefaultModel(id) {
+  try {
+    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id) + '/default'), { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '操作失败'); return; }
+    showToast('已设为默认模型'); loadAimodelsData();
+  } catch (e) { showToast('网络错误'); }
+}
+
+async function moveModel(id, dir) {
+  try {
+    const r = await fetch(api('/api/admin/models/' + encodeURIComponent(id) + '/move'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dir: dir }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '操作失败'); return; }
+    loadAimodelsData();
+  } catch (e) { showToast('网络错误'); }
 }
 
 // ====== 启动 ======

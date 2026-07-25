@@ -54,6 +54,12 @@
       type = '股权'; subtype = '沪市'; market = (first3 === '688') ? 'kcb' : 'sh';
     } else if (first2 === '00' || first2 === '30') {
       type = '股权'; subtype = '深市'; market = 'sz';
+    } else if (first3 === '159') {
+      // 深市 ETF/LOF
+      type = '股权'; subtype = '基金/ETF'; market = 'sz';
+    } else if (first2 === '15' || first2 === '16' || first2 === '50' || first2 === '51' || first2 === '56' || first2 === '58') {
+      // 沪市 LOF(15/16 开头)、封闭式基金/ETF/REITs(50/51/56/58 开头)
+      type = '股权'; subtype = '基金/ETF'; market = 'sh';
     } else if (first3 === '920' || first1 === '4' || first1 === '8') {
       type = '股权'; subtype = '京市'; market = 'bj';
     } else {
@@ -61,13 +67,15 @@
       type = '股权'; subtype = '沪市'; market = 'sh';
     }
 
-    // 东方财富行情 secid 候选列表（与原 fetchQuoteByCode 逻辑一致）
+    // 东方财富行情 secid 候选列表
     var secids = [];
     if (isHK) {
       secids.push('0.' + code.padStart(5, '0') + '.hk');
-    } else {
-      if (first1 === '6' || code.startsWith('5') || code.startsWith('11')) secids.push('1.' + code);
-      secids.push('0.' + code);
+    } else if (market === 'sh' || market === 'kcb') {
+      secids.push('1.' + code);   // 沪市（主板/科创/基金/ETF/LOF/可转债）
+      secids.push('0.' + code);   // 兜底
+    } else if (market === 'sz' || market === 'bj') {
+      secids.push('0.' + code);   // 深市/北交所
     }
 
     return { type: type, subtype: subtype, market: market, isHK: isHK, secids: secids };

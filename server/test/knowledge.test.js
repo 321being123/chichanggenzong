@@ -122,7 +122,24 @@ async function checkAsync(name, fn) {
     );
   });
 
-  console.log('F. 分类权限边界');
+  console.log('F. 微信公众号文章导入');
+  check('识别微信公众号文章链接并添加直连参数', () => {
+    const input = 'https://mp.weixin.qq.com/s/example';
+    assert.strictEqual(ks.isWeChatArticleUrl(input), true);
+    assert.strictEqual(new URL(ks.buildWeChatArticleUrl(input)).searchParams.get('nwr_flag'), '1');
+    assert.strictEqual(ks.isWeChatArticleUrl('https://example.com/s/example'), false);
+  });
+  check('从微信文章节点提取标题、正文和懒加载图片', () => {
+    const html = '<html><head><meta property="og:title" content="备用标题"></head><body>' +
+      '<h1 id="activity-name"> 测试文章 </h1>' +
+      '<div id="js_content"><p>正文内容</p><img data-src="https://img.example/a.jpg"></div></body></html>';
+    const result = ks.parseWeChatArticleHtml(html, 'https://mp.weixin.qq.com/s/example?nwr_flag=1');
+    assert.strictEqual(result.title, '测试文章');
+    assert.ok(result.content.includes('正文内容'));
+    assert.ok(result.content.includes('https://img.example/a.jpg'));
+  });
+
+  console.log('G. 分类权限边界');
   check('有知识写作权限的用户可以新增分类', () => {
     const layer = ks.stack.find(item => item.route && item.route.path === '/categories' && item.route.methods.post);
     const middlewareNames = layer.route.stack.map(item => item.handle.name);

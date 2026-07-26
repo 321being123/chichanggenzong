@@ -682,7 +682,11 @@ router.post('/import-url', requireKsWrite, async (req, res) => {
     // P1-4：SSRF 防护（异步 DNS 解析 + 公网地址校验）
     if (!await isSafeUrl(url)) return res.status(400).json({ error: '链接不合法或目标不可访问' });
 
-    let result = await fetchJinaReader(url);
+    const isWeChat = isWeChatArticleUrl(url);
+    let result = isWeChat ? await fetchWeChatArticle(url) : await fetchJinaReader(url);
+    if (!result && isWeChat) {
+      result = await fetchJinaReader(url);
+    }
     if (!result || !result.content) {
       result = await fetchWithReadability(url);
     }
@@ -828,7 +832,12 @@ async function fetchWithProxy(url, options = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const r = await undici.request(url, { ...options, dispatcher, signal: ctrl.signal });
+    const requestOptions = { ...options, signal: ctrl.signal };
+    delete requestOptions.maxBytes;
+    delete requestOptions.allowedTypes;
+    delete requestOptions.timeoutMs;
+    if (dispatcher) requestOptions.dispatcher = dispatcher;
+    const r = await undici.request(url, requestOptions);
     const statusCode = r.statusCode;
     const headers = r.headers || {};
     const ct = (typeof headers['content-type'] === 'string' ? headers['content-type'] : (headers['Content-Type'] || '')).toLowerCase();
@@ -888,6 +897,67 @@ function parseJinaOutput(text) {
   const content = contentStart >= 0 ? lines.slice(contentStart).join('\n').trim() : text.trim();
   if (!content && !title) return null;
   return { title, content };
+}
+
+function isWeChatArticleUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return url.hostname.toLowerCase() === 'mp.weixin.qq.com' && /^\/s(?:\/|$)/.test(url.pathname);
+  } catch (e) {
+    return false;
+  }
+}
+
+function buildWeChatArticleUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  url.searchParams.set('nwr_flag', '1');
+  url.hash = '';
+  return url.toString();
+}
+
+function parseWeChatArticleHtml(html, url) {
+  const { JSDOM } = require('jsdom');
+  const TurndownService = require('turndown');
+  const dom = new JSDOM(html, { url });
+  const document = dom.window.document;
+  const article = document.querySelector('#js_content');
+  if (!article) return null;
+  article.querySelectorAll('script, style').forEach(node => node.remove());
+  article.querySelectorAll('img[data-src]').forEach(img => {
+    if (!img.getAttribute('src')) img.setAttribute('src', img.getAttribute('data-src'));
+  });
+  const titleNode = document.querySelector('#activity-name');
+  const titleMeta = document.querySelector('meta[property="og:title"]');
+  const title = String(
+    (titleNode && titleNode.textContent) || (titleMeta && titleMeta.getAttribute('content')) || ''
+  ).trim();
+  const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+  const content = turndown.turndown(article.innerHTML).trim();
+  return content ? { title, content } : null;
+}
+
+async function fetchWeChatArticle(url) {
+  try {
+    const requestUrl = buildWeChatArticleUrl(url);
+    const response = await fetchWithProxy(requestUrl, {
+      maxBytes: MAX_IMPORT_BYTES,
+      allowedTypes: ['text/html', 'application/xhtml+xml'],
+      timeoutMs: IMPORT_TIMEOUT_MS,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/107.0.0.0 Mobile Safari/537.36 MicroMessenger/8.0.50 WeChat/arm64 NetType/WIFI Language/zh_CN',
+        Referer: 'https://mp.weixin.qq.com/',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+      },
+    });
+    if (!response.ok) {
+      console.error('WeChat article fetch failed: HTTP ' + response.status);
+      return null;
+    }
+    return parseWeChatArticleHtml(await response.text(), requestUrl);
+  } catch (e) {
+    console.error('WeChat article fetch failed:', e.message);
+    return null;
+  }
 }
 
 async function fetchWithReadability(url) {
@@ -954,3 +1024,7 @@ module.exports.LIMITS = LIMITS;
 module.exports.deriveSummary = deriveSummary;
 module.exports.validateImages = validateImages;
 module.exports.resolveCommentNickname = resolveCommentNickname;
+module.exports.isWeChatArticleUrl = isWeChatArticleUrl;
+module.exports.buildWeChatArticleUrl = buildWeChatArticleUrl;
+module.exports.parseWeChatArticleHtml = parseWeChatArticleHtml;
+module.exports.fetchWeChatArticle = fetchWeChatArticle;

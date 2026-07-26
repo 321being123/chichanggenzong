@@ -77,6 +77,34 @@ body {
     </div>
   </div>
 
+  <div id="forgot-fields" style="display:none;">
+    <div class="form-group">
+      <label>邮箱</label>
+      <input type="email" id="reset-email" placeholder="输入账号绑定的邮箱" autocomplete="email">
+    </div>
+    <div class="form-group">
+      <label>邮箱验证码</label>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="reset-email-code" placeholder="6位验证码" inputmode="numeric" maxlength="6" style="flex:1;min-width:0;">
+        <button class="btn btn-primary" id="reset-send-code-btn" onclick="sendResetCode()" type="button" style="width:auto;padding:12px 18px;margin:0;white-space:nowrap;font-size:13px;">发送验证码</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>新密码</label>
+      <div class="pwd-wrap">
+        <input type="password" id="reset-pwd" placeholder="6~128位新密码" autocomplete="new-password">
+        <button class="pwd-toggle" onclick="togglePwd('reset-pwd')" type="button">👁</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>确认新密码</label>
+      <div class="pwd-wrap">
+        <input type="password" id="reset-pwd2" placeholder="再次输入新密码" autocomplete="new-password">
+        <button class="pwd-toggle" onclick="togglePwd('reset-pwd2')" type="button">👁</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 注册专用 - 确认密码 + 显示密码按钮 -->
   <div id="register-fields" style="display:none;">
     <div class="form-group">
@@ -113,7 +141,7 @@ body {
 
   <button class="btn btn-primary" id="submit-btn" onclick="submit()">登 录</button>
   <div class="switch" id="switch-hint">
-    没有账号？<a onclick="toggleMode()">注册新账号</a>
+    <a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -121,6 +149,7 @@ body {
 <script src="js/utils.js"></script>
 <script>
 let isRegister = false;
+let isForgot = false;
 let needCode = false;
 let submitting = false;
 
@@ -159,15 +188,32 @@ function togglePwd(id) {
 
 function toggleMode() {
   isRegister = !isRegister;
+  isForgot = false;
   hideError();
   document.getElementById('subtitle').textContent = isRegister ? '注册新账号' : '账号登录';
   document.getElementById('submit-btn').textContent = isRegister ? '注 册' : '登 录';
   document.getElementById('login-pwd-group').style.display = isRegister ? 'none' : 'block';
   document.getElementById('register-fields').style.display = isRegister ? 'block' : 'none';
+  document.getElementById('forgot-fields').style.display = 'none';
   document.getElementById('code-group').style.display = isRegister && needCode ? 'block' : 'none';
   document.getElementById('switch-hint').innerHTML = isRegister
     ? '已有账号？<a onclick="toggleMode()">返回登录</a>'
-    : '没有账号？<a onclick="toggleMode()">注册新账号</a>';
+    : '<a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+}
+
+function toggleForgotMode() {
+  isForgot = !isForgot;
+  isRegister = false;
+  hideError();
+  document.getElementById('subtitle').textContent = isForgot ? '重置密码' : '账号登录';
+  document.getElementById('submit-btn').textContent = isForgot ? '重置密码' : '登 录';
+  document.getElementById('login-pwd-group').style.display = isForgot ? 'none' : 'block';
+  document.getElementById('register-fields').style.display = 'none';
+  document.getElementById('forgot-fields').style.display = isForgot ? 'block' : 'none';
+  document.getElementById('code-group').style.display = 'none';
+  document.getElementById('switch-hint').innerHTML = isForgot
+    ? '<a onclick="toggleForgotMode()">返回登录</a>'
+    : '<a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
 }
 
 let sendCodeTimer = 0;
@@ -204,11 +250,89 @@ async function sendCode() {
   }
 }
 
+let resetCodeTimer = 0;
+async function sendResetCode() {
+  if (resetCodeTimer > 0) return;
+  const username = document.getElementById('username').value.trim();
+  const email = document.getElementById('reset-email').value.trim();
+  if (!username) { showError('请输入账号'); return; }
+  if (!email) { showError('请输入账号绑定的邮箱'); return; }
+
+  hideError();
+  const btn = document.getElementById('reset-send-code-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch(api('/api/forgot-password/send-code'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email })
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      showError(d.error || '验证码发送失败');
+      btn.disabled = false;
+      return;
+    }
+
+    showToast('如账号与邮箱匹配，验证码将发送到该邮箱');
+    resetCodeTimer = 60;
+    btn.textContent = resetCodeTimer + 's';
+    const iv = setInterval(() => {
+      resetCodeTimer--;
+      if (resetCodeTimer <= 0) {
+        clearInterval(iv);
+        btn.textContent = '发送验证码';
+        btn.disabled = false;
+      } else {
+        btn.textContent = resetCodeTimer + 's';
+      }
+    }, 1000);
+  } catch (e) {
+    showError('发送失败，请稍后重试');
+    btn.disabled = false;
+  }
+}
+
 function submit() {
   if (submitting) return;
   hideError();
   const username = document.getElementById('username').value.trim();
   if (!username) { showError('请输入账号'); return; }
+
+  if (isForgot) {
+    const email = document.getElementById('reset-email').value.trim();
+    const emailCode = document.getElementById('reset-email-code').value.trim();
+    const newPassword = document.getElementById('reset-pwd').value;
+    const newPassword2 = document.getElementById('reset-pwd2').value;
+    if (!email) { showError('请输入账号绑定的邮箱'); return; }
+    if (!/^\d{6}$/.test(emailCode)) { showError('请输入6位邮箱验证码'); return; }
+    if (newPassword.length < 6 || newPassword.length > 128) { showError('新密码需为6~128位'); return; }
+    if (newPassword !== newPassword2) { showError('两次输入的新密码不一致'); return; }
+
+    submitting = true;
+    document.getElementById('submit-btn').disabled = true;
+    fetch(api('/api/forgot-password/reset'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, emailCode, newPassword })
+    }).then(r => r.json().then(data => ({ status: r.status, data })))
+    .then(({ data }) => {
+      submitting = false;
+      document.getElementById('submit-btn').disabled = false;
+      if (data.ok) {
+        showToast('密码已重置，请使用新密码登录');
+        document.getElementById('password').value = '';
+        setTimeout(() => toggleForgotMode(), 800);
+      } else {
+        showError(data.error || '密码重置失败');
+      }
+    }).catch(() => {
+      submitting = false;
+      document.getElementById('submit-btn').disabled = false;
+      showError('连接失败，请稍后重试');
+    });
+    return;
+  }
 
   if (!isRegister) {
     // === 登录 ===
@@ -284,12 +408,14 @@ function submit() {
 document.getElementById('username').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     if (isRegister) document.getElementById('reg-pwd').focus();
+    else if (isForgot) document.getElementById('reset-email').focus();
     else document.getElementById('password').focus();
   }
 });
 document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
 document.getElementById('reg-pwd').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('reg-pwd2').focus(); });
 document.getElementById('reg-pwd2').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+document.getElementById('reset-pwd2').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
 document.getElementById('code').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
 </script>
 </body>

@@ -6,7 +6,18 @@ const asyncHandler = require('../middleware/async');
 const rateLimit = require('../middleware/rateLimit');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, syncUserAccounts, getUserProfile, getUserAuth, getUserForPasswordReset, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const RESET_CODE_TTL_MS = 5 * 60 * 1000;
+const RESET_CODE_MAX_ATTEMPTS = 5;
+
+function codeMatches(actual, expected) {
+  if (typeof actual !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(actual);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 router.post('/register', asyncHandler(async (req, res) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();
@@ -118,5 +129,116 @@ router.post('/send-code',
   });
   res.json({ ok: true });
 }));
+
+router.post('/forgot-password/send-code',
+  rateLimit({
+    prefix: 'password-reset-code',
+    windowMs: 60000,
+    max: 5,
+    getKey: (req) => {
+      const body = req.body || {};
+      return (req.ip || '0.0.0.0') + ':' + (body.username || '') + ':' + (body.email || '');
+    },
+    message: '发送验证码过于频繁，请稍后再试'
+  }),
+  asyncHandler(async (req, res) => {
+    if (!mailer) return res.status(503).json({ error: '邮件服务暂不可用' });
+
+    const username = (req.body && req.body.username || '').normalize('NFC').trim();
+    const email = (req.body && req.body.email || '').trim().toLowerCase();
+    if (!username || username.length > 64) return res.status(400).json({ error: '请输入正确的账号' });
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' });
+
+    const user = await getUserForPasswordReset(username, email);
+    if (!user || (user.status && user.status !== 'active')) {
+      delete req.session.passwordResetCode;
+      return res.json({ ok: true });
+    }
+
+    const now = Date.now();
+    const previous = req.session.passwordResetCode;
+    if (previous && previous.lastSend && now - previous.lastSend < 60000) {
+      return res.status(429).json({ error: '发送太频繁，请60秒后再试' });
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    req.session.passwordResetCode = {
+      username,
+      email,
+      code,
+      expires: now + RESET_CODE_TTL_MS,
+      lastSend: now,
+      attempts: 0
+    };
+
+    try {
+      await mailer.sendMail({
+        from: process.env.SMTP_USER,
+        to: email,
+        subject: '存在小站 - 重置密码验证码',
+        text: `您的重置密码验证码是：${code}，5分钟内有效。请勿泄露给他人。`
+      });
+    } catch (error) {
+      delete req.session.passwordResetCode;
+      throw error;
+    }
+
+    res.json({ ok: true });
+  })
+);
+
+router.post('/forgot-password/reset',
+  rateLimit({
+    prefix: 'password-reset',
+    windowMs: 60000,
+    max: 10,
+    getKey: (req) => (req.ip || '0.0.0.0') + ':' + ((req.body && req.body.username) || ''),
+    message: '重置尝试过于频繁，请稍后再试'
+  }),
+  asyncHandler(async (req, res) => {
+    const username = (req.body && req.body.username || '').normalize('NFC').trim();
+    const email = (req.body && req.body.email || '').trim().toLowerCase();
+    const code = (req.body && req.body.emailCode || '').trim();
+    const newPassword = req.body && req.body.newPassword;
+
+    if (!username || username.length > 64) return res.status(400).json({ error: '请输入正确的账号' });
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' });
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: '请输入6位邮箱验证码' });
+    if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
+      return res.status(400).json({ error: '新密码需为6~128位' });
+    }
+
+    const pending = req.session.passwordResetCode;
+    if (!pending || pending.username !== username || pending.email !== email) {
+      return res.status(400).json({ error: '请先获取邮箱验证码' });
+    }
+    if (Date.now() > pending.expires) {
+      delete req.session.passwordResetCode;
+      return res.status(400).json({ error: '验证码已过期，请重新获取' });
+    }
+    if (pending.attempts >= RESET_CODE_MAX_ATTEMPTS) {
+      delete req.session.passwordResetCode;
+      return res.status(400).json({ error: '验证码错误次数过多，请重新获取' });
+    }
+    if (!codeMatches(code, pending.code)) {
+      pending.attempts += 1;
+      if (pending.attempts >= RESET_CODE_MAX_ATTEMPTS) {
+        delete req.session.passwordResetCode;
+        return res.status(400).json({ error: '验证码错误次数过多，请重新获取' });
+      }
+      return res.status(400).json({ error: '验证码错误' });
+    }
+
+    const user = await getUserForPasswordReset(username, email);
+    if (!user || (user.status && user.status !== 'active')) {
+      delete req.session.passwordResetCode;
+      return res.status(400).json({ error: '无法重置密码，请联系管理员' });
+    }
+
+    await changePassword(username, hashPwd(newPassword));
+    delete req.session.passwordResetCode;
+    res.json({ ok: true });
+  })
+);
 
 module.exports = router;

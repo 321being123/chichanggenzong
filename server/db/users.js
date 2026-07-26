@@ -64,6 +64,14 @@ async function getUserAuth(username) {
   return rows[0] || null;
 }
 
+async function getUserForPasswordReset(username, email) {
+  const { rows } = await pool.query(
+    'SELECT username, email, status FROM users WHERE username=$1 AND lower(email)=lower($2)',
+    [username, email]
+  );
+  return rows[0] || null;
+}
+
 // ====== 平台管理后台：用户列表/详情/状态/角色/删除 ======
 async function countUsers(search) {
   const { rows } = search
@@ -182,6 +190,7 @@ module.exports = {
   updateUserAccounts,
   getUserProfile,
   getUserAuth,
+  getUserForPasswordReset,
   countUsers,
   listUsers,
   setUserRole,

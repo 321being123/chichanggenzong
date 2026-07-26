@@ -30,6 +30,7 @@ module.exports = {
   isLegacyHash: util.isLegacyHash,
   getUserProfile: users.getUserProfile,
   getUserAuth: users.getUserAuth,
+  getUserForPasswordReset: users.getUserForPasswordReset,
   countUsers: users.countUsers,
   listUsers: users.listUsers,
   setUserRole: users.setUserRole,

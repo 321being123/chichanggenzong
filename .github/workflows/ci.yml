@@ -20,7 +20,7 @@ jobs:
       - name: Node 语法检查
         run: |
           fail=0
-          for f in $(git ls-files '*.js'); do
+          for f in $(git ls-files '*.js' ':!public/vendor/**'); do
             if ! node --check "$f"; then echo "语法错误: $f"; fail=1; fi
           done
           [ "$fail" -eq 0 ] && echo "全部 JS 语法检查通过" || { echo "存在语法错误，CI 失败"; exit 1; }

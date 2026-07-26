@@ -15,7 +15,55 @@ let ksState = {
   draggedCategoryId: null,
 };
 
+let ksOverflowTooltip = null;
+let ksOverflowTooltipReady = false;
+
 function ksEl(id) { return document.getElementById(id); }
+
+function ksHideOverflowTooltip() {
+  if (ksOverflowTooltip) {
+    ksOverflowTooltip.remove();
+    ksOverflowTooltip = null;
+  }
+}
+
+function ksShowOverflowTooltip(target) {
+  if (!target || target.scrollWidth <= target.clientWidth + 1) return;
+  const text = String(target.dataset.overflowTitle || target.textContent || '').trim();
+  if (!text) return;
+  ksHideOverflowTooltip();
+  const tooltip = document.createElement('div');
+  tooltip.className = 'ks-overflow-tooltip';
+  tooltip.textContent = text;
+  document.body.appendChild(tooltip);
+  const targetRect = target.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const left = Math.max(8, Math.min(targetRect.left, window.innerWidth - tooltipRect.width - 8));
+  let top = targetRect.bottom + 8;
+  if (top + tooltipRect.height > window.innerHeight - 8) {
+    top = Math.max(8, targetRect.top - tooltipRect.height - 8);
+  }
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+  ksOverflowTooltip = tooltip;
+}
+
+function ksInitOverflowTooltips() {
+  if (ksOverflowTooltipReady) return;
+  ksOverflowTooltipReady = true;
+  document.addEventListener('mouseover', function (event) {
+    const target = event.target.closest('[data-overflow-title]');
+    if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+    ksShowOverflowTooltip(target);
+  });
+  document.addEventListener('mouseout', function (event) {
+    const target = event.target.closest('[data-overflow-title]');
+    if (!target || (event.relatedTarget && target.contains(event.relatedTarget))) return;
+    ksHideOverflowTooltip();
+  });
+  window.addEventListener('scroll', ksHideOverflowTooltip, true);
+  window.addEventListener('resize', ksHideOverflowTooltip);
+}
 
 // 写操作失败的统一友好提示（不回显服务器内部错误）
 function ksWriteErrMsg(status) {
@@ -111,7 +159,7 @@ function ksRenderNodes(nodes, depth) {
     html += '<li class="ks-tree-item' + active + manageable + '" data-cat="' + n.id + '" data-parent="' +
       (n.parent_id || '') + '" draggable="' + (n.can_manage ? 'true' : 'false') +
       '" style="padding-left:' + pad + 'px;">' +
-      '<span>' + escapeHtml(n.name) + '</span>' + menu + '</li>';
+      '<span data-overflow-title="' + escapeHtml(n.name) + '">' + escapeHtml(n.name) + '</span>' + menu + '</li>';
     if (n.children && n.children.length) html += ksRenderNodes(n.children, depth + 1);
   });
   return html;
@@ -258,6 +306,9 @@ async function ksOpenArticle(id) {
   Promise.resolve(renderMarkdownSafe(content, a.content || '')).then(function () {
     if (!outlineWrap || !outline || typeof Vditor === 'undefined' || !Vditor.outlineRender) return;
     const outlineHtml = Vditor.outlineRender(content, outline);
+    outline.querySelectorAll('li > span').forEach(function (item) {
+      item.dataset.overflowTitle = item.textContent.trim();
+    });
     outlineWrap.classList.toggle('hidden', !outlineHtml || !outline.textContent.trim());
   }).catch(function () {
     if (outlineWrap) outlineWrap.classList.add('hidden');
@@ -1030,6 +1081,7 @@ function ksShowView(view) {
 
 // 绑定知识分享模块内的事件（在 index.html 末尾一次性绑定）
 function initKnowledgeEvents() {
+  ksInitOverflowTooltips();
   const bind = function (id, ev, fn) { const e = ksEl(id); if (e) e.addEventListener(ev, fn); };
   bind('ks-new', 'click', function () { ksOpenEditor(null); });
   bind('ks-cat-add', 'click', function () { ksToggleCategoryCreate(true); });

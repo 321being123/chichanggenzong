@@ -144,8 +144,10 @@ function deleteTrade(id) {
   renderAll();
 }
 
-function clearTrades() {
-  if (!confirm('确定清空所有交易记录？（不会影响持仓数据）')) return;
+async function clearTrades() {
+  if (!await projectConfirm('确定清空所有交易记录？（不会影响持仓数据）', {
+    title: '清空交易记录', confirmText: '清空', danger: true
+  })) return;
   data.trades = [];
   saveData();
   renderAll();

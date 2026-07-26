@@ -4,6 +4,8 @@
 //       覆盖 P2-5 拆分后遗漏的跨模块引用（seedBrokers / BROKER_SEED / loadUsers 等）。
 // 依赖本地/CI 的 PostgreSQL 且当前用户有 CREATEDB 权限；否则自动跳过（不影响通过）。
 const assert = require('assert');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const { Client } = require('pg');
 
 const results = [];
@@ -57,7 +59,56 @@ function pgConfig(dbName) {
     check('券商种子数据已写入（>0）', () => { assert.ok(b.rows[0].c > 0, 'brokers 种子为空'); });
 
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 11); });
+    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 20); });
+
+    const knowledgeConstraints = await db.pool.query(
+      `SELECT conname FROM pg_constraint
+       WHERE conname = ANY($1::text[])`,
+      [['ck_articles_status', 'ck_articles_view_count', 'ck_cat_name_nonempty', 'ck_cat_no_self_parent']]
+    );
+    const knowledgeConstraintNames = new Set(knowledgeConstraints.rows.map(row => row.conname));
+    check('知识分享约束均已创建', () => {
+      for (const name of ['ck_articles_status', 'ck_articles_view_count', 'ck_cat_name_nonempty', 'ck_cat_no_self_parent']) {
+        assert.ok(knowledgeConstraintNames.has(name), '缺少约束：' + name);
+      }
+    });
+
+    const authorFk = await db.pool.query(
+      `SELECT rc.delete_rule
+       FROM information_schema.referential_constraints rc
+       WHERE rc.constraint_name='articles_author_username_fkey'`
+    );
+    check('文章作者外键注销时置空', () => {
+      assert.strictEqual(authorFk.rows[0] && authorFk.rows[0].delete_rule, 'SET NULL');
+    });
+
+    const commentArticleColumn = await db.pool.query(
+      `SELECT is_nullable FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='article_comments' AND column_name='article_id'`
+    );
+    check('评论文章关联不能为空', () => {
+      assert.strictEqual(commentArticleColumn.rows[0] && commentArticleColumn.rows[0].is_nullable, 'NO');
+    });
+
+    const categoryOwnerColumn = await db.pool.query(
+      `SELECT is_nullable FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='article_categories' AND column_name='owner_username'`
+    );
+    check('分类已增加所有者字段', () => {
+      assert.ok(categoryOwnerColumn.rows[0], '缺少 owner_username 字段');
+    });
+
+    const categoryFks = await db.pool.query(
+      `SELECT rc.constraint_name, rc.delete_rule
+       FROM information_schema.referential_constraints rc
+       WHERE rc.constraint_name = ANY($1::text[])`,
+      [['article_categories_parent_id_fkey', 'article_categories_owner_username_fkey']]
+    );
+    const categoryFkRules = new Map(categoryFks.rows.map(row => [row.constraint_name, row.delete_rule]));
+    check('删除父分类或用户时均保留其他分类', () => {
+      assert.strictEqual(categoryFkRules.get('article_categories_parent_id_fkey'), 'SET NULL');
+      assert.strictEqual(categoryFkRules.get('article_categories_owner_username_fkey'), 'SET NULL');
+    });
 
     const schemasResult = await db.pool.query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = ANY($1)", [['ops','core','market','fundamental','event','analytics']]);
     check('股票分析分层数据库已创建', () => { assert.strictEqual(schemasResult.rows.length, 6); });
@@ -72,7 +123,7 @@ function pgConfig(dbName) {
     console.log('B. 二次 initSchema（幂等）');
     await db.initSchema();
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('二次迁移不重复登记（仍为11）', () => { assert.strictEqual(m2.rows[0].c, 11); });
+    check('二次迁移不重复登记（仍为20）', () => { assert.strictEqual(m2.rows[0].c, 20); });
   } catch (e) {
     if (!tmpDb) {
       // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）

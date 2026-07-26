@@ -15,7 +15,8 @@ const VIEW_TITLES = {
   settings: '全局参数',
   holidays: '休市日历',
   audit: '操作审计',
-  aimodels: '大模型配置'
+  aimodels: '大模型配置',
+  knowledge: '投资笔记管理'
 };
 
 // Toast（复用风格，utils.js 未提供）
@@ -90,6 +91,7 @@ function switchView(view) {
   else if (view === 'holidays') renderHolidays();
   else if (view === 'audit') renderAudit();
   else if (view === 'aimodels') renderAimodels();
+  else if (view === 'knowledge') renderKnowledge();
   else renderPlaceholder(view);
 }
 
@@ -950,6 +952,181 @@ async function moveModel(id, dir) {
     if (!r.ok) { showToast(d.error || '操作失败'); return; }
     loadAimodelsData();
   } catch (e) { showToast('网络错误'); }
+}
+
+// ====== 知识分享管理 ======
+let ksAdminTab = 'articles';
+let ksAdminCommentFilter = '';
+
+function renderKnowledge() {
+  const el = document.getElementById('view-knowledge');
+  if (!el) return;
+  el.innerHTML =
+    '<div class="ks-admin-tabs">' +
+      '<button class="ks-admin-tab ' + (ksAdminTab === 'articles' ? 'active' : '') + '" data-tab="articles">文章管理</button>' +
+      '<button class="ks-admin-tab ' + (ksAdminTab === 'comments' ? 'active' : '') + '" data-tab="comments">评论管理</button>' +
+      '<button class="ks-admin-tab ' + (ksAdminTab === 'permissions' ? 'active' : '') + '" data-tab="permissions">写权限管理</button>' +
+    '</div>' +
+    '<div id="ks-admin-body"></div>';
+  el.querySelectorAll('.ks-admin-tab').forEach(function (b) {
+    b.addEventListener('click', function () { ksAdminTab = b.dataset.tab; renderKnowledge(); });
+  });
+  if (ksAdminTab === 'articles') ksRenderKsArticles();
+  else if (ksAdminTab === 'comments') ksRenderKsComments();
+  else ksRenderKsPermissions();
+}
+
+async function ksRenderKsArticles() {
+  const body = document.getElementById('ks-admin-body');
+  if (!body) return;
+  let html = '<div class="filter-bar">' +
+    '<select id="ks-ad-status" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' +
+      '<option value="">全部状态</option><option value="published">已发布</option><option value="draft">草稿</option></select>' +
+    '<button class="btn btn-primary btn-sm" id="ks-ad-search">筛选</button>' +
+    '<span class="ks-ad-count" id="ks-ad-count"></span></div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>ID</th><th>标题</th><th>分类</th><th>状态</th><th>作者</th><th>阅读</th><th>发布时间</th><th>操作</th></tr></thead>' +
+    '<tbody id="ks-ad-tbody"><tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+  body.innerHTML = html;
+  document.getElementById('ks-ad-search').addEventListener('click', function () {
+    ksLoadKsArticles(document.getElementById('ks-ad-status').value);
+  });
+  ksLoadKsArticles('');
+}
+
+async function ksLoadKsArticles(status) {
+  const tbody = document.getElementById('ks-ad-tbody');
+  const count = document.getElementById('ks-ad-count');
+  try {
+    const r = await fetch(api('/api/admin/knowledge/articles?limit=50' + (status ? '&status=' + status : '')));
+    const d = await r.json();
+    if (count) count.textContent = '共 ' + d.total + ' 篇';
+    if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">暂无文章</td></tr>'; return; }
+    tbody.innerHTML = d.list.map(function (a) {
+      const created = (a.published_at || a.updated_at || '').toString().replace('T', ' ').slice(0, 19);
+      const statusTag = a.status === 'draft' ? '<span class="tag tag-over">草稿</span>' : '<span class="tag tag-ok">已发布</span>';
+      return '<tr>' +
+        '<td>' + a.id + '</td>' +
+        '<td>' + escapeHtml(a.title || '无标题') + '</td>' +
+        '<td>' + escapeHtml(a.category_name || '未分类') + '</td>' +
+        '<td>' + statusTag + '</td>' +
+        '<td>' + escapeHtml(a.author_username || '') + '</td>' +
+        '<td>' + (a.view_count || 0) + '</td>' +
+        '<td>' + created + '</td>' +
+        '<td style="white-space:nowrap;">' +
+          '<button class="btn btn-sm ' + (a.status === 'draft' ? 'btn-success' : 'btn-warning') + '" data-act="status" data-id="' + a.id + '" data-cur="' + a.status + '">' + (a.status === 'draft' ? '发布' : '撤回') + '</button> ' +
+          '<button class="btn btn-sm btn-danger" data-act="del" data-id="' + a.id + '">删除</button>' +
+        '</td></tr>';
+    }).join('');
+    tbody.querySelectorAll('button[data-act]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const id = btn.dataset.id, act = btn.dataset.act;
+        if (act === 'del') {
+          if (!await projectConfirm('确定删除这篇文章？', { title: '删除文章', confirmText: '删除', danger: true })) return;
+          await fetch(api('/api/admin/knowledge/articles/' + id), { method: 'DELETE' });
+          showToast('已删除'); ksLoadKsArticles(document.getElementById('ks-ad-status').value);
+        } else if (act === 'status') {
+          const next = btn.dataset.cur === 'draft' ? 'published' : 'draft';
+          await fetch(api('/api/admin/knowledge/articles/' + id + '/status'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: next }) });
+          showToast(next === 'published' ? '已发布' : '已撤回'); ksLoadKsArticles(document.getElementById('ks-ad-status').value);
+        }
+      });
+    });
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
+}
+
+async function ksRenderKsComments() {
+  const body = document.getElementById('ks-admin-body');
+  if (!body) return;
+  body.innerHTML = '<div class="filter-bar">' +
+    '<input id="ks-cm-article" placeholder="按文章ID筛选（可选）" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:160px;">' +
+    '<button class="btn btn-primary btn-sm" id="ks-cm-search">筛选</button>' +
+    '<span class="ks-ad-count" id="ks-cm-count"></span></div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>ID</th><th>文章</th><th>评论人</th><th>内容</th><th>回复对象</th><th>时间</th><th>操作</th></tr></thead>' +
+    '<tbody id="ks-cm-tbody"><tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+  document.getElementById('ks-cm-search').addEventListener('click', function () {
+    ksLoadKsComments(document.getElementById('ks-cm-article').value.trim());
+  });
+  ksLoadKsComments('');
+}
+
+async function ksLoadKsComments(articleId) {
+  const tbody = document.getElementById('ks-cm-tbody');
+  const count = document.getElementById('ks-cm-count');
+  try {
+    const r = await fetch(api('/api/admin/knowledge/comments?limit=50' + (articleId ? '&article_id=' + articleId : '')));
+    const d = await r.json();
+    if (count) count.textContent = '共 ' + d.total + ' 条';
+    if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">暂无评论</td></tr>'; return; }
+    tbody.innerHTML = d.list.map(function (c) {
+      const t = (c.created_at || '').toString().replace('T', ' ').slice(0, 19);
+      const reply = c.parent_id ? ('#' + c.parent_id) : '—';
+      return '<tr>' +
+        '<td>' + c.id + '</td>' +
+        '<td>' + escapeHtml(c.article_title || ('#' + c.article_id)) + '</td>' +
+        '<td>' + escapeHtml(c.nickname) + '</td>' +
+        '<td style="max-width:360px;">' + escapeHtml(c.content) + '</td>' +
+        '<td>' + reply + '</td>' +
+        '<td>' + t + '</td>' +
+        '<td><button class="btn btn-sm btn-danger" data-id="' + c.id + '">删除</button></td></tr>';
+    }).join('');
+    tbody.querySelectorAll('button[data-id]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        if (!await projectConfirm('确定删除这条评论？', { title: '删除评论', confirmText: '删除', danger: true })) return;
+        await fetch(api('/api/admin/knowledge/comments/' + btn.dataset.id), { method: 'DELETE' });
+        showToast('已删除'); ksLoadKsComments(document.getElementById('ks-cm-article').value.trim());
+      });
+    });
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
+}
+
+async function ksRenderKsPermissions() {
+  const body = document.getElementById('ks-admin-body');
+  if (!body) return;
+  body.innerHTML = '<div class="filter-bar">' +
+    '<input id="ks-per-search" placeholder="搜索账号" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:180px;">' +
+    '<button class="btn btn-primary btn-sm" id="ks-per-go">搜索</button>' +
+    '<span class="ks-ad-count">管理员默认拥有写权限</span></div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>投资笔记写权限</th><th>操作</th></tr></thead>' +
+    '<tbody id="ks-per-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+  document.getElementById('ks-per-go').addEventListener('click', function () {
+    ksLoadKsPermissions(document.getElementById('ks-per-search').value.trim());
+  });
+  ksLoadKsPermissions('');
+}
+
+async function ksLoadKsPermissions(search) {
+  const tbody = document.getElementById('ks-per-tbody');
+  try {
+    const r = await fetch(api('/api/admin/knowledge/users' + (search ? '?search=' + encodeURIComponent(search) : '')));
+    const d = await r.json();
+    if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无用户</td></tr>'; return; }
+    tbody.innerHTML = d.list.map(function (u) {
+      const isAdmin = u.role === 'admin';
+      const enabled = isAdmin || u.knowledge_enabled;
+      const roleTag = isAdmin ? '<span class="tag tag-a">管理员</span>' : '<span class="tag">普通用户</span>';
+      const statusTag = (u.status && u.status !== 'active') ? '<span class="tag tag-over">已禁用</span>' : '<span class="tag tag-ok">正常</span>';
+      const permTag = enabled ? '<span class="tag tag-ok">可写</span>' : '<span class="tag tag-over">不可写</span>';
+      const toggleBtn = isAdmin
+        ? '<button class="btn btn-sm btn-outline" disabled>管理员默认开启</button>'
+        : '<button class="btn btn-sm ' + (enabled ? 'btn-warning' : 'btn-success') + '" data-act="toggle" data-username="' + escapeHtml(u.username) + '" data-cur="' + (enabled ? '1' : '0') + '">' + (enabled ? '关闭写权限' : '开启写权限') + '</button>';
+      return '<tr>' +
+        '<td>' + escapeHtml(u.username) + '</td>' +
+        '<td>' + roleTag + '</td>' +
+        '<td>' + statusTag + '</td>' +
+        '<td>' + permTag + '</td>' +
+        '<td>' + toggleBtn + '</td></tr>';
+    }).join('');
+    tbody.querySelectorAll('button[data-act="toggle"]').forEach(function (btn) {
+      btn.addEventListener('click', async function () {
+        const next = btn.dataset.cur !== '1';
+        await fetch(api('/api/admin/knowledge/users/' + encodeURIComponent(btn.dataset.username) + '/permission'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next })
+        });
+        showToast(next ? '已开启写权限' : '已关闭写权限');
+        ksLoadKsPermissions(document.getElementById('ks-per-search').value.trim());
+      });
+    });
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
 }
 
 // ====== 启动 ======

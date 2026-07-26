@@ -55,9 +55,11 @@ function saveNavEdit() {
   showToast('已保存');
 }
 
-function deleteNav(date) {
+async function deleteNav(date) {
   if (!data.navHistory) return;
-  if (!confirm('确定删除 ' + (date || '') + ' 这条净值记录？')) return;
+  if (!await projectConfirm('确定删除 ' + (date || '') + ' 这条净值记录？', {
+    title: '删除净值记录', confirmText: '删除', danger: true
+  })) return;
   data.navHistory = data.navHistory.filter(function (n) { return n.date !== date; });
   data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
   saveData();

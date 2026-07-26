@@ -26,6 +26,20 @@ check('登录限流缓存定时清理不会导致服务崩溃', () => {
   assert.doesNotThrow(() => auth.sweepAuthMaps(Date.now() + 2 * 60 * 60 * 1000));
 });
 
+check('管理员身份统一识别数据库角色和环境白名单', () => {
+  const auth = require('../middleware/auth');
+  const original = process.env.ADMIN_USERS;
+  try {
+    process.env.ADMIN_USERS = 'legacy-admin,other-admin';
+    assert.strictEqual(auth.isAdminIdentity('db-admin', 'admin'), true);
+    assert.strictEqual(auth.isAdminIdentity('legacy-admin', 'user'), true);
+    assert.strictEqual(auth.isAdminIdentity('normal-user', 'user'), false);
+  } finally {
+    if (original === undefined) delete process.env.ADMIN_USERS;
+    else process.env.ADMIN_USERS = original;
+  }
+});
+
 check('hashPwd 产出 scrypt:salt:hash 格式', () => {
   const h = db.hashPwd('secret123');
   assert.ok(/^scrypt:[0-9a-f]+:[0-9a-f]+$/.test(h), '应为 scrypt:salt:hash 形式，实际: ' + h);

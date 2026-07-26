@@ -59,6 +59,8 @@ function renderHomeBonds(payload) {
 
 async function loadHomeDashboard() {
   renderHomeHoldings();
+  // 最新文章独立加载，不等待 IPO/债券接口，避免被大数据接口阻塞
+  renderHomeArticles();
   if (homeDashboardLoading) return;
   homeDashboardLoading = true;
   try {
@@ -67,8 +69,33 @@ async function loadHomeDashboard() {
     var calendar = await results[0].json(), bonds = await results[1].json();
     renderHomeIpo(calendar.calendar || []);
     renderHomeBonds(bonds);
-    homeSetText('home-updated', '更新于 ' + new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
   } catch (error) {
-    homeSetText('home-updated', '部分数据加载失败');
+    console.error('首页数据加载失败', error);
   } finally { homeDashboardLoading = false; }
+}
+
+async function renderHomeArticles() {
+  var heroBox = document.getElementById('home-hero-articles');
+  if (!heroBox) return;
+  try {
+    var r = await fetch(api('/api/knowledge/latest?limit=5'));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var list = await r.json();
+    if (!Array.isArray(list)) throw new Error('返回格式错误');
+    if (!list.length) {
+      heroBox.innerHTML = '<span class="home-hero-article-loading">暂无已发布文章</span>';
+      return;
+    }
+    heroBox.innerHTML = list.slice(0, 5).map(function (a) {
+      var date = (a.published_at || '').toString().slice(0, 10);
+      return '<button type="button" class="home-hero-article" onclick="switchMain(\'knowledge\'); ksOpenArticle(' + (a.id || 0) + ');">' +
+        '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
+        '<strong>' + escapeHtml(a.title || '无标题') + '</strong>' +
+        '<small>' + escapeHtml(a.summary || '点击阅读文章详情') + '</small>' +
+        '<em>' + date + ' · ' + (a.view_count || 0) + ' 次阅读</em>' +
+      '</button>';
+    }).join('');
+  } catch (e) {
+    heroBox.innerHTML = '<span class="home-hero-article-loading">加载失败</span>';
+  }
 }

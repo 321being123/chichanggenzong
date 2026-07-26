@@ -36,7 +36,7 @@ async function updateUserAccounts(username, accountsList) {
 
 async function getUserProfile(username) {
   const { rows } = await pool.query(
-    'SELECT username, nickname, bio, avatar, email, last_login, role, status, accounts FROM users WHERE username=$1',
+    'SELECT username, nickname, bio, avatar, email, last_login, role, status, knowledge_enabled, accounts FROM users WHERE username=$1',
     [username]
   );
   const r = rows[0];
@@ -50,6 +50,7 @@ async function getUserProfile(username) {
     last_login: r.last_login || null,
     role: r.role || 'user',
     status: r.status || 'active',
+    knowledgeEnabled: r.knowledge_enabled || false,
     accounts: JSON.parse(r.accounts || '[]')
   };
 }
@@ -75,7 +76,7 @@ async function listUsers({ search, limit, offset }) {
   const params = [];
   let where = '';
   if (search) { params.push('%' + search + '%'); where = 'WHERE username ILIKE $1'; }
-  let sql = `SELECT username, role, status, email, created_at, last_login,
+  let sql = `SELECT username, role, status, email, created_at, last_login, knowledge_enabled,
       (SELECT COUNT(*) FROM accounts a WHERE a.username = users.username) AS account_count
     FROM users ${where} ORDER BY created_at DESC, username`;
   params.push(limit, offset);
@@ -89,6 +90,10 @@ async function setUserRole(username, role) {
 }
 async function setUserStatus(username, status) {
   await pool.query('UPDATE users SET status=$2 WHERE username=$1', [username, status]);
+}
+// 知识分享写权限开关
+async function setKnowledgeEnabled(username, enabled) {
+  await pool.query('UPDATE users SET knowledge_enabled=$2 WHERE username=$1', [username, !!enabled]);
 }
 async function adminSetPassword(username, newHash) {
   await pool.query('UPDATE users SET password=$2 WHERE username=$1', [username, newHash]);
@@ -112,7 +117,7 @@ async function deleteUser(username) {
 }
 async function getUserDetail(username) {
   const { rows: u } = await pool.query(
-    'SELECT username, role, status, email, created_at, last_login, nickname, bio, avatar FROM users WHERE username=$1',
+    'SELECT username, role, status, email, created_at, last_login, nickname, bio, avatar, knowledge_enabled FROM users WHERE username=$1',
     [username]
   );
   if (!u[0]) return null;
@@ -141,6 +146,10 @@ async function ensureAdmin() {
       await pool.query("UPDATE users SET role='admin' WHERE username=$1", [uname]);
       console.log('[seed] 已将账号提升为管理员:', uname);
     }
+    // 管理员默认拥有知识分享写权限
+    await pool.query('UPDATE users SET knowledge_enabled=true WHERE username=$1', [uname]);
+    // 首次部署时默认分类早于管理员账号创建，补齐这些无归属的历史分类。
+    await pool.query('UPDATE article_categories SET owner_username=$1 WHERE owner_username IS NULL', [uname]);
   } catch (e) { console.warn('[seed] 管理员初始化跳过:', e.message); }
 }
 
@@ -177,6 +186,7 @@ module.exports = {
   listUsers,
   setUserRole,
   setUserStatus,
+  setKnowledgeEnabled,
   adminSetPassword,
   deleteUser,
   getUserDetail,

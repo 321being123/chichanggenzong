@@ -943,6 +943,188 @@ async function migration011IpoTrackingStorage() {
   `);
 }
 
+// ========== 知识分享模块：文章 / 分类目录树 / 评论 ==========
+async function migration012KnowledgeArticles() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS article_categories (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      parent_id INTEGER REFERENCES article_categories(id) ON DELETE CASCADE,
+      sort_order INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS articles (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      slug VARCHAR(255) UNIQUE,
+      content TEXT NOT NULL DEFAULT '',
+      html_content TEXT,
+      summary TEXT,
+      category_id INTEGER REFERENCES article_categories(id) ON DELETE SET NULL,
+      status VARCHAR(20) DEFAULT 'draft',
+      share_token VARCHAR(64) UNIQUE,
+      view_count INTEGER DEFAULT 0,
+      author_username TEXT NOT NULL REFERENCES users(username),
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      published_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);
+    CREATE INDEX IF NOT EXISTS idx_articles_share_token ON articles(share_token);
+    CREATE INDEX IF NOT EXISTS idx_articles_category ON articles(category_id);
+    CREATE INDEX IF NOT EXISTS idx_articles_author ON articles(author_username);
+
+    CREATE TABLE IF NOT EXISTS article_comments (
+      id SERIAL PRIMARY KEY,
+      article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
+      nickname VARCHAR(50) NOT NULL DEFAULT '匿名',
+      content TEXT NOT NULL,
+      ip_hash VARCHAR(64),
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_comments_article ON article_comments(article_id);
+    CREATE INDEX IF NOT EXISTS idx_comments_created ON article_comments(created_at DESC);
+  `);
+}
+
+// ========== 013：知识分享写权限开关（users 表加字段） ==========
+async function migration013KnowledgePermission() {
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS knowledge_enabled boolean NOT NULL DEFAULT false;
+  `);
+}
+
+// ========== 014：评论楼中楼（article_comments 加 parent_id / root_id） ==========
+async function migration014NestedComments() {
+  await pool.query(`
+    ALTER TABLE article_comments ADD COLUMN IF NOT EXISTS parent_id integer REFERENCES article_comments(id) ON DELETE CASCADE;
+    ALTER TABLE article_comments ADD COLUMN IF NOT EXISTS root_id integer REFERENCES article_comments(id) ON DELETE CASCADE;
+    CREATE INDEX IF NOT EXISTS idx_comments_parent ON article_comments(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_comments_root ON article_comments(root_id);
+  `);
+}
+
+// ========== 015：评论作者归属（author_username，关联用户，注销置空） ==========
+async function migration015CommentAuthor() {
+  await pool.query(`
+    ALTER TABLE article_comments ADD COLUMN IF NOT EXISTS author_username TEXT REFERENCES users(username) ON DELETE SET NULL;
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_comments_author ON article_comments(author_username)');
+}
+
+// ========== 016：文章作者外键允许为空（用户注销后保留文章） ==========
+async function migration016ArticleAuthorNullable() {
+  await pool.query('ALTER TABLE articles ALTER COLUMN author_username DROP NOT NULL');
+  await pool.query('ALTER TABLE articles DROP CONSTRAINT IF EXISTS articles_author_username_fkey');
+  await pool.query('ALTER TABLE articles ADD CONSTRAINT articles_author_username_fkey FOREIGN KEY (author_username) REFERENCES users(username) ON DELETE SET NULL');
+}
+
+// ========== 017：知识分享表约束强化 ==========
+async function migration017KnowledgeConstraints() {
+  // 先修正历史异常数据，再加严格约束
+  await pool.query("UPDATE articles SET status='draft' WHERE status IS NULL OR status NOT IN ('draft','published')");
+  await pool.query('UPDATE articles SET view_count=0 WHERE view_count IS NULL OR view_count<0');
+  await pool.query('DELETE FROM article_comments WHERE article_id IS NULL');
+  await pool.query("UPDATE article_categories SET name='未命名' WHERE name IS NULL OR name=''");
+
+  const stmts = [
+    'ALTER TABLE articles ALTER COLUMN status SET NOT NULL',
+    `DO $migration$
+     BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_articles_status' AND conrelid='articles'::regclass) THEN
+         ALTER TABLE articles ADD CONSTRAINT ck_articles_status CHECK (status IN ('draft','published'));
+       END IF;
+     END
+     $migration$`,
+    'ALTER TABLE articles ALTER COLUMN view_count SET DEFAULT 0',
+    'ALTER TABLE articles ALTER COLUMN view_count SET NOT NULL',
+    `DO $migration$
+     BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_articles_view_count' AND conrelid='articles'::regclass) THEN
+         ALTER TABLE articles ADD CONSTRAINT ck_articles_view_count CHECK (view_count >= 0);
+       END IF;
+     END
+     $migration$`,
+    'ALTER TABLE article_comments ALTER COLUMN article_id SET NOT NULL',
+    `DO $migration$
+     BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_cat_name_nonempty' AND conrelid='article_categories'::regclass) THEN
+         ALTER TABLE article_categories ADD CONSTRAINT ck_cat_name_nonempty CHECK (name <> '');
+       END IF;
+     END
+     $migration$`,
+    `DO $migration$
+     BEGIN
+       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_cat_no_self_parent' AND conrelid='article_categories'::regclass) THEN
+         ALTER TABLE article_categories ADD CONSTRAINT ck_cat_no_self_parent CHECK (id <> parent_id);
+       END IF;
+     END
+     $migration$`,
+  ];
+  for (const sql of stmts) {
+    await pool.query(sql);
+  }
+  // 同级分类同名唯一（父子维度去重）
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_cat_parent_name ON article_categories (COALESCE(parent_id, -1), lower(name))');
+}
+
+// ========== 018：默认分类幂等种子（读取接口不再写库） ==========
+async function migration018SeedDefaultCategories() {
+  const defaults = ['投资笔记', '打新攻略', '可转债', '读书笔记'];
+  for (let i = 0; i < defaults.length; i++) {
+    await pool.query(
+      'INSERT INTO article_categories (name, parent_id, sort_order) VALUES ($1, NULL, $2) ON CONFLICT DO NOTHING',
+      [defaults[i], i]
+    );
+  }
+}
+
+// ========== 019：重新核验知识分享约束（覆盖已执行旧版 016/017 的环境） ==========
+async function migration019KnowledgeConstraintsVerify() {
+  await migration016ArticleAuthorNullable();
+  await migration017KnowledgeConstraints();
+}
+
+// ========== 020：分类归属与安全移动 ==========
+async function migration020KnowledgeCategoryOwnership() {
+  await pool.query(`
+    ALTER TABLE article_categories
+      ADD COLUMN IF NOT EXISTS owner_username TEXT REFERENCES users(username) ON DELETE SET NULL;
+  `);
+
+  // 历史分类优先归属给该分类文章的作者；没有文章时归属给首位管理员。
+  await pool.query(`
+    UPDATE article_categories c
+    SET owner_username = COALESCE(
+      (
+        SELECT a.author_username
+        FROM articles a
+        WHERE a.category_id = c.id AND a.author_username IS NOT NULL
+        ORDER BY a.created_at, a.id
+        LIMIT 1
+      ),
+      (
+        SELECT u.username
+        FROM users u
+        WHERE u.role = 'admin'
+        ORDER BY u.created_at NULLS LAST, u.username
+        LIMIT 1
+      )
+    )
+    WHERE c.owner_username IS NULL
+  `);
+
+  // 删除父分类时仅把子分类移回根目录，避免连带删除其他用户的分类。
+  await pool.query('ALTER TABLE article_categories DROP CONSTRAINT IF EXISTS article_categories_parent_id_fkey');
+  await pool.query(`
+    ALTER TABLE article_categories
+      ADD CONSTRAINT article_categories_parent_id_fkey
+      FOREIGN KEY (parent_id) REFERENCES article_categories(id) ON DELETE SET NULL
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_article_categories_owner ON article_categories(owner_username)');
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -976,6 +1158,15 @@ const MIGRATIONS = [
   { version: '009_valuation_data_quality', up: migration009ValuationDataQuality },
   { version: '010_convertible_bond_analysis', up: migration010ConvertibleBondAnalysis },
   { version: '011_ipo_tracking_storage', up: migration011IpoTrackingStorage },
+  { version: '012_knowledge_articles', up: migration012KnowledgeArticles },
+  { version: '013_knowledge_permission', up: migration013KnowledgePermission },
+  { version: '014_nested_comments', up: migration014NestedComments },
+  { version: '015_comment_author', up: migration015CommentAuthor },
+  { version: '016_article_author_nullable', up: migration016ArticleAuthorNullable },
+  { version: '017_knowledge_constraints', up: migration017KnowledgeConstraints },
+  { version: '018_seed_default_categories', up: migration018SeedDefaultCategories },
+  { version: '019_knowledge_constraints_verify', up: migration019KnowledgeConstraintsVerify },
+  { version: '020_knowledge_category_ownership', up: migration020KnowledgeCategoryOwnership },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

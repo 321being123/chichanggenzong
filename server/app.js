@@ -19,6 +19,7 @@ const ipoRouter = require('./routes/ipo');
 const bondSafetyRouter = require('./routes/bondSafety');
 const stockAnalysisRouter = require('./routes/stockAnalysis');
 const bondAnalysisRouter = require('./routes/bondAnalysis');
+const knowledgeRouter = require('./routes/knowledge');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
@@ -80,6 +81,17 @@ async function start() {
   app.use(redirectUnauthenticated);
   // 安全响应头（必须在静态资源之前注册，确保 HTML/JS/CSS 均携带 CSP / X-Frame-Options 等头）
   app.use(securityHeaders);
+  // 静态资源不缓存（开发期频繁改动，避免浏览器缓存旧版 HTML/JS/CSS 导致功能异常）
+  app.use(function noCacheStatic(req, res, next) {
+    if (req.path.startsWith('/api')) return next();
+    const ext = path.extname(req.path).toLowerCase();
+    if (ext === '' || ['.html', '.js', '.css'].includes(ext)) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+    next();
+  });
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
   // CSRF 防护：仅允许指定来源
@@ -97,6 +109,7 @@ async function start() {
   app.use('/api/bond-analysis', bondAnalysisRouter); // 可转债分析：数据库快照读取和单债刷新
   app.use('/api/ipo', ipoRouter);       // 打新日历：报告/历史列表/已上市表现
   app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：数据库快照读取/管理员刷新
+  app.use('/api/knowledge', knowledgeRouter);    // 知识分享：文章/分类/评论/公开分享
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));

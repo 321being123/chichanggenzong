@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const rateLimit = require('../middleware/rateLimit');
-const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit } = require('../middleware/auth');
+const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
 const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, syncUserAccounts, getUserProfile, getUserAuth, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
@@ -71,7 +71,7 @@ router.post('/login', asyncHandler(async (req, res, next) => {
     if (err) return next(err);
     req.session.user = username;
     updateLastLogin(username).catch(() => {});
-    res.json({ ok: true, username, role: user.role || 'user' });
+    res.json({ ok: true, username, role: isAdminIdentity(username, user.role) ? 'admin' : (user.role || 'user') });
   });
 }));
 
@@ -85,7 +85,8 @@ router.post('/logout', (req, res) => {
 router.get('/me', asyncHandler(async (req, res) => {
   if (!req.session.user) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
-  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role: p.role || 'user', status: p.status || 'active' });
+  const role = isAdminIdentity(p.username, p.role) ? 'admin' : (p.role || 'user');
+  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role, status: p.status || 'active', knowledgeEnabled: p.knowledgeEnabled || false });
 }));
 router.get('/config', asyncHandler(async (req, res) => { res.json({ needRegisterCode: !!(await getConfig('register_code', REGISTER_CODE || '')) }); }));
 

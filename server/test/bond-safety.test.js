@@ -2,7 +2,7 @@ const assert = require('assert');
 const { cleanValue, rateCompany, evaluateBondSafety } = require('../services/bondSafety');
 const { pickArray, authHeaders, isConfigured } = require('../services/bondSafetyFetcher');
 const { nextShanghaiDelay } = require('../jobs/bondSafetyRefresh');
-const { finite, derivePb, isActiveBond } = require('../services/bondSafetyTushare');
+const { finite, derivePb, isActiveBond, preferredSecurityName } = require('../services/bondSafetyTushare');
 
 const results = [];
 function check(name, fn) {
@@ -111,6 +111,11 @@ check('PB缺失时可按总市值和归母净资产补算正负市净率', () =>
   assert.strictEqual(derivePb(10000, 50000000), 2);
   assert.strictEqual(derivePb(10000, -50000000), -2);
   assert.strictEqual(derivePb(null, -50000000), null);
+});
+
+check('证券名称优先使用腾讯行情正确解码结果', () => {
+  assert.strictEqual(preferredSecurityName({ name: '珂玛科技' }, '��玛��技'), '珂玛科技');
+  assert.strictEqual(preferredSecurityName(null, '珂玛转债'), '珂玛转债');
 });
 
 const pass = results.filter(r => r[0] === 'PASS').length;

@@ -12,6 +12,10 @@ function finite(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function preferredSecurityName(quote, fallback) {
+  return String((quote && quote.name) || fallback || '').trim();
+}
+
 function isActiveBond(row, today, listedStocks) {
   return Boolean(row && row.list_date && row.list_date <= today &&
     (!row.delist_date || row.delist_date > today) &&
@@ -208,8 +212,9 @@ async function fetchTushareBondSafetySource() {
   const companyRows = uniqueStocks.map(stock => {
     const cached = financials.get(stock.stk_code);
     const value = valuations.get(stock.stk_code) || {};
+    const liveStock = tencent.get(String(stock.stk_code).split('.')[0]);
     return Object.assign({
-      company: stock.stk_short_name,
+      company: preferredSecurityName(liveStock, stock.stk_short_name),
       industry: industries.get(stock.stk_code) || '',
       has_cb: 1,
       financial_available: Boolean(cached && cached.data),
@@ -237,8 +242,8 @@ async function fetchTushareBondSafetySource() {
       cachedFinancial && cachedFinancial.data && cachedFinancial.data.shareholder_equity);
     return {
       bond_code: String(bond.ts_code).split('.')[0],
-      bond_name: bond.bond_short_name,
-      stock_name: bond.stk_short_name,
+      bond_name: preferredSecurityName(liveBond, bond.bond_short_name),
+      stock_name: preferredSecurityName(liveStock, bond.stk_short_name),
       pe_ttm: peTtm != null ? peTtm : (peStatic != null ? peStatic : '亏损'),
       pb: pb != null ? pb : calculatedPb,
       dividend_yield: finite(valuation.dv_ttm) == null ? 0 : finite(valuation.dv_ttm),
@@ -258,4 +263,11 @@ async function fetchTushareBondSafetySource() {
   };
 }
 
-module.exports = { finite, derivePb, isActiveBond, selectFinancialReport, fetchTushareBondSafetySource };
+module.exports = {
+  finite,
+  derivePb,
+  isActiveBond,
+  preferredSecurityName,
+  selectFinancialReport,
+  fetchTushareBondSafetySource,
+};

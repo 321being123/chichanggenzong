@@ -1297,6 +1297,14 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   var allowedMain = ['home','holdings','stock-analysis','ipo','bond-safety','changelog','profile','knowledge'];
   var initialMain = loggedIn && allowedMain.includes(requestedMain) ? requestedMain : 'home';
   switchMain(initialMain);
+  // 用完后清除地址栏里的 ?main=，避免下次打开（或刷新）仍停留在上次跳转的页面，
+  // 保证“首次打开网站”始终回到存在小站主页；分享链接在首次打开时仍能正确跳转到指定页。
+  if (requestedMain) {
+    var sp = new URLSearchParams(window.location.search);
+    sp.delete('main');
+    var ns = sp.toString();
+    history.replaceState(null, '', window.location.pathname + (ns ? '?' + ns : '') + window.location.hash);
+  }
   if (loggedIn) {
     // 首次直接进入持仓页时，switchMain() 已触发完整刷新，避免紧接着重复刷新和重绘圆环图。
     if (initialMain !== 'holdings') {

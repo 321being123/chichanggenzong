@@ -161,14 +161,15 @@ section('I. 过期判断用交易日历（节假日/盘中不误报）');
 check('国庆假期、周末、盘中、发布后各场景预期数据日正确', async () => {
   const { expectedTradeDate } = require('../routes/bondCycle');
   assert.ok(typeof expectedTradeDate === 'function', '路由未导出 expectedTradeDate');
-  // 2026-10-01（周四，法定节假日）→ 回退到 9-30（周三，交易日）
-  assert.strictEqual(expectedTradeDate(new Date(2026, 9, 1, 10, 0)), '2026-09-30', '节假日应回退到上一交易日');
-  // 2026-07-26（周日）→ 回退到 7-24（周五）
-  assert.strictEqual(expectedTradeDate(new Date(2026, 6, 26, 12, 0)), '2026-07-24', '周末应回退到上一交易日');
-  // 2026-07-27（周一，交易日）盘中 10:00（未到发布时刻）→ 允许展示 7-24，不误报
-  assert.strictEqual(expectedTradeDate(new Date(2026, 6, 27, 10, 0)), '2026-07-24', '盘中应允许展示上一交易日');
-  // 2026-07-27（周一，交易日）18:00（已过发布时刻）→ 预期当天
-  assert.strictEqual(expectedTradeDate(new Date(2026, 6, 27, 18, 0)), '2026-07-27', '发布后预期应为当天');
+  // 用 Date.UTC 显式构造 UTC 时间，避免依赖容器本地时区（与业务代码 expectedTradeDate 的"now 视为 UTC"一致）
+  // 北京时间 2026-10-01（周四，法定节假日）10:00 = UTC 02:00 → 回退到 9-30（周三，交易日）
+  assert.strictEqual(expectedTradeDate(new Date(Date.UTC(2026, 9, 1, 2, 0))), '2026-09-30', '节假日应回退到上一交易日');
+  // 北京时间 2026-07-26（周日）12:00 = UTC 04:00 → 回退到 7-24（周五）
+  assert.strictEqual(expectedTradeDate(new Date(Date.UTC(2026, 6, 26, 4, 0))), '2026-07-24', '周末应回退到上一交易日');
+  // 北京时间 2026-07-27（周一，交易日）盘中 10:00（未到发布时刻）= UTC 02:00 → 允许展示 7-24，不误报
+  assert.strictEqual(expectedTradeDate(new Date(Date.UTC(2026, 6, 27, 2, 0))), '2026-07-24', '盘中应允许展示上一交易日');
+  // 北京时间 2026-07-27（周一，交易日）18:00（已过发布时刻）= UTC 10:00 → 预期当天
+  assert.strictEqual(expectedTradeDate(new Date(Date.UTC(2026, 6, 27, 10, 0))), '2026-07-27', '发布后预期应为当天');
 });
 
 section('J. 事务隔离（主同步先提交，周期用独立事务）');

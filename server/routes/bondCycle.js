@@ -3,7 +3,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const svc = require('../services/convertibleBondCycleService');
 const cycle = require('../services/convertibleBondCycle');
-const { isTradingDay, fmtCN } = require('../jobs/marketClose');
+const { isTradingDay } = require('../jobs/marketClose');
 
 const FORMULA_VERSION = cycle.FORMULA_VERSION;
 const UNIVERSE_VERSION = cycle.UNIVERSE_VERSION;
@@ -17,14 +17,16 @@ function isoDate(d) {
 }
 
 // 预期数据日：最近一个「应有数据」的交易日（用交易日历判断，法定节假日不误报；
-// 当天为交易日但未到发布时刻时，允许展示上一交易日、不标记过期）
+// 当天为交易日但未到发布时刻时，允许展示上一交易日、不标记过期）。
+// now 按 UTC 真实时间解读：内部 +8h 转到北京时间再做判断与返回，与 fmtCN 一致，不受容器时区影响。
 function expectedTradeDate(now = new Date()) {
-  const d = new Date(now);
-  const beforePublish = d.getHours() < PUBLISH_HOUR || (d.getHours() === PUBLISH_HOUR && d.getMinutes() < PUBLISH_MINUTE);
-  if (!isTradingDay(d) || beforePublish) d.setDate(d.getDate() - 1);
+  const cn = new Date(now.getTime() + 8 * 3600 * 1000);
+  const beforePublish = cn.getUTCHours() < PUBLISH_HOUR || (cn.getUTCHours() === PUBLISH_HOUR && cn.getUTCMinutes() < PUBLISH_MINUTE);
+  if (!isTradingDay(cn) || beforePublish) cn.setUTCDate(cn.getUTCDate() - 1);
   let guard = 0;
-  while (!isTradingDay(d) && guard++ < 30) d.setDate(d.getDate() - 1);
-  return fmtCN(d);
+  while (!isTradingDay(cn) && guard++ < 30) cn.setUTCDate(cn.getUTCDate() - 1);
+  const p = n => String(n).padStart(2, '0');
+  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
 }
 
 const DIAGNOSTICS = {

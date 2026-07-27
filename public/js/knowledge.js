@@ -303,16 +303,20 @@ async function ksOpenArticle(id) {
   const outline = ksEl('ks-read-outline');
   if (outlineWrap) outlineWrap.classList.add('hidden');
   if (outline) outline.innerHTML = '';
-  Promise.resolve(renderMarkdownSafe(content, a.content || '')).then(function () {
+  // 快显优先：备用渲染立即可见；Vditor 后台渲完替换，每次内容更新后重建大纲
+  renderMarkdownSafe(content, a.content || '', { onUpdate: function () {
     if (!outlineWrap || !outline || typeof Vditor === 'undefined' || !Vditor.outlineRender) return;
-    const outlineHtml = Vditor.outlineRender(content, outline);
-    outline.querySelectorAll('li > span').forEach(function (item) {
-      item.dataset.overflowTitle = item.textContent.trim();
-    });
-    outlineWrap.classList.toggle('hidden', !outlineHtml || !outline.textContent.trim());
-  }).catch(function () {
-    if (outlineWrap) outlineWrap.classList.add('hidden');
-  });
+    try {
+      outline.innerHTML = '';
+      const outlineHtml = Vditor.outlineRender(content, outline);
+      outline.querySelectorAll('li > span').forEach(function (item) {
+        item.dataset.overflowTitle = item.textContent.trim();
+      });
+      outlineWrap.classList.toggle('hidden', !outlineHtml || !outline.textContent.trim());
+    } catch (e) {
+      outlineWrap.classList.add('hidden');
+    }
+  } });
 
   // 操作按钮（有写权限可编辑/分享/删除）
   const ops = ksEl('ks-read-ops');

@@ -1,7 +1,8 @@
 // ========== 公共 Markdown 安全渲染 ==========
 // 主站阅读页与公开分享页共用，避免两份逻辑漂移。
-// 渲染策略：优先 Vditor.preview（自带净化）；Vditor 缺失/超时/失败时，
-// 用 marked 解析后经 DOMPurify 净化兜底；再不行退化为转义纯文本。
+// 渲染策略（快显优先）：先用 marked+DOMPurify 立即渲染出内容；
+// 若 Vditor 可用则在后台影子容器渲染，完成后无缝替换为更精细的排版。
+// marked/DOMPurify 缺失时退化为转义纯文本。
 (function (global) {
   function escapeHtml(str) {
     return String(str == null ? '' : str)
@@ -18,58 +19,45 @@
     return '<pre>' + escapeHtml(text) + '</pre>';
   }
 
-  function renderMarkdownSafe(el, md) {
+  // 渲染序号：同一容器再次渲染新内容时，作废上一次的后台 Vditor 替换
+  var renderSeq = 0;
+
+  // opts.onUpdate(el)：每次内容落到容器后调用（备用快显一次；Vditor 后台替换完成再一次），
+  // 供调用方在替换后重建依赖正文 DOM 的内容（如大纲）。
+  function renderMarkdownSafe(el, md, opts) {
     if (!el) return Promise.resolve();
     var text = md || '';
-    el.innerHTML = '';
-    var done = false;
-    function fallback() {
-      if (done) return el;
-      done = true;
-      try { el.innerHTML = sanitizedMarkdown(text); }
-      catch (e) { el.innerHTML = '<pre>' + escapeHtml(text) + '</pre>'; }
-      return el;
-    }
-    function tryVditor() {
-      return new Promise(function (resolve) {
-        var finished = false;
-        // 影子容器：让 Vditor 渲染到此，避免超时降级后 Vditor 后台完成又覆盖 el
+    var onUpdate = opts && typeof opts.onUpdate === 'function' ? opts.onUpdate : null;
+    var seq = ++renderSeq;
+    el.dataset.mdSeq = String(seq);
+
+    // 第一步：备用方式立即渲染，内容马上可见
+    try { el.innerHTML = sanitizedMarkdown(text); }
+    catch (e) { el.innerHTML = '<pre>' + escapeHtml(text) + '</pre>'; }
+    if (onUpdate) { try { onUpdate(el); } catch (e) {} }
+
+    // 第二步：Vditor 可用则后台渲染，完成后替换（容器已渲染新内容则放弃）
+    try {
+      if (typeof global.Vditor !== 'undefined' && global.Vditor.preview) {
         var shadow = document.createElement('div');
         shadow.style.cssText = 'position:absolute;left:-99999px;top:0;width:720px;visibility:hidden;';
         document.body.appendChild(shadow);
-        function cleanup() { try { shadow.remove(); } catch (e) {} }
-        var timer = setTimeout(function () {
-          if (finished) return;
-          finished = true;
-          cleanup();
-          resolve(fallback());
-        }, 2000);
+        var cleanup = function () { try { shadow.remove(); } catch (e) {} };
         Promise.resolve(global.Vditor.preview(shadow, text, { mode: 'light', cdn: '/vendor/vditor' }))
           .then(function () {
-            if (finished) { cleanup(); return resolve(el); }
-            finished = true; clearTimeout(timer);
-            el.innerHTML = shadow.innerHTML;
-            if (!el.textContent.trim() && !el.querySelector('img, table, pre, blockquote, ul, ol')) el.innerHTML = sanitizedMarkdown(text);
+            var stale = el.dataset.mdSeq !== String(seq) || !document.body.contains(el);
+            var empty = !shadow.textContent.trim() && !shadow.querySelector('img, table, pre, blockquote, ul, ol');
+            if (!stale && !empty) {
+              el.innerHTML = shadow.innerHTML;
+              if (onUpdate) { try { onUpdate(el); } catch (e) {} }
+            }
             cleanup();
-            resolve(el);
           })
-          .catch(function () {
-            if (finished) { cleanup(); return resolve(el); }
-            finished = true; clearTimeout(timer);
-            cleanup();
-            resolve(fallback());
-          });
-      });
-    }
-    try {
-      if (typeof global.Vditor !== 'undefined' && global.Vditor.preview) {
-        return tryVditor();
-      } else {
-        return Promise.resolve(fallback());
+          .catch(cleanup);
       }
-    } catch (e) {
-      return Promise.resolve(fallback());
-    }
+    } catch (e) { /* 后台升级失败不影响已显示的备用渲染 */ }
+
+    return Promise.resolve(el);
   }
 
   global.renderMarkdownSafe = renderMarkdownSafe;

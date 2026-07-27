@@ -223,15 +223,21 @@ function renderHistoryChart(history) {
   for (var si = 0; si < series.length; si++) {
     var s = series[si], ax = bcAxisX(s.cfg.side), col = s.cfg.color, isLeft = (s.cfg.side[0] === 'L');
     svg.push('<line x1="' + ax + '" y1="' + T + '" x2="' + ax + '" y2="' + (T + plotH) + '" stroke="' + col + '" stroke-width="1.2"/>');
+    // 5 个刻度值：必须全是 5 的整数倍（无小数），step 动态算（≥5）
+    var span = s.mx - s.mn;
+    var step = Math.max(5, Math.ceil(span / 4 / 5) * 5);
+    var tickVals = [0, 1, 2, 3, 4].map(function (t) {
+      return Math.round((s.mx - t * span / 4) / step) * step;
+    });
     for (var t = 0; t <= 4; t++) {
       var yy = T + t * plotH / 4;
-      var val = s.mx - t * (s.mx - s.mn) / 4;
+      var val = tickVals[t];
       var tx1 = isLeft ? (ax - 4) : ax;
       var tx2 = isLeft ? ax : (ax + 4);
       svg.push('<line x1="' + tx1 + '" y1="' + yy + '" x2="' + tx2 + '" y2="' + yy + '" stroke="' + col + '" stroke-width="1"/>');
       var lblX = isLeft ? (ax - 7) : (ax + 7);
       var anchor = isLeft ? 'end' : 'start';
-      svg.push('<text class="bc-axis" style="fill:' + col + '" x="' + lblX + '" y="' + (yy + 4) + '" text-anchor="' + anchor + '">' + num(val, 1) + '</text>');
+      svg.push('<text class="bc-axis" style="fill:' + col + '" x="' + lblX + '" y="' + (yy + 4) + '" text-anchor="' + anchor + '">' + val + '</text>');
     }
     var pts = [];
     for (var i = 0; i < history.length; i++) {

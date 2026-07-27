@@ -166,7 +166,7 @@
 .bond-cycle-tip span { display: block; color: #4a4a55; }
 
 /* 标题悬停说明浮框（替代原“指标说明”静态模块） */
-.bond-cycle-title-wrap { position: relative; }
+.bond-cycle-title-wrap { position: relative; display: inline-block; }
 .bond-cycle-title-wrap h2 { cursor: help; }
 .bond-cycle-help-tip {
   display: none;

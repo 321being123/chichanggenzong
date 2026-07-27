@@ -951,6 +951,15 @@ function mergeChangelogByDate(list) {
       if (byDate[date].items.indexOf(text) === -1) byDate[date].items.push(text);
     });
   });
+  merged.forEach(function(day) {
+    day.items.sort(function(a, b) {
+      var ma = /^(新增|优化|修复)[:：]/.exec(a || '');
+      var mb = /^(新增|优化|修复)[:：]/.exec(b || '');
+      var ra = ma ? (ma[1] === '新增' ? 0 : ma[1] === '优化' ? 1 : 2) : 1;
+      var rb = mb ? (mb[1] === '新增' ? 0 : mb[1] === '优化' ? 1 : 2) : 1;
+      return ra - rb;
+    });
+  });
   return merged;
 }
 

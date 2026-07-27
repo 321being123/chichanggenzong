@@ -39,17 +39,37 @@ async function loadChangelog() {
 }
 
 function renderChangelogHtml(data) {
-  var css = 'color:#1a73e8;font-size:16px;font-weight:700;margin:18px 0 8px;border-left:3px solid #1a73e8;padding-left:10px;';
-  var cssItem = 'margin:4px 0 4px 16px;line-height:1.7;';
-  var h = '';
+  var dateCss = 'color:#1a73e8;font-size:16px;font-weight:700;margin:18px 0 8px;border-left:3px solid #1a73e8;padding-left:10px;';
+  var itemCss = 'margin:4px 0 4px 16px;line-height:1.7;';
+  var catRe = /^(新增|优化|修复)[:：]/;
+  function catOf(s) { var m = catRe.exec(s); return m ? m[1] : '优化'; }
+  function stripCat(s) { while (catRe.test(s)) s = s.replace(catRe, ''); return s; } // 去掉前缀，避免重复
+  // 按日期合并同一天的多个版本
+  var byDate = [];
+  var map = {};
   for (var i = 0; i < data.length; i++) {
     var entry = data[i];
-    h += '<h3 style="' + css + '">' + entry.date + '</h3>';
-    h += '<ol>';
-    for (var j = 0; j < entry.items.length; j++) {
-      h += '<li style="' + cssItem + '">' + entry.items[j] + '</li>';
+    if (!map[entry.date]) { map[entry.date] = { date: entry.date, items: [] }; byDate.push(map[entry.date]); }
+    for (var j = 0; j < entry.items.length; j++) map[entry.date].items.push(entry.items[j]);
+  }
+  // 三类顺序：新增 → 优化 → 修复
+  var order = ['新增', '优化', '修复'];
+  var h = '';
+  for (var g = 0; g < byDate.length; g++) {
+    var day = byDate[g];
+    h += '<h3 style="' + dateCss + '">' + day.date + '</h3>';
+    var ordered = [];
+    for (var o = 0; o < order.length; o++) {
+      for (var k = 0; k < day.items.length; k++) {
+        if (catOf(day.items[k]) === order[o]) ordered.push(day.items[k]);
+      }
     }
-    h += '</ol>';
+    for (var n = 0; n < ordered.length; n++) {
+      var it = ordered[n];
+      var cat = catOf(it);
+      var content = stripCat(it); // 去掉前缀后由下方统一加回，杜绝「新增：新增：」这类重复
+      h += '<div style="' + itemCss + '">' + cat + '：' + content + '</div>';
+    }
   }
   return h;
 }

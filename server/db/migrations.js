@@ -1125,6 +1125,54 @@ async function migration020KnowledgeCategoryOwnership() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_article_categories_owner ON article_categories(owner_username)');
 }
 
+// 可转债周期：原始日度事实表 + 周期聚合表（不修改/删除现有安全性表）
+async function migration021ConvertibleBondCycle() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.convertible_bond_daily_metrics (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      trade_date DATE NOT NULL,
+      source_id SMALLINT NOT NULL,
+      close NUMERIC(20,4),
+      conversion_value NUMERIC(20,4),
+      conversion_premium_pct NUMERIC(20,4),
+      bond_value NUMERIC(20,4),
+      bond_premium_pct NUMERIC(20,4),
+      raw_payload JSONB,
+      ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (instrument_id, trade_date, source_id),
+      CONSTRAINT chk_cbdm_close_positive CHECK (close > 0)
+    );
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbdm_trade_date ON market.convertible_bond_daily_metrics(trade_date DESC)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_cycle_daily (
+      trade_date DATE NOT NULL,
+      formula_version TEXT NOT NULL,
+      universe_version TEXT NOT NULL,
+      bond_count INTEGER,
+      premium_count INTEGER,
+      coverage_ratio NUMERIC(5,4),
+      median_price NUMERIC(20,4),
+      median_conversion_value NUMERIC(20,4),
+      median_conversion_premium_pct NUMERIC(20,4),
+      premium_weight NUMERIC(5,4),
+      composite_value NUMERIC(20,4),
+      rolling_percentile NUMERIC(5,2),
+      cycle_level TEXT,
+      source_id SMALLINT,
+      diagnostics JSONB,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (trade_date, formula_version, universe_version),
+      CONSTRAINT chk_cbcd_bond_count CHECK (bond_count >= 100),
+      CONSTRAINT chk_cbcd_coverage CHECK (coverage_ratio >= 0 AND coverage_ratio <= 1),
+      CONSTRAINT chk_cbcd_weight CHECK (premium_weight >= 0.20 AND premium_weight <= 0.55),
+      CONSTRAINT chk_cbcd_percentile CHECK (rolling_percentile >= 0 AND rolling_percentile <= 100)
+    );
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbcd_lookup ON analytics.convertible_bond_cycle_daily(formula_version, trade_date DESC)');
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1167,6 +1215,7 @@ const MIGRATIONS = [
   { version: '018_seed_default_categories', up: migration018SeedDefaultCategories },
   { version: '019_knowledge_constraints_verify', up: migration019KnowledgeConstraintsVerify },
   { version: '020_knowledge_category_ownership', up: migration020KnowledgeCategoryOwnership },
+  { version: '021_convertible_bond_cycle', up: migration021ConvertibleBondCycle },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

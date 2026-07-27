@@ -22,22 +22,48 @@
     if (!el) return Promise.resolve();
     var text = md || '';
     el.innerHTML = '';
+    var done = false;
     function fallback() {
+      if (done) return el;
+      done = true;
       try { el.innerHTML = sanitizedMarkdown(text); }
       catch (e) { el.innerHTML = '<pre>' + escapeHtml(text) + '</pre>'; }
       return el;
     }
+    function tryVditor() {
+      return new Promise(function (resolve) {
+        var finished = false;
+        // 影子容器：让 Vditor 渲染到此，避免超时降级后 Vditor 后台完成又覆盖 el
+        var shadow = document.createElement('div');
+        shadow.style.cssText = 'position:absolute;left:-99999px;top:0;width:720px;visibility:hidden;';
+        document.body.appendChild(shadow);
+        function cleanup() { try { shadow.remove(); } catch (e) {} }
+        var timer = setTimeout(function () {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          resolve(fallback());
+        }, 2000);
+        Promise.resolve(global.Vditor.preview(shadow, text, { mode: 'light', cdn: '/vendor/vditor' }))
+          .then(function () {
+            if (finished) { cleanup(); return resolve(el); }
+            finished = true; clearTimeout(timer);
+            el.innerHTML = shadow.innerHTML;
+            if (!el.textContent.trim() && !el.querySelector('img, table, pre, blockquote, ul, ol')) el.innerHTML = sanitizedMarkdown(text);
+            cleanup();
+            resolve(el);
+          })
+          .catch(function () {
+            if (finished) { cleanup(); return resolve(el); }
+            finished = true; clearTimeout(timer);
+            cleanup();
+            resolve(fallback());
+          });
+      });
+    }
     try {
       if (typeof global.Vditor !== 'undefined' && global.Vditor.preview) {
-        return Promise.resolve(global.Vditor.preview(el, text, {
-          mode: 'light',
-          cdn: '/vendor/vditor'
-        })).then(function () {
-          if (!el.textContent.trim() && !el.querySelector('img, table, pre, blockquote, ul, ol')) fallback();
-          return el;
-        }).catch(function () {
-          return fallback();
-        });
+        return tryVditor();
       } else {
         return Promise.resolve(fallback());
       }

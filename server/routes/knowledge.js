@@ -612,7 +612,7 @@ router.get('/articles/:id/comments', async (req, res) => {
 // P1-6：评论限流——以登录用户名+文章为权威维度（不可伪造），Redis 优先、内存兜底
 router.post('/articles/:id/comments', requireLogin,
   rateLimit({
-    prefix: 'ks-comment', windowMs: 5 * 60 * 1000, max: 3,
+    prefix: 'ks-comment', windowMs: 5 * 60 * 1000, max: 10,
     getKey: req => (req.session.user || 'anon') + ':' + req.params.id,
     message: '评论太频繁，请稍后再试',
   }),

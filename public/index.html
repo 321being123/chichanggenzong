@@ -9,6 +9,7 @@
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
 <link rel="stylesheet" href="shared/style.css?v=19">
 <link rel="stylesheet" href="css/bond-safety.css?v=6">
+<link rel="stylesheet" href="css/bond-cycle.css?v=1">
 <link rel="stylesheet" href="css/stock-analysis.css?v=11">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
 <link rel="stylesheet" href="css/knowledge.css?v=15">
@@ -24,7 +25,7 @@
         <button class="main-tab" data-main="stock-analysis">股债分析</button>
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
-        <button class="main-tab" data-main="bond-safety">转债安全性</button>
+        <button class="main-tab" data-main="bond-safety">可转债</button>
         <button class="main-tab" data-main="changelog">版本记录</button>
       </nav>
     </div>
@@ -83,7 +84,7 @@
           <span class="home-module-meta" id="home-ipo-next"><span>正在读取排期</span></span>
         </button>
         <button class="home-module-card home-module-bonds" onclick="switchMain('bond-safety')">
-          <span class="home-module-head"><span class="home-module-mark">债</span><span class="home-module-name">可转债安全性</span><b>→</b></span>
+          <span class="home-module-head"><span class="home-module-mark">债</span><span class="home-module-name">可转债</span><b>→</b></span>
           <strong id="home-bond-count">--</strong>
           <small>在市可转债</small>
           <span class="home-module-meta"><span id="home-bond-safe">安全 --</span><span id="home-bond-risk">高风险 --</span></span>
@@ -525,35 +526,109 @@
   </div>
 </div>
 
-<!-- 可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
+<!-- 可转债（二级导航：可转债安全性 / 可转债周期） -->
 <div class="main-page" id="main-bond-safety">
   <div class="bond-safety-shell feature-page-shell">
-    <div class="bond-safety-hero">
-      <div>
-        <h2>可转债安全性</h2>
-        <p>基于利息保障、短期偿债能力和负债水平的三指标评级。行情仅供研究参考，不构成投资建议。</p>
-      </div>
-      <div class="bond-safety-updated" id="bond-safety-updated">正在读取数据...</div>
+    <div class="bond-sub-nav">
+      <button class="bond-sub-tab active" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
+      <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
     </div>
-    <div class="bond-safety-stats">
-      <div class="bond-safety-stat"><span>安全</span><strong data-bond-rating-count="安全">0</strong></div>
-      <div class="bond-safety-stat"><span>低风险</span><strong data-bond-rating-count="低风险">0</strong></div>
-      <div class="bond-safety-stat"><span>中风险</span><strong data-bond-rating-count="中风险">0</strong></div>
-      <div class="bond-safety-stat"><span>高风险</span><strong data-bond-rating-count="高风险">0</strong></div>
-    </div>
-    <div class="table-wrap">
-      <div class="bond-safety-toolbar">
-        <input id="bond-safety-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondSafetyApplyFilters()">
-        <select id="bond-safety-rating" onchange="bondSafetyApplyFilters()" aria-label="按安全性筛选">
-          <option value="">全部评级</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option>
-        </select>
-        <span class="bond-safety-quality" id="bond-safety-visible"></span>
-        <span class="bond-safety-spacer"></span>
-        <span class="bond-safety-quality" id="bond-safety-quality"></span>
-        <button class="btn btn-outline btn-sm" id="bond-safety-export" onclick="exportBondSafety()">导出Excel</button>
-        <button class="btn btn-primary btn-sm" id="bond-safety-refresh" onclick="refreshBondSafety()" style="display:none;">刷新数据</button>
+
+    <!-- 子页：可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
+    <div id="sub-bond-safety" class="bond-sub-page">
+      <div class="bond-safety-hero">
+        <div>
+          <h2>可转债安全性</h2>
+          <p>基于利息保障、短期偿债能力和负债水平的三指标评级。行情仅供研究参考，不构成投资建议。</p>
+        </div>
+        <div class="bond-safety-updated" id="bond-safety-updated">正在读取数据...</div>
       </div>
-      <div id="bond-safety-table"><div class="bond-safety-empty">正在加载安全性数据...</div></div>
+      <div class="bond-safety-stats">
+        <div class="bond-safety-stat"><span>安全</span><strong data-bond-rating-count="安全">0</strong></div>
+        <div class="bond-safety-stat"><span>低风险</span><strong data-bond-rating-count="低风险">0</strong></div>
+        <div class="bond-safety-stat"><span>中风险</span><strong data-bond-rating-count="中风险">0</strong></div>
+        <div class="bond-safety-stat"><span>高风险</span><strong data-bond-rating-count="高风险">0</strong></div>
+      </div>
+      <div class="table-wrap">
+        <div class="bond-safety-toolbar">
+          <input id="bond-safety-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondSafetyApplyFilters()">
+          <select id="bond-safety-rating" onchange="bondSafetyApplyFilters()" aria-label="按安全性筛选">
+            <option value="">全部评级</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option>
+          </select>
+          <span class="bond-safety-quality" id="bond-safety-visible"></span>
+          <span class="bond-safety-spacer"></span>
+          <span class="bond-safety-quality" id="bond-safety-quality"></span>
+          <button class="btn btn-outline btn-sm" id="bond-safety-export" onclick="exportBondSafety()">导出Excel</button>
+          <button class="btn btn-primary btn-sm" id="bond-safety-refresh" onclick="refreshBondSafety()" style="display:none;">刷新数据</button>
+        </div>
+        <div id="bond-safety-table"><div class="bond-safety-empty">正在加载安全性数据...</div></div>
+      </div>
+    </div>
+
+    <!-- 子页：可转债周期 -->
+    <div id="sub-bond-cycle" class="bond-sub-page" hidden>
+      <div class="bond-cycle-hero">
+        <div class="bond-cycle-hero-left">
+          <div class="bond-cycle-title-wrap">
+            <h2>可转债周期</h2>
+            <div class="bond-cycle-help-tip" id="bond-cycle-help-tip">
+              <p><strong>综合估值</strong> = 价格中位数 + 转股溢价率中位数 × 动态权重</p>
+              <p><strong>动态权重</strong> = 20%～55%，价格中位数达到 135 元后封顶</p>
+              <p>为什么使用中位数：可转债整体存在明显周期，平均价格和平均溢价率容易被妖债、极高溢价转债影响，中位数可降低极端个券干扰。</p>
+              <p>为什么权重随价格提高：可转债接近面值时偏债性，溢价率影响较低；价格升高后逐渐偏股性，溢价率对整体估值的影响应提高。</p>
+              <p>历史分位如何理解：取最近约五年（1260 个有效交易日）的综合估值计算滚动分位，反映当前市场所处位置。</p>
+              <p class="bond-cycle-disclaimer">数据仅供研究参考，不构成任何投资建议。</p>
+            </div>
+          </div>
+          <p>使用全市场中位数观察可转债综合估值所处位置。</p>
+        </div>
+        <div class="bond-cycle-updated" id="bond-cycle-updated">正在读取数据...</div>
+      </div>
+      <div class="bond-cycle-stale" id="bond-cycle-stale" style="display:none;">数据暂未更新，当前展示上一交易日</div>
+      <div class="bond-cycle-status" id="bond-cycle-status"></div>
+
+      <div class="bond-cycle-overview" id="bond-cycle-overview" style="display:none;">
+        <div class="bond-cycle-cards">
+          <div class="bond-cycle-card"><span>当前周期位置</span><strong id="bc-cycle-level">--</strong></div>
+          <div class="bond-cycle-card"><span>历史分位</span><strong id="bc-percentile">--</strong></div>
+          <div class="bond-cycle-card"><span>综合估值</span><strong id="bc-composite">--</strong></div>
+          <div class="bond-cycle-card"><span>有效转债数量</span><strong id="bc-bond-count">--</strong></div>
+        </div>
+        <div class="bond-cycle-note" id="bc-history-note" style="display:none;">历史不足 252 个有效交易日，暂不计算周期分位</div>
+        <div class="bond-cycle-metrics">
+          <div class="bond-cycle-metric"><span>价格中位数</span><strong id="bc-median-price">--</strong></div>
+          <div class="bond-cycle-metric"><span>转股溢价率中位数</span><strong id="bc-median-premium">--</strong></div>
+          <div class="bond-cycle-metric"><span>转股价值中位数</span><strong id="bc-median-value">--</strong></div>
+          <div class="bond-cycle-metric"><span>当前溢价率权重</span><strong id="bc-weight">--</strong></div>
+          <div class="bond-cycle-metric"><span>数据覆盖率</span><strong id="bc-coverage">--</strong></div>
+        </div>
+      </div>
+
+      <div class="bond-cycle-chart-wrap" id="bond-cycle-chart-wrap" style="display:none;">
+        <div class="bond-cycle-chart-controls">
+          <div class="bond-cycle-range-tabs">
+            <button data-range="1y">1年</button>
+            <button data-range="3y">3年</button>
+            <button data-range="5y">5年</button>
+            <button data-range="all" class="active">全部</button>
+          </div>
+          <div class="bond-cycle-metric-tabs">
+            <button data-metric="percentile" class="active">周期分位</button>
+            <button data-metric="composite" class="active">综合估值</button>
+            <button data-metric="median_price">价格中位数</button>
+            <button data-metric="median_conversion_premium_pct">溢价率中位数</button>
+          </div>
+        </div>
+        <div class="bond-cycle-chart" id="bond-cycle-chart"></div>
+        <div class="bond-cycle-tip" id="bond-cycle-tip"></div>
+      </div>
+
+      <div class="table-wrap bond-cycle-table-wrap" id="bond-cycle-table-wrap" style="display:none;">
+        <div class="table-header">
+          <h3>历史数据明细（每日回填）</h3>
+        </div>
+        <div id="bond-cycle-table"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -789,13 +864,14 @@
 <script src="vendor/dompurify.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=7"></script>
+<script src="js/bond-cycle.js?v=1"></script>
 <script src="js/stock-analysis.js?v=11"></script>
 <script src="js/bond-analysis.js?v=3"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>
 <script src="js/stock-analysis-chart.js?v=11"></script>
 <script src="js/stock-analysis-valuation-chart.js?v=4"></script>
 <script src="js/home-dashboard.js?v=9"></script>
-<script src="vendor/vditor/dist/index.min.js"></script>
+<script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>
 <script src="js/knowledge.js?v=20"></script>
 <script>
@@ -853,7 +929,7 @@ function switchMain(main) {
   if (main === 'profile') loadProfile();
   if (main === 'changelog') loadChangelogPage();
   if (main === 'ipo') loadIpo();
-  if (main === 'bond-safety') loadBondSafety();
+  if (main === 'bond-safety') { loadBondSafety(); if (typeof initBondCycleSub === 'function') initBondCycleSub(); }
   if (main === 'stock-analysis') loadStockAnalysis();
   if (main === 'knowledge') loadKnowledge();
   if (main === 'home') loadHomeDashboard();

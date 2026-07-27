@@ -1,0 +1,206 @@
+/* 可转债周期页面样式（沿用可转债安全性视觉规范） */
+[hidden] { display: none !important; }
+
+.bond-sub-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid #ececf3;
+  padding-bottom: 0;
+}
+.bond-sub-tab {
+  border: none;
+  background: transparent;
+  padding: 10px 16px;
+  font-size: 15px;
+  color: #6b6b80;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.bond-sub-tab:hover { color: #1a1a2e; }
+.bond-sub-tab.active { color: #1a1a2e; font-weight: 600; border-bottom-color: #3b5bdb; }
+
+.bond-sub-page { animation: bcFade .18s ease; }
+@keyframes bcFade { from { opacity: 0; } to { opacity: 1; } }
+
+/* 页面标题区 */
+.bond-cycle-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.bond-cycle-hero h2 { margin: 0 0 4px; font-size: 22px; color: #1a1a2e; }
+.bond-cycle-hero p { margin: 0; color: #777; font-size: 13px; }
+.bond-cycle-updated { color: #999; font-size: 12px; white-space: nowrap; }
+
+.bond-cycle-stale {
+  background: #fff7e6;
+  border: 1px solid #ffe0a3;
+  color: #9a6700;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+
+.bond-cycle-status { color: #888; font-size: 14px; padding: 20px 0; }
+
+/* 概览卡片 */
+.bond-cycle-overview { margin-bottom: 18px; }
+.bond-cycle-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.bond-cycle-card {
+  background: #fbfbff;
+  border: 1px solid #ececf3;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bond-cycle-card span { color: #888; font-size: 13px; }
+.bond-cycle-card strong { font-size: 26px; color: #1a1a2e; font-weight: 700; }
+
+.bond-cycle-note {
+  background: #f0f4ff;
+  border: 1px solid #d6e0ff;
+  color: #3b5bdb;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.bond-cycle-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+}
+.bond-cycle-metric {
+  background: #fff;
+  border: 1px solid #f0f0f6;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bond-cycle-metric span { color: #999; font-size: 12px; }
+.bond-cycle-metric strong { font-size: 18px; color: #33334d; font-weight: 600; }
+
+/* 图表 */
+.bond-cycle-chart-wrap {
+  background: #fff;
+  border: 1px solid #ececf3;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 18px;
+}
+.bond-cycle-chart-controls {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.bond-cycle-range-tabs button,
+.bond-cycle-metric-tabs button {
+  border: 1px solid #e2e2ec;
+  background: #fff;
+  color: #555;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.bond-cycle-range-tabs button.active {
+  background: #3b5bdb;
+  border-color: #3b5bdb;
+  color: #fff;
+  font-weight: 600;
+}
+.bond-cycle-metric-tabs button.active {
+  background: #f4f6ff;
+  border-color: #c5cdef;
+  font-weight: 600;
+}
+.bond-cycle-chart { width: 100%; overflow-x: auto; }
+.bond-cycle-chart svg { width: 100%; height: auto; min-width: 720px; }
+.bond-cycle-chart-empty { color: #999; padding: 40px 0; text-align: center; }
+
+.bc-grid { stroke: #eee; stroke-width: 1; }
+.bc-axis { fill: #999; font-size: 11px; }
+.bc-band { opacity: .5; }
+.bc-band-低位 { fill: #e7f0ff; }
+.bc-band-偏低 { fill: #e9f7f4; }
+.bc-band-中位 { fill: #f4f4f8; }
+.bc-band-偏高 { fill: #fff3e9; }
+.bc-band-高位 { fill: #ffeaea; }
+.bc-band-label { fill: #b0b0c0; font-size: 11px; }
+.bc-line { fill: none; stroke: #3b5bdb; stroke-width: 1.8; }
+.bc-hit { fill: transparent; }
+
+.bond-cycle-tip {
+  display: none;
+  position: fixed;
+  pointer-events: none;
+  background: #ffffff;
+  color: #1a1a2e;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  z-index: 20;
+  max-width: 240px;
+  border: 1px solid #d8d8e3;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+.bond-cycle-tip strong { display: block; margin-bottom: 4px; font-size: 13px; color: #1a1a2e; }
+.bond-cycle-tip span { display: block; color: #4a4a55; }
+
+/* 标题悬停说明浮框（替代原“指标说明”静态模块） */
+.bond-cycle-title-wrap { position: relative; }
+.bond-cycle-title-wrap h2 { cursor: help; }
+.bond-cycle-help-tip {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 8px;
+  width: 380px;
+  max-width: 86vw;
+  background: #fff;
+  border: 1px solid #d8d8e3;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  padding: 14px 16px;
+  z-index: 50;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #555;
+}
+/* 透明桥接区：避免鼠标从标题移到浮框时中间空隙导致闪烁 */
+.bond-cycle-help-tip::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.bond-cycle-title-wrap:hover .bond-cycle-help-tip { display: block; }
+.bond-cycle-help-tip p { margin: 0 0 8px; }
+.bond-cycle-help-tip p:last-child { margin-bottom: 0; }
+.bond-cycle-help-tip .bond-cycle-disclaimer { color: #999; font-style: italic; }
+
+@media (max-width: 720px) {
+  .bond-cycle-cards { grid-template-columns: repeat(2, 1fr); }
+  .bond-cycle-metrics { grid-template-columns: repeat(2, 1fr); }
+}

@@ -5,6 +5,7 @@ const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchS
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const cycleService = require('./convertibleBondCycleService');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const PROFILE_FIELDS = [
@@ -938,9 +939,11 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
     const dailyMap = new Map(daily.rows.map(row => [row.ts_code, row]));
     const client = await pool.connect();
     let saved = 0;
+    let tushareSourceId = null;
     try {
       await client.query('BEGIN');
       const sources = await sourceIds(client);
+      tushareSourceId = sources.tushare;
       for (const profile of basics) {
         const ids = await saveProfile(client, profile, sources);
         const quote = dailyMap.get(profile.ts_code);
@@ -955,8 +958,21 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
         [isoDate(daily.tradeDate)]
       );
       await client.query('COMMIT');
+      console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
+    // 可转债周期：主同步提交后，用独立事务计算（周期失败只影响周期数据，不影响主同步）
+    const cycleClient = await pool.connect();
+    try {
+      await cycleClient.query('BEGIN');
+      const cyc = await cycleService.processCycleDay(daily.tradeDate, daily.rows, { sourceId: tushareSourceId, client: cycleClient });
+      await cycleClient.query('COMMIT');
+      if (cyc.stored) console.log(`[cycle] 当日周期指标已发布（${daily.tradeDate}）`);
+      else console.warn(`[cycle] 当日未发布周期指标（${daily.tradeDate}，原因：${cyc.reason}）`);
+    } catch (cycErr) {
+      await cycleClient.query('ROLLBACK').catch(() => {});
+      console.warn('[cycle] 当日周期计算失败（不影响主同步）：', cycErr.message);
+    } finally { cycleClient.release(); }
     await finishJobRun(runId, true, `${reason}：同步 ${saved} 只，行情日期 ${daily.tradeDate}`);
     return { skipped: false, count: saved, trade_date: isoDate(daily.tradeDate) };
   } catch (error) {
@@ -1333,4 +1349,5 @@ module.exports = {
   annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
+  DAILY_FIELDS,
 };

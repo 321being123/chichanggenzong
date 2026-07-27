@@ -59,7 +59,7 @@ function pgConfig(dbName) {
     check('券商种子数据已写入（>0）', () => { assert.ok(b.rows[0].c > 0, 'brokers 种子为空'); });
 
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 20); });
+    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 21); });
 
     const knowledgeConstraints = await db.pool.query(
       `SELECT conname FROM pg_constraint
@@ -120,10 +120,17 @@ function pgConfig(dbName) {
     });
     check('股票分析旧表已删除', () => { for (const name of ['stock_analysis_stocks','stock_income_statements','stock_balance_sheets','stock_cashflow_statements','stock_financial_indicators','stock_dividends','stock_forecasts','stock_daily_valuations','stock_events','stock_analysis_snapshots','stock_data_sync_state']) assert.ok(!tables.includes(name), '旧表仍存在 '+name); });
 
+    const cycleTables = await db.pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE (table_schema='market' AND table_name='convertible_bond_daily_metrics') OR (table_schema='analytics' AND table_name='convertible_bond_cycle_daily')");
+    const cycleSet = new Set(cycleTables.rows.map(r => `${r.table_schema}.${r.table_name}`));
+    check('可转债周期新表已创建（021）', () => {
+      assert.ok(cycleSet.has('market.convertible_bond_daily_metrics'), '缺少表 market.convertible_bond_daily_metrics');
+      assert.ok(cycleSet.has('analytics.convertible_bond_cycle_daily'), '缺少表 analytics.convertible_bond_cycle_daily');
+    });
+
     console.log('B. 二次 initSchema（幂等）');
     await db.initSchema();
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('二次迁移不重复登记（仍为20）', () => { assert.strictEqual(m2.rows[0].c, 20); });
+    check('二次迁移不重复登记（仍为21）', () => { assert.strictEqual(m2.rows[0].c, 21); });
   } catch (e) {
     if (!tmpDb) {
       // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）

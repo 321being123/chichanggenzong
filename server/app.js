@@ -17,6 +17,7 @@ const profileRouter = require('./routes/profile');
 const adminRouter = require('./routes/admin');
 const ipoRouter = require('./routes/ipo');
 const bondSafetyRouter = require('./routes/bondSafety');
+const bondCycleRouter = require('./routes/bondCycle');
 const stockAnalysisRouter = require('./routes/stockAnalysis');
 const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
@@ -109,6 +110,7 @@ async function start() {
   app.use('/api/bond-analysis', bondAnalysisRouter); // 可转债分析：数据库快照读取和单债刷新
   app.use('/api/ipo', ipoRouter);       // 打新日历：报告/历史列表/已上市表现
   app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：数据库快照读取/管理员刷新
+  app.use('/api/bond-cycle', bondCycleRouter);    // 可转债周期：只读聚合查询
   app.use('/api/knowledge', knowledgeRouter);    // 知识分享：文章/分类/评论/公开分享
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测

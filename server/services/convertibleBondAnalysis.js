@@ -981,6 +981,61 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
   } finally { await releaseJob('convertible_bond_universe_refresh'); }
 }
 
+// 扫描最近窗口内的开市日（按时间正序），用于检测空缺
+async function getRecentOpenDays(days = 90) {
+  const end = tsDateStr(new Date());
+  const start = tsDateStr(addDays(new Date(), -days));
+  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: start, end_date: end, is_open: '1' }, 'cal_date,is_open');
+  return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort();
+}
+
+// 自动补齐历史空缺：主同步之后调用，扫描游标之前（含游标当天）窗口内「事实表缺失/坏数据」的交易日，逐日重算周期指标。
+// 无空缺时几乎零开销（一次 SQL 扫描）。windowDays 控制扫描范围：每日任务用默认 90 天足够，手动脚本可传更大值补全量历史。
+async function backfillCycleGaps({ windowDays = 90 } = {}) {
+  const sourceId = await cycleService.getTushareSourceId();
+  if (sourceId == null) { console.warn('[cycle-backfill] 未取得 tushare 数据源，跳过空缺补齐'); return; }
+  const openDays = await getRecentOpenDays(windowDays);
+  if (!openDays.length) return;
+  const cursor = await cycleService.getSyncCursor();
+  // 游标之后已由当日主同步覆盖；只需检查游标之前（含游标当天）的窗口日
+  const candidateDays = cursor ? openDays.filter(d => d <= cursor) : openDays;
+  const gaps = candidateDays.length ? await cycleService.findGapDays(candidateDays) : [];
+  if (!gaps.length) return;
+  console.log(`[cycle-backfill] 检测到 ${gaps.length} 个空缺日：${gaps.slice(0, 10).join(',')}${gaps.length > 10 ? '...' : ''}，开始补齐`);
+  let gapFilled = 0;
+  const client = await pool.connect();
+  try {
+    for (const day of gaps) {
+      try {
+        const data = await tushareQuery('cb_daily', { trade_date: day }, DAILY_FIELDS);
+        const rows = tsRows(data);
+        if (!rows.length) continue;
+        await client.query('BEGIN');
+        const res = await cycleService.processCycleDay(day, rows, { sourceId, client });
+        if (res.failed) { await client.query('ROLLBACK'); console.warn(`[cycle-backfill] ${day} 数据异常，停止补齐：${res.reason}`); break; }
+        await client.query('COMMIT');
+        if (res.stored) gapFilled++;
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.warn(`[cycle-backfill] ${day} 补齐失败，停止：${e.message}`);
+        break;
+      }
+    }
+  } finally { client.release(); }
+  if (gapFilled > 0) {
+    console.log(`[cycle-backfill] 已补 ${gapFilled} 个空缺日，按时间顺序重算滚动分位...`);
+    const n = await cycleService.recomputePercentiles();
+    console.log(`[cycle-backfill] 分位重算完成（${n} 天）`);
+  }
+}
+
+// 每日主同步 + 自动补齐遗漏的交易日：某天任务失败或部署晚于点，下次运行时主同步更新最新日，backfill 顺手把漏的那天补上，不留永久缺口。
+// backfillOpts 透传给 backfillCycleGaps（如手动脚本传 { windowDays: 4000 } 补全量历史）。
+async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
+  await syncConvertibleBondUniverse(reason);
+  await backfillCycleGaps(backfillOpts);
+}
+
 async function loadSafety(code) {
   const { rows } = await pool.query('SELECT data,source_updated_at FROM bond_safety_snapshots ORDER BY id DESC LIMIT 1');
   const snapshot = rows[0];
@@ -1350,4 +1405,5 @@ module.exports = {
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
   DAILY_FIELDS,
+  syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, getRecentOpenDays,
 };

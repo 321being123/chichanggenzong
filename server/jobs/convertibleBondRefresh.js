@@ -1,5 +1,5 @@
 const { pool } = require('../db/connection');
-const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnalysis');
+const { syncConvertibleBondUniverse, syncConvertibleBondUniverseWithBackfill } = require('../services/convertibleBondAnalysis');
 
 function nextShanghaiDelay(hour = 16, minute = 40, now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -23,7 +23,7 @@ function scheduleConvertibleBondRefresh() {
   bootstrapConvertibleBonds().catch(error => console.error('[bond-analysis] 首次全量同步失败:', error.message));
   function scheduleNext() {
     const timer = setTimeout(async () => {
-      try { await syncConvertibleBondUniverse('daily_incremental'); }
+      try { await syncConvertibleBondUniverseWithBackfill('daily_incremental'); }
       catch (error) { console.error('[bond-analysis] 每日增量同步失败:', error.message); }
       scheduleNext();
     }, nextShanghaiDelay());

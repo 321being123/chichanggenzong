@@ -79,6 +79,7 @@ function runPython() {
     path.join(rootDir, 'ipo-report', 'test_ipo_unit.py'),
     path.join(rootDir, 'ipo-report', 'test_ipo_integration.py'),
     path.join(rootDir, 'ipo-report', 'test_unit_fixes.py'),
+    path.join(testDir, 'test_valuation_regression.py'),
   ].filter(f => fs.existsSync(f));
   if (pyFiles.length === 0) { skip++; console.log('  ⊘ 未找到 Python 测试文件，跳过'); return; }
   for (const file of pyFiles) {

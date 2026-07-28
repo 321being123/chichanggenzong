@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="shared/style.css?v=19">
 <link rel="stylesheet" href="css/bond-safety.css?v=6">
 <link rel="stylesheet" href="css/bond-cycle.css?v=1">
+<link rel="stylesheet" href="css/bond-valuation.css?v=1">
 <link rel="stylesheet" href="css/stock-analysis.css?v=11">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
 <link rel="stylesheet" href="css/knowledge.css?v=15">
@@ -532,6 +533,7 @@
     <div class="bond-sub-nav">
       <button class="bond-sub-tab active" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
       <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
+      <button class="bond-sub-tab" data-sub="valuation" onclick="switchBondSub('valuation')">可转债估值</button>
     </div>
 
     <!-- 子页：可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
@@ -628,6 +630,46 @@
           <h3>历史数据明细（每日回填）</h3>
         </div>
         <div id="bond-cycle-table"></div>
+      </div>
+    </div>
+
+    <!-- 子页：可转债估值 -->
+    <div id="sub-bond-valuation" class="bond-sub-page" hidden>
+      <div class="bond-val-hero">
+        <div>
+          <h2>可转债估值</h2>
+          <p>使用跨越牛熊的中性公允价，判断单只转债相对公允价是低估、合理还是高估。仅供研究参考，不构成投资建议。</p>
+        </div>
+        <div class="bond-val-updated" id="bond-val-updated">正在读取数据...</div>
+      </div>
+      <div class="bond-val-overview" id="bond-val-overview" style="display:none;">
+        <div class="bond-val-cards" id="bond-val-cards"></div>
+        <div class="bond-val-counts" id="bond-val-counts"></div>
+      </div>
+      <div class="bond-val-stale" id="bond-val-stale" style="display:none;">数据暂未更新，当前展示上一交易日</div>
+      <div class="bond-val-status" id="bond-val-status"></div>
+      <div class="table-wrap">
+        <div class="bond-val-toolbar">
+          <input id="bond-val-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondValApplyFilters()">
+          <select id="bond-val-eval" onchange="bondValApplyFilters()" aria-label="按最终评价筛选">
+            <option value="">全部评价</option>
+            <option>低估</option><option>偏低估</option><option>合理</option>
+            <option>偏高估</option><option>高估</option><option>风险折价</option><option>数据不足</option>
+          </select>
+          <select id="bond-val-safety" onchange="bondValApplyFilters()" aria-label="按安全性筛选">
+            <option value="">全部安全性</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option><option>未评级</option>
+          </select>
+          <select id="bond-val-alert" onchange="bondValApplyFilters()" aria-label="按预警筛选">
+            <option value="">全部预警</option><option value="关注">关注</option><option value="重要">重要</option>
+          </select>
+          <select id="bond-val-data" onchange="bondValApplyFilters()" aria-label="按数据状态筛选">
+            <option value="">全部数据</option><option value="完整">数据完整</option><option value="数据不足">数据不足</option>
+          </select>
+          <button class="btn btn-outline btn-sm" onclick="bondValClearFilters()">清除筛选</button>
+          <span class="bond-val-spacer"></span>
+          <span class="bond-val-quality" id="bond-val-visible"></span>
+        </div>
+        <div id="bond-val-table"><div class="bond-val-empty">正在加载估值数据...</div></div>
       </div>
     </div>
   </div>
@@ -865,6 +907,7 @@
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=7"></script>
 <script src="js/bond-cycle.js?v=1"></script>
+<script src="js/bond-valuation.js?v=1"></script>
 <script src="js/stock-analysis.js?v=11"></script>
 <script src="js/bond-analysis.js?v=3"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>

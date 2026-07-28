@@ -1,0 +1,74 @@
+/* 可转债估值子页面样式（与安全性/周期模块保持一致） */
+.bond-val-hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 4px 10px; }
+.bond-val-hero h2 { margin: 0 0 4px; font-size: 20px; }
+.bond-val-hero p { margin: 0; color: #6b7280; font-size: 13px; max-width: 720px; }
+.bond-val-updated { font-size: 12px; color: #8a8f98; white-space: nowrap; padding-top: 6px; }
+
+.bond-val-overview { margin: 6px 0 12px; }
+.bond-val-cards { display: flex; flex-wrap: wrap; gap: 10px; }
+.bond-val-card { background: #f7f8fa; border: 1px solid #eceef1; border-radius: 8px; padding: 10px 14px; min-width: 110px; }
+.bond-val-card span { display: block; font-size: 12px; color: #8a8f98; margin-bottom: 4px; }
+.bond-val-card strong { font-size: 17px; }
+.bond-val-counts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.bond-val-count { font-size: 12px; padding: 3px 8px; border-radius: 12px; background: #f0f1f3; color: #555; }
+
+.bond-val-stale { background: #fff7e6; border: 1px solid #ffe0a3; color: #a86a00; padding: 6px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 8px; }
+.bond-val-status { font-size: 13px; color: #8a8f98; min-height: 18px; margin-bottom: 6px; }
+
+.bond-val-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 0; }
+.bond-val-toolbar input[type=search] { min-width: 220px; padding: 6px 10px; border: 1px solid #d8dbe0; border-radius: 6px; }
+.bond-val-toolbar select { padding: 6px 8px; border: 1px solid #d8dbe0; border-radius: 6px; background: #fff; }
+.bond-val-spacer { flex: 1; }
+.bond-val-quality { font-size: 12px; color: #8a8f98; }
+
+.bond-val-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.bond-val-table th, .bond-val-table td { padding: 6px 8px; border-bottom: 1px solid #eef0f2; white-space: nowrap; text-align: right; }
+.bond-val-table th:not(.num), .bond-val-table td:not(.num) { text-align: left; }
+.bond-val-table thead th { position: sticky; top: 0; background: #fafbfc; cursor: pointer; user-select: none; border-bottom: 2px solid #e3e6ea; z-index: 1; }
+.bond-val-table tbody tr { cursor: pointer; }
+.bond-val-table tbody tr:hover { background: #f4f8ff; }
+.bond-val-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.bond-val-empty { padding: 30px; text-align: center; color: #9aa0a6; }
+
+/* 最终评价配色 */
+.val-low { color: #1e8e3e; font-weight: 600; }
+.val-low2 { color: #34a853; font-weight: 600; }
+.val-mid { color: #5f6368; }
+.val-high1 { color: #e8710a; font-weight: 600; }
+.val-high { color: #d93025; font-weight: 600; }
+.val-risk { color: #b06000; font-weight: 600; }
+.val-none { color: #9aa0a6; }
+
+.val-alert { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+.val-alert-imp { background: #fdecea; color: #c5221f; }
+.val-alert-att { background: #fff4e0; color: #b06a00; }
+
+/* 详情 */
+.bond-val-detail { padding: 4px 0 24px; }
+.bond-val-detail-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.bond-val-detail-title { font-size: 17px; font-weight: 600; }
+.val-alert-tag { margin-left: auto; padding: 3px 12px; border-radius: 14px; background: #f0f1f3; font-size: 13px; }
+.bond-val-detail-loading { padding: 30px; color: #8a8f98; }
+.bond-val-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.bond-val-sum-card { background: #f7f8fa; border: 1px solid #eceef1; border-radius: 8px; padding: 8px 12px; min-width: 96px; }
+.bond-val-sum-card span { display: block; font-size: 11px; color: #8a8f98; margin-bottom: 3px; }
+.bond-val-sum-card strong { font-size: 15px; }
+.bond-val-section { margin: 16px 0; }
+.bond-val-section h3 { font-size: 15px; margin: 0 0 8px; border-left: 3px solid #4a76d4; padding-left: 8px; }
+.bond-val-section h4 { font-size: 13px; margin: 12px 0 6px; color: #555; }
+.bond-val-detail-table { width: 100%; max-width: 760px; border-collapse: collapse; font-size: 13px; }
+.bond-val-detail-table th, .bond-val-detail-table td { padding: 6px 10px; border-bottom: 1px solid #eef0f2; text-align: left; }
+.bond-val-detail-table td.num, .bond-val-detail-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.bond-val-detail-table td.note { color: #9aa0a6; font-size: 12px; }
+.bond-val-note { color: #9aa0a6; font-size: 13px; }
+.bond-val-disclaimer { color: #8a8f98; font-size: 12.5px; }
+.bond-val-disclaimer p { line-height: 1.7; }
+
+.bond-val-range-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.bond-val-range-tabs button { padding: 4px 12px; border: 1px solid #d8dbe0; background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.bond-val-range-tabs button.active { background: #4a76d4; color: #fff; border-color: #4a76d4; }
+.bond-val-chart-card { border: 1px solid #eef0f2; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; background: #fff; }
+.bond-val-chart-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #444; }
+.bond-val-svg { display: block; width: 100%; height: 220px; }
+.bond-val-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #666; margin-top: 4px; }
+.bond-val-legend i { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 4px; }

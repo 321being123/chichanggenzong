@@ -12,21 +12,27 @@ function switchBondSub(sub) {
   sub = sub || 'safety';
   var safety = document.getElementById('sub-bond-safety');
   var cycle = document.getElementById('sub-bond-cycle');
+  var valuation = document.getElementById('sub-bond-valuation');
   if (safety) safety.hidden = (sub !== 'safety');
   if (cycle) cycle.hidden = (sub !== 'cycle');
+  if (valuation) valuation.hidden = (sub !== 'valuation');
   var tabs = document.querySelectorAll('.bond-sub-tab');
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.sub === sub);
   var params = new URLSearchParams(window.location.search);
   params.set('main', 'bond-safety');
-  if (sub === 'cycle') params.set('sub', 'cycle'); else params.delete('sub');
+  if (sub === 'cycle') params.set('sub', 'cycle');
+  else if (sub === 'valuation') params.set('sub', 'valuation');
+  else params.delete('sub');
   history.replaceState(null, '', '/?' + params.toString());
   if (sub === 'cycle') loadBondCycle();
+  else if (sub === 'valuation') loadBondValuation();
 }
 
 function initBondCycleSub() {
   if (window.__bondCycleControlsReady) {
     var p = new URLSearchParams(window.location.search);
-    switchBondSub(p.get('sub') === 'cycle' ? 'cycle' : 'safety');
+    var sub = p.get('sub');
+    switchBondSub(sub === 'cycle' ? 'cycle' : (sub === 'valuation' ? 'valuation' : 'safety'));
     return;
   }
   window.__bondCycleControlsReady = true;
@@ -60,7 +66,8 @@ function initBondCycleSub() {
     })(metricBtns[k]);
   }
   var p2 = new URLSearchParams(window.location.search);
-  switchBondSub(p2.get('sub') === 'cycle' ? 'cycle' : 'safety');
+  var sub2 = p2.get('sub');
+  switchBondSub(sub2 === 'cycle' ? 'cycle' : (sub2 === 'valuation' ? 'valuation' : 'safety'));
 }
 
 async function loadBondCycle() {

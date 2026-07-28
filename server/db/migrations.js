@@ -1173,6 +1173,149 @@ async function migration021ConvertibleBondCycle() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_cbcd_lookup ON analytics.convertible_bond_cycle_daily(formula_version, trade_date DESC)');
 }
 
+async function migration022ConvertibleBondValuation() {
+  // 模型版本表：每次训练保存公式/特征/样本池版本、训练范围、中性市场基准、误差分位、模型文件与校验值
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_valuation_models (
+      model_version TEXT PRIMARY KEY,
+      formula_version TEXT NOT NULL,
+      feature_version TEXT NOT NULL,
+      universe_version TEXT NOT NULL,
+      training_start_date DATE,
+      training_end_date DATE,
+      training_row_count INTEGER,
+      training_bond_count INTEGER,
+      neutral_market_extra NUMERIC(14,8),
+      residual_quantiles JSONB,
+      model_path TEXT,
+      model_sha256 TEXT,
+      backtest_metrics JSONB,
+      is_active BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      activated_at TIMESTAMPTZ
+    );
+  `);
+
+  // 每日估值结果表：每个交易日每只转债一份（同一模型版本），保存当时使用的数据与模型版本，可历史追溯
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_valuation_daily (
+      trade_date DATE NOT NULL,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      model_version TEXT NOT NULL,
+      formula_version TEXT NOT NULL,
+      feature_version TEXT NOT NULL,
+      universe_version TEXT NOT NULL,
+      quote_date DATE,
+      close NUMERIC(20,4),
+      conversion_value NUMERIC(20,4),
+      bond_value NUMERIC(20,4),
+      conversion_premium_pct NUMERIC(20,4),
+      anchor_value NUMERIC(20,4),
+      remaining_years NUMERIC(8,4),
+      conversion_value_volatility_60d NUMERIC(10,6),
+      neutral_market_extra NUMERIC(14,8),
+      predicted_relative_extra NUMERIC(14,8),
+      fair_price NUMERIC(20,4),
+      fair_price_low NUMERIC(20,4),
+      fair_price_high NUMERIC(20,4),
+      absolute_deviation_pct NUMERIC(12,6),
+      valuation_percentile NUMERIC(6,3),
+      market_heat_pct NUMERIC(12,6),
+      relative_market_deviation_pct NUMERIC(12,6),
+      base_evaluation TEXT,
+      safety_level TEXT,
+      credit_warning TEXT,
+      final_evaluation TEXT,
+      confidence_level TEXT,
+      data_status TEXT,
+      diagnostics JSONB,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (trade_date, instrument_id, model_version),
+      CONSTRAINT chk_cbvd_close_nonneg CHECK (close IS NULL OR close >= 0),
+      CONSTRAINT chk_cbvd_fair_positive CHECK (fair_price IS NULL OR fair_price > 0),
+      CONSTRAINT chk_cbvd_deviation_range CHECK (absolute_deviation_pct IS NULL OR absolute_deviation_pct BETWEEN -99 AND 999),
+      CONSTRAINT chk_cbvd_percentile_range CHECK (valuation_percentile IS NULL OR valuation_percentile BETWEEN 0 AND 100),
+      CONSTRAINT chk_cbvd_interval_order CHECK (fair_price_low IS NULL OR fair_price_high IS NULL OR fair_price_low <= fair_price_high)
+    );
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbvd_trade_date ON analytics.convertible_bond_valuation_daily(trade_date DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbvd_instrument_date ON analytics.convertible_bond_valuation_daily(instrument_id, trade_date DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbvd_eval_date ON analytics.convertible_bond_valuation_daily(final_evaluation, trade_date DESC)');
+
+  // 预警表：状态跃迁预警，去重键为 转债+类型+当前状态+模型版本
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_valuation_alerts (
+      alert_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      trade_date DATE NOT NULL,
+      alert_type TEXT NOT NULL,
+      alert_level TEXT NOT NULL,
+      previous_state TEXT,
+      current_state TEXT,
+      trigger_payload JSONB,
+      model_version TEXT,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      resolved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (instrument_id, alert_type, current_state, model_version)
+    );
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbva_trade_date ON analytics.convertible_bond_valuation_alerts(trade_date DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cbva_instrument ON analytics.convertible_bond_valuation_alerts(instrument_id, trade_date DESC)');
+
+  // 同步游标（历史回填游标，只前进不回退）
+  await pool.query(
+    `INSERT INTO ops.sync_cursors (scope_key, dataset_code, last_success_date)
+     VALUES ('convertible_bond_valuation', 'daily_valuation', NULL)
+     ON CONFLICT (scope_key, dataset_code) DO NOTHING`
+  );
+}
+
+async function migration023ValuationConstraints() {
+  // 每日估值表：实际使用的年度子模型版本、稳定评价分类（供统计/排序，不依赖中文文案）
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_daily ADD COLUMN IF NOT EXISTS model_year INTEGER`);
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_daily ADD COLUMN IF NOT EXISTS eval_class TEXT`);
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_daily ADD COLUMN IF NOT EXISTS quote_lag_days INTEGER`);
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_daily ADD COLUMN IF NOT EXISTS historical_safety TEXT`);
+
+  // 模型版本表：相对路径（跨环境）、年度元数据固化、启用审计
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_models ADD COLUMN IF NOT EXISTS model_file_rel_path TEXT`);
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_models ADD COLUMN IF NOT EXISTS yearly_metadata JSONB`);
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_models ADD COLUMN IF NOT EXISTS enabled_by TEXT`);
+  await pool.query(`ALTER TABLE analytics.convertible_bond_valuation_models ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`);
+
+  // 同一时间仅一个活动模型：partial unique index（只对 is_active=true 生效）
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_cbv_one_active_model
+     ON analytics.convertible_bond_valuation_models ((1)) WHERE is_active`
+  );
+
+  // 每日估值表的 model_version 外键关联模型版本表（历史重建后引用均存在）
+  await pool.query(
+    `ALTER TABLE analytics.convertible_bond_valuation_daily
+     ADD CONSTRAINT fk_cbvd_model_version
+     FOREIGN KEY (model_version) REFERENCES analytics.convertible_bond_valuation_models(model_version)
+     ON DELETE RESTRICT`
+  );
+
+  // 预警表的 model_version 外键关联
+  await pool.query(
+    `ALTER TABLE analytics.convertible_bond_valuation_alerts
+     ADD CONSTRAINT fk_cbva_model_version
+     FOREIGN KEY (model_version) REFERENCES analytics.convertible_bond_valuation_models(model_version)
+     ON DELETE RESTRICT`
+  );
+
+  // 历史安全性快照（供历史回填按快照日期取当时有效安全性；缺失则标记“历史安全性不可用”）
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.bond_safety_snapshot_history (
+      snapshot_date DATE PRIMARY KEY,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1216,6 +1359,8 @@ const MIGRATIONS = [
   { version: '019_knowledge_constraints_verify', up: migration019KnowledgeConstraintsVerify },
   { version: '020_knowledge_category_ownership', up: migration020KnowledgeCategoryOwnership },
   { version: '021_convertible_bond_cycle', up: migration021ConvertibleBondCycle },
+  { version: '022_convertible_bond_valuation', up: migration022ConvertibleBondValuation },
+  { version: '023_valuation_constraints', up: migration023ValuationConstraints },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤
@@ -1314,6 +1459,7 @@ module.exports = {
   migration002BondSafetySnapshots,
   migration003MarketDataCache,
   migration004BondSafetyFinancialCache,
+  migration022ConvertibleBondValuation,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

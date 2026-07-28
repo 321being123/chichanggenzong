@@ -140,12 +140,7 @@ function renderCharts() {
             pointStyle: 'circle'
           }
         },
-        tooltip: {
-          backgroundColor: '#323232',
-          cornerRadius: 8,
-          padding: 10,
-          titleFont: { size: 13 },
-          bodyFont: { size: 12 },
+        tooltip: appChartTooltip({
           callbacks: {
             label: function (ctx) {
               var v = ctx.raw;
@@ -153,7 +148,7 @@ function renderCharts() {
               return ' ' + ctx.label + ': ' + fmt(v) + ' (' + p + '%)';
             }
           }
-        }
+        })
       }
     }
   });
@@ -202,19 +197,14 @@ function renderCharts() {
             pointStyle: 'circle'
           }
         },
-        tooltip: {
-          backgroundColor: '#323232',
-          cornerRadius: 8,
-          padding: 10,
-          titleFont: { size: 13 },
-          bodyFont: { size: 12 },
+        tooltip: appChartTooltip({
           callbacks: {
             label: function (ctx) {
               const p = s.total > 0 ? (ctx.raw / s.total * 100).toFixed(1) : 0;
               return ' ' + ctx.label + ': ' + fmt(ctx.raw) + ' (' + p + '%)';
             }
           }
-        }
+        })
       }
     }
   });

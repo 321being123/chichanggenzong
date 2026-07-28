@@ -1,13 +1,13 @@
 .bond-safety-shell { width:100%; }
-.bond-safety-hero { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; margin-bottom:18px; }
-.bond-safety-hero h2 { margin:0 0 6px; font-size:24px; color:#152033; }
-.bond-safety-hero p { margin:0; color:#697386; font-size:13px; line-height:1.7; }
-.bond-safety-updated { color:#697386; font-size:12px; text-align:right; white-space:nowrap; }
+.bond-safety-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,#3f51b5,#5c6bc0); color:#fff; }
+.bond-safety-hero h2 { margin:0 0 8px; font-size:22px; color:#fff; }
+.bond-safety-hero p { margin:0; color:#d9e7f5; font-size:13px; line-height:1.65; }
+.bond-safety-updated { color:#d9e7f5; font-size:12px; text-align:right; white-space:nowrap; }
 .bond-safety-stats { display:grid; grid-template-columns:repeat(4,minmax(100px,1fr)); gap:10px; margin-bottom:16px; }
-.bond-safety-stat { background:#fff; border:1px solid #e7ebf0; border-radius:10px; padding:12px 14px; box-shadow:0 2px 8px rgba(24,39,75,.04); }
+.bond-safety-stat { background:#fff; border:1px solid #e7ebf0; border-radius:10px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
 .bond-safety-stat span { color:#7a8495; font-size:12px; }
 .bond-safety-stat strong { display:block; margin-top:4px; font-size:22px; color:#172033; }
-.bond-safety-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; }
+.bond-safety-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; }
 .bond-safety-toolbar input,.bond-safety-toolbar select { height:36px; border:1px solid #d8dee8; border-radius:7px; background:#fff; padding:0 10px; color:#273142; }
 .bond-safety-toolbar input { min-width:220px; }
 .bond-safety-spacer { flex:1; }
@@ -36,8 +36,7 @@
 .bond-safety-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }
 .bond-safety-error { color:#b3261e; }
 @media (max-width:760px) {
-  .bond-safety-shell { padding:12px; }
-  .bond-safety-hero { display:block; }
+  .bond-safety-hero { display:block; padding:18px; }
   .bond-safety-updated { text-align:left; margin-top:8px; white-space:normal; }
   .bond-safety-stats { grid-template-columns:repeat(2,1fr); }
   .bond-safety-toolbar input { min-width:0; flex:1 1 170px; }

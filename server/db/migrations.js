@@ -1293,6 +1293,8 @@ async function migration023ValuationConstraints() {
   // 每日估值表的 model_version 外键关联模型版本表（历史重建后引用均存在）
   await pool.query(
     `ALTER TABLE analytics.convertible_bond_valuation_daily
+     DROP CONSTRAINT IF EXISTS fk_cbvd_model_version;
+     ALTER TABLE analytics.convertible_bond_valuation_daily
      ADD CONSTRAINT fk_cbvd_model_version
      FOREIGN KEY (model_version) REFERENCES analytics.convertible_bond_valuation_models(model_version)
      ON DELETE RESTRICT`
@@ -1301,6 +1303,8 @@ async function migration023ValuationConstraints() {
   // 预警表的 model_version 外键关联
   await pool.query(
     `ALTER TABLE analytics.convertible_bond_valuation_alerts
+     DROP CONSTRAINT IF EXISTS fk_cbva_model_version;
+     ALTER TABLE analytics.convertible_bond_valuation_alerts
      ADD CONSTRAINT fk_cbva_model_version
      FOREIGN KEY (model_version) REFERENCES analytics.convertible_bond_valuation_models(model_version)
      ON DELETE RESTRICT`
@@ -1313,6 +1317,19 @@ async function migration023ValuationConstraints() {
       data JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+  `);
+}
+
+async function migration024ValuationAlertReentry() {
+  // 同一状态恢复后可以在新的交易日再次触发；同日重跑仍保持幂等。
+  await pool.query(`
+    ALTER TABLE analytics.convertible_bond_valuation_alerts
+      DROP CONSTRAINT IF EXISTS convertible_bond_valuation_al_instrument_id_alert_type_curr_key;
+    ALTER TABLE analytics.convertible_bond_valuation_alerts
+      DROP CONSTRAINT IF EXISTS uq_cbva_event_state;
+    ALTER TABLE analytics.convertible_bond_valuation_alerts
+      ADD CONSTRAINT uq_cbva_event_state
+      UNIQUE (instrument_id, trade_date, alert_type, current_state, model_version);
   `);
 }
 
@@ -1361,6 +1378,7 @@ const MIGRATIONS = [
   { version: '021_convertible_bond_cycle', up: migration021ConvertibleBondCycle },
   { version: '022_convertible_bond_valuation', up: migration022ConvertibleBondValuation },
   { version: '023_valuation_constraints', up: migration023ValuationConstraints },
+  { version: '024_valuation_alert_reentry', up: migration024ValuationAlertReentry },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

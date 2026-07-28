@@ -65,6 +65,10 @@ check('时间范围与指标切换按钮存在', () => {
 check('CSS 含关键样式类', () => {
   assert.ok(css.includes('.bond-cycle-card') && css.includes('.bc-line') && css.includes('.bc-band-高位'), 'CSS 关键类缺失');
 });
+check('周期说明与图表提示使用统一主题', () => {
+  assert.ok(html.includes('bond-cycle-help-tip app-tooltip'), '周期说明未使用统一主题');
+  assert.ok(html.includes('bond-cycle-tip app-tooltip'), '周期图表提示未使用统一主题');
+});
 
 console.log('E. 曲线字段映射（整改 P1-4）');
 check('存在指标→接口字段映射 BC_METRIC_FIELDS', () => {

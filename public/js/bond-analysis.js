@@ -1,4 +1,97 @@
-var securityAnalysisState = { type:'', code:'', loading:false };
+var securityAnalysisState = { type:'', code:'', loading:false, suggestions:[], suggestionIndex:-1, searchTimer:null, searchSeq:0 };
+
+function securityAnalysisHideSuggestions() {
+  var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
+  if(box) box.style.display='none';
+  if(input){input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}
+  securityAnalysisState.suggestionIndex=-1;
+}
+
+function securityAnalysisRenderSuggestions(rows) {
+  var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
+  if(!box||!input) return;
+  securityAnalysisState.suggestions=rows||[];
+  securityAnalysisState.suggestionIndex=-1;
+  if(!rows||!rows.length){
+    box.innerHTML='<div class="security-analysis-suggestion-empty">没有找到可查询的股票或可转债</div>';
+  } else {
+    box.innerHTML=rows.map(function(row,index){
+      var label=row.type==='bond'?'可转债':'股票';
+      var detail=row.ts_code+(row.type==='bond'&&row.stock_name?' · 正股 '+row.stock_name:'');
+      return '<button type="button" id="security-analysis-option-'+index+'" class="security-analysis-suggestion" role="option" data-index="'+index+'" aria-selected="false">'+
+        '<span class="security-analysis-suggestion-type '+(row.type==='bond'?'bond':'')+'">'+label+'</span>'+
+        '<span class="security-analysis-suggestion-main"><strong>'+escapeHtml(row.name||row.code)+'</strong><small>'+escapeHtml(detail)+'</small></span></button>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.security-analysis-suggestion'),function(button){
+      button.addEventListener('mousedown',function(event){event.preventDefault();});
+      button.addEventListener('click',function(){securityAnalysisChooseSuggestion(Number(button.getAttribute('data-index')));});
+    });
+  }
+  box.style.display='block'; input.setAttribute('aria-expanded','true');
+}
+
+function securityAnalysisMoveSuggestion(step) {
+  var rows=securityAnalysisState.suggestions||[];
+  if(!rows.length) return;
+  var next=securityAnalysisState.suggestionIndex+step;
+  if(next<0) next=rows.length-1;
+  if(next>=rows.length) next=0;
+  securityAnalysisState.suggestionIndex=next;
+  var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
+  Array.prototype.forEach.call(box.querySelectorAll('.security-analysis-suggestion'),function(button,index){
+    var active=index===next; button.classList.toggle('active',active); button.setAttribute('aria-selected',active?'true':'false');
+    if(active) button.scrollIntoView({block:'nearest'});
+  });
+  input.setAttribute('aria-activedescendant','security-analysis-option-'+next);
+}
+
+function securityAnalysisChooseSuggestion(index) {
+  var row=(securityAnalysisState.suggestions||[])[index];
+  if(!row) return;
+  var input=document.getElementById('stock-analysis-code');
+  if(input) input.value=row.ts_code||row.code;
+  securityAnalysisHideSuggestions();
+  securityAnalysisSubmit();
+}
+
+async function securityAnalysisSearchSuggestions(value) {
+  var keyword=String(value||'').trim();
+  if(!keyword){securityAnalysisState.suggestions=[];return securityAnalysisHideSuggestions();}
+  var seq=++securityAnalysisState.searchSeq;
+  try {
+    var response=await fetch(api('/api/bond-analysis/search/securities?q='+encodeURIComponent(keyword)));
+    var payload=await response.json();
+    if(seq!==securityAnalysisState.searchSeq) return;
+    if(!response.ok) throw new Error(payload.error||'证券搜索失败');
+    securityAnalysisRenderSuggestions(payload.data||[]);
+  } catch(_) {
+    if(seq===securityAnalysisState.searchSeq) securityAnalysisHideSuggestions();
+  }
+}
+
+function securityAnalysisInitSearch() {
+  var input=document.getElementById('stock-analysis-code');
+  if(!input||input.dataset.suggestReady) return;
+  input.dataset.suggestReady='1';
+  input.addEventListener('input',function(){
+    clearTimeout(securityAnalysisState.searchTimer);
+    securityAnalysisState.searchTimer=setTimeout(function(){securityAnalysisSearchSuggestions(input.value);},180);
+  });
+  input.addEventListener('focus',function(){if(String(input.value||'').trim()) securityAnalysisSearchSuggestions(input.value);});
+  input.addEventListener('blur',function(){setTimeout(securityAnalysisHideSuggestions,120);});
+  input.addEventListener('keydown',function(event){
+    var visible=document.getElementById('security-analysis-suggestions').style.display!=='none';
+    if(event.key==='ArrowDown'&&visible){event.preventDefault();securityAnalysisMoveSuggestion(1);}
+    else if(event.key==='ArrowUp'&&visible){event.preventDefault();securityAnalysisMoveSuggestion(-1);}
+    else if(event.key==='Escape'){securityAnalysisHideSuggestions();}
+    else if(event.key==='Enter'){
+      event.preventDefault();
+      if(visible&&securityAnalysisState.suggestions.length){
+        securityAnalysisChooseSuggestion(securityAnalysisState.suggestionIndex<0?0:securityAnalysisState.suggestionIndex);
+      } else securityAnalysisSubmit();
+    }
+  });
+}
 
 async function securityAnalysisLoadList(force) {
   if (securityAnalysisState.listLoaded && !force) return;
@@ -116,7 +209,7 @@ function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3
 async function securityAnalysisSubmit() {
   var input=document.getElementById('stock-analysis-code'), raw=String(input&&input.value||'').trim().toUpperCase();
   var code=raw.replace(/\.(SH|SZ)$/,'').replace(/\D/g,'');
-  if (!/^\d{6}$/.test(code)) return stockAnalysisSetMessage('请输入6位股票或可转债代码', true);
+  if (!/^\d{6}$/.test(code)) return stockAnalysisSetMessage('请输入代码，或从联想下拉中选择股票或可转债', true);
   securityAnalysisState.type=securityAnalysisKind(code); securityAnalysisState.code=code;
   if (securityAnalysisState.type==='stock') {
     stockAnalysisState.selected=code;
@@ -151,23 +244,27 @@ async function bondAnalysisLoad(refresh) {
   finally { securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';} }
 }
 
+securityAnalysisInitSearch();
+
 function bondAnalysisRender(d) {
   stockAnalysisSetMessage('');
   var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
   if(stock) stock.style.display='none'; if(root) root.style.display='block';
   var q=d.quote||{}, b=d.basic||{}, terms=d.terms||{}, safety=d.safety||{}, bond=d.bond||{}, option=d.option||{}, stockData=d.stock||{}, credit=d.credit||{};
   var change=q.bond_change_pct, changeClass=Number(change)>0?'bond-analysis-up':Number(change)<0?'bond-analysis-down':'';
-  bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong><span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
+  var delistedTag=d.is_delisted?'<span class="bond-analysis-delisted">已退市</span>':'';
+  bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
   var updated=document.getElementById('stock-analysis-updated'); if(updated) updated.textContent='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
   bondAnalysisSet('bond-analysis-basic',bondAnalysisTable([
-    ['正股价',bondAnalysisNumber(q.stock_price,3,' 元')],['转股价',bondAnalysisNumber(b.convert_price,3,' 元')],
-    ['转股价值',bondAnalysisNumber(b.convert_value,3,' 元')],['转股溢价率',bondAnalysisPercent(b.convert_premium)],
-    ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':'暂无数据'],['到期时间',bondAnalysisDate(b.maturity_date)],
-    ['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],['剩余规模',bondAnalysisNumber(b.remain_size,2,' 亿元')],
-    ['最快回售触发日',bondAnalysisDate(b.earliest_put_trigger_date)],['最快回售剩余年限',bondAnalysisNumber(b.earliest_put_remaining_years,2,' 年')],
-    ['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date)+'<br><small>预计触发 '+bondAnalysisDate(b.expected_put_trigger_date)+'；'+bondAnalysisText(b.expected_put_assumption)+'</small>':(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],['回售到账税前收益率',bondAnalysisPercent(b.put_yield_pre_tax)],
-    ['回售到账税后收益率',bondAnalysisPercent(b.put_yield_after_tax)],['转债/总市值',bondAnalysisPercent(b.bond_to_market_cap)],
-    ['转股起始日',bondAnalysisDate(b.conv_start_date)],['转股截止日',bondAnalysisDate(b.conv_end_date)]
+    ['正股价',bondAnalysisNumber(q.stock_price,3,' 元')],['正股PB',bondAnalysisNumber(stockData.pb,2,' 倍')],
+    ['转股价',bondAnalysisNumber(b.convert_price,3,' 元')],['转股价值',bondAnalysisNumber(b.convert_value,3,' 元')],
+    ['转股溢价率',bondAnalysisPercent(b.convert_premium)],['到期时间',bondAnalysisDate(b.maturity_date)],
+    ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':'暂无数据'],['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],
+    ['剩余规模',bondAnalysisNumber(b.remain_size,2,' 亿元')],['最快回售触发日',bondAnalysisDate(b.earliest_put_trigger_date)],
+    ['最快回售剩余年限',bondAnalysisNumber(b.earliest_put_remaining_years,2,' 年')],['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date)+'<br><small>预计触发 '+bondAnalysisDate(b.expected_put_trigger_date)+'；'+bondAnalysisText(b.expected_put_assumption)+'</small>':(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],
+    ['回售到账税前收益率',bondAnalysisPercent(b.put_yield_pre_tax)],['回售到账税后收益率',bondAnalysisPercent(b.put_yield_after_tax)],
+    ['转债/总市值',bondAnalysisPercent(b.bond_to_market_cap)],['转股起始日',bondAnalysisDate(b.conv_start_date)],
+    ['转股截止日',bondAnalysisDate(b.conv_end_date)],['1PB参考价',stockData.pb>0&&q.stock_price!=null?bondAnalysisNumber(Number(q.stock_price)/Number(stockData.pb),3,' 元'):'暂无数据']
   ]));
   bondAnalysisSet('bond-analysis-triggers',bondAnalysisTable([
     ['强赎触发价',bondAnalysisNumber(b.call_trigger_price,3,' 元')],['强赎天计数',b.call_day_count==null?'暂无数据':bondAnalysisNumber(b.call_day_count,0,' / '+b.call_required_days+' 天')+(b.call_met?'（已满足）':'')],

@@ -1,32 +1,36 @@
 /* 可转债估值子页面样式（与安全性/周期模块保持一致） */
-.bond-val-hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 4px 10px; }
-.bond-val-hero h2 { margin: 0 0 4px; font-size: 20px; }
-.bond-val-hero p { margin: 0; color: #6b7280; font-size: 13px; max-width: 720px; }
-.bond-val-updated { font-size: 12px; color: #8a8f98; white-space: nowrap; padding-top: 6px; }
+.bond-val-hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 16px; padding: 22px; border-radius: 14px; background: linear-gradient(135deg,#3f51b5,#5c6bc0); color: #fff; }
+.bond-val-hero h2 { margin: 0 0 8px; font-size: 22px; }
+.bond-val-hero p { margin: 0; color: #d9e7f5; font-size: 13px; line-height: 1.65; max-width: 720px; }
+.bond-val-hero p .bond-val-beta-warning { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #fff1f0; color: #c62828; font-weight: 700; }
+.bond-val-updated { font-size: 12px; color: #d9e7f5; white-space: nowrap; }
 
-.bond-val-overview { margin: 6px 0 12px; }
-.bond-val-cards { display: flex; flex-wrap: wrap; gap: 10px; }
-.bond-val-card { background: #f7f8fa; border: 1px solid #eceef1; border-radius: 8px; padding: 10px 14px; min-width: 110px; }
+.bond-val-overview { margin: 0 0 16px; }
+.bond-val-cards { display: grid; grid-template-columns: repeat(4,minmax(120px,1fr)); gap: 10px; }
+.bond-val-card { background: #fff; border: 1px solid #e7ebf0; border-radius: 10px; padding: 14px 16px; min-width: 110px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
 .bond-val-card span { display: block; font-size: 12px; color: #8a8f98; margin-bottom: 4px; }
-.bond-val-card strong { font-size: 17px; }
+.bond-val-card strong { font-size: 22px; color: #172033; }
 .bond-val-counts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.bond-val-count { font-size: 12px; padding: 3px 8px; border-radius: 12px; background: #f0f1f3; color: #555; }
+.bond-val-count { font-size: 12px; padding: 5px 10px; border: 1px solid #e2e6ec; border-radius: 999px; background: #fff; color: #526173; }
 
 .bond-val-stale { background: #fff7e6; border: 1px solid #ffe0a3; color: #a86a00; padding: 6px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 8px; }
 .bond-val-status { font-size: 13px; color: #8a8f98; min-height: 18px; margin-bottom: 6px; }
 
-.bond-val-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 0; }
-.bond-val-toolbar input[type=search] { min-width: 220px; padding: 6px 10px; border: 1px solid #d8dbe0; border-radius: 6px; }
-.bond-val-toolbar select { padding: 6px 8px; border: 1px solid #d8dbe0; border-radius: 6px; background: #fff; }
+.bond-val-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 14px 16px; border-bottom: 1px solid #edf0f4; }
+.bond-val-toolbar input[type=search] { min-width: 220px; height: 36px; padding: 0 10px; border: 1px solid #d8dde6; border-radius: 7px; }
+.bond-val-toolbar select { height: 36px; padding: 0 10px; border: 1px solid #d8dde6; border-radius: 7px; background: #fff; color: #273142; }
+.bond-val-toolbar input:focus, .bond-val-toolbar select:focus { outline: none; border-color: #5c6bc0; box-shadow: 0 0 0 2px rgba(92,107,192,.14); }
+.bond-val-toolbar .btn { height: 36px; padding: 0 14px; border-color: #cbd2dc; background: #fff; color: #3f51b5; font-size: 12px; }
+.bond-val-toolbar .btn:hover { border-color: #5c6bc0; background: #eef1fb; color: #283593; }
 .bond-val-spacer { flex: 1; }
 .bond-val-quality { font-size: 12px; color: #8a8f98; }
 
 .bond-val-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.bond-val-table th, .bond-val-table td { padding: 6px 8px; border-bottom: 1px solid #eef0f2; white-space: nowrap; text-align: right; }
+.bond-val-table th, .bond-val-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; text-align: right; }
 .bond-val-table th:not(.num), .bond-val-table td:not(.num) { text-align: left; }
-.bond-val-table thead th { position: sticky; top: 0; background: #fafbfc; cursor: pointer; user-select: none; border-bottom: 2px solid #e3e6ea; z-index: 1; }
+.bond-val-table thead th { position: sticky; top: 0; background: #fafbfc; cursor: pointer; user-select: none; border-bottom: 1px solid #e3e6ea; z-index: 1; }
 .bond-val-table tbody tr { cursor: pointer; }
-.bond-val-table tbody tr:hover { background: #f4f8ff; }
+.bond-val-table tbody tr:hover { background: #f7fbff; }
 .bond-val-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .bond-val-empty { padding: 30px; text-align: center; color: #9aa0a6; }
 
@@ -66,9 +70,21 @@
 
 .bond-val-range-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
 .bond-val-range-tabs button { padding: 4px 12px; border: 1px solid #d8dbe0; background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
-.bond-val-range-tabs button.active { background: #4a76d4; color: #fff; border-color: #4a76d4; }
+.bond-val-range-tabs button.active { background: #3f51b5; color: #fff; border-color: #3f51b5; }
 .bond-val-chart-card { border: 1px solid #eef0f2; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; background: #fff; }
 .bond-val-chart-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #444; }
 .bond-val-svg { display: block; width: 100%; height: 220px; }
 .bond-val-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #666; margin-top: 4px; }
 .bond-val-legend i { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 4px; }
+.bond-val-chart-tooltip { position: fixed; z-index: 10001; display: none; min-width: 180px; max-width: 300px; padding: 9px 11px; pointer-events: none; }
+.bond-val-chart-tooltip strong, .bond-val-chart-tooltip span { display: block; }
+.bond-val-chart-tooltip span { margin-top: 3px; }
+.bond-val-chart-tooltip i { display: inline-block; width: 10px; height: 3px; margin-right: 6px; vertical-align: middle; }
+
+@media (max-width: 760px) {
+  .bond-val-hero { display: block; padding: 18px; }
+  .bond-val-updated { margin-top: 10px; white-space: normal; }
+  .bond-val-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .bond-val-toolbar input[type=search], .bond-val-toolbar select { min-width: 0; flex: 1 1 170px; }
+  .bond-val-spacer { display: none; }
+}

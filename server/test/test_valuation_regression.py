@@ -61,26 +61,39 @@ row_bad = m._insufficient_row(tgt, '110000.SH', None, '核心字段缺失:价格
 check('FK: model_version 非空且等于传入值', row_bad['model_version'] == 'cb-valuation-v1-train-20260724')
 diag = json.loads(row_bad['diagnostics'])
 check('missing_fields 正确解析为 [价格, 转股价值]', diag['missing_fields'] == ['价格', '转股价值'])
+row_new = m._insufficient_row(tgt, '110001.SH', None, '新上市观察期:18/40个交易日', False, {},
+                              '110001', None, mv='cb-valuation-v1-train-20260724')
+check('新上市债单列观察期', row_new['data_status'] == '新上市观察期')
+check('新上市债记录样本进度', json.loads(row_new['diagnostics'])['observation_days'] == 18)
 
 
 # =====================================================================
-# 单元：as-of 残差分布（阻断① 消除年内未来泄漏）
+# 单元：训练时固化残差分布（阻断① 消除年内未来泄漏/当日横排）
 # =====================================================================
-print('== 单元：as-of 残差分布 (阻断1) ==')
-edges = list(np.linspace(-0.5, 0.5, 201))
-tr = m._new_residual_tracker(edges)
-check('空 tracker 分位返回 None', m._tracker_percentile(tr, 0.1) is None)
-m._tracker_add(tr, np.linspace(-0.2, 0.2, 101))
-p_mid = m._tracker_percentile(tr, 0.0)
-check(f'中位偏离分位约 50 (实测 {p_mid})', p_mid is not None and 40 <= p_mid <= 60)
-p_low, p_high = m._tracker_percentile(tr, -0.19), m._tracker_percentile(tr, 0.19)
-check(f'分位单调 (低 {p_low} < 高 {p_high})', p_low < p_mid < p_high)
-q40, q60 = m._tracker_quantile(tr, 0.40), m._tracker_quantile(tr, 0.60)
-check(f'q40 < q60 (实测 {q40:.4f} / {q60:.4f})', q40 < q60)
-# 增量累计后分位随之变化（as-of 语义：只反映已累计的历史）
-m._tracker_add(tr, np.full(500, 0.3))
-p_mid2 = m._tracker_percentile(tr, 0.0)
-check(f'追加高偏离样本后原中位分位下降 (实测 {p_mid2})', p_mid2 < p_mid)
+print('== 单元：固定残差分布 (阻断1) ==')
+edges = np.linspace(-0.5, 0.5, 201)
+counts, _ = np.histogram(np.linspace(-0.2, 0.2, 101), bins=edges)
+hist = {"hist_edges": edges.tolist(), "hist_cum": (np.cumsum(counts) / counts.sum()).tolist()}
+p_mid = m.percentile_from_hist(0.0, hist)
+check(f'固定历史分布中位约 50 (实测 {p_mid})', 40 <= p_mid <= 60)
+p_low, p_high = m.percentile_from_hist(-0.19, hist), m.percentile_from_hist(0.19, hist)
+check(f'固定分位单调 (低 {p_low} < 高 {p_high})', p_low < p_mid < p_high)
+check('风险折价使用独立稳定分类', m._stable_eval_class('低估', '风险折价，不认定为低估') == '风险折价')
+
+# 临近到期时只衰减正的额外期权价值，不衰减转股/债底内在价值。
+fair_near, weight_near = m.maturity_adjusted_fair_value(110.0, 0.10, np.log(1.16))
+fair_far, weight_far = m.maturity_adjusted_fair_value(110.0, 2.0, np.log(1.16))
+fair_discount, _ = m.maturity_adjusted_fair_value(110.0, 0.10, np.log(0.95))
+check(f'临期正溢价按剩余期限衰减 (实测 {fair_near:.2f})', 111.0 < fair_near < 112.5)
+check('一年以上完整保留正溢价', abs(fair_far - 127.6) < 0.01 and weight_far == 1)
+check('临期负溢价不被抹掉', abs(fair_discount - 104.5) < 0.01)
+forced_years, forced_end, forced_source = m.effective_option_window(
+    pd.Timestamp('2026-07-27'), 1.14,
+    {'maturity_date': pd.Timestamp('2027-09-16'), 'conv_stop_date': pd.Timestamp('2026-08-12'),
+     'bond_delist_date': pd.Timestamp('2026-08-12')}
+)
+check('强赎按停止转股日缩短期权窗口',
+      forced_end == '2026-08-12' and forced_source == 'conv_stop_date' and 0.04 < forced_years < 0.05)
 
 
 # =====================================================================
@@ -107,6 +120,14 @@ check('高位状态值不含每日分位', s4.get("估值进入高位") == "p80"
 r95 = dict(base_row); r95["valuation_percentile"] = 96.0
 s5 = m._alert_state_of(r95, prev_row={"safety": "中风险"}, market_cycle="中位")
 check('极端高位状态值稳定为 p95', s5.get("估值进入极端高位") == "p95")
+check('极端高位同时保持高位活动状态', s5.get("估值进入高位") == "p80")
+low_risk_row = dict(base_row); low_risk_row["valuation_percentile"] = 10.0; low_risk_row["safety_level"] = "低风险"
+check('低分位且低风险触发进入低位', m._alert_state_of(low_risk_row, prev_row={"safety": "低风险"}).get("估值进入低位") == "p20")
+medium_row = dict(low_risk_row); medium_row["safety_level"] = "中风险"
+check('中风险低分位不触发进入低位', "估值进入低位" not in m._alert_state_of(medium_row, prev_row={"safety": "中风险"}))
+missing_row = dict(base_row); missing_row["data_status"] = "数据不足"
+check('数据从完整变为不足才触发', "数据不足" in m._alert_state_of(missing_row, prev_row={"status": "完整", "safety": "中风险"}))
+check('首日即不足不误触发状态变化', "数据不足" not in m._alert_state_of(missing_row, prev_row=None))
 
 
 # =====================================================================
@@ -127,17 +148,39 @@ try:
     univ = m._universe_as_of(idx[1], profiles, pd.Timestamp('2026-07-24'), 7)
     check('可交易范围排除已到期券 110073.SH', '110073.SH' not in univ)
     check('可交易范围排除转股截止券 113037.SH', '113037.SH' not in univ)
+    delist_univ = m._universe_as_of(idx[1], profiles, pd.Timestamp('2026-07-27'), 7)
+    check('可交易范围排除退市日债券 113632.SH', '113632.SH' not in delist_univ)
+    ghost_profiles = dict(profiles)
+    ghost_profiles.pop('128044.SZ', None)
+    ghost_univ = m._universe_as_of(idx[1], ghost_profiles, pd.Timestamp('2026-07-27'), 7)
+    check('可交易范围排除无正式档案的幽灵行情 128044.SZ', '128044.SZ' not in ghost_univ)
     check(f'可交易范围非空 (实测 {len(univ)} 只)', len(univ) > 100)
 
     # bug7：单天 compute 必须远低于整改前的 8~42s（预填 as-of 分布不计入单天耗时）
     # 注意：须用行情表真实存在的交易日，否则 compute_daily 会用滞后行情写出孤儿日期，
-    # 干扰下方“估值日集合 ⊆ 行情日”的孤儿检查。
+    # 干扰下方“估值日全部属于行情日”的孤儿检查。
     perf_date = '2025-06-03'
-    trackers = m._prefill_trackers(prep, model, perf_date, idx, profiles)
+    # 性能测试不得写真实数据库：临时替换发布函数，计算完成后立即恢复。
+    class _NoWriteConnection:
+        def __enter__(self): return self
+        def __exit__(self, exc_type, exc, tb): return False
+        def commit(self): return None
+
+    original_db_connect = m.db_connect
+    original_validate = m._validate_snapshot
+    original_persist = m._persist_daily
+    m.db_connect = lambda: _NoWriteConnection()
+    m._validate_snapshot = lambda rows, conn, is_historical=False: None
+    m._persist_daily = lambda rows, conn: None
     ts = time.time()
-    n, _ = m.compute_daily(perf_date, prep, model, full, safety, ratings, is_historical=False,
-                           index=idx, profile_map=profiles, residual_trackers=trackers)
-    dt = time.time() - ts
+    try:
+        n, _ = m.compute_daily(perf_date, prep, model, full, safety, ratings, is_historical=False,
+                               index=idx, profile_map=profiles)
+        dt = time.time() - ts
+    finally:
+        m.db_connect = original_db_connect
+        m._validate_snapshot = original_validate
+        m._persist_daily = original_persist
     check(f'bug7 单天 compute < 5s (实测 {dt:.2f}s, {n} 只)', dt < 5)
 
     with m.db_connect() as conn:
@@ -148,7 +191,7 @@ try:
                 "SELECT DISTINCT DATE(trade_date) FROM analytics.convertible_bond_valuation_daily WHERE trade_date>='2023-01-01' "
                 "EXCEPT SELECT DISTINCT DATE(trade_date) FROM market.convertible_bond_daily_metrics WHERE trade_date>='2023-01-01') t")
             orphan_days = cur.fetchone()[0]
-            check(f'估值日集合 ⊆ 行情日（无孤儿日期, 实测 {orphan_days}）', orphan_days == 0)
+            check(f'估值日全部属于行情日（无孤儿日期, 实测 {orphan_days}）', orphan_days == 0)
             cur.execute("SELECT COUNT(DISTINCT trade_date) FROM market.convertible_bond_daily_metrics WHERE trade_date >= '2023-01-01'")
             expected_days = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT trade_date) FROM analytics.convertible_bond_valuation_daily WHERE trade_date >= '2023-01-01'")
@@ -163,7 +206,7 @@ try:
 
             cur.execute(
                 "SELECT EXTRACT(YEAR FROM trade_date)::int y, "
-                "AVG(CASE WHEN data_status='数据不足' THEN 1.0 ELSE 0 END) p "
+                "AVG(CASE WHEN eval_class='数据不足' THEN 1.0 ELSE 0 END) p "
                 "FROM analytics.convertible_bond_valuation_daily GROUP BY 1 ORDER BY 1")
             trend = {int(r[0]): float(r[1]) for r in cur.fetchall()}
             check('数据不足占比随年递减 (2023 > 2026)', trend.get(2023, 0) > trend.get(2026, 0))
@@ -209,6 +252,39 @@ try:
                 "WHERE alert_type LIKE '%（恢复）' AND is_active")
             active_recover = cur.fetchone()[0]
             check(f'恢复记录不保持活动状态 (实测 {active_recover})', active_recover == 0)
+
+            cur.execute(
+                "SELECT COUNT(*) FROM analytics.convertible_bond_valuation_daily "
+                "WHERE final_evaluation LIKE '风险折价%' AND eval_class <> '风险折价'")
+            wrong_risk_class = cur.fetchone()[0]
+            check(f'风险折价均使用独立分类 (实测错误 {wrong_risk_class})', wrong_risk_class == 0)
+
+            cur.execute(
+                "SELECT model_path, model_file_rel_path, backtest_metrics, yearly_metadata "
+                "FROM analytics.convertible_bond_valuation_models WHERE is_active LIMIT 1")
+            model_path, rel_path, metrics, yearly = cur.fetchone()
+            check('活动模型数据库路径不含本机绝对路径',
+                  not os.path.isabs(model_path or '') and not os.path.isabs(rel_path or ''))
+            required_bt = {'high_heat_portfolio', 'high_heat_convergence', 'missing_horizon', 'high_heat_fail'}
+            check('活动模型保存完整新回测字段', required_bt.issubset(set((metrics or {}).keys())))
+            leakage = [
+                year for year, meta in (yearly or {}).items()
+                if str((meta.get('residual_quantiles') or {}).get('calibration_end_date', '9999')) >= f'{year}-01-01'
+            ]
+            check(f'年度误差校准截止日早于预测年 (异常 {leakage})', not leakage)
+
+            # 在事务内验证同一状态可于不同交易日再次触发，随后回滚，不污染数据库。
+            cur.execute("SELECT instrument_id FROM analytics.convertible_bond_valuation_daily ORDER BY trade_date DESC LIMIT 1")
+            test_iid = cur.fetchone()[0]
+            for event_date in ('1900-01-01', '1900-01-02'):
+                cur.execute(
+                    "INSERT INTO analytics.convertible_bond_valuation_alerts "
+                    "(instrument_id,trade_date,alert_type,alert_level,current_state,model_version,is_active) "
+                    "VALUES(%s,%s,'回归测试-恢复后再次触发','关注','同一状态',%s,false)",
+                    (test_iid, event_date, model["model_version"]),
+                )
+            check('恢复后可在新交易日再次触发相同状态', True)
+            conn.rollback()
 except Exception as e:
     import traceback; traceback.print_exc()
     check('集成测试执行', False, str(e))

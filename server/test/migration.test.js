@@ -59,7 +59,7 @@ function pgConfig(dbName) {
     check('券商种子数据已写入（>0）', () => { assert.ok(b.rows[0].c > 0, 'brokers 种子为空'); });
 
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 23); });
+    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 24); });
 
     const knowledgeConstraints = await db.pool.query(
       `SELECT conname FROM pg_constraint
@@ -126,11 +126,24 @@ function pgConfig(dbName) {
       assert.ok(cycleSet.has('market.convertible_bond_daily_metrics'), '缺少表 market.convertible_bond_daily_metrics');
       assert.ok(cycleSet.has('analytics.convertible_bond_cycle_daily'), '缺少表 analytics.convertible_bond_cycle_daily');
     });
+    const alertConstraint = await db.pool.query(
+      `SELECT pg_get_constraintdef(c.oid) AS def
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid=c.conrelid
+         JOIN pg_namespace n ON n.oid=t.relnamespace
+        WHERE n.nspname='analytics'
+          AND t.relname='convertible_bond_valuation_alerts'
+          AND c.conname='uq_cbva_event_state'`
+    );
+    check('预警去重键允许跨交易日再次触发（024）', () => {
+      assert.strictEqual(alertConstraint.rows.length, 1);
+      assert.match(alertConstraint.rows[0].def, /trade_date/);
+    });
 
     console.log('B. 二次 initSchema（幂等）');
     await db.initSchema();
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('二次迁移不重复登记（仍为23）', () => { assert.strictEqual(m2.rows[0].c, 23); });
+    check('二次迁移不重复登记（仍为24）', () => { assert.strictEqual(m2.rows[0].c, 24); });
   } catch (e) {
     if (!tmpDb) {
       // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）

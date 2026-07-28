@@ -26,5 +26,7 @@ assert.ok(css.includes('.bond-analysis-table tr:last-child th,.bond-analysis-tab
 assert.ok(script.includes('put_opportunity_used'), '回售展示未处理本计息年度机会已使用状态');
 assert.ok(css.includes('#bond-analysis-price-history .bond-analysis-table th:nth-child(7){width:36%}'), '转股价历史说明列宽度不足');
 assert.ok(script.includes('查看募集说明书') && script.includes('coupon_source_url'), '募集说明书或利息明细入口缺失');
+assert.ok(script.includes('bond-analysis-delisted') && script.includes('已退市'), '退市转债缺少醒目标识');
+assert.ok(css.includes('.bond-analysis-summary .bond-analysis-delisted'), '退市标识缺少样式');
 
 console.log('convertible bond frontend tests passed');

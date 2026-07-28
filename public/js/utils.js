@@ -13,6 +13,20 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+function appChartTooltip(options) {
+  return Object.assign({
+    backgroundColor: 'rgba(31,35,41,.96)',
+    titleColor: '#ffffff',
+    bodyColor: '#e5e7eb',
+    borderColor: '#4b5563',
+    borderWidth: 1,
+    cornerRadius: 8,
+    padding: 12,
+    titleFont: { size: 13, weight: '600' },
+    bodyFont: { size: 12 },
+  }, options || {});
+}
+
 function fmt(n) {
   var num = Number(n);
   if (isNaN(num)) return '¥0.00';

@@ -78,21 +78,36 @@ const LIST_SELECT = `
          CASE COALESCE(al.alert_rank, 0) WHEN 2 THEN '重要' WHEN 1 THEN '关注' ELSE '无' END AS alert_level
   FROM analytics.convertible_bond_valuation_daily v
   JOIN core.instruments i ON i.instrument_id = v.instrument_id
-  LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = v.instrument_id
+  JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = v.instrument_id
   LEFT JOIN core.instruments s ON s.instrument_id = p.stock_instrument_id
   LEFT JOIN (
-    SELECT instrument_id, trade_date, MAX(CASE alert_level WHEN '重要' THEN 2 WHEN '关注' THEN 1 ELSE 0 END) AS alert_rank
-    FROM analytics.convertible_bond_valuation_alerts WHERE is_active GROUP BY instrument_id, trade_date
-  ) al ON al.instrument_id = v.instrument_id AND al.trade_date = v.trade_date
+    SELECT a.instrument_id, MAX(CASE a.alert_level WHEN '重要' THEN 2 WHEN '关注' THEN 1 ELSE 0 END) AS alert_rank
+    FROM analytics.convertible_bond_valuation_alerts a
+    JOIN analytics.convertible_bond_valuation_models m ON m.model_version=a.model_version AND m.is_active
+    WHERE a.is_active GROUP BY a.instrument_id
+  ) al ON al.instrument_id = v.instrument_id
 `;
 
 async function getList(asOf, filters = {}) {
   const model = await getActiveModel();
   const tradeDate = asOf || (await getLatestTradeDate());
   if (!tradeDate) return null;
-  const where = ['v.trade_date = $1'];
-  const params = [tradeDate];
-  let pi = 2;
+  // 默认列表即使展示的是上一有效快照，也必须按当前预期交易日剔除已退市、
+  // 已到期或已停止转股的债券；显式查询历史日期时则按该历史日还原范围。
+  const universeDate = asOf ? tradeDate : expectedTradeDate();
+  const where = [
+    'v.trade_date = $1',
+    '(i.list_date IS NULL OR i.list_date <= $2::date)',
+    '(i.delist_date IS NULL OR i.delist_date > $2::date)',
+    '(p.maturity_date IS NULL OR p.maturity_date >= $2::date)',
+    '(p.conv_end_date IS NULL OR p.conv_end_date >= $2::date)',
+    '(p.conv_stop_date IS NULL OR p.conv_stop_date > $2::date)',
+    "(p.cb_type IS NULL OR p.cb_type IN ('CB', ''))",
+    "(s.status IS NULL OR s.status = 'listed')",
+    '(s.delist_date IS NULL OR s.delist_date > $2::date)',
+  ];
+  const params = [tradeDate, universeDate];
+  let pi = 3;
   if (filters.search) {
     where.push(`(i.canonical_code ILIKE $${pi} OR i.name ILIKE $${pi} OR COALESCE(s.name,'') ILIKE $${pi})`);
     params.push('%' + filters.search + '%');
@@ -190,6 +205,8 @@ async function getBondDetail(code, asOf) {
     missing_fields: Array.isArray(diagnostics.missing_fields) && diagnostics.missing_fields.length
       ? diagnostics.missing_fields
       : (diagnostics.missing ? [String(diagnostics.missing)] : []),
+    observation_days: diagnostics.observation_days ?? null,
+    required_observation_days: diagnostics.required_observation_days ?? null,
     historical_safety: r.historical_safety || '',
     model_version: r.model_version,
     model_year: r.model_year,
@@ -206,6 +223,12 @@ async function getBondDetail(code, asOf) {
       conversion_value_volatility_60d: cur.conversion_value_volatility_60d,
       neutral_market_extra: r.neutral_market_extra,
       predicted_relative_extra: r.predicted_relative_extra,
+      maturity_call_price: diagnostics.maturity_call_price ?? null,
+      redemption_present_value: diagnostics.redemption_present_value ?? null,
+      option_time_value_weight: diagnostics.option_time_value_weight ?? null,
+      effective_option_years: diagnostics.effective_option_years ?? null,
+      option_end_date: diagnostics.option_end_date ?? null,
+      option_end_reason: diagnostics.option_end_reason ?? null,
       fair_price: cur.fair_price,
       fair_price_low: cur.fair_price_low,
       fair_price_high: cur.fair_price_high,

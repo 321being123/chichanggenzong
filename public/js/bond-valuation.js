@@ -30,6 +30,8 @@ async function loadBondValuation() {
     var json = await r.json();
     bondValState.data = json;
     renderBondValOverview(json);
+    bondValState.loading = false;
+    if (statusEl) statusEl.textContent = '';
     if (json.detailCode) bondValState.detailCode = json.detailCode;
     // 直接带 bond 参数进入详情
     var params = new URLSearchParams(window.location.search);
@@ -97,7 +99,7 @@ function bondValFilteredRows() {
   var f = bondValFilters();
   var rows = json.data.filter(function (r) {
     if (f.search && (r.bond_code + r.bond_name + r.stock_name).toLowerCase().indexOf(f.search.toLowerCase()) < 0) return false;
-    if (f.final_evaluation && r.final_evaluation !== f.final_evaluation) return false;
+    if (f.final_evaluation && r.eval_class !== f.final_evaluation) return false;
     if (f.safety_level && r.safety_level !== f.safety_level) return false;
     if (f.alert_level && r.alert_level !== f.alert_level) return false;
     if (f.data_status && r.data_status !== f.data_status) return false;
@@ -157,7 +159,7 @@ function renderBondValTable() {
   }
   for (var j = 0; j < rows.length; j++) {
     var r = rows[j];
-    head += '<tr class="' + (EVAL_CLASS[r.final_evaluation] || '') + '" onclick="openBondValDetail(\'' + esc(r.bond_code) + '\')">';
+    head += '<tr class="' + (EVAL_CLASS[r.eval_class] || '') + '" onclick="openBondValDetail(\'' + esc(r.bond_code) + '\')">';
     for (var m = 0; m < BOND_VAL_COLS.length; m++) {
       var col = BOND_VAL_COLS[m];
       var v = r[col.k];
@@ -264,7 +266,7 @@ function renderBondValDetail(d, hist, alerts) {
   var html = '';
   html += '<div class="bond-val-detail-bar"><button class="btn btn-outline btn-sm" onclick="closeBondValDetail()">← 返回列表</button>' +
     '<span class="bond-val-detail-title">' + esc(d.bond_name) + '（' + esc(d.bond_code) + '）</span>' +
-    '<span class="val-alert-tag ' + (EVAL_CLASS[cur.final_evaluation] || '') + '">' + esc(cur.final_evaluation) + '</span></div>';
+    '<span class="val-alert-tag ' + (EVAL_CLASS[cur.eval_class] || '') + '">' + esc(cur.final_evaluation) + '</span></div>';
 
   // 顶部摘要
   html += '<div class="bond-val-summary">';
@@ -282,9 +284,14 @@ function renderBondValDetail(d, hist, alerts) {
   var bd = [
     ['转股价值', num(b.conversion_value, 2), '当前股性基础'],
     ['纯债价值', num(b.bond_value, 2), '当前债性基础'],
-    ['价值底座', num(b.anchor_value, 2), '两者较高值'],
+    ['到期赎回价', num(b.maturity_call_price, 2), '募集说明书约定'],
+    ['赎回价折现值', num(b.redemption_present_value, 2), '最后一年纳入价值底座'],
+    ['价值底座', num(b.anchor_value, 2), '转股价值、纯债价值与临期赎回价折现值中的较高值'],
     ['转股溢价率', pctv(b.conversion_premium_pct), '当前转股溢价'],
     ['剩余年限', num(b.remaining_years, 2) + ' 年', '模型输入'],
+    ['期权截止日', b.option_end_date || '自然到期', b.option_end_reason || '按自然到期日计算'],
+    ['有效期权年限', num(b.effective_option_years, 2) + ' 年', b.option_end_date ? '按强赎/提前退出窗口计算' : '与剩余年限一致'],
+    ['期权时间价值权重', pctv(b.option_time_value_weight == null ? null : b.option_time_value_weight * 100), '最后一年随到期线性归零'],
     ['60日波动率', pctv(b.conversion_value_volatility_60d), '模型输入（转股价值年化波动）'],
     ['历史中性额外价值', num(b.neutral_market_extra, 4), '模型市场中性基准（跨牛熊）'],
     ['单券结构性额外价值', num(b.predicted_relative_extra, 4), '模型根据条件估计的额外价值'],
@@ -353,9 +360,11 @@ function renderBondValDetail(d, hist, alerts) {
   html += '<div class="bond-val-section bond-val-disclaimer"><h3>数据与模型说明</h3>';
   html += '<table class="bond-val-detail-table"><tbody>';
   html += '<tr><td>数据状态</td><td>' + esc(dstatus) + (dstatus === '数据不足' && missFields ? '（缺失：' + esc(missFields) + '）' : '') + '</td></tr>';
+  if (dstatus === '新上市观察期') html += '<tr><td>处理说明</td><td>上市行情已积累 ' + esc(d.observation_days == null ? '—' : d.observation_days) + ' / ' + esc(d.required_observation_days || 40) + ' 个交易日，暂不输出高低估结论；样本达到要求后自动进入正式估值。</td></tr>';
   if (d.model_version) html += '<tr><td>模型版本</td><td>' + esc(d.model_version) + '</td></tr>';
   if (d.model_year) html += '<tr><td>模型年份</td><td>' + esc(String(d.model_year)) + '</td></tr>';
-  if (d.model_training_end_date) html += '<tr><td>模型训练截止日</td><td>' + esc(d.model_training_end_date) + '</td></tr>';
+  if (d.model_training_end_date) html += '<tr><td>模型训练截止日（防未来泄漏）</td><td>' + esc(d.model_training_end_date) + '</td></tr>';
+  if (d.model_year) html += '<tr><td>年度训练规则</td><td>' + esc(String(d.model_year)) + ' 年估值只使用 ' + esc(String(Number(d.model_year) - 1)) + ' 年末及以前的数据</td></tr>';
   if (d.historical_safety) html += '<tr><td>历史安全性</td><td>' + esc(d.historical_safety) + '</td></tr>';
   html += '<tr><td>行情日期</td><td>' + esc(cur.quote_date || '—') + '</td></tr>';
   html += '<tr><td>估值计算时间</td><td>' + esc(d.trade_date || '—') + '</td></tr>';
@@ -383,6 +392,8 @@ function drawBondValCharts(data, boundaries) {
   var box = document.getElementById('bond-val-charts');
   if (!box) return;
   if (!data.length) { box.innerHTML = '<div class="bond-val-note">该区间暂无历史估值数据。</div>'; return; }
+  bondValChartTipStore = {};
+  bondValChartTipSeq = 0;
   box.innerHTML =
     chartCard('价格与公允区间', svgChart([
       { key: 'close', color: '#c0392b', label: '收盘价' },
@@ -400,11 +411,15 @@ function drawBondValCharts(data, boundaries) {
       { key: 'market_heat_pct', color: '#e67e22', label: '市场热度' },
       { key: 'relative_market_deviation_pct', color: '#34495e', label: '相对市场偏离' }
     ], data, { zero: true, pct: true }));
+  bindBondValChartTips(box);
 }
 
 function chartCard(title, svg) {
   return '<div class="bond-val-chart-card"><div class="bond-val-chart-title">' + esc(title) + '</div>' + svg + '</div>';
 }
+
+var bondValChartTipStore = {};
+var bondValChartTipSeq = 0;
 
 // 通用 SVG 折线图；opts: {band:[low,high], zero:bool, pct:bool, refLines:[], shadePct:field}
 function svgChart(series, data, opts) {
@@ -435,7 +450,9 @@ function svgChart(series, data, opts) {
   function X(i) { return padL + (W - padL - padR) * (i / (n - 1)); }
   function Y(v) { return padT + (H - padT - padB) * (1 - (v - min) / (max - min)); }
 
-  var svg = '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" class="bond-val-svg">';
+  var tipId = 'bond-val-chart-' + (++bondValChartTipSeq);
+  bondValChartTipStore[tipId] = { series: series, data: data, opts: opts };
+  var svg = '<svg width="100%" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" class="bond-val-svg" data-tip-id="' + tipId + '">';
   // 五分位背景区（低估→高估，用于估值分位图）
   if (opts.bands5) {
     var bandCols = ['rgba(39,174,96,0.12)', 'rgba(46,204,113,0.07)', 'rgba(241,196,15,0.05)', 'rgba(230,126,34,0.07)', 'rgba(192,57,43,0.12)'];
@@ -512,4 +529,43 @@ function svgChart(series, data, opts) {
   if (opts.versionKey) leg += '<span><i style="background:#2c3e50"></i>模型版本切换</span>';
   leg += '</div>';
   return svg + leg;
+}
+
+function bindBondValChartTips(box) {
+  var tip = document.getElementById('bond-val-chart-tooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'bond-val-chart-tooltip';
+    tip.className = 'bond-val-chart-tooltip app-tooltip';
+    document.body.appendChild(tip);
+  }
+  var svgs = box.querySelectorAll('.bond-val-svg[data-tip-id]');
+  for (var i = 0; i < svgs.length; i++) {
+    svgs[i].addEventListener('mousemove', function (e) {
+      var entry = bondValChartTipStore[this.getAttribute('data-tip-id')];
+      if (!entry || !entry.data.length) return;
+      var rect = this.getBoundingClientRect();
+      var plotRatio = ((e.clientX - rect.left) / rect.width * 720 - 48) / (720 - 48 - 12);
+      var idx = Math.round(Math.max(0, Math.min(1, plotRatio)) * (entry.data.length - 1));
+      var row = entry.data[idx];
+      var html = '<strong>' + esc(row.date || row.trade_date || '—') + '</strong>';
+      for (var j = 0; j < entry.series.length; j++) {
+        var s = entry.series[j], value = Number(row[s.key]);
+        html += '<span><i style="background:' + s.color + '"></i>' + esc(s.label) + '：' +
+          (Number.isFinite(value) ? esc(num(value, 2) + (entry.opts.pct ? '%' : '')) : '—') + '</span>';
+      }
+      if (entry.opts.band) {
+        var low = Number(row[entry.opts.band[0]]), high = Number(row[entry.opts.band[1]]);
+        html += '<span>公允区间：' + (Number.isFinite(low) && Number.isFinite(high) ? esc(num(low, 2) + '～' + num(high, 2)) : '—') + '</span>';
+      }
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      var left = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+      var top = e.clientY - tip.offsetHeight - 12;
+      if (top < 8) top = Math.min(e.clientY + 18, window.innerHeight - tip.offsetHeight - 8);
+      tip.style.left = Math.max(8, left) + 'px';
+      tip.style.top = Math.max(8, top) + 'px';
+    });
+    svgs[i].addEventListener('mouseleave', function () { tip.style.display = 'none'; });
+  }
 }

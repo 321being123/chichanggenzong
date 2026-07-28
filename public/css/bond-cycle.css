@@ -1,25 +1,48 @@
 /* 可转债周期页面样式（沿用可转债安全性视觉规范） */
 [hidden] { display: none !important; }
 
+.bond-header {
+  position: sticky;
+  top: 52px;
+  z-index: 90;
+  background: #fff;
+  border-bottom: 1px solid #dfe3eb;
+  box-shadow: 0 2px 6px rgba(31,42,68,.08);
+}
 .bond-sub-nav {
   display: flex;
-  gap: 8px;
-  margin-bottom: 18px;
-  border-bottom: 1px solid #ececf3;
-  padding-bottom: 0;
+  align-items: stretch;
+  gap: 2px;
+  height: 46px;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 20px;
+  overflow-x: auto;
 }
 .bond-sub-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
   border: none;
   background: transparent;
-  padding: 10px 16px;
-  font-size: 15px;
-  color: #6b6b80;
+  padding: 0 16px;
+  font-size: 13px;
+  color: #667085;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  white-space: nowrap;
 }
-.bond-sub-tab:hover { color: #1a1a2e; }
-.bond-sub-tab.active { color: #1a1a2e; font-weight: 600; border-bottom-color: #3b5bdb; }
+.bond-sub-tab:hover { color: #283593; background: #f5f6fb; }
+.bond-sub-tab.active { color: #1a237e; font-weight: 600; }
+.bond-sub-tab.active::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: #3f51b5;
+}
 
 .bond-sub-page { animation: bcFade .18s ease; }
 @keyframes bcFade { from { opacity: 0; } to { opacity: 1; } }
@@ -28,13 +51,17 @@
 .bond-cycle-hero {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
-  gap: 16px;
-  margin-bottom: 14px;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 16px;
+  padding: 22px;
+  border-radius: 14px;
+  background: linear-gradient(135deg,#3f51b5,#5c6bc0);
+  color: #fff;
 }
-.bond-cycle-hero h2 { margin: 0 0 4px; font-size: 22px; color: #1a1a2e; }
-.bond-cycle-hero p { margin: 0; color: #777; font-size: 13px; }
-.bond-cycle-updated { color: #999; font-size: 12px; white-space: nowrap; }
+.bond-cycle-hero h2 { margin: 0 0 8px; font-size: 22px; color: #fff; }
+.bond-cycle-hero p { margin: 0; color: #d9e7f5; font-size: 13px; line-height: 1.65; }
+.bond-cycle-updated { color: #d9e7f5; font-size: 12px; white-space: nowrap; }
 
 .bond-cycle-stale {
   background: #fff7e6;
@@ -57,16 +84,17 @@
   margin-bottom: 10px;
 }
 .bond-cycle-card {
-  background: #fbfbff;
-  border: 1px solid #ececf3;
-  border-radius: 12px;
-  padding: 16px;
+  background: #fff;
+  border: 1px solid #e7ebf0;
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.bond-cycle-card span { color: #888; font-size: 13px; }
-.bond-cycle-card strong { font-size: 26px; color: #1a1a2e; font-weight: 700; }
+.bond-cycle-card span { color: #7a8495; font-size: 12px; }
+.bond-cycle-card strong { font-size: 22px; color: #172033; font-weight: 700; }
 
 .bond-cycle-note {
   background: #f0f4ff;
@@ -85,7 +113,7 @@
 }
 .bond-cycle-metric {
   background: #fff;
-  border: 1px solid #f0f0f6;
+  border: 1px solid #e7ebf0;
   border-radius: 10px;
   padding: 12px;
   display: flex;
@@ -98,9 +126,10 @@
 /* 图表 */
 .bond-cycle-chart-wrap {
   background: #fff;
-  border: 1px solid #ececf3;
-  border-radius: 12px;
-  padding: 14px;
+  border: 1px solid #e7ebf0;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
   margin-bottom: 18px;
 }
 .bond-cycle-chart-controls {
@@ -112,17 +141,18 @@
 }
 .bond-cycle-range-tabs button,
 .bond-cycle-metric-tabs button {
-  border: 1px solid #e2e2ec;
+  min-height: 34px;
+  border: 1px solid #d8dde6;
   background: #fff;
   color: #555;
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   font-size: 13px;
 }
 .bond-cycle-range-tabs button.active {
-  background: #3b5bdb;
-  border-color: #3b5bdb;
+  background: #3f51b5;
+  border-color: #3f51b5;
   color: #fff;
   font-weight: 600;
 }
@@ -201,6 +231,8 @@
 .bond-cycle-help-tip .bond-cycle-disclaimer { color: #999; font-style: italic; }
 
 @media (max-width: 720px) {
+  .bond-cycle-hero { display: block; padding: 18px; }
+  .bond-cycle-updated { margin-top: 10px; white-space: normal; }
   .bond-cycle-cards { grid-template-columns: repeat(2, 1fr); }
   .bond-cycle-metrics { grid-template-columns: repeat(2, 1fr); }
 }

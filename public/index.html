@@ -7,11 +7,11 @@
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="shared/style.css?v=19">
-<link rel="stylesheet" href="css/bond-safety.css?v=6">
-<link rel="stylesheet" href="css/bond-cycle.css?v=1">
-<link rel="stylesheet" href="css/bond-valuation.css?v=1">
-<link rel="stylesheet" href="css/stock-analysis.css?v=11">
+<link rel="stylesheet" href="shared/style.css?v=21">
+<link rel="stylesheet" href="css/bond-safety.css?v=8">
+<link rel="stylesheet" href="css/bond-cycle.css?v=4">
+<link rel="stylesheet" href="css/bond-valuation.css?v=4">
+<link rel="stylesheet" href="css/stock-analysis.css?v=13">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
 <link rel="stylesheet" href="css/knowledge.css?v=15">
 </head>
@@ -439,16 +439,19 @@
 <div class="main-page" id="main-stock-analysis">
   <div class="stock-analysis-shell feature-page-shell">
     <div class="stock-analysis-hero">
-      <div><h2>股债分析</h2><p>输入股票或可转债代码，读取已入库数据并生成分析结果。数据仅供研究参考。</p></div>
-      <span id="stock-analysis-updated">请输入代码</span>
+      <div><h2>股债分析</h2><p>输入股票、可转债名称或代码，读取已入库数据并生成分析结果。数据仅供研究参考。</p></div>
+      <span id="stock-analysis-updated">请输入名称或代码</span>
     </div>
     <div class="stock-analysis-toolbar table-wrap">
       <select id="security-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value)"><option value="">选择持仓或自选</option></select>
-      <input id="stock-analysis-code" inputmode="numeric" maxlength="9" placeholder="股票或可转债代码，如 600519 / 113xxx" onkeydown="if(event.key==='Enter')securityAnalysisSubmit()">
+      <div class="security-analysis-search">
+        <input id="stock-analysis-code" autocomplete="off" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-controls="security-analysis-suggestions" aria-expanded="false">
+        <div id="security-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
+      </div>
       <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit()">开始分析</button>
       <button class="btn btn-outline btn-sm" id="stock-analysis-refresh" onclick="securityAnalysisRefresh()">刷新数据</button>
     </div>
-    <div id="stock-analysis-message" class="stock-analysis-message">请输入股票或可转债代码开始分析。</div>
+    <div id="stock-analysis-message" class="stock-analysis-message">请输入股票、可转债名称或代码开始分析。</div>
     <div id="stock-analysis-content" style="display:none;">
       <div class="stock-analysis-summary" id="stock-analysis-summary"></div>
       <div class="stock-analysis-view-tabs" role="tablist" aria-label="个股数据视图">
@@ -529,12 +532,14 @@
 
 <!-- 可转债（二级导航：可转债安全性 / 可转债周期） -->
 <div class="main-page" id="main-bond-safety">
-  <div class="bond-safety-shell feature-page-shell">
+  <div class="bond-header">
     <div class="bond-sub-nav">
       <button class="bond-sub-tab active" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
       <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
       <button class="bond-sub-tab" data-sub="valuation" onclick="switchBondSub('valuation')">可转债估值</button>
     </div>
+  </div>
+  <div class="bond-safety-shell feature-page-shell">
 
     <!-- 子页：可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
     <div id="sub-bond-safety" class="bond-sub-page">
@@ -573,7 +578,7 @@
         <div class="bond-cycle-hero-left">
           <div class="bond-cycle-title-wrap">
             <h2>可转债周期</h2>
-            <div class="bond-cycle-help-tip" id="bond-cycle-help-tip">
+            <div class="bond-cycle-help-tip app-tooltip" id="bond-cycle-help-tip">
               <p><strong>综合估值</strong> = 价格中位数 + 转股溢价率中位数 × 动态权重</p>
               <p><strong>动态权重</strong> = 20%～55%，价格中位数达到 135 元后封顶</p>
               <p>为什么使用中位数：可转债整体存在明显周期，平均价格和平均溢价率容易被妖债、极高溢价转债影响，中位数可降低极端个券干扰。</p>
@@ -622,7 +627,7 @@
           </div>
         </div>
         <div class="bond-cycle-chart" id="bond-cycle-chart"></div>
-        <div class="bond-cycle-tip" id="bond-cycle-tip"></div>
+        <div class="bond-cycle-tip app-tooltip" id="bond-cycle-tip"></div>
       </div>
 
       <div class="table-wrap bond-cycle-table-wrap" id="bond-cycle-table-wrap" style="display:none;">
@@ -637,8 +642,8 @@
     <div id="sub-bond-valuation" class="bond-sub-page" hidden>
       <div class="bond-val-hero">
         <div>
-          <h2>可转债估值</h2>
-          <p>使用跨越牛熊的中性公允价，判断单只转债相对公允价是低估、合理还是高估。仅供研究参考，不构成投资建议。</p>
+          <h2><span class="analysis-help" tabindex="0" data-help="中性公允价以转股价值、纯债价值及临期赎回价折现值中的较高者为底座，再叠加跨牛熊市场中性溢价和单券结构性价值。正的额外期权价值会在到期前最后一年逐步归零；已确定强赎或提前退市时，改按停止转股/退市日计算剩余期权窗口。转股内在价值不衰减。估值分位来自对应年度开始前已固化的样本外误差分布。">可转债估值</span></h2>
+          <p>使用跨越牛熊的中性公允价，判断单只转债相对公允价是低估、合理还是高估。<span class="bond-val-beta-warning">当前还在内测中，仅供研究参考，不构成投资建议。</span></p>
         </div>
         <div class="bond-val-updated" id="bond-val-updated">正在读取数据...</div>
       </div>
@@ -663,7 +668,7 @@
             <option value="">全部预警</option><option value="关注">关注</option><option value="重要">重要</option>
           </select>
           <select id="bond-val-data" onchange="bondValApplyFilters()" aria-label="按数据状态筛选">
-            <option value="">全部数据</option><option value="完整">数据完整</option><option value="数据不足">数据不足</option>
+            <option value="">全部数据</option><option value="完整">数据完整</option><option value="新上市观察期">新上市观察期</option><option value="数据不足">数据不足</option>
           </select>
           <button class="btn btn-outline btn-sm" onclick="bondValClearFilters()">清除筛选</button>
           <span class="bond-val-spacer"></span>
@@ -891,28 +896,28 @@
 </div>
 
 <script src="js/code-classify.js?v=2"></script>
-<script src="js/utils.js?v=2"></script>
+<script src="js/utils.js?v=3"></script>
 <script src="shared/dialog.js?v=1"></script>
 <script src="shared/core-quote.js?v=20260712"></script>
-<script src="shared/core-tables.js?v=4"></script>
+<script src="shared/core-tables.js?v=5"></script>
 <script src="shared/core-fees.js?v=1"></script>
 <script src="shared/core-trade.js?v=20260712"></script>
 <script src="shared/nav-math.js?v=1"></script>
-<script src="shared/core-returns.js?v=3"></script>
+<script src="shared/core-returns.js?v=4"></script>
 <script src="shared/core-earnings.js?v=20260712c"></script>
-<script src="shared/core-account.js?v=20260722a"></script>
+<script src="shared/core-account.js?v=20260728a"></script>
 <script src="shared/date-range-control.js?v=1"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/dompurify.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=7"></script>
 <script src="js/bond-cycle.js?v=1"></script>
-<script src="js/bond-valuation.js?v=1"></script>
-<script src="js/stock-analysis.js?v=11"></script>
-<script src="js/bond-analysis.js?v=3"></script>
+<script src="js/bond-valuation.js?v=3"></script>
+<script src="js/stock-analysis.js?v=12"></script>
+<script src="js/bond-analysis.js?v=5"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>
-<script src="js/stock-analysis-chart.js?v=11"></script>
-<script src="js/stock-analysis-valuation-chart.js?v=4"></script>
+<script src="js/stock-analysis-chart.js?v=12"></script>
+<script src="js/stock-analysis-valuation-chart.js?v=5"></script>
 <script src="js/home-dashboard.js?v=9"></script>
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>

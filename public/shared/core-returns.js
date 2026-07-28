@@ -541,10 +541,7 @@ async function renderNavVsIndexChart(canvasId, opts) {
           position: 'top',
           labels: { padding: 16, font: { size: 12, weight: '500' }, usePointStyle: true }
         },
-        tooltip: {
-          backgroundColor: '#323232',
-          cornerRadius: 8,
-          padding: 12,
+        tooltip: appChartTooltip({
           callbacks: {
             label: function (ctx) {
               if (ctx.raw == null) return '';
@@ -553,7 +550,7 @@ async function renderNavVsIndexChart(canvasId, opts) {
               return ' ' + ctx.dataset.label + ': ' + prefix + pct + '%';
             }
           }
-        }
+        })
       },
       scales: {
         x: {

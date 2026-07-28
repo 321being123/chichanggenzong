@@ -1,14 +1,17 @@
 const assert = require('assert');
 const {
-  normalizeBondCode, isoDate, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
+  normalizeBondCode, isoDate, instrumentStatus, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
   earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates,
   yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
+  mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges,
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
 
 assert.strictEqual(normalizeBondCode('113001'), '113001.SH');
 assert.strictEqual(normalizeBondCode('123001.SZ'), '123001.SZ');
 assert.strictEqual(normalizeBondCode('600519'), null);
+assert.strictEqual(instrumentStatus('2026-08-12', '2026-07-28'), 'listed');
+assert.strictEqual(instrumentStatus('2026-07-28', '2026-07-28'), 'delisted');
 assert.strictEqual(yuanToHundredMillion(2449880700), 24.498807);
 assert.strictEqual(isoDate('2026-07-22'), '2026-07-22');
 assert.strictEqual(isoDate('20260722'), '2026-07-22');
@@ -78,5 +81,24 @@ assert.strictEqual(revisionDecision('关于预计触发转股价格向下修正�
 assert.strictEqual(revisionDecision('关于不向下修正某转债转股价格的公告'), 'no_revision');
 assert.strictEqual(revisionDecision('关于向下修正某转债转股价格的公告'), 'revised');
 assert.strictEqual(revisionDecision('关于可转换公司债券转股价格调整的公告'), 'adjusted');
+assert.deepStrictEqual(
+  mergeDailyRows([{trade_date:'2026-07-25',close:100},{trade_date:'2026-07-24',close:99}], [{trade_date:'20260725',close:101}])
+    .map(row => [row.trade_date,row.close]),
+  [['2026-07-25',101],['2026-07-24',99]]
+);
+assert.strictEqual(incrementalStart([{trade_date:'2026-07-25'}], '20250101'), '20260718');
+assert.deepStrictEqual(pricePairFromReason('转股价格由20.03元/股调整为19.84元/股。'), { price_before:20.03, price_after:19.84 });
+assert.deepStrictEqual(
+  normalizePriceChange({ price_before:53.27, price_after:19.84, reason:'由20.03元/股调整为19.84元/股' }),
+  { price_before:20.03, price_after:19.84, convertprice_bef:20.03, convertprice_aft:19.84, reason:'由20.03元/股调整为19.84元/股' }
+);
+assert.deepStrictEqual(
+  normalizePriceChange({ price_before:53.27, price_after:20.03, reason:'报告后文另载由20.03元/股调整为19.84元/股' }),
+  { price_before:53.27, price_after:20.03, reason:'报告后文另载由20.03元/股调整为19.84元/股' }
+);
+assert.strictEqual(normalizePriceChanges([
+  { change_date:'2025-06-13', price_before:20.03, price_after:19.84 },
+  { change_date:'2025-06-07', price_before:20.03, price_after:19.84 },
+]).length, 1);
 
 console.log('convertible bond analysis tests passed');

@@ -3,10 +3,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireAdmin } = require('../middleware/auth');
 const svc = require('../services/convertibleBondValuationService');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
-const execFileAsync = promisify(execFile);
-const path = require('path');
+const { runDailyValuation } = require('../jobs/convertibleBondRefresh');
 
 const VALID_RANGES = ['1y', '3y', '5y', 'all'];
 const LEVEL_MAP = { attention: '关注', important: '重要', 关注: '关注', 重要: '重要' };
@@ -78,27 +75,16 @@ router.get('/bonds/:code/alerts', asyncHandler(async (req, res) => {
   res.json({ bond_code: resolveCode(req), total: data.length, data });
 }));
 
-// 管理员刷新（每日推算最新交易日并生成预警）——同步等待，失败返回明确原因
-let refreshRunning = false;
+// 管理员刷新：复用数据库任务锁，多进程部署也不会重复执行。
 router.post('/refresh', requireAdmin, asyncHandler(async (req, res) => {
-  if (refreshRunning) return res.status(409).json({ error: '已有估值刷新任务正在运行，请稍后再试' });
-  const script = path.join(__dirname, '..', 'scripts', 'convertibleBondValuation.py');
-  const py = process.env.VALUATION_PYTHON || path.join(__dirname, '..', '..', 'venv', 'Scripts', 'python.exe');
-  refreshRunning = true;
   try {
-    const { stdout } = await execFileAsync(py, [script, 'refresh'], {
-      cwd: path.join(__dirname, '..', '..'),
-      timeout: 10 * 60 * 1000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const tail = String(stdout || '').trim().split('\n').slice(-5).join('\n');
-    res.json({ ok: true, message: '估值刷新完成', detail: tail });
+    const result = await runDailyValuation('admin');
+    if (result.skipped) return res.status(409).json({ error: '已有估值刷新任务正在运行，请稍后再试' });
+    res.json({ ok: true, message: '估值刷新完成', detail: result.detail });
   } catch (err) {
-    const reason = String(err.stderr || err.message || '').trim().split('\n').slice(-5).join('\n');
+    const reason = String(err.detail || err.message || '').trim();
     console.error('[bond-valuation] 刷新失败:', reason);
     res.status(500).json({ ok: false, error: '估值刷新失败', reason });
-  } finally {
-    refreshRunning = false;
   }
 }));
 

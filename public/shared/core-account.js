@@ -131,10 +131,9 @@ function renderEarningsChart(sorted) {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { position: 'top', labels: { padding: 16, font: { size: 12, weight: '500' }, usePointStyle: true } },
-        tooltip: {
-          backgroundColor: '#323232', cornerRadius: 8, padding: 12,
+        tooltip: appChartTooltip({
           callbacks: { label: function (c) { return ' ' + c.dataset.label + ': ' + fmt(c.raw); } }
-        }
+        })
       },
       scales: {
         x: { grid: { display: false }, ticks: { maxTicksLimit: 12, font: { size: 11 }, color: '#999' } },

@@ -11,6 +11,13 @@ const bondScript = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysi
 const statementsScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-statements.js'), 'utf8');
 const dateRangeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'date-range-control.js'), 'utf8');
 const analysisCss = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
+const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
+const utilsScript = fs.readFileSync(path.join(root, 'public', 'js', 'utils.js'), 'utf8');
+const holdingsCharts = [
+  fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.js'), 'utf8'),
+  fs.readFileSync(path.join(root, 'public', 'shared', 'core-account.js'), 'utf8'),
+  fs.readFileSync(path.join(root, 'public', 'shared', 'core-returns.js'), 'utf8'),
+].join('\n');
 
 const stockTab = html.indexOf('data-main="stock-analysis"');
 const ipoTab = html.indexOf('data-main="ipo"');
@@ -54,7 +61,15 @@ assert.ok(script.includes('平均股息率') && script.includes('最近12个月�
 assert.ok(script.includes('(late-early)/early') && script.includes('近期三年均值－十年前三年均值'), '十年三年均值增长必须按两组三年均值的总增长率计算');
 assert.ok(script.includes('analysisHelp(label, stockAnalysisLabelHelp(label))'), '股票分析指标缺少算法说明入口');
 assert.ok(bondScript.includes('analysisHelp(row[0],bondAnalysisLabelHelp(row[0]))'), '可转债分析指标缺少算法说明入口');
+assert.ok(html.includes('id="security-analysis-suggestions"') && html.includes('aria-autocomplete="list"'), '股债分析缺少名称联想下拉框');
+assert.ok(bondScript.includes('/api/bond-analysis/search/securities?q=') && bondScript.includes('securityAnalysisChooseSuggestion'), '股债分析名称联想未接入证券搜索接口');
+assert.ok(analysisCss.includes('.security-analysis-suggestions{') && analysisCss.includes('.security-analysis-suggestion.active'), '证券联想下拉缺少样式或键盘选中状态');
 assert.ok(analysisCss.includes('.analysis-help{') && analysisCss.includes('border-bottom:1px dashed') && analysisCss.includes('.analysis-help-tooltip{'), '算法说明缺少虚线下划线或悬浮弹框样式');
 assert.ok(html.includes('data-help="分位点从所选起始日累计计算') && html.includes('data-help="实际期权价值＝转债市价－纯债价值'), '股债分析模块标题缺少算法说明');
+assert.ok(sharedCss.includes('.app-tooltip.app-tooltip'), '缺少全站统一浮动提示主题');
+assert.ok(script.includes('analysis-help-tooltip app-tooltip') && chartScript.includes('stock-analysis-chart-tooltip app-tooltip') &&
+  valuationChartScript.includes('stock-analysis-valuation-tip app-tooltip'), '股债分析提示未使用统一主题');
+assert.ok(utilsScript.includes('function appChartTooltip(') && holdingsCharts.split('appChartTooltip(').length - 1 >= 4,
+  '持仓管理图表提示未使用统一主题');
 
 console.log('stock-analysis frontend tests passed');

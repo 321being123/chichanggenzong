@@ -30,6 +30,41 @@ router.get('/list/securities', asyncHandler(async (req, res) => {
   res.json({ data: rows.map(row => Object.assign(row, { type: normalizeBondCode(row.code) ? 'bond' : 'stock' })) });
 }));
 
+router.get('/search/securities', asyncHandler(async (req, res) => {
+  const keyword = String(req.query.q || '').trim().slice(0, 30);
+  if (!keyword) return res.json({ data: [] });
+  const like = `%${keyword}%`;
+  const prefix = `${keyword}%`;
+  const { rows } = await pool.query(
+    `WITH candidates AS (
+       SELECT substring(m.ts_code,1,6) AS code,m.ts_code,m.name,'stock'::text AS type,''::text AS stock_name
+         FROM market_instruments m
+        WHERE m.source='tushare'
+          AND m.ts_code ~ '^(60|68|00|30|43|83|87|92)[0-9]{4}\\.(SH|SZ|BJ)$'
+          AND (m.name ILIKE $1 OR m.ts_code ILIKE $1 OR substring(m.ts_code,1,6) ILIKE $1)
+       UNION ALL
+       SELECT substring(b.canonical_code,1,6),b.canonical_code,p.bond_short_name,'bond',COALESCE(s.name,'')
+         FROM fundamental.convertible_bond_profiles p
+         JOIN core.instruments b ON b.instrument_id=p.instrument_id
+         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        WHERE b.status <> 'delisted'
+          AND (b.delist_date IS NULL OR b.delist_date > CURRENT_DATE)
+          AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)
+          AND (p.conv_end_date IS NULL OR p.conv_end_date >= CURRENT_DATE)
+          AND (p.conv_stop_date IS NULL OR p.conv_stop_date > CURRENT_DATE)
+          AND (p.bond_short_name ILIKE $1 OR b.canonical_code ILIKE $1
+               OR substring(b.canonical_code,1,6) ILIKE $1 OR COALESCE(s.name,'') ILIKE $1)
+     )
+     SELECT code,ts_code,name,type,stock_name
+       FROM candidates
+      ORDER BY CASE WHEN name ILIKE $2 THEN 0 WHEN code ILIKE $2 THEN 1 ELSE 2 END,
+               CASE type WHEN 'stock' THEN 0 ELSE 1 END,name,code
+      LIMIT 12`,
+    [like, prefix]
+  );
+  res.json({ data: rows });
+}));
+
 router.get('/:code', validBond, asyncHandler(async (req, res) => {
   const snapshot = await getConvertibleBondSnapshot(req.bondTsCode);
   if (!snapshot) return res.status(404).json({ error: '尚未建档，请刷新该可转债' });

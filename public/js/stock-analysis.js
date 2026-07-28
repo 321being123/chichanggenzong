@@ -42,7 +42,7 @@ function stockAnalysisLabelHelp(label) {
 (function(){
   var tip;
   function hide(){if(tip)tip.style.display='none'}
-  function show(target,x,y){if(!tip){tip=document.createElement('div');tip.className='analysis-help-tooltip';document.body.appendChild(tip)}tip.textContent=target.getAttribute('data-help')||'';tip.style.display='block';var left=Math.min(x+12,window.innerWidth-tip.offsetWidth-8),top=y-tip.offsetHeight-12;if(top<8)top=Math.min(y+18,window.innerHeight-tip.offsetHeight-8);tip.style.left=Math.max(8,left)+'px';tip.style.top=Math.max(8,top)+'px'}
+  function show(target,x,y){if(!tip){tip=document.createElement('div');tip.className='analysis-help-tooltip app-tooltip';document.body.appendChild(tip)}tip.textContent=target.getAttribute('data-help')||'';tip.style.display='block';var left=Math.min(x+12,window.innerWidth-tip.offsetWidth-8),top=y-tip.offsetHeight-12;if(top<8)top=Math.min(y+18,window.innerHeight-tip.offsetHeight-8);tip.style.left=Math.max(8,left)+'px';tip.style.top=Math.max(8,top)+'px'}
   document.addEventListener('mouseover',function(e){var target=e.target.closest&&e.target.closest('.analysis-help');if(target)show(target,e.clientX,e.clientY)});
   document.addEventListener('mousemove',function(e){var target=e.target.closest&&e.target.closest('.analysis-help');if(target)show(target,e.clientX,e.clientY)});
   document.addEventListener('mouseout',function(e){if(e.target.closest&&e.target.closest('.analysis-help'))hide()});

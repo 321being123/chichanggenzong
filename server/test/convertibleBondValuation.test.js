@@ -3,6 +3,8 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const express = require('express');
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 
 const bondValuationRouter = require('../routes/bondValuation');
 
@@ -14,6 +16,24 @@ function check(name, fn) {
 }
 
 async function main() {
+  const frontendSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'bond-valuation.js'), 'utf8');
+  check('前端评价筛选使用稳定分类字段', () => {
+    assert.ok(frontendSource.includes('r.eval_class !== f.final_evaluation'));
+    assert.ok(!frontendSource.includes('r.final_evaluation !== f.final_evaluation'));
+  });
+  check('估值读取成功后清除加载提示', () => {
+    assert.ok(frontendSource.includes("if (statusEl) statusEl.textContent = '';"));
+  });
+  check('历史曲线已绑定鼠标悬浮数据说明', () => {
+    assert.ok(frontendSource.includes('bindBondValChartTips(box)'));
+    assert.ok(frontendSource.includes("data-tip-id"));
+  });
+  const pageSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'index.html'), 'utf8');
+  check('可转债估值标题含算法悬浮说明', () => {
+    assert.ok(pageSource.includes('正的额外期权价值会在到期前最后一年逐步归零'));
+    assert.ok(pageSource.includes('改按停止转股/退市日计算剩余期权窗口'));
+  });
+
   const app = express();
   app.use(express.json());
   app.use((req, res, next) => { req.session = { user: 'test' }; next(); });
@@ -30,6 +50,12 @@ async function main() {
   check('返回 data 数组', () => assert.ok(Array.isArray(j.data)));
   check('返回 counts 对象', () => assert.strictEqual(typeof j.counts, 'object'));
   check('模型版本存在', () => assert.ok(j.model_version));
+  check('当前列表排除已退市转债', () => {
+    const codes = new Set((j.data || []).map(row => row.bond_code));
+    assert.ok(!codes.has('113632.SH'), '鹤21转债仍在当前列表');
+    assert.ok(!codes.has('118011.SH'), '银微转债仍在当前列表');
+    assert.ok(!codes.has('128124.SZ'), '科华转债仍在当前列表');
+  });
   let sample = null;
   if (j.data.length) {
     sample = j.data[0];
@@ -60,8 +86,35 @@ async function main() {
       assert.ok(valued > 0, '全部债券均为"数据不足"，页面不可用: ' + JSON.stringify(c));
       assert.ok(valued * 2 > j.data.length, '过半债券为"数据不足"(' + valued + '/' + j.data.length + ')');
     });
+    check('七类计数合计等于总数', () => {
+      const total = Object.values(j.counts || {}).reduce((sum, n) => sum + Number(n || 0), 0);
+      assert.strictEqual(total, j.total);
+    });
+    check('风险折价未计入低估/偏低估', () => {
+      const riskRows = j.data.filter(row => String(row.final_evaluation || '').startsWith('风险折价'));
+      assert.strictEqual(Number((j.counts || {})['风险折价'] || 0), riskRows.length);
+      for (const row of riskRows) assert.strictEqual(row.eval_class, '风险折价');
+    });
     // 数据新鲜度红线：估值日不得落后最新行情日
     const { pool } = require('../db');
+    const currentCodes = j.data.map(row => row.bond_code);
+    const { rows: invalidRows } = await pool.query(
+      `SELECT i.canonical_code
+         FROM core.instruments i
+         LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        WHERE i.canonical_code=ANY($1)
+          AND ((i.delist_date IS NOT NULL AND i.delist_date <= $2::date)
+            OR (p.maturity_date IS NOT NULL AND p.maturity_date < $2::date)
+            OR (p.conv_end_date IS NOT NULL AND p.conv_end_date < $2::date)
+            OR (p.conv_stop_date IS NOT NULL AND p.conv_stop_date <= $2::date)
+            OR (p.cb_type IS NOT NULL AND p.cb_type NOT IN ('CB',''))
+            OR (s.status IS NOT NULL AND s.status <> 'listed')
+            OR (s.delist_date IS NOT NULL AND s.delist_date <= $2::date))`,
+      [currentCodes, j.expected_trade_date]
+    );
+    check('当前列表全量通过可交易状态校验', () =>
+      assert.deepStrictEqual(invalidRows, [], '仍有不可交易转债: ' + invalidRows.map(x => x.canonical_code).join(',')));
     const { rows: mktRows } = await pool.query('SELECT MAX(trade_date)::text AS d FROM market.convertible_bond_daily_metrics');
     const latestMkt = mktRows[0] && mktRows[0].d ? String(mktRows[0].d).slice(0, 10) : null;
     check('估值日不过期（=最新行情日）', () => {
@@ -133,20 +186,20 @@ async function main() {
     check('返回 data 数组', () => assert.ok(Array.isArray(j.data)));
   }
 
-  // 6b. 数据不足债券详情（P0-3 / P1-2：核心字段缺失仍保存并标记）
-  console.log('== 6b. GET /bonds?data_status=数据不足 ==');
-  r = await fetch(base + '/api/bond-valuation/bonds?data_status=' + encodeURIComponent('数据不足'));
+  // 6b. 新上市债单列观察期，不与真正缺字段混为“数据不足”
+  console.log('== 6b. GET /bonds?data_status=新上市观察期 ==');
+  r = await fetch(base + '/api/bond-valuation/bonds?data_status=' + encodeURIComponent('新上市观察期'));
   check('HTTP 200', () => assert.strictEqual(r.status, 200));
   let jd = await r.json();
-  check('存在数据不足债券', () => assert.ok(Array.isArray(jd.data) && jd.data.length > 0));
+  check('存在新上市观察期债券', () => assert.ok(Array.isArray(jd.data) && jd.data.length > 0));
   if (jd.data && jd.data.length) {
     const ins = jd.data[0];
-    check('数据不足行 data_status=数据不足', () => assert.strictEqual(ins.data_status, '数据不足'));
+    check('观察期行 data_status=新上市观察期', () => assert.strictEqual(ins.data_status, '新上市观察期'));
     r = await fetch(base + '/api/bond-valuation/bonds/' + ins.bond_code);
     check('详情 HTTP 200', () => assert.strictEqual(r.status, 200));
     let dins = await r.json();
-    check('数据不足详情 missing_fields 非空（含缺失列名）', () =>
-      assert.ok(Array.isArray(dins.missing_fields) && dins.missing_fields.length > 0));
+    check('观察期详情含已积累交易日与门槛', () =>
+      assert.ok(Number.isInteger(dins.observation_days) && dins.required_observation_days === 40));
   }
 
   // 8b. 预警语义校验（P1-3：状态机字段齐全；安全性恶化仅中/高风险）

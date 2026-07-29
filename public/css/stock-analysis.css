@@ -2,7 +2,7 @@
 .stock-analysis-hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;padding:22px;border-radius:14px;background:linear-gradient(135deg,#182848,#294f78);color:#fff}
 .stock-analysis-hero h2{margin:0 0 8px}.stock-analysis-hero p{margin:0;color:#d9e7f5;font-size:13px}
 #stock-analysis-updated{font-size:12px;color:#d9e7f5;white-space:nowrap}
-.stock-analysis-toolbar{display:flex;gap:8px;align-items:center;padding:14px;flex-wrap:wrap}
+.stock-analysis-toolbar{display:flex;gap:8px;align-items:center;padding:14px;flex-wrap:wrap;overflow:visible}
 .stock-analysis-toolbar select,.stock-analysis-toolbar input{height:36px;border:1px solid #d8dde6;border-radius:7px;padding:0 10px;background:#fff}
 .stock-analysis-toolbar select{min-width:220px}.stock-analysis-toolbar input{width:210px}
 .security-analysis-search{position:relative;width:260px}.security-analysis-search input{width:100%;box-sizing:border-box}.security-analysis-suggestions{position:absolute;z-index:1000;top:calc(100% + 5px);left:0;width:380px;max-width:min(380px,calc(100vw - 32px));max-height:360px;overflow-y:auto;border:1px solid #d8dde6;border-radius:9px;background:#fff;box-shadow:0 10px 28px rgba(31,45,61,.16)}

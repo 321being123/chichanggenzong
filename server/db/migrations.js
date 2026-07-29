@@ -1536,6 +1536,7 @@ async function migrateToStructured() {
 // ====== 用户 ======
 
 module.exports = {
+  MIGRATIONS,
   migration001Init,
   migration002BondSafetySnapshots,
   migration003MarketDataCache,

@@ -29,6 +29,7 @@ function pgConfig(dbName) {
   let tmpDb = null;
   let origClient = null;
   let db = null;
+  let expectedMigrationCount = 0;
   try {
     // 1) 连原库建一个临时空库
     origClient = new Client(pgConfig(origDb));
@@ -41,6 +42,7 @@ function pgConfig(dbName) {
     // 2) 让 db 模块连到临时库（必须在首次 require 前设定）
     process.env.PGDATABASE = tmpDb;
     db = require('../../server/db');
+    expectedMigrationCount = require('../../server/db/migrations').MIGRATIONS.length;
 
     console.log('A. 首次 initSchema（空库）');
     await db.initSchema();
@@ -59,7 +61,7 @@ function pgConfig(dbName) {
     check('券商种子数据已写入（>0）', () => { assert.ok(b.rows[0].c > 0, 'brokers 种子为空'); });
 
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, 24); });
+    check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, expectedMigrationCount); });
 
     const knowledgeConstraints = await db.pool.query(
       `SELECT conname FROM pg_constraint
@@ -143,7 +145,9 @@ function pgConfig(dbName) {
     console.log('B. 二次 initSchema（幂等）');
     await db.initSchema();
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
-    check('二次迁移不重复登记（仍为24）', () => { assert.strictEqual(m2.rows[0].c, 24); });
+    check(`二次迁移不重复登记（仍为${expectedMigrationCount}）`, () => {
+      assert.strictEqual(m2.rows[0].c, expectedMigrationCount);
+    });
   } catch (e) {
     if (!tmpDb) {
       // 连不上 PostgreSQL 或无建库权限：临时库从未建立，属于环境不具备，优雅跳过（本地不影响通过；CI 下由上层视为失败）

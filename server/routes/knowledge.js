@@ -334,14 +334,17 @@ router.get('/articles', async (req, res) => {
       params.push('%' + q + '%');
     }
     // 列表不返回 share_token（P0-2.5）
+    const orderBy = categoryId
+      ? 'a.sort_order ASC, a.id ASC'
+      : 'COALESCE(a.published_at, a.updated_at) DESC, a.id DESC';
     const sql = `
       SELECT a.id, a.title, a.summary, a.category_id, c.name AS category_name,
              a.status, a.view_count, a.author_username,
-             a.created_at, a.updated_at, a.published_at
+             a.created_at, a.updated_at, a.published_at, a.sort_order
       FROM articles a
       LEFT JOIN article_categories c ON c.id = a.category_id
       ${where}
-      ORDER BY COALESCE(a.published_at, a.updated_at) DESC
+      ORDER BY ${orderBy}
       LIMIT 200
     `;
     const r = await pool.query(sql, params);
@@ -447,8 +450,9 @@ router.post('/articles', requireKsWrite, async (req, res) => {
     const shareToken = genToken();
     const r = await pool.query(
       `INSERT INTO articles
-        (title, content, html_content, summary, category_id, status, share_token, author_username, published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,${status === 'published' ? 'now()' : 'NULL'})
+        (title, content, html_content, summary, category_id, status, share_token, author_username, published_at, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,${status === 'published' ? 'now()' : 'NULL'},
+               COALESCE((SELECT MAX(sort_order) + 10 FROM articles WHERE category_id IS NOT DISTINCT FROM $5), 10))
        RETURNING id`,
       [title, content, htmlContent, summary, categoryId, status, shareToken, req.session.user]
     );
@@ -457,6 +461,46 @@ router.post('/articles', requireKsWrite, async (req, res) => {
     res.json({ id: newId, share_token: shareToken, status });
   } catch (e) {
     res.status(500).json({ error: '新建文章失败', detail: e.message });
+  }
+});
+
+// ---------- 分类内文章排序 ----------
+router.put('/articles/reorder', requireKsWrite, async (req, res) => {
+  const categoryId = parseInt(req.body.category_id, 10);
+  const orderedIds = Array.isArray(req.body.article_ids) ? req.body.article_ids.map(Number) : [];
+  if (!Number.isInteger(categoryId) || !orderedIds.length || orderedIds.some(id => !Number.isInteger(id))) {
+    return res.status(400).json({ error: '排序参数无效' });
+  }
+  if (new Set(orderedIds).size !== orderedIds.length) return res.status(400).json({ error: '文章列表重复' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rows = await client.query(
+      'SELECT id, author_username FROM articles WHERE category_id=$1 FOR UPDATE',
+      [categoryId]
+    );
+    const actualIds = rows.rows.map(row => row.id);
+    if (actualIds.length !== orderedIds.length || actualIds.some(id => !orderedIds.includes(id))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '文章列表已变化，请刷新后重试' });
+    }
+    const me = await getUserKsInfo(req.session.user);
+    if (!me.isAdmin && rows.rows.some(row => row.author_username !== req.session.user)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '只能排序自己创建的文章' });
+    }
+    for (let i = 0; i < orderedIds.length; i++) {
+      await client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, orderedIds[i]]);
+    }
+    await client.query('COMMIT');
+    await auditLog(req.session.user, 'ks_article_reorder', categoryId, '调整分类内文章顺序').catch(() => {});
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: '文章排序失败', detail: e.message });
+  } finally {
+    client.release();
   }
 });
 

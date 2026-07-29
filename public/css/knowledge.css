@@ -694,14 +694,18 @@
 }
 
 .ks-article-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
 }
 
 .ks-card {
   position: relative;
-  padding: 19px 20px 16px;
+  aspect-ratio: 1;
+  min-width: 0;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
   background: var(--ks-surface);
   border: 1px solid var(--ks-border);
   border-radius: 11px;
@@ -745,7 +749,6 @@
 }
 
 .ks-card-sum {
-  max-width: 760px;
   margin: 8px 0 12px;
   display: -webkit-box;
   overflow: hidden;
@@ -762,6 +765,19 @@
   gap: 14px;
   color: #9ca3af;
   font-size: 11px;
+}
+
+.ks-card[draggable="true"] {
+  cursor: grab;
+}
+
+.ks-card.ks-card-dragging {
+  opacity: .45;
+}
+
+.ks-card.ks-card-drag-over {
+  border-color: var(--ks-primary);
+  box-shadow: 0 0 0 2px rgba(63,81,181,.2);
 }
 
 .ks-card-meta span + span::before {
@@ -789,7 +805,7 @@
 }
 
 .ks-card-ops {
-  margin-top: 14px;
+  margin-top: auto;
   padding-top: 12px;
   display: flex;
   gap: 7px;
@@ -1529,9 +1545,9 @@
     width: 100%;
   }
 
-  .ks-card {
-    padding: 16px;
-  }
+  .ks-article-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+  .ks-card { padding: 14px; }
 
   .ks-card-meta {
     gap: 8px;

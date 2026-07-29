@@ -13,6 +13,7 @@ let ksState = {
   categoryActionId: null,
   categoryActionMode: null,
   draggedCategoryId: null,
+  draggedArticleId: null,
 };
 
 let ksOverflowTooltip = null;
@@ -227,13 +228,14 @@ function ksRenderList() {
     box.innerHTML = '<div class="ks-empty">当前范围内没有文章</div>';
     return;
   }
+  const canSort = ksCanSortArticles();
   let html = '';
   ksState.articles.forEach(a => {
     const statusTag = a.status === 'draft'
       ? '<span class="ks-tag ks-tag-draft">草稿</span>'
       : '<span class="ks-tag ks-tag-pub">已发布</span>';
     const date = (a.published_at || a.updated_at || '').toString().slice(0, 10);
-    html += '<div class="ks-card" data-id="' + a.id + '" role="button" tabindex="0">' +
+    html += '<div class="ks-card" data-id="' + a.id + '" role="button" tabindex="0" draggable="' + canSort + '">' +
       '<div class="ks-card-labels"><span class="ks-category-label">' + escapeHtml(a.category_name || '未分类') + '</span>' + statusTag + '</div>' +
       '<div class="ks-card-head"><h3>' + escapeHtml(a.title || '无标题') + '</h3></div>' +
       (a.summary ? '<p class="ks-card-sum">' + escapeHtml(a.summary) + '</p>' : '') +
@@ -261,6 +263,61 @@ function ksRenderList() {
       if (e.target !== card || (e.key !== 'Enter' && e.key !== ' ')) return;
       e.preventDefault();
       ksOpenArticle(parseInt(card.dataset.id, 10));
+    });
+  });
+  if (canSort) ksBindArticleDrag(box);
+}
+
+function ksCanSortArticles() {
+  const search = ksEl('ks-search');
+  const filter = ksEl('ks-filter');
+  return !!(ksState.currentCategory && ksState.canWrite && ksState.articles.length &&
+    (!search || !search.value.trim()) && (!filter || !filter.value) &&
+    ksState.articles.every(function (article) { return article.can_edit; }));
+}
+
+async function ksSaveArticleOrder() {
+  const box = ksEl('ks-article-list');
+  const articleIds = Array.from(box.querySelectorAll('.ks-card')).map(function (card) { return parseInt(card.dataset.id, 10); });
+  try {
+    const r = await fetch(api('/api/knowledge/articles/reorder'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category_id: ksState.currentCategory, article_ids: articleIds }),
+    });
+    if (!r.ok) { showToast((await r.json().catch(function () { return {}; })).error || '排序保存失败'); await ksLoadArticles(); }
+  } catch (e) {
+    showToast('排序保存失败');
+    await ksLoadArticles();
+  }
+}
+
+function ksBindArticleDrag(box) {
+  box.querySelectorAll('.ks-card').forEach(function (card) {
+    card.addEventListener('dragstart', function (event) {
+      ksState.draggedArticleId = card.dataset.id;
+      card.classList.add('ks-card-dragging');
+      event.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragover', function (event) {
+      if (!ksState.draggedArticleId || ksState.draggedArticleId === card.dataset.id) return;
+      event.preventDefault();
+      card.classList.add('ks-card-drag-over');
+    });
+    card.addEventListener('dragleave', function () { card.classList.remove('ks-card-drag-over'); });
+    card.addEventListener('drop', function (event) {
+      event.preventDefault();
+      const dragged = box.querySelector('.ks-card[data-id="' + ksState.draggedArticleId + '"]');
+      card.classList.remove('ks-card-drag-over');
+      if (!dragged || dragged === card) return;
+      const before = event.clientY < card.getBoundingClientRect().top + card.offsetHeight / 2 ||
+        (Math.abs(event.clientY - (card.getBoundingClientRect().top + card.offsetHeight / 2)) < card.offsetHeight / 4 && event.clientX < card.getBoundingClientRect().left + card.offsetWidth / 2);
+      box.insertBefore(dragged, before ? card : card.nextSibling);
+      ksSaveArticleOrder();
+    });
+    card.addEventListener('dragend', function () {
+      ksState.draggedArticleId = null;
+      box.querySelectorAll('.ks-card').forEach(function (item) { item.classList.remove('ks-card-dragging', 'ks-card-drag-over'); });
     });
   });
 }

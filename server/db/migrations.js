@@ -1394,6 +1394,25 @@ async function migration026IndexValuationHistory() {
   `);
 }
 
+// ========== 027：知识文章分类内排序 ==========
+async function migration027ArticleSortOrder() {
+  await pool.query('ALTER TABLE articles ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0');
+  await pool.query(`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (
+        PARTITION BY category_id
+        ORDER BY COALESCE(published_at, updated_at) DESC, id DESC
+      ) * 10 AS next_sort_order
+      FROM articles
+    )
+    UPDATE articles a
+    SET sort_order = ranked.next_sort_order
+    FROM ranked
+    WHERE a.id = ranked.id AND a.sort_order = 0
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_articles_category_sort ON articles(category_id, sort_order, id)');
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1442,6 +1461,7 @@ const MIGRATIONS = [
   { version: '024_valuation_alert_reentry', up: migration024ValuationAlertReentry },
   { version: '025_market_volatility', up: migration025MarketVolatility },
   { version: '026_index_valuation_history', up: migration026IndexValuationHistory },
+  { version: '027_article_sort_order', up: migration027ArticleSortOrder },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

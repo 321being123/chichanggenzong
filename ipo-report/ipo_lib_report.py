@@ -5,6 +5,8 @@ import os
 import re
 from collections import defaultdict
 import time
+import subprocess
+import sys
 from datetime import datetime, timedelta
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
@@ -148,6 +150,11 @@ def build_report(target_date):
             bond["has_detail"] = False
 
     # 4. 生成估值建议（只在有对应类型时计算）
+    # 新股上市预测必须使用 XGBoost。模型或依赖不可用时中止生成，
+    # 防止静默写入板块规则模型的结果而页面无法察觉。
+    if any(stock.get("has_detail") for stock in target_list_stocks) and not _load_xgb_model():
+        raise RuntimeError("新股 XGBoost 模型不可用，已中止生成日报；请检查 ipo-report/data 下的模型文件及 xgboost 依赖")
+
     for stock in target_apply_stocks:
         if stock.get("has_detail"):
             d = stock["detail"]
@@ -812,6 +819,13 @@ def save_report_to_pg(md_content, html_content, data, date_str):
     except Exception as e:
         print(f"[报告] 写入 PostgreSQL 失败: {e}")
 
+def retrain_xgb_model():
+    """实际涨幅回填后重训，确保当天预测使用最新样本。"""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_xgb_model.py")
+    print("[XGBoost] 实际涨幅回填完成，开始重训模型...")
+    subprocess.run([sys.executable, script], cwd=os.path.dirname(script), check=True)
+    print("[XGBoost] 模型重训完成")
+
 def main():
     """主函数 - 支持命令行传参指定日期"""
     # 上市后回填：从K线补全实际首日涨跌幅
@@ -820,6 +834,7 @@ def main():
     detect_bond_market_temperature()
     # 预测跟踪：回填已上市的实际结果
     backfill_prediction_actuals()
+    retrain_xgb_model()
     # 预测误差日志
     _log_prediction_errors()
     # 自动校准板块基准

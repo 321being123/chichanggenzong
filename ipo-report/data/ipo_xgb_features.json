@@ -20,20 +20,21 @@
   ],
   "medians": {
     "issue_price": 0.0,
-    "issue_pe": 20.975,
-    "industry_pe": 32.08,
+    "issue_pe": 21.03,
+    "industry_pe": 44.7,
     "fund_raised": 0.0,
     "online_shares": 0.0,
     "total_shares": 0.0,
-    "lottery_rate": 0.03,
-    "oversub_multiple": 4536.370000000001,
-    "circ_mv": 3.93,
+    "lottery_rate": 0.02516657,
+    "oversub_multiple": 4539.93,
+    "circ_mv": 3.9450000000000003,
     "sub_limit": 0.0,
     "pe_ratio": 1.44
   },
-  "sample_count": 172,
-  "train_mae": 146.71806545303232,
-  "test_mae": 216.73666770856582,
-  "train_mape": 116.84080785786774,
-  "test_mape": 96.37884722878599
+  "sample_count": 175,
+  "train_mae": 63.80460810631889,
+  "test_mae": 218.37680803885317,
+  "train_mape": 21.136252699941043,
+  "test_mape": 56.30785539404625,
+  "target_transform": "log1p_nonnegative_return"
 }

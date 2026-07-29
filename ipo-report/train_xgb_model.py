@@ -8,6 +8,10 @@ import os
 import json
 import warnings
 import numpy as np
+from _common import _load_env
+import db_pg
+
+_load_env()
 warnings.filterwarnings("ignore")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -17,20 +21,41 @@ MODEL_PATH = os.path.join(DATA_DIR, "ipo_xgb_model.json")
 FEATURES_PATH = os.path.join(DATA_DIR, "ipo_xgb_features.json")
 
 # ── 1. 加载数据 ──
-conn = sqlite3.connect(DB_PATH)
-rows = conn.execute("""
-    SELECT 
+# 生产历史数据已迁移至 PostgreSQL。SQLite 仅保留为旧环境兼容回退，
+# 不能因空库而让模型长期无法重训。
+TRAINING_SQL = """
+    SELECT
         security_code, security_name, board_key, ld_close_change,
         issue_price, issue_pe, industry_pe, fund_raised,
         online_shares, total_shares, online_lottery_rate,
         oversubscribe_multiple, circulation_mv, subscribe_upper_limit,
         pe_ratio
-    FROM ipo_history 
-    WHERE board_key != '北交所' 
+    FROM ipo_history
+    WHERE board_key != '北交所'
       AND ld_close_change IS NOT NULL
     ORDER BY listing_date
-""").fetchall()
-conn.close()
+"""
+
+def load_training_rows():
+    try:
+        conn = db_pg.connect()
+        rows = conn.execute(TRAINING_SQL).fetchall()
+        conn.close()
+        if rows:
+            print(f"数据源：PostgreSQL（{len(rows)} 条）")
+            return rows
+    except Exception as error:
+        print(f"PostgreSQL 历史数据读取失败，尝试旧 SQLite：{error}")
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        return conn.execute(TRAINING_SQL).fetchall()
+    finally:
+        conn.close()
+
+rows = load_training_rows()
+if not rows:
+    raise RuntimeError("没有可用于训练的已上市新股历史数据")
 
 print(f"加载 {len(rows)} 只新股")
 
@@ -110,9 +135,11 @@ feature_names = [
 n = len(rows)
 train_size = int(n * 0.8)
 X_train = all_features[:train_size]
-y_train = gain[:train_size]
 X_test = all_features[train_size:]
+y_train = gain[:train_size]
 y_test = gain[train_size:]
+y_train_target = np.log1p(np.maximum(y_train, 0))
+y_test_target = np.log1p(np.maximum(y_test, 0))
 
 print(f"训练集: {train_size} 只, 测试集: {n - train_size} 只")
 print(f"特征数: {len(feature_names)}")
@@ -120,25 +147,13 @@ print(f"特征数: {len(feature_names)}")
 # ── 3. 训练XGBoost ──
 import xgboost as xgb
 
-model = xgb.XGBRegressor(
-    n_estimators=500,
-    max_depth=3,
-    learning_rate=0.05,
-    subsample=0.7,
-    colsample_bytree=0.7,
-    reg_alpha=2.0,
-    reg_lambda=3.0,
-    min_child_weight=5,
-    random_state=42,
-    verbosity=0,
-    early_stopping_rounds=20,
-)
-
-model.fit(
-    X_train, y_train,
-    eval_set=[(X_test, y_test)],
-    verbose=False
-)
+dtrain = xgb.DMatrix(X_train, label=y_train_target, feature_names=feature_names)
+dtest = xgb.DMatrix(X_test, label=y_test_target, feature_names=feature_names)
+model = xgb.train({
+    "objective": "reg:squarederror", "max_depth": 3, "eta": 0.05,
+    "subsample": 0.7, "colsample_bytree": 0.7, "alpha": 2.0,
+    "lambda": 3.0, "min_child_weight": 5, "seed": 42, "verbosity": 0,
+}, dtrain, num_boost_round=300)
 
 # 获取最佳迭代次数
 best_iter = model.best_iteration if hasattr(model, 'best_iteration') and model.best_iteration is not None else None
@@ -146,8 +161,8 @@ if best_iter:
     print(f"最佳迭代次数: {best_iter}")
 
 # ── 4. 评估 ──
-y_pred_train = model.predict(X_train)
-y_pred_test = model.predict(X_test)
+y_pred_train = np.expm1(model.predict(dtrain))
+y_pred_test = np.expm1(model.predict(dtest))
 
 train_mae = np.mean(np.abs(y_train - y_pred_train))
 test_mae = np.mean(np.abs(y_test - y_pred_test))
@@ -170,17 +185,14 @@ for i in range(len(y_test)):
 
 # 特征重要性
 print(f"\n特征重要性（TOP10）:")
-importance = model.feature_importances_
+score = model.get_score(importance_type="gain")
+importance = np.array([score.get(name, 0.0) for name in feature_names])
 idx_sorted = np.argsort(importance)[::-1]
 for i in idx_sorted[:10]:
     print(f"  {feature_names[i]}: {importance[i]:.3f}")
 
 # ── 5. 保存 ──
-try:
-    model.save_model(MODEL_PATH)
-except TypeError:
-    # xgboost 3.x兼容性问题
-    model.get_booster().save_model(MODEL_PATH)
+model.save_model(MODEL_PATH)
 
 info = {
     "features": feature_names,
@@ -190,6 +202,7 @@ info = {
     "test_mae": float(test_mae),
     "train_mape": float(train_mape),
     "test_mape": float(test_mape),
+    "target_transform": "log1p_nonnegative_return",
 }
 with open(FEATURES_PATH, "w", encoding="utf-8") as f:
     json.dump(info, f, ensure_ascii=False, indent=2)

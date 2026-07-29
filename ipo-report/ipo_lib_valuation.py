@@ -645,7 +645,9 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0):
             lottery_inv, circ_per_lot, pe_squared
         ]])
 
-        estimated = float(_XGB_MODEL.predict(xgb.DMatrix(features))[0])
+        estimated = float(_XGB_MODEL.predict(xgb.DMatrix(features, feature_names=_XGB_FEATURES))[0])
+        if (_XGB_FEATURE_INFO or {}).get("target_transform") == "log1p_nonnegative_return":
+            estimated = float(np.expm1(estimated))
         estimated = int(round(max(estimated, 0)))
 
         # XGBoost动态校准：按板块基准 + 市场温度调整

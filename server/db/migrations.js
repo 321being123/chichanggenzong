@@ -1333,6 +1333,67 @@ async function migration024ValuationAlertReentry() {
   `);
 }
 
+// 股市波动：估值、国债收益率、格雷厄姆指数与用户策略设置。
+// 所有数值均使用百分数口径，例如 1.73 表示 1.73%，不写入模拟数据。
+async function migration025MarketVolatility() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.market_valuation_daily (
+      market_code TEXT NOT NULL, benchmark_code TEXT NOT NULL, trade_date DATE NOT NULL,
+      pe NUMERIC(20,6), pe_ttm NUMERIC(20,6), source_code TEXT NOT NULL,
+      source_date DATE NOT NULL, raw_payload JSONB, ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (market_code, benchmark_code, trade_date, source_code),
+      CONSTRAINT chk_market_valuation_pe_positive CHECK (pe IS NULL OR pe > 0)
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_valuation_lookup ON market.market_valuation_daily(market_code, benchmark_code, trade_date DESC);
+
+    CREATE TABLE IF NOT EXISTS market.sovereign_yield_daily (
+      market_code TEXT NOT NULL, tenor_years SMALLINT NOT NULL, trade_date DATE NOT NULL,
+      yield_pct NUMERIC(12,6) NOT NULL, source_code TEXT NOT NULL, source_date DATE NOT NULL,
+      raw_payload JSONB, ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (market_code, tenor_years, trade_date, source_code),
+      CONSTRAINT chk_sovereign_yield_tenor CHECK (tenor_years = 10)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sovereign_yield_lookup ON market.sovereign_yield_daily(market_code, tenor_years, trade_date DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.graham_index_daily (
+      market_code TEXT NOT NULL, benchmark_code TEXT NOT NULL, trade_date DATE NOT NULL,
+      pe NUMERIC(20,6), earnings_yield_pct NUMERIC(12,6), sovereign_yield_pct NUMERIC(12,6),
+      sovereign_yield_date DATE, graham_index_pct NUMERIC(16,6), data_status TEXT NOT NULL,
+      formula_version TEXT NOT NULL DEFAULT '1', calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (market_code, benchmark_code, trade_date, formula_version),
+      CONSTRAINT chk_graham_status CHECK (data_status IN ('normal','carried_forward','stale','missing'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_graham_index_lookup ON analytics.graham_index_daily(market_code, benchmark_code, trade_date DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.graham_strategy_settings (
+      setting_id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      account_name TEXT NOT NULL, market_code TEXT NOT NULL, benchmark_code TEXT NOT NULL,
+      lower_boundary_pct NUMERIC(16,4) NOT NULL, upper_boundary_pct NUMERIC(16,4) NOT NULL,
+      step_pct NUMERIC(8,4) NOT NULL DEFAULT 10, version INTEGER NOT NULL DEFAULT 1,
+      is_current BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT chk_graham_boundaries CHECK (lower_boundary_pct > 0 AND upper_boundary_pct > lower_boundary_pct),
+      CONSTRAINT chk_graham_step CHECK (step_pct = 10)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_graham_settings_current
+      ON analytics.graham_strategy_settings(username, account_name, market_code, benchmark_code) WHERE is_current;
+  `);
+}
+
+async function migration026IndexValuationHistory() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.index_valuation_history (
+      index_code TEXT NOT NULL, valuation_method TEXT NOT NULL, trade_date DATE NOT NULL,
+      close NUMERIC(20,4), market_cap NUMERIC(28,4), pe_ttm NUMERIC(20,6), pb NUMERIC(20,6),
+      pe_percentile NUMERIC(12,6), pe_p80 NUMERIC(20,6), pe_p50 NUMERIC(20,6), pe_p20 NUMERIC(20,6),
+      pb_percentile NUMERIC(12,6), pb_p80 NUMERIC(20,6), pb_p50 NUMERIC(20,6), pb_p20 NUMERIC(20,6),
+      source_code TEXT NOT NULL, raw_payload JSONB, ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY(index_code, valuation_method, trade_date, source_code)
+    );
+    CREATE INDEX IF NOT EXISTS idx_index_valuation_history_lookup
+      ON market.index_valuation_history(index_code, valuation_method, trade_date DESC);
+  `);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1379,6 +1440,8 @@ const MIGRATIONS = [
   { version: '022_convertible_bond_valuation', up: migration022ConvertibleBondValuation },
   { version: '023_valuation_constraints', up: migration023ValuationConstraints },
   { version: '024_valuation_alert_reentry', up: migration024ValuationAlertReentry },
+  { version: '025_market_volatility', up: migration025MarketVolatility },
+  { version: '026_index_valuation_history', up: migration026IndexValuationHistory },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

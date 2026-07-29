@@ -22,6 +22,7 @@ const bondValuationRouter = require('./routes/bondValuation');
 const stockAnalysisRouter = require('./routes/stockAnalysis');
 const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
+const marketVolatilityRouter = require('./routes/marketVolatility');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
@@ -31,6 +32,7 @@ const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
 const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
+const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
 
 const app = express();
 // 安全默认：不信任上游代理（避免伪造 X-Forwarded-For 绕过限流/IP 识别）。
@@ -114,6 +116,7 @@ async function start() {
   app.use('/api/bond-cycle', bondCycleRouter);    // 可转债周期：只读聚合查询
   app.use('/api/bond-valuation', bondValuationRouter); // 可转债估值：列表/详情/历史/预警/刷新
   app.use('/api/knowledge', knowledgeRouter);    // 知识分享：文章/分类/评论/公开分享
+  app.use('/api/market-volatility', marketVolatilityRouter); // 股市波动：格雷厄姆指数与仓位纪律
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));
@@ -142,6 +145,7 @@ async function start() {
       runIndexRecentJob().catch(function (e) { console.error('指数每日补齐失败:', e.message); });
       // 每日港币汇率自动更新（避免不开网页时港股估值沿用旧汇率）
       runHkRateJob().catch(function (e) { console.error('汇率更新失败:', e.message); });
+      scheduleMarketVolatilitySync();
       scheduleBondSafetyRefresh();
       scheduleStockAnalysisRefresh();
       scheduleConvertibleBondRefresh();

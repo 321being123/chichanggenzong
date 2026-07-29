@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="css/bond-cycle.css?v=4">
 <link rel="stylesheet" href="css/bond-valuation.css?v=4">
 <link rel="stylesheet" href="css/stock-analysis.css?v=13">
+<link rel="stylesheet" href="css/market-volatility.css?v=3">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
 <link rel="stylesheet" href="css/knowledge.css?v=15">
 </head>
@@ -24,6 +25,7 @@
       <nav class="main-nav">
         <button class="main-tab" data-main="knowledge">投资笔记</button>
         <button class="main-tab" data-main="stock-analysis">股债分析</button>
+        <button class="main-tab" data-main="market-volatility">股市波动</button>
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
         <button class="main-tab" data-main="bond-safety">可转债</button>
@@ -498,6 +500,28 @@
   </div>
 </div>
 
+<!-- 股市波动（一级页） -->
+<div class="main-page" id="main-market-volatility">
+  <div class="market-volatility-shell feature-page-shell">
+    <div class="mv-hero"><div><h2>股市波动</h2><p>以格雷厄姆指数辅助管理股票仓位；仅供研究参考，不构成投资建议。</p></div><span id="mv-updated">正在读取数据...</span></div>
+    <div class="mv-controls table-wrap">
+      <div class="mv-control-group"><span>市场</span><button data-mv-market="CN" class="active">中国A股</button><button data-mv-market="HK">港股</button></div>
+      <div class="mv-control-group" id="mv-benchmark-controls"><span>指数</span><button data-mv-benchmark="CSI300" class="active">沪深300</button><button data-mv-benchmark="CSIALL">中证全指</button></div>
+      <div class="mv-control-group"><span>时间</span><select id="mv-range" aria-label="历史范围"><option value="1y">1年</option><option value="3y">3年</option><option value="5y">5年</option><option value="10y">10年</option><option value="20y" selected>20年</option><option value="all">全部</option></select></div>
+    </div>
+    <div id="mv-status" class="mv-status"></div>
+    <div id="mv-content" style="display:none;">
+      <div class="mv-cards">
+        <div><span>当前格雷厄姆指数</span><strong id="mv-graham">--</strong></div><div><span>指数市盈率</span><strong id="mv-pe">--</strong></div><div><span>股票收益率</span><strong id="mv-earnings">--</strong></div><div><span id="mv-yield-label">10年期国债收益率</span><strong id="mv-yield">--</strong></div>
+        <div><span>建议股票仓位</span><strong id="mv-recommended">--</strong></div><div><span>实际股票仓位</span><strong id="mv-actual">--</strong></div><div><span>仓位偏差</span><strong id="mv-deviation">--</strong></div>
+      </div>
+      <div class="mv-setting-note">最低、最高边界可分别拖动；松开后自动重新计算中间仓位档位。登录后点击保存才会生效。</div>
+      <div class="mv-chart-wrap"><div id="mv-chart"></div><div id="mv-draft" class="mv-draft" hidden></div><div class="mv-actions"><button class="btn btn-primary btn-sm" id="mv-save" disabled>保存边界</button><button class="btn btn-outline btn-sm" id="mv-cancel" disabled>取消</button></div></div>
+      <div class="table-wrap"><div class="table-header"><h3>仓位阶梯</h3></div><div id="mv-ladder"></div></div>
+    </div>
+  </div>
+</div>
+
 <!-- 打新日历（一级页） -->
 <div class="main-page" id="main-ipo">
   <div class="feature-page-shell">
@@ -918,6 +942,7 @@
 <script src="js/stock-analysis-statements.js?v=3"></script>
 <script src="js/stock-analysis-chart.js?v=12"></script>
 <script src="js/stock-analysis-valuation-chart.js?v=5"></script>
+<script src="js/market-volatility.js?v=9"></script>
 <script src="js/home-dashboard.js?v=9"></script>
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>
@@ -979,6 +1004,7 @@ function switchMain(main) {
   if (main === 'ipo') loadIpo();
   if (main === 'bond-safety') { loadBondSafety(); if (typeof initBondCycleSub === 'function') initBondCycleSub(); }
   if (main === 'stock-analysis') loadStockAnalysis();
+  if (main === 'market-volatility') loadMarketVolatility();
   if (main === 'knowledge') loadKnowledge();
   if (main === 'home') loadHomeDashboard();
   if (main === 'holdings' && username && typeof doRefresh === 'function') {
@@ -1342,8 +1368,9 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   setupMainNav();
   initKnowledgeEvents();
   var requestedMain = new URLSearchParams(window.location.search).get('main');
-  var allowedMain = ['home','holdings','stock-analysis','ipo','bond-safety','changelog','profile','knowledge'];
-  var initialMain = loggedIn && allowedMain.includes(requestedMain) ? requestedMain : 'home';
+  var allowedMain = ['home','holdings','stock-analysis','market-volatility','ipo','bond-safety','changelog','profile','knowledge'];
+  var publicMain = ['home', 'knowledge', 'market-volatility'];
+  var initialMain = allowedMain.includes(requestedMain) && (loggedIn || publicMain.includes(requestedMain)) ? requestedMain : 'home';
   switchMain(initialMain);
   // 用完后清除地址栏里的 ?main=，避免下次打开（或刷新）仍停留在上次跳转的页面，
   // 保证“首次打开网站”始终回到存在小站主页；分享链接在首次打开时仍能正确跳转到指定页。

@@ -15,7 +15,6 @@ const VIEW_TITLES = {
   settings: '全局参数',
   holidays: '休市日历',
   audit: '操作审计',
-  aimodels: '大模型配置',
   knowledge: '投资笔记管理'
 };
 
@@ -90,7 +89,6 @@ function switchView(view) {
   else if (view === 'settings') renderSettings();
   else if (view === 'holidays') renderHolidays();
   else if (view === 'audit') renderAudit();
-  else if (view === 'aimodels') renderAimodels();
   else if (view === 'knowledge') renderKnowledge();
   else renderPlaceholder(view);
 }
@@ -501,6 +499,17 @@ function renderJobs() {
   loadJobsData();
 }
 
+async function importFederalFunds() {
+  const input = document.getElementById('set-fed-file'), file = input && input.files && input.files[0];
+  if (!file) return showToast('请选择 CSV 或 XLSX 文件');
+  const button = document.getElementById('set-btn-fed'), form = new FormData(); form.append('file', file); button.disabled = true;
+  try {
+    const r = await fetch(api('/api/market-volatility/federal-funds/import'), { method: 'POST', body: form }), d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status); input.value = ''; showToast('已导入 ' + d.imported + ' 条日频利率数据');
+  } catch (e) { showToast('导入失败：' + (e.message || e)); }
+  finally { button.disabled = false; }
+}
+
 async function loadJobsData() {
   const tbody = document.getElementById('jobs-tbody');
   const summary = document.getElementById('jobs-summary');
@@ -658,6 +667,7 @@ function renderSettings() {
   el.innerHTML = '<div class="admin-placeholder"><div class="spinner" style="margin:0 auto 12px;"></div>加载中...</div>';
   fetch(api('/api/admin/settings')).then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
     if (!s) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
+    renderSettingsTabs(el, s); return;
     const o = s.register_open === '1' ? 'checked' : '';
     const e = s.require_email === '1' ? 'checked' : '';
     el.innerHTML = '<div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
@@ -667,6 +677,24 @@ function renderSettings() {
       '<button class="btn btn-primary" onclick="submitSettings()" style="padding:9px 22px;">保存设置</button>' +
       '<div style="font-size:12px;color:#999;margin-top:12px;">设置即时生效，无需重启。</div></div>';
   }).catch(function () { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; });
+}
+function renderSettingsTabs(el, s) {
+  const o = s.register_open === '1' ? 'checked' : '', e = s.require_email === '1' ? 'checked' : '';
+  el.innerHTML = '<div class="filter-bar" style="margin-bottom:16px;border-bottom:1px solid #e8e8e8;padding-bottom:10px;">' +
+    '<button class="btn btn-primary btn-sm settings-tab active" data-tab="site" onclick="switchSettingsTab(\'site\')">站点参数</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="market" onclick="switchSettingsTab(\'market\')">市场数据</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="models" onclick="switchSettingsTab(\'models\')">大模型配置</button></div>' +
+    '<div class="settings-panel" data-panel="site"><div style="font-size:13px;color:#666;margin-bottom:12px;">控制用户注册与邮箱验证；保存后即时生效。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
+    '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><input type="checkbox" id="set-register-open" ' + o + '><label for="set-register-open">开放注册</label></div>' +
+    '<div style="margin-bottom:16px;"><div style="font-size:13px;color:#555;margin-bottom:6px;">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需邀请码" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
+    '<div style="display:flex;align-items:center;gap:9px;margin-bottom:20px;"><input type="checkbox" id="set-require-email" ' + e + '><label for="set-require-email">注册强制邮箱验证</label></div><button class="btn btn-primary" onclick="submitSettings()">保存站点参数</button></div></div>' +
+    '<div class="settings-panel" data-panel="market" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">港股格雷厄姆指数使用美国联邦基金有效利率作为代理。管理员导入周频 CSV/XLSX 后，系统会自动补成日频并对所有用户生效。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:680px;"><input id="set-fed-file" type="file" accept=".csv,.xlsx"><button class="btn btn-primary btn-sm" id="set-btn-fed" onclick="importFederalFunds()">导入联邦基金利率</button></div></div>' +
+    '<div class="settings-panel" data-panel="models" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">配置图片和 Excel 识别使用的大模型。模型按顺序调用，排在最前的是默认模型；前一个不可用时会自动切换。</div><div id="settings-models"></div></div>';
+}
+function switchSettingsTab(tab) {
+  document.querySelectorAll('.settings-tab').forEach(function (button) { const active = button.dataset.tab === tab; button.classList.toggle('btn-primary', active); button.classList.toggle('btn-outline', !active); });
+  document.querySelectorAll('.settings-panel').forEach(function (panel) { panel.hidden = panel.dataset.panel !== tab; });
+  if (tab === 'models') { const target = document.getElementById('settings-models'); if (target && !target.dataset.loaded) { target.dataset.loaded = '1'; renderAimodels(target); } }
 }
 async function submitSettings() {
   const body = { register_open: document.getElementById('set-register-open').checked, register_code: document.getElementById('set-register-code').value || '', require_email: document.getElementById('set-require-email').checked };
@@ -791,8 +819,8 @@ async function loadAuditData() {
 }
 
 // ====== 大模型配置 ======
-function renderAimodels() {
-  const el = document.getElementById('view-aimodels'); if (!el) return;
+function renderAimodels(target) {
+  const el = target || document.getElementById('settings-models'); if (!el) return;
   el.innerHTML =
     '<div style="font-size:12px;color:#888;background:#f6f8fa;padding:8px 10px;border-radius:6px;margin-bottom:12px;">图片/Excel 识别会按顺序依次调用已启用的模型：排在最前的是<b>默认模型</b>，上一个失效自动切换到下一个（用户无感知）。状态灯反映后台最近一次真实调用的结果。</div>' +
     '<div class="filter-bar">' +

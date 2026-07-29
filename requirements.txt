@@ -5,6 +5,7 @@
 psycopg2-binary==2.9.9
 tushare==1.4.6
 pandas==2.2.2
+xlrd==2.0.2
 numpy==1.26.4
 requests==2.32.3
 PyMuPDF==1.24.10

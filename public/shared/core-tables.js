@@ -247,7 +247,8 @@ function setFilter(type, val) {
 function renderPositionsTable(targetId, limit) {
   const el = document.getElementById(targetId);
   if (!el) return;
-  let list = [...data.positions];
+  const activePositions = (data.positions || []).filter(function(p) { return Number(p.quantity) > 0; });
+  let list = [...activePositions];
 
   // 筛选（仅全量表格，topN 不筛选）
   if (!limit) {
@@ -307,8 +308,8 @@ function renderPositionsTable(targetId, limit) {
   // 筛选栏（仅全量表格）
   let filterBar = '';
   if (!limit) {
-    const types = [...new Set(data.positions.map(p => p.type).filter(Boolean))];
-    const subtypes = [...new Set(data.positions.map(p => p.subtype).filter(Boolean))];
+    const types = [...new Set(activePositions.map(p => p.type).filter(Boolean))];
+    const subtypes = [...new Set(activePositions.map(p => p.subtype).filter(Boolean))];
     filterBar = '<div class="filter-bar">' +
       '<span class="filter-label">筛选:</span>' +
       '<select onchange="setFilter(&quot;type&quot;,this.value)">' +
@@ -323,7 +324,7 @@ function renderPositionsTable(targetId, limit) {
         ? '<button class="btn btn-outline btn-sm" onclick="filterState={type:&quot;&quot;,subtype:&quot;&quot;};renderPositionsTable(&quot;positions-table&quot;);renderPositionsTable(&quot;topn-table&quot;)">清除筛选</button>'
         : '') +
       '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="exportToExcel()">导出EXCEL</button>' +
-      '<span style="color:#bbb;">' + list.length + ' / ' + data.positions.length + ' 只</span>' +
+      '<span style="color:#bbb;">' + list.length + ' / ' + activePositions.length + ' 只</span>' +
       '</div>';
   }
 

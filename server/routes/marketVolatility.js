@@ -3,6 +3,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, requireAdmin } = require('../middleware/auth');
 const svc = require('../services/marketVolatility');
+const cycleMetrics = require('../services/marketCycleMetrics');
 const { pool } = require('../db');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
@@ -44,31 +45,44 @@ function expandFederalFundsDaily(records) {
 }
 
 function query(req) {
+  const metric = String(req.query.metric || 'graham');
+  if (metric !== 'graham' && !cycleMetrics.validMetric(metric)) { const e = new Error('股市周期指标参数不合法'); e.status = 400; throw e; }
+  if (metric === 'm2_market_cap') return { metric, market: 'CN', benchmark: 'ASHARE' };
   const market = String(req.query.market || 'CN'); const benchmark = String(req.query.benchmark || 'CSI300');
   if (!svc.validMarketBenchmark(market, benchmark)) { const e = new Error('市场或指数参数不合法'); e.status = 400; throw e; }
-  return { market, benchmark };
+  return { metric, market, benchmark };
 }
 async function assertAccount(username, account) {
   const { rows } = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2 LIMIT 1', [username, account]);
   if (!rows.length) { const e = new Error('账户不存在或无权访问'); e.status = 403; throw e; }
 }
 router.get('/overview', asyncHandler(async (req, res) => {
-  const { market, benchmark } = query(req); const account = String(req.query.account || '');
+  const { metric, market, benchmark } = query(req); const account = String(req.query.account || '');
   if (account.length > 100) return res.status(400).json({ error: '账户不合法' });
   if (account && req.session.user) await assertAccount(req.session.user, account);
-  res.json(await svc.getOverview(req.session.user || null, req.session.user ? account : '', market, benchmark));
+  if (metric === 'graham') return res.json(await svc.getOverview(req.session.user || null, req.session.user ? account : '', market, benchmark));
+  res.json(await cycleMetrics.getOverview(req.session.user || null, req.session.user ? account : '', metric, market, benchmark));
 }));
 router.get('/history', asyncHandler(async (req, res) => {
-  const { market, benchmark } = query(req); const range = String(req.query.range || '5y');
+  const { metric, market, benchmark } = query(req); const range = String(req.query.range || '5y');
   if (!['1y','3y','5y','10y','20y','all'].includes(range)) return res.status(400).json({ error: '时间范围不合法' });
-  res.json({ market, benchmark, range, history: await svc.getHistory(market, benchmark, range) });
+  if (metric === 'graham') return res.json({ market, benchmark, range, history: await svc.getHistory(market, benchmark, range) });
+  res.json({ metric, market, benchmark, range, history: await cycleMetrics.getHistory(metric, market, benchmark, range) });
 }));
 router.put('/settings', requireLogin, asyncHandler(async (req, res) => {
-  const body = req.body || {}; const market = String(body.market || ''); const benchmark = String(body.benchmark || '');
-  if (!svc.validMarketBenchmark(market, benchmark)) return res.status(400).json({ error: '市场或指数参数不合法' });
+  const body = req.body || {}; const metric = String(body.metric || 'graham');
+  const market = metric === 'm2_market_cap' ? 'CN' : String(body.market || '');
+  const benchmark = metric === 'm2_market_cap' ? 'ASHARE' : String(body.benchmark || '');
+  if (metric !== 'graham' && !cycleMetrics.validMetric(metric)) return res.status(400).json({ error: '股市周期指标参数不合法' });
+  if (metric !== 'm2_market_cap' && !svc.validMarketBenchmark(market, benchmark)) return res.status(400).json({ error: '市场或指数参数不合法' });
   if (!body.accountName || String(body.accountName).length > 100) return res.status(400).json({ error: '账户不合法' });
   await assertAccount(req.session.user, String(body.accountName));
-  try { res.json({ ok: true, setting: await svc.saveSetting(req.session.user, String(body.accountName), market, benchmark, body.lowerBoundaryPct, body.upperBoundaryPct, body.version) }); }
+  try {
+    const setting = metric === 'graham'
+      ? await svc.saveSetting(req.session.user, String(body.accountName), market, benchmark, body.lowerBoundaryPct, body.upperBoundaryPct, body.version)
+      : await cycleMetrics.saveSetting(req.session.user, String(body.accountName), metric, market, benchmark, body.lowerBoundaryPct, body.upperBoundaryPct, body.version);
+    res.json({ ok: true, setting });
+  }
   catch (e) { res.status(e.conflict ? 409 : e.status || 500).json({ error: e.message }); }
 }));
 router.post('/federal-funds/import', requireAdmin, upload.single('file'), asyncHandler(async (req, res) => {

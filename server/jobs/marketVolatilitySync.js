@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { tushareQuery, tsRows, normDate } = require('../services/market');
 
 function request(url, binary) { return new Promise((resolve, reject) => {
   https.get(url, { headers: { 'User-Agent': 'portfolio-server/1.0 (+official-data-sync)' }, timeout: 60000 }, r => {
@@ -60,7 +61,12 @@ async function syncHsiPe() {
   const data = await parseHsiWorkbook(b); let count=0;
   for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);
     await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
-      VALUES('HK','HSI',$1,$2,'hsi_official',$1,$3) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(r)]); count++; }
+      VALUES('HK','HSI',$1,$2,'hsi_official',$1,$3) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(r)]);
+    await pool.query(`INSERT INTO market.index_valuation_history(index_code,valuation_method,trade_date,pe_ttm,source_code,raw_payload)
+      VALUES('HSI','market_cap_weighted',$1,$2,'hsi_official',$3)
+      ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
+        pe_ttm=EXCLUDED.pe_ttm,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [day, pe, JSON.stringify(r)]);
+    count++; }
   return count;
 }
 async function syncHkYield(full) {
@@ -82,6 +88,147 @@ async function calculateGraham() {
     await pool.query(`INSERT INTO analytics.graham_index_daily(market_code,benchmark_code,trade_date,pe,earnings_yield_pct,sovereign_yield_pct,sovereign_yield_date,graham_index_pct,data_status)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(market_code,benchmark_code,trade_date,formula_version) DO UPDATE SET pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, [r.market_code,r.benchmark_code,r.trade_date,r.pe,earnings,y,r.yield_date,earnings-y,status]); }
 }
-async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),hkYield:await syncHkYield(first)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
+
+function tsDate(value) { return String(value || '').replace(/-/g, ''); }
+function monthDate(value) {
+  const month = String(value || '');
+  return /^\d{6}$/.test(month) ? month.slice(0, 4) + '-' + month.slice(4, 6) + '-01' : null;
+}
+function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function syncCsi300Valuation(full) {
+  const end = tsDate(dateStr(new Date()));
+  const ranges = full
+    ? [['20040101', '20151231'], ['20160101', end]]
+    : [[tsDate(dateStr(new Date(Date.now() - 45 * 86400000))), end]];
+  let count = 0;
+  for (const [startDate, endDate] of ranges) {
+    const data = await tushareQuery('index_dailybasic', { ts_code: '000300.SH', start_date: startDate, end_date: endDate },
+      'ts_code,trade_date,total_mv,pe_ttm,pb');
+    if (!data) continue;
+    for (const row of tsRows(data)) {
+      const day = normDate(row.trade_date), pe = Number(row.pe_ttm), pb = Number(row.pb);
+      if (!day || (!(pe > 0) && !(pb > 0))) continue;
+      await pool.query(`INSERT INTO market.index_valuation_history
+        (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
+        VALUES('CSI300','market_cap_weighted',$1,$2,$3,$4,'tushare_index_dailybasic',$5)
+        ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
+          market_cap=EXCLUDED.market_cap,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
+          raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+      [day, Number(row.total_mv) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row)]);
+      count++;
+    }
+  }
+  return count;
+}
+
+async function syncMoneySupply() {
+  const data = await tushareQuery('cn_m', {}, 'month,m2,m2_yoy');
+  if (!data) return 0;
+  let count = 0;
+  for (const row of tsRows(data)) {
+    const month = monthDate(row.month), m2 = Number(row.m2);
+    if (!month || !(m2 > 0)) continue;
+    await pool.query(`INSERT INTO market.money_supply_monthly
+      (market_code,month,m2_100m_yuan,source_code,raw_payload)
+      VALUES('CN',$1,$2,'nbs_via_tushare',$3)
+      ON CONFLICT(market_code,month,source_code) DO UPDATE SET
+        m2_100m_yuan=EXCLUDED.m2_100m_yuan,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+    [month, m2, JSON.stringify({
+      ...row,
+      source: 'https://data.stats.gov.cn/',
+      fiscalReference: 'https://gks.mof.gov.cn/tongjishuju/',
+      transport: 'tushare.cn_m',
+      unit: '100m CNY',
+      m1DefinitionVersion: String(row.month) >= '202501' ? '2025_revised' : 'pre_2025',
+    })]);
+    count++;
+  }
+  return count;
+}
+
+async function tradeMonthEnds(startYear, endYear) {
+  const result = [], today = tsDate(dateStr(new Date()));
+  for (let year = startYear; year <= endYear; year++) {
+    const data = await tushareQuery('trade_cal',
+      { exchange: 'SSE', start_date: year + '0101', end_date: year + '1231', is_open: '1' },
+      'cal_date,is_open');
+    if (!data) continue;
+    const latest = new Map();
+    for (const row of tsRows(data)) {
+      if (String(row.is_open) !== '1' || !/^\d{8}$/.test(String(row.cal_date)) || String(row.cal_date) > today) continue;
+      const day = String(row.cal_date), month = day.slice(0, 6), previous = latest.get(month);
+      if (!previous || day > previous) latest.set(month, day);
+    }
+    result.push(...latest.values());
+  }
+  return result.sort();
+}
+
+async function syncAShareMarketCap(full) {
+  const currentYear = new Date().getUTCFullYear();
+  const dates = await tradeMonthEnds(full ? 2010 : currentYear, currentYear);
+  if (!dates.length) return 0;
+  const existing = await pool.query(`SELECT to_char(trade_date,'YYYYMMDD') AS day
+    FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'`);
+  const seen = new Set(existing.rows.map(row => row.day));
+  const targets = full ? dates.filter(day => !seen.has(day)) : [dates.at(-1)].filter(day => day && !seen.has(day));
+  let count = 0;
+  for (const day of targets) {
+    const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv');
+    const rows = tsRows(data);
+    if (rows.length < 1000) continue;
+    const totalWan = rows.reduce((sum, row) => {
+      const value = Number(row.total_mv);
+      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+    }, 0);
+    if (!(totalWan > 0)) continue;
+    await pool.query(`INSERT INTO market.a_share_market_cap_daily
+      (trade_date,total_market_cap_100m_yuan,security_count,source_code,raw_payload)
+      VALUES($1,$2,$3,'tushare_daily_basic',$4)
+      ON CONFLICT(trade_date,source_code) DO UPDATE SET
+        total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
+        security_count=EXCLUDED.security_count,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+    [normDate(day), totalWan / 10000, rows.length, JSON.stringify({ upstreamUnit: '10000 CNY', storedUnit: '100m CNY', securityCount: rows.length })]);
+    count++;
+    await wait(350);
+  }
+  return count;
+}
+
+async function calculateM2MarketCap() {
+  const result = await pool.query(`INSERT INTO analytics.m2_market_cap_daily
+    (trade_date,m2_month,m2_100m_yuan,total_market_cap_100m_yuan,ratio_pct,data_status)
+    SELECT c.trade_date,m.month,m.m2_100m_yuan,c.total_market_cap_100m_yuan,
+      m.m2_100m_yuan/c.total_market_cap_100m_yuan*100,
+      CASE WHEN c.trade_date <= (m.month + INTERVAL '2 months') THEN 'normal' ELSE 'carried_forward' END
+    FROM market.a_share_market_cap_daily c
+    JOIN LATERAL (
+      SELECT month,m2_100m_yuan FROM market.money_supply_monthly
+      WHERE market_code='CN' AND month <= date_trunc('month',c.trade_date)
+      ORDER BY month DESC LIMIT 1
+    ) m ON true
+    WHERE c.source_code='tushare_daily_basic'
+    ON CONFLICT(trade_date,formula_version) DO UPDATE SET
+      m2_month=EXCLUDED.m2_month,m2_100m_yuan=EXCLUDED.m2_100m_yuan,
+      total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
+      ratio_pct=EXCLUDED.ratio_pct,data_status=EXCLUDED.data_status,calculated_at=now()`);
+  return result.rowCount;
+}
+
+async function syncMarketCycleMetrics(full) {
+  if (!process.env.TUSHARE_TOKEN) return { skipped: 'TUSHARE_TOKEN missing' };
+  const result = {
+    csi300Valuation: await syncCsi300Valuation(full),
+    moneySupply: await syncMoneySupply(),
+    aShareMarketCap: await syncAShareMarketCap(full),
+  };
+  result.m2MarketCap = await calculateM2MarketCap();
+  return result;
+}
+
+async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const cycleSeen=await pool.query("SELECT min(trade_date)::text AS valuation_min FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'"); const capSeen=await pool.query("SELECT min(trade_date)::text AS cap_min FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'"); const cycleFirst=!cycleSeen.rows[0].valuation_min||cycleSeen.rows[0].valuation_min>'2005-01-01'||!capSeen.rows[0].cap_min||capSeen.rows[0].cap_min>'2010-01-31'; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),hkYield:await syncHkYield(first),cycleMetrics:await syncMarketCycleMetrics(cycleFirst)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
-module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncHkYield, calculateGraham, parseHsiWorkbook, runMarketVolatilitySync, scheduleMarketVolatilitySync };
+module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncHkYield, calculateGraham, parseHsiWorkbook,
+  syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
+  syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync };

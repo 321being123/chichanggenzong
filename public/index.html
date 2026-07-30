@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="css/bond-cycle.css?v=4">
 <link rel="stylesheet" href="css/bond-valuation.css?v=5">
 <link rel="stylesheet" href="css/stock-analysis.css?v=13">
-<link rel="stylesheet" href="css/market-volatility.css?v=4">
+<link rel="stylesheet" href="css/market-volatility.css?v=5">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
 <link rel="stylesheet" href="css/knowledge.css?v=17">
 </head>
@@ -503,7 +503,14 @@
 <!-- 股市周期（一级页） -->
 <div class="main-page" id="main-market-volatility">
   <div class="market-volatility-shell feature-page-shell">
-    <div class="mv-hero"><div><h2>股市周期</h2><p>以格雷厄姆指数辅助管理股票仓位；仅供研究参考，不构成投资建议。</p></div><span id="mv-updated">正在读取数据...</span></div>
+    <div class="mv-hero"><div><h2>股市周期</h2><p>从股债收益、估值和资金面观察市场周期；仅供研究参考，不构成投资建议。</p></div><span id="mv-updated">正在读取数据...</span></div>
+    <div class="mv-sub-nav">
+      <button class="mv-sub-tab active" data-mv-metric="graham" onclick="switchMarketCycleMetric('graham')">格雷厄姆指数</button>
+      <button class="mv-sub-tab" data-mv-metric="pe" onclick="switchMarketCycleMetric('pe')">市盈率（PE）</button>
+      <button class="mv-sub-tab" data-mv-metric="pb" onclick="switchMarketCycleMetric('pb')">市净率（PB）</button>
+      <button class="mv-sub-tab" data-mv-metric="m2_market_cap" onclick="switchMarketCycleMetric('m2_market_cap')">M2与股市市值比</button>
+    </div>
+    <div id="mv-sub-graham">
     <div class="mv-controls table-wrap">
       <div class="mv-control-group"><span>市场</span><button data-mv-market="CN" class="active">中国A股</button><button data-mv-market="HK">港股</button></div>
       <div class="mv-control-group" id="mv-benchmark-controls"><span>指数</span><button data-mv-benchmark="CSI300" class="active">沪深300</button><button data-mv-benchmark="CSIALL">中证全指</button></div>
@@ -518,6 +525,34 @@
       <div class="mv-setting-note">最低、最高边界可分别拖动；松开后自动重新计算中间仓位档位。登录后点击保存才会生效。</div>
       <div class="mv-chart-wrap"><div id="mv-chart"></div><div id="mv-draft" class="mv-draft" hidden></div><div class="mv-actions"><button class="btn btn-primary btn-sm" id="mv-save" disabled>保存边界</button><button class="btn btn-outline btn-sm" id="mv-cancel" disabled>取消</button></div></div>
       <div class="table-wrap"><div class="table-header"><h3>仓位阶梯</h3></div><div id="mv-ladder"></div></div>
+    </div>
+    </div>
+    <div id="mv-sub-metric" hidden>
+      <div class="mv-controls table-wrap">
+        <div class="mv-control-group" id="mvc-market-controls"><span>市场</span><button data-mvc-market="CN" class="active">中国A股</button><button data-mvc-market="HK">港股</button></div>
+        <div class="mv-control-group" id="mvc-benchmark-controls"><span>指数</span><button data-mvc-benchmark="CSI300" class="active">沪深300</button><button data-mvc-benchmark="CSIALL">中证全指</button></div>
+        <div class="mv-control-group"><span>时间</span><select id="mvc-range" aria-label="历史范围"><option value="1y">1年</option><option value="3y">3年</option><option value="5y">5年</option><option value="10y">10年</option><option value="20y" selected>20年</option><option value="all">全部</option></select></div>
+      </div>
+      <div id="mvc-status" class="mv-status"></div>
+      <div id="mvc-content" hidden>
+        <div class="mv-cards">
+          <div><span id="mvc-value-label">当前值</span><strong id="mvc-value">--</strong></div>
+          <div><span>当前历史分位</span><strong id="mvc-percentile">--</strong></div>
+          <div><span>20%分位</span><strong id="mvc-p20">--</strong></div>
+          <div><span>历史中位数</span><strong id="mvc-p50">--</strong></div>
+          <div><span>80%分位</span><strong id="mvc-p80">--</strong></div>
+          <div><span>建议股票仓位</span><strong id="mvc-recommended">--</strong></div>
+          <div><span>实际股票仓位</span><strong id="mvc-actual">--</strong></div>
+          <div><span>仓位偏差</span><strong id="mvc-deviation">--</strong></div>
+        </div>
+        <div id="mvc-detail" class="mv-setting-note"></div>
+        <div class="mvc-boundary-controls" id="mvc-boundary-controls" hidden>
+          <label>最低边界 <input id="mvc-lower" type="number" min="0.000001" step="0.01"></label>
+          <label>最高边界 <input id="mvc-upper" type="number" min="0.000001" step="0.01"></label>
+        </div>
+        <div class="mv-chart-wrap"><div id="mvc-chart"></div><div class="mv-actions"><button class="btn btn-primary btn-sm" id="mvc-save" disabled>保存边界</button><button class="btn btn-outline btn-sm" id="mvc-reset">取消</button></div></div>
+        <div class="table-wrap"><div class="table-header"><h3>仓位阶梯</h3></div><div id="mvc-ladder"></div></div>
+      </div>
     </div>
   </div>
 </div>
@@ -929,9 +964,9 @@
 <script src="js/utils.js?v=3"></script>
 <script src="shared/dialog.js?v=1"></script>
 <script src="shared/core-quote.js?v=20260712"></script>
-<script src="shared/core-tables.js?v=5"></script>
+<script src="shared/core-tables.js?v=6"></script>
 <script src="shared/core-fees.js?v=1"></script>
-<script src="shared/core-trade.js?v=20260712"></script>
+<script src="shared/core-trade.js?v=20260730"></script>
 <script src="shared/nav-math.js?v=1"></script>
 <script src="shared/core-returns.js?v=4"></script>
 <script src="shared/core-earnings.js?v=20260712c"></script>
@@ -949,6 +984,7 @@
 <script src="js/stock-analysis-chart.js?v=12"></script>
 <script src="js/stock-analysis-valuation-chart.js?v=5"></script>
 <script src="js/market-volatility.js?v=10"></script>
+<script src="js/market-cycle-metrics.js?v=7"></script>
 <script src="js/home-dashboard.js?v=9"></script>
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>

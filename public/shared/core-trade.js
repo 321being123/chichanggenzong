@@ -695,7 +695,10 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
     existing.price = price;
     existing.type = existing.type || rec.type;
     if (direction === 'buy') existing.quantity += quantity;
-    else existing.quantity = Math.max(0, existing.quantity - quantity);
+    else {
+      existing.quantity = Math.max(0, existing.quantity - quantity);
+      if (existing.quantity <= 0) data.positions = data.positions.filter(function(p) { return p !== existing; });
+    }
   } else if (direction === 'buy') {
     data.positions.push({
       id: uid(), code: code, name: name || code,

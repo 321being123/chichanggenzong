@@ -1419,6 +1419,58 @@ async function migration028ArticleGlobalSortOrder() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_articles_global_sort ON articles(sort_order, id)');
 }
 
+// 股市周期扩展：PE、PB、M2/股市市值比及三类新指标的用户边界设置。
+async function migration029MarketCycleMetrics() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.money_supply_monthly (
+      market_code TEXT NOT NULL, month DATE NOT NULL, m2_100m_yuan NUMERIC(28,4) NOT NULL,
+      source_code TEXT NOT NULL, raw_payload JSONB, ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (market_code, month, source_code),
+      CONSTRAINT chk_money_supply_m2_positive CHECK (m2_100m_yuan > 0)
+    );
+    CREATE INDEX IF NOT EXISTS idx_money_supply_monthly_lookup
+      ON market.money_supply_monthly(market_code, month DESC);
+
+    CREATE TABLE IF NOT EXISTS market.a_share_market_cap_daily (
+      trade_date DATE NOT NULL, total_market_cap_100m_yuan NUMERIC(28,4) NOT NULL,
+      security_count INTEGER NOT NULL, source_code TEXT NOT NULL,
+      raw_payload JSONB, ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (trade_date, source_code),
+      CONSTRAINT chk_a_share_market_cap_positive CHECK (total_market_cap_100m_yuan > 0),
+      CONSTRAINT chk_a_share_security_count CHECK (security_count >= 1000)
+    );
+    CREATE INDEX IF NOT EXISTS idx_a_share_market_cap_lookup
+      ON market.a_share_market_cap_daily(trade_date DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.m2_market_cap_daily (
+      trade_date DATE NOT NULL, m2_month DATE NOT NULL,
+      m2_100m_yuan NUMERIC(28,4) NOT NULL, total_market_cap_100m_yuan NUMERIC(28,4) NOT NULL,
+      ratio_pct NUMERIC(18,6) NOT NULL, data_status TEXT NOT NULL DEFAULT 'normal',
+      formula_version TEXT NOT NULL DEFAULT '1', calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (trade_date, formula_version),
+      CONSTRAINT chk_m2_market_cap_ratio_positive CHECK (ratio_pct > 0),
+      CONSTRAINT chk_m2_market_cap_status CHECK (data_status IN ('normal','carried_forward','stale','missing'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_m2_market_cap_lookup
+      ON analytics.m2_market_cap_daily(trade_date DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.market_cycle_strategy_settings (
+      setting_id BIGSERIAL PRIMARY KEY,
+      username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      account_name TEXT NOT NULL, metric_code TEXT NOT NULL,
+      market_code TEXT NOT NULL, benchmark_code TEXT NOT NULL,
+      lower_boundary NUMERIC(20,6) NOT NULL, upper_boundary NUMERIC(20,6) NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1, is_current BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT chk_market_cycle_metric CHECK (metric_code IN ('pe','pb','m2_market_cap')),
+      CONSTRAINT chk_market_cycle_boundaries CHECK (lower_boundary > 0 AND upper_boundary > lower_boundary)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_market_cycle_settings_current
+      ON analytics.market_cycle_strategy_settings(username, account_name, metric_code, market_code, benchmark_code)
+      WHERE is_current;
+  `);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1469,6 +1521,7 @@ const MIGRATIONS = [
   { version: '026_index_valuation_history', up: migration026IndexValuationHistory },
   { version: '027_article_sort_order', up: migration027ArticleSortOrder },
   { version: '028_article_global_sort_order', up: migration028ArticleGlobalSortOrder },
+  { version: '029_market_cycle_metrics', up: migration029MarketCycleMetrics },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

@@ -94,6 +94,11 @@ function securityAnalysisInitSearch() {
 }
 
 async function securityAnalysisLoadList(force) {
+  var guestSelect=document.getElementById('security-analysis-select');
+  if(!username){
+    if(guestSelect){guestSelect.disabled=true;guestSelect.innerHTML='<option value="">登录后可选择持仓和自选</option>';}
+    return;
+  }
   if (securityAnalysisState.listLoaded && !force) return;
   try {
     var response=await fetch(api('/api/bond-analysis/list/securities')), payload=await response.json();
@@ -103,6 +108,7 @@ async function securityAnalysisLoadList(force) {
       var tags=(row.held?'持仓':'')+(row.watchlisted?(row.held?' / 自选':'自选'):'');
       return '<option value="'+escapeHtml(row.code)+'">'+escapeHtml((row.name||row.code)+' · '+row.code+'（'+tags+'）')+'</option>';
     }).join('');
+    if(select) select.disabled=false;
     securityAnalysisState.listLoaded=true;
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true); }
 }
@@ -222,6 +228,7 @@ async function securityAnalysisSubmit() {
 
 async function securityAnalysisRefresh() {
   if (!securityAnalysisState.code) return securityAnalysisSubmit();
+  if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。');
   if (securityAnalysisState.type==='stock') return stockAnalysisRefresh();
   return bondAnalysisLoad(true);
 }
@@ -235,7 +242,11 @@ async function bondAnalysisLoad(refresh) {
   try {
     var path='/api/bond-analysis/'+encodeURIComponent(securityAnalysisState.code)+(refresh?'/refresh':'');
     var response=await fetch(api(path), refresh?{method:'POST'}:undefined);
-    if(response.status===404&&!refresh){securityAnalysisState.loading=false;return bondAnalysisLoad(true);}
+    if(response.status===404&&!refresh){
+      securityAnalysisState.loading=false;
+      if(!username) return stockAnalysisSetMessage('该转债暂未建档，登录后可刷新并建立分析数据。');
+      return bondAnalysisLoad(true);
+    }
     var payload=await response.json(), analysis=payload.analysis||payload;
     if(!response.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
     bondAnalysisRender(analysis);

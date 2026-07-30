@@ -187,17 +187,6 @@ async function migration001Init() {
       updated_at TIMESTAMPTZ DEFAULT now()
     );
   `);
-  // ===== 后台：平台公告 =====
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS announcements (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL DEFAULT '',
-      content TEXT DEFAULT '',
-      pinned BOOLEAN NOT NULL DEFAULT false,
-      published_at TEXT DEFAULT '',
-      created_at TIMESTAMPTZ DEFAULT now()
-    );
-  `);
   // ===== 后台：操作审计日志 =====
   await pool.query(`
     CREATE TABLE IF NOT EXISTS admin_audit_log (
@@ -1413,6 +1402,23 @@ async function migration027ArticleSortOrder() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_articles_category_sort ON articles(category_id, sort_order, id)');
 }
 
+// ========== 028：文章统一排序（支持“全部文章”和未分类文章拖动） ==========
+async function migration028ArticleGlobalSortOrder() {
+  await pool.query(`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (
+        ORDER BY COALESCE(published_at, updated_at, created_at) DESC, id DESC
+      ) * 10 AS next_sort_order
+      FROM articles
+    )
+    UPDATE articles a
+    SET sort_order = ranked.next_sort_order
+    FROM ranked
+    WHERE a.id = ranked.id
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_articles_global_sort ON articles(sort_order, id)');
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1462,6 +1468,7 @@ const MIGRATIONS = [
   { version: '025_market_volatility', up: migration025MarketVolatility },
   { version: '026_index_valuation_history', up: migration026IndexValuationHistory },
   { version: '027_article_sort_order', up: migration027ArticleSortOrder },
+  { version: '028_article_global_sort_order', up: migration028ArticleGlobalSortOrder },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

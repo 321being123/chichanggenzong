@@ -9,8 +9,7 @@ const {
   deleteUser, getUserDetail, hashPwd, adminListBrokers, createBroker, updateBroker, deleteBroker,
   isValidBroker, adminJobRuns, startJobRun, finishJobRun,
   getConfig, setConfig,
-  listAnnouncements, createAnnouncement, updateAnnouncement, deleteAnnouncement,
-  getChangelog, addChangelogItem, auditLog, listAudit, pool
+  auditLog, listAudit, pool
 } = require('../db');
 const { backfillMissingCloses } = require('../jobs/marketClose');
 const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
@@ -130,41 +129,6 @@ router.post('/jobs/holiday-sync', asyncHandler(async (req, res) => {
     await finishJobRun(id, false, e.message || String(e));
     res.status(500).json({ error: '休市核对失败：' + (e.message || '未知错误') });
   }
-}));
-
-// ====== 平台公告 ======
-router.get('/announcements', asyncHandler(async (req, res) => {
-  res.json({ list: await listAnnouncements() });
-}));
-router.post('/announcements', asyncHandler(async (req, res) => {
-  const { title, content, pinned, published_at } = req.body || {};
-  if (!title || !title.trim()) return res.status(400).json({ error: '标题必填' });
-  const id = await createAnnouncement({ title: title.trim(), content: content || '', pinned: !!pinned, published_at: published_at || '' });
-  await auditLog(req.session.user, 'announce_create', id, '发布公告：' + title).catch(() => {});
-  res.json({ ok: true, id });
-}));
-router.put('/announcements/:id', asyncHandler(async (req, res) => {
-  const { title, content, pinned, published_at } = req.body || {};
-  await updateAnnouncement(req.params.id, { title: (title || '').trim(), content: content || '', pinned: !!pinned, published_at: published_at || '' });
-  await auditLog(req.session.user, 'announce_update', req.params.id, '编辑公告').catch(() => {});
-  res.json({ ok: true });
-}));
-router.delete('/announcements/:id', asyncHandler(async (req, res) => {
-  await deleteAnnouncement(req.params.id);
-  await auditLog(req.session.user, 'announce_delete', req.params.id, '删除公告').catch(() => {});
-  res.json({ ok: true });
-}));
-
-// ====== 版本记录（changelog.json 可视化编辑）======
-router.get('/changelog', asyncHandler(async (req, res) => {
-  res.json({ list: getChangelog() });
-}));
-router.post('/changelog', asyncHandler(async (req, res) => {
-  const { date, item } = req.body || {};
-  if (!date || !item || !item.trim()) return res.status(400).json({ error: '日期与更新内容均必填' });
-  const list = addChangelogItem(date, item.trim());
-  await auditLog(req.session.user, 'changelog_add', date, '新增更新记录：' + item).catch(() => {});
-  res.json({ ok: true, list });
 }));
 
 // ====== 休市日历（读写 holidays.json，即时生效，无需部署）======

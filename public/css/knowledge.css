@@ -695,7 +695,7 @@
 
 .ks-article-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -736,10 +736,19 @@
 }
 
 .ks-card-labels {
-  margin-bottom: 9px;
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.ks-card-drag-handle {
+  margin: -18px -18px 9px;
+  padding: 18px 18px 9px;
+}
+
+.ks-card-drag-handle[draggable="true"] {
+  cursor: move;
+  user-select: none;
 }
 
 .ks-category-label {
@@ -767,12 +776,28 @@
   font-size: 11px;
 }
 
-.ks-card[draggable="true"] {
-  cursor: grab;
+.ks-card.ks-card-dragging {
+  opacity: .72;
+  border: 2px dashed var(--ks-primary);
+  box-shadow: 0 0 0 4px rgba(63,81,181,.12);
+  transform: scale(.98);
 }
 
-.ks-card.ks-card-dragging {
-  opacity: .45;
+.ks-card.ks-card-dragging::after {
+  content: "松开后放到这里";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  padding: 7px 12px;
+  border-radius: 6px;
+  background: rgba(26,35,126,.92);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
 }
 
 .ks-card.ks-card-drag-over {
@@ -1548,6 +1573,8 @@
   .ks-article-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 
   .ks-card { padding: 14px; }
+
+  .ks-card-drag-handle { margin: -14px -14px 9px; padding: 14px 14px 9px; }
 
   .ks-card-meta {
     gap: 8px;

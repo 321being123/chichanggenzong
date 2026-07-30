@@ -9,8 +9,6 @@ const {
 } = require('../services/stockAnalysis');
 const { getStockStatements } = require('../services/stockStatements');
 
-router.use(requireLogin);
-
 async function validStock(req, res, next) {
   const tsCode = normalizeStockCode(req.params.ts_code);
   if (!tsCode || !isOrdinaryAStock(tsCode)) return res.status(400).json({ error: '仅支持A股普通股票' });
@@ -18,12 +16,12 @@ async function validStock(req, res, next) {
   next();
 }
 
-router.get('/stocks', asyncHandler(async (req, res) => {
+router.get('/stocks', requireLogin, asyncHandler(async (req, res) => {
   const stocks = await listUserStocks(req.session.user);
   res.json({ data: stocks });
 }));
 
-router.get('/watchlist', asyncHandler(async (req, res) => {
+router.get('/watchlist', requireLogin, asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT ts_code,name,created_at FROM stock_watchlist WHERE username=$1 ORDER BY created_at',
     [req.session.user]
@@ -31,7 +29,7 @@ router.get('/watchlist', asyncHandler(async (req, res) => {
   res.json({ data: rows });
 }));
 
-router.post('/watchlist', rateLimit({ prefix: 'stock-watchlist', windowMs: 60000, max: 10,
+router.post('/watchlist', requireLogin, rateLimit({ prefix: 'stock-watchlist', windowMs: 60000, max: 10,
   getKey: req => req.session.user, message: '自选股操作过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const tsCode = normalizeStockCode(req.body && req.body.ts_code);
   if (!tsCode || !isOrdinaryAStock(tsCode)) return res.status(400).json({ error: '请输入有效的A股代码' });
@@ -48,7 +46,7 @@ router.post('/watchlist', rateLimit({ prefix: 'stock-watchlist', windowMs: 60000
   }
 }));
 
-router.delete('/watchlist/:ts_code', asyncHandler(async (req, res) => {
+router.delete('/watchlist/:ts_code', requireLogin, asyncHandler(async (req, res) => {
   const tsCode = normalizeStockCode(req.params.ts_code);
   if (!tsCode) return res.status(400).json({ error: '股票代码无效' });
   await pool.query('DELETE FROM stock_watchlist WHERE username=$1 AND ts_code=$2', [req.session.user, tsCode]);
@@ -70,7 +68,7 @@ router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) 
   }
 }));
 
-router.post('/:ts_code/refresh', rateLimit({ prefix: 'stock-analysis-refresh', windowMs: 60 * 60 * 1000, max: 10,
+router.post('/:ts_code/refresh', requireLogin, rateLimit({ prefix: 'stock-analysis-refresh', windowMs: 60 * 60 * 1000, max: 10,
   getKey: req => req.session.user, message: '刷新过于频繁，请稍后再试' }), asyncHandler(validStock), asyncHandler(async (req, res) => {
   try {
     const analysis = await refreshStockAnalysis(req.stockTsCode, `manual:${req.session.user}`);

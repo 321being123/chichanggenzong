@@ -10,11 +10,11 @@
 <link rel="stylesheet" href="shared/style.css?v=22">
 <link rel="stylesheet" href="css/bond-safety.css?v=8">
 <link rel="stylesheet" href="css/bond-cycle.css?v=4">
-<link rel="stylesheet" href="css/bond-valuation.css?v=4">
+<link rel="stylesheet" href="css/bond-valuation.css?v=5">
 <link rel="stylesheet" href="css/stock-analysis.css?v=13">
-<link rel="stylesheet" href="css/market-volatility.css?v=3">
+<link rel="stylesheet" href="css/market-volatility.css?v=4">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
-<link rel="stylesheet" href="css/knowledge.css?v=16">
+<link rel="stylesheet" href="css/knowledge.css?v=17">
 </head>
 <body>
 
@@ -25,7 +25,7 @@
       <nav class="main-nav">
         <button class="main-tab" data-main="knowledge">投资笔记</button>
         <button class="main-tab" data-main="stock-analysis">股债分析</button>
-        <button class="main-tab" data-main="market-volatility">股市波动</button>
+        <button class="main-tab" data-main="market-volatility">股市周期</button>
         <button class="main-tab" data-main="ipo">打新日历</button>
         <button class="main-tab" data-main="holdings">持仓管理</button>
         <button class="main-tab" data-main="bond-safety">可转债</button>
@@ -500,10 +500,10 @@
   </div>
 </div>
 
-<!-- 股市波动（一级页） -->
+<!-- 股市周期（一级页） -->
 <div class="main-page" id="main-market-volatility">
   <div class="market-volatility-shell feature-page-shell">
-    <div class="mv-hero"><div><h2>股市波动</h2><p>以格雷厄姆指数辅助管理股票仓位；仅供研究参考，不构成投资建议。</p></div><span id="mv-updated">正在读取数据...</span></div>
+    <div class="mv-hero"><div><h2>股市周期</h2><p>以格雷厄姆指数辅助管理股票仓位；仅供研究参考，不构成投资建议。</p></div><span id="mv-updated">正在读取数据...</span></div>
     <div class="mv-controls table-wrap">
       <div class="mv-control-group"><span>市场</span><button data-mv-market="CN" class="active">中国A股</button><button data-mv-market="HK">港股</button></div>
       <div class="mv-control-group" id="mv-benchmark-controls"><span>指数</span><button data-mv-benchmark="CSI300" class="active">沪深300</button><button data-mv-benchmark="CSIALL">中证全指</button></div>
@@ -942,17 +942,17 @@
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=7"></script>
 <script src="js/bond-cycle.js?v=1"></script>
-<script src="js/bond-valuation.js?v=3"></script>
-<script src="js/stock-analysis.js?v=12"></script>
-<script src="js/bond-analysis.js?v=5"></script>
+<script src="js/bond-valuation.js?v=4"></script>
+<script src="js/stock-analysis.js?v=13"></script>
+<script src="js/bond-analysis.js?v=6"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>
 <script src="js/stock-analysis-chart.js?v=12"></script>
 <script src="js/stock-analysis-valuation-chart.js?v=5"></script>
-<script src="js/market-volatility.js?v=9"></script>
+<script src="js/market-volatility.js?v=10"></script>
 <script src="js/home-dashboard.js?v=9"></script>
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>
-<script src="js/knowledge.js?v=21"></script>
+<script src="js/knowledge.js?v=23"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -997,7 +997,7 @@ function renderTopUser(p) {
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
 function switchMain(main) {
-  if (!username && (main === 'holdings' || main === 'profile' || main === 'stock-analysis')) {
+  if (!username && (main === 'holdings' || main === 'profile')) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return;
   }
@@ -1209,7 +1209,7 @@ async function autoSaveAvatar(dataUrl) {
 
 async function logout() {
   await fetch(api('/api/logout'), { method: 'POST' });
-  window.location.href = api('/login.html');
+  window.location.href = api('/');
 }
 
 async function fetchAccounts() {

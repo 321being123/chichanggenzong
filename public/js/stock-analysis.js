@@ -83,6 +83,16 @@ function stockAnalysisSetMessage(text, error) {
 
 async function loadStockAnalysis(force) {
   if (window.securityAnalysisLoadList) window.securityAnalysisLoadList(force);
+  var refresh = document.getElementById('stock-analysis-refresh');
+  if (refresh) {
+    refresh.disabled = !username;
+    refresh.title = username ? '刷新分析数据' : '登录后可刷新数据';
+  }
+  if (!username) {
+    stockAnalysisState.stocks = [];
+    stockAnalysisState.loaded = true;
+    return;
+  }
   if (stockAnalysisState.loaded && !force) return;
   try {
     var response = await fetch(api('/api/stock-analysis/stocks'));
@@ -112,7 +122,10 @@ async function stockAnalysisSelect(tsCode) {
   stockAnalysisSetMessage('正在读取分析结果...');
   try {
     var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(tsCode)));
-    if (response.status === 404) return stockAnalysisRefresh();
+    if (response.status === 404) {
+      if (!username) return stockAnalysisSetMessage('该股票暂未建档，登录后可刷新并建立分析数据。');
+      return stockAnalysisRefresh();
+    }
     var payload = await response.json();
     if (!response.ok) throw new Error(payload.error || '分析读取失败');
     stockAnalysisRender(payload);
@@ -122,6 +135,7 @@ async function stockAnalysisSelect(tsCode) {
 async function stockAnalysisRefresh() {
   var tsCode = stockAnalysisState.selected;
   if (!tsCode || stockAnalysisState.loading) return;
+  if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。');
   stockAnalysisState.loading = true;
   var button = document.getElementById('stock-analysis-refresh');
   if (button) { button.disabled = true; button.textContent = '刷新中...'; }

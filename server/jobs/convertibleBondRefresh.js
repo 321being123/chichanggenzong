@@ -5,6 +5,10 @@ const { syncConvertibleBondUniverse, syncConvertibleBondUniverseWithBackfill } =
 const { expectedTradeDate } = require('../routes/bondCycle');
 
 const VALUATION_JOB = 'convertible_bond_valuation_refresh';
+const DAILY_REFRESH_HOUR = 18;
+const DAILY_REFRESH_MINUTE = 0;
+const RETRY_HOUR = 8;
+const RETRY_MINUTE = 0;
 
 // 每日估值+预警：在行情/周期同步完成后串行执行（方案 §顺序：行情→周期→估值→预警）
 async function runDailyValuation(reason = 'scheduled') {
@@ -52,7 +56,7 @@ async function runDailyValuation(reason = 'scheduled') {
   }
 }
 
-function nextShanghaiDelay(hour = 16, minute = 40, now = new Date()) {
+function nextShanghaiDelay(hour = DAILY_REFRESH_HOUR, minute = DAILY_REFRESH_MINUTE, now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
@@ -70,28 +74,69 @@ async function bootstrapConvertibleBonds() {
   return syncConvertibleBondUniverse('first_full_sync');
 }
 
-function scheduleConvertibleBondRefresh() {
-  bootstrapConvertibleBonds().catch(error => console.error('[bond-analysis] 首次全量同步失败:', error.message));
-  function scheduleNext() {
-    const timer = setTimeout(async () => {
-      let syncOk = true;
-      try { await syncConvertibleBondUniverseWithBackfill('daily_incremental'); }
-      catch (error) { syncOk = false; console.error('[bond-analysis] 每日增量同步失败:', error.message); }
-      if (syncOk) {
-        try {
-          const result = await runDailyValuation('daily_incremental');
-          if (result.skipped) console.log('[bond-valuation] 已有刷新任务运行，本次跳过');
-          else console.log('[bond-valuation] 每日估值完成:', result.detail);
-        } catch (error) {
-          console.error('[bond-valuation] 每日估值失败:', String(error.detail || error.message));
-        }
-      }
-      scheduleNext();
-    }, nextShanghaiDelay());
-    if (timer.unref) timer.unref();
-  }
-  scheduleNext();
-  console.log('[bond-analysis] 已调度：每日 16:40（上海时间）');
+async function refreshCompleteness() {
+  const expected = expectedTradeDate();
+  const { rows } = await pool.query(
+    `SELECT
+       COALESCE((SELECT MAX(trade_date) >= $1::date FROM market.convertible_bond_daily_metrics), false) AS cycle_complete,
+       COALESCE((SELECT MAX(trade_date) >= $1::date FROM analytics.convertible_bond_valuation_daily), false) AS valuation_complete`,
+    [expected]
+  );
+  return { expected, ...rows[0] };
 }
 
-module.exports = { nextShanghaiDelay, bootstrapConvertibleBonds, runDailyValuation, scheduleConvertibleBondRefresh };
+async function runRefreshChain(reason) {
+  try {
+    await syncConvertibleBondUniverseWithBackfill(reason);
+  } catch (error) {
+    console.error('[bond-analysis] 可转债增量同步失败:', error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const completeness = await refreshCompleteness();
+  if (!completeness.cycle_complete) {
+    console.warn(`[bond-analysis] ${completeness.expected} 数据不完整，跳过估值，次日 08:00 自动重试`);
+    return { ok: false, incomplete: true, expected: completeness.expected };
+  }
+
+  try {
+    const result = await runDailyValuation(reason);
+    if (result.skipped) console.log('[bond-valuation] 已有刷新任务运行，本次跳过');
+    else console.log('[bond-valuation] 每日估值完成:', result.detail);
+    return { ok: true, result };
+  } catch (error) {
+    console.error('[bond-valuation] 每日估值失败:', String(error.detail || error.message));
+    return { ok: false, error: String(error.detail || error.message) };
+  }
+}
+
+function scheduleConvertibleBondRefresh() {
+  bootstrapConvertibleBonds().catch(error => console.error('[bond-analysis] 首次全量同步失败:', error.message));
+
+  function scheduleDaily(hour, minute, task) {
+    const timer = setTimeout(async () => {
+      try { await task(); }
+      catch (error) { console.error('[bond-analysis] 定时任务执行失败:', error.message); }
+      finally { scheduleDaily(hour, minute, task); }
+    }, nextShanghaiDelay(hour, minute));
+    if (timer.unref) timer.unref();
+  }
+
+  scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE, () => runRefreshChain('daily_incremental'));
+  scheduleDaily(RETRY_HOUR, RETRY_MINUTE, async () => {
+    const completeness = await refreshCompleteness();
+    if (completeness.cycle_complete && completeness.valuation_complete) return;
+    console.warn(`[bond-analysis] 检测到 ${completeness.expected} 数据不完整，开始 08:00 补跑`);
+    await runRefreshChain('morning_incomplete_retry');
+  });
+  console.log('[bond-analysis] 已调度：每日 18:00 刷新；数据不完整时次日 08:00 重试（上海时间）');
+}
+
+module.exports = {
+  nextShanghaiDelay,
+  bootstrapConvertibleBonds,
+  refreshCompleteness,
+  runRefreshChain,
+  runDailyValuation,
+  scheduleConvertibleBondRefresh,
+};

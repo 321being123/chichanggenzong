@@ -168,6 +168,7 @@ function renderBondValTable() {
       if (col.k === 'fair_range') txt = r.fair_price_low != null ? (num(r.fair_price_low, 1) + '～' + num(r.fair_price_high, 1)) : '—';
       else if (col.p) txt = pctv(v);
       else if (col.n) txt = num(v, 1);
+      else if (col.k === 'bond_name') txt = esc(v) + (r.data_status === '新上市观察期' ? '<span class="bond-val-new-listing" title="上市满 40 个交易日后自动进入正式估值">新上市</span>' : '');
       else if (col.k === 'alert_level') txt = (v && v !== '无') ? '<span class="val-alert ' + (v === '重要' ? 'val-alert-imp' : 'val-alert-att') + '">' + esc(v) + '</span>' : '—';
       else if (col.k === 'final_evaluation') txt = '<span class="' + (EVAL_CLASS[v] || '') + '">' + esc(v || '—') + '</span>';
       else txt = (v == null || v === '') ? '—' : esc(v);

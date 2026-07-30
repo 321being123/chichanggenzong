@@ -6,13 +6,16 @@
 <meta name="base-url" content="">
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="shared/style.css?v=22">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
   background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #3949ab 100%);
-  min-height: 100vh; display:flex; align-items:center; justify-content:center;
+  min-height: 100vh;
 }
+.login-page { min-height: calc(100vh - 52px); display:flex; align-items:center; justify-content:center; padding:24px 0; }
+.login-brand, .login-nav-link { color:inherit; text-decoration:none; }
 .login-box {
   background: #fff; border-radius: 16px; padding: 40px; width: 400px; max-width: 92vw;
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
@@ -35,7 +38,7 @@ body {
 }
 .btn {
   width:100%; padding:12px; border:none; border-radius:10px; font-size:15px; font-weight:600;
-  cursor:pointer; transition:.2s; margin-bottom:10px;
+  cursor:pointer; transition:.2s; margin-bottom:10px; justify-content:center; text-align:center;
 }
 .btn-primary { background:#1a237e; color:#fff; }
 .btn-primary:hover { background:#283593; }
@@ -57,6 +60,24 @@ body {
 </style>
 </head>
 <body>
+<div class="nav">
+  <div class="nav-inner">
+    <div class="nav-left">
+      <h1><a class="login-brand" href="/">存在小站</a></h1>
+      <nav class="main-nav">
+        <a class="main-tab login-nav-link" href="/?main=knowledge">投资笔记</a>
+        <a class="main-tab login-nav-link" href="/?main=stock-analysis">股债分析</a>
+        <a class="main-tab login-nav-link" href="/?main=market-volatility">股市周期</a>
+        <a class="main-tab login-nav-link" href="/?main=ipo">打新日历</a>
+        <a class="main-tab login-nav-link" href="/?main=holdings">持仓管理</a>
+        <a class="main-tab login-nav-link" href="/?main=bond-safety">可转债</a>
+        <a class="main-tab login-nav-link" href="/?main=changelog">版本记录</a>
+      </nav>
+    </div>
+    <div class="nav-right"><a class="top-login-link" href="/login.html">登录</a></div>
+  </div>
+</div>
+<main class="login-page">
 <div class="login-box">
   <h1>📈 持仓管理</h1>
   <p class="sub" id="subtitle">账号登录</p>
@@ -144,6 +165,7 @@ body {
     <a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>
   </div>
 </div>
+</main>
 <div class="toast" id="toast"></div>
 
 <script src="js/utils.js"></script>

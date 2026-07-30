@@ -1243,6 +1243,12 @@ td.negative { color: #137333; font-weight: 600; }
 .admin-section-title { font-size: 15px; font-weight: 600; color: #1a1a2e; margin: 4px 0 14px; }
 .admin-table-wrap { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.05); overflow: hidden; margin-bottom: 18px; }
 
+/* 投资笔记管理页签：复用后台的浅色分段控件风格 */
+.ks-admin-tabs { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid #e2e6ec; border-radius: 9px; background: #f4f6f9; }
+.ks-admin-tab { padding: 8px 16px; border: 0; border-radius: 6px; background: transparent; color: #526173; font-size: 13px; font-weight: 500; cursor: pointer; transition: .15s; }
+.ks-admin-tab:hover { background: #fff; color: #1a237e; }
+.ks-admin-tab.active { background: #1a237e; color: #fff; box-shadow: 0 1px 2px rgba(26,35,126,.18); }
+
 @media (max-width: 720px) {
   .admin-sidebar { width: 64px; }
   .admin-brand { font-size: 0; padding: 18px 0; text-align: center; }

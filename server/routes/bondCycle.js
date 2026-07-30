@@ -7,8 +7,8 @@ const { isTradingDay } = require('../jobs/marketClose');
 
 const FORMULA_VERSION = cycle.FORMULA_VERSION;
 const UNIVERSE_VERSION = cycle.UNIVERSE_VERSION;
-// 每日周期数据发布时刻（同步任务 16:40 触发，预留处理时间）
-const PUBLISH_HOUR = 17, PUBLISH_MINUTE = 30;
+// 每日周期数据发布时刻（与同步任务统一为 18:00）
+const PUBLISH_HOUR = 18, PUBLISH_MINUTE = 0;
 
 // Date -> 本地 'YYYY-MM-DD'（node-pg 把 DATE 解析为本地零点的 Date，避免 toISOString 的 UTC 偏移）
 function isoDate(d) {

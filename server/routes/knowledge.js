@@ -334,9 +334,7 @@ router.get('/articles', async (req, res) => {
       params.push('%' + q + '%');
     }
     // 列表不返回 share_token（P0-2.5）
-    const orderBy = categoryId
-      ? 'a.sort_order ASC, a.id ASC'
-      : 'COALESCE(a.published_at, a.updated_at) DESC, a.id DESC';
+    const orderBy = 'a.sort_order ASC, a.id ASC';
     const sql = `
       SELECT a.id, a.title, a.summary, a.category_id, c.name AS category_name,
              a.status, a.view_count, a.author_username,
@@ -452,7 +450,7 @@ router.post('/articles', requireKsWrite, async (req, res) => {
       `INSERT INTO articles
         (title, content, html_content, summary, category_id, status, share_token, author_username, published_at, sort_order)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,${status === 'published' ? 'now()' : 'NULL'},
-               COALESCE((SELECT MAX(sort_order) + 10 FROM articles WHERE category_id IS NOT DISTINCT FROM $5), 10))
+               COALESCE((SELECT MAX(sort_order) + 10 FROM articles), 10))
        RETURNING id`,
       [title, content, htmlContent, summary, categoryId, status, shareToken, req.session.user]
     );
@@ -466,9 +464,12 @@ router.post('/articles', requireKsWrite, async (req, res) => {
 
 // ---------- 分类内文章排序 ----------
 router.put('/articles/reorder', requireKsWrite, async (req, res) => {
-  const categoryId = parseInt(req.body.category_id, 10);
+  const rawCategoryId = req.body.category_id;
+  const categoryId = rawCategoryId === null || rawCategoryId === undefined || rawCategoryId === ''
+    ? null
+    : parseInt(rawCategoryId, 10);
   const orderedIds = Array.isArray(req.body.article_ids) ? req.body.article_ids.map(Number) : [];
-  if (!Number.isInteger(categoryId) || !orderedIds.length || orderedIds.some(id => !Number.isInteger(id))) {
+  if ((categoryId !== null && !Number.isInteger(categoryId)) || !orderedIds.length || orderedIds.some(id => !Number.isInteger(id))) {
     return res.status(400).json({ error: '排序参数无效' });
   }
   if (new Set(orderedIds).size !== orderedIds.length) return res.status(400).json({ error: '文章列表重复' });
@@ -477,21 +478,27 @@ router.put('/articles/reorder', requireKsWrite, async (req, res) => {
   try {
     await client.query('BEGIN');
     const rows = await client.query(
-      'SELECT id, author_username FROM articles WHERE category_id=$1 FOR UPDATE',
-      [categoryId]
+      'SELECT id, category_id, author_username FROM articles ORDER BY sort_order, id FOR UPDATE'
     );
-    const actualIds = rows.rows.map(row => row.id);
+    const scopedRows = categoryId === null
+      ? rows.rows
+      : rows.rows.filter(row => Number(row.category_id) === categoryId);
+    const actualIds = scopedRows.map(row => row.id);
     if (actualIds.length !== orderedIds.length || actualIds.some(id => !orderedIds.includes(id))) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '文章列表已变化，请刷新后重试' });
     }
     const me = await getUserKsInfo(req.session.user);
-    if (!me.isAdmin && rows.rows.some(row => row.author_username !== req.session.user)) {
+    if (!me.isAdmin && scopedRows.some(row => row.author_username !== req.session.user)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '只能排序自己创建的文章' });
     }
-    for (let i = 0; i < orderedIds.length; i++) {
-      await client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, orderedIds[i]]);
+    const queue = orderedIds.slice();
+    const finalIds = categoryId === null
+      ? queue
+      : rows.rows.map(row => Number(row.category_id) === categoryId ? queue.shift() : row.id);
+    for (let i = 0; i < finalIds.length; i++) {
+      await client.query('UPDATE articles SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, finalIds[i]]);
     }
     await client.query('COMMIT');
     await auditLog(req.session.user, 'ks_article_reorder', categoryId, '调整分类内文章顺序').catch(() => {});

@@ -8,7 +8,6 @@ const {
 } = require('../services/convertibleBondAnalysis');
 
 const router = express.Router();
-router.use(requireLogin);
 
 function validBond(req, res, next) {
   const tsCode = normalizeBondCode(req.params.code);
@@ -17,7 +16,7 @@ function validBond(req, res, next) {
   next();
 }
 
-router.get('/list/securities', asyncHandler(async (req, res) => {
+router.get('/list/securities', requireLogin, asyncHandler(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT code,MAX(name) AS name,BOOL_OR(held) AS held,BOOL_OR(watchlisted) AS watchlisted FROM (
        SELECT p.code,MAX(p.name) AS name,true AS held,false AS watchlisted FROM positions p
@@ -71,7 +70,7 @@ router.get('/:code', validBond, asyncHandler(async (req, res) => {
   res.json(snapshot);
 }));
 
-router.post('/:code/refresh', rateLimit({
+router.post('/:code/refresh', requireLogin, rateLimit({
   prefix: 'bond-analysis-refresh', windowMs: 60 * 60 * 1000, max: 10,
   getKey: req => req.session.user, message: '刷新过于频繁，请稍后再试',
 }), validBond, asyncHandler(async (req, res) => {

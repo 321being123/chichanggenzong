@@ -11,7 +11,6 @@ const VIEW_TITLES = {
   users: '用户管理',
   brokers: '券商管理',
   jobs: '定时任务',
-  announce: '公告与更新',
   settings: '全局参数',
   holidays: '休市日历',
   audit: '操作审计',
@@ -85,7 +84,6 @@ function switchView(view) {
   else if (view === 'users') renderUsers();
   else if (view === 'brokers') renderBrokers();
   else if (view === 'jobs') renderJobs();
-  else if (view === 'announce') renderAnnounce();
   else if (view === 'settings') renderSettings();
   else if (view === 'holidays') renderHolidays();
   else if (view === 'audit') renderAudit();
@@ -451,7 +449,7 @@ function jobDescription(job) {
   }
   const map = {
     bond_safety_refresh: '每日早 6:30 刷新可转债安全评分快照，供转债筛选与风险面板使用。',
-    convertible_bond_universe_refresh: '每日 16:40 增量同步可转债全量数据（含价格、条款、评级、正股等）。',
+    convertible_bond_universe_refresh: '每日 18:00 增量同步可转债全量数据（含价格、条款、评级、正股等）；数据不完整时次日 08:00 自动重试。',
     hk_rate: '每日自动抓取港币兑人民币汇率并写入所有账户，用于港股持仓的人民币估值。',
     index_baseline: '首次启动或新增账户时，自动补齐净值起点之前的沪深300/上证/中证500/恒生等指数基准点位。',
     index_recent: '每日补齐最近交易日的指数点位，确保收益对比图数据连续。',
@@ -490,7 +488,7 @@ function renderJobs() {
         '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐（index_baseline / index_recent）</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">港币汇率（hk_rate）</span><span>每个交易日港股收盘后更新港币兑人民币汇率，用于港股持仓人民币估值。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">可转债安全评分（bond_safety_refresh，06:30）</span><span>每日刷新可转债安全评分快照，供转债筛选与风险面板使用。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（16:40）</span><span>每日增量同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（18:00）</span><span>每日增量同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果；数据不完整时次日 08:00 自动重试。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">打新日历与日报（工作日 18:00）</span><span>自动生成并更新 IPO/打新日历和每日打新日报。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">股市波动指标（18:45）</span><span>同步中债收益率、沪深指数估值、恒指市盈率等数据，并重新计算股市波动指标。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">个股分析（20:30）</span><span>刷新用户关注个股的估值、财务和情绪等深度分析数据。</span></div>' +
@@ -585,94 +583,6 @@ async function runJobHolidaySync() {
   } catch (e) { showToast('网络错误'); }
   if (btn) { btn.disabled = false; btn.textContent = '从交易所核对本年休市日'; }
   renderHolidays();
-}
-
-// ====== 平台公告 + 版本更新记录 ======
-function renderAnnounce() {
-  const el = document.getElementById('view-announce'); if (!el) return;
-  el.innerHTML =
-    '<div class="filter-bar"><button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="openAnnounceForm()">+ 新增公告</button></div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>标题</th><th>置顶</th><th>发布日期</th><th>操作</th></tr></thead>' +
-    '<tbody id="announce-tbody"><tr><td colspan="4" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>' +
-    '<div class="acct-section-title" style="margin-top:22px;">版本更新记录</div>' +
-    '<div id="changelog-box" style="margin-bottom:10px;"></div>' +
-    '<button class="btn btn-outline btn-sm" onclick="openChangelogForm()">+ 新增更新记录</button>';
-  const tb = document.getElementById('announce-tbody');
-  if (tb) tb.addEventListener('click', function (e) { const btn = e.target.closest('button[data-action]'); if (!btn) return; const id = btn.dataset.id; if (btn.dataset.action === 'edit') openAnnounceForm(id); else if (btn.dataset.action === 'del') deleteAnnounceConfirm(id); });
-  loadAnnounceData();
-  loadChangelog();
-}
-async function loadAnnounceData() {
-  const tb = document.getElementById('announce-tbody'); if (!tb) return;
-  try {
-    const r = await fetch(api('/api/admin/announcements'));
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
-    const d = await r.json();
-    if (!d.list.length) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;padding:24px;">暂无公告</td></tr>'; return; }
-    tb.innerHTML = d.list.map(function (a) {
-      return '<tr><td>' + escapeHtml(a.title) + '</td><td>' + (a.pinned ? '<span class="tag tag-a">置顶</span>' : '—') + '</td><td>' + escapeHtml(a.published_at || '') + '</td><td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" data-action="edit" data-id="' + escapeHtml(a.id) + '">编辑</button> <button class="btn btn-sm btn-danger" data-action="del" data-id="' + escapeHtml(a.id) + '">删除</button></td></tr>';
-    }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
-}
-function openAnnounceForm(id) {
-  const isEdit = !!id;
-  let body = '<input type="hidden" id="announce-id" value="' + (isEdit ? escapeHtml(id) : '') + '">' +
-    '<div class="form-group"><label>标题</label><input id="announce-title" placeholder="公告标题" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>内容</label><textarea id="announce-content" rows="4" placeholder="公告正文" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></textarea></div>' +
-    '<div class="form-group"><label>发布日期</label><input id="announce-published" placeholder="如 2026-07-12（可空）" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;"><input type="checkbox" id="announce-pinned"> 置顶显示</label>';
-  openAdminModal(isEdit ? '编辑公告' : '新增公告', body, '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button><button class="btn btn-primary" onclick="submitAnnounce()">保存</button>');
-  if (isEdit) {
-    fetch(api('/api/admin/announcements')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) { const a = (d.list || []).find(function (x) { return x.id === id; }); if (!a) return; const t = document.getElementById('announce-title'); if (t) t.value = a.title || ''; const c = document.getElementById('announce-content'); if (c) c.value = a.content || ''; const p = document.getElementById('announce-published'); if (p) p.value = a.published_at || ''; const pin = document.getElementById('announce-pinned'); if (pin) pin.checked = !!a.pinned; }).catch(function () {});
-  }
-}
-async function submitAnnounce() {
-  const id = document.getElementById('announce-id').value;
-  const isEdit = !!id;
-  const body = { title: (document.getElementById('announce-title').value || '').trim(), content: document.getElementById('announce-content').value || '', published_at: document.getElementById('announce-published').value || '', pinned: document.getElementById('announce-pinned').checked };
-  if (!body.title) { showToast('标题必填'); return; }
-  try {
-    const r = await fetch(api(isEdit ? '/api/admin/announcements/' + encodeURIComponent(id) : '/api/admin/announcements'), { method: isEdit ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json();
-    if (!r.ok) { showToast(d.error || '保存失败'); return; }
-    showToast('已保存'); closeAdminModal(); loadAnnounceData();
-  } catch (e) { showToast('网络错误'); }
-}
-function deleteAnnounceConfirm(id) {
-  openAdminModal('删除公告', '<p style="font-size:14px;color:#666;">确定删除该公告吗？</p>', '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button><button class="btn btn-danger" onclick="doDeleteAnnounce(\'' + escapeHtml(id) + '\')">确认删除</button>');
-}
-async function doDeleteAnnounce(id) {
-  try { const r = await fetch(api('/api/admin/announcements/' + encodeURIComponent(id)), { method: 'DELETE' }); const d = await r.json(); if (!r.ok) { showToast(d.error || '删除失败'); return; } showToast('已删除'); closeAdminModal(); loadAnnounceData(); } catch (e) { showToast('网络错误'); }
-}
-async function loadChangelog() {
-  const box = document.getElementById('changelog-box'); if (!box) return;
-  try {
-    const r = await fetch(api('/api/admin/changelog'));
-    if (!r.ok) { box.innerHTML = '<div style="color:#d93025;font-size:13px;">加载失败</div>'; return; }
-    const d = await r.json();
-    const list = (d.list || []).slice(0, 3);
-    if (!list.length) { box.innerHTML = '<div style="color:#999;font-size:13px;">暂无更新记录</div>'; return; }
-    box.innerHTML = list.map(function (e) {
-      var title = e.date + (e.version ? '（' + e.version + '）' : '');
-      return '<div style="border-left:3px solid #4f6ef7;padding:6px 10px;margin-bottom:8px;background:#f8f9ff;border-radius:0 6px 6px 0;"><div style="font-weight:600;font-size:13px;color:#333;">' + escapeHtml(title) + '</div>' + e.items.slice(0, 3).map(function (it) { return '<div style="font-size:12px;color:#666;">· ' + escapeHtml(it) + '</div>'; }).join('') + (e.items.length > 3 ? '<div style="font-size:12px;color:#999;">…共' + e.items.length + '条</div>' : '') + '</div>';
-    }).join('');
-  } catch (e) { box.innerHTML = '<div style="color:#d93025;font-size:13px;">网络错误</div>'; }
-}
-function openChangelogForm() {
-  let body = '<div class="form-group"><label>日期</label><input id="cl-date" type="date" value="' + new Date().toISOString().slice(0, 10) + '" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>更新内容</label><textarea id="cl-item" rows="3" placeholder="一句话描述本次更新" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></textarea></div>';
-  openAdminModal('新增更新记录', body, '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button><button class="btn btn-primary" onclick="submitChangelog()">添加</button>');
-}
-async function submitChangelog() {
-  const date = document.getElementById('cl-date').value;
-  const item = (document.getElementById('cl-item').value || '').trim();
-  if (!date || !item) { showToast('日期与内容均必填'); return; }
-  try {
-    const r = await fetch(api('/api/admin/changelog'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: date, item: item }) });
-    const d = await r.json();
-    if (!r.ok) { showToast(d.error || '添加失败'); return; }
-    showToast('已添加更新记录'); closeAdminModal(); loadChangelog();
-  } catch (e) { showToast('网络错误'); }
 }
 
 // ====== 全局参数 ======

@@ -32,6 +32,7 @@
 .bond-val-table tbody tr { cursor: pointer; }
 .bond-val-table tbody tr:hover { background: #f7fbff; }
 .bond-val-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.bond-val-new-listing { display: inline-block; margin-left: 6px; padding: 1px 5px; border: 1px solid #cfd8ff; border-radius: 4px; background: #eef1ff; color: #3f51b5; font-size: 11px; line-height: 16px; vertical-align: middle; }
 .bond-val-empty { padding: 30px; text-align: center; color: #9aa0a6; }
 
 /* 最终评价配色 */

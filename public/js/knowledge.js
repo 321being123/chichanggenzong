@@ -14,6 +14,7 @@ let ksState = {
   categoryActionMode: null,
   draggedCategoryId: null,
   draggedArticleId: null,
+  articleDragOriginalOrder: [],
 };
 
 let ksOverflowTooltip = null;
@@ -235,8 +236,10 @@ function ksRenderList() {
       ? '<span class="ks-tag ks-tag-draft">草稿</span>'
       : '<span class="ks-tag ks-tag-pub">已发布</span>';
     const date = (a.published_at || a.updated_at || '').toString().slice(0, 10);
-    html += '<div class="ks-card" data-id="' + a.id + '" role="button" tabindex="0" draggable="' + canSort + '">' +
-      '<div class="ks-card-labels"><span class="ks-category-label">' + escapeHtml(a.category_name || '未分类') + '</span>' + statusTag + '</div>' +
+    html += '<div class="ks-card" data-id="' + a.id + '" role="button" tabindex="0">' +
+      '<div class="ks-card-drag-handle" draggable="' + canSort + '" title="按住鼠标左键拖动排序">' +
+        '<div class="ks-card-labels"><span class="ks-category-label">' + escapeHtml(a.category_name || '未分类') + '</span>' + statusTag + '</div>' +
+      '</div>' +
       '<div class="ks-card-head"><h3>' + escapeHtml(a.title || '无标题') + '</h3></div>' +
       (a.summary ? '<p class="ks-card-sum">' + escapeHtml(a.summary) + '</p>' : '') +
       '<div class="ks-card-meta">' +
@@ -271,7 +274,7 @@ function ksRenderList() {
 function ksCanSortArticles() {
   const search = ksEl('ks-search');
   const filter = ksEl('ks-filter');
-  return !!(ksState.currentCategory && ksState.canWrite && ksState.articles.length &&
+  return !!(ksState.canWrite && ksState.articles.length &&
     (!search || !search.value.trim()) && (!filter || !filter.value) &&
     ksState.articles.every(function (article) { return article.can_edit; }));
 }
@@ -285,39 +288,47 @@ async function ksSaveArticleOrder() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category_id: ksState.currentCategory, article_ids: articleIds }),
     });
-    if (!r.ok) { showToast((await r.json().catch(function () { return {}; })).error || '排序保存失败'); await ksLoadArticles(); }
+    if (!r.ok) { showToast((await r.json().catch(function () { return {}; })).error || '排序保存失败'); await ksLoadArticles(); return false; }
+    showToast('排序已保存');
+    return true;
   } catch (e) {
     showToast('排序保存失败');
     await ksLoadArticles();
+    return false;
   }
 }
 
 function ksBindArticleDrag(box) {
   box.querySelectorAll('.ks-card').forEach(function (card) {
-    card.addEventListener('dragstart', function (event) {
+    const handle = card.querySelector('.ks-card-drag-handle');
+    if (!handle) return;
+    handle.addEventListener('dragstart', function (event) {
       ksState.draggedArticleId = card.dataset.id;
+      ksState.articleDragOriginalOrder = Array.from(box.querySelectorAll('.ks-card')).map(function (item) { return item.dataset.id; });
       card.classList.add('ks-card-dragging');
       event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', card.dataset.id);
     });
     card.addEventListener('dragover', function (event) {
       if (!ksState.draggedArticleId || ksState.draggedArticleId === card.dataset.id) return;
       event.preventDefault();
-      card.classList.add('ks-card-drag-over');
+      event.dataTransfer.dropEffect = 'move';
+      const dragged = box.querySelector('.ks-card[data-id="' + ksState.draggedArticleId + '"]');
+      if (!dragged) return;
+      const rect = card.getBoundingClientRect();
+      const before = event.clientX < rect.left + rect.width / 2;
+      box.insertBefore(dragged, before ? card : card.nextSibling);
     });
-    card.addEventListener('dragleave', function () { card.classList.remove('ks-card-drag-over'); });
     card.addEventListener('drop', function (event) {
       event.preventDefault();
-      const dragged = box.querySelector('.ks-card[data-id="' + ksState.draggedArticleId + '"]');
-      card.classList.remove('ks-card-drag-over');
-      if (!dragged || dragged === card) return;
-      const before = event.clientY < card.getBoundingClientRect().top + card.offsetHeight / 2 ||
-        (Math.abs(event.clientY - (card.getBoundingClientRect().top + card.offsetHeight / 2)) < card.offsetHeight / 4 && event.clientX < card.getBoundingClientRect().left + card.offsetWidth / 2);
-      box.insertBefore(dragged, before ? card : card.nextSibling);
-      ksSaveArticleOrder();
     });
-    card.addEventListener('dragend', function () {
+    handle.addEventListener('dragend', async function () {
+      const finalOrder = Array.from(box.querySelectorAll('.ks-card')).map(function (item) { return item.dataset.id; });
+      const changed = finalOrder.join(',') !== ksState.articleDragOriginalOrder.join(',');
       ksState.draggedArticleId = null;
+      ksState.articleDragOriginalOrder = [];
       box.querySelectorAll('.ks-card').forEach(function (item) { item.classList.remove('ks-card-dragging', 'ks-card-drag-over'); });
+      if (changed) await ksSaveArticleOrder();
     });
   });
 }

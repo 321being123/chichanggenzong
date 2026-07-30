@@ -7,22 +7,23 @@ const MAX_BATCH_SIZE = 80;
 
 function normalizeCode(rawCode) {
   return String(rawCode || '').trim().toUpperCase()
-    .replace(/\.(SH|SZ|HK)$/i, '')
-    .replace(/^(SH|SZ|HK)/i, '');
+    .replace(/\.(SH|SZ|BJ|HK)$/i, '')
+    .replace(/^(SH|SZ|BJ|HK)/i, '');
 }
 
 function describeTencentCode(rawCode) {
   const original = String(rawCode || '').trim().toUpperCase();
   const code = normalizeCode(original);
   if (!code) return null;
-  const explicit = ((original.match(/^(SH|SZ|HK)/i) || original.match(/\.(SH|SZ|HK)$/i)) || [])[1];
+  const explicit = ((original.match(/^(SH|SZ|BJ|HK)/i) || original.match(/\.(SH|SZ|BJ|HK)$/i)) || [])[1];
   let market = explicit ? explicit.toLowerCase() : '';
   if (!market && /^\d{5}$/.test(code)) market = 'hk';
   if (!market && /^\d{6}$/.test(code)) {
     if (code.startsWith('11') || code[0] === '6' || code[0] === '5') market = 'sh';
+    else if (code[0] === '4' || code[0] === '8' || code.startsWith('92')) market = 'bj';
     else market = 'sz';
   }
-  if (!['sh', 'sz', 'hk'].includes(market)) return null;
+  if (!['sh', 'sz', 'bj', 'hk'].includes(market)) return null;
   const normalized = market === 'hk' ? code.padStart(5, '0') : code.padStart(6, '0');
   return { code: normalized, market, symbol: market + normalized };
 }

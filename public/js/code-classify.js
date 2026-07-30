@@ -28,8 +28,8 @@
   function classifyCode(rawCode) {
     if (!rawCode) return null;
     var code = String(rawCode).trim().toUpperCase()
-      .replace(/\.(SH|SZ|HK|US)$/i, '')
-      .replace(/^(SH|SZ|HK|US)/i, '');
+      .replace(/\.(SH|SZ|BJ|HK|US)$/i, '')
+      .replace(/^(SH|SZ|BJ|HK|US)/i, '');
     if (!code) return null;
 
     var len = code.length;
@@ -84,8 +84,8 @@
   function normalizeCode(rawCode) {
     if (!rawCode) return rawCode;
     var code = String(rawCode).trim().toUpperCase()
-      .replace(/\.(SH|SZ|HK|US)$/i, '')
-      .replace(/^(SH|SZ|HK|US)/i, '');
+      .replace(/\.(SH|SZ|BJ|HK|US)$/i, '')
+      .replace(/^(SH|SZ|BJ|HK|US)/i, '');
     if (!code) return code;
 
     var info = classifyCode(code);

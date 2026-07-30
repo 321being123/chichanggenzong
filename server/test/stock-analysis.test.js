@@ -1,6 +1,6 @@
 const assert = require('assert');
 const {
-  finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
+  finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
 } = require('../services/stockAnalysis');
 
 function close(actual, expected, epsilon = 1e-9) {
@@ -13,9 +13,14 @@ assert.strictEqual(finite('-12.5'), -12.5);
 
 assert.strictEqual(normalizeStockCode('600519'), '600519.SH');
 assert.strictEqual(normalizeStockCode('000001.sz'), '000001.SZ');
+assert.strictEqual(normalizeStockCode('920002'), '920002.BJ');
 assert.strictEqual(isOrdinaryAStock('600519.SH'), true);
+assert.strictEqual(isOrdinaryAStock('920002.BJ'), true);
 assert.strictEqual(isOrdinaryAStock('113575.SH'), false);
 assert.strictEqual(isOrdinaryAStock('00700.HK'), false);
+assert.strictEqual(stockExchange('600519.SH'), 'SH');
+assert.strictEqual(stockExchange('000001.SZ'), 'SZ');
+assert.strictEqual(stockExchange('920002.BJ'), 'BJ');
 
 const cagr = growthMetric(100, 121, 2);
 close(cagr.value, 0.1);

@@ -31,6 +31,12 @@ function isOrdinaryAStock(tsCode) {
   return /^(60|68|00|30|43|83|87|92)/.test(code) && !/^(110|111|113|118|123|127|128)/.test(code);
 }
 
+function stockExchange(tsCode) {
+  if (String(tsCode || '').endsWith('.SH')) return 'SH';
+  if (String(tsCode || '').endsWith('.BJ')) return 'BJ';
+  return 'SZ';
+}
+
 function versionKey(row) {
   return [row.end_date || '', row.report_type || '', row.f_ann_date || row.ann_date || '', row.update_flag || '', row.div_proc || '', row.ex_date || row.pay_date || ''].join('|');
 }
@@ -73,7 +79,7 @@ function controllerType(name) {
 
 async function fetchActualController(tsCode) {
   try {
-    const prefix = tsCode.endsWith('.SH') ? 'SH' : 'SZ';
+    const prefix = stockExchange(tsCode);
     const payload = await requestJson(`https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax?code=${prefix}${tsCode.slice(0, 6)}`);
     const raw = Array.isArray(payload.sjkzr) ? payload.sjkzr[0] : payload.sjkzr;
     if (!raw || !raw.HOLDER_NAME) return null;
@@ -239,7 +245,7 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
   const events = [];
   for (let page = 1; page <= 5; page++) {
     const body = new URLSearchParams({ pageNum: String(page), pageSize: '100', stock: `${code},${stock.orgId}`, searchkey: searchKey,
-      tabName: 'fulltext', column: 'szse', plate: tsCode.endsWith('.SH') ? 'sh' : 'sz',
+      tabName: 'fulltext', column: 'szse', plate: stockExchange(tsCode).toLowerCase(),
       seDate: `${isoDate(startDate)}~${isoDate(endDate)}` }).toString();
     const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
     const rows = payload.announcements || [];
@@ -320,7 +326,7 @@ async function fetchSzseLatestReport(tsCode, startDate, endDate) {
 
 async function fetchXueqiuEvents(tsCode, startDate, endDate) {
   try {
-    const symbol = tsCode.endsWith('.SH') ? `SH${tsCode.slice(0, 6)}` : `SZ${tsCode.slice(0, 6)}`;
+    const symbol = `${stockExchange(tsCode)}${tsCode.slice(0, 6)}`;
     const url = `https://xueqiu.com/statuses/search.json?count=20&comment=0&symbol=${symbol}&hl=0&source=all&sort=time&page=1&q=`;
     const payload = await requestJson(url, { headers: { Referer: `https://xueqiu.com/S/${symbol}` } });
     return (payload.list || payload.statuses || []).map(row => ({
@@ -377,7 +383,8 @@ async function refreshEvents(tsCode, today) {
   try {
     const sources = await Promise.allSettled([
       fetchCninfoEvents(tsCode, start, today),
-      tsCode.endsWith('.SH') ? fetchSseEvents(tsCode, start, today) : fetchSzseEvents(tsCode, start, today)
+      tsCode.endsWith('.SH') ? fetchSseEvents(tsCode, start, today)
+        : tsCode.endsWith('.SZ') ? fetchSzseEvents(tsCode, start, today) : Promise.resolve([])
     ]);
     const unique = mergeOfficialEventSources(sources);
     await saveEvents(tsCode, unique);
@@ -754,6 +761,6 @@ async function listUserStocks(username) {
   return rows.filter(row => isOrdinaryAStock(row.ts_code));
 }
 
-module.exports = { finite, normalizeStockCode, isOrdinaryAStock, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
+module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
   refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
   fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport };

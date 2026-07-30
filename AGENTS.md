@@ -7,7 +7,9 @@
 以下流程适用于所有生产服务器部署、热修复、数据同步和模型更新，不得跳步：
 
 1. **先更新版本记录**：先用 `add_changelog.py` 同步更新 `public/changelog.json`、`CHANGELOG.md`；需要发版号时同时更新 `package.json` 的 `version/appVersion`。未完成版本记录，禁止部署。
+   - Windows 固定使用项目根目录 `.\venv\Scripts\python.exe add_changelog.py ...`，禁止使用 `WindowsApps\python.exe` 占位程序，也不要猜测 `ipo-report\venv` 路径。
 2. **本地验证**：完成与改动相关的测试和数据校验。
+   - Windows 全量测试固定使用 `npm.cmd run test:all`，外层超时至少 240 秒，避免 `npm.ps1` 执行策略错误和正常测试被提前终止。
 3. **正式提交并推送**：所有代码、版本记录、模型文件和同步 SQL 必须提交 Git 并推送到 `master`；禁止只保留本地修改。
 4. **标准服务器部署**：仅按本文件规定的 Git 同步、依赖安装和 PM2 重启步骤执行。禁止通过 SFTP、SSH 直接覆盖生产代码或模型文件；紧急修复也必须补齐本流程后才算完成。
 5. **部署后验收**：核对提交版本、PM2、`/health`、本次相关接口/页面和数据库同步结果；任一项失败即视为部署失败。

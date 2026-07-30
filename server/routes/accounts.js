@@ -7,7 +7,7 @@ const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
 const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool } = require('../db');
-const { fetchQuoteByCode, todayCN } = require('../services/market');
+const { fetchQuoteByCode, todayCN, toTsCode } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 
 router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
@@ -145,10 +145,8 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
 
     positions.forEach(function (p) {
       var code = p.code || '';
-      var suffix = '';
-      if (p.subtype === '港股') { suffix = '.HK'; }
-      else if (code.startsWith('6') || code.startsWith('5')) { suffix = '.SH'; }
-      else { suffix = '.SZ'; }
+      var canonicalCode = toTsCode(code);
+      var suffix = canonicalCode.startsWith(code) ? canonicalCode.slice(code.length) : '';
 
       var price = Number(p.price) || 0;
       var qty = Number(p.quantity) || 0;

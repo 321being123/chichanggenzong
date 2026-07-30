@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
+const { describeTencentCode } = require('./tencentQuote');
 
 function asDate(value) {
   const text=String(value||'').replace(/-/g,'').slice(0,8);
@@ -52,7 +53,8 @@ async function ensureMaster(client, tsCode, sources, metadata) {
     RETURNING instrument_id`,[tsCode,legacy.name||'',assetClass,legacy.market||'',exchange,currency,asDate(legacy.list_date),'listed',JSON.stringify(raw)])).rows[0];
   await client.query(`INSERT INTO core.company_instruments(company_id,instrument_id,valid_from) VALUES($1,$2,$3)
     ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from)`,[company.company_id,instrument.instrument_id,asDate(legacy.list_date)]);
-  for(const [sourceCode,type,value] of [['tushare','ts_code',tsCode],['tencent','quote_symbol',tsCode.endsWith('.SH')?'sh'+tsCode.slice(0,6):'sz'+tsCode.slice(0,6)],['eastmoney','f10_code',tsCode]]){
+  const tencentCode=describeTencentCode(tsCode);
+  for(const [sourceCode,type,value] of [['tushare','ts_code',tsCode],['tencent','quote_symbol',tencentCode.symbol],['eastmoney','f10_code',tsCode]]){
     await client.query(`INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
       VALUES($1,$2,$3,$4,$5) ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,[instrument.instrument_id,sources[sourceCode],type,value,asDate(legacy.list_date)]);
   }

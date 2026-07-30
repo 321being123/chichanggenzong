@@ -145,29 +145,75 @@ async function recordMarketClose(label, matchFn, dateStr) {
   if (!anyRecorded && anyError) throw new Error('收盘记录全部失败 (' + label + ' ' + cnDate + ')');
 }
 
-// 缺失补漏：回看最近若干交易日，某账户某交易日 daily_prices 为 0 行则重抓落库（幂等）
-async function backfillMissingCloses() {
+function recentTradingDays(count) {
   const days = [];
   const now = new Date();
-  for (let i = 1; i <= 12 && days.length < 6; i++) {
+  for (let i = 1; i <= 14 && days.length < count; i++) {
     const dd = new Date(now.getTime() - i * 86400000);
     if (isTradingDay(dd)) days.push(fmtCN(dd));
   }
-  if (days.length === 0) return;
+  return days;
+}
+
+// 手动补漏先查询账户已有收盘价的日期范围，再找出其中遗漏的交易日。
+// 不把 daily_prices 首日之前的历史当成“遗漏”，避免在功能启用前的旧数据被误判为待补。
+async function findMissingCloseDates(username, accountName) {
+  const range = await pool.query(
+    'SELECT MIN(date)::text AS first_date FROM daily_prices WHERE username=$1 AND account_name=$2',
+    [username, accountName]
+  );
+  const firstDate = range.rows[0] && range.rows[0].first_date;
+  const lastDate = recentTradingDays(1)[0];
+  if (!firstDate || !lastDate || firstDate > lastDate) return [];
+
+  const existing = await pool.query(
+    'SELECT date::text AS date FROM daily_prices WHERE username=$1 AND account_name=$2 AND date BETWEEN $3 AND $4',
+    [username, accountName, firstDate, lastDate]
+  );
+  const existingDates = new Set(existing.rows.map(row => row.date));
+  const missingDates = [];
+  const cursor = new Date(firstDate + 'T12:00:00Z');
+  const end = new Date(lastDate + 'T12:00:00Z');
+  while (cursor <= end) {
+    if (isTradingDay(cursor)) {
+      const date = fmtCN(cursor);
+      if (!existingDates.has(date)) missingDates.push(date);
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return missingDates;
+}
+
+// 缺失补漏：自动任务只回看近期；手动任务查询每个账户已落库区间的全部缺失交易日。
+async function backfillMissingCloses(options) {
+  const scanAllMissingDates = !!(options && options.scanAllMissingDates);
+  const recentDays = scanAllMissingDates ? null : recentTradingDays(6);
   const { rows: users } = await pool.query('SELECT username, accounts FROM users');
+  let accountCount = 0, missingDates = 0, recorded = 0, failed = 0;
   for (const user of users) {
-    const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
-    for (const accountName of accounts) {
+    const accountNames = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
+    for (const accountName of accountNames) {
+      const days = scanAllMissingDates
+        ? await findMissingCloseDates(user.username, accountName)
+        : recentDays;
+      if (!days.length) continue;
+      accountCount++;
+      missingDates += days.length;
       for (const day of days) {
         // 不再用「当天任意一条记录」判断是否跳过：recordCloseOne 内部按代码幂等，
         // 只补齐缺失代码，已完整的市场不会重复抓取，缺失的市场会被补上。
         for (const mkt of MARKET_CLOSE_TIMES) {
-          await recordCloseOne(user.username, accountName, mkt.label, mkt.match, day)
-            .catch(e => console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message));
+          const result = await recordCloseOne(user.username, accountName, mkt.label, mkt.match, day)
+            .catch(e => { console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message); return null; });
+          if (result) {
+            recorded += result.recorded || 0;
+            failed += result.failed || 0;
+          }
         }
       }
     }
   }
+  return { accounts: accountCount, missingDates, recorded, failed };
 }
 
 // 带幂等锁与执行记录的收盘任务（跨实例单跑，失败留痕供告警）
@@ -217,4 +263,4 @@ function scheduleAllMarketCloses() {
   }
 }
 
-module.exports = { scheduleAllMarketCloses, backfillMissingCloses, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil, nextRunDelay };
+module.exports = { scheduleAllMarketCloses, backfillMissingCloses, findMissingCloseDates, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil, nextRunDelay };

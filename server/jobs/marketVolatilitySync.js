@@ -17,7 +17,7 @@ function request(url, binary) { return new Promise((resolve, reject) => {
 function dateStr(d) { return d.toISOString().slice(0, 10); }
 function parseHsiWorkbook(buffer) { return new Promise((resolve, reject) => {
   // 官方文件为旧版 xls；通过 requirements.txt 中受控的 pandas/xlrd 解析，避免引入有高危漏洞的 Node xlsx 包。
-  const code = "import sys,json,pandas as p; print(json.dumps(p.read_excel(sys.stdin.buffer,header=None).fillna('').values.tolist(),default=str))";
+  const code = "import sys,io,json,pandas as p; print(json.dumps(p.read_excel(io.BytesIO(sys.stdin.buffer.read()),header=None).fillna('').values.tolist(),default=str))";
   const localPython = path.join(__dirname, '..', '..', 'venv', 'Scripts', 'python.exe');
   const python = process.env.PYTHON || (process.platform === 'win32' && fs.existsSync(localPython) ? localPython : process.platform === 'win32' ? 'python.exe' : 'python3');
   const child = spawn(python, ['-c', code], { stdio: ['pipe', 'pipe', 'pipe'] }); let out='', err='';

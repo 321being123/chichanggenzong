@@ -110,8 +110,8 @@ router.get('/jobs', asyncHandler(async (req, res) => {
 router.post('/jobs/backfill', asyncHandler(async (req, res) => {
   const id = await startJobRun('manual_backfill');
   try {
-    await backfillMissingCloses();
-    await finishJobRun(id, true, '手动触发收盘数据补漏');
+    const result = await backfillMissingCloses({ scanAllMissingDates: true });
+    await finishJobRun(id, true, '检查 ' + result.accounts + ' 个账户，发现 ' + result.missingDates + ' 个缺失交易日，补写 ' + result.recorded + ' 条价格');
     await auditLog(req.session.user, 'job_backfill', 'manual_backfill', '手动补漏收盘数据').catch(() => {});
     res.json({ ok: true });
   } catch (e) {

@@ -432,6 +432,12 @@ function jobLabel(job) {
   if (job.indexOf('market_close:') === 0) return '收盘数据（' + job.slice('market_close:'.length) + '）';
   const map = {
     index_baseline: '指数基线', index_recent: '指数每日补齐',
+    nav_snapshot: '净值快照补齐', hk_rate: '港币汇率更新',
+    bond_safety_refresh: '可转债安全评分刷新',
+    convertible_bond_universe_refresh: '可转债行情同步',
+    convertible_bond_valuation_refresh: '可转债估值与预警',
+    stock_analysis_refresh: '个股分析刷新', ipo_calendar_refresh: '打新日历与日报',
+    market_volatility_sync: '股市波动指标同步',
     manual_backfill: '手动补漏', manual_holiday_sync: '手动休市核对',
     holiday_sync: '休市日历同步'
   };
@@ -452,8 +458,10 @@ function jobDescription(job) {
     nav_snapshot: '收盘后根据当日收盘价自动计算并补齐每个账户的总资产与净值记录（nav_history）。',
     stock_analysis_refresh: '每日 20:30 刷新用户关注个股的深度分析数据（估值、财务、情绪等）。',
     ipo_calendar_refresh: '工作日 18:00 自动更新 IPO/打新日历与每日打新日报数据。',
+    market_volatility_sync: '每日 18:45 同步中债收益率、沪深指数估值、恒指市盈率等数据，并计算股市波动指标。',
+    convertible_bond_valuation_refresh: '在可转债行情同步后自动刷新估值、预警与模型结果。',
     holiday_sync: '每月自动核对交易所法定休市日，确保「是否交易日」判断准确。',
-    manual_backfill: '手动触发：检查最近 6 个交易日是否缺失收盘价/市值，缺失则重新抓取补齐。',
+    manual_backfill: '手动触发：查询每个账户已落库日期范围内缺失的交易日，再重新抓取补齐。',
     manual_holiday_sync: '手动触发：立即从交易所日历重新拉取并校正当年休市日。'
   };
   return map[job] || '系统自动后台任务。';
@@ -476,18 +484,24 @@ function renderJobs() {
       '<div class="job-help-title">📋 任务说明</div>' +
       '<div class="job-help-sub">以下自动任务由系统按周期执行；手动任务可随时点击触发，用于补救或立即生效。</div>' +
       '<div class="job-help-group"><b>自动任务</b>' +
-        '<div class="job-help-item"><span class="job-help-name">收盘数据抓取（market_close）</span><span>每个交易日收盘后，自动抓取所有账户当日收盘价与市值并落库（daily_prices），驱动收益走势与净值计算。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">指数基线（index_baseline）</span><span>维护沪深300 / 上证 / 恒生等指数基准点，供收益对比图使用。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">休市日历同步（holiday_sync）</span><span>每月自动从交易所（上交所）日历校正当年法定休市日，确保「交易日判断」准确。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">A 股 / 可转债 / LOF·ETF 收盘数据（15:10）</span><span>每个交易日收盘后，抓取所有账户对应持仓的收盘价并写入 daily_prices。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">港股收盘数据（16:10）</span><span>抓取港股持仓收盘价；完成后依次触发当日净值快照、指数点位与港币汇率更新。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">净值快照（nav_snapshot）</span><span>根据已落库的收盘价，补齐每个账户的总资产和净值记录（nav_history）。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐（index_baseline / index_recent）</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">港币汇率（hk_rate）</span><span>每个交易日港股收盘后更新港币兑人民币汇率，用于港股持仓人民币估值。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">可转债安全评分（bond_safety_refresh，06:30）</span><span>每日刷新可转债安全评分快照，供转债筛选与风险面板使用。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（16:40）</span><span>每日增量同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">打新日历与日报（工作日 18:00）</span><span>自动生成并更新 IPO/打新日历和每日打新日报。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">股市波动指标（18:45）</span><span>同步中债收益率、沪深指数估值、恒指市盈率等数据，并重新计算股市波动指标。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">个股分析（20:30）</span><span>刷新用户关注个股的估值、财务和情绪等深度分析数据。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">休市日历同步（启动时及每月）</span><span>从交易所日历校正当年法定休市日，确保「交易日判断」准确。</span></div>' +
       '</div>' +
       '<div class="job-help-group"><b>手动任务（下方按钮）</b>' +
-        '<div class="job-help-item"><span class="job-help-name">手动补漏收盘数据</span><span>对最近 6 个交易日，逐个账户检查是否缺失当日收盘价/市值，缺失则重新从行情源抓取并补写（已存在的数据不会被覆盖）。<i>适用：收盘任务因网络抖动/接口超时漏抓，导致某天收益图断点。</i></span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">手动核对休市日历</span><span>立即从交易所（上交所）日历重新拉取本年度法定休市日并校正 holidays.json（仅改本机文件，无需重启、不动 git）。<i>适用：法定节假日调整后需立即生效。</i></span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">手动补漏收盘数据</span><span>先查询每个账户已落库日期范围内缺失的交易日，再逐日从行情源抓取并补写（已存在的数据不会被覆盖）。<i>适用：收盘任务因网络抖动/接口超时漏抓，导致某天收益图断点。</i></span></div>' +
       '</div>' +
     '</div>' +
     '<div class="filter-bar">' +
       '<button class="btn btn-primary btn-sm" id="job-btn-backfill" onclick="runJobBackfill()">手动补漏收盘数据</button>' +
-      '<button class="btn btn-info btn-sm" id="job-btn-holiday" onclick="runJobHolidaySync()">手动核对休市日历</button>' +
       '<button class="btn btn-outline btn-sm" onclick="loadJobsData()">刷新</button>' +
     '</div>' +
     '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
@@ -562,15 +576,15 @@ async function runJobBackfill() {
 }
 
 async function runJobHolidaySync() {
-  const btn = document.getElementById('job-btn-holiday');
+  const btn = document.getElementById('holiday-btn-sync');
   if (btn) { btn.disabled = true; btn.textContent = '核对中...'; }
   try {
     const r = await fetch(api('/api/admin/jobs/holiday-sync'), { method: 'POST' });
     const d = await r.json();
     showToast(r.ok ? '休市日历已核对' : (d.error || '核对失败'));
   } catch (e) { showToast('网络错误'); }
-  if (btn) { btn.disabled = false; btn.textContent = '手动核对休市日历'; }
-  loadJobsData();
+  if (btn) { btn.disabled = false; btn.textContent = '从交易所核对本年休市日'; }
+  renderHolidays();
 }
 
 // ====== 平台公告 + 版本更新记录 ======
@@ -725,12 +739,13 @@ function renderHolidays() {
     el.innerHTML =
       '<div class="filter-bar">' +
       '<select id="holiday-year" onchange="holidayYear=this.value;renderHolidays();" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' + opts + '</select>' +
-      '<input id="holiday-new" type="date" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' +
-      '<button class="btn btn-primary btn-sm" onclick="addHolidayByInput()">添加休市日</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="saveHolidays()">保存' + holidayYear + '年</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="renderHolidays()">刷新</button>' +
-      '</div>' +
-      '<div style="font-size:12px;color:#888;background:#f6f8fa;padding:8px 10px;border-radius:6px;margin-bottom:12px;">休市日（法定节假日，不含周末）影响收盘数据抓取与交易日判断；修改即时生效，无需部署。每年自动核对。<b>点击日历格可增删</b>：橙色=休市日（点它移除），空白格（点它添加），灰色=周末。</div>' +
+       '<input id="holiday-new" type="date" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' +
+       '<button class="btn btn-primary btn-sm" onclick="addHolidayByInput()">添加休市日</button>' +
+       '<button class="btn btn-outline btn-sm" onclick="saveHolidays()">保存' + holidayYear + '年</button>' +
+       '<button class="btn btn-info btn-sm" id="holiday-btn-sync" onclick="runJobHolidaySync()">从交易所核对本年休市日</button>' +
+       '<button class="btn btn-outline btn-sm" onclick="renderHolidays()">刷新</button>' +
+       '</div>' +
+       '<div style="font-size:12px;color:#888;background:#f6f8fa;padding:8px 10px;border-radius:6px;margin-bottom:12px;">休市日（法定节假日，不含周末）影响收盘数据抓取与交易日判断；修改即时生效，无需部署。可点击「从交易所核对本年休市日」立即同步，也可<b>点击日历格手动增删</b>：橙色=休市日（点它移除），空白格（点它添加），灰色=周末。</div>' +
       '<div id="holiday-calendar" class="holiday-calendar"></div>';
     renderHolidayCalendar();
   }).catch(function () { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; });

@@ -866,6 +866,108 @@ td.negative { color: #137333; font-weight: 600; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.home-market-cycle-section {
+  margin-top: 30px;
+}
+
+.home-market-cycle-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.home-cycle-card {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--home-border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(17,24,39,.03);
+}
+
+.home-cycle-legend {
+  margin: -3px 0 8px;
+  display: flex;
+  gap: 18px;
+  color: #747c8e;
+  font-size: 11px;
+}
+
+.home-cycle-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.home-cycle-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.home-cycle-dot-blue {
+  background: #2563eb;
+}
+
+.home-cycle-dot-red {
+  background: #ef4444;
+}
+
+.home-cycle-line-sample {
+  width: 16px;
+  border-top: 2px dashed #dc2626;
+}
+
+.home-cycle-chart {
+  position: relative;
+  min-height: 300px;
+}
+
+.home-cycle-chart svg {
+  display: block;
+  width: 100%;
+}
+
+.home-cycle-grid-line {
+  stroke: #e5e7eb;
+  stroke-width: 1;
+}
+
+.home-cycle-axis {
+  fill: #8b93a3;
+  font-size: 11px;
+}
+
+.home-cycle-path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.home-cycle-boundary {
+  stroke: #dc2626;
+  stroke-dasharray: 6 5;
+  stroke-width: 1.6;
+}
+
+.home-cycle-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.home-cycle-tooltip {
+  position: absolute;
+  z-index: 3;
+  width: 190px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(15,23,42,.92);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.55;
+  pointer-events: none;
+}
+
 .home-detail-card {
   min-width: 0;
   padding: 20px;
@@ -1086,6 +1188,10 @@ td.negative { color: #137333; font-weight: 600; }
 
   .home-module-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .home-cycle-chart {
+    min-height: 230px;
   }
 
   .home-module-card,

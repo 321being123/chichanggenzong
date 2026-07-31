@@ -1,11 +1,12 @@
 """ipo-report 共用样板工具（收口重复定义，避免分叉）。
 
 集中放置 4+ 脚本里原本各自复制的样板：
-  - shlex_quote / ssh_run（远程执行，inspect / verify_* 同款）
+  - shlex_quote / ssh_connect / ssh_run（远程执行，inspect / verify_* 同款）
   - _load_env（加载 .env，统一查脚本同级与父目录）
   - _tushare（零依赖 REST 调用）
   - psql_run（本地 psql 执行，临时文件避免 GBK 截断）
-密码不在本模块硬编码：ssh_run 从环境变量 SERVER_PASS 读取。
+登录方式：SSH 用密钥（默认 ~/.ssh/server_login，可用环境变量 SSH_KEY_PATH 覆盖），
+sudo 提权走免密（服务器 sudoers 已配置 NOPASSWD），全程不依赖密码。
 """
 import os
 import json
@@ -19,12 +20,27 @@ def shlex_quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+# ============ SSH 连接（密钥登录，2026-07-31 起服务器已关闭密码登录） ============
+def ssh_connect(host="82.156.125.47", port=22, username="ubuntu", timeout=30):
+    """用本机密钥连接服务器。密钥路径：环境变量 SSH_KEY_PATH > ~/.ssh/server_login。"""
+    import paramiko
+    key_path = os.environ.get("SSH_KEY_PATH") or os.path.expanduser("~/.ssh/server_login")
+    if not os.path.exists(key_path):
+        raise FileNotFoundError(f"未找到 SSH 密钥 {key_path}（服务器已关闭密码登录，必须用密钥）")
+    key = paramiko.Ed25519Key.from_private_key_file(key_path)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(host, port=port, username=username, pkey=key, timeout=timeout,
+                   banner_timeout=timeout, auth_timeout=timeout,
+                   look_for_keys=False, allow_agent=False)
+    return client
+
+
 # ============ 远程执行（与 inspect / verify_* 同款，返回 out, err, status） ============
 def ssh_run(client, cmd, sudo=False, timeout=300):
-    """远程执行命令，返回 (stdout, stderr, exit_status)。sudo=True 用 SERVER_PASS 提权。"""
-    passwd = os.environ.get("SERVER_PASS", "")
+    """远程执行命令，返回 (stdout, stderr, exit_status)。sudo=True 用免密 sudo 提权。"""
     if sudo:
-        full = f"echo {passwd} | sudo -S bash -c {shlex_quote(cmd)}"
+        full = f"sudo bash -c {shlex_quote(cmd)}"
     else:
         full = f"bash -c {shlex_quote(cmd)}"
     stdin, stdout, stderr = client.exec_command(full, timeout=timeout)

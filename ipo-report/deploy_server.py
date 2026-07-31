@@ -1,4 +1,4 @@
-"""通过密码 SSH 直连腾讯云服务器，执行部署：
+"""通过 SSH 密钥直连腾讯云服务器，执行部署：
   1) git pull origin master
   2) pm2 restart portfolio-server --update-env
   3) sftp 上传本地 server_bond_sync.sql 到服务器
@@ -6,26 +6,26 @@
   5) 依次执行：中签率精确化 UPDATE、ipo_history 同步、ipo_reports 同步（打新日历/打新建议数据）
 
 依赖：paramiko（已在 ipo_test venv 安装）
+登录：SSH 密钥 ~/.ssh/server_login（服务器 2026-07-31 起关闭密码登录，sudo 免密提权）
 用法：python deploy_server.py
 """
 import os, sys, re
 sys.path.insert(0, os.path.dirname(__file__))
 import paramiko
-from _common import shlex_quote
+from _common import shlex_quote, ssh_connect
 
 HOST = "82.156.125.47"
 PORT = 22
 USER = "ubuntu"
-PASS = os.environ.get("SERVER_PASS", "")
 REMOTE_DIR = "/opt/portfolio"
 LOCAL_SQL = os.path.join(os.path.dirname(__file__), "server_bond_sync.sql")
 LOCAL_LOTTERY = os.path.join(os.path.dirname(__file__), "backfill_lottery_rate.sql")
 
 
 def ssh_run(client, cmd, timeout=300, sudo=False):
-    """远程执行命令，返回 (status, stdout, stderr)。sudo=True 用密码提权。"""
+    """远程执行命令，返回 (status, stdout, stderr)。sudo=True 用免密 sudo 提权。"""
     if sudo:
-        full = f"echo {PASS} | sudo -S bash -c {shlex_quote(cmd)}"
+        full = f"sudo bash -c {shlex_quote(cmd)}"
     else:
         full = f"bash -c {shlex_quote(cmd)}"
     stdin, stdout, stderr = client.exec_command(full, timeout=timeout)
@@ -84,10 +84,7 @@ def main():
         sys.exit(1)
 
     print(f"[1/5] SSH 连接 {USER}@{HOST}:{PORT} ...")
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, port=PORT, username=USER, password=PASS, timeout=30,
-                   look_for_keys=False, allow_agent=False)
+    client = ssh_connect(HOST, PORT, USER)
     sftp = client.open_sftp()
     print("      已连接")
 

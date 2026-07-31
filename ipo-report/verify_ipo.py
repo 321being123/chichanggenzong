@@ -1,12 +1,8 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-import paramiko
-HOST="82.156.125.47"; PORT=22; USER="ubuntu"; PASS=os.environ.get("SERVER_PASS", "")
-os.environ["SERVER_PASS"] = PASS  # 供 _common.ssh_run 提权使用
-from _common import shlex_quote, ssh_run
+from _common import shlex_quote, ssh_run, ssh_connect
 
-client = paramiko.SSHClient(); client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(HOST, port=PORT, username=USER, password=PASS, timeout=30, look_for_keys=False, allow_agent=False)
+client = ssh_connect()
 base = "set -a; source " + shlex_quote("/opt/portfolio/.env") + "; PGPASSWORD=\"$PGPASSWORD\" psql -h \"$PGHOST\" -p \"$PGPORT\" -U \"$PGUSER\" -d \"$PGDATABASE\" -t -A -c"
 checks = [
     ("ipo总行数", "SELECT count(*) FROM ipo_history;"),

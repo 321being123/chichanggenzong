@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""通过腾讯云账户密码部署生产环境。"""
+"""通过 SSH 密钥部署生产环境（服务器已关闭密码登录，2026-07-31 起用密钥+免密 sudo）。"""
 
 import json
 import os
@@ -19,33 +19,22 @@ except ImportError as exc:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ENV_FILE = ROOT / ".env"
 HOST = "82.156.125.47"
 USER = "ubuntu"
 
 
-def read_env_value(name):
-    if not ENV_FILE.exists():
-        raise SystemExit("未找到项目根目录 .env，无法读取部署密码。")
-    for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key.strip() != name:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        return value
-    raise SystemExit(f".env 中未配置 {name}。")
+def load_key():
+    """加载本机 SSH 密钥（环境变量 SSH_KEY_PATH > 默认 ~/.ssh/server_login）。"""
+    key_path = os.environ.get("SSH_KEY_PATH") or os.path.expanduser("~/.ssh/server_login")
+    if not os.path.exists(key_path):
+        raise SystemExit(f"未找到 SSH 密钥 {key_path}（服务器已关闭密码登录，必须用密钥）")
+    return paramiko.Ed25519Key.from_private_key_file(key_path)
 
 
-def run_sudo(client, password, command, timeout=240):
-    wrapped = "sudo -S -p '' bash -lc " + shlex.quote(command)
+def run_sudo(client, command, timeout=240):
+    """免密 sudo 执行（服务器 sudoers 已配置 NOPASSWD）。"""
+    wrapped = "sudo bash -c " + shlex.quote(command)
     stdin, stdout, stderr = client.exec_command(wrapped, timeout=timeout)
-    stdin.write(password + "\n")
-    stdin.flush()
     output = stdout.read().decode("utf-8", "replace")
     error = stderr.read().decode("utf-8", "replace")
     exit_code = stdout.channel.recv_exit_status()
@@ -59,7 +48,6 @@ def run_sudo(client, password, command, timeout=240):
 
 
 def main():
-    password = read_env_value("DEPLOY_SSH_PASSWORD")
     local_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["appVersion"]
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -67,7 +55,7 @@ def main():
         client.connect(
             HOST,
             username=USER,
-            password=password,
+            pkey=load_key(),
             timeout=20,
             auth_timeout=20,
             banner_timeout=20,
@@ -76,14 +64,12 @@ def main():
         )
         run_sudo(
             client,
-            password,
             "cd /opt/portfolio && git fetch origin && git reset --hard origin/master "
             "&& npm ci --omit=dev && pm2 restart portfolio-server --update-env && pm2 save",
         )
         time.sleep(5)
         result = run_sudo(
             client,
-            password,
             "cd /opt/portfolio && printf 'commit=' && git rev-parse --short HEAD "
             "&& printf 'pm2pid=' && pm2 pid portfolio-server "
             "&& curl -fsS http://127.0.0.1:3000/health",

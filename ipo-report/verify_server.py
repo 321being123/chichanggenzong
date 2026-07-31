@@ -1,13 +1,8 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-import paramiko
+from _common import shlex_quote, ssh_run, ssh_connect
 
-HOST="82.156.125.47"; PORT=22; USER="ubuntu"; PASS=os.environ.get("SERVER_PASS", "")
-os.environ["SERVER_PASS"] = PASS  # 供 _common.ssh_run 提权使用
-from _common import shlex_quote, ssh_run
-
-client = paramiko.SSHClient(); client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect(HOST, port=PORT, username=USER, password=PASS, timeout=30, look_for_keys=False, allow_agent=False)
+client = ssh_connect()
 
 # 读 .env 的 PG 配置
 st, out, err = ssh_run(client, "cat /opt/portfolio/.env", sudo=True)

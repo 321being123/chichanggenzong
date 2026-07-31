@@ -89,6 +89,17 @@ async function saveInstrumentCache(rows) {
            name=EXCLUDED.name, source=EXCLUDED.source, fetched_at=now()`,
         params
       );
+      // 同步写入 core.instruments：确保新架构表也有这份数据
+      const instParams = [];
+      const instValues = chunk.map((row, idx) => {
+        instParams.push(row.ts_code, row.name || '');
+        return `($${idx * 2 + 1},$${idx * 2 + 2},'stock','CN')`;
+      });
+      await pool.query(
+        `INSERT INTO core.instruments (canonical_code, name, asset_class, market) VALUES ${instValues.join(',')}
+         ON CONFLICT (canonical_code) DO UPDATE SET name=EXCLUDED.name, updated_at=now()`,
+        instParams
+      ).catch(() => {}); // core schema 可能尚未创建，优雅降级
     }
   } catch (_) {}
 }

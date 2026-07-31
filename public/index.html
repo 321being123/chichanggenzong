@@ -9,8 +9,8 @@
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
 <link rel="stylesheet" href="shared/style.css?v=24">
 <link rel="stylesheet" href="css/bond-safety.css?v=8">
-<link rel="stylesheet" href="css/bond-cycle.css?v=4">
-<link rel="stylesheet" href="css/bond-valuation.css?v=5">
+<link rel="stylesheet" href="css/bond-cycle.css?v=5">
+<link rel="stylesheet" href="css/bond-valuation.css?v=7">
 <link rel="stylesheet" href="css/stock-analysis.css?v=13">
 <link rel="stylesheet" href="css/market-volatility.css?v=5">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
@@ -716,6 +716,7 @@
             <button data-metric="median_price">价格中位数</button>
             <button data-metric="median_conversion_premium_pct">溢价率中位数</button>
           </div>
+          <button class="bond-cycle-export-btn" onclick="exportBondCycleChart()" title="导出图片含上方指标卡片">导出图片</button>
         </div>
         <div class="bond-cycle-chart" id="bond-cycle-chart"></div>
         <div class="bond-cycle-tip app-tooltip" id="bond-cycle-tip"></div>
@@ -1008,7 +1009,7 @@
 <script src="vendor/dompurify.min.js"></script>
 <script src="js/ipo.js?v=8"></script>
 <script src="js/bond-safety.js?v=7"></script>
-<script src="js/bond-cycle.js?v=1"></script>
+<script src="js/bond-cycle.js?v=5"></script>
 <script src="js/bond-valuation.js?v=4"></script>
 <script src="js/stock-analysis.js?v=13"></script>
 <script src="js/bond-analysis.js?v=7"></script>
@@ -1069,9 +1070,12 @@ function switchMain(main, noPushState) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return;
   }
-  // 同步地址栏：首页清掉参数，其他页面带上 ?main=
+  // 同步地址栏：首页清掉参数，其他页面带上 ?main=，可转债保留 sub
   if (!noPushState) {
-    var newUrl = main === 'home' ? '/' : '/?main=' + main;
+    var params = new URLSearchParams(window.location.search);
+    if (main === 'home') { while (params.toString()) { params.delete(params.keys().next().value); } }
+    else { params.set('main', main); if (main !== 'bond-safety') params.delete('sub'); }
+    var newUrl = params.toString() ? '/?' + params.toString() : '/';
     if (window.location.pathname + window.location.search !== newUrl) {
       history.replaceState(null, '', newUrl);
     }
@@ -1136,7 +1140,8 @@ async function loadChangelogPage() {
     });
     el.innerHTML = html || '<p style="color:#888;">暂无记录</p>';
   } catch(e) {
-    el.innerHTML = '<p style="color:#888;">加载失败</p>';
+    console.error('changelog load failed', e);
+    el.innerHTML = '<p style="color:#888;">加载失败：' + escapeHtml(String(e.message || e)) + '</p>';
   }
 }
 
@@ -1451,21 +1456,26 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   var startParams = new URLSearchParams(window.location.search);
   var requestedMain = startParams.get('main');
   var requestedMetric = startParams.get('metric');
+  var requestedSub = startParams.get('sub');
   var allowedMain = ['home','holdings','stock-analysis','market-volatility','ipo','bond-safety','changelog','profile','knowledge'];
   var publicMain = ['home', 'knowledge', 'market-volatility'];
-  var initialMain = allowedMain.includes(requestedMain) && (loggedIn || publicMain.includes(requestedMain)) ? requestedMain : 'home';
+  var initialMain = 'home';
+  if (allowedMain.includes(requestedMain)) {
+    if (loggedIn || publicMain.includes(requestedMain)) {
+      initialMain = requestedMain;
+    } else if (requestedMain !== 'home') {
+      // 未登录访问非公开页面 → 跳转登录，登录后回来
+      window.location.href = api('/login.html?redirect=' + encodeURIComponent(window.location.pathname + window.location.search));
+      return;
+    }
+  }
   switchMain(initialMain, true);
   if (initialMain === 'market-volatility' && ['graham','pe','pb','m2_market_cap'].includes(requestedMetric)) {
     switchMarketCycleMetric(requestedMetric);
   }
-  // 用完后清除地址栏里的 ?main=，避免下次打开（或刷新）仍停留在上次跳转的页面，
-  // 保证“首次打开网站”始终回到存在小站主页；分享链接在首次打开时仍能正确跳转到指定页。
-  if (requestedMain) {
-    var sp = new URLSearchParams(window.location.search);
-    sp.delete('main');
-    sp.delete('metric');
-    var ns = sp.toString();
-    history.replaceState(null, '', window.location.pathname + (ns ? '?' + ns : '') + window.location.hash);
+  // 恢复子标签页
+  if (initialMain === 'bond-safety' && ['safety','cycle','valuation'].includes(requestedSub)) {
+    switchBondSub(requestedSub);
   }
   if (loggedIn) {
     // 首次直接进入持仓页时，switchMain() 已触发完整刷新，避免紧接着重复刷新和重绘圆环图。

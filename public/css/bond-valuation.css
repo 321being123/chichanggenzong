@@ -25,7 +25,8 @@
 .bond-val-spacer { flex: 1; }
 .bond-val-quality { font-size: 12px; color: #8a8f98; }
 
-.bond-val-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.bond-val-table-scroll { overflow: auto; max-height: calc(100vh - 360px); min-height: 340px; }
+.bond-val-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
 .bond-val-table th, .bond-val-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; text-align: right; }
 .bond-val-table th:not(.num), .bond-val-table td:not(.num) { text-align: left; }
 .bond-val-table thead th { position: sticky; top: 0; background: #fafbfc; cursor: pointer; user-select: none; border-bottom: 1px solid #e3e6ea; z-index: 1; }

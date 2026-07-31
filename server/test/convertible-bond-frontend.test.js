@@ -12,7 +12,7 @@ assert.ok(html.includes('id="bond-analysis-content"'), '缺少可转债分析结
 assert.ok(html.includes('id="security-analysis-select"'), '缺少持仓和自选入口');
 assert.ok(html.includes('js/bond-analysis.js'), '缺少可转债前端脚本');
 assert.ok(script.includes('/api/bond-analysis/'), '前端未接入可转债分析接口');
-for (const field of ['强赎触发价','基金持仓','最快回售触发日','下修天计数','募资用途','转股价调整历史','转股价不下修历史','利息保障倍数','纯债价值','理论偏离度','正股年化波动率','资产负债率']) {
+for (const field of ['强赎触发价','基金持仓','预估回售触发日','下修天计数','募资用途','转股价调整历史','转股价不下修历史','利息保障倍数','纯债价值','理论偏离度','正股年化波动率','资产负债率']) {
   assert.ok((html+script).includes(field), '可转债页面缺少字段：'+field);
 }
 assert.ok(script.includes("['到期赎回价'") && script.includes("['回售价'"), '募集用途与条款缺少到期赎回价后的回售价');

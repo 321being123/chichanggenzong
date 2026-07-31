@@ -147,8 +147,8 @@ var bondAnalysisHelpTexts = {
   '转股溢价率':'转债现价 ÷ 转股价值－1。',
   '基金持仓':'基金持有该转债的数量及占当前剩余规模的比例。',
   '剩余年限':'到期日距离当前日期的实际天数 ÷ 365.25。',
-  '最快回售触发日':'未到回售期时从回售期起算；已到回售期时先检查本计息年度是否已回售，再从下一有效回售期计算满足条款所需的最早日期。',
-  '最快回售剩余年限':'最快回售触发日距离当前日期的实际天数 ÷ 365.25。',
+  '预估回售触发日':'未到回售期时从回售期起算；已到回售期时先检查本计息年度是否已回售，再从下一有效回售期计算满足条款所需的最早日期。当前价高于触发价时基于正股波动率估算。',
+  '预估回售剩余年限':'预估回售触发日距离当前日期的实际天数 ÷ 365.25。',
   '预期回售到账日':'按当前正股价格和回售计数进度估算触发日，再加上预计到账时间。',
   '回售到账税前收益率':'（预计回售价 ÷ 转债现价）的最快回售剩余年限次方根－1；预计回售价含本金和应计利息。',
   '回售到账税后收益率':'仅对预计回售价中高于100元的利息部分扣除20%税，再按最快回售剩余年限计算年化收益率。',
@@ -261,6 +261,12 @@ async function bondAnalysisLoad(refresh) {
     }
     var payload=await response.json(), analysis=payload.analysis||payload;
     if(!response.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
+    // 缓存版本过旧，自动触发刷新
+    if (!refresh && analysis.needs_refresh) {
+      securityAnalysisState.loading = false;
+      if (!username) { bondAnalysisRender(analysis); return; }
+      return bondAnalysisLoad(true);
+    }
     bondAnalysisRender(analysis);
     if(!response.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true); }
@@ -278,13 +284,17 @@ function bondAnalysisRender(d) {
   var delistedTag=d.is_delisted?'<span class="bond-analysis-delisted">已退市</span>':'';
   bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
   var updated=document.getElementById('stock-analysis-updated'); if(updated) updated.textContent='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
+  // 注入动态波动率提示到预估回售触发日的浮框中
+  var putHelp='未到回售期时从回售期起算；已到回售期时先检查本计息年度是否已回售，再从下一有效回售期计算满足条款所需的最早日期。';
+  if (b.expected_put_assumption) putHelp = b.expected_put_assumption + '。' + putHelp;
+  bondAnalysisHelpTexts['预估回售触发日'] = putHelp;
   bondAnalysisSet('bond-analysis-basic',bondAnalysisTable([
     ['正股价',bondAnalysisNumber(q.stock_price,3,' 元')],['正股PB',bondAnalysisNumber(stockData.pb,2,' 倍')],
     ['转股价',bondAnalysisNumber(b.convert_price,3,' 元')],['转股价值',bondAnalysisNumber(b.convert_value,3,' 元')],
     ['转股溢价率',bondAnalysisPercent(b.convert_premium)],['到期时间',bondAnalysisDate(b.maturity_date)],
     ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':'暂无数据'],['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],
-    ['剩余规模',bondAnalysisNumber(b.remain_size,2,' 亿元')],['最快回售触发日',bondAnalysisDate(b.earliest_put_trigger_date)],
-    ['最快回售剩余年限',bondAnalysisNumber(b.earliest_put_remaining_years,2,' 年')],['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date)+'<br><small>预计触发 '+bondAnalysisDate(b.expected_put_trigger_date)+'；'+bondAnalysisText(b.expected_put_assumption)+'</small>':(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],
+    ['剩余规模',bondAnalysisNumber(b.remain_size,2,' 亿元')],    ['预估回售触发日',bondAnalysisDate(b.estimated_put_trigger_date)],
+    ['预估回售剩余年限',bondAnalysisNumber(b.estimated_put_remaining_years,2,' 年')],['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date):(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],
     ['回售到账税前收益率',bondAnalysisPercent(b.put_yield_pre_tax)],['回售到账税后收益率',bondAnalysisPercent(b.put_yield_after_tax)],
     ['转债/总市值',bondAnalysisPercent(b.bond_to_market_cap)],['转股起始日',bondAnalysisDate(b.conv_start_date)],
     ['转股截止日',bondAnalysisDate(b.conv_end_date)],['1PB参考价',stockData.pb>0&&q.stock_price!=null?bondAnalysisNumber(Number(q.stock_price)/Number(stockData.pb),3,' 元'):'暂无数据']

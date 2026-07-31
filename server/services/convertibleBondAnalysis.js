@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const cycleService = require('./convertibleBondCycleService');
+const { upsertBondBaseInfo } = require('./bondDataService');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const PROFILE_FIELDS = [
@@ -226,25 +227,44 @@ function estimatePutTimeline(rows, term, convertPrice, putStartDate, futureTrade
   const start = isoDate(putStartDate), current = isoDate(today), price = finite(currentPrice), conversion = finite(convertPrice);
   if (!start || !term || term.ratio == null || !(conversion > 0) || !(price > 0)) return null;
   const triggerPrice = conversion * term.ratio;
-  if (price >= triggerPrice) return { status: 'current_price_not_below_trigger', trigger_date: null, payment_date: null, remaining_days: null };
   const required = term.required_days || term.observation_days;
-  const history = (rows || []).filter(row => isoDate(row.trade_date) >= start && isoDate(row.trade_date) <= current)
-    .sort((a,b) => isoDate(b.trade_date).localeCompare(isoDate(a.trade_date)));
-  let trailing = 0;
-  for (const row of history) {
-    if (finite(row.close) < triggerPrice) trailing += 1;
-    else break;
-    if (trailing >= required) break;
+
+  // 当前价低于触发价：直接统计已满足天数 + 推算未来
+  if (price < triggerPrice) {
+    const history = (rows || []).filter(row => isoDate(row.trade_date) >= start && isoDate(row.trade_date) <= current)
+      .sort((a,b) => isoDate(b.trade_date).localeCompare(isoDate(a.trade_date)));
+    let trailing = 0;
+    for (const row of history) {
+      if (finite(row.close) < triggerPrice) trailing += 1;
+      else break;
+      if (trailing >= required) break;
+    }
+    const remaining = Math.max(0, required - trailing);
+    const lastHistoryDate = history[0] ? isoDate(history[0].trade_date) : null;
+    const calendar = [...new Set((futureTradeDates || []).map(isoDate).filter(Boolean))].sort();
+    const future = calendar.filter(date => date >= start && date > (lastHistoryDate || current));
+    const triggerDate = remaining === 0 ? lastHistoryDate : future[remaining - 1] || null;
+    const paymentDates = triggerDate ? calendar.filter(date => date > triggerDate) : [];
+    return { status: triggerDate ? 'estimated' : 'calendar_insufficient', trigger_date: triggerDate,
+      payment_date: paymentDates[9] || null, remaining_days: remaining, trailing_days: trailing,
+      method: trailing > 0 ? 'trailing_count' : 'assumed_continuous', assumption: '假设正股收盘价持续低于回售触发价' };
   }
-  const remaining = Math.max(0, required - trailing);
-  const lastHistoryDate = history[0] ? isoDate(history[0].trade_date) : null;
+
+  // 当前价高于触发价：用波动率估算股价首次触及触发价的时间
+  const annualVol = annualizedVolatility(rows);
+  if (!annualVol) return { status: 'current_price_not_below_trigger', trigger_date: null, payment_date: null, remaining_days: null, method: 'vol_unavailable' };
+  const dailyVol = annualVol / Math.sqrt(250);
+  const logDist = -Math.log(triggerPrice / price); // 正数，价格偏离触发价的对数距离
+  const z = logDist / dailyVol;
+  const estCrossDays = Math.round((z * z) / 2); // 随机游走首次触及下界的期望交易日数
+  const totalTradingDays = Math.min(estCrossDays + required, futureTradeDates.length);
   const calendar = [...new Set((futureTradeDates || []).map(isoDate).filter(Boolean))].sort();
-  const future = calendar.filter(date => date >= start && date > (lastHistoryDate || current));
-  const triggerDate = remaining === 0 ? lastHistoryDate : future[remaining - 1] || null;
+  const future = calendar.filter(date => date >= start && date > current);
+  const triggerDate = totalTradingDays > 0 && totalTradingDays <= future.length ? future[totalTradingDays - 1] : null;
   const paymentDates = triggerDate ? calendar.filter(date => date > triggerDate) : [];
-  return { status: triggerDate ? 'estimated' : 'calendar_insufficient', trigger_date: triggerDate,
-    payment_date: paymentDates[9] || null, remaining_days: remaining, trailing_days: trailing,
-    assumption: '假设正股收盘价持续低于回售触发价，触发后第10个交易日到账；未公布的休市安排按工作日估算' };
+  return { status: triggerDate ? 'volatility_estimated' : 'estimation_failed', trigger_date: triggerDate,
+    payment_date: paymentDates[9] || null, remaining_days: totalTradingDays, trailing_days: 0,
+    method: 'volatility', annual_vol: annualVol, assumption: `基于年化波动率 ${(annualVol*100).toFixed(0)}% 估算首次触及时间，仅供参考` };
 }
 
 function futureTradeCalendar(rows, today = isoDate(tsDateStr(new Date())), horizonDays = 800) {
@@ -434,6 +454,28 @@ async function saveTerms(client, instrumentId, profile, tushareSource) {
         window.observation_days, window.required_days, tushareSource, `cb_basic:${profile.ts_code}:${type}`, JSON.stringify({ clause })]
     );
   }
+}
+
+// 从 bond_history 引导创建 instrument + profile：
+// 标准模式：查 bond_history 里有没有数据 → 用 upsertBondBaseInfo 写入（已有不覆盖）。
+// 不假设谁先写谁后写。
+async function bootstrapBondsFromHistory(client, sources) {
+  const { rows } = await client.query(
+    `SELECT bh.* FROM bond_history bh
+      LEFT JOIN core.instruments i ON i.canonical_code LIKE bh.security_code || '.%'
+        AND i.asset_class = 'convertible_bond'
+      WHERE i.instrument_id IS NULL
+        AND bh.security_code ~ '^1'
+      ORDER BY COALESCE(bh.listing_date, bh.onl_date) DESC NULLS LAST`
+  );
+  if (!rows.length) return 0;
+
+  let count = 0;
+  for (const bh of rows) {
+    const bondId = await upsertBondBaseInfo(client, bh, sources.tushare);
+    if (bondId) count++;
+  }
+  return count;
 }
 
 async function saveProfile(client, profile, sources) {
@@ -993,6 +1035,11 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       await client.query('BEGIN');
       const sources = await sourceIds(client);
       tushareSourceId = sources.tushare;
+
+      // 第一步：从 bond_history 引导新债（打新日历先写的数据，避免重复拉 Tushare）
+      const bootstrapped = await bootstrapBondsFromHistory(client, sources);
+      if (bootstrapped) console.log(`[主同步] 从打新日历引导了 ${bootstrapped} 只新债`);
+
       const stockInstrumentMap = new Map();
       for (const profile of basics) {
         const ids = await saveProfile(client, profile, sources);
@@ -1541,8 +1588,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   };
   const futureTradeDates = futureTradeCalendar(tsRows(futureCalendarData));
   const putTimeline = estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate, futureTradeDates, stockPrice);
-  const earliestPutTimeline = estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate,
-    futureTradeDates, convPrice * termDetails.put.ratio * 0.5);
   const maturityFinal = parseMoney(profile.maturity_call_price, 100 + (finite(profile.coupon_rate) || 0));
   const discountRate = creditDiscountRate(profile.newest_rating || profile.issue_rating);
   const interestYear = currentInterestYear(profile.value_date, profile.maturity_date, end);
@@ -1552,11 +1597,11 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const optionValue = bondPrice != null && pureBond != null ? bondPrice - pureBond : null;
   const maturityPreTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, false, maturityFinal));
   const maturityAfterTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, true, maturityFinal));
-  const earliestPutDate = earliestPutTimeline && earliestPutTimeline.trigger_date;
-  const earliestPutPaymentDate = earliestPutTimeline && earliestPutTimeline.payment_date;
-  const earliestPutYears = remainingYears(earliestPutDate);
-  const putYieldYears = remainingYears(earliestPutPaymentDate);
-  const putFinal = accruedPutPrice(profile, extras.coupons, earliestPutDate);
+  const estimatedPutDate = putTimeline && putTimeline.trigger_date;
+  const estimatedPutPaymentDate = putTimeline && putTimeline.payment_date;
+  const estimatedPutYears = remainingYears(estimatedPutDate);
+  const putYieldYears = remainingYears(estimatedPutPaymentDate);
+  const putFinal = accruedPutPrice(profile, extras.coupons, estimatedPutDate);
   const putPreTax = annualizedRedemptionYield(bondPrice, putFinal, putYieldYears);
   const putAfterTax = annualizedRedemptionYield(bondPrice, putFinal, putYieldYears, 0.2);
   const volatility = annualizedVolatility(stockDaily), riskFreeRate = finite(process.env.CB_RISK_FREE_RATE) == null ? 0.015 : finite(process.env.CB_RISK_FREE_RATE);
@@ -1597,8 +1642,8 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
       maturity_date: isoDate(profile.maturity_date), remaining_years: remainingYears(profile.maturity_date), issue_size: yuanToHundredMillion(profile.issue_size),
       remain_size: yuanToHundredMillion(remainSizeYuan), bond_to_market_cap: remainSizeYuan != null && marketCap > 0 ? remainSizeYuan / marketCap : null,
       conv_start_date: isoDate(profile.conv_start_date), conv_end_date: isoDate(profile.conv_end_date),
-      earliest_put_trigger_date: earliestPutDate,
-      earliest_put_remaining_years: earliestPutYears,
+      estimated_put_trigger_date: estimatedPutDate,
+      estimated_put_remaining_years: estimatedPutYears,
       expected_put_trigger_date: putTimeline && putTimeline.trigger_date, expected_put_payment_date: putTimeline && putTimeline.payment_date,
       expected_put_remaining_days: putTimeline && putTimeline.remaining_days, expected_put_assumption: putTimeline && putTimeline.assumption,
       expected_put_status: putOpportunity.used && !nextPutPeriod(putPeriod, profile.maturity_date)
@@ -1657,7 +1702,7 @@ async function getConvertibleBondSnapshot(value) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) return null;
   const { rows } = await pool.query(
-    `SELECT s.payload,s.created_at,i.status,i.delist_date FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
+    `SELECT s.payload,s.created_at,s.formula_bundle_version,i.status,i.delist_date FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
      WHERE i.canonical_code=$1 AND s.snapshot_type='convertible_bond_analysis'
      ORDER BY s.as_of_date DESC,s.created_at DESC LIMIT 1`, [tsCode]
   );
@@ -1667,6 +1712,8 @@ async function getConvertibleBondSnapshot(value) {
     cached_at: rows[0].created_at,
     delist_date: delistDate,
     is_delisted: rows[0].status === 'delisted' || Boolean(delistDate && delistDate <= isoDate(new Date())),
+    needs_refresh: rows[0].formula_bundle_version !== FORMULA_VERSION,
+    formula_version: rows[0].formula_bundle_version,
   });
 }
 

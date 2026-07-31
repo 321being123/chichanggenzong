@@ -686,8 +686,18 @@ async function refreshStockAnalysis(rawCode, reason = 'manual') {
   const tsCode = normalizeStockCode(rawCode);
   if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
   const today = tsDateStr(new Date());
-  const metadataRows = await fetchRequired('stock_basic', { ts_code: tsCode }, 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date');
-  let meta = metadataRows[0];
+
+  // 先查 stock_unified 缓存（market.js 全市场同步时已写入），有就直接用
+  let meta = null;
+  try {
+    const cached = await pool.query('SELECT stock_name AS name, industry FROM public.stock_unified WHERE stock_code=$1', [tsCode]);
+    if (cached.rows[0]) meta = cached.rows[0];
+  } catch (_) { /* stock_unified 可能尚未建，降级到原逻辑 */ }
+
+  if (!meta) {
+    const metadataRows = await fetchRequired('stock_basic', { ts_code: tsCode }, 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date');
+    meta = metadataRows[0];
+  }
   if (!meta) throw new Error('未找到股票基础信息');
   const [industryInfo, actualController] = await Promise.all([fetchIndustry(tsCode), fetchActualController(tsCode)]);
   meta = Object.assign({}, meta, { tushare_industry: meta.industry }, industryInfo || { industry_system: 'Tushare基础行业', industry_level: '未标注级别', industry_path: [meta.industry].filter(Boolean) }, { actual_controller: actualController || { name: '', type: '', source: '东方财富F10' } });

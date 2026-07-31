@@ -175,13 +175,28 @@ async function syncAShareMarketCap(full) {
   const targets = full ? dates.filter(day => !seen.has(day)) : [dates.at(-1)].filter(day => day && !seen.has(day));
   let count = 0;
   for (const day of targets) {
-    const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv');
-    const rows = tsRows(data);
-    if (rows.length < 1000) continue;
-    const totalWan = rows.reduce((sum, row) => {
-      const value = Number(row.total_mv);
-      return sum + (Number.isFinite(value) && value > 0 ? value : 0);
-    }, 0);
+    // 优先用 stock_unified 视图读市值（已有 market.daily_valuations 数据）
+    let totalWan = 0;
+    let securityCount = 0;
+    try {
+      const { getTotalMarketCap } = require('../services/stockDataService');
+      const cap = await getTotalMarketCap();
+      if (cap && cap.total_cap > 0) {
+        totalWan = Number(cap.total_cap);  // daily_valuations 存的单位是万元
+        securityCount = cap.stock_count;
+      }
+    } catch (_) { /* stock_unified 不存在则降级 */ }
+
+    if (!(totalWan > 0)) {
+      const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv');
+      const rows = tsRows(data);
+      if (rows.length < 1000) continue;
+      securityCount = rows.length;
+      totalWan = rows.reduce((sum, row) => {
+        const value = Number(row.total_mv);
+        return sum + (Number.isFinite(value) && value > 0 ? value : 0);
+      }, 0);
+    }
     if (!(totalWan > 0)) continue;
     await pool.query(`INSERT INTO market.a_share_market_cap_daily
       (trade_date,total_market_cap_100m_yuan,security_count,source_code,raw_payload)

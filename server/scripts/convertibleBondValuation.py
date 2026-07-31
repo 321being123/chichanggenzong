@@ -474,27 +474,44 @@ def _rank(rating):
 def evaluate_credit(code, ratings_df):
     """返回 (credit_triggered, label, latest_rating)。ratings_df 已按估值日截断。"""
     if ratings_df is None or ratings_df.empty:
-        return False, "评级历史不足", ""
+        return False, "暂无评级记录", ""
     latest = ratings_df.iloc[-1]
     latest_rating = str(latest["rating"]).strip()
-    if len(ratings_df) < 2:
-        return False, "评级历史不足", latest_rating
+    has_history = len(ratings_df) >= 2
 
     triggered = False
     labels = []
+
+    # 评级偏低检测（只要有最新评级就行，不需要历史）
     if _rank(latest_rating) <= 2:
         triggered = True
         labels.append("评级偏低")
-    last_two = ratings_df.iloc[-2:]
-    if _rank(last_two.iloc[-1]["rating"]) < _rank(last_two.iloc[-2]["rating"]):
-        triggered = True
-        labels.append("评级下调")
-    last_date = pd.to_datetime(latest["rating_date"])
-    window = ratings_df[ratings_df["rating_date"] >= (last_date - pd.Timedelta(days=365))]
-    if len(window) >= 2 and _rank(window.iloc[-1]["rating"]) < _rank(window.iloc[0]["rating"]):
-        triggered = True
-        if "评级下调" not in labels:
+
+    # 历史趋势检测（需要 ≥ 2 条记录）
+    if has_history:
+        last_two = ratings_df.iloc[-2:]
+        if _rank(last_two.iloc[-1]["rating"]) < _rank(last_two.iloc[-2]["rating"]):
+            triggered = True
             labels.append("评级下调")
+        last_date = pd.to_datetime(latest["rating_date"])
+        window = ratings_df[ratings_df["rating_date"] >= (last_date - pd.Timedelta(days=365))]
+        if len(window) >= 2 and _rank(window.iloc[-1]["rating"]) < _rank(window.iloc[0]["rating"]):
+            triggered = True
+            if "评级下调" not in labels:
+                labels.append("评级下调")
+        seq = [_rank(x) for x in ratings_df["rating"]]
+        consec = 0
+        max_consec = 0
+        for i in range(1, len(seq)):
+            if seq[i] < seq[i - 1]:
+                consec += 1
+                max_consec = max(max_consec, consec)
+            else:
+                consec = 0
+        if max_consec >= 2:
+            triggered = True
+            labels.append("连续下调")
+
     outlook = str(latest.get("rating_outlook") or "").strip()
     if "负面" in outlook or "消极" in outlook:
         triggered = True
@@ -508,18 +525,6 @@ def evaluate_credit(code, ratings_df):
     if "观察" in rating_type or "观察" in raw:
         triggered = True
         labels.append("列入观察")
-    seq = [_rank(x) for x in ratings_df["rating"]]
-    consec = 0
-    max_consec = 0
-    for i in range(1, len(seq)):
-        if seq[i] < seq[i - 1]:
-            consec += 1
-            max_consec = max(max_consec, consec)
-        else:
-            consec = 0
-    if max_consec >= 2:
-        triggered = True
-        labels.append("连续下调")
     label = "、".join(labels) if labels else "无"
     return triggered, label, latest_rating
 
@@ -833,11 +838,13 @@ def _ratings_as_of(ratings_map, code, as_of_ts):
     if g is None or g.empty:
         return None
     # 评级只使用估值日之前已经公告的数据（rating_date 与 announced_at 均 <= as_of）
+    # announced_at 可能为空，空时退回到 rating_date
     mask = pd.Series(True, index=g.index)
     if "rating_date" in g:
         mask &= g["rating_date"].dt.normalize() <= as_of_ts.normalize()
-    if "announced_at" in g and g["announced_at"].notna().any():
-        mask &= g["announced_at"].dt.normalize() <= as_of_ts.normalize()
+    if "announced_at" in g:
+        effective_announced = g["announced_at"].fillna(g["rating_date"])
+        mask &= effective_announced.dt.normalize() <= as_of_ts.normalize()
     sub = g[mask]
     return sub if not sub.empty else None
 

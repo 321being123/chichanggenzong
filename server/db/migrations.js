@@ -1472,6 +1472,148 @@ async function migration029MarketCycleMetrics() {
 }
 
 // 首页市场周期：全局只保留一个当前指标，并记录采用哪位管理员、哪个账户的已保存边界。
+// ========== 031：可转债统一信息视图（合并 bond_history + profiles + instruments） ==========
+async function migration031BondUnified() {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION normalize_bond_code(raw TEXT) RETURNS TEXT AS $$
+      SELECT CASE WHEN strpos(raw, '.') > 0 THEN split_part(raw, '.', 1) ELSE raw END;
+    $$ LANGUAGE sql IMMUTABLE;
+  `);
+  // bond_history 由 Python 脚本建表，Node 迁移可能先执行，容错建一个空壳
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bond_history (
+      security_code          TEXT PRIMARY KEY,
+      security_name          TEXT,
+      listing_date           TEXT,
+      first_day_return       REAL,
+      updated_at             TEXT,
+      ann_date               TEXT,
+      res_ann_date           TEXT,
+      issue_size             REAL,
+      issue_type             TEXT,
+      rating                 TEXT,
+      shd_ration_ratio       REAL,
+      issue_price            REAL,
+      shd_ration_record_date TEXT,
+      onl_date               TEXT,
+      onl_size               REAL,
+      onl_pch_num            REAL,
+      offl_size              REAL,
+      shd_ration_size        REAL,
+      conv_price             REAL,
+      stk_code               TEXT,
+      stk_name               TEXT
+    );
+  `);
+  // 使用普通视图而非物化视图：数据量小（<1000行），自动反映最新写入
+  await pool.query(`DROP VIEW IF EXISTS public.bond_unified CASCADE`);
+  await pool.query(`
+    CREATE VIEW public.bond_unified AS
+    SELECT
+      i.canonical_code                                          AS bond_code,
+      i.name                                                    AS bond_name,
+      i.list_date                                               AS listing_date,
+      i.delist_date,
+      i.status,
+      p.bond_full_name,
+      p.stock_instrument_id,
+      p.issue_size,
+      p.remain_size,
+      p.par_value,
+      p.first_conv_price,
+      p.current_conv_price                                      AS conv_price,
+      p.value_date,
+      p.maturity_date,
+      p.conv_start_date,
+      p.conv_end_date,
+      p.conv_stop_date,
+      p.coupon_rate,
+      p.issue_rating,
+      p.newest_rating                                           AS rating,
+      p.rating_company,
+      p.guarantor,
+      p.guarantee_type,
+      p.fundraising_purpose,
+      p.cb_type,
+      p.maturity_call_price,
+      bh.ann_date,
+      bh.res_ann_date,
+      bh.issue_type,
+      bh.shd_ration_ratio,
+      bh.shd_ration_record_date,
+      bh.onl_date,
+      bh.onl_size,
+      bh.onl_pch_num,
+      bh.offl_size,
+      bh.shd_ration_size,
+      bh.issue_price                                              AS bh_issue_price,
+      bh.first_day_return,
+      s.canonical_code                                          AS stock_code,
+      COALESCE(s.name, bh.stk_name, '')                         AS stock_name,
+      COALESCE(p.newest_rating, bh.rating)                      AS display_rating,
+      COALESCE(p.current_conv_price, bh.conv_price)             AS display_conv_price,
+      COALESCE(p.issue_size, bh.issue_size)                     AS display_issue_size
+    FROM core.instruments i
+    LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = i.instrument_id
+    LEFT JOIN bond_history bh ON bh.security_code = normalize_bond_code(i.canonical_code)
+    LEFT JOIN core.instruments s ON s.instrument_id = p.stock_instrument_id
+    WHERE i.asset_class = 'convertible_bond';
+  `);
+}
+
+// ========== 032：安全性快照结构化列（从 JSONB 提取关键汇总字段） ==========
+async function migration032BondSafetyStructured() {
+  await pool.query(`
+    ALTER TABLE bond_safety_snapshots ADD COLUMN IF NOT EXISTS dominant_risk_level TEXT;
+    ALTER TABLE bond_safety_snapshots ADD COLUMN IF NOT EXISTS total_bonds_count INTEGER;
+  `);
+  // 回填已有快照：从 data JSONB 中统计各级别数量，取最多的那个
+  await pool.query(`
+    UPDATE bond_safety_snapshots
+    SET total_bonds_count = jsonb_array_length(data),
+        dominant_risk_level = (
+          SELECT key FROM jsonb_each_text(
+            (SELECT jsonb_object_agg(safety, cnt) FROM (
+              SELECT COALESCE(item->>'safety', '未评级') AS safety, COUNT(*) AS cnt
+              FROM jsonb_array_elements(data) AS item
+              GROUP BY item->>'safety'
+            ) t)
+          ) ORDER BY value::int DESC LIMIT 1
+        )
+    WHERE total_bonds_count IS NULL
+  `);
+}
+
+// ========== 033：股票统一信息视图（合并 instruments + 最新估值） ==========
+async function migration033StockUnified() {
+  await pool.query(`DROP VIEW IF EXISTS public.stock_unified CASCADE`);
+  await pool.query(`
+    CREATE VIEW public.stock_unified AS
+    SELECT
+      i.canonical_code                                          AS stock_code,
+      i.name                                                    AS stock_name,
+      i.market,
+      i.list_date,
+      i.delist_date,
+      i.status,
+      NULL::text                                                AS industry,
+      dv.trade_date                                             AS last_valuation_date,
+      dv.pe_ttm,
+      dv.pb,
+      dv.dividend_yield_ttm,
+      dv.total_market_cap,
+      dv.circulating_market_cap
+    FROM core.instruments i
+    LEFT JOIN LATERAL (
+      SELECT instrument_id, trade_date, pe_ttm, pb, dividend_yield_ttm, total_market_cap, circulating_market_cap
+      FROM market.daily_valuations
+      WHERE instrument_id = i.instrument_id
+      ORDER BY trade_date DESC LIMIT 1
+    ) dv ON true
+    WHERE i.asset_class = 'stock';
+  `);
+}
+
 async function migration030MarketCycleHomeSetting() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS analytics.market_cycle_home_setting (
@@ -1551,6 +1693,9 @@ const MIGRATIONS = [
   { version: '028_article_global_sort_order', up: migration028ArticleGlobalSortOrder },
   { version: '029_market_cycle_metrics', up: migration029MarketCycleMetrics },
   { version: '030_market_cycle_home_setting', up: migration030MarketCycleHomeSetting },
+  { version: '031_bond_unified', up: migration031BondUnified },
+  { version: '032_bond_safety_structured', up: migration032BondSafetyStructured },
+  { version: '033_stock_unified', up: migration033StockUnified },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

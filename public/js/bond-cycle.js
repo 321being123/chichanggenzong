@@ -370,3 +370,100 @@ function bcTableJump() {
   bondCycleTablePage = p;
   renderBondCycleTable(bondCycleState.data);
 }
+
+// 导出可转债周期图为 PNG（含上方指标卡片）
+function exportBondCycleChart() {
+  try {
+    var svg = document.querySelector('#bond-cycle-chart svg');
+    if (!svg) { showToast('未找到图表，请先加载可转债周期数据'); return; }
+    var svgClone = svg.cloneNode(true);
+    // 注入 CSS（SVG 独立成图时会丢失外部样式表）
+    var style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    style.textContent = '.bc-grid{stroke:#eee;stroke-width:1}.bc-line{fill:none;stroke-width:1.8}.bc-hit{fill:transparent}';
+    svgClone.insertBefore(style, svgClone.firstChild);
+
+    var svgRect = svg.getBoundingClientRect();
+    var svgW = Math.round(svgRect.width) || 1100;
+    var svgH = Math.round(svgRect.height) || 360;
+
+    // 采集卡片信息
+    var cards = [];
+    var cardIds = ['bc-cycle-level','bc-percentile','bc-composite','bc-bond-count',
+                   'bc-median-price','bc-median-premium','bc-median-value','bc-weight','bc-coverage'];
+    for (var i = 0; i < cardIds.length; i++) {
+      var el = document.getElementById(cardIds[i]);
+      var span = el && el.parentElement && el.parentElement.querySelector('span');
+      cards.push({ label: span ? span.textContent : cardIds[i], value: el ? el.textContent : '--' });
+    }
+    var updatedAt = document.getElementById('bond-cycle-updated');
+    var dateStr = updatedAt ? updatedAt.textContent.replace('数据日期：','') : '';
+    var rangeEl = document.querySelector('.bond-cycle-range-tabs .active');
+    var range = rangeEl ? rangeEl.textContent : '全部';
+
+    // Canvas
+    var cardH = 80, gap = 10, titleH = 28, legendH = 24, padX = 16;
+    var totalW = svgW + padX * 2;
+    var totalH = titleH + cardH + 4 + legendH + 8 + svgH + padX;
+    var canvas = document.createElement('canvas');
+    canvas.width = totalW * 2; canvas.height = totalH * 2;
+    var ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, totalW, totalH);
+    ctx.fillStyle = '#172033'; ctx.font = '600 14px sans-serif';
+    ctx.fillText('可转债周期 · ' + range + ' · ' + dateStr, padX, 20);
+
+    var cw = Math.floor((totalW - padX * 2 - gap * (cards.length - 1)) / cards.length);
+    var cr = 6;
+    for (var j = 0; j < cards.length; j++) {
+      var cx = padX + j * (cw + gap), cy = titleH, cw2 = cw, ch2 = cardH - 8;
+      ctx.fillStyle = '#f7f8fa'; ctx.strokeStyle = '#e7ebf0'; ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(cx + cr, cy); ctx.lineTo(cx + cw2 - cr, cy); ctx.quadraticCurveTo(cx + cw2, cy, cx + cw2, cy + cr);
+      ctx.lineTo(cx + cw2, cy + ch2 - cr); ctx.quadraticCurveTo(cx + cw2, cy + ch2, cx + cw2 - cr, cy + ch2);
+      ctx.lineTo(cx + cr, cy + ch2); ctx.quadraticCurveTo(cx, cy + ch2, cx, cy + ch2 - cr);
+      ctx.lineTo(cx, cy + cr); ctx.quadraticCurveTo(cx, cy, cx + cr, cy); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#8a8f98'; ctx.font = '11px sans-serif';
+      ctx.fillText(cards[j].label, cx + 8, cy + 20);
+      ctx.fillStyle = '#172033'; ctx.font = '700 18px sans-serif';
+      ctx.fillText(cards[j].value, cx + 8, cy + 48);
+    }
+
+    // 图例行
+    var legendY = titleH + cardH;
+    ctx.font = '12px sans-serif'; ctx.textBaseline = 'middle';
+    var legends = [];
+    for (var k = 0; k < BC_SERIES.length; k++) {
+      if (!bondCycleState.visible[BC_SERIES[k].key]) continue;
+      legends.push({ name: BC_SERIES[k].name, color: BC_SERIES[k].color });
+    }
+    var lx = padX;
+    for (var m = 0; m < legends.length; m++) {
+      var lw = ctx.measureText(legends[m].name).width + 28;
+      ctx.strokeStyle = legends[m].color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(lx, legendY + 14); ctx.lineTo(lx + 20, legendY + 14); ctx.stroke();
+      ctx.fillStyle = '#555';
+      ctx.fillText(legends[m].name, lx + 24, legendY + 14);
+      lx += lw + 16;
+    }
+
+    // SVG → data URL → Image → Canvas
+    var svgTop = legendY + legendH;
+    var svgData = '<?xml version="1.0" encoding="UTF-8"?>' + new XMLSerializer().serializeToString(svgClone);
+    var img = new Image();
+    img.onload = function() {
+      ctx.drawImage(img, padX, svgTop, svgW, svgH);
+      var a = document.createElement('a');
+      a.download = '可转债周期_' + dateStr.replace(/\//g, '-').replace(/\s/g, '') + '_' + range + '.png';
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+      showToast('导出完成');
+    };
+    img.onerror = function() { showToast('导出失败：SVG 渲染异常，请刷新后重试'); };
+    img.src = 'data:image/svg+xml,' + encodeURIComponent(svgData);
+  } catch (e) {
+    console.error('导出失败', e);
+    showToast('导出失败：' + (e.message || e));
+  }
+}

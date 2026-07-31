@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool } = require('../db');
 const { requireLogin } = require('../middleware/auth');
+const { getBondBySecurityCode, getBondHistoryList } = require('../services/bondDataService');
 
 function isBeijingStock(code) {
   return /^(920|82|83|87|43)/.test(String(code || ''));
@@ -82,19 +83,14 @@ async function buildCalendarReport(code) {
   ];
 
   if (isBond) {
-    const detail = await pool.query(
-      `SELECT rating, issue_size, conv_price, stk_code, stk_name, onl_date, listing_date
-       FROM bond_history WHERE security_code=$1 LIMIT 1`,
-      [code]
-    );
-    const row = detail.rows[0] || {};
+    const row = await getBondBySecurityCode(code) || {};
     lines = lines.concat([
       '',
       '## 基本资料',
-      `- **债券评级**：${valueOrDash(row.rating)}`,
-      `- **发行规模**：${valueOrDash(row.issue_size, '亿元')}`,
-      `- **正股**：${valueOrDash(row.stk_name)}${row.stk_code ? `（${row.stk_code}）` : ''}`,
-      `- **转股价**：${valueOrDash(row.conv_price, '元')}`,
+      `- **债券评级**：${valueOrDash(row.display_rating || row.rating)}`,
+      `- **发行规模**：${valueOrDash(row.display_issue_size || row.issue_size, '亿元')}`,
+      `- **正股**：${valueOrDash(row.stock_name)}${row.stock_code ? `（${row.stock_code}）` : ''}`,
+      `- **转股价**：${valueOrDash(row.display_conv_price || row.conv_price, '元')}`,
       `- **申购日**：${valueOrDash(row.onl_date)}`,
       `- **上市日**：${valueOrDash(row.listing_date)}`,
     ]);
@@ -172,20 +168,7 @@ router.get('/history', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 200);
     let rows;
     if (type === 'bond') {
-      // 集思录式可转债详细列（扩展后 bond_history 含 cb_issue 全字段）
-      const r = await pool.query(
-        `SELECT security_code, security_name,
-           ann_date, res_ann_date, issue_size, issue_type, rating,
-           shd_ration_ratio, issue_price, shd_ration_record_date,
-           onl_date, onl_size, onl_pch_num, offl_size, shd_ration_size,
-           conv_price, stk_code, stk_name,
-           listing_date, first_day_return
-         FROM bond_history
-         WHERE issue_type NOT IN ('定向', '私募')
-         ORDER BY COALESCE(res_ann_date, ann_date, listing_date) DESC NULLS LAST LIMIT $1`,
-        [limit]
-      );
-      rows = r.rows;
+      rows = await getBondHistoryList(limit);
     } else {
       // 集思录式列：代码/名称/发行价/发行PE/行业PE/行业/发行总数/申购上限/顶格申购需配市值/中签率%/募资/上市日/首日涨幅
       const r = await pool.query(

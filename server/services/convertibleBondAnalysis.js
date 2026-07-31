@@ -1150,7 +1150,16 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
 async function loadSafety(code) {
   const { rows } = await pool.query('SELECT data,source_updated_at FROM bond_safety_snapshots ORDER BY id DESC LIMIT 1');
   const snapshot = rows[0];
-  const item = snapshot && Array.isArray(snapshot.data) ? snapshot.data.find(row => String(row.bond_code) === code) : null;
+  if (!snapshot || !Array.isArray(snapshot.data)) return null;
+  // 快照里 bond_code 可能带后缀（113049.SH）也可能不带（113049），传入的 code 也两种都有
+  const codeStr = String(code || '');
+  const codeBare = codeStr.split('.')[0];
+  const candidates = codeStr === codeBare ? [codeStr] : [codeStr, codeBare];
+  const item = snapshot.data.find(row => {
+    const rowCode = String(row.bond_code || '');
+    const rowBare = rowCode.split('.')[0];
+    return candidates.includes(rowCode) || candidates.includes(rowBare);
+  });
   return item ? Object.assign({ source_updated_at: snapshot.source_updated_at }, item) : null;
 }
 

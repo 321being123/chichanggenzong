@@ -241,7 +241,7 @@ async function fetchTushareBondSafetySource() {
     const calculatedPb = derivePb(valuation.total_mv,
       cachedFinancial && cachedFinancial.data && cachedFinancial.data.shareholder_equity);
     return {
-      bond_code: String(bond.ts_code).split('.')[0],
+      bond_code: String(bond.ts_code),
       bond_name: preferredSecurityName(liveBond, bond.bond_short_name),
       stock_name: preferredSecurityName(liveStock, bond.stk_short_name),
       pe_ttm: peTtm != null ? peTtm : (peStatic != null ? peStatic : '亏损'),

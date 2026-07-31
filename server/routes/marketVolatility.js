@@ -4,7 +4,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, requireAdmin } = require('../middleware/auth');
 const svc = require('../services/marketVolatility');
 const cycleMetrics = require('../services/marketCycleMetrics');
-const { pool } = require('../db');
+const { pool, auditLog } = require('../db');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const { calculateGraham } = require('../jobs/marketVolatilitySync');
@@ -56,6 +56,19 @@ async function assertAccount(username, account) {
   const { rows } = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2 LIMIT 1', [username, account]);
   if (!rows.length) { const e = new Error('账户不存在或无权访问'); e.status = 403; throw e; }
 }
+async function homeCycleConfig() {
+  const { rows } = await pool.query(`SELECT metric_code AS metric,market_code AS market,benchmark_code AS benchmark,
+    reference_username,reference_account FROM analytics.market_cycle_home_setting
+    WHERE setting_key='market_cycle_home' LIMIT 1`);
+  return rows[0] || {
+    metric: 'pe', market: 'CN', benchmark: 'CSI300',
+    reference_username: process.env.HOME_PE_REFERENCE_USER || 'daicunzai',
+    reference_account: process.env.HOME_PE_REFERENCE_ACCOUNT || '华泰账户',
+  };
+}
+function publicHomeConfig(config) {
+  return { metric: config.metric, market: config.market, benchmark: config.benchmark };
+}
 router.get('/overview', asyncHandler(async (req, res) => {
   const { metric, market, benchmark } = query(req); const account = String(req.query.account || '');
   if (account.length > 100) return res.status(400).json({ error: '账户不合法' });
@@ -68,6 +81,51 @@ router.get('/history', asyncHandler(async (req, res) => {
   if (!['1y','3y','5y','10y','20y','all'].includes(range)) return res.status(400).json({ error: '时间范围不合法' });
   if (metric === 'graham') return res.json({ market, benchmark, range, history: await svc.getHistory(market, benchmark, range) });
   res.json({ metric, market, benchmark, range, history: await cycleMetrics.getHistory(metric, market, benchmark, range) });
+}));
+router.get('/home-cycle/config', asyncHandler(async (req, res) => {
+  res.json(publicHomeConfig(await homeCycleConfig()));
+}));
+router.get('/home-cycle', asyncHandler(async (req, res) => {
+  const range = String(req.query.range || '20y');
+  if (!['1y','3y','5y','10y','20y','all'].includes(range)) return res.status(400).json({ error: '时间范围不合法' });
+  const config = await homeCycleConfig();
+  const isGraham = config.metric === 'graham';
+  const overview = isGraham
+    ? await svc.getOverview(config.reference_username, config.reference_account, config.market, config.benchmark)
+    : await cycleMetrics.getOverview(config.reference_username, config.reference_account, config.metric, config.market, config.benchmark);
+  const history = isGraham
+    ? await svc.getHistory(config.market, config.benchmark, range)
+    : await cycleMetrics.getHistory(config.metric, config.market, config.benchmark, range);
+  const { actualPosition, deviation, hasUsPosition, ...publicOverview } = overview || {};
+  res.json({ ...publicHomeConfig(config), overview: publicOverview, history });
+}));
+router.put('/home-cycle/config', requireAdmin, asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  const metric = String(body.metric || '');
+  const account = String(body.accountName || '');
+  let market = String(body.market || '');
+  let benchmark = String(body.benchmark || '');
+  if (metric !== 'graham' && !cycleMetrics.validMetric(metric)) return res.status(400).json({ error: '股市周期指标参数不合法' });
+  if (metric === 'm2_market_cap') { market = 'CN'; benchmark = 'ASHARE'; }
+  else if (!svc.validMarketBenchmark(market, benchmark)) return res.status(400).json({ error: '市场或指数参数不合法' });
+  await assertAccount(req.session.user, account);
+  const saved = metric === 'graham'
+    ? await pool.query(`SELECT 1 FROM analytics.graham_strategy_settings
+        WHERE username=$1 AND account_name=$2 AND market_code=$3 AND benchmark_code=$4 AND is_current LIMIT 1`,
+      [req.session.user, account, market, benchmark])
+    : await pool.query(`SELECT 1 FROM analytics.market_cycle_strategy_settings
+        WHERE username=$1 AND account_name=$2 AND metric_code=$3 AND market_code=$4 AND benchmark_code=$5 AND is_current LIMIT 1`,
+      [req.session.user, account, metric, market, benchmark]);
+  if (!saved.rows.length) return res.status(400).json({ error: '请先保存当前页面的仓位边界，再设为首页' });
+  await pool.query(`INSERT INTO analytics.market_cycle_home_setting
+    (setting_key,metric_code,market_code,benchmark_code,reference_username,reference_account,updated_by,updated_at)
+    VALUES('market_cycle_home',$1,$2,$3,$4,$5,$4,now())
+    ON CONFLICT(setting_key) DO UPDATE SET metric_code=EXCLUDED.metric_code,market_code=EXCLUDED.market_code,
+      benchmark_code=EXCLUDED.benchmark_code,reference_username=EXCLUDED.reference_username,
+      reference_account=EXCLUDED.reference_account,updated_by=EXCLUDED.updated_by,updated_at=now()`,
+  [metric, market, benchmark, req.session.user, account]);
+  await auditLog(req.session.user, 'market_cycle_home', metric, `${market}/${benchmark}/${account}`);
+  res.json({ ok: true, ...publicHomeConfig({ metric, market, benchmark }) });
 }));
 router.put('/settings', requireLogin, asyncHandler(async (req, res) => {
   const body = req.body || {}; const metric = String(body.metric || 'graham');

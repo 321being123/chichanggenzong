@@ -11,12 +11,14 @@ function mvRateLabel() { return mvState.market === 'HK' ? '美国联邦基金利
 function initMarketVolatility() {
   if (window.__mvReady) return; window.__mvReady = true;
   document.querySelectorAll('[data-mv-market]').forEach(function (button) { button.onclick = function () {
-    mvState.market = button.dataset.mvMarket; mvState.benchmark = mvState.market === 'CN' ? 'CSI300' : 'HSI'; mvReload();
+    mvState.market = button.dataset.mvMarket; mvState.benchmark = mvState.market === 'CN' ? 'CSI300' : 'HSI'; mvReload(); updateMarketCycleHomeButtons();
   }; });
-  document.querySelectorAll('[data-mv-benchmark]').forEach(function (button) { button.onclick = function () { mvState.benchmark = button.dataset.mvBenchmark; mvReload(); }; });
+  document.querySelectorAll('[data-mv-benchmark]').forEach(function (button) { button.onclick = function () { mvState.benchmark = button.dataset.mvBenchmark; mvReload(); updateMarketCycleHomeButtons(); }; });
   document.getElementById('mv-range').onchange = function (e) { mvState.range = e.target.value; loadMarketVolatility(); };
   document.getElementById('mv-save').onclick = mvSaveDraft;
+  document.getElementById('mv-home').onclick = function () { setMarketCycleHome('graham',mvState.market,mvState.benchmark); };
   document.getElementById('mv-cancel').onclick = function () { mvState.draft = null; document.getElementById('mv-draft').hidden=true; document.getElementById('mv-save').disabled=true; document.getElementById('mv-cancel').disabled=true; mvRender(); };
+  loadMarketCycleHomeConfig();
 }
 function mvReload() { mvState.overview = null; mvState.history = []; mvState.draft = null; loadMarketVolatility(); }
 async function loadMarketVolatility() {
@@ -45,7 +47,7 @@ function mvRender() {
   var activeSetting=mvActiveSetting(), recommended=o.recommendedPosition == null && activeSetting ? mvRecommended(current.graham_index_pct,activeSetting.lower,activeSetting.upper) : o.recommendedPosition;
   document.getElementById('mv-recommended').textContent = recommended == null ? '--' : recommended + '%'; var actual=document.getElementById('mv-actual'),actualLabel=actual.previousElementSibling; if(!username){actual.innerHTML='<a class="mv-login-link" href="'+api('/login.html?redirect='+encodeURIComponent('/?main=market-volatility'))+'">登录</a>';if(actualLabel)actualLabel.textContent='实际股票仓位';}else{actual.textContent=mvPct(o.actualPosition);if(actualLabel)actualLabel.textContent=mvAccount()?'实际股票仓位（'+mvAccount()+'）':'实际股票仓位';}
   var d = o.deviation; if(!d&&o.actualPosition!=null&&recommended!=null){var delta=Number((o.actualPosition-recommended).toFixed(2));d={value:delta,status:Math.abs(delta)<=5?'符合':delta>0?'偏高':'偏低'};} document.getElementById('mv-deviation').textContent = d ? (d.value > 0 ? '高出 ' : d.value < 0 ? '低出 ' : '') + Math.abs(d.value) + ' 个百分点（' + d.status + '）' : '--';
-  mvRenderLadder(); mvRenderChart();
+  mvRenderLadder(); mvRenderChart(); updateMarketCycleHomeButtons();
 }
 function mvActiveSetting() { return mvState.draft || (mvState.overview && mvState.overview.setting) || mvDefaultSetting(); }
 function mvRenderLadder() {
@@ -79,7 +81,29 @@ function mvShowTooltip(e, chart, data, left, right, width) {
 function mvBeginDrag(e, boundary, min, max) {
   e.preventDefault(); e.stopPropagation(); var chart=document.querySelector('#mv-chart svg'), setting=mvActiveSetting(); if(!chart||!setting)return; chart.classList.add('mv-dragging'); chart.setPointerCapture(e.pointerId); var previewLower=Number(setting.lower),previewUpper=Number(setting.upper);
   function preview(ev) { var box=chart.getBoundingClientRect(), svgY=(ev.clientY-box.top)*320/box.height, ratio=Math.max(0,Math.min(1,(svgY-18)/266)), value=max-ratio*(max-min); if(boundary==='lower')previewLower=Math.min(Math.max(.0001,value),previewUpper-.0001); else previewUpper=Math.max(value,previewLower+.0001); var rows=mvLadder(previewLower,previewUpper); for(var i=0;i<7;i++){var yy=18+(max-rows[i].value)*266/(max-min); chart.querySelector('[data-ladder="'+i+'"]').setAttribute('y1',yy); chart.querySelector('[data-ladder="'+i+'"]').setAttribute('y2',yy); chart.querySelector('[data-ladder-label="'+i+'"]').setAttribute('y',yy-5); } var lowerY=18+(max-previewLower)*266/(max-min),upperY=18+(max-previewUpper)*266/(max-min); chart.querySelector('[data-boundary="lower"]').setAttribute('y1',lowerY); chart.querySelector('[data-boundary="lower"]').setAttribute('y2',lowerY); chart.querySelector('[data-boundary="upper"]').setAttribute('y1',upperY); chart.querySelector('[data-boundary="upper"]').setAttribute('y2',upperY); document.querySelector('#mv-chart .mv-tooltip').hidden=true; document.getElementById('mv-draft').hidden=false; document.getElementById('mv-draft').textContent=(boundary==='upper'?'最高':'最低')+'边界预览：'+mvNum(boundary==='upper'?previewUpper:previewLower,2)+'%'; }
-  function done(ev) { chart.removeEventListener('pointermove',preview); chart.removeEventListener('pointerup',done); chart.removeEventListener('pointercancel',done); chart.classList.remove('mv-dragging'); if(Number.isFinite(previewLower)&&Number.isFinite(previewUpper)){mvState.draft={lower:Number(previewLower.toFixed(4)),upper:Number(previewUpper.toFixed(4)),version:(mvState.overview.setting||{version:0}).version}; document.getElementById('mv-cancel').disabled=false; document.getElementById('mv-save').disabled=!username; mvRender();} }
+  function done(ev) { chart.removeEventListener('pointermove',preview); chart.removeEventListener('pointerup',done); chart.removeEventListener('pointercancel',done); chart.classList.remove('mv-dragging'); if(Number.isFinite(previewLower)&&Number.isFinite(previewUpper)){mvState.draft={lower:Number(previewLower.toFixed(4)),upper:Number(previewUpper.toFixed(4)),version:(mvState.overview.setting||{version:0}).version}; document.getElementById('mv-cancel').disabled=false; document.getElementById('mv-save').disabled=false; mvRender();} }
   chart.addEventListener('pointermove',preview); chart.addEventListener('pointerup',done); chart.addEventListener('pointercancel',done); preview(e);
 }
-async function mvSaveDraft() { var d=mvState.draft; if(!d||!username) return; try { var r=await fetch(api('/api/market-volatility/settings'),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({market:mvState.market,benchmark:mvState.benchmark,lowerBoundaryPct:d.lower,upperBoundaryPct:d.upper,accountName:mvAccount(),version:d.version})}); var json=await r.json(); if(!r.ok) throw new Error(json.error||r.status); mvState.draft=null; document.getElementById('mv-save').disabled=true; document.getElementById('mv-cancel').disabled=true; document.getElementById('mv-draft').hidden=true; await loadMarketVolatility(); } catch(e){ showToast('保存失败：'+(e.message||e)); } }
+async function mvSaveDraft() {
+  var d=mvState.draft,account=mvAccount(),button=document.getElementById('mv-save');
+  if(!d){showToast('请先拖动边界后再保存');return;}
+  if(!username){
+    window.location.href=api('/login.html?redirect='+encodeURIComponent('/?main=market-volatility&metric=graham'));
+    return;
+  }
+  if(!account){showToast('请先选择账户后再保存');return;}
+  button.disabled=true;button.textContent='保存中...';
+  try {
+    var r=await fetch(api('/api/market-volatility/settings'),{
+      method:'PUT',headers:{'Content-Type':'application/json'},credentials:'same-origin',
+      body:JSON.stringify({market:mvState.market,benchmark:mvState.benchmark,lowerBoundaryPct:d.lower,upperBoundaryPct:d.upper,accountName:account,version:d.version})
+    });
+    var json=await r.json();if(!r.ok)throw new Error(json.error||r.status);
+    mvState.draft=null;document.getElementById('mv-cancel').disabled=true;document.getElementById('mv-draft').hidden=true;
+    await loadMarketVolatility();showToast('边界保存成功');
+  } catch(e) {
+    button.disabled=false;showToast('保存失败：'+(e.message||e));
+  } finally {
+    button.textContent='保存边界';
+  }
+}

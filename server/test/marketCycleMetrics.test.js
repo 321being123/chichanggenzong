@@ -64,7 +64,28 @@ assert.ok(frontend.includes('M2：') && frontend.includes('A股总市值：'), '
 assert.ok(frontend.includes("metric==='pb'&&mvcState.benchmark==='CSIALL')mvcState.benchmark='CSI300'"), 'PB未回退到已支持的沪深300');
 assert.ok(frontend.includes("button.hidden=mvcState.metric==='pb'&&button.dataset.mvcBenchmark==='CSIALL'"), 'PB页面仍显示未支持的中证全指');
 assert.ok(frontend.includes('未提供PB历史数据'), '中证全指PB缺少官网数据说明');
+assert.ok(frontend.includes("button.textContent='保存中...'") && frontend.includes("showToast('边界保存成功')"), 'PE/PB/M2保存边界缺少进度或成功反馈');
+assert.ok(frontend.includes("credentials:'same-origin'"), 'PE/PB/M2保存边界未携带登录凭据');
+assert.ok(frontend.includes("window.location.href=api('/login.html?redirect='") && frontend.includes("metric='+mvcState.metric"), '未登录保存边界未跳转登录并保留指标页');
+assert.ok(frontend.includes("getElementById('mvc-save').disabled=!valid"), '未登录时保存边界按钮仍不可点击');
+assert.ok(html.includes("startParams.get('metric')") && html.includes('switchMarketCycleMetric(requestedMetric)'), '登录返回后未恢复原指标页');
+assert.ok(html.includes('id="mv-home" hidden') && html.includes('id="mvc-home" hidden'), '四个指标缺少管理员“设为首页”按钮');
+assert.ok(frontend.includes("myProfile.role === 'admin'") && frontend.includes("metricButton.hidden=!admin"), '普通账户仍会显示“设为首页”按钮');
+assert.ok(frontend.includes("?'已设为首页':'设为首页'") && frontend.includes('metricButton.disabled=metricCurrent'), '当前首页指标未进入不可点击状态');
+assert.ok(frontend.includes("method:'PUT'") && frontend.includes('/home-cycle/config'), '管理员设置首页指标未接入接口');
 assert.ok(html.includes('id="mvc-boundary-controls" hidden'), 'PE/PB/M2仍显示边界输入框');
 assert.ok(!frontend.includes("getElementById('mvc-boundary-controls').hidden=false"), '边界输入框会被重新显示');
+
+const grahamFrontend = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'market-volatility.js'), 'utf8');
+assert.ok(grahamFrontend.includes("button.textContent='保存中...'") && grahamFrontend.includes("showToast('边界保存成功')"), '格雷厄姆指数保存边界缺少进度或成功反馈');
+assert.ok(grahamFrontend.includes("credentials:'same-origin'"), '格雷厄姆指数保存边界未携带登录凭据');
+assert.ok(grahamFrontend.includes('metric=graham') && grahamFrontend.includes('window.location.href'), '格雷厄姆指数未登录保存未跳转登录');
+assert.ok(html.includes("['graham','pe','pb','m2_market_cap'].includes(requestedMetric)"), '登录返回后未恢复格雷厄姆指数页');
+assert.ok(grahamFrontend.includes("getElementById('mv-home').onclick") && grahamFrontend.includes("setMarketCycleHome('graham'"), '格雷厄姆指数未接入设为首页');
+const sharedStyle = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'shared', 'style.css'), 'utf8');
+assert.ok(html.includes('<div class="mv-header">') && html.indexOf('class="mv-header"') < html.indexOf('class="market-volatility-shell'), '股市周期二级导航未移到统一标题栏');
+assert.ok(sharedStyle.includes('#main-market-volatility .mv-sub-tab.active::after') && sharedStyle.includes('height: 46px'), '股市周期二级导航未使用统一标签栏样式');
+const migrations = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
+assert.ok(migrations.includes("030_market_cycle_home_setting") && migrations.includes('market_cycle_home_setting'), '首页股市周期唯一设置表迁移缺失');
 
 console.log('marketCycleMetrics tests passed');

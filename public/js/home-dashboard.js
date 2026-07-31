@@ -1,6 +1,7 @@
 var homeDashboardLoading = false;
 var homeMarketCyclesLoading = false;
 var homeMarketCyclesLoaded = false;
+var homeMarketCycleMetric = 'pe';
 
 function homeSetText(id, value) {
   var el = document.getElementById(id);
@@ -161,36 +162,39 @@ function renderHomeBondCycle(payload) {
   });
 }
 
-function renderHomeGraham(overview, historyPayload) {
-  var root = document.getElementById('home-graham-chart');
-  var rows = historyPayload && historyPayload.history || [];
+function openHomeMarketCycleDetail() {
+  switchMain('market-volatility');
+  switchMarketCycleMetric(homeMarketCycleMetric);
+}
+
+function renderHomeMarketCycle(payload) {
+  var root = document.getElementById('home-market-chart');
+  var rows = payload && payload.history || [];
+  var overview = payload && payload.overview || {};
   var current = overview && overview.current;
   var setting = overview && overview.setting;
-  if (!root || !current || !rows.length) {
-    if (root) root.innerHTML = '<div class="home-overview-empty">暂无格雷厄姆指数数据</div>';
-    homeSetText('home-graham-summary', '暂无可用数据');
+  var metric = payload && payload.metric || 'pe';
+  var meta = {
+    graham: { title:'格雷厄姆指数', legend:'格雷厄姆指数', suffix:'%', currentField:'graham_index_pct' },
+    pe: { title:'市盈率（PE）', legend:'PE', suffix:'倍', currentField:'value' },
+    pb: { title:'市净率（PB）', legend:'PB', suffix:'倍', currentField:'value' },
+    m2_market_cap: { title:'M2与股市市值比', legend:'M2与股市市值比', suffix:'%', currentField:'value' }
+  }[metric];
+  homeMarketCycleMetric = metric;
+  homeSetText('home-market-title', '股市周期 · ' + meta.title);
+  homeSetText('home-market-legend', meta.legend);
+  if (!root || !current || !rows.length || !setting) {
+    if (root) root.innerHTML = '<div class="home-overview-empty">暂无管理员保存的首页边界或历史数据</div>';
+    homeSetText('home-market-summary', '暂无可用数据');
     return;
   }
-  if (!setting) {
-    var currentValue = Number(current.graham_index_pct);
-    var lower = currentValue * .75, upper = currentValue * 1.25;
-    setting = { lower:lower, upper:upper, ladder:[] };
-    for (var step=0;step<7;step++) {
-      setting.ladder.push({ value:lower+(upper-lower)*step/6, position:20+step*10 });
-    }
-  }
+  var currentDate = metric === 'graham' ? current.trade_date : current.date;
+  var currentValue = Number(current[meta.currentField]);
   var recommended = overview.recommendedPosition;
-  if (recommended == null) {
-    recommended = 20;
-    for (var level=setting.ladder.length-1;level>=0;level--) {
-      if (Number(current.graham_index_pct) >= Number(setting.ladder[level].value)) {
-        recommended = setting.ladder[level].position;
-        break;
-      }
-    }
-  }
-  homeSetText('home-graham-summary', String(current.trade_date || '').slice(0,10) + ' · 当前 ' +
-    homeCycleNumber(current.graham_index_pct,2) + '% · 建议仓位 ' + homeCycleNumber(recommended,0) + '%');
+  var summary = String(currentDate || '').slice(0,10) + ' · 当前 ' + homeCycleNumber(currentValue,2) + meta.suffix;
+  if (metric !== 'graham') summary += ' · 历史分位 ' + homeCycleNumber(overview.stats&&overview.stats.percentile,1) + '%';
+  summary += ' · 建议仓位 ' + homeCycleNumber(recommended,0) + '%';
+  homeSetText('home-market-summary', summary);
 
   var ladder = setting.ladder || [];
   var values = rows.map(function(row) { return row.value; }).concat(ladder.map(function(row) { return row.value; }));
@@ -204,7 +208,7 @@ function renderHomeGraham(overview, historyPayload) {
     var y=T+i*plotH/4;
     svg.push('<line class="home-cycle-grid-line" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'"/>');
     svg.push('<text class="home-cycle-axis" x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end">'+
-      homeCycleNumber(range.max-i*(range.max-range.min)/4,2)+'%</text>');
+      homeCycleNumber(range.max-i*(range.max-range.min)/4,2)+meta.suffix+'</text>');
   }
   ladder.forEach(function(row,index) {
     var y=yAt(Number(row.value));
@@ -215,11 +219,13 @@ function renderHomeGraham(overview, historyPayload) {
   svg.push('<path class="home-cycle-path" stroke="#2563eb" d="'+homeCyclePath(rows,'value',xAt,yAt)+'"/>');
   svg.push(homeCycleAxisLabels(rows,xAt,H));
   svg.push('<rect class="home-cycle-hit" x="'+L+'" y="'+T+'" width="'+(W-L-R)+'" height="'+plotH+'"/>');
-  root.innerHTML = '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="格雷厄姆指数历史图">'+svg.join('')+'</svg><div class="home-cycle-tooltip" hidden></div>';
+  root.innerHTML = '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+escapeHtml(meta.title)+'历史图">'+svg.join('')+'</svg><div class="home-cycle-tooltip" hidden></div>';
   homeBindCycleTooltip(root, rows, L, R, W, function(row) {
-    return '<strong>'+escapeHtml(String(row.date).slice(0,10))+'</strong><br>格雷厄姆指数：'+
-      homeCycleNumber(row.value,2)+'%<br>指数 PE：'+homeCycleNumber(row.pe,2)+'<br>国债收益率：'+
-      homeCycleNumber(row.sovereign_yield_pct,2)+'%';
+    var detail = '<strong>'+escapeHtml(String(row.date).slice(0,10))+'</strong><br>'+escapeHtml(meta.title)+'：'+homeCycleNumber(row.value,2)+meta.suffix;
+    if (metric === 'graham') detail += '<br>指数 PE：'+homeCycleNumber(row.pe,2)+'倍';
+    else if (metric === 'm2_market_cap') detail += '<br>M2：'+homeCycleNumber(row.m2_100m_yuan,2)+'亿元<br>A股总市值：'+homeCycleNumber(row.total_market_cap_100m_yuan,2)+'亿元';
+    else detail += '<br>指数点位：'+homeCycleNumber(row.close,2);
+    return detail;
   });
 }
 
@@ -229,17 +235,16 @@ async function loadHomeMarketCycles() {
   try {
     var responses = await Promise.all([
       fetch(api('/api/bond-cycle?range=all')),
-      fetch(api('/api/market-volatility/overview?market=CN&benchmark=CSI300')),
-      fetch(api('/api/market-volatility/history?market=CN&benchmark=CSI300&range=20y'))
+      fetch(api('/api/market-volatility/home-cycle?range=20y'))
     ]);
-    if (!responses[0].ok || !responses[1].ok || !responses[2].ok) throw new Error('市场周期数据读取失败');
+    if (!responses[0].ok || !responses[1].ok) throw new Error('市场周期数据读取失败');
     var payloads = await Promise.all(responses.map(function(response) { return response.json(); }));
     renderHomeBondCycle(payloads[0]);
-    renderHomeGraham(payloads[1], payloads[2]);
+    renderHomeMarketCycle(payloads[1]);
     homeMarketCyclesLoaded = true;
   } catch (error) {
     console.error('首页市场周期加载失败', error);
-    ['home-bond-cycle-chart','home-graham-chart'].forEach(function(id) {
+    ['home-bond-cycle-chart','home-market-chart'].forEach(function(id) {
       var el=document.getElementById(id);
       if (el) el.innerHTML='<div class="home-overview-empty">数据加载失败</div>';
     });

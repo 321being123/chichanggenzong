@@ -438,6 +438,51 @@ td.negative { color: #137333; font-weight: 600; }
 .sub-nav .nav-account select option { background: #fff; color: #333; }
 .sub-nav .btn-account-add { background: #fff; color: #3f51b5; border: 1px solid rgba(255,255,255,.6); }
 .sub-nav .btn-account-add:hover { background: #eef1fb; }
+/* 股市周期：与持仓管理、可转债共用同一套二级导航视觉 */
+#main-market-volatility .mv-header {
+  position: sticky;
+  top: 52px;
+  z-index: 90;
+  background: #fff;
+  border-bottom: 1px solid #dfe3eb;
+  box-shadow: 0 2px 6px rgba(31,42,68,.08);
+}
+#main-market-volatility .mv-sub-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 46px;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 20px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+#main-market-volatility .mv-sub-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-bottom: 0;
+  background: transparent;
+  padding: 0 16px;
+  color: #667085;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#main-market-volatility .mv-sub-tab:hover { color: #283593; background: #f5f6fb; }
+#main-market-volatility .mv-sub-tab.active { color: #1a237e; font-weight: 600; }
+#main-market-volatility .mv-sub-tab.active::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: #3f51b5;
+}
 /* 顶部头像 / 登录入口 */
 .nav-avatar {
   width: 32px; height: 32px; border-radius: 50%; border: 2px solid rgba(255,255,255,.45);

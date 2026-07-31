@@ -7,6 +7,11 @@ function securityAnalysisHideSuggestions() {
   securityAnalysisState.suggestionIndex=-1;
 }
 
+function securityAnalysisClearListSelection() {
+  var select=document.getElementById('security-analysis-select');
+  if(select) select.value='';
+}
+
 function securityAnalysisRenderSuggestions(rows) {
   var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
   if(!box||!input) return;
@@ -50,6 +55,7 @@ function securityAnalysisChooseSuggestion(index) {
   if(!row) return;
   var input=document.getElementById('stock-analysis-code');
   if(input) input.value=row.ts_code||row.code;
+  securityAnalysisClearListSelection();
   securityAnalysisHideSuggestions();
   securityAnalysisSubmit();
 }
@@ -74,6 +80,7 @@ function securityAnalysisInitSearch() {
   if(!input||input.dataset.suggestReady) return;
   input.dataset.suggestReady='1';
   input.addEventListener('input',function(){
+    securityAnalysisClearListSelection();
     clearTimeout(securityAnalysisState.searchTimer);
     securityAnalysisState.searchTimer=setTimeout(function(){securityAnalysisSearchSuggestions(input.value);},180);
   });
@@ -115,8 +122,13 @@ async function securityAnalysisLoadList(force) {
 
 function securityAnalysisSelect(code) {
   if(!code) return;
+  clearTimeout(securityAnalysisState.searchTimer);
+  securityAnalysisState.searchTimer=null;
+  securityAnalysisState.searchSeq++;
+  securityAnalysisState.suggestions=[];
+  securityAnalysisHideSuggestions();
   var input=document.getElementById('stock-analysis-code'); if(input) input.value=code;
-  securityAnalysisSubmit();
+  securityAnalysisSubmit(code);
 }
 
 function bondAnalysisText(value, suffix) {
@@ -212,8 +224,8 @@ function bondAnalysisListTable(headers, rows) {
 function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) el.innerHTML=html; }
 function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3}$/.test(code) ? 'bond' : 'stock'; }
 
-async function securityAnalysisSubmit() {
-  var input=document.getElementById('stock-analysis-code'), raw=String(input&&input.value||'').trim().toUpperCase();
+async function securityAnalysisSubmit(selectedCode) {
+  var input=document.getElementById('stock-analysis-code'), raw=String(selectedCode||(input&&input.value)||'').trim().toUpperCase();
   var code=raw.replace(/\.(SH|SZ)$/,'').replace(/\D/g,'');
   if (!/^\d{6}$/.test(code)) return stockAnalysisSetMessage('请输入代码，或从联想下拉中选择股票或可转债', true);
   securityAnalysisState.type=securityAnalysisKind(code); securityAnalysisState.code=code;

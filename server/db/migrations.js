@@ -1471,6 +1471,34 @@ async function migration029MarketCycleMetrics() {
   `);
 }
 
+// 首页市场周期：全局只保留一个当前指标，并记录采用哪位管理员、哪个账户的已保存边界。
+async function migration030MarketCycleHomeSetting() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.market_cycle_home_setting (
+      setting_key TEXT PRIMARY KEY,
+      metric_code TEXT NOT NULL,
+      market_code TEXT NOT NULL,
+      benchmark_code TEXT NOT NULL,
+      reference_username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+      reference_account TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(username) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT chk_market_cycle_home_key CHECK (setting_key = 'market_cycle_home'),
+      CONSTRAINT chk_market_cycle_home_metric CHECK (metric_code IN ('graham','pe','pb','m2_market_cap'))
+    );
+
+    INSERT INTO analytics.market_cycle_home_setting
+      (setting_key,metric_code,market_code,benchmark_code,reference_username,reference_account,updated_by)
+    SELECT 'market_cycle_home','pe','CN','CSI300','daicunzai','华泰账户','daicunzai'
+    WHERE EXISTS (
+      SELECT 1 FROM analytics.market_cycle_strategy_settings
+      WHERE username='daicunzai' AND account_name='华泰账户'
+        AND metric_code='pe' AND market_code='CN' AND benchmark_code='CSI300' AND is_current
+    )
+    ON CONFLICT (setting_key) DO NOTHING;
+  `);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1522,6 +1550,7 @@ const MIGRATIONS = [
   { version: '027_article_sort_order', up: migration027ArticleSortOrder },
   { version: '028_article_global_sort_order', up: migration028ArticleGlobalSortOrder },
   { version: '029_market_cycle_metrics', up: migration029MarketCycleMetrics },
+  { version: '030_market_cycle_home_setting', up: migration030MarketCycleHomeSetting },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

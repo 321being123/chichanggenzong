@@ -131,6 +131,10 @@ function normalizeBondRow(row, rating) {
     indicator_liquidity: indicatorValue(rating, 'liquidity'),
     indicator_leverage: indicatorValue(rating, 'leverage'),
     safety: rating ? rating.rating : '未评级',
+    interest_coverage: rating ? rating.interest_coverage : null,
+    cash_coverage: rating ? rating.cash_coverage : null,
+    liability_market_ratio: rating ? rating.liability_to_market_cap : null,
+    source_updated_at: rating ? rating.source_updated_at : null,
   };
 }
 

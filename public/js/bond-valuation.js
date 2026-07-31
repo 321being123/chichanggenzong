@@ -319,11 +319,11 @@ function renderBondValDetail(d, hist, alerts) {
     html += '<p class="bond-val-note">未匹配到安全性快照，估值仅供参考。</p>';
   }
   html += '<h4>信用评级</h4>';
-  var ratingHistory = Array.isArray(d.rating_history) ? d.rating_history : [];
-  if (ratingHistory.length) {
+  var creditHistory = d.credit && Array.isArray(d.credit.history) ? d.credit.history : [];
+  if (creditHistory.length) {
     html += '<table class="bond-val-detail-table"><thead><tr><th>公告日</th><th>评级</th><th>展望</th><th>评级机构</th></tr></thead><tbody>';
-    for (var c = 0; c < ratingHistory.length; c++) {
-      var cr = ratingHistory[c];
+    for (var c = 0; c < creditHistory.length; c++) {
+      var cr = creditHistory[c];
       html += '<tr><td>' + esc((cr.announced_at || cr.rating_date || '').slice(0, 10)) + '</td><td>' + esc(cr.rating || '—') + '</td><td>' + esc(cr.rating_outlook || '—') + '</td><td>' + esc(cr.rating_company || '—') + '</td></tr>';
     }
     html += '</tbody></table>';

@@ -312,18 +312,19 @@ function renderBondValDetail(d, hist, alerts) {
       '<tr><td>安全性评价</td><td>' + badge(d.safety.safety, EVAL_CLASS[d.safety.safety]) + '</td><td class="note">来自现有可转债安全性模块</td></tr>' +
       '<tr><td>利息保障倍数</td><td class="num">' + (d.safety.interest_coverage != null ? num(d.safety.interest_coverage, 2) : '—') + '</td><td class="note">-</td></tr>' +
       '<tr><td>现金覆盖率</td><td class="num">' + (d.safety.cash_coverage != null ? num(d.safety.cash_coverage, 2) : '—') + '</td><td class="note">-</td></tr>' +
-      '<tr><td>负债市值比</td><td class="num">' + (d.safety.liability_market_ratio != null ? num(d.safety.liability_market_ratio, 2) : '—') + '</td><td class="note">-</td></tr>' +
+      '<tr><td>负债市值比</td><td class="num">' + (d.safety.liability_to_market_cap != null ? num(d.safety.liability_to_market_cap, 2) : '—') + '</td><td class="note">-</td></tr>' +
       '<tr><td>财务数据日期</td><td>' + esc(d.safety.source_updated_at || '—') + '</td><td class="note">-</td></tr>' +
       '</tbody></table>';
   } else {
     html += '<p class="bond-val-note">未匹配到安全性快照，估值仅供参考。</p>';
   }
   html += '<h4>信用评级</h4>';
-  if (d.credit && d.credit.length) {
-    html += '<table class="bond-val-detail-table"><thead><tr><th>公告日</th><th>评级</th><th>展望</th><th>类型</th></tr></thead><tbody>';
-    for (var c = 0; c < d.credit.length; c++) {
-      var cr = d.credit[c];
-      html += '<tr><td>' + esc(cr.announced_at || cr.rating_date) + '</td><td>' + esc(cr.rating) + '</td><td>' + esc(cr.rating_outlook || '—') + '</td><td>' + esc(cr.rating_type || '—') + '</td></tr>';
+  var ratingHistory = Array.isArray(d.rating_history) ? d.rating_history : [];
+  if (ratingHistory.length) {
+    html += '<table class="bond-val-detail-table"><thead><tr><th>公告日</th><th>评级</th><th>展望</th><th>评级机构</th></tr></thead><tbody>';
+    for (var c = 0; c < ratingHistory.length; c++) {
+      var cr = ratingHistory[c];
+      html += '<tr><td>' + esc((cr.announced_at || cr.rating_date || '').slice(0, 10)) + '</td><td>' + esc(cr.rating || '—') + '</td><td>' + esc(cr.rating_outlook || '—') + '</td><td>' + esc(cr.rating_company || '—') + '</td></tr>';
     }
     html += '</tbody></table>';
   } else {

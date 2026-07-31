@@ -257,7 +257,7 @@ async function getSafetySnapshotDetail(code) {
     safety: rec.safety || '',
     interest_coverage: rec.interest_coverage,
     cash_coverage: rec.cash_coverage,
-    liability_market_ratio: rec.liability_market_ratio,
+    liability_to_market_cap: rec.liability_market_ratio,
     source_updated_at: rec.source_updated_at || null,
   };
 }

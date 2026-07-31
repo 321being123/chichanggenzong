@@ -1724,6 +1724,7 @@ module.exports = {
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart,
   syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
+  loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,
 };

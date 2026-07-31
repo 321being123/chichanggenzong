@@ -113,7 +113,7 @@ function indicatorValue(result, key) {
   return Number.isFinite(value) ? value : null;
 }
 
-function normalizeBondRow(row, rating) {
+function normalizeBondRow(row, rating, sourceUpdatedAt) {
   return {
     bond_code: String(row.bond_code == null ? '' : row.bond_code),
     bond_name: String(row.bond_name == null ? '' : row.bond_name),
@@ -131,14 +131,14 @@ function normalizeBondRow(row, rating) {
     indicator_liquidity: indicatorValue(rating, 'liquidity'),
     indicator_leverage: indicatorValue(rating, 'leverage'),
     safety: rating ? rating.rating : '未评级',
-    interest_coverage: rating ? rating.interest_coverage : null,
-    cash_coverage: rating ? rating.cash_coverage : null,
-    liability_market_ratio: rating ? rating.liability_to_market_cap : null,
-    source_updated_at: rating ? rating.source_updated_at : null,
+    interest_coverage: rating ? rating.metrics && rating.metrics.interest : null,
+    cash_coverage: rating ? rating.metrics && rating.metrics.liquidity : null,
+    liability_market_ratio: rating ? rating.metrics && rating.metrics.leverage : null,
+    source_updated_at: sourceUpdatedAt || null,
   };
 }
 
-function evaluateBondSafety(companyRows, bondRows) {
+function evaluateBondSafety(companyRows, bondRows, sourceUpdatedAt) {
   if (!Array.isArray(companyRows) || !Array.isArray(bondRows)) {
     throw new TypeError('公司财务数据和债券行情数据必须是数组');
   }
@@ -151,7 +151,7 @@ function evaluateBondSafety(companyRows, bondRows) {
       const stockName = String(row.stock_name == null ? '' : row.stock_name);
       const rating = ratingState.index.get(stockName);
       if (!rating && stockName) unmatchedStocks.add(stockName);
-      return normalizeBondRow(row, rating || null);
+      return normalizeBondRow(row, rating || null, sourceUpdatedAt);
     })
     .sort((a, b) => {
       const ap = finiteNumber(a.bond_price);

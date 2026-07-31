@@ -174,8 +174,15 @@ async function getBondDetail(code, asOf) {
   const r = rows[0];
   const cur = mapListRow(r);
 
-  // 安全性快照明细
-  const safety = await getSafetySnapshotDetail(code);
+  // 安全性快照明细（统一用 loadSafety，和股债分析同一套逻辑）
+  const safetyRaw = await loadSafety(code);
+  const safety = safetyRaw ? {
+    safety: safetyRaw.safety || '',
+    interest_coverage: safetyRaw.interest_coverage,
+    cash_coverage: safetyRaw.cash_coverage,
+    liability_to_market_cap: safetyRaw.liability_market_ratio,
+    source_updated_at: safetyRaw.source_updated_at || null,
+  } : null;
   // 信用历史
   const credit = await getCreditHistory(code);
   // 诊断
@@ -246,21 +253,7 @@ async function getBondDetail(code, asOf) {
   };
 }
 
-async function getSafetySnapshotDetail(code) {
-  const base = code.split('.')[0];
-  const { rows } = await pool.query('SELECT data FROM bond_safety_snapshots ORDER BY id DESC LIMIT 1');
-  if (!rows.length || !rows[0].data) return null;
-  const data = rows[0].data;
-  const rec = (Array.isArray(data) ? data : []).find(x => (x.bond_code || '').split('.')[0] === base);
-  if (!rec) return null;
-  return {
-    safety: rec.safety || '',
-    interest_coverage: rec.interest_coverage,
-    cash_coverage: rec.cash_coverage,
-    liability_to_market_cap: rec.liability_market_ratio,
-    source_updated_at: rec.source_updated_at || null,
-  };
-}
+const { loadSafety } = require('./convertibleBondAnalysis');
 
 async function getCreditHistory(code) {
   const sql = `

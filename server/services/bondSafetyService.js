@@ -97,7 +97,7 @@ async function refreshBondSafety(reason = 'manual') {
     if (!source.companyRows.length || !source.bondRows.length) {
       throw new Error('数据源返回空数据，已保留上一份有效快照');
     }
-    const result = evaluateBondSafety(source.companyRows, source.bondRows);
+    const result = evaluateBondSafety(source.companyRows, source.bondRows, source.sourceUpdatedAt);
     const snapshot = await saveSnapshot(result, source.sourceUpdatedAt, reason);
     await finishJobRun(runId, true, `刷新 ${snapshot.row_count} 条；未匹配 ${result.diagnostics.unmatched_stock_count} 条`);
     return { skipped: false, snapshot };

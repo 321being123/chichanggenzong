@@ -125,14 +125,17 @@ jobs:
           print('全部 JSON 文件格式合法')
           PY
 
-  # 秘密扫描：检测仓库历史与当前代码中泄露的密钥/密码
+  # 秘密扫描：检测仓库历史与当前代码中泄露的密钥/密码（trufflehog 免费开源，替代需许可证的 gitleaks）
   secret-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: gitleaks 秘密扫描
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # gitleaks/gitleaks-action@v2
-        env:
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+      - name: trufflehog 秘密扫描
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: HEAD
+          extra_args: --only-verified --fail

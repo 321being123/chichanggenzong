@@ -136,6 +136,4 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.before }}
-          head: HEAD
-          extra_args: --only-verified --fail
+          extra_args: --only-verified

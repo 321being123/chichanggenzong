@@ -227,6 +227,20 @@ function getTodayProfit(position) {
   return (price - previousClose) * (Number(position.quantity) || 0) * exchangeRate;
 }
 
+// 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
+var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
+
+// 可转债持仓显示估值标签 + 分位；其他持仓或查不到显示 —
+function getValuationCell(position) {
+  if (position.subtype !== '可转债') return '<td class="text-center" style="color:#bbb;">—</td>';
+  var vm = (data && data.valuation_map) || {};
+  var v = vm[position.code];
+  if (!v || !v.eval_class) return '<td class="text-center" style="color:#bbb;">—</td>';
+  var cls = POS_EVAL_CLASS[v.eval_class] || '';
+  var pct = (v.percentile != null && Number.isFinite(Number(v.percentile))) ? ' ' + Number(v.percentile).toFixed(0) + '%' : '';
+  return '<td class="text-center"><span class="' + cls + '">' + escapeHtml(v.eval_class) + pct + '</span></td>';
+}
+
 function setSort(col) {
   if (sortState.col === col) {
     sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
@@ -340,6 +354,7 @@ function renderPositionsTable(targetId, limit) {
     '<th class="text-right sortable" onclick="setSort(&quot;pct&quot;)">比例' + sortArrow('pct') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;type&quot;)">类型' + sortArrow('type') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;subtype&quot;)">细类' + sortArrow('subtype') + '</th>' +
+    '<th class="text-center" style="width:110px;">估值</th>' +
     (limit ? '' : '<th class="text-center">操作</th>') +
     '</tr></thead><tbody>';
 
@@ -399,6 +414,7 @@ function renderPositionsTable(targetId, limit) {
       '<td class="text-right">' + pct + '%</td>' +
       '<td>' + typeTag + '</td>' +
       '<td>' + subtypeTag + '</td>' +
+      getValuationCell(p) +
       (limit ? '' : '<td class="text-center">' +
         '<button class="btn btn-outline btn-sm" data-act="editPosition" data-id="' + escapeHtml(p.id) + '">编辑</button> ' +
         '<button class="btn btn-danger btn-sm" data-act="deletePosition" data-id="' + escapeHtml(p.id) + '">删除</button>' +
@@ -421,6 +437,7 @@ function renderPositionsTable(targetId, limit) {
       '<td class="text-right">' + cashPct + '%</td>' +
       '<td><span class="tag ' + cashTypeTag + '">' + escapeHtml(data.cashType || '现金') + '</span></td>' +
       '<td><span class="tag tag-cash">' + escapeHtml(data.cashSubtype || '现金') + '</span></td>' +
+      '<td class="text-center" style="color:#bbb;">—</td>' +
       (limit ? '' : '<td class="text-center">' +
         '<button class="btn btn-outline btn-sm" onclick="editCash()">编辑</button>' +
         '</td>') +

@@ -106,7 +106,7 @@ router.post('/send-code',
   rateLimit({
     prefix: 'emailcode',
     windowMs: 60000,
-    max: 5,
+    max: 2,
     getKey: (req) => (req.ip || '0.0.0.0') + ':' + ((req.body && req.body.email) || ''),
     message: '发送验证码过于频繁，请稍后再试'
   }),
@@ -134,7 +134,7 @@ router.post('/forgot-password/send-code',
   rateLimit({
     prefix: 'password-reset-code',
     windowMs: 60000,
-    max: 5,
+    max: 2,
     getKey: (req) => {
       const body = req.body || {};
       return (req.ip || '0.0.0.0') + ':' + (body.username || '') + ':' + (body.email || '');

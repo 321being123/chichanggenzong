@@ -344,6 +344,37 @@ async function getBondAlerts(code) {
   }));
 }
 
+// ---- 持仓联动：按 6 位代码批量查最新交易日估值 ----
+// 输入持仓里的可转债 6 位纯数字代码列表（如 ['113050','123456']），返回
+// { '113050': { eval_class, final_evaluation, percentile, as_of } }。
+// 匹配时忽略后缀（库中 canonical_code 形如 113050.SH），一次 SQL 查完。
+async function getValuationByCodes(codes) {
+  if (!Array.isArray(codes) || codes.length === 0) return {};
+  const clean = [...new Set(codes.map(c => String(c || '').trim()).filter(c => /^\d{6}$/.test(c)))];
+  if (clean.length === 0) return {};
+  const tradeDate = await getLatestTradeDate();
+  if (!tradeDate) return {};
+  const sql = `
+    SELECT i.canonical_code, v.final_evaluation, v.eval_class, v.valuation_percentile, v.trade_date
+    FROM analytics.convertible_bond_valuation_daily v
+    JOIN core.instruments i ON i.instrument_id = v.instrument_id
+    WHERE v.trade_date = $1
+      AND REGEXP_REPLACE(i.canonical_code, '\\D', '', 'g') = ANY($2)`;
+  const { rows } = await pool.query(sql, [tradeDate, clean]);
+  const out = {};
+  for (const r of rows) {
+    const code = String(r.canonical_code || '').replace(/\D/g, '');
+    if (!code) continue;
+    out[code] = {
+      eval_class: r.eval_class || r.final_evaluation || '',
+      final_evaluation: r.final_evaluation || '',
+      percentile: r.valuation_percentile != null ? Number(r.valuation_percentile) : null,
+      as_of: isoDate(r.trade_date),
+    };
+  }
+  return out;
+}
+
 module.exports = {
   EVAL_ORDER,
   getActiveModel,
@@ -353,4 +384,5 @@ module.exports = {
   getHistory,
   getAlerts,
   getBondAlerts,
+  getValuationByCodes,
 };

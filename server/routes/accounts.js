@@ -9,6 +9,7 @@ const { validateAccountData, isValidAccountName } = require('../middleware/valid
 const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool } = require('../db');
 const { fetchQuoteByCode, todayCN, toTsCode } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
+const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 
 router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
   // P2-3：账户列表优先读结构化 accounts 表；该用户尚无结构化记录时回退 users.accounts（单用户读取，不暴露全量密码哈希）
@@ -77,6 +78,15 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
         if (!q && code === '404002') result.changes['404002'] = 0;
       } catch (e) {}
     }));
+    // 附加可转债估值对照表（仅取可转债 6 位代码，一次批量查询；失败不影响持仓加载）
+    try {
+      const bondCodes = codes
+        .map(c => String(c || '').trim().replace(/\.(SH|SZ|BJ|HK|US)$/i, ''))
+        .filter(c => /^\d{6}$/.test(c));
+      result.valuation_map = bondCodes.length ? await getValuationByCodes(bondCodes) : {};
+    } catch (e) {
+      result.valuation_map = {};
+    }
   }
   res.json(result);
 }));

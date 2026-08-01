@@ -268,6 +268,36 @@ async function main() {
   r = await fetch(base + '/api/bond-valuation/refresh', { method: 'POST' });
   check('非管理员被拒（401/403）', () => assert.ok(r.status === 401 || r.status === 403));
 
+  // 10. 持仓联动：getValuationByCodes 批量查询（6 位代码 → 估值对照表）
+  console.log('== 9. getValuationByCodes 批量查询 ==');
+  const svc = require('../services/convertibleBondValuationService');
+  const emptyMap = await svc.getValuationByCodes([]);
+  check('空数组返回空对象', () => assert.deepStrictEqual(emptyMap, {}));
+  const messyMap = await svc.getValuationByCodes(['abc', '123', '113050.SH', '600519']);
+  check('非法代码被过滤（键均为 6 位数字）', () => {
+    for (const code of Object.keys(messyMap)) assert.ok(/^\d{6}$/.test(code), '键非 6 位数字: ' + code);
+  });
+  if (hasValuationData && j.data && j.data.length) {
+    const bondCodes = j.data.slice(0, 5).map(row => String(row.bond_code).replace(/\D/g, ''));
+    const map = await svc.getValuationByCodes(bondCodes);
+    check('批量查询返回全部输入代码', () => {
+      for (const code of bondCodes) assert.ok(map[code], '缺 ' + code + ' 的估值');
+    });
+    check('估值键字段齐全', () => {
+      const first = map[bondCodes[0]];
+      assert.ok(first && first.eval_class && 'percentile' in first && first.as_of, '字段缺失: ' + JSON.stringify(first));
+    });
+    check('返回分位在 0-100', () => {
+      for (const code of bondCodes) {
+        if (map[code] && map[code].percentile != null) {
+          assert.ok(map[code].percentile >= 0 && map[code].percentile <= 100, code + ' 分位越界');
+        }
+      }
+    });
+  } else {
+    console.log('  (CI 空数据库：跳过批量查询数据断言)');
+  }
+
   server.close();
   const fail = results.filter(x => x[0] === 'FAIL').length;
   console.log(`\n结果：${results.length - fail}/${results.length} 通过`);

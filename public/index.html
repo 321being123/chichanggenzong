@@ -1054,14 +1054,32 @@ async function checkAuth() {
 function renderTopUser(p) {
   const el = document.getElementById('top-user');
   if (!el) return;
+  el.textContent = '';
   if (!p || !p.username) {
-    el.innerHTML = '<a class="nav-avatar guest-avatar" href="' + api('/login.html') + '" title="登录/注册">👤</a>';
+    const link = document.createElement('a');
+    link.className = 'nav-avatar guest-avatar';
+    link.href = api('/login.html');
+    link.title = '登录/注册';
+    link.textContent = '👤';
+    el.appendChild(link);
     return;
   }
   const src = p.avatar || '';
   const initial = (p.nickname || p.username || '?').charAt(0).toUpperCase();
-  el.innerHTML = '<button class="nav-avatar" onclick="switchMain(\'profile\')" title="个人中心">' +
-    (src ? '<img src="' + src + '" alt="头像">' : escapeHtml(initial)) + '</button>';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'nav-avatar';
+  button.title = '个人中心';
+  button.addEventListener('click', function () { switchMain('profile'); });
+  if (src) {
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = '头像';
+    button.appendChild(img);
+  } else {
+    button.textContent = initial;
+  }
+  el.appendChild(button);
 }
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）

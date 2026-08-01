@@ -4,6 +4,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin } = require('../middleware/auth');
 const { getUserProfile, getUserAuth, updateUserProfile, changePassword, hashPwd, verifyPwd } = require('../db');
+const AVATAR_DATA_RE = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
 
 // 资料读取：昵称/简介/头像/邮箱/最后登录 + 我的券商账户
 router.get('/profile', requireLogin, asyncHandler(async (req, res) => {
@@ -23,7 +24,7 @@ router.put('/profile', requireLogin, asyncHandler(async (req, res) => {
   }
   if (avatar !== undefined) {
     if (typeof avatar !== 'string') return res.status(400).json({ error: '头像数据格式错误' });
-    if (avatar && !avatar.startsWith('data:image/')) return res.status(400).json({ error: '头像需为图片' });
+    if (avatar && !AVATAR_DATA_RE.test(avatar)) return res.status(400).json({ error: '头像数据格式错误' });
     if (avatar.length > 300000) return res.status(400).json({ error: '头像过大，请压缩后重试' });
   }
   if (email !== undefined && email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {

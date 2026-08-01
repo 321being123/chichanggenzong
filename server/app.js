@@ -35,6 +35,7 @@ const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefres
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
 
 const app = express();
+app.disable('x-powered-by');
 // 安全默认：不信任上游代理（避免伪造 X-Forwarded-For 绕过限流/IP 识别）。
 // 生产若确在反向代理后，需在 .env 显式设置 TRUST_PROXY=1（P1-5）。
 app.set('trust proxy', process.env.TRUST_PROXY === '1');
@@ -129,8 +130,8 @@ async function start() {
   // 统一错误处理（兜底所有未捕获异常，输出结构化日志并返回 JSON）
   app.use(errorHandler);
 
-  server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`存在小站已启动: http://0.0.0.0:${PORT}`);
+  server = app.listen(PORT, '127.0.0.1', () => {
+    console.log(`存在小站已启动: http://127.0.0.1:${PORT}`);
     console.log(`数据目录: ${DATA_DIR}`);
     // 任务调度默认在 Web 进程内运行（向后兼容）。若拆分独立 worker，请给 Web 进程设
     // DISABLE_SCHEDULER=1 并另起 worker 进程（见 server/worker.js），避免重复执行。

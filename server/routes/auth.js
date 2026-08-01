@@ -12,6 +12,35 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESET_CODE_TTL_MS = 5 * 60 * 1000;
 const RESET_CODE_MAX_ATTEMPTS = 5;
 
+const registerIpLimit = rateLimit({
+  prefix: 'register-ip',
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  getKey: (req) => req.ip || '0.0.0.0',
+  message: '注册尝试过于频繁，请稍后再试'
+});
+const loginIpLimit = rateLimit({
+  prefix: 'login-ip',
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  getKey: (req) => req.ip || '0.0.0.0',
+  message: '登录尝试过于频繁，请15分钟后再试'
+});
+const emailIpLimit = rateLimit({
+  prefix: 'email-ip',
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  getKey: (req) => req.ip || '0.0.0.0',
+  message: '验证码发送过于频繁，请稍后再试'
+});
+const passwordResetEmailIpLimit = rateLimit({
+  prefix: 'password-reset-email-ip',
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  getKey: (req) => req.ip || '0.0.0.0',
+  message: '验证码发送过于频繁，请稍后再试'
+});
+
 function codeMatches(actual, expected) {
   if (typeof actual !== 'string' || typeof expected !== 'string') return false;
   const a = Buffer.from(actual);
@@ -19,7 +48,7 @@ function codeMatches(actual, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-router.post('/register', asyncHandler(async (req, res) => {
+router.post('/register', registerIpLimit, asyncHandler(async (req, res) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();
   const password = (req.body && req.body.password || '').normalize('NFC');
   const { code, email, emailCode } = req.body || {};
@@ -59,7 +88,7 @@ router.post('/register', asyncHandler(async (req, res) => {
   res.json({ ok: true, username });
 }));
 
-router.post('/login', asyncHandler(async (req, res, next) => {
+router.post('/login', loginIpLimit, asyncHandler(async (req, res, next) => {
   const username = (req.body && req.body.username || '').normalize('NFC').trim();
   const password = (req.body && req.body.password || '').normalize('NFC');
   if (!username || !password) return res.status(400).json({ error: '请填写账号和密码' });
@@ -103,6 +132,7 @@ router.get('/config', asyncHandler(async (req, res) => { res.json({ needRegister
 
 // 发送邮箱验证码（IP+邮箱 联合限流，复用现有内存/Redis 限流中间件）
 router.post('/send-code',
+  emailIpLimit,
   rateLimit({
     prefix: 'emailcode',
     windowMs: 60000,
@@ -131,6 +161,7 @@ router.post('/send-code',
 }));
 
 router.post('/forgot-password/send-code',
+  passwordResetEmailIpLimit,
   rateLimit({
     prefix: 'password-reset-code',
     windowMs: 60000,

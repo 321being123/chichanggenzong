@@ -1,5 +1,10 @@
 # 持仓管理系统
 
+## 维护文档
+
+- [技术架构](docs/技术架构.md)：系统入口、前后端分层、数据库、后台任务、数据源与维护边界。
+- [生产部署流程](docs/生产部署流程.md)：版本、测试、发布、部署和验收铁律。
+
 ## 功能
 - 手机号注册/登录（多人独立账号，数据隔离）
 - 多账户管理（每个人可创建多个券商账户）
@@ -16,18 +21,17 @@
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
 
-# 2. 上传项目并安装
-cd /opt
-# scp -r portfolio-server root@IP:/opt/portfolio
-cd portfolio
-# 按 lockfile 精确安装（与 package-lock.json 一致；去掉 --omit=dev 可装开发依赖以跑测试）
-npm ci --omit=dev
+# 2. 从 Git 同步项目并按 lockfile 安装
+cd /opt/portfolio
+sudo git fetch origin
+sudo git reset --hard origin/master
+sudo npm ci --omit=dev
 
 # 3. 用 PM2 保活运行
-npm install -g pm2
-pm2 start server.js --name portfolio-server
-pm2 save
-pm2 startup
+sudo npm install -g pm2
+sudo pm2 start deploy/ecosystem.config.js
+sudo pm2 save
+sudo pm2 startup
 
 # 4. 开放端口
 # 腾讯云安全组只放行 80/443/22 端口（3000 仅内网 Nginx 反代使用，不对公网开放）

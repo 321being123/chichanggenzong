@@ -54,6 +54,10 @@ for idx, (instrument_id, canonical_code) in enumerate(bonds):
     if '.' not in ts_code:
         # 按前缀补交易所后缀（估值引擎 canonical_code 通常已带后缀）
         ts_code = ts_code + ('.SH' if str(canonical_code).startswith(('11', '113', '118', '110')) else '.SZ')
+    # 每只用独立保存点：单只失败 rollback 到保存点，不影响其他转债
+    sp = f"sp_{idx}"
+    if not dry:
+        cur.execute(f"SAVEPOINT {sp}")
     try:
         dr = None
         for attempt in range(4):
@@ -64,6 +68,8 @@ for idx, (instrument_id, canonical_code) in enumerate(bonds):
                 time.sleep(0.5 * (attempt + 1))
         if dr is None or dr.empty:
             total_failed += 1
+            if not dry:
+                cur.execute(f"RELEASE SAVEPOINT {sp}")
             continue
         if 'rating_date' in dr.columns:
             dr = dr.sort_values('rating_date', ascending=False)
@@ -97,11 +103,15 @@ for idx, (instrument_id, canonical_code) in enumerate(bonds):
                       rating_type, rating, rating_outlook,
                       __import__('json').dumps(dict(r), ensure_ascii=False)))
                 total_inserted += 1
+        if not dry:
+            cur.execute(f"RELEASE SAVEPOINT {sp}")
         if (idx + 1) % 10 == 0:
             print(f"  progress {idx+1}/{len(bonds)}")
     except Exception as e:
         total_failed += 1
-        print(f"  FAIL {canonical_code}: {e}")
+        if not dry:
+            cur.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+        print(f"  FAIL {canonical_code}: {str(e)[:200]}")
     time.sleep(0.15)
 
 if not dry:

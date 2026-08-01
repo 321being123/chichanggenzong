@@ -22,6 +22,28 @@ if not pro:
 
 dry = '--dry' in sys.argv
 
+
+def _json_safe(row_dict):
+    """清洗 numpy NaN / pandas NaT 等非 JSON 值，避免 jsonb 写入报错。"""
+    import json
+    import math
+    out = {}
+    for k, v in dict(row_dict).items():
+        if v is None:
+            out[k] = None
+            continue
+        # 数字类型做 NaN/inf 检测；字符串/日期等原样保留
+        if not isinstance(v, str):
+            try:
+                f = float(v)
+                if math.isnan(f) or math.isinf(f):
+                    out[k] = None
+                    continue
+            except (TypeError, ValueError):
+                pass
+        out[k] = str(v) if isinstance(v, (bytes,)) else v
+    return json.dumps(out, ensure_ascii=False, allow_nan=False)
+
 conn = psycopg2.connect(
     host=os.environ.get('PGHOST', 'localhost'),
     port=int(os.environ.get('PGPORT', '5432')),
@@ -83,6 +105,17 @@ for idx, (instrument_id, canonical_code) in enumerate(bonds):
             rating_company = str(r.get('rating_com_name') or '').strip()
             rating_type = str(r.get('rating_type') or '').strip()
             rating_method = str(r.get('rating_way') or '').strip()
+            # Tushare 空值可能以字符串 'nan'/'NaN' 形式出现，统一清洗为空（否则 JSONB 写入报错）
+            if rating_outlook.lower() == 'nan':
+                rating_outlook = ''
+            if rating_company.lower() == 'nan':
+                rating_company = ''
+            if rating_type.lower() == 'nan':
+                rating_type = ''
+            if rating_method.lower() == 'nan':
+                rating_method = ''
+            if rating.lower() == 'nan':
+                rating = ''
             if not rating and not rating_company and not rating_outlook:
                 continue
             if not dry:
@@ -101,7 +134,7 @@ for idx, (instrument_id, canonical_code) in enumerate(bonds):
                       raw_payload = fundamental.convertible_bond_ratings.raw_payload || EXCLUDED.raw_payload
                 """, (instrument_id, rating_date, ann_date, rating_company, rating_method,
                       rating_type, rating, rating_outlook,
-                      __import__('json').dumps(dict(r), ensure_ascii=False)))
+                      _json_safe(dict(r))))
                 total_inserted += 1
         if not dry:
             cur.execute(f"RELEASE SAVEPOINT {sp}")

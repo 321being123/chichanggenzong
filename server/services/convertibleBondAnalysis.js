@@ -540,6 +540,46 @@ async function saveRatingHistory(client, instrumentId, rows, sourceId) {
   }
 }
 
+// 评级历史自动补齐：找出评级表里还没有记录的可转债，逐只从 Tushare cb_rating 拉全量历史写入。
+// 每日同步的一环（cb_rating 无法批量拉取，只能逐只传 ts_code）；幂等 upsert，失败只跳过该只不影响主同步。
+async function backfillMissingRatings(reason = 'scheduled') {
+  const { rows: missing } = await pool.query(`
+    SELECT i.instrument_id, i.canonical_code
+      FROM core.instruments i
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = i.instrument_id
+      LEFT JOIN (SELECT DISTINCT instrument_id FROM fundamental.convertible_bond_ratings) r
+             ON r.instrument_id = i.instrument_id
+     WHERE p.cb_type IN ('CB', '')
+       AND r.instrument_id IS NULL
+     ORDER BY i.canonical_code`);
+  if (!missing.length) return { skipped: true, reason: 'no_missing' };
+  const sources = await sourceIds();
+  const client = await pool.connect();
+  let filled = 0;
+  let failed = 0;
+  try {
+    await client.query('BEGIN');
+    for (const bond of missing) {
+      try {
+        const data = await tushareQuery('cb_rating', { ts_code: bond.canonical_code },
+          'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook');
+        const rows = tsRows(data);
+        if (!rows.length) { failed += 1; continue; }
+        await saveRatingHistory(client, bond.instrument_id, rows, sources.tushare);
+        filled += 1;
+      } catch (error) {
+        failed += 1;
+        if (reason !== 'scheduled') console.warn(`[ratings] ${bond.canonical_code} 拉取失败: ${error.message}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 150)); // 限流缓冲
+    }
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+  console.log(`[ratings] 评级补齐完成：新增 ${filled} 只，无数据/失败 ${failed} 只（reason=${reason}）`);
+  return { ok: true, filled, failed };
+}
+
 async function savePriceChanges(client, instrumentId, rows, sourceId) {
   for (const original of rows || []) {
     const row = normalizePriceChange(original);
@@ -1060,6 +1100,9 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
+    // 评级历史自动补齐（独立事务，失败不影响主同步；缺评级的转债逐只从 Tushare 拉取）
+    try { await backfillMissingRatings(reason); }
+    catch (ratingErr) { console.warn('[ratings] 评级补齐失败（不影响主同步）:', ratingErr.message); }
     // 可转债周期：主同步提交后，用独立事务计算（周期失败只影响周期数据，不影响主同步）
     const cycleClient = await pool.connect();
     try {
@@ -1736,4 +1779,5 @@ module.exports = {
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,
+  backfillMissingRatings,
 };

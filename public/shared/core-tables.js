@@ -230,7 +230,35 @@ function getTodayProfit(position) {
 // 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
 var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
 
-// 可转债持仓显示估值标签 + 分位；其他持仓或查不到显示 —
+// 点击持仓代码/名称 → 进入对应股票或可转债的股债分析
+function openPositionAnalysis(code) {
+  if (!code) return;
+  switchMain('stock-analysis');
+  setTimeout(function () {
+    if (typeof securityAnalysisSelect === 'function') securityAnalysisSelect(code);
+  }, 100);
+}
+
+// 点击估值标签 → 进入该可转债的估值详情页
+function openPositionValuation(code) {
+  if (!code) return;
+  switchMain('bond-safety');
+  if (typeof switchBondSub === 'function') switchBondSub('valuation');
+  setTimeout(function () {
+    if (typeof openBondValDetail === 'function') openBondValDetail(code);
+  }, 120);
+}
+
+// 持仓代码转估值库格式（6位 → 带后缀，如 113050 → 113050.SH）；取不到市场就用原代码兜底
+function positionCodeFull(code) {
+  try {
+    var info = classifyCode(code);
+    if (info && info.market) return code + '.' + info.market.toUpperCase();
+  } catch (e) {}
+  return code;
+}
+
+// 可转债持仓显示估值标签 + 分位（可点击进详情）；其他持仓或查不到显示 —
 function getValuationCell(position) {
   if (position.subtype !== '可转债') return '<td class="text-center" style="color:#bbb;">—</td>';
   var vm = (data && data.valuation_map) || {};
@@ -238,7 +266,7 @@ function getValuationCell(position) {
   if (!v || !v.eval_class) return '<td class="text-center" style="color:#bbb;">—</td>';
   var cls = POS_EVAL_CLASS[v.eval_class] || '';
   var pct = (v.percentile != null && Number.isFinite(Number(v.percentile))) ? ' ' + Number(v.percentile).toFixed(0) + '%' : '';
-  return '<td class="text-center"><span class="' + cls + '">' + escapeHtml(v.eval_class) + pct + '</span></td>';
+  return '<td class="text-center"><a href="javascript:void(0)" class="pos-link" title="查看估值详情" onclick="openPositionValuation(\'' + escapeHtml(positionCodeFull(position.code)) + '\')"><span class="' + cls + '">' + escapeHtml(v.eval_class) + pct + '</span></a></td>';
 }
 
 function setSort(col) {
@@ -404,8 +432,8 @@ function renderPositionsTable(targetId, limit) {
 
     html += '<tr>' +
       '<td style="text-align:center;color:#bbb;">' + (idx + 1) + '</td>' +
-      '<td style="font-weight:600;color:' + getSubtypeColor(p.subtype) + ';">' + escapeHtml(p.code || '-') + '</td>' +
-      '<td><strong>' + escapeHtml(p.name || '未知') + '</strong></td>' +
+      '<td style="font-weight:600;color:' + getSubtypeColor(p.subtype) + ';"><a href="javascript:void(0)" class="pos-link" style="color:inherit;" title="查看股债分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.code || '-') + '</a></td>' +
+      '<td><strong><a href="javascript:void(0)" class="pos-link" style="color:inherit;font-weight:600;" title="查看股债分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.name || '未知') + '</a></strong></td>' +
       '<td class="text-right" style="font-weight:600;' + priceStyle + '">' + priceDisplay + '</td>' +
       '<td class="text-right" style="font-weight:600;font-size:13px;' + chgStyle + '">' + chgDisplay + '</td>' +
       '<td style="font-weight:600;' + todayProfitStyle + '">' + todayProfitDisplay + '</td>' +

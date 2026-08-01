@@ -1614,6 +1614,12 @@ async function migration033StockUnified() {
   `);
 }
 
+// ========== 034：可转债档案补齐 list_date 列（统一数据层写入 SQL 引用该列，旧库缺失） ==========
+async function migration034BondProfileListDate() {
+  await pool.query(`ALTER TABLE fundamental.convertible_bond_profiles ADD COLUMN IF NOT EXISTS list_date DATE`);
+}
+
+// ========== 030：市场周期首页设置（已有） ==========
 async function migration030MarketCycleHomeSetting() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS analytics.market_cycle_home_setting (
@@ -1696,6 +1702,7 @@ const MIGRATIONS = [
   { version: '031_bond_unified', up: migration031BondUnified },
   { version: '032_bond_safety_structured', up: migration032BondSafetyStructured },
   { version: '033_stock_unified', up: migration033StockUnified },
+  { version: '034_bond_profile_list_date', up: migration034BondProfileListDate },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

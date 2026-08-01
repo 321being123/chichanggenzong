@@ -165,6 +165,12 @@ async function tradeMonthEnds(startYear, endYear) {
   return result.sort();
 }
 
+// 全市场总市值完整性门禁：统一层（market.daily_valuations）证券数低于该值视为不完整，
+// 拒绝使用并回退到对应交易日的 Tushare daily_basic 全量快照（A股两市约 5500 只）。
+const MIN_UNIFIED_MARKET_COUNT = 4500;
+// 统一层 total_market_cap 单位：元 → 存储列 total_market_cap_100m_yuan 单位：亿元
+const YUAN_TO_100M = 100000000;
+
 async function syncAShareMarketCap(full) {
   const currentYear = new Date().getUTCFullYear();
   const dates = await tradeMonthEnds(full ? 2010 : currentYear, currentYear);
@@ -175,38 +181,46 @@ async function syncAShareMarketCap(full) {
   const targets = full ? dates.filter(day => !seen.has(day)) : [dates.at(-1)].filter(day => day && !seen.has(day));
   let count = 0;
   for (const day of targets) {
-    // 优先用 stock_unified 视图读市值（已有 market.daily_valuations 数据）
-    let totalWan = 0;
+    // 1) 优先用统一数据层按【目标交易日】完整分区聚合（daily_valuations.total_market_cap 单位：元）
+    let totalYi = 0;   // 统一为亿元
     let securityCount = 0;
+    let fromUnified = false;
     try {
       const { getTotalMarketCap } = require('../services/stockDataService');
-      const cap = await getTotalMarketCap();
-      if (cap && cap.total_cap > 0) {
-        totalWan = Number(cap.total_cap);  // daily_valuations 存的单位是万元
+      const cap = await getTotalMarketCap(normDate(day));
+      if (cap && cap.total_cap > 0 && cap.stock_count >= MIN_UNIFIED_MARKET_COUNT) {
+        totalYi = Number(cap.total_cap) / YUAN_TO_100M;
         securityCount = cap.stock_count;
+        fromUnified = true;
       }
-    } catch (_) { /* stock_unified 不存在则降级 */ }
+    } catch (_) { /* 统一层异常则走 Tushare 回退 */ }
 
-    if (!(totalWan > 0)) {
+    // 2) 统一层覆盖不足或异常：回退 Tushare daily_basic（total_mv 单位：万元 → 亿元 = /10000）
+    //    回退数据同样验证交易日、数量、有效市值占比；异常时保留上一份有效数据（不写库）。
+    if (!(totalYi > 0)) {
       const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv');
       const rows = tsRows(data);
       if (rows.length < 1000) continue;
+      const valid = rows.filter(row => Number.isFinite(Number(row.total_mv)) && Number(row.total_mv) > 0);
+      if (valid.length / rows.length < 0.8) continue;
       securityCount = rows.length;
-      totalWan = rows.reduce((sum, row) => {
-        const value = Number(row.total_mv);
-        return sum + (Number.isFinite(value) && value > 0 ? value : 0);
-      }, 0);
+      totalYi = valid.reduce((sum, row) => sum + Number(row.total_mv), 0) / 10000;
     }
-    if (!(totalWan > 0)) continue;
+    if (!(totalYi > 0)) continue;
     await pool.query(`INSERT INTO market.a_share_market_cap_daily
       (trade_date,total_market_cap_100m_yuan,security_count,source_code,raw_payload)
       VALUES($1,$2,$3,'tushare_daily_basic',$4)
       ON CONFLICT(trade_date,source_code) DO UPDATE SET
         total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
         security_count=EXCLUDED.security_count,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-    [normDate(day), totalWan / 10000, rows.length, JSON.stringify({ upstreamUnit: '10000 CNY', storedUnit: '100m CNY', securityCount: rows.length })]);
+    [normDate(day), totalYi, securityCount, JSON.stringify({
+      upstreamUnit: fromUnified ? 'CNY' : '10000 CNY',
+      storedUnit: '100m CNY',
+      securityCount,
+      source: fromUnified ? 'unified_daily_valuations' : 'tushare_daily_basic',
+    })]);
     count++;
-    await wait(350);
+    if (!fromUnified) await wait(350);  // 只有回退 Tushare 才需要限流
   }
   return count;
 }

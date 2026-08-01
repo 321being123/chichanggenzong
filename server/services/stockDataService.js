@@ -1,10 +1,18 @@
 // ====== 股票统一数据服务 ======
-// 标准模式（与 bondDataService 一致）：
-//   1. checkStockData(code) → 查 stock_unified，判断数据是否完整
-//   2. 完整 → 直接用；缺字段 → 补缺；不存在 → 全量写入
+// 统一读取层：从标准估值表 market.daily_valuations 聚合读取股票数据。
 //
-// 关键：market.js 的 saveInstrumentCache 是唯一写入入口。
-// 其他模块通过本服务读取，不再各自调 Tushare stock_basic/daily_basic。
+// 当前真实调用方：
+//   - getTotalMarketCap(tradeDate)：marketVolatilitySync 按目标交易日聚合全市场总市值。
+// 其余函数（getStockInfo / getStockList / getLatestValuations）为预留标准接口，
+// 供后续模块迁移接入统一层时使用，暂未有模块调用。
+//
+// 写入入口（注意：本服务只读，不负责写入）：
+//   - 标准估值：financialDataArchitecture.js（个股分析落库）与
+//     convertibleBondAnalysis.js 的 saveFullStockMarketPartition（可转债正股行情同步）。
+//
+// ⚠️ stock_unified 视图 = core.instruments + 每只股票"自身最新一条估值"，
+//    只适合单券最新数据展示，不能用于跨日期全市场聚合；全市场聚合必须走
+//    getTotalMarketCap(tradeDate) 按目标交易日读取完整分区。
 const { pool } = require('../db');
 
 // 查单只股票在 stock_unified 中的数据完整性
@@ -23,7 +31,7 @@ async function getStockInfo(code) {
   return r2[0] || null;
 }
 
-// 全量股票列表
+// 全量股票列表（预留接口：当前无模块调用）
 async function getStockList(filters = {}) {
   const where = ["status = 'listed'"];
   const params = [];
@@ -42,7 +50,7 @@ async function getStockList(filters = {}) {
   return rows;
 }
 
-// 获取最新估值数据（PE/PB/市值），marketVolatilitySync 等模块用
+// 获取单只股票最新估值（预留接口：当前无模块调用）
 async function getLatestValuations(codes) {
   if (!codes || !codes.length) return [];
   const { rows } = await pool.query(
@@ -53,12 +61,18 @@ async function getLatestValuations(codes) {
   return rows;
 }
 
-// 全市场总市值汇总（marketVolatilitySync 用）
-async function getTotalMarketCap() {
+// 指定交易日全市场总市值（marketVolatilitySync 用）
+// 只聚合该 tradeDate 的完整分区，杜绝"每只证券最新值"造成的混合截面。
+// 返回 total_cap 单位：元（与 market.daily_valuations.total_market_cap 一致）。
+async function getTotalMarketCap(tradeDate) {
+  if (!tradeDate) return { total_cap: 0, stock_count: 0 };
   const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(total_market_cap), 0) AS total_cap,
-            COUNT(*) AS stock_count
-     FROM public.stock_unified WHERE status = 'listed' AND total_market_cap > 0`
+    `SELECT COALESCE(SUM(dv.total_market_cap), 0)::double precision AS total_cap,
+            COUNT(*)::int AS stock_count
+     FROM market.daily_valuations dv
+     JOIN core.instruments i ON i.instrument_id = dv.instrument_id
+     WHERE i.asset_class = 'stock' AND dv.trade_date = $1 AND dv.total_market_cap > 0`,
+    [tradeDate]
   );
   return rows[0] || { total_cap: 0, stock_count: 0 };
 }

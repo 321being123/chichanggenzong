@@ -44,8 +44,10 @@ assert.ok(route.includes('cycleMetrics.getHistory'), '新指标 history 未接�
 const job = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketVolatilitySync.js'), 'utf8');
 assert.ok(job.includes("tushareQuery('index_dailybasic'"), '未接入指数 PE/PB');
 assert.ok(job.includes("tushareQuery('cn_m'"), '未接入 M2');
-assert.ok(job.includes("tushareQuery('daily_basic'"), '未接入A股总市值');
-assert.ok(job.includes('totalWan / 10000'), 'daily_basic.total_mv 未从万元换算为亿元');
+assert.ok(job.includes('tushareQuery(\'daily_basic\''), '未接入A股总市值');
+assert.ok(job.includes('/ 10000'), 'daily_basic.total_mv 未从万元换算为亿元');
+assert.ok(job.includes('/ YUAN_TO_100M'), '统一层 total_market_cap 未从元换算为亿元');
+assert.ok(job.includes('getTotalMarketCap(normDate(day))'), '统一层总市值未按目标交易日聚合');
 assert.ok(job.includes('ON CONFLICT(trade_date,formula_version)'), 'M2/市值比写入必须幂等');
 assert.ok(job.includes("'nbs_via_tushare'"), 'M2未记录国家统计局来源');
 assert.ok(job.includes('day > previous'), '月末交易日选择未处理上游倒序返回');

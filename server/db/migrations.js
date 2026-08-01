@@ -1619,6 +1619,74 @@ async function migration034BondProfileListDate() {
   await pool.query(`ALTER TABLE fundamental.convertible_bond_profiles ADD COLUMN IF NOT EXISTS list_date DATE`);
 }
 
+// ========== 035：bond_unified 正股代码兜底（迁移期保护：正股关联为空时返回 bond_history.stk_code） ==========
+// 正股代码补后缀规则必须与 bondDataService.normalizeStockCode() 保持一致（0/3 开头 → 深市，其余 → 沪市）。
+async function migration035BondUnifiedStkFallback() {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION normalize_stock_code(raw TEXT) RETURNS TEXT AS $$
+      SELECT CASE
+        WHEN raw IS NULL OR raw = '' THEN NULL
+        WHEN strpos(raw, '.') > 0 THEN raw
+        WHEN raw ~ '^(0|3)' THEN raw || '.SZ'
+        ELSE raw || '.SH'
+      END;
+    $$ LANGUAGE sql IMMUTABLE;
+  `);
+  await pool.query(`DROP VIEW IF EXISTS public.bond_unified CASCADE`);
+  await pool.query(`
+    CREATE VIEW public.bond_unified AS
+    SELECT
+      i.canonical_code                                          AS bond_code,
+      i.name                                                    AS bond_name,
+      i.list_date                                               AS listing_date,
+      i.delist_date,
+      i.status,
+      p.bond_full_name,
+      p.stock_instrument_id,
+      p.issue_size,
+      p.remain_size,
+      p.par_value,
+      p.first_conv_price,
+      p.current_conv_price                                      AS conv_price,
+      p.value_date,
+      p.maturity_date,
+      p.conv_start_date,
+      p.conv_end_date,
+      p.conv_stop_date,
+      p.coupon_rate,
+      p.issue_rating,
+      p.newest_rating                                           AS rating,
+      p.rating_company,
+      p.guarantor,
+      p.guarantee_type,
+      p.fundraising_purpose,
+      p.cb_type,
+      p.maturity_call_price,
+      bh.ann_date,
+      bh.res_ann_date,
+      bh.issue_type,
+      bh.shd_ration_ratio,
+      bh.shd_ration_record_date,
+      bh.onl_date,
+      bh.onl_size,
+      bh.onl_pch_num,
+      bh.offl_size,
+      bh.shd_ration_size,
+      bh.issue_price                                              AS bh_issue_price,
+      bh.first_day_return,
+      COALESCE(s.canonical_code, normalize_stock_code(bh.stk_code)) AS stock_code,
+      COALESCE(s.name, bh.stk_name, '')                         AS stock_name,
+      COALESCE(p.newest_rating, bh.rating)                      AS display_rating,
+      COALESCE(p.current_conv_price, bh.conv_price)             AS display_conv_price,
+      COALESCE(p.issue_size, bh.issue_size)                     AS display_issue_size
+    FROM core.instruments i
+    LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = i.instrument_id
+    LEFT JOIN bond_history bh ON bh.security_code = normalize_bond_code(i.canonical_code)
+    LEFT JOIN core.instruments s ON s.instrument_id = p.stock_instrument_id
+    WHERE i.asset_class = 'convertible_bond';
+  `);
+}
+
 // ========== 030：市场周期首页设置（已有） ==========
 async function migration030MarketCycleHomeSetting() {
   await pool.query(`
@@ -1703,6 +1771,7 @@ const MIGRATIONS = [
   { version: '032_bond_safety_structured', up: migration032BondSafetyStructured },
   { version: '033_stock_unified', up: migration033StockUnified },
   { version: '034_bond_profile_list_date', up: migration034BondProfileListDate },
+  { version: '035_bond_unified_stk_fallback', up: migration035BondUnifiedStkFallback },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

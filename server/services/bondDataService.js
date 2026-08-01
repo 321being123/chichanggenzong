@@ -1,15 +1,27 @@
 // ====== 可转债统一数据服务 ======
-// 所有模块（打新日历、股债分析、估值、安全性、周期）通过本服务读写可转债基础信息。
+// 统一读取/写入层：以 bond_unified 视图为读入口，upsertBondBaseInfo() 为写入口。
 //
-// 标准模式（所有模块都遵循，不假设谁先谁后）：
-//   1. checkBondCompleteness(code) → 查 bond_unified，判断数据是否完整
-//   2. 如果完整 → 直接用，不再拉外部 API
-//   3. 如果缺字段 → pull 缺失的字段（不是全量拉），upsert 补充
-//   4. 如果不存在 → pull 全部，upsert 新建
+// 当前真实调用方：
+//   - getBondBySecurityCode / getBondHistoryList：ipo.js 打新日历路由（读）。
+//   - upsertBondBaseInfo：convertibleBondAnalysis.js 主同步的 bootstrapBondsFromHistory（写）。
+// 其余函数（getBondList / getBondDetail / getActiveBondCodes / getRatingDistribution /
+// checkBondCompleteness）为预留标准接口，供后续模块迁移接入统一层时使用，暂未有模块调用。
 //
-// 关键：所有写入走 upsertBondBaseInfo()，内部用 INSERT ON CONFLICT，
-// 已有数据保留（COALESCE 优先旧值），只补空字段。任何模块都可以是"第一个"。
+// ⚠️ 尚未接入本服务的模块（股债分析、估值、安全性、可转债周期）仍直接读各自的事实表，
+//    属正常分层，迁移调用方需逐模块进行双读核对后再切换，不得一次性删除旧链路。
+//
+// 写入原则（upsertBondBaseInfo）：INSERT ON CONFLICT + COALESCE 优先保留旧值、只补空字段，
+// 任何模块都可以是"第一个"；重复执行幂等，不会覆盖更完整的新数据。
 const { pool } = require('../db');
+
+// 六位正股代码 → 标准代码（补后缀）。规则必须与迁移 035 的 normalize_stock_code() SQL 函数保持一致：
+// 0/3 开头 → 深市 .SZ，其余 → 沪市 .SH；已带后缀则原样返回。
+function normalizeStockCode(code) {
+  const raw = String(code || '').trim();
+  if (!raw) return null;
+  if (raw.includes('.')) return raw;
+  return /^(0|3)/.test(raw) ? raw + '.SZ' : raw + '.SH';
+}
 
 // 全量可转债列表（基础信息）
 async function getBondList(filters = {}) {
@@ -64,9 +76,11 @@ async function getBondBySecurityCode(securityCode) {
 }
 
 // 打新历史列表（替代原 bond_history 直查）
+// 对外契约：security_code 保持六位纯数字（兼容前端交易所判断/报告链接）；标准代码走 canonical_code。
 async function getBondHistoryList(limit = 50) {
   const { rows } = await pool.query(
-    `SELECT bond_code AS security_code, bond_name AS security_name,
+    `SELECT split_part(bond_code, '.', 1) AS security_code,
+       bond_code AS canonical_code, bond_name AS security_name,
        ann_date, res_ann_date, display_issue_size AS issue_size, issue_type,
        display_rating AS rating, shd_ration_ratio, bh_issue_price AS issue_price,
        shd_ration_record_date, onl_date, onl_size, onl_pch_num, offl_size,
@@ -165,10 +179,10 @@ async function upsertBondBaseInfo(client, bhRow, sourceId) {
       sourceId, JSON.stringify({ source: 'bond_history_upsert', security_code: bhRow.security_code })]
   );
 
-  // 正股：有 stk_code 就确保 instrument
+  // 正股：有 stk_code 就确保 instrument（后缀规则统一走 normalizeStockCode）
   if (bhRow.stk_code) {
-    const stkSuffix = /^(0|3)/.test(bhRow.stk_code) ? '.SZ' : '.SH';
-    const stkCode = bhRow.stk_code + stkSuffix;
+    const stkCode = normalizeStockCode(bhRow.stk_code);
+    if (!stkCode) return bondId;
     await db.query(
       `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
        VALUES($1,$2,'stock','CN')

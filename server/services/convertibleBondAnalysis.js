@@ -456,16 +456,20 @@ async function saveTerms(client, instrumentId, profile, tushareSource) {
   }
 }
 
-// 从 bond_history 引导创建 instrument + profile：
-// 标准模式：查 bond_history 里有没有数据 → 用 upsertBondBaseInfo 写入（已有不覆盖）。
-// 不假设谁先写谁后写。
+// 从 bond_history 引导补齐 instrument + profile：
+// 标准模式：对「债券主档不存在」或「已有主档但缺正股关联」的债券，用 upsertBondBaseInfo 幂等补齐。
+// 补齐范围：① 债券 instrument 尚未创建；② 债券已有 instrument，但 bond_history 有 stk_code
+// 而 profile.stock_instrument_id 为空（正股关联缺失）。
+// upsertBondBaseInfo 内部 ON CONFLICT + COALESCE，重复执行不新增重复证券、不覆盖更完整数据。
 async function bootstrapBondsFromHistory(client, sources) {
   const { rows } = await client.query(
     `SELECT bh.* FROM bond_history bh
       LEFT JOIN core.instruments i ON i.canonical_code LIKE bh.security_code || '.%'
         AND i.asset_class = 'convertible_bond'
-      WHERE i.instrument_id IS NULL
-        AND bh.security_code ~ '^1'
+      LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = i.instrument_id
+      WHERE bh.security_code ~ '^1'
+        AND (i.instrument_id IS NULL
+             OR (bh.stk_code IS NOT NULL AND bh.stk_code <> '' AND p.stock_instrument_id IS NULL))
       ORDER BY COALESCE(bh.listing_date, bh.onl_date) DESC NULLS LAST`
   );
   if (!rows.length) return 0;
@@ -1775,6 +1779,7 @@ module.exports = {
   annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart,
+  bootstrapBondsFromHistory,
   syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
   loadSafety, latestFinancial,
   DAILY_FIELDS,

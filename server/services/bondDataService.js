@@ -161,7 +161,7 @@ async function upsertBondBaseInfo(client, bhRow, sourceId) {
       updated_at=now()`,
     [bondId, bhRow.security_name || bhRow.security_code,
       finiteVal(bhRow.conv_price), finiteVal(bhRow.issue_size),
-      bhRow.rating || null, bhRow.listing_date || null,
+      bhRow.rating || '', bhRow.listing_date || null,
       sourceId, JSON.stringify({ source: 'bond_history_upsert', security_code: bhRow.security_code })]
   );
 

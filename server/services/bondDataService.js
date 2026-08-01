@@ -149,11 +149,11 @@ async function upsertBondBaseInfo(client, bhRow, sourceId) {
   // 确保或补充 profile（ON CONFLICT：已有数据保留，只补空字段）
   await db.query(
     `INSERT INTO fundamental.convertible_bond_profiles
-     (instrument_id,bond_short_name,cb_type,conv_price,issue_size,newest_rating,list_date,source_id,raw_payload)
+     (instrument_id,bond_short_name,cb_type,current_conv_price,issue_size,newest_rating,list_date,source_id,raw_payload)
      VALUES($1,$2,'CB',$3,$4,$5,$6::date,$7,$8::jsonb)
      ON CONFLICT(instrument_id) DO UPDATE SET
       bond_short_name=COALESCE(NULLIF(fundamental.convertible_bond_profiles.bond_short_name,''),EXCLUDED.bond_short_name),
-      conv_price=COALESCE(fundamental.convertible_bond_profiles.conv_price,EXCLUDED.conv_price),
+      current_conv_price=COALESCE(fundamental.convertible_bond_profiles.current_conv_price,EXCLUDED.current_conv_price),
       issue_size=COALESCE(fundamental.convertible_bond_profiles.issue_size,EXCLUDED.issue_size),
       newest_rating=COALESCE(fundamental.convertible_bond_profiles.newest_rating,EXCLUDED.newest_rating),
       list_date=COALESCE(fundamental.convertible_bond_profiles.list_date,EXCLUDED.list_date),

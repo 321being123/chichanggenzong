@@ -676,7 +676,6 @@ td.negative { color: #137333; font-weight: 600; }
 
 .home-hero-article {
   min-width: 0;
-  aspect-ratio: 1;
   padding: 15px;
   display: flex;
   flex-direction: column;

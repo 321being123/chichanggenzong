@@ -252,27 +252,37 @@ console.log('F. 数据架构（12.4，需 PG）');
   });
   await checkAsync('历史持仓已回填 instrument_id（A股主档存在即可关联）', async () => {
     if (!isPg) throw new Error('SKIP-');
-    // 取一条现存可匹配主档（不限 asset_class，避免空匹配 SKIP）
-    const inst = (await pool.query(
-      `SELECT instrument_id, canonical_code FROM core.instruments
-        WHERE REGEXP_REPLACE(canonical_code, '[^0-9]', '', 'g') ~ '^[0-9]{6}$'
-        LIMIT 1`
-    )).rows[0];
-    if (!inst) throw new Error('SKIP-'); // 无主档则跳过
-    const code = String(inst.canonical_code).replace(/\D/g, '');
+    // 自建 6 位数字主档（干净库/CI 无真实主档会 SKIP；验证后清理，绝不依赖生产数据）
+    const TEST_INST = '999901.SH';
+    await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_INST]);
     await pool.query(
-      `INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype)
-       VALUES ('pc-test-1', 'pc_test_user', '测试账户', $1, '回填测试', 1, 1, 1, '股票', '沪市')
-       ON CONFLICT (id, username, account_name) DO NOTHING`, [code]
-    );
-    await require('../services/tradeLot').backfillPositionInstrumentIds();
-    const { rows: r2 } = await pool.query(
-      `SELECT instrument_id FROM positions WHERE id='pc-test-1' AND username='pc_test_user'`
-    );
-    assert(r2[0] && r2[0].instrument_id != null, '回填未关联 instrument_id');
-    // 清理（positions + 可能产生的质量问题记录，绝不残留真实库）
-    await pool.query(`DELETE FROM positions WHERE id='pc-test-1' AND username='pc_test_user'`);
-    await pool.query(`DELETE FROM ops.data_quality_issues WHERE details->>'username'='pc_test_user'`);
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
+       VALUES ($1,'CI回填测试主档','stock','SH')`, [TEST_INST]);
+    try {
+      // 取一条现存可匹配主档（不限 asset_class，避免空匹配 SKIP）
+      const inst = (await pool.query(
+        `SELECT instrument_id, canonical_code FROM core.instruments
+          WHERE REGEXP_REPLACE(canonical_code, '[^0-9]', '', 'g') ~ '^[0-9]{6}$'
+          LIMIT 1`
+      )).rows[0];
+      if (!inst) throw new Error('SKIP-'); // 无主档则跳过
+      const code = String(inst.canonical_code).replace(/\D/g, '');
+      await pool.query(
+        `INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype)
+         VALUES ('pc-test-1', 'pc_test_user', '测试账户', $1, '回填测试', 1, 1, 1, '股票', '沪市')
+         ON CONFLICT (id, username, account_name) DO NOTHING`, [code]
+      );
+      await require('../services/tradeLot').backfillPositionInstrumentIds();
+      const { rows: r2 } = await pool.query(
+        `SELECT instrument_id FROM positions WHERE id='pc-test-1' AND username='pc_test_user'`
+      );
+      assert(r2[0] && r2[0].instrument_id != null, '回填未关联 instrument_id');
+    } finally {
+      // 清理（positions + 主档 + 质量问题记录，绝不残留真实库）
+      await pool.query(`DELETE FROM positions WHERE id='pc-test-1' AND username='pc_test_user'`);
+      await pool.query(`DELETE FROM ops.data_quality_issues WHERE details->>'username'='pc_test_user'`);
+      await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_INST]);
+    }
   });
   await checkAsync('半公开脱敏只删除标杆字段、保留我的字段', async () => {
     const raw = {

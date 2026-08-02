@@ -58,21 +58,48 @@ async function checkAsync(name, fn) {
     });
 
     // 3) IPO 打新历史：security_code 六位纯数字、canonical_code 带后缀（P2-1 验收）
-    const history = await bondSvc.getBondHistoryList(50);
-    check('打新历史接口 security_code 为六位纯数字', () => {
-      assert.ok(history.length > 0, '打新历史为空');
-      for (const row of history) {
-        assert.match(String(row.security_code), /^\d{6}$/, `非六位: ${row.security_code}`);
-        assert.ok(String(row.canonical_code).includes('.'), `canonical_code 缺后缀: ${row.canonical_code}`);
-      }
-    });
+    //    干净库（CI）无真实数据 → 自建一条测试债券（验证后清理），不依赖生产数据
+    const TEST_BOND_CODE = '999900.SH';
+    await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_BOND_CODE]);
+    await pool.query(
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
+       VALUES ($1,'CI测试可转债','convertible_bond','SH')`, [TEST_BOND_CODE]);
+    try {
+      const history = await bondSvc.getBondHistoryList(50);
+      check('打新历史接口 security_code 为六位纯数字', () => {
+        assert.ok(history.length > 0, '打新历史为空');
+        for (const row of history) {
+          assert.match(String(row.security_code), /^\d{6}$/, `非六位: ${row.security_code}`);
+          assert.ok(String(row.canonical_code).includes('.'), `canonical_code 缺后缀: ${row.canonical_code}`);
+        }
+      });
+    } finally {
+      await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_BOND_CODE]);
+    }
 
     // 4) stockDataService.getTotalMarketCap 按目标交易日聚合（P0-1 验收）
-    const cap = await stockSvc.getTotalMarketCap('2026-07-30');
-    check('getTotalMarketCap(2026-07-30) 返回单日聚合', () => {
-      assert.ok(cap && typeof cap.total_cap === 'number' && cap.total_cap > 0, 'total_cap 无效');
-      assert.ok(cap.stock_count > 0, 'stock_count 无效');
-    });
+    //    干净库（CI）无真实数据 → 自建测试股票 + 市值行（验证后清理）
+    const TEST_STOCK_CODE = '999901.SH';
+    await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_STOCK_CODE]);
+    const insStock = await pool.query(
+      `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
+       VALUES ($1,'CI测试股票','stock','SH') RETURNING instrument_id`, [TEST_STOCK_CODE]);
+    const { rows: srcRows } = await pool.query(
+      `SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1`);
+    const srcId = srcRows.length ? srcRows[0].source_id : 1;
+    try {
+      await pool.query(
+        `INSERT INTO market.daily_valuations(instrument_id,trade_date,source_id,total_market_cap)
+         VALUES ($1,'2026-07-30',$2,1000000000000)`, [insStock.rows[0].instrument_id, srcId]);
+      const cap = await stockSvc.getTotalMarketCap('2026-07-30');
+      check('getTotalMarketCap(2026-07-30) 返回单日聚合', () => {
+        assert.ok(cap && typeof cap.total_cap === 'number' && cap.total_cap > 0, 'total_cap 无效');
+        assert.ok(cap.stock_count > 0, 'stock_count 无效');
+      });
+    } finally {
+      await pool.query(`DELETE FROM market.daily_valuations WHERE instrument_id=$1`, [insStock.rows[0].instrument_id]);
+      await pool.query(`DELETE FROM core.instruments WHERE canonical_code=$1`, [TEST_STOCK_CODE]);
+    }
     const noDate = await stockSvc.getTotalMarketCap(null);
     check('getTotalMarketCap 无日期参数返回 0（拒绝全表混合聚合）', () => {
       assert.strictEqual(noDate.total_cap, 0);

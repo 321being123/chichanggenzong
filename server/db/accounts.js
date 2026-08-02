@@ -5,7 +5,7 @@ const { loadUsers } = require('./users');
 
 async function loadAccountData(username, accountName) {
   const { rows: positions } = await pool.query(
-    'SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity, cost::float8 AS cost, type, subtype, note FROM positions WHERE username=$1 AND account_name=$2',
+    'SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity, cost::float8 AS cost, type, subtype, note, instrument_id FROM positions WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   const { rows: trades } = await pool.query(
@@ -78,6 +78,35 @@ async function loadAccountData(username, accountName) {
   return result;
 }
 
+// 按持仓 code 批量关联 core.instruments.instrument_id（仓位对比统一证券身份用）。
+// 匹配规则与 bondDataService 一致：优先精确 code（如 600519 / 00700.HK / 113050.SH），
+// 再尝试去掉交易所后缀的纯数字匹配；未匹配返回 null（由回填/同步补偿，不影响保存）。
+async function buildInstrumentIdMap(codes) {
+  const map = new Map();
+  const unique = [...new Set((codes || []).filter(Boolean).map(c => String(c).trim()))];
+  if (!unique.length) return map;
+  try {
+    const { rows } = await pool.query(
+      `SELECT canonical_code, instrument_id FROM core.instruments
+        WHERE canonical_code = ANY($1::text[])
+           OR REGEXP_REPLACE(canonical_code, '\\D', '', 'g') = ANY($2::text[])`,
+      [unique, unique.map(c => c.replace(/\D/g, ''))]
+    );
+    const byPlain = new Map();
+    for (const r of rows) {
+      const plain = String(r.canonical_code).replace(/\D/g, '');
+      if (!byPlain.has(plain)) byPlain.set(plain, r.instrument_id);
+    }
+    for (const c of unique) {
+      const exact = rows.find(r => r.canonical_code === c);
+      map.set(c, exact ? exact.instrument_id : (byPlain.get(c.replace(/\D/g, '')) || null));
+    }
+  } catch (e) {
+    // 映射失败不阻断保存（positions 仍可写 NULL），由每日回填补偿
+  }
+  return map;
+}
+
 // 单连接事务：DELETE+INSERT 全成功或全回滚，避免中途异常留下半成品数据
 // expectedVersion：前端带回加载时的版本号（乐观锁）；为 null 时不强制（兼容旧客户端/测试）
 async function saveAccountData(username, accountName, data, expectedVersion = null) {
@@ -86,10 +115,13 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     await client.query('BEGIN');
     // positions（P2-4：批量写入，原单条 INSERT 循环改为一次性批量）
     await client.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
+    const posRows = data.positions || [];
+    // 仓位对比：保存时按 code 重新关联 instrument_id（避免 DELETE+重建把回填映射清空；未匹配写 NULL 不报错）
+    const instIdMap = await buildInstrumentIdMap(posRows.map(p => p && p.code));
     await bulkInsert(client, 'positions',
-      ['id', 'username', 'account_name', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note'],
-      data.positions || [],
-      (p) => [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '']
+      ['id', 'username', 'account_name', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note', 'instrument_id'],
+      posRows,
+      (p) => [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null]
     );
     // trades
     await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
@@ -134,10 +166,14 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       );
     }
     // P2-3：账户元数据（cash_base/hk_rate）结构化落库，作为权威来源（JSON 仅兜底）
+    // hk_rate_updated_at：首次插入=now()；仅当 hk_rate 值变化时更新（用户手动改汇率也算真实变更，迁移 039）。
+    // ⚠️ VALUES 子句不能引用目标表列（PostgreSQL 报"字段不存在"），首次值直接 now()，
+    //    变化判断只放在 ON CONFLICT DO UPDATE 分支（EXCLUDED/accounts 表引用合法）。
     const acctId = crypto.createHash('sha256').update(username + '\n' + accountName).digest('hex');
+    const newHkRate = round(data.hkRate || 0.868, 6);
     await client.query(
-      'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,$4,$5,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, version=accounts.version+1, updated_at=EXCLUDED.updated_at',
-      [acctId, username, accountName, round(data.cashBase || 0, 2), round(data.hkRate || 0.868, 6)]
+      'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at, hk_rate_updated_at) VALUES ($1,$2,$3,$4,$5,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), now()) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, version=accounts.version+1, updated_at=EXCLUDED.updated_at, hk_rate_updated_at=CASE WHEN EXCLUDED.hk_rate IS DISTINCT FROM accounts.hk_rate THEN now() ELSE accounts.hk_rate_updated_at END',
+      [acctId, username, accountName, round(data.cashBase || 0, 2), newHkRate]
     );
     const { rows: vr } = await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     await client.query('COMMIT');
@@ -242,6 +278,7 @@ async function getAccountMeta(username, accountName) {
 module.exports = {
   loadAccountData,
   saveAccountData,
+  buildInstrumentIdMap,
   saveDailyPrices,
   loadDailyPrices,
   upsertNav,

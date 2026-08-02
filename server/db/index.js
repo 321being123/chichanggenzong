@@ -54,6 +54,7 @@ module.exports = {
   listAudit: config.listAudit,
   loadAccountData: accounts.loadAccountData,
   saveAccountData: accounts.saveAccountData,
+  buildInstrumentIdMap: accounts.buildInstrumentIdMap,
   saveDailyPrices: accounts.saveDailyPrices,
   loadDailyPrices: accounts.loadDailyPrices,
   upsertNav: accounts.upsertNav,

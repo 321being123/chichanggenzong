@@ -14,6 +14,7 @@ const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
 const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
+const { scheduleHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
 
 async function main() {
   await initSchema();
@@ -39,6 +40,8 @@ async function main() {
   scheduleStockAnalysisRefresh();
   scheduleConvertibleBondRefresh();
   scheduleIpoCalendarRefresh();
+  // 港股每手股数每日同步（仓位对比复制测算的交易单位数据源）
+  scheduleHkTradeRulesSync();
 }
 
 main().catch(e => { console.error('[worker] 启动失败:', e.message); process.exit(1); });

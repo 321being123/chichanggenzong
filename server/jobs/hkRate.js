@@ -25,12 +25,13 @@ async function fetchHkRate() {
 }
 
 // 抓取最新汇率并更新所有账户（全量覆盖，幂等；抓取失败则不更新）
+// hk_rate_updated_at 记录真实汇率更新时间（迁移 039），不随持仓保存/公开状态修改而更新
 async function ensureHkRate() {
   const rate = await fetchHkRate();
   if (!rate) return { ok: false, rate: null };
   try {
     const r = await pool.query(
-      "UPDATE accounts SET hk_rate=$1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')",
+      "UPDATE accounts SET hk_rate=$1, hk_rate_updated_at=now(), updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')",
       [rate]
     );
     return { ok: true, rate: rate, count: r.rowCount };

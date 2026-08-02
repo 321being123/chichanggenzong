@@ -1417,3 +1417,32 @@ td.negative { color: #137333; font-weight: 600; }
 }
 .date-range-control{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding:12px;border:1px solid #e4e7ec;border-radius:9px;background:#fafbfc}.date-range-control>strong{margin-right:8px}.date-range-control label{display:flex;align-items:center;gap:6px;color:#667085;font-size:12px}.date-range-control input{height:32px;padding:0 8px;border:1px solid #d0d5dd;border-radius:6px;background:#fff}.date-range-presets{display:flex}.date-range-presets button{height:32px;padding:0 11px;border:1px solid #d0d5dd;border-right:0;background:#fff;color:#475467;cursor:pointer}.date-range-presets button:first-child{border-radius:6px 0 0 6px}.date-range-presets button:last-child{border-right:1px solid #d0d5dd;border-radius:0 6px 6px 0}.date-range-presets button:hover{background:#eef4fb}.date-range-presets button.is-active{background:#245f9e;color:#fff;border-color:#245f9e}.date-range-presets button.is-active+button{border-left-color:#245f9e}
 @media(max-width:720px){.date-range-control label{width:100%;justify-content:space-between}}
+
+/* ===================== 仓位对比（position-comparison） ===================== */
+.pc-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pc-label { font-size: 12px; color: #667085; }
+.pc-select { height: 32px; padding: 0 8px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: #1a1a2e; font-size: 13px; }
+.pc-compare-btn { white-space: nowrap; }
+.pc-bench-table, .pc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pc-bench-table th, .pc-bench-table td, .pc-table th, .pc-table td { padding: 9px 10px; border-bottom: 1px solid #f0f0f0; text-align: left; }
+.pc-bench-table th, .pc-table th { background: #f8f9fc; color: #475467; font-weight: 600; white-space: nowrap; }
+.pc-bench-table tr:hover { background: #fafbfe; }
+.pc-meta { font-size: 13px; color: #344054; margin-bottom: 12px; line-height: 1.7; }
+.pc-overview { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.pc-ov-item { flex: 1; min-width: 110px; background: #f8f9fc; border: 1px solid #eef0f4; border-radius: 9px; padding: 10px 12px; text-align: center; }
+.pc-ov-item span { display: block; font-size: 11px; color: #98a2b3; margin-bottom: 4px; }
+.pc-ov-item b { font-size: 16px; color: #1a1a2e; }
+.pc-summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.pc-up { color: #d92d20; }
+.pc-down { color: #12b76a; }
+.pc-table td { vertical-align: middle; }
+
+/* 仓位对比页面（非弹框，独立主页面） */
+.pc-page { padding: 20px 24px; max-width: 1280px; margin: 0 auto; }
+.pc-page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.pc-page-head h2 { font-size: 18px; font-weight: 700; color: #1a1a2e; margin: 0 0 4px; }
+.pc-page-head p { font-size: 12px; color: #98a2b3; margin: 0; }
+.pc-page-head .btn-sm { white-space: nowrap; }
+.pc-page-empty { text-align: center; color: #98a2b3; font-size: 13px; padding: 60px 0; }
+.pc-page-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+@media (max-width: 720px) { .pc-page { padding: 14px 12px; } }

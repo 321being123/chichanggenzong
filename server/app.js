@@ -23,6 +23,7 @@ const stockAnalysisRouter = require('./routes/stockAnalysis');
 const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
 const marketVolatilityRouter = require('./routes/marketVolatility');
+const positionComparisonRouter = require('./routes/positionComparison');
 const { scheduleAllMarketCloses } = require('./jobs/marketClose');
 const { runNavSnapshotJob } = require('./jobs/navSnapshot');
 const { runIndexBaselineJob } = require('./jobs/indexBaseline');
@@ -33,6 +34,7 @@ const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
+const { scheduleHkTradeRulesSync, runHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
 
 const app = express();
 app.disable('x-powered-by');
@@ -118,6 +120,7 @@ async function start() {
   app.use('/api/bond-valuation', bondValuationRouter); // 可转债估值：列表/详情/历史/预警/刷新
   app.use('/api/knowledge', knowledgeRouter);    // 知识分享：文章/分类/评论/公开分享
   app.use('/api/market-volatility', marketVolatilityRouter); // 股市波动：格雷厄姆指数与仓位纪律
+  app.use('/api', positionComparisonRouter);     // 仓位对比：公开状态/标杆列表/对比/复制测算
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));
@@ -151,6 +154,9 @@ async function start() {
       scheduleStockAnalysisRefresh();
       scheduleConvertibleBondRefresh();
       scheduleIpoCalendarRefresh();
+      // 港股每手股数：启动即补齐一轮 + 每日 20:30 增量同步（仓位对比复制测算的交易单位数据源）
+      scheduleHkTradeRulesSync();
+      runHkTradeRulesSync('startup').catch(function (e) { console.error('港股每手股数启动同步失败:', e.message); });
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }

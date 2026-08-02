@@ -247,6 +247,8 @@ function renderAll() {
   try { renderTrades(); } catch(e) {}
   try { renderReturnsStats(); } catch(e) {}
   try { renderEarnings(); } catch(e) {}
+  // 仓位对比控件（公开状态 + 对比按钮）：账户切换后同步刷新
+  try { if (window.PositionComparison && typeof window.PositionComparison.initPositionControls === 'function') window.PositionComparison.initPositionControls(); } catch(e) {}
 }
 
 // ===================== 自动刷新 =====================
@@ -282,6 +284,7 @@ function renderAccountSelect() {
 async function switchAccount(name) {
   if (name === currentAccount) return;
   currentAccount = name;
+  window.currentAccount = name; // 同步全局（仓位对比等独立脚本经 window 读取）
   priceChangeMap = {};
   data = await loadData(currentAccount);
   // loadData() 已从 data.changes 和持仓 price 恢复 priceChangeMap
@@ -503,6 +506,7 @@ async function confirmDeleteAccount() {
   if (name === currentAccount) {
     currentAccount = accounts[0];
   }
+  window.currentAccount = currentAccount; // 删除账户后同步全局
   priceChangeMap = {};
   data = await loadData(currentAccount);
   // loadData() 已恢复 priceChangeMap
@@ -520,6 +524,7 @@ async function saveAccountName() {
     accounts.push(n);
     saveAccounts();
     currentAccount = n;
+    window.currentAccount = n; // 新建后同步全局（仓位对比等独立脚本读取）
     data = await loadData(currentAccount);
     priceChangeMap = {};
     renderAccountSelect();
@@ -547,6 +552,7 @@ async function saveAccountName() {
 
   accounts[oldIdx] = n;
   if (wasCurrent) currentAccount = n;
+  window.currentAccount = currentAccount; // 重命名后同步全局（当前账户名可能已变化）
   saveAccounts();
 
   // 保存到新名称下

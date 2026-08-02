@@ -193,6 +193,7 @@
   <div class="table-wrap">
     <div class="table-header">
       <h3>持仓明细</h3>
+      <div id="position-comp-controls" class="pc-controls"></div>
     </div>
     <div style="padding:18px;">
       <div id="positions-table"></div>
@@ -321,6 +322,23 @@
   </div>
 </div>
 </div><!-- /main-holdings -->
+
+<!-- 仓位对比（一级页：标杆选择 + 对比结果 + 复制测算） -->
+<div class="main-page" id="main-position-compare">
+  <div class="pc-page">
+    <div class="pc-page-head">
+      <div>
+        <h2>仓位对比</h2>
+        <p>与公开/半公开标杆账户对比持仓，并测算复制仓位。</p>
+      </div>
+      <div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.openBenchmarkPicker()">切换标杆</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.goBackHoldings()">← 返回持仓</button>
+      </div>
+    </div>
+    <div id="position-compare-page-body"><div class="pc-page-empty">请先选择一个标杆账户开始对比。</div></div>
+  </div>
+</div>
 
 <!-- 版本记录（一级页） -->
 <div class="main-page" id="main-changelog">
@@ -1019,6 +1037,7 @@
 <script src="js/market-volatility.js?v=12"></script>
 <script src="js/market-cycle-metrics.js?v=9"></script>
 <script src="js/home-dashboard.js?v=13"></script>
+<script src="js/position-comparison.js?v=3"></script>
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>
 <script src="js/knowledge.js?v=23"></script>
@@ -1027,6 +1046,8 @@
 let data = null;
 let accounts = [];
 let currentAccount = '默认账户';
+// 暴露当前账户给其他脚本（顶层 let 不在 window 上，position-comparison.js 等独立文件需经 window 读取）
+window.currentAccount = currentAccount;
 let priceChangeMap = {};
 const PRICE_CACHE = {};
 let indexData = {};
@@ -1112,6 +1133,10 @@ function switchMain(main, noPushState) {
   if (main === 'home') loadHomeDashboard();
   if (main === 'holdings' && username && typeof doRefresh === 'function') {
     doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
+  }
+  // 仓位对比页：进入时若已有对比数据则重渲染，否则停留在空态（由标杆选择进入）
+  if (main === 'position-compare' && window.PositionComparison && typeof window.PositionComparison.onPageEnter === 'function') {
+    window.PositionComparison.onPageEnter();
   }
 }
 
@@ -1459,6 +1484,7 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   if (loggedIn) {
     await fetchAccounts();
     currentAccount = accounts[0] || '默认账户';
+    window.currentAccount = currentAccount;
     await loadData(currentAccount);
     if (data && data.totalAsset > 0) TOTAL_ASSET = data.totalAsset;
     renderAccountSelect();
@@ -1476,7 +1502,7 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   var requestedMain = startParams.get('main');
   var requestedMetric = startParams.get('metric');
   var requestedSub = startParams.get('sub');
-  var allowedMain = ['home','holdings','stock-analysis','market-volatility','ipo','bond-safety','changelog','profile','knowledge'];
+  var allowedMain = ['home','holdings','stock-analysis','market-volatility','ipo','bond-safety','changelog','profile','knowledge','position-compare'];
   var publicMain = ['home', 'knowledge', 'market-volatility'];
   var initialMain = 'home';
   if (allowedMain.includes(requestedMain)) {

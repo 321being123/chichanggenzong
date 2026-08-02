@@ -1715,6 +1715,195 @@ async function migration030MarketCycleHomeSetting() {
   `);
 }
 
+// ========== 036：仓位对比功能（账户公开状态 + 持仓 instrument_id + 证券交易单位缓存） ==========
+// 对应 docs/仓位对比功能_开发文档.md 8.2 节：
+//   1) accounts 表加 position_visibility / position_visibility_updated_at（幂等加约束 + 部分索引）
+//   2) positions 表加 instrument_id（兼容性新增，未匹配保持 NULL，不删除旧链路）
+//   3) 新建 market.instrument_trade_rules（港股每手股数标准化事实表）
+//   4) 注册港股每手股数数据源（复用 tushare，dataset_code 见同步脚本）
+async function migration036PositionComparison() {
+  // ---- 1) accounts 公开状态 ----
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS position_visibility TEXT NOT NULL DEFAULT 'private'`);
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS position_visibility_updated_at TIMESTAMPTZ`);
+  await pool.query(`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_accounts_position_visibility' AND conrelid='accounts'::regclass) THEN
+        ALTER TABLE accounts ADD CONSTRAINT chk_accounts_position_visibility
+          CHECK (position_visibility IN ('public', 'semi_public', 'private'));
+      END IF;
+    END
+    $migration$;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_accounts_position_visibility
+      ON accounts (position_visibility, position_visibility_updated_at DESC)
+      WHERE position_visibility <> 'private';
+  `);
+
+  // ---- 2) positions.instrument_id（兼容性新增；保存链路见 server/db/accounts.js saveAccountData） ----
+  await pool.query(`
+    ALTER TABLE positions ADD COLUMN IF NOT EXISTS instrument_id BIGINT
+      REFERENCES core.instruments(instrument_id) ON DELETE SET NULL
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_positions_account_instrument
+      ON positions (username, account_name, instrument_id)
+      WHERE instrument_id IS NOT NULL;
+  `);
+
+  // ---- 3) market.instrument_trade_rules（港股每手股数事实表） ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.instrument_trade_rules (
+      instrument_id BIGINT NOT NULL
+        REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      source_id SMALLINT NOT NULL
+        REFERENCES ops.data_sources(source_id),
+      valid_from DATE NOT NULL,
+      valid_to DATE,
+      buy_lot_size_shares INTEGER NOT NULL,
+      source_updated_at TIMESTAMPTZ,
+      raw_record_id BIGINT
+        REFERENCES ops.raw_records(raw_record_id) ON DELETE SET NULL,
+      ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+      PRIMARY KEY (instrument_id, source_id, valid_from),
+
+      CONSTRAINT chk_trade_rules_lot_size
+        CHECK (buy_lot_size_shares > 0),
+
+      CONSTRAINT chk_trade_rules_validity
+        CHECK (valid_to IS NULL OR valid_to >= valid_from)
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_trade_rules_lookup
+      ON market.instrument_trade_rules
+      (instrument_id, valid_from DESC, source_id);
+  `);
+
+  // ---- 4) 数据源登记（港股每手股数走 Tushare hk_basic，复用现有 tushare source_code） ----
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES ('tushare','Tushare','official',10)
+    ON CONFLICT(source_code) DO NOTHING;
+  `);
+}
+
+// ========== 037：回填历史持仓的 instrument_id（仓位对比统一证券身份） ==========
+// 对应 docs/仓位对比功能_开发文档.md 8.2 节："迁移后按 core.instruments.canonical_code 和
+// core.instrument_identifiers 回填现有持仓的 instrument_id。未匹配记录继续保留原 code，
+// 写入 ops.data_quality_issues，不得因映射失败删除持仓。"
+// 匹配规则与 server/db/accounts.js buildInstrumentIdMap 一致：
+//   1) canonical_code 精确匹配（如 600519.SH / 00700.HK）；
+//   2) 否则按"去掉非数字字符"的纯代码匹配（如 600519 / 00700）。
+// 港股持仓需先有 core.instruments 主档（由 hkTradeRulesSync 落库），未匹配时保留 NULL
+// 并在下一轮同步/回填补偿，不删除持仓。幂等：重复执行仅更新仍未匹配的行。
+// 2026-08-01 收尾修复：映射成功后关闭 open 质量记录；未匹配先查重再插入（instrument_id NULL
+// 时 UNIQUE 不生效，须手动去重，避免每日重复累积）。
+async function migration037BackfillPositionInstrumentIds() {
+  // 1) 精确匹配（canonical_code 或 code 本身）
+  await pool.query(`
+    UPDATE positions p
+       SET instrument_id = i.instrument_id
+      FROM core.instruments i
+     WHERE p.instrument_id IS NULL
+       AND i.canonical_code = p.code
+  `);
+  // 2) 去符号纯代码匹配（排除精确已匹配的行；同一纯代码映射多个主档时不覆盖，防错配）
+  await pool.query(`
+    UPDATE positions p
+       SET instrument_id = m.instrument_id
+      FROM (
+        SELECT p.username, p.account_name, p.id, min(i.instrument_id) AS instrument_id
+          FROM positions p
+          JOIN core.instruments i
+            ON REGEXP_REPLACE(i.canonical_code, '[^0-9]', '', 'g') = REGEXP_REPLACE(p.code, '[^0-9]', '', 'g')
+         WHERE p.instrument_id IS NULL
+         GROUP BY p.username, p.account_name, p.id
+        HAVING count(DISTINCT i.instrument_id) = 1
+      ) m
+     WHERE p.username = m.username AND p.account_name = m.account_name AND p.id = m.id
+  `);
+  // 3) 映射成功：关闭已 open 的未匹配质量记录
+  await pool.query(`
+    UPDATE ops.data_quality_issues q
+       SET status='resolved', resolved_at=now(), details=jsonb_set(details,'{resolved_by}','"backfill"')
+      FROM positions p
+     WHERE q.dataset_code='positions' AND q.field_code='instrument_id' AND q.issue_type='unmatched_position'
+       AND q.status='open'
+       AND p.instrument_id IS NOT NULL
+       AND q.details->>'username'=p.username AND q.details->>'account_name'=p.account_name AND q.details->>'code'=p.code
+  `);
+  // 4) 仍未匹配：先查重再插入（避免重复累积）
+  await pool.query(`
+    INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
+    SELECT NULL,'positions','instrument_id','unmatched_position','warning',
+           jsonb_build_object('username',p.username,'account_name',p.account_name,'code',p.code)
+      FROM positions p
+     WHERE p.instrument_id IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM core.instruments i
+          WHERE REGEXP_REPLACE(i.canonical_code, '[^0-9]', '', 'g') = REGEXP_REPLACE(p.code, '[^0-9]', '', 'g')
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM ops.data_quality_issues q
+          WHERE q.dataset_code='positions' AND q.field_code='instrument_id'
+            AND q.issue_type='unmatched_position' AND q.status='open'
+            AND q.details->>'username'=p.username
+            AND q.details->>'account_name'=p.account_name
+            AND q.details->>'code'=p.code
+       )
+  `);
+  // 5) 清理历史重复的 open 记录（同一持仓保留最新一条）
+  await pool.query(`
+    DELETE FROM ops.data_quality_issues q
+      USING ops.data_quality_issues q2
+     WHERE q.dataset_code='positions' AND q.field_code='instrument_id' AND q.issue_type='unmatched_position'
+       AND q.status='open' AND q2.dataset_code=q.dataset_code AND q2.field_code=q.field_code
+       AND q2.issue_type=q.issue_type AND q2.status='open'
+       AND q2.details->>'username'=q.details->>'username'
+       AND q2.details->>'account_name'=q.details->>'account_name'
+       AND q2.details->>'code'=q.details->>'code'
+       AND (q.issue_id < q2.issue_id)
+  `);
+}
+
+// ========== 038：数据架构收尾（交易单位规则去重 + 质量问题清理） ==========
+// 2026-08-01 验收收尾：
+//   1) 清理 037 早期版本累积的重复 open 质量记录（同持仓保留最新一条）；
+//   2) 重跑回填并关闭已映射持仓的 open 记录（037 函数已含此逻辑，这里再次执行以修复存量）；
+//   3) 修正 market.instrument_trade_rules 中同一天重复写入的规则（保留最新一条）。
+async function migration038DataArchitectureCleanup() {
+  // 1) 清理重复 open 质量记录（同一持仓仅保留 issue_id 最大的一条）
+  await pool.query(`
+    DELETE FROM ops.data_quality_issues q
+      USING ops.data_quality_issues q2
+     WHERE q.dataset_code='positions' AND q.field_code='instrument_id' AND q.issue_type='unmatched_position'
+       AND q.status='open' AND q2.dataset_code=q.dataset_code AND q2.field_code=q.field_code
+       AND q2.issue_type=q.issue_type AND q2.status='open'
+       AND q2.details->>'username'=q.details->>'username'
+       AND q2.details->>'account_name'=q.details->>'account_name'
+       AND q2.details->>'code'=q.details->>'code'
+       AND q.issue_id < q2.issue_id
+  `);
+  // 2) 重跑回填（037 逻辑，含关闭已映射的 open 记录 + 去重插入未匹配记录）
+  await migration037BackfillPositionInstrumentIds();
+}
+
+// ========== 039：accounts.hk_rate_updated_at（精确记录汇率更新时间） ==========
+// 2026-08-02 验收收尾：此前汇率"更新时间"复用 accounts.updated_at（会被持仓保存、公开状态
+// 修改等操作更新），不是真实汇率更新时间。新增专用列，由 ensureHkRate / saveAccountData
+// 在写 hk_rate 时同步更新；loadAccountCash 读取它作为汇率时间。
+async function migration039AccountHkRateUpdatedAt() {
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS hk_rate_updated_at TIMESTAMPTZ`);
+  // 存量：updated_at 是 text（to_char 格式），转 timestamptz 近似；转换失败则用 now()
+  await pool.query(`
+    UPDATE accounts SET hk_rate_updated_at = COALESCE(updated_at::timestamptz, now())
+     WHERE hk_rate_updated_at IS NULL
+  `);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1772,6 +1961,10 @@ const MIGRATIONS = [
   { version: '033_stock_unified', up: migration033StockUnified },
   { version: '034_bond_profile_list_date', up: migration034BondProfileListDate },
   { version: '035_bond_unified_stk_fallback', up: migration035BondUnifiedStkFallback },
+  { version: '036_position_comparison', up: migration036PositionComparison },
+  { version: '037_backfill_position_instrument_ids', up: migration037BackfillPositionInstrumentIds },
+  { version: '038_data_architecture_cleanup', up: migration038DataArchitectureCleanup },
+  { version: '039_account_hk_rate_updated_at', up: migration039AccountHkRateUpdatedAt },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

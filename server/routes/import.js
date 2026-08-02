@@ -186,7 +186,71 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
   }
 }));
 
-// ========== Excel 导入解析（大模型，交易/持仓自动识别）==========
+// ========== Excel 结构化直解析（表头规则命中时优先，不走大模型） ==========
+// 目的：持仓历史/对账单等表头清晰的 Excel 直接按列提取，避免依赖大模型识别；
+// 规则未命中返回 null，由调用方回退到大模型识别。
+function normHeaderCell(h) {
+  return String(h == null ? '' : h)
+    .replace(/[（(].*?[)）]/g, '')   // 去掉括号内注释（如 数量(股)）
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+const EXCEL_HINTS = {
+  code: ['代码', 'code', '证券编码'],
+  name: ['名称', 'name'],
+  price: ['价格', '成交价', '均价', '成本价', '买入均价', '成本'],
+  qty: ['数量', '成交量', '持仓数量', '股票余额', '总余额', '余额', 'quantity', 'qty'],
+  dir: ['买卖', '方向', '操作', '委托'],
+  date: ['日期', '时间', 'date'],
+  amount: ['金额', 'amount', '发生金额']
+};
+function detectExcelMapping(headers) {
+  const map = {};
+  headers.forEach(function (h, i) {
+    const n = normHeaderCell(h);
+    if (!n) return;
+    Object.keys(EXCEL_HINTS).forEach(function (key) {
+      if (map[key] !== undefined) return;
+      if (EXCEL_HINTS[key].some(function (k) { return n === k || n.indexOf(k) >= 0; })) map[key] = i;
+    });
+  });
+  return map;
+}
+// 命中「代码+名称+价格+数量」核心列 → 按列直接提取 items；否则返回 null
+function buildStructuredItems(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return null;
+  const headers = rows[0].map(normHeaderCell);
+  const m = detectExcelMapping(headers);
+  if (m.code === undefined || m.name === undefined || m.price === undefined || m.qty === undefined) return null;
+  // 有方向列（买卖/方向/操作/委托）→ 交易；否则视为持仓
+  const kind = m.dir !== undefined ? 'trade' : 'position';
+  const items = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = Array.isArray(rows[i]) ? rows[i] : [];
+    const get = function (key) { return m[key] !== undefined ? r[m[key]] : null; };
+    const code = String(get('code') == null ? '' : get('code')).replace(/\s+/g, '');
+    if (!code) continue;
+    const name = String(get('name') == null ? '' : get('name')).trim();
+    const price = Number(String(get('price')).replace(/,/g, ''));
+    const qty = Number(String(get('qty')).replace(/,/g, ''));
+    if (!isFinite(price) || !isFinite(qty)) continue;
+    const item = { kind: kind, code: normalizeCode(code), name: name || code, price: price, quantity: qty };
+    if (kind === 'trade') {
+      const dirRaw = String(get('dir') == null ? '' : get('dir'));
+      item.direction = /卖|sell/i.test(dirRaw) ? 'sell' : 'buy';
+      const d = String(get('date') == null ? '' : get('date')).trim();
+      if (d) item.date = d.replace(/[./]/g, '-').replace(/(\d{4})-(\d{1,2})-(\d{1,2}).*/, '$1-$2-$3');
+      if (m.amount !== undefined) {
+        const amt = Number(String(get('amount')).replace(/,/g, ''));
+        if (isFinite(amt)) item.amount = amt;
+      }
+    }
+    items.push(item);
+  }
+  return items.length ? items : null;
+}
+
+// ========== Excel 导入解析（结构化直解析优先，其次大模型，交易/持仓自动识别）==========
 router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs: 60000, max: 10, message: 'Excel 解析请求过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const { file, model } = req.body;
@@ -204,6 +268,10 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
     if (!rows || rows.length === 0) {
       return res.json({ items: [] });
     }
+
+    // 结构化直解析优先：表头清晰的（持仓历史/对账单等）直接提取，不走大模型
+    const structured = buildStructuredItems(rows);
+    if (structured) return res.json({ items: structured });
 
     // AI 输入截断，避免超大表格放大 token 成本（最多约 5 万字符）
     const rowsJson = JSON.stringify(rows);
@@ -261,9 +329,11 @@ router.post('/api/index-history', requireLogin, asyncHandler(assertOwnership), r
   }
 }));
 
-// 暴露 validateImage / pickVisionModel 供测试使用（不改变 router 导出）
+// 暴露 validateImage / pickVisionModel / 结构化直解析 供测试使用（不改变 router 导出）
 router.validateImage = validateImage;
 router.pickVisionModel = pickVisionModel;
 router.fetchAiWithRetry = fetchAiWithRetry;
+router.detectExcelMapping = detectExcelMapping;
+router.buildStructuredItems = buildStructuredItems;
 
 module.exports = router;

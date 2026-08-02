@@ -74,6 +74,64 @@ async function main() {
     assert.strictEqual(calls, 1);
   });
 
+  // ===== Excel 结构化直解析（表头清晰不走大模型）=====
+  await check('持仓历史表直解析为 position', () => {
+    const items = router.buildStructuredItems([
+      ['交易日期', '证券代码', '证券名称', '股票余额', '成本价'],
+      ['2026-01-05', '600519', '贵州茅台', '100', '1800.50']
+    ]);
+    assert.ok(items && items.length === 1);
+    assert.strictEqual(items[0].kind, 'position');
+    assert.strictEqual(items[0].code, '600519');
+    assert.strictEqual(items[0].price, 1800.5);
+    assert.strictEqual(items[0].quantity, 100);
+  });
+  await check('成交明细表（有买卖标志）直解析为 trade 且方向/日期/金额正确', () => {
+    const items = router.buildStructuredItems([
+      ['成交日期', '证券代码', '证券名称', '买卖标志', '成交价格', '成交数量', '发生金额'],
+      ['2026-07-09', '000001', '平安银行', '买入', '12.34', '100', '1234.00'],
+      ['2026-07-10', '600519', '贵州茅台', '卖出', '1850.00', '50', '92500.00']
+    ]);
+    assert.ok(items && items.length === 2);
+    assert.strictEqual(items[0].kind, 'trade');
+    assert.strictEqual(items[0].direction, 'buy');
+    assert.strictEqual(items[0].date, '2026-07-09');
+    assert.strictEqual(items[0].amount, 1234);
+    assert.strictEqual(items[1].direction, 'sell');
+  });
+  await check('带括号注释表头也能命中（持仓数量(股)）', () => {
+    const items = router.buildStructuredItems([
+      ['证券代码', '证券名称', '持仓数量(股)', '买入均价(元)'],
+      ['300750', '宁德时代', '200', '210.35']
+    ]);
+    assert.ok(items && items.length === 1 && items[0].kind === 'position');
+  });
+  await check('千分位数字正确转换', () => {
+    const items = router.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['601318', '中国平安', '45,600.50', '1,000']
+    ]);
+    assert.ok(items && items[0].price === 45600.5 && items[0].quantity === 1000);
+  });
+  await check('港股代码 5 位补零', () => {
+    const items = router.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['700', '腾讯控股', '380.20', '100'],
+      ['9988', '阿里巴巴', '95.50', '200']
+    ]);
+    assert.ok(items && items[0].code === '00700' && items[1].code === '09988');
+  });
+  await check('复杂对账单（无核心列）返回 null 走大模型', () => {
+    const items = router.buildStructuredItems([
+      ['序号', '资金账号', '摘要', '发生额', '结余'],
+      ['1', 'A12345', '买入手续费', '-5.00', '995.00']
+    ]);
+    assert.strictEqual(items, null);
+  });
+  await check('无数据行返回 null', () => {
+    assert.strictEqual(router.buildStructuredItems([['代码', '名称']]), null);
+  });
+
   console.log('\n通过 ' + passed + ' 项');
 }
 

@@ -16,10 +16,36 @@ process.stdin.on('end', () => {
     try { buffer = Buffer.from(input.b64 || '', 'base64'); }
     catch (e) { process.stdout.write(JSON.stringify({ error: '文件解码失败' })); return; }
 
-    // 1) 魔数校验：xlsx 本质是 ZIP 归档，必须以 PK\x03\x04 开头
-    if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B ||
-        buffer[2] !== 0x03 || buffer[3] !== 0x04) {
-      process.stdout.write(JSON.stringify({ error: '文件不是有效的 Excel(.xlsx) 文件' }));
+    // 1) 魔数判断：xlsx=ZIP(PK\x03\x04)；xls 老格式=OLE2(D0CF11E0)；其余尝试按 CSV 解析
+    if (buffer.length < 4) {
+      process.stdout.write(JSON.stringify({ error: '文件内容为空或损坏' }));
+      return;
+    }
+    const isXlsx = buffer[0] === 0x50 && buffer[1] === 0x4B && buffer[2] === 0x03 && buffer[3] === 0x04;
+    const isXls = buffer[0] === 0xD0 && buffer[1] === 0xCF && buffer[2] === 0x11 && buffer[3] === 0xE0;
+    if (isXls) {
+      process.stdout.write(JSON.stringify({ error: '不支持 .xls 老格式，请在 Excel 中另存为 .xlsx 或 .csv 后再上传' }));
+      return;
+    }
+    if (!isXlsx) {
+      // 非 ZIP 归档：按 CSV 尝试（ExcelJS csv 解析，worker 超时/内存上限兜底）
+      // 剥离 UTF-8 BOM，避免表头带不可见字符
+      let csvBuffer = buffer;
+      if (csvBuffer[0] === 0xEF && csvBuffer[1] === 0xBB && csvBuffer[2] === 0xBF) csvBuffer = csvBuffer.subarray(3);
+      let csvText;
+      try {
+        csvText = csvBuffer.toString('utf8');
+        if (csvText.indexOf('\uFFFD') >= 0) { // 含替换字符 → 大概率 GBK 编码，改用 gbk 重解
+          try { csvText = new TextDecoder('gbk').decode(csvBuffer); } catch (e) { /* 保持 utf8 */ }
+        }
+      } catch (e) {
+        process.stdout.write(JSON.stringify({ error: 'CSV 解码失败' }));
+        return;
+      }
+      const wbCsv = new ExcelJS.Workbook();
+      await wbCsv.csv.read(Readable.from(Buffer.from(csvText, 'utf8')), { parserOptions: { delimiter: ',', quote: '"' } });
+      const rows = collectRows(wbCsv, input);
+      process.stdout.write(JSON.stringify({ sheetNames: ['CSV'], rows }));
       return;
     }
 
@@ -55,26 +81,8 @@ process.stdin.on('end', () => {
       await wb.xlsx.read(Readable.from(buffer));
       if (wb.worksheets.length === 0) { process.stdout.write(JSON.stringify({ error: 'Excel 无工作表' })); return; }
       if (wb.worksheets.length > 20) { process.stdout.write(JSON.stringify({ error: 'Excel 工作表过多' })); return; }
-      let ws;
-      if (input.mode === 'contains' && input.contains) {
-        ws = wb.worksheets.find(s => String(s.name).includes(input.contains)) || wb.worksheets[0];
-      } else {
-        ws = wb.worksheets[0];
-      }
       const sheetNames = wb.worksheets.map(s => s.name);
-      const rows = [];
-      // 单元格统一转文本；公式单元格（ExcelJS 值为 { formula, result }）取计算结果，
-      // 否则 String() 会变成 "[object Object]"（如 净值=市值/份额 这类公式列）
-      const cellText = function (c) {
-        let v = c;
-        if (v && typeof v === 'object' && !(v instanceof Date) && 'result' in v) v = v.result;
-        const s = String(v == null ? '' : v);
-        return s.length > 300 ? s.slice(0, 300) : s;
-      };
-      ws.eachRow((row) => {
-        const vals = Array.isArray(row.values) ? row.values.slice(1) : [];
-        rows.push(vals.map(cellText));
-      });
+      const rows = collectRows(wb, input);
       // 限制规模：行/列/单元格，防止超大表格撑爆内存 / 放大 AI token
       const trimmed = rows.slice(0, 2000).map(r =>
         Array.isArray(r) ? r.slice(0, 60).map(cellText) : r);
@@ -84,3 +92,32 @@ process.stdin.on('end', () => {
     }
   })();
 });
+
+// 单元格统一转文本；公式单元格（ExcelJS 值为 { formula, result }）取计算结果，
+// 超链接/富文本对象取 text，否则 String() 会变成 "[object Object]"
+function cellText(c) {
+  let v = c;
+  if (v && typeof v === 'object' && !(v instanceof Date)) {
+    if ('result' in v) v = v.result;
+    else if (typeof v.text === 'string' && v.text) v = v.text;
+  }
+  const s = String(v == null ? '' : v);
+  return s.length > 300 ? s.slice(0, 300) : s;
+}
+
+// 从工作簿收集首个工作表的所有行（统一转文本）
+function collectRows(wb, inputObj) {
+  const rows = [];
+  let ws;
+  if (inputObj && inputObj.mode === 'contains' && inputObj.contains) {
+    ws = wb.worksheets.find(s => String(s.name).includes(inputObj.contains)) || wb.worksheets[0];
+  } else {
+    ws = wb.worksheets[0];
+  }
+  if (!ws) return rows;
+  ws.eachRow((row) => {
+    const vals = Array.isArray(row.values) ? row.values.slice(1) : [];
+    rows.push(vals.map(cellText));
+  });
+  return rows;
+}

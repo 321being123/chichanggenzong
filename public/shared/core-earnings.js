@@ -180,6 +180,15 @@ function normalizeDate(v) {
 /** 补零辅助 */
 function pad2(n) { return String(n).padStart(2, '0'); }
 
+// 数值单元格清洗：支持千分位逗号、带单位/符号（"1,234.56"、"100股"、"12.34元"），无法识别返回 NaN
+function parseNumericCellF(v) {
+  if (v == null || v === '') return NaN;
+  if (typeof v === 'number') return v;
+  var s = String(v).replace(/,/g, '').trim();
+  var m = s.match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : NaN;
+}
+
 // 投入本金 investedAt() 已收口到 shared/nav-math.js（前后端共用），此处不再重复定义
 
 // 把真实数据(navHistory + cashFlows + cashBase)转换为收益 tab 渲染器吃的标准行结构
@@ -417,14 +426,13 @@ async function finishImport(rows, mapping) {
   const badRows = [];
   rows.forEach(function (row, i) {
     const date = normalizeDate(row[mapping.date]);
-    const navRaw = row[mapping.nav];
-    const nav = (navRaw == null || navRaw === '') ? null : Number(navRaw);
+    const nav = parseNumericCellF(row[mapping.nav]);
     if (!date || nav === null || isNaN(nav)) { badRows.push(i + 1); return; }
     parsed.push({
       date: date,
       nav: nav,
-      totalAsset: (mapping.total >= 0 && row[mapping.total] != null && row[mapping.total] !== '') ? Number(row[mapping.total]) : null,
-      invested: (mapping.invested >= 0 && row[mapping.invested] != null && row[mapping.invested] !== '') ? Number(row[mapping.invested]) : null
+      totalAsset: (mapping.total >= 0 && row[mapping.total] != null && row[mapping.total] !== '') ? parseNumericCellF(row[mapping.total]) : null,
+      invested: (mapping.invested >= 0 && row[mapping.invested] != null && row[mapping.invested] !== '') ? parseNumericCellF(row[mapping.invested]) : null
     });
   });
   if (parsed.length === 0) {

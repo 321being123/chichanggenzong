@@ -216,6 +216,30 @@ function detectExcelMapping(headers) {
   });
   return map;
 }
+// 数值单元格清洗：支持千分位逗号、带单位/符号（"1,234.56"、"100股"、"12.34元"），无法识别返回 NaN
+function parseNumericCell(v) {
+  if (v == null) return NaN;
+  if (typeof v === 'number') return v;
+  const s = String(v).replace(/,/g, '').trim();
+  const m = s.match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : NaN;
+}
+// 日期单元格归一化为 YYYY-MM-DD（支持 ISO/斜杠/点/中文/英文格式），无法识别返回原串
+function normalizeDateCell(v) {
+  if (v == null || v === '') return '';
+  if (v instanceof Date && !isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  if (!s) return '';
+  let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (m) return m[1] + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[3]).padStart(2, '0');
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/); // 美式 1/15/2024
+  if (m) return m[3] + '-' + String(m[1]).padStart(2, '0') + '-' + String(m[2]).padStart(2, '0');
+  const cn = s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日?/);
+  if (cn) return cn[1] + '-' + String(cn[2]).padStart(2, '0') + '-' + String(cn[3]).padStart(2, '0');
+  const dt = new Date(s);
+  if (!isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  return s;
+}
 // 命中「代码+名称+价格+数量」核心列 → 按列直接提取 items；否则返回 null
 function buildStructuredItems(rows) {
   if (!Array.isArray(rows) || rows.length < 2) return null;
@@ -231,17 +255,17 @@ function buildStructuredItems(rows) {
     const code = String(get('code') == null ? '' : get('code')).replace(/\s+/g, '');
     if (!code) continue;
     const name = String(get('name') == null ? '' : get('name')).trim();
-    const price = Number(String(get('price')).replace(/,/g, ''));
-    const qty = Number(String(get('qty')).replace(/,/g, ''));
+    const price = parseNumericCell(get('price'));
+    const qty = parseNumericCell(get('qty'));
     if (!isFinite(price) || !isFinite(qty)) continue;
     const item = { kind: kind, code: normalizeCode(code), name: name || code, price: price, quantity: qty };
     if (kind === 'trade') {
       const dirRaw = String(get('dir') == null ? '' : get('dir'));
-      item.direction = /卖|sell/i.test(dirRaw) ? 'sell' : 'buy';
-      const d = String(get('date') == null ? '' : get('date')).trim();
-      if (d) item.date = d.replace(/[./]/g, '-').replace(/(\d{4})-(\d{1,2})-(\d{1,2}).*/, '$1-$2-$3');
+      item.direction = /卖|卖出|sell/i.test(dirRaw) ? 'sell' : 'buy';
+      const d = normalizeDateCell(get('date'));
+      if (d) item.date = d;
       if (m.amount !== undefined) {
-        const amt = Number(String(get('amount')).replace(/,/g, ''));
+        const amt = parseNumericCell(get('amount'));
         if (isFinite(amt)) item.amount = amt;
       }
     }
@@ -335,5 +359,7 @@ router.pickVisionModel = pickVisionModel;
 router.fetchAiWithRetry = fetchAiWithRetry;
 router.detectExcelMapping = detectExcelMapping;
 router.buildStructuredItems = buildStructuredItems;
+router.parseNumericCell = parseNumericCell;
+router.normalizeDateCell = normalizeDateCell;
 
 module.exports = router;

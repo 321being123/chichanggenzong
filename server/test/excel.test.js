@@ -30,12 +30,19 @@ check('构造小表并解析', async () => {
   assert.strictEqual(r.rows[1][0], '600000');
 });
 
-console.log('B. 非 xlsx（魔数错误）应被拒绝');
-check('传入纯文本 base64', async () => {
+console.log('B. xls 老格式应被拒绝；纯文本按 CSV 解析（产品支持 csv）');
+check('传入 xls 老格式被拒并提示另存为', async () => {
+  const b = Buffer.concat([Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]), Buffer.alloc(100)]);
   let threw = false;
-  try { await safeParseExcel(Buffer.from('这是文本不是Excel').toString('base64'), { mode: 'first' }); }
-  catch (e) { threw = true; assert.ok(/有效的 Excel/.test(e.message), '错误提示不符: ' + e.message); }
-  assert.ok(threw, '非 xlsx 未被拒绝');
+  try { await safeParseExcel(b.toString('base64'), { mode: 'first' }); }
+  catch (e) { threw = true; assert.ok(/不支持 .xls/.test(e.message), '错误提示不符: ' + e.message); }
+  assert.ok(threw, 'xls 老格式未被拒绝');
+});
+check('传入纯文本按 CSV 解析成功', async () => {
+  const r = await safeParseExcel(Buffer.from('证券代码,证券名称,持仓数量,成本价\n600519,贵州茅台,100,1800.5').toString('base64'), { mode: 'first' });
+  assert.ok(Array.isArray(r.rows) && r.rows.length >= 2, 'CSV 行数异常');
+  assert.strictEqual(r.rows[0][0], '证券代码');
+  assert.strictEqual(r.rows[1][0], '600519');
 });
 
 console.log('C. 压缩炸弹（声明解压体积巨大）应被拒绝');

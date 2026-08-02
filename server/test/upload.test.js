@@ -2,6 +2,7 @@
 // 目标：伪造 MIME 的非图片被拒；超大图被拒；客户端无法指定名单外的高成本模型。
 const assert = require('assert');
 const router = require('../routes/import');
+const { safeParseExcel } = require('../services/excelSafe');
 
 let passed = 0;
 async function check(name, fn) {
@@ -130,6 +131,54 @@ async function main() {
   });
   await check('无数据行返回 null', () => {
     assert.strictEqual(router.buildStructuredItems([['代码', '名称']]), null);
+  });
+
+  // ===== 数值清洗 / 日期归一化 / 文件格式兼容 =====
+  await check('数值清洗：千分位/单位/货币符号', () => {
+    assert.strictEqual(router.parseNumericCell('1,234.56'), 1234.56);
+    assert.strictEqual(router.parseNumericCell('100股'), 100);
+    assert.strictEqual(router.parseNumericCell('12.34元'), 12.34);
+    assert.strictEqual(router.parseNumericCell(-5), -5);
+    assert.ok(isNaN(router.parseNumericCell('N/A')));
+    assert.ok(isNaN(router.parseNumericCell(null)));
+  });
+  await check('日期归一化：英文/斜杠/中文/ISO', () => {
+    assert.strictEqual(router.normalizeDateCell('Tue Aug 21 2018 08:00:00 GMT+0800 (中国标准时间)'), '2018-08-21');
+    assert.strictEqual(router.normalizeDateCell('2026/1/5'), '2026-01-05');
+    assert.strictEqual(router.normalizeDateCell('2026.1.5'), '2026-01-05');
+    assert.strictEqual(router.normalizeDateCell('2026年1月5日'), '2026-01-05');
+    assert.strictEqual(router.normalizeDateCell('2026-07-09'), '2026-07-09');
+    assert.strictEqual(router.normalizeDateCell(new Date(Date.UTC(2026, 0, 5))), '2026-01-05');
+  });
+  await check('直解析增强：带单位数值 + 英文日期 + 卖出方向', () => {
+    const items = router.buildStructuredItems([
+      ['日期', '代码', '名称', '买卖', '价格', '数量', '金额'],
+      ['2026/7/9', '000001', '平安银行', '买入', '12.34元', '100股', '1,234.00'],
+      ['Tue Aug 21 2018 08:00:00 GMT+0800 (中国标准时间)', '600519', '贵州茅台', '卖出', '1,850.00', '50', '92,500.00']
+    ]);
+    assert.ok(items && items.length === 2);
+    assert.strictEqual(items[0].date, '2026-07-09');
+    assert.strictEqual(items[0].price, 12.34);
+    assert.strictEqual(items[0].quantity, 100);
+    assert.strictEqual(items[0].amount, 1234);
+    assert.strictEqual(items[1].date, '2018-08-21');
+    assert.strictEqual(items[1].direction, 'sell');
+  });
+  await check('CSV 支持（UTF-8 BOM 中文表头）', async () => {
+    const csv = '\uFEFF证券代码,证券名称,持仓数量,成本价\n600519,贵州茅台,100,1800.5\n000001,平安银行,500,12.34\n';
+    const parsed = await safeParseExcel(Buffer.from(csv, 'utf8').toString('base64'), { mode: 'first' });
+    assert.deepStrictEqual(parsed.rows[0], ['证券代码', '证券名称', '持仓数量', '成本价']);
+    const items = router.buildStructuredItems(parsed.rows);
+    assert.ok(items && items.length === 2 && items[0].code === '600519' && items[0].quantity === 100);
+  });
+  await check('xls 老格式明确拒绝', async () => {
+    const xls = Buffer.concat([Buffer.from([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]), Buffer.alloc(100)]);
+    try {
+      await safeParseExcel(xls.toString('base64'), { mode: 'first' });
+      assert.fail('xls 应被拒绝');
+    } catch (e) {
+      assert.ok(/不支持 .xls/.test(e.message), '应提示另存为 xlsx/csv，实际: ' + e.message);
+    }
   });
 
   console.log('\n通过 ' + passed + ' 项');

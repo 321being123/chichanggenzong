@@ -63,19 +63,21 @@ process.stdin.on('end', () => {
       }
       const sheetNames = wb.worksheets.map(s => s.name);
       const rows = [];
+      // 单元格统一转文本；公式单元格（ExcelJS 值为 { formula, result }）取计算结果，
+      // 否则 String() 会变成 "[object Object]"（如 净值=市值/份额 这类公式列）
+      const cellText = function (c) {
+        let v = c;
+        if (v && typeof v === 'object' && !(v instanceof Date) && 'result' in v) v = v.result;
+        const s = String(v == null ? '' : v);
+        return s.length > 300 ? s.slice(0, 300) : s;
+      };
       ws.eachRow((row) => {
         const vals = Array.isArray(row.values) ? row.values.slice(1) : [];
-        rows.push(vals.map(c => {
-          const s = String(c == null ? '' : c);
-          return s.length > 300 ? s.slice(0, 300) : s;
-        }));
+        rows.push(vals.map(cellText));
       });
       // 限制规模：行/列/单元格，防止超大表格撑爆内存 / 放大 AI token
       const trimmed = rows.slice(0, 2000).map(r =>
-        Array.isArray(r) ? r.slice(0, 60).map(c => {
-          const s = String(c == null ? '' : c);
-          return s.length > 300 ? s.slice(0, 300) : s;
-        }) : r);
+        Array.isArray(r) ? r.slice(0, 60).map(cellText) : r);
       process.stdout.write(JSON.stringify({ sheetNames, rows: trimmed }));
     } catch (e) {
       process.stdout.write(JSON.stringify({ error: 'Excel 解析失败：' + e.message }));

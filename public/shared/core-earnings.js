@@ -440,6 +440,9 @@ async function finishImport(rows, mapping) {
     return;
   }
 
+  // 导入前自动备份当前 navHistory（误导入可一键还原），失败不阻塞导入
+  await backupNavHistoryServer();
+
   // 冲突检测：导入中存在日期落在线上段 [首条, 末条] 内
   const realStart = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
   const realEnd = (data.navHistory && data.navHistory.length) ? data.navHistory[data.navHistory.length - 1].date : null;
@@ -453,6 +456,76 @@ async function finishImport(rows, mapping) {
   let msg = '已导入 ' + parsed.length + ' 条历史净值';
   if (badRows.length) msg += '（' + badRows.length + ' 行因缺日期/净值未导入）';
   showToast(msg);
+}
+
+// ===================== 历史净值备份/还原（导入前自动拍快照，误导入可一键还原） =====================
+
+// 调用后端 API：把当前 navHistory 存到 nav_history_backup
+async function backupNavHistoryServer() {
+  if (!currentAccount) return;
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/backup-nav-history'), { method: 'POST' });
+    if (!r.ok) console.warn('历史数据备份失败：HTTP ' + r.status);
+  } catch (e) { console.warn('历史数据备份失败', e); }
+}
+
+// 打开"管理历史数据"弹窗
+async function openNavHistoryManageModal() {
+  if (!currentAccount) { showToast('请先选择账户'); return; }
+  var info = document.getElementById('nav-mgmt-backup-info');
+  var restoreBtn = document.getElementById('nav-mgmt-restore-btn');
+  if (info) info.innerHTML = '正在读取备份信息...';
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/nav-history-backup-info'));
+    var d = await r.json();
+    if (d.hasBackup) {
+      if (info) info.innerHTML = '✓ 已备份 <b>' + (d.rows || 0) + '</b> 条记录，备份时间：' + escapeHtml(String(d.at || '')).replace('T', ' ').replace(/\..*$/, '');
+      if (restoreBtn) restoreBtn.disabled = false;
+    } else {
+      if (info) info.innerHTML = '⚠ 当前账户没有备份（本次功能之前的历史数据未自动备份）—— 一键还原不可用，可用「清空投入本金」救火';
+      if (restoreBtn) restoreBtn.disabled = true;
+    }
+  } catch (e) {
+    if (info) info.innerHTML = '读取备份信息失败：' + escapeHtml(e.message);
+    if (restoreBtn) restoreBtn.disabled = true;
+  }
+  openModal('modal-nav-mgmt');
+}
+
+// 一键还原：把 nav_history_backup 恢复到 navHistory
+async function restoreNavHistory() {
+  if (!currentAccount) return;
+  if (!confirm('确认把当前账户的历史净值恢复到上次导入前的快照？\n\n当前数据会被覆盖。')) return;
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/restore-nav-history'), { method: 'POST' });
+    var d = await r.json();
+    if (!r.ok || d.error) { showToast('还原失败：' + (d.error || r.status)); return; }
+    showToast('已还原 ' + (d.rows || 0) + ' 条记录' + (d.backupAt ? '（备份时间 ' + String(d.backupAt).replace('T',' ').replace(/\..*$/,'') + '）' : ''));
+    var fresh = await loadData(currentAccount);
+    if (fresh) { data = fresh; }
+    renderEarnings();
+    closeModal('modal-nav-mgmt');
+  } catch (e) { showToast('还原失败：' + e.message); }
+}
+
+// 清空投入本金字段（让前端按现金流转公式回算，适合"投入本金数据误导入"场景）
+async function clearNavHistoryInvested() {
+  if (!currentAccount) return;
+  if (!confirm('确认把当前账户所有历史净值的「投入本金」字段清空？\n\n此操作不可撤销（除非有备份可还原）。')) return;
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/clear-nav-history'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'invested-only' })
+    });
+    var d = await r.json();
+    if (!r.ok || d.error) { showToast('清理失败：' + (d.error || r.status)); return; }
+    showToast('已清空「投入本金」字段，共 ' + (d.rows || 0) + ' 条记录');
+    var fresh = await loadData(currentAccount);
+    if (fresh) { data = fresh; }
+    renderEarnings();
+    closeModal('modal-nav-mgmt');
+  } catch (e) { showToast('清理失败：' + e.message); }
 }
 
 // ===================== 列手动匹配弹框 =====================

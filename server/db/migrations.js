@@ -1904,6 +1904,14 @@ async function migration039AccountHkRateUpdatedAt() {
   `);
 }
 
+// ========== 040：account_data 历史净值备份（导入前自动拍快照，误导入可一键还原） ==========
+// 2026-08-02 误导入清污染：用户把招商账户的"投入本金"误导入到华泰账户，污染历史走势。
+// 后续导入历史净值前自动备份当前 navHistory 到 nav_history_backup，并暴露一键还原 API。
+async function migration040NavHistoryBackup() {
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_history_backup JSONB`);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_history_backup_at TIMESTAMPTZ`);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1965,6 +1973,7 @@ const MIGRATIONS = [
   { version: '037_backfill_position_instrument_ids', up: migration037BackfillPositionInstrumentIds },
   { version: '038_data_architecture_cleanup', up: migration038DataArchitectureCleanup },
   { version: '039_account_hk_rate_updated_at', up: migration039AccountHkRateUpdatedAt },
+  { version: '040_nav_history_backup', up: migration040NavHistoryBackup },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

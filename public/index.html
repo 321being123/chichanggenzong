@@ -209,6 +209,7 @@
       <div>
         <input type="file" id="fund-excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" onchange="importFundExcel(event)">
         <button class="btn btn-primary btn-sm" onclick="document.getElementById('fund-excel-input').click()">📥 导入历史数据</button>
+        <button class="btn btn-outline btn-sm" onclick="openNavHistoryManageModal()" style="margin-left:6px;">🛠 管理历史数据</button>
       </div>
     </div>
     <div style="padding:18px;">
@@ -875,6 +876,26 @@
       <button class="btn btn-primary" id="conflict-import-btn">导入数据覆盖线上（用 Excel 净值替换冲突日）</button>
       <button class="btn btn-outline" id="conflict-online-btn">线上覆盖导入（保留线上真实记录，仅补早于首条的历史）</button>
     </div>
+  </div>
+</div>
+
+<!-- 管理历史数据弹窗（误导入/污染时还原 + 清空投入本金） -->
+<div class="modal-overlay" id="modal-nav-mgmt" style="z-index:2100;">
+  <div class="modal" style="width:520px;">
+    <h2>管理历史数据</h2>
+    <span class="modal-close" onclick="closeModal('modal-nav-mgmt')">&times;</span>
+    <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">
+      误导入到错误账户时用这里还原。每次导入历史数据前会自动拍一份快照。
+    </p>
+    <div id="nav-mgmt-backup-info" style="font-size:12px;color:#888;margin-bottom:14px;padding:8px 10px;background:#f7f9ff;border-radius:6px;"></div>
+    <div class="modal-actions" style="flex-direction:column;gap:10px;">
+      <button class="btn btn-primary" onclick="restoreNavHistory()" id="nav-mgmt-restore-btn">⏪ 一键还原到上次导入前</button>
+      <button class="btn btn-outline" onclick="clearNavHistoryInvested()" id="nav-mgmt-clear-invested-btn">🧹 仅清空「投入本金」字段（保留市值/净值）</button>
+    </div>
+    <p style="font-size:11px;color:#aaa;margin-top:14px;line-height:1.5;">
+      「一键还原」会把当前账户的历史净值恢复到上次导入前的快照（之前没有快照则无法还原）。<br>
+      「清空投入本金」适合像招商账户的投入本金误导入到华泰的场景——清空后投入本金按真实现金流转公式回算。
+    </p>
   </div>
 </div>
 

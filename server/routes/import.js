@@ -92,7 +92,9 @@ async function callAiFallback(messages, maxTokens, clientModel) {
         throw new Error(response.status + ' ' + String(errText).slice(0, 200));
       }
       const result = await response.json();
-      const content = result.choices?.[0]?.message?.content || '[]';
+      // agnès 推理模型可能把答案放在 reasoning_content 而 content 为空（图片识别场景），双字段兜底
+      const msg = result.choices?.[0]?.message || {};
+      const content = msg.content || msg.reasoning_content || '[]';
       if (m.id) recordStatus(m.id, true, '', Date.now() - t0);
       return content;
     } catch (e) {

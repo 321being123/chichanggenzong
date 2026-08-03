@@ -28,6 +28,7 @@ HOT_SECTOR_KEYWORDS = {
 
 NEW_STOCK_HOT_SECTORS = {
     "光通信": 3.0, "光纤": 3.0, "光子": 2.5,
+    "PCB": 1.0, "印制电路板": 1.0,
     "半导体": 2.0, "芯片": 2.0, "集成电路": 2.0, "先进封装": 2.0,
     "AI": 2.5, "人工智能": 2.5, "算力": 2.0, "GPU": 2.5,
     "机器人": 1.5, "人形机器人": 2.0, "具身智能": 2.0,
@@ -94,6 +95,10 @@ def calibrate_sector_boost():
 
     conn = _init_sector_db()
 
+    # 行业兜底系数每次按最新历史数据重建，避免同一进程重复校准时残留旧行业。
+    for key in [k for k in NEW_STOCK_HOT_SECTORS if k.startswith("行业:")]:
+        del NEW_STOCK_HOT_SECTORS[key]
+
     # 清空旧的全市场板块数据，只保留基于新股首日涨幅重算的结果
     conn.execute("DELETE FROM sector_heat")
 
@@ -107,20 +112,32 @@ def calibrate_sector_boost():
         if ld is None:
             continue
         text = f"{name} {mb or ''} {ind or ''}"
+        normalized = text.upper()
         best, best_boost = None, 0
         for kw, boost in NEW_STOCK_HOT_SECTORS.items():
-            if kw in text and boost > best_boost:
+            if kw.startswith("行业:"):
+                continue
+            if kw.upper() in normalized and boost > best_boost:
                 best_boost = boost
                 best = kw
         if best:
             sector_gains[best].append(ld)
+        # 所有新股同时沉淀所属行业热度，供未命中热门关键词的新股统一兜底。
+        industry_name = str(ind or "").strip()
+        if industry_name and industry_name.lower() not in ("nan", "none", "-"):
+            sector_gains[f"行业:{industry_name}"].append(ld)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for sector_key, gains in sector_gains.items():
         if not gains:
             continue
         avg = sum(gains) / len(gains)
-        boost = round(min(3.0, avg / 150.0), 2)
+        calculated = round(min(3.0, avg / 150.0), 2)
+        fallback = _default_sector_boost(sector_key)
+        if sector_key.startswith("行业:") and not fallback:
+            fallback = 1.0
+        # 破发或异常样本不允许把预测乘成零/负数；无有效热度时回到默认或中性系数。
+        boost = calculated if calculated > 0 else fallback
         conn.execute(
             "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
             (sector_key, round(avg, 2), len(gains), boost, now_str),
@@ -135,7 +152,10 @@ def calibrate_sector_boost():
     updated = []
     for sector_key, boost, avg_gain, count in rows:
         old = NEW_STOCK_HOT_SECTORS.get(sector_key, "?")
-        NEW_STOCK_HOT_SECTORS[sector_key] = boost or _default_sector_boost(sector_key)
+        fallback = _default_sector_boost(sector_key)
+        if sector_key.startswith("行业:") and not fallback:
+            fallback = 1.0
+        NEW_STOCK_HOT_SECTORS[sector_key] = boost if boost and boost > 0 else fallback
         updated.append(f"{sector_key}: {old}→{boost}（{count}只新股, 首日均值{avg_gain}%）")
 
     if updated:
@@ -318,15 +338,26 @@ def detect_hot_sector(bond_name, stock_name, stock_industry=""):
     return None, 0
 
 def detect_stock_hot_sector(stock_name, main_business, industry):
-    """检测新股热门赛道（基于2025-2026年实际涨幅数据）"""
+    """检测新股赛道：热门关键词优先，所属行业兜底，最后使用中性系数。"""
     search_text = f"{stock_name} {main_business} {industry}"
+    normalized = search_text.upper()
     best_label, best_boost = None, 0
     for keyword, boost in NEW_STOCK_HOT_SECTORS.items():
-        if keyword in search_text:
+        if keyword.startswith("行业:"):
+            continue
+        if keyword.upper() in normalized:
             if boost > best_boost:
                 best_boost = boost
                 best_label = keyword
-    return best_label, best_boost
+    if best_label:
+        return best_label, best_boost
+
+    industry_name = str(industry or "").strip()
+    if industry_name and industry_name.lower() not in ("nan", "none", "-"):
+        industry_boost = NEW_STOCK_HOT_SECTORS.get(f"行业:{industry_name}", 1.0)
+        return industry_name, industry_boost if industry_boost and industry_boost > 0 else 1.0
+
+    return "其他赛道", 1.0
 
 def _get_board_key_from_code(code):
     """从股票代码获取板块键"""
@@ -349,7 +380,10 @@ def _sync_sector_boost_from_db():
         rows = conn.execute("SELECT sector_key, boost FROM sector_heat").fetchall()
         for sector_key, boost in rows:
             # DB 中异常归零时，回退源码静态默认值
-            NEW_STOCK_HOT_SECTORS[sector_key] = boost or _default_sector_boost(sector_key)
+            fallback = _default_sector_boost(sector_key)
+            if sector_key.startswith("行业:") and not fallback:
+                fallback = 1.0
+            NEW_STOCK_HOT_SECTORS[sector_key] = boost if boost and boost > 0 else fallback
         conn.close()
     except Exception:
         pass  # DB缺失或无数据时保留源码默认系数

@@ -514,7 +514,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
         lines.append("---")
         lines.append("## 📊 当前赛道热度系数（每日动态校准）")
         lines.append("")
-        lines.append("> 系数 = 该赛道新股上市首日平均涨幅 / 150，封顶 3.0，由系统每日自动计算，非人工固定值。")
+        lines.append("> 系数 = 该赛道或行业新股上市首日平均涨幅 / 150，封顶 3.0；未命中热门赛道时按所属行业兜底，无行业历史时使用中性系数 1.0。")
         lines.append("")
         lines.append("| 赛道 | 热度系数 | 新股首日均值 | 样本数 |")
         lines.append("|------|----------|----------------|--------|")
@@ -710,7 +710,7 @@ def generate_html(md_content, data):
     sb = data.get("sector_boost_info", [])
     if sb:
         html += '<div class="card">\n<h2>📊 当前赛道热度系数（每日动态校准）</h2>\n'
-        html += '<p class="subtitle">系数 = 该赛道新股上市首日平均涨幅 / 150，封顶 3.0，由系统每日自动计算，非人工固定值。</p>\n'
+        html += '<p class="subtitle">系数 = 该赛道或行业新股上市首日平均涨幅 / 150，封顶 3.0；未命中热门赛道时按所属行业兜底，无行业历史时使用中性系数 1.0。</p>\n'
         html += '<table>\n<tr><th>赛道</th><th>热度系数</th><th>新股首日均值</th><th>样本数</th></tr>\n'
         for r in sb:
             html += f'<tr><td>{r["sector"]}</td><td>{r["boost"]}</td><td>{r["avg_gain"]}%</td><td>{r["count"]}</td></tr>\n'

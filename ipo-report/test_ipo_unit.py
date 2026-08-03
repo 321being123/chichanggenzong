@@ -78,6 +78,22 @@ try:
         "circulation_mv": 5,
     })
     check("XGBoost可完成新股预测", model_prediction is not None)
+    summary_125 = _val._format_listing_summary(
+        125,
+        {"stock_code": "301668", "issue_price": 84.46},
+        "热市",
+    )
+    check("新股125%按50%档位显示150%", "约150%" in summary_125, "summary=%r" % summary_125)
+    check("新股摘要包含单签收益", "预计首日单签收益6万元" in summary_125, "summary=%r" % summary_125)
+    sector = _val.detect_stock_hot_sector("测试", "印制电路板（PCB）研发和生产", "电子元器件")
+    check("PCB赛道无历史样本时按中性系数识别", sector[0] in ("PCB", "印制电路板") and sector[1] == 1.0,
+          "sector=%r" % (sector,))
+    industry_fallback = _val.detect_stock_hot_sector("测试", "普通产品研发和生产", "专用设备")
+    check("未命中热门赛道时按行业中性兜底", industry_fallback == ("专用设备", 1.0),
+          "sector=%r" % (industry_fallback,))
+    no_industry_fallback = _val.detect_stock_hot_sector("测试", "普通产品研发和生产", "")
+    check("行业缺失时仍有中性赛道系数", no_industry_fallback == ("其他赛道", 1.0),
+          "sector=%r" % (no_industry_fallback,))
     _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']
     _val.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
     _old_xgb = _val._xgb_predict_listing

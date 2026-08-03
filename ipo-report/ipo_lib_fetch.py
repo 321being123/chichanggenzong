@@ -669,7 +669,7 @@ def _fetch_stock_industry(stock_code):
 # 赛道判定用关键词（与 ipo_lib_sector 中的 NEW_STOCK_HOT_SECTORS/HOT_SECTOR_KEYWORDS 对应，
 # 此处本地复制一份以避免与 ipo_lib_fetch 形成循环导入）。
 _SECTOR_KW = set(
-    "半导体 芯片 集成电路 先进封装 光子 光通信 光纤 AI 人工智能 算力 GPU 机器人 "
+    "PCB 印制电路板 半导体 芯片 集成电路 先进封装 光子 光通信 光纤 AI 人工智能 算力 GPU 机器人 "
     "人形机器人 具身智能 低空经济 飞行汽车 航天 航空 储能 新能源 光伏 锂电池 "
     "创新药 医疗器械 生物医药 新材料 高端装备 精密制造 军工 自动驾驶 智能驾驶 "
     "电力设备 轨道交通 核电 数字经济 数据要素 云计算 氢能 钠离子 固态电池 "
@@ -681,7 +681,8 @@ def _has_sector_keyword(text):
     """文本是否含赛道关键词（用于判断主营业务是否足以做赛道判定）。"""
     if not text:
         return False
-    return any(k in text for k in _SECTOR_KW)
+    normalized = str(text).upper()
+    return any(k.upper() in normalized for k in _SECTOR_KW)
 
 
 def _extract_main_business(text):

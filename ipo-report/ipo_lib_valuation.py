@@ -686,9 +686,9 @@ def _get_lot_size(stock_code):
 
 def _format_listing_summary(estimated, stock_detail, temp):
     """生成上市结论文字，包含预计单签收益
-    涨幅按50%梯度向下取整，单签收益按万元整数向下取整"""
-    # 涨幅向下取整到最近的50%梯度
-    est_floor = (estimated // 50) * 50
+    涨幅按最接近的50%梯度展示，单签收益按万元整数向下取整"""
+    # 125% 应展示为约150%，避免 Python round 的“银行家舍入”把它算成100%。
+    est_step = ((estimated + 25) // 50) * 50
     issue_price = None
     if stock_detail:
         try:
@@ -700,14 +700,14 @@ def _format_listing_summary(estimated, stock_detail, temp):
     if issue_price and issue_price > 0:
         stock_code = stock_detail.get("stock_code") if stock_detail else None
         lot_size = _get_lot_size(stock_code)
-        single_lot_profit = issue_price * lot_size * estimated / 100 / 10000  # 万元
+        single_lot_profit = issue_price * lot_size * est_step / 100 / 10000  # 万元
 
     if temp == "冷市":
-        return f"❄️ 预计首日涨幅 {est_floor}%，冷市涨幅受限"
-    if est_floor >= 500:
-        part = f"{est_floor}%+"
+        return f"❄️ 预计首日涨幅 {est_step}%，冷市涨幅受限"
+    if est_step >= 500:
+        part = f"{est_step}%+"
     else:
-        part = f"约{est_floor}%"
+        part = f"约{est_step}%"
     if single_lot_profit and single_lot_profit >= 0.01:
         return f"预计首日涨幅{part}，预计首日单签收益{int(single_lot_profit)}万元"
     else:
@@ -757,21 +757,14 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             estimated = int(round(estimated * sector_mult))
             tag = "顶级赛道修正" if sector_boost >= 2 else "赛道修正"
             detail_parts.append(f"🚀 {tag}: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
+        else:
+            detail_parts.append(f"🚀 赛道修正: 未命中热门赛道（×1.00）→{estimated}%")
         # 市场温度衰减
         temp_mult = get_temp_listing_multiplier()
         estimated = int(round(estimated * temp_mult))
         detail_parts.append(f"🌡️ 温度衰减: {temp}（×{temp_mult}）→{estimated}%")
 
-        if temp == "冷市":
-            summary = f"❄️ 预计首日涨幅 {estimated}%，冷市涨幅受限"
-        elif estimated >= 500:
-            summary = _format_listing_summary(estimated, stock_detail, temp)
-        elif estimated >= 200:
-            summary = _format_listing_summary(estimated, stock_detail, temp)
-        elif estimated >= 100:
-            summary = f"预计首日涨幅约{estimated}%"
-        else:
-            summary = f"预计首日涨幅约{estimated}%"
+        summary = _format_listing_summary(estimated, stock_detail, temp)
 
         return {"summary": summary, "detail": "\n".join(detail_parts), "price": None, "predicted_return": estimated}
 
@@ -841,16 +834,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     estimated = int(round(estimated * temp_mult))
 
     # 生成预测文本
-    if temp == "冷市":
-        summary = f"❄️ 预计首日涨幅 {estimated}%，冷市环境下涨幅受限"
-    elif estimated >= 500:
-        summary = _format_listing_summary(estimated, stock_detail, temp)
-    elif estimated >= 200:
-        summary = _format_listing_summary(estimated, stock_detail, temp)
-    elif estimated >= 100:
-        summary = f"预计首日涨幅约{estimated}%，打新收益良好"
-    else:
-        summary = f"预计首日涨幅约{estimated}%，中签即赚"
+    summary = _format_listing_summary(estimated, stock_detail, temp)
 
     detail_parts = []
     detail_parts.append(f"📊 预估首日涨幅: {estimated}%")
@@ -858,6 +842,8 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     detail_parts.append(f"🌡️ 市场温度: {temp}（衰减系数×{temp_mult}）")
     if sector_label:
         detail_parts.append(f"🚀 热门赛道: {sector_label}（赛道系数×{sector_boost:.2f}）")
+    else:
+        detail_parts.append("🚀 热门赛道: 未命中（赛道系数×1.00）")
     if lottery_rate is not None:
         detail_parts.append(f"📋 中签率: {lottery_rate}%")
     if cmv is not None:

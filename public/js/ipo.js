@@ -32,6 +32,28 @@ function ipoExBadge(code) {
     color + ';border-radius:3px;padding:0 4px;margin-right:5px;font-weight:600;">' + ex + '</span>';
 }
 
+// 板块标识：新债按其代码段对应的正股板块判断。
+function ipoBoard(code, type) {
+  var c = String(code || '').trim();
+  if (type === '新债') {
+    if (/^118/.test(c)) return '科创板';
+    if (/^123/.test(c)) return '创业板';
+    if (/^(110|111|113|127|128)/.test(c)) return '主板';
+    return '';
+  }
+  if (/^688/.test(c)) return '科创板';
+  if (/^(300|301)/.test(c)) return '创业板';
+  if (/^(000|001|002|003|600|601|603|605)/.test(c)) return '主板';
+  return '';
+}
+
+function ipoBoardBadge(code, type) {
+  var board = ipoBoard(code, type);
+  if (!board) return '';
+  return ' <span style="display:inline-block;font-size:10px;color:#666;background:#f1f3f4;border-radius:3px;padding:1px 5px;margin-left:4px;vertical-align:1px;">' +
+    escapeHtml(board) + '</span>';
+}
+
 // 名称 + 交易所前缀
 function ipoNameCell(name, code) {
   return ipoExBadge(code) + escapeHtml(name || '-');
@@ -243,6 +265,7 @@ function ipoCalendarRow(label, items, color) {
   items.forEach(function (it) {
     html += '<div style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(it.name || '-') + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
     html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
+    html += ipoBoardBadge(it.code, it.type);
     html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';
   });
   html += '</div>';

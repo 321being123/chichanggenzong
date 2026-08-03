@@ -2168,6 +2168,10 @@ async function migration046PositionEvents() {
 // 说明：读写代码仍以 username+account_name 为准（兼容层）；account_id 作为不可变关联键，
 // 账户重命名不再影响子表关联（方案 4.2），并为未来按 account_id 收敛提供基础。
 // NOT VALID：历史存量行若无法匹配 accounts（孤立数据）也允许建约束，仅约束新写入。
+// ⚠️ 部署修复（2026-08-03）：PG 的 UPDATE 会重新校验 NOT VALID 约束！回填 account_id 的 UPDATE
+//    命中招商 32 条期初导入（amount=成本金额≠price×qty）→ 被 chk_trades_amount_rel 拦截导致
+//    迁移失败（服务器 0.4.3.6→0.4.4.3 实测）。处理：回填前临时 DROP，回填后重建（NOT VALID
+//    仍允许存量违反；新写入由账本层强制 amount 一致）。
 async function migration047AccountId() {
   const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history'];
   for (const t of tables) {
@@ -2179,12 +2183,20 @@ async function migration047AccountId() {
       await pool.query(`ALTER TABLE ${t} ADD COLUMN account_id TEXT`);
     }
     // 2) 回填（按 username+account_name 匹配 accounts.id）
+    //    回填前 DROP 会拦截历史数据的 NOT VALID 约束（UPDATE 重新校验）
+    await pool.query(`ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_rel`);
     await pool.query(
       `UPDATE ${t} b SET account_id = a.id
          FROM accounts a
         WHERE b.username = a.username AND b.account_name = a.account_name
           AND b.account_id IS NULL`
     );
+    // 回填后重建 amount_rel（NOT VALID：存量违反不再校验）
+    const amtRelEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`);
+    if (amtRelEx.rowCount === 0) {
+      await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+        CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
+    }
     // 3) 外键（NOT VALID：存量孤立行不校验；后续写入由代码保证 account_id 关联）
     const fkName = `fk_${t}_account_id`;
     const fkEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [fkName]);
@@ -2227,7 +2239,10 @@ async function migration048TightenAccountLedger() {
       CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
   }
   // 4) account_id 基础设施（幂等，兼容 047 未跑/缺跑的库）
+  //    ⚠️ 部署修复：回填 UPDATE 前临时 DROP amount_rel（UPDATE 重新校验 NOT VALID 约束），
+  //    回填完成后重建——与 047 同款处理，防止服务器升级顺序（046建约束→048回填）再次撞约束。
   const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history'];
+  await pool.query(`ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_rel`);
   for (const t of tables) {
     const colEx = await pool.query(
       `SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name='account_id'`, [t]
@@ -2249,6 +2264,12 @@ async function migration048TightenAccountLedger() {
          FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE NOT VALID`
       );
     }
+  }
+  // 回填完成后重建 amount_rel（NOT VALID：存量期初导入成本金额不校验；新写入由账本层保证）
+  const amtRelEx2 = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`);
+  if (amtRelEx2.rowCount === 0) {
+    await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+      CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
   }
 }
 

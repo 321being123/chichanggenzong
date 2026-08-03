@@ -119,12 +119,12 @@ router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit
       return res.status(400).json({ error: '数据集版本号非法' });
     }
   }
-  // P0-2（整改收口）：旧客户端（浏览器缓存旧 JS，未带任何数据集版本）整包保存会覆盖后台新增数据。
-  // 路由层直接拒绝并提示刷新，防止"无版本全量写入"绕过版本保护；db 层对无版本仍允许写入以兼容
-  // 纯数据层调用/测试（position-comparison 等），但对外 HTTP 入口必须带版本。
-  const hasAnyDatasetVersion = dv.positions !== undefined || dv.trades !== undefined ||
-    dv.navHistory !== undefined || dv.cashFlows !== undefined;
-  if (!hasAnyDatasetVersion) {
+  // P0-2 阻断修复（2026-08-03）：四个数据集版本必须**全部**提供且合法。
+  // 只要求"至少一个版本"会导致只传 posV 即放行，其余数据集（尤其 navHistory）走 db 层
+  // match(undefined)=允许写入 → 后台新增净值仍可被旧客户端覆盖。全带=新客户端；缺任一=409 提示刷新。
+  const hasAllDatasetVersions = dv.positions !== undefined && dv.trades !== undefined &&
+    dv.navHistory !== undefined && dv.cashFlows !== undefined;
+  if (!hasAllDatasetVersions) {
     return res.status(409).json({ error: '页面版本过旧，无法安全保存，请刷新页面后重试' });
   }
   try {

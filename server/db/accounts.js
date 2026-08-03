@@ -256,19 +256,31 @@ async function loadDailyPrices(username, accountName, date) {
 // 幂等写入单条净值快照（回填/重算/后台快照用）：冲突则覆盖 nav / total_asset / invested
 // 2026-08-03 整改：写入后提升 nav_version（后台任务与前端保存共用同一版本机制，
 // 后台新增净值后，旧浏览器保存持仓时 nav_version 不匹配 → 该数据集被跳过，不再覆盖后台新净值）
+// 2026-08-03 阻断修复：写 nav_history 与 nav_version+1 必须在**同一事务**内，
+// 否则第一步成功第二步失败时净值已写入但版本未涨 → 旧客户端保存仍可覆盖后台数据（版本失真）。
 async function upsertNav(username, accountName, rec) {
-  await pool.query(
-    'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
-    'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
-    [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2))]
-  );
-  await pool.query(
-    `INSERT INTO account_data (username, account_name, data, version, nav_version)
-     VALUES ($1,$2,'{}',0,1)
-     ON CONFLICT (username, account_name)
-     DO UPDATE SET nav_version = account_data.nav_version + 1`,
-    [username, accountName]
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
+      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
+      [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2))]
+    );
+    await client.query(
+      `INSERT INTO account_data (username, account_name, data, version, nav_version)
+       VALUES ($1,$2,'{}',0,1)
+       ON CONFLICT (username, account_name)
+       DO UPDATE SET nav_version = account_data.nav_version + 1`,
+      [username, accountName]
+    );
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // ====== 历史净值备份/还原/清理（2026-08-03 架构整改：只写 nav_history 表，不再双写 JSON） ======

@@ -44,7 +44,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     q.rows.forEach(r => issue('孤立业务数据_' + t, r.username + '/' + r.account_name));
   }
 
-  // 3) account_data JSON 中是否仍残留五类业务数组（整改后应只读归档，不再参与业务；此处仅统计提示）
+  // 3) account_data JSON 中是否仍残留五类业务数组（整改后应只读归档，不再参与业务；归档残留=提示不阻断）
   const { rows: adRows } = await pool.query('SELECT username, account_name, data FROM account_data');
   let leftoverArrays = 0;
   for (const r of adRows) {
@@ -53,7 +53,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     for (const k of FIVE_ARRAYS) {
       if (d && Array.isArray(d[k]) && d[k].length > 0) {
         leftoverArrays++;
-        if (leftoverArrays <= 20) issue('JSON残留业务数组_' + k, r.username + '/' + r.account_name + ' (' + d[k].length + ' 条)');
+        if (leftoverArrays <= 20) issue('JSON残留业务数组_' + k + '(归档提示)', r.username + '/' + r.account_name + ' (' + d[k].length + ' 条)');
       }
     }
   }
@@ -66,15 +66,15 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
   } else {
     console.log('===== 账户数据一致性审计 =====');
     for (const k of Object.keys(report.counts)) {
-      const isHint = k.includes('(提示)');
+      const isHint = k.includes('(提示)') || k.includes('(归档提示)');
       console.log((report.counts[k] && !isHint ? '❌' : 'ℹ️') + ' ' + k + ': ' + report.counts[k]);
       if (report.counts[k] && process.argv.includes('--detail')) {
         report.issues[k].slice(0, 20).forEach(d => console.log('    ' + d));
       }
     }
     console.log('JSON 残留业务数组合计: ' + leftoverArrays + '（整改后仅归档，不参与业务读取）');
-    const total = Object.entries(report.counts).filter(([k, n]) => !k.includes('(提示)') && n > 0).reduce((s, [, n]) => s + n, 0);
-    console.log(total === 0 && leftoverArrays === 0 ? '✅ 数据一致，无孤立/差异' : '⚠️ 存在 ' + total + ' 项数据问题（含归档残留 ' + leftoverArrays + '）');
+    const total = Object.entries(report.counts).filter(([k, n]) => !k.includes('(提示)') && !k.includes('(归档提示)') && n > 0).reduce((s, [, n]) => s + n, 0);
+    console.log(total === 0 ? '✅ 数据一致，无孤立/差异' : '⚠️ 存在 ' + total + ' 项严重数据问题（另有归档残留 ' + leftoverArrays + ' 项，不阻断）');
   }
   // 退出码只看结构化数据损坏（业务子表孤立 / account_data 无主 / JSON 解析失败）；
   // 归档残留与"新账户无数据"是整改迁移前/正常状态，不阻断

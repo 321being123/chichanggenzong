@@ -234,9 +234,10 @@ function payload(over) {
       // 原账户数据完好
       const d = await loadAccountData(U, A);
       assert.ok(Array.isArray(d.navHistory), '冲突后原账户应完好');
-      // 清理保留账户
-      await pool.query(`DELETE FROM account_data WHERE username=$1 AND account_name=$2`, [U, A + '_保留']);
-      await pool.query(`DELETE FROM accounts WHERE username=$1 AND account_name=$2`, [U, A + '_保留']);
+      // 清理保留账户（含全部业务表，避免审计残留）
+      for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data', 'accounts']) {
+        await pool.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [U, A + '_保留']);
+      }
       await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`, [U, JSON.stringify([A])]);
     });
 

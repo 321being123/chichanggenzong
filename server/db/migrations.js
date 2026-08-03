@@ -1983,6 +1983,15 @@ async function migration041AccountDataSource() {
       [key.slice(0, sep), key.slice(sep + 1)]
     );
   }
+  // ⚠️ 2026-08-03 执行器级修复：存在失败账户时必须**抛异常**，否则 runMigration 会把 041 登记为
+  // 已完成，下次启动直接跳过 → 失败账户永远不会被重试（设置永久丢失风险）。
+  // 抛错后：已成功归档的账户保留 dsv=2（幂等重跑跳过）；失败账户 dsv=1 → runMigration 不登记 → 下次启动重跑。
+  if (failedArchive.length > 0) {
+    throw new Error(
+      '[migrate 041] ' + failedArchive.length + ' 个账户偏好迁移失败（未归档待重试）：' +
+      failedArchive.map(function (k) { return k.replace('\u0000', '/'); }).join('、')
+    );
+  }
 }
 
 async function ensureMigrationsTable() {

@@ -255,36 +255,53 @@ function payload(over) {
       }
     });
 
-    await checkAsync('迁移041失败分支：偏好迁移失败/JSON解析失败的账户不归档（防设置丢失）', async () => {
-      // 独立测试用户，避免污染
+    await checkAsync('迁移041执行器级：失败账户抛错不登记，下次启动重试成功后登记', async () => {
+      // 独立测试用户 + 测试专用迁移版本号（不污染真实 041 登记）
       const M = 'mig041_fail_test';
       const A_bad = '坏JSON', A_ok = '好账户';
+      const TEST_VERSION = '041_test_guard_' + Date.now();
       await pool.query(`DELETE FROM account_data WHERE username=$1`, [M]);
       await pool.query(`DELETE FROM accounts WHERE username=$1`, [M]);
       await pool.query(`DELETE FROM users WHERE username=$1`, [M]);
+      await pool.query(`DELETE FROM schema_migrations WHERE version=$1`, [TEST_VERSION]);
       try {
         await pool.query(`INSERT INTO users (username, password, accounts) VALUES ($1,'x','[]')`, [M]);
-        // 坏 JSON → 偏好迁移解析失败 → 不应归档（data_source_version 保持 <2 待重试）
+        // 坏 JSON → 偏好迁移解析失败 → 应抛错且不归档（data_source_version 保持 1 待重试）
         await pool.query(`INSERT INTO account_data (username, account_name, data, data_source_version) VALUES ($1,$2,'{invalid json',0)`, [M, A_bad]);
         // 好账户 → 应归档 + feeSettings 迁入 accounts
         await pool.query(`INSERT INTO account_data (username, account_name, data, data_source_version) VALUES ($1,$2,'{"feeSettings":{"ashare_stock":{"commissionRate":0.0002}}}',0)`, [M, A_ok]);
         const migrations = require('../db/migrations');
         const fn = migrations.MIGRATIONS.find(m => m.version === '041_account_data_source');
-        await fn.up();
+
+        // ---- 第一次启动：runMigration 执行 041，失败账户存在 → up 抛错 → 不登记 ----
+        let firstThrew = false;
+        try { await migrations.runMigration(fn.up, TEST_VERSION); }
+        catch (e) { firstThrew = true; }
+        assert.ok(firstThrew, '失败账户存在时 041 应抛错（runMigration 不登记）');
+        const reg1 = await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1', [TEST_VERSION]);
+        assert.strictEqual(reg1.rowCount, 0, '失败时 041 不应登记为已完成');
         const { rows: r1 } = await pool.query('SELECT data_source_version FROM account_data WHERE username=$1 AND account_name=$2', [M, A_bad]);
-        assert.strictEqual(r1[0].data_source_version, 1, '坏JSON账户不应归档（应待重试）');
+        assert.strictEqual(r1[0].data_source_version, 1, '坏JSON账户应保持待重试');
         const { rows: r2 } = await pool.query('SELECT data_source_version FROM account_data WHERE username=$1 AND account_name=$2', [M, A_ok]);
-        assert.strictEqual(r2[0].data_source_version, 2, '好账户应归档');
+        assert.strictEqual(r2[0].data_source_version, 2, '好账户应已归档');
         const { rows: r3 } = await pool.query('SELECT fee_settings FROM accounts WHERE username=$1 AND account_name=$2', [M, A_ok]);
         assert.ok(r3[0].fee_settings !== null, '好账户 feeSettings 应已迁移');
-        // 重复执行幂等：坏JSON仍不归档
-        await fn.up();
+
+        // ---- 修复坏数据（模拟运维修复 JSON）后第二次启动：runMigration 重跑 041 成功并登记 ----
+        await pool.query(`UPDATE account_data SET data='{"feeSettings":{"ashare_stock":{"commissionRate":0.0003}}}' WHERE username=$1 AND account_name=$2`, [M, A_bad]);
+        await migrations.runMigration(fn.up, TEST_VERSION); // 应成功不抛错
+        const reg2 = await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1', [TEST_VERSION]);
+        assert.strictEqual(reg2.rowCount, 1, '第二次成功后 041 应登记');
         const { rows: r1b } = await pool.query('SELECT data_source_version FROM account_data WHERE username=$1 AND account_name=$2', [M, A_bad]);
-        assert.strictEqual(r1b[0].data_source_version, 1, '重复执行后坏JSON仍不归档');
+        assert.strictEqual(r1b[0].data_source_version, 2, '修复后重跑应归档成功');
+        // 第三次启动：已登记 → runMigrations 跳过
+        const reg3 = await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1', [TEST_VERSION]);
+        assert.strictEqual(reg3.rowCount, 1, '已登记后不再重复');
       } finally {
         await pool.query(`DELETE FROM account_data WHERE username=$1`, [M]);
         await pool.query(`DELETE FROM accounts WHERE username=$1`, [M]);
         await pool.query(`DELETE FROM users WHERE username=$1`, [M]);
+        await pool.query(`DELETE FROM schema_migrations WHERE version=$1`, [TEST_VERSION]);
       }
     });
 

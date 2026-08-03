@@ -75,6 +75,8 @@ async function heldQuantity(client, username, accountName, code) {
 
 // 移动加权成本重算：按时间顺序重放该证券全部事件（buy/open 累加数量与成本；sell/adjust 增减数量）
 // 返回 { quantity, cost }（cost=移动加权单位成本；无持仓时 cost 保留最后买入价）
+// ⚠️ cost 允许为负数（用户确认 2026-08-03）：反复做 T（高抛低吸摊薄）会把持仓成本摊到负数，
+//    这是正常现象，绝不强制 cost>=0（仅 price/amount/费用约束非负）。
 // ⚠️ strict 模式下若出现"卖出超过可卖数量"（重放遇历史超卖），抛错——避免超卖被静默截断掩盖账本错误
 async function recomputeSecurity(client, username, accountName, code, strict = false) {
   const { rows: trs } = await client.query(

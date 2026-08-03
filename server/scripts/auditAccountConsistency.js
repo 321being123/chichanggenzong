@@ -149,7 +149,12 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
                WHERE username=$1 AND account_name=$2 AND code=$3`,
             [username, account_name, r.code]
           )).rows[0];
-          if (Math.abs(Number(r.amount) - Number(costAmt.ca)) > 1) {
+          const ca = Number(costAmt.ca);
+          // ⚠️ 负数成本豁免（用户确认 2026-08-03）：持仓成本为负是【正常现象】——
+          // 反复做 T（高抛低吸摊薄）会把持仓成本摊到负数，绝不强制成本>=0。
+          // 此时导入的 amount（成本金额）若被导入脚本截为 0 或为负，属合理行为，不报。
+          if (ca < 0) continue;
+          if (Math.abs(Number(r.amount) - ca) > 1) {
             issue('期初导入金额≠持仓成本金额', username + '/' + account_name + ' ' + r.code + ' ' + r.date + ' amount=' + r.amount + ' 持仓成本=' + costAmt.ca);
           }
         }

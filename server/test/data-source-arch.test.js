@@ -305,6 +305,40 @@ function payload(over) {
       }
     });
 
+    await checkAsync('saveAccountData 去重：navHistory 重复日期不报错且后写覆盖先写', async () => {
+      const U2 = 'dedupe_test_user', A2 = '去重验证账户';
+      await pool.query(`DELETE FROM positions WHERE username=$1`, [U2]);
+      await pool.query(`DELETE FROM trades WHERE username=$1`, [U2]);
+      await pool.query(`DELETE FROM nav_history WHERE username=$1`, [U2]);
+      await pool.query(`DELETE FROM cash_flows WHERE username=$1`, [U2]);
+      await pool.query(`DELETE FROM account_data WHERE username=$1`, [U2]);
+      await pool.query(`DELETE FROM accounts WHERE username=$1`, [U2]);
+      await pool.query(`DELETE FROM users WHERE username=$1`, [U2]);
+      try {
+        await pool.query(`INSERT INTO users (username, password, accounts) VALUES ($1,'x','[]')`, [U2]);
+        // 重复日期 2026-08-01 出现两次（后写 1.5 应覆盖先写 1.0）；批量 ON CONFLICT 不报错
+        const navs = [
+          { date: '2026-08-01', nav: 1.0, totalAsset: 10000, invested: 8000 },
+          { date: '2026-08-02', nav: 1.1, totalAsset: 11000, invested: 8000 },
+          { date: '2026-08-01', nav: 1.5, totalAsset: 15000, invested: 8000 },
+        ];
+        const r = await saveAccountData(U2, A2, payload({ navHistory: navs }), 0, { positions: 0, trades: 0, navHistory: 0, cashFlows: 0 });
+        assert.strictEqual(r.skipped.length, 0, '保存不应跳过任何数据集');
+        const d = await loadAccountData(U2, A2);
+        assert.strictEqual(d.navHistory.length, 2, '重复日期应归一为一条');
+        const d0801 = d.navHistory.find(n => n.date === '2026-08-01');
+        assert.strictEqual(d0801.nav, 1.5, '重复日期应保留后写值（覆盖语义）');
+      } finally {
+        await pool.query(`DELETE FROM positions WHERE username=$1`, [U2]);
+        await pool.query(`DELETE FROM trades WHERE username=$1`, [U2]);
+        await pool.query(`DELETE FROM nav_history WHERE username=$1`, [U2]);
+        await pool.query(`DELETE FROM cash_flows WHERE username=$1`, [U2]);
+        await pool.query(`DELETE FROM account_data WHERE username=$1`, [U2]);
+        await pool.query(`DELETE FROM accounts WHERE username=$1`, [U2]);
+        await pool.query(`DELETE FROM users WHERE username=$1`, [U2]);
+      }
+    });
+
     await cleanup();
   }
 

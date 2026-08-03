@@ -3,6 +3,18 @@ const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./co
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
 const { loadUsers } = require('./users');
 
+// 按唯一键去重：同 key 只保留最后一条（前序被后序覆盖，与旧版逐条 INSERT 的覆盖语义一致）。
+// 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会报 "cannot affect row a second time"，写入前必须先归一。
+function dedupeByKey(rows, key) {
+  const seen = new Map();
+  for (const r of rows) {
+    if (r == null) continue;
+    const k = String(r[key] == null ? '' : r[key]);
+    seen.set(k, r);
+  }
+  return Array.from(seen.values());
+}
+
 async function loadAccountData(username, accountName) {
   const { rows: positions } = await pool.query(
     'SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity, cost::float8 AS cost, type, subtype, note, instrument_id FROM positions WHERE username=$1 AND account_name=$2',
@@ -106,6 +118,15 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 去重：同一数据集内按唯一键只保留最后一条（旧版逐条 INSERT 遇重复会静默覆盖；
+    // 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会整条报错，故写入前先归一）。
+    // positions/trades/cashFlows 按 id、navHistory 按 date，保留后出现的记录。
+    data = Object.assign({}, data, {
+      positions: dedupeByKey(data.positions || [], 'id'),
+      trades: dedupeByKey(data.trades || [], 'id'),
+      cashFlows: dedupeByKey(data.cashFlows || [], 'id'),
+      navHistory: dedupeByKey(data.navHistory || [], 'date'),
+    });
     // 读取当前各数据集版本
     const { rows: vrows } = await client.query(
       `SELECT COALESCE(pos_version,0) AS pv, COALESCE(trade_version,0) AS tv,

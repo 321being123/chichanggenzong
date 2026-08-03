@@ -2317,36 +2317,43 @@ async function migrateToStructured() {
     let d;
     try { d = JSON.parse(r.data); } catch (e) { continue; }
     try {
-      for (const p of (d.positions || [])) {
-        await pool.query(
-          'INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id, username, account_name) DO NOTHING',
-          [p.id, r.username, r.account_name, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
-        );
-      }
-      for (const t of (d.trades || [])) {
-        await pool.query(
-          'INSERT INTO trades (id, username, account_name, date, created_at, code, name, direction, price, quantity, amount, type, subtype, note, commission, stamp_tax, transfer_fee, other_fee) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (id, username, account_name) DO NOTHING',
-          [t.id, r.username, r.account_name, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, t.amount || 0, t.type || '', t.subtype || '', t.note || '', t.commission || 0, t.stamp_tax || 0, t.transfer_fee || 0, t.other_fee || 0]
-        );
-      }
-      for (const n of (d.navHistory || [])) {
-        await pool.query(
-          'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date) DO NOTHING',
-          [r.username, r.account_name, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested)]
-        );
-      }
-      for (const c of (d.cashFlows || [])) {
-        await pool.query(
-          'INSERT INTO cash_flows (id, username, account_name, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id, username, account_name) DO NOTHING',
-          [c.id || uid(), r.username, r.account_name, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
-        );
-      }
-      // 补 accounts 元数据（cash_base/hk_rate/fee_settings），不覆盖已有
+      // 不可变账户主键（四轮验收：新写入必须带 account_id；账户不存在则先建）
       const acctId = require('crypto').createHash('sha256').update(r.username + '\n' + r.account_name).digest('hex');
       await pool.query(
         'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
         [acctId, r.username, r.account_name, (typeof d.cashBase === 'number' ? d.cashBase : 0), (typeof d.hkRate === 'number' && d.hkRate > 0 ? d.hkRate : 0.868), (d.feeSettings && typeof d.feeSettings === 'object' ? JSON.stringify(d.feeSettings) : null)]
       );
+      for (const p of (d.positions || [])) {
+        await pool.query(
+          'INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [p.id, r.username, r.account_name, acctId, p.code || '', p.name || '', p.price || 0, p.quantity || 0, p.cost || 0, p.type || '', p.subtype || '', p.note || '']
+        );
+      }
+      for (const t of (d.trades || [])) {
+        // ⚠️ 四轮验收：补 trade_date/executed_at/account_id；amount 若与 price×quantity 严重不符
+        // 且非期初导入（note 非"X证券导出导入"）→ 按 price×quantity 修正，避免被金额约束 NOT VALID 拦截
+        const rawAmount = (typeof t.amount === 'number' && isFinite(t.amount) ? t.amount : (t.price || 0) * (t.quantity || 0));
+        const isSnapshotImport = (String(t.note || '').indexOf('导出导入') !== -1);
+        const amount = isSnapshotImport ? rawAmount : Math.abs(rawAmount - (t.price || 0) * (t.quantity || 0)) > 0.02 ? Math.round((t.price || 0) * (t.quantity || 0) * 100) / 100 : rawAmount;
+        const tradeDate = t.trade_date || String(t.date || '').slice(0, 10);
+        const executedAt = t.executed_at || (String(t.date || '').length > 10 ? t.date : (t.created_at || t.date || ''));
+        await pool.query(
+          'INSERT INTO trades (id, username, account_name, account_id, date, created_at, trade_date, executed_at, import_batch_id, code, name, direction, price, quantity, amount, type, subtype, note, commission, stamp_tax, transfer_fee, other_fee) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [t.id, r.username, r.account_name, acctId, t.date || '', t.created_at || '', tradeDate, executedAt, t.import_batch_id || null, t.code || '', t.name || '', t.direction || 'buy', t.price || 0, t.quantity || 0, amount, t.type || '', t.subtype || '', t.note || '', t.commission || 0, t.stamp_tax || 0, t.transfer_fee || 0, t.other_fee || 0]
+        );
+      }
+      for (const n of (d.navHistory || [])) {
+        await pool.query(
+          'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (username, account_name, date) DO NOTHING',
+          [r.username, r.account_name, acctId, n.date || '', n.nav || 1.0, n.totalAsset || 0, (n.invested == null ? null : n.invested), n.snapshot_at || null]
+        );
+      }
+      for (const c of (d.cashFlows || [])) {
+        await pool.query(
+          'INSERT INTO cash_flows (id, username, account_name, account_id, date, created_at, amount, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id, username, account_name) DO NOTHING',
+          [c.id || uid(), r.username, r.account_name, acctId, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
+        );
+      }
       // 合并成功 → 置迁移标记
       await pool.query('UPDATE account_data SET data_source_version=2, structured_migrated_at=now() WHERE username=$1 AND account_name=$2', [r.username, r.account_name]);
       migrated++;

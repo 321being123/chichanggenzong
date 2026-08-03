@@ -13,6 +13,16 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
   const report = { issues: {}, counts: {} };
   const issue = (k, detail) => { (report.issues[k] = report.issues[k] || []).push(detail); };
 
+  // 账本方向语义（与 tradeLedger/replayNav/navSnapshot 一致，2026-08-03 修复）：
+  //   buy/open → 累加数量；sell → 减数量（需可卖校验）；adjust → 目标数量绝对设置（可为 0=清仓）
+  // ⚠️ 不能用 `direction==='buy' ? q : -q`——那会把 open/adjust 误当卖出（合法期初建仓后卖出被误报超卖）
+  function applyDirection(cur, t) {
+    const q = Number(t.quantity) || 0;
+    if (t.direction === 'sell') return cur - q;
+    if (t.direction === 'adjust') return Math.max(0, q); // 目标数量绝对设置（0=清仓）
+    return cur + q; // buy / open 累加
+  }
+
   // 1) account_data 与 accounts 元数据一致性：存在 account_data 但无 accounts 行（严重：数据无主）
   const orphanJson = (await pool.query(
     `SELECT ad.username, ad.account_name
@@ -81,7 +91,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
       const snapCnt = (await pool.query(
         `SELECT COUNT(*)::int AS c FROM trades WHERE username=$1 AND account_name=$2
            AND code=$3 AND left(date,10)=$4 AND direction=$5 AND price=$6 AND quantity=$7
-           AND COALESCE(note,'')='券商导出导入'`,
+           AND COALESCE(note,'') LIKE '%导出导入'`,
         [username, account_name, g.code, g.d, g.direction, g.price, g.quantity]
       )).rows[0].c;
       if (Number(g.c) === Number(snapCnt)) {
@@ -89,7 +99,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
         const snapQty = (await pool.query(
           `SELECT COALESCE(SUM(CASE WHEN direction IN ('buy','open') THEN quantity ELSE -quantity END),0)::numeric(14,2) AS net
              FROM trades WHERE username=$1 AND account_name=$2 AND code=$3
-               AND COALESCE(note,'')='券商导出导入'`,
+               AND COALESCE(note,'') LIKE '%导出导入'`,
           [username, account_name, g.code]
         )).rows[0];
         const heldQty2 = (await pool.query(
@@ -106,24 +116,28 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     }
 
     // ---- b) 金额关系异常（验证式，非豁免式） ----
-    // 期初持仓导入批（同日 ≥3 buy）的 amount = 持仓成本金额（positions.cost×quantity，港股按
-    // 参考汇率还原）而非 成交额 → 用「amount ≈ 成本金额」验证该批合法性；不匹配才报错。
-    // 真实成交交易仍严格校验 amount = price × quantity。
+    // 期初持仓导入批的 amount = 持仓成本金额（positions.cost×quantity，港股按参考汇率还原）
+    // 而非 成交额 → 用「amount ≈ 成本金额」验证该批合法性；不匹配才报错。
+    // ⚠️ 2026-08-03 收紧：**只有"X证券导出导入"note 的批量买入**才进入期初导入分支——
+    //     "任意一天 ≥3 笔买入"识别太宽，会把真实成交的金额错误也放过。
+    //     note 前缀可变（华泰="券商导出导入"、招商="招商证券导出导入"），统一匹配尾部"导出导入"。
     const initDays = (await pool.query(
       `SELECT left(date,10) AS d FROM trades
          WHERE username=$1 AND account_name=$2 AND direction='buy'
+           AND COALESCE(note,'') LIKE '%导出导入'
         GROUP BY left(date,10) HAVING COUNT(*) >= 3 LIMIT 10`,
       [username, account_name]
     )).rows.map(r => r.d);
     // 先查所有金额不一致的交易（含期初导入批）
     const allBad = (await pool.query(
-      `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect, direction, left(date,10) AS d
+      `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect, direction, left(date,10) AS d, COALESCE(note,'') AS note
          FROM trades WHERE username=$1 AND account_name=$2
            AND ABS(amount - ROUND(price*quantity,2)) > 0.02 LIMIT 50`,
       [username, account_name]
     )).rows;
     for (const r of allBad) {
-      if (r.direction === 'buy' && initDays.includes(r.d)) {
+      // 仅当 当日是导入批 且 本条本身是"X证券导出导入" 才走期初成本口径（其余严格按真实成交校验）
+      if (r.direction === 'buy' && initDays.includes(r.d) && r.note.indexOf('导出导入') !== -1) {
         // 期初导入批：amount 应为「当日导入成本」= 该 code 当日该笔的 成本价×数量。
         // ⚠️ 不能用 positions.cost×quantity（当前持仓成本可能含后续买入/调整，量级不对）。
         // 用该批当日同一 code 的"成本口径金额"验证：取该 code 当日买条的
@@ -134,7 +148,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
         const impQty = (await pool.query(
           `SELECT COALESCE(SUM(quantity),0)::numeric(14,2) AS q FROM trades
              WHERE username=$1 AND account_name=$2 AND code=$3 AND left(date,10)=$4
-               AND direction='buy' AND COALESCE(note,'')='券商导出导入'`,
+               AND direction='buy' AND COALESCE(note,'') LIKE '%导出导入'`,
           [username, account_name, r.code, r.d]
         )).rows[0].q;
         const heldNow = (await pool.query(
@@ -165,26 +179,30 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     }
 
     // c) 交易净数量 vs 持仓数量差异：交易重放(<=今日)数量 ≠ positions 数量
-    const trNet = (await pool.query(
-      `SELECT code, SUM(CASE WHEN direction='buy' THEN quantity ELSE -quantity END) AS net
-         FROM trades WHERE username=$1 AND account_name=$2 GROUP BY code`,
+    // ⚠️ 按方向语义 JS 重放（SQL 三目不支持 adjust 绝对设置），与账本引擎一致
+    const allTrs = (await pool.query(
+      `SELECT code, direction, quantity FROM trades WHERE username=$1 AND account_name=$2`,
       [username, account_name]
     )).rows;
+    const netMap = new Map();
+    for (const t of allTrs) {
+      netMap.set(t.code, applyDirection(netMap.get(t.code) || 0, t));
+    }
     const posQty = (await pool.query(
       `SELECT code, SUM(quantity) AS qty FROM positions WHERE username=$1 AND account_name=$2 GROUP BY code`,
       [username, account_name]
     )).rows;
     const posMap = new Map(posQty.map(r => [r.code, Number(r.qty)]));
-    for (const r of trNet) {
-      const net = Number(r.net);
-      const held = posMap.get(r.code) || 0;
+    for (const [code, net] of netMap) {
+      const held = posMap.get(code) || 0;
       if (Math.abs(net - held) > 0.01 && net !== 0) {
         // 交易净数 ≠ 持仓数（注意：期初导入持仓无交易记录，属正常；仅提示非严重）
-        issue('持仓数量与交易净数量差异(提示)', username + '/' + account_name + ' ' + r.code + ' 交易净=' + net + ' 持仓=' + held);
+        issue('持仓数量与交易净数量差异(提示)', username + '/' + account_name + ' ' + code + ' 交易净=' + net + ' 持仓=' + held);
       }
     }
 
     // d) 超卖检查：按时间序重放，若某卖出时可用<0 则为超卖（历史缺口）
+    // ⚠️ 支持 open/adjust 语义：open 累加、adjust 绝对设置，避免"期初建仓后卖出"被误报
     const trs = (await pool.query(
       `SELECT date, created_at, code, direction, quantity FROM trades
          WHERE username=$1 AND account_name=$2
@@ -199,7 +217,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
         issue('超卖(历史缺口)', username + '/' + account_name + ' ' + t.code + ' ' + t.date + ' 卖出' + q + ' 当时可用' + cur);
         qtyMap.set(t.code, 0);
       } else {
-        qtyMap.set(t.code, cur + (t.direction === 'buy' ? q : -q));
+        qtyMap.set(t.code, applyDirection(cur, t));
       }
     }
 

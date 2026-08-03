@@ -487,7 +487,7 @@ async function openNavHistoryManageModal() {
       if (info) info.innerHTML = '✓ 已备份 <b>' + (d.rows || 0) + '</b> 条记录，备份时间：' + escapeHtml(String(d.at || '')).replace('T', ' ').replace(/\..*$/, '');
       if (restoreBtn) restoreBtn.disabled = false;
     } else {
-      if (info) info.innerHTML = '⚠ 当前账户没有备份（本次功能之前的历史数据未自动备份）—— 一键还原不可用，可用「清空投入本金」救火';
+      if (info) info.innerHTML = '⚠ 当前账户没有备份（本次功能之前的历史数据未自动备份）—— 一键还原不可用，可用「清空历史数据」救火';
       if (restoreBtn) restoreBtn.disabled = true;
     }
   } catch (e) {
@@ -498,10 +498,15 @@ async function openNavHistoryManageModal() {
   if (modal) modal.classList.add('show');
 }
 
-// 一键还原：把 nav_history_backup 恢复到 navHistory
-async function restoreNavHistory() {
+// 还原：先弹通用确认框，确认后调用
+function confirmRestoreNavHistory() {
   if (!currentAccount) return;
-  if (!confirm('确认把当前账户的历史净值恢复到上次导入前的快照？\n\n当前数据会被覆盖。')) return;
+  var modal = document.getElementById('modal-nav-restore-confirm');
+  if (modal) modal.classList.add('show');
+}
+async function doRestoreNavHistory() {
+  if (!currentAccount) return;
+  closeModal('modal-nav-restore-confirm');
   try {
     var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/restore-nav-history'), { method: 'POST' });
     var d = await r.json();
@@ -514,24 +519,29 @@ async function restoreNavHistory() {
   } catch (e) { showToast('还原失败：' + e.message); }
 }
 
-// 清空投入本金字段（让前端按现金流转公式回算，适合"投入本金数据误导入"场景）
-async function clearNavHistoryInvested() {
+// 清空历史数据：先弹通用确认框，确认后删除除最近一天外的全部记录
+function confirmClearNavHistory() {
   if (!currentAccount) return;
-  if (!confirm('确认把当前账户所有历史净值的「投入本金」字段清空？\n\n此操作不可撤销（除非有备份可还原）。')) return;
+  var modal = document.getElementById('modal-nav-clear-confirm');
+  if (modal) modal.classList.add('show');
+}
+async function doClearNavHistory() {
+  if (!currentAccount) return;
+  closeModal('modal-nav-clear-confirm');
   try {
     var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/clear-nav-history'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'invested-only' })
+      body: JSON.stringify({ mode: 'keep-latest' })
     });
     var d = await r.json();
-    if (!r.ok || d.error) { showToast('清理失败：' + (d.error || r.status)); return; }
-    showToast('已清空「投入本金」字段，共 ' + (d.rows || 0) + ' 条记录');
+    if (!r.ok || d.error) { showToast('清空失败：' + (d.error || r.status)); return; }
+    showToast('已清空历史数据，仅保留最近一天，共删除 ' + (d.rows || 0) + ' 条记录');
     var fresh = await loadData(currentAccount);
     if (fresh) { data = fresh; }
     renderEarnings();
     closeModal('modal-nav-mgmt');
-  } catch (e) { showToast('清理失败：' + e.message); }
+  } catch (e) { showToast('清空失败：' + e.message); }
 }
 
 // ===================== 列手动匹配弹框 =====================

@@ -93,6 +93,22 @@ async function cleanup() {
       assert.strictEqual(hist[0].date, '2024-01-03');
     });
 
+    await checkAsync('清理 keep-latest：删除除最近一天外全部记录', async () => {
+      // 先清空再补 3 条
+      await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U, A]);
+      await pool.query(
+        `INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES
+         ($1,$2,'2024-01-01',1.0,1000,500),($1,$2,'2024-01-02',1.1,1100,600),($1,$2,'2024-01-03',1.2,1200,700)`,
+        [U, A]
+      );
+      const r = await clearNavHistory(U, A, 'keep-latest');
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.rows, 2, '应删除最近一天之外的全部（删除 2 条）');
+      const { rows: hist } = await pool.query('SELECT date FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date', [U, A]);
+      assert.strictEqual(hist.length, 1);
+      assert.strictEqual(hist[0].date, '2024-01-03', '应保留最近一天');
+    });
+
     await checkAsync('清理：非法模式报错', async () => {
       let threw = false;
       try { await clearNavHistory(U, A, 'nonsense'); }

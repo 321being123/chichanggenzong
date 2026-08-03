@@ -879,7 +879,7 @@
   </div>
 </div>
 
-<!-- 管理历史数据弹窗（误导入/污染时还原 + 清空投入本金） -->
+<!-- 管理历史数据弹窗（误导入/污染时还原 + 清空历史数据） -->
 <div class="modal-overlay" id="modal-nav-mgmt" style="z-index:2100;">
   <div class="modal" style="width:520px;">
     <h2>管理历史数据</h2>
@@ -889,13 +889,39 @@
     </p>
     <div id="nav-mgmt-backup-info" style="font-size:12px;color:#888;margin-bottom:14px;padding:8px 10px;background:#f7f9ff;border-radius:6px;"></div>
     <div class="modal-actions" style="flex-direction:column;gap:10px;">
-      <button class="btn btn-primary" onclick="restoreNavHistory()" id="nav-mgmt-restore-btn">⏪ 一键还原到上次导入前</button>
-      <button class="btn btn-outline" onclick="clearNavHistoryInvested()" id="nav-mgmt-clear-invested-btn">🧹 仅清空「投入本金」字段（保留市值/净值）</button>
+      <button class="btn btn-primary" onclick="confirmRestoreNavHistory()" id="nav-mgmt-restore-btn">⏪ 一键还原到上次导入前</button>
+      <button class="btn btn-outline" onclick="confirmClearNavHistory()" id="nav-mgmt-clear-btn">🗑 清空历史数据（只保留最近一天）</button>
     </div>
     <p style="font-size:11px;color:#aaa;margin-top:14px;line-height:1.5;">
       「一键还原」会把当前账户的历史净值恢复到上次导入前的快照（之前没有快照则无法还原）。<br>
-      「清空投入本金」适合像招商账户的投入本金误导入到华泰的场景——清空后投入本金按真实现金流转公式回算。
+      「清空历史数据」会删除除最近一天外的全部历史净值，适合历史数据已污染、想从头重建的场景。
     </p>
+  </div>
+</div>
+
+<!-- 清空历史数据确认弹窗（通用弹框，非浏览器 confirm） -->
+<div class="modal-overlay" id="modal-nav-clear-confirm" style="z-index:2200;">
+  <div class="modal" style="width:420px;">
+    <h2>清空历史数据</h2>
+    <span class="modal-close" onclick="closeModal('modal-nav-clear-confirm')">&times;</span>
+    <p id="nav-clear-confirm-text" style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px;">将删除除最近一天外的全部历史净值记录，此操作不可撤销（除非有备份可还原）。确定继续？</p>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="doClearNavHistory()">确认清空</button>
+      <button class="btn btn-outline" onclick="closeModal('modal-nav-clear-confirm')">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 还原历史数据确认弹窗（通用弹框，非浏览器 confirm） -->
+<div class="modal-overlay" id="modal-nav-restore-confirm" style="z-index:2200;">
+  <div class="modal" style="width:420px;">
+    <h2>还原历史数据</h2>
+    <span class="modal-close" onclick="closeModal('modal-nav-restore-confirm')">&times;</span>
+    <p style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px;">确认把当前账户的历史净值恢复到上次导入前的快照？当前数据会被覆盖。</p>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="doRestoreNavHistory()">确认还原</button>
+      <button class="btn btn-outline" onclick="closeModal('modal-nav-restore-confirm')">取消</button>
+    </div>
   </div>
 </div>
 

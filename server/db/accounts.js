@@ -268,8 +268,19 @@ async function restoreNavHistory(username, accountName) {
   return { ok: true, rows: backupArr.length, backupAt: bk[0] ? bk[0].nav_history_backup_at : null };
 }
 
-// 清理：invested-only 清空投入本金（置 NULL 由前端按现金流转公式回算）；before-date 删除指定日期前（含）；均提升 version
+// 清理：keep-latest 删除除最近一天外全部记录；invested-only 清空投入本金（置 NULL）；
+//       before-date 删除指定日期前（含）；均提升 version
 async function clearNavHistory(username, accountName, mode, beforeDate) {
+  if (mode === 'keep-latest') {
+    const r = await pool.query(
+      `DELETE FROM nav_history nh
+        USING (SELECT MAX(date) AS md FROM nav_history WHERE username=$1 AND account_name=$2) m
+        WHERE nh.username=$1 AND nh.account_name=$2 AND nh.date < m.md`,
+      [username, accountName]
+    );
+    await pool.query('UPDATE account_data SET version=version+1 WHERE username=$1 AND account_name=$2', [username, accountName]);
+    return { ok: true, rows: r.rowCount };
+  }
   if (mode === 'invested-only') {
     const r = await pool.query('UPDATE nav_history SET invested=NULL WHERE username=$1 AND account_name=$2', [username, accountName]);
     await pool.query('UPDATE account_data SET version=version+1 WHERE username=$1 AND account_name=$2', [username, accountName]);
@@ -280,7 +291,7 @@ async function clearNavHistory(username, accountName, mode, beforeDate) {
     await pool.query('UPDATE account_data SET version=version+1 WHERE username=$1 AND account_name=$2', [username, accountName]);
     return { ok: true, rows: r.rowCount };
   }
-  throw Object.assign(new Error('不支持的模式（invested-only / before-date）'), { status: 400 });
+  throw Object.assign(new Error('不支持的模式（keep-latest / invested-only / before-date）'), { status: 400 });
 }
 
 // ====== 指数历史（独立表，增量 upsert，避免 JSON 读写放大） ======

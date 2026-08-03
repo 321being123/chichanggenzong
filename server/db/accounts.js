@@ -219,30 +219,35 @@ async function upsertNav(username, accountName, rec) {
 // 导致"接口成功但刷新无变化"。以下均以 nav_history 表为唯一数据源。
 
 // 备份：把 nav_history 表当前数据快照到 account_data.nav_history_backup
+// 2026-08-03 修复：新账户可能还没有 account_data 行，UPDATE 命中 0 行导致备份丢失却返回成功
+// → 改为 UPSERT 确保行存在；新行 version=0（与"从未保存"一致），避免破坏前端首存（expectedVersion=0）
 async function backupNavHistory(username, accountName) {
   const { rows } = await pool.query(
     'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   await pool.query(
-    `UPDATE account_data SET nav_history_backup=$3::jsonb, nav_history_backup_at=now()
-     WHERE username=$1 AND account_name=$2`,
+    `INSERT INTO account_data (username, account_name, data, version, nav_history_backup, nav_history_backup_at)
+     VALUES ($1,$2,'{}',0,$3::jsonb,now())
+     ON CONFLICT (username, account_name)
+     DO UPDATE SET nav_history_backup = EXCLUDED.nav_history_backup, nav_history_backup_at = now()`,
     [username, accountName, JSON.stringify(rows)]
   );
   return { ok: true, rows: rows.length };
 }
 
-// 还原：校验备份存在 → 写回 nav_history 表 → 提升 version（使其他页面的旧乐观锁失效）
+// 还原：校验备份存在（NULL=从未备份）→ 写回 nav_history 表 → 提升 version（使其他页面的旧乐观锁失效）
+// 2026-08-03 修复：备份过"0 条"（空数组）也是合法快照，应能还原为空历史，不能误判为"没有备份"
 async function restoreNavHistory(username, accountName) {
   const { rows: bk } = await pool.query(
     'SELECT nav_history_backup, nav_history_backup_at FROM account_data WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
-  const backup = bk[0] && bk[0].nav_history_backup;
-  const backupArr = Array.isArray(backup) ? backup : null;
-  if (!backupArr || backupArr.length === 0) {
+  const backup = bk[0] ? bk[0].nav_history_backup : null;
+  if (backup === null || backup === undefined) {
     throw Object.assign(new Error('当前账户没有备份，无法还原'), { status: 404 });
   }
+  const backupArr = Array.isArray(backup) ? backup : [];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -260,7 +265,7 @@ async function restoreNavHistory(username, accountName) {
     await client.query('ROLLBACK');
     throw e;
   } finally { client.release(); }
-  return { ok: true, rows: backupArr.length, backupAt: bk[0].nav_history_backup_at };
+  return { ok: true, rows: backupArr.length, backupAt: bk[0] ? bk[0].nav_history_backup_at : null };
 }
 
 // 清理：invested-only 清空投入本金（置 NULL 由前端按现金流转公式回算）；before-date 删除指定日期前（含）；均提升 version

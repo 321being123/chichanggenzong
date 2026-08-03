@@ -100,6 +100,54 @@ async function cleanup() {
       assert.ok(threw, '非法模式应报错');
     });
 
+    await checkAsync('新账户（无 account_data 行）备份也能保存快照', async () => {
+      // 用独立账户名模拟"从未保存过"的新账户
+      const U2 = U + '_new', A2 = A + '_新';
+      await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U2, A2]);
+      await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]);
+      try {
+        const r = await backupNavHistory(U2, A2); // 无 account_data 行
+        assert.strictEqual(r.ok, true);
+        assert.strictEqual(r.rows, 0);
+        const { rows } = await pool.query('SELECT nav_history_backup, version FROM account_data WHERE username=$1 AND account_name=$2', [U2, A2]);
+        assert.ok(rows.length === 1, '应创建 account_data 行');
+        assert.ok(Array.isArray(rows[0].nav_history_backup) && rows[0].nav_history_backup.length === 0, '快照应为空数组');
+        assert.strictEqual(rows[0].version, 0, '新行 version 应为 0（不破坏前端首存）');
+      } finally {
+        await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U2, A2]);
+        await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]);
+      }
+    });
+
+    await checkAsync('空快照（0 条）可还原为空历史，不误判为无备份', async () => {
+      const U2 = U + '_empty', A2 = A + '_空';
+      await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U2, A2]);
+      await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]);
+      try {
+        // 造一条数据再清掉：验证"导入前有数据 → 备份(1条) → 导入清空 → 还原恢复"之外的场景
+        await pool.query(`INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested)
+                          VALUES ($1,$2,'2024-01-01',1.0,1000,500)`, [U2, A2]);
+        await backupNavHistory(U2, A2); // 备份 1 条
+        await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]); // 模拟误操作清空
+        // 此时快照 1 条 → 还原
+        const r = await restoreNavHistory(U2, A2);
+        assert.strictEqual(r.rows, 1);
+        // 现在制造"0 条快照"：先清空表再备份（0 条），再插入数据，再还原 → 应清空
+        await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]);
+        await backupNavHistory(U2, A2); // 覆盖为 0 条快照
+        await pool.query(`INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested)
+                          VALUES ($1,$2,'2025-05-05',2.0,2000,800)`, [U2, A2]);
+        const r2 = await restoreNavHistory(U2, A2); // 0 条快照 → 应成功清空
+        assert.strictEqual(r2.ok, true);
+        assert.strictEqual(r2.rows, 0);
+        const { rows: hist } = await pool.query('SELECT date FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]);
+        assert.strictEqual(hist.length, 0, '0 条快照还原后历史应为空');
+      } finally {
+        await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U2, A2]);
+        await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U2, A2]);
+      }
+    });
+
     await cleanup();
   }
 

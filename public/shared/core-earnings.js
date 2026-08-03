@@ -494,7 +494,8 @@ async function openNavHistoryManageModal() {
     if (info) info.innerHTML = '读取备份信息失败：' + escapeHtml(e.message);
     if (restoreBtn) restoreBtn.disabled = true;
   }
-  openModal('modal-nav-mgmt');
+  var modal = document.getElementById('modal-nav-mgmt');
+  if (modal) modal.classList.add('show');
 }
 
 // 一键还原：把 nav_history_backup 恢复到 navHistory

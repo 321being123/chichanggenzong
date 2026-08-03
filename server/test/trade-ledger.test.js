@@ -288,6 +288,56 @@ const T = (over) => Object.assign({
     assert.strictEqual(pos.quantity, 500, '不应重复累加');
   });
 
+  // ---- 验收补充：删除持仓生成 adjust 清仓事件（问题 2） ----
+  await checkAsync('删除持仓：生成 adjust 清仓事件而非直接删快照', async () => {
+    await ledger.applyTrade(U2, A2, {
+      code: '600519', name: '贵州茅台', direction: 'open', price: 100, quantity: 300,
+      type: '股权', subtype: '沪市', date: '2026-01-01 09:30'
+    });
+    // 模拟前端 confirmDelete 的清仓事件（目标数量 0）
+    const r = await ledger.applyTrade(U2, A2, {
+      code: '600519', direction: 'adjust', price: 100, quantity: 0,
+      type: '股权', subtype: '沪市', date: '2026-01-02 09:30', note: '删除持仓（清仓）'
+    });
+    assert.strictEqual(r.ok, true);
+    const d = await loadAccountData(U2, A2);
+    assert.ok(!d.positions.find(p => p.code === '600519'), '清仓后持仓应删除');
+    assert.ok(d.trades.some(t => t.direction === 'adjust' && t.code === '600519'), '应保留 adjust 清仓事件');
+    const { recomputeSecurity } = require('../services/tradeLedger');
+    const client = await pool.connect();
+    const sec = await recomputeSecurity(client, U2, A2, '600519');
+    client.release();
+    assert.strictEqual(sec.quantity, 0, '重放后数量应为 0');
+  });
+
+  // ---- 验收补充：导入去重含账户（同批次号跨账户不冲突，问题 4） ----
+  await checkAsync('导入幂等含账户：同批次号跨账户不互相冲突', async () => {
+    const U3 = 'ledger_accept_user2', A3 = '验收补充账户2';
+    await pool.query(`DELETE FROM positions WHERE username=$1`, [U3]);
+    await pool.query(`DELETE FROM trades WHERE username=$1`, [U3]);
+    await pool.query(`DELETE FROM account_data WHERE username=$1`, [U3]);
+    await pool.query(`DELETE FROM accounts WHERE username=$1`, [U3]);
+    await pool.query(`DELETE FROM users WHERE username=$1`, [U3]);
+    await pool.query(`INSERT INTO users (username, password, accounts) VALUES ($1,'x','[]')`, [U3]);
+    const id3 = require('crypto').createHash('sha256').update(U3 + '\n' + A3).digest('hex');
+    await pool.query(
+      `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+       VALUES ($1,$2,$3,10000,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`, [id3, U3, A3]
+    );
+    // 同一批次号 batch_shared 分别在不同账户写入同业务键交易 → 都应成功（不冲突）
+    const tA = { code: '600036', name: '招商银行', direction: 'buy', price: 35, quantity: 100, commission: 5, stamp_tax: 0, transfer_fee: 0.2, other_fee: 0, type: '股权', subtype: '沪市', date: '2026-06-01 09:30', import_batch_id: 'batch_shared' };
+    const rA1 = await ledger.applyTrade(U2, A2, tA);
+    const rB1 = await ledger.applyTrade(U3, A3, tA);
+    assert.ok(rA1.ok && !rA1.skipped, '账户 A 首笔应写入');
+    assert.ok(rB1.ok && !rB1.skipped, '账户 B 同批次应独立写入（不冲突）');
+    const dA = await loadAccountData(U2, A2);
+    const dB = await loadAccountData(U3, A3);
+    assert.strictEqual(dA.positions.find(p => p.code === '600036').quantity, 100);
+    assert.strictEqual(dB.positions.find(p => p.code === '600036').quantity, 100, '两账户各有独立持仓');
+    for (const t of ['positions','trades','account_data','accounts']) await pool.query('DELETE FROM ' + t + ' WHERE username=$1', [U3]);
+    await pool.query('DELETE FROM users WHERE username=$1', [U3]);
+  });
+
   await pool.query(`DELETE FROM positions WHERE username=$1`, [U2]);
   await pool.query(`DELETE FROM trades WHERE username=$1`, [U2]);
   await pool.query(`DELETE FROM account_data WHERE username=$1`, [U2]);

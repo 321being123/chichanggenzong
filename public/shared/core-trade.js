@@ -363,9 +363,48 @@ function deletePosition(id) {
 
 function confirmDelete() {
   if (deleteTargetId) {
-    data.positions = data.positions.filter(p => p.id !== deleteTargetId);
-    // 仅删持仓，保留交易流水（交易用于净值计算，删持仓不应抹掉历史）
+    const p = data.positions.find(x => x.id === deleteTargetId);
     deleteTargetId = null;
+    // P0-2 验收修复：删除持仓生成「adjust 清仓事件」（目标数量 0），保留账本可追溯性，
+    // 不再直接删除持仓快照（否则交易重放与持仓再次不一致）
+    if (p && p.code) {
+      (async function () {
+        try {
+          var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event: {
+                code: p.code, name: p.name || p.code,
+                direction: 'adjust',
+                price: p.cost || p.price || 0,
+                quantity: 0, // 清仓
+                type: p.type || '股权', subtype: p.subtype || '',
+                date: todayCN(), note: '删除持仓（清仓）'
+              }
+            })
+          });
+          var j = await r.json().catch(function () { return {}; });
+          if (!r.ok) { showToast(j.error || '删除持仓失败'); return; }
+          if (j.data) {
+            data = j.data;
+            dataVersion = j.data.version || dataVersion;
+            if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+            if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+            if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+            if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+            restorePriceChangeMap();
+          }
+          renderAll();
+          showToast('持仓已删除（记录为清仓调整）');
+        } catch (e) {
+          showToast('删除失败：' + (e.message || e));
+        }
+      })();
+      closeModal('modal-delete');
+      return;
+    }
+    data.positions = data.positions.filter(x => x.id !== deleteTargetId);
     saveData();
     renderAll();
   }

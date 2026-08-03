@@ -40,8 +40,8 @@ function validateTrade(t) {
   const price = Number(t.price);
   const quantity = Number(t.quantity);
   if (t.direction === 'adjust') {
-    // 持仓调整：数量可正可负（负=减少），价格/成本可给可不给
-    if (!isFinite(quantity) || quantity === 0) throw bizError('调整数量不能为 0');
+    // 持仓调整：数量 = 调整后目标数量（绝对设置，可为 0=清仓；负数非法）
+    if (!isFinite(quantity) || quantity < 0) throw bizError('调整数量不能为负数');
   } else {
     if (!isFinite(price) || price <= 0) throw bizError('交易价格必须为正数');
     if (!isFinite(quantity) || quantity <= 0) throw bizError('交易数量必须为正数');
@@ -219,12 +219,13 @@ async function applyTrade(username, accountName, trade) {
     }
     // 写交易（替换走 UPDATE，新增走 INSERT；ON CONFLICT 兜底幂等）
     const tradeId = t.id || require('crypto').randomBytes(8).toString('hex');
-    // P1-4 服务端导入幂等：同批次+代码+交易日+方向+价格+数量 视为重复导入，跳过（不新增、不重算）
+    // P1-4 服务端导入幂等：同账户+同批次+代码+交易日+方向+价格+数量 视为重复导入，跳过（不新增、不重算）
+    // 验收修复：查重必须限定 username/account_name，防相同批次号跨账户互相冲突
     if (t.import_batch_id) {
       const dup = await client.query(
-        `SELECT id FROM trades WHERE import_batch_id=$1 AND code=$2 AND trade_date=$3
-           AND direction=$4 AND price=$5 AND quantity=$6 LIMIT 1`,
-        [t.import_batch_id, t.code, tradeDate, t.direction, price, quantity]
+        `SELECT id FROM trades WHERE username=$1 AND account_name=$2 AND import_batch_id=$3
+           AND code=$4 AND trade_date=$5 AND direction=$6 AND price=$7 AND quantity=$8 LIMIT 1`,
+        [username, accountName, t.import_batch_id, t.code, tradeDate, t.direction, price, quantity]
       );
       if (dup.rows[0]) {
         await client.query('COMMIT');
@@ -368,13 +369,14 @@ async function deleteCashFlow(username, accountName, flowId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 读取被删现金流原日期（验收修复：历史净值须从该日期起重算，而非仅今天）
     const del = await client.query(
-      'DELETE FROM cash_flows WHERE username=$1 AND account_name=$2 AND id=$3 RETURNING id',
+      'DELETE FROM cash_flows WHERE username=$1 AND account_name=$2 AND id=$3 RETURNING id, date',
       [username, accountName, flowId]
     );
     if (del.rowCount === 0) throw bizError('现金流记录不存在', 404);
+    const fromDate = (del.rows[0].date || '').slice(0, 10) || todayCN();
     // 现金流变更 → 提升 account_data 总版本 + cashflow_version（P0-1）
-    const fromDate = todayCN();
     await markNavDirty(client, username, accountName, fromDate, 'cashflow');
     await client.query(
       `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')

@@ -314,20 +314,21 @@ async function upsertNav(username, accountName, rec) {
 // 读取当前实际生效的 navHistory（只读结构化表；表空即空，绝不读 JSON 归档）
 async function readEffectiveNavHistory(username, accountName) {
   const { rows } = await pool.query(
-    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   return rows;
 }
 
 // 事务内：写 nav_history 表（DELETE+INSERT）+ 提升 nav_version（使其他页面的旧快照不再覆盖）
+// snapshot_at（同日现金流结算边界）随备份/还原保留（验收修复）
 async function writeNavHistoryBoth(client, username, accountName, navs) {
   await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
   for (const n of navs) {
     await client.query(
-      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
-      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested',
-      [username, accountName, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))]
+      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
+      [username, accountName, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null]
     );
   }
   await client.query(

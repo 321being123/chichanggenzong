@@ -2062,6 +2062,7 @@ const MIGRATIONS = [
   { version: '044_nav_cash_boundary', up: migration044NavCashBoundary },
   { version: '045_nav_snapshot_at', up: migration045NavSnapshotAt },
   { version: '046_position_events', up: migration046PositionEvents },
+  { version: '047_account_id_fk', up: migration047AccountId },
 ];
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========
@@ -2126,10 +2127,12 @@ async function migration046PositionEvents() {
     ALTER TABLE trades
       ADD CONSTRAINT chk_trades_direction CHECK (direction IN ('buy','sell','open','adjust'))
   `);
-  // 服务端导入幂等（P1-4）：批次+业务唯一键唯一索引（NULL 不参与约束，手工交易不受影响）
+  // 服务端导入幂等（P1-4 验收修复）：批次+账户+业务唯一键唯一索引（NULL 不参与约束，手工交易不受影响）
+  // ⚠️ 必须含 username/account_name——否则相同批次号跨账户互相冲突
+  await pool.query(`DROP INDEX IF EXISTS uq_trades_import_dedupe`);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_import_dedupe
-      ON trades (import_batch_id, code, trade_date, direction, price, quantity)
+      ON trades (username, account_name, import_batch_id, code, trade_date, direction, price, quantity)
       WHERE import_batch_id IS NOT NULL
   `);
   // 数据库约束补齐（P1-5，方案阶段五第 5 条）：
@@ -2140,10 +2143,55 @@ async function migration046PositionEvents() {
     ['chk_trades_qty', `CHECK (direction = 'adjust' OR quantity > 0)`],
     ['chk_trades_amount', `CHECK (amount IS NULL OR amount >= 0)`],
     ['chk_trades_fee', `CHECK (commission IS NULL OR commission >= 0)`],
+    // 全部费用非负（验收补充：stamp_tax/transfer_fee/other_fee）
+    ['chk_trades_fee_all', `CHECK ((stamp_tax IS NULL OR stamp_tax >= 0) AND (transfer_fee IS NULL OR transfer_fee >= 0) AND (other_fee IS NULL OR other_fee >= 0))`],
+    // 交易日期格式合法（trade_date 为 YYYY-MM-DD）
+    ['chk_trades_trade_date', `CHECK (trade_date IS NULL OR trade_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`],
   ]) {
     const ex = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1 AND conrelid='trades'::regclass`, [c[0]]);
     if (ex.rowCount === 0) {
       await pool.query(`ALTER TABLE trades ADD CONSTRAINT ${c[0]} ${c[1]}`);
+    }
+  }
+  // 金额关系 amount = price × quantity（验收补充）：存量有 20 条历史数据金额错位（招商期初导入），
+  // 硬约束会拒绝存量 → 用 NOT VALID 只约束新写入（服务端账本已强制一致）
+  const amtEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`);
+  if (amtEx.rowCount === 0) {
+    await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+      CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
+  }
+}
+
+// ========== 047：不可变 account_id 外键基础设施（验收补充，方案阶段五） ==========
+// 所有账户子表新增 account_id（指向 accounts.id 的不可变主键），回填后建立外键。
+// 说明：读写代码仍以 username+account_name 为准（兼容层）；account_id 作为不可变关联键，
+// 账户重命名不再影响子表关联（方案 4.2），并为未来按 account_id 收敛提供基础。
+// NOT VALID：历史存量行若无法匹配 accounts（孤立数据）也允许建约束，仅约束新写入。
+async function migration047AccountId() {
+  const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history'];
+  for (const t of tables) {
+    // 1) 加列
+    const colEx = await pool.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name='account_id'`, [t]
+    );
+    if (colEx.rowCount === 0) {
+      await pool.query(`ALTER TABLE ${t} ADD COLUMN account_id TEXT`);
+    }
+    // 2) 回填（按 username+account_name 匹配 accounts.id）
+    await pool.query(
+      `UPDATE ${t} b SET account_id = a.id
+         FROM accounts a
+        WHERE b.username = a.username AND b.account_name = a.account_name
+          AND b.account_id IS NULL`
+    );
+    // 3) 外键（NOT VALID：存量孤立行不校验；后续写入由代码保证 account_id 关联）
+    const fkName = `fk_${t}_account_id`;
+    const fkEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [fkName]);
+    if (fkEx.rowCount === 0) {
+      await pool.query(
+        `ALTER TABLE ${t} ADD CONSTRAINT ${fkName}
+         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE NOT VALID`
+      );
     }
   }
 }

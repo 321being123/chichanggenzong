@@ -84,24 +84,33 @@ async function recomputeNav(username, accountName, fromDate) {
 
   // 复刻 investedAt(date)（与前端 core-earnings.js:116 一致）—— 已收口到 public/shared/nav-math.js
 
-  // 持仓-as-of 某日：重放 tradeDay<=d 的交易（买加/卖减）—— 纯日期比较，修复当日带时间交易漏算
+  // 持仓-as-of 某日：重放 tradeDay<=d 的事件（纯日期比较，修复当日带时间交易漏算）
+  // 方向语义：buy/open 累加数量；sell 减数量；adjust 数量=调整后目标数量（绝对设置，P0-2）
   function heldQty(date) {
     const m = new Map();
     trades.forEach(function (t) {
       if (tradeDay(t) > date) return;
       const cur = m.get(t.code) || { qty: 0, subtype: t.subtype };
-      cur.qty += (t.direction === 'buy' ? 1 : -1) * (t.quantity || 0);
+      if (t.direction === 'sell') {
+        cur.qty -= (t.quantity || 0);
+      } else if (t.direction === 'adjust') {
+        cur.qty = Math.max(0, (t.quantity || 0)); // 目标数量绝对设置
+      } else {
+        cur.qty += (t.quantity || 0); // buy / open 累加
+      }
       cur.subtype = t.subtype || cur.subtype;
       m.set(t.code, cur);
     });
     return m;
   }
   // 现金-as-of 某日：cashBase + 现金流(<=d) + 交易净额(tradeDay<=d)
+  // open（期初建仓）/ adjust（持仓调整）不产生现金变动（P0-2）
   function cashAsOf(date) {
     let c = cashBase;
     cfs.forEach(function (f) { if (f.date <= date) c += (f.amount || 0); });
     trades.forEach(function (t) {
       if (tradeDay(t) > date) return;
+      if (t.direction === 'open' || t.direction === 'adjust') return;
       const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
       c += (t.direction === 'buy') ? -(t.amount || 0) - fee : (t.amount || 0) - fee;
     });

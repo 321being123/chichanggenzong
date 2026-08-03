@@ -39,7 +39,8 @@ function fmt(n) {
   var intStr = String(intPart);
   var formattedInt = '';
   for (var i = 0; i < intStr.length; i++) {
-    if (i > 0 && (intStr.length - i) % 4 === 0) formattedInt += ',';
+    // 千分位：每 3 位一组（% 3），修复前误用 % 4 导致 7 位数字显示为 "256,3839" 而非 "2,563,839"
+    if (i > 0 && (intStr.length - i) % 3 === 0) formattedInt += ',';
     formattedInt += intStr[i];
   }
   return sign + '¥' + formattedInt + '.' + String(decPart).padStart(2, '0');

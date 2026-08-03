@@ -440,8 +440,12 @@ async function finishImport(rows, mapping) {
     return;
   }
 
-  // 导入前自动备份当前 navHistory（误导入可一键还原），失败不阻塞导入
-  await backupNavHistoryServer();
+  // 导入前自动备份当前 navHistory（误导入可一键还原）；备份失败则中止导入，防止"以为有快照实际没有"
+  var backedUp = await backupNavHistoryServer();
+  if (!backedUp) {
+    showToast('导入前自动备份失败，已取消导入（避免误导入后无法还原）。请稍后重试');
+    return;
+  }
 
   // 冲突检测：导入中存在日期落在线上段 [首条, 末条] 内
   const realStart = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
@@ -460,13 +464,14 @@ async function finishImport(rows, mapping) {
 
 // ===================== 历史净值备份/还原（导入前自动拍快照，误导入可一键还原） =====================
 
-// 调用后端 API：把当前 navHistory 存到 nav_history_backup
+// 调用后端 API：把当前 nav_history 存到 nav_history_backup；成功返回 true，失败返回 false
 async function backupNavHistoryServer() {
-  if (!currentAccount) return;
+  if (!currentAccount) return true; // 无账户上下文不备份也不阻塞
   try {
     var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/backup-nav-history'), { method: 'POST' });
-    if (!r.ok) console.warn('历史数据备份失败：HTTP ' + r.status);
-  } catch (e) { console.warn('历史数据备份失败', e); }
+    if (!r.ok) { console.warn('历史数据备份失败：HTTP ' + r.status); return false; }
+    return true;
+  } catch (e) { console.warn('历史数据备份失败', e); return false; }
 }
 
 // 打开"管理历史数据"弹窗

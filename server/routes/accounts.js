@@ -6,7 +6,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
-const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool } = require('../db');
+const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory } = require('../db');
 const { fetchQuoteByCode, todayCN, toTsCode } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
@@ -208,117 +208,56 @@ router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), 
   }
 }));
 
-// ========== 历史净值备份（导入前自动拍快照，误导入可一键还原） ==========
+// ========== 历史净值备份/还原/清理（导入前自动拍快照，误导入可一键还原） ==========
+// ⚠️ 2026-08-03 修复：必须操作真实数据源 nav_history 表（页面读取来源），而非 account_data.data JSONB
+//    （旧实现导致"接口成功但刷新无变化"）。逻辑集中在 db 层 backupNavHistory/restoreNavHistory/clearNavHistory。
 
-// 备份当前 navHistory 到 nav_history_backup（导入前调用）
+// 备份当前 nav_history 到 nav_history_backup（导入前调用）
 router.post('/accounts/:name/backup-nav-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '备份过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const result = await pool.query(
-      `UPDATE account_data
-         SET nav_history_backup = (data::jsonb->'navHistory')::jsonb,
-             nav_history_backup_at = now()
-       WHERE username=$1 AND account_name=$2
-       RETURNING jsonb_array_length(COALESCE(nav_history_backup, '[]'::jsonb)) AS rows`,
-      [req.session.user, name]
-    );
-    if (!result.rowCount) return res.status(404).json({ error: '账户数据不存在' });
-    res.json({ ok: true, rows: result.rows[0].rows });
+    const r = await backupNavHistory(req.session.user, name);
+    res.json(r);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
 }));
 
-// 清理历史数据（按模式）：invested-only 清空投入本金字段让公式回算；before-date 删除某日期前
+// 清理历史数据（按模式）：invested-only 清空投入本金字段让公式回算；before-date 删除某日期前（含）
 router.post('/accounts/:name/clear-nav-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '清理过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
     const { mode, beforeDate } = req.body || {};
-    if (mode === 'invested-only') {
-      // 清空 navHistory 中每条记录的 invested 字段（置 null，前端 investedAt 用 cashFlows 回算）
-      const r = await pool.query(
-        `UPDATE account_data
-            SET data = jsonb_set(
-              data::jsonb,
-              '{navHistory}',
-              COALESCE(
-                (SELECT jsonb_agg(jsonb_set(elem, '{invested}', 'null'::jsonb))
-                   FROM jsonb_array_elements(data::jsonb->'navHistory') elem),
-                '[]'::jsonb
-              ),
-              false
-            )::text
-          WHERE username=$1 AND account_name=$2
-          RETURNING jsonb_array_length(data::jsonb->'navHistory') AS rows`,
-        [req.session.user, name]
-      );
-      if (!r.rowCount) return res.status(404).json({ error: '账户数据不存在' });
-      res.json({ ok: true, rows: r.rows[0].rows });
-    } else if (mode === 'before-date' && beforeDate) {
-      // 删除该日期之前（含）的所有 navHistory 记录
-      const r = await pool.query(
-        `UPDATE account_data
-            SET data = jsonb_set(
-              data::jsonb,
-              '{navHistory}',
-              COALESCE(
-                (SELECT jsonb_agg(elem)
-                   FROM jsonb_array_elements(data::jsonb->'navHistory') elem
-                  WHERE elem->>'date' > $1),
-                '[]'::jsonb
-              ),
-              false
-            )::text
-          WHERE username=$1 AND account_name=$2
-          RETURNING jsonb_array_length(data::jsonb->'navHistory') AS rows`,
-        [beforeDate, req.session.user, name]
-      );
-      if (!r.rowCount) return res.status(404).json({ error: '账户数据不存在' });
-      res.json({ ok: true, rows: r.rows[0].rows });
-    } else {
-      res.status(400).json({ error: '不支持的模式（invested-only / before-date）' });
-    }
+    const r = await clearNavHistory(req.session.user, name, mode, beforeDate);
+    res.json(r);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
 }));
 
-// 一键还原：将 nav_history_backup 恢复到 navHistory（误导入/污染时使用）
+// 一键还原：校验备份存在，将 nav_history_backup 写回 nav_history 表，并提升 version
 router.post('/accounts/:name/restore-nav-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '还原请求过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const r = await pool.query(
-      `UPDATE account_data
-          SET data = jsonb_set(
-            data::jsonb,
-            '{navHistory}',
-            COALESCE(nav_history_backup, '[]'::jsonb),
-            false
-          )::text
-        WHERE username=$1 AND account_name=$2
-        RETURNING nav_history_backup_at AS backup_at,
-                  jsonb_array_length(COALESCE(nav_history_backup, '[]'::jsonb)) AS rows`,
-      [req.session.user, name]
-    );
-    if (!r.rowCount) return res.status(404).json({ error: '账户数据不存在' });
-    res.json({ ok: true, rows: r.rows[0].rows, backupAt: r.rows[0].backup_at });
+    const r = await restoreNavHistory(req.session.user, name);
+    res.json(r);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
 }));
 
-// 查看备份信息（前端按钮显示"备份时间"）
+// 查看备份信息（前端按钮显示"备份时间"；无备份时 hasBackup=false）
 router.get('/accounts/:name/nav-history-backup-info', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const r = await pool.query(
+    const { rows } = await pool.query(
       `SELECT nav_history_backup_at AS at,
               jsonb_array_length(COALESCE(nav_history_backup, '[]'::jsonb)) AS rows
          FROM account_data WHERE username=$1 AND account_name=$2`,
       [req.session.user, name]
     );
-    if (!r.rowCount) return res.json({ hasBackup: false });
-    res.json({ hasBackup: !!r.rows[0].at, at: r.rows[0].at, rows: r.rows[0].rows });
+    if (!rows.length || !rows[0].at) return res.json({ hasBackup: false });
+    res.json({ hasBackup: true, at: rows[0].at, rows: rows[0].rows });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

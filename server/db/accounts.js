@@ -214,6 +214,70 @@ async function upsertNav(username, accountName, rec) {
   );
 }
 
+// ====== 历史净值备份/还原/清理（操作真实 nav_history 表，与 loadAccountData 数据源一致） ======
+// 2026-08-03 修复：此前误操作 account_data.data JSONB 字段，而页面实际读 nav_history 表，
+// 导致"接口成功但刷新无变化"。以下均以 nav_history 表为唯一数据源。
+
+// 备份：把 nav_history 表当前数据快照到 account_data.nav_history_backup
+async function backupNavHistory(username, accountName) {
+  const { rows } = await pool.query(
+    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    [username, accountName]
+  );
+  await pool.query(
+    `UPDATE account_data SET nav_history_backup=$3::jsonb, nav_history_backup_at=now()
+     WHERE username=$1 AND account_name=$2`,
+    [username, accountName, JSON.stringify(rows)]
+  );
+  return { ok: true, rows: rows.length };
+}
+
+// 还原：校验备份存在 → 写回 nav_history 表 → 提升 version（使其他页面的旧乐观锁失效）
+async function restoreNavHistory(username, accountName) {
+  const { rows: bk } = await pool.query(
+    'SELECT nav_history_backup, nav_history_backup_at FROM account_data WHERE username=$1 AND account_name=$2',
+    [username, accountName]
+  );
+  const backup = bk[0] && bk[0].nav_history_backup;
+  const backupArr = Array.isArray(backup) ? backup : null;
+  if (!backupArr || backupArr.length === 0) {
+    throw Object.assign(new Error('当前账户没有备份，无法还原'), { status: 404 });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+    for (const n of backupArr) {
+      await client.query(
+        'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
+        'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested',
+        [username, accountName, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))]
+      );
+    }
+    await client.query('UPDATE account_data SET version=version+1 WHERE username=$1 AND account_name=$2', [username, accountName]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally { client.release(); }
+  return { ok: true, rows: backupArr.length, backupAt: bk[0].nav_history_backup_at };
+}
+
+// 清理：invested-only 清空投入本金（置 NULL 由前端按现金流转公式回算）；before-date 删除指定日期前（含）；均提升 version
+async function clearNavHistory(username, accountName, mode, beforeDate) {
+  if (mode === 'invested-only') {
+    const r = await pool.query('UPDATE nav_history SET invested=NULL WHERE username=$1 AND account_name=$2', [username, accountName]);
+    await pool.query('UPDATE account_data SET version=version+1 WHERE username=$1 AND account_name=$2', [username, accountName]);
+    return { ok: true, rows: r.rowCount };
+  }
+  if (mode === 'before-date' && beforeDate) {
+    const r = await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND date<=$3', [username, accountName, beforeDate]);
+    await pool.query('UPDATE account_data SET version=version+1 WHERE username=$1 AND account_name=$2', [username, accountName]);
+    return { ok: true, rows: r.rowCount };
+  }
+  throw Object.assign(new Error('不支持的模式（invested-only / before-date）'), { status: 400 });
+}
+
 // ====== 指数历史（独立表，增量 upsert，避免 JSON 读写放大） ======
 
 async function upsertIndexPoints(username, accountName, points) {
@@ -286,4 +350,7 @@ module.exports = {
   loadIndexPoints,
   migrateAccountsTable,
   getAccountMeta,
+  backupNavHistory,
+  restoreNavHistory,
+  clearNavHistory,
 };

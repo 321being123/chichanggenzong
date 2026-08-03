@@ -196,6 +196,104 @@ const T = (over) => Object.assign({
     await cleanup();
   }
 
+  // ========== 验收补充测试（持仓管理整改验收报告） ==========
+  // 独立测试用户，避免污染主流程
+  const U2 = 'ledger_accept_user', A2 = '验收补充账户';
+  await pool.query(`DELETE FROM positions WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM trades WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM account_data WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM accounts WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM users WHERE username=$1`, [U2]);
+  await pool.query(`INSERT INTO users (username, password, accounts) VALUES ($1,'x','[]')`, [U2]);
+  const acctId2 = require('crypto').createHash('sha256').update(U2 + '\n' + A2).digest('hex');
+  await pool.query(
+    `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+     VALUES ($1,$2,$3,500000,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))`, [acctId2, U2, A2]
+  );
+
+  // ---- P0-2：期初建仓 open 事件（不产生现金，成本入账，后续交易正常累加） ----
+  await checkAsync('P0-2 期初建仓：open 事件数量/成本入账且现金不变', async () => {
+    const cashBefore = (await loadAccountData(U2, A2)).cash;
+    const r = await ledger.applyTrade(U2, A2, {
+      code: '600000', name: '浦发银行', direction: 'open', price: 10, quantity: 1000,
+      type: '股权', subtype: '沪市', date: '2026-01-01 09:30'
+    });
+    assert.strictEqual(r.ok, true);
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '600000');
+    assert.strictEqual(pos.quantity, 1000, '期初数量 1000');
+    assert.strictEqual(pos.cost, 10, '期初成本=价格');
+    assert.strictEqual(d.cash, cashBefore, '期初建仓不产生现金变动');
+    assert.ok(d.trades.some(t => t.direction === 'open'), '应生成 open 事件');
+  });
+
+  await checkAsync('P0-2 期初+首笔卖出：从期初数量扣减，不误删持仓', async () => {
+    // 期初 1000，卖出 200 → 剩 800
+    const r = await ledger.applyTrade(U2, A2, {
+      code: '600000', direction: 'sell', price: 12, quantity: 200,
+      commission: 5, stamp_tax: 0, transfer_fee: 0.2, other_fee: 0,
+      date: '2026-02-01 10:00'
+    });
+    assert.strictEqual(r.ok, true);
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '600000');
+    assert.ok(pos, '持仓应保留');
+    assert.strictEqual(pos.quantity, 800, '期初1000-卖出200=800');
+    assert.strictEqual(pos.cost, 10, '卖出不改变期初成本');
+  });
+
+  // ---- P0-4：并发卖出锁（两笔并发卖出总量超可卖，只能一笔成功） ----
+  await checkAsync('P0-4 并发卖出：两笔并发超卖只有一笔成功', async () => {
+    // 当前持仓 800。两笔并发各卖 500 → 总量 1000 > 800，只能一笔成功
+    const [r1, r2] = await Promise.allSettled([
+      ledger.applyTrade(U2, A2, { code: '600000', direction: 'sell', price: 13, quantity: 500, commission: 5, stamp_tax: 0, transfer_fee: 0.2, other_fee: 0, date: '2026-03-01 10:00' }),
+      ledger.applyTrade(U2, A2, { code: '600000', direction: 'sell', price: 13, quantity: 500, commission: 5, stamp_tax: 0, transfer_fee: 0.2, other_fee: 0, date: '2026-03-01 10:05' }),
+    ]);
+    const success = [r1, r2].filter(r => r.status === 'fulfilled');
+    const failed = [r1, r2].filter(r => r.status === 'rejected');
+    assert.strictEqual(success.length, 1, '两笔并发超卖应只有一笔成功，实际成功=' + success.length);
+    assert.strictEqual(failed.length, 1, '另一笔应被拒绝');
+    assert.ok(/可用持仓|超出/.test(failed[0].reason.message), '拒绝信息应含可卖数量');
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '600000');
+    assert.strictEqual(pos.quantity, 300, '800-500=300');
+  });
+
+  // ---- P0-1：账本写操作同步 account_data 版本（防旧页面全量保存覆盖） ----
+  await checkAsync('P0-1 账本写入提升 account_data 版本与数据集版本', async () => {
+    const before = await loadAccountData(U2, A2);
+    const vBefore = before.version, tvBefore = before.tradeVersion;
+    await ledger.applyTrade(U2, A2, {
+      code: '600000', direction: 'buy', price: 15, quantity: 100,
+      commission: 5, stamp_tax: 0, transfer_fee: 0.2, other_fee: 0, date: '2026-04-01 10:00'
+    });
+    const after = await loadAccountData(U2, A2);
+    assert.ok(after.version > vBefore, '总版本应提升（' + vBefore + '→' + after.version + '）');
+    assert.ok(after.tradeVersion > tvBefore, 'trade_version 应提升');
+  });
+
+  // ---- P1-4：服务端导入幂等（同批次重复导入跳过） ----
+  await checkAsync('P1-4 服务端导入幂等：同批次同业务键重复导入跳过', async () => {
+    const t1 = {
+      code: '601998', name: '中信银行', direction: 'buy', price: 7, quantity: 500,
+      commission: 5, stamp_tax: 0, transfer_fee: 0.2, other_fee: 0,
+      type: '股权', subtype: '沪市', date: '2026-05-01 09:30', import_batch_id: 'batch_test_1'
+    };
+    const r1 = await ledger.applyTrade(U2, A2, t1);
+    assert.ok(r1.ok && !r1.skipped, '首笔应写入');
+    const r2 = await ledger.applyTrade(U2, A2, Object.assign({}, t1, { date: '2026-05-01 09:31' }));
+    assert.strictEqual(r2.skipped, 'duplicate', '同批次同业务键应跳过');
+    const d = await loadAccountData(U2, A2);
+    const pos = d.positions.find(p => p.code === '601998');
+    assert.strictEqual(pos.quantity, 500, '不应重复累加');
+  });
+
+  await pool.query(`DELETE FROM positions WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM trades WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM account_data WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM accounts WHERE username=$1`, [U2]);
+  await pool.query(`DELETE FROM users WHERE username=$1`, [U2]);
+
   const pass = results.filter(r => r[0] === 'PASS').length;
   const fail = results.filter(r => r[0] === 'FAIL').length;
   console.log('\n===== 账户账本测试汇总 =====');

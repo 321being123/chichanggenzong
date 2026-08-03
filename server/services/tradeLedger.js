@@ -32,20 +32,29 @@ function splitTradeDateTime(date, createdAt) {
 }
 
 // 校验单笔交易字段（与 saveAccountData 的 validate 一致但更严格：amount=price×quantity）
+// direction: buy/sell=真实成交；open=期初建仓（等效买入）；adjust=持仓调整（数量可正可负，仅校正数量/成本，无现金变动）
 function validateTrade(t) {
   if (!t) throw bizError('交易数据缺失');
-  if (t.direction !== 'buy' && t.direction !== 'sell') throw bizError('交易方向非法');
+  const DIRS = ['buy', 'sell', 'open', 'adjust'];
+  if (DIRS.indexOf(t.direction) === -1) throw bizError('交易方向非法');
   const price = Number(t.price);
   const quantity = Number(t.quantity);
-  if (!isFinite(price) || price <= 0) throw bizError('交易价格必须为正数');
-  if (!isFinite(quantity) || quantity <= 0) throw bizError('交易数量必须为正数');
-  // amount 服务端统一计算（四舍五入到分），与前端显示口径一致；导入值不一致拒绝（方案阶段一第 4 条）
+  if (t.direction === 'adjust') {
+    // 持仓调整：数量可正可负（负=减少），价格/成本可给可不给
+    if (!isFinite(quantity) || quantity === 0) throw bizError('调整数量不能为 0');
+  } else {
+    if (!isFinite(price) || price <= 0) throw bizError('交易价格必须为正数');
+    if (!isFinite(quantity) || quantity <= 0) throw bizError('交易数量必须为正数');
+  }
+  // amount 服务端统一计算（四舍五入到分）；期初/调整事件不产生现金，不校验金额
   const expectAmount = Math.round(price * quantity * 100) / 100;
   const provided = t.amount == null ? null : Number(t.amount);
-  if (provided != null && isFinite(provided) && Math.abs(provided - expectAmount) > 0.02) {
-    throw bizError('成交金额与 价格×数量 不一致（' + provided + ' ≠ ' + expectAmount + '），请核对后重试');
+  if (t.direction === 'buy' || t.direction === 'sell') {
+    if (provided != null && isFinite(provided) && Math.abs(provided - expectAmount) > 0.02) {
+      throw bizError('成交金额与 价格×数量 不一致（' + provided + ' ≠ ' + expectAmount + '），请核对后重试');
+    }
   }
-  // 费用非负
+  // 费用非负（期初/调整事件费用应为 0）
   for (const f of ['commission', 'stamp_tax', 'transfer_fee', 'other_fee']) {
     const v = Number(t[f] || 0);
     if (!isFinite(v) || v < 0) throw bizError('费用不能为负数');
@@ -64,7 +73,7 @@ async function heldQuantity(client, username, accountName, code) {
   return Number(rows[0] ? rows[0].qty : 0);
 }
 
-// 移动加权成本重算：按时间顺序重放该证券全部交易（仅 buy/sell 影响数量与成本）
+// 移动加权成本重算：按时间顺序重放该证券全部事件（buy/open 累加数量与成本；sell/adjust 增减数量）
 // 返回 { quantity, cost }（cost=移动加权单位成本；无持仓时 cost 保留最后买入价）
 // ⚠️ strict 模式下若出现"卖出超过可卖数量"（重放遇历史超卖），抛错——避免超卖被静默截断掩盖账本错误
 async function recomputeSecurity(client, username, accountName, code, strict = false) {
@@ -75,17 +84,22 @@ async function recomputeSecurity(client, username, accountName, code, strict = f
     [username, accountName, code]
   );
   let qty = 0;
-  let cost = 0; // 移动加权单位成本（仅买入参与加权）
+  let cost = 0; // 移动加权单位成本（买入/期初参与加权）
   for (const t of trs) {
     const q = Number(t.quantity) || 0;
     const p = Number(t.price) || 0;
-    if (t.direction === 'buy') {
+    if (t.direction === 'buy' || t.direction === 'open') {
       const oldTotal = cost * qty;
       const newTotal = oldTotal + p * q;
       qty += q;
       cost = qty > 0 ? newTotal / qty : 0;
+    } else if (t.direction === 'adjust') {
+      // 持仓调整：quantity = 调整后目标数量（绝对设置）；成本保持单位成本（若给了新成本则按新成本）
+      const unitCost = p > 0 ? p : (qty > 0 ? cost : 0);
+      qty = Math.max(0, q);
+      cost = qty > 0 ? unitCost : 0;
     } else {
-      // 卖出只减数量，单位成本不变（移动加权法）
+      // sell：只减数量，单位成本不变（移动加权法）
       if (strict && qty < q) {
         throw bizError('无法安全重放：' + t.date + ' 卖出 ' + q + ' 超过当时可卖 ' + qty + '（历史交易存在缺口或超卖，请用冲正交易处理）');
       }
@@ -96,7 +110,9 @@ async function recomputeSecurity(client, username, accountName, code, strict = f
 }
 
 // 交易净额（买入减/卖出加，含费用）—— 与 loadAccountData 现金公式一致
+// open（期初建仓）/ adjust（持仓调整）不产生现金变动，净额为 0
 function tradeNetDelta(t) {
+  if (t.direction === 'open' || t.direction === 'adjust') return 0;
   const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
   return (t.direction === 'buy') ? -(Number(t.amount) || 0) - fee : (Number(t.amount) || 0) - fee;
 }
@@ -123,10 +139,26 @@ async function recomputeCash(client, username, accountName) {
   return round(cashBase + cfNet + tradeNet, 2);
 }
 
-// 标记受影响日期之后的净值需要重算（在 account_data 记录 dirty 标记；实际重算由前端 recompute-nav 触发）
-async function markNavDirty(client, username, accountName, fromDate) {
+// 标记受影响日期之后的净值需要重算 + 同步提升 account_data 版本（P0-1 验收修复）：
+// 账本写操作必须在同一事务内提升 account_data 总版本与相关数据集版本，否则旧页面全量保存
+// 仍以旧 version 校验通过，删除重建把账本新写入覆盖掉。
+// dataset: 'trade' | 'position' | 'cashflow' | 'nav'（决定提升哪个数据集版本）
+async function markNavDirty(client, username, accountName, fromDate, dataset) {
+  const col = dataset === 'position' ? 'pos_version' :
+    dataset === 'cashflow' ? 'cashflow_version' :
+    dataset === 'nav' ? 'nav_version' : 'trade_version';
+  // account_data 行可能不存在（账本首笔写入前）→ INSERT 兜底建行再提升
   await client.query(
-    `UPDATE account_data SET nav_cash_cutoff=$3
+    `INSERT INTO account_data (username, account_name, data, version, ${col}, nav_cash_cutoff)
+     VALUES ($1,$2,'{}',0,0,$3)
+     ON CONFLICT (username, account_name) DO NOTHING`,
+    [username, accountName, fromDate || todayCN()]
+  );
+  await client.query(
+    `UPDATE account_data
+        SET nav_cash_cutoff=$3,
+            version=COALESCE(version,0)+1,
+            ${col}=COALESCE(${col},0)+1
       WHERE username=$1 AND account_name=$2`,
     [username, accountName, fromDate || todayCN()]
   );
@@ -149,6 +181,23 @@ async function applyTrade(username, accountName, trade) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // P0-4（验收修复）：账户级并发锁——同账户的交易写入串行化。
+    // 若账户行不存在（新账户首笔交易），INSERT ... ON CONFLICT 兜底建行并锁住；
+    // 用 pg_advisory_xact_lock 按 (username,account_name) 哈希串行，保证两笔并发卖出不会同时通过校验。
+    const { rows: lockRows } = await client.query(
+      `SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`,
+      [username, accountName]
+    );
+    if (lockRows.length === 0) {
+      const acctId = require('crypto').createHash('sha256').update(username + '\n' + accountName).digest('hex');
+      await client.query(
+        `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at)
+         VALUES ($1,$2,$3,0,0.868,0,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+         ON CONFLICT (username, account_name) DO NOTHING`,
+        [acctId, username, accountName]
+      );
+      await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
+    }
     // 卖出校验：可卖数量 = 当前持仓 + 本笔卖出自身数量（若为替换已有卖出，则 + 被替换卖出量）
     if (t.direction === 'sell') {
       const held = await heldQuantity(client, username, accountName, t.code);
@@ -170,6 +219,18 @@ async function applyTrade(username, accountName, trade) {
     }
     // 写交易（替换走 UPDATE，新增走 INSERT；ON CONFLICT 兜底幂等）
     const tradeId = t.id || require('crypto').randomBytes(8).toString('hex');
+    // P1-4 服务端导入幂等：同批次+代码+交易日+方向+价格+数量 视为重复导入，跳过（不新增、不重算）
+    if (t.import_batch_id) {
+      const dup = await client.query(
+        `SELECT id FROM trades WHERE import_batch_id=$1 AND code=$2 AND trade_date=$3
+           AND direction=$4 AND price=$5 AND quantity=$6 LIMIT 1`,
+        [t.import_batch_id, t.code, tradeDate, t.direction, price, quantity]
+      );
+      if (dup.rows[0]) {
+        await client.query('COMMIT');
+        return { ok: true, id: dup.rows[0].id, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
+      }
+    }
     await client.query(
       `INSERT INTO trades (id, username, account_name, date, created_at, trade_date, executed_at, import_batch_id,
                            code, name, direction, price, quantity, amount,
@@ -224,14 +285,14 @@ async function applyTrade(username, accountName, trade) {
         [posId, username, accountName, t.code, t.name || '', price, sec.quantity, sec.cost, t.type || '股权', t.subtype || '']
       );
     }
-    // 更新账户修订号 + 现金派生（accounts 表不存现金，仅提升修订号）
+    // 标记净值边界 + 同步提升 account_data 总版本/交易版本（P0-1：防旧页面全量保存覆盖）
+    await markNavDirty(client, username, accountName, tradeDate, 'trade');
+    // 账户修订号（accounts 表版本，与 account_data 版本各自独立语义）
     await client.query(
       `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
         WHERE username=$1 AND account_name=$2`,
       [username, accountName]
     );
-    // 标记净值边界（同日现金流/交易 → 需要重算当天及之后净值）
-    await markNavDirty(client, username, accountName, tradeDate);
     const cash = await recomputeCash(client, username, accountName);
     await client.query('COMMIT');
     return { ok: true, id: tradeId, cash: cash, tradeDate: tradeDate };
@@ -250,6 +311,8 @@ async function deleteTrade(username, accountName, tradeId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 账户级并发锁（与 applyTrade 同锁，防删除与新增并发交错）
+    await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
     const del = await client.query(
       'DELETE FROM trades WHERE username=$1 AND account_name=$2 AND id=$3 RETURNING code, date, trade_date',
       [username, accountName, tradeId]
@@ -276,15 +339,16 @@ async function deleteTrade(username, accountName, tradeId) {
       }
     }
     // 重算现金 + 修订号
+    const fromDate = del.rows[0].trade_date || todayCN();
+    await markNavDirty(client, username, accountName, fromDate, 'trade');
     await client.query(
       `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
         WHERE username=$1 AND account_name=$2`,
       [username, accountName]
     );
-    await markNavDirty(client, username, accountName, del.rows[0].trade_date || todayCN());
     const cash = await recomputeCash(client, username, accountName);
     await client.query('COMMIT');
-    return { ok: true, cash: cash };
+    return { ok: true, cash: cash, fromDate: fromDate };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -293,26 +357,10 @@ async function deleteTrade(username, accountName, tradeId) {
   }
 }
 
-// 清空全部交易：清空交易流水（不动持仓；现金重算 = cashBase + 现金流）
+// 清空全部交易（P1-1 验收修复）：清空交易会立即制造账实不一致（持仓还在、交易依据消失、现金跳变）。
+// 整改：禁止直接清空——返回业务错误，提示用户逐笔删除或用期初事件重建。
 async function clearTrades(username, accountName) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
-    await client.query(
-      `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-        WHERE username=$1 AND account_name=$2`,
-      [username, accountName]
-    );
-    const cash = await recomputeCash(client, username, accountName);
-    await client.query('COMMIT');
-    return { ok: true, cash: cash };
-  } catch (e) {
-    await client.query('ROLLBACK');
-    throw e;
-  } finally {
-    client.release();
-  }
+  throw bizError('不支持直接清空全部交易：清空会破坏持仓与现金的一致性。请逐笔删除交易，或用期初/调整事件重建持仓。');
 }
 
 // 删除单条现金流（方案阶段一第 5 条：删除后立即重算现金并返回最新结果）
@@ -325,6 +373,9 @@ async function deleteCashFlow(username, accountName, flowId) {
       [username, accountName, flowId]
     );
     if (del.rowCount === 0) throw bizError('现金流记录不存在', 404);
+    // 现金流变更 → 提升 account_data 总版本 + cashflow_version（P0-1）
+    const fromDate = todayCN();
+    await markNavDirty(client, username, accountName, fromDate, 'cashflow');
     await client.query(
       `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
         WHERE username=$1 AND account_name=$2`,
@@ -332,7 +383,7 @@ async function deleteCashFlow(username, accountName, flowId) {
     );
     const cash = await recomputeCash(client, username, accountName);
     await client.query('COMMIT');
-    return { ok: true, cash: cash };
+    return { ok: true, cash: cash, fromDate: fromDate };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;

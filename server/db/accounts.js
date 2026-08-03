@@ -25,7 +25,7 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
-    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   const { rows: cashFlows } = await pool.query(
@@ -70,7 +70,9 @@ async function loadAccountData(username, accountName) {
   // 现金自动重算：现金 = 期初本金(cashBase) + 现金流净额 + 交易净额(买入减/卖出加)
   const cfNet = (result.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
   // 交易净额：买入 -(成交额+费用)，卖出 +(成交额-费用)；费用从 trades 表读取
+  // open（期初建仓）/ adjust（持仓调整）不产生现金变动（P0-2 账本整改）
   const tradeNet = (result.trades || []).reduce((s, t) => {
+    if (t.direction === 'open' || t.direction === 'adjust') return s;
     const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
     return s + (t.direction === 'buy' ? -(t.amount || 0) - fee : (t.amount || 0) - fee);
   }, 0);
@@ -170,14 +172,14 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
         (t) => [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
       );
     }
-    // nav_history
+    // nav_history（snapshot_at 持久化，P0-3：同日现金流结算边界刷新后不丢）
     if (allow.navHistory) {
       await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
       await bulkInsert(client, 'nav_history',
-        ['username', 'account_name', 'date', 'nav', 'total_asset', 'invested'],
+        ['username', 'account_name', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at'],
         data.navHistory || [],
-        (n) => [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))],
-        'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested'
+        (n) => [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null],
+        'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)'
       );
     }
     // cash_flows
@@ -284,9 +286,9 @@ async function upsertNav(username, accountName, rec) {
   try {
     await client.query('BEGIN');
     await client.query(
-      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
-      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
-      [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2))]
+      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
+      [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null]
     );
     await client.query(
       `INSERT INTO account_data (username, account_name, data, version, nav_version)

@@ -154,9 +154,11 @@ function payload(over) {
 
     // ---------- 4) 账户删除原子（走 db 层真实函数）+ 重建同名 ----------
     await checkAsync('删除账户：deleteAccountData 删全部业务表 + 元数据 + 兼容 JSON + users.accounts 列表', async () => {
-      // 造各表数据
+      // 造各表数据（trades 须满足账本约束：direction/price/quantity 合法）
       await pool.query(`INSERT INTO positions (id, username, account_name, code) VALUES ('p_del',$1,$2,'600000')`, [U, A]);
-      await pool.query(`INSERT INTO trades (id, username, account_name, date) VALUES ('t_del',$1,$2,'2026-01-01 09:30')`, [U, A]);
+      await pool.query(
+        `INSERT INTO trades (id, username, account_name, date, trade_date, executed_at, direction, price, quantity, amount)
+         VALUES ('t_del',$1,$2,'2026-01-01 09:30','2026-01-01','2026-01-01 09:30','buy',10,100,1000)`, [U, A]);
       await pool.query(`INSERT INTO daily_prices (username, account_name, date, code) VALUES ($1,$2,'2026-01-01','600000')`, [U, A]);
       // 确保 users.accounts 列表含该账户
       await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`,

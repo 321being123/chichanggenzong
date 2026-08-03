@@ -186,29 +186,8 @@ async function deleteTrade(id) {
 }
 
 async function clearTrades() {
-  if (!await projectConfirm('确定清空所有交易记录？', {
-    title: '清空交易记录', confirmText: '清空', danger: true
-  })) return;
-  try {
-    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades'), {
-      method: 'DELETE'
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { showToast(j.error || '清空交易失败'); return; }
-    if (j.data) {
-      data = j.data;
-      dataVersion = j.data.version || dataVersion;
-      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
-      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
-      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
-      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
-      restorePriceChangeMap();
-    }
-    renderAll();
-    showToast('交易记录已清空');
-  } catch (e) {
-    showToast('清空失败：' + (e.message || e));
-  }
+  // P1-1 验收修复：清空全部交易会破坏持仓与现金一致性，服务端已禁止；直接提示
+  showToast('不支持清空全部交易：请逐笔删除，或用期初/调整事件重建持仓');
 }
 
 // ===================== 持仓增删改 =====================
@@ -280,15 +259,96 @@ function savePosition() {
 
   if (!code || !price || !qty) { showToast('请填写代码、价格和数量'); return; }
 
+  // P1-6 验收修复：持仓编辑转成「adjust 调整事件」走服务端账本（不再直接改 data.positions + 全量保存）
   if (editingId) {
     const p = data.positions.find(x => x.id === editingId);
-    if (p) Object.assign(p, { code, name, price, quantity: qty, cost, type, subtype, note });
+    if (!p) { closeModal('modal-add'); return; }
+    const delta = qty - (p.quantity || 0);
+    // 先更新名称/类型/细类/备注（这些不参与账本，直接改内存后随整包保存）
+    var changedMeta = false;
+    if (p.name !== name || p.type !== type || p.subtype !== subtype || p.note !== note) {
+      p.name = name; p.type = type; p.subtype = subtype; p.note = note;
+      changedMeta = true;
+    }
+    if (delta !== 0) {
+      (async function () {
+        try {
+          var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event: {
+                code: code, name: name || code,
+                direction: 'adjust',
+                price: cost || price,
+                quantity: qty, // adjust 语义 = 调整后目标数量（绝对设置）
+                type: type, subtype: subtype,
+                date: todayCN(), note: note || ('持仓调整至 ' + qty)
+              }
+            })
+          });
+          var j = await r.json().catch(function () { return {}; });
+          if (!r.ok) { showToast(j.error || '保存持仓失败'); return; }
+          if (j.data) {
+            data = j.data;
+            dataVersion = j.data.version || dataVersion;
+            if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+            if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+            if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+            if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+            restorePriceChangeMap();
+          }
+          closeModal('modal-add');
+          renderAll();
+          showToast('已保存 ' + (name || code));
+        } catch (e) {
+          showToast('保存失败：' + (e.message || e));
+        }
+      })();
+    } else {
+      // 数量未变：仅元数据变化，走整包保存即可
+      saveData();
+      closeModal('modal-add');
+      renderAll();
+      showToast('已保存 ' + (name || code));
+    }
+    return;
   }
 
-  saveData();
-  closeModal('modal-add');
-  renderAll();
-  showToast('已保存 ' + (name || code));
+  // 新增持仓（手动添加新代码）：用 open 期初建仓事件
+  (async function () {
+    try {
+      var r2 = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: {
+            code: code, name: name || code,
+            direction: 'open',
+            price: cost || price, quantity: qty,
+            type: type, subtype: subtype,
+            date: todayCN(), note: note || '手动建仓'
+          }
+        })
+      });
+      var j2 = await r2.json().catch(function () { return {}; });
+      if (!r2.ok) { showToast(j2.error || '添加持仓失败'); return; }
+      if (j2.data) {
+        data = j2.data;
+        dataVersion = j2.data.version || dataVersion;
+        if (typeof j2.data.posVersion === 'number') dataPosVersion = j2.data.posVersion;
+        if (typeof j2.data.tradeVersion === 'number') dataTradeVersion = j2.data.tradeVersion;
+        if (typeof j2.data.navVersion === 'number') dataNavVersion = j2.data.navVersion;
+        if (typeof j2.data.cashflowVersion === 'number') dataCashVersion = j2.data.cashflowVersion;
+        restorePriceChangeMap();
+      }
+      closeModal('modal-add');
+      renderAll();
+      showToast('已保存 ' + (name || code));
+    } catch (e) {
+      showToast('添加失败：' + (e.message || e));
+    }
+  })();
 }
 
 function deletePosition(id) {
@@ -616,26 +676,40 @@ async function confirmSmartItem(index) {
     var fees = getSmartItemFees(item, code);
     await addTradeInternal(code, name, direction, price, quantity, date, fees, window._smartBatchId || null);
   } else {
+    // P0-2 验收修复：持仓导入转成「期初建仓事件」走服务端账本（不再直接改 data.positions + 全量保存）
     var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
-    var existing = data.positions.find(function(p) { return p.code === code; });
-    if (existing) {
-      existing.name = name || code;
-      existing.price = price;
-      existing.quantity = quantity;
-      existing.cost = price;
-      existing.type = existing.type || rec.type;
-      existing.subtype = existing.subtype || rec.subtype;
-    } else {
-      data.positions.push({
-        id: uid(), code: code, name: name || code,
-        price: price, quantity: quantity, cost: price,
-        type: rec.type, subtype: rec.subtype, note: ''
+    var isAdjust = (data.positions || []).some(function(p) { return p.code === code; });
+    try {
+      var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: {
+            code: code, name: name || code,
+            direction: isAdjust ? 'adjust' : 'open',
+            price: price, quantity: quantity,
+            type: rec.type, subtype: rec.subtype,
+            date: (document.getElementById('s-date-' + index) && document.getElementById('s-date-' + index).value) || todayCN(),
+            import_batch_id: window._smartBatchId || null
+          }
+        })
       });
+      var j = await r.json().catch(function() { return {}; });
+      if (!r.ok) { showToast(j.error || '导入持仓失败'); return; }
+      if (j.data) {
+        data = j.data;
+        dataVersion = j.data.version || dataVersion;
+        if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+        if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+        if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+        if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+        restorePriceChangeMap();
+      }
+      renderAll();
+      showToast('已导入持仓 ' + (name || code));
+    } catch (e) {
+      showToast('导入失败：' + (e.message || e));
     }
-    recalcCash();
-    saveData();
-    renderAll();
-    showToast('已导入持仓 ' + (name || code));
   }
 
   var row = document.getElementById('s-code-' + index);
@@ -769,6 +843,12 @@ async function addTradeInternal(code, name, direction, price, quantity, date, im
     });
     const j = await r.json().catch(function () { return {}; });
     if (!r.ok) { showToast(j.error || '保存交易失败'); return; }
+    if (j.skipped === 'duplicate') {
+      // P1-4 服务端幂等命中：同批次重复导入，不重复提示
+      renderAll();
+      showToast('该笔交易已存在（同批次重复导入），已跳过');
+      return;
+    }
     if (j.data) {
       data = j.data;
       dataVersion = j.data.version || dataVersion;

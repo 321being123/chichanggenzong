@@ -118,17 +118,24 @@ function recordNav() {
   const s = calcSummary();
   if (s.total <= 0) return;
 
-  // 已结算现金流边界（方案 3.7）：本次快照时间。同日再次快照时，只把
-  // 「上次快照之后新录入」的同日现金流计入 periodCashFlow，避免把已结算的入金重复计、
-  // 或把新入金误算成盈利。旧数据无 snapshot_at → 退回按日期比较（与原逻辑一致）。
+  // 已结算现金流边界（P0-3 验收修复）：本次快照时间 snapshot_at 已持久化到 nav_history。
+  // 同日再次快照时，只把「上次快照之后新录入」的同日现金流计入 periodCashFlow；
+  // 跨日时按日期区间计入（与旧逻辑一致）。旧数据无 snapshot_at → 同日现金流全部计入（保守）。
   const lastSnapAt = (data.navHistory.length > 0 && data.navHistory[data.navHistory.length - 1].snapshot_at) || '';
   function periodCashFlowSince(lastDate, cutoffAt) {
     var pcf = 0;
     if (!data.cashFlows) return pcf;
+    var isSameDay = lastDate === today;
     data.cashFlows.forEach(function (cf) {
-      if (cf.date > lastDate && cf.date <= today) {
-        // 有快照边界：同日现金流只在快照时间之后新录的计入；跨日现金流全部计入
-        if (cf.date === today && cutoffAt && cf.created_at && cf.created_at <= cutoffAt) return;
+      if (cf.date > today) return; // 未来现金流不计
+      if (isSameDay) {
+        // 同日：只计「快照时间之后新录入」的现金流（按完整时间戳比较）
+        if (cf.date !== today) return;
+        if (cutoffAt && cf.created_at && cf.created_at <= cutoffAt) return; // 已结算，跳过
+        pcf += (cf.amount || 0);
+      } else {
+        // 跨日：计上次快照日（不含）至今天（含）的全部现金流
+        if (cf.date <= lastDate || cf.date > today) return;
         pcf += (cf.amount || 0);
       }
     });

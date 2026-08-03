@@ -23,6 +23,10 @@ router.post('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOw
   if (!trade) return res.status(400).json({ error: '缺少 trade' });
   try {
     const r = await tradeLedger.applyTrade(req.session.user, name, trade);
+    if (r.skipped === 'duplicate') {
+      // P1-4 服务端幂等：重复导入直接返回已存在，不重复写入
+      return res.json({ ok: true, skipped: 'duplicate', id: r.id });
+    }
     // 返回服务端最新账户结果（前端直接刷新内存，方案阶段二第 8 条）
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
     res.json({ ok: true, id: r.id, cash: r.cash, tradeDate: r.tradeDate, data: fresh });
@@ -38,6 +42,8 @@ router.delete('/accounts/:name/ledger/trades/:tradeId', requireLogin, asyncHandl
   if (!tradeId) return res.status(400).json({ error: '缺少 tradeId' });
   try {
     const r = await tradeLedger.deleteTrade(req.session.user, name, tradeId);
+    // P1-3：服务端自动触发历史净值重算闭环（删除交易影响该日之后净值，不依赖前端）
+    try { await recomputeNav(req.session.user, name, r.fromDate || todayCN()); } catch (e) { console.warn('[ledger] 净值重算跳过:', e.message); }
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
     res.json({ ok: true, cash: r.cash, data: fresh });
   } catch (e) {
@@ -64,8 +70,29 @@ router.delete('/accounts/:name/ledger/cash-flows/:flowId', requireLogin, asyncHa
   if (!flowId) return res.status(400).json({ error: '缺少 flowId' });
   try {
     const r = await tradeLedger.deleteCashFlow(req.session.user, name, flowId);
+    // P1-3：现金流变动影响全部历史净值，触发重算闭环
+    try { await recomputeNav(req.session.user, name, r.fromDate || todayCN()); } catch (e) { console.warn('[ledger] 净值重算跳过:', e.message); }
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
     res.json({ ok: true, cash: r.cash, data: fresh });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+}));
+
+// 期初持仓/持仓调整事件（P0-2 验收修复）：POST /ledger/position-events
+// body={ event: { code, name, direction: 'open'|'adjust', price?, quantity(+/-), date } }
+// open=期初建仓（等效买入，记成本，不计现金）；adjust=持仓调整（数量可正可负，仅校正数量/成本）
+router.post('/accounts/:name/ledger/position-events', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const event = req.body && req.body.event;
+  if (!event) return res.status(400).json({ error: '缺少 event' });
+  if (event.direction !== 'open' && event.direction !== 'adjust') {
+    return res.status(400).json({ error: '方向必须为 open（期初建仓）或 adjust（持仓调整）' });
+  }
+  try {
+    const r = await tradeLedger.applyTrade(req.session.user, name, event);
+    const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
+    res.json({ ok: true, id: r.id, data: fresh });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

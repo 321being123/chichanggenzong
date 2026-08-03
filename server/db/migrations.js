@@ -2060,6 +2060,8 @@ const MIGRATIONS = [
   { version: '042_trade_fields', up: migration042TradeFields },
   { version: '043_position_cost', up: migration043PositionCost },
   { version: '044_nav_cash_boundary', up: migration044NavCashBoundary },
+  { version: '045_nav_snapshot_at', up: migration045NavSnapshotAt },
+  { version: '046_position_events', up: migration046PositionEvents },
 ];
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========
@@ -2101,6 +2103,49 @@ async function migration043PositionCost() {
 // 在 account_data 上记录上次净值快照的现金流结算边界（快照时间），供前端同日更新净值时判断。
 async function migration044NavCashBoundary() {
   await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_cash_cutoff TEXT`);
+}
+
+// ========== 045：nav_history 快照时间持久化（P0-3 验收修复） ==========
+// 前端 recordNav 用 snapshot_at 记录"快照时刻"，作为同日现金流的结算边界。
+// 原实现只在内存，刷新页面后丢失 → 同日入金仍可能误算盈利。
+// 修复：nav_history 增加 snapshot_at 列持久化，读写全链路保留。
+async function migration045NavSnapshotAt() {
+  await pool.query(`ALTER TABLE nav_history ADD COLUMN IF NOT EXISTS snapshot_at TEXT`);
+}
+
+// ========== 046：期初持仓与调整事件 + 服务端导入幂等（P0-2 / P1-4 验收修复） ==========
+// 方案 4.2：期初持仓不是普通买入交易，必须使用独立业务类型。
+// 实现：trades.direction 扩展为 buy/sell/open/adjust：
+//   - open   = 期初建仓（导入持仓快照，等效买入，记入成本）
+//   - adjust = 持仓调整（数量可正可负，仅校正数量/成本，不产生现金变动）
+// 同时删除旧的 direction 检查约束（迁移 042 建的），改为允许四值的约束。
+// 幂等：import_batch_id 非空时，同批次+代码+交易日+方向+价格+数量 视为重复导入，数据库层拦截。
+async function migration046PositionEvents() {
+  await pool.query(`ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_direction`);
+  await pool.query(`
+    ALTER TABLE trades
+      ADD CONSTRAINT chk_trades_direction CHECK (direction IN ('buy','sell','open','adjust'))
+  `);
+  // 服务端导入幂等（P1-4）：批次+业务唯一键唯一索引（NULL 不参与约束，手工交易不受影响）
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_import_dedupe
+      ON trades (import_batch_id, code, trade_date, direction, price, quantity)
+      WHERE import_batch_id IS NOT NULL
+  `);
+  // 数据库约束补齐（P1-5，方案阶段五第 5 条）：
+  // price>=0、quantity>0（存量有 2 条 price=0 历史数据，允许 0 但禁止负价）、amount>=0、费用>=0
+  // ⚠️ PG 不支持 ADD CONSTRAINT IF NOT EXISTS → 先查 pg_constraint 再建
+  for (const c of [
+    ['chk_trades_price', `CHECK (direction = 'adjust' OR price >= 0)`],
+    ['chk_trades_qty', `CHECK (direction = 'adjust' OR quantity > 0)`],
+    ['chk_trades_amount', `CHECK (amount IS NULL OR amount >= 0)`],
+    ['chk_trades_fee', `CHECK (commission IS NULL OR commission >= 0)`],
+  ]) {
+    const ex = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1 AND conrelid='trades'::regclass`, [c[0]]);
+    if (ex.rowCount === 0) {
+      await pool.query(`ALTER TABLE trades ADD CONSTRAINT ${c[0]} ${c[1]}`);
+    }
+  }
 }
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤

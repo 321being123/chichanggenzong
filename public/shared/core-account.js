@@ -500,6 +500,13 @@ async function confirmDeleteAccount() {
   
   closeModal('modal-delete');
   
+  // 2026-08-03 整改（报告 3.6）：后端单事务删除该账户全部业务数据 + 兼容 JSON + 列表项，
+  // 杜绝"删除后重建同名账户又看到旧数据"的孤立数据问题。删除失败则中止，不静默改列表。
+  try {
+    var dr = await fetch(api('/api/accounts/' + encodeURIComponent(name)), { method: 'DELETE' });
+    if (!dr.ok) { var de = {}; try { de = await dr.json(); } catch (ee) {} showToast('删除失败：' + (de.error || dr.status)); return; }
+  } catch (e) { showToast('删除失败：' + e.message); return; }
+  
   accounts = accounts.filter(function(a) { return a !== name; });
   saveAccounts();
   
@@ -538,35 +545,34 @@ async function saveAccountName() {
   if (n === targetName) { closeModal('modal-account'); return; }
   if (accounts.includes(n)) { showToast('该名称已被使用'); return; }
 
-  // 重命名任何账户：从旧名加载数据，保存到新名
+  // 2026-08-03 整改（报告 3.7）：重命名由后端单事务完成（所有业务表 + 兼容 JSON + 列表原子改名），
+  // 不再"读旧名数据→存新名"（旧方案中途失败会留半完成状态、旧名数据残留、重名账户复活）。
   var wasCurrent = targetName === currentAccount;
   var oldIdx = accounts.indexOf(targetName);
   if (oldIdx === -1) { showToast('找不到该账户'); return; }
-  
-  var oldData = null;
+
   try {
-    var resp = await fetch(api('/api/data/' + encodeURIComponent(targetName)));
-    if (resp.ok) oldData = await resp.json();
-  } catch(e) {}
-  if (!oldData) oldData = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
+    var rn = await fetch(api('/api/accounts/' + encodeURIComponent(targetName) + '/rename'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newName: n })
+    });
+    var rnBody = {};
+    try { rnBody = await rn.json(); } catch (ee) {}
+    if (!rn.ok) { showToast('重命名失败：' + (rnBody.error || rn.status)); return; }
+  } catch (e) { showToast('重命名失败：' + e.message); return; }
 
   accounts[oldIdx] = n;
   if (wasCurrent) currentAccount = n;
   window.currentAccount = currentAccount; // 重命名后同步全局（当前账户名可能已变化）
   saveAccounts();
 
-  // 保存到新名称下
-  await fetch(api('/api/data/' + encodeURIComponent(n)), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(oldData)
-  });
-
-  renderAccountSelect();
   if (wasCurrent) {
-    data = oldData;
-    renderAll();
+    data = await loadData(n); // 从新名下重新加载（数据已由后端原子改名）
+    priceChangeMap = {};
   }
+  renderAccountSelect();
+  if (wasCurrent) renderAll();
   closeModal('modal-account');
   showToast('已重命名为「' + n + '」');
 }

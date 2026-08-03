@@ -1068,7 +1068,7 @@
 <script src="shared/nav-math.js?v=1"></script>
 <script src="shared/core-returns.js?v=4"></script>
 <script src="shared/core-earnings.js?v=20260712e"></script>
-<script src="shared/core-account.js?v=20260728a"></script>
+<script src="shared/core-account.js?v=20260803a"></script>
 <script src="shared/date-range-control.js?v=1"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/dompurify.min.js"></script>
@@ -1446,6 +1446,11 @@ async function loadData(accountName) {
     data = { positions: [], trades: [], cash: 0, navHistory: [], cashFlows: [] };
   }
   dataVersion = (data && typeof data.version === 'number') ? data.version : 0;
+  // 数据集级版本（2026-08-03 整改）：保存时带回去做逐数据集校验，防止旧快照覆盖后台新数据
+  dataPosVersion = (data && typeof data.posVersion === 'number') ? data.posVersion : 0;
+  dataTradeVersion = (data && typeof data.tradeVersion === 'number') ? data.tradeVersion : 0;
+  dataNavVersion = (data && typeof data.navVersion === 'number') ? data.navVersion : 0;
+  dataCashVersion = (data && typeof data.cashflowVersion === 'number') ? data.cashflowVersion : 0;
   if (!data.cashFlows) data.cashFlows = [];
   if (!data.hkRate) data.hkRate = 0.868; // 默认汇率
   if (!data.cashType) data.cashType = '现金';
@@ -1474,6 +1479,7 @@ var _saveInFlight = false;
 var _savePending = false;
 var _lastSaveOk = true;
 var dataVersion = 0; // 乐观锁：加载时记下的账户版本号，保存时带回供服务端冲突检测
+var dataPosVersion = 0, dataTradeVersion = 0, dataNavVersion = 0, dataCashVersion = 0; // 数据集级版本（8.2 并发验收）
 function saveData() {
   // 已有保存在进行中：标记待保存，等当前保存完成后用最新数据再存一次（保证最终落库的是最新内存状态）
   if (_saveInFlight) { _savePending = true; return; }
@@ -1487,7 +1493,9 @@ async function saveDataNow() {
   var lastError = '';
   for (var attempt = 0; attempt < 3; attempt++) {
     try {
-      var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '?version=' + dataVersion), {
+      var q = '?version=' + dataVersion +
+        '&posV=' + dataPosVersion + '&tradeV=' + dataTradeVersion + '&navV=' + dataNavVersion + '&cashV=' + dataCashVersion;
+      var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + q), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -1500,6 +1508,13 @@ async function saveDataNow() {
       }
       const j = await r.json().catch(() => ({}));
       if (j && typeof j.version === 'number') dataVersion = j.version;
+      // 服务端按数据集版本跳过写入的数据集（后台任务/其他浏览器已更新）→ 提示并重载，防止旧内存覆盖
+      if (j && Array.isArray(j.skipped) && j.skipped.length > 0) {
+        _lastSaveOk = false;
+        showToast('部分数据已被其他来源更新（' + j.skipped.join('、') + '），已保留服务器最新数据，正在刷新...');
+        loadData(currentAccount).then(function () { renderAll(); });
+        return false;
+      }
       _lastSaveOk = true;
       return true;
     } catch (e) {

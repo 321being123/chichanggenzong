@@ -102,9 +102,22 @@ router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit
   if (!Number.isInteger(expectedVersion) || expectedVersion < 0 || expectedVersion > 1e9) {
     return res.status(400).json({ error: '版本号（version）非法' });
   }
+  // 数据集级版本（2026-08-03 整改）：前端带回加载时的各数据集版本，服务端只写入版本一致的数据集，
+  // 版本落后（被后台任务/其他浏览器改过）的数据集跳过写入并提示，防止旧快照覆盖新数据（报告 8.2）。
+  const dv = {
+    positions: req.query.posV === undefined ? undefined : parseInt(req.query.posV, 10),
+    trades: req.query.tradeV === undefined ? undefined : parseInt(req.query.tradeV, 10),
+    navHistory: req.query.navV === undefined ? undefined : parseInt(req.query.navV, 10),
+    cashFlows: req.query.cashV === undefined ? undefined : parseInt(req.query.cashV, 10),
+  };
+  for (const k of Object.keys(dv)) {
+    if (dv[k] !== undefined && (!Number.isInteger(dv[k]) || dv[k] < 0 || dv[k] > 1e9)) {
+      return res.status(400).json({ error: '数据集版本号非法' });
+    }
+  }
   try {
-    const newVersion = await saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body, expectedVersion);
-    res.json({ ok: true, version: newVersion });
+    const r = await saveAccountData(req.session.user, decodeURIComponent(req.params.name), req.body, expectedVersion, dv);
+    res.json({ ok: true, version: r.version, skipped: r.skipped || [] });
   } catch (e) {
     if (e && e.conflict) return res.status(409).json({ error: e.message });
     throw e;
@@ -135,11 +148,82 @@ function requireAdmin(req, res, next) {
 }
 
 // 一次性手动触发：把 account_data JSON 里残留的净值/持仓/交易/现金流合并进结构化表（幂等，不覆盖已有）。
-// 属全局数据运维任务，收敛为仅管理员可调，并记录操作人。
+// 2026-08-03 架构整改（报告 3.4）：迁移只能执行一次——已归档账户（data_source_version=2）不再回灌，
+// 防止"用户删除的数据被 /migrate-json 再次导入"。全局数据运维任务，仅管理员可调，记录操作人。
 router.post('/migrate-json', requireLogin, requireAdmin, asyncHandler(async (req, res) => {
   console.log('[migrate-json] 操作人:', req.session.user, '时间:', new Date().toISOString());
-  await migrateToStructured();
-  res.json({ ok: true });
+  const r = await migrateToStructured();
+  res.json({ ok: true, ...r });
+}));
+
+// ========== 账户生命周期（2026-08-03 架构整改，报告 3.6/3.7/阶段四） ==========
+// 之前账户删除只更新列表、重命名靠"读旧存新"，均非原子且会遗留孤立业务数据（重名账户复活）。
+// 以下两个 API 在单事务内完成全部子表（含 account_data 兼容 JSON）的删除/改名，杜绝孤立数据。
+
+// 删除账户：单事务删除该账户全部业务数据 + 账户元数据 + 兼容 JSON + users.accounts 列表项
+router.delete('/accounts/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const username = req.session.user;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data', 'accounts'];
+    for (const t of tables) {
+      await client.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [username, name]);
+    }
+    // 同步 users.accounts 列表（移除被删账户名）
+    const u = await loadUser(username);
+    if (u && Array.isArray(u.accounts)) {
+      const rest = u.accounts.filter(function (a) { return a !== name; });
+      await client.query('UPDATE users SET accounts=$2 WHERE username=$1', [username, JSON.stringify(rest)]);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+}));
+
+// 重命名账户：单事务内把所有业务表 + 账户元数据 + 兼容 JSON + users.accounts 列表改为新名
+// （只改 account_name，不搬运/复制任何数据；失败整体回滚，不会出现"改了一半"）
+// ⚠️ accounts.id = sha256(username+accountName) 是确定性哈希主键（业务表不引用它），
+//    重命名时必须同步更新为新名的哈希，否则旧名重建账户会主键冲突（报告 3.7 重命名缺陷）。
+router.post('/accounts/:name/rename', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const oldName = decodeURIComponent(req.params.name);
+  const newName = (req.body && req.body.newName) || '';
+  const username = req.session.user;
+  if (!isValidAccountName(newName)) return res.status(400).json({ error: '新账户名含非法字符或长度不合法' });
+  if (newName === oldName) return res.json({ ok: true });
+  // 目标名已存在则拒绝（users.accounts 与 accounts 表都查，防并发重名）
+  const dup = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2', [username, newName]);
+  if (dup.rowCount > 0) return res.status(409).json({ error: '该名称已被使用' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data'];
+    for (const t of tables) {
+      // nav_history/index_history 主键含 (username, account_name, ...)，改名会触发唯一键冲突检测；
+      // 先删后插会破坏关联，直接用 UPDATE（PostgreSQL 对主键更新按行内原子处理，目标名不冲突即成功）
+      await client.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [username, oldName, newName]);
+    }
+    // accounts 表：id 与新名哈希保持一致（sha256 确定性主键，业务表不引用 id，可安全更新）
+    const crypto = require('crypto');
+    const newId = crypto.createHash('sha256').update(username + '\n' + newName).digest('hex');
+    await client.query('UPDATE accounts SET id=$3, account_name=$4, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2', [username, oldName, newId, newName]);
+    // 同步 users.accounts 列表
+    const u = await loadUser(username);
+    if (u && Array.isArray(u.accounts)) {
+      const mapped = u.accounts.map(function (a) { return a === oldName ? newName : a; });
+      await client.query('UPDATE users SET accounts=$2 WHERE username=$1', [username, JSON.stringify(mapped)]);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (e && e.code === '23505') return res.status(409).json({ error: '该名称已被使用' });
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
 }));
 
 // 导出持仓为 Excel

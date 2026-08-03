@@ -1912,6 +1912,26 @@ async function migration040NavHistoryBackup() {
   await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_history_backup_at TIMESTAMPTZ`);
 }
 
+// ========== 041：账户双数据源架构整改（2026-08-03 整改报告 P0/P1 代码部分） ==========
+// 目标：结构化表成为唯一权威来源，JSON 兼容数据退出运行时读取。
+// 1) 数据集级版本号：positions/trades/nav_history/cash_flows 各自独立版本，
+//    整包保存时按数据集校验，后台任务写入净值后旧浏览器保存持仓不再覆盖新净值（8.2 并发验收）。
+// 2) data_source_version：一次性迁移标记。存量行置 2（视为已归档，禁止 migrateToStructured 再回灌）；
+//    新账户默认 0（表空即真空，绝不自动从 JSON 迁入）。人工确认补录后置 2。
+// 3) accounts.fee_settings：税费设置从 JSON 迁入 accounts 表（账户偏好结构化，JSON 不再读写）。
+async function migration041AccountDataSource() {
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS pos_version INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS trade_version INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_version INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS cashflow_version INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS data_source_version INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS structured_migrated_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS fee_settings JSONB`);
+  // 存量 account_data 视为已归档（data_source_version=2）：本次部署后运行时代码不再读其业务数组，
+  // 也未执行自动回灌；确需从 JSON 补录的账户由管理员人工确认后单独处理。
+  await pool.query(`UPDATE account_data SET data_source_version = 2 WHERE data_source_version < 2`);
+}
+
 async function ensureMigrationsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1974,6 +1994,7 @@ const MIGRATIONS = [
   { version: '038_data_architecture_cleanup', up: migration038DataArchitectureCleanup },
   { version: '039_account_hk_rate_updated_at', up: migration039AccountHkRateUpdatedAt },
   { version: '040_nav_history_backup', up: migration040NavHistoryBackup },
+  { version: '041_account_data_source', up: migration041AccountDataSource },
 ];
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤
@@ -2029,9 +2050,14 @@ async function migrateFromJson() {
   } catch (e) { console.error('JSON 迁移失败:', e.message); }
 }
 
+// 2026-08-03 架构整改（报告 3.4/阶段二）：迁移只能执行一次。
+// - 存量 account_data 已由迁移 041 置 data_source_version=2（视为已归档），本函数对它们直接跳过，
+//   即使 JSON 里还有旧业务数组也不再回灌 → 已删除的数据不可能被 /migrate-json 重新导入。
+// - 仅 data_source_version<2 的账户（新库/人工确认需补录的账户）才会被合并，合并后置 2。
 async function migrateToStructured() {
-  const { rows } = await pool.query('SELECT username, account_name, data FROM account_data');
-  if (rows.length === 0) return;
+  const { rows } = await pool.query('SELECT username, account_name, data, data_source_version FROM account_data WHERE data_source_version < 2');
+  if (rows.length === 0) return { ok: true, migrated: 0, skippedArchived: true };
+  let migrated = 0;
   for (const r of rows) {
     let d;
     try { d = JSON.parse(r.data); } catch (e) { continue; }
@@ -2060,9 +2086,19 @@ async function migrateToStructured() {
           [c.id || uid(), r.username, r.account_name, c.date || '', c.created_at || '', c.amount || 0, c.note || '']
         );
       }
+      // 补 accounts 元数据（cash_base/hk_rate/fee_settings），不覆盖已有
+      const acctId = require('crypto').createHash('sha256').update(r.username + '\n' + r.account_name).digest('hex');
+      await pool.query(
+        'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
+        [acctId, r.username, r.account_name, (typeof d.cashBase === 'number' ? d.cashBase : 0), (typeof d.hkRate === 'number' && d.hkRate > 0 ? d.hkRate : 0.868), (d.feeSettings && typeof d.feeSettings === 'object' ? JSON.stringify(d.feeSettings) : null)]
+      );
+      // 合并成功 → 置迁移标记
+      await pool.query('UPDATE account_data SET data_source_version=2, structured_migrated_at=now() WHERE username=$1 AND account_name=$2', [r.username, r.account_name]);
+      migrated++;
     } catch (e) { console.error('迁移账户失败 ' + r.username + '/' + r.account_name + ':', e.message); }
   }
-  console.log('已按需合并 JSON → 结构化表（幂等，不覆盖已有记录）');
+  console.log('已按需合并 JSON → 结构化表（幂等，已迁移账户不再回灌）');
+  return { ok: true, migrated: migrated, skippedArchived: false };
 }
 
 // ====== 用户 ======

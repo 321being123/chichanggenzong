@@ -486,20 +486,21 @@ console.log('F. 数据架构（12.4，需 PG）');
     const payload = (hk) => ({ positions: [], trades: [], navHistory: [], cashFlows: [], cash: 1000, hkRate: hk, cashBase: 1000, totalAsset: 1000, fundRecord: [], feeSettings: {} });
     try {
       // 首次保存（真实走 saveAccountData 的 INSERT ... VALUES 分支）
+      // 2026-08-03 整改：返回 { version, skipped }（数据集级版本控制），不再返回裸数字
       const v1 = await saveAccountData(user, '账户A', payload(0.8626), null);
-      assert(v1 >= 1, '首次保存应返回版本号');
+      assert(v1 && v1.version >= 1, '首次保存应返回版本号');
       const r1 = (await pool.query(
         `SELECT hk_rate::float8 AS hk_rate, hk_rate_updated_at IS NOT NULL AS has_time FROM accounts WHERE username=$1 AND account_name='账户A'`, [user]
       )).rows[0];
       assert.strictEqual(r1.hk_rate, 0.8626);
       assert(r1.has_time, '首次保存 hk_rate_updated_at 应有值');
       // 同值再保存（ON CONFLICT 分支）不应报错
-      const v2 = await saveAccountData(user, '账户A', payload(0.8626), v1);
-      assert(v2 > v1, '版本应递增');
+      const v2 = await saveAccountData(user, '账户A', payload(0.8626), v1.version);
+      assert(v2.version > v1.version, '版本应递增');
       // 改汇率保存（hk_rate_updated_at 更新逻辑）
       await new Promise(r => setTimeout(r, 1100));
-      const v3 = await saveAccountData(user, '账户A', payload(0.87), v2);
-      assert(v3 > v2);
+      const v3 = await saveAccountData(user, '账户A', payload(0.87), v2.version);
+      assert(v3.version > v2.version);
       const r3 = (await pool.query(
         `SELECT hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name='账户A'`, [user]
       )).rows[0];

@@ -20,52 +20,40 @@ async function loadAccountData(username, accountName) {
     'SELECT id, date, created_at, amount::float8 AS amount, note FROM cash_flows WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
-  var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0 };
-  // 从 account_data JSON 恢复 totalAsset / cashBase（cashBase=期初本金基准，cash 仅作兜底）
-  let jsonData = null;
-  try {
-    const { rows } = await pool.query('SELECT data, version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
-    if (rows[0]) {
-      const d = JSON.parse(rows[0].data);
-      jsonData = d;
-      if (d.totalAsset) result.totalAsset = d.totalAsset;
-      if (typeof d.cashBase === 'number') result.cashBase = d.cashBase;
-      if (typeof d.cash === 'number') result.cash = d.cash;
-      if (Array.isArray(d.fundRecord)) result.fundRecord = d.fundRecord;
-      if (d.feeSettings && typeof d.feeSettings === 'object') result.feeSettings = d.feeSettings;
-      if (typeof rows[0].version === 'number') result.version = rows[0].version;
-    }
-  } catch (e) {}
-  // P2-3：账户元数据优先读结构化 accounts 表（cash_base/hk_rate），JSON 仅作兜底
+  // 2026-08-03 架构整改（报告 3.1/3.3）：结构化表是唯一权威来源。
+  // - 不再从 account_data JSON 恢复 totalAsset/cashBase/cash/fundRecord/feeSettings（JSON 退出日常读取）；
+  // - 指数历史只读结构化表，表空即空，不再读旧 JSON 且读取接口绝不写库；
+  // - 持仓/交易/净值/现金流四表同时为空时返回空（用户主动清空是真实结果，禁止 JSON 还魂）。
+  var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0, indexHistory: [], feeSettings: null };
+  // 账户元数据（期初本金/汇率/税费设置/乐观锁版本）：唯一来源 accounts 表 + account_data.version
   try {
     const { rows: am } = await pool.query(
-      'SELECT cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name=$2',
+      'SELECT cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate, fee_settings FROM accounts WHERE username=$1 AND account_name=$2',
       [username, accountName]
     );
     if (am[0]) {
       if (typeof am[0].cash_base === 'number') result.cashBase = am[0].cash_base;
       if (typeof am[0].hk_rate === 'number' && am[0].hk_rate > 0) result.hkRate = am[0].hk_rate;
+      if (am[0].fee_settings && typeof am[0].fee_settings === 'object') result.feeSettings = am[0].fee_settings;
     }
-  } catch (e) {}
-  // 指数历史：优先读独立表；表为空则用旧 JSON 快照并一次性迁移进表（消除 JSON 读写放大）
-  const tableIndex = await loadIndexPoints(username, accountName);
-  if (tableIndex.length > 0) {
-    result.indexHistory = tableIndex;
-  } else if (jsonData && Array.isArray(jsonData.indexHistory) && jsonData.indexHistory.length > 0) {
-    result.indexHistory = jsonData.indexHistory;
-    try { await upsertIndexPoints(username, accountName, jsonData.indexHistory); } catch (e) {}
-  } else {
-    result.indexHistory = [];
-  }
-  if (positions.length === 0 && trades.length === 0 && navHistory.length === 0 && cashFlows.length === 0) {
-    const { rows } = await pool.query('SELECT data, version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
-    if (rows[0]) {
-      try {
-        const d = JSON.parse(rows[0].data);
-        result = { ...d, positions: d.positions || [], trades: d.trades || [], navHistory: d.navHistory || [], cashFlows: d.cashFlows || [] };
-        if (typeof rows[0].version === 'number') result.version = rows[0].version;
-      } catch (e) {}
+  } catch (e) { console.warn('[loadAccountData] accounts 元数据读取失败:', e.message); }
+  try {
+    const { rows: v } = await pool.query('SELECT version, pos_version, trade_version, nav_version, cashflow_version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
+    if (v[0]) {
+      if (typeof v[0].version === 'number') result.version = v[0].version;
+      // 数据集级版本号：前端保存时带回来做逐数据集校验（8.2 并发验收）
+      result.posVersion = v[0].pos_version || 0;
+      result.tradeVersion = v[0].trade_version || 0;
+      result.navVersion = v[0].nav_version || 0;
+      result.cashflowVersion = v[0].cashflow_version || 0;
     }
+  } catch (e) { console.warn('[loadAccountData] 版本号读取失败:', e.message); }
+  // 指数历史：只读结构化表（读取接口不产生任何写库副作用）
+  result.indexHistory = await loadIndexPoints(username, accountName);
+  // 总资产快照：结构化来源（nav_history 最近一条的 total_asset），不再从 JSON 恢复（报告 5 矩阵：
+  // 总资产不作为第二份业务事实长期保存；前端行情刷新后会按持仓现值重算 TOTAL_ASSET 覆盖）
+  if (navHistory.length > 0 && navHistory[navHistory.length - 1].totalAsset != null) {
+    result.totalAsset = navHistory[navHistory.length - 1].totalAsset;
   }
   // 现金自动重算：现金 = 期初本金(cashBase) + 现金流净额 + 交易净额(买入减/卖出加)
   const cfNet = (result.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
@@ -108,76 +96,122 @@ async function buildInstrumentIdMap(codes) {
 }
 
 // 单连接事务：DELETE+INSERT 全成功或全回滚，避免中途异常留下半成品数据
-// expectedVersion：前端带回加载时的版本号（乐观锁）；为 null 时不强制（兼容旧客户端/测试）
-async function saveAccountData(username, accountName, data, expectedVersion = null) {
+// 2026-08-03 架构整改（报告 3.5/8.2）：数据集级版本控制，替代"整包无条件覆盖"。
+// - 前端保存时带回加载时的各数据集版本（datasetVersions）；服务端只写入版本一致的数据集，
+//   版本落后（被后台任务/其他浏览器改过）的数据集跳过写入，保留库中较新数据 → 旧浏览器
+//   保存持仓不会覆盖后台新净值；两个浏览器改不同数据集互不覆盖。
+// - 未指定某数据集版本（旧客户端/测试）→ 允许写入该数据集（向后兼容）。
+// - expectedVersion：账户级乐观锁（任何一次保存都要求与加载时一致，防整包并发互踩）。
+async function saveAccountData(username, accountName, data, expectedVersion = null, datasetVersions = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 读取当前各数据集版本
+    const { rows: vrows } = await client.query(
+      `SELECT COALESCE(pos_version,0) AS pv, COALESCE(trade_version,0) AS tv,
+              COALESCE(nav_version,0) AS nv, COALESCE(cashflow_version,0) AS cv
+         FROM account_data WHERE username=$1 AND account_name=$2`,
+      [username, accountName]
+    );
+    const base = vrows[0] || { pv: 0, tv: 0, nv: 0, cv: 0 };
+    const req = datasetVersions || {};
+    const asNum = function (x) { return (typeof x === 'number') ? x : (x == null ? null : Number(x)); };
+    const match = function (reqV, curV) { return reqV === undefined || reqV === null || asNum(reqV) === curV; };
+    const allow = {
+      positions: match(req.positions, base.pv),
+      trades: match(req.trades, base.tv),
+      navHistory: match(req.navHistory, base.nv),
+      cashFlows: match(req.cashFlows, base.cv),
+    };
+    const skipped = [];
+    for (const k of ['positions', 'trades', 'navHistory', 'cashFlows']) if (!allow[k]) skipped.push(k);
+
     // positions（P2-4：批量写入，原单条 INSERT 循环改为一次性批量）
-    await client.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
-    const posRows = data.positions || [];
-    // 仓位对比：保存时按 code 重新关联 instrument_id（避免 DELETE+重建把回填映射清空；未匹配写 NULL 不报错）
-    const instIdMap = await buildInstrumentIdMap(posRows.map(p => p && p.code));
-    await bulkInsert(client, 'positions',
-      ['id', 'username', 'account_name', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note', 'instrument_id'],
-      posRows,
-      (p) => [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null]
-    );
+    if (allow.positions) {
+      await client.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [username, accountName]);
+      const posRows = data.positions || [];
+      // 仓位对比：保存时按 code 重新关联 instrument_id（避免 DELETE+重建把回填映射清空；未匹配写 NULL 不报错）
+      const instIdMap = await buildInstrumentIdMap(posRows.map(p => p && p.code));
+      await bulkInsert(client, 'positions',
+        ['id', 'username', 'account_name', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note', 'instrument_id'],
+        posRows,
+        (p) => [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null]
+      );
+    }
     // trades
-    await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
-    await bulkInsert(client, 'trades',
-      ['id', 'username', 'account_name', 'date', 'created_at', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
-      data.trades || [],
-      (t) => [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
-    );
+    if (allow.trades) {
+      await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
+      await bulkInsert(client, 'trades',
+        ['id', 'username', 'account_name', 'date', 'created_at', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
+        data.trades || [],
+        (t) => [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
+      );
+    }
     // nav_history
-    await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
-    await bulkInsert(client, 'nav_history',
-      ['username', 'account_name', 'date', 'nav', 'total_asset', 'invested'],
-      data.navHistory || [],
-      (n) => [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))],
-      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested'
-    );
+    if (allow.navHistory) {
+      await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+      await bulkInsert(client, 'nav_history',
+        ['username', 'account_name', 'date', 'nav', 'total_asset', 'invested'],
+        data.navHistory || [],
+        (n) => [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))],
+        'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested'
+      );
+    }
     // cash_flows
-    await client.query('DELETE FROM cash_flows WHERE username=$1 AND account_name=$2', [username, accountName]);
-    await bulkInsert(client, 'cash_flows',
-      ['id', 'username', 'account_name', 'date', 'created_at', 'amount', 'note'],
-      data.cashFlows || [],
-      (c) => [c.id || uid(), username, accountName, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
-    );
-    // account_data：仅显式挑选允许的顶层字段写入（杜绝未知字段持久化，满足 schema 白名单）；
-    // indexHistory 已独立成表、changes/version 为瞬时字段，均不写入 JSON。
-    const { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord, feeSettings } = data;
-    const dataForJson = { positions, trades, navHistory, cashFlows, cash, hkRate, cashBase, totalAsset, fundRecord, feeSettings };
-    const json = JSON.stringify(dataForJson);
-    // 乐观锁（P1-3）：version 必填且已在路由层校验为整数；冲突（已被其他设备修改）抛 conflict 错误由路由返回 409。
-    // 不再保留 expectedVersion==null 的绕过路径，杜绝乐观锁被静默跳过。
+    if (allow.cashFlows) {
+      await client.query('DELETE FROM cash_flows WHERE username=$1 AND account_name=$2', [username, accountName]);
+      await bulkInsert(client, 'cash_flows',
+        ['id', 'username', 'account_name', 'date', 'created_at', 'amount', 'note'],
+        data.cashFlows || [],
+        (c) => [c.id || uid(), username, accountName, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
+      );
+    }
+    // account_data：业务数组已退出 JSON（整改后 JSON 仅作只读归档，不再参与业务读取/写入），
+    // 仅维护版本号列（账户级 + 数据集级）与 updated_at。
+    // 乐观锁（P1-3）：version 必填且已在路由层校验为整数；冲突抛 conflict 由路由返回 409。
+    // 被跳过写入的数据集版本保持不变（保留库中较新数据），写入成功的数据集版本 +1。
     const up = await client.query(
-      'UPDATE account_data SET data=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), version=version+1 WHERE username=$1 AND account_name=$2 AND version=$4',
-      [username, accountName, json, expectedVersion]
+      `UPDATE account_data
+          SET updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS'),
+              version=version+1,
+              pos_version = CASE WHEN $3 THEN pos_version+1 ELSE pos_version END,
+              trade_version = CASE WHEN $4 THEN trade_version+1 ELSE trade_version END,
+              nav_version = CASE WHEN $5 THEN nav_version+1 ELSE nav_version END,
+              cashflow_version = CASE WHEN $6 THEN cashflow_version+1 ELSE cashflow_version END
+        WHERE username=$1 AND account_name=$2 AND version=$7`,
+      [username, accountName, !!allow.positions, !!allow.trades, !!allow.navHistory, !!allow.cashFlows, expectedVersion]
     );
     if (up.rowCount === 0) {
       const ex = await client.query('SELECT 1 FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
       if (ex.rowCount > 0) throw Object.assign(new Error('数据已在其他位置被修改，请刷新页面后重试'), { conflict: true });
       // 新账户首次保存：行尚不存在，插入初版（前端首存带 version=0，UPDATE 命中 0 行后走此分支）
       await client.query(
-        'INSERT INTO account_data (username, account_name, data, version, updated_at) VALUES ($1,$2,$3,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at, version=account_data.version+1',
-        [username, accountName, json]
+        `INSERT INTO account_data (username, account_name, data, version, updated_at,
+            pos_version, trade_version, nav_version, cashflow_version)
+         VALUES ($1,$2,'{}',1,to_char(now(),'YYYY-MM-DD HH24:MI:SS'),
+            CASE WHEN $3 THEN 1 ELSE 0 END, CASE WHEN $4 THEN 1 ELSE 0 END,
+            CASE WHEN $5 THEN 1 ELSE 0 END, CASE WHEN $6 THEN 1 ELSE 0 END)
+         ON CONFLICT (username, account_name) DO UPDATE
+           SET updated_at=EXCLUDED.updated_at, version=account_data.version+1,
+               pos_version = CASE WHEN $3 THEN account_data.pos_version+1 ELSE account_data.pos_version END,
+               trade_version = CASE WHEN $4 THEN account_data.trade_version+1 ELSE account_data.trade_version END,
+               nav_version = CASE WHEN $5 THEN account_data.nav_version+1 ELSE account_data.nav_version END,
+               cashflow_version = CASE WHEN $6 THEN account_data.cashflow_version+1 ELSE account_data.cashflow_version END`,
+        [username, accountName, !!allow.positions, !!allow.trades, !!allow.navHistory, !!allow.cashFlows]
       );
     }
-    // P2-3：账户元数据（cash_base/hk_rate）结构化落库，作为权威来源（JSON 仅兜底）
+    // P2-3：账户元数据（cash_base/hk_rate/fee_settings）结构化落库，作为唯一权威来源（JSON 不再兜底）
     // hk_rate_updated_at：首次插入=now()；仅当 hk_rate 值变化时更新（用户手动改汇率也算真实变更，迁移 039）。
-    // ⚠️ VALUES 子句不能引用目标表列（PostgreSQL 报"字段不存在"），首次值直接 now()，
-    //    变化判断只放在 ON CONFLICT DO UPDATE 分支（EXCLUDED/accounts 表引用合法）。
     const acctId = crypto.createHash('sha256').update(username + '\n' + accountName).digest('hex');
     const newHkRate = round(data.hkRate || 0.868, 6);
+    const feeSettingsJson = (data.feeSettings && typeof data.feeSettings === 'object') ? JSON.stringify(data.feeSettings) : null;
     await client.query(
-      'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at, hk_rate_updated_at) VALUES ($1,$2,$3,$4,$5,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), now()) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, version=accounts.version+1, updated_at=EXCLUDED.updated_at, hk_rate_updated_at=CASE WHEN EXCLUDED.hk_rate IS DISTINCT FROM accounts.hk_rate THEN now() ELSE accounts.hk_rate_updated_at END',
-      [acctId, username, accountName, round(data.cashBase || 0, 2), newHkRate]
+      'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at, hk_rate_updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), now()) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, fee_settings=COALESCE(EXCLUDED.fee_settings, accounts.fee_settings), version=accounts.version+1, updated_at=EXCLUDED.updated_at, hk_rate_updated_at=CASE WHEN EXCLUDED.hk_rate IS DISTINCT FROM accounts.hk_rate THEN now() ELSE accounts.hk_rate_updated_at END',
+      [acctId, username, accountName, round(data.cashBase || 0, 2), newHkRate, feeSettingsJson]
     );
     const { rows: vr } = await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
     await client.query('COMMIT');
-    return vr[0] ? vr[0].version : 1; // 返回新版本号，供前端更新乐观锁基准
+    return { version: vr[0] ? vr[0].version : 1, skipped: skipped }; // 返回新版本号 + 被跳过（保留库中较新）的数据集
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -205,38 +239,39 @@ async function loadDailyPrices(username, accountName, date) {
   return rows;
 }
 
-// 幂等写入单条净值快照（回填/重算用）：冲突则覆盖 nav / total_asset / invested
+// 幂等写入单条净值快照（回填/重算/后台快照用）：冲突则覆盖 nav / total_asset / invested
+// 2026-08-03 整改：写入后提升 nav_version（后台任务与前端保存共用同一版本机制，
+// 后台新增净值后，旧浏览器保存持仓时 nav_version 不匹配 → 该数据集被跳过，不再覆盖后台新净值）
 async function upsertNav(username, accountName, rec) {
   await pool.query(
     'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6) ' +
     'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested',
     [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2))]
   );
+  await pool.query(
+    `INSERT INTO account_data (username, account_name, data, version, nav_version)
+     VALUES ($1,$2,'{}',0,1)
+     ON CONFLICT (username, account_name)
+     DO UPDATE SET nav_version = account_data.nav_version + 1`,
+    [username, accountName]
+  );
 }
 
-// ====== 历史净值备份/还原/清理（nav_history 表 + account_data JSON 双写） ======
-// 2026-08-03 教训：页面 loadAccountData 优先读 nav_history 表，但表空时回退 JSONB（L60-69）；
-// 若只清表不清 JSON，用户点"清空"后旧数据会被 JSON 兜底读回 → "清空没清理完全"。
-// 因此以下所有操作必须同时写 nav_history 表与 account_data.data 的 navHistory 键。
+// ====== 历史净值备份/还原/清理（2026-08-03 架构整改：只写 nav_history 表，不再双写 JSON） ======
+// 整改前（0.4.3.0）曾做"表 + JSONB 双写"以防页面从 JSON 兜底读回旧数据；本次 loadAccountData
+// 已彻底移除 JSON 兜底（结构化表=唯一权威），JSON 双写不再必要，反而制造第二份业务事实（报告 3.2）。
+// 所有净值写入统一提升 nav_version（后台任务/导入/还原/清理与前端保存共用同一版本机制，8.2 验收）。
 
-// 读取当前实际生效的 navHistory（表优先；表空回退 JSONB，与 loadAccountData 语义一致）
+// 读取当前实际生效的 navHistory（只读结构化表；表空即空，绝不读 JSON 归档）
 async function readEffectiveNavHistory(username, accountName) {
   const { rows } = await pool.query(
     'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
-  if (rows.length) return rows;
-  const { rows: jr } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
-  if (jr[0]) {
-    try {
-      const d = JSON.parse(jr[0].data);
-      if (Array.isArray(d.navHistory) && d.navHistory.length) return d.navHistory;
-    } catch (e) {}
-  }
-  return [];
+  return rows;
 }
 
-// 事务内：写 nav_history 表 + 同步 account_data JSONB 的 navHistory + 提升 version
+// 事务内：写 nav_history 表（DELETE+INSERT）+ 提升 nav_version（使其他页面的旧快照不再覆盖）
 async function writeNavHistoryBoth(client, username, accountName, navs) {
   await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
   for (const n of navs) {
@@ -246,16 +281,10 @@ async function writeNavHistoryBoth(client, username, accountName, navs) {
       [username, accountName, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2))]
     );
   }
-  const json = JSON.stringify(navs.map(n => ({
-    date: n.date,
-    nav: Number(n.nav),
-    totalAsset: n.totalAsset != null ? Number(n.totalAsset) : null,
-    invested: n.invested != null ? Number(n.invested) : null
-  })));
   await client.query(
-    `UPDATE account_data SET data = jsonb_set(data::jsonb, '{navHistory}', $3::jsonb, false)::text, version = version + 1
-     WHERE username=$1 AND account_name=$2`,
-    [username, accountName, json]
+    `UPDATE account_data SET nav_version = nav_version + 1
+      WHERE username=$1 AND account_name=$2`,
+    [username, accountName]
   );
 }
 
@@ -273,7 +302,7 @@ async function backupNavHistory(username, accountName) {
   return { ok: true, rows: rows.length };
 }
 
-// 还原：校验备份存在（NULL=从未备份）→ 双写 nav_history 表 + JSONB → 提升 version
+// 还原：校验备份存在（NULL=从未备份）→ 写回 nav_history 表 → 提升 nav_version
 // 空快照（0 条）是合法快照，应能还原为空历史，不误判为"没有备份"
 async function restoreNavHistory(username, accountName) {
   const { rows: bk } = await pool.query(
@@ -298,7 +327,7 @@ async function restoreNavHistory(username, accountName) {
 }
 
 // 清理：keep-latest 删除除最近一天外全部记录；invested-only 清空投入本金（置 NULL）；
-//       before-date 删除指定日期前（含）；均双写表 + JSONB 并提升 version
+//       before-date 删除指定日期前（含）；均只操作 nav_history 表并提升 nav_version
 async function clearNavHistory(username, accountName, mode, beforeDate) {
   const current = await readEffectiveNavHistory(username, accountName);
   let keep = current;
@@ -353,24 +382,30 @@ async function loadIndexPoints(username, accountName) {
 
 // ====== P2-3：账户元数据表迁移与读写 ======
 // 幂等：从 users.accounts JSON + account_data JSON 补全 accounts 表；ON CONFLICT DO NOTHING 不覆盖已有
+// 2026-08-03 整改：只对 data_source_version<2 的账户补全（已归档账户不再从 JSON 读取元数据），
+// 并补 fee_settings（税费设置结构化落库，JSON 退出运行时读取）。
 async function migrateAccountsTable() {
   try {
     const users = await loadUsers();
     for (const [username, u] of Object.entries(users)) {
       for (const name of (u.accounts || [])) {
-        let cashBase = 0, hkRate = 0.868;
+        let cashBase = 0, hkRate = 0.868, feeSettings = null;
         try {
-          const { rows } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [username, name]);
-          if (rows[0]) {
+          const { rows } = await pool.query(
+            'SELECT data, data_source_version FROM account_data WHERE username=$1 AND account_name=$2',
+            [username, name]
+          );
+          if (rows[0] && (rows[0].data_source_version == null || rows[0].data_source_version < 2)) {
             const d = JSON.parse(rows[0].data);
             if (typeof d.cashBase === 'number') cashBase = d.cashBase;
             if (typeof d.hkRate === 'number' && d.hkRate > 0) hkRate = d.hkRate;
+            if (d.feeSettings && typeof d.feeSettings === 'object') feeSettings = JSON.stringify(d.feeSettings);
           }
         } catch (e) {}
         const acctId = crypto.createHash('sha256').update(username + '\n' + name).digest('hex');
         await pool.query(
-          'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, version, updated_at) VALUES ($1,$2,$3,$4,$5,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
-          [acctId, username, name, round(cashBase, 2), round(hkRate, 6)]
+          'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\')) ON CONFLICT (username, account_name) DO NOTHING',
+          [acctId, username, name, round(cashBase, 2), round(hkRate, 6), feeSettings]
         );
       }
     }

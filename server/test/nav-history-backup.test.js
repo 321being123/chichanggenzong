@@ -52,11 +52,11 @@ async function cleanup() {
       assert.ok(Array.isArray(rows[0].nav_history_backup) && rows[0].nav_history_backup.length === 3);
     });
 
-    await checkAsync('还原：写回 nav_history 表且 version 提升', async () => {
+    await checkAsync('还原：写回 nav_history 表且 nav_version 提升', async () => {
       // 先破坏：删掉两条 + 改一条 invested
       await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3', [U, A, '2024-01-02']);
       await pool.query('UPDATE nav_history SET invested=99999 WHERE username=$1 AND account_name=$2 AND date=$3', [U, A, '2024-01-03']);
-      const { rows: v1 } = await pool.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
+      const { rows: v1 } = await pool.query('SELECT nav_version FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
       const r = await restoreNavHistory(U, A);
       assert.strictEqual(r.ok, true);
       assert.strictEqual(r.rows, 3);
@@ -64,8 +64,9 @@ async function cleanup() {
       assert.strictEqual(hist.length, 3);
       assert.strictEqual(hist[1].date, '2024-01-02'); // 被删的恢复了
       assert.strictEqual(Number(hist[2].invested), 700); // 被改的还原了
-      const { rows: v2 } = await pool.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
-      assert.ok(v2[0].version > v1[0].version, '还原后 version 应提升');
+      // 2026-08-03 整改：还原/清理只提升 nav_version（数据集级版本），账户级 version（乐观锁）不动
+      const { rows: v2 } = await pool.query('SELECT nav_version FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
+      assert.ok(v2[0].nav_version > v1[0].nav_version, '还原后 nav_version 应提升');
     });
 
     await checkAsync('还原：无备份时明确报错', async () => {
@@ -76,16 +77,15 @@ async function cleanup() {
       assert.ok(threw, '无备份应报错');
     });
 
-    await checkAsync('清理 invested-only：清空投入本金字段（表 + JSON 双写）', async () => {
+    await checkAsync('清理 invested-only：清空投入本金字段（只操作 nav_history 表）', async () => {
       await backupNavHistory(U, A); // 重新造备份（还原用例清过）
       const r = await clearNavHistory(U, A, 'invested-only');
       assert.strictEqual(r.ok, true);
       assert.strictEqual(r.rows, 0, '清空投入本金不删除记录');
       const { rows: hist } = await pool.query('SELECT invested FROM nav_history WHERE username=$1 AND account_name=$2', [U, A]);
       assert.ok(hist.every(h => h.invested === null), '表 invested 应全为 null');
-      const { rows: jr } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
-      const jd = JSON.parse(jr[0].data);
-      assert.ok(jd.navHistory.every(n => n.invested == null), 'JSON invested 应全为 null');
+      // 2026-08-03 整改：JSON 不再双写业务数组（account_data.data 退出运行时链路），
+      // 只校验表数据；JSON 残留由审计/归档流程处理，不参与业务读取。
     });
 
     await checkAsync('清理 before-date：删除指定日期前（含）记录', async () => {
@@ -110,10 +110,6 @@ async function cleanup() {
       const { rows: hist } = await pool.query('SELECT date FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date', [U, A]);
       assert.strictEqual(hist.length, 1);
       assert.strictEqual(hist[0].date, '2024-01-03', '应保留最近一天');
-      const { rows: jr } = await pool.query('SELECT data FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
-      const jd = JSON.parse(jr[0].data);
-      assert.ok(Array.isArray(jd.navHistory) && jd.navHistory.length === 1 && jd.navHistory[0].date === '2024-01-03',
-        'JSON navHistory 应同步只保留最近一天');
     });
 
     await checkAsync('清理：非法模式报错', async () => {

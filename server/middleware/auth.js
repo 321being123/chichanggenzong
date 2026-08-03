@@ -1,6 +1,6 @@
 // ========== 鉴权与账户归属校验中间件 ==========
 const asyncHandler = require('./async');
-const { loadUser, updateUserAccounts, loadAccountData, pool } = require('../db');
+const { loadUser, pool } = require('../db');
 
 function requireLogin(req, res, next) {
   if (!req.session.user) return res.status(401).json({ error: '未登录' });
@@ -44,26 +44,22 @@ if (typeof setInterval === 'function') {
 // ========== 账户归属校验：确保被访问的账户属于当前登录用户 ==========
 // 所有数据接口都按 (username=会话用户, account_name) 隔离，跨用户读取在结构上已被挡住；
 // 此中间件作纵深防御：校验账户名属于本人账户列表，并对历史遗留账户自动补登。
+// 2026-08-03 整改（报告 8.3）：账户列表唯一权威来源 = accounts 表（users.accounts JSON 仅兜底，
+// 因为 syncUserAccounts 已保证 accounts 表与列表同步；结构化表空≠无权限——新账户/主动清空都合法）。
 async function assertOwnership(req, res, next) {
   const username = req.session.user;
   const name = (req.params.name ? decodeURIComponent(req.params.name) : (req.body && req.body.account)) || '';
   if (!name) return next();
   try {
+    // 权威来源：accounts 表存在该账户即通过（列表/权限与业务数据同源）
+    const acct = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2', [username, name]);
+    if (acct.rowCount > 0) return next();
+    // 兼容层：accounts 表尚无记录时（历史遗留），查 users.accounts JSON 列表
     const user = await loadUser(username);
     const accounts = (user && user.accounts) || [];
     if (accounts.includes(name)) return next();
-    // 未登记：若当前用户确有该账户数据，属历史遗留，自动补登；否则拒绝越权访问
-    const data = await loadAccountData(username, name);
-    const hasData = data && (
-      (data.positions || []).length ||
-      (data.trades || []).length ||
-      (data.navHistory || []).length ||
-      (data.cashFlows || []).length
-    );
-    if (!hasData) return res.status(403).json({ error: '无权访问该账户' });
-    accounts.push(name);
-    await updateUserAccounts(username, accounts);
-    return next();
+    // 未登记且无账户主记录：拒绝越权访问（不再从 JSON 归档自动补登业务数据——表空是真实状态）
+    return res.status(403).json({ error: '无权访问该账户' });
   } catch (e) { next(e); }
 }
 

@@ -1938,13 +1938,20 @@ async function migration041AccountDataSource() {
          OR a.cash_base = 0 OR a.hk_rate = 0.868)
         AND EXISTS (SELECT 1 FROM users u WHERE u.username = ad.username)`
   );
+  // 偏好迁移失败/JSON 解析失败的账户**不归档**（保持 data_source_version<2，下次启动重试），
+  // 避免"设置还没迁走就被标记归档 → 运行时不再读 JSON → 设置永久丢失"（2026-08-03 阻断修复）。
+  const failedArchive = [];
   for (const r of arch) {
     let d = null;
-    try { d = JSON.parse(r.data); } catch (e) { continue; }
+    try { d = JSON.parse(r.data); } catch (e) {
+      failedArchive.push(r.username + '\u0000' + r.account_name);
+      console.warn('[migrate 041] JSON 解析失败，不归档待重试', r.username + '/' + r.account_name + ':', e.message);
+      continue;
+    }
     const fee = (d && d.feeSettings && typeof d.feeSettings === 'object') ? JSON.stringify(d.feeSettings) : null;
     const cashBase = (d && typeof d.cashBase === 'number' && d.cashBase > 0) ? String(d.cashBase) : null;
     const hkRate = (d && typeof d.hkRate === 'number' && d.hkRate > 0) ? String(d.hkRate) : null;
-    if (fee === null && cashBase === null && hkRate === null) continue;
+    if (fee === null && cashBase === null && hkRate === null) continue; // 无偏好可迁，可直接归档
     const acctId = require('crypto').createHash('sha256').update(r.username + '\n' + r.account_name).digest('hex');
     try {
       await pool.query(
@@ -1958,13 +1965,24 @@ async function migration041AccountDataSource() {
         [acctId, r.username, r.account_name, cashBase, hkRate, fee]
       );
     } catch (e) {
-      // 孤立 account_data（无对应用户）跳过迁移，留给人工清理（审计脚本会列出）
-      console.warn('[migrate 041] 偏好迁移跳过', r.username + '/' + r.account_name + ':', e.message);
+      // 孤立 account_data（无对应用户）或写入失败 → 不归档，留给人工处理/下次重试（审计脚本会列出）
+      failedArchive.push(r.username + '\u0000' + r.account_name);
+      console.warn('[migrate 041] 偏好迁移失败，不归档待重试', r.username + '/' + r.account_name + ':', e.message);
     }
   }
   // 存量 account_data 视为已归档（data_source_version=2）：本次部署后运行时代码不再读其业务数组，
   // 也未执行自动回灌；确需从 JSON 补录的账户由管理员人工确认后单独处理。
+  // ⚠️ 2026-08-03 阻断修复：仅归档"偏好迁移成功/无需迁移"的账户；偏好迁移失败或 JSON 解析失败的
+  //    账户**保持 data_source_version<2（待重试）**——否则设置还没迁走就被标记归档，运行时不再读
+  //    JSON，税费设置将永久丢失。实现：先归档全部，再把失败账户回退为 1（下次启动 runMigration 重试）。
   await pool.query(`UPDATE account_data SET data_source_version = 2 WHERE data_source_version < 2`);
+  for (const key of failedArchive) {
+    const sep = key.indexOf('\u0000');
+    await pool.query(
+      'UPDATE account_data SET data_source_version = 1 WHERE username=$1 AND account_name=$2',
+      [key.slice(0, sep), key.slice(sep + 1)]
+    );
+  }
 }
 
 async function ensureMigrationsTable() {

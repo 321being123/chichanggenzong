@@ -255,6 +255,39 @@ function payload(over) {
       }
     });
 
+    await checkAsync('迁移041失败分支：偏好迁移失败/JSON解析失败的账户不归档（防设置丢失）', async () => {
+      // 独立测试用户，避免污染
+      const M = 'mig041_fail_test';
+      const A_bad = '坏JSON', A_ok = '好账户';
+      await pool.query(`DELETE FROM account_data WHERE username=$1`, [M]);
+      await pool.query(`DELETE FROM accounts WHERE username=$1`, [M]);
+      await pool.query(`DELETE FROM users WHERE username=$1`, [M]);
+      try {
+        await pool.query(`INSERT INTO users (username, password, accounts) VALUES ($1,'x','[]')`, [M]);
+        // 坏 JSON → 偏好迁移解析失败 → 不应归档（data_source_version 保持 <2 待重试）
+        await pool.query(`INSERT INTO account_data (username, account_name, data, data_source_version) VALUES ($1,$2,'{invalid json',0)`, [M, A_bad]);
+        // 好账户 → 应归档 + feeSettings 迁入 accounts
+        await pool.query(`INSERT INTO account_data (username, account_name, data, data_source_version) VALUES ($1,$2,'{"feeSettings":{"ashare_stock":{"commissionRate":0.0002}}}',0)`, [M, A_ok]);
+        const migrations = require('../db/migrations');
+        const fn = migrations.MIGRATIONS.find(m => m.version === '041_account_data_source');
+        await fn.up();
+        const { rows: r1 } = await pool.query('SELECT data_source_version FROM account_data WHERE username=$1 AND account_name=$2', [M, A_bad]);
+        assert.strictEqual(r1[0].data_source_version, 1, '坏JSON账户不应归档（应待重试）');
+        const { rows: r2 } = await pool.query('SELECT data_source_version FROM account_data WHERE username=$1 AND account_name=$2', [M, A_ok]);
+        assert.strictEqual(r2[0].data_source_version, 2, '好账户应归档');
+        const { rows: r3 } = await pool.query('SELECT fee_settings FROM accounts WHERE username=$1 AND account_name=$2', [M, A_ok]);
+        assert.ok(r3[0].fee_settings !== null, '好账户 feeSettings 应已迁移');
+        // 重复执行幂等：坏JSON仍不归档
+        await fn.up();
+        const { rows: r1b } = await pool.query('SELECT data_source_version FROM account_data WHERE username=$1 AND account_name=$2', [M, A_bad]);
+        assert.strictEqual(r1b[0].data_source_version, 1, '重复执行后坏JSON仍不归档');
+      } finally {
+        await pool.query(`DELETE FROM account_data WHERE username=$1`, [M]);
+        await pool.query(`DELETE FROM accounts WHERE username=$1`, [M]);
+        await pool.query(`DELETE FROM users WHERE username=$1`, [M]);
+      }
+    });
+
     await cleanup();
   }
 

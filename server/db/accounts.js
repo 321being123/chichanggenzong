@@ -120,6 +120,11 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // account_id（不可变账户主键，四轮验收：新写入必须赋值，不允许空）
+    const { rows: aRows } = await client.query(
+      'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
+    );
+    const accountId = aRows[0] ? aRows[0].id : null;
     // 去重：同一数据集内按唯一键只保留最后一条（旧版逐条 INSERT 遇重复会静默覆盖；
     // 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会整条报错，故写入前先归一）。
     // positions/trades/cashFlows 按 id、navHistory 按 date，保留后出现的记录。
@@ -158,27 +163,27 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       // 仓位对比：保存时按 code 重新关联 instrument_id（避免 DELETE+重建把回填映射清空；未匹配写 NULL 不报错）
       const instIdMap = await buildInstrumentIdMap(posRows.map(p => p && p.code));
       await bulkInsert(client, 'positions',
-        ['id', 'username', 'account_name', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note', 'instrument_id'],
+        ['id', 'username', 'account_name', 'account_id', 'code', 'name', 'price', 'quantity', 'cost', 'type', 'subtype', 'note', 'instrument_id'],
         posRows,
-        (p) => [p.id, username, accountName, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null]
+        (p) => [p.id, username, accountName, accountId, p.code || '', p.name || '', round(p.price, 4), round(p.quantity, 4), round(p.cost, 4), p.type || '', p.subtype || '', p.note || '', instIdMap.get(String(p.code || '').trim()) || null]
       );
     }
     // trades
     if (allow.trades) {
       await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
       await bulkInsert(client, 'trades',
-        ['id', 'username', 'account_name', 'date', 'created_at', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
+        ['id', 'username', 'account_name', 'account_id', 'date', 'created_at', 'trade_date', 'executed_at', 'import_batch_id', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
         data.trades || [],
-        (t) => [t.id, username, accountName, t.date || '', t.created_at || '', t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
+        (t) => [t.id, username, accountName, accountId, t.date || '', t.created_at || '', t.trade_date || (t.date || '').slice(0, 10), t.executed_at || t.date || t.created_at || '', t.import_batch_id || null, t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
       );
     }
     // nav_history（snapshot_at 持久化，P0-3：同日现金流结算边界刷新后不丢）
     if (allow.navHistory) {
       await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
       await bulkInsert(client, 'nav_history',
-        ['username', 'account_name', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at'],
+        ['username', 'account_name', 'account_id', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at'],
         data.navHistory || [],
-        (n) => [username, accountName, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null],
+        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null],
         'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)'
       );
     }
@@ -186,9 +191,9 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     if (allow.cashFlows) {
       await client.query('DELETE FROM cash_flows WHERE username=$1 AND account_name=$2', [username, accountName]);
       await bulkInsert(client, 'cash_flows',
-        ['id', 'username', 'account_name', 'date', 'created_at', 'amount', 'note'],
+        ['id', 'username', 'account_name', 'account_id', 'date', 'created_at', 'amount', 'note'],
         data.cashFlows || [],
-        (c) => [c.id || uid(), username, accountName, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
+        (c) => [c.id || uid(), username, accountName, accountId, c.date || '', c.created_at || '', round(c.amount, 2), c.note || '']
       );
     }
     // account_data：业务数组已退出 JSON（整改后 JSON 仅作只读归档，不再参与业务读取/写入），
@@ -260,10 +265,14 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
 // ====== 每日收盘价 ======
 
 async function saveDailyPrices(username, accountName, date, prices) {
+  const { rows: aRows } = await pool.query(
+    'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
+  );
+  const accountId = aRows[0] ? aRows[0].id : null;
   for (const p of prices) {
     await pool.query(
-      'INSERT INTO daily_prices (username, account_name, date, code, name, price) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date, code) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price',
-      [username, accountName, date, p.code, p.name || '', round(p.price, 4)]
+      'INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (username, account_name, date, code) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price',
+      [username, accountName, accountId, date, p.code, p.name || '', round(p.price, 4)]
     );
   }
 }
@@ -285,10 +294,14 @@ async function upsertNav(username, accountName, rec) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const { rows: aRows } = await client.query(
+      'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
+    );
+    const accountId = aRows[0] ? aRows[0].id : null;
     await client.query(
-      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ' +
       'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
-      [username, accountName, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null]
+      [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null]
     );
     await client.query(
       `INSERT INTO account_data (username, account_name, data, version, nav_version)
@@ -323,12 +336,16 @@ async function readEffectiveNavHistory(username, accountName) {
 // 事务内：写 nav_history 表（DELETE+INSERT）+ 提升 nav_version（使其他页面的旧快照不再覆盖）
 // snapshot_at（同日现金流结算边界）随备份/还原保留（验收修复）
 async function writeNavHistoryBoth(client, username, accountName, navs) {
+  const { rows: aRows } = await client.query(
+    'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
+  );
+  const accountId = aRows[0] ? aRows[0].id : null;
   await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
   for (const n of navs) {
     await client.query(
-      'INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ' +
       'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
-      [username, accountName, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null]
+      [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null]
     );
   }
   await client.query(
@@ -407,11 +424,15 @@ async function clearNavHistory(username, accountName, mode, beforeDate) {
 // ====== 指数历史（独立表，增量 upsert，避免 JSON 读写放大） ======
 
 async function upsertIndexPoints(username, accountName, points) {
+  const { rows: aRows } = await pool.query(
+    'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
+  );
+  const accountId = aRows[0] ? aRows[0].id : null;
   for (const p of (points || [])) {
     if (!p || !p.date || !p.name) continue;
     await pool.query(
-      'INSERT INTO index_history (username, account_name, date, name, close) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (username, account_name, date, name) DO UPDATE SET close = EXCLUDED.close',
-      [username, accountName, p.date, p.name, p.close || 0]
+      'INSERT INTO index_history (username, account_name, account_id, date, name, close) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date, name) DO UPDATE SET close = EXCLUDED.close',
+      [username, accountName, accountId, p.date, p.name, p.close || 0]
     );
   }
 }

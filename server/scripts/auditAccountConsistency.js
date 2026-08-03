@@ -66,40 +66,98 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
   const { rows: accounts } = await pool.query('SELECT username, account_name, COALESCE(cash_base,0) AS cash_base FROM accounts');
   for (const acct of accounts) {
     const { username, account_name, cash_base } = acct;
-    // a) 重复交易组：同 code+date(前10位)+direction+price+quantity 出现多次
-    // 2026-08-03 修正：排除 note='券商导出导入' 的交易——券商持仓快照导入可能同一 code 多条
-    // 相同价格/数量但属于不同子账户（如华泰 160719 三个基金账户各 40 股），非重复导入。
-    const dups = (await pool.query(
+
+    // ---- a) 重复交易组（验证式，非豁免式） ----
+    // 券商快照导入（note='券商导出导入'）同 code 多条相同价格/数量 = 不同子账户拆分（如华泰
+    // 160719 三基金账户各 40 股），合法前提是：该 code 全部导入交易的数量总和 == 持仓数量。
+    // 满足则非重复（不报）；不满足（总和 ≠ 持仓）仍报错——避免"豁免掩盖真重复"。
+    const dupGroups = (await pool.query(
       `SELECT code, left(date,10) AS d, direction, price, quantity, COUNT(*) AS c
          FROM trades WHERE username=$1 AND account_name=$2
-           AND COALESCE(note,'') <> '券商导出导入'
-        GROUP BY code, left(date,10), direction, price, quantity HAVING COUNT(*)>1 LIMIT 20`,
+        GROUP BY code, left(date,10), direction, price, quantity HAVING COUNT(*)>1 LIMIT 30`,
       [username, account_name]
     )).rows;
-    dups.forEach(r => issue('重复交易组', username + '/' + account_name + ' ' + r.code + ' ' + r.d + ' ' + r.direction + ' x' + r.c));
+    for (const g of dupGroups) {
+      const snapCnt = (await pool.query(
+        `SELECT COUNT(*)::int AS c FROM trades WHERE username=$1 AND account_name=$2
+           AND code=$3 AND left(date,10)=$4 AND direction=$5 AND price=$6 AND quantity=$7
+           AND COALESCE(note,'')='券商导出导入'`,
+        [username, account_name, g.code, g.d, g.direction, g.price, g.quantity]
+      )).rows[0].c;
+      if (Number(g.c) === Number(snapCnt)) {
+        // 快照导入拆分：校验 该 code 导入交易数量总和 == 持仓数量（子账户拆分合法性）
+        const snapQty = (await pool.query(
+          `SELECT COALESCE(SUM(CASE WHEN direction IN ('buy','open') THEN quantity ELSE -quantity END),0)::numeric(14,2) AS net
+             FROM trades WHERE username=$1 AND account_name=$2 AND code=$3
+               AND COALESCE(note,'')='券商导出导入'`,
+          [username, account_name, g.code]
+        )).rows[0];
+        const heldQty2 = (await pool.query(
+          `SELECT COALESCE(SUM(quantity),0)::numeric(14,2) AS q FROM positions WHERE username=$1 AND account_name=$2 AND code=$3`,
+          [username, account_name, g.code]
+        )).rows[0];
+        if (Math.abs(Number(snapQty.net) - Number(heldQty2.q)) > 0.01) {
+          issue('重复交易组(快照导入数量≠持仓)', username + '/' + account_name + ' ' + g.code + ' ' + g.d + ' 导入净=' + snapQty.net + ' 持仓=' + heldQty2.q);
+        }
+        // 相等 → 子账户拆分合法，不报
+      } else {
+        issue('重复交易组', username + '/' + account_name + ' ' + g.code + ' ' + g.d + ' ' + g.direction + ' x' + g.c);
+      }
+    }
 
-    // b) 金额关系异常：amount ≠ price × quantity（允许 0.02 舍入差）
-    // 2026-08-03 修正：**期初持仓导入批豁免**。券商持仓快照导入（同日多代码 buy，
-    // amount 保存的是"成本金额"而非成交额，港股还含汇率口径）不适用 amount=price×quantity。
-    // 识别：某日 buy 数 ≥3 且该批非重复交易 → 视为期初导入批，排除其金额校验（误报源头）。
+    // ---- b) 金额关系异常（验证式，非豁免式） ----
+    // 期初持仓导入批（同日 ≥3 buy）的 amount = 持仓成本金额（positions.cost×quantity，港股按
+    // 参考汇率还原）而非 成交额 → 用「amount ≈ 成本金额」验证该批合法性；不匹配才报错。
+    // 真实成交交易仍严格校验 amount = price × quantity。
     const initDays = (await pool.query(
       `SELECT left(date,10) AS d FROM trades
          WHERE username=$1 AND account_name=$2 AND direction='buy'
-        GROUP BY left(date,10)
-       HAVING COUNT(*) >= 3
-         AND COUNT(*) = COUNT(DISTINCT id)  -- 排除重复交易组影响
-       LIMIT 10`,
+        GROUP BY left(date,10) HAVING COUNT(*) >= 3 LIMIT 10`,
       [username, account_name]
     )).rows.map(r => r.d);
-    const badAmt = (await pool.query(
-      `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect
+    // 先查所有金额不一致的交易（含期初导入批）
+    const allBad = (await pool.query(
+      `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect, direction, left(date,10) AS d
          FROM trades WHERE username=$1 AND account_name=$2
-           AND ABS(amount - ROUND(price*quantity,2)) > 0.02
-           AND NOT (direction='buy' AND left(date,10) = ANY($3::text[]))
-         LIMIT 20`,
-      [username, account_name, initDays.length ? initDays : ['__none__']]
+           AND ABS(amount - ROUND(price*quantity,2)) > 0.02 LIMIT 50`,
+      [username, account_name]
     )).rows;
-    badAmt.forEach(r => issue('交易金额与价格×数量不一致', username + '/' + account_name + ' ' + r.code + ' ' + r.date + ' amount=' + r.amount + ' 应=' + r.expect));
+    for (const r of allBad) {
+      if (r.direction === 'buy' && initDays.includes(r.d)) {
+        // 期初导入批：amount 应为「当日导入成本」= 该 code 当日该笔的 成本价×数量。
+        // ⚠️ 不能用 positions.cost×quantity（当前持仓成本可能含后续买入/调整，量级不对）。
+        // 用该批当日同一 code 的"成本口径金额"验证：取该 code 当日买条的
+        // amount 与 (价格×数量) 中更接近"成本"的参照——实务上期初导入 amount=成本金额列。
+        // 参照 = 该 code 当日所有期初买条中，数量与当前持仓最接近那条的 amount 语义。
+        // 简化且稳妥：仅当该 code 当日仅此一条导入、且持仓数量=导入数量 时，amount 应≈持仓成本；
+        // 否则（有后续交易）跳过——后续交易导致的差异不是导入错误。
+        const impQty = (await pool.query(
+          `SELECT COALESCE(SUM(quantity),0)::numeric(14,2) AS q FROM trades
+             WHERE username=$1 AND account_name=$2 AND code=$3 AND left(date,10)=$4
+               AND direction='buy' AND COALESCE(note,'')='券商导出导入'`,
+          [username, account_name, r.code, r.d]
+        )).rows[0].q;
+        const heldNow = (await pool.query(
+          `SELECT COALESCE(SUM(quantity),0)::numeric(14,2) AS q FROM positions
+             WHERE username=$1 AND account_name=$2 AND code=$3`,
+          [username, account_name, r.code]
+        )).rows[0].q;
+        if (Math.abs(Number(impQty) - Number(heldNow)) < 1) {
+          // 无后续交易：导入数量=持仓数量 → amount 应≈持仓成本金额
+          const costAmt = (await pool.query(
+            `SELECT COALESCE(SUM(cost*quantity),0)::numeric(14,2) AS ca FROM positions
+               WHERE username=$1 AND account_name=$2 AND code=$3`,
+            [username, account_name, r.code]
+          )).rows[0];
+          if (Math.abs(Number(r.amount) - Number(costAmt.ca)) > 1) {
+            issue('期初导入金额≠持仓成本金额', username + '/' + account_name + ' ' + r.code + ' ' + r.date + ' amount=' + r.amount + ' 持仓成本=' + costAmt.ca);
+          }
+        }
+        // 有后续交易（导入数量≠持仓数量）→ 差异由后续交易造成，属正常，不报
+      } else {
+        issue('交易金额与价格×数量不一致', username + '/' + account_name + ' ' + r.code + ' ' + r.date + ' amount=' + r.amount + ' 应=' + r.expect);
+      }
+    }
 
     // c) 交易净数量 vs 持仓数量差异：交易重放(<=今日)数量 ≠ positions 数量
     const trNet = (await pool.query(
@@ -164,7 +222,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
   }
   // 退出码只看结构化数据损坏（业务子表孤立 / account_data 无主 / JSON 解析失败 / 账本严重项）；
   // 归档残留、"新账户无数据"、持仓数量与交易净数量差异（可能为期初导入）是提示级不阻断
-  const severe = ['孤立业务数据', 'account_data无accounts元数据', 'JSON解析失败', '重复交易组', '交易金额与价格×数量不一致', '超卖(历史缺口)'];
+  const severe = ['孤立业务数据', 'account_data无accounts元数据', 'JSON解析失败', '重复交易组', '交易金额与价格×数量不一致', '超卖(历史缺口)', '期初导入金额≠持仓成本金额', '重复交易组(快照导入数量≠持仓)'];
   const total = Object.entries(report.counts)
     .filter(([k, n]) => severe.some(s => k.startsWith(s)) && n > 0)
     .reduce((s, [, n]) => s + n, 0);

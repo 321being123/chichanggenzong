@@ -188,6 +188,7 @@ async function applyTrade(username, accountName, trade) {
       `SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`,
       [username, accountName]
     );
+    let accountId = lockRows.length ? lockRows[0].id : null;
     if (lockRows.length === 0) {
       const acctId = require('crypto').createHash('sha256').update(username + '\n' + accountName).digest('hex');
       await client.query(
@@ -196,7 +197,8 @@ async function applyTrade(username, accountName, trade) {
          ON CONFLICT (username, account_name) DO NOTHING`,
         [acctId, username, accountName]
       );
-      await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
+      const re = await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
+      accountId = re.rows[0].id;
     }
     // 卖出校验：可卖数量 = 当前持仓 + 本笔卖出自身数量（若为替换已有卖出，则 + 被替换卖出量）
     if (t.direction === 'sell') {
@@ -233,10 +235,10 @@ async function applyTrade(username, accountName, trade) {
       }
     }
     await client.query(
-      `INSERT INTO trades (id, username, account_name, date, created_at, trade_date, executed_at, import_batch_id,
+      `INSERT INTO trades (id, username, account_name, account_id, date, created_at, trade_date, executed_at, import_batch_id,
                            code, name, direction, price, quantity, amount,
                            commission, stamp_tax, transfer_fee, other_fee, type, subtype, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (id, username, account_name) DO UPDATE SET
          date=EXCLUDED.date, created_at=EXCLUDED.created_at, trade_date=EXCLUDED.trade_date,
          executed_at=EXCLUDED.executed_at, import_batch_id=EXCLUDED.import_batch_id,
@@ -244,7 +246,7 @@ async function applyTrade(username, accountName, trade) {
          price=EXCLUDED.price, quantity=EXCLUDED.quantity, amount=EXCLUDED.amount,
          commission=EXCLUDED.commission, stamp_tax=EXCLUDED.stamp_tax, transfer_fee=EXCLUDED.transfer_fee,
          other_fee=EXCLUDED.other_fee, type=EXCLUDED.type, subtype=EXCLUDED.subtype, note=EXCLUDED.note`,
-      [tradeId, username, accountName, t.date || '', t.created_at || nowStr(), tradeDate, executedAt,
+      [tradeId, username, accountName, accountId, t.date || '', t.created_at || nowStr(), tradeDate, executedAt,
        t.import_batch_id || null,
        t.code, t.name || '', t.direction, price, quantity, amount,
        round(Number(t.commission) || 0, 4), round(Number(t.stamp_tax) || 0, 4),
@@ -281,9 +283,9 @@ async function applyTrade(username, accountName, trade) {
       // 首次建仓：cost=移动加权成本；price 用成交价作为初始行情价（后续行情刷新覆盖）
       const posId = require('crypto').randomBytes(8).toString('hex');
       await client.query(
-        `INSERT INTO positions (id, username, account_name, code, name, price, quantity, cost, type, subtype, note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'')`,
-        [posId, username, accountName, t.code, t.name || '', price, sec.quantity, sec.cost, t.type || '股权', t.subtype || '']
+        `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype, note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'')`,
+        [posId, username, accountName, accountId, t.code, t.name || '', price, sec.quantity, sec.cost, t.type || '股权', t.subtype || '']
       );
     }
     // 标记净值边界 + 同步提升 account_data 总版本/交易版本（P0-1：防旧页面全量保存覆盖）

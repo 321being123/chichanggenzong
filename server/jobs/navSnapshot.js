@@ -53,7 +53,7 @@ async function recordNavSnapshots(username, accountName) {
   navs.forEach(function (n) { navByDate.set(n.date, n); });
 
   // 投入本金 investedAt() 已收口到 public/shared/nav-math.js（前后端共用）
-  // 持仓-as-of 某日（P1-2 修复：按 trade_date 纯日期比较；open=期初建仓计入、adjust=数量调整）
+  // 持仓-as-of 某日（与 tradeLedger/replayNav 语义一致：adjust = 目标数量绝对设置）
   function tradeDay(t) { return t.trade_date || (t.date || '').slice(0, 10); }
   function heldQty(date) {
     const m = new Map();
@@ -62,7 +62,7 @@ async function recordNavSnapshots(username, accountName) {
       const cur = m.get(t.code) || { qty: 0, subtype: t.subtype };
       const q = (t.quantity || 0);
       if (t.direction === 'sell') cur.qty -= q;
-      else if (t.direction === 'adjust') cur.qty += q; // 调整可为负
+      else if (t.direction === 'adjust') cur.qty = Math.max(0, q); // 目标数量绝对设置（0=清仓）
       else cur.qty += q; // buy / open 均累加
       cur.subtype = t.subtype || cur.subtype;
       m.set(t.code, cur);

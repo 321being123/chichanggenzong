@@ -2063,6 +2063,7 @@ const MIGRATIONS = [
   { version: '045_nav_snapshot_at', up: migration045NavSnapshotAt },
   { version: '046_position_events', up: migration046PositionEvents },
   { version: '047_account_id_fk', up: migration047AccountId },
+  { version: '048_tighten_account_ledger', up: migration048TightenAccountLedger },
 ];
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========
@@ -2185,6 +2186,61 @@ async function migration047AccountId() {
           AND b.account_id IS NULL`
     );
     // 3) 外键（NOT VALID：存量孤立行不校验；后续写入由代码保证 account_id 关联）
+    const fkName = `fk_${t}_account_id`;
+    const fkEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [fkName]);
+    if (fkEx.rowCount === 0) {
+      await pool.query(
+        `ALTER TABLE ${t} ADD CONSTRAINT ${fkName}
+         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE NOT VALID`
+      );
+    }
+  }
+}
+
+// ========== 048：046 增量约束与索引的幂等收敛（四轮验收修复） ==========
+// 问题：046 曾含"含账户去重索引 + 补充约束 + amount_rel"，这些是在 046 已发布后追加的，
+// 从 0.4.3.9 升级的库不会重跑 046 → 新库缺这些约束/索引。
+// 解决：抽成独立迁移 048，全部幂等（先查后建 / IF NOT EXISTS），任何版本升级到本版都会补齐。
+// 同时确保 account_id 在所有业务子表存在（与 047 相同逻辑，幂等；防止 047 缺跑的库）。
+async function migration048TightenAccountLedger() {
+  // 1) 含账户的导入幂等唯一索引（幂等重建）
+  await pool.query(`DROP INDEX IF EXISTS uq_trades_import_dedupe`);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_import_dedupe
+      ON trades (username, account_name, import_batch_id, code, trade_date, direction, price, quantity)
+      WHERE import_batch_id IS NOT NULL
+  `);
+  // 2) 补充约束（先查 pg_constraint 再建）
+  for (const c of [
+    ['chk_trades_fee_all', `CHECK ((stamp_tax IS NULL OR stamp_tax >= 0) AND (transfer_fee IS NULL OR transfer_fee >= 0) AND (other_fee IS NULL OR other_fee >= 0))`],
+    ['chk_trades_trade_date', `CHECK (trade_date IS NULL OR trade_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`],
+  ]) {
+    const ex = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1 AND conrelid='trades'::regclass`, [c[0]]);
+    if (ex.rowCount === 0) {
+      await pool.query(`ALTER TABLE trades ADD CONSTRAINT ${c[0]} ${c[1]}`);
+    }
+  }
+  // 3) amount 关系（NOT VALID：兼容存量期初导入成本金额）
+  const amtEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`);
+  if (amtEx.rowCount === 0) {
+    await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+      CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
+  }
+  // 4) account_id 基础设施（幂等，兼容 047 未跑/缺跑的库）
+  const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history'];
+  for (const t of tables) {
+    const colEx = await pool.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name='account_id'`, [t]
+    );
+    if (colEx.rowCount === 0) {
+      await pool.query(`ALTER TABLE ${t} ADD COLUMN account_id TEXT`);
+    }
+    await pool.query(
+      `UPDATE ${t} b SET account_id = a.id
+         FROM accounts a
+        WHERE b.username = a.username AND b.account_name = a.account_name
+          AND b.account_id IS NULL`
+    );
     const fkName = `fk_${t}_account_id`;
     const fkEx = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1`, [fkName]);
     if (fkEx.rowCount === 0) {

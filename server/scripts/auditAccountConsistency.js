@@ -76,11 +76,25 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     dups.forEach(r => issue('重复交易组', username + '/' + account_name + ' ' + r.code + ' ' + r.d + ' ' + r.direction + ' x' + r.c));
 
     // b) 金额关系异常：amount ≠ price × quantity（允许 0.02 舍入差）
+    // 2026-08-03 修正：**期初持仓导入批豁免**。券商持仓快照导入（同日多代码 buy，
+    // amount 保存的是"成本金额"而非成交额，港股还含汇率口径）不适用 amount=price×quantity。
+    // 识别：某日 buy 数 ≥3 且该批非重复交易 → 视为期初导入批，排除其金额校验（误报源头）。
+    const initDays = (await pool.query(
+      `SELECT left(date,10) AS d FROM trades
+         WHERE username=$1 AND account_name=$2 AND direction='buy'
+        GROUP BY left(date,10)
+       HAVING COUNT(*) >= 3
+         AND COUNT(*) = COUNT(DISTINCT id)  -- 排除重复交易组影响
+       LIMIT 10`,
+      [username, account_name]
+    )).rows.map(r => r.d);
     const badAmt = (await pool.query(
       `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect
          FROM trades WHERE username=$1 AND account_name=$2
-           AND ABS(amount - ROUND(price*quantity,2)) > 0.02 LIMIT 20`,
-      [username, account_name]
+           AND ABS(amount - ROUND(price*quantity,2)) > 0.02
+           AND NOT (direction='buy' AND left(date,10) = ANY($3::text[]))
+         LIMIT 20`,
+      [username, account_name, initDays.length ? initDays : ['__none__']]
     )).rows;
     badAmt.forEach(r => issue('交易金额与价格×数量不一致', username + '/' + account_name + ' ' + r.code + ' ' + r.date + ' amount=' + r.amount + ' 应=' + r.expect));
 

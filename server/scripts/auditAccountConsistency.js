@@ -49,7 +49,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
          FROM ${t} b
          LEFT JOIN accounts a ON a.username=b.username AND a.account_name=b.account_name
         WHERE a.username IS NULL
-        GROUP BY b.username, b.account_name LIMIT 20`
+        GROUP BY b.username, b.account_name`
     );
     q.rows.forEach(r => issue('孤立业务数据_' + t, r.username + '/' + r.account_name));
   }
@@ -84,7 +84,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     const dupGroups = (await pool.query(
       `SELECT code, left(date,10) AS d, direction, price, quantity, COUNT(*) AS c
          FROM trades WHERE username=$1 AND account_name=$2
-        GROUP BY code, left(date,10), direction, price, quantity HAVING COUNT(*)>1 LIMIT 30`,
+        GROUP BY code, left(date,10), direction, price, quantity HAVING COUNT(*)>1`,
       [username, account_name]
     )).rows;
     for (const g of dupGroups) {
@@ -125,14 +125,14 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
       `SELECT left(date,10) AS d FROM trades
          WHERE username=$1 AND account_name=$2 AND direction='buy'
            AND COALESCE(note,'') LIKE '%导出导入'
-        GROUP BY left(date,10) HAVING COUNT(*) >= 3 LIMIT 10`,
+        GROUP BY left(date,10) HAVING COUNT(*) >= 3`,
       [username, account_name]
     )).rows.map(r => r.d);
     // 先查所有金额不一致的交易（含期初导入批）
     const allBad = (await pool.query(
       `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect, direction, left(date,10) AS d, COALESCE(note,'') AS note
          FROM trades WHERE username=$1 AND account_name=$2
-           AND ABS(amount - ROUND(price*quantity,2)) > 0.02 LIMIT 50`,
+           AND ABS(amount - ROUND(price*quantity,2)) > 0.02`,
       [username, account_name]
     )).rows;
     for (const r of allBad) {
@@ -179,9 +179,12 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     }
 
     // c) 交易净数量 vs 持仓数量差异：交易重放(<=今日)数量 ≠ positions 数量
-    // ⚠️ 按方向语义 JS 重放（SQL 三目不支持 adjust 绝对设置），与账本引擎一致
+    // ⚠️ 按方向语义 JS 重放（SQL 三目不支持 adjust 绝对设置），与账本引擎一致；
+    //    必须按交易日+成交时间排序（adjust=目标数量绝对设置，顺序错乱会得出错误结果）
     const allTrs = (await pool.query(
-      `SELECT code, direction, quantity FROM trades WHERE username=$1 AND account_name=$2`,
+      `SELECT code, direction, quantity, trade_date, executed_at, date, created_at FROM trades
+         WHERE username=$1 AND account_name=$2
+        ORDER BY COALESCE(trade_date, left(date,10)) ASC, COALESCE(executed_at, date, created_at) ASC, created_at ASC, id ASC`,
       [username, account_name]
     )).rows;
     const netMap = new Map();
@@ -236,7 +239,7 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
       const isHint = k.includes('(提示)') || k.includes('(归档提示)');
       console.log((report.counts[k] && !isHint ? '❌' : 'ℹ️') + ' ' + k + ': ' + report.counts[k]);
       if (report.counts[k] && process.argv.includes('--detail')) {
-        report.issues[k].slice(0, 20).forEach(d => console.log('    ' + d));
+        report.issues[k].slice(0, 100).forEach(d => console.log('    ' + d));
       }
     }
     console.log('JSON 残留业务数组合计: ' + leftoverArrays + '（整改后仅归档，不参与业务读取）');

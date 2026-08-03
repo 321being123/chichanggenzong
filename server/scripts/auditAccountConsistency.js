@@ -67,9 +67,12 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
   for (const acct of accounts) {
     const { username, account_name, cash_base } = acct;
     // a) 重复交易组：同 code+date(前10位)+direction+price+quantity 出现多次
+    // 2026-08-03 修正：排除 note='券商导出导入' 的交易——券商持仓快照导入可能同一 code 多条
+    // 相同价格/数量但属于不同子账户（如华泰 160719 三个基金账户各 40 股），非重复导入。
     const dups = (await pool.query(
       `SELECT code, left(date,10) AS d, direction, price, quantity, COUNT(*) AS c
          FROM trades WHERE username=$1 AND account_name=$2
+           AND COALESCE(note,'') <> '券商导出导入'
         GROUP BY code, left(date,10), direction, price, quantity HAVING COUNT(*)>1 LIMIT 20`,
       [username, account_name]
     )).rows;

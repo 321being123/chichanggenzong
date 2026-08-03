@@ -549,12 +549,29 @@ function renderTrades() {
   el.innerHTML = html;
 }
 
-function deleteCashFlow(id) {
+async function deleteCashFlow(id) {
   if (!id) return;
-  data.cashFlows = (data.cashFlows || []).filter(c => c.id !== id);
-  saveData();
-  renderAll();
-  showToast('现金流记录已删除');
+  // 服务端统一账本：删除后重算现金并返回最新结果（方案阶段一第 5 条）
+  try {
+    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows/' + encodeURIComponent(id)), {
+      method: 'DELETE'
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(j.error || '删除现金流失败'); return; }
+    if (j.data) {
+      data = j.data;
+      dataVersion = j.data.version || dataVersion;
+      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+      restorePriceChangeMap();
+    }
+    renderAll();
+    showToast('现金流记录已删除');
+  } catch (e) {
+    showToast('删除失败：' + (e.message || e));
+  }
 }
 
 // ===================== 事件委托：替代“把用户数据拼进内联 onclick” =====================

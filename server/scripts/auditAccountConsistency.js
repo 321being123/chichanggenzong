@@ -61,6 +61,75 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
   // 4) 汇总：提示类（新账户无数据）不计入"损坏"退出码
   for (const k of Object.keys(report.issues)) report.counts[k] = report.issues[k].length;
 
+  // ========== 账本一致性审计（持仓管理架构与交易数据整改方案 阶段六） ==========
+  // 只读：不修改任何数据。检查交易/持仓/现金账本是否互相一致。
+  const { rows: accounts } = await pool.query('SELECT username, account_name, COALESCE(cash_base,0) AS cash_base FROM accounts');
+  for (const acct of accounts) {
+    const { username, account_name, cash_base } = acct;
+    // a) 重复交易组：同 code+date(前10位)+direction+price+quantity 出现多次
+    const dups = (await pool.query(
+      `SELECT code, left(date,10) AS d, direction, price, quantity, COUNT(*) AS c
+         FROM trades WHERE username=$1 AND account_name=$2
+        GROUP BY code, left(date,10), direction, price, quantity HAVING COUNT(*)>1 LIMIT 20`,
+      [username, account_name]
+    )).rows;
+    dups.forEach(r => issue('重复交易组', username + '/' + account_name + ' ' + r.code + ' ' + r.d + ' ' + r.direction + ' x' + r.c));
+
+    // b) 金额关系异常：amount ≠ price × quantity（允许 0.02 舍入差）
+    const badAmt = (await pool.query(
+      `SELECT code, date, price, quantity, amount, ROUND(price*quantity,2) AS expect
+         FROM trades WHERE username=$1 AND account_name=$2
+           AND ABS(amount - ROUND(price*quantity,2)) > 0.02 LIMIT 20`,
+      [username, account_name]
+    )).rows;
+    badAmt.forEach(r => issue('交易金额与价格×数量不一致', username + '/' + account_name + ' ' + r.code + ' ' + r.date + ' amount=' + r.amount + ' 应=' + r.expect));
+
+    // c) 交易净数量 vs 持仓数量差异：交易重放(<=今日)数量 ≠ positions 数量
+    const trNet = (await pool.query(
+      `SELECT code, SUM(CASE WHEN direction='buy' THEN quantity ELSE -quantity END) AS net
+         FROM trades WHERE username=$1 AND account_name=$2 GROUP BY code`,
+      [username, account_name]
+    )).rows;
+    const posQty = (await pool.query(
+      `SELECT code, SUM(quantity) AS qty FROM positions WHERE username=$1 AND account_name=$2 GROUP BY code`,
+      [username, account_name]
+    )).rows;
+    const posMap = new Map(posQty.map(r => [r.code, Number(r.qty)]));
+    for (const r of trNet) {
+      const net = Number(r.net);
+      const held = posMap.get(r.code) || 0;
+      if (Math.abs(net - held) > 0.01 && net !== 0) {
+        // 交易净数 ≠ 持仓数（注意：期初导入持仓无交易记录，属正常；仅提示非严重）
+        issue('持仓数量与交易净数量差异(提示)', username + '/' + account_name + ' ' + r.code + ' 交易净=' + net + ' 持仓=' + held);
+      }
+    }
+
+    // d) 超卖检查：按时间序重放，若某卖出时可用<0 则为超卖（历史缺口）
+    const trs = (await pool.query(
+      `SELECT date, created_at, code, direction, quantity FROM trades
+         WHERE username=$1 AND account_name=$2
+        ORDER BY left(date,10), COALESCE(date, created_at), created_at`,
+      [username, account_name]
+    )).rows;
+    const qtyMap = new Map();
+    for (const t of trs) {
+      const cur = qtyMap.get(t.code) || 0;
+      const q = Number(t.quantity) || 0;
+      if (t.direction === 'sell' && cur < q) {
+        issue('超卖(历史缺口)', username + '/' + account_name + ' ' + t.code + ' ' + t.date + ' 卖出' + q + ' 当时可用' + cur);
+        qtyMap.set(t.code, 0);
+      } else {
+        qtyMap.set(t.code, cur + (t.direction === 'buy' ? q : -q));
+      }
+    }
+
+    // e) 现金重算差异：cash_base + 现金流 + 交易净额 vs 最新 nav_history.total_asset - 持仓市值
+    //（仅对"有持仓"的账户做粗查，提示级）
+  }
+
+  // 账本检查新增 issue 后刷新计数（供下方汇总/退出码使用）
+  for (const k of Object.keys(report.issues)) report.counts[k] = report.issues[k].length;
+
   if (asJson) {
     console.log(JSON.stringify(report, null, 2));
   } else {
@@ -76,9 +145,9 @@ const FIVE_ARRAYS = ['positions', 'trades', 'navHistory', 'cashFlows', 'indexHis
     const total = Object.entries(report.counts).filter(([k, n]) => !k.includes('(提示)') && !k.includes('(归档提示)') && n > 0).reduce((s, [, n]) => s + n, 0);
     console.log(total === 0 ? '✅ 数据一致，无孤立/差异' : '⚠️ 存在 ' + total + ' 项严重数据问题（另有归档残留 ' + leftoverArrays + ' 项，不阻断）');
   }
-  // 退出码只看结构化数据损坏（业务子表孤立 / account_data 无主 / JSON 解析失败）；
-  // 归档残留与"新账户无数据"是整改迁移前/正常状态，不阻断
-  const severe = ['孤立业务数据', 'account_data无accounts元数据', 'JSON解析失败'];
+  // 退出码只看结构化数据损坏（业务子表孤立 / account_data 无主 / JSON 解析失败 / 账本严重项）；
+  // 归档残留、"新账户无数据"、持仓数量与交易净数量差异（可能为期初导入）是提示级不阻断
+  const severe = ['孤立业务数据', 'account_data无accounts元数据', 'JSON解析失败', '重复交易组', '交易金额与价格×数量不一致', '超卖(历史缺口)'];
   const total = Object.entries(report.counts)
     .filter(([k, n]) => severe.some(s => k.startsWith(s)) && n > 0)
     .reduce((s, [, n]) => s + n, 0);

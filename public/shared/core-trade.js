@@ -1,6 +1,23 @@
 // shared/core-trade.js – 交易录入/持仓增删改/截图AI/扫码/导入导出（原 core.js 拆分，全局作用域不变）
 // ===================== 交易录入 =====================
 
+// 服务端 ledger 接口返回最新 data 后：恢复行情涨跌幅缓存（priceChangeMap），
+// 保持渲染与加载后一致（与 loadData 中 data.changes → priceChangeMap 恢复逻辑相同）
+function restorePriceChangeMap() {
+  try {
+    if (typeof priceChangeMap === 'undefined' || !data) return;
+    priceChangeMap = {};
+    if (data.changes && typeof data.changes === 'object') {
+      Object.keys(data.changes).forEach(function(k) { priceChangeMap[k] = data.changes[k]; });
+    }
+    (data.positions || []).forEach(function(p) {
+      if (p.code && p.price != null && p.price > 0 && priceChangeMap[p.code] === undefined) {
+        priceChangeMap[p.code] = null;
+      }
+    });
+  } catch (e) {}
+}
+
 // 本地秒级时间字符串 YYYY-MM-DD HH:MM:SS（用于交易/现金流精确排序，东八区）
 function nowSec() {
   const now = new Date();
@@ -56,7 +73,7 @@ function autoCalcTrade() {
   setVal('trade-other', f.other_fee);
 }
 
-function addTrade() {
+async function addTrade() {
   const code = classifyCode.normalizeCode(document.getElementById('trade-code').value.trim());
   const name = document.getElementById('trade-name').value.trim() || code;
   const direction = document.getElementById('trade-dir').value;
@@ -86,45 +103,51 @@ function addTrade() {
   const tradeDate = pickedTime ? (pickedDate + ' ' + pickedTime) : pickedDate;
 
   const trade = {
-    id: uid(),
-    date: tradeDate,
-    created_at: nowSec(),
     code: code, name: name, direction: direction,
     price: price, quantity: qty, amount: amount,
     commission: commission, stamp_tax: stamp_tax, transfer_fee: transfer_fee, other_fee: other_fee,
-    type: type, subtype: subtype, note: note
+    type: type, subtype: subtype, note: note,
+    date: tradeDate
   };
-  data.trades.push(trade);
 
-  // 更新持仓
-  const existing = data.positions.find(p => p.code === code);
-  const delta = direction === 'buy' ? qty : -qty;
-  if (existing) {
-    const oldMv = (existing.price || 0) * (existing.quantity || 0);
-    const newMv = direction === 'buy' ? price * qty : -(price * qty);
-    const totalQty = (existing.quantity || 0) + delta;
-    if (totalQty > 0) {
-      existing.quantity = totalQty;
-      existing.price = (oldMv + newMv) / totalQty;
-      existing.type = type;
-      existing.subtype = subtype;
-      if (!existing.name) existing.name = name;
-    } else {
-      data.positions = data.positions.filter(p => p.id !== existing.id);
-    }
-  } else if (direction === 'buy') {
-    data.positions.push({
-      id: uid(), code: code, name: name,
-      price: price, quantity: qty,
-      type: type, subtype: subtype, cost: price, note: ''
+  // 服务端统一账本事务（2026-08-03 整改）：持仓/现金由服务端重算并返回，前端不再自行计算
+  try {
+    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trade: trade })
     });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showToast(j.error || '保存交易失败');
+      return;
+    }
+    if (j.data) {
+      data = j.data;
+      dataVersion = j.data.version || dataVersion;
+      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+      restorePriceChangeMap();
+    }
+    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
+    if (pickedDate && pickedDate < todayCN()) {
+      try {
+        const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromDate: pickedDate })
+        });
+        const jj = await rr.json().catch(function () { return {}; });
+        if (jj && jj.ok) data = await loadData(currentAccount);
+      } catch (e) {}
+    }
+    renderAll();
+    showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
+  } catch (e) {
+    showToast('保存失败：' + (e.message || e));
+    return;
   }
 
-  // 现金由系统自动重算，这里仅刷新内存显示
-  recalcCash();
-
-  saveData();
-  renderAll();
   document.getElementById('trade-code').value = '';
   document.getElementById('trade-name').value = '';
   document.getElementById('trade-price').value = '';
@@ -138,19 +161,54 @@ function addTrade() {
   initTradeDateTime(); // 重置日期时间为当前
 }
 
-function deleteTrade(id) {
-  data.trades = data.trades.filter(t => t.id !== id);
-  saveData();
-  renderAll();
+async function deleteTrade(id) {
+  // 服务端统一账本事务：删除交易后服务端重放持仓/现金并返回最新结果
+  try {
+    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades/' + encodeURIComponent(id)), {
+      method: 'DELETE'
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(j.error || '删除交易失败'); return; }
+    if (j.data) {
+      data = j.data;
+      dataVersion = j.data.version || dataVersion;
+      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+      restorePriceChangeMap();
+    }
+    renderAll();
+    showToast('交易已删除');
+  } catch (e) {
+    showToast('删除失败：' + (e.message || e));
+  }
 }
 
 async function clearTrades() {
-  if (!await projectConfirm('确定清空所有交易记录？（不会影响持仓数据）', {
+  if (!await projectConfirm('确定清空所有交易记录？', {
     title: '清空交易记录', confirmText: '清空', danger: true
   })) return;
-  data.trades = [];
-  saveData();
-  renderAll();
+  try {
+    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades'), {
+      method: 'DELETE'
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast(j.error || '清空交易失败'); return; }
+    if (j.data) {
+      data = j.data;
+      dataVersion = j.data.version || dataVersion;
+      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+      restorePriceChangeMap();
+    }
+    renderAll();
+    showToast('交易记录已清空');
+  } catch (e) {
+    showToast('清空失败：' + (e.message || e));
+  }
 }
 
 // ===================== 持仓增删改 =====================
@@ -556,7 +614,7 @@ async function confirmSmartItem(index) {
     var direction = document.getElementById('s-dir-' + index).value;
     var date = document.getElementById('s-date-' + index).value;
     var fees = getSmartItemFees(item, code);
-    await addTradeInternal(code, name, direction, price, quantity, date, fees);
+    await addTradeInternal(code, name, direction, price, quantity, date, fees, window._smartBatchId || null);
   } else {
     var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
     var existing = data.positions.find(function(p) { return p.code === code; });
@@ -587,9 +645,12 @@ async function confirmSmartItem(index) {
 
 async function confirmAllSmartItems() {
   if (!window._smartParsed || window._smartParsed.length === 0) return;
+  // 同一批导入共享批次号（业务去重/追溯，方案阶段五第 6 条）
+  window._smartBatchId = 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   for (var i = window._smartParsed.length - 1; i >= 0; i--) {
     await confirmSmartItem(i);
   }
+  window._smartBatchId = null;
 }
 
 function fileToBase64(file) {
@@ -672,55 +733,66 @@ function updateQtyHint(code) {
   el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
 }
 
-async function addTradeInternal(code, name, direction, price, quantity, date, importedFees) {
+async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId) {
   code = classifyCode.normalizeCode(code);
   // 华泰/招商证券上交所债券：手→张自动转换
   quantity = normalizeQuantity(quantity, code);
-  var amount = Math.round(price * quantity * 100) / 100;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
   var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
-  var f = importedFees || calcTradeFees(direction, amount, rec.subtype);
-  data.trades.push({
-    id: uid(), code: code, name: name || code,
-    direction: direction, price: price, quantity: quantity,
-    amount: amount,
-    commission: f.commission, stamp_tax: f.stamp_tax, transfer_fee: f.transfer_fee, other_fee: f.other_fee,
-    type: rec.type, subtype: rec.subtype,
-    date: date || todayCN(), created_at: nowSec()
+  var f = importedFees || calcTradeFees(direction, Math.round(price * quantity * 100) / 100, rec.subtype);
+
+  // 业务去重（方案阶段一第 6 条）：同 code+date+direction+price+quantity 视为重复导入，跳过
+  var dup = (data.trades || []).some(function (t) {
+    return t.code === code &&
+      (t.trade_date || (t.date || '').slice(0, 10)) === String(date || '').slice(0, 10) &&
+      t.direction === direction &&
+      Math.abs((Number(t.price) || 0) - price) < 0.001 &&
+      Math.abs((Number(t.quantity) || 0) - quantity) < 0.001;
   });
+  if (dup) { showToast('该笔交易已存在（同代码/日期/方向/价格/数量），已跳过重复导入'); return; }
 
-  var existing = data.positions.find(function(p) { return p.code === code; });
-  if (existing) {
-    existing.price = price;
-    existing.type = existing.type || rec.type;
-    if (direction === 'buy') existing.quantity += quantity;
-    else {
-      existing.quantity = Math.max(0, existing.quantity - quantity);
-      if (existing.quantity <= 0) data.positions = data.positions.filter(function(p) { return p !== existing; });
-    }
-  } else if (direction === 'buy') {
-    data.positions.push({
-      id: uid(), code: code, name: name || code,
-      price: price, quantity: quantity, cost: price,
-      type: rec.type, subtype: rec.subtype, note: ''
+  // 服务端统一账本事务：持仓/现金由服务端重算并返回
+  try {
+    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/trades'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trade: {
+          code: code, name: name || code, direction: direction,
+          price: price, quantity: quantity,
+          commission: f.commission, stamp_tax: f.stamp_tax, transfer_fee: f.transfer_fee, other_fee: f.other_fee,
+          type: rec.type, subtype: rec.subtype,
+          date: date || todayCN(), import_batch_id: importBatchId || null
+        }
+      })
     });
+    const j = await r.json().catch(function () { return {}; });
+    if (!r.ok) { showToast(j.error || '保存交易失败'); return; }
+    if (j.data) {
+      data = j.data;
+      dataVersion = j.data.version || dataVersion;
+      if (typeof j.data.posVersion === 'number') dataPosVersion = j.data.posVersion;
+      if (typeof j.data.tradeVersion === 'number') dataTradeVersion = j.data.tradeVersion;
+      if (typeof j.data.navVersion === 'number') dataNavVersion = j.data.navVersion;
+      if (typeof j.data.cashflowVersion === 'number') dataCashVersion = j.data.cashflowVersion;
+      restorePriceChangeMap();
+    }
+    // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
+    if (date && date < todayCN()) {
+      try {
+        const rr = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromDate: date })
+        });
+        const jj = await rr.json().catch(function () { return {}; });
+        if (jj && jj.ok) data = await loadData(currentAccount); // 刷新 navHistory
+      } catch (e) {}
+    }
+    renderAll();
+    showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
+  } catch (e) {
+    showToast('保存失败：' + (e.message || e));
   }
-
-  recalcCash();
-  await saveDataNow(); // 确保 PUT 落库后再回填，避免读库早于保存
-  // 过去日期的交易：触发历史净值精确回填（Tushare 历史回补，不近似）
-  if (date && date < todayCN()) {
-    try {
-      const r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '/recompute-nav'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fromDate: date })
-      });
-      const j = await r.json().catch(function () { return {}; });
-      if (j && j.ok) data = await loadData(currentAccount); // 刷新 navHistory
-    } catch (e) {}
-  }
-  renderAll();
-  showToast('已记录 ' + (direction === 'buy' ? '买入' : '卖出') + ' ' + (name || code));
 }
 
 // ===================== 税费设置 =====================

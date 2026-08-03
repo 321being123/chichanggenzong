@@ -21,7 +21,7 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: trades } = await pool.query(
-    'SELECT id, date, created_at, code, name, direction, price::float8 AS price, quantity::float8 AS quantity, amount::float8 AS amount, type, subtype, note, commission::float8 AS commission, stamp_tax::float8 AS stamp_tax, transfer_fee::float8 AS transfer_fee, other_fee::float8 AS other_fee FROM trades WHERE username=$1 AND account_name=$2',
+    'SELECT id, date, created_at, COALESCE(trade_date, left(date,10)) AS trade_date, executed_at, import_batch_id, code, name, direction, price::float8 AS price, quantity::float8 AS quantity, amount::float8 AS amount, type, subtype, note, commission::float8 AS commission, stamp_tax::float8 AS stamp_tax, transfer_fee::float8 AS transfer_fee, other_fee::float8 AS other_fee FROM trades WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(

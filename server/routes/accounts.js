@@ -10,6 +10,66 @@ const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateT
 const { fetchQuoteByCode, todayCN, toTsCode } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
+const tradeLedger = require('../services/tradeLedger');
+
+// ========== 账户账本局部接口（方案阶段三：交易增删改走服务端统一事务） ==========
+// 前端交易录入不再自行计算持仓/现金，服务端事务完成后返回最新账户结果供刷新。
+// 路由统一前缀 /api/accounts/:name/ledger/*（:name=账户名，保持与既有 /data/:name 一致的编码方式）
+
+// 新增/修改交易：POST body={ trade: {...}, fromDate? }
+router.post('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const trade = req.body && req.body.trade;
+  if (!trade) return res.status(400).json({ error: '缺少 trade' });
+  try {
+    const r = await tradeLedger.applyTrade(req.session.user, name, trade);
+    // 返回服务端最新账户结果（前端直接刷新内存，方案阶段二第 8 条）
+    const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
+    res.json({ ok: true, id: r.id, cash: r.cash, tradeDate: r.tradeDate, data: fresh });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+}));
+
+// 删除交易：DELETE body={ tradeId, fromDate? }
+router.delete('/accounts/:name/ledger/trades/:tradeId', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const tradeId = req.params.tradeId;
+  if (!tradeId) return res.status(400).json({ error: '缺少 tradeId' });
+  try {
+    const r = await tradeLedger.deleteTrade(req.session.user, name, tradeId);
+    const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
+    res.json({ ok: true, cash: r.cash, data: fresh });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+}));
+
+// 清空交易：DELETE /ledger/trades
+router.delete('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  try {
+    const r = await tradeLedger.clearTrades(req.session.user, name);
+    const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
+    res.json({ ok: true, cash: r.cash, data: fresh });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+}));
+
+// 删除现金流：DELETE /ledger/cash-flows/:flowId（删除后服务端重算现金并返回最新结果）
+router.delete('/accounts/:name/ledger/cash-flows/:flowId', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const flowId = req.params.flowId;
+  if (!flowId) return res.status(400).json({ error: '缺少 flowId' });
+  try {
+    const r = await tradeLedger.deleteCashFlow(req.session.user, name, flowId);
+    const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
+    res.json({ ok: true, cash: r.cash, data: fresh });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+}));
 
 router.get('/accounts', requireLogin, asyncHandler(async (req, res) => {
   // 2026-08-03 整改（报告 8.3）：账户列表唯一权威来源 = accounts 表。

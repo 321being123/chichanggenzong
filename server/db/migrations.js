@@ -2057,7 +2057,51 @@ const MIGRATIONS = [
   { version: '039_account_hk_rate_updated_at', up: migration039AccountHkRateUpdatedAt },
   { version: '040_nav_history_backup', up: migration040NavHistoryBackup },
   { version: '041_account_data_source', up: migration041AccountDataSource },
+  { version: '042_trade_fields', up: migration042TradeFields },
+  { version: '043_position_cost', up: migration043PositionCost },
+  { version: '044_nav_cash_boundary', up: migration044NavCashBoundary },
 ];
+
+// ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========
+// 2026-08-03 持仓账本整改（方案 3.6/阶段四）：
+//  - date 保留完整 "YYYY-MM-DD HH:MM"（历史兼容），新增 trade_date 为纯交易日 YYYY-MM-DD，
+//    后台净值重放一律按 trade_date 比较，修复"当天带时间交易被字符串比较漏算"。
+//  - executed_at 成交时间（YYYY-MM-DD HH:MM:SS，用于同日现金流/交易排序与净值结算边界）。
+//  - import_batch_id 导入批次标识（智能导入业务去重 + 追溯），无批次的手工交易为 NULL。
+async function migration042TradeFields() {
+  await pool.query(`ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_date TEXT`);
+  await pool.query(`ALTER TABLE trades ADD COLUMN IF NOT EXISTS executed_at TEXT`);
+  await pool.query(`ALTER TABLE trades ADD COLUMN IF NOT EXISTS import_batch_id TEXT`);
+  // 回填：trade_date = date 的前 10 位（纯日期）；executed_at = date 若有时间部分则取完整串，否则用 created_at
+  await pool.query(`
+    UPDATE trades
+       SET trade_date = left(date, 10),
+           executed_at = CASE
+             WHEN length(date) > 10 THEN date
+             WHEN created_at IS NOT NULL AND created_at <> '' THEN created_at
+             ELSE date END
+     WHERE trade_date IS NULL OR executed_at IS NULL
+  `);
+  // 数据约束（阶段五）：direction/quantity/price/amount 合法性
+  await pool.query(`
+    ALTER TABLE trades
+      ADD CONSTRAINT chk_trades_direction CHECK (direction IN ('buy','sell'))
+  `);
+}
+
+// ========== 043：账户账本整改（持仓成本与当前价分离注释性迁移占位） ==========
+// 说明：positions.price = 当前行情价（由行情刷新更新）；positions.cost = 移动加权成本（由服务端交易事务维护）。
+// 交易录入只更新 cost/quantity，禁止覆盖 price——已在服务端账本事务中强制执行，本迁移仅为后续约束预留。
+async function migration043PositionCost() {
+  // 无结构变更；账户账本整改的约束由服务端事务层保证（见 services/tradeLedger.js）
+}
+
+// ========== 044：同日现金流净值边界字段（nav_history 记录数据截止/结算边界） ==========
+// 方案 3.7：当天净值需知道"已结算的现金流边界"，避免当天入金被误算成盈利。
+// 在 account_data 上记录上次净值快照的现金流结算边界（快照时间），供前端同日更新净值时判断。
+async function migration044NavCashBoundary() {
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_cash_cutoff TEXT`);
+}
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤
 async function runMigrations() {

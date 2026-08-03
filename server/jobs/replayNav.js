@@ -61,9 +61,17 @@ async function recomputeNav(username, accountName, fromDate) {
   const hkRate = Number(data.hkRate) || 0.868;
   const cashBase = Number(data.cashBase) || 0;
   const trades = (data.trades || []).slice().sort(function (a, b) {
-    return (a.date + (a.created_at || '')).localeCompare(b.date + (b.created_at || ''));
+    // 方案 3.6 修复：按交易日(trade_date)+成交时间(executed_at)排序，避免带时间 date 与纯日期比较错位
+    const ad = a.trade_date || (a.date || '').slice(0, 10);
+    const bd = b.trade_date || (b.date || '').slice(0, 10);
+    const at = a.executed_at || a.date || a.created_at || '';
+    const bt = b.executed_at || b.date || b.created_at || '';
+    return (ad + at).localeCompare(bd + bt);
   });
   const cfs = (data.cashFlows || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+
+  // 交易日字段（trade_date 优先，兼容旧数据回退 date 前 10 位）
+  const tradeDay = function (t) { return t.trade_date || (t.date || '').slice(0, 10); };
 
   // daily_prices → map "code|date" → price
   const { rows: dpRows } = await pool.query(
@@ -76,11 +84,11 @@ async function recomputeNav(username, accountName, fromDate) {
 
   // 复刻 investedAt(date)（与前端 core-earnings.js:116 一致）—— 已收口到 public/shared/nav-math.js
 
-  // 持仓-as-of 某日：重放 date<=d 的 trades（买加/卖减）
+  // 持仓-as-of 某日：重放 tradeDay<=d 的交易（买加/卖减）—— 纯日期比较，修复当日带时间交易漏算
   function heldQty(date) {
     const m = new Map();
     trades.forEach(function (t) {
-      if (t.date > date) return;
+      if (tradeDay(t) > date) return;
       const cur = m.get(t.code) || { qty: 0, subtype: t.subtype };
       cur.qty += (t.direction === 'buy' ? 1 : -1) * (t.quantity || 0);
       cur.subtype = t.subtype || cur.subtype;
@@ -88,12 +96,12 @@ async function recomputeNav(username, accountName, fromDate) {
     });
     return m;
   }
-  // 现金-as-of 某日：cashBase + 现金流(<=d) + 交易净额(<=d)
+  // 现金-as-of 某日：cashBase + 现金流(<=d) + 交易净额(tradeDay<=d)
   function cashAsOf(date) {
     let c = cashBase;
     cfs.forEach(function (f) { if (f.date <= date) c += (f.amount || 0); });
     trades.forEach(function (t) {
-      if (t.date > date) return;
+      if (tradeDay(t) > date) return;
       const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
       c += (t.direction === 'buy') ? -(t.amount || 0) - fee : (t.amount || 0) - fee;
     });

@@ -118,21 +118,36 @@ function recordNav() {
   const s = calcSummary();
   if (s.total <= 0) return;
 
+  // 已结算现金流边界（方案 3.7）：本次快照时间。同日再次快照时，只把
+  // 「上次快照之后新录入」的同日现金流计入 periodCashFlow，避免把已结算的入金重复计、
+  // 或把新入金误算成盈利。旧数据无 snapshot_at → 退回按日期比较（与原逻辑一致）。
+  const lastSnapAt = (data.navHistory.length > 0 && data.navHistory[data.navHistory.length - 1].snapshot_at) || '';
+  function periodCashFlowSince(lastDate, cutoffAt) {
+    var pcf = 0;
+    if (!data.cashFlows) return pcf;
+    data.cashFlows.forEach(function (cf) {
+      if (cf.date > lastDate && cf.date <= today) {
+        // 有快照边界：同日现金流只在快照时间之后新录的计入；跨日现金流全部计入
+        if (cf.date === today && cutoffAt && cf.created_at && cf.created_at <= cutoffAt) return;
+        pcf += (cf.amount || 0);
+      }
+    });
+    return pcf;
+  }
+
   // 当天已记录 → 覆盖当天（一天内多次刷新/收盘后市值变动也能反映）
   if (data.navHistory.length > 0 &&
       data.navHistory[data.navHistory.length - 1].date === today) {
     const lastNav = data.navHistory[data.navHistory.length - 1];
-    var periodCashFlow = 0;
-    if (data.cashFlows) {
-      data.cashFlows.forEach(function (cf) {
-        if (cf.date > lastNav.date && cf.date <= today) periodCashFlow += cf.amount;
-      });
-    }
+    // 上次快照边界 = 该记录的 snapshot_at（若无则为空 → 全部同日现金流计入，与原逻辑一致）
+    var cutoff = lastNav.snapshot_at || '';
+    var periodCashFlow = periodCashFlowSince(lastNav.date, cutoff);
     var baseAsset = lastNav.totalAsset + periodCashFlow;
     if (baseAsset > 0) {
       lastNav.nav = chainNav(lastNav.nav, lastNav.totalAsset, s.total, periodCashFlow);
       lastNav.totalAsset = s.total;
       lastNav.invested = invested;
+      lastNav.snapshot_at = nowSec(); // 更新快照边界
     }
     saveData();
     return;
@@ -144,14 +159,15 @@ function recordNav() {
       date: today,
       nav: 1.0,
       totalAsset: s.total,
-      invested: invested
+      invested: invested,
+      snapshot_at: nowSec()
     });
   } else {
     // 修正后的净值计算：
     // adjustedNav = lastNav * (currentTotal / (lastTotalAsset + periodCashFlow))
     // 即：剔除「上次净值以来累计现金流」影响后的真实净值增长
     const lastNav = data.navHistory[data.navHistory.length - 1];
-    // 自上次净值记录日（不含）到今天（含）的累计净现金流
+    // 自上次净值记录日（不含）到今天（含）的累计净现金流（新一天，无同日边界问题）
     var periodCashFlow2 = 0;
     if (data.cashFlows) {
       data.cashFlows.forEach(function (cf) {
@@ -165,7 +181,8 @@ function recordNav() {
       date: today,
       nav: nav,
       totalAsset: s.total,
-      invested: invested
+      invested: invested,
+      snapshot_at: nowSec()
     });
   }
   saveData();

@@ -137,7 +137,10 @@ async function deleteBroker(code) {
   await pool.query('DELETE FROM brokers WHERE code=$1', [code]);
 }
 
-// 同步账户列表到结构化 accounts 表：新增补行、删除已移除的行（仅元数据，不动 account_data）
+// 同步账户列表到结构化 accounts 表：新增补行、删除已移除的行。
+// 2026-08-03 整改（报告 3.6/8.3）：删除 accounts 行时**同步删除该账户的业务数据**（positions/trades/
+// nav_history/cash_flows/daily_prices/index_history/account_data），杜绝"列表删了但业务数据成孤儿、
+// 重建同名账户复活旧数据"。旧客户端（未走 DELETE /api/accounts/:name）经 PUT /accounts 删账户也兜住。
 async function syncUserAccounts(username, names) {
   if (!Array.isArray(names)) return;
   const client = await pool.connect();
@@ -155,6 +158,16 @@ async function syncUserAccounts(username, names) {
         "UPDATE accounts SET broker=$2 WHERE username=$1 AND account_name=$3 AND (broker IS NULL OR broker='other' OR broker='')",
         [username, broker, name]
       );
+    }
+    // 找出被移除的账户名，先删业务数据再删元数据
+    const { rows: gone } = await client.query(
+      'SELECT account_name FROM accounts WHERE username=$1 AND account_name <> ALL($2::text[])',
+      [username, names]
+    );
+    for (const g of gone) {
+      for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data']) {
+        await client.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [username, g.account_name]);
+      }
     }
     await client.query('DELETE FROM accounts WHERE username=$1 AND account_name <> ALL($2::text[])', [username, names]);
     await client.query('COMMIT');

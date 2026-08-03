@@ -1927,6 +1927,41 @@ async function migration041AccountDataSource() {
   await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS data_source_version INTEGER NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS structured_migrated_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS fee_settings JSONB`);
+  // P0-3 修复（2026-08-03）：**先**把 JSON 中仍有效的账户偏好（feeSettings/cashBase/hkRate）迁入
+  // accounts 表，**再**置归档标记。否则 JSON 被标记归档后运行时不再读它，税费设置将永久丢失。
+  // 幂等：accounts 表已有值（非 NULL 的 fee_settings、非默认的 cash_base/hk_rate）不被覆盖。
+  const { rows: arch } = await pool.query(
+    `SELECT ad.username, ad.account_name, ad.data
+       FROM account_data ad
+       LEFT JOIN accounts a ON a.username=ad.username AND a.account_name=ad.account_name
+      WHERE (a.username IS NULL OR a.fee_settings IS NULL
+         OR a.cash_base = 0 OR a.hk_rate = 0.868)
+        AND EXISTS (SELECT 1 FROM users u WHERE u.username = ad.username)`
+  );
+  for (const r of arch) {
+    let d = null;
+    try { d = JSON.parse(r.data); } catch (e) { continue; }
+    const fee = (d && d.feeSettings && typeof d.feeSettings === 'object') ? JSON.stringify(d.feeSettings) : null;
+    const cashBase = (d && typeof d.cashBase === 'number' && d.cashBase > 0) ? String(d.cashBase) : null;
+    const hkRate = (d && typeof d.hkRate === 'number' && d.hkRate > 0) ? String(d.hkRate) : null;
+    if (fee === null && cashBase === null && hkRate === null) continue;
+    const acctId = require('crypto').createHash('sha256').update(r.username + '\n' + r.account_name).digest('hex');
+    try {
+      await pool.query(
+        `INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at)
+         VALUES ($1,$2,$3,COALESCE($4::numeric,0),COALESCE($5::numeric,0.868),$6,1,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+         ON CONFLICT (username, account_name) DO UPDATE SET
+           cash_base = CASE WHEN accounts.cash_base = 0 THEN COALESCE(EXCLUDED.cash_base, accounts.cash_base) ELSE accounts.cash_base END,
+           hk_rate = CASE WHEN accounts.hk_rate = 0.868 THEN COALESCE(EXCLUDED.hk_rate, accounts.hk_rate) ELSE accounts.hk_rate END,
+           fee_settings = CASE WHEN accounts.fee_settings IS NULL THEN EXCLUDED.fee_settings ELSE accounts.fee_settings END,
+           updated_at = EXCLUDED.updated_at`,
+        [acctId, r.username, r.account_name, cashBase, hkRate, fee]
+      );
+    } catch (e) {
+      // 孤立 account_data（无对应用户）跳过迁移，留给人工清理（审计脚本会列出）
+      console.warn('[migrate 041] 偏好迁移跳过', r.username + '/' + r.account_name + ':', e.message);
+    }
+  }
   // 存量 account_data 视为已归档（data_source_version=2）：本次部署后运行时代码不再读其业务数组，
   // 也未执行自动回灌；确需从 JSON 补录的账户由管理员人工确认后单独处理。
   await pool.query(`UPDATE account_data SET data_source_version = 2 WHERE data_source_version < 2`);

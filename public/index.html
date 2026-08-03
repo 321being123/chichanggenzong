@@ -1068,7 +1068,7 @@
 <script src="shared/nav-math.js?v=1"></script>
 <script src="shared/core-returns.js?v=4"></script>
 <script src="shared/core-earnings.js?v=20260712e"></script>
-<script src="shared/core-account.js?v=20260803a"></script>
+<script src="shared/core-account.js?v=20260803b"></script>
 <script src="shared/date-range-control.js?v=1"></script>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/dompurify.min.js"></script>
@@ -1507,7 +1507,12 @@ async function saveDataNow() {
         throw new Error('HTTP ' + r.status + (errBody.error ? ': ' + errBody.error : ''));
       }
       const j = await r.json().catch(() => ({}));
+      // 保存成功后同步更新账户版本 + 四个数据集版本（P0-1：否则第二次保存版本落后被全部跳过）
       if (j && typeof j.version === 'number') dataVersion = j.version;
+      if (j && typeof j.posVersion === 'number') dataPosVersion = j.posVersion;
+      if (j && typeof j.tradeVersion === 'number') dataTradeVersion = j.tradeVersion;
+      if (j && typeof j.navVersion === 'number') dataNavVersion = j.navVersion;
+      if (j && typeof j.cashflowVersion === 'number') dataCashVersion = j.cashflowVersion;
       // 服务端按数据集版本跳过写入的数据集（后台任务/其他浏览器已更新）→ 提示并重载，防止旧内存覆盖
       if (j && Array.isArray(j.skipped) && j.skipped.length > 0) {
         _lastSaveOk = false;

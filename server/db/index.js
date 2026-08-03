@@ -63,6 +63,8 @@ module.exports = {
   backupNavHistory: accounts.backupNavHistory,
   restoreNavHistory: accounts.restoreNavHistory,
   clearNavHistory: accounts.clearNavHistory,
+  deleteAccountData: accounts.deleteAccountData,
+  renameAccountData: accounts.renameAccountData,
   tryClaimJob: jobs.tryClaimJob,
   releaseJob: jobs.releaseJob,
   startJobRun: jobs.startJobRun,

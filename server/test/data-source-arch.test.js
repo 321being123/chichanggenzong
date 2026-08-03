@@ -4,16 +4,17 @@
 //  1) 表空、JSON 非空时禁止还魂（loadAccountData 永远从结构化表组装）
 //  2) 读取接口不写库（indexHistory 表空时不再自动迁移 JSON）
 //  3) 数据集级版本控制：后台写入净值后，旧浏览器保存持仓不覆盖新净值（8.2 并发验收）
-//  4) 账户删除原子：删除后重建同名账户不出现旧数据
-//  5) 账户重命名原子：业务表/元数据/列表全部改名，失败整体回滚
-//  6) 静态边界：业务代码不再读取 JSON 五类业务数组
+//  4) P0-1：连续两次保存不误报冲突（保存成功后数据集版本同步更新）
+//  5) 账户删除原子（走 db 层 deleteAccountData 真实函数 + users.accounts 同步）：删除后重建同名不出现旧数据
+//  6) 账户重命名原子（走 db 层 renameAccountData 真实函数）：业务表/元数据/列表全部改名，旧名可重建
+//  7) 静态边界：业务代码不再读取 JSON 五类业务数组
 // 全部使用专用测试数据并在 finally 清理，绝不触碰真实账户数据。
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const { pool } = require('../db');
-const { loadAccountData, saveAccountData, upsertNav, upsertIndexPoints, loadIndexPoints } = require('../db/accounts');
+const { loadAccountData, saveAccountData, upsertNav, upsertIndexPoints, loadIndexPoints, deleteAccountData, renameAccountData } = require('../db/accounts');
 
 const U = 'arch_test_user';
 const A = '架构整改测试账户';
@@ -118,31 +119,59 @@ function payload(over) {
       assert.strictEqual(d.positions.length, 1, '持仓（前端改动）应正常保存');
     });
 
-    await checkAsync('数据集版本：无版本参数（旧客户端/测试）仍可全量保存', async () => {
+    await checkAsync('P0-1：连续两次保存不误报冲突（数据集版本随保存同步更新）', async () => {
+      // 基于现有数据（前面用例已建），读取当前版本 → 保存 → 用返回的新版本再保存
       const d0 = await loadAccountData(U, A);
-      const r = await saveAccountData(U, A, payload({ positions: [{ id: 'p2', code: '000001', name: '平安银行', price: 10, quantity: 100, cost: 9, type: '股票', subtype: 'A股', note: '' }] }), d0.version);
-      assert.strictEqual(r.skipped.length, 0, '无版本参数时应允许全量写入');
+      const cur = { v: d0.version, pv: d0.posVersion, tv: d0.tradeVersion, nv: d0.navVersion, cv: d0.cashflowVersion };
+      // 第一次保存（用当前版本）
+      const v1 = await saveAccountData(U, A, payload(), cur.v,
+        { positions: cur.pv, trades: cur.tv, navHistory: cur.nv, cashFlows: cur.cv });
+      assert.strictEqual(v1.skipped.length, 0, '第一次保存不应跳过');
+      assert.strictEqual(v1.posVersion, cur.pv + 1, '保存后 positions 版本应 +1');
+      assert.strictEqual(v1.navVersion, cur.nv + 1, '保存后 navHistory 版本应 +1');
+      // 第二次保存：用第一次返回的新版本（模拟前端 saveDataNow 已同步数据集版本）
+      const p2 = payload({ positions: [{ id: 'p1', code: '600519', name: '贵州茅台', price: 1001, quantity: 11, cost: 900, type: '股票', subtype: 'A股', note: '' }] });
+      const v2 = await saveAccountData(U, A, p2, v1.version,
+        { positions: v1.posVersion, trades: v1.tradeVersion, navHistory: v1.navVersion, cashFlows: v1.cashflowVersion });
+      assert.strictEqual(v2.skipped.length, 0, '第二次保存不应跳过任何数据集（否则=误报冲突）');
+      assert.strictEqual(v2.posVersion, cur.pv + 2, '第二次保存后 positions 版本应再 +1');
+      const d = await loadAccountData(U, A);
+      assert.strictEqual(d.positions[0].quantity, 11, '第二次保存的持仓改动应生效');
     });
 
-    // ---------- 4) 账户删除原子 + 重建同名 ----------
-    await checkAsync('删除账户：全部业务表 + 元数据 + 兼容 JSON 一并删除', async () => {
+    await checkAsync('P0-1：保存成功后前端同步数据集版本（loadAccountData 返回新版本）', async () => {
+      const d = await loadAccountData(U, A);
+      // 前面用例已多次保存推进版本，只需断言返回的是正数且可用（前端保存时带回）
+      assert.ok(d.posVersion >= 1, 'loadAccountData 应返回最新数据集版本供前端保存时带回');
+      assert.ok(d.navVersion >= 1);
+    });
+
+    await checkAsync('数据集版本：无版本参数（纯数据层调用/测试）允许全量写入', async () => {
+      const d0 = await loadAccountData(U, A);
+      const r = await saveAccountData(U, A, payload({ positions: [{ id: 'p2', code: '000001', name: '平安银行', price: 10, quantity: 100, cost: 9, type: '股票', subtype: 'A股', note: '' }] }), d0.version);
+      assert.strictEqual(r.skipped.length, 0, '无版本参数时应允许全量写入（db 层兼容内部调用）');
+    });
+
+    // ---------- 4) 账户删除原子（走 db 层真实函数）+ 重建同名 ----------
+    await checkAsync('删除账户：deleteAccountData 删全部业务表 + 元数据 + 兼容 JSON + users.accounts 列表', async () => {
       // 造各表数据
       await pool.query(`INSERT INTO positions (id, username, account_name, code) VALUES ('p_del',$1,$2,'600000')`, [U, A]);
       await pool.query(`INSERT INTO trades (id, username, account_name, date) VALUES ('t_del',$1,$2,'2026-01-01 09:30')`, [U, A]);
       await pool.query(`INSERT INTO daily_prices (username, account_name, date, code) VALUES ($1,$2,'2026-01-01','600000')`, [U, A]);
-      // 调用路由层删除逻辑（这里直接执行与路由相同的事务 SQL）
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data', 'accounts']) {
-          await client.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [U, A]);
-        }
-        await client.query('COMMIT');
-      } finally { client.release(); }
+      // 确保 users.accounts 列表含该账户
+      await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`,
+        [U, JSON.stringify([A, A + '_保留'])]);
+      const r = await deleteAccountData(U, A);
+      assert.strictEqual(r.ok, true);
       for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data', 'accounts']) {
         const { rows } = await pool.query(`SELECT COUNT(*)::int AS c FROM ${t} WHERE username=$1 AND account_name=$2`, [U, A]);
         assert.strictEqual(rows[0].c, 0, `删除后 ${t} 应为空`);
       }
+      // users.accounts 列表同步移除
+      const { rows: u } = await pool.query('SELECT accounts FROM users WHERE username=$1', [U]);
+      const list = JSON.parse(u[0].accounts);
+      assert.ok(!list.includes(A), 'users.accounts 应移除被删账户');
+      assert.ok(list.includes(A + '_保留'), '其他账户不应被误删');
     });
 
     await checkAsync('重建同名账户：不出现旧数据（孤立数据已随删除清空）', async () => {
@@ -153,29 +182,28 @@ function payload(over) {
       assert.ok(!d.navHistory.some(n => n.date === '2026-01-01'), '重建后不应出现删除前的旧净值');
     });
 
-    // ---------- 5) 账户重命名原子（模拟路由事务，含 accounts.id 哈希同步） ----------
-    await checkAsync('重命名账户：各表 account_name 全部原子更新', async () => {
+    // ---------- 5) 账户重命名原子（走 db 层真实函数 renameAccountData） ----------
+    await checkAsync('重命名账户：renameAccountData 全表原子改名 + users.accounts 同步', async () => {
       // 无论断言成败都恢复原名，避免 id(sha256) 残留导致后续用例主键冲突
       try {
-        const client = await pool.connect();
-        try {
-          await client.query('BEGIN');
-          for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data']) {
-            await client.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [U, A, A + '_新名']);
-          }
-          const crypto = require('crypto');
-          const newId = crypto.createHash('sha256').update(U + '\n' + A + '_新名').digest('hex');
-          await client.query('UPDATE accounts SET id=$3, account_name=$4 WHERE username=$1 AND account_name=$2', [U, A, newId, A + '_新名']);
-          await client.query('COMMIT');
-        } finally { client.release(); }
+        // 确保 users.accounts 列表含被重命名账户（重建同名用例不更新列表，这里补上）
+        await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`,
+          [U, JSON.stringify([A, A + '_保留'])]);
+        const r = await renameAccountData(U, A, A + '_新名');
+        assert.strictEqual(r.ok, true);
         // 新名下应有数据
         const d = await loadAccountData(U, A + '_新名');
         assert.ok(Array.isArray(d.navHistory) && d.navHistory.length === 1, '新名应能读到数据，实际=' + (d.navHistory || []).length);
         const { rows: cnt } = await pool.query('SELECT COUNT(*)::int AS c FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
         assert.strictEqual(cnt[0].c, 0, '旧名不应残留');
+        // users.accounts 列表同步
+        const { rows: u } = await pool.query('SELECT accounts FROM users WHERE username=$1', [U]);
+        const list = JSON.parse(u[0].accounts);
+        assert.ok(list.includes(A + '_新名'), 'users.accounts 应含新名');
+        assert.ok(!list.includes(A), 'users.accounts 不应再含旧名');
         // 旧名可重建（id 哈希已随新名更新，不冲突）
         const rb = await saveAccountData(U, A, payload({ navHistory: [{ date: '2026-03-01', nav: 1.2, totalAsset: 12000, invested: 8000 }] }), 0);
-        assert.ok(rb && rb.ok !== false, '旧名重建应成功');
+        assert.ok(rb && rb.version >= 1, '旧名重建应成功');
         const d3 = await loadAccountData(U, A);
         assert.ok(d3.navHistory.length === 1 && d3.navHistory[0].date === '2026-03-01', '旧名重建后是新数据而非残留');
         // 清理重建数据，恢复现场
@@ -183,20 +211,33 @@ function payload(over) {
         await pool.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [U, A]);
         await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U, A]);
         await pool.query('DELETE FROM accounts WHERE username=$1 AND account_name=$2', [U, A]);
+        // 清理新名（避免残留），然后重建原名数据
+        await pool.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
+        await pool.query('DELETE FROM positions WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
+        await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
+        await pool.query('DELETE FROM accounts WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
       } finally {
-        // 改回原名，恢复测试现场（含 accounts.id 哈希）
-        const client2 = await pool.connect();
-        try {
-          await client2.query('BEGIN');
-          for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data']) {
-            await client2.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [U, A + '_新名', A]);
-          }
-          const crypto = require('crypto');
-          const oldId = crypto.createHash('sha256').update(U + '\n' + A).digest('hex');
-          await client2.query('UPDATE accounts SET id=$3, account_name=$4 WHERE username=$1 AND account_name=$2', [U, A + '_新名', oldId, A]);
-          await client2.query('COMMIT');
-        } finally { client2.release(); }
+        // 确保恢复到 A 名下的干净状态
+        await cleanup();
+        await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`, [U, JSON.stringify([A])]);
       }
+    });
+
+    await checkAsync('重命名冲突：目标名已存在时拒绝且不破坏数据', async () => {
+      // 确保 A 与 A_保留 都真实存在于 accounts 表（renameAccountData 的 dup 查的是 accounts 表）
+      await saveAccountData(U, A, payload(), 0);
+      await saveAccountData(U, A + '_保留', payload(), 0);
+      await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`,
+        [U, JSON.stringify([A, A + '_保留'])]);
+      const r = await renameAccountData(U, A, A + '_保留');
+      assert.strictEqual(r.conflict, '该名称已被使用');
+      // 原账户数据完好
+      const d = await loadAccountData(U, A);
+      assert.ok(Array.isArray(d.navHistory), '冲突后原账户应完好');
+      // 清理保留账户
+      await pool.query(`DELETE FROM account_data WHERE username=$1 AND account_name=$2`, [U, A + '_保留']);
+      await pool.query(`DELETE FROM accounts WHERE username=$1 AND account_name=$2`, [U, A + '_保留']);
+      await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`, [U, JSON.stringify([A])]);
     });
 
     // ---------- 6) 静态边界：业务代码不再读取 JSON 五类业务数组 ----------

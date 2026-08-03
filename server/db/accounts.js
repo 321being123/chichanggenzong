@@ -116,6 +116,8 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     const base = vrows[0] || { pv: 0, tv: 0, nv: 0, cv: 0 };
     const req = datasetVersions || {};
     const asNum = function (x) { return (typeof x === 'number') ? x : (x == null ? null : Number(x)); };
+    // 版本语义：undefined/null = 客户端未提供（兼容纯数据层调用/测试，允许写入）；
+    // 提供了但落后于库中版本 = 该数据集被后台任务/其他浏览器更新过 → 跳过写入保留库中较新数据。
     const match = function (reqV, curV) { return reqV === undefined || reqV === null || asNum(reqV) === curV; };
     const allow = {
       positions: match(req.positions, base.pv),
@@ -209,9 +211,21 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at, hk_rate_updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), now()) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, fee_settings=COALESCE(EXCLUDED.fee_settings, accounts.fee_settings), version=accounts.version+1, updated_at=EXCLUDED.updated_at, hk_rate_updated_at=CASE WHEN EXCLUDED.hk_rate IS DISTINCT FROM accounts.hk_rate THEN now() ELSE accounts.hk_rate_updated_at END',
       [acctId, username, accountName, round(data.cashBase || 0, 2), newHkRate, feeSettingsJson]
     );
-    const { rows: vr } = await client.query('SELECT version FROM account_data WHERE username=$1 AND account_name=$2', [username, accountName]);
+    const { rows: vr } = await client.query(
+      'SELECT version, pos_version, trade_version, nav_version, cashflow_version FROM account_data WHERE username=$1 AND account_name=$2',
+      [username, accountName]
+    );
     await client.query('COMMIT');
-    return { version: vr[0] ? vr[0].version : 1, skipped: skipped }; // 返回新版本号 + 被跳过（保留库中较新）的数据集
+    // 返回账户新版本 + 四个数据集新版本号（前端保存成功后同步更新，避免二次保存误报冲突 P0-1）
+    const v = vr[0] || {};
+    return {
+      version: v.version || 1,
+      posVersion: v.pos_version || 0,
+      tradeVersion: v.trade_version || 0,
+      navVersion: v.nav_version || 0,
+      cashflowVersion: v.cashflow_version || 0,
+      skipped: skipped // 被跳过（保留库中较新）的数据集
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -421,6 +435,65 @@ async function getAccountMeta(username, accountName) {
   return rows[0] ? { cashBase: rows[0].cash_base, hkRate: rows[0].hk_rate, version: rows[0].version } : null;
 }
 
+// ====== 账户生命周期（2026-08-03 整改，报告 3.6/3.7/阶段四） ======
+// 删除/重命名抽成 db 层函数（路由与测试共用真实事务，覆盖业务表 + 兼容 JSON + users.accounts 列表同步）。
+// 之前删除只改列表、重命名靠"读旧存新"，均非原子且留孤立业务数据（重名账户复活）。
+
+// 删除账户：单事务删除该账户全部业务数据 + 账户元数据 + 兼容 JSON + users.accounts 列表项
+async function deleteAccountData(username, accountName) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data', 'accounts'];
+    for (const t of tables) {
+      await client.query(`DELETE FROM ${t} WHERE username=$1 AND account_name=$2`, [username, accountName]);
+    }
+    // 同步 users.accounts 列表（移除被删账户名）
+    const u = await loadUsers();
+    if (u[username] && Array.isArray(u[username].accounts)) {
+      const rest = u[username].accounts.filter(function (a) { return a !== accountName; });
+      await client.query('UPDATE users SET accounts=$2 WHERE username=$1', [username, JSON.stringify(rest)]);
+    }
+    await client.query('COMMIT');
+    return { ok: true };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally { client.release(); }
+}
+
+// 重命名账户：单事务内把所有业务表 + 账户元数据 + 兼容 JSON + users.accounts 列表改为新名
+// （只改 account_name，不搬运/复制任何数据；失败整体回滚）。
+// ⚠️ accounts.id = sha256(username+accountName) 是确定性哈希主键（业务表不引用它），
+//    重命名时必须同步更新为新名的哈希，否则旧名重建账户会主键冲突（报告 3.7 重命名缺陷）。
+async function renameAccountData(username, oldName, newName) {
+  const dup = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2', [username, newName]);
+  if (dup.rowCount > 0) return { ok: false, conflict: '该名称已被使用' };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data'];
+    for (const t of tables) {
+      await client.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [username, oldName, newName]);
+    }
+    // accounts 表：id 与新名哈希保持一致（sha256 确定性主键，业务表不引用 id，可安全更新）
+    const newId = crypto.createHash('sha256').update(username + '\n' + newName).digest('hex');
+    await client.query('UPDATE accounts SET id=$3, account_name=$4, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2', [username, oldName, newId, newName]);
+    // 同步 users.accounts 列表
+    const u = await loadUsers();
+    if (u[username] && Array.isArray(u[username].accounts)) {
+      const mapped = u[username].accounts.map(function (a) { return a === oldName ? newName : a; });
+      await client.query('UPDATE users SET accounts=$2 WHERE username=$1', [username, JSON.stringify(mapped)]);
+    }
+    await client.query('COMMIT');
+    return { ok: true };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (e && e.code === '23505') return { ok: false, conflict: '该名称已被使用' };
+    throw e;
+  } finally { client.release(); }
+}
+
 module.exports = {
   loadAccountData,
   saveAccountData,
@@ -432,6 +505,8 @@ module.exports = {
   loadIndexPoints,
   migrateAccountsTable,
   getAccountMeta,
+  deleteAccountData,
+  renameAccountData,
   backupNavHistory,
   restoreNavHistory,
   clearNavHistory,

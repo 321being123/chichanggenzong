@@ -19,6 +19,8 @@
 .bond-safety-table td { padding:9px; border-bottom:1px solid #eef1f5; white-space:nowrap; color:#303a49; text-align:center; }
 .bond-safety-table tbody tr:hover td { background:#f7fbff; }
 .bond-safety-code { color:#1769aa; font-variant-numeric:tabular-nums; }
+.bond-safety-link { cursor:pointer; text-decoration:none; }
+.bond-safety-link:hover { text-decoration:underline; }
 .bond-safety-number { text-align:center; font-variant-numeric:tabular-nums; }
 .bond-change-up { color:#d93025; font-weight:600; }
 .bond-change-down { color:#137333; font-weight:600; }

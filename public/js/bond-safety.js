@@ -44,6 +44,9 @@ function bondSafetyIndicator(value) {
 }
 
 function bondSafetyCell(row, key) {
+  if (key === 'bond_code' || key === 'bond_name') {
+    return '<span class="bond-safety-link" onclick="bondSafetyJump(\'' + row.bond_code + '\')" title="点击查看股债分析">' + escapeHtml(bondSafetyText(row[key])) + '</span>';
+  }
   if (key === 'safety') return bondSafetyRating(row[key]);
   if (key.indexOf('indicator_') === 0) return bondSafetyIndicator(row[key]);
   if (key === 'change_pct') return bondSafetyPercent(row[key], true);
@@ -53,6 +56,11 @@ function bondSafetyCell(row, key) {
   }
   if (key === 'pe_ttm' || key === 'pb') return escapeHtml(bondSafetyFixed(row[key], 2));
   return escapeHtml(bondSafetyText(row[key]));
+}
+
+function bondSafetyJump(code) {
+  switchMain('stock-analysis');
+  securityAnalysisSubmit(code);
 }
 
 function bondSafetyApplyFilters() {

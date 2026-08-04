@@ -10,10 +10,13 @@
     return (typeof window.currentAccount === 'string' && window.currentAccount) || '默认账户';
   }
 
-  // 当前用户是否为管理员（仅管理员可设置仓位公开状态）
+  // 当前用户是否可发布官方标杆（管理员，或拥有 benchmark_publish 能力的受信任人员；普通用户不可自行发布）
   // ⚠️ myProfile 是 index.html 顶层 let（不在 window 上）；同页 script 共享全局词法环境，直接按名引用
-  function isAdminUser() {
-    return !!((typeof myProfile !== 'undefined' && myProfile) && myProfile.role === 'admin');
+  function canPublishBenchmark() {
+    if (typeof myProfile === 'undefined' || !myProfile) return false;
+    if (myProfile.role === 'admin') return true;
+    var caps = myProfile.capabilities;
+    return !!(caps && caps.benchmark_publish);
   }
 
   // ========== 公开状态控件 ==========
@@ -22,17 +25,17 @@
     var wrap = document.getElementById('position-comp-controls');
     if (!wrap) return;
     var current = getAccount();
-    var visibilityHtml = isAdminUser()
-      ? '<span class="pc-label">仓位公开：</span>' +
+    var visibilityHtml = canPublishBenchmark()
+      ? '<span class="pc-label">官方标杆发布：</span>' +
         '<select id="position-visibility-select" class="pc-select" onchange="PositionComparison.changeVisibility(this.value)">' +
-          '<option value="private">不公开</option>' +
-          '<option value="semi_public">半公开仓位</option>' +
-          '<option value="public">公开仓位</option>' +
+          '<option value="private">不发布</option>' +
+          '<option value="semi_public">脱敏标杆</option>' +
+          '<option value="public">完整标杆</option>' +
         '</select>'
       : '';
     wrap.innerHTML = visibilityHtml +
       '<button type="button" class="btn btn-outline btn-sm pc-compare-btn" id="pc-open-btn" onclick="PositionComparison.openBenchmarkPicker()">仓位对比</button>';
-    if (isAdminUser()) loadVisibility(current);
+    if (canPublishBenchmark()) loadVisibility(current);
     refreshBenchmarkButton();
   }
 
@@ -49,12 +52,12 @@
 
   var VALID_VISIBILITY = ['public', 'semi_public', 'private'];
 
-  // 修改公开状态：公开/半公开二次确认
+  // 修改发布状态：完整标杆/脱敏标杆二次确认（不发布无需确认）
   async function changeVisibility(visibility) {
     var accountName = getAccount();
     if (visibility !== 'private') {
-      var tip = visibility === 'public' ? '公开仓位后，其他用户可查看你的完整持仓（含数量、市值）。确定公开吗？' : '半公开仓位后，其他用户可查看你的持仓比例和证券，但看不到数量、市值和总资产。确定公开吗？';
-      var ok = await window.projectConfirm(tip, { title: '公开仓位确认', confirmText: '确定公开' });
+      var tip = visibility === 'public' ? '发布为完整标杆后，其他用户可查看你的完整持仓（含数量、市值）。确定发布吗？' : '发布为脱敏标杆后，其他用户可查看你的持仓比例和证券，但看不到数量、市值和总资产。确定发布吗？';
+      var ok = await window.projectConfirm(tip, { title: '发布官方标杆确认', confirmText: '确定发布' });
       if (!ok) { initPositionControls(); return; }
     }
     try {
@@ -64,10 +67,10 @@
         body: JSON.stringify({ visibility: visibility })
       });
       var d = await r.json().catch(function () { return {}; });
-      if (!r.ok) { showToast(d.error || '设置失败，请重试'); initPositionControls(); return; }
-      showToast(visibility === 'private' ? '已设为不公开' : (visibility === 'public' ? '已设为公开仓位' : '已设为半公开仓位'));
+      if (!r.ok) { showToast(d.error || '发布失败，请重试'); initPositionControls(); return; }
+      showToast(visibility === 'private' ? '已取消发布（不发布）' : (visibility === 'public' ? '已发布为完整标杆' : '已发布为脱敏标杆'));
       refreshBenchmarkButton();
-    } catch (e) { showToast('设置失败，请重试'); initPositionControls(); }
+    } catch (e) { showToast('发布失败，请重试'); initPositionControls(); }
   }
 
   // 有无可用标杆 → 控制"仓位对比"按钮显示
@@ -89,11 +92,11 @@
         state.benchmarks = r.ok ? (await r.json()) : [];
       } catch (e) {}
     }
-    if (!state.benchmarks.length) { showToast('暂无可对比的公开仓位'); return; }
+    if (!state.benchmarks.length) { showToast('暂无可对比的官方标杆'); return; }
     var rows = state.benchmarks.map(function (b) {
       return '<tr onclick="PositionComparison.startCompare(\'' + b.accountId + '\')" style="cursor:pointer;">' +
         '<td>' + escapeHtml(b.displayName) + '</td>' +
-        '<td>' + (b.visibility === 'public' ? '公开仓位' : '半公开仓位') + '</td>' +
+        '<td>' + (b.visibility === 'public' ? '完整标杆' : '脱敏标杆') + '</td>' +
         '<td>' + escapeHtml(b.positionUpdatedAt || '--') + '</td>' +
         '<td>' + b.securityCount + '</td>' +
         '<td><button type="button" class="btn btn-primary btn-sm">开始对比</button></td>' +
@@ -101,7 +104,7 @@
     }).join('');
     var html =
       '<h2>选择对比标杆</h2><span class="modal-close" onclick="PositionComparison.closeSelf()">&times;</span>' +
-      '<p style="font-size:12px;color:#888;margin:-6px 0 12px;">选择其他用户的公开或半公开账户作为标杆，进行仓位对比与复制测算。</p>' +
+      '<p style="font-size:12px;color:#888;margin:-6px 0 12px;">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
       '<div class="table-wrap" style="margin-bottom:0;"><table class="pc-bench-table">' +
         '<thead><tr><th>账户</th><th>公开类型</th><th>持仓更新时间</th><th>证券只数</th><th>操作</th></tr></thead>' +
         '<tbody>' + rows + '</tbody></table></div>' +
@@ -175,7 +178,7 @@
     }).join('');
 
     var html =
-      '<div class="pc-meta">标杆：<b>' + escapeHtml(benchName) + '</b>（' + (semi ? '半公开仓位' : '公开仓位') + '）<br>' +
+      '<div class="pc-meta">标杆：<b>' + escapeHtml(benchName) + '</b>（' + (semi ? '脱敏标杆' : '完整标杆') + '）<br>' +
       '<span style="font-size:11px;color:#888;">我的持仓更新：' + escapeHtml(d.overview.myUpdatedAt || '--') + '　标杆持仓更新：' + escapeHtml(d.overview.benchmarkUpdatedAt || '--') + '<br>' +
       '本次估值时间：' + escapeHtml(d.overview.valuationTime || '--') + '　港币汇率：' + (d.overview.hkRate || '--') + '</span></div>' +
       '<div class="pc-overview">' +

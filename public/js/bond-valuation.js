@@ -267,7 +267,7 @@ function renderBondValDetail(d, hist, alerts) {
   var html = '';
   html += '<div class="bond-val-detail-bar"><button class="btn btn-outline btn-sm" onclick="closeBondValDetail()">← 返回列表</button>' +
     '<span class="bond-val-detail-title">' + esc(d.bond_name) + '（' + esc(d.bond_code) + '）</span>' +
-    '<button class="btn btn-outline btn-sm" onclick="switchMain(\'stock-analysis\');setTimeout(function(){securityAnalysisSelect(\'' + esc(d.bond_code) + '\')},100)" title="查看完整债券分析（条款、评级、正股财务等）">📊 完整分析</button>' +
+    '<button class="btn btn-outline btn-sm" onclick="switchMain(\'bond-safety\');switchBondSub(\'analysis\');setTimeout(function(){securityAnalysisSelect(\'' + esc(d.bond_code) + '\',\'bond\')},150)" title="查看完整债券分析（条款、评级、正股财务等）">📊 完整分析</button>' +
     '<span class="val-alert-tag ' + (EVAL_CLASS[cur.eval_class] || '') + '">' + esc(cur.final_evaluation) + '</span></div>';
 
   // 顶部摘要

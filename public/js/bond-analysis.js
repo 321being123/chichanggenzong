@@ -1,19 +1,22 @@
 var securityAnalysisState = { type:'', code:'', loading:false, suggestions:[], suggestionIndex:-1, searchTimer:null, searchSeq:0 };
 
-function securityAnalysisHideSuggestions() {
-  var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
+function securityAnalysisHideSuggestions(ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var box=document.getElementById(p+'suggestions'), input=document.getElementById(p+'code');
   if(box) box.style.display='none';
   if(input){input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');}
   securityAnalysisState.suggestionIndex=-1;
 }
 
-function securityAnalysisClearListSelection() {
-  var select=document.getElementById('security-analysis-select');
+function securityAnalysisClearListSelection(ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var select=document.getElementById(p+'select');
   if(select) select.value='';
 }
 
-function securityAnalysisRenderSuggestions(rows) {
-  var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
+function securityAnalysisRenderSuggestions(rows, ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var box=document.getElementById(p+'suggestions'), input=document.getElementById(p+'code');
   if(!box||!input) return;
   securityAnalysisState.suggestions=rows||[];
   securityAnalysisState.suggestionIndex=-1;
@@ -23,112 +26,115 @@ function securityAnalysisRenderSuggestions(rows) {
     box.innerHTML=rows.map(function(row,index){
       var label=row.type==='bond'?'可转债':'股票';
       var detail=row.ts_code+(row.type==='bond'&&row.stock_name?' · 正股 '+row.stock_name:'');
-      return '<button type="button" id="security-analysis-option-'+index+'" class="security-analysis-suggestion" role="option" data-index="'+index+'" aria-selected="false">'+
+      return '<button type="button" id="'+(p==='bond-analysis-'?'bond-analysis-option-':'security-analysis-option-')+index+'" class="security-analysis-suggestion" role="option" data-index="'+index+'" aria-selected="false">'+
         '<span class="security-analysis-suggestion-type '+(row.type==='bond'?'bond':'')+'">'+label+'</span>'+
         '<span class="security-analysis-suggestion-main"><strong>'+escapeHtml(row.name||row.code)+'</strong><small>'+escapeHtml(detail)+'</small></span></button>';
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('.security-analysis-suggestion'),function(button){
       button.addEventListener('mousedown',function(event){event.preventDefault();});
-      button.addEventListener('click',function(){securityAnalysisChooseSuggestion(Number(button.getAttribute('data-index')));});
+      button.addEventListener('click',function(){securityAnalysisChooseSuggestion(Number(button.getAttribute('data-index')), ctx);});
     });
   }
   box.style.display='block'; input.setAttribute('aria-expanded','true');
 }
 
-function securityAnalysisMoveSuggestion(step) {
+function securityAnalysisMoveSuggestion(step, ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
   var rows=securityAnalysisState.suggestions||[];
   if(!rows.length) return;
   var next=securityAnalysisState.suggestionIndex+step;
   if(next<0) next=rows.length-1;
   if(next>=rows.length) next=0;
   securityAnalysisState.suggestionIndex=next;
-  var box=document.getElementById('security-analysis-suggestions'), input=document.getElementById('stock-analysis-code');
+  var box=document.getElementById(p+'suggestions'), input=document.getElementById(p+'code');
   Array.prototype.forEach.call(box.querySelectorAll('.security-analysis-suggestion'),function(button,index){
     var active=index===next; button.classList.toggle('active',active); button.setAttribute('aria-selected',active?'true':'false');
     if(active) button.scrollIntoView({block:'nearest'});
   });
-  input.setAttribute('aria-activedescendant','security-analysis-option-'+next);
+  input.setAttribute('aria-activedescendant',(p==='bond-analysis-'?'bond-analysis-option-':'security-analysis-option-')+next);
 }
 
-function securityAnalysisChooseSuggestion(index) {
+function securityAnalysisChooseSuggestion(index, ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
   var row=(securityAnalysisState.suggestions||[])[index];
   if(!row) return;
-  var input=document.getElementById('stock-analysis-code');
+  var input=document.getElementById(p+'code');
   if(input) input.value=row.ts_code||row.code;
-  securityAnalysisClearListSelection();
-  securityAnalysisHideSuggestions();
-  securityAnalysisSubmit();
+  securityAnalysisClearListSelection(ctx);
+  securityAnalysisHideSuggestions(ctx);
+  securityAnalysisSubmit(null, ctx);
 }
 
-async function securityAnalysisSearchSuggestions(value) {
+async function securityAnalysisSearchSuggestions(value, ctx) {
   var keyword=String(value||'').trim();
-  if(!keyword){securityAnalysisState.suggestions=[];return securityAnalysisHideSuggestions();}
+  if(!keyword){securityAnalysisState.suggestions=[];return securityAnalysisHideSuggestions(ctx);}
   var seq=++securityAnalysisState.searchSeq;
   try {
     var response=await fetch(api('/api/bond-analysis/search/securities?q='+encodeURIComponent(keyword)));
     var payload=await response.json();
     if(seq!==securityAnalysisState.searchSeq) return;
     if(!response.ok) throw new Error(payload.error||'证券搜索失败');
-    securityAnalysisRenderSuggestions(payload.data||[]);
+    securityAnalysisRenderSuggestions(payload.data||[], ctx);
   } catch(_) {
-    if(seq===securityAnalysisState.searchSeq) securityAnalysisHideSuggestions();
+    if(seq===securityAnalysisState.searchSeq) securityAnalysisHideSuggestions(ctx);
   }
 }
 
-function securityAnalysisInitSearch() {
-  var input=document.getElementById('stock-analysis-code');
+function securityAnalysisInitSearch(ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var input=document.getElementById(p+'code');
   if(!input||input.dataset.suggestReady) return;
   input.dataset.suggestReady='1';
   input.addEventListener('input',function(){
-    securityAnalysisClearListSelection();
+    securityAnalysisClearListSelection(ctx);
     clearTimeout(securityAnalysisState.searchTimer);
-    securityAnalysisState.searchTimer=setTimeout(function(){securityAnalysisSearchSuggestions(input.value);},180);
+    securityAnalysisState.searchTimer=setTimeout(function(){securityAnalysisSearchSuggestions(input.value, ctx);},180);
   });
-  input.addEventListener('focus',function(){if(String(input.value||'').trim()) securityAnalysisSearchSuggestions(input.value);});
-  input.addEventListener('blur',function(){setTimeout(securityAnalysisHideSuggestions,120);});
+  input.addEventListener('focus',function(){if(String(input.value||'').trim()) securityAnalysisSearchSuggestions(input.value, ctx);});
+  input.addEventListener('blur',function(){setTimeout(function(){securityAnalysisHideSuggestions(ctx);},120);});
   input.addEventListener('keydown',function(event){
-    var visible=document.getElementById('security-analysis-suggestions').style.display!=='none';
-    if(event.key==='ArrowDown'&&visible){event.preventDefault();securityAnalysisMoveSuggestion(1);}
-    else if(event.key==='ArrowUp'&&visible){event.preventDefault();securityAnalysisMoveSuggestion(-1);}
-    else if(event.key==='Escape'){securityAnalysisHideSuggestions();}
+    var visible=document.getElementById(p+'suggestions').style.display!=='none';
+    if(event.key==='ArrowDown'&&visible){event.preventDefault();securityAnalysisMoveSuggestion(1,ctx);}
+    else if(event.key==='ArrowUp'&&visible){event.preventDefault();securityAnalysisMoveSuggestion(-1,ctx);}
+    else if(event.key==='Escape'){securityAnalysisHideSuggestions(ctx);}
     else if(event.key==='Enter'){
       event.preventDefault();
       if(visible&&securityAnalysisState.suggestions.length){
-        securityAnalysisChooseSuggestion(securityAnalysisState.suggestionIndex<0?0:securityAnalysisState.suggestionIndex);
-      } else securityAnalysisSubmit();
+        securityAnalysisChooseSuggestion(securityAnalysisState.suggestionIndex<0?0:securityAnalysisState.suggestionIndex, ctx);
+      } else securityAnalysisSubmit(null, ctx);
     }
   });
 }
 
 async function securityAnalysisLoadList(force) {
-  var guestSelect=document.getElementById('security-analysis-select');
+  var selects = ['stock-analysis-select','bond-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
   if(!username){
-    if(guestSelect){guestSelect.disabled=true;guestSelect.innerHTML='<option value="">登录后可选择持仓和自选</option>';}
+    selects.forEach(function(s){s.disabled=true;s.innerHTML='<option value="">登录后可选择持仓和自选</option>';});
     return;
   }
   if (securityAnalysisState.listLoaded && !force) return;
   try {
     var response=await fetch(api('/api/bond-analysis/list/securities')), payload=await response.json();
     if(!response.ok) throw new Error(payload.error||'持仓和自选加载失败');
-    var select=document.getElementById('security-analysis-select');
-    if(select) select.innerHTML='<option value="">选择持仓或自选</option>'+(payload.data||[]).map(function(row){
+    var options='<option value="">选择持仓或自选</option>'+(payload.data||[]).map(function(row){
       var tags=(row.held?'持仓':'')+(row.watchlisted?(row.held?' / 自选':'自选'):'');
       return '<option value="'+escapeHtml(row.code)+'">'+escapeHtml((row.name||row.code)+' · '+row.code+'（'+tags+'）')+'</option>';
     }).join('');
-    if(select) select.disabled=false;
+    selects.forEach(function(s){s.innerHTML=options; s.disabled=false;});
     securityAnalysisState.listLoaded=true;
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true); }
 }
 
-function securityAnalysisSelect(code) {
+function securityAnalysisSelect(code, ctx) {
   if(!code) return;
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
   clearTimeout(securityAnalysisState.searchTimer);
   securityAnalysisState.searchTimer=null;
   securityAnalysisState.searchSeq++;
   securityAnalysisState.suggestions=[];
-  securityAnalysisHideSuggestions();
-  var input=document.getElementById('stock-analysis-code'); if(input) input.value=code;
-  securityAnalysisSubmit(code);
+  securityAnalysisHideSuggestions(ctx);
+  var input=document.getElementById(p+'code'); if(input) input.value=code;
+  securityAnalysisSubmit(code, ctx);
 }
 
 function bondAnalysisText(value, suffix) {
@@ -224,66 +230,70 @@ function bondAnalysisListTable(headers, rows) {
 function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) el.innerHTML=html; }
 function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3}$/.test(code) ? 'bond' : 'stock'; }
 
-async function securityAnalysisSubmit(selectedCode) {
-  var input=document.getElementById('stock-analysis-code'), raw=String(selectedCode||(input&&input.value)||'').trim().toUpperCase();
+async function securityAnalysisSubmit(selectedCode, ctx) {
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var input=document.getElementById(p+'code'), raw=String(selectedCode||(input&&input.value)||'').trim().toUpperCase();
   var code=raw.replace(/\.(SH|SZ)$/,'').replace(/\D/g,'');
-  if (!/^\d{6}$/.test(code)) return stockAnalysisSetMessage('请输入代码，或从联想下拉中选择股票或可转债', true);
+  if (!/^\d{6}$/.test(code)) return stockAnalysisSetMessage('请输入代码，或从联想下拉中选择股票或可转债', true, ctx);
   securityAnalysisState.type=securityAnalysisKind(code); securityAnalysisState.code=code;
   if (securityAnalysisState.type==='stock') {
     stockAnalysisState.selected=code;
     var bond=document.getElementById('bond-analysis-content'); if(bond) bond.style.display='none';
+    if (ctx === 'bond') switchMain('stock-analysis');
     return stockAnalysisSelect(code);
   }
   var stock=document.getElementById('stock-analysis-content'); if(stock) stock.style.display='none';
-  return bondAnalysisLoad(false);
+  return bondAnalysisLoad(false, ctx);
 }
 
-async function securityAnalysisRefresh() {
-  if (!securityAnalysisState.code) return securityAnalysisSubmit();
-  if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。');
+async function securityAnalysisRefresh(ctx) {
+  if (!securityAnalysisState.code) return securityAnalysisSubmit(null, ctx);
+  if (!username) return stockAnalysisSetMessage('登录后可刷新并建立分析数据。', false, ctx);
   if (securityAnalysisState.type==='stock') return stockAnalysisRefresh();
-  return bondAnalysisLoad(true);
+  return bondAnalysisLoad(true, ctx);
 }
 
-async function bondAnalysisLoad(refresh) {
+async function bondAnalysisLoad(refresh, ctx) {
   if (securityAnalysisState.loading) return;
   securityAnalysisState.loading=true;
-  var button=document.getElementById('stock-analysis-refresh');
+  var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
+  var button=document.getElementById(p+'refresh');
   if(button){button.disabled=true;button.textContent='刷新中...';}
-  stockAnalysisSetMessage(refresh ? '正在更新可转债数据...' : '正在读取可转债分析结果...');
+  stockAnalysisSetMessage(refresh ? '正在更新可转债数据...' : '正在读取可转债分析结果...', false, ctx);
   try {
     var path='/api/bond-analysis/'+encodeURIComponent(securityAnalysisState.code)+(refresh?'/refresh':'');
     var response=await fetch(api(path), refresh?{method:'POST'}:undefined);
     if(response.status===404&&!refresh){
       securityAnalysisState.loading=false;
-      if(!username) return stockAnalysisSetMessage('该转债暂未建档，登录后可刷新并建立分析数据。');
-      return bondAnalysisLoad(true);
+      if(!username) return stockAnalysisSetMessage('该转债暂未建档，登录后可刷新并建立分析数据。', false, ctx);
+      return bondAnalysisLoad(true, ctx);
     }
     var payload=await response.json(), analysis=payload.analysis||payload;
     if(!response.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
     // 缓存版本过旧，自动触发刷新
     if (!refresh && analysis.needs_refresh) {
       securityAnalysisState.loading = false;
-      if (!username) { bondAnalysisRender(analysis); return; }
-      return bondAnalysisLoad(true);
+      if (!username) { bondAnalysisRender(analysis, ctx); return; }
+      return bondAnalysisLoad(true, ctx);
     }
-    bondAnalysisRender(analysis);
+    bondAnalysisRender(analysis, ctx);
     if(!response.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
-  } catch(error) { stockAnalysisSetMessage(error.message||String(error),true); }
+  } catch(error) { stockAnalysisSetMessage(error.message||String(error),true, ctx); }
   finally { securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';} }
 }
 
 securityAnalysisInitSearch();
+securityAnalysisInitSearch('bond');
 
-function bondAnalysisRender(d) {
-  stockAnalysisSetMessage('');
+function bondAnalysisRender(d, ctx) {
+  stockAnalysisSetMessage('', false, ctx);
   var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
   if(stock) stock.style.display='none'; if(root) root.style.display='block';
   var q=d.quote||{}, b=d.basic||{}, terms=d.terms||{}, safety=d.safety||{}, bond=d.bond||{}, option=d.option||{}, stockData=d.stock||{}, credit=d.credit||{};
   var change=q.bond_change_pct, changeClass=Number(change)>0?'bond-analysis-up':Number(change)<0?'bond-analysis-down':'';
   var delistedTag=d.is_delisted?'<span class="bond-analysis-delisted">已退市</span>':'';
   bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
-  var updated=document.getElementById('stock-analysis-updated'); if(updated) updated.textContent='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
+  var updated=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'updated'); if(updated) updated.textContent='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
   // 注入动态波动率提示到预估回售触发日的浮框中
   var putHelp='未到回售期时从回售期起算；已到回售期时先检查本计息年度是否已回售，再从下一有效回售期计算满足条款所需的最早日期。';
   if (b.expected_put_assumption) putHelp = b.expected_put_assumption + '。' + putHelp;

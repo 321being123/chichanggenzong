@@ -105,4 +105,28 @@ ok(html.includes('popstate'), '应监听 popstate 支持浏览器前进/后退')
 // 下拉样式存在
 ok(css.includes('.main-tab-dropdown') && css.includes('.dropdown-menu') && css.includes('.sub-tab'), '缺少研究工具下拉样式');
 
+// ===== UI-03：可转债产品入口收敛到统一上下文 =====
+// 可转债专题子导航含四类能力：安全性 / 周期 / 估值 / 个券分析
+['safety','cycle','valuation','analysis'].forEach(function (sub) {
+  ok(new RegExp('class="bond-sub-tab[^"]*"[^>]*data-sub="' + sub + '"').test(html), '可转债子导航缺少子项 ' + sub);
+});
+// 新增“个券分析”子页容器
+ok(html.includes('id="sub-bond-analysis"'), '缺少可转债个券分析子页容器 sub-bond-analysis');
+// 转债分析内容块已迁入可转债专题子页，不再内嵌在股票分析页
+ok(html.includes('id="sub-bond-analysis"') && html.includes('id="bond-analysis-content"'), '可转债分析内容块应位于可转债专题子页内');
+ok(!/id="main-stock-analysis"[\s\S]{0,2000}id="bond-analysis-content"/.test(html), '股票分析页不应再内嵌可转债分析内容块');
+// 个券分析子页自带搜索/刷新栏，回调传入 bond 上下文
+ok(html.includes('id="bond-analysis-code"'), '个券分析子页缺少转债搜索输入框 bond-analysis-code');
+ok(html.includes("securityAnalysisSubmit(null,'bond')"), '个券分析“开始分析”按钮未传入 bond 上下文');
+ok(html.includes("securityAnalysisRefresh('bond')"), '个券分析“刷新”按钮未传入 bond 上下文');
+// switchBondSub 已支持 analysis 分支（bond-cycle.js）
+const bondCycleJs = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
+ok(bondCycleJs.includes("getElementById('sub-bond-analysis')") && bondCycleJs.includes("sub !== 'analysis'"), 'switchBondSub 未处理 analysis 分支');
+ok(bondCycleJs.includes("params.set('sub', 'analysis')"), 'switchBondSub 未把 analysis 写入深链');
+// 深链解析支持 analysis 子页，并能自动带入 code 分析
+ok(html.includes("['safety','cycle','valuation','analysis']"), 'URL 解析子页列表未包含 analysis');
+ok(html.includes("securityAnalysisSubmit(reqCode, 'bond')"), 'analysis 深链未自动带入 code 进行分析');
+// 旧转债分析深链（main=stock-analysis&code=转债）自动映射到可转债个券分析
+ok(html.includes("securityAnalysisKind(maybeCode) === 'bond'"), '旧转债深链未做自动映射');
+
 console.log('frontend-navigation: ' + checks + ' 项断言通过');

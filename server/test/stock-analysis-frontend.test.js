@@ -63,8 +63,8 @@ assert.ok(script.includes('analysisHelp(label, stockAnalysisLabelHelp(label))'),
 assert.ok(bondScript.includes('analysisHelp(row[0],bondAnalysisLabelHelp(row[0]))'), '可转债分析指标缺少算法说明入口');
 assert.ok(html.includes('id="security-analysis-suggestions"') && html.includes('aria-autocomplete="list"'), '股债分析缺少名称联想下拉框');
 assert.ok(bondScript.includes('/api/bond-analysis/search/securities?q=') && bondScript.includes('securityAnalysisChooseSuggestion'), '股债分析名称联想未接入证券搜索接口');
-assert.ok(bondScript.includes("input.addEventListener('input',function(){\n    securityAnalysisClearListSelection();"), '手动输入证券后未清空旧持仓选项');
-assert.ok(bondScript.includes('securityAnalysisState.searchSeq++;') && bondScript.includes('securityAnalysisSubmit(code);'), '从持仓选择证券时未取消旧搜索并按新代码分析');
+assert.ok(bondScript.includes("input.addEventListener('input',function(){\n    securityAnalysisClearListSelection(ctx);"), '手动输入证券后未清空旧持仓选项');
+assert.ok(bondScript.includes('securityAnalysisState.searchSeq++;') && bondScript.includes('securityAnalysisSubmit(code, ctx);'), '从持仓选择证券时未取消旧搜索并按新代码分析');
 assert.ok(analysisCss.includes('.security-analysis-suggestions{') && analysisCss.includes('.security-analysis-suggestion.active'), '证券联想下拉缺少样式或键盘选中状态');
 assert.ok(analysisCss.includes('.analysis-help{') && analysisCss.includes('border-bottom:1px dashed') && analysisCss.includes('.analysis-help-tooltip{'), '算法说明缺少虚线下划线或悬浮弹框样式');
 assert.ok(html.includes('data-help="分位点从所选起始日累计计算') && html.includes('data-help="实际期权价值＝转债市价－纯债价值'), '股债分析模块标题缺少算法说明');

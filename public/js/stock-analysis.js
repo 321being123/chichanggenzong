@@ -73,8 +73,8 @@ function stockAnalysisMetric(label, value, note, negative) {
   return '<div class="stock-analysis-metric"><span>' + analysisHelp(label, stockAnalysisLabelHelp(label)) + '</span><strong' + cls + '>' + escapeHtml(String(value)) + '</strong>' +
     (note ? '<small>' + escapeHtml(note) + '</small>' : '') + '</div>';
 }
-function stockAnalysisSetMessage(text, error) {
-  var el = document.getElementById('stock-analysis-message');
+function stockAnalysisSetMessage(text, error, ctx) {
+  var el = document.getElementById((ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-') + 'message');
   if (!el) return;
   el.style.display = text ? 'block' : 'none';
   el.style.color = error ? '#b42318' : '#777';

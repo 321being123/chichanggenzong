@@ -131,12 +131,15 @@ function hasCapability(user, cap) {
 // 能力校验中间件工厂：先走统一登录态校验，再判定能力。
 function requireCapability(cap) {
   return function (req, res, next) {
-    requireLogin(req, res, function () {
+    const proceed = function () {
       const user = req.authUser;
       if (!user) return res.status(401).json({ error: '未登录' });
       if (!hasCapability(user, cap)) return res.status(403).json({ error: '无权限：需要 ' + cap + ' 能力' });
       next();
-    });
+    };
+    // requireStaff / requireLogin 已设置 req.authUser 时直接复用，避免重复查库
+    if (req.authUser) return proceed();
+    requireLogin(req, res, proceed);
   };
 }
 

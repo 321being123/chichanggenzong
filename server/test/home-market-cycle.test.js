@@ -17,7 +17,7 @@ assert.ok(js.includes('/api/market-volatility/home-cycle?range=20y'), '首页未
 assert.ok(js.includes('renderHomeMarketCycle') && js.includes('homeMarketCycleMetric'), '首页不能根据管理员设置动态绘图');
 assert.ok(js.includes('homeBindCycleTooltip'), '首页市场周期图缺少悬浮提示');
 assert.ok(js.includes("raw === null || raw === undefined || raw === ''"), '首页周期图未跳过历史空值');
-assert.ok(route.includes("router.get('/home-cycle'") && route.includes("router.put('/home-cycle/config', requireAdmin"), '首页指标读取或管理员设置接口缺失');
+assert.ok(route.includes("router.get('/home-cycle'") && route.includes("router.put('/home-cycle/config', requireCapability('ops_manage')"), '首页指标读取或运维设置接口缺失');
 assert.ok(route.includes('const { actualPosition, deviation, hasUsPosition, ...publicOverview }'), '首页接口暴露了管理员账户仓位');
 assert.ok(css.includes('.home-market-cycle-grid') && css.includes('.home-cycle-tooltip'), '首页市场周期图样式缺失');
 

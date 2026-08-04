@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
-const { requireAdmin } = require('../middleware/auth');
+const { requireCapability } = require('../middleware/auth');
 const svc = require('../services/convertibleBondValuationService');
 const { runDailyValuation } = require('../jobs/convertibleBondRefresh');
 
@@ -76,7 +76,7 @@ router.get('/bonds/:code/alerts', asyncHandler(async (req, res) => {
 }));
 
 // 管理员刷新：复用数据库任务锁，多进程部署也不会重复执行。
-router.post('/refresh', requireAdmin, asyncHandler(async (req, res) => {
+router.post('/refresh', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
   try {
     const result = await runDailyValuation('admin');
     if (result.skipped) return res.status(409).json({ error: '已有估值刷新任务正在运行，请稍后再试' });

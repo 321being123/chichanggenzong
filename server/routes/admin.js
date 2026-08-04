@@ -1,8 +1,8 @@
-// ========== 管理后台路由（统一前缀 /api/admin，全部接口需管理员权限）==========
+// ========== 管理后台路由（统一前缀 /api/admin，需管理员或对应后台能力）==========
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
-const { requireAdmin } = require('../middleware/auth');
+const { requireStaff, requireCapability } = require('../middleware/auth');
 const { REGISTER_CODE } = require('../config');
 const {
   adminOverview,   countUsers, listUsers, setUserRole, setUserStatus, adminSetPassword, setKnowledgeEnabled,
@@ -16,8 +16,23 @@ const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
 const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
 
-// 该路由下其余接口均需管理员鉴权（数据库 role=admin 或 ADMIN_USERS 白名单）
-router.use(requireAdmin);
+// PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
+// 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
+router.use(requireStaff);
+
+// 后台接口 → 所需能力 映射（按路径前缀派发，避免逐个 handler 脆弱改动）
+function adminCapabilityForPath(p) {
+  if (p.indexOf('/users') === 0) return 'user_manage';
+  if (p.indexOf('/knowledge') === 0) return 'content_manage';
+  if (p.indexOf('/brokers') === 0 || p.indexOf('/jobs') === 0 || p.indexOf('/holidays') === 0 ||
+      p.indexOf('/models') === 0 || p.indexOf('/settings') === 0) return 'ops_manage';
+  return null; // /overview、/audit 等仅要求员工身份
+}
+router.use(function (req, res, next) {
+  const cap = adminCapabilityForPath(req.path);
+  if (!cap) return next();
+  requireCapability(cap)(req, res, next);
+});
 
 // 平台概览：总用户/管理员/禁用/账户数/今日新增/全平台总资产
 router.get('/overview', asyncHandler(async (req, res) => {

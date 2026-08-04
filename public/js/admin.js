@@ -17,6 +17,23 @@ const VIEW_TITLES = {
   knowledge: '投资笔记管理'
 };
 
+// 后台视图所需能力（无映射者仅需任一后台能力即可访问，与后端 requireStaff 一致）
+const VIEW_CAPABILITY = {
+  users: 'user_manage',
+  brokers: 'ops_manage',
+  jobs: 'ops_manage',
+  settings: 'ops_manage',
+  holidays: 'ops_manage',
+  knowledge: 'content_manage'
+};
+
+function adminCan(cap) {
+  if (!adminProfile) return false;
+  if (adminProfile.role === 'admin') return true;
+  const caps = adminProfile.capabilities || {};
+  return !!caps[cap];
+}
+
 // Toast（复用风格，utils.js 未提供）
 function showToast(msg) {
   const el = document.getElementById('toast');
@@ -46,8 +63,10 @@ async function checkAuth() {
     const r = await fetch(api('/api/me'));
     const d = await r.json();
     if (!d.username) { window.location.href = api('/login.html?redirect=' + encodeURIComponent('/admin.html')); return false; }
-    if (d.role !== 'admin') { window.location.href = api('/'); return false; }
     adminProfile = d;
+    const caps = d.capabilities || {};
+    const hasAny = d.role === 'admin' || Object.keys(caps).some(function (k) { return caps[k]; });
+    if (!hasAny) { adminProfile = null; window.location.href = api('/'); return false; }
     const u = document.getElementById('admin-user');
     if (u) u.textContent = '当前账号：' + (d.nickname || d.username);
     return true;
@@ -66,6 +85,14 @@ async function adminLogout() {
 function setupMenu() {
   document.querySelectorAll('.admin-menu-item').forEach(function (item) {
     item.addEventListener('click', function () { switchView(item.dataset.view); });
+  });
+}
+
+// 按能力隐藏无权访问的菜单（后端已独立校验，此处仅避免误点）
+function applyMenuPermissions() {
+  document.querySelectorAll('.admin-menu-item').forEach(function (item) {
+    const cap = VIEW_CAPABILITY[item.dataset.view];
+    if (cap && !adminCan(cap)) item.style.display = 'none';
   });
 }
 
@@ -1087,5 +1114,6 @@ async function ksLoadKsPermissions(search) {
   const ok = await checkAuth();
   if (!ok) return;
   setupMenu();
+  applyMenuPermissions();
   renderOverview();
 })();

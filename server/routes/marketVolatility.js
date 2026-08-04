@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
-const { requireLogin, requireAdmin } = require('../middleware/auth');
+const { requireLogin, requireCapability } = require('../middleware/auth');
 const svc = require('../services/marketVolatility');
 const cycleMetrics = require('../services/marketCycleMetrics');
 const { pool, auditLog } = require('../db');
@@ -99,7 +99,7 @@ router.get('/home-cycle', asyncHandler(async (req, res) => {
   const { actualPosition, deviation, hasUsPosition, ...publicOverview } = overview || {};
   res.json({ ...publicHomeConfig(config), overview: publicOverview, history });
 }));
-router.put('/home-cycle/config', requireAdmin, asyncHandler(async (req, res) => {
+router.put('/home-cycle/config', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
   const body = req.body || {};
   const metric = String(body.metric || '');
   const account = String(body.accountName || '');
@@ -143,7 +143,7 @@ router.put('/settings', requireLogin, asyncHandler(async (req, res) => {
   }
   catch (e) { res.status(e.conflict ? 409 : e.status || 500).json({ error: e.message }); }
 }));
-router.post('/federal-funds/import', requireAdmin, upload.single('file'), asyncHandler(async (req, res) => {
+router.post('/federal-funds/import', requireCapability('ops_manage'), upload.single('file'), asyncHandler(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '请选择联邦基金利率文件' });
   const sourceRecords = await parseFederalFundsFile(req.file);
   if (!sourceRecords.length) return res.status(400).json({ error: '未识别到有效数据；需要日期和利率两列' });

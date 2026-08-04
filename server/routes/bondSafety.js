@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
-const { requireLogin, requireAdmin } = require('../middleware/auth');
+const { requireLogin, requireCapability } = require('../middleware/auth');
 const { RATINGS } = require('../services/bondSafety');
 const { getLatestSnapshot, refreshBondSafety, isConfigured } = require('../services/bondSafetyService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
@@ -49,7 +49,7 @@ router.get('/export', asyncHandler(async (req, res) => {
   res.end(Buffer.from(buffer));
 }));
 
-router.post('/refresh', requireAdmin, asyncHandler(async (req, res) => {
+router.post('/refresh', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
   if (!isConfigured()) return res.status(503).json({ error: '数据源尚未配置' });
   try {
     const result = await refreshBondSafety('manual:' + req.session.user);

@@ -8,7 +8,8 @@ const http = require('http');
 
 // 1) mock 鉴权：放行所有请求（把 auth 模块导出替换为 pass-through，须在 require admin.js 之前）
 const auth = require('../middleware/auth');
-auth.requireAdmin = (req, res, next) => next();
+auth.requireStaff = (req, res, next) => next();
+auth.requireCapability = () => (req, res, next) => next();
 
 // 2) mock db 读写 + 审计
 const db = require('../db');

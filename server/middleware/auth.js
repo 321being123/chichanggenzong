@@ -17,7 +17,7 @@ async function requireLogin(req, res, next) {
   if (!req.session || !req.session.user) return res.status(401).json({ error: '未登录' });
   try {
     const { rows } = await pool.query(
-      'SELECT username, role, status, auth_version FROM users WHERE username=$1',
+      'SELECT username, role, status, auth_version, permissions FROM users WHERE username=$1',
       [req.session.user]
     );
     const user = rows[0];
@@ -115,4 +115,42 @@ async function requireAdmin(req, res, next) {
   } catch (e) { next(e); }
 }
 
-module.exports = { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps };
+// ========== 轻量能力权限（PERM-01，P1）==========
+// 能力白名单：后端按白名单过滤，绝不允许前端传入任意权限字符串绕过。
+const CAPABILITY_WHITELIST = ['knowledge_write', 'content_manage', 'ops_manage', 'user_manage', 'benchmark_publish'];
+
+// 判断用户是否拥有某项能力：管理员（role=admin 或 ADMIN_USERS）拥有全部；普通用户按 permissions 白名单判定。
+function hasCapability(user, cap) {
+  if (!user) return false;
+  if (isAdminIdentity(user.username, user.role)) return true;
+  if (CAPABILITY_WHITELIST.indexOf(cap) === -1) return false; // 未知能力一律拒绝
+  const perms = (user.permissions && typeof user.permissions === 'object') ? user.permissions : {};
+  return !!perms[cap];
+}
+
+// 能力校验中间件工厂：先走统一登录态校验，再判定能力。
+function requireCapability(cap) {
+  return function (req, res, next) {
+    requireLogin(req, res, function () {
+      const user = req.authUser;
+      if (!user) return res.status(401).json({ error: '未登录' });
+      if (!hasCapability(user, cap)) return res.status(403).json({ error: '无权限：需要 ' + cap + ' 能力' });
+      next();
+    });
+  };
+}
+
+// 后台员工入口：管理员或拥有任一后台能力者可进入后台（具体接口仍需逐项能力校验）。
+function requireStaff(req, res, next) {
+  requireLogin(req, res, function () {
+    const user = req.authUser;
+    if (!user) return res.status(401).json({ error: '未登录' });
+    if (isAdminIdentity(user.username, user.role)) return next();
+    const perms = (user.permissions && typeof user.permissions === 'object') ? user.permissions : {};
+    const hasAny = CAPABILITY_WHITELIST.some(function (c) { return perms[c]; });
+    if (!hasAny) return res.status(403).json({ error: '无权限：需要管理员或任一后台能力' });
+    next();
+  });
+}
+
+module.exports = { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps, CAPABILITY_WHITELIST, hasCapability, requireCapability, requireStaff };

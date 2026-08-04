@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const rateLimit = require('../middleware/rateLimit');
-const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity } = require('../middleware/auth');
+const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity, hasCapability, CAPABILITY_WHITELIST } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
 const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, upgradePasswordHash, syncUserAccounts, getUserProfile, getUserAuth, getUserForPasswordReset, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
@@ -133,7 +133,10 @@ router.get('/me', asyncHandler(async (req, res) => {
   if (req.session.authVersion !== undefined && a.auth_version !== req.session.authVersion) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
   const role = isAdminIdentity(p.username, p.role) ? 'admin' : (p.role || 'user');
-  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role, status: p.status || 'active', knowledgeEnabled: p.knowledgeEnabled || false });
+  // PERM-01：能力经白名单过滤后返回布尔值，绝不直接回传数据库任意 JSON
+  const capabilities = {};
+  CAPABILITY_WHITELIST.forEach(function (c) { capabilities[c] = hasCapability(p, c); });
+  res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role, status: p.status || 'active', knowledgeEnabled: p.knowledgeEnabled || false, capabilities });
 }));
 router.get('/config', asyncHandler(async (req, res) => {
   const registerOpen = (await getConfig('register_open', '1')) === '1';

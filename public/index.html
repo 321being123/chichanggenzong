@@ -1160,6 +1160,10 @@ function renderTopUser(p) {
   const src = p.avatar || '';
   const initial = (p.nickname || p.username || '?').charAt(0).toUpperCase();
   const isAdmin = (p.role || (myProfile && myProfile.role)) === 'admin';
+  const caps = (p.capabilities || (myProfile && myProfile.capabilities) || {});
+  let hasAnyCap = false;
+  for (const k in caps) { if (caps[k]) { hasAnyCap = true; break; } }
+  const canStaff = isAdmin || hasAnyCap;
   const wrap = document.createElement('div');
   wrap.className = 'nav-user';
   const button = document.createElement('button');
@@ -1180,7 +1184,7 @@ function renderTopUser(p) {
     { label: '个人中心', fn: function () { switchMain('profile'); } },
     { label: '版本记录', fn: function () { switchMain('changelog'); } }
   ];
-  if (isAdmin) items.push({ label: '管理后台', href: '/admin.html' });
+  if (canStaff) items.push({ label: '管理后台', href: '/admin.html' });
   items.push({ label: '退出登录', fn: function () { logout(); } });
   function closeMenu() { menu.classList.remove('open'); }
   items.forEach(function (it) {

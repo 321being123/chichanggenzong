@@ -2026,6 +2026,14 @@ async function migration049SessionRevocation() {
   }
 }
 
+// ========== 050：轻量能力权限基础（PERM-01，P1）==========
+// users 增加 permissions JSONB（能力白名单布尔集合，默认空对象）。
+// 现有 knowledge_enabled=true 的用户映射为 knowledge_write=true，保留 knowledge_enabled 字段兼容一个版本。
+async function migration050CapabilityPermissions() {
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'::jsonb`);
+  await pool.query(`UPDATE users SET permissions = jsonb_set(permissions, '{knowledge_write}', 'true') WHERE knowledge_enabled = true`);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -2076,6 +2084,7 @@ const MIGRATIONS = [
   { version: '047_account_id_fk', up: migration047AccountId },
   { version: '048_tighten_account_ledger', up: migration048TightenAccountLedger },
   { version: '049_session_revocation', up: migration049SessionRevocation },
+  { version: '050_capability_permissions', up: migration050CapabilityPermissions },
 ];
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========

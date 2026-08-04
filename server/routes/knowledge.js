@@ -78,24 +78,26 @@ function resolveCommentNickname(profileNickname, username) {
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 const IMPORT_TIMEOUT_MS = 25000;
 
-// 写权限中间件：管理员或 knowledge_enabled=true 才放行
+// 写权限中间件：管理员、拥有 knowledge_write 能力，或兼容期的 knowledge_enabled=true 才放行
 async function requireKsWrite(req, res, next) {
   const username = req.session && req.session.user;
   if (!username) return res.status(401).json({ error: '未登录' });
   try {
-    const { rows } = await pool.query('SELECT role, knowledge_enabled FROM users WHERE username=$1', [username]);
-    if (rows[0] && (isAdminIdentity(username, rows[0].role) || rows[0].knowledge_enabled)) return next();
+    const { rows } = await pool.query('SELECT role, knowledge_enabled, permissions FROM users WHERE username=$1', [username]);
+    const u = rows[0];
+    if (u && (isAdminIdentity(username, u.role) || (u.permissions && u.permissions.knowledge_write) || u.knowledge_enabled)) return next();
   } catch (e) {}
   return res.status(403).json({ error: '你暂无投资笔记的写权限' });
 }
 
 // 当前用户角色与写权限
 async function getUserKsInfo(username) {
-  const { rows } = await pool.query('SELECT role, knowledge_enabled FROM users WHERE username=$1', [username]);
+  const { rows } = await pool.query('SELECT role, knowledge_enabled, permissions FROM users WHERE username=$1', [username]);
   const r = rows[0];
   const role = r && r.role;
   const isAdmin = isAdminIdentity(username, role);
-  return { role, isAdmin, canWrite: isAdmin || !!(r && r.knowledge_enabled) };
+  const canWrite = isAdmin || (r && r.permissions && r.permissions.knowledge_write) || !!(r && r.knowledge_enabled);
+  return { role, isAdmin, canWrite };
 }
 
 // 文章归属校验：仅作者本人可以修改自己的文章

@@ -36,7 +36,7 @@ async function updateUserAccounts(username, accountsList) {
 
 async function getUserProfile(username) {
   const { rows } = await pool.query(
-    'SELECT username, nickname, bio, avatar, email, last_login, role, status, knowledge_enabled, accounts FROM users WHERE username=$1',
+    'SELECT username, nickname, bio, avatar, email, last_login, role, status, knowledge_enabled, permissions, accounts FROM users WHERE username=$1',
     [username]
   );
   const r = rows[0];
@@ -51,6 +51,7 @@ async function getUserProfile(username) {
     role: r.role || 'user',
     status: r.status || 'active',
     knowledgeEnabled: r.knowledge_enabled || false,
+    permissions: (r.permissions && typeof r.permissions === 'object') ? r.permissions : {},
     accounts: JSON.parse(r.accounts || '[]')
   };
 }

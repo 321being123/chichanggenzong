@@ -14,6 +14,7 @@ const VIEW_TITLES = {
   settings: '全局参数',
   holidays: '休市日历',
   audit: '操作审计',
+  ops: '数据运维',
   knowledge: '投资笔记管理'
 };
 
@@ -24,6 +25,7 @@ const VIEW_CAPABILITY = {
   jobs: 'ops_manage',
   settings: 'ops_manage',
   holidays: 'ops_manage',
+  ops: 'ops_manage',
   knowledge: 'content_manage'
 };
 
@@ -114,6 +116,7 @@ function switchView(view) {
   else if (view === 'settings') renderSettings();
   else if (view === 'holidays') renderHolidays();
   else if (view === 'audit') renderAudit();
+  else if (view === 'ops') renderOps();
   else if (view === 'knowledge') renderKnowledge();
   else renderPlaceholder(view);
 }
@@ -796,6 +799,76 @@ async function loadAuditData() {
       return '<tr><td>' + escapeHtml(x.created_at || '') + '</td><td>' + escapeHtml(x.actor || '') + '</td><td><span class="tag">' + escapeHtml(x.action || '') + '</span></td><td>' + escapeHtml(x.target || '') + '</td><td><span class="tag ' + rc + '">' + rt + '</span></td><td style="max-width:360px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(x.detail || '') + '</td></tr>';
     }).join('');
   } catch (e) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
+}
+
+// ====== 数据运维（OPS-01：共享数据刷新/导入统一迁入后台，前台按钮已移除）======
+function renderOps() {
+  const el = document.getElementById('view-ops'); if (!el) return;
+  el.innerHTML =
+    '<div class="ops-grid">' +
+      opsCard('可转债安全性刷新', '手动触发全部可转债安全评分快照刷新（每日 06:30 自动跑，此处用于立即生效或补救）。',
+        '<button class="btn btn-primary" id="ops-bond-safety-refresh" onclick="opsRefreshBondSafety()">立即刷新</button>') +
+      opsCard('可转债估值刷新', '手动触发估值与预警模型重算（每日 18:00 后自动跑）。',
+        '<button class="btn btn-primary" id="ops-bond-valuation-refresh" onclick="opsRefreshBondValuation()">立即刷新</button>') +
+      opsCard('联邦基金利率导入', '上传 CSV/XLSX（两列：日期、利率%），用于更新美国联邦基金利率并触发重算。',
+        '<input type="file" id="ops-fed-file" accept=".csv,.xlsx" style="margin-bottom:8px;width:100%;" />' +
+        '<button class="btn btn-primary" id="ops-fed-import" onclick="opsImportFederalFunds()">导入文件</button>') +
+    '</div>' +
+    '<div class="ops-jobs"><div class="ops-jobs-head"><span>最近任务状态</span><button class="btn btn-outline btn-sm" onclick="opsLoadJobs()">刷新</button></div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始</th><th>结束</th><th>结果</th></tr></thead>' +
+    '<tbody id="ops-jobs-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div></div>';
+  opsLoadJobs();
+}
+function opsCard(title, desc, actionHtml) {
+  return '<div class="ops-card"><div class="ops-card-title">' + title + '</div><div class="ops-card-desc">' + desc + '</div><div class="ops-card-action">' + actionHtml + '</div></div>';
+}
+async function opsRefreshBondSafety() {
+  const btn = document.getElementById('ops-bond-safety-refresh'); if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
+  try {
+    const r = await fetch(api('/api/bond-safety/refresh'), { method: 'POST' });
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok) showToast(d.error || '刷新失败');
+    else showToast('可转债安全性数据已刷新');
+  } catch (e) { showToast('网络错误'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '立即刷新'; } opsLoadJobs(); }
+}
+async function opsRefreshBondValuation() {
+  const btn = document.getElementById('ops-bond-valuation-refresh'); if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
+  try {
+    const r = await fetch(api('/api/bond-valuation/refresh'), { method: 'POST' });
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok) showToast(d.error || '刷新失败');
+    else showToast('可转债估值已刷新');
+  } catch (e) { showToast('网络错误'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '立即刷新'; } opsLoadJobs(); }
+}
+async function opsImportFederalFunds() {
+  const fileEl = document.getElementById('ops-fed-file');
+  const btn = document.getElementById('ops-fed-import');
+  if (!fileEl || !fileEl.files || !fileEl.files.length) { showToast('请先选择利率文件'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = '导入中...'; }
+  try {
+    const fd = new FormData();
+    fd.append('file', fileEl.files[0]);
+    const r = await fetch(api('/api/market-volatility/federal-funds/import'), { method: 'POST', body: fd });
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok) showToast(d.error || '导入失败');
+    else showToast('已导入 ' + (d.imported || 0) + ' 条利率数据');
+  } catch (e) { showToast('网络错误'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '导入文件'; } opsLoadJobs(); }
+}
+async function opsLoadJobs() {
+  const tb = document.getElementById('ops-jobs-tbody'); if (!tb) return;
+  try {
+    const r = await fetch(api('/api/admin/jobs?limit=20'));
+    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    const list = (await r.json()).list || [];
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无任务记录</td></tr>'; return; }
+    tb.innerHTML = list.map(function (j) {
+      const st = j.status === 'done' ? '<span class="tag tag-ok">成功</span>' : (j.status === 'failed' ? '<span class="tag tag-over">失败</span>' : (j.status === 'running' ? '<span class="tag tag-a">运行中</span>' : '<span class="tag">' + escapeHtml(j.status || '—') + '</span>'));
+      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + st + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td style="max-width:320px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td></tr>';
+    }).join('');
+  } catch (e) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
 }
 
 // ====== 大模型配置 ======

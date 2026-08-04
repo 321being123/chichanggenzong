@@ -172,8 +172,6 @@ async function loadBondSafety(force) {
   if (bondSafetyState.loaded && !force) return;
   var el = document.getElementById('bond-safety-table');
   if (el) el.innerHTML = '<div class="bond-safety-empty">正在加载安全性数据...</div>';
-  var refresh = document.getElementById('bond-safety-refresh');
-  if (refresh) refresh.style.display = myProfile && myProfile.role === 'admin' ? '' : 'none';
   try {
     var response = await fetch(api('/api/bond-safety/bonds'));
     var d = await response.json();
@@ -190,22 +188,5 @@ async function loadBondSafety(force) {
     bondSafetyApplyFilters();
   } catch(error) {
     if (el) el.innerHTML = '<div class="bond-safety-empty bond-safety-error">加载失败：' + escapeHtml(error.message || String(error)) + '</div>';
-  }
-}
-
-async function refreshBondSafety() {
-  var button = document.getElementById('bond-safety-refresh');
-  if (button) { button.disabled = true; button.textContent = '刷新中...'; }
-  try {
-    var response = await fetch(api('/api/bond-safety/refresh'), { method:'POST' });
-    var d = await response.json();
-    if (!response.ok) throw new Error(d.error || '刷新失败');
-    bondSafetyState.loaded = false;
-    await loadBondSafety(true);
-    if (typeof showToast === 'function') showToast('可转债安全性数据已刷新');
-  } catch(error) {
-    if (typeof showToast === 'function') showToast(error.message || String(error));
-  } finally {
-    if (button) { button.disabled = false; button.textContent = '刷新数据'; }
   }
 }

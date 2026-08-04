@@ -17,7 +17,7 @@ const _store = {};
 db.getConfig = async (k, def) => (k in _store ? _store[k] : (def === undefined ? '' : def));
 db.setConfig = async (k, v) => { _store[k] = String(v); };
 let auditCalls = 0;
-db.auditLog = async () => { auditCalls++; };
+db.auditEvent = async () => { auditCalls++; };
 
 // 3) mock 全局 fetch（测试连通性路由用真实外部请求，这里替换为可控桩）
 //    注意：测试客户端 call() 必须用自己的引用 clientFetch，否则 mock 会连带把客户端请求也劫持。

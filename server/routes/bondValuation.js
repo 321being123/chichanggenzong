@@ -4,6 +4,7 @@ const asyncHandler = require('../middleware/async');
 const { requireCapability } = require('../middleware/auth');
 const svc = require('../services/convertibleBondValuationService');
 const { runDailyValuation } = require('../jobs/convertibleBondRefresh');
+const { auditEvent } = require('../db');
 
 const VALID_RANGES = ['1y', '3y', '5y', 'all'];
 const LEVEL_MAP = { attention: '关注', important: '重要', 关注: '关注', 重要: '重要' };
@@ -79,11 +80,16 @@ router.get('/bonds/:code/alerts', asyncHandler(async (req, res) => {
 router.post('/refresh', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
   try {
     const result = await runDailyValuation('admin');
-    if (result.skipped) return res.status(409).json({ error: '已有估值刷新任务正在运行，请稍后再试' });
+    if (result.skipped) {
+      await auditEvent({ actor: req.session.user, action: 'bond_valuation_refresh', target: 'all', result: 'failure', requestId: req.id, detail: '已有估值刷新任务正在运行' });
+      return res.status(409).json({ error: '已有估值刷新任务正在运行，请稍后再试' });
+    }
+    await auditEvent({ actor: req.session.user, action: 'bond_valuation_refresh', target: 'all', result: 'success', requestId: req.id, metadata: { detail: result.detail } });
     res.json({ ok: true, message: '估值刷新完成', detail: result.detail });
   } catch (err) {
     const reason = String(err.detail || err.message || '').trim();
     console.error('[bond-valuation] 刷新失败:', reason);
+    await auditEvent({ actor: req.session.user, action: 'bond_valuation_refresh', target: 'all', result: 'failure', requestId: req.id, detail: reason || '估值刷新失败' });
     res.status(500).json({ ok: false, error: '估值刷新失败', reason });
   }
 }));

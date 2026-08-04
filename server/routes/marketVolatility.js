@@ -4,7 +4,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const svc = require('../services/marketVolatility');
 const cycleMetrics = require('../services/marketCycleMetrics');
-const { pool, auditLog } = require('../db');
+const { pool, auditEvent } = require('../db');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const { calculateGraham } = require('../jobs/marketVolatilitySync');
@@ -124,7 +124,7 @@ router.put('/home-cycle/config', requireCapability('ops_manage'), asyncHandler(a
       benchmark_code=EXCLUDED.benchmark_code,reference_username=EXCLUDED.reference_username,
       reference_account=EXCLUDED.reference_account,updated_by=EXCLUDED.updated_by,updated_at=now()`,
   [metric, market, benchmark, req.session.user, account]);
-  await auditLog(req.session.user, 'market_cycle_home', metric, `${market}/${benchmark}/${account}`);
+  await auditEvent({ actor: req.session.user, action: 'market_cycle_home', target: metric, result: 'success', requestId: req.id, detail: market + '/' + benchmark + '/' + account });
   res.json({ ok: true, ...publicHomeConfig({ metric, market, benchmark }) });
 }));
 router.put('/settings', requireLogin, asyncHandler(async (req, res) => {
@@ -155,7 +155,12 @@ router.post('/federal-funds/import', requireCapability('ops_manage'), upload.sin
       VALUES('US',10,$1,$2,'manual_fed_funds',$3,$4) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,source_date=EXCLUDED.source_date,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [row.tradeDate, row.yieldPct, row.sourceDate, JSON.stringify({ source: req.file.originalname, sourceDate: row.sourceDate, rate: row.yieldPct })]);
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
-  await calculateGraham();
+  try {
+    await calculateGraham();
+    await auditEvent({ actor: req.session.user, action: 'market_rate_import', target: 'US_10Y', result: 'success', requestId: req.id, metadata: { sourceRows: sourceRecords.length, imported: records.length } });
+  } catch (e) {
+    await auditEvent({ actor: req.session.user, action: 'market_rate_import', target: 'US_10Y', result: 'failure', requestId: req.id, detail: e.message || '利率导入后重算失败' });
+  }
   res.json({ ok: true, sourceRows: sourceRecords.length, imported: records.length, earliest: records[0].tradeDate, latest: records[records.length - 1].tradeDate });
 }));
 module.exports = router;

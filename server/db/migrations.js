@@ -2034,6 +2034,15 @@ async function migration050CapabilityPermissions() {
   await pool.query(`UPDATE users SET permissions = jsonb_set(permissions, '{knowledge_write}', 'true') WHERE knowledge_enabled = true`);
 }
 
+// ========== 051：审计记录补充结果、请求 ID 与参数摘要（AUDIT-01，P1）==========
+// 旧记录默认视为成功；metadata 仅存必要参数摘要，严禁写入密码/密钥/Token 等敏感信息。
+async function migration051AuditResultMetadata() {
+  await pool.query(`ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT 'success'`);
+  await pool.query(`ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action ON admin_audit_log (action)`);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -2085,6 +2094,7 @@ const MIGRATIONS = [
   { version: '048_tighten_account_ledger', up: migration048TightenAccountLedger },
   { version: '049_session_revocation', up: migration049SessionRevocation },
   { version: '050_capability_permissions', up: migration050CapabilityPermissions },
+  { version: '051_audit_result_metadata', up: migration051AuditResultMetadata },
 ];
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========

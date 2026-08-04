@@ -749,25 +749,53 @@ async function saveHolidays() {
 }
 
 // ====== 操作审计 ======
+const AUDIT_MODULE_LABELS = {
+  user: '用户权限', broker: '券商', job: '人工任务', holiday: '休市日历',
+  model: '大模型', settings: '全局参数', knowledge: '知识分享', bond: '可转债',
+  market: '行情指标', benchmark: '标杆发布'
+};
 function renderAudit() {
   const el = document.getElementById('view-audit'); if (!el) return;
   el.innerHTML =
-    '<div class="filter-bar"><button class="btn btn-outline btn-sm" onclick="loadAuditData()">刷新</button></div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>' +
-    '<tbody id="audit-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+    '<div class="filter-bar">' +
+      '<select id="audit-filter-module" style="padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"><option value="">全部模块</option></select>' +
+      '<input id="audit-filter-actor" placeholder="操作人" style="width:140px;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;" />' +
+      '<select id="audit-filter-result" style="padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"><option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option></select>' +
+      '<button class="btn btn-outline btn-sm" onclick="loadAuditData()">查询</button>' +
+      '<button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="loadAuditData()">刷新</button>' +
+    '</div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>' +
+    '<tbody id="audit-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
   loadAuditData();
 }
 async function loadAuditData() {
   const tb = document.getElementById('audit-tbody'); if (!tb) return;
+  const moduleSel = document.getElementById('audit-filter-module');
+  const actorInp = document.getElementById('audit-filter-actor');
+  const resultSel = document.getElementById('audit-filter-result');
+  const m = moduleSel ? moduleSel.value : '';
+  const a = actorInp ? actorInp.value.trim() : '';
+  const r = resultSel ? resultSel.value : '';
+  const qs = 'limit=100' + (m ? '&module=' + encodeURIComponent(m) : '') + (a ? '&actor=' + encodeURIComponent(a) : '') + (r ? '&result=' + encodeURIComponent(r) : '');
   try {
-    const r = await fetch(api('/api/admin/audit?limit=100'));
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
-    const d = await r.json();
-    if (!d.list.length) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无操作记录</td></tr>'; return; }
-    tb.innerHTML = d.list.map(function (a) {
-      return '<tr><td>' + escapeHtml(a.created_at || '') + '</td><td>' + escapeHtml(a.actor || '') + '</td><td><span class="tag">' + escapeHtml(a.action || '') + '</span></td><td>' + escapeHtml(a.target || '') + '</td><td style="max-width:360px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(a.detail || '') + '</td></tr>';
+    const resp = await fetch(api('/api/admin/audit?' + qs));
+    if (!resp.ok) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    const d = await resp.json();
+    if (moduleSel && d.modules) {
+      d.modules.forEach(function (k) {
+        if (!moduleSel.querySelector('option[value="' + k + '"]')) {
+          const o = document.createElement('option'); o.value = k; o.textContent = AUDIT_MODULE_LABELS[k] || k; moduleSel.appendChild(o);
+        }
+      });
+    }
+    if (!d.list.length) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无操作记录</td></tr>'; return; }
+    tb.innerHTML = d.list.map(function (x) {
+      const isFail = x.result === 'failure';
+      const rc = isFail ? 'tag-over' : 'tag-ok';
+      const rt = isFail ? '失败' : '成功';
+      return '<tr><td>' + escapeHtml(x.created_at || '') + '</td><td>' + escapeHtml(x.actor || '') + '</td><td><span class="tag">' + escapeHtml(x.action || '') + '</span></td><td>' + escapeHtml(x.target || '') + '</td><td><span class="tag ' + rc + '">' + rt + '</span></td><td style="max-width:360px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(x.detail || '') + '</td></tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
+  } catch (e) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
 }
 
 // ====== 大模型配置 ======

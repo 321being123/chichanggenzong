@@ -9,7 +9,7 @@ const {
   deleteUser, getUserDetail, hashPwd, adminListBrokers, createBroker, updateBroker, deleteBroker,
   isValidBroker, adminJobRuns, startJobRun, finishJobRun,
   getConfig, setConfig,
-  auditLog, listAudit, pool
+  auditEvent, listAudit, AUDIT_MODULES, pool
 } = require('../db');
 const { backfillMissingCloses } = require('../jobs/marketClose');
 const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
@@ -34,6 +34,16 @@ router.use(function (req, res, next) {
   requireCapability(cap)(req, res, next);
 });
 
+// AUDIT-01 审计助手：统一带上操作者与请求 ID，成功与失败都留痕（metadata 只放必要摘要）
+function audit(req, action, target, opt) {
+  const o = opt || {};
+  return auditEvent({
+    actor: req.session.user, action: action, target: target,
+    result: o.result || 'success', requestId: req.id,
+    detail: o.detail, metadata: o.metadata,
+  }).catch(function () {});
+}
+
 // 平台概览：总用户/管理员/禁用/账户数/今日新增/全平台总资产
 router.get('/overview', asyncHandler(async (req, res) => {
   res.json(await adminOverview());
@@ -54,31 +64,49 @@ router.get('/users/:username', asyncHandler(async (req, res) => {
 }));
 router.post('/users/:username/role', asyncHandler(async (req, res) => {
   const role = req.body && req.body.role;
-  if (role !== 'admin' && role !== 'user') return res.status(400).json({ error: '角色非法' });
-  if (role !== 'admin' && req.params.username === req.session.user) return res.status(400).json({ error: '不能取消自己的管理员权限' });
+  if (role !== 'admin' && role !== 'user') {
+    await audit(req, 'user_role', req.params.username, { result: 'failure', detail: '角色非法' });
+    return res.status(400).json({ error: '角色非法' });
+  }
+  if (role !== 'admin' && req.params.username === req.session.user) {
+    await audit(req, 'user_role', req.params.username, { result: 'failure', detail: '不能取消自己的管理员权限' });
+    return res.status(400).json({ error: '不能取消自己的管理员权限' });
+  }
   await setUserRole(req.params.username, role);
-  await auditLog(req.session.user, 'user_role', req.params.username, '设为' + (role === 'admin' ? '管理员' : '普通用户')).catch(() => {});
+  await audit(req, 'user_role', req.params.username, { detail: '设为' + (role === 'admin' ? '管理员' : '普通用户'), metadata: { role: role } });
   res.json({ ok: true });
 }));
 router.post('/users/:username/status', asyncHandler(async (req, res) => {
   const status = req.body && req.body.status;
-  if (status !== 'active' && status !== 'disabled') return res.status(400).json({ error: '状态非法' });
-  if (status !== 'active' && req.params.username === req.session.user) return res.status(400).json({ error: '不能禁用自己的账号' });
+  if (status !== 'active' && status !== 'disabled') {
+    await audit(req, 'user_status', req.params.username, { result: 'failure', detail: '状态非法' });
+    return res.status(400).json({ error: '状态非法' });
+  }
+  if (status !== 'active' && req.params.username === req.session.user) {
+    await audit(req, 'user_status', req.params.username, { result: 'failure', detail: '不能禁用自己的账号' });
+    return res.status(400).json({ error: '不能禁用自己的账号' });
+  }
   await setUserStatus(req.params.username, status);
-  await auditLog(req.session.user, 'user_status', req.params.username, status === 'active' ? '启用' : '禁用').catch(() => {});
+  await audit(req, 'user_status', req.params.username, { detail: status === 'active' ? '启用' : '禁用', metadata: { status: status } });
   res.json({ ok: true });
 }));
 router.post('/users/:username/password', asyncHandler(async (req, res) => {
   const pwd = req.body && req.body.password;
-  if (!pwd || typeof pwd !== 'string' || pwd.length < 6) return res.status(400).json({ error: '密码至少6位' });
+  if (!pwd || typeof pwd !== 'string' || pwd.length < 6) {
+    await audit(req, 'user_password', req.params.username, { result: 'failure', detail: '密码长度不符合要求' });
+    return res.status(400).json({ error: '密码至少6位' });
+  }
   await adminSetPassword(req.params.username, hashPwd(pwd));
-  await auditLog(req.session.user, 'user_password', req.params.username, '管理员重置密码').catch(() => {});
+  await audit(req, 'user_password', req.params.username, { detail: '管理员重置密码' });
   res.json({ ok: true });
 }));
 router.delete('/users/:username', asyncHandler(async (req, res) => {
-  if (req.params.username === req.session.user) return res.status(400).json({ error: '不能删除当前登录账号' });
+  if (req.params.username === req.session.user) {
+    await audit(req, 'user_delete', req.params.username, { result: 'failure', detail: '不能删除当前登录账号' });
+    return res.status(400).json({ error: '不能删除当前登录账号' });
+  }
   await deleteUser(req.params.username);
-  await auditLog(req.session.user, 'user_delete', req.params.username, '删除用户及全部数据').catch(() => {});
+  await audit(req, 'user_delete', req.params.username, { detail: '删除用户及全部数据' });
   res.json({ ok: true });
 }));
 
@@ -99,7 +127,7 @@ router.post('/brokers', asyncHandler(async (req, res) => {
   if (import_unit && !['sheet', 'lot'].includes(import_unit)) return res.status(400).json({ error: '导入单位非法' });
   if (await isValidBroker(code)) return res.status(409).json({ error: '券商代码已存在' });
   await createBroker({ code, name, market, sort_order: sort_order ? parseInt(sort_order, 10) || 0 : 0, import_unit: import_unit || 'sheet' });
-  await auditLog(req.session.user, 'broker_create', code, '新增券商 ' + name).catch(() => {});
+  await audit(req, 'broker_create', code, { detail: '新增券商 ' + name });
   res.json({ ok: true });
 }));
 router.put('/brokers/:code', asyncHandler(async (req, res) => {
@@ -108,12 +136,12 @@ router.put('/brokers/:code', asyncHandler(async (req, res) => {
   if (!['A', 'H', 'U'].includes(market)) return res.status(400).json({ error: '市场非法' });
   if (import_unit && !['sheet', 'lot'].includes(import_unit)) return res.status(400).json({ error: '导入单位非法' });
   await updateBroker(req.params.code, { name, market, sort_order: sort_order ? parseInt(sort_order, 10) || 0 : 0, import_unit: import_unit || 'sheet' });
-  await auditLog(req.session.user, 'broker_update', req.params.code, '编辑券商').catch(() => {});
+  await audit(req, 'broker_update', req.params.code, { detail: '编辑券商' });
   res.json({ ok: true });
 }));
 router.delete('/brokers/:code', asyncHandler(async (req, res) => {
   await deleteBroker(req.params.code);
-  await auditLog(req.session.user, 'broker_delete', req.params.code, '删除券商').catch(() => {});
+  await audit(req, 'broker_delete', req.params.code, { detail: '删除券商' });
   res.json({ ok: true });
 }));
 
@@ -126,10 +154,14 @@ router.post('/jobs/backfill', asyncHandler(async (req, res) => {
   try {
     const result = await backfillMissingCloses({ scanAllMissingDates: true });
     await finishJobRun(id, true, '检查 ' + result.accounts + ' 个账户，发现 ' + result.missingDates + ' 个缺失交易日，补写 ' + result.recorded + ' 条价格');
-    await auditLog(req.session.user, 'job_backfill', 'manual_backfill', '手动补漏收盘数据').catch(() => {});
+    await audit(req, 'job_backfill', 'manual_backfill', {
+      detail: '手动补漏收盘数据',
+      metadata: { accounts: result.accounts, missingDates: result.missingDates, recorded: result.recorded },
+    });
     res.json({ ok: true });
   } catch (e) {
     await finishJobRun(id, false, e.message || String(e));
+    await audit(req, 'job_backfill', 'manual_backfill', { result: 'failure', detail: e.message || String(e) });
     res.status(500).json({ error: '补漏失败：' + (e.message || '未知错误') });
   }
 }));
@@ -138,10 +170,11 @@ router.post('/jobs/holiday-sync', asyncHandler(async (req, res) => {
   try {
     await ensureHolidaysCurrent();
     await finishJobRun(id, true, '手动触发休市日历核对');
-    await auditLog(req.session.user, 'job_holiday_sync', 'manual_holiday_sync', '手动核对休市日历').catch(() => {});
+    await audit(req, 'job_holiday_sync', 'manual_holiday_sync', { detail: '手动核对休市日历' });
     res.json({ ok: true });
   } catch (e) {
     await finishJobRun(id, false, e.message || String(e));
+    await audit(req, 'job_holiday_sync', 'manual_holiday_sync', { result: 'failure', detail: e.message || String(e) });
     res.status(500).json({ error: '休市核对失败：' + (e.message || '未知错误') });
   }
 }));
@@ -161,7 +194,7 @@ router.put('/holidays', asyncHandler(async (req, res) => {
   obj.years[y] = dates.filter(function (d) { return typeof d === 'string'; });
   obj.updatedAt = new Date().toISOString().slice(0, 10);
   saveHolidays(obj);
-  await auditLog(req.session.user, 'holiday_edit', y, '维护' + y + '年休市日，共' + obj.years[y].length + '天').catch(() => {});
+  await audit(req, 'holiday_edit', y, { detail: '维护' + y + '年休市日，共' + obj.years[y].length + '天' });
   res.json({ ok: true });
 }));
 
@@ -198,7 +231,7 @@ router.post('/models', asyncHandler(async (req, res) => {
     enabled: enabled !== false, order: maxOrder + 1
   });
   await saveModels(list);
-  await auditLog(req.session.user, 'model_create', id, '新增大模型 ' + name).catch(() => {});
+  await audit(req, 'model_create', id, { detail: '新增大模型 ' + name });
   res.json({ ok: true, id });
 }));
 
@@ -216,7 +249,7 @@ router.put('/models/:id', asyncHandler(async (req, res) => {
   // 前端回传的打码 Key（含 ***）表示未改动，保留库中原值；否则更新
   if (apiKey && String(apiKey).indexOf('***') < 0) m.apiKey = String(apiKey).trim();
   await saveModels(list);
-  await auditLog(req.session.user, 'model_update', m.id, '编辑大模型 ' + m.name).catch(() => {});
+  await audit(req, 'model_update', m.id, { detail: '编辑大模型 ' + m.name });
   res.json({ ok: true });
 }));
 
@@ -225,7 +258,7 @@ router.delete('/models/:id', asyncHandler(async (req, res) => {
   const m = list.find(function (x) { return x.id === req.params.id; });
   if (!m) return res.status(404).json({ error: '模型不存在' });
   await saveModels(list.filter(function (x) { return x.id !== req.params.id; }));
-  await auditLog(req.session.user, 'model_delete', m.id, '删除大模型 ' + m.name).catch(() => {});
+  await audit(req, 'model_delete', m.id, { detail: '删除大模型 ' + m.name });
   res.json({ ok: true });
 }));
 
@@ -239,7 +272,7 @@ router.post('/models/:id/default', asyncHandler(async (req, res) => {
   const ordered = [m].concat(rest);
   ordered.forEach(function (x, i) { x.order = i; });
   await saveModels(ordered);
-  await auditLog(req.session.user, 'model_default', m.id, '设为默认大模型 ' + m.name).catch(() => {});
+  await audit(req, 'model_default', m.id, { detail: '设为默认大模型 ' + m.name });
   res.json({ ok: true });
 }));
 
@@ -256,7 +289,7 @@ router.post('/models/:id/move', asyncHandler(async (req, res) => {
   const tmp = list[idx]; list[idx] = list[swap]; list[swap] = tmp;
   list.forEach(function (x, i) { x.order = i; });
   await saveModels(list);
-  await auditLog(req.session.user, 'model_move', req.params.id, '调整大模型顺序').catch(() => {});
+  await audit(req, 'model_move', req.params.id, { detail: '调整大模型顺序' });
   res.json({ ok: true });
 }));
 
@@ -298,7 +331,12 @@ router.post('/models/:id/test', asyncHandler(async (req, res) => {
 
 // ====== 操作审计 ======
 router.get('/audit', asyncHandler(async (req, res) => {
-  res.json({ list: await listAudit(req.query.limit) });
+  const filter = {
+    module: (req.query.module || '').trim(),
+    actor: (req.query.actor || '').trim(),
+    result: (req.query.result || '').trim(),
+  };
+  res.json({ list: await listAudit(req.query.limit, filter), modules: Object.keys(AUDIT_MODULES) });
 }));
 
 // ====== 知识分享管理 ======
@@ -327,7 +365,7 @@ router.get('/knowledge/articles', asyncHandler(async (req, res) => {
 router.delete('/knowledge/articles/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   await pool.query('DELETE FROM articles WHERE id=$1', [id]);
-  await auditLog(req.session.user, 'ks_article_delete', id, '后台删除投资笔记文章').catch(() => {});
+  await audit(req, 'ks_article_delete', id, { detail: '后台删除投资笔记文章' });
   res.json({ ok: true });
 }));
 // 修改文章状态（草稿/发布）
@@ -346,7 +384,7 @@ router.put('/knowledge/articles/:id/status', asyncHandler(async (req, res) => {
   } else {
     await pool.query("UPDATE articles SET status='draft', published_at=NULL, updated_at=now() WHERE id=$1", [id]);
   }
-  await auditLog(req.session.user, 'ks_article_status', id, status === 'published' ? '发布' : '撤回').catch(() => {});
+  await audit(req, 'ks_article_status', id, { detail: status === 'published' ? '发布' : '撤回' });
   res.json({ ok: true });
 }));
 
@@ -378,7 +416,7 @@ router.get('/knowledge/comments', asyncHandler(async (req, res) => {
 router.delete('/knowledge/comments/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   await pool.query('DELETE FROM article_comments WHERE id=$1', [id]);
-  await auditLog(req.session.user, 'ks_comment_delete', id, '后台删除评论').catch(() => {});
+  await audit(req, 'ks_comment_delete', id, { detail: '后台删除评论' });
   res.json({ ok: true });
 }));
 
@@ -398,10 +436,13 @@ router.get('/knowledge/users', asyncHandler(async (req, res) => {
 // 开关用户写权限
 router.post('/knowledge/users/:username/permission', asyncHandler(async (req, res) => {
   const username = req.params.username;
-  if (username === req.session.user) return res.status(400).json({ error: '不能修改自己的权限' });
+  if (username === req.session.user) {
+    await audit(req, 'ks_permission', username, { result: 'failure', detail: '不能修改自己的权限' });
+    return res.status(400).json({ error: '不能修改自己的权限' });
+  }
   const enabled = !!(req.body && req.body.enabled);
   await setKnowledgeEnabled(username, enabled);
-  await auditLog(req.session.user, 'ks_permission', username, enabled ? '开启写权限' : '关闭写权限').catch(() => {});
+  await audit(req, 'ks_permission', username, { detail: enabled ? '开启写权限' : '关闭写权限', metadata: { enabled: enabled } });
   res.json({ ok: true, enabled });
 }));
 
@@ -421,7 +462,7 @@ router.put('/settings', asyncHandler(async (req, res) => {
     setConfig('register_code', b.register_code || ''),
     setConfig('require_email', (b.require_email === true || b.require_email === '1') ? '1' : '0')
   ]);
-  await auditLog(req.session.user, 'settings_update', 'global', '更新全局参数').catch(() => {});
+  await audit(req, 'settings_update', 'global', { detail: '更新全局参数' });
   res.json({ ok: true });
 }));
 

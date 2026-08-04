@@ -13,7 +13,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership, requireCapability } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
-const { pool } = require('../db');
+const { pool, auditEvent } = require('../db');
 const { isValidAccountName } = require('../middleware/validate');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
 const { fetchHkRate } = require('../jobs/hkRate');
@@ -31,6 +31,7 @@ router.put('/accounts/:name/position-visibility', requireLogin, requireCapabilit
   const name = decodeURIComponent(req.params.name);
   const { visibility } = req.body || {};
   if (!VALID_VISIBILITY.includes(visibility)) {
+    await auditEvent({ actor: req.session.user, action: 'benchmark_publish', target: name, result: 'failure', requestId: req.id, detail: '公开状态不合法' });
     return res.status(400).json({ error: '公开状态不合法' });
   }
   const { rows } = await pool.query(
@@ -38,7 +39,11 @@ router.put('/accounts/:name/position-visibility', requireLogin, requireCapabilit
       WHERE username=$2 AND account_name=$3 RETURNING id`,
     [visibility, req.session.user, name]
   );
-  if (rows.length === 0) return res.status(404).json({ error: '账户不存在' });
+  if (rows.length === 0) {
+    await auditEvent({ actor: req.session.user, action: 'benchmark_publish', target: name, result: 'failure', requestId: req.id, detail: '账户不存在' });
+    return res.status(404).json({ error: '账户不存在' });
+  }
+  await auditEvent({ actor: req.session.user, action: 'benchmark_publish', target: name, result: 'success', requestId: req.id, detail: '设为' + visibility, metadata: { visibility: visibility } });
   res.json({ ok: true, visibility });
 }));
 

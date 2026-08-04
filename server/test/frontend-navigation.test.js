@@ -7,6 +7,8 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const policy = fs.readFileSync(path.join(root, 'public', 'js', 'access-policy.js'), 'utf8');
+const coreTrade = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 
 let checks = 0;
 function ok(cond, msg) { checks++; assert.ok(cond, msg); }
@@ -62,5 +64,23 @@ pageIds.forEach(p => ok(allowedPages.includes(p), '页面容器 main-' + p + ' �
 // 5) 策略里登记的可作为 main 的页面，HTML 都应有对应容器（无孤儿配置）
 allowedPages.forEach(p => ok(pageIds.includes(p) || navMains.includes(p),
   'allowedPages 中的 ' + p + ' 在 index.html 找不到对应 data-main 或 #main- 容器'));
+
+// ===== UI-01：清理无效入口并补齐管理员入口 =====
+// 交易历史的“清空记录”按钮与无调用方的 clearTrades() 已删除
+ok(!/清空记录/.test(html), 'index.html 不应再保留“清空记录”按钮');
+ok(!/onclick="clearTrades\(\)"/.test(html), 'index.html 不应再调用 clearTrades()');
+ok(!/function clearTrades\(/.test(coreTrade), 'core-trade.js 不应再保留无调用方的 clearTrades()');
+// 头像改为下拉菜单，固定含 个人中心 / 版本记录 / 退出登录
+ok(html.includes("'个人中心'") || html.includes('个人中心'), '头像菜单缺少“个人中心”');
+ok(html.includes("'版本记录'") || html.includes('版本记录'), '头像菜单缺少“版本记录”');
+ok(html.includes('退出登录'), '头像菜单缺少“退出登录”');
+ok(html.includes("switchMain('profile')"), '个人中心菜单项未接入个人中心页');
+ok(html.includes("switchMain('changelog')"), '版本记录菜单项未接入版本记录页');
+ok(html.includes('logout()'), '退出登录菜单项未接入退出逻辑');
+// 管理后台入口仅管理员可见（role === 'admin' 时挂 /admin.html）
+ok(html.includes("isAdmin") && html.includes("'/admin.html'"), '管理后台入口未按要求（仅管理员）接入 /admin.html');
+ok(!/^\s*<a [^>]*admin\.html/.test(html), '管理后台入口不应在 HTML 中硬编码为常驻链接');
+// 菜单样式存在
+ok(css.includes('.nav-user-menu') && css.includes('.nav-user-item'), '缺少头像下拉菜单样式');
 
 console.log('frontend-navigation: ' + checks + ' 项断言通过');

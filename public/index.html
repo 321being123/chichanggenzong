@@ -311,7 +311,7 @@
     </div>
   </div>
   <div class="table-wrap">
-    <div class="table-header"><h3>交易历史</h3><button class="btn btn-sm btn-danger" onclick="clearTrades()">清空记录</button></div>
+    <div class="table-header"><h3>交易历史</h3></div>
     <div id="trades-table" class="trade-list" style="min-height:80px;"><div class="empty-state"><div class="icon">📄</div>暂无交易记录</div></div>
   </div>
 </div>
@@ -1119,7 +1119,7 @@ async function checkAuth() {
   }
 }
 
-// 顶部右侧：登录态显示头像（点击进个人中心），未登录显示「登录/注册」
+// 顶部右侧：登录态显示头像（点击展开菜单），未登录显示「登录/注册」
 function renderTopUser(p) {
   const el = document.getElementById('top-user');
   if (!el) return;
@@ -1135,11 +1135,13 @@ function renderTopUser(p) {
   }
   const src = p.avatar || '';
   const initial = (p.nickname || p.username || '?').charAt(0).toUpperCase();
+  const isAdmin = (p.role || (myProfile && myProfile.role)) === 'admin';
+  const wrap = document.createElement('div');
+  wrap.className = 'nav-user';
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'nav-avatar';
-  button.title = '个人中心';
-  button.addEventListener('click', function () { switchMain('profile'); });
+  button.title = '菜单';
   if (src) {
     const img = document.createElement('img');
     img.src = src;
@@ -1148,7 +1150,32 @@ function renderTopUser(p) {
   } else {
     button.textContent = initial;
   }
-  el.appendChild(button);
+  const menu = document.createElement('div');
+  menu.className = 'nav-user-menu';
+  const items = [
+    { label: '个人中心', fn: function () { switchMain('profile'); } },
+    { label: '版本记录', fn: function () { switchMain('changelog'); } }
+  ];
+  if (isAdmin) items.push({ label: '管理后台', href: '/admin.html' });
+  items.push({ label: '退出登录', fn: function () { logout(); } });
+  function closeMenu() { menu.classList.remove('open'); }
+  items.forEach(function (it) {
+    const node = document.createElement(it.href ? 'a' : 'button');
+    node.className = 'nav-user-item';
+    node.textContent = it.label;
+    if (it.href) {
+      node.href = it.href;
+    } else {
+      node.type = 'button';
+      node.addEventListener('click', function () { closeMenu(); it.fn(); });
+    }
+    menu.appendChild(node);
+  });
+  button.addEventListener('click', function (e) { e.stopPropagation(); menu.classList.toggle('open'); });
+  document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) closeMenu(); });
+  wrap.appendChild(button);
+  wrap.appendChild(menu);
+  el.appendChild(wrap);
 }
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）

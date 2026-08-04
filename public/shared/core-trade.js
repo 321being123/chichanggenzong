@@ -186,11 +186,6 @@ async function deleteTrade(id) {
   }
 }
 
-async function clearTrades() {
-  // P1-1 验收修复：清空全部交易会破坏持仓与现金一致性，服务端已禁止；直接提示
-  showToast('不支持清空全部交易：请逐笔删除，或用期初/调整事件重建持仓');
-}
-
 // ===================== 持仓增删改 =====================
 
 let editingId = null;

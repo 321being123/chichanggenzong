@@ -281,16 +281,17 @@ const next = () => {}; // 占位，实际测试用闭包捕获
     assert.strictEqual(validateImage('data:image/jpeg;base64,/9j/4AAQ'), null);
   });
 
-  console.log('\n[11] 迁移接口管理员收敛 (isAdmin) — P1-4');
-  const { isAdmin } = require('./server/routes/accounts');
+  console.log('\n[11] 迁移接口管理员收敛 (统一 isAdminIdentity) — AUTH-03');
+  const { isAdminIdentity } = require('./server/middleware/auth');
   const _prevAdmin = process.env.ADMIN_USERS;
   try {
     process.env.ADMIN_USERS = 'admin1,admin2';
-    assert.ok(isAdmin('admin1'), '名单内应放行');
-    assert.ok(isAdmin('admin2'), '名单内应放行');
-    assert.ok(!isAdmin('daicunzai'), '名单外应拒绝');
+    assert.ok(isAdminIdentity('admin1', 'user'), '白名单内应放行');
+    assert.ok(isAdminIdentity('admin2', 'user'), '白名单内应放行');
+    assert.ok(isAdminIdentity('dbadmin', 'admin'), '数据库 role=admin 应放行');
+    assert.ok(!isAdminIdentity('daicunzai', 'user'), '名单外应拒绝');
     process.env.ADMIN_USERS = '';
-    assert.ok(!isAdmin('admin1'), '未配置 ADMIN_USERS 应一律拒绝');
+    assert.ok(!isAdminIdentity('admin1', 'user'), '未配置 ADMIN_USERS 应一律拒绝');
   } finally {
     if (_prevAdmin === undefined) delete process.env.ADMIN_USERS; else process.env.ADMIN_USERS = _prevAdmin;
   }

@@ -55,10 +55,10 @@ async function getUserProfile(username) {
   };
 }
 
-// ====== 登录鉴权（精简记录，含密码/角色/状态，避免 loadUsers 全表）======
+// ====== 登录鉴权（精简记录，含密码/角色/状态/会话版本，避免 loadUsers 全表）======
 async function getUserAuth(username) {
   const { rows } = await pool.query(
-    'SELECT username, password, role, status, email FROM users WHERE username=$1',
+    'SELECT username, password, role, status, email, auth_version FROM users WHERE username=$1',
     [username]
   );
   return rows[0] || null;
@@ -94,17 +94,17 @@ async function listUsers({ search, limit, offset }) {
 }
 
 async function setUserRole(username, role) {
-  await pool.query('UPDATE users SET role=$2 WHERE username=$1', [username, role]);
+  await pool.query('UPDATE users SET role=$2, auth_version = auth_version + 1 WHERE username=$1', [username, role]);
 }
 async function setUserStatus(username, status) {
-  await pool.query('UPDATE users SET status=$2 WHERE username=$1', [username, status]);
+  await pool.query('UPDATE users SET status=$2, auth_version = auth_version + 1 WHERE username=$1', [username, status]);
 }
 // 知识分享写权限开关
 async function setKnowledgeEnabled(username, enabled) {
   await pool.query('UPDATE users SET knowledge_enabled=$2 WHERE username=$1', [username, !!enabled]);
 }
 async function adminSetPassword(username, newHash) {
-  await pool.query('UPDATE users SET password=$2 WHERE username=$1', [username, newHash]);
+  await pool.query('UPDATE users SET password=$2, auth_version = auth_version + 1 WHERE username=$1', [username, newHash]);
 }
 async function deleteUser(username) {
   const client = await pool.connect();
@@ -173,7 +173,13 @@ async function updateUserProfile(username, fields) {
   await pool.query('UPDATE users SET ' + sets.join(', ') + ' WHERE username=$1', vals);
 }
 
+// 改密（本人修改 / 找回密码）：递增 auth_version，使其他设备的旧 Session 立即失效。
 async function changePassword(username, newHash) {
+  await pool.query('UPDATE users SET password=$2, auth_version = auth_version + 1 WHERE username=$1', [username, newHash]);
+}
+// 仅更新哈希、不递增 auth_version：用于登录时旧哈希格式的透明升级，
+// 避免"刚登录成功的会话"因版本号变化被误判为过期（AUTH-01 第 8 条）。
+async function upgradePasswordHash(username, newHash) {
   await pool.query('UPDATE users SET password=$2 WHERE username=$1', [username, newHash]);
 }
 
@@ -202,5 +208,6 @@ module.exports = {
   ensureAdmin,
   updateUserProfile,
   changePassword,
+  upgradePasswordHash,
   updateLastLogin,
 };

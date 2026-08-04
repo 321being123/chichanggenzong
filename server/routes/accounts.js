@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const ExcelJS = require('exceljs');
 const asyncHandler = require('../middleware/async');
-const { requireLogin, assertOwnership } = require('../middleware/auth');
+const { requireLogin, assertOwnership, requireAdmin } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
 const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
@@ -268,15 +268,8 @@ router.post('/data/:name/recompute-nav', requireLogin, asyncHandler(assertOwners
   res.json({ ok: true, days: r.days || 0 });
 }));
 
-// 管理员判定：仅 ADMIN_USERS 环境变量中的用户名可触发运维类操作；未配置则一律拒绝
-function isAdmin(username) {
-  const admins = (process.env.ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
-  return admins.includes(username);
-}
-function requireAdmin(req, res, next) {
-  if (!isAdmin(req.session.user)) return res.status(403).json({ error: '无权限：该操作仅限管理员执行' });
-  next();
-}
+// 管理员判定统一走 server/middleware/auth.js 的 requireAdmin（数据库 role=admin 或 ADMIN_USERS 白名单，
+// 并校验账号状态与会话版本），不再在此重复实现第二套逻辑（AUTH-03）。
 
 // 一次性手动触发：把 account_data JSON 里残留的净值/持仓/交易/现金流合并进结构化表（幂等，不覆盖已有）。
 // 2026-08-03 架构整改（报告 3.4）：迁移只能执行一次——已归档账户（data_source_version=2）不再回灌，
@@ -683,7 +676,6 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
   } finally { client.release(); }
 }));
 
-// 暴露 isAdmin 供测试与安全审计使用（不改变 router 导出，app.js 仍以 router 挂载）
-router.isAdmin = isAdmin;
+// 管理员判定已统一收敛到 server/middleware/auth.js（AUTH-03），accounts 路由不再保留第二套逻辑。
 
 module.exports = router;

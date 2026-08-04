@@ -2015,6 +2015,17 @@ async function runMigration(up, version) {
 }
 
 // 已登记的升级步骤（按数组顺序执行；新增表/字段时追加 002、003… 步骤，勿往 001 堆 SQL）
+// ========== 049：会话吊销（AUTH-01，P0）==========
+// users 增加 auth_version（正整数，默认 1）。登录成功写入会话；禁用/删号/改密/重置密码后递增，
+// 旧 Session 的版本号与库不一致 → 下次受保护请求立即 401，实现"禁用即失效、改密即吊销"。
+async function migration049SessionRevocation() {
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 1`);
+  const ex = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname='chk_users_auth_version_positive' AND conrelid='users'::regclass`);
+  if (ex.rowCount === 0) {
+    await pool.query(`ALTER TABLE users ADD CONSTRAINT chk_users_auth_version_positive CHECK (auth_version > 0)`);
+  }
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -2064,6 +2075,7 @@ const MIGRATIONS = [
   { version: '046_position_events', up: migration046PositionEvents },
   { version: '047_account_id_fk', up: migration047AccountId },
   { version: '048_tighten_account_ledger', up: migration048TightenAccountLedger },
+  { version: '049_session_revocation', up: migration049SessionRevocation },
 ];
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========

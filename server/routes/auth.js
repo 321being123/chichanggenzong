@@ -6,7 +6,7 @@ const asyncHandler = require('../middleware/async');
 const rateLimit = require('../middleware/rateLimit');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
-const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, syncUserAccounts, getUserProfile, getUserAuth, getUserForPasswordReset, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, upgradePasswordHash, syncUserAccounts, getUserProfile, getUserAuth, getUserForPasswordReset, updateUserProfile, updateLastLogin, getConfig } = require('../db');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESET_CODE_TTL_MS = 5 * 60 * 1000;
@@ -85,6 +85,7 @@ router.post('/register', registerIpLimit, asyncHandler(async (req, res) => {
   // P2-3：同步结构化 accounts 表，新用户即拥有账户元数据行（cash_base/hk_rate 用默认）
   await syncUserAccounts(username, ['默认账户']).catch(() => {});
   req.session.user = username;
+  req.session.authVersion = 1; // 新用户会话版本（DEFAULT 1）
   res.json({ ok: true, username });
 }));
 
@@ -103,13 +104,15 @@ router.post('/login', loginIpLimit, asyncHandler(async (req, res, next) => {
   if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '账号或密码错误' }); }
   clearFail(lockKey);
   // 渐进迁移：旧哈希格式（pbkdf2/sha256）登录成功后，透明升级为新 scrypt 哈希（P1-5）
+  // 注意：仅更新哈希、不递增 auth_version，避免刚登录成功的会话被误判过期（AUTH-01 第 8 条）
   if (isLegacyHash(user.password)) {
-    changePassword(username, hashPwd(password)).catch(() => {});
+    upgradePasswordHash(username, hashPwd(password)).catch(() => {});
   }
   // 会话固定防护（P1-1）：登录成功后重建会话，丢弃旧会话ID，防会话固定攻击
   req.session.regenerate((err) => {
     if (err) return next(err);
     req.session.user = username;
+    req.session.authVersion = user.auth_version; // 写入会话版本，供后续请求校验（AUTH-01）
     updateLastLogin(username).catch(() => {});
     res.json({ ok: true, username, role: isAdminIdentity(username, user.role) ? 'admin' : (user.role || 'user') });
   });
@@ -124,11 +127,20 @@ router.post('/logout', (req, res) => {
 });
 router.get('/me', asyncHandler(async (req, res) => {
   if (!req.session.user) return res.json({ username: null });
+  // AUTH-01：会话失效（账号删除/禁用/版本不一致）时不再返回旧身份，按游客处理
+  const a = await getUserAuth(req.session.user);
+  if (!a || a.status !== 'active') return res.json({ username: null });
+  if (req.session.authVersion !== undefined && a.auth_version !== req.session.authVersion) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
   const role = isAdminIdentity(p.username, p.role) ? 'admin' : (p.role || 'user');
   res.json({ username: p.username, nickname: p.nickname || '', avatar: p.avatar || '', role, status: p.status || 'active', knowledgeEnabled: p.knowledgeEnabled || false });
 }));
-router.get('/config', asyncHandler(async (req, res) => { res.json({ needRegisterCode: !!(await getConfig('register_code', REGISTER_CODE || '')) }); }));
+router.get('/config', asyncHandler(async (req, res) => {
+  const registerOpen = (await getConfig('register_open', '1')) === '1';
+  const needRegisterCode = !!(await getConfig('register_code', REGISTER_CODE || ''));
+  const requireEmail = (await getConfig('require_email', '0')) === '1';
+  res.json({ registerOpen, needRegisterCode, requireEmail, emailServiceAvailable: !!mailer });
+}));
 
 // 发送邮箱验证码（IP+邮箱 联合限流，复用现有内存/Redis 限流中间件）
 router.post('/send-code',

@@ -2,9 +2,34 @@
 const asyncHandler = require('./async');
 const { loadUser, pool } = require('../db');
 
-function requireLogin(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: '未登录' });
-  next();
+// 安全销毁会话：兼容测试中的桩 session（无 destroy 方法时不崩溃）
+function destroySession(req) {
+  try {
+    if (req.session && typeof req.session.destroy === 'function') req.session.destroy(() => {});
+    else if (req.session) req.session.user = null;
+  } catch (e) { /* 忽略销毁异常 */ }
+}
+
+// ========== 登录态校验（AUTH-01：统一验证存在/状态/会话版本）==========
+// 每次请求校验用户仍存在、状态为 active、会话版本与数据库一致；任一不满足即销毁会话并返回 401/403。
+// 校验结果缓存到 req.authUser，供同请求内的 requireAdmin 复用，避免重复查询。
+async function requireLogin(req, res, next) {
+  if (!req.session || !req.session.user) return res.status(401).json({ error: '未登录' });
+  try {
+    const { rows } = await pool.query(
+      'SELECT username, role, status, auth_version FROM users WHERE username=$1',
+      [req.session.user]
+    );
+    const user = rows[0];
+    if (!user) { destroySession(req); return res.status(401).json({ error: '账号不存在或已失效' }); }
+    if (user.status && user.status !== 'active') { destroySession(req); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
+    if (req.session.authVersion !== undefined && user.auth_version !== req.session.authVersion) {
+      destroySession(req);
+      return res.status(401).json({ error: '登录态已失效，请重新登录' });
+    }
+    req.authUser = user;
+    next();
+  } catch (e) { next(e); }
 }
 
 // ========== 防暴力破解 ==========
@@ -69,16 +94,25 @@ function isAdminIdentity(username, role) {
   return role === 'admin' || admins.includes(username);
 }
 
-// ========== 管理员鉴权（升级：数据库 role=admin 或 ADMIN_USERS 白名单，兼容旧机制）==========
-// 异步安全：所有异常均被吞掉并返回 403，永不向 Express 抛 reject。
+// ========== 管理员鉴权（升级：数据库 role=admin 或 ADMIN_USERS 白名单 + 状态/版本校验）==========
+// 复用 requireLogin 的会话版本与状态校验；管理员账号禁用或降级后立即拒绝。
+// 异常安全：所有异常均被吞掉并返回 403/401，永不向 Express 抛 reject。
 async function requireAdmin(req, res, next) {
   const username = req.session && req.session.user;
   if (!username) return res.status(401).json({ error: '未登录' });
   try {
-    const { rows } = await pool.query('SELECT role FROM users WHERE username=$1', [username]);
-    if (isAdminIdentity(username, rows[0] && rows[0].role)) return next();
-  } catch (e) {}
-  return res.status(403).json({ error: '无权限：该操作仅限管理员执行' });
+    const user = req.authUser
+      || (await pool.query('SELECT role, status, auth_version FROM users WHERE username=$1', [username])).rows[0];
+    if (!user) { destroySession(req); return res.status(403).json({ error: '无权限：该操作仅限管理员执行' }); }
+    if (user.status && user.status !== 'active') { destroySession(req); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
+    if (req.session.authVersion !== undefined && user.auth_version !== req.session.authVersion) {
+      destroySession(req);
+      return res.status(401).json({ error: '登录态已失效，请重新登录' });
+    }
+    if (!isAdminIdentity(username, user.role)) return res.status(403).json({ error: '无权限：该操作仅限管理员执行' });
+    req.authUser = user;
+    next();
+  } catch (e) { next(e); }
 }
 
 module.exports = { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps };

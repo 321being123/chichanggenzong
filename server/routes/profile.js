@@ -42,8 +42,12 @@ router.post('/profile/password', requireLogin, asyncHandler(async (req, res) => 
   const user = await getUserAuth(req.session.user);
   if (!user) return res.status(404).json({ error: '用户不存在' });
   if (!verifyPwd(oldPassword, user.password)) return res.status(400).json({ error: '旧密码错误' });
-  await changePassword(req.session.user, hashPwd(newPassword));
-  res.json({ ok: true });
+  await changePassword(req.session.user, hashPwd(newPassword)); // 递增 auth_version，其他设备旧 Session 失效
+  // 销毁当前会话，前端提示重新登录（AUTH-01）
+  req.session.destroy((err) => {
+    if (err) return res.status(500).json({ error: '登录态清理失败，请重新登录' });
+    res.json({ ok: true });
+  });
 }));
 
 module.exports = router;

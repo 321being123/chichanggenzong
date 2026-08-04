@@ -83,6 +83,7 @@ body {
   <p class="sub" id="subtitle">账号登录</p>
 
   <div class="error" id="error"></div>
+  <div class="error" id="email-service-hint" style="display:none;"></div>
 
   <div class="form-group">
     <label>账号</label>
@@ -142,6 +143,14 @@ body {
         <button class="pwd-toggle" onclick="togglePwd('reg-pwd2')" type="button">👁</button>
       </div>
     </div>
+  </div>
+
+  <div class="form-group" id="code-group" style="display:none;">
+    <label>邀请码</label>
+    <input type="text" id="code" placeholder="输入邀请码">
+  </div>
+
+  <div id="register-email-fields">
     <div class="form-group">
       <label>邮箱</label>
       <input type="email" id="email" placeholder="用于接收验证码" autocomplete="email">
@@ -150,19 +159,14 @@ body {
       <label>验证码</label>
       <div style="display:flex;gap:8px;">
         <input type="text" id="email-code" placeholder="6位验证码" style="flex:1;min-width:0;">
-        <button class="btn btn-primary" id="send-code-btn" onclick="sendCode()" style="width:auto;padding:12px 18px;margin:0;white-space:nowrap;font-size:13px;">发送验证码</button>
+        <button class="btn btn-primary" id="send-code-btn" onclick="sendCode()" type="button" style="width:auto;padding:12px 18px;margin:0;white-space:nowrap;font-size:13px;">发送验证码</button>
       </div>
     </div>
   </div>
 
-  <div class="form-group" id="code-group" style="display:none;">
-    <label>邀请码</label>
-    <input type="text" id="code" placeholder="输入邀请码">
-  </div>
-
   <button class="btn btn-primary" id="submit-btn" onclick="submit()">登 录</button>
   <div class="switch" id="switch-hint">
-    <a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>
+    <a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>
   </div>
 </div>
 </main>
@@ -173,6 +177,9 @@ body {
 let isRegister = false;
 let isForgot = false;
 let needCode = false;
+let requireEmail = false;
+let emailServiceAvailable = false;
+let registerOpen = true;
 let submitting = false;
 
 // 回跳目标：登录后回到原页面（如后台 /admin.html），默认前台首页
@@ -189,8 +196,28 @@ fetch(api('/api/me')).then(r => r.json()).then(d => {
 }).catch(() => {});
 
 fetch(api('/api/config')).then(r => r.json()).then(cfg => {
-  needCode = cfg.needRegisterCode;
+  needCode = !!cfg.needRegisterCode;
+  requireEmail = !!cfg.requireEmail;
+  emailServiceAvailable = !!cfg.emailServiceAvailable;
+  registerOpen = cfg.registerOpen !== false;
+  applyAuthConfig();
 }).catch(() => {});
+
+// 依据后台配置统一控制：注册入口可见性、邮箱字段显隐、邮箱服务不可用提示（AUTH-02）
+function applyAuthConfig() {
+  document.querySelectorAll('.register-entry').forEach(el => { el.style.display = registerOpen ? '' : 'none'; });
+  const emailFields = document.getElementById('register-email-fields');
+  if (emailFields) emailFields.style.display = (isRegister && requireEmail) ? 'block' : 'none';
+  const hint = document.getElementById('email-service-hint');
+  if (hint) {
+    if (requireEmail && !emailServiceAvailable) {
+      hint.textContent = '邮箱验证服务暂不可用，注册功能暂停';
+      hint.style.display = 'block';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+}
 
 function showToast(msg) {
   const el = document.getElementById('toast');
@@ -220,7 +247,8 @@ function toggleMode() {
   document.getElementById('code-group').style.display = isRegister && needCode ? 'block' : 'none';
   document.getElementById('switch-hint').innerHTML = isRegister
     ? '已有账号？<a onclick="toggleMode()">返回登录</a>'
-    : '<a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+    : '<a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+  applyAuthConfig();
 }
 
 function toggleForgotMode() {
@@ -235,12 +263,14 @@ function toggleForgotMode() {
   document.getElementById('code-group').style.display = 'none';
   document.getElementById('switch-hint').innerHTML = isForgot
     ? '<a onclick="toggleForgotMode()">返回登录</a>'
-    : '<a onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+    : '<a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+  applyAuthConfig();
 }
 
 let sendCodeTimer = 0;
 async function sendCode() {
   if (sendCodeTimer > 0) return;
+  if (requireEmail && !emailServiceAvailable) { showError('邮箱验证服务暂不可用'); return; }
   const email = document.getElementById('email').value.trim();
   if (!email) { showError('请先填写邮箱'); return; }
   hideError();
@@ -381,6 +411,7 @@ function submit() {
   }
 
   // === 注册 ===
+  if (!registerOpen) { showError('注册已关闭'); return; }
   const pwd = document.getElementById('reg-pwd').value;
   const pwd2 = document.getElementById('reg-pwd2').value;
   if (!pwd || pwd.length < 6) { showError('密码至少6位'); return; }
@@ -388,13 +419,16 @@ function submit() {
 
   const body = { username, password: pwd };
 
-  // 邮箱验证码
-  const email = document.getElementById('email').value.trim();
-  const emailCode = document.getElementById('email-code').value.trim();
-  if (!email) { showError('请输入邮箱'); return; }
-  if (!emailCode) { showError('请输入邮箱验证码'); return; }
-  body.email = email;
-  body.emailCode = emailCode;
+  // 邮箱验证码（仅当后台要求邮箱验证时收集并校验）
+  if (requireEmail) {
+    if (!emailServiceAvailable) { showError('邮箱验证服务暂不可用，无法注册'); return; }
+    const email = document.getElementById('email').value.trim();
+    const emailCode = document.getElementById('email-code').value.trim();
+    if (!email) { showError('请输入邮箱'); return; }
+    if (!emailCode) { showError('请输入邮箱验证码'); return; }
+    body.email = email;
+    body.emailCode = emailCode;
+  }
 
   if (needCode) {
     const code = document.getElementById('code').value.trim();

@@ -1088,6 +1088,7 @@
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>
 <script src="js/knowledge.js?v=23"></script>
+<script src="js/access-policy.js?v=1"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -1152,7 +1153,7 @@ function renderTopUser(p) {
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
 function switchMain(main, noPushState) {
-  if (!username && (main === 'holdings' || main === 'profile')) {
+  if (!username && ACCESS_POLICY.requiresLogin(main)) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return;
   }
@@ -1598,11 +1599,10 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
   var requestedMain = startParams.get('main');
   var requestedMetric = startParams.get('metric');
   var requestedSub = startParams.get('sub');
-  var allowedMain = ['home','holdings','stock-analysis','market-volatility','ipo','bond-safety','changelog','profile','knowledge','position-compare'];
-  var publicMain = ['home', 'knowledge', 'market-volatility'];
+  var allowedMain = ACCESS_POLICY.allowedPages;
   var initialMain = 'home';
   if (allowedMain.includes(requestedMain)) {
-    if (loggedIn || publicMain.includes(requestedMain)) {
+    if (loggedIn || ACCESS_POLICY.isPublic(requestedMain)) {
       initialMain = requestedMain;
     } else if (requestedMain !== 'home') {
       // 未登录访问非公开页面 → 跳转登录，登录后回来

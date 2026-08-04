@@ -83,4 +83,26 @@ ok(!/^\s*<a [^>]*admin\.html/.test(html), '管理后台入口不应在 HTML 中�
 // 菜单样式存在
 ok(css.includes('.nav-user-menu') && css.includes('.nav-user-item'), '缺少头像下拉菜单样式');
 
+// ===== UI-02：一级导航按用户任务重排 =====
+// 一级入口：首页、我的资产、研究工具（下拉）、投资笔记
+ok(html.includes('data-main="home"') && html.includes('>首页<'), '一级导航缺少“首页”入口');
+ok(html.includes('data-main="holdings"') && html.includes('我的资产'), '一级导航缺少“我的资产”入口');
+ok(html.includes('data-main="knowledge"') && html.includes('投资笔记'), '一级导航缺少“投资笔记”入口');
+// 研究工具为下拉触发器（data-dropdown），且子项映射四个现有页面
+ok(html.includes('data-dropdown="research"') && html.includes('id="research-menu"'), '研究工具未实现为下拉触发器');
+['stock-analysis','bond-safety','market-volatility','ipo'].forEach(function (sub) {
+  ok(html.includes('class="sub-tab" data-main="' + sub + '"'), '研究工具下拉缺少子项 ' + sub);
+});
+// 旧一级入口已收敛（不再作为一级 tab 出现）
+['股债分析','股市周期','持仓管理','可转债','版本记录'].forEach(function (old) {
+  ok(!new RegExp('class="main-tab" data-main="[^"]*"[^>]*>' + old + '<').test(html), '旧一级入口“' + old + '”应已移走/重排');
+});
+// 删除全局劫持 Ctrl+R / F5（恢复浏览器标准刷新）
+ok(!/keydown[\s\S]{0,120}F5[\s\S]{0,80}preventDefault/.test(html), '不应再全局劫持 F5/Ctrl+R');
+// 导航写入历史（pushState），支持前进/后退（popstate）
+ok(html.includes('history.pushState'), 'switchMain 应使用 pushState 写入历史');
+ok(html.includes('popstate'), '应监听 popstate 支持浏览器前进/后退');
+// 下拉样式存在
+ok(css.includes('.main-tab-dropdown') && css.includes('.dropdown-menu') && css.includes('.sub-tab'), '缺少研究工具下拉样式');
+
 console.log('frontend-navigation: ' + checks + ' 项断言通过');

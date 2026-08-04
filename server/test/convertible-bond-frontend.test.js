@@ -7,7 +7,7 @@ const script = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
 
-assert.ok(html.includes('data-main="stock-analysis">股债分析'), '一级导航未改为股债分析');
+assert.ok(html.includes('data-main="stock-analysis"'), '缺少个券分析导航入口（研究工具下拉子项）');
 assert.ok(html.includes('id="bond-analysis-content"'), '缺少可转债分析结果区');
 assert.ok(html.includes('id="security-analysis-select"'), '缺少持仓和自选入口');
 assert.ok(html.includes('js/bond-analysis.js'), '缺少可转债前端脚本');

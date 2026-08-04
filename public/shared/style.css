@@ -428,6 +428,21 @@ td.negative { color: #137333; font-weight: 600; }
   content: ''; position: absolute; bottom: 0; left: 10px; right: 10px;
   height: 3px; background: #ffc107; border-radius: 3px 3px 0 0;
 }
+/* 一级导航下拉（研究工具） */
+.main-tab-dropdown { position: relative; display: flex; }
+.dropdown-menu {
+  position: absolute; top: 100%; left: 0; min-width: 150px;
+  background: #fff; border: 1px solid rgba(0,0,0,.08); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 6px; display: none; z-index: 1000;
+}
+.dropdown-menu.open { display: block; }
+.sub-tab {
+  display: block; width: 100%; text-align: left; background: transparent; border: 0;
+  padding: 9px 12px; border-radius: 6px; font-size: 13px; color: #1a1a2e; cursor: pointer;
+  white-space: nowrap;
+}
+.sub-tab:hover { background: #f2f4f8; }
+.sub-tab.active { color: #1a237e; font-weight: 600; }
 /* 持仓管理：二级导航（全宽铺满，紧贴一级栏下方，实色中靛蓝与一级深蓝强对比） */
 #main-holdings { /* 全宽容器，内部元素各自按 1240 居中 */ }
 .holdings-header { position: sticky; top: 52px; z-index: 90; background: #fff; border-bottom: 1px solid #dfe3eb; box-shadow: 0 2px 6px rgba(31,42,68,.08); }

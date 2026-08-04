@@ -15,8 +15,8 @@ function check(name, fn) {
 }
 
 console.log('A. 一级导航与首页卡片');
-check('一级导航显示“可转债”且保留内部标识 bond-safety', () => {
-  assert.ok(html.includes('data-main="bond-safety">可转债<'), '一级导航未改为“可转债”');
+check('研究工具下拉含“可转债”入口且保留内部标识 bond-safety', () => {
+  assert.ok(html.includes('data-main="bond-safety"') && html.includes('可转债'), '研究工具下拉缺少可转债入口');
 });
 check('首页模块卡片标题为“可转债”', () => {
   assert.ok(html.includes('home-module-name">可转债<'), '首页卡片标题未改为“可转债”');

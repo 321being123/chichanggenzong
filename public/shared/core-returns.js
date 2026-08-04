@@ -59,7 +59,7 @@ function closeCashFlowModal() {
   if (container) container.parentNode.removeChild(container);
 }
 
-function addCashFlow() {
+async function addCashFlow() {
   var amountInput = document.getElementById('cf-amount');
   var noteInput = document.getElementById('cf-note');
   var abs = parseFloat(amountInput ? amountInput.value : 0);
@@ -69,20 +69,28 @@ function addCashFlow() {
   }
   var dir = window.__cfDir || 'in';
   var cfAmount = dir === 'in' ? abs : -abs;
-  if (!data.cashFlows) data.cashFlows = [];
-  data.cashFlows.push({
-    id: uid(),
-    date: todayCN(),
-    created_at: nowSec(),
-    amount: cfAmount,
-    note: noteInput ? noteInput.value.trim() : ''
-  });
-  // 现金由系统自动重算（cashFlows 已更新），刷新内存显示
-  recalcCash();
-  saveData();
-  closeCashFlowModal();
-  renderAll();
-  showToast((cfAmount > 0 ? '入金' : '出金') + ' ' + fmt(Math.abs(cfAmount)) + ' 已记录');
+  // 幂等键：前端生成唯一 id，重复点击/网络重试不会新增第二条（2026-08-04 修复）
+  var cfId = uid();
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cashFlow: {
+          id: cfId,
+          date: todayCN(),
+          amount: cfAmount,
+          note: noteInput ? noteInput.value.trim() : ''
+        }
+      })
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { showToast(j.error || '记录失败'); return; }
+    if (j.data) refreshDataFromServer(j.data);
+    closeCashFlowModal();
+    renderAll();
+    showToast((cfAmount > 0 ? '入金' : '出金') + ' ' + fmt(Math.abs(cfAmount)) + ' 已记录');
+  } catch(e) { showToast('记录失败：' + (e.message || e)); }
 }
 
 // ===================== 基金净值法收益（已修正现金流） =====================
@@ -109,7 +117,7 @@ let indexVisibility = {
  *   （含今天、不含上次净值日，避免漏算未开 App 那几天的出入金，也不重复计入已结算日）
  * - 现金流的金额同时累加到 data.cash 上，确保总资产正确
  */
-function recordNav() {
+async function recordNav() {
   if (!data.navHistory) data.navHistory = [];
   const today = todayCN();
   // 投入本金：优先用导入数据，导入数据最后一列日期之后按出入金延续（见 investedAt）
@@ -156,7 +164,17 @@ function recordNav() {
       lastNav.invested = invested;
       lastNav.snapshot_at = nowSec(); // 更新快照边界
     }
-    saveData();
+    // 阶段三：净值记录走 PUT /nav/:date 局部接口
+    // ⚠️ 只同步版本号，不整体覆盖 data——避免服务器旧持仓冲掉刚获取的新行情价格（2026-08-04 阻断修复）
+    try {
+      var _r = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: currentAccount, nav: lastNav.nav, totalAsset: s.total, invested: invested })
+      });
+      var _j = await _r.json().catch(function(){ return {}; });
+      if (_r.ok && _j.data) syncDataVersions(_j.data);
+    } catch(_e) { console.warn('recordNav PUT failed:', _e); }
     return;
   }
 
@@ -192,7 +210,16 @@ function recordNav() {
       snapshot_at: nowSec()
     });
   }
-  saveData();
+  // 阶段三：净值记录走 PUT /nav/:date 局部接口（只同步版本号，不整体覆盖 data，防冲掉新价格）
+  try {
+    var _r2 = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: currentAccount, nav: nav, totalAsset: s.total, invested: invested })
+    });
+    var _j2 = await _r2.json().catch(function(){ return {}; });
+    if (_r2.ok && _j2.data) syncDataVersions(_j2.data);
+  } catch(_e2) { console.warn('recordNav PUT failed:', _e2); }
 }
 
 function renderReturnsStats() {

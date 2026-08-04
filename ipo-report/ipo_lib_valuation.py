@@ -548,9 +548,11 @@ _XGB_FEATURE_INFO = None
 
 _XGB_MEDIAN_VALS = {}
 
+_XGB_TRAINED_AT = None
+
 def _load_xgb_model():
     """加载XGBoost模型（从训练好的模型文件）"""
-    global _XGB_MODEL, _XGB_FEATURES, _XGB_FEATURE_INFO, _XGB_MEDIAN_VALS
+    global _XGB_MODEL, _XGB_FEATURES, _XGB_FEATURE_INFO, _XGB_MEDIAN_VALS, _XGB_TRAINED_AT
     if _XGB_MODEL is not None:
         return True
 
@@ -577,6 +579,7 @@ def _load_xgb_model():
         _XGB_FEATURES = info["features"]
         _XGB_FEATURE_INFO = info
         _XGB_MEDIAN_VALS = info.get("medians", {})
+        _XGB_TRAINED_AT = info.get("trained_at", None)
         return True
     except Exception as e:
         print(f"[XGBoost] 模型加载失败: {e}")
@@ -665,7 +668,7 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0):
                 f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lr}% 流通{cmv:.1f}亿",
             ]
 
-        return estimated, detail_parts
+        return estimated, detail_parts, _XGB_TRAINED_AT
     except Exception as e:
         print(f"[XGBoost] 预测失败: {e}")
         return None
@@ -750,7 +753,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         _XGB_MODEL = None
         xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
     if xgb_result is not None and xgb_result[0] > 0:
-        estimated, detail_parts = xgb_result
+        estimated, detail_parts, trained_at = (xgb_result[0], xgb_result[1], xgb_result[2] if len(xgb_result) > 2 else None)
         # 叠加赛道热度修正：真实基础 × 赛道系数（乘一次，线性可预期，不用非线性放大公式）
         if sector_label:
             sector_mult = sector_boost
@@ -763,6 +766,9 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         temp_mult = get_temp_listing_multiplier()
         estimated = int(round(estimated * temp_mult))
         detail_parts.append(f"🌡️ 温度衰减: {temp}（×{temp_mult}）→{estimated}%")
+        # 模型更新时间
+        if trained_at:
+            detail_parts.append(f"🕐 XGBoost模型更新: {trained_at}")
 
         summary = _format_listing_summary(estimated, stock_detail, temp)
 
@@ -863,4 +869,4 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         "predicted_return": estimated,
     }
 
-__all__ = ['get_temp_pe_penalty', 'get_temp_temp_score_penalty', 'get_temp_listing_multiplier', '_get_market_premium_curve', '_estimate_initial_premium_by_iteration', '_calc_xgb_boost', 'estimate_bond_listing_price', 'get_valuation_advice', '_XGB_MODEL', '_XGB_FEATURES', '_XGB_FEATURE_INFO', '_XGB_MEDIAN_VALS', '_load_xgb_model', '_xgb_predict_listing', '_get_lot_size', '_format_listing_summary', 'get_listing_analysis']
+__all__ = ['get_temp_pe_penalty', 'get_temp_temp_score_penalty', 'get_temp_listing_multiplier', '_get_market_premium_curve', '_estimate_initial_premium_by_iteration', '_calc_xgb_boost', 'estimate_bond_listing_price', 'get_valuation_advice', '_XGB_MODEL', '_XGB_FEATURES', '_XGB_FEATURE_INFO', '_XGB_MEDIAN_VALS', '_XGB_TRAINED_AT', '_load_xgb_model', '_xgb_predict_listing', '_get_lot_size', '_format_listing_summary', 'get_listing_analysis']

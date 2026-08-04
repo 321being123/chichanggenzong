@@ -25,7 +25,7 @@ function openNavEdit(date) {
   document.getElementById('modal-nav-edit').classList.add('show');
 }
 
-function saveNavEdit() {
+async function saveNavEdit() {
   const date = normalizeDate(document.getElementById('nav-edit-date').value);
   const navRaw = document.getElementById('nav-edit-nav').value;
   const totalRaw = document.getElementById('nav-edit-total').value;
@@ -33,23 +33,24 @@ function saveNavEdit() {
   if (!date) { showToast('请填写有效的日期（YYYY-MM-DD）'); return; }
   const nav = parseFloat(navRaw);
   if (isNaN(nav)) { showToast('请填写有效的净值'); return; }
-  const rec = {
-    date: date,
-    nav: nav,
-    totalAsset: (totalRaw === '' || totalRaw == null) ? null : parseFloat(totalRaw),
-    invested: (invRaw === '' || invRaw == null) ? null : parseFloat(invRaw)
-  };
-  if (!data.navHistory) data.navHistory = [];
-  if (navEditIndex >= 0 && data.navHistory[navEditIndex]) {
-    const target = data.navHistory[navEditIndex];
-    target.date = rec.date; target.nav = rec.nav; target.totalAsset = rec.totalAsset; target.invested = rec.invested;
-  } else {
-    const exist = data.navHistory.find(function (n) { return n.date === rec.date; });
-    if (exist) { exist.nav = rec.nav; exist.totalAsset = rec.totalAsset; exist.invested = rec.invested; }
-    else data.navHistory.push(rec);
-  }
-  data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
-  saveData();
+  // 编辑场景：取编辑前的旧日期，改日期时服务端先删旧再写新（2026-08-04 阻断修复）
+  const oldDate = (navEditIndex >= 0 && data.navHistory[navEditIndex]) ? data.navHistory[navEditIndex].date : null;
+  try {
+    var r = await fetch(api('/api/nav/' + date + '?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nav: nav,
+        totalAsset: (totalRaw === '' || totalRaw == null) ? null : parseFloat(totalRaw),
+        invested: (invRaw === '' || invRaw == null) ? null : parseFloat(invRaw),
+        account: currentAccount,
+        fromDate: (oldDate && oldDate !== date) ? oldDate : null
+      })
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { showToast(j.error || '保存失败'); return; }
+    if (j.data) refreshDataFromServer(j.data);
+  } catch(e) { showToast('保存失败：' + (e.message || e)); return; }
   renderEarnings();
   closeModal('modal-nav-edit');
   showToast('已保存');
@@ -60,9 +61,16 @@ async function deleteNav(date) {
   if (!await projectConfirm('确定删除 ' + (date || '') + ' 这条净值记录？', {
     title: '删除净值记录', confirmText: '删除', danger: true
   })) return;
-  data.navHistory = data.navHistory.filter(function (n) { return n.date !== date; });
-  data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
-  saveData();
+  try {
+    var r = await fetch(api('/api/nav/' + date + '?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: currentAccount })
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { showToast(j.error || '删除失败'); return; }
+    if (j.data) refreshDataFromServer(j.data);
+  } catch(e) { showToast('删除失败：' + (e.message || e)); return; }
   renderEarnings();
   showToast('已删除');
 }

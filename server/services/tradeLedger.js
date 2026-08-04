@@ -172,17 +172,51 @@ async function loadLedgerResult(username, accountName) {
   return await loadAccountData(username, accountName);
 }
 
+// 乐观锁版本校验（2026-08-04 并发验收）：在事务内比较 account_data.version。
+// expectedVersion 为空/非法 → 跳过（兼容纯数据层调用/测试）；不一致 → 409 拒绝，防多窗口后写覆盖先写。
+// FOR UPDATE 行锁：两个请求真正同时到达时，第一个锁行，第二个阻塞到第一个提交后
+// 再读到新版本 → 409，杜绝"都读到旧版本同时通过"的竞态（2026-08-04 第二轮修复）。
+async function checkVersionInTxn(client, username, accountName, expectedVersion) {
+  if (expectedVersion == null || expectedVersion === '') return;
+  const ev = Number(expectedVersion);
+  if (!Number.isFinite(ev)) return;
+  const { rows } = await client.query(
+    'SELECT COALESCE(version,0) AS v FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',
+    [username, accountName]
+  );
+  const cur = rows[0] ? Number(rows[0].v) : 0;
+  if (cur !== ev) throw bizError('数据已在其他窗口被修改，请刷新页面后重试', 409);
+}
+
 // ========== 主入口：新增交易（事务） ==========
 // trade 字段：{ id?, code, name?, direction, price, quantity, amount?, commission?, stamp_tax?,
 //              transfer_fee?, other_fee?, type?, subtype?, note?, date, created_at?, import_batch_id? }
 // opts: { replaceId? } 替换已存在交易（修改场景）
-async function applyTrade(username, accountName, trade) {
+// externalClient: 外部传入的 client（批量导入时由调用方开大事务，本函数不自行 BEGIN/COMMIT/RELEASE）
+// expectedVersion: 乐观锁版本（事务内校验 account_data.version，不一致 409）
+async function applyTrade(username, accountName, trade, externalClient = null, expectedVersion = null) {
   const t = Object.assign({}, trade);
   const { price, quantity, amount } = validateTrade(t);
   const { tradeDate, executedAt } = splitTradeDateTime(t.date, t.created_at);
-  const client = await pool.connect();
+  const client = externalClient || await pool.connect();
+  const ownTxn = !externalClient;
   try {
-    await client.query('BEGIN');
+    if (ownTxn) await client.query('BEGIN');
+    // 幂等预检（2026-08-04）：event.id 已存在 → 直接返回成功，不校验版本。
+    // 放在版本校验之前：双击/网络重试的第二个请求携带同一 id 与同一旧版本号，
+    // 若先校验版本会因第一个请求已 +1 而 409，与"幂等不新增"的语义矛盾。
+    if (t.id) {
+      const idDup = await client.query(
+        'SELECT id FROM trades WHERE id=$1 AND username=$2 AND account_name=$3',
+        [t.id, username, accountName]
+      );
+      if (idDup.rows[0]) {
+        if (ownTxn) await client.query('COMMIT');
+        return { ok: true, id: t.id, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
+      }
+    }
+    // 乐观锁：独立事务时校验版本（外部事务由调用方统一校验一次）
+    if (ownTxn) await checkVersionInTxn(client, username, accountName, expectedVersion);
     // P0-4（验收修复）：账户级并发锁——同账户的交易写入串行化。
     // 若账户行不存在（新账户首笔交易），INSERT ... ON CONFLICT 兜底建行并锁住；
     // 用 pg_advisory_xact_lock 按 (username,account_name) 哈希串行，保证两笔并发卖出不会同时通过校验。
@@ -232,7 +266,7 @@ async function applyTrade(username, accountName, trade) {
         [username, accountName, t.import_batch_id, t.code, tradeDate, t.direction, price, quantity]
       );
       if (dup.rows[0]) {
-        await client.query('COMMIT');
+        if (ownTxn) await client.query('COMMIT');
         return { ok: true, id: dup.rows[0].id, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
       }
     }
@@ -264,9 +298,17 @@ async function applyTrade(username, accountName, trade) {
     );
     if (pos.rows[0]) {
       if (sec.quantity > 0) {
+        // 2026-08-04 阻断修复：adjust 时同步名称/类型/细类/备注（非空才更新，防覆盖已有值），
+        // 否则服务器返回后会把页面上刚改的元数据恢复成旧值
         await client.query(
-          `UPDATE positions SET quantity=$4, cost=$5 WHERE username=$1 AND account_name=$2 AND code=$3`,
-          [username, accountName, t.code, sec.quantity, sec.cost]
+          `UPDATE positions SET quantity=$4, cost=$5,
+             name=CASE WHEN $6<>'' THEN $6 ELSE name END,
+             type=CASE WHEN $7<>'' THEN $7 ELSE type END,
+             subtype=CASE WHEN $8<>'' THEN $8 ELSE subtype END,
+             note=CASE WHEN $9<>'' THEN $9 ELSE note END
+           WHERE username=$1 AND account_name=$2 AND code=$3`,
+          [username, accountName, t.code, sec.quantity, sec.cost,
+           t.name || '', t.type || '', t.subtype || '', t.note || '']
         );
       } else {
         // 全部卖出 → 持仓归零删除
@@ -299,8 +341,32 @@ async function applyTrade(username, accountName, trade) {
       [username, accountName]
     );
     const cash = await recomputeCash(client, username, accountName);
-    await client.query('COMMIT');
+    if (ownTxn) await client.query('COMMIT');
     return { ok: true, id: tradeId, cash: cash, tradeDate: tradeDate };
+  } catch (e) {
+    if (ownTxn) await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    if (ownTxn) client.release();
+  }
+}
+
+// ========== 批量期初建仓/调整（单事务，2026-08-04 阻断修复） ==========
+// 原实现循环调用 applyTrade 各自开事务，中间一条失败 → 前面已入库，出现"提示失败但导入了一部分"。
+// 改为外部传入同一 client，所有事件在同一个事务内执行：任一条失败 → 整体 ROLLBACK。
+// expectedVersion：批量开始时校验一次 account_data.version（乐观锁）。
+async function applyTradesBatch(username, accountName, events, expectedVersion = null) {
+  const client = await pool.connect();
+  const ids = [];
+  try {
+    await client.query('BEGIN');
+    await checkVersionInTxn(client, username, accountName, expectedVersion);
+    for (const event of events) {
+      const r = await applyTrade(username, accountName, event, client);
+      ids.push(r.id);
+    }
+    await client.query('COMMIT');
+    return { ok: true, ids, added: ids.length };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -312,10 +378,13 @@ async function applyTrade(username, accountName, trade) {
 // ========== 删除交易（事务） ==========
 // 策略（方案阶段二）：从被删交易日起重放该证券持仓与账户现金；被删交易不是最后一条时，
 // 由重放逻辑自然处理（删除后剩余交易按序重算数量/成本/现金）。
-async function deleteTrade(username, accountName, tradeId) {
+// expectedVersion：乐观锁版本（2026-08-04 第三轮修复：删除也必须在同一事务内校验版本，
+// 否则旧窗口仍能删除新窗口正在处理的数据）
+async function deleteTrade(username, accountName, tradeId, expectedVersion = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 账户级并发锁（与 applyTrade 同锁，防删除与新增并发交错）
     await client.query(`SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE`, [username, accountName]);
     const del = await client.query(
@@ -369,10 +438,12 @@ async function clearTrades(username, accountName) {
 }
 
 // 删除单条现金流（方案阶段一第 5 条：删除后立即重算现金并返回最新结果）
-async function deleteCashFlow(username, accountName, flowId) {
+// expectedVersion：乐观锁版本（2026-08-04 第三轮修复：删除也须事务内校验版本）
+async function deleteCashFlow(username, accountName, flowId, expectedVersion = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 读取被删现金流原日期（验收修复：历史净值须从该日期起重算，而非仅今天）
     const del = await client.query(
       'DELETE FROM cash_flows WHERE username=$1 AND account_name=$2 AND id=$3 RETURNING id, date',
@@ -407,10 +478,75 @@ function nowStr() {
     p(cn.getUTCHours()) + ':' + p(cn.getUTCMinutes()) + ':' + p(cn.getUTCSeconds());
 }
 
+// 新增现金流（方案阶段二-2：局部接口替代 saveData 全量保存）
+// cf.id 由前端生成（幂等键）：同一 id 重复提交 → ON CONFLICT DO NOTHING，不新增第二条（2026-08-04 修复）
+// expectedVersion：乐观锁版本（事务内校验 account_data.version，不一致 409）
+async function addCashFlow(username, accountName, cf, expectedVersion = null) {
+  if (!cf || typeof cf.amount !== 'number' || isNaN(cf.amount)) throw bizError('请填写有效的金额');
+  const date = (cf.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw bizError('日期格式错误');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // 幂等预检（2026-08-04）：同一 cf.id 已存在 → 直接返回成功，不校验版本
+    // （双击/网络重试的第二个请求带同一 id 与同一旧版本号，若先校验版本会 409）
+    if (cf.id) {
+      const idDup = await client.query(
+        'SELECT id FROM cash_flows WHERE id=$1 AND username=$2 AND account_name=$3',
+        [cf.id, username, accountName]
+      );
+      if (idDup.rows[0]) {
+        await client.query('COMMIT');
+        const result = await loadLedgerResult(username, accountName);
+        return { ok: true, id: cf.id, cash: null, data: result, skipped: 'duplicate' };
+      }
+    }
+    await checkVersionInTxn(client, username, accountName, expectedVersion);
+    const { rows: aRows } = await client.query(
+      'SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE',
+      [username, accountName]
+    );
+    const accountId = aRows.length ? aRows[0].id : null;
+    const flowId = cf.id || require('crypto').randomBytes(8).toString('hex');
+    const createdAt = cf.created_at || nowStr();
+    const ins = await client.query(
+      `INSERT INTO cash_flows (id, username, account_name, account_id, date, created_at, amount, note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (id, username, account_name) DO NOTHING`,
+      [flowId, username, accountName, accountId, date, createdAt, round(cf.amount, 2), cf.note || '']
+    );
+    if (ins.rowCount === 0) {
+      // 幂等命中：同一 id 已存在，不重复新增
+      await client.query('COMMIT');
+      const result = await loadLedgerResult(username, accountName);
+      return { ok: true, id: flowId, cash: null, data: result, skipped: 'duplicate' };
+    }
+    await markNavDirty(client, username, accountName, date, 'cashflow');
+    await client.query(
+      `UPDATE accounts SET version=COALESCE(version,0)+1, updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+        WHERE username=$1 AND account_name=$2`,
+      [username, accountName]
+    );
+    const cash = await recomputeCash(client, username, accountName);
+    await client.query('COMMIT');
+    const result = await loadLedgerResult(username, accountName);
+    return { ok: true, id: flowId, cash, data: result };
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   applyTrade,
+  applyTradesBatch,
+  checkVersionInTxn,
+  loadLedgerResult,
   deleteTrade,
   clearTrades,
+  addCashFlow,
   deleteCashFlow,
   recomputeSecurity,
   recomputeCash,

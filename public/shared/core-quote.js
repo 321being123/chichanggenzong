@@ -137,8 +137,29 @@ async function refreshAllPrices() {
   data.changes = {}; Object.keys(priceChangeMap).forEach(function(k) { data.changes[k] = priceChangeMap[k]; });
   await syncIndexPoints();
   data.totalAsset = calcSummary().total;
-  recordNav();
-  saveData(); renderAll(); renderReturnsChart();
+  await recordNav();
+  // 阶段二-5：行情价格用局部 PATCH 接口，不触发 saveData 全量保存
+  var pricesToSave = data.positions.map(function(p) { return { code: p.code, price: p.price }; }).filter(function(p) { return p.code && p.price != null; });
+  try {
+    var pr = await fetch(api('/api/positions/prices?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: currentAccount, prices: pricesToSave })
+    });
+    var pj = await pr.json().catch(function(){ return {}; });
+    // 2026-08-04 阻断修复：必须检查保存状态，否则 400/500 时仍提示"刷新完成"，下次打开价格回退旧值
+    if (!pr.ok) {
+      console.warn('[refreshAllPrices] 价格保存失败', pr.status, pj.error || '');
+      showToast('行情已获取，但价格保存失败：' + (pj.error || ('HTTP ' + pr.status)) + '（请刷新后重试）');
+    } else if (typeof pj.version === 'number') {
+      // 同步新版本号，避免紧接着的第二次操作误报"其他窗口已修改"（2026-08-04 第二轮修复）
+      dataVersion = pj.version;
+    }
+  } catch(e) {
+    console.warn('[refreshAllPrices] 价格保存异常', e);
+    showToast('行情已获取，但价格保存失败（' + (e.message || e) + '）');
+  }
+  renderAll(); renderReturnsChart();
   const failedCodes = codes.filter(c => {
     const p = data.positions.find(x => x.code === c);
     return p && (!p.price || !p.name);
@@ -195,7 +216,7 @@ async function saveDailyPricesToDB() {
       body: JSON.stringify({ prices: prices, date: todayCN() })
     });
     data._dailyPricesSaved = todayCN();
-    saveData();
+    try { localStorage.setItem('_dailyPricesSaved_' + currentAccount, todayCN()); } catch(e) {}
   } catch(e) {}
 }
 
@@ -290,7 +311,7 @@ function calcQuick() {
     : '-';
 }
 
-function addQuickPosition() {
+async function addQuickPosition() {
   const code = classifyCode.normalizeCode(document.getElementById('quick-code').value.trim());
   const name = document.getElementById('quick-name').value.trim();
   var qty = parseInt(document.getElementById('quick-qty').value);
@@ -305,13 +326,20 @@ function addQuickPosition() {
   if (!code || !qty || qty <= 0) { showToast('请填写代码和数量'); return; }
   if (isNaN(price) || price <= 0) { showToast('请输入有效价格（可手动填写）'); return; }
 
-  data.positions.push({
-    id: uid(), code, name: name,
-    price: price, quantity: qty,
-    cost: price, type: type, subtype: subtype, note: ''
-  });
-  saveData();
-  renderAll();
+  // 阶段二-6：快速添加走 position-events，服务端统一事务写持仓+交易
+  // 幂等键：event.id 前端生成，重复点击/网络重试不会新增第二条（2026-08-04 修复）
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: { id: uid(), code, name, direction: 'open', price: price, quantity: qty, type, subtype, date: todayCN(), note: '快速添加' } })
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { showToast(j.error || '添加失败'); return; }
+    if (j.data) refreshDataFromServer(j.data);
+    renderAll();
+  } catch(e) { showToast('添加失败：' + (e.message || e)); return; }
+
   showToast('已添加 ' + (name || code) + ' ' + qty + (subtype === '可转债' ? '张' : '股'));
 
   document.getElementById('quick-code').value = '';
@@ -331,28 +359,57 @@ function pasteImport() {
   document.getElementById('paste-import-area').style.display = 'block';
 }
 
-function executePasteImport() {
+async function executePasteImport() {
   const raw = document.getElementById('paste-input').value.trim();
   if (!raw) { showToast('请粘贴数据'); return; }
   const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  let added = 0, skipped = 0;
-  lines.forEach(line => {
+  const events = [];
+  let skipped = 0, noPrice = 0;
+  for (const line of lines) {
     const parts = line.split(/\s+/);
-    if (parts.length < 3) { skipped++; return; }
+    if (parts.length < 3) { skipped++; continue; }
     const code = parts[0].replace(/[.](SH|SZ|HK|US)$/i, '');
     const type = parts[1] === '债权' ? '债权' : '股权';
     const recognized = recognizeCode(code);
     const subtype = parts[2] || (type === '股权' ? (recognized ? recognized.subtype : '深市') : type === '现金' ? '现金' : '可转债');
     const qty = parseInt(parts[3]) || 0;
-    if (data.positions.some(p => p.code === code)) { skipped++; return; }
-    data.positions.push({
-      id: uid(), code: code, name: '', price: null,
-      quantity: qty, cost: null, type: type, subtype: subtype, note: ''
+    if (qty <= 0) { skipped++; continue; }
+    if (data.positions.some(p => p.code === code)) { skipped++; continue; }
+    // 价格：优先第5列显式填写，否则拉行情兜底（期初建仓价格必须>0，后端会拒绝 0 价）
+    let price = parseFloat(parts[4]);
+    if (!price || price <= 0) {
+      try {
+        const q = await fetchQuote(code);
+        if (q && q.price && q.price > 0) price = q.price;
+      } catch(e) {}
+    }
+    if (!price || price <= 0) { noPrice++; continue; }
+    events.push({
+      id: uid(), // 幂等键：网络重试/重复点击不会重复导入（2026-08-04 修复）
+      code, name: '', direction: 'open', price: price, quantity: qty,
+      type, subtype, date: todayCN(), note: '粘贴导入'
     });
-    added++;
-  });
-  saveData(); renderAll();
-  document.getElementById('paste-import-area').style.display = 'none';
-  showToast('已导入 ' + added + ' 只' + (skipped > 0 ? '，' + skipped + ' 只跳过' : ''));
-  doRefresh();
+  }
+  if (events.length === 0) {
+    let msg = '没有可导入的持仓';
+    if (skipped) msg += '（' + skipped + ' 只格式错误/重复）';
+    if (noPrice) msg += '（' + noPrice + ' 只无法获取价格）';
+    showToast(msg);
+    return;
+  }
+  try {
+    var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/position-events/batch?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: events })
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { showToast(j.error || '导入失败'); return; }
+    if (j.data) refreshDataFromServer(j.data);
+    renderAll();
+    document.getElementById('paste-import-area').style.display = 'none';
+    let msg = '已导入 ' + events.length + ' 只' + (skipped > 0 ? '，' + skipped + ' 只跳过' : '') + (noPrice > 0 ? '，' + noPrice + ' 只无价格未导入' : '');
+    showToast(msg);
+    doRefresh();
+  } catch(e) { showToast('导入失败：' + (e.message || e)); }
 }

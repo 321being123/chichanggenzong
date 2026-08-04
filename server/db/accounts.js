@@ -116,7 +116,7 @@ async function buildInstrumentIdMap(codes) {
 //   保存持仓不会覆盖后台新净值；两个浏览器改不同数据集互不覆盖。
 // - 未指定某数据集版本（旧客户端/测试）→ 允许写入该数据集（向后兼容）。
 // - expectedVersion：账户级乐观锁（任何一次保存都要求与加载时一致，防整包并发互踩）。
-async function saveAccountData(username, accountName, data, expectedVersion = null, datasetVersions = null) {
+async function saveAccountData(username, accountName, data, expectedVersion = null, datasetVersions = null, changedDatasets = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -153,6 +153,13 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       navHistory: match(req.navHistory, base.nv),
       cashFlows: match(req.cashFlows, base.cv),
     };
+    // changedDatasets：阶段一止损参数。提供时只允许写入声明的数据集（交集过滤版本匹配的结果）；
+    // 未提供 → 400 拒绝（路由层兜底），但 db 层保留 null 兼容纯数据层调用/测试。
+    if (changedDatasets !== null) {
+      for (const k of Object.keys(allow)) {
+        if (allow[k] && !changedDatasets.includes(k)) allow[k] = false;
+      }
+    }
     const skipped = [];
     for (const k of ['positions', 'trades', 'navHistory', 'cashFlows']) if (!allow[k]) skipped.push(k);
 
@@ -174,7 +181,17 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       await bulkInsert(client, 'trades',
         ['id', 'username', 'account_name', 'account_id', 'date', 'created_at', 'trade_date', 'executed_at', 'import_batch_id', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
         data.trades || [],
-        (t) => [t.id, username, accountName, accountId, t.date || '', t.created_at || '', t.trade_date || (t.date || '').slice(0, 10), t.executed_at || t.date || t.created_at || '', t.import_batch_id || null, t.code || '', t.name || '', t.direction || 'buy', round(t.price, 4), round(t.quantity, 4), round(t.amount, 4), t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)]
+        (t) => {
+          const price = round(t.price, 4);
+          const quantity = round(t.quantity, 4);
+          const direction = t.direction || 'buy';
+          // amount 统一为 price×quantity（与 tradeLedger 校验一致）；open/adjust 保持原值
+          let amount = round(t.amount, 4);
+          if (direction !== 'open' && direction !== 'adjust') {
+            amount = round(price * quantity, 4);
+          }
+          return [t.id, username, accountName, accountId, t.date || '', t.created_at || '', t.trade_date || (t.date || '').slice(0, 10), t.executed_at || t.date || t.created_at || '', t.import_batch_id || null, t.code || '', t.name || '', direction, price, quantity, amount, t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)];
+        }
       );
     }
     // nav_history（snapshot_at 持久化，P0-3：同日现金流结算边界刷新后不丢）
@@ -290,24 +307,55 @@ async function loadDailyPrices(username, accountName, date) {
 // 后台新增净值后，旧浏览器保存持仓时 nav_version 不匹配 → 该数据集被跳过，不再覆盖后台新净值）
 // 2026-08-03 阻断修复：写 nav_history 与 nav_version+1 必须在**同一事务**内，
 // 否则第一步成功第二步失败时净值已写入但版本未涨 → 旧客户端保存仍可覆盖后台数据（版本失真）。
-async function upsertNav(username, accountName, rec) {
+async function upsertNav(username, accountName, rec, fromDate = null, expectedVersion = null, bumpVersion = false) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 乐观锁（2026-08-04 并发验收）：版本不一致 → 409，防多窗口后写覆盖先写。
+    // FOR UPDATE 行锁：两窗口同时记录净值时第一个锁行，第二个阻塞后读到新版本 → 409（2026-08-04 第三轮修复）
+    if (expectedVersion != null && expectedVersion !== '') {
+      const ev = Number(expectedVersion);
+      if (Number.isFinite(ev)) {
+        const { rows: vrows } = await client.query(
+          'SELECT COALESCE(version,0) AS v FROM account_data WHERE username=$1 AND account_name=$2 FOR UPDATE',
+          [username, accountName]
+        );
+        const cur = vrows[0] ? Number(vrows[0].v) : 0;
+        if (cur !== ev) {
+          const e = new Error('数据已在其他窗口被修改，请刷新页面后重试');
+          e.status = 409;
+          throw e;
+        }
+      }
+    }
     const { rows: aRows } = await client.query(
       'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
     );
     const accountId = aRows[0] ? aRows[0].id : null;
+    // 修改记录日期（2026-08-04 阻断修复）：先删除旧日期，防止"改日期后新旧两条并存"
+    if (fromDate && fromDate !== rec.date) {
+      await client.query(
+        'DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3',
+        [username, accountName, fromDate]
+      );
+    }
     await client.query(
       'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ' +
       'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
       [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null]
     );
+    // bumpVersion：仅前端主动保存净值时提升总版本（并发乐观锁基准）；
+    // 后台任务（replayNav/navSnapshot）只提升 nav_version，靠数据集级版本防旧快照覆盖前端保存
     await client.query(
-      `INSERT INTO account_data (username, account_name, data, version, nav_version)
-       VALUES ($1,$2,'{}',0,1)
-       ON CONFLICT (username, account_name)
-       DO UPDATE SET nav_version = account_data.nav_version + 1`,
+      bumpVersion
+        ? `INSERT INTO account_data (username, account_name, data, version, nav_version)
+           VALUES ($1,$2,'{}',0,1)
+           ON CONFLICT (username, account_name)
+           DO UPDATE SET nav_version = account_data.nav_version + 1, version = account_data.version + 1`
+        : `INSERT INTO account_data (username, account_name, data, version, nav_version)
+           VALUES ($1,$2,'{}',0,1)
+           ON CONFLICT (username, account_name)
+           DO UPDATE SET nav_version = account_data.nav_version + 1`,
       [username, accountName]
     );
     await client.query('COMMIT');

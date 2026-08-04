@@ -8,6 +8,7 @@ import os
 import json
 import warnings
 import numpy as np
+from datetime import datetime
 from _common import _load_env
 import db_pg
 
@@ -203,6 +204,7 @@ info = {
     "train_mape": float(train_mape),
     "test_mape": float(test_mape),
     "target_transform": "log1p_nonnegative_return",
+    "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 }
 with open(FEATURES_PATH, "w", encoding="utf-8") as f:
     json.dump(info, f, ensure_ascii=False, indent=2)

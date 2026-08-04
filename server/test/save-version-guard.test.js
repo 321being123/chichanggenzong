@@ -1,8 +1,8 @@
-// ========== 保存版本保护 HTTP 集成测试（2026-08-03 阻断项修复） ==========
+// ========== 保存接口下线 + 恢复导入 HTTP 集成测试（2026-08-04 整改后适配） ==========
 // 覆盖：
-//  1) 四个数据集版本全带 → 保存成功
-//  2) 只带 posV（缺 navV 等）→ 409 拒绝（后台净值不受影响）
-//  3) 一个版本都不带 → 409 拒绝
+//  1) 日常全量保存（无 restore）→ 410 下线（阶段三要求）
+//  2) restore=true → 全量覆盖成功，无需版本号
+//  3) restore=true 数据校验失败 → 400
 // 走真实 HTTP（mini app + session mock），验证路由层行为。
 const assert = require('assert');
 const path = require('path');
@@ -56,34 +56,28 @@ function payload(over) {
       return fetch(url + q, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     };
 
-    await checkAsync('四个数据集版本全带 → 保存成功（版本最新时以请求数据为准）', async () => {
+    await checkAsync('日常全量保存（无 restore）→ 410 下线', async () => {
       const d = await loadAccountData(U, A);
       const q = '?version=' + d.version + '&posV=' + d.posVersion + '&tradeV=' + d.tradeVersion +
         '&navV=' + d.navVersion + '&cashV=' + d.cashflowVersion;
       const res = await put(q, payload({ positions: [{ id: 'p1', code: '600519', name: '贵州茅台', price: 999, quantity: 10, cost: 900, type: '股票', subtype: 'A股', note: '' }] }));
-      assert.strictEqual(res.status, 200, '全版本应保存成功，状态=' + res.status);
+      assert.strictEqual(res.status, 410, '日常保存应 410 下线，状态=' + res.status);
       const d2 = await loadAccountData(U, A);
-      assert.strictEqual(d2.positions[0].price, 999, '持仓改动应生效');
-      // 版本全带且最新 → 前端快照可信，净值以请求数据为准（用户可能删除了 08-02）
-      assert.ok(!d2.navHistory.some(n => n.date === '2026-08-02'), '全版本最新时净值以请求为准');
+      assert.strictEqual(d2.positions[0].price, 1000, '410 后持仓不应被改动');
+      assert.ok(d2.navHistory.some(n => n.date === '2026-08-02'), '后台净值不应被覆盖');
     });
 
-    await checkAsync('只传 posV（缺 navV/cashV）→ 409 拒绝，后台净值不被覆盖', async () => {
-      // 重新补上后台净值
-      await upsertNav(U, A, { date: '2026-08-02', nav: 1.05, totalAsset: 105000, invested: 80000 });
-      const d = await loadAccountData(U, A);
-      // 模拟旧客户端：只传 posV/tradeV（缺 navV/cashV），且 navHistory 用旧数据（不含 08-02）
-      const q = '?version=' + d.version + '&posV=' + d.posVersion + '&tradeV=' + d.tradeVersion;
-      const res = await put(q, payload({ navHistory: [{ date: '2026-08-01', nav: 1.0, totalAsset: 100000, invested: 80000 }] }));
-      assert.strictEqual(res.status, 409, '只传部分版本应被拒绝，状态=' + res.status);
+    await checkAsync('restore=true → 全量覆盖成功（无需版本号）', async () => {
+      const res = await put('?restore=true', payload({ positions: [{ id: 'p1', code: '600519', name: '贵州茅台', price: 888, quantity: 10, cost: 900, type: '股票', subtype: 'A股', note: '' }] }));
+      assert.strictEqual(res.status, 200, 'restore 应成功，状态=' + res.status);
       const d2 = await loadAccountData(U, A);
-      assert.ok(d2.navHistory.some(n => n.date === '2026-08-02'), '后台 08-02 净值必须保留');
+      assert.strictEqual(d2.positions[0].price, 888, 'restore 后持仓价格应被覆盖');
+      assert.ok(!d2.navHistory.some(n => n.date === '2026-08-02'), 'restore 以导入数据为准（08-02 后台净值被覆盖）');
     });
 
-    await checkAsync('一个版本都不带 → 409 拒绝', async () => {
-      const d = await loadAccountData(U, A);
-      const res = await put('?version=' + d.version, payload());
-      assert.strictEqual(res.status, 409, '无任何版本应被拒绝，状态=' + res.status);
+    await checkAsync('restore=true 数据校验失败 → 400', async () => {
+      const res = await put('?restore=true', { positions: 'bad' });
+      assert.strictEqual(res.status, 400, '非法数据应 400，状态=' + res.status);
     });
   }
 
@@ -96,7 +90,7 @@ function payload(over) {
 
   const pass = results.filter(r => r[0] === 'PASS').length;
   const fail = results.filter(r => r[0] === 'FAIL').length;
-  console.log('\n===== 保存版本保护 HTTP 集成汇总 =====');
+  console.log('\n===== 保存接口下线/恢复导入 HTTP 集成汇总 =====');
   console.log('PASS=' + pass + '  FAIL=' + fail + '  SKIP=' + (results.length - pass - fail));
   if (fail > 0) { console.log('HAS_ISSUES'); process.exit(1); }
   console.log('ALL PASS');

@@ -553,7 +553,7 @@ async function deleteCashFlow(id) {
   if (!id) return;
   // 服务端统一账本：删除后重算现金并返回最新结果（方案阶段一第 5 条）
   try {
-    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows/' + encodeURIComponent(id)), {
+    const r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/ledger/cash-flows/' + encodeURIComponent(id) + '?version=' + (dataVersion != null ? dataVersion : '')), {
       method: 'DELETE'
     });
     const j = await r.json().catch(() => ({}));

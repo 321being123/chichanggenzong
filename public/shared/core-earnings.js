@@ -324,18 +324,19 @@ function applyHistoryRecords(parsed, mode) {
 
 // 导入后自动重算：以「导入的最后一条」为锚点，其后的净值按链式公式接续计算
 // nav_t = nav_{t-1} * 当日总市值 / (前一日总市值 + 当日现金流)  —— 剔除入金影响，与 recordNav 同源
+// 返回锚点日期（导入最后一条），供提交时把重算后的后续记录一并持久化（2026-08-04 修复）
 function recalcNavAfterImport(parsed) {
-  if (!data.navHistory || data.navHistory.length === 0) return;
+  if (!data.navHistory || data.navHistory.length === 0) return null;
   const cf = (data.cashFlows || []);
   let lastImportDate = null;
   (parsed || []).forEach(function (p) { if (!lastImportDate || p.date > lastImportDate) lastImportDate = p.date; });
-  if (!lastImportDate) return;
+  if (!lastImportDate) return null;
   const sorted = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   let anchor = null;
   for (let i = 0; i < sorted.length; i++) {
     if (sorted[i].date <= lastImportDate && sorted[i].nav != null) anchor = sorted[i];
   }
-  if (!anchor) return;
+  if (!anchor) return null;
   let prevNav = anchor.nav;
   let prevTotal = (anchor.totalAsset != null) ? anchor.totalAsset : 0;
   for (let i = 0; i < sorted.length; i++) {
@@ -348,6 +349,7 @@ function recalcNavAfterImport(parsed) {
     prevTotal = (n.totalAsset != null) ? n.totalAsset : prevTotal;
   }
   data.navHistory = sorted;
+  return lastImportDate;
 }
 
 // 冲突确认弹框（返回 Promise：'import' 导入覆盖 / 'online' 线上覆盖）
@@ -453,9 +455,38 @@ async function finishImport(rows, mapping) {
   const hasConflict = realStart && parsed.some(function (p) { return p.date >= realStart && p.date <= realEnd; });
   const choice = hasConflict ? await showConflictModal() : 'online';
   applyHistoryRecords(parsed, choice);
-  recalcNavAfterImport(parsed); // 以导入最后一条为锚，其后净值自动接续重算
+  const lastImportDate = recalcNavAfterImport(parsed); // 以导入最后一条为锚，其后净值自动接续重算
 
-  saveData();
+  // 阶段三：净值导入走 POST /nav/import 局部接口
+  // 语义（2026-08-04 阻断修复）：
+  //  - 导入数据为准：发送全部记录，后端按日期 upsert，只覆盖冲突日期、保留其余线上净值（不再 replace 删全部）
+  //  - 线上数据为准：只发送不落在线上段内的记录，冲突日期不发，避免覆盖线上
+  //  - 导入数据为准时追加重算后的后续记录一并持久化，防止服务器响应刷新后重算结果消失
+  var sendRecords = parsed;
+  if (choice === 'online' && realStart) {
+    sendRecords = parsed.filter(function (p) { return p.date < realStart || p.date > realEnd; });
+  } else if (choice === 'import' && lastImportDate) {
+    var tail = (data.navHistory || []).filter(function (n) { return n.date > lastImportDate; })
+      .map(function (n) { return { date: n.date, nav: n.nav, totalAsset: (n.totalAsset != null ? n.totalAsset : null), invested: (n.invested != null ? n.invested : null) }; });
+    sendRecords = parsed.concat(tail);
+  }
+  if (sendRecords.length === 0) {
+    renderEarnings();
+    showToast('导入完成：冲突日期均保留线上净值，无新增记录');
+    return;
+  }
+  try {
+    var importBody = { account: currentAccount, records: sendRecords };
+    var r = await fetch(api('/api/nav/import?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(importBody)
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { showToast(j.error || '导入失败'); return; }
+    if (j.data) refreshDataFromServer(j.data);
+  } catch(e) { showToast('导入失败：' + (e.message || e)); return; }
+
   renderEarnings();
   let msg = '已导入 ' + parsed.length + ' 条历史净值';
   if (badRows.length) msg += '（' + badRows.length + ' 行因缺日期/净值未导入）';

@@ -221,38 +221,48 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
   res.json(result);
 }));
 
-router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
-  const isRestore = req.query.restore === 'true';
-  // 阶段三下线 saveData：日常调用（无 ?restore=true）直接 410 拒绝
-  if (!isRestore) {
-    return res.status(410).json({ error: '全量保存已下线，请刷新页面使用新版局部接口' });
-  }
-  // 全量导入恢复：跳过 changedDatasets/版本验证，按当前库版本强制覆盖全部数据集
-  const v = validateAccountData(req.body);
-  if (!v.ok) return res.status(400).json({ error: '数据校验失败：' + v.msg });
-  const username = req.session.user;
-  const accountName = decodeURIComponent(req.params.name);
-  // 读取当前版本号作为乐观锁基值
+// ========== DATA-01 阶段二：快照导入专用接口（替代 PUT /api/data/:name?restore=true 整包写） ==========
+// 逻辑集中在此 helper，前端导入与历史兼容调用统一走这里：强制全量覆盖全部数据集、跳过版本校验。
+async function doImportSnapshot(username, accountName, body) {
+  const v = validateAccountData(body);
+  if (!v.ok) return { status: 400, error: '数据校验失败：' + v.msg };
   const { rows: verRows } = await pool.query(
     'SELECT COALESCE(version,0) as v FROM account_data WHERE username=$1 AND account_name=$2',
     [username, accountName]
   );
   const currentVersion = verRows[0] ? verRows[0].v : 0;
   try {
-    const r = await saveAccountData(username, accountName, req.body, currentVersion, null, null);
-    res.json({
-      ok: true,
-      version: r.version,
-      posVersion: r.posVersion,
-      tradeVersion: r.tradeVersion,
-      navVersion: r.navVersion,
-      cashflowVersion: r.cashflowVersion,
-      skipped: r.skipped || []
-    });
+    const r = await saveAccountData(username, accountName, body, currentVersion, null, null);
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        version: r.version,
+        posVersion: r.posVersion,
+        tradeVersion: r.tradeVersion,
+        navVersion: r.navVersion,
+        cashflowVersion: r.cashflowVersion,
+        skipped: r.skipped || []
+      }
+    };
   } catch (e) {
-    if (e && e.conflict) return res.status(409).json({ error: e.message });
+    if (e && e.conflict) return { status: 409, error: e.message };
     throw e;
   }
+}
+
+router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
+  // 阶段三下线 saveData：日常与恢复整包写入统一走 POST /api/accounts/:name/import-snapshot
+  return res.status(410).json({ error: '全量保存已下线，请刷新页面使用新版局部接口或快照导入功能' });
+}));
+
+// 快照导入：全量覆盖账户全部数据集（持仓/交易/现金流/净值/设置），跳过版本校验，按当前库版本强制覆盖。
+// 鉴权：本人账户归属校验 + 限频；数据校验失败 400；导入后返回最新版本号供前端同步。
+router.post('/accounts/:name/import-snapshot', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '导入过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
+  const accountName = decodeURIComponent(req.params.name);
+  const r = await doImportSnapshot(req.session.user, accountName, req.body);
+  if (r.status !== 200) return res.status(r.status).json({ error: r.error });
+  res.json(r.body);
 }));
 
 // 晚录入交易 → 历史净值精确回填：从 fromDate 起重算该账户 nav_history（幂等 upsert）。

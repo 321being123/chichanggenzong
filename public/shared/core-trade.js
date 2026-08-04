@@ -1053,9 +1053,9 @@ function importData(event) {
     try {
       const imported = JSON.parse(e.target.result);
       if (imported.positions && imported.trades !== undefined) {
-        // 全量导入走 restore 模式（绕过日常 410 门禁，跳过版本检查强制覆盖）
-        var r = await fetch(api('/api/data/' + encodeURIComponent(currentAccount) + '?restore=true'), {
-          method: 'PUT',
+        // 全量导入走专用快照导入接口（DATA-01：替代旧整包写接口，跳过版本检查强制覆盖）
+        var r = await fetch(api('/api/accounts/' + encodeURIComponent(currentAccount) + '/import-snapshot'), {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(imported)
         });

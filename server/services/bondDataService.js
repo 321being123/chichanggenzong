@@ -219,4 +219,5 @@ module.exports = {
   getRatingDistribution,
   checkBondCompleteness,
   upsertBondBaseInfo,
+  normalizeStockCode,
 };

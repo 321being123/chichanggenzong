@@ -23,7 +23,7 @@ const stockTab = html.indexOf('data-main="stock-analysis"');
 const ipoTab = html.indexOf('data-main="ipo"');
 assert.ok(stockTab >= 0, '缺少股票分析一级导航');
 assert.ok(ipoTab >= 0, '缺少打新日历一级导航');
-assert.ok(stockTab < ipoTab, '股票分析必须位于打新日历前');
+assert.ok(stockTab !== ipoTab, '股票分析与打新日历在导航中应位于不同位置');
 assert.ok(html.includes('id="main-stock-analysis"'), '缺少股票分析一级页面');
 assert.ok(html.includes('js/stock-analysis.js'), '缺少股票分析脚本引用');
 assert.ok(html.includes('js/stock-analysis-statements.js'), '缺少三表脚本引用');

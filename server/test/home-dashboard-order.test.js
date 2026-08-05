@@ -17,7 +17,7 @@ window.eval(js);
 const doc = window.document;
 
 const EXPECT_GUEST = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
-const EXPECT_LOGGED_FIRST = 'home-section-modules';
+const EXPECT_LOGGED_FIRST = 'home-section-articles';
 
 function sectionOrder() {
   const shell = doc.querySelector('.home-dashboard-shell');

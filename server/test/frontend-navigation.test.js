@@ -90,18 +90,27 @@ ok(!/^\s*<a [^>]*admin\.html/.test(html), '管理后台入口不应在 HTML 中�
 // 菜单样式存在
 ok(css.includes('.nav-user-menu') && css.includes('.nav-user-item'), '缺少头像下拉菜单样式');
 
-// ===== UI-02：一级导航按用户任务重排 =====
-// 一级入口：首页、我的资产、研究工具（下拉）、投资笔记
-ok(html.includes('data-main="home"') && html.includes('>首页<'), '一级导航缺少“首页”入口');
-ok(html.includes('data-main="holdings"') && html.includes('我的资产'), '一级导航缺少“我的资产”入口');
-ok(html.includes('data-main="knowledge"') && html.includes('投资笔记'), '一级导航缺少“投资笔记”入口');
-// 研究工具为下拉触发器（data-dropdown），且子项映射四个现有页面
-ok(html.includes('data-dropdown="research"') && html.includes('id="research-menu"'), '研究工具未实现为下拉触发器');
-['stock-analysis','bond-safety','market-volatility','ipo'].forEach(function (sub) {
-  ok(html.includes('class="sub-tab" data-main="' + sub + '"'), '研究工具下拉缺少子项 ' + sub);
+// ===== UI-02：一级导航按用户任务重排（平铺）=====
+// 一级入口：首页、投资笔记、持仓管理、打新日历、可转债、证券分析、市场周期、版本记录
+const EXPECTED_MAIN_TABS = [
+  { main: 'home', label: '首页' },
+  { main: 'knowledge', label: '投资笔记' },
+  { main: 'holdings', label: '持仓管理' },
+  { main: 'ipo', label: '打新日历' },
+  { main: 'bond-safety', label: '可转债' },
+  { main: 'stock-analysis', label: '证券分析' },
+  { main: 'market-volatility', label: '市场周期' },
+  { main: 'changelog', label: '版本记录' }
+];
+EXPECTED_MAIN_TABS.forEach(function (t) {
+  ok(html.includes('data-main="' + t.main + '"') && html.includes('>' + t.label + '<'),
+    '一级导航缺少“' + t.label + '”入口');
 });
+// 研究工具已拆为独立一级入口，不再以下拉形式存在
+ok(!html.includes('data-dropdown="research"'), '研究工具不应再以下拉触发器存在');
+ok(!html.includes('id="research-menu"'), '不应再保留研究工具下拉菜单');
 // 旧一级入口已收敛（不再作为一级 tab 出现）
-['股债分析','股市周期','持仓管理','可转债','版本记录'].forEach(function (old) {
+['股债分析','股市周期'].forEach(function (old) {
   ok(!new RegExp('class="main-tab" data-main="[^"]*"[^>]*>' + old + '<').test(html), '旧一级入口“' + old + '”应已移走/重排');
 });
 // 删除全局劫持 Ctrl+R / F5（恢复浏览器标准刷新）
@@ -110,8 +119,6 @@ ok(!/keydown[\s\S]{0,120}F5[\s\S]{0,80}preventDefault/.test(html), '不应再全
 // 注：FRONT-01 拆分后 switchMain/setupMainNav 位于 js/navigation.js
 ok(html.includes('history.pushState') || nav.includes('history.pushState'), 'switchMain 应使用 pushState 写入历史');
 ok(html.includes('popstate') || nav.includes('popstate'), '应监听 popstate 支持浏览器前进/后退');
-// 下拉样式存在
-ok(css.includes('.main-tab-dropdown') && css.includes('.dropdown-menu') && css.includes('.sub-tab'), '缺少研究工具下拉样式');
 
 // ===== UI-03：可转债产品入口收敛到统一上下文 =====
 // 可转债专题子导航含四类能力：安全性 / 周期 / 估值 / 个券分析

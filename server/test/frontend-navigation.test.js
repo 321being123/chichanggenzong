@@ -1,11 +1,14 @@
 // ACCESS-01 前端导航访问矩阵测试（静态断言，不依赖浏览器/数据库）
-// 验证：统一访问矩阵存在且口径正确；index.html 的 switchMain 与 URL 解析已统一复用该矩阵。
+// 验证：统一访问矩阵存在且口径正确；switchMain（FRONT-01 拆分后位于 js/navigation.js）与
+// index.html 的 URL 解析已统一复用该矩阵。
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
+const nav = fs.readFileSync(path.join(root, 'public', 'js', 'navigation.js'), 'utf8');
+const sess = fs.readFileSync(path.join(root, 'public', 'js', 'session.js'), 'utf8');
 const policy = fs.readFileSync(path.join(root, 'public', 'js', 'access-policy.js'), 'utf8');
 const coreTrade = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
@@ -39,8 +42,10 @@ ok(JSON.stringify(protectedPages) === JSON.stringify(expectedProtected),
 ok(allowedPages.length === publicPages.length + protectedPages.length, 'allowedPages 应为公开与受限的并集');
 
 // 2) switchMain 已统一复用矩阵，删除硬编码 holdings/profile 例外
-ok(html.includes('ACCESS_POLICY.requiresLogin(main)'), 'switchMain 应改用 ACCESS_POLICY.requiresLogin');
-ok(!/!username && \(main === 'holdings' \|\| main === 'profile'\)/.test(html),
+// 注：FRONT-01 拆分后 switchMain 位于 js/navigation.js，断言跟随代码位置
+ok(html.includes('ACCESS_POLICY.requiresLogin(main)') || nav.includes('ACCESS_POLICY.requiresLogin(main)'),
+  'switchMain 应改用 ACCESS_POLICY.requiresLogin');
+ok(!/!username && \(main === 'holdings' \|\| main === 'profile'\)/.test(nav),
   'switchMain 不应再硬编码 holdings/profile 例外');
 
 // 3) 首次 URL 解析已统一复用矩阵，删除独立 publicMain
@@ -71,14 +76,16 @@ ok(!/清空记录/.test(html), 'index.html 不应再保留“清空记录”按�
 ok(!/onclick="clearTrades\(\)"/.test(html), 'index.html 不应再调用 clearTrades()');
 ok(!/function clearTrades\(/.test(coreTrade), 'core-trade.js 不应再保留无调用方的 clearTrades()');
 // 头像改为下拉菜单，固定含 个人中心 / 版本记录 / 退出登录
-ok(html.includes("'个人中心'") || html.includes('个人中心'), '头像菜单缺少“个人中心”');
-ok(html.includes("'版本记录'") || html.includes('版本记录'), '头像菜单缺少“版本记录”');
-ok(html.includes('退出登录'), '头像菜单缺少“退出登录”');
-ok(html.includes("switchMain('profile')"), '个人中心菜单项未接入个人中心页');
-ok(html.includes("switchMain('changelog')"), '版本记录菜单项未接入版本记录页');
-ok(html.includes('logout()'), '退出登录菜单项未接入退出逻辑');
+// 注：FRONT-01 拆分后头像菜单由 js/session.js 的 renderTopUser 渲染，断言跟随代码位置
+ok(html.includes('个人中心') || sess.includes('个人中心'), '头像菜单缺少“个人中心”');
+ok(html.includes('版本记录') || sess.includes('版本记录'), '头像菜单缺少“版本记录”');
+ok(html.includes('退出登录') || sess.includes('退出登录'), '头像菜单缺少“退出登录”');
+ok(html.includes("switchMain('profile')") || sess.includes("switchMain('profile')"), '个人中心菜单项未接入个人中心页');
+ok(html.includes("switchMain('changelog')") || sess.includes("switchMain('changelog')"), '版本记录菜单项未接入版本记录页');
+ok(html.includes('logout()') || sess.includes('logout()'), '退出登录菜单项未接入退出逻辑');
 // 管理后台入口仅管理员可见（role === 'admin' 时挂 /admin.html）
-ok(html.includes("isAdmin") && html.includes("'/admin.html'"), '管理后台入口未按要求（仅管理员）接入 /admin.html');
+ok((html.includes('isAdmin') || sess.includes('isAdmin')) && (html.includes("'/admin.html'") || sess.includes("'/admin.html'")),
+  '管理后台入口未按要求（仅管理员）接入 /admin.html');
 ok(!/^\s*<a [^>]*admin\.html/.test(html), '管理后台入口不应在 HTML 中硬编码为常驻链接');
 // 菜单样式存在
 ok(css.includes('.nav-user-menu') && css.includes('.nav-user-item'), '缺少头像下拉菜单样式');
@@ -100,8 +107,9 @@ ok(html.includes('data-dropdown="research"') && html.includes('id="research-menu
 // 删除全局劫持 Ctrl+R / F5（恢复浏览器标准刷新）
 ok(!/keydown[\s\S]{0,120}F5[\s\S]{0,80}preventDefault/.test(html), '不应再全局劫持 F5/Ctrl+R');
 // 导航写入历史（pushState），支持前进/后退（popstate）
-ok(html.includes('history.pushState'), 'switchMain 应使用 pushState 写入历史');
-ok(html.includes('popstate'), '应监听 popstate 支持浏览器前进/后退');
+// 注：FRONT-01 拆分后 switchMain/setupMainNav 位于 js/navigation.js
+ok(html.includes('history.pushState') || nav.includes('history.pushState'), 'switchMain 应使用 pushState 写入历史');
+ok(html.includes('popstate') || nav.includes('popstate'), '应监听 popstate 支持浏览器前进/后退');
 // 下拉样式存在
 ok(css.includes('.main-tab-dropdown') && css.includes('.dropdown-menu') && css.includes('.sub-tab'), '缺少研究工具下拉样式');
 

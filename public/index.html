@@ -1112,6 +1112,8 @@
 <script src="shared/md-safe.js?v=2"></script>
 <script src="js/knowledge.js?v=23"></script>
 <script src="js/access-policy.js?v=1"></script>
+<script src="js/session.js?v=1"></script>
+<script src="js/navigation.js?v=1"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -1123,131 +1125,13 @@ let priceChangeMap = {};
 const PRICE_CACHE = {};
 let indexData = {};
 let returnsPeriod = 30;
-let username = null;
-let myProfile = null;   // 个人中心资料缓存（nickname/avatar/email/last_login/accounts）
+// username / myProfile 已迁至 js/session.js（保留全局 var，供其他脚本直接引用）
 
-async function checkAuth() {
-  try {
-    const r = await fetch(api('/api/me'));
-    const d = await r.json();
-    if (!d.username) { username = null; myProfile = null; renderTopUser(null); return false; }
-    username = d.username;
-    myProfile = d;
-    const nu0 = document.getElementById('nav-user');
-    if (nu0) nu0.textContent = d.nickname || username;
-    renderTopUser(d);
-    return true;
-  } catch(e) {
-    username = null; myProfile = null; renderTopUser(null); return false;
-  }
-}
+// 登录态与认证已迁至 js/session.js（checkAuth / renderTopUser / logout）
 
-// 顶部右侧：登录态显示头像（点击展开菜单），未登录显示「登录/注册」
-function renderTopUser(p) {
-  const el = document.getElementById('top-user');
-  if (!el) return;
-  el.textContent = '';
-  if (!p || !p.username) {
-    const link = document.createElement('a');
-    link.className = 'nav-avatar guest-avatar';
-    link.href = api('/login.html');
-    link.title = '登录/注册';
-    link.textContent = '👤';
-    el.appendChild(link);
-    return;
-  }
-  const src = p.avatar || '';
-  const initial = (p.nickname || p.username || '?').charAt(0).toUpperCase();
-  const isAdmin = (p.role || (myProfile && myProfile.role)) === 'admin';
-  const caps = (p.capabilities || (myProfile && myProfile.capabilities) || {});
-  let hasAnyCap = false;
-  for (const k in caps) { if (caps[k]) { hasAnyCap = true; break; } }
-  const canStaff = isAdmin || hasAnyCap;
-  const wrap = document.createElement('div');
-  wrap.className = 'nav-user';
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'nav-avatar';
-  button.title = '菜单';
-  if (src) {
-    const img = document.createElement('img');
-    img.src = src;
-    img.alt = '头像';
-    button.appendChild(img);
-  } else {
-    button.textContent = initial;
-  }
-  const menu = document.createElement('div');
-  menu.className = 'nav-user-menu';
-  const items = [
-    { label: '个人中心', fn: function () { switchMain('profile'); } },
-    { label: '版本记录', fn: function () { switchMain('changelog'); } }
-  ];
-  if (canStaff) items.push({ label: '管理后台', href: '/admin.html' });
-  items.push({ label: '退出登录', fn: function () { logout(); } });
-  function closeMenu() { menu.classList.remove('open'); }
-  items.forEach(function (it) {
-    const node = document.createElement(it.href ? 'a' : 'button');
-    node.className = 'nav-user-item';
-    node.textContent = it.label;
-    if (it.href) {
-      node.href = it.href;
-    } else {
-      node.type = 'button';
-      node.addEventListener('click', function () { closeMenu(); it.fn(); });
-    }
-    menu.appendChild(node);
-  });
-  button.addEventListener('click', function (e) { e.stopPropagation(); menu.classList.toggle('open'); });
-  document.addEventListener('click', function (e) { if (!wrap.contains(e.target)) closeMenu(); });
-  wrap.appendChild(button);
-  wrap.appendChild(menu);
-  el.appendChild(wrap);
-}
+// 顶部右侧头像渲染已迁至 js/session.js（renderTopUser）
 
-// 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
-function switchMain(main, noPushState) {
-  if (!username && ACCESS_POLICY.requiresLogin(main)) {
-    window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
-    return;
-  }
-  // 同步地址栏：首页清掉参数，其他页面带上 ?main=，可转债保留 sub
-  if (!noPushState) {
-    var params = new URLSearchParams(window.location.search);
-    if (main === 'home') { while (params.toString()) { params.delete(params.keys().next().value); } }
-    else { params.set('main', main); if (main !== 'bond-safety') params.delete('sub'); }
-    var newUrl = params.toString() ? '/?' + params.toString() : '/';
-    if (window.location.pathname + window.location.search !== newUrl) {
-      history.pushState(null, '', newUrl);
-    }
-  }
-  document.querySelectorAll('.main-tab').forEach(function (t) { if (!t.dataset.dropdown) t.classList.toggle('active', t.dataset.main === main); });
-  // 研究工具下拉：当激活的页面是其子项时高亮触发器
-  document.querySelectorAll('.main-tab-dropdown').forEach(function (dd) {
-    var trigger = dd.querySelector('.main-tab');
-    var menu = dd.querySelector('.dropdown-menu');
-    var hasActive = menu && Array.prototype.some.call(menu.querySelectorAll('.sub-tab'), function (s) { return s.dataset.main === main; });
-    if (trigger) trigger.classList.toggle('active', !!hasActive);
-  });
-  document.querySelectorAll('.main-page').forEach(function (p) { p.classList.remove('active'); });
-  const mp = document.getElementById('main-' + main);
-  if (mp) mp.classList.add('active');
-  if (main === 'profile') loadProfile();
-  if (main === 'changelog') loadChangelogPage();
-  if (main === 'ipo') loadIpo();
-  if (main === 'bond-safety') { loadBondSafety(); if (typeof initBondCycleSub === 'function') initBondCycleSub(); }
-  if (main === 'stock-analysis') loadStockAnalysis();
-  if (main === 'market-volatility') loadMarketVolatility();
-  if (main === 'knowledge') loadKnowledge();
-  if (main === 'home') loadHomeDashboard();
-  if (main === 'holdings' && username && typeof doRefresh === 'function') {
-    doRefresh().catch(function(e) { showToast('行情刷新失败: ' + (e.message || e)); });
-  }
-  // 仓位对比页：进入时若已有对比数据则重渲染，否则停留在空态（由标杆选择进入）
-  if (main === 'position-compare' && window.PositionComparison && typeof window.PositionComparison.onPageEnter === 'function') {
-    window.PositionComparison.onPageEnter();
-  }
-}
+// 一级页面切换 switchMain 已迁至 js/navigation.js（FRONT-01 拆分，第一期）
 
 function mergeChangelogByDate(list) {
   var merged = [];
@@ -1307,41 +1191,8 @@ function togglePwdCard() {
   arrow.textContent = isOpen ? '▶' : '▼';
 }
 
-function setupMainNav() {
-  document.querySelectorAll('.main-tab').forEach(function (tab) {
-    if (tab.dataset.dropdown) {
-      tab.addEventListener('click', function (e) { e.stopPropagation(); toggleDropdown(tab.dataset.dropdown); });
-    } else {
-      tab.addEventListener('click', function () { switchMain(tab.dataset.main); });
-    }
-  });
-  document.querySelectorAll('.sub-tab').forEach(function (tab) {
-    tab.addEventListener('click', function (e) { e.stopPropagation(); closeDropdowns(); switchMain(tab.dataset.main); });
-  });
-  document.addEventListener('click', function () { closeDropdowns(); });
-  window.addEventListener('popstate', function () {
-    var params = new URLSearchParams(window.location.search);
-    switchMain(params.get('main') || 'home', true);
-  });
-}
-
-function toggleDropdown(name) {
-  var menu = document.getElementById(name + '-menu');
-  if (!menu) return;
-  var open = menu.classList.contains('open');
-  closeDropdowns();
-  if (!open) menu.classList.add('open');
-}
-function closeDropdowns() {
-  document.querySelectorAll('.dropdown-menu.open').forEach(function (m) { m.classList.remove('open'); });
-}
-
-// 从首页功能卡跳转到持仓管理指定二级页
-function goHoldings(page) {
-  switchMain('holdings');
-  const tab = document.querySelector('.sub-nav .nav-tab[data-page="' + page + '"]');
-  if (tab) tab.click();
-}
+// 主导航绑定 / 下拉 / URL 同步 已迁至 js/navigation.js（FRONT-01 拆分，第一期）
+// setupMainNav / toggleDropdown / closeDropdowns / goHoldings 同处，调用入口保持不变
 
 // 加载个人中心资料
 async function loadProfile() {

@@ -30,10 +30,15 @@ process.env.ADMIN_USERS = 'legacy'; // 环境变量白名单管理员
 const auth = require('../middleware/auth');
 
 function run(mw, session) {
-  const req = { session };
-  const res = { code: 200, payload: null, status(c) { this.code = c; return this; }, json(p) { this.payload = p; return this; } };
-  return new Promise((resolve) => {
-    mw(req, res, (e) => resolve({ req, res, nexted: !e, err: e }));
+  // 复用同一 req 对象：使同一次会话的 requireLogin 缓存可被子后续 requireAdmin 复用（对应 check 的「1 次查库」断言）
+  const req = session.__req || (session.__req = { session });
+  let settled = false;
+  let resolve;
+  function settle(val) { if (settled) return; settled = true; resolve(val); }
+  const res = { code: 200, payload: null, status(c) { this.code = c; return this; }, json(p) { this.payload = p; settle({ req, res, nexted: false, err: null }); return this; } };
+  return new Promise((res2) => {
+    resolve = res2;
+    mw(req, res, (e) => settle({ req, res, nexted: !e, err: e }));
   });
 }
 function session(over) {
@@ -109,10 +114,18 @@ async function main() {
   await check('同请求 requireLogin 后再 requireAdmin 只查一次用户', async () => {
     userQueryCount = 0;
     const s = session({ user: 'admin' });
-    await run(auth.requireLogin, s);
-    assert.strictEqual(s.authUser && s.authUser.username, 'admin', 'requireLogin 应缓存 req.authUser');
-    await run(auth.requireAdmin, s); // 复用 req.authUser，不应再查库
+    const r1 = await run(auth.requireLogin, s);
+    assert.strictEqual(r1.req.authUser && r1.req.authUser.username, 'admin', 'requireLogin 应缓存 req.authUser');
+    await run(auth.requireAdmin, s); // 复用同一 req 的 req.authUser，不应再查库
     assert.strictEqual(userQueryCount, 1, 'requireAdmin 应复用 req.authUser，不重复查库');
+  });
+
+  await check('旧会话无 authVersion（改密失效机制 P0）：401 且销毁会话', async () => {
+    // 老 Session 在改密前签发，不带 authVersion 字段；移除守卫后必须一律判定失效
+    const s = session({ user: 'alice', authVersion: undefined });
+    const r = await run(auth.requireLogin, s);
+    assert.strictEqual(r.res.code, 401);
+    assert.strictEqual(s.destroyed, true);
   });
 
   // ====== users.js：改密/禁用/改角色 递增 auth_version；旧哈希升级不递增 ======

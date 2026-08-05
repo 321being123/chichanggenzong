@@ -15,8 +15,8 @@ module.exports = {
         NODE_ENV: 'production',
         // 注意：PORT / ALLOWED_ORIGIN / REGISTER_CODE / SECRET / PG 连接变量 放在项目根目录的 .env 文件里
         // （应用启动时会通过 dotenv 自动读取项目根的 .env，pm2 只负责拉起进程）
-        // Web/Worker 拆分就绪前的过渡：Web 仍默认运行调度（单进程兼容）。
-        // 拆分启用时，给本进程加 DISABLE_SCHEDULER=1，并启动下方 portfolio-worker。
+        // Web/Worker 固定拆分：Web 进程不跑后台任务，全部调度交由下方 portfolio-worker 执行（避免重复执行/丢失）。
+        DISABLE_SCHEDULER: '1'
       },
       error_file: 'logs/pm2-error.log',
       out_file: 'logs/pm2-out.log',

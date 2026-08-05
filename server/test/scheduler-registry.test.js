@@ -10,7 +10,8 @@ const { SCHEDULER_REGISTRY } = require('../scheduler');
 // 与技术架构后台任务清单逐项一致（并集：Web 原有 + Worker 补齐的市场周期/港股启动补跑）
 const EXPECTED_SCHEDULED = [
   'marketCloses', 'marketVolatilitySync', 'bondSafetyRefresh',
-  'stockAnalysisRefresh', 'convertibleBondRefresh', 'ipoCalendarRefresh', 'hkTradeRulesSync'
+  'stockAnalysisRefresh', 'convertibleBondRefresh', 'ipoCalendarRefresh', 'hkTradeRulesSync',
+  'holidaySyncMonthly'
 ];
 const EXPECTED_STARTUP = [
   'holidaySync', 'backfillCloses', 'indexBaseline', 'hkTradeRulesStartup'

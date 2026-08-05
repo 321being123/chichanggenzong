@@ -1,0 +1,20 @@
+[Unit]
+Description=持仓管理系统 Web 服务
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=portfolio-app
+WorkingDirectory=/opt/portfolio
+# 敏感信息（PG / SECRET 等）由应用通过 dotenv 读取 /opt/portfolio/.env，此处不硬编码
+Environment=NODE_ENV=production
+# Web 进程固定关闭后台调度，全部后台任务由独立 worker 进程承担（见 portfolio-worker.service）
+Environment=DISABLE_SCHEDULER=1
+ExecStart=/usr/bin/node /opt/portfolio/server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

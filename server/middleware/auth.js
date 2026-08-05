@@ -23,7 +23,7 @@ async function requireLogin(req, res, next) {
     const user = rows[0];
     if (!user) { destroySession(req); return res.status(401).json({ error: '账号不存在或已失效' }); }
     if (user.status && user.status !== 'active') { destroySession(req); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
-    if (req.session.authVersion !== undefined && user.auth_version !== req.session.authVersion) {
+    if (user.auth_version !== req.session.authVersion) {
       destroySession(req);
       return res.status(401).json({ error: '登录态已失效，请重新登录' });
     }
@@ -105,7 +105,7 @@ async function requireAdmin(req, res, next) {
       || (await pool.query('SELECT role, status, auth_version FROM users WHERE username=$1', [username])).rows[0];
     if (!user) { destroySession(req); return res.status(403).json({ error: '无权限：该操作仅限管理员执行' }); }
     if (user.status && user.status !== 'active') { destroySession(req); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
-    if (req.session.authVersion !== undefined && user.auth_version !== req.session.authVersion) {
+    if (user.auth_version !== req.session.authVersion) {
       destroySession(req);
       return res.status(401).json({ error: '登录态已失效，请重新登录' });
     }

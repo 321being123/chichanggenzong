@@ -38,7 +38,12 @@ const SCHEDULED_TASKS = [
   { name: 'stockAnalysisRefresh', register: () => scheduleStockAnalysisRefresh() },
   { name: 'convertibleBondRefresh', register: () => scheduleConvertibleBondRefresh() },
   { name: 'ipoCalendarRefresh', register: () => scheduleIpoCalendarRefresh() },
-  { name: 'hkTradeRulesSync', register: () => scheduleHkTradeRulesSync() }
+  { name: 'hkTradeRulesSync', register: () => scheduleHkTradeRulesSync() },
+  // 月度休市日自愈：原 worker.js 内联的 setInterval 任务，现统一纳入注册表（与启动补漏 holidaySync 区分）。
+  // 注意：此处故意不 unref，作为独立 Worker 进程的保活句柄（迁移前 worker.js 的内联 setInterval 即承担此职责）。
+  { name: 'holidaySyncMonthly', register: () => setInterval(() => {
+      ensureHolidaysCurrent().catch(e => console.warn('[scheduler] 休市日月度核对失败:', e && e.message));
+    }, 30 * 24 * 3600 * 1000) }
 ];
 
 // 供测试断言的清单（与技术架构后台任务清单逐项一致）

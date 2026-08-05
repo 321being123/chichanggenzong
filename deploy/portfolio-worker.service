@@ -1,0 +1,19 @@
+[Unit]
+Description=持仓管理系统 后台任务 Worker
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=portfolio-app
+WorkingDirectory=/opt/portfolio
+# 敏感信息（PG / SECRET 等）由应用通过 dotenv 读取 /opt/portfolio/.env，此处不硬编码
+Environment=NODE_ENV=production
+# worker 进程承担全部后台调度（server/scheduler.js 单一注册表）；切勿设 DISABLE_SCHEDULER
+ExecStart=/usr/bin/node /opt/portfolio/server/worker.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

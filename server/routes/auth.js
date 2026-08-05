@@ -130,7 +130,7 @@ router.get('/me', asyncHandler(async (req, res) => {
   // AUTH-01：会话失效（账号删除/禁用/版本不一致）时不再返回旧身份，按游客处理
   const a = await getUserAuth(req.session.user);
   if (!a || a.status !== 'active') return res.json({ username: null });
-  if (req.session.authVersion !== undefined && a.auth_version !== req.session.authVersion) return res.json({ username: null });
+  if (a.auth_version !== req.session.authVersion) return res.json({ username: null });
   const p = await getUserProfile(req.session.user);
   const role = isAdminIdentity(p.username, p.role) ? 'admin' : (p.role || 'user');
   // PERM-01：能力经白名单过滤后返回布尔值，绝不直接回传数据库任意 JSON

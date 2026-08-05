@@ -47,7 +47,7 @@ function payload(over) {
 
     const app = express();
     app.use(express.json());
-    app.use(function (req, res, next) { req.session = { user: U }; next(); });
+    app.use(function (req, res, next) { req.session = { user: U, authVersion: 1 }; next(); });
     app.use('/api', accountsRouter);
     server = await new Promise(function (resolve) { const s = app.listen(0, '127.0.0.1', function () { resolve(s); }); });
     port = server.address().port;

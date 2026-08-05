@@ -40,6 +40,7 @@ module.exports = {
   getUserDetail: users.getUserDetail,
   updateUserProfile: users.updateUserProfile,
   changePassword: users.changePassword,
+  upgradePasswordHash: users.upgradePasswordHash,
   updateLastLogin: users.updateLastLogin,
   ensureAdmin: users.ensureAdmin,
   adminOverview: jobs.adminOverview,

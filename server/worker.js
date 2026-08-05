@@ -10,13 +10,9 @@ const { startScheduler } = require('./scheduler');
 async function main() {
   await initSchema();
   console.log('[worker] 后台任务调度已启动（独立进程）');
-  // 启动即补齐缺失的每日收盘价、净值/总资产快照、指数基线、港币汇率、港股每手股数，并注册全部周期调度
+  // 启动即补齐缺失的每日收盘价、净值/总资产快照、指数基线、港币汇率、港股每手股数，并注册全部周期调度。
+  // 月度休市日核对（holidaySyncMonthly）已随 startScheduler 统一注册，不再在此内联。
   await startScheduler();
-  // 每月核对一次休市日（本地短路：未跨年且 30 天内已核对则跳过联网）
-  setInterval(() => {
-    require('./jobs/holidaySync').ensureHolidaysCurrent()
-      .catch(e => console.warn('[worker] 休市日核对失败:', e.message));
-  }, 30 * 24 * 3600 * 1000);
 }
 
 main().catch(e => { console.error('[worker] 启动失败:', e.message); process.exit(1); });

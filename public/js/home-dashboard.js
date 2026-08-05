@@ -253,8 +253,33 @@ async function loadHomeMarketCycles() {
   }
 }
 
+// HOME-01：首页按登录态调整内容顺序（只重排已有区块/卡片，不新增接口或统计口径）
+// 游客：公开文章 + 研究优先；登录用户：持仓总资产卡与资产入口置前，再展示周期/打新/文章。
+var HOME_ORDER_GUEST = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
+var HOME_ORDER_LOGGED = ['home-section-modules', 'home-section-cycle', 'home-section-secondary', 'home-section-articles', 'home-section-capabilities'];
+
+function applyHomeOrder(root, isLoggedIn) {
+  var shell = root && root.querySelector ? root.querySelector('.home-dashboard-shell') : null;
+  if (!shell) return;
+  var order = isLoggedIn ? HOME_ORDER_LOGGED : HOME_ORDER_GUEST;
+  order.forEach(function (id) {
+    var el = root.getElementById(id);
+    if (el && el.parentNode === shell) shell.appendChild(el);
+  });
+  // 登录用户：把“持仓管理”资产卡置于模块网格首位
+  if (isLoggedIn) {
+    var grid = root.querySelector('#home-section-modules .home-module-grid');
+    var holdings = root.getElementById('home-module-holdings');
+    if (grid && holdings && grid.firstElementChild && grid.firstElementChild !== holdings) {
+      grid.insertBefore(holdings, grid.firstElementChild);
+    }
+  }
+}
+
 async function loadHomeDashboard() {
   renderHomeHoldings();
+  // HOME-01：按登录态重排首页区块顺序
+  applyHomeOrder(document, !!username);
   // 最新文章独立加载，不等待 IPO/债券接口，避免被大数据接口阻塞
   renderHomeArticles();
   loadHomeMarketCycles();

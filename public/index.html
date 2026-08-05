@@ -48,7 +48,7 @@
 <!-- 首页：核心模块统一工作台 -->
 <div class="main-page active" id="main-home">
   <div class="home-dashboard-shell">
-    <section class="home-latest-feature">
+    <section class="home-latest-feature" id="home-section-articles">
       <div class="home-latest-feature-head">
         <div>
           <span>KNOWLEDGE UPDATES</span>
@@ -62,7 +62,7 @@
       </div>
     </section>
 
-    <section class="home-section home-market-cycle-section">
+    <section class="home-section home-market-cycle-section" id="home-section-cycle">
       <div class="home-section-head">
         <div><h2>市场周期</h2><p>从可转债与股票市场观察当前估值位置</p></div>
       </div>
@@ -92,7 +92,7 @@
       </div>
     </section>
 
-    <section class="home-section">
+    <section class="home-section" id="home-section-modules">
       <div class="home-section-head">
         <div><h2>常用工具</h2><p>快速进入主要功能与数据概览</p></div>
       </div>
@@ -109,7 +109,7 @@
           <small>估值、财务、条款与触发进度</small>
           <span class="home-module-meta"><span>股票三表分析</span><span>转债价值分析</span></span>
         </button>
-        <button class="home-module-card home-module-holdings" onclick="goHoldings('dashboard')">
+        <button class="home-module-card home-module-holdings" id="home-module-holdings" onclick="goHoldings('dashboard')">
           <span class="home-module-head"><span class="home-module-mark">仓</span><span class="home-module-name">持仓管理</span><b>→</b></span>
           <strong id="home-total-asset">--</strong>
           <small>总资产</small>
@@ -130,7 +130,7 @@
       </div>
     </section>
 
-    <div class="home-content-grid home-content-grid-secondary">
+    <div class="home-content-grid home-content-grid-secondary" id="home-section-secondary">
       <div class="home-side-stack">
         <section class="home-detail-card">
           <div class="home-detail-title"><div><h3>近期打新安排</h3><p>未来 90 天重要节点</p></div><button onclick="switchMain('ipo')">查看全部 →</button></div>
@@ -143,7 +143,7 @@
       </div>
     </div>
 
-    <section class="home-capabilities">
+    <section class="home-capabilities" id="home-section-capabilities">
       <div class="home-section-head"><div><h2>能力概览</h2><p>覆盖投资过程中的核心环节</p></div></div>
       <div class="home-capability-grid">
         <div class="home-capability-card"><span>01</span><b>股债深度分析</b><p>股票估值、财务三表与可转债条款、纯债及期权价值。</p></div>
@@ -1106,7 +1106,7 @@
 <script src="js/stock-analysis-valuation-chart.js?v=5"></script>
 <script src="js/market-volatility.js?v=12"></script>
 <script src="js/market-cycle-metrics.js?v=9"></script>
-<script src="js/home-dashboard.js?v=13"></script>
+<script src="js/home-dashboard.js?v=14"></script>
 <script src="js/position-comparison.js?v=3"></script>
 <script src="vendor/vditor/dist/index.min.js" defer></script>
 <script src="shared/md-safe.js?v=2"></script>

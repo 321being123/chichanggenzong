@@ -11,7 +11,7 @@ const route = fs.readFileSync(path.join(root, 'server', 'routes', 'marketVolatil
 assert.ok(html.includes('id="home-bond-cycle-chart"'), '首页缺少可转债周期图');
 assert.ok(html.includes('id="home-market-chart"'), '首页缺少可配置的股市周期图');
 assert.ok(html.indexOf('<h2>市场周期</h2>') < html.indexOf('<h2>常用工具</h2>'), '首页市场周期应位于常用工具上方');
-assert.ok(html.includes('js/home-dashboard.js?v=13'), '首页市场周期脚本静态版本未更新');
+assert.ok(html.includes('js/home-dashboard.js?v=14'), '首页市场周期脚本静态版本未更新');
 assert.ok(js.includes('/api/bond-cycle?range=all'), '首页未读取可转债周期历史数据');
 assert.ok(js.includes('/api/market-volatility/home-cycle?range=20y'), '首页未读取管理员选择的股市周期指标');
 assert.ok(js.includes('renderHomeMarketCycle') && js.includes('homeMarketCycleMetric'), '首页不能根据管理员设置动态绘图');

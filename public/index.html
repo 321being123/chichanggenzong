@@ -24,17 +24,12 @@
       <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">存在小站</h1>
       <nav class="main-nav">
         <button class="main-tab" data-main="home">首页</button>
-        <button class="main-tab" data-main="holdings">我的资产</button>
-        <div class="main-tab-dropdown">
-          <button class="main-tab" data-dropdown="research" aria-haspopup="true">研究工具</button>
-          <div class="dropdown-menu" id="research-menu">
-            <button class="sub-tab" data-main="stock-analysis">个券分析</button>
-            <button class="sub-tab" data-main="bond-safety">可转债专题</button>
-            <button class="sub-tab" data-main="market-volatility">市场周期</button>
-            <button class="sub-tab" data-main="ipo">打新日历</button>
-          </div>
-        </div>
-        <button class="main-tab" data-main="knowledge">投资笔记</button>
+        <button class="main-tab" data-main="holdings">持仓管理</button>
+        <button class="main-tab" data-main="ipo">打新日历</button>
+        <button class="main-tab" data-main="bond-safety">可转债</button>
+        <button class="main-tab" data-main="stock-analysis">证券分析</button>
+        <button class="main-tab" data-main="market-volatility">市场周期</button>
+        <button class="main-tab" data-main="changelog">版本记录</button>
       </nav>
     </div>
     <div class="nav-right">
@@ -1113,7 +1108,7 @@
 <script src="js/knowledge.js?v=23"></script>
 <script src="js/access-policy.js?v=1"></script>
 <script src="js/session.js?v=1"></script>
-<script src="js/navigation.js?v=1"></script>
+<script src="js/navigation.js?v=2"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -1191,8 +1186,8 @@ function togglePwdCard() {
   arrow.textContent = isOpen ? '▶' : '▼';
 }
 
-// 主导航绑定 / 下拉 / URL 同步 已迁至 js/navigation.js（FRONT-01 拆分，第一期）
-// setupMainNav / toggleDropdown / closeDropdowns / goHoldings 同处，调用入口保持不变
+// 主导航绑定 / 页面切换 / URL 同步 已迁至 js/navigation.js（FRONT-01 拆分，第一期）
+// setupMainNav / switchMain / goHoldings 同处，调用入口保持不变
 
 // 加载个人中心资料
 async function loadProfile() {

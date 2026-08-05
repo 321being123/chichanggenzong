@@ -20,14 +20,7 @@ function switchMain(main, noPushState) {
       history.pushState(null, '', newUrl);
     }
   }
-  document.querySelectorAll('.main-tab').forEach(function (t) { if (!t.dataset.dropdown) t.classList.toggle('active', t.dataset.main === main); });
-  // 研究工具下拉：当激活的页面是其子项时高亮触发器
-  document.querySelectorAll('.main-tab-dropdown').forEach(function (dd) {
-    var trigger = dd.querySelector('.main-tab');
-    var menu = dd.querySelector('.dropdown-menu');
-    var hasActive = menu && Array.prototype.some.call(menu.querySelectorAll('.sub-tab'), function (s) { return s.dataset.main === main; });
-    if (trigger) trigger.classList.toggle('active', !!hasActive);
-  });
+  document.querySelectorAll('.main-tab').forEach(function (t) { t.classList.toggle('active', t.dataset.main === main); });
   document.querySelectorAll('.main-page').forEach(function (p) { p.classList.remove('active'); });
   const mp = document.getElementById('main-' + main);
   if (mp) mp.classList.add('active');
@@ -50,31 +43,12 @@ function switchMain(main, noPushState) {
 
 function setupMainNav() {
   document.querySelectorAll('.main-tab').forEach(function (tab) {
-    if (tab.dataset.dropdown) {
-      tab.addEventListener('click', function (e) { e.stopPropagation(); toggleDropdown(tab.dataset.dropdown); });
-    } else {
-      tab.addEventListener('click', function () { switchMain(tab.dataset.main); });
-    }
+    tab.addEventListener('click', function () { switchMain(tab.dataset.main); });
   });
-  document.querySelectorAll('.sub-tab').forEach(function (tab) {
-    tab.addEventListener('click', function (e) { e.stopPropagation(); closeDropdowns(); switchMain(tab.dataset.main); });
-  });
-  document.addEventListener('click', function () { closeDropdowns(); });
   window.addEventListener('popstate', function () {
     var params = new URLSearchParams(window.location.search);
     switchMain(params.get('main') || 'home', true);
   });
-}
-
-function toggleDropdown(name) {
-  var menu = document.getElementById(name + '-menu');
-  if (!menu) return;
-  var open = menu.classList.contains('open');
-  closeDropdowns();
-  if (!open) menu.classList.add('open');
-}
-function closeDropdowns() {
-  document.querySelectorAll('.dropdown-menu.open').forEach(function (m) { m.classList.remove('open'); });
 }
 
 // 从首页功能卡跳转到持仓管理指定二级页

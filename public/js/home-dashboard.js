@@ -254,9 +254,9 @@ async function loadHomeMarketCycles() {
 }
 
 // HOME-01：首页按登录态调整内容顺序（只重排已有区块/卡片，不新增接口或统计口径）
-// 游客：公开文章 + 研究优先；登录用户：持仓总资产卡与资产入口置前，再展示周期/打新/文章。
+// 游客：公开文章 + 研究优先；登录用户：最新文章置顶，再展示资产/周期/打新等。
 var HOME_ORDER_GUEST = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
-var HOME_ORDER_LOGGED = ['home-section-modules', 'home-section-cycle', 'home-section-secondary', 'home-section-articles', 'home-section-capabilities'];
+var HOME_ORDER_LOGGED = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
 
 function applyHomeOrder(root, isLoggedIn) {
   var shell = root && root.querySelector ? root.querySelector('.home-dashboard-shell') : null;

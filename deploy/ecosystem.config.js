@@ -2,21 +2,42 @@
 // 用法：在服务器项目目录下执行 `pm2 start deploy/ecosystem.config.js`
 //       然后 `pm2 save` 将当前进程固化，`pm2 startup` 设置开机自启
 module.exports = {
-  apps: [{
-    name: 'portfolio-server',
-    script: 'server.js',
-    cwd: __dirname + '/..',          // 指向项目根目录
-    instances: 1,                    // PostgreSQL 写入为「先删后插」单进程策略，不要多实例
-    exec_mode: 'fork',
-    autorestart: true,
-    max_memory_restart: '300M',
-    env: {
-      NODE_ENV: 'production',
-      // 注意：PORT / ALLOWED_ORIGIN / REGISTER_CODE / SECRET / PG 连接变量 放在项目根目录的 .env 文件里
-      // （应用启动时会通过 dotenv 自动读取项目根的 .env，pm2 只负责拉起进程）
+  apps: [
+    {
+      name: 'portfolio-server',
+      script: 'server.js',
+      cwd: __dirname + '/..',          // 指向项目根目录
+      instances: 1,                    // PostgreSQL 写入为「先删后插」单进程策略，不要多实例
+      exec_mode: 'fork',
+      autorestart: true,
+      max_memory_restart: '300M',
+      env: {
+        NODE_ENV: 'production',
+        // 注意：PORT / ALLOWED_ORIGIN / REGISTER_CODE / SECRET / PG 连接变量 放在项目根目录的 .env 文件里
+        // （应用启动时会通过 dotenv 自动读取项目根的 .env，pm2 只负责拉起进程）
+        // Web/Worker 拆分就绪前的过渡：Web 仍默认运行调度（单进程兼容）。
+        // 拆分启用时，给本进程加 DISABLE_SCHEDULER=1，并启动下方 portfolio-worker。
+      },
+      error_file: 'logs/pm2-error.log',
+      out_file: 'logs/pm2-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss'
     },
-    error_file: 'logs/pm2-error.log',
-    out_file: 'logs/pm2-out.log',
-    log_date_format: 'YYYY-MM-DD HH:mm:ss'
-  }]
+    {
+      // 独立后台任务进程：只跑调度，不监听端口（见 server/worker.js + server/scheduler.js）
+      name: 'portfolio-worker',
+      script: 'server/worker.js',
+      cwd: __dirname + '/..',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      max_memory_restart: '300M',
+      env: {
+        NODE_ENV: 'production'
+        // 不暴露端口；PG 任务锁保证与 Web（若仍运行调度）不会重复执行同一有锁任务
+      },
+      error_file: 'logs/pm2-worker-error.log',
+      out_file: 'logs/pm2-worker-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss'
+    }
+  ]
 };

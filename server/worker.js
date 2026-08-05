@@ -1,47 +1,22 @@
 // ========== 独立 worker 进程：只跑后台任务，不承载 Web 请求 ==========
-// 用途：将“收盘记录 + 指数基线”从 Web 进程拆出，避免重启/扩容时任务丢失或重复。
+// 用途：将后台任务从 Web 进程拆出，避免重启/扩容时任务丢失或重复。
 // 启动方式：node server/worker.js   （可配合 pm2 命名为 portfolio-worker）
-// Web 进程需设 DISABLE_SCHEDULER=1 以防重复执行；本进程默认运行调度。
+// Web 进程设 DISABLE_SCHEDULER=1 以防重复执行；本进程默认运行全部调度。
+// 任务清单与 Web 共用 server/scheduler.js 的单一注册表，避免漏注册。
 require('dotenv').config();
 const { initSchema, pool } = require('./db');
-const { scheduleAllMarketCloses, backfillMissingCloses } = require('./jobs/marketClose');
-const { runNavSnapshotJob } = require('./jobs/navSnapshot');
-const { runIndexBaselineJob } = require('./jobs/indexBaseline');
-const { runIndexRecentJob } = require('./jobs/indexBaseline');
-const { runHkRateJob } = require('./jobs/hkRate');
-const { ensureHolidaysCurrent } = require('./jobs/holidaySync');
-const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
-const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
-const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
-const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
-const { scheduleHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
+const { startScheduler } = require('./scheduler');
 
 async function main() {
   await initSchema();
   console.log('[worker] 后台任务调度已启动（独立进程）');
-  // 启动即核对休市日（年度自愈，确保日历最新再调度）
-  await ensureHolidaysCurrent().catch(e => console.warn('[worker] 休市日核对失败:', e.message));
-  // 收盘记录按市场时刻精准调度（含休市识别 + 每日缺失补漏）
-  scheduleAllMarketCloses();
-  // 启动即补齐缺失的每日收盘价（崩溃/报错/节假日空档自愈），随后补齐净值/总资产快照、指数点位、港币汇率
-  backfillMissingCloses()
-    .then(() => runNavSnapshotJob())
-    .then(() => runIndexRecentJob())
-    .then(() => runHkRateJob())
-    .catch(e => console.error('[worker] 补漏/快照失败:', e.message));
+  // 启动即补齐缺失的每日收盘价、净值/总资产快照、指数基线、港币汇率、港股每手股数，并注册全部周期调度
+  await startScheduler();
   // 每月核对一次休市日（本地短路：未跨年且 30 天内已核对则跳过联网）
   setInterval(() => {
-    ensureHolidaysCurrent().catch(e => console.warn('[worker] 休市日核对失败:', e.message));
+    require('./jobs/holidaySync').ensureHolidaysCurrent()
+      .catch(e => console.warn('[worker] 休市日核对失败:', e.message));
   }, 30 * 24 * 3600 * 1000);
-  // 启动即补齐指数基线（带幂等锁，多实例仅一个执行）
-  runIndexBaselineJob().catch(e => console.error('[worker] 指数基线失败:', e.message));
-  // 每日可转债安全性快照（与 Web 进程的 DISABLE_SCHEDULER 约定一致）
-  scheduleBondSafetyRefresh();
-  scheduleStockAnalysisRefresh();
-  scheduleConvertibleBondRefresh();
-  scheduleIpoCalendarRefresh();
-  // 港股每手股数每日同步（仓位对比复制测算的交易单位数据源）
-  scheduleHkTradeRulesSync();
 }
 
 main().catch(e => { console.error('[worker] 启动失败:', e.message); process.exit(1); });

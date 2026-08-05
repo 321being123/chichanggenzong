@@ -24,17 +24,8 @@ const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
 const marketVolatilityRouter = require('./routes/marketVolatility');
 const positionComparisonRouter = require('./routes/positionComparison');
-const { scheduleAllMarketCloses } = require('./jobs/marketClose');
-const { runNavSnapshotJob } = require('./jobs/navSnapshot');
-const { runIndexBaselineJob } = require('./jobs/indexBaseline');
-const { runIndexRecentJob } = require('./jobs/indexBaseline');
-const { runHkRateJob } = require('./jobs/hkRate');
-const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
-const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
-const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
-const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
-const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
-const { scheduleHkTradeRulesSync, runHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
+// 单一后台任务注册清单（Web 兼容模式与独立 Worker 共用）：见 server/scheduler.js
+const { startScheduler } = require('./scheduler');
 
 const app = express();
 app.disable('x-powered-by');
@@ -136,27 +127,10 @@ async function start() {
   server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`存在小站已启动: http://127.0.0.1:${PORT}`);
     console.log(`数据目录: ${DATA_DIR}`);
-    // 任务调度默认在 Web 进程内运行（向后兼容）。若拆分独立 worker，请给 Web 进程设
+    // 任务调度默认在 Web 进程内运行（向后兼容）。若拆分独立 worker，给 Web 进程设
     // DISABLE_SCHEDULER=1 并另起 worker 进程（见 server/worker.js），避免重复执行。
     if (process.env.DISABLE_SCHEDULER !== '1') {
-      // 按各市场收盘时刻精准调度收盘价记录
-      scheduleAllMarketCloses();
-      // 启动即补齐缺失的每日净值/总资产快照（历史空档自愈，幂等只补缺失日）
-      runNavSnapshotJob().catch(function (e) { console.error('净值快照补齐失败:', e.message); });
-      // 启动后自动补齐指数基线（A股走Tushare，恒生走腾讯），缺失才联网，幂等自愈+执行记录
-      runIndexBaselineJob().catch(function (e) { console.error('指数基线补齐失败:', e.message); });
-      // 每日指数点位增量补齐（收市后持续新增，避免不开网页时对比曲线断档）
-      runIndexRecentJob().catch(function (e) { console.error('指数每日补齐失败:', e.message); });
-      // 每日港币汇率自动更新（避免不开网页时港股估值沿用旧汇率）
-      runHkRateJob().catch(function (e) { console.error('汇率更新失败:', e.message); });
-      scheduleMarketVolatilitySync();
-      scheduleBondSafetyRefresh();
-      scheduleStockAnalysisRefresh();
-      scheduleConvertibleBondRefresh();
-      scheduleIpoCalendarRefresh();
-      // 港股每手股数：启动即补齐一轮 + 每日 20:30 增量同步（仓位对比复制测算的交易单位数据源）
-      scheduleHkTradeRulesSync();
-      runHkTradeRulesSync('startup').catch(function (e) { console.error('港股每手股数启动同步失败:', e.message); });
+      startScheduler().catch(function (e) { console.error('[scheduler] 启动失败:', e && e.message); });
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }

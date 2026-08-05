@@ -497,8 +497,8 @@
     <div class="stock-analysis-toolbar table-wrap">
       <select id="security-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value)"><option value="">选择持仓或自选</option></select>
       <div class="security-analysis-search">
-        <input id="stock-analysis-code" autocomplete="off" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-controls="security-analysis-suggestions" aria-expanded="false">
-        <div id="security-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
+        <input id="stock-analysis-code" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-controls="stock-analysis-suggestions" aria-expanded="false">
+        <div id="stock-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
       </div>
       <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit()">开始分析</button>
       <button class="btn btn-outline btn-sm" id="stock-analysis-refresh" onclick="securityAnalysisRefresh()">刷新数据</button>
@@ -783,7 +783,7 @@
         <div class="stock-analysis-toolbar table-wrap">
           <select id="bond-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value,'bond')"><option value="">选择持仓或自选</option></select>
           <div class="security-analysis-search">
-            <input id="bond-analysis-code" autocomplete="off" placeholder="可转债名称、代码" aria-autocomplete="list" aria-controls="bond-analysis-suggestions" aria-expanded="false">
+            <input id="bond-analysis-code" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="可转债名称、代码" aria-autocomplete="list" aria-controls="bond-analysis-suggestions" aria-expanded="false">
             <div id="bond-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
           </div>
           <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit(null,'bond')">开始分析</button>

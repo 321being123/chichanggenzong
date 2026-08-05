@@ -107,7 +107,7 @@ function securityAnalysisInitSearch(ctx) {
 }
 
 async function securityAnalysisLoadList(force) {
-  var selects = ['stock-analysis-select','bond-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
+  var selects = ['stock-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
   if(!username){
     selects.forEach(function(s){s.disabled=true;s.innerHTML='<option value="">登录后可选择持仓和自选</option>';});
     return;
@@ -242,6 +242,7 @@ async function securityAnalysisSubmit(selectedCode, ctx) {
     if (ctx === 'bond') switchMain('stock-analysis');
     return stockAnalysisSelect(code);
   }
+  // 证券分析页已内置可转债分析内容区，输入可转债代码直接在当前页渲染结果
   var stock=document.getElementById('stock-analysis-content'); if(stock) stock.style.display='none';
   return bondAnalysisLoad(false, ctx);
 }
@@ -283,7 +284,6 @@ async function bondAnalysisLoad(refresh, ctx) {
 }
 
 securityAnalysisInitSearch();
-securityAnalysisInitSearch('bond');
 
 function bondAnalysisRender(d, ctx) {
   stockAnalysisSetMessage('', false, ctx);

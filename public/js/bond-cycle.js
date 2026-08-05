@@ -9,27 +9,24 @@ var bondCycleTablePage = 1;
 var BC_TABLE_PAGE_SIZE = 50; // 表格每页显示条数（默认展示最近 50 条，可翻页）
 
 function switchBondSub(sub) {
+  if (sub === 'analysis') sub = 'safety';
   sub = sub || 'safety';
   var safety = document.getElementById('sub-bond-safety');
   var cycle = document.getElementById('sub-bond-cycle');
   var valuation = document.getElementById('sub-bond-valuation');
-  var analysis = document.getElementById('sub-bond-analysis');
   if (safety) safety.hidden = (sub !== 'safety');
   if (cycle) cycle.hidden = (sub !== 'cycle');
   if (valuation) valuation.hidden = (sub !== 'valuation');
-  if (analysis) analysis.hidden = (sub !== 'analysis');
   var tabs = document.querySelectorAll('.bond-sub-tab');
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.sub === sub);
   var params = new URLSearchParams(window.location.search);
   params.set('main', 'bond-safety');
   if (sub === 'cycle') params.set('sub', 'cycle');
   else if (sub === 'valuation') params.set('sub', 'valuation');
-  else if (sub === 'analysis') params.set('sub', 'analysis');
   else params.delete('sub');
   history.replaceState(null, '', '/?' + params.toString());
   if (sub === 'cycle') loadBondCycle();
   else if (sub === 'valuation') loadBondValuation();
-  else if (sub === 'analysis' && typeof securityAnalysisLoadList === 'function') securityAnalysisLoadList(true);
 }
 
 function initBondCycleSub() {

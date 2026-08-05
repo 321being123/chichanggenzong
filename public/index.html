@@ -532,6 +532,21 @@
         </section>
       </div>
     </div>
+    <div id="bond-analysis-content" class="bond-analysis-content" style="display:none;">
+      <div class="bond-analysis-summary" id="bond-analysis-summary"></div>
+      <section class="bond-analysis-section"><h3>可转债基本信息</h3><div id="bond-analysis-basic"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="根据募集说明书中的强赎、下修和回售条款，计算触发价格及观察窗口内满足条件的交易日数量。">触发价格与计数</span></h3><div id="bond-analysis-triggers"></div></section>
+      <section class="bond-analysis-section"><h3>募集用途与条款</h3><div id="bond-analysis-terms"></div></section>
+      <section class="bond-analysis-section"><h3>转股价调整历史</h3><div id="bond-analysis-price-history"></div></section>
+      <section class="bond-analysis-section"><h3>转股价不下修历史</h3><div id="bond-analysis-no-revision"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="综合利息保障倍数、现金覆盖率、负债市值比和信用评级观察可转债偿债风险。">可转债安全性</span></h3><div id="bond-analysis-safety"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="展示纯债价值、债底溢价率、票息及按未来现金流计算的到期收益率。">债券基本信息</span></h3><div id="bond-analysis-bond"></div></section>
+      <section class="bond-analysis-section"><h3>债券利息明细</h3><div id="bond-analysis-coupons"></div></section>
+      <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="实际期权价值＝转债市价－纯债价值；理论期权价值使用Black-Scholes模型估算。">期权价值</span></h3><small class="bond-analysis-method" id="bond-analysis-option-method"></small><div id="bond-analysis-option"></div></section>
+      <section class="bond-analysis-section"><h3>正股相关</h3><div id="bond-analysis-stock"></div></section>
+      <section class="bond-analysis-section"><h3>评级历史</h3><div id="bond-analysis-ratings"></div></section>
+      <div class="bond-analysis-status" id="bond-analysis-status"></div>
+    </div>
   </div>
 </div>
 
@@ -633,7 +648,6 @@
       <button class="bond-sub-tab active" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
       <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
       <button class="bond-sub-tab" data-sub="valuation" onclick="switchBondSub('valuation')">可转债估值</button>
-      <button class="bond-sub-tab" data-sub="analysis" onclick="switchBondSub('analysis')">个券分析</button>
     </div>
   </div>
   <div class="bond-safety-shell feature-page-shell">
@@ -774,38 +788,6 @@
         <div id="bond-val-table"><div class="bond-val-empty">正在加载估值数据...</div></div>
       </div>
 
-      <!-- 子页：可转债个券分析 -->
-      <div id="sub-bond-analysis" class="bond-sub-page" hidden>
-        <div class="bond-analysis-hero">
-          <div><h2>可转债个券分析</h2><p>输入可转债名称或代码，读取已入库数据并生成分析结果。数据仅供研究参考，不构成投资建议。</p></div>
-          <span id="bond-analysis-updated">请输入名称或代码</span>
-        </div>
-        <div class="stock-analysis-toolbar table-wrap">
-          <select id="bond-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value,'bond')"><option value="">选择持仓或自选</option></select>
-          <div class="security-analysis-search">
-            <input id="bond-analysis-code" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="可转债名称、代码" aria-autocomplete="list" aria-controls="bond-analysis-suggestions" aria-expanded="false">
-            <div id="bond-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit(null,'bond')">开始分析</button>
-          <button class="btn btn-outline btn-sm" id="bond-analysis-refresh" onclick="securityAnalysisRefresh('bond')">刷新数据</button>
-        </div>
-        <div id="bond-analysis-message" class="stock-analysis-message">请输入可转债名称或代码开始分析。</div>
-        <div id="bond-analysis-content" class="bond-analysis-content" style="display:none;">
-          <div class="bond-analysis-summary" id="bond-analysis-summary"></div>
-          <section class="bond-analysis-section"><h3>可转债基本信息</h3><div id="bond-analysis-basic"></div></section>
-          <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="根据募集说明书中的强赎、下修和回售条款，计算触发价格及观察窗口内满足条件的交易日数量。">触发价格与计数</span></h3><div id="bond-analysis-triggers"></div></section>
-          <section class="bond-analysis-section"><h3>募集用途与条款</h3><div id="bond-analysis-terms"></div></section>
-          <section class="bond-analysis-section"><h3>转股价调整历史</h3><div id="bond-analysis-price-history"></div></section>
-          <section class="bond-analysis-section"><h3>转股价不下修历史</h3><div id="bond-analysis-no-revision"></div></section>
-          <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="综合利息保障倍数、现金覆盖率、负债市值比和信用评级观察可转债偿债风险。">可转债安全性</span></h3><div id="bond-analysis-safety"></div></section>
-          <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="展示纯债价值、债底溢价率、票息及按未来现金流计算的到期收益率。">债券基本信息</span></h3><div id="bond-analysis-bond"></div></section>
-          <section class="bond-analysis-section"><h3>债券利息明细</h3><div id="bond-analysis-coupons"></div></section>
-          <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="实际期权价值＝转债市价－纯债价值；理论期权价值使用Black-Scholes模型估算。">期权价值</span></h3><small class="bond-analysis-method" id="bond-analysis-option-method"></small><div id="bond-analysis-option"></div></section>
-          <section class="bond-analysis-section"><h3>正股相关</h3><div id="bond-analysis-stock"></div></section>
-          <section class="bond-analysis-section"><h3>评级历史</h3><div id="bond-analysis-ratings"></div></section>
-          <div class="bond-analysis-status" id="bond-analysis-status"></div>
-        </div>
-      </div>
     </div>
   </div>
 </div>

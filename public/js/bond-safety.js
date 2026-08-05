@@ -59,9 +59,8 @@ function bondSafetyCell(row, key) {
 }
 
 function bondSafetyJump(code) {
-  switchMain('bond-safety');
-  switchBondSub('analysis');
-  setTimeout(function(){ securityAnalysisSelect(code, 'bond'); }, 150);
+  switchMain('stock-analysis');
+  setTimeout(function(){ securityAnalysisSelect(code); }, 150);
 }
 
 function bondSafetyApplyFilters() {

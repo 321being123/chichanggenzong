@@ -1892,7 +1892,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
 // 从「标准条款表」convertible_bond_terms 重算条款指纹。
 // 必须按有效期（effective_from / effective_to）选择「截至 asOf 当日生效」的条款，
 // 而不是取最后写入的一行——可转债条款可能在存续期内修订，历史快照应锁定当时生效的条款。
-// asOf 不传时取今天（实时刷新用）；读取/回填历史快照时传入该快照自身的 as_of_date。
+// asOf 不传时取今天：①写入水位用快照自身 as_of；②回填历史快照用各快照自身的 as_of_date；
+// ③失效判定（getConvertibleBondSnapshot）刻意不传 asOf，按今天重算后与水位比较，
+//   使「快照生成后新增有效条款」能被检出并令旧快照失效。
 // 同一来源用于写入水位与失效判定，保证读/写一致；标准表条款修订（新增 term_type 行）时指纹随之变化，旧快照会被判失效。
 async function buildStandardTermsHash(pool, instrumentId, asOf) {
   if (!instrumentId) return null;
@@ -1947,8 +1949,10 @@ async function getConvertibleBondSnapshot(value) {
   const latestConvPriceChangeDate = latest.rows[0] && latest.rows[0].conv_change_date;
   const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;
   const currentFinancialEnd = latest.rows[0] && latest.rows[0].report_end_date;
-  // 条款指纹读取「标准条款表」convertible_bond_terms（与写入水位同一来源），不再读快照自身 payload，也不再读 profiles.raw_payload
-  const currentTermsHash = await buildStandardTermsHash(pool, r.instrument_id, snapshotAsOf);
+  // 失效检查必须按「当前分析日期」重算条款指纹，再与快照水位（写入时按快照日期锁定）比较；
+  // 若快照生成后条款被修订（新增/调整有效条款），两者不一致即触发 terms_changed，使旧快照自动失效。
+  // 注意：不可传 snapshotAsOf，否则永远查到快照当时条款，修订后旧快照永远不会被判失效。
+  const currentTermsHash = await buildStandardTermsHash(pool, r.instrument_id);
   const freshness = evaluateConvertibleBondFreshness({
     snapshotConvPrice: payload.basic && payload.basic.convert_price,
     snapshotAsOf,

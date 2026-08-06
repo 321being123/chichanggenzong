@@ -349,7 +349,12 @@ async function syncIndexPoints() {
   try {
     if (!data.indexHistory) data.indexHistory = [];
     const firstNavDate = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
-    const days = Math.max(250, firstNavDate ? daysBetween(firstNavDate) : 250);
+    // 增量起点：本地已有历史的最新日期；本地为空（首次）才从净值首日全量补齐
+    let latestDate = null;
+    for (const h of data.indexHistory) { if (!latestDate || h.date > latestDate) latestDate = h.date; }
+    const baseDate = latestDate || firstNavDate;
+    // 首次拉全量；之后只拉「最新日期 → 今天」+ 容错 buffer（几天），不再每次从头拉
+    const days = baseDate ? Math.max(latestDate ? 5 : 250, daysBetween(baseDate)) : 250;
     const names = Object.keys(INDEX_SECID);
     const results = await Promise.all(names.map(function (n) {
       return fetchIndexKline(INDEX_SECID[n], days + 5);
@@ -363,17 +368,20 @@ async function syncIndexPoints() {
       });
     });
     data.indexHistory = Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
-    // 增量写入独立表
+    // 增量写入独立表：只发送「本地最新日期之后」的新增点，不再每次全量重传
     try {
       const points = [];
       data.indexHistory.forEach(function (h) {
+        if (latestDate && h.date <= latestDate) return;
         names.forEach(function (n) { if (h[n] != null) points.push({ date: h.date, name: n, close: h[n] }); });
       });
-      await fetch(api('/api/index-history'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: currentAccount, points: points })
-      });
+      if (points.length > 0) {
+        await fetch(api('/api/index-history'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account: currentAccount, points: points })
+        });
+      }
     } catch (e) { /* 指数入库失败不影响主流程 */ }
   } catch (e) { /* 指数快照失败不影响主流程 */ }
 }

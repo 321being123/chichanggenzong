@@ -65,12 +65,15 @@ function renderStats() {
   }
   if (el('stat-total-sub')) el('stat-total-sub').textContent = '持仓市值 ' + fmt(s.total - s.cash) + ' + 现金 ' + fmt(s.cash);
   if (el('stat-change')) {
+    var scEl = el('stat-change');
     if (hasChange) {
       var arrow = changeAmt >= 0 ? '▲' : '▼';
       var color = changeAmt >= 0 ? '#d93025' : '#137333';
-      el('stat-change').innerHTML = '<span style="color:' + color + ';">' + arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)</span>';
+      scEl.innerHTML = '<span style="color:' + color + ';">' + arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)</span>';
+      // 悬浮浮框：分解今日涨跌（股价影响 + 汇率影响 + 计算过程）
+      bindChangeTip(scEl, changeAmt, changePct);
     } else {
-      el('stat-change').textContent = '-';
+      scEl.textContent = '-';
     }
   }
   if (el('stat-equity')) el('stat-equity').textContent = fmt(s.equityVal);
@@ -82,6 +85,55 @@ function renderStats() {
   if (el('bar-equity')) el('bar-equity').style.width = (s.equityPct * 100) + '%';
   if (el('bar-debt')) el('bar-debt').style.width = (s.debtPct * 100) + '%';
   if (el('bar-cash')) el('bar-cash').style.width = (s.cashPct * 100) + '%';
+}
+
+// 总资产今日涨跌浮框：分解「股价影响 + 汇率影响」并写出计算过程
+function bindChangeTip(el, changeAmt, changePct) {
+  if (!el) return;
+  // 股价/债价涨跌影响（含今日汇率）= 各持仓(今价−昨价)×数量×汇率，与持仓明细「今日盈亏」同口径
+  var priceImpact = 0;
+  (data.positions || []).forEach(function (p) {
+    var prof = getTodayProfit(p);
+    if (prof != null) priceImpact += prof;
+  });
+  // 汇率影响 = 总资产涨跌 − 股价影响（港币资产因港币兑人民币波动的账面价值变化）
+  var fxImpact = changeAmt - priceImpact;
+
+  var tip = document.getElementById('stat-change-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'stat-change-tip';
+    tip.style.cssText = 'position:fixed;z-index:9999;display:none;max-width:380px;background:#1f2329;color:#e8eaed;padding:12px 14px;border-radius:8px;font-size:12px;line-height:1.7;box-shadow:0 6px 20px rgba(0,0,0,.35);white-space:normal;pointer-events:none;';
+    document.body.appendChild(tip);
+  }
+  el.style.cursor = 'help';
+  el.onmouseenter = function () {
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact);
+    tip.style.display = 'block';
+    var r = el.getBoundingClientRect();
+    var left = r.left;
+    if (left + 388 > window.innerWidth) left = Math.max(8, window.innerWidth - 388);
+    tip.style.left = left + 'px';
+    tip.style.top = (r.bottom + 8) + 'px';
+  };
+  el.onmouseleave = function () { tip.style.display = 'none'; };
+}
+
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact) {
+  var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
+  var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
+  var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
+  var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
+  return '' +
+    '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
+    '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
+      '<div>股价/债价涨跌影响：<span style="color:' + col(priceImpact) + ';">' + arrow(priceImpact) + ' ' + sign(priceImpact) + '</span></div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">各持仓（今价−昨价）×数量×汇率，仅反映价格变动</div>' +
+      '<div>汇率影响：<span style="color:' + col(fxImpact) + ';">' + arrow(fxImpact) + ' ' + sign(fxImpact) + '</span></div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港币资产因港币兑人民币波动产生的账面价值变化</div>' +
+      '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响 = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
+    '</div>' +
+    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：持仓明细里的「今日盈亏」只看股价、不含汇率，所以和这里对不上；差值就是汇率影响。</div>';
 }
 
 // ===================== 饼图渲染 =====================

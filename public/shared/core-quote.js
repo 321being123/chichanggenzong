@@ -135,7 +135,7 @@ async function refreshAllPrices() {
   }
   // 保存涨跌幅到数据文件，页面刷新后自动恢复
   data.changes = {}; Object.keys(priceChangeMap).forEach(function(k) { data.changes[k] = priceChangeMap[k]; });
-  await syncIndexPoints();
+  // 指数对比线同步已移至渲染之后（见下方 renderAll 之后），不再阻塞总资产计算
   data.totalAsset = calcSummary().total;
   await recordNav();
   // 阶段二-5：行情价格用局部 PATCH 接口，不触发 saveData 全量保存
@@ -160,6 +160,8 @@ async function refreshAllPrices() {
     showToast('行情已获取，但价格保存失败（' + (e.message || e) + '）');
   }
   renderAll(); renderReturnsChart();
+  // 指数对比线后台同步（增量拉取 + 批量写库），不阻塞总资产与页面渲染
+  syncIndexPoints().catch(function(){});
   const failedCodes = codes.filter(c => {
     const p = data.positions.find(x => x.code === c);
     return p && (!p.price || !p.name);

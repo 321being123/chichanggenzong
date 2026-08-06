@@ -472,17 +472,23 @@ async function clearNavHistory(username, accountName, mode, beforeDate) {
 // ====== 指数历史（独立表，增量 upsert，避免 JSON 读写放大） ======
 
 async function upsertIndexPoints(username, accountName, points) {
+  const valid = (points || []).filter(p => p && p.date && p.name);
+  if (valid.length === 0) return;
   const { rows: aRows } = await pool.query(
     'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
   );
   const accountId = aRows[0] ? aRows[0].id : null;
-  for (const p of (points || [])) {
-    if (!p || !p.date || !p.name) continue;
-    await pool.query(
-      'INSERT INTO index_history (username, account_name, account_id, date, name, close) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (username, account_name, date, name) DO UPDATE SET close = EXCLUDED.close',
-      [username, accountName, accountId, p.date, p.name, p.close || 0]
-    );
-  }
+  const dates = valid.map(p => p.date);
+  const names = valid.map(p => p.name);
+  const closes = valid.map(p => p.close || 0);
+  // 批量 upsert：单次 SQL 完成全部写入（UNNEST 展开），替代逐条 INSERT 循环
+  await pool.query(
+    `INSERT INTO index_history (username, account_name, account_id, date, name, close)
+     SELECT $1, $2, $3, d::date, n, c::numeric
+     FROM UNNEST($4::text[], $5::text[], $6::numeric[]) AS t(d, n, c)
+     ON CONFLICT (username, account_name, date, name) DO UPDATE SET close = EXCLUDED.close`,
+    [username, accountName, accountId, dates, names, closes]
+  );
 }
 
 async function loadIndexPoints(username, accountName) {

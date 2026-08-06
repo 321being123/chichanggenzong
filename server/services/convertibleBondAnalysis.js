@@ -1874,7 +1874,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     rating: { newest_rating: profile.newest_rating || null,
       rating_date: latestRating ? isoDate(latestRating.rating_date) : null },
     financial: { report_end_date: isoDate(latestBalance.end_date || financial.report_end_date) },
-    terms_hash: await buildStandardTermsHash(pool, ids.bondId),
+    terms_hash: await buildStandardTermsHash(pool, ids.bondId, analysis.as_of),
     formula_bundle_version: FORMULA_VERSION,
   };
   await pool.query(
@@ -1890,12 +1890,21 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
 }
 
 // 从「标准条款表」convertible_bond_terms 重算条款指纹。
-// 与写入水位时共用同一来源，保证读/写一致；标准表条款有修订（新增 term_type 行）时指纹随之变化，旧快照会被判失效。
-async function buildStandardTermsHash(pool, instrumentId) {
+// 必须按有效期（effective_from / effective_to）选择「截至 asOf 当日生效」的条款，
+// 而不是取最后写入的一行——可转债条款可能在存续期内修订，历史快照应锁定当时生效的条款。
+// asOf 不传时取今天（实时刷新用）；读取/回填历史快照时传入该快照自身的 as_of_date。
+// 同一来源用于写入水位与失效判定，保证读/写一致；标准表条款修订（新增 term_type 行）时指纹随之变化，旧快照会被判失效。
+async function buildStandardTermsHash(pool, instrumentId, asOf) {
   if (!instrumentId) return null;
+  const asOfDate = isoDate(asOf) || isoDate(new Date());
   const { rows } = await pool.query(
-    `SELECT term_type, clause_text FROM fundamental.convertible_bond_terms WHERE instrument_id = $1`,
-    [instrumentId]
+    `SELECT DISTINCT ON (term_type) term_type, clause_text
+     FROM fundamental.convertible_bond_terms
+     WHERE instrument_id = $1
+       AND effective_from <= $2::date
+       AND (effective_to IS NULL OR effective_to > $2::date)
+     ORDER BY term_type, effective_from DESC`,
+    [instrumentId, asOfDate]
   );
   const textByType = {};
   rows.forEach(r => { textByType[r.term_type] = r.clause_text; });
@@ -1939,7 +1948,7 @@ async function getConvertibleBondSnapshot(value) {
   const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;
   const currentFinancialEnd = latest.rows[0] && latest.rows[0].report_end_date;
   // 条款指纹读取「标准条款表」convertible_bond_terms（与写入水位同一来源），不再读快照自身 payload，也不再读 profiles.raw_payload
-  const currentTermsHash = await buildStandardTermsHash(pool, r.instrument_id);
+  const currentTermsHash = await buildStandardTermsHash(pool, r.instrument_id, snapshotAsOf);
   const freshness = evaluateConvertibleBondFreshness({
     snapshotConvPrice: payload.basic && payload.basic.convert_price,
     snapshotAsOf,

@@ -1874,7 +1874,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     rating: { newest_rating: profile.newest_rating || null,
       rating_date: latestRating ? isoDate(latestRating.rating_date) : null },
     financial: { report_end_date: isoDate(latestBalance.end_date || financial.report_end_date) },
-    terms_hash: termsHash(analysis.terms),
+    terms_hash: await buildStandardTermsHash(pool, ids.bondId),
     formula_bundle_version: FORMULA_VERSION,
   };
   await pool.query(
@@ -1889,6 +1889,24 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   return analysis;
 }
 
+// 从「标准条款表」convertible_bond_terms 重算条款指纹。
+// 与写入水位时共用同一来源，保证读/写一致；标准表条款有修订（新增 term_type 行）时指纹随之变化，旧快照会被判失效。
+async function buildStandardTermsHash(pool, instrumentId) {
+  if (!instrumentId) return null;
+  const { rows } = await pool.query(
+    `SELECT term_type, clause_text FROM fundamental.convertible_bond_terms WHERE instrument_id = $1`,
+    [instrumentId]
+  );
+  const textByType = {};
+  rows.forEach(r => { textByType[r.term_type] = r.clause_text; });
+  return termsHash({
+    reset: simplifyClause('reset', textByType.reset),
+    call: simplifyClause('call', textByType.call),
+    put: simplifyClause('put', textByType.put),
+    maturity_call_price: textByType.maturity_call ? finite(textByType.maturity_call) : null,
+  });
+}
+
 async function getConvertibleBondSnapshot(value) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) return null;
@@ -1896,10 +1914,6 @@ async function getConvertibleBondSnapshot(value) {
     `SELECT s.payload,s.created_at,s.formula_bundle_version,s.source_watermark,
             p.current_conv_price,p.source_updated_at,p.updated_at AS profile_updated_at,
             p.stock_instrument_id,p.newest_rating AS profile_rating,
-            p.maturity_call_price AS profile_maturity_call_price,
-            p.raw_payload->>'call_clause' AS db_call_clause,
-            p.raw_payload->>'reset_clause' AS db_reset_clause,
-            p.raw_payload->>'put_clause' AS db_put_clause,
             i.instrument_id,i.status,i.delist_date
      FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
      LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
@@ -1924,14 +1938,8 @@ async function getConvertibleBondSnapshot(value) {
   const latestConvPriceChangeDate = latest.rows[0] && latest.rows[0].conv_change_date;
   const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;
   const currentFinancialEnd = latest.rows[0] && latest.rows[0].report_end_date;
-  // 条款指纹必须基于「数据库当前条款」重算，而非快照自身 payload（否则等于自己比自己，永远相等）
-  // maturity_call_price 用 finite() 转数字，与写入水位时一致（node-pg 把 numeric 列返回为字符串，会导致 hash 不一致）
-  const currentTermsHash = termsHash({
-    reset: simplifyClause('reset', r.db_reset_clause),
-    call: simplifyClause('call', r.db_call_clause),
-    put: simplifyClause('put', r.db_put_clause),
-    maturity_call_price: finite(r.profile_maturity_call_price),
-  });
+  // 条款指纹读取「标准条款表」convertible_bond_terms（与写入水位同一来源），不再读快照自身 payload，也不再读 profiles.raw_payload
+  const currentTermsHash = await buildStandardTermsHash(pool, r.instrument_id);
   const freshness = evaluateConvertibleBondFreshness({
     snapshotConvPrice: payload.basic && payload.basic.convert_price,
     snapshotAsOf,
@@ -1963,7 +1971,7 @@ module.exports = {
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart,
   bootstrapBondsFromHistory,
-  syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
+  syncConvertibleBondUniverse, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,

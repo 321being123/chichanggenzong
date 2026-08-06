@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
 const { describeTencentCode } = require('./tencentQuote');
+const { STOCK_FORMULA_VERSION } = require('./analysisFreshness');
 
 function asDate(value) {
   const text=String(value||'').replace(/-/g,'').slice(0,8);
@@ -193,9 +194,27 @@ async function syncAnalytics(client, instrumentId, analysis, sources) {
     DO UPDATE SET numeric_value=EXCLUDED.numeric_value,status=EXCLUDED.status,input_hash=EXCLUDED.input_hash,diagnostics=EXCLUDED.diagnostics,calculated_at=now()`,[instrumentId,code,asOf,value,value==null?'missing':calculated?'calculated':'valid',hash(JSON.stringify(metricValues)),JSON.stringify(code==='roa'?{source:valuation.roa_source||''}:{})]);}
   for(const code of ['price','pe','pb']){const stat=analysis.percentiles&&analysis.percentiles[code];if(!stat)continue;await client.query(`INSERT INTO analytics.metric_statistics(instrument_id,metric_code,as_of_date,window_start,window_end,percentile_value,valid_samples,excluded_reason)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(instrument_id,metric_code,as_of_date,window_start,window_end) DO UPDATE SET percentile_value=EXCLUDED.percentile_value,valid_samples=EXCLUDED.valid_samples,excluded_reason=EXCLUDED.excluded_reason,calculated_at=now()`,[instrumentId,code,asOf,analysis.percentiles.window_start?asDate(analysis.percentiles.window_start):null,asOf,finite(stat.value),Number(stat.samples||0),stat.reason||'']);}
-  await client.query(`INSERT INTO analytics.analysis_snapshots(instrument_id,as_of_date,snapshot_type,formula_bundle_version,payload,source_watermark)
-    VALUES($1,$2,'stock_analysis','1',$3::jsonb,$4::jsonb) ON CONFLICT(instrument_id,as_of_date,snapshot_type,formula_bundle_version) DO UPDATE SET payload=EXCLUDED.payload,source_watermark=EXCLUDED.source_watermark,created_at=now()`,[instrumentId,asOf,JSON.stringify(analysis),JSON.stringify({source:'legacy_projection'})]);
   const controller=analysis.actual_controller||{},report=analysis.latest_report||{},guidance=analysis.performance_forecast||{},quote=analysis.quote||{};
+  const dividendHistory=(analysis.stability&&analysis.stability.dividend_history)||[];
+  const latestDividend=dividendHistory[0]||{};
+  const latestEventDate=(analysis.events||[]).reduce((max,e)=>String(e.event_date||'')>max?String(e.event_date):max,'');
+  const stockWatermark = {
+    analysis_type: 'stock',
+    as_of: asDate(analysis.as_of),
+    latest_report_end: report.end_date || null,
+    instrument: { name: analysis.name || '', list_date: asDate(analysis.list_date) },
+    market: { trade_date: asDate(analysis.latest_market_trade_date) || asOf, quote_time: quote.quote_time || null, quote_source: quote.source || null },
+    financial: { report_end_date: report.end_date || null, report_ann_date: report.ann_date || null },
+    dividend: { latest_ann_date: latestDividend.ann_date || null, latest_ex_date: latestDividend.ex_date || null },
+    guidance: { ann_date: guidance.ann_date || null, end_date: guidance.end_date || null },
+    industry: { name: (analysis.industry_info && analysis.industry_info.name) || analysis.industry || '',
+      system: (analysis.industry_info && analysis.industry_info.system) || '' },
+    controller: { name: controller.name || '', source: controller.source || '' },
+    event: { latest_event_date: latestEventDate || null },
+    formula_bundle_version: STOCK_FORMULA_VERSION,
+  };
+  await client.query(`INSERT INTO analytics.analysis_snapshots(instrument_id,as_of_date,snapshot_type,formula_bundle_version,payload,source_watermark)
+    VALUES($1,$2,'stock_analysis',$3,$4::jsonb,$5::jsonb) ON CONFLICT(instrument_id,as_of_date,snapshot_type,formula_bundle_version) DO UPDATE SET payload=EXCLUDED.payload,source_watermark=EXCLUDED.source_watermark,created_at=now()`,[instrumentId,asOf,STOCK_FORMULA_VERSION,JSON.stringify(analysis),JSON.stringify(stockWatermark)]);
   if(finite(quote.price)!==null)await client.query(`INSERT INTO market.latest_quotes(instrument_id,source_id,price,currency_code,quote_time,is_stale)
     VALUES($1,$2,$3,$4,$5,false) ON CONFLICT(instrument_id,source_id) DO UPDATE SET price=EXCLUDED.price,currency_code=EXCLUDED.currency_code,quote_time=EXCLUDED.quote_time,is_stale=false,fetched_at=now()`,[instrumentId,sources[quote.source]||sources.calculated,finite(quote.price),quote.currency||'CNY',quote.quote_time||null]);
   await client.query(`INSERT INTO analytics.stock_overview_latest(instrument_id,as_of_date,name,canonical_code,industry_label,currency_code,price,total_market_cap,a_share_market_cap,circulating_market_cap,free_float_market_cap,controller_name,controller_type,latest_report_date,latest_report_announced_at,guidance_summary,metrics)

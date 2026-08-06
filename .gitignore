@@ -55,3 +55,10 @@ backups/
 *.sql.gz
 *.gpg
 *.sha256
+
+# 本地券商备份（含敏感持仓/交易数据，禁止入库）
+huatai_backup_*.json
+*_backup_*.json
+
+# 临时调试脚本（本地产物，禁止入库）
+tmp_debug_*.js

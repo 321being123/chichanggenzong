@@ -61,9 +61,9 @@ assert.ok(script.includes('平均股息率') && script.includes('最近12个月�
 assert.ok(script.includes('(late-early)/early') && script.includes('近期三年均值－十年前三年均值'), '十年三年均值增长必须按两组三年均值的总增长率计算');
 assert.ok(script.includes('analysisHelp(label, stockAnalysisLabelHelp(label))'), '股票分析指标缺少算法说明入口');
 assert.ok(bondScript.includes('analysisHelp(row[0],bondAnalysisLabelHelp(row[0]))'), '可转债分析指标缺少算法说明入口');
-assert.ok(html.includes('id="security-analysis-suggestions"') && html.includes('aria-autocomplete="list"'), '股债分析缺少名称联想下拉框');
+assert.ok(html.includes('id="stock-analysis-suggestions"') && html.includes('aria-autocomplete="list"'), '股债分析缺少名称联想下拉框');
 assert.ok(bondScript.includes('/api/bond-analysis/search/securities?q=') && bondScript.includes('securityAnalysisChooseSuggestion'), '股债分析名称联想未接入证券搜索接口');
-assert.ok(bondScript.includes("input.addEventListener('input',function(){\n    securityAnalysisClearListSelection(ctx);"), '手动输入证券后未清空旧持仓选项');
+assert.ok(/addEventListener\('input',function\(\)\s*\{[\s\S]*?securityAnalysisClearListSelection\(ctx\)/.test(bondScript), '手动输入证券后未清空旧持仓选项');
 assert.ok(bondScript.includes('securityAnalysisState.searchSeq++;') && bondScript.includes('securityAnalysisSubmit(code, ctx);'), '从持仓选择证券时未取消旧搜索并按新代码分析');
 assert.ok(analysisCss.includes('.security-analysis-suggestions{') && analysisCss.includes('.security-analysis-suggestion.active'), '证券联想下拉缺少样式或键盘选中状态');
 assert.ok(analysisCss.includes('.analysis-help{') && analysisCss.includes('border-bottom:1px dashed') && analysisCss.includes('.analysis-help-tooltip{'), '算法说明缺少虚线下划线或悬浮弹框样式');

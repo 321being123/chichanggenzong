@@ -3,10 +3,14 @@ const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport } = require('./stockAnalysis');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const cycleService = require('./convertibleBondCycleService');
 const { upsertBondBaseInfo } = require('./bondDataService');
+const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
+const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess, markDatasetFailure,
+  recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const PROFILE_FIELDS = [
@@ -19,6 +23,16 @@ const PROFILE_FIELDS = [
 const DAILY_FIELDS = 'ts_code,trade_date,pre_close,open,high,low,close,change,pct_chg,vol,amount,bond_value,bond_over_rate,cb_value,cb_over_rate';
 const FORMULA_VERSION = '3';
 const CN_OFFSET_MS = 8 * 3600 * 1000;
+// 允许按 TTL 跳过上游的静态/低频数据组。行情与公告不在此列：
+// 行情已有 7 天重叠增量，公告参与回售、下修等当期判定，跳过会改变分析结论。
+const GATED_BOND_DATASETS = ['cb_basic', 'cb_rating', 'cb_price_chg', 'cb_rate', 'top10_cb_holders', 'bond_dividend'];
+
+// 条款指纹：条款文本一变，指纹就变，用于判断旧快照是否还基于同一套条款
+function termsHash(terms) {
+  try {
+    return crypto.createHash('md5').update(JSON.stringify(terms || {})).digest('hex');
+  } catch (e) { return null; }
+}
 
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -1053,6 +1067,35 @@ function activeProfile(row, today) {
     (!convertStop || convertStop > today);
 }
 
+// 转股价发生变动时的定点处理：登记数据问题 + 只对这几只补取转股价公告
+async function handleConvPriceChanges(changes, sourceId) {
+  for (const change of changes) {
+    await recordQualityIssue({
+      instrumentId: change.instrument_id,
+      datasetCode: 'cb_basic',
+      fieldCode: 'conv_price',
+      issueType: 'snapshot_input_mismatch',
+      details: { ts_code: change.ts_code, before: change.before, after: change.after, detected_by: 'daily_universe_sync' },
+    });
+    try {
+      const rows = tsRows(await tushareQuery('cb_price_chg', { ts_code: change.ts_code },
+        'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'));
+      if (rows.length) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await savePriceChanges(client, change.instrument_id, rows, sourceId);
+          await client.query('COMMIT');
+        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+        finally { client.release(); }
+      }
+    } catch (e) {
+      console.warn(`[主同步] ${change.ts_code} 转股价公告补取失败：${e.message}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 150)); // 限流缓冲
+  }
+}
+
 async function syncConvertibleBondUniverse(reason = 'scheduled') {
   const claimed = await tryClaimJob('convertible_bond_universe_refresh');
   if (!claimed) return { skipped: true, reason: 'already_running' };
@@ -1075,6 +1118,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
     const client = await pool.connect();
     let saved = 0;
     let tushareSourceId = null;
+    const convPriceChanges = [];
     try {
       await client.query('BEGIN');
       const sources = await sourceIds(client);
@@ -1084,12 +1128,25 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       const bootstrapped = await bootstrapBondsFromHistory(client, sources);
       if (bootstrapped) console.log(`[主同步] 从打新日历引导了 ${bootstrapped} 只新债`);
 
+      // 保存前先记下现有转股价，用来识别本轮发生转股价变动的转债
+      const prevConvPrice = new Map();
+      const prevRows = await client.query(
+        `SELECT i.canonical_code AS ts_code, p.current_conv_price
+           FROM fundamental.convertible_bond_profiles p
+           JOIN core.instruments i ON i.instrument_id = p.instrument_id`);
+      for (const row of prevRows.rows) prevConvPrice.set(row.ts_code, finite(row.current_conv_price));
+
       const stockInstrumentMap = new Map();
       for (const profile of basics) {
         const ids = await saveProfile(client, profile, sources);
         if (profile.stk_code && ids.stockId) stockInstrumentMap.set(profile.stk_code, ids.stockId);
         const quote = dailyMap.get(profile.ts_code);
         if (quote) await saveDailyBar(client, ids.bondId, quote, sources.tushare);
+        const before = prevConvPrice.get(profile.ts_code);
+        const after = finite(profile.conv_price);
+        if (before != null && after != null && Math.abs(before - after) > CONV_PRICE_EPS) {
+          convPriceChanges.push({ ts_code: profile.ts_code, instrument_id: ids.bondId, before, after });
+        }
         saved += 1;
       }
       await saveFullStockMarketPartition(client, stockInstrumentMap, stockDailyRows, stockValuationRows, sources.tushare);
@@ -1104,6 +1161,11 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
+    // 转股价变动的转债：记数据问题 + 定点补取转股价公告（旧快照由新鲜度判定自动标记为需刷新）
+    if (convPriceChanges.length) {
+      console.log(`[主同步] 检测到 ${convPriceChanges.length} 只转债转股价变动：${convPriceChanges.map(c => c.ts_code).join(',')}`);
+      await handleConvPriceChanges(convPriceChanges, tushareSourceId);
+    }
     // 评级历史自动补齐（独立事务，失败不影响主同步；缺评级的转债逐只从 Tushare 拉取）
     try { await backfillMissingRatings(reason); }
     catch (ratingErr) { console.warn('[ratings] 评级补齐失败（不影响主同步）:', ratingErr.message); }
@@ -1471,7 +1533,7 @@ async function loadCachedAnalysisHistory(tsCode, startDate) {
   };
 }
 
-async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
+async function refreshConvertibleBondAnalysis(value, reason = 'manual', options = {}) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) throw new Error('请输入有效的可转债代码');
   const end = tsDateStr(new Date());
@@ -1479,17 +1541,33 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const start = tsDateStr(startDate);
   const cachedHistory = await loadCachedAnalysisHistory(tsCode, isoDate(startDate));
   const bondStart = incrementalStart(cachedHistory.bondDaily, start);
-  const couponPromise = process.env.TUSHARE_ENABLE_5000_ENDPOINTS === '1'
-    ? tushareQuery('cb_rate', { ts_code: tsCode }, 'ts_code,rate_freq,rate_start_date,rate_end_date,coupon_rate')
+  // 按数据组门控：TTL 内且上次成功的低频数据组不再重复请求上游，options.force 可强制全拉
+  const bondScope = datasetScope('convertible_bond', tsCode);
+  const cursors = await getDatasetCursors(bondScope, GATED_BOND_DATASETS);
+  const forceAll = options.force === true;
+  const skippedDatasets = [];
+  const gate = (code, run, fallback) => {
+    if (isDatasetFresh(cursors.get(code), code, { force: forceAll })) {
+      skippedDatasets.push(code);
+      return Promise.resolve(fallback);
+    }
+    return run();
+  };
+  const enable5000 = process.env.TUSHARE_ENABLE_5000_ENDPOINTS === '1';
+  const couponPromise = enable5000
+    ? gate('cb_rate', () => tushareQuery('cb_rate', { ts_code: tsCode }, 'ts_code,rate_freq,rate_start_date,rate_end_date,coupon_rate'), null)
     : Promise.resolve(null);
-  const holderPromise = process.env.TUSHARE_ENABLE_5000_ENDPOINTS === '1'
-    ? tushareQuery('top10_cb_holders', { ts_code: tsCode }, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio')
+  const holderPromise = enable5000
+    ? gate('top10_cb_holders', () => tushareQuery('top10_cb_holders', { ts_code: tsCode }, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio'), null)
     : Promise.resolve(null);
+  // 主档只在数据库已有完整 raw_payload 时才允许跳过，避免主档缺失导致分析中断
+  const canReuseProfile = Boolean(cachedHistory.profile && cachedHistory.profile.stk_code);
+  const fetchProfile = () => tushareQuery('cb_basic', { ts_code: tsCode }, PROFILE_FIELDS);
   const [profileData, bondDailyData, ratingData, priceChangeData, couponData, holderData] = await Promise.all([
-    tushareQuery('cb_basic', { ts_code: tsCode }, PROFILE_FIELDS),
+    canReuseProfile ? gate('cb_basic', fetchProfile, null) : fetchProfile(),
     tushareQuery('cb_daily', { ts_code: tsCode, start_date: bondStart, end_date: end }, DAILY_FIELDS),
-    tushareQuery('cb_rating', { ts_code: tsCode }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook'),
-    tushareQuery('cb_price_chg', { ts_code: tsCode }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'),
+    gate('cb_rating', () => tushareQuery('cb_rating', { ts_code: tsCode }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook'), null),
+    gate('cb_price_chg', () => tushareQuery('cb_price_chg', { ts_code: tsCode }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'), null),
     couponPromise,
     holderPromise,
   ]);
@@ -1515,13 +1593,17 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   const needsPriceDetails = priceChangeCache.some(row => row.parser_version !== '3');
   const ratingSourceCache = await loadRatingSourceCache(tsCode);
   const needsProspectus = !prospectusCache.fundraising_purpose || Number(prospectusCache.coupon_count) === 0 || prospectusCache.parser_version !== '4';
+  // 分红明细只在估值接口缺少股息率时才参与计算，已有股息率时可按 TTL 跳过全量拉取
+  const dividendFields = 'ts_code,end_date,ann_date,div_proc,cash_div_tax,ex_date,pay_date';
+  const fetchDividend = () => tushareQuery('dividend', { ts_code: stockCode }, dividendFields);
+  const hasCachedDividendYield = finite(cachedValuations[0] && cachedValuations[0].dv_ttm) != null;
   const [stockDailyData, valuationData, incomeData, balanceData, dividendData, liveQuotes, announcements, futureCalendarData] = await Promise.all([
     tushareQuery('daily', { ts_code: stockCode, start_date: stockStart, end_date: end }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
     tushareQuery('daily_basic', { ts_code: stockCode, start_date: valuationStart, end_date: end }, 'ts_code,trade_date,close,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
     tushareQuery('income', { ts_code: stockCode, start_date: announcementStart, end_date: end }, 'ts_code,ann_date,f_ann_date,end_date,report_type,n_income_attr_p'),
     tushareQuery('balancesheet', { ts_code: stockCode, start_date: announcementStart, end_date: end },
       'ts_code,ann_date,f_ann_date,end_date,report_type,total_assets,total_liab'),
-    tushareQuery('dividend', { ts_code: stockCode }, 'ts_code,end_date,ann_date,div_proc,cash_div_tax,ex_date,pay_date'),
+    hasCachedDividendYield ? gate('bond_dividend', fetchDividend, null) : fetchDividend(),
     fetchTencentQuotes([tsCode, stockCode]),
     Promise.all([
       needsPriceDetails ? fetchCninfoEventsByYear(stockCode, announcementStart, end, '转股价格').catch(() => [])
@@ -1620,9 +1702,38 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
 
+  // 事务提交后推进本次真正拉取成功的数据组水位；被 TTL 跳过的组保持原水位
+  const fetchedDatasets = [];
+  if (profileData) fetchedDatasets.push('cb_basic');
+  if (ratingData) fetchedDatasets.push('cb_rating');
+  if (priceChangeData) fetchedDatasets.push('cb_price_chg');
+  if (couponData) fetchedDatasets.push('cb_rate');
+  if (holderData) fetchedDatasets.push('top10_cb_holders');
+  if (dividendData) fetchedDatasets.push('bond_dividend');
+  for (const dataset of fetchedDatasets) {
+    await markDatasetSuccess(bondScope, dataset, { instrumentId: ids.bondId, lastSuccessDate: isoDate(new Date()) });
+  }
+
   const code = tsCode.slice(0,6), stockShortCode = stockCode.slice(0,6);
   const liveBond = liveQuotes.get(code), liveStock = liveQuotes.get(stockShortCode);
-  const synchronizedLive = Boolean(liveBond && liveStock && finite(liveBond.price) > 0 && finite(liveStock.price) > 0);
+  // 同口径校验：转债与正股实时行情必须同属一个交易日，否则整组退回同一交易日收盘数据
+  const quoteDay = (quote) => (quote && quote.quote_time ? String(quote.quote_time).slice(0, 10) : null);
+  const bondQuoteDay = quoteDay(liveBond), stockQuoteDay = quoteDay(liveStock);
+  const todayStr = isoDate(new Date());
+  const bothLivePriced = Boolean(liveBond && liveStock && finite(liveBond.price) > 0 && finite(liveStock.price) > 0);
+  const quotePairMismatched = bothLivePriced && Boolean(bondQuoteDay && stockQuoteDay && bondQuoteDay !== stockQuoteDay);
+  // 仅当债券与正股实时报价都来自今天（最新交易日）才视为实时同步；
+  // 两者同为历史缓存日期（如周末/休市未更新）时一律退回收盘，避免过期缓存被误标为腾讯实时行情
+  const bothFreshToday = bothLivePriced && bondQuoteDay === todayStr && stockQuoteDay === todayStr;
+  const synchronizedLive = bothFreshToday && !quotePairMismatched;
+  if (quotePairMismatched) {
+    await recordQualityIssue({
+      instrumentId: ids.bondId, datasetCode: 'live_quote', fieldCode: 'quote_time', issueType: 'quote_pair_unsynchronized',
+      details: { bond_quote_date: bondQuoteDay, stock_quote_date: stockQuoteDay, fallback: 'tushare_close' },
+    });
+  } else if (bothLivePriced) {
+    await resolveQualityIssue({ instrumentId: ids.bondId, datasetCode: 'live_quote', fieldCode: 'quote_time', issueType: 'quote_pair_unsynchronized' });
+  }
   const bondPrice = synchronizedLive ? finite(liveBond.price) : finite(latestBond.close);
   const stockPrice = synchronizedLive ? finite(liveStock.price) : finite(latestStock && latestStock.close);
   const convPrice = finite(profile.conv_price);
@@ -1681,7 +1792,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
     quote: { bond_price: bondPrice, bond_change_pct: synchronizedLive ? finite(liveBond.change) : finite(latestBond.pct_chg),
       stock_price: stockPrice, stock_change_pct: synchronizedLive ? finite(liveStock.change) : null,
       quote_time: synchronizedLive ? liveBond.quote_time : `${isoDate(latestBond.trade_date)}T15:00:00+08:00`,
-      source: synchronizedLive ? 'tencent' : 'tushare_close', synchronized: true },
+      source: synchronizedLive ? 'tencent' : 'tushare_close', synchronized: !quotePairMismatched },
     basic: {
       convert_price: convPrice, convert_value: convValue, convert_premium: convPremium,
       call_trigger_price: triggerState.call.trigger_price, reset_trigger_price: triggerState.reset.trigger_price,
@@ -1744,13 +1855,37 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual') {
       put_yield: putStartDate ? (putPreTax == null ? 'not_yet_calculable' : 'calculated') : 'put_period_not_found'
     }
   };
+  const latestPriceChange = extras.price_changes && extras.price_changes[0];
+  const latestNoRevision = extras.no_revision_history && extras.no_revision_history[0];
+  const latestRating = extras.ratings && extras.ratings[0];
+  const watermark = {
+    analysis_type: 'convertible_bond',
+    profile: { updated_at: isoDate(profile.source_updated_at || profile.updated_at), current_conv_price: finite(profile.conv_price) },
+    conversion_price_event: {
+      change_date: latestPriceChange ? isoDate(latestPriceChange.change_date) : null,
+      publish_date: latestPriceChange ? isoDate(latestPriceChange.publish_date) : null,
+      price_after: latestPriceChange ? finite(latestPriceChange.price_after) : null,
+      no_revision_announced_at: latestNoRevision ? isoDate(latestNoRevision.announced_at) : null,
+    },
+    bond_daily: { trade_date: isoDate(latestBond.trade_date) },
+    stock_daily: { trade_date: isoDate(latestStock.trade_date) },
+    quote: { source: analysis.quote.source, quote_time: analysis.quote.quote_time,
+      synchronized: analysis.quote.synchronized !== false },
+    rating: { newest_rating: profile.newest_rating || null,
+      rating_date: latestRating ? isoDate(latestRating.rating_date) : null },
+    financial: { report_end_date: isoDate(latestBalance.end_date || financial.report_end_date) },
+    terms_hash: termsHash(analysis.terms),
+    formula_bundle_version: FORMULA_VERSION,
+  };
   await pool.query(
     `INSERT INTO analytics.analysis_snapshots(instrument_id,as_of_date,snapshot_type,formula_bundle_version,payload,source_watermark)
      VALUES($1,$2,'convertible_bond_analysis',$3,$4::jsonb,$5::jsonb)
      ON CONFLICT(instrument_id,as_of_date,snapshot_type,formula_bundle_version) DO UPDATE SET payload=EXCLUDED.payload,
        source_watermark=EXCLUDED.source_watermark,created_at=now()`,
-    [ids.bondId, analysis.as_of, FORMULA_VERSION, JSON.stringify(analysis), JSON.stringify({ reason, quote: analysis.quote.source })]
+    [ids.bondId, analysis.as_of, FORMULA_VERSION, JSON.stringify(analysis), JSON.stringify(watermark)]
   );
+  // 快照刷新成功，该债券历史遗留的转股价错配问题已随之解决，自动恢复闭环
+  await resolveQualityIssue({ instrumentId: ids.bondId, datasetCode: 'cb_basic', fieldCode: 'conv_price', issueType: 'snapshot_input_mismatch' });
   return analysis;
 }
 
@@ -1758,18 +1893,54 @@ async function getConvertibleBondSnapshot(value) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) return null;
   const { rows } = await pool.query(
-    `SELECT s.payload,s.created_at,s.formula_bundle_version,i.status,i.delist_date FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
+    `SELECT s.payload,s.created_at,s.formula_bundle_version,s.source_watermark,
+            p.current_conv_price,p.source_updated_at,p.updated_at AS profile_updated_at,
+            p.stock_instrument_id,p.newest_rating AS profile_rating,
+            i.instrument_id,i.status,i.delist_date
+     FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
+     LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
      WHERE i.canonical_code=$1 AND s.snapshot_type='convertible_bond_analysis'
      ORDER BY s.as_of_date DESC,s.created_at DESC LIMIT 1`, [tsCode]
   );
   if (!rows[0]) return null;
-  const delistDate = isoDate(rows[0].delist_date) || isoDate(rows[0].payload && rows[0].payload.delist_date);
-  return Object.assign({}, rows[0].payload, {
-    cached_at: rows[0].created_at,
+  const r = rows[0];
+  const payload = r.payload || {};
+  const delistDate = isoDate(r.delist_date) || isoDate(payload.delist_date);
+  const snapshotAsOf = isoDate(payload.as_of);
+  const latest = await pool.query(
+    `SELECT (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$1) AS bond_date,
+            (SELECT max(change_date) FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1) AS conv_change_date,
+            (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$2) AS stock_date,
+            (SELECT max(end_date) FROM fundamental.financial_reports fr
+               JOIN core.company_instruments ci ON ci.company_id=fr.company_id
+               WHERE ci.instrument_id=$2) AS report_end_date`,
+    [r.instrument_id, r.stock_instrument_id]
+  );
+  const latestBondTradeDate = latest.rows[0] && latest.rows[0].bond_date;
+  const latestConvPriceChangeDate = latest.rows[0] && latest.rows[0].conv_change_date;
+  const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;
+  const currentFinancialEnd = latest.rows[0] && latest.rows[0].report_end_date;
+  const freshness = evaluateConvertibleBondFreshness({
+    snapshotConvPrice: payload.basic && payload.basic.convert_price,
+    snapshotAsOf,
+    snapshotCreatedAt: r.created_at,
+    profileConvPrice: r.current_conv_price,
+    profileUpdatedAt: r.source_updated_at || r.profile_updated_at,
+    latestBondTradeDate,
+    latestConvPriceChangeDate,
+    latestStockTradeDate,
+    currentFinancialEnd,
+    currentRating: r.profile_rating,
+    currentTermsHash: termsHash(payload.terms),
+    watermark: r.source_watermark,
+  });
+  return Object.assign({}, payload, {
+    cached_at: r.created_at,
     delist_date: delistDate,
-    is_delisted: rows[0].status === 'delisted' || Boolean(delistDate && delistDate <= isoDate(new Date())),
-    needs_refresh: rows[0].formula_bundle_version !== FORMULA_VERSION,
-    formula_version: rows[0].formula_bundle_version,
+    is_delisted: r.status === 'delisted' || Boolean(delistDate && delistDate <= isoDate(new Date())),
+    needs_refresh: r.formula_bundle_version !== FORMULA_VERSION || freshness.needs_refresh,
+    formula_version: r.formula_bundle_version,
+    freshness,
   });
 }
 

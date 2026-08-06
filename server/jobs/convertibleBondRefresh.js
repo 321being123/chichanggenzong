@@ -3,6 +3,7 @@ const { execFile } = require('child_process');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { syncConvertibleBondUniverse, syncConvertibleBondUniverseWithBackfill } = require('../services/convertibleBondAnalysis');
 const { expectedTradeDate } = require('../routes/bondCycle');
+const { dailyConsistencyStats } = require('./consistencyStats');
 
 const VALUATION_JOB = 'convertible_bond_valuation_refresh';
 const DAILY_REFRESH_HOUR = 18;
@@ -79,7 +80,20 @@ async function refreshCompleteness() {
   const { rows } = await pool.query(
     `SELECT
        COALESCE((SELECT MAX(trade_date) >= $1::date FROM market.convertible_bond_daily_metrics), false) AS cycle_complete,
-       COALESCE((SELECT MAX(trade_date) >= $1::date FROM analytics.convertible_bond_valuation_daily), false) AS valuation_complete`,
+       COALESCE((SELECT MAX(trade_date) >= $1::date FROM analytics.convertible_bond_valuation_daily), false) AS valuation_complete,
+       COALESCE((SELECT last_success_date >= $1::date FROM ops.sync_cursors
+                  WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'), false) AS universe_complete,
+       COALESCE((SELECT COUNT(*) FROM ops.data_quality_issues
+                  WHERE issue_type='snapshot_input_mismatch' AND status='open'), 0)::int AS open_conv_price_issues,
+       COALESCE((SELECT COUNT(*) FROM (
+           SELECT DISTINCT ON (s.instrument_id)
+                  (s.payload->'basic'->>'convert_price')::numeric AS snap_price, p.current_conv_price
+             FROM analytics.analysis_snapshots s
+             JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = s.instrument_id
+            WHERE s.snapshot_type='convertible_bond_analysis'
+            ORDER BY s.instrument_id, s.as_of_date DESC, s.created_at DESC
+         ) t WHERE t.snap_price IS NOT NULL AND t.current_conv_price IS NOT NULL
+             AND abs(t.snap_price - t.current_conv_price) > 0.001), 0)::int AS stale_snapshots`,
     [expected]
   );
   return { expected, ...rows[0] };
@@ -94,8 +108,14 @@ async function runRefreshChain(reason) {
   }
 
   const completeness = await refreshCompleteness();
-  if (!completeness.cycle_complete) {
-    console.warn(`[bond-analysis] ${completeness.expected} 数据不完整，跳过估值，次日 08:00 自动重试`);
+  if (completeness.stale_snapshots) {
+    console.warn(`[bond-analysis] ${completeness.stale_snapshots} 只转债的分析快照转股价与主档不一致，页面将提示需重新分析`);
+  }
+  if (completeness.open_conv_price_issues) {
+    console.warn(`[bond-analysis] 尚有 ${completeness.open_conv_price_issues} 条转股价变动待跟进`);
+  }
+  if (!completeness.cycle_complete || !completeness.universe_complete) {
+    console.warn(`[bond-analysis] ${completeness.expected} 数据不完整（主档 ${completeness.universe_complete ? 'ok' : '缺'}／周期 ${completeness.cycle_complete ? 'ok' : '缺'}），跳过估值，次日 08:00 自动重试`);
     return { ok: false, incomplete: true, expected: completeness.expected };
   }
 
@@ -107,6 +127,11 @@ async function runRefreshChain(reason) {
   } catch (error) {
     console.error('[bond-valuation] 每日估值失败:', String(error.detail || error.message));
     return { ok: false, error: String(error.detail || error.message) };
+  } finally {
+    try {
+      const stats = await dailyConsistencyStats();
+      console.log(`[一致性统计] 转债快照 ${stats.bond_snapshots} 份，转股价错配 ${stats.bond_conv_price_mismatch} 份，未处理问题 ${stats.open_conv_price_issues} 条；股票快照 ${stats.stock_snapshots} 份，待补水位 ${stats.stock_legacy_watermark} 份`);
+    } catch (e) { console.warn('[一致性统计] 统计失败（不影响主链）:', e.message); }
   }
 }
 
@@ -125,7 +150,7 @@ function scheduleConvertibleBondRefresh() {
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE, () => runRefreshChain('daily_incremental'));
   scheduleDaily(RETRY_HOUR, RETRY_MINUTE, async () => {
     const completeness = await refreshCompleteness();
-    if (completeness.cycle_complete && completeness.valuation_complete) return;
+    if (completeness.universe_complete && completeness.cycle_complete && completeness.valuation_complete) return;
     console.warn(`[bond-analysis] 检测到 ${completeness.expected} 数据不完整，开始 08:00 补跑`);
     await runRefreshChain('morning_incomplete_retry');
   });

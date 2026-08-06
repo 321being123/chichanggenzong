@@ -5,9 +5,14 @@ const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
 const { fetchTencentQuotes, normalizeCode } = require('./tencentQuote');
 const { persistCollectedData, saveCollectedEvents, saveAnalysisResults } = require('./financialDataArchitecture');
 const { statementApiFields } = require('./stockStatements');
+const { evaluateStockFreshness, isoDateSafe } = require('./analysisFreshness');
+const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess } = require('./datasetCursors');
 
 const FORMULA_VERSION = '1';
 const DAY = 86400000;
+// 允许按 TTL 跳过上游的低频数据组。行情、三表、财务指标不在此列：
+// 行情已有 14 天重叠增量，财务有 120 天更正窗口，跳过会改变分析结论。
+const GATED_STOCK_DATASETS = ['stock_basic', 'stock_dividend', 'stock_forecast', 'stock_industry', 'stock_controller'];
 const REPORT_TABLES = {
   income: 'stock_income_statements',
   balancesheet: 'stock_balance_sheets',
@@ -533,8 +538,11 @@ async function buildAnalysis(tsCode) {
   const latestIndicator = indicatorMap.get(latestBalance.end_date) || [...indicatorMap.values()].sort((a, b) => b.end_date.localeCompare(a.end_date))[0] || {};
   const latestValuation = data.valuations[data.valuations.length - 1] || {};
   const quoteMap = await fetchTencentQuotes([tsCode]);
-  const quote = quoteMap.get(normalizeCode(tsCode));
-  const currentPrice = finite(quote && quote.price) || finite(latestValuation.close);
+  const rawQuote = quoteMap.get(normalizeCode(tsCode));
+  // 腾讯旧缓存（上游失败保留）不能当实时行情：只有报价时间是当天，才算有效实时报价
+  const liveQuote = rawQuote && isoDateSafe(rawQuote.quote_time) === isoDate(today) ? rawQuote : null;
+  const quote = liveQuote;
+  const currentPrice = finite(liveQuote && liveQuote.price) || finite(latestValuation.close);
   const totalShare = finite(latestValuation.total_share);
   const marketCap = currentPrice != null && totalShare != null ? currentPrice * totalShare * 10000 : finite(latestValuation.total_mv) == null ? null : finite(latestValuation.total_mv) * 10000;
   const floatShare = finite(latestValuation.float_share), freeShare = finite(latestValuation.free_share);
@@ -638,7 +646,7 @@ async function buildAnalysis(tsCode) {
     actual_controller: data.meta.data?.actual_controller || { name: '', type: '', source: '' },
     latest_report: { end_date: latestIncome?.end_date || '', ann_date: dateText(latestIncome?.f_ann_date || latestIncome?.ann_date), type: latestIncome?.end_date?.endsWith('1231') ? '年报' : (latestIncome?.end_date?.endsWith('0630') ? '半年报' : '季报') },
     performance_forecast: forecast ? { ann_date: dateText(forecast.ann_date), end_date: dateText(forecast.end_date), type: forecast.type || '', profit_min: finite(forecast.net_profit_min) == null ? null : finite(forecast.net_profit_min) * 10000, profit_max: finite(forecast.net_profit_max) == null ? null : finite(forecast.net_profit_max) * 10000, change_min: finite(forecast.p_change_min), change_max: finite(forecast.p_change_max), summary: forecast.summary || '' } : null,
-    as_of: isoDate(today), quote: { price: currentPrice, currency: 'CNY', currency_name: '人民币', unit: '元', quote_time: quote && quote.quote_time, source: quote ? 'tencent' : 'tushare_close' },
+    as_of: isoDate(today), latest_market_trade_date: isoDate(latestValuation && latestValuation.trade_date) || isoDate(today), quote: { price: currentPrice, currency: 'CNY', currency_name: '人民币', unit: '元', quote_time: quote && quote.quote_time, source: quote ? 'tencent' : 'tushare_close' },
     valuation: {
       market_cap: marketCap, a_share_market_cap: marketCap, circulating_market_cap: circulatingMarketCap, free_float_market_cap: freeFloatMarketCap,
       annualized_return_since_listing: annualizedSinceListing, return_start_date: earliestValuation?.trade_date || '',
@@ -682,24 +690,54 @@ async function buildAnalysis(tsCode) {
   };
 }
 
-async function refreshStockAnalysis(rawCode, reason = 'manual') {
+async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   const tsCode = normalizeStockCode(rawCode);
   if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
   const today = tsDateStr(new Date());
 
-  // 先查 stock_unified 缓存（market.js 全市场同步时已写入），有就直接用
+  // 低频数据组按 TTL 门控：TTL 内且本地已有可用旧值时跳过上游，避免重复拉取
+  const stockScope = datasetScope('stock', tsCode);
+  const cursors = await getDatasetCursors(stockScope, GATED_STOCK_DATASETS);
+  const forceAll = options.force === true;
+  const skippedDatasets = [];
+  const gate = (code, run, fallback) => {
+    if (fallback != null && isDatasetFresh(cursors.get(code), code, { force: forceAll })) {
+      skippedDatasets.push(code);
+      return Promise.resolve(fallback);
+    }
+    return run();
+  };
+
+  // 主档 stock_basic 有 7 天 TTL：TTL 内且本地 stock_unified 已同步时复用缓存，
+  // 否则重新拉取主档（名称/上市状态等），避免「只要 stock_unified 有记录就永不刷新」的缺陷。
+  const stockBasicFresh = isDatasetFresh(cursors.get('stock_basic'), 'stock_basic', { force: forceAll });
   let meta = null;
-  try {
-    const cached = await pool.query('SELECT stock_name AS name, industry FROM public.stock_unified WHERE stock_code=$1', [tsCode]);
-    if (cached.rows[0]) meta = cached.rows[0];
-  } catch (_) { /* stock_unified 可能尚未建，降级到原逻辑 */ }
+  if (stockBasicFresh) {
+    try {
+      const cached = await pool.query('SELECT stock_name AS name, industry FROM public.stock_unified WHERE stock_code=$1', [tsCode]);
+      if (cached.rows[0]) meta = cached.rows[0];
+    } catch (_) { /* stock_unified 可能尚未建，降级到原逻辑 */ }
+  }
 
   if (!meta) {
     const metadataRows = await fetchRequired('stock_basic', { ts_code: tsCode }, 'ts_code,symbol,name,area,industry,market,exchange,list_status,list_date');
     meta = metadataRows[0];
   }
   if (!meta) throw new Error('未找到股票基础信息');
-  const [industryInfo, actualController] = await Promise.all([fetchIndustry(tsCode), fetchActualController(tsCode)]);
+  // 上一轮存下来的行业与实际控制人，作为 TTL 内跳过时的兜底值（没有兜底就照常拉取）
+  let prevRaw = {};
+  try {
+    const prev = await pool.query('SELECT raw_data FROM core.instruments WHERE canonical_code=$1', [tsCode]);
+    prevRaw = (prev.rows[0] && prev.rows[0].raw_data) || {};
+  } catch (_) { /* 主档还没建时正常走全量 */ }
+  const prevIndustry = prevRaw.industry_system
+    ? { industry_system: prevRaw.industry_system, industry_level: prevRaw.industry_level, industry_path: prevRaw.industry_path || [] }
+    : null;
+  const prevController = prevRaw.actual_controller && prevRaw.actual_controller.name ? prevRaw.actual_controller : null;
+  const [industryInfo, actualController] = await Promise.all([
+    gate('stock_industry', () => fetchIndustry(tsCode), prevIndustry),
+    gate('stock_controller', () => fetchActualController(tsCode), prevController),
+  ]);
   meta = Object.assign({}, meta, { tushare_industry: meta.industry }, industryInfo || { industry_system: 'Tushare基础行业', industry_level: '未标注级别', industry_path: [meta.industry].filter(Boolean) }, { actual_controller: actualController || { name: '', type: '', source: '东方财富F10' } });
   const financialFields = {
     income: statementApiFields('income'),
@@ -722,8 +760,8 @@ async function refreshStockAnalysis(rawCode, reason = 'manual') {
   const indicatorStart = hasIndicator ? yearsAgo(120) : (meta.list_date || '19900101');
   const [indicators, dividends, forecasts] = await Promise.all([
     fetchPartitioned('fina_indicator', tsCode, indicatorStart, today, 'ts_code,ann_date,end_date,roe,roa,ebit,ebit_to_interest,interestdebt,profit_dedt,dt_netprofit_yoy'),
-    fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share'),
-    fetchRequired('forecast', { ts_code: tsCode }, 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason')
+    gate('stock_dividend', () => fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share'), []),
+    gate('stock_forecast', () => fetchRequired('forecast', { ts_code: tsCode }, 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason'), [])
   ]);
   const lastTenYears = yearsAgo(3653), listDate = meta.list_date || lastTenYears;
   const incrementalStart = yearsAgo(14);
@@ -739,22 +777,65 @@ async function refreshStockAnalysis(rawCode, reason = 'manual') {
   const repairedBasics=await repairZeroValuations(tsCode,fetchedBasics,basicFields),basics=repairedBasics.rows;
   if (!basics.length) throw new Error('历史估值数据为空，保留上一份结果');
   await persistCollectedData(meta,{income,balance,cashflow,indicators,dividends,forecasts,daily,basics,factors,valuationIssues:repairedBasics.issues});
+  // 本轮真正拉过的低频数据组推进游标，下一轮才能按 TTL 跳过
+  const fetchedDatasets = GATED_STOCK_DATASETS.filter(code => !skippedDatasets.includes(code));
+  for (const dataset of fetchedDatasets) {
+    await markDatasetSuccess(stockScope, dataset, { lastSuccessDate: isoDate(new Date()) });
+  }
   await refreshEvents(tsCode, today);
   const analysis = await buildAnalysis(tsCode);
-  await saveAnalysisResults(tsCode,Object.assign({},analysis,{diagnostics:{reason}}));
+  await saveAnalysisResults(tsCode,Object.assign({},analysis,{diagnostics:{reason,skipped_datasets:skippedDatasets}}));
   return analysis;
 }
 
 async function getSnapshot(rawCode) {
   const tsCode = normalizeStockCode(rawCode);
   if (!tsCode) return null;
-  const current = await pool.query(`SELECT s.payload,s.created_at FROM core.instruments i
+  const current = await pool.query(`SELECT s.payload,s.created_at,s.formula_bundle_version,s.source_watermark,i.instrument_id FROM core.instruments i
     JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
     WHERE i.canonical_code=$1 AND s.snapshot_type='stock_analysis'
     ORDER BY s.as_of_date DESC,s.created_at DESC LIMIT 1`, [tsCode]);
-  if (current.rows[0]) return Object.assign({}, current.rows[0].payload, { refreshed_at: current.rows[0].created_at,
-    source_updated_at: current.rows[0].created_at, diagnostics: { source: 'analytics.analysis_snapshots' } });
-  return null;
+  if (!current.rows[0]) return null;
+  const r = current.rows[0];
+  const latest = await pool.query(
+    `SELECT
+        (SELECT max(trade_date) FROM market.daily_valuations WHERE instrument_id=$1) AS trade_date,
+        (SELECT max(period_end) FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id WHERE ci.instrument_id=$1) AS financial_end,
+        (SELECT max(announced_at) FROM fundamental.financial_reports r JOIN core.company_instruments ci ON ci.company_id=r.company_id WHERE ci.instrument_id=$1) AS financial_ann,
+        (SELECT max(announced_at) FROM fundamental.corporate_actions WHERE instrument_id=$1 AND action_type='dividend') AS dividend_ann,
+        (SELECT max(ex_date) FROM fundamental.corporate_actions WHERE instrument_id=$1 AND action_type='dividend') AS dividend_ex,
+        (SELECT max(announced_at) FROM fundamental.earnings_guidance g JOIN core.company_instruments ci ON ci.company_id=g.company_id WHERE ci.instrument_id=$1) AS guidance_ann,
+        (SELECT max(period_end) FROM fundamental.earnings_guidance g JOIN core.company_instruments ci ON ci.company_id=g.company_id WHERE ci.instrument_id=$1) AS guidance_end,
+        (SELECT n.industry_name FROM core.industry_nodes n JOIN core.company_industry_memberships m ON m.industry_node_id=n.industry_node_id JOIN core.company_instruments ci ON ci.company_id=m.company_id WHERE ci.instrument_id=$1 AND m.is_current LIMIT 1) AS industry_name,
+        (SELECT c.controller_name FROM core.company_controllers c WHERE c.company_id=(SELECT ci.company_id FROM core.company_instruments ci WHERE ci.instrument_id=$1 LIMIT 1) AND c.is_current=true ORDER BY c.announced_at DESC LIMIT 1) AS controller_name,
+        (SELECT max(event_date) FROM event.company_events e JOIN core.company_instruments ci ON ci.company_id=e.company_id WHERE ci.instrument_id=$1 AND e.is_official=true) AS event_date`,
+    [r.instrument_id]
+  );
+  const latestRow = latest.rows[0] || {};
+  const freshness = evaluateStockFreshness({
+    watermark: r.source_watermark,
+    formula_bundle_version: r.formula_bundle_version,
+    expected_formula_version: FORMULA_VERSION,
+    latestTradeDate: latestRow.trade_date,
+    current: {
+      financialEnd: latestRow.financial_end,
+      financialAnn: latestRow.financial_ann,
+      dividendAnn: latestRow.dividend_ann,
+      dividendEx: latestRow.dividend_ex,
+      guidanceAnn: latestRow.guidance_ann,
+      guidanceEnd: latestRow.guidance_end,
+      industryName: latestRow.industry_name,
+      controllerName: latestRow.controller_name,
+      eventDate: latestRow.event_date,
+    },
+  });
+  return Object.assign({}, r.payload, {
+    refreshed_at: r.created_at,
+    source_updated_at: r.created_at,
+    diagnostics: { source: 'analytics.analysis_snapshots' },
+    needs_refresh: freshness.needs_refresh,
+    freshness,
+  });
 }
 
 async function listUserStocks(username) {

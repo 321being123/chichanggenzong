@@ -1,6 +1,10 @@
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { listUserStocks, refreshStockAnalysis } = require('../services/stockAnalysis');
 const { pool } = require('../db/connection');
+const { datasetScope, markDatasetFailure, markDatasetSuccess } = require('../services/datasetCursors');
+const { dailyConsistencyStats } = require('./consistencyStats');
+
+const ANALYSIS_DATASET = 'stock_analysis';
 
 const JOB = 'stock_analysis_refresh';
 
@@ -32,13 +36,42 @@ async function runStockAnalysisRefresh(reason = 'scheduled') {
   let ok = 0, failed = 0;
   try {
     const stocks = await trackedStocks();
+    const failures = [];
     for (const stock of stocks) {
-      try { await refreshStockAnalysis(stock.ts_code, reason); ok++; }
-      catch (error) { failed++; console.warn(`[stock-analysis] ${stock.ts_code} 更新失败:`, error.message); }
+      try {
+        await refreshStockAnalysis(stock.ts_code, reason);
+        ok++;
+        await markDatasetSuccess(datasetScope('stock', stock.ts_code), ANALYSIS_DATASET,
+          { lastSuccessDate: new Date().toISOString().slice(0, 10) });
+      } catch (error) {
+        failed++;
+        failures.push(stock.ts_code);
+        console.warn(`[stock-analysis] ${stock.ts_code} 更新失败:`, error.message);
+        await markDatasetFailure(datasetScope('stock', stock.ts_code), ANALYSIS_DATASET, error.message);
+      }
       await new Promise(resolve => setTimeout(resolve, 300));
     }
-    await finishJobRun(runId, failed === 0, `成功 ${ok}，失败 ${failed}`);
-    return { ok, failed };
+    // 失败的股票定点补跑一次（强制忽略 TTL），仍失败则留在数据库里等次日
+    const recovered = [];
+    for (const tsCode of failures) {
+      try {
+        await refreshStockAnalysis(tsCode, `${reason}-retry`, { force: true });
+        ok++; failed--; recovered.push(tsCode);
+        await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET,
+          { lastSuccessDate: new Date().toISOString().slice(0, 10) });
+      } catch (error) {
+        console.warn(`[stock-analysis] ${tsCode} 补跑仍失败:`, error.message);
+        await markDatasetFailure(datasetScope('stock', tsCode), ANALYSIS_DATASET, error.message);
+      }
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    const detail = `成功 ${ok}，失败 ${failed}${recovered.length ? `，补跑救回 ${recovered.length}` : ''}`;
+    await finishJobRun(runId, failed === 0, detail);
+    try {
+      const stats = await dailyConsistencyStats();
+      console.log(`[一致性统计] 股票快照 ${stats.stock_snapshots} 份，待补水位 ${stats.stock_legacy_watermark} 份；转债快照 ${stats.bond_snapshots} 份，转股价错配 ${stats.bond_conv_price_mismatch} 份`);
+    } catch (e) { console.warn('[一致性统计] 统计失败（不影响任务）:', e.message); }
+    return { ok, failed, recovered };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;

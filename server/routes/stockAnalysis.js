@@ -62,7 +62,7 @@ router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) 
   if (!snapshot) return res.status(404).json({ error: '尚未建档，请刷新该股票' });
   try {
     const current = await buildAnalysis(req.stockTsCode);
-    res.json(Object.assign(current, { refreshed_at: snapshot.refreshed_at, source_updated_at: snapshot.source_updated_at, diagnostics: snapshot.diagnostics }));
+    res.json(Object.assign(current, { refreshed_at: snapshot.refreshed_at, source_updated_at: snapshot.source_updated_at, diagnostics: snapshot.diagnostics, needs_refresh: snapshot.needs_refresh, freshness: snapshot.freshness }));
   } catch (_) {
     res.json(snapshot);
   }

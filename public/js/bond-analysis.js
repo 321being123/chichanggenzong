@@ -289,11 +289,19 @@ function bondAnalysisRender(d, ctx) {
   stockAnalysisSetMessage('', false, ctx);
   var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
   if(stock) stock.style.display='none'; if(root) root.style.display='block';
+  var suEl=document.getElementById('stock-analysis-updated'); if(suEl) suEl.style.display='none';
+  var buEl=document.getElementById('bond-analysis-updated'); if(buEl) buEl.style.display='';
   var q=d.quote||{}, b=d.basic||{}, terms=d.terms||{}, safety=d.safety||{}, bond=d.bond||{}, option=d.option||{}, stockData=d.stock||{}, credit=d.credit||{};
   var change=q.bond_change_pct, changeClass=Number(change)>0?'bond-analysis-up':Number(change)<0?'bond-analysis-down':'';
   var delistedTag=d.is_delisted?'<span class="bond-analysis-delisted">已退市</span>':'';
   bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
-  var updated=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'updated'); if(updated) updated.textContent='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
+  var updated=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'updated'); if(updated){
+    var utxt='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
+    if(d.needs_refresh && d.freshness && d.freshness.reasons && d.freshness.reasons.length){
+      utxt+=' · 数据待更新：'+d.freshness.reasons.map(function(r){return r.message;}).join('；');
+    }
+    updated.textContent=utxt;
+  }
   // 注入动态波动率提示到预估回售触发日的浮框中
   var putHelp='未到回售期时从回售期起算；已到回售期时先检查本计息年度是否已回售，再从下一有效回售期计算满足条款所需的最早日期。';
   if (b.expected_put_assumption) putHelp = b.expected_put_assumption + '。' + putHelp;

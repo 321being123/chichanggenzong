@@ -128,6 +128,11 @@ async function stockAnalysisSelect(tsCode) {
     }
     var payload = await response.json();
     if (!response.ok) throw new Error(payload.error || '分析读取失败');
+    if (payload.needs_refresh) {
+      var reasons = payload.freshness && payload.freshness.reasons ? payload.freshness.reasons.map(function(r){return r.message;}).join('；') : '数据待更新';
+      if (!username) { showToast('数据待更新：' + reasons); }
+      else { return stockAnalysisRefresh(); }
+    }
     stockAnalysisRender(payload);
   } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
 }
@@ -186,6 +191,8 @@ function stockAnalysisRender(d) {
   stockAnalysisState.data = d; stockAnalysisSetMessage('');
   var bondContent = document.getElementById('bond-analysis-content'); if (bondContent) bondContent.style.display = 'none';
   var content = document.getElementById('stock-analysis-content'); if (content) content.style.display = 'block';
+  var buEl=document.getElementById('bond-analysis-updated'); if(buEl) buEl.style.display='none';
+  var suEl=document.getElementById('stock-analysis-updated'); if(suEl) suEl.style.display='';
   var updated = document.getElementById('stock-analysis-updated');
   if (updated) updated.textContent = '数据日期：' + (d.as_of || '--') + (d.quote && d.quote.quote_time ? ' · 行情：' + String(d.quote.quote_time).replace('T',' ').slice(0,19) : '');
   var summary = document.getElementById('stock-analysis-summary');

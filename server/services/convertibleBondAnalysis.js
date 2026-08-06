@@ -1896,6 +1896,10 @@ async function getConvertibleBondSnapshot(value) {
     `SELECT s.payload,s.created_at,s.formula_bundle_version,s.source_watermark,
             p.current_conv_price,p.source_updated_at,p.updated_at AS profile_updated_at,
             p.stock_instrument_id,p.newest_rating AS profile_rating,
+            p.maturity_call_price AS profile_maturity_call_price,
+            p.raw_payload->>'call_clause' AS db_call_clause,
+            p.raw_payload->>'reset_clause' AS db_reset_clause,
+            p.raw_payload->>'put_clause' AS db_put_clause,
             i.instrument_id,i.status,i.delist_date
      FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
      LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
@@ -1920,6 +1924,14 @@ async function getConvertibleBondSnapshot(value) {
   const latestConvPriceChangeDate = latest.rows[0] && latest.rows[0].conv_change_date;
   const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;
   const currentFinancialEnd = latest.rows[0] && latest.rows[0].report_end_date;
+  // 条款指纹必须基于「数据库当前条款」重算，而非快照自身 payload（否则等于自己比自己，永远相等）
+  // maturity_call_price 用 finite() 转数字，与写入水位时一致（node-pg 把 numeric 列返回为字符串，会导致 hash 不一致）
+  const currentTermsHash = termsHash({
+    reset: simplifyClause('reset', r.db_reset_clause),
+    call: simplifyClause('call', r.db_call_clause),
+    put: simplifyClause('put', r.db_put_clause),
+    maturity_call_price: finite(r.profile_maturity_call_price),
+  });
   const freshness = evaluateConvertibleBondFreshness({
     snapshotConvPrice: payload.basic && payload.basic.convert_price,
     snapshotAsOf,
@@ -1931,7 +1943,7 @@ async function getConvertibleBondSnapshot(value) {
     latestStockTradeDate,
     currentFinancialEnd,
     currentRating: r.profile_rating,
-    currentTermsHash: termsHash(payload.terms),
+    currentTermsHash,
     watermark: r.source_watermark,
   });
   return Object.assign({}, payload, {

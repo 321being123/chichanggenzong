@@ -29,8 +29,14 @@ const { getConvertibleBondSnapshot } = require('../services/convertibleBondAnaly
   }
   assert.ok(!endColExists, 'fundamental.financial_reports 不应存在 end_date 列（确认修复点正确）');
 
+  // 3) 条款指纹必须基于「数据库当前条款」重算：本地快照的数据库条款与水位一致，不得误报 terms_changed
+  assert.ok(Array.isArray(snap.freshness.reasons), '新鲜度应含 reasons 数组');
+  const termsChanged = snap.freshness.reasons.filter(r => r.code === 'terms_changed');
+  assert.ok(termsChanged.length === 0,
+    '数据库当前条款与快照水位一致时不应报 terms_changed（确认条款指纹读取的是数据库条款而非快照自身 payload）');
+
   await pool.end();
-  console.log('convertible-bond-snapshot-db.test.js 通过：可转债快照真实读库正常（period_end 列名契约锁死）');
+  console.log('convertible-bond-snapshot-db.test.js 通过：可转债快照真实读库正常（period_end 列名契约 + 条款指纹读数据库条款 已锁死）');
 })().catch((err) => {
   console.error('convertible-bond-snapshot-db.test.js 失败：', err && err.message);
   process.exit(1);

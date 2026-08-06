@@ -17,7 +17,12 @@ async function dailyConsistencyStats() {
          WHERE s.snapshot_type='stock_analysis'
          ORDER BY s.instrument_id, s.as_of_date DESC, s.created_at DESC
       ) t WHERE t.source_watermark IS NULL OR t.source_watermark = '{"source":"legacy_projection"}'::jsonb) AS stock_legacy_watermark,
-      (SELECT COUNT(*) FROM analytics.analysis_snapshots WHERE snapshot_type='convertible_bond_analysis') AS bond_snapshots,
+      (SELECT COUNT(*) FROM (
+        SELECT DISTINCT ON (s.instrument_id) s.instrument_id
+          FROM analytics.analysis_snapshots s
+         WHERE s.snapshot_type='convertible_bond_analysis'
+         ORDER BY s.instrument_id, s.as_of_date DESC, s.created_at DESC
+      ) t) AS bond_snapshots,
       (SELECT COUNT(*) FROM (
         SELECT DISTINCT ON (s.instrument_id) (s.payload->'basic'->>'convert_price')::numeric AS snap_price, p.current_conv_price
           FROM analytics.analysis_snapshots s

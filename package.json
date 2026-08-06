@@ -11,7 +11,8 @@
     "test:unit": "node test.js",
     "test:integration": "node test-integration.js",
     "test:all": "node server/test/run-all.js",
-    "audit:bonds": "node server/scripts/auditHeldConvertibleBondNoRevision.js"
+    "audit:bonds": "node server/scripts/auditHeldConvertibleBondNoRevision.js",
+    "backfill:terms-hash": "node server/scripts/backfillTermsHash.js"
   },
   "dependencies": {
     "@mozilla/readability": "0.6.0",

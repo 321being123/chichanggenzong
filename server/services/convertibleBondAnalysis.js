@@ -1911,7 +1911,7 @@ async function getConvertibleBondSnapshot(value) {
     `SELECT (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$1) AS bond_date,
             (SELECT max(change_date) FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1) AS conv_change_date,
             (SELECT max(trade_date) FROM market.daily_bars WHERE instrument_id=$2) AS stock_date,
-            (SELECT max(end_date) FROM fundamental.financial_reports fr
+            (SELECT max(period_end) FROM fundamental.financial_reports fr
                JOIN core.company_instruments ci ON ci.company_id=fr.company_id
                WHERE ci.instrument_id=$2) AS report_end_date`,
     [r.instrument_id, r.stock_instrument_id]

@@ -94,12 +94,12 @@ async function syncHkYield(full) {
       VALUES('HK',10,$1,$2,'hkma',$1,$3) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [r.end_of_day, y, JSON.stringify(r)]); count++; }
   if (!full || records.length < 100) break; } return count;
 }
-async function calculateGraham() {
+async function calculateGraham(pg = pool) {
   // 水位：上次计算最大日期往前 45 天重叠窗口；仅重算本轮变化的日期
-  const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM analytics.graham_index_daily`);
+  const wm = await pg.query(`SELECT max(trade_date)::text AS mx FROM analytics.graham_index_daily`);
   const maxDate = wm.rows[0].mx;
   const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
-  const { rows } = await pool.query(`SELECT v.market_code,v.benchmark_code,v.trade_date,v.pe,
+  const { rows } = await pg.query(`SELECT v.market_code,v.benchmark_code,v.trade_date,v.pe,
     (SELECT y.yield_pct FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='manual_fed_funds') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_pct,
     (SELECT y.trade_date FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='manual_fed_funds') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_date
     FROM (SELECT DISTINCT ON (market_code,benchmark_code,trade_date) market_code,benchmark_code,trade_date,pe
@@ -128,7 +128,7 @@ async function calculateGraham() {
       params.push(row.market_code, row.benchmark_code, row.trade_date, row.pe, row.earnings, row.y, row.yield_date, row.graham, row.status);
       p += 9;
     }
-    await pool.query(`INSERT INTO analytics.graham_index_daily(market_code,benchmark_code,trade_date,pe,earnings_yield_pct,sovereign_yield_pct,sovereign_yield_date,graham_index_pct,data_status)
+    await pg.query(`INSERT INTO analytics.graham_index_daily(market_code,benchmark_code,trade_date,pe,earnings_yield_pct,sovereign_yield_pct,sovereign_yield_date,graham_index_pct,data_status)
       VALUES ${values.join(',')}
       ON CONFLICT(market_code,benchmark_code,trade_date,formula_version) DO UPDATE SET
         pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,

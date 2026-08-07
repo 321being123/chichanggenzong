@@ -42,19 +42,36 @@ async function syncChinaYield(start, end) {
   return count;
 }
 async function syncCsiIndexPe(benchmark, indexCode) {
+  // 水位：本地该基准最新日期往前 45 天重叠窗口（首次空表则全量）
+  const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code=$1 AND source_code='csindex'`, [benchmark]);
+  const maxDate = wm.rows[0].mx;
+  const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
+  // 中证 PE 专用接口只能返回全部历史，下载后在内存过滤只保留重叠窗口
   const data = await request('https://www.csindex.com.cn/csindex-home/perf/indexCsiDsPe?indexCode=' + indexCode);
   const rows = data && data.success && Array.isArray(data.data) ? data.data : [];
-  let count = 0;
+  const kept = [];
   for (const r of rows) {
     // 中证该 PE 专用接口字段名为 peg，但端点与页面均为 indexCsiDsPe；按官方原始字段保留，映射入本系统统一 pe 口径。
     const pe = Number(r.peg); const date = String(r.tradeDate || '');
     if (!/^\d{8}$/.test(date) || !(pe > 0)) continue;
     const day = date.slice(0,4) + '-' + date.slice(4,6) + '-' + date.slice(6,8);
-    await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
-      VALUES('CN',$1,$2,$3,'csindex',$2,$4) ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [benchmark, day, pe, JSON.stringify(r)]);
-    count++;
+    if (day < since) continue;
+    kept.push({ day, pe, raw: r });
   }
-  return count;
+  let written = 0;
+  if (kept.length) {
+    const values = [], params = []; let p = 1;
+    for (const k of kept) {
+      values.push(`($${p},$${p+1},$${p+2},$${p+3},'csindex',$${p+2},$${p+4})`);
+      params.push('CN', benchmark, k.day, k.pe, JSON.stringify(k.raw));
+      p += 5;
+    }
+    await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
+      VALUES ${values.join(',')} ON CONFLICT(market_code,benchmark_code,trade_date,source_code) DO UPDATE SET pe=EXCLUDED.pe,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+    written = kept.length;
+  }
+  console.log(`[市场周期] 中证PE(${benchmark}) 接口返回=${rows.length}条, 重叠窗口(${since}起)保留=${kept.length}条, 写入=${written}条`);
+  return written;
 }
 async function syncHsiPe() {
   const b = await request('https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/monthly/pe/hsi.xls', true);
@@ -78,15 +95,41 @@ async function syncHkYield(full) {
   if (!full || records.length < 100) break; } return count;
 }
 async function calculateGraham() {
+  // 水位：上次计算最大日期往前 45 天重叠窗口；仅重算本轮变化的日期
+  const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM analytics.graham_index_daily`);
+  const maxDate = wm.rows[0].mx;
+  const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
   const { rows } = await pool.query(`SELECT v.market_code,v.benchmark_code,v.trade_date,v.pe,
     (SELECT y.yield_pct FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='manual_fed_funds') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_pct,
     (SELECT y.trade_date FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='manual_fed_funds') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_date
     FROM (SELECT DISTINCT ON (market_code,benchmark_code,trade_date) market_code,benchmark_code,trade_date,pe
       FROM market.market_valuation_daily WHERE pe>0
-      ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='hsi_weighted_manual' THEN 0 WHEN source_code='hsi_official' THEN 1 ELSE 2 END) v`);
-  for (const r of rows) { const earnings = 100 / Number(r.pe), y = Number(r.yield_pct); if (!(y > 0)) continue; const status = String(r.yield_date) === String(r.trade_date) ? 'normal' : 'carried_forward';
+      ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='hsi_weighted_manual' THEN 0 WHEN source_code='hsi_official' THEN 1 ELSE 2 END) v
+    WHERE v.trade_date >= $1`, [since]);
+  if (!rows.length) return 0;
+  const values = [], params = []; let p = 1, valid = 0;
+  for (const r of rows) {
+    const earnings = 100 / Number(r.pe), y = Number(r.yield_pct);
+    if (!(y > 0)) continue;
+    const status = String(r.yield_date) === String(r.trade_date) ? 'normal' : 'carried_forward';
+    values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8})`);
+    params.push(r.market_code, r.benchmark_code, r.trade_date, r.pe, earnings, y, r.yield_date, earnings - y, status);
+    p += 9; valid++;
+  }
+  if (!valid) return 0;
+  // 分批写入，避免首次全量时参数超过 PostgreSQL 上限（每批 1000 行）
+  const BATCH = 1000;
+  for (let i = 0; i < values.length; i += BATCH) {
+    const vt = values.slice(i, i + BATCH);
+    const pr = params.slice(i * 9, (i + BATCH) * 9);
     await pool.query(`INSERT INTO analytics.graham_index_daily(market_code,benchmark_code,trade_date,pe,earnings_yield_pct,sovereign_yield_pct,sovereign_yield_date,graham_index_pct,data_status)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(market_code,benchmark_code,trade_date,formula_version) DO UPDATE SET pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, [r.market_code,r.benchmark_code,r.trade_date,r.pe,earnings,y,r.yield_date,earnings-y,status]); }
+      VALUES ${vt.join(',')}
+      ON CONFLICT(market_code,benchmark_code,trade_date,formula_version) DO UPDATE SET
+        pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,
+        sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, pr);
+  }
+  console.log(`[市场周期] 格雷厄姆指数 重算窗口(${since}起)=${rows.length}条, 有效写入=${valid}条`);
+  return valid;
 }
 
 function tsDate(value) { return String(value || '').replace(/-/g, ''); }
@@ -97,8 +140,12 @@ function monthDate(value) {
 function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 async function syncCsi300Valuation(full) {
+  // 水位：本地 CSI300 估值最新日期；空表才全量，否则只拉最近 45 天重叠窗口
+  const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'`);
+  const maxDate = wm.rows[0].mx;
+  const needFull = full || !maxDate;
   const end = tsDate(dateStr(new Date()));
-  const ranges = full
+  const ranges = needFull
     ? [['20040101', '20151231'], ['20160101', end]]
     : [[tsDate(dateStr(new Date(Date.now() - 45 * 86400000))), end]];
   let count = 0;
@@ -106,45 +153,68 @@ async function syncCsi300Valuation(full) {
     const data = await tushareQuery('index_dailybasic', { ts_code: '000300.SH', start_date: startDate, end_date: endDate },
       'ts_code,trade_date,total_mv,pe_ttm,pb');
     if (!data) continue;
-    for (const row of tsRows(data)) {
+    const kept = tsRows(data).filter(row => {
       const day = normDate(row.trade_date), pe = Number(row.pe_ttm), pb = Number(row.pb);
-      if (!day || (!(pe > 0) && !(pb > 0))) continue;
-      await pool.query(`INSERT INTO market.index_valuation_history
-        (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
-        VALUES('CSI300','market_cap_weighted',$1,$2,$3,$4,'tushare_index_dailybasic',$5)
-        ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
-          market_cap=EXCLUDED.market_cap,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
-          raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-      [day, Number(row.total_mv) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row)]);
-      count++;
+      return day && ((pe > 0) || (pb > 0));
+    });
+    if (!kept.length) continue;
+    const values = [], params = []; let p = 1;
+    for (const row of kept) {
+      const day = normDate(row.trade_date), pe = Number(row.pe_ttm), pb = Number(row.pb);
+      values.push(`('CSI300','market_cap_weighted',$${p},$${p+1},$${p+2},$${p+3},'tushare_index_dailybasic',$${p+4})`);
+      params.push(day, Number(row.total_mv) || null, pe > 0 ? pe : null, pb > 0 ? pb : null, JSON.stringify(row));
+      p += 5;
     }
+    await pool.query(`INSERT INTO market.index_valuation_history
+      (index_code,valuation_method,trade_date,market_cap,pe_ttm,pb,source_code,raw_payload)
+      VALUES ${values.join(',')}
+      ON CONFLICT(index_code,valuation_method,trade_date,source_code) DO UPDATE SET
+        market_cap=EXCLUDED.market_cap,pe_ttm=EXCLUDED.pe_ttm,pb=EXCLUDED.pb,
+        raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+    count += kept.length;
   }
+  console.log(`[市场周期] 沪深300估值 ${needFull ? '全量' : '增量(45天)'} 写入=${count}条`);
   return count;
 }
 
 async function syncMoneySupply() {
   const data = await tushareQuery('cn_m', {}, 'month,m2,m2_yoy');
   if (!data) return 0;
-  let count = 0;
+  // 水位：本地最新月份；只保留最近 24 个月重叠窗口（首次空表则全量）
+  const wm = await pool.query(`SELECT max(month)::text AS mx FROM market.money_supply_monthly WHERE market_code='CN'`);
+  const maxMonth = wm.rows[0].mx;
+  const since = maxMonth ? (new Date(maxMonth).getUTCFullYear() - 2) + '-' + String(new Date(maxMonth).getUTCMonth() + 1).padStart(2, '0') + '-01' : '1990-01-01';
+  const kept = [];
   for (const row of tsRows(data)) {
     const month = monthDate(row.month), m2 = Number(row.m2);
     if (!month || !(m2 > 0)) continue;
+    if (maxMonth && month < since) continue;
+    kept.push({ month, m2, row });
+  }
+  let written = 0;
+  if (kept.length) {
+    const values = [], params = []; let p = 1;
+    for (const k of kept) {
+      values.push(`('CN',$${p},$${p+1},'nbs_via_tushare',$${p+2})`);
+      params.push(k.month, k.m2, JSON.stringify({
+        ...k.row,
+        source: 'https://data.stats.gov.cn/',
+        fiscalReference: 'https://gks.mof.gov.cn/tongjishuju/',
+        transport: 'tushare.cn_m',
+        unit: '100m CNY',
+        m1DefinitionVersion: String(k.row.month) >= '202501' ? '2025_revised' : 'pre_2025',
+      }));
+      p += 3;
+    }
     await pool.query(`INSERT INTO market.money_supply_monthly
       (market_code,month,m2_100m_yuan,source_code,raw_payload)
-      VALUES('CN',$1,$2,'nbs_via_tushare',$3)
+      VALUES ${values.join(',')}
       ON CONFLICT(market_code,month,source_code) DO UPDATE SET
-        m2_100m_yuan=EXCLUDED.m2_100m_yuan,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
-    [month, m2, JSON.stringify({
-      ...row,
-      source: 'https://data.stats.gov.cn/',
-      fiscalReference: 'https://gks.mof.gov.cn/tongjishuju/',
-      transport: 'tushare.cn_m',
-      unit: '100m CNY',
-      m1DefinitionVersion: String(row.month) >= '202501' ? '2025_revised' : 'pre_2025',
-    })]);
-    count++;
+        m2_100m_yuan=EXCLUDED.m2_100m_yuan,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+    written = kept.length;
   }
-  return count;
+  console.log(`[市场周期] 货币供应量 接口返回=${tsRows(data).length}条, 重叠窗口(近24月)保留=${kept.length}条, 写入=${written}条`);
+  return written;
 }
 
 async function tradeMonthEnds(startYear, endYear) {
@@ -256,7 +326,7 @@ async function syncMarketCycleMetrics(full) {
   return result;
 }
 
-async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const cycleSeen=await pool.query("SELECT min(trade_date)::text AS valuation_min FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'"); const capSeen=await pool.query("SELECT min(trade_date)::text AS cap_min FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'"); const cycleFirst=!cycleSeen.rows[0].valuation_min||cycleSeen.rows[0].valuation_min>'2005-01-01'||!capSeen.rows[0].cap_min||capSeen.rows[0].cap_min>'2010-01-31'; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),hkYield:await syncHkYield(first),cycleMetrics:await syncMarketCycleMetrics(cycleFirst)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
+async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const capSeen=await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'"); const cycleFirst=capSeen.rows[0].n===0; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),hkYield:await syncHkYield(first),cycleMetrics:await syncMarketCycleMetrics(cycleFirst)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); console.log('[市场周期] 本次同步汇总:', JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
 module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncHkYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,

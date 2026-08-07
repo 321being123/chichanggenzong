@@ -690,15 +690,15 @@ async function buildAnalysis(tsCode) {
   };
 }
 
-// 本地已存分红的最新报告期（end_date）：作为增量水位，请求时只取该期往前约一年窗口，
-// 覆盖最新一期及其修订；首发（无本地数据）返回 null → 由 list_date 决定起点（接近全量）。
+// 本地已存分红的最新报告期（end_date）：作为增量水位原样返回（YYYYMMDD）；
+// 重叠窗口（往前约一年）由下方过滤器统一计算，避免两处各减一年导致窗口翻倍。
+// 首发（无本地数据）返回 null → 保留全量。
 async function latestDividendEndDate(tsCode) {
   try {
     const { rows } = await pool.query('SELECT MAX(end_date) AS d FROM stock_dividends WHERE ts_code=$1', [tsCode]);
     const d = rows[0] && rows[0].d ? String(rows[0].d).replace(/-/g, '') : '';
     if (!/^\d{8}$/.test(d)) return null;
-    const dt = new Date(Date.UTC(Number(d.slice(0, 4)) - 1, Number(d.slice(4, 6)) - 1, Number(d.slice(6, 8))));
-    return tsDateStr(dt);
+    return d;
   } catch (_) { return null; }
 }
 
@@ -786,7 +786,7 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   const [indicators, dividends, forecasts] = await Promise.all([
     fetchPartitioned('fina_indicator', tsCode, indicatorStart, today, 'ts_code,ann_date,end_date,roe,roa,ebit,ebit_to_interest,interestdebt,profit_dedt,dt_netprofit_yoy'),
     // dividend 官方仅支持 ts_code（无 start_date/end_date 范围）：传 ts_code 拉该只全量，内存过滤只保留本地最新分红报告期往前一年的重叠窗口，
-    // 由 saveAux 按唯一键幂等 upsert，只写新增/修订行（首次无水位则保留全量）。
+    // 由 saveAux 按唯一键幂等 upsert，只写新增/修订行（首次无水位则保留全量）。重叠窗口在此统一计算，与 latestDividendEndDate 各算一次。
     gate('stock_dividend', async () => {
       const all = await fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share');
       if (!dividendStart) return all;

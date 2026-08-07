@@ -134,8 +134,8 @@ async function calculateGraham() {
         pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,
         sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, params);
   }
-  console.log(`[市场周期] 格雷厄姆指数 重算窗口(${since}起)=${rows.length}条, 有效写入=${valid}条`);
-  return valid;
+  console.log(`[市场周期] 格雷厄姆指数 重算窗口(${since}起)=${rows.length}条, 有效写入=${rowsToInsert.length}条`);
+  return rowsToInsert.length;
 }
 
 function tsDate(value) { return String(value || '').replace(/-/g, ''); }

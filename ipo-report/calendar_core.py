@@ -43,18 +43,39 @@ def _str_date(val):
 # ============ Tushare REST 调用（零依赖，不依赖 tushare 库）—— 已收口到 _common.py ============
 
 
-def fetch_calendar_entries():
+def fetch_calendar_entries(start_date=None, end_date=None, full=False):
     """获取新股/新债日历数据（Tushare: new_share + cb_issue + cb_basic）。
+
+    增量优化（整改报告 P1）：默认只拉近期窗口，不再每次全量拉取。
+    - 默认窗口：今天前60天 ~ 今天后90天（覆盖已公告未上市 + 未来90天申购/上市）。
+    - full=True 时强制全量（用于手动补历史）。
+    - start_date/end_date 可显式指定（YYYY-MM-DD 或 YYYYMMDD），优先级高于默认窗口。
 
     返回与东财同构的字典列表，键保持：
     TRADE_DATE, DATE_TYPE(申购/上市), SECURITY_TYPE(0=股票,1=债券),
     SECURITY_NAME_ABBR, SECURITY_CODE(6位), SECUCODE(ts_code)
     """
+    today = datetime.now().date()
+    if not full:
+        if not start_date:
+            start_date = (today - timedelta(days=60)).strftime("%Y-%m-%d")
+        if not end_date:
+            end_date = (today + timedelta(days=90)).strftime("%Y-%m-%d")
+    win_start = _str_date(start_date) or (today - timedelta(days=60)).strftime("%Y-%m-%d")
+    win_end = _str_date(end_date) or (today + timedelta(days=90)).strftime("%Y-%m-%d")
+    sd_int = str(start_date).replace("-", "") if (not full and start_date) else None
+    ed_int = str(end_date).replace("-", "") if (not full and end_date) else None
+
     all_data = []
 
-    # 1. 新股：申购日 ipo_date / 上市日 issue_date
+    # 1. 新股：申购日 ipo_date / 上市日 issue_date（服务端按日期窗口过滤）
     try:
-        df = _tushare("new_share", {}, "ts_code,name,ipo_date,issue_date")
+        params = {}
+        if sd_int:
+            params["start_date"] = sd_int
+        if ed_int:
+            params["end_date"] = ed_int
+        df = _tushare("new_share", params, "ts_code,name,ipo_date,issue_date")
         for r in df:
             ts_code = str(r.get("ts_code") or "")
             if not ts_code:
@@ -78,9 +99,14 @@ def fetch_calendar_entries():
     except Exception as e:
         print(f"[日历] 新股获取失败: {e}")
 
-    # 2. 新债申购：cb_issue.onl_date
+    # 2. 新债申购：cb_issue.onl_date（服务端按日期窗口过滤）
     try:
-        df2 = _tushare("cb_issue", {}, "ts_code,onl_name,onl_date")
+        params2 = {}
+        if sd_int:
+            params2["start_date"] = sd_int
+        if ed_int:
+            params2["end_date"] = ed_int
+        df2 = _tushare("cb_issue", params2, "ts_code,onl_name,onl_date")
         for r in df2:
             ts_code = str(r.get("ts_code") or "")
             if not ts_code:
@@ -97,7 +123,8 @@ def fetch_calendar_entries():
     except Exception as e:
         print(f"[日历] 新债申购获取失败: {e}")
 
-    # 3. 新债上市：cb_basic.list_date
+    # 3. 新债上市：cb_basic.list_date（接口不支持日期范围，全量拉取后内存过滤窗口）
+    cb_basic_kept = 0
     try:
         df3 = _tushare("cb_basic", {}, "ts_code,bond_short_name,list_date")
         for r in df3:
@@ -107,16 +134,22 @@ def fetch_calendar_entries():
             ld = r.get("list_date")
             if not ld:
                 continue
+            ld_s = _str_date(ld)
+            if not full and ld_s and (ld_s < win_start or ld_s > win_end):
+                continue
             code6 = ts_code.split(".")[0]
             abbr = str(r.get("bond_short_name") or "")
             all_data.append({
-                "TRADE_DATE": _str_date(ld), "DATE_TYPE": "上市",
+                "TRADE_DATE": ld_s, "DATE_TYPE": "上市",
                 "SECURITY_TYPE": "1", "SECURITY_NAME_ABBR": abbr,
                 "SECURITY_CODE": code6, "SECUCODE": ts_code,
             })
+            cb_basic_kept += 1
     except Exception as e:
         print(f"[日历] 新债上市获取失败: {e}")
 
+    scope = "全量(不限窗口)" if full else f"{win_start}~{win_end}"
+    print(f"[日历] 拉取完成 范围={scope} 共 {len(all_data)} 条（其中新债上市 {cb_basic_kept} 条）")
     return all_data
 
 

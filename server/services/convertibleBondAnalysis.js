@@ -1533,6 +1533,54 @@ async function loadCachedAnalysisHistory(tsCode, startDate) {
   };
 }
 
+// P1 整改：本地水位查询，刷新时不再从上市日起重复拉取全部历史
+// 财务报表最新报告期（fundamental.financial_reports），无则返回 null（首次全量回退上市日）
+async function latestStockFinancialEnd(stockTsCode) {
+  if (!stockTsCode) return null;
+  const { rows } = await pool.query(
+    `SELECT max(fr.period_end) AS report_end_date
+       FROM fundamental.financial_reports fr
+       JOIN core.company_instruments ci ON ci.company_id = fr.company_id
+       JOIN core.instruments i ON i.instrument_id = ci.instrument_id
+      WHERE i.canonical_code = $1`, [stockTsCode]
+  );
+  return rows[0] && rows[0].report_end_date || null;
+}
+
+// 公告相关已持久化资料的最新日期（下修提示/转股价变动/评级），作为公告搜索水位
+async function latestAnnouncementBaseline(tsCode) {
+  if (!tsCode) return null;
+  const { rows } = await pool.query(
+    `SELECT max(d) AS event_date FROM (
+       SELECT max(announced_at) AS d FROM fundamental.convertible_bond_no_revision_history h
+         JOIN core.instruments i ON i.instrument_id = h.instrument_id WHERE i.canonical_code = $1
+       UNION ALL
+       SELECT max(change_date) FROM fundamental.convertible_bond_price_changes c
+         JOIN core.instruments i ON i.instrument_id = c.instrument_id WHERE i.canonical_code = $1
+       UNION ALL
+       SELECT max(rating_date) FROM fundamental.convertible_bond_ratings r
+         JOIN core.instruments i ON i.instrument_id = r.instrument_id WHERE i.canonical_code = $1
+     ) t`, [tsCode]
+  );
+  return rows[0] && rows[0].event_date || null;
+}
+
+async function latestRatingDate(tsCode) {
+  const { rows } = await pool.query(
+    `SELECT max(rating_date) AS rating_date FROM fundamental.convertible_bond_ratings r
+       JOIN core.instruments i ON i.instrument_id = r.instrument_id WHERE i.canonical_code = $1`, [tsCode]
+  );
+  return rows[0] && rows[0].rating_date || null;
+}
+
+async function latestPriceChangeDate(tsCode) {
+  const { rows } = await pool.query(
+    `SELECT max(change_date) AS change_date FROM fundamental.convertible_bond_price_changes c
+       JOIN core.instruments i ON i.instrument_id = c.instrument_id WHERE i.canonical_code = $1`, [tsCode]
+  );
+  return rows[0] && rows[0].change_date || null;
+}
+
 async function refreshConvertibleBondAnalysis(value, reason = 'manual', options = {}) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) throw new Error('请输入有效的可转债代码');
@@ -1566,8 +1614,16 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const [profileData, bondDailyData, ratingData, priceChangeData, couponData, holderData] = await Promise.all([
     canReuseProfile ? gate('cb_basic', fetchProfile, null) : fetchProfile(),
     tushareQuery('cb_daily', { ts_code: tsCode, start_date: bondStart, end_date: end }, DAILY_FIELDS),
-    gate('cb_rating', () => tushareQuery('cb_rating', { ts_code: tsCode }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook'), null),
-    gate('cb_price_chg', () => tushareQuery('cb_price_chg', { ts_code: tsCode }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'), null),
+    gate('cb_rating', async () => {
+      const wm = forceAll ? null : await latestRatingDate(tsCode);
+      const sd = wm ? tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30)) : announcementStart;
+      return tushareQuery('cb_rating', { ts_code: tsCode, start_date: sd }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook');
+    }, null),
+    gate('cb_price_chg', async () => {
+      const wm = forceAll ? null : await latestPriceChangeDate(tsCode);
+      const sd = wm ? tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30)) : announcementStart;
+      return tushareQuery('cb_price_chg', { ts_code: tsCode, start_date: sd }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft');
+    }, null),
     couponPromise,
     holderPromise,
   ]);
@@ -1584,6 +1640,15 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const stockStart = incrementalStart(cachedStockDaily, start);
   const valuationStart = incrementalStart(cachedValuations, start);
   const announcementStart = String(profile.list_date || '').replace(/-/g,'') || start;
+  // P1 整改：财务报表与公告增量——日常刷新只补本地最新水位往前的重叠窗口；force 全量补历史时回退上市日
+  const financialWaterMark = forceAll ? null : await latestStockFinancialEnd(stockCode);
+  const financialWindowStart = financialWaterMark
+    ? tsDateStr(addDays(new Date(`${isoDate(financialWaterMark)}T00:00:00+08:00`), -120))
+    : announcementStart;
+  const announcementWaterMark = forceAll ? null : await latestAnnouncementBaseline(tsCode);
+  const announcementWindowStart = announcementWaterMark
+    ? tsDateStr(addDays(new Date(`${isoDate(announcementWaterMark)}T00:00:00+08:00`), -30))
+    : announcementStart;
   const prospectusStartDate = addYears(new Date(`${isoDate(profile.list_date) || isoDate(profile.value_date) || isoDate(start)}T00:00:00+08:00`), -1);
   const prospectusStart = tsDateStr(prospectusStartDate);
   const futureCalendarEnd = addDays(new Date(), 400);
@@ -1600,21 +1665,21 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const [stockDailyData, valuationData, incomeData, balanceData, dividendData, liveQuotes, announcements, futureCalendarData] = await Promise.all([
     tushareQuery('daily', { ts_code: stockCode, start_date: stockStart, end_date: end }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
     tushareQuery('daily_basic', { ts_code: stockCode, start_date: valuationStart, end_date: end }, 'ts_code,trade_date,close,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
-    tushareQuery('income', { ts_code: stockCode, start_date: announcementStart, end_date: end }, 'ts_code,ann_date,f_ann_date,end_date,report_type,n_income_attr_p'),
-    tushareQuery('balancesheet', { ts_code: stockCode, start_date: announcementStart, end_date: end },
+    tushareQuery('income', { ts_code: stockCode, start_date: financialWindowStart, end_date: end }, 'ts_code,ann_date,f_ann_date,end_date,report_type,n_income_attr_p'),
+    tushareQuery('balancesheet', { ts_code: stockCode, start_date: financialWindowStart, end_date: end },
       'ts_code,ann_date,f_ann_date,end_date,report_type,total_assets,total_liab'),
     hasCachedDividendYield ? gate('bond_dividend', fetchDividend, null) : fetchDividend(),
     fetchTencentQuotes([tsCode, stockCode]),
     Promise.all([
-      needsPriceDetails ? fetchCninfoEventsByYear(stockCode, announcementStart, end, '转股价格').catch(() => [])
-        : fetchCninfoEvents(stockCode, announcementStart, end, '转股价格').catch(() => []),
-      fetchSzseEvents(stockCode, announcementStart, end, '转股价格').catch(() => []),
-      fetchCninfoEvents(stockCode, announcementStart, end, '回售').catch(() => []),
-      fetchSseEvents(stockCode, announcementStart, end, '回售').catch(() => []),
-      fetchSzseEvents(stockCode, announcementStart, end, '回售').catch(() => []),
-      fetchCninfoEvents(stockCode, announcementStart, end, '年度报告').catch(() => []),
-      ratingSourceCache.missing ? fetchCninfoEventsByYear(stockCode, prospectusStart, end, '评级').catch(() => []) : Promise.resolve([]),
-      fetchSseEvents(stockCode, prospectusStart, end, '评级').catch(() => []),
+      needsPriceDetails ? fetchCninfoEventsByYear(stockCode, announcementWindowStart, end, '转股价格').catch(() => [])
+        : fetchCninfoEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
+      fetchSzseEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
+      fetchCninfoEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
+      fetchSseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
+      fetchSzseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
+      fetchCninfoEvents(stockCode, announcementWindowStart, end, '年度报告').catch(() => []),
+      ratingSourceCache.missing ? fetchCninfoEventsByYear(stockCode, announcementWindowStart, end, '评级').catch(() => []) : Promise.resolve([]),
+      fetchSseEvents(stockCode, announcementWindowStart, end, '评级').catch(() => []),
       fetchSseLatestReport(stockCode).then(report => report ? [report] : []).catch(() => []),
       fetchSzseLatestReport(stockCode, start, end).then(report => report ? [report] : []).catch(() => []),
       needsProspectus ? fetchCninfoEvents(stockCode, prospectusStart, end, '募集说明书').catch(() => []) : Promise.resolve([]),

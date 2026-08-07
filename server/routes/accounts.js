@@ -217,6 +217,22 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
     } catch (e) {
       result.valuation_map = {};
     }
+    // 附加真实昨收价（取自 daily_prices 上一交易日），供前端拆分「股价影响」时消除行情涨跌幅精度误差
+    try {
+      const today = todayCN();
+      const { rows: prevRows } = await pool.query(
+        `SELECT DISTINCT ON (code) code, price::text AS price
+           FROM daily_prices
+          WHERE username = $1 AND account_name = $2 AND date < $3 AND code = ANY($4::text[])
+          ORDER BY code, date DESC`,
+        [req.session.user, name, today, codes]
+      );
+      const previousPrices = {};
+      prevRows.forEach(r => { previousPrices[r.code] = Number(r.price); });
+      result.previousPrices = previousPrices;
+    } catch (e) {
+      result.previousPrices = {};
+    }
   }
   res.json(result);
 }));

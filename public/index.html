@@ -1101,6 +1101,7 @@ let currentAccount = '默认账户';
 // 暴露当前账户给其他脚本（顶层 let 不在 window 上，position-comparison.js 等独立文件需经 window 读取）
 window.currentAccount = currentAccount;
 let priceChangeMap = {};
+let previousPriceMap = {};  // 真实昨收价（来自 daily_prices），用于精确拆分股价影响
 const PRICE_CACHE = {};
 let indexData = {};
 let returnsPeriod = 30;
@@ -1376,6 +1377,11 @@ async function loadData(accountName) {
   if (data.changes) {
     priceChangeMap = {};
     Object.keys(data.changes).forEach(function(k) { priceChangeMap[k] = data.changes[k]; });
+  }
+  // 恢复真实昨收价（来自 daily_prices），优先用它算股价影响，避免行情涨跌幅反推产生精度误差
+  previousPriceMap = {};
+  if (data.previousPrices) {
+    Object.keys(data.previousPrices).forEach(function(k) { previousPriceMap[k] = data.previousPrices[k]; });
   }
   // 对于有缓存现价但无涨跌幅记录的持仓，用null占位
   // 这样渲染时能显示缓存价格和 "--"（灰色），而不是转圈 ⟳

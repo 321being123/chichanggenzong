@@ -21,5 +21,14 @@ assert.ok(
   ledger.includes("sec.quantity > 0"),
   '服务端账本事务缺少数量判断（0 时删除持仓）'
 );
+// 2026-08-07：拆分「股价影响」时必须用真实昨收价，否则行情涨跌幅反推会产生 ~4 元级精度误差，流入「其他变动」
+assert.ok(
+  tables.includes("previousPriceMap[position.code]"),
+  'getTodayProfit 未优先使用 previousPriceMap 真实昨收价'
+);
+assert.ok(
+  tables.includes("previousPriceMap[position.code] != null"),
+  'getTodayProfit 未正确判断 previousPriceMap 存在性'
+);
 
 console.log('zero quantity position tests passed');

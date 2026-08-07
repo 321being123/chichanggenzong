@@ -2095,7 +2095,27 @@ const MIGRATIONS = [
   { version: '049_session_revocation', up: migration049SessionRevocation },
   { version: '050_capability_permissions', up: migration050CapabilityPermissions },
   { version: '051_audit_result_metadata', up: migration051AuditResultMetadata },
+  { version: '052_nav_history_hk_rate', up: migration052NavHistoryHkRate },
 ];
+
+// ========== 052：nav_history 记录每条快照所用港币汇率（治本：今日涨跌可正确拆分汇率影响） ==========
+// 历史快照此前不记录汇率，导致"总资产今日涨跌"把汇率波动混进差额、且浮框无法正确拆分汇率影响。
+// 加可空列 hk_rate，recordNav / 后台快照任务写入时带上当时 data.hkRate；旧行留 NULL（浮框残差兜底）。
+async function migration052NavHistoryHkRate() {
+  await pool.query(`ALTER TABLE nav_history ADD COLUMN IF NOT EXISTS hk_rate numeric(10,6)`);
+  // 历史快照此前无汇率记录 → 用账户当前 hk_rate 近似回填（HKD/CNY 极稳定，误差可忽略），
+  // 让浮框"汇率影响"可立刻基于昨日快照汇率直接算，而非残差兜底。
+  await pool.query(`
+    UPDATE nav_history nh
+    SET hk_rate = a.hk_rate
+    FROM accounts a
+    WHERE nh.hk_rate IS NULL
+      AND a.username = nh.username
+      AND a.account_name = nh.account_name
+      AND a.hk_rate IS NOT NULL
+      AND a.hk_rate > 0
+  `);
+}
 
 // ========== 042：交易字段整改（trade_date 交易日 / executed_at 成交时间 / import_batch_id 导入批次） ==========
 // 2026-08-03 持仓账本整改（方案 3.6/阶段四）：

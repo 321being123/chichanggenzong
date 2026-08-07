@@ -96,8 +96,26 @@ function bindChangeTip(el, changeAmt, changePct) {
     var prof = getTodayProfit(p);
     if (prof != null) priceImpact += prof;
   });
-  // 汇率影响 = 总资产涨跌 − 股价影响（港币资产因港币兑人民币波动的账面价值变化）
-  var fxImpact = changeAmt - priceImpact;
+  // 汇率影响 = 港股港币面值 ×（今日汇率 − 昨日快照汇率），直接算，不再用"今日涨跌−股价影响"残差
+  var todayRate = Number(data.hkRate) || 0.868;
+  var yesterdayRate = null;
+  if (data.navHistory && data.navHistory.length >= 2) {
+    var prevNav = data.navHistory[data.navHistory.length - 2];
+    if (prevNav && prevNav.hkRate != null && prevNav.hkRate > 0) yesterdayRate = prevNav.hkRate;
+  }
+  var fxImpact = 0;
+  var otherChange = null;
+  if (yesterdayRate != null) {
+    (data.positions || []).forEach(function (p) {
+      if (p.subtype === '港股') {
+        fxImpact += (Number(p.price) || 0) * (Number(p.quantity) || 0) * (todayRate - yesterdayRate);
+      }
+    });
+    otherChange = changeAmt - priceImpact - fxImpact;
+  } else {
+    // 旧快照无汇率记录 → 残差兜底（保持与历史一致）
+    fxImpact = changeAmt - priceImpact;
+  }
 
   var tip = document.getElementById('stat-change-tip');
   if (!tip) {
@@ -108,7 +126,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -119,21 +137,26 @@ function bindChangeTip(el, changeAmt, changePct) {
   el.onmouseleave = function () { tip.style.display = 'none'; };
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
   var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
-  return '' +
+  var html = '' +
     '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
       '<div>股价/债价涨跌影响：<span style="color:' + col(priceImpact) + ';">' + arrow(priceImpact) + ' ' + sign(priceImpact) + '</span></div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">各持仓（今价−昨价）×数量×汇率，仅反映价格变动</div>' +
       '<div>汇率影响：<span style="color:' + col(fxImpact) + ';">' + arrow(fxImpact) + ' ' + sign(fxImpact) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港币资产因港币兑人民币波动产生的账面价值变化</div>' +
-      '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响 = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港股港币市值 ×（今日汇率−昨日汇率），反映港币兑人民币波动</div>';
+  if (otherChange != null) {
+    html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、现金流入流出等</div>';
+  }
+  html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
     '</div>' +
-    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：持仓明细里的「今日盈亏」只看股价、不含汇率，所以和这里对不上；差值就是汇率影响。</div>';
+    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：持仓明细里的「今日盈亏」只看股价、不含汇率；这里的「汇率影响」是港币兑人民币波动造成的差额，和持仓盈亏对不上属正常现象。</div>';
+  return html;
 }
 
 // ===================== 饼图渲染 =====================

@@ -169,7 +169,7 @@ async function recomputeNav(username, accountName, fromDate) {
 
     if (i === 0 && idx0 === 0 && !prev) {
       // 整体首条：nav 固定 1.0（与 recordNav 一致）
-      await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested });
+      await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
       prev = { date: d, nav: 1.0, totalAsset: totalAsset };
       affected++;
       continue;
@@ -186,7 +186,7 @@ async function recomputeNav(username, accountName, fromDate) {
       continue;
     }
     const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
-    await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested });
+    await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
     prev = { date: d, nav: nav, totalAsset: totalAsset };
     affected++;
   }

@@ -162,6 +162,7 @@ async function recordNav() {
       lastNav.nav = chainNav(lastNav.nav, lastNav.totalAsset, s.total, periodCashFlow);
       lastNav.totalAsset = s.total;
       lastNav.invested = invested;
+      lastNav.hk_rate = data.hkRate; // 记录当日所用汇率，供总资产今日涨跌正确拆分汇率影响
       lastNav.snapshot_at = nowSec(); // 更新快照边界
     }
     // 阶段三：净值记录走 PUT /nav/:date 局部接口
@@ -185,6 +186,7 @@ async function recordNav() {
       nav: 1.0,
       totalAsset: s.total,
       invested: invested,
+      hk_rate: data.hkRate,
       snapshot_at: nowSec()
     });
   } else {
@@ -207,6 +209,7 @@ async function recordNav() {
       nav: nav,
       totalAsset: s.total,
       invested: invested,
+      hk_rate: data.hkRate,
       snapshot_at: nowSec()
     });
   }

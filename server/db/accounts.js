@@ -25,7 +25,7 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
-    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at, hk_rate::float8 AS "hkRate" FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   const { rows: cashFlows } = await pool.query(
@@ -198,10 +198,10 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     if (allow.navHistory) {
       await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
       await bulkInsert(client, 'nav_history',
-        ['username', 'account_name', 'account_id', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at'],
+        ['username', 'account_name', 'account_id', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at', 'hk_rate'],
         data.navHistory || [],
-        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null],
-        'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)'
+        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null, (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : null],
+        'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate = EXCLUDED.hk_rate'
       );
     }
     // cash_flows
@@ -340,9 +340,9 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
       );
     }
     await client.query(
-      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ' +
-      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
-      [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null]
+      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ' +
+      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate = EXCLUDED.hk_rate',
+      [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null, (rec.hkRate != null && rec.hkRate > 0) ? round(rec.hkRate, 6) : null]
     );
     // bumpVersion：仅前端主动保存净值时提升总版本（并发乐观锁基准）；
     // 后台任务（replayNav/navSnapshot）只提升 nav_version，靠数据集级版本防旧快照覆盖前端保存
@@ -375,7 +375,7 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
 // 读取当前实际生效的 navHistory（只读结构化表；表空即空，绝不读 JSON 归档）
 async function readEffectiveNavHistory(username, accountName) {
   const { rows } = await pool.query(
-    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at, hk_rate::float8 AS "hkRate" FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
     [username, accountName]
   );
   return rows;
@@ -391,9 +391,9 @@ async function writeNavHistoryBoth(client, username, accountName, navs) {
   await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
   for (const n of navs) {
     await client.query(
-      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ' +
-      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at)',
-      [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null]
+      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ' +
+      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate=EXCLUDED.hk_rate',
+      [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null, (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : null]
     );
   }
   await client.query(

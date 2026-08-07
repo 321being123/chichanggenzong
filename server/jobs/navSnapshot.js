@@ -120,7 +120,7 @@ async function recordNavSnapshots(username, accountName) {
     const invested = investedAt(navs, cfs, cashBase, d);
 
     if (!prev) {
-      await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested });
+      await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
       prev = { date: d, nav: 1.0, totalAsset: totalAsset }; affected++; continue;
     }
     let pcf = 0;
@@ -128,7 +128,7 @@ async function recordNavSnapshots(username, accountName) {
     const baseAsset = prev.totalAsset + pcf;
     if (baseAsset <= 0) continue; // 无法续链，跳过
     const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
-    await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested });
+    await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
     prev = { date: d, nav: nav, totalAsset: totalAsset }; affected++;
   }
   return { ok: true, days: affected };

@@ -603,6 +603,7 @@ router.put('/nav/:date', requireLogin, asyncHandler(assertOwnership), requireVer
     nav: parseFloat(req.body.nav),
     totalAsset: req.body.totalAsset != null ? parseFloat(req.body.totalAsset) : null,
     invested: req.body.invested != null ? parseFloat(req.body.invested) : null,
+    hkRate: req.body.hkRate != null ? parseFloat(req.body.hkRate) : null,
   };
   try {
     // fromDate：编辑改日期时传旧日期，服务端事务内先删旧再写新（2026-08-04 阻断修复）
@@ -669,8 +670,8 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     for (const r of records) {
       if (!r.date || r.nav == null) continue;
       await client.query(
-        'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested',
-        [username, accountName, accountId, r.date, round(r.nav, 6), r.totalAsset != null ? round(r.totalAsset, 2) : null, r.invested != null ? round(r.invested, 2) : null]
+        'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, hk_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, hk_rate=EXCLUDED.hk_rate',
+        [username, accountName, accountId, r.date, round(r.nav, 6), r.totalAsset != null ? round(r.totalAsset, 2) : null, r.invested != null ? round(r.invested, 2) : null, (r.hkRate != null && r.hkRate > 0) ? round(r.hkRate, 6) : null]
       );
     }
     await client.query(

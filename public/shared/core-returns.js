@@ -171,7 +171,7 @@ async function recordNav() {
       var _r = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: currentAccount, nav: lastNav.nav, totalAsset: s.total, invested: invested })
+        body: JSON.stringify({ account: currentAccount, nav: lastNav.nav, totalAsset: s.total, invested: invested, hkRate: data.hkRate })
       });
       var _j = await _r.json().catch(function(){ return {}; });
       if (_r.ok && _j.data) syncDataVersions(_j.data);
@@ -218,10 +218,10 @@ async function recordNav() {
     var _r2 = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ account: currentAccount, nav: nav, totalAsset: s.total, invested: invested })
-    });
-    var _j2 = await _r2.json().catch(function(){ return {}; });
-    if (_r2.ok && _j2.data) syncDataVersions(_j2.data);
+        body: JSON.stringify({ account: currentAccount, nav: nav, totalAsset: s.total, invested: invested, hkRate: data.hkRate })
+      });
+      var _j2 = await _r2.json().catch(function(){ return {}; });
+      if (_r2.ok && _j2.data) syncDataVersions(_j2.data);
   } catch(_e2) { console.warn('recordNav PUT failed:', _e2); }
 }
 

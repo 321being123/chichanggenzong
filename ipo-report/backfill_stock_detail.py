@@ -25,6 +25,14 @@ _DETAIL_FIELDS = [
     ("online_lottery_rate", "online_lottery_rate"),
     ("circulation_mv", "circulation_mv"),
     ("main_business", "main_business"),
+    ("online_date", "ipo_date"),                       # 申购日
+    ("subscribe_upper_limit", "subscribe_upper_limit"),  # 顶格申购上限(万股)
+]
+
+# 判定"这行还缺详情"的字段（任一为空即需要回填）
+_MISSING_CHECK_COLS = [
+    "issue_price", "issue_pe", "fund_raised", "total_shares", "online_shares",
+    "online_lottery_rate", "circulation_mv", "ipo_date", "subscribe_upper_limit",
 ]
 
 
@@ -32,13 +40,18 @@ def main():
     conn = db_pg.connect()
     cur = conn.cursor()
 
-    # 找出 issue_price 为空的行（代表详情未获取过）
+    # 找出任一详情字段为空的行（不能只看 issue_price，
+    # 否则"只缺申购日/顶格上限"的行永远进不了回填列表）
+    where = " OR ".join(
+        ("%s IS NULL OR %s = ''" % (c, c)) if c == "ipo_date" else ("%s IS NULL" % c)
+        for c in _MISSING_CHECK_COLS
+    )
     cur.execute("""
         SELECT security_code, security_name
         FROM ipo_history
-        WHERE issue_price IS NULL OR issue_price = 0
+        WHERE %s
         ORDER BY listing_date DESC NULLS LAST
-    """)
+    """ % where)
     rows = cur.fetchall()
     total = len(rows)
     print(f"共 {total} 行需要补全详情")
@@ -59,12 +72,17 @@ def main():
             continue
 
         # 逐字段 UPDATE（只更新有意义的非空非零值）
+        # 用 COALESCE 只填空位，绝不覆盖库里已有的值
         sets = []
         vals = []
         for src_key, db_col in _DETAIL_FIELDS:
             val = detail.get(src_key)
             if val is not None and val != "" and val != 0:
-                sets.append(f"{db_col}=%s")
+                if db_col == "ipo_date":
+                    # ipo_date 是 TEXT，空串也算缺失
+                    sets.append(f"{db_col}=CASE WHEN COALESCE({db_col}, '')='' THEN %s ELSE {db_col} END")
+                else:
+                    sets.append(f"{db_col}=COALESCE({db_col}, %s)")
                 vals.append(val)
 
         if sets:

@@ -200,7 +200,7 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
       await bulkInsert(client, 'nav_history',
         ['username', 'account_name', 'account_id', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at', 'hk_rate'],
         data.navHistory || [],
-        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null, (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : null],
+        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null, (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : ((n.hk_rate != null && n.hk_rate > 0) ? round(n.hk_rate, 6) : null)],
         'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate = EXCLUDED.hk_rate'
       );
     }

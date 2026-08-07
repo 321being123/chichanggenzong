@@ -171,21 +171,28 @@ router.get('/history', async (req, res) => {
       rows = await getBondHistoryList(limit);
     } else {
       // 集思录式列：代码/名称/发行价/发行PE/行业PE/行业/发行总数/申购上限/顶格申购需配市值/中签率%/募资/上市日/首日涨幅
+      // 预测涨幅：关联 predictions 表（取该代码最新一条有效预测），无预测则显示空
       const r = await pool.query(
-        `              SELECT security_code, security_name, ipo_date,
-                issue_price, issue_pe, industry_pe, fund_raised,
-                total_shares, online_shares, online_lottery_rate,
+        `              SELECT h.security_code, h.security_name, h.ipo_date,
+                h.issue_price, h.issue_pe, h.industry_pe, h.fund_raised,
+                h.total_shares, h.online_shares, h.online_lottery_rate,
                 COALESCE(
-                  circulation_mv,
-                  ROUND((COALESCE(online_shares, total_shares) * issue_price / 10000.0)::numeric, 2)::double precision
+                  h.circulation_mv,
+                  ROUND((COALESCE(h.online_shares, h.total_shares) * h.issue_price / 10000.0)::numeric, 2)::double precision
                 ) AS circulation_mv,
-                listing_date, ld_close_change,
-                main_business, industry, subscribe_upper_limit
-         FROM ipo_history
-         WHERE listing_date IS NOT NULL AND listing_date <> ''
-           AND COALESCE(market_type, '') <> '北交所'
-           AND security_code !~ '^(920|82|83|87|43)'
-         ORDER BY listing_date DESC LIMIT $1`,
+                h.listing_date, h.ld_close_change,
+                h.main_business, h.industry, h.subscribe_upper_limit,
+                p.pred_return AS pred_return
+         FROM ipo_history h
+         LEFT JOIN LATERAL (
+           SELECT pred_return FROM predictions
+           WHERE type = 'stock' AND code = h.security_code AND pred_return IS NOT NULL
+           ORDER BY pred_date DESC LIMIT 1
+         ) p ON true
+         WHERE h.listing_date IS NOT NULL AND h.listing_date <> ''
+           AND COALESCE(h.market_type, '') <> '北交所'
+           AND h.security_code !~ '^(920|82|83|87|43)'
+         ORDER BY h.listing_date DESC LIMIT $1`,
         [limit]
       );
       rows = r.rows;

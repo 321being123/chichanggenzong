@@ -79,17 +79,23 @@ async function getBondBySecurityCode(securityCode) {
 // 对外契约：security_code 保持六位纯数字（兼容前端交易所判断/报告链接）；标准代码走 canonical_code。
 async function getBondHistoryList(limit = 50) {
   const { rows } = await pool.query(
-    `SELECT split_part(bond_code, '.', 1) AS security_code,
-       bond_code AS canonical_code, bond_name AS security_name,
-       ann_date, res_ann_date, display_issue_size AS issue_size, issue_type,
-       display_rating AS rating, shd_ration_ratio, bh_issue_price AS issue_price,
-       shd_ration_record_date, onl_date, onl_size, onl_pch_num, offl_size,
-       shd_ration_size, display_conv_price AS conv_price,
-       stock_code AS stk_code, stock_name AS stk_name,
-       listing_date, first_day_return
-     FROM public.bond_unified
-     WHERE issue_type IS NULL OR issue_type NOT IN ('定向', '私募')
-     ORDER BY COALESCE(res_ann_date, ann_date, listing_date::text) DESC NULLS LAST
+    `SELECT split_part(b.bond_code, '.', 1) AS security_code,
+       b.bond_code AS canonical_code, b.bond_name AS security_name,
+       b.ann_date, b.res_ann_date, b.display_issue_size AS issue_size, b.issue_type,
+       b.display_rating AS rating, b.shd_ration_ratio, b.bh_issue_price AS issue_price,
+       b.shd_ration_record_date, b.onl_date, b.onl_size, b.onl_pch_num, b.offl_size,
+       b.shd_ration_size, b.display_conv_price AS conv_price,
+       b.stock_code AS stk_code, b.stock_name AS stk_name,
+       b.listing_date, b.first_day_return,
+       p.pred_return AS pred_return
+     FROM public.bond_unified b
+     LEFT JOIN LATERAL (
+       SELECT pred_return FROM predictions
+       WHERE type = 'bond' AND code = split_part(b.bond_code, '.', 1) AND pred_return IS NOT NULL
+       ORDER BY pred_date DESC LIMIT 1
+     ) p ON true
+     WHERE b.issue_type IS NULL OR b.issue_type NOT IN ('定向', '私募')
+     ORDER BY COALESCE(b.res_ann_date, b.ann_date, b.listing_date::text) DESC NULLS LAST
      LIMIT $1`,
     [limit]
   );

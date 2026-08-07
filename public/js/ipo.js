@@ -294,7 +294,7 @@ function ipoRenderHistory(type, rows) {
       '代码', '名称', '方案进展', '进展公告日', '发行规模(亿)', '评级',
       '股东配售率', '配售10张所需股数', '股权登记日',
       '网上上限(亿)', '申请户数(万)',
-      '上市涨幅%'
+      '预测涨幅%', '上市涨幅%'
     ];
     var r2 = rows.map(function (it) {
       // 进展公告日 = 当前阶段日期（绝不用未来的发行结果公告日）
@@ -322,6 +322,7 @@ function ipoRenderHistory(type, rows) {
         shdRecDate,                                // 股权登记日
         announced ? ipoFmt(it.onl_size) : '-',     // 网上上限(亿)：仅公告后
         it.onl_pch_num != null ? ipoFmt(it.onl_pch_num) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '') : '-',  // 申请户数(万)：深市公告只给配号总数，按1000配号/户估算，标注(估算)；沪市为公告真户数
+        ipoPctCell(it.pred_return),               // 预测涨幅%：模型预测上市涨幅（无预测则显示 -）
         ipoPctCell(it.first_day_return)            // 上市涨幅% = 上市首日收盘 - 100
       ];
     });
@@ -332,7 +333,7 @@ function ipoRenderHistory(type, rows) {
   var headers = [
     '代码', '名称', '申购日期', '上市日', '发行价', '发行PE', '行业PE', '行业',
     '发行总数(万股)', '顶格申购上限(万股)', '顶格申购需配市值(万)',
-    '中签率(万分之)', '募资(亿)', '公开发行市值(亿)', '首日涨幅%', '单签收益(元)'
+    '中签率(万分之)', '募资(亿)', '公开发行市值(亿)', '预测涨幅%', '首日涨幅%', '单签收益(元)'
   ];
   var r3 = rows.map(function (it) {
     // 单签收益 = 500股 × 发行价 × 首日涨幅%
@@ -364,6 +365,7 @@ function ipoRenderHistory(type, rows) {
       ipoWanfenCell(it.online_lottery_rate),
       ipoFmt(it.fund_raised),
       ipoNumFixed(it.circulation_mv, 2),
+      ipoPctCell(it.pred_return),               // 预测涨幅%：模型预测首日涨幅（无预测则显示 -）
       ipoPctCell(it.ld_close_change),
       ipoFmt(profit)
     ];

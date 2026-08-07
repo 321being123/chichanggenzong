@@ -85,11 +85,22 @@ async function saveFinancialCache(tsCode, stockName, data) {
   );
 }
 
-async function fetchOneFinancial(stock, today) {
+// 由已缓存的最近报告期推算“增量窗口起点”：只拉取该报告期往前约一年，
+// 覆盖最新一期及其修订，避免缓存过期后重拉全部历史。首次无缓存则返回 null（全量）。
+function financialWindowStart(cached) {
+  const end = cached && cached.data && cached.data.report_end_date;
+  const t = end ? String(end).replace(/-/g, '') : '';
+  if (!/^\d{8}$/.test(t)) return null;
+  const d = new Date(Date.UTC(Number(t.slice(0, 4)) - 1, Number(t.slice(4, 6)) - 1, Number(t.slice(6, 8))));
+  return tsDateStr(d);
+}
+
+async function fetchOneFinancial(stock, today, startDate) {
+  const dateParams = startDate ? { start_date: startDate } : {};
   const [fiData, bsData, incomeData] = await Promise.all([
-    tushareQuery('fina_indicator', { ts_code: stock.stk_code }, 'ts_code,ann_date,end_date,ebit,ebit_to_interest,interestdebt'),
-      tushareQuery('balancesheet', { ts_code: stock.stk_code }, 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_assets,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
-    tushareQuery('income', { ts_code: stock.stk_code }, 'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
+    tushareQuery('fina_indicator', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,end_date,ebit,ebit_to_interest,interestdebt'),
+      tushareQuery('balancesheet', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_assets,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
+    tushareQuery('income', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
   ]);
   return selectFinancialReport(tsRows(fiData), tsRows(bsData), tsRows(incomeData), today);
 }
@@ -135,11 +146,15 @@ async function refreshFinancials(stocks, today) {
   });
   const concurrency = Math.max(1, Math.min(6, Number(process.env.BOND_SAFETY_TUSHARE_CONCURRENCY) || 3));
   let cursor = 0;
+  let windowCount = 0, fullCount = 0;
   async function worker() {
     while (cursor < pending.length) {
       const stock = pending[cursor++];
+      const cached = cache.get(stock.stk_code);
+      const startDate = financialWindowStart(cached);
+      if (startDate) windowCount++; else fullCount++;
       try {
-        const data = await fetchOneFinancial(stock, today);
+        const data = await fetchOneFinancial(stock, today, startDate);
         if (data) {
           await saveFinancialCache(stock.stk_code, stock.stk_short_name, data);
           cache.set(stock.stk_code, { stock_name: stock.stk_short_name, data, fetched_at: Date.now() });
@@ -149,6 +164,7 @@ async function refreshFinancials(stocks, today) {
     }
   }
   await Promise.all(Array.from({ length: concurrency }, worker));
+  console.log(`[可转债安全] 财务同步：${pending.length} 只待更新，其中增量窗口 ${windowCount} 只、首次全量 ${fullCount} 只`);
   return cache;
 }
 

@@ -12,8 +12,30 @@ const INDEX_BACKFILL_DEFS = [
   { name: '恒生指数', src: 'tencent' } // 恒生无 Tushare 权限，沿用腾讯策略
 ];
 
-// 记录“已确认数据源最早只能拉到这”的指数，避免每次启动重复联网拉取
-const settledIndexBaselines = new Set();
+// 读取“已确认数据源最早只能拉到这”的记录（落库，进程重启不丢）
+// key = username|account_name|指数名，value = 确认时的净值起点
+async function loadSettledBaselines() {
+  try {
+    const { rows } = await pool.query('SELECT username, account_name, index_name, baseline_date FROM index_baseline_settled');
+    const map = new Map();
+    rows.forEach(function (r) {
+      map.set(r.username + '|' + r.account_name + '|' + r.index_name, String(r.baseline_date || ''));
+    });
+    return map;
+  } catch (_) { return new Map(); }
+}
+
+async function markSettledBaseline(username, accountName, indexName, baselineDate, earliestDate) {
+  try {
+    await pool.query(
+      `INSERT INTO index_baseline_settled (username,account_name,index_name,baseline_date,earliest_date,settled_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (username,account_name,index_name) DO UPDATE SET
+         baseline_date=EXCLUDED.baseline_date, earliest_date=EXCLUDED.earliest_date, settled_at=now()`,
+      [username, accountName, indexName, baselineDate, earliestDate || null]
+    );
+  } catch (e) { console.error('指数基线状态落库失败:', e.message); }
+}
 
 // 恒生历史日K：腾讯 web.ifzq hkfqkline（日期范围，结束日期须<=今天，否则返回空）
 async function fetchHsiHistory(fromDate, toDate) {
@@ -35,8 +57,11 @@ async function fetchHsiHistory(fromDate, toDate) {
   } catch (e) { return []; }
 }
 
-async function ensureIndexBaseline() {
+// options.force = true 时忽略"已确认"记录，强制重查（供用户主动补历史使用）
+async function ensureIndexBaseline(options) {
+  const force = !!(options && options.force);
   try {
+    const settled = force ? new Map() : await loadSettledBaselines();
     const accs = await pool.query('SELECT DISTINCT username, account_name FROM nav_history');
     for (const acc of accs.rows) {
       const base = await pool.query('SELECT MIN(date) AS d FROM nav_history WHERE username=$1 AND account_name=$2', [acc.username, acc.account_name]);
@@ -49,7 +74,9 @@ async function ensureIndexBaseline() {
       const points = [];
       for (const def of INDEX_BACKFILL_DEFS) {
         const key = accountKey + '|' + def.name;
-        if (settledIndexBaselines.has(key)) continue; // 已确认数据源最早只能拉到这，跳过
+        // 已确认数据源最早只能拉到这，且净值起点没有变得更早 → 跳过，不再联网
+        const settledBase = settled.get(key);
+        if (settledBase && settledBase <= baseline) continue;
         // 已覆盖到基线（指数最早日期 <= 净值起点）则跳过，避免重复联网
         const minR = await pool.query('SELECT MIN(date) AS d FROM index_history WHERE username=$1 AND account_name=$2 AND name=$3', [acc.username, acc.account_name, def.name]);
         const minD = minR.rows[0] && minR.rows[0].d ? String(minR.rows[0].d) : null;
@@ -64,7 +91,9 @@ async function ensureIndexBaseline() {
         // 取到了数据但最早日并未早于已有最早日 → 说明数据源最早只能拉到这，记录以避免重复拉取
         if (series.length) {
           const earliest = series.reduce(function (a, b) { return a.date < b.date ? a : b; }).date;
-          if (minD == null || earliest >= minD) settledIndexBaselines.add(key);
+          if (minD == null || earliest >= minD) {
+            await markSettledBaseline(acc.username, acc.account_name, def.name, baseline, earliest);
+          }
         }
         series.forEach(function (p) { points.push({ date: p.date, name: def.name, close: p.close }); });
       }

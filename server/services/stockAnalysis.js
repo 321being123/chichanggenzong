@@ -690,6 +690,29 @@ async function buildAnalysis(tsCode) {
   };
 }
 
+// 本地已存分红的最新报告期（end_date）：作为增量水位，请求时只取该期往前约一年窗口，
+// 覆盖最新一期及其修订；首发（无本地数据）返回 null → 由 list_date 决定起点（接近全量）。
+async function latestDividendEndDate(tsCode) {
+  try {
+    const { rows } = await pool.query('SELECT MAX(end_date) AS d FROM stock_dividends WHERE ts_code=$1', [tsCode]);
+    const d = rows[0] && rows[0].d ? String(rows[0].d).replace(/-/g, '') : '';
+    if (!/^\d{8}$/.test(d)) return null;
+    const dt = new Date(Date.UTC(Number(d.slice(0, 4)) - 1, Number(d.slice(4, 6)) - 1, Number(d.slice(6, 8))));
+    return tsDateStr(dt);
+  } catch (_) { return null; }
+}
+
+// 本地已存业绩预告的最新公告日：作为增量水位，请求时只取该日往前 30 天重叠窗口。
+async function latestForecastAnnDate(tsCode) {
+  try {
+    const { rows } = await pool.query('SELECT MAX(ann_date) AS d FROM stock_forecasts WHERE ts_code=$1', [tsCode]);
+    const d = rows[0] && rows[0].d ? String(rows[0].d).replace(/-/g, '') : '';
+    if (!/^\d{8}$/.test(d)) return null;
+    const dt = new Date(Date.UTC(Number(d.slice(0, 4)), Number(d.slice(4, 6)) - 1, Number(d.slice(6, 8)) - 30));
+    return tsDateStr(dt);
+  } catch (_) { return null; }
+}
+
 async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   const tsCode = normalizeStockCode(rawCode);
   if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
@@ -758,10 +781,12 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
     .map(([api, fields]) => fetchPartitioned(api, tsCode, financialStart, today, fields)));
   if (!income.length || !balance.length || !cashflow.length) throw new Error('三表数据不完整，保留上一份结果');
   const indicatorStart = hasIndicator ? yearsAgo(120) : (meta.list_date || '19900101');
+  const dividendStart = await latestDividendEndDate(tsCode);
+  const forecastStart = await latestForecastAnnDate(tsCode);
   const [indicators, dividends, forecasts] = await Promise.all([
     fetchPartitioned('fina_indicator', tsCode, indicatorStart, today, 'ts_code,ann_date,end_date,roe,roa,ebit,ebit_to_interest,interestdebt,profit_dedt,dt_netprofit_yoy'),
-    gate('stock_dividend', () => fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share'), []),
-    gate('stock_forecast', () => fetchRequired('forecast', { ts_code: tsCode }, 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason'), [])
+    gate('stock_dividend', () => fetchRequired('dividend', Object.assign({ ts_code: tsCode }, dividendStart ? { start_date: dividendStart } : {}), 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share'), []),
+    gate('stock_forecast', () => fetchRequired('forecast', Object.assign({ ts_code: tsCode }, forecastStart ? { start_date: forecastStart } : {}), 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason'), [])
   ]);
   const lastTenYears = yearsAgo(3653), listDate = meta.list_date || lastTenYears;
   const incrementalStart = yearsAgo(14);

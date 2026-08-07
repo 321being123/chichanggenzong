@@ -23,6 +23,7 @@
 
 import argparse
 import bisect
+import datetime as _dt
 import hashlib
 import json
 import math
@@ -51,6 +52,9 @@ REDEMPTION_DISCOUNT_RATE = 0.03
 BACKTEST_TOLERANCE = {"60": 1.0, "120": 1.5}  # 百分比绝对容差
 EXISTING_BASELINE = {"20": 1.144, "60": 2.876, "120": 4.325}  # 方案 §22.1
 EXISTING_CONVERGENCE = {"20": 2.347, "60": 4.561, "120": 6.831}  # 方案 §22.2
+# 日常估值只需最近这么多自然日的行情（约 340 个交易日）：最长历史依赖是 cv_vol60 的
+# 60 个交易日滚动波动，其余判定都只看当日截面。训练与明确的补历史仍读全量。
+DAILY_WINDOW_DAYS = 500
 
 
 def _models_dir():
@@ -113,7 +117,8 @@ def db_connect():
 # ----------------------------------------------------------------------------
 # 数据准备（保留全部历史行情行；不过滤，缺失由推算阶段判定“数据不足”）
 # ----------------------------------------------------------------------------
-def load_daily_facts():
+def load_daily_facts(start_date=None):
+    """读行情事实表。start_date 非空时只读该日之后（日常估值滚动窗口）；为空则全量。"""
     sql = """
       SELECT i.instrument_id,
              i.canonical_code AS ts_code,
@@ -127,10 +132,15 @@ def load_daily_facts():
         FROM market.convertible_bond_daily_metrics m
         JOIN core.instruments i ON i.instrument_id = m.instrument_id
         LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = m.instrument_id
+       {where}
        ORDER BY i.canonical_code, m.trade_date
     """
+    where = "WHERE m.trade_date >= %(start_date)s" if start_date else ""
     with db_connect() as conn:
-        return pd.read_sql_query(sql, conn)
+        return pd.read_sql_query(
+            sql.format(where=where), conn,
+            params={"start_date": start_date} if start_date else None
+        )
 
 
 def prepare_data(facts):
@@ -1383,10 +1393,30 @@ def _apply_alert_state_machine(cur, iid, trade_date, row, target_states, prev_st
 # ----------------------------------------------------------------------------
 # 推算 / 回填命令
 # ----------------------------------------------------------------------------
-def _build_prepared():
-    load_env()
-    facts = load_daily_facts()
-    return prepare_data(facts)
+# 同一次进程内按窗口缓存准备数据与索引：一轮刷新会依次走 refresh → backfill → calculate，
+# 此前每一步都重新读一遍全库行情并重建索引，现在同一窗口只读一次。
+_PREPARED_CACHE = {}
+_WINDOW_DEFAULT = object()  # 区分“未指定窗口”与“显式要求全量（None）”
+
+
+def _daily_window_start():
+    return (_dt.date.today() - _dt.timedelta(days=DAILY_WINDOW_DAYS)).isoformat()
+
+
+def _prepared_bundle(start_date=None):
+    """返回 (prepared, index)。start_date 为空表示全量（训练/补历史）。"""
+    key = start_date or ""
+    hit = _PREPARED_CACHE.get(key)
+    if hit is None:
+        load_env()
+        prepared = prepare_data(load_daily_facts(start_date))
+        hit = (prepared, _build_index(prepared))
+        _PREPARED_CACHE[key] = hit
+    return hit
+
+
+def _build_prepared(start_date=None):
+    return _prepared_bundle(start_date)[0]
 
 
 def _full_universe(prepared):
@@ -1551,10 +1581,10 @@ def _universe_as_of(by_code_dates, profile_map, target, within=7, cutoff=None):
 
 
 
-def cmd_calculate(trade_date=None, with_alerts=False):
+def cmd_calculate(trade_date=None, with_alerts=False, window_start=_WINDOW_DEFAULT):
     load_env()
-    prepared = _build_prepared()
-    index = _build_index(prepared)
+    # 未指定则用日常滚动窗口；显式传 None 表示读全量
+    prepared, index = _prepared_bundle(_daily_window_start() if window_start is _WINDOW_DEFAULT else window_start)
     model = _load_active_model()
     if not model:
         raise RuntimeError("尚未启用估值模型，请先运行 train 并 enable")
@@ -1581,10 +1611,9 @@ def cmd_calculate(trade_date=None, with_alerts=False):
     return n
 
 
-def cmd_backfill(start="2021-01-01", end=None):
+def cmd_backfill(start="2021-01-01", end=None, window_start=None):
     load_env()
-    prepared = _build_prepared()
-    index = _build_index(prepared)
+    prepared, index = _prepared_bundle(window_start)
     model = _load_active_model()
     if not model:
         raise RuntimeError("尚未启用估值模型，请先运行 train 并 enable")
@@ -1616,9 +1645,13 @@ def cmd_backfill(start="2021-01-01", end=None):
 
 
 def cmd_refresh():
-    """补齐游标之后遗漏的估值日，再推算最新日并生成实时预警。"""
+    """补齐游标之后遗漏的估值日，再推算最新日并生成实时预警。
+
+    日常只读最近一段行情窗口；只有当游标落后到窗口之外（长期没跑过）才退回读全量。
+    """
     load_env()
-    prepared = _build_prepared()
+    window_start = _daily_window_start()
+    prepared = _build_prepared(window_start)
     latest = prepared["trade_date"].max().date()
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -1628,11 +1661,16 @@ def cmd_refresh():
             )
             row = cur.fetchone()
     last_success = row[0] if row else None
+    # 游标已落到窗口之外（长期没跑过）→ 这一轮退回读全量，避免漏补中间的估值日
+    if last_success and str(last_success) < window_start:
+        window_start = None
+        prepared = _build_prepared(None)
+        latest = prepared["trade_date"].max().date()
     dates = sorted(set(prepared["trade_date"].dt.date))
     missing = [d for d in dates if last_success and last_success < d < latest]
     if missing:
-        cmd_backfill(missing[0].isoformat(), missing[-1].isoformat())
-    return cmd_calculate(with_alerts=True)
+        cmd_backfill(missing[0].isoformat(), missing[-1].isoformat(), window_start=window_start)
+    return cmd_calculate(with_alerts=True, window_start=window_start)
 
 
 def main():

@@ -2096,7 +2096,25 @@ const MIGRATIONS = [
   { version: '050_capability_permissions', up: migration050CapabilityPermissions },
   { version: '051_audit_result_metadata', up: migration051AuditResultMetadata },
   { version: '052_nav_history_hk_rate', up: migration052NavHistoryHkRate },
+  { version: '053_index_baseline_settled', up: migration053IndexBaselineSettled },
 ];
+
+// ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
+// 此前用进程内存 Set 记录"数据源最早只能拉到这"，进程一重启就丢，导致每次启动都把
+// 五个指数从基线到今天重新拉一遍。改为落库后：净值起点没变更早就不再联网重查。
+async function migration053IndexBaselineSettled() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS index_baseline_settled (
+      username TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      index_name TEXT NOT NULL,
+      baseline_date TEXT NOT NULL,
+      earliest_date TEXT,
+      settled_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (username, account_name, index_name)
+    )
+  `);
+}
 
 // ========== 052：nav_history 记录每条快照所用港币汇率（治本：今日涨跌可正确拆分汇率影响） ==========
 // 历史快照此前不记录汇率，导致"总资产今日涨跌"把汇率波动混进差额、且浮框无法正确拆分汇率影响。

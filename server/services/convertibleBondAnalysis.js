@@ -1614,15 +1614,23 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const [profileData, bondDailyData, ratingData, priceChangeData, couponData, holderData] = await Promise.all([
     canReuseProfile ? gate('cb_basic', fetchProfile, null) : fetchProfile(),
     tushareQuery('cb_daily', { ts_code: tsCode, start_date: bondStart, end_date: end }, DAILY_FIELDS),
+    // cb_rating / cb_price_chg 官方只支持 ts_code，不支持日期过滤：拉该只全量后在内存里只保留本地水位往前 30 天重叠窗口，
+    // 由 saveRatingHistory / savePriceChanges 按唯一键幂等 upsert，只写新增/修订行（避免传不支持的 start_date 报错）。
     gate('cb_rating', async () => {
-      const wm = forceAll ? null : await latestRatingDate(tsCode);
-      const sd = wm ? tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30)) : announcementStart;
-      return tushareQuery('cb_rating', { ts_code: tsCode, start_date: sd }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook');
+      const rows = tsRows(await tushareQuery('cb_rating', { ts_code: tsCode }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook'));
+      if (forceAll) return rows;
+      const wm = await latestRatingDate(tsCode);
+      if (!wm) return rows;
+      const floor = tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30));
+      return rows.filter(r => (r.rating_date || '').replace(/-/g, '') >= floor);
     }, null),
     gate('cb_price_chg', async () => {
-      const wm = forceAll ? null : await latestPriceChangeDate(tsCode);
-      const sd = wm ? tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30)) : announcementStart;
-      return tushareQuery('cb_price_chg', { ts_code: tsCode, start_date: sd }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft');
+      const rows = tsRows(await tushareQuery('cb_price_chg', { ts_code: tsCode }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'));
+      if (forceAll) return rows;
+      const wm = await latestPriceChangeDate(tsCode);
+      if (!wm) return rows;
+      const floor = tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30));
+      return rows.filter(r => (r.change_date || '').replace(/-/g, '') >= floor);
     }, null),
     couponPromise,
     holderPromise,

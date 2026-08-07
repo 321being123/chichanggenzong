@@ -107,26 +107,32 @@ async function calculateGraham() {
       ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='hsi_weighted_manual' THEN 0 WHEN source_code='hsi_official' THEN 1 ELSE 2 END) v
     WHERE v.trade_date >= $1`, [since]);
   if (!rows.length) return 0;
-  const values = [], params = []; let p = 1, valid = 0;
+  const rowsToInsert = [];
   for (const r of rows) {
     const earnings = 100 / Number(r.pe), y = Number(r.yield_pct);
     if (!(y > 0)) continue;
     const status = String(r.yield_date) === String(r.trade_date) ? 'normal' : 'carried_forward';
-    values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8})`);
-    params.push(r.market_code, r.benchmark_code, r.trade_date, r.pe, earnings, y, r.yield_date, earnings - y, status);
-    p += 9; valid++;
+    rowsToInsert.push({
+      market_code: r.market_code, benchmark_code: r.benchmark_code, trade_date: r.trade_date,
+      pe: r.pe, earnings, y, yield_date: r.yield_date, graham: earnings - y, status,
+    });
   }
-  if (!valid) return 0;
-  // 分批写入，避免首次全量时参数超过 PostgreSQL 上限（每批 1000 行）
+  if (!rowsToInsert.length) return 0;
+  // 分批写入：每批内部占位符从 $1 重新编号，避免首次全量超过 PostgreSQL 参数上限（每批 1000 行）
   const BATCH = 1000;
-  for (let i = 0; i < values.length; i += BATCH) {
-    const vt = values.slice(i, i + BATCH);
-    const pr = params.slice(i * 9, (i + BATCH) * 9);
+  for (let i = 0; i < rowsToInsert.length; i += BATCH) {
+    const chunk = rowsToInsert.slice(i, i + BATCH);
+    const values = [], params = []; let p = 1;
+    for (const row of chunk) {
+      values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8})`);
+      params.push(row.market_code, row.benchmark_code, row.trade_date, row.pe, row.earnings, row.y, row.yield_date, row.graham, row.status);
+      p += 9;
+    }
     await pool.query(`INSERT INTO analytics.graham_index_daily(market_code,benchmark_code,trade_date,pe,earnings_yield_pct,sovereign_yield_pct,sovereign_yield_date,graham_index_pct,data_status)
-      VALUES ${vt.join(',')}
+      VALUES ${values.join(',')}
       ON CONFLICT(market_code,benchmark_code,trade_date,formula_version) DO UPDATE SET
         pe=EXCLUDED.pe,earnings_yield_pct=EXCLUDED.earnings_yield_pct,sovereign_yield_pct=EXCLUDED.sovereign_yield_pct,
-        sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, pr);
+        sovereign_yield_date=EXCLUDED.sovereign_yield_date,graham_index_pct=EXCLUDED.graham_index_pct,data_status=EXCLUDED.data_status,calculated_at=now()`, params);
   }
   console.log(`[市场周期] 格雷厄姆指数 重算窗口(${since}起)=${rows.length}条, 有效写入=${valid}条`);
   return valid;
@@ -143,7 +149,8 @@ async function syncCsi300Valuation(full) {
   // 水位：本地 CSI300 估值最新日期；空表才全量，否则只拉最近 45 天重叠窗口
   const wm = await pool.query(`SELECT max(trade_date)::text AS mx FROM market.index_valuation_history WHERE index_code='CSI300' AND source_code='tushare_index_dailybasic'`);
   const maxDate = wm.rows[0].mx;
-  const needFull = full || !maxDate;
+  // 沪深300估值是否全量，只看它自己表是否为空；不再受“A股总市值表为空”牵连，避免总市值丢失时误触发估值全量重拉
+  const needFull = !maxDate;
   const end = tsDate(dateStr(new Date()));
   const ranges = needFull
     ? [['20040101', '20151231'], ['20160101', end]]

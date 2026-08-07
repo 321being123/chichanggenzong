@@ -785,7 +785,16 @@ async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   const forecastStart = await latestForecastAnnDate(tsCode);
   const [indicators, dividends, forecasts] = await Promise.all([
     fetchPartitioned('fina_indicator', tsCode, indicatorStart, today, 'ts_code,ann_date,end_date,roe,roa,ebit,ebit_to_interest,interestdebt,profit_dedt,dt_netprofit_yoy'),
-    gate('stock_dividend', () => fetchRequired('dividend', Object.assign({ ts_code: tsCode }, dividendStart ? { start_date: dividendStart } : {}), 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share'), []),
+    // dividend 官方仅支持 ts_code（无 start_date/end_date 范围）：传 ts_code 拉该只全量，内存过滤只保留本地最新分红报告期往前一年的重叠窗口，
+    // 由 saveAux 按唯一键幂等 upsert，只写新增/修订行（首次无水位则保留全量）。
+    gate('stock_dividend', async () => {
+      const all = await fetchRequired('dividend', { ts_code: tsCode }, 'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share');
+      if (!dividendStart) return all;
+      const dt = new Date(Date.UTC(+dividendStart.slice(0, 4), +dividendStart.slice(4, 6) - 1, +dividendStart.slice(6, 8)));
+      dt.setUTCDate(dt.getUTCDate() - 365);
+      const floor = tsDateStr(dt);
+      return (all || []).filter(r => (String(r.end_date || r.ann_date || '').replace(/-/g, '')) >= floor);
+    }, []),
     gate('stock_forecast', () => fetchRequired('forecast', Object.assign({ ts_code: tsCode }, forecastStart ? { start_date: forecastStart } : {}), 'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason'), [])
   ]);
   const lastTenYears = yearsAgo(3653), listDate = meta.list_date || lastTenYears;

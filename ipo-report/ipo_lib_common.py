@@ -129,13 +129,15 @@ def _ts_latest_trade_date(pro):
     return None
 
 def _ts_fetch_roe(ts_code):
-    """从 fina_indicator 取最新年报ROE(%)，无年报则取最新一期"""
+    """从 fina_indicator 取最新年报ROE(%)，无年报则取最新一期；只拉最近两年报告期，不再全量历史"""
     pro = _get_tushare_pro()
     if not pro:
         return None
     try:
-        # 拉取后按报告期降序取最新一期（避免不带报告期拉全量且误取最早一期）
-        df = pro.fina_indicator(ts_code=ts_code, fields='ts_code,end_date,roe')
+        today = datetime.now()
+        end = today.strftime('%Y%m%d')
+        start = (today - timedelta(days=365 * 2)).strftime('%Y%m%d')
+        df = pro.fina_indicator(ts_code=ts_code, start_date=start, end_date=end, fields='ts_code,end_date,roe')
         if df is None or len(df) == 0:
             return None
         df = df.sort_values('end_date', ascending=False)
@@ -160,10 +162,11 @@ def _fetch_quote_tushare(stock_code):
         end = today.strftime('%Y%m%d')
         start = (today - timedelta(days=14)).strftime('%Y%m%d')
         df = pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
-                             fields='ts_code,close,pe,pe_ttm,pb,total_mv')
+                             fields='ts_code,trade_date,close,pe,pe_ttm,pb,total_mv')
         if df is None or len(df) == 0:
             return None
-        row = df.iloc[-1]  # 升序最后一行为最新交易日
+        df = df.sort_values('trade_date', ascending=False)  # 显式按交易日降序，取最新一天
+        row = df.iloc[0]
         price = _ts_float(row.get('close'))
         pe = _ts_float(row.get('pe_ttm')) or _ts_float(row.get('pe'))
         pb = _ts_float(row.get('pb'))

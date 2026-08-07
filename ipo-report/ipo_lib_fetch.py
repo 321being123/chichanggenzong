@@ -13,6 +13,21 @@ from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
 
+# new_share 全量待发行列表进程内缓存：同一轮任务只拉一次，本地按 ts_code 匹配。
+# Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），
+# 每个标的都调一次会重复拉全量；缓存一次后本进程内复用。
+_NEW_SHARE_CACHE = None
+
+
+def _get_new_share_df(pro):
+    global _NEW_SHARE_CACHE
+    if _NEW_SHARE_CACHE is not None:
+        return _NEW_SHARE_CACHE
+    df = pro.new_share()
+    _NEW_SHARE_CACHE = df
+    return df
+
+
 def fetch_stock_detail(secu_code):
     """获取新股详细发行信息（Tushare new_share）
 
@@ -25,7 +40,7 @@ def fetch_stock_detail(secu_code):
         if not pro:
             return None
         ts_code = _to_ts_code(secu_code)
-        df = pro.new_share(ts_code=ts_code)
+        df = _get_new_share_df(pro)
         if df is None or df.empty:
             return None
         # Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），

@@ -134,9 +134,11 @@ def _ts_fetch_roe(ts_code):
     if not pro:
         return None
     try:
+        # 拉取后按报告期降序取最新一期（避免不带报告期拉全量且误取最早一期）
         df = pro.fina_indicator(ts_code=ts_code, fields='ts_code,end_date,roe')
         if df is None or len(df) == 0:
             return None
+        df = df.sort_values('end_date', ascending=False)
         annual = df[df['end_date'].astype(str).str.endswith('1231')]
         src = annual if len(annual) > 0 else df
         return _ts_float(src.iloc[0].get('roe'))
@@ -153,11 +155,15 @@ def _fetch_quote_tushare(stock_code):
         return None
     try:
         ts_code = _to_ts_code(stock_code)
-        df = pro.daily_basic(ts_code=ts_code,
+        # 只拉最近14天行情（增量），取最新有数据的一天；避免不带日期拉全量历史
+        today = datetime.now()
+        end = today.strftime('%Y%m%d')
+        start = (today - timedelta(days=14)).strftime('%Y%m%d')
+        df = pro.daily_basic(ts_code=ts_code, start_date=start, end_date=end,
                              fields='ts_code,close,pe,pe_ttm,pb,total_mv')
         if df is None or len(df) == 0:
             return None
-        row = df.iloc[0]
+        row = df.iloc[-1]  # 升序最后一行为最新交易日
         price = _ts_float(row.get('close'))
         pe = _ts_float(row.get('pe_ttm')) or _ts_float(row.get('pe'))
         pb = _ts_float(row.get('pb'))
@@ -186,10 +192,18 @@ def _ts_fetch_bond_close(bond_code):
         print(f"[Tushare] 转债行情失败({bond_code}): {e}")
         return None
 
+_ALL_MARKET_PRICES_CACHE = None
+
+
 def _ts_fetch_all_market_prices():
     """Tushare按交易日一次拉全市场：转债收盘价 + 正股收盘价（2个请求）
     返回 (bond_prices{code:price}, stock_prices{code:price})，全失败返回 (None, None)
+
+    进程内缓存：同一轮任务只拉一次全市场，避免每只标的重复拉取。
     """
+    global _ALL_MARKET_PRICES_CACHE
+    if _ALL_MARKET_PRICES_CACHE is not None:
+        return _ALL_MARKET_PRICES_CACHE
     pro = _get_tushare_pro()
     if not pro:
         return None, None
@@ -219,6 +233,7 @@ def _ts_fetch_all_market_prices():
         print(f"[Tushare] 全市场正股行情失败: {e}")
     if not bond_prices and not stock_prices:
         return None, None
+    _ALL_MARKET_PRICES_CACHE = (bond_prices, stock_prices)
     return bond_prices, stock_prices
 
 BOARD_BASE = {

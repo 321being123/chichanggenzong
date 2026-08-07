@@ -90,19 +90,19 @@ function renderStats() {
 // 总资产今日涨跌浮框：分解「股价影响 + 汇率影响」并写出计算过程
 function bindChangeTip(el, changeAmt, changePct) {
   if (!el) return;
-  // 股价/债价涨跌影响（含今日汇率）= 各持仓(今价−昨价)×数量×汇率，与持仓明细「今日盈亏」同口径
-  var priceImpact = 0;
-  (data.positions || []).forEach(function (p) {
-    var prof = getTodayProfit(p);
-    if (prof != null) priceImpact += prof;
-  });
-  // 汇率影响 = 港股港币面值 ×（今日汇率 − 昨日快照汇率），直接算，不再用"今日涨跌−股价影响"残差
   var todayRate = Number(data.hkRate) || 0.868;
   var yesterdayRate = null;
   if (data.navHistory && data.navHistory.length >= 2) {
     var prevNav = data.navHistory[data.navHistory.length - 2];
     if (prevNav && prevNav.hkRate != null && prevNav.hkRate > 0) yesterdayRate = prevNav.hkRate;
   }
+  // 股价影响：按昨日快照汇率计算，与下方汇率影响（今价×汇率差）相加正好等于港股市值变动，消除交叉项残差
+  var priceImpact = 0;
+  (data.positions || []).forEach(function (p) {
+    var prof = getTodayProfit(p, yesterdayRate);
+    if (prof != null) priceImpact += prof;
+  });
+  // 汇率影响 = 港股今价 ×（今日汇率 − 昨日快照汇率），直接算，不再用"今日涨跌−股价影响"残差
   var fxImpact = 0;
   var otherChange = null;
   if (yesterdayRate != null) {
@@ -146,16 +146,16 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
     '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
       '<div>股价/债价涨跌影响：<span style="color:' + col(priceImpact) + ';">' + arrow(priceImpact) + ' ' + sign(priceImpact) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">各持仓（今价−昨价）×数量×汇率，仅反映价格变动</div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">各持仓（今价−昨价）×数量×昨日快照汇率，仅反映价格变动</div>' +
       '<div>汇率影响：<span style="color:' + col(fxImpact) + ';">' + arrow(fxImpact) + ' ' + sign(fxImpact) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港股港币市值 ×（今日汇率−昨日汇率），反映港币兑人民币波动</div>';
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港股今价 ×（今日汇率−昨日快照汇率），反映港币兑人民币波动</div>';
   if (otherChange != null) {
     html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、现金流入流出等</div>';
   }
   html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
     '</div>' +
-    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：持仓明细里的「今日盈亏」只看股价、不含汇率；这里的「汇率影响」是港币兑人民币波动造成的差额，和持仓盈亏对不上属正常现象。</div>';
+    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：股价影响按昨日快照汇率算、汇率影响按今价×汇率差算，两者相加正好等于港股市值变动，不再有交叉项残差。「昨日快照汇率」指上一条净值记录里存的港币汇率（即上次记账时的实时汇率，通常为昨天打开网页那一刻）。</div>';
   return html;
 }
 
@@ -293,12 +293,16 @@ let sortState = { col: null, dir: 'asc' };
 // 筛选状态（全局）
 let filterState = { type: '', subtype: '' };
 
-function getTodayProfit(position) {
+function getTodayProfit(position, overrideRate) {
   var change = priceChangeMap[position.code];
   var price = Number(position.price);
   if (change == null || !(price > 0) || change <= -100) return null;
   var previousClose = price / (1 + change / 100);
-  var exchangeRate = position.subtype === '港股' ? (Number(data.hkRate) || 0.868) : 1;
+  // 默认用今日汇率；浮框拆分「股价影响」时传入昨日快照汇率(overrideRate)，
+  // 使「股价影响 + 汇率影响」精确等于港股市值变动，消除价格×汇率交叉项残差
+  var exchangeRate = position.subtype === '港股'
+    ? (overrideRate != null ? overrideRate : (Number(data.hkRate) || 0.868))
+    : 1;
   return (price - previousClose) * (Number(position.quantity) || 0) * exchangeRate;
 }
 

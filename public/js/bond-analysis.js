@@ -107,7 +107,7 @@ function securityAnalysisInitSearch(ctx) {
 }
 
 async function securityAnalysisLoadList(force) {
-  var selects = ['stock-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
+  var selects = ['security-analysis-select'].map(function(id){return document.getElementById(id);}).filter(Boolean);
   if(!username){
     selects.forEach(function(s){s.disabled=true;s.innerHTML='<option value="">登录后可选择持仓和自选</option>';});
     return;

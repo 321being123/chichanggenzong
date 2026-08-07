@@ -82,7 +82,8 @@ function stockAnalysisSetMessage(text, error, ctx) {
 }
 
 async function loadStockAnalysis(force) {
-  if (window.securityAnalysisLoadList) window.securityAnalysisLoadList(force);
+  // 必须 await：加自选后要等下拉填充完成才能回选，否则 value 落在空列表上被重置
+  if (window.securityAnalysisLoadList) await window.securityAnalysisLoadList(force);
   var refresh = document.getElementById('stock-analysis-refresh');
   if (refresh) {
     refresh.disabled = !username;
@@ -100,14 +101,6 @@ async function loadStockAnalysis(force) {
     var payload = await response.json();
     stockAnalysisState.stocks = payload.data || [];
     stockAnalysisState.loaded = true;
-    var select = document.getElementById('stock-analysis-select');
-    if (select) {
-      select.innerHTML = '<option value="">选择持仓或自选股</option>' + stockAnalysisState.stocks.map(function(row) {
-        var tags = (row.held ? '持仓' : '') + (row.watchlisted ? (row.held ? ' / 自选' : '自选') : '');
-        return '<option value="' + escapeHtml(row.ts_code) + '">' + escapeHtml((row.name || row.ts_code) + ' · ' + row.ts_code + (tags ? '（' + tags + '）' : '')) + '</option>';
-      }).join('');
-      if (stockAnalysisState.selected) select.value = stockAnalysisState.selected;
-    }
   } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
 }
 
@@ -169,7 +162,9 @@ async function stockAnalysisAddWatchlist() {
     stockAnalysisState.loaded = false;
     await loadStockAnalysis(true);
     stockAnalysisState.selected = payload.stock.ts_code;
-    var select = document.getElementById('stock-analysis-select'); if (select) select.value = payload.stock.ts_code;
+    // 下拉 option 的 value 是六位纯数字，ts_code 带后缀（600000.SH）需截取
+    var select = document.getElementById('security-analysis-select');
+    if (select) select.value = String(payload.stock.ts_code).slice(0, 6);
     var remove = document.getElementById('stock-analysis-remove'); if (remove) remove.style.display = '';
     if (input) input.value = '';
     if (payload.analysis) stockAnalysisRender(payload.analysis); else await stockAnalysisSelect(payload.stock.ts_code);

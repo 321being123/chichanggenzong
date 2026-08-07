@@ -10,6 +10,12 @@ const css = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css
 assert.ok(html.includes('data-main="stock-analysis"'), '缺少个券分析导航入口（研究工具下拉子项）');
 assert.ok(html.includes('id="bond-analysis-content"'), '缺少可转债分析结果区');
 assert.ok(html.includes('id="security-analysis-select"'), '缺少持仓和自选入口');
+assert.ok(script.includes("'security-analysis-select'"), '持仓和自选下拉填充引用的 id 必须与 index.html 一致，否则选项为空');
+{
+  const stockScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
+  assert.ok(!stockScript.includes('stock-analysis-select'), 'stock-analysis.js 不得再引用已废弃的下拉 id stock-analysis-select（现为 security-analysis-select）');
+  assert.ok(/await\s+window\.securityAnalysisLoadList\(/.test(stockScript), '加载分析页时必须等待持仓和自选列表填充完成，否则加自选后无法自动回选');
+}
 assert.ok(html.includes('js/bond-analysis.js'), '缺少可转债前端脚本');
 assert.ok(script.includes('/api/bond-analysis/'), '前端未接入可转债分析接口');
 for (const field of ['强赎触发价','基金持仓','预估回售触发日','下修天计数','募资用途','转股价调整历史','转股价不下修历史','利息保障倍数','纯债价值','理论偏离度','正股年化波动率','资产负债率']) {

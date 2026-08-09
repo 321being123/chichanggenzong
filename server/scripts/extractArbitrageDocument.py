@@ -171,14 +171,16 @@ def parse_fields(text):
 
     # 现金对价
     m = RE_CASH_OFFER.search(text)
-    if m:
-        result['cash_offer_price'] = float(m.group(1))
+    val = _to_num(m.group(1)) if m else None
+    if val is not None and val > 0:
+        result['cash_offer_price'] = val
         result['evidence'].append({'field': 'cash_offer_price', 'value': m.group(1), 'pos': m.start()})
 
     # 供股价
     m = RE_SUBSCRIPTION_PRICE.search(text)
-    if m:
-        result['subscription_price'] = float(m.group(1))
+    val = _to_num(m.group(1)) if m else None
+    if val is not None and val > 0:
+        result['subscription_price'] = val
         result['evidence'].append({'field': 'subscription_price', 'value': m.group(1), 'pos': m.start()})
 
     # 换股比例
@@ -186,14 +188,15 @@ def parse_fields(text):
     if m:
         g1 = _to_num(m.group(1))
         g2 = _to_num(m.group(2))
-        if g1 is not None and g2 not in (None, 0):
+        if g1 is not None and g2 is not None and g1 > 0 and g2 > 0:
             result['swap_ratio'] = round(g1 / g2, 6)
             result['evidence'].append({'field': 'swap_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
 
     # 现金补偿
     m = RE_CASH_COMP.search(text)
-    if m:
-        result['cash_component'] = float(m.group(1))
+    val = _to_num(m.group(1)) if m else None
+    if val is not None and val > 0:
+        result['cash_component'] = val
         result['evidence'].append({'field': 'cash_component', 'value': m.group(1), 'pos': m.start()})
 
     # 供股比例
@@ -201,7 +204,7 @@ def parse_fields(text):
     if m:
         g1 = _to_num(m.group(1))
         g2 = _to_num(m.group(2))
-        if g1 is not None and g2 is not None:
+        if g1 is not None and g2 is not None and g1 > 0 and g2 > 0:
             result['rights_ratio_numerator'] = int(g1)
             result['rights_ratio_denominator'] = int(g2)
             result['evidence'].append({'field': 'rights_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})

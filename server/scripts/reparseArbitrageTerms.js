@@ -30,8 +30,10 @@ async function main() {
 
   let recovered = 0, extracted = 0, failed = 0, skipped = 0;
   const START = parseInt(process.env.START_CASE_ID || '0', 10); // 断点续跑：跳过错过的案件
+  const ONLY = parseInt(process.env.ONLY_CASE_ID || '0', 10);   // 仅处理单个案件（如修复失败个案）
   for (const r of rows) {
     if (r.case_id < START) continue; // 已处理过的案件直接跳过（幂等，避免重复拉取）
+    if (ONLY && r.case_id !== ONLY) continue;
     let url = (r.doc_url || '').trim();
 
     // 主文档无有效 PDF 链接 → 尝试从原始载荷恢复（巨潮相对路径）

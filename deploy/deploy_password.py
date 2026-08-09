@@ -69,7 +69,9 @@ def main():
         run_sudo(
             client,
             "cd /opt/portfolio && git fetch origin && git reset --hard origin/master "
-            "&& npm ci --omit=dev && pm2 startOrRestart deploy/ecosystem.config.js --update-env && pm2 save",
+            "&& npm ci --omit=dev "
+            "&& (grep -q '^TRUST_PROXY=' .env || printf '\\nTRUST_PROXY=loopback\\n' >> .env) "
+            "&& pm2 startOrRestart deploy/ecosystem.config.js --update-env && pm2 save",
         )
         time.sleep(5)
         result = run_sudo(

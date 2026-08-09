@@ -68,28 +68,38 @@ RE_HK_STOCK = re.compile(r'(?:股份代號|股份代号|股票代碼|股票代�
 # 现金对价 / 注销价 / 要约价 / 收购价 —— A股常见写法：「收购价格为每股X元」「要约收购价格为X元/股」
 # 「异议股东收购请求权价格」「现金选择权价格」；港股写法：「註銷價為每股X港元」
 RE_CASH_OFFER = re.compile(
-    r'(?:現金對價|现金对价|現金選擇權價格|现金选择权价格|異議股東收購請求權價格|异议股东收购请求权价格|'
-    r'註銷價|注销价|注銷價|要約收購價格|要约收购价格|要約價格|要约价格|要約價|要约价|'
-    r'收購價格|收购价格|收購價|收购价|收購價款|收购价款|現金代價|现金代价)'
-    r'[:：\s]*(?:為|是)?[:：\s]*(?:每?股[^\d]{0,20}?)?'
-    r'(?:港幣|港元|港币|HK\$|HKD|人民幣|人民币|RMB)?\s*([\d.]+)', re.I)
+    r'(?:現金對價|现金对价|'
+    r'現金選擇權價格|现金选择权价格|異議股東收購請求權價格|异议股东收购请求权价格|'
+    r'註銷價|注销价|注銷價|'
+    r'要約收購(?:的)?價格|要约收购(?:的)?价格|'
+    r'要約(?:的)?價格|要约(?:的)?价格|要約(?:的)?價|要约(?:的)?价|'
+    r'收購(?:的)?價格|收购(?:的)?价格|收購(?:的)?價|收购(?:的)?价|收購(?:的)?價款|收购(?:的)?价款|'
+    r'現金代價|现金代价)'
+            r'[\s:：]*'                              # 冒号/空格
+    r'(?:為|为|是)?'                         # 为/是（简繁兼容）
+    r'的?'                                   # 的（如「价格为的」/「价格为」）
+    r'[\s:：]*'                              # 更多空格/冒号
+    r'(?:每?股)?'                            # 可选「每股」
+    r'(?:港幣|港元|港币|HK\$?|HKD|人民幣|人民币|RMB)?'  # 货币
+    r'\s*'
+    r'([\d.]+)', re.I)
 # 供股价格 / 认购价 —— 「認購價為每股供股股份港幣6.25元」
 RE_SUBSCRIPTION_PRICE = re.compile(
     r'(?:認購價|认购价|供股價|供股价|認購價格|认购价格|供股價格|供股价格)'
-    r'[:：\s]*(?:為|是)?[:：\s]*(?:每?股[^\d]{0,15}?)?'
+    r'[:：\s]*(?:為|为|是)?[:：\s]*(?:每?股[^\d]{0,15}?)?'
     r'(?:港幣|港元|港币|HK\$|HKD)?\s*([\d.]+)', re.I)
 
 # 换股比例（换股吸收合并）：「換股比率為每X股換Y股」「每X股獲發Y股合併股份」
 # 注意：数字用「捕获组 (...)」而非非捕获组 (?:...)，否则 m.group(1) 为 None 导致崩溃
 RE_SWAP_RATIO = re.compile(
-    r'(?:換股比率|换股比率|換股比例|换股比例|合併比例|合并比例)[:：\s]*(?:為|是)?[:：\s]*'
+    r'(?:換股比率|换股比率|換股比例|换股比例|合併比例|合并比例)[:：\s]*(?:為|为|是)?[:：\s]*'
     r'每?.{0,8}?(\(?\d+\.?\d*\)?)\s*股.{0,12}?(\(?\d+\.?\d*\)?)\s*股', re.I)
 # 兜底：无「换股比例」前缀时，匹配「每X股换Y股」写法
 RE_SWAP_RATIO2 = re.compile(
     r'每?.{0,10}?(\(?\d+\.?\d*\)?)\s*股.{0,6}?(?:換|换).{0,6}?(\(?\d+\.?\d*\)?)\s*股', re.I)
 
 # 现金补偿
-RE_CASH_COMP = re.compile(r'(?:現金補償|现金补偿|每股現金|每股现金|Cash\s*Component)[:：\s]*(?:為|是)?[:：\s]*([\d.]+)', re.I)
+RE_CASH_COMP = re.compile(r'(?:現金補償|现金补偿|每股現金|每股现金|Cash\s*Component)[:：\s]*(?:為|为|是)?[:：\s]*([\d.]+)', re.I)
 
 # 供股比例：「按每持有X股獲發Y股」「每持有X股可認購Y股」（数字常被括号包住，如 一(1)股）
 # 数字用捕获组 (...)
@@ -101,10 +111,10 @@ RE_DATE = re.compile(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日')
 RE_DATE_ISO = re.compile(r'(\d{4}-\d{2}-\d{2})')
 
 # 要约人
-RE_OFFEROR = re.compile(r'(?:要約人|要约人|收購人|收购人|收購方|收购方)[:：\s]*(?:為|是)?[:：\s]*([^，。\n]{2,40})')
+RE_OFFEROR = re.compile(r'(?:要約人|要约人|收購人|收购人|收購方|收购方)[:：\s]*(?:為|为|是)?[:：\s]*([^，。\n]{2,40})')
 
 # 持股比例
-RE_HOLDING_PCT = re.compile(r'(?:持股比例|持股量|持股百分比|Holding)[:：\s]*(?:為|是)?[:：\s]*([\d.]+)\s*%')
+RE_HOLDING_PCT = re.compile(r'(?:持股比例|持股量|持股百分比|Holding)[:：\s]*(?:為|为|是)?[:：\s]*([\d.]+)\s*%')
 
 def _to_num(s):
     """从可能带括号/单位的文本中解析数值，失败返回 None。
@@ -175,12 +185,19 @@ def parse_fields(text):
             result['rights_codes'].append(code)
             result['evidence'].append({'field': 'rights_code', 'value': code, 'pos': pos})
 
-    # 现金对价
-    m = RE_CASH_OFFER.search(text)
-    val = _to_num(m.group(1)) if m else None
-    if val is not None and val > 0:
-        result['cash_offer_price'] = val
-        result['evidence'].append({'field': 'cash_offer_price', 'value': m.group(1), 'pos': m.start()})
+    # 现金对价：遍历所有命中，取首个能解析出正数价格的
+    # （避免首个关键词命中落在无关语境、其后无数字导致整条提取落空）
+    cash_val = None
+    cash_ev = None
+    for _m in RE_CASH_OFFER.finditer(text):
+        _v = _to_num(_m.group(1))
+        if _v is not None and _v > 0:
+            cash_val = _v
+            cash_ev = {'field': 'cash_offer_price', 'value': _m.group(1), 'pos': _m.start()}
+            break
+    if cash_val is not None:
+        result['cash_offer_price'] = cash_val
+        result['evidence'].append(cash_ev)
 
     # 供股价
     m = RE_SUBSCRIPTION_PRICE.search(text)
@@ -220,8 +237,11 @@ def parse_fields(text):
     # 要约人
     m = RE_OFFEROR.search(text)
     if m:
-        result['offeror'] = m.group(1).strip()
-        result['evidence'].append({'field': 'offeror', 'value': m.group(1), 'pos': m.start()})
+        _off = m.group(1).strip()
+        # 排除「一致行动人」等无关语境（A 股固定术语，非真正要约人）
+        if '一致' not in _off:
+            result['offeror'] = _off
+            result['evidence'].append({'field': 'offeror', 'value': _off, 'pos': m.start()})
 
     # 持股比例
     m = RE_HOLDING_PCT.search(text)

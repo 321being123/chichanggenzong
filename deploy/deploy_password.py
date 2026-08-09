@@ -70,14 +70,17 @@ def main():
             client,
             "cd /opt/portfolio && git fetch origin && git reset --hard origin/master "
             "&& npm ci --omit=dev "
-            "&& (grep -q '^TRUST_PROXY=' .env || printf '\\nTRUST_PROXY=loopback\\n' >> .env) "
-            "&& pm2 startOrRestart deploy/ecosystem.config.js --update-env && pm2 save",
+            "&& (grep -q '^TRUST_PROXY=' .env "
+            "&& sed -i 's/^TRUST_PROXY=.*/TRUST_PROXY=loopback/' .env "
+            "|| printf '\\nTRUST_PROXY=loopback\\n' >> .env) "
+            "&& systemctl restart portfolio-server.service portfolio-worker.service",
         )
         time.sleep(5)
         result = run_sudo(
             client,
             "cd /opt/portfolio && printf 'commit=' && git rev-parse --short HEAD "
-            "&& printf 'pm2pid=' && pm2 pid portfolio-server "
+            "&& systemctl is-active --quiet portfolio-server.service portfolio-worker.service "
+            "&& printf 'webpid=' && systemctl show -p MainPID --value portfolio-server.service "
             "&& curl -fsS http://127.0.0.1:3000/health",
             timeout=60,
         )

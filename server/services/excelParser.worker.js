@@ -3,6 +3,7 @@
 // 主进程通过 safeParseExcel 调用，并设有超时强杀。
 const ExcelJS = require('exceljs');
 const { Readable } = require('stream');
+const { assertSafeZip } = require('./zipSafety');
 
 const chunks = [];
 process.stdin.on('data', c => chunks.push(c));
@@ -49,29 +50,11 @@ process.stdin.on('end', () => {
       return;
     }
 
-    // 2) ZIP Bomb 防护：仅扫描本地文件头累加「解压后体积」，超过上限直接拒绝（不真正解压）
-    //    ZIP 本地文件头：偏移18=压缩后大小，偏移22=解压后大小（顺序不可反）
-    const MAX_UNCOMPRESSED = 200 * 1024 * 1024; // 200MB
-    const GPBF_DATA_DESCRIPTOR = 0x08; // 通用标志位第3位：本地头不含真实大小，大小在尾部数据描述符
-    let total = 0, ok = true, i = 0;
-    while (i + 30 <= buffer.length) {
-      if (buffer[i] === 0x50 && buffer[i + 1] === 0x4B && buffer[i + 2] === 0x03 && buffer[i + 3] === 0x04) {
-        const flag = buffer.readUInt16LE(i + 6);
-        const comp = buffer.readUInt32LE(i + 18);   // 偏移18 = 压缩后大小
-        const uncomp = buffer.readUInt32LE(i + 22); // 偏移22 = 解压后大小
-        if (uncomp === 0xFFFFFFFF || comp === 0xFFFFFFFF) { ok = false; break; } // ZIP64：保守拒绝
-        if (flag & GPBF_DATA_DESCRIPTOR) break; // 数据描述符：无法静态定界，停止扫描，交由隔离子进程+内存上限兜底
-        total += uncomp;
-        if (total > MAX_UNCOMPRESSED) { ok = false; break; }
-        const fnLen = buffer.readUInt16LE(i + 26);
-        const exLen = buffer.readUInt16LE(i + 28);
-        i += 30 + fnLen + exLen + comp; // 跳到下一个本地文件头
-        continue;
-      }
-      i++;
-    }
-    if (!ok) {
-      process.stdout.write(JSON.stringify({ error: 'Excel 解压后体积过大，已被拒绝（疑似压缩炸弹）' }));
+    // 2) 使用中央目录核对所有条目；data descriptor 文件也不能跳过检查。
+    try {
+      assertSafeZip(buffer, { label: 'Excel', maxUncompressed: 200 * 1024 * 1024, maxEntries: 10000, maxRatio: 250 });
+    } catch (e) {
+      process.stdout.write(JSON.stringify({ error: e.message }));
       return;
     }
 

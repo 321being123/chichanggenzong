@@ -29,7 +29,11 @@ def ssh_connect(host="82.156.125.47", port=22, username="ubuntu", timeout=30):
         raise FileNotFoundError(f"未找到 SSH 密钥 {key_path}（服务器已关闭密码登录，必须用密钥）")
     key = paramiko.Ed25519Key.from_private_key_file(key_path)
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.load_system_host_keys()
+    known_hosts = os.environ.get("SSH_KNOWN_HOSTS")
+    if known_hosts:
+        client.load_host_keys(os.path.expanduser(known_hosts))
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     client.connect(host, port=port, username=username, pkey=key, timeout=timeout,
                    banner_timeout=timeout, auth_timeout=timeout,
                    look_for_keys=False, allow_agent=False)
@@ -78,7 +82,7 @@ def _tushare(api_name, params, fields):
         "fields": fields,
     }).encode("utf-8")
     req = urllib.request.Request(
-        "http://api.tushare.pro",
+        "https://api.tushare.pro",
         data=body,
         headers={"Content-Type": "application/json"},
     )

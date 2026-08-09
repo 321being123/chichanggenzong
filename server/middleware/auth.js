@@ -13,21 +13,40 @@ function destroySession(req) {
 // ========== 登录态校验（AUTH-01：统一验证存在/状态/会话版本）==========
 // 每次请求校验用户仍存在、状态为 active、会话版本与数据库一致；任一不满足即销毁会话并返回 401/403。
 // 校验结果缓存到 req.authUser，供同请求内的 requireAdmin 复用，避免重复查询。
+async function resolveSessionUser(req) {
+  if (!req.session || !req.session.user) return { status: 401, error: '未登录' };
+  const { rows } = await pool.query(
+    'SELECT username, role, status, auth_version, permissions FROM users WHERE username=$1',
+    [req.session.user]
+  );
+  const user = rows[0];
+  if (!user) { destroySession(req); return { status: 401, error: '账号不存在或已失效' }; }
+  if (user.status && user.status !== 'active') {
+    destroySession(req);
+    return { status: 403, error: '该账号已被禁用，请联系管理员' };
+  }
+  if (user.auth_version !== req.session.authVersion) {
+    destroySession(req);
+    return { status: 401, error: '登录态已失效，请重新登录' };
+  }
+  return { user };
+}
+
 async function requireLogin(req, res, next) {
-  if (!req.session || !req.session.user) return res.status(401).json({ error: '未登录' });
   try {
-    const { rows } = await pool.query(
-      'SELECT username, role, status, auth_version, permissions FROM users WHERE username=$1',
-      [req.session.user]
-    );
-    const user = rows[0];
-    if (!user) { destroySession(req); return res.status(401).json({ error: '账号不存在或已失效' }); }
-    if (user.status && user.status !== 'active') { destroySession(req); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
-    if (user.auth_version !== req.session.authVersion) {
-      destroySession(req);
-      return res.status(401).json({ error: '登录态已失效，请重新登录' });
-    }
-    req.authUser = user;
+    const result = await resolveSessionUser(req);
+    if (!result.user) return res.status(result.status).json({ error: result.error });
+    req.authUser = result.user;
+    next();
+  } catch (e) { next(e); }
+}
+
+// 公开路由可选登录：有效会话获得身份；失效会话被销毁并按游客继续。
+async function optionalLogin(req, res, next) {
+  if (!req.session || !req.session.user) return next();
+  try {
+    const result = await resolveSessionUser(req);
+    if (result.user) req.authUser = result.user;
     next();
   } catch (e) { next(e); }
 }
@@ -156,4 +175,4 @@ function requireStaff(req, res, next) {
   });
 }
 
-module.exports = { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps, CAPABILITY_WHITELIST, hasCapability, requireCapability, requireStaff };
+module.exports = { requireLogin, optionalLogin, checkLocked, recordFail, clearFail, checkRegLimit, assertOwnership, requireAdmin, isAdminIdentity, sweepAuthMaps, CAPABILITY_WHITELIST, hasCapability, requireCapability, requireStaff };

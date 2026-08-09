@@ -88,6 +88,21 @@ async function main() {
     assert.strictEqual(r.res.code, 401);
   });
 
+  await check('公开路由可选登录：游客与正常会话均放行', async () => {
+    assert.strictEqual((await run(auth.optionalLogin, {})).nexted, true);
+    const active = await run(auth.optionalLogin, session({ user: 'alice' }));
+    assert.strictEqual(active.nexted, true);
+    assert.strictEqual(active.req.authUser.username, 'alice');
+  });
+
+  await check('公开路由可选登录：失效会话销毁后按游客放行', async () => {
+    const s = session({ user: 'carol', authVersion: 1 });
+    const r = await run(auth.optionalLogin, s);
+    assert.strictEqual(r.nexted, true);
+    assert.strictEqual(s.destroyed, true);
+    assert.strictEqual(r.req.authUser, undefined);
+  });
+
   await check('数据库管理员：requireAdmin 放行', async () => {
     const r = await run(auth.requireAdmin, session({ user: 'admin' }));
     assert.strictEqual(r.nexted, true);
@@ -139,6 +154,11 @@ async function main() {
   });
   await check('setUserRole 递增 auth_version', async () => {
     lastSql = ''; await users.setUserRole('x', 'admin');
+    assert.ok(/auth_version\s*=\s*auth_version\s*\+\s*1/.test(lastSql));
+  });
+  await check('setKnowledgeEnabled 同步 knowledge_write 并递增 auth_version', async () => {
+    lastSql = ''; await users.setKnowledgeEnabled('x', false);
+    assert.ok(/knowledge_write/.test(lastSql));
     assert.ok(/auth_version\s*=\s*auth_version\s*\+\s*1/.test(lastSql));
   });
   await check('adminSetPassword 递增 auth_version', async () => {

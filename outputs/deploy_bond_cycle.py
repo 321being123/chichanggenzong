@@ -10,13 +10,11 @@ import os, sys, time, shlex
 import paramiko
 
 HOST, PORT, USER = "82.156.125.47", 22, "ubuntu"
-PASS = os.environ.get("SERVER_PASS", "")
-if not PASS:
-    print("缺少 SERVER_PASS"); sys.exit(1)
+KEY_PATH = os.environ.get("SSH_KEY_PATH") or os.path.expanduser("~/.ssh/server_login")
 
 def ssh_run(client, cmd, timeout=300, sudo=False):
     if sudo:
-        full = "echo %s | sudo -S bash -c %s" % (shlex.quote(PASS), shlex.quote(cmd))
+        full = "sudo bash -c %s" % shlex.quote(cmd)
     else:
         full = "bash -c %s" % shlex.quote(cmd)
     _, stdout, stderr = client.exec_command(full, timeout=timeout)
@@ -25,9 +23,17 @@ def ssh_run(client, cmd, timeout=300, sudo=False):
     return stdout.channel.recv_exit_status(), out, err
 
 def main():
+    if not os.path.exists(KEY_PATH):
+        print("缺少 SSH 密钥：" + KEY_PATH); sys.exit(1)
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, PORT, USER, PASS, timeout=30)
+    client.load_system_host_keys()
+    known_hosts = os.environ.get("SSH_KNOWN_HOSTS")
+    if known_hosts:
+        client.load_host_keys(os.path.expanduser(known_hosts))
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    key = paramiko.Ed25519Key.from_private_key_file(KEY_PATH)
+    client.connect(HOST, port=PORT, username=USER, pkey=key, timeout=30,
+                   look_for_keys=False, allow_agent=False)
     print("[1] SSH 已连接")
 
     st, out, err = ssh_run(client, "cd /opt/portfolio && git fetch origin && git reset --hard origin/master && git log --oneline -1", sudo=True)

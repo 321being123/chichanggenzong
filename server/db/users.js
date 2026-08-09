@@ -102,7 +102,14 @@ async function setUserStatus(username, status) {
 }
 // 知识分享写权限开关
 async function setKnowledgeEnabled(username, enabled) {
-  await pool.query('UPDATE users SET knowledge_enabled=$2 WHERE username=$1', [username, !!enabled]);
+  await pool.query(
+    `UPDATE users
+     SET knowledge_enabled=$2,
+         permissions=jsonb_set(COALESCE(permissions, '{}'::jsonb), '{knowledge_write}', to_jsonb($2::boolean), true),
+         auth_version=auth_version + 1
+     WHERE username=$1`,
+    [username, !!enabled]
+  );
 }
 async function adminSetPassword(username, newHash) {
   await pool.query('UPDATE users SET password=$2, auth_version = auth_version + 1 WHERE username=$1', [username, newHash]);

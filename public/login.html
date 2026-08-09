@@ -187,8 +187,17 @@ function getParam(name) {
   const m = new URLSearchParams(window.location.search).get(name);
   return m || '';
 }
-let REDIRECT = getParam('redirect') || '/';
-if (!REDIRECT.startsWith('/') || REDIRECT.startsWith('//')) REDIRECT = '/'; // 仅允许站内相对路径
+function safeRedirect(raw) {
+  if (!raw || /[\\\u0000-\u001F\u007F]/.test(raw)) return '/';
+  try {
+    const target = new URL(raw, window.location.origin);
+    if (target.origin !== window.location.origin) return '/';
+    return target.pathname + target.search + target.hash;
+  } catch (e) {
+    return '/';
+  }
+}
+let REDIRECT = safeRedirect(getParam('redirect'));
 
 // 如果已登录，直接跳转到回跳页
 fetch(api('/api/me')).then(r => r.json()).then(d => {

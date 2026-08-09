@@ -80,6 +80,7 @@ if [ ! -f "$APP_DIR/.env" ]; then
   PUB_IP="$(curl -fsSL https://ifconfig.me 2>/dev/null || curl -fsSL ipinfo.io/ip 2>/dev/null || echo 127.0.0.1)"
   cat > "$APP_DIR/.env" <<ENV
 PORT=3000
+TRUST_PROXY=loopback
 SECRET=$SECRET
 ALLOWED_ORIGIN=$PUB_IP,localhost,127.0.0.1
 REGISTER_CODE=$REG_CODE
@@ -90,6 +91,7 @@ ENV
   chmod 600 "$APP_DIR/.env" "$APP_DIR/.dbpass"
 else
   echo "[5/9] .env 已存在，跳过"
+  grep -q '^TRUST_PROXY=' "$APP_DIR/.env" || echo 'TRUST_PROXY=loopback' >> "$APP_DIR/.env"
   REG_CODE="$(grep '^REGISTER_CODE=' "$APP_DIR/.env" | cut -d= -f2 || echo '(见 .env)')"
 fi
 

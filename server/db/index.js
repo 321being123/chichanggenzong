@@ -35,6 +35,7 @@ module.exports = {
   listUsers: users.listUsers,
   setUserRole: users.setUserRole,
   setUserStatus: users.setUserStatus,
+  setKnowledgeEnabled: users.setKnowledgeEnabled,
   adminSetPassword: users.adminSetPassword,
   deleteUser: users.deleteUser,
   getUserDetail: users.getUserDetail,

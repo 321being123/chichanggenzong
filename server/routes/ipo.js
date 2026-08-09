@@ -142,7 +142,7 @@ router.get('/report', async (req, res) => {
       : row.summary_json;
     res.json({ report_date: row.report_date, summary, md: row.md || '', html: row.html || '' });
   } catch (e) {
-    res.status(500).json({ error: '读取打新报告失败', detail: e.message });
+    res.status(500).json({ error: '读取打新报告失败' });
   }
 });
 
@@ -157,7 +157,7 @@ router.get('/reports', async (req, res) => {
     );
     res.json(r.rows);
   } catch (e) {
-    res.status(500).json({ error: '读取报告列表失败', detail: e.message });
+    res.status(500).json({ error: '读取报告列表失败' });
   }
 });
 
@@ -199,7 +199,7 @@ router.get('/history', async (req, res) => {
     }
     res.json({ type, rows });
   } catch (e) {
-    res.status(500).json({ error: '读取打新历史失败', detail: e.message });
+    res.status(500).json({ error: '读取打新历史失败' });
   }
 });
 
@@ -217,7 +217,7 @@ router.get('/calendar', async (req, res) => {
     }
     res.json({ days, calendar: filterBeijingStocks(calendar) });
   } catch (e) {
-    res.status(500).json({ error: '读取打新日历失败', detail: e.message });
+    res.status(500).json({ error: '读取打新日历失败' });
   }
 });
 
@@ -246,7 +246,7 @@ router.get('/report/code', async (req, res) => {
     const calendarReport = await buildCalendarReport(code);
     res.json({ code, md: calendarReport });
   } catch (e) {
-    res.status(500).json({ error: '读取个股报告失败', detail: e.message });
+    res.status(500).json({ error: '读取个股报告失败' });
   }
 });
 

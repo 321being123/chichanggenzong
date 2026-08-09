@@ -11,6 +11,8 @@ const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, upgradeP
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESET_CODE_TTL_MS = 5 * 60 * 1000;
 const RESET_CODE_MAX_ATTEMPTS = 5;
+// 不存在的账号也执行一次真实密码哈希校验，避免通过响应时间枚举账号。
+const DUMMY_PASSWORD_HASH = hashPwd(crypto.randomBytes(32).toString('hex'));
 
 const registerIpLimit = rateLimit({
   prefix: 'register-ip',
@@ -98,10 +100,12 @@ router.post('/login', loginIpLimit, asyncHandler(async (req, res, next) => {
   const lockKey = 'login_' + username + '_' + ip;
   if (checkLocked(lockKey)) return res.status(429).json({ error: '登录尝试过多，已锁定15分钟' });
   const user = await getUserAuth(username);
-  // 统一模糊错误（P1-1）：账号不存在与密码错误返回相同提示，避免枚举账号
-  if (!user) { recordFail(lockKey); return res.status(401).json({ error: '账号或密码错误' }); }
-  if (user.status && user.status !== 'active') { recordFail(lockKey); return res.status(403).json({ error: '该账号已被禁用，请联系管理员' }); }
-  if (!verifyPwd(password, user.password)) { recordFail(lockKey); return res.status(401).json({ error: '账号或密码错误' }); }
+  const passwordOk = verifyPwd(password, user ? user.password : DUMMY_PASSWORD_HASH);
+  // 不存在、密码错误和账号禁用统一返回，避免泄露账号及禁用状态。
+  if (!user || !passwordOk || (user.status && user.status !== 'active')) {
+    recordFail(lockKey);
+    return res.status(401).json({ error: '账号或密码错误' });
+  }
   clearFail(lockKey);
   // 渐进迁移：旧哈希格式（pbkdf2/sha256）登录成功后，透明升级为新 scrypt 哈希（P1-5）
   // 注意：仅更新哈希、不递增 auth_version，避免刚登录成功的会话被误判过期（AUTH-01 第 8 条）

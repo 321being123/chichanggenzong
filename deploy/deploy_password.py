@@ -50,7 +50,11 @@ def run_sudo(client, command, timeout=240):
 def main():
     local_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["appVersion"]
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.load_system_host_keys()
+    known_hosts = os.environ.get("SSH_KNOWN_HOSTS")
+    if known_hosts:
+        client.load_host_keys(os.path.expanduser(known_hosts))
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(
             HOST,

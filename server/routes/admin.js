@@ -23,10 +23,11 @@ router.use(requireStaff);
 
 // 后台接口 → 所需能力 映射（按路径前缀派发，避免逐个 handler 脆弱改动）
 function adminCapabilityForPath(p) {
-  if (p.indexOf('/users') === 0) return 'user_manage';
-  if (p.indexOf('/knowledge') === 0) return 'content_manage';
-  if (p.indexOf('/brokers') === 0 || p.indexOf('/jobs') === 0 || p.indexOf('/holidays') === 0 ||
-      p.indexOf('/models') === 0 || p.indexOf('/settings') === 0 || p.indexOf('/arbitrage') === 0) return 'ops_manage';
+  const normalized = String(p || '').toLowerCase();
+  if (normalized.indexOf('/users') === 0) return 'user_manage';
+  if (normalized.indexOf('/knowledge') === 0) return 'content_manage';
+  if (normalized.indexOf('/brokers') === 0 || normalized.indexOf('/jobs') === 0 || normalized.indexOf('/holidays') === 0 ||
+      normalized.indexOf('/models') === 0 || normalized.indexOf('/settings') === 0 || normalized.indexOf('/arbitrage') === 0) return 'ops_manage';
   return null; // /overview、/audit 等仅要求员工身份
 }
 router.use(function (req, res, next) {
@@ -243,12 +244,18 @@ router.put('/models/:id', asyncHandler(async (req, res) => {
   const list = await getModels();
   const m = list.find(function (x) { return x.id === req.params.id; });
   if (!m) return res.status(404).json({ error: '模型不存在' });
+  const nextApiUrl = String(apiUrl).trim();
+  const targetChanged = new URL(nextApiUrl).origin !== new URL(m.apiUrl).origin;
+  const hasNewKey = !!(apiKey && String(apiKey).indexOf('***') < 0 && String(apiKey).trim());
+  if (targetChanged && !hasNewKey) {
+    return res.status(400).json({ error: '更换 API 服务地址时必须同时填写新的 API Key' });
+  }
   m.name = String(name).trim();
   m.model = String(model).trim();
-  m.apiUrl = String(apiUrl).trim();
+  m.apiUrl = nextApiUrl;
   m.enabled = enabled !== false;
   // 前端回传的打码 Key（含 ***）表示未改动，保留库中原值；否则更新
-  if (apiKey && String(apiKey).indexOf('***') < 0) m.apiKey = String(apiKey).trim();
+  if (hasNewKey) m.apiKey = String(apiKey).trim();
   await saveModels(list);
   await audit(req, 'model_update', m.id, { detail: '编辑大模型 ' + m.name });
   res.json({ ok: true });

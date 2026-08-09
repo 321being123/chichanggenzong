@@ -30,9 +30,9 @@ const { startScheduler } = require('./scheduler');
 
 const app = express();
 app.disable('x-powered-by');
-// 安全默认：不信任上游代理（避免伪造 X-Forwarded-For 绕过限流/IP 识别）。
-// 生产若确在反向代理后，需在 .env 显式设置 TRUST_PROXY=1（P1-5）。
-app.set('trust proxy', process.env.TRUST_PROXY === '1');
+// 仅信任本机反向代理；官方 Nginx 部署使用 TRUST_PROXY=loopback。
+// 不接受任意跳数，避免客户端伪造转发头绕过限流/IP 识别。
+app.set('trust proxy', process.env.TRUST_PROXY === 'loopback' ? 'loopback' : false);
 
 // 启动前的基础中间件（不依赖 Redis）：请求体解析 + 请求追踪/访问日志
 // 上限 15mb：10MB 图片经 Base64 后约 13.3MB，超过原 10mb 会被 body-parser 直接拒绝（P1-7）

@@ -5,9 +5,10 @@ const crypto = require('crypto');
 const net = require('net');
 const dns = require('dns').promises;
 const { pool, auditLog } = require('../db');
-const { requireLogin, isAdminIdentity } = require('../middleware/auth');
+const { requireLogin, optionalLogin, isAdminIdentity } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { redis } = require('../config');
+const { safeParseDocx } = require('../services/docxSafe');
 
 // 生成公开分享 token（随机 48 位十六进制，唯一）
 function genToken() {
@@ -78,15 +79,10 @@ function resolveCommentNickname(profileNickname, username) {
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 const IMPORT_TIMEOUT_MS = 25000;
 
-// 写权限中间件：管理员、拥有 knowledge_write 能力，或兼容期的 knowledge_enabled=true 才放行
+// 写权限中间件：统一登录态校验已把当前用户放入 req.authUser。
 async function requireKsWrite(req, res, next) {
-  const username = req.session && req.session.user;
-  if (!username) return res.status(401).json({ error: '未登录' });
-  try {
-    const { rows } = await pool.query('SELECT role, knowledge_enabled, permissions FROM users WHERE username=$1', [username]);
-    const u = rows[0];
-    if (u && (isAdminIdentity(username, u.role) || (u.permissions && u.permissions.knowledge_write) || u.knowledge_enabled)) return next();
-  } catch (e) {}
+  const u = req.authUser;
+  if (u && (isAdminIdentity(u.username, u.role) || (u.permissions && u.permissions.knowledge_write))) return next();
   return res.status(403).json({ error: '你暂无投资笔记的写权限' });
 }
 
@@ -96,7 +92,7 @@ async function getUserKsInfo(username) {
   const r = rows[0];
   const role = r && r.role;
   const isAdmin = isAdminIdentity(username, role);
-  const canWrite = isAdmin || (r && r.permissions && r.permissions.knowledge_write) || !!(r && r.knowledge_enabled);
+  const canWrite = isAdmin || !!(r && r.permissions && r.permissions.knowledge_write);
   return { role, isAdmin, canWrite };
 }
 
@@ -112,7 +108,7 @@ async function requireArticleOwner(req, res, next) {
     if (info.canWrite && rows[0].author_username === username) return next();
     return res.status(403).json({ error: '无权操作该文章' });
   } catch (e) {
-    return res.status(500).json({ error: '校验权限失败', detail: e.message });
+    return res.status(500).json({ error: '校验权限失败' });
   }
 }
 
@@ -129,7 +125,7 @@ async function requireCategoryOwner(req, res, next) {
     if (info.canWrite && rows[0].owner_username === username) return next();
     return res.status(403).json({ error: '只能管理自己创建的分类' });
   } catch (e) {
-    return res.status(500).json({ error: '校验分类权限失败', detail: e.message });
+    return res.status(500).json({ error: '校验分类权限失败' });
   }
 }
 
@@ -139,7 +135,7 @@ router.get('/can-write', requireLogin, async (req, res) => {
     const info = await getUserKsInfo(req.session.user);
     res.json({ canWrite: info.canWrite, isAdmin: info.isAdmin });
   } catch (e) {
-    res.status(500).json({ error: '查询写权限失败', detail: e.message });
+    res.status(500).json({ error: '查询写权限失败' });
   }
 });
 
@@ -170,12 +166,12 @@ router.get('/categories', async (req, res) => {
     );
     res.json(buildTree(r.rows));
   } catch (e) {
-    res.status(500).json({ error: '读取分类失败', detail: e.message });
+    res.status(500).json({ error: '读取分类失败' });
   }
 });
 
 // 有知识写作权限的用户可新增分类，并拥有自己创建的分类
-router.post('/categories', requireKsWrite, async (req, res) => {
+router.post('/categories', requireLogin, requireKsWrite, async (req, res) => {
   try {
     const name = String(req.body.name || '').trim().slice(0, LIMITS.categoryName);
     if (!name) return res.status(400).json({ error: '分类名称不能为空' });
@@ -190,11 +186,11 @@ router.post('/categories', requireKsWrite, async (req, res) => {
     res.json({ id: r.rows[0].id });
   } catch (e) {
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '同级已存在同名分类' });
-    res.status(500).json({ error: '新建分类失败', detail: e.message });
+    res.status(500).json({ error: '新建分类失败' });
   }
 });
 
-router.put('/categories/:id', requireCategoryOwner, async (req, res) => {
+router.put('/categories/:id', requireLogin, requireCategoryOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const name = String(req.body.name || '').trim().slice(0, LIMITS.categoryName);
@@ -207,11 +203,11 @@ router.put('/categories/:id', requireCategoryOwner, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '同级已存在同名分类' });
-    res.status(500).json({ error: '更新分类失败', detail: e.message });
+    res.status(500).json({ error: '更新分类失败' });
   }
 });
 
-router.post('/categories/:id/move', requireCategoryOwner, async (req, res) => {
+router.post('/categories/:id/move', requireLogin, requireCategoryOwner, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const parentId = req.body.parent_id ? parseInt(req.body.parent_id, 10) : null;
   const beforeId = req.body.before_id ? parseInt(req.body.before_id, 10) : null;
@@ -223,15 +219,15 @@ router.post('/categories/:id/move', requireCategoryOwner, async (req, res) => {
   try {
     await client.query('BEGIN');
     const current = await client.query(
-      'SELECT id, parent_id FROM article_categories WHERE id=$1 FOR UPDATE',
-      [id]
+      'SELECT id, parent_id FROM article_categories WHERE id=$1 AND owner_username=$2 FOR UPDATE',
+      [id, req.session.user]
     );
     if (!current.rows[0]) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '分类不存在' });
     }
     if (parentId !== null) {
-      const parent = await client.query('SELECT id FROM article_categories WHERE id=$1', [parentId]);
+      const parent = await client.query('SELECT id FROM article_categories WHERE id=$1 AND owner_username=$2', [parentId, req.session.user]);
       if (!parent.rows[0]) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: '目标分类不存在' });
@@ -253,9 +249,9 @@ router.post('/categories/:id/move', requireCategoryOwner, async (req, res) => {
     await client.query('UPDATE article_categories SET parent_id=$1 WHERE id=$2', [parentId, id]);
     const target = await client.query(
       `SELECT id FROM article_categories
-       WHERE parent_id IS NOT DISTINCT FROM $1 AND id<>$2
+       WHERE parent_id IS NOT DISTINCT FROM $1 AND id<>$2 AND owner_username=$3
        ORDER BY sort_order, id`,
-      [parentId, id]
+      [parentId, id, req.session.user]
     );
     const targetIds = target.rows.map(row => row.id);
     let insertAt = targetIds.length;
@@ -274,9 +270,9 @@ router.post('/categories/:id/move', requireCategoryOwner, async (req, res) => {
     if (oldParentId !== parentId) {
       const old = await client.query(
         `SELECT id FROM article_categories
-         WHERE parent_id IS NOT DISTINCT FROM $1
+         WHERE parent_id IS NOT DISTINCT FROM $1 AND owner_username=$2
          ORDER BY sort_order, id`,
-        [oldParentId]
+        [oldParentId, req.session.user]
       );
       for (let i = 0; i < old.rows.length; i++) {
         await client.query('UPDATE article_categories SET sort_order=$1 WHERE id=$2', [(i + 1) * 10, old.rows[i].id]);
@@ -288,20 +284,20 @@ router.post('/categories/:id/move', requireCategoryOwner, async (req, res) => {
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '目标位置已有同名分类' });
-    res.status(500).json({ error: '移动分类失败', detail: e.message });
+    res.status(500).json({ error: '移动分类失败' });
   } finally {
     client.release();
   }
 });
 
-router.delete('/categories/:id', requireCategoryOwner, async (req, res) => {
+router.delete('/categories/:id', requireLogin, requireCategoryOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     await pool.query('DELETE FROM article_categories WHERE id=$1', [id]);
     await auditLog(req.session.user, 'ks_category_delete', id, '删除分类').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: '删除分类失败', detail: e.message });
+    res.status(500).json({ error: '删除分类失败' });
   }
 });
 
@@ -355,7 +351,7 @@ router.get('/articles', async (req, res) => {
     }));
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: '读取文章列表失败', detail: e.message });
+    res.status(500).json({ error: '读取文章列表失败' });
   }
 });
 
@@ -373,7 +369,7 @@ router.get('/latest', async (req, res) => {
     );
     res.json(r.rows);
   } catch (e) {
-    res.status(500).json({ error: '读取最新文章失败', detail: e.message });
+    res.status(500).json({ error: '读取最新文章失败' });
   }
 });
 
@@ -389,18 +385,19 @@ async function getRawArticle(id) {
   return r.rows[0] || null;
 }
 
-router.get('/articles/:id', async (req, res) => {
+router.get('/articles/:id', optionalLogin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const article = await getRawArticle(id);
     if (!article) return res.status(404).json({ error: '文章不存在或未发布' });
-    const isLogin = !!req.session.user;
-    const me = isLogin ? await getUserKsInfo(req.session.user) : { isAdmin: false, username: null };
+    const username = req.authUser && req.authUser.username;
+    const isLogin = !!username;
+    const me = isLogin ? await getUserKsInfo(username) : { isAdmin: false, username: null };
     // 草稿仅作者或管理员可见
-    if (article.status !== 'published' && !(me.isAdmin || article.author_username === req.session.user)) {
+    if (article.status !== 'published' && !(me.isAdmin || article.author_username === username)) {
       return res.status(404).json({ error: '文章不存在或未发布' });
     }
-    const isOwner = !!(me.canWrite && article.author_username === req.session.user);
+    const isOwner = !!(me.canWrite && article.author_username === username);
     const out = { ...article };
     delete out.share_token;
     out.can_edit = isOwner;
@@ -409,7 +406,7 @@ router.get('/articles/:id', async (req, res) => {
     if (isOwner && article.status === 'published') out.share_token = article.share_token;
     res.json(out);
   } catch (e) {
-    res.status(500).json({ error: '读取文章失败', detail: e.message });
+    res.status(500).json({ error: '读取文章失败' });
   }
 });
 
@@ -428,12 +425,12 @@ router.get('/share/:token', async (req, res) => {
     if (!row || row.status !== 'published') return res.status(404).json({ error: '分享链接无效或文章未发布' });
     res.json(row);
   } catch (e) {
-    res.status(500).json({ error: '读取分享文章失败', detail: e.message });
+    res.status(500).json({ error: '读取分享文章失败' });
   }
 });
 
 // ---------- 新建 ----------
-router.post('/articles', requireKsWrite, async (req, res) => {
+router.post('/articles', requireLogin, requireKsWrite, async (req, res) => {
   try {
     const title = String(req.body.title || '').trim().slice(0, LIMITS.title);
     if (!title) return res.status(400).json({ error: '标题不能为空' });
@@ -460,12 +457,12 @@ router.post('/articles', requireKsWrite, async (req, res) => {
     await auditLog(req.session.user, 'ks_article_create', newId, '新建' + (status === 'published' ? '并发布' : '草稿') + '文章：' + title).catch(() => {});
     res.json({ id: newId, share_token: shareToken, status });
   } catch (e) {
-    res.status(500).json({ error: '新建文章失败', detail: e.message });
+    res.status(500).json({ error: '新建文章失败' });
   }
 });
 
 // ---------- 分类内文章排序 ----------
-router.put('/articles/reorder', requireKsWrite, async (req, res) => {
+router.put('/articles/reorder', requireLogin, requireKsWrite, async (req, res) => {
   const rawCategoryId = req.body.category_id;
   const categoryId = rawCategoryId === null || rawCategoryId === undefined || rawCategoryId === ''
     ? null
@@ -507,14 +504,14 @@ router.put('/articles/reorder', requireKsWrite, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
-    res.status(500).json({ error: '文章排序失败', detail: e.message });
+    res.status(500).json({ error: '文章排序失败' });
   } finally {
     client.release();
   }
 });
 
 // ---------- 更新（归属校验 + 保留发布时间） ----------
-router.put('/articles/:id', requireArticleOwner, async (req, res) => {
+router.put('/articles/:id', requireLogin, requireArticleOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const title = req.body.title != null ? String(req.body.title).trim().slice(0, LIMITS.title) : null;
@@ -555,24 +552,24 @@ router.put('/articles/:id', requireArticleOwner, async (req, res) => {
     await auditLog(req.session.user, 'ks_article_update', id, '编辑文章（状态：' + status + '）').catch(() => {});
     res.json({ ok: true, status });
   } catch (e) {
-    res.status(500).json({ error: '更新文章失败', detail: e.message });
+    res.status(500).json({ error: '更新文章失败' });
   }
 });
 
 // ---------- 删除（归属校验） ----------
-router.delete('/articles/:id', requireArticleOwner, async (req, res) => {
+router.delete('/articles/:id', requireLogin, requireArticleOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     await pool.query('DELETE FROM articles WHERE id=$1', [id]);
     await auditLog(req.session.user, 'ks_article_delete', id, '删除文章').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: '删除文章失败', detail: e.message });
+    res.status(500).json({ error: '删除文章失败' });
   }
 });
 
 // 发布 / 撤回（归属校验）
-router.post('/articles/:id/publish', requireArticleOwner, async (req, res) => {
+router.post('/articles/:id/publish', requireLogin, requireArticleOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const cur = await pool.query('SELECT share_token, published_at FROM articles WHERE id=$1', [id]);
@@ -586,11 +583,11 @@ router.post('/articles/:id/publish', requireArticleOwner, async (req, res) => {
     await auditLog(req.session.user, 'ks_article_publish', id, '发布文章').catch(() => {});
     res.json({ ok: true, share_token: token });
   } catch (e) {
-    res.status(500).json({ error: '发布失败', detail: e.message });
+    res.status(500).json({ error: '发布失败' });
   }
 });
 
-router.post('/articles/:id/unpublish', requireArticleOwner, async (req, res) => {
+router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     await pool.query(
@@ -600,7 +597,7 @@ router.post('/articles/:id/unpublish', requireArticleOwner, async (req, res) => 
     await auditLog(req.session.user, 'ks_article_unpublish', id, '撤回文章').catch(() => {});
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: '撤回失败', detail: e.message });
+    res.status(500).json({ error: '撤回失败' });
   }
 });
 
@@ -614,7 +611,7 @@ router.post('/articles/:id/view', async (req, res) => {
     await pool.query('UPDATE articles SET view_count = view_count + 1 WHERE id=$1', [id]);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: '更新阅读量失败', detail: e.message });
+    res.status(500).json({ error: '更新阅读量失败' });
   }
 });
 
@@ -658,7 +655,7 @@ router.get('/articles/:id/comments', async (req, res) => {
     };
     res.json(buildTree());
   } catch (e) {
-    res.status(500).json({ error: '读取评论失败', detail: e.message });
+    res.status(500).json({ error: '读取评论失败' });
   }
 });
 
@@ -702,7 +699,7 @@ router.post('/articles/:id/comments', requireLogin,
       );
       res.json(r.rows[0]);
     } catch (e) {
-      res.status(500).json({ error: '发表评论失败', detail: e.message });
+      res.status(500).json({ error: '发表评论失败' });
     }
   }
 );
@@ -720,14 +717,14 @@ router.delete('/comments/:id', requireLogin, async (req, res) => {
     await pool.query('DELETE FROM article_comments WHERE id=$1', [id]);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: '删除评论失败', detail: e.message });
+    res.status(500).json({ error: '删除评论失败' });
   }
 });
 
 // ---------- 链接导入（抓取网页正文转 Markdown） ----------
 // 优先使用 Jina AI Reader（GitHub: jina-ai/reader），可绕过语雀等反爬站点；
 // 失败时回退到本地 fetch + Readability + Turndown。
-router.post('/import-url', requireKsWrite, async (req, res) => {
+router.post('/import-url', requireLogin, requireKsWrite, async (req, res) => {
   try {
     const url = String(req.body.url || '').trim();
     if (!url) return res.status(400).json({ error: '请提供文章链接' });
@@ -752,7 +749,7 @@ router.post('/import-url', requireKsWrite, async (req, res) => {
     await auditLog(req.session.user, 'ks_import_url', '-', '链接导入：' + url).catch(() => {});
     res.json(result);
   } catch (e) {
-    res.status(500).json({ error: '链接抓取失败', detail: e.message });
+    res.status(500).json({ error: '链接抓取失败' });
   }
 });
 
@@ -778,25 +775,46 @@ function isPublicIPv6(addr) {
   if (a.startsWith('::ffff:')) return isPublicIPv4(a.slice('::ffff:'.length)); // IPv4 映射
   return true;
 }
-async function isSafeUrl(url) {
+async function resolveSafeTarget(url) {
   let u;
-  try { u = new URL(url); } catch (e) { return false; }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  try { u = new URL(url); } catch (e) { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
   const port = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80);
-  if (port !== 80 && port !== 443) return false;
-  const host = u.hostname.toLowerCase();
+  if (port !== 80 && port !== 443) return null;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (net.isIP(host)) {
-    return net.isIPv4(host) ? isPublicIPv4(host) : isPublicIPv6(host);
+    const family = net.isIPv4(host) ? 4 : 6;
+    const ok = family === 4 ? isPublicIPv4(host) : isPublicIPv6(host);
+    return ok ? { url: u, hostname: host, address: host, family } : null;
   }
-  // 域名：解析全部地址，任一非公网则拒绝（防 DNS 重绑定）
+  // 域名：解析全部地址，任一非公网则拒绝，并返回一个将用于真实连接的固定地址。
   let addrs;
-  try { addrs = await dns.lookup(host, { all: true }); } catch (e) { return false; }
-  if (!addrs.length) return false;
+  try { addrs = await dns.lookup(host, { all: true }); } catch (e) { return null; }
+  if (!addrs.length) return null;
   for (const a of addrs) {
     const ok = a.family === 4 ? isPublicIPv4(a.address) : isPublicIPv6(a.address);
-    if (!ok) return false;
+    if (!ok) return null;
   }
-  return true;
+  return { url: u, hostname: host, address: addrs[0].address, family: addrs[0].family };
+}
+
+async function isSafeUrl(url) {
+  return !!(await resolveSafeTarget(url));
+}
+
+function createPinnedDispatcher(target) {
+  const { Agent } = require('undici');
+  return new Agent({
+    connect: {
+      lookup(hostname, options, callback) {
+        if (String(hostname).toLowerCase() !== target.hostname) {
+          return callback(new Error('目标主机在连接前发生变化'));
+        }
+        if (options && options.all) return callback(null, [{ address: target.address, family: target.family }]);
+        return callback(null, target.address, target.family);
+      },
+    },
+  });
 }
 
 // ---------- 文件导入（Word / Markdown / txt） ----------
@@ -806,7 +824,7 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
 });
 
-router.post('/import-file', requireKsWrite, upload.single('file'), async (req, res) => {
+router.post('/import-file', requireLogin, requireKsWrite, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '未收到文件' });
     const fname = req.file.originalname || '';
@@ -825,11 +843,7 @@ router.post('/import-file', requireKsWrite, upload.single('file'), async (req, r
       if (req.file.mimetype && !/wordprocessingml|officedocument|zip|octet-stream/.test(req.file.mimetype)) {
         return res.status(400).json({ error: '文件类型不支持' });
       }
-      const mammoth = require('mammoth');
-      const TurndownService = require('turndown');
-      const conv = await mammoth.convertToHtml({ buffer: buf });
-      const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-      content = turndown.turndown(conv.value);
+      content = await safeParseDocx(buf, { timeoutMs: 15000 });
     } else {
       return res.status(400).json({ error: '仅支持 .md / .txt / .docx 文件' });
     }
@@ -838,7 +852,7 @@ router.post('/import-file', requireKsWrite, upload.single('file'), async (req, r
     await auditLog(req.session.user, 'ks_import_file', '-', '文件导入：' + fname).catch(() => {});
     res.json({ title: title, content: content });
   } catch (e) {
-    res.status(500).json({ error: '文件解析失败', detail: e.message });
+    res.status(500).json({ error: '文件解析失败' });
   }
 });
 
@@ -878,17 +892,28 @@ function getProxyDispatcher() {
 // P1-5：不打印完整代理地址/凭据；带响应大小与内容类型限制
 async function fetchWithProxy(url, options = {}) {
   const undici = require('undici');
-  const dispatcher = getProxyDispatcher();
+  let dispatcher = null;
+  let pinnedDispatcher = null;
   const maxBytes = options.maxBytes || MAX_IMPORT_BYTES;
   const allowedTypes = options.allowedTypes || null;
   const timeoutMs = options.timeoutMs || IMPORT_TIMEOUT_MS;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    if (options.enforcePublicTarget) {
+      const target = await resolveSafeTarget(url);
+      if (!target) return { ok: false, status: 400, text: () => Promise.resolve('') };
+      // 用户控制的目标不交给代理二次解析；连接固定到本次验证通过的公网 IP。
+      pinnedDispatcher = createPinnedDispatcher(target);
+      dispatcher = pinnedDispatcher;
+    } else {
+      dispatcher = getProxyDispatcher();
+    }
     const requestOptions = { ...options, signal: ctrl.signal };
     delete requestOptions.maxBytes;
     delete requestOptions.allowedTypes;
     delete requestOptions.timeoutMs;
+    delete requestOptions.enforcePublicTarget;
     if (dispatcher) requestOptions.dispatcher = dispatcher;
     const r = await undici.request(url, requestOptions);
     const statusCode = r.statusCode;
@@ -925,6 +950,7 @@ async function fetchWithProxy(url, options = {}) {
     return { ok: false, status: 0, statusText: 'fetch error', text: () => Promise.resolve(String((e && e.message) || '')) };
   } finally {
     clearTimeout(timer);
+    if (pinnedDispatcher) await pinnedDispatcher.close().catch(() => {});
   }
 }
 
@@ -1023,6 +1049,7 @@ async function fetchWithReadability(url) {
       allowedTypes: ['text/html', 'application/xhtml+xml', 'text/plain'],
       timeoutMs: 15000,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KnowledgeBot/1.0)' },
+      enforcePublicTarget: true,
     });
     if (!fr.ok) throw new Error('HTTP ' + fr.status);
     const html = await fr.text();
@@ -1081,3 +1108,5 @@ module.exports.isWeChatArticleUrl = isWeChatArticleUrl;
 module.exports.buildWeChatArticleUrl = buildWeChatArticleUrl;
 module.exports.parseWeChatArticleHtml = parseWeChatArticleHtml;
 module.exports.fetchWeChatArticle = fetchWeChatArticle;
+module.exports.resolveSafeTarget = resolveSafeTarget;
+module.exports.createPinnedDispatcher = createPinnedDispatcher;

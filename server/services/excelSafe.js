@@ -3,7 +3,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-function safeParseExcel(b64, opts) {
+function runParseExcel(b64, opts) {
   opts = opts || {};
   // 输入上限：base64 字符串超过约 64MB（≈48MB 二进制）直接拒绝，避免把超大负载塞进子进程
   if (typeof b64 === 'string' && b64.length > 64 * 1024 * 1024) {
@@ -55,6 +55,33 @@ function safeParseExcel(b64, opts) {
 
     child.stdin.write(JSON.stringify({ b64: b64, mode: opts.mode, contains: opts.contains }));
     child.stdin.end();
+  });
+}
+
+const MAX_ACTIVE = 2;
+const MAX_PENDING = 20;
+let active = 0;
+const queue = [];
+
+function drain() {
+  while (active < MAX_ACTIVE && queue.length) {
+    const job = queue.shift();
+    active++;
+    runParseExcel(job.b64, job.opts).then(job.resolve, job.reject).finally(() => {
+      active--;
+      drain();
+    });
+  }
+}
+
+function safeParseExcel(b64, opts) {
+  if (typeof b64 === 'string' && b64.length > 64 * 1024 * 1024) {
+    return Promise.reject(new Error('Excel 文件过大，已拒绝'));
+  }
+  if (queue.length >= MAX_PENDING) return Promise.reject(new Error('Excel 解析繁忙，请稍后重试'));
+  return new Promise((resolve, reject) => {
+    queue.push({ b64, opts, resolve, reject });
+    drain();
   });
 }
 

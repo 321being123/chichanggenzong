@@ -125,6 +125,8 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     assert.strictEqual((await get('/api/admin/users', 'perm2_user')).status, 200);
     assert.strictEqual((await get('/api/admin/users', 'perm2_ops')).status, 403);
     assert.strictEqual((await get('/api/admin/users', 'perm2_content')).status, 403);
+    assert.strictEqual((await get('/api/admin/Users', 'perm2_ops')).status, 403, '大小写变体绕过了 user_manage');
+    assert.strictEqual((await get('/api/admin/USERS', 'perm2_user')).status, 200, '合法 user_manage 被大小写变体误拒');
   });
   await check('内容管理：content_manage 通过、user/ops 拒绝', async () => {
     assert.strictEqual((await get('/api/admin/knowledge/articles', 'perm2_content')).status, 200);
@@ -140,6 +142,7 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     for (const p of ['/brokers', '/jobs', '/holidays', '/models', '/settings']) {
       assert.strictEqual((await get('/api/admin' + p, 'perm2_content')).status, 403, p + ' 未拦截无能力用户');
     }
+    assert.strictEqual((await get('/api/admin/Models', 'perm2_content')).status, 403, '大小写变体绕过了 ops_manage');
   });
   await check('管理员：用户/内容/运维全部通过', async () => {
     for (const p of ['/users', '/knowledge/articles', '/brokers', '/settings']) {

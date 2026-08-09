@@ -29,7 +29,9 @@ async function main() {
   `);
 
   let recovered = 0, extracted = 0, failed = 0, skipped = 0;
+  const START = parseInt(process.env.START_CASE_ID || '0', 10); // 断点续跑：跳过错过的案件
   for (const r of rows) {
+    if (r.case_id < START) continue; // 已处理过的案件直接跳过（幂等，避免重复拉取）
     let url = (r.doc_url || '').trim();
 
     // 主文档无有效 PDF 链接 → 尝试从原始载荷恢复（巨潮相对路径）
@@ -38,10 +40,11 @@ async function main() {
       if (recoveredUrl && /\.pdf$/i.test(recoveredUrl)) {
         url = recoveredUrl;
         if (r.document_id) {
-          await pool.query(
-            'UPDATE event.documents SET url=$1, updated_at=now() WHERE document_id=$2',
-            [url, r.document_id]
-          );
+          try {
+            await pool.query('UPDATE event.documents SET url=$1 WHERE document_id=$2', [url, r.document_id]);
+          } catch (e) {
+            console.error(`case ${r.case_id}: url update failed: ${e.message}`);
+          }
         }
         recovered++;
         console.log(`case ${r.case_id}: url recovered -> ${url}`);

@@ -30,6 +30,7 @@ function switchMain(main, noPushState) {
   if (main === 'bond-safety') { loadBondSafety(); if (typeof initBondCycleSub === 'function') initBondCycleSub(); }
   if (main === 'stock-analysis') loadStockAnalysis();
   if (main === 'market-volatility') loadMarketVolatility();
+  if (main === 'arbitrage') loadArbitrage();
   if (main === 'knowledge') loadKnowledge();
   if (main === 'home') loadHomeDashboard();
   if (main === 'holdings' && username && typeof doRefresh === 'function') {

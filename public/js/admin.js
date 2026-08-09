@@ -15,7 +15,8 @@ const VIEW_TITLES = {
   holidays: '休市日历',
   audit: '操作审计',
   ops: '数据运维',
-  knowledge: '投资笔记管理'
+  knowledge: '投资笔记管理',
+  arbitrage: '套利审核'
 };
 
 // 后台视图所需能力（无映射者仅需任一后台能力即可访问，与后端 requireStaff 一致）
@@ -26,7 +27,8 @@ const VIEW_CAPABILITY = {
   settings: 'ops_manage',
   holidays: 'ops_manage',
   ops: 'ops_manage',
-  knowledge: 'content_manage'
+  knowledge: 'content_manage',
+  arbitrage: 'ops_manage'
 };
 
 function adminCan(cap) {
@@ -118,6 +120,7 @@ function switchView(view) {
   else if (view === 'audit') renderAudit();
   else if (view === 'ops') renderOps();
   else if (view === 'knowledge') renderKnowledge();
+  else if (view === 'arbitrage') renderArbitrage();
   else renderPlaceholder(view);
 }
 
@@ -1208,6 +1211,214 @@ async function ksLoadKsPermissions(search) {
       });
     });
   } catch (e) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
+}
+
+// ====== 套利审核 ======
+async function renderArbitrage() {
+  const el = document.getElementById('view-arbitrage');
+  if (!el) return;
+  el.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+      '<div><button class="btn btn-sm btn-primary" onclick="adminArbSync()">手动同步</button></div>' +
+      '<div id="arb-admin-meta" style="font-size:12px;color:#999;"></div>' +
+    '</div>' +
+    '<div class="admin-table-wrap"><table><thead><tr>' +
+      '<th>ID</th><th>市场</th><th>类型</th><th>证券</th><th>状态</th><th>审核</th><th>公告日</th><th>操作</th>' +
+    '</tr></thead><tbody id="arb-admin-tbody"><tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+  loadArbCandidates();
+}
+
+async function loadArbCandidates() {
+  const tb = document.getElementById('arb-admin-tbody');
+  if (!tb) return;
+  try {
+    const r = await fetch(api('/api/admin/arbitrage/candidates?status=pending&page_size=100'));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const meta = document.getElementById('arb-admin-meta');
+    if (meta) meta.textContent = '共 ' + (d.total || 0) + ' 条待审核';
+    if (!d.rows || !d.rows.length) {
+      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">暂无待审核事件</td></tr>';
+      return;
+    }
+    tb.innerHTML = d.rows.map(function (c) {
+      return '<tr>' +
+        '<td>' + c.case_id + '</td>' +
+        '<td>' + (c.market || '') + '</td>' +
+        '<td>' + esc(c.strategy_type || '') + '</td>' +
+        '<td>' + esc(c.canonical_code || '') + ' ' + esc(c.name || '') + '</td>' +
+        '<td>' + esc(c.event_status || '') + '</td>' +
+        '<td>' + esc(c.review_status || '') + '</td>' +
+        '<td>' + (c.announced_at ? String(c.announced_at).slice(0, 10) : '') + '</td>' +
+        '<td>' +
+          '<button class="btn btn-sm btn-success" onclick="adminArbReview(' + c.case_id + ',\'approved\')">通过</button> ' +
+          '<button class="btn btn-sm btn-danger" onclick="adminArbReview(' + c.case_id + ',\'rejected\')">驳回</button> ' +
+          '<button class="btn btn-sm btn-ghost" onclick="adminArbDetail(' + c.case_id + ')">详情</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#d93025;">加载失败: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+async function adminArbReview(caseId, status) {
+  try {
+    const r = await fetch(api('/api/admin/arbitrage/' + caseId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ review_status: status })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    showToast(status === 'approved' ? '已通过审核' : '已驳回');
+    loadArbCandidates();
+  } catch (e) {
+    showToast('操作失败: ' + e.message);
+  }
+}
+
+async function adminArbDetail(caseId) {
+  try {
+    const r = await fetch(api('/api/admin/arbitrage/' + caseId));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    var docs = (d.documents || []).map(function (doc) {
+      return '<div style="padding:4px 0;border-bottom:1px solid #eee;font-size:13px;">' +
+        '<span style="color:#666;">' + (doc.announced_at ? String(doc.announced_at).slice(0, 10) : '') + '</span> ' +
+        esc(doc.title || '') + '</div>';
+    }).join('');
+    openAdminModal('套利事件 #' + caseId,
+      '<div style="max-height:400px;overflow-y:auto;">' +
+      '<p><b>证券:</b> ' + esc(d.canonical_code || '') + ' ' + esc(d.name || '') + '</p>' +
+      '<p><b>类型:</b> ' + esc(d.strategy_type || '') + '</p>' +
+      '<p><b>状态:</b> ' + esc(d.event_status || '') + ' / ' + esc(d.review_status || '') + '</p>' +
+      '<p><b>描述:</b> ' + esc(d.description || '') + '</p>' +
+      '<h4 style="margin:12px 0 4px;">公告链</h4>' + (docs || '<p style="color:#999;">无</p>') +
+      '</div>',
+      '<button class="btn btn-sm btn-primary" onclick="openArbEditForm(' + caseId + ')">编辑条款</button>' +
+      '<button class="btn btn-sm btn-ghost" onclick="closeAdminModal()">关闭</button>'
+    );
+  } catch (e) {
+    showToast('加载失败: ' + e.message);
+  }
+}
+
+async function adminArbSync() {
+  try {
+    const r = await fetch(api('/api/admin/arbitrage/sync'), { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    showToast(d.message || '同步已启动');
+  } catch (e) {
+    showToast('同步失败: ' + e.message);
+  }
+}
+
+// 编辑套利事件条款（证券 / 价格 / 比例 / 日期），保存时 PATCH 到后端
+async function openArbEditForm(caseId) {
+  let d;
+  try {
+    const r = await fetch(api('/api/admin/arbitrage/' + caseId));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    d = await r.json();
+  } catch (e) { showToast('加载失败: ' + e.message); return; }
+  const v = function (x) { return x == null ? '' : x; };
+  const g = function (label, id, type, step) {
+    const t = type || 'text';
+    const s = step ? (' step="' + step + '"') : '';
+    return '<div class="form-group"><label>' + label + '</label><input id="' + id + '" type="' + t + '"' + s + ' style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;box-sizing:border-box;"></div>';
+  };
+  const sel = function (label, id, opts, cur) {
+    let o = ''; opts.forEach(function (x) { o += '<option value="' + x + '"' + (x === cur ? ' selected' : '') + '>' + x + '</option>'; });
+    return '<div class="form-group"><label>' + label + '</label><select id="' + id + '" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;box-sizing:border-box;">' + o + '</select></div>';
+  };
+  const body =
+    '<div style="max-height:62vh;overflow:auto;padding-right:4px;">' +
+      sel('类型', 'arb-edit-strategy_type', ['a_cash_offer', 'a_share_swap', 'hk_privatisation', 'hk_rights'], d.strategy_type) +
+      sel('状态', 'arb-edit-event_status', ['proposed', 'in_progress', 'completed', 'terminated', 'expired'], d.event_status) +
+      sel('审核', 'arb-edit-review_status', ['pending', 'approved', 'rejected'], d.review_status) +
+      g('现金对价', 'arb-edit-offer_price', 'number', '0.0001') +
+      g('现金选择权价', 'arb-edit-cash_choice_price', 'number', '0.0001') +
+      g('供股价', 'arb-edit-subscription_price', 'number', '0.0001') +
+      g('换股比例', 'arb-edit-swap_ratio', 'number', '0.00000001') +
+      g('现金补偿', 'arb-edit-cash_component', 'number', '0.0001') +
+      g('每新股所需供股权数', 'arb-edit-rights_units_per_new_share', 'number', '1') +
+      g('供股比例(分子)', 'arb-edit-rights_ratio_numerator', 'number', '1') +
+      g('供股比例(分母)', 'arb-edit-rights_ratio_denominator', 'number', '1') +
+      g('参考证券代码', 'arb-edit-reference_instrument_code') +
+      g('供股权代码', 'arb-edit-rights_instrument_code') +
+      g('要约人', 'arb-edit-offeror') +
+      g('持股比例%', 'arb-edit-offeror_holding_pct', 'number', '0.01') +
+      g('公告日', 'arb-edit-announced_at', 'date') +
+      g('预计完成', 'arb-edit-expected_completion_date', 'date') +
+      g('供股交易开始', 'arb-edit-rights_trade_start', 'date') +
+      g('供股交易结束', 'arb-edit-rights_trade_end', 'date') +
+      g('缴款截止', 'arb-edit-payment_deadline', 'date') +
+      g('上市日', 'arb-edit-listing_date', 'date') +
+      '<div class="form-group"><label>描述</label><textarea id="arb-edit-description" rows="3" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;box-sizing:border-box;">' + escapeHtml(v(d.description)) + '</textarea></div>' +
+    '</div>';
+  openAdminModal('编辑条款 #' + caseId, body,
+    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
+    '<button class="btn btn-primary" onclick="submitArbEdit(' + caseId + ')">保存</button>');
+  const setVal = function (id, val) { const el = document.getElementById(id); if (el) el.value = v(val); };
+  setVal('arb-edit-offer_price', d.offer_price);
+  setVal('arb-edit-cash_choice_price', d.cash_choice_price);
+  setVal('arb-edit-subscription_price', d.subscription_price);
+  setVal('arb-edit-swap_ratio', d.swap_ratio);
+  setVal('arb-edit-cash_component', d.cash_component);
+  setVal('arb-edit-rights_units_per_new_share', d.rights_units_per_new_share);
+  setVal('arb-edit-rights_ratio_numerator', d.rights_ratio_numerator);
+  setVal('arb-edit-rights_ratio_denominator', d.rights_ratio_denominator);
+  setVal('arb-edit-reference_instrument_code', d.ref_code);
+  setVal('arb-edit-rights_instrument_code', d.rights_code);
+  setVal('arb-edit-offeror', d.offeror);
+  setVal('arb-edit-offeror_holding_pct', d.offeror_holding_pct);
+  setVal('arb-edit-announced_at', d.announced_at ? String(d.announced_at).slice(0, 10) : '');
+  setVal('arb-edit-expected_completion_date', d.expected_completion_date ? String(d.expected_completion_date).slice(0, 10) : '');
+  setVal('arb-edit-rights_trade_start', d.rights_trade_start ? String(d.rights_trade_start).slice(0, 10) : '');
+  setVal('arb-edit-rights_trade_end', d.rights_trade_end ? String(d.rights_trade_end).slice(0, 10) : '');
+  setVal('arb-edit-payment_deadline', d.payment_deadline ? String(d.payment_deadline).slice(0, 10) : '');
+  setVal('arb-edit-listing_date', d.listing_date ? String(d.listing_date).slice(0, 10) : '');
+}
+
+async function submitArbEdit(caseId) {
+  const numOrNull = function (id) { const el = document.getElementById(id); if (!el || el.value === '' || el.value == null) return null; const n = Number(el.value); return isNaN(n) ? null : n; };
+  const strOrNull = function (id) { const el = document.getElementById(id); if (!el || el.value.trim() === '') return null; return el.value.trim(); };
+  const dateOrNull = function (id) { const el = document.getElementById(id); if (!el || el.value === '') return null; return el.value; };
+  const body = {
+    strategy_type: strOrNull('arb-edit-strategy_type'),
+    event_status: strOrNull('arb-edit-event_status'),
+    review_status: strOrNull('arb-edit-review_status'),
+    offer_price: numOrNull('arb-edit-offer_price'),
+    cash_choice_price: numOrNull('arb-edit-cash_choice_price'),
+    subscription_price: numOrNull('arb-edit-subscription_price'),
+    swap_ratio: numOrNull('arb-edit-swap_ratio'),
+    cash_component: numOrNull('arb-edit-cash_component'),
+    rights_units_per_new_share: numOrNull('arb-edit-rights_units_per_new_share'),
+    rights_ratio_numerator: numOrNull('arb-edit-rights_ratio_numerator'),
+    rights_ratio_denominator: numOrNull('arb-edit-rights_ratio_denominator'),
+    reference_instrument_code: strOrNull('arb-edit-reference_instrument_code'),
+    rights_instrument_code: strOrNull('arb-edit-rights_instrument_code'),
+    offeror: strOrNull('arb-edit-offeror'),
+    offeror_holding_pct: numOrNull('arb-edit-offeror_holding_pct'),
+    announced_at: dateOrNull('arb-edit-announced_at'),
+    expected_completion_date: dateOrNull('arb-edit-expected_completion_date'),
+    rights_trade_start: dateOrNull('arb-edit-rights_trade_start'),
+    rights_trade_end: dateOrNull('arb-edit-rights_trade_end'),
+    payment_deadline: dateOrNull('arb-edit-payment_deadline'),
+    listing_date: dateOrNull('arb-edit-listing_date'),
+    description: strOrNull('arb-edit-description'),
+  };
+  try {
+    const r = await fetch(api('/api/admin/arbitrage/' + caseId), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '保存失败'); return; }
+    showToast('条款已保存');
+    closeAdminModal();
+    loadArbCandidates();
+  } catch (e) { showToast('网络错误'); }
 }
 
 // ====== 启动 ======

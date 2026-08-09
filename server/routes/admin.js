@@ -15,6 +15,7 @@ const { backfillMissingCloses } = require('../jobs/marketClose');
 const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
 const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
+const arbitrageSvc = require('../services/arbitrageService');
 
 // PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
 // 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
@@ -25,7 +26,7 @@ function adminCapabilityForPath(p) {
   if (p.indexOf('/users') === 0) return 'user_manage';
   if (p.indexOf('/knowledge') === 0) return 'content_manage';
   if (p.indexOf('/brokers') === 0 || p.indexOf('/jobs') === 0 || p.indexOf('/holidays') === 0 ||
-      p.indexOf('/models') === 0 || p.indexOf('/settings') === 0) return 'ops_manage';
+      p.indexOf('/models') === 0 || p.indexOf('/settings') === 0 || p.indexOf('/arbitrage') === 0) return 'ops_manage';
   return null; // /overview、/audit 等仅要求员工身份
 }
 router.use(function (req, res, next) {
@@ -464,6 +465,39 @@ router.put('/settings', asyncHandler(async (req, res) => {
   ]);
   await audit(req, 'settings_update', 'global', { detail: '更新全局参数' });
   res.json({ ok: true });
+}));
+
+// ====== 套利机会审核 ======
+router.get('/arbitrage/candidates', asyncHandler(async (req, res) => {
+  const { page = 1, page_size = 50, status = 'pending' } = req.query;
+  const result = await arbitrageSvc.getCandidates(parseInt(page), parseInt(page_size), status);
+  res.json(result);
+}));
+
+router.get('/arbitrage/:caseId', asyncHandler(async (req, res) => {
+  const detail = await arbitrageSvc.getCaseDetail(parseInt(req.params.caseId));
+  if (!detail) return res.status(404).json({ error: '未找到该事件' });
+  res.json(detail);
+}));
+
+router.patch('/arbitrage/:caseId', asyncHandler(async (req, res) => {
+  const reviewer = req.session.user ? req.session.user.username : 'admin';
+  const updated = await arbitrageSvc.updateCase(parseInt(req.params.caseId), req.body || {}, reviewer);
+  if (!updated) return res.status(404).json({ error: '未找到该事件' });
+  await audit(req, 'arbitrage_review', String(req.params.caseId), { detail: '审核/修改套利事件' });
+  res.json({ ok: true, case: updated });
+}));
+
+router.post('/arbitrage/:caseId/reparse', asyncHandler(async (req, res) => {
+  const result = await arbitrageSvc.reparseCase(parseInt(req.params.caseId));
+  if (!result) return res.status(404).json({ error: '未找到该事件' });
+  res.json(result);
+}));
+
+router.post('/arbitrage/sync', asyncHandler(async (req, res) => {
+  const result = await arbitrageSvc.triggerSync();
+  await audit(req, 'arbitrage_sync', 'manual', { detail: '手动触发套利公告同步' });
+  res.json(result);
 }));
 
 module.exports = router;

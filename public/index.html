@@ -30,6 +30,7 @@
         <button class="main-tab" data-main="bond-safety">可转债</button>
         <button class="main-tab" data-main="stock-analysis">证券分析</button>
         <button class="main-tab" data-main="market-volatility">市场周期</button>
+        <button class="main-tab" data-main="arbitrage">套利机会</button>
         <button class="main-tab" data-main="changelog">版本记录</button>
       </nav>
     </div>
@@ -610,6 +611,31 @@
   </div>
 </div>
 
+<!-- 套利机会（一级页） -->
+<div class="main-page" id="main-arbitrage">
+  <div class="feature-page-shell">
+    <div class="bond-header" style="margin-bottom:16px;">
+      <div class="bond-sub-nav">
+        <button class="bond-sub-tab active" data-arb-tab="a_stock" onclick="switchArbTab('a_stock')">A 股套利</button>
+        <button class="bond-sub-tab" data-arb-tab="hk_privatisation" onclick="switchArbTab('hk_privatisation')">港股私有化</button>
+        <button class="bond-sub-tab" data-arb-tab="hk_rights" onclick="switchArbTab('hk_rights')">港股供股权</button>
+      </div>
+    </div>
+    <div id="arb-status" style="padding:0 4px 8px;color:#666;font-size:13px;"></div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <h3 id="arb-table-title">A 股套利</h3>
+        <div id="arb-meta" style="font-size:12px;color:#999;"></div>
+      </div>
+      <div style="padding:12px;overflow-x:auto;">
+        <div id="arb-table"></div>
+      </div>
+    </div>
+    <!-- 详情展开区 -->
+    <div id="arb-detail" hidden style="margin-top:16px;"></div>
+  </div>
+</div>
+
 <!-- 打新日历（一级页） -->
 <div class="main-page" id="main-ipo">
   <div class="feature-page-shell">
@@ -1092,7 +1118,8 @@
 <script src="js/knowledge.js?v=23"></script>
 <script src="js/access-policy.js?v=1"></script>
 <script src="js/session.js?v=1"></script>
-<script src="js/navigation.js?v=2"></script>
+<script src="js/arbitrage.js?v=1"></script>
+<script src="js/navigation.js?v=3"></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;

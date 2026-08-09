@@ -15,6 +15,7 @@ const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
 const { scheduleHkTradeRulesSync, runHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
+const { scheduleArbitrageSync } = require('./jobs/arbitrageSync');
 
 // 启动即执行的补漏/快照（幂等、带 PG 锁，多实例仅一个真正执行）
 const STARTUP_TASKS = [
@@ -39,6 +40,7 @@ const SCHEDULED_TASKS = [
   { name: 'convertibleBondRefresh', register: () => scheduleConvertibleBondRefresh() },
   { name: 'ipoCalendarRefresh', register: () => scheduleIpoCalendarRefresh() },
   { name: 'hkTradeRulesSync', register: () => scheduleHkTradeRulesSync() },
+  { name: 'arbitrageSync', register: () => scheduleArbitrageSync() },
   // 月度休市日自愈：原 worker.js 内联的 setInterval 任务，现统一纳入注册表（与启动补漏 holidaySync 区分）。
   // 注意：此处故意不 unref，作为独立 Worker 进程的保活句柄（迁移前 worker.js 的内联 setInterval 即承担此职责）。
   { name: 'holidaySyncMonthly', register: () => setInterval(() => {

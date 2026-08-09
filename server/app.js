@@ -24,6 +24,7 @@ const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
 const marketVolatilityRouter = require('./routes/marketVolatility');
 const positionComparisonRouter = require('./routes/positionComparison');
+const arbitrageRouter = require('./routes/arbitrage');
 // 单一后台任务注册清单（Web 兼容模式与独立 Worker 共用）：见 server/scheduler.js
 const { startScheduler } = require('./scheduler');
 
@@ -112,6 +113,7 @@ async function start() {
   app.use('/api/knowledge', knowledgeRouter);    // 知识分享：文章/分类/评论/公开分享
   app.use('/api/market-volatility', marketVolatilityRouter); // 股市波动：格雷厄姆指数与仓位纪律
   app.use('/api', positionComparisonRouter);     // 仓位对比：公开状态/标杆列表/对比/复制测算
+  app.use('/api/arbitrage', arbitrageRouter);     // 套利机会：A 股套利/港股私有化/港股供股权
 
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));

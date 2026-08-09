@@ -10,6 +10,7 @@
     'bond-safety',      // 可转债安全性 / 周期 / 估值
     'market-volatility',// 市场周期
     'ipo',              // 打新日历
+    'arbitrage',        // 套利机会
     'changelog'         // 版本记录
   ];
 

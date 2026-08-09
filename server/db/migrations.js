@@ -2097,6 +2097,7 @@ const MIGRATIONS = [
   { version: '051_audit_result_metadata', up: migration051AuditResultMetadata },
   { version: '052_nav_history_hk_rate', up: migration052NavHistoryHkRate },
   { version: '053_index_baseline_settled', up: migration053IndexBaselineSettled },
+  { version: '054_arbitrage_cases', up: migration054ArbitrageCases },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -2113,6 +2114,100 @@ async function migration053IndexBaselineSettled() {
       settled_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (username, account_name, index_name)
     )
+  `);
+}
+
+// ========== 054：套利机会模块——event.arbitrage_cases + event.arbitrage_case_documents ==========
+// 套利机会模块（A 股套利 / 港股私有化 / 港股供股权）的两张核心业务表。
+// 复用现有 event.documents、event.company_events、ops.data_sources、ops.raw_records、ops.sync_cursors。
+async function migration054ArbitrageCases() {
+  // 1. 登记数据源（hkex_announcements 新增；cninfo 已存在，补登记 cninfo_announcements 作为独立数据集标识）
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority) VALUES
+      ('hkex_announcements','港交所披露易','official',5),
+      ('cninfo_announcements','巨潮资讯公告','official',5)
+    ON CONFLICT(source_code) DO UPDATE SET source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,priority=EXCLUDED.priority;
+  `);
+
+  // 2. event.arbitrage_cases —— 套利事件主表
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS event.arbitrage_cases (
+      case_id              BIGSERIAL PRIMARY KEY,
+      market               TEXT NOT NULL CHECK (market IN ('CN','HK')),
+      strategy_type        TEXT NOT NULL CHECK (strategy_type IN ('a_cash_offer','a_share_swap','hk_privatisation','hk_rights')),
+      source_id            SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+      source_key           TEXT NOT NULL,
+
+      target_instrument_id  BIGINT REFERENCES core.instruments(instrument_id) ON DELETE SET NULL,
+      reference_instrument_id BIGINT REFERENCES core.instruments(instrument_id) ON DELETE SET NULL,
+      rights_instrument_id   BIGINT REFERENCES core.instruments(instrument_id) ON DELETE SET NULL,
+
+      company_event_id     BIGINT REFERENCES event.company_events(event_id) ON DELETE SET NULL,
+      primary_document_id  BIGINT REFERENCES event.documents(document_id) ON DELETE SET NULL,
+
+      event_status         TEXT NOT NULL DEFAULT 'proposed'
+                             CHECK (event_status IN ('proposed','in_progress','completed','terminated','expired')),
+      review_status        TEXT NOT NULL DEFAULT 'pending'
+                             CHECK (review_status IN ('pending','approved','rejected')),
+      reviewed_by          TEXT,
+      reviewed_at          TIMESTAMPTZ,
+
+      -- 通用条款
+      currency_code        TEXT,
+      offer_price          NUMERIC(20,6) CHECK (offer_price IS NULL OR offer_price > 0),
+      cash_choice_price    NUMERIC(20,6) CHECK (cash_choice_price IS NULL OR cash_choice_price > 0),
+      cash_component       NUMERIC(20,6) CHECK (cash_component IS NULL OR cash_component >= 0),
+      swap_ratio           NUMERIC(20,8) CHECK (swap_ratio IS NULL OR swap_ratio > 0),
+
+      -- 供股条款
+      subscription_price       NUMERIC(20,6) CHECK (subscription_price IS NULL OR subscription_price > 0),
+      rights_units_per_new_share INTEGER CHECK (rights_units_per_new_share IS NULL OR rights_units_per_new_share > 0),
+      rights_ratio_numerator   INTEGER CHECK (rights_ratio_numerator IS NULL OR rights_ratio_numerator > 0),
+      rights_ratio_denominator INTEGER CHECK (rights_ratio_denominator IS NULL OR rights_ratio_denominator > 0),
+
+      -- 日期
+      announced_at          DATE,
+      terms_updated_at      TIMESTAMPTZ,
+      expected_completion_date DATE,
+      rights_trade_start    DATE,
+      rights_trade_end      DATE,
+      payment_deadline      DATE,
+      listing_date          DATE,
+
+      -- 港股字段
+      offeror               TEXT,
+      offeror_holding_pct   NUMERIC(8,4),
+      registrar             TEXT,
+      transaction_method    TEXT,
+      headcount_required    BOOLEAN,
+      shortable             BOOLEAN,
+
+      -- 审计
+      description           TEXT,
+      raw_payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
+      formula_version       TEXT,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+      UNIQUE(source_id, source_key)
+    );
+  `);
+
+  // 3. 索引
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_arb_cases_type_status ON event.arbitrage_cases(strategy_type, event_status, review_status);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_arb_cases_target ON event.arbitrage_cases(target_instrument_id) WHERE target_instrument_id IS NOT NULL;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_arb_cases_updated ON event.arbitrage_cases(updated_at DESC);`);
+
+  // 4. event.arbitrage_case_documents —— 公告链
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS event.arbitrage_case_documents (
+      case_id      BIGINT NOT NULL REFERENCES event.arbitrage_cases(case_id) ON DELETE CASCADE,
+      document_id  BIGINT NOT NULL REFERENCES event.documents(document_id) ON DELETE CASCADE,
+      relation_type TEXT NOT NULL DEFAULT 'announcement',
+      announced_at DATE,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (case_id, document_id)
+    );
   `);
 }
 

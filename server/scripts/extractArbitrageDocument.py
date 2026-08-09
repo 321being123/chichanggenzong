@@ -65,10 +65,13 @@ def download_pdf(url, dest):
 RE_A_STOCK = re.compile(r'(?:證券代碼|证券代码|股票代碼|股票代码|代碼|代码)[:：\s]*(\d{6})')
 RE_HK_STOCK = re.compile(r'(?:股份代號|股份代号|股票代碼|股票代码|Stock\s*Code)[:：\s]*(\d{3,5})', re.I)
 
-# 现金对价 / 注销价 / 要约价 / 收购价 —— 真实公告写法：「註銷價為每股X港元」「要約價為每股X港元」
+# 现金对价 / 注销价 / 要约价 / 收购价 —— A股常见写法：「收购价格为每股X元」「要约收购价格为X元/股」
+# 「异议股东收购请求权价格」「现金选择权价格」；港股写法：「註銷價為每股X港元」
 RE_CASH_OFFER = re.compile(
-    r'(?:現金對價|现金对价|註銷價|注销价|注銷價|要約價|要约价|收購價|收购价|現金代價|现金代价)'
-    r'[:：\s]*(?:為|是)?[:：\s]*(?:每?股[^\d]{0,15}?)?'
+    r'(?:現金對價|现金对价|現金選擇權價格|现金选择权价格|異議股東收購請求權價格|异议股东收购请求权价格|'
+    r'註銷價|注销价|注銷價|要約收購價格|要约收购价格|要約價格|要约价格|要約價|要约价|'
+    r'收購價格|收购价格|收購價|收购价|收購價款|收购价款|現金代價|现金代价)'
+    r'[:：\s]*(?:為|是)?[:：\s]*(?:每?股[^\d]{0,20}?)?'
     r'(?:港幣|港元|港币|HK\$|HKD|人民幣|人民币|RMB)?\s*([\d.]+)', re.I)
 # 供股价格 / 认购价 —— 「認購價為每股供股股份港幣6.25元」
 RE_SUBSCRIPTION_PRICE = re.compile(
@@ -79,8 +82,11 @@ RE_SUBSCRIPTION_PRICE = re.compile(
 # 换股比例（换股吸收合并）：「換股比率為每X股換Y股」「每X股獲發Y股合併股份」
 # 注意：数字用「捕获组 (...)」而非非捕获组 (?:...)，否则 m.group(1) 为 None 导致崩溃
 RE_SWAP_RATIO = re.compile(
-    r'(?:換股比率|换股比率|換股比例|换股比例)[:：\s]*(?:為|是)?[:：\s]*'
+    r'(?:換股比率|换股比率|換股比例|换股比例|合併比例|合并比例)[:：\s]*(?:為|是)?[:：\s]*'
     r'每?.{0,8}?(\(?\d+\.?\d*\)?)\s*股.{0,12}?(\(?\d+\.?\d*\)?)\s*股', re.I)
+# 兜底：无「换股比例」前缀时，匹配「每X股换Y股」写法
+RE_SWAP_RATIO2 = re.compile(
+    r'每?.{0,10}?(\(?\d+\.?\d*\)?)\s*股.{0,6}?(?:換|换).{0,6}?(\(?\d+\.?\d*\)?)\s*股', re.I)
 
 # 现金补偿
 RE_CASH_COMP = re.compile(r'(?:現金補償|现金补偿|每股現金|每股现金|Cash\s*Component)[:：\s]*(?:為|是)?[:：\s]*([\d.]+)', re.I)
@@ -184,13 +190,15 @@ def parse_fields(text):
         result['evidence'].append({'field': 'subscription_price', 'value': m.group(1), 'pos': m.start()})
 
     # 换股比例
-    m = RE_SWAP_RATIO.search(text)
-    if m:
-        g1 = _to_num(m.group(1))
-        g2 = _to_num(m.group(2))
-        if g1 is not None and g2 is not None and g1 > 0 and g2 > 0:
-            result['swap_ratio'] = round(g1 / g2, 6)
-            result['evidence'].append({'field': 'swap_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
+    for _rex in (RE_SWAP_RATIO, RE_SWAP_RATIO2):
+        m = _rex.search(text)
+        if m:
+            g1 = _to_num(m.group(1))
+            g2 = _to_num(m.group(2))
+            if g1 is not None and g2 is not None and g1 > 0 and g2 > 0:
+                result['swap_ratio'] = round(g1 / g2, 6)
+                result['evidence'].append({'field': 'swap_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
+                break
 
     # 现金补偿
     m = RE_CASH_COMP.search(text)

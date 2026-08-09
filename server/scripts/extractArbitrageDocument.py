@@ -61,32 +61,57 @@ def download_pdf(url, dest):
 
 # ========== 正则提取模式 ==========
 
-# 证券代码（A股6位 / 港股5位）
-RE_A_STOCK = re.compile(r'(?:证券代码|股票代码|代码)[:\s]*(\d{6})')
-RE_HK_STOCK = re.compile(r'(?:股份代号|股票代码|Stock\s*Code)[:\s]*(\d{5})', re.I)
+# 证券代码（A股6位 / 港股3-5位）—— 繁简兼容，接受全角冒号
+RE_A_STOCK = re.compile(r'(?:證券代碼|证券代码|股票代碼|股票代码|代碼|代码)[:：\s]*(\d{6})')
+RE_HK_STOCK = re.compile(r'(?:股份代號|股份代号|股票代碼|股票代码|Stock\s*Code)[:：\s]*(\d{3,5})', re.I)
 
-# 现金对价 / 注销价 / 供股价
-RE_CASH_OFFER = re.compile(r'(?:现金对价|注销价|要约价|收购价|Offer\s*Price)[:\s]* hk?d?\s*([\d.]+)', re.I)
-RE_SUBSCRIPTION_PRICE = re.compile(r'(?:供股价|认购价|Subscription\s*Price)[:\s]* hk?d?\s*([\d.]+)', re.I)
+# 现金对价 / 注销价 / 要约价 / 收购价 —— 真实公告写法：「註銷價為每股X港元」「要約價為每股X港元」
+RE_CASH_OFFER = re.compile(
+    r'(?:現金對價|现金对价|註銷價|注销价|注銷價|要約價|要约价|收購價|收购价|現金代價|现金代价)'
+    r'[:：\s]*(?:為|是)?[:：\s]*(?:每?股[^\d]{0,15}?)?'
+    r'(?:港幣|港元|港币|HK\$|HKD|人民幣|人民币|RMB)?\s*([\d.]+)', re.I)
+# 供股价格 / 认购价 —— 「認購價為每股供股股份港幣6.25元」
+RE_SUBSCRIPTION_PRICE = re.compile(
+    r'(?:認購價|认购价|供股價|供股价|認購價格|认购价格|供股價格|供股价格)'
+    r'[:：\s]*(?:為|是)?[:：\s]*(?:每?股[^\d]{0,15}?)?'
+    r'(?:港幣|港元|港币|HK\$|HKD)?\s*([\d.]+)', re.I)
 
-# 换股比例
-RE_SWAP_RATIO = re.compile(r'(?:换股比例|换股比率|Exchange\s*Ratio)[:\s]*.*?(\d+\.?\d*)\s*(?:股|shares?)\s*(?:换|for)\s*(\d+\.?\d*)\s*(?:股|shares?)', re.I)
+# 换股比例（换股吸收合并）：「換股比率為每X股換Y股」「每X股獲發Y股合併股份」
+# 注意：数字用「捕获组 (...)」而非非捕获组 (?:...)，否则 m.group(1) 为 None 导致崩溃
+RE_SWAP_RATIO = re.compile(
+    r'(?:換股比率|换股比率|換股比例|换股比例)[:：\s]*(?:為|是)?[:：\s]*'
+    r'每?.{0,8}?(\(?\d+\.?\d*\)?)\s*股.{0,12}?(\(?\d+\.?\d*\)?)\s*股', re.I)
 
 # 现金补偿
-RE_CASH_COMP = re.compile(r'(?:现金补偿|每股现金|Cash\s*Component)[:\s]*([\d.]+)', re.I)
+RE_CASH_COMP = re.compile(r'(?:現金補償|现金补偿|每股現金|每股现金|Cash\s*Component)[:：\s]*(?:為|是)?[:：\s]*([\d.]+)', re.I)
 
-# 供股比例
-RE_RIGHTS_RATIO = re.compile(r'(?:供股比例|认购比例|Basis\s*of\s*(?:Offering|Entitlement))[:\s]*.*?(\d+)\s*(?:股|for)\s*(\d+)\s*(?:股|shares?)', re.I)
+# 供股比例：「按每持有X股獲發Y股」「每持有X股可認購Y股」（数字常被括号包住，如 一(1)股）
+# 数字用捕获组 (...)
+RE_RIGHTS_RATIO = re.compile(
+    r'每持有.{0,12}?(\(?\d+\)?)\s*股.{0,25}?(?:獲發|認購|配發|發行|獲配).{0,12}?(\(?\d+\)?)\s*股', re.I)
 
 # 日期
 RE_DATE = re.compile(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日')
 RE_DATE_ISO = re.compile(r'(\d{4}-\d{2}-\d{2})')
 
 # 要约人
-RE_OFFEROR = re.compile(r'(?:要约人|Offeror|收购人)[:\s]*([^\n，,。.]{2,50})')
+RE_OFFEROR = re.compile(r'(?:要約人|要约人|收購人|收购人|收購方|收购方)[:：\s]*(?:為|是)?[:：\s]*([^，。\n]{2,40})')
 
 # 持股比例
-RE_HOLDING_PCT = re.compile(r'(?:持股比例|持股量|Holding)[:\s]*([\d.]+)\s*%')
+RE_HOLDING_PCT = re.compile(r'(?:持股比例|持股量|持股百分比|Holding)[:：\s]*(?:為|是)?[:：\s]*([\d.]+)\s*%')
+
+def _to_num(s):
+    """从可能带括号/单位的文本中解析数值，失败返回 None。
+    例如 '(1)' → 1.0、'6.25' → 6.25、'港幣6.25元' 经前置清洗后只留数字。"""
+    if s is None:
+        return None
+    s = re.sub(r'[^\d.]', '', str(s))
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 def parse_fields(text):
     """从全文中提取结构化字段"""
@@ -159,8 +184,11 @@ def parse_fields(text):
     # 换股比例
     m = RE_SWAP_RATIO.search(text)
     if m:
-        result['swap_ratio'] = float(m.group(1)) / float(m.group(2)) if float(m.group(2)) != 0 else None
-        result['evidence'].append({'field': 'swap_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
+        g1 = _to_num(m.group(1))
+        g2 = _to_num(m.group(2))
+        if g1 is not None and g2 not in (None, 0):
+            result['swap_ratio'] = round(g1 / g2, 6)
+            result['evidence'].append({'field': 'swap_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
 
     # 现金补偿
     m = RE_CASH_COMP.search(text)
@@ -171,9 +199,12 @@ def parse_fields(text):
     # 供股比例
     m = RE_RIGHTS_RATIO.search(text)
     if m:
-        result['rights_ratio_numerator'] = int(m.group(1))
-        result['rights_ratio_denominator'] = int(m.group(2))
-        result['evidence'].append({'field': 'rights_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
+        g1 = _to_num(m.group(1))
+        g2 = _to_num(m.group(2))
+        if g1 is not None and g2 is not None:
+            result['rights_ratio_numerator'] = int(g1)
+            result['rights_ratio_denominator'] = int(g2)
+            result['evidence'].append({'field': 'rights_ratio', 'value': f'{m.group(1)}:{m.group(2)}', 'pos': m.start()})
 
     # 要约人
     m = RE_OFFEROR.search(text)
@@ -236,8 +267,11 @@ def main():
         print(json.dumps({'error': f'PDF extraction failed: {err}'}))
         sys.exit(1)
 
-    # 解析字段
-    result = parse_fields(text)
+    # 解析字段（即便单字段异常也尽可能返回已提取结果，绝不空输出导致同步崩溃）
+    try:
+        result = parse_fields(text)
+    except Exception as e:
+        result = {'error': 'parse_fields failed: ' + str(e), 'source': source}
     result['text_length'] = len(text) if text else 0
     result['source'] = source
 

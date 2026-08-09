@@ -76,12 +76,22 @@ function httpRequest(urlStr, { method = 'GET', body } = {}) {
 }
 
 // 规范化附件链接
+// 巨潮附件常见两种情况：
+//   1) 已是完整 URL（可能落在 www.cninfo.com.cn 或 static.cninfo.com.cn）—— 直接使用
+//   2) 相对路径 finalpage/YYYY-MM-DD/xxx.PDF（无域名、常无前导斜杠）—— 真实文件在 static.cninfo.com.cn
 function normalizeAdjunctUrl(url) {
   if (!url) return '';
-  const full = url.startsWith('http') ? url : (BASE_URL + url);
+  let full;
+  if (url.startsWith('http')) {
+    full = url;
+  } else {
+    const path = url.startsWith('/') ? url : '/' + url;
+    full = 'https://static.cninfo.com.cn' + path;
+  }
   try {
     const u = new URL(full);
-    if (u.hostname !== ALLOWED_DOMAIN) return '';
+    // 仅允许 cninfo 官方域名（www / static 均可）
+    if (!/cninfo\.com\.cn$/.test(u.hostname)) return '';
     return full;
   } catch { return ''; }
 }
@@ -205,6 +215,7 @@ async function searchAnnouncements({ fromDate, toDate, keywords, exchanges } = {
 module.exports = {
   searchAnnouncements,
   parseSearchResponse,
+  normalizeAdjunctUrl,
   DISCOVERY_KEYWORDS,
   UPDATE_KEYWORDS,
   httpRequest,

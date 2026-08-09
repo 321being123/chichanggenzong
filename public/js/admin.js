@@ -1232,11 +1232,11 @@ async function loadArbCandidates() {
   const tb = document.getElementById('arb-admin-tbody');
   if (!tb) return;
   try {
-    const r = await fetch(api('/api/admin/arbitrage/candidates?status=pending&page_size=100'));
+    const r = await fetch(api('/api/admin/arbitrage/candidates?status=approved&page_size=100'));
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const meta = document.getElementById('arb-admin-meta');
-    if (meta) meta.textContent = '共 ' + (d.total || 0) + ' 条待审核';
+    if (meta) meta.textContent = '共 ' + (d.total || 0) + ' 条事件';
     if (!d.rows || !d.rows.length) {
       tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">暂无待审核事件</td></tr>';
       return;

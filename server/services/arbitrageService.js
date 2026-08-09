@@ -30,6 +30,7 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
     WHERE c.strategy_type = ANY($1)
       AND c.review_status = 'approved'
       AND c.event_status NOT IN ('completed','terminated','expired')
+      AND (c.expected_completion_date IS NULL OR c.expected_completion_date >= CURRENT_DATE)
     ORDER BY c.terms_updated_at DESC NULLS LAST
     LIMIT $2 OFFSET $3
   `, [types, pageSize, offset]);
@@ -37,6 +38,7 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
   const { rows: countRows } = await pool.query(`
     SELECT count(*) as total FROM event.arbitrage_cases
     WHERE strategy_type = ANY($1) AND review_status='approved' AND event_status NOT IN ('completed','terminated','expired')
+      AND (expected_completion_date IS NULL OR expected_completion_date >= CURRENT_DATE)
   `, [types]);
 
   // 收集所有需取行情的代码（正股 / 换股参考股 / 供股权）

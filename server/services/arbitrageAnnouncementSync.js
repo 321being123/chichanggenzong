@@ -176,7 +176,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
         const { rows: newCase } = await client.query(`
           INSERT INTO event.arbitrage_cases(market, strategy_type, source_id, source_key, target_instrument_id, primary_document_id,
             event_status, review_status, announced_at, terms_updated_at, raw_payload)
-          VALUES($1,$2,$3,$4,$5,$6,'proposed','pending',$7,now(),$8)
+          VALUES($1,$2,$3,$4,$5,$6,'proposed','approved',$7,now(),$8)
           RETURNING case_id
         `, [market, strategyType, sourceId, ann.sourceKey, instrumentId, documentId, ann.announcedAt, JSON.stringify(ann.rawPayload)]);
 

@@ -63,10 +63,11 @@ def download_pdf(url, dest):
 
 # 证券代码（A股6位 / 港股3-5位）—— 繁简兼容，接受全角冒号
 RE_A_STOCK = re.compile(r'(?:證券代碼|证券代码|股票代碼|股票代码|代碼|代码)[:：\s]*(\d{6})')
-RE_HK_STOCK = re.compile(r'(?:股份代號|股份代号|股票代碼|股票代码|Stock\s*Code)[:：\s]*(\d{3,5})', re.I)
+# 港股代码只匹配港股常用词，避免从 A 股「股票代码：600095」里截出 5 位「60009」
+RE_HK_STOCK = re.compile(r'(?:股份代號|股份代号|Stock\s*Code)[:：\s]*(\d{3,5})', re.I)
 
-# 现金对价 / 注销价 / 要约价 / 收购价 —— A股常见写法：「收购价格为每股X元」「要约收购价格为X元/股」
-# 「异议股东收购请求权价格」「现金选择权价格」；港股写法：「註銷價為每股X港元」
+# 现金对价 / 注销价 / 要约价 / 收购价 / 换股价格 —— A股常见写法：「收购价格为每股X元」「要约收购价格为X元/股」
+# 「异议股东收购请求权价格」「现金选择权价格」「A股换股价格」；港股写法：「註銷價為每股X港元」
 RE_CASH_OFFER = re.compile(
     r'(?:現金對價|现金对价|'
     r'現金選擇權價格|现金选择权价格|異議股東收購請求權價格|异议股东收购请求权价格|'
@@ -74,6 +75,7 @@ RE_CASH_OFFER = re.compile(
     r'要約收購(?:的)?價格|要约收购(?:的)?价格|'
     r'要約(?:的)?價格|要约(?:的)?价格|要約(?:的)?價|要约(?:的)?价|'
     r'收購(?:的)?價格|收购(?:的)?价格|收購(?:的)?價|收购(?:的)?价|收購(?:的)?價款|收购(?:的)?价款|'
+    r'換股價格|换股价格|'
     r'現金代價|现金代价)'
             r'[\s:：]*'                              # 冒号/空格
     r'(?:為|为|是)?'                         # 为/是（简繁兼容）
@@ -89,14 +91,17 @@ RE_SUBSCRIPTION_PRICE = re.compile(
     r'[:：\s]*(?:為|为|是)?[:：\s]*(?:每?股[^\d]{0,15}?)?'
     r'(?:港幣|港元|港币|HK\$|HKD)?\s*([\d.]+)', re.I)
 
-# 换股比例（换股吸收合并）：「換股比率為每X股換Y股」「每X股獲發Y股合併股份」
+# 换股比例（换股吸收合并）：「換股比率為每X股換Y股」「每X股獲發Y股合併股份」「换股比例确定为X:Y」
 # 注意：数字用「捕获组 (...)」而非非捕获组 (?:...)，否则 m.group(1) 为 None 导致崩溃
 RE_SWAP_RATIO = re.compile(
     r'(?:換股比率|换股比率|換股比例|换股比例|合併比例|合并比例)[:：\s]*(?:為|为|是)?[:：\s]*'
     r'每?.{0,8}?(\(?\d+\.?\d*\)?)\s*股.{0,12}?(\(?\d+\.?\d*\)?)\s*股', re.I)
-# 兜底：无「换股比例」前缀时，匹配「每X股换Y股」写法
+# 兜底1：无「换股比例」前缀时，匹配「每X股换Y股」写法
 RE_SWAP_RATIO2 = re.compile(
-    r'每?.{0,10}?(\(?\d+\.?\d*\)?)\s*股.{0,6}?(?:換|换).{0,6}?(\(?\d+\.?\d*\)?)\s*股', re.I)
+    r'每\s*(\(?\d+\.?\d*\)?)\s*股.{0,30}?(?:換|换).{0,20}?(\(?\d+\.?\d*\)?)\s*股', re.I)
+# 兜底2：A 股报告书常见「换股比例确定为1:1.27」「换股比例 1:1.27」
+RE_SWAP_RATIO3 = re.compile(
+    r'(?:換股比例|换股比例|換股比率|换股比率)[:：\s]*(?:為|为|是|指)?[:：\s]*[^。:：]{0,80}?(\d+\.?\d*)[:：](\d+\.?\d*)', re.I)
 
 # 现金补偿
 RE_CASH_COMP = re.compile(r'(?:現金補償|现金补偿|每股現金|每股现金|Cash\s*Component)[:：\s]*(?:為|为|是)?[:：\s]*([\d.]+)', re.I)
@@ -129,8 +134,28 @@ def _to_num(s):
     except ValueError:
         return None
 
-def parse_fields(text):
-    """从全文中提取结构化字段"""
+def _infer_short_name_by_code(text, code):
+    """根据证券代码在文本中反查公司简称（支持代码在前/简称在前两种排版，分隔符可缺省）。"""
+    pat = re.compile(
+        r'(?:股票代码|证券代码|代碼|代码)[:：\s]*' + re.escape(code) + r'(?:\.\w+)?.{0,80}?(?:股票简称|证券简称|股票簡稱)[:：\s]*([^ 　\n]{2,20})',
+        re.I | re.S)
+    m = pat.search(text)
+    if m:
+        return m.group(1).strip()
+    pat2 = re.compile(
+        r'(?:股票简称|证券简称|股票簡稱)[:：\s]*([^ 　\n]{2,20}).{0,80}?(?:股票代码|证券代码|代碼|代码)[:：\s]*' + re.escape(code),
+        re.I | re.S)
+    m2 = pat2.search(text)
+    if m2:
+        return m2.group(1).strip()
+    return None
+
+def parse_fields(text, target_code=None):
+    """从全文中提取结构化字段。
+
+    target_code: 若已知目标证券代码（如 A 股换股吸收合并中的被吸收合并方），
+                 会优先提取该代码附近的「换股价格」，并把该代码排在 target_codes 首位。
+    """
     result = {
         'target_codes': [],
         'reference_codes': [],
@@ -164,10 +189,16 @@ def parse_fields(text):
         if code not in ordered_codes:
             ordered_codes.append(code)
 
+    # 若调用方已告知目标证券代码，将其置顶，避免从财务顾问报告/合并方段落里取错价格
+    if target_code and target_code in ordered_codes:
+        ordered_codes.remove(target_code)
+        ordered_codes.insert(0, target_code)
+
     # 主证券（发行人）：首个出现的代码
     if ordered_codes:
         result['target_codes'].append(ordered_codes[0])
-        result['evidence'].append({'field': 'target_code', 'value': ordered_codes[0], 'pos': code_hits[0][0]})
+        first_pos = next((pos for pos, code in code_hits if code == ordered_codes[0]), code_hits[0][0])
+        result['evidence'].append({'field': 'target_code', 'value': ordered_codes[0], 'pos': first_pos})
 
     # 按上下文归类：参考证券（换股吸收合并的换股标的/合并方/收购方）、供股权证券（供股临时交易代码）
     # 排除主证券本身；同一代码只归一类，优先参考证券。
@@ -187,14 +218,42 @@ def parse_fields(text):
 
     # 现金对价：遍历所有命中，取首个能解析出正数价格的
     # （避免首个关键词命中落在无关语境、其后无数字导致整条提取落空）
+    # 若已知 target_code，对「换股价格」额外做上下文选择：优先取 target_code 附近的价格，
+    # 避免在换股吸收合并报告书中取成合并方（如湘财股份 7.51）而非被合并方（如大智慧 9.53）的价格。
     cash_val = None
     cash_ev = None
-    for _m in RE_CASH_OFFER.finditer(text):
-        _v = _to_num(_m.group(1))
-        if _v is not None and _v > 0:
-            cash_val = _v
-            cash_ev = {'field': 'cash_offer_price', 'value': _m.group(1), 'pos': _m.start()}
-            break
+
+    # 若已知 target_code，对「换股价格」做上下文选择，避免取成合并方价格。
+    # 做法：根据 target_code 反查公司简称，再取该简称附近的「换股价格」。
+    if target_code and cash_val is None:
+        short_name = _infer_short_name_by_code(text, target_code)
+        if short_name:
+            best = None
+            best_dist = float('inf')
+            name_pat = re.compile(re.escape(short_name))
+            for _m in RE_CASH_OFFER.finditer(text):
+                kw = _m.group(0)[:40]
+                if '换股' not in kw and '換股' not in kw:
+                    continue
+                _v = _to_num(_m.group(1))
+                if _v is None or _v <= 0:
+                    continue
+                for nm in name_pat.finditer(text):
+                    _dist = abs(_m.start() - nm.start())
+                    if _dist < best_dist:
+                        best_dist = _dist
+                        best = (_v, _m)
+            if best:
+                cash_val, cash_m = best
+                cash_ev = {'field': 'cash_offer_price', 'value': cash_m.group(1), 'pos': cash_m.start()}
+
+    if cash_val is None:
+        for _m in RE_CASH_OFFER.finditer(text):
+            _v = _to_num(_m.group(1))
+            if _v is not None and _v > 0:
+                cash_val = _v
+                cash_ev = {'field': 'cash_offer_price', 'value': _m.group(1), 'pos': _m.start()}
+                break
     if cash_val is not None:
         result['cash_offer_price'] = cash_val
         result['evidence'].append(cash_ev)
@@ -207,7 +266,7 @@ def parse_fields(text):
         result['evidence'].append({'field': 'subscription_price', 'value': m.group(1), 'pos': m.start()})
 
     # 换股比例
-    for _rex in (RE_SWAP_RATIO, RE_SWAP_RATIO2):
+    for _rex in (RE_SWAP_RATIO, RE_SWAP_RATIO2, RE_SWAP_RATIO3):
         m = _rex.search(text)
         if m:
             g1 = _to_num(m.group(1))
@@ -270,11 +329,23 @@ def parse_fields(text):
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({'error': 'Usage: extractArbitrageDocument.py <url_or_path> [output.json]'}))
+        print(json.dumps({'error': 'Usage: extractArbitrageDocument.py <url_or_path> [--target-code CODE] [output.json]'}))
         sys.exit(1)
 
     source = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else None
+    target_code = None
+    output_path = None
+    i = 2
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == '--target-code' and i + 1 < len(sys.argv):
+            target_code = sys.argv[i + 1]
+            i += 2
+        elif output_path is None:
+            output_path = arg
+            i += 1
+        else:
+            i += 1
 
     temp_pdf = None
     file_path = source
@@ -300,7 +371,7 @@ def main():
 
     # 解析字段（即便单字段异常也尽可能返回已提取结果，绝不空输出导致同步崩溃）
     try:
-        result = parse_fields(text)
+        result = parse_fields(text, target_code=target_code)
     except Exception as e:
         result = {'error': 'parse_fields failed: ' + str(e), 'source': source}
     result['text_length'] = len(text) if text else 0

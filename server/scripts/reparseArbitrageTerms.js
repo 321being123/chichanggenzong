@@ -27,8 +27,10 @@ async function main() {
   const START = parseInt(process.env.START_CASE_ID || '0', 10);   // 断点续跑：跳过错过的案件
   const ONLY = parseInt(process.env.ONLY_CASE_ID || '0', 10);     // 仅处理单个案件
 
-  // 取出案件（可按 STRATEGY 过滤）
-  let caseSql = 'SELECT c.case_id, c.strategy_type, c.raw_payload AS case_payload FROM event.arbitrage_cases c';
+  // 取出案件（可按 STRATEGY 过滤），同时带上目标证券代码供解析器做上下文选择
+  let caseSql = `SELECT c.case_id, c.strategy_type, c.raw_payload AS case_payload, i.canonical_code AS target_code
+                 FROM event.arbitrage_cases c
+                 LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id`;
   const caseParams = [];
   if (STRATEGY.length) {
     caseSql += ' WHERE c.strategy_type = ANY($1)';
@@ -84,7 +86,7 @@ async function main() {
 
     for (const url of urls) {
       try {
-        const parsed = await parser.runPythonExtraction(url);
+        const parsed = await parser.runPythonExtraction(url, c.target_code);
         const ok = await parser.applyExtractedTerms(c.case_id, parsed);
         extracted++;
         console.log(`case ${c.case_id} [${url.slice(-22)}]: conf=${parsed.confidence}${ok ? '' : ' (no new terms)'}`);

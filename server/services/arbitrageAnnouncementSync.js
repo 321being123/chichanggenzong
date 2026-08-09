@@ -196,7 +196,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     // 新事件且有 PDF 公告时，调用解析器补充条款（含参考/供股证券关系与 rights_units_per_new_share）
     if (createdNew && createdCaseId && ann.fileLink && /\.pdf$/i.test(ann.fileLink)) {
       try {
-        const parsed = await parser.runPythonExtraction(ann.fileLink);
+        const parsed = await parser.runPythonExtraction(ann.fileLink, ann.stockCode);
         await parser.applyExtractedTerms(createdCaseId, parsed);
       } catch (parseErr) {
         // 解析失败（Python 缺失 / PDF 下载或提取异常）记录为数据质量错误，便于排查，不阻断同步

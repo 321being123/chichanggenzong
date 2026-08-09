@@ -24,11 +24,14 @@ function resolvePython() {
 }
 
 // 调用 Python 解析器提取单条公告 URL 的条款
-function runPythonExtraction(url) {
+// targetCode: 目标证券代码（如 A 股换股吸收合并中的被吸收合并方），帮助解析器选择正确的换股价格
+function runPythonExtraction(url, targetCode) {
   return new Promise((resolve, reject) => {
     if (!/^https?:\/\//i.test(url)) return reject(new Error('only http(s) urls are supported'));
     const py = resolvePython();
-    const child = spawn(py, [SCRIPT, url], {
+    const args = [SCRIPT, url];
+    if (targetCode) args.push('--target-code', String(targetCode));
+    const child = spawn(py, args, {
       cwd: path.resolve(__dirname, '..', '..'),
       env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
       windowsHide: true,

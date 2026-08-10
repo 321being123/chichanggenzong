@@ -17,6 +17,8 @@ const DISCOVERY_KEYWORDS = [
   '现金选择权',
   '异议股东收购请求权',
   '换股吸收合并',
+  '境内上市外资股转换上市地',
+  'B股转H股',
 ];
 const UPDATE_KEYWORDS = [
   '换股实施',
@@ -135,7 +137,7 @@ function parseSearchResponse(text) {
     const adjunctUrl = normalizeAdjunctUrl(a.adjunctUrl || a.attachmentUrl || '');
     const title = cleanText(a.announcementTitle || a.title || '');
     const secCode = String(a.secCode || a.code || '').trim();
-    const secName = String(a.secName || a.companyName || '').trim();
+    const secName = cleanText(a.secName || a.companyName || '');
     const exchange = mapCninfoExchange(a.pageColumn || a.columnId || a.exchange || a.secCodeType);
     const annTime = a.announcementTime || a.publishDate;
 

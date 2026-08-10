@@ -111,6 +111,20 @@ td.negative { color: #137333; font-weight: 600; }
 .text-center { text-align: center; }
 .positions-data-table th,
 .positions-data-table td { text-align: center !important; }
+.arb-table-scroll { max-height: calc(100vh - 185px); overflow: auto; padding: 12px; }
+.arb-data-table { width: max-content !important; min-width: 100%; border-collapse: separate; border-spacing: 0; }
+.arb-data-table thead th { position: sticky; top: 0; z-index: 2; background: #fafbfc; }
+.arb-data-table th, .arb-data-table td { white-space: nowrap; }
+.arb-data-table-a_stock { min-width: 2050px; }
+.arb-data-table-hk_privatisation { min-width: 1650px; }
+.arb-data-table-hk_rights { min-width: 1550px; }
+.arb-data-table .arb-code-cell { min-width: 86px; }
+.arb-data-table .arb-name-cell { min-width: 112px; }
+.arb-data-table .arb-security-link { color: #1a73e8; font-weight: 500; text-decoration: none; }
+.arb-data-table .arb-security-link:hover { color: #0d47a1; text-decoration: underline; }
+.arb-data-table .arb-note-cell { min-width: 260px; max-width: 420px; white-space: normal; text-align: left !important; line-height: 1.55; }
+.arb-data-table .arb-announcement-link { color: #1a73e8; white-space: nowrap; text-decoration: none; }
+.arb-data-table .arb-announcement-link:hover { text-decoration: underline; }
 /* 持仓表可点击跳转：代码/名称/估值标签 */
 .pos-link { color: #1a73e8; cursor: pointer; text-decoration: none; }
 .pos-link:hover { text-decoration: underline; color: #0d47a1; }

@@ -33,6 +33,11 @@ function isConvertibleBondCode(rawCode) {
   return /^\d{6}$/.test(code) && /^(110|111|113|118|123|127|128)/.test(code);
 }
 
+function quoteLookupKeys(item) {
+  if (!item || !item.code || !item.market) return [];
+  return [item.code, `${item.code}.${item.market.toUpperCase()}`];
+}
+
 function parseQuoteTime(value) {
   const text = String(value || '');
   if (/^\d{14}$/.test(text)) {
@@ -171,7 +176,9 @@ async function fetchTencentQuotes(rawCodes, options = {}) {
   const result = new Map();
   descriptors.forEach(item => {
     const quote = fresh.get(item.symbol);
-    if (quote && quote.price > 0) result.set(item.code, quote);
+    if (quote && quote.price > 0) {
+      quoteLookupKeys(item).forEach(key => result.set(key, quote));
+    }
   });
   return result;
 }
@@ -182,5 +189,6 @@ module.exports = {
   isConvertibleBondCode,
   parseQuoteTime,
   parseTencentQuoteText,
+  quoteLookupKeys,
   fetchTencentQuotes,
 };

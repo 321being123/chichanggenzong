@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { toTsCode } = require('../services/market');
-const { describeTencentCode, isConvertibleBondCode, parseQuoteTime, parseTencentQuoteText } = require('../services/tencentQuote');
+const { describeTencentCode, isConvertibleBondCode, parseQuoteTime, parseTencentQuoteText, quoteLookupKeys } = require('../services/tencentQuote');
 const { evaluateBondSafety } = require('../services/bondSafety');
 
 const fields = Array(33).fill('');
@@ -23,6 +23,7 @@ assert.strictEqual(describeTencentCode('SH128044').symbol, 'sh128044', '显式�
 assert.strictEqual(describeTencentCode('920002').symbol, 'bj920002', '北交所裸代码必须映射到 bj');
 assert.strictEqual(describeTencentCode('920002.BJ').symbol, 'bj920002', '北交所后缀必须被识别');
 assert.strictEqual(describeTencentCode('BJ920002').symbol, 'bj920002', '北交所前缀必须被识别');
+assert.deepStrictEqual(quoteLookupKeys(describeTencentCode('00751.HK')), ['00751', '00751.HK']);
 assert.strictEqual(isConvertibleBondCode('128044'), true);
 assert.strictEqual(parsed.get('sz128044').price, 101.234);
 assert.strictEqual(parsed.get('sz128044').change, 1.25);

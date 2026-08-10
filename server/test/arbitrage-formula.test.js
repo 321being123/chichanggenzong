@@ -18,6 +18,11 @@ test('现金套利：对价10元，现价8元 → 套利价值2元，空间25%',
   assert.strictEqual(r.arbitrageSpace, 25);
 });
 
+test('选择权溢折价与预期收益率使用不同分母', () => {
+  assert.strictEqual(svc.calcPricePremium(10, 8), -20);
+  assert.strictEqual(svc.calcCashArbitrage(10, 8).arbitrageSpace, 25);
+});
+
 test('现金套利：对价5元，现价5元 → 空间0%', () => {
   const r = svc.calcCashArbitrage(5, 5);
   assert.strictEqual(r.arbitrageValue, 0);
@@ -151,6 +156,17 @@ test('统一入口：缺现价 → 不计算', () => {
 test('统一入口：offer_price 和 cash_choice_price 都有时优先 offer_price', () => {
   const r = svc.calcArbitrage({ strategy_type: 'a_cash_offer', offer_price: 10, cash_choice_price: 8 }, 5, null, null);
   assert.strictEqual(r.arbitrageValue, 5); // 10 - 5 = 5
+});
+
+test('合并方自身：有现金选择权，但不参与换股套利', () => {
+  assert.strictEqual(svc.isSwapEligible({
+    strategy_type: 'a_share_swap', swap_ratio: 0.4376,
+    target_instrument_id: 1, reference_instrument_id: 1,
+  }), false);
+  assert.strictEqual(svc.isSwapEligible({
+    strategy_type: 'a_share_swap', swap_ratio: 0.521,
+    target_instrument_id: 2, reference_instrument_id: 1,
+  }), true);
 });
 
 console.log('\nPASS=' + pass + ' FAIL=' + fail);

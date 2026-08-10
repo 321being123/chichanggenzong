@@ -42,6 +42,14 @@ test('巨潮创业板 SZCY / 深圳主板 SZZB 均映射为 SZSE', () => {
   assert.strictEqual(items[1].exchange, 'SZSE');
 });
 
+test('巨潮证券名称中的 em 高亮标签会被清除', () => {
+  const payload = JSON.stringify({ announcements: [
+    { announcementId: 'name-clean', announcementTitle: '换股吸收合并', secCode: '600095', secName: '湘财<em>股</em>份' },
+  ]});
+  const { items } = cninfo.parseSearchResponse(payload);
+  assert.strictEqual(items[0].stockName, '湘财股份');
+});
+
 test('巨潮默认搜索关键词包含 UPDATE_KEYWORDS（终止/完成/换股实施）', () => {
   const all = [...cninfo.DISCOVERY_KEYWORDS, ...cninfo.UPDATE_KEYWORDS];
   assert.ok(all.includes('终止'), 'missing 终止');
@@ -111,12 +119,21 @@ test('detectUpdate：完成私有化 → completed + hk_privatisation', () => {
   const r = sync.detectUpdate('XX集团私有化完成暨撤回上市地位的公告');
   assert.deepStrictEqual(r, { status: 'completed', strategyType: 'hk_privatisation' });
 });
+
+test('detectUpdate：私有化建议公告不能误标为已完成', () => {
+  const title = '要约人透过计划安排方式将国泰君安国际私有化之附带先决条件之建议及建议撤销上市地位';
+  assert.strictEqual(sync.detectUpdate(title), null);
+});
 test('detectUpdate：换股吸收合并实施结果 → completed + a_share_swap', () => {
   const r = sync.detectUpdate('关于换股吸收合并实施结果暨股票复牌的公告');
   assert.deepStrictEqual(r, { status: 'completed', strategyType: 'a_share_swap' });
 });
 test('detectUpdate：要约收购完成过户 → completed + a_cash_offer', () => {
   const r = sync.detectUpdate('关于要约收购完成过户的公告');
+  assert.deepStrictEqual(r, { status: 'completed', strategyType: 'a_cash_offer' });
+});
+test('detectUpdate：现金选择权申报结果 → completed + a_cash_offer', () => {
+  const r = sync.detectUpdate('关于现金选择权申报结果的公告');
   assert.deepStrictEqual(r, { status: 'completed', strategyType: 'a_cash_offer' });
 });
 test('detectUpdate：无关完成场景 → null（不误关套利事件）', () => {

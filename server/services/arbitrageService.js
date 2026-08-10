@@ -4,8 +4,50 @@ const { pool } = require('../db');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const sync = require('./arbitrageAnnouncementSync');
 const parser = require('./arbitrageParser');
+const { cleanSecurityText } = require('./arbitrageRules');
 
-const FORMULA_VERSION = 'v1.0';
+const FORMULA_VERSION = 'v2.0';
+
+// 公开页只展示具备核心计算条款的案件；同时兜底排除历史上被误建为“进行中”的终态公告。
+// 后台审核页仍保留全部案件，便于检查和修正原始数据。
+const PUBLIC_CASE_FILTER = `
+  c.review_status = 'approved'
+  AND (c.parser_version IS NULL OR c.parse_status = 'validated')
+  AND c.event_status NOT IN ('completed','terminated','expired')
+  AND (c.expected_completion_date IS NULL OR c.expected_completion_date >= CURRENT_DATE)
+  AND (
+    (c.strategy_type IN ('a_cash_offer','hk_privatisation') AND COALESCE(c.offer_price,c.cash_choice_price) > 0)
+    OR (c.strategy_type = 'a_share_swap' AND (
+        COALESCE(c.cash_choice_price,c.offer_price) > 0
+        OR (c.swap_ratio > 0
+          AND c.reference_instrument_id IS NOT NULL
+          AND c.reference_instrument_id <> c.target_instrument_id
+          AND EXISTS (
+            SELECT 1 FROM core.instruments ref_valid
+            WHERE ref_valid.instrument_id = c.reference_instrument_id
+              AND COALESCE(ref_valid.name, '') <> ''
+          ))))
+    OR (c.strategy_type = 'hk_rights' AND c.subscription_price > 0
+        AND c.rights_units_per_new_share > 0 AND c.rights_instrument_id IS NOT NULL)
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM event.arbitrage_case_documents acd_terminal
+    JOIN event.documents d_terminal ON d_terminal.document_id = acd_terminal.document_id
+    WHERE acd_terminal.case_id = c.case_id
+      AND COALESCE(d_terminal.title, '') ~* '(终止|終止|完成过户|完成過戶|过户完成|過戶完成|交割完成|交割完毕|交割完畢|实施结果|實施結果|申报结果|申報結果|供股.{0,12}结果|供股.{0,12}結果|私有化.{0,12}完成|privati[sz]ation.{0,20}completed|lapsed|terminated|withdrawn)'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM event.arbitrage_cases terminal_case
+    JOIN event.arbitrage_case_documents terminal_link ON terminal_link.case_id=terminal_case.case_id
+    JOIN event.documents terminal_doc ON terminal_doc.document_id=terminal_link.document_id
+    WHERE terminal_case.target_instrument_id=c.target_instrument_id
+      AND terminal_case.strategy_type=c.strategy_type
+      AND terminal_case.case_id<>c.case_id
+      AND terminal_case.event_status IN ('completed','terminated','expired')
+      AND terminal_doc.announced_at>=c.announced_at
+  )`;
 
 // ========== 查询 ==========
 
@@ -20,25 +62,25 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
   const types = typeMap[type] || typeMap.a_stock;
 
   const { rows } = await pool.query(`
-    SELECT c.*, i.canonical_code, i.name, i.currency_code as inst_currency,
-           ri.canonical_code as ref_code, ri.name as ref_name,
-           rwi.canonical_code as rights_code, rwi.name as rights_name
+    SELECT c.*, i.canonical_code, regexp_replace(i.name,'<[^>]+>','','g') AS name, i.currency_code as inst_currency,
+           ri.canonical_code as ref_code, regexp_replace(ri.name,'<[^>]+>','','g') AS ref_name,
+           rwi.canonical_code as rights_code, rwi.name as rights_name,
+           pd.url AS announcement_url
     FROM event.arbitrage_cases c
     LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
     LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
     LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
+    LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
     WHERE c.strategy_type = ANY($1)
-      AND c.review_status = 'approved'
-      AND c.event_status NOT IN ('completed','terminated','expired')
-      AND (c.expected_completion_date IS NULL OR c.expected_completion_date >= CURRENT_DATE)
+      AND ${PUBLIC_CASE_FILTER}
     ORDER BY c.terms_updated_at DESC NULLS LAST
     LIMIT $2 OFFSET $3
   `, [types, pageSize, offset]);
 
   const { rows: countRows } = await pool.query(`
-    SELECT count(*) as total FROM event.arbitrage_cases
-    WHERE strategy_type = ANY($1) AND review_status='approved' AND event_status NOT IN ('completed','terminated','expired')
-      AND (expected_completion_date IS NULL OR expected_completion_date >= CURRENT_DATE)
+    SELECT count(*) as total FROM event.arbitrage_cases c
+    WHERE c.strategy_type = ANY($1)
+      AND ${PUBLIC_CASE_FILTER}
   `, [types]);
 
   // 收集所有需取行情的代码（正股 / 换股参考股 / 供股权）
@@ -59,8 +101,19 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
     const changePct = tQuote ? Number(tQuote.change) : null;
     const quoteTime = tQuote ? tQuote.quote_time : null;
 
+    const swapEligible = isSwapEligible(r);
+    const calc = swapEligible || r.strategy_type !== 'a_share_swap'
+      ? calcArbitrage(r, currentPrice, refPrice, rightsPrice)
+      : calcCashArbitrage(r.cash_choice_price || r.offer_price, currentPrice);
+    const cashCalc = r.strategy_type === 'a_share_swap'
+      ? calcCashArbitrage(r.cash_choice_price, currentPrice)
+      : calc;
+
     return {
       ...r,
+      name: cleanSecurityText(r.name),
+      ref_name: cleanSecurityText(r.ref_name),
+      rights_name: cleanSecurityText(r.rights_name),
       currentPrice,
       changePct,
       quoteTime,
@@ -69,7 +122,14 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
       rights_code: r.rights_code,
       ref_code: r.ref_code,
       stale: !tQuote,
-      ...calcArbitrage(r, currentPrice, refPrice, rightsPrice),
+      swapEligible,
+      ...calc,
+      cashArbitrageSpace: cashCalc.arbitrageSpace,
+      cashExpectedReturn: cashCalc.arbitrageSpace,
+      cashChoicePremium: calcPricePremium(r.cash_choice_price || r.offer_price, currentPrice),
+      fixedSwapPremium: calcPricePremium(r.target_swap_price, currentPrice),
+      swapArbitrageSpace: swapEligible ? calc.arbitrageSpace : null,
+      liveSwapReturn: swapEligible ? calc.arbitrageSpace : null,
     };
   });
 
@@ -91,13 +151,15 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
 // 详情
 async function getArbitrageDetail(caseId) {
   const { rows } = await pool.query(`
-    SELECT c.*, i.canonical_code, i.name, i.currency_code as inst_currency,
-           ri.canonical_code as ref_code, ri.name as ref_name,
-           rwi.canonical_code as rights_code, rwi.name as rights_name
+    SELECT c.*, i.canonical_code, regexp_replace(i.name,'<[^>]+>','','g') AS name, i.currency_code as inst_currency,
+           ri.canonical_code as ref_code, regexp_replace(ri.name,'<[^>]+>','','g') AS ref_name,
+           rwi.canonical_code as rights_code, rwi.name as rights_name,
+           pd.url AS announcement_url
     FROM event.arbitrage_cases c
     LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
     LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
     LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
+    LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
     WHERE c.case_id = $1 AND c.review_status = 'approved'
   `, [caseId]);
 
@@ -113,7 +175,10 @@ async function getArbitrageDetail(caseId) {
   const rightsQuote = c.rights_code ? quoteMap.get(c.rights_code) : null;
 
   const currentPrice = targetQuote ? Number(targetQuote.price) : null;
-  const calc = calcArbitrage(c, currentPrice, refQuote ? Number(refQuote.price) : null, rightsQuote ? Number(rightsQuote.price) : null);
+  const swapEligible = isSwapEligible(c);
+  const calc = swapEligible || c.strategy_type !== 'a_share_swap'
+    ? calcArbitrage(c, currentPrice, refQuote ? Number(refQuote.price) : null, rightsQuote ? Number(rightsQuote.price) : null)
+    : calcCashArbitrage(c.cash_choice_price || c.offer_price, currentPrice);
 
   // 获取公告链
   const { rows: docs } = await pool.query(`
@@ -126,13 +191,21 @@ async function getArbitrageDetail(caseId) {
 
   return {
     ...c,
+    name: cleanSecurityText(c.name),
+    ref_name: cleanSecurityText(c.ref_name),
+    rights_name: cleanSecurityText(c.rights_name),
     currentPrice,
     changePct: targetQuote ? Number(targetQuote.change) : null,
     refPrice: refQuote ? Number(refQuote.price) : null,
     rightsPrice: rightsQuote ? Number(rightsQuote.price) : null,
     quoteTime: targetQuote ? targetQuote.quote_time : null,
+    swapEligible,
     documents: docs,
     ...calc,
+    cashExpectedReturn: calcCashArbitrage(c.cash_choice_price || c.offer_price, currentPrice).arbitrageSpace,
+    cashChoicePremium: calcPricePremium(c.cash_choice_price || c.offer_price, currentPrice),
+    fixedSwapPremium: calcPricePremium(c.target_swap_price, currentPrice),
+    liveSwapReturn: swapEligible ? calc.arbitrageSpace : null,
     formulaVersion: FORMULA_VERSION,
     dataAsOf: new Date().toISOString(),
     quoteAsOf: targetQuote ? targetQuote.quote_time : new Date().toISOString(),
@@ -245,40 +318,49 @@ async function updateCase(caseId, updates, reviewer) {
 // 重新解析：调用 Python 解析器提取正文条款并回写事件
 async function reparseCase(caseId) {
   const { rows } = await pool.query(`
-    SELECT c.*, d.url, d.title
+    SELECT c.*,i.canonical_code
     FROM event.arbitrage_cases c
-    LEFT JOIN event.documents d ON c.primary_document_id = d.document_id
+    LEFT JOIN core.instruments i ON i.instrument_id=c.target_instrument_id
     WHERE c.case_id = $1
   `, [caseId]);
   if (!rows.length) return null;
   const row = rows[0];
-
-  // primary 为空时，取事件链中最新一条带链接的公告
-  let url = row.url;
-  if (!url) {
-    const { rows: docRows } = await pool.query(`
-      SELECT d.url FROM event.arbitrage_case_documents acd
-      JOIN event.documents d ON acd.document_id = d.document_id
-      WHERE acd.case_id = $1 AND d.url IS NOT NULL AND d.url <> ''
-      ORDER BY d.announced_at DESC NULLS LAST LIMIT 1
-    `, [caseId]);
-    if (docRows.length) url = docRows[0].url;
-  }
-
-  if (!url || !/\.pdf$/i.test(url)) {
+  const { rows: docRows } = await pool.query(`
+    SELECT d.document_id,d.url,d.title,acd.document_role
+    FROM event.arbitrage_case_documents acd
+    JOIN event.documents d ON acd.document_id=d.document_id
+    WHERE acd.case_id=$1 AND d.url ~* '\\.pdf$'
+    ORDER BY d.announced_at ASC NULLS LAST
+  `, [caseId]);
+  if (!docRows.length) {
     return { caseId, status: 'skipped', message: '该事件没有可解析的 PDF 公告链接', extracted: null };
   }
-
-  const parsed = await parser.runPythonExtraction(url);
-  // applyExtractedTerms 会回写标量条款，并建立参考证券/供股权证券关系、rights_units_per_new_share
-  const applied = await parser.applyExtractedTerms(caseId, parsed);
+  let parsedCount = 0;
+  let failedCount = 0;
+  for (const doc of docRows) {
+    const role = parserRole(doc.title, doc.document_role);
+    if (role === 'terminal') continue;
+    try {
+      await parser.parseAndStoreDocument(caseId, doc.document_id, doc.url, row.canonical_code, role, true);
+      parsedCount++;
+    } catch (err) {
+      failedCount++;
+      console.error(`[arbitrage] case ${caseId} document ${doc.document_id} parse failed:`, err.message);
+    }
+  }
+  if (!parsedCount) return { caseId, status: 'failed', message: `${failedCount}份公告均解析失败`, extracted: null };
+  const rebuilt = await parser.rebuildCaseTerms(caseId);
   return {
     caseId,
-    status: applied ? 'reparsed' : 'parsed_empty',
-    message: applied ? '已重新解析并应用条款' : '已解析但未提取到可用条款',
-    confidence: parsed.confidence,
-    extracted: parser.mapParserFields(parsed),
+    status: rebuilt.status,
+    message: `已解析${parsedCount}份公告并按证据优先级重建条款${failedCount ? `，${failedCount}份失败已记录` : ''}`,
+    ...rebuilt,
   };
+}
+
+function parserRole(title, existingRole) {
+  if (existingRole && existingRole !== 'other') return existingRole;
+  return require('./arbitrageRules').classifyDocumentRole(title);
 }
 
 // 触发同步（后台执行）
@@ -306,6 +388,12 @@ function calcCashArbitrage(offerPrice, currentPrice) {
   return { arbitrageValue: round(value), arbitrageSpace: round(space) };
 }
 
+// 现价相对固定条款价格的溢折价；与“潜在收益率”分开，避免正负号和分母混用。
+function calcPricePremium(termPrice, currentPrice) {
+  if (!termPrice || !currentPrice || termPrice <= 0 || currentPrice <= 0) return null;
+  return round((currentPrice / termPrice - 1) * 100);
+}
+
 // 换股吸收合并
 function calcSwapArbitgage(refPrice, swapRatio, cashComponent, targetPrice) {
   if (!refPrice || !swapRatio || !targetPrice || refPrice <= 0 || swapRatio <= 0 || targetPrice <= 0) {
@@ -320,6 +408,14 @@ function calcSwapArbitgage(refPrice, swapRatio, cashComponent, targetPrice) {
     arbitrageValue: round(value),
     arbitrageSpace: round(space),
   };
+}
+
+function isSwapEligible(caseRow) {
+  return Boolean(caseRow && caseRow.strategy_type === 'a_share_swap'
+    && Number(caseRow.swap_ratio) > 0
+    && caseRow.reference_instrument_id != null
+    && caseRow.target_instrument_id != null
+    && String(caseRow.reference_instrument_id) !== String(caseRow.target_instrument_id));
 }
 
 // 港股供股权：每股新股总成本 = 供股价(subscriptionPrice) + 供股权现价(rightsPrice) × rights_units_per_new_share
@@ -379,8 +475,10 @@ module.exports = {
   reparseCase,
   triggerSync,
   calcCashArbitrage,
+  calcPricePremium,
   calcSwapArbitgage,
   calcRightsArbitrage,
   calcArbitrage,
+  isSwapEligible,
   FORMULA_VERSION,
 };

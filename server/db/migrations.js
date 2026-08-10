@@ -2098,6 +2098,7 @@ const MIGRATIONS = [
   { version: '052_nav_history_hk_rate', up: migration052NavHistoryHkRate },
   { version: '053_index_baseline_settled', up: migration053IndexBaselineSettled },
   { version: '054_arbitrage_cases', up: migration054ArbitrageCases },
+  { version: '055_arbitrage_parser_accuracy', up: migration055ArbitrageParserAccuracy },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -2209,6 +2210,29 @@ async function migration054ArbitrageCases() {
       PRIMARY KEY (case_id, document_id)
     );
   `);
+}
+
+// ========== 055：套利解析准确性——稳定事件键、字段证据、固定换股价格 ==========
+async function migration055ArbitrageParserAccuracy() {
+  await pool.query(`
+    ALTER TABLE event.arbitrage_cases
+      ADD COLUMN IF NOT EXISTS event_key TEXT,
+      ADD COLUMN IF NOT EXISTS target_swap_price NUMERIC(20,6),
+      ADD COLUMN IF NOT EXISTS reference_swap_price NUMERIC(20,6),
+      ADD COLUMN IF NOT EXISTS parse_status TEXT NOT NULL DEFAULT 'unparsed',
+      ADD COLUMN IF NOT EXISTS parser_version TEXT,
+      ADD COLUMN IF NOT EXISTS terms_confidence NUMERIC(5,4)
+  `);
+  await pool.query(`
+    ALTER TABLE event.arbitrage_case_documents
+      ADD COLUMN IF NOT EXISTS document_role TEXT NOT NULL DEFAULT 'other',
+      ADD COLUMN IF NOT EXISTS parsed_payload JSONB,
+      ADD COLUMN IF NOT EXISTS parser_version TEXT,
+      ADD COLUMN IF NOT EXISTS parse_status TEXT NOT NULL DEFAULT 'unparsed',
+      ADD COLUMN IF NOT EXISTS parsed_at TIMESTAMPTZ
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_arb_cases_event_key ON event.arbitrage_cases(event_key) WHERE event_key IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_arb_case_docs_parse ON event.arbitrage_case_documents(case_id, parse_status, document_role)`);
 }
 
 // ========== 052：nav_history 记录每条快照所用港币汇率（治本：今日涨跌可正确拆分汇率影响） ==========

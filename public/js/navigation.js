@@ -15,6 +15,7 @@ function switchMain(main, noPushState) {
     var params = new URLSearchParams(window.location.search);
     if (main === 'home') { while (params.toString()) { params.delete(params.keys().next().value); } }
     else { params.set('main', main); if (main !== 'bond-safety') params.delete('sub'); }
+    if (main !== 'arbitrage') { params.delete('case'); params.delete('arb_type'); }
     var newUrl = params.toString() ? '/?' + params.toString() : '/';
     if (window.location.pathname + window.location.search !== newUrl) {
       history.pushState(null, '', newUrl);

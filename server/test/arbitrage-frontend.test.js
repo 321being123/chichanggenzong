@@ -1,0 +1,40 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const root = path.join(__dirname, '..', '..');
+const frontend = fs.readFileSync(path.join(root, 'public', 'js', 'arbitrage.js'), 'utf8');
+const service = fs.readFileSync(path.join(root, 'server', 'services', 'arbitrageService.js'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
+const style = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
+
+assert.ok(frontend.includes('num(r.refPrice)'), '换股参考价必须显示参考证券现价');
+assert.ok(!frontend.includes("'<td>' + num(r.theoreticalPrice)"), '换股参考价不得误用理论换股价');
+assert.ok(frontend.includes('cashChoicePremium') && frontend.includes('cashExpectedReturn'), '选择权溢折价与预期现金收益必须分开');
+assert.ok(frontend.includes('fixedSwapPremium') && frontend.includes('liveSwapReturn'), '固定换股溢折价与实时换股收益必须分开');
+assert.ok(frontend.includes('\\u4e0d\\u9002\\u7528'), '现金选择权行的换股字段应明确显示“不适用”');
+assert.ok(service.includes('COALESCE(c.cash_choice_price,c.offer_price) > 0'), '有现金选择权的合并方必须保留');
+assert.ok(frontend.includes('r.swapEligible'), '合并方自身的换股字段必须显示不适用');
+assert.ok(service.includes("regexp_replace(i.name,'<[^>]+>','','g')"), '公开证券名称必须清理 HTML 标签');
+assert.ok(frontend.includes('r.description') && frontend.includes('arb-note-cell'), '套利列表必须展示备注列');
+assert.ok(frontend.includes('r.announcement_url') && frontend.includes('arbAnnouncementLink'), '套利列表必须展示官方公告链接');
+assert.ok(html.includes('arb-table-scroll'), '套利表格滚动容器缺失');
+assert.ok(style.includes('.arb-data-table thead th') && style.includes('position: sticky'), '套利列表表头必须滚动吸顶');
+assert.ok(style.includes('max-height: calc(100vh - 185px)') && style.includes('overflow: auto'), '套利列表必须在纵向滚动容器内保持表头吸顶');
+assert.ok(style.includes('.arb-data-table .arb-name-cell') && style.includes('white-space: nowrap'), '证券名称不得逐字换行');
+assert.ok(frontend.includes('arbDetailLink') && frontend.includes('arb-security-link'), '代码和名称必须使用详情链接');
+assert.ok(!frontend.includes('onclick="openArbDetail(' + "' + r.case_id"), '套利整行不得绑定详情点击');
+assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("params.delete('case')"), '套利详情必须具有独立URL页面状态');
+assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
+assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
+assert.ok(html.includes('shared/style.css?v=27'), '全局样式缓存版本未更新');
+assert.ok(html.includes('js/arbitrage.js?v=9'), '套利前端缓存版本未更新');
+assert.ok(html.includes('js/navigation.js?v=4'), '导航缓存版本未更新');
+assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');
+assert.ok(frontend.includes('d.cashChoicePremium') && frontend.includes('d.cashExpectedReturn'), '详情必须显示现金选择权两种收益口径');
+assert.ok(frontend.includes('d.fixedSwapPremium') && frontend.includes('d.liveSwapReturn'), '详情必须显示固定换股和实时换股指标');
+assert.ok(frontend.includes('d.rightsPrice') && frontend.includes('d.rights_ratio_numerator'), '详情必须显示供股列表字段');
+assert.ok(frontend.includes('arbAnnouncementLink(d.announcement_url)'), '详情必须显示列表主公告链接');
+assert.ok(service.includes('pd.url AS announcement_url'), '详情接口必须返回主公告链接');
+
+console.log('arbitrage frontend tests passed');

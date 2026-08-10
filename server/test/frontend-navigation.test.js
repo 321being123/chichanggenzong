@@ -30,7 +30,7 @@ const protectedPages = arrayItems('protectedPages');
 const allowedPages = publicPages.concat(protectedPages);
 
 // 1) 访问矩阵口径与整改报告 ACCESS-01 一致
-const expectedPublic = ['home', 'knowledge', 'stock-analysis', 'bond-safety', 'market-volatility', 'ipo', 'changelog'];
+const expectedPublic = ['home', 'knowledge', 'stock-analysis', 'bond-safety', 'market-volatility', 'ipo', 'arbitrage', 'changelog'];
 ok(JSON.stringify(publicPages) === JSON.stringify(expectedPublic),
   '公开页面应为 ' + expectedPublic.join(',') + '，实际为 ' + publicPages.join(','));
 

@@ -2,6 +2,7 @@
 // 数据源：https://www1.hkexnews.hk/search/titleSearchServlet.do
 // 用途：检索私有化、协议安排、供股等公告，标准化后交由同步编排入库
 const https = require('https');
+const { firstSecurityCode, firstSecurityName, cleanSecurityText } = require('./arbitrageRules');
 
 const BASE_URL = 'https://www1.hkexnews.hk';
 const SEARCH_PATH = '/search/titleSearchServlet.do';
@@ -122,10 +123,10 @@ function parseSearchResponse(text) {
   const items = results.map((r) => {
     const newsId = String(r['NEWS_ID'] || r['newsId'] || r['id'] || '').trim();
     const fileLink = normalizeFileLink(r['FILE_LINK'] || r['fileLink'] || r['href'] || '');
-    const title = String(r['TITLE'] || r['title'] || r['SHORT_TEXT'] || '').trim();
+    const title = cleanSecurityText(r['TITLE'] || r['title'] || r['SHORT_TEXT'] || '');
     const dateStr = String(r['DATE_TIME'] || r['dateTime'] || r['LDT'] || r['RELEASE_TIME'] || '').trim();
-    const stockCode = String(r['STOCK_CODE'] || r['stockCode'] || '').trim();
-    const stockName = String(r['STOCK_NAME'] || r['stockName'] || '').trim();
+    const stockCode = firstSecurityCode(r['STOCK_CODE'] || r['stockCode'] || '', 'HK');
+    const stockName = firstSecurityName(r['STOCK_NAME'] || r['stockName'] || '');
     const category = String(r['CATEGORY'] || r['category'] || r['CAT_CODE'] || '').trim();
 
     return {
@@ -133,7 +134,7 @@ function parseSearchResponse(text) {
       fileLink,
       title,
       announcedAt: parseHKEXDate(dateStr),
-      stockCode: stockCode.replace(/^0+/, '').padStart(5, '0'),
+      stockCode,
       stockName,
       category,
       rawPayload: r,

@@ -65,8 +65,26 @@ test('标题分类：A股要约收购', () => {
   assert.strictEqual(sync.classifyTitle('要约收购报告书摘要', 'cninfo'), 'a_cash_offer');
 });
 
+test('标题分类：免于发出要约不属于套利机会', () => {
+  assert.strictEqual(sync.classifyTitle('收购报告书暨免于发出要约收购申请之财务顾问报告', 'cninfo'), null);
+});
+
+test('标题分类：完成公告不能新建进行中案件', () => {
+  assert.strictEqual(sync.classifyTitle('关于要约收购公司股份完成过户的公告', 'cninfo'), null);
+  assert.strictEqual(sync.classifyTitle('关于现金选择权申报结果的公告', 'cninfo'), null);
+});
+
 test('标题分类：港股私有化', () => {
   assert.strictEqual(sync.classifyTitle('建议私有化公告', 'hkex'), 'hk_privatisation');
+});
+
+test('标题分类：B股转H现金选择权', () => {
+  assert.strictEqual(sync.classifyTitle('境内上市外资股转换上市地以介绍方式在香港上市的预案', 'cninfo'), 'a_cash_offer');
+});
+
+test('标题分类：港交所分类元数据中的私有化', () => {
+  const text = '建议以计划安排方式进行股份回购及撤销上市 私有化/撤销或取消证券上市';
+  assert.strictEqual(sync.classifyTitle(text, 'hkex'), 'hk_privatisation');
 });
 
 test('标题分类：港股供股', () => {
@@ -95,6 +113,7 @@ test('SCOPES 包含 hkex 和 cninfo 两个数据源', () => {
   assert.ok(sync.SCOPES.cninfo, 'missing cninfo scope');
   assert.strictEqual(sync.SCOPES.hkex.dataset, 'hkex_announcements');
   assert.strictEqual(sync.SCOPES.cninfo.dataset, 'cninfo_announcements');
+  assert.strictEqual(typeof sync.retryPendingDocuments, 'function');
 });
 
 console.log('\nPASS=' + pass + ' FAIL=' + fail);

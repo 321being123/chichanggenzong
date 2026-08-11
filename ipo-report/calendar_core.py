@@ -67,6 +67,7 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
     ed_int = str(end_date).replace("-", "") if (not full and end_date) else None
 
     all_data = []
+    new_share_ok = False
 
     # 1. 新股：申购日 ipo_date / 上市日 issue_date（服务端按日期窗口过滤）
     try:
@@ -76,6 +77,9 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
         if ed_int:
             params["end_date"] = ed_int
         df = _tushare("new_share", params, "ts_code,name,ipo_date,issue_date")
+        if not df:
+            raise RuntimeError("Tushare new_share 返回空结果")
+        new_share_ok = True
         for r in df:
             ts_code = str(r.get("ts_code") or "")
             if not ts_code:
@@ -101,6 +105,8 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
 
     # 2. 新债申购：cb_issue.onl_date（服务端按日期窗口过滤）
     try:
+        if not new_share_ok:
+            raise RuntimeError("新股日历数据源失败，任务不得标记成功")
         params2 = {}
         if sd_int:
             params2["start_date"] = sd_int
@@ -150,6 +156,8 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
 
     scope = "全量(不限窗口)" if full else f"{win_start}~{win_end}"
     print(f"[日历] 拉取完成 范围={scope} 共 {len(all_data)} 条（其中新债上市 {cb_basic_kept} 条）")
+    if not new_share_ok:
+        raise RuntimeError("新股日历数据源失败，任务不得标记成功")
     return all_data
 
 

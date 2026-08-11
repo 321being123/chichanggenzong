@@ -30,10 +30,13 @@ function nextIpoRefreshDelay(now = new Date()) {
 function pythonCandidates() {
   const configured = process.env.IPO_PYTHON_PATH;
   const bundled = path.join(process.env.USERPROFILE || '', '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'python', 'python.exe');
+  const rootVenv = process.platform === 'win32'
+    ? path.join(PROJECT_ROOT, 'venv', 'Scripts', 'python.exe')
+    : path.join(PROJECT_ROOT, 'venv', 'bin', 'python');
   const projectVenv = process.platform === 'win32'
     ? path.join(PROJECT_ROOT, 'ipo-report', 'venv', 'Scripts', 'python.exe')
     : path.join(PROJECT_ROOT, 'ipo-report', 'venv', 'bin', 'python');
-  return [configured, fs.existsSync(projectVenv) ? projectVenv : null, fs.existsSync(bundled) ? bundled : null,
+  return [configured, fs.existsSync(rootVenv) ? rootVenv : null, fs.existsSync(projectVenv) ? projectVenv : null, fs.existsSync(bundled) ? bundled : null,
     process.platform === 'win32' ? 'py' : 'python3', 'python'].filter(Boolean);
 }
 

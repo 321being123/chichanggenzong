@@ -489,6 +489,7 @@ function jobDescription(job) {
     nav_snapshot: '收盘后根据当日收盘价自动计算并补齐每个账户的总资产与净值记录（nav_history）。',
     stock_analysis_refresh: '每日 20:30 刷新用户关注个股的深度分析数据（估值、财务、情绪等）。',
     ipo_calendar_refresh: '工作日 18:00 自动更新 IPO/打新日历与每日打新日报数据。',
+    ipo_history_sync: '工作日 19:30 独立增量同步新股历史、发行详情与首日表现；启动时自动补漏。',
     market_volatility_sync: '每日 18:45 同步中债收益率、沪深指数估值、恒指市盈率等数据，并计算股市波动指标。',
     convertible_bond_valuation_refresh: '在可转债行情同步后自动刷新估值、预警与模型结果。',
     holiday_sync: '每月自动核对交易所法定休市日，确保「是否交易日」判断准确。',

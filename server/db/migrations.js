@@ -2043,6 +2043,44 @@ async function migration051AuditResultMetadata() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action ON admin_audit_log (action)`);
 }
 
+// ========== 057：新股历史独立同步的状态、原始响应与补偿字段 ==========
+async function migration057IpoHistorySync() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ipo_history (
+      security_code TEXT PRIMARY KEY,
+      security_name TEXT,
+      market_type TEXT,
+      listing_date TEXT,
+      ld_close_change REAL,
+      board_key TEXT,
+      updated_at TEXT,
+      issue_price REAL,
+      issue_pe REAL,
+      industry_pe REAL,
+      fund_raised REAL,
+      total_shares REAL,
+      online_shares REAL,
+      online_lottery_rate REAL,
+      oversubscribe_multiple REAL,
+      subscribe_upper_limit REAL,
+      main_business TEXT,
+      industry TEXT,
+      circulation_mv REAL,
+      pe_ratio REAL,
+      ipo_date TEXT
+    );
+    ALTER TABLE ipo_history ADD COLUMN IF NOT EXISTS issue_pe_status TEXT NOT NULL DEFAULT 'pending';
+    ALTER TABLE ipo_history ADD COLUMN IF NOT EXISTS source_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE ipo_history ADD COLUMN IF NOT EXISTS data_quality_status JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE ipo_history ADD COLUMN IF NOT EXISTS first_day_retry_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE ipo_history ADD COLUMN IF NOT EXISTS first_day_last_attempt_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_listing_date ON ipo_history(listing_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_incomplete
+      ON ipo_history(listing_date DESC)
+      WHERE data_quality_status->>'status' = 'missing';
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -2100,6 +2138,7 @@ const MIGRATIONS = [
   { version: '054_arbitrage_cases', up: migration054ArbitrageCases },
   { version: '055_arbitrage_parser_accuracy', up: migration055ArbitrageParserAccuracy },
   { version: '056_global_fx_rate_source', up: migration056GlobalFxRateSource },
+  { version: '057_ipo_history_sync', up: migration057IpoHistorySync },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

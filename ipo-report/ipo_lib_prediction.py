@@ -316,6 +316,8 @@ def calibrate_board_base():
             pass
 
     # ── 2. 从接口获取最新数据（增量拉取） ──
+    # 历史采集已由独立 ipo_history_sync 任务负责；校准过程只读数据库。
+    need_fetch = False
     if need_fetch:
         url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
         params = {

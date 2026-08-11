@@ -182,10 +182,11 @@ router.get('/history', async (req, res) => {
                 ) AS circulation_mv,
                 h.listing_date, h.ld_close_change,
                 h.main_business, h.industry, h.subscribe_upper_limit,
-                p.pred_return AS pred_return
+                h.issue_pe_status, h.data_quality_status,
+                p.pred_return AS pred_return, COALESCE(p.has_prediction, false) AS has_prediction
          FROM ipo_history h
          LEFT JOIN LATERAL (
-           SELECT pred_return FROM predictions
+           SELECT pred_return, true AS has_prediction FROM predictions
            WHERE type = 'stock' AND code = h.security_code AND pred_return IS NOT NULL
            ORDER BY pred_date DESC LIMIT 1
          ) p ON true

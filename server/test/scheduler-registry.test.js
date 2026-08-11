@@ -11,10 +11,11 @@ const { SCHEDULER_REGISTRY } = require('../scheduler');
 const EXPECTED_SCHEDULED = [
   'marketCloses', 'marketVolatilitySync', 'bondSafetyRefresh',
   'stockAnalysisRefresh', 'convertibleBondRefresh', 'ipoCalendarRefresh', 'hkTradeRulesSync', 'arbitrageSync',
+  'ipoHistorySync',
   'holidaySyncMonthly'
 ];
 const EXPECTED_STARTUP = [
-  'holidaySync', 'backfillCloses', 'indexBaseline', 'hkTradeRulesStartup'
+  'holidaySync', 'backfillCloses', 'indexBaseline', 'hkTradeRulesStartup', 'ipoHistoryStartupCatchup'
 ];
 
 const sameSet = (a, b) => {

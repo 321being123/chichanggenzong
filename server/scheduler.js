@@ -11,6 +11,7 @@ const { runIndexBaselineJob, runIndexRecentJob } = require('./jobs/indexBaseline
 const { runHkRateJob } = require('./jobs/hkRate');
 const { scheduleBondSafetyRefresh } = require('./jobs/bondSafetyRefresh');
 const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
+const { scheduleIpoHistorySync, runIpoHistoryStartupCatchup } = require('./jobs/ipoHistorySync');
 const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
@@ -28,7 +29,8 @@ const STARTUP_TASKS = [
       .then(() => runHkRateJob())
   },
   { name: 'indexBaseline', run: () => runIndexBaselineJob() },
-  { name: 'hkTradeRulesStartup', run: () => runHkTradeRulesSync('startup') }
+  { name: 'hkTradeRulesStartup', run: () => runHkTradeRulesSync('startup') },
+  { name: 'ipoHistoryStartupCatchup', run: () => runIpoHistoryStartupCatchup() }
 ];
 
 // 周期调度注册（调用即按 cron/间隔排期，不阻塞）
@@ -39,6 +41,7 @@ const SCHEDULED_TASKS = [
   { name: 'stockAnalysisRefresh', register: () => scheduleStockAnalysisRefresh() },
   { name: 'convertibleBondRefresh', register: () => scheduleConvertibleBondRefresh() },
   { name: 'ipoCalendarRefresh', register: () => scheduleIpoCalendarRefresh() },
+  { name: 'ipoHistorySync', register: () => scheduleIpoHistorySync() },
   { name: 'hkTradeRulesSync', register: () => scheduleHkTradeRulesSync() },
   { name: 'arbitrageSync', register: () => scheduleArbitrageSync() },
   // 月度休市日自愈：原 worker.js 内联的 setInterval 任务，现统一纳入注册表（与启动补漏 holidaySync 区分）。

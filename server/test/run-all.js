@@ -78,6 +78,7 @@ function runPython() {
   const pyFiles = [
     path.join(rootDir, 'ipo-report', 'test_ipo_unit.py'),
     path.join(rootDir, 'ipo-report', 'test_ipo_integration.py'),
+    path.join(rootDir, 'ipo-report', 'test_ipo_history_sync.py'),
     path.join(rootDir, 'ipo-report', 'test_unit_fixes.py'),
     path.join(testDir, 'test_valuation_regression.py'),
   ].filter(f => fs.existsSync(f));

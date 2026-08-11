@@ -35,19 +35,20 @@ def _save_stock_detail_to_db(code, detail):
 
         conn.execute("""
             UPDATE ipo_history SET
-                issue_price=?,
-                issue_pe=?,
-                industry_pe=?,
-                fund_raised=?,
-                total_shares=?,
-                online_shares=?,
-                online_lottery_rate=?,
-                oversubscribe_multiple=?,
-                subscribe_upper_limit=?,
-                main_business=?,
-                industry=?,
-                circulation_mv=?,
-                pe_ratio=?
+                issue_price=COALESCE(?, issue_price),
+                issue_pe=COALESCE(?, issue_pe),
+                industry_pe=COALESCE(?, industry_pe),
+                fund_raised=COALESCE(?, fund_raised),
+                total_shares=COALESCE(?, total_shares),
+                online_shares=COALESCE(?, online_shares),
+                online_lottery_rate=COALESCE(?, online_lottery_rate),
+                oversubscribe_multiple=COALESCE(?, oversubscribe_multiple),
+                subscribe_upper_limit=COALESCE(?, subscribe_upper_limit),
+                main_business=COALESCE(NULLIF(?, ''), main_business),
+                industry=COALESCE(NULLIF(?, ''), industry),
+                circulation_mv=COALESCE(?, circulation_mv),
+                pe_ratio=COALESCE(?, pe_ratio),
+                ipo_date=COALESCE(?, ipo_date)
             WHERE security_code=?
         """, (
             ip,
@@ -63,12 +64,13 @@ def _save_stock_detail_to_db(code, detail):
             detail.get("industry"),
             cmv,
             pe_ratio,
+            detail.get("online_date"),
             code,
         ))
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError(f"保存新股发行详情失败({code}): {exc}") from exc
 
 def build_report(target_date):
     """生成日报"""

@@ -80,6 +80,20 @@ function ipoWanfenCell(v) {
   return '<span>' + s + '</span>';
 }
 
+function ipoPending(v, formatter) {
+  if (v === null || v === undefined || v === '') return '<span>待补全</span>';
+  return formatter ? formatter(v) : ipoFmt(v);
+}
+
+function ipoFirstDayStatus(it) {
+  if (it.ld_close_change !== null && it.ld_close_change !== undefined && it.ld_close_change !== '') {
+    return ipoPctCell(it.ld_close_change);
+  }
+  var listing = String(it.listing_date || '').slice(0, 10);
+  var today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+  return listing === today ? '<span>收盘后更新</span>' : '<span>待补全</span>';
+}
+
 // 方案进展：只显示当前所处的一个阶段（董事会预案→发行公告→申购日→上市日 中的“一个”）。
 // 阶段优先级（进度从高到低）：上市日 > 申购日 > 发行公告 > 董事会预案。
 // 日期字段：listing_date=上市日 / onl_date=申购日 / ann_date=发行公告日(申购日前)
@@ -332,7 +346,7 @@ function ipoRenderHistory(type, rows) {
   // 新股历史（集思录式列）
   var headers = [
     '代码', '名称', '申购日期', '上市日', '发行价', '发行PE', '行业PE', '行业',
-    '发行总数(万股)', '顶格申购上限(万股)', '顶格申购需配市值(万)',
+    '发行总数(万股)', '网上发行量(万股)', '顶格申购上限(万股)', '顶格申购需配市值(万)',
     '中签率(万分之)', '募资(亿)', '公开发行市值(亿)', '预测涨幅%', '首日涨幅%', '单签收益(元)'
   ];
   var r3 = rows.map(function (it) {
@@ -353,20 +367,21 @@ function ipoRenderHistory(type, rows) {
     return [
       escapeHtml(it.security_code || ''),
       ipoNameCell(it.security_name, it.security_code),
-      ipoFmt(it.ipo_date),
+      ipoPending(it.ipo_date),
       escapeHtml(String(it.listing_date || '').slice(0, 10)),
-      ipoFmt(it.issue_price),
-      ipoFmt(it.issue_pe),
+      ipoPending(it.issue_price),
+      it.issue_pe != null ? ipoFmt(it.issue_pe) : (it.issue_pe_status === 'loss' ? '亏损' : '待补全'),
       ipoFmt(it.industry_pe),
       escapeHtml(it.industry || '-'),
-      ipoFmt(total10k),
-      ipoFmt(upperWan),
-      ipoFmt(mvWan),
-      ipoWanfenCell(it.online_lottery_rate),
-      ipoFmt(it.fund_raised),
-      ipoNumFixed(it.circulation_mv, 2),
-      ipoPctCell(it.pred_return),               // 预测涨幅%：模型预测首日涨幅（无预测则显示 -）
-      ipoPctCell(it.ld_close_change),
+      ipoPending(total10k),
+      ipoPending(it.online_shares),
+      ipoPending(upperWan),
+      ipoPending(mvWan),
+      ipoPending(it.online_lottery_rate, ipoWanfenCell),
+      ipoPending(it.fund_raised),
+      ipoPending(it.circulation_mv, function (v) { return ipoNumFixed(v, 2); }),
+      it.has_prediction ? ipoPctCell(it.pred_return) : '无历史预测',
+      ipoFirstDayStatus(it),
       ipoFmt(profit)
     ];
   });

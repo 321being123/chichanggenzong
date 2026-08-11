@@ -18,7 +18,7 @@ from datetime import date, datetime, time as dt_time, timedelta
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
-from _common import _load_env
+from _common import _load_env, _tushare
 
 _load_env()
 
@@ -103,41 +103,7 @@ def normalize_share(row):
 
 
 def tushare_query(api_name, params, fields, retries=2):
-    token = os.environ.get("TUSHARE_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("TUSHARE_TOKEN 未配置")
-    payload = json.dumps({
-        "api_name": api_name, "token": token, "params": params, "fields": fields,
-    }).encode("utf-8")
-    for attempt in range(retries + 1):
-        try:
-            request = urllib.request.Request(
-                "https://api.tushare.pro", data=payload,
-                headers={"Content-Type": "application/json"}, method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=30) as response:
-                result = json.loads(response.read().decode("utf-8"))
-            if result.get("code") != 0:
-                raise RuntimeError(f"Tushare {api_name} 失败: {result.get('msg') or result.get('code')}")
-            data = result.get("data") or {}
-            names = data.get("fields")
-            items = data.get("items")
-            if not isinstance(names, list) or not isinstance(items, list):
-                raise RuntimeError(f"Tushare {api_name} 响应结构异常")
-            rows = []
-            for item in items:
-                if not isinstance(item, list) or len(item) != len(names):
-                    raise RuntimeError(f"Tushare {api_name} 字段与数据列数不一致")
-                rows.append(dict(zip(names, item)))
-            return rows
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (429, 500, 502, 503, 504) or attempt >= retries:
-                raise RuntimeError(f"Tushare {api_name} HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            if attempt >= retries:
-                raise RuntimeError(f"Tushare {api_name} 网络失败: {exc.reason if hasattr(exc, 'reason') else exc}") from exc
-        time.sleep((2 ** attempt) + random.random())
-    raise RuntimeError(f"Tushare {api_name} 请求失败")
+    return _tushare(api_name, params, fields)
 
 
 def pg_connect():
@@ -331,7 +297,7 @@ def run(today=None):
             mark_cursor(cur, today)
         connection.commit()
         return {
-            "ok": True, "source": "tushare.new_share", "bootstrap": bootstrap,
+            "ok": True, "source": "tushare_replay.new_share", "bootstrap": bootstrap,
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),

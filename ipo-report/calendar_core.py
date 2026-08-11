@@ -15,7 +15,7 @@ import json
 import urllib.request
 from datetime import datetime, timedelta
 
-from _common import _load_env, _tushare, TUSHARE_TOKEN
+from _common import _load_env, _tushare, TUSHARE_REPLAY_API_KEY
 
 _load_env()
 

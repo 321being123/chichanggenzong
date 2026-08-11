@@ -24,6 +24,11 @@ import xgboost as xgb
 
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT / "ipo-report"))
+from _common import _tushare, _load_env
+
+_load_env()
 HORIZONS = (20, 60, 120)
 FEATURES = ("log_cv", "log_bv", "log_cv_bv", "remaining_years", "cv_vol60")
 
@@ -39,27 +44,11 @@ def load_env():
 
 
 def tushare_cb_basic():
-    token = os.environ.get("TUSHARE_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("TUSHARE_TOKEN 未配置")
     fields = "ts_code,list_date,delist_date,maturity_date"
-    response = requests.post(
-        "https://api.tushare.pro",
-        json={"api_name": "cb_basic", "token": token, "params": {}, "fields": fields},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if payload.get("code") != 0:
-        raise RuntimeError(f"cb_basic 调用失败：{payload.get('code')} {payload.get('msg')}")
-    data = payload.get("data") or {}
-    columns = data.get("fields") or []
-    rows = data.get("items") or []
+    rows = _tushare("cb_basic", {}, fields)
     if len(rows) >= 2000:
         raise RuntimeError("cb_basic 达到2000行上限，存在截断风险")
-    if any(len(row) != len(columns) for row in rows):
-        raise RuntimeError("cb_basic 返回字段与数据长度不一致")
-    return pd.DataFrame(rows, columns=columns)
+    return pd.DataFrame(rows, columns=fields.split(","))
 
 
 def database_connection():

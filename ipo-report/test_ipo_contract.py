@@ -2,7 +2,7 @@
 """
 外部行情合约测试（依赖 Tushare / 外部行情与网络，CI 用 continue-on-error，不阻断普通 PR）。
 运行：python ipo-report/test_ipo_contract.py
-依赖：本地 PostgreSQL 已启动 + .env 含 PG* 与 TUSHARE_TOKEN
+依赖：本地 PostgreSQL 已启动 + .env 含 PG* 与 TUSHARE_REPLAY_API_KEY
 """
 import os
 import sys

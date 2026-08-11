@@ -93,9 +93,10 @@ check('Excel 使用中央目录预检并限制全局并发', () => {
   assert.ok(!/GPBF_DATA_DESCRIPTOR[\s\S]{0,500}break/.test(excelWorker));
 });
 
-check('Tushare Token 仅通过 HTTPS 发送', () => {
-  assert.ok(/https:\/\/api\.tushare\.pro/.test(ipoCommon));
-  assert.ok(!/http:\/\/api\.tushare\.pro/.test(ipoCommon));
+check('Tushare Replay Key 仅通过 HTTPS Header 发送', () => {
+  assert.ok(/https:\/\/ai-tool\.indevs\.in\/tushare\/pro/.test(ipoCommon));
+  assert.ok(/X-API-Key/.test(ipoCommon));
+  assert.ok(!/api_name[\s\S]{0,120}token/.test(ipoCommon));
 });
 
 check('登录回跳按 URL 语义限制为同源', () => {

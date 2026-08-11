@@ -10,7 +10,7 @@ import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
 from _classify import _is_bj_stock, _market_type_to_board_key
-from _common import _load_env
+from _common import _load_env, TUSHARE_REPLAY_API_KEY, get_tushare_replay_pro
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history_reports")
 
@@ -77,20 +77,17 @@ def _get_qt_prefix(code):
 _TUSHARE_PRO = None
 
 def _get_tushare_pro():
-    """懒加载 Tushare pro 接口；未配置token或tushare未装返回None"""
+    """懒加载统一 Tushare Replay 适配器；新 Key 优先，旧 Token 仅作回滚兼容。"""
     global _TUSHARE_PRO
     if _TUSHARE_PRO is not None:
         return _TUSHARE_PRO
-    token = os.environ.get('TUSHARE_TOKEN', '')
-    if not token:
+    if not TUSHARE_REPLAY_API_KEY:
         return None
     try:
-        import tushare as ts
-        ts.set_token(token)
-        _TUSHARE_PRO = ts.pro_api()
+        _TUSHARE_PRO = get_tushare_replay_pro()
         return _TUSHARE_PRO
     except Exception as e:
-        print(f"[Tushare] 初始化失败: {e}")
+        print(f"[Tushare Replay] 初始化失败: {e}")
         return None
 
 def _ts_float(val):

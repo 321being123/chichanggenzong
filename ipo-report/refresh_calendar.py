@@ -26,12 +26,12 @@ from calendar_core import (
 )
 
 # ── 共用样板收口（_load_env / _tushare / psql_run 统一到 _common.py） ──
-from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN
+from _common import _load_env, _tushare, psql_run, TUSHARE_REPLAY_API_KEY
 
 
 def main():
-    if not TUSHARE_TOKEN:
-        print("缺少 TUSHARE_TOKEN，退出")
+    if not TUSHARE_REPLAY_API_KEY:
+        print("缺少 TUSHARE_REPLAY_API_KEY，退出")
         sys.exit(1)
 
     print("1) 拉取日历数据...")

@@ -11,6 +11,9 @@ sudo 提权走免密（服务器 sudoers 已配置 NOPASSWD），全程不依赖
 import os
 import json
 import urllib.request
+import urllib.error
+import urllib.parse
+import time
 import tempfile
 import subprocess
 import shutil
@@ -70,29 +73,79 @@ def _load_env():
 
 
 _load_env()
-TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
+TUSHARE_REPLAY_API_KEY = os.environ.get("TUSHARE_REPLAY_API_KEY", "").strip()
+TUSHARE_REPLAY_BASE_URL = os.environ.get(
+    "TUSHARE_REPLAY_BASE_URL", "https://ai-tool.indevs.in/tushare/pro"
+).rstrip("/")
 
 
-# ============ Tushare REST 调用（零依赖，不依赖 tushare 库） ============
-def _tushare(api_name, params, fields):
-    body = json.dumps({
-        "api_name": api_name,
-        "token": TUSHARE_TOKEN,
-        "params": params,
-        "fields": fields,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.tushare.pro",
-        data=body,
-        headers={"Content-Type": "application/json"},
+# ============ Tushare Replay REST 调用（GET + X-API-Key） ============
+def _replay_request(api_name, params=None, fields="", retries=2):
+    if not TUSHARE_REPLAY_API_KEY:
+        raise RuntimeError("TUSHARE_REPLAY_API_KEY 未配置")
+    query = {str(k): str(v) for k, v in (params or {}).items() if v is not None}
+    if fields:
+        query["fields"] = fields
+    url = f"{TUSHARE_REPLAY_BASE_URL}/{str(api_name).strip().lstrip('/')}"
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "tushare-replay-client/1.0",
+            "X-API-Key": TUSHARE_REPLAY_API_KEY,
+        },
+        method="GET",
     )
-    resp = urllib.request.urlopen(req, timeout=30)
-    d = json.loads(resp.read().decode("utf-8"))
-    if d.get("code") != 0:
-        raise RuntimeError(f"Tushare {api_name} 错误: {d.get('msg')}")
-    f = d["data"]["fields"]
-    rows = d["data"]["items"]
-    return [dict(zip(f, r)) for r in rows]
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("code") != 0:
+                raise RuntimeError(f"Tushare Replay {api_name} 错误: {payload.get('msg') or payload.get('code')}")
+            data = payload.get("data") or {}
+            fields_out = data.get("fields")
+            items = data.get("items")
+            if not isinstance(fields_out, list) or not isinstance(items, list):
+                raise RuntimeError(f"Tushare Replay {api_name} 响应结构异常")
+            if any(not isinstance(row, list) or len(row) != len(fields_out) for row in items):
+                raise RuntimeError(f"Tushare Replay {api_name} 字段与数据列数不一致")
+            return [dict(zip(fields_out, row)) for row in items]
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (429, 500, 502, 503, 504) or attempt >= retries:
+                raise RuntimeError(f"Tushare Replay {api_name} HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt >= retries:
+                raise RuntimeError(f"Tushare Replay {api_name} 网络失败: {exc}") from exc
+        time.sleep((2 ** attempt) + 0.2)
+    raise RuntimeError(f"Tushare Replay {api_name} 请求失败")
+
+
+def _tushare(api_name, params, fields):
+    """统一入口：只调用 Tushare Replay。"""
+    return _replay_request(api_name, params, fields)
+
+
+class TushareReplayPro:
+    """兼容旧版 pro.xxx(**params) 代码的 Replay 适配器，返回 pandas.DataFrame。"""
+
+    def query(self, api_name, **params):
+        fields = params.pop("fields", "")
+        rows = _tushare(api_name, params, fields)
+        import pandas as pd
+        return pd.DataFrame(rows)
+
+    def __getattr__(self, api_name):
+        if api_name.startswith("_"):
+            raise AttributeError(api_name)
+        return lambda **params: self.query(api_name, **params)
+
+
+def get_tushare_replay_pro():
+    if not TUSHARE_REPLAY_API_KEY:
+        return None
+    return TushareReplayPro()
 
 
 # ============ 本地 psql 执行（收口 2 份，临时文件避免 Windows GBK 截断） ============

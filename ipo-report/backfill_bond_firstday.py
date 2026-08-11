@@ -12,10 +12,14 @@ Usage: python backfill_bond_firstday.py [--dry]
 import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
 import db_pg
-import tushare as ts
+from _common import _load_env, get_tushare_replay_pro
+
+_load_env()
 
 dry = '--dry' in sys.argv
-pro = ts.pro_api()
+pro = get_tushare_replay_pro()
+if pro is None:
+    raise RuntimeError("TUSHARE_REPLAY_API_KEY 未配置")
 
 # 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
 conn = db_pg.connect()

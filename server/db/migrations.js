@@ -2302,6 +2302,7 @@ async function migration056GlobalFxRateSource() {
     SELECT 'HKD','CNY',(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date, 7, MIN(a.hk_rate), now()
       FROM accounts a
      WHERE a.hk_rate IS NOT NULL AND a.hk_rate > 0
+    HAVING MIN(a.hk_rate) IS NOT NULL
     ON CONFLICT (base_currency, quote_currency, rate_date) DO NOTHING
   `);
 }

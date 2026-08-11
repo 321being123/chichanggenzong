@@ -90,7 +90,7 @@ function renderStats() {
 // 总资产今日涨跌浮框：分解「股价影响 + 汇率影响」并写出计算过程
 function bindChangeTip(el, changeAmt, changePct) {
   if (!el) return;
-  var todayRate = Number(data.hkRate) || 0.868;
+  var todayRate = Number(typeof unifiedHkRate !== 'undefined' && unifiedHkRate > 0 ? unifiedHkRate : data.hkRate) || 0.868;
   var yesterdayRate = null;
   if (data.navHistory && data.navHistory.length >= 2) {
     var prevNav = data.navHistory[data.navHistory.length - 2];

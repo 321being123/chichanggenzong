@@ -17,6 +17,9 @@ assert.ok(service.includes('COALESCE(c.cash_choice_price,c.offer_price) > 0'), '
 assert.ok(frontend.includes('r.swapEligible'), '合并方自身的换股字段必须显示不适用');
 assert.ok(service.includes("regexp_replace(i.name,'<[^>]+>','','g')"), '公开证券名称必须清理 HTML 标签');
 assert.ok(frontend.includes('r.description') && frontend.includes('arb-note-cell'), '套利列表必须展示备注列');
+assert.ok(frontend.includes('formatArbitrageType') && frontend.includes('\\u8981\\u7ea6\\u6536\\u8d2d') && frontend.includes('\\u0042\\u80a1\\u8f6c\\u0048\\u80a1'), '套利类型必须按交易性质显示');
+assert.ok(frontend.includes('\\u6362\\u80a1\\u5438\\u6536\\u5408\\u5e76\\uff08\\u5408\\u5e76\\u65b9\\uff09') && !frontend.includes('\\u73b0\\u91d1\\u9009\\u62e9\\u6743\\uff08\\u5408\\u5e76\\u65b9\\uff09'), '合并方类型不得误显示为现金选择权');
+assert.ok(frontend.includes('formatArbitrageStatus') && frontend.includes('in_progress'), '套利当前进程必须映射为中文');
 assert.ok(frontend.includes('r.announcement_url') && frontend.includes('arbAnnouncementLink'), '套利列表必须展示官方公告链接');
 assert.ok(html.includes('arb-table-scroll'), '套利表格滚动容器缺失');
 assert.ok(style.includes('.arb-data-table thead th') && style.includes('position: sticky'), '套利列表表头必须滚动吸顶');
@@ -28,7 +31,7 @@ assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("
 assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
 assert.ok(html.includes('shared/style.css?v=27'), '全局样式缓存版本未更新');
-assert.ok(html.includes('js/arbitrage.js?v=9'), '套利前端缓存版本未更新');
+assert.ok(html.includes('js/arbitrage.js?v=10'), '套利前端缓存版本未更新');
 assert.ok(html.includes('js/navigation.js?v=4'), '导航缓存版本未更新');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');
 assert.ok(frontend.includes('d.cashChoicePremium') && frontend.includes('d.cashExpectedReturn'), '详情必须显示现金选择权两种收益口径');

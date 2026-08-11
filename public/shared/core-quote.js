@@ -81,6 +81,20 @@ async function fetchHKRate() {
   return null;
 }
 
+// 页面内所有账户共用一次汇率快照，避免切换账户时各自使用不同的账户旧汇率。
+var unifiedHkRate = null;
+var unifiedHkRatePromise = null;
+async function fetchUnifiedHKRate() {
+  if (unifiedHkRate != null && unifiedHkRate > 0) return unifiedHkRate;
+  if (!unifiedHkRatePromise) {
+    unifiedHkRatePromise = fetchHKRate().then(function (rate) {
+      if (rate != null && rate > 0) unifiedHkRate = rate;
+      return unifiedHkRate;
+    }).catch(function () { return unifiedHkRate; });
+  }
+  return unifiedHkRatePromise;
+}
+
 async function refreshAllPrices() {
   const codes = [...new Set(data.positions.map(p => p.code).filter(Boolean))];
   if (codes.length === 0) { showToast('没有持仓需要刷新'); return; }
@@ -97,6 +111,8 @@ async function refreshAllPrices() {
   // 获取港币→人民币汇率（港股通用）
   var hkRate = await fetchHKRate();
   if (!hkRate || hkRate <= 0) hkRate = 0.868;
+  unifiedHkRate = hkRate;
+  unifiedHkRatePromise = Promise.resolve(hkRate);
   data.hkRate = hkRate; // 全局汇率，供 getMarketValue 使用
   
   // 并发请求，每次10只

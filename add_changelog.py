@@ -12,6 +12,7 @@
 # 写坏立即报错且不落盘（先写临时文件再原子替换）。
 import argparse
 import json
+import re
 import sys
 import tempfile
 from datetime import date
@@ -54,6 +55,9 @@ def main():
 
     if not args.item:
         sys.exit('至少需要一条 --item 说明')
+    invalid_items = [item for item in args.item if not re.match(r'^(新增|优化|修复)：.+$', item.strip())]
+    if invalid_items:
+        sys.exit('每条版本说明必须以“新增：”“优化：”或“修复：”开头，并使用“新增 → 优化 → 修复”的分类顺序')
 
     # --- changelog.json ---
     data = json.loads(CHANGELOG_JSON.read_text(encoding='utf-8'))

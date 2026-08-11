@@ -421,6 +421,19 @@ def parse_fields(text, target_code=None):
         first_pos = next((pos for pos, code in code_hits if code == ordered_codes[0]), code_hits[0][0] if code_hits else 0)
         result['evidence'].append({'field': 'target_code', 'value': ordered_codes[0], 'pos': first_pos})
 
+    # B 股转 H 股公告有时只在正文中识别出财务顾问等机构代码，标的 B 股代码由
+    # 上游上下文传入。公告明确属于 B 股转换上市地时，不应因机构代码造成误判。
+    if (
+        target_code
+        and re.fullmatch(r'2\d{5}', str(target_code))
+        and result['target_codes']
+        and result['target_codes'][0] == str(target_code)
+        and result['target_code_match'] is False
+        and re.search(r'境内\s*上市\s*外资股[\s\S]{0,40}转换[\s\S]{0,40}上市地|B\s*股[\s\S]{0,12}转\s*H', text, re.I)
+    ):
+        result['target_code_match'] = True
+        result['evidence'].append({'field': 'target_code_match', 'value': str(target_code), 'reason': 'b_share_conversion'})
+
     # 按上下文归类：参考证券（换股吸收合并的换股标的/合并方/收购方）、供股权证券（供股临时交易代码）
     # 排除主证券本身；同一代码只归一类，优先参考证券。
     primary = ordered_codes[0] if ordered_codes else None

@@ -44,6 +44,17 @@ test('苏威孚B：B转H现金选择权价格使用港币', () => {
   assert.equal(parsed.cash_choice_price, 12.68);
 });
 
+test('苏威孚B：财务顾问代码不应覆盖B股标的代码', () => {
+  const parsed = parseSnippet(
+    '证券代码：913202。境内上市外资股转换上市地，以介绍方式在香港上市。现金选择权具体的价格为每股12.68元港币。',
+    '200581',
+  );
+  assert.deepEqual(parsed.observed_codes, ['913202']);
+  assert.deepEqual(parsed.target_codes, ['200581']);
+  assert.equal(parsed.target_code_match, true);
+  assert.equal(parsed.cash_choice_price, 12.68);
+});
+
 test('港股私有化：现金注销价优先于购股权行使价', () => {
   const code = [
     'import importlib.util, json, sys',

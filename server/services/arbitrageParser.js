@@ -13,6 +13,25 @@ const {
   validateParsedTerms,
 } = require('./arbitrageRules');
 
+// 公告正文通常是简体中文，港股证券基础资料可能保留繁体中文。名称回查时先做
+// 常见证券名称字形归一，避免同一只参考证券在两套数据源中被识别成不同名称。
+const SECURITY_NAME_CHAR_MAP = {
+  '滬': '沪', '證': '证', '銀': '银', '國': '国', '際': '际', '華': '华',
+  '東': '东', '興': '兴', '達': '达', '發': '发', '財': '财', '業': '业',
+  '經': '经', '濟': '济', '與': '与', '廣': '广', '萬': '万', '會': '会',
+  '龍': '龙', '賣': '卖', '買': '买', '聯': '联', '絡': '络', '號': '号',
+  '開': '开', '關': '关', '點': '点', '場': '场', '現': '现', '價': '价',
+  '實': '实', '訊': '讯', '網': '网', '臺': '台', '灣': '湾',
+};
+
+function normalizeSecurityName(value) {
+  return [...String(value || '').replace(/<[^>]+>/g, '')]
+    .map((char) => SECURITY_NAME_CHAR_MAP[char] || char)
+    .join('')
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'extractArbitrageDocument.py');
 
 // 复用项目已有的 Python 定位逻辑（与 marketVolatilitySync / convertibleBondAnalysis 一致）：
@@ -135,7 +154,30 @@ async function resolveInstrumentByName(raw) {
      ORDER BY (CASE WHEN regexp_replace(name,'<[^>]+>','','g') = $1 THEN 0 ELSE 1 END), length(regexp_replace(name,'<[^>]+>','','g')) DESC`,
     [clean]
   );
-  if (!rows.length) return null;
+  if (!rows.length) {
+    // 基础资料和公告可能分别使用繁体/简体名称；仅在普通模糊查询无结果时
+    // 才做一次归一化兜底，避免给每次正常名称回查增加额外查询成本。
+    const normalized = normalizeSecurityName(clean);
+    if (!normalized) return null;
+    const { rows: candidates } = await pool.query(`
+      SELECT instrument_id, canonical_code, regexp_replace(name,'<[^>]+>','','g') AS nm
+      FROM core.instruments
+      WHERE length(regexp_replace(name,'<[^>]+>','','g')) >= 2
+    `);
+    const matched = candidates
+      .filter((candidate) => {
+        const candidateName = normalizeSecurityName(candidate.nm);
+        return candidateName.includes(normalized) || normalized.includes(candidateName);
+      })
+      .sort((left, right) => {
+        const leftExact = normalizeSecurityName(left.nm) === normalized ? 0 : 1;
+        const rightExact = normalizeSecurityName(right.nm) === normalized ? 0 : 1;
+        return leftExact - rightExact || right.nm.length - left.nm.length;
+      });
+    if (!matched.length) return null;
+    const fallback = matched.find((r) => /^\d{6}$/.test(r.canonical_code));
+    return (fallback || matched[0]).instrument_id;
+  }
   // 多家命中时优先 A 股 6 位代码
   const a = rows.find((r) => /^\d{6}$/.test(r.canonical_code));
   return (a || rows[0]).instrument_id;

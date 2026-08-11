@@ -1,4 +1,4 @@
-// ========== 打新日历路由（读取 Python 定时任务写入 PostgreSQL 的打新数据） ==========
+// ========== 打新日历路由（优先读取日报，过期时回读本地发行数据） ==========
 const express = require('express');
 const router = express.Router();
 const fs = require('fs');
@@ -17,6 +17,86 @@ function filterBeijingStocks(calendar) {
     apply_stocks: (day.apply_stocks || []).filter(item => !isBeijingStock(item.code)),
     list_stocks: (day.list_stocks || []).filter(item => !isBeijingStock(item.code)),
   }));
+}
+
+function normalizeIpoDate(value) {
+  const text = String(value || '').trim().slice(0, 10);
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '';
+}
+
+function beijingToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+}
+
+function calendarDateRange(days) {
+  const start = beijingToday();
+  const end = new Date(`${start}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + days);
+  return { start, end: end.toISOString().slice(0, 10) };
+}
+
+function hasUpcomingCalendar(calendar, days) {
+  const { start, end } = calendarDateRange(days);
+  return (calendar || []).some(day => {
+    const date = normalizeIpoDate(day.date);
+    if (!date || date < start || date > end) return false;
+    return ['apply_stocks', 'apply_bonds', 'list_stocks', 'list_bonds']
+      .some(key => Array.isArray(day[key]) && day[key].length > 0);
+  });
+}
+
+async function buildLocalCalendar(days) {
+  const { start, end } = calendarDateRange(days);
+  const groups = new Map();
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+  function add(dateValue, key, item) {
+    const date = normalizeIpoDate(dateValue);
+    if (!date || date < start || date > end) return;
+    if (key.endsWith('_stocks') && isBeijingStock(item.code)) return;
+    if (!groups.has(date)) {
+      const day = new Date(`${date}T00:00:00Z`);
+      groups.set(date, {
+        date,
+        weekday: weekday[day.getUTCDay()],
+        list_bonds: [], apply_bonds: [], list_stocks: [], apply_stocks: [],
+      });
+    }
+    groups.get(date)[key].push({ name: item.name || '', code: item.code || '' });
+  }
+
+  const [stocks, bonds] = await Promise.all([
+    pool.query('SELECT security_code, security_name, ipo_date, listing_date FROM ipo_history'),
+    pool.query('SELECT security_code, security_name, onl_date, listing_date FROM bond_history'),
+  ]);
+  for (const row of stocks.rows) {
+    const item = { code: row.security_code, name: row.security_name };
+    add(row.ipo_date, 'apply_stocks', item);
+    add(row.listing_date, 'list_stocks', item);
+  }
+  for (const row of bonds.rows) {
+    const item = { code: row.security_code, name: row.security_name };
+    add(row.onl_date, 'apply_bonds', item);
+    add(row.listing_date, 'list_bonds', item);
+  }
+  return [...groups.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function buildLocalAdviceMarkdown(calendar) {
+  const apply = [];
+  const listed = [];
+  for (const day of calendar || []) {
+    for (const item of day.apply_stocks || []) apply.push(`- ${item.name || item.code}（${item.code}，待评估）`);
+    for (const item of day.apply_bonds || []) apply.push(`- ${item.name || item.code}（${item.code}，待评估）`);
+    for (const item of day.list_stocks || []) listed.push(`- ${item.name || item.code}（${item.code}）`);
+    for (const item of day.list_bonds || []) listed.push(`- ${item.name || item.code}（${item.code}）`);
+  }
+  if (!apply.length && !listed.length) return '';
+  const lines = ['# 📋 本地发行数据', '', '## 📋 结论', ''];
+  if (apply.length) lines.push('**打新**', ...apply, '');
+  if (listed.length) lines.push('**上市**', ...listed, '');
+  return lines.join('\n');
 }
 
 function extractCodeReport(md, code) {
@@ -136,11 +216,59 @@ router.get('/report', async (req, res) => {
       );
       row = r.rows[0];
     }
-    if (!row) return res.json({ report_date: null, summary: null, md: '', html: '' });
-    const summary = typeof row.summary_json === 'string'
+    if (!row) {
+      try {
+        const localCalendar = await buildLocalCalendar(90);
+        const localMd = buildLocalAdviceMarkdown(localCalendar);
+        if (localMd) {
+          const first = localCalendar[0] || {};
+          return res.json({
+            report_date: beijingToday().replace(/-/g, ''),
+            summary: {
+              date_display: `${beijingToday()}（本地发行数据）`,
+              calendar: localCalendar,
+              apply_stocks: first.apply_stocks || [],
+              apply_bonds: first.apply_bonds || [],
+              list_stocks: first.list_stocks || [],
+              list_bonds: first.list_bonds || [],
+            },
+            md: localMd,
+            html: '',
+          });
+        }
+      } catch (_) {
+        // 本地发行表不可用时返回空报告。
+      }
+      return res.json({ report_date: null, summary: null, md: '', html: '' });
+    }
+    let summary = typeof row.summary_json === 'string'
       ? JSON.parse(row.summary_json)
       : row.summary_json;
-    res.json({ report_date: row.report_date, summary, md: row.md || '', html: row.html || '' });
+    let md = row.md || '';
+    let reportDate = row.report_date;
+    try {
+      if (!hasUpcomingCalendar(summary && summary.calendar, 90)) {
+        const localCalendar = await buildLocalCalendar(90);
+        const localMd = buildLocalAdviceMarkdown(localCalendar);
+        if (localMd) {
+          const first = localCalendar[0] || {};
+          summary = {
+            ...(summary || {}),
+            date_display: `${beijingToday()}（本地发行数据）`,
+            calendar: localCalendar,
+            apply_stocks: first.apply_stocks || [],
+            apply_bonds: first.apply_bonds || [],
+            list_stocks: first.list_stocks || [],
+            list_bonds: first.list_bonds || [],
+          };
+          md = localMd;
+          reportDate = beijingToday().replace(/-/g, '');
+        }
+      }
+    } catch (_) {
+      // 本地发行表不可用时仍返回原日报，避免日报接口整体失败。
+    }
+    res.json({ report_date: reportDate, summary, md, html: row.html || '' });
   } catch (e) {
     res.status(500).json({ error: '读取打新报告失败' });
   }
@@ -216,7 +344,13 @@ router.get('/calendar', async (req, res) => {
     if (row && row.calendar) {
       calendar = typeof row.calendar === 'string' ? JSON.parse(row.calendar) : row.calendar;
     }
-    res.json({ days, calendar: filterBeijingStocks(calendar) });
+    let filteredCalendar = filterBeijingStocks(calendar);
+    try {
+      if (!hasUpcomingCalendar(filteredCalendar, days)) filteredCalendar = await buildLocalCalendar(days);
+    } catch (_) {
+      // 本地发行表不可用时仍返回原日报日历。
+    }
+    res.json({ days, calendar: filteredCalendar });
   } catch (e) {
     res.status(500).json({ error: '读取打新日历失败' });
   }

@@ -6,7 +6,6 @@ const {
   isConvertibleBondCode,
   normalizeCode,
 } = require('./tencentQuote');
-const { tushareReplayQuery } = require('./tushareReplay');
 
 // 通用 HTTPS GET（支持 gbk 解码）
 function httpsGet(url, encoding) {
@@ -27,16 +26,32 @@ function httpsGet(url, encoding) {
   });
 }
 
-// ===================== Tushare 数据层（统一 Replay） =====================
-// 港股实时 / 恒生指数 / 汇率：仍按业务规则走腾讯。
-// 新链路固定使用 GET + X-API-Key。
-const TUSHARE_REPLAY_API_KEY = process.env.TUSHARE_REPLAY_API_KEY || '';
+// ===================== Tushare 数据层（A股优先数据源） =====================
+// 港股实时 / 恒生指数 / 汇率：Tushare 2000积分无权限，仍走腾讯。
+const TUSHARE_TOKEN = process.env.TUSHARE_TOKEN || '';
+const TS_API = 'https://api.tushare.pro';
 
-// 调统一 Tushare 接口，返回 {fields,items} 或 null。
-async function tushareQuery(apiName, params, fields) {
-  if (!TUSHARE_REPLAY_API_KEY) return null;
-  try { return await tushareReplayQuery(apiName, params || {}, fields || ''); }
-  catch (_) { return null; }
+// 调 Tushare HTTP API（POST JSON），返回 {fields,items} 或 null。
+function tushareQuery(apiName, params, fields) {
+  return new Promise((resolve) => {
+    if (!TUSHARE_TOKEN) return resolve(null);
+    const payload = JSON.stringify({ api_name: apiName, token: TUSHARE_TOKEN, params: params || {}, fields: fields || '' });
+    const body = Buffer.from(payload, 'utf8');
+    const req = https.request(TS_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': body.length }
+    }, (resp) => {
+      let data = '';
+      resp.on('data', c => data += c);
+      resp.on('end', () => {
+        try { const j = JSON.parse(data); resolve(j && j.code === 0 && j.data ? j.data : null); }
+        catch (e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(10000, () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
 }
 
 // Tushare items 二维数组 → 行对象数组

@@ -1,4 +1,8 @@
 
+## 2026-08-11 · 0.6.0.20
+- 优化：切回官方 Tushare Pro，使用 6000 积分 Token 获取打新、财务和可转债数据
+- 修复：移除不可用的 Tushare Replay 数据源及其配置和测试
+
 ## 2026-08-11 · 0.6.0.19
 - 新增：统一切换 Tushare Replay API，并提供可复用 tushare-replay-api Skill
 

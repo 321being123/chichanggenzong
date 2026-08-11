@@ -297,7 +297,7 @@ def run(today=None):
             mark_cursor(cur, today)
         connection.commit()
         return {
-            "ok": True, "source": "tushare_replay.new_share", "bootstrap": bootstrap,
+            "ok": True, "source": "tushare.new_share", "bootstrap": bootstrap,
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),

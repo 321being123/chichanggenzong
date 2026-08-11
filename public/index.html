@@ -613,15 +613,15 @@
 
 <!-- 套利机会（一级页） -->
 <div class="main-page" id="main-arbitrage">
+  <div class="bond-header">
+    <div class="bond-sub-nav">
+      <button class="bond-sub-tab active" data-arb-tab="a_stock" onclick="switchArbTab('a_stock')">A 股套利</button>
+      <button class="bond-sub-tab" data-arb-tab="hk_privatisation" onclick="switchArbTab('hk_privatisation')">港股私有化</button>
+      <button class="bond-sub-tab" data-arb-tab="hk_rights" onclick="switchArbTab('hk_rights')">港股供股权</button>
+    </div>
+  </div>
   <div class="feature-page-shell">
     <div id="arb-list-view">
-    <div class="bond-header" style="margin-bottom:16px;">
-      <div class="bond-sub-nav">
-        <button class="bond-sub-tab active" data-arb-tab="a_stock" onclick="switchArbTab('a_stock')">A 股套利</button>
-        <button class="bond-sub-tab" data-arb-tab="hk_privatisation" onclick="switchArbTab('hk_privatisation')">港股私有化</button>
-        <button class="bond-sub-tab" data-arb-tab="hk_rights" onclick="switchArbTab('hk_rights')">港股供股权</button>
-      </div>
-    </div>
     <div id="arb-status" style="padding:0 4px 8px;color:#666;font-size:13px;"></div>
     <div class="table-wrap">
       <div class="table-header">

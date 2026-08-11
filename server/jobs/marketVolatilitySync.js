@@ -323,7 +323,7 @@ async function calculateM2MarketCap() {
 }
 
 async function syncMarketCycleMetrics(full) {
-  if (!process.env.TUSHARE_REPLAY_API_KEY) return { skipped: 'TUSHARE_REPLAY_API_KEY missing' };
+  if (!process.env.TUSHARE_TOKEN) return { skipped: 'TUSHARE_TOKEN missing' };
   const result = {
     csi300Valuation: await syncCsi300Valuation(full),
     moneySupply: await syncMoneySupply(),

@@ -101,6 +101,13 @@ test('标题分类：空标题返回null', () => {
   assert.strictEqual(sync.classifyTitle('', 'cninfo'), null);
 });
 
+test('终止公告：控制权变更/协议转让终止可识别为终态', () => {
+  assert.strictEqual(sync.isGenericControlChangeTermination(
+    '关于控股股东及相关方终止协议转让暨公司控制权变更事项终止的公告'
+  ), true);
+  assert.strictEqual(sync.isGenericControlChangeTermination('关于工商变更登记的公告'), false);
+});
+
 // ===== 调度注册 =====
 test('调度任务已注册 arbitrageSync', () => {
   assert.ok(SCHEDULER_REGISTRY.scheduled.includes('arbitrageSync'),

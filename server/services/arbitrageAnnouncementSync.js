@@ -202,6 +202,34 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       return;
     }
 
+    // 部分控制权变更/协议转让终止公告不会在标题中重复写出“要约收购”，
+    // 但它们仍然代表关联的 A 股套利事件已经终止（例如君亭酒店）。
+    // 只在巨潮公告、已知标的、且明确出现“终止/撤回/取消”与控制权变更语义时处理，
+    // 避免把普通工商变更或其他无关公告误关。
+    if (scope === 'cninfo' && isGenericControlChangeTermination(classificationText) && instrumentId) {
+      const { rows: broadOpen } = await client.query(`
+        SELECT case_id FROM event.arbitrage_cases
+        WHERE target_instrument_id=$1
+          AND strategy_type IN ('a_cash_offer','a_share_swap')
+          AND event_status NOT IN ('completed','terminated','expired')
+        ORDER BY announced_at DESC NULLS LAST, created_at DESC
+      `, [instrumentId]);
+      for (const row of broadOpen) {
+        await client.query(`
+          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
+          VALUES($1,$2,'announcement',$3,'terminal')
+          ON CONFLICT(case_id, document_id) DO UPDATE SET document_role='terminal', announced_at=EXCLUDED.announced_at
+        `, [row.case_id, documentId, ann.announcedAt]);
+        await client.query(`
+          UPDATE event.arbitrage_cases
+          SET event_status='terminated', terms_updated_at=COALESCE($1::date, terms_updated_at), updated_at=now()
+          WHERE case_id=$2
+        `, [ann.announcedAt || null, row.case_id]);
+      }
+      await client.query('COMMIT');
+      return;
+    }
+
     // 标题分类 -> 确定策略类型
     const strategyType = classifyTitle(classificationText, scope);
 
@@ -338,6 +366,13 @@ function detectUpdate(title) {
   if (isTerminate) return { status: 'terminated', strategyType };
   if (isComplete) return { status: 'completed', strategyType };
   return null;
+}
+
+// 控制权变更/协议转让整体终止的公告，标题可能不再出现“要约收购”等策略词。
+function isGenericControlChangeTermination(text) {
+  if (!text) return false;
+  return /(终止|撤回|取消)/.test(text)
+    && /(控制权变更|协议转让)/.test(text);
 }
 
 // 生成月窗口：每段 ≤31 天；首段起点严格等于 fromDate（不回退到当月 1 日，避免越过一年边界）
@@ -497,5 +532,6 @@ module.exports = {
   retryPendingDocuments,
   classifyTitle,
   detectUpdate,
+  isGenericControlChangeTermination,
   SCOPES,
 };

@@ -25,7 +25,12 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
-    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at, hk_rate::float8 AS "hkRate" FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    `SELECT nh.date, nh.nav::float8 AS nav, nh.total_asset::float8 AS "totalAsset", nh.invested::float8 AS invested,
+            nh.snapshot_at, COALESCE(fx.rate, nh.hk_rate)::float8 AS "hkRate"
+       FROM nav_history nh
+       LEFT JOIN market.fx_rates fx
+         ON fx.base_currency='HKD' AND fx.quote_currency='CNY' AND fx.rate_date=nh.date::date
+      WHERE nh.username=$1 AND nh.account_name=$2 ORDER BY nh.date`,
     [username, accountName]
   );
   const { rows: cashFlows } = await pool.query(
@@ -40,7 +45,13 @@ async function loadAccountData(username, accountName) {
   // 账户元数据（期初本金/汇率/税费设置/乐观锁版本）：唯一来源 accounts 表 + account_data.version
   try {
     const { rows: am } = await pool.query(
-      'SELECT cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate, fee_settings FROM accounts WHERE username=$1 AND account_name=$2',
+      `SELECT cash_base::float8 AS cash_base,
+              COALESCE((SELECT rate::float8 FROM market.fx_rates
+                          WHERE base_currency='HKD' AND quote_currency='CNY'
+                            AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), hk_rate::float8) AS hk_rate,
+              fee_settings
+         FROM accounts WHERE username=$1 AND account_name=$2`,
       [username, accountName]
     );
     if (am[0]) {
@@ -250,7 +261,13 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     // P2-3：账户元数据（cash_base/hk_rate/fee_settings）结构化落库，作为唯一权威来源（JSON 不再兜底）
     // hk_rate_updated_at：首次插入=now()；仅当 hk_rate 值变化时更新（用户手动改汇率也算真实变更，迁移 039）。
     const acctId = crypto.createHash('sha256').update(username + '\n' + accountName).digest('hex');
-    const newHkRate = round(data.hkRate || 0.868, 6);
+    const { rows: fxRows } = await client.query(
+      `SELECT rate::float8 AS rate FROM market.fx_rates
+        WHERE base_currency='HKD' AND quote_currency='CNY'
+          AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+        ORDER BY rate_date DESC, fetched_at DESC LIMIT 1`
+    );
+    const newHkRate = round((fxRows[0] && fxRows[0].rate) || data.hkRate || 0.868, 6);
     const feeSettingsJson = (data.feeSettings && typeof data.feeSettings === 'object') ? JSON.stringify(data.feeSettings) : null;
     await client.query(
       'INSERT INTO accounts (id, username, account_name, cash_base, hk_rate, fee_settings, version, updated_at, hk_rate_updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), now()) ON CONFLICT (username, account_name) DO UPDATE SET cash_base=EXCLUDED.cash_base, hk_rate=EXCLUDED.hk_rate, fee_settings=COALESCE(EXCLUDED.fee_settings, accounts.fee_settings), version=accounts.version+1, updated_at=EXCLUDED.updated_at, hk_rate_updated_at=CASE WHEN EXCLUDED.hk_rate IS DISTINCT FROM accounts.hk_rate THEN now() ELSE accounts.hk_rate_updated_at END',
@@ -375,7 +392,12 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
 // 读取当前实际生效的 navHistory（只读结构化表；表空即空，绝不读 JSON 归档）
 async function readEffectiveNavHistory(username, accountName) {
   const { rows } = await pool.query(
-    'SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested::float8 AS invested, snapshot_at, hk_rate::float8 AS "hkRate" FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date',
+    `SELECT nh.date, nh.nav::float8 AS nav, nh.total_asset::float8 AS "totalAsset", nh.invested::float8 AS invested,
+            nh.snapshot_at, COALESCE(fx.rate, nh.hk_rate)::float8 AS "hkRate"
+       FROM nav_history nh
+       LEFT JOIN market.fx_rates fx
+         ON fx.base_currency='HKD' AND fx.quote_currency='CNY' AND fx.rate_date=nh.date::date
+      WHERE nh.username=$1 AND nh.account_name=$2 ORDER BY nh.date`,
     [username, accountName]
   );
   return rows;

@@ -3,7 +3,8 @@
 //   若长期不开网页，港股持仓估值会沿用旧汇率（偏差有限但会过期）。本任务每日自动抓取最新汇率写回。
 // 抓取源与 /api/hkrate 路由一致（open.er-api.com），fetchHkRate 为单点真相，两者共用。
 const https = require('https');
-const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { cnDate, upsertFxRate, syncLegacyAccountRates, getCurrentFxRate } = require('../services/fxRate');
 
 // 抓取港币→人民币汇率（成功返回 number，失败返回 null）
 // 数据源 open.er-api.com：免费、无需 key，返回 rates.CNY = 1 HKD 兑多少人民币（约 0.865）
@@ -30,11 +31,9 @@ async function ensureHkRate() {
   const rate = await fetchHkRate();
   if (!rate) return { ok: false, rate: null };
   try {
-    const r = await pool.query(
-      "UPDATE accounts SET hk_rate=$1, hk_rate_updated_at=now(), updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')",
-      [rate]
-    );
-    return { ok: true, rate: rate, count: r.rowCount };
+    await upsertFxRate(rate, { rateDate: cnDate(new Date()), sourceId: 7 });
+    const count = await syncLegacyAccountRates(rate);
+    return { ok: true, rate: rate, count: count };
   } catch (e) {
     return { ok: false, rate: rate, error: e.message };
   }
@@ -42,16 +41,19 @@ async function ensureHkRate() {
 
 // 带幂等锁与执行记录的每日汇率任务
 async function runHkRateJob() {
-  if (!(await tryClaimJob('hk_rate'))) return;
+  if (!(await tryClaimJob('hk_rate'))) return { ok: false, skipped: true };
   const runId = await startJobRun('hk_rate');
+  let result = { ok: false, rate: null };
   try {
     const r = await ensureHkRate();
+    result = r;
     await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || '抓取失败'));
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
   } finally {
     await releaseJob('hk_rate');
   }
+  return result;
 }
 
-module.exports = { fetchHkRate, ensureHkRate, runHkRateJob };
+module.exports = { fetchHkRate, ensureHkRate, runHkRateJob, getCurrentFxRate };

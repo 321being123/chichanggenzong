@@ -72,10 +72,11 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
 }));
 
 // 港币→人民币汇率代理（抓取逻辑见 server/jobs/hkRate.js，单点真相，供路由与定时任务共用）
-const { fetchHkRate } = require('../jobs/hkRate');
+const { ensureHkRate, getCurrentFxRate } = require('../jobs/hkRate');
 router.get('/hkrate', requireLogin, asyncHandler(async (req, res) => {
-  const rate = await fetchHkRate();
-  res.json({ rate: rate || 0.868 });
+  const result = await ensureHkRate();
+  const rate = result.ok ? result.rate : await getCurrentFxRate();
+  res.json({ rate: rate || 0.868, source: result.ok ? 'global' : 'global_cache' });
 }));
 
 // 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯 web.ifzq 历史日K）

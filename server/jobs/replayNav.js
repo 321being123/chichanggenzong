@@ -7,6 +7,7 @@ const { pool, loadAccountData, saveDailyPrices, upsertNav } = require('../db');
 const { tushareQuery, tsRows, toTsCode, normDate } = require('../services/market');
 const { isCnHoliday } = require('../config/holidays');
 const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
+const { getCurrentFxRate } = require('../services/fxRate');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -58,7 +59,6 @@ async function recomputeNav(username, accountName, fromDate) {
   const data = await loadAccountData(username, accountName);
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   if (navs.length === 0) return { ok: true, days: 0, note: 'no_nav' };
-  const hkRate = Number(data.hkRate) || 0.868;
   const cashBase = Number(data.cashBase) || 0;
   const trades = (data.trades || []).slice().sort(function (a, b) {
     // 方案 3.6 修复：按交易日(trade_date)+成交时间(executed_at)排序，避免带时间 date 与纯日期比较错位
@@ -127,12 +127,20 @@ async function recomputeNav(username, accountName, fromDate) {
   }
 
   const today = cnDate(new Date());
+  const { rows: fxRows } = await pool.query(
+    `SELECT rate_date, rate::float8 AS rate FROM market.fx_rates
+      WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
+    [today]
+  );
+  const fxByDate = new Map(fxRows.map(r => [r.rate_date, Number(r.rate)]));
+  const currentFxRate = fxByDate.get(today) || await getCurrentFxRate();
   let affected = 0;
 
   for (let i = idx0; i < navs.length; i++) {
     const d = navs[i].date;
 
     const held = heldQty(d);
+    const hkRate = fxByDate.get(d) || (d === today ? currentFxRate : null);
     let missing = false;
     const mvList = [];
     for (const [code, info] of held) {
@@ -154,6 +162,7 @@ async function recomputeNav(username, accountName, fromDate) {
         price = dpMap.get(code + '|' + d);
         if (price == null) { missing = true; continue; }
       }
+      if (info.subtype === '港股' && !(hkRate > 0)) { missing = true; continue; }
       const mv = price * info.qty * (info.subtype === '港股' ? hkRate : 1);
       mvList.push(mv);
     }

@@ -2099,6 +2099,7 @@ const MIGRATIONS = [
   { version: '053_index_baseline_settled', up: migration053IndexBaselineSettled },
   { version: '054_arbitrage_cases', up: migration054ArbitrageCases },
   { version: '055_arbitrage_parser_accuracy', up: migration055ArbitrageParserAccuracy },
+  { version: '056_global_fx_rate_source', up: migration056GlobalFxRateSource },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -2233,6 +2234,37 @@ async function migration055ArbitrageParserAccuracy() {
   `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_arb_cases_event_key ON event.arbitrage_cases(event_key) WHERE event_key IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_arb_case_docs_parse ON event.arbitrage_case_documents(case_id, parse_status, document_role)`);
+}
+
+// ========== 056：全局港币汇率单一来源 ==========
+// accounts.hk_rate / nav_history.hk_rate 仅保留为兼容缓存；所有新估值统一读取 market.fx_rates。
+async function migration056GlobalFxRateSource() {
+  await pool.query(`
+    ALTER TABLE market.fx_rates
+      ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_market_fx_rates_authoritative_day
+      ON market.fx_rates(base_currency, quote_currency, rate_date)
+  `);
+  // 只有历史记录中的所有账户汇率一致时才自动回填，冲突日期留给专用修复脚本核对后处理。
+  await pool.query(`
+    INSERT INTO market.fx_rates(base_currency, quote_currency, rate_date, source_id, rate, fetched_at)
+    SELECT 'HKD','CNY', nh.date::date, 7, MIN(nh.hk_rate), now()
+      FROM nav_history nh
+     WHERE nh.hk_rate IS NOT NULL AND nh.hk_rate > 0
+     GROUP BY nh.date::date
+    HAVING COUNT(DISTINCT nh.hk_rate) = 1
+    ON CONFLICT (base_currency, quote_currency, rate_date) DO NOTHING
+  `);
+  // 当天没有净值记录时，用现有账户缓存初始化当天的全局值；后续由汇率任务更新。
+  await pool.query(`
+    INSERT INTO market.fx_rates(base_currency, quote_currency, rate_date, source_id, rate, fetched_at)
+    SELECT 'HKD','CNY',(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date, 7, MIN(a.hk_rate), now()
+      FROM accounts a
+     WHERE a.hk_rate IS NOT NULL AND a.hk_rate > 0
+    ON CONFLICT (base_currency, quote_currency, rate_date) DO NOTHING
+  `);
 }
 
 // ========== 052：nav_history 记录每条快照所用港币汇率（治本：今日涨跌可正确拆分汇率影响） ==========

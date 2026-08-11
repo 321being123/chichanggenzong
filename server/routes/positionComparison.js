@@ -16,7 +16,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { pool, auditEvent } = require('../db');
 const { isValidAccountName } = require('../middleware/validate');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
-const { fetchHkRate } = require('../jobs/hkRate');
+const { ensureHkRate, getCurrentFxRate } = require('../jobs/hkRate');
 const {
   listBenchmarks, loadEffectivePositions, loadAccountCash, estimatePositions,
   missingQuotePositions, groupByField, similarity, compareSecurities, sanitizeSemiPublic,
@@ -131,7 +131,7 @@ async function prepareUnifiedEstimation(myUsername, myAccountName, benchRow) {
     loadEffectivePositions(benchRow.username, benchRow.account_name),
     loadAccountCash(myUsername, myAccountName),
     loadAccountCash(benchRow.username, benchRow.account_name),
-    fetchHkRate(),
+    ensureHkRate().then(r => r.ok ? r.rate : getCurrentFxRate()),
   ]);
   const codes = [...new Set([...myPositions, ...benchPositions].map(p => String(p.code || '').trim()).filter(Boolean))];
   const quotes = codes.length ? await fetchTencentQuotes(codes) : new Map();

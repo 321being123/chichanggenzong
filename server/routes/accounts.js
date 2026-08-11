@@ -577,6 +577,20 @@ router.patch('/accounts/:name/settings', requireLogin, asyncHandler(assertOwners
       'UPDATE accounts SET ' + sets.join(', ') + ', updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\'), version=COALESCE(version,0)+1 WHERE username=$1 AND account_name=$2',
       vals
     );
+    if (req.body.hkRate !== undefined) {
+      const globalRate = round(req.body.hkRate, 6);
+      await client.query(
+        `INSERT INTO market.fx_rates(base_currency,quote_currency,rate_date,source_id,rate,fetched_at)
+         VALUES ('HKD','CNY',(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date,7,$1,now())
+         ON CONFLICT (base_currency,quote_currency,rate_date)
+         DO UPDATE SET source_id=7, rate=EXCLUDED.rate, fetched_at=EXCLUDED.fetched_at`,
+        [globalRate]
+      );
+      await client.query(
+        "UPDATE accounts SET hk_rate=$1, hk_rate_updated_at=now(), updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')",
+        [globalRate]
+      );
+    }
     // 同步提升 account_data 总版本（并发乐观锁基准），RETURNING 返回新版本号供前端同步
     const upV = await client.query(
       `INSERT INTO account_data (username, account_name, data, version) VALUES ($1,$2,'{}',0)

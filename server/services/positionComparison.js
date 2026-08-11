@@ -86,7 +86,12 @@ async function loadEffectivePositions(username, accountName) {
 // 简单复用 loadAccountData 太重（会拉全部 trades/nav），这里直接算现金
 async function loadAccountCash(username, accountName) {
   const { rows: am } = await pool.query(
-    `SELECT cash_base::float8 AS cash_base, hk_rate::float8 AS hk_rate, hk_rate_updated_at FROM accounts WHERE username=$1 AND account_name=$2`,
+    `SELECT cash_base::float8 AS cash_base,
+            COALESCE((SELECT rate::float8 FROM market.fx_rates
+                       WHERE base_currency='HKD' AND quote_currency='CNY'
+                         AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                       ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), hk_rate::float8) AS hk_rate,
+            hk_rate_updated_at FROM accounts WHERE username=$1 AND account_name=$2`,
     [username, accountName]
   );
   const cashBase = am[0] ? am[0].cash_base : 0;

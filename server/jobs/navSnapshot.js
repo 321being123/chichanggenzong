@@ -9,6 +9,7 @@
 const { pool, loadAccountData, upsertNav, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { isCnHoliday } = require('../config/holidays');
 const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
+const { getCurrentFxRate } = require('../services/fxRate');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
@@ -19,10 +20,9 @@ function cnDate(d) {
 }
 
 // 为单个账户填补缺失交易日的净值快照（幂等：已有记录跳过、只新增缺失日）
-async function recordNavSnapshots(username, accountName) {
+async function recordNavSnapshots(username, accountName, hkRateOverride = null) {
   const data = await loadAccountData(username, accountName);
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
-  const hkRate = Number(data.hkRate) || 0.868;
   const cashBase = Number(data.cashBase) || 0;
   const trades = (data.trades || []).slice().sort(function (a, b) {
     return (a.date + (a.created_at || '')).localeCompare(b.date + (b.created_at || ''));
@@ -83,6 +83,13 @@ async function recordNavSnapshots(username, accountName) {
   }
 
   const today = cnDate(new Date());
+  const { rows: fxRows } = await pool.query(
+    `SELECT rate_date, rate::float8 AS rate FROM market.fx_rates
+      WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
+    [today]
+  );
+  const fxByDate = new Map(fxRows.map(r => [r.rate_date, Number(r.rate)]));
+  const currentFxRate = Number(hkRateOverride) > 0 ? Number(hkRateOverride) : (fxByDate.get(today) || await getCurrentFxRate());
   let allDates = Array.from(priceDates).filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today; });
   // 不在首条净值记录之前捏造历史：有净值时只填 >= 首条净值日的空档
   if (navs.length > 0) allDates = allDates.filter(function (d) { return d >= navs[0].date; });
@@ -105,6 +112,7 @@ async function recordNavSnapshots(username, accountName) {
     }
     // 缺失日 → 用当日收盘价估值
     const held = heldQty(d);
+    const hkRate = fxByDate.get(d) || (d === today ? currentFxRate : null);
     let incomplete = false;
     const mvs = [];
     for (const [code, info] of held) {
@@ -112,6 +120,7 @@ async function recordNavSnapshots(username, accountName) {
       let price = code ? dpMap.get(code + '|' + d) : null;
       if (price == null) price = recentPrice(code, d); // 当日缺价 → 前向填充最近交易日收盘价（兜底，保证连续）
       if (price == null) { incomplete = true; break; }
+      if (info.subtype === '港股' && !(hkRate > 0)) { incomplete = true; break; }
       mvs.push(price * info.qty * (info.subtype === '港股' ? hkRate : 1));
     }
     if (incomplete) continue; // 仍无任何可用价 → 跳过那天
@@ -140,12 +149,17 @@ async function runNavSnapshotJob() {
   const runId = await startJobRun('nav_snapshot');
   let total = 0, accounts = 0;
   try {
+    const hkRate = await getCurrentFxRate();
+    if (!(hkRate > 0)) {
+      await finishJobRun(runId, false, '全局港币汇率缺失，跳过净值快照');
+      return { ok: false, days: 0, error: '全局港币汇率缺失' };
+    }
     const { rows: users } = await pool.query('SELECT username, accounts FROM users');
     for (const user of users) {
       const accs = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
       for (const accountName of accs) {
         try {
-          const r = await recordNavSnapshots(user.username, accountName);
+          const r = await recordNavSnapshots(user.username, accountName, hkRate);
           if (r && r.days > 0) { total += r.days; accounts++; }
         } catch (e) {
           console.warn('[nav_snapshot] ' + user.username + '/' + accountName + ' 失败:', e.message);

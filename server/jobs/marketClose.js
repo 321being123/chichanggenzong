@@ -248,9 +248,12 @@ function scheduleAllMarketCloses() {
           runMarketCloseJob(mkt.label, mkt.match)
             .then(() => {
               if (mkt.label !== '港股') return;
-              return runNavSnapshotJob()
-                .then(() => runIndexRecentJob())
-                .then(() => runHkRateJob());
+              return runHkRateJob()
+                .then((fx) => {
+                  if (!fx || !fx.ok) return null;
+                  return runNavSnapshotJob();
+                })
+                .then(() => runIndexRecentJob());
             })
             .catch(() => {});
         }

@@ -62,20 +62,34 @@ async function runIpoHistorySync(reason = 'scheduled') {
   const claimed = await tryClaimJob(JOB);
   if (!claimed) return { skipped: true, reason: 'locked' };
   let runId = null;
+  let retryOf = null;
   const errors = [];
   try {
     const prior = await pool.query(
-      `SELECT 1 FROM job_runs WHERE job=$1
+      `SELECT id,status,detail FROM job_runs WHERE job=$1
         AND (started_at AT TIME ZONE 'Asia/Shanghai')::date =
-            (now() AT TIME ZONE 'Asia/Shanghai')::date LIMIT 1`,
+            (now() AT TIME ZONE 'Asia/Shanghai')::date
+        ORDER BY id DESC LIMIT 1`,
       [JOB]
     );
-    if (prior.rowCount) return { skipped: true, reason: 'already-ran-today' };
-    runId = await startJobRun(JOB);
+    if (prior.rowCount && prior.rows[0].status === 'done') {
+      return { skipped: true, reason: 'already-ran-today' };
+    }
+    if (prior.rowCount && prior.rows[0].status === 'failed') {
+      runId = prior.rows[0].id;
+      retryOf = String(prior.rows[0].detail || '').slice(0, 1000);
+      await pool.query(
+        `UPDATE job_runs SET status='running', started_at=now(), finished_at=NULL,
+          locked_until=now() + interval '1 hour', detail=$2 WHERE id=$1`,
+        [runId, JSON.stringify({ reason: 'retry-after-failure', previous: retryOf })]
+      );
+    } else {
+      runId = await startJobRun(JOB);
+    }
     for (const executable of pythonCandidates()) {
       try {
         const result = await runWith(executable);
-        const detail = JSON.stringify({ reason, executable, ...result });
+        const detail = JSON.stringify({ reason, executable, retryOf, ...result });
         await finishJobRun(runId, true, detail);
         console.log(`[ipo-history] ${reason} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
         return result;

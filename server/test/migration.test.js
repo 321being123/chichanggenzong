@@ -52,7 +52,7 @@ function pgConfig(dbName) {
     const tables = t.rows.map(r => r.table_name).sort();
     check('生成全部核心表', () => {
       for (const need of ['accounts', 'brokers', 'users', 'positions', 'trades', 'schema_migrations', 'job_runs',
-        'stock_watchlist']) {
+        'stock_watchlist', 'ipo_reports']) {
         assert.ok(tables.includes(need), '缺少表: ' + need + '（现有: ' + tables.join(',') + '）');
       }
     });
@@ -118,7 +118,14 @@ function pgConfig(dbName) {
     const architectureTables = await db.pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema = ANY($1)", [['ops','core','market','fundamental','event','analytics']]);
     const architectureNames = new Set(architectureTables.rows.map(row => `${row.table_schema}.${row.table_name}`));
     check('分层数据库核心表已创建', () => {
-      for (const name of ['core.instruments','market.daily_valuations','fundamental.financial_reports','fundamental.corporate_actions','event.company_events','analytics.metric_values','analytics.stock_overview_latest','ops.sync_cursors','fundamental.convertible_bond_profiles','fundamental.convertible_bond_terms','fundamental.convertible_bond_ratings','analytics.convertible_bond_trigger_daily']) assert.ok(architectureNames.has(name), '缺少表 ' + name);
+      for (const name of ['core.instruments','market.daily_valuations','fundamental.financial_reports','fundamental.corporate_actions','event.company_events','analytics.metric_values','analytics.stock_overview_latest','ops.sync_cursors','fundamental.convertible_bond_profiles','fundamental.convertible_bond_issuance','event.instrument_events','analytics.convertible_bond_listing_performance','fundamental.convertible_bond_terms','fundamental.convertible_bond_ratings','analytics.convertible_bond_trigger_daily']) assert.ok(architectureNames.has(name), '缺少表 ' + name);
+    });
+    const legacyBondTableName = ['bond', 'history'].join('_');
+    const legacyBondTable = await db.pool.query('SELECT to_regclass($1) AS name', [`public.${legacyBondTableName}`]);
+    const bondViewDefinition = await db.pool.query("SELECT pg_get_viewdef('public.bond_unified'::regclass, true) AS definition");
+    check('统一切换后旧表已移除且视图不依赖旧表', () => {
+      assert.strictEqual(legacyBondTable.rows[0].name, null);
+      assert.ok(!new RegExp(legacyBondTableName, 'i').test(bondViewDefinition.rows[0].definition));
     });
     check('股票分析旧表已删除', () => { for (const name of ['stock_analysis_stocks','stock_income_statements','stock_balance_sheets','stock_cashflow_statements','stock_financial_indicators','stock_dividends','stock_forecasts','stock_daily_valuations','stock_events','stock_analysis_snapshots','stock_data_sync_state']) assert.ok(!tables.includes(name), '旧表仍存在 '+name); });
 

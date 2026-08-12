@@ -93,10 +93,10 @@ check('Excel 使用中央目录预检并限制全局并发', () => {
   assert.ok(!/GPBF_DATA_DESCRIPTOR[\s\S]{0,500}break/.test(excelWorker));
 });
 
-check('Tushare 直连使用 HTTPS POST Token', () => {
-  assert.ok(/https:\/\/api\.tushare\.pro/.test(ipoCommon));
-  assert.ok(/"api_name":\s*api_name/.test(ipoCommon));
-  assert.ok(/"token":\s*TUSHARE_TOKEN/.test(ipoCommon));
+check('Tushare 统一走 Replay HTTPS GET API Key', () => {
+  assert.ok(/TUSHARE_REPLAY_BASE_URL/.test(ipoCommon));
+  assert.ok(/method="GET"/.test(ipoCommon));
+  assert.ok(/X-API-Key.*TUSHARE_REPLAY_API_KEY/.test(ipoCommon));
 });
 
 check('登录回跳按 URL 语义限制为同源', () => {

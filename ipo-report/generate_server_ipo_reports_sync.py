@@ -1,4 +1,4 @@
-"""生成 ipo_reports 服务器同步 SQL（与 bond_history/ipo_history 同模式：建表 + 全量 upsert，无事务包裹）。
+"""生成 ipo_reports 服务器同步 SQL（与 ipo_history 同模式：建表 + 全量 upsert，无事务包裹）。
 
 ipo_reports 由每日日报 ipo_daily_report.py 写入，存储打新日历(calendar)、打新建议(md 的"结论"段)、
 赛道热度(sector_boost_info) 等。服务器此前未建该表，导致线上打新日历/打新建议为空。

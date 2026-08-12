@@ -222,7 +222,7 @@ _BOND_MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_6m": 0}
 def detect_bond_market_temperature():
     """
     检测当前新债（可转债）市场温度
-    从 bond_history 表或东财接口统计近6个月数据
+    从标准上市表现表统计近6个月数据
     返回 {'level': '热市'|'常温'|'冷市', 'break_rate': float, 'avg_gain_6m': float}
     """
     global _BOND_MARKET_TEMP
@@ -233,34 +233,9 @@ def detect_bond_market_temperature():
     # 先从数据库查，检查数据是否够新（24h内）
     try:
         conn = _init_ipo_db()
-        last_update = conn.execute("SELECT MAX(updated_at) FROM bond_history").fetchone()[0]
-        need_fetch = True
-        if last_update:
-            try:
-                last_dt = datetime.strptime(last_update, "%Y-%m-%d %H:%M:%S")
-                if (datetime.now() - last_dt).total_seconds() < 86400:
-                    need_fetch = False
-            except ValueError:
-                pass
-
-        if need_fetch:
-            conn.close()
-            rows = _fetch_bond_listing_data_from_api(cutoff)
-            # 保存后重新读取
-            conn = _init_ipo_db()
-            db_rows = conn.execute(
-                "SELECT first_day_return FROM bond_history WHERE listing_date >= ? AND first_day_return IS NOT NULL",
-                (cutoff,),
-            ).fetchall()
-            conn.close()
-            rows = [r[0] for r in db_rows]
-        else:
-            db_rows = conn.execute(
-                "SELECT first_day_return FROM bond_history WHERE listing_date >= ? AND first_day_return IS NOT NULL",
-                (cutoff,),
-            ).fetchall()
-            conn.close()
-            rows = [r[0] for r in db_rows]
+        conn.close()
+        from bond_data_layer import list_bond_performance
+        rows = list_bond_performance(cutoff)
     except Exception:
         rows = []
 

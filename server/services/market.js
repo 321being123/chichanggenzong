@@ -1,6 +1,7 @@
 // ===================== 行情服务层（原 server.js 中的行情代理逻辑集中于此） =====================
 const https = require('https');
 const { pool } = require('../db/connection');
+const { tushareQuery } = require('./tushareReplay');
 const {
   fetchTencentQuotes,
   isConvertibleBondCode,
@@ -28,32 +29,6 @@ function httpsGet(url, encoding) {
 
 // ===================== Tushare 数据层（A股优先数据源） =====================
 // 港股实时 / 恒生指数 / 汇率：Tushare 2000积分无权限，仍走腾讯。
-const TUSHARE_TOKEN = process.env.TUSHARE_TOKEN || '';
-const TS_API = 'https://api.tushare.pro';
-
-// 调 Tushare HTTP API（POST JSON），返回 {fields,items} 或 null。
-function tushareQuery(apiName, params, fields) {
-  return new Promise((resolve) => {
-    if (!TUSHARE_TOKEN) return resolve(null);
-    const payload = JSON.stringify({ api_name: apiName, token: TUSHARE_TOKEN, params: params || {}, fields: fields || '' });
-    const body = Buffer.from(payload, 'utf8');
-    const req = https.request(TS_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': body.length }
-    }, (resp) => {
-      let data = '';
-      resp.on('data', c => data += c);
-      resp.on('end', () => {
-        try { const j = JSON.parse(data); resolve(j && j.code === 0 && j.data ? j.data : null); }
-        catch (e) { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.setTimeout(10000, () => { req.destroy(); resolve(null); });
-    req.write(body); req.end();
-  });
-}
-
 // Tushare items 二维数组 → 行对象数组
 function tsRows(data) {
   if (!data || !Array.isArray(data.items)) return [];

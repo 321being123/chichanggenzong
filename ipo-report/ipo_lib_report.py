@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timedelta
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
-from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
+from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries, next_trading_date
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
@@ -856,11 +856,7 @@ def main():
         else:
             target_date = datetime.strptime(date_arg, "%Y%m%d")
     else:
-        # 默认：明天；如果明天是周末则跳到下周一
-        target_date = datetime.now() + timedelta(days=1)
-        if target_date.weekday() >= 5:
-            days_to_monday = 7 - target_date.weekday()
-            target_date += timedelta(days=days_to_monday)
+        target_date = next_trading_date(datetime.now())
 
     md_content, data = build_report(target_date)
 

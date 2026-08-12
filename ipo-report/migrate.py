@@ -77,8 +77,6 @@ def main():
          "board_key", "updated_at", "issue_price", "issue_pe", "industry_pe", "fund_raised",
          "total_shares", "online_shares", "online_lottery_rate", "oversubscribe_multiple",
          "subscribe_upper_limit", "main_business", "industry", "circulation_mv", "pe_ratio"])
-    migrate_table(pg, ipo_db, "bond_history",
-        ["security_code", "security_name", "listing_date", "first_day_return", "updated_at"])
     migrate_table(pg, ipo_db, "predictions",
         ["type", "code", "name", "listing_date", "pred_date", "pred_return", "pred_price",
          "pred_advice", "actual_return", "actual_price", "actual_date", "status", "updated_at"])

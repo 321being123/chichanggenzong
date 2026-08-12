@@ -15,9 +15,12 @@ import json
 import urllib.request
 from datetime import datetime, timedelta
 
-from _common import _load_env, _tushare, TUSHARE_TOKEN
+from _common import _load_env, _tushare, TUSHARE_REPLAY_API_KEY
 
 _load_env()
+
+CB_ISSUE_FIELDS = "ts_code,ann_date,res_ann_date,issue_size,issue_price,issue_type,shd_ration_record_date,shd_ration_ratio,onl_date,onl_size,onl_pch_num,offl_size,shd_ration_size,onl_name"
+CB_BASIC_FIELDS = "ts_code,bond_full_name,bond_short_name,cb_type,stk_code,stk_short_name,maturity,par,issue_price,issue_size,remain_size,value_date,maturity_date,rate_type,coupon_rate,add_rate,pay_per_year,list_date,delist_date,exchange,conv_start_date,conv_end_date,conv_stop_date,first_conv_price,conv_price,issue_rating,newest_rating,rating_comp"
 
 
 def _str_date(val):
@@ -38,6 +41,41 @@ def _str_date(val):
     if re.match(r"^\d{8}$", s):
         return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return s[:10] if re.match(r"^\d{4}-\d{2}-\d{2}$", s[:10]) else ""
+
+
+def next_trading_date(start_date=None):
+    """返回 start_date 之后的下一个实际交易日，兼容周末和法定节假日。"""
+    start = start_date or datetime.now()
+    if not isinstance(start, datetime):
+        start = datetime.combine(start, datetime.min.time())
+    begin = start.date() + timedelta(days=1)
+    end = begin + timedelta(days=31)
+    try:
+        rows = _tushare(
+            "trade_cal",
+            {
+                "exchange": "SSE",
+                "start_date": begin.strftime("%Y%m%d"),
+                "end_date": end.strftime("%Y%m%d"),
+                "is_open": "1",
+            },
+            "cal_date,is_open",
+        )
+        open_dates = sorted(
+            _str_date(row.get("cal_date"))
+            for row in rows
+            if str(row.get("is_open")) == "1" and _str_date(row.get("cal_date"))
+        )
+        if open_dates:
+            return datetime.strptime(open_dates[0], "%Y-%m-%d")
+    except Exception as exc:
+        print(f"[日历] 实际交易日查询失败，暂按工作日兜底: {exc}")
+
+    # 上游不可用时只作为兜底，避免报告任务因日期查询暂时失败而中断。
+    candidate = begin
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return datetime.combine(candidate, datetime.min.time())
 
 
 # ============ Tushare REST 调用（零依赖，不依赖 tushare 库）—— 已收口到 _common.py ============
@@ -104,6 +142,7 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
         print(f"[日历] 新股获取失败: {e}")
 
     # 2. 新债申购：cb_issue.onl_date（服务端按日期窗口过滤）
+    df2 = []
     try:
         if not new_share_ok:
             raise RuntimeError("新股日历数据源失败，任务不得标记成功")
@@ -112,7 +151,7 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
             params2["start_date"] = sd_int
         if ed_int:
             params2["end_date"] = ed_int
-        df2 = _tushare("cb_issue", params2, "ts_code,onl_name,onl_date")
+        df2 = _tushare("cb_issue", params2, CB_ISSUE_FIELDS)
         for r in df2:
             ts_code = str(r.get("ts_code") or "")
             if not ts_code:
@@ -131,8 +170,9 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
 
     # 3. 新债上市：cb_basic.list_date（接口不支持日期范围，全量拉取后内存过滤窗口）
     cb_basic_kept = 0
+    df3 = []
     try:
-        df3 = _tushare("cb_basic", {}, "ts_code,bond_short_name,list_date")
+        df3 = _tushare("cb_basic", {}, CB_BASIC_FIELDS)
         for r in df3:
             ts_code = str(r.get("ts_code") or "")
             if not ts_code:
@@ -153,6 +193,18 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
             cb_basic_kept += 1
     except Exception as e:
         print(f"[日历] 新债上市获取失败: {e}")
+
+    # cb_issue 已成功时，即使 cb_basic 暂时失败，也要把发行事实先写入统一层。
+    if df2:
+        try:
+            from bond_data_layer import save_cb_issue_rows
+            rating_map = {
+                str(row.get("ts_code")): row.get("newest_rating") or row.get("issue_rating")
+                for row in df3 if row.get("ts_code")
+            }
+            save_cb_issue_rows(df2, df3, rating_map)
+        except Exception as exc:
+            print(f"[日历] 可转债标准化入库失败（保留已有数据）: {exc}")
 
     scope = "全量(不限窗口)" if full else f"{win_start}~{win_end}"
     print(f"[日历] 拉取完成 范围={scope} 共 {len(all_data)} 条（其中新债上市 {cb_basic_kept} 条）")

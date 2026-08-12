@@ -1,9 +1,9 @@
-// ========== DATA-02 数据集③：可转债主档/正股关联/行情 双读核对 ==========
+// ========== DATA-02 数据集③：可转债主档/正股关联/行情统一层核对 ==========
 // 运行：node server/test/data-convergence-bond-master.test.js
 // 目的：收敛可转债标准数据读取链路。
 //   - 可转债主档与正股关联统一读取者 = bondDataService（bond_unified 视图）。
-//   - 双读核对：统一读取者 getActiveBondCodes() 与权威 SQL（bond_unified WHERE status='listed'）集合一致。
-//   - 正股关联完整性：bond_history 有正股代码的债券，统一视图 stock_code 必须全覆盖（P1-1）。
+//   - 统一读取者 getActiveBondCodes() 与标准视图（bond_unified WHERE status='listed'）集合一致。
+//   - 标准主档存在正股关联时，统一视图 stock_code 必须全覆盖。
 // 依赖本地 PostgreSQL（portfolio 库）；连不上时优雅跳过（不影响通过）。不写入任何数据。
 const assert = require('assert');
 const path = require('path');
@@ -32,13 +32,12 @@ function check(name, fn) {
         '统一读取者与权威 SQL 返回的在市可转债集合不一致');
     });
 
-    // 2) 正股关联完整性：bond_history 有正股代码的债券，统一视图 stock_code 不应缺失
+    // 2) 正股关联完整性：标准档案有正股关联时，统一视图 stock_code 不应缺失
     const missing = await pool.query(
-      `SELECT count(*)::int AS n FROM bond_unified bu
-       JOIN bond_history bh ON bh.security_code = split_part(bu.bond_code, '.', 1)
-       WHERE (bu.stock_code IS NULL OR bu.stock_code='')
-         AND bh.stk_code IS NOT NULL AND bh.stk_code <> ''`);
-    check('正股关联完整性：bond_history 有正股代码的债券视图缺失数为 0', () => {
+      `SELECT count(*)::int AS n FROM public.bond_unified bu
+       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=bu.instrument_id
+       WHERE p.stock_instrument_id IS NOT NULL AND (bu.stock_code IS NULL OR bu.stock_code='')`);
+    check('正股关联完整性：标准档案有正股代码的债券视图缺失数为 0', () => {
       assert.strictEqual(missing.rows[0].n, 0, `仍有 ${missing.rows[0].n} 条正股关联缺失`);
     });
 
@@ -49,7 +48,7 @@ function check(name, fn) {
       assert.ok(Array.isArray(list), 'getBondList 应返回数组');
     });
   } catch (e) {
-    if (!pool) {
+    if (!pool || e.code === 'ECONNREFUSED' || e.name === 'AggregateError') {
       console.log('  [SKIP] 无可用 PostgreSQL，跳过 DATA-02 数据集③ 双读核对');
       results.push(['SKIP', 'SKIP-DATA-02-ds3']);
     } else {

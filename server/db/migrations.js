@@ -1479,7 +1479,7 @@ async function migration031BondUnified() {
       SELECT CASE WHEN strpos(raw, '.') > 0 THEN split_part(raw, '.', 1) ELSE raw END;
     $$ LANGUAGE sql IMMUTABLE;
   `);
-  // bond_history 由 Python 脚本建表，Node 迁移可能先执行，容错建一个空壳
+  // 迁移 058 会重建不依赖旧表的统一视图并删除历史兼容表；这里仅为老版本升级保留输入表。
   await pool.query(`
     CREATE TABLE IF NOT EXISTS bond_history (
       security_code          TEXT PRIMARY KEY,
@@ -1619,7 +1619,7 @@ async function migration034BondProfileListDate() {
   await pool.query(`ALTER TABLE fundamental.convertible_bond_profiles ADD COLUMN IF NOT EXISTS list_date DATE`);
 }
 
-// ========== 035：bond_unified 正股代码兜底（迁移期保护：正股关联为空时返回 bond_history.stk_code） ==========
+// ========== 035：bond_unified 正股代码兜底（迁移期保护） ==========
 // 正股代码补后缀规则必须与 bondDataService.normalizeStockCode() 保持一致（0/3 开头 → 深市，其余 → 沪市）。
 async function migration035BondUnifiedStkFallback() {
   await pool.query(`
@@ -2081,6 +2081,460 @@ async function migration057IpoHistorySync() {
   `);
 }
 
+// ========== 058：打新与可转债统一数据层直接切换 ==========
+// 发行事实、证券生命周期事件、上市表现分别落表；bond_history 只在本迁移内作为一次性输入。
+async function migration058ConvertibleBondIssueUnified() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_issuance (
+        instrument_id BIGINT PRIMARY KEY REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+        issue_type TEXT,
+        issue_price_yuan NUMERIC(20,8),
+        issue_size_100m_yuan NUMERIC(20,8),
+        shareholder_allotment_ratio_yuan_per_share NUMERIC(20,8),
+        online_size_100m_yuan NUMERIC(20,8),
+        offline_size_100m_yuan NUMERIC(20,8),
+        online_purchase_accounts_10k NUMERIC(20,8),
+        shareholder_allotment_quantity NUMERIC(30,4),
+        source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+        source_updated_at TIMESTAMPTZ,
+        raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_cb_issuance_source_updated
+        ON fundamental.convertible_bond_issuance(source_updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS event.instrument_events (
+        event_id BIGSERIAL PRIMARY KEY,
+        instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL CHECK (event_type IN (
+          'issue_announcement','shareholder_record','online_subscription',
+          'result_announcement','listing'
+        )),
+        event_date DATE NOT NULL,
+        source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+        document_id BIGINT NULL REFERENCES event.documents(document_id),
+        source_key TEXT NOT NULL,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        source_updated_at TIMESTAMPTZ NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (source_id, source_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_instrument_events_date
+        ON event.instrument_events(instrument_id, event_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_instrument_events_type_date
+        ON event.instrument_events(event_type, event_date);
+
+      CREATE TABLE IF NOT EXISTS analytics.convertible_bond_listing_performance (
+        instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+        listing_date DATE NOT NULL,
+        observation_date DATE NOT NULL,
+        measurement_type TEXT NOT NULL CHECK (measurement_type = 'first_non_limit_day'),
+        close_price NUMERIC(24,8),
+        return_pct NUMERIC(20,8),
+        formula_version TEXT NOT NULL,
+        source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+        raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (instrument_id, measurement_type, formula_version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cb_listing_performance_date
+        ON analytics.convertible_bond_listing_performance(listing_date DESC);
+
+      ALTER TABLE predictions ADD COLUMN IF NOT EXISTS instrument_id BIGINT
+        REFERENCES core.instruments(instrument_id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_predictions_instrument
+        ON predictions(instrument_id, pred_date DESC);
+    `);
+
+    const sourceResult = await client.query(
+      `SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1`
+    );
+    if (!sourceResult.rows[0]) throw new Error('缺少 tushare 数据源');
+    const tushareSourceId = sourceResult.rows[0].source_id;
+
+    // 旧表可能由迁移 031 建成空壳，也可能由日报脚本建成完整表。
+    const oldTable = await client.query(`
+      SELECT to_regclass('public.bond_history') AS name
+    `);
+    if (oldTable.rows[0].name) {
+      for (const [column, type] of [
+        ['security_name', 'TEXT'], ['listing_date', 'TEXT'], ['first_day_return', 'REAL'], ['updated_at', 'TEXT'],
+        ['ann_date', 'TEXT'], ['res_ann_date', 'TEXT'], ['issue_size', 'REAL'], ['issue_type', 'TEXT'],
+        ['rating', 'TEXT'], ['shd_ration_ratio', 'REAL'], ['issue_price', 'REAL'],
+        ['shd_ration_record_date', 'TEXT'], ['onl_date', 'TEXT'], ['onl_size', 'REAL'],
+        ['onl_pch_num', 'REAL'], ['offl_size', 'REAL'], ['shd_ration_size', 'REAL'], ['conv_price', 'REAL'],
+        ['stk_code', 'TEXT'], ['stk_name', 'TEXT']
+      ]) {
+        await client.query(`ALTER TABLE public.bond_history ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+      }
+      const legacyAudit = await client.query(`
+        SELECT COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE security_code !~ '^[0-9]{6}$')::int AS invalid_codes,
+               COUNT(*) FILTER (WHERE NULLIF(stk_code,'') IS NOT NULL)::int AS stock_codes,
+               COUNT(*) FILTER (WHERE NULLIF(issue_size::text,'') IS NOT NULL)::int AS issue_sizes,
+               COUNT(*) FILTER (WHERE NULLIF(ann_date,'') IS NOT NULL OR NULLIF(res_ann_date,'') IS NOT NULL
+                                  OR NULLIF(shd_ration_record_date,'') IS NOT NULL OR NULLIF(onl_date,'') IS NOT NULL)::int AS event_rows,
+               COUNT(*) FILTER (WHERE first_day_return IS NOT NULL)::int AS performance_rows
+          FROM public.bond_history`);
+      if (legacyAudit.rows[0].invalid_codes > 0) {
+        throw new Error(`bond_history 存在 ${legacyAudit.rows[0].invalid_codes} 条非法可转债代码，停止删除旧表`);
+      }
+      const oldRows = await client.query(`
+        SELECT * FROM public.bond_history
+        WHERE security_code ~ '^[0-9]{6}$'
+        ORDER BY security_code
+      `);
+      for (const row of oldRows.rows) {
+        const code = String(row.security_code);
+        const canonicalCode = /^12/.test(code) ? `${code}.SZ` : `${code}.SH`;
+        const instrument = await client.query(`
+          INSERT INTO core.instruments(canonical_code,name,asset_class,market,list_date,status,raw_data)
+          VALUES($1,$2,'convertible_bond','CN',$3::date,
+                 CASE WHEN $3::date IS NULL THEN 'announced'
+                      WHEN $3::date <= CURRENT_DATE THEN 'listed' ELSE 'pending_listing' END,
+                 $4::jsonb)
+          ON CONFLICT(canonical_code) DO UPDATE SET
+            name=COALESCE(NULLIF(core.instruments.name,''),EXCLUDED.name),
+            list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
+            updated_at=now()
+          RETURNING instrument_id
+        `, [canonicalCode, row.security_name || code, normalizeMigrationDate(row.listing_date), JSON.stringify(row)]);
+        const instrumentId = instrument.rows[0].instrument_id;
+
+        let stockId = null;
+        const stockCode = normalizeMigrationStockCode(row.stk_code);
+        if (stockCode) {
+          const stock = await client.query(`
+            INSERT INTO core.instruments(canonical_code,name,asset_class,market)
+            VALUES($1,$2,'stock','CN')
+            ON CONFLICT(canonical_code) DO UPDATE SET
+              name=COALESCE(NULLIF(core.instruments.name,''),EXCLUDED.name),updated_at=now()
+            RETURNING instrument_id
+          `, [stockCode, row.stk_name || stockCode]);
+          stockId = stock.rows[0].instrument_id;
+          await client.query(
+            `UPDATE fundamental.convertible_bond_profiles
+                SET stock_instrument_id=COALESCE(stock_instrument_id,$1),updated_at=now()
+              WHERE instrument_id=$2`, [stockId, instrumentId]
+          );
+        }
+
+        await client.query(`
+          INSERT INTO fundamental.convertible_bond_profiles
+            (instrument_id,stock_instrument_id,bond_short_name,current_conv_price,issue_size,newest_rating,list_date,source_id,raw_payload)
+          VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9::jsonb)
+          ON CONFLICT(instrument_id) DO UPDATE SET
+            stock_instrument_id=COALESCE(fundamental.convertible_bond_profiles.stock_instrument_id,EXCLUDED.stock_instrument_id),
+            bond_short_name=COALESCE(NULLIF(fundamental.convertible_bond_profiles.bond_short_name,''),EXCLUDED.bond_short_name),
+            current_conv_price=COALESCE(fundamental.convertible_bond_profiles.current_conv_price,EXCLUDED.current_conv_price),
+            issue_size=COALESCE(fundamental.convertible_bond_profiles.issue_size,EXCLUDED.issue_size),
+            newest_rating=COALESCE(NULLIF(fundamental.convertible_bond_profiles.newest_rating,''),EXCLUDED.newest_rating),
+            list_date=COALESCE(fundamental.convertible_bond_profiles.list_date,EXCLUDED.list_date),
+            raw_payload=fundamental.convertible_bond_profiles.raw_payload || EXCLUDED.raw_payload,
+            updated_at=now()
+        `, [instrumentId, stockId, row.security_name || code, toNumber(row.conv_price), toNumber(row.issue_size) == null ? null : toNumber(row.issue_size) * 100000000,
+          row.rating || '', normalizeMigrationDate(row.listing_date), tushareSourceId, JSON.stringify(row)]);
+
+        const updatedAt = normalizeMigrationTimestamp(row.updated_at);
+        await client.query(`
+          INSERT INTO fundamental.convertible_bond_issuance
+            (instrument_id,issue_type,issue_price_yuan,issue_size_100m_yuan,
+             shareholder_allotment_ratio_yuan_per_share,online_size_100m_yuan,
+             offline_size_100m_yuan,online_purchase_accounts_10k,
+             shareholder_allotment_quantity,source_id,source_updated_at,raw_payload)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+          ON CONFLICT(instrument_id) DO UPDATE SET
+            issue_type=COALESCE(EXCLUDED.issue_type, fundamental.convertible_bond_issuance.issue_type),
+            issue_price_yuan=COALESCE(EXCLUDED.issue_price_yuan, fundamental.convertible_bond_issuance.issue_price_yuan),
+            issue_size_100m_yuan=COALESCE(EXCLUDED.issue_size_100m_yuan, fundamental.convertible_bond_issuance.issue_size_100m_yuan),
+            shareholder_allotment_ratio_yuan_per_share=COALESCE(EXCLUDED.shareholder_allotment_ratio_yuan_per_share, fundamental.convertible_bond_issuance.shareholder_allotment_ratio_yuan_per_share),
+            online_size_100m_yuan=COALESCE(EXCLUDED.online_size_100m_yuan, fundamental.convertible_bond_issuance.online_size_100m_yuan),
+            offline_size_100m_yuan=COALESCE(EXCLUDED.offline_size_100m_yuan, fundamental.convertible_bond_issuance.offline_size_100m_yuan),
+            online_purchase_accounts_10k=COALESCE(EXCLUDED.online_purchase_accounts_10k, fundamental.convertible_bond_issuance.online_purchase_accounts_10k),
+            shareholder_allotment_quantity=COALESCE(EXCLUDED.shareholder_allotment_quantity, fundamental.convertible_bond_issuance.shareholder_allotment_quantity),
+            source_updated_at=COALESCE(EXCLUDED.source_updated_at, fundamental.convertible_bond_issuance.source_updated_at),
+            raw_payload=fundamental.convertible_bond_issuance.raw_payload || EXCLUDED.raw_payload,
+            updated_at=now()
+        `, [instrumentId, row.issue_type || null, toNumber(row.issue_price), toNumber(row.issue_size),
+          toNumber(row.shd_ration_ratio), toNumber(row.onl_size), toNumber(row.offl_size),
+          toNumber(row.onl_pch_num), toNumber(row.shd_ration_size), tushareSourceId,
+          updatedAt, JSON.stringify(row)]);
+
+        const events = [
+          ['issue_announcement', row.ann_date],
+          ['shareholder_record', row.shd_ration_record_date],
+          ['online_subscription', row.onl_date],
+          ['result_announcement', row.res_ann_date],
+          ['listing', row.listing_date],
+        ];
+        for (const [eventType, date] of events) {
+          const eventDate = normalizeMigrationDate(date);
+          if (!eventDate) continue;
+          await client.query(`
+            INSERT INTO event.instrument_events
+              (instrument_id,event_type,event_date,source_id,source_key,details,source_updated_at)
+            VALUES($1,$2,$3::date,$4,$5,$6::jsonb,$7)
+            ON CONFLICT(source_id,source_key) DO UPDATE SET
+              instrument_id=EXCLUDED.instrument_id,event_date=EXCLUDED.event_date,
+              details=EXCLUDED.details,source_updated_at=EXCLUDED.source_updated_at,updated_at=now()
+          `, [instrumentId, eventType, eventDate, tushareSourceId,
+            `tushare:cb_issue:${code}:${eventType}:${eventDate}`, JSON.stringify(row), updatedAt]);
+        }
+
+        const listingDate = normalizeMigrationDate(row.listing_date);
+        const returnPct = toNumber(row.first_day_return);
+        if (listingDate && returnPct != null) {
+          await client.query(`
+            INSERT INTO analytics.convertible_bond_listing_performance
+              (instrument_id,listing_date,observation_date,measurement_type,close_price,return_pct,formula_version,source_id,raw_payload)
+            VALUES($1,$2::date,$2::date,'first_non_limit_day',100 * (1 + $3::numeric / 100),$3::numeric,'legacy_bond_history_v1',$4,$5::jsonb)
+            ON CONFLICT(instrument_id,measurement_type,formula_version) DO UPDATE SET
+              listing_date=EXCLUDED.listing_date,observation_date=EXCLUDED.observation_date,
+              close_price=EXCLUDED.close_price,return_pct=EXCLUDED.return_pct,
+              raw_payload=EXCLUDED.raw_payload,calculated_at=now()
+          `, [instrumentId, listingDate, returnPct, tushareSourceId, JSON.stringify(row)]);
+        }
+      }
+      const coverage = await client.query(`
+        SELECT
+          (SELECT COUNT(*) FROM public.bond_history) AS old_total,
+          (SELECT COUNT(*) FROM public.bond_history bh JOIN core.instruments i
+             ON i.canonical_code = CASE WHEN bh.security_code LIKE '12%' THEN bh.security_code || '.SZ' ELSE bh.security_code || '.SH' END
+            WHERE i.asset_class='convertible_bond') AS instrument_total,
+          (SELECT COUNT(*) FROM public.bond_history bh JOIN core.instruments i
+             ON i.canonical_code = CASE WHEN bh.security_code LIKE '12%' THEN bh.security_code || '.SZ' ELSE bh.security_code || '.SH' END
+             JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
+            WHERE (NULLIF(bh.issue_type,'') IS NULL OR NULLIF(iss.issue_type,'') IS NOT NULL)
+              AND (bh.issue_price IS NULL OR iss.issue_price_yuan IS NOT NULL)
+              AND (bh.issue_size IS NULL OR iss.issue_size_100m_yuan IS NOT NULL)
+              AND (bh.shd_ration_ratio IS NULL OR iss.shareholder_allotment_ratio_yuan_per_share IS NOT NULL)
+              AND (bh.onl_size IS NULL OR iss.online_size_100m_yuan IS NOT NULL)
+              AND (bh.offl_size IS NULL OR iss.offline_size_100m_yuan IS NOT NULL)
+              AND (bh.onl_pch_num IS NULL OR iss.online_purchase_accounts_10k IS NOT NULL)
+              AND (bh.shd_ration_size IS NULL OR iss.shareholder_allotment_quantity IS NOT NULL)) AS issuance_covered,
+          (SELECT COUNT(*) FROM public.bond_history bh JOIN core.instruments i
+             ON i.canonical_code = CASE WHEN bh.security_code LIKE '12%' THEN bh.security_code || '.SZ' ELSE bh.security_code || '.SH' END
+             JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+             WHERE NULLIF(bh.stk_code,'') IS NULL OR p.stock_instrument_id IS NOT NULL) AS stock_covered,
+          (SELECT COUNT(*) FROM public.bond_history bh JOIN core.instruments i
+             ON i.canonical_code = CASE WHEN bh.security_code LIKE '12%' THEN bh.security_code || '.SZ' ELSE bh.security_code || '.SH' END
+            WHERE (NULLIF(bh.ann_date,'') IS NULL OR EXISTS (
+                     SELECT 1 FROM event.instrument_events e
+                      WHERE e.instrument_id=i.instrument_id AND e.event_type='issue_announcement'
+                   ))
+              AND (NULLIF(bh.shd_ration_record_date,'') IS NULL OR EXISTS (
+                     SELECT 1 FROM event.instrument_events e
+                      WHERE e.instrument_id=i.instrument_id AND e.event_type='shareholder_record'
+                   ))
+              AND (NULLIF(bh.onl_date,'') IS NULL OR EXISTS (
+                     SELECT 1 FROM event.instrument_events e
+                      WHERE e.instrument_id=i.instrument_id AND e.event_type='online_subscription'
+                   ))
+              AND (NULLIF(bh.res_ann_date,'') IS NULL OR EXISTS (
+                     SELECT 1 FROM event.instrument_events e
+                      WHERE e.instrument_id=i.instrument_id AND e.event_type='result_announcement'
+                   ))
+              AND (NULLIF(bh.listing_date,'') IS NULL OR EXISTS (
+                     SELECT 1 FROM event.instrument_events e
+                      WHERE e.instrument_id=i.instrument_id AND e.event_type='listing'
+                   ))) AS issue_event_covered,
+          (SELECT COUNT(*) FROM public.bond_history bh JOIN core.instruments i
+             ON i.canonical_code = CASE WHEN bh.security_code LIKE '12%' THEN bh.security_code || '.SZ' ELSE bh.security_code || '.SH' END
+             LEFT JOIN analytics.convertible_bond_listing_performance lp ON lp.instrument_id=i.instrument_id
+            WHERE bh.first_day_return IS NULL OR lp.measurement_type='first_non_limit_day') AS performance_covered
+      `);
+      const c = coverage.rows[0];
+      if (Number(c.old_total) !== Number(c.instrument_total)) throw new Error('旧债代码未 100% 映射到 instrument_id，停止删除旧表');
+      if (Number(c.old_total) !== Number(c.issuance_covered)) throw new Error('旧债发行事实未 100% 覆盖，停止删除旧表');
+      if (Number(c.old_total) !== Number(c.stock_covered)) throw new Error('旧债正股关联未 100% 覆盖，停止删除旧表');
+      if (Number(c.old_total) !== Number(c.issue_event_covered)) throw new Error('旧债发行公告事件未 100% 覆盖，停止删除旧表');
+      if (Number(c.old_total) !== Number(c.performance_covered)) throw new Error('旧债上市表现未 100% 覆盖，停止删除旧表');
+    }
+
+    const unresolved = await client.query(`
+      SELECT p.id,p.type,p.code
+        FROM predictions p
+        LEFT JOIN core.instruments i
+          ON i.canonical_code = CASE
+               WHEN p.code ~ '^\\d{6}\\.(SH|SZ)$' THEN p.code
+               WHEN p.code ~ '^(10|11|110|111|113|118)' THEN p.code || '.SH'
+               ELSE p.code || '.SZ' END
+       WHERE p.type='bond' AND p.instrument_id IS NULL AND i.instrument_id IS NULL
+    `);
+    if (unresolved.rows.length) {
+      throw new Error(`存在无法映射到 instrument_id 的可转债预测：${unresolved.rows.slice(0, 10).map(r => r.code).join(',')}`);
+    }
+    await client.query(`
+      UPDATE predictions p
+         SET instrument_id=i.instrument_id,updated_at=COALESCE(p.updated_at,to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+        FROM core.instruments i
+       WHERE p.type='bond' AND p.instrument_id IS NULL
+         AND i.canonical_code = CASE
+           WHEN p.code ~ '^\\d{6}\\.(SH|SZ)$' THEN p.code
+           WHEN p.code ~ '^(10|11|110|111|113|118)' THEN p.code || '.SH'
+           ELSE p.code || '.SZ' END
+    `);
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname='chk_predictions_bond_instrument'
+            AND conrelid='predictions'::regclass
+        ) THEN
+          ALTER TABLE predictions ADD CONSTRAINT chk_predictions_bond_instrument
+            CHECK (type <> 'bond' OR instrument_id IS NOT NULL) NOT VALID;
+        END IF;
+      END $$;
+    `);
+
+    await client.query(`
+      DROP VIEW IF EXISTS public.bond_unified CASCADE;
+      CREATE VIEW public.bond_unified AS
+      SELECT
+        i.instrument_id,
+        i.canonical_code AS bond_code,
+        split_part(i.canonical_code, '.', 1) AS security_code,
+        i.name AS bond_name,
+        COALESCE(ev.listing_date::date, i.list_date) AS listing_date,
+        i.delist_date,
+        i.status,
+        p.bond_full_name,
+        p.stock_instrument_id,
+        p.issue_size,
+        p.remain_size,
+        p.par_value,
+        p.first_conv_price,
+        p.current_conv_price AS conv_price,
+        p.value_date,
+        p.maturity_date,
+        p.conv_start_date,
+        p.conv_end_date,
+        p.conv_stop_date,
+        p.coupon_rate,
+        p.issue_rating,
+        p.newest_rating AS rating,
+        p.rating_company,
+        p.guarantor,
+        p.guarantee_type,
+        p.fundraising_purpose,
+        p.cb_type,
+        p.maturity_call_price,
+        iss.issue_type,
+        iss.issue_size_100m_yuan,
+        iss.shareholder_allotment_ratio_yuan_per_share AS shd_ration_ratio,
+        iss.online_size_100m_yuan AS onl_size,
+        iss.offline_size_100m_yuan AS offl_size,
+        iss.online_purchase_accounts_10k AS onl_pch_num,
+        iss.shareholder_allotment_quantity AS shd_ration_size,
+        iss.issue_price_yuan AS bh_issue_price,
+        ev.ann_date,
+        ev.res_ann_date,
+        ev.shd_ration_record_date,
+        ev.onl_date,
+        perf.first_day_return,
+        s.canonical_code AS stock_code,
+        COALESCE(s.name, '') AS stock_name,
+        COALESCE(p.newest_rating, p.issue_rating) AS display_rating,
+        p.current_conv_price AS display_conv_price,
+        COALESCE(iss.issue_size_100m_yuan, p.issue_size / 100000000.0) AS display_issue_size
+      FROM core.instruments i
+      LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
+      LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+      LEFT JOIN LATERAL (
+        SELECT
+          MAX(event_date) FILTER (WHERE event_type='issue_announcement')::text AS ann_date,
+          MAX(event_date) FILTER (WHERE event_type='result_announcement')::text AS res_ann_date,
+          MAX(event_date) FILTER (WHERE event_type='shareholder_record')::text AS shd_ration_record_date,
+          MAX(event_date) FILTER (WHERE event_type='online_subscription')::text AS onl_date,
+          MAX(event_date) FILTER (WHERE event_type='listing')::text AS listing_date
+        FROM event.instrument_events e WHERE e.instrument_id=i.instrument_id
+      ) ev ON true
+      LEFT JOIN LATERAL (
+        SELECT return_pct AS first_day_return
+          FROM analytics.convertible_bond_listing_performance lp
+         WHERE lp.instrument_id=i.instrument_id AND lp.measurement_type='first_non_limit_day'
+         ORDER BY lp.calculated_at DESC LIMIT 1
+      ) perf ON true
+      WHERE i.asset_class='convertible_bond';
+    `);
+
+    const oldExists = await client.query(`SELECT to_regclass('public.bond_history') AS name`);
+    if (oldExists.rows[0].name) {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ops.legacy_bond_history_20260812 AS
+        SELECT * FROM public.bond_history WHERE false
+      `);
+      const oldCount = await client.query(`SELECT COUNT(*)::int AS n FROM public.bond_history`);
+      const archiveCount = await client.query(`SELECT COUNT(*)::int AS n FROM ops.legacy_bond_history_20260812`);
+      const oldTotal = oldCount.rows[0].n;
+      const archivedTotal = archiveCount.rows[0].n;
+      if (archivedTotal !== 0 && archivedTotal !== oldTotal) {
+        throw new Error(`旧 bond_history 归档不完整：旧表 ${oldTotal} 行，归档表 ${archivedTotal} 行，停止删除旧表`);
+      }
+      if (archivedTotal === 0 && oldTotal > 0) {
+        await client.query(`INSERT INTO ops.legacy_bond_history_20260812 SELECT * FROM public.bond_history`);
+      }
+      const verifiedArchive = await client.query(`SELECT COUNT(*)::int AS n FROM ops.legacy_bond_history_20260812`);
+      if (verifiedArchive.rows[0].n !== oldTotal) {
+        throw new Error(`旧 bond_history 归档校验失败：期望 ${oldTotal} 行，实际 ${verifiedArchive.rows[0].n} 行，停止删除旧表`);
+      }
+      await client.query(`DROP TABLE public.bond_history`);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// ========== 059：打新日报入库表纳入版本化迁移 ==========
+async function migration059IpoReportsSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ipo_reports (
+      report_date  TEXT PRIMARY KEY,
+      html         TEXT,
+      md           TEXT,
+      summary_json JSONB,
+      created_at   TIMESTAMPTZ DEFAULT now()
+    )
+  `);
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeMigrationDate(value) {
+  const text = String(value || '').replace(/-/g, '').slice(0, 8);
+  return /^\d{8}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}` : null;
+}
+
+function normalizeMigrationTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeMigrationStockCode(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) return null;
+  if (raw.includes('.')) return raw;
+  return /^(0|3)/.test(raw) ? `${raw}.SZ` : `${raw}.SH`;
+}
+
+function scale100m(value, divisor) {
+  const number = toNumber(value);
+  return number == null ? null : number / divisor;
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -2139,6 +2593,8 @@ const MIGRATIONS = [
   { version: '055_arbitrage_parser_accuracy', up: migration055ArbitrageParserAccuracy },
   { version: '056_global_fx_rate_source', up: migration056GlobalFxRateSource },
   { version: '057_ipo_history_sync', up: migration057IpoHistorySync },
+  { version: '058_convertible_bond_issue_unified', up: migration058ConvertibleBondIssueUnified },
+  { version: '059_ipo_reports_schema', up: migration059IpoReportsSchema },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -2666,6 +3122,8 @@ module.exports = {
   migration003MarketDataCache,
   migration004BondSafetyFinancialCache,
   migration022ConvertibleBondValuation,
+  migration058ConvertibleBondIssueUnified,
+  migration059IpoReportsSchema,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

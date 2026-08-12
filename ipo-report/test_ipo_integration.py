@@ -30,7 +30,7 @@ def pg_conn():
         host=os.environ.get("PGHOST", "127.0.0.1"),
         port=int(os.environ.get("PGPORT", "5432")),
         user=os.environ.get("PGUSER", "postgres"),
-        password=os.environ.get("PGPASSWORD", "postgres"),
+        password=os.environ.get("PGPASSWORD"),
         dbname=os.environ.get("PGDATABASE", "portfolio"),
         connect_timeout=10,
     )
@@ -69,12 +69,12 @@ except Exception as e:
     traceback.print_exc()
 
 
-# ===== 2. fetch_bond_detail（读 bond_history，无样本则跳过细节）=====
+    # ===== 2. fetch_bond_detail（读统一债券视图，无样本则跳过细节）=====
 print("== 2. fetch_bond_detail(真实已上市转债) ==")
 try:
     c = pg_conn()
     cur = c.cursor()
-    cur.execute("SELECT security_code FROM bond_history WHERE listing_date IS NOT NULL AND listing_date <> '' LIMIT 1")
+    cur.execute("SELECT security_code FROM public.bond_unified WHERE listing_date IS NOT NULL LIMIT 1")
     row = cur.fetchone()
     c.close()
     if row:
@@ -87,7 +87,7 @@ try:
                   "convert_price=%r" % b.get("convert_price"))
             check("含 rating 字段", "rating" in b)
     else:
-        check("本地无已上市转债样本(跳过)", True, "bond_history 无 listing_date")
+        check("本地无已上市转债样本(跳过)", True, "统一视图无 listing_date")
 except Exception as e:
     ERR.append("fetch_bond_detail: " + str(e))
     traceback.print_exc()

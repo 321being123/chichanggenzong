@@ -53,7 +53,73 @@ function valueOrDash(value, suffix = '') {
   return value === null || value === undefined || value === '' ? '暂无' : `${value}${suffix}`;
 }
 
+function calendarDay(date) {
+  return { date, weekday: new Intl.DateTimeFormat('zh-CN', { weekday: 'short', timeZone: 'Asia/Shanghai' }).format(new Date(`${date}T00:00:00+08:00`)),
+    apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };
+}
+
+function trimCalendar(calendar, days) {
+  const start = new Date();
+  const startText = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(start);
+  const end = new Date(`${startText}T00:00:00+08:00`);
+  end.setDate(end.getDate() + days);
+  const endText = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(end);
+  return (calendar || []).filter(day => {
+    const date = String(day.date || '').slice(0, 10);
+    return date >= startText && date < endText;
+  });
+}
+
+async function loadBondCalendar(days) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (e.instrument_id, e.event_type, e.event_date)
+            e.event_date::text AS date, e.event_type, split_part(i.canonical_code, '.', 1) AS code,
+            i.canonical_code AS secu_code, i.name
+       FROM event.instrument_events e
+       JOIN core.instruments i ON i.instrument_id=e.instrument_id
+      WHERE i.asset_class='convertible_bond'
+        AND e.event_type IN ('online_subscription','listing')
+        AND e.event_date >= CURRENT_DATE
+        AND e.event_date < CURRENT_DATE + ($1::int * INTERVAL '1 day')
+      ORDER BY e.instrument_id, e.event_type, e.event_date, e.source_updated_at DESC NULLS LAST`, [days]
+  );
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.date)) groups.set(row.date, calendarDay(row.date));
+    const key = row.event_type === 'online_subscription' ? 'apply_bonds' : 'list_bonds';
+    groups.get(row.date)[key].push({ code: row.code, name: row.name, secu_code: row.secu_code });
+  }
+  return [...groups.values()];
+}
+
 async function buildCalendarReport(code) {
+  const bond = await getBondBySecurityCode(code);
+  if (bond) {
+    const eventResult = await pool.query(
+      `SELECT event_type,event_date::text AS date
+         FROM event.instrument_events
+        WHERE instrument_id=$1 AND event_type IN ('online_subscription','listing')
+        ORDER BY event_date DESC, event_type DESC LIMIT 1`, [bond.instrument_id]
+    );
+    const event = eventResult.rows[0];
+    if (!event) return '';
+    const isApply = event.event_type === 'online_subscription';
+    const found = { code: String(code).split('.')[0], name: bond.bond_name, date: event.date,
+      key: isApply ? 'apply_bonds' : 'list_bonds' };
+    const eventName = isApply ? '申购' : '上市';
+    const lines = [
+      `# 📄 单独分析 — ${found.name}（${found.code}）`, '', '## 日历信息',
+      '- **类型**：新债', `- **事项**：${eventName}`, `- **日期**：${found.date || '暂无'}`,
+      '', '## 基本资料',
+      `- **债券评级**：${valueOrDash(bond.display_rating || bond.rating)}`,
+      `- **发行规模**：${valueOrDash(bond.display_issue_size || bond.issue_size, '亿元')}`,
+      `- **正股**：${valueOrDash(bond.stock_name)}${bond.stock_code ? `（${bond.stock_code}）` : ''}`,
+      `- **转股价**：${valueOrDash(bond.display_conv_price || bond.conv_price, '元')}`,
+      `- **申购日**：${valueOrDash(bond.onl_date)}`,
+      `- **上市日**：${valueOrDash(bond.listing_date)}`,
+    ];
+    return lines.join('\n');
+  }
   const latest = await pool.query(
     "SELECT summary_json->'calendar' AS calendar FROM ipo_reports ORDER BY report_date DESC LIMIT 1"
   );
@@ -216,7 +282,16 @@ router.get('/calendar', async (req, res) => {
     if (row && row.calendar) {
       calendar = typeof row.calendar === 'string' ? JSON.parse(row.calendar) : row.calendar;
     }
-    res.json({ days, calendar: filterBeijingStocks(calendar) });
+    const stockCalendar = trimCalendar(filterBeijingStocks(calendar), days);
+    const bondCalendar = await loadBondCalendar(days);
+    const byDate = new Map(stockCalendar.map(day => [day.date, { ...calendarDay(day.date), ...day }]));
+    for (const day of bondCalendar) {
+      const target = byDate.get(day.date) || calendarDay(day.date);
+      target.apply_bonds = day.apply_bonds;
+      target.list_bonds = day.list_bonds;
+      byDate.set(day.date, target);
+    }
+    res.json({ days, calendar: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)) });
   } catch (e) {
     res.status(500).json({ error: '读取打新日历失败' });
   }

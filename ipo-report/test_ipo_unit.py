@@ -6,10 +6,13 @@
 import os
 import sys
 import traceback
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_daily_report as m
 import _common as common
+import calendar_core
+from datetime import datetime
 
 PASS, FAIL, ERR = [], [], []
 
@@ -28,6 +31,44 @@ check("新债实际价格入库换算", m._price_from_return(100, 23.5) == 123.5
 
 
 check("psql 路径适配当前系统", os.name == "nt" or not common.PSQL.lower().startswith("c:\\"), common.PSQL)
+
+try:
+    old_tushare = calendar_core._tushare
+    calendar_core._tushare = lambda *_args, **_kwargs: [
+        {"cal_date": "20261001", "is_open": "0"},
+        {"cal_date": "20261002", "is_open": "1"},
+    ]
+    check("下一个实际交易日跳过节假日", calendar_core.next_trading_date(datetime(2026, 9, 30)).strftime("%Y-%m-%d") == "2026-10-02")
+finally:
+    calendar_core._tushare = old_tushare
+
+try:
+    old_tushare = calendar_core._tushare
+    old_bond_layer = sys.modules.get("bond_data_layer")
+    save_calls = []
+
+    def fake_calendar_tushare(api, params, fields):
+        if api == "new_share":
+            return [{"ts_code": "301001.SZ", "name": "测试股", "ipo_date": "20260812", "issue_date": "20260813"}]
+        if api == "cb_issue":
+            return [{"ts_code": "113099.SH", "onl_name": "测试债", "onl_date": "20260813", "ann_date": "20260801"}]
+        if api == "cb_basic":
+            raise RuntimeError("cb_basic unavailable")
+        raise AssertionError(api)
+
+    layer = types.ModuleType("bond_data_layer")
+    layer.save_cb_issue_rows = lambda issues, basics, ratings: save_calls.append((issues, basics, ratings))
+    sys.modules["bond_data_layer"] = layer
+    calendar_core._tushare = fake_calendar_tushare
+    calendar_rows = calendar_core.fetch_calendar_entries("2026-08-01", "2026-08-31")
+    check("cb_basic 失败时日历仍保留新债", any(row.get("SECURITY_CODE") == "113099" for row in calendar_rows))
+    check("cb_issue 成功时仍写入统一层", len(save_calls) == 1)
+finally:
+    calendar_core._tushare = old_tushare
+    if old_bond_layer is None:
+        sys.modules.pop("bond_data_layer", None)
+    else:
+        sys.modules["bond_data_layer"] = old_bond_layer
 
 
 # ===== 1. _str_date 单元（修复：NaN 污染为 'nan'）=====

@@ -12,7 +12,11 @@ if not pro:
 # 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
 conn = db_pg.connect()
 cur = conn.cursor()
-cur.execute("SELECT security_code FROM bond_history WHERE rating IS NULL OR rating=''")
+cur.execute("""SELECT split_part(i.canonical_code,'.',1)
+                FROM fundamental.convertible_bond_profiles p
+                JOIN core.instruments i ON i.instrument_id=p.instrument_id
+               WHERE i.asset_class='convertible_bond'
+                 AND COALESCE(p.newest_rating,'')=''""")
 missing = [r[0] for r in cur.fetchall()]
 print(f"本地缺评级: {len(missing)} 只")
 
@@ -36,7 +40,11 @@ for i, code in enumerate(missing):
         rt = dr.iloc[0].get('rating')
         if rt:
             rating = str(rt).replace('sti', '').replace('STI', '').strip()
-            cur.execute("UPDATE bond_history SET rating=%s WHERE security_code=%s", (rating, code))
+            cur.execute("""UPDATE fundamental.convertible_bond_profiles p
+                             SET newest_rating=%s, source_updated_at=NOW(), updated_at=NOW()
+                            FROM core.instruments i
+                           WHERE p.instrument_id=i.instrument_id
+                             AND i.canonical_code=%s""", (rating, tsc))
             updated += 1
     if (i + 1) % 20 == 0:
         print(f"  progress {i+1}/{len(missing)} updated={updated}")
@@ -44,7 +52,9 @@ for i, code in enumerate(missing):
 
 conn.commit()
 print(f"已更新评级: {updated} 只")
-cur.execute("SELECT count(*) FROM bond_history WHERE rating IS NULL OR rating=''")
+cur.execute("""SELECT count(*) FROM fundamental.convertible_bond_profiles p
+                JOIN core.instruments i ON i.instrument_id=p.instrument_id
+               WHERE i.asset_class='convertible_bond' AND COALESCE(p.newest_rating,'')=''""")
 still = cur.fetchall()[0][0]
 print(f"仍缺评级: {still} 只")
 cur.close(); conn.close()

@@ -10,7 +10,7 @@ import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
 from _classify import _is_bj_stock, _market_type_to_board_key
-from _common import _load_env, TUSHARE_TOKEN, get_tushare_pro
+from _common import _load_env, TUSHARE_REPLAY_API_KEY, get_tushare_pro
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history_reports")
 
@@ -81,7 +81,7 @@ def _get_tushare_pro():
     global _TUSHARE_PRO
     if _TUSHARE_PRO is not None:
         return _TUSHARE_PRO
-    if not TUSHARE_TOKEN:
+    if not TUSHARE_REPLAY_API_KEY:
         return None
     try:
         _TUSHARE_PRO = get_tushare_pro()
@@ -251,8 +251,7 @@ _BOARD_CALIBRATED = False
 _IPO_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_history.db")
 
 def _init_ipo_db():
-    """初始化新股历史数据库"""
-    import sqlite3
+    """打开统一 PostgreSQL 数据层；只负责兼容新股表，不创建可转债旧表。"""
     conn = db_pg.connect()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ipo_history (
@@ -263,34 +262,6 @@ def _init_ipo_db():
             ld_close_change REAL,
             board_key TEXT,
             updated_at TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS bond_history (
-            security_code TEXT PRIMARY KEY,
-            security_name TEXT,
-            listing_date TEXT,
-            first_day_return REAL,
-            updated_at TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL,
-            code TEXT NOT NULL,
-            name TEXT NOT NULL,
-            listing_date TEXT NOT NULL,
-            pred_date TEXT NOT NULL,
-            pred_return REAL,
-            pred_price REAL,
-            pred_advice TEXT,
-            actual_return REAL,
-            actual_price REAL,
-            actual_date TEXT,
-            status TEXT DEFAULT 'pending',
-            updated_at TEXT,
-            UNIQUE(type, code, pred_date)
         )
     """)
     conn.commit()

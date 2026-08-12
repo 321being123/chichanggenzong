@@ -22,7 +22,6 @@ _TABLE_PK = {
     "ipo_history": ["security_code"],
     "stock_gain": ["stock_code"],
     "sector_heat": ["sector_key"],
-    "bond_history": ["security_code"],
     "predictions": ["type", "code", "pred_date"],
 }
 
@@ -118,8 +117,9 @@ def connect():
     host = os.environ.get("PGHOST", "127.0.0.1")
     port = int(os.environ.get("PGPORT", "5432"))
     user = os.environ.get("PGUSER", "postgres")
-    # 本地开发默认回退到 postgres（仅本地开发用）；生产必须通过 PGPASSWORD 环境变量注入，切勿写死密码
-    password = os.environ.get("PGPASSWORD", "postgres")
+    password = os.environ.get("PGPASSWORD")
+    if not password:
+        raise RuntimeError("请通过 PGPASSWORD 环境变量提供数据库密码")
     dbname = os.environ.get("PGDATABASE", "postgres")
     pg_conn = psycopg2.connect(
         host=host, port=port, user=user, password=password,

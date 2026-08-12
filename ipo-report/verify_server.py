@@ -16,10 +16,10 @@ for pk,dk in pg_map.items():
     if pk in cfg and dk not in cfg: cfg[dk]=cfg[pk]
 
 psql_base = f"set -a; source {shlex_quote('/opt/portfolio/.env')}; PGPASSWORD=\"$PGPASSWORD\" psql -h \"$PGHOST\" -p \"$PGPORT\" -U \"$PGUSER\" -d \"$PGDATABASE\" -t -A -c"
-q1 = psql_base + " " + shlex_quote("SELECT count(*) FROM bond_history;")
-q2 = psql_base + " " + shlex_quote("SELECT security_code, security_name, issue_size, rating FROM bond_history WHERE security_code IN ('118070','110059') ORDER BY security_code;")
-q3 = psql_base + " " + shlex_quote("SELECT count(*) FROM bond_history WHERE issue_size >= 10000;")
-q4 = psql_base + " " + shlex_quote("SELECT count(*) FROM bond_history WHERE rating IS NULL OR rating='';")
+q1 = psql_base + " " + shlex_quote("SELECT count(*) FROM public.bond_unified;")
+q2 = psql_base + " " + shlex_quote("SELECT security_code, bond_name, display_issue_size, display_rating FROM public.bond_unified WHERE security_code IN ('118070','110059') ORDER BY security_code;")
+q3 = psql_base + " " + shlex_quote("SELECT count(*) FROM public.bond_unified WHERE display_issue_size >= 10000;")
+q4 = psql_base + " " + shlex_quote("SELECT count(*) FROM public.bond_unified WHERE display_rating IS NULL OR display_rating='';")
 for label, q in [("总行数",q1),("南芯/浦发",q2),("残留元值",q3),("缺失评级",q4)]:
     o,e,s = ssh_run(client, q, sudo=True)
     print(f"[{label}] status={s}")

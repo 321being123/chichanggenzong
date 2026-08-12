@@ -1,7 +1,7 @@
 // ========== 统一数据层集成测试（P2-2 验收）==========
 // 运行：node server/test/unified-data-layer.test.js
-// 目的：验证 035 迁移后的 bond_unified 正股代码兜底、IPO 六位 security_code 兼容、
-//       stockDataService 按目标交易日聚合、回填幂等。
+// 目的：验证标准 bond_unified、IPO 六位 security_code 兼容、
+//       stockDataService 按目标交易日聚合和预测身份关联。
 // 依赖本地 PostgreSQL（portfolio 库）；连不上时优雅跳过（不影响通过）。
 const assert = require('assert');
 const path = require('path');
@@ -46,14 +46,13 @@ async function checkAsync(name, fn) {
       assert.strictEqual(r.passthrough, '600000.SH');
     });
 
-    // 2) bond_history 有正股代码的债券，统一视图 stock_code 缺失数为 0（P1-1 验收）
+    // 2) 标准档案有正股代码的债券，统一视图 stock_code 缺失数为 0
     const missing = await pool.query(
-      `SELECT count(*)::int AS n FROM bond_unified bu
-       JOIN bond_history bh ON bh.security_code = split_part(bu.bond_code, '.', 1)
-       WHERE (bu.stock_code IS NULL OR bu.stock_code='')
-         AND bh.stk_code IS NOT NULL AND bh.stk_code <> ''`
+      `SELECT count(*)::int AS n FROM public.bond_unified bu
+       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=bu.instrument_id
+       WHERE p.stock_instrument_id IS NOT NULL AND (bu.stock_code IS NULL OR bu.stock_code='')`
     );
-    check('bond_history 有正股代码的债券视图缺失数为 0', () => {
+    check('标准档案有正股代码的债券视图缺失数为 0', () => {
       assert.strictEqual(missing.rows[0].n, 0, `仍有 ${missing.rows[0].n} 条缺失`);
     });
 
@@ -106,31 +105,15 @@ async function checkAsync(name, fn) {
       assert.strictEqual(noDate.stock_count, 0);
     });
 
-    // 5) 回填幂等：重复执行 bootstrapBondsFromHistory 不新增重复关联
-    const { bootstrapBondsFromHistory } = require('../../server/services/convertibleBondAnalysis');
-    const before = await pool.query(
-      `SELECT count(*)::int AS n FROM bond_unified WHERE stock_code IS NOT NULL AND stock_code <> ''`
+    // 5) 可转债预测必须通过 instrument_id 关联，展示代码仅是快照
+    const predictionRows = await pool.query(
+      `SELECT count(*)::int AS invalid FROM predictions WHERE type='bond' AND instrument_id IS NULL`
     );
-    const client = await pool.connect();
-    let rerun = null;
-    try {
-      await client.query('BEGIN');
-      const src = await client.query('SELECT source_code, source_id FROM ops.data_sources');
-      const sources = Object.fromEntries(src.rows.map(r => [r.source_code, r.source_id]));
-      rerun = await bootstrapBondsFromHistory(client, sources);
-      await client.query('COMMIT');
-    } catch (e) { await client.query('ROLLBACK'); throw e; }
-    finally { client.release(); }
-    const after = await pool.query(
-      `SELECT count(*)::int AS n FROM bond_unified WHERE stock_code IS NOT NULL AND stock_code <> ''`
-    );
-    check('重复执行回填幂等（不新增重复关联）', () => {
-      assert.strictEqual(before.rows[0].n, after.rows[0].n,
-        `回填前 ${before.rows[0].n} → 回填后 ${after.rows[0].n}`);
-      console.log(`    （本次重跑补齐/确认 ${rerun} 只，总数未变化）`);
+    check('可转债预测 instrument_id 全部存在', () => {
+      assert.strictEqual(predictionRows.rows[0].invalid, 0);
     });
   } catch (e) {
-    if (!pool) {
+    if (!pool || e.code === 'ECONNREFUSED' || e.name === 'AggregateError') {
       console.log('  [SKIP] 无可用 PostgreSQL，跳过统一数据层集成测试');
       results.push(['SKIP', 'SKIP-统一数据层']);
     } else {

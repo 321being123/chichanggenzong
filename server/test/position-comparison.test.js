@@ -485,6 +485,14 @@ console.log('F. 数据架构（12.4，需 PG）');
     await pool.query(`INSERT INTO users (username,password,nickname) VALUES ('${user}','x','测试') ON CONFLICT (username) DO NOTHING`);
     const payload = (hk) => ({ positions: [], trades: [], navHistory: [], cashFlows: [], cash: 1000, hkRate: hk, cashBase: 1000, totalAsset: 1000, fundRecord: [], feeSettings: {} });
     try {
+      const globalFx = (await pool.query(
+        `SELECT rate::float8 AS rate FROM market.fx_rates
+          WHERE base_currency='HKD' AND quote_currency='CNY'
+            AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1`
+      )).rows[0];
+      assert(globalFx && Number.isFinite(globalFx.rate), '测试需要已有全局港币汇率');
+      const expectedFx = Number(globalFx.rate);
       // 首次保存（真实走 saveAccountData 的 INSERT ... VALUES 分支）
       // 2026-08-03 整改：返回 { version, skipped }（数据集级版本控制），不再返回裸数字
       const v1 = await saveAccountData(user, '账户A', payload(0.8626), null);
@@ -492,19 +500,19 @@ console.log('F. 数据架构（12.4，需 PG）');
       const r1 = (await pool.query(
         `SELECT hk_rate::float8 AS hk_rate, hk_rate_updated_at IS NOT NULL AS has_time FROM accounts WHERE username=$1 AND account_name='账户A'`, [user]
       )).rows[0];
-      assert.strictEqual(r1.hk_rate, 0.8626);
+      assert.strictEqual(r1.hk_rate, expectedFx, '保存时应优先使用全局汇率，而不是请求体汇率');
       assert(r1.has_time, '首次保存 hk_rate_updated_at 应有值');
       // 同值再保存（ON CONFLICT 分支）不应报错
       const v2 = await saveAccountData(user, '账户A', payload(0.8626), v1.version);
       assert(v2.version > v1.version, '版本应递增');
-      // 改汇率保存（hk_rate_updated_at 更新逻辑）
+      // 即使请求体提交新汇率，也应继续遵循全局汇率优先规则
       await new Promise(r => setTimeout(r, 1100));
       const v3 = await saveAccountData(user, '账户A', payload(0.87), v2.version);
       assert(v3.version > v2.version);
       const r3 = (await pool.query(
         `SELECT hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name='账户A'`, [user]
       )).rows[0];
-      assert.strictEqual(r3.hk_rate, 0.87);
+      assert.strictEqual(r3.hk_rate, expectedFx, '更新时仍应优先使用全局汇率');
     } finally {
       await pool.query(`DELETE FROM accounts WHERE username='${user}'`);
       await pool.query(`DELETE FROM account_data WHERE username='${user}'`);

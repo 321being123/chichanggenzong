@@ -1,4 +1,4 @@
-"""Backfill: 首个非涨停日涨幅（历史字段名 first_day_return）回写 PostgreSQL bond_history。
+"""Backfill: 首个非涨停日涨幅写入统一上市表现表。
 
 旧逻辑（用户确认保留）：上市涨幅 = 上市后首个「非涨停日」收盘 - 100（百分比）。
 即：上市日若未涨停(D1收盘<157.3)直接取D1；若涨停则顺延，取首个未触及±20%涨停的交易日收盘。
@@ -13,20 +13,21 @@ import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
 import db_pg
 from _common import _load_env, get_tushare_pro
+from bond_data_layer import update_listing_performance
 
 _load_env()
 
 dry = '--dry' in sys.argv
 pro = get_tushare_pro()
 if pro is None:
-    raise RuntimeError("TUSHARE_TOKEN 未配置")
+    raise RuntimeError("TUSHARE_REPLAY_API_KEY 未配置")
 
 # 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
 conn = db_pg.connect()
 cur = conn.cursor()
 
-# 取所有已上市债券（listing_date 非空），全部按旧逻辑重算以保证一致正确
-cur.execute("SELECT security_code, security_name, listing_date FROM bond_history WHERE listing_date IS NOT NULL AND listing_date <> ''")
+# 取所有已上市债券（listing_date 非空），全部按既有公式重算以保证一致正确
+cur.execute("SELECT security_code, bond_name, listing_date FROM public.bond_unified WHERE listing_date IS NOT NULL")
 rows = cur.fetchall()
 print(f"[1] 已上市债券 {len(rows)} 只，开始按旧逻辑(首个非涨停日)取收盘...")
 
@@ -43,7 +44,7 @@ for code, name, ld in rows:
     df = None
     for attempt in range(4):
         try:
-            df = pro.cb_daily(ts_code=_ts_code(code), start_date=ldd, end_date='20261231')
+            df = pro.cb_daily(ts_code=_ts_code(code), start_date=ldd, end_date='20991231')
             break
         except Exception as e:
             msg = str(e)
@@ -63,6 +64,7 @@ for code, name, ld in rows:
     day2_close = None
     listing_found = False
     prev_close = None
+    observation_date = None
     for _, r in df.iterrows():
         td = str(r['trade_date'])
         close = float(r['close'])
@@ -71,15 +73,18 @@ for code, name, ld in rows:
             prev_close = close
             if abs(prev_close - 157.3) > 0.05:  # 首日未触及 +57.3% 限制
                 day2_close = prev_close
+                observation_date = td
                 break
             continue
         if listing_found:
             limit_price = round(prev_close * 1.2, 1)  # 次日起 ±20% 限制
             if abs(close - limit_price) > 0.5:  # 未涨停
                 day2_close = close
+                observation_date = td
                 break
             prev_close = close
             day2_close = close
+            observation_date = td
 
     # 数据中缺失上市日（极少）：用首个可用收盘兜底
     if not listing_found and day2_close is None:
@@ -92,8 +97,8 @@ for code, name, ld in rows:
     fdr = round(day2_close - 100, 2)   # 上市涨幅%
     print(f"  {code} {name}: 上市日{ld} 首个非涨停日收盘={day2_close} -> 上市涨幅={fdr}%")
     if not dry:
-        cur.execute("UPDATE bond_history SET first_day_return=%s, updated_at=NOW() WHERE security_code=%s",
-                    (fdr, code))
+        update_listing_performance(code, ld, observation_date or ld, day2_close, fdr,
+                                   {"source": "cb_daily", "formula": "first_non_limit_day_v1"}, dry=dry)
     ok += 1
     time.sleep(0.4)  # 控速：约150次/分钟，低于200上限
 

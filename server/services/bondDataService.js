@@ -1,17 +1,11 @@
 // ====== 可转债统一数据服务 ======
-// 统一读取/写入层：以 bond_unified 视图为读入口，upsertBondBaseInfo() 为写入口。
+// 统一读取层：所有可转债展示与打新读取都经过 bond_unified 视图。
 //
 // 当前真实调用方：
 //   - getBondBySecurityCode / getBondHistoryList：ipo.js 打新日历路由（读）。
-//   - upsertBondBaseInfo：convertibleBondAnalysis.js 主同步的 bootstrapBondsFromHistory（写）。
-// 其余函数（getBondList / getBondDetail / getActiveBondCodes / getRatingDistribution /
-// checkBondCompleteness）为预留标准接口，供后续模块迁移接入统一层时使用，暂未有模块调用。
-//
-// ⚠️ 尚未接入本服务的模块（股债分析、估值、安全性、可转债周期）仍直接读各自的事实表，
-//    属正常分层，迁移调用方需逐模块进行双读核对后再切换，不得一次性删除旧链路。
-//
-// 写入原则（upsertBondBaseInfo）：INSERT ON CONFLICT + COALESCE 优先保留旧值、只补空字段，
-// 任何模块都可以是"第一个"；重复执行幂等，不会覆盖更完整的新数据。
+//   - 可转债主同步：convertibleBondAnalysis.js 直接写入标准主档、发行事实和事件（写）。
+// 主档、发行事实、生命周期事件和上市表现由迁移 058 的标准表分别写入；
+// 本服务不再回读或写入历史兼容表。
 const { pool } = require('../db');
 
 // 六位正股代码 → 标准代码（补后缀）。规则必须与迁移 035 的 normalize_stock_code() SQL 函数保持一致：
@@ -51,18 +45,12 @@ async function getBondList(filters = {}) {
 
 // 单债详情
 async function getBondDetail(code) {
-  const cleanCode = code.includes('.') ? code.split('.')[0] : code;
+  const cleanCode = String(code || '').trim().toUpperCase().split('.')[0];
   const { rows } = await pool.query(
-    'SELECT * FROM public.bond_unified WHERE bond_code = $1',
-    [code.includes('.') ? code : null]
+    "SELECT * FROM public.bond_unified WHERE split_part(bond_code, '.', 1) = $1",
+    [cleanCode]
   );
-  if (rows.length) return rows[0];
-  // 兜底：只用代码前缀匹配
-  const { rows: r2 } = await pool.query(
-    "SELECT * FROM public.bond_unified WHERE bond_code LIKE $1",
-    [cleanCode + '.%']
-  );
-  return r2[0] || null;
+  return rows[0] || null;
 }
 
 // 根据纯数字代码查（兼容 IPO 模块调用方式）
@@ -75,7 +63,7 @@ async function getBondBySecurityCode(securityCode) {
   return rows[0] || null;
 }
 
-// 打新历史列表（替代原 bond_history 直查）
+// 打新历史列表（读取统一视图）
 // 对外契约：security_code 保持六位纯数字（兼容前端交易所判断/报告链接）；标准代码走 canonical_code。
 async function getBondHistoryList(limit = 50) {
   const { rows } = await pool.query(
@@ -91,7 +79,7 @@ async function getBondHistoryList(limit = 50) {
      FROM public.bond_unified b
      LEFT JOIN LATERAL (
        SELECT pred_return FROM predictions
-       WHERE type = 'bond' AND code = split_part(b.bond_code, '.', 1) AND pred_return IS NOT NULL
+       WHERE type = 'bond' AND instrument_id = b.instrument_id AND pred_return IS NOT NULL
        ORDER BY pred_date DESC LIMIT 1
      ) p ON true
      WHERE b.issue_type IS NULL OR b.issue_type NOT IN ('定向', '私募')
@@ -121,11 +109,10 @@ async function getRatingDistribution() {
 }
 
 // ====== 统一写入标准：所有模块都走这个入口写入可转债基础信息 ======
-// 原则：先查 bond_unified 有没有 → 缺什么补什么 → 够了直接用。
+// 原则：只读 bond_unified；缺失数据由标准同步任务补齐。
 // 不假设谁先写谁后写，任何模块都可以是"第一个"。
 //
 // 字段完整性判断：有 bond_code + bond_name + conv_price + stock_code 就算基础完整。
-// 如果 ipo 特有字段（onl_date/ann_date 等）缺失，说明只有打新日历模块能补。
 async function checkBondCompleteness(code) {
   const row = await getBondDetail(code);
   if (!row) return { exists: false, complete: false, missingFields: ['all'] };
@@ -143,79 +130,6 @@ async function checkBondCompleteness(code) {
   return { exists: true, complete: missing.length === 0, missingFields: missing, data: row };
 }
 
-// 从 bond_history 增量补充数据到 instruments + profiles
-// 调用方可以传入已有的 client（事务内），也可以不传（独立事务）
-async function upsertBondBaseInfo(client, bhRow, sourceId) {
-  const db = client || pool;
-  const suffix = /^12/.test(bhRow.security_code) ? '.SZ' : '.SH';
-  const tsCode = bhRow.security_code + suffix;
-
-  // 确保 instrument 存在
-  await db.query(
-    `INSERT INTO core.instruments(canonical_code,name,asset_class,market,list_date)
-     VALUES($1,$2,'convertible_bond','CN',$3::date)
-     ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
-       updated_at=now()`,
-    [tsCode, bhRow.security_name || bhRow.security_code, bhRow.listing_date || null]
-  );
-
-  // 查 instrument_id（新建或已存在都取到）
-  const { rows: [inst] } = await db.query(
-    'SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [tsCode]
-  );
-  if (!inst) return null;
-  const bondId = inst.instrument_id;
-
-  // 确保或补充 profile（ON CONFLICT：已有数据保留，只补空字段）
-  await db.query(
-    `INSERT INTO fundamental.convertible_bond_profiles
-     (instrument_id,bond_short_name,cb_type,current_conv_price,issue_size,newest_rating,list_date,source_id,raw_payload)
-     VALUES($1,$2,'CB',$3,$4,$5,$6::date,$7,$8::jsonb)
-     ON CONFLICT(instrument_id) DO UPDATE SET
-      bond_short_name=COALESCE(NULLIF(fundamental.convertible_bond_profiles.bond_short_name,''),EXCLUDED.bond_short_name),
-      current_conv_price=COALESCE(fundamental.convertible_bond_profiles.current_conv_price,EXCLUDED.current_conv_price),
-      issue_size=COALESCE(fundamental.convertible_bond_profiles.issue_size,EXCLUDED.issue_size),
-      newest_rating=COALESCE(fundamental.convertible_bond_profiles.newest_rating,EXCLUDED.newest_rating),
-      list_date=COALESCE(fundamental.convertible_bond_profiles.list_date,EXCLUDED.list_date),
-      raw_payload=fundamental.convertible_bond_profiles.raw_payload || EXCLUDED.raw_payload,
-      updated_at=now()`,
-    [bondId, bhRow.security_name || bhRow.security_code,
-      finiteVal(bhRow.conv_price), finiteVal(bhRow.issue_size),
-      bhRow.rating || '', bhRow.listing_date || null,
-      sourceId, JSON.stringify({ source: 'bond_history_upsert', security_code: bhRow.security_code })]
-  );
-
-  // 正股：有 stk_code 就确保 instrument（后缀规则统一走 normalizeStockCode）
-  if (bhRow.stk_code) {
-    const stkCode = normalizeStockCode(bhRow.stk_code);
-    if (!stkCode) return bondId;
-    await db.query(
-      `INSERT INTO core.instruments(canonical_code,name,asset_class,market)
-       VALUES($1,$2,'stock','CN')
-       ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,updated_at=now()`,
-      [stkCode, bhRow.stk_name || bhRow.stk_code]
-    );
-    // 关联正股
-    const { rows: [stk] } = await db.query(
-      'SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [stkCode]
-    );
-    if (stk) {
-      await db.query(
-        `UPDATE fundamental.convertible_bond_profiles SET stock_instrument_id=$1,updated_at=now()
-         WHERE instrument_id=$2 AND (stock_instrument_id IS NULL OR stock_instrument_id<>$1)`,
-        [stk.instrument_id, bondId]
-      );
-    }
-  }
-
-  return bondId;
-}
-
-function finiteVal(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
 module.exports = {
   getBondList,
   getBondDetail,
@@ -224,6 +138,5 @@ module.exports = {
   getActiveBondCodes,
   getRatingDistribution,
   checkBondCompleteness,
-  upsertBondBaseInfo,
   normalizeStockCode,
 };

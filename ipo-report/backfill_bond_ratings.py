@@ -1,4 +1,4 @@
-"""补充回填 bond_history.rating：逐只调用 Tushare cb_rating（带重试），仅更新 rating 列。
+"""补充回填统一债券档案评级：逐只调用 Tushare cb_rating（带重试）。
 单独抽出是因为 cb_rating 必须带 ts_code，无法一次批量拉取；原 backfill 的兜底在遇到
 限流异常时被静默吞掉，导致部分债券评级缺失。本脚本带重试，确保有数据的债券评级被填满。
 Usage: python backfill_bond_ratings.py [--dry]
@@ -47,7 +47,11 @@ for _, r in df.iterrows():
         skipped += 1
         continue
     if not dry:
-        cur.execute("UPDATE bond_history SET rating=%s, updated_at=NOW() WHERE security_code=%s", (rating, code6))
+        cur.execute("""UPDATE fundamental.convertible_bond_profiles p
+                         SET newest_rating=%s, source_updated_at=NOW(), updated_at=NOW()
+                        FROM core.instruments i
+                       WHERE p.instrument_id=i.instrument_id
+                         AND i.canonical_code=%s""", (rating, ts_code))
     updated += 1
     time.sleep(0.05)
 

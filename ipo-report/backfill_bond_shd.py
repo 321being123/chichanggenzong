@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-从巨潮网《发行结果公告》/《网上中签率及优先配售结果公告》解析真实数据，回填
-bond_history 中 Tushare 占位/缺失的字段：
+从巨潮网《发行结果公告》/《网上中签率及优先配售结果公告》解析真实数据，回填统一发行事实表中的缺失字段：
 
   - 股东配售率：公告原文"原股东优先配售…约占本次发行总量的XX.XX%"（单位无关，最权威）
-    -> 折算 shd_ration_size(张) = rate/100 × issue_size(亿) × 1e6，前端按原公式显示配售率
+    -> 折算 shareholder_allotment_quantity(张) = rate/100 × issue_size(亿) × 1e6
   - 网上申购户数：公告原文"本次网上申购有效申购户数为N 户"
-    -> onl_pch_num(万户) = N / 1e4
+    -> online_purchase_accounts_10k(万户) = N / 1e4
 
 策略（按用户要求"API 读不了的读公告"）：
   - 仅处理已上市(listing_date 非空)且字段缺失(shd_ration_size 占位/空 或 onl_pch_num 空)的债；
@@ -202,12 +201,12 @@ def main():
     conn = get_conn()
     cur = conn.cursor()
     if args.code:
-        cur.execute("SELECT security_code, security_name, stk_code, issue_size, shd_ration_size, onl_pch_num, onl_date "
-                    "FROM bond_history WHERE security_code=%s", (args.code,))
+        cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date "
+                    "FROM public.bond_unified WHERE security_code=%s", (args.code,))
     else:
         # 只抓能真正改善的：配售率缺失(shd占位/空) 或 户数缺失(沪市取真实户数，深市取公告配号总数兜底)
-        cur.execute("SELECT security_code, security_name, stk_code, issue_size, shd_ration_size, onl_pch_num, onl_date "
-                    "FROM bond_history WHERE listing_date IS NOT NULL "
+        cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date "
+                    "FROM public.bond_unified WHERE listing_date IS NOT NULL "
                     "AND (issue_type IS NULL OR issue_type NOT IN ('定向','私募')) "
                     "AND (shd_ration_size IS NULL OR shd_ration_size <= 100 OR onl_pch_num IS NULL) "
                     "ORDER BY onl_date DESC")
@@ -217,7 +216,7 @@ def main():
     print("待回填(已上市+字段缺失):", len(rows))
 
     ok = skip = fail = 0
-    for code, name, stk, issue_sz, old_shd, old_pch, onl_d in rows:
+    for instrument_id, code, name, stk, issue_sz, old_shd, old_pch, onl_d in rows:
         stk_code = (stk or "").split(".")[0]
         if not stk_code:
             print("  [SKIP] %s %s 无正股代码" % (code, name))
@@ -248,8 +247,11 @@ def main():
         print("  [UPDATE] %s %s 配售率=%s%% 户数=%s万 (shd:%s->%s pch:%s->%s)" % (
             code, name, rate, pch, old_shd, new_shd if upd_shd else '-', old_pch, new_pch if upd_pch else '-'))
         if not args.dry:
-            cur.execute("UPDATE bond_history SET shd_ration_size=%s, onl_pch_num=%s, updated_at=NOW() "
-                        "WHERE security_code=%s", (new_shd, new_pch, code))
+            cur.execute("""UPDATE fundamental.convertible_bond_issuance
+                              SET shareholder_allotment_quantity=COALESCE(%s, shareholder_allotment_quantity),
+                                  online_purchase_accounts_10k=COALESCE(%s / 10000.0, online_purchase_accounts_10k),
+                                  updated_at=NOW()
+                            WHERE instrument_id=%s""", (new_shd, pch, instrument_id))
             conn.commit()
         ok += 1
         time.sleep(0.5)

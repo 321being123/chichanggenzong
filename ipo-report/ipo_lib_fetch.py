@@ -12,6 +12,7 @@ from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_ent
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
+from bond_data_layer import get_bond_row
 
 # new_share 全量待发行列表进程内缓存：同一轮任务只拉一次，本地按 ts_code 匹配。
 # Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），
@@ -104,43 +105,21 @@ def fetch_stock_detail(secu_code):
         return None
 
 def fetch_bond_detail(secu_code):
-    """获取新债详细发行信息"""
+    """从统一数据库读取债券发行详情；实时行情仍由后台日报单独补充。"""
     try:
+        row = get_bond_row(secu_code)
+        if not row:
+            return None
         info = {}
 
-        # 1. 转债基础信息（Tushare cb_basic + cb_rating，替代东财 RPT_BOND_CB_LIST）
-        pro = _get_tushare_pro()
-        if not pro:
-            return None
-        ts_code = _to_ts_code(secu_code)
-        cb = None
-        try:
-            df = pro.cb_basic(ts_code=ts_code,
-                              fields="ts_code,bond_short_name,stk_code,stk_short_name,conv_price,first_conv_price,list_date,issue_size,par")
-            if df is not None and not df.empty:
-                cb = df.iloc[0]
-        except Exception as e:
-            print(f"[转债] cb_basic 获取失败({secu_code}): {e}")
-        if cb is None:
-            return None
-
-        info["bond_name"] = str(cb.get("bond_short_name") or "")
-        info["stock_code"] = str(cb.get("stk_code") or "").split(".")[0]  # 6位正股代码
-        info["stock_name"] = str(cb.get("stk_short_name") or "")
-        info["convert_price"] = _ts_float(cb.get("conv_price")) or _ts_float(cb.get("first_conv_price"))
-        issue_size = _ts_float(cb.get("issue_size"))
-        info["issue_scale"] = round(issue_size / 1e8, 4) if issue_size else None  # 亿
-        info["list_date"] = _str_date(cb.get("list_date"))
-
-        # 评级（优先 cb_rating 最新一期）
-        rating = cb.get("rating")
-        try:
-            rdf = pro.cb_rating(ts_code=ts_code, fields="ts_code,rating,rating_date")
-            if rdf is not None and not rdf.empty:
-                rating = rdf.iloc[0].get("rating") or rating
-        except Exception:
-            pass
-        info["rating"] = (str(rating or "").replace("sti", "").replace("STI", ""))
+        info["bond_name"] = str(row.get("bond_name") or "")
+        info["stock_code"] = str(row.get("stock_code") or "").split(".")[0]
+        info["stock_name"] = str(row.get("stock_name") or "")
+        info["convert_price"] = _ts_float(row.get("conv_price"))
+        issue_size = _ts_float(row.get("issue_size"))
+        info["issue_scale"] = round(issue_size, 4) if issue_size is not None else None
+        info["list_date"] = _str_date(row.get("listing_date"))
+        info["rating"] = str(row.get("rating") or "").replace("sti", "").replace("STI", "")
 
         # 2. 获取可转债交易价格（已上市→实时行情，未上市→面值100）
         bond_price = _fetch_bond_price(secu_code, info.get("list_date"))
@@ -1162,6 +1141,7 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
             day2_close = None
             listing_found = False
             prev_close = None
+            observation_date = None
             for d in days:
                 if d[0] == ld:
                     listing_found = True
@@ -1169,6 +1149,7 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
                     # D1涨停→跳过，否则直接取D1
                     if abs(prev_close - 157.3) > 0.05:
                         day2_close = prev_close
+                        observation_date = d[0]
                         break
                     continue
                 if listing_found and len(d) >= 3:
@@ -1178,26 +1159,22 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
                     # 没涨停→取这天
                     if abs(close - limit_price) > 0.5:
                         day2_close = close
+                        observation_date = d[0]
                         break
                     # 涨停了→记录暂存，继续看下一天
                     prev_close = close
                     day2_close = close
+                    observation_date = d[0]
             # 还没有出现非涨停日时不写入首日临时值，后续每日继续回补。
             if day2_close is None:
                 continue
             first_day_return = day2_close - 100  # 百分比值
             gains.append(first_day_return)
-            # 保存到数据库（SQLite）
-            try:
-                conn = _init_ipo_db()
-                conn.execute(
-                    "INSERT OR REPLACE INTO bond_history (security_code, security_name, listing_date, first_day_return, updated_at) VALUES (?,?,?,?,?)",
-                    (code, name, ld, round(first_day_return, 2), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                )
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
+            from bond_data_layer import update_listing_performance
+            update_listing_performance(
+                code, ld, observation_date or ld, day2_close, round(first_day_return, 2),
+                {"source": "listing_kline", "formula": "first_non_limit_day_v1"},
+            )
         except Exception:
             continue
 

@@ -1,4 +1,4 @@
-"""生成 ipo_history 服务器同步 SQL（与 bond_history 同模式：建表+全量 upsert，无事务包裹）。
+"""生成 ipo_history 服务器同步 SQL（建表+全量 upsert，无事务包裹）。
 本地 ipo_history 含精确中签率(oneline_lottery_rate 等)，同步到服务器使 IPO 中签率精确化生效。
 Usage: python generate_server_ipo_sync.py -> ipo_server_sync.sql
 """

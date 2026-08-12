@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
+from bond_data_layer import get_bond_row
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
@@ -21,7 +22,7 @@ def _bond_predicted_return(pred_price, fallback=None):
     return fallback
 
 def _bond_first_non_limit_return(stored_return):
-    """bond_history与预测准确率统一使用首个非涨停日涨幅。"""
+    """统一使用首个非涨停日涨幅。"""
     if stored_return is None:
         return None
     return round(float(stored_return), 2)
@@ -109,12 +110,25 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
         if pred_return is None:
             continue
 
+        instrument_row = conn.execute(
+            "SELECT instrument_id FROM public.bond_unified WHERE security_code=? LIMIT 1",
+            (str(b["code"]).split(".")[0],),
+        ).fetchone()
+        if not instrument_row:
+            raise RuntimeError(f"可转债 {b['code']} 尚未建立 instrument_id，拒绝保存预测")
         rows.append(("bond", b["code"], b["name"], listing_date,
                       pred_date, pred_return, pred_price, advice,
-                      today_str))
+                      today_str, instrument_row[0]))
 
     for row in rows:
         try:
+            if len(row) == 10:
+                conn.execute("""
+                INSERT OR REPLACE INTO predictions
+                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at, instrument_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """, row)
+                continue
             conn.execute("""
                 INSERT OR REPLACE INTO predictions
                     (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at)
@@ -134,17 +148,17 @@ def backfill_prediction_actuals():
     conn = _init_ipo_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ── 1. 补全：bond_history / ipo_history 已上市但 predictions 缺记录的 ──
-    bond_rows = conn.execute(
-        "SELECT security_code, security_name, listing_date, first_day_return FROM bond_history WHERE first_day_return IS NOT NULL"
-    ).fetchall()
-    for code, name, ldate, fdr in bond_rows:
-        if not conn.execute("SELECT 1 FROM predictions WHERE code=?", (code,)).fetchone():
-            ld = str(ldate)[:10] if ldate else None
-            conn.execute(
-                "INSERT INTO predictions (type,code,name,listing_date,pred_date,actual_return,actual_price,actual_date,status,updated_at) VALUES ('bond',?,?,?,?,?,?,?,'fulfilled',?)",
-                (code, name, ld, ld, fdr, _price_from_return(100, fdr), ld, now),
-            )
+    # ── 1. 补全：标准上市表现表已上市但 predictions 缺记录的债券 ──
+    conn.execute(
+        """INSERT INTO predictions(type,code,name,listing_date,pred_date,actual_return,actual_price,actual_date,status,updated_at,instrument_id)
+           SELECT 'bond',split_part(i.canonical_code,'.',1),i.name,lp.listing_date::text,lp.listing_date::text,
+                  lp.return_pct,100*(1+lp.return_pct/100),lp.observation_date::text,'fulfilled',?,i.instrument_id
+             FROM analytics.convertible_bond_listing_performance lp
+             JOIN core.instruments i ON i.instrument_id=lp.instrument_id
+            WHERE lp.measurement_type='first_non_limit_day'
+              AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.type='bond' AND p.code=split_part(i.canonical_code,'.',1))""",
+        (now,),
+    )
     stock_rows = conn.execute(
         "SELECT security_code, security_name, listing_date, ld_close_change, issue_price FROM ipo_history WHERE ld_close_change IS NOT NULL"
     ).fetchall()
@@ -202,7 +216,11 @@ def backfill_prediction_actuals():
                     updated += 1
             else:
                 row = conn.execute(
-                    "SELECT first_day_return, listing_date FROM bond_history WHERE security_code=? AND first_day_return IS NOT NULL",
+                    """SELECT lp.return_pct,lp.listing_date,lp.observation_date,i.instrument_id
+                         FROM analytics.convertible_bond_listing_performance lp
+                         JOIN core.instruments i ON i.instrument_id=lp.instrument_id
+                        WHERE lp.measurement_type='first_non_limit_day'
+                          AND split_part(i.canonical_code,'.',1)=? AND lp.return_pct IS NOT NULL""",
                     (code,),
                 ).fetchone()
                 if row:
@@ -210,8 +228,8 @@ def backfill_prediction_actuals():
                     pred_return = _bond_predicted_return(pred_price)
                     actual_price = _price_from_return(100, actual_return)
                     conn.execute(
-                        "UPDATE predictions SET pred_return=COALESCE(?, pred_return), actual_return=?, actual_price=?, actual_date=?, status='fulfilled', updated_at=? WHERE id=?",
-                        (pred_return, actual_return, actual_price, row[1], now, pid),
+                        "UPDATE predictions SET instrument_id=?, pred_return=COALESCE(?, pred_return), actual_return=?, actual_price=?, actual_date=?, status='fulfilled', updated_at=? WHERE id=?",
+                        (row[3], pred_return, actual_return, actual_price, row[2], now, pid),
                     )
                     updated += 1
         except Exception:

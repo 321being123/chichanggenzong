@@ -4,7 +4,7 @@
 const DEFAULT_TIMEOUT_MS = 15000;
 
 function isConfigured(env = process.env) {
-  return Boolean(env.TUSHARE_TOKEN || env.BOND_SAFETY_API_URL ||
+  return Boolean(env.TUSHARE_REPLAY_API_KEY || env.BOND_SAFETY_API_URL ||
     (env.BOND_SAFETY_COMPANY_API_URL && env.BOND_SAFETY_QUOTE_API_URL));
 }
 
@@ -54,7 +54,7 @@ async function fetchBondSafetySource(env = process.env) {
     throw error;
   }
 
-  if (!env.BOND_SAFETY_API_URL && !(env.BOND_SAFETY_COMPANY_API_URL && env.BOND_SAFETY_QUOTE_API_URL) && env.TUSHARE_TOKEN) {
+  if (!env.BOND_SAFETY_API_URL && !(env.BOND_SAFETY_COMPANY_API_URL && env.BOND_SAFETY_QUOTE_API_URL) && env.TUSHARE_REPLAY_API_KEY) {
     const { fetchTushareBondSafetySource } = require('./bondSafetyTushare');
     return fetchTushareBondSafetySource(env);
   }

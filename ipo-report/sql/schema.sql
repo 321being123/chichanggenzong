@@ -26,14 +26,6 @@ CREATE TABLE IF NOT EXISTS ipo_history (
   pe_ratio              REAL
 );
 
-CREATE TABLE IF NOT EXISTS bond_history (
-  security_code   TEXT PRIMARY KEY,
-  security_name   TEXT,
-  listing_date    TEXT,
-  first_day_return REAL,
-  updated_at      TEXT
-);
-
 CREATE TABLE IF NOT EXISTS predictions (
   id           SERIAL PRIMARY KEY,
   type         TEXT NOT NULL,
@@ -49,6 +41,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   actual_date   TEXT,
   status       TEXT DEFAULT 'pending',
   updated_at   TEXT,
+  instrument_id BIGINT,
   UNIQUE (type, code, pred_date)
 );
 

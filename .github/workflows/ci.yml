@@ -58,7 +58,7 @@ jobs:
       PGDATABASE: portfolio
       AI_ALLOWED_HOSTS: 'api.openai.com'
       ALLOWED_ORIGIN: 'localhost,127.0.0.1'
-      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      TUSHARE_REPLAY_API_KEY: ${{ secrets.TUSHARE_REPLAY_API_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4

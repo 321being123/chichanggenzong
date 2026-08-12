@@ -20,7 +20,7 @@ _load_env()
 dry = '--dry' in sys.argv
 pro = get_tushare_pro()
 if pro is None:
-    raise RuntimeError("TUSHARE_REPLAY_API_KEY 未配置")
+    raise RuntimeError("TUSHARE_TOKEN 未配置")
 
 # 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
 conn = db_pg.connect()

@@ -8,12 +8,12 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _common import _load_env, _tushare, psql_run, TUSHARE_REPLAY_API_KEY
+from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN
 
 
 def main():
-    if not TUSHARE_REPLAY_API_KEY:
-        print("缺少 TUSHARE_REPLAY_API_KEY，退出"); return
+    if not TUSHARE_TOKEN:
+        print("缺少 TUSHARE_TOKEN，退出"); return
     # 1. 取缺失行
     rows = psql_run(
         "SELECT security_code, security_name FROM ipo_history "

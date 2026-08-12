@@ -1,7 +1,7 @@
 // ===================== 行情服务层（原 server.js 中的行情代理逻辑集中于此） =====================
 const https = require('https');
 const { pool } = require('../db/connection');
-const { tushareQuery } = require('./tushareReplay');
+const { tushareQuery } = require('./tushare');
 const {
   fetchTencentQuotes,
   isConvertibleBondCode,

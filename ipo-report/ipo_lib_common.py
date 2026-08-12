@@ -10,7 +10,7 @@ import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
 from _classify import _is_bj_stock, _market_type_to_board_key
-from _common import _load_env, TUSHARE_REPLAY_API_KEY, get_tushare_pro
+from _common import _load_env, TUSHARE_TOKEN, get_tushare_pro
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history_reports")
 
@@ -81,7 +81,7 @@ def _get_tushare_pro():
     global _TUSHARE_PRO
     if _TUSHARE_PRO is not None:
         return _TUSHARE_PRO
-    if not TUSHARE_REPLAY_API_KEY:
+    if not TUSHARE_TOKEN:
         return None
     try:
         _TUSHARE_PRO = get_tushare_pro()

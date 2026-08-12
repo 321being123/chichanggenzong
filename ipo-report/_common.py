@@ -12,7 +12,6 @@ import os
 import json
 import urllib.request
 import urllib.error
-import urllib.parse
 import time
 import tempfile
 import subprocess
@@ -73,23 +72,29 @@ def _load_env():
 
 
 _load_env()
-TUSHARE_REPLAY_API_KEY = os.environ.get("TUSHARE_REPLAY_API_KEY", "").strip()
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "").strip()
 
 
 def _tushare(api_name, params, fields):
-    """统一通过 Tushare Replay GET 接口查询。"""
-    if not TUSHARE_REPLAY_API_KEY:
-        raise RuntimeError("TUSHARE_REPLAY_API_KEY 未配置")
-    base = os.environ.get("TUSHARE_REPLAY_BASE_URL", "https://ai-tool.indevs.in/tushare/pro").rstrip("/")
-    query = dict(params or {})
-    if fields:
-        query["fields"] = fields
-    url = base + "/" + urllib.parse.quote(api_name) + "?" + urllib.parse.urlencode(query)
-    request = urllib.request.Request(url, headers={"X-API-Key": TUSHARE_REPLAY_API_KEY}, method="GET")
+    """统一直连 Tushare Pro 官方 POST API。"""
+    if not TUSHARE_TOKEN:
+        raise RuntimeError("TUSHARE_TOKEN 未配置")
+    body = json.dumps({
+        "api_name": api_name,
+        "token": TUSHARE_TOKEN,
+        "params": params or {},
+        "fields": fields or "",
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.tushare.pro",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if payload.get("code") != 0:
-        raise RuntimeError(f"Tushare Replay {api_name} 错误: {payload.get('msg') or payload.get('code')}")
+        raise RuntimeError(f"Tushare {api_name} 错误: {payload.get('msg') or payload.get('code')}")
     data = payload.get("data") or {}
     fields_out = data.get("fields")
     items = data.get("items")
@@ -116,7 +121,7 @@ class TusharePro:
 
 
 def get_tushare_pro():
-    if not TUSHARE_REPLAY_API_KEY:
+    if not TUSHARE_TOKEN:
         return None
     return TusharePro()
 

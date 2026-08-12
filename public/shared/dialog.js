@@ -13,7 +13,7 @@
         '<h2 id="project-dialog-title">提示</h2>' +
         '<button type="button" class="modal-close" id="project-dialog-close" aria-label="关闭">&times;</button>' +
         '<p class="project-dialog-message" id="project-dialog-message"></p>' +
-        '<input class="project-dialog-input" id="project-dialog-input">' +
+        '<input class="project-dialog-input" id="project-dialog-input" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true">' +
         '<div class="modal-actions">' +
           '<button type="button" class="btn btn-outline" id="project-dialog-cancel">取消</button>' +
           '<button type="button" class="btn btn-primary" id="project-dialog-confirm">确定</button>' +

@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="css/market-volatility.css?v=5">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
 <link rel="stylesheet" href="css/knowledge.css?v=17">
+<script src="shared/autofill-guard.js?v=3"></script>
 </head>
 <body>
 
@@ -499,7 +500,7 @@
     <div class="stock-analysis-toolbar table-wrap">
       <select id="security-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value)"><option value="">选择持仓或自选</option></select>
       <div class="security-analysis-search">
-        <input id="stock-analysis-code" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-controls="stock-analysis-suggestions" aria-expanded="false">
+        <input id="stock-analysis-code" name="security-analysis-query" type="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-controls="stock-analysis-suggestions" aria-expanded="false">
         <div id="stock-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
       </div>
       <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit()">开始分析</button>
@@ -846,9 +847,9 @@
         <h3 style="margin:0;cursor:pointer;">修改密码 <span id="pwd-arrow">▶</span></h3>
       </div>
       <div id="pwd-body" style="display:none;">
-        <div class="form-group"><label>旧密码</label><input id="pwd-old" type="password" autocomplete="current-password"></div>
-        <div class="form-group"><label>新密码</label><input id="pwd-new" type="password" autocomplete="new-password"></div>
-        <div class="form-group"><label>确认新密码</label><input id="pwd-new2" type="password" autocomplete="new-password"></div>
+        <div class="form-group"><label>旧密码</label><input id="pwd-old" type="password" autocomplete="current-password" data-autofill-credential></div>
+        <div class="form-group"><label>新密码</label><input id="pwd-new" type="password" autocomplete="new-password" data-autofill-credential></div>
+        <div class="form-group"><label>确认新密码</label><input id="pwd-new2" type="password" autocomplete="new-password" data-autofill-credential></div>
         <button class="btn btn-primary" onclick="changePwd()">更新密码</button>
       </div>
     </div>

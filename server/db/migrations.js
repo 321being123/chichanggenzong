@@ -2506,6 +2506,18 @@ async function migration059IpoReportsSchema() {
   `);
 }
 
+// ========== 060：可转债上市公告数据源分类 ==========
+async function migration060SseListingAnnouncementSource() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES ('sse_listing_announcements','上交所上市/退市公告','official',5)
+    ON CONFLICT(source_code) DO UPDATE SET
+      source_name=EXCLUDED.source_name,
+      source_type=EXCLUDED.source_type,
+      priority=EXCLUDED.priority
+  `);
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -2595,6 +2607,7 @@ const MIGRATIONS = [
   { version: '057_ipo_history_sync', up: migration057IpoHistorySync },
   { version: '058_convertible_bond_issue_unified', up: migration058ConvertibleBondIssueUnified },
   { version: '059_ipo_reports_schema', up: migration059IpoReportsSchema },
+  { version: '060_sse_listing_announcement_source', up: migration060SseListingAnnouncementSource },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3124,6 +3137,7 @@ module.exports = {
   migration022ConvertibleBondValuation,
   migration058ConvertibleBondIssueUnified,
   migration059IpoReportsSchema,
+  migration060SseListingAnnouncementSource,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

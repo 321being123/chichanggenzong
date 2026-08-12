@@ -13,6 +13,11 @@ from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
 from bond_data_layer import get_bond_row
+from sse_listing_parser import (
+    SSE_LISTING_INDEX_URL,
+    parse_sse_listing_detail,
+    parse_sse_listing_index,
+)
 
 # new_share 全量待发行列表进程内缓存：同一轮任务只拉一次，本地按 ts_code 匹配。
 # Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），
@@ -162,7 +167,7 @@ def fetch_bond_detail(secu_code):
         # 优先从配售结果公告获取精确数据（控股+实控人配售量），
         # 公告未发布时用网上占比分段系数估算
         if info.get("issue_scale"):
-            calc_circulation_scale(info)
+            calc_circulation_scale(info, bond_code=secu_code)
 
         # 5. 转债总市值占比
         if info.get("issue_scale") and info.get("stock_market_cap"):
@@ -370,7 +375,63 @@ def _derive_total_zhang(ctrl_zhang, ctrl_pct, issue_scale):
         return total_zhang
     return scale_total
 
-def fetch_placing_result(stock_code, issue_scale):
+_SSE_LISTING_CACHE = {}
+
+
+def _sse_listing_page_url(page_num):
+    if page_num == 1:
+        return SSE_LISTING_INDEX_URL
+    return SSE_LISTING_INDEX_URL.replace("s_list.shtml", f"s_list_{page_num}.shtml")
+
+
+def _fetch_sse_listing_notice(bond_code=None, stock_name=None, max_pages=5):
+    """从上交所官方上市/退市公告中查找指定可转债，失败不影响巨潮主流程。"""
+    code = re.sub(r"\D", "", str(bond_code or ""))
+    name = str(stock_name or "").strip()
+    if not code and not name:
+        return None
+    cache_key = code or name
+    if cache_key in _SSE_LISTING_CACHE:
+        return _SSE_LISTING_CACHE[cache_key]
+
+    try:
+        session = _get_session()
+        for page_num in range(1, max_pages + 1):
+            response = session.get(_sse_listing_page_url(page_num), timeout=20)
+            records = parse_sse_listing_index(response.text)
+            if not records:
+                break
+            for record in records:
+                if code and code not in record.get("title", "") and "可转" not in record.get("title", ""):
+                    continue
+                if name and name not in record.get("title", ""):
+                    continue
+                detail_response = session.get(record["url"], timeout=20)
+                detail = parse_sse_listing_detail(detail_response.text, record["url"])
+                if code and detail.get("bond_code") != code:
+                    continue
+                if name and name not in (detail.get("title") or "") and name not in (detail.get("body") or ""):
+                    continue
+                _SSE_LISTING_CACHE[cache_key] = detail
+                return detail
+        _SSE_LISTING_CACHE[cache_key] = None
+    except Exception as exc:
+        print(f"查询上交所上市/退市公告失败({bond_code or stock_name}): {exc}")
+    return None
+
+
+def _listing_notice_error(notice):
+    if not notice:
+        return None
+    bond_name = notice.get("bond_name") or notice.get("bond_code") or "目标债券"
+    listing_date = notice.get("listing_date") or "未提取到上市日"
+    return (
+        f"已找到上交所正式上市公告（{bond_name}，上市日{listing_date}），"
+        "但该公告只确认上市信息，不包含前十名持有人及限售明细，仍需等待巨潮上市公告书"
+    )
+
+
+def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=None):
     """
     从巨潮资讯网获取可转债**上市公告书**，提取精确限售数据。
 
@@ -385,45 +446,69 @@ def fetch_placing_result(stock_code, issue_scale):
     """
     org_id = _get_org_id(stock_code)
     if not org_id:
-        return {"status": "error", "error": f"巨潮资讯网无法获取股票{stock_code}的orgId"}
+        notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
+        result = {
+            "status": "error",
+            "source_class": "cninfo_announcements",
+            "error": f"巨潮资讯网无法获取股票{stock_code}的orgId",
+        }
+        if notice:
+            result["listing_notice"] = notice
+            result["error"] = _listing_notice_error(notice)
+        return result
 
     try:
-        # 搜索公告（时间范围：最近180天）
+        # 搜索公告：365天范围 + 分页，避免近期公告超过第一页后漏检。
         url = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
         today = datetime.now()
         end_date = today.strftime("%Y-%m-%d")
-        start_date = (today - timedelta(days=180)).strftime("%Y-%m-%d")
+        start_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")
         plate = "sz" if len(stock_code) >= 3 and stock_code[0] in ('0', '3') else "sh"
-        data = {
-            "pageNum": 1, "pageSize": 50,
-            "stock": f"{stock_code},{org_id}",
-            "tabName": "fulltext", "column": "szse" if plate == "sz" else "shse",
-            "plate": plate,
-            "seDate": f"{start_date}~{end_date}",
-        }
 
         # 带重试的公告查询
-        announcements = None
+        announcements = []
         cn_session = _get_cninfo_session()
-        for attempt in range(3):
-            try:
-                resp = cn_session.post(url, data=data, timeout=20)
-                result = resp.json()
-                announcements = result.get("announcements") or []
+        seen = set()
+        for page_num in range(1, 6):
+            data = {
+                "pageNum": page_num, "pageSize": 50,
+                "stock": f"{stock_code},{org_id}",
+                "tabName": "fulltext", "column": "szse" if plate == "sz" else "shse",
+                "plate": plate,
+                "seDate": f"{start_date}~{end_date}",
+            }
+            page_items = None
+            for attempt in range(3):
+                try:
+                    resp = cn_session.post(url, data=data, timeout=20)
+                    result = resp.json()
+                    page_items = result.get("announcements") or []
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        cn_session.close()
+                        notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
+                        error = {"status": "error", "source_class": "cninfo_announcements", "error": f"公告查询接口异常: {e}"}
+                        if notice:
+                            error["listing_notice"] = notice
+                            error["error"] = _listing_notice_error(notice)
+                        return error
+                    time.sleep(2)
+            for ann in page_items or []:
+                key = (ann.get("announcementId"), ann.get("adjunctUrl"), ann.get("announcementTitle"))
+                if key not in seen:
+                    seen.add(key)
+                    announcements.append(ann)
+            if len(page_items or []) < 50:
                 break
-            except Exception as e:
-                if attempt == 2:
-                    cn_session.close()
-                    return {"status": "error", "error": f"公告查询接口异常: {e}"}
-                import time
-                time.sleep(2)
 
         # 优先找上市公告书，没有则尝试发行结果公告
         target = None
         source_type = ""
         for ann in announcements:
             title = ann.get("announcementTitle", "")
-            if "上市公告书" in title and "可转换" in title:
+            normalized_title = re.sub(r"\s+", "", title)
+            if "上市公告书" in normalized_title and ("可转换" in normalized_title or "可转债" in normalized_title):
                 target = ann
                 source_type = "上市公告书"
                 break
@@ -437,14 +522,28 @@ def fetch_placing_result(stock_code, issue_scale):
 
         if not target:
             cn_session.close()
-            return {"status": "error", "error": "未找到上市公告书或发行结果公告，可能公告尚未发布或时间超出180天查询范围"}
+            notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
+            result = {
+                "status": "error",
+                "source_class": "cninfo_announcements",
+                "error": "巨潮365天分页检索未找到上市公告书或发行结果公告",
+            }
+            if notice:
+                result["listing_notice"] = notice
+                result["error"] = _listing_notice_error(notice)
+            return result
 
         # 下载PDF
         pdf_url = f"http://static.cninfo.com.cn/{target['adjunctUrl']}"
         resp_pdf = cn_session.get(pdf_url, timeout=30)
         cn_session.close()
         if resp_pdf.status_code != 200:
-            return {"status": "error", "error": f"PDF下载失败(HTTP {resp_pdf.status_code})"}
+            return {
+                "status": "error",
+                "source_code": "cninfo_announcements",
+                "source_class": "cninfo_listing_book" if source_type == "上市公告书" else "cninfo_issue_result",
+                "error": f"PDF下载失败(HTTP {resp_pdf.status_code})",
+            }
 
         # 解析PDF文本
         doc = fitz.open(stream=resp_pdf.content, filetype='pdf')
@@ -457,12 +556,22 @@ def fetch_placing_result(stock_code, issue_scale):
             # ---- 从上市公告书解析精确限售数据 ----
             holders = _parse_bond_top10_holders(text)
             if not holders:
-                return {"status": "error", "error": "上市公告书中未能解析前十名可转换公司债券持有人表格（PDF表格格式可能不被支持）"}
+                return {
+                    "status": "error",
+                    "source_code": "cninfo_announcements",
+                    "source_class": "cninfo_listing_book",
+                    "error": "上市公告书中未能解析前十名可转换公司债券持有人表格（PDF表格格式可能不被支持）",
+                }
 
             controller_names, controlled_entities = _extract_controller_names(text)
 
             if not controller_names and not controlled_entities:
-                return {"status": "error", "error": f"上市公告书中未能识别控股股东/实际控制人信息；前十名持有人明细：{'、'.join(f'{n}({a:,}张)' for n,a,_ in holders[:5])}"}
+                return {
+                    "status": "error",
+                    "source_code": "cninfo_announcements",
+                    "source_class": "cninfo_listing_book",
+                    "error": f"上市公告书中未能识别控股股东/实际控制人信息；前十名持有人明细：{'、'.join(f'{n}({a:,}张)' for n,a,_ in holders[:5])}",
+                }
 
             # 匹配：控股股东/实控人/控制企业 vs 前十名持有人
             locked_holders = []
@@ -490,7 +599,12 @@ def fetch_placing_result(stock_code, issue_scale):
 
             if not locked_holders:
                 holder_summary = '、'.join(f'{n}' for n, a, _ in holders[:5])
-                return {"status": "error", "error": f"控股股东/实控人{controller_names}未在前十名持有人（{holder_summary}…）中找到匹配项"}
+                return {
+                    "status": "error",
+                    "source_code": "cninfo_announcements",
+                    "source_class": "cninfo_listing_book",
+                    "error": f"控股股东/实控人{controller_names}未在前十名持有人（{holder_summary}…）中找到匹配项",
+                }
 
             # 计算
             ctrl_zhang = sum(a for _, a, _ in locked_holders)
@@ -509,6 +623,8 @@ def fetch_placing_result(stock_code, issue_scale):
                     corrected_note = "（金额列已按100元面值折算修正）"
                 else:
                     return {"status": "error",
+                            "source_code": "cninfo_announcements",
+                            "source_class": "cninfo_listing_book",
                             "error": f"控股股东/实控人配售量({ctrl_zhang:,}张)超过发行总量({scale_total:,}张)，公告书表格解析异常，流通规模不可信"}
 
             # 发行总张数：优先从公告书表格自身推导（控股股东持有量 ÷ 其占比%），
@@ -523,6 +639,8 @@ def fetch_placing_result(stock_code, issue_scale):
 
             return {
                 "status": "ok",
+                "source_code": "cninfo_announcements",
+                "source_class": "cninfo_listing_book",
                 "lock_scale": lock_scale,
                 "circulation_scale": circulation_scale,
                 "ctrl_zhang": ctrl_zhang,
@@ -545,12 +663,27 @@ def fetch_placing_result(stock_code, issue_scale):
             if m:
                 web_zhang = int(m.group(1).replace(",", "")) * 10  # 手→张
 
-            return {"status": "error", "error": f"仅找到发行结果公告，该公告仅有原股东配售总量(ps_zhang={ps_zhang}手)，无法区分控股股东/实控人的具体配售量，需等待上市公告书发布"}
+            notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
+            result = {
+                "status": "error",
+                "source_code": "cninfo_announcements",
+                "source_class": "cninfo_issue_result",
+                "error": f"仅找到发行结果公告，该公告仅有原股东配售总量(ps_zhang={ps_zhang}手)，无法区分控股股东/实控人的具体配售量，需等待上市公告书发布",
+            }
+            if notice:
+                result["listing_notice"] = notice
+                result["error"] = _listing_notice_error(notice)
+            return result
 
     except Exception as e:
-        return {"status": "error", "error": f"处理异常: {type(e).__name__}: {str(e)}"}
+        return {
+            "status": "error",
+            "source_code": "cninfo_announcements",
+            "source_class": "cninfo_listing_book" if source_type == "上市公告书" else "cninfo_issue_result",
+            "error": f"处理异常: {type(e).__name__}: {str(e)}",
+        }
 
-def calc_circulation_scale(info):
+def calc_circulation_scale(info, bond_code=None):
     """
     从上市公告书获取可转债精确流通规模。
 
@@ -569,15 +702,32 @@ def calc_circulation_scale(info):
         info["_note"] = "缺少正股代码，无法查询上市公告书"
         return
 
-    placing = fetch_placing_result(stock_code, scale)
+    placing = fetch_placing_result(
+        stock_code,
+        scale,
+        bond_code=bond_code or info.get("bond_code"),
+        stock_name=info.get("stock_name"),
+    )
+    notice = placing.get("listing_notice") if placing else None
+    if notice:
+        info["_official_listing_notice"] = {
+            key: notice.get(key)
+            for key in (
+                "bond_code", "bond_name", "announcement_date", "listing_date",
+                "announcement_number", "url", "source_code", "source_name", "source_class",
+            )
+        }
+        info["_listing_source"] = notice.get("source_code")
+        if not info.get("list_date") and notice.get("listing_date"):
+            info["list_date"] = notice["listing_date"]
     if placing and placing.get("status") == "ok":
         info["lock_scale"] = placing["lock_scale"]
         info["circulation_scale"] = placing["circulation_scale"]
         info["_note"] = placing["source"]
-        info["_circulation_source"] = "上市公告书"
+        info["_circulation_source"] = placing.get("source_class", "cninfo_listing_book")
     else:
         error_msg = placing.get("error", "查询失败（未知错误）") if placing else "接口无返回"
-        info["_note"] = f"⚠️ 上市公告书查询失败：{error_msg}"
+        info["_note"] = f"⚠️ 可转债公告解析失败：{error_msg}"
         info["_circulation_error"] = error_msg
 
 def _fetch_bond_price(bond_code, list_date):

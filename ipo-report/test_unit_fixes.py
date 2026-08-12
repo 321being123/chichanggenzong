@@ -7,6 +7,7 @@ for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2",
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 import importlib.util
+from sse_listing_parser import parse_sse_listing_detail, parse_sse_listing_index
 spec = importlib.util.spec_from_file_location(
     "ipo_daily_report_fix",
     Path(__file__).resolve().parent / "ipo_daily_report.py",
@@ -102,6 +103,33 @@ check("占比异常时退回 issue_scale 兜底",
 no_pct = mod._derive_total_zhang(baotai_ctrl, 0, issue_scale)
 check("占比缺失时退回 issue_scale 兜底",
       no_pct == 25_000_000, f"total_zhang={no_pct}")
+
+# ---------- 测试6：上交所上市/退市公告来源分类与字段解析 ----------
+sse_index = """
+<dd><span>2026-08-10</span>
+<a href="/disclosure/announcement/listing/stock/c/c_20260810_10828514.shtml"
+   title="关于申能股份有限公司可转换公司债券上市交易的公告">公告</a></dd>
+"""
+index_rows = parse_sse_listing_index(sse_index)
+check("上交所列表识别可转债公告", len(index_rows) == 1, f"rows={index_rows}")
+check("上交所来源分类正确",
+      index_rows and index_rows[0]["source_code"] == "sse_listing_announcements",
+      f"source={index_rows[0].get('source_code') if index_rows else None}")
+
+sse_detail = """
+<span id="searchTitle">关于申能股份有限公司可转换公司债券上市交易的公告</span>
+<div class="article_opt"><i>2026-08-10</i></div>
+<div class="allZoom"><p>上证公告（可转债上市）【2026】111号</p>
+根据相关规定，申能股份有限公司发行的20亿元可转换公司债券将于2026年8月13日起在本所市场上市交易，证券代码为“110103”，证券简称为“申能转债”。
+</div>
+"""
+detail = parse_sse_listing_detail(sse_detail, "https://www.sse.com.cn/example.shtml")
+check("申能转债代码解析", detail["bond_code"] == "110103", f"detail={detail}")
+check("申能转债上市日解析", detail["listing_date"] == "2026-08-13", f"listing_date={detail['listing_date']}")
+check("申能转债发行规模解析", detail["issue_scale"] == 20.0, f"issue_scale={detail['issue_scale']}")
+check("申能转债公告编号解析", detail["announcement_number"] == "2026-111", f"number={detail['announcement_number']}")
+check("申能转债官方来源标记", detail["is_official"] and detail["event_type"] == "convertible_bond_listing",
+      f"source={detail['source_class']}, event={detail['event_type']}")
 
 print("\n结果:", "ALL PASS" if all(PASS) else f"{PASS.count(False)} FAILED")
 sys.exit(0 if all(PASS) else 1)

@@ -5,8 +5,9 @@ const { pool } = require('../db');
 const { getConvertibleBondSnapshot, buildStandardTermsHash } = require('../services/convertibleBondAnalysis');
 const { evaluateConvertibleBondFreshness } = require('../services/analysisFreshness');
 
-const BOND_CODE = '128124.SZ';
-const STOCK_CODE = '000001.SZ';
+// 使用专用虚拟代码，避免与生产库真实证券（如 000001.SZ）冲突。
+const BOND_CODE = '128990.SZ';
+const STOCK_CODE = '128991.SZ';
 const COMPANY_NAME = 'CI测试公司（可删除）';
 
 let fixtureCreated = false;
@@ -95,7 +96,6 @@ async function ensureFixture() {
 }
 
 async function cleanupFixture() {
-  if (!fixtureCreated) return;
   await pool.query(`DELETE FROM fundamental.financial_reports WHERE company_id IN (SELECT company_id FROM core.companies WHERE legal_name=$1)`, [COMPANY_NAME]);
   await pool.query(`DELETE FROM fundamental.convertible_bond_terms WHERE instrument_id IN (SELECT instrument_id FROM core.instruments WHERE canonical_code=$1)`, [BOND_CODE]);
   await pool.query(`DELETE FROM analytics.analysis_snapshots WHERE instrument_id IN (SELECT instrument_id FROM core.instruments WHERE canonical_code=$1)`, [BOND_CODE]);
@@ -106,14 +106,16 @@ async function cleanupFixture() {
 }
 
 (async () => {
+  // 清理上次中断可能留下的测试夹具，再开始本轮测试。
+  await cleanupFixture();
   await ensureFixture();
 
   const [{ instrument_id: bondId }] = (await pool.query(
     `SELECT instrument_id FROM core.instruments WHERE canonical_code=$1`, [BOND_CODE]
   )).rows;
-  assert.ok(bondId, '本地库应有 128124.SZ 的可转债主档');
+  assert.ok(bondId, '本地库应有测试用可转债主档');
 
-  // 1) 直接调用快照函数：本地库已有 128124.SZ / 113625.SH 的可转债分析快照
+  // 1) 直接调用快照函数：读取本轮测试夹具生成的可转债分析快照
   const snap = await getConvertibleBondSnapshot(BOND_CODE);
   assert.ok(snap && typeof snap === 'object', 'getConvertibleBondSnapshot 应返回快照对象而非抛错');
   assert.ok(snap.freshness && typeof snap.freshness === 'object', '快照应带 freshness 新鲜度判定结果');

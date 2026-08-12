@@ -1,6 +1,13 @@
 [
   {
     "date": "2026-08-12",
+    "version": "0.6.0.24",
+    "items": [
+      "修复：禁止非账号密码输入框触发浏览器密码自动填充"
+    ]
+  },
+  {
+    "date": "2026-08-12",
     "version": "0.6.0.23",
     "items": [
       "优化：全部 Tushare 数据调用切回官方 Pro API，统一使用 TUSHARE_TOKEN 和 HTTPS POST JSON 协议",

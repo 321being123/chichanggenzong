@@ -418,7 +418,7 @@ def fetch_placing_result(stock_code, issue_scale):
         data = {
             "pageNum": 1, "pageSize": 50,
             "stock": f"{stock_code},{org_id}",
-            "tabName": "fulltext", "column": "szse",
+            "tabName": "fulltext", "column": "szse" if plate == "sz" else "shse",
             "plate": plate,
             "seDate": f"{start_date}~{end_date}",
         }

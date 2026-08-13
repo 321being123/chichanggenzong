@@ -4,22 +4,29 @@
 //   - 原始记录、同步批次、游标、数据质量问题走 ops 层
 //   - 失败不覆盖上一份有效数据（表本身只插入新规则，不删旧记录）
 const { syncHkTradeRules } = require('../services/tradeLot');
+const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const JOB = 'hk_trade_rules_sync';
 
 let running = false;
 
 // 每交易日 20:30（上海时间）执行一次；启动时先跑一轮补齐
 async function runHkTradeRulesSync(reason = 'scheduled') {
   if (running) return { skipped: true };
+  if (!(await tryClaimJob(JOB))) return { skipped: true, reason: 'already_running' };
   running = true;
+  const runId = await startJobRun(JOB);
   try {
     const result = await syncHkTradeRules();
+    await finishJobRun(runId, true, JSON.stringify(result || {}));
     console.log(`[trade-rules] ${reason} 港股每手股数同步完成:`, result);
-    return result;
+    return { ok: true, result };
   } catch (error) {
+    await finishJobRun(runId, false, error.message || String(error));
     console.error('[trade-rules] 港股每手股数同步失败:', error.message);
     throw error;
   } finally {
     running = false;
+    await releaseJob(JOB);
   }
 }
 

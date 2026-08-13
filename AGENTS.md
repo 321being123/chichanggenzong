@@ -14,6 +14,20 @@
 - 每次本地交付前必须检查 `http://127.0.0.1:3000/health`、本次相关页面或接口以及静态资源版本；三者与当前代码一致后才能宣布完成。
 - 需要形成新版本时，默认递增 `appVersion` 最后一位，并同步 `package.json`、`package-lock.json`、`CHANGELOG.md` 和 `public/changelog.json`。本地 `/health` 返回旧版本时，视为任务未完成。
 
+## 本机 PostgreSQL 固定信息（每次本地验收前必读）
+
+- 本机已安装并验证 PostgreSQL 16.4（Windows x64 免安装版），程序目录为 `C:\pg\pgsql\bin`，数据目录为 `C:\pg\pgdata`，本地业务库为 `portfolio`。
+- 该实例未注册为 Windows 服务，且未加入系统 `PATH`。`Get-Service *postgres*` 无结果或 `Get-Command psql` 找不到命令，均不能作为“本机未安装 PostgreSQL”的依据。
+- 在得出“本机没有数据库”的结论前，必须先检查 `C:\pg\pgsql\bin\pg_ctl.exe`、`C:\pg\pgsql\bin\psql.exe` 和 `C:\pg\pgdata\PG_VERSION`；文件存在但实例未运行时，应按需启动，不能重新安装。
+- 数据库连接账号、密码等敏感配置只从项目根目录 `.env` 读取，禁止把密码复制进规则、文档或代码。
+- 启动、状态检查、连接和停止命令见 `deploy/本地验证交接文档.md` 的“本机 PostgreSQL 固定信息”章节。
+
+## QQ 邮箱 SMTP 固定信息
+
+- 用户已确认 QQ 邮箱的 SMTP 服务已开启（2026-08-13）。项目根目录 `.env` 已配置 `SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS` 和 `ALERT_EMAIL_TO`。
+- 排查邮件告警时，不得再默认判断为“QQ 邮箱未开启 SMTP”；应先检查应用 SMTP 连接、QQ 邮箱授权码、网络连通性和投递记录。
+- SMTP 授权码及邮箱账号等敏感值只允许保存在 `.env`，禁止复制到规则、Markdown、代码、日志或回复中。
+
 ## 生产部署铁律（任何服务器部署均强制执行）
 
 以下流程适用于所有生产服务器部署、热修复、数据同步和模型更新，不得跳步：
@@ -23,8 +37,8 @@
 2. **本地验证**：完成与改动相关的测试和数据校验。
    - Windows 全量测试固定使用 `npm.cmd run test:all`，外层超时至少 240 秒，避免 `npm.ps1` 执行策略错误和正常测试被提前终止。
 3. **正式提交并推送**：所有代码、版本记录、模型文件和同步 SQL 必须提交 Git 并推送到 `master`；禁止只保留本地修改。
-4. **标准服务器部署**：仅按本文件规定的 Git 同步、依赖安装和 PM2 重启步骤执行。禁止通过 SFTP、SSH 直接覆盖生产代码或模型文件；紧急修复也必须补齐本流程后才算完成。
-5. **部署后验收**：核对提交版本、PM2、`/health`、本次相关接口/页面和数据库同步结果；任一项失败即视为部署失败。
+4. **标准服务器部署**：仅按本文件规定的 Git 同步、依赖安装和 systemd 重启步骤执行。禁止通过 SFTP、SSH 直接覆盖生产代码或模型文件；紧急修复也必须补齐本流程后才算完成。
+5. **部署后验收**：核对提交版本、Web/Worker/健康检查三个 systemd 单元、`/health`、本次相关接口/页面和数据库同步结果；任一项失败即视为部署失败。
 
 数据同步不是固定步骤。只有本次变更涉及数据库结构、历史数据、日报、模型产物或其他需要写入生产数据的内容时，必须先询问用户是否执行同步；未获得明确同意，禁止生成同步 SQL 或执行数据同步。
 
@@ -35,7 +49,7 @@
 - 腾讯云生产服务器：`ubuntu@82.156.125.47`。`root` 账号不允许直接登录，不要再次尝试。**已关闭密码登录（2026-07-31 安全加固），只允许 SSH 密钥登录**：使用本机 `~/.ssh/server_login`（环境变量 `SSH_KEY_PATH` 可覆盖），通过 Paramiko 的 Ed25519Key 认证；服务器 sudo 已配置 NOPASSWD，执行部署命令时直接用 `sudo` 提权，全程不需要密码。不要使用密码、不要尝试本机 `id_ed25519` 或 `temp_cvm_key`。
 - GitHub：仓库 `git@github.com:321being123/chichanggenzong.git`，使用本机 `~/.ssh/id_ed25519` 和 `~/.ssh/known_hosts`。若直接 `git push` 出现主机密钥校验失败，使用：
   `GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=accept-new -o BatchMode=yes' git push origin master`
-- 部署时先推送 GitHub，再按上述密钥方式登录腾讯云，进入 `/opt/portfolio`，依次执行 `sudo git fetch origin && sudo git reset --hard origin/master`（仓库早年清密已与 GitHub 分叉，不能用 `git pull`，会报 divergent branches 失败）、`sudo npm ci --omit=dev`、`sudo pm2 restart portfolio-server --update-env`、`sudo pm2 save`。重启后等待服务完成启动，再检查提交版本、PM2、`http://127.0.0.1:3000/health` 和本次相关接口。服务器已关闭密码登录，统一使用 `~/.ssh/server_login` 密钥连接（脚本内已封装在 `ipo-report/_common.py` 的 `ssh_connect()`），不要再尝试密码登录。
+- 部署时先推送 GitHub，再使用 `deploy/deploy_password.py` 按标准流程登录腾讯云并部署；生产由 systemd 管理 `portfolio-server.service`、`portfolio-worker.service` 和 `portfolio-worker-health.timer`，PM2 已停用。重启后检查提交版本、三个 systemd 单元、`http://127.0.0.1:3000/health` 和本次相关接口。服务器已关闭密码登录，统一使用 `~/.ssh/server_login` 密钥连接，不要再尝试密码登录。
 
 以后新增或修改金融数据、数据库及产品功能时，必须同时满足以下要求：
 

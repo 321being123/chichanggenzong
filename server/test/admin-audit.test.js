@@ -27,6 +27,7 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
   const positionComparisonSrc = readSrc('server/routes/positionComparison.js');
   const adminJsSrc = readSrc('public/js/admin.js');
   const adminHtmlSrc = readSrc('public/admin.html');
+  const auditDbSrc = readSrc('server/db/config.js');
 
   await check('用户权限修改记审计（成功与失败）', () => {
     assert.ok(/auditEvent\(/.test(adminSrc), '后台未使用对象式审计入口');
@@ -63,6 +64,12 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     audits.forEach(function (blk) {
       assert.ok(!/password|apiKey|api_key|token|secret|REGISTER_CODE/i.test(blk), '审计块疑似含敏感字段：' + blk.slice(0, 80));
     });
+  });
+  await check('审计错误摘要写入和读取均统一脱敏', () => {
+    assert.ok(/sanitizeJobError\(e\.detail/.test(auditDbSrc), '审计 detail 写入前未脱敏');
+    assert.ok(/detail: sanitizeJobError\(row\.detail/.test(auditDbSrc), '历史审计 detail 返回前未脱敏');
+    assert.ok(/metadata: sanitizeJobResult\(row\.metadata/.test(auditDbSrc), '历史审计 metadata 返回前未递归脱敏');
+    assert.ok(/out\[k\] = sanitizeJobError\(v, 200\)/.test(auditDbSrc), '审计 metadata 字符串值落库前未脱敏');
   });
   await check('后台审计页提供模块/操作者/结果筛选', () => {
     assert.ok(/audit-filter-module|auditFilter/.test(adminJsSrc + adminHtmlSrc), '审计页缺少筛选控件');
@@ -115,13 +122,14 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
   });
   await check('敏感字段不落库（密码/密钥/Token 被过滤）', async () => {
     await auditEvent({ actor, action: 'user_password', target: 'someone', requestId: 'rid-mask-1',
-      metadata: { password: 'p@ss', apiKey: 'sk-123', token: 'tk', ok: true } });
+      metadata: { password: 'p@ss', apiKey: 'sk-123', token: 'tk', error: 'DB_PASS=raw-secret', ok: true } });
     const { rows } = await pool.query(
       "SELECT metadata FROM admin_audit_log WHERE actor=$1 AND request_id='rid-mask-1'", [actor]);
     const m = rows[0].metadata;
     assert.strictEqual(m.password, undefined, 'password 落库');
     assert.strictEqual(m.apiKey, undefined, 'apiKey 落库');
     assert.strictEqual(m.token, undefined, 'token 落库');
+    assert.ok(!String(m.error || '').includes('raw-secret'), 'metadata 字符串中的密码原样落库');
     assert.strictEqual(m.ok, true, '正常字段被误删');
   });
   await check('列表支持按操作者、结果、模块筛选', async () => {

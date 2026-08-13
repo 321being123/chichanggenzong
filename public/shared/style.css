@@ -83,6 +83,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .color-positive { color: #d93025; }
 .color-negative { color: #137333; }
 .tag-over { background: #fce8e6; color: #d93025; }
+.tag-warn { background: #fff4ce; color: #9a6700; }
 .tag-under { background: #e6f4ea; color: #137333; }
 .tag-ok { background: #e8f0fe; color: #1a73e8; }
 
@@ -184,6 +185,10 @@ td.negative { color: #137333; font-weight: 600; }
 .job-help-item:first-child { border-top: none; }
 .job-help-name { flex: 0 0 150px; font-weight: 600; color: #333; }
 .job-help-item i { color: #999; font-style: normal; }
+.job-worker-status { margin-left: auto; color: #777; font-size: 12px; }
+.job-detail { color: #555; font-size: 13px; line-height: 1.8; }
+.job-detail p { margin: 6px 0; }
+.btn-xs { padding: 3px 7px; font-size: 11px; }
 
 /* 休市日历（日历视图） */
 .holiday-calendar { margin-top: 4px; }

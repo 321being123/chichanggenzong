@@ -31,11 +31,13 @@ assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("
 assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
 assert.ok(html.includes('shared/style.css?v=27'), '全局样式缓存版本未更新');
-assert.ok(html.includes('js/arbitrage.js?v=10'), '套利前端缓存版本未更新');
+assert.ok(html.includes('js/arbitrage.js?v=11'), '套利前端缓存版本未更新');
 assert.ok(html.includes('js/navigation.js?v=4'), '导航缓存版本未更新');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');
 assert.ok(frontend.includes('d.cashChoicePremium') && frontend.includes('d.cashExpectedReturn'), '详情必须显示现金选择权两种收益口径');
 assert.ok(frontend.includes('d.fixedSwapPremium') && frontend.includes('d.liveSwapReturn'), '详情必须显示固定换股和实时换股指标');
+assert.ok(frontend.includes('successProbability') && frontend.includes('重要风险节点'), '换股详情必须显示成功概率和重要风险节点');
+assert.ok(frontend.includes("doc.relation_type !== 'risk_event'"), '风险公告应与普通公告链分开显示');
 assert.ok(frontend.includes('d.rightsPrice') && frontend.includes('d.rights_ratio_numerator'), '详情必须显示供股列表字段');
 assert.ok(frontend.includes('arbAnnouncementLink(d.announcement_url)'), '详情必须显示列表主公告链接');
 assert.ok(service.includes('pd.url AS announcement_url'), '详情接口必须返回主公告链接');

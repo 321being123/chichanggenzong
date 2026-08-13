@@ -64,3 +64,10 @@ test('年份不能被当成价格', () => {
   assert.equal(result.parsed.cash_offer_price, null);
   assert.ok(result.errors.includes('cash_offer_price:looks_like_year'));
 });
+
+test('监管立案公告识别为风险节点，不是终止公告', () => {
+  const risk = rules.classifyRiskAnnouncement('大智慧：关于收到中国证监会立案告知书的公告');
+  assert.equal(risk.riskType, 'regulatory_investigation');
+  assert.equal(risk.severity, 'high');
+  assert.equal(rules.classifyDocumentRole('大智慧：关于收到中国证监会立案告知书的公告'), 'risk');
+});

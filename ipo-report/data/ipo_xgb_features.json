@@ -25,17 +25,17 @@
     "fund_raised": 0.0,
     "online_shares": 0.0,
     "total_shares": 0.0,
-    "lottery_rate": 0.02412762,
+    "lottery_rate": 0.02490265,
     "oversub_multiple": 4539.93,
     "circ_mv": 3.96,
     "sub_limit": 0.0,
     "pe_ratio": 1.44
   },
   "sample_count": 181,
-  "train_mae": 63.75481365403069,
-  "test_mae": 222.48408410017686,
-  "train_mape": 21.436701640405833,
-  "test_mape": 58.79642845963156,
+  "train_mae": 62.57253011580573,
+  "test_mae": 222.4934078388936,
+  "train_mape": 20.982691756224966,
+  "test_mape": 59.51645606313063,
   "target_transform": "log1p_nonnegative_return",
-  "trained_at": "2026-08-11 23:04:14"
+  "trained_at": "2026-08-13 19:52:37"
 }

@@ -13,6 +13,7 @@ module.exports = {
       max_memory_restart: '300M',
       env: {
         NODE_ENV: 'production',
+        DURABLE_SCHEDULER: '1',
         // 注意：PORT / ALLOWED_ORIGIN / REGISTER_CODE / SECRET / PG 连接变量 放在项目根目录的 .env 文件里
         // （应用启动时会通过 dotenv 自动读取项目根的 .env，pm2 只负责拉起进程）
         // Web/Worker 固定拆分：Web 进程不跑后台任务，全部调度交由下方 portfolio-worker 执行（避免重复执行/丢失）。
@@ -32,9 +33,13 @@ module.exports = {
       autorestart: true,
       max_memory_restart: '300M',
       env: {
-        NODE_ENV: 'production'
+        NODE_ENV: 'production',
+        DURABLE_SCHEDULER: '1',
+        JOB_PROCESS_ROLE: 'worker',
+        WORKER_DRAIN_TIMEOUT_MS: '60000'
         // 不暴露端口；PG 任务锁保证与 Web（若仍运行调度）不会重复执行同一有锁任务
       },
+      kill_timeout: 3000000,
       error_file: 'logs/pm2-worker-error.log',
       out_file: 'logs/pm2-worker-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss'

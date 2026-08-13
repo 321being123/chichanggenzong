@@ -1,5 +1,7 @@
 // ========== 管理后台前端逻辑 ==========
 let adminProfile = null;
+let jobsPollTimer = null;
+let jobsVisibilityBound = false;
 
 // 用户管理状态
 let usersSearch = '';
@@ -101,6 +103,7 @@ function applyMenuPermissions() {
 }
 
 function switchView(view) {
+  if (view !== 'jobs' && jobsPollTimer) { clearInterval(jobsPollTimer); jobsPollTimer = null; }
   document.querySelectorAll('.admin-menu-item').forEach(function (i) {
     i.classList.toggle('active', i.dataset.view === view);
   });
@@ -508,7 +511,7 @@ function fmtTime(t) {
   return t ? String(t).replace('T', ' ').slice(0, 19) : '—';
 }
 
-function renderJobs() {
+function renderJobsLegacy() {
   const el = document.getElementById('view-jobs');
   if (!el) return;
   el.innerHTML =
@@ -536,7 +539,7 @@ function renderJobs() {
       '<button class="btn btn-primary btn-sm" id="job-btn-backfill" onclick="runJobBackfill()">手动补漏收盘数据</button>' +
       '<button class="btn btn-outline btn-sm" onclick="loadJobsData()">刷新</button>' +
     '</div>' +
-    '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
+     '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
     '<div class="acct-section-title">最近执行记录</div>' +
     '<div class="admin-table-wrap"><table>' +
       '<thead><tr><th>任务</th><th>说明</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>详情</th></tr></thead>' +
@@ -556,7 +559,7 @@ async function importFederalFunds() {
   finally { button.disabled = false; }
 }
 
-async function loadJobsData() {
+async function loadJobsDataLegacy() {
   const tbody = document.getElementById('jobs-tbody');
   const summary = document.getElementById('jobs-summary');
   try {
@@ -593,6 +596,245 @@ async function loadJobsData() {
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
   }
+}
+
+function jobSlotStatusTag(status, late) {
+  if (late && status === 'pending') return '<span class="tag tag-over">超时待处理</span>';
+  if (status === 'succeeded' || status === 'done') return '<span class="tag tag-ok">成功</span>';
+  if (status === 'running') return '<span class="tag tag-a">运行中</span>';
+  if (status === 'failed' || status === 'blocked') return '<span class="tag tag-over">' + (status === 'blocked' ? '已阻塞' : '失败') + '</span>';
+  if (status === 'degraded') return '<span class="tag tag-warn">降级</span>';
+  return '<span class="tag">待运行</span>';
+}
+
+function renderJobs() {
+  const el = document.getElementById('view-jobs');
+  if (!el) return;
+  el.innerHTML =
+    '<div class="job-help"><div class="job-help-title">后台自动任务</div>' +
+      '<div class="job-help-sub">这里同时展示计划时间、实际运行结果、超时任务和邮件告警。失败或漏跑时可直接补跑；补跑和确认操作都会留下审计记录。</div>' +
+    '</div>' +
+    '<div class="filter-bar">' +
+      '<button class="btn btn-primary btn-sm" id="job-btn-backfill" onclick="runJobBackfill()">手动补漏收盘数据</button>' +
+      '<button class="btn btn-outline btn-sm" onclick="testJobAlertEmail()">测试告警邮件</button>' +
+      '<button class="btn btn-outline btn-sm" onclick="loadJobsData()">刷新</button>' +
+      '<span id="job-worker-status" class="job-worker-status">正在读取 Worker 状态…</span>' +
+    '</div>' +
+    '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
+    '<div class="acct-section-title">今日计划与运行情况</div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>计划时间</th><th>状态</th><th>尝试次数</th><th>数据日期</th><th>最近结果</th><th>操作</th></tr></thead>' +
+      '<tbody id="jobs-slots-tbody"><tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">加载中…</td></tr></tbody></table></div>' +
+    '<div class="acct-section-title">待处理告警</div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>时间</th><th>任务</th><th>告警</th><th>状态</th><th>操作</th></tr></thead>' +
+      '<tbody id="jobs-alerts-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中…</td></tr></tbody></table></div>' +
+    '<div class="acct-section-title">最近运行记录</div>' +
+    '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>触发方式</th><th>详情</th></tr></thead>' +
+      '<tbody id="jobs-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中…</td></tr></tbody></table></div>';
+  loadJobsData();
+  if (jobsPollTimer) clearInterval(jobsPollTimer);
+  jobsPollTimer = setInterval(function () {
+    if (document.visibilityState === 'visible' && document.getElementById('view-jobs')?.classList.contains('active')) loadJobsData();
+  }, 30000);
+  if (!jobsVisibilityBound) {
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible' && document.getElementById('view-jobs')?.classList.contains('active')) loadJobsData();
+    });
+    jobsVisibilityBound = true;
+  }
+}
+
+async function retryJobSlotFromUi(slotId) {
+  try {
+    const detailResponse = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
+    const detail = await detailResponse.json();
+    if (!detailResponse.ok) return showToast(detail.error || '读取任务信息失败');
+    const label = detail.definition && detail.definition.label || detail.job_code || '该任务';
+    const targetDate = detail.business_date ? String(detail.business_date).slice(0, 10) : '-';
+    const source = detail.definition && detail.definition.sourceDescription || '本地数据库与该任务已配置的数据源';
+    const cost = detail.definition && detail.definition.mayConsumeQuota ? '可能消耗接口额度' : '通常不产生额外接口费用';
+    if (!window.confirm('确认补跑“' + label + '”？\n目标业务日期：' + targetDate + '\n访问数据源：' + source + '\n成本提示：' + cost + '。')) return;
+    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/retry'), { method: 'POST' });
+    const d = await r.json();
+    showToast(r.ok ? (d.queued ? '已加入补跑队列' : '补跑完成') : (d.error || '补跑失败'));
+  } catch (e) { showToast('网络错误'); }
+  loadJobsData();
+}
+
+async function validateJobSlotFromUi(slotId) {
+  try {
+    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/validate'), { method: 'POST' });
+    const d = await r.json();
+    showToast(d.message || (r.ok ? '重新校验通过' : '重新校验未通过'));
+  } catch (e) { showToast('网络错误'); }
+  loadJobsData();
+}
+
+async function acknowledgeJobSlot(slotId) {
+  try {
+    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/acknowledge'), { method: 'POST' });
+    const d = await r.json();
+    showToast(r.ok ? '已确认并接管' : (d.error || '操作失败'));
+  } catch (e) { showToast('网络错误'); }
+  loadJobsData();
+}
+
+async function testJobAlertEmail() {
+  try {
+    const r = await fetch(api('/api/admin/jobs/alert-email/test'), { method: 'POST' });
+    const d = await r.json();
+    showToast(r.ok ? '测试邮件已发送' : (d.error || '邮件测试失败'));
+  } catch (e) { showToast('网络错误'); }
+}
+
+async function loadJobsData() {
+  const slotBody = document.getElementById('jobs-slots-tbody');
+  const runBody = document.getElementById('jobs-tbody');
+  const alertBody = document.getElementById('jobs-alerts-tbody');
+  const summary = document.getElementById('jobs-summary');
+  ensureJobMonitorControls();
+  ensureJobMonitorAdvancedControls();
+  try {
+    const responses = await Promise.all([
+      fetch(api('/api/admin/jobs/overview')),
+      fetch(api('/api/admin/jobs/slots?limit=100' + jobSlotQuery())),
+      fetch(api('/api/admin/jobs?limit=50')),
+      fetch(api('/api/admin/jobs/notifications?limit=30')),
+    ]);
+    const data = await Promise.all(responses.map(r => r.json()));
+    if (responses.some(r => !r.ok)) throw new Error('load failed');
+    const overview = data[0], slots = data[1].list || [], runs = data[2], alerts = data[3].list || [];
+    if (summary) {
+      const counts = (overview.counts || []).reduce((map, item) => { map[item.status] = item.count; return map; }, {});
+      const alertCounts = (overview.alerts || []).reduce((map, item) => { map[item.status] = Number(item.count || 0); return map; }, {});
+      const emailConfigured = Boolean(overview.health && overview.health.emailConfigured);
+      const emailStatus = !emailConfigured ? '未配置' : (alertCounts.send_failed ? '投递失败' : '正常');
+      const emailColor = !emailConfigured || alertCounts.send_failed ? '#d93025' : '#188038';
+      summary.innerHTML = '<div class="stats">' +
+        '<div class="stat-card"><div class="label">今日计划</div><div class="value">' + slots.length + '</div><div class="sub">已生成持久化计划</div></div>' +
+        '<div class="stat-card"><div class="label">已成功</div><div class="value" style="color:#188038">' + (counts.succeeded || 0) + '</div><div class="sub">可继续观察数据时间</div></div>' +
+        '<div class="stat-card"><div class="label">待处理异常</div><div class="value" style="color:#d93025">' + ((counts.failed || 0) + (counts.blocked || 0) + (counts.degraded || 0)) + '</div><div class="sub">失败、阻塞或降级</div></div>' +
+        '<div class="stat-card"><div class="label">告警数量</div><div class="value">' + (overview.alerts || []).reduce((n, item) => n + Number(item.count || 0), 0) + '</div><div class="sub">邮件告警会去重抑制</div></div>' +
+        '<div class="stat-card"><div class="label">邮件告警</div><div class="value" style="color:' + emailColor + '">' + emailStatus + '</div><div class="sub">可在下方查看投递失败详情</div></div>' +
+      '</div>';
+    }
+    const workers = overview.workers || [];
+    workers.sort(function (a, b) { return (a.role === 'worker' ? 0 : 1) - (b.role === 'worker' ? 0 : 1); });
+    const workerText = workers.length ? 'Worker 心跳：' + fmtTime(workers[0].last_seen_at) + '（' + (workers[0].status || 'unknown') + '）' : '未检测到 Worker 心跳';
+    const workerEl = document.getElementById('job-worker-status'); if (workerEl) workerEl.textContent = workerText;
+    if (slotBody) slotBody.innerHTML = slots.length ? slots.map(renderJobSlotRow).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">暂无计划</td></tr>';
+    const freshness = document.getElementById('jobs-freshness');
+    if (freshness) freshness.innerHTML = '<div class="job-help-sub">数据日期：' + escapeHtml(slots.filter(function (slot) { return slot.data_as_of; }).map(function (slot) { return (slot.label || slot.job_code) + ' ' + String(slot.data_as_of).slice(0, 10); }).join(' ｜ ') || '暂无可确认数据日期') + '</div>';
+    if (runBody) runBody.innerHTML = runs.recent && runs.recent.length ? runs.recent.map(function (j) {
+      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(j.trigger_type || 'scheduled') + '</td><td style="max-width:300px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无运行记录</td></tr>';
+    if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
+      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(alert.job_code || '-') + '</td><td style="max-width:320px;word-break:break-all;">' + escapeHtml(alert.summary || alert.subject || '') + '</td><td>' + escapeHtml(alert.status || '') + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
+    }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无待处理告警</td></tr>';
+  } catch (e) {
+    if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
+    if (runBody) runBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
+    if (alertBody) alertBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
+  }
+}
+
+function ensureJobMonitorControls() {
+  const summary = document.getElementById('jobs-summary');
+  if (!summary || document.getElementById('job-status-filter')) return;
+  summary.insertAdjacentHTML('afterend',
+    '<div class="filter-bar"><label>任务状态 <select id="job-status-filter" onchange="loadJobsData()">' +
+      '<option value="">全部</option><option value="pending">待执行</option><option value="running">运行中</option>' +
+      '<option value="failed">失败</option><option value="blocked">阻塞</option><option value="degraded">降级</option>' +
+      '<option value="succeeded">成功</option></select></label></div>' +
+    '<div id="jobs-freshness" style="margin-bottom:14px;"></div>'
+  );
+}
+
+function jobSlotQuery() {
+  const fields = [
+    ['date', 'job-date-filter'], ['status', 'job-status-filter'],
+    ['category', 'job-category-filter'], ['trigger', 'job-trigger-filter'],
+    ['keyword', 'job-keyword-filter'],
+  ];
+  return fields.reduce(function (query, item) {
+    const el = document.getElementById(item[1]);
+    const value = el && el.value ? String(el.value).trim() : '';
+    return value ? query + '&' + item[0] + '=' + encodeURIComponent(value) : query;
+  }, '');
+}
+
+function ensureJobMonitorAdvancedControls() {
+  const summary = document.getElementById('jobs-summary');
+  if (!summary || document.getElementById('job-date-filter')) return;
+  summary.insertAdjacentHTML('afterend',
+    '<div class="filter-bar" style="gap:8px;flex-wrap:wrap;">' +
+      '<label>日期 <input id="job-date-filter" type="date" onchange="loadJobsData()"></label>' +
+      '<label>分类 <select id="job-category-filter" onchange="loadJobsData()"><option value="">全部分类</option><option value="data_sync">数据同步</option><option value="system">系统任务</option></select></label>' +
+      '<label>触发方式 <select id="job-trigger-filter" onchange="loadJobsData()"><option value="">全部触发</option><option value="scheduled">定时</option><option value="manual_retry">人工补跑</option><option value="auto_retry">自动重试</option></select></label>' +
+      '<label>关键词 <input id="job-keyword-filter" type="search" placeholder="任务或错误内容" onkeydown="if(event.key===\'Enter\') loadJobsData()"></label>' +
+    '</div>'
+  );
+  const table = document.getElementById('jobs-slots-tbody')?.closest('table');
+  if (table) {
+    const headers = table.querySelectorAll('thead th');
+    ['任务', '计划时间', '状态', '尝试次数', '数据日期', '最近结果', '操作'].forEach(function (text, index) {
+      if (headers[index]) headers[index].textContent = text;
+    });
+  }
+}
+
+function renderJobSlotRow(slot) {
+  const detail = '<button class="btn btn-outline btn-xs" onclick="openJobSlotDetail(' + Number(slot.slot_id) + ')">详情</button>';
+  const validate = (slot.status === 'succeeded' || slot.status === 'degraded')
+    ? ' <button class="btn btn-outline btn-xs" onclick="validateJobSlotFromUi(' + Number(slot.slot_id) + ')">重新校验</button>' : '';
+  const retry = (slot.status === 'failed' || slot.status === 'degraded' || slot.status === 'blocked')
+    ? ' <button class="btn btn-outline btn-xs" onclick="retryJobSlotFromUi(' + Number(slot.slot_id) + ')">立即补跑</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobSlot(' + Number(slot.slot_id) + ')">确认</button>' : '';
+  const watermark = slot.data_as_of ? String(slot.data_as_of).slice(0, 10) : '-';
+  return '<tr><td>' + escapeHtml(slot.label || jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td style="max-width:260px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '') + '</td><td>' + detail + validate + retry + '</td></tr>';
+}
+
+async function resendJobAlert(alertId) {
+  try {
+    const r = await fetch(api('/api/admin/jobs/notifications/' + encodeURIComponent(alertId) + '/resend'), { method: 'POST' });
+    const d = await r.json();
+    showToast(r.ok ? '告警邮件已重新投递' : (d.error || '邮件投递失败'));
+  } catch (e) { showToast('网络错误'); }
+  loadJobsData();
+}
+
+async function acknowledgeJobAlert(alertId) {
+  try {
+    const r = await fetch(api('/api/admin/jobs/alerts/' + encodeURIComponent(alertId) + '/acknowledge'), { method: 'POST' });
+    const d = await r.json();
+    showToast(r.ok ? '告警已确认' : (d.error || '确认失败'));
+  } catch (e) { showToast('网络错误'); }
+  loadJobsData();
+}
+
+async function openJobSlotDetailLegacy(slotId) {
+  try {
+    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
+    const d = await r.json();
+    if (!r.ok) return showToast(d.error || '读取详情失败');
+    openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(d.definition && d.definition.label || d.job_code) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(d.last_error || '无') + '</p><p><b>结果：</b><br>' + escapeHtml(JSON.stringify(d.result_summary || {}, null, 2)) + '</p></div>', '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
+  } catch (e) { showToast('网络错误'); }
+}
+
+// 任务详情包含执行尝试、数据水位、依赖、邮件告警和人工审计，便于直接定位异常。
+async function openJobSlotDetail(slotId) {
+  try {
+    const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
+    const d = await r.json();
+    if (!r.ok) return showToast(d.error || '读取详情失败');
+    const list = function (items, mapper, empty) {
+      return (items || []).map(mapper).join('') || '<li>' + empty + '</li>';
+    };
+    const runs = list(d.runs, function (run) { return '<li>' + escapeHtml(run.status || '-') + ' / ' + fmtTime(run.started_at) + ' / ' + escapeHtml(run.trigger_type || '-') + ' / ' + escapeHtml(run.detail || '') + '</li>'; }, '暂无执行记录');
+    const deps = list(d.dependencies, function (dep) { return '<li>' + escapeHtml(dep.job_code) + '：' + escapeHtml(dep.status || '-') + '，数据日期 ' + escapeHtml(dep.data_as_of ? String(dep.data_as_of).slice(0, 10) : '-') + '</li>'; }, '无前置依赖');
+    const alerts = list(d.alerts, function (alert) { return '<li>' + escapeHtml(alert.status || '-') + ' / 尝试 ' + Number(alert.send_attempts || 0) + ' / ' + escapeHtml(alert.last_send_error || alert.subject || '') + '</li>'; }, '无告警记录');
+    const audits = list(d.audits, function (audit) { return '<li>' + escapeHtml(audit.actor || '-') + ' / ' + escapeHtml(audit.action || '-') + ' / ' + escapeHtml(audit.created_at || '') + '</li>'; }, '无审计记录');
+    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(d.definition && d.definition.label || d.job_code) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>数据日期：</b>' + escapeHtml(d.data_as_of ? String(d.data_as_of).slice(0, 10) : '-') + '</p><p><b>最近错误：</b>' + escapeHtml(d.last_error || '无') + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul><p><b>结果：</b><br>' + escapeHtml(JSON.stringify(d.result_summary || {}, null, 2)) + '</p></div>';
+    openAdminModal('任务详情', html, '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
+  } catch (e) { showToast('网络错误'); }
 }
 
 async function runJobBackfill() {

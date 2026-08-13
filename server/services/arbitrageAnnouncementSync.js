@@ -4,17 +4,20 @@ const { pool } = require('../db');
 const hkex = require('./hkexAnnouncement');
 const cninfo = require('./cninfoAnnouncement');
 const parser = require('./arbitrageParser');
+const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const {
   cleanSecurityText,
   firstSecurityCode,
   firstSecurityName,
   classifyDocumentRole,
+  classifyRiskAnnouncement,
   buildEventKey,
   PARSER_VERSION,
 } = require('./arbitrageRules');
 
 const SYNC_JOB = 'arbitrage_sync';
+const MAX_PARSE_ATTEMPTS = 3;
 const SCOPES = {
   hkex: { sourceCode: 'hkex_announcements', dataset: 'hkex_announcements', adapter: hkex },
   cninfo: { sourceCode: 'cninfo_announcements', dataset: 'cninfo_announcements', adapter: cninfo },
@@ -157,8 +160,6 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       RETURNING document_id
     `, [null, 'arbitrage_announcement', ann.title, ann.announcedAt, ann.fileLink || '', sourceId, contentHash, rawRecordId, JSON.stringify(ann.rawPayload)]);
     const documentId = docRows[0].document_id;
-    const documentRole = classifyDocumentRole(ann.title);
-
     // 后续进程公告（完成/终止/换股实施等）：必须同时命中「套利事件语义」+「终态动作词」，
     // 且只更新「同标的 + 同策略类型」的进行中事件，避免「工商变更登记」「股份回购完成」等无关公告误关有效机会。
     // 港交所部分公告（如创维集团）只在 LONG_TEXT 分类标签里写“私有化”，
@@ -166,6 +167,31 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     const classificationText = [ann.title, ann.rawPayload && ann.rawPayload.LONG_TEXT]
       .filter(Boolean)
       .join(' ');
+    const risk = classifyRiskAnnouncement(ann.title);
+    const documentRole = risk ? 'risk' : classifyDocumentRole(ann.title);
+
+    // 风险公告不新建套利案件；按公告证券代码挂到同一证券参与的进行中 A 股事件。
+    if (risk && instrumentId) {
+      const { rows: riskCases } = await client.query(`
+        SELECT case_id
+        FROM event.arbitrage_cases
+        WHERE strategy_type IN ('a_cash_offer','a_share_swap')
+          AND event_status NOT IN ('completed','terminated','expired')
+          AND (target_instrument_id=$1 OR reference_instrument_id=$1)
+        ORDER BY announced_at DESC NULLS LAST, created_at DESC
+      `, [instrumentId]);
+      for (const riskCase of riskCases) {
+        await client.query(`
+          INSERT INTO event.arbitrage_case_documents(case_id, document_id, relation_type, announced_at, document_role)
+          VALUES($1,$2,'risk_event',$3,'risk')
+          ON CONFLICT(case_id, document_id) DO UPDATE
+            SET relation_type='risk_event', document_role='risk', announced_at=EXCLUDED.announced_at
+        `, [riskCase.case_id, documentId, ann.announcedAt]);
+        await client.query('UPDATE event.arbitrage_cases SET updated_at=now() WHERE case_id=$1', [riskCase.case_id]);
+      }
+      await client.query('COMMIT');
+      return;
+    }
     const update = detectUpdate(classificationText);
     if (update && update.strategyType && instrumentId) {
       const { rows: open } = await client.query(`
@@ -303,11 +329,11 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     // 每份条款类 PDF 只解析一次并把证据存入数据库；再按公告角色聚合，不允许低优先级公告覆盖正式方案。
     if (touchedCaseId && touchedDocumentId && touchedDocumentRole !== 'terminal' && ann.fileLink && /\.pdf$/i.test(ann.fileLink)) {
       try {
-        await parser.parseAndStoreDocument(touchedCaseId, touchedDocumentId, ann.fileLink, ann.stockCode, touchedDocumentRole);
-        await parser.rebuildCaseTerms(touchedCaseId);
+        const payload = await parser.parseAndStoreDocument(touchedCaseId, touchedDocumentId, ann.fileLink, ann.stockCode, touchedDocumentRole);
+        if (payload) await parser.rebuildCaseTerms(touchedCaseId);
       } catch (parseErr) {
         // 解析失败（Python 缺失 / PDF 下载或提取异常）记录为数据质量错误，便于排查，不阻断同步
-        try { await parser.recordParseFailure(touchedCaseId, parseErr.message); } catch (_) {}
+        try { await parser.recordParseFailure(touchedCaseId, sanitizeJobError(parseErr.message || parseErr, 500)); } catch (_) {}
       }
     }
   } catch (err) {
@@ -434,17 +460,22 @@ async function retryPendingDocuments(limit = 20) {
     JOIN core.instruments i ON i.instrument_id=c.target_instrument_id
     WHERE c.event_status NOT IN ('completed','terminated','expired')
       AND acd.document_role IN ('amendment','terms','summary','proposal')
-      AND acd.parse_status <> 'failed'
-      AND (acd.parsed_payload IS NULL OR acd.parser_version IS DISTINCT FROM $1)
+      AND (
+        acd.parser_version IS DISTINCT FROM $1
+        OR (acd.parse_status='failed' AND acd.parse_attempts < $2
+            AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
+        OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL)
+      )
       AND d.url ~* '\\.pdf($|\\?)'
     ORDER BY d.announced_at DESC,acd.document_id DESC
-    LIMIT $2
-  `, [PARSER_VERSION, Math.max(1, Math.min(Number(limit) || 20, 100))]);
+    LIMIT $3
+  `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS, Math.max(1, Math.min(Number(limit) || 20, 100))]);
   const touched = new Set();
   const result = { attempted: rows.length, parsed: 0, failed: 0 };
   for (const doc of rows) {
     try {
-      await parser.parseAndStoreDocument(doc.case_id, doc.document_id, doc.url, doc.canonical_code, doc.document_role, true);
+      const payload = await parser.parseAndStoreDocument(doc.case_id, doc.document_id, doc.url, doc.canonical_code, doc.document_role, true);
+      if (!payload) continue;
       touched.add(String(doc.case_id));
       result.parsed++;
     } catch (_) {
@@ -452,6 +483,20 @@ async function retryPendingDocuments(limit = 20) {
     }
   }
   for (const caseId of touched) await parser.rebuildCaseTerms(caseId);
+  const { rows: retryState } = await pool.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE acd.parse_attempts < $2)::int AS pending,
+      COUNT(*) FILTER (WHERE acd.parse_attempts >= $2)::int AS exhausted
+    FROM event.arbitrage_case_documents acd
+    JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
+    JOIN event.documents d ON d.document_id=acd.document_id
+    WHERE c.event_status NOT IN ('completed','terminated','expired')
+      AND acd.document_role IN ('amendment','terms','summary','proposal')
+      AND acd.parse_status='failed' AND acd.parser_version=$1
+      AND d.url ~* '\\.pdf($|\\?)'
+  `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
+  result.pending = Number(retryState[0] && retryState[0].pending || 0);
+  result.exhausted = Number(retryState[0] && retryState[0].exhausted || 0);
   return result;
 }
 
@@ -487,19 +532,21 @@ async function runSync(windows, isFirst) {
             await standardizeAnnouncement(sourceId, rawRecordId, ann, scopeName);
             count++;
           } catch (err) {
-            results[scopeName].errors.push(`${ann.sourceKey}: ${err.message}`);
+            const safeError = sanitizeJobError(err.message || err, 1000);
+            results[scopeName].errors.push(`${ann.sourceKey}: ${safeError}`);
             windowFailed = true;
-            lastError = `${ann.sourceKey}: ${err.message}`;
+            lastError = `${ann.sourceKey}: ${safeError}`;
           }
         }
 
         await finishIngestionRun(runId, count, windowFailed ? 'partial: some records failed' : '');
         results[scopeName].total += count;
       } catch (err) {
-        await finishIngestionRun(runId, 0, err.message);
-        results[scopeName].errors.push(`${win.from}~${win.to}: ${err.message}`);
+        const safeError = sanitizeJobError(err.message || err, 1000);
+        await finishIngestionRun(runId, 0, safeError);
+        results[scopeName].errors.push(`${win.from}~${win.to}: ${safeError}`);
         windowFailed = true;
-        lastError = `${win.from}~${win.to}: ${err.message}`;
+        lastError = `${win.from}~${win.to}: ${safeError}`;
       }
 
       if (windowFailed) {
@@ -533,5 +580,6 @@ module.exports = {
   classifyTitle,
   detectUpdate,
   isGenericControlChangeTermination,
+  classifyRiskAnnouncement,
   SCOPES,
 };

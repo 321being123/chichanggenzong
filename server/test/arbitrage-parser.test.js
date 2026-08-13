@@ -3,6 +3,19 @@ const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const parser = require('../services/arbitrageParser');
 
+test('PDF 解析重试入口统一阻止未到期和超过上限的调用', () => {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  assert.equal(parser.getParseRetryDecision({
+    parser_version: parser.PARSER_VERSION, parse_status: 'failed', parse_attempts: 2, next_parse_attempt_at: future,
+  }, true).reason, 'not_due');
+  assert.equal(parser.getParseRetryDecision({
+    parser_version: parser.PARSER_VERSION, parse_status: 'failed', parse_attempts: 3, next_parse_attempt_at: null,
+  }, true).reason, 'exhausted');
+  assert.equal(parser.getParseRetryDecision({
+    parser_version: 'old-version', parse_status: 'failed', parse_attempts: 3, next_parse_attempt_at: null,
+  }, true).shouldParse, true);
+});
+
 test('创维集团复合私有化对价：只按现金计算，公司估值写入备注', () => {
   const code = [
     'import importlib.util, json, sys',

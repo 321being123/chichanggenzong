@@ -2,9 +2,10 @@
 // 查询、事件合并、审核、统一计算（3 类公式）
 const { pool } = require('../db');
 const { fetchTencentQuotes } = require('./tencentQuote');
-const sync = require('./arbitrageAnnouncementSync');
 const parser = require('./arbitrageParser');
-const { cleanSecurityText } = require('./arbitrageRules');
+const { cleanSecurityText, classifyRiskAnnouncement } = require('./arbitrageRules');
+const { sanitizeJobError } = require('./jobErrorSanitizer');
+const { enqueueManualJob } = require('./jobScheduleSlots');
 
 const FORMULA_VERSION = 'v2.0';
 
@@ -181,13 +182,31 @@ async function getArbitrageDetail(caseId) {
     : calcCashArbitrage(c.cash_choice_price || c.offer_price, currentPrice);
 
   // 获取公告链
+  const riskCodes = [c.canonical_code, c.ref_code].filter(Boolean);
   const { rows: docs } = await pool.query(`
-    SELECT d.document_id, d.title, d.announced_at, d.url, acd.relation_type
-    FROM event.arbitrage_case_documents acd
-    JOIN event.documents d ON acd.document_id = d.document_id
-    WHERE acd.case_id = $1
-    ORDER BY d.announced_at DESC NULLS LAST
-  `, [caseId]);
+    WITH linked AS (
+      SELECT d.document_id, d.title, d.announced_at, d.url, acd.relation_type, acd.document_role
+      FROM event.arbitrage_case_documents acd
+      JOIN event.documents d ON acd.document_id = d.document_id
+      WHERE acd.case_id = $1
+    ), inferred_risk AS (
+      SELECT d.document_id, d.title, d.announced_at, d.url,
+             'risk_event'::text AS relation_type, 'risk'::text AS document_role
+      FROM event.documents d
+      WHERE d.document_type = 'arbitrage_announcement'
+        AND d.title ~* '(立案告知书|立案调查|调查通知书|调查告知书|行政处罚决定书|处罚决定|行政监管措施|监管警示|监管措施|问询函|监管工作函|监管函)'
+        AND COALESCE(d.raw_payload->>'secCode', d.raw_payload->>'stockCode', d.raw_payload->>'code') = ANY($2::text[])
+        AND NOT EXISTS (SELECT 1 FROM linked l WHERE l.document_id = d.document_id)
+    )
+    SELECT * FROM linked
+    UNION ALL
+    SELECT * FROM inferred_risk
+    ORDER BY announced_at DESC NULLS LAST
+  `, [caseId, riskCodes]);
+
+  const successEstimate = c.strategy_type === 'a_share_swap'
+    ? estimateSwapSuccess(c, docs)
+    : null;
 
   return {
     ...c,
@@ -201,6 +220,7 @@ async function getArbitrageDetail(caseId) {
     quoteTime: targetQuote ? targetQuote.quote_time : null,
     swapEligible,
     documents: docs,
+    ...(successEstimate || {}),
     ...calc,
     cashExpectedReturn: calcCashArbitrage(c.cash_choice_price || c.offer_price, currentPrice).arbitrageSpace,
     cashChoicePremium: calcPricePremium(c.cash_choice_price || c.offer_price, currentPrice),
@@ -209,6 +229,74 @@ async function getArbitrageDetail(caseId) {
     formulaVersion: FORMULA_VERSION,
     dataAsOf: new Date().toISOString(),
     quoteAsOf: targetQuote ? targetQuote.quote_time : new Date().toISOString(),
+  };
+}
+
+// 换股合并成功概率：这是“公开进展 + 风险公告”的规则估计，不是历史样本训练出的统计概率。
+// 目的在于把影响判断的因素明白列出来，避免只看套利空间而忽略事件风险。
+function estimateSwapSuccess(caseRow, documents) {
+  const docs = Array.isArray(documents) ? documents : [];
+  const titles = docs.map(d => cleanSecurityText(d.title)).filter(Boolean);
+  let score = 50;
+  const factors = [];
+  const riskEvents = [];
+
+  if (caseRow.review_status === 'approved') {
+    score += 8;
+    factors.push({ type: 'positive', label: '事件已审核通过', points: 8 });
+  }
+  if (caseRow.event_status === 'in_progress') {
+    score += 8;
+    factors.push({ type: 'positive', label: '当前仍处于进行中', points: 8 });
+  }
+  if (caseRow.parse_status === 'validated') {
+    score += 8;
+    factors.push({ type: 'positive', label: '换股核心条款已验证', points: 8 });
+  } else if (caseRow.parse_status === 'conflict') {
+    score -= 8;
+    factors.push({ type: 'negative', label: '公告条款存在解析冲突', points: -8 });
+  }
+  if (Number(caseRow.terms_confidence) >= 0.85) {
+    score += 4;
+    factors.push({ type: 'positive', label: '条款证据置信度较高', points: 4 });
+  }
+  if (titles.some(t => /恢复审核|恢复审查|同意恢复审核|审核通过/.test(t))) {
+    score += 8;
+    factors.push({ type: 'positive', label: '已出现恢复审核或审核通过进展', points: 8 });
+  }
+  if (titles.some(t => /股东大会|股东会/.test(t) && /通过|审议通过|决议/.test(t))) {
+    score += 8;
+    factors.push({ type: 'positive', label: '已出现股东会审议通过进展', points: 8 });
+  }
+  if (titles.some(t => /中止审核|中止审查|暂停审核/.test(t))) {
+    score -= 15;
+    factors.push({ type: 'negative', label: '曾出现审核中止或暂停', points: -15 });
+  }
+
+  for (const doc of docs) {
+    const risk = classifyRiskAnnouncement(doc.title);
+    if (!risk) continue;
+    riskEvents.push({
+      document_id: doc.document_id,
+      title: doc.title,
+      announced_at: doc.announced_at,
+      url: doc.url,
+      riskType: risk.riskType,
+      severity: risk.severity,
+      label: risk.label,
+    });
+    score -= risk.penalty;
+    factors.push({ type: 'negative', label: `${risk.label}：${cleanSecurityText(doc.title)}`, points: -risk.penalty });
+  }
+
+  score = Math.max(5, Math.min(95, Math.round(score)));
+  return {
+    successProbability: score,
+    successProbabilityLabel: score >= 70 ? '较高' : (score >= 45 ? '中等' : '偏低'),
+    successProbabilityFactors: factors,
+    riskEvents,
+    successProbabilityNote: '规则估计值，仅用于比较风险；立案调查尚无最终结论时，不代表交易必然终止。',
+    successProbabilityAsOf: new Date().toISOString(),
   };
 }
 
@@ -337,24 +425,52 @@ async function reparseCase(caseId) {
   }
   let parsedCount = 0;
   let failedCount = 0;
+  let eligibleCount = 0;
   for (const doc of docRows) {
     const role = parserRole(doc.title, doc.document_role);
-    if (role === 'terminal') continue;
+    if (role === 'terminal' || role === 'risk') continue;
+    eligibleCount++;
     try {
-      await parser.parseAndStoreDocument(caseId, doc.document_id, doc.url, row.canonical_code, role, true);
-      parsedCount++;
+      const payload = await parser.parseAndStoreDocument(caseId, doc.document_id, doc.url, row.canonical_code, role, true, true);
+      if (payload) parsedCount++;
+      else failedCount++;
     } catch (err) {
       failedCount++;
-      console.error(`[arbitrage] case ${caseId} document ${doc.document_id} parse failed:`, err.message);
+      console.error(`[arbitrage] case ${caseId} document ${doc.document_id} parse failed:`, sanitizeJobError(err.message || err, 500));
     }
   }
+  if (!eligibleCount) return { caseId, status: 'skipped', message: '该事件没有需要重新解析的条款类 PDF 公告', extracted: null };
   if (!parsedCount) return { caseId, status: 'failed', message: `${failedCount}份公告均解析失败`, extracted: null };
   const rebuilt = await parser.rebuildCaseTerms(caseId);
+  if (failedCount) {
+    return {
+      caseId,
+      ...rebuilt,
+      status: 'failed',
+      message: `已解析${parsedCount}份公告，但仍有${failedCount}份失败，任务将进入统一重试`,
+    };
+  }
   return {
     caseId,
     status: rebuilt.status,
-    message: `已解析${parsedCount}份公告并按证据优先级重建条款${failedCount ? `，${failedCount}份失败已记录` : ''}`,
+    message: `已解析${parsedCount}份公告并按证据优先级重建条款`,
     ...rebuilt,
+  };
+}
+
+async function queueReparseCase(caseId) {
+  if (!Number.isSafeInteger(caseId) || caseId <= 0) return null;
+  const { rows } = await pool.query('SELECT case_id FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+  if (!rows.length) return null;
+  const slot = await enqueueManualJob('arbitrage_reparse', { caseId });
+  if (!slot) return { ok: false, error: '公告重新解析任务未注册' };
+  return {
+    ok: true,
+    queued: true,
+    slotId: slot.slot_id,
+    status: slot.status || 'pending',
+    caseId,
+    message: '公告重新解析已进入后台任务队列',
   };
 }
 
@@ -365,15 +481,9 @@ function parserRole(title, existingRole) {
 
 // 触发同步（后台执行）
 async function triggerSync() {
-  // 异步执行，不阻塞 HTTP 请求
-  setImmediate(async () => {
-    try {
-      await sync.runIncrementalSync();
-    } catch (err) {
-      console.error('[arbitrage] sync error:', err.message);
-    }
-  });
-  return { status: 'started', message: '增量同步已启动' };
+  const slot = await enqueueManualJob('arbitrage_sync');
+  if (!slot) return { ok: false, error: '套利同步任务未注册' };
+  return { ok: true, queued: true, slotId: slot.slot_id, status: 'pending', message: '增量同步已进入后台任务队列' };
 }
 
 // ========== 统一计算 ==========
@@ -473,6 +583,7 @@ module.exports = {
   getCaseDetail,
   updateCase,
   reparseCase,
+  queueReparseCase,
   triggerSync,
   calcCashArbitrage,
   calcPricePremium,
@@ -480,5 +591,6 @@ module.exports = {
   calcRightsArbitrage,
   calcArbitrage,
   isSwapEligible,
+  estimateSwapSuccess,
   FORMULA_VERSION,
 };

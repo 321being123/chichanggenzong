@@ -17,6 +17,23 @@ const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefres
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
 const { scheduleHkTradeRulesSync, runHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
 const { scheduleArbitrageSync } = require('./jobs/arbitrageSync');
+const { syncScheduleSlots, heartbeat } = require('./services/jobScheduleSlots');
+const { startDurableExecutor } = require('./services/jobOrchestrator');
+
+let orchestrationStarted = false;
+let orchestrationObserverTimer = null;
+let startupTasksPromise = Promise.resolve();
+
+function startJobOrchestrationObserver() {
+  if (orchestrationStarted || process.env.DURABLE_SCHEDULER === '0' || process.env.JOB_ORCHESTRATION_ENABLED === '0') return;
+  orchestrationStarted = true;
+  const sync = () => syncScheduleSlots().catch(error => console.warn('[job-orchestration] 计划状态同步失败:', error.message));
+  const beat = () => heartbeat(process.env.JOB_PROCESS_ROLE || 'web').catch(error => console.warn('[job-orchestration] Worker 心跳写入失败:', error.message));
+  sync();
+  beat();
+  orchestrationObserverTimer = setInterval(() => { sync(); beat(); }, 60 * 1000);
+  if (orchestrationObserverTimer.unref) orchestrationObserverTimer.unref();
+}
 
 // 启动即执行的补漏/快照（幂等、带 PG 锁，多实例仅一个真正执行）
 const STARTUP_TASKS = [
@@ -58,13 +75,20 @@ const SCHEDULER_REGISTRY = {
 };
 
 async function runStartupTasks() {
-  for (const t of STARTUP_TASKS) {
+  const tasks = process.env.DURABLE_SCHEDULER !== '0'
+    ? STARTUP_TASKS.filter(t => ['holidaySync', 'indexBaseline'].includes(t.name))
+    : STARTUP_TASKS;
+  for (const t of tasks) {
     try { await t.run(); }
     catch (e) { console.error(`[scheduler] 启动任务 ${t.name} 失败:`, e && e.message); }
   }
 }
 
 function registerScheduledTasks() {
+  if (process.env.DURABLE_SCHEDULER !== '0') {
+    startDurableExecutor();
+    return;
+  }
   for (const t of SCHEDULED_TASKS) {
     try { t.register(); }
     catch (e) { console.error(`[scheduler] 周期任务 ${t.name} 注册失败:`, e && e.message); }
@@ -73,8 +97,24 @@ function registerScheduledTasks() {
 
 // Web 兼容模式与独立 Worker 共用：启动补漏 + 周期调度一起拉起
 async function startScheduler() {
-  await runStartupTasks();
+  startJobOrchestrationObserver();
+  startupTasksPromise = runStartupTasks();
+  await startupTasksPromise;
   registerScheduledTasks();
 }
 
-module.exports = { startScheduler, runStartupTasks, registerScheduledTasks, SCHEDULER_REGISTRY };
+async function waitForStartupTasks(timeoutMs) {
+  const waitMs = Math.max(Number(timeoutMs) || 0, 0);
+  if (!waitMs) return startupTasksPromise;
+  return Promise.race([
+    startupTasksPromise,
+    new Promise(resolve => setTimeout(resolve, waitMs)),
+  ]);
+}
+
+function stopJobOrchestrationObserver() {
+  if (orchestrationObserverTimer) clearInterval(orchestrationObserverTimer);
+  orchestrationObserverTimer = null;
+}
+
+module.exports = { startScheduler, waitForStartupTasks, stopJobOrchestrationObserver, runStartupTasks, registerScheduledTasks, startJobOrchestrationObserver, SCHEDULER_REGISTRY };

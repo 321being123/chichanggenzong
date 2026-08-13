@@ -128,21 +128,22 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
   return { recorded, failed, error };
 }
 
-// 为所有账户记录某市场某交易日收盘价（聚合判断「全部失败」才抛出，供任务留痕）
+// 为所有账户记录某市场某交易日收盘价；任一证券失败都进入统一有限重试，避免部分账户缺数却显示成功。
 async function recordMarketClose(label, matchFn, dateStr) {
   const cnDate = dateStr || cnDateStr();
   const { rows: users } = await pool.query('SELECT username, accounts FROM users');
-  let anyRecorded = false, anyError = false;
+  let recorded = 0, failed = 0;
   for (const user of users) {
     const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
     for (const accountName of accounts) {
       const r = await recordCloseOne(user.username, accountName, label, matchFn, cnDate)
-        .catch(e => { anyError = true; return { recorded: 0, failed: 1, error: true }; });
-      if (r && r.recorded > 0) anyRecorded = true;
-      if (r && r.error) anyError = true;
+        .catch(() => ({ recorded: 0, failed: 1, error: true }));
+      recorded += Number(r && r.recorded || 0);
+      failed += Number(r && r.failed || 0);
     }
   }
-  if (!anyRecorded && anyError) throw new Error('收盘记录全部失败 (' + label + ' ' + cnDate + ')');
+  if (failed > 0) throw new Error(`收盘记录存在缺失 (${label} ${cnDate})：成功 ${recorded}，失败 ${failed}`);
+  return { recorded, failed };
 }
 
 function recentTradingDays(count) {
@@ -217,18 +218,26 @@ async function backfillMissingCloses(options) {
 }
 
 // 带幂等锁与执行记录的收盘任务（跨实例单跑，失败留痕供告警）
-async function runMarketCloseJob(label, matchFn) {
-  if (!(await tryClaimJob('market_close:' + label))) return; // 其他实例已在跑，跳过
+async function runMarketCloseJob(label, matchFn, dateStr) {
+  if (!(await tryClaimJob('market_close:' + label))) return { skipped: true, reason: 'already_running' }; // 其他实例已在跑，跳过
   const runId = await startJobRun('market_close:' + label);
   try {
-    await recordMarketClose(label, matchFn);
-    await finishJobRun(runId, true, '');
+    const result = await recordMarketClose(label, matchFn, dateStr);
+    await finishJobRun(runId, true, `写入 ${result.recorded}，失败 0`);
+    return { ok: true, label, ...result };
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
     console.error('[market_close:' + label + '] 失败:', e.message || e);
+    return { ok: false, error: e.message || String(e) };
   } finally {
     await releaseJob('market_close:' + label);
   }
+}
+
+async function runMarketCloseByLabel(label, dateStr) {
+  const market = MARKET_CLOSE_TIMES.find(item => item.label === label);
+  if (!market) return { ok: false, unsupported: true, error: `未找到收盘市场规则：${label}` };
+  return runMarketCloseJob(market.label, market.match, dateStr);
 }
 
 // 为所有市场分别调度收盘任务（含休市识别 + 每日缺失补漏）
@@ -266,4 +275,4 @@ function scheduleAllMarketCloses() {
   }
 }
 
-module.exports = { scheduleAllMarketCloses, backfillMissingCloses, findMissingCloseDates, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil, nextRunDelay };
+module.exports = { scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, fmtCN, pickMissingCodes, cnWeekday, msUntil, nextRunDelay };

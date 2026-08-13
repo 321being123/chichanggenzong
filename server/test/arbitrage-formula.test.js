@@ -169,5 +169,22 @@ test('合并方自身：有现金选择权，但不参与换股套利', () => {
   }), true);
 });
 
+test('换股成功概率：监管立案会作为可解释的负面因素扣分', () => {
+  const r = svc.estimateSwapSuccess({
+    review_status: 'approved',
+    event_status: 'in_progress',
+    parse_status: 'validated',
+    terms_confidence: 0.9,
+  }, [{
+    document_id: 1,
+    title: '关于公司收到中国证监会立案告知书的公告',
+    announced_at: '2026-04-10',
+    url: 'https://static.cninfo.com.cn/finalpage/2026-04-10/example.PDF',
+  }]);
+  assert.equal(r.successProbability, 53);
+  assert.equal(r.riskEvents.length, 1);
+  assert.ok(r.successProbabilityFactors.some(f => f.points === -25));
+});
+
 console.log('\nPASS=' + pass + ' FAIL=' + fail);
 process.exit(fail > 0 ? 1 : 0);

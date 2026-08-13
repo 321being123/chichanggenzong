@@ -1,28 +1,37 @@
-// ========== 独立 worker 进程：只跑后台任务，不承载 Web 请求 ==========
-// 用途：将后台任务从 Web 进程拆出，避免重启/扩容时任务丢失或重复。
-// 启动方式：node server/worker.js   （可配合 pm2 命名为 portfolio-worker）
-// Web 进程设 DISABLE_SCHEDULER=1 以防重复执行；本进程默认运行全部调度。
-// 任务清单与 Web 共用 server/scheduler.js 的单一注册表，避免漏注册。
+// 独立 Worker 进程：只运行后台任务，不承载 Web 请求。
 require('dotenv').config();
+process.env.JOB_PROCESS_ROLE = 'worker';
 const { initSchema, pool } = require('./db');
-const { startScheduler } = require('./scheduler');
+const { startScheduler, waitForStartupTasks, stopJobOrchestrationObserver } = require('./scheduler');
+const { stopDurableExecutor, JOB_DEFINITIONS } = require('./services/jobOrchestrator');
 
 async function main() {
   await initSchema();
   console.log('[worker] 后台任务调度已启动（独立进程）');
-  // 启动即补齐缺失的每日收盘价、净值/总资产快照、指数基线、港币汇率、港股每手股数，并注册全部周期调度。
-  // 月度休市日核对（holidaySyncMonthly）已随 startScheduler 统一注册，不再在此内联。
   await startScheduler();
 }
 
-main().catch(e => { console.error('[worker] 启动失败:', e.message); process.exit(1); });
+main().catch(error => {
+  console.error('[worker] 启动失败:', error.message);
+  process.exit(1);
+});
 
-// 优雅停机：释放咨询锁与连接池
-function shutdown(sig) {
-  console.log(`[worker] 收到 ${sig}，释放资源...`);
-  const hard = setTimeout(() => process.exit(1), 5000);
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[worker] 收到 ${signal}，停止领取新任务并等待运行中的任务结束`);
+  const drainMs = Math.max(Number(process.env.WORKER_DRAIN_TIMEOUT_MS) || 60000, 10000);
+  const maxTaskTimeoutMs = Math.max(...JOB_DEFINITIONS.map(item => Number(item.timeoutMinutes || 30) * 60 * 1000), 30 * 60 * 1000);
+  const hard = setTimeout(() => process.exit(1), Math.max(drainMs, maxTaskTimeoutMs) + 15 * 60 * 1000);
   hard.unref();
-  Promise.allSettled([pool.end().catch(() => {})]).then(() => process.exit(0));
+  stopJobOrchestrationObserver();
+  await waitForStartupTasks().catch(() => {});
+  await stopDurableExecutor(drainMs).catch(() => {});
+  await pool.end().catch(() => {});
+  clearTimeout(hard);
+  process.exit(0);
 }
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(1)); });
+process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(1)); });

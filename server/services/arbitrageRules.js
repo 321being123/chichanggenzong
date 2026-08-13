@@ -24,6 +24,7 @@ function firstSecurityName(value) {
 
 function classifyDocumentRole(title) {
   const text = cleanSecurityText(title);
+  if (classifyRiskAnnouncement(text)) return 'risk';
   if (/(完成过户|完成過戶|实施结果|實施結果|申报结果|申報結果|终止|終止|失效|撤回)/.test(text)) return 'terminal';
   if (/(董事会报告|董事會報告|财务顾问|財務顧問|法律意见|法律意見|估值报告|估值報告|核查意见|核查意見)/.test(text)) return 'advice';
   if (/(修订|修訂|补充|補充|更新)/.test(text)) return 'amendment';
@@ -34,8 +35,25 @@ function classifyDocumentRole(title) {
   return 'other';
 }
 
+// 监管风险公告不属于套利条款，但会影响换股合并能否继续。
+// 只根据公告标题识别风险类型，不臆测调查结论。
+function classifyRiskAnnouncement(title) {
+  const text = cleanSecurityText(title);
+  if (!text) return null;
+  if (/(立案告知书|立案调查|调查通知书|调查告知书)/.test(text)) {
+    return { riskType: 'regulatory_investigation', severity: 'high', penalty: 25, label: '监管立案调查' };
+  }
+  if (/(行政处罚决定书|处罚决定|行政监管措施|监管警示|监管措施)/.test(text)) {
+    return { riskType: 'regulatory_action', severity: 'medium', penalty: 15, label: '监管处罚或措施' };
+  }
+  if (/(问询函|监管工作函|监管函)/.test(text)) {
+    return { riskType: 'regulatory_query', severity: 'low', penalty: 8, label: '监管问询' };
+  }
+  return null;
+}
+
 function documentRolePriority(role) {
-  return ({ amendment: 110, terms: 100, summary: 80, proposal: 60, advice: 30, other: 20, terminal: 0 })[role] || 0;
+  return ({ amendment: 110, terms: 100, summary: 80, proposal: 60, advice: 30, risk: 120, other: 20, terminal: 0 })[role] || 0;
 }
 
 function eventDateAnchor(value) {
@@ -123,6 +141,7 @@ module.exports = {
   firstSecurityCode,
   firstSecurityName,
   classifyDocumentRole,
+  classifyRiskAnnouncement,
   documentRolePriority,
   buildEventKey,
   sanitizeOfferor,

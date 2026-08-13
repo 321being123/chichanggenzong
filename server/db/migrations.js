@@ -2518,6 +2518,151 @@ async function migration060SseListingAnnouncementSource() {
   `);
 }
 
+// ========== 061：后台任务持久化计划、告警与 Worker 心跳 ==========
+async function migration061JobOrchestration() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ops.job_schedule_slots (
+      slot_id             BIGSERIAL PRIMARY KEY,
+      job_code            TEXT NOT NULL,
+      scheduled_for       TIMESTAMPTZ NOT NULL,
+      business_date       DATE NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','running','succeeded','degraded','failed','blocked','skipped')),
+      attempt_count       INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at     TIMESTAMPTZ,
+      lease_owner         TEXT,
+      lease_until         TIMESTAMPTZ,
+      heartbeat_at        TIMESTAMPTZ,
+      last_run_id         INTEGER,
+      trigger_type        TEXT NOT NULL DEFAULT 'scheduled',
+      data_as_of          TIMESTAMPTZ,
+      result_summary      JSONB NOT NULL DEFAULT '{}'::jsonb,
+      last_error          TEXT,
+      acknowledged_at     TIMESTAMPTZ,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(job_code, scheduled_for)
+    );
+    CREATE INDEX IF NOT EXISTS idx_job_schedule_slots_status_time
+      ON ops.job_schedule_slots(status, scheduled_for DESC);
+    CREATE INDEX IF NOT EXISTS idx_job_schedule_slots_business_date
+      ON ops.job_schedule_slots(business_date, scheduled_for DESC);
+
+    CREATE TABLE IF NOT EXISTS ops.alert_notifications (
+      alert_id            BIGSERIAL PRIMARY KEY,
+      alert_key           TEXT NOT NULL UNIQUE,
+      alert_type          TEXT NOT NULL,
+      severity            TEXT NOT NULL DEFAULT 'critical',
+      status              TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending','sent','suppressed','resolved','send_failed','acknowledged')),
+      job_code            TEXT,
+      slot_id             BIGINT REFERENCES ops.job_schedule_slots(slot_id) ON DELETE SET NULL,
+      subject             TEXT NOT NULL,
+      summary             TEXT NOT NULL DEFAULT '',
+      occurrence_count    INTEGER NOT NULL DEFAULT 1,
+      send_attempts       INTEGER NOT NULL DEFAULT 0,
+      recovery_attempts   INTEGER NOT NULL DEFAULT 0,
+      first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_sent_at        TIMESTAMPTZ,
+      next_send_at        TIMESTAMPTZ,
+      sending_started_at  TIMESTAMPTZ,
+      resolved_at         TIMESTAMPTZ,
+      acknowledged_at     TIMESTAMPTZ,
+      last_send_error     TEXT,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_notifications_status_time
+      ON ops.alert_notifications(status, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ops.worker_heartbeats (
+      worker_id           TEXT PRIMARY KEY,
+      role                TEXT NOT NULL DEFAULT 'worker',
+      pid                 TEXT,
+      app_version         TEXT,
+      status              TEXT NOT NULL DEFAULT 'running',
+      started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_last_seen
+      ON ops.worker_heartbeats(last_seen_at DESC);
+
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS slot_id BIGINT;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS attempt_no INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS trigger_type TEXT NOT NULL DEFAULT 'scheduled';
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS worker_id TEXT;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS result_json JSONB;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS error_code TEXT;
+    CREATE INDEX IF NOT EXISTS idx_job_runs_slot_id ON job_runs(slot_id);
+    CREATE INDEX IF NOT EXISTS idx_job_runs_job_started_at ON job_runs(job, started_at DESC);
+  `);
+}
+
+// ========== 062：告警投递重试索引 ==========
+async function migration062AlertDeliveryRetry() {
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_alert_notifications_due
+      ON ops.alert_notifications(status, next_send_at, alert_id)
+      WHERE status IN ('pending','send_failed');
+  `);
+}
+
+// ========== 063：告警投递中的并发状态 ==========
+async function migration063AlertSendingStatus() {
+  await pool.query(`
+    ALTER TABLE ops.alert_notifications DROP CONSTRAINT IF EXISTS alert_notifications_status_check;
+    ALTER TABLE ops.alert_notifications
+      ADD CONSTRAINT alert_notifications_status_check
+      CHECK (status IN ('pending','sending','sent','suppressed','resolved','send_failed','acknowledged'));
+  `);
+}
+
+// ========== 064：告警发送开始时间（避免持续故障刷新 updated_at 导致 sending 僵尸无法回收） ==========
+async function migration064AlertSendingStartedAt() {
+  await pool.query(`
+    ALTER TABLE ops.alert_notifications
+      ADD COLUMN IF NOT EXISTS sending_started_at TIMESTAMPTZ;
+    UPDATE ops.alert_notifications
+       SET sending_started_at=COALESCE(sending_started_at, updated_at)
+     WHERE status='sending' AND sending_started_at IS NULL;
+  `);
+}
+
+// ========== 065：SMTP 恢复摘要有限重试 ==========
+async function migration065AlertRecoveryAttempts() {
+  await pool.query(`
+    ALTER TABLE ops.alert_notifications
+      ADD COLUMN IF NOT EXISTS recovery_attempts INTEGER NOT NULL DEFAULT 0;
+  `);
+}
+
+// ========== 066：套利公告 PDF 解析有限重试 ==========
+async function migration066ArbitrageParseRetry() {
+  await pool.query(`
+    ALTER TABLE event.arbitrage_case_documents
+      ADD COLUMN IF NOT EXISTS parse_attempts INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS next_parse_attempt_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS last_parse_error TEXT;
+    UPDATE event.arbitrage_case_documents
+       SET parse_attempts=1,
+           next_parse_attempt_at=COALESCE(next_parse_attempt_at, now())
+     WHERE parse_status='failed' AND parse_attempts=0;
+    CREATE INDEX IF NOT EXISTS idx_arb_case_docs_parse_retry
+      ON event.arbitrage_case_documents(parse_status, next_parse_attempt_at, parse_attempts)
+      WHERE parse_status='failed';
+  `);
+}
+
+async function migration067JobRequestPayload() {
+  await pool.query(`
+    ALTER TABLE ops.job_schedule_slots
+      ADD COLUMN IF NOT EXISTS request_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+  `);
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -2608,6 +2753,13 @@ const MIGRATIONS = [
   { version: '058_convertible_bond_issue_unified', up: migration058ConvertibleBondIssueUnified },
   { version: '059_ipo_reports_schema', up: migration059IpoReportsSchema },
   { version: '060_sse_listing_announcement_source', up: migration060SseListingAnnouncementSource },
+  { version: '061_job_orchestration', up: migration061JobOrchestration },
+  { version: '062_alert_delivery_retry', up: migration062AlertDeliveryRetry },
+  { version: '063_alert_sending_status', up: migration063AlertSendingStatus },
+  { version: '064_alert_sending_started_at', up: migration064AlertSendingStartedAt },
+  { version: '065_alert_recovery_attempts', up: migration065AlertRecoveryAttempts },
+  { version: '066_arbitrage_parse_retry', up: migration066ArbitrageParseRetry },
+  { version: '067_job_request_payload', up: migration067JobRequestPayload },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3138,6 +3290,12 @@ module.exports = {
   migration058ConvertibleBondIssueUnified,
   migration059IpoReportsSchema,
   migration060SseListingAnnouncementSource,
+  migration061JobOrchestration,
+  migration063AlertSendingStatus,
+  migration064AlertSendingStartedAt,
+  migration065AlertRecoveryAttempts,
+  migration066ArbitrageParseRetry,
+  migration067JobRequestPayload,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

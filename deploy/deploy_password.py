@@ -5,7 +5,6 @@ import json
 import os
 import shlex
 import sys
-import time
 from pathlib import Path
 
 for stream in (sys.stdout, sys.stderr):
@@ -66,23 +65,82 @@ def main():
             look_for_keys=False,
             allow_agent=False,
         )
-        run_sudo(
+        result = run_sudo(
             client,
-            "cd /opt/portfolio && git fetch origin && git reset --hard origin/master "
+            "set -Eeuo pipefail; cd /opt/portfolio; "
+            "previous_commit=$(git rev-parse HEAD); "
+            "backup_dir=$(mktemp -d /tmp/portfolio-deploy.XXXXXX); "
+            "services_stopped=0; code_updated=0; deploy_complete=0; health_timer_preexisting=0; health_timer_enabled=0; health_timer_active=0; health_timer_masked=0; "
+            "for unit in portfolio-server.service portfolio-worker.service portfolio-worker-health.service portfolio-worker-health.timer; do "
+            "if test -e /etc/systemd/system/$unit || test -L /etc/systemd/system/$unit; then cp -a /etc/systemd/system/$unit $backup_dir/$unit; fi; done; "
+            "if test -e $backup_dir/portfolio-worker-health.timer || test -L $backup_dir/portfolio-worker-health.timer; then health_timer_preexisting=1; fi; "
+            "if [ $health_timer_preexisting -eq 1 ]; then "
+            "test \"$(systemctl is-enabled portfolio-worker-health.timer 2>/dev/null || true)\" != masked || health_timer_masked=1; "
+            "systemctl is-enabled --quiet portfolio-worker-health.timer && health_timer_enabled=1 || true; "
+            "systemctl is-active --quiet portfolio-worker-health.timer && health_timer_active=1 || true; fi; "
+            "stop_unit_if_present() { systemctl cat \"$1\" >/dev/null 2>&1 || return 0; systemctl stop \"$1\"; }; "
+            "rollback_deploy() { rc=$?; "
+            "rollback_failed=0; "
+            "if [ $deploy_complete -ne 1 ]; then "
+            "echo '部署失败，正在恢复部署前版本和服务' >&2; "
+            "if [ $code_updated -eq 1 ]; then git reset --hard $previous_commit || rollback_failed=1; npm ci --omit=dev || rollback_failed=1; fi; "
+            "for unit in portfolio-server.service portfolio-worker.service portfolio-worker-health.service portfolio-worker-health.timer; do "
+            "if test -e $backup_dir/$unit || test -L $backup_dir/$unit; then rm -f /etc/systemd/system/$unit; cp -a $backup_dir/$unit /etc/systemd/system/$unit || rollback_failed=1; "
+            "else rm -f /etc/systemd/system/$unit || rollback_failed=1; fi; done; "
+            "systemctl daemon-reload || rollback_failed=1; fi; "
+            "if [ $deploy_complete -ne 1 ] && [ $services_stopped -eq 1 ]; then "
+            "systemctl restart portfolio-server.service portfolio-worker.service || rollback_failed=1; "
+            "if [ $health_timer_preexisting -eq 1 ]; then "
+            "systemctl unmask portfolio-worker-health.timer || rollback_failed=1; "
+            "if [ $health_timer_masked -eq 1 ]; then systemctl stop portfolio-worker-health.timer || rollback_failed=1; systemctl mask portfolio-worker-health.timer || rollback_failed=1; "
+            "else if [ $health_timer_enabled -eq 1 ]; then systemctl enable portfolio-worker-health.timer || rollback_failed=1; "
+            "else systemctl disable portfolio-worker-health.timer || rollback_failed=1; fi; "
+            "if [ $health_timer_active -eq 1 ]; then systemctl start portfolio-worker-health.timer || rollback_failed=1; "
+            "else systemctl stop portfolio-worker-health.timer || rollback_failed=1; fi; fi; fi; "
+            "sleep 5; "
+            "systemctl is-active --quiet portfolio-server.service portfolio-worker.service || rollback_failed=1; "
+            "if [ $health_timer_preexisting -eq 1 ]; then "
+            "if [ $health_timer_masked -eq 1 ]; then test \"$(systemctl is-enabled portfolio-worker-health.timer 2>/dev/null || true)\" = masked || rollback_failed=1; "
+            "else if [ $health_timer_enabled -eq 1 ]; then systemctl is-enabled --quiet portfolio-worker-health.timer || rollback_failed=1; "
+            "else systemctl is-enabled --quiet portfolio-worker-health.timer && rollback_failed=1 || true; fi; "
+            "if [ $health_timer_active -eq 1 ]; then systemctl is-active --quiet portfolio-worker-health.timer || rollback_failed=1; "
+            "else systemctl is-active --quiet portfolio-worker-health.timer && rollback_failed=1 || true; fi; fi; fi; "
+            "curl -fsS http://127.0.0.1:3000/health >/dev/null || rollback_failed=1; fi; "
+            "case $backup_dir in /tmp/portfolio-deploy.*) rm -rf -- $backup_dir ;; esac; "
+            "if [ $rollback_failed -ne 0 ]; then echo '严重：部署回滚未能恢复服务，请立即人工介入' >&2; exit 90; fi; "
+            "exit $rc; }; "
+            "trap rollback_deploy EXIT; "
+            "git fetch origin "
+            "&& git show origin/master:deploy/portfolio-worker.service | tee /etc/systemd/system/portfolio-worker.service >/dev/null "
+            "&& git show origin/master:deploy/portfolio-server.service | tee /etc/systemd/system/portfolio-server.service >/dev/null "
+            "&& systemctl daemon-reload "
+            "&& services_stopped=1 "
+            "&& stop_unit_if_present portfolio-worker-health.timer "
+            "&& stop_unit_if_present portfolio-worker-health.service "
+            "&& systemctl stop portfolio-worker.service "
+            "&& systemctl stop portfolio-server.service "
+            "&& code_updated=1 "
+            "&& git reset --hard origin/master "
             "&& npm ci --omit=dev "
             "&& (grep -q '^TRUST_PROXY=' .env "
             "&& sed -i 's/^TRUST_PROXY=.*/TRUST_PROXY=loopback/' .env "
             "|| printf '\\nTRUST_PROXY=loopback\\n' >> .env) "
-            "&& systemctl restart portfolio-server.service portfolio-worker.service",
-        )
-        time.sleep(5)
-        result = run_sudo(
-            client,
-            "cd /opt/portfolio && printf 'commit=' && git rev-parse --short HEAD "
-            "&& systemctl is-active --quiet portfolio-server.service portfolio-worker.service "
-            "&& printf 'webpid=' && systemctl show -p MainPID --value portfolio-server.service "
-            "&& curl -fsS http://127.0.0.1:3000/health",
-            timeout=60,
+            "&& install -m 0644 deploy/portfolio-server.service /etc/systemd/system/portfolio-server.service "
+            "&& install -m 0644 deploy/portfolio-worker.service /etc/systemd/system/portfolio-worker.service "
+            "&& install -m 0644 deploy/portfolio-worker-health.service /etc/systemd/system/portfolio-worker-health.service "
+            "&& install -m 0644 deploy/portfolio-worker-health.timer /etc/systemd/system/portfolio-worker-health.timer "
+        "&& systemctl daemon-reload "
+            "&& systemctl enable portfolio-server.service portfolio-worker.service "
+            "&& systemctl start portfolio-server.service portfolio-worker.service "
+            "&& systemctl enable --now portfolio-worker-health.timer "
+            "&& sleep 10 "
+            "&& systemctl is-active --quiet portfolio-server.service portfolio-worker.service portfolio-worker-health.timer "
+            "&& systemctl is-enabled --quiet portfolio-server.service portfolio-worker.service portfolio-worker-health.timer "
+            "&& health_json=$(curl -fsS http://127.0.0.1:3000/health) "
+            "&& printf '%s' \"$health_json\" | grep -Fq '\"version\":\"" + local_version + "\"' "
+            "&& printf 'commit=%s webpid=%s health=%s\\n' \"$(git rev-parse --short HEAD)\" \"$(systemctl show -p MainPID --value portfolio-server.service)\" \"$health_json\" "
+            "&& deploy_complete=1",
+            timeout=3600,
         )
         if f'"version":"{local_version}"' not in result:
             raise SystemExit(f"部署后版本校验失败，期望 {local_version}。")

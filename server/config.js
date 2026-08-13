@@ -73,7 +73,10 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
   mailer = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT) || 587,
-    secure: false,
+    secure: (parseInt(process.env.SMTP_PORT) || 587) === 465,
+    connectionTimeout: 10 * 1000,
+    greetingTimeout: 10 * 1000,
+    socketTimeout: 10 * 1000,
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
   });
 }

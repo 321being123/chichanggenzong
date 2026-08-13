@@ -137,8 +137,9 @@ async function main() {
     `, [PARSER_VERSION]);
     for (const doc of pendingDocs) {
       try {
-        await parser.parseAndStoreDocument(doc.case_id, doc.document_id, doc.url, doc.canonical_code, doc.document_role, true);
-        stats.parsed++;
+        const payload = await parser.parseAndStoreDocument(doc.case_id, doc.document_id, doc.url, doc.canonical_code, doc.document_role, true);
+        if (payload) stats.parsed++;
+        else stats.parseFailed++;
       } catch (_) {
         stats.parseFailed++;
       }

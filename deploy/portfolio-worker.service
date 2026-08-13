@@ -8,8 +8,11 @@ User=portfolio-app
 WorkingDirectory=/opt/portfolio
 # 敏感信息（PG / SECRET 等）由应用通过 dotenv 读取 /opt/portfolio/.env，此处不硬编码
 Environment=NODE_ENV=production
+Environment=DURABLE_SCHEDULER=1
+Environment=WORKER_DRAIN_TIMEOUT_MS=60000
 # worker 进程承担全部后台调度（server/scheduler.js 单一注册表）；切勿设 DISABLE_SCHEDULER
 ExecStart=/usr/bin/node /opt/portfolio/server/worker.js
+TimeoutStopSec=50min
 Restart=always
 RestartSec=5
 StandardOutput=journal

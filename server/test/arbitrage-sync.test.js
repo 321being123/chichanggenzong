@@ -101,6 +101,11 @@ test('标题分类：空标题返回null', () => {
   assert.strictEqual(sync.classifyTitle('', 'cninfo'), null);
 });
 
+test('监管立案公告不新建套利案件', () => {
+  assert.equal(sync.classifyTitle('关于公司收到中国证监会立案告知书的公告', 'cninfo'), null);
+  assert.equal(sync.classifyRiskAnnouncement('关于公司收到中国证监会立案告知书的公告').severity, 'high');
+});
+
 test('终止公告：控制权变更/协议转让终止可识别为终态', () => {
   assert.strictEqual(sync.isGenericControlChangeTermination(
     '关于控股股东及相关方终止协议转让暨公司控制权变更事项终止的公告'

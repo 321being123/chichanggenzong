@@ -135,7 +135,7 @@ async function main() {
   check('HTTP 200', () => assert.strictEqual(r.status, 200));
   j = await r.json();
   check('筛选结果全部含"高估"标签', () => {
-    for (const row of j.data) assert.ok(String(row.final_evaluation).includes('高估'), '非高估: ' + row.final_evaluation);
+    for (const row of j.data) assert.equal(row.eval_class, '高估', '稳定估值分类不是高估: ' + row.eval_class);
   });
 
   // 3. 单券详情

@@ -1,6 +1,7 @@
 // 本文件由 server/db.js 物理拆分而来，函数体未改动，仅调整文件归属。
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
+const { sanitizeJobError, sanitizeJobResult, isSensitiveKey } = require('../services/jobErrorSanitizer');
 
 async function getConfig(key, def) {
   try {
@@ -31,15 +32,14 @@ const AUDIT_MODULES = {
   benchmark: 'benchmark_',
 };
 // 参数摘要键名黑名单：任何疑似凭据的字段一律不落库（AUDIT-01 硬性要求）
-const AUDIT_SENSITIVE_KEY = /pass|pwd|token|secret|api_?key|cookie|auth|code|credential/i;
 function sanitizeAuditMeta(meta) {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {};
   const out = {};
   Object.keys(meta).forEach(function (k) {
-    if (AUDIT_SENSITIVE_KEY.test(k)) return;
+    if (isSensitiveKey(k) || /^(?:cookie|session|set-cookie)$/i.test(k)) return;
     const v = meta[k];
     if (v === null || v === undefined) return;
-    if (typeof v === 'string') out[k] = v.slice(0, 200);
+    if (typeof v === 'string') out[k] = sanitizeJobError(v, 200);
     else if (typeof v === 'number' || typeof v === 'boolean') out[k] = v;
     // 对象/数组等复杂值不落库，避免误写入完整外部响应或持仓明细
   });
@@ -54,7 +54,7 @@ async function auditEvent(evt) {
       'INSERT INTO admin_audit_log (actor, action, target, detail, result, request_id, metadata, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now())',
       [
         e.actor || '', e.action || '', e.target == null ? '' : String(e.target),
-        String(e.detail == null ? '' : e.detail).slice(0, 500),
+        sanitizeJobError(e.detail == null ? '' : e.detail, 500),
         e.result === 'failure' ? 'failure' : 'success',
         e.requestId || '',
         JSON.stringify(sanitizeAuditMeta(e.metadata)),
@@ -82,7 +82,13 @@ async function listAudit(limit, filter) {
     'ORDER BY id DESC LIMIT $' + params.length,
     params
   );
-  return rows;
+  return rows.map(function (row) {
+    return {
+      ...row,
+      detail: sanitizeJobError(row.detail || '', 500),
+      metadata: sanitizeJobResult(row.metadata || {}),
+    };
+  });
 }
 
 // ====== 导出 ======

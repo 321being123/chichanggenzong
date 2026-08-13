@@ -1,0 +1,11 @@
+[Unit]
+Description=每两分钟检查后台 Worker 心跳
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=portfolio-worker-health.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

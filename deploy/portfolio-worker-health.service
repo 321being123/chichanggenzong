@@ -1,0 +1,10 @@
+[Unit]
+Description=持仓管理系统 Worker 健康检查
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=portfolio-app
+WorkingDirectory=/opt/portfolio
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/portfolio/server/scripts/checkWorkerHealth.js

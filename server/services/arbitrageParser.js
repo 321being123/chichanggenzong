@@ -5,6 +5,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { pool } = require('../db');
+const { hashString } = require('../db/util');
+const { sanitizeJobError } = require('./jobErrorSanitizer');
 const {
   PARSER_VERSION,
   classifyDocumentRole,
@@ -33,6 +35,41 @@ function normalizeSecurityName(value) {
 }
 
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'extractArbitrageDocument.py');
+const MAX_PARSE_ATTEMPTS = 3;
+const PARSE_RETRY_MINUTES = [5, 15];
+
+function getParseRetryDecision(existing, force = false, now = new Date()) {
+  if (!existing || existing.parser_version !== PARSER_VERSION) return { shouldParse: true };
+  if (!force && existing.parsed_payload) return { shouldParse: false, payload: existing.parsed_payload, reason: 'cached' };
+  if (existing.parse_status !== 'failed') return { shouldParse: true };
+  const attempts = Number(existing.parse_attempts || 0);
+  if (attempts >= MAX_PARSE_ATTEMPTS) return { shouldParse: false, reason: 'exhausted' };
+  const nextAttemptAt = existing.next_parse_attempt_at && new Date(existing.next_parse_attempt_at);
+  if (nextAttemptAt && !Number.isNaN(nextAttemptAt.getTime()) && nextAttemptAt.getTime() > new Date(now).getTime()) {
+    return { shouldParse: false, reason: 'not_due' };
+  }
+  return { shouldParse: true };
+}
+
+async function acquireDocumentParseLock(caseId, documentId) {
+  const client = await pool.connect();
+  const namespace = hashString('arbitrage_pdf_parse');
+  const documentKey = hashString(`${caseId}:${documentId}`);
+  try {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1,$2) AS ok', [namespace, documentKey]);
+    if (!rows[0] || !rows[0].ok) {
+      client.release();
+      return null;
+    }
+    return async () => {
+      await client.query('SELECT pg_advisory_unlock($1,$2)', [namespace, documentKey]).catch(() => {});
+      client.release();
+    };
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
 
 // 复用项目已有的 Python 定位逻辑（与 marketVolatilitySync / convertibleBondAnalysis 一致）：
 // 优先 PYTHON 环境变量，其次项目 venv/Scripts/python.exe（Windows）/venv/bin/python（类 Unix），最后退回 PATH。
@@ -230,42 +267,77 @@ const MERGE_FIELDS = [
   'clear_offeror',
 ];
 
-async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, force = false) {
-  const { rows: caseRows } = await pool.query('SELECT strategy_type FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
-  if (!caseRows.length) throw new Error('arbitrage case not found: ' + caseId);
-  const strategyType = caseRows[0].strategy_type;
-  const documentRole = role || classifyDocumentRole('');
-  const { rows: existing } = await pool.query(
-    'SELECT parsed_payload,parser_version,parse_status FROM event.arbitrage_case_documents WHERE case_id=$1 AND document_id=$2',
-    [caseId, documentId]
-  );
-  if (!force && existing.length && existing[0].parser_version === PARSER_VERSION && existing[0].parsed_payload) {
-    return existing[0].parsed_payload;
-  }
+async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, force = false, resetRetries = false) {
+  const releaseLock = await acquireDocumentParseLock(caseId, documentId);
+  if (!releaseLock) return null;
   try {
-    const raw = await runPythonExtraction(url, targetCode);
-    const checked = validateParsedTerms(strategyType, raw);
-    const payload = {
-      raw,
-      validated: checked.parsed,
-      errors: checked.errors,
-      coreComplete: checked.coreComplete,
-      confidence: checked.confidence,
-    };
-    await pool.query(`
-      UPDATE event.arbitrage_case_documents
-      SET document_role=$1,parsed_payload=$2,parser_version=$3,parse_status=$4,parsed_at=now()
-      WHERE case_id=$5 AND document_id=$6
-    `, [documentRole, JSON.stringify(payload), PARSER_VERSION, checked.parseStatus, caseId, documentId]);
+    const { rows: caseRows } = await pool.query('SELECT strategy_type FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+    if (!caseRows.length) throw new Error('arbitrage case not found: ' + caseId);
+    const strategyType = caseRows[0].strategy_type;
+    const documentRole = role || classifyDocumentRole('');
+    if (resetRetries) {
+      await pool.query(`
+        UPDATE event.arbitrage_case_documents
+           SET parse_attempts=0,next_parse_attempt_at=NULL,last_parse_error=NULL
+         WHERE case_id=$1 AND document_id=$2
+      `, [caseId, documentId]);
+    }
+    const { rows: existing } = await pool.query(
+      'SELECT parsed_payload,parser_version,parse_status,parse_attempts,next_parse_attempt_at FROM event.arbitrage_case_documents WHERE case_id=$1 AND document_id=$2',
+      [caseId, documentId]
+    );
+    const retryDecision = getParseRetryDecision(existing[0], force);
+    if (!retryDecision.shouldParse) return retryDecision.payload || null;
+    let payload;
+    try {
+      const raw = await runPythonExtraction(url, targetCode);
+      const checked = validateParsedTerms(strategyType, raw);
+      payload = {
+        raw,
+        validated: checked.parsed,
+        errors: checked.errors,
+        coreComplete: checked.coreComplete,
+        confidence: checked.confidence,
+      };
+      await pool.query(`
+        UPDATE event.arbitrage_case_documents
+        SET document_role=$1,parsed_payload=$2,parser_version=$3,parse_status=$4,parsed_at=now(),
+            parse_attempts=0,next_parse_attempt_at=NULL,last_parse_error=NULL
+        WHERE case_id=$5 AND document_id=$6
+      `, [documentRole, JSON.stringify(payload), PARSER_VERSION, checked.parseStatus, caseId, documentId]);
+    } catch (err) {
+      const previous = existing[0];
+      const previousAttempts = previous && previous.parser_version === PARSER_VERSION
+        ? Number(previous.parse_attempts || 0) : 0;
+      const attempt = previousAttempts + 1;
+      const retryMinutes = PARSE_RETRY_MINUTES[Math.min(attempt - 1, PARSE_RETRY_MINUTES.length - 1)];
+      await pool.query(`
+        WITH failed_document AS (
+          UPDATE event.arbitrage_case_documents
+             SET document_role=$1,parser_version=$2,parse_status='failed',parsed_at=now(),
+                 parse_attempts=$3,
+                 next_parse_attempt_at=CASE WHEN $3 < $4 THEN now()+($5 || ' minutes')::interval ELSE NULL END,
+                 last_parse_error=$6
+           WHERE case_id=$7 AND document_id=$8
+           RETURNING case_id
+        )
+        UPDATE event.arbitrage_cases
+           SET parse_status='incomplete',parser_version=$2,updated_at=now()
+         WHERE case_id=$7 AND parse_status NOT IN ('conflict','incomplete')
+           AND EXISTS (SELECT 1 FROM failed_document)
+      `, [documentRole, PARSER_VERSION, attempt, MAX_PARSE_ATTEMPTS, String(retryMinutes),
+        sanitizeJobError(err.message || err, 1000), caseId, documentId]);
+      await recordParseFailure(caseId, err.message);
+      throw err;
+    }
+    try {
+      await resolveParseFailure(caseId);
+    } catch (err) {
+      console.error('[arbitrage] resolveParseFailure error:', sanitizeJobError(err.message || err, 500));
+    }
     return payload;
-  } catch (err) {
-    await pool.query(`
-      UPDATE event.arbitrage_case_documents
-      SET document_role=$1,parser_version=$2,parse_status='failed',parsed_at=now()
-      WHERE case_id=$3 AND document_id=$4
-    `, [documentRole, PARSER_VERSION, caseId, documentId]);
-    await recordParseFailure(caseId, err.message);
-    throw err;
+  } finally {
+    await releaseLock();
   }
 }
 
@@ -274,19 +346,24 @@ async function rebuildCaseTerms(caseId) {
   if (!caseRows.length) return { status: 'missing' };
   const strategyType = caseRows[0].strategy_type;
   const { rows: docs } = await pool.query(`
-    SELECT acd.document_role,acd.parsed_payload,d.announced_at
+    SELECT acd.document_role,acd.parsed_payload,acd.parse_status,d.announced_at
     FROM event.arbitrage_case_documents acd
     JOIN event.documents d ON d.document_id=acd.document_id
-    WHERE acd.case_id=$1 AND acd.parsed_payload IS NOT NULL AND acd.parse_status IN ('validated','incomplete')
+    WHERE acd.case_id=$1 AND (
+      (acd.parsed_payload IS NOT NULL AND acd.parse_status IN ('validated','incomplete'))
+      OR (acd.parse_status='failed' AND acd.document_role IN ('amendment','terms','summary','proposal'))
+    )
   `, [caseId]);
+  const hasFailedDocument = docs.some(doc => doc.parse_status === 'failed');
+  const usableDocs = docs.filter(doc => doc.parsed_payload != null && doc.parse_status !== 'failed');
   // 后续正式文件天然覆盖早期版本；同日多附件再按“修订 > 正式条款 > 摘要”取证。
-  docs.sort((a, b) => (new Date(b.announced_at || 0).getTime() - new Date(a.announced_at || 0).getTime())
+  usableDocs.sort((a, b) => (new Date(b.announced_at || 0).getTime() - new Date(a.announced_at || 0).getTime())
     || documentRolePriority(b.document_role) - documentRolePriority(a.document_role));
 
   const merged = { evidence: [], reference_codes: [], reference_names: [], rights_codes: [] };
   const swapFields = ['target_swap_price', 'reference_swap_price', 'swap_ratio'];
   let swapBundleChosen = false;
-  for (const doc of docs) {
+  for (const doc of usableDocs) {
     const payload = doc.parsed_payload || {};
     const candidate = payload.validated || payload.raw || payload;
     if (!swapBundleChosen && swapFields.some((field) => candidate[field] != null)) {
@@ -311,6 +388,11 @@ async function rebuildCaseTerms(caseId) {
   }
   const checked = validateParsedTerms(strategyType, merged);
   if (merged.clear_offeror) checked.parsed.offeror = null;
+  if (hasFailedDocument) {
+    await pool.query(`UPDATE event.arbitrage_cases SET parse_status='incomplete',parser_version=$1,terms_confidence=$2,updated_at=now() WHERE case_id=$3`,
+      [PARSER_VERSION, checked.confidence, caseId]);
+    return { status: 'incomplete', confidence: checked.confidence, errors: [...checked.errors, '仍有公告解析失败'] };
+  }
   if (!checked.coreComplete || checked.errors.length) {
     await pool.query(`UPDATE event.arbitrage_cases SET parse_status=$1,parser_version=$2,terms_confidence=$3,updated_at=now() WHERE case_id=$4`,
       [checked.parseStatus, PARSER_VERSION, checked.confidence, caseId]);
@@ -346,17 +428,94 @@ async function rebuildCaseTerms(caseId) {
 
 // 解析失败写入数据质量表（不再静默吞掉），便于后续排查
 async function recordParseFailure(caseId, message) {
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query('SELECT target_instrument_id FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT target_instrument_id FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
     const instrumentId = rows.length ? rows[0].target_instrument_id : null;
-    await pool.query(`
-      INSERT INTO ops.data_quality_issues(instrument_id, dataset_code, field_code, issue_type, severity, details)
-      VALUES($1, 'arbitrage', 'pdf_parse', 'parse_failed', 'warning', $2)
-      ON CONFLICT(instrument_id, dataset_code, field_code, issue_type, status)
-      DO UPDATE SET details=EXCLUDED.details, detected_at=now()
-    `, [instrumentId, JSON.stringify({ case_id: caseId, error: String(message || '').slice(0, 500) })]);
+    const details = JSON.stringify({ case_id: caseId, error: sanitizeJobError(message, 500) });
+    await client.query('SELECT pg_advisory_xact_lock($1,$2)', [
+      hashString('arbitrage_parse_quality'),
+      instrumentId == null ? hashString(`case:${caseId}`) : Number(instrumentId) | 0,
+    ]);
+    if (instrumentId == null) {
+      const updated = await client.query(`
+        UPDATE ops.data_quality_issues SET details=$2::jsonb,detected_at=now()
+         WHERE issue_id=(
+           SELECT issue_id FROM ops.data_quality_issues
+            WHERE instrument_id IS NULL AND dataset_code='arbitrage' AND field_code='pdf_parse'
+              AND issue_type='parse_failed' AND status='open' AND details->>'case_id'=$1::text
+            ORDER BY issue_id DESC LIMIT 1
+         )
+      `, [caseId, details]);
+      if (!updated.rowCount) {
+        await client.query(`
+          INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
+          VALUES(NULL,'arbitrage','pdf_parse','parse_failed','warning',$1::jsonb)
+        `, [details]);
+      }
+    } else {
+      await client.query(`
+        INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,details)
+        VALUES($1,'arbitrage','pdf_parse','parse_failed','warning',$2::jsonb)
+        ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
+        DO UPDATE SET details=EXCLUDED.details,detected_at=now(),resolved_at=NULL
+      `, [instrumentId, details]);
+    }
+    await client.query('COMMIT');
   } catch (e) {
-    console.error('[arbitrage] recordParseFailure error:', e.message);
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[arbitrage] recordParseFailure error:', sanitizeJobError(e.message, 500));
+  } finally {
+    client.release();
+  }
+}
+
+async function resolveParseFailure(caseId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT target_instrument_id FROM event.arbitrage_cases WHERE case_id=$1', [caseId]);
+    if (!rows.length) {
+      await client.query('ROLLBACK');
+      return;
+    }
+    const instrumentId = rows[0].target_instrument_id;
+    await client.query('SELECT pg_advisory_xact_lock($1,$2)', [
+      hashString('arbitrage_parse_quality'),
+      instrumentId == null ? hashString(`case:${caseId}`) : Number(instrumentId) | 0,
+    ]);
+    const { rows: failedRows } = await client.query(`
+      SELECT 1
+        FROM event.arbitrage_case_documents acd
+        JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
+       WHERE acd.parse_status='failed'
+         AND (($2::bigint IS NOT NULL AND c.target_instrument_id=$2) OR ($2::bigint IS NULL AND c.case_id=$1))
+       LIMIT 1
+    `, [caseId, instrumentId]);
+    if (!failedRows.length) {
+      await client.query(`
+        DELETE FROM ops.data_quality_issues q
+         WHERE q.dataset_code='arbitrage' AND q.field_code='pdf_parse'
+           AND q.issue_type='parse_failed' AND q.status='resolved'
+           AND (($2::bigint IS NOT NULL AND q.instrument_id=$2)
+             OR ($2::bigint IS NULL AND q.instrument_id IS NULL AND q.details->>'case_id'=$1::text))
+      `, [caseId, instrumentId]);
+      await client.query(`
+        UPDATE ops.data_quality_issues q
+           SET status='resolved',resolved_at=now()
+         WHERE q.dataset_code='arbitrage' AND q.field_code='pdf_parse'
+           AND q.issue_type='parse_failed' AND q.status='open'
+           AND (($2::bigint IS NOT NULL AND q.instrument_id=$2)
+             OR ($2::bigint IS NULL AND q.instrument_id IS NULL AND q.details->>'case_id'=$1::text))
+      `, [caseId, instrumentId]);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -367,6 +526,10 @@ module.exports = {
   parseAndStoreDocument,
   rebuildCaseTerms,
   recordParseFailure,
+  resolveParseFailure,
+  getParseRetryDecision,
+  acquireDocumentParseLock,
+  PARSER_VERSION,
   resolvePython,
   resolveInstrumentByCode,
   resolveInstrumentByName,

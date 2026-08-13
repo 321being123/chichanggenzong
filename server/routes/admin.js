@@ -16,6 +16,9 @@ const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
 const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
 const arbitrageSvc = require('../services/arbitrageService');
+const { getJobOverview, listJobSlots, getJobSlot, retryJobSlot, acknowledgeSlot, validateJobSlot } = require('../services/jobScheduleSlots');
+const { listAlerts, resendAlert, acknowledgeAlert, sendTestEmail } = require('../services/jobAlertMailer');
+const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 
 // PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
 // 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
@@ -150,6 +153,94 @@ router.delete('/brokers/:code', asyncHandler(async (req, res) => {
 // ====== 定时任务监控 ======
 router.get('/jobs', asyncHandler(async (req, res) => {
   res.json(await adminJobRuns(req.query.limit));
+}));
+router.get('/jobs/overview', asyncHandler(async (req, res) => {
+  res.json(await getJobOverview());
+}));
+router.get('/jobs/health', asyncHandler(async (req, res) => {
+  const overview = await getJobOverview();
+  res.json({ ok: Boolean(overview.health && overview.health.schedulerOnline), ...overview.health, today: overview.today });
+}));
+router.get('/jobs/slots', asyncHandler(async (req, res) => {
+  res.json({ list: await listJobSlots({
+    date: req.query.date,
+    status: req.query.status,
+    category: req.query.category,
+    trigger: req.query.trigger,
+    keyword: req.query.keyword,
+    limit: req.query.limit,
+  }) });
+}));
+router.get('/jobs/slots/:slotId', asyncHandler(async (req, res) => {
+  const slot = await getJobSlot(parseInt(req.params.slotId, 10));
+  if (!slot) return res.status(404).json({ error: '任务计划不存在' });
+  res.json(slot);
+}));
+router.post('/jobs/slots/:slotId/retry', asyncHandler(async (req, res) => {
+  const slotId = parseInt(req.params.slotId, 10);
+  const slot = await retryJobSlot(slotId);
+  if (!slot) {
+    await audit(req, 'job_retry', String(slotId), { result: 'failure', detail: '当前任务状态不允许补跑', metadata: { slotId, queued: false } });
+    return res.status(409).json({ error: '当前任务状态不允许补跑' });
+  }
+  await audit(req, 'job_retry', slot.job_code, { detail: '后台手动补跑已入队', metadata: { slotId, queued: true } });
+  res.status(202).json({ ok: true, queued: true, slotId, slot });
+}));
+router.post('/jobs/slots/:slotId/validate', asyncHandler(async (req, res) => {
+  const slotId = parseInt(req.params.slotId, 10);
+  const result = await validateJobSlot(slotId);
+  if (!result) {
+    await audit(req, 'job_validate', String(slotId), { result: 'failure', detail: '任务计划不存在', metadata: { slotId } });
+    return res.status(404).json({ error: '任务计划不存在' });
+  }
+  await audit(req, 'job_validate', String(result.slotId), { result: result.valid ? 'success' : 'failure', detail: result.message, metadata: { slotId: result.slotId, dataAsOf: result.dataAsOf } });
+  res.status(result.valid ? 200 : 409).json(result);
+}));
+router.post('/jobs/slots/:slotId/acknowledge', asyncHandler(async (req, res) => {
+  const slotId = parseInt(req.params.slotId, 10);
+  const slot = await acknowledgeSlot(slotId);
+  if (!slot) {
+    await audit(req, 'job_acknowledge', String(slotId), { result: 'failure', detail: '任务计划不存在', metadata: { slotId } });
+    return res.status(404).json({ error: '任务计划不存在' });
+  }
+  await audit(req, 'job_acknowledge', slot.job_code, { detail: '确认任务异常已接管', metadata: { slotId: slot.slot_id } });
+  res.json({ ok: true, slot });
+}));
+router.get('/jobs/alerts', asyncHandler(async (req, res) => {
+  res.json({ list: await listAlerts({ status: req.query.status, limit: req.query.limit }) });
+}));
+router.get('/jobs/notifications', asyncHandler(async (req, res) => {
+  res.json({ list: await listAlerts({ status: req.query.status || 'open', limit: req.query.limit }) });
+}));
+router.post('/jobs/notifications/:alertId/resend', asyncHandler(async (req, res) => {
+  const alertId = parseInt(req.params.alertId, 10);
+  const result = await resendAlert(alertId);
+  if (!result) {
+    await audit(req, 'job_alert_resend', String(alertId), { result: 'failure', detail: '告警不存在' });
+    return res.status(404).json({ error: '告警不存在' });
+  }
+  await audit(req, 'job_alert_resend', String(alertId), { result: result.ok ? 'success' : 'failure', detail: result.ok ? '告警邮件已重新投递' : (result.error || '告警邮件投递失败') });
+  res.status(result.ok ? 200 : 503).json(result);
+}));
+router.post('/jobs/alerts/:alertId/acknowledge', asyncHandler(async (req, res) => {
+  const alertId = parseInt(req.params.alertId, 10);
+  const alert = await acknowledgeAlert(alertId);
+  if (!alert) {
+    await audit(req, 'job_alert_acknowledge', String(alertId), { result: 'failure', detail: '告警不存在' });
+    return res.status(404).json({ error: '告警不存在' });
+  }
+  await audit(req, 'job_alert_acknowledge', String(alert.alert_id), { detail: '确认邮件告警' });
+  res.json({ ok: true, alert });
+}));
+router.post('/jobs/alert-email/test', asyncHandler(async (req, res) => {
+  try {
+    const result = await sendTestEmail();
+    await audit(req, 'job_alert_email_test', 'smtp', { result: result.ok ? 'success' : 'failure', detail: result.ok ? '邮件测试成功' : result.error });
+    res.status(result.ok ? 200 : 503).json(result);
+  } catch (error) {
+    await audit(req, 'job_alert_email_test', 'smtp', { result: 'failure', detail: String(error.message || error) });
+    res.status(503).json({ ok: false, error: String(error.message || error) });
+  }
 }));
 router.post('/jobs/backfill', asyncHandler(async (req, res) => {
   const id = await startJobRun('manual_backfill');
@@ -496,15 +587,40 @@ router.patch('/arbitrage/:caseId', asyncHandler(async (req, res) => {
 }));
 
 router.post('/arbitrage/:caseId/reparse', asyncHandler(async (req, res) => {
-  const result = await arbitrageSvc.reparseCase(parseInt(req.params.caseId));
-  if (!result) return res.status(404).json({ error: '未找到该事件' });
-  res.json(result);
+  const caseId = parseInt(req.params.caseId, 10);
+  try {
+    const result = await arbitrageSvc.queueReparseCase(caseId);
+    if (!result) {
+      await audit(req, 'arbitrage_reparse', String(caseId), { result: 'failure', detail: '未找到该事件', metadata: { caseId, resetRetries: true } });
+      return res.status(404).json({ error: '未找到该事件' });
+    }
+    await audit(req, 'arbitrage_reparse', String(caseId), {
+      result: result.ok ? 'success' : 'failure',
+      detail: result.message || result.error || '人工重新解析已进入任务队列',
+      metadata: { caseId, resetRetries: true, queued: Boolean(result.queued), slotId: result.slotId || null },
+    });
+    res.status(result.ok ? 202 : 503).json(result);
+  } catch (error) {
+    const safeError = sanitizeJobError(error.message || error, 500);
+    await audit(req, 'arbitrage_reparse', String(caseId), { result: 'failure', detail: safeError, metadata: { caseId, resetRetries: true } });
+    res.status(500).json({ error: safeError });
+  }
 }));
 
 router.post('/arbitrage/sync', asyncHandler(async (req, res) => {
-  const result = await arbitrageSvc.triggerSync();
-  await audit(req, 'arbitrage_sync', 'manual', { detail: '手动触发套利公告同步' });
-  res.json(result);
+  try {
+    const result = await arbitrageSvc.triggerSync();
+    await audit(req, 'arbitrage_sync', 'manual', {
+      result: result.ok ? 'success' : 'failure',
+      detail: result.ok ? '手动套利公告同步已进入持久化任务队列' : result.error,
+      metadata: { slotId: result.slotId || null, queued: Boolean(result.queued) },
+    });
+    res.status(result.ok ? 202 : 503).json(result);
+  } catch (error) {
+    const safeError = sanitizeJobError(error.message || error, 500);
+    await audit(req, 'arbitrage_sync', 'manual', { result: 'failure', detail: safeError, metadata: { queued: false } });
+    res.status(503).json({ ok: false, error: safeError });
+  }
 }));
 
 module.exports = router;

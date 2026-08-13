@@ -1,0 +1,605 @@
+const os = require('os');
+const { pool } = require('../db/connection');
+const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
+const { isCnHoliday } = require('../config/holidays');
+const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
+
+const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
+
+function shanghaiParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', weekday: 'short'
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map(item => [item.type, item.value]));
+}
+
+function dateText(date = new Date()) {
+  const p = shanghaiParts(date);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+function scheduledDate(dateTextValue, hour, minute) {
+  const [year, month, day] = dateTextValue.split('-').map(Number);
+  // Date.UTC 的字段作为北京时间字段使用，再减去东八区偏移得到真实时刻。
+  return new Date(Date.UTC(year, month - 1, day, hour - 8, minute, 0));
+}
+
+function isWeekday(dateTextValue) {
+  const day = new Date(`${dateTextValue}T00:00:00Z`).getUTCDay();
+  return day >= 1 && day <= 5 && !isCnHoliday(dateTextValue);
+}
+
+function previousDate(dateTextValue) {
+  const d = new Date(`${dateTextValue}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'scheduled') {
+  const { rows } = await pool.query(
+    `INSERT INTO ops.job_schedule_slots(job_code, scheduled_for, business_date, trigger_type, next_attempt_at)
+     VALUES ($1,$2,$3,$4,$2)
+     ON CONFLICT(job_code, scheduled_for) DO UPDATE SET updated_at=now()
+     RETURNING *`,
+    [jobCode, scheduledFor, businessDate, triggerType]
+  );
+  return rows[0] || null;
+}
+
+async function enqueueManualJob(jobCode, requestPayload = {}) {
+  const definition = JOB_DEFINITIONS.find(item => item.jobCode === jobCode);
+  if (!definition) return null;
+  const safePayload = sanitizeJobResult(requestPayload || {});
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('manual_job:' || $1 || ':' || $2))", [jobCode, JSON.stringify(safePayload)]);
+    const active = await client.query(`
+      SELECT * FROM ops.job_schedule_slots
+       WHERE job_code=$1
+         AND request_payload @> $3::jsonb
+         AND (status='running' OR (status='pending' AND scheduled_for <= now()
+           AND COALESCE(next_attempt_at,scheduled_for) <= now() AND attempt_count < $2))
+       ORDER BY slot_id DESC LIMIT 1
+    `, [jobCode, Number(definition.maxAttempts || 3), JSON.stringify(safePayload)]);
+    if (active.rows[0]) {
+      await client.query('COMMIT');
+      return active.rows[0];
+    }
+    const scheduledFor = new Date();
+    const { rows } = await client.query(`
+      INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,trigger_type,next_attempt_at,request_payload)
+      VALUES($1,$2,$3,'manual_retry',$2,$4::jsonb) RETURNING *
+    `, [jobCode, scheduledFor, dateText(scheduledFor), JSON.stringify(safePayload)]);
+    await client.query('COMMIT');
+    return rows[0] || null;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function reconcileSlot(slot) {
+  if (!slot || new Date(slot.scheduled_for) > new Date()) return slot;
+  if (slot.status === 'failed' && slot.result_summary && slot.result_summary.timed_out) return slot;
+  const { rows } = await pool.query(
+    `SELECT id, status, finished_at, detail
+       FROM job_runs
+      WHERE slot_id=$1
+      ORDER BY id DESC LIMIT 1`,
+    [slot.slot_id]
+  );
+  let run = rows[0];
+  if (!run) {
+    const legacy = await pool.query(
+      `SELECT id, status, finished_at, detail
+         FROM job_runs
+       WHERE job=$1 AND started_at >= $2::timestamptz
+         AND started_at < $2::timestamptz + make_interval(mins => $3::integer)
+        ORDER BY id DESC LIMIT 1`,
+    [slot.job_code, slot.scheduled_for, Number(getJobDefinition(slot.job_code).deadlineMinutes || 180)]
+    );
+    run = legacy.rows[0];
+  }
+  if (!run || !['done', 'failed'].includes(run.status)) return slot;
+  const requestedStatus = run.status === 'done' ? 'succeeded' : 'failed';
+  const requiresDataWatermark = getJobDefinition(slot.job_code).requiresDataWatermark !== false;
+  const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
+    ? await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null)
+    : null;
+  const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark
+    && !isDataAsOfFresh(dataAsOf, slot.business_date) ? 'degraded' : requestedStatus;
+  const resultSummary = { source: 'job_runs', runId: run.id, detail: sanitizeJobError(run.detail || '') };
+  const updated = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status=$2, last_run_id=$3,
+            data_as_of=CASE WHEN $2='succeeded' THEN COALESCE($4, data_as_of) ELSE data_as_of END,
+            last_error=$5, result_summary=$6::jsonb, updated_at=now()
+      WHERE slot_id=$1 AND status NOT IN ('running','succeeded')
+      RETURNING *`,
+    [slot.slot_id, nextStatus, run.id, dataAsOf,
+      nextStatus === 'failed' ? sanitizeJobError(run.detail || '') : nextStatus === 'degraded' ? '运行记录成功但未形成可确认的数据日期' : null,
+      JSON.stringify(resultSummary)]
+  );
+  if (updated.rows[0] && nextStatus === 'degraded') {
+    const { notifyJobFailure } = require('./jobAlertMailer');
+    await notifyJobFailure({
+      jobCode: slot.job_code,
+      slotId: slot.slot_id,
+      alertKey: `slot:${slot.slot_id}:degraded`,
+      alertType: 'degraded',
+      subject: `后台任务数据未确认：${getJobDefinition(slot.job_code).label}`,
+      summary: '任务执行记录显示成功，但没有找到不早于计划日期的数据日期，请检查上游接口和入库结果。',
+    }).catch(error => console.warn('[job-alert] 降级告警失败:', error.message));
+  }
+  return updated.rows[0] || slot;
+}
+
+async function syncScheduleSlots(now = new Date()) {
+  const today = dateText(now);
+  const dates = [today];
+  let cursor = today;
+  for (let i = 0; i < 31; i++) {
+    cursor = previousDate(cursor);
+    dates.push(cursor);
+  }
+  const created = [];
+  for (const definition of JOB_DEFINITIONS) {
+    if (definition.manualOnly) continue;
+    for (const businessDate of dates) {
+      if (definition.monthly && businessDate.slice(8, 10) !== '01') continue;
+      if (definition.weekdays && !isWeekday(businessDate)) continue;
+      const scheduledFor = scheduledDate(businessDate, definition.hour, definition.minute);
+      const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
+      if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
+      const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate);
+      const current = await reconcileSlot(slot);
+      if (current.status === 'pending' && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
+        const { notifyJobFailure } = require('./jobAlertMailer');
+        await notifyJobFailure({
+          jobCode: definition.jobCode,
+          slotId: current.slot_id,
+          alertKey: `slot:${current.slot_id}:late`,
+          alertType: 'late',
+          subject: `后台任务漏跑：${definition.label}`,
+          summary: `计划时间 ${scheduledFor.toISOString()} 后仍未完成，请在后台任务页面补跑或确认接管。`,
+        }).catch(error => console.warn('[job-alert] 漏跑告警处理失败:', error.message));
+      }
+      created.push(current);
+    }
+  }
+  return { ok: true, count: created.length, slots: created };
+}
+
+async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled') {
+  const lookup = await pool.query('SELECT job_code,business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  if (!lookup.rows[0]) return null;
+  const definition = getJobDefinition(lookup.rows[0].job_code);
+  const dependencies = definition.dependencyCodes || [];
+  if (dependencies.length) {
+    const dependencyRows = await pool.query(
+      'SELECT job_code,status FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[])',
+      [lookup.rows[0].business_date, dependencies]
+    );
+    const states = new Map(dependencyRows.rows.map(row => [row.job_code, row.status]));
+    if (dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)))) {
+      await pool.query(
+        `UPDATE ops.job_schedule_slots
+            SET status='blocked', last_error=$2, next_attempt_at=NULL,
+                lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
+          WHERE slot_id=$1 AND status IN ('pending','failed','degraded')`,
+        [slotId, `依赖任务未成功：${dependencies.map(code => `${code}=${states.get(code) || 'missing'}`).join(', ')}`]
+      );
+      return null;
+    }
+    if (dependencies.some(code => !states.has(code) || ['pending', 'running'].includes(states.get(code)))) return null;
+  }
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='running', attempt_count=attempt_count+1, lease_owner=$2,
+            lease_until=now()+($5::integer * interval '1 minute'), heartbeat_at=now(),
+            next_attempt_at=NULL, trigger_type=$3, updated_at=now()
+      WHERE slot_id=$1 AND status IN ('pending','failed','degraded')
+        AND attempt_count < $4
+        AND (next_attempt_at IS NULL OR next_attempt_at<=now())
+      RETURNING *`,
+    [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30]
+  );
+  return rows[0] || null;
+}
+
+async function recoverExpiredSlots() {
+  const { rows } = await pool.query(
+    `SELECT slot_id, job_code, attempt_count
+       FROM ops.job_schedule_slots
+      WHERE status='running' AND lease_until IS NOT NULL AND lease_until < now()
+      ORDER BY slot_id`
+  );
+  for (const slot of rows) {
+    const definition = getJobDefinition(slot.job_code);
+    const nextStatus = Number(slot.attempt_count || 0) < (definition.maxAttempts || 3) ? 'pending' : 'failed';
+    await pool.query(
+      `UPDATE ops.job_schedule_slots
+          SET status=$2, next_attempt_at=CASE WHEN $2='pending' THEN now() ELSE NULL END,
+              lease_owner=NULL, lease_until=NULL, heartbeat_at=now(),
+              last_error='执行租约已过期，系统已自动接管', updated_at=now()
+        WHERE slot_id=$1 AND status='running'`,
+      [slot.slot_id, nextStatus]
+    );
+    if (nextStatus === 'failed') {
+      const { notifyJobFailure } = require('./jobAlertMailer');
+      await notifyJobFailure({
+        jobCode: slot.job_code,
+        slotId: slot.slot_id,
+        alertKey: `slot:${slot.slot_id}:lease-exhausted`,
+        alertType: 'failure',
+        subject: `后台任务租约失败：${slot.job_code}`,
+        summary: `计划实例 ${slot.slot_id} 的租约已过期并达到最大尝试次数，请在后台检查后手工处理。`,
+      }).catch(error => console.warn('[job-alert] 租约失败告警发送失败:', error.message));
+    }
+  }
+  return rows.length;
+}
+
+async function listDueSlots(limit = 20) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const { rows } = await pool.query(
+    `SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s
+      WHERE status IN ('pending','failed','degraded','blocked')
+        AND scheduled_for <= now()
+        AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+      ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, [safeLimit]
+  );
+  const due = [];
+  for (const slot of rows) {
+    const definition = getJobDefinition(slot.job_code);
+    if (Number(slot.attempt_count || 0) >= (definition.maxAttempts || 3)) continue;
+    const dependencies = definition.dependencyCodes || [];
+    if (dependencies.length) {
+      const dependencyRows = await pool.query(
+        'SELECT job_code,status FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[])',
+        [slot.business_date, dependencies]
+      );
+      const states = new Map(dependencyRows.rows.map(row => [row.job_code, row.status]));
+      const dependencyFailed = dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)));
+      const dependencyPending = dependencies.some(code => !states.has(code) || ['pending', 'running'].includes(states.get(code)));
+      if (dependencyFailed) {
+        const blocked = await pool.query(
+          `UPDATE ops.job_schedule_slots
+              SET status='blocked', last_error=$2, next_attempt_at=NULL,
+                  lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
+            WHERE slot_id=$1 AND status <> 'blocked'
+            RETURNING *`,
+          [slot.slot_id, `依赖任务未成功：${dependencies.map(code => `${code}=${states.get(code) || 'missing'}`).join(', ')}`]
+        );
+        if (blocked.rows[0]) {
+          const { notifyJobFailure } = require('./jobAlertMailer');
+          await notifyJobFailure({
+            jobCode: slot.job_code,
+            slotId: slot.slot_id,
+            alertKey: `slot:${slot.slot_id}:blocked`,
+            alertType: 'dependency_blocked',
+            subject: `后台任务被依赖任务阻塞：${definition.label}`,
+            summary: blocked.rows[0].last_error,
+          }).catch(error => console.warn('[job-alert] 依赖阻塞告警失败:', error.message));
+        }
+        continue;
+      }
+      if (dependencyPending) continue;
+      if (slot.status === 'blocked') {
+        await pool.query(
+          `UPDATE ops.job_schedule_slots
+              SET status='pending', next_attempt_at=now(), last_error=NULL, updated_at=now()
+            WHERE slot_id=$1 AND status='blocked'`, [slot.slot_id]
+        );
+        slot.status = 'pending';
+      }
+    }
+    due.push(slot);
+  }
+  return due;
+}
+
+function normalizeDataAsOf(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function isDataAsOfFresh(dataAsOf, businessDate) {
+  if (!dataAsOf || !businessDate) return false;
+  const actual = new Date(dataAsOf).getTime();
+  const expected = new Date(`${String(businessDate).slice(0, 10)}T00:00:00Z`).getTime();
+  return Number.isFinite(actual) && Number.isFinite(expected) && actual >= expected;
+}
+
+async function queryDataAsOf(jobCode, businessDate) {
+  if (jobCode === 'holiday_sync') {
+    const { loadHolidays } = require('../config/holidays');
+    return normalizeDataAsOf(loadHolidays().updatedAt);
+  }
+  const queries = {
+    bond_safety_refresh: `SELECT COALESCE(source_updated_at, refreshed_at) AS data_as_of FROM bond_safety_snapshots ORDER BY refreshed_at DESC LIMIT 1`,
+    hk_rate: `SELECT max(rate_date)::text AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
+    nav_snapshot: `SELECT max(date)::text AS data_as_of FROM nav_history`,
+    index_baseline: `SELECT max(date)::text AS data_as_of FROM index_history`,
+    index_recent: `SELECT max(date)::text AS data_as_of FROM index_history`,
+    ipo_calendar_refresh: `SELECT max(report_date)::text AS data_as_of FROM ipo_reports`,
+    ipo_history_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='global:ipo_history'`,
+    stock_analysis_refresh: `SELECT max(as_of_date)::text AS data_as_of FROM analytics.stock_overview_latest`,
+    hk_trade_rules_sync: `SELECT max(valid_from)::text AS data_as_of FROM market.instrument_trade_rules`,
+    arbitrage_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key LIKE 'arbitrage_%'`,
+    convertible_bond_universe_refresh: `SELECT max(trade_date)::text AS data_as_of FROM market.convertible_bond_daily_metrics`,
+    convertible_bond_valuation_refresh: `SELECT max(trade_date)::text AS data_as_of FROM analytics.convertible_bond_valuation_daily`,
+    market_volatility_sync: `SELECT LEAST(
+      COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='HK' AND tenor_years=10 AND source_code='hkma'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'), '1900-01-01'::date)
+    )::text AS data_as_of`,
+  };
+  const marketClosePredicates = {
+    'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)'`,
+    'market_close:港股': `char_length(p.code)=5`,
+    'market_close:可转债': `p.code ~ '^(11|12)'`,
+    'market_close:LOF/ETF': `p.code ~ '^(15|16|50|51)' AND char_length(p.code)=6`,
+  };
+  const marketPredicate = marketClosePredicates[jobCode];
+  const sql = queries[jobCode] || (marketPredicate
+    ? `SELECT CASE WHEN COUNT(*)=0 OR COUNT(dp.code)=COUNT(*) THEN $1::text ELSE NULL END AS data_as_of
+         FROM positions p
+         LEFT JOIN daily_prices dp ON dp.username=p.username AND dp.account_name=p.account_name
+              AND dp.code=p.code AND dp.date=$1
+        WHERE ${marketPredicate}`
+    : null);
+  if (!sql) return null;
+  const { rows } = await pool.query(sql, marketPredicate ? [businessDate] : []);
+  if (!rows[0] || !rows[0].data_as_of) return null;
+  const raw = String(rows[0].data_as_of).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00.000Z` : normalizeDataAsOf(rows[0].data_as_of);
+}
+
+async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
+  return queryDataAsOf(jobCode, businessDate).catch(() => null);
+}
+
+async function completeSlot(slotId, status, resultSummary, errorMessage, runId) {
+  const allowed = ['succeeded', 'degraded', 'failed', 'blocked', 'skipped'];
+  const requestedStatus = allowed.includes(status) ? status : 'failed';
+  const current = await pool.query('SELECT job_code,business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  if (!current.rows[0]) return null;
+  const requiresDataWatermark = getJobDefinition(current.rows[0].job_code).requiresDataWatermark !== false;
+  const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
+    ? await resolveDataAsOf(current.rows[0].job_code, current.rows[0].business_date, resultSummary)
+    : null;
+  const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark
+    && !isDataAsOfFresh(dataAsOf, current.rows[0].business_date) ? 'degraded' : requestedStatus;
+  const finalError = nextStatus === 'degraded' && !errorMessage
+    ? '任务完成但没有形成可确认的数据日期，请检查上游返回和入库结果'
+    : errorMessage;
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status=$2, last_run_id=COALESCE($5,last_run_id), data_as_of=CASE WHEN $2='succeeded' THEN $6 ELSE data_as_of END,
+            result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
+            heartbeat_at=now(), updated_at=now()
+      WHERE slot_id=$1 AND status='running' RETURNING *`,
+    [slotId, nextStatus, JSON.stringify(sanitizeJobResult(resultSummary || {})), finalError ? sanitizeJobError(finalError) : null, runId || null, dataAsOf]
+  );
+  const completed = rows[0] || null;
+  if (completed && nextStatus === 'succeeded') {
+    const { resolveJobSlotAlerts } = require('./jobAlertMailer');
+    await resolveJobSlotAlerts(completed).catch(error => console.warn('[job-alert] 恢复告警处理失败:', error.message));
+  }
+  if (completed && nextStatus === 'degraded') {
+    const { notifyJobFailure } = require('./jobAlertMailer');
+    await notifyJobFailure({
+      jobCode: current.rows[0].job_code,
+      slotId,
+      alertKey: `slot:${slotId}:degraded`,
+      alertType: 'degraded',
+      subject: `后台任务数据未确认：${getJobDefinition(current.rows[0].job_code).label}`,
+      summary: completed.last_error || '任务执行成功，但产出数据日期早于计划日期。',
+    }).catch(error => console.warn('[job-alert] 降级告警失败:', error.message));
+  }
+  return completed;
+}
+
+async function deferSlot(slotId, errorMessage, resultSummary, delayMinutes = 5, runId = null) {
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='failed', last_run_id=COALESCE($5,last_run_id), trigger_type='auto_retry',
+            next_attempt_at=now()+($2 || ' minutes')::interval,
+            result_summary=$3::jsonb, last_error=$4, lease_owner=NULL, lease_until=NULL,
+            heartbeat_at=now(), updated_at=now()
+      WHERE slot_id=$1 AND status='running' RETURNING *`,
+    [slotId, String(Math.max(Number(delayMinutes) || 5, 1)), JSON.stringify(sanitizeJobResult(resultSummary || {})),
+      errorMessage ? sanitizeJobError(errorMessage) : null, runId]
+  );
+  return rows[0] || null;
+}
+
+async function touchSlot(slotId, workerId = WORKER_ID) {
+  const { rows } = await pool.query('SELECT job_code FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const timeoutMinutes = rows[0] ? Number(getJobDefinition(rows[0].job_code).timeoutMinutes || 30) : 30;
+  await pool.query(
+    `UPDATE ops.job_schedule_slots SET heartbeat_at=now(), lease_until=now()+($3::integer * interval '1 minute'), updated_at=now()
+      WHERE slot_id=$1 AND lease_owner=$2`, [slotId, workerId, timeoutMinutes]
+  );
+}
+
+async function retryJobSlot(slotId) {
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='pending', attempt_count=0, next_attempt_at=now(), trigger_type='manual_retry',
+            lease_owner=NULL, lease_until=NULL, acknowledged_at=NULL, last_error=NULL, result_summary='{}'::jsonb, updated_at=now()
+      WHERE slot_id=$1 AND status IN ('failed','degraded','blocked','skipped')
+      RETURNING *`, [slotId]
+  );
+  return rows[0] || null;
+}
+
+async function acknowledgeSlot(slotId) {
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots SET acknowledged_at=now(), updated_at=now()
+      WHERE slot_id=$1 RETURNING *`, [slotId]
+  );
+  return rows[0] ? {
+    ...rows[0],
+    last_error: rows[0].last_error ? sanitizeJobError(rows[0].last_error, 2000) : null,
+    result_summary: sanitizeJobResult(rows[0].result_summary || {}),
+  } : null;
+}
+
+async function listJobSlots(options = {}) {
+  const businessDate = options.date && /^\d{4}-\d{2}-\d{2}$/.test(String(options.date)) ? String(options.date) : dateText();
+  const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 300);
+  const status = ['pending', 'running', 'succeeded', 'degraded', 'failed', 'blocked', 'skipped'].includes(options.status) ? options.status : null;
+  const triggerType = String(options.trigger || '').trim() || null;
+  const keyword = String(options.keyword || '').trim() || null;
+  const category = String(options.category || '').trim() || null;
+  const categoryCodes = category ? JOB_DEFINITIONS.filter(item => item.category === category).map(item => item.jobCode) : null;
+  const keywordCodes = keyword
+    ? JOB_DEFINITIONS.filter(item => item.jobCode.toLowerCase().includes(keyword.toLowerCase()) || item.label.includes(keyword)).map(item => item.jobCode)
+    : null;
+  const { rows } = await pool.query(
+    `SELECT s.*, s.business_date::text AS business_date
+       FROM ops.job_schedule_slots s
+      WHERE s.business_date=$1::date AND ($2::text IS NULL OR s.status=$2)
+        AND ($4::text IS NULL OR s.trigger_type=$4)
+        AND ($5::text IS NULL OR s.job_code ILIKE '%' || $5 || '%' OR s.last_error ILIKE '%' || $5 || '%' OR s.job_code=ANY($7::text[]))
+        AND ($6::text[] IS NULL OR s.job_code=ANY($6::text[]))
+      ORDER BY s.scheduled_for DESC, s.slot_id DESC LIMIT $3`,
+    [businessDate, status, limit, triggerType, keyword, categoryCodes, keywordCodes]
+  );
+  const labels = new Map(JOB_DEFINITIONS.map(item => [item.jobCode, item.label]));
+  return rows.map(row => {
+    const definition = getJobDefinition(row.job_code);
+    const lateAt = new Date(row.scheduled_for).getTime() + Number(definition.deadlineMinutes || 180) * 60000;
+    return { ...row,
+      last_error: row.last_error ? sanitizeJobError(row.last_error) : null,
+      result_summary: sanitizeJobResult(row.result_summary || {}),
+      request_payload: sanitizeJobResult(row.request_payload || {}),
+      label: labels.get(row.job_code) || row.job_code,
+      category: definition.category, importance: definition.importance,
+      dependency_codes: definition.dependencyCodes || [],
+      deadline_at: new Date(lateAt).toISOString(), max_attempts: definition.maxAttempts,
+      is_late: ['pending', 'running', 'failed', 'degraded'].includes(row.status) && lateAt < Date.now() };
+  });
+}
+
+async function getJobSlot(slotId) {
+  const { rows } = await pool.query('SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s WHERE slot_id=$1', [slotId]);
+  if (!rows[0]) return null;
+  const definition = getJobDefinition(rows[0].job_code);
+  const [runs, dependencies, alerts, audits] = await Promise.all([
+    pool.query('SELECT id,job,status,started_at,finished_at,detail,attempt_no,trigger_type,worker_id,heartbeat_at,error_code FROM job_runs WHERE slot_id=$1 OR id=$2 ORDER BY id DESC LIMIT 20', [slotId, rows[0].last_run_id || 0]),
+    pool.query('SELECT job_code,status,scheduled_for,data_as_of,last_error FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[]) ORDER BY scheduled_for', [rows[0].business_date, definition.dependencyCodes || []]),
+    pool.query('SELECT alert_id,alert_key,alert_type,severity,status,subject,summary,send_attempts,last_sent_at,next_send_at,last_send_error FROM ops.alert_notifications WHERE slot_id=$1 ORDER BY alert_id DESC LIMIT 20', [slotId]),
+    pool.query("SELECT id,actor,action,target,detail,result,request_id,metadata,created_at FROM admin_audit_log WHERE target=$1 OR metadata->>'slotId'=$1 ORDER BY id DESC LIMIT 20", [String(slotId)]),
+  ]);
+  return {
+    ...rows[0],
+    last_error: rows[0].last_error ? sanitizeJobError(rows[0].last_error) : null,
+    result_summary: sanitizeJobResult(rows[0].result_summary || {}),
+    request_payload: sanitizeJobResult(rows[0].request_payload || {}),
+    definition,
+    runs: runs.rows.map(run => ({ ...run, detail: sanitizeJobError(run.detail || '', 4000) })),
+    dependencies: dependencies.rows.map(dep => ({ ...dep, last_error: dep.last_error ? sanitizeJobError(dep.last_error) : null })),
+    alerts: alerts.rows.map(alert => ({
+      ...alert,
+      subject: sanitizeJobError(alert.subject || '', 500),
+      summary: sanitizeJobError(alert.summary || '', 4000),
+      last_send_error: alert.last_send_error ? sanitizeJobError(alert.last_send_error, 1000) : null,
+    })),
+    audits: audits.rows.map(audit => ({
+      ...audit,
+      detail: sanitizeJobError(audit.detail || '', 500),
+      metadata: sanitizeJobResult(audit.metadata || {}),
+    })),
+  };
+}
+
+async function heartbeat(role = 'worker', status = 'running') {
+  await pool.query(
+    `INSERT INTO ops.worker_heartbeats(worker_id,role,pid,app_version,status,started_at,last_seen_at,updated_at)
+     VALUES($1,$2,$3,$4,$5,now(),now(),now())
+     ON CONFLICT(worker_id) DO UPDATE SET role=EXCLUDED.role,pid=EXCLUDED.pid,
+       app_version=EXCLUDED.app_version,status=EXCLUDED.status,last_seen_at=now(),updated_at=now()`,
+    [WORKER_ID, role, String(process.pid), process.env.APP_VERSION || '', status]
+  );
+}
+
+async function getJobOverview() {
+  const today = dateText();
+  const [counts, slots, alerts, workers] = await Promise.all([
+    pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.job_schedule_slots WHERE business_date=$1::date GROUP BY status`, [today]),
+    pool.query(`SELECT job_code, status, scheduled_for, updated_at, last_error FROM ops.job_schedule_slots WHERE business_date=$1::date ORDER BY scheduled_for DESC`, [today]),
+    pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.alert_notifications WHERE status NOT IN ('resolved','acknowledged') GROUP BY status`),
+    pool.query(`SELECT worker_id,role,pid,app_version,
+          CASE WHEN last_seen_at < now()-interval '2 minutes' THEN 'stale' ELSE status END AS status,
+          started_at,last_seen_at FROM ops.worker_heartbeats ORDER BY last_seen_at DESC`),
+  ]);
+  return {
+    today,
+    definitions: JOB_DEFINITIONS,
+    counts: counts.rows,
+    slots: slots.rows.map(slot => ({ ...slot, last_error: slot.last_error ? sanitizeJobError(slot.last_error) : null })),
+    alerts: alerts.rows,
+    workers: workers.rows,
+    health: {
+      durableScheduler: process.env.DURABLE_SCHEDULER !== '0',
+      emailConfigured: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.ALERT_EMAIL_TO),
+      schedulerOnline: workers.rows.some(worker =>
+        worker.status !== 'stale' && (worker.role === 'worker' || (worker.role === 'web' && process.env.DISABLE_SCHEDULER !== '1'))
+      ),
+    },
+  };
+}
+
+async function validateJobSlot(slotId) {
+  const { rows } = await pool.query('SELECT * FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  if (!rows[0]) return null;
+  const slot = rows[0];
+  if (getJobDefinition(slot.job_code).requiresDataWatermark === false) {
+    return {
+      valid: slot.status === 'succeeded', slotId: slot.slot_id, status: slot.status, dataAsOf: slot.data_as_of || null,
+      message: slot.status === 'succeeded' ? '任务执行结果正常' : '该任务无需数据水位校验，请查看执行结果',
+    };
+  }
+  const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);
+  const freshness = isDataAsOfFresh(actualDataAsOf, slot.business_date);
+  const canValidate = ['succeeded', 'degraded'].includes(slot.status);
+  const valid = canValidate && Boolean(actualDataAsOf) && freshness;
+  let updated = slot;
+  if (canValidate) {
+    const result = await pool.query(
+      `UPDATE ops.job_schedule_slots
+          SET data_as_of=$2,
+              status=CASE WHEN $2 IS NOT NULL AND $2::timestamptz >= business_date::timestamptz THEN 'succeeded' ELSE 'degraded' END,
+              last_error=CASE WHEN $2 IS NOT NULL AND $2::timestamptz >= business_date::timestamptz THEN NULL ELSE '重新校验发现业务数据水位落后' END,
+              updated_at=now()
+        WHERE slot_id=$1
+        RETURNING *`,
+      [slotId, actualDataAsOf]
+    );
+    updated = result.rows[0] || { ...slot, status: valid ? 'succeeded' : 'degraded', data_as_of: actualDataAsOf };
+    if (valid && slot.status === 'degraded') {
+      const { resolveJobSlotAlerts } = require('./jobAlertMailer');
+      await resolveJobSlotAlerts(updated).catch(error => console.warn('[job-alert] 重新校验恢复告警处理失败:', error.message));
+    }
+  }
+  return { valid, slotId: slot.slot_id, status: canValidate ? (valid ? 'succeeded' : 'degraded') : slot.status, dataAsOf: actualDataAsOf || null,
+    message: valid ? '任务状态和数据时间均正常' : '任务尚未形成可确认的数据结果' };
+}
+
+module.exports = {
+  WORKER_ID, JOB_DEFINITIONS, dateText, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
+  claimSlot, completeSlot, deferSlot, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
+  listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview,
+};

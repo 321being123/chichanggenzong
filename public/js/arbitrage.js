@@ -316,11 +316,46 @@ function renderArbDetail(d) {
   html += '\u26a0 \u4ee5\u4e0a\u4e3a\u672a\u6263\u9664\u4ea4\u6613\u8d39\u7528\u7684\u7406\u8bba\u6bdb\u7a7a\u95f4\uff0c\u4ec5\u4f9b\u53c2\u8003\uff0c\u4e0d\u6784\u6210\u6295\u8d44\u5efa\u8bae\u3002';
   html += '</div>';
 
+  // 换股合并成功概率：规则估计，展示影响因素和重要风险节点。
+  if (d.strategy_type === 'a_share_swap' && d.successProbability != null) {
+    var probColor = d.successProbability >= 70 ? '#137333' : (d.successProbability >= 45 ? '#b26a00' : '#c5221f');
+    html += '<div style="background:#f5f7ff;border:1px solid #d9e2ff;padding:12px 14px;border-radius:6px;margin-bottom:16px;">';
+    html += '<div style="font-weight:600;color:#243b80;margin-bottom:6px;">换股合并成功概率（规则估计）</div>';
+    html += '<div style="font-size:24px;font-weight:700;color:' + probColor + ';">' + num(d.successProbability, 0) + '% <span style="font-size:13px;font-weight:500;">' + esc(d.successProbabilityLabel || '') + '</span></div>';
+    if (d.successProbabilityFactors && d.successProbabilityFactors.length) {
+      html += '<div style="font-size:13px;color:#555;margin-top:8px;line-height:1.7;">';
+      d.successProbabilityFactors.forEach(function (factor) {
+        var points = Number(factor.points || 0);
+        html += '<div>' + (points >= 0 ? '\u2713 ' : '\u26a0 ') + esc(factor.label) + '（' + (points >= 0 ? '+' : '') + points + '\u5206）</div>';
+      });
+      html += '</div>';
+    }
+    html += '<div style="font-size:12px;color:#888;margin-top:8px;">' + esc(d.successProbabilityNote || '') + '</div>';
+    html += '</div>';
+
+    if (d.riskEvents && d.riskEvents.length) {
+      html += '<div style="background:#fff4f3;border:1px solid #ffd6d2;padding:12px 14px;border-radius:6px;margin-bottom:16px;">';
+      html += '<div style="font-weight:600;color:#c5221f;margin-bottom:6px;">重要风险节点</div>';
+      d.riskEvents.forEach(function (risk) {
+        html += '<div style="padding:6px 0;border-bottom:1px solid #f2d6d3;font-size:13px;">';
+        html += '<span style="color:#888;">' + arbDate(risk.announced_at) + '</span> ';
+        html += '<span style="color:#c5221f;">' + esc(risk.label || '\u76d1\u7ba1\u98ce\u9669') + '</span> ';
+        html += esc(risk.title || '');
+        if (risk.url) html += ' ' + arbAnnouncementLink(risk.url);
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+  }
+
   // 公告链
-  if (d.documents && d.documents.length) {
+  var normalDocuments = (d.documents || []).filter(function (doc) {
+    return doc.relation_type !== 'risk_event' && doc.document_role !== 'risk';
+  });
+  if (normalDocuments.length) {
     html += '<h4 style="margin-bottom:8px;">\u516c\u544a\u94fe</h4>';
     html += '<div style="margin-bottom:8px;">';
-    d.documents.forEach(function (doc) {
+    normalDocuments.forEach(function (doc) {
       var url = doc.url || '';
       var isWhitelisted = url && /^https:\/\/(www1\.hkexnews\.hk|static\.cninfo\.com\.cn|www\.cninfo\.com\.cn)\//.test(url);
       html += '<div style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px;">';

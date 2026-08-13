@@ -3,6 +3,7 @@
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const sync = require('../services/arbitrageAnnouncementSync');
 const { pool } = require('../db');
+const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 
 const SYNC_JOB = 'arbitrage_sync';
 
@@ -18,16 +19,27 @@ function nextShanghaiDelay(hour = 21, minute = 30, now = new Date()) {
 
 async function runArbitrageSync(reason = 'scheduled') {
   if (!(await tryClaimJob(SYNC_JOB))) return { skipped: true, reason: 'already_running' };
-  const runId = await startJobRun(SYNC_JOB);
+  let runId = null;
   try {
+    runId = await startJobRun(SYNC_JOB);
     const result = await sync.runIncrementalSync();
-    const detail = `hkex:${result.hkex.total} cninfo:${result.cninfo.total}`;
+    const errors = [...(result.hkex.errors || []), ...(result.cninfo.errors || [])];
+    const parsePending = Number(result.recovery && result.recovery.pending || 0);
+    const parseExhausted = Number(result.recovery && result.recovery.exhausted || 0);
+    const detail = `hkex:${result.hkex.total} cninfo:${result.cninfo.total} errors:${errors.length} parse_pending:${parsePending} parse_exhausted:${parseExhausted}`;
+    if (errors.length || parsePending || parseExhausted) {
+      const sourceError = errors.length ? `；数据源错误：${errors.slice(0, 5).join(' | ')}` : '';
+      const error = `套利公告同步未完整成功：PDF待重试 ${parsePending}，已达上限 ${parseExhausted}${sourceError}`;
+      await finishJobRun(runId, false, error);
+      return { ok: false, error, detail, result };
+    }
     await finishJobRun(runId, true, detail);
     return { ok: true, detail, result };
   } catch (error) {
-    await finishJobRun(runId, false, error.message);
-    console.error('[arbitrage-sync] 同步失败:', error.message);
-    return { ok: false, error: error.message };
+    const safeError = sanitizeJobError(error.message || error, 1000);
+    await finishJobRun(runId, false, safeError);
+    console.error('[arbitrage-sync] 同步失败:', safeError);
+    return { ok: false, error: safeError };
   } finally {
     await releaseJob(SYNC_JOB);
   }
@@ -53,7 +65,7 @@ async function checkStartupBackfill() {
       await runArbitrageSync('startup_backfill');
     }
   } catch (err) {
-    console.warn('[arbitrage-sync] 启动检查失败:', err.message);
+    console.warn('[arbitrage-sync] 启动检查失败:', sanitizeJobError(err.message || err, 500));
   }
 }
 
@@ -68,7 +80,7 @@ function scheduleArbitrageSync() {
 
   // 启动时断点补偿检查
   checkStartupBackfill().catch(err =>
-    console.warn('[arbitrage-sync] 启动补偿失败:', err.message)
+    console.warn('[arbitrage-sync] 启动补偿失败:', sanitizeJobError(err.message || err, 500))
   );
 }
 

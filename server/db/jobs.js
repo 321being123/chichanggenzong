@@ -1,6 +1,7 @@
 // 本文件由 server/db.js 物理拆分而来，函数体未改动，仅调整文件归属。
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
+const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 // 咨询锁必须占住一条专用连接，否则连接归还连接池即释放。用 Map 持有直到 releaseJob。
 const _jobClients = {};
 
@@ -36,7 +37,7 @@ async function finishJobRun(id, ok, detail) {
   if (!id) return;
   await pool.query(
     "UPDATE job_runs SET status=$2, finished_at=now(), detail=COALESCE($3,'') WHERE id=$1",
-    [id, ok ? 'done' : 'failed', detail || '']
+    [id, ok ? 'done' : 'failed', sanitizeJobError(detail || '', 4000)]
   );
 }
 
@@ -45,13 +46,16 @@ async function finishJobRun(id, ok, detail) {
 async function adminJobRuns(limit = 50) {
   const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
   const recent = await pool.query(
-    'SELECT id, job, status, started_at, finished_at, detail FROM job_runs ORDER BY id DESC LIMIT $1',
+    'SELECT id, job, status, started_at, finished_at, detail, slot_id, attempt_no, trigger_type, worker_id, heartbeat_at, error_code FROM job_runs ORDER BY id DESC LIMIT $1',
     [lim]
   );
   const summary = await pool.query(
-    'SELECT DISTINCT ON (job) job, status, started_at, finished_at FROM job_runs ORDER BY job, id DESC'
+    'SELECT DISTINCT ON (job) job, status, started_at, finished_at, detail, slot_id, attempt_no, trigger_type FROM job_runs ORDER BY job, id DESC'
   );
-  return { recent: recent.rows, summary: summary.rows };
+  return {
+    recent: recent.rows.map(row => ({ ...row, detail: sanitizeJobError(row.detail || '', 4000) })),
+    summary: summary.rows.map(row => ({ ...row, detail: sanitizeJobError(row.detail || '', 4000) })),
+  };
 }
 
 // ====== 管理后台：平台概览聚合（供后台仪表盘）======

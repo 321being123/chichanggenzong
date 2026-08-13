@@ -1,0 +1,53 @@
+// 后台人工补跑入口。使用现有任务实现，避免在管理路由里复制业务逻辑。
+async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, context = {}) {
+  switch (jobCode) {
+    case 'bond_safety_refresh':
+      return require('../jobs/bondSafetyRefresh').runBondSafetyRefresh(reason);
+    case 'hk_rate':
+      return require('../jobs/hkRate').runHkRateJob();
+    case 'nav_snapshot':
+      return require('../jobs/navSnapshot').runNavSnapshotJob();
+    case 'index_baseline':
+      return require('../jobs/indexBaseline').runIndexBaselineJob();
+    case 'index_recent':
+      return require('../jobs/indexBaseline').runIndexRecentJob();
+    case 'market_volatility_sync':
+      return require('../jobs/marketVolatilitySync').runMarketVolatilitySync();
+    case 'stock_analysis_refresh':
+      return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason);
+    case 'ipo_history_sync':
+      return require('../jobs/ipoHistorySync').runIpoHistorySync(reason);
+    case 'hk_trade_rules_sync':
+      return require('../jobs/hkTradeRulesSync').runHkTradeRulesSync(reason);
+    case 'arbitrage_sync':
+      return require('../jobs/arbitrageSync').runArbitrageSync(reason);
+    case 'arbitrage_reparse': {
+      const { pool } = require('../db');
+      const { rows } = await pool.query(
+        'SELECT request_payload FROM ops.job_schedule_slots WHERE slot_id=$1',
+        [context.slotId]
+      );
+      const caseId = Number(rows[0] && rows[0].request_payload && rows[0].request_payload.caseId);
+      if (!Number.isSafeInteger(caseId) || caseId <= 0) {
+        return { ok: false, error: '重新解析任务缺少有效事件编号' };
+      }
+      return require('../jobs/arbitrageReparse').runArbitrageReparse(caseId, reason);
+    }
+    case 'holiday_sync':
+      return require('../jobs/holidaySync').ensureHolidaysCurrent().then(() => ({ ok: true }));
+    case 'convertible_bond_universe_refresh':
+      return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason);
+    case 'convertible_bond_valuation_refresh':
+      return require('../jobs/convertibleBondRefresh').runRefreshChain(reason);
+    case 'ipo_calendar_refresh':
+      return require('../jobs/ipoCalendarRefresh').runIpoCalendarRefresh(reason, context);
+    default:
+      if (jobCode && jobCode.indexOf('market_close:') === 0) {
+        const label = jobCode.slice('market_close:'.length);
+        return require('../jobs/marketClose').runMarketCloseByLabel(label, businessDate);
+      }
+      return { ok: false, unsupported: true, error: `暂未开放 ${jobCode} 的安全人工补跑入口` };
+  }
+}
+
+module.exports = { runJobByCode };

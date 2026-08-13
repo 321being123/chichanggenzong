@@ -15,6 +15,7 @@ from ipo_lib_common import *
 from ipo_lib_fetch import *
 from ipo_lib_sector import *
 from ipo_lib_prediction import *
+from ipo_lib_liquidity import calculate_liquidity_adjustment
 
 def get_temp_pe_penalty(issue_pe, industry_pe):
     """
@@ -159,7 +160,7 @@ def _calc_xgb_boost(stock_detail, xgb_raw):
 
 def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
                                  stock_code="", bond_name="", stock_name="", stock_industry="",
-                                 issue_scale=None):
+                                 issue_scale=None, listing_date=None):
     """
     新债上市首日价格预估 - 五因子模型（迭代收敛法）
 
@@ -195,47 +196,21 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     # 动量修正：近1月中证转债指数涨跌影响情绪
     momentum_adj = index_1m * 0.02
 
-    # ── 2. 流通规模调整（基于新上市转债统计校准，2026-06-18） ──
-    # 统计结论：新债流通规模越小，溢价率越高，倒U型峰值在1.5-2亿
-    # scale_adj 是在转股价值分档中位数基础溢价率之上的增量调整
+    # ── 2. 流通规模调整（近3个月70% + 第4至6个月30%的实际残差） ──
     scale_adj = 0
     scale_label = ""
     is_yaozhai = False
+    liquidity_calibration = None
     if circulation_scale is not None:
         cs = float(circulation_scale)
-        if cs < 1:
-            # 妖债：流通<1亿，额外大幅加成（保留原有转股价值联动逻辑）
-            if market_level == "高估":
-                yaozhai_base = 1.20
-            elif market_level == "偏高":
-                yaozhai_base = 1.00
-            elif market_level == "中性偏低":
-                yaozhai_base = 0.70
-            else:
-                yaozhai_base = 0.55
-            scale_adj = yaozhai_base * (1 + tv / 100)
-            scale_label = f"妖债(流通{cs}亿)"
-            is_yaozhai = True
-        elif cs < 1.5:
-            scale_adj = 0.55
-            scale_label = "小妖(1-1.5亿)"
-            is_yaozhai = True
-        elif cs < 2:
-            scale_adj = 0.30
-            scale_label = "中妖(1.5-2亿)"
-            is_yaozhai = True
-        elif cs < 3:
-            scale_adj = 0.20
-            scale_label = "小盘(2-3亿)"
-        elif cs < 5:
-            scale_adj = 0.12
-            scale_label = "中盘(3-5亿)"
-        elif cs < 10:
-            scale_adj = 0.05
-            scale_label = "大盘(5-10亿)"
-        else:
-            scale_adj = -0.05
-            scale_label = "巨盘(>10亿)"
+        try:
+            liquidity_calibration = calculate_liquidity_adjustment(cs, listing_date)
+        except Exception as error:
+            print(f"[流通校准] 动态样本读取失败，暂不调整：{error}")
+        if liquidity_calibration:
+            scale_adj = liquidity_calibration["adjustment_pp"] / 100
+            scale_label = liquidity_calibration["bucket_label"]
+        is_yaozhai = cs < 2
 
     # ── 2.5 发行规模(总募资)折扣（用户2026-07-15：巨无霸转债溢价率明显高估，需额外下修）──
     # 与流通规模折扣叠加；按总募资档位给固定负向调整（温和梯度）
@@ -277,7 +252,9 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
         sector_label, sector_boost = detect_hot_sector("", "", stock_industry)
 
     # ── 5. 计算预估价格 ──
-    total_premium = base_premium + scale_adj + rating_adj + sector_boost + issue_adj
+    base_premium_no_liquidity = base_premium + rating_adj + sector_boost + issue_adj
+    base_price_no_liquidity = round(tv * (1 + base_premium_no_liquidity), 2)
+    total_premium = base_premium_no_liquidity + scale_adj
     estimated_price = round(tv * (1 + total_premium), 2)
     tracking_price = estimated_price  # 首个非涨停日理论价格，不受上市首日157.3元限制
 
@@ -325,7 +302,12 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
 
     # 流通规模
     if scale_label:
-        detail_parts.append(f"💰 流通规模 {circulation_scale}亿 → {scale_label}，调整 {round(scale_adj*100,1)}%")
+        sample_count = (liquidity_calibration or {}).get("sample_count", 0)
+        weight_text = (liquidity_calibration or {}).get("weight_text", "动态样本")
+        detail_parts.append(
+            f"💰 流通规模 {circulation_scale}亿 → {scale_label}，参考{sample_count}只近期转债，"
+            f"{weight_text}，调整 {round(scale_adj*100,1)}个百分点"
+        )
 
     # 发行规模(总募资)
     if issue_scale_label:
@@ -366,6 +348,13 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
         "second_day_limit": second_day_limit,
         "is_yaozhai": is_yaozhai,
         "market_level": market_level,
+        "transfer_value": tv,
+        "circulation_scale": circulation_scale,
+        "base_price_no_liquidity": base_price_no_liquidity,
+        "liquidity_adjustment_pp": round(scale_adj * 100, 2),
+        "liquidity_sample_count": (liquidity_calibration or {}).get("sample_count", 0),
+        "valuation_model_version": (liquidity_calibration or {}).get("model_version", "dynamic_residual_v1"),
+        "liquidity_calibration": liquidity_calibration,
     }, None
 
 def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_detail=None):
@@ -728,7 +717,8 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             sn = bond_detail.get("stock_name", "")
             si = bond_detail.get("stock_industry", "")
             result, err = estimate_bond_listing_price(tv, cs, rating, sc, bn, sn, si,
-                                                      issue_scale=bond_detail.get("issue_scale"))
+                                                      issue_scale=bond_detail.get("issue_scale"),
+                                                      listing_date=bond_detail.get("list_date"))
             if result:
                 return result
         return {"summary": "预计首日涨幅 15%-30%，数据不足无法精确预估", "detail": "转股价值或流通规模数据缺失", "price": None}

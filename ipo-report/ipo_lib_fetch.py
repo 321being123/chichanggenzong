@@ -12,7 +12,7 @@ from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_ent
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
-from bond_data_layer import get_bond_row
+from bond_data_layer import get_bond_row, get_listing_liquidity, save_listing_liquidity
 from sse_listing_parser import (
     SSE_LISTING_INDEX_URL,
     parse_sse_listing_detail,
@@ -738,10 +738,24 @@ def calc_circulation_scale(info, bond_code=None):
         info["_note"] = "缺少正股代码，无法查询上市公告书"
         return
 
+    resolved_bond_code = bond_code or info.get("bond_code")
+    try:
+        cached = get_listing_liquidity(resolved_bond_code)
+    except Exception as error:
+        cached = None
+        print(f"读取流通规模缓存失败({resolved_bond_code}): {error}")
+    if cached:
+        info["lock_scale"] = float(cached["lock_scale"])
+        info["circulation_scale"] = float(cached["circulation_scale"])
+        source_detail = cached.get("source_detail") or {}
+        info["_note"] = source_detail.get("source") or "上市公告书（数据库缓存）"
+        info["_circulation_source"] = cached.get("source_code") or "cninfo_announcements"
+        return
+
     placing = fetch_placing_result(
         stock_code,
         scale,
-        bond_code=bond_code or info.get("bond_code"),
+        bond_code=resolved_bond_code,
         stock_name=info.get("stock_name"),
     )
     notice = placing.get("listing_notice") if placing else None
@@ -761,6 +775,10 @@ def calc_circulation_scale(info, bond_code=None):
         info["circulation_scale"] = placing["circulation_scale"]
         info["_note"] = placing["source"]
         info["_circulation_source"] = placing.get("source_class", "cninfo_listing_book")
+        try:
+            save_listing_liquidity(resolved_bond_code, placing, info.get("list_date"))
+        except Exception as error:
+            print(f"保存流通规模缓存失败({resolved_bond_code}): {error}")
     else:
         error_msg = placing.get("error", "查询失败（未知错误）") if placing else "接口无返回"
         info["_note"] = f"⚠️ 可转债公告解析失败：{error_msg}"

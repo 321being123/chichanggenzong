@@ -232,6 +232,72 @@ def get_bond_row(code):
     return dict(zip(fields, row))
 
 
+def get_listing_liquidity(code):
+    """读取已落库的上市流通规模，避免重复请求公告。"""
+    conn = db_pg.connect()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT l.circulation_scale_100m_yuan,l.lock_scale_100m_yuan,
+                  l.controller_quantity_zhang,l.total_quantity_zhang,l.controller_ratio_pct,
+                  l.source_code,l.source_detail,l.listing_date
+             FROM analytics.convertible_bond_listing_liquidity l
+             JOIN core.instruments i ON i.instrument_id=l.instrument_id
+            WHERE split_part(i.canonical_code,'.',1)=%s LIMIT 1""",
+        (str(code or "").split(".")[0],),
+    )
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return None
+    fields = ("circulation_scale", "lock_scale", "ctrl_zhang", "total_zhang", "ctrl_ratio",
+              "source_code", "source_detail", "listing_date")
+    return dict(zip(fields, row))
+
+
+def save_listing_liquidity(code, payload, listing_date=None):
+    """幂等保存公告解析出的流通规模；失败或空值不覆盖有效事实。"""
+    if not payload or payload.get("status") != "ok" or payload.get("circulation_scale") is None:
+        return False
+    conn = db_pg.connect()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT instrument_id,list_date FROM core.instruments WHERE split_part(canonical_code,'.',1)=%s LIMIT 1",
+        (str(code or "").split(".")[0],),
+    )
+    instrument = cur.fetchone()
+    if not instrument:
+        cur.close(); conn.close()
+        return False
+    cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='cninfo_announcements' LIMIT 1")
+    source = cur.fetchone()
+    source_detail = {
+        "source": payload.get("source"),
+        "source_class": payload.get("source_class"),
+    }
+    cur.execute(
+        """INSERT INTO analytics.convertible_bond_listing_liquidity
+             (instrument_id,listing_date,circulation_scale_100m_yuan,lock_scale_100m_yuan,
+              controller_quantity_zhang,total_quantity_zhang,controller_ratio_pct,source_id,source_code,source_detail)
+           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+           ON CONFLICT(instrument_id) DO UPDATE SET
+             listing_date=COALESCE(EXCLUDED.listing_date,analytics.convertible_bond_listing_liquidity.listing_date),
+             circulation_scale_100m_yuan=EXCLUDED.circulation_scale_100m_yuan,
+             lock_scale_100m_yuan=EXCLUDED.lock_scale_100m_yuan,
+             controller_quantity_zhang=EXCLUDED.controller_quantity_zhang,
+             total_quantity_zhang=EXCLUDED.total_quantity_zhang,
+             controller_ratio_pct=EXCLUDED.controller_ratio_pct,
+             source_id=EXCLUDED.source_id,source_code=EXCLUDED.source_code,
+             source_detail=EXCLUDED.source_detail,updated_at=now()""",
+        (instrument[0], _date(listing_date or instrument[1]), payload.get("circulation_scale"),
+         payload.get("lock_scale"), payload.get("ctrl_zhang"), payload.get("total_zhang"),
+         payload.get("ctrl_ratio"), source[0] if source else None,
+         payload.get("source_code") or "cninfo_announcements",
+         json.dumps(source_detail, ensure_ascii=False, default=str)),
+    )
+    conn.commit(); cur.close(); conn.close()
+    return True
+
+
 def list_bond_performance(cutoff_date):
     conn = db_pg.connect()
     cur = conn.cursor()

@@ -2663,6 +2663,40 @@ async function migration067JobRequestPayload() {
   `);
 }
 
+// ========== 068：新债流通规模动态校准字段 ==========
+async function migration068IpoBondLiquidityCalibration() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_listing_liquidity (
+      instrument_id BIGINT PRIMARY KEY REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      listing_date DATE,
+      circulation_scale_100m_yuan NUMERIC(20,4) NOT NULL CHECK (circulation_scale_100m_yuan > 0),
+      lock_scale_100m_yuan NUMERIC(20,4) NOT NULL CHECK (lock_scale_100m_yuan >= 0),
+      controller_quantity_zhang BIGINT CHECK (controller_quantity_zhang >= 0),
+      total_quantity_zhang BIGINT CHECK (total_quantity_zhang > 0),
+      controller_ratio_pct NUMERIC(10,4),
+      source_id SMALLINT REFERENCES ops.data_sources(source_id),
+      source_code TEXT NOT NULL DEFAULT 'cninfo_announcements',
+      source_detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+      formula_version TEXT NOT NULL DEFAULT 'controller_locked_v1',
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_listing_liquidity_date
+      ON analytics.convertible_bond_listing_liquidity(listing_date DESC);
+    ALTER TABLE predictions
+      ADD COLUMN IF NOT EXISTS transfer_value REAL,
+      ADD COLUMN IF NOT EXISTS circulation_scale REAL,
+      ADD COLUMN IF NOT EXISTS base_price_no_liquidity REAL,
+      ADD COLUMN IF NOT EXISTS liquidity_adjustment_pp REAL,
+      ADD COLUMN IF NOT EXISTS liquidity_sample_count INTEGER,
+      ADD COLUMN IF NOT EXISTS valuation_model_version TEXT,
+      ADD COLUMN IF NOT EXISTS valuation_context JSONB NOT NULL DEFAULT '{}'::jsonb;
+    CREATE INDEX IF NOT EXISTS idx_predictions_bond_liquidity_calibration
+      ON predictions(type, listing_date, circulation_scale)
+      WHERE type='bond' AND actual_price IS NOT NULL AND base_price_no_liquidity IS NOT NULL;
+  `);
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -2760,6 +2794,7 @@ const MIGRATIONS = [
   { version: '065_alert_recovery_attempts', up: migration065AlertRecoveryAttempts },
   { version: '066_arbitrage_parse_retry', up: migration066ArbitrageParseRetry },
   { version: '067_job_request_payload', up: migration067JobRequestPayload },
+  { version: '068_ipo_bond_liquidity_calibration', up: migration068IpoBondLiquidityCalibration },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3296,6 +3331,7 @@ module.exports = {
   migration065AlertRecoveryAttempts,
   migration066ArbitrageParseRetry,
   migration067JobRequestPayload,
+  migration068IpoBondLiquidityCalibration,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

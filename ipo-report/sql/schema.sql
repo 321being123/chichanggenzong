@@ -42,7 +42,30 @@ CREATE TABLE IF NOT EXISTS predictions (
   status       TEXT DEFAULT 'pending',
   updated_at   TEXT,
   instrument_id BIGINT,
+  transfer_value REAL,
+  circulation_scale REAL,
+  base_price_no_liquidity REAL,
+  liquidity_adjustment_pp REAL,
+  liquidity_sample_count INTEGER,
+  valuation_model_version TEXT,
+  valuation_context JSONB NOT NULL DEFAULT '{}'::jsonb,
   UNIQUE (type, code, pred_date)
+);
+
+CREATE TABLE IF NOT EXISTS analytics.convertible_bond_listing_liquidity (
+  instrument_id BIGINT PRIMARY KEY REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+  listing_date DATE,
+  circulation_scale_100m_yuan NUMERIC(20,4) NOT NULL CHECK (circulation_scale_100m_yuan > 0),
+  lock_scale_100m_yuan NUMERIC(20,4) NOT NULL CHECK (lock_scale_100m_yuan >= 0),
+  controller_quantity_zhang BIGINT CHECK (controller_quantity_zhang >= 0),
+  total_quantity_zhang BIGINT CHECK (total_quantity_zhang > 0),
+  controller_ratio_pct NUMERIC(10,4),
+  source_id SMALLINT REFERENCES ops.data_sources(source_id),
+  source_code TEXT NOT NULL DEFAULT 'cninfo_announcements',
+  source_detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+  formula_version TEXT NOT NULL DEFAULT 'controller_locked_v1',
+  calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS sector_heat (

@@ -118,15 +118,21 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
             raise RuntimeError(f"可转债 {b['code']} 尚未建立 instrument_id，拒绝保存预测")
         rows.append(("bond", b["code"], b["name"], listing_date,
                       pred_date, pred_return, pred_price, advice,
-                      today_str, instrument_row[0]))
+                      today_str, instrument_row[0],
+                      analysis.get("transfer_value"), analysis.get("circulation_scale"),
+                      analysis.get("base_price_no_liquidity"), analysis.get("liquidity_adjustment_pp"),
+                      analysis.get("liquidity_sample_count"), analysis.get("valuation_model_version"),
+                      json.dumps(analysis.get("liquidity_calibration") or {}, ensure_ascii=False, default=str)))
 
     for row in rows:
         try:
-            if len(row) == 10:
+            if len(row) == 17:
                 conn.execute("""
                 INSERT OR REPLACE INTO predictions
-                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at, instrument_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at, instrument_id,
+                     transfer_value, circulation_scale, base_price_no_liquidity, liquidity_adjustment_pp,
+                     liquidity_sample_count, valuation_model_version, valuation_context)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
                 """, row)
                 continue
             conn.execute("""

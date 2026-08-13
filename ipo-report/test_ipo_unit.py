@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_daily_report as m
 import _common as common
 import calendar_core
+from ipo_lib_liquidity import calculate_adjustment_from_samples, liquidity_bucket, robust_mean
 from datetime import datetime
 
 PASS, FAIL, ERR = [], [], []
@@ -28,6 +29,26 @@ def check(name, cond, detail=""):
 
 check("新股预测价格入库换算", m._price_from_return(84.46, 100) == 168.92)
 check("新债实际价格入库换算", m._price_from_return(100, 23.5) == 123.5)
+check("流通规模细分8-10亿", liquidity_bucket(8.03)[1] == "中大盘(8-10亿)")
+check("小样本平均使用中位数", robust_mean([1, 2, 100]) == 2)
+
+recent_liquidity_samples = [
+    {"circulation_scale": scale, "residual_pp": residual}
+    for scale, residual in [(2.1, 12), (2.2, 10), (2.3, 14), (2.4, 8), (2.15, 11), (2.35, 9),
+                            (8.0, 2), (9.0, 0)]
+]
+older_liquidity_samples = [
+    {"circulation_scale": scale, "residual_pp": residual}
+    for scale, residual in [(2.1, 8), (2.2, 6), (2.3, 10), (2.4, 4), (8.0, 0), (9.0, -2)]
+]
+dynamic_adjustment = calculate_adjustment_from_samples(
+    2.25, recent_liquidity_samples, older_liquidity_samples
+)
+check("流通影响按近3月70%和第4至6月30%加权",
+      dynamic_adjustment["adjustment_pp"] == 1.3,
+      "adjustment=%s" % dynamic_adjustment["adjustment_pp"])
+inactive_adjustment = calculate_adjustment_from_samples(2.25, recent_liquidity_samples[:3], [])
+check("动态流通调整不足4只不启用", inactive_adjustment["adjustment_pp"] == 0)
 
 
 check("psql 路径适配当前系统", os.name == "nt" or not common.PSQL.lower().startswith("c:\\"), common.PSQL)
@@ -137,6 +158,11 @@ try:
           "sector=%r" % (no_industry_fallback,))
     _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']
     _val.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
+    _val.calculate_liquidity_adjustment = lambda cs, *_args: {
+        "adjustment_pp": -5.0 if float(cs) >= 10 else (20.0 if float(cs) < 3 else 0.0),
+        "bucket_label": liquidity_bucket(cs)[1], "sample_count": 8,
+        "weight_text": "测试样本", "model_version": "dynamic_residual_v1",
+    }
     _old_xgb = _val._xgb_predict_listing
     _val._xgb_predict_listing = lambda *args, **kwargs: None
     fallback = _val.get_listing_analysis("stock", 10, None, None, stock_detail={"stock_code": "001234"})

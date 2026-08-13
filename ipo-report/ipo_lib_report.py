@@ -825,8 +825,14 @@ def retrain_xgb_model():
     """实际涨幅回填后重训，确保当天预测使用最新样本。"""
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_xgb_model.py")
     print("[XGBoost] 实际涨幅回填完成，开始重训模型...")
-    subprocess.run([sys.executable, script], cwd=os.path.dirname(script), check=True)
+    try:
+        subprocess.run([sys.executable, script], cwd=os.path.dirname(script), check=True)
+    except Exception as error:
+        # 模型重训失败时保留上一版模型，不能阻断当天日报和打新建议入库。
+        print(f"[XGBoost] 模型重训失败，继续使用上一版模型：{error}")
+        return False
     print("[XGBoost] 模型重训完成")
+    return True
 
 def main():
     """主函数 - 支持命令行传参指定日期"""

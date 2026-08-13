@@ -122,6 +122,8 @@ def main():
             "&& code_updated=1 "
             "&& git reset --hard origin/master "
             "&& npm ci --omit=dev "
+            "&& install -d -o portfolio-app -g portfolio-app -m 0755 ipo-report/data ipo-report/history_reports ipo-report/individual "
+            "&& chown -R portfolio-app:portfolio-app ipo-report/data ipo-report/history_reports ipo-report/individual "
             "&& (grep -q '^TRUST_PROXY=' .env "
             "&& sed -i 's/^TRUST_PROXY=.*/TRUST_PROXY=loopback/' .env "
             "|| printf '\\nTRUST_PROXY=loopback\\n' >> .env) "

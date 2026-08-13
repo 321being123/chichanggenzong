@@ -6,6 +6,7 @@
 import sqlite3
 import os
 import json
+import tempfile
 import warnings
 import numpy as np
 from datetime import datetime
@@ -193,7 +194,16 @@ for i in idx_sorted[:10]:
     print(f"  {feature_names[i]}: {importance[i]:.3f}")
 
 # ── 5. 保存 ──
-model.save_model(MODEL_PATH)
+# 先写同目录临时文件再替换，避免旧模型文件由部署用户创建时无法直接覆盖。
+model_fd, model_tmp = tempfile.mkstemp(prefix="ipo_xgb_model_", suffix=".json", dir=DATA_DIR)
+os.close(model_fd)
+try:
+    model.save_model(model_tmp)
+    os.replace(model_tmp, MODEL_PATH)
+except Exception:
+    if os.path.exists(model_tmp):
+        os.unlink(model_tmp)
+    raise
 
 info = {
     "features": feature_names,
@@ -206,8 +216,16 @@ info = {
     "target_transform": "log1p_nonnegative_return",
     "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 }
-with open(FEATURES_PATH, "w", encoding="utf-8") as f:
-    json.dump(info, f, ensure_ascii=False, indent=2)
+features_fd, features_tmp = tempfile.mkstemp(prefix="ipo_xgb_features_", suffix=".json", dir=DATA_DIR)
+os.close(features_fd)
+try:
+    with open(features_tmp, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False, indent=2)
+    os.replace(features_tmp, FEATURES_PATH)
+except Exception:
+    if os.path.exists(features_tmp):
+        os.unlink(features_tmp)
+    raise
 
 print(f"\n模型已保存: {MODEL_PATH}")
 print(f"特征信息已保存: {FEATURES_PATH}")

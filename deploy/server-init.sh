@@ -109,6 +109,8 @@ cd "$APP_DIR"
 npm install
 python3 -m venv ipo-report/venv
 ipo-report/venv/bin/pip install -r requirements.txt
+install -d -o portfolio-app -g portfolio-app -m 0755 ipo-report/data ipo-report/history_reports ipo-report/individual
+chown -R portfolio-app:portfolio-app ipo-report/data ipo-report/history_reports ipo-report/individual
 pm2 start deploy/ecosystem.config.js --update-env 2>/dev/null || pm2 restart portfolio-server 2>/dev/null || pm2 start server.js --name portfolio-server
 pm2 save
 pm2 startup >/dev/null 2>&1 || true

@@ -32,12 +32,35 @@ text = """
 前十大持有人包括：华夏中证白酒交易型开放式指数证券投资基金、宝鸡投资（集团）有限公司、永安咨询有限公司。
 """.strip()
 controllers, entities = mod._extract_controller_names(text)
-check("真实控股企业(宝钛集团)保留", any("宝钛集团" in e for e in entities), f"entities={entities}")
-check("真实控股企业(宝鸡投资集团)保留",
-      any("宝鸡投资" in e for e in entities), f"entities={entities}")
+check("明确控股股东保留", any("宝钛集团" in e for e in controllers), f"controllers={controllers}")
+check("普通持有人不误判为控制企业",
+      not any("宝鸡投资" in e or "永安咨询" in e for e in entities), f"entities={entities}")
 check("指数基金被排除(后缀命中路径)",
       not any("指数证券" in e or "证券投资基金" in e for e in entities), f"entities={entities}")
-check("咨询类企业保留", any("咨询" in e for e in entities), f"entities={entities}")
+
+# 玉禾转债真实公告书结构：控股股东直接持股，并通过控制另一企业间接持股。
+yuhe_text = """
+五、发行人控股股东和实际控制人情况
+（一）控股股东
+截至本上市公告书出具之日，西藏天之润直接持有发行人171,057,001股股份；同时，西藏天之润通过控制深圳鑫宏泰间接控制发行人3.54%的股份，因此，西藏天之润为发行人的控股股东。
+公司名称
+西藏天之润投资管理有限公司
+（二）实际控制人
+周平与周梦晨为父子关系，二人为发行人的共同实际控制人。
+六、其他事项
+""".strip()
+yuhe_holders = [
+    ("西藏天之润投资管理有限公司", 6_437_217, 42.91),
+    ("深圳市鑫宏泰投资管理有限公司", 530_861, 3.54),
+    ("王东焱", 281_924, 1.88),
+]
+yuhe_controllers, yuhe_entities = mod._extract_controller_names(yuhe_text, yuhe_holders)
+yuhe_locked = mod._match_controller_holders(yuhe_holders, yuhe_controllers, yuhe_entities)
+check("玉禾控股体系识别两名持有人", len(yuhe_locked) == 2, f"locked={yuhe_locked}")
+yuhe_ctrl_zhang = sum(item[1] for item in yuhe_locked)
+yuhe_total_zhang = mod._derive_total_zhang(yuhe_ctrl_zhang, sum(item[2] for item in yuhe_locked), 15.0)
+yuhe_circulation = round((yuhe_total_zhang - yuhe_ctrl_zhang) * 100 / 100000000, 4)
+check("玉禾流通规模约8.03亿元", 8.0 < yuhe_circulation < 8.1, f"circulation={yuhe_circulation}亿")
 
 # ---------- 测试2：_parse_bond_top10_holders 手单位 ×10 ----------
 hand_text = """二、前十名可转换公司债券持有人

@@ -313,50 +313,107 @@ def _parse_bond_top10_holders(text):
 
     return entries if entries else None
 
-def _extract_controller_names(text):
+_FUND_HOLDER_RE = re.compile(r'基金|ETF|指数|证券投资|资产管理计划|资管计划|公募|私募')
+
+
+def _controller_section(text):
+    """只截取控股股东/实际控制人章节，避免从整份公告正文误抓普通句子。"""
+    starts = [
+        text.find('发行人控股股东和实际控制人情况'),
+        text.find('控股股东和实际控制人情况'),
+        text.find('（一）控股股东'),
+    ]
+    start = min((pos for pos in starts if pos >= 0), default=-1)
+    if start < 0:
+        return text
+    section = text[start:start + 20000]
+    next_heading = re.search(r'\n[六七八九十]+、', section[20:])
+    return section[:next_heading.start() + 20] if next_heading else section
+
+
+def _clean_controller_candidate(value):
+    value = re.sub(r'\s+', '', str(value or '')).strip('，。；;：:、')
+    value = re.sub(r'^(?:仍|分别|共同)', '', value)
+    if not 2 <= len(value) <= 50:
+        return ''
+    if value in {'一人', '二人', '双方', '其本人'}:
+        return ''
+    if re.search(r'不存在|情形|情况|发行人|上市公司|本公司|公司与|及其|其他企业|重大|公开承诺|经营|募集资金|规定', value):
+        return ''
+    if re.search(r'[{}\[\]“”"\d%]', value):
+        return ''
+    return value
+
+
+def _holder_alias(name):
+    alias = re.sub(r'\s+', '', str(name or ''))
+    alias = re.sub(r'(股份有限公司|投资管理有限公司|集团有限公司|有限责任公司|有限公司)$', '', alias)
+    alias = re.sub(r'^(深圳|上海|北京|广州|南京|杭州|苏州)市', r'\1', alias)
+    return alias
+
+
+def _extract_controller_names(text, holders=None):
     """
     从上市公告书中识别控股股东、实际控制人及其控制的企业名称。
 
     返回 (controller_set, controlled_entity_set)
     """
-    controllers = set()
-    controlled_entities = set()
+    controllers, controlled_entities = set(), set()
+    section = _controller_section(text)
+    compact = re.sub(r'\s+', '', section)
 
-    # 控股股东名称
-    for m in re.finditer(r'控股股东[是为:：]\s*(.{2,50})[，。,\n]', text):
-        name = m.group(1).strip()
-        if name:
-            controllers.add(name)
+    # 只接受带“为/是/：”的明确身份表述，禁止把“实际控制人最近三年……”等正文误当名称。
+    for m in re.finditer(r'(?:控股股东|实际控制人)(?:仍)?(?:为|是|：|:)\s*([^。；;\n]{2,100})', section):
+        for part in re.split(r'[、和与]', m.group(1)):
+            name = _clean_controller_candidate(re.sub(r'先生|女士', '', part))
+            if name:
+                controllers.add(name)
 
-    # 实际控制人名称（可能多个人：XXX先生和YYY女士）
-    for m in re.finditer(r'实际控制人[是为:：\s]*\n?\s*(.{2,80})[。，,\n]', text, re.DOTALL):
-        ctrl_text = m.group(1).strip()
-        parts = re.split(r'[、和与]', ctrl_text)
-        for part in parts:
-            part = re.sub(r'[先生女士]', '', part).strip()
-            if part and len(part) >= 2:
-                controllers.add(part)
+    # “X、Y为发行人的共同实际控制人”等反向表述。
+    for m in re.finditer(r'([\u4e00-\u9fa5]{2,4})与([\u4e00-\u9fa5]{2,4})为(?:父子|父女|母子|母女|夫妻)关系', section):
+        controllers.update(m.groups())
+    for m in re.finditer(r'([^。；;\n]{2,60}?)(?:为|系)发行人的(?:共同)?(?:控股股东|实际控制人)', section):
+        for part in re.split(r'[、和与]', m.group(1)):
+            name = _clean_controller_candidate(re.sub(r'^.*[，,]', '', part))
+            if name:
+                controllers.add(name)
 
-    # 实际控制人控制的企业（100%出资额、控制出资额等）
-    for m in re.finditer(r'持有(.{2,30})100%的出资额', text):
-        entity = m.group(1).strip()
-        if entity:
-            controlled_entities.add(entity)
+    # 控股股东章节常见的直接持股、公司名称表格和控制链表述。
+    entity_patterns = [
+        r'截至[^。；]{0,80}[，,]([^，。；\n]{2,50}?)(?:直接)?持有发行人',
+        r'公司名称\s*\n\s*([^\n]{2,50})',
+        r'([^，。；\n]{2,50}?)通过控制([^，。；\n]{2,50}?)间接控制发行人',
+        r'持有([^，。；\n]{2,50}?)100%的出资额',
+    ]
+    for pattern in entity_patterns:
+        for match in re.finditer(pattern, section):
+            for raw in match.groups():
+                entity = _clean_controller_candidate(raw)
+                if entity and not _FUND_HOLDER_RE.search(entity):
+                    controlled_entities.add(entity)
 
-    # 企业名称中出现的"有限公司"或"咨询"等关键词的实体
-    # 从"实际控制人为XXX"段落后上下文找企业名
-    # 收紧：排除 ETF/指数基金/公募私募/资管等财务投资主体（名称常含"投资"易被误判为一致行动人）
-    _FUND_EXCLUDE = re.compile(r'基金|ETF|指数|资产管理|资管|公募|私募')
-    # 公司名字符类（中文/字母/数字/括号/·，排除 、，。 等标点），避免把前导"基金、"等
-    # 无关文本吞入实体；仅检查匹配关键词尾随12字符是否为基金/资管类，排除财务投资主体。
-    _NAME = r'[\u4e00-\u9fa5A-Za-z0-9（）()·.\-]{2,30}'
-    for m in re.finditer(r'(' + _NAME + r')(有限|咨询|投资|合伙)', text):
-        entity = m.group(1).strip() + m.group(2).strip()
-        window = text[m.start():m.end() + 12]
-        if entity and len(entity) >= 4 and not _FUND_EXCLUDE.search(window):
-            controlled_entities.add(entity)
+    # 用已解析的前十名持有人反向补全公司全称。只有名称别名确实出现在控制人章节才纳入。
+    for holder_name, _amount, _pct in holders or []:
+        if _FUND_HOLDER_RE.search(holder_name):
+            continue
+        alias = _holder_alias(holder_name)
+        if len(alias) >= 4 and alias in compact:
+            controlled_entities.add(re.sub(r'\s+', '', holder_name))
 
     return controllers, controlled_entities
+
+
+def _match_controller_holders(holders, controller_names, controlled_entities):
+    """从前十名持有人中匹配控股股东、实控人及其控制企业。"""
+    locked_holders = []
+    candidates = [x for x in controller_names | controlled_entities if x]
+    for name, amount, pct in holders:
+        if _FUND_HOLDER_RE.search(name):
+            continue
+        compact_name = re.sub(r'\s+', '', name)
+        if any(candidate in compact_name or compact_name in candidate for candidate in candidates):
+            locked_holders.append((name, amount, pct))
+    return locked_holders
 
 def _derive_total_zhang(ctrl_zhang, ctrl_pct, issue_scale):
     """
@@ -563,7 +620,7 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
                     "error": "上市公告书中未能解析前十名可转换公司债券持有人表格（PDF表格格式可能不被支持）",
                 }
 
-            controller_names, controlled_entities = _extract_controller_names(text)
+            controller_names, controlled_entities = _extract_controller_names(text, holders)
 
             if not controller_names and not controlled_entities:
                 return {
@@ -574,28 +631,7 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
                 }
 
             # 匹配：控股股东/实控人/控制企业 vs 前十名持有人
-            locked_holders = []
-            # 直接排除 ETF/指数基金/资管等财务投资主体：其持有人名常带券商 custodian 前缀
-            # （如"中国银河证券股份有限公司－XXX证券投资基金"），易被控股股东实体子串命中而
-            # 混入限售；按用户要求在此彻底排除，与 _extract_controller_names 的收紧保持一致。
-            _FUND_RE = re.compile(r'基金|ETF|指数|资产管理|资管|公募|私募')
-            for name, amount, pct in holders:
-                if _FUND_RE.search(name):
-                    continue
-                is_locked = False
-                # 检查是否为控股股东
-                for ctrl in controller_names:
-                    # 子串匹配（如"南京迪威尔实业有限公司" vs "南京迪威尔实业有限公司"）
-                    if ctrl in name or name in ctrl:
-                        is_locked = True
-                        break
-                if not is_locked:
-                    for entity in controlled_entities:
-                        if entity in name or name in entity:
-                            is_locked = True
-                            break
-                if is_locked:
-                    locked_holders.append((name, amount, pct))
+            locked_holders = _match_controller_holders(holders, controller_names, controlled_entities)
 
             if not locked_holders:
                 holder_summary = '、'.join(f'{n}' for n, a, _ in holders[:5])
@@ -1555,4 +1591,4 @@ def _fetch_stock_listing_actuals():
     if updated > 0:
         print(f"[回填] 从K线回填 {updated} 只股票的首日涨幅")
 
-__all__ = ['fetch_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']
+__all__ = ['fetch_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']

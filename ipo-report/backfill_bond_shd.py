@@ -19,7 +19,7 @@
   python backfill_bond_shd.py 111025     # 单只调试
   python backfill_bond_shd.py --dry      # 只查不写
 """
-import os, sys, re, time, datetime, argparse
+import os, sys, re, time, datetime, argparse, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backfill_lottery_rate import get_org_id, _download_pdf_text
 import db_pg

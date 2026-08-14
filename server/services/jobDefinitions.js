@@ -24,7 +24,7 @@ const JOB_DEFINITIONS = [
   { jobCode: 'ipo_calendar_refresh', label: '打新日历与日报', hour: 18, minute: 0, weekdays: true, deadlineMinutes: 240, catchupWindowMinutes: 4200, importance: 'high', sourceDescription: '打新数据接口与公告源', mayConsumeQuota: true },
   { jobCode: 'convertible_bond_universe_refresh', label: '可转债行情同步', hour: 18, minute: 0, weekdays: true, deadlineMinutes: 240, sourceDescription: '腾讯行情与 Tushare 接口', mayConsumeQuota: true },
   { jobCode: 'market_volatility_sync', label: '股市波动指标', hour: 18, minute: 45, weekdays: true, deadlineMinutes: 240, freshnessMaxLagDays: 45, sourceDescription: '中债、中证指数、恒生指数及美国十年期国债收益率替代基准', mayConsumeQuota: true },
-  { jobCode: 'convertible_bond_valuation_refresh', label: '可转债估值预警', hour: 18, minute: 15, weekdays: true, deadlineMinutes: 360,
+  { jobCode: 'convertible_bond_valuation_refresh', label: '可转债估值预警', hour: 18, minute: 15, weekdays: true, deadlineMinutes: 360, dataDatePolicy: 'previous_trading_day',
     dependencyCodes: ['convertible_bond_universe_refresh'] },
   { jobCode: 'ipo_history_sync', label: '新股历史同步', hour: 19, minute: 30, weekdays: true, deadlineMinutes: 240, sourceDescription: '新股历史数据接口', mayConsumeQuota: true },
   { jobCode: 'stock_analysis_refresh', label: '个股分析刷新', hour: 20, minute: 30, weekdays: true, deadlineMinutes: 360, sourceDescription: 'Tushare 与已入库标准行情', mayConsumeQuota: true },

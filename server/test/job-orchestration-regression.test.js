@@ -47,6 +47,7 @@ assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾�
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
 assert(/systemctl enable portfolio-server\.service portfolio-worker\.service/.test(deployScript), 'Web 与 Worker 服务必须配置开机自启');
 assert(/maxAttempts: 4/.test(definitions), '任务最大尝试次数必须包含首次执行和三次自动重试');
+assert(/jobCode: 'convertible_bond_valuation_refresh'[\s\S]*dataDatePolicy: 'previous_trading_day'/.test(definitions), '可转债估值任务必须按上一个交易日校验数据水位');
 assert(!/notifyJobFailure/.test(jobsDb), '底层 job_runs 完成记录不得绕过统一执行器直接发送首次失败告警');
 assert(/claimAlertDelivery/.test(alertMailer) && /status='sending'/.test(alertMailer), '邮件投递必须先原子领取，避免重复发送');
 assert(/connectionTimeout: 10 \* 1000/.test(config) && /greetingTimeout: 10 \* 1000/.test(config) && /socketTimeout: 10 \* 1000/.test(config), 'SMTP 必须配置 10 秒超时');
@@ -131,4 +132,4 @@ assert(/DELETE FROM ops\.data_quality_issues q[\s\S]*q\.status='resolved'/.test(
 assert(/sanitizeJobError\(err\.message \|\| err, 500\)/.test(arbitrageService)
   && /sanitizeJobError\(error\.message \|\| error, 1000\)/.test(arbitrageJob), '套利解析和同步错误写入日志前必须脱敏');
 
-console.log('OK job-orchestration-regression: 90 项关键验收约束通过');
+console.log('OK job-orchestration-regression: 91 项关键验收约束通过');

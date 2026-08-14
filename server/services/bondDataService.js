@@ -75,6 +75,35 @@ async function getBondHistoryList(limit = 50) {
        b.shd_ration_size, b.display_conv_price AS conv_price,
        b.stock_code AS stk_code, b.stock_name AS stk_name,
        b.listing_date, b.first_day_return,
+       CASE
+         WHEN b.listing_date = (timezone('Asia/Shanghai', now()))::date THEN 'listing_today'
+         WHEN b.listing_date < (timezone('Asia/Shanghai', now()))::date THEN 'listed'
+         WHEN b.onl_date IS NOT NULL THEN 'subscribed'
+         ELSE 'announced'
+       END AS history_stage,
+       jsonb_build_object(
+         'ann_date', CASE WHEN b.ann_date IS NOT NULL THEN 'value' ELSE 'missing' END,
+         'onl_date', CASE WHEN b.onl_date IS NOT NULL THEN 'value' ELSE 'pending' END,
+         'listing_date', CASE WHEN b.listing_date IS NOT NULL THEN 'value' ELSE 'pending' END,
+         'issue_size', CASE WHEN b.display_issue_size IS NOT NULL THEN 'value' ELSE 'missing' END,
+         'rating', CASE WHEN NULLIF(b.display_rating, '') IS NOT NULL THEN 'value' ELSE 'missing' END,
+         'onl_size', CASE
+           WHEN b.res_ann_date IS NULL OR b.res_ann_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+           WHEN b.onl_size IS NOT NULL THEN 'value'
+           ELSE 'missing'
+         END,
+         'onl_pch_num', CASE
+           WHEN b.res_ann_date IS NULL OR b.res_ann_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+           WHEN b.onl_pch_num IS NOT NULL THEN 'value'
+           ELSE 'missing'
+         END,
+         'first_day_return', CASE
+           WHEN b.listing_date IS NULL OR b.listing_date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+           WHEN b.first_day_return IS NOT NULL THEN 'value'
+           ELSE 'missing'
+         END
+       ) AS field_status,
+       to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD') AS data_as_of,
        p.pred_return AS pred_return
      FROM public.bond_unified b
      LEFT JOIN LATERAL (

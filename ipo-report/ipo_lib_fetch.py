@@ -1120,6 +1120,18 @@ def _get_industry_pe_map():
         print(f"行业PE映射构建失败: {e}")
     return _INDUSTRY_PE_MAP
 
+def fetch_stock_historical_detail(secu_code, existing_industry=None):
+    """补全已进入历史的新股详情，不依赖 new_share 的待发行列表。"""
+    code = str(secu_code or '').split('.')[0]
+    if not code:
+        return None
+    industry = _fetch_stock_industry(code) or str(existing_industry or '').strip()
+    detail = {'industry': industry or ''}
+    if industry:
+        detail['industry_pe'] = _get_industry_pe_map().get(industry)
+    detail['main_business'] = (_fetch_stock_main_business(code) or '')[:200]
+    return detail
+
 def _fetch_quote_tencent(stock_code):
     """腾讯行情API - 数据格式稳定，sandbox内可达"""
     try:
@@ -1668,4 +1680,4 @@ def _fetch_stock_listing_actuals():
     if updated > 0:
         print(f"[回填] 从K线回填 {updated} 只股票的首日涨幅")
 
-__all__ = ['fetch_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']
+__all__ = ['fetch_stock_detail', 'fetch_stock_historical_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']

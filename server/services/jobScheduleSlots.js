@@ -394,7 +394,19 @@ async function queryDataAsOf(jobCode, businessDate) {
 }
 
 async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
-  return queryDataAsOf(jobCode, businessDate).catch(() => null);
+  const queried = await queryDataAsOf(jobCode, businessDate).catch(() => null);
+  if (queried) return queried;
+  const candidates = [
+    resultSummary?.data_as_of,
+    resultSummary?.dataAsOf,
+    resultSummary?.window_end,
+    resultSummary?.trade_date,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeDataAsOf(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
 }
 
 async function completeSlot(slotId, status, resultSummary, errorMessage, runId) {

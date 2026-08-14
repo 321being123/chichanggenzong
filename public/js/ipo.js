@@ -85,13 +85,31 @@ function ipoPending(v, formatter) {
   return formatter ? formatter(v) : ipoFmt(v);
 }
 
+function ipoBondField(it, field, value, formatter) {
+  if (value !== null && value !== undefined && value !== '') {
+    return formatter ? formatter(value) : ipoFmt(value);
+  }
+  var status = it.field_status && it.field_status[field];
+  if (status === 'pending') return '<span>待公告</span>';
+  if (status === 'missing') return '<span>待补全</span>';
+  return '<span>-</span>';
+}
+
 function ipoFirstDayStatus(it) {
   if (it.ld_close_change !== null && it.ld_close_change !== undefined && it.ld_close_change !== '') {
     return ipoPctCell(it.ld_close_change);
   }
+  if (it.history_stage === 'subscribed') return '<span>待上市</span>';
   var listing = String(it.listing_date || '').slice(0, 10);
   var today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
   return listing === today ? '<span>收盘后更新</span>' : '<span>待补全</span>';
+}
+
+function ipoHistoryListingCell(it) {
+  var listing = String(it.listing_date || '').slice(0, 10);
+  if (listing) return escapeHtml(listing);
+  if (it.history_stage === 'subscribed') return '<span>待上市</span>';
+  return '<span>待补全</span>';
 }
 
 // 方案进展：只显示当前所处的一个阶段（董事会预案→发行公告→申购日→上市日 中的“一个”）。
@@ -334,8 +352,10 @@ function ipoRenderHistory(type, rows) {
         shdPct,                                   // 股东配售率(%)：= shd_ration_size/(issue_size×1e6)×100
         ipoShdShares(it),                          // 配售10张所需股数 = 1000/每股配售额(元)
         shdRecDate,                                // 股权登记日
-        announced ? ipoFmt(it.onl_size) : '-',     // 网上上限(亿)：仅公告后
-        it.onl_pch_num != null ? ipoFmt(it.onl_pch_num) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '') : '-',  // 申请户数(万)：深市公告只给配号总数，按1000配号/户估算，标注(估算)；沪市为公告真户数
+        ipoBondField(it, 'onl_size', it.onl_size), // 网上上限(亿)：结果公告后才应出现
+        ipoBondField(it, 'onl_pch_num', it.onl_pch_num, function (v) {
+          return ipoFmt(v) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '');
+        }),                                        // 申请户数(万)
         ipoPctCell(it.pred_return),               // 预测涨幅%：模型预测上市涨幅（无预测则显示 -）
         ipoPctCell(it.first_day_return)            // 上市涨幅% = 上市首日收盘 - 100
       ];
@@ -368,11 +388,11 @@ function ipoRenderHistory(type, rows) {
       escapeHtml(it.security_code || ''),
       ipoNameCell(it.security_name, it.security_code),
       ipoPending(it.ipo_date),
-      escapeHtml(String(it.listing_date || '').slice(0, 10)),
+      ipoHistoryListingCell(it),
       ipoPending(it.issue_price),
       it.issue_pe != null ? ipoFmt(it.issue_pe) : (it.issue_pe_status === 'loss' ? '亏损' : '待补全'),
-      ipoFmt(it.industry_pe),
-      escapeHtml(it.industry || '-'),
+      ipoPending(it.industry_pe),
+      ipoPending(it.industry),
       ipoPending(total10k),
       ipoPending(it.online_shares),
       ipoPending(upperWan),

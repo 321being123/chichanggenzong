@@ -29,6 +29,11 @@ REQUIRED_FIELDS = (
     "online_shares", "online_lottery_rate", "subscribe_upper_limit",
     "fund_raised", "circulation_mv",
 )
+QUALITY_BASE_FIELDS = (
+    "ipo_date", "issue_price", "total_shares", "online_shares",
+    "online_lottery_rate", "subscribe_upper_limit", "fund_raised", "circulation_mv",
+)
+QUALITY_DETAIL_FIELDS = ("industry", "industry_pe", "main_business")
 
 
 def _date_text(value):
@@ -197,7 +202,10 @@ def backfill_first_day(cur, now):
     updated = attempted = failed = 0
     for row in cur.fetchall():
         code, listing_text, issue_price, _, last_attempt = row
-        listing = datetime.strptime(listing_text[:10], "%Y-%m-%d").date()
+        try:
+            listing = datetime.strptime(str(listing_text)[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
         if listing == today and now.time() < dt_time(15, 30):
             continue
         if last_attempt and last_attempt.date() == today:
@@ -223,24 +231,108 @@ def backfill_first_day(cur, now):
     return {"attempted": attempted, "updated": updated, "pending": failed}
 
 
+def enrich_stock_missing_details(cur, today, limit=10):
+    """定点补全历史新股详情；不依赖 new_share 的待发行列表。"""
+    today_text = today.isoformat()
+    cur.execute("""
+      SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry
+        FROM ipo_history
+       WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL)
+         AND COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s
+       ORDER BY ipo_date DESC,security_code LIMIT %s
+    """, (today_text, today_text, int(limit)))
+    candidates = cur.fetchall()
+    if not candidates:
+        return {"attempted": 0, "updated": 0, "failed": 0, "remaining": 0}
+
+    from ipo_lib_fetch import fetch_stock_historical_detail
+
+    attempted = updated = failed = 0
+    for code, prior_status, existing_industry in candidates:
+        attempted += 1
+        meta = {"attempted_on": today_text, "source": "stock_basic/cninfo/valuation"}
+        try:
+            detail = fetch_stock_historical_detail(code, existing_industry) or {}
+            changed = any(detail.get(field) not in (None, "") for field in QUALITY_DETAIL_FIELDS)
+            if changed:
+                cur.execute("""
+                  UPDATE ipo_history SET
+                    industry=COALESCE(NULLIF(industry,''),NULLIF(%s,'')),
+                    industry_pe=COALESCE(industry_pe,%s),
+                    main_business=COALESCE(NULLIF(main_business,''),NULLIF(%s,'')),
+                    source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object('historical_enrichment',%s::jsonb),
+                    updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+                   WHERE security_code=%s
+                """, (detail.get("industry"), detail.get("industry_pe"), detail.get("main_business"),
+                      Json(detail), code))
+                updated += 1
+                meta["updated_fields"] = [field for field in QUALITY_DETAIL_FIELDS if detail.get(field) not in (None, "")]
+            else:
+                meta["result"] = "no_new_value"
+        except Exception as exc:
+            failed += 1
+            meta["error"] = str(exc)[:300]
+        cur.execute("""
+          UPDATE ipo_history
+             SET data_quality_status=COALESCE(data_quality_status,'{}'::jsonb)
+               || jsonb_build_object('enrichment',%s::jsonb)
+           WHERE security_code=%s
+        """, (Json(meta), code))
+
+    cur.execute("""
+      SELECT count(*) FROM ipo_history
+       WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL)
+    """, (today_text,))
+    remaining = int(cur.fetchone()[0] or 0)
+    return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining}
+
+
 def update_quality(cur, today):
     cur.execute("""
       SELECT security_code,ipo_date,listing_date,issue_price,total_shares,online_shares,
-             online_lottery_rate,subscribe_upper_limit,fund_raised,circulation_mv
+             online_lottery_rate,subscribe_upper_limit,fund_raised,circulation_mv,
+             issue_pe,issue_pe_status,industry,industry_pe,main_business,ld_close_change,
+             COALESCE(data_quality_status,'{}'::jsonb)
         FROM ipo_history
-       WHERE listing_date IS NOT NULL AND listing_date<>'' AND listing_date::date <= %s
-         AND listing_date::date >= %s
-    """, (today, today - timedelta(days=730)))
+       WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+         AND ipo_date >= %s
+    """, (today.isoformat(), (today - timedelta(days=730)).isoformat()))
     missing_records = 0
     missing_fields = 0
     for row in cur.fetchall():
-        values = dict(zip(("security_code",) + REQUIRED_FIELDS, row))
-        missing = [field for field in REQUIRED_FIELDS if values.get(field) in (None, "")]
+        values = dict(zip(("security_code", "ipo_date", "listing_date", "issue_price", "total_shares",
+                           "online_shares", "online_lottery_rate", "subscribe_upper_limit", "fund_raised",
+                           "circulation_mv", "issue_pe", "issue_pe_status", "industry", "industry_pe",
+                           "main_business", "ld_close_change", "prior_status"), row))
+        missing = [field for field in QUALITY_BASE_FIELDS if values.get(field) in (None, "")]
+        if values.get("issue_pe") in (None, "") and values.get("issue_pe_status") != "loss":
+            missing.append("issue_pe")
+        for field in QUALITY_DETAIL_FIELDS:
+            if values.get(field) in (None, ""):
+                missing.append(field)
+        listing_text = str(values.get("listing_date") or "")[:10]
+        valid_listing = (
+            len(listing_text) == 10 and listing_text[4] == "-" and listing_text[7] == "-"
+            and listing_text.replace("-", "").isdigit()
+        )
+        listed = valid_listing and listing_text <= today.isoformat()
+        pending = []
+        if not listed:
+            pending.append("listing_date")
+        elif values.get("ld_close_change") in (None, ""):
+            missing.append("ld_close_change")
+        prior = values.get("prior_status") if isinstance(values.get("prior_status"), dict) else {}
         status = {
             "status": "missing" if missing else "complete",
             "missing_fields": missing,
+            "pending_not_due": pending,
+            "stage": "listed" if listed else "subscribed",
             "checked_at": datetime.now().isoformat(timespec="seconds"),
         }
+        if prior.get("enrichment"):
+            status["enrichment"] = prior["enrichment"]
         cur.execute("UPDATE ipo_history SET data_quality_status=%s WHERE security_code=%s",
                     (Json(status), values["security_code"]))
         if missing:
@@ -287,6 +379,7 @@ def run(today=None):
         with connection.cursor() as cur:
             inserted, refreshed = upsert_shares(cur, records)
             first_day = backfill_first_day(cur, datetime.now())
+            enrichment = enrich_stock_missing_details(cur, today)
             quality = update_quality(cur, today)
             listed_source = {row["security_code"] for row in records if row["listing_date"] and row["listing_date"] <= today.isoformat()}
             cur.execute("SELECT security_code FROM ipo_history WHERE security_code = ANY(%s)", (list(listed_source),))
@@ -302,6 +395,7 @@ def run(today=None):
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),
             "first_day": first_day, "quality": quality, "calendar_diff": calendar_diff,
+            "enrichment": enrichment,
         }
     except Exception as exc:
         connection.rollback()

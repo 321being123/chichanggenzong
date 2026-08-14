@@ -2757,6 +2757,32 @@ async function migration070RemoveDuplicateLegacyPriceDates() {
   `);
 }
 
+// ========== 071：可转债发行事件按业务键去重并加唯一约束 ==========
+// 同一标的、同一事件类型、同一日期只保留一条最完整且最新的事实，避免不同来源键重复写入。
+async function migration071DeduplicateInstrumentEvents() {
+  await pool.query(`
+    WITH ranked AS (
+      SELECT event_id,
+             ROW_NUMBER() OVER (
+               PARTITION BY instrument_id,event_type,event_date
+               ORDER BY
+                 CASE WHEN details IS NOT NULL AND details <> '{}'::jsonb THEN 1 ELSE 0 END DESC,
+                 source_updated_at DESC NULLS LAST,
+                 updated_at DESC NULLS LAST,
+                 event_id DESC
+             ) AS rn
+        FROM event.instrument_events
+    )
+    DELETE FROM event.instrument_events e
+     USING ranked r
+     WHERE e.event_id=r.event_id AND r.rn>1
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_instrument_events_business
+      ON event.instrument_events(instrument_id,event_type,event_date)
+  `);
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -2857,6 +2883,7 @@ const MIGRATIONS = [
   { version: '068_ipo_bond_liquidity_calibration', up: migration068IpoBondLiquidityCalibration },
   { version: '069_normalize_daily_price_dates', up: migration069NormalizeDailyPriceDates },
   { version: '070_remove_duplicate_legacy_price_dates', up: migration070RemoveDuplicateLegacyPriceDates },
+  { version: '071_deduplicate_instrument_events', up: migration071DeduplicateInstrumentEvents },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3396,6 +3423,7 @@ module.exports = {
   migration068IpoBondLiquidityCalibration,
   migration069NormalizeDailyPriceDates,
   migration070RemoveDuplicateLegacyPriceDates,
+  migration071DeduplicateInstrumentEvents,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

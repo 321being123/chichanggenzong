@@ -228,6 +228,10 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       await failOrRetry(claimed, result.error || result.reason, runId, result);
       return result;
     }
+    if (result && result.skipped && ['fresh', 'already-ran-today'].includes(result.reason)) {
+      await completeSlot(claimed.slot_id, 'succeeded', result, null, runId);
+      return result;
+    }
     if (result && result.skipped && result.reason !== 'not_configured') {
       await deferSlot(claimed.slot_id, result.reason || '任务被其他实例占用', result, 5, runId);
       return result;

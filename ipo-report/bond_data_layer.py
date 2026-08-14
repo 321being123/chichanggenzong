@@ -187,7 +187,7 @@ def save_cb_issue_rows(issue_rows, basic_rows=None, rating_map=None, dry=False):
                 cur.execute(
                     """INSERT INTO event.instrument_events(instrument_id,event_type,event_date,source_id,source_key,details,source_updated_at)
                        VALUES(%s,%s,%s,%s,%s,%s::jsonb,now())
-                       ON CONFLICT(source_id,source_key) DO UPDATE SET instrument_id=EXCLUDED.instrument_id,event_date=EXCLUDED.event_date,
+                       ON CONFLICT(instrument_id,event_type,event_date) DO UPDATE SET source_id=EXCLUDED.source_id,source_key=EXCLUDED.source_key,
                          details=EXCLUDED.details,source_updated_at=now(),updated_at=now()""",
                     (instrument_id, event_type, event_date, source_id,
                      f"tushare:cb_issue:{ts_code}:{event_type}:{event_date}", payload_text),

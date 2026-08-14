@@ -12,6 +12,8 @@ const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess, mar
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
+const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
+const BOND_ISSUE_RESULT_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_shd.py');
 const PROFILE_FIELDS = [
   'ts_code','bond_full_name','bond_short_name','cb_type','stk_code','stk_short_name','maturity','par','issue_price',
   'issue_size','remain_size','value_date','maturity_date','rate_type','coupon_rate','add_rate','pay_per_year',
@@ -573,8 +575,8 @@ async function saveIssueFacts(client, issue, instrumentId, sourceId, runId = nul
     await client.query(
       `INSERT INTO event.instrument_events(instrument_id,event_type,event_date,source_id,source_key,details,source_updated_at)
        VALUES($1,$2,$3::date,$4,$5,$6::jsonb,now())
-       ON CONFLICT(source_id,source_key) DO UPDATE SET
-         instrument_id=EXCLUDED.instrument_id,event_date=EXCLUDED.event_date,
+       ON CONFLICT(instrument_id,event_type,event_date) DO UPDATE SET
+         source_id=EXCLUDED.source_id,source_key=EXCLUDED.source_key,
          details=EXCLUDED.details,source_updated_at=now(),updated_at=now()`,
       [instrumentId, eventType, eventDate, sourceId,
         `tushare:cb_issue:${issue.ts_code || instrumentId}:${eventType}:${eventDate}`, payload]
@@ -1119,6 +1121,86 @@ function activeProfile(row, today) {
     (!convertStop || convertStop > today);
 }
 
+function runBondFirstDayBackfill(executable) {
+  return new Promise((resolve, reject) => {
+    const args = path.basename(executable).toLowerCase() === 'py'
+      ? ['-3', BOND_FIRSTDAY_SCRIPT]
+      : [BOND_FIRSTDAY_SCRIPT];
+    const child = spawn(executable, args, {
+      cwd: path.resolve(__dirname, '..', '..'),
+      env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
+      windowsHide: true,
+    });
+    let output = '', error = '';
+    const timer = setTimeout(() => child.kill(), 25 * 60 * 1000);
+    child.stdout.on('data', chunk => { output += chunk.toString(); });
+    child.stderr.on('data', chunk => { error += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(error || output || `新债上市表现补全失败（${code}）`));
+      const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '{}';
+      try { resolve(JSON.parse(line)); }
+      catch (_) { reject(new Error(`新债上市表现补全结果格式错误: ${line.slice(0, 300)}`)); }
+    });
+  });
+}
+
+function runBondIssueResultBackfill(executable) {
+  return new Promise((resolve, reject) => {
+    const args = path.basename(executable).toLowerCase() === 'py'
+      ? ['-3', BOND_ISSUE_RESULT_SCRIPT]
+      : [BOND_ISSUE_RESULT_SCRIPT];
+    const limit = String(process.env.IPO_BOND_ISSUE_RESULT_LIMIT || '20');
+    const child = spawn(executable, [...args, '--limit', limit], {
+      cwd: path.resolve(__dirname, '..', '..'),
+      env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
+      windowsHide: true,
+    });
+    let output = '', error = '';
+    const timer = setTimeout(() => child.kill(), 25 * 60 * 1000);
+    child.stdout.on('data', chunk => { output += chunk.toString(); });
+    child.stderr.on('data', chunk => { error += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(error || output || `新债发行结果补全失败（${code}）`));
+      const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '';
+      const match = line.match(/update=(\d+)\s+skip=(\d+)\s+fail=(\d+)/);
+      if (!match) return reject(new Error(`新债发行结果补全结果格式错误: ${line.slice(0, 300)}`));
+      resolve({ updated: Number(match[1]), skipped: Number(match[2]), failed: Number(match[3]), limit: Number(limit) });
+    });
+  });
+}
+
+async function backfillBondFirstDayPerformance(reason = 'scheduled') {
+  if (!fs.existsSync(BOND_FIRSTDAY_SCRIPT)) return { ok: false, skipped: true, reason: 'script_missing' };
+  const errors = [];
+  for (const executable of pythonCandidates()) {
+    try {
+      const result = await runBondFirstDayBackfill(executable);
+      return { ...result, reason };
+    } catch (error) {
+      errors.push(`${executable}: ${error.message}`);
+    }
+  }
+  throw new Error(errors.join(' | ') || '未找到可用的 Python 解释器');
+}
+
+async function backfillBondIssueResults(reason = 'scheduled') {
+  if (!fs.existsSync(BOND_ISSUE_RESULT_SCRIPT)) return { ok: false, skipped: true, reason: 'script_missing' };
+  const errors = [];
+  for (const executable of pythonCandidates()) {
+    try {
+      const result = await runBondIssueResultBackfill(executable);
+      return { ...result, reason };
+    } catch (error) {
+      errors.push(`${executable}: ${error.message}`);
+    }
+  }
+  throw new Error(errors.join(' | ') || '未找到可用的 Python 解释器');
+}
+
 function recentIssueCandidate(row, today = isoDate(new Date())) {
   const dates = [row && row.ann_date, row && row.res_ann_date, row && row.onl_date]
     .map(isoDate).filter(Boolean).sort();
@@ -1289,6 +1371,22 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
     // 评级历史自动补齐（独立事务，失败不影响主同步；缺评级的转债逐只从 Tushare 拉取）
     try { await backfillMissingRatings(reason); }
     catch (ratingErr) { console.warn('[ratings] 评级补齐失败（不影响主同步）:', ratingErr.message); }
+    let listingPerformance = { ok: true, skipped: true, reason: 'no_pending_candidates' };
+    try {
+      listingPerformance = await backfillBondFirstDayPerformance(reason);
+      console.log(`[上市表现] 本批尝试${listingPerformance.attempted || 0}，更新${listingPerformance.updated || 0}，剩余${listingPerformance.remaining || 0}`);
+    } catch (performanceErr) {
+      listingPerformance = { ok: false, error: performanceErr.message };
+      console.warn('[上市表现] 自动补全失败（不影响主同步）:', performanceErr.message);
+    }
+    let issueResults = { ok: true, skipped: true, reason: 'no_pending_candidates' };
+    try {
+      issueResults = await backfillBondIssueResults(reason);
+      console.log(`[发行结果] 本批尝试${(issueResults.updated || 0) + (issueResults.skipped || 0)}，更新${issueResults.updated || 0}，失败${issueResults.failed || 0}`);
+    } catch (issueErr) {
+      issueResults = { ok: false, error: issueErr.message };
+      console.warn('[发行结果] 自动补全失败（不影响主同步）:', issueErr.message);
+    }
     // 可转债周期：主同步提交后，用独立事务计算（周期失败只影响周期数据，不影响主同步）
     const cycleClient = await pool.connect();
     try {
@@ -1301,8 +1399,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       await cycleClient.query('ROLLBACK').catch(() => {});
       console.warn('[cycle] 当日周期计算失败（不影响主同步）：', cycErr.message);
     } finally { cycleClient.release(); }
-    await finishJobRun(runId, true, `${reason}：同步 ${saved} 只，行情日期 ${daily.tradeDate}`);
-    return { skipped: false, count: saved, trade_date: isoDate(daily.tradeDate) };
+    await finishJobRun(runId, true, `${reason}：同步 ${saved} 只，行情日期 ${daily.tradeDate}，上市表现 ${listingPerformance.updated || 0} 只`);
+    return { skipped: false, count: saved, trade_date: isoDate(daily.tradeDate), listing_performance: listingPerformance, issue_results: issueResults };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;
@@ -1372,8 +1470,9 @@ async function backfillCycleGaps({ windowDays = 90 } = {}) {
 // 每日主同步 + 自动补齐遗漏的交易日：某天任务失败或部署晚于点，下次运行时主同步更新最新日，backfill 顺手把漏的那天补上，不留永久缺口。
 // backfillOpts 透传给 backfillCycleGaps（如手动脚本传 { windowDays: 4000 } 补全量历史）。
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
-  await syncConvertibleBondUniverse(reason);
+  const result = await syncConvertibleBondUniverse(reason);
   await backfillCycleGaps(backfillOpts);
+  return result;
 }
 
 async function loadSafety(code) {
@@ -2180,5 +2279,5 @@ module.exports = {
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,
-  backfillMissingRatings,
+  backfillMissingRatings, backfillBondFirstDayPerformance, backfillBondIssueResults,
 };

@@ -249,7 +249,7 @@ def main():
         if not args.dry:
             cur.execute("""UPDATE fundamental.convertible_bond_issuance
                               SET shareholder_allotment_quantity=COALESCE(%s, shareholder_allotment_quantity),
-                                  online_purchase_accounts_10k=COALESCE(%s / 10000.0, online_purchase_accounts_10k),
+                                  online_purchase_accounts_10k=COALESCE(%s, online_purchase_accounts_10k),
                                   updated_at=NOW()
                             WHERE instrument_id=%s""", (new_shd, pch, instrument_id))
             conn.commit()

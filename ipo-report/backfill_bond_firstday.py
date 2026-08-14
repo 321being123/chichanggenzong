@@ -9,7 +9,7 @@
 
 Usage: python backfill_bond_firstday.py [--dry]
 """
-import sys, os, time
+import sys, os, time, json
 sys.path.insert(0, os.path.dirname(__file__))
 import db_pg
 from _common import _load_env, get_tushare_pro
@@ -17,19 +17,40 @@ from bond_data_layer import update_listing_performance
 
 _load_env()
 
-dry = '--dry' in sys.argv
-pro = get_tushare_pro()
-if pro is None:
-    raise RuntimeError("TUSHARE_TOKEN 未配置")
-
 # 凭据统一从 PG* 环境变量读取（.env / 部署脚本注入），不再写死密码
+dry = '--dry' in sys.argv
 conn = db_pg.connect()
 cur = conn.cursor()
 
-# 取所有已上市债券（listing_date 非空），全部按既有公式重算以保证一致正确
+# 只处理已上市且尚未形成表现事实的债券；已有有效表现不重复请求上游。
+limit = max(int(os.environ.get('IPO_BOND_FIRSTDAY_LIMIT', '80')), 1)
 cur.execute("SELECT security_code, bond_name, listing_date FROM public.bond_unified WHERE listing_date IS NOT NULL")
+all_rows = cur.fetchall()
+cur.execute("""
+  SELECT b.security_code,b.bond_name,b.listing_date
+    FROM public.bond_unified b
+   WHERE b.listing_date IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM analytics.convertible_bond_listing_performance p
+        WHERE p.instrument_id=b.instrument_id
+          AND p.measurement_type='first_non_limit_day'
+          AND p.formula_version='first_non_limit_day_v1'
+     )
+   ORDER BY b.listing_date DESC
+   LIMIT %s
+""", (limit,))
 rows = cur.fetchall()
-print(f"[1] 已上市债券 {len(rows)} 只，开始按旧逻辑(首个非涨停日)取收盘...")
+print(f"[1] 已上市债券 {len(all_rows)} 只，本批待补 {len(rows)} 只，最多处理 {limit} 只...")
+
+if not rows:
+    cur.close(); conn.close()
+    print(json.dumps({"ok": True, "attempted": 0, "updated": 0, "skipped": 0, "remaining": 0}, ensure_ascii=False))
+    raise SystemExit(0)
+
+pro = get_tushare_pro()
+if pro is None:
+    cur.close(); conn.close()
+    raise RuntimeError("TUSHARE_TOKEN 未配置")
 
 
 def _ts_code(code):
@@ -104,5 +125,17 @@ for code, name, ld in rows:
 
 if not dry:
     conn.commit()
+cur.execute("""
+  SELECT count(*) FROM public.bond_unified b
+   WHERE b.listing_date IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM analytics.convertible_bond_listing_performance p
+        WHERE p.instrument_id=b.instrument_id
+          AND p.measurement_type='first_non_limit_day'
+          AND p.formula_version='first_non_limit_day_v1'
+     )
+""")
+remaining = int(cur.fetchone()[0] or 0)
 cur.close(); conn.close()
-print(f"\nDone: 更新={ok} 跳过(无K线/缺失)={skip} (dry={dry})")
+print(f"\nDone: 更新={ok} 跳过(无K线/缺失)={skip} 剩余={remaining} (dry={dry})")
+print(json.dumps({"ok": True, "attempted": len(rows), "updated": ok, "skipped": skip, "remaining": remaining}, ensure_ascii=False))

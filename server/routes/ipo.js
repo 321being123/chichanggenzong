@@ -70,6 +70,74 @@ function trimCalendar(calendar, days) {
   });
 }
 
+function stockHistoryStageSql(alias = 'h') {
+  return `CASE WHEN ${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN
+    CASE
+      WHEN ${alias}.listing_date::date = (timezone('Asia/Shanghai', now()))::date THEN 'listing_today'
+      WHEN ${alias}.listing_date::date < (timezone('Asia/Shanghai', now()))::date THEN 'listed'
+      ELSE 'subscribed'
+    END
+  ELSE 'subscribed' END`;
+}
+
+function stockFieldStatusSql(alias = 'h') {
+  return `jsonb_build_object(
+    'ipo_date', CASE WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'value' ELSE 'missing' END,
+    'listing_date', CASE
+      WHEN ${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'value'
+      ELSE 'pending'
+    END,
+    'issue_price', CASE WHEN ${alias}.issue_price IS NOT NULL THEN 'value' ELSE 'missing' END,
+    'industry', CASE WHEN NULLIF(${alias}.industry, '') IS NOT NULL THEN 'value' ELSE 'missing' END,
+    'industry_pe', CASE WHEN ${alias}.industry_pe IS NOT NULL THEN 'value' ELSE 'missing' END,
+    'main_business', CASE WHEN NULLIF(${alias}.main_business, '') IS NOT NULL THEN 'value' ELSE 'missing' END,
+    'ld_close_change', CASE WHEN ${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN
+      CASE
+        WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+        WHEN ${alias}.ld_close_change IS NOT NULL THEN 'value'
+        ELSE 'missing'
+      END
+      ELSE 'pending'
+    END
+  )`;
+}
+
+async function loadStockCalendar(days) {
+  const { rows } = await pool.query(
+    `WITH bounds AS (
+       SELECT (timezone('Asia/Shanghai', now()))::date AS start_date,
+              (timezone('Asia/Shanghai', now()))::date + ($1::int * INTERVAL '1 day') AS end_date
+     ), stock_events AS (
+       SELECT h.ipo_date AS event_date, 'apply' AS event_type,
+              h.security_code AS code, h.security_name AS name
+         FROM ipo_history h, bounds b
+        WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+          AND h.ipo_date >= to_char(b.start_date, 'YYYY-MM-DD')
+          AND h.ipo_date < to_char(b.end_date, 'YYYY-MM-DD')
+          AND COALESCE(h.market_type, '') <> '北交所'
+          AND h.security_code !~ '^(920|82|83|87|43)'
+       UNION ALL
+       SELECT h.listing_date AS event_date, 'listing' AS event_type,
+              h.security_code AS code, h.security_name AS name
+         FROM ipo_history h, bounds b
+        WHERE h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+          AND h.listing_date >= to_char(b.start_date, 'YYYY-MM-DD')
+          AND h.listing_date < to_char(b.end_date, 'YYYY-MM-DD')
+          AND COALESCE(h.market_type, '') <> '北交所'
+          AND h.security_code !~ '^(920|82|83|87|43)'
+     )
+     SELECT event_date AS date,event_type,code,name
+       FROM stock_events ORDER BY event_date,code,event_type`, [days]
+  );
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.date)) groups.set(row.date, calendarDay(row.date));
+    const key = row.event_type === 'apply' ? 'apply_stocks' : 'list_stocks';
+    groups.get(row.date)[key].push({ code: row.code, name: row.name, secu_code: row.code });
+  }
+  return [...groups.values()];
+}
+
 async function loadBondCalendar(days) {
   const { rows } = await pool.query(
     `SELECT DISTINCT ON (e.instrument_id, e.event_type, e.event_date)
@@ -249,6 +317,9 @@ router.get('/history', async (req, res) => {
                 h.listing_date, h.ld_close_change,
                 h.main_business, h.industry, h.subscribe_upper_limit,
                 h.issue_pe_status, h.data_quality_status,
+                ${stockHistoryStageSql('h')} AS history_stage,
+                ${stockFieldStatusSql('h')} AS field_status,
+                to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD') AS data_as_of,
                 p.pred_return AS pred_return, COALESCE(p.has_prediction, false) AS has_prediction
          FROM ipo_history h
          LEFT JOIN LATERAL (
@@ -256,10 +327,11 @@ router.get('/history', async (req, res) => {
            WHERE type = 'stock' AND code = h.security_code AND pred_return IS NOT NULL
            ORDER BY pred_date DESC LIMIT 1
          ) p ON true
-         WHERE h.listing_date IS NOT NULL AND h.listing_date <> ''
+         WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+           AND h.ipo_date <= to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD')
            AND COALESCE(h.market_type, '') <> '北交所'
            AND h.security_code !~ '^(920|82|83|87|43)'
-         ORDER BY h.listing_date DESC LIMIT $1`,
+         ORDER BY h.ipo_date DESC, NULLIF(h.listing_date, '') DESC NULLS LAST, h.security_code LIMIT $1`,
         [limit]
       );
       rows = r.rows;
@@ -270,20 +342,14 @@ router.get('/history', async (req, res) => {
   }
 });
 
-// 打新日历：未来 N 天申购/上市日（来自最新报告的 summary_json.calendar）
+// 打新日历：未来 N 天申购/上市日（股票来自 ipo_history，新债来自标准事件表）
 router.get('/calendar', async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days || '30', 10) || 30, 90);
-    const r = await pool.query(
-      "SELECT summary_json->'calendar' AS calendar FROM ipo_reports ORDER BY report_date DESC LIMIT 1"
-    );
-    const row = r.rows[0];
-    let calendar = [];
-    if (row && row.calendar) {
-      calendar = typeof row.calendar === 'string' ? JSON.parse(row.calendar) : row.calendar;
-    }
-    const stockCalendar = trimCalendar(filterBeijingStocks(calendar), days);
-    const bondCalendar = await loadBondCalendar(days);
+    const [stockCalendar, bondCalendar] = await Promise.all([
+      loadStockCalendar(days),
+      loadBondCalendar(days),
+    ]);
     const byDate = new Map(stockCalendar.map(day => [day.date, { ...calendarDay(day.date), ...day }]));
     for (const day of bondCalendar) {
       const target = byDate.get(day.date) || calendarDay(day.date);

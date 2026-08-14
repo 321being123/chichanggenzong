@@ -8,7 +8,7 @@ const { runHkRateJob } = require('./hkRate');
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
 const MARKET_CLOSE_TIMES = [
-  { h: 15, m: 10, label: 'A股',     match: code => /^(00|30|60|68|[48])/.test(code) },
+  { h: 15, m: 10, label: 'A股',     match: (code, position) => /^(00|30|60|68|[48])/.test(code) && !/(债|转债)/.test(String(position && position.name || '')) },
   { h: 16, m: 10, label: '港股',    match: code => code.length === 5 },
   { h: 15, m: 10, label: '可转债',   match: code => /^(11|12)/.test(code) },
   { h: 15, m: 10, label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
@@ -81,7 +81,7 @@ async function fetchWithRetry(code, tries) {
 // 保证 A 股已写入时，可转债/ETF 仍会被抓取，部分缺失也能补齐。
 function pickMissingCodes(positions, existingCodes, matchFn) {
   return (positions || [])
-    .filter(p => p && p.code && matchFn(p.code) && !existingCodes.has(p.code))
+    .filter(p => p && p.code && matchFn(p.code, p) && !existingCodes.has(p.code))
     .map(p => p.code);
 }
 
@@ -131,16 +131,13 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
 // 为所有账户记录某市场某交易日收盘价；任一证券失败都进入统一有限重试，避免部分账户缺数却显示成功。
 async function recordMarketClose(label, matchFn, dateStr) {
   const cnDate = dateStr || cnDateStr();
-  const { rows: users } = await pool.query('SELECT username, accounts FROM users');
+  const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
   let recorded = 0, failed = 0;
-  for (const user of users) {
-    const accounts = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
-    for (const accountName of accounts) {
-      const r = await recordCloseOne(user.username, accountName, label, matchFn, cnDate)
-        .catch(() => ({ recorded: 0, failed: 1, error: true }));
-      recorded += Number(r && r.recorded || 0);
-      failed += Number(r && r.failed || 0);
-    }
+  for (const account of accounts) {
+    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate)
+      .catch(() => ({ recorded: 0, failed: 1, error: true }));
+    recorded += Number(r && r.recorded || 0);
+    failed += Number(r && r.failed || 0);
   }
   if (failed > 0) throw new Error(`收盘记录存在缺失 (${label} ${cnDate})：成功 ${recorded}，失败 ${failed}`);
   return { recorded, failed };
@@ -189,27 +186,25 @@ async function findMissingCloseDates(username, accountName) {
 async function backfillMissingCloses(options) {
   const scanAllMissingDates = !!(options && options.scanAllMissingDates);
   const recentDays = scanAllMissingDates ? null : recentTradingDays(6);
-  const { rows: users } = await pool.query('SELECT username, accounts FROM users');
+  const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
   let accountCount = 0, missingDates = 0, recorded = 0, failed = 0;
-  for (const user of users) {
-    const accountNames = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
-    for (const accountName of accountNames) {
-      const days = scanAllMissingDates
-        ? await findMissingCloseDates(user.username, accountName)
-        : recentDays;
-      if (!days.length) continue;
-      accountCount++;
-      missingDates += days.length;
-      for (const day of days) {
-        // 不再用「当天任意一条记录」判断是否跳过：recordCloseOne 内部按代码幂等，
-        // 只补齐缺失代码，已完整的市场不会重复抓取，缺失的市场会被补上。
-        for (const mkt of MARKET_CLOSE_TIMES) {
-          const result = await recordCloseOne(user.username, accountName, mkt.label, mkt.match, day)
-            .catch(e => { console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message); return null; });
-          if (result) {
-            recorded += result.recorded || 0;
-            failed += result.failed || 0;
-          }
+  for (const account of accounts) {
+    const accountName = account.account_name;
+    const days = scanAllMissingDates
+      ? await findMissingCloseDates(account.username, accountName)
+      : recentDays;
+    if (!days.length) continue;
+    accountCount++;
+    missingDates += days.length;
+    for (const day of days) {
+      // 不再用「当天任意一条记录」判断是否跳过：recordCloseOne 内部按代码幂等，
+      // 只补齐缺失代码，已完整的市场不会重复抓取，缺失的市场会被补上。
+      for (const mkt of MARKET_CLOSE_TIMES) {
+        const result = await recordCloseOne(account.username, accountName, mkt.label, mkt.match, day)
+          .catch(e => { console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message); return null; });
+        if (result) {
+          recorded += result.recorded || 0;
+          failed += result.failed || 0;
         }
       }
     }

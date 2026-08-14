@@ -19,6 +19,15 @@ function dateText(date = new Date()) {
   return `${p.year}-${p.month}-${p.day}`;
 }
 
+function normalizeBusinessDate(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return dateText(value);
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : dateText(parsed);
+}
+
 function scheduledDate(dateTextValue, hour, minute) {
   const [year, month, day] = dateTextValue.split('-').map(Number);
   // Date.UTC 的字段作为北京时间字段使用，再减去东八区偏移得到真实时刻。
@@ -34,6 +43,14 @@ function previousDate(dateTextValue) {
   const d = new Date(`${dateTextValue}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
+}
+
+function expectedDataDate(jobCode, businessDate) {
+  const normalized = normalizeBusinessDate(businessDate);
+  if (!normalized || getJobDefinition(jobCode).dataDatePolicy !== 'previous_trading_day') return normalized;
+  let cursor = previousDate(normalized);
+  while (!isWeekday(cursor)) cursor = previousDate(cursor);
+  return cursor;
 }
 
 async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'scheduled') {
@@ -106,12 +123,13 @@ async function reconcileSlot(slot) {
   }
   if (!run || !['done', 'failed'].includes(run.status)) return slot;
   const requestedStatus = run.status === 'done' ? 'succeeded' : 'failed';
-  const requiresDataWatermark = getJobDefinition(slot.job_code).requiresDataWatermark !== false;
+  const definition = getJobDefinition(slot.job_code);
+  const requiresDataWatermark = definition.requiresDataWatermark !== false;
   const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
     ? await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null)
     : null;
   const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark
-    && !isDataAsOfFresh(dataAsOf, slot.business_date) ? 'degraded' : requestedStatus;
+    && !isDataAsOfFresh(dataAsOf, slot.business_date, definition) ? 'degraded' : requestedStatus;
   const resultSummary = { source: 'job_runs', runId: run.id, detail: sanitizeJobError(run.detail || '') };
   const updated = await pool.query(
     `UPDATE ops.job_schedule_slots
@@ -133,7 +151,11 @@ async function reconcileSlot(slot) {
       alertType: 'degraded',
       subject: `后台任务数据未确认：${getJobDefinition(slot.job_code).label}`,
       summary: '任务执行记录显示成功，但没有找到不早于计划日期的数据日期，请检查上游接口和入库结果。',
-    }).catch(error => console.warn('[job-alert] 降级告警失败:', error.message));
+      }).catch(error => console.warn('[job-alert] 降级告警失败:', error.message));
+  }
+  if (updated.rows[0] && nextStatus === 'succeeded') {
+    const { resolveJobSlotAlerts } = require('./jobAlertMailer');
+    await resolveJobSlotAlerts(updated).catch(error => console.warn('[job-alert] 重新校验恢复告警处理失败:', error.message));
   }
   return updated.rows[0] || slot;
 }
@@ -175,7 +197,7 @@ async function syncScheduleSlots(now = new Date()) {
 }
 
 async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled') {
-  const lookup = await pool.query('SELECT job_code,business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const lookup = await pool.query('SELECT job_code,business_date::text AS business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!lookup.rows[0]) return null;
   const definition = getJobDefinition(lookup.rows[0].job_code);
   const dependencies = definition.dependencyCodes || [];
@@ -205,7 +227,7 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
       WHERE slot_id=$1 AND status IN ('pending','failed','degraded')
         AND attempt_count < $4
         AND (next_attempt_at IS NULL OR next_attempt_at<=now())
-      RETURNING *`,
+      RETURNING *, business_date::text AS business_date`,
     [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30]
   );
   return rows[0] || null;
@@ -309,11 +331,14 @@ function normalizeDataAsOf(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function isDataAsOfFresh(dataAsOf, businessDate) {
+function isDataAsOfFresh(dataAsOf, businessDate, definition = {}) {
   if (!dataAsOf || !businessDate) return false;
   const actual = new Date(dataAsOf).getTime();
-  const expected = new Date(`${String(businessDate).slice(0, 10)}T00:00:00Z`).getTime();
-  return Number.isFinite(actual) && Number.isFinite(expected) && actual >= expected;
+  const expectedDate = expectedDataDate(definition.jobCode || '', businessDate);
+  const expected = expectedDate ? new Date(`${expectedDate}T00:00:00Z`).getTime() : NaN;
+  const maxLagDays = Math.max(Number(definition.freshnessMaxLagDays) || 0, 0);
+  const earliestAccepted = expected - maxLagDays * 86400000;
+  return Number.isFinite(actual) && Number.isFinite(expected) && actual >= earliestAccepted;
 }
 
 async function queryDataAsOf(jobCode, businessDate) {
@@ -327,25 +352,27 @@ async function queryDataAsOf(jobCode, businessDate) {
     nav_snapshot: `SELECT max(date)::text AS data_as_of FROM nav_history`,
     index_baseline: `SELECT max(date)::text AS data_as_of FROM index_history`,
     index_recent: `SELECT max(date)::text AS data_as_of FROM index_history`,
-    ipo_calendar_refresh: `SELECT max(report_date)::text AS data_as_of FROM ipo_reports`,
+    ipo_calendar_refresh: `SELECT max(to_date(report_date, 'YYYYMMDD'))::text AS data_as_of
+      FROM ipo_reports WHERE report_date ~ '^\\d{8}$'`,
     ipo_history_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='global:ipo_history'`,
     stock_analysis_refresh: `SELECT max(as_of_date)::text AS data_as_of FROM analytics.stock_overview_latest`,
-    hk_trade_rules_sync: `SELECT max(valid_from)::text AS data_as_of FROM market.instrument_trade_rules`,
+    hk_trade_rules_sync: `SELECT max(source_updated_at)::text AS data_as_of FROM market.instrument_trade_rules`,
     arbitrage_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key LIKE 'arbitrage_%'`,
-    convertible_bond_universe_refresh: `SELECT max(trade_date)::text AS data_as_of FROM market.convertible_bond_daily_metrics`,
+    convertible_bond_universe_refresh: `SELECT max(last_success_date)::text AS data_as_of
+      FROM ops.sync_cursors WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'`,
     convertible_bond_valuation_refresh: `SELECT max(trade_date)::text AS data_as_of FROM analytics.convertible_bond_valuation_daily`,
     market_volatility_sync: `SELECT LEAST(
       COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'), '1900-01-01'::date),
-      COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='HK' AND tenor_years=10 AND source_code='hkma'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'), '1900-01-01'::date)
     )::text AS data_as_of`,
   };
   const marketClosePredicates = {
-    'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)'`,
+    'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)' AND COALESCE(p.name,'') !~ '(债|转债)'`,
     'market_close:港股': `char_length(p.code)=5`,
     'market_close:可转债': `p.code ~ '^(11|12)'`,
     'market_close:LOF/ETF': `p.code ~ '^(15|16|50|51)' AND char_length(p.code)=6`,
@@ -359,7 +386,8 @@ async function queryDataAsOf(jobCode, businessDate) {
         WHERE ${marketPredicate}`
     : null);
   if (!sql) return null;
-  const { rows } = await pool.query(sql, marketPredicate ? [businessDate] : []);
+  const normalizedBusinessDate = normalizeBusinessDate(businessDate);
+  const { rows } = await pool.query(sql, marketPredicate ? [normalizedBusinessDate] : []);
   if (!rows[0] || !rows[0].data_as_of) return null;
   const raw = String(rows[0].data_as_of).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00.000Z` : normalizeDataAsOf(rows[0].data_as_of);
@@ -372,14 +400,15 @@ async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
 async function completeSlot(slotId, status, resultSummary, errorMessage, runId) {
   const allowed = ['succeeded', 'degraded', 'failed', 'blocked', 'skipped'];
   const requestedStatus = allowed.includes(status) ? status : 'failed';
-  const current = await pool.query('SELECT job_code,business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const current = await pool.query('SELECT job_code,business_date::text AS business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!current.rows[0]) return null;
-  const requiresDataWatermark = getJobDefinition(current.rows[0].job_code).requiresDataWatermark !== false;
+  const definition = getJobDefinition(current.rows[0].job_code);
+  const requiresDataWatermark = definition.requiresDataWatermark !== false;
   const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
     ? await resolveDataAsOf(current.rows[0].job_code, current.rows[0].business_date, resultSummary)
     : null;
   const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark
-    && !isDataAsOfFresh(dataAsOf, current.rows[0].business_date) ? 'degraded' : requestedStatus;
+    && !isDataAsOfFresh(dataAsOf, current.rows[0].business_date, definition) ? 'degraded' : requestedStatus;
   const finalError = nextStatus === 'degraded' && !errorMessage
     ? '任务完成但没有形成可确认的数据日期，请检查上游返回和入库结果'
     : errorMessage;
@@ -441,7 +470,14 @@ async function retryJobSlot(slotId) {
       WHERE slot_id=$1 AND status IN ('failed','degraded','blocked','skipped')
       RETURNING *`, [slotId]
   );
-  return rows[0] || null;
+  if (!rows[0]) return null;
+  await pool.query(
+    `UPDATE ops.alert_notifications
+        SET status='resolved', resolved_at=now(), sending_started_at=NULL, updated_at=now()
+      WHERE slot_id=$1 AND status NOT IN ('resolved','acknowledged') AND alert_type <> 'recovery'`,
+    [slotId]
+  );
+  return rows[0];
 }
 
 async function acknowledgeSlot(slotId) {
@@ -566,14 +602,35 @@ async function validateJobSlot(slotId) {
   const { rows } = await pool.query('SELECT * FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!rows[0]) return null;
   const slot = rows[0];
+  const definition = getJobDefinition(slot.job_code);
   if (getJobDefinition(slot.job_code).requiresDataWatermark === false) {
+    if (slot.status === 'degraded') {
+      const runResult = slot.last_run_id
+        ? await pool.query('SELECT status FROM job_runs WHERE id=$1', [slot.last_run_id])
+        : { rows: [] };
+      const runSucceeded = runResult.rows[0] && runResult.rows[0].status === 'done';
+      const summarySucceeded = slot.result_summary && slot.result_summary.ok === true;
+      if (runSucceeded || summarySucceeded) {
+        const recovered = await pool.query(
+          `UPDATE ops.job_schedule_slots
+              SET status='succeeded', last_error=NULL, data_as_of=NULL, updated_at=now()
+            WHERE slot_id=$1
+            RETURNING *`,
+          [slotId]
+        );
+        const updated = recovered.rows[0] || { ...slot, status: 'succeeded', last_error: null, data_as_of: null };
+        const { resolveJobSlotAlerts } = require('./jobAlertMailer');
+        await resolveJobSlotAlerts(updated).catch(error => console.warn('[job-alert] 重新校验恢复告警处理失败:', error.message));
+        return { valid: true, slotId: slot.slot_id, status: 'succeeded', dataAsOf: null, message: '任务执行结果正常' };
+      }
+    }
     return {
       valid: slot.status === 'succeeded', slotId: slot.slot_id, status: slot.status, dataAsOf: slot.data_as_of || null,
       message: slot.status === 'succeeded' ? '任务执行结果正常' : '该任务无需数据水位校验，请查看执行结果',
     };
   }
   const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);
-  const freshness = isDataAsOfFresh(actualDataAsOf, slot.business_date);
+  const freshness = isDataAsOfFresh(actualDataAsOf, slot.business_date, definition);
   const canValidate = ['succeeded', 'degraded'].includes(slot.status);
   const valid = canValidate && Boolean(actualDataAsOf) && freshness;
   let updated = slot;
@@ -581,12 +638,12 @@ async function validateJobSlot(slotId) {
     const result = await pool.query(
       `UPDATE ops.job_schedule_slots
           SET data_as_of=$2,
-              status=CASE WHEN $2 IS NOT NULL AND $2::timestamptz >= business_date::timestamptz THEN 'succeeded' ELSE 'degraded' END,
-              last_error=CASE WHEN $2 IS NOT NULL AND $2::timestamptz >= business_date::timestamptz THEN NULL ELSE '重新校验发现业务数据水位落后' END,
+              status=CASE WHEN $3::boolean THEN 'succeeded' ELSE 'degraded' END,
+              last_error=CASE WHEN $3::boolean THEN NULL ELSE '重新校验发现业务数据水位落后' END,
               updated_at=now()
         WHERE slot_id=$1
         RETURNING *`,
-      [slotId, actualDataAsOf]
+      [slotId, actualDataAsOf, Boolean(actualDataAsOf && freshness)]
     );
     updated = result.rows[0] || { ...slot, status: valid ? 'succeeded' : 'degraded', data_as_of: actualDataAsOf };
     if (valid && slot.status === 'degraded') {
@@ -599,7 +656,7 @@ async function validateJobSlot(slotId) {
 }
 
 module.exports = {
-  WORKER_ID, JOB_DEFINITIONS, dateText, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
+  WORKER_ID, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
   claimSlot, completeSlot, deferSlot, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview,
 };

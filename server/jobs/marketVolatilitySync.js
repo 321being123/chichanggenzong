@@ -1,4 +1,4 @@
-// 官网数据同步：中债 10 年期、恒指历史 PE、香港金管局 10 年期。
+// 官网/Tushare 数据同步：中债 10 年期、恒指历史 PE；港股基准利率使用美国十年期国债收益率替代。
 // 不用第三方替代中证全指 PE；该数据源未拿到精确 000985 指数值时保持缺失。
 const https = require('https');
 const { spawn } = require('child_process');
@@ -86,22 +86,64 @@ async function syncHsiPe() {
     count++; }
   return count;
 }
-async function syncHkYield(full) {
-  let count=0;
-  for (let offset=0; offset<(full?2000:500); offset+=100) { const d = await request('https://api.hkma.gov.hk/public/market-data-and-statistics/monthly-statistical-bulletin/gov-bond/instit-bond-price-yield-daily?segment=Benchmark&offset=' + offset); const records=(((d || {}).result || {}).records || []);
-  for (const r of records) { const key=Object.keys(r).find(k=>k.replace(/\*+$/,'')==='closing_ref_rate_10y'); const y = Number(key && r[key]); if (!r.end_of_day || !(y > 0)) continue;
-    await pool.query(`INSERT INTO market.sovereign_yield_daily(market_code,tenor_years,trade_date,yield_pct,source_code,source_date,raw_payload)
-      VALUES('HK',10,$1,$2,'hkma',$1,$3) ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET yield_pct=EXCLUDED.yield_pct,raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, [r.end_of_day, y, JSON.stringify(r)]); count++; }
-  if (!full || records.length < 100) break; } return count;
+const US_TREASURY_YIELD_SOURCE = 'tushare_us_tycr';
+
+async function syncUsTreasuryYield(end = dateStr(new Date())) {
+  const wm = await pool.query(`SELECT max(trade_date)::text AS mx
+    FROM market.sovereign_yield_daily
+    WHERE market_code='US' AND tenor_years=10 AND source_code=$1`, [US_TREASURY_YIELD_SOURCE]);
+  const maxDate = wm.rows[0] && wm.rows[0].mx;
+  const start = maxDate
+    ? dateStr(new Date(new Date(maxDate + 'T00:00:00Z').getTime() - 14 * 86400000))
+    : '2012-01-01';
+  if (!process.env.TUSHARE_TOKEN) return 0;
+
+  let cursor = new Date(start + 'T00:00:00Z');
+  const last = new Date(end + 'T00:00:00Z');
+  let count = 0;
+  while (cursor <= last) {
+    const rangeEnd = new Date(Date.UTC(cursor.getUTCFullYear() + 5, cursor.getUTCMonth(), cursor.getUTCDate() - 1));
+    const to = rangeEnd < last ? rangeEnd : last;
+    const fromTs = tsDate(dateStr(cursor));
+    const toTs = tsDate(dateStr(to));
+    const data = await tushareQuery('us_tycr', { start_date: fromTs, end_date: toTs }, 'date,y10');
+    if (!data) throw new Error(`Tushare us_tycr 查询失败（${fromTs}-${toTs}）`);
+    const rows = tsRows(data).map(row => ({
+      day: normDate(row.date),
+      yieldPct: Number(row.y10),
+      raw: row,
+    })).filter(row => row.day && Number.isFinite(row.yieldPct));
+    for (let i = 0; i < rows.length; i += 500) {
+      const batch = rows.slice(i, i + 500);
+      const values = [], params = [];
+      let p = 1;
+      for (const row of batch) {
+        values.push(`('US',10,$${p},$${p + 1},'${US_TREASURY_YIELD_SOURCE}',$${p},$${p + 2})`);
+        params.push(row.day, row.yieldPct, JSON.stringify(row.raw));
+        p += 3;
+      }
+      if (!values.length) continue;
+      await pool.query(`INSERT INTO market.sovereign_yield_daily
+        (market_code,tenor_years,trade_date,yield_pct,source_code,source_date,raw_payload)
+        VALUES ${values.join(',')}
+        ON CONFLICT(market_code,tenor_years,trade_date,source_code) DO UPDATE SET
+          yield_pct=EXCLUDED.yield_pct,source_date=EXCLUDED.source_date,
+          raw_payload=EXCLUDED.raw_payload,ingested_at=now()`, params);
+      count += batch.length;
+    }
+    cursor = new Date(to.getTime() + 86400000);
+  }
+  console.log(`[市场周期] 美国十年期国债收益率(Tushare us_tycr) 写入=${count}条`);
+  return count;
 }
-async function calculateGraham(pg = pool) {
+async function calculateGraham(pg = pool, recalcFrom = null) {
   // 水位：上次计算最大日期往前 45 天重叠窗口；仅重算本轮变化的日期
   const wm = await pg.query(`SELECT max(trade_date)::text AS mx FROM analytics.graham_index_daily`);
   const maxDate = wm.rows[0].mx;
-  const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
+  const since = recalcFrom || (maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01');
   const { rows } = await pg.query(`SELECT v.market_code,v.benchmark_code,v.trade_date,v.pe,
-    (SELECT y.yield_pct FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='manual_fed_funds') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_pct,
-    (SELECT y.trade_date FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='manual_fed_funds') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_date
+    (SELECT y.yield_pct FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='tushare_us_tycr') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_pct,
+    (SELECT y.trade_date FROM market.sovereign_yield_daily y WHERE y.market_code=CASE WHEN v.market_code='HK' THEN 'US' ELSE v.market_code END AND y.tenor_years=10 AND (v.market_code<>'HK' OR y.source_code='tushare_us_tycr') AND y.trade_date<=v.trade_date AND y.trade_date>=v.trade_date-CASE WHEN v.market_code='HK' THEN 10 ELSE 5 END ORDER BY y.trade_date DESC LIMIT 1) AS yield_date
     FROM (SELECT DISTINCT ON (market_code,benchmark_code,trade_date) market_code,benchmark_code,trade_date,pe
       FROM market.market_valuation_daily WHERE pe>0
       ORDER BY market_code,benchmark_code,trade_date,CASE WHEN source_code='hsi_weighted_manual' THEN 0 WHEN source_code='hsi_official' THEN 1 ELSE 2 END) v
@@ -333,8 +375,8 @@ async function syncMarketCycleMetrics(full) {
   return result;
 }
 
-async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const capSeen=await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'"); const cycleFirst=capSeen.rows[0].n===0; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),hkYield:await syncHkYield(first),cycleMetrics:await syncMarketCycleMetrics(cycleFirst)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); console.log('[市场周期] 本次同步汇总:', JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
+async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const capSeen=await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'"); const cycleFirst=capSeen.rows[0].n===0; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),usTreasuryYield:await syncUsTreasuryYield(end),cycleMetrics:await syncMarketCycleMetrics(cycleFirst)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); console.log('[市场周期] 本次同步汇总:', JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
-module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncHkYield, calculateGraham, parseHsiWorkbook,
+module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,
   syncMarketCycleMetrics, runMarketVolatilitySync, scheduleMarketVolatilitySync };

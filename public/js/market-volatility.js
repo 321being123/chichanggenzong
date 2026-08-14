@@ -6,7 +6,7 @@ function mvDefaultSetting() { var current=mvState.overview&&mvState.overview.cur
 function mvRecommended(value, lower, upper) { if(!Number.isFinite(Number(value))||Number(value)<=0)return 20; var ladder=mvLadder(lower,upper); for(var i=ladder.length-1;i>=0;i--)if(Number(value)>=ladder[i].value)return ladder[i].position; return 20; }
 function mvAccount() { return (typeof username === 'string' && username && typeof currentAccount === 'string' && currentAccount) ? currentAccount : ''; }
 function mvEsc(v) { return typeof escapeHtml === 'function' ? escapeHtml(v) : String(v); }
-function mvRateLabel() { return mvState.market === 'HK' ? '美国联邦基金利率（港股代理）' : '10年期国债收益率'; }
+function mvRateLabel() { return mvState.market === 'HK' ? '美国十年期国债收益率（港股代理）' : '10年期国债收益率'; }
 
 function initMarketVolatility() {
   if (window.__mvReady) return; window.__mvReady = true;

@@ -45,18 +45,37 @@ def extract_text_from_pdf(file_path):
 def download_pdf(url, dest):
     """下载 PDF 到本地临时文件"""
     import urllib.request
+    default_limit = 50 * 1024 * 1024
+    try:
+        max_bytes = int(os.environ.get('ARBITRAGE_PDF_MAX_BYTES', default_limit))
+    except (TypeError, ValueError):
+        max_bytes = default_limit
+    max_bytes = max(max_bytes, 1 * 1024 * 1024)
     try:
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
         })
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-            if len(data) > 20 * 1024 * 1024:  # 20MB 上限
+            content_length = resp.headers.get('Content-Length')
+            if content_length and int(content_length) > max_bytes:
                 return False, 'PDF exceeds size limit'
+            total = 0
             with open(dest, 'wb') as f:
-                f.write(data)
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        f.close()
+                        if os.path.exists(dest):
+                            os.remove(dest)
+                        return False, 'PDF exceeds size limit'
+                    f.write(chunk)
         return True, None
     except Exception as e:
+        if os.path.exists(dest):
+            os.remove(dest)
         return False, str(e)
 
 # ========== 正则提取模式 ==========

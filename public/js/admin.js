@@ -728,7 +728,7 @@ async function loadJobsData() {
       return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(j.trigger_type || 'scheduled') + '</td><td style="max-width:300px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td></tr>';
     }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无运行记录</td></tr>';
     if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
-      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(alert.job_code || '-') + '</td><td style="max-width:320px;word-break:break-all;">' + escapeHtml(alert.summary || alert.subject || '') + '</td><td>' + escapeHtml(alert.status || '') + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
+      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(alert.job_code || '-') + '</td><td style="max-width:320px;word-break:break-word;">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(alert.status || '') + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
     }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无待处理告警</td></tr>';
   } catch (e) {
     if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
@@ -762,6 +762,18 @@ function jobSlotQuery() {
   }, '');
 }
 
+function jobDisplayText(value, limit) {
+  const text = String(value || '').replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/Permission denied/i.test(text) && /ipo_xgb_model\.json/i.test(text)) {
+    return 'XGBoost 模型文件写入失败：ipo_xgb_model.json 权限不足，请重新部署修复目录归属。';
+  }
+  if ((text.match(/\uFFFD/g) || []).length >= 3) {
+    return '历史运行输出编码异常，原内容无法完整还原；重新执行后将以 UTF-8 正常显示。';
+  }
+  const max = Number(limit) || 300;
+  return text.length > max ? text.slice(0, max) + '…' : text;
+}
+
 function ensureJobMonitorAdvancedControls() {
   const summary = document.getElementById('jobs-summary');
   if (!summary || document.getElementById('job-date-filter')) return;
@@ -789,7 +801,7 @@ function renderJobSlotRow(slot) {
   const retry = (slot.status === 'failed' || slot.status === 'degraded' || slot.status === 'blocked')
     ? ' <button class="btn btn-outline btn-xs" onclick="retryJobSlotFromUi(' + Number(slot.slot_id) + ')">立即补跑</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobSlot(' + Number(slot.slot_id) + ')">确认</button>' : '';
   const watermark = slot.data_as_of ? String(slot.data_as_of).slice(0, 10) : '-';
-  return '<tr><td>' + escapeHtml(slot.label || jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td style="max-width:260px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '') + '</td><td>' + detail + validate + retry + '</td></tr>';
+  return '<tr><td>' + escapeHtml(slot.label || jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td style="max-width:260px;word-break:break-word;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
 
 async function resendJobAlert(alertId) {
@@ -888,7 +900,7 @@ function renderSettingsTabs(el, s) {
     '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><input type="checkbox" id="set-register-open" ' + o + '><label for="set-register-open">开放注册</label></div>' +
     '<div style="margin-bottom:16px;"><div style="font-size:13px;color:#555;margin-bottom:6px;">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需邀请码" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
     '<div style="display:flex;align-items:center;gap:9px;margin-bottom:20px;"><input type="checkbox" id="set-require-email" ' + e + '><label for="set-require-email">注册强制邮箱验证</label></div><button class="btn btn-primary" onclick="submitSettings()">保存站点参数</button></div></div>' +
-    '<div class="settings-panel" data-panel="market" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">港股格雷厄姆指数使用美国联邦基金有效利率作为代理。管理员导入周频 CSV/XLSX 后，系统会自动补成日频并对所有用户生效。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:680px;"><input id="set-fed-file" type="file" accept=".csv,.xlsx"><button class="btn btn-primary btn-sm" id="set-btn-fed" onclick="importFederalFunds()">导入联邦基金利率</button></div></div>' +
+    '<div class="settings-panel" data-panel="market" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">港股格雷厄姆指数使用美国十年期国债收益率作为代理，数据由 Tushare us_tycr.y10 定时自动同步。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:680px;">无需手工上传，市场波动任务每日自动更新。</div></div>' +
     '<div class="settings-panel" data-panel="models" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">配置图片和 Excel 识别使用的大模型。模型按顺序调用，排在最前的是默认模型；前一个不可用时会自动切换。</div><div id="settings-models"></div></div>';
 }
 function switchSettingsTab(tab) {
@@ -1056,9 +1068,8 @@ function renderOps() {
         '<button class="btn btn-primary" id="ops-bond-safety-refresh" onclick="opsRefreshBondSafety()">立即刷新</button>') +
       opsCard('可转债估值刷新', '手动触发估值与预警模型重算（每日 18:00 后自动跑）。',
         '<button class="btn btn-primary" id="ops-bond-valuation-refresh" onclick="opsRefreshBondValuation()">立即刷新</button>') +
-      opsCard('联邦基金利率导入', '上传 CSV/XLSX（两列：日期、利率%），用于更新美国联邦基金利率并触发重算。',
-        '<input type="file" id="ops-fed-file" accept=".csv,.xlsx" style="margin-bottom:8px;width:100%;" />' +
-        '<button class="btn btn-primary" id="ops-fed-import" onclick="opsImportFederalFunds()">导入文件</button>') +
+      opsCard('美国十年期国债收益率', '由 Tushare us_tycr.y10 自动同步，并用于港股格雷厄姆指数计算。',
+        '<span style="color:#55705d;">定时任务自动更新，无需手工导入</span>') +
     '</div>' +
     '<div class="ops-jobs"><div class="ops-jobs-head"><span>最近任务状态</span><button class="btn btn-outline btn-sm" onclick="opsLoadJobs()">刷新</button></div>' +
     '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始</th><th>结束</th><th>结果</th></tr></thead>' +

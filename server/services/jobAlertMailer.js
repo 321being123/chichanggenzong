@@ -12,6 +12,12 @@ function recipients() {
     .split(',').map(item => item.trim()).filter(Boolean);
 }
 
+function formatAlertDate(value) {
+  if (!value) return '未提供';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString().slice(0, 10);
+}
+
 function alertKeyFor({ alertKey, jobCode, slotId, alertType = 'failure' }) {
   if (alertKey) return String(alertKey);
   return `${jobCode || 'unknown'}:${slotId || 'legacy'}:${alertType}`;
@@ -349,7 +355,7 @@ async function resolveJobSlotAlerts(slot) {
     jobCode: rows[0].job_code,
     slotId: slot.slot_id,
     subject: `后台任务已恢复：${rows[0].job_code || slot.job_code}`,
-    summary: `计划实例 ${slot.slot_id} 已恢复成功，已关闭 ${rows.length} 条相关告警，数据日期：${slot.data_as_of || '未提供'}`,
+    summary: `计划实例 ${slot.slot_id} 已恢复成功，已关闭 ${rows.length} 条相关告警，数据日期：${formatAlertDate(slot.data_as_of)}`,
   });
   return rows.length;
 }

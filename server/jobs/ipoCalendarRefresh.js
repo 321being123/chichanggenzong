@@ -39,19 +39,38 @@ function pythonCandidates() {
   const projectVenv = process.platform === 'win32'
     ? path.join(PROJECT_ROOT, 'ipo-report', 'venv', 'Scripts', 'python.exe')
     : path.join(PROJECT_ROOT, 'ipo-report', 'venv', 'bin', 'python');
-  return [configured, fs.existsSync(rootVenv) ? rootVenv : null, fs.existsSync(projectVenv) ? projectVenv : null, fs.existsSync(bundled) ? bundled : null,
-    process.platform === 'win32' ? 'py' : 'python3', 'python'].filter(Boolean);
+  return [...new Set([configured, fs.existsSync(rootVenv) ? rootVenv : null, fs.existsSync(projectVenv) ? projectVenv : null, fs.existsSync(bundled) ? bundled : null,
+    process.platform === 'win32' ? 'py' : 'python3', 'python'].filter(Boolean))];
+}
+
+function summarizeIpoPythonError(value) {
+  const text = String(value || '').replace(/\r/g, '').trim();
+  if (/Permission denied/i.test(text) && /ipo_xgb_model\.json/i.test(text)) {
+    return 'XGBoost 模型文件写入失败：ipo-report/data/ipo_xgb_model.json 权限不足，请重新部署以修复目录归属。';
+  }
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  const useful = lines.filter(line => !/^Traceback \(most recent call last\):$/.test(line)
+    && !/^File "/.test(line) && !/^\[bt\]/.test(line) && !/^Stack trace:/.test(line));
+  const finalLine = useful.findLast(line => /(?:Error|Exception|Permission denied|exit \d+)/i.test(line))
+    || useful.at(-1) || 'Python 任务执行失败';
+  return finalLine.replace(/\s+/g, ' ').slice(0, 500);
 }
 
 function runWith(executable) {
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
-    const child = spawn(executable, args, { cwd: PROJECT_ROOT, env: process.env, windowsHide: true });
+    const child = spawn(executable, args, {
+      cwd: PROJECT_ROOT,
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+      windowsHide: true,
+    });
     let output = '', error = '';
-    child.stdout.on('data', chunk => { output += chunk.toString(); });
-    child.stderr.on('data', chunk => { error += chunk.toString(); });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { error += chunk; });
     child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve(output) : reject(new Error(error || output || `exit ${code}`)));
+    child.on('close', code => code === 0 ? resolve(output) : reject(new Error(summarizeIpoPythonError(error || output || `exit ${code}`))));
   });
 }
 
@@ -65,7 +84,7 @@ async function runIpoCalendarRefreshRaw(reason = 'scheduled') {
         const output = await runWith(executable);
         console.log(`[ipo-calendar] ${reason} 更新完成 (${executable})`);
         return { ok: true, executable, output };
-      } catch (error) { errors.push(`${executable}: ${error.message}`); }
+      } catch (error) { errors.push(`${executable}: ${summarizeIpoPythonError(error.message)}`); }
     }
     throw new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
   } finally { running = false; }
@@ -135,4 +154,4 @@ function scheduleIpoCalendarRefresh() {
   console.log('[ipo-calendar] 已调度：工作日 18:00（上海时间）');
 }
 
-module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, runIpoCalendarStartupCatchup, scheduleIpoCalendarRefresh, pythonCandidates };
+module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, runIpoCalendarStartupCatchup, scheduleIpoCalendarRefresh, pythonCandidates, summarizeIpoPythonError };

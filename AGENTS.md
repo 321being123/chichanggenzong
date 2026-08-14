@@ -10,6 +10,7 @@
 
 ## 本地运行版本闭环（每次代码修改均强制执行）
 
+- Windows 下所有 npm 命令一律直接调用 `npm.cmd`（如 `npm.cmd run test:all`），禁止先尝试 `npm` 或 `npm.ps1`；本机 PowerShell 执行策略会稳定拦截 `npm.ps1`，重复尝试只会产生无效报错。
 - 每次完成代码修改并通过相关测试后，必须自动重启或刷新本地服务，使运行中的服务加载最新代码；禁止只修改文件、不更新本地运行状态。
 - 每次本地交付前必须检查 `http://127.0.0.1:3000/health`、本次相关页面或接口以及静态资源版本；三者与当前代码一致后才能宣布完成。
 - 需要形成新版本时，默认递增 `appVersion` 最后一位，并同步 `package.json`、`package-lock.json`、`CHANGELOG.md` 和 `public/changelog.json`。本地 `/health` 返回旧版本时，视为任务未完成。

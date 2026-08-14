@@ -299,6 +299,10 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
 // ====== 每日收盘价 ======
 
 async function saveDailyPrices(username, accountName, date, prices) {
+  const normalizedDate = date instanceof Date
+    ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date)
+    : String(date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) throw new Error('收盘价日期必须是 YYYY-MM-DD');
   const { rows: aRows } = await pool.query(
     'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
   );
@@ -306,7 +310,7 @@ async function saveDailyPrices(username, accountName, date, prices) {
   for (const p of prices) {
     await pool.query(
       'INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (username, account_name, date, code) DO UPDATE SET name = EXCLUDED.name, price = EXCLUDED.price',
-      [username, accountName, accountId, date, p.code, p.name || '', round(p.price, 4)]
+      [username, accountName, accountId, normalizedDate, p.code, p.name || '', round(p.price, 4)]
     );
   }
 }

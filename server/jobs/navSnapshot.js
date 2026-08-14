@@ -22,6 +22,7 @@ function cnDate(d) {
 // 为单个账户填补缺失交易日的净值快照（幂等：已有记录跳过、只新增缺失日）
 async function recordNavSnapshots(username, accountName, hkRateOverride = null) {
   const data = await loadAccountData(username, accountName);
+  const positionNames = new Map((data.positions || []).map(position => [position.code, position.name || '']));
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   const cashBase = Number(data.cashBase) || 0;
   const trades = (data.trades || []).slice().sort(function (a, b) {
@@ -59,12 +60,13 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
     const m = new Map();
     trades.forEach(function (t) {
       if (tradeDay(t) > date) return;
-      const cur = m.get(t.code) || { qty: 0, subtype: t.subtype };
+      const cur = m.get(t.code) || { qty: 0, subtype: t.subtype, name: positionNames.get(t.code) || t.name || '' };
       const q = (t.quantity || 0);
       if (t.direction === 'sell') cur.qty -= q;
       else if (t.direction === 'adjust') cur.qty = Math.max(0, q); // 目标数量绝对设置（0=清仓）
       else cur.qty += q; // buy / open 均累加
       cur.subtype = t.subtype || cur.subtype;
+      cur.name = positionNames.get(t.code) || t.name || cur.name;
       m.set(t.code, cur);
     });
     return m;
@@ -88,7 +90,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
     [today]
   );
-  const fxByDate = new Map(fxRows.map(r => [r.rate_date, Number(r.rate)]));
+  const fxByDate = new Map(fxRows.map(r => [r.rate_date instanceof Date ? cnDate(r.rate_date) : String(r.rate_date).slice(0, 10), Number(r.rate)]));
   const currentFxRate = Number(hkRateOverride) > 0 ? Number(hkRateOverride) : (fxByDate.get(today) || await getCurrentFxRate());
   let allDates = Array.from(priceDates).filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today; });
   // 不在首条净值记录之前捏造历史：有净值时只填 >= 首条净值日的空档
@@ -119,6 +121,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
       if (info.qty === 0) continue;
       let price = code ? dpMap.get(code + '|' + d) : null;
       if (price == null) price = recentPrice(code, d); // 当日缺价 → 前向填充最近交易日收盘价（兜底，保证连续）
+      if (price == null && /(退债|退市)/.test(String(info.name || ''))) price = 0;
       if (price == null) { incomplete = true; break; }
       if (info.subtype === '港股' && !(hkRate > 0)) { incomplete = true; break; }
       mvs.push(price * info.qty * (info.subtype === '港股' ? hkRate : 1));
@@ -147,26 +150,24 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
 async function runNavSnapshotJob() {
   if (!(await tryClaimJob('nav_snapshot'))) return; // 其他实例已在跑
   const runId = await startJobRun('nav_snapshot');
-  let total = 0, accounts = 0;
+  let total = 0, accountCount = 0;
   try {
     const hkRate = await getCurrentFxRate();
     if (!(hkRate > 0)) {
       await finishJobRun(runId, false, '全局港币汇率缺失，跳过净值快照');
       return { ok: false, days: 0, error: '全局港币汇率缺失' };
     }
-    const { rows: users } = await pool.query('SELECT username, accounts FROM users');
-    for (const user of users) {
-      const accs = typeof user.accounts === 'string' ? JSON.parse(user.accounts) : (user.accounts || []);
-      for (const accountName of accs) {
-        try {
-          const r = await recordNavSnapshots(user.username, accountName, hkRate);
-          if (r && r.days > 0) { total += r.days; accounts++; }
-        } catch (e) {
-          console.warn('[nav_snapshot] ' + user.username + '/' + accountName + ' 失败:', e.message);
-        }
+    const { rows: accountRows } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
+    for (const account of accountRows) {
+      const accountName = account.account_name;
+      try {
+        const r = await recordNavSnapshots(account.username, accountName, hkRate);
+        if (r && r.days > 0) { total += r.days; accountCount++; }
+      } catch (e) {
+        console.warn('[nav_snapshot] ' + account.username + '/' + accountName + ' 失败:', e.message);
       }
     }
-    await finishJobRun(runId, true, '补' + total + '条 / ' + accounts + '账户');
+    await finishJobRun(runId, true, '补' + total + '条 / ' + accountCount + '账户');
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
     console.error('[nav_snapshot] 失败:', e.message || e);

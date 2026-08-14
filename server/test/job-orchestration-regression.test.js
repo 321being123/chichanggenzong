@@ -28,7 +28,7 @@ assert(/retryJobSlot\(slotId\)/.test(adminRoute), '人工补跑必须进入计�
 assert(/reasonForSlot\(slot\)/.test(orchestrator) && /slot\.trigger_type === 'manual_retry'/.test(orchestrator), '执行器必须保留人工补跑触发类型');
 assert(/trigger_type='auto_retry'/.test(slots), '失败退避后必须标记为自动重试');
 assert(/dependencyCodes/.test(slots) && /claimSlot/.test(slots), '领取任务前必须检查依赖');
-assert(/benchmark_code='CSI300'/.test(slots) && /benchmark_code='CSIALL'/.test(slots) && /source_code='chinabond'/.test(slots) && /source_code='hkma'/.test(slots), '市场波动水位必须逐项检查必要来源');
+assert(/benchmark_code='CSI300'/.test(slots) && /benchmark_code='CSIALL'/.test(slots) && /source_code='chinabond'/.test(slots) && /source_code='tushare_us_tycr'/.test(slots), '市场波动水位必须逐项检查必要来源');
 assert(/重新校验发现业务数据水位落后/.test(slots), '重新校验发现水位落后时必须落库为降级');
 assert(/slot\.status === 'degraded'/.test(slots) && /resolveJobSlotAlerts/.test(slots), '数据恢复后重新校验必须恢复状态和告警');
 assert(/fork\(/.test(orchestrator) && /taskkill/.test(orchestrator) && /SIGKILL/.test(orchestrator), '任务必须在可强制终止的独立进程执行');
@@ -61,6 +61,7 @@ assert(/migration063AlertSendingStatus/.test(migrations), '数据库必须支持
 assert(/job_alert_resend/.test(adminRoute) && /result: 'failure'/.test(adminRoute), '邮件重发失败必须写入管理员审计');
 assert(/sendRecoverySummary/.test(alertMailer) && /status='sending'/.test(alertMailer), 'SMTP 恢复后必须合并补发历史告警且不能覆盖人工状态');
 assert(/emailConfigured/.test(read('public/js/admin.js')) && /投递失败/.test(read('public/js/admin.js')), '后台必须显示邮件告警配置与投递状态');
+assert(/jobDisplayText\(alert\.summary/.test(adminUi) && /text\.match\(\/\\uFFFD\/g\)/.test(adminUi), '后台必须压缩超长告警并隐藏无法还原的历史乱码');
 assert(/FOR UPDATE SKIP LOCKED/.test(alertMailer) && /status <> 'sending'/.test(alertMailer), '历史告警合并补发与人工重发不得抢占正在发送的告警');
 assert(/sending_started_at/.test(alertMailer) && /COALESCE\(sending_started_at, updated_at\)/.test(alertMailer), '告警僵尸回收必须使用独立发送开始时间');
 assert(/status='send_failed'/.test(alertMailer) && /status IN \('pending','send_failed'\)/.test(alertMailer) && /next_send_at IS NULL OR next_send_at <= now\(\)/.test(alertMailer), 'SMTP 恢复后必须合并全部到期待发送告警');

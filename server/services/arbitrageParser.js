@@ -38,6 +38,10 @@ const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'extractArbitrageDocumen
 const MAX_PARSE_ATTEMPTS = 3;
 const PARSE_RETRY_MINUTES = [5, 15];
 
+function isPermanentParseError(message) {
+  return /PDF exceeds size limit/i.test(String(message || ''));
+}
+
 function getParseRetryDecision(existing, force = false, now = new Date()) {
   if (!existing || existing.parser_version !== PARSER_VERSION) return { shouldParse: true };
   if (!force && existing.parsed_payload) return { shouldParse: false, payload: existing.parsed_payload, reason: 'cached' };
@@ -309,14 +313,16 @@ async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, 
       const previous = existing[0];
       const previousAttempts = previous && previous.parser_version === PARSER_VERSION
         ? Number(previous.parse_attempts || 0) : 0;
-      const attempt = previousAttempts + 1;
+      const attempt = isPermanentParseError(err.message)
+        ? MAX_PARSE_ATTEMPTS
+        : previousAttempts + 1;
       const retryMinutes = PARSE_RETRY_MINUTES[Math.min(attempt - 1, PARSE_RETRY_MINUTES.length - 1)];
       await pool.query(`
         WITH failed_document AS (
           UPDATE event.arbitrage_case_documents
              SET document_role=$1,parser_version=$2,parse_status='failed',parsed_at=now(),
-                 parse_attempts=$3,
-                 next_parse_attempt_at=CASE WHEN $3 < $4 THEN now()+($5 || ' minutes')::interval ELSE NULL END,
+                 parse_attempts=$3::integer,
+                 next_parse_attempt_at=CASE WHEN $3::integer < $4::integer THEN now()+($5 || ' minutes')::interval ELSE NULL END,
                  last_parse_error=$6
            WHERE case_id=$7 AND document_id=$8
            RETURNING case_id

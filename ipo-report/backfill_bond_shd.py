@@ -277,6 +277,20 @@ def main():
                                     WHERE instrument_id=%s AND dataset_code='cb_issue'
                                       AND field_code=%s AND status='open'""",
                                 (json.dumps({"resolved_by": "backfill_bond_shd"}), instrument_id, field_code))
+            due = bool(res_ann_d)
+            issue_type = 'source_field_unavailable' if due else 'pending_not_due'
+            for field_code, missing in (
+                ('shareholder_allotment_quantity', new_shd is None or new_shd <= 100),
+                ('online_purchase_accounts_10k', new_pch is None),
+            ):
+                if not missing:
+                    continue
+                cur.execute("""INSERT INTO ops.data_quality_issues
+                  (instrument_id,dataset_code,field_code,issue_type,severity,status,details)
+                  VALUES(%s,'cb_issue',%s,%s,'warning','open',%s::jsonb)
+                  ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
+                  DO UPDATE SET details=EXCLUDED.details,detected_at=now(),resolved_at=NULL""",
+                  (instrument_id, field_code, issue_type, json.dumps({"security_code": code, "onl_date": onl_d, "res_ann_date": res_ann_d, "rate": rate, "pch": pch}, ensure_ascii=False)))
             conn.commit()
         ok += 1
         time.sleep(0.5)

@@ -58,6 +58,7 @@ assert(/systemctl stop portfolio-worker\.service/.test(deployScript) && /systemc
 assert(/stop_unit_if_present portfolio-worker-health\.timer/.test(deployScript) && /stop_unit_if_present portfolio-worker-health\.service/.test(deployScript), '部署期间必须暂停已安装的独立 Worker 健康检查，避免停机误报');
 assert(/worker:overdue-slots:recovered/.test(health), '逾期任务恢复后必须发送恢复告警');
 assert(/migration063AlertSendingStatus/.test(migrations), '数据库必须支持告警投递中状态');
+assert(/migration070RemoveDuplicateLegacyPriceDates/.test(migrations) && /DELETE FROM daily_prices/.test(migrations), '收盘价日期归一后必须清理已存在标准日期对应的旧格式重复行');
 assert(/job_alert_resend/.test(adminRoute) && /result: 'failure'/.test(adminRoute), '邮件重发失败必须写入管理员审计');
 assert(/sendRecoverySummary/.test(alertMailer) && /status='sending'/.test(alertMailer), 'SMTP 恢复后必须合并补发历史告警且不能覆盖人工状态');
 assert(/emailConfigured/.test(read('public/js/admin.js')) && /投递失败/.test(read('public/js/admin.js')), '后台必须显示邮件告警配置与投递状态');
@@ -130,4 +131,4 @@ assert(/DELETE FROM ops\.data_quality_issues q[\s\S]*q\.status='resolved'/.test(
 assert(/sanitizeJobError\(err\.message \|\| err, 500\)/.test(arbitrageService)
   && /sanitizeJobError\(error\.message \|\| error, 1000\)/.test(arbitrageJob), '套利解析和同步错误写入日志前必须脱敏');
 
-console.log('OK job-orchestration-regression: 89 项关键验收约束通过');
+console.log('OK job-orchestration-regression: 90 项关键验收约束通过');

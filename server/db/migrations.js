@@ -2728,6 +2728,35 @@ async function migration069NormalizeDailyPriceDates() {
   `);
 }
 
+// ========== 070：清理已有标准日期对应的旧格式重复收盘价 ==========
+async function migration070RemoveDuplicateLegacyPriceDates() {
+  await pool.query(`
+    WITH anchor AS (
+      SELECT EXTRACT(YEAR FROM COALESCE(
+        MAX(CASE WHEN date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN date::date END),
+        CURRENT_DATE
+      ))::int AS year
+      FROM daily_prices
+    ), duplicates AS (
+      SELECT dp.ctid
+      FROM daily_prices dp
+      CROSS JOIN anchor
+      WHERE dp.date ~ '^[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2}$'
+        AND EXISTS (
+          SELECT 1
+          FROM daily_prices existing
+          WHERE existing.username = dp.username
+            AND existing.account_name = dp.account_name
+            AND existing.code = dp.code
+            AND existing.date = to_char(to_date(dp.date || ' ' || anchor.year, 'Dy Mon DD YYYY'), 'YYYY-MM-DD')
+        )
+    )
+    DELETE FROM daily_prices dp
+    USING duplicates
+    WHERE dp.ctid = duplicates.ctid
+  `);
+}
+
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -2827,6 +2856,7 @@ const MIGRATIONS = [
   { version: '067_job_request_payload', up: migration067JobRequestPayload },
   { version: '068_ipo_bond_liquidity_calibration', up: migration068IpoBondLiquidityCalibration },
   { version: '069_normalize_daily_price_dates', up: migration069NormalizeDailyPriceDates },
+  { version: '070_remove_duplicate_legacy_price_dates', up: migration070RemoveDuplicateLegacyPriceDates },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3365,6 +3395,7 @@ module.exports = {
   migration067JobRequestPayload,
   migration068IpoBondLiquidityCalibration,
   migration069NormalizeDailyPriceDates,
+  migration070RemoveDuplicateLegacyPriceDates,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

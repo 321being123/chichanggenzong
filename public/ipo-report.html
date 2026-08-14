@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>打新日报 · 报告详情</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preload" href="/vendor/marked.min.js" as="script">
+<link rel="preload" href="/vendor/dompurify.min.js" as="script">
 <script src="shared/autofill-guard.js?v=3"></script>
-<script src="vendor/marked.min.js"></script>
-<script src="vendor/dompurify.min.js"></script>
+<script defer src="vendor/marked.min.js"></script>
+<script defer src="vendor/dompurify.min.js"></script>
 <style>
   :root { --red:#d93025; --green:#137333; --ink:#1a1a2e; --muted:#888; }
   * { box-sizing: border-box; }
@@ -64,6 +66,15 @@
     // 与 app 同源，登录态 cookie 自动携带
     return path;
   }
+  function reportUrl() {
+    var date = getParam('date');
+    var code = getParam('code');
+    return code
+      ? '/api/ipo/report/code?code=' + encodeURIComponent(code)
+      : '/api/ipo/report' + (date ? ('?date=' + encodeURIComponent(date)) : '');
+  }
+  // 详情请求与 Markdown 渲染库并行发起，避免首次打开时串行等待。
+  var reportRequest = fetch(api(reportUrl()), { credentials: 'same-origin' });
   // 安全输出状态/错误信息：用 textContent，绝不拼接进 innerHTML（防 XSS）
   // 自行获取容器元素，避免依赖外部作用域变量（修复 ReferenceError）
   function setState(msg, isErr) {
@@ -81,13 +92,7 @@
     var dateEl = document.getElementById('rpt-date');
     var content = document.getElementById('md-content');
     try {
-      var url;
-      if (code) {
-        url = '/api/ipo/report/code?code=' + encodeURIComponent(code);
-      } else {
-        url = '/api/ipo/report' + (date ? ('?date=' + encodeURIComponent(date)) : '');
-      }
-      var r = await fetch(api(url), { credentials: 'same-origin' });
+      var r = await reportRequest;
       if (r.status === 401) {
         setState('未登录或登录已过期，请先在系统主页面登录后再打开本报告。', true);
         return;
@@ -127,7 +132,11 @@
       setState('加载失败：' + (e.message || e), true);
     }
   }
-  init();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
 </script>
 </body>
 </html>

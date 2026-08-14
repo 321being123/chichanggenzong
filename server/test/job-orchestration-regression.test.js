@@ -69,6 +69,7 @@ const scheduledJobCodes = [...definitions.matchAll(/jobCode: '([^']+)'/g)].map(m
 assert(scheduledJobCodes.filter(code => !code.startsWith('market_close:')).every(code => new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':').test(adminUi)), '任务定义中的每个任务都必须有中文名称映射');
 assert(/function formatJobDetail/.test(adminUi) && /jobDisplayText\(j\.detail/.test(adminUi) && /jobTriggerLabel/.test(adminUi), '任务运行详情和触发方式必须转换为中文说明');
 assert(/jobStatusLabel\(alert\.status\)/.test(adminUi) && /jobLabel\(dep\.job_code\)/.test(adminUi), '告警状态和任务依赖名称必须转换为中文');
+assert(/market_close:\(\[\^#/.test(adminUi) && /Object\.keys\(JOB_LABELS\)/.test(adminUi), '逾期汇总告警中的任务代码必须转换为中文名称');
 assert(/FOR UPDATE SKIP LOCKED/.test(alertMailer) && /status <> 'sending'/.test(alertMailer), '历史告警合并补发与人工重发不得抢占正在发送的告警');
 assert(/sending_started_at/.test(alertMailer) && /COALESCE\(sending_started_at, updated_at\)/.test(alertMailer), '告警僵尸回收必须使用独立发送开始时间');
 assert(/status='send_failed'/.test(alertMailer) && /status IN \('pending','send_failed'\)/.test(alertMailer) && /next_send_at IS NULL OR next_send_at <= now\(\)/.test(alertMailer), 'SMTP 恢复后必须合并全部到期待发送告警');
@@ -137,4 +138,4 @@ assert(/DELETE FROM ops\.data_quality_issues q[\s\S]*q\.status='resolved'/.test(
 assert(/sanitizeJobError\(err\.message \|\| err, 500\)/.test(arbitrageService)
   && /sanitizeJobError\(error\.message \|\| error, 1000\)/.test(arbitrageJob), '套利解析和同步错误写入日志前必须脱敏');
 
-console.log('OK job-orchestration-regression: 94 项关键验收约束通过');
+console.log('OK job-orchestration-regression: 95 项关键验收约束通过');

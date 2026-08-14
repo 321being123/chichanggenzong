@@ -514,7 +514,12 @@ function jobStatusLabel(status) {
 }
 function jobFieldLabel(field) { return JOB_FIELD_LABELS[field] || '任务信息'; }
 function translateJobText(value) {
-  return String(value || '')
+  let text = String(value || '')
+    .replace(/\bmarket_close:([^#、，\s]+)#(\d+)/g, function (all, market, id) { return jobLabel('market_close:' + market) + '#' + id; });
+  Object.keys(JOB_LABELS).forEach(function (code) {
+    text = text.split(code + '#').join(JOB_LABELS[code] + '#');
+  });
+  return text
     .replace(/\bparse_pending\b/g, '待解析数量')
     .replace(/\bparse_exhausted\b/g, '解析失败数量')
     .replace(/\bscheduled\b/g, '定时执行')

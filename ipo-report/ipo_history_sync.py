@@ -321,6 +321,10 @@ def update_quality(cur, today):
         pending = []
         if not listed:
             pending.append("listing_date")
+            for field in QUALITY_DETAIL_FIELDS:
+                if values.get(field) in (None, ""):
+                    pending.append(field)
+            missing = [field for field in missing if field not in pending]
         elif values.get("ld_close_change") in (None, ""):
             missing.append("ld_close_change")
         prior = values.get("prior_status") if isinstance(values.get("prior_status"), dict) else {}

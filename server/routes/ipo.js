@@ -88,9 +88,18 @@ function stockFieldStatusSql(alias = 'h') {
       ELSE 'pending'
     END,
     'issue_price', CASE WHEN ${alias}.issue_price IS NOT NULL THEN 'value' ELSE 'missing' END,
-    'industry', CASE WHEN NULLIF(${alias}.industry, '') IS NOT NULL THEN 'value' ELSE 'missing' END,
-    'industry_pe', CASE WHEN ${alias}.industry_pe IS NOT NULL THEN 'value' ELSE 'missing' END,
-    'main_business', CASE WHEN NULLIF(${alias}.main_business, '') IS NOT NULL THEN 'value' ELSE 'missing' END,
+    'industry', CASE WHEN NULLIF(${alias}.industry, '') IS NOT NULL THEN 'value'
+      WHEN ${alias}.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'pending'
+      WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+      ELSE 'missing' END,
+    'industry_pe', CASE WHEN ${alias}.industry_pe IS NOT NULL THEN 'value'
+      WHEN ${alias}.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'pending'
+      WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+      ELSE 'missing' END,
+    'main_business', CASE WHEN NULLIF(${alias}.main_business, '') IS NOT NULL THEN 'value'
+      WHEN ${alias}.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'pending'
+      WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
+      ELSE 'missing' END,
     'ld_close_change', CASE WHEN ${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN
       CASE
         WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'

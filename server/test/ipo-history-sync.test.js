@@ -26,6 +26,7 @@ assert.match(routeSource, /history_stage/, '新股历史没有阶段字段');
 assert.match(routeSource, /field_status/, '新股历史没有字段质量状态');
 assert.match(routeSource, /loadStockCalendar\(days\)/, '打新日历没有读取历史事实表');
 assert.match(routeSource, /h\.ipo_date <= to_char\(\(timezone\('Asia\/Shanghai', now\(\)\)\)::date/, '新股历史仍只按上市日过滤');
+assert.match(routeSource, /'industry'.*pending/s, '未上市新股行业字段未标记待补全');
 
 const bondSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'bondDataService.js'), 'utf8');
 assert.match(bondSource, /first_day_return/, '新债历史没有首日表现质量状态');

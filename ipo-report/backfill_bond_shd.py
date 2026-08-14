@@ -295,6 +295,8 @@ def main():
         ok += 1
         time.sleep(0.5)
 
+    if not args.dry:
+        conn.commit()
     print("完成: update=%d skip=%d fail=%d" % (ok, skip, fail))
     cur.close(); conn.close()
 

@@ -24,13 +24,13 @@ cur = conn.cursor()
 
 # 只处理已上市且尚未形成表现事实的债券；已有有效表现不重复请求上游。
 limit = max(int(os.environ.get('IPO_BOND_FIRSTDAY_LIMIT', '80')), 1)
-cur.execute("SELECT security_code, bond_name, listing_date FROM public.bond_unified WHERE listing_date IS NOT NULL AND listing_date <= CURRENT_DATE")
+cur.execute("SELECT security_code, bond_name, listing_date FROM public.bond_unified WHERE listing_date IS NOT NULL AND listing_date < CURRENT_DATE")
 all_rows = cur.fetchall()
 cur.execute("""
   SELECT b.instrument_id,b.security_code,b.bond_name,b.listing_date
     FROM public.bond_unified b
    WHERE b.listing_date IS NOT NULL
-     AND b.listing_date <= CURRENT_DATE
+     AND b.listing_date < CURRENT_DATE
      AND (b.issue_type IS NULL OR b.issue_type NOT IN ('定向','私募'))
      AND NOT EXISTS (
        SELECT 1 FROM analytics.convertible_bond_listing_performance p
@@ -148,7 +148,7 @@ if not dry:
     conn.commit()
 cur.execute("""
   SELECT count(*) FROM public.bond_unified b
-   WHERE b.listing_date IS NOT NULL AND b.listing_date <= CURRENT_DATE
+   WHERE b.listing_date IS NOT NULL AND b.listing_date < CURRENT_DATE
      AND (b.issue_type IS NULL OR b.issue_type NOT IN ('定向','私募'))
      AND NOT EXISTS (
        SELECT 1 FROM analytics.convertible_bond_listing_performance p

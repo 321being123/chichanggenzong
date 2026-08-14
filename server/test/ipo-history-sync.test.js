@@ -39,6 +39,10 @@ assert.match(firstDaySource, /NOT EXISTS/, '新债上市表现补偿未按事实
 assert.match(firstDaySource, /"remaining"/, '新债上市表现补偿没有输出剩余缺口');
 const issueResultSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'backfill_bond_shd.py'), 'utf8');
 assert.match(issueResultSource, /online_purchase_accounts_10k=COALESCE\(%s,/, '发行结果户数回填单位被重复缩放');
+assert.match(issueResultSource, /listing_date <= CURRENT_DATE/, '发行结果补全会误处理未来上市债券');
+assert.match(issueResultSource, /source_field_unavailable/, '发行结果缺口没有质量分类');
+assert.match(firstDaySource, /listing_date <= CURRENT_DATE/, '首日表现补全会误处理未来上市债券');
+assert.match(firstDaySource, /source_unavailable/, '首日表现缺口没有质量分类');
 
 const slotSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobScheduleSlots.js'), 'utf8');
 assert.match(slotSource, /resultSummary\?\.window_end/, '任务成功判定未使用同步结果日期兜底');

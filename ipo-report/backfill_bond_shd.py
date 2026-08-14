@@ -201,12 +201,12 @@ def main():
     conn = get_conn()
     cur = conn.cursor()
     if args.code:
-        cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date "
+        cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date, res_ann_date "
                     "FROM public.bond_unified WHERE security_code=%s", (args.code,))
     else:
         # 只抓能真正改善的：配售率缺失(shd占位/空) 或 户数缺失(沪市取真实户数，深市取公告配号总数兜底)
-        cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date "
-                    "FROM public.bond_unified WHERE listing_date IS NOT NULL "
+        cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date, res_ann_date "
+                    "FROM public.bond_unified WHERE listing_date IS NOT NULL AND listing_date <= CURRENT_DATE "
                     "AND (issue_type IS NULL OR issue_type NOT IN ('定向','私募')) "
                     "AND (shd_ration_size IS NULL OR shd_ration_size <= 100 OR onl_pch_num IS NULL) "
                     "ORDER BY onl_date DESC")
@@ -216,7 +216,7 @@ def main():
     print("待回填(已上市+字段缺失):", len(rows))
 
     ok = skip = fail = 0
-    for instrument_id, code, name, stk, issue_sz, old_shd, old_pch, onl_d in rows:
+    for instrument_id, code, name, stk, issue_sz, old_shd, old_pch, onl_d, res_ann_d in rows:
         stk_code = (stk or "").split(".")[0]
         if not stk_code:
             print("  [SKIP] %s %s 无正股代码" % (code, name))
@@ -238,6 +238,21 @@ def main():
         need = (new_shd != old_shd) or (new_pch != old_pch)
         if not need:
             print("  [SKIP] %s %s 公告未取到新值(rate=%s pch=%s)" % (code, name, rate, pch))
+            if not args.dry:
+                due = bool(res_ann_d)
+                issue_type = 'source_field_unavailable' if due else 'pending_not_due'
+                for field_code, missing in (
+                    ('shareholder_allotment_quantity', old_shd is None or old_shd <= 100),
+                    ('online_purchase_accounts_10k', old_pch is None),
+                ):
+                    if not missing:
+                        continue
+                    cur.execute("""INSERT INTO ops.data_quality_issues
+                      (instrument_id,dataset_code,field_code,issue_type,severity,status,details)
+                      VALUES(%s,'cb_issue',%s,%s,'warning','open',%s::jsonb)
+                      ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status)
+                      DO UPDATE SET details=EXCLUDED.details,detected_at=now(),resolved_at=NULL""",
+                      (instrument_id, field_code, issue_type, json.dumps({"security_code": code, "onl_date": onl_d, "res_ann_date": res_ann_d, "rate": rate, "pch": pch}, ensure_ascii=False)))
             skip += 1
             time.sleep(0.3)
             continue
@@ -252,6 +267,16 @@ def main():
                                   online_purchase_accounts_10k=COALESCE(%s, online_purchase_accounts_10k),
                                   updated_at=NOW()
                             WHERE instrument_id=%s""", (new_shd, pch, instrument_id))
+            for field_code, updated in (
+                ('shareholder_allotment_quantity', upd_shd),
+                ('online_purchase_accounts_10k', upd_pch),
+            ):
+                if updated:
+                    cur.execute("""UPDATE ops.data_quality_issues
+                                      SET status='resolved',resolved_at=now(),details=details || %s::jsonb
+                                    WHERE instrument_id=%s AND dataset_code='cb_issue'
+                                      AND field_code=%s AND status='open'""",
+                                (json.dumps({"resolved_by": "backfill_bond_shd"}), instrument_id, field_code))
             conn.commit()
         ok += 1
         time.sleep(0.5)

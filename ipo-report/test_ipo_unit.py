@@ -30,6 +30,10 @@ def check(name, cond, detail=""):
 check("新股预测价格入库换算", m._price_from_return(84.46, 100) == 168.92)
 check("新债实际价格入库换算", m._price_from_return(100, 23.5) == 123.5)
 check("流通规模细分8-10亿", liquidity_bucket(8.03)[1] == "中大盘(8-10亿)")
+check("小规模按1亿元梯度分组",
+      liquidity_bucket(1.2)[0] == liquidity_bucket(1.8)[0]
+      and liquidity_bucket(2.1)[0] == liquidity_bucket(2.9)[0]
+      and liquidity_bucket(1.9)[0] != liquidity_bucket(2.1)[0])
 check("小样本平均使用中位数", robust_mean([1, 2, 100]) == 2)
 
 recent_liquidity_samples = [

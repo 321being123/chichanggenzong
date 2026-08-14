@@ -9,7 +9,7 @@ from _common import _load_env
 _load_env()
 
 
-LIQUIDITY_MODEL_VERSION = "dynamic_residual_v1"
+LIQUIDITY_MODEL_VERSION = "dynamic_residual_v2"
 MIN_WINDOW_SAMPLES = 4
 NEAREST_SAMPLE_COUNT = 6
 MIN_ACTIVE_SAMPLES = 4
@@ -18,13 +18,11 @@ ADJUSTMENT_MAX_PP = 35.0
 
 LIQUIDITY_BUCKETS = (
     (0, 1, "超小盘(<1亿)"),
-    (1, 1.5, "极小盘(1-1.5亿)"),
-    (1.5, 2, "小妖(1.5-2亿)"),
-    (2, 2.5, "小盘A(2-2.5亿)"),
-    (2.5, 3, "小盘B(2.5-3亿)"),
-    (3, 4, "中小盘A(3-4亿)"),
-    (4, 5, "中小盘B(4-5亿)"),
-    (5, 6, "中盘A(5-6亿)"),
+    (1, 2, "极小盘(1-2亿)"),
+    (2, 3, "小盘(2-3亿)"),
+    (3, 4, "中小盘(3-4亿)"),
+    (4, 5, "中小盘(4-5亿)"),
+    (5, 6, "中盘(5-6亿)"),
     (6, 8, "中盘B(6-8亿)"),
     (8, 10, "中大盘(8-10亿)"),
     (10, 15, "大盘(10-15亿)"),

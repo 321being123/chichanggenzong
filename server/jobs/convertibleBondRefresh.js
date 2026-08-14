@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { execFile } = require('child_process');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { syncConvertibleBondUniverse, syncConvertibleBondUniverseWithBackfill } = require('../services/convertibleBondAnalysis');
@@ -19,7 +20,14 @@ async function runDailyValuation(reason = 'scheduled') {
     runId = await startJobRun(VALUATION_JOB);
     const root = path.join(__dirname, '..', '..');
     const script = path.join(root, 'server', 'scripts', 'convertibleBondValuation.py');
-    const py = process.env.VALUATION_PYTHON || path.join(root, 'venv', 'Scripts', 'python.exe');
+    const pythonCandidates = [
+      process.env.VALUATION_PYTHON,
+      path.join(root, 'venv', 'Scripts', 'python.exe'),
+      path.join(root, 'venv', 'bin', 'python'),
+      path.join(root, 'ipo-report', 'venv', 'bin', 'python'),
+      'python3',
+    ].filter(Boolean);
+    const py = pythonCandidates.find(candidate => candidate === 'python3' || fs.existsSync(candidate)) || pythonCandidates[pythonCandidates.length - 1];
     const output = await new Promise((resolve, reject) => {
       execFile(py, [script, 'refresh'], {
         cwd: root,

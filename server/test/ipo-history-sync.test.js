@@ -57,6 +57,8 @@ assert.match(bondJobSource, /BOND_ISSUE_RESULT_SCRIPT/, '新债发行结果补�
 const migrationSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
 assert.match(migrationSource, /071_deduplicate_instrument_events/, '重复发行事件没有独立迁移');
 assert.match(migrationSource, /uq_instrument_events_business/, '发行事件缺少业务唯一约束');
+const bondRefreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
+assert.match(bondRefreshSource, /ipo-report.*venv.*bin.*python/, '估值任务没有 Linux Python 解释器兜底');
 
 const reportSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_report.py'), 'utf8');
 assert.match(reportSource, /ipo_date=COALESCE\(\?, ipo_date\)/, '日报详情保存仍遗漏 ipo_date');

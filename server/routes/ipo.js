@@ -304,11 +304,7 @@ router.get('/report/code', async (req, res) => {
     if (!/^[0-9A-Za-z]+$/.test(code)) {
       return res.status(400).json({ error: '非法 code' });
     }
-    const file = path.join(__dirname, '..', '..', 'ipo-report', 'individual', code + '.md');
-    if (fs.existsSync(file)) {
-      const md = fs.readFileSync(file, 'utf-8');
-      return res.json({ code, md: codeReportWithFooter(md, code) });
-    }
+    // 数据库报告会随补数和重新生成及时更新；仓库内单债文件只是部署兜底，不能遮住新数据。
     const reports = await pool.query(
       'SELECT md FROM ipo_reports WHERE md LIKE $1 ORDER BY report_date DESC',
       [`%${code}%`]
@@ -318,6 +314,11 @@ router.get('/report/code', async (req, res) => {
       if (section) {
         return res.json({ code, md: codeReportWithFooter(row.md, code) });
       }
+    }
+    const file = path.join(__dirname, '..', '..', 'ipo-report', 'individual', code + '.md');
+    if (fs.existsSync(file)) {
+      const md = fs.readFileSync(file, 'utf-8');
+      return res.json({ code, md: codeReportWithFooter(md, code) });
     }
     const calendarReport = await buildCalendarReport(code);
     res.json({ code, md: calendarReport });

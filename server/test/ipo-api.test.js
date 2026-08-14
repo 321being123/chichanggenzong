@@ -91,6 +91,14 @@ async function main() {
   check('详情包含预测跟踪统计', () => assert.ok(j.md.includes('预测跟踪统计')));
   check('详情包含当前赛道热度系数', () => assert.ok(j.md.includes('当前赛道热度系数')));
 
+  // 数据库报告必须优先于仓库内可能过期的 individual Markdown。
+  const routeSource = require('fs').readFileSync(require.resolve('../routes/ipo'), 'utf8');
+  check('单债详情优先读取数据库报告', () => {
+    const dbRead = routeSource.indexOf("SELECT md FROM ipo_reports WHERE md LIKE $1");
+    const fileRead = routeSource.indexOf('fs.existsSync(file)', dbRead);
+    assert.ok(dbRead >= 0 && fileRead > dbRead);
+  });
+
   server.close();
 
   const fails = results.filter(x => x[0] === 'FAIL');

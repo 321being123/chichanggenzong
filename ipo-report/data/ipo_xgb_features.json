@@ -32,10 +32,10 @@
     "pe_ratio": 1.44
   },
   "sample_count": 181,
-  "train_mae": 62.57253011580573,
-  "test_mae": 222.4934078388936,
-  "train_mape": 20.982691756224966,
-  "test_mape": 59.51645606313063,
+  "train_mae": 62.114444708845355,
+  "test_mae": 222.47247649189714,
+  "train_mape": 20.915608658101608,
+  "test_mape": 58.92356837743644,
   "target_transform": "log1p_nonnegative_return",
-  "trained_at": "2026-08-13 19:52:37"
+  "trained_at": "2026-08-14 14:30:10"
 }

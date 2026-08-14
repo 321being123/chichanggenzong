@@ -23,6 +23,7 @@ from sse_listing_parser import (
 # Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），
 # 每个标的都调一次会重复拉全量；缓存一次后本进程内复用。
 _NEW_SHARE_CACHE = None
+_bond_price_source = {}
 
 
 def _get_new_share_df(pro):
@@ -137,6 +138,14 @@ def fetch_bond_detail(secu_code):
             if not stock_info:
                 # fallback: 从HTML详情页获取正股价格
                 stock_info = fetch_stock_price_from_detail(secu_code)
+            bond_key = re.sub(r"\D", "", str(secu_code))[:6]
+            if _bond_price_source.get(bond_key) == "tencent":
+                live_stock = _fetch_quote_tencent(stock_code)
+                if live_stock and live_stock.get("price"):
+                    stock_info = {**(stock_info or {}), "price": live_stock["price"]}
+                else:
+                    # 两条行情必须同步；拿不到腾讯正股价时不展示混合口径的实时溢价率。
+                    info["bond_price"] = None
             if stock_info:
                 info["stock_price"] = stock_info.get("price")
                 info["stock_pe"] = stock_info.get("pe")
@@ -156,10 +165,12 @@ def fetch_bond_detail(secu_code):
             try:
                 cp = float(info["convert_price"])
                 sp = float(info["stock_price"])
-                info["transfer_value"] = round(100 / cp * sp, 2)
-                bp = float(info["bond_price"])
-                if info["transfer_value"] > 0:
-                    info["premium_ratio"] = round((bp / info["transfer_value"] - 1) * 100, 2)
+                transfer_value, premium_ratio = calculate_conversion_metrics(
+                    sp, cp, info.get("bond_price")
+                )
+                info["transfer_value"] = transfer_value
+                if premium_ratio is not None:
+                    info["premium_ratio"] = premium_ratio
             except (ValueError, TypeError):
                 pass
 
@@ -799,10 +810,39 @@ def calc_circulation_scale(info, bond_code=None):
         info["_note"] = f"⚠️ 可转债公告解析失败：{error_msg}"
         info["_circulation_error"] = error_msg
 
+def calculate_conversion_metrics(stock_price, convert_price, bond_price=None):
+    """用同一时点的正股/转债价格计算转股价值和转股溢价率。"""
+    cp = float(convert_price)
+    sp = float(stock_price)
+    transfer_value = round(100 / cp * sp, 2)
+    if bond_price is None or transfer_value <= 0:
+        return transfer_value, None
+    premium_ratio = round((float(bond_price) / transfer_value - 1) * 100, 2)
+    return transfer_value, premium_ratio
+
+
+def _parse_tencent_bond_price(content, bond_code):
+    """解析并校验腾讯可转债行情，响应固定按 GBK 解码。"""
+    code = re.sub(r"\D", "", str(bond_code))[:6]
+    text = content.decode("gbk", "replace") if isinstance(content, bytes) else str(content or "")
+    match = re.search(r'v_(?:sh|sz)(\d{6})="([^"]*)"', text)
+    if not match or match.group(1) != code:
+        return None
+    parts = match.group(2).split("~")
+    if len(parts) <= 3 or parts[2] != code:
+        return None
+    try:
+        price = float(parts[3])
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
 def _fetch_bond_price(bond_code, list_date):
     """获取可转债交易价格：已上市→实时行情，未上市→面值100"""
-    if bond_code in _bond_price_cache:
-        return _bond_price_cache[bond_code]
+    code = re.sub(r"\D", "", str(bond_code))[:6]
+    if code in _bond_price_cache:
+        return _bond_price_cache[code]
 
     # 判断是否已上市
     is_listed = False
@@ -815,27 +855,31 @@ def _fetch_bond_price(bond_code, list_date):
             pass
 
     if is_listed:
-        # 主源：Tushare转债收盘价
-        price = _ts_fetch_bond_close(bond_code)
-        if price:
-            _bond_price_cache[bond_code] = price
-            return price
-        # 兜底：腾讯行情实时价格
+        # 主源：腾讯转债实时行情；上市首日 Tushare 日线通常尚未更新。
         try:
-            qt_code = f"{_get_qt_prefix(bond_code)}{bond_code}"
+            qt_code = f"{_get_qt_prefix(code)}{code}"
             resp = _get_session().get(f"https://qt.gtimg.cn/q={qt_code}", timeout=10)
-            m = re.search(r'="(.+)"', resp.text)
-            if m:
-                parts = m.group(1).split("~")
-                if len(parts) > 3 and parts[3]:
-                    price = float(parts[3])
-                    _bond_price_cache[bond_code] = price
-                    return price
+            price = _parse_tencent_bond_price(resp.content, code)
+            if price:
+                _bond_price_cache[code] = price
+                _bond_price_source[code] = "tencent"
+                return price
         except Exception:
             pass
 
-    # 未上市或获取失败 → 面值100
-    _bond_price_cache[bond_code] = 100
+        # 兜底：Tushare最近完整交易日收盘价。
+        price = _ts_fetch_bond_close(bond_code)
+        if price:
+            _bond_price_cache[code] = price
+            _bond_price_source[code] = "tushare"
+            return price
+
+        # 已上市但两路行情均失败时禁止伪装成面值100。
+        return None
+
+    # 未上市债券尚无市场成交价，申购报告按面值100计算参考溢价率。
+    _bond_price_cache[code] = 100
+    _bond_price_source[code] = "face_value"
     return 100
 
 def fetch_stock_quote(stock_code):
@@ -1624,4 +1668,4 @@ def _fetch_stock_listing_actuals():
     if updated > 0:
         print(f"[回填] 从K线回填 {updated} 只股票的首日涨幅")
 
-__all__ = ['fetch_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']
+__all__ = ['fetch_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']

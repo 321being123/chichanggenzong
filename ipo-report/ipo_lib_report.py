@@ -463,7 +463,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
         if list_bonds:
             lines.append("### 💰 新债上市")
             lines.append("")
-            lines.append("| 债券代码 | 债券简称 | 评级 | 发行规模(亿) | 转股价值 | 溢价率 | 首日预估 |")
+            lines.append("| 债券代码 | 债券简称 | 评级 | 发行规模(亿) | 转股价值 | 溢价率 | 预测最终价格 |")
             lines.append("|----------|----------|------|-------------|----------|--------|----------|")
             for b in list_bonds:
                 if b.get("has_detail"):
@@ -486,7 +486,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     if isinstance(la, dict):
                         detail = la.get("detail", "")
                         lines.append(f"#### {b['name']}（{b['code']}）")
-                        lines.append(f"- **首日预估**：{la.get('summary', '数据不足')}")
+                        lines.append(f"- **预测最终价格**：{la.get('summary', '数据不足')}")
                         if detail:
                             for line in detail.split("\n"):
                                 lines.append(f"  - {line}")
@@ -663,14 +663,14 @@ def generate_html(md_content, data):
             html += '</table>\n'
 
         if data["list_bonds"]:
-            html += '<h3>💰 新债上市</h3>\n<table>\n<tr><th>代码</th><th>简称</th><th>评级</th><th>规模(亿)</th><th>转股价值</th><th>溢价率</th><th>预估上市价</th></tr>\n'
+            html += '<h3>💰 新债上市</h3>\n<table>\n<tr><th>代码</th><th>简称</th><th>评级</th><th>规模(亿)</th><th>转股价值</th><th>溢价率</th><th>预测最终价格</th></tr>\n'
             for b in data["list_bonds"]:
                 d = b.get("detail", {}) if b.get("has_detail") else {}
                 tv = d.get("transfer_value", "-")
                 pr = f"{d.get('premium_ratio')}%" if d.get("premium_ratio") is not None else "-"
                 la = b.get("listing_analysis", {})
                 if isinstance(la, dict):
-                    price = f"{la.get('price')}元" if la.get("price") else "数据不足"
+                    price = la.get("summary", "数据不足")
                 else:
                     price = str(la)
                 html += f'<tr><td>{b["code"]}</td><td>{b["name"]}</td><td>{d.get("rating","-")}</td><td>{d.get("issue_scale","-")}</td><td>{tv}</td><td>{pr}</td><td>{price}</td></tr>\n'
@@ -682,12 +682,12 @@ def generate_html(md_content, data):
                     la = b.get("listing_analysis", {})
                     html += f'<div class="bond-item"><h4>{b["name"]}（{b["code"]}）</h4>'
                     if isinstance(la, dict):
-                        html += f'<p><strong>首日预估：</strong>{la.get("summary","数据不足")}</p>'
+                        html += f'<p><strong>预测最终价格：</strong>{la.get("summary","数据不足")}</p>'
                         detail = la.get("detail", "")
                         if detail:
                             html += f'<p style="color:#666;font-size:13px">{"<br>".join(detail.split(chr(10)))}</p>'
                     else:
-                        html += f'<p><strong>首日预估：</strong>{la}</p>'
+                        html += f'<p><strong>预测最终价格：</strong>{la}</p>'
                     if d.get("stock_name"):
                         html += f'<p><strong>正股：</strong>{d["stock_name"]}（{d.get("stock_code","")}）'
                         if d.get("stock_price"):

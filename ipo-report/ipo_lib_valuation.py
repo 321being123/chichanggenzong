@@ -181,7 +181,7 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     tv = float(transfer_value)
 
     # ── 0. 获取全市场数据和热度 ──
-    bonds_data = _fetch_all_bonds_market()
+    bonds_data = _fetch_all_bonds_market() or []
     market = fetch_market_heat()
     market_level = market["index_level"]
     index_1m = market.get("index_1m", 0)
@@ -290,7 +290,10 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     # ── 6. 生成详细说明 ──
     premium_pct = round(total_premium * 100, 1)
     detail_parts = []
-    detail_parts.append(f"📊 预估上市价: {estimated_price}元（溢价率 {premium_pct}%）")
+    display_price = int(tracking_price // 5 * 5)
+    detail_parts.append(
+        f"📊 预测最终价格: {tracking_price}元（向下取整展示{display_price}元左右，估值溢价率 {premium_pct}%）"
+    )
 
     # 市场热度
     detail_parts.append(f"🔥 市场热度: {market_level}（全市场平均溢价率 {round(market['avg_premium']*100,1)}%，"
@@ -325,20 +328,15 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
     if capped:
         detail_parts.append(cap_reason)
 
-    # 生成简洁摘要：非封顶预测统一取最接近的 5 元整数，并用“左右”表达模糊区间。
-    rounded_price = int((estimated_price + 2.5) // 5 * 5)
-    if capped:
-        range_text = "预估157.3元"
-        if second_day_limit:
-            range_text += "（预计次日继续涨停）"
-    else:
-        suffix = "，注意破发风险" if estimated_price < 105 else ""
-        prefix = "🔥 妖债，" if is_yaozhai else ""
-        range_text = f"{prefix}预估{rounded_price}元左右{suffix}"
+    # 首日展示直接给出模型最终理论价，统一按5元档向下取整。
+    suffix = "，注意破发风险" if tracking_price < 105 else ""
+    prefix = "🔥 妖债，" if is_yaozhai else ""
+    range_text = f"{prefix}{display_price}元左右{suffix}"
 
     return {
         "price": estimated_price,
         "tracking_price": tracking_price,
+        "display_price": display_price,
         "premium": premium_pct,
         "detail": "\n".join(detail_parts),
         "summary": range_text,

@@ -9,10 +9,10 @@ from _common import _load_env
 _load_env()
 
 
-LIQUIDITY_MODEL_VERSION = "dynamic_residual_v2"
-MIN_WINDOW_SAMPLES = 4
-NEAREST_SAMPLE_COUNT = 6
-MIN_ACTIVE_SAMPLES = 4
+LIQUIDITY_MODEL_VERSION = "dynamic_residual_v4"
+MIN_WINDOW_SAMPLES = 1
+MIN_ACTIVE_SAMPLES = 1
+MAX_BUCKET_RADIUS = 1
 ADJUSTMENT_MIN_PP = -25.0
 ADJUSTMENT_MAX_PP = 35.0
 
@@ -58,7 +58,7 @@ def _select_comparable_samples(samples, target_scale):
     if len(exact) >= MIN_WINDOW_SAMPLES:
         return exact, "同档"
 
-    for radius in range(1, len(LIQUIDITY_BUCKETS)):
+    for radius in range(1, MAX_BUCKET_RADIUS + 1):
         adjacent = [
             row for row in samples
             if abs(liquidity_bucket(row["circulation_scale"])[0] - target_index) <= radius
@@ -66,11 +66,7 @@ def _select_comparable_samples(samples, target_scale):
         if len(adjacent) >= MIN_WINDOW_SAMPLES:
             return adjacent, "相邻档合并"
 
-    nearest = sorted(
-        samples,
-        key=lambda row: abs(float(row["circulation_scale"]) - float(target_scale)),
-    )[:NEAREST_SAMPLE_COUNT]
-    return nearest, "最近规模"
+    return exact, "同档及相邻档样本不足"
 
 
 def _window_impact(samples, target_scale):
@@ -82,9 +78,10 @@ def _window_impact(samples, target_scale):
     selected_mean = robust_mean(row["residual_pp"] for row in selected)
     market_mean = robust_mean(row["residual_pp"] for row in samples)
     return {
-        "impact_pp": selected_mean - market_mean,
+        "impact_pp": selected_mean,
         "sample_count": len(selected),
         "market_count": len(samples),
+        "market_mean_pp": market_mean,
         "method": method,
     }
 
@@ -116,7 +113,7 @@ def calculate_adjustment_from_samples(target_scale, recent_samples, older_sample
         weight_text = "近半年（近3个月有效样本不足）"
     else:
         raw = 0.0
-        weight_text = "近半年有效样本不足，暂不调整"
+        weight_text = f"同档或紧邻档有效样本不足{MIN_WINDOW_SAMPLES}只，暂不调整"
 
     adjustment = max(ADJUSTMENT_MIN_PP, min(ADJUSTMENT_MAX_PP, raw))
     _, label = liquidity_bucket(target_scale)

@@ -49,10 +49,27 @@ dynamic_adjustment = calculate_adjustment_from_samples(
     2.25, recent_liquidity_samples, older_liquidity_samples
 )
 check("流通影响按近3月70%和第4至6月30%加权",
-      dynamic_adjustment["adjustment_pp"] == 1.3,
+      dynamic_adjustment["adjustment_pp"] == 9.45,
       "adjustment=%s" % dynamic_adjustment["adjustment_pp"])
-inactive_adjustment = calculate_adjustment_from_samples(2.25, recent_liquidity_samples[:3], [])
-check("动态流通调整不足4只不启用", inactive_adjustment["adjustment_pp"] == 0)
+inactive_adjustment = calculate_adjustment_from_samples(2.25, [], [])
+check("动态流通调整无符合样本时不启用", inactive_adjustment["adjustment_pp"] == 0)
+
+sparse_cross_bucket_samples = [
+    {"circulation_scale": scale, "residual_pp": residual}
+    for scale, residual in [(17.6984, 27.28), (2.6723, 49.67), (3.0917, 59.50),
+                            (1.2495, 59.20), (77.6359, 10.75)]
+]
+sparse_adjustment = calculate_adjustment_from_samples(8.0332, sparse_cross_bucket_samples, [])
+check("流通规模样本稀疏时不跨多档凑样本",
+      sparse_adjustment["adjustment_pp"] == 0,
+      "adjustment=%s" % sparse_adjustment["adjustment_pp"])
+
+single_adjustment = calculate_adjustment_from_samples(
+    8.0332, [{"circulation_scale": 8.417, "residual_pp": 11.72}], []
+)
+check("流通规模只有一个符合样本时直接采用",
+      single_adjustment["adjustment_pp"] == 11.72,
+      "adjustment=%s" % single_adjustment["adjustment_pp"])
 
 
 check("psql 路径适配当前系统", os.name == "nt" or not common.PSQL.lower().startswith("c:\\"), common.PSQL)
@@ -209,8 +226,15 @@ try:
     check("区间带 流通2亿 ±3 (low)", abs(r3cs["low"] - 152.0) < 0.01, "low=%s" % r3cs["low"])
     check("区间带 流通2亿 ±3 (high<=157.3)", abs(r3cs["high"] - 157.3) < 0.01, "high=%s" % r3cs["high"])
 
-    # 3.3 摘要格式：按当前产品规则取最接近的整数并显示「预估XXX元左右」
-    check("summary 显示整数元左右", r500["summary"] == "预估110元左右", "summary=%r" % r500["summary"])
+    # 3.3 摘要格式：最终理论价按5元档向下取整，不显示首日交易上限替代值。
+    check("summary 显示向下取整后的最终价格", r500["summary"] == "110元左右", "summary=%r" % r500["summary"])
+    capped_result, _ = m.estimate_bond_listing_price(108, 2, "AAA", issue_scale=None)
+    check("理论估值167元向下展示165元左右",
+          capped_result["price"] == 157.3
+          and capped_result["display_price"] == 165
+          and capped_result["summary"] == "165元左右",
+          "price=%s display=%s summary=%s" % (
+              capped_result["price"], capped_result["display_price"], capped_result["summary"]))
 
     # 3.4 返回结构含 low/high 区间键
     check("返回含 low 键", "low" in r500)

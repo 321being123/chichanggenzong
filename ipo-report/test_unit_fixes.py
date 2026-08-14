@@ -174,5 +174,22 @@ check("申能转债公告编号解析", detail["announcement_number"] == "2026-1
 check("申能转债官方来源标记", detail["is_official"] and detail["event_type"] == "convertible_bond_listing",
       f"source={detail['source_class']}, event={detail['event_type']}")
 
+# ---------- 测试7：上市首日腾讯行情与转股溢价率 ----------
+tencent_payload = 'v_sz123277="51~玉禾转债~123277~130.000~100.000~130.000";'.encode('gbk')
+check("带交易所后缀的深市转债可正确解析腾讯价格",
+      mod._parse_tencent_bond_price(tencent_payload, "123277.SZ") == 130.0)
+for code, market in (("110103", "sh"), ("113001", "sh"), ("118001", "sh"),
+                     ("123277", "sz"), ("127001", "sz"), ("128001", "sz")):
+    payload = f'v_{market}{code}="51~测试转债~{code}~123.456";'.encode('gbk')
+    check(f"腾讯转债代码族 {code} 路由与解析正确",
+          mod._parse_tencent_bond_price(payload, f"{code}.{market.upper()}") == 123.456)
+transfer_value, premium_ratio = mod.calculate_conversion_metrics(16.28, 16.35, 130.0)
+check("玉禾转债转股价值按同步正股价计算", transfer_value == 99.57, f"transfer_value={transfer_value}")
+check("玉禾转债转股溢价率按真实债价计算", premium_ratio == 30.56, f"premium_ratio={premium_ratio}")
+_, missing_premium = mod.calculate_conversion_metrics(16.28, 16.35, None)
+check("已上市债价缺失时不伪造面值溢价率", missing_premium is None)
+check("腾讯同步只覆盖正股价格、不覆盖Tushare基本面",
+      '"price": live_stock["price"]' in fetch_source and '**{k: v for k, v in live_stock.items()' not in fetch_source)
+
 print("\n结果:", "ALL PASS" if all(PASS) else f"{PASS.count(False)} FAILED")
 sys.exit(0 if all(PASS) else 1)

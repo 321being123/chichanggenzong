@@ -324,17 +324,13 @@ function ipoRenderHistory(type, rows) {
     // 集思录式可转债详细列（来源：Tushare cb_issue + cb_basic + cb_rating）
     var headers = [
       '代码', '名称', '方案进展', '进展公告日', '发行规模(亿)', '评级',
-      '股东配售率', '配售10张所需股数', '股权登记日',
+      '股东配售率', '配售10张所需股数',
       '网上上限(亿)', '申请户数(万)',
       '预测涨幅%', '上市涨幅%'
     ];
     var r2 = rows.map(function (it) {
       // 进展公告日 = 当前阶段日期（绝不用未来的发行结果公告日）
       var progDate = ipoProgressDate(it);
-      var shdRecDate = String(it.shd_ration_record_date || '');
-      if (/^\d{8}$/.test(shdRecDate)) shdRecDate = shdRecDate.slice(0,4)+'-'+shdRecDate.slice(4,6)+'-'+shdRecDate.slice(6);
-      else shdRecDate = '';
-
       // 发行结果公告是否已出：网上上限此时才公布
       var announced = ipoAnnounced(it);
       // 股东配售率(%)：已公告(res_ann_date<=今天)且 shd_ration_size 为真实张数(>100)时显示；
@@ -351,7 +347,6 @@ function ipoRenderHistory(type, rows) {
         it.rating ? escapeHtml(it.rating) : '-',   // 评级（已知则显示，无则 -）
         shdPct,                                   // 股东配售率(%)：= shd_ration_size/(issue_size×1e6)×100
         ipoShdShares(it),                          // 配售10张所需股数 = 1000/每股配售额(元)
-        shdRecDate,                                // 股权登记日
         ipoBondField(it, 'onl_size', it.onl_size), // 网上上限(亿)：结果公告后才应出现
         ipoBondField(it, 'onl_pch_num', it.onl_pch_num, function (v) {
           return ipoFmt(v) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '');

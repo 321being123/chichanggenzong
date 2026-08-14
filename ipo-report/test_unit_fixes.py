@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # 局部单元验证：桩掉重型依赖后导入真实脚本，测试本次两处修复（隔离样本，避免无关规则干扰）
+import os
 import sys, types
 from pathlib import Path
 
@@ -61,6 +62,25 @@ yuhe_ctrl_zhang = sum(item[1] for item in yuhe_locked)
 yuhe_total_zhang = mod._derive_total_zhang(yuhe_ctrl_zhang, sum(item[2] for item in yuhe_locked), 15.0)
 yuhe_circulation = round((yuhe_total_zhang - yuhe_ctrl_zhang) * 100 / 100000000, 4)
 check("玉禾流通规模约8.03亿元", 8.0 < yuhe_circulation < 8.1, f"circulation={yuhe_circulation}亿")
+
+# 巨潮实际最多返回30条，不能因请求50条却只收到30条而误判为末页。
+fetch_source = open(os.path.join(os.path.dirname(__file__), "ipo_lib_fetch.py"), encoding="utf-8").read()
+check("巨潮公告分页不再按返回数小于请求数提前停止",
+      "len(page_items or []) < 50" not in fetch_source and "total_announcement" in fetch_source)
+
+# 科创板公告常用“控股股东、实际控制人基本信息如下”介绍自然人。
+aiwei_text = """
+四、发行人控股股东、实际控制人情况
+截至2025年6月30日，孙洪军直接持有公司41.80%的股份。
+公司控股股东、实际控制人基本信息如下：
+孙洪军先生，中国国籍。
+"""
+aiwei_holders = [("孙洪军", 7_941_780, 41.77), ("某证券投资基金", 100_000, 0.53)]
+aiwei_controllers, aiwei_entities = mod._extract_controller_names(aiwei_text, aiwei_holders)
+aiwei_locked = mod._match_controller_holders(aiwei_holders, aiwei_controllers, aiwei_entities)
+check("控股股东基本信息如下可识别自然人",
+      aiwei_locked == [("孙洪军", 7_941_780, 41.77)],
+      f"controllers={aiwei_controllers}, locked={aiwei_locked}")
 
 # ---------- 测试2：_parse_bond_top10_holders 手单位 ×10 ----------
 hand_text = """二、前十名可转换公司债券持有人

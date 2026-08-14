@@ -378,9 +378,17 @@ def _extract_controller_names(text, holders=None):
             if name:
                 controllers.add(name)
 
+    # 科创板公告常写作“控股股东、实际控制人基本信息如下：张三先生”。
+    for m in re.finditer(
+        r'(?:控股股东[、和及]实际控制人|控股股东、实际控制人)[^。；]{0,30}?基本信息如下[：:]\s*'
+        r'([\u4e00-\u9fa5]{2,4})(?:先生|女士)?',
+        section,
+    ):
+        controllers.add(m.group(1))
+
     # 控股股东章节常见的直接持股、公司名称表格和控制链表述。
     entity_patterns = [
-        r'截至[^。；]{0,80}[，,]([^，。；\n]{2,50}?)(?:直接)?持有发行人',
+        r'截至[^。；]{0,80}[，,]([^，。；\n]{2,50}?)(?:直接)?持有(?:发行人|公司)',
         r'公司名称\s*\n\s*([^\n]{2,50})',
         r'([^，。；\n]{2,50}?)通过控制([^，。；\n]{2,50}?)间接控制发行人',
         r'持有([^，。；\n]{2,50}?)100%的出资额',
@@ -526,9 +534,13 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
         announcements = []
         cn_session = _get_cninfo_session()
         seen = set()
-        for page_num in range(1, 6):
+        # 巨潮接口即使传 pageSize=50，实际也可能只返回30条；不能用“返回数<请求数”
+        # 判断末页，否则公告较多的公司会在第一页后提前停止，漏掉上市公告书。
+        page_size = 30
+        total_announcement = None
+        for page_num in range(1, 13):
             data = {
-                "pageNum": page_num, "pageSize": 50,
+                "pageNum": page_num, "pageSize": page_size,
                 "stock": f"{stock_code},{org_id}",
                 "tabName": "fulltext", "column": "szse" if plate == "sz" else "shse",
                 "plate": plate,
@@ -540,6 +552,7 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
                     resp = cn_session.post(url, data=data, timeout=20)
                     result = resp.json()
                     page_items = result.get("announcements") or []
+                    total_announcement = result.get("totalAnnouncement") or result.get("totalRecordNum")
                     break
                 except Exception as e:
                     if attempt == 2:
@@ -556,7 +569,9 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
                 if key not in seen:
                     seen.add(key)
                     announcements.append(ann)
-            if len(page_items or []) < 50:
+            if not page_items:
+                break
+            if total_announcement is not None and len(seen) >= int(total_announcement):
                 break
 
         # 优先找上市公告书，没有则尝试发行结果公告

@@ -461,21 +461,118 @@ async function doDeleteBroker(code) {
 }
 
 // ====== 定时任务监控 ======
+const JOB_LABELS = {
+  index_baseline: '指数基线补齐',
+  index_recent: '指数每日补齐',
+  nav_snapshot: '净值快照',
+  hk_rate: '港币汇率更新',
+  bond_safety_refresh: '可转债安全评分',
+  convertible_bond_universe_refresh: '可转债行情同步',
+  convertible_bond_valuation_refresh: '可转债估值预警',
+  stock_analysis_refresh: '个股分析刷新',
+  ipo_calendar_refresh: '打新日历与日报',
+  ipo_history_sync: '新股历史同步',
+  market_volatility_sync: '股市波动指标同步',
+  hk_trade_rules_sync: '港股每手股数同步',
+  arbitrage_sync: '套利公告同步',
+  arbitrage_reparse: '套利公告重新解析',
+  holiday_sync: '休市日历同步',
+  manual_backfill: '手动补漏收盘数据',
+  manual_holiday_sync: '手动核对休市日历',
+};
+const JOB_FIELD_LABELS = {
+  reason: '执行原因', executable: '执行程序', retryOf: '关联重试', ok: '执行结果', source: '数据来源', bootstrap: '是否首次初始化',
+  window_start: '开始日期', window_end: '结束日期', fetched: '获取数量', inserted: '新增数量', refreshed: '更新数量', completed_fields: '已补全字段数',
+  first_day: '首日表现', quality: '数据质量', missing_records: '缺少记录数', missing_fields: '缺少字段数', calendar_diff: '日历差异数',
+  enrichment: '数据补充', attempted: '尝试处理数', updated: '更新数量', pending: '待处理数量', failed: '失败数量', remaining: '剩余数量',
+  cycleMetrics: '波动指标', cnYield: '中债收益率', csi300Pe: '沪深300市盈率', csiAllPe: '中证全指市盈率', hsiPe: '恒生指数市盈率',
+  usTreasuryYield: '美国十年期国债收益率', csi300Valuation: '沪深300估值', moneySupply: '货币供应', aShareMarketCap: 'A股市值', m2MarketCap: 'M2市值',
+  trade_date: '交易日期', tradeDate: '交易日期', data_as_of: '数据日期', dataAsOf: '数据日期', runId: '执行编号', detail: '说明', error: '错误',
+  count: '数量', total: '总数', saved: '写入数量', synced: '同步数量', skipped: '跳过数量', errors: '错误数量', message: '说明', output: '执行日志',
+  recorded: '记录数量', accounts: '账户数量', missingDates: '缺少日期', rate: '汇率', expected: '目标日期', last: '最新日期', previous: '上次执行',
+  days: '交易日数量', recovered: '恢复数量', result: '同步结果', label: '任务类别', modelVersion: '模型版本', incomplete: '数据是否不完整',
+  status: '状态', caseId: '事件编号', parse_pending: '待解析数量', parse_exhausted: '解析失败数量', unsupported: '是否支持',
+};
+const JOB_VALUE_LABELS = {
+  scheduled: '定时执行', manual_retry: '人工补跑', auto_retry: '自动重试', locked: '已有同类任务运行', already_running: '已有同类任务运行',
+  already_initialized: '已经完成初始化', cached: '使用已缓存结果', not_configured: '未配置，已跳过', in_process: '已有进程运行', fresh: '数据已是最新',
+  'retry-after-failure': '失败后重试', no_missing: '没有缺失数据', no_nav: '没有净值记录', not_due: '尚未到执行时间', job_runs: '任务执行记录',
+  'tushare.new_share': 'Tushare 新股接口', tushare: 'Tushare 数据接口', tencent: '腾讯行情接口', tushare_close: 'Tushare 收盘数据',
+};
 function jobLabel(job) {
   if (!job) return '—';
-  if (job.indexOf('market_close:') === 0) return '收盘数据（' + job.slice('market_close:'.length) + '）';
-  const map = {
-    index_baseline: '指数基线', index_recent: '指数每日补齐',
-    nav_snapshot: '净值快照补齐', hk_rate: '港币汇率更新',
-    bond_safety_refresh: '可转债安全评分刷新',
-    convertible_bond_universe_refresh: '可转债行情同步',
-    convertible_bond_valuation_refresh: '可转债估值与预警',
-    stock_analysis_refresh: '个股分析刷新', ipo_calendar_refresh: '打新日历与日报',
-    market_volatility_sync: '股市波动指标同步',
-    manual_backfill: '手动补漏', manual_holiday_sync: '手动休市核对',
-    holiday_sync: '休市日历同步'
-  };
-  return map[job] || job;
+  if (JOB_LABELS[job]) return JOB_LABELS[job];
+  if (job.indexOf('market_close:') === 0) return job.slice('market_close:'.length) + '收盘数据';
+  return '其他后台任务';
+}
+function jobTriggerLabel(trigger) { return JOB_VALUE_LABELS[trigger] || (trigger ? '系统触发' : '—'); }
+function jobActionLabel(action) {
+  return { job_validate: '重新校验', job_retry: '人工补跑', job_acknowledge: '确认任务异常', job_alert_resend: '重发告警', job_alert_acknowledge: '确认告警' }[action] || (action ? '系统操作' : '—');
+}
+function jobStatusLabel(status) {
+  return { done: '成功', succeeded: '成功', failed: '失败', running: '运行中', pending: '待运行', blocked: '已阻塞', degraded: '降级', skipped: '已跳过', sent: '已发送', resolved: '已恢复', acknowledged: '已确认', sending: '发送中', send_failed: '发送失败' }[status] || status || '—';
+}
+function jobFieldLabel(field) { return JOB_FIELD_LABELS[field] || '任务信息'; }
+function translateJobText(value) {
+  return String(value || '')
+    .replace(/\bparse_pending\b/g, '待解析数量')
+    .replace(/\bparse_exhausted\b/g, '解析失败数量')
+    .replace(/\bscheduled\b/g, '定时执行')
+    .replace(/\bacceptance_recheck_2\b/g, '验收复核第2次')
+    .replace(/\bacceptance_recheck\b/g, '验收复核')
+    .replace(/\bhkex\b/g, '港交所')
+    .replace(/\bcninfo\b/g, '巨潮资讯')
+    .replace(/\berrors\b/g, '错误数量')
+    .replace(/\bmodel=/g, '模型版本：')
+    .replace(/\breason=/g, '执行原因：')
+    .replace(/\btrade_date=/g, '交易日期：')
+    .replace(/\bwindow_start=/g, '开始日期：')
+    .replace(/\bwindow_end=/g, '结束日期：')
+    .replace(/\bspawn\b/g, '启动程序失败')
+    .replace(/\bENOENT\b/g, '文件不存在')
+    .replace(/\/opt\/portfolio\/[^\s|]+/g, 'Python 任务程序')
+    .replace(/\balready_running\b/g, '已有同类任务运行')
+    .replace(/\bnot_configured\b/g, '未配置，已跳过')
+    .replace(/\bPermission denied\b/gi, '权限不足');
+}
+function jobValueLabel(value, field) {
+  if (value === null || value === undefined || value === '') return '';
+  if (field === 'ok') return value ? '成功' : '失败';
+  if (field === 'bootstrap') return value ? '是' : '否';
+  if (field === 'executable') return 'Python 数据同步程序';
+  if (field === 'output') return '程序执行日志已完成（详细日志不在页面展开）';
+  if (field === 'status') return jobStatusLabel(String(value));
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  return JOB_VALUE_LABELS[value] || (typeof value === 'string' ? translateJobText(value) : String(value));
+}
+function formatJobObject(value) {
+  if (!value || typeof value !== 'object') return '';
+  return Object.keys(value).reduce(function (parts, field) {
+    const item = value[field];
+    if (item === null || item === undefined || item === '') return parts;
+    if (Array.isArray(item)) {
+      if (item.length) parts.push(jobFieldLabel(field) + '：' + item.map(function (entry) { return typeof entry === 'object' ? formatJobObject(entry) : jobValueLabel(entry, field); }).join('、'));
+      return parts;
+    }
+    if (typeof item === 'object') {
+      const nested = formatJobObject(item);
+      if (nested) parts.push(jobFieldLabel(field) + '（' + nested + '）');
+      return parts;
+    }
+    parts.push(jobFieldLabel(field) + '：' + jobValueLabel(item, field));
+    return parts;
+  }, []).join('；');
+}
+function formatJobDetail(value, limit) {
+  let parsed = value;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return '';
+    try { parsed = JSON.parse(text); } catch (e) { parsed = text; }
+  }
+  const formatted = parsed && typeof parsed === 'object' ? formatJobObject(parsed) : translateJobText(String(parsed || ''));
+  const max = Number(limit) || 500;
+  return formatted.length > max ? formatted.slice(0, max) + '…' : formatted;
 }
 function jobDescription(job) {
   if (!job) return '';
@@ -495,6 +592,9 @@ function jobDescription(job) {
     ipo_history_sync: '工作日 19:30 独立增量同步新股历史、发行详情与首日表现；启动时自动补漏。',
     market_volatility_sync: '每日 18:45 同步中债收益率、沪深指数估值、恒指市盈率等数据，并计算股市波动指标。',
     convertible_bond_valuation_refresh: '在可转债行情同步后自动刷新估值、预警与模型结果。',
+    hk_trade_rules_sync: '每日同步港股证券的每手股数和交易规则，供港股持仓测算使用。',
+    arbitrage_sync: '每日同步港交所和巨潮资讯的套利公告，并更新事件状态。',
+    arbitrage_reparse: '按指定事件重新解析已入库公告，补齐套利条款和风险字段。',
     holiday_sync: '每月自动核对交易所法定休市日，确保「是否交易日」判断准确。',
     manual_backfill: '手动触发：查询每个账户已落库日期范围内缺失的交易日，再重新抓取补齐。',
     manual_holiday_sync: '手动触发：立即从交易所日历重新拉取并校正当年休市日。'
@@ -505,7 +605,7 @@ function jobStatusTag(status) {
   if (status === 'done') return '<span class="tag tag-ok">成功</span>';
   if (status === 'failed') return '<span class="tag tag-over">失败</span>';
   if (status === 'running') return '<span class="tag tag-a">运行中</span>';
-  return '<span class="tag">' + escapeHtml(status || '—') + '</span>';
+  return '<span class="tag">' + escapeHtml(jobStatusLabel(status)) + '</span>';
 }
 function fmtTime(t) {
   return t ? String(t).replace('T', ' ').slice(0, 19) : '—';
@@ -521,10 +621,10 @@ function renderJobsLegacy() {
       '<div class="job-help-group"><b>自动任务</b>' +
         '<div class="job-help-item"><span class="job-help-name">A 股 / 可转债 / LOF·ETF 收盘数据（15:10）</span><span>每个交易日收盘后，抓取所有账户对应持仓的收盘价并写入 daily_prices。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">港股收盘数据（16:10）</span><span>抓取港股持仓收盘价；完成后依次触发当日净值快照、指数点位与港币汇率更新。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">净值快照（nav_snapshot）</span><span>根据已落库的收盘价，补齐每个账户的总资产和净值记录（nav_history）。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐（index_baseline / index_recent）</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">港币汇率（hk_rate）</span><span>每个交易日港股收盘后更新港币兑人民币汇率，用于港股持仓人民币估值。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">可转债安全评分（bond_safety_refresh，06:30）</span><span>每日刷新可转债安全评分快照，供转债筛选与风险面板使用。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">净值快照</span><span>根据已落库的收盘价，补齐每个账户的总资产和净值记录。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">港币汇率</span><span>每个交易日港股收盘后更新港币兑人民币汇率，用于港股持仓人民币估值。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">可转债安全评分（06:30）</span><span>每日刷新可转债安全评分快照，供转债筛选与风险面板使用。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（18:00）</span><span>每日增量同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果；数据不完整时次日 08:00 自动重试。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">打新日历与日报（工作日 18:00）</span><span>自动生成并更新 IPO/打新日历和每日打新日报。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">股市波动指标（18:45）</span><span>同步中债收益率、沪深指数估值、恒指市盈率等数据，并重新计算股市波动指标。</span></div>' +
@@ -589,7 +689,7 @@ async function loadJobsDataLegacy() {
           '<td>' + jobStatusTag(j.status) + '</td>' +
           '<td>' + fmtTime(j.started_at) + '</td>' +
           '<td>' + fmtTime(j.finished_at) + '</td>' +
-          '<td style="max-width:260px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td>' +
+          '<td style="max-width:260px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td>' +
         '</tr>';
       }).join('');
     }
@@ -723,12 +823,12 @@ async function loadJobsData() {
     const workerEl = document.getElementById('job-worker-status'); if (workerEl) workerEl.textContent = workerText;
     if (slotBody) slotBody.innerHTML = slots.length ? slots.map(renderJobSlotRow).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">暂无计划</td></tr>';
     const freshness = document.getElementById('jobs-freshness');
-    if (freshness) freshness.innerHTML = '<div class="job-help-sub">数据日期：' + escapeHtml(slots.filter(function (slot) { return slot.data_as_of; }).map(function (slot) { return (slot.label || slot.job_code) + ' ' + String(slot.data_as_of).slice(0, 10); }).join(' ｜ ') || '暂无可确认数据日期') + '</div>';
+    if (freshness) freshness.innerHTML = '<div class="job-help-sub">数据日期：' + escapeHtml(slots.filter(function (slot) { return slot.data_as_of; }).map(function (slot) { return jobLabel(slot.job_code) + ' ' + String(slot.data_as_of).slice(0, 10); }).join(' ｜ ') || '暂无可确认数据日期') + '</div>';
     if (runBody) runBody.innerHTML = runs.recent && runs.recent.length ? runs.recent.map(function (j) {
-      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(j.trigger_type || 'scheduled') + '</td><td style="max-width:300px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td></tr>';
+      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(jobTriggerLabel(j.trigger_type || 'scheduled')) + '</td><td style="max-width:300px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
     }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无运行记录</td></tr>';
     if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
-      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(alert.job_code || '-') + '</td><td style="max-width:320px;word-break:break-word;">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(alert.status || '') + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
+      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td style="max-width:320px;word-break:break-word;">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
     }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无待处理告警</td></tr>';
   } catch (e) {
     if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
@@ -763,8 +863,8 @@ function jobSlotQuery() {
 }
 
 function jobDisplayText(value, limit) {
-  const text = String(value || '').replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (/Permission denied/i.test(text) && /ipo_xgb_model\.json/i.test(text)) {
+  const text = formatJobDetail(value, limit).replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/(Permission denied|权限不足)/i.test(text) && /ipo_xgb_model\.json/i.test(text)) {
     return 'XGBoost 模型文件写入失败：ipo_xgb_model.json 权限不足，请重新部署修复目录归属。';
   }
   if ((text.match(/\uFFFD/g) || []).length >= 3) {
@@ -801,7 +901,7 @@ function renderJobSlotRow(slot) {
   const retry = (slot.status === 'failed' || slot.status === 'degraded' || slot.status === 'blocked')
     ? ' <button class="btn btn-outline btn-xs" onclick="retryJobSlotFromUi(' + Number(slot.slot_id) + ')">立即补跑</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobSlot(' + Number(slot.slot_id) + ')">确认</button>' : '';
   const watermark = slot.data_as_of ? String(slot.data_as_of).slice(0, 10) : '-';
-  return '<tr><td>' + escapeHtml(slot.label || jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td style="max-width:260px;word-break:break-word;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
+  return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td style="max-width:260px;word-break:break-word;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
 
 async function resendJobAlert(alertId) {
@@ -827,7 +927,7 @@ async function openJobSlotDetailLegacy(slotId) {
     const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
     const d = await r.json();
     if (!r.ok) return showToast(d.error || '读取详情失败');
-    openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(d.definition && d.definition.label || d.job_code) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(d.last_error || '无') + '</p><p><b>结果：</b><br>' + escapeHtml(JSON.stringify(d.result_summary || {}, null, 2)) + '</p></div>', '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
+    openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>结果：</b><br>' + escapeHtml(jobDisplayText(d.result_summary || {}, 4000)) + '</p></div>', '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
   } catch (e) { showToast('网络错误'); }
 }
 
@@ -840,11 +940,11 @@ async function openJobSlotDetail(slotId) {
     const list = function (items, mapper, empty) {
       return (items || []).map(mapper).join('') || '<li>' + empty + '</li>';
     };
-    const runs = list(d.runs, function (run) { return '<li>' + escapeHtml(run.status || '-') + ' / ' + fmtTime(run.started_at) + ' / ' + escapeHtml(run.trigger_type || '-') + ' / ' + escapeHtml(run.detail || '') + '</li>'; }, '暂无执行记录');
-    const deps = list(d.dependencies, function (dep) { return '<li>' + escapeHtml(dep.job_code) + '：' + escapeHtml(dep.status || '-') + '，数据日期 ' + escapeHtml(dep.data_as_of ? String(dep.data_as_of).slice(0, 10) : '-') + '</li>'; }, '无前置依赖');
-    const alerts = list(d.alerts, function (alert) { return '<li>' + escapeHtml(alert.status || '-') + ' / 尝试 ' + Number(alert.send_attempts || 0) + ' / ' + escapeHtml(alert.last_send_error || alert.subject || '') + '</li>'; }, '无告警记录');
-    const audits = list(d.audits, function (audit) { return '<li>' + escapeHtml(audit.actor || '-') + ' / ' + escapeHtml(audit.action || '-') + ' / ' + escapeHtml(audit.created_at || '') + '</li>'; }, '无审计记录');
-    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(d.definition && d.definition.label || d.job_code) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>数据日期：</b>' + escapeHtml(d.data_as_of ? String(d.data_as_of).slice(0, 10) : '-') + '</p><p><b>最近错误：</b>' + escapeHtml(d.last_error || '无') + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul><p><b>结果：</b><br>' + escapeHtml(JSON.stringify(d.result_summary || {}, null, 2)) + '</p></div>';
+    const runs = list(d.runs, function (run) { return '<li>' + escapeHtml(jobStatusLabel(run.status)) + ' / ' + fmtTime(run.started_at) + ' / ' + escapeHtml(jobTriggerLabel(run.trigger_type)) + ' / ' + escapeHtml(jobDisplayText(run.detail || '', 1000)) + '</li>'; }, '暂无执行记录');
+    const deps = list(d.dependencies, function (dep) { return '<li>' + escapeHtml(jobLabel(dep.job_code)) + '：' + escapeHtml(jobStatusLabel(dep.status)) + '，数据日期 ' + escapeHtml(dep.data_as_of ? String(dep.data_as_of).slice(0, 10) : '-') + '</li>'; }, '无前置依赖');
+    const alerts = list(d.alerts, function (alert) { return '<li>' + escapeHtml(jobStatusLabel(alert.status)) + ' / 尝试 ' + Number(alert.send_attempts || 0) + ' / ' + escapeHtml(jobDisplayText(alert.last_send_error || alert.subject || '', 1000)) + '</li>'; }, '无告警记录');
+    const audits = list(d.audits, function (audit) { return '<li>' + escapeHtml(audit.actor || '-') + ' / ' + escapeHtml(jobActionLabel(audit.action)) + ' / ' + escapeHtml(audit.created_at || '') + '</li>'; }, '无审计记录');
+    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>数据日期：</b>' + escapeHtml(d.data_as_of ? String(d.data_as_of).slice(0, 10) : '-') + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul><p><b>结果：</b><br>' + escapeHtml(jobDisplayText(d.result_summary || {}, 4000)) + '</p></div>';
     openAdminModal('任务详情', html, '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
   } catch (e) { showToast('网络错误'); }
 }
@@ -1123,7 +1223,7 @@ async function opsLoadJobs() {
     if (!list.length) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无任务记录</td></tr>'; return; }
     tb.innerHTML = list.map(function (j) {
       const st = j.status === 'done' ? '<span class="tag tag-ok">成功</span>' : (j.status === 'failed' ? '<span class="tag tag-over">失败</span>' : (j.status === 'running' ? '<span class="tag tag-a">运行中</span>' : '<span class="tag">' + escapeHtml(j.status || '—') + '</span>'));
-      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + st + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td style="max-width:320px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(j.detail || '') + '</td></tr>';
+      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + st + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td style="max-width:320px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
     }).join('');
   } catch (e) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
 }

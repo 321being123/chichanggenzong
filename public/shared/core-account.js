@@ -265,11 +265,10 @@ var _autoRefreshTimer = null;
 
 function initAutoRefresh() {
   if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
-  // 每 15 分钟自动刷新行情：休市时也刷新（接口回落最近交易日收盘价），
-  // 保证总资产始终按持仓现值实时计算，页面常开时无需手动刷新。
+  // 交易时段每 15 分钟刷新；最终收盘后当天只刷新一次，周末/节假日不刷新。
   _autoRefreshTimer = setInterval(function () {
     if (data && data.positions && data.positions.length > 0) {
-      doRefresh();
+      doAutoRefresh();
     }
   }, 900000);
 }
@@ -298,7 +297,7 @@ async function switchAccount(name) {
   // loadData() 已从 data.changes 和持仓 price 恢复 priceChangeMap
   renderAccountSelect();
   renderAll();
-  if (data.positions.length > 0) doRefresh();
+  if (data.positions.length > 0) doAutoRefresh();
   showToast('已切换到「' + currentAccount + '」');
 }
 

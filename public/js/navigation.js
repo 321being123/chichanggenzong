@@ -34,8 +34,8 @@ function switchMain(main, noPushState) {
   if (main === 'arbitrage') loadArbitrage();
   if (main === 'knowledge') loadKnowledge();
   if (main === 'home') loadHomeDashboard();
-  if (main === 'holdings' && username && typeof doRefresh === 'function') {
-    doRefresh().catch(function (e) { showToast('行情刷新失败: ' + (e.message || e)); });
+  if (main === 'holdings' && username && typeof doAutoRefresh === 'function') {
+    doAutoRefresh().catch(function (e) { showToast('行情刷新失败: ' + (e.message || e)); });
   }
   // 仓位对比页：进入时若已有对比数据则重渲染，否则停留在空态（由标杆选择进入）
   if (main === 'position-compare' && window.PositionComparison && typeof window.PositionComparison.onPageEnter === 'function') {

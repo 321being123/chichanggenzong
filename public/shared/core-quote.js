@@ -207,8 +207,7 @@ async function doRefresh() {
   if (typeof TOTAL_ASSET !== 'undefined' && TOTAL_ASSET > 0) {
     data.totalAsset = TOTAL_ASSET;
   }
-  // 休市（周末 / 法定节假日 / 非交易时段）也拉取最新可用价（= 最近交易日收盘价），
-  // 保证总资产按持仓现值实时计算；实时接口收盘后回落日线收盘价，与“最近交易日收盘”一致。
+  // 手动刷新即使休市也使用最近交易日收盘价；自动刷新由 doAutoRefresh 统一控制。
   // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
     await refreshAllPrices();
   })();
@@ -217,6 +216,50 @@ async function doRefresh() {
   } finally {
     _priceRefreshInFlight = null;
   }
+}
+
+function shanghaiClockNumber() {
+  var parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date());
+  var p = Object.fromEntries(parts.map(function (item) { return [item.type, item.value]; }));
+  return Number(p.hour) * 100 + Number(p.minute);
+}
+
+function isChinaTradingDayNow() {
+  var day = new Date(todayCN() + 'T00:00:00Z').getUTCDay();
+  return day >= 1 && day <= 5 && !isCnHoliday(todayCN());
+}
+
+function isAfterHoldingMarketClose() {
+  var hasHK = data && Array.isArray(data.positions) && data.positions.some(function (p) { return p.subtype === '港股'; });
+  return shanghaiClockNumber() >= (hasHK ? 1600 : 1500);
+}
+
+function autoQuoteRefreshDoneToday() {
+  var today = todayCN();
+  if (data && data._autoQuoteRefreshDate === today) return true;
+  try { return localStorage.getItem('_autoQuoteRefresh_' + currentAccount) === today; } catch (e) { return false; }
+}
+
+function markAutoQuoteRefreshDoneToday() {
+  var today = todayCN();
+  if (data) data._autoQuoteRefreshDate = today;
+  try { localStorage.setItem('_autoQuoteRefresh_' + currentAccount, today); } catch (e) {}
+}
+
+// 自动行情规则：交易时段允许刷新；最终收盘后当天只刷新一次；周末/节假日不刷新。
+async function doAutoRefresh() {
+  if (!data || !Array.isArray(data.positions) || !data.positions.length || !isChinaTradingDayNow()) {
+    return { ok: true, skipped: true, reason: 'market_closed' };
+  }
+  var marketOpen = isMarketOpen();
+  var afterClose = !marketOpen && isAfterHoldingMarketClose();
+  if (!marketOpen && (!afterClose || autoQuoteRefreshDoneToday())) {
+    return { ok: true, skipped: true, reason: 'market_closed' };
+  }
+  if (afterClose) markAutoQuoteRefreshDoneToday();
+  return doRefresh();
 }
 
 async function saveDailyPricesToDB() {

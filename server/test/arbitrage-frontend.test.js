@@ -32,7 +32,7 @@ assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
 assert.ok(html.includes('shared/style.css?v=27'), '全局样式缓存版本未更新');
 assert.ok(html.includes('js/arbitrage.js?v=11'), '套利前端缓存版本未更新');
-assert.ok(html.includes('js/navigation.js?v=4'), '导航缓存版本未更新');
+assert.ok(html.includes('js/navigation.js?v=5'), '导航缓存版本未更新');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');
 assert.ok(frontend.includes('d.cashChoicePremium') && frontend.includes('d.cashExpectedReturn'), '详情必须显示现金选择权两种收益口径');
 assert.ok(frontend.includes('d.fixedSwapPremium') && frontend.includes('d.liveSwapReturn'), '详情必须显示固定换股和实时换股指标');

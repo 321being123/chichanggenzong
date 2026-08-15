@@ -115,7 +115,8 @@ jobs:
                   if fn.endswith('.json'):
                       p = os.path.join(root, fn)
                       try:
-                          json.load(open(p, encoding='utf-8'))
+                          # 兼容 Windows 工具生成的 UTF-8 BOM，同时继续校验 JSON 内容。
+                          json.load(open(p, encoding='utf-8-sig'))
                       except Exception as e:
                           bad.append((p, str(e)))
           if bad:

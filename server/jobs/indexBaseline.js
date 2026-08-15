@@ -4,6 +4,7 @@
 const { pool, upsertIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, tsDateStr, normDate } = require('../services/market');
 const { withExternalCallGuard } = require('../services/externalCallGuard');
+const { isCnHoliday } = require('../config/holidays');
 
 const INDEX_BACKFILL_DEFS = [
   { name: '沪深300', ts: '000300.SH', src: 'tushare' },
@@ -12,6 +13,28 @@ const INDEX_BACKFILL_DEFS = [
   { name: '中证500', ts: '000905.SH', src: 'tushare' },
   { name: '恒生指数', src: 'tencent' } // 恒生无 Tushare 权限，沿用腾讯策略
 ];
+
+function chinaDateText(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(value);
+  const map = Object.fromEntries(parts.map(item => [item.type, item.value]));
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
+function isChinaTradingDay(value = new Date()) {
+  const weekday = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', weekday: 'short'
+  }).format(value);
+  return weekday !== 'Sat' && weekday !== 'Sun' && !isCnHoliday(chinaDateText(value));
+}
+
+function triggerTypeForReason(reason) {
+  if (reason === 'startup-catchup') return 'startup_catchup';
+  if (reason === 'manual-retry') return 'manual_retry';
+  if (reason === 'auto-retry') return 'auto_retry';
+  return 'scheduled';
+}
 
 // 读取“已确认数据源最早只能拉到这”的记录（落库，进程重启不丢）
 // key = username|account_name|指数名，value = 确认时的净值起点
@@ -36,6 +59,26 @@ async function markSettledBaseline(username, accountName, indexName, baselineDat
       [username, accountName, indexName, baselineDate, earliestDate || null]
     );
   } catch (e) { console.error('指数基线状态落库失败:', e.message); }
+}
+
+// 只做本地数据库检查，不访问外部接口；没有基线缺口时，启动不产生运行记录。
+async function hasIndexBaselineGap() {
+  const settled = await loadSettledBaselines();
+  const accs = await pool.query('SELECT DISTINCT username, account_name FROM nav_history');
+  for (const acc of accs.rows) {
+    const base = await pool.query('SELECT MIN(date) AS d FROM nav_history WHERE username=$1 AND account_name=$2', [acc.username, acc.account_name]);
+    const baseline = base.rows[0] && base.rows[0].d ? String(base.rows[0].d) : null;
+    if (!baseline) continue;
+    const accountKey = acc.username + '|' + acc.account_name;
+    for (const def of INDEX_BACKFILL_DEFS) {
+      const settledBase = settled.get(accountKey + '|' + def.name);
+      if (settledBase && settledBase <= baseline) continue;
+      const minR = await pool.query('SELECT MIN(date) AS d FROM index_history WHERE username=$1 AND account_name=$2 AND name=$3', [acc.username, acc.account_name, def.name]);
+      const minD = minR.rows[0] && minR.rows[0].d ? String(minR.rows[0].d) : null;
+      if (!minD || minD > baseline) return true;
+    }
+  }
+  return false;
 }
 
 // 恒生历史日K：腾讯 web.ifzq hkfqkline（日期范围，结束日期须<=今天，否则返回空）
@@ -126,14 +169,27 @@ async function ensureIndexBaseline(options) {
 }
 
 // 带幂等锁与执行记录的指数基线任务（跨实例单跑，失败留痕）
-async function runIndexBaselineJob() {
-  if (!(await tryClaimJob('index_baseline'))) return;
-  const runId = await startJobRun('index_baseline');
+async function runIndexBaselineJob(reason = 'startup-catchup') {
+  // 启动补跑属于自动任务，休息日不执行；人工补跑仍允许按需执行。
+  if (reason !== 'manual-retry' && !isChinaTradingDay()) {
+    return { ok: true, skipped: true, reason: 'not_trading_day' };
+  }
+  if (!(await tryClaimJob('index_baseline'))) {
+    return { ok: true, skipped: true, reason: 'already_running' };
+  }
+  let runId = null;
   try {
+    if (!(await hasIndexBaselineGap())) {
+      return { ok: true, skipped: true, reason: 'no_missing_data' };
+    }
+    runId = await startJobRun('index_baseline', triggerTypeForReason(reason));
     await ensureIndexBaseline();
     await finishJobRun(runId, true, '');
   } catch (e) {
-    await finishJobRun(runId, false, e.message || String(e));
+    // 预检查失败时没有运行记录；已创建记录的正常执行仍需留痕。
+    if (runId) await finishJobRun(runId, false, e.message || String(e));
+    else console.error('指数基线补齐预检查失败:', e.message || String(e));
+    return { ok: false, error: e.message || String(e) };
   } finally {
     await releaseJob('index_baseline');
   }

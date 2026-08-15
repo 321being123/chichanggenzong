@@ -8,7 +8,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'nav_snapshot':
       return require('../jobs/navSnapshot').runNavSnapshotJob();
     case 'index_baseline':
-      return require('../jobs/indexBaseline').runIndexBaselineJob();
+      return require('../jobs/indexBaseline').runIndexBaselineJob(reason);
     case 'index_recent':
       return require('../jobs/indexBaseline').runIndexRecentJob();
     case 'market_volatility_sync':

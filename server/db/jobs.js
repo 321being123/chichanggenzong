@@ -26,12 +26,12 @@ async function releaseJob(job) {
   client.release();
   delete _jobClients[job];
 }
-async function startJobRun(job) {
+async function startJobRun(job, triggerType = 'scheduled') {
   // 持久化执行器已在父进程为计划实例建立唯一 job_runs；子进程不得再写嵌套成功记录。
   if (process.env.DURABLE_JOB_RUN === '1') return null;
   const { rows } = await pool.query(
-    "INSERT INTO job_runs (job, status, started_at, locked_until) VALUES ($1, 'running', now(), now() + interval '1 hour') RETURNING id",
-    [job]
+    "INSERT INTO job_runs (job, status, started_at, locked_until, trigger_type) VALUES ($1, 'running', now(), now() + interval '1 hour', $2) RETURNING id",
+    [job, triggerType]
   );
   return rows[0] ? rows[0].id : null;
 }

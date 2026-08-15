@@ -494,7 +494,7 @@ const JOB_FIELD_LABELS = {
   status: '状态', caseId: '事件编号', parse_pending: '待解析数量', parse_exhausted: '解析失败数量', unsupported: '是否支持',
 };
 const JOB_VALUE_LABELS = {
-  scheduled: '定时执行', manual_retry: '人工补跑', auto_retry: '自动重试', locked: '已有同类任务运行', already_running: '已有同类任务运行',
+  scheduled: '定时执行', startup_catchup: '启动补跑', manual_retry: '人工补跑', auto_retry: '自动重试', locked: '已有同类任务运行', already_running: '已有同类任务运行',
   already_initialized: '已经完成初始化', cached: '使用已缓存结果', not_configured: '未配置，已跳过', in_process: '已有进程运行', fresh: '数据已是最新',
   'retry-after-failure': '失败后重试', no_missing: '没有缺失数据', no_nav: '没有净值记录', not_due: '尚未到执行时间', job_runs: '任务执行记录',
   'tushare.new_share': 'Tushare 新股接口', tushare: 'Tushare 数据接口', tencent: '腾讯行情接口', tushare_close: 'Tushare 收盘数据',

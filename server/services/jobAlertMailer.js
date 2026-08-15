@@ -6,6 +6,9 @@ const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
 const RECOVERY_SUMMARY_RETRY_MINUTES = 15;
 const MAX_RECOVERY_SUMMARY_ATTEMPTS = 3;
+// 故障告警在人工确认或任务恢复前保持待处理；恢复通知本身已发送后不再算待处理。
+const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
+        AND NOT (alert_type='recovery' AND status IN ('sent','suppressed'))`;
 
 function recipients() {
   return String(process.env.ALERT_EMAIL_TO || '')
@@ -368,7 +371,7 @@ async function listAlerts(options = {}) {
   const exact = allowed.includes(status) ? status : null;
   const { rows } = await pool.query(
     `SELECT * FROM ops.alert_notifications
-      WHERE ($1::boolean = false OR status NOT IN ('resolved','acknowledged'))
+      WHERE ($1::boolean = false OR (${ACTIVE_ALERT_WHERE}))
         AND ($2::text IS NULL OR status=$2)
       ORDER BY last_seen_at DESC LIMIT $3`, [open, exact, limit]
   );
@@ -409,4 +412,5 @@ async function acknowledgeAlert(alertId) {
 module.exports = {
   sendAlert, sendDueAlerts, sendRecoveryAlert, resolveJobSlotAlerts,
   notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
+  ACTIVE_ALERT_WHERE,
 };

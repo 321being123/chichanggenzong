@@ -25,11 +25,36 @@
     root.classifyCode = factory();
   }
 })(typeof self !== 'undefined' ? self : this, function () {
-  function classifyCode(rawCode) {
-    if (!rawCode) return null;
-    var code = String(rawCode).trim().toUpperCase()
+  // 港股五位代码被 Excel/AI 误读为六位数字时，仅凭代码前缀无法和 A 股区分；
+  // 对导入结果同时有证券名称的场景，用已知港股名称恢复正确代码。
+  var HK_NAME_CODE_ALIASES = {
+    '深圳国际': '00152',
+    '深圳國際': '00152',
+    '深圳国际控股': '00152',
+    '深圳國際控股': '00152'
+  };
+
+  function cleanCode(rawCode) {
+    return String(rawCode == null ? '' : rawCode).trim().toUpperCase()
       .replace(/\.(SH|SZ|BJ|HK|US)$/i, '')
       .replace(/^(SH|SZ|BJ|HK|US)/i, '');
+  }
+
+  function normalizeInstrumentName(rawName) {
+    return String(rawName == null ? '' : rawName).trim().replace(/\s+/g, '');
+  }
+
+  function resolveCode(rawCode, rawName) {
+    var code = cleanCode(rawCode);
+    var alias = HK_NAME_CODE_ALIASES[normalizeInstrumentName(rawName)];
+    if (/^\d+$/.test(code) && alias) return alias;
+    return code;
+  }
+
+  function classifyCode(rawCode) {
+    if (!rawCode) return null;
+    var rawName = arguments.length > 1 ? arguments[1] : '';
+    var code = resolveCode(rawCode, rawName);
     if (!code) return null;
 
     var len = code.length;
@@ -81,14 +106,12 @@
     return { type: type, subtype: subtype, market: market, isHK: isHK, secids: secids };
   }
 
-  function normalizeCode(rawCode) {
+  function normalizeCode(rawCode, rawName) {
     if (!rawCode) return rawCode;
-    var code = String(rawCode).trim().toUpperCase()
-      .replace(/\.(SH|SZ|BJ|HK|US)$/i, '')
-      .replace(/^(SH|SZ|BJ|HK|US)/i, '');
+    var code = resolveCode(rawCode, rawName);
     if (!code) return code;
 
-    var info = classifyCode(code);
+    var info = classifyCode(code, rawName);
     if (!info) return code;
 
     // 美股代码保持原样（字母）

@@ -1089,13 +1089,13 @@
   <a href="https://beian.mps.gov.cn/#/query/webSearch?code=11011402056694" target="_blank" rel="noreferrer">京公网安备11011402056694号</a>
 </footer>
 
-<script src="js/code-classify.js?v=2"></script>
-<script src="js/utils.js?v=3"></script>
+<script src="js/code-classify.js?v=3"></script>
+<script src="js/utils.js?v=4"></script>
 <script src="shared/dialog.js?v=1"></script>
 <script src="shared/core-quote.js?v=20260811a"></script>
-<script src="shared/core-tables.js?v=20260811a"></script>
+<script src="shared/core-tables.js?v=20260815b"></script>
 <script src="shared/core-fees.js?v=1"></script>
-<script src="shared/core-trade.js?v=20260803i"></script>
+<script src="shared/core-trade.js?v=20260815a"></script>
 <script src="shared/nav-math.js?v=1"></script>
 <script src="shared/core-returns.js?v=20260803i"></script>
 <script src="shared/core-earnings.js?v=20260803h"></script>
@@ -1362,7 +1362,7 @@ async function loadData(accountName) {
         if (p.quantity != null) p.quantity = Number(p.quantity);
         if (p.cost != null) p.cost = Number(p.cost);
         if (p.subtype === 'A股') {
-          var positionClass = classifyCode(p.code);
+          var positionClass = classifyCode(p.code, p.name);
           if (positionClass) p.subtype = positionClass.subtype;
         }
       });
@@ -1377,7 +1377,7 @@ async function loadData(accountName) {
         if (t.transfer_fee != null) t.transfer_fee = Number(t.transfer_fee);
         if (t.other_fee != null) t.other_fee = Number(t.other_fee);
         if (t.subtype === 'A股') {
-          var tradeClass = classifyCode(t.code);
+          var tradeClass = classifyCode(t.code, t.name);
           if (tradeClass) t.subtype = tradeClass.subtype;
         }
       });

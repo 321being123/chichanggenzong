@@ -3,6 +3,7 @@ const { pool } = require('../db/connection');
 const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const { isCnHoliday } = require('../config/holidays');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
+const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
 
 const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
 
@@ -649,7 +650,7 @@ async function getJobOverview() {
   const [counts, slots, alerts, workers] = await Promise.all([
     pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.job_schedule_slots WHERE business_date=$1::date GROUP BY status`, [today]),
     pool.query(`SELECT job_code, status, scheduled_for, updated_at, last_error FROM ops.job_schedule_slots WHERE business_date=$1::date ORDER BY scheduled_for DESC`, [today]),
-    pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.alert_notifications WHERE status NOT IN ('resolved','acknowledged') GROUP BY status`),
+    pool.query(`SELECT status, COUNT(*)::int AS count FROM ops.alert_notifications WHERE ${ACTIVE_ALERT_WHERE} GROUP BY status`),
     pool.query(`SELECT worker_id,role,pid,app_version,
           CASE WHEN last_seen_at < now()-interval '2 minutes' THEN 'stale' ELSE status END AS status,
           started_at,last_seen_at FROM ops.worker_heartbeats ORDER BY last_seen_at DESC`),

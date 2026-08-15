@@ -152,7 +152,7 @@ assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSou
     } finally {
       const testSlots = await pool.query(
         `SELECT slot_id FROM ops.job_schedule_slots WHERE scheduled_for >= $1 AND scheduled_for < $2`,
-        [catchupStart, catchupEnd]
+        [new Date(catchupStart.getTime() - 31 * 24 * 60 * 60 * 1000), catchupEnd]
       );
       if (testSlots.rows.length) {
         await pool.query('DELETE FROM ops.alert_notifications WHERE slot_id=ANY($1::bigint[])', [testSlots.rows.map(row => row.slot_id)]);

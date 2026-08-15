@@ -90,12 +90,11 @@ function renderStats() {
 // 总资产今日涨跌浮框：分解「股价影响 + 汇率影响」并写出计算过程
 function bindChangeTip(el, changeAmt, changePct) {
   if (!el) return;
-  // 归因只使用后端统一计算结果，避免前端现金端公式制造“历史快照校准差额”。
+  // 归因只使用后端统一计算结果，避免前端现金端公式制造未归因项。
   var attribution = data.navAttribution || { complete: false };
   var priceImpact = attribution.complete ? Number(attribution.priceImpact) || 0 : 0;
   var fxImpact = attribution.complete ? Number(attribution.fxImpact) || 0 : 0;
   var otherChange = attribution.complete ? Number(attribution.ledgerChange) || 0 : null;
-  var snapshotDrift = attribution.complete ? attribution.snapshotDrift : null;
   var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_delta_estimate') : null;
 
   var tip = document.getElementById('stat-change-tip');
@@ -107,7 +106,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, snapshotDrift, authorityMode, !attribution.complete);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, authorityMode, !attribution.complete);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -118,7 +117,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   el.onmouseleave = function () { tip.style.display = 'none'; };
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, snapshotDrift, authorityMode, attributionIncomplete) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, authorityMode, attributionIncomplete) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
@@ -133,10 +132,6 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   if (otherChange != null) {
     html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、现金流入流出等</div>';
-  }
-  if (snapshotDrift != null && Math.abs(snapshotDrift) >= 1) {
-    html += '<div>历史快照校准差额：<span style="color:#fbbc04;">' + sign(snapshotDrift) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">净值快照与行情/资金流水不一致，已单独标记，不再计入其他变动</div>';
   }
   if (authorityMode) {
     html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">已按券商导入总资产/现金锚定；持仓明细仍按本系统行情估值，当前仅展示锚点后的系统增量（' + (authorityMode === 'broker_exact' ? '导入日权威值' : '系统增量估算') + '）。</div>';

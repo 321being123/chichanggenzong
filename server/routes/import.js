@@ -179,7 +179,7 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
     if (!jsonMatch) return res.json({ items: [] });
 
     const items = JSON.parse(jsonMatch[0]);
-    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code); });
+    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code, it.name); });
     res.json({ items: items });
   } catch (e) {
     res.json({ error: '识别失败: ' + e.message });
@@ -258,7 +258,7 @@ function buildStructuredItems(rows) {
     const price = parseNumericCell(get('price'));
     const qty = parseNumericCell(get('qty'));
     if (!isFinite(price) || !isFinite(qty)) continue;
-    const item = { kind: kind, code: normalizeCode(code), name: name || code, price: price, quantity: qty };
+    const item = { kind: kind, code: normalizeCode(code, name), name: name || code, price: price, quantity: qty };
     if (kind === 'trade') {
       const dirRaw = String(get('dir') == null ? '' : get('dir'));
       item.direction = /卖|卖出|sell/i.test(dirRaw) ? 'sell' : 'buy';
@@ -310,7 +310,7 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
     if (!jsonMatch) return res.json({ items: [] });
 
     const items = JSON.parse(jsonMatch[0]);
-    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code); });
+    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code, it.name); });
     res.json({ items: items });
   } catch (e) {
     res.json({ error: '解析失败: ' + e.message });

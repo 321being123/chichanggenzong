@@ -536,7 +536,7 @@ async function doSmartParse(file, source) {
     }
 
     window._smartParsed = d.items.map(function(item) {
-      item.code = classifyCode.normalizeCode(item.code || '');
+      item.code = classifyCode.normalizeCode(item.code || '', item.name || '');
       return item;
     });
     renderSmartItems();
@@ -561,7 +561,7 @@ function renderSmartItems() {
     '</tr></thead><tbody>';
   items.forEach(function(item, i) {
     var code = item.code || '';
-    var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
+    var rec = recognizeCode(code, item.name) || { type: '股权', subtype: '深市' };
     var isTrade = item.kind === 'trade';
     html += '<tr>' +
       '<td>' + (isTrade ? '<span class="tag tag-equity">交易</span>' : '<span class="tag tag-cash">持仓</span>') + '</td>' +
@@ -594,7 +594,7 @@ function buildSmartFeeRates(items) {
   (items || []).forEach(function(item) {
     if (item.kind !== 'trade') return;
     var code = item.code || '';
-    var rec = recognizeCode(code) || { subtype: '深市' };
+    var rec = recognizeCode(code, item.name) || { subtype: '深市' };
     var group = getFeeGroup(rec.subtype);
     if (!result[group]) result[group] = { config: Object.assign({}, current[group]), sums: {}, direct: {} };
     var summary = result[group];
@@ -685,7 +685,7 @@ async function saveSmartFeeRates() {
   showToast('税费费率已保存并更新到税费设置');
 }
 
-function getSmartItemFees(item, code) {
+function getSmartItemFees(item, code, name) {
   var fields = ['commission', 'stamp_tax', 'transfer_fee', 'other_fee'];
   var hasRecognizedFee = fields.some(function(key) { return item[key] !== undefined && item[key] !== null && item[key] !== ''; });
   if (hasRecognizedFee) {
@@ -696,7 +696,7 @@ function getSmartItemFees(item, code) {
       other_fee: Math.max(0, Number(item.other_fee) || 0)
     };
   }
-  var rec = recognizeCode(code) || { subtype: '深市' };
+  var rec = recognizeCode(code, name || item.name) || { subtype: '深市' };
   var quantity = normalizeQuantity(Number(item.quantity) || 0, code);
   var amount = (Number(item.price) || 0) * quantity;
   return calcTradeFees(item.direction || 'buy', amount, rec.subtype);
@@ -733,8 +733,11 @@ async function confirmSmartItem(index) {
   var item = window._smartParsed[index];
   if (!item) return;
 
-  var code = classifyCode.normalizeCode(document.getElementById('s-code-' + index).value.trim());
-  var name = await ensureName(code, document.getElementById('s-name-' + index).value.trim());
+  var rawCode = document.getElementById('s-code-' + index).value.trim();
+  var inputName = document.getElementById('s-name-' + index).value.trim();
+  var code = classifyCode.normalizeCode(rawCode, inputName);
+  var name = await ensureName(code, inputName);
+  code = classifyCode.normalizeCode(rawCode, name);
   var price = parseFloat(document.getElementById('s-price-' + index).value) || 0;
   var quantity = parseInt(document.getElementById('s-qty-' + index).value) || 0;
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
@@ -742,7 +745,7 @@ async function confirmSmartItem(index) {
   if (item.kind === 'trade') {
     var direction = document.getElementById('s-dir-' + index).value;
     var date = document.getElementById('s-date-' + index).value;
-    var fees = getSmartItemFees(item, code);
+    var fees = getSmartItemFees(item, code, name);
     await addTradeInternal(code, name, direction, price, quantity, date, fees, window._smartBatchId || null);
   } else {
     // P0-2 验收修复：持仓导入转成「期初建仓事件」走服务端账本（不再直接改 data.positions + 全量保存）
@@ -878,12 +881,12 @@ function updateQtyHint(code) {
 }
 
 async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId) {
-  code = classifyCode.normalizeCode(code);
+  code = classifyCode.normalizeCode(code, name);
   // 华泰/招商证券上交所债券：手→张自动转换
   quantity = normalizeQuantity(quantity, code);
   if (!code || !price || !quantity) { showToast('请填写代码、价格和数量'); return; }
 
-  var rec = recognizeCode(code) || { type: '股权', subtype: '深市' };
+  var rec = recognizeCode(code, name) || { type: '股权', subtype: '深市' };
   var f = importedFees || calcTradeFees(direction, Math.round(price * quantity * 100) / 100, rec.subtype);
 
   // 业务去重（方案阶段一第 6 条）：同 code+date+direction+price+quantity 视为重复导入，跳过

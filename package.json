@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.6.1.23",
-  "appVersion": "0.6.1.23",
+  "version": "0.6.1.28",
+  "appVersion": "0.6.1.28",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
@@ -17,7 +17,7 @@
   "dependencies": {
     "@mozilla/readability": "0.6.0",
     "connect-redis": "^7.1.1",
-    "dompurify": "^3.4.12",
+    "dompurify": "^3.4.13",
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
     "express": "^4.18.2",

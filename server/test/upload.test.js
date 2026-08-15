@@ -122,6 +122,15 @@ async function main() {
     ]);
     assert.ok(items && items[0].code === '00700' && items[1].code === '09988');
   });
+  await check('港股名称纠正六位误识别代码', () => {
+    const items = router.buildStructuredItems([
+      ['代码', '名称', '价格', '数量'],
+      ['000152', '深圳国际', '5.07', '4500']
+    ]);
+    assert.ok(items && items.length === 1);
+    assert.strictEqual(items[0].code, '00152');
+    assert.strictEqual(require('../../public/js/code-classify')(items[0].code, items[0].name).subtype, '港股');
+  });
   await check('复杂对账单（无核心列）返回 null 走大模型', () => {
     const items = router.buildStructuredItems([
       ['序号', '资金账号', '摘要', '发生额', '结余'],

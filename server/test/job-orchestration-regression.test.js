@@ -96,6 +96,8 @@ assert(/last_sent_at=CASE WHEN ops\.alert_notifications\.status IN \('acknowledg
 assert(/sanitizeJobError\(alert\.summary \|\| '', 4000\)/.test(alertMailer) && /sanitizeAlertRecord\(rows\[0\]\)/.test(alertMailer), '历史告警在邮件发送和确认接口返回前必须再次脱敏');
 assert(/stop_unit_if_present portfolio-worker-health\.timer/.test(deployScript) && /health_timer_preexisting/.test(deployScript), '首次部署时不存在的健康检查单元不得导致部署或回滚失败');
 assert(/WHERE slot_id=\$1 AND status <> 'resolved' AND alert_type <> 'recovery'/.test(alertMailer) && /worker:offline[\s\S]*status <> 'resolved'/.test(health), '人工确认后的故障恢复仍必须关闭故障告警且不得重复处理恢复邮件');
+assert(/ACTIVE_ALERT_WHERE/.test(alertMailer) && /alert_type='recovery' AND status IN \('sent','suppressed'\)/.test(alertMailer)
+  && /WHERE \$\{ACTIVE_ALERT_WHERE\} GROUP BY status/.test(slots), '已发送的恢复通知不得继续计入待处理告警');
 assert(/subject: sanitizeJobError\(alert\.subject/.test(slots) && /audits: audits\.rows\.map/.test(slots), '任务详情中的历史告警标题和审计记录必须脱敏');
 assert(/health_timer_enabled=0/.test(deployScript) && /health_timer_active=0/.test(deployScript)
   && /systemctl disable portfolio-worker-health\.timer/.test(deployScript), '部署回滚必须恢复健康定时器原有启用和运行状态');

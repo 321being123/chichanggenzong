@@ -16,6 +16,7 @@
 const { pool } = require('../db/connection');
 const { round } = require('../db/util');
 const { todayCN } = require('../services/market');
+const classifyCode = require('../../public/js/code-classify');
 
 // 业务错误（带 status，路由按 400/409 返回）
 function bizError(msg, status = 400) {
@@ -202,6 +203,19 @@ async function checkVersionInTxn(client, username, accountName, expectedVersion)
 // expectedVersion: 乐观锁版本（事务内校验 account_data.version，不一致 409）
 async function applyTrade(username, accountName, trade, externalClient = null, expectedVersion = null) {
   const t = Object.assign({}, trade);
+  const rawCode = String(t.code == null ? '' : t.code).trim();
+  const normalizedCode = classifyCode.normalizeCode(rawCode, t.name);
+  if (normalizedCode) {
+    t.code = normalizedCode;
+    // 只有代码被名称校正/补齐时才同步覆盖分类，避免改变现有自定义品种选择。
+    if (normalizedCode !== rawCode) {
+      const codeInfo = classifyCode(normalizedCode, t.name);
+      if (codeInfo) {
+        t.type = codeInfo.type;
+        t.subtype = codeInfo.subtype;
+      }
+    }
+  }
   const { price, quantity, amount } = validateTrade(t);
   const { tradeDate, executedAt } = splitTradeDateTime(t.date, t.created_at);
   const client = externalClient || await pool.connect();

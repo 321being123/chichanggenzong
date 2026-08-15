@@ -61,9 +61,9 @@ function fmtPct(n) {
   return (n * 100).toFixed(2) + '%';
 }
 
-function recognizeCode(code) {
+function recognizeCode(code, name) {
   // 委托单一分类函数（public/js/code-classify.js，前后端共用）
-  var c = classifyCode(code);
+  var c = classifyCode(code, name);
   return c ? { type: c.type, subtype: c.subtype } : null;
 }
 

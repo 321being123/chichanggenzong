@@ -11,10 +11,7 @@ const { getCurrentFxRate } = require('../services/fxRate');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
-  const x = new Date(d);
-  const cn = new Date(x.getTime() + (x.getTimezoneOffset() + 480) * 60000);
-  const p = n => String(n).padStart(2, '0');
-  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(d));
 }
 // 交易日：周一至五 且 非法定节假日
 function isTradingDay(d) {
@@ -72,6 +69,13 @@ async function recomputeNav(username, accountName, fromDate) {
 
   // 交易日字段（trade_date 优先，兼容旧数据回退 date 前 10 位）
   const tradeDay = function (t) { return t.trade_date || (t.date || '').slice(0, 10); };
+  const unresolvedHkdDays = trades
+    .filter(function (t) {
+      const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+        (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+      return String(t.quote_currency || '').toUpperCase() === 'HKD' && rawAmountCny == null;
+    })
+    .map(tradeDay);
 
   // daily_prices → map "code|date" → price
   const { rows: dpRows } = await pool.query(
@@ -112,7 +116,12 @@ async function recomputeNav(username, accountName, fromDate) {
       if (tradeDay(t) > date) return;
       if (t.direction === 'open' || t.direction === 'adjust') return;
       const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
-      c += (t.direction === 'buy') ? -(t.amount || 0) - fee : (t.amount || 0) - fee;
+      const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+        (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+      const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
+      if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') return;
+      const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
+      c += (t.direction === 'buy') ? -settled - fee : settled - fee;
     });
     return c;
   }
@@ -132,7 +141,7 @@ async function recomputeNav(username, accountName, fromDate) {
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
     [today]
   );
-  const fxByDate = new Map(fxRows.map(r => [r.rate_date, Number(r.rate)]));
+  const fxByDate = new Map(fxRows.map(r => [cnDate(r.rate_date), Number(r.rate)]));
   const currentFxRate = fxByDate.get(today) || await getCurrentFxRate();
   let affected = 0;
 
@@ -141,7 +150,8 @@ async function recomputeNav(username, accountName, fromDate) {
 
     const held = heldQty(d);
     const hkRate = fxByDate.get(d) || (d === today ? currentFxRate : null);
-    let missing = false;
+    // 未解决港股结算金额会使现金重建不可信；对应日期保留原快照，不允许自动覆盖。
+    let missing = unresolvedHkdDays.some(function (td) { return td <= d; });
     const mvList = [];
     for (const [code, info] of held) {
       if (info.qty === 0) continue;
@@ -200,6 +210,9 @@ async function recomputeNav(username, accountName, fromDate) {
     affected++;
   }
 
+  if (affected > 0) {
+    await pool.query('UPDATE account_data SET nav_dirty_from=NULL WHERE username=$1 AND account_name=$2', [username, accountName]);
+  }
   return { ok: true, days: affected };
 }
 

@@ -1,6 +1,7 @@
 // ========== 账户与数据 API 路由 ==========
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const ExcelJS = require('exceljs');
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership, requireAdmin } = require('../middleware/auth');
@@ -25,6 +26,48 @@ function requireVersion(req, res, next) {
     return res.status(400).json({ error: '版本号非法，请刷新页面后重试' });
   }
   next();
+}
+
+// 根据当前持仓反向回放导入日之后的交易，得到导入日的系统持仓数量。
+// 导入历史收益时不能直接拿当前数量估值，否则导入日之后的买卖会被重复计入。
+function buildAnchorPositions(positionRows, tradeRows, anchorDate) {
+  const rowsByCode = new Map((positionRows || []).map((p) => [String(p.code), { ...p, quantity: Number(p.quantity) || 0 }]));
+  for (const t of (tradeRows || [])) {
+    const code = String(t.code || '');
+    if (code && !rowsByCode.has(code)) {
+      rowsByCode.set(code, { code, name: t.name || '', price: 0, quantity: 0, subtype: t.subtype || '', type: t.type || '' });
+    }
+  }
+  const eventsByCode = new Map();
+  for (const t of (tradeRows || [])) {
+    const code = String(t.code || '');
+    const d = String(t.trade_date || t.date || '').slice(0, 10);
+    if (!code || d <= anchorDate) continue;
+    if (!eventsByCode.has(code)) eventsByCode.set(code, []);
+    eventsByCode.get(code).push(t);
+  }
+  const unsupported = [];
+  for (const [code, events] of eventsByCode) {
+    const row = rowsByCode.get(code);
+    let quantity = Number(row.quantity) || 0;
+    events.sort((a, b) => String(b.executed_at || b.created_at || b.date || '').localeCompare(String(a.executed_at || a.created_at || a.date || '')));
+    for (const t of events) {
+      const q = Number(t.quantity) || 0;
+      if (t.direction === 'adjust') {
+        unsupported.push(code);
+        break;
+      }
+      // 反向撤销导入日之后的数量变化；open 与 buy 都是增加持仓。
+      quantity += t.direction === 'sell' ? q : -q;
+    }
+    row.quantity = quantity;
+  }
+  if (unsupported.length) {
+    const e = new Error('历史导入日期之后存在无法反向重建的持仓调整：' + [...new Set(unsupported)].join(', '));
+    e.status = 422;
+    throw e;
+  }
+  return [...rowsByCode.values()];
 }
 
 // ========== 账户账本局部接口（方案阶段三：交易增删改走服务端统一事务） ==========
@@ -220,21 +263,31 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
     // 附加真实昨收价（取自 daily_prices 上一交易日），供前端拆分「股价影响」时消除行情涨跌幅精度误差
     try {
       const today = todayCN();
+      const navs = result.navHistory || [];
+      const previousDate = navs.length >= 2 ? String(navs[navs.length - 2].date).slice(0, 10) : null;
       const { rows: prevRows } = await pool.query(
-        `SELECT DISTINCT ON (code) code, price::text AS price
+        `SELECT code, price::text AS price
            FROM daily_prices
-          WHERE username = $1 AND account_name = $2 AND date < $3 AND code = ANY($4::text[])
-          ORDER BY code, date DESC`,
-        [req.session.user, name, today, codes]
+          WHERE username = $1 AND account_name = $2 AND date = $3 AND code = ANY($4::text[])`,
+        [req.session.user, name, previousDate || today, codes]
       );
       const previousPrices = {};
       prevRows.forEach(r => { previousPrices[r.code] = Number(r.price); });
       result.previousPrices = previousPrices;
+      result.previousPricesDate = previousDate || today;
+      result.previousPricesComplete = codes.every(code => Number.isFinite(previousPrices[code]));
     } catch (e) {
       result.previousPrices = {};
     }
   }
   res.json(result);
+}));
+
+// 只读归因接口：页面或审计工具可单独读取后端统一归因结果。
+router.get('/nav/attribution/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const result = await loadAccountData(req.session.user, name);
+  res.json({ ok: true, attribution: result.navAttribution || { complete: false, reason: 'not_available' } });
 }));
 
 // ========== DATA-01 阶段二：快照导入专用接口（替代 PUT /api/data/:name?restore=true 整包写） ==========
@@ -634,6 +687,7 @@ router.put('/nav/:date', requireLogin, asyncHandler(assertOwnership), requireVer
     totalAsset: req.body.totalAsset != null ? parseFloat(req.body.totalAsset) : null,
     invested: req.body.invested != null ? parseFloat(req.body.invested) : null,
     hkRate: req.body.hkRate != null ? parseFloat(req.body.hkRate) : null,
+    snapshot_at: null,
   };
   try {
     // fromDate：编辑改日期时传旧日期，服务端事务内先删旧再写新（2026-08-04 阻断修复）
@@ -659,6 +713,16 @@ router.delete('/nav/:date', requireLogin, asyncHandler(assertOwnership), require
   try {
     await client.query('BEGIN');
     await tradeLedger.checkVersionInTxn(client, username, accountName, req.query.version);
+    const { rows: locked } = await client.query(
+      `SELECT is_locked AS "isLocked", source_priority AS "sourcePriority"
+         FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3 FOR UPDATE`,
+      [username, accountName, date]
+    );
+    if (locked[0] && locked[0].isLocked === true && Number(locked[0].sourcePriority || 0) >= 100) {
+      const e = new Error('券商导入快照已锁定，不能删除');
+      e.status = 409;
+      throw e;
+    }
     await client.query(
       'DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3',
       [username, accountName, date]
@@ -677,13 +741,33 @@ router.delete('/nav/:date', requireLogin, asyncHandler(assertOwnership), require
 }));
 
 // 2-7 历史净值批量导入：POST /api/nav/import
-// body={ account, records: [{ date, nav, totalAsset?, invested? }], mode?: 'replace'|'merge' }
+// body={ account, records: [{ date, nav, totalAsset, invested, cash }], mode?: 'replace'|'merge' }
 router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireVersion, rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '导入过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const accountName = req.body.account;
   if (!accountName) return res.status(400).json({ error: '缺少 account' });
   const username = req.session.user;
   const records = req.body.records;
   if (!Array.isArray(records) || records.length === 0) return res.status(400).json({ error: '缺少有效净值记录' });
+  const requiredNumber = (value) => value == null || value === '' ? NaN : Number(value);
+  const normalizedRecords = records.map((r) => ({
+    date: String(r.date || '').slice(0, 10),
+    nav: requiredNumber(r.nav),
+    totalAsset: requiredNumber(r.totalAsset),
+    invested: requiredNumber(r.invested),
+    cash: requiredNumber(r.cash),
+    hkRate: r.hkRate == null || r.hkRate === '' ? null : Number(r.hkRate)
+  }));
+  const bad = normalizedRecords.find((r) => !/^\d{4}-\d{2}-\d{2}$/.test(r.date) ||
+    !Number.isFinite(r.nav) || r.nav < 0 || !Number.isFinite(r.totalAsset) || r.totalAsset < 0 ||
+    !Number.isFinite(r.invested) || !Number.isFinite(r.cash) || r.cash < 0 || r.cash > r.totalAsset ||
+    (r.hkRate != null && (!Number.isFinite(r.hkRate) || r.hkRate <= 0)));
+  if (bad) return res.status(400).json({ error: '权威导入必须包含合法的日期、净值、总资产、累计投入资金和现金；现金不能大于总资产' });
+  const dateSet = new Set(normalizedRecords.map((r) => r.date));
+  if (dateSet.size !== normalizedRecords.length) return res.status(400).json({ error: '同一导入文件存在重复日期' });
+  const minImportDate = normalizedRecords.reduce((m, r) => !m || r.date < m ? r.date : m, '');
+  const maxImportDate = normalizedRecords.reduce((m, r) => r.date > m ? r.date : m, '');
+  const importBatchId = String(req.body.importBatchId || crypto.randomUUID());
+  const inputHash = crypto.createHash('sha256').update(JSON.stringify({ mode: req.body.mode || 'merge', records: normalizedRecords })).digest('hex');
   const client = await pool.connect();
   const { rows: aRows } = await client.query(
     'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
@@ -691,18 +775,142 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
   const accountId = aRows[0] ? aRows[0].id : null;
   try {
     await client.query('BEGIN');
-    // 乐观锁（2026-08-04）：版本不一致 → 409
+    const { rows: oldBatch } = await client.query(
+      `SELECT id, input_hash AS "inputHash", row_count AS "rowCount"
+         FROM nav_import_batches WHERE username=$1 AND account_name=$2
+           AND (id=$3 OR input_hash=$4)
+         ORDER BY CASE WHEN id=$3 THEN 0 ELSE 1 END, imported_at DESC
+         LIMIT 1 FOR UPDATE`,
+      [username, accountName, importBatchId, inputHash]
+    );
+    if (oldBatch[0]) {
+      if (oldBatch[0].inputHash !== inputHash) {
+        const e = new Error('importBatchId 已存在但内容不同，拒绝覆盖');
+        e.status = 409;
+        throw e;
+      }
+      await client.query('COMMIT');
+      const result = await loadAccountData(username, accountName);
+      return res.json({ ok: true, idempotent: true, batchId: oldBatch[0].id, count: Number(oldBatch[0].rowCount || records.length), data: result });
+    }
+    // 乐观锁（2026-08-04）：版本不一致 → 409；幂等重试已在上面无写入返回，不受旧版本影响。
     await tradeLedger.checkVersionInTxn(client, username, accountName, req.query.version);
+    const { rows: currentNav } = await client.query(
+      `SELECT date, nav, total_asset AS "totalAsset", invested, snapshot_at, hk_rate AS "hkRate",
+              cash_cny AS "cashCny", market_value_cny AS "marketValueCny", system_market_value_at_snapshot AS "systemMarketValueAtSnapshot",
+              snapshot_source AS "snapshotSource", source_priority AS "sourcePriority", import_batch_id AS "importBatchId",
+              calc_status AS "calcStatus", diagnostics, is_locked AS "isLocked", input_hash AS "inputHash"
+         FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date`, [username, accountName]
+    );
+    const { rows: posRows } = await client.query(
+      `SELECT code, name, price::float8 AS price, quantity::float8 AS quantity, subtype, type
+         FROM positions WHERE username=$1 AND account_name=$2`, [username, accountName]
+    );
+    const { rows: tradeRows } = await client.query(
+      `SELECT code, name, direction, quantity::float8 AS quantity, trade_date, date, executed_at, created_at, subtype, type,
+              quote_currency, amount_cny::float8 AS amount_cny
+         FROM trades WHERE username=$1 AND account_name=$2`, [username, accountName]
+    );
+    const anchorPositions = buildAnchorPositions(posRows, tradeRows, maxImportDate);
+    const { rows: acctRows } = await client.query(
+      `SELECT hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name=$2`, [username, accountName]
+    );
+    const requestedAnchorDate = maxImportDate;
+    const { rows: fxRows } = await client.query(
+      `SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates
+        WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
+        ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [requestedAnchorDate]
+    );
+    const fxAtDate = (date) => {
+      let rate = 0;
+      for (const row of fxRows) {
+        const rowDate = row.rate_date instanceof Date
+          ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(row.rate_date)
+          : String(row.rate_date).slice(0, 10);
+        if (rowDate <= date && Number(row.rate) > 0) rate = Number(row.rate);
+      }
+      return rate;
+    };
+    const anchorRecord = normalizedRecords.find((r) => r.date === requestedAnchorDate);
+    const systemRate = anchorRecord && anchorRecord.hkRate > 0 ? anchorRecord.hkRate :
+      (fxAtDate(requestedAnchorDate) || (acctRows[0] && Number(acctRows[0].hk_rate) > 0 ? Number(acctRows[0].hk_rate) : 0));
+    const { rows: dayPriceRows } = await client.query(
+      `SELECT code, price::float8 AS price FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND date=$3`, [username, accountName, requestedAnchorDate]
+    );
+    const dayPrices = new Map(dayPriceRows.map((p) => [String(p.code), Number(p.price)]));
+    const missingCodes = [];
+    if (requestedAnchorDate !== todayCN() && anchorPositions.some((p) => Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0))) {
+      anchorPositions.forEach((p) => { if (Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0)) missingCodes.push(String(p.code)); });
+      const e = new Error('历史导入日期缺少持仓收盘价，无法建立精确锚点：' + [...new Set(missingCodes)].join(', '));
+      e.status = 422;
+      throw e;
+    }
+    if (anchorPositions.some((p) => Number(p.quantity) !== 0 && p.subtype === '港股') && !(systemRate > 0)) {
+      const e = new Error('历史导入日期缺少港币兑人民币汇率，无法建立精确锚点');
+      e.status = 422;
+      throw e;
+    }
+    const systemMarketValue = anchorPositions.reduce((sum, p) => {
+      const price = requestedAnchorDate === todayCN() ? (Number(p.price) || 0) : dayPrices.get(String(p.code));
+      const mv = price * (Number(p.quantity) || 0);
+      return sum + (p.subtype === '港股' ? mv * systemRate : mv);
+    }, 0);
+    const priorLatestCash = currentNav.length && currentNav[currentNav.length - 1].cashCny != null
+      ? Number(currentNav[currentNav.length - 1].cashCny) : null;
+    await client.query(
+      `INSERT INTO nav_import_batches (id, username, account_name, range_start, range_end, row_count, input_hash, status, backup_payload, diagnostics)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'committed',$8::jsonb,$9::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+      [importBatchId, username, accountName, minImportDate, maxImportDate, normalizedRecords.length, inputHash,
+        JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue })]
+    );
     // 全量替换模式：先清空再导入
     if (req.body.mode === 'replace') {
       await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
     }
-    for (const r of records) {
-      if (!r.date || r.nav == null) continue;
+    for (const r of normalizedRecords) {
+      const brokerPositionValue = round(r.totalAsset - r.cash, 2);
+      const isAnchor = r.date === maxImportDate;
       await client.query(
-        'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, hk_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, hk_rate=EXCLUDED.hk_rate',
-        [username, accountName, accountId, r.date, round(r.nav, 6), r.totalAsset != null ? round(r.totalAsset, 2) : null, r.invested != null ? round(r.invested, 2) : null, (r.hkRate != null && r.hkRate > 0) ? round(r.hkRate, 6) : null]
+        `INSERT INTO nav_history
+          (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate,
+           cash_cny, market_value_cny, system_market_value_at_snapshot, broker_fx_rate,
+           snapshot_source, source_priority, import_batch_id, calc_status, diagnostics, is_locked, input_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'imported',100,$14,$15,$16,true,$17)
+         ON CONFLICT (username, account_name, date) DO UPDATE SET
+           nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=EXCLUDED.snapshot_at,
+           hk_rate=EXCLUDED.hk_rate, cash_cny=EXCLUDED.cash_cny, market_value_cny=EXCLUDED.market_value_cny,
+           system_market_value_at_snapshot=EXCLUDED.system_market_value_at_snapshot, broker_fx_rate=EXCLUDED.broker_fx_rate,
+           snapshot_source='imported', source_priority=100, import_batch_id=EXCLUDED.import_batch_id,
+           calc_status=EXCLUDED.calc_status, diagnostics=EXCLUDED.diagnostics, is_locked=true, input_hash=EXCLUDED.input_hash`,
+        [username, accountName, accountId, r.date, round(r.nav, 6), round(r.totalAsset, 2), round(r.invested, 2),
+           `${r.date} 23:59:59`, round(r.hkRate != null && r.hkRate > 0 ? r.hkRate : (fxAtDate(r.date) || systemRate), 6),
+          round(r.cash, 2), brokerPositionValue, isAnchor ? round(systemMarketValue, 2) : null,
+          r.hkRate != null && r.hkRate > 0 ? round(r.hkRate, 6) : null, importBatchId,
+          isAnchor ? 'broker_exact' : 'total_authoritative',
+          JSON.stringify({
+            source: 'broker_import',
+            position_source_gap_cny: isAnchor ? round(brokerPositionValue - systemMarketValue, 2) : null,
+            cash_replacement_delta_cny: isAnchor && priorLatestCash != null ? round(r.cash - priorLatestCash, 2) : null
+          }), inputHash]
       );
+      if (isAnchor) {
+        await client.query('DELETE FROM nav_position_snapshots WHERE snapshot_id=$1', [importBatchId]);
+        for (const p of anchorPositions) {
+          const price = maxImportDate === todayCN() ? (Number(p.price) || 0) : dayPrices.get(String(p.code));
+          const fx = p.subtype === '港股' ? systemRate : 1;
+          await client.query(
+            `INSERT INTO nav_position_snapshots
+               (snapshot_id, username, account_name, snapshot_date, instrument_code, quantity, price,
+                quote_currency, fx_rate_to_cny, market_value_cny, source)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [importBatchId, username, accountName, maxImportDate, p.code, Number(p.quantity) || 0,
+              price, p.subtype === '港股' ? 'HKD' : 'CNY', fx,
+              round(price * (Number(p.quantity) || 0) * fx, 2), 'system_daily_price']
+          );
+        }
+      }
     }
     await client.query(
       `INSERT INTO account_data (username, account_name, data, version, nav_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET nav_version=account_data.nav_version+1, version=account_data.version+1`,
@@ -710,11 +918,104 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     );
     await client.query('COMMIT');
     const result = await loadAccountData(username, accountName);
-    res.json({ ok: true, count: records.length, data: result });
+    res.json({ ok: true, batchId: importBatchId, count: records.length, data: result });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(e.status || 500).json({ error: e.message });
   } finally { client.release(); }
+}));
+
+// 导入批次回滚：只允许回滚本账户已提交批次，恢复导入前的 nav_history 备份。
+router.post('/nav/import/:batchId/rollback', requireLogin, asyncHandler(assertOwnership), requireVersion, rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '回滚过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
+  const accountName = req.body && req.body.account;
+  const batchId = String(req.params.batchId || '');
+  if (!accountName || !batchId) return res.status(400).json({ error: '缺少 account 或 batchId' });
+  const username = req.session.user;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await tradeLedger.checkVersionInTxn(client, username, accountName, req.query.version);
+    const { rows: batches } = await client.query(
+      `SELECT id, status, backup_payload FROM nav_import_batches
+        WHERE id=$1 AND username=$2 AND account_name=$3 FOR UPDATE`,
+      [batchId, username, accountName]
+    );
+    if (!batches[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '导入批次不存在' });
+    }
+    if (batches[0].status === 'rolled_back') {
+      await client.query('COMMIT');
+      return res.json({ ok: true, idempotent: true, data: await loadAccountData(username, accountName) });
+    }
+    const backup = Array.isArray(batches[0].backup_payload) ? batches[0].backup_payload : [];
+    const { rows: aRows } = await client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]);
+    const accountId = aRows[0] ? aRows[0].id : null;
+    await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+    await client.query('DELETE FROM nav_position_snapshots WHERE username=$1 AND account_name=$2 AND snapshot_id=$3', [username, accountName, batchId]);
+    for (const n of backup) {
+      await client.query(
+        `INSERT INTO nav_history
+          (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate,
+           cash_cny, market_value_cny, system_market_value_at_snapshot, broker_fx_rate,
+           snapshot_source, source_priority, import_batch_id, calc_status, diagnostics, is_locked, input_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+        [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), n.invested == null ? null : round(n.invested, 2),
+          n.snapshot_at || null, n.hkRate || null, n.cashCny == null ? null : round(n.cashCny, 2),
+          n.marketValueCny == null ? null : round(n.marketValueCny, 2), n.systemMarketValueAtSnapshot == null ? null : round(n.systemMarketValueAtSnapshot, 2),
+          n.brokerFxRate || null, n.snapshotSource || 'legacy', Number(n.sourcePriority || 10), n.importBatchId || null,
+          n.calcStatus || 'complete', JSON.stringify(n.diagnostics || {}), n.isLocked === true, n.inputHash || null]
+      );
+    }
+    await client.query(`UPDATE nav_import_batches SET status='rolled_back' WHERE id=$1`, [batchId]);
+    await client.query(
+      `INSERT INTO account_data (username, account_name, data, version, nav_version)
+       VALUES ($1,$2,'{}',0,1)
+       ON CONFLICT (username, account_name) DO UPDATE SET version=account_data.version+1, nav_version=account_data.nav_version+1`,
+      [username, accountName]
+    );
+    await client.query('COMMIT');
+    res.json({ ok: true, batchId, rows: backup.length, data: await loadAccountData(username, accountName) });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(e.status || 500).json({ error: e.message });
+  } finally { client.release(); }
+}));
+
+// 导入预览：只校验字段和历史锚点输入，不写入任何业务表。
+router.post('/nav/import/preview', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const accountName = req.body && req.body.account;
+  const records = req.body && req.body.records;
+  if (!accountName || !Array.isArray(records) || records.length === 0) return res.status(400).json({ error: '缺少 account 或 records' });
+  const toNum = v => v == null || v === '' ? NaN : Number(v);
+  const normalized = records.map(r => ({ date: String(r.date || '').slice(0, 10), nav: toNum(r.nav), totalAsset: toNum(r.totalAsset), invested: toNum(r.invested), cash: toNum(r.cash) }));
+  const bad = normalized.find(r => !/^\d{4}-\d{2}-\d{2}$/.test(r.date) || !Number.isFinite(r.nav) || !Number.isFinite(r.totalAsset) || !Number.isFinite(r.invested) || !Number.isFinite(r.cash) || r.cash < 0 || r.cash > r.totalAsset);
+  if (bad) return res.status(400).json({ error: '必须包含合法的日期、净值、总资产、累计投入资金和现金；现金不能大于总资产' });
+  const maxDate = normalized.reduce((m, r) => !m || r.date > m ? r.date : m, '');
+  const { rows: positions } = await pool.query('SELECT code, price::float8 AS price, quantity::float8 AS quantity, subtype FROM positions WHERE username=$1 AND account_name=$2', [req.session.user, accountName]);
+  const { rows: previewTrades } = await pool.query(`SELECT code, name, direction, quantity::float8 AS quantity, trade_date, date, executed_at, created_at, subtype, type, quote_currency, amount_cny::float8 AS amount_cny FROM trades WHERE username=$1 AND account_name=$2`, [req.session.user, accountName]);
+  const unresolvedTradeIds = previewTrades.filter((t) => String(t.quote_currency || '').toUpperCase() === 'HKD' && t.amount_cny == null).map((t) => t.code).slice(0, 20);
+  const anchorPositions = buildAnchorPositions(positions, previewTrades, maxDate);
+  const { rows: fx } = await pool.query(`SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1 ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [maxDate]);
+  const fxAtDate = (date) => {
+    let rate = 0;
+    for (const row of fx) {
+      const rowDate = row.rate_date instanceof Date ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(row.rate_date) : String(row.rate_date).slice(0, 10);
+      if (rowDate <= date && Number(row.rate) > 0) rate = Number(row.rate);
+    }
+    return rate;
+  };
+  const systemRate = fxAtDate(maxDate);
+  const { rows: dp } = await pool.query('SELECT code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3', [req.session.user, accountName, maxDate]);
+  const priceMap = new Map(dp.map(r => [String(r.code), Number(r.price)]));
+  const missingCodes = anchorPositions.filter(p => Number(p.quantity) !== 0 && maxDate !== todayCN() && !(priceMap.get(String(p.code)) > 0)).map(p => String(p.code));
+  const missingFx = anchorPositions.some(p => Number(p.quantity) !== 0 && p.subtype === '港股') && !(systemRate > 0);
+  const systemMarketValue = missingCodes.length || missingFx ? null : anchorPositions.reduce((s, p) => {
+    const price = maxDate === todayCN() ? Number(p.price) || 0 : priceMap.get(String(p.code));
+    return s + price * (Number(p.quantity) || 0) * (p.subtype === '港股' ? systemRate : 1);
+  }, 0);
+  const inputHash = crypto.createHash('sha256').update(JSON.stringify({ mode: req.body.mode || 'merge', records: normalized.map(r => ({ ...r, hkRate: null })) })).digest('hex');
+  res.json({ ok: true, rowCount: normalized.length, rangeStart: normalized.reduce((m, r) => !m || r.date < m ? r.date : m, ''), rangeEnd: maxDate, inputHash, systemMarketValueAtSnapshot: systemMarketValue, calcStatus: systemMarketValue == null || unresolvedTradeIds.length ? 'data_incomplete' : 'ready', missingCodes: [...new Set(missingCodes)], missingFx, unresolvedTradeIds });
 }));
 
 // 管理员判定已统一收敛到 server/middleware/auth.js（AUTH-03），accounts 路由不再保留第二套逻辑。

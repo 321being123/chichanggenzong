@@ -90,47 +90,13 @@ function renderStats() {
 // 总资产今日涨跌浮框：分解「股价影响 + 汇率影响」并写出计算过程
 function bindChangeTip(el, changeAmt, changePct) {
   if (!el) return;
-  var todayRate = Number(typeof unifiedHkRate !== 'undefined' && unifiedHkRate > 0 ? unifiedHkRate : data.hkRate) || 0.868;
-  var yesterdayRate = null;
-  if (data.navHistory && data.navHistory.length >= 2) {
-    var prevNav = data.navHistory[data.navHistory.length - 2];
-    if (prevNav && prevNav.hkRate != null && prevNav.hkRate > 0) yesterdayRate = prevNav.hkRate;
-  }
-  // 股价影响：按昨日快照汇率计算，与下方汇率影响（今价×汇率差）相加正好等于港股市值变动，消除交叉项残差
-  var priceImpact = 0;
-  (data.positions || []).forEach(function (p) {
-    var prof = getTodayProfit(p, yesterdayRate);
-    if (prof != null) priceImpact += prof;
-  });
-  // 汇率影响 = 港股今价 ×（今日汇率 − 昨日快照汇率），直接算，不再用"今日涨跌−股价影响"残差
-  var fxImpact = 0;
-  var otherChange = null;
-  var snapshotDrift = 0;
-  if (yesterdayRate != null) {
-    (data.positions || []).forEach(function (p) {
-      if (p.subtype === '港股') {
-        fxImpact += (Number(p.price) || 0) * (Number(p.quantity) || 0) * (todayRate - yesterdayRate);
-      }
-    });
-    var prevDate = data.navHistory[data.navHistory.length - 2].date;
-    var lastDate = data.navHistory[data.navHistory.length - 1].date;
-    var ledgerChange = 0;
-    (data.cashFlows || []).forEach(function (f) {
-      if (f.date > prevDate && f.date <= lastDate) ledgerChange += Number(f.amount) || 0;
-    });
-    (data.trades || []).forEach(function (t) {
-      var tradeDate = (t.trade_date || t.date || '').slice(0, 10);
-      if (tradeDate > prevDate && tradeDate <= lastDate && t.direction !== 'open' && t.direction !== 'adjust') {
-        var fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
-        ledgerChange += t.direction === 'buy' ? -(Number(t.amount) || 0) - fee : (Number(t.amount) || 0) - fee;
-      }
-    });
-    otherChange = ledgerChange;
-    snapshotDrift = changeAmt - priceImpact - fxImpact - ledgerChange;
-  } else {
-    // 旧快照无汇率记录 → 残差兜底（保持与历史一致）
-    fxImpact = changeAmt - priceImpact;
-  }
+  // 归因只使用后端统一计算结果，避免前端现金端公式制造“历史快照校准差额”。
+  var attribution = data.navAttribution || { complete: false };
+  var priceImpact = attribution.complete ? Number(attribution.priceImpact) || 0 : 0;
+  var fxImpact = attribution.complete ? Number(attribution.fxImpact) || 0 : 0;
+  var otherChange = attribution.complete ? Number(attribution.ledgerChange) || 0 : null;
+  var snapshotDrift = attribution.complete ? attribution.snapshotDrift : null;
+  var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_delta_estimate') : null;
 
   var tip = document.getElementById('stat-change-tip');
   if (!tip) {
@@ -141,7 +107,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, snapshotDrift);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, snapshotDrift, authorityMode, !attribution.complete);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -152,7 +118,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   el.onmouseleave = function () { tip.style.display = 'none'; };
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, snapshotDrift) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, snapshotDrift, authorityMode, attributionIncomplete) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
@@ -172,7 +138,13 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
     html += '<div>历史快照校准差额：<span style="color:#fbbc04;">' + sign(snapshotDrift) + '</span></div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">净值快照与行情/资金流水不一致，已单独标记，不再计入其他变动</div>';
   }
-  html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
+  if (authorityMode) {
+    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">已按券商导入总资产/现金锚定；持仓明细仍按本系统行情估值，当前仅展示锚点后的系统增量（' + (authorityMode === 'broker_exact' ? '导入日权威值' : '系统增量估算') + '）。</div>';
+  }
+  if (attributionIncomplete) {
+    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">缺少上一基准日的完整收盘价或汇率，本次不伪造价格/汇率归因。</div>';
+  }
+  html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">' + (authorityMode ? '合计 = 导入锚点 + 后续行情/资金增量' : '合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '')) + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
     '</div>' +
     '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：股价影响按昨日快照汇率算、汇率影响按今价×汇率差算，两者相加正好等于港股市值变动，不再有交叉项残差。「昨日快照汇率」指上一条净值记录里存的港币汇率（即上次记账时的实时汇率，通常为昨天打开网页那一刻）。</div>';
   return html;

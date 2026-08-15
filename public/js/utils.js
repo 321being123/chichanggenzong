@@ -82,7 +82,13 @@ function calcSummary() {
     else debtVal += mv;
   });
   var cash = (Number(data.cash) || 0) + cashPosVal;
-  var total = equityVal + debtVal + cash;
+  // 权威券商导入后：现金和账户级持仓总值按锚点续算；逐证券 equity/debt 仍是本系统参考估值。
+  // 不把两套口径强行按比例摊回每只证券，避免伪造券商汇率。
+  var total = (data.authoritativeTotalAsset != null)
+    ? (Number(data.authoritativeTotalAsset) || 0)
+    : ((data.authoritativePositionValue != null)
+      ? (Number(data.authoritativePositionValue) || 0) + cash - cashPosVal
+      : equityVal + debtVal + cash);
   return { total: total, equityVal: equityVal, debtVal: debtVal, cash: cash,
     equityPct: total > 0 ? equityVal / total : 0,
     debtPct: total > 0 ? debtVal / total : 0,

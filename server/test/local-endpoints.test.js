@@ -28,7 +28,7 @@ async function checkAsync(name, fn) {
   let port = 0;
   try { await pool.query('SELECT 1'); } catch (e) { skip = true; }
   if (!skip) {
-    for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'index_history', 'daily_prices', 'account_data', 'accounts']) {
+    for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'index_history', 'daily_prices', 'nav_position_snapshots', 'nav_import_batches', 'account_data', 'accounts']) {
       await pool.query(`DELETE FROM ${t} WHERE username=$1`, [U]);
     }
     await pool.query(`DELETE FROM users WHERE username=$1`, [U]);
@@ -149,26 +149,61 @@ async function checkAsync(name, fn) {
 
     // ========== 4) 净值批量导入持久化 + 版本提升 ==========
     await checkAsync('净值导入：按日期 upsert 且版本提升', async () => {
+      // 历史锚点必须使用导入日收盘价；测试显式准备两只现有持仓的基准价格。
+      await pool.query(
+        `INSERT INTO daily_prices (username, account_name, date, code, name, price)
+         VALUES ($1,$2,'2026-08-02','600519','贵州茅台',1000),
+                ($1,$2,'2026-08-02','000858','五粮液',100)
+         ON CONFLICT (username, account_name, date, code) DO UPDATE SET price=EXCLUDED.price`, [U, A]
+      );
       const d0 = await loadAccountData(U, A);
       const r = await fetch(base + '/nav/import?version=' + d0.version, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account: A, records: [
-          { date: '2026-08-01', nav: 1.0, totalAsset: 10000, invested: 9000 },
-          { date: '2026-08-02', nav: 1.05, totalAsset: 10500, invested: 9000 }
+          { date: '2026-08-01', nav: 1.0, totalAsset: 10000, invested: 9000, cash: 2000 },
+          { date: '2026-08-02', nav: 1.05, totalAsset: 10500, invested: 9000, cash: 2000 }
         ] })
       });
       assert.strictEqual(r.status, 200, '导入应成功，状态=' + r.status);
       const d1 = await loadAccountData(U, A);
       assert.ok(d1.navHistory.some(n => n.date === '2026-08-01'), '导入的净值应持久化');
       assert.ok(d1.navHistory.some(n => n.date === '2026-08-02'), '导入的净值应持久化');
+      const imported = d1.navHistory.find(n => n.date === '2026-08-02');
+      assert.strictEqual(imported.cashCny, 2000, '导入现金应持久化');
+      assert.strictEqual(imported.snapshotSource, 'imported', '导入来源应标记');
+      assert.strictEqual(imported.isLocked, true, '导入行必须锁定');
+      assert.strictEqual(imported.totalAsset, 10500, '导入日总资产应保留券商权威值');
+      assert.strictEqual(d1.authoritativeTotalAsset, 25500, '导入锚点之后的现金流和新增持仓应继续计入当前总资产');
       assert.ok(d1.version > d0.version, '导入后版本应提升');
+    });
+
+    await checkAsync('净值导入：缺现金字段 → 400', async () => {
+      const d0 = await loadAccountData(U, A);
+      const r = await fetch(base + '/nav/import?version=' + d0.version, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: A, records: [{ date: '2026-08-04', nav: 1.1, totalAsset: 11000, invested: 9000 }] })
+      });
+      assert.strictEqual(r.status, 400, '缺现金字段必须拒绝');
+    });
+
+    await checkAsync('净值导入：普通快照不得覆盖锁定导入日', async () => {
+      const d0 = await loadAccountData(U, A);
+      const r = await fetch(base + '/nav/2026-08-02?version=' + d0.version, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: A, nav: 9.99, totalAsset: 99999, invested: 1 })
+      });
+      assert.strictEqual(r.status, 200, '普通快照请求应幂等跳过');
+      const d1 = await loadAccountData(U, A);
+      const imported = d1.navHistory.find(n => n.date === '2026-08-02');
+      assert.strictEqual(imported.totalAsset, 10500, '锁定导入总资产不得被覆盖');
+      assert.strictEqual(imported.cashCny, 2000, '锁定导入现金不得被覆盖');
     });
 
     await checkAsync('净值导入：旧版本 → 409', async () => {
       const d0 = await loadAccountData(U, A);
       const r = await fetch(base + '/nav/import?version=' + (d0.version - 1), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: A, records: [{ date: '2026-08-03', nav: 1.1, totalAsset: 11000, invested: 9000 }] })
+        body: JSON.stringify({ account: A, records: [{ date: '2026-08-03', nav: 1.1, totalAsset: 11000, invested: 9000, cash: 2000 }] })
       });
       assert.strictEqual(r.status, 409, '旧版本导入应 409，状态=' + r.status);
     });
@@ -303,7 +338,7 @@ async function checkAsync(name, fn) {
   }
 
   if (server) server.close();
-  for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'index_history', 'daily_prices', 'account_data', 'accounts']) {
+  for (const t of ['positions', 'trades', 'nav_history', 'cash_flows', 'index_history', 'daily_prices', 'nav_position_snapshots', 'nav_import_batches', 'account_data', 'accounts']) {
     await pool.query(`DELETE FROM ${t} WHERE username=$1`, [U]);
   }
   await pool.query(`DELETE FROM users WHERE username=$1`, [U]);

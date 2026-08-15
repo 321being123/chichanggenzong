@@ -2812,6 +2812,158 @@ function scale100m(value, divisor) {
   return number == null ? null : number / divisor;
 }
 
+// ========== 072：权威收益导入锚点（日期/净值/总资产/投入/现金） ==========
+// 导入总资产来自券商，持仓数量仍由 positions 表维护；导入后按券商现金/持仓总值锚点叠加本系统持仓增量。
+async function migration072AuthoritativeNavImportAnchor() {
+  await pool.query(`
+    ALTER TABLE nav_history
+      ADD COLUMN IF NOT EXISTS cash_cny numeric(20,2),
+      ADD COLUMN IF NOT EXISTS market_value_cny numeric(20,2),
+      ADD COLUMN IF NOT EXISTS system_market_value_at_snapshot numeric(20,2),
+      ADD COLUMN IF NOT EXISTS broker_fx_rate numeric(20,8),
+      ADD COLUMN IF NOT EXISTS snapshot_source text NOT NULL DEFAULT 'legacy',
+      ADD COLUMN IF NOT EXISTS source_priority integer NOT NULL DEFAULT 10,
+      ADD COLUMN IF NOT EXISTS import_batch_id text,
+      ADD COLUMN IF NOT EXISTS calc_status text NOT NULL DEFAULT 'complete',
+      ADD COLUMN IF NOT EXISTS diagnostics jsonb NOT NULL DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS is_locked boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS input_hash text
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_nav_history_import_anchor
+      ON nav_history(username, account_name, date, source_priority)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS nav_import_batches (
+      id text PRIMARY KEY,
+      username text NOT NULL,
+      account_name text NOT NULL,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      range_start date NOT NULL,
+      range_end date NOT NULL,
+      row_count integer NOT NULL,
+      input_hash text NOT NULL,
+      status text NOT NULL,
+      backup_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      diagnostics jsonb NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_nav_import_batches_account
+      ON nav_import_batches(username, account_name, imported_at DESC)
+  `);
+}
+
+// ========== 073：净值归因与币种结算完整性 ==========
+// 历史导入锚点必须能按导入日重建；交易金额统一保留原币金额并落人民币结算金额。
+async function migration073NavAttributionIntegrity() {
+  await pool.query(`
+    ALTER TABLE trades
+      ADD COLUMN IF NOT EXISTS quote_currency CHAR(3),
+      ADD COLUMN IF NOT EXISTS fx_rate_to_cny numeric(20,8),
+      ADD COLUMN IF NOT EXISTS amount_cny numeric(20,4),
+      ADD COLUMN IF NOT EXISTS currency_status TEXT NOT NULL DEFAULT 'legacy'
+  `);
+  // 旧版 amount_rel 是 NOT VALID，但 PostgreSQL 更新同一行时仍会重新校验；
+  // 先临时拆除，回填币种金额后按原语义恢复。
+  await pool.query(`ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_rel`);
+  await pool.query(`
+    UPDATE trades
+       SET quote_currency = CASE WHEN subtype = '港股' THEN 'HKD' ELSE 'CNY' END,
+           fx_rate_to_cny = CASE WHEN subtype = '港股' THEN NULL ELSE 1 END,
+           amount_cny = CASE WHEN subtype = '港股' THEN NULL ELSE amount END,
+           currency_status = CASE WHEN subtype = '港股' THEN 'needs_review' ELSE 'complete' END
+     WHERE quote_currency IS NULL OR amount_cny IS NULL
+  `);
+  await pool.query(`
+    ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+      CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID
+  `);
+  await pool.query(`ALTER TABLE account_data ADD COLUMN IF NOT EXISTS nav_dirty_from DATE`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS nav_position_snapshots (
+      snapshot_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      account_name TEXT NOT NULL,
+      snapshot_date DATE NOT NULL,
+      instrument_code TEXT NOT NULL,
+      quantity numeric(20,4) NOT NULL,
+      price numeric(20,8) NOT NULL,
+      quote_currency CHAR(3) NOT NULL,
+      fx_rate_to_cny numeric(20,8) NOT NULL,
+      market_value_cny numeric(20,4) NOT NULL,
+      source TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, instrument_code)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_nav_position_snapshots_account_date ON nav_position_snapshots(username, account_name, snapshot_date)`);
+  // 历史版本允许同文件产生多个随机批次；先把引用归并到最新批次，再建立唯一约束。
+  await pool.query(`
+    WITH ranked AS (
+      SELECT id, username, account_name, input_hash,
+             first_value(id) OVER (PARTITION BY username, account_name, input_hash ORDER BY imported_at DESC, id DESC) AS keep_id,
+             row_number() OVER (PARTITION BY username, account_name, input_hash ORDER BY imported_at DESC, id DESC) AS rn
+        FROM nav_import_batches
+    )
+    UPDATE nav_history n SET import_batch_id = r.keep_id
+      FROM ranked r
+     WHERE n.import_batch_id = r.id AND r.rn > 1
+  `);
+  await pool.query(`
+    DELETE FROM nav_import_batches b
+     USING nav_import_batches k
+     WHERE b.username=k.username AND b.account_name=k.account_name AND b.input_hash=k.input_hash
+       AND (b.imported_at < k.imported_at OR (b.imported_at = k.imported_at AND b.id < k.id))
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_nav_import_content
+      ON nav_import_batches(username, account_name, input_hash)
+  `);
+  for (const c of [
+    ['chk_trades_quote_currency', `CHECK (quote_currency IS NULL OR quote_currency IN ('CNY','HKD','USD'))`],
+    ['chk_trades_fx_rate_to_cny', `CHECK (fx_rate_to_cny IS NULL OR fx_rate_to_cny > 0)`],
+    ['chk_trades_amount_cny', `CHECK (amount_cny IS NULL OR amount_cny >= 0)`]
+  ]) {
+    const ex = await pool.query(`SELECT 1 FROM pg_constraint WHERE conname=$1 AND conrelid='trades'::regclass`, [c[0]]);
+    if (ex.rowCount === 0) await pool.query(`ALTER TABLE trades ADD CONSTRAINT ${c[0]} ${c[1]}`);
+  }
+}
+
+// ========== 074：历史港股人民币结算回填 ==========
+// 旧导入记录的 amount 是券商成交结算金额，不能用 price×quantity 反推（部分券商数量单位不同）。
+// 有成交日历史汇率时直接补齐 amount_cny；没有可靠汇率的记录继续保持 needs_review，禁止静默入账。
+async function migration074BackfillLegacyHkdSettlement() {
+  await pool.query(`ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_rel`);
+  await pool.query(`
+    WITH candidates AS (
+      SELECT t.id, fx.rate
+        FROM trades t
+        CROSS JOIN LATERAL (
+          SELECT rate::numeric AS rate
+            FROM market.fx_rates
+           WHERE base_currency='HKD' AND quote_currency='CNY'
+             AND rate_date <= COALESCE(t.trade_date, left(t.date, 10))::date
+           ORDER BY rate_date DESC, fetched_at DESC, source_id DESC
+           LIMIT 1
+        ) fx
+       WHERE t.quote_currency='HKD'
+         AND t.amount_cny IS NULL
+         AND t.amount IS NOT NULL
+         AND t.currency_status <> 'complete'
+    )
+    UPDATE trades t
+       SET fx_rate_to_cny = c.rate,
+           amount_cny = ROUND(t.amount * c.rate, 4),
+           currency_status = 'complete'
+      FROM candidates c
+     WHERE t.id = c.id
+  `);
+  await pool.query(`
+    ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+      CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -2884,6 +3036,9 @@ const MIGRATIONS = [
   { version: '069_normalize_daily_price_dates', up: migration069NormalizeDailyPriceDates },
   { version: '070_remove_duplicate_legacy_price_dates', up: migration070RemoveDuplicateLegacyPriceDates },
   { version: '071_deduplicate_instrument_events', up: migration071DeduplicateInstrumentEvents },
+  { version: '072_authoritative_nav_import_anchor', up: migration072AuthoritativeNavImportAnchor },
+  { version: '073_nav_attribution_integrity', up: migration073NavAttributionIntegrity },
+  { version: '074_backfill_legacy_hkd_settlement', up: migration074BackfillLegacyHkdSettlement },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3424,6 +3579,7 @@ module.exports = {
   migration069NormalizeDailyPriceDates,
   migration070RemoveDuplicateLegacyPriceDates,
   migration071DeduplicateInstrumentEvents,
+  migration072AuthoritativeNavImportAnchor,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

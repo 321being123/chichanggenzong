@@ -2,6 +2,7 @@
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
 const { loadUsers } = require('./users');
+const { computeNavAttribution } = require('../services/navAttribution');
 
 // 按唯一键去重：同 key 只保留最后一条（前序被后序覆盖，与旧版逐条 INSERT 的覆盖语义一致）。
 // 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会报 "cannot affect row a second time"，写入前必须先归一。
@@ -21,15 +22,25 @@ async function loadAccountData(username, accountName) {
     [username, accountName]
   );
   const { rows: trades } = await pool.query(
-    'SELECT id, date, created_at, COALESCE(trade_date, left(date,10)) AS trade_date, executed_at, import_batch_id, code, name, direction, price::float8 AS price, quantity::float8 AS quantity, amount::float8 AS amount, type, subtype, note, commission::float8 AS commission, stamp_tax::float8 AS stamp_tax, transfer_fee::float8 AS transfer_fee, other_fee::float8 AS other_fee FROM trades WHERE username=$1 AND account_name=$2',
+    `SELECT id, date, created_at, COALESCE(trade_date, left(date,10)) AS trade_date, executed_at, import_batch_id,
+            code, name, direction, price::float8 AS price, quantity::float8 AS quantity,
+            amount::float8 AS amount, quote_currency, fx_rate_to_cny::float8 AS fx_rate_to_cny,
+            amount_cny::float8 AS amount_cny, currency_status, type, subtype, note,
+            commission::float8 AS commission, stamp_tax::float8 AS stamp_tax,
+            transfer_fee::float8 AS transfer_fee, other_fee::float8 AS other_fee
+       FROM trades WHERE username=$1 AND account_name=$2`,
     [username, accountName]
   );
   const { rows: navHistory } = await pool.query(
     `SELECT nh.date, nh.nav::float8 AS nav, nh.total_asset::float8 AS "totalAsset", nh.invested::float8 AS invested,
-            nh.snapshot_at, COALESCE(fx.rate, nh.hk_rate)::float8 AS "hkRate"
+            nh.snapshot_at, nh.hk_rate::float8 AS "hkRate",
+            nh.cash_cny::float8 AS "cashCny", nh.market_value_cny::float8 AS "marketValueCny",
+            nh.system_market_value_at_snapshot::float8 AS "systemMarketValueAtSnapshot",
+            nh.broker_fx_rate::float8 AS "brokerFxRate",
+            nh.snapshot_source AS "snapshotSource", nh.source_priority AS "sourcePriority",
+            nh.import_batch_id AS "importBatchId", nh.calc_status AS "calcStatus",
+            nh.diagnostics, nh.is_locked AS "isLocked", nh.input_hash AS "inputHash"
        FROM nav_history nh
-       LEFT JOIN market.fx_rates fx
-         ON fx.base_currency='HKD' AND fx.quote_currency='CNY' AND fx.rate_date=nh.date::date
       WHERE nh.username=$1 AND nh.account_name=$2 ORDER BY nh.date`,
     [username, accountName]
   );
@@ -41,7 +52,9 @@ async function loadAccountData(username, accountName) {
   // - 不再从 account_data JSON 恢复 totalAsset/cashBase/cash/fundRecord/feeSettings（JSON 退出日常读取）；
   // - 指数历史只读结构化表，表空即空，不再读旧 JSON 且读取接口绝不写库；
   // - 持仓/交易/净值/现金流四表同时为空时返回空（用户主动清空是真实结果，禁止 JSON 还魂）。
-  var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0, indexHistory: [], feeSettings: null };
+  var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0, indexHistory: [], feeSettings: null,
+    authoritativeTotalAsset: null, authoritativePositionValue: null, authoritativeCash: null, authoritativeInvested: null,
+    totalAssetSource: null, anchorImportDate: null };
   // 账户元数据（期初本金/汇率/税费设置/乐观锁版本）：唯一来源 accounts 表 + account_data.version
   try {
     const { rows: am } = await pool.query(
@@ -82,12 +95,66 @@ async function loadAccountData(username, accountName) {
   const cfNet = (result.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
   // 交易净额：买入 -(成交额+费用)，卖出 +(成交额-费用)；费用从 trades 表读取
   // open（期初建仓）/ adjust（持仓调整）不产生现金变动（P0-2 账本整改）
+  result.cashDataIncomplete = false;
   const tradeNet = (result.trades || []).reduce((s, t) => {
     if (t.direction === 'open' || t.direction === 'adjust') return s;
     const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
-    return s + (t.direction === 'buy' ? -(t.amount || 0) - fee : (t.amount || 0) - fee);
+    const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+      (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+    const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
+    if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') {
+      result.cashDataIncomplete = true;
+      return s;
+    }
+    const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
+    return s + (t.direction === 'buy' ? -settled - fee : settled - fee);
   }, 0);
-  result.cash = (result.cashBase || 0) + cfNet + tradeNet;
+  const ledgerCash = (result.cashBase || 0) + cfNet + tradeNet;
+  result.cash = ledgerCash;
+
+  // 权威券商导入锚点：持仓数量仍来自 positions，现金和账户总资产从导入快照开始续算。
+  // 这里只使用 snapshot_source=imported 的最新一条；旧快照不参与，避免把遗留数据误当锚点。
+  const imports = navHistory.filter(n => n.snapshotSource === 'imported' && n.isLocked !== false);
+  const anchor = imports.length ? imports[imports.length - 1] : null;
+  if (anchor && Number.isFinite(Number(anchor.cashCny)) && Number.isFinite(Number(anchor.marketValueCny)) &&
+      Number.isFinite(Number(anchor.systemMarketValueAtSnapshot))) {
+    const systemPositionValue = (positions || []).reduce((sum, p) => {
+      const mv = (Number(p.price) || 0) * (Number(p.quantity) || 0);
+      return sum + (p.subtype === '港股' ? mv * (Number(result.hkRate) || 0.868) : mv);
+    }, 0);
+    const postCashFlow = (cashFlows || []).reduce((sum, f) => {
+      return String(f.date || '').slice(0, 10) > String(anchor.date).slice(0, 10) ? sum + (Number(f.amount) || 0) : sum;
+    }, 0);
+    const postTradeCash = (trades || []).reduce((sum, t) => {
+      const dt = String(t.trade_date || t.date || '').slice(0, 10);
+      if (dt <= String(anchor.date).slice(0, 10) || t.direction === 'open' || t.direction === 'adjust') return sum;
+      const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
+      const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+        (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+      const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
+      if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') return sum;
+      const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
+      return sum + (t.direction === 'buy' ? -settled - fee : settled - fee);
+    }, 0);
+    const effectiveCash = Number(anchor.cashCny) + postCashFlow + postTradeCash;
+    const effectivePosition = Number(anchor.marketValueCny) + (systemPositionValue - Number(anchor.systemMarketValueAtSnapshot));
+    const effectiveInvested = Number(anchor.invested) + postCashFlow;
+    result.cash = effectiveCash;
+    result.authoritativeCash = effectiveCash;
+    result.authoritativePositionValue = effectivePosition;
+    result.authoritativeTotalAsset = effectiveCash + effectivePosition;
+    result.authoritativeInvested = effectiveInvested;
+    // 账户总资产对外读取也切到同一权威口径，避免页面初始化阶段短暂使用旧 nav_history.total_asset。
+    result.totalAsset = result.authoritativeTotalAsset;
+    const todayCn = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+    result.totalAssetSource = String(anchor.date).slice(0, 10) === todayCn ? 'broker_exact' : 'system_delta_estimate';
+    result.anchorImportDate = anchor.date;
+  }
+  try {
+    result.navAttribution = await computeNavAttribution(username, accountName, result, result.authoritativeTotalAsset != null ? result.authoritativeTotalAsset : result.totalAsset);
+  } catch (e) {
+    result.navAttribution = { complete: false, reason: 'attribution_unavailable' };
+  }
   return result;
 }
 
@@ -190,7 +257,7 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     if (allow.trades) {
       await client.query('DELETE FROM trades WHERE username=$1 AND account_name=$2', [username, accountName]);
       await bulkInsert(client, 'trades',
-        ['id', 'username', 'account_name', 'account_id', 'date', 'created_at', 'trade_date', 'executed_at', 'import_batch_id', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
+        ['id', 'username', 'account_name', 'account_id', 'date', 'created_at', 'trade_date', 'executed_at', 'import_batch_id', 'code', 'name', 'direction', 'price', 'quantity', 'amount', 'quote_currency', 'fx_rate_to_cny', 'amount_cny', 'currency_status', 'type', 'subtype', 'note', 'commission', 'stamp_tax', 'transfer_fee', 'other_fee'],
         data.trades || [],
         (t) => {
           const price = round(t.price, 4);
@@ -201,17 +268,35 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
           if (direction !== 'open' && direction !== 'adjust') {
             amount = round(price * quantity, 4);
           }
-          return [t.id, username, accountName, accountId, t.date || '', t.created_at || '', t.trade_date || (t.date || '').slice(0, 10), t.executed_at || t.date || t.created_at || '', t.import_batch_id || null, t.code || '', t.name || '', direction, price, quantity, amount, t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)];
+          const quoteCurrency = t.quote_currency || t.quoteCurrency || (t.subtype === '港股' ? 'HKD' : 'CNY');
+          const fxRate = quoteCurrency === 'CNY' ? 1 : (Number(t.fx_rate_to_cny || t.fxRateToCny) || null);
+          const amountCny = quoteCurrency === 'CNY' ? amount : (Number(t.amount_cny || t.amountCny) || (fxRate ? amount * fxRate : null));
+          const currencyStatus = amountCny != null && fxRate > 0 ? 'complete' : (quoteCurrency === 'CNY' ? 'complete' : 'needs_review');
+          return [t.id, username, accountName, accountId, t.date || '', t.created_at || '', t.trade_date || (t.date || '').slice(0, 10), t.executed_at || t.date || t.created_at || '', t.import_batch_id || null, t.code || '', t.name || '', direction, price, quantity, amount, quoteCurrency, fxRate, amountCny, currencyStatus, t.type || '', t.subtype || '', t.note || '', round(t.commission, 4), round(t.stamp_tax, 4), round(t.transfer_fee, 4), round(t.other_fee, 4)];
         }
       );
     }
     // nav_history（snapshot_at 持久化，P0-3：同日现金流结算边界刷新后不丢）
     if (allow.navHistory) {
-      await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+      // 权威券商导入行是不可被普通全量保存删除/降级的；保留锁定行，只重建系统来源行。
+      const { rows: lockedNav } = await client.query(
+        `SELECT date FROM nav_history
+          WHERE username=$1 AND account_name=$2 AND is_locked=true AND source_priority >= 100`,
+        [username, accountName]
+      );
+      const lockedDates = lockedNav.map((n) => n.date);
+      if (lockedDates.length) {
+        await client.query(
+          'DELETE FROM nav_history WHERE username=$1 AND account_name=$2 AND NOT (date = ANY($3::date[]))',
+          [username, accountName, lockedDates]
+        );
+      } else {
+        await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
+      }
       await bulkInsert(client, 'nav_history',
         ['username', 'account_name', 'account_id', 'date', 'nav', 'total_asset', 'invested', 'snapshot_at', 'hk_rate'],
-        data.navHistory || [],
-        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null, (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : ((n.hk_rate != null && n.hk_rate > 0) ? round(n.hk_rate, 6) : null)],
+        (data.navHistory || []).filter((n) => !lockedDates.includes(n.date)),
+        (n) => [username, accountName, accountId, n.date || '', round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || new Date().toISOString(), (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : ((n.hk_rate != null && n.hk_rate > 0) ? round(n.hk_rate, 6) : null)],
         'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate = EXCLUDED.hk_rate'
       );
     }
@@ -332,6 +417,34 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 快照边界由服务端统一生成，客户端时间只作兼容输入，避免同日现金流边界漂移。
+    const serverSnapshotAt = rec && rec.snapshotSource === 'imported' && rec.snapshot_at
+      ? rec.snapshot_at
+      : new Date().toISOString();
+    const isImportWrite = rec && (rec.snapshotSource === 'imported' || rec.source === 'imported');
+    // 权威券商导入日不可被普通行情刷新/手动记录覆盖。
+    // 导入接口直接写入 snapshot_source=imported、source_priority=100、is_locked=true；
+    // 这里拦住所有旧的 PUT /nav/:date、后台快照和重放写入，避免导入后又回到系统估值。
+    const protectedRow = async (date) => {
+      if (!date) return null;
+      const { rows } = await client.query(
+        `SELECT source_priority AS "sourcePriority", is_locked AS "isLocked"
+           FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3 FOR UPDATE`,
+        [username, accountName, date]
+      );
+      const row = rows[0];
+      return row && (row.isLocked === true || row.isLocked === 't') && Number(row.sourcePriority || 0) >= 100 ? row : null;
+    };
+    if (fromDate && fromDate !== rec.date && !isImportWrite && await protectedRow(fromDate)) {
+      const e = new Error('券商导入快照已锁定，不能修改日期或覆盖');
+      e.status = 409;
+      throw e;
+    }
+    if (!isImportWrite && await protectedRow(rec.date)) {
+      // 视为幂等跳过：调用方无需因为行情刷新失败而中断整条刷新链路。
+      await client.query('COMMIT');
+      return { skipped: true, protected: true };
+    }
     // 乐观锁（2026-08-04 并发验收）：版本不一致 → 409，防多窗口后写覆盖先写。
     // FOR UPDATE 行锁：两窗口同时记录净值时第一个锁行，第二个阻塞后读到新版本 → 409（2026-08-04 第三轮修复）
     if (expectedVersion != null && expectedVersion !== '') {
@@ -363,7 +476,7 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
     await client.query(
       'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ' +
       'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate = EXCLUDED.hk_rate',
-      [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), rec.snapshot_at || null, (rec.hkRate != null && rec.hkRate > 0) ? round(rec.hkRate, 6) : null]
+      [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), serverSnapshotAt, (rec.hkRate != null && rec.hkRate > 0) ? round(rec.hkRate, 6) : null]
     );
     // bumpVersion：仅前端主动保存净值时提升总版本（并发乐观锁基准）；
     // 后台任务（replayNav/navSnapshot）只提升 nav_version，靠数据集级版本防旧快照覆盖前端保存
@@ -397,10 +510,13 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
 async function readEffectiveNavHistory(username, accountName) {
   const { rows } = await pool.query(
     `SELECT nh.date, nh.nav::float8 AS nav, nh.total_asset::float8 AS "totalAsset", nh.invested::float8 AS invested,
-            nh.snapshot_at, COALESCE(fx.rate, nh.hk_rate)::float8 AS "hkRate"
+            nh.snapshot_at, nh.hk_rate::float8 AS "hkRate",
+            nh.cash_cny::float8 AS "cashCny", nh.market_value_cny::float8 AS "marketValueCny",
+            nh.system_market_value_at_snapshot::float8 AS "systemMarketValueAtSnapshot",
+            nh.broker_fx_rate::float8 AS "brokerFxRate", nh.snapshot_source AS "snapshotSource",
+            nh.source_priority AS "sourcePriority", nh.import_batch_id AS "importBatchId",
+            nh.calc_status AS "calcStatus", nh.diagnostics, nh.is_locked AS "isLocked", nh.input_hash AS "inputHash"
        FROM nav_history nh
-       LEFT JOIN market.fx_rates fx
-         ON fx.base_currency='HKD' AND fx.quote_currency='CNY' AND fx.rate_date=nh.date::date
       WHERE nh.username=$1 AND nh.account_name=$2 ORDER BY nh.date`,
     [username, accountName]
   );
@@ -417,9 +533,26 @@ async function writeNavHistoryBoth(client, username, accountName, navs) {
   await client.query('DELETE FROM nav_history WHERE username=$1 AND account_name=$2', [username, accountName]);
   for (const n of navs) {
     await client.query(
-      'INSERT INTO nav_history (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ' +
-      'ON CONFLICT (username, account_name, date) DO UPDATE SET nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested, snapshot_at=COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate=EXCLUDED.hk_rate',
-      [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null, (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : null]
+      `INSERT INTO nav_history
+        (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate,
+         cash_cny, market_value_cny, system_market_value_at_snapshot, broker_fx_rate,
+         snapshot_source, source_priority, import_batch_id, calc_status, diagnostics, is_locked, input_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       ON CONFLICT (username, account_name, date) DO UPDATE SET
+         nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested,
+         snapshot_at=COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate=EXCLUDED.hk_rate,
+         cash_cny=EXCLUDED.cash_cny, market_value_cny=EXCLUDED.market_value_cny,
+         system_market_value_at_snapshot=EXCLUDED.system_market_value_at_snapshot,
+         broker_fx_rate=EXCLUDED.broker_fx_rate, snapshot_source=EXCLUDED.snapshot_source,
+         source_priority=EXCLUDED.source_priority, import_batch_id=EXCLUDED.import_batch_id,
+         calc_status=EXCLUDED.calc_status, diagnostics=EXCLUDED.diagnostics,
+         is_locked=EXCLUDED.is_locked, input_hash=EXCLUDED.input_hash`,
+      [username, accountName, accountId, n.date, round(n.nav, 6), round(n.totalAsset, 2), (n.invested == null ? null : round(n.invested, 2)), n.snapshot_at || null,
+        (n.hkRate != null && n.hkRate > 0) ? round(n.hkRate, 6) : null,
+        n.cashCny == null ? null : round(n.cashCny, 2), n.marketValueCny == null ? null : round(n.marketValueCny, 2),
+        n.systemMarketValueAtSnapshot == null ? null : round(n.systemMarketValueAtSnapshot, 2), n.brokerFxRate == null ? null : round(n.brokerFxRate, 6),
+        n.snapshotSource || 'legacy', Number.isFinite(Number(n.sourcePriority)) ? Number(n.sourcePriority) : 10, n.importBatchId || null,
+        n.calcStatus || 'complete', JSON.stringify(n.diagnostics || {}), n.isLocked === true, n.inputHash || null]
     );
   }
   await client.query(

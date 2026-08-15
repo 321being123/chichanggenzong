@@ -116,7 +116,12 @@ async function recomputeSecurity(client, username, accountName, code, strict = f
 function tradeNetDelta(t) {
   if (t.direction === 'open' || t.direction === 'adjust') return 0;
   const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
-  return (t.direction === 'buy') ? -(Number(t.amount) || 0) - fee : (Number(t.amount) || 0) - fee;
+  const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+    (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+  const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
+  if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') return 0;
+  const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
+  return (t.direction === 'buy') ? -settled - fee : settled - fee;
 }
 
 // 重算账户现金 = cash_base + 现金流净额 + 交易净额（与 loadAccountData 一致，写入 accounts.cash_base 之外的派生）
@@ -132,7 +137,7 @@ async function recomputeCash(client, username, accountName) {
   );
   const cfNet = Number(cf[0] ? cf[0].s : 0);
   const { rows: tr } = await client.query(
-    `SELECT direction, amount, commission, stamp_tax, transfer_fee, other_fee
+    `SELECT direction, amount, amount_cny, commission, stamp_tax, transfer_fee, other_fee
        FROM trades WHERE username=$1 AND account_name=$2`,
     [username, accountName]
   );
@@ -151,18 +156,19 @@ async function markNavDirty(client, username, accountName, fromDate, dataset) {
     dataset === 'nav' ? 'nav_version' : 'trade_version';
   // account_data 行可能不存在（账本首笔写入前）→ INSERT 兜底建行再提升
   await client.query(
-    `INSERT INTO account_data (username, account_name, data, version, ${col}, nav_cash_cutoff)
-     VALUES ($1,$2,'{}',0,0,$3)
+    `INSERT INTO account_data (username, account_name, data, version, ${col}, nav_cash_cutoff, nav_dirty_from)
+     VALUES ($1,$2,'{}',0,0,$3::text,$4::date)
      ON CONFLICT (username, account_name) DO NOTHING`,
-    [username, accountName, fromDate || todayCN()]
+    [username, accountName, fromDate || todayCN(), fromDate || todayCN()]
   );
   await client.query(
     `UPDATE account_data
-        SET nav_cash_cutoff=$3,
+        SET nav_cash_cutoff=$3::text,
+            nav_dirty_from=CASE WHEN nav_dirty_from IS NULL OR nav_dirty_from > $4::date THEN $4::date ELSE nav_dirty_from END,
             version=COALESCE(version,0)+1,
             ${col}=COALESCE(${col},0)+1
       WHERE username=$1 AND account_name=$2`,
-    [username, accountName, fromDate || todayCN()]
+    [username, accountName, fromDate || todayCN(), fromDate || todayCN()]
   );
 }
 
@@ -270,21 +276,38 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
         return { ok: true, id: dup.rows[0].id, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
       }
     }
+    const isHk = String(t.subtype || '').trim() === '港股' || String(t.quote_currency || t.quoteCurrency || '').toUpperCase() === 'HKD';
+    const quoteCurrency = isHk ? 'HKD' : 'CNY';
+    let fxRate = quoteCurrency === 'CNY' ? 1 : Number(t.fx_rate_to_cny || t.fxRateToCny);
+    if (quoteCurrency === 'HKD' && !(fxRate > 0)) {
+      const fx = await client.query(
+        `SELECT rate::float8 AS rate FROM market.fx_rates
+          WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
+          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1`, [tradeDate]
+      );
+      fxRate = fx.rows[0] ? Number(fx.rows[0].rate) : 0;
+    }
+    if (quoteCurrency === 'HKD' && !(fxRate > 0)) throw bizError('港股交易缺少成交日港币兑人民币汇率，不能入账');
+    const amountCny = quoteCurrency === 'CNY' ? amount : round(amount * fxRate, 4);
+    const currencyStatus = 'complete';
     await client.query(
       `INSERT INTO trades (id, username, account_name, account_id, date, created_at, trade_date, executed_at, import_batch_id,
                            code, name, direction, price, quantity, amount,
+                           quote_currency, fx_rate_to_cny, amount_cny, currency_status,
                            commission, stamp_tax, transfer_fee, other_fee, type, subtype, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
        ON CONFLICT (id, username, account_name) DO UPDATE SET
          date=EXCLUDED.date, created_at=EXCLUDED.created_at, trade_date=EXCLUDED.trade_date,
          executed_at=EXCLUDED.executed_at, import_batch_id=EXCLUDED.import_batch_id,
          code=EXCLUDED.code, name=EXCLUDED.name, direction=EXCLUDED.direction,
          price=EXCLUDED.price, quantity=EXCLUDED.quantity, amount=EXCLUDED.amount,
+         quote_currency=EXCLUDED.quote_currency, fx_rate_to_cny=EXCLUDED.fx_rate_to_cny,
+         amount_cny=EXCLUDED.amount_cny, currency_status=EXCLUDED.currency_status,
          commission=EXCLUDED.commission, stamp_tax=EXCLUDED.stamp_tax, transfer_fee=EXCLUDED.transfer_fee,
          other_fee=EXCLUDED.other_fee, type=EXCLUDED.type, subtype=EXCLUDED.subtype, note=EXCLUDED.note`,
       [tradeId, username, accountName, accountId, t.date || '', t.created_at || nowStr(), tradeDate, executedAt,
        t.import_batch_id || null,
-       t.code, t.name || '', t.direction, price, quantity, amount,
+       t.code, t.name || '', t.direction, price, quantity, amount, quoteCurrency, fxRate, amountCny, currencyStatus,
        round(Number(t.commission) || 0, 4), round(Number(t.stamp_tax) || 0, 4),
        round(Number(t.transfer_fee) || 0, 4), round(Number(t.other_fee) || 0, 4),
        t.type || '', t.subtype || '', t.note || '']

@@ -379,7 +379,8 @@ function detectMappingExact(headers) {
     date: ['日期', '时间', '交易日期', '记账日期', '日期时间', '净值日期', 'date'],
     nav: ['净值', '单位净值', '累计净值', '当日净值', '最新净值', '收盘净值', 'nav'],
     total: ['总资产', '总市值', '市值', '资产总额', '资产总值', 'total'],
-    invested: ['本金', '投入', '投入本金', '累计投入', '资金', '投入资金', '实缴本金', 'invest']
+    invested: ['本金', '投入', '投入本金', '累计投入', '资金', '投入资金', '实缴本金', 'invest'],
+    cash: ['现金', '现金余额', '可用余额', '账户现金', '现金资产', 'cash']
   };
   const find = function (key) {
     for (let i = 0; i < headers.length; i++) {
@@ -387,7 +388,7 @@ function detectMappingExact(headers) {
     }
     return -1;
   };
-  return { date: find('date'), nav: find('nav'), total: find('total'), invested: find('invested') };
+  return { date: find('date'), nav: find('nav'), total: find('total'), invested: find('invested'), cash: find('cash') };
 }
 
 async function importFundExcel(event) {
@@ -406,7 +407,7 @@ async function importFundExcel(event) {
     if (!d.headers || !d.rows || d.rows.length === 0) { closeImportProgress(); showToast('Excel 中没有可识别的数据行'); return; }
 
     const auto = detectMappingExact(d.headers);
-    if (auto.date >= 0 && auto.nav >= 0) {
+    if (auto.date >= 0 && auto.nav >= 0 && auto.total >= 0 && auto.invested >= 0 && auto.cash >= 0) {
       // 精确匹配成功，直接导入
       closeImportProgress();
       await finishImport(d.rows, auto);
@@ -429,12 +430,19 @@ async function finishImport(rows, mapping) {
   rows.forEach(function (row, i) {
     const date = normalizeDate(row[mapping.date]);
     const nav = parseNumericCellF(row[mapping.nav]);
-    if (!date || nav === null || isNaN(nav)) { badRows.push(i + 1); return; }
+    const totalAsset = mapping.total >= 0 ? parseNumericCellF(row[mapping.total]) : null;
+    const invested = mapping.invested >= 0 ? parseNumericCellF(row[mapping.invested]) : null;
+    const cash = mapping.cash >= 0 ? parseNumericCellF(row[mapping.cash]) : null;
+    if (!date || nav === null || isNaN(nav) || totalAsset === null || isNaN(totalAsset) ||
+        invested === null || isNaN(invested) || cash === null || isNaN(cash) || cash < 0 || cash > totalAsset) {
+      badRows.push(i + 1); return;
+    }
     parsed.push({
       date: date,
       nav: nav,
-      totalAsset: (mapping.total >= 0 && row[mapping.total] != null && row[mapping.total] !== '') ? parseNumericCellF(row[mapping.total]) : null,
-      invested: (mapping.invested >= 0 && row[mapping.invested] != null && row[mapping.invested] !== '') ? parseNumericCellF(row[mapping.invested]) : null
+      totalAsset: totalAsset,
+      invested: invested,
+      cash: cash
     });
   });
   if (parsed.length === 0) {
@@ -449,34 +457,10 @@ async function finishImport(rows, mapping) {
     return;
   }
 
-  // 冲突检测：导入中存在日期落在线上段 [首条, 末条] 内
-  const realStart = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
-  const realEnd = (data.navHistory && data.navHistory.length) ? data.navHistory[data.navHistory.length - 1].date : null;
-  const hasConflict = realStart && parsed.some(function (p) { return p.date >= realStart && p.date <= realEnd; });
-  const choice = hasConflict ? await showConflictModal() : 'online';
-  applyHistoryRecords(parsed, choice);
-  const lastImportDate = recalcNavAfterImport(parsed); // 以导入最后一条为锚，其后净值自动接续重算
-
   // 阶段三：净值导入走 POST /nav/import 局部接口
-  // 语义（2026-08-04 阻断修复）：
-  //  - 导入数据为准：发送全部记录，后端按日期 upsert，只覆盖冲突日期、保留其余线上净值（不再 replace 删全部）
-  //  - 线上数据为准：只发送不落在线上段内的记录，冲突日期不发，避免覆盖线上
-  //  - 导入数据为准时追加重算后的后续记录一并持久化，防止服务器响应刷新后重算结果消失
-  var sendRecords = parsed;
-  if (choice === 'online' && realStart) {
-    sendRecords = parsed.filter(function (p) { return p.date < realStart || p.date > realEnd; });
-  } else if (choice === 'import' && lastImportDate) {
-    var tail = (data.navHistory || []).filter(function (n) { return n.date > lastImportDate; })
-      .map(function (n) { return { date: n.date, nav: n.nav, totalAsset: (n.totalAsset != null ? n.totalAsset : null), invested: (n.invested != null ? n.invested : null) }; });
-    sendRecords = parsed.concat(tail);
-  }
-  if (sendRecords.length === 0) {
-    renderEarnings();
-    showToast('导入完成：冲突日期均保留线上净值，无新增记录');
-    return;
-  }
   try {
-    var importBody = { account: currentAccount, records: sendRecords };
+    // 导入字段是券商账户级事实：同日一律覆盖；持仓数量不在此接口中写入。
+    var importBody = { account: currentAccount, records: parsed, mode: 'merge' };
     var r = await fetch(api('/api/nav/import?version=' + (dataVersion != null ? dataVersion : '')), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -583,8 +567,9 @@ function openMappingModal(headers, rows, auto) {
   const fields = [
     { key: 'date', label: '日期列 *', def: auto.date },
     { key: 'nav', label: '净值列 *', def: auto.nav },
-    { key: 'total', label: '总市值/总资产列', def: auto.total },
-    { key: 'invested', label: '本金/投入列', def: auto.invested }
+    { key: 'total', label: '总资产列 *', def: auto.total },
+    { key: 'invested', label: '累计投入列 *', def: auto.invested },
+    { key: 'cash', label: '现金列 *', def: auto.cash }
   ];
   const optsHtml = '<option value="-1">— 请选择 —</option>' +
     headers.map(function (h, i) { return '<option value="' + i + '">' + escapeHtml(h || '(空表头' + (i + 1) + ')') + '</option>'; }).join('');
@@ -609,17 +594,19 @@ function renderMappingPreview() {
     date: parseInt(document.getElementById('map-date').value, 10),
     nav: parseInt(document.getElementById('map-nav').value, 10),
     total: parseInt(document.getElementById('map-total').value, 10),
-    invested: parseInt(document.getElementById('map-invested').value, 10)
+    invested: parseInt(document.getElementById('map-invested').value, 10),
+    cash: parseInt(document.getElementById('map-cash').value, 10)
   };
   const rows = pendingMapping.rows.slice(0, 5);
   let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:#f7f7f9;color:#666;">' +
-    '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总市值</th><th style="padding:6px;text-align:left;">本金</th></tr></thead><tbody>';
+    '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总资产</th><th style="padding:6px;text-align:left;">累计投入</th><th style="padding:6px;text-align:left;">现金</th></tr></thead><tbody>';
   rows.forEach(function (row) {
     html += '<tr>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.date >= 0 ? row[map.date] : '') + '</td>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.nav >= 0 ? row[map.nav] : '') + '</td>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.total >= 0 ? row[map.total] : '') + '</td>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.invested >= 0 ? row[map.invested] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.cash >= 0 ? row[map.cash] : '') + '</td>' +
       '</tr>';
   });
   html += '</tbody></table>';
@@ -631,9 +618,12 @@ function confirmMapping() {
     date: parseInt(document.getElementById('map-date').value, 10),
     nav: parseInt(document.getElementById('map-nav').value, 10),
     total: parseInt(document.getElementById('map-total').value, 10),
-    invested: parseInt(document.getElementById('map-invested').value, 10)
+    invested: parseInt(document.getElementById('map-invested').value, 10),
+    cash: parseInt(document.getElementById('map-cash').value, 10)
   };
-  if (map.date < 0 || map.nav < 0) { showToast('请先选择「日期列」和「净值列」'); return; }
+  if (map.date < 0 || map.nav < 0 || map.total < 0 || map.invested < 0 || map.cash < 0) {
+    showToast('请先选择日期、净值、总资产、累计投入和现金五列'); return;
+  }
   const pm = pendingMapping;
   closeMappingModal();
   finishImport(pm.rows, map);

@@ -183,6 +183,15 @@ router.post('/jobs/slots/:slotId/retry', asyncHandler(async (req, res) => {
     await audit(req, 'job_retry', String(slotId), { result: 'failure', detail: '当前任务状态不允许补跑', metadata: { slotId, queued: false } });
     return res.status(409).json({ error: '当前任务状态不允许补跑' });
   }
+  // 普通补跑仍遵守新鲜度门禁；只有管理员明确传 force=true 才允许强制重拉。
+  if (req.body && req.body.force === true) {
+    if (!req.user || req.user.role !== 'admin') return res.status(403).json({ error: '只有管理员可以强制重拉外部数据' });
+    await pool.query(
+      `UPDATE ops.job_schedule_slots SET request_payload=request_payload || '{"force":true}'::jsonb, updated_at=now() WHERE slot_id=$1`,
+      [slotId]
+    );
+    slot.request_payload = { ...(slot.request_payload || {}), force: true };
+  }
   await audit(req, 'job_retry', slot.job_code, { detail: '后台手动补跑已入队', metadata: { slotId, queued: true } });
   res.status(202).json({ ok: true, queued: true, slotId, slot });
 }));

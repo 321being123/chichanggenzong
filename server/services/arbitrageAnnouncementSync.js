@@ -504,7 +504,7 @@ async function retryPendingDocuments(limit = 20) {
 // 游标规则：某窗口内有任一条公告入库失败（或整窗拉取失败），则不推进游标，
 // 并把 last_success_date 指向该窗口起点，下一次增量同步会重新拉取该窗口并重试失败记录（入库幂等）。
 async function runSync(windows, isFirst) {
-  const results = { hkex: { total: 0, errors: [] }, cninfo: { total: 0, errors: [] } };
+  const results = { hkex: { total: 0, errors: [], failureDetails: [] }, cninfo: { total: 0, errors: [], failureDetails: [] } };
 
   for (const [scopeName, cfg] of Object.entries(SCOPES)) {
     const sourceId = await getSourceId(cfg.sourceCode);
@@ -545,6 +545,7 @@ async function runSync(windows, isFirst) {
         const safeError = sanitizeJobError(err.message || err, 1000);
         await finishIngestionRun(runId, 0, safeError);
         results[scopeName].errors.push(`${win.from}~${win.to}: ${safeError}`);
+        results[scopeName].failureDetails.push({ code: err.code || 'JOB_FAILED', errorType: err.errorType || err.type || 'unknown', source: err.source || scopeName, error: err.message });
         windowFailed = true;
         lastError = `${win.from}~${win.to}: ${safeError}`;
       }

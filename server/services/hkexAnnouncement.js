@@ -3,6 +3,7 @@
 // 用途：检索私有化、协议安排、供股等公告，标准化后交由同步编排入库
 const https = require('https');
 const { firstSecurityCode, firstSecurityName, cleanSecurityText } = require('./arbitrageRules');
+const { withExternalCallGuard } = require('./externalCallGuard');
 
 const BASE_URL = 'https://www1.hkexnews.hk';
 const SEARCH_PATH = '/search/titleSearchServlet.do';
@@ -23,7 +24,7 @@ const HKEX_CATEGORIES = [
 const TIMEOUT_MS = 15000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB
 
-function httpRequest(urlStr, { method = 'GET', body } = {}) {
+function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     if (u.hostname !== ALLOWED_DOMAIN) {
@@ -53,10 +54,14 @@ function httpRequest(urlStr, { method = 'GET', body } = {}) {
         if (redirectHost !== ALLOWED_DOMAIN) {
           return reject(new Error('Redirect to non-whitelisted domain: ' + redirectHost));
         }
-        return resolve(httpRequest(redirectUrl, { method, body }));
+          return resolve(rawHttpRequest(redirectUrl, { method, body }));
       }
       if (res.statusCode !== 200) {
-        return reject(new Error('HKEX HTTP ' + res.statusCode));
+        const error = new Error('HKEX HTTP ' + res.statusCode);
+        error.code = res.statusCode === 429 ? 'RATE_LIMIT' : res.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
+        error.errorType = res.statusCode === 429 ? 'rate_limit' : res.statusCode >= 500 ? 'network' : 'upstream';
+        error.source = 'hkex';
+        return reject(error);
       }
       const chunks = [];
       let totalLen = 0;
@@ -78,6 +83,11 @@ function httpRequest(urlStr, { method = 'GET', body } = {}) {
     if (body) req.write(body);
     req.end();
   });
+}
+
+function httpRequest(urlStr, options = {}) {
+  return withExternalCallGuard('hkex', `announcement:${urlStr}`, process.env.JOB_BUSINESS_DATE,
+    () => rawHttpRequest(urlStr, options));
 }
 
 // 日期格式转换：YYYY-MM-DD -> YYYYMMDD（港交所接口要求）

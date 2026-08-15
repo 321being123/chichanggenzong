@@ -61,7 +61,7 @@ function runWith(executable) {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
     const child = spawn(executable, args, {
       cwd: PROJECT_ROOT,
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, EXTERNAL_CALL_GUARD: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
       windowsHide: true,
     });
     let output = '', error = '';
@@ -70,7 +70,25 @@ function runWith(executable) {
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.on('data', chunk => { error += chunk; });
     child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve(output) : reject(new Error(summarizeIpoPythonError(error || output || `exit ${code}`))));
+    child.on('close', code => {
+      const statsMatch = error.match(/\[external-call-stats\]\s*(\{.*\})/);
+      let stats = {};
+      try { stats = statsMatch ? JSON.parse(statsMatch[1]) : {}; } catch (_) {}
+      if (code === 0) return resolve({ output, externalCalls: Number(stats.total || 0), externalSources: stats.sources || {} });
+      const message = summarizeIpoPythonError(error || output || `exit ${code}`);
+      const failure = new Error(message);
+      if (/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN)\]/.test(message)) {
+        failure.code = message.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN)\]/)[1];
+        failure.errorType = 'rate_limit';
+      } else if (/\[DATASET_LOCKED\]/.test(message)) {
+        failure.code = 'DATASET_LOCKED'; failure.errorType = 'in_progress';
+      } else if (/\[UPSTREAM_5XX\]/.test(message)) {
+        failure.code = 'UPSTREAM_5XX'; failure.errorType = 'network';
+      }
+      const sourceMatch = message.match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/);
+      if (sourceMatch) failure.source = sourceMatch[1];
+      reject(failure);
+    });
   });
 }
 
@@ -83,10 +101,13 @@ async function runIpoCalendarRefreshRaw(reason = 'scheduled') {
       try {
         const output = await runWith(executable);
         console.log(`[ipo-calendar] ${reason} 更新完成 (${executable})`);
-        return { ok: true, executable, output };
+        return { ok: true, executable, output: output.output, externalCalls: output.externalCalls, externalSources: output.externalSources };
       } catch (error) { errors.push(`${executable}: ${summarizeIpoPythonError(error.message)}`); }
     }
-    throw new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
+    const failure = new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
+    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/)).find(Boolean);
+    if (typed) { failure.code = typed[1]; failure.source = typed[2]; failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : 'rate_limit'; }
+    throw failure;
   } finally { running = false; }
 }
 
@@ -98,7 +119,7 @@ async function runIpoCalendarRefresh(reason = 'scheduled', context = {}) {
   try {
     runId = await startJobRun(JOB);
     const result = await runIpoCalendarRefreshRaw(reason);
-    await finishJobRun(runId, true, JSON.stringify({ reason, executable: result.executable, output: String(result.output || '').slice(-2000) }));
+    await finishJobRun(runId, true, JSON.stringify({ reason, executable: result.executable, externalCalls: result.externalCalls, externalSources: result.externalSources, output: String(result.output || '').slice(-2000) }));
     return result;
   } catch (error) {
     await finishJobRun(runId, false, JSON.stringify({ reason, error: String(error.message || error).slice(0, 3000) }));

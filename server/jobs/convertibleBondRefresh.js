@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { syncConvertibleBondUniverse, syncConvertibleBondUniverseWithBackfill } = require('../services/convertibleBondAnalysis');
+const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnalysis');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { dailyConsistencyStats } = require('./consistencyStats');
 
@@ -108,13 +108,8 @@ async function refreshCompleteness() {
 }
 
 async function runRefreshChain(reason) {
-  try {
-    await syncConvertibleBondUniverseWithBackfill(reason);
-  } catch (error) {
-    console.error('[bond-analysis] 可转债增量同步失败:', error.message);
-    return { ok: false, error: error.message };
-  }
-
+  // 估值任务只读取已入库的主档、行情和周期数据；上游同步由
+  // convertible_bond_universe_refresh 独立负责，禁止在这里重复联网。
   const completeness = await refreshCompleteness();
   if (completeness.stale_snapshots) {
     console.warn(`[bond-analysis] ${completeness.stale_snapshots} 只转债的分析快照转股价与主档不一致，页面将提示需重新分析`);
@@ -124,14 +119,16 @@ async function runRefreshChain(reason) {
   }
   if (!completeness.cycle_complete || !completeness.universe_complete) {
     console.warn(`[bond-analysis] ${completeness.expected} 数据不完整（主档 ${completeness.universe_complete ? 'ok' : '缺'}／周期 ${completeness.cycle_complete ? 'ok' : '缺'}），跳过估值，次日 08:00 自动重试`);
-    return { ok: false, incomplete: true, expected: completeness.expected };
+    return { ok: false, status: 'partial', incomplete: true, expected: completeness.expected,
+      externalCalls: 0, datasets: [{ code: 'convertible_bond_valuation', status: 'blocked', dataAsOf: null }] };
   }
 
   try {
     const result = await runDailyValuation(reason);
     if (result.skipped) console.log('[bond-valuation] 已有刷新任务运行，本次跳过');
     else console.log('[bond-valuation] 每日估值完成:', result.detail);
-    return { ok: true, result };
+    return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,
+      datasets: [{ code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected }], result };
   } catch (error) {
     console.error('[bond-valuation] 每日估值失败:', String(error.detail || error.message));
     return { ok: false, error: String(error.detail || error.message) };
@@ -155,7 +152,9 @@ function scheduleConvertibleBondRefresh() {
     if (timer.unref) timer.unref();
   }
 
-  scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE, () => runRefreshChain('daily_incremental'));
+  scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE,
+    () => require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill('daily_incremental'));
+  scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE + 15, () => runRefreshChain('daily_valuation'));
   scheduleDaily(RETRY_HOUR, RETRY_MINUTE, async () => {
     const completeness = await refreshCompleteness();
     if (completeness.universe_complete && completeness.cycle_complete && completeness.valuation_complete) return;

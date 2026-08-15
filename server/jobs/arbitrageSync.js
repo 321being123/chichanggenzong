@@ -24,6 +24,7 @@ async function runArbitrageSync(reason = 'scheduled') {
     runId = await startJobRun(SYNC_JOB);
     const result = await sync.runIncrementalSync();
     const errors = [...(result.hkex.errors || []), ...(result.cninfo.errors || [])];
+    const failure = [...(result.hkex.failureDetails || []), ...(result.cninfo.failureDetails || [])][0] || null;
     const parsePending = Number(result.recovery && result.recovery.pending || 0);
     const parseExhausted = Number(result.recovery && result.recovery.exhausted || 0);
     const detail = `hkex:${result.hkex.total} cninfo:${result.cninfo.total} errors:${errors.length} parse_pending:${parsePending} parse_exhausted:${parseExhausted}`;
@@ -31,7 +32,7 @@ async function runArbitrageSync(reason = 'scheduled') {
       const sourceError = errors.length ? `；数据源错误：${errors.slice(0, 5).join(' | ')}` : '';
       const error = `套利公告同步未完整成功：PDF待重试 ${parsePending}，已达上限 ${parseExhausted}${sourceError}`;
       await finishJobRun(runId, false, error);
-      return { ok: false, error, detail, result };
+      return { ok: false, error, detail, result, ...(failure ? { errorCode: failure.code, errorType: failure.errorType, source: failure.source } : {}) };
     }
     await finishJobRun(runId, true, detail);
     return { ok: true, detail, result };
@@ -39,7 +40,7 @@ async function runArbitrageSync(reason = 'scheduled') {
     const safeError = sanitizeJobError(error.message || error, 1000);
     await finishJobRun(runId, false, safeError);
     console.error('[arbitrage-sync] 同步失败:', safeError);
-    return { ok: false, error: safeError };
+    return { ok: false, error: safeError, errorCode: error.code, errorType: error.errorType, source: error.source };
   } finally {
     await releaseJob(SYNC_JOB);
   }

@@ -164,6 +164,7 @@ function withSingleFlight(state, ttlMs, loader) {
       return map;
     } catch (e) {
       state.failedAt = Date.now();
+      if (e && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED', 'AUTH_ERROR', 'PERMISSION_DENIED', 'INVALID_PARAMETER'].includes(e.code)) throw e;
       return state.map || new Map();
     } finally {
       state.inflight = null;
@@ -259,7 +260,9 @@ async function fetchQuoteByCode(code) {
     const quotes = await fetchTencentQuotes([c]);
     const quote = quotes.get(normalizeCode(c));
     if (quote) return { price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
-  } catch (e) {}
+  } catch (e) {
+    if (e && e.code) throw e;
+  }
   return null;
 }
 

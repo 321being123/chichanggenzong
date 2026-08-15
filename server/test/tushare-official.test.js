@@ -58,6 +58,7 @@ const originalToken = process.env.TUSHARE_TOKEN;
     https.request = originalRequest;
     if (originalToken === undefined) delete process.env.TUSHARE_TOKEN;
     else process.env.TUSHARE_TOKEN = originalToken;
+    if (require.cache[require.resolve('../db/connection')]) await require('../db/connection').pool.end();
   }
 })().catch(error => {
   console.error(error);

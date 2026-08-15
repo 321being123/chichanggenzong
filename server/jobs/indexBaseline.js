@@ -3,6 +3,7 @@
 // 幂等：已覆盖到基线的指数跳过，仅在缺失时联网补齐；可随 deploy 自动自愈指数缺口。
 const { pool, upsertIndexPoints, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, tsDateStr, normDate } = require('../services/market');
+const { withExternalCallGuard } = require('../services/externalCallGuard');
 
 const INDEX_BACKFILL_DEFS = [
   { name: '沪深300', ts: '000300.SH', src: 'tushare' },
@@ -41,20 +42,35 @@ async function markSettledBaseline(username, accountName, indexName, baselineDat
 async function fetchHsiHistory(fromDate, toDate) {
   const url = `https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,${fromDate},${toDate},4000,qfq`;
   try {
-    const txt = await new Promise((resolve, reject) => {
+    const txt = await withExternalCallGuard('tencent', `hsi-history:${fromDate}:${toDate}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
       const https = require('https');
       https.get(url, { timeout: 10000 }, (resp) => {
         let data = ''; resp.on('data', c => data += c);
-        resp.on('end', () => resolve(data));
+        resp.on('end', () => {
+          if (resp.statusCode === 429) {
+            const error = new Error('腾讯恒指接口 HTTP 429');
+            error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = 'tencent';
+            return reject(error);
+          }
+          if (resp.statusCode >= 500) {
+            const error = new Error(`腾讯恒指接口 HTTP ${resp.statusCode}`);
+            error.code = 'UPSTREAM_5XX'; error.errorType = 'network'; error.source = 'tencent';
+            return reject(error);
+          }
+          resolve(data);
+        });
       }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    });
+    }));
     const json = JSON.parse(txt);
     const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
     if (!Array.isArray(dayArr)) return [];
     return dayArr
       .map(function (it) { return { date: normDate(it[0]), close: parseFloat(it[2]) }; })
       .filter(function (p) { return p.date && !isNaN(p.close) && p.close > 0; });
-  } catch (e) { return []; }
+  } catch (e) {
+    if (e && e.code) throw e;
+    return [];
+  }
 }
 
 // options.force = true 时忽略"已确认"记录，强制重查（供用户主动补历史使用）
@@ -105,6 +121,7 @@ async function ensureIndexBaseline(options) {
     console.log('指数基线检查完成');
   } catch (e) {
     console.error('指数基线补齐失败:', e.message);
+    throw e;
   }
 }
 
@@ -156,6 +173,7 @@ async function ensureIndexRecent(days) {
     console.log('指数每日补齐完成，新增 ' + total + ' 点');
   } catch (e) {
     console.error('指数每日补齐失败:', e.message);
+    throw e;
   }
 }
 

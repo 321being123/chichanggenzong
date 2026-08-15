@@ -2,6 +2,7 @@ const https = require('https');
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
+const { withExternalCallGuard } = require('./externalCallGuard');
 const { fetchTencentQuotes, normalizeCode } = require('./tencentQuote');
 const { persistCollectedData, saveCollectedEvents, saveAnalysisResults } = require('./financialDataArchitecture');
 const { statementApiFields } = require('./stockStatements');
@@ -210,7 +211,8 @@ async function setSyncState(tsCode, dataset, successDate, error) {
 }
 
 function requestJson(url, options = {}) {
-  return new Promise((resolve, reject) => {
+  const source = /cninfo\.com\.cn/i.test(url) ? 'cninfo' : 'stock-analysis';
+  return withExternalCallGuard(source, `request:${url}:${options.body || ''}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
     const req = https.request(url, {
       method: options.method || 'GET', timeout: options.timeout || 10000,
       headers: Object.assign({ 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, options.headers || {})
@@ -218,7 +220,13 @@ function requestJson(url, options = {}) {
       let text = '';
       resp.on('data', c => { text += c; });
       resp.on('end', () => {
-        if (resp.statusCode < 200 || resp.statusCode >= 300) return reject(new Error(`HTTP ${resp.statusCode}`));
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          const error = new Error(`HTTP ${resp.statusCode}`);
+          error.code = resp.statusCode === 429 ? 'RATE_LIMIT' : resp.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
+          error.errorType = resp.statusCode === 429 ? 'rate_limit' : resp.statusCode >= 500 ? 'network' : 'upstream';
+          error.source = source;
+          return reject(error);
+        }
         try { resolve(JSON.parse(text)); } catch (e) { reject(e); }
       });
     });
@@ -226,7 +234,7 @@ function requestJson(url, options = {}) {
     req.on('error', reject);
     if (options.body) req.write(options.body);
     req.end();
-  });
+  }));
 }
 
 function eventCategory(title) {

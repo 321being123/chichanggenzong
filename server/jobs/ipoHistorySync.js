@@ -44,13 +44,19 @@ function pythonCandidates() {
 function runWith(executable) {
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
-    const child = spawn(executable, args, { cwd: PROJECT_ROOT, env: process.env, windowsHide: true });
+    const child = spawn(executable, args, { cwd: PROJECT_ROOT, env: { ...process.env, EXTERNAL_CALL_GUARD: '1' }, windowsHide: true });
     let output = '', error = '';
     child.stdout.on('data', chunk => { output += chunk.toString(); });
     child.stderr.on('data', chunk => { error += chunk.toString(); });
     child.on('error', reject);
     child.on('close', code => {
-      if (code !== 0) return reject(new Error((error || output || `exit ${code}`).trim()));
+      if (code !== 0) {
+        const message = (error || output || `exit ${code}`).trim();
+        const failure = new Error(message);
+        const typed = message.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/);
+        if (typed) { failure.code = typed[1]; failure.source = typed[2]; failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : 'rate_limit'; }
+        return reject(failure);
+      }
       const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '{}';
       try { resolve(JSON.parse(line)); }
       catch (_) { reject(new Error(`同步脚本返回了无法识别的结果: ${line.slice(0, 300)}`)); }
@@ -97,7 +103,10 @@ async function runIpoHistorySync(reason = 'scheduled') {
         errors.push(`${executable}: ${error.message}`);
       }
     }
-    throw new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
+    const failure = new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
+    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/)).find(Boolean);
+    if (typed) { failure.code = typed[1]; failure.source = typed[2]; failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : 'rate_limit'; }
+    throw failure;
   } catch (error) {
     await finishJobRun(runId, false, JSON.stringify({ reason, error: error.message.slice(0, 1000) }));
     throw error;

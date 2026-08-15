@@ -17,7 +17,7 @@ const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefres
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
 const { scheduleHkTradeRulesSync, runHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
 const { scheduleArbitrageSync } = require('./jobs/arbitrageSync');
-const { syncScheduleSlots, heartbeat } = require('./services/jobScheduleSlots');
+const { heartbeat } = require('./services/jobScheduleSlots');
 const { startDurableExecutor } = require('./services/jobOrchestrator');
 
 let orchestrationStarted = false;
@@ -27,11 +27,11 @@ let startupTasksPromise = Promise.resolve();
 function startJobOrchestrationObserver() {
   if (orchestrationStarted || process.env.DURABLE_SCHEDULER === '0' || process.env.JOB_ORCHESTRATION_ENABLED === '0') return;
   orchestrationStarted = true;
-  const sync = () => syncScheduleSlots().catch(error => console.warn('[job-orchestration] 计划状态同步失败:', error.message));
   const beat = () => heartbeat(process.env.JOB_PROCESS_ROLE || 'web').catch(error => console.warn('[job-orchestration] Worker 心跳写入失败:', error.message));
-  sync();
   beat();
-  orchestrationObserverTimer = setInterval(() => { sync(); beat(); }, 60 * 1000);
+  // 计划状态只由 durable executor 的 runDueSlots() 同步，观察器只保留心跳，
+  // 避免观察器与执行器同时 reconcile 同一计划实例。
+  orchestrationObserverTimer = setInterval(beat, 60 * 1000);
   if (orchestrationObserverTimer.unref) orchestrationObserverTimer.unref();
 }
 

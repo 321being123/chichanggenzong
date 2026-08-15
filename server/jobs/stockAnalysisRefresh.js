@@ -30,13 +30,16 @@ async function trackedStocks() {
   return [...map.values()];
 }
 
-async function runStockAnalysisRefresh(reason = 'scheduled') {
+async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
   if (!(await tryClaimJob(JOB))) return { skipped: true, reason: 'locked' };
   const runId = await startJobRun(JOB);
   let ok = 0, failed = 0;
   try {
-    const stocks = await trackedStocks();
+    const requestedCodes = new Set((context.failedDatasets || []).map(item =>
+      typeof item === 'string' ? item : item && (item.code || item.tsCode)).filter(Boolean));
+    const stocks = (await trackedStocks()).filter(stock => !requestedCodes.size || requestedCodes.has(stock.ts_code));
     const failures = [];
+    const failureDetails = [];
     for (const stock of stocks) {
       try {
         await refreshStockAnalysis(stock.ts_code, reason);
@@ -46,6 +49,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled') {
       } catch (error) {
         failed++;
         failures.push(stock.ts_code);
+        failureDetails.push({ code: error.code || 'JOB_FAILED', errorType: error.errorType || error.type || 'unknown', source: error.source || null, error: error.message });
         console.warn(`[stock-analysis] ${stock.ts_code} 更新失败:`, error.message);
         await markDatasetFailure(datasetScope('stock', stock.ts_code), ANALYSIS_DATASET, error.message);
       }
@@ -60,6 +64,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled') {
         await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET,
           { lastSuccessDate: new Date().toISOString().slice(0, 10) });
       } catch (error) {
+        failureDetails.push({ code: error.code || 'JOB_FAILED', errorType: error.errorType || error.type || 'unknown', source: error.source || null, error: error.message });
         console.warn(`[stock-analysis] ${tsCode} 补跑仍失败:`, error.message);
         await markDatasetFailure(datasetScope('stock', tsCode), ANALYSIS_DATASET, error.message);
       }
@@ -71,7 +76,18 @@ async function runStockAnalysisRefresh(reason = 'scheduled') {
       const stats = await dailyConsistencyStats();
       console.log(`[一致性统计] 股票快照 ${stats.stock_snapshots} 份，待补水位 ${stats.stock_legacy_watermark} 份；转债快照 ${stats.bond_snapshots} 份，转股价错配 ${stats.bond_conv_price_mismatch} 份`);
     } catch (e) { console.warn('[一致性统计] 统计失败（不影响任务）:', e.message); }
-    return { ok, failed, recovered };
+    const failedDatasets = failures.filter(code => !recovered.includes(code));
+    const firstFailure = failureDetails[0] || null;
+    return {
+      ok: failed === 0,
+      status: failed === 0 ? 'succeeded' : 'partial',
+      completed: ok,
+      failed,
+      recovered,
+      failedDatasets,
+      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : 'succeeded', dataAsOf: new Date().toISOString().slice(0, 10) })),
+      ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
+    };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;

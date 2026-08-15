@@ -6,15 +6,24 @@ const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, normDate } = require('../services/market');
+const { withExternalCallGuard, openExternalCircuit } = require('../services/externalCallGuard');
 
-function request(url, binary) { return new Promise((resolve, reject) => {
+function request(url, binary, source = 'market-volatility', dataset = url) {
+  return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
   https.get(url, { headers: { 'User-Agent': 'portfolio-server/1.0 (+official-data-sync)' }, timeout: 60000 }, r => {
     const chunks = []; r.on('data', c => chunks.push(c)); r.on('end', () => {
-      if (r.statusCode < 200 || r.statusCode >= 300) return reject(new Error('HTTP ' + r.statusCode));
+      if (r.statusCode < 200 || r.statusCode >= 300) {
+        const error = new Error('HTTP ' + r.statusCode);
+        error.code = r.statusCode === 429 ? 'RATE_LIMIT' : r.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
+        error.errorType = r.statusCode === 429 ? 'rate_limit' : r.statusCode >= 500 ? 'network' : 'upstream';
+        error.source = source;
+        return reject(error);
+      }
       const b = Buffer.concat(chunks); resolve(binary ? b : JSON.parse(b.toString('utf8')));
     });
   }).on('error', reject).on('timeout', function () { this.destroy(new Error('timeout')); });
-}); }
+  }));
+}
 function dateStr(d) { return d.toISOString().slice(0, 10); }
 function parseHsiWorkbook(buffer) { return new Promise((resolve, reject) => {
   // 官方文件为旧版 xls；通过 requirements.txt 中受控的 pandas/xlrd 解析，避免引入有高危漏洞的 Node xlsx 包。
@@ -28,7 +37,7 @@ function parseHsiWorkbook(buffer) { return new Promise((resolve, reject) => {
 async function syncChinaYield(start, end) {
   async function queryRange(from, to) {
     const u = 'https://yield.chinabond.com.cn/cbweb-mn/pgxh/historyQuery?startDate=' + from + '&&endDate=' + to + '&&gjqx=10&&locale=cn_ZH';
-    return new Promise((resolve, reject) => { const req = https.request(u, { method: 'POST', headers: { 'User-Agent': 'portfolio-server/1.0', Referer: 'https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory' } }, r => { let b=''; r.on('data', c => b += c); r.on('end', () => { try { const data=JSON.parse(b); if (!Array.isArray(data)) throw new Error('中债返回格式错误'); resolve(data); } catch(e) { reject(new Error('中债 ' + from + ' 至 ' + to + ' 查询失败：' + e.message)); } }); }); req.on('error', reject); req.end(); });
+    return withExternalCallGuard('chinabond', `yield:${from}:${to}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => { const req = https.request(u, { method: 'POST', headers: { 'User-Agent': 'portfolio-server/1.0', Referer: 'https://yield.chinabond.com.cn/cbweb-mn/pgxh/showHistory' } }, r => { let b=''; r.on('data', c => b += c); r.on('end', () => { try { if (r.statusCode === 429) { const e = new Error('中债接口 HTTP 429'); e.code='RATE_LIMIT'; e.errorType='rate_limit'; e.source='chinabond'; throw e; } if (r.statusCode >= 500) { const e = new Error('中债接口 HTTP ' + r.statusCode); e.code='UPSTREAM_5XX'; e.errorType='network'; e.source='chinabond'; throw e; } const data=JSON.parse(b); if (!Array.isArray(data)) throw new Error('中债返回格式错误'); resolve(data); } catch(e) { if (!e.code) { e = new Error('中债 ' + from + ' 至 ' + to + ' 查询失败：' + e.message); } reject(e); } }); }); req.on('error', reject); req.end(); }));
   }
   let count = 0, cursor = new Date(start + 'T00:00:00Z'), last = new Date(end + 'T00:00:00Z');
   while (cursor <= last) {
@@ -47,7 +56,7 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   const maxDate = wm.rows[0].mx;
   const since = maxDate ? dateStr(new Date(new Date(maxDate).getTime() - 45 * 86400000)) : '2005-01-01';
   // 中证 PE 专用接口只能返回全部历史，下载后在内存过滤只保留重叠窗口
-  const data = await request('https://www.csindex.com.cn/csindex-home/perf/indexCsiDsPe?indexCode=' + indexCode);
+  const data = await request('https://www.csindex.com.cn/csindex-home/perf/indexCsiDsPe?indexCode=' + indexCode, false, 'csindex', `pe:${benchmark}:${indexCode}`);
   const rows = data && data.success && Array.isArray(data.data) ? data.data : [];
   const kept = [];
   for (const r of rows) {
@@ -74,7 +83,7 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   return written;
 }
 async function syncHsiPe() {
-  const b = await request('https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/monthly/pe/hsi.xls', true);
+  const b = await request('https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/monthly/pe/hsi.xls', true, 'hsi-official', 'monthly-pe');
   const data = await parseHsiWorkbook(b); let count=0;
   for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);
     await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
@@ -375,7 +384,53 @@ async function syncMarketCycleMetrics(full) {
   return result;
 }
 
-async function runMarketVolatilitySync() { if (!(await tryClaimJob('market_volatility_sync'))) return; const id=await startJobRun('market_volatility_sync'); try { const end=dateStr(new Date()); const seen=await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'"); const first=seen.rows[0].n===0; const capSeen=await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'"); const cycleFirst=capSeen.rows[0].n===0; const start=first?'2006-03-01':dateStr(new Date(Date.now()-14*86400000)); const result={cnYield:await syncChinaYield(start,end),csi300Pe:await syncCsiIndexPe('CSI300','000300'),csiAllPe:await syncCsiIndexPe('CSIALL','000985'),hsiPe:await syncHsiPe(),usTreasuryYield:await syncUsTreasuryYield(end),cycleMetrics:await syncMarketCycleMetrics(cycleFirst)}; await calculateGraham(); await finishJobRun(id,true,JSON.stringify(result)); console.log('[市场周期] 本次同步汇总:', JSON.stringify(result)); } catch(e) { await finishJobRun(id,false,e.message||String(e)); } finally { await releaseJob('market_volatility_sync'); } }
+async function runMarketVolatilitySync(context = {}) {
+  if (!(await tryClaimJob('market_volatility_sync'))) return { skipped: true, reason: 'locked' };
+  const id = await startJobRun('market_volatility_sync');
+  const requested = new Set((context.failedDatasets || []).map(item => typeof item === 'string' ? item : item && item.code).filter(Boolean));
+  const failedDatasets = [];
+  const failures = [];
+  const result = {};
+  const shouldRun = code => !requested.size || requested.has(code);
+  const runDataset = async (code, task) => {
+    if (!shouldRun(code)) { result[code] = { status: 'succeeded', skipped: true }; return; }
+    try { result[code] = await task(); }
+    catch (error) {
+      failedDatasets.push(code);
+      failures.push({ code: error.code || 'JOB_FAILED', errorType: error.errorType || error.type || 'unknown', source: error.source || null, error: error.message });
+      result[code] = { status: 'failed', error: error.message, errorCode: error.code, errorType: error.errorType, source: error.source };
+    }
+  };
+  try {
+    const end = dateStr(new Date());
+    const seen = await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'");
+    const first = seen.rows[0].n === 0;
+    const capSeen = await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'");
+    const cycleFirst = capSeen.rows[0].n === 0;
+    const start = first ? '2006-03-01' : dateStr(new Date(Date.now() - 14 * 86400000));
+    await runDataset('cn_yield', () => syncChinaYield(start, end));
+    await runDataset('csi300_pe', () => syncCsiIndexPe('CSI300', '000300'));
+    await runDataset('csi_all_pe', () => syncCsiIndexPe('CSIALL', '000985'));
+    await runDataset('hsi_pe', () => syncHsiPe());
+    await runDataset('us_treasury_yield', () => syncUsTreasuryYield(end));
+    await runDataset('cycle_metrics', () => syncMarketCycleMetrics(cycleFirst));
+    if (!failedDatasets.length) await calculateGraham();
+    const ok = failedDatasets.length === 0;
+    await finishJobRun(id, ok, JSON.stringify({ result, failedDatasets }));
+    console.log('[市场周期] 本次同步汇总:', JSON.stringify({ result, failedDatasets }));
+    const firstFailure = failures[0] || null;
+    return {
+      ok,
+      status: ok ? 'succeeded' : 'partial',
+      failedDatasets,
+      datasets: Object.keys(result).map(code => ({ code, status: failedDatasets.includes(code) ? 'failed' : 'succeeded' })),
+      ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
+    };
+  } catch (error) {
+    await finishJobRun(id, false, error.message || String(error));
+    return { ok: false, error: error.message || String(error), failedDatasets: ['cycle_metrics'] };
+  } finally { await releaseJob('market_volatility_sync'); }
+}
 function scheduleMarketVolatilitySync() { runMarketVolatilitySync().catch(e => console.error('股市波动首次同步失败:', e.message)); const now=new Date(), next=new Date(); next.setHours(18,45,0,0); if(next<=now) next.setDate(next.getDate()+1); const first=setTimeout(function(){ runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)); const timer=setInterval(()=>runMarketVolatilitySync().catch(e=>console.error('股市波动同步失败:',e.message)),86400000); if(timer.unref) timer.unref(); }, next-now); if(first.unref) first.unref(); }
 module.exports = { syncChinaYield, syncCsiIndexPe, syncHsiPe, syncUsTreasuryYield, calculateGraham, parseHsiWorkbook,
   syncCsi300Valuation, syncMoneySupply, tradeMonthEnds, syncAShareMarketCap, calculateM2MarketCap,

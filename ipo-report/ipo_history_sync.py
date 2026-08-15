@@ -19,6 +19,7 @@ import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
 from _common import _load_env, _tushare
+from external_call_guard import guarded_urlopen, get_external_call_stats
 
 _load_env()
 
@@ -178,7 +179,7 @@ def _tencent_first_close(code, listing_date):
     qt_code = prefix + str(code)
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,30,qfq"
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=12) as response:
+    with guarded_urlopen(request, timeout=12, source="tencent", dataset=f"history-kline:{qt_code}:{listing_date}") as response:
         payload = json.loads(response.read().decode("utf-8"))
     data = payload.get("data", {})
     days = (data.get(qt_code, {}).get("day") or
@@ -420,7 +421,9 @@ def main():
     args = parser.parse_args()
     today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
     try:
-        print(json.dumps(run(today), ensure_ascii=False, separators=(",", ":")))
+        result = run(today)
+        result.update({"externalCalls": get_external_call_stats()["total"], "externalSources": get_external_call_stats()["sources"]})
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
         return 1

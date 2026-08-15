@@ -2,6 +2,7 @@
 // 数据源：https://www.cninfo.com.cn/new/hisAnnouncement/query
 // 用途：检索 A 股要约收购、现金选择权、换股吸收合并等公告
 const https = require('https');
+const { withExternalCallGuard } = require('./externalCallGuard');
 
 const BASE_URL = 'https://www.cninfo.com.cn';
 const SEARCH_PATH = '/new/hisAnnouncement/query';
@@ -32,7 +33,7 @@ const UPDATE_KEYWORDS = [
   '完成',
 ];
 
-function httpRequest(urlStr, { method = 'GET', body } = {}) {
+function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
     if (u.hostname !== ALLOWED_DOMAIN) {
@@ -58,7 +59,11 @@ function httpRequest(urlStr, { method = 'GET', body } = {}) {
     }
     const req = https.request(options, (res) => {
       if (res.statusCode !== 200) {
-        return reject(new Error('CNINFO HTTP ' + res.statusCode));
+        const error = new Error('CNINFO HTTP ' + res.statusCode);
+        error.code = res.statusCode === 429 ? 'RATE_LIMIT' : res.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
+        error.errorType = res.statusCode === 429 ? 'rate_limit' : res.statusCode >= 500 ? 'network' : 'upstream';
+        error.source = 'cninfo';
+        return reject(error);
       }
       const chunks = [];
       let totalLen = 0;
@@ -80,6 +85,11 @@ function httpRequest(urlStr, { method = 'GET', body } = {}) {
     if (body) req.write(body);
     req.end();
   });
+}
+
+function httpRequest(urlStr, options = {}) {
+  return withExternalCallGuard('cninfo', `announcement:${urlStr}`, process.env.JOB_BUSINESS_DATE,
+    () => rawHttpRequest(urlStr, options));
 }
 
 // 规范化附件链接

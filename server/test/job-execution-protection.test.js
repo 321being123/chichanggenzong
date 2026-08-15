@@ -1,0 +1,139 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const { EventEmitter } = require('events');
+
+const root = path.join(__dirname, '..', '..');
+const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+const definitions = require('../services/jobDefinitions');
+const slots = read('server/services/jobScheduleSlots.js');
+const orchestrator = read('server/services/jobOrchestrator.js');
+const valuation = read('server/jobs/convertibleBondRefresh.js');
+const slotService = read('server/services/jobScheduleSlots.js');
+const adminUi = read('public/js/admin.js');
+const pythonGuard = read('ipo-report/external_call_guard.py');
+
+for (const definition of definitions.JOB_DEFINITIONS) {
+  assert.ok(definition.retryPolicy, `${definition.jobCode} 缺少 retryPolicy`);
+  assert.ok(Array.isArray(definition.externalSources), `${definition.jobCode} 缺少 externalSources`);
+  assert.ok(definition.catchupMode, `${definition.jobCode} 缺少 catchupMode`);
+  assert.ok(definition.dataDatePolicy, `${definition.jobCode} 缺少 dataDatePolicy`);
+}
+assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
+assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
+assert.ok(/WHERE \(status='pending' OR \(status='failed' AND next_attempt_at IS NOT NULL/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
+assert.ok(/status IN \('pending','failed'\)/.test(slots), '领取任务不得领取 degraded');
+assert.ok(/freshnessGate/.test(orchestrator) && /externalCalls: 0/.test(orchestrator), '外部任务必须先执行本地新鲜度门禁');
+assert.ok(/DURABLE_JOB_RUN/.test(orchestrator) && /唯一 job_runs/.test(read('server/db/jobs.js')), '子进程不得创建嵌套 job_runs');
+const valuationRunner = valuation.slice(valuation.indexOf('async function runRefreshChain'), valuation.indexOf('function nextShanghaiDelay'));
+assert.ok(!/syncConvertibleBondUniverseWithBackfill/.test(valuationRunner), '估值 Runner 不得嵌套可转债行情同步');
+assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
+assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
+assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
+assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) && /EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoHistorySync.js')), 'Python 自动任务子进程必须开启外部请求保护');
+assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=now\(\)\+/.test(orchestrator), '过期运行记录必须自动回收且活动任务必须续租');
+assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');
+
+(async () => {
+  const originalRequest = require('https').request;
+  const originalToken = process.env.TUSHARE_TOKEN;
+  const guard = require('../services/externalCallGuard');
+  process.env.TUSHARE_TOKEN = 'test-token';
+  try {
+    const https = require('https');
+    const clientPath = require.resolve('../services/tushare');
+    delete require.cache[clientPath];
+    const { tushareQuery } = require('../services/tushare');
+    const mock = (statusCode, payload) => {
+      https.request = (url, options, callback) => {
+        const request = new EventEmitter();
+        request.write = () => {};
+        request.end = () => {
+          const response = new EventEmitter();
+          response.statusCode = statusCode;
+          response.setEncoding = () => {};
+          callback(response);
+          response.emit('data', JSON.stringify(payload));
+          response.emit('end');
+        };
+        request.destroy = () => {};
+        return request;
+      };
+    };
+
+    guard.resetExternalCallGuard();
+    await guard.resetExternalCallGuardPersistence('tushare');
+    mock(429, { code: 40203, msg: '频率限制' });
+    await assert.rejects(() => tushareQuery('daily'), error => error.code === 'RATE_LIMIT' && error.retryable === false);
+
+    guard.resetExternalCallGuard();
+    await guard.resetExternalCallGuardPersistence('tushare');
+    mock(200, { code: 40101, msg: 'token 无效' });
+    await assert.rejects(() => tushareQuery('daily'), error => error.code === 'AUTH_ERROR' && error.retryable === false);
+
+    const guardSource = `test_guard_${process.pid}_${Date.now()}`;
+    const guardEnv = guardSource.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    process.env[`${guardEnv}_PER_MINUTE_BUDGET`] = '20';
+    process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
+    const guarded = await Promise.allSettled([
+      guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => new Promise(resolve => setTimeout(() => resolve('called'), 50))),
+      guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => Promise.resolve('duplicate')),
+    ]);
+    assert.strictEqual(guarded.filter(item => item.status === 'fulfilled').length, 1, '同一数据集并发只能有一个请求者');
+    assert.strictEqual(guarded.find(item => item.status === 'rejected').reason.code, 'DATASET_LOCKED');
+    await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error => error.code === 'QUOTA_EXHAUSTED');
+    const budgetRows = await require('../db/connection').pool.query(
+      `SELECT call_count,circuit_open FROM ops.external_call_budgets WHERE source=$1 AND window_type='day'`, [guardSource]
+    );
+    assert.strictEqual(budgetRows.rows[0].call_count, 1, '每日预算必须跨调用持久化计数');
+    assert.strictEqual(budgetRows.rows[0].circuit_open, true, '每日额度耗尽必须持久化熔断');
+    await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
+    delete process.env[`${guardEnv}_PER_MINUTE_BUDGET`];
+    delete process.env[`${guardEnv}_DAILY_BUDGET`];
+
+    const { pool } = require('../db/connection');
+    const { claimSlot, completeSlot, listDueSlots, enqueueManualJob } = require('../services/jobScheduleSlots');
+    const claimTime = new Date(Date.now() - 60 * 1000);
+    const claimInsert = await pool.query(
+      `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,next_attempt_at)
+       VALUES('market_close:A股',$1,'2099-01-01','pending',$1) RETURNING slot_id`, [claimTime]
+    );
+    const claimResults = await Promise.all([
+      claimSlot(claimInsert.rows[0].slot_id, 'acceptance-worker-a'),
+      claimSlot(claimInsert.rows[0].slot_id, 'acceptance-worker-b'),
+    ]);
+    assert.strictEqual(claimResults.filter(Boolean).length, 1, '两个 Worker 同时领取只能有一个成功');
+    await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [claimInsert.rows[0].slot_id]);
+
+    const manualInsert = await pool.query(
+      `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,next_attempt_at,request_payload)
+       VALUES('market_close:A股',$1,CURRENT_DATE,'pending',$1,'{}'::jsonb) RETURNING slot_id`, [claimTime]
+    );
+    const manualExisting = await enqueueManualJob('market_close:A股');
+    assert.strictEqual(String(manualExisting.slot_id), String(manualInsert.rows[0].slot_id), '非强制手动补跑应复用同日可执行计划');
+    await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [manualInsert.rows[0].slot_id]);
+
+    const staleInsert = await pool.query(
+      `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,attempt_count,next_attempt_at)
+       VALUES('stock_analysis_refresh',$1,'2099-01-01','running',1,NULL) RETURNING slot_id`, [claimTime]
+    );
+    const staleSlot = await completeSlot(staleInsert.rows[0].slot_id, 'succeeded', { ok: true }, null, null);
+    assert.strictEqual(staleSlot.status, 'degraded', '成功但水位落后只能标记 degraded');
+    const dueAfterDegraded = await listDueSlots(100);
+    assert.ok(!dueAfterDegraded.some(slot => String(slot.slot_id) === String(staleInsert.rows[0].slot_id)), 'degraded 不得再次进入执行队列');
+    await pool.query('DELETE FROM ops.alert_notifications WHERE slot_id=$1', [staleInsert.rows[0].slot_id]);
+    await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [staleInsert.rows[0].slot_id]);
+
+    console.log('job-execution-protection: 状态机、任务契约、估值拆分、Tushare 错误分类和 PostgreSQL API 保护通过');
+  } finally {
+    require('https').request = originalRequest;
+    guard.resetExternalCallGuard();
+    await guard.resetExternalCallGuardPersistence('tushare');
+    if (originalToken === undefined) delete process.env.TUSHARE_TOKEN;
+    else process.env.TUSHARE_TOKEN = originalToken;
+    await require('../db/connection').pool.end();
+  }
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

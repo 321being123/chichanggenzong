@@ -16,6 +16,7 @@ import time
 import tempfile
 import subprocess
 import shutil
+from external_call_guard import guarded_urlopen
 
 # ============ 引号转义（4 份脚本完全一致） ============
 def shlex_quote(s):
@@ -91,7 +92,8 @@ def _tushare(api_name, params, fields):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    dataset = api_name + json.dumps(params or {}, ensure_ascii=False, separators=(',', ':')) + (fields or '')
+    with guarded_urlopen(request, timeout=30, source="tushare", dataset=dataset) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if payload.get("code") != 0:
         raise RuntimeError(f"Tushare {api_name} 错误: {payload.get('msg') or payload.get('code')}")

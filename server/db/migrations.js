@@ -2964,6 +2964,36 @@ async function migration074BackfillLegacyHkdSettlement() {
   `);
 }
 
+// ========== 075：任务执行结果与外部请求保护 ==========
+async function migration075JobExecutionProtection() {
+  await pool.query(`
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS external_call_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS external_sources JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS datasets JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS error_type TEXT;
+    CREATE INDEX IF NOT EXISTS idx_job_runs_slot_status ON job_runs(slot_id,status);
+  `);
+}
+
+// ========== 076：跨 Worker 外部请求预算与数据集锁 ==========
+async function migration076ExternalCallProtection() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ops.external_call_budgets (
+      source TEXT NOT NULL,
+      window_type TEXT NOT NULL CHECK (window_type IN ('minute','day')),
+      window_key TEXT NOT NULL,
+      call_count INTEGER NOT NULL DEFAULT 0,
+      budget_limit INTEGER NOT NULL,
+      circuit_open BOOLEAN NOT NULL DEFAULT false,
+      last_error TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (source, window_type, window_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_external_call_budgets_updated
+      ON ops.external_call_budgets(updated_at);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -3039,6 +3069,8 @@ const MIGRATIONS = [
   { version: '072_authoritative_nav_import_anchor', up: migration072AuthoritativeNavImportAnchor },
   { version: '073_nav_attribution_integrity', up: migration073NavAttributionIntegrity },
   { version: '074_backfill_legacy_hkd_settlement', up: migration074BackfillLegacyHkdSettlement },
+  { version: '075_job_execution_protection', up: migration075JobExecutionProtection },
+  { version: '076_external_call_protection', up: migration076ExternalCallProtection },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3580,6 +3612,8 @@ module.exports = {
   migration070RemoveDuplicateLegacyPriceDates,
   migration071DeduplicateInstrumentEvents,
   migration072AuthoritativeNavImportAnchor,
+  migration075JobExecutionProtection,
+  migration076ExternalCallProtection,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

@@ -1,11 +1,12 @@
-const { pool } = require('../db');
+const { pool, startJobRun } = require('../db');
 const { fork, execFile } = require('child_process');
 const path = require('path');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
+const { openExternalCircuit } = require('./externalCallGuard');
 const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
-  claimSlot, completeSlot, deferSlot, touchSlot,
+  claimSlot, completeSlot, deferSlot, touchSlot, queryDataAsOf, isDataAsOfFresh,
 } = require('./jobScheduleSlots');
 
 let executorStarted = false;
@@ -33,6 +34,93 @@ function reasonForSlot(slot) {
   if (slot && slot.trigger_type === 'auto_retry') return 'auto-retry';
   if (slot && slot.trigger_type === 'startup_catchup') return 'startup-catchup';
   return 'scheduled';
+}
+
+function normalizeJobResult(result, externalCalls = 0) {
+  const value = result && typeof result === 'object' ? { ...result } : {};
+  const skippedFresh = value.skipped && ['fresh', 'already-ran-today'].includes(value.reason);
+  const failed = value.ok === false || value.status === 'failed' || Boolean(value.error);
+  const status = value.status || (skippedFresh ? 'fresh' : failed ? 'failed' : value.partial ? 'partial' : 'succeeded');
+  return {
+    ...value,
+    ok: !failed,
+    status,
+    dataAsOf: value.dataAsOf || value.data_as_of || value.trade_date || value.dataDate || null,
+    externalCalls: Number.isFinite(Number(value.externalCalls)) ? Number(value.externalCalls) : Number(externalCalls || 0),
+    datasets: Array.isArray(value.datasets) ? value.datasets : [],
+  };
+}
+
+function classifyFailure(error, result = {}) {
+  const code = String((error && (error.code || error.errorCode)) || result.errorCode || '').toUpperCase();
+  const type = String((error && (error.errorType || error.type)) || result.errorType || '').toLowerCase();
+  const source = String((error && error.source) || result.source || '').toLowerCase() || null;
+  const message = String((error && error.message) || result.error || error || '任务执行失败');
+  if (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|配额|rate.?limit|quota/i.test(message)) {
+    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: false, source, message };
+  }
+  if (code === 'AUTH_ERROR' || code === 'PERMISSION_DENIED' || code === 'INVALID_PARAMETER' || type === 'permission' || /权限|token|参数错误|invalid parameter/i.test(message)) {
+    return { code: code || 'NON_RETRYABLE', type: 'non_retryable', retryable: false, source, message };
+  }
+  if (code === 'EMPTY_DATA' || type === 'empty_data' || /数据为空|返回空|empty data/i.test(message)) {
+    return { code: code || 'EMPTY_DATA', type: 'empty_data', retryable: true, delayMinutes: 30, maxAttempts: 2, source, message };
+  }
+  if (code === 'DATASET_LOCKED' || type === 'in_progress' || /DATASET_LOCKED|数据集正在由其他 Worker|正在请求中/i.test(message)) {
+    return { code: 'DATASET_LOCKED', type: 'in_progress', retryable: true, delayMinutes: 1, source, message };
+  }
+  if (code === 'NETWORK_TIMEOUT' || code === 'UPSTREAM_5XX' || type === 'network' || /timeout|超时|上游.*5\d\d|\b5\d\d\b/i.test(message)) {
+    return { code: code || 'NETWORK_ERROR', type: 'network', retryable: true, source, message };
+  }
+  return { code: code || 'JOB_FAILED', type: type || 'unknown', retryable: true, source, message };
+}
+
+async function startManagedRun(slot, reason) {
+  const runId = await startJobRun(slot.job_code);
+  if (!runId) return null;
+  await pool.query(
+    `UPDATE job_runs SET slot_id=$2, attempt_no=$3, trigger_type=$4, worker_id=$5, heartbeat_at=now()
+      WHERE id=$1`,
+    [runId, slot.slot_id, slot.attempt_count, triggerType(reason), WORKER_ID]
+  );
+  return runId;
+}
+
+async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null) {
+  if (!runId) return;
+  const safeResult = sanitizeJobResult(result || {});
+  await pool.query(
+    `UPDATE job_runs SET status=$2, finished_at=now(), detail=$3, result_json=$4::jsonb,
+        external_call_count=$5, external_sources=$6::jsonb, datasets=$7::jsonb,
+        error_code=$8, error_type=$9
+      WHERE id=$1`,
+    [runId, ok ? 'done' : 'failed', sanitizeJobError(failure ? failure.message : safeResult.error || '', 4000),
+      JSON.stringify(safeResult), Number(safeResult.externalCalls || 0),
+      JSON.stringify(safeResult.externalSources || getJobDefinition(jobCode).externalSources || []),
+      JSON.stringify(safeResult.datasets || []), failure ? failure.code : safeResult.errorCode || null,
+      failure ? failure.type : safeResult.errorType || null]
+  );
+  if (ok && runId) {
+    const { rows: duplicateRows } = await pool.query(
+      `SELECT COUNT(*)::int AS count, MAX(s.business_date)::text AS business_date
+         FROM job_runs r
+         JOIN ops.job_schedule_slots s ON s.slot_id=r.slot_id
+        WHERE r.id<>$1 AND r.job=$2 AND r.status='done'
+          AND s.business_date=(SELECT business_date FROM ops.job_schedule_slots WHERE slot_id=(SELECT slot_id FROM job_runs WHERE id=$1))`,
+      [runId, jobCode]
+    );
+    if (Number(duplicateRows[0]?.count || 0) > 0 && duplicateRows[0]?.business_date) {
+      const { notifyJobFailure } = require('./jobAlertMailer');
+      await notifyJobFailure({
+        alertKey: `duplicate-success:${jobCode}:${duplicateRows[0].business_date}`,
+        alertType: 'duplicate_success',
+        severity: 'critical',
+        jobCode,
+        slotId: null,
+        subject: `后台任务出现重复成功记录：${jobCode}`,
+        summary: `任务 ${jobCode} 在业务日期 ${duplicateRows[0].business_date} 已出现第 2 条成功运行记录，请检查定时与手动任务是否重复。`,
+      }).catch(error => console.warn('[job-alert] 重复成功告警失败:', error.message));
+    }
+  }
 }
 
 async function linkLatestRun(slot, startedAt, reason) {
@@ -87,7 +175,8 @@ function killProcessTree(child, graceMs = 3000) {
 function runJobInIsolatedProcess(jobCode, reason, businessDate, context, signal) {
   return new Promise((resolve, reject) => {
     const child = fork(path.join(__dirname, 'jobRunnerProcess.js'), [], {
-      detached: process.platform !== 'win32', silent: true, env: process.env,
+      detached: process.platform !== 'win32', silent: true,
+      env: { ...process.env, DURABLE_JOB_RUN: '1' },
     });
     if (child.stdout) child.stdout.resume();
     if (child.stderr) child.stderr.resume();
@@ -107,27 +196,45 @@ function runJobInIsolatedProcess(jobCode, reason, businessDate, context, signal)
     }
     child.once('message', message => message && message.ok
       ? finish(resolve, message.result)
-      : finish(reject, new Error(message && message.error || 'job child process failed')));
+      : finish(reject, Object.assign(new Error(message && message.error || 'job child process failed'), {
+        code: message && message.errorCode,
+        errorType: message && message.errorType,
+         retryable: message && message.retryable,
+         source: message && message.source,
+         dataset: message && message.dataset,
+         externalCallCount: message && message.externalCallCount,
+         externalSources: message && message.externalSources,
+       })));
     child.once('error', error => finish(reject, error));
     child.once('exit', code => { if (!settled) finish(reject, new Error(`job child process exited ${code} without result`)); });
-    child.send({ jobCode, reason, businessDate, context: { slotId: context && context.slotId } });
+    child.send({ jobCode, reason, businessDate, context: context || {} });
   });
 }
 
-async function markRunFailed(runId, detail) {
+async function markRunFailed(runId, detail, failure = null, result = {}) {
   if (!runId) return;
   await pool.query(
-    `UPDATE job_runs SET status='failed', finished_at=now(), detail=$2
+    `UPDATE job_runs SET status='failed', finished_at=now(), detail=$2,
+        error_code=$3, error_type=$4, external_call_count=$5,
+        external_sources=$6::jsonb, datasets=$7::jsonb
        WHERE id=$1 AND status='running'`,
-    [runId, sanitizeJobError(detail || 'job interrupted')]
+    [runId, sanitizeJobError(detail || 'job interrupted'), failure && failure.code || null, failure && failure.type || null,
+      Number(result.externalCalls || result.externalCallCount || 0), JSON.stringify(result.externalSources || {}), JSON.stringify(result.datasets || [])]
   );
 }
 
 async function failOrRetry(slot, error, runId, result = {}) {
   const definition = getJobDefinition(slot.job_code);
-  const message = sanitizeJobError(error || result.error || '任务执行失败');
-  if (Number(slot.attempt_count || 0) >= Number(definition.maxAttempts || 3)) {
-    const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(result), attempts: slot.attempt_count }, message, runId);
+  const failure = classifyFailure(error, result);
+  const message = sanitizeJobError(failure.message || '任务执行失败');
+  const configuredMax = Number(definition.maxAttempts || 3);
+  const maxAttempts = Math.min(configuredMax, Number(failure.maxAttempts || (definition.retryPolicy === 'external' ? 3 : configuredMax)));
+  const noRetry = definition.retryPolicy === 'no_retry' || failure.retryable === false;
+  if (failure.type === 'rate_limit' && failure.source) await openExternalCircuit(failure.source, message).catch(() => {});
+  const normalized = normalizeJobResult({ ...result, error: message, errorCode: failure.code, errorType: failure.type }, result.externalCalls);
+  if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
+    await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+    const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId);
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
       jobCode: slot.job_code,
@@ -135,13 +242,14 @@ async function failOrRetry(slot, error, runId, result = {}) {
       alertKey: `slot:${slot.slot_id}:max-attempts`,
       alertType: 'failure',
       subject: `后台任务最终失败：${definition.label}`,
-      summary: `已达到最大尝试次数 ${definition.maxAttempts || 3} 次。${message}`,
+      summary: noRetry ? `错误类型 ${failure.type} 不自动重试。${message}` : `已达到最大尝试次数 ${maxAttempts} 次。${message}`,
     }).catch(mailError => console.warn('[job-alert] 最终失败告警处理失败:', mailError.message));
     return completed;
   }
   const delays = Array.isArray(definition.retryDelaysMinutes) ? definition.retryDelaysMinutes : [5, 15, 45];
-  const delay = delays[Math.min(Number(slot.attempt_count || 1) - 1, delays.length - 1)] || 15;
-  const deferred = await deferSlot(slot.slot_id, message, { ...sanitizeJobResult(result), retryInMinutes: delay }, delay, runId);
+  const delay = Number(failure.delayMinutes || delays[Math.min(Number(slot.attempt_count || 1) - 1, delays.length - 1)] || 15);
+  await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+  const deferred = await deferSlot(slot.slot_id, message, { ...sanitizeJobResult(normalized), retryInMinutes: delay, errorType: failure.type }, delay, runId);
   if (Number(slot.attempt_count || 0) === 2) {
     const { notifyJobFailure } = require('./jobAlertMailer');
     await notifyJobFailure({
@@ -187,7 +295,14 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
   let task;
   const controller = new AbortController();
   activeControllers.add(controller);
-  const heartbeatTimer = setInterval(() => touchSlot(claimed.slot_id, WORKER_ID).catch(() => {}), 60 * 1000);
+  const heartbeatTimer = setInterval(() => {
+    touchSlot(claimed.slot_id, WORKER_ID).catch(() => {});
+    if (runId) pool.query(
+      `UPDATE job_runs SET heartbeat_at=now(), locked_until=now()+($2::integer * interval '1 minute')
+         WHERE id=$1 AND status='running'`,
+      [runId, Number(getJobDefinition(claimed.job_code).timeoutMinutes || 30) + 10]
+    ).catch(() => {});
+  }, 60 * 1000);
   if (heartbeatTimer.unref) heartbeatTimer.unref();
   const definition = getJobDefinition(claimed.job_code);
   const runMeta = {
@@ -196,13 +311,30 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     timeoutMs: Number(definition.timeoutMinutes || 30) * 60 * 1000,
   };
   activeRunMeta.add(runMeta);
+  const runContext = {
+    slotId: claimed.slot_id,
+    force: Boolean(claimed.request_payload && claimed.request_payload.force === true),
+    failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)
+      ? claimed.result_summary.failedDatasets : [],
+    externalCallCount: Number(claimed.result_summary && claimed.result_summary.externalCalls || 0),
+  };
 
   try {
+    runId = await startManagedRun(claimed, reason);
+    if (definition.freshnessGate && !runContext.force) {
+      const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
+      if (dataAsOf && isDataAsOfFresh(dataAsOf, claimed.business_date, definition)) {
+        const freshResult = normalizeJobResult({ ok: true, status: 'fresh', dataAsOf, externalCalls: 0 });
+        await finishManagedRun(runId, claimed.job_code, true, freshResult);
+        await completeSlot(claimed.slot_id, 'succeeded', freshResult, null, runId);
+        return freshResult;
+      }
+    }
     task = runWithAbort(
       claimed.job_code,
       reason,
       String(claimed.business_date || '').slice(0, 10),
-      { slotId: claimed.slot_id, signal: controller.signal },
+      runContext,
       controller.signal
     );
     task.catch(() => {});
@@ -216,11 +348,11 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
         );
       }, timeoutMinutes * 60 * 1000);
     });
-    const result = await Promise.race([task, timeout]);
-    runId = await linkLatestRun(claimed, startedAt, reason);
-    const run = await readRunStatus(runId);
+    const rawResult = await Promise.race([task, timeout]);
+    const result = normalizeJobResult(rawResult);
 
     if (result && result.unsupported) {
+      await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'blocked', result, result.error, runId);
       return result;
     }
@@ -229,14 +361,19 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       return result;
     }
     if (result && result.skipped && ['fresh', 'already-ran-today'].includes(result.reason)) {
+      result.status = 'fresh';
+      await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'succeeded', result, null, runId);
       return result;
     }
     if (result && result.skipped && result.reason !== 'not_configured') {
+      const failure = classifyFailure(result.error || result.reason, result);
+      await finishManagedRun(runId, claimed.job_code, false, result, failure);
       await deferSlot(claimed.slot_id, result.reason || '任务被其他实例占用', result, 5, runId);
       return result;
     }
     if (result && result.skipped && result.reason === 'not_configured') {
+      await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'skipped', result, '当前任务未配置，保留上一份有效数据', runId);
       return result;
     }
@@ -244,22 +381,28 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       await failOrRetry(claimed, result.error, runId, result);
       return result;
     }
-    if (run && run.status === 'failed') {
-      await failOrRetry(claimed, run.detail, runId, { ok: false, detail: run.detail });
-      return { ok: false, error: run.detail };
-    }
-    if (result === undefined && !runId) {
+    if (rawResult === undefined && !runId) {
       await deferSlot(claimed.slot_id, '任务未产生运行记录，等待下一次自动补偿', {}, 5);
       return { ok: false, skipped: true, reason: 'no_run_record' };
     }
+    await finishManagedRun(runId, claimed.job_code, true, result);
     await completeSlot(claimed.slot_id, 'succeeded', result || { ok: true }, null, runId);
     return { ok: true, result };
   } catch (error) {
-    runId = runId || await linkLatestRun(claimed, startedAt, reason).catch(() => null);
     const timedOut = controller.signal.aborted;
-    await markRunFailed(runId, timedOut ? 'job timeout or worker shutdown' : error.message || error).catch(() => {});
-    await failOrRetry(claimed, error.message || error, runId, timedOut ? { timed_out: true } : {});
-    return { ok: false, error: sanitizeJobError(error.message || error) };
+    const errorResult = {
+      ...(timedOut ? { timed_out: true } : {}),
+      errorCode: error.code,
+      errorType: error.errorType,
+      source: error.source,
+      dataset: error.dataset,
+      externalCalls: Number(error.externalCallCount || 0),
+      externalSources: error.externalSources || {},
+    };
+    const failure = classifyFailure(error, errorResult);
+    await markRunFailed(runId, timedOut ? 'job timeout or worker shutdown' : error.message || error, failure, errorResult).catch(() => {});
+    await failOrRetry(claimed, error, runId, { ...errorResult, errorCode: failure.code, errorType: failure.type });
+    return { ok: false, error: sanitizeJobError(error.message || error), ...errorResult };
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer);
     clearInterval(heartbeatTimer);

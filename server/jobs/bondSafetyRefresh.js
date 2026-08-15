@@ -16,7 +16,7 @@ async function runBondSafetyRefresh(reason = 'scheduled') {
     return await refreshBondSafety(reason);
   } catch (error) {
     console.error('[bond-safety] 定时刷新失败，保留上一份有效数据:', error.message);
-    return { skipped: true, reason: 'failed' };
+    return { ok: false, skipped: true, reason: 'failed', error: error.message, errorCode: error.code, errorType: error.errorType || error.type, source: error.source };
   }
 }
 

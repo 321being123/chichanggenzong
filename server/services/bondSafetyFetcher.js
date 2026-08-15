@@ -2,6 +2,7 @@
 // 上游的字段差异只应在这里适配，核心算法只接收内部标准字段。
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const { withExternalCallGuard } = require('./externalCallGuard');
 
 function isConfigured(env = process.env) {
   return Boolean(env.TUSHARE_TOKEN || env.BOND_SAFETY_API_URL ||
@@ -23,8 +24,15 @@ async function fetchJson(url, label, env = process.env) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, { method: 'GET', headers: authHeaders(env), signal: controller.signal });
-    if (!response.ok) throw new Error(`${label}接口返回 HTTP ${response.status}`);
+    const response = await withExternalCallGuard('bond-safety', `source:${url}`, process.env.JOB_BUSINESS_DATE,
+      () => fetch(url, { method: 'GET', headers: authHeaders(env), signal: controller.signal }));
+    if (!response.ok) {
+      const error = new Error(`${label}接口返回 HTTP ${response.status}`);
+      error.code = response.status === 429 ? 'RATE_LIMIT' : response.status >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
+      error.errorType = response.status === 429 ? 'rate_limit' : response.status >= 500 ? 'network' : 'upstream';
+      error.source = 'bond-safety';
+      throw error;
+    }
     return await response.json();
   } catch (error) {
     if (error && error.name === 'AbortError') throw new Error(`${label}接口请求超时`);

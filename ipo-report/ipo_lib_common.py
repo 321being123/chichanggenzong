@@ -11,6 +11,9 @@ import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env, TUSHARE_TOKEN, get_tushare_pro
+from external_call_guard import install_requests_guard
+
+install_requests_guard()
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history_reports")
 

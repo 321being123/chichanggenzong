@@ -5,23 +5,39 @@
 const https = require('https');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { cnDate, upsertFxRate, syncLegacyAccountRates, getCurrentFxRate } = require('../services/fxRate');
+const { withExternalCallGuard, openExternalCircuit } = require('../services/externalCallGuard');
 
 // 抓取港币→人民币汇率（成功返回 number，失败返回 null）
 // 数据源 open.er-api.com：免费、无需 key，返回 rates.CNY = 1 HKD 兑多少人民币（约 0.865）
 async function fetchHkRate() {
   try {
-    const text = await new Promise((resolve, reject) => {
+      const text = await withExternalCallGuard('exchange-rate', 'HKD:CNY', process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
       https.get('https://open.er-api.com/v6/latest/HKD', { timeout: 8000 }, (resp) => {
         let data = ''; resp.on('data', c => data += c);
-        resp.on('end', () => resolve(data));
+        resp.on('end', () => {
+          if (resp.statusCode === 429) {
+            const error = new Error('汇率接口 HTTP 429');
+            error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = 'exchange-rate';
+            return reject(error);
+          }
+          if (resp.statusCode >= 500) {
+            const error = new Error(`汇率接口 HTTP ${resp.statusCode}`);
+            error.code = 'UPSTREAM_5XX'; error.errorType = 'network'; error.source = 'exchange-rate';
+            return reject(error);
+          }
+          resolve(data);
+        });
       }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    });
+    }));
     const json = JSON.parse(text);
     if (json && json.result === 'success' && json.rates && json.rates.CNY) {
       const rate = parseFloat(json.rates.CNY);
       if (!isNaN(rate) && rate > 0) return rate;
     }
-  } catch (e) {}
+  } catch (e) {
+    if (e && e.errorType === 'rate_limit') await openExternalCircuit(e.source || 'exchange-rate', e.message).catch(() => {});
+    if (e && e.code) throw e;
+  }
   return null;
 }
 
@@ -50,6 +66,7 @@ async function runHkRateJob() {
     await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || '抓取失败'));
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
+    result = { ok: false, rate: null, error: e.message || String(e), errorCode: e.code, errorType: e.errorType || e.type, source: e.source };
   } finally {
     await releaseJob('hk_rate');
   }

@@ -1,5 +1,6 @@
 const https = require('https');
 const { pool } = require('../db/connection');
+const { withExternalCallGuard } = require('./externalCallGuard');
 
 const SOURCE = 'tencent';
 const DEFAULT_TTL_MS = 60 * 1000;
@@ -81,6 +82,13 @@ function requestText(url) {
       const chunks = [];
       resp.on('data', chunk => chunks.push(chunk));
       resp.on('end', () => {
+        if (resp.statusCode === 429 || resp.statusCode >= 500) {
+          const error = new Error(`Tencent HTTP ${resp.statusCode}`);
+          error.code = resp.statusCode === 429 ? 'RATE_LIMIT' : 'UPSTREAM_5XX';
+          error.errorType = resp.statusCode === 429 ? 'rate_limit' : 'network';
+          error.source = SOURCE;
+          return reject(error);
+        }
         const buffer = Buffer.concat(chunks);
         try { resolve(new TextDecoder('gbk').decode(buffer)); }
         catch (_) { resolve(buffer.toString('utf8')); }
@@ -164,11 +172,17 @@ async function fetchTencentQuotes(rawCodes, options = {}) {
   for (let start = 0; start < staleSymbols.length; start += MAX_BATCH_SIZE) {
     const batch = staleSymbols.slice(start, start + MAX_BATCH_SIZE);
     try {
-      const text = await requestText('https://qt.gtimg.cn/q=' + batch.join(','));
+      const text = await withExternalCallGuard(
+        SOURCE,
+        `quote:${batch.join(',')}`,
+        options.businessDate || process.env.JOB_BUSINESS_DATE,
+        () => requestText('https://qt.gtimg.cn/q=' + batch.join(','))
+      );
       const received = parseTencentQuoteText(text);
       received.forEach((quote, symbol) => fresh.set(symbol, quote));
       await saveCache(received);
-    } catch (_) {
+    } catch (error) {
+      if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(error.code)) throw error;
       // 使用数据库中的最后成功值；没有缓存的代码由调用方判定为失败。
     }
   }

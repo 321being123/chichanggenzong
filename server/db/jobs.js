@@ -27,6 +27,8 @@ async function releaseJob(job) {
   delete _jobClients[job];
 }
 async function startJobRun(job) {
+  // 持久化执行器已在父进程为计划实例建立唯一 job_runs；子进程不得再写嵌套成功记录。
+  if (process.env.DURABLE_JOB_RUN === '1') return null;
   const { rows } = await pool.query(
     "INSERT INTO job_runs (job, status, started_at, locked_until) VALUES ($1, 'running', now(), now() + interval '1 hour') RETURNING id",
     [job]
@@ -34,7 +36,7 @@ async function startJobRun(job) {
   return rows[0] ? rows[0].id : null;
 }
 async function finishJobRun(id, ok, detail) {
-  if (!id) return;
+  if (!id || process.env.DURABLE_JOB_RUN === '1') return;
   await pool.query(
     "UPDATE job_runs SET status=$2, finished_at=now(), detail=COALESCE($3,'') WHERE id=$1",
     [id, ok ? 'done' : 'failed', sanitizeJobError(detail || '', 4000)]
@@ -46,7 +48,7 @@ async function finishJobRun(id, ok, detail) {
 async function adminJobRuns(limit = 50) {
   const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
   const recent = await pool.query(
-    'SELECT id, job, status, started_at, finished_at, detail, slot_id, attempt_no, trigger_type, worker_id, heartbeat_at, error_code FROM job_runs ORDER BY id DESC LIMIT $1',
+    'SELECT id, job, status, started_at, finished_at, detail, slot_id, attempt_no, trigger_type, worker_id, heartbeat_at, error_code, error_type, external_call_count, external_sources, datasets FROM job_runs ORDER BY id DESC LIMIT $1',
     [lim]
   );
   const summary = await pool.query(

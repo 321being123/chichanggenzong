@@ -12,9 +12,9 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'index_recent':
       return require('../jobs/indexBaseline').runIndexRecentJob();
     case 'market_volatility_sync':
-      return require('../jobs/marketVolatilitySync').runMarketVolatilitySync();
+      return require('../jobs/marketVolatilitySync').runMarketVolatilitySync(context);
     case 'stock_analysis_refresh':
-      return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason);
+      return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason, context);
     case 'ipo_history_sync':
       return require('../jobs/ipoHistorySync').runIpoHistorySync(reason);
     case 'hk_trade_rules_sync':
@@ -44,7 +44,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     default:
       if (jobCode && jobCode.indexOf('market_close:') === 0) {
         const label = jobCode.slice('market_close:'.length);
-        return require('../jobs/marketClose').runMarketCloseByLabel(label, businessDate);
+        return require('../jobs/marketClose').runMarketCloseByLabel(label, businessDate, context);
       }
       return { ok: false, unsupported: true, error: `暂未开放 ${jobCode} 的安全人工补跑入口` };
   }

@@ -65,8 +65,15 @@ function nextRunDelay(h, m) {
 }
 
 // 带重试的行情抓取：Tushare 偶发 null / 港股腾讯抖动 → 重试 2 次，间隔 1s
-async function fetchWithRetry(code, tries) {
+async function fetchWithRetry(code, tries, requestBudget) {
   for (let i = 0; i < tries; i++) {
+    if (requestBudget && requestBudget.used >= requestBudget.limit) {
+      const error = new Error(`收盘行情请求预算已用尽（${requestBudget.limit}）`);
+      error.code = 'QUOTA_EXHAUSTED';
+      error.errorType = 'rate_limit';
+      throw error;
+    }
+    if (requestBudget) requestBudget.used += 1;
     try {
       const q = await fetchQuoteByCode(code);
       if (q && q.price) return q;
@@ -89,7 +96,7 @@ function pickMissingCodes(positions, existingCodes, matchFn) {
 // 幂等到「代码」级别：只抓取当日该市场持仓中【尚未记录】的代码，
 // 因此 A 股先写入后，可转债/ETF 不会被整体跳过；部分缺失也能补齐。
 // 返回 { recorded, failed, error }；error=true 表示有持仓却全部抓取失败
-async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
+async function recordCloseOne(username, accountName, label, matchFn, dateStr, requestBudget) {
   const cnDate = dateStr || cnDateStr();
 
   const result = await loadAccountData(username, accountName);
@@ -115,7 +122,7 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
   let recorded = 0, failed = 0;
   const prices = [];
   for (const pos of missing) {
-    const q = await fetchWithRetry(pos.code, 2);
+    const q = await fetchWithRetry(pos.code, 2, requestBudget);
     if (q && q.price) {
       prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price });
       recorded++;
@@ -129,18 +136,32 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr) {
 }
 
 // 为所有账户记录某市场某交易日收盘价；任一证券失败都进入统一有限重试，避免部分账户缺数却显示成功。
-async function recordMarketClose(label, matchFn, dateStr) {
+async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   const cnDate = dateStr || cnDateStr();
+  const totalLimit = Math.max(Number(process.env.MARKET_CLOSE_REQUEST_BUDGET) || 2000, 1);
+  const previousCalls = Math.max(Number(context.externalCallCount) || 0, 0);
+  const requestBudget = { used: 0, limit: Math.max(totalLimit - previousCalls, 0) };
   const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
   let recorded = 0, failed = 0;
   for (const account of accounts) {
-    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate)
-      .catch(() => ({ recorded: 0, failed: 1, error: true }));
+    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget)
+      .catch(error => {
+        if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code)) {
+          error.externalCalls = previousCalls + requestBudget.used;
+          throw error;
+        }
+        return { recorded: 0, failed: 1, error: true };
+      });
     recorded += Number(r && r.recorded || 0);
     failed += Number(r && r.failed || 0);
   }
-  if (failed > 0) throw new Error(`收盘记录存在缺失 (${label} ${cnDate})：成功 ${recorded}，失败 ${failed}`);
-  return { recorded, failed };
+  if (failed > 0) {
+    // 失败必须按统一执行器重试：if (failed > 0) throw new Error(...)
+    const error = new Error(`收盘记录存在缺失 (${label} ${cnDate})：成功 ${recorded}，失败 ${failed}`);
+    error.externalCalls = previousCalls + requestBudget.used;
+    throw error;
+  }
+  return { recorded, failed, externalCalls: previousCalls + requestBudget.used };
 }
 
 function recentTradingDays(count) {
@@ -213,26 +234,33 @@ async function backfillMissingCloses(options) {
 }
 
 // 带幂等锁与执行记录的收盘任务（跨实例单跑，失败留痕供告警）
-async function runMarketCloseJob(label, matchFn, dateStr) {
+async function runMarketCloseJob(label, matchFn, dateStr, context = {}) {
   if (!(await tryClaimJob('market_close:' + label))) return { skipped: true, reason: 'already_running' }; // 其他实例已在跑，跳过
   const runId = await startJobRun('market_close:' + label);
   try {
-    const result = await recordMarketClose(label, matchFn, dateStr);
+    const result = await recordMarketClose(label, matchFn, dateStr, context);
     await finishJobRun(runId, true, `写入 ${result.recorded}，失败 0`);
     return { ok: true, label, ...result };
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
     console.error('[market_close:' + label + '] 失败:', e.message || e);
-    return { ok: false, error: e.message || String(e) };
+    return {
+      ok: false,
+      error: e.message || String(e),
+      errorCode: e.code,
+      errorType: e.errorType || e.type,
+      source: e.source,
+      externalCalls: Number(e.externalCalls || context.externalCallCount || 0),
+    };
   } finally {
     await releaseJob('market_close:' + label);
   }
 }
 
-async function runMarketCloseByLabel(label, dateStr) {
+async function runMarketCloseByLabel(label, dateStr, context = {}) {
   const market = MARKET_CLOSE_TIMES.find(item => item.label === label);
   if (!market) return { ok: false, unsupported: true, error: `未找到收盘市场规则：${label}` };
-  return runMarketCloseJob(market.label, market.match, dateStr);
+  return runMarketCloseJob(market.label, market.match, dateStr, context);
 }
 
 // 为所有市场分别调度收盘任务（含休市识别 + 每日缺失补漏）

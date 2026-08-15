@@ -71,16 +71,26 @@ assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSou
     mock(200, { code: 40101, msg: 'token 无效' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'AUTH_ERROR' && error.retryable === false);
 
+    guard.resetExternalCallGuard();
+    await guard.resetExternalCallGuardPersistence('tushare');
+    mock(200, { code: 2002, msg: '没有接口访问权限' });
+    await assert.rejects(() => tushareQuery('daily'), error => error.code === 'PERMISSION_DENIED' && error.errorType === 'permission' && error.retryable === false);
+
     const guardSource = `test_guard_${process.pid}_${Date.now()}`;
     const guardEnv = guardSource.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
     process.env[`${guardEnv}_PER_MINUTE_BUDGET`] = '20';
     process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
+    let guardedExternalCalls = 0;
     const guarded = await Promise.allSettled([
-      guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => new Promise(resolve => setTimeout(() => resolve('called'), 50))),
+      guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => new Promise(resolve => {
+        guardedExternalCalls += 1;
+        setTimeout(() => resolve('called'), 50);
+      })),
       guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => Promise.resolve('duplicate')),
     ]);
     assert.strictEqual(guarded.filter(item => item.status === 'fulfilled').length, 1, '同一数据集并发只能有一个请求者');
     assert.strictEqual(guarded.find(item => item.status === 'rejected').reason.code, 'DATASET_LOCKED');
+    assert.strictEqual(guardedExternalCalls, 1, '同一数据集并发时外部 API 实际调用次数必须为 1');
     await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error => error.code === 'QUOTA_EXHAUSTED');
     const budgetRows = await require('../db/connection').pool.query(
       `SELECT call_count,circuit_open FROM ops.external_call_budgets WHERE source=$1 AND window_type='day'`, [guardSource]
@@ -92,7 +102,8 @@ assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSou
     delete process.env[`${guardEnv}_DAILY_BUDGET`];
 
     const { pool } = require('../db/connection');
-    const { claimSlot, completeSlot, listDueSlots, enqueueManualJob } = require('../services/jobScheduleSlots');
+    const { claimSlot, completeSlot, listDueSlots, enqueueManualJob, syncScheduleSlots, expectedDataDate } = require('../services/jobScheduleSlots');
+    assert.strictEqual(expectedDataDate('convertible_bond_valuation_refresh', '2026-02-24'), '2026-02-13', '前一交易日必须跳过春节休市日');
     const claimTime = new Date(Date.now() - 60 * 1000);
     const claimInsert = await pool.query(
       `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,next_attempt_at)
@@ -119,10 +130,35 @@ assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSou
     );
     const staleSlot = await completeSlot(staleInsert.rows[0].slot_id, 'succeeded', { ok: true }, null, null);
     assert.strictEqual(staleSlot.status, 'degraded', '成功但水位落后只能标记 degraded');
-    const dueAfterDegraded = await listDueSlots(100);
-    assert.ok(!dueAfterDegraded.some(slot => String(slot.slot_id) === String(staleInsert.rows[0].slot_id)), 'degraded 不得再次进入执行队列');
+    let dueAfterDegraded = [];
+    for (let scan = 0; scan < 10; scan++) {
+      dueAfterDegraded = await listDueSlots(100);
+      assert.ok(!dueAfterDegraded.some(slot => String(slot.slot_id) === String(staleInsert.rows[0].slot_id)), `第 ${scan + 1} 次扫描不得重新执行 degraded`);
+    }
     await pool.query('DELETE FROM ops.alert_notifications WHERE slot_id=$1', [staleInsert.rows[0].slot_id]);
     await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [staleInsert.rows[0].slot_id]);
+
+    const catchupNow = new Date(Date.UTC(2099, 1, 5, 0, 0, 0));
+    const catchupStart = new Date(Date.UTC(2099, 1, 5, 0, 0, 0));
+    const catchupEnd = new Date(Date.UTC(2099, 1, 6, 0, 0, 0));
+    try {
+      await syncScheduleSlots(catchupNow);
+      const latestOnlyRows = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM ops.job_schedule_slots
+          WHERE job_code='ipo_calendar_refresh' AND scheduled_for >= $1 AND scheduled_for < $2`,
+        [catchupStart, catchupEnd]
+      );
+      assert.strictEqual(latestOnlyRows.rows[0].count, 1, 'latest_only 补跑窗口缺失多天时只能生成一个实例');
+    } finally {
+      const testSlots = await pool.query(
+        `SELECT slot_id FROM ops.job_schedule_slots WHERE scheduled_for >= $1 AND scheduled_for < $2`,
+        [catchupStart, catchupEnd]
+      );
+      if (testSlots.rows.length) {
+        await pool.query('DELETE FROM ops.alert_notifications WHERE slot_id=ANY($1::bigint[])', [testSlots.rows.map(row => row.slot_id)]);
+        await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=ANY($1::bigint[])', [testSlots.rows.map(row => row.slot_id)]);
+      }
+    }
 
     console.log('job-execution-protection: 状态机、任务契约、估值拆分、Tushare 错误分类和 PostgreSQL API 保护通过');
   } finally {

@@ -20,12 +20,12 @@ class TushareRequestError extends Error {
 function classifyUpstreamError(payload, statusCode, apiName) {
   const code = payload && payload.code;
   const message = String(payload && (payload.msg || payload.message) || `Tushare HTTP ${statusCode || 'error'}`);
-  if (statusCode === 429 || /429|频率|频次|配额|积分|rate.?limit|quota/i.test(message)) {
-    return new TushareRequestError('RATE_LIMIT', message, { errorType: 'rate_limit', statusCode, apiName, upstreamCode: code });
-  }
-  if (code === 40101 || /token|权限|permission|积分不足|无权限/i.test(message)) {
+  if (code === 2002 || code === 40101 || /token|权限|permission|积分不足|没有接口|无权限/i.test(message)) {
     return new TushareRequestError(code === 40101 ? 'AUTH_ERROR' : 'PERMISSION_DENIED', message,
       { errorType: 'permission', statusCode, apiName, upstreamCode: code });
+  }
+  if (statusCode === 429 || /429|频率|频次|配额|rate.?limit|quota/i.test(message)) {
+    return new TushareRequestError('RATE_LIMIT', message, { errorType: 'rate_limit', statusCode, apiName, upstreamCode: code });
   }
   if (/参数|parameter|invalid/i.test(message)) {
     return new TushareRequestError('INVALID_PARAMETER', message,
@@ -37,7 +37,12 @@ function classifyUpstreamError(payload, statusCode, apiName) {
 
 function tushareQuery(apiName, params = {}, fields = '') {
   const token = process.env.TUSHARE_TOKEN || '';
-  if (!token) return Promise.resolve(null);
+  if (!token) {
+    return Promise.reject(new TushareRequestError(
+      'AUTH_ERROR', 'Tushare 未配置 TUSHARE_TOKEN，无法调用外部数据接口',
+      { errorType: 'permission', apiName }
+    ));
+  }
 
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
   const dataset = `${apiName}:${JSON.stringify(params || {})}:${fields || ''}`;

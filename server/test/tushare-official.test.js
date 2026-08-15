@@ -12,7 +12,10 @@ const originalToken = process.env.TUSHARE_TOKEN;
     let called = false;
     https.request = () => { called = true; throw new Error('不应发起请求'); };
     let client = require('../services/tushare');
-    assert.strictEqual(await client.tushareQuery('trade_cal'), null);
+    await assert.rejects(
+      () => client.tushareQuery('trade_cal'),
+      error => error.code === 'AUTH_ERROR' && error.errorType === 'permission' && error.retryable === false
+    );
     assert.strictEqual(called, false);
 
     process.env.TUSHARE_TOKEN = 'test-token-not-real';

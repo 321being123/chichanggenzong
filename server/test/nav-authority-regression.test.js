@@ -38,10 +38,14 @@ const yesterday = (() => {
       positions: [{ id: 'hk1', code: '00700', name: '腾讯控股', price: 110, quantity: 10, cost: 100, type: '股权', subtype: '港股', note: '' }],
       trades: [], navHistory: [], cashFlows: [], cash: 0, cashBase: 0, hkRate: 0.85, feeSettings: {}
     }, 0, { positions: 0, trades: 0, navHistory: 0, cashFlows: 0 });
+    const sourceRow = (await pool.query(
+      `SELECT source_id FROM ops.data_sources WHERE source_code='calculated' LIMIT 1`
+    )).rows[0];
+    assert.ok(sourceRow, '测试汇率必须使用已登记的数据源');
     await pool.query(
       `INSERT INTO market.fx_rates(base_currency,quote_currency,rate_date,source_id,rate,fetched_at)
-       VALUES ('HKD','CNY',$1,999,0.90,now()),('HKD','CNY',$2,999,0.85,now())
-       ON CONFLICT (base_currency,quote_currency,rate_date) DO UPDATE SET rate=EXCLUDED.rate,fetched_at=EXCLUDED.fetched_at`, [yesterday, todayCN()]
+       VALUES ('HKD','CNY',$1,$3,0.90,now()),('HKD','CNY',$2,$3,0.85,now())
+       ON CONFLICT (base_currency,quote_currency,rate_date) DO UPDATE SET rate=EXCLUDED.rate,fetched_at=EXCLUDED.fetched_at`, [yesterday, todayCN(), sourceRow.source_id]
     );
     await pool.query(
       `INSERT INTO daily_prices (username,account_name,date,code,name,price)

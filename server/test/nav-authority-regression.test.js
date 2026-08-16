@@ -12,6 +12,11 @@ const yesterday = (() => {
   const x = new Date(Date.UTC(y, m - 1, d - 1));
   return x.toISOString().slice(0, 10);
 })();
+const previousCloseDate = (() => {
+  const [y, m, d] = todayCN().split('-').map(Number);
+  const x = new Date(Date.UTC(y, m - 1, d - 2));
+  return x.toISOString().slice(0, 10);
+})();
 
 (async () => {
   let server;
@@ -50,7 +55,7 @@ const yesterday = (() => {
     await pool.query(
       `INSERT INTO daily_prices (username,account_name,date,code,name,price)
        VALUES ($1,$2,$3,'00700','腾讯控股',100)
-       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, yesterday]
+       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, previousCloseDate]
     );
 
     const app = express();
@@ -70,7 +75,9 @@ const yesterday = (() => {
     assert.strictEqual(first.status, 200, '历史导入应成功');
     const firstJson = await first.json();
     const imported = (await loadAccountData(U, A)).navHistory.find(n => n.date === yesterday);
-    assert.strictEqual(imported.systemMarketValueAtSnapshot, 900, '锚点必须使用导入日收盘价×导入日系统汇率');
+    assert.strictEqual(imported.systemMarketValueAtSnapshot, 900, '缺少导入日行情时应使用最近完整收盘日建立锚点');
+    assert.strictEqual(imported.calcStatus, 'broker_previous_close', '使用前一完整收盘日时必须标记状态');
+    assert.strictEqual(imported.diagnostics.position_price_date, previousCloseDate, '必须记录实际使用的行情日期');
     const after = await loadAccountData(U, A);
     assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1435, '当前总资产必须=券商锚点+本系统价格/汇率增量');
     const repeat = await fetch(base + '/nav/import?version=' + after.version, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

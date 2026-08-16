@@ -70,6 +70,54 @@ function buildAnchorPositions(positionRows, tradeRows, anchorDate) {
   return [...rowsByCode.values()];
 }
 
+// 历史导入日可能是周末，或当日收盘任务尚未补齐。
+// 取导入日前最近一个“所有锚点持仓都有有效收盘价”的日期，避免把整批数据误判为缺价。
+async function loadAnchorPrices(username, accountName, anchorDate, anchorPositions) {
+  const codes = [...new Set((anchorPositions || [])
+    .filter((p) => Number(p.quantity) !== 0)
+    .map((p) => String(p.code || ''))
+    .filter(Boolean))];
+  if (!codes.length) return { prices: new Map(), priceDate: null };
+  const { rows: exactRows } = await pool.query(
+    `SELECT code, price::float8 AS price
+       FROM daily_prices
+      WHERE username=$1 AND account_name=$2 AND date=$3
+        AND code=ANY($4::text[]) AND price > 0`,
+    [username, accountName, anchorDate, codes]
+  );
+  if (exactRows.length === codes.length) {
+    return { prices: new Map(exactRows.map((p) => [String(p.code), Number(p.price)])), priceDate: anchorDate };
+  }
+  // 当天已有部分行情但并不完整时不能混用前一日价格，继续返回缺失，避免形成混合日期锚点。
+  if (exactRows.length > 0) {
+    return { prices: new Map(exactRows.map((p) => [String(p.code), Number(p.price)])), priceDate: null };
+  }
+  const { rows } = await pool.query(
+    `WITH candidate AS (
+       SELECT date::text AS price_date
+         FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND date < $3
+          AND code = ANY($4::text[]) AND price > 0
+        GROUP BY date
+       HAVING COUNT(DISTINCT code) = $5
+        ORDER BY date DESC
+        LIMIT 1
+     )
+     SELECT dp.code, dp.price::float8 AS price, c.price_date AS "priceDate"
+       FROM candidate c
+       JOIN daily_prices dp
+         ON dp.username=$1 AND dp.account_name=$2
+        AND dp.date=c.price_date AND dp.code=ANY($4::text[])
+        AND dp.price > 0`,
+    [username, accountName, anchorDate, codes, codes.length]
+  );
+  const priceDate = rows[0] ? String(rows[0].priceDate).slice(0, 10) : null;
+  return {
+    prices: new Map(rows.map((p) => [String(p.code), Number(p.price)])),
+    priceDate
+  };
+}
+
 // ========== 账户账本局部接口（方案阶段三：交易增删改走服务端统一事务） ==========
 // 前端交易录入不再自行计算持仓/现金，服务端事务完成后返回最新账户结果供刷新。
 // 路由统一前缀 /api/accounts/:name/ledger/*（:name=账户名，保持与既有 /data/:name 一致的编码方式）
@@ -837,13 +885,11 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     const anchorRecord = normalizedRecords.find((r) => r.date === requestedAnchorDate);
     const systemRate = anchorRecord && anchorRecord.hkRate > 0 ? anchorRecord.hkRate :
       (fxAtDate(requestedAnchorDate) || (acctRows[0] && Number(acctRows[0].hk_rate) > 0 ? Number(acctRows[0].hk_rate) : 0));
-    const { rows: dayPriceRows } = await client.query(
-      `SELECT code, price::float8 AS price FROM daily_prices
-        WHERE username=$1 AND account_name=$2 AND date=$3`, [username, accountName, requestedAnchorDate]
-    );
-    const dayPrices = new Map(dayPriceRows.map((p) => [String(p.code), Number(p.price)]));
+    const anchorPriceData = await loadAnchorPrices(username, accountName, requestedAnchorDate, anchorPositions);
+    const dayPrices = anchorPriceData.prices;
+    const anchorPriceDate = anchorPriceData.priceDate;
     const missingCodes = [];
-    if (requestedAnchorDate !== todayCN() && anchorPositions.some((p) => Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0))) {
+    if (requestedAnchorDate !== todayCN() && (!anchorPriceDate || anchorPositions.some((p) => Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0)))) {
       anchorPositions.forEach((p) => { if (Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0)) missingCodes.push(String(p.code)); });
       const e = new Error('历史导入日期缺少持仓收盘价，无法建立精确锚点：' + [...new Set(missingCodes)].join(', '));
       e.status = 422;
@@ -855,8 +901,10 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
       throw e;
     }
     const systemMarketValue = anchorPositions.reduce((sum, p) => {
+      const quantity = Number(p.quantity) || 0;
+      if (quantity === 0) return sum;
       const price = requestedAnchorDate === todayCN() ? (Number(p.price) || 0) : dayPrices.get(String(p.code));
-      const mv = price * (Number(p.quantity) || 0);
+      const mv = price * quantity;
       return sum + (p.subtype === '港股' ? mv * systemRate : mv);
     }, 0);
     const priorLatestCash = currentNav.length && currentNav[currentNav.length - 1].cashCny != null
@@ -891,17 +939,35 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
            `${r.date} 23:59:59`, round(r.hkRate != null && r.hkRate > 0 ? r.hkRate : (fxAtDate(r.date) || systemRate), 6),
           round(r.cash, 2), brokerPositionValue, isAnchor ? round(systemMarketValue, 2) : null,
           r.hkRate != null && r.hkRate > 0 ? round(r.hkRate, 6) : null, importBatchId,
-          isAnchor ? 'broker_exact' : 'total_authoritative',
+          isAnchor ? (anchorPriceDate && anchorPriceDate !== requestedAnchorDate ? 'broker_previous_close' : 'broker_exact') : 'total_authoritative',
           JSON.stringify({
             source: 'broker_import',
             position_source_gap_cny: isAnchor ? round(brokerPositionValue - systemMarketValue, 2) : null,
-            cash_replacement_delta_cny: isAnchor && priorLatestCash != null ? round(r.cash - priorLatestCash, 2) : null
+            cash_replacement_delta_cny: isAnchor && priorLatestCash != null ? round(r.cash - priorLatestCash, 2) : null,
+            position_price_date: isAnchor ? anchorPriceDate : null,
+            position_price_fallback: isAnchor && anchorPriceDate && anchorPriceDate !== requestedAnchorDate ? 'previous_complete_close' : null
           }), inputHash]
       );
       if (isAnchor) {
+        // 前一完整收盘日用于周末/行情未落库日时，把同一组价格固化到导入日，
+        // 让后续归因查询仍能按导入日读取，并可被之后的真实收盘价覆盖。
+        if (anchorPriceDate && anchorPriceDate !== requestedAnchorDate) {
+          for (const p of anchorPositions) {
+            const price = dayPrices.get(String(p.code));
+            if (!(price > 0)) continue;
+            await client.query(
+              `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)
+               ON CONFLICT (username, account_name, date, code) DO NOTHING`,
+              [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price]
+            );
+          }
+        }
         await client.query('DELETE FROM nav_position_snapshots WHERE snapshot_id=$1', [importBatchId]);
         for (const p of anchorPositions) {
-          const price = maxImportDate === todayCN() ? (Number(p.price) || 0) : dayPrices.get(String(p.code));
+          const price = maxImportDate === todayCN()
+            ? (Number(p.price) || 0)
+            : (dayPrices.get(String(p.code)) > 0 ? dayPrices.get(String(p.code)) : (Number(p.quantity) === 0 ? 0 : null));
           const fx = p.subtype === '港股' ? systemRate : 1;
           await client.query(
             `INSERT INTO nav_position_snapshots
@@ -910,7 +976,8 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
             [importBatchId, username, accountName, maxImportDate, p.code, Number(p.quantity) || 0,
               price, p.subtype === '港股' ? 'HKD' : 'CNY', fx,
-              round(price * (Number(p.quantity) || 0) * fx, 2), 'system_daily_price']
+              round(price * (Number(p.quantity) || 0) * fx, 2),
+              anchorPriceDate && anchorPriceDate !== requestedAnchorDate ? 'system_previous_close' : 'system_daily_price']
           );
         }
       }
@@ -1009,16 +1076,19 @@ router.post('/nav/import/preview', requireLogin, asyncHandler(assertOwnership), 
     return rate;
   };
   const systemRate = fxAtDate(maxDate);
-  const { rows: dp } = await pool.query('SELECT code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3', [req.session.user, accountName, maxDate]);
-  const priceMap = new Map(dp.map(r => [String(r.code), Number(r.price)]));
-  const missingCodes = anchorPositions.filter(p => Number(p.quantity) !== 0 && maxDate !== todayCN() && !(priceMap.get(String(p.code)) > 0)).map(p => String(p.code));
+  const anchorPriceData = await loadAnchorPrices(req.session.user, accountName, maxDate, anchorPositions);
+  const priceMap = anchorPriceData.prices;
+  const anchorPriceDate = anchorPriceData.priceDate;
+  const missingCodes = anchorPositions.filter(p => Number(p.quantity) !== 0 && maxDate !== todayCN() && (!anchorPriceDate || !(priceMap.get(String(p.code)) > 0))).map(p => String(p.code));
   const missingFx = anchorPositions.some(p => Number(p.quantity) !== 0 && p.subtype === '港股') && !(systemRate > 0);
   const systemMarketValue = missingCodes.length || missingFx ? null : anchorPositions.reduce((s, p) => {
+    const quantity = Number(p.quantity) || 0;
+    if (quantity === 0) return s;
     const price = maxDate === todayCN() ? Number(p.price) || 0 : priceMap.get(String(p.code));
-    return s + price * (Number(p.quantity) || 0) * (p.subtype === '港股' ? systemRate : 1);
+    return s + price * quantity * (p.subtype === '港股' ? systemRate : 1);
   }, 0);
   const inputHash = crypto.createHash('sha256').update(JSON.stringify({ mode: req.body.mode || 'merge', records: normalized.map(r => ({ ...r, hkRate: null })) })).digest('hex');
-  res.json({ ok: true, rowCount: normalized.length, rangeStart: normalized.reduce((m, r) => !m || r.date < m ? r.date : m, ''), rangeEnd: maxDate, inputHash, systemMarketValueAtSnapshot: systemMarketValue, calcStatus: systemMarketValue == null || unresolvedTradeIds.length ? 'data_incomplete' : 'ready', missingCodes: [...new Set(missingCodes)], missingFx, unresolvedTradeIds });
+  res.json({ ok: true, rowCount: normalized.length, rangeStart: normalized.reduce((m, r) => !m || r.date < m ? r.date : m, ''), rangeEnd: maxDate, inputHash, systemMarketValueAtSnapshot: systemMarketValue, calcStatus: systemMarketValue == null || unresolvedTradeIds.length ? 'data_incomplete' : 'ready', missingCodes: [...new Set(missingCodes)], missingFx, unresolvedTradeIds, positionPriceDate: anchorPriceDate, positionPriceFallback: anchorPriceDate && anchorPriceDate !== maxDate ? 'previous_complete_close' : null });
 }));
 
 // 管理员判定已统一收敛到 server/middleware/auth.js（AUTH-03），accounts 路由不再保留第二套逻辑。

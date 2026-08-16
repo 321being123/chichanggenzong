@@ -116,13 +116,15 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
         ).fetchone()
         if not instrument_row:
             raise RuntimeError(f"可转债 {b['code']} 尚未建立 instrument_id，拒绝保存预测")
+        valuation_context = dict(analysis.get("liquidity_calibration") or {})
+        valuation_context.update({"source": "live_report", "is_historical_backfill": False})
         rows.append(("bond", b["code"], b["name"], listing_date,
                       pred_date, pred_return, pred_price, advice,
                       today_str, instrument_row[0],
                       analysis.get("transfer_value"), analysis.get("circulation_scale"),
                       analysis.get("base_price_no_liquidity"), analysis.get("liquidity_adjustment_pp"),
                       analysis.get("liquidity_sample_count"), analysis.get("valuation_model_version"),
-                      json.dumps(analysis.get("liquidity_calibration") or {}, ensure_ascii=False, default=str)))
+                      json.dumps(valuation_context, ensure_ascii=False, default=str)))
 
     for row in rows:
         try:

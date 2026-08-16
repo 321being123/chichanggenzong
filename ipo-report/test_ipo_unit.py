@@ -13,6 +13,11 @@ import ipo_daily_report as m
 import _common as common
 import calendar_core
 from ipo_lib_liquidity import calculate_adjustment_from_samples, liquidity_bucket, robust_mean
+from ipo_lib_historical_prediction import (
+    historical_base_price,
+    prior_liquidity_samples,
+    rollback_prediction,
+)
 from datetime import datetime
 
 PASS, FAIL, ERR = [], [], []
@@ -70,6 +75,57 @@ single_adjustment = calculate_adjustment_from_samples(
 check("流通规模只有一个符合样本时直接采用",
       single_adjustment["adjustment_pp"] == 11.72,
       "adjustment=%s" % single_adjustment["adjustment_pp"])
+
+real_priority = calculate_adjustment_from_samples(
+    8.03,
+    [
+        {"circulation_scale": 8.4, "residual_pp": 25, "is_backfilled": True},
+        {"circulation_scale": 8.2, "residual_pp": 4, "is_backfilled": False},
+    ],
+    [],
+)
+check("真实日报样本覆盖历史回滚样本",
+      real_priority["adjustment_pp"] == 4
+      and real_priority["recent"]["sample_source"] == "live")
+
+base_fixture = historical_base_price(
+    82.32,
+    [
+        {"conversion_value": 81, "conversion_premium_pct": 20},
+        {"conversion_value": 84, "conversion_premium_pct": 30},
+        {"conversion_value": 88, "conversion_premium_pct": 40},
+    ],
+    rating="AA", issue_scale=20, bond_name="测试债", stock_name="测试股",
+)
+check("历史回滚基础价只使用预测日前市场截面",
+      base_fixture["base_price_no_liquidity"] == 107.02
+      and base_fixture["market_sample_count"] == 3)
+
+recent_fixture, older_fixture = prior_liquidity_samples(
+    [
+        {"listing_date": "2026-08-01", "circulation_scale": 5.5, "residual_pp": 8},
+        {"listing_date": "2026-01-01", "circulation_scale": 5.4, "residual_pp": 30},
+        {"listing_date": "2026-09-01", "circulation_scale": 5.4, "residual_pp": 99},
+    ],
+    "2026-08-16",
+)
+check("历史回滚严格排除预测日之后样本",
+      len(recent_fixture) == 1 and len(older_fixture) == 0)
+
+rollback_fixture = rollback_prediction(
+    82.32, 5.5,
+    [
+        {"conversion_value": 81, "conversion_premium_pct": 20},
+        {"conversion_value": 84, "conversion_premium_pct": 30},
+        {"conversion_value": 88, "conversion_premium_pct": 40},
+    ],
+    "2026-08-16", [], rating="AA", issue_scale=20,
+    bond_name="测试债", stock_name="测试股",
+)
+check("历史回滚同时生成基础价和预测价",
+      rollback_fixture["base_price_no_liquidity"] == 107.02
+      and rollback_fixture["tracking_price"] == 107.02
+      and rollback_fixture["liquidity_adjustment_pp"] == 0)
 
 
 check("psql 路径适配当前系统", os.name == "nt" or not common.PSQL.lower().startswith("c:\\"), common.PSQL)

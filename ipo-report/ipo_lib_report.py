@@ -842,6 +842,14 @@ def main():
     detect_bond_market_temperature()
     # 预测跟踪：回填已上市的实际结果
     backfill_prediction_actuals()
+    # 只用本地历史事实按上市日期回滚缺失的新债预测；没有流通规模事实时自动跳过。
+    try:
+        from backfill_bond_liquidity_calibration import backfill_historical_prediction_baselines
+        rollback_result = backfill_historical_prediction_baselines()
+        print(f"[历史预测回滚] 候选{rollback_result['candidates']}只，补出{rollback_result['generated']}只，更新{rollback_result['updated']}只，跳过{rollback_result['skipped']}只")
+    except Exception as error:
+        # 回滚是校准补偿，不阻断当天日报；下一次任务继续重试。
+        print(f"[历史预测回滚] 暂未完成，保留现有日报：{error}")
     retrain_xgb_model()
     # 预测误差日志
     _log_prediction_errors()

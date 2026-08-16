@@ -9,7 +9,7 @@ from _common import _load_env
 _load_env()
 
 
-LIQUIDITY_MODEL_VERSION = "dynamic_residual_v4"
+LIQUIDITY_MODEL_VERSION = "dynamic_residual_v5"
 MIN_WINDOW_SAMPLES = 1
 MIN_ACTIVE_SAMPLES = 1
 MAX_BUCKET_RADIUS = 1
@@ -69,10 +69,20 @@ def _select_comparable_samples(samples, target_scale):
     return exact, "同档及相邻档样本不足"
 
 
+def _preferred_comparable_samples(samples, target_scale):
+    """真实日报样本优先；真实样本不足时才回退历史回滚样本。"""
+    real_samples = [row for row in samples if not row.get("is_backfilled", False)]
+    if real_samples:
+        selected, method = _select_comparable_samples(real_samples, target_scale)
+        if len(selected) >= MIN_WINDOW_SAMPLES:
+            return selected, f"{method}（真实样本）"
+    return _select_comparable_samples(samples, target_scale)
+
+
 def _window_impact(samples, target_scale):
     if len(samples) < MIN_WINDOW_SAMPLES:
         return None
-    selected, method = _select_comparable_samples(samples, target_scale)
+    selected, method = _preferred_comparable_samples(samples, target_scale)
     if len(selected) < MIN_WINDOW_SAMPLES:
         return None
     selected_mean = robust_mean(row["residual_pp"] for row in selected)
@@ -83,6 +93,9 @@ def _window_impact(samples, target_scale):
         "market_count": len(samples),
         "market_mean_pp": market_mean,
         "method": method,
+        "sample_source": "historical_backfill" if all(
+            row.get("is_backfilled", False) for row in selected
+        ) else "live",
     }
 
 
@@ -97,6 +110,7 @@ def calculate_adjustment_from_samples(target_scale, recent_samples, older_sample
             "recent": None, "older": None, "half_year": None,
             "weight_text": f"近半年有效样本{len(all_half_year)}只，未达到{MIN_ACTIVE_SAMPLES}只启用门槛，暂不调整",
             "model_version": LIQUIDITY_MODEL_VERSION,
+            "sample_source": "none",
         }
     recent = _window_impact(recent_samples, target_scale)
     # 第4至6个月本身样本很少时，半年稳定项使用完整近半年窗口。
@@ -130,6 +144,10 @@ def calculate_adjustment_from_samples(target_scale, recent_samples, older_sample
         "half_year": half_year,
         "weight_text": weight_text,
         "model_version": LIQUIDITY_MODEL_VERSION,
+        "sample_source": "historical_backfill" if any(
+            section and section.get("sample_source") == "historical_backfill"
+            for section in (recent, older, half_year)
+        ) else "live",
     }
 
 
@@ -154,7 +172,8 @@ def calculate_liquidity_adjustment(circulation_scale, as_of_date=None):
     try:
         rows = conn.execute(
             """SELECT listing_date,circulation_scale,
-                      (actual_price-base_price_no_liquidity)/NULLIF(transfer_value,0)*100 AS residual_pp
+                      (actual_price-base_price_no_liquidity)/NULLIF(transfer_value,0)*100 AS residual_pp,
+                      valuation_context,valuation_model_version
                  FROM predictions
                 WHERE type='bond' AND status='fulfilled'
                   AND actual_price IS NOT NULL AND base_price_no_liquidity IS NOT NULL
@@ -169,12 +188,22 @@ def calculate_liquidity_adjustment(circulation_scale, as_of_date=None):
         conn.close()
 
     recent, older = [], []
-    for listing_date, scale, residual in rows:
+    for listing_date, scale, residual, context, model_version in rows:
         if scale is None or residual is None:
             continue
         row_date = _as_date(listing_date)
         age_days = (target_date - row_date).days
-        item = {"circulation_scale": float(scale), "residual_pp": float(residual)}
+        context = context if isinstance(context, dict) else {}
+        source = str(context.get("source") or "")
+        is_backfilled = (
+            source in ("historical_rollback", "legacy_snapshot")
+            or str(model_version or "").startswith("historical_")
+        )
+        item = {
+            "circulation_scale": float(scale),
+            "residual_pp": float(residual),
+            "is_backfilled": is_backfilled,
+        }
         if age_days <= 92:
             recent.append(item)
         else:

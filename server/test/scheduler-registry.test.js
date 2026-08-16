@@ -1,6 +1,6 @@
 // WORKER-01：单一任务注册清单校验（Web 兼容模式与独立 Worker 共用）
 // 验收：任务注册表与技术架构后台任务清单逐项一致；Web/Worker 使用同一清单；
-//       Web 在 DISABLE_SCHEDULER=1 时不运行调度；Worker 始终注册全部任务。
+//       只有生产环境允许运行调度；生产 Web 在 DISABLE_SCHEDULER=1 时关闭，Worker 注册全部任务。
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -39,13 +39,18 @@ check(new Set(allNames).size === allNames.length, '任务清单存在重复名�
 // 2) Web 与 Worker 共用同一份注册清单（静态：都 require('./scheduler')）
 const appSrc = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const workerSrc = fs.readFileSync(path.join(__dirname, '..', 'worker.js'), 'utf8');
+const schedulerSrc = fs.readFileSync(path.join(__dirname, '..', 'scheduler.js'), 'utf8');
 check(/require\('\.\/scheduler'\)/.test(appSrc), 'app.js 未共用 server/scheduler.js 注册清单');
 check(/require\('\.\/scheduler'\)/.test(workerSrc), 'worker.js 未共用 server/scheduler.js 注册清单');
 
-// 3) Web 在 DISABLE_SCHEDULER=1 时不运行调度；Worker 始终运行（无该开关）
-check(/process\.env\.DISABLE_SCHEDULER\s*!==\s*'1'/.test(appSrc) && /startScheduler\(/.test(appSrc),
-  'app.js 缺少 DISABLE_SCHEDULER 守卫或未调用 startScheduler');
+// 3) 非生产环境不运行调度；生产 Web 仍受 DISABLE_SCHEDULER 控制，Worker 不使用该开关。
+check(/process\.env\.NODE_ENV\s*===\s*'production'/.test(appSrc)
+  && /process\.env\.DISABLE_SCHEDULER\s*!==\s*'1'/.test(appSrc) && /startScheduler\(/.test(appSrc),
+  'app.js 缺少生产环境或 DISABLE_SCHEDULER 守卫');
 check(/startScheduler\(/.test(workerSrc), 'worker.js 未调用 startScheduler');
+check(/process\.env\.NODE_ENV\s*!==\s*'production'/.test(workerSrc), 'worker.js 缺少非生产环境禁用守卫');
+check(/function productionSchedulerEnabled\(\)/.test(schedulerSrc)
+  && /process\.env\.NODE_ENV\s*===\s*'production'/.test(schedulerSrc), 'scheduler.js 缺少中央生产环境守卫');
 check(!/process\.env\.DISABLE_SCHEDULER/.test(workerSrc), 'worker.js 不应包含 DISABLE_SCHEDULER 开关（应始终运行调度）');
 
 if (failures > 0) {

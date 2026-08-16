@@ -24,6 +24,10 @@ let orchestrationStarted = false;
 let orchestrationObserverTimer = null;
 let startupTasksPromise = Promise.resolve();
 
+function productionSchedulerEnabled() {
+  return process.env.NODE_ENV === 'production';
+}
+
 function startJobOrchestrationObserver() {
   if (orchestrationStarted || process.env.DURABLE_SCHEDULER === '0' || process.env.JOB_ORCHESTRATION_ENABLED === '0') return;
   orchestrationStarted = true;
@@ -97,6 +101,10 @@ function registerScheduledTasks() {
 
 // Web 兼容模式与独立 Worker 共用：启动补漏 + 周期调度一起拉起
 async function startScheduler() {
+  if (!productionSchedulerEnabled()) {
+    console.log('[scheduler] 非生产环境不启动后台任务调度');
+    return;
+  }
   startJobOrchestrationObserver();
   startupTasksPromise = runStartupTasks();
   await startupTasksPromise;

@@ -10,6 +10,10 @@ const MAX_RECOVERY_SUMMARY_ATTEMPTS = 3;
 const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
         AND NOT (alert_type='recovery' AND status IN ('sent','suppressed'))`;
 
+function productionAlertsEnabled() {
+  return process.env.NODE_ENV === 'production';
+}
+
 function recipients() {
   return String(process.env.ALERT_EMAIL_TO || '')
     .split(',').map(item => item.trim()).filter(Boolean);
@@ -62,15 +66,15 @@ async function upsertAlert(input) {
 }
 
 async function deliverAlert(alert) {
-  // 自动化测试会故意制造失败/降级任务；即使开发机误加载了真实 SMTP，也绝不能向真实收件人发信。
-  if (process.env.NODE_ENV === 'test') {
+  // 最终邮件出口再做一次生产环境校验，防止测试或本地开发误加载真实 SMTP 后向真实收件人发信。
+  if (!productionAlertsEnabled()) {
     await pool.query(
       `UPDATE ops.alert_notifications
           SET status='suppressed', send_attempts=0, recovery_attempts=0,
               next_send_at=NULL, last_send_error=NULL, sending_started_at=NULL, updated_at=now()
         WHERE alert_id=$1`, [alert.alert_id]
     );
-    return { ok: true, suppressed: true, alertId: alert.alert_id, reason: 'test_environment' };
+    return { ok: true, suppressed: true, alertId: alert.alert_id, reason: 'non_production_environment' };
   }
   const claimed = await claimAlertDelivery(alert.alert_id);
   if (!claimed) return { ok: true, suppressed: true, alertId: alert.alert_id };
@@ -124,6 +128,10 @@ async function deliverAlert(alert) {
 }
 
 async function sendAlert(input, options = {}) {
+  // 非生产环境不创建任务告警记录，也不触碰共享告警状态。
+  if (!productionAlertsEnabled()) {
+    return { ok: true, suppressed: true, reason: 'non_production_environment' };
+  }
   let alert = await upsertAlert(input);
   const repeatWindowMs = 6 * 60 * 60 * 1000;
   const force = Boolean(options.force || input.force);
@@ -174,6 +182,9 @@ async function claimAlertDelivery(alertId) {
 }
 
 async function sendDueAlerts(limit = 20) {
+  if (!productionAlertsEnabled()) {
+    return { ok: true, suppressed: true, count: 0, results: [], reason: 'non_production_environment' };
+  }
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
   await pool.query(
     `UPDATE ops.alert_notifications
@@ -262,6 +273,7 @@ async function releaseRecoverySummaryClaim(claim) {
 }
 
 async function sendRecoverySummary() {
+  if (!productionAlertsEnabled()) return null;
   const to = recipients();
   if (!mailer || !to.length) return null;
   const { rows: dueFailures } = await pool.query(
@@ -336,6 +348,9 @@ async function notifyJobFailure(input) {
 }
 
 async function sendTestEmail() {
+  if (!productionAlertsEnabled()) {
+    return { ok: false, suppressed: true, error: '非生产环境已禁止任务告警邮件' };
+  }
   const to = recipients();
   if (!mailer || !to.length) return { ok: false, error: '未配置 SMTP 或 ALERT_EMAIL_TO' };
   await mailer.sendMail({
@@ -355,6 +370,7 @@ async function sendRecoveryAlert(input) {
 }
 
 async function resolveJobSlotAlerts(slot) {
+  if (!productionAlertsEnabled()) return 0;
   const { rows } = await pool.query(
       `UPDATE ops.alert_notifications
         SET status='resolved', resolved_at=now(), sending_started_at=NULL, updated_at=now()
@@ -389,6 +405,9 @@ async function listAlerts(options = {}) {
 }
 
 async function resendAlert(alertId) {
+  if (!productionAlertsEnabled()) {
+    return { ok: true, suppressed: true, alertId, reason: 'non_production_environment' };
+  }
   const { rows } = await pool.query('SELECT * FROM ops.alert_notifications WHERE alert_id=$1', [alertId]);
   if (!rows[0]) return null;
   const { rows: resetRows } = await pool.query(

@@ -129,10 +129,12 @@ async function start() {
   server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`存在小站已启动: http://127.0.0.1:${PORT}`);
     console.log(`数据目录: ${DATA_DIR}`);
-    // 任务调度默认在 Web 进程内运行（向后兼容）。若拆分独立 worker，给 Web 进程设
-    // DISABLE_SCHEDULER=1 并另起 worker 进程（见 server/worker.js），避免重复执行。
-    if (process.env.DISABLE_SCHEDULER !== '1') {
+    // 仅生产兼容模式允许在 Web 进程内运行调度。拆分独立 worker 时给 Web 进程设
+    // DISABLE_SCHEDULER=1（见 server/worker.js），避免重复执行；非生产环境始终关闭。
+    if (process.env.NODE_ENV === 'production' && process.env.DISABLE_SCHEDULER !== '1') {
       startScheduler().catch(function (e) { console.error('[scheduler] 启动失败:', e && e.message); });
+    } else if (process.env.NODE_ENV !== 'production') {
+      console.log('[scheduler] 非生产环境不启动后台任务调度');
     } else {
       console.log('[scheduler] DISABLE_SCHEDULER=1：Web 进程不运行后台任务（由独立 worker 承担）');
     }

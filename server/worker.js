@@ -6,6 +6,10 @@ const { startScheduler, waitForStartupTasks, stopJobOrchestrationObserver } = re
 const { stopDurableExecutor, JOB_DEFINITIONS } = require('./services/jobOrchestrator');
 
 async function main() {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[worker] 非生产环境不启动后台任务调度');
+    return;
+  }
   await initSchema();
   console.log('[worker] 后台任务调度已启动（独立进程）');
   await startScheduler();

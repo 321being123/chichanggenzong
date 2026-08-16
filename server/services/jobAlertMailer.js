@@ -62,6 +62,16 @@ async function upsertAlert(input) {
 }
 
 async function deliverAlert(alert) {
+  // 自动化测试会故意制造失败/降级任务；即使开发机误加载了真实 SMTP，也绝不能向真实收件人发信。
+  if (process.env.NODE_ENV === 'test') {
+    await pool.query(
+      `UPDATE ops.alert_notifications
+          SET status='suppressed', send_attempts=0, recovery_attempts=0,
+              next_send_at=NULL, last_send_error=NULL, sending_started_at=NULL, updated_at=now()
+        WHERE alert_id=$1`, [alert.alert_id]
+    );
+    return { ok: true, suppressed: true, alertId: alert.alert_id, reason: 'test_environment' };
+  }
   const claimed = await claimAlertDelivery(alert.alert_id);
   if (!claimed) return { ok: true, suppressed: true, alertId: alert.alert_id };
   const to = recipients();

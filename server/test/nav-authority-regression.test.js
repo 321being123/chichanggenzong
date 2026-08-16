@@ -176,6 +176,42 @@ const previousCloseDate = (() => {
     assert.strictEqual(incompletePreview.status, 200, '缺少历史结算额时预览仍应返回可解释结果');
     assert.strictEqual(incompletePreviewJson.calcStatus, 'data_incomplete', '缺少历史结算额时预览必须标记数据不完整');
     assert.ok(incompletePreviewJson.unresolvedTradeIds.length > 0, '预览必须返回未解决港股交易标识');
+
+    // 已有较新的完整券商锚点时，merge 补导更早历史只补净值事实，不应重建一个不会生效的旧锚点。
+    await upsertNav(U, A, { date: todayCN(), nav: 1.1, totalAsset: 1500, invested: 1000, hkRate: 0.85 });
+    await pool.query(
+      `UPDATE nav_history SET snapshot_source='imported', is_locked=true, cash_cny=500, market_value_cny=1000,
+              system_market_value_at_snapshot=1000, calc_status='broker_exact'
+        WHERE username=$1 AND account_name=$2 AND date=$3`, [U, A, todayCN()]
+    );
+    await pool.query(`DELETE FROM daily_prices WHERE username=$1 AND account_name=$2 AND date <= $3`, [U, A, previousCloseDate]);
+    const preservedBefore = await loadAccountData(U, A);
+    const olderBatchId = 'older-history-preserve-current-anchor';
+    const olderImport = await fetch(base + '/nav/import?version=' + preservedBefore.version, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: A, importBatchId: olderBatchId, mode: 'merge', records: [
+        { date: previousCloseDate, nav: 0.95, totalAsset: 1200, invested: 1000, cash: 400 }
+      ] })
+    });
+    const olderJson = await olderImport.json();
+    assert.strictEqual(olderImport.status, 200, '已有较新锚点时补导更早历史不应被旧行情缺失阻断：' + JSON.stringify(olderJson));
+    const preservedAfter = await loadAccountData(U, A);
+    assert.strictEqual(String(preservedAfter.anchorImportDate).slice(0, 10), todayCN(), '补导旧历史后仍应使用较新的券商锚点');
+    const olderSnapshots = await pool.query(`SELECT count(*)::int AS c FROM nav_position_snapshots WHERE snapshot_id=$1`, [olderBatchId]);
+    assert.strictEqual(olderSnapshots.rows[0].c, 0, '仅补历史净值时不应生成无效的旧持仓锚点');
+
+    // 同日记录的现金列缺省时，沿用库中已有券商现金；不能把正确现金静默覆盖为 0。
+    const blankCashBefore = await loadAccountData(U, A);
+    const blankCashImport = await fetch(base + '/nav/import?version=' + blankCashBefore.version, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: A, importBatchId: 'blank-cash-preserve-existing', mode: 'merge', records: [
+        { date: todayCN(), nav: 1.1, totalAsset: 1500, invested: 1000, cash: null }
+      ] })
+    });
+    const blankCashJson = await blankCashImport.json();
+    assert.strictEqual(blankCashImport.status, 200, '现金列缺省的同日重导应成功：' + JSON.stringify(blankCashJson));
+    const preservedCash = await pool.query(`SELECT cash_cny::float8 AS cash FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3`, [U, A, todayCN()]);
+    assert.strictEqual(preservedCash.rows[0].cash, 500, '同日现金缺省时必须保留已有券商现金');
     console.log('nav-authority-regression: ALL PASS');
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));

@@ -19,9 +19,11 @@ const rootDir = path.join(__dirname, '..', '..');
 let pass = 0, fail = 0, skip = 0;
 const failed = [];
 const isCI = process.env.CI === '1';
+// 所有测试子进程统一隔离真实邮件；空字符串可阻止 dotenv 从开发机 .env 回填真实收件人。
+const testEnv = { ...process.env, NODE_ENV: 'test', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '' };
 
 function runNode(file) {
-  const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv });
   const out = (r.stdout || '') + (r.stderr || '');
   const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
   const last = lines[lines.length - 1] || '(无输出)';
@@ -84,7 +86,7 @@ function runPython() {
   ].filter(f => fs.existsSync(f));
   if (pyFiles.length === 0) { skip++; console.log('  ⊘ 未找到 Python 测试文件，跳过'); return; }
   for (const file of pyFiles) {
-    const r = spawnSync(py, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const r = spawnSync(py, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv });
     const out = (r.stdout || '') + (r.stderr || '');
     const lines = out.split('\n').map(s => s.trim()).filter(Boolean);
     const last = lines[lines.length - 1] || '(无输出)';

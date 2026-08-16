@@ -3,6 +3,11 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 
+// 本测试会主动制造 degraded 告警；单独运行时也必须隔离开发机真实 SMTP。
+process.env.NODE_ENV = 'test';
+process.env.ALERT_EMAIL_TO = '';
+process.env.ALERT_EMAIL_FROM = '';
+
 const root = path.join(__dirname, '..', '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const definitions = require('../services/jobDefinitions');

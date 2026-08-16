@@ -801,14 +801,14 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     nav: requiredNumber(r.nav),
     totalAsset: requiredNumber(r.totalAsset),
     invested: requiredNumber(r.invested),
-    cash: requiredNumber(r.cash),
+    cash: r.cash == null || r.cash === '' ? null : Number(r.cash),
     hkRate: r.hkRate == null || r.hkRate === '' ? null : Number(r.hkRate)
   }));
   const bad = normalized.find((r) => !/^\d{4}-\d{2}-\d{2}$/.test(r.date) ||
     !Number.isFinite(r.nav) || r.nav < 0 || !Number.isFinite(r.totalAsset) || r.totalAsset < 0 ||
-    !Number.isFinite(r.invested) || !Number.isFinite(r.cash) || r.cash < 0 || r.cash > r.totalAsset ||
+    !Number.isFinite(r.invested) || (r.cash != null && (!Number.isFinite(r.cash) || r.cash < 0 || r.cash > r.totalAsset)) ||
     (r.hkRate != null && (!Number.isFinite(r.hkRate) || r.hkRate <= 0)));
-  if (bad) return res.status(400).json({ error: '权威导入必须包含合法的日期、净值、总资产、累计投入资金和现金；现金不能大于总资产' });
+  if (bad) return res.status(400).json({ error: '权威导入必须包含合法的日期、净值、总资产和累计投入资金；现金可留空，但不能为负数或大于总资产' });
   // 券商导出可能同一天出现多条修订记录；按已有后写覆盖语义保留最后一行，避免整批导入失败。
   const byDate = new Map();
   normalized.forEach((r) => byDate.set(r.date, r));
@@ -852,6 +852,23 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
               calc_status AS "calcStatus", diagnostics, is_locked AS "isLocked", input_hash AS "inputHash"
          FROM nav_history WHERE username=$1 AND account_name=$2 ORDER BY date`, [username, accountName]
     );
+    const hasStoredNumber = (value) => value != null && value !== '' && Number.isFinite(Number(value));
+    const existingCashByDate = new Map(currentNav.filter((n) => hasStoredNumber(n.cashCny))
+      .map((n) => [String(n.date || '').slice(0, 10), Number(n.cashCny)]));
+    normalizedRecords.forEach((r) => {
+      if (r.cash == null) r.cash = existingCashByDate.has(r.date) ? existingCashByDate.get(r.date) : 0;
+    });
+    // merge 仅补导更早历史时，保留库中较新的完整券商锚点。
+    // 旧批次只补历史总资产/净值，不应为了一个不会生效的旧锚点强制要求整套历史持仓行情。
+    const latestExistingAnchor = currentNav.filter((n) =>
+      n.snapshotSource === 'imported' && n.isLocked !== false &&
+      hasStoredNumber(n.cashCny) && hasStoredNumber(n.marketValueCny) &&
+      hasStoredNumber(n.systemMarketValueAtSnapshot)
+    ).reduce((latest, n) => {
+      const date = String(n.date || '').slice(0, 10);
+      return !latest || date > latest ? date : latest;
+    }, '');
+    const preserveExistingAnchor = req.body.mode !== 'replace' && latestExistingAnchor > maxImportDate;
     const { rows: posRows } = await client.query(
       `SELECT code, name, price::float8 AS price, quantity::float8 AS quantity, subtype, type
          FROM positions WHERE username=$1 AND account_name=$2`, [username, accountName]
@@ -861,7 +878,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
               quote_currency, amount_cny::float8 AS amount_cny
          FROM trades WHERE username=$1 AND account_name=$2`, [username, accountName]
     );
-    const anchorPositions = buildAnchorPositions(posRows, tradeRows, maxImportDate);
+    const anchorPositions = preserveExistingAnchor ? [] : buildAnchorPositions(posRows, tradeRows, maxImportDate);
     const { rows: acctRows } = await client.query(
       `SELECT hk_rate::float8 AS hk_rate FROM accounts WHERE username=$1 AND account_name=$2`, [username, accountName]
     );
@@ -884,22 +901,24 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     const anchorRecord = normalizedRecords.find((r) => r.date === requestedAnchorDate);
     const systemRate = anchorRecord && anchorRecord.hkRate > 0 ? anchorRecord.hkRate :
       (fxAtDate(requestedAnchorDate) || (acctRows[0] && Number(acctRows[0].hk_rate) > 0 ? Number(acctRows[0].hk_rate) : 0));
-    const anchorPriceData = await loadAnchorPrices(username, accountName, requestedAnchorDate, anchorPositions);
+    const anchorPriceData = preserveExistingAnchor
+      ? { prices: new Map(), priceDate: null }
+      : await loadAnchorPrices(username, accountName, requestedAnchorDate, anchorPositions);
     const dayPrices = anchorPriceData.prices;
     const anchorPriceDate = anchorPriceData.priceDate;
     const missingCodes = [];
-    if (requestedAnchorDate !== todayCN() && (!anchorPriceDate || anchorPositions.some((p) => Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0)))) {
+    if (!preserveExistingAnchor && requestedAnchorDate !== todayCN() && (!anchorPriceDate || anchorPositions.some((p) => Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0)))) {
       anchorPositions.forEach((p) => { if (Number(p.quantity) !== 0 && !(dayPrices.get(String(p.code)) > 0)) missingCodes.push(String(p.code)); });
       const e = new Error('历史导入日期缺少持仓收盘价，无法建立精确锚点：' + [...new Set(missingCodes)].join(', '));
       e.status = 422;
       throw e;
     }
-    if (anchorPositions.some((p) => Number(p.quantity) !== 0 && p.subtype === '港股') && !(systemRate > 0)) {
+    if (!preserveExistingAnchor && anchorPositions.some((p) => Number(p.quantity) !== 0 && p.subtype === '港股') && !(systemRate > 0)) {
       const e = new Error('历史导入日期缺少港币兑人民币汇率，无法建立精确锚点');
       e.status = 422;
       throw e;
     }
-    const systemMarketValue = anchorPositions.reduce((sum, p) => {
+    const systemMarketValue = preserveExistingAnchor ? null : anchorPositions.reduce((sum, p) => {
       const quantity = Number(p.quantity) || 0;
       if (quantity === 0) return sum;
       const price = requestedAnchorDate === todayCN() ? (Number(p.price) || 0) : dayPrices.get(String(p.code));
@@ -913,7 +932,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
        VALUES ($1,$2,$3,$4,$5,$6,$7,'committed',$8::jsonb,$9::jsonb)
        ON CONFLICT (id) DO NOTHING`,
       [importBatchId, username, accountName, minImportDate, maxImportDate, normalizedRecords.length, inputHash,
-        JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue })]
+        JSON.stringify(currentNav), JSON.stringify({ systemRate, systemMarketValue, preservedAnchorDate: preserveExistingAnchor ? latestExistingAnchor : null })]
     );
     // 全量替换模式：先清空再导入
     if (req.body.mode === 'replace') {
@@ -921,7 +940,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     }
     for (const r of normalizedRecords) {
       const brokerPositionValue = round(r.totalAsset - r.cash, 2);
-      const isAnchor = r.date === maxImportDate;
+      const isAnchor = !preserveExistingAnchor && r.date === maxImportDate;
       await client.query(
         `INSERT INTO nav_history
           (username, account_name, account_id, date, nav, total_asset, invested, snapshot_at, hk_rate,

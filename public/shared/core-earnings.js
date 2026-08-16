@@ -427,16 +427,30 @@ async function importFundExcel(event) {
 async function finishImport(rows, mapping) {
   const parsed = [];
   const badRows = [];
+  // “累计投入资金”是累计值。券商表尾公式损坏/空白时，仅对最后一个有效值之后的连续尾部行沿用前值；
+  // 中间缺值仍判为坏行，避免跨越后续真实入金记录进行错误填充。
+  let trailingInvested = null;
+  let lastValidInvestedRow = -1;
+  rows.forEach(function (row, i) {
+    const value = mapping.invested >= 0 ? parseNumericCellF(row[mapping.invested]) : NaN;
+    if (!isNaN(value)) { trailingInvested = value; lastValidInvestedRow = i; }
+  });
+  let carriedInvestedCount = 0;
   rows.forEach(function (row, i) {
     const date = normalizeDate(row[mapping.date]);
     const nav = parseNumericCellF(row[mapping.nav]);
     const totalAsset = mapping.total >= 0 ? parseNumericCellF(row[mapping.total]) : null;
-    const invested = mapping.invested >= 0 ? parseNumericCellF(row[mapping.invested]) : null;
+    let invested = mapping.invested >= 0 ? parseNumericCellF(row[mapping.invested]) : null;
+    if (isNaN(invested) && lastValidInvestedRow >= 0 && i > lastValidInvestedRow) {
+      invested = trailingInvested;
+      carriedInvestedCount++;
+    }
     const cashRaw = mapping.cash >= 0 ? row[mapping.cash] : null;
     const cashBlank = cashRaw == null || String(cashRaw).trim() === '';
-    const cash = cashBlank ? 0 : parseNumericCellF(cashRaw);
+    // 空现金表示“该行未提供”，交给服务端优先沿用同日已有券商现金；同日也没有时再按 0 缺省。
+    const cash = cashBlank ? null : parseNumericCellF(cashRaw);
     if (!date || nav === null || isNaN(nav) || totalAsset === null || isNaN(totalAsset) ||
-        invested === null || isNaN(invested) || cash === null || isNaN(cash) || cash < 0 || cash > totalAsset) {
+        invested === null || isNaN(invested) || (!cashBlank && (isNaN(cash) || cash < 0 || cash > totalAsset))) {
       badRows.push(i + 1); return;
     }
     parsed.push({
@@ -481,7 +495,8 @@ async function finishImport(rows, mapping) {
   renderEarnings();
   let msg = '已导入 ' + importedRecords.length + ' 条历史净值';
   if (duplicateCount) msg += '（已合并 ' + duplicateCount + ' 个重复日期，保留最后一行）';
-  if (badRows.length) msg += '（' + badRows.length + ' 行因缺日期/净值未导入）';
+  if (carriedInvestedCount) msg += '（' + carriedInvestedCount + ' 行累计投入资金异常，已沿用前一有效值）';
+  if (badRows.length) msg += '（' + badRows.length + ' 行字段不完整或数值无效，未导入）';
   showToast(msg);
 }
 

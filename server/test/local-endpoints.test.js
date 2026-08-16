@@ -177,13 +177,15 @@ async function checkAsync(name, fn) {
       assert.ok(d1.version > d0.version, '导入后版本应提升');
     });
 
-    await checkAsync('净值导入：缺现金字段 → 400', async () => {
+    await checkAsync('净值导入：缺现金字段按 0 缺省', async () => {
       const d0 = await loadAccountData(U, A);
       const r = await fetch(base + '/nav/import?version=' + d0.version, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account: A, records: [{ date: '2026-08-04', nav: 1.1, totalAsset: 11000, invested: 9000 }] })
       });
-      assert.strictEqual(r.status, 400, '缺现金字段必须拒绝');
+      assert.strictEqual(r.status, 200, '缺现金字段应支持列式缺省');
+      const d1 = await loadAccountData(U, A);
+      assert.strictEqual(d1.navHistory.find(n => n.date === '2026-08-04').cashCny, 0, '同日无已有现金时应按 0 缺省');
     });
 
     await checkAsync('净值导入：普通快照不得覆盖锁定导入日', async () => {

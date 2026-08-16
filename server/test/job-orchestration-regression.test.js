@@ -9,6 +9,7 @@ const adminRoute = read('server/routes/admin.js');
 const slots = read('server/services/jobScheduleSlots.js');
 const orchestrator = read('server/services/jobOrchestrator.js');
 const alertMailer = read('server/services/jobAlertMailer.js');
+const testRunner = read('server/test/run-all.js');
 const health = read('server/scripts/checkWorkerHealth.js');
 const adminUi = read('public/js/admin.js');
 const ipoJob = read('server/jobs/ipoCalendarRefresh.js');
@@ -42,6 +43,8 @@ assert(/item\.label\.includes\(keyword\)/.test(slots), '关键词必须支持中
 assert(!/渚濊禆|鍚庡彴|璁″垝/.test(slots), '任务告警内容不得包含乱码');
 
 assert(/MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES\.length \+ 1/.test(alertMailer), '邮件发送失败后必须完整执行 1、5、15 分钟三次重试');
+assert(/process\.env\.NODE_ENV === 'test'/.test(alertMailer) && /status='suppressed'/.test(alertMailer), '测试环境必须在邮件发送器内强制抑制真实邮件');
+assert(/NODE_ENV: 'test'/.test(testRunner) && /ALERT_EMAIL_TO: ''/.test(testRunner), '完整测试入口必须清空真实告警收件人');
 assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.alertType\)/.test(alertMailer), '持续异常不得绕过去重周期重复发信');
 assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾期告警');
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');

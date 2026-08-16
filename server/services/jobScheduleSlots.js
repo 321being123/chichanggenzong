@@ -144,7 +144,7 @@ async function reconcileSlot(slot) {
   }
   if (slot.status === 'failed' && slot.result_summary && slot.result_summary.timed_out) return slot;
   const { rows } = await pool.query(
-    `SELECT id, status, finished_at, detail
+    `SELECT id, status, finished_at, detail, result_json
        FROM job_runs
       WHERE slot_id=$1
       ORDER BY id DESC LIMIT 1`,
@@ -153,7 +153,7 @@ async function reconcileSlot(slot) {
   let run = rows[0];
   if (!run) {
     const legacy = await pool.query(
-      `SELECT id, status, finished_at, detail
+      `SELECT id, status, finished_at, detail, result_json
          FROM job_runs
        WHERE job=$1 AND started_at >= $2::timestamptz
          AND started_at < $2::timestamptz + make_interval(mins => $3::integer)
@@ -165,12 +165,14 @@ async function reconcileSlot(slot) {
   if (!run || !['done', 'failed'].includes(run.status)) return slot;
   const requestedStatus = run.status === 'done' ? 'succeeded' : 'failed';
   const requiresDataWatermark = definition.requiresDataWatermark !== false;
-  const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
+  const runResult = run.result_json && typeof run.result_json === 'object' ? run.result_json : {};
+  const skipWatermark = runResult.watermarkNotRequired === true;
+  const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark && !skipWatermark
     ? await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null)
     : null;
-  const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark
+  const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark && !skipWatermark
     && !isDataAsOfFresh(dataAsOf, slot.business_date, definition) ? 'degraded' : requestedStatus;
-  const resultSummary = { source: 'job_runs', runId: run.id, detail: sanitizeJobError(run.detail || '') };
+  const resultSummary = { ...runResult, source: 'job_runs', runId: run.id, detail: sanitizeJobError(run.detail || '') };
   const updated = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status=$2, last_run_id=$3,
@@ -446,8 +448,6 @@ async function queryDataAsOf(jobCode, businessDate) {
 }
 
 async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
-  const queried = await queryDataAsOf(jobCode, businessDate).catch(() => null);
-  if (queried) return queried;
   const candidates = [
     resultSummary?.data_as_of,
     resultSummary?.dataAsOf,
@@ -458,7 +458,7 @@ async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
     const normalized = normalizeDataAsOf(candidate);
     if (normalized) return normalized;
   }
-  return null;
+  return queryDataAsOf(jobCode, businessDate).catch(() => null);
 }
 
 async function completeSlot(slotId, status, resultSummary, errorMessage, runId) {
@@ -467,7 +467,8 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
   const current = await pool.query('SELECT job_code,business_date::text AS business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!current.rows[0]) return null;
   const definition = getJobDefinition(current.rows[0].job_code);
-  const requiresDataWatermark = definition.requiresDataWatermark !== false;
+  const skipWatermark = resultSummary && resultSummary.watermarkNotRequired === true;
+  const requiresDataWatermark = definition.requiresDataWatermark !== false && !skipWatermark;
   const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
     ? await resolveDataAsOf(current.rows[0].job_code, current.rows[0].business_date, resultSummary)
     : null;

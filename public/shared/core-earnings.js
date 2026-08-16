@@ -380,7 +380,7 @@ function detectMappingExact(headers) {
     nav: ['净值', '单位净值', '累计净值', '当日净值', '最新净值', '收盘净值', 'nav'],
     total: ['总资产', '总市值', '市值', '资产总额', '资产总值', 'total'],
     invested: ['本金', '投入', '投入本金', '累计投入', '资金', '投入资金', '实缴本金', 'invest'],
-    cash: ['现金', '现金余额', '可用余额', '账户现金', '现金资产', 'cash']
+    cash: ['现金', '现金余额', '可用余额', '账户现金', '现金资产', '持仓现金', '持仓现金余额', 'cash']
   };
   const find = function (key) {
     for (let i = 0; i < headers.length; i++) {
@@ -407,7 +407,7 @@ async function importFundExcel(event) {
     if (!d.headers || !d.rows || d.rows.length === 0) { closeImportProgress(); showToast('Excel 中没有可识别的数据行'); return; }
 
     const auto = detectMappingExact(d.headers);
-    if (auto.date >= 0 && auto.nav >= 0 && auto.total >= 0 && auto.invested >= 0 && auto.cash >= 0) {
+    if (auto.date >= 0 && auto.nav >= 0 && auto.total >= 0 && auto.invested >= 0) {
       // 精确匹配成功，直接导入
       closeImportProgress();
       await finishImport(d.rows, auto);
@@ -432,7 +432,9 @@ async function finishImport(rows, mapping) {
     const nav = parseNumericCellF(row[mapping.nav]);
     const totalAsset = mapping.total >= 0 ? parseNumericCellF(row[mapping.total]) : null;
     const invested = mapping.invested >= 0 ? parseNumericCellF(row[mapping.invested]) : null;
-    const cash = mapping.cash >= 0 ? parseNumericCellF(row[mapping.cash]) : null;
+    const cashRaw = mapping.cash >= 0 ? row[mapping.cash] : null;
+    const cashBlank = cashRaw == null || String(cashRaw).trim() === '';
+    const cash = cashBlank ? 0 : parseNumericCellF(cashRaw);
     if (!date || nav === null || isNaN(nav) || totalAsset === null || isNaN(totalAsset) ||
         invested === null || isNaN(invested) || cash === null || isNaN(cash) || cash < 0 || cash > totalAsset) {
       badRows.push(i + 1); return;
@@ -567,9 +569,9 @@ function openMappingModal(headers, rows, auto) {
   const fields = [
     { key: 'date', label: '日期列 *', def: auto.date },
     { key: 'nav', label: '净值列 *', def: auto.nav },
-    { key: 'total', label: '总资产列 *', def: auto.total },
-    { key: 'invested', label: '累计投入列 *', def: auto.invested },
-    { key: 'cash', label: '现金列 *', def: auto.cash }
+    { key: 'total', label: '总市值列 *', def: auto.total },
+    { key: 'invested', label: '累计投入资金列 *', def: auto.invested },
+    { key: 'cash', label: '持仓现金列（可选）', def: auto.cash }
   ];
   const optsHtml = '<option value="-1">— 请选择 —</option>' +
     headers.map(function (h, i) { return '<option value="' + i + '">' + escapeHtml(h || '(空表头' + (i + 1) + ')') + '</option>'; }).join('');
@@ -599,14 +601,15 @@ function renderMappingPreview() {
   };
   const rows = pendingMapping.rows.slice(0, 5);
   let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:#f7f7f9;color:#666;">' +
-    '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总资产</th><th style="padding:6px;text-align:left;">累计投入</th><th style="padding:6px;text-align:left;">现金</th></tr></thead><tbody>';
+    '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总市值</th><th style="padding:6px;text-align:left;">累计投入资金</th><th style="padding:6px;text-align:left;">持仓现金</th></tr></thead><tbody>';
   rows.forEach(function (row) {
+    const cashValue = map.cash >= 0 && row[map.cash] != null && String(row[map.cash]).trim() !== '' ? row[map.cash] : 0;
     html += '<tr>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.date >= 0 ? row[map.date] : '') + '</td>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.nav >= 0 ? row[map.nav] : '') + '</td>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.total >= 0 ? row[map.total] : '') + '</td>' +
       '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.invested >= 0 ? row[map.invested] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.cash >= 0 ? row[map.cash] : '') + '</td>' +
+      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(cashValue) + '</td>' +
       '</tr>';
   });
   html += '</tbody></table>';
@@ -621,8 +624,8 @@ function confirmMapping() {
     invested: parseInt(document.getElementById('map-invested').value, 10),
     cash: parseInt(document.getElementById('map-cash').value, 10)
   };
-  if (map.date < 0 || map.nav < 0 || map.total < 0 || map.invested < 0 || map.cash < 0) {
-    showToast('请先选择日期、净值、总资产、累计投入和现金五列'); return;
+  if (map.date < 0 || map.nav < 0 || map.total < 0 || map.invested < 0) {
+    showToast('请先选择日期、净值、总市值和累计投入资金列'); return;
   }
   const pm = pendingMapping;
   closeMappingModal();

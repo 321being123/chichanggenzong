@@ -9,6 +9,7 @@ const definitions = require('../services/jobDefinitions');
 const slots = read('server/services/jobScheduleSlots.js');
 const orchestrator = read('server/services/jobOrchestrator.js');
 const valuation = read('server/jobs/convertibleBondRefresh.js');
+const stockJob = read('server/jobs/stockAnalysisRefresh.js');
 const slotService = read('server/services/jobScheduleSlots.js');
 const adminUi = read('public/js/admin.js');
 const pythonGuard = read('ipo-report/external_call_guard.py');
@@ -33,6 +34,9 @@ assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_loc
 assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) && /EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoHistorySync.js')), 'Python 自动任务子进程必须开启外部请求保护');
 assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=now\(\)\+/.test(orchestrator), '过期运行记录必须自动回收且活动任务必须续租');
 assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');
+assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_overview_latest/.test(stockJob)
+  && /const dataAsOf = stocks\.length && failed === 0 \? await latestStockAnalysisDate\(\) : null/.test(stockJob)
+  && /watermarkNotRequired: stocks\.length === 0/.test(stockJob), '个股分析成功水位必须来自实际入库，无目标时不得误报');
 
 (async () => {
   const originalRequest = require('https').request;
@@ -138,9 +142,10 @@ assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSou
     await pool.query('DELETE FROM ops.alert_notifications WHERE slot_id=$1', [staleInsert.rows[0].slot_id]);
     await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [staleInsert.rows[0].slot_id]);
 
-    const catchupNow = new Date(Date.UTC(2099, 1, 5, 0, 0, 0));
-    const catchupStart = new Date(Date.UTC(2099, 1, 5, 0, 0, 0));
-    const catchupEnd = new Date(Date.UTC(2099, 1, 6, 0, 0, 0));
+    // 使用月初且不超过月度任务 24 小时截止线的时间，避免验收测试自己触发漏跑告警。
+    const catchupNow = new Date(Date.UTC(2030, 3, 1, 0, 30, 0));
+    const catchupStart = new Date(Date.UTC(2030, 3, 1, 0, 0, 0));
+    const catchupEnd = new Date(Date.UTC(2030, 3, 2, 0, 0, 0));
     try {
       await syncScheduleSlots(catchupNow);
       const latestOnlyRows = await pool.query(

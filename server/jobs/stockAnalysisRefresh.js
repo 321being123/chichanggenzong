@@ -20,6 +20,13 @@ function nextShanghaiDelay(hour = 20, minute = 30, now = new Date()) {
   return target - current;
 }
 
+async function latestStockAnalysisDate() {
+  const { rows } = await pool.query(
+    'SELECT max(as_of_date)::text AS data_as_of FROM analytics.stock_overview_latest'
+  );
+  return rows[0] && rows[0].data_as_of ? String(rows[0].data_as_of).slice(0, 10) : null;
+}
+
 async function trackedStocks() {
   const { rows: users } = await pool.query('SELECT username FROM users WHERE status=$1', ['active']);
   const map = new Map();
@@ -78,14 +85,18 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     } catch (e) { console.warn('[一致性统计] 统计失败（不影响任务）:', e.message); }
     const failedDatasets = failures.filter(code => !recovered.includes(code));
     const firstFailure = failureDetails[0] || null;
+    const dataAsOf = stocks.length && failed === 0 ? await latestStockAnalysisDate() : null;
     return {
       ok: failed === 0,
       status: failed === 0 ? 'succeeded' : 'partial',
+      dataAsOf,
+      watermarkNotRequired: stocks.length === 0,
+      reason: stocks.length === 0 ? 'no-tracked-stocks' : undefined,
       completed: ok,
       failed,
       recovered,
       failedDatasets,
-      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : 'succeeded', dataAsOf: new Date().toISOString().slice(0, 10) })),
+      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : 'succeeded', dataAsOf })),
       ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
     };
   } catch (error) {
@@ -109,4 +120,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 20:30（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, trackedStocks, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, trackedStocks, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };

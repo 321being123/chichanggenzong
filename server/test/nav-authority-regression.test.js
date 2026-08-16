@@ -95,6 +95,27 @@ const yesterday = (() => {
     const rolled = await loadAccountData(U, A);
     assert.strictEqual(rolled.navHistory.length, 0, '回滚应恢复导入前净值历史');
 
+    // 招商等券商导出可能同一天有多条修订记录：应保留最后一行并完成整批导入。
+    const duplicateBefore = await loadAccountData(U, A);
+    const duplicateImport = await fetch(base + '/nav/import?version=' + duplicateBefore.version, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: A, records: [
+        { date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 },
+        { date: yesterday, nav: 1.01, totalAsset: 1401, invested: 1000, cash: 500 }
+      ] })
+    });
+    const duplicateJson = await duplicateImport.json();
+    assert.strictEqual(duplicateImport.status, 200, '重复日期的招商导入应成功');
+    assert.strictEqual(duplicateJson.duplicates, 1, '重复日期应合并为一条');
+    assert.strictEqual(duplicateJson.count, 1, '重复日期导入后的有效行数应为1');
+    const deduped = (await loadAccountData(U, A)).navHistory.find(n => n.date === yesterday);
+    assert.strictEqual(deduped.nav, 1.01, '重复日期应保留文件最后一行');
+    const duplicateAfter = await loadAccountData(U, A);
+    const duplicateRollback = await fetch(base + '/nav/import/' + encodeURIComponent(duplicateJson.batchId) + '/rollback?version=' + duplicateAfter.version, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: A })
+    });
+    assert.strictEqual(duplicateRollback.status, 200, '重复日期导入批次回滚应成功');
+
     // 导入历史日期之后已有买入时，锚点必须使用导入日数量，而不是当前数量。
     await pool.query(
       `INSERT INTO trades (id, username, account_name, date, trade_date, executed_at, code, name, direction, price, quantity, amount,

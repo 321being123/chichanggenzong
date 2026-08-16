@@ -749,7 +749,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
   const records = req.body.records;
   if (!Array.isArray(records) || records.length === 0) return res.status(400).json({ error: '缺少有效净值记录' });
   const requiredNumber = (value) => value == null || value === '' ? NaN : Number(value);
-  const normalizedRecords = records.map((r) => ({
+  const normalized = records.map((r) => ({
     date: String(r.date || '').slice(0, 10),
     nav: requiredNumber(r.nav),
     totalAsset: requiredNumber(r.totalAsset),
@@ -757,13 +757,16 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     cash: requiredNumber(r.cash),
     hkRate: r.hkRate == null || r.hkRate === '' ? null : Number(r.hkRate)
   }));
-  const bad = normalizedRecords.find((r) => !/^\d{4}-\d{2}-\d{2}$/.test(r.date) ||
+  const bad = normalized.find((r) => !/^\d{4}-\d{2}-\d{2}$/.test(r.date) ||
     !Number.isFinite(r.nav) || r.nav < 0 || !Number.isFinite(r.totalAsset) || r.totalAsset < 0 ||
     !Number.isFinite(r.invested) || !Number.isFinite(r.cash) || r.cash < 0 || r.cash > r.totalAsset ||
     (r.hkRate != null && (!Number.isFinite(r.hkRate) || r.hkRate <= 0)));
   if (bad) return res.status(400).json({ error: '权威导入必须包含合法的日期、净值、总资产、累计投入资金和现金；现金不能大于总资产' });
-  const dateSet = new Set(normalizedRecords.map((r) => r.date));
-  if (dateSet.size !== normalizedRecords.length) return res.status(400).json({ error: '同一导入文件存在重复日期' });
+  // 券商导出可能同一天出现多条修订记录；按已有后写覆盖语义保留最后一行，避免整批导入失败。
+  const byDate = new Map();
+  normalized.forEach((r) => byDate.set(r.date, r));
+  const normalizedRecords = [...byDate.values()];
+  const duplicateCount = normalized.length - normalizedRecords.length;
   const minImportDate = normalizedRecords.reduce((m, r) => !m || r.date < m ? r.date : m, '');
   const maxImportDate = normalizedRecords.reduce((m, r) => r.date > m ? r.date : m, '');
   const importBatchId = String(req.body.importBatchId || crypto.randomUUID());
@@ -918,7 +921,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     );
     await client.query('COMMIT');
     const result = await loadAccountData(username, accountName);
-    res.json({ ok: true, batchId: importBatchId, count: records.length, data: result });
+    res.json({ ok: true, batchId: importBatchId, count: normalizedRecords.length, duplicates: duplicateCount, data: result });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(e.status || 500).json({ error: e.message });

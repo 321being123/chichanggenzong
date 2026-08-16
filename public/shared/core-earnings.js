@@ -451,6 +451,11 @@ async function finishImport(rows, mapping) {
     showToast('没有可用数据' + (badRows.length ? ('（' + badRows.length + ' 行因缺日期/净值被跳过）') : ''));
     return;
   }
+  // 券商导出可能同一天有多条修订记录，保留文件中最后一行，和服务端后写覆盖语义一致。
+  var uniqueByDate = new Map();
+  parsed.forEach(function (record) { uniqueByDate.set(record.date, record); });
+  var importedRecords = Array.from(uniqueByDate.values());
+  var duplicateCount = parsed.length - importedRecords.length;
 
   // 导入前自动备份当前 navHistory（误导入可一键还原）；备份失败则中止导入，防止"以为有快照实际没有"
   var backedUp = await backupNavHistoryServer();
@@ -462,7 +467,7 @@ async function finishImport(rows, mapping) {
   // 阶段三：净值导入走 POST /nav/import 局部接口
   try {
     // 导入字段是券商账户级事实：同日一律覆盖；持仓数量不在此接口中写入。
-    var importBody = { account: currentAccount, records: parsed, mode: 'merge' };
+    var importBody = { account: currentAccount, records: importedRecords, mode: 'merge' };
     var r = await fetch(api('/api/nav/import?version=' + (dataVersion != null ? dataVersion : '')), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -474,7 +479,8 @@ async function finishImport(rows, mapping) {
   } catch(e) { showToast('导入失败：' + (e.message || e)); return; }
 
   renderEarnings();
-  let msg = '已导入 ' + parsed.length + ' 条历史净值';
+  let msg = '已导入 ' + importedRecords.length + ' 条历史净值';
+  if (duplicateCount) msg += '（已合并 ' + duplicateCount + ' 个重复日期，保留最后一行）';
   if (badRows.length) msg += '（' + badRows.length + ' 行因缺日期/净值未导入）';
   showToast(msg);
 }

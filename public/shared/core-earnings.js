@@ -495,6 +495,7 @@ async function finishImport(rows, mapping) {
   renderEarnings();
   let msg = '已导入 ' + importedRecords.length + ' 条历史净值';
   if (duplicateCount) msg += '（已合并 ' + duplicateCount + ' 个重复日期，保留最后一行）';
+  if (j.deletedLegacyRows) msg += '（已清理 ' + j.deletedLegacyRows + ' 条导入前的旧历史）';
   if (carriedInvestedCount) msg += '（' + carriedInvestedCount + ' 行累计投入资金异常，已沿用前一有效值）';
   if (badRows.length) msg += '（' + badRows.length + ' 行字段不完整或数值无效，未导入）';
   showToast(msg);

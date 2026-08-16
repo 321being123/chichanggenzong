@@ -1001,13 +1001,25 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
         }
       }
     }
+    // 导入成功后，导入批次的最新日期之前只保留导入数据；清理旧的系统/手工快照，
+    // 避免它们继续混入历史曲线或在后续刷新时被误当成有效历史。
+    const { rowCount: deletedLegacyRows } = await client.query(
+      `DELETE FROM nav_history
+         WHERE username=$1 AND account_name=$2
+           AND COALESCE(snapshot_source, '') <> 'imported'
+           AND date < (
+             SELECT MAX(date) FROM nav_history
+              WHERE username=$1 AND account_name=$2 AND snapshot_source='imported'
+           )`,
+      [username, accountName]
+    );
     await client.query(
       `INSERT INTO account_data (username, account_name, data, version, nav_version) VALUES ($1,$2,'{}',0,0) ON CONFLICT (username, account_name) DO UPDATE SET nav_version=account_data.nav_version+1, version=account_data.version+1`,
       [username, accountName]
     );
     await client.query('COMMIT');
     const result = await loadAccountData(username, accountName);
-    res.json({ ok: true, batchId: importBatchId, count: normalizedRecords.length, duplicates: duplicateCount, data: result });
+    res.json({ ok: true, batchId: importBatchId, count: normalizedRecords.length, duplicates: duplicateCount, deletedLegacyRows, data: result });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(e.status || 500).json({ error: e.message });

@@ -156,6 +156,15 @@ async function checkAsync(name, fn) {
                 ($1,$2,'2026-08-02','000858','五粮液',100)
          ON CONFLICT (username, account_name, date, code) DO UPDATE SET price=EXCLUDED.price`, [U, A]
       );
+      // 导入后只应清理最新导入日期之前的非导入快照；更晚的非导入快照保留。
+      await pool.query(
+        `INSERT INTO nav_history (username, account_name, date, nav, total_asset, invested, snapshot_at)
+         VALUES ($1,$2,'2026-07-31',0.98,9800,9000,'2026-07-31 23:59:59'),
+                ($1,$2,'2026-08-03',1.08,10800,9000,'2026-08-03 23:59:59')
+         ON CONFLICT (username, account_name, date) DO UPDATE SET
+           nav=EXCLUDED.nav, total_asset=EXCLUDED.total_asset, invested=EXCLUDED.invested,
+           snapshot_at=EXCLUDED.snapshot_at, snapshot_source='legacy', source_priority=0, is_locked=false`, [U, A]
+      );
       const d0 = await loadAccountData(U, A);
       const r = await fetch(base + '/nav/import?version=' + d0.version, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -165,9 +174,13 @@ async function checkAsync(name, fn) {
         ] })
       });
       assert.strictEqual(r.status, 200, '导入应成功，状态=' + r.status);
+      const importResult = await r.json();
+      assert.strictEqual(importResult.deletedLegacyRows, 1, '应清理最新导入日期之前的旧非导入历史');
       const d1 = await loadAccountData(U, A);
       assert.ok(d1.navHistory.some(n => n.date === '2026-08-01'), '导入的净值应持久化');
       assert.ok(d1.navHistory.some(n => n.date === '2026-08-02'), '导入的净值应持久化');
+      assert.ok(!d1.navHistory.some(n => n.date === '2026-07-31'), '最新导入日期之前的非导入历史应删除');
+      assert.ok(d1.navHistory.some(n => n.date === '2026-08-03'), '最新导入日期之后的非导入历史不应删除');
       const imported = d1.navHistory.find(n => n.date === '2026-08-02');
       assert.strictEqual(imported.cashCny, 2000, '导入现金应持久化');
       assert.strictEqual(imported.snapshotSource, 'imported', '导入来源应标记');

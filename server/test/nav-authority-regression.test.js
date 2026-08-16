@@ -64,6 +64,25 @@ const previousCloseDate = (() => {
     app.use('/api', accountsRouter);
     server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     const base = 'http://127.0.0.1:' + server.address().port + '/api';
+
+    // 导入日已有部分行情时，必须整批回退到前一个完整收盘日，不能混用两个日期的价格。
+    await pool.query(
+      `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype, note)
+       VALUES ('partial_anchor_position',$1,$2,$3,'00005','汇丰控股',20,10,20,'股权','港股','')`, [U, A, accountId]
+    );
+    await pool.query(
+      `INSERT INTO daily_prices (username,account_name,date,code,name,price)
+       VALUES ($1,$2,$3,'00005','汇丰控股',20),($1,$2,$4,'00700','腾讯控股',99)
+       ON CONFLICT (username,account_name,date,code) DO UPDATE SET price=EXCLUDED.price`, [U, A, previousCloseDate, yesterday]
+    );
+    const partialPreview = await fetch(base + '/nav/import/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 }] }) });
+    const partialPreviewJson = await partialPreview.json();
+    assert.strictEqual(partialPreview.status, 200, '导入日部分行情时预览应成功');
+    assert.strictEqual(partialPreviewJson.positionPriceDate, previousCloseDate, '部分行情必须回退到前一个完整收盘日');
+    assert.strictEqual(partialPreviewJson.positionPriceFallback, 'previous_complete_close', '部分行情回退必须标记来源');
+    await pool.query(`DELETE FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 AND code IN ('00005','00700')`, [U, A, yesterday]);
+    await pool.query(`DELETE FROM positions WHERE username=$1 AND account_name=$2 AND id='partial_anchor_position'`, [U, A]);
+
     const body = { account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 }], mode: 'merge' };
     const before = await loadAccountData(U, A);
     const preview = await fetch(base + '/nav/import/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

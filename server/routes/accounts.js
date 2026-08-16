@@ -85,13 +85,12 @@ async function loadAnchorPrices(username, accountName, anchorDate, anchorPositio
         AND code=ANY($4::text[]) AND price > 0`,
     [username, accountName, anchorDate, codes]
   );
+  const exactPrices = new Map(exactRows.map((p) => [String(p.code), Number(p.price)]));
   if (exactRows.length === codes.length) {
-    return { prices: new Map(exactRows.map((p) => [String(p.code), Number(p.price)])), priceDate: anchorDate };
+    return { prices: exactPrices, priceDate: anchorDate };
   }
-  // 当天已有部分行情但并不完整时不能混用前一日价格，继续返回缺失，避免形成混合日期锚点。
-  if (exactRows.length > 0) {
-    return { prices: new Map(exactRows.map((p) => [String(p.code), Number(p.price)])), priceDate: null };
-  }
+  // 当天已有部分行情但并不完整时，也必须整批回退到前一个完整收盘日，
+  // 不能把当天部分价格和前一完整日价格混用成一个锚点。
   const { rows } = await pool.query(
     `WITH candidate AS (
        SELECT date::text AS price_date
@@ -113,7 +112,7 @@ async function loadAnchorPrices(username, accountName, anchorDate, anchorPositio
   );
   const priceDate = rows[0] ? String(rows[0].priceDate).slice(0, 10) : null;
   return {
-    prices: new Map(rows.map((p) => [String(p.code), Number(p.price)])),
+    prices: rows.length ? new Map(rows.map((p) => [String(p.code), Number(p.price)])) : exactPrices,
     priceDate
   };
 }
@@ -958,7 +957,8 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
             await client.query(
               `INSERT INTO daily_prices (username, account_name, account_id, date, code, name, price)
                VALUES ($1,$2,$3,$4,$5,$6,$7)
-               ON CONFLICT (username, account_name, date, code) DO NOTHING`,
+               ON CONFLICT (username, account_name, date, code) DO UPDATE SET
+                 name=EXCLUDED.name, price=EXCLUDED.price`,
               [username, accountName, accountId, requestedAnchorDate, p.code, p.name || '', price]
             );
           }

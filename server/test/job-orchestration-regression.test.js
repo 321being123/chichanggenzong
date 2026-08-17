@@ -52,6 +52,8 @@ assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾�
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
 assert(/systemctl enable portfolio-server\.service portfolio-worker\.service/.test(deployScript), 'Web 与 Worker 服务必须配置开机自启');
 assert(/maxAttempts: 4/.test(definitions), '任务最大尝试次数必须包含首次执行和三次自动重试');
+assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*hour: 8, minute: 0/.test(definitions), '可转债行情同步必须改为次日 08:00 执行');
+assert(/jobCode: 'convertible_bond_valuation_refresh'[^\n]*hour: 8, minute: 15/.test(definitions), '可转债估值必须改为 08:15 执行');
 assert(/jobCode: 'convertible_bond_valuation_refresh'[\s\S]*dataDatePolicy: 'previous_trading_day'/.test(definitions), '可转债估值任务必须按上一个交易日校验数据水位');
 assert(!/notifyJobFailure/.test(jobsDb), '底层 job_runs 完成记录不得绕过统一执行器直接发送首次失败告警');
 assert(/claimAlertDelivery/.test(alertMailer) && /status='sending'/.test(alertMailer), '邮件投递必须先原子领取，避免重复发送');

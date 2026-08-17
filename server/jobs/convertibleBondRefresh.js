@@ -8,10 +8,8 @@ const { expectedTradeDate } = require('../routes/bondCycle');
 const { dailyConsistencyStats } = require('./consistencyStats');
 
 const VALUATION_JOB = 'convertible_bond_valuation_refresh';
-const DAILY_REFRESH_HOUR = 18;
+const DAILY_REFRESH_HOUR = 8;
 const DAILY_REFRESH_MINUTE = 0;
-const RETRY_HOUR = 8;
-const RETRY_MINUTE = 0;
 
 // 每日估值+预警：在行情/周期同步完成后串行执行（方案 §顺序：行情→周期→估值→预警）
 async function runDailyValuation(reason = 'scheduled') {
@@ -169,13 +167,7 @@ function scheduleConvertibleBondRefresh() {
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE,
     () => require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill('daily_incremental'));
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE + 15, () => runRefreshChain('daily_valuation'));
-  scheduleDaily(RETRY_HOUR, RETRY_MINUTE, async () => {
-    const completeness = await refreshCompleteness();
-    if (completeness.universe_complete && completeness.cycle_complete && completeness.valuation_complete && completeness.list_complete) return;
-    console.warn(`[bond-analysis] 检测到 ${completeness.expected} 数据不完整，开始 08:00 补跑`);
-    await runRefreshChain('morning_incomplete_retry');
-  });
-  console.log('[bond-analysis] 已调度：每日 18:00 刷新；数据不完整时次日 08:00 重试（上海时间）');
+  console.log('[bond-analysis] 已调度：每日 08:00 同步行情，08:15 刷新估值（上海时间）');
 }
 
 module.exports = {

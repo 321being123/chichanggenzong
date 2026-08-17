@@ -2994,6 +2994,44 @@ async function migration076ExternalCallProtection() {
   `);
 }
 
+// ========== 077：上市可转债列表每日派生指标 ==========
+async function migration077ConvertibleBondListMetrics() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_list_metrics_daily (
+      trade_date DATE NOT NULL,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      formula_version TEXT NOT NULL,
+      theoretical_option_value NUMERIC(20,6),
+      theoretical_value NUMERIC(20,6),
+      theoretical_deviation_pct NUMERIC(20,8),
+      stock_volatility NUMERIC(20,8),
+      call_trigger_price NUMERIC(20,6),
+      bond_market_cap_ratio NUMERIC(20,10),
+      asset_liability_ratio NUMERIC(20,10),
+      fund_holding_ratio NUMERIC(20,10),
+      turnover_rate NUMERIC(20,10),
+      maturity_yield_pre_tax NUMERIC(20,10),
+      earliest_put_trigger_date DATE,
+      earliest_put_remaining_years NUMERIC(20,8),
+      expected_put_payment_date DATE,
+      put_yield_pre_tax NUMERIC(20,10),
+      put_yield_after_tax NUMERIC(20,10),
+      double_low NUMERIC(20,6),
+      financial_period_end DATE,
+      fund_report_date DATE,
+      input_hash TEXT,
+      data_status TEXT NOT NULL DEFAULT 'partial',
+      diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (trade_date, instrument_id, formula_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_list_metrics_date
+      ON analytics.convertible_bond_list_metrics_daily(trade_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_cb_list_metrics_instrument
+      ON analytics.convertible_bond_list_metrics_daily(instrument_id, trade_date DESC);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -3071,6 +3109,7 @@ const MIGRATIONS = [
   { version: '074_backfill_legacy_hkd_settlement', up: migration074BackfillLegacyHkdSettlement },
   { version: '075_job_execution_protection', up: migration075JobExecutionProtection },
   { version: '076_external_call_protection', up: migration076ExternalCallProtection },
+  { version: '077_convertible_bond_list_metrics', up: migration077ConvertibleBondListMetrics },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3614,6 +3653,7 @@ module.exports = {
   migration072AuthoritativeNavImportAnchor,
   migration075JobExecutionProtection,
   migration076ExternalCallProtection,
+  migration077ConvertibleBondListMetrics,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

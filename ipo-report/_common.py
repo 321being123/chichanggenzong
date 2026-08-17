@@ -10,6 +10,7 @@ sudo 提权走免密（服务器 sudoers 已配置 NOPASSWD），全程不依赖
 """
 import os
 import json
+import re
 import urllib.request
 import urllib.error
 import time
@@ -74,37 +75,67 @@ def _load_env():
 
 _load_env()
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "").strip()
+TUSHARE_BACKUP_TOKEN = os.environ.get("TUSHARE_BACKUP_TOKEN", "").strip()
+TUSHARE_TOKEN_MODE = os.environ.get("TUSHARE_TOKEN_MODE", "auto").strip().lower()
+if TUSHARE_TOKEN_MODE not in {"auto", "primary", "backup"}:
+    TUSHARE_TOKEN_MODE = "auto"
+
+
+def _tushare_failover_eligible(error=None, message=""):
+    code = getattr(error, "code", None)
+    if code in {"AUTH_ERROR", "PERMISSION_DENIED", "RATE_LIMIT", "QUOTA_EXHAUSTED", "CIRCUIT_OPEN"}:
+        return True
+    if isinstance(error, urllib.error.HTTPError) and error.code in {401, 403, 429}:
+        return True
+    return bool(re.search(r"token|权限|permission|积分不足|没有接口|无权限|频率|频次|配额|rate.?limit|quota", str(message), re.I))
 
 
 def _tushare(api_name, params, fields):
     """统一直连 Tushare Pro 官方 POST API。"""
-    if not TUSHARE_TOKEN:
-        raise RuntimeError("TUSHARE_TOKEN 未配置")
-    body = json.dumps({
-        "api_name": api_name,
-        "token": TUSHARE_TOKEN,
-        "params": params or {},
-        "fields": fields or "",
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        "https://api.tushare.pro",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    candidates = [(TUSHARE_TOKEN, "tushare"), (TUSHARE_BACKUP_TOKEN, "tushare_backup")]
+    if TUSHARE_TOKEN_MODE == "primary":
+        candidates = candidates[:1]
+    elif TUSHARE_TOKEN_MODE == "backup":
+        candidates = candidates[1:]
+    candidates = [(token, source) for token, source in candidates if token]
+    if not candidates:
+        raise RuntimeError("当前 Tushare 模式未配置可用 Token")
     dataset = api_name + json.dumps(params or {}, ensure_ascii=False, separators=(',', ':')) + (fields or '')
-    with guarded_urlopen(request, timeout=30, source="tushare", dataset=dataset) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if payload.get("code") != 0:
-        raise RuntimeError(f"Tushare {api_name} 错误: {payload.get('msg') or payload.get('code')}")
-    data = payload.get("data") or {}
-    fields_out = data.get("fields")
-    items = data.get("items")
-    if not isinstance(fields_out, list) or not isinstance(items, list):
-        raise RuntimeError(f"Tushare {api_name} 响应结构异常")
-    if any(not isinstance(row, list) or len(row) != len(fields_out) for row in items):
-        raise RuntimeError(f"Tushare {api_name} 字段与数据列数不一致")
-    return [dict(zip(fields_out, row)) for row in items]
+    last_error = None
+    for index, (token, source) in enumerate(candidates):
+        body = json.dumps({
+            "api_name": api_name,
+            "token": token,
+            "params": params or {},
+            "fields": fields or "",
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "https://api.tushare.pro",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with guarded_urlopen(request, timeout=30, source=source, dataset=dataset) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if payload.get("code") != 0:
+                message = payload.get("msg") or payload.get("code")
+                if index < len(candidates) - 1 and _tushare_failover_eligible(message=message):
+                    continue
+                raise RuntimeError(f"Tushare {api_name} 错误: {message}")
+            data = payload.get("data") or {}
+            fields_out = data.get("fields")
+            items = data.get("items")
+            if not isinstance(fields_out, list) or not isinstance(items, list):
+                raise RuntimeError(f"Tushare {api_name} 响应结构异常")
+            if any(not isinstance(row, list) or len(row) != len(fields_out) for row in items):
+                raise RuntimeError(f"Tushare {api_name} 字段与数据列数不一致")
+            return [dict(zip(fields_out, row)) for row in items]
+        except Exception as error:
+            last_error = error
+            if index == len(candidates) - 1 or not _tushare_failover_eligible(error=error, message=str(error)):
+                raise
+    raise last_error
 
 
 class TusharePro:
@@ -123,7 +154,7 @@ class TusharePro:
 
 
 def get_tushare_pro():
-    if not TUSHARE_TOKEN:
+    if not (TUSHARE_TOKEN or TUSHARE_BACKUP_TOKEN):
         return None
     return TusharePro()
 

@@ -8,11 +8,11 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN
+from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN, TUSHARE_BACKUP_TOKEN
 
 
 def main():
-    if not TUSHARE_TOKEN:
+    if not (TUSHARE_TOKEN or TUSHARE_BACKUP_TOKEN):
         print("缺少 TUSHARE_TOKEN，退出"); return
     # 1. 取缺失行
     rows = psql_run(

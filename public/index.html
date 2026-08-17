@@ -8,7 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
 <link rel="stylesheet" href="shared/style.css?v=27">
-<link rel="stylesheet" href="css/bond-safety.css?v=9">
+<link rel="stylesheet" href="css/bond-safety.css?v=18">
 <link rel="stylesheet" href="css/bond-cycle.css?v=5">
 <link rel="stylesheet" href="css/bond-valuation.css?v=7">
 <link rel="stylesheet" href="css/stock-analysis.css?v=13">
@@ -675,6 +675,7 @@
 <div class="main-page" id="main-bond-safety">
   <div class="bond-header">
     <div class="bond-sub-nav">
+      <button class="bond-sub-tab" data-sub="list" onclick="switchBondSub('list')">上市可转债</button>
       <button class="bond-sub-tab active" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
       <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
       <button class="bond-sub-tab" data-sub="valuation" onclick="switchBondSub('valuation')">可转债估值</button>
@@ -817,6 +818,30 @@
         </div>
         <div id="bond-val-table"><div class="bond-val-empty">正在加载估值数据...</div></div>
       </div>
+    </div>
+
+    <!-- 子页：上市可转债列表（每日快照） -->
+    <div id="sub-bond-list" class="bond-sub-page" hidden>
+      <div class="bond-list-hero">
+        <div>
+          <h2>上市可转债</h2>
+          <p>展示在市可转债的行情、转股价值、理论价值、回售收益和双低指标。数据来自最近交易日的本地快照。</p>
+        </div>
+        <div class="bond-list-updated" id="bond-list-updated">正在读取数据...</div>
+      </div>
+      <div class="bond-list-stale" id="bond-list-stale" style="display:none;">数据暂未更新，当前展示最近一份有效快照</div>
+      <div class="table-wrap">
+        <div class="bond-list-toolbar">
+          <input id="bond-list-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondListApplyFilters()">
+          <select id="bond-list-status" onchange="bondListApplyFilters()" aria-label="按数据状态筛选">
+            <option value="">全部数据</option><option value="complete">数据完整</option><option value="partial">数据不完整</option>
+          </select>
+          <button class="btn btn-outline btn-sm" id="bond-list-refresh" onclick="bondListRefresh()">刷新行情</button>
+          <span class="bond-list-quality" id="bond-list-visible"></span>
+        </div>
+        <div id="bond-list-table"><div class="bond-list-empty">正在加载上市转债数据...</div></div>
+      </div>
+    </div>
 
     </div>
   </div>
@@ -1105,8 +1130,9 @@
 <script src="vendor/dompurify.min.js"></script>
 <script src="js/ipo.js?v=9"></script>
 <script src="js/bond-safety.js?v=9"></script>
-<script src="js/bond-cycle.js?v=5"></script>
+<script src="js/bond-cycle.js?v=6"></script>
 <script src="js/bond-valuation.js?v=6"></script>
+<script src="js/bond-list.js?v=14"></script>
 <script src="js/stock-analysis.js?v=13"></script>
 <script src="js/bond-analysis.js?v=7"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>
@@ -1502,7 +1528,7 @@ var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
     switchMarketCycleMetric(requestedMetric);
   }
   // 恢复子标签页
-  if (initialMain === 'bond-safety' && ['safety','cycle','valuation','analysis'].includes(requestedSub)) {
+  if (initialMain === 'bond-safety' && ['safety','cycle','valuation','list','analysis'].includes(requestedSub)) {
     switchBondSub(requestedSub);
     if (requestedSub === 'analysis') {
       var reqCode = startParams.get('code');

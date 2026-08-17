@@ -194,7 +194,11 @@ function putOpportunityState(events, periodStart, periodEnd) {
 }
 
 function annualizedVolatility(rows) {
-  const closes = (rows || []).slice().sort((a,b) => String(a.trade_date).localeCompare(String(b.trade_date)))
+  const closes = (rows || []).slice()
+    .map(row => ({ row, date: isoDate(row.trade_date) }))
+    .filter(item => item.date)
+    .sort((a,b) => a.date.localeCompare(b.date))
+    .map(item => item.row)
     .map(row => finite(row.close)).filter(value => value > 0).slice(-251);
   if (closes.length < 30) return null;
   const returns = [];
@@ -303,7 +307,7 @@ function futureTradeCalendar(rows, today = isoDate(tsDateStr(new Date())), horiz
   const end = addDays(new Date(`${isoDate(today)}T00:00:00+08:00`), horizonDays);
   while (cursor < end) {
     cursor = addDays(cursor, 1);
-    if (cursor.getDay() !== 0 && cursor.getDay() !== 6) dates.add(isoDate(cursor));
+    if (cursor.getUTCDay() !== 0 && cursor.getUTCDay() !== 6) dates.add(isoDate(cursor));
   }
   return [...dates].sort();
 }
@@ -315,7 +319,9 @@ function parseCouponRates(text) {
 }
 
 function parseMoney(text, fallback = null) {
-  const match = String(text || '').match(/(\d+(?:\.\d+)?)\s*元/);
+  const raw = String(text || '').trim();
+  const match = raw.match(/(\d+(?:\.\d+)?)\s*元/);
+  if (!match && /^\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
   return match ? Number(match[1]) : fallback;
 }
 
@@ -331,8 +337,9 @@ function addDays(date, days) {
   return new Date(cn.getTime() - CN_OFFSET_MS);
 }
 
-function cashflowsToDate(profile, coupons, targetDate, afterTax, finalValue) {
-  const today = new Date();
+function cashflowsToDate(profile, coupons, targetDate, afterTax, finalValue, asOfDate = null) {
+  const asOfText = asOfDate ? isoDate(asOfDate) : null;
+  const today = asOfText ? new Date(`${asOfText}T00:00:00+08:00`) : new Date();
   const target = targetDate ? new Date(`${isoDate(targetDate)}T00:00:00+08:00`) : null;
   const valueDate = profile.value_date ? new Date(`${isoDate(profile.value_date)}T00:00:00+08:00`) : null;
   if (!target || !valueDate || Number.isNaN(target.getTime()) || Number.isNaN(valueDate.getTime()) || target <= today) return [];
@@ -388,7 +395,8 @@ function derivedDividendYield(rows, stockPrice, today = isoDate(tsDateStr(new Da
 function yieldToMaturity(price, cashflows) {
   if (!(finite(price) > 0) || !cashflows || !cashflows.length) return null;
   const npv = rate => cashflows.reduce((sum, flow) => sum + flow.amount / Math.pow(1 + rate, flow.years), 0) - price;
-  let low = -0.99, high = 5;
+  // 高溢价、临近到期的债券可能对应低于 -99% 的年化收益率；收益率理论下限为 -100%。
+  let low = -1 + 1e-12, high = 5;
   if (npv(low) * npv(high) > 0) return null;
   for (let i = 0; i < 100; i += 1) { const mid = (low + high) / 2; if (npv(mid) > 0) low = mid; else high = mid; }
   return (low + high) / 2;
@@ -410,8 +418,10 @@ function accruedPutPrice(profile, coupons, targetDate) {
   const interestYear = currentInterestYear(valueDate, profile.maturity_date, target);
   if (!interestYear) return null;
   const coupon = (coupons || []).find(row => Number(row.interest_year) === interestYear);
+  const parsedRates = parseCouponRates(profile.rate_clause);
   const rate = finite(coupon && coupon.coupon_rate) == null
-    ? finite(profile.coupon_rate) : finite(coupon.coupon_rate);
+    ? (finite(profile.coupon_rate) == null ? finite(parsedRates[interestYear - 1]) : finite(profile.coupon_rate))
+    : finite(coupon.coupon_rate);
   if (rate == null) return null;
   const periodStart = addYears(new Date(`${valueDate}T00:00:00+08:00`), interestYear - 1);
   const elapsedDays = Math.max(0, Math.floor(
@@ -2271,8 +2281,8 @@ async function getConvertibleBondSnapshot(value) {
 
 module.exports = {
   finite, yuanToHundredMillion, isoDate, normalizeBondCode, instrumentStatus, remainingYears, pricePairFromReason, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState,
-  annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, yieldToMaturity,
-  annualizedRedemptionYield, accruedPutPrice,
+  annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, parseMoney, yieldToMaturity,
+  cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart,
   syncConvertibleBondUniverse, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,

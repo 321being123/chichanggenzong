@@ -10,7 +10,7 @@ import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
 from _classify import _is_bj_stock, _market_type_to_board_key
-from _common import _load_env, TUSHARE_TOKEN, get_tushare_pro
+from _common import _load_env, TUSHARE_TOKEN, TUSHARE_BACKUP_TOKEN, get_tushare_pro
 from external_call_guard import install_requests_guard
 
 install_requests_guard()
@@ -84,7 +84,7 @@ def _get_tushare_pro():
     global _TUSHARE_PRO
     if _TUSHARE_PRO is not None:
         return _TUSHARE_PRO
-    if not TUSHARE_TOKEN:
+    if not (TUSHARE_TOKEN or TUSHARE_BACKUP_TOKEN):
         return None
     try:
         _TUSHARE_PRO = get_tushare_pro()

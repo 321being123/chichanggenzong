@@ -105,7 +105,7 @@ async function syncUsTreasuryYield(end = dateStr(new Date())) {
   const start = maxDate
     ? dateStr(new Date(new Date(maxDate + 'T00:00:00Z').getTime() - 14 * 86400000))
     : '2012-01-01';
-  if (!process.env.TUSHARE_TOKEN) return 0;
+  if (!(process.env.TUSHARE_TOKEN || process.env.TUSHARE_BACKUP_TOKEN)) return 0;
 
   let cursor = new Date(start + 'T00:00:00Z');
   const last = new Date(end + 'T00:00:00Z');
@@ -374,7 +374,7 @@ async function calculateM2MarketCap() {
 }
 
 async function syncMarketCycleMetrics(full) {
-  if (!process.env.TUSHARE_TOKEN) return { skipped: 'TUSHARE_TOKEN missing' };
+  if (!(process.env.TUSHARE_TOKEN || process.env.TUSHARE_BACKUP_TOKEN)) return { skipped: 'TUSHARE_TOKEN/TUSHARE_BACKUP_TOKEN missing' };
   const result = {
     csi300Valuation: await syncCsi300Valuation(full),
     moneySupply: await syncMoneySupply(),

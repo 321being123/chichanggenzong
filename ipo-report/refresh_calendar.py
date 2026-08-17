@@ -26,11 +26,11 @@ from calendar_core import (
 )
 
 # ── 共用样板收口（_load_env / _tushare / psql_run 统一到 _common.py） ──
-from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN
+from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN, TUSHARE_BACKUP_TOKEN
 
 
 def main():
-    if not TUSHARE_TOKEN:
+    if not (TUSHARE_TOKEN or TUSHARE_BACKUP_TOKEN):
         print("缺少 TUSHARE_TOKEN，退出")
         sys.exit(1)
 

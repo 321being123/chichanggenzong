@@ -6,6 +6,7 @@ const { pool } = require('../db/connection');
 const {
   normalizeBondCode, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
 } = require('../services/convertibleBondAnalysis');
+const { getBondList } = require('../services/convertibleBondListService');
 
 const router = express.Router();
 
@@ -62,6 +63,19 @@ router.get('/search/securities', asyncHandler(async (req, res) => {
     [like, prefix]
   );
   res.json({ data: rows });
+}));
+
+// 上市可转债列表：默认读取本地快照，行情刷新通过统一服务端缓存完成。
+router.get('/bonds', asyncHandler(async (req, res) => {
+  const query = String(req.query.q || '').trim().slice(0, 50);
+  const requestedDate = String(req.query.date || '').trim();
+  if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    return res.status(400).json({ error: '交易日格式应为 YYYY-MM-DD' });
+  }
+  const tradeDate = requestedDate || null;
+  const refreshQuotes = !requestedDate && ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());
+  const result = await getBondList({ tradeDate, query, limit: req.query.limit, refreshQuotes });
+  res.json(result);
 }));
 
 router.get('/:code', validBond, asyncHandler(async (req, res) => {

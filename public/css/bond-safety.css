@@ -37,6 +37,37 @@
 .bond-indicator-exempt { background:#e8eaf6; color:#283593; }
 .bond-safety-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }
 .bond-safety-error { color:#b3261e; }
+.bond-list-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,#2563a8,#3f82c4); color:#fff; }
+.bond-list-hero h2 { margin:0 0 8px; font-size:22px; color:#fff; }
+.bond-list-hero p { margin:0; color:#e3f0ff; font-size:13px; line-height:1.65; }
+.bond-list-updated { color:#e3f0ff; font-size:12px; text-align:right; white-space:nowrap; }
+.bond-list-stale { margin:0 0 12px; padding:8px 12px; border-radius:8px; background:#fff8e1; color:#7a5b00; font-size:12px; }
+.bond-list-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; }
+.bond-list-toolbar input,.bond-list-toolbar select { height:36px; border:1px solid #d8dee8; border-radius:7px; background:#fff; padding:0 10px; color:#273142; }
+.bond-list-toolbar input { min-width:220px; }
+.bond-list-quality { margin-left:auto; color:#7a8495; font-size:12px; }
+#sub-bond-list .table-wrap { overflow:visible; }
+.bond-list-scroll { overflow-x:auto; overflow-y:visible; min-height:280px; background:#fff; }
+.bond-list-table { width:max-content; min-width:100%; border-collapse:separate; border-spacing:0; font-size:12px; background:#fff; }
+.bond-list-table thead { position:static; }
+.bond-list-table th { position:static; background:#fafbfc; color:#555; font-weight:700; text-align:center; padding:10px 9px; white-space:nowrap; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+.bond-list-table th:hover { background:#edf5ff; color:#175a93; }
+.bond-list-table td { padding:9px; border-bottom:1px solid #eef1f5; white-space:nowrap; color:#303a49; text-align:center; font-variant-numeric:tabular-nums; }
+.bond-list-table tbody tr:hover td { background:#f7fbff; }
+.bond-list-link { color:#1769aa; cursor:pointer; }
+.bond-list-link:hover { text-decoration:underline; }
+.bond-list-up { color:#d93025; font-weight:600; }
+.bond-list-down { color:#137333; font-weight:600; }
+.bond-list-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }
+.bond-list-floating-head { position:fixed; z-index:89; overflow:hidden; min-height:40px; background:#fff; box-shadow:0 2px 6px rgba(31,42,68,.12); pointer-events:auto; }
+.bond-list-floating-head .bond-list-table,
+.bond-list-floating-head .bond-list-table thead,
+.bond-list-floating-head .bond-list-table tr { height:40px; }
+.bond-list-floating-head .bond-list-table thead { display:table-header-group; }
+.bond-list-floating-head .bond-list-table th { display:table-cell; height:40px; box-sizing:border-box; vertical-align:middle; }
+.bond-list-floating-table { min-width:0; margin:0; transform:translateX(0); }
+.bond-list-floating-scroll { position:fixed; bottom:0; z-index:95; height:18px; overflow-x:auto; overflow-y:hidden; background:#fff; border-top:1px solid #dfe3eb; }
+.bond-list-floating-scroll-inner { height:1px; }
 @media (max-width:760px) {
   .bond-safety-hero { display:block; padding:18px; }
   .bond-safety-updated { text-align:left; margin-top:8px; white-space:normal; }
@@ -44,4 +75,9 @@
   .bond-safety-toolbar input { min-width:0; flex:1 1 170px; }
   .bond-safety-spacer { display:none; }
   .bond-safety-scroll { max-height:calc(100vh - 390px); }
+  .bond-list-hero { display:block; padding:18px; }
+  .bond-list-updated { text-align:left; margin-top:8px; white-space:normal; }
+  .bond-list-toolbar input { min-width:0; flex:1 1 170px; }
+  .bond-list-quality { margin-left:0; }
+  .bond-list-scroll { min-height:280px; }
 }

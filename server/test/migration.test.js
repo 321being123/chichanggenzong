@@ -118,7 +118,7 @@ function pgConfig(dbName) {
     const architectureTables = await db.pool.query("SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema = ANY($1)", [['ops','core','market','fundamental','event','analytics']]);
     const architectureNames = new Set(architectureTables.rows.map(row => `${row.table_schema}.${row.table_name}`));
     check('分层数据库核心表已创建', () => {
-      for (const name of ['core.instruments','market.daily_valuations','fundamental.financial_reports','fundamental.corporate_actions','event.company_events','analytics.metric_values','analytics.stock_overview_latest','ops.sync_cursors','fundamental.convertible_bond_profiles','fundamental.convertible_bond_issuance','event.instrument_events','analytics.convertible_bond_listing_performance','fundamental.convertible_bond_terms','fundamental.convertible_bond_ratings','analytics.convertible_bond_trigger_daily']) assert.ok(architectureNames.has(name), '缺少表 ' + name);
+      for (const name of ['core.instruments','market.daily_valuations','fundamental.financial_reports','fundamental.corporate_actions','event.company_events','analytics.metric_values','analytics.stock_overview_latest','ops.sync_cursors','fundamental.convertible_bond_profiles','fundamental.convertible_bond_issuance','event.instrument_events','analytics.convertible_bond_listing_performance','analytics.convertible_bond_list_metrics_daily','fundamental.convertible_bond_terms','fundamental.convertible_bond_ratings','analytics.convertible_bond_trigger_daily']) assert.ok(architectureNames.has(name), '缺少表 ' + name);
     });
     const legacyBondTableName = ['bond', 'history'].join('_');
     const legacyBondTable = await db.pool.query('SELECT to_regclass($1) AS name', [`public.${legacyBondTableName}`]);

@@ -3,6 +3,7 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnalysis');
+const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { dailyConsistencyStats } = require('./consistencyStats');
 
@@ -89,6 +90,7 @@ async function refreshCompleteness() {
     `SELECT
        COALESCE((SELECT MAX(trade_date) >= $1::date FROM market.convertible_bond_daily_metrics), false) AS cycle_complete,
        COALESCE((SELECT MAX(trade_date) >= $1::date FROM analytics.convertible_bond_valuation_daily), false) AS valuation_complete,
+       COALESCE((SELECT MAX(trade_date) >= $1::date FROM analytics.convertible_bond_list_metrics_daily), false) AS list_complete,
        COALESCE((SELECT last_success_date >= $1::date FROM ops.sync_cursors
                   WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'), false) AS universe_complete,
        COALESCE((SELECT COUNT(*) FROM ops.data_quality_issues
@@ -123,12 +125,24 @@ async function runRefreshChain(reason) {
       externalCalls: 0, datasets: [{ code: 'convertible_bond_valuation', status: 'blocked', dataAsOf: null }] };
   }
 
+  let listResult = null;
+  try {
+    listResult = await buildDailyMetrics({ tradeDate: completeness.expected, reason });
+    console.log(`[bond-list] 上市转债列表完成：${listResult.count} 条，完整 ${listResult.complete} 条`);
+  } catch (error) {
+    // 列表派生指标失败不阻断现有估值链路，且事务回滚后保留上一份有效列表。
+    console.error('[bond-list] 列表派生指标失败，保留上一份有效数据：', error.message);
+  }
+
   try {
     const result = await runDailyValuation(reason);
     if (result.skipped) console.log('[bond-valuation] 已有刷新任务运行，本次跳过');
     else console.log('[bond-valuation] 每日估值完成:', result.detail);
     return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,
-      datasets: [{ code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected }], result };
+      datasets: [
+        { code: 'convertible_bond_list_metrics', status: listResult ? 'succeeded' : 'stale', dataAsOf: listResult ? completeness.expected : null },
+        { code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected },
+      ], result, listResult };
   } catch (error) {
     console.error('[bond-valuation] 每日估值失败:', String(error.detail || error.message));
     return { ok: false, error: String(error.detail || error.message) };
@@ -157,7 +171,7 @@ function scheduleConvertibleBondRefresh() {
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE + 15, () => runRefreshChain('daily_valuation'));
   scheduleDaily(RETRY_HOUR, RETRY_MINUTE, async () => {
     const completeness = await refreshCompleteness();
-    if (completeness.universe_complete && completeness.cycle_complete && completeness.valuation_complete) return;
+    if (completeness.universe_complete && completeness.cycle_complete && completeness.valuation_complete && completeness.list_complete) return;
     console.warn(`[bond-analysis] 检测到 ${completeness.expected} 数据不完整，开始 08:00 补跑`);
     await runRefreshChain('morning_incomplete_retry');
   });

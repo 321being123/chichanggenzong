@@ -52,7 +52,7 @@ if not rows:
 pro = get_tushare_pro()
 if pro is None:
     cur.close(); conn.close()
-    raise RuntimeError("TUSHARE_TOKEN 未配置")
+    raise RuntimeError("TUSHARE_TOKEN/TUSHARE_BACKUP_TOKEN 未配置")
 
 
 def _ts_code(code):

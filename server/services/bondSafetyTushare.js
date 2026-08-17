@@ -142,7 +142,8 @@ async function refreshFinancials(stocks, today) {
   const ttl = Math.max(1, Number(process.env.BOND_SAFETY_FINANCIAL_TTL_DAYS) || FINANCIAL_TTL_DAYS) * 86400000;
   const pending = stocks.filter(stock => {
     const cached = cache.get(stock.stk_code);
-    return !cached || !cached.data || finite(cached.data.interest_coverage) == null || Date.now() - cached.fetched_at >= ttl;
+    return !cached || !cached.data || finite(cached.data.interest_coverage) == null ||
+      finite(cached.data.total_assets) == null || Date.now() - cached.fetched_at >= ttl;
   });
   const concurrency = Math.max(1, Math.min(6, Number(process.env.BOND_SAFETY_TUSHARE_CONCURRENCY) || 3));
   let cursor = 0;

@@ -998,21 +998,57 @@ function renderSettings() {
 }
 function renderSettingsTabs(el, s) {
   const o = s.register_open === '1' ? 'checked' : '', e = s.require_email === '1' ? 'checked' : '';
+  const apiSettings = s.external_apis && s.external_apis.tushare || {};
+  const apiPrimary = apiSettings.primary || {}, apiBackup = apiSettings.backup || {};
+  const apiMode = ['auto', 'primary', 'backup'].indexOf(apiSettings.mode) >= 0 ? apiSettings.mode : 'auto';
+  const apiSwitch = apiSettings.last_switch || null;
+  const modeLabel = apiMode === 'primary' ? '主 Token' : apiMode === 'backup' ? '备用 Token' : '自动故障转移';
+  const option = function (value, label) { return '<option value="' + value + '"' + (apiMode === value ? ' selected' : '') + '>' + label + '</option>'; };
   el.innerHTML = '<div class="filter-bar" style="margin-bottom:16px;border-bottom:1px solid #e8e8e8;padding-bottom:10px;">' +
     '<button class="btn btn-primary btn-sm settings-tab active" data-tab="site" onclick="switchSettingsTab(\'site\')">站点参数</button>' +
     '<button class="btn btn-outline btn-sm settings-tab" data-tab="market" onclick="switchSettingsTab(\'market\')">市场数据</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="models" onclick="switchSettingsTab(\'models\')">大模型配置</button></div>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="models" onclick="switchSettingsTab(\'models\')">大模型配置</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="external-api" onclick="switchSettingsTab(\'external-api\')">外部 API 主备</button></div>' +
     '<div class="settings-panel" data-panel="site"><div style="font-size:13px;color:#666;margin-bottom:12px;">控制用户注册与邮箱验证；保存后即时生效。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
     '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><input type="checkbox" id="set-register-open" ' + o + '><label for="set-register-open">开放注册</label></div>' +
     '<div style="margin-bottom:16px;"><div style="font-size:13px;color:#555;margin-bottom:6px;">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需邀请码" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
     '<div style="display:flex;align-items:center;gap:9px;margin-bottom:20px;"><input type="checkbox" id="set-require-email" ' + e + '><label for="set-require-email">注册强制邮箱验证</label></div><button class="btn btn-primary" onclick="submitSettings()">保存站点参数</button></div></div>' +
     '<div class="settings-panel" data-panel="market" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">港股格雷厄姆指数使用美国十年期国债收益率作为代理，数据由 Tushare us_tycr.y10 定时自动同步。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:680px;">无需手工上传，市场波动任务每日自动更新。</div></div>' +
-    '<div class="settings-panel" data-panel="models" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">配置图片和 Excel 识别使用的大模型。模型按顺序调用，排在最前的是默认模型；前一个不可用时会自动切换。</div><div id="settings-models"></div></div>';
+    '<div class="settings-panel" data-panel="models" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">配置图片和 Excel 识别使用的大模型。模型按顺序调用，排在最前的是默认模型；前一个不可用时会自动切换。</div><div id="settings-models"></div></div>' +
+    '<div class="settings-panel" data-panel="external-api" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">统一管理外部数据 API 的主备凭据。凭据加密保存在服务端，页面只显示掩码；留空表示保留原值。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:700px;">' +
+    '<div style="font-size:17px;font-weight:600;color:#222;margin-bottom:16px;">' + escapeHtml(apiSettings.label || 'Tushare Pro') + '</div>' +
+    '<div style="display:grid;grid-template-columns:120px 1fr;gap:12px 14px;align-items:center;">' +
+    '<label for="set-tushare-primary">主 Token</label><div><input id="set-tushare-primary" type="password" autocomplete="new-password" placeholder="' + (apiPrimary.configured ? '当前已配置：' + escapeHtml(apiPrimary.masked || '已配置') : '尚未配置') + '" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
+    '<label for="set-tushare-backup">备用 Token</label><div><input id="set-tushare-backup" type="password" autocomplete="new-password" placeholder="' + (apiBackup.configured ? '当前已配置：' + escapeHtml(apiBackup.masked || '已配置') : '尚未配置') + '" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
+    '<label for="set-tushare-mode">运行模式</label><select id="set-tushare-mode" style="padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;max-width:260px;">' + option('auto', '自动故障转移') + option('primary', '固定使用主 Token') + option('backup', '固定使用备用 Token') + '</select>' +
+    '<label>切换通知</label><label style="display:flex;align-items:center;gap:8px;"><input id="set-tushare-notify" type="checkbox" ' + (apiSettings.notify_on_switch !== false ? 'checked' : '') + '>主备切换时发送后台告警</label></div>' +
+    '<div style="font-size:12px;color:#777;margin-top:16px;">当前模式：' + modeLabel + (apiSwitch ? '；最近切换：' + escapeHtml(apiSwitch.switched_at || '') + '（' + escapeHtml(apiSwitch.reason || '') + '）' : '') + '</div>' +
+    '<div style="display:flex;gap:10px;margin-top:18px;"><button class="btn btn-primary" onclick="saveExternalApiSettings()">保存 API 参数</button><button class="btn btn-outline" onclick="switchExternalApiMode(\'tushare\')">手动应用当前模式</button></div></div></div>';
 }
 function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(function (button) { const active = button.dataset.tab === tab; button.classList.toggle('btn-primary', active); button.classList.toggle('btn-outline', !active); });
   document.querySelectorAll('.settings-panel').forEach(function (panel) { panel.hidden = panel.dataset.panel !== tab; });
   if (tab === 'models') { const target = document.getElementById('settings-models'); if (target && !target.dataset.loaded) { target.dataset.loaded = '1'; renderAimodels(target); } }
+}
+async function saveExternalApiSettings() {
+  const body = { external_api: { provider: 'tushare', primary_token: document.getElementById('set-tushare-primary').value || '', backup_token: document.getElementById('set-tushare-backup').value || '', mode: document.getElementById('set-tushare-mode').value, notify_on_switch: document.getElementById('set-tushare-notify').checked } };
+  try {
+    const r = await fetch(api('/api/admin/settings'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '保存失败'); return; }
+    showToast('外部 API 参数已保存');
+    renderSettings();
+  } catch (e) { showToast('网络错误'); }
+}
+async function switchExternalApiMode(provider) {
+  const mode = document.getElementById('set-tushare-mode').value;
+  try {
+    const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/switch'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: mode }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '切换失败'); return; }
+    showToast('已手动应用' + (mode === 'auto' ? '自动故障转移' : mode === 'primary' ? '主 Token' : '备用 Token'));
+    renderSettings();
+  } catch (e) { showToast('网络错误'); }
 }
 async function submitSettings() {
   const body = { register_open: document.getElementById('set-register-open').checked, register_code: document.getElementById('set-register-code').value || '', require_email: document.getElementById('set-require-email').checked };

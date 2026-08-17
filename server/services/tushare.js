@@ -1,7 +1,10 @@
 const https = require('https');
 const { withExternalCallGuard, openExternalCircuit } = require('./externalCallGuard');
+const { getProviderRuntime, recordProviderSwitch } = require('./externalApiConfig');
 
 const API_URL = 'https://api.tushare.pro';
+const PRIMARY_SOURCE = 'tushare';
+const BACKUP_SOURCE = 'tushare_backup';
 
 class TushareRequestError extends Error {
   constructor(code, message, details = {}) {
@@ -35,18 +38,13 @@ function classifyUpstreamError(payload, statusCode, apiName) {
     { errorType: statusCode >= 500 ? 'network' : 'upstream', statusCode, apiName, upstreamCode: code });
 }
 
-function tushareQuery(apiName, params = {}, fields = '') {
-  const token = process.env.TUSHARE_TOKEN || '';
-  if (!token) {
-    return Promise.reject(new TushareRequestError(
-      'AUTH_ERROR', 'Tushare 未配置 TUSHARE_TOKEN，无法调用外部数据接口',
-      { errorType: 'permission', apiName }
-    ));
-  }
+function failoverEligible(error) {
+  return Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
+}
 
+function requestWithToken(apiName, params, fields, token, guardSource, dataset) {
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
-  const dataset = `${apiName}:${JSON.stringify(params || {})}:${fields || ''}`;
-  return withExternalCallGuard('tushare', dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
+  return withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
     const request = https.request(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
@@ -61,7 +59,7 @@ function tushareQuery(apiName, params = {}, fields = '') {
         catch (_) { return reject(new TushareRequestError('INVALID_RESPONSE', 'Tushare 返回了无法解析的 JSON', { apiName, statusCode: response.statusCode })); }
         if (response.statusCode !== 200 || !payload || payload.code !== 0) {
           const error = classifyUpstreamError(payload, response.statusCode, apiName);
-          if (error.errorType === 'rate_limit') await openExternalCircuit('tushare', error.message).catch(() => {});
+          if (error.errorType === 'rate_limit') await openExternalCircuit(guardSource, error.message).catch(() => {});
           return reject(error);
         }
         const data = payload.data;
@@ -88,6 +86,43 @@ function tushareQuery(apiName, params = {}, fields = '') {
     request.write(body);
     request.end();
   }));
+}
+
+async function tushareQuery(apiName, params = {}, fields = '') {
+  const runtime = await getProviderRuntime('tushare');
+  const allCandidates = [
+    { token: runtime.primary, source: PRIMARY_SOURCE },
+    { token: runtime.backup, source: BACKUP_SOURCE },
+  ];
+  const candidates = (runtime.mode === 'primary' ? allCandidates.slice(0, 1)
+    : runtime.mode === 'backup' ? allCandidates.slice(1)
+      : allCandidates).filter(item => item.token);
+  if (!candidates.length) {
+    throw new TushareRequestError(
+      'AUTH_ERROR', `Tushare 未配置${runtime.mode === 'backup' ? '备用' : ''} Token，无法调用外部数据接口`,
+      { errorType: 'permission', apiName }
+    );
+  }
+
+  const dataset = `${apiName}:${JSON.stringify(params || {})}:${fields || ''}`;
+  let lastError = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    try {
+      const result = await requestWithToken(apiName, params, fields, candidate.token, candidate.source, dataset);
+      if (candidate.source === PRIMARY_SOURCE && runtime.mode === 'auto' && runtime.lastSwitch?.mode === 'backup') {
+        await recordProviderSwitch('tushare', 'primary', '主 Token 已恢复，自动切回主 Token', { automatic: true });
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (index === candidates.length - 1 || !failoverEligible(error)) throw error;
+      if (candidate.source === PRIMARY_SOURCE && runtime.mode === 'auto') {
+        await recordProviderSwitch('tushare', 'backup', error.message || '主 Token 请求失败，自动切换备用 Token', { automatic: true });
+      }
+    }
+  }
+  throw lastError;
 }
 
 module.exports = { tushareQuery, TushareRequestError };

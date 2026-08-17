@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
+const { getProviderRuntime } = require('../services/externalApiConfig');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_history_sync.py');
@@ -41,10 +42,20 @@ function pythonCandidates() {
     process.platform === 'win32' ? 'py' : 'python3', 'python'].filter(Boolean);
 }
 
-function runWith(executable) {
+function runWith(executable, runtime) {
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
-    const child = spawn(executable, args, { cwd: PROJECT_ROOT, env: { ...process.env, EXTERNAL_CALL_GUARD: '1' }, windowsHide: true });
+    const child = spawn(executable, args, {
+      cwd: PROJECT_ROOT,
+      env: {
+        ...process.env,
+        TUSHARE_TOKEN: runtime.primary || '',
+        TUSHARE_BACKUP_TOKEN: runtime.backup || '',
+        TUSHARE_TOKEN_MODE: runtime.mode || 'auto',
+        EXTERNAL_CALL_GUARD: '1'
+      },
+      windowsHide: true
+    });
     let output = '', error = '';
     child.stdout.on('data', chunk => { output += chunk.toString(); });
     child.stderr.on('data', chunk => { error += chunk.toString(); });
@@ -71,6 +82,7 @@ async function runIpoHistorySync(reason = 'scheduled') {
   let retryOf = null;
   const errors = [];
   try {
+    const runtime = await getProviderRuntime('tushare');
     const prior = await pool.query(
       `SELECT id,status,detail FROM job_runs WHERE job=$1
         AND (started_at AT TIME ZONE 'Asia/Shanghai')::date =
@@ -94,7 +106,7 @@ async function runIpoHistorySync(reason = 'scheduled') {
     }
     for (const executable of pythonCandidates()) {
       try {
-        const result = await runWith(executable);
+        const result = await runWith(executable, runtime);
         const detail = JSON.stringify({ reason, executable, retryOf, ...result });
         await finishJobRun(runId, true, detail);
         console.log(`[ipo-history] ${reason} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);

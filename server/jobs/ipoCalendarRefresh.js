@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { notifyJobFailure } = require('../services/jobAlertMailer');
+const { getProviderRuntime } = require('../services/externalApiConfig');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_daily_report.py');
@@ -56,12 +57,18 @@ function summarizeIpoPythonError(value) {
   return finalLine.replace(/\s+/g, ' ').slice(0, 500);
 }
 
-function runWith(executable) {
+function runWith(executable, runtime) {
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
     const child = spawn(executable, args, {
       cwd: PROJECT_ROOT,
-      env: { ...process.env, EXTERNAL_CALL_GUARD: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+      env: {
+        ...process.env,
+        TUSHARE_TOKEN: runtime.primary || '',
+        TUSHARE_BACKUP_TOKEN: runtime.backup || '',
+        TUSHARE_TOKEN_MODE: runtime.mode || 'auto',
+        EXTERNAL_CALL_GUARD: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8'
+      },
       windowsHide: true,
     });
     let output = '', error = '';
@@ -97,9 +104,10 @@ async function runIpoCalendarRefreshRaw(reason = 'scheduled') {
   running = true;
   const errors = [];
   try {
+    const runtime = await getProviderRuntime('tushare');
     for (const executable of pythonCandidates()) {
       try {
-        const output = await runWith(executable);
+        const output = await runWith(executable, runtime);
         console.log(`[ipo-calendar] ${reason} 更新完成 (${executable})`);
         return { ok: true, executable, output: output.output, externalCalls: output.externalCalls, externalSources: output.externalSources };
       } catch (error) { errors.push(`${executable}: ${summarizeIpoPythonError(error.message)}`); }

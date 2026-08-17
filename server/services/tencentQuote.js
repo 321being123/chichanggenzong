@@ -162,8 +162,9 @@ async function fetchTencentQuotes(rawCodes, options = {}) {
   const symbols = descriptors.map(item => item.symbol);
   const cached = await loadCache(symbols);
   const ttlMs = Math.max(1000, Number(options.ttlMs || process.env.TENCENT_QUOTE_TTL_MS) || DEFAULT_TTL_MS);
+  const force = options.force === true;
   const now = Date.now();
-  const staleSymbols = symbols.filter(symbol => {
+  const staleSymbols = force ? symbols : symbols.filter(symbol => {
     const row = cached.get(symbol);
     return !row || !row.fetched_at || now - new Date(row.fetched_at).getTime() >= ttlMs;
   });

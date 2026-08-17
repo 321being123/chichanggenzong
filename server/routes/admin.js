@@ -19,6 +19,12 @@ const arbitrageSvc = require('../services/arbitrageService');
 const { getJobOverview, listJobSlots, getJobSlot, retryJobSlot, acknowledgeSlot, validateJobSlot } = require('../services/jobScheduleSlots');
 const { listAlerts, resendAlert, acknowledgeAlert, sendTestEmail } = require('../services/jobAlertMailer');
 const { sanitizeJobError } = require('../services/jobErrorSanitizer');
+const {
+  PROVIDERS: EXTERNAL_API_PROVIDERS,
+  getExternalApiSettings,
+  saveProviderSettings,
+  switchProvider,
+} = require('../services/externalApiConfig');
 
 // PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
 // 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
@@ -556,22 +562,65 @@ router.post('/knowledge/users/:username/permission', asyncHandler(async (req, re
 
 // ====== 全局参数（注册开关/邀请码/邮箱验证）======
 router.get('/settings', asyncHandler(async (req, res) => {
-  const [regOpen, regCode, email] = await Promise.all([
+  const [regOpen, regCode, email, externalApis] = await Promise.all([
     getConfig('register_open', '1'),
     getConfig('register_code', REGISTER_CODE || ''),
-    getConfig('require_email', '0')
+    getConfig('require_email', '0'),
+    getExternalApiSettings()
   ]);
-  res.json({ register_open: regOpen, register_code: regCode, require_email: email });
+  res.json({ register_open: regOpen, register_code: regCode, require_email: email, external_apis: externalApis });
 }));
 router.put('/settings', asyncHandler(async (req, res) => {
   const b = req.body || {};
-  await Promise.all([
-    setConfig('register_open', (b.register_open === false || b.register_open === '0') ? '0' : '1'),
-    setConfig('register_code', b.register_code || ''),
-    setConfig('require_email', (b.require_email === true || b.require_email === '1') ? '1' : '0')
-  ]);
+  const externalInput = b.external_api && b.external_api.provider ? b.external_api : null;
+  const externalProvider = externalInput ? String(externalInput.provider).trim() : '';
+  if (externalInput && !EXTERNAL_API_PROVIDERS[externalProvider]) return res.status(400).json({ error: '不支持的外部 API' });
+  const writes = [];
+  if (Object.prototype.hasOwnProperty.call(b, 'register_open')) {
+    writes.push(setConfig('register_open', (b.register_open === false || b.register_open === '0') ? '0' : '1'));
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'register_code')) writes.push(setConfig('register_code', b.register_code || ''));
+  if (Object.prototype.hasOwnProperty.call(b, 'require_email')) {
+    writes.push(setConfig('require_email', (b.require_email === true || b.require_email === '1') ? '1' : '0'));
+  }
+  if (writes.length) await Promise.all(writes);
+  if (externalInput) {
+    await saveProviderSettings(externalProvider, {
+      primary_token: typeof externalInput.primary_token === 'string' ? externalInput.primary_token : undefined,
+      backup_token: typeof externalInput.backup_token === 'string' ? externalInput.backup_token : undefined,
+      clear_primary: externalInput.clear_primary === true,
+      clear_backup: externalInput.clear_backup === true,
+      mode: externalInput.mode,
+      notify_on_switch: externalInput.notify_on_switch,
+    });
+    await audit(req, 'settings_external_api', externalProvider, {
+      detail: '更新外部 API 主备参数',
+      metadata: {
+        provider: externalProvider,
+        mode: externalInput.mode,
+        notify_on_switch: externalInput.notify_on_switch,
+        primary_changed: Boolean(externalInput.primary_token && String(externalInput.primary_token).trim()) || externalInput.clear_primary === true,
+        backup_changed: Boolean(externalInput.backup_token && String(externalInput.backup_token).trim()) || externalInput.clear_backup === true,
+      },
+    });
+  }
   await audit(req, 'settings_update', 'global', { detail: '更新全局参数' });
-  res.json({ ok: true });
+  res.json({ ok: true, external_apis: await getExternalApiSettings() });
+}));
+
+// 外部 API 主备手动切换：模式为 auto 时恢复自动故障转移。
+router.post('/settings/external-api/:provider/switch', asyncHandler(async (req, res) => {
+  const provider = String(req.params.provider || '').trim();
+  const mode = String(req.body && req.body.mode || '').trim();
+  if (!EXTERNAL_API_PROVIDERS[provider]) return res.status(400).json({ error: '不支持的外部 API' });
+  if (!['auto', 'primary', 'backup'].includes(mode)) return res.status(400).json({ error: '切换模式非法' });
+  const runtime = await switchProvider(provider, mode, { reason: '后台手动切换' });
+  await audit(req, 'settings_external_api_switch', provider, {
+    detail: `手动切换外部 API 到${mode === 'auto' ? '自动模式' : mode === 'primary' ? '主 Token' : '备用 Token'}`,
+    metadata: { provider, mode },
+  });
+  const settings = await getExternalApiSettings();
+  res.json({ ok: true, provider, mode: runtime.mode, settings: settings[provider] });
 }));
 
 // ====== 套利机会审核 ======

@@ -102,9 +102,10 @@ async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null)
   if (ok && runId) {
     const { rows: duplicateRows } = await pool.query(
       `SELECT COUNT(*)::int AS count, MAX(s.business_date)::text AS business_date
-         FROM job_runs r
+        FROM job_runs r
          JOIN ops.job_schedule_slots s ON s.slot_id=r.slot_id
-        WHERE r.id<>$1 AND r.job=$2 AND r.status='done'
+        WHERE r.id<>$1 AND r.job=$2 AND r.status='done' AND r.trigger_type='scheduled'
+          AND (SELECT trigger_type FROM job_runs WHERE id=$1)='scheduled'
           AND s.business_date=(SELECT business_date FROM ops.job_schedule_slots WHERE slot_id=(SELECT slot_id FROM job_runs WHERE id=$1))`,
       [runId, jobCode]
     );
@@ -117,7 +118,7 @@ async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null)
         jobCode,
         slotId: null,
         subject: `后台任务出现重复成功记录：${jobCode}`,
-        summary: `任务 ${jobCode} 在业务日期 ${duplicateRows[0].business_date} 已出现第 2 条成功运行记录，请检查定时与手动任务是否重复。`,
+        summary: `任务 ${jobCode} 在业务日期 ${duplicateRows[0].business_date} 已出现第 2 条定时成功运行记录，请检查定时计划是否重复。`,
       }).catch(error => console.warn('[job-alert] 重复成功告警失败:', error.message));
     }
   }

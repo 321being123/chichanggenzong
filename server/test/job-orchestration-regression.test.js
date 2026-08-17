@@ -50,6 +50,7 @@ assert(/NODE_ENV: 'test'/.test(testRunner) && /ALERT_EMAIL_TO: ''/.test(testRunn
 assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.alertType\)/.test(alertMailer), '持续异常不得绕过去重周期重复发信');
 assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾期告警');
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
+assert(/r\.trigger_type='scheduled'/.test(orchestrator) && /SELECT trigger_type FROM job_runs WHERE id=\$1/.test(orchestrator), '重复成功告警不得把人工补跑或自动重试误判为重复定时任务');
 assert(/systemctl enable portfolio-server\.service portfolio-worker\.service/.test(deployScript), 'Web 与 Worker 服务必须配置开机自启');
 assert(/maxAttempts: 4/.test(definitions), '任务最大尝试次数必须包含首次执行和三次自动重试');
 assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*hour: 8, minute: 0/.test(definitions), '可转债行情同步必须改为次日 08:00 执行');

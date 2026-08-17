@@ -1000,6 +1000,7 @@ function renderSettingsTabs(el, s) {
   const o = s.register_open === '1' ? 'checked' : '', e = s.require_email === '1' ? 'checked' : '';
   const apiSettings = s.external_apis && s.external_apis.tushare || {};
   const apiPrimary = apiSettings.primary || {}, apiBackup = apiSettings.backup || {};
+  const apiTests = apiSettings.test_results || {};
   const apiMode = ['auto', 'primary', 'backup'].indexOf(apiSettings.mode) >= 0 ? apiSettings.mode : 'auto';
   const apiSwitch = apiSettings.last_switch || null;
   const modeLabel = apiMode === 'primary' ? '主 Token' : apiMode === 'backup' ? '备用 Token' : '自动故障转移';
@@ -1023,7 +1024,35 @@ function renderSettingsTabs(el, s) {
     '<label for="set-tushare-mode">运行模式</label><select id="set-tushare-mode" style="padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;max-width:260px;">' + option('auto', '自动故障转移') + option('primary', '固定使用主 Token') + option('backup', '固定使用备用 Token') + '</select>' +
     '<label>切换通知</label><label style="display:flex;align-items:center;gap:8px;"><input id="set-tushare-notify" type="checkbox" ' + (apiSettings.notify_on_switch !== false ? 'checked' : '') + '>主备切换时发送后台告警</label></div>' +
     '<div style="font-size:12px;color:#777;margin-top:16px;">当前模式：' + modeLabel + (apiSwitch ? '；最近切换：' + escapeHtml(apiSwitch.switched_at || '') + '（' + escapeHtml(apiSwitch.reason || '') + '）' : '') + '</div>' +
-    '<div style="display:flex;gap:10px;margin-top:18px;"><button class="btn btn-primary" onclick="saveExternalApiSettings()">保存 API 参数</button><button class="btn btn-outline" onclick="switchExternalApiMode(\'tushare\')">手动应用当前模式</button></div></div></div>';
+    '<div style="display:flex;gap:10px;margin-top:18px;"><button class="btn btn-primary" onclick="saveExternalApiSettings()">保存 API 参数</button><button class="btn btn-outline" onclick="switchExternalApiMode(\'tushare\')">手动应用当前模式</button></div>' +
+    '<div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">API 可用性测试</div><div style="font-size:12px;color:#777;margin-bottom:10px;">点击后仅测试指定凭据，不会自动切换主备；测试接口为 trade_cal。</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(apiTests.primary, '主 API') + renderExternalApiTestResult(apiTests.backup, '备用 API') + '</div></div></div></div>';
+}
+function renderExternalApiTestResult(result, label) {
+  if (!result) return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;color:#888;font-size:12px;">' + label + '：未测试</div>';
+  const status = result.status === 'available' ? '可用' : result.status === 'not_configured' ? '未配置' : '不可用';
+  const color = result.ok ? '#16803c' : '#c62828';
+  const latency = result.latency_ms == null ? '' : ' · ' + Number(result.latency_ms) + ' ms';
+  return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;font-size:12px;"><div style="color:#555;">' + label + '：<span style="font-weight:600;color:' + color + ';">' + status + '</span>' + latency + '</div><div style="color:#888;margin-top:4px;word-break:break-all;">' + escapeHtml(result.message || '') + (result.checked_at ? ' · ' + escapeHtml(result.checked_at) : '') + '</div>' + renderExternalApiReturnedData(result.returned_data) + '</div>';
+}
+function renderExternalApiReturnedData(data) {
+  if (!data || !Array.isArray(data.fields)) return '';
+  const fields = data.fields.slice(0, 20), rows = Array.isArray(data.items) ? data.items.slice(0, 5) : [];
+  let html = '<div style="margin-top:8px;color:#555;">API 返回数据：</div>';
+  if (!fields.length) return html + '<div style="color:#888;margin-top:3px;">0 个字段，0 行</div>';
+  html += '<div style="overflow-x:auto;margin-top:4px;"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap;"><thead><tr>';
+  fields.forEach(function (field) { html += '<th style="padding:3px 7px;border:1px solid #ddd;background:#eee;text-align:left;">' + escapeHtml(field) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  rows.forEach(function (row) {
+    html += '<tr>';
+    fields.forEach(function (field, index) { const value = !row || row[index] == null ? '-' : row[index]; html += '<td style="padding:3px 7px;border:1px solid #ddd;">' + escapeHtml(String(value)) + '</td>'; });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  if (!rows.length) html += '<div style="color:#888;margin-top:3px;">0 行</div>';
+  if (data.truncated) html += '<div style="color:#888;margin-top:3px;">仅展示前 5 行</div>';
+  return html;
 }
 function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(function (button) { const active = button.dataset.tab === tab; button.classList.toggle('btn-primary', active); button.classList.toggle('btn-outline', !active); });
@@ -1049,6 +1078,20 @@ async function switchExternalApiMode(provider) {
     showToast('已手动应用' + (mode === 'auto' ? '自动故障转移' : mode === 'primary' ? '主 Token' : '备用 Token'));
     renderSettings();
   } catch (e) { showToast('网络错误'); }
+}
+async function testExternalApiAvailability(provider, role) {
+  const button = document.getElementById('test-' + provider + '-' + role);
+  const originalText = button ? button.textContent : '';
+  if (button) { button.disabled = true; button.textContent = '测试中...'; }
+  const label = role === 'primary' ? '主' : role === 'backup' ? '备用' : '当前';
+  try {
+    const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '测试失败'); if (button) { button.disabled = false; button.textContent = originalText; } return; }
+    showToast((d.result && d.result.ok ? label + ' API 可用' : label + ' API 不可用：' + ((d.result && d.result.message) || '请检查配置')));
+    renderSettings();
+  } catch (e) { showToast('网络错误'); }
+  if (button) { button.disabled = false; button.textContent = originalText; }
 }
 async function submitSettings() {
   const body = { register_open: document.getElementById('set-register-open').checked, register_code: document.getElementById('set-register-code').value || '', require_email: document.getElementById('set-require-email').checked };

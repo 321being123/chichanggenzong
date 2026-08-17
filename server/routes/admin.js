@@ -22,6 +22,7 @@ const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 const {
   PROVIDERS: EXTERNAL_API_PROVIDERS,
   getExternalApiSettings,
+  testProviderAvailability,
   saveProviderSettings,
   switchProvider,
 } = require('../services/externalApiConfig');
@@ -621,6 +622,22 @@ router.post('/settings/external-api/:provider/switch', asyncHandler(async (req, 
   });
   const settings = await getExternalApiSettings();
   res.json({ ok: true, provider, mode: runtime.mode, settings: settings[provider] });
+}));
+
+// 外部 API 可用性测试：只测试指定主/备凭据，不触发自动故障转移。
+router.post('/settings/external-api/:provider/test', asyncHandler(async (req, res) => {
+  const provider = String(req.params.provider || '').trim();
+  const role = String(req.body && req.body.role || 'current').trim();
+  if (!EXTERNAL_API_PROVIDERS[provider]) return res.status(400).json({ error: '不支持的外部 API' });
+  if (!['primary', 'backup', 'current'].includes(role)) return res.status(400).json({ error: '测试目标非法' });
+  const result = await testProviderAvailability(provider, role);
+  await audit(req, 'settings_external_api_test', provider, {
+    result: result.ok ? 'success' : 'failure',
+    detail: `${result.role === 'primary' ? '主' : '备用'} API 测试：${result.message}`,
+    metadata: { provider, role: result.role, status: result.status, latency_ms: result.latency_ms },
+  });
+  const settings = await getExternalApiSettings();
+  res.json({ ok: result.ok, result, settings: settings[provider] });
 }));
 
 // ====== 套利机会审核 ======

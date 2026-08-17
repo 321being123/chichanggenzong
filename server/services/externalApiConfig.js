@@ -1,5 +1,6 @@
 // 后台外部 API 主备凭据配置。Token 只在服务端解密使用，接口只返回掩码。
 const crypto = require('crypto');
+const https = require('https');
 const { SECRET } = require('../config');
 const { getConfig, setConfig } = require('../db/config');
 
@@ -50,6 +51,103 @@ function maskSecret(value) {
   return `${text.slice(0, 4)}***${text.slice(-4)}`;
 }
 
+function normalizeTestRole(value) {
+  return ['primary', 'backup', 'current'].includes(String(value || '')) ? String(value) : 'current';
+}
+
+function safeTestMessage(message, token) {
+  let text = String(message || 'API 测试失败').replace(/\s+/g, ' ').trim();
+  if (token) text = text.split(String(token)).join('***');
+  return text.slice(0, 240);
+}
+
+function normalizeReturnedData(data) {
+  if (!data || typeof data !== 'object') return null;
+  const fields = Array.isArray(data.fields) ? data.fields.slice(0, 20).map(value => String(value).slice(0, 64)) : [];
+  const sourceItems = Array.isArray(data.items) ? data.items : [];
+  const items = sourceItems.slice(0, 5).map(row => {
+    const values = Array.isArray(row) ? row : [];
+    return fields.map((field, index) => {
+      const value = values[index];
+      if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value == null ? null : value;
+      return String(value).slice(0, 120);
+    });
+  });
+  return { fields, items, truncated: sourceItems.length > items.length };
+}
+
+function readTushareHealth(token) {
+  const body = JSON.stringify({
+    api_name: 'trade_cal',
+    token,
+    params: { exchange: 'SSE', start_date: '20200102', end_date: '20200102' },
+    fields: 'cal_date,is_open',
+  });
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const request = https.request('https://api.tushare.pro', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 10000,
+    }, response => {
+      let responseBody = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { responseBody += chunk; });
+      response.on('end', () => {
+        let payload;
+        try { payload = JSON.parse(responseBody); } catch (error) {
+          return reject(new Error(`Tushare 返回了无法解析的响应（HTTP ${response.statusCode || '未知'}）`));
+        }
+        if (response.statusCode !== 200 || !payload || payload.code !== 0) {
+          const upstreamCode = payload && payload.code != null ? `（代码 ${payload.code}）` : '';
+          return reject(new Error(`${payload && (payload.msg || payload.message) || `HTTP ${response.statusCode || '未知'}`}${upstreamCode}`));
+        }
+        const data = payload.data;
+        if (data && (!Array.isArray(data.fields) || !Array.isArray(data.items))) {
+          return reject(new Error('Tushare 返回的数据结构无效'));
+        }
+        resolve({
+          latency_ms: Date.now() - startedAt,
+          data_count: data && Array.isArray(data.items) ? data.items.length : 0,
+          returned_data: normalizeReturnedData(data),
+        });
+      });
+    });
+    request.on('error', error => reject(new Error(error.message || '网络连接失败')));
+    request.on('timeout', () => {
+      request.destroy();
+      reject(new Error('请求超时（10 秒）'));
+    });
+    request.write(body);
+    request.end();
+  });
+}
+
+function normalizeStoredTestResult(result) {
+  if (!result || typeof result !== 'object') return null;
+  return {
+    ok: result.ok === true,
+    status: String(result.status || (result.ok === true ? 'available' : 'unavailable')).slice(0, 32),
+    message: String(result.message || '').slice(0, 240),
+    latency_ms: Number.isFinite(Number(result.latency_ms)) ? Number(result.latency_ms) : null,
+    data_count: Number.isFinite(Number(result.data_count)) ? Number(result.data_count) : null,
+    checked_at: result.checked_at || null,
+    api_name: String(result.api_name || '').slice(0, 64),
+    returned_data: normalizeReturnedData(result.returned_data),
+  };
+}
+
+async function recordProviderTestResult(provider, role, result) {
+  const store = await readStore();
+  store.providers = store.providers || {};
+  const current = store.providers[provider] || {};
+  current.testResults = current.testResults || {};
+  current.testResults[role] = normalizeStoredTestResult(result);
+  store.providers[provider] = current;
+  await writeStore(store);
+  return current.testResults[role];
+}
+
 async function readStore() {
   const raw = await getConfig(CONFIG_KEY, '');
   if (!raw) return { providers: {} };
@@ -84,7 +182,73 @@ async function getProviderRuntime(provider = 'tushare') {
     notifyOnSwitch: item.notifyOnSwitch !== false,
     lastSwitch: item.lastSwitch || null,
     updatedAt: item.updatedAt || null,
+    testResults: item.testResults || {},
   };
+}
+
+async function testProviderAvailability(provider = 'tushare', role = 'current') {
+  if (!PROVIDERS[provider]) throw new Error('不支持的外部 API');
+  const runtime = await getProviderRuntime(provider);
+  const requestedRole = normalizeTestRole(role);
+  const targetRole = requestedRole === 'current'
+    ? (runtime.mode === 'backup' || (runtime.mode === 'auto' && runtime.lastSwitch?.mode === 'backup') ? 'backup' : 'primary')
+    : requestedRole;
+  const token = runtime[targetRole];
+  const checkedAt = new Date().toISOString();
+  let result;
+  if (!token) {
+    result = {
+      ok: false,
+      status: 'not_configured',
+      provider,
+      role: targetRole,
+      message: `${targetRole === 'primary' ? '主' : '备用'} Token 尚未配置`,
+      latency_ms: null,
+      data_count: null,
+      checked_at: checkedAt,
+      api_name: provider === 'tushare' ? 'trade_cal' : '',
+    };
+  } else if (provider === 'tushare') {
+    try {
+      const health = await readTushareHealth(token);
+      result = {
+        ok: true,
+        status: 'available',
+        provider,
+        role: targetRole,
+        message: '连接成功，Token 可用',
+        ...health,
+        checked_at: checkedAt,
+        api_name: 'trade_cal',
+      };
+    } catch (error) {
+      result = {
+        ok: false,
+        status: 'unavailable',
+        provider,
+        role: targetRole,
+        message: safeTestMessage(error.message || error, token),
+        latency_ms: Date.now() - Date.parse(checkedAt),
+        data_count: null,
+        checked_at: checkedAt,
+        api_name: 'trade_cal',
+      };
+    }
+  } else {
+    result = {
+      ok: false,
+      status: 'unsupported',
+      provider,
+      role: targetRole,
+      message: '该 API 暂未配置可用性测试',
+      latency_ms: null,
+      data_count: null,
+      checked_at: checkedAt,
+      api_name: '',
+    };
+  }
+  await recordProviderTestResult(provider, targetRole, result);
+  return result;
 }
 
 async function getExternalApiSettings() {
@@ -100,6 +264,11 @@ async function getExternalApiSettings() {
       backup: { configured: Boolean(item.backup), masked: maskSecret(item.backup) },
       last_switch: item.lastSwitch,
       updated_at: item.updatedAt,
+      test_results: Object.keys(item.testResults || {}).reduce((acc, role) => {
+        const safe = normalizeStoredTestResult(item.testResults[role]);
+        if (safe) acc[role] = safe;
+        return acc;
+      }, {}),
     };
   }
   return result;
@@ -176,6 +345,8 @@ module.exports = {
   maskSecret,
   getProviderRuntime,
   getExternalApiSettings,
+  testProviderAvailability,
+  recordProviderTestResult,
   saveProviderSettings,
   recordProviderSwitch,
   switchProvider,

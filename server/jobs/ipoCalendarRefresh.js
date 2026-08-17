@@ -151,8 +151,17 @@ async function runIpoCalendarStartupCatchup(now = new Date()) {
     const weekday = new Date(`${value}T00:00:00Z`).getUTCDay();
     return weekday >= 1 && weekday <= 5 && !isCnHoliday(value);
   };
+  const nextTradingDay = value => {
+    const cursor = new Date(`${value}T00:00:00Z`);
+    do {
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    } while (!tradingDay(cursor.toISOString().slice(0, 10)));
+    return cursor.toISOString().slice(0, 10);
+  };
   let expectedDate = today;
-  if (Number(p.hour) < 18 || !tradingDay(today)) {
+  if (Number(p.hour) >= 18 && tradingDay(today)) {
+    expectedDate = nextTradingDay(today);
+  } else if (Number(p.hour) < 18 || !tradingDay(today)) {
     const cursor = new Date(`${today}T00:00:00Z`);
     for (let i = 0; i < 10; i++) {
       cursor.setUTCDate(cursor.getUTCDate() - 1);

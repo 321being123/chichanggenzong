@@ -48,7 +48,15 @@ function previousDate(dateTextValue) {
 
 function expectedDataDate(jobCode, businessDate) {
   const normalized = normalizeBusinessDate(businessDate);
-  if (!normalized || getJobDefinition(jobCode).dataDatePolicy !== 'previous_trading_day') return normalized;
+  if (!normalized) return null;
+  // 打新日报在当天 18:00 生成下一个交易日的建议，不能把当天旧日报当成新鲜数据。
+  if (jobCode === 'ipo_calendar_refresh') {
+    let cursor = normalized;
+    do { cursor = new Date(`${cursor}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1); cursor = cursor.toISOString().slice(0, 10); }
+    while (!isWeekday(cursor));
+    return cursor;
+  }
+  if (getJobDefinition(jobCode).dataDatePolicy !== 'previous_trading_day') return normalized;
   let cursor = previousDate(normalized);
   while (!isWeekday(cursor)) cursor = previousDate(cursor);
   return cursor;

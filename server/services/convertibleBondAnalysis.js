@@ -1305,11 +1305,32 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       tushareQuery('daily', { trade_date: daily.tradeDate }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
       tushareQuery('daily_basic', { trade_date: daily.tradeDate }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
     ]);
-    const activeCodes = new Set(basics.map(row => row.ts_code));
-    const activeDailyRows = daily.rows.filter(row => activeCodes.has(row.ts_code));
-    const dailyMap = new Map(activeDailyRows.map(row => [row.ts_code, row]));
     const stockDailyRows = tsRows(stockDailyData);
     const stockValuationRows = tsRows(stockValuationData);
+    const activeCodes = new Set(basics.map(row => row.ts_code));
+    const profileByCode = new Map(profiles.map(row => [row.ts_code, row]));
+    const stockCloseByCode = new Map(stockDailyRows.map(row => [row.ts_code, finite(row.close)]));
+    // Tushare cb_daily 偶发只返回价格、不返回转股价值/溢价率；用同日正股收盘价和转股价补齐，
+    // 保证周期指标和后续估值链路不会因上游可推导字段缺失而整体阻断。
+    const activeDailyRows = daily.rows
+      .filter(row => activeCodes.has(row.ts_code))
+      .map(row => {
+        const profile = profileByCode.get(row.ts_code);
+        const stockClose = profile ? stockCloseByCode.get(profile.stk_code) : null;
+        const conversionPrice = profile ? finite(profile.conv_price) : null;
+        const close = finite(row.close);
+        const conversionValue = finite(row.cb_value) != null
+          ? finite(row.cb_value)
+          : stockClose != null && conversionPrice != null && conversionPrice > 0
+            ? stockClose / conversionPrice * 100 : null;
+        const premium = finite(row.cb_over_rate) != null
+          ? finite(row.cb_over_rate)
+          : conversionValue != null && conversionValue > 0 && close != null
+            ? (close / conversionValue - 1) * 100 : null;
+        return conversionValue == null && premium == null
+          ? row : { ...row, cb_value: conversionValue, cb_over_rate: premium };
+      });
+    const dailyMap = new Map(activeDailyRows.map(row => [row.ts_code, row]));
     const client = await pool.connect();
     let saved = 0;
     let tushareSourceId = null;

@@ -30,7 +30,7 @@ assert.ok(!frontend.includes('onclick="openArbDetail(' + "' + r.case_id"), '套�
 assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("params.delete('case')"), '套利详情必须具有独立URL页面状态');
 assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
-assert.ok(html.includes('shared/style.css?v=27'), '全局样式缓存版本未更新');
+assert.ok(html.includes('shared/style.css?v=31'), '全局样式缓存版本未更新');
 assert.ok(html.includes('js/arbitrage.js?v=11'), '套利前端缓存版本未更新');
 assert.ok(html.includes('js/navigation.js?v=5'), '导航缓存版本未更新');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');

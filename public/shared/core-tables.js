@@ -358,6 +358,132 @@ function setFilter(type, val) {
   renderPositionsTable('topn-table');
 }
 
+// 持仓明细统一表格：横向滚动、标题吸顶、底部滚动条与上市可转债列表保持一致。
+function positionListFloatingHead() {
+  var host = document.getElementById('position-list-floating-head');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'position-list-floating-head';
+    host.className = 'position-list-floating-head';
+    host.hidden = true;
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function positionListFloatingScroll() {
+  var host = document.getElementById('position-list-floating-scroll');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'position-list-floating-scroll';
+    host.className = 'position-list-floating-scroll';
+    host.hidden = true;
+    host.innerHTML = '<div class="position-list-floating-scroll-inner"></div>';
+    host.addEventListener('scroll', function () {
+      var scroll = document.querySelector('#page-positions .position-list-scroll');
+      if (scroll && Math.abs(scroll.scrollLeft - host.scrollLeft) > 1) scroll.scrollLeft = host.scrollLeft;
+    }, { passive: true });
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function positionListBuildFloatingHead() {
+  var source = document.querySelector('#page-positions .position-list-table');
+  var sourceHead = source && source.querySelector('thead');
+  var scroll = document.querySelector('#page-positions .position-list-scroll');
+  if (!source || !sourceHead || !scroll || !source.getBoundingClientRect().width) return;
+  var host = positionListFloatingHead();
+  var bottomScroll = positionListFloatingScroll();
+  host.innerHTML = '';
+  var floating = source.cloneNode(false);
+  floating.classList.add('position-list-floating-table');
+  floating.style.width = source.getBoundingClientRect().width + 'px';
+  floating.appendChild(sourceHead.cloneNode(true));
+  host.appendChild(floating);
+  var sourceCells = sourceHead.querySelectorAll('th');
+  floating.querySelectorAll('th').forEach(function (th, index) {
+    if (sourceCells[index]) th.style.width = sourceCells[index].getBoundingClientRect().width + 'px';
+    th.onclick = function () { if (sourceCells[index]) sourceCells[index].click(); };
+  });
+  if (!scroll.__positionListFloatingBound) {
+    scroll.__positionListFloatingBound = true;
+    scroll.addEventListener('scroll', positionListSyncFloatingUi, { passive: true });
+  }
+  if (!window.__positionListFloatingBound) {
+    window.__positionListFloatingBound = true;
+    window.addEventListener('scroll', positionListSyncFloatingUi, { passive: true });
+    window.addEventListener('resize', positionListSyncFloatingUi);
+    document.addEventListener('scroll', positionListSyncFloatingUi, true);
+  }
+  host.__source = source;
+  host.__scroll = scroll;
+  bottomScroll.querySelector('.position-list-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
+}
+
+function positionListSyncFloatingHead() {
+  var host = document.getElementById('position-list-floating-head');
+  var source = document.querySelector('#page-positions .position-list-table');
+  var head = source && source.querySelector('thead');
+  var scroll = document.querySelector('#page-positions .position-list-scroll');
+  var nav = document.querySelector('#main-holdings > .holdings-header');
+  var page = document.getElementById('page-positions');
+  if (!host || !source || !head || !scroll || !nav || !page || !page.classList.contains('active')) {
+    if (host) host.hidden = true;
+    return;
+  }
+  if (host.__source !== source) positionListBuildFloatingHead();
+  var top = nav.getBoundingClientRect().bottom;
+  var sourceRect = source.getBoundingClientRect();
+  var headRect = head.getBoundingClientRect();
+  var headRow = head.querySelector('tr');
+  var headHeight = Math.max(40, headRow ? headRow.getBoundingClientRect().height : 0, headRect.height || 0);
+  var show = headRect.top < top && sourceRect.bottom > top + headHeight;
+  if (!show) { host.hidden = true; return; }
+  var scrollRect = scroll.getBoundingClientRect();
+  host.hidden = false;
+  host.style.display = 'block';
+  host.style.visibility = 'visible';
+  host.style.top = top + 'px';
+  host.style.left = scrollRect.left + 'px';
+  host.style.width = Math.max(0, Math.min(scrollRect.width, window.innerWidth - scrollRect.left)) + 'px';
+  host.style.height = headHeight + 'px';
+  var floating = host.querySelector('.position-list-floating-table');
+  if (floating) {
+    floating.style.height = headHeight + 'px';
+    floating.style.transform = 'translateX(-' + scroll.scrollLeft + 'px)';
+  }
+}
+
+function positionListSyncFloatingScroll() {
+  var host = document.getElementById('position-list-floating-scroll');
+  var scroll = document.querySelector('#page-positions .position-list-scroll');
+  var page = document.getElementById('page-positions');
+  if (!host || !scroll || !page || !page.classList.contains('active')) {
+    if (host) host.hidden = true;
+    return;
+  }
+  var rect = scroll.getBoundingClientRect();
+  var show = scroll.scrollWidth > scroll.clientWidth + 1 && rect.top < window.innerHeight && rect.bottom > window.innerHeight;
+  if (!show) { host.hidden = true; return; }
+  host.hidden = false;
+  host.style.left = rect.left + 'px';
+  host.style.width = Math.max(0, Math.min(rect.width, window.innerWidth - rect.left)) + 'px';
+  host.querySelector('.position-list-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
+  if (Math.abs(host.scrollLeft - scroll.scrollLeft) > 1) host.scrollLeft = scroll.scrollLeft;
+}
+
+function positionListSyncFloatingUi(event) {
+  if (event && event.target && event.target.id === 'position-list-floating-scroll') return;
+  positionListSyncFloatingHead();
+  positionListSyncFloatingScroll();
+}
+
+function positionListStartFloatingSync() {
+  if (window.__positionListFloatingTimer) return;
+  window.__positionListFloatingTimer = window.setInterval(positionListSyncFloatingUi, 200);
+}
+
 function renderPositionsTable(targetId, limit) {
   const el = document.getElementById(targetId);
   if (!el) return;
@@ -442,7 +568,7 @@ function renderPositionsTable(targetId, limit) {
       '</div>';
   }
 
-  var html = filterBar + '<table class="positions-data-table"><thead><tr>' +
+  var html = filterBar + '<div class="position-list-scroll"><table class="positions-data-table position-list-table"><thead><tr>' +
     '<th style="width:40px;" class="sortable" onclick="setSort(&quot;xh&quot;)">序号' + sortArrow('xh') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;code&quot;)">代码' + sortArrow('code') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;name&quot;)">名称' + sortArrow('name') + '</th>' +
@@ -543,8 +669,13 @@ function renderPositionsTable(targetId, limit) {
         '</td>') +
       '</tr>';
   }
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   el.innerHTML = html;
+  if (targetId === 'positions-table') {
+    positionListBuildFloatingHead();
+    positionListSyncFloatingUi();
+    positionListStartFloatingSync();
+  }
   if (targetId === 'topn-table') {
     const sumEl = document.getElementById('topn-summary');
     if (sumEl) sumEl.textContent = '共 ' + data.positions.length + ' 只持仓';

@@ -11,5 +11,7 @@ assert.ok(quote.includes('fetchUnifiedHKRate') && quote.includes('unifiedHkRateP
 assert.ok(index.includes('await fetchUnifiedHKRate()'), '切换账户时必须套用统一汇率快照');
 assert.ok(tables.includes('data.navAttribution') && tables.includes('fxImpact'), '涨跌归因必须使用后端统一汇率结果');
 assert.ok(!tables.includes('历史快照校准差额'), '持仓管理不得继续展示历史快照校准差额');
+assert.ok(tables.includes('position-list-table') && tables.includes('positionListBuildFloatingHead'), '持仓明细必须使用统一表格和吸顶表头');
+assert.ok(index.includes('shared/core-tables.js?v=20260817a'), '持仓表格脚本缓存版本未更新');
 
 console.log('holdings FX tests passed');

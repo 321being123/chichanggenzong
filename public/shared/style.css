@@ -112,6 +112,43 @@ td.negative { color: #137333; font-weight: 600; }
 .text-center { text-align: center; }
 .positions-data-table th,
 .positions-data-table td { text-align: center !important; }
+/* 持仓明细与「上市可转债」统一表格样式 */
+#page-positions .table-wrap { overflow: visible; }
+#page-positions .position-list-scroll { overflow-x: auto; overflow-y: visible; min-height: 280px; background: #fff; }
+#page-positions #positions-table .position-list-scroll { margin-left: -18px; margin-right: -18px; }
+.position-list-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
+.position-list-table thead { position: static; }
+.position-list-table th { position: static; background: #fafbfc; color: #555; font-weight: 700; text-align: center !important; padding: 10px 9px; white-space: nowrap; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+.position-list-table th:hover { background: #edf5ff; color: #175a93; }
+.position-list-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; color: #303a49; text-align: center !important; font-variant-numeric: tabular-nums; }
+.position-list-table tbody tr:hover td { background: #f7fbff; }
+.position-list-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
+.position-list-floating-head .position-list-table,
+.position-list-floating-head .position-list-table thead,
+.position-list-floating-head .position-list-table tr { height: 40px; }
+.position-list-floating-head .position-list-table thead { display: table-header-group; }
+.position-list-floating-head .position-list-table th { display: table-cell; height: 40px; box-sizing: border-box; vertical-align: middle; }
+.position-list-floating-table { min-width: 0; margin: 0; transform: translateX(0); }
+.position-list-floating-scroll { position: fixed; bottom: 0; z-index: 95; height: 18px; overflow-x: auto; overflow-y: hidden; background: #fff; border-top: 1px solid #dfe3eb; }
+.position-list-floating-scroll-inner { height: 1px; }
+/* 打新历史与持仓、上市可转债共用统一列表样式 */
+#main-ipo #ipo-history .ipo-history-scroll { overflow-x: auto; overflow-y: visible; min-height: 280px; margin-left: -18px; margin-right: -18px; background: #fff; }
+.ipo-history-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
+.ipo-history-table thead { position: static; }
+.ipo-history-table th { position: static; background: #fafbfc; color: #555; font-weight: 700; text-align: center; padding: 10px 9px; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
+.ipo-history-table th.ipo-history-header-long { width: 92px; min-width: 92px; max-width: 108px; white-space: normal; line-height: 1.25; }
+.ipo-history-table th:hover { background: #edf5ff; color: #175a93; }
+.ipo-history-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; color: #303a49; text-align: center; font-variant-numeric: tabular-nums; }
+.ipo-history-table tbody tr:hover td { background: #f7fbff; }
+.ipo-history-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
+.ipo-history-floating-head .ipo-history-table,
+.ipo-history-floating-head .ipo-history-table thead,
+.ipo-history-floating-head .ipo-history-table tr { height: 40px; }
+.ipo-history-floating-head .ipo-history-table thead { display: table-header-group; }
+.ipo-history-floating-head .ipo-history-table th { display: table-cell; height: 40px; box-sizing: border-box; vertical-align: middle; }
+.ipo-history-floating-table { min-width: 0; margin: 0; transform: translateX(0); }
+.ipo-history-floating-scroll { position: fixed; bottom: 0; z-index: 95; height: 18px; overflow-x: auto; overflow-y: hidden; background: #fff; border-top: 1px solid #dfe3eb; }
+.ipo-history-floating-scroll-inner { height: 1px; }
 .arb-table-scroll { max-height: calc(100vh - 185px); overflow: auto; padding: 12px; }
 .arb-data-table { width: max-content !important; min-width: 100%; border-collapse: separate; border-spacing: 0; }
 .arb-data-table thead th { position: sticky; top: 0; z-index: 2; background: #fafbfc; }

@@ -22,6 +22,14 @@ function renderStats() {
       hasChange = true;
     }
   }
+  // 后端按同一基准日行情重建的归因是今日涨跌权威值，避免旧快照与收盘价更新造成虚假残差。
+  var liveAttribution = data.navAttribution;
+  if (hasChange && liveAttribution && liveAttribution.complete && liveAttribution.currentDate === todayCN() && Number.isFinite(Number(liveAttribution.totalChange))) {
+    changeAmt = Number(liveAttribution.totalChange);
+    var attributionBase = Number(liveAttribution.previousTotalAsset);
+    if (!(attributionBase > 0)) attributionBase = s.total - changeAmt;
+    changePct = attributionBase > 0 ? (changeAmt / attributionBase * 100) : 0;
+  }
   
   // 首次渲染生成卡片结构
   if (!container.querySelector('.stat-card')) {

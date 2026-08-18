@@ -36,6 +36,29 @@ function eventAtOrBefore(row, eventDate, snapshotDate, snapshotAt) {
   return eventAt == null || cutoffAt == null || eventAt <= cutoffAt;
 }
 
+function cashAtSnapshot(data, snapshotDate, snapshotAt) {
+  const result = { value: Number(data.cashBase) || 0, incomplete: false };
+  for (const f of (data.cashFlows || [])) {
+    const d = dateKey(f.date);
+    if (eventAtOrBefore(f, d, snapshotDate, snapshotAt)) result.value += Number(f.amount) || 0;
+  }
+  for (const t of (data.trades || [])) {
+    const d = dateKey(t.trade_date || t.date);
+    if (!eventAtOrBefore(t, d, snapshotDate, snapshotAt) || t.direction === 'open' || t.direction === 'adjust') continue;
+    const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
+    const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+      (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+    const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
+    if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') {
+      result.incomplete = true;
+      continue;
+    }
+    const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
+    result.value += t.direction === 'buy' ? -settled - fee : settled - fee;
+  }
+  return result;
+}
+
 function quantityAsOf(data, date, snapshotAt) {
   const map = new Map();
   const trades = (data.trades || []).slice().sort((a, b) => {
@@ -110,6 +133,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
   const priceImpact = { value: 0 };
   const fxImpact = { value: 0 };
+  const previousMarketValue = { value: 0, complete: true };
   const missing = [];
   const codes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
   for (const code of codes) {
@@ -122,9 +146,11 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     const isHk = q.subtype === '港股' || (p && p.subtype === '港股');
     if (!(prevPrice > 0) || !(lastPrice > 0) || (isHk && !(prevRate > 0 && lastRate > 0))) {
       missing.push(code);
+      previousMarketValue.complete = false;
       continue;
     }
     const baseFx = isHk ? prevRate : 1;
+    previousMarketValue.value += prevPrice * qty * baseFx;
     priceImpact.value += (lastPrice - prevPrice) * qty * baseFx;
     if (isHk) fxImpact.value += lastPrice * qty * (lastRate - prevRate);
   }
@@ -149,7 +175,14 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     ledgerChange.value += t.direction === 'buy' ? -settled - fee : settled - fee;
   }
   const lastTotal = liveEnd ? Number(currentTotal) : Number(last.totalAsset) || 0;
-  const totalChange = lastTotal - (Number(previous.totalAsset) || 0);
+  // legacy/system 快照的 totalAsset 可能记录于实时价，之后 daily_prices 又被正式收盘价覆盖。
+  // 用同一基准日的持仓收盘价、数量和现金重建期初总资产，避免把行情源切换误算成涨跌。
+  let previousTotal = Number(previous.totalAsset) || 0;
+  if (previous.snapshotSource !== 'imported' && previousMarketValue.complete) {
+    const previousCash = cashAtSnapshot(data, prevDate, previous.snapshot_at);
+    if (!previousCash.incomplete) previousTotal = previousCash.value + previousMarketValue.value;
+  }
+  const totalChange = lastTotal - previousTotal;
   const complete = missing.length === 0 && !currencyIncomplete;
   // 仅在“券商导入日 → 首个系统计算日”展示一次口径切换差异。
   // 正数表示系统导入时点持仓估值高于券商持仓总值，负数反之；后续不再保留此差额。
@@ -164,6 +197,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     missingCodes: [...new Set(missing)],
     previousDate: prevDate,
     currentDate,
+    previousTotalAsset: previousTotal,
     totalChange,
     priceImpact: priceImpact.value,
     fxImpact: fxImpact.value,

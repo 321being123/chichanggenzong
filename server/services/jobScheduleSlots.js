@@ -113,6 +113,9 @@ async function reconcileSlot(slot) {
   const definition = getJobDefinition(slot.job_code);
   // succeeded 是执行终态。后续只允许展示/告警，不得再次根据水位重放业务任务。
   if (slot.status === 'succeeded') return slot;
+  // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
+  // 必须先让统一执行器领取并生成新的 manual_retry 运行记录。
+  if (slot.status === 'pending' && slot.trigger_type === 'manual_retry') return slot;
   // degraded 只做数据库水位重验，绝不重新调用业务 Runner 或外部接口。
   if (slot.status === 'degraded' && definition.requiresDataWatermark !== false) {
     const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);

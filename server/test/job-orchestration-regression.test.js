@@ -27,6 +27,7 @@ const arbitrageService = read('server/services/arbitrageService.js');
 assert(!/runSlot\(slot,\s*'manual-retry'\)/.test(adminRoute), 'Web 路由不应直接执行人工补跑');
 assert(/retryJobSlot\(slotId\)/.test(adminRoute), '人工补跑必须进入计划队列');
 assert(/reasonForSlot\(slot\)/.test(orchestrator) && /slot\.trigger_type === 'manual_retry'/.test(orchestrator), '执行器必须保留人工补跑触发类型');
+assert(/slot\.status === 'pending' && slot\.trigger_type === 'manual_retry'/.test(slots), '人工补跑不得被旧的失败运行记录立即回滚');
 assert(/trigger_type='auto_retry'/.test(slots), '失败退避后必须标记为自动重试');
 assert(/dependencyCodes/.test(slots) && /claimSlot/.test(slots), '领取任务前必须检查依赖');
 assert(/benchmark_code='CSI300'/.test(slots) && /benchmark_code='CSIALL'/.test(slots) && /source_code='chinabond'/.test(slots) && /source_code='tushare_us_tycr'/.test(slots), '市场波动水位必须逐项检查必要来源');

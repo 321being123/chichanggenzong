@@ -15,6 +15,7 @@ const slots = read('server/services/jobScheduleSlots.js');
 const orchestrator = read('server/services/jobOrchestrator.js');
 const valuation = read('server/jobs/convertibleBondRefresh.js');
 const bondAnalysis = read('server/services/convertibleBondAnalysis.js');
+const stockAnalysisJob = read('server/jobs/stockAnalysisRefresh.js');
 const stockJob = read('server/jobs/stockAnalysisRefresh.js');
 const slotService = read('server/services/jobScheduleSlots.js');
 const adminUi = read('public/js/admin.js');
@@ -36,6 +37,7 @@ const valuationRunner = valuation.slice(valuation.indexOf('async function runRef
 assert.ok(!/syncConvertibleBondUniverseWithBackfill/.test(valuationRunner), '估值 Runner 不得嵌套可转债行情同步');
 assert.ok(/complete\.length \/ priced\.length >= 0\.8/.test(bondAnalysis), '可转债半成品行情不得覆盖完整行情日');
 assert.ok(/runRefreshChain\(reason, businessDate\)/.test(read('server/services/jobRunners.js')), '人工补跑估值必须沿用计划业务日期');
+assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCodes/.test(stockAnalysisJob), '无股票基础档案不得阻断整批分析任务');
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
 assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');

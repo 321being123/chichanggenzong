@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { toTsCode } = require('../services/market');
 const { describeTencentCode, isConvertibleBondCode, parseQuoteTime, parseTencentQuoteText, quoteLookupKeys } = require('../services/tencentQuote');
 const { evaluateBondSafety } = require('../services/bondSafety');
@@ -25,6 +27,10 @@ assert.strictEqual(describeTencentCode('920002.BJ').symbol, 'bj920002', '北交�
 assert.strictEqual(describeTencentCode('BJ920002').symbol, 'bj920002', '北交所前缀必须被识别');
 assert.deepStrictEqual(quoteLookupKeys(describeTencentCode('00751.HK')), ['00751', '00751.HK']);
 assert.strictEqual(isConvertibleBondCode('128044'), true);
+
+const marketRouteSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
+assert.ok(marketRouteSource.includes('fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes))'), '批量行情应统一调用腾讯实时行情');
+assert.ok(!marketRouteSource.includes('ensureTsRealtime(stockCodes)'), '页面批量行情不得调用 Tushare rt_min');
 assert.strictEqual(parsed.get('sz128044').price, 101.234);
 assert.strictEqual(parsed.get('sz128044').change, 1.25);
 assert.strictEqual(parsed.get('sz128044').quote_time, '2026-07-17T14:59:59+08:00');

@@ -39,6 +39,11 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     assert.ok(indexHtmlSrc.indexOf('id="bond-safety-refresh"') === -1, '前台仍残留 bond-safety-refresh 按钮');
     assert.ok(bondSafetyJsSrc.indexOf('function refreshBondSafety') === -1, 'bond-safety.js 仍定义 refreshBondSafety');
   });
+  await check('后台 API 测试后保留当前设置 tab', () => {
+    assert.ok(/let settingsTab = 'site'/.test(adminJsSrc), '缺少设置 tab 状态');
+    assert.ok(/function switchSettingsTab\(tab\) \{\s*settingsTab = tab;/.test(adminJsSrc), '切换设置 tab 时未保存状态');
+    assert.ok(/switchSettingsTab\(settingsTab\);/.test(adminJsSrc), '设置重新渲染后未恢复当前 tab');
+  });
 
   // ===== 运行态（需要数据库）=====
   let hasDb = true;

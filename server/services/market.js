@@ -206,7 +206,8 @@ function ensureTsDaily() {
   });
 }
 
-// 缓存：实时价（60秒）ts_code→close（rt_min 批量；可转债无实时，回落日线）
+// 备用：分钟级实时价（60秒）ts_code→close；页面批量行情统一走腾讯，避免触发 rt_min 频率限制。
+// 仅供需要分钟数据的专项任务调用，不作为普通页面行情入口。
 let TS_RT = { map: null, ts: 0, inflight: null, failedAt: 0 };
 function ensureTsRealtime(codes) {
   return withSingleFlight(TS_RT, 60000, async () => {
@@ -228,41 +229,53 @@ async function fetchQuoteByCode(code) {
 
   const tsCode = toTsCode(c);
   if (tsCode.endsWith('.HK') || isConvertibleBondCode(c)) {
-    const quotes = await fetchTencentQuotes([c]);
-    const quote = quotes.get(normalizeCode(c));
-    return quote ? { price: quote.price, name: quote.name || normalizeCode(c), code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source } : null;
+    try {
+      const quotes = await fetchTencentQuotes([c]);
+      const quote = quotes.get(normalizeCode(c));
+      return quote ? { price: quote.price, name: quote.name || normalizeCode(c), code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source } : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   // A股实时价格和涨跌幅必须来自同一条腾讯行情，避免用盘中价搭配旧日线 pre_close 算错方向。
+  let liveQuote = null;
   try {
     const liveQuotes = await fetchTencentQuotes([c]);
-    const liveQuote = liveQuotes.get(normalizeCode(c));
-    if (liveQuote) {
-      return { price: liveQuote.price, name: liveQuote.name || c, code: normalizeCode(c), change: liveQuote.change, quote_time: liveQuote.quote_time, source: liveQuote.source };
-    }
+    liveQuote = liveQuotes.get(normalizeCode(c)) || null;
+  } catch (_) {
+    // 腾讯限流、熔断或临时网络失败时继续走 Tushare 日线回退。
+  }
+  if (liveQuote) {
+    return { price: liveQuote.price, name: liveQuote.name || c, code: normalizeCode(c), change: liveQuote.change, quote_time: liveQuote.quote_time, source: liveQuote.source };
+  }
 
-    // 腾讯临时不可用时，保留原 Tushare 日线回退。
-    const [names, daily] = await Promise.all([ensureTsNames(), ensureTsDaily()]);
-    const d = daily.get(tsCode);
-    const name = names.get(tsCode) || '';
-    if (d && d.close != null && !isNaN(d.close)) {
-      return { price: d.close, name, code: c, change: (d.pct_chg != null && !isNaN(d.pct_chg)) ? d.pct_chg : null };
-    }
-    // 有名称但无价格（停牌/数据延迟）：尝试腾讯 fallback
-    if (name) {
+  // 腾讯临时不可用时，保留原 Tushare 日线回退；辅助数据失败不阻断请求。
+  const [names, daily] = await Promise.all([
+    ensureTsNames().catch(() => new Map()),
+    ensureTsDaily().catch(() => new Map()),
+  ]);
+  const d = daily.get(tsCode);
+  const name = names.get(tsCode) || '';
+  if (d && d.close != null && !isNaN(d.close)) {
+    return { price: d.close, name, code: c, change: (d.pct_chg != null && !isNaN(d.pct_chg)) ? d.pct_chg : null };
+  }
+  // 有名称但无价格（停牌/数据延迟）：尝试腾讯 fallback
+  if (name) {
+    try {
       const quotes = await fetchTencentQuotes([c]);
       const quote = quotes.get(normalizeCode(c));
       if (quote) return { price: quote.price, name: name || quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
-      // fallback 也拿不到价格：仅返回名称（供前端自动填充）
-      return { price: null, name, code: c, change: null };
-    }
-    // 无数据（如新股）：fallback 腾讯实时
+    } catch (_) {}
+    // fallback 也拿不到价格：仅返回名称（供前端自动填充）
+    return { price: null, name, code: c, change: null };
+  }
+  // 无数据（如新股）：fallback 腾讯实时
+  try {
     const quotes = await fetchTencentQuotes([c]);
     const quote = quotes.get(normalizeCode(c));
     if (quote) return { price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change, quote_time: quote.quote_time, source: quote.source };
-  } catch (e) {
-    if (e && e.code) throw e;
-  }
+  } catch (_) {}
   return null;
 }
 

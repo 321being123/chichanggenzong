@@ -2,6 +2,7 @@
 let adminProfile = null;
 let jobsPollTimer = null;
 let jobsVisibilityBound = false;
+let settingsTab = 'site';
 
 // 用户管理状态
 let usersSearch = '';
@@ -1028,6 +1029,7 @@ function renderSettingsTabs(el, s) {
     '<div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">API 可用性测试</div><div style="font-size:12px;color:#777;margin-bottom:10px;">点击后仅测试指定凭据，不会自动切换主备；测试接口为 trade_cal。</div>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(apiTests.primary, '主 API') + renderExternalApiTestResult(apiTests.backup, '备用 API') + '</div></div></div></div>';
+  switchSettingsTab(settingsTab);
 }
 function renderExternalApiTestResult(result, label) {
   if (!result) return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;color:#888;font-size:12px;">' + label + '：未测试</div>';
@@ -1055,6 +1057,7 @@ function renderExternalApiReturnedData(data) {
   return html;
 }
 function switchSettingsTab(tab) {
+  settingsTab = tab;
   document.querySelectorAll('.settings-tab').forEach(function (button) { const active = button.dataset.tab === tab; button.classList.toggle('btn-primary', active); button.classList.toggle('btn-outline', !active); });
   document.querySelectorAll('.settings-panel').forEach(function (panel) { panel.hidden = panel.dataset.panel !== tab; });
   if (tab === 'models') { const target = document.getElementById('settings-models'); if (target && !target.dataset.loaded) { target.dataset.loaded = '1'; renderAimodels(target); } }

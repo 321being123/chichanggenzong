@@ -6,7 +6,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin } = require('../middleware/auth');
 const {
   fetchQuoteByCode, tushareQuery, tsRows, toTsCode,
-  tsDateStr, normDate, ensureTsNames, ensureTsDaily, ensureTsRealtime
+  tsDateStr, normDate, ensureTsNames, ensureTsDaily
 } = require('../services/market');
 const { fetchTencentQuotes, isConvertibleBondCode, normalizeCode } = require('../services/tencentQuote');
 
@@ -16,7 +16,7 @@ router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   res.json(await fetchQuoteByCode(code) || { price: null, code });
 }));
 
-// 批量行情（刷新用）：A股走Tushare(rt_min实时+daily涨跌)，港股走腾讯实时
+// 批量行情（刷新用）：A股/可转债/港股统一走腾讯实时，Tushare 日线仅作回退
 router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   const codes = (req.query.codes || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
   const result = {};
@@ -29,22 +29,21 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
     else stockCodes.push(c);
   });
 
-  // A 股实时价格和涨跌幅优先使用腾讯同一条行情，Tushare 只作回退。
-  const [names, daily, rt, tencent] = await Promise.all([
-    stockCodes.length ? ensureTsNames() : Promise.resolve(new Map()),
-    stockCodes.length ? ensureTsDaily() : Promise.resolve(new Map()),
-    stockCodes.length ? ensureTsRealtime(stockCodes) : Promise.resolve(new Map()),
-    fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes)),
+  // A 股实时价格和涨跌幅优先使用腾讯同一条行情，Tushare 名称/日线只作回退。
+  // 辅助数据源失败时不能阻断腾讯实时行情返回。
+  const [names, daily, tencent] = await Promise.all([
+    stockCodes.length ? ensureTsNames().catch(() => new Map()) : Promise.resolve(new Map()),
+    stockCodes.length ? ensureTsDaily().catch(() => new Map()) : Promise.resolve(new Map()),
+    fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes)).catch(() => new Map()),
   ]);
   stockCodes.forEach(c => {
     const ts = toTsCode(c);
     const d = daily.get(ts);
-    const r = rt.get(ts);
     const quote = tencent.get(normalizeCode(c));
-    const price = quote ? quote.price : ((r != null) ? r : (d ? d.close : null));
+    const price = quote ? quote.price : (d ? d.close : null);
     let change = null;
     if (quote && quote.change != null) change = quote.change;
-    else if (d) change = (r != null && d.pre_close) ? (r - d.pre_close) / d.pre_close * 100 : d.pct_chg;
+    else if (d) change = d.pct_chg;
     result[c] = {
       price: (price != null && !isNaN(price)) ? price : null,
       name: names.get(ts) || (quote && quote.name) || '',

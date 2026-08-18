@@ -12,12 +12,6 @@
 .bond-safety-toolbar input { min-width:220px; }
 .bond-safety-spacer { flex:1; }
 .bond-safety-quality { font-size:12px; color:#7a8495; }
-.bond-safety-scroll { overflow:auto; max-height:calc(100vh - 330px); min-height:280px; }
-.bond-safety-table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; }
-.bond-safety-table th { position:sticky; top:0; z-index:2; background:#fafbfc; color:#555; font-weight:700; text-align:center; padding:10px 9px; white-space:nowrap; border-bottom:1px solid #f0f0f0; cursor:pointer; }
-.bond-safety-table th:hover { background:#f0f1ff; color:#1a237e; }
-.bond-safety-table td { padding:9px; border-bottom:1px solid #eef1f5; white-space:nowrap; color:#303a49; text-align:center; }
-.bond-safety-table tbody tr:hover td { background:#f7fbff; }
 .bond-safety-code { color:#1769aa; font-variant-numeric:tabular-nums; }
 .bond-safety-link { cursor:pointer; text-decoration:none; }
 .bond-safety-link:hover { text-decoration:underline; }
@@ -47,37 +41,22 @@
 .bond-list-toolbar input { min-width:220px; }
 .bond-list-quality { margin-left:auto; color:#7a8495; font-size:12px; }
 #sub-bond-list .table-wrap { overflow:visible; }
-.bond-list-scroll { overflow-x:auto; overflow-y:visible; min-height:280px; background:#fff; }
-.bond-list-table { width:max-content; min-width:100%; border-collapse:separate; border-spacing:0; font-size:12px; background:#fff; }
-.bond-list-table thead { position:static; }
-.bond-list-table th { position:static; background:#fafbfc; color:#555; font-weight:700; text-align:center; padding:10px 9px; white-space:nowrap; border-bottom:1px solid #f0f0f0; cursor:pointer; }
-.bond-list-table th:hover { background:#edf5ff; color:#175a93; }
-.bond-list-table td { padding:9px; border-bottom:1px solid #eef1f5; white-space:nowrap; color:#303a49; text-align:center; font-variant-numeric:tabular-nums; }
-.bond-list-table tbody tr:hover td { background:#f7fbff; }
+/* 兼容历史选择器；实际吸顶与底部滚动条统一由 business-table.js 提供。 */
+.bond-list-floating-head { position:fixed; min-height:40px; display:none; }
+.bond-list-floating-scroll { position:fixed; bottom:0; display:none; }
 .bond-list-link { color:#1769aa; cursor:pointer; }
 .bond-list-link:hover { text-decoration:underline; }
 .bond-list-up { color:#d93025; font-weight:600; }
 .bond-list-down { color:#137333; font-weight:600; }
 .bond-list-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }
-.bond-list-floating-head { position:fixed; z-index:89; overflow:hidden; min-height:40px; background:#fff; box-shadow:0 2px 6px rgba(31,42,68,.12); pointer-events:auto; }
-.bond-list-floating-head .bond-list-table,
-.bond-list-floating-head .bond-list-table thead,
-.bond-list-floating-head .bond-list-table tr { height:40px; }
-.bond-list-floating-head .bond-list-table thead { display:table-header-group; }
-.bond-list-floating-head .bond-list-table th { display:table-cell; height:40px; box-sizing:border-box; vertical-align:middle; }
-.bond-list-floating-table { min-width:0; margin:0; transform:translateX(0); }
-.bond-list-floating-scroll { position:fixed; bottom:0; z-index:95; height:18px; overflow-x:auto; overflow-y:hidden; background:#fff; border-top:1px solid #dfe3eb; }
-.bond-list-floating-scroll-inner { height:1px; }
 @media (max-width:760px) {
   .bond-safety-hero { display:block; padding:18px; }
   .bond-safety-updated { text-align:left; margin-top:8px; white-space:normal; }
   .bond-safety-stats { grid-template-columns:repeat(2,1fr); }
   .bond-safety-toolbar input { min-width:0; flex:1 1 170px; }
   .bond-safety-spacer { display:none; }
-  .bond-safety-scroll { max-height:calc(100vh - 390px); }
   .bond-list-hero { display:block; padding:18px; }
   .bond-list-updated { text-align:left; margin-top:8px; white-space:normal; }
   .bond-list-toolbar input { min-width:0; flex:1 1 170px; }
   .bond-list-quality { margin-left:0; }
-  .bond-list-scroll { min-height:280px; }
 }

@@ -26,13 +26,11 @@
 .bond-val-quality { font-size: 12px; color: #8a8f98; }
 
 .bond-val-table-scroll { overflow: auto; max-height: calc(100vh - 360px); min-height: 340px; }
-.bond-val-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
-.bond-val-table th, .bond-val-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; text-align: right; }
-.bond-val-table th:not(.num), .bond-val-table td:not(.num) { text-align: left; }
-.bond-val-table thead th { position: sticky; top: 0; background: #fafbfc; cursor: pointer; user-select: none; border-bottom: 1px solid #e3e6ea; z-index: 1; }
+.bond-val-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.bond-val-table thead th { cursor: pointer; user-select: none; }
 .bond-val-table tbody tr { cursor: pointer; }
 .bond-val-table tbody tr:hover { background: #f7fbff; }
-.bond-val-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.bond-val-table .num { font-variant-numeric: tabular-nums; }
 .bond-val-new-listing { display: inline-block; margin-left: 6px; padding: 1px 5px; border: 1px solid #cfd8ff; border-radius: 4px; background: #eef1ff; color: #3f51b5; font-size: 11px; line-height: 16px; vertical-align: middle; }
 .bond-val-empty { padding: 30px; text-align: center; color: #9aa0a6; }
 

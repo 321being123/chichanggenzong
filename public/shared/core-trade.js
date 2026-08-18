@@ -555,7 +555,7 @@ function renderSmartItems() {
   window._smartFeeRates = buildSmartFeeRates(items);
   var html = renderSmartFeeRates(window._smartFeeRates) +
     '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllSmartItems()">✅ 全部录入</button></div>' +
-    '<table><thead><tr>' +
+    '<div class="biz-table-scroll"><table class="biz-table biz-table--preview"><thead><tr>' +
     '<th>类型</th><th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
     '<th>方向</th><th>品种</th><th>确认</th>' +
     '</tr></thead><tbody>';
@@ -578,8 +578,9 @@ function renderSmartItems() {
       '<td><button class="btn btn-success btn-sm" onclick="confirmSmartItem(' + i + ')">确认' + (isTrade ? '录入' : '导入') + '</button></td>' +
       '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   result.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(result, { page: '#page-trades', top: '#main-holdings > .holdings-header', sticky: false });
 }
 
 function buildSmartFeeRates(items) {

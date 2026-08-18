@@ -6,16 +6,19 @@ function renderStats() {
   var container = document.getElementById('stats-container');
   if (!container) return;
   
-  // 计算今日涨跌（对比 nav_history 最近两条记录）；若最近两条间隔过大（如导入的历史快照），
-  // 则无真实日涨跌，置 hasChange=false 由渲染端显示"-"
+  // 计算今日涨跌：今日已有快照时对比前一条；今日尚未落快照时对比最近一条。
+  // 导入日之后跨过一个完整交易日仍没有系统快照时，不把多日变化冒充成今日涨跌。
   var changeAmt = 0, changePct = 0, hasChange = false;
   if (data.navHistory && data.navHistory.length >= 2) {
-    var last = data.navHistory[data.navHistory.length - 1];
-    var prev = data.navHistory[data.navHistory.length - 2];
-    var gapDays = daysBetweenDates(prev.date, last.date);
-    if (gapDays != null && gapDays <= 4) {
-      changeAmt = s.total - prev.totalAsset;
-      changePct = prev.totalAsset > 0 ? (changeAmt / prev.totalAsset * 100) : 0;
+    var latest = data.navHistory[data.navHistory.length - 1];
+    var base = latest;
+    if (latest.date === todayCN()) base = data.navHistory[data.navHistory.length - 2];
+    var gapDays = daysBetweenDates(base.date, todayCN());
+    var tradingGapDays = countTradingDaysBetween(base.date, todayCN());
+    var importedGap = latest.snapshotSource === 'imported' && latest.date !== todayCN() && tradingGapDays > 0;
+    if (gapDays != null && gapDays <= 4 && !importedGap) {
+      changeAmt = s.total - base.totalAsset;
+      changePct = base.totalAsset > 0 ? (changeAmt / base.totalAsset * 100) : 0;
       hasChange = true;
     }
   }
@@ -87,6 +90,25 @@ function renderStats() {
   if (el('bar-cash')) el('bar-cash').style.width = (s.cashPct * 100) + '%';
 }
 
+// 只统计两个日期之间（不含首尾）的有效交易日，避免把周末/休市日误当成漏算日。
+function countTradingDaysBetween(start, end) {
+  var a = String(start || '').slice(0, 10).split('-').map(Number);
+  var b = String(end || '').slice(0, 10).split('-').map(Number);
+  if (a.length !== 3 || b.length !== 3 || a.some(isNaN) || b.some(isNaN)) return null;
+  var cursor = new Date(Date.UTC(a[0], a[1] - 1, a[2]));
+  var target = new Date(Date.UTC(b[0], b[1] - 1, b[2]));
+  if (!Number.isFinite(cursor.getTime()) || !Number.isFinite(target.getTime()) || cursor >= target) return 0;
+  var count = 0;
+  cursor.setUTCDate(cursor.getUTCDate() + 1);
+  while (cursor < target) {
+    var day = cursor.getUTCDay();
+    var date = cursor.toISOString().slice(0, 10);
+    if (day !== 0 && day !== 6 && !(typeof isCnHoliday === 'function' && isCnHoliday(date))) count++;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return count;
+}
+
 // 总资产今日涨跌浮框：分解「股价影响 + 汇率影响」并写出计算过程
 function bindChangeTip(el, changeAmt, changePct) {
   if (!el) return;
@@ -96,6 +118,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   var fxImpact = attribution.complete ? Number(attribution.fxImpact) || 0 : 0;
   var otherChange = attribution.complete ? Number(attribution.ledgerChange) || 0 : null;
   var importBasisAdjustment = attribution.importBasisAdjustment == null ? null : Number(attribution.importBasisAdjustment);
+  var snapshotDrift = attribution.complete && Number.isFinite(Number(attribution.snapshotDrift)) ? Number(attribution.snapshotDrift) : null;
   var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_calculated') : null;
 
   var tip = document.getElementById('stat-change-tip');
@@ -107,7 +130,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, authorityMode, !attribution.complete);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -118,11 +141,13 @@ function bindChangeTip(el, changeAmt, changePct) {
   el.onmouseleave = function () { tip.style.display = 'none'; };
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, authorityMode, attributionIncomplete) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
   var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
+  // 低于分币级别的残差属于浮点/四舍五入误差，不在浮框中制造噪音。
+  var visibleDrift = snapshotDrift != null && Math.abs(snapshotDrift) >= 0.005 ? snapshotDrift : null;
   var html = '' +
     '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
@@ -146,9 +171,18 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   if (attributionIncomplete) {
     html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">缺少上一基准日的完整收盘价或汇率，本次不伪造价格/汇率归因。</div>';
   }
-  html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
-    '</div>' +
-    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：股价影响按昨日快照汇率算、汇率影响按今价×汇率差算，两者相加正好等于港股市值变动，不再有交叉项残差。「昨日快照汇率」指上一条净值记录里存的港币汇率（即上次记账时的实时汇率，通常为昨天打开网页那一刻）。</div>';
+  if (attributionIncomplete) {
+    html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计：<span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span>（归因不完整，未进行明细加总）</div>';
+  } else {
+    html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
+  }
+  if (visibleDrift != null) {
+    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">未归因差额：' + sign(visibleDrift) + '（请检查行情、汇率或账本数据）</div>';
+  }
+  html += '</div>' +
+    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">' + (attributionIncomplete
+      ? '注：当前缺少上一基准日的完整行情或汇率，暂不拆分价格/汇率影响。'
+      : '注：股价影响按昨日快照汇率算、汇率影响按今价×汇率差算，两者相加正好等于港股市值变动，不再有交叉项残差。「昨日快照汇率」指上一条净值记录里存的港币汇率（即上次记账时的实时汇率，通常为昨天打开网页那一刻）。') + '</div>';
   return html;
 }
 
@@ -308,6 +342,11 @@ function getTodayProfit(position, overrideRate) {
 
 // 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
 var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
+var POS_SUBTYPE_CLASS = { '沪市': 'pos-subtype-sh', '深市': 'pos-subtype-sz', '京市': 'pos-subtype-bj', '港股': 'pos-subtype-hk', '美股': 'pos-subtype-us', '可转债': 'pos-subtype-cb', '信用债': 'pos-subtype-credit', '基金/ETF': 'pos-subtype-fund' };
+function getPositionTrendClass(value, hasData) {
+  if (!hasData) return 'muted-cell';
+  return Number(value) > 0 ? 'positive' : (Number(value) < 0 ? 'negative' : '');
+}
 
 // 点击持仓代码/名称 → 进入对应股票或可转债的证券分析
 function openPositionAnalysis(code) {
@@ -339,10 +378,10 @@ function positionCodeFull(code) {
 
 // 可转债持仓显示估值标签 + 分位（可点击进详情）；其他持仓或查不到显示 —
 function getValuationCell(position) {
-  if (position.subtype !== '可转债') return '<td class="text-center" style="color:#bbb;">—</td>';
+  if (position.subtype !== '可转债') return '<td class="text-center muted-cell">—</td>';
   var vm = (data && data.valuation_map) || {};
   var v = vm[position.code];
-  if (!v || !v.eval_class) return '<td class="text-center" style="color:#bbb;">—</td>';
+  if (!v || !v.eval_class) return '<td class="text-center muted-cell">—</td>';
   var cls = POS_EVAL_CLASS[v.eval_class] || '';
   var pct = (v.percentile != null && Number.isFinite(Number(v.percentile))) ? ' ' + Number(v.percentile).toFixed(0) + '%' : '';
   return '<td class="text-center"><a href="javascript:void(0)" class="pos-link" title="查看估值详情" onclick="openPositionValuation(\'' + escapeHtml(positionCodeFull(position.code)) + '\')"><span class="' + cls + '">' + escapeHtml(v.eval_class) + pct + '</span></a></td>';
@@ -365,131 +404,8 @@ function setFilter(type, val) {
   renderPositionsTable('topn-table');
 }
 
-// 持仓明细统一表格：横向滚动、标题吸顶、底部滚动条与上市可转债列表保持一致。
-function positionListFloatingHead() {
-  var host = document.getElementById('position-list-floating-head');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'position-list-floating-head';
-    host.className = 'position-list-floating-head';
-    host.hidden = true;
-    document.body.appendChild(host);
-  }
-  return host;
-}
-
-function positionListFloatingScroll() {
-  var host = document.getElementById('position-list-floating-scroll');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'position-list-floating-scroll';
-    host.className = 'position-list-floating-scroll';
-    host.hidden = true;
-    host.innerHTML = '<div class="position-list-floating-scroll-inner"></div>';
-    host.addEventListener('scroll', function () {
-      var scroll = document.querySelector('#page-positions .position-list-scroll');
-      if (scroll && Math.abs(scroll.scrollLeft - host.scrollLeft) > 1) scroll.scrollLeft = host.scrollLeft;
-    }, { passive: true });
-    document.body.appendChild(host);
-  }
-  return host;
-}
-
-function positionListBuildFloatingHead() {
-  var source = document.querySelector('#page-positions .position-list-table');
-  var sourceHead = source && source.querySelector('thead');
-  var scroll = document.querySelector('#page-positions .position-list-scroll');
-  if (!source || !sourceHead || !scroll || !source.getBoundingClientRect().width) return;
-  var host = positionListFloatingHead();
-  var bottomScroll = positionListFloatingScroll();
-  host.innerHTML = '';
-  var floating = source.cloneNode(false);
-  floating.classList.add('position-list-floating-table');
-  floating.style.width = source.getBoundingClientRect().width + 'px';
-  floating.appendChild(sourceHead.cloneNode(true));
-  host.appendChild(floating);
-  var sourceCells = sourceHead.querySelectorAll('th');
-  floating.querySelectorAll('th').forEach(function (th, index) {
-    if (sourceCells[index]) th.style.width = sourceCells[index].getBoundingClientRect().width + 'px';
-    th.onclick = function () { if (sourceCells[index]) sourceCells[index].click(); };
-  });
-  if (!scroll.__positionListFloatingBound) {
-    scroll.__positionListFloatingBound = true;
-    scroll.addEventListener('scroll', positionListSyncFloatingUi, { passive: true });
-  }
-  if (!window.__positionListFloatingBound) {
-    window.__positionListFloatingBound = true;
-    window.addEventListener('scroll', positionListSyncFloatingUi, { passive: true });
-    window.addEventListener('resize', positionListSyncFloatingUi);
-    document.addEventListener('scroll', positionListSyncFloatingUi, true);
-  }
-  host.__source = source;
-  host.__scroll = scroll;
-  bottomScroll.querySelector('.position-list-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
-}
-
-function positionListSyncFloatingHead() {
-  var host = document.getElementById('position-list-floating-head');
-  var source = document.querySelector('#page-positions .position-list-table');
-  var head = source && source.querySelector('thead');
-  var scroll = document.querySelector('#page-positions .position-list-scroll');
-  var nav = document.querySelector('#main-holdings > .holdings-header');
-  var page = document.getElementById('page-positions');
-  if (!host || !source || !head || !scroll || !nav || !page || !page.classList.contains('active')) {
-    if (host) host.hidden = true;
-    return;
-  }
-  if (host.__source !== source) positionListBuildFloatingHead();
-  var top = nav.getBoundingClientRect().bottom;
-  var sourceRect = source.getBoundingClientRect();
-  var headRect = head.getBoundingClientRect();
-  var headRow = head.querySelector('tr');
-  var headHeight = Math.max(40, headRow ? headRow.getBoundingClientRect().height : 0, headRect.height || 0);
-  var show = headRect.top < top && sourceRect.bottom > top + headHeight;
-  if (!show) { host.hidden = true; return; }
-  var scrollRect = scroll.getBoundingClientRect();
-  host.hidden = false;
-  host.style.display = 'block';
-  host.style.visibility = 'visible';
-  host.style.top = top + 'px';
-  host.style.left = scrollRect.left + 'px';
-  host.style.width = Math.max(0, Math.min(scrollRect.width, window.innerWidth - scrollRect.left)) + 'px';
-  host.style.height = headHeight + 'px';
-  var floating = host.querySelector('.position-list-floating-table');
-  if (floating) {
-    floating.style.height = headHeight + 'px';
-    floating.style.transform = 'translateX(-' + scroll.scrollLeft + 'px)';
-  }
-}
-
-function positionListSyncFloatingScroll() {
-  var host = document.getElementById('position-list-floating-scroll');
-  var scroll = document.querySelector('#page-positions .position-list-scroll');
-  var page = document.getElementById('page-positions');
-  if (!host || !scroll || !page || !page.classList.contains('active')) {
-    if (host) host.hidden = true;
-    return;
-  }
-  var rect = scroll.getBoundingClientRect();
-  var show = scroll.scrollWidth > scroll.clientWidth + 1 && rect.top < window.innerHeight && rect.bottom > window.innerHeight;
-  if (!show) { host.hidden = true; return; }
-  host.hidden = false;
-  host.style.left = rect.left + 'px';
-  host.style.width = Math.max(0, Math.min(rect.width, window.innerWidth - rect.left)) + 'px';
-  host.querySelector('.position-list-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
-  if (Math.abs(host.scrollLeft - scroll.scrollLeft) > 1) host.scrollLeft = scroll.scrollLeft;
-}
-
-function positionListSyncFloatingUi(event) {
-  if (event && event.target && event.target.id === 'position-list-floating-scroll') return;
-  positionListSyncFloatingHead();
-  positionListSyncFloatingScroll();
-}
-
-function positionListStartFloatingSync() {
-  if (window.__positionListFloatingTimer) return;
-  window.__positionListFloatingTimer = window.setInterval(positionListSyncFloatingUi, 200);
-}
+// 兼容旧页面调用名：持仓表的吸顶表头已统一交给 BusinessTable。
+function positionListBuildFloatingHead() { if (window.BusinessTable) window.BusinessTable.sync(); }
 
 function renderPositionsTable(targetId, limit) {
   const el = document.getElementById(targetId);
@@ -575,19 +491,19 @@ function renderPositionsTable(targetId, limit) {
       '</div>';
   }
 
-  var html = filterBar + '<div class="position-list-scroll"><table class="positions-data-table position-list-table"><thead><tr>' +
-    '<th style="width:40px;" class="sortable" onclick="setSort(&quot;xh&quot;)">序号' + sortArrow('xh') + '</th>' +
+  var html = filterBar + '<div class="biz-table-scroll position-list-scroll"><table class="biz-table positions-data-table position-list-table"><thead><tr>' +
+    '<th class="sortable pos-index-col" onclick="setSort(&quot;xh&quot;)">序号' + sortArrow('xh') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;code&quot;)">代码' + sortArrow('code') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;name&quot;)">名称' + sortArrow('name') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;price&quot;)">现价' + sortArrow('price') + '</th>' +
-    '<th class="text-right sortable" style="width:70px;" onclick="setSort(&quot;chg&quot;)">涨跌' + sortArrow('chg') + '</th>' +
+    '<th class="text-right sortable pos-chg-col" onclick="setSort(&quot;chg&quot;)">涨跌' + sortArrow('chg') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;todayProfit&quot;)">今日盈亏（元）' + sortArrow('todayProfit') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;qty&quot;)">数量' + sortArrow('qty') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;mv&quot;)">市值' + sortArrow('mv') + '</th>' +
     '<th class="text-right sortable" onclick="setSort(&quot;pct&quot;)">比例' + sortArrow('pct') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;type&quot;)">类型' + sortArrow('type') + '</th>' +
     '<th class="sortable" onclick="setSort(&quot;subtype&quot;)">细类' + sortArrow('subtype') + '</th>' +
-    '<th class="text-center" style="width:110px;">估值</th>' +
+    '<th class="text-center pos-valuation-col">估值</th>' +
     (limit ? '' : '<th class="text-center">操作</th>') +
     '</tr></thead><tbody>';
 
@@ -605,16 +521,11 @@ function renderPositionsTable(targetId, limit) {
     var hasRealTime = priceChangeMap[p.code] !== undefined && priceChangeMap[p.code] !== null;
     var hasCachedPrice = p.price != null && p.price > 0;
 
-    var priceStyle = '';
-    if (hasCachedPrice) {
-      priceStyle = hasRealTime
-        ? (priceChangeMap[p.code] >= 0 ? 'color:#d93025;' : 'color:#137333;')
-        : 'color:#999;';
-    }
-    var chgStyle = '#999;';
+    var priceClass = getPositionTrendClass(priceChangeMap[p.code], hasCachedPrice && hasRealTime);
+    var chgClass = 'muted-cell';
     var chgText = '-';
     if (hasRealTime) {
-      chgStyle = priceChangeMap[p.code] >= 0 ? 'color:#d93025;' : 'color:#137333;';
+      chgClass = getPositionTrendClass(priceChangeMap[p.code], true);
       var chgVal = priceChangeMap[p.code];
       chgText = chgVal != null
         ? (chgVal >= 0 ? '+' : '') + chgVal.toFixed(2) + '%'
@@ -625,25 +536,25 @@ function renderPositionsTable(targetId, limit) {
     var priceCurrency = p.subtype === '港股' ? 'HK$' : '¥';
     var priceDisplay = hasCachedPrice
       ? priceCurrency + Number(p.price).toFixed(3)
-      : '<span style="color:#ccc;" title="无价格数据">⟳</span>';
+      : '<span class="muted-cell" title="无价格数据">⟳</span>';
     var chgDisplay = hasRealTime
       ? chgText
-      : (hasCachedPrice ? '<span style="color:#bbb;">--</span>' : '<span style="color:#ccc;font-size:16px;" title="无涨跌数据">⟳</span>');
+      : (hasCachedPrice ? '<span class="muted-cell">--</span>' : '<span class="muted-cell data-pending" title="无涨跌数据">⟳</span>');
     var todayProfit = getTodayProfit(p);
     var todayProfitDisplay = todayProfit == null
-      ? '<span style="color:#bbb;">--</span>'
+      ? '<span class="muted-cell">--</span>'
       : (todayProfit >= 0 ? '+' : '') + fmt(todayProfit);
-    var todayProfitStyle = todayProfit == null ? 'color:#bbb;' : (todayProfit >= 0 ? 'color:#d93025;' : 'color:#137333;');
+    var todayProfitClass = getPositionTrendClass(todayProfit, todayProfit != null);
 
     html += '<tr>' +
-      '<td style="text-align:center;color:#bbb;">' + (idx + 1) + '</td>' +
-      '<td style="font-weight:600;color:' + getSubtypeColor(p.subtype) + ';"><a href="javascript:void(0)" class="pos-link" style="color:inherit;" title="查看证券分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.code || '-') + '</a></td>' +
-      '<td><strong><a href="javascript:void(0)" class="pos-link" style="color:inherit;font-weight:600;" title="查看证券分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.name || '未知') + '</a></strong></td>' +
-      '<td class="text-right" style="font-weight:600;' + priceStyle + '">' + priceDisplay + '</td>' +
-      '<td class="text-right" style="font-weight:600;font-size:13px;' + chgStyle + '">' + chgDisplay + '</td>' +
-      '<td style="font-weight:600;' + todayProfitStyle + '">' + todayProfitDisplay + '</td>' +
+      '<td class="pos-index-cell muted-cell">' + (idx + 1) + '</td>' +
+      '<td class="pos-code-cell ' + (POS_SUBTYPE_CLASS[p.subtype] || '') + '"><a href="javascript:void(0)" class="pos-link" title="查看证券分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.code || '-') + '</a></td>' +
+      '<td class="pos-name-cell"><strong><a href="javascript:void(0)" class="pos-link" title="查看证券分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.name || '未知') + '</a></strong></td>' +
+      '<td class="text-right ' + priceClass + '">' + priceDisplay + '</td>' +
+      '<td class="text-right ' + chgClass + '">' + chgDisplay + '</td>' +
+      '<td class="' + todayProfitClass + '">' + todayProfitDisplay + '</td>' +
       '<td class="text-right">' + (p.quantity != null ? fmtQty(p.quantity) : 0) + '</td>' +
-      '<td class="text-right" style="font-weight:600;">' + fmt(mv) + '</td>' +
+      '<td class="text-right num">' + fmt(mv) + '</td>' +
       '<td class="text-right">' + pct + '%</td>' +
       '<td>' + typeTag + '</td>' +
       '<td>' + subtypeTag + '</td>' +
@@ -658,19 +569,19 @@ function renderPositionsTable(targetId, limit) {
   if (cashAmt > 0) {
     var cashPct = total > 0 ? (cashAmt / total * 100).toFixed(2) : 0;
     var cashTypeTag = getTypeTagClass(data.cashType || '现金');
-    html += '<tr class="cash-row" style="background:#f0fdf4;">' +
-      '<td style="text-align:center;color:#bbb;">-</td>' +
-      '<td style="color:#bbb;">-</td>' +
+    html += '<tr class="cash-row">' +
+      '<td class="muted-cell">-</td>' +
+      '<td class="muted-cell">-</td>' +
       '<td><strong>现金</strong></td>' +
-      '<td class="text-right" style="color:#bbb;">-</td>' +
-      '<td class="text-right" style="color:#bbb;">-</td>' +
-      '<td style="color:#bbb;">-</td>' +
-      '<td class="text-right" style="color:#bbb;">-</td>' +
-      '<td class="text-right" style="font-weight:600;">' + fmt(cashAmt) + '</td>' +
+      '<td class="text-right muted-cell">-</td>' +
+      '<td class="text-right muted-cell">-</td>' +
+      '<td class="muted-cell">-</td>' +
+      '<td class="text-right muted-cell">-</td>' +
+      '<td class="text-right num">' + fmt(cashAmt) + '</td>' +
       '<td class="text-right">' + cashPct + '%</td>' +
       '<td><span class="tag ' + cashTypeTag + '">' + escapeHtml(data.cashType || '现金') + '</span></td>' +
       '<td><span class="tag tag-cash">' + escapeHtml(data.cashSubtype || '现金') + '</span></td>' +
-      '<td class="text-center" style="color:#bbb;">—</td>' +
+      '<td class="text-center muted-cell">—</td>' +
       (limit ? '' : '<td class="text-center">' +
         '<button class="btn btn-outline btn-sm" onclick="editCash()">编辑</button>' +
         '</td>') +
@@ -678,10 +589,11 @@ function renderPositionsTable(targetId, limit) {
   }
   html += '</tbody></table></div>';
   el.innerHTML = html;
-  if (targetId === 'positions-table') {
-    positionListBuildFloatingHead();
-    positionListSyncFloatingUi();
-    positionListStartFloatingSync();
+  if (window.BusinessTable) {
+    window.BusinessTable.attach(el, {
+      page: targetId === 'positions-table' ? '#page-positions' : '#page-dashboard',
+      top: targetId === 'positions-table' ? '#main-holdings > .holdings-header' : '.nav'
+    });
   }
   if (targetId === 'topn-table') {
     const sumEl = document.getElementById('topn-summary');
@@ -703,7 +615,7 @@ function renderTrades() {
     el.innerHTML = '<div class="empty-state"><div class="icon">📄</div><p>暂无交易记录</p></div>';
     return;
   }
-  var html = '<table><thead><tr>' +
+  var html = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>' +
     '<th>时间</th><th>代码</th><th>名称</th><th>方向</th>' +
     '<th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">成交额</th><th class="text-right">费用</th>' +
     '<th>类型</th><th>备注</th><th class="text-center">操作</th>' +
@@ -755,8 +667,9 @@ function renderTrades() {
         '</tr>';
     }
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   el.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#page-trades', top: '#main-holdings > .holdings-header' });
 }
 
 async function deleteCashFlow(id) {

@@ -168,9 +168,9 @@ function renderUsers() {
       '<button class="btn btn-primary btn-sm" onclick="usersSearch=document.getElementById(\'users-search\').value;usersOffset=0;renderUsers();">搜索</button>' +
       '<button class="btn btn-outline btn-sm" onclick="usersSearch=\'\';usersOffset=0;renderUsers();">重置</button>' +
     '</div>' +
-    '<div class="admin-table-wrap"><table>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>账号</th><th>角色</th><th>状态</th><th>账户数</th><th>注册时间</th><th>操作</th></tr></thead>' +
-      '<tbody id="users-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
+      '<tbody id="users-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody>' +
     '</table></div>' +
     '<div class="earnings-pager" id="users-pager"></div>';
 
@@ -195,10 +195,10 @@ async function loadUsersData() {
   const pager = document.getElementById('users-pager');
   try {
     const r = await fetch(api('/api/admin/users?search=' + encodeURIComponent(usersSearch) + '&limit=' + usersLimit + '&offset=' + usersOffset));
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
     const d = await r.json();
     if (!d.list.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无用户</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无用户</td></tr>';
     } else {
       tbody.innerHTML = d.list.map(function (u) {
         const isAdmin = u.role === 'admin';
@@ -213,7 +213,7 @@ async function loadUsersData() {
           '<td>' + statusTag + '</td>' +
           '<td>' + (u.account_count || 0) + '</td>' +
           '<td>' + created + '</td>' +
-          '<td style="white-space:nowrap;">' +
+          '<td class="biz-table-nowrap">' +
             '<button class="btn btn-sm btn-outline" data-action="detail" data-username="' + escapeHtml(u.username) + '">详情</button> ' +
             '<button class="btn btn-sm ' + (disabled ? 'btn-success' : 'btn-warning') + '" data-action="status" data-username="' + escapeHtml(u.username) + '" data-cur="' + (disabled ? 'disabled' : 'active') + '">' + (disabled ? '启用' : '禁用') + '</button> ' +
             '<button class="btn btn-sm ' + (isAdmin ? 'btn-outline' : 'btn-info') + '" data-action="role" data-username="' + escapeHtml(u.username) + '" data-cur="' + u.role + '"' + (self ? ' disabled title="不能修改自己"' : '') + '>' + (isAdmin ? '取消管理员' : '设管理员') + '</button> ' +
@@ -231,7 +231,7 @@ async function loadUsersData() {
       '<button class="btn btn-sm btn-outline" ' + (usersOffset <= 0 ? 'disabled' : 'onclick="usersOffset=Math.max(0,usersOffset-usersLimit);renderUsers();"') + '>上一页</button>' +
       '<button class="btn btn-sm btn-outline" ' + (end >= d.total ? 'disabled' : 'onclick="usersOffset+=usersLimit;renderUsers();"') + '>下一页</button>';
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
   }
 }
 
@@ -353,9 +353,9 @@ function renderBrokers() {
       '<button class="btn btn-outline btn-sm" onclick="brokersSearch=\'\';brokersMarket=\'\';renderBrokers();">重置</button>' +
       '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="openBrokerForm()">+ 新增券商</button>' +
     '</div>' +
-      '<div class="admin-table-wrap"><table>' +
+      '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>代码</th><th>名称</th><th>市场</th><th>导入单位</th><th>排序</th><th>操作</th></tr></thead>' +
-      '<tbody id="brokers-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
+      '<tbody id="brokers-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody>' +
     '</table></div>';
   const msel = document.getElementById('brokers-market');
   if (msel) msel.value = brokersMarket;
@@ -374,10 +374,10 @@ async function loadBrokersData() {
   try {
     const qs = 'search=' + encodeURIComponent(brokersSearch) + '&market=' + encodeURIComponent(brokersMarket);
     const r = await fetch(api('/api/admin/brokers?' + qs));
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
     const d = await r.json();
     if (!d.list.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无券商</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无券商</td></tr>';
     } else {
       tbody.innerHTML = d.list.map(function (b) {
         return '<tr>' +
@@ -386,7 +386,7 @@ async function loadBrokersData() {
           '<td><span class="tag">' + (MARKET_TEXT[b.market] || escapeHtml(b.market || '')) + '</span></td>' +
           '<td>' + (b.import_unit === 'lot' ? '<span class="tag tag-a">手</span>' : '<span class="tag">张</span>') + '</td>' +
           '<td>' + (b.sort_order || 0) + '</td>' +
-          '<td style="white-space:nowrap;">' +
+          '<td class="biz-table-nowrap">' +
             '<button class="btn btn-sm btn-outline" data-action="edit" data-code="' + escapeHtml(b.code) + '">编辑</button> ' +
             '<button class="btn btn-sm btn-danger" data-action="del" data-code="' + escapeHtml(b.code) + '">删除</button>' +
           '</td>' +
@@ -394,7 +394,7 @@ async function loadBrokersData() {
       }).join('');
     }
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
   }
 }
 
@@ -646,9 +646,9 @@ function renderJobsLegacy() {
     '</div>' +
      '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
     '<div class="acct-section-title">最近执行记录</div>' +
-    '<div class="admin-table-wrap"><table>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>任务</th><th>说明</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>详情</th></tr></thead>' +
-      '<tbody id="jobs-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
+      '<tbody id="jobs-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody>' +
     '</table></div>';
   loadJobsData();
 }
@@ -669,7 +669,7 @@ async function loadJobsDataLegacy() {
   const summary = document.getElementById('jobs-summary');
   try {
     const r = await fetch(api('/api/admin/jobs?limit=50'));
-    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
     const d = await r.json();
     // 各任务最近状态卡片
     if (summary) {
@@ -685,21 +685,21 @@ async function loadJobsDataLegacy() {
     }
     // 执行记录表
     if (!d.recent || !d.recent.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无执行记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无执行记录</td></tr>';
     } else {
       tbody.innerHTML = d.recent.map(function (j) {
         return '<tr>' +
           '<td>' + escapeHtml(jobLabel(j.job)) + '</td>' +
-          '<td style="max-width:260px;color:#666;font-size:12px;line-height:1.5;">' + escapeHtml(jobDescription(j.job)) + '</td>' +
+          '<td class="biz-table-note-cell biz-table-note-cell--260">' + escapeHtml(jobDescription(j.job)) + '</td>' +
           '<td>' + jobStatusTag(j.status) + '</td>' +
           '<td>' + fmtTime(j.started_at) + '</td>' +
           '<td>' + fmtTime(j.finished_at) + '</td>' +
-          '<td style="max-width:260px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td>' +
+          '<td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-all">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td>' +
         '</tr>';
       }).join('');
     }
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
   }
 }
 
@@ -727,14 +727,14 @@ function renderJobs() {
     '</div>' +
     '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
     '<div class="acct-section-title">今日计划与运行情况</div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>计划时间</th><th>状态</th><th>尝试次数</th><th>数据日期</th><th>最近结果</th><th>操作</th></tr></thead>' +
-      '<tbody id="jobs-slots-tbody"><tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">加载中…</td></tr></tbody></table></div>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>任务</th><th>计划时间</th><th>状态</th><th>尝试次数</th><th>数据日期</th><th>最近结果</th><th>操作</th></tr></thead>' +
+      '<tbody id="jobs-slots-tbody"><tr><td colspan="7" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>' +
     '<div class="acct-section-title">待处理告警</div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>时间</th><th>任务</th><th>告警</th><th>状态</th><th>操作</th></tr></thead>' +
-      '<tbody id="jobs-alerts-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中…</td></tr></tbody></table></div>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>时间</th><th>任务</th><th>告警</th><th>状态</th><th>操作</th></tr></thead>' +
+      '<tbody id="jobs-alerts-tbody"><tr><td colspan="5" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>' +
     '<div class="acct-section-title">最近运行记录</div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>触发方式</th><th>详情</th></tr></thead>' +
-      '<tbody id="jobs-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中…</td></tr></tbody></table></div>';
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>任务</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>触发方式</th><th>详情</th></tr></thead>' +
+      '<tbody id="jobs-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>';
   loadJobsData();
   if (jobsPollTimer) clearInterval(jobsPollTimer);
   jobsPollTimer = setInterval(function () {
@@ -826,19 +826,19 @@ async function loadJobsData() {
     workers.sort(function (a, b) { return (a.role === 'worker' ? 0 : 1) - (b.role === 'worker' ? 0 : 1); });
     const workerText = workers.length ? 'Worker 心跳：' + fmtTime(workers[0].last_seen_at) + '（' + (workers[0].status || 'unknown') + '）' : '未检测到 Worker 心跳';
     const workerEl = document.getElementById('job-worker-status'); if (workerEl) workerEl.textContent = workerText;
-    if (slotBody) slotBody.innerHTML = slots.length ? slots.map(renderJobSlotRow).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">暂无计划</td></tr>';
+    if (slotBody) slotBody.innerHTML = slots.length ? slots.map(renderJobSlotRow).join('') : '<tr><td colspan="7" class="biz-table-state-cell">暂无计划</td></tr>';
     const freshness = document.getElementById('jobs-freshness');
     if (freshness) freshness.innerHTML = '<div class="job-help-sub">数据日期：' + escapeHtml(slots.filter(function (slot) { return slot.data_as_of; }).map(function (slot) { return jobLabel(slot.job_code) + ' ' + String(slot.data_as_of).slice(0, 10); }).join(' ｜ ') || '暂无可确认数据日期') + '</div>';
     if (runBody) runBody.innerHTML = runs.recent && runs.recent.length ? runs.recent.map(function (j) {
-      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(jobTriggerLabel(j.trigger_type || 'scheduled')) + '</td><td style="max-width:300px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
-    }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无运行记录</td></tr>';
+      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(jobTriggerLabel(j.trigger_type || 'scheduled')) + '</td><td class="biz-table-note-cell biz-table-note-cell--300 biz-table-break-all">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="biz-table-state-cell">暂无运行记录</td></tr>';
     if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
-      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td style="max-width:320px;word-break:break-word;">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
-    }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无待处理告警</td></tr>';
+      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
+    }).join('') : '<tr><td colspan="5" class="biz-table-state-cell">暂无待处理告警</td></tr>';
   } catch (e) {
-    if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
-    if (runBody) runBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
-    if (alertBody) alertBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败，请刷新重试</td></tr>';
+    if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
+    if (runBody) runBody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
+    if (alertBody) alertBody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
   }
 }
 
@@ -906,7 +906,7 @@ function renderJobSlotRow(slot) {
   const retry = (slot.status === 'failed' || slot.status === 'degraded' || slot.status === 'blocked')
     ? ' <button class="btn btn-outline btn-xs" onclick="retryJobSlotFromUi(' + Number(slot.slot_id) + ')">立即补跑</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobSlot(' + Number(slot.slot_id) + ')">确认</button>' : '';
   const watermark = slot.data_as_of ? String(slot.data_as_of).slice(0, 10) : '-';
-  return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td style="max-width:260px;word-break:break-word;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
+  return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-word">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
 
 async function resendJobAlert(alertId) {
@@ -1041,12 +1041,12 @@ function renderExternalApiReturnedData(data) {
   const fields = data.fields.slice(0, 20), rows = Array.isArray(data.items) ? data.items.slice(0, 5) : [];
   let html = '<div style="margin-top:8px;color:#555;">API 返回数据：</div>';
   if (!fields.length) return html + '<div style="color:#888;margin-top:3px;">0 个字段，0 行</div>';
-  html += '<div style="overflow-x:auto;margin-top:4px;"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap;"><thead><tr>';
-  fields.forEach(function (field) { html += '<th style="padding:3px 7px;border:1px solid #ddd;background:#eee;text-align:left;">' + escapeHtml(field) + '</th>'; });
+  html += '<div class="biz-table-scroll" style="margin-top:4px;"><table class="biz-table biz-table--preview"><thead><tr>';
+  fields.forEach(function (field) { html += '<th>' + escapeHtml(field) + '</th>'; });
   html += '</tr></thead><tbody>';
   rows.forEach(function (row) {
     html += '<tr>';
-    fields.forEach(function (field, index) { const value = !row || row[index] == null ? '-' : row[index]; html += '<td style="padding:3px 7px;border:1px solid #ddd;">' + escapeHtml(String(value)) + '</td>'; });
+    fields.forEach(function (field, index) { const value = !row || row[index] == null ? '-' : row[index]; html += '<td>' + escapeHtml(String(value)) + '</td>'; });
     html += '</tr>';
   });
   html += '</tbody></table></div>';
@@ -1210,8 +1210,8 @@ function renderAudit() {
       '<button class="btn btn-outline btn-sm" onclick="loadAuditData()">查询</button>' +
       '<button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="loadAuditData()">刷新</button>' +
     '</div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>' +
-    '<tbody id="audit-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>' +
+    '<tbody id="audit-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
   loadAuditData();
 }
 async function loadAuditData() {
@@ -1225,7 +1225,7 @@ async function loadAuditData() {
   const qs = 'limit=100' + (m ? '&module=' + encodeURIComponent(m) : '') + (a ? '&actor=' + encodeURIComponent(a) : '') + (r ? '&result=' + encodeURIComponent(r) : '');
   try {
     const resp = await fetch(api('/api/admin/audit?' + qs));
-    if (!resp.ok) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!resp.ok) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
     const d = await resp.json();
     if (moduleSel && d.modules) {
       d.modules.forEach(function (k) {
@@ -1234,14 +1234,14 @@ async function loadAuditData() {
         }
       });
     }
-    if (!d.list.length) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无操作记录</td></tr>'; return; }
+    if (!d.list.length) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无操作记录</td></tr>'; return; }
     tb.innerHTML = d.list.map(function (x) {
       const isFail = x.result === 'failure';
       const rc = isFail ? 'tag-over' : 'tag-ok';
       const rt = isFail ? '失败' : '成功';
-      return '<tr><td>' + escapeHtml(x.created_at || '') + '</td><td>' + escapeHtml(x.actor || '') + '</td><td><span class="tag">' + escapeHtml(x.action || '') + '</span></td><td>' + escapeHtml(x.target || '') + '</td><td><span class="tag ' + rc + '">' + rt + '</span></td><td style="max-width:360px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(x.detail || '') + '</td></tr>';
+      return '<tr><td>' + escapeHtml(x.created_at || '') + '</td><td>' + escapeHtml(x.actor || '') + '</td><td><span class="tag">' + escapeHtml(x.action || '') + '</span></td><td>' + escapeHtml(x.target || '') + '</td><td><span class="tag ' + rc + '">' + rt + '</span></td><td class="biz-table-note-cell biz-table-note-cell--360 biz-table-break-all">' + escapeHtml(x.detail || '') + '</td></tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
+  } catch (e) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误</td></tr>'; }
 }
 
 // ====== 数据运维（OPS-01：共享数据刷新/导入统一迁入后台，前台按钮已移除）======
@@ -1257,8 +1257,8 @@ function renderOps() {
         '<span style="color:#55705d;">定时任务自动更新，无需手工导入</span>') +
     '</div>' +
     '<div class="ops-jobs"><div class="ops-jobs-head"><span>最近任务状态</span><button class="btn btn-outline btn-sm" onclick="opsLoadJobs()">刷新</button></div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>开始</th><th>结束</th><th>结果</th></tr></thead>' +
-    '<tbody id="ops-jobs-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div></div>';
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>任务</th><th>状态</th><th>开始</th><th>结束</th><th>结果</th></tr></thead>' +
+    '<tbody id="ops-jobs-tbody"><tr><td colspan="5" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div></div>';
   opsLoadJobs();
 }
 function opsCard(title, desc, actionHtml) {
@@ -1303,14 +1303,14 @@ async function opsLoadJobs() {
   const tb = document.getElementById('ops-jobs-tbody'); if (!tb) return;
   try {
     const r = await fetch(api('/api/admin/jobs?limit=20'));
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
     const list = (await r.json()).list || [];
-    if (!list.length) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无任务记录</td></tr>'; return; }
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell">暂无任务记录</td></tr>'; return; }
     tb.innerHTML = list.map(function (j) {
       const st = j.status === 'done' ? '<span class="tag tag-ok">成功</span>' : (j.status === 'failed' ? '<span class="tag tag-over">失败</span>' : (j.status === 'running' ? '<span class="tag tag-a">运行中</span>' : '<span class="tag">' + escapeHtml(j.status || '—') + '</span>'));
-      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + st + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td style="max-width:320px;word-break:break-all;color:#666;font-size:12px;">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
+      return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + st + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-all">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">网络错误</td></tr>'; }
+  } catch (e) { tb.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">网络错误</td></tr>'; }
 }
 
 // ====== 大模型配置 ======
@@ -1322,9 +1322,9 @@ function renderAimodels(target) {
       '<button class="btn btn-outline btn-sm" onclick="loadAimodelsData()">刷新</button>' +
       '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="openModelForm()">+ 新增模型</button>' +
     '</div>' +
-    '<div class="admin-table-wrap"><table>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>名称</th><th>模型名</th><th>API 地址</th><th>API Key</th><th>状态</th><th>操作</th></tr></thead>' +
-      '<tbody id="aimodels-tbody"><tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody>' +
+      '<tbody id="aimodels-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody>' +
     '</table></div>';
   const tb = document.getElementById('aimodels-tbody');
   if (tb) tb.addEventListener('click', function (e) {
@@ -1353,10 +1353,10 @@ async function loadAimodelsData() {
   const tb = document.getElementById('aimodels-tbody'); if (!tb) return;
   try {
     const r = await fetch(api('/api/admin/models'));
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">加载失败</td></tr>'; return; }
+    if (!r.ok) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; return; }
     const d = await r.json();
     const list = d.list || [];
-    if (!list.length) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:24px;">暂无模型，点击右上角「新增模型」</td></tr>'; return; }
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell">暂无模型，点击右上角「新增模型」</td></tr>'; return; }
     const minOrder = Math.min.apply(null, list.map(function (m) { return m.order || 0; }));
     tb.innerHTML = list.map(function (m) {
       const isDefault = (m.order || 0) === minOrder;
@@ -1365,10 +1365,10 @@ async function loadAimodelsData() {
       return '<tr>' +
         '<td>' + defTag + escapeHtml(m.name) + '</td>' +
         '<td>' + escapeHtml(m.model) + '</td>' +
-        '<td style="max-width:240px;word-break:break-all;">' + escapeHtml(m.apiUrl) + '</td>' +
-        '<td style="font-family:monospace;color:#555;">' + escapeHtml(m.apiKey || '') + '</td>' +
+        '<td class="biz-table-note-cell biz-table-note-cell--240 biz-table-break-all">' + escapeHtml(m.apiUrl) + '</td>' +
+        '<td class="biz-table-mono-cell">' + escapeHtml(m.apiKey || '') + '</td>' +
         '<td>' + enTag + '<div style="margin-top:4px;">' + aimodelStatusHtml(m.status) + '</div></td>' +
-        '<td style="white-space:nowrap;">' +
+        '<td class="biz-table-nowrap">' +
           '<button class="btn btn-sm btn-info" data-action="test" data-id="' + escapeHtml(m.id) + '">测试</button> ' +
           '<button class="btn btn-sm btn-outline" data-action="edit" data-id="' + escapeHtml(m.id) + '">编辑</button> ' +
           (isDefault ? '' : '<button class="btn btn-sm btn-ghost" data-action="default" data-id="' + escapeHtml(m.id) + '">设默认</button> ') +
@@ -1378,7 +1378,7 @@ async function loadAimodelsData() {
         '</td>' +
       '</tr>';
     }).join('');
-  } catch (e) { tb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#d93025;">网络错误，请重试</td></tr>'; }
+  } catch (e) { tb.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>'; }
 }
 
 // 在全部模型里找出指定 id 的记录（含打码 Key，用于编辑回显；后端遇打码串保留原值）
@@ -1507,8 +1507,8 @@ async function ksRenderKsArticles() {
       '<option value="">全部状态</option><option value="published">已发布</option><option value="draft">草稿</option></select>' +
     '<button class="btn btn-primary btn-sm" id="ks-ad-search">筛选</button>' +
     '<span class="ks-ad-count" id="ks-ad-count"></span></div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>ID</th><th>标题</th><th>分类</th><th>状态</th><th>作者</th><th>阅读</th><th>发布时间</th><th>操作</th></tr></thead>' +
-    '<tbody id="ks-ad-tbody"><tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>ID</th><th>标题</th><th>分类</th><th>状态</th><th>作者</th><th>阅读</th><th>发布时间</th><th>操作</th></tr></thead>' +
+    '<tbody id="ks-ad-tbody"><tr><td colspan="8" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
   body.innerHTML = html;
   document.getElementById('ks-ad-search').addEventListener('click', function () {
     ksLoadKsArticles(document.getElementById('ks-ad-status').value);
@@ -1523,7 +1523,7 @@ async function ksLoadKsArticles(status) {
     const r = await fetch(api('/api/admin/knowledge/articles?limit=50' + (status ? '&status=' + status : '')));
     const d = await r.json();
     if (count) count.textContent = '共 ' + d.total + ' 篇';
-    if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">暂无文章</td></tr>'; return; }
+  if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell">暂无文章</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (a) {
       const created = (a.published_at || a.updated_at || '').toString().replace('T', ' ').slice(0, 19);
       const statusTag = a.status === 'draft' ? '<span class="tag tag-over">草稿</span>' : '<span class="tag tag-ok">已发布</span>';
@@ -1535,7 +1535,7 @@ async function ksLoadKsArticles(status) {
         '<td>' + escapeHtml(a.author_username || '') + '</td>' +
         '<td>' + (a.view_count || 0) + '</td>' +
         '<td>' + created + '</td>' +
-        '<td style="white-space:nowrap;">' +
+        '<td class="biz-table-nowrap">' +
           '<button class="btn btn-sm ' + (a.status === 'draft' ? 'btn-success' : 'btn-warning') + '" data-act="status" data-id="' + a.id + '" data-cur="' + a.status + '">' + (a.status === 'draft' ? '发布' : '撤回') + '</button> ' +
           '<button class="btn btn-sm btn-danger" data-act="del" data-id="' + a.id + '">删除</button>' +
         '</td></tr>';
@@ -1554,7 +1554,7 @@ async function ksLoadKsArticles(status) {
         }
       });
     });
-  } catch (e) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; }
 }
 
 async function ksRenderKsComments() {
@@ -1564,8 +1564,8 @@ async function ksRenderKsComments() {
     '<input id="ks-cm-article" placeholder="按文章ID筛选（可选）" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:160px;">' +
     '<button class="btn btn-primary btn-sm" id="ks-cm-search">筛选</button>' +
     '<span class="ks-ad-count" id="ks-cm-count"></span></div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>ID</th><th>文章</th><th>评论人</th><th>内容</th><th>回复对象</th><th>时间</th><th>操作</th></tr></thead>' +
-    '<tbody id="ks-cm-tbody"><tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>ID</th><th>文章</th><th>评论人</th><th>内容</th><th>回复对象</th><th>时间</th><th>操作</th></tr></thead>' +
+    '<tbody id="ks-cm-tbody"><tr><td colspan="7" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
   document.getElementById('ks-cm-search').addEventListener('click', function () {
     ksLoadKsComments(document.getElementById('ks-cm-article').value.trim());
   });
@@ -1579,7 +1579,7 @@ async function ksLoadKsComments(articleId) {
     const r = await fetch(api('/api/admin/knowledge/comments?limit=50' + (articleId ? '&article_id=' + articleId : '')));
     const d = await r.json();
     if (count) count.textContent = '共 ' + d.total + ' 条';
-    if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;padding:24px;">暂无评论</td></tr>'; return; }
+  if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="7" class="biz-table-state-cell">暂无评论</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (c) {
       const t = (c.created_at || '').toString().replace('T', ' ').slice(0, 19);
       const reply = c.parent_id ? ('#' + c.parent_id) : '—';
@@ -1587,7 +1587,7 @@ async function ksLoadKsComments(articleId) {
         '<td>' + c.id + '</td>' +
         '<td>' + escapeHtml(c.article_title || ('#' + c.article_id)) + '</td>' +
         '<td>' + escapeHtml(c.nickname) + '</td>' +
-        '<td style="max-width:360px;">' + escapeHtml(c.content) + '</td>' +
+        '<td class="biz-table-note-cell biz-table-note-cell--360">' + escapeHtml(c.content) + '</td>' +
         '<td>' + reply + '</td>' +
         '<td>' + t + '</td>' +
         '<td><button class="btn btn-sm btn-danger" data-id="' + c.id + '">删除</button></td></tr>';
@@ -1599,7 +1599,7 @@ async function ksLoadKsComments(articleId) {
         showToast('已删除'); ksLoadKsComments(document.getElementById('ks-cm-article').value.trim());
       });
     });
-  } catch (e) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="7" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; }
 }
 
 async function ksRenderKsPermissions() {
@@ -1609,8 +1609,8 @@ async function ksRenderKsPermissions() {
     '<input id="ks-per-search" placeholder="搜索账号" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:180px;">' +
     '<button class="btn btn-primary btn-sm" id="ks-per-go">搜索</button>' +
     '<span class="ks-ad-count">管理员默认拥有写权限</span></div>' +
-    '<div class="admin-table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>投资笔记写权限</th><th>操作</th></tr></thead>' +
-    '<tbody id="ks-per-tbody"><tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>投资笔记写权限</th><th>操作</th></tr></thead>' +
+    '<tbody id="ks-per-tbody"><tr><td colspan="5" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
   document.getElementById('ks-per-go').addEventListener('click', function () {
     ksLoadKsPermissions(document.getElementById('ks-per-search').value.trim());
   });
@@ -1622,7 +1622,7 @@ async function ksLoadKsPermissions(search) {
   try {
     const r = await fetch(api('/api/admin/knowledge/users' + (search ? '?search=' + encodeURIComponent(search) : '')));
     const d = await r.json();
-    if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;padding:24px;">暂无用户</td></tr>'; return; }
+  if (!d.list.length) { tbody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell">暂无用户</td></tr>'; return; }
     tbody.innerHTML = d.list.map(function (u) {
       const isAdmin = u.role === 'admin';
       const enabled = isAdmin || u.knowledge_enabled;
@@ -1649,7 +1649,7 @@ async function ksLoadKsPermissions(search) {
         ksLoadKsPermissions(document.getElementById('ks-per-search').value.trim());
       });
     });
-  } catch (e) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#d93025;">加载失败</td></tr>'; }
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败</td></tr>'; }
 }
 
 // ====== 套利审核 ======
@@ -1661,9 +1661,9 @@ async function renderArbitrage() {
       '<div><button class="btn btn-sm btn-primary" onclick="adminArbSync()">手动同步</button></div>' +
       '<div id="arb-admin-meta" style="font-size:12px;color:#999;"></div>' +
     '</div>' +
-    '<div class="admin-table-wrap"><table><thead><tr>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr>' +
       '<th>ID</th><th>市场</th><th>类型</th><th>证券</th><th>状态</th><th>审核</th><th>公告日</th><th>操作</th>' +
-    '</tr></thead><tbody id="arb-admin-tbody"><tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">加载中...</td></tr></tbody></table></div>';
+    '</tr></thead><tbody id="arb-admin-tbody"><tr><td colspan="8" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
   loadArbCandidates();
 }
 
@@ -1677,7 +1677,7 @@ async function loadArbCandidates() {
     const meta = document.getElementById('arb-admin-meta');
     if (meta) meta.textContent = '共 ' + (d.total || 0) + ' 条事件';
     if (!d.rows || !d.rows.length) {
-      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:24px;">暂无待审核事件</td></tr>';
+      tb.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell">暂无待审核事件</td></tr>';
       return;
     }
     tb.innerHTML = d.rows.map(function (c) {
@@ -1697,7 +1697,7 @@ async function loadArbCandidates() {
       '</tr>';
     }).join('');
   } catch (e) {
-    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#d93025;">加载失败: ' + esc(e.message) + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="8" class="biz-table-state-cell biz-table-error">加载失败: ' + esc(e.message) + '</td></tr>';
   }
 }
 

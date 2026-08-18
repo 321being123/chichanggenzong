@@ -22,10 +22,12 @@ const context = {
     ]
   },
   console,
-  document: { querySelector: function() { return null; } }
+  window: {},
+  document: { querySelector: function() { return null; }, addEventListener: function() {} }
 };
 vm.createContext(context);
 vm.runInContext(utils, context);
+vm.runInContext(tables, context);
 
 const before = context.getSystemPositionValue();
 assert.strictEqual(before, 950, '刷新前系统持仓市值错误');
@@ -59,5 +61,12 @@ assert.ok(attributionRenderAt > navAt, '净值归因返回后必须立即刷新�
 assert.ok(quote.includes("Number(data.hkRate) > 0 ? Number(data.hkRate) : 0.868"), '汇率接口失败时必须保留账户上一份有效汇率');
 assert.ok(returns.includes('data.navAttribution = _j2.data.navAttribution'), '记录净值后未同步最新导入口径归因');
 assert.ok(tables.includes('导入口径切换差异') && tables.includes('importBasisAdjustment'), '涨跌浮框未展示首次口径切换差异');
+assert.strictEqual(context.countTradingDaysBetween('2026-08-15', '2026-08-17'), 0, '周末不应被算作完整交易日');
+assert.strictEqual(context.countTradingDaysBetween('2026-08-13', '2026-08-17'), 1, '周四到周一应识别中间的周五交易日');
+const incompleteTip = context.buildChangeTipHtml(100, 1, 0, 0, null, null, null, null, true);
+assert.ok(incompleteTip.includes('归因不完整，未进行明细加总'), '归因不完整时必须明确提示未进行明细加总');
+assert.ok(!incompleteTip.includes('合计 = 股价影响 + 汇率影响'), '归因不完整时不得伪装成明细已闭合');
+const driftTip = context.buildChangeTipHtml(100, 1, 70, 20, 0, null, 10, null, false);
+assert.ok(driftTip.includes('未归因差额') && driftTip.includes('合计 = 股价影响 + 汇率影响 + 其他变动 + 未归因差额'), '存在明显残差时必须在浮框中展示并纳入合计');
 
 console.log('holdings summary refresh tests passed');

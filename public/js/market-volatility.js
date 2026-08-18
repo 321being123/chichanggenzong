@@ -51,13 +51,10 @@ function mvRender() {
 }
 function mvActiveSetting() { return mvState.draft || (mvState.overview && mvState.overview.setting) || mvDefaultSetting(); }
 function mvRenderLadder() {
-  var setting = mvActiveSetting(), root = document.getElementById('mv-ladder'); if (!setting) { root.innerHTML = '<div class="mv-empty">' + (username ? '尚未设置仓位边界' : '登录后可设置仓位边界') + '</div>'; return; }
-  var rows = setting.ladder || mvLadder(setting.lower,setting.upper); root.innerHTML = '<table><thead><tr><th>格雷厄姆指数阈值</th><th class="text-right">建议股票仓位</th></tr></thead><tbody>' + rows.map(function (r) { return '<tr><td>' + mvNum(r.value, 4) + '%</td><td class="text-right">' + r.position + '%</td></tr>'; }).join('') + '</tbody></table>';
-}
-function mvRenderLadder() {
   var setting=mvActiveSetting(),root=document.getElementById('mv-ladder'); if(!setting){root.innerHTML='<div class="mv-empty">暂无仓位边界</div>';return;}
   var rows=setting.ladder||mvLadder(setting.lower,setting.upper),o=mvState.overview||{},current=o.current||{},point=o.indexPoint,indexName=mvState.benchmark==='CSI300'?'沪深300':mvState.benchmark==='CSIALL'?'中证全指':'恒生指数';
-  root.innerHTML='<table><thead><tr><th>格雷厄姆指数阈值</th><th class="text-right">对应 PE</th><th class="text-right">对应'+indexName+'点位</th><th class="text-right">建议股票仓位</th></tr></thead><tbody>'+rows.map(function(r){var pe=Number(current.sovereign_yield_pct)>0?100/(Number(r.value)+Number(current.sovereign_yield_pct)):null,level=pe&&point&&Number(current.pe)>0?Number(point.value)*pe/Number(current.pe):null;return '<tr><td>'+mvNum(r.value,4)+'%</td><td class="text-right">'+mvNum(pe)+'</td><td class="text-right">'+mvNum(level,2)+'</td><td class="text-right">'+r.position+'%</td></tr>';}).join('')+'</tbody></table><div class="mv-ladder-note">对应点位按当前指数点位、当前 PE 与'+mvRateLabel()+'换算。</div>';
+  root.innerHTML='<div class="biz-table-scroll"><table class="biz-table biz-table--compact"><thead><tr><th>格雷厄姆指数阈值</th><th class="text-right">对应 PE</th><th class="text-right">对应'+indexName+'点位</th><th class="text-right">建议股票仓位</th></tr></thead><tbody>'+rows.map(function(r){var pe=Number(current.sovereign_yield_pct)>0?100/(Number(r.value)+Number(current.sovereign_yield_pct)):null,level=pe&&point&&Number(current.pe)>0?Number(point.value)*pe/Number(current.pe):null;return '<tr><td>'+mvNum(r.value,4)+'%</td><td class="text-right">'+mvNum(pe)+'</td><td class="text-right">'+mvNum(level,2)+'</td><td class="text-right">'+r.position+'%</td></tr>';}).join('')+'</tbody></table></div><div class="mv-ladder-note">对应点位按当前指数点位、当前 PE 与'+mvRateLabel()+'换算。</div>';
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-market-volatility', sticky: false });
 }
 function mvRenderChart() {
   var root = document.getElementById('mv-chart'), setting = mvActiveSetting(), data = mvState.history || [], current = mvState.overview.current;

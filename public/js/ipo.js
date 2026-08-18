@@ -169,7 +169,7 @@ function ipoShdShares(it) {
 }
 
 function ipoTable(headers, rows, opts) {
-  var h = '<div class="ipo-history-scroll"><table class="ipo-history-table">';
+  var h = '<div class="biz-table-scroll"><table class="biz-table">';
   h += '<thead><tr>';
   headers.forEach(function (hh) { h += ipoHistoryHeaderCell(hh); });
   h += '</tr></thead><tbody>';
@@ -183,146 +183,7 @@ function ipoTable(headers, rows, opts) {
 }
 
 function ipoHistoryHeaderCell(label) {
-  var breaks = {
-    '发行规模(亿)': ['发行规模', '(亿)'],
-    '股东配售率': ['股东', '配售率'],
-    '配售10张所需股数': ['配售10张', '所需股数'],
-    '网上上限(亿)': ['网上上限', '(亿)'],
-    '申请户数(万)': ['申请户数', '(万)'],
-    '发行总数(万股)': ['发行总数', '(万股)'],
-    '网上发行量(万股)': ['网上发行量', '(万股)'],
-    '顶格申购上限(万股)': ['顶格申购上限', '(万股)'],
-    '顶格申购需配市值(万)': ['顶格申购需配', '市值(万)'],
-    '中签率(万分之)': ['中签率', '(万分之)'],
-    '公开发行市值(亿)': ['公开发行', '市值(亿)'],
-  }[label];
-  if (!breaks) return '<th>' + escapeHtml(label) + '</th>';
-  return '<th class="ipo-history-header-long">' + escapeHtml(breaks[0]) + '<br>' + escapeHtml(breaks[1]) + '</th>';
-}
-
-// 打新历史统一表格：横向滚动、标题吸顶、底部滚动条与持仓/上市可转债列表保持一致。
-function ipoHistoryFloatingHead() {
-  var host = document.getElementById('ipo-history-floating-head');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'ipo-history-floating-head';
-    host.className = 'ipo-history-floating-head';
-    host.hidden = true;
-    document.body.appendChild(host);
-  }
-  return host;
-}
-
-function ipoHistoryFloatingScroll() {
-  var host = document.getElementById('ipo-history-floating-scroll');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'ipo-history-floating-scroll';
-    host.className = 'ipo-history-floating-scroll';
-    host.hidden = true;
-    host.innerHTML = '<div class="ipo-history-floating-scroll-inner"></div>';
-    host.addEventListener('scroll', function () {
-      var scroll = document.querySelector('#ipo-history .ipo-history-scroll');
-      if (scroll && Math.abs(scroll.scrollLeft - host.scrollLeft) > 1) scroll.scrollLeft = host.scrollLeft;
-    }, { passive: true });
-    document.body.appendChild(host);
-  }
-  return host;
-}
-
-function ipoHistoryBuildFloatingHead() {
-  var source = document.querySelector('#ipo-history .ipo-history-table');
-  var sourceHead = source && source.querySelector('thead');
-  var scroll = document.querySelector('#ipo-history .ipo-history-scroll');
-  if (!source || !sourceHead || !scroll || !source.getBoundingClientRect().width) return;
-  var host = ipoHistoryFloatingHead();
-  var bottomScroll = ipoHistoryFloatingScroll();
-  host.innerHTML = '';
-  var floating = source.cloneNode(false);
-  floating.classList.add('ipo-history-floating-table');
-  floating.style.width = source.getBoundingClientRect().width + 'px';
-  floating.appendChild(sourceHead.cloneNode(true));
-  host.appendChild(floating);
-  var sourceCells = sourceHead.querySelectorAll('th');
-  floating.querySelectorAll('th').forEach(function (th, index) {
-    if (sourceCells[index]) th.style.width = sourceCells[index].getBoundingClientRect().width + 'px';
-  });
-  if (!scroll.__ipoHistoryFloatingBound) {
-    scroll.__ipoHistoryFloatingBound = true;
-    scroll.addEventListener('scroll', ipoHistorySyncFloatingUi, { passive: true });
-  }
-  if (!window.__ipoHistoryFloatingBound) {
-    window.__ipoHistoryFloatingBound = true;
-    window.addEventListener('scroll', ipoHistorySyncFloatingUi, { passive: true });
-    window.addEventListener('resize', ipoHistorySyncFloatingUi);
-    document.addEventListener('scroll', ipoHistorySyncFloatingUi, true);
-  }
-  host.__source = source;
-  host.__scroll = scroll;
-  bottomScroll.querySelector('.ipo-history-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
-}
-
-function ipoHistorySyncFloatingHead() {
-  var host = document.getElementById('ipo-history-floating-head');
-  var source = document.querySelector('#ipo-history .ipo-history-table');
-  var head = source && source.querySelector('thead');
-  var scroll = document.querySelector('#ipo-history .ipo-history-scroll');
-  var nav = document.querySelector('.nav');
-  var page = document.getElementById('main-ipo');
-  if (!host || !source || !head || !scroll || !nav || !page || !page.classList.contains('active')) {
-    if (host) host.hidden = true;
-    return;
-  }
-  if (host.__source !== source) ipoHistoryBuildFloatingHead();
-  var top = nav.getBoundingClientRect().bottom;
-  var sourceRect = source.getBoundingClientRect();
-  var headRect = head.getBoundingClientRect();
-  var headRow = head.querySelector('tr');
-  var headHeight = Math.max(40, headRow ? headRow.getBoundingClientRect().height : 0, headRect.height || 0);
-  var show = headRect.top < top && sourceRect.bottom > top + headHeight;
-  if (!show) { host.hidden = true; return; }
-  var scrollRect = scroll.getBoundingClientRect();
-  host.hidden = false;
-  host.style.display = 'block';
-  host.style.visibility = 'visible';
-  host.style.top = top + 'px';
-  host.style.left = scrollRect.left + 'px';
-  host.style.width = Math.max(0, Math.min(scrollRect.width, window.innerWidth - scrollRect.left)) + 'px';
-  host.style.height = headHeight + 'px';
-  var floating = host.querySelector('.ipo-history-floating-table');
-  if (floating) {
-    floating.style.height = headHeight + 'px';
-    floating.style.transform = 'translateX(-' + scroll.scrollLeft + 'px)';
-  }
-}
-
-function ipoHistorySyncFloatingScroll() {
-  var host = document.getElementById('ipo-history-floating-scroll');
-  var scroll = document.querySelector('#ipo-history .ipo-history-scroll');
-  var page = document.getElementById('main-ipo');
-  if (!host || !scroll || !page || !page.classList.contains('active')) {
-    if (host) host.hidden = true;
-    return;
-  }
-  var rect = scroll.getBoundingClientRect();
-  var show = scroll.scrollWidth > scroll.clientWidth + 1 && rect.top < window.innerHeight && rect.bottom > window.innerHeight;
-  if (!show) { host.hidden = true; return; }
-  host.hidden = false;
-  host.style.left = rect.left + 'px';
-  host.style.width = Math.max(0, Math.min(rect.width, window.innerWidth - rect.left)) + 'px';
-  host.querySelector('.ipo-history-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
-  if (Math.abs(host.scrollLeft - scroll.scrollLeft) > 1) host.scrollLeft = scroll.scrollLeft;
-}
-
-function ipoHistorySyncFloatingUi(event) {
-  if (event && event.target && event.target.id === 'ipo-history-floating-scroll') return;
-  ipoHistorySyncFloatingHead();
-  ipoHistorySyncFloatingScroll();
-}
-
-function ipoHistoryStartFloatingSync() {
-  if (window.__ipoHistoryFloatingTimer) return;
-  window.__ipoHistoryFloatingTimer = window.setInterval(ipoHistorySyncFloatingUi, 200);
+  return '<th>' + escapeHtml(label) + '</th>';
 }
 
 // 主入口
@@ -453,9 +314,7 @@ async function ipoLoadHistory(type) {
     var d = await r.json();
     if (el) {
       el.innerHTML = ipoRenderHistory(type, d.rows || []);
-      ipoHistoryBuildFloatingHead();
-      ipoHistorySyncFloatingUi();
-      ipoHistoryStartFloatingSync();
+      if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-ipo', top: '.nav' });
     }
   } catch (e) {
     if (el) el.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';

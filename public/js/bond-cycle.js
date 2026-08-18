@@ -342,7 +342,7 @@ function renderBondCycleTable(data) {
     { t: '数据覆盖率', right: true, get: function (r) { return r.coverage_ratio == null ? '--' : pct(r.coverage_ratio, 1); } }
   ];
 
-  var html = '<table><thead><tr>';
+  var html = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>';
   cols.forEach(function (c) {
     html += '<th' + (c.right ? ' class="text-right"' : '') + '>' + c.t + '</th>';
   });
@@ -352,7 +352,7 @@ function renderBondCycleTable(data) {
       return '<td' + (c.right ? ' class="text-right"' : '') + '>' + c.get(r) + '</td>';
     }).join('') + '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   html += '<div class="earnings-pager">' +
     '<button class="btn btn-sm btn-outline" onclick="bcTableToPage(1)"' + (bondCycleTablePage <= 1 ? ' disabled' : '') + '>首页</button>' +
     '<button class="btn btn-sm btn-outline" onclick="bcTableGoPage(-1)"' + (bondCycleTablePage <= 1 ? ' disabled' : '') + '>上一页</button>' +
@@ -363,6 +363,7 @@ function renderBondCycleTable(data) {
     '<button class="btn btn-sm btn-outline" onclick="bcTableJump()">跳转</button></span>' +
     '</div>';
   el.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#sub-bond-cycle', top: '#main-bond-safety > .bond-header' });
 }
 
 function bcTableGoPage(delta) { bondCycleTablePage += delta; renderBondCycleTable(bondCycleState.data); }

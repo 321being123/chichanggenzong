@@ -220,14 +220,14 @@ function bondAnalysisTable(rows) {
   var cells = rows.map(function(row) { return '<th>' + analysisHelp(row[0],bondAnalysisLabelHelp(row[0])) + '</th><td>' + (row[1] || '暂无数据') + '</td>'; });
   var body = '';
   for (var i = 0; i < cells.length; i += 2) body += '<tr>' + cells[i] + (cells[i + 1] || '<th></th><td></td>') + '</tr>';
-  return '<div class="bond-analysis-table-wrap"><table class="bond-analysis-table"><tbody>' + body + '</tbody></table></div>';
+  return '<div class="biz-table-scroll bond-analysis-table-wrap"><table class="biz-table biz-table--detail bond-analysis-table"><tbody>' + body + '</tbody></table></div>';
 }
 function bondAnalysisListTable(headers, rows) {
   if (!rows || !rows.length) return '<div class="bond-analysis-empty">暂无数据</div>';
-  return '<div class="bond-analysis-table-wrap"><table class="bond-analysis-table"><thead><tr>' + headers.map(function(h){return '<th>'+analysisHelp(h,bondAnalysisLabelHelp(h))+'</th>';}).join('') +
+  return '<div class="biz-table-scroll bond-analysis-table-wrap"><table class="biz-table bond-analysis-list-table"><thead><tr>' + headers.map(function(h){return '<th>'+analysisHelp(h,bondAnalysisLabelHelp(h))+'</th>';}).join('') +
     '</tr></thead><tbody>' + rows.map(function(row){return '<tr>'+row.map(function(value){return '<td>'+(value || '暂无数据')+'</td>';}).join('')+'</tr>';}).join('') + '</tbody></table></div>';
 }
-function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) el.innerHTML=html; }
+function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) { el.innerHTML=html; if(window.BusinessTable) window.BusinessTable.attach(el,{page:'#main-stock-analysis',top:'.nav',sticky:!el.querySelector('.biz-table--detail')}); } }
 function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3}$/.test(code) ? 'bond' : 'stock'; }
 
 async function securityAnalysisSubmit(selectedCode, ctx) {

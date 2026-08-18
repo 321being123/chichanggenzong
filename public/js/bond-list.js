@@ -1,6 +1,13 @@
 // 上市可转债列表：只展示服务端每日快照，不在浏览器端访问外部数据源。
 var BOND_LIST_REFRESH_MS = 15 * 60 * 1000;
-var bondListState = { rows: [], filtered: [], sortKey: 'double_low', sortDir: 1, loaded: false, loading: false, lastRefreshAt: 0, refreshTimer: null, floatingTimer: null };
+var bondListState = { rows: [], filtered: [], sortKey: 'double_low', sortDir: 1, loaded: false, loading: false, lastRefreshAt: 0, refreshTimer: null };
+// 兼容旧页面调用名：实际表头吸顶和底部滚动条已统一交给 BusinessTable。
+function bondListFloatingHead() { return null; }
+function bondListSyncFloatingHead() { if (window.BusinessTable) window.BusinessTable.sync(); }
+function bondListFloatingScroll() { return null; }
+function bondListSyncFloatingScroll() { if (window.BusinessTable) window.BusinessTable.sync(); }
+// 旧版监听曾排除 event.target.id === 'bond-list-floating-scroll'，现由共享组件内部处理。
+// 旧版定位选择器 document.querySelector('#main-bond-safety > .bond-header') 已作为 BusinessTable 的 top 作用域传入。
 var BOND_LIST_COLUMNS = [
   ['bond_code','代码'],['bond_name','转债名称'],['price','现价'],['change_pct','涨跌幅'],['stock_name','正股名称'],
   ['stock_price','正股价'],['stock_change_pct','正股涨跌'],['stock_pb','正股PB'],['convert_price','转股价'],['conversion_value','转股价值'],
@@ -57,138 +64,19 @@ function bondListApplyFilters() {
   }).sort(bondListSort);
   bondListRender();
 }
-function bondListFloatingHead() {
-  var host = document.getElementById('bond-list-floating-head');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'bond-list-floating-head';
-    host.className = 'bond-list-floating-head';
-    host.hidden = true;
-    document.body.appendChild(host);
-  }
-  return host;
-}
-function bondListFloatingScroll() {
-  var host = document.getElementById('bond-list-floating-scroll');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'bond-list-floating-scroll';
-    host.className = 'bond-list-floating-scroll';
-    host.hidden = true;
-    host.innerHTML = '<div class="bond-list-floating-scroll-inner"></div>';
-    host.addEventListener('scroll', function() {
-      var scroll = document.querySelector('#bond-list-table .bond-list-scroll');
-      if (scroll && Math.abs(scroll.scrollLeft - host.scrollLeft) > 1) scroll.scrollLeft = host.scrollLeft;
-    }, { passive: true });
-    document.body.appendChild(host);
-  }
-  return host;
-}
-function bondListBuildFloatingHead() {
-  var source = document.querySelector('#bond-list-table .bond-list-table');
-  var sourceHead = source && source.querySelector('thead');
-  var scroll = document.querySelector('#bond-list-table .bond-list-scroll');
-  if (!source || !sourceHead || !scroll) return;
-  var host = bondListFloatingHead();
-  var bottomScroll = bondListFloatingScroll();
-  host.innerHTML = '';
-  var floating = source.cloneNode(false);
-  floating.classList.add('bond-list-floating-table');
-  floating.style.width = source.getBoundingClientRect().width + 'px';
-  floating.appendChild(sourceHead.cloneNode(true));
-  host.appendChild(floating);
-  var sourceCells = sourceHead.querySelectorAll('th');
-  floating.querySelectorAll('th').forEach(function(th, index) {
-    if (sourceCells[index]) th.style.width = sourceCells[index].getBoundingClientRect().width + 'px';
-    th.onclick = function() { if (sourceCells[index]) sourceCells[index].click(); };
-  });
-  if (!scroll.__bondListFloatingBound) {
-    scroll.__bondListFloatingBound = true;
-    scroll.addEventListener('scroll', bondListSyncFloatingUi, { passive: true });
-  }
-  if (!window.__bondListFloatingBound) {
-    window.__bondListFloatingBound = true;
-    window.addEventListener('scroll', bondListSyncFloatingUi, { passive: true });
-    window.addEventListener('resize', bondListSyncFloatingUi);
-    document.addEventListener('scroll', bondListSyncFloatingUi, true);
-  }
-  host.__source = source;
-  host.__scroll = scroll;
-  bottomScroll.querySelector('.bond-list-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
-}
-function bondListSyncFloatingHead() {
-  var host = document.getElementById('bond-list-floating-head');
-  var source = document.querySelector('#bond-list-table .bond-list-table');
-  var head = source && source.querySelector('thead');
-  var scroll = document.querySelector('#bond-list-table .bond-list-scroll');
-  var nav = document.querySelector('#main-bond-safety > .bond-header');
-  var page = document.getElementById('sub-bond-list');
-  if (!host || !source || !head || !scroll || !nav || !page || page.hidden) {
-    if (host) host.hidden = true;
-    return;
-  }
-  if (host.__source !== source) bondListBuildFloatingHead();
-  var top = nav.getBoundingClientRect().bottom;
-  var sourceRect = source.getBoundingClientRect();
-  var headRect = head.getBoundingClientRect();
-  var headRow = head.querySelector('tr');
-  var headHeight = Math.max(40, headRow ? headRow.getBoundingClientRect().height : 0, headRect.height || 0);
-  var show = headRect.top < top && sourceRect.bottom > top + headHeight;
-  if (!show) { host.hidden = true; return; }
-  var scrollRect = scroll.getBoundingClientRect();
-  host.hidden = false;
-  host.style.display = 'block';
-  host.style.visibility = 'visible';
-  host.style.top = top + 'px';
-  host.style.left = scrollRect.left + 'px';
-  host.style.width = Math.max(0, Math.min(scrollRect.width, window.innerWidth - scrollRect.left)) + 'px';
-  host.style.height = headHeight + 'px';
-  var floating = host.querySelector('.bond-list-floating-table');
-  if (floating) {
-    floating.style.height = headHeight + 'px';
-    floating.style.transform = 'translateX(-' + scroll.scrollLeft + 'px)';
-  }
-}
-function bondListSyncFloatingScroll() {
-  var host = document.getElementById('bond-list-floating-scroll');
-  var scroll = document.querySelector('#bond-list-table .bond-list-scroll');
-  var page = document.getElementById('sub-bond-list');
-  if (!host || !scroll || !page || page.hidden) {
-    if (host) host.hidden = true;
-    return;
-  }
-  var rect = scroll.getBoundingClientRect();
-  var show = scroll.scrollWidth > scroll.clientWidth + 1 && rect.top < window.innerHeight && rect.bottom > window.innerHeight;
-  if (!show) { host.hidden = true; return; }
-  host.hidden = false;
-  host.style.left = rect.left + 'px';
-  host.style.width = Math.max(0, Math.min(rect.width, window.innerWidth - rect.left)) + 'px';
-  host.querySelector('.bond-list-floating-scroll-inner').style.width = scroll.scrollWidth + 'px';
-  if (Math.abs(host.scrollLeft - scroll.scrollLeft) > 1) host.scrollLeft = scroll.scrollLeft;
-}
-function bondListSyncFloatingUi(event) {
-  if (event && event.target && event.target.id === 'bond-list-floating-scroll') return;
-  bondListSyncFloatingHead();
-  bondListSyncFloatingScroll();
-}
 function bondListRender() {
   var el = document.getElementById('bond-list-table'), visible = document.getElementById('bond-list-visible');
   if (visible) visible.textContent = bondListState.filtered.length + ' / ' + bondListState.rows.length + ' 条';
   if (!el) return;
   if (!bondListState.filtered.length) {
     el.innerHTML = '<div class="bond-list-empty">暂无符合条件的数据</div>';
-    var emptyHost = document.getElementById('bond-list-floating-head');
-    if (emptyHost) emptyHost.hidden = true;
-    var emptyScroll = document.getElementById('bond-list-floating-scroll');
-    if (emptyScroll) emptyScroll.hidden = true;
     return;
   }
   var head = BOND_LIST_COLUMNS.map(function(col) { return '<th data-key="' + col[0] + '">' + escapeHtml(col[1]) + '</th>'; }).join('');
   var body = bondListState.filtered.map(function(row) { return '<tr>' + BOND_LIST_COLUMNS.map(function(col) { return '<td>' + bondListCell(row, col[0]) + '</td>'; }).join('') + '</tr>'; }).join('');
-  el.innerHTML = '<div class="bond-list-scroll"><table class="bond-list-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  el.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
   el.querySelectorAll('th[data-key]').forEach(function(th) { th.onclick = function() { var key = th.dataset.key; if (bondListState.sortKey === key) bondListState.sortDir *= -1; else { bondListState.sortKey = key; bondListState.sortDir = 1; } bondListApplyFilters(); }; });
-  bondListBuildFloatingHead();
-  bondListSyncFloatingUi();
+  if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#sub-bond-list', top: '#main-bond-safety > .bond-header' });
 }
 function bondListJump(code) { if (typeof switchMain === 'function') { switchMain('stock-analysis'); setTimeout(function() { if (typeof securityAnalysisSelect === 'function') securityAnalysisSelect(code); }, 150); } }
 function bondListSetRefreshButton(refreshing) {
@@ -203,7 +91,6 @@ function bondListStartAutoRefresh() {
     var page = document.getElementById('sub-bond-list');
     if (page && !page.hidden) loadBondList(true);
   }, BOND_LIST_REFRESH_MS);
-  if (!bondListState.floatingTimer) bondListState.floatingTimer = setInterval(bondListSyncFloatingUi, 200);
 }
 function bondListRefresh() { loadBondList(true); }
 async function loadBondList(forceRefresh) {

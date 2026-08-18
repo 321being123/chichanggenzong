@@ -172,6 +172,7 @@ function renderEarningsTable(sorted) {
   earningsSorted = sorted;
   const wan = function (v) { return (Number(v || 0) / 10000).toFixed(2) + '万'; };
   const trendColor = function (v) { return v > 0 ? '#d93025' : (v < 0 ? '#137333' : '#888'); };
+  const trendClass = function (color) { return color === '#d93025' ? 'positive' : (color === '#137333' ? 'negative' : ''); };
   const cols = [
     { t: '日期', get: function (r) { return r.date || '-'; } },
     { t: '总市值(万元)', get: function (r) { return wan(r.totalMarketValue); } },
@@ -195,7 +196,7 @@ function renderEarningsTable(sorted) {
   const reversed = sorted.slice().reverse();
   const start = (earningsPage - 1) * EARNINGS_PAGE_SIZE;
   const pageRows = reversed.slice(start, start + EARNINGS_PAGE_SIZE);
-  let html = '<table><thead><tr>';
+  let html = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>';
   cols.forEach(function (c) {
     const cls = c.right ? ' class="text-right"' : (c.center ? ' class="text-center"' : '');
     html += '<th' + cls + '>' + c.t + '</th>';
@@ -204,7 +205,8 @@ function renderEarningsTable(sorted) {
   pageRows.forEach(function (r) {
     html += '<tr>' + cols.map(function (c) {
       if (c.right) {
-        return '<td class="text-right" style="font-weight:600;color:' + (c.color ? c.color(r) : '#1a1a2e') + '">' + c.get(r) + '</td>';
+        const color = c.color ? c.color(r) : '';
+        return '<td class="text-right ' + trendClass(color) + '">' + c.get(r) + '</td>';
       }
       if (c.center) {
         return '<td class="text-center">' + c.get(r) + '</td>';
@@ -212,7 +214,7 @@ function renderEarningsTable(sorted) {
       return '<td>' + c.get(r) + '</td>';
     }).join('') + '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   html += '<div class="earnings-pager">' +
     '<button class="btn btn-sm btn-outline" onclick="earningsToPage(1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>首页</button>' +
     '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(-1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
@@ -223,6 +225,7 @@ function renderEarningsTable(sorted) {
     '<button class="btn btn-sm btn-outline" onclick="earningsJump()">跳转</button></span>' +
     '</div>';
   el.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#page-earnings', top: '#main-holdings > .holdings-header' });
 }
 
 function earningsGoPage(delta) {

@@ -94,7 +94,7 @@
     }
     if (!state.benchmarks.length) { showToast('暂无可对比的官方标杆'); return; }
     var rows = state.benchmarks.map(function (b) {
-      return '<tr onclick="PositionComparison.startCompare(\'' + b.accountId + '\')" style="cursor:pointer;">' +
+      return '<tr class="pc-bench-row" onclick="PositionComparison.startCompare(\'' + b.accountId + '\')">' +
         '<td>' + escapeHtml(b.displayName) + '</td>' +
         '<td>' + (b.visibility === 'public' ? '完整标杆' : '脱敏标杆') + '</td>' +
         '<td>' + escapeHtml(b.positionUpdatedAt || '--') + '</td>' +
@@ -105,11 +105,12 @@
     var html =
       '<h2>选择对比标杆</h2><span class="modal-close" onclick="PositionComparison.closeSelf()">&times;</span>' +
       '<p style="font-size:12px;color:#888;margin:-6px 0 12px;">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
-      '<div class="table-wrap" style="margin-bottom:0;"><table class="pc-bench-table">' +
+      '<div class="table-wrap" style="margin-bottom:0;"><div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-bench-table">' +
         '<thead><tr><th>账户</th><th>公开类型</th><th>持仓更新时间</th><th>证券只数</th><th>操作</th></tr></thead>' +
-        '<tbody>' + rows + '</tbody></table></div>' +
+        '<tbody>' + rows + '</tbody></table></div></div>' +
         '<div class="modal-actions"><button type="button" class="btn btn-outline" onclick="PositionComparison.closeSelf()">关闭</button></div>';
     openBox('position-comp-modal', html);
+    if (window.BusinessTable) window.BusinessTable.attach(document.getElementById('position-comp-modal-box') || document.getElementById('position-comp-modal'), { sticky: false });
   }
 
   // 开始对比：请求 compare 接口 → 跳转到独立对比页并渲染
@@ -190,24 +191,30 @@
         '<div class="pc-ov-item"><span>最大细类差异</span><b>' + fmtPct(d.overview.maxSubtypeDiff) + '</b></div>' +
       '</div>' +
       '<div class="table-wrap"><div class="table-header"><h3>证券持仓对比</h3></div>' +
-        '<div style="overflow-x:auto;"><table class="pc-table"><thead><tr>' +
+        '<div class="biz-table-scroll"><table class="biz-table pc-table"><thead><tr>' +
           '<th>证券</th><th>状态</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th><th>最新价格/涨跌幅</th>' +
           '<th>我的数量</th><th>我的市值</th>' +
           (semi ? '' : '<th>标杆数量</th><th>标杆市值</th>') +
         '</tr></thead><tbody>' + secRows + '</tbody></table></div></div>' +
       '<div class="table-wrap"><div class="table-header"><h3>资产类型对比</h3></div>' +
-        '<div style="overflow-x:auto;"><table class="pc-table"><thead><tr><th>资产类型</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
+        '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>资产类型</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
         '<tbody>' + typeRows + '</tbody></table></div></div>' +
       '<div class="table-wrap"><div class="table-header"><h3>持仓细类对比</h3></div>' +
-        '<div style="overflow-x:auto;"><table class="pc-table"><thead><tr><th>持仓细类</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
+        '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>持仓细类</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
         '<tbody>' + subtypeRows + '</tbody></table></div></div>' +
       '<div class="pc-page-actions">' +
         '<button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.openBenchmarkPicker()">切换标杆</button>' +
         '<button type="button" class="btn btn-primary btn-sm" onclick="PositionComparison.openReplicatePanel()">模拟复制仓位</button>' +
       '</div>';
     var body = document.getElementById('position-compare-page-body');
-    if (body) body.innerHTML = html;
-    else openBox('position-comp-modal', html, true);
+    if (body) {
+      body.innerHTML = html;
+      if (window.BusinessTable) {
+        window.BusinessTable.attachAll(body, { page: '#position-compare-page', top: '.nav' });
+      }
+    } else {
+      openBox('position-comp-modal', html, true);
+    }
   }
 
   // ========== 复制测算（7 节，页面内联，不用弹框） ==========
@@ -300,7 +307,7 @@
         '<td>' + (it.diff >= 0 ? '+' : '') + fmtPct(it.diff) + '</td>' +
         '<td>' + (STATUS_TEXT[it.status] || it.status) + '</td>' +
       '</tr>' +
-      '<tr style="background:#fafbfe;"><td colspan="11" style="font-size:11px;color:#999;padding:3px 10px;">' +
+      '<tr class="pc-replicate-meta-row"><td colspan="11" class="pc-replicate-meta-cell">' +
         '行情时间：' + quoteTime + '　每手数据更新：' + lotTime + '　汇率：' + hkRate.toFixed(4) +
       '</td></tr>';
     }).join('');
@@ -314,15 +321,22 @@
         '<div class="pc-ov-item"><span>误差改善</span><b>' + (summary.improvement * 100).toFixed(2) + '%</b></div>' +
       '</div>' +
       '<div class="table-wrap"><div class="table-header"><h3>建议买入明细</h3></div>' +
-        '<div style="overflow-x:auto;"><table class="pc-table"><thead><tr>' +
+        '<div class="biz-table-scroll"><table class="biz-table pc-table"><thead><tr>' +
           '<th>证券</th><th>市场</th><th>标杆占比</th><th>我的当前股数</th><th>理论股数</th><th>每手（来源）</th><th>建议买入</th><th>预计金额</th><th>复制后占比</th><th>占比误差</th><th>状态</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
       '<p style="font-size:11px;color:#999;margin-top:10px;">本结果仅根据当前持仓比例、参考价格和交易单位进行模拟，不构成投资建议，也不会自动发起交易。实际成交价格和数量以交易结果为准。</p>';
     var resultEl = document.getElementById('pc-replicate-result');
-    if (resultEl) resultEl.innerHTML = html;
-    else {
+    if (resultEl) {
+      resultEl.innerHTML = html;
+      if (window.BusinessTable) {
+        window.BusinessTable.attachAll(resultEl, { page: '#position-compare-page', top: '.nav' });
+      }
+    } else {
       var body = document.getElementById('position-compare-page-body');
-      if (body) body.insertAdjacentHTML('beforeend', '<div class="table-wrap" style="margin-top:18px;">' + html + '</div>');
+      if (body) {
+        body.insertAdjacentHTML('beforeend', '<div class="table-wrap" style="margin-top:18px;">' + html + '</div>');
+        if (window.BusinessTable) window.BusinessTable.attachAll(body, { page: '#position-compare-page', top: '.nav' });
+      }
     }
   }
 

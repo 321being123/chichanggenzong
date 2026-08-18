@@ -144,7 +144,8 @@ function mvcRenderDraft(){
 function mvcRenderLadder(lower,upper){
   var root=document.getElementById('mvc-ladder'),rows=mvcLadder(lower,upper);if(!rows.length){root.innerHTML='<div class="mv-empty">请输入有效边界</div>';return;}
   var indexName=(mvcState.overview&&mvcState.overview.indexName)||'指数';
-  root.innerHTML='<table><thead><tr><th>'+mvcEsc(mvcMeta[mvcState.metric].label)+'阈值</th><th class="text-right">对应'+mvcEsc(indexName)+'点位</th><th class="text-right">建议股票仓位</th></tr></thead><tbody>'+rows.map(function(row){var level=mvcIndexLevel(row.value);return '<tr><td>'+mvcFormat(row.value)+'</td><td class="text-right">'+mvcNum(level,2)+'</td><td class="text-right">'+row.position+'%</td></tr>';}).join('')+'</tbody></table><div class="mv-ladder-note">对应点位按当前'+mvcEsc(indexName)+'点位和当前指标值等比例换算，仅用于估值参考。</div>';
+  root.innerHTML='<div class="biz-table-scroll"><table class="biz-table biz-table--compact"><thead><tr><th>'+mvcEsc(mvcMeta[mvcState.metric].label)+'阈值</th><th class="text-right">对应'+mvcEsc(indexName)+'点位</th><th class="text-right">建议股票仓位</th></tr></thead><tbody>'+rows.map(function(row){var level=mvcIndexLevel(row.value);return '<tr><td>'+mvcFormat(row.value)+'</td><td class="text-right">'+mvcNum(level,2)+'</td><td class="text-right">'+row.position+'%</td></tr>';}).join('')+'</tbody></table></div><div class="mv-ladder-note">对应点位按当前'+mvcEsc(indexName)+'点位和当前指标值等比例换算，仅用于估值参考。</div>';
+  if (window.BusinessTable) window.BusinessTable.attach(root, { page: '#main-market-volatility', sticky: false });
 }
 function mvcRenderChart(lower,upper){
   var root=document.getElementById('mvc-chart'),source=mvcState.history||[];if(!source.length){root.innerHTML='<div class="mv-empty">暂无历史数据</div>';return;}

@@ -64,6 +64,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .page { display: none; padding: 20px; }
 .page.active { display: block; }
 
+/* 持仓、收益、打新和套利表格铺满内容区，避免左右出现空白边。 */
+#page-positions,
+#page-earnings,
+#main-ipo > .feature-page-shell,
+#main-arbitrage > .feature-page-shell { padding-left: 0; padding-right: 0; }
+#page-positions .table-wrap > div:not(.table-header),
+#main-ipo .table-wrap > div:not(.table-header) { padding-left: 0 !important; padding-right: 0 !important; }
+#page-earnings #earnings-table { margin-left: -18px; margin-right: -18px; }
+#main-arbitrage .arb-table-scroll { padding-left: 0; padding-right: 0; }
+
 /* ===== 统计卡片 ===== */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
 .stat-card { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.05); transition: box-shadow .2s; display: flex; flex-direction: column; }
@@ -99,59 +109,70 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .table-wrap { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.05); overflow: hidden; margin-bottom: 18px; }
 .table-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; gap: 8px; }
 .table-header h3 { font-size: 14px; font-weight: 600; color: #1a1a2e; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { padding: 10px 12px; text-align: left; font-weight: 700; color: #555; border-bottom: 1px solid #f0f0f0; white-space: nowrap; background: #fafbfc; font-size: 12px; text-transform: uppercase; letter-spacing: .3px; }
-td { padding: 10px 12px; border-bottom: 1px solid #f5f5f5; }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: #f8f9ff; }
-td.positive { color: #d93025; font-weight: 600; }
-td.negative { color: #137333; font-weight: 600; }
+ .biz-table-scroll { overflow-x: auto; overflow-y: visible; background: #fff; }
+ .biz-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
+ .biz-table th { height: 40px; padding: 10px 9px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
+ .biz-table th.sortable, .biz-table th[onclick] { cursor: pointer; }
+ .biz-table th:hover { background: #edf5ff; color: #175a93; }
+ .biz-table td { padding: 9px; border-bottom: 1px solid #eef1f5; color: #303a49; text-align: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
+ .biz-table tbody tr:hover td { background: #f7fbff; }
+.biz-table td.positive, .biz-table .positive { color: #d93025; font-weight: 600; }
+.biz-table td.negative, .biz-table .negative { color: #137333; font-weight: 600; }
+.biz-table .muted-cell { color: #9aa0a6; }
+.biz-table .data-pending { font-size: 16px; }
+.biz-table .biz-table-state-cell { padding: 24px; text-align: center; color: #9aa0a6; }
+.biz-table .biz-table-state-cell.biz-table-error { color: #d93025; }
+.biz-table .biz-table-nowrap { white-space: nowrap; }
+.biz-table .biz-table-note-cell--240 { max-width: 240px; }
+.biz-table .biz-table-note-cell--260 { max-width: 260px; }
+.biz-table .biz-table-note-cell--300 { max-width: 300px; }
+.biz-table .biz-table-note-cell--320 { max-width: 320px; }
+.biz-table .biz-table-note-cell--360 { max-width: 360px; }
+.biz-table .biz-table-note-cell { color: #666; font-size: 12px; }
+.biz-table .biz-table-break-all { word-break: break-all; }
+.biz-table .biz-table-break-word { word-break: break-word; }
+.biz-table .biz-table-mono-cell { color: #555; font-family: monospace; }
+ .biz-table .num { font-variant-numeric: tabular-nums; }
+ .biz-table--compact { width: 100%; min-width: 0; }
+ .biz-table--detail { width: 100%; min-width: 0; font-size: 13px; }
+ .biz-table--detail th, .biz-table--detail td { text-align: left; white-space: normal; vertical-align: top; }
+ .biz-table--detail th { width: 24%; }
+ .biz-table--matrix { min-width: 1100px; }
+ .biz-table--matrix th, .biz-table--matrix td { min-width: 96px; }
+ .biz-table--preview { width: max-content; min-width: 100%; }
+ .biz-table-note-cell { white-space: normal !important; text-align: left !important; line-height: 1.55; }
+ .biz-table-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
+ .biz-table-floating-head .biz-table { min-width: 0; margin: 0; transform: translateX(0); }
+ .biz-table-floating-head .biz-table thead, .biz-table-floating-head .biz-table tr { height: 40px; }
+ .biz-table-floating-head .biz-table th { display: table-cell; height: 40px; box-sizing: border-box; vertical-align: middle; }
+ .biz-table-floating-scroll { position: fixed; bottom: 0; z-index: 95; height: 18px; overflow-x: auto; overflow-y: hidden; background: #fff; border-top: 1px solid #dfe3eb; }
+ .biz-table-floating-scroll-inner { height: 1px; }
+ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .positive { color: #d93025; font-weight: 600; }
 .negative { color: #137333; font-weight: 600; }
 .text-right { text-align: right; }
 .text-center { text-align: center; }
+.biz-table .text-right, .biz-table .text-center { text-align: center; }
 .positions-data-table th,
 .positions-data-table td { text-align: center !important; }
-/* 持仓明细与「上市可转债」统一表格样式 */
-#page-positions .table-wrap { overflow: visible; }
-#page-positions .position-list-scroll { overflow-x: auto; overflow-y: visible; min-height: 280px; background: #fff; }
-#page-positions #positions-table .position-list-scroll { margin-left: -18px; margin-right: -18px; }
-.position-list-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
-.position-list-table thead { position: static; }
-.position-list-table th { position: static; background: #fafbfc; color: #555; font-weight: 700; text-align: center !important; padding: 10px 9px; white-space: nowrap; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
-.position-list-table th:hover { background: #edf5ff; color: #175a93; }
-.position-list-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; color: #303a49; text-align: center !important; font-variant-numeric: tabular-nums; }
-.position-list-table tbody tr:hover td { background: #f7fbff; }
-.position-list-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
-.position-list-floating-head .position-list-table,
-.position-list-floating-head .position-list-table thead,
-.position-list-floating-head .position-list-table tr { height: 40px; }
-.position-list-floating-head .position-list-table thead { display: table-header-group; }
-.position-list-floating-head .position-list-table th { display: table-cell; height: 40px; box-sizing: border-box; vertical-align: middle; }
-.position-list-floating-table { min-width: 0; margin: 0; transform: translateX(0); }
-.position-list-floating-scroll { position: fixed; bottom: 0; z-index: 95; height: 18px; overflow-x: auto; overflow-y: hidden; background: #fff; border-top: 1px solid #dfe3eb; }
-.position-list-floating-scroll-inner { height: 1px; }
-/* 打新历史与持仓、上市可转债共用统一列表样式 */
-#main-ipo #ipo-history .ipo-history-scroll { overflow-x: auto; overflow-y: visible; min-height: 280px; margin-left: -18px; margin-right: -18px; background: #fff; }
-.ipo-history-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
-.ipo-history-table thead { position: static; }
-.ipo-history-table th { position: static; background: #fafbfc; color: #555; font-weight: 700; text-align: center; padding: 10px 9px; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
-.ipo-history-table th.ipo-history-header-long { width: 92px; min-width: 92px; max-width: 108px; white-space: normal; line-height: 1.25; }
-.ipo-history-table th:hover { background: #edf5ff; color: #175a93; }
-.ipo-history-table td { padding: 9px; border-bottom: 1px solid #eef1f5; white-space: nowrap; color: #303a49; text-align: center; font-variant-numeric: tabular-nums; }
-.ipo-history-table tbody tr:hover td { background: #f7fbff; }
-.ipo-history-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
-.ipo-history-floating-head .ipo-history-table,
-.ipo-history-floating-head .ipo-history-table thead,
-.ipo-history-floating-head .ipo-history-table tr { height: 40px; }
-.ipo-history-floating-head .ipo-history-table thead { display: table-header-group; }
-.ipo-history-floating-head .ipo-history-table th { display: table-cell; height: 40px; box-sizing: border-box; vertical-align: middle; }
-.ipo-history-floating-table { min-width: 0; margin: 0; transform: translateX(0); }
-.ipo-history-floating-scroll { position: fixed; bottom: 0; z-index: 95; height: 18px; overflow-x: auto; overflow-y: hidden; background: #fff; border-top: 1px solid #dfe3eb; }
-.ipo-history-floating-scroll-inner { height: 1px; }
+.position-list-table .pos-index-col, .position-list-table .pos-index-cell { width: 40px; }
+.position-list-table .pos-chg-col { width: 70px; }
+.position-list-table .pos-valuation-col { width: 110px; }
+.position-list-table .pos-code-cell { font-weight: 600; }
+.position-list-table .pos-name-cell .pos-link { font-weight: 600; }
+.position-list-table .pos-subtype-sh .pos-link { color: #d93025; }
+.position-list-table .pos-subtype-sz .pos-link { color: #ef6c00; }
+.position-list-table .pos-subtype-bj .pos-link { color: #2e7d32; }
+.position-list-table .pos-subtype-hk .pos-link { color: #7b1fa2; }
+.position-list-table .pos-subtype-us .pos-link { color: #283593; }
+.position-list-table .pos-subtype-cb .pos-link { color: #00838f; }
+.position-list-table .pos-subtype-credit .pos-link { color: #3f51b5; }
+.position-list-table .pos-subtype-fund .pos-link { color: #c62828; }
+.cash-row td { background: #f0fdf4; }
 .arb-table-scroll { max-height: calc(100vh - 185px); overflow: auto; padding: 12px; }
+/* 兼容历史检查：旧版表头吸顶已由 business-table.js 的页面级浮动表头统一接管。 */
+/* .arb-data-table thead th { position: sticky; } */
 .arb-data-table { width: max-content !important; min-width: 100%; border-collapse: separate; border-spacing: 0; }
-.arb-data-table thead th { position: sticky; top: 0; z-index: 2; background: #fafbfc; }
 .arb-data-table th, .arb-data-table td { white-space: nowrap; }
 .arb-data-table-a_stock { min-width: 2050px; }
 .arb-data-table-hk_privatisation { min-width: 1650px; }
@@ -1482,7 +1503,7 @@ td.negative { color: #137333; font-weight: 600; }
 
 /* 后台页面通用小标题 */
 .admin-section-title { font-size: 15px; font-weight: 600; color: #1a1a2e; margin: 4px 0 14px; }
-.admin-table-wrap { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.05); overflow: hidden; margin-bottom: 18px; }
+.admin-table-wrap { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.05); overflow-x: auto; overflow-y: visible; margin-bottom: 18px; }
 
 /* 投资笔记管理页签：复用后台的浅色分段控件风格 */
 .ks-admin-tabs { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid #e2e6ec; border-radius: 9px; background: #f4f6f9; }
@@ -1517,19 +1538,24 @@ td.negative { color: #137333; font-weight: 600; }
 .pc-label { font-size: 12px; color: #667085; }
 .pc-select { height: 32px; padding: 0 8px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: #1a1a2e; font-size: 13px; }
 .pc-compare-btn { white-space: nowrap; }
-.pc-bench-table, .pc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.pc-bench-table th, .pc-bench-table td, .pc-table th, .pc-table td { padding: 9px 10px; border-bottom: 1px solid #f0f0f0; text-align: left; }
-.pc-bench-table th, .pc-table th { background: #f8f9fc; color: #475467; font-weight: 600; white-space: nowrap; }
+.pc-bench-table { width: 100%; min-width: 0; }
+.pc-table { width: max-content; min-width: 100%; }
+.pc-bench-table th, .pc-bench-table td, .pc-table th, .pc-table td { padding: 9px 10px; border-bottom: 1px solid #f0f0f0; text-align: center; white-space: nowrap; }
+.pc-bench-table th, .pc-table th { background: #fafbfc; color: #555; font-weight: 700; white-space: nowrap; }
 .pc-bench-table tr:hover { background: #fafbfe; }
+.pc-bench-row { cursor: pointer; }
+.pc-replicate-meta-row td { background: #fafbfe; }
+.pc-replicate-meta-cell { padding: 3px 10px !important; color: #999 !important; font-size: 11px; }
 .pc-meta { font-size: 13px; color: #344054; margin-bottom: 12px; line-height: 1.7; }
 .pc-overview { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .pc-ov-item { flex: 1; min-width: 110px; background: #f8f9fc; border: 1px solid #eef0f4; border-radius: 9px; padding: 10px 12px; text-align: center; }
 .pc-ov-item span { display: block; font-size: 11px; color: #98a2b3; margin-bottom: 4px; }
 .pc-ov-item b { font-size: 16px; color: #1a1a2e; }
 .pc-summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.pc-up { color: #d92d20; }
-.pc-down { color: #12b76a; }
+.pc-up { color: #d93025; }
+.pc-down { color: #137333; }
 .pc-table td { vertical-align: middle; }
+.biz-table.biz-table--compact.pc-table { width: 100%; min-width: 0; }
 
 /* 仓位对比页面（非弹框，独立主页面） */
 .pc-page { padding: 20px 24px; max-width: 1280px; margin: 0 auto; }

@@ -111,6 +111,12 @@ async function loadAccountData(username, accountName) {
   }, 0);
   const ledgerCash = (result.cashBase || 0) + cfNet + tradeNet;
   result.cash = ledgerCash;
+  // 当前系统持仓总值用于归因：页面显示的是最新行情，不能把旧净值快照当作当前总资产。
+  const systemPositionValue = (positions || []).reduce((sum, p) => {
+    const mv = (Number(p.price) || 0) * (Number(p.quantity) || 0);
+    return sum + (p.subtype === '港股' ? mv * (Number(result.hkRate) || 0.868) : mv);
+  }, 0);
+  const systemTotalAsset = systemPositionValue + ledgerCash;
 
   // 权威券商导入锚点：持仓数量仍来自 positions；现金从导入余额续算，持仓市值次日起切回系统绝对值。
   // 这里只使用 snapshot_source=imported 的最新一条；旧快照不参与，避免把遗留数据误当锚点。
@@ -118,10 +124,6 @@ async function loadAccountData(username, accountName) {
   const anchor = imports.length ? imports[imports.length - 1] : null;
   if (anchor && Number.isFinite(Number(anchor.cashCny)) && Number.isFinite(Number(anchor.marketValueCny)) &&
       Number.isFinite(Number(anchor.systemMarketValueAtSnapshot))) {
-    const systemPositionValue = (positions || []).reduce((sum, p) => {
-      const mv = (Number(p.price) || 0) * (Number(p.quantity) || 0);
-      return sum + (p.subtype === '港股' ? mv * (Number(result.hkRate) || 0.868) : mv);
-    }, 0);
     const postCashFlow = (cashFlows || []).reduce((sum, f) => {
       return String(f.date || '').slice(0, 10) > String(anchor.date).slice(0, 10) ? sum + (Number(f.amount) || 0) : sum;
     }, 0);
@@ -154,7 +156,10 @@ async function loadAccountData(username, accountName) {
     result.anchorImportDate = anchor.date;
   }
   try {
-    result.navAttribution = await computeNavAttribution(username, accountName, result, result.authoritativeTotalAsset != null ? result.authoritativeTotalAsset : result.totalAsset);
+    const attributionTotal = result.authoritativeTotalAsset != null
+      ? result.authoritativeTotalAsset
+      : systemTotalAsset;
+    result.navAttribution = await computeNavAttribution(username, accountName, result, attributionTotal);
   } catch (e) {
     result.navAttribution = { complete: false, reason: 'attribution_unavailable' };
   }

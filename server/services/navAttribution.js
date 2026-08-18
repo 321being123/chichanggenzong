@@ -77,19 +77,25 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const navs = (data.navHistory || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
   if (navs.length < 2) return { complete: false, reason: 'not_enough_snapshots' };
   const last = navs[navs.length - 1];
-  const previous = navs[navs.length - 2];
+  const historicalPrevious = navs[navs.length - 2];
+  const storedLastDate = dateKey(last.date);
+  const todayDate = dateKey(new Date());
+  // 页面有当前系统总资产时，最后一条已保存快照就是当前计算的基准。
+  // 这样周二会按“周一快照 → 周二当前行情”计算，不会重复把周日/更早区间算进来。
+  const liveEnd = currentTotal != null && storedLastDate <= todayDate;
+  const previous = liveEnd && storedLastDate < todayDate ? last : historicalPrevious;
   const prevDate = dateKey(previous.date);
-  const lastDate = dateKey(last.date);
+  const currentDate = liveEnd ? todayDate : storedLastDate;
   const { rows: prices } = await pool.query(
     `SELECT date, code, price::float8 AS price FROM daily_prices
       WHERE username=$1 AND account_name=$2 AND date IN ($3,$4)`,
-    [username, accountName, prevDate, lastDate]
+    [username, accountName, prevDate, currentDate]
   );
   const priceMap = new Map(prices.map(r => [dateKey(r.date) + '|' + String(r.code), Number(r.price)]));
   const { rows: fxRows } = await pool.query(
     `SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
-      ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [lastDate]
+      ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [currentDate]
   );
   const fxByDate = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
   const fallbackCurrent = Number(data.hkRate) > 0 ? Number(data.hkRate) : null;
@@ -97,10 +103,9 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const rateAt = (date, nav) => Number(nav && nav.hkRate) > 0 ? Number(nav.hkRate) :
     (Number(fxByDate.get(date)) > 0 ? Number(fxByDate.get(date)) : fallbackCurrent);
   const prevRate = rateAt(prevDate, previous);
-  const lastRate = rateAt(lastDate, last);
+  const lastRate = liveEnd && Number(data.hkRate) > 0 ? Number(data.hkRate) : rateAt(currentDate, last);
   const currentByCode = new Map((data.positions || []).map(p => [String(p.code), p]));
   const prevAt = timestamp(previous.snapshot_at);
-  const liveEnd = lastDate === dateKey(new Date()) && currentTotal != null;
   const lastAt = liveEnd ? Date.now() : timestamp(last.snapshot_at);
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
   const priceImpact = { value: 0 };
@@ -113,7 +118,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     if (qty === 0) continue;
     const p = currentByCode.get(code);
     const prevPrice = priceMap.get(prevDate + '|' + code);
-    const lastPrice = lastDate === dateKey(new Date()) && p ? Number(p.price) : priceMap.get(lastDate + '|' + code);
+    const lastPrice = liveEnd && p ? Number(p.price) : priceMap.get(currentDate + '|' + code);
     const isHk = q.subtype === '港股' || (p && p.subtype === '港股');
     if (!(prevPrice > 0) || !(lastPrice > 0) || (isHk && !(prevRate > 0 && lastRate > 0))) {
       missing.push(code);
@@ -127,11 +132,11 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   let currencyIncomplete = false;
   for (const f of (data.cashFlows || [])) {
     const d = dateKey(f.date);
-    if (eventInInterval(f, d, prevDate, lastDate, prevAt, lastAt)) ledgerChange.value += Number(f.amount) || 0;
+    if (eventInInterval(f, d, prevDate, currentDate, prevAt, lastAt)) ledgerChange.value += Number(f.amount) || 0;
   }
   for (const t of (data.trades || [])) {
     const d = dateKey(t.trade_date || t.date);
-    if (!eventInInterval(t, d, prevDate, lastDate, prevAt, lastAt) || t.direction === 'open' || t.direction === 'adjust') continue;
+    if (!eventInInterval(t, d, prevDate, currentDate, prevAt, lastAt) || t.direction === 'open' || t.direction === 'adjust') continue;
     const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
     const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
       (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
@@ -143,12 +148,12 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
     ledgerChange.value += t.direction === 'buy' ? -settled - fee : settled - fee;
   }
-  const lastTotal = lastDate === dateKey(new Date()) && currentTotal != null ? Number(currentTotal) : Number(last.totalAsset) || 0;
+  const lastTotal = liveEnd ? Number(currentTotal) : Number(last.totalAsset) || 0;
   const totalChange = lastTotal - (Number(previous.totalAsset) || 0);
   const complete = missing.length === 0 && !currencyIncomplete;
   // 仅在“券商导入日 → 首个系统计算日”展示一次口径切换差异。
   // 正数表示系统导入时点持仓估值高于券商持仓总值，负数反之；后续不再保留此差额。
-  const importBasisAdjustment = previous.snapshotSource === 'imported' && last.snapshotSource !== 'imported' && lastDate > prevDate &&
+  const importBasisAdjustment = previous.snapshotSource === 'imported' && (liveEnd || last.snapshotSource !== 'imported') && currentDate > prevDate &&
     Number.isFinite(Number(previous.systemMarketValueAtSnapshot)) && Number.isFinite(Number(previous.marketValueCny))
     ? Number(previous.systemMarketValueAtSnapshot) - Number(previous.marketValueCny)
     : null;
@@ -158,7 +163,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     reason: complete ? null : (currencyIncomplete ? 'missing_trade_currency_settlement' : 'missing_exact_price_or_fx'),
     missingCodes: [...new Set(missing)],
     previousDate: prevDate,
-    currentDate: lastDate,
+    currentDate,
     totalChange,
     priceImpact: priceImpact.value,
     fxImpact: fxImpact.value,

@@ -73,8 +73,10 @@ function stockAnalysisRenderStatements(data) {
     var branch = field.level ? '<span class="statement-branch">└</span>' : '';
     return sectionRow + '<tr class="' + rowClass + '"><th>' + branch + '<span>' + escapeHtml(field.label) + '</span>' + (field.unit ? '<small>' + escapeHtml(field.unit) + '</small>' : '') + '</th>' + cells + '</tr>';
   }).join('');
-  wrap.innerHTML = '<table class="stock-analysis-statements-table"><thead><tr><th rowspan="2">默认单位：亿元</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  wrap.classList.add('biz-table-scroll');
+  wrap.innerHTML = '<table class="biz-table biz-table--matrix stock-analysis-statements-table"><thead><tr><th rowspan="2">默认单位：亿元</th>' + headYears + '</tr><tr>' + subHead + '</tr></thead><tbody>' + rows + '</tbody></table>';
   wrap.style.display='block';
+  if (window.BusinessTable) window.BusinessTable.attach(wrap, { page: '#main-stock-analysis', sticky: false });
 }
 
 function stockAnalysisInvalidateStatements(code) {

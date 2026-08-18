@@ -16,12 +16,6 @@ function initNav() {
         if (tab.dataset.page === 'earnings') renderEarnings();
         // 交易页：初始化日期时间为当前
         if (tab.dataset.page === 'trades' && typeof initTradeDateTime === 'function') initTradeDateTime();
-        // 持仓页显示后重新计算吸顶表头和底部横向滚动条位置（页面隐藏时尺寸为 0）。
-        if (tab.dataset.page === 'positions' && typeof positionListBuildFloatingHead === 'function') {
-          positionListBuildFloatingHead();
-          positionListSyncFloatingUi();
-          positionListStartFloatingSync();
-        }
         // 总览页：切回时重绘收益走势对比图（导入新数据后切回能立即显示，无需再点周期切换）
         if (tab.dataset.page === 'dashboard' && typeof renderReturnsChart === 'function') renderReturnsChart();
       }
@@ -628,20 +622,22 @@ function renderMappingPreview() {
     cash: parseInt(document.getElementById('map-cash').value, 10)
   };
   const rows = pendingMapping.rows.slice(0, 5);
-  let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:#f7f7f9;color:#666;">' +
-    '<th style="padding:6px;text-align:left;">日期</th><th style="padding:6px;text-align:left;">净值</th><th style="padding:6px;text-align:left;">总市值</th><th style="padding:6px;text-align:left;">累计投入资金</th><th style="padding:6px;text-align:left;">持仓现金</th></tr></thead><tbody>';
+  let html = '<div class="biz-table-scroll"><table class="biz-table biz-table--preview"><thead><tr>' +
+    '<th>日期</th><th>净值</th><th>总市值</th><th>累计投入资金</th><th>持仓现金</th></tr></thead><tbody>';
   rows.forEach(function (row) {
     const cashValue = map.cash >= 0 && row[map.cash] != null && String(row[map.cash]).trim() !== '' ? row[map.cash] : 0;
     html += '<tr>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.date >= 0 ? row[map.date] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.nav >= 0 ? row[map.nav] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.total >= 0 ? row[map.total] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(map.invested >= 0 ? row[map.invested] : '') + '</td>' +
-      '<td style="padding:6px;border-top:1px solid #f0f0f0;">' + escapeHtml(cashValue) + '</td>' +
+      '<td>' + escapeHtml(map.date >= 0 ? row[map.date] : '') + '</td>' +
+      '<td>' + escapeHtml(map.nav >= 0 ? row[map.nav] : '') + '</td>' +
+      '<td>' + escapeHtml(map.total >= 0 ? row[map.total] : '') + '</td>' +
+      '<td>' + escapeHtml(map.invested >= 0 ? row[map.invested] : '') + '</td>' +
+      '<td>' + escapeHtml(cashValue) + '</td>' +
       '</tr>';
   });
-  html += '</tbody></table>';
-  document.getElementById('mapping-preview').innerHTML = html;
+  html += '</tbody></table></div>';
+  const preview = document.getElementById('mapping-preview');
+  preview.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(preview, { page: '#page-earnings', sticky: false });
 }
 
 function confirmMapping() {

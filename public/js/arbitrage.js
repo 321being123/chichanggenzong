@@ -32,6 +32,10 @@ function pctv(v, d) {
   return (v >= 0 ? '+' : '') + Number(v).toFixed(d || 2) + '%';
 }
 
+function arbTrendClass(v) {
+  return Number(v) > 0 ? 'positive' : Number(v) < 0 ? 'negative' : '';
+}
+
 function api(p) {
   return (typeof BASE_URL !== 'undefined' && BASE_URL) ? BASE_URL + p : p;
 }
@@ -140,7 +144,7 @@ function renderArbTable(json) {
   }
 
   var type = arbState.type;
-  var html = '<table class="positions-data-table arb-data-table arb-data-table-' + esc(type) + '" style="font-size:13px;"><thead><tr>';
+  var html = '<div class="biz-table-scroll"><table class="biz-table positions-data-table arb-data-table arb-data-table-' + esc(type) + '"><thead><tr>';
 
   if (type === 'a_stock') {
     html += '<th>\u4ee3\u7801</th><th>\u540d\u79f0</th><th>\u73b0\u4ef7</th><th>\u6da8\u8dcc</th>';
@@ -170,15 +174,15 @@ function renderArbTable(json) {
       html += arbDetailLink(r.case_id, r.canonical_code, 'arb-code-cell');
       html += arbDetailLink(r.case_id, r.name, 'arb-name-cell');
       html += '<td>' + num(r.currentPrice) + '</td>';
-      html += '<td style="color:' + (r.changePct >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.changePct) + '</td>';
+      html += '<td class="' + arbTrendClass(r.changePct) + '">' + pctv(r.changePct) + '</td>';
       html += '<td>' + num(r.offer_price || r.cash_choice_price) + '</td>';
-      html += '<td style="color:' + (r.cashChoicePremium >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.cashChoicePremium) + '</td>';
-      html += '<td style="color:' + (r.cashExpectedReturn >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.cashExpectedReturn) + '</td>';
+      html += '<td class="' + arbTrendClass(r.cashChoicePremium) + '">' + pctv(r.cashChoicePremium) + '</td>';
+      html += '<td class="' + arbTrendClass(r.cashExpectedReturn) + '">' + pctv(r.cashExpectedReturn) + '</td>';
       html += '<td>' + num(r.target_swap_price) + '</td>';
-      html += '<td style="color:' + (r.fixedSwapPremium >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.fixedSwapPremium) + '</td>';
+      html += '<td class="' + arbTrendClass(r.fixedSwapPremium) + '">' + pctv(r.fixedSwapPremium) + '</td>';
       html += '<td>' + (r.swapEligible ? num(r.refPrice) : '\u4e0d\u9002\u7528') + '</td>';
       html += '<td>' + (r.swapEligible && r.swap_ratio ? esc(r.swap_ratio) : '\u4e0d\u9002\u7528') + '</td>';
-      html += '<td style="color:' + (r.liveSwapReturn >= 0 ? '#d93025' : '#137333') + ';">' + (r.swapEligible ? pctv(r.liveSwapReturn) : '\u4e0d\u9002\u7528') + '</td>';
+      html += '<td class="' + arbTrendClass(r.liveSwapReturn) + '">' + (r.swapEligible ? pctv(r.liveSwapReturn) : '\u4e0d\u9002\u7528') + '</td>';
       html += '<td>' + esc(formatArbitrageType(r)) + '</td>';
       html += '<td>' + esc(formatArbitrageStatus(r.event_status)) + '</td>';
       html += '<td>' + (r.terms_updated_at ? esc(String(r.terms_updated_at).slice(0, 10)) : '\u2014') + '</td>';
@@ -186,10 +190,10 @@ function renderArbTable(json) {
       html += arbDetailLink(r.case_id, r.canonical_code, 'arb-code-cell');
       html += arbDetailLink(r.case_id, r.name, 'arb-name-cell');
       html += '<td>' + num(r.currentPrice) + '</td>';
-      html += '<td style="color:' + (r.changePct >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.changePct) + '</td>';
+      html += '<td class="' + arbTrendClass(r.changePct) + '">' + pctv(r.changePct) + '</td>';
       html += '<td>' + num(r.offer_price) + '</td>';
-      html += '<td style="color:' + (r.cashChoicePremium >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.cashChoicePremium) + '</td>';
-      html += '<td style="color:' + (r.cashExpectedReturn >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.cashExpectedReturn) + '</td>';
+      html += '<td class="' + arbTrendClass(r.cashChoicePremium) + '">' + pctv(r.cashChoicePremium) + '</td>';
+      html += '<td class="' + arbTrendClass(r.cashExpectedReturn) + '">' + pctv(r.cashExpectedReturn) + '</td>';
       html += '<td>' + (r.announced_at ? esc(String(r.announced_at).slice(0, 10)) : '\u2014') + '</td>';
       html += '<td>' + esc(formatArbitrageStatus(r.event_status)) + '</td>';
       html += '<td>' + esc(r.offeror || '\u2014') + '</td>';
@@ -201,23 +205,24 @@ function renderArbTable(json) {
       html += arbDetailLink(r.case_id, r.name, 'arb-name-cell');
       html += '<td>' + num(r.currentPrice) + '</td>';
       html += '<td>' + num(r.rightsPrice) + '</td>';
-      html += '<td style="color:' + (r.changePct >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.changePct) + '</td>';
+      html += '<td class="' + arbTrendClass(r.changePct) + '">' + pctv(r.changePct) + '</td>';
       html += '<td>' + num(r.subscription_price) + '</td>';
       html += '<td>' + (r.rights_ratio_numerator && r.rights_ratio_denominator ? r.rights_ratio_numerator + ':' + r.rights_ratio_denominator : '\u2014') + '</td>';
-      html += '<td style="color:' + (r.arbitrageSpace >= 0 ? '#d93025' : '#137333') + ';">' + pctv(r.arbitrageSpace) + '</td>';
+      html += '<td class="' + arbTrendClass(r.arbitrageSpace) + '">' + pctv(r.arbitrageSpace) + '</td>';
       html += '<td>' + (r.rights_trade_start && r.rights_trade_end ? esc(r.rights_trade_start) + '~' + esc(r.rights_trade_end) : '\u2014') + '</td>';
       html += '<td>' + (r.payment_deadline ? esc(String(r.payment_deadline).slice(0, 10)) : '\u2014') + '</td>';
       html += '<td>' + (r.terms_updated_at ? esc(String(r.terms_updated_at).slice(0, 10)) : '\u2014') + '</td>';
     }
 
-    html += '<td class="arb-note-cell">' + esc(r.description || '\u2014') + '</td>';
+    html += '<td class="biz-table-note-cell arb-note-cell">' + esc(r.description || '\u2014') + '</td>';
     html += '<td>' + arbAnnouncementLink(r.announcement_url) + '</td>';
 
     html += '</tr>';
   });
 
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   el.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-arbitrage', top: '#main-arbitrage > .bond-header' });
 }
 
 function formatStrategyType(t) {

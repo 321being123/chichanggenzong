@@ -101,7 +101,7 @@ function bondSafetyRenderTable() {
     el.innerHTML = '<div class="bond-safety-empty">没有符合当前条件的可转债</div>';
     return;
   }
-  var html = '<div class="bond-safety-scroll"><table class="bond-safety-table"><thead><tr>';
+  var html = '<div class="biz-table-scroll"><table class="biz-table bond-safety-table"><thead><tr>';
   BOND_SAFETY_COLUMNS.forEach(function(col) {
     var arrow = bondSafetyState.sortKey === col[0] ? (bondSafetyState.sortDir > 0 ? ' ↑' : ' ↓') : '';
     html += '<th onclick="bondSafetySort(\'' + col[0] + '\')">' + escapeHtml(col[1] + arrow) + '</th>';
@@ -117,6 +117,7 @@ function bondSafetyRenderTable() {
   });
   html += '</tbody></table></div>';
   el.innerHTML = html;
+  if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#sub-bond-safety', top: '#main-bond-safety > .bond-header' });
   var visible = document.getElementById('bond-safety-visible');
   if (visible) visible.textContent = '当前显示 ' + rows.length + ' / ' + bondSafetyState.rows.length + ' 只';
 }

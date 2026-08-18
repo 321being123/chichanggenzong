@@ -130,6 +130,21 @@ function quantityAsOf(data, date, snapshotAt) {
     const code = String(p.code || '');
     if (code && !map.has(code)) map.set(code, { quantity: Number(p.quantity) || 0, subtype: p.subtype || '' });
   }
+  // 导入快照是历史锚点；若锚点之后到基准日没有交易，而当前持仓已被校正，
+  // 以当前持仓现状为准，避免旧快照数量把合法的子账户拆分重复误判为重复交易。
+  if (importedAnchor) {
+    for (const p of (data.positions || [])) {
+      const code = String(p.code || '');
+      if (!code) continue;
+      const changedAfter = trades.some((t) => String(t.trade_date || t.date || '').slice(0, 10) > date && String(t.code || '') === code);
+      if (changedAfter) continue;
+      const currentQuantity = Number(p.quantity) || 0;
+      const row = map.get(code);
+      if (!row || Math.abs((Number(row.quantity) || 0) - currentQuantity) > 0.0001) {
+        map.set(code, { quantity: currentQuantity, subtype: p.subtype || (row && row.subtype) || '' });
+      }
+    }
+  }
   // 当前持仓表是现状权威：若某证券当前已不存在，且基准日之后没有交易，
   // 交易历史中的残余数量不能被继续当成基准日持仓（典型是券商数量单位修正后留下的 1 股尾差）。
   const currentCodes = new Set((data.positions || []).map((p) => String(p.code || '')).filter(Boolean));

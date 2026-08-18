@@ -12,7 +12,7 @@ const previousDay = (() => {
 const originalQuery = pool.query;
 pool.query = async (sql) => {
   if (sql.includes('FROM daily_prices')) {
-    return { rows: [{ date: previousDay, code: '600000', price: 11 }] };
+    return { rows: [{ date: previousDay, code: '600000', price: 11 }, { date: previousDay, code: '160719', price: 11 }] };
   }
   if (sql.includes('FROM market.fx_rates')) return { rows: [] };
   throw new Error('unexpected query in baseline attribution test');
@@ -46,14 +46,14 @@ pool.query = async (sql) => {
         { trade_date: '2026-06-26', code: '160719', direction: 'buy', quantity: 40, amount_cny: 98.11, quote_currency: 'CNY' },
         { trade_date: '2026-06-26', code: '160719', direction: 'buy', quantity: 40, amount_cny: 98.11, quote_currency: 'CNY' }
       ],
-      positions: [{ code: '160719', price: 11, quantity: 40, subtype: '沪市' }],
+      positions: [{ code: '160719', price: 12, quantity: 120, subtype: '沪市' }],
       positionSnapshots: [{ snapshotId: 'import-1', snapshotDate: previousDay, code: '160719', quantity: 40, quoteCurrency: 'CNY' }],
       navHistory: [
-        { date: previousDay, totalAsset: 1000, hkRate: 1, snapshotSource: 'imported', importBatchId: 'import-1', snapshot_at: previousDay + 'T23:59:59.000Z' },
-        { date: today, totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T08:00:00.000Z' }
+        { date: previousDay, totalAsset: 1320, hkRate: 1, snapshotSource: 'imported', importBatchId: 'import-1', snapshot_at: previousDay + 'T23:59:59.000Z' },
+        { date: today, totalAsset: 1440, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T08:00:00.000Z' }
       ]
-    }, 1000);
-    assert.strictEqual(Math.round(anchored.priceImpact), 0, '导入快照后的历史重复交易不应重复计入持仓归因');
+    }, 1440);
+    assert.strictEqual(Math.round(anchored.priceImpact), 120, '当前持仓校正后应按120份计算价格影响');
     assert.strictEqual(Math.round(anchored.snapshotDrift), 0, '导入快照锚定后归因必须闭合');
     console.log('nav attribution baseline tests passed');
   } finally {

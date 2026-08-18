@@ -37,13 +37,20 @@ function eventAtOrBefore(row, eventDate, snapshotDate, snapshotAt) {
 }
 
 function cashAtSnapshot(data, snapshotDate, snapshotAt) {
-  const result = { value: Number(data.cashBase) || 0, incomplete: false };
+  const imports = (data.navHistory || []).filter((n) => n.snapshotSource === 'imported' && n.isLocked !== false &&
+    dateKey(n.date) <= snapshotDate && Number.isFinite(Number(n.cashCny)) && Number(n.cashCny) >= 0)
+    .sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
+  const anchor = imports.length ? imports[imports.length - 1] : null;
+  const anchorDate = anchor ? dateKey(anchor.date) : null;
+  const result = { value: anchor ? Number(anchor.cashCny) : (Number(data.cashBase) || 0), incomplete: false };
   for (const f of (data.cashFlows || [])) {
     const d = dateKey(f.date);
+    if (anchorDate && d <= anchorDate) continue;
     if (eventAtOrBefore(f, d, snapshotDate, snapshotAt)) result.value += Number(f.amount) || 0;
   }
   for (const t of (data.trades || [])) {
     const d = dateKey(t.trade_date || t.date);
+    if (anchorDate && d <= anchorDate) continue;
     if (!eventAtOrBefore(t, d, snapshotDate, snapshotAt) || t.direction === 'open' || t.direction === 'adjust') continue;
     const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
     const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :

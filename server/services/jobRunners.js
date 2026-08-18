@@ -38,7 +38,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'convertible_bond_universe_refresh':
       return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason);
     case 'convertible_bond_valuation_refresh':
-      return require('../jobs/convertibleBondRefresh').runRefreshChain(reason);
+      return require('../jobs/convertibleBondRefresh').runRefreshChain(reason, businessDate);
     case 'ipo_calendar_refresh':
       return require('../jobs/ipoCalendarRefresh').runIpoCalendarRefresh(reason, context);
     default:

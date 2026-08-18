@@ -87,6 +87,14 @@ fair_discount, _ = m.maturity_adjusted_fair_value(110.0, 0.10, np.log(0.95))
 check(f'临期正溢价按剩余期限衰减 (实测 {fair_near:.2f})', 111.0 < fair_near < 112.5)
 check('一年以上完整保留正溢价', abs(fair_far - 127.6) < 0.01 and weight_far == 1)
 check('临期负溢价不被抹掉', abs(fair_discount - 104.5) < 0.01)
+quality_dates = pd.to_datetime(['2026-08-17'] * 5 + ['2026-08-18'] * 5)
+quality = pd.DataFrame({
+    'trade_date': quality_dates,
+    'close': [100] * 10,
+    'conversion_value': [90] * 10,
+    'bond_value': [95] * 5 + [np.nan] * 5,
+})
+check('半成品行情日不作为最新估值日', m.latest_usable_trade_date(quality) == pd.Timestamp('2026-08-17').date())
 forced_years, forced_end, forced_source = m.effective_option_window(
     pd.Timestamp('2026-07-27'), 1.14,
     {'maturity_date': pd.Timestamp('2027-09-16'), 'conv_stop_date': pd.Timestamp('2026-08-12'),

@@ -12,7 +12,7 @@ const DAILY_REFRESH_HOUR = 8;
 const DAILY_REFRESH_MINUTE = 0;
 
 // 每日估值+预警：在行情/周期同步完成后串行执行（方案 §顺序：行情→周期→估值→预警）
-async function runDailyValuation(reason = 'scheduled') {
+async function runDailyValuation(reason = 'scheduled', expectedDate = expectedTradeDate()) {
   if (!(await tryClaimJob(VALUATION_JOB))) return { skipped: true, reason: 'locked' };
   let runId = null;
   try {
@@ -32,7 +32,7 @@ async function runDailyValuation(reason = 'scheduled') {
         cwd: root,
         timeout: 15 * 60 * 1000,
         maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env, VALUATION_EXPECTED_TRADE_DATE: expectedTradeDate() },
+        env: { ...process.env, VALUATION_EXPECTED_TRADE_DATE: expectedDate },
       }, (err, stdout, stderr) => {
         if (err) {
           err.detail = String(stderr || err.message).trim().split('\n').slice(-5).join(' | ');
@@ -82,8 +82,7 @@ async function bootstrapConvertibleBonds() {
   return syncConvertibleBondUniverse('first_full_sync');
 }
 
-async function refreshCompleteness() {
-  const expected = expectedTradeDate();
+async function refreshCompleteness(expected = expectedTradeDate()) {
   const { rows } = await pool.query(
     `SELECT
        COALESCE((SELECT MAX(trade_date) >= $1::date FROM market.convertible_bond_daily_metrics), false) AS cycle_complete,
@@ -107,10 +106,14 @@ async function refreshCompleteness() {
   return { expected, ...rows[0] };
 }
 
-async function runRefreshChain(reason) {
+async function runRefreshChain(reason, businessDate = null) {
   // 估值任务只读取已入库的主档、行情和周期数据；上游同步由
   // convertible_bond_universe_refresh 独立负责，禁止在这里重复联网。
-  const completeness = await refreshCompleteness();
+  // 计划槽位的业务日期决定“上一交易日”口径；人工晚间补跑不能因当前时钟跨过 18:00 就跳到当天半成品行情。
+  const expectedDate = businessDate
+    ? expectedTradeDate(new Date(`${String(businessDate).slice(0, 10)}T00:00:00+08:00`))
+    : expectedTradeDate();
+  const completeness = await refreshCompleteness(expectedDate);
   if (completeness.stale_snapshots) {
     console.warn(`[bond-analysis] ${completeness.stale_snapshots} 只转债的分析快照转股价与主档不一致，页面将提示需重新分析`);
   }
@@ -133,7 +136,7 @@ async function runRefreshChain(reason) {
   }
 
   try {
-    const result = await runDailyValuation(reason);
+    const result = await runDailyValuation(reason, expectedDate);
     if (result.skipped) console.log('[bond-valuation] 已有刷新任务运行，本次跳过');
     else console.log('[bond-valuation] 每日估值完成:', result.detail);
     return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,

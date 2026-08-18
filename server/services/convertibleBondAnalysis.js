@@ -1114,7 +1114,11 @@ async function latestFullBondDaily(dates) {
   for (const tradeDate of dates.slice(0, 5)) {
     const data = await tushareQuery('cb_daily', { trade_date: tradeDate }, DAILY_FIELDS);
     const rows = tsRows(data);
-    if (rows.length) return { tradeDate, rows };
+    // Tushare 可能先发布收盘价，稍后才补齐转股价值/纯债价值。
+    // 估值链路依赖这两个字段，未达到 80% 完整度的日期不能当作“最新完整行情”入库，继续回看上一交易日。
+    const priced = rows.filter(row => finite(row.close) > 0);
+    const complete = priced.filter(row => finite(row.cb_value) > 0 && finite(row.bond_value) > 0);
+    if (priced.length && complete.length / priced.length >= 0.8) return { tradeDate, rows };
   }
   return { tradeDate: null, rows: [] };
 }

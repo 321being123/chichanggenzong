@@ -202,6 +202,26 @@ def prepare_data(facts):
     return df
 
 
+def latest_usable_trade_date(prepared, min_coverage=0.80):
+    """选择最新一份核心字段足够完整的行情日。
+
+    上游可能先发布收盘价、稍后补齐转股价值和纯债价值；不能把这种半成品日期
+    当成估值日，否则会生成全量“数据不足”并触发错误告警。
+    """
+    if prepared is None or prepared.empty or "trade_date" not in prepared:
+        return None
+    dates = sorted(set(prepared["trade_date"].dropna().dt.date), reverse=True)
+    for trade_date in dates:
+        day = prepared[prepared["trade_date"].dt.date == trade_date]
+        priced = day[day["close"].gt(0)]
+        if priced.empty:
+            continue
+        complete = priced[priced["conversion_value"].gt(0) & priced["bond_value"].gt(0)]
+        if len(complete) / len(priced) >= float(min_coverage):
+            return trade_date
+    return None
+
+
 def maturity_adjusted_fair_value(anchor, remaining_years, fair_log_extra):
     """额外期权价值临近到期归零；负溢价保留，避免抹掉信用折价。"""
     multiplier_extra = np.exp(fair_log_extra) - 1
@@ -1593,7 +1613,10 @@ def cmd_calculate(trade_date=None, with_alerts=False, window_start=_WINDOW_DEFAU
     profile_map = load_bond_profiles()
     full = _full_universe(prepared)
     if not trade_date:
-        trade_date = prepared["trade_date"].max().date().isoformat()
+        latest_usable = latest_usable_trade_date(prepared)
+        if latest_usable is None:
+            raise RuntimeError("没有核心字段完整的可转债行情日，拒绝发布")
+        trade_date = latest_usable.isoformat()
     n, snapshot_total = compute_daily(
         trade_date, prepared, model, full, safety_map, ratings_map,
         generate_alerts=with_alerts, is_historical=False, index=index, profile_map=profile_map
@@ -1652,7 +1675,9 @@ def cmd_refresh():
     load_env()
     window_start = _daily_window_start()
     prepared = _build_prepared(window_start)
-    latest = prepared["trade_date"].max().date()
+    latest = latest_usable_trade_date(prepared)
+    if latest is None:
+        raise RuntimeError("没有核心字段完整的可转债行情日，等待上游补齐")
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1665,12 +1690,14 @@ def cmd_refresh():
     if last_success and str(last_success) < window_start:
         window_start = None
         prepared = _build_prepared(None)
-        latest = prepared["trade_date"].max().date()
+        latest = latest_usable_trade_date(prepared)
+        if latest is None:
+            raise RuntimeError("没有核心字段完整的可转债行情日，等待上游补齐")
     dates = sorted(set(prepared["trade_date"].dt.date))
     missing = [d for d in dates if last_success and last_success < d < latest]
     if missing:
         cmd_backfill(missing[0].isoformat(), missing[-1].isoformat(), window_start=window_start)
-    return cmd_calculate(with_alerts=True, window_start=window_start)
+    return cmd_calculate(trade_date=latest.isoformat(), with_alerts=True, window_start=window_start)
 
 
 def main():

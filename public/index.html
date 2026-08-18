@@ -1115,14 +1115,14 @@
 </footer>
 
 <script src="js/code-classify.js?v=3"></script>
-<script src="js/utils.js?v=4"></script>
+<script src="js/utils.js?v=5"></script>
 <script src="shared/dialog.js?v=1"></script>
-<script src="shared/core-quote.js?v=20260815c"></script>
-<script src="shared/core-tables.js?v=20260817a"></script>
+<script src="shared/core-quote.js?v=20260818a"></script>
+<script src="shared/core-tables.js?v=20260818a"></script>
 <script src="shared/core-fees.js?v=1"></script>
 <script src="shared/core-trade.js?v=20260815a"></script>
 <script src="shared/nav-math.js?v=1"></script>
-<script src="shared/core-returns.js?v=20260803i"></script>
+<script src="shared/core-returns.js?v=20260818a"></script>
 <script src="shared/core-earnings.js?v=20260817a"></script>
 <script src="shared/core-account.js?v=20260815b"></script>
 <script src="shared/date-range-control.js?v=1"></script>
@@ -1477,7 +1477,7 @@ function refreshDataFromServer(respData) {
 }
 
 // ============== 启动 ==============
-var TOTAL_ASSET = 2462607.72; // 默认总市值，会被 data.totalAsset 覆盖
+var TOTAL_ASSET = 0; // 当前账户实时总资产，由账户数据和行情计算更新
 
 (async function init() {
   var loggedIn = await checkAuth();

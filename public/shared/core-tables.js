@@ -95,7 +95,8 @@ function bindChangeTip(el, changeAmt, changePct) {
   var priceImpact = attribution.complete ? Number(attribution.priceImpact) || 0 : 0;
   var fxImpact = attribution.complete ? Number(attribution.fxImpact) || 0 : 0;
   var otherChange = attribution.complete ? Number(attribution.ledgerChange) || 0 : null;
-  var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_delta_estimate') : null;
+  var importBasisAdjustment = attribution.importBasisAdjustment == null ? null : Number(attribution.importBasisAdjustment);
+  var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_calculated') : null;
 
   var tip = document.getElementById('stat-change-tip');
   if (!tip) {
@@ -106,7 +107,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, authorityMode, !attribution.complete);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, authorityMode, !attribution.complete);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -117,7 +118,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   el.onmouseleave = function () { tip.style.display = 'none'; };
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, authorityMode, attributionIncomplete) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, authorityMode, attributionIncomplete) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
@@ -133,13 +134,19 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
     html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、现金流入流出等</div>';
   }
+  if (importBasisAdjustment != null && Number.isFinite(importBasisAdjustment)) {
+    html += '<div>导入口径切换差异：<span style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">导入当天使用券商持仓总值；从本日开始改用系统价格、数量和汇率计算。该差异通常来自汇率或收盘价更新时间不同，仅在首次切换时说明，后续不再保留。</div>';
+  }
   if (authorityMode) {
-    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">已按券商导入总资产/现金锚定；持仓明细仍按本系统行情估值，当前仅展示锚点后的系统增量（' + (authorityMode === 'broker_exact' ? '导入日权威值' : '系统增量估算') + '）。</div>';
+    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">' + (authorityMode === 'broker_exact'
+      ? '当前为导入日，账户总资产和现金采用券商导入值。'
+      : '现金从最近券商导入余额续算；持仓市值已完全按系统价格、数量和汇率计算，不保留导入差额。') + '</div>';
   }
   if (attributionIncomplete) {
     html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">缺少上一基准日的完整收盘价或汇率，本次不伪造价格/汇率归因。</div>';
   }
-  html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">' + (authorityMode ? '合计 = 导入锚点 + 后续行情/资金增量' : '合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '')) + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
+  html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>' +
     '</div>' +
     '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">注：股价影响按昨日快照汇率算、汇率影响按今价×汇率差算，两者相加正好等于港股市值变动，不再有交叉项残差。「昨日快照汇率」指上一条净值记录里存的港币汇率（即上次记账时的实时汇率，通常为昨天打开网页那一刻）。</div>';
   return html;

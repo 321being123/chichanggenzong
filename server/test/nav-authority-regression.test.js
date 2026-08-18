@@ -83,7 +83,7 @@ const previousCloseDate = (() => {
     await pool.query(`DELETE FROM daily_prices WHERE username=$1 AND account_name=$2 AND date=$3 AND code IN ('00005','00700')`, [U, A, yesterday]);
     await pool.query(`DELETE FROM positions WHERE username=$1 AND account_name=$2 AND id='partial_anchor_position'`, [U, A]);
 
-    const body = { account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1400, invested: 1000, cash: 500 }], mode: 'merge' };
+    const body = { account: A, records: [{ date: yesterday, nav: 1, totalAsset: 1405, invested: 1000, cash: 500 }], mode: 'merge' };
     const before = await loadAccountData(U, A);
     const preview = await fetch(base + '/nav/import/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const previewJson = await preview.json();
@@ -98,7 +98,7 @@ const previousCloseDate = (() => {
     assert.strictEqual(imported.calcStatus, 'broker_previous_close', '使用前一完整收盘日时必须标记状态');
     assert.strictEqual(imported.diagnostics.position_price_date, previousCloseDate, '必须记录实际使用的行情日期');
     const after = await loadAccountData(U, A);
-    assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1435, '当前总资产必须=券商锚点+本系统价格/汇率增量');
+    assert.strictEqual(Math.round(after.authoritativeTotalAsset), 1435, '导入次日起当前总资产必须使用系统持仓绝对市值加锚定现金');
     const repeat = await fetch(base + '/nav/import?version=' + after.version, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const repeatJson = await repeat.json();
     assert.strictEqual(repeat.status, 200, '同文件重复导入应成功幂等返回');
@@ -111,8 +111,9 @@ const previousCloseDate = (() => {
     assert.ok(closed.navAttribution && closed.navAttribution.complete, '导入日到今天应能完整归因');
     assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 90, '价格影响应为90');
     assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -55, '汇率影响应为-55');
-    assert.strictEqual(Math.round(closed.navAttribution.totalChange), 35, '总资产变化应为35');
-    assert.strictEqual(Math.round(closed.navAttribution.priceImpact + closed.navAttribution.fxImpact + closed.navAttribution.ledgerChange), 35, '归因必须闭合，无现金端校准差额');
+    assert.strictEqual(Math.round(closed.navAttribution.totalChange), 30, '导入日到系统计算日的总资产变化应包含一次性口径切换');
+    assert.strictEqual(Math.round(closed.navAttribution.importBasisAdjustment), -5, '券商持仓比系统导入时点估值高5元，应显示-5元口径切换差异');
+    assert.strictEqual(Math.round(closed.navAttribution.priceImpact + closed.navAttribution.fxImpact + closed.navAttribution.ledgerChange + closed.navAttribution.importBasisAdjustment), 30, '价格、汇率、账本和一次性口径切换必须闭合');
 
     const latest = await loadAccountData(U, A);
     const batchId = firstJson.data.navHistory.find(n => n.date === yesterday).importBatchId;

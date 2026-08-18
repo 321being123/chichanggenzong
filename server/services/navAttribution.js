@@ -146,7 +146,13 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const lastTotal = lastDate === dateKey(new Date()) && currentTotal != null ? Number(currentTotal) : Number(last.totalAsset) || 0;
   const totalChange = lastTotal - (Number(previous.totalAsset) || 0);
   const complete = missing.length === 0 && !currencyIncomplete;
-  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - ledgerChange.value : null;
+  // 仅在“券商导入日 → 首个系统计算日”展示一次口径切换差异。
+  // 正数表示系统导入时点持仓估值高于券商持仓总值，负数反之；后续不再保留此差额。
+  const importBasisAdjustment = previous.snapshotSource === 'imported' && last.snapshotSource !== 'imported' && lastDate > prevDate &&
+    Number.isFinite(Number(previous.systemMarketValueAtSnapshot)) && Number.isFinite(Number(previous.marketValueCny))
+    ? Number(previous.systemMarketValueAtSnapshot) - Number(previous.marketValueCny)
+    : null;
+  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - ledgerChange.value - (importBasisAdjustment || 0) : null;
   return {
     complete,
     reason: complete ? null : (currencyIncomplete ? 'missing_trade_currency_settlement' : 'missing_exact_price_or_fx'),
@@ -157,6 +163,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     priceImpact: priceImpact.value,
     fxImpact: fxImpact.value,
     ledgerChange: ledgerChange.value,
+    importBasisAdjustment,
     snapshotDrift: drift,
     authorityMode: data.authoritativeTotalAsset != null,
   };

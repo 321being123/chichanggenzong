@@ -100,6 +100,8 @@ async function refreshAllPrices() {
   if (codes.length === 0) { showToast('没有持仓需要刷新'); return; }
   showToast('正在获取 ' + codes.length + ' 只行情...');
   let ok = 0, fail = 0;
+  // 导入日按行情增量更新券商持仓总值；次日起直接切到系统绝对持仓市值。
+  var systemPositionValueBeforeRefresh = getSystemPositionValue();
 
   // 批量拉取行情（A股走Tushare实时，港股走腾讯）
   let allQuotes = {};
@@ -110,7 +112,7 @@ async function refreshAllPrices() {
 
   // 获取港币→人民币汇率（港股通用）
   var hkRate = await fetchHKRate();
-  if (!hkRate || hkRate <= 0) hkRate = 0.868;
+  if (!hkRate || hkRate <= 0) hkRate = (Number(data.hkRate) > 0 ? Number(data.hkRate) : 0.868);
   unifiedHkRate = hkRate;
   unifiedHkRatePromise = Promise.resolve(hkRate);
   data.hkRate = hkRate; // 全局汇率，供 getMarketValue 使用
@@ -152,10 +154,14 @@ async function refreshAllPrices() {
   // 保存涨跌幅到数据文件，页面刷新后自动恢复
   data.changes = {}; Object.keys(priceChangeMap).forEach(function(k) { data.changes[k] = priceChangeMap[k]; });
   // 指数对比线同步已移至渲染之后（见下方 renderAll 之后），不再阻塞总资产计算
+  applyAuthoritativeMarketDelta(systemPositionValueBeforeRefresh);
   data.totalAsset = calcSummary().total;
-  await recordNav();
+  if (typeof TOTAL_ASSET !== 'undefined') TOTAL_ASSET = data.totalAsset;
+  // 行情到齐后立即显示新价格和总资产；保存价格、记录净值等网络请求不再阻塞页面。
+  renderAll();
   // 阶段二-5：行情价格用局部 PATCH 接口，不触发 saveData 全量保存
   var pricesToSave = data.positions.map(function(p) { return { code: p.code, price: p.price }; }).filter(function(p) { return p.code && p.price != null; });
+  var pricesSaved = false;
   try {
     var pr = await fetch(api('/api/positions/prices?version=' + (dataVersion != null ? dataVersion : '')), {
       method: 'PATCH',
@@ -170,12 +176,19 @@ async function refreshAllPrices() {
     } else if (typeof pj.version === 'number') {
       // 同步新版本号，避免紧接着的第二次操作误报"其他窗口已修改"（2026-08-04 第二轮修复）
       dataVersion = pj.version;
+      pricesSaved = true;
+    } else {
+      pricesSaved = true;
     }
   } catch(e) {
     console.warn('[refreshAllPrices] 价格保存异常', e);
     showToast('行情已获取，但价格保存失败（' + (e.message || e) + '）');
   }
-  renderAll(); renderReturnsChart();
+  // 净值必须在新价格成功落库后记录，防止保存旧持仓价对应的新总资产。
+  if (pricesSaved) await recordNav();
+  // recordNav 会返回最新归因；重新绑定总资产浮框，使首次口径切换说明立即生效。
+  if (pricesSaved && typeof renderStats === 'function') renderStats();
+  renderReturnsChart();
   // 指数对比线后台同步（增量拉取 + 批量写库），不阻塞总资产与页面渲染
   syncIndexPoints().catch(function(){});
   const failedCodes = codes.filter(c => {
@@ -202,13 +215,8 @@ var _priceRefreshInFlight = null;
 async function doRefresh() {
   if (_priceRefreshInFlight) return _priceRefreshInFlight;
   _priceRefreshInFlight = (async function () {
-  // 总资产持久化（供净值走势展示），须在 refreshAllPrices 之前设置，
-  // 使其内部的统一 saveData 一并保存，避免双重写入/重绘
-  if (typeof TOTAL_ASSET !== 'undefined' && TOTAL_ASSET > 0) {
-    data.totalAsset = TOTAL_ASSET;
-  }
   // 手动刷新即使休市也使用最近交易日收盘价；自动刷新由 doAutoRefresh 统一控制。
-  // refreshAllPrices 内部已统一 saveData + renderAll + recordNav + renderReturnsChart
+  // refreshAllPrices 内部统一即时渲染、保存价格、记录净值和刷新收益图。
     await refreshAllPrices();
   })();
   try {

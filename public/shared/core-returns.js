@@ -174,7 +174,11 @@ async function recordNav() {
         body: JSON.stringify({ account: currentAccount, nav: lastNav.nav, totalAsset: s.total, invested: invested, hkRate: data.hkRate })
       });
       var _j = await _r.json().catch(function(){ return {}; });
-      if (_r.ok && _j.data) syncDataVersions(_j.data);
+      if (_r.ok && _j.data) {
+        syncDataVersions(_j.data);
+        if (_j.data.navAttribution) data.navAttribution = _j.data.navAttribution;
+        if (_j.data.totalAssetSource) data.totalAssetSource = _j.data.totalAssetSource;
+      }
     } catch(_e) { console.warn('recordNav PUT failed:', _e); }
     return;
   }
@@ -221,7 +225,11 @@ async function recordNav() {
         body: JSON.stringify({ account: currentAccount, nav: nav, totalAsset: s.total, invested: invested, hkRate: data.hkRate })
       });
       var _j2 = await _r2.json().catch(function(){ return {}; });
-      if (_r2.ok && _j2.data) syncDataVersions(_j2.data);
+      if (_r2.ok && _j2.data) {
+        syncDataVersions(_j2.data);
+        if (_j2.data.navAttribution) data.navAttribution = _j2.data.navAttribution;
+        if (_j2.data.totalAssetSource) data.totalAssetSource = _j2.data.totalAssetSource;
+      }
   } catch(_e2) { console.warn('recordNav PUT failed:', _e2); }
 }
 

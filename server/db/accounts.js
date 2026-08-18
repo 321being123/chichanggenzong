@@ -112,7 +112,7 @@ async function loadAccountData(username, accountName) {
   const ledgerCash = (result.cashBase || 0) + cfNet + tradeNet;
   result.cash = ledgerCash;
 
-  // 权威券商导入锚点：持仓数量仍来自 positions，现金和账户总资产从导入快照开始续算。
+  // 权威券商导入锚点：持仓数量仍来自 positions；现金从导入余额续算，持仓市值次日起切回系统绝对值。
   // 这里只使用 snapshot_source=imported 的最新一条；旧快照不参与，避免把遗留数据误当锚点。
   const imports = navHistory.filter(n => n.snapshotSource === 'imported' && n.isLocked !== false);
   const anchor = imports.length ? imports[imports.length - 1] : null;
@@ -137,7 +137,11 @@ async function loadAccountData(username, accountName) {
       return sum + (t.direction === 'buy' ? -settled - fee : settled - fee);
     }, 0);
     const effectiveCash = Number(anchor.cashCny) + postCashFlow + postTradeCash;
-    const effectivePosition = Number(anchor.marketValueCny) + (systemPositionValue - Number(anchor.systemMarketValueAtSnapshot));
+    const todayCn = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+    const isImportDay = String(anchor.date).slice(0, 10) === todayCn;
+    // 导入当天保留券商持仓总值；从下一天开始完全使用系统按当前价格、数量和汇率计算的持仓市值。
+    // 券商与系统在导入时点的差异只用于审计/首日浮框说明，不再作为固定差额续算。
+    const effectivePosition = isImportDay ? Number(anchor.marketValueCny) : systemPositionValue;
     const effectiveInvested = Number(anchor.invested) + postCashFlow;
     result.cash = effectiveCash;
     result.authoritativeCash = effectiveCash;
@@ -146,8 +150,7 @@ async function loadAccountData(username, accountName) {
     result.authoritativeInvested = effectiveInvested;
     // 账户总资产对外读取也切到同一权威口径，避免页面初始化阶段短暂使用旧 nav_history.total_asset。
     result.totalAsset = result.authoritativeTotalAsset;
-    const todayCn = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
-    result.totalAssetSource = String(anchor.date).slice(0, 10) === todayCn ? 'broker_exact' : 'system_delta_estimate';
+    result.totalAssetSource = isImportDay ? 'broker_exact' : 'system_calculated';
     result.anchorImportDate = anchor.date;
   }
   try {

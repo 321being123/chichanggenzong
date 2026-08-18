@@ -73,6 +73,29 @@ function getMarketValue(pos) {
   return mv;
 }
 
+function getSystemPositionValue() {
+  return (data.positions || []).reduce(function(total, pos) {
+    return total + getMarketValue(pos);
+  }, 0);
+}
+
+// 券商导入锚点只保存账户级持仓总值。导入日按行情增量更新；次日起使用系统绝对持仓市值，
+// 避免页面继续使用加载时的旧 authoritativeTotalAsset 或长期保留导入口径差异。
+function applyAuthoritativeMarketDelta(previousSystemPositionValue) {
+  if (data.authoritativePositionValue == null) return;
+  var previous = Number(previousSystemPositionValue);
+  var current = getSystemPositionValue();
+  var authoritativePosition = Number(data.authoritativePositionValue);
+  if (!Number.isFinite(previous) || !Number.isFinite(current) || !Number.isFinite(authoritativePosition)) return;
+  // 导入日保持券商总值并叠加当日行情变化；次日起直接采用系统绝对持仓市值，不延续导入差额。
+  data.authoritativePositionValue = data.totalAssetSource === 'broker_exact'
+    ? authoritativePosition + current - previous
+    : current;
+  var authoritativeCash = data.authoritativeCash != null ? Number(data.authoritativeCash) : Number(data.cash);
+  if (!Number.isFinite(authoritativeCash)) authoritativeCash = 0;
+  data.authoritativeTotalAsset = data.authoritativePositionValue + authoritativeCash;
+}
+
 function calcSummary() {
   var equityVal = 0, debtVal = 0, cashPosVal = 0;
   data.positions.forEach(function(p) {
@@ -82,8 +105,8 @@ function calcSummary() {
     else debtVal += mv;
   });
   var cash = (Number(data.cash) || 0) + cashPosVal;
-  // 权威券商导入后：现金和账户级持仓总值按锚点续算；逐证券 equity/debt 仍是本系统参考估值。
-  // 不把两套口径强行按比例摊回每只证券，避免伪造券商汇率。
+  // 权威券商导入后：导入日使用券商账户级持仓总值，次日起使用系统绝对持仓市值；
+  // 现金始终从最近导入余额按后续账本续算。
   var total = (data.authoritativeTotalAsset != null)
     ? (Number(data.authoritativeTotalAsset) || 0)
     : ((data.authoritativePositionValue != null)

@@ -96,7 +96,8 @@ check('Excel 使用中央目录预检并限制全局并发', () => {
 check('Tushare 统一直连官方 HTTPS POST API', () => {
   assert.ok(/https:\/\/api\.tushare\.pro/.test(ipoCommon));
   assert.ok(/method="POST"/.test(ipoCommon));
-  assert.ok(/"token": TUSHARE_TOKEN/.test(ipoCommon));
+  assert.ok(/TUSHARE_TOKEN/.test(ipoCommon), 'Tushare 请求应使用主 Token 配置');
+  assert.ok(/"token": token/.test(ipoCommon), 'Tushare 请求体应使用当前候选 Token');
   assert.ok(!/TUSHARE_REPLAY|X-API-Key/.test(ipoCommon));
 });
 

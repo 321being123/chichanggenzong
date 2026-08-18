@@ -111,9 +111,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .table-header h3 { font-size: 14px; font-weight: 600; color: #1a1a2e; }
  .biz-table-scroll { overflow-x: auto; overflow-y: visible; background: #fff; }
  .biz-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
- .biz-table th { height: 40px; padding: 10px 9px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
- .biz-table th.sortable, .biz-table th[onclick] { cursor: pointer; }
+ .biz-table th { position: relative; height: 40px; padding: 10px 9px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
+ .biz-table th.sortable, .biz-table th[onclick], .biz-table th[data-key] { cursor: pointer; user-select: none; }
  .biz-table th:hover { background: #edf5ff; color: #175a93; }
+ .biz-table th.is-sorted { background: #e4effa; color: #175a93; box-shadow: inset 0 -3px 0 #2a67a0; }
+ .biz-table th .biz-sort-indicator { position: absolute; top: 3px; left: 50%; display: block; margin: 0; transform: translateX(-50%); color: #1f6ca8; font-size: 10px; line-height: 1; pointer-events: none; }
  .biz-table td { padding: 9px; border-bottom: 1px solid #eef1f5; color: #303a49; text-align: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
  .biz-table tbody tr:hover td { background: #f7fbff; }
 .biz-table td.positive, .biz-table .positive { color: #d93025; font-weight: 600; }

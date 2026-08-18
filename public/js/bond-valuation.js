@@ -147,9 +147,11 @@ function renderBondValTable() {
   for (var i = 0; i < BOND_VAL_COLS.length; i++) {
     var c = BOND_VAL_COLS[i];
     var cls = (c.n || c.p) ? ' num' : '';
-    var sortMark = bondValState.sortKey === c.k ? (bondValState.sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    var selected = bondValState.sortKey === c.k;
+    var direction = selected ? (bondValState.sortDir === 'asc' ? 'ascending' : 'descending') : 'none';
+    var sortMark = selected ? '<span class="biz-sort-indicator" aria-hidden="true">' + (bondValState.sortDir === 'asc' ? '▲' : '▼') + '</span>' : '';
     if (c.noSort) head += '<th class="' + cls + '">' + esc(c.t) + '</th>';
-    else head += '<th class="' + cls + '" onclick="bondValSort(\'' + c.k + '\')">' + esc(c.t) + sortMark + '</th>';
+    else head += '<th class="' + cls + ' sortable' + (selected ? ' is-sorted sort-' + (bondValState.sortDir === 'asc' ? 'asc' : 'desc') : '') + '" aria-sort="' + direction + '" onclick="bondValSort(\'' + c.k + '\')">' + esc(c.t) + sortMark + '</th>';
   }
   head += '</tr></thead><tbody>';
 

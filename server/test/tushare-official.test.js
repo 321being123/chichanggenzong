@@ -1,13 +1,23 @@
 const assert = require('assert');
 const { EventEmitter } = require('events');
 const https = require('https');
+const { getConfig, setConfig } = require('../db/config');
+const guard = require('../services/externalCallGuard');
 
 const originalRequest = https.request;
 const originalToken = process.env.TUSHARE_TOKEN;
+const originalBackupToken = process.env.TUSHARE_BACKUP_TOKEN;
+const originalTokenMode = process.env.TUSHARE_TOKEN_MODE;
 
 (async () => {
+  const originalExternalApiConfig = await getConfig('external_api_configs', '');
   try {
     delete process.env.TUSHARE_TOKEN;
+    delete process.env.TUSHARE_BACKUP_TOKEN;
+    delete process.env.TUSHARE_TOKEN_MODE;
+    await setConfig('external_api_configs', '');
+    await guard.resetExternalCallGuardPersistence('tushare');
+    await guard.resetExternalCallGuardPersistence('tushare_backup');
     delete require.cache[require.resolve('../services/tushare')];
     let called = false;
     https.request = () => { called = true; throw new Error('不应发起请求'); };
@@ -61,6 +71,11 @@ const originalToken = process.env.TUSHARE_TOKEN;
     https.request = originalRequest;
     if (originalToken === undefined) delete process.env.TUSHARE_TOKEN;
     else process.env.TUSHARE_TOKEN = originalToken;
+    if (originalBackupToken === undefined) delete process.env.TUSHARE_BACKUP_TOKEN;
+    else process.env.TUSHARE_BACKUP_TOKEN = originalBackupToken;
+    if (originalTokenMode === undefined) delete process.env.TUSHARE_TOKEN_MODE;
+    else process.env.TUSHARE_TOKEN_MODE = originalTokenMode;
+    await setConfig('external_api_configs', originalExternalApiConfig);
     if (require.cache[require.resolve('../db/connection')]) await require('../db/connection').pool.end();
   }
 })().catch(error => {

@@ -44,7 +44,7 @@ function failoverEligible(error) {
 
 function requestWithToken(apiName, params, fields, token, guardSource, dataset) {
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
-  return withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
+  const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
     const request = https.request(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
@@ -59,7 +59,9 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
         catch (_) { return reject(new TushareRequestError('INVALID_RESPONSE', 'Tushare 返回了无法解析的 JSON', { apiName, statusCode: response.statusCode })); }
         if (response.statusCode !== 200 || !payload || payload.code !== 0) {
           const error = classifyUpstreamError(payload, response.statusCode, apiName);
-          if (error.errorType === 'rate_limit') await openExternalCircuit(guardSource, error.message).catch(() => {});
+          if (error.errorType === 'rate_limit') {
+            await openExternalCircuit(guardSource, error.message, `${guardSource}:${apiName}`).catch(() => {});
+          }
           return reject(error);
         }
         const data = payload.data;
@@ -85,7 +87,11 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
     });
     request.write(body);
     request.end();
-  }));
+  }), `${guardSource}:${apiName}`);
+  return guardedRequest.catch(error => {
+    if (error && error.name === 'TushareRequestError') error.source = guardSource;
+    throw error;
+  });
 }
 
 async function tushareQuery(apiName, params = {}, fields = '') {

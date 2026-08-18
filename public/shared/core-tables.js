@@ -597,6 +597,16 @@ function renderPositionsTable(targetId, limit) {
   }
   html += '</tbody></table></div>';
   el.innerHTML = html;
+  el.querySelectorAll('th.sortable').forEach(function(th) {
+    var indicator = th.querySelector('.biz-sort-indicator');
+    if (indicator) {
+      th.classList.add('is-sorted');
+      th.classList.add(indicator.textContent === '▲' ? 'sort-asc' : 'sort-desc');
+      th.setAttribute('aria-sort', indicator.textContent === '▲' ? 'ascending' : 'descending');
+    } else {
+      th.setAttribute('aria-sort', 'none');
+    }
+  });
   if (window.BusinessTable) {
     window.BusinessTable.attach(el, {
       page: targetId === 'positions-table' ? '#page-positions' : '#page-dashboard',

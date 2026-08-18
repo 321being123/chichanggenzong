@@ -106,6 +106,11 @@ check('前端含上市转债子页、脚本和只读接口', () => {
   assert.ok(js.includes('BOND_LIST_REFRESH_MS') && js.includes('refresh=1') && js.includes('setInterval'), '列表缺少15分钟自动刷新');
   assert.ok(js.includes('bondListRefresh'), '列表缺少手动刷新函数');
   assert.ok(js.includes('bond-list-up') && js.includes('bond-list-down'), '涨跌幅缺少红涨绿跌样式');
+  assert.ok(js.includes('biz-sort-indicator') && js.includes('aria-sort="'), '列表表头缺少正逆序标识或排序状态');
+  assert.ok(js.includes("var cls = 'sortable'") && js.includes('is-sorted'), '列表选中排序列缺少表头区分');
+  const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
+  assert.ok(sharedCss.includes('.biz-table th.sortable') && sharedCss.includes('cursor: pointer') && sharedCss.includes('.biz-table th.is-sorted'), '共享表格缺少手势光标和选中列样式');
+  assert.ok(sharedCss.includes('.biz-sort-indicator { position: absolute;') && sharedCss.includes('left: 50%'), '排序图标未固定在标题上方，可能导致列宽变化');
   assert.ok(js.includes('bond-list-stale') && js.includes('data.stale'));
   const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-safety.css'), 'utf8');
   assert.ok(js.includes('bondListFloatingHead') && js.includes('bondListSyncFloatingHead'), '列表缺少滚动吸顶表头逻辑');

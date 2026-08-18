@@ -62,8 +62,9 @@ function localCount(key, day, minute) {
   return item;
 }
 
-async function consumeExternalCall(source, dataset = '', providedClient = null) {
+async function consumeExternalCall(source, dataset = '', providedClient = null, circuitSource = source) {
   const key = sourceKey(source);
+  const circuitKey = sourceKey(circuitSource || source);
   const { minute, day } = nowParts();
   const limits = budgetLimits(key);
   const client = providedClient || await getPool().connect();
@@ -76,7 +77,11 @@ async function consumeExternalCall(source, dataset = '', providedClient = null) 
       `SELECT call_count,circuit_open FROM ops.external_call_budgets
         WHERE source=$1 AND window_type='day' AND window_key=$2 FOR UPDATE`, [key, dayKey]
     );
-    if (dayRows[0] && dayRows[0].circuit_open) {
+    const circuitRows = circuitKey === key ? dayRows : (await client.query(
+      `SELECT circuit_open FROM ops.external_call_budgets
+        WHERE source=$1 AND window_type='day' AND window_key=$2 FOR UPDATE`, [circuitKey, dayKey]
+    )).rows;
+    if ((circuitKey === key && dayRows[0] && dayRows[0].circuit_open) || (circuitKey !== key && circuitRows[0]?.circuit_open)) {
       throw new ExternalCallGuardError('CIRCUIT_OPEN', `${key} 数据源今日已熔断，停止自动请求`, key, dataset);
     }
     const { rows: minuteRows } = await client.query(
@@ -145,27 +150,28 @@ async function releaseExternalDatasetLock(lock) {
   lock.client.release();
 }
 
-async function withExternalCallGuard(source, dataset, businessDate, fn) {
+async function withExternalCallGuard(source, dataset, businessDate, fn, circuitSource = source) {
   const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
   try {
-    await consumeExternalCall(source, dataset, lock.client);
+    await consumeExternalCall(source, dataset, lock.client, circuitSource);
     return await fn();
   } finally {
     await releaseExternalDatasetLock(lock);
   }
 }
 
-async function openExternalCircuit(source, detail = '') {
+async function openExternalCircuit(source, detail = '', circuitSource = source) {
   const key = sourceKey(source);
+  const circuitKey = sourceKey(circuitSource || source);
   const { day } = nowParts();
-  circuits.set(key, { day });
+  circuits.set(circuitKey, { day });
   const client = await getPool().connect();
   try {
     await client.query(
       `INSERT INTO ops.external_call_budgets(source,window_type,window_key,call_count,budget_limit,circuit_open,last_error)
        VALUES($1,'day',$2,0,$3,true,$4)
        ON CONFLICT(source,window_type,window_key) DO UPDATE SET circuit_open=true,last_error=EXCLUDED.last_error,updated_at=now()`,
-      [key, day, budgetLimits(key).day, detail || '上游限流或配额错误']
+      [circuitKey, day, budgetLimits(circuitKey).day, detail || '上游限流或配额错误']
     );
   } finally {
     client.release();
@@ -180,7 +186,7 @@ function resetExternalCallGuard() {
 async function resetExternalCallGuardPersistence(source = null) {
   const { day } = nowParts();
   await getPool().query(
-    'DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND ($2::text IS NULL OR source=$2)',
+    'DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND ($2::text IS NULL OR source=$2 OR source LIKE $2 || \':%\')',
     [day, source]
   );
 }

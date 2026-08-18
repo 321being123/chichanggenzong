@@ -37,5 +37,5 @@
   "train_mape": 21.436701640405833,
   "test_mape": 58.79642845963156,
   "target_transform": "log1p_nonnegative_return",
-  "trained_at": "2026-08-16 17:43:25"
+  "trained_at": "2026-08-18 19:14:33"
 }

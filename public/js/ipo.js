@@ -192,21 +192,45 @@ async function loadIpo() {
   if (calendar) calendar.innerHTML = '<div class="empty-state">加载中...</div>';
   try {
     var rr = await fetch(api('/api/ipo/report'));
+    if (!rr.ok) throw new Error('日报接口返回 ' + rr.status);
     var rep = await rr.json();
     var adv = document.getElementById('ipo-advice');
-    if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md);
     var rc = await fetch(api('/api/ipo/calendar?days=90'));
+    if (!rc.ok) throw new Error('日历接口返回 ' + rc.status);
     var cal = await rc.json();
+    if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md, {
+      reportDate: rep && rep.report_date,
+      calendar: cal && cal.calendar
+    });
     if (calendar) calendar.innerHTML = ipoRenderCalendar(cal.calendar || []);
     ipoLoadHistory('stock');
   } catch (e) {
+    var advError = document.getElementById('ipo-advice');
+    if (advError) advError.innerHTML = ipoRenderAdviceStatus('打新建议暂不可用', '日报读取失败，请稍后重试或在后台补跑打新日报。');
     if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
 }
 
 // 打新建议：从日报 md 的「📋 结论」段解析 **上市**/**打新** 两组条目
-function ipoRenderAdvice(md) {
-  if (!md) return '';
+function ipoNormalizeDate(value) {
+  var text = String(value || '').replace(/-/g, '').slice(0, 8);
+  return /^\d{8}$/.test(text) ? text.slice(0, 4) + '-' + text.slice(4, 6) + '-' + text.slice(6) : '';
+}
+
+function ipoRenderAdviceStatus(title, message) {
+  return '<div class="table-wrap ipo-advice-status" style="margin-top:18px;">' +
+    '<div class="table-header"><h3>' + escapeHtml(title) + '</h3></div>' +
+    '<div style="padding:14px 18px;color:#8a6d3b;background:#fffaf0;">' + escapeHtml(message) + '</div></div>';
+}
+
+function ipoRenderAdvice(md, context) {
+  context = context || {};
+  if (!md) return ipoRenderAdviceStatus('打新建议暂不可用', '当前没有可展示的日报建议。');
+  var reportDate = ipoNormalizeDate(context.reportDate);
+  var calendar = Array.isArray(context.calendar) ? context.calendar : null;
+  if (reportDate && calendar && !calendar.some(function (day) { return String(day.date || '').slice(0, 10) === reportDate; })) {
+    return ipoRenderAdviceStatus('打新建议暂不可用', '日报日期 ' + reportDate + ' 已落后于当前打新日历，旧建议已隐藏，等待最新日报生成。');
+  }
   var lines = String(md).split('\n');
   var start = -1;
   for (var i = 0; i < lines.length; i++) {
@@ -224,9 +248,9 @@ function ipoRenderAdvice(md) {
     var mItem = ln.match(/^-\s+(.+)$/);                   // - 条目
     if (mItem && cur) { cur.items.push(mItem[1]); }
   }
-  if (!groups.length) return '';
+  if (!groups.length) return ipoRenderAdviceStatus('打新建议', reportDate ? reportDate + ' 暂无申购或上市建议。' : '当前暂无申购或上市建议。');
   var html = '<div class="table-wrap" style="margin-top:18px;">';
-  html += '<div class="table-header"><h3>打新建议</h3></div>';
+  html += '<div class="table-header"><h3>打新建议</h3>' + (reportDate ? '<span style="font-size:12px;color:#999;">建议日期：' + escapeHtml(reportDate) + '</span>' : '') + '</div>';
   html += '<div style="padding:14px 18px;">';
   groups.forEach(function (g) {
     html += '<div style="margin-bottom:8px;"><span style="font-size:13px;color:#333;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';

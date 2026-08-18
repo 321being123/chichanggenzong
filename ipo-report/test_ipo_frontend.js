@@ -83,6 +83,12 @@ check("结果公告已出=true", sandbox.ipoAnnounced({ res_ann_date: "2026-07-1
 check("结果公告未来=false", sandbox.ipoAnnounced({ res_ann_date: "2026-07-21" }) === false);
 check("无结果公告=false", sandbox.ipoAnnounced({}) === false);
 
+console.log("== E. 打新建议与日历日期一致性 ==");
+const adviceMd = "## 📋 结论\n\n**上市**\n- 测试转债-深市（150元左右）";
+const currentCalendar = [{ date: "2026-08-18", apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [{ code: "123456", name: "测试转债" }] }];
+check("日报日期与日历一致时显示建议", sandbox.ipoRenderAdvice(adviceMd, { reportDate: "20260818", calendar: currentCalendar }).indexOf("测试转债") >= 0);
+check("日报落后日历时隐藏旧建议", sandbox.ipoRenderAdvice(adviceMd, { reportDate: "20260817", calendar: currentCalendar }).indexOf("旧建议已隐藏") >= 0);
+
 console.log("\n===== 前端结果汇总 =====");
 console.log("PASS=%d  FAIL=%d", PASS, FAIL);
 console.log(FAIL === 0 ? "OK" : "HAS_ISSUES");

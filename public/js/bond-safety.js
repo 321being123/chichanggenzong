@@ -103,8 +103,11 @@ function bondSafetyRenderTable() {
   }
   var html = '<div class="biz-table-scroll"><table class="biz-table bond-safety-table"><thead><tr>';
   BOND_SAFETY_COLUMNS.forEach(function(col) {
-    var arrow = bondSafetyState.sortKey === col[0] ? (bondSafetyState.sortDir > 0 ? ' ↑' : ' ↓') : '';
-    html += '<th onclick="bondSafetySort(\'' + col[0] + '\')">' + escapeHtml(col[1] + arrow) + '</th>';
+    var selected = bondSafetyState.sortKey === col[0];
+    var direction = selected ? (bondSafetyState.sortDir > 0 ? 'ascending' : 'descending') : 'none';
+    var arrow = selected ? '<span class="biz-sort-indicator" aria-hidden="true">' + (bondSafetyState.sortDir > 0 ? '▲' : '▼') + '</span>' : '';
+    var cls = 'sortable' + (selected ? ' is-sorted sort-' + (bondSafetyState.sortDir > 0 ? 'asc' : 'desc') : '');
+    html += '<th class="' + cls + '" aria-sort="' + direction + '" onclick="bondSafetySort(\'' + col[0] + '\')">' + escapeHtml(col[1]) + arrow + '</th>';
   });
   html += '</tr></thead><tbody>';
   rows.forEach(function(row) {

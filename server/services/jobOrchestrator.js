@@ -55,23 +55,24 @@ function classifyFailure(error, result = {}) {
   const code = String((error && (error.code || error.errorCode)) || result.errorCode || '').toUpperCase();
   const type = String((error && (error.errorType || error.type)) || result.errorType || '').toLowerCase();
   const source = String((error && error.source) || result.source || '').toLowerCase() || null;
+  const apiName = String((error && error.apiName) || result.apiName || '').trim() || null;
   const message = String((error && error.message) || result.error || error || '任务执行失败');
   if (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|配额|rate.?limit|quota/i.test(message)) {
-    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: false, source, message };
+    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: false, source, apiName, message };
   }
   if (code === 'AUTH_ERROR' || code === 'PERMISSION_DENIED' || code === 'INVALID_PARAMETER' || type === 'permission' || /权限|token|参数错误|invalid parameter/i.test(message)) {
-    return { code: code || 'NON_RETRYABLE', type: 'non_retryable', retryable: false, source, message };
+    return { code: code || 'NON_RETRYABLE', type: 'non_retryable', retryable: false, source, apiName, message };
   }
   if (code === 'EMPTY_DATA' || type === 'empty_data' || /数据为空|返回空|empty data/i.test(message)) {
-    return { code: code || 'EMPTY_DATA', type: 'empty_data', retryable: true, delayMinutes: 30, maxAttempts: 2, source, message };
+    return { code: code || 'EMPTY_DATA', type: 'empty_data', retryable: true, delayMinutes: 30, maxAttempts: 2, source, apiName, message };
   }
   if (code === 'DATASET_LOCKED' || type === 'in_progress' || /DATASET_LOCKED|数据集正在由其他 Worker|正在请求中/i.test(message)) {
-    return { code: 'DATASET_LOCKED', type: 'in_progress', retryable: true, delayMinutes: 1, source, message };
+    return { code: 'DATASET_LOCKED', type: 'in_progress', retryable: true, delayMinutes: 1, source, apiName, message };
   }
   if (code === 'NETWORK_TIMEOUT' || code === 'UPSTREAM_5XX' || type === 'network' || /timeout|超时|上游.*5\d\d|\b5\d\d\b/i.test(message)) {
-    return { code: code || 'NETWORK_ERROR', type: 'network', retryable: true, source, message };
+    return { code: code || 'NETWORK_ERROR', type: 'network', retryable: true, source, apiName, message };
   }
-  return { code: code || 'JOB_FAILED', type: type || 'unknown', retryable: true, source, message };
+  return { code: code || 'JOB_FAILED', type: type || 'unknown', retryable: true, source, apiName, message };
 }
 
 async function startManagedRun(slot, reason) {
@@ -231,7 +232,11 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const configuredMax = Number(definition.maxAttempts || 3);
   const maxAttempts = Math.min(configuredMax, Number(failure.maxAttempts || (definition.retryPolicy === 'external' ? 3 : configuredMax)));
   const noRetry = definition.retryPolicy === 'no_retry' || failure.retryable === false;
-  if (failure.type === 'rate_limit' && failure.source) await openExternalCircuit(failure.source, message).catch(() => {});
+  if (failure.type === 'rate_limit' && failure.source) {
+    const circuitSource = /^tushare(?:_backup)?$/i.test(failure.source) && failure.apiName
+      ? `${failure.source}:${failure.apiName}` : failure.source;
+    await openExternalCircuit(failure.source, message, circuitSource).catch(() => {});
+  }
   const normalized = normalizeJobResult({ ...result, error: message, errorCode: failure.code, errorType: failure.type }, result.externalCalls);
   if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});

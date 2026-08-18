@@ -72,7 +72,13 @@ function bondListRender() {
     el.innerHTML = '<div class="bond-list-empty">暂无符合条件的数据</div>';
     return;
   }
-  var head = BOND_LIST_COLUMNS.map(function(col) { return '<th data-key="' + col[0] + '">' + escapeHtml(col[1]) + '</th>'; }).join('');
+  var head = BOND_LIST_COLUMNS.map(function(col) {
+    var selected = bondListState.sortKey === col[0];
+    var direction = selected ? (bondListState.sortDir > 0 ? 'ascending' : 'descending') : 'none';
+    var arrow = selected ? '<span class="biz-sort-indicator" aria-hidden="true">' + (bondListState.sortDir > 0 ? '▲' : '▼') + '</span>' : '';
+    var cls = 'sortable' + (selected ? ' is-sorted sort-' + (bondListState.sortDir > 0 ? 'asc' : 'desc') : '');
+    return '<th class="' + cls + '" data-key="' + escapeHtml(col[0]) + '" aria-sort="' + direction + '">' + escapeHtml(col[1]) + arrow + '</th>';
+  }).join('');
   var body = bondListState.filtered.map(function(row) { return '<tr>' + BOND_LIST_COLUMNS.map(function(col) { return '<td>' + bondListCell(row, col[0]) + '</td>'; }).join('') + '</tr>'; }).join('');
   el.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
   el.querySelectorAll('th[data-key]').forEach(function(th) { th.onclick = function() { var key = th.dataset.key; if (bondListState.sortKey === key) bondListState.sortDir *= -1; else { bondListState.sortKey = key; bondListState.sortDir = 1; } bondListApplyFilters(); }; });

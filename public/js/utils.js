@@ -142,7 +142,7 @@ function getSubtypeColor(st) {
 
 function sortArrow(col) {
   if (sortState.col !== col) return '';
-  return sortState.dir === 'asc' ? ' ▲' : ' ▼';
+  return '<span class="biz-sort-indicator" aria-hidden="true">' + (sortState.dir === 'asc' ? '▲' : '▼') + '</span>';
 }
 
 // ===================== 交易时间判断 =====================

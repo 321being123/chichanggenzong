@@ -70,18 +70,36 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
       };
     };
 
-    guard.resetExternalCallGuard();
-    await guard.resetExternalCallGuardPersistence('tushare');
+    const resetTushareGuards = async () => {
+      guard.resetExternalCallGuard();
+      await guard.resetExternalCallGuardPersistence('tushare');
+      await guard.resetExternalCallGuardPersistence('tushare_backup');
+    };
+
+    await resetTushareGuards();
     mock(429, { code: 40203, msg: '频率限制' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'RATE_LIMIT' && error.retryable === false);
+    const circuitRows = await require('../db/connection').pool.query(
+      `SELECT source,circuit_open FROM ops.external_call_budgets
+        WHERE (source=$1 OR source=$2) AND window_type='day'
+          AND window_key=(timezone('Asia/Shanghai', now()))::date::text`,
+      ['tushare', 'tushare:daily']
+    );
+    assert.strictEqual(circuitRows.rows.find(row => row.source === 'tushare')?.circuit_open, false,
+      '单个 Tushare 接口限流不得熔断整个 Tushare 数据源');
+    assert.strictEqual(circuitRows.rows.find(row => row.source === 'tushare:daily')?.circuit_open, true,
+      '限流熔断必须记录到具体接口');
 
-    guard.resetExternalCallGuard();
-    await guard.resetExternalCallGuardPersistence('tushare');
+    mock(200, { code: 0, data: { fields: ['cal_date'], items: [['20260812']] } });
+    const unaffected = await tushareQuery('trade_cal');
+    assert.deepStrictEqual(unaffected, { fields: ['cal_date'], items: [['20260812']] },
+      'daily 限流不得阻断 trade_cal 等其它接口');
+
+    await resetTushareGuards();
     mock(200, { code: 40101, msg: 'token 无效' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'AUTH_ERROR' && error.retryable === false);
 
-    guard.resetExternalCallGuard();
-    await guard.resetExternalCallGuardPersistence('tushare');
+    await resetTushareGuards();
     mock(200, { code: 2002, msg: '没有接口访问权限' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'PERMISSION_DENIED' && error.errorType === 'permission' && error.retryable === false);
 
@@ -175,6 +193,7 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     require('https').request = originalRequest;
     guard.resetExternalCallGuard();
     await guard.resetExternalCallGuardPersistence('tushare');
+    await guard.resetExternalCallGuardPersistence('tushare_backup');
     if (originalToken === undefined) delete process.env.TUSHARE_TOKEN;
     else process.env.TUSHARE_TOKEN = originalToken;
     await require('../db/connection').pool.end();

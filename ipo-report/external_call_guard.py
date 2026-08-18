@@ -2,6 +2,7 @@
 import atexit
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -57,6 +58,16 @@ def _source_key(source):
     return str(source or "python-http")
 
 
+def _circuit_key(source, dataset=""):
+    """Tushare 的限流按接口隔离，不能让 rt_min 熔断 new_share。"""
+    source_key = _source_key(source)
+    if source_key.startswith("tushare"):
+        match = re.match(r"^([A-Za-z0-9_]+)", str(dataset or ""))
+        if match:
+            return f"{source_key}:{match.group(1)}"
+    return source_key
+
+
 def _env_key(source):
     return "".join(char if char.isalnum() else "_" for char in _source_key(source).upper())
 
@@ -88,8 +99,9 @@ def _record(source):
     _stats["sources"][key] = int(_stats["sources"].get(key, 0)) + 1
 
 
-def _consume(conn, source, dataset):
+def _consume(conn, source, dataset, circuit_source=None):
     source = _source_key(source)
+    circuit_source = _source_key(circuit_source or _circuit_key(source, dataset))
     day_key = _date_text()
     minute_key = f"{day_key}:{_minute_key()}"
     day_limit = _limit(source, "day")
@@ -103,7 +115,14 @@ def _consume(conn, source, dataset):
                 (source, day_key),
             )
             day_row = cur.fetchone()
-            if day_row and day_row[1]:
+            cur.execute(
+                """SELECT circuit_open FROM ops.external_call_budgets
+                   WHERE source=%s AND window_type='day' AND window_key=%s FOR UPDATE""",
+                (circuit_source, day_key),
+            )
+            circuit_row = cur.fetchone() if circuit_source != source else day_row
+            if ((circuit_source == source and day_row and day_row[1])
+                    or (circuit_source != source and circuit_row and circuit_row[0])):
                 raise ExternalCallGuardError("CIRCUIT_OPEN", f"{source} 数据源今日已熔断，停止自动请求", source, dataset)
             cur.execute(
                 """SELECT call_count FROM ops.external_call_budgets
@@ -148,7 +167,8 @@ def _consume(conn, source, dataset):
         raise
 
 
-def _open_circuit(source, detail):
+def _open_circuit(source, detail, dataset=None, circuit_source=None):
+    circuit_source = _source_key(circuit_source or _circuit_key(source, dataset))
     conn = _db_connect()
     try:
         with conn.cursor() as cur:
@@ -158,14 +178,14 @@ def _open_circuit(source, detail):
                    VALUES(%s,'day',%s,0,%s,true,%s)
                    ON CONFLICT(source,window_type,window_key) DO UPDATE SET
                    circuit_open=true,last_error=EXCLUDED.last_error,updated_at=now()""",
-                (_source_key(source), _date_text(), _limit(source, "day"), detail or "上游限流或配额错误"),
+                (circuit_source, _date_text(), _limit(circuit_source, "day"), detail or "上游限流或配额错误"),
             )
         conn.commit()
     finally:
         conn.close()
 
 
-def with_external_call_guard(source, dataset, fn):
+def with_external_call_guard(source, dataset, fn, circuit_source=None):
     if not enabled():
         return fn()
     conn = _db_connect()
@@ -177,7 +197,7 @@ def with_external_call_guard(source, dataset, fn):
             locked = bool(cur.fetchone()[0])
         if not locked:
             raise ExternalCallGuardError("DATASET_LOCKED", "同一数据集正在由其他 Worker 请求中", _source_key(source), dataset)
-        _consume(conn, source, dataset)
+        _consume(conn, source, dataset, circuit_source)
         _record(source)
         return fn()
     finally:
@@ -237,14 +257,14 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None):
             response = urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             if error.code == 429:
-                _open_circuit(source, str(error))
+                _open_circuit(source, str(error), dataset=dataset)
                 raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset) from error
             if error.code >= 500:
                 raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {error.code}", source, dataset) from error
             raise
         status = int(getattr(response, "status", getattr(response, "code", 200)) or 200)
         if status == 429:
-            _open_circuit(source, f"HTTP {status}")
+            _open_circuit(source, f"HTTP {status}", dataset=dataset)
             raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset)
         if status >= 500:
             raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset)
@@ -272,7 +292,7 @@ def install_requests_guard():
             response = original(session, method, url, **kwargs)
             status = int(response.status_code or 0)
             if status == 429:
-                _open_circuit(source, f"HTTP {status}")
+                _open_circuit(source, f"HTTP {status}", dataset=dataset)
                 raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset)
             if status >= 500:
                 raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset)

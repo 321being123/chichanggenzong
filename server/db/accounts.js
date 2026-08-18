@@ -44,6 +44,15 @@ async function loadAccountData(username, accountName) {
       WHERE nh.username=$1 AND nh.account_name=$2 ORDER BY nh.date`,
     [username, accountName]
   );
+  const { rows: positionSnapshots } = await pool.query(
+    `SELECT snapshot_id AS "snapshotId", snapshot_date AS "snapshotDate", instrument_code AS code,
+            quantity::float8 AS quantity, price::float8 AS price, quote_currency AS "quoteCurrency",
+            fx_rate_to_cny::float8 AS "fxRateToCny", market_value_cny::float8 AS "marketValueCny", source
+       FROM nav_position_snapshots
+      WHERE username=$1 AND account_name=$2
+      ORDER BY snapshot_date, snapshot_id, instrument_code`,
+    [username, accountName]
+  );
   const { rows: cashFlows } = await pool.query(
     'SELECT id, date, created_at, amount::float8 AS amount, note FROM cash_flows WHERE username=$1 AND account_name=$2',
     [username, accountName]
@@ -52,7 +61,7 @@ async function loadAccountData(username, accountName) {
   // - 不再从 account_data JSON 恢复 totalAsset/cashBase/cash/fundRecord/feeSettings（JSON 退出日常读取）；
   // - 指数历史只读结构化表，表空即空，不再读旧 JSON 且读取接口绝不写库；
   // - 持仓/交易/净值/现金流四表同时为空时返回空（用户主动清空是真实结果，禁止 JSON 还魂）。
-  var result = { positions, trades, navHistory, cashFlows, cash: 0, hkRate: 0.868, cashBase: 0, indexHistory: [], feeSettings: null,
+  var result = { positions, trades, navHistory, cashFlows, positionSnapshots, cash: 0, hkRate: 0.868, cashBase: 0, indexHistory: [], feeSettings: null,
     authoritativeTotalAsset: null, authoritativePositionValue: null, authoritativeCash: null, authoritativeInvested: null,
     totalAssetSource: null, anchorImportDate: null };
   // 账户元数据（期初本金/汇率/税费设置/乐观锁版本）：唯一来源 accounts 表 + account_data.version

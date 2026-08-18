@@ -36,6 +36,25 @@ pool.query = async (sql) => {
     assert.strictEqual(Math.round(result.totalChange), 10, '总涨跌必须使用重建后的期初总资产');
     assert.strictEqual(Math.round(result.priceImpact), 10, '价格影响应与基准日收盘价一致');
     assert.strictEqual(Math.round(result.snapshotDrift), 0, '同一价格口径下归因必须闭合');
+
+    const anchored = await computeNavAttribution('u', 'a', {
+      hkRate: 1,
+      cashBase: 0,
+      cashFlows: [],
+      trades: [
+        { trade_date: '2026-06-26', code: '160719', direction: 'buy', quantity: 40, amount_cny: 98.11, quote_currency: 'CNY' },
+        { trade_date: '2026-06-26', code: '160719', direction: 'buy', quantity: 40, amount_cny: 98.11, quote_currency: 'CNY' },
+        { trade_date: '2026-06-26', code: '160719', direction: 'buy', quantity: 40, amount_cny: 98.11, quote_currency: 'CNY' }
+      ],
+      positions: [{ code: '160719', price: 11, quantity: 40, subtype: '沪市' }],
+      positionSnapshots: [{ snapshotId: 'import-1', snapshotDate: previousDay, code: '160719', quantity: 40, quoteCurrency: 'CNY' }],
+      navHistory: [
+        { date: previousDay, totalAsset: 1000, hkRate: 1, snapshotSource: 'imported', importBatchId: 'import-1', snapshot_at: previousDay + 'T23:59:59.000Z' },
+        { date: today, totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T08:00:00.000Z' }
+      ]
+    }, 1000);
+    assert.strictEqual(Math.round(anchored.priceImpact), 0, '导入快照后的历史重复交易不应重复计入持仓归因');
+    assert.strictEqual(Math.round(anchored.snapshotDrift), 0, '导入快照锚定后归因必须闭合');
     console.log('nav attribution baseline tests passed');
   } finally {
     pool.query = originalQuery;

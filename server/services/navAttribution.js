@@ -66,6 +66,33 @@ function cashAtSnapshot(data, snapshotDate, snapshotAt) {
   return result;
 }
 
+function latestImportedPositionAnchor(data, date) {
+  const imports = (data.navHistory || []).filter((n) => n.snapshotSource === 'imported' && n.isLocked !== false &&
+    dateKey(n.date) <= date)
+    .sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)) ||
+      (timestamp(a.snapshot_at) || 0) - (timestamp(b.snapshot_at) || 0));
+  const imported = imports.length ? imports[imports.length - 1] : null;
+  const snapshots = (data.positionSnapshots || []).filter((s) => dateKey(s.snapshotDate || s.date) <= date);
+  if (!snapshots.length) return null;
+
+  let rows = imported && imported.importBatchId
+    ? snapshots.filter((s) => String(s.snapshotId) === String(imported.importBatchId))
+    : [];
+  if (!rows.length) {
+    const latestDate = imported ? dateKey(imported.date) : snapshots.reduce((max, s) => {
+      const d = dateKey(s.snapshotDate || s.date);
+      return d > max ? d : max;
+    }, '');
+    rows = snapshots.filter((s) => dateKey(s.snapshotDate || s.date) === latestDate);
+  }
+  if (!rows.length) return null;
+  const anchorDate = rows.reduce((max, s) => {
+    const d = dateKey(s.snapshotDate || s.date);
+    return d > max ? d : max;
+  }, '');
+  return { anchorDate, rows };
+}
+
 function quantityAsOf(data, date, snapshotAt) {
   const map = new Map();
   const trades = (data.trades || []).slice().sort((a, b) => {
@@ -73,9 +100,20 @@ function quantityAsOf(data, date, snapshotAt) {
     const bd = String(b.trade_date || b.date || '').slice(0, 10);
     return ad.localeCompare(bd) || String(a.executed_at || a.date || '').localeCompare(String(b.executed_at || b.date || ''));
   });
+  // 券商导入快照是该时点的持仓事实；历史交易可能包含旧导入重复行，
+  // 因此只能从快照之后重放交易，不能把快照之前的账本再次累加。
+  const importedAnchor = latestImportedPositionAnchor(data, date);
+  if (importedAnchor) {
+    for (const s of importedAnchor.rows) {
+      const code = String(s.code || s.instrumentCode || '');
+      if (!code) continue;
+      map.set(code, { quantity: Number(s.quantity) || 0, subtype: String(s.quoteCurrency || '').toUpperCase() === 'HKD' ? '港股' : '' });
+    }
+  }
   if (trades.length) {
     for (const t of trades) {
       const td = String(t.trade_date || t.date || '').slice(0, 10);
+      if (importedAnchor && td <= importedAnchor.anchorDate) continue;
       if (!eventAtOrBefore(t, td, date, snapshotAt)) continue;
       const code = String(t.code || '');
       if (!code) continue;

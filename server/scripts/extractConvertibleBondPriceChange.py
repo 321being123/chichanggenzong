@@ -33,8 +33,8 @@ def extract_one(url):
     current_change = current_changes[-1] if current_changes else None
     changes = list(re.finditer(r"转股价格由(?:原来(?:的)?|人民币)?(\d+(?:\.\d+)?)元/股(?:调整|向下修正)为(?:人民币)?(\d+(?:\.\d+)?)元/股", text))
     changed = changes[-1] if changes else None
-    before = changed or re.search(r"(?:调整|修正)前.{0,30}?转股价格[：:为]*人民币?(\d+(?:\.\d+)?)元/股", text)
-    after = changed or re.search(r"(?:调整|修正)后.{0,30}?转股价格[：:为]*人民币?(\d+(?:\.\d+)?)元/股", text)
+    before = changed or re.search(r"(?:调整|修正)前.{0,30}?转股价格[：:为]*(?:人民币)?(\d+(?:\.\d+)?)元/股", text)
+    after = changed or re.search(r"(?:调整|修正)后.{0,30}?转股价格[：:为]*(?:人民币)?(\d+(?:\.\d+)?)元/股", text)
     price_before = float(before.group(1)) if before else None
     price_after = float(after.group(2) if before is after and after else after.group(1)) if after else None
     if current_change:

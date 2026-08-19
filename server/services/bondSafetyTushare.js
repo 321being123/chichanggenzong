@@ -162,7 +162,9 @@ async function refreshFinancials(stocks, today) {
     return !cached || !cached.data || finite(cached.data.interest_coverage) == null ||
       finite(cached.data.total_assets) == null || Date.now() - cached.fetched_at >= ttl;
   });
-  const concurrency = Math.max(1, Math.min(6, Number(process.env.BOND_SAFETY_TUSHARE_CONCURRENCY) || 3));
+  // 每家公司同时占用 3 个带数据库锁的 Tushare 请求；连接池默认 10，最多 3 家并发，
+  // 为请求完成时的熔断状态更新保留至少 1 个连接，避免生产配置为 6 时连接池互等。
+  const concurrency = Math.max(1, Math.min(3, Number(process.env.BOND_SAFETY_TUSHARE_CONCURRENCY) || 3));
   let windowCount = 0, fullCount = 0;
   for (let offset = 0; offset < pending.length; offset += FINANCIAL_REFRESH_BATCH_SIZE) {
     const batch = pending.slice(offset, offset + FINANCIAL_REFRESH_BATCH_SIZE);

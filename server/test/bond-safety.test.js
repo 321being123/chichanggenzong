@@ -128,6 +128,7 @@ check('财务刷新每批最多45次请求并跨分钟续跑', () => {
   assert.strictEqual(nextFinancialBatchDelay(119999), 1001);
   const source = require('fs').readFileSync(require('path').resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
   assert.strictEqual((source.match(/if \(remaining > 0\) await waitForNextFinancialBatch\(remaining\)/g) || []).length, 2);
+  assert.ok(/Math\.min\(3, Number\(process\.env\.BOND_SAFETY_TUSHARE_CONCURRENCY\)/.test(source));
 });
 
 const pass = results.filter(r => r[0] === 'PASS').length;

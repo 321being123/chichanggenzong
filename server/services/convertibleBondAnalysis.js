@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const cycleService = require('./convertibleBondCycleService');
 const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
-const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess, markDatasetFailure,
+const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
@@ -27,7 +27,7 @@ const FORMULA_VERSION = '3';
 const CN_OFFSET_MS = 8 * 3600 * 1000;
 // 允许按 TTL 跳过上游的静态/低频数据组。行情与公告不在此列：
 // 行情已有 7 天重叠增量，公告参与回售、下修等当期判定，跳过会改变分析结论。
-const GATED_BOND_DATASETS = ['cb_basic', 'cb_rating', 'cb_price_chg', 'cb_rate', 'top10_cb_holders', 'bond_dividend'];
+const GATED_BOND_DATASETS = ['cb_basic', 'cb_rating', 'cb_rate', 'top10_cb_holders', 'bond_dividend'];
 
 // 条款指纹：条款文本一变，指纹就变，用于判断旧快照是否还基于同一套条款
 function termsHash(terms) {
@@ -1240,8 +1240,8 @@ function shouldAdvanceConvertibleBondIssueCursor(issueRows, incremental) {
   return !incremental || (Array.isArray(issueRows) && issueRows.length > 0);
 }
 
-// 转股价发生变动时的定点处理：登记数据问题 + 只对这几只补取转股价公告
-async function handleConvPriceChanges(changes, sourceId) {
+// 转股价发生变动时只登记数据问题，后续由历史公告解析链路补齐详情。
+async function handleConvPriceChanges(changes) {
   for (const change of changes) {
     await recordQualityIssue({
       instrumentId: change.instrument_id,
@@ -1250,21 +1250,7 @@ async function handleConvPriceChanges(changes, sourceId) {
       issueType: 'snapshot_input_mismatch',
       details: { ts_code: change.ts_code, before: change.before, after: change.after, detected_by: 'daily_universe_sync' },
     });
-    try {
-      const rows = tsRows(await tushareQuery('cb_price_chg', { ts_code: change.ts_code },
-        'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'));
-      if (rows.length) {
-        const client = await pool.connect();
-        try {
-          await client.query('BEGIN');
-          await savePriceChanges(client, change.instrument_id, rows, sourceId);
-          await client.query('COMMIT');
-        } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
-        finally { client.release(); }
-      }
-    } catch (e) {
-      console.warn(`[主同步] ${change.ts_code} 转股价公告补取失败：${e.message}`);
-    }
+    console.log(`[主同步] ${change.ts_code} 转股价已变化，等待历史公告解析链路补齐详情`);
     await new Promise(resolve => setTimeout(resolve, 150)); // 限流缓冲
   }
 }
@@ -1398,10 +1384,10 @@ async function syncConvertibleBondUniverse(reason = 'scheduled') {
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
-    // 转股价变动的转债：记数据问题 + 定点补取转股价公告（旧快照由新鲜度判定自动标记为需刷新）
+    // 转股价变动的转债：记数据问题，后续由历史公告解析链路补齐（旧快照由新鲜度判定自动标记为需刷新）
     if (convPriceChanges.length) {
       console.log(`[主同步] 检测到 ${convPriceChanges.length} 只转债转股价变动：${convPriceChanges.map(c => c.ts_code).join(',')}`);
-      await handleConvPriceChanges(convPriceChanges, tushareSourceId);
+      await handleConvPriceChanges(convPriceChanges);
     }
     // 评级历史自动补齐（独立事务，失败不影响主同步；缺评级的转债逐只从 Tushare 拉取）
     try { await backfillMissingRatings(reason); }
@@ -1827,14 +1813,6 @@ async function latestRatingDate(tsCode) {
   return rows[0] && rows[0].rating_date || null;
 }
 
-async function latestPriceChangeDate(tsCode) {
-  const { rows } = await pool.query(
-    `SELECT max(change_date) AS change_date FROM fundamental.convertible_bond_price_changes c
-       JOIN core.instruments i ON i.instrument_id = c.instrument_id WHERE i.canonical_code = $1`, [tsCode]
-  );
-  return rows[0] && rows[0].change_date || null;
-}
-
 async function refreshConvertibleBondAnalysis(value, reason = 'manual', options = {}) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) throw new Error('请输入有效的可转债代码');
@@ -1865,11 +1843,11 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   // 主档只在数据库已有完整 raw_payload 时才允许跳过，避免主档缺失导致分析中断
   const canReuseProfile = Boolean(cachedHistory.profile && cachedHistory.profile.stk_code);
   const fetchProfile = () => tushareQuery('cb_basic', { ts_code: tsCode }, PROFILE_FIELDS);
-  const [profileData, bondDailyData, ratingData, priceChangeData, couponData, holderData] = await Promise.all([
+  const [profileData, bondDailyData, ratingData, couponData, holderData] = await Promise.all([
     canReuseProfile ? gate('cb_basic', fetchProfile, null) : fetchProfile(),
     tushareQuery('cb_daily', { ts_code: tsCode, start_date: bondStart, end_date: end }, DAILY_FIELDS),
-    // cb_rating / cb_price_chg 官方只支持 ts_code，不支持日期过滤：拉该只全量后在内存里只保留本地水位往前 30 天重叠窗口，
-    // 由 saveRatingHistory / savePriceChanges 按唯一键幂等 upsert，只写新增/修订行（避免传不支持的 start_date 报错）。
+    // cb_rating 官方只支持 ts_code，不支持日期过滤：拉该只全量后在内存里只保留本地水位往前 30 天重叠窗口，
+    // 由 saveRatingHistory 按唯一键幂等 upsert，只写新增/修订行。
     gate('cb_rating', async () => {
       const rows = tsRows(await tushareQuery('cb_rating', { ts_code: tsCode }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook'));
       if (forceAll) return rows;
@@ -1877,14 +1855,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
       if (!wm) return rows;
       const floor = tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30));
       return rows.filter(r => (r.rating_date || '').replace(/-/g, '') >= floor);
-    }, null),
-    gate('cb_price_chg', async () => {
-      const rows = tsRows(await tushareQuery('cb_price_chg', { ts_code: tsCode }, 'ts_code,bond_short_name,publish_date,change_date,convert_price_initial,convertprice_bef,convertprice_aft'));
-      if (forceAll) return rows;
-      const wm = await latestPriceChangeDate(tsCode);
-      if (!wm) return rows;
-      const floor = tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30));
-      return rows.filter(r => (r.change_date || '').replace(/-/g, '') >= floor);
     }, null),
     couponPromise,
     holderPromise,
@@ -1984,7 +1954,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     for (const row of freshValuations) await saveStockValuation(client, ids.stockId, row, sources.tushare);
     await saveRatingHistory(client, ids.bondId, tsRows(ratingData), sources.tushare);
     await saveRatingOutlooks(client, ids.bondId, ratingOutlooks);
-    await savePriceChanges(client, ids.bondId, tsRows(priceChangeData), sources.tushare);
     if (couponData) await saveCouponSchedule(client, ids.bondId, tsRows(couponData), sources.tushare);
     if (holderData) await saveFundHolding(client, ids.bondId, tsRows(holderData), sources.tushare);
     if (reportHolding) await saveReportFundHolding(client, ids.bondId, reportHolding, sources.cninfo || sources.calculated);
@@ -2033,7 +2002,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const fetchedDatasets = [];
   if (profileData) fetchedDatasets.push('cb_basic');
   if (ratingData) fetchedDatasets.push('cb_rating');
-  if (priceChangeData) fetchedDatasets.push('cb_price_chg');
   if (couponData) fetchedDatasets.push('cb_rate');
   if (holderData) fetchedDatasets.push('top10_cb_holders');
   if (dividendData) fetchedDatasets.push('bond_dividend');
@@ -2174,7 +2142,8 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
       rating_company: profile.rating_comp || null },
     liquidity: { volume: finite(latestBond.vol), amount: finite(latestBond.amount), double_low: bondPrice != null && convPremium != null ? bondPrice + convPremium * 100 : null },
     data_status: {
-      cb_price_chg: priceChangeData ? 'ok' : 'permission_or_unavailable',
+      cb_price_chg: priceChangeDetails.length || (reportPriceHistory && reportPriceHistory.price_changes.length) || priceChangeCache.some(row => row.parser_version === '3')
+        ? 'announcement_parsed' : 'unavailable',
       coupon_schedule: extras.coupons.length ? 'ok' : (parseCouponRates(profile.rate_clause).length ? 'parsed_from_clause' : 'requires_5000_points'),
       fund_holding: extras.fund_holding ? 'ok' : 'requires_5000_points_or_report_parse',
       no_revision_history: extras.no_revision_history.length ? 'ok' : 'no_matching_announcement',

@@ -12,7 +12,6 @@ const DATASET_TTL_MINUTES = {
   cb_basic: 15,
   conversion_price_announcements: 30,
   cb_rating: 24 * 60,
-  cb_price_chg: 24 * 60,
   cb_rate: 24 * 60,
   top10_cb_holders: 24 * 60,
   bond_dividend: 12 * 60,

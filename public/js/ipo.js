@@ -220,7 +220,7 @@ function ipoNormalizeDate(value) {
 function ipoRenderAdviceStatus(title, message) {
   return '<div class="table-wrap ipo-advice-status" style="margin-top:18px;">' +
     '<div class="table-header"><h3>' + escapeHtml(title) + '</h3></div>' +
-    '<div style="padding:14px 18px;color:#8a6d3b;background:#fffaf0;">' + escapeHtml(message) + '</div></div>';
+    '<div class="ipo-content" style="padding:14px 18px;color:#8a6d3b;background:#fffaf0;">' + escapeHtml(message) + '</div></div>';
 }
 
 function ipoRenderAdvice(md, context) {
@@ -251,7 +251,7 @@ function ipoRenderAdvice(md, context) {
   if (!groups.length) return ipoRenderAdviceStatus('打新建议', reportDate ? reportDate + ' 暂无申购或上市建议。' : '当前暂无申购或上市建议。');
   var html = '<div class="table-wrap" style="margin-top:18px;">';
   html += '<div class="table-header"><h3>打新建议</h3>' + (reportDate ? '<span style="font-size:12px;color:#999;">建议日期：' + escapeHtml(reportDate) + '</span>' : '') + '</div>';
-  html += '<div style="padding:14px 18px;">';
+  html += '<div class="ipo-content" style="padding:14px 18px;">';
   groups.forEach(function (g) {
     html += '<div style="margin-bottom:8px;"><span style="font-size:13px;color:#333;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';
     html += '<ul style="margin:0 0 10px;padding-left:22px;">';

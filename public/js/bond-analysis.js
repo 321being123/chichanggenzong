@@ -353,6 +353,6 @@ function bondAnalysisRender(d, ctx) {
     ['正股总市值',stockAnalysisMoney(stockData.total_market_cap)],['股息率',bondAnalysisPercent(stockData.dividend_yield)]
   ]));
   bondAnalysisSet('bond-analysis-ratings',bondAnalysisListTable(['评级日','公告日','评级','展望','评级机构'],(d.rating_history||[]).map(function(r){return [bondAnalysisDate(r.rating_date),bondAnalysisDate(r.announced_at),bondAnalysisText(r.rating),bondAnalysisText(r.rating_outlook),bondAnalysisText(r.rating_company)];})));
-  var status=d.data_status||{}, labels={requires_5000_points:'需5000积分权限',requires_5000_points_or_report_parse:'需5000积分权限或报告解析',parsed_from_clause:'已从利率条款解析',no_matching_announcement:'未找到匹配公告',calculated:'已计算',not_yet_calculable:'当前尚不能计算',put_period_not_found:'未识别回售期',calculation_inputs_incomplete:'计算参数不完整',permission_or_unavailable:'权限不足或数据不可用',unavailable:'暂无数据',ok:'已更新'};
+  var status=d.data_status||{}, labels={requires_5000_points:'需5000积分权限',requires_5000_points_or_report_parse:'需5000积分权限或报告解析',parsed_from_clause:'已从利率条款解析',announcement_parsed:'历史公告解析',no_matching_announcement:'未找到匹配公告',calculated:'已计算',not_yet_calculable:'当前尚不能计算',put_period_not_found:'未识别回售期',calculation_inputs_incomplete:'计算参数不完整',permission_or_unavailable:'权限不足或数据不可用',unavailable:'暂无数据',ok:'已更新'};
   bondAnalysisSet('bond-analysis-status','数据状态：'+Object.keys(status).map(function(key){return escapeHtml(key)+'：'+escapeHtml(labels[status[key]]||status[key]);}).join('；'));
 }

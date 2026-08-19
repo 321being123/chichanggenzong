@@ -5,6 +5,7 @@ const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+const priceChangeAudit = fs.readFileSync(path.join(root, 'server', 'scripts', 'auditConvertibleBondPriceChanges.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
 
 assert.ok(html.includes('data-main="stock-analysis"'), '缺少个券分析导航入口（研究工具下拉子项）');
@@ -34,5 +35,7 @@ assert.ok(css.includes('#bond-analysis-price-history .bond-analysis-table th:nth
 assert.ok(script.includes('查看募集说明书') && script.includes('coupon_source_url'), '募集说明书或利息明细入口缺失');
 assert.ok(script.includes('bond-analysis-delisted') && script.includes('已退市'), '退市转债缺少醒目标识');
 assert.ok(css.includes('.bond-analysis-summary .bond-analysis-delisted'), '退市标识缺少样式');
+assert.ok(!/tushareQuery\(['"]cb_price_chg/.test(service + priceChangeAudit),
+  '转股价历史只能走公告解析链路，不得重新调用无权限的 cb_price_chg');
 
 console.log('convertible bond frontend tests passed');

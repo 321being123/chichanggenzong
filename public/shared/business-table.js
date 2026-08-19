@@ -55,11 +55,14 @@
     var text = String(target.textContent || '').trim();
     var chars = Array.from(text);
     if (chars.length <= 6) return;
-    var breakAt = -1;
+    var midpoint = Math.ceil(chars.length / 2);
+    var breakAt = midpoint;
     for (var i = 3; i <= chars.length - 2; i++) {
-      if (chars[i] === '(' || chars[i] === '（') { breakAt = i; break; }
+      if (chars[i] === '(' || chars[i] === '（') {
+        if (Math.abs(i - midpoint) <= 1) breakAt = i;
+        break;
+      }
     }
-    if (breakAt < 0) breakAt = Math.ceil(chars.length / 2);
     target.textContent = chars.slice(0, breakAt).join('');
     target.appendChild(document.createElement('br'));
     target.appendChild(document.createTextNode(chars.slice(breakAt).join('')));

@@ -110,7 +110,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .table-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; gap: 8px; }
 .table-header h3 { font-size: 14px; font-weight: 600; color: #1a1a2e; }
  .biz-table-scroll { overflow-x: auto; overflow-y: visible; background: #fff; }
- .biz-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
+ .biz-table { width: max-content; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
  .biz-table th { position: relative; height: 52px; box-sizing: border-box; padding: 8px 6px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: normal; line-height: 1.35; overflow-wrap: break-word; border-bottom: 1px solid #f0f0f0; }
  .biz-table th .biz-table-head-label { display: inline-block; line-height: 1.35; text-align: center; vertical-align: middle; }
  .biz-table th.sortable, .biz-table th[onclick], .biz-table th[data-key] { cursor: pointer; user-select: none; }

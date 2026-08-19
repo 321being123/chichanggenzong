@@ -6,9 +6,10 @@ const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
 const RECOVERY_SUMMARY_RETRY_MINUTES = 15;
 const MAX_RECOVERY_SUMMARY_ATTEMPTS = 3;
-// 故障告警在人工确认或任务恢复前保持待处理；恢复通知本身已发送后不再算待处理。
+// 故障告警在人工确认或任务恢复前保持待处理；一次性通知发送后不再算待处理。
 const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
-        AND NOT (alert_type='recovery' AND status IN ('sent','suppressed'))`;
+        AND NOT (alert_type IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+          AND status IN ('sent','suppressed'))`;
 
 function productionAlertsEnabled() {
   return process.env.NODE_ENV === 'production';

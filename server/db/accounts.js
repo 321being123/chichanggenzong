@@ -3,6 +3,7 @@ const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./co
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
 const { loadUsers } = require('./users');
 const { computeNavAttribution } = require('../services/navAttribution');
+const classifyCode = require('../../public/js/code-classify');
 
 // 按唯一键去重：同 key 只保留最后一条（前序被后序覆盖，与旧版逐条 INSERT 的覆盖语义一致）。
 // 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会报 "cannot affect row a second time"，写入前必须先归一。
@@ -14,6 +15,18 @@ function dedupeByKey(rows, key) {
     seen.set(k, r);
   }
   return Array.from(seen.values());
+}
+
+// 保存前统一证券代码；对已知“六位误识别港股”同时修正市场属性，避免无效 A 股代码进入行情任务。
+function normalizeSecurityRow(row) {
+  if (!row) return row;
+  const rawCode = String(row.code == null ? '' : row.code).trim();
+  const code = classifyCode.normalizeCode(rawCode, row.name);
+  const info = classifyCode(code, row.name);
+  const cleanedRaw = rawCode.toUpperCase().replace(/\.(SH|SZ|BJ|HK|US)$/i, '').replace(/^(SH|SZ|BJ|HK|US)/i, '');
+  const correctedHkAlias = /^\d{6}$/.test(cleanedRaw) && /^\d{5}$/.test(String(code || '')) && info && info.isHK;
+  if (!correctedHkAlias) return { ...row, code };
+  return { ...row, code, type: info.type, subtype: info.subtype, quote_currency: 'HKD', quoteCurrency: 'HKD' };
 }
 
 async function loadAccountData(username, accountName) {
@@ -224,8 +237,8 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     // 批量 INSERT + ON CONFLICT DO UPDATE 遇重复唯一键会整条报错，故写入前先归一）。
     // positions/trades/cashFlows 按 id、navHistory 按 date，保留后出现的记录。
     data = Object.assign({}, data, {
-      positions: dedupeByKey(data.positions || [], 'id'),
-      trades: dedupeByKey(data.trades || [], 'id'),
+      positions: dedupeByKey(data.positions || [], 'id').map(normalizeSecurityRow),
+      trades: dedupeByKey(data.trades || [], 'id').map(normalizeSecurityRow),
       cashFlows: dedupeByKey(data.cashFlows || [], 'id'),
       navHistory: dedupeByKey(data.navHistory || [], 'date'),
     });

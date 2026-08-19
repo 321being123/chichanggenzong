@@ -69,7 +69,7 @@ function classifyFailure(error, result = {}) {
     return { code: code || 'NON_RETRYABLE', type: 'non_retryable', retryable: false, source, apiName, message };
   }
   if (code === 'EMPTY_DATA' || type === 'empty_data' || /数据为空|返回空|empty data/i.test(message)) {
-    return { code: code || 'EMPTY_DATA', type: 'empty_data', retryable: true, delayMinutes: 30, maxAttempts: 2, source, apiName, message };
+    return { code: code || 'EMPTY_DATA', type: 'empty_data', retryable: true, source, apiName, message };
   }
   if (code === 'DATASET_LOCKED' || type === 'in_progress' || /DATASET_LOCKED|数据集正在由其他 Worker|正在请求中/i.test(message)) {
     return { code: 'DATASET_LOCKED', type: 'in_progress', retryable: true, delayMinutes: 1, source, apiName, message };

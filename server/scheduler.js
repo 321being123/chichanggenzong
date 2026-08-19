@@ -65,11 +65,12 @@ const SCHEDULED_TASKS = [
   { name: 'ipoHistorySync', register: () => scheduleIpoHistorySync() },
   { name: 'hkTradeRulesSync', register: () => scheduleHkTradeRulesSync() },
   { name: 'arbitrageSync', register: () => scheduleArbitrageSync() },
-  // 月度休市日自愈：原 worker.js 内联的 setInterval 任务，现统一纳入注册表（与启动补漏 holidaySync 区分）。
+  // 月度休市日自愈：每天检查一次是否需要更新。不能把 30 天毫秒数直接交给 setInterval，
+  // Node 定时器最大约 24.8 天，溢出后会退化为约 1ms 高频执行。
   // 注意：此处故意不 unref，作为独立 Worker 进程的保活句柄（迁移前 worker.js 的内联 setInterval 即承担此职责）。
   { name: 'holidaySyncMonthly', register: () => setInterval(() => {
       ensureHolidaysCurrent().catch(e => console.warn('[scheduler] 休市日月度核对失败:', e && e.message));
-    }, 30 * 24 * 3600 * 1000) }
+    }, 24 * 60 * 60 * 1000) }
 ];
 
 // 供测试断言的清单（与技术架构后台任务清单逐项一致）

@@ -2,7 +2,10 @@ const assert = require('assert');
 const { cleanValue, rateCompany, evaluateBondSafety } = require('../services/bondSafety');
 const { pickArray, authHeaders, isConfigured } = require('../services/bondSafetyFetcher');
 const { nextShanghaiDelay } = require('../jobs/bondSafetyRefresh');
-const { finite, derivePb, isActiveBond, preferredSecurityName } = require('../services/bondSafetyTushare');
+const {
+  finite, derivePb, isActiveBond, preferredSecurityName,
+  FINANCIAL_REFRESH_BATCH_SIZE, nextFinancialBatchDelay,
+} = require('../services/bondSafetyTushare');
 
 const results = [];
 function check(name, fn) {
@@ -116,6 +119,15 @@ check('PB缺失时可按总市值和归母净资产补算正负市净率', () =>
 check('证券名称优先使用腾讯行情正确解码结果', () => {
   assert.strictEqual(preferredSecurityName({ name: '珂玛科技' }, '��玛��技'), '珂玛科技');
   assert.strictEqual(preferredSecurityName(null, '珂玛转债'), '珂玛转债');
+});
+
+check('财务刷新每批最多45次请求并跨分钟续跑', () => {
+  assert.strictEqual(FINANCIAL_REFRESH_BATCH_SIZE, 15);
+  assert.strictEqual(FINANCIAL_REFRESH_BATCH_SIZE * 3, 45);
+  assert.strictEqual(nextFinancialBatchDelay(60001), 60999);
+  assert.strictEqual(nextFinancialBatchDelay(119999), 1001);
+  const source = require('fs').readFileSync(require('path').resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
+  assert.strictEqual((source.match(/if \(remaining > 0\) await waitForNextFinancialBatch\(remaining\)/g) || []).length, 2);
 });
 
 const pass = results.filter(r => r[0] === 'PASS').length;

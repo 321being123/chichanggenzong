@@ -8,6 +8,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const adminRoute = read('server/routes/admin.js');
 const slots = read('server/services/jobScheduleSlots.js');
 const orchestrator = read('server/services/jobOrchestrator.js');
+const scheduler = read('server/scheduler.js');
 const alertMailer = read('server/services/jobAlertMailer.js');
 const testRunner = read('server/test/run-all.js');
 const health = read('server/scripts/checkWorkerHealth.js');
@@ -54,6 +55,9 @@ assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test
 assert(/r\.trigger_type='scheduled'/.test(orchestrator) && /SELECT trigger_type FROM job_runs WHERE id=\$1/.test(orchestrator), '重复成功告警不得把人工补跑或自动重试误判为重复定时任务');
 assert(/systemctl enable portfolio-server\.service portfolio-worker\.service/.test(deployScript), 'Web 与 Worker 服务必须配置开机自启');
 assert(/maxAttempts: 4/.test(definitions), '任务最大尝试次数必须包含首次执行和三次自动重试');
+assert(/jobCode: 'bond_safety_refresh'[^\n]*retryDelaysMinutes: \[15, 60, 240\][^\n]*maxAttempts: 4/.test(definitions), '可转债安全评分必须覆盖上游数小时短时故障');
+assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*retryDelaysMinutes: \[15, 60, 240\][^\n]*maxAttempts: 4/.test(definitions), '可转债行情同步必须覆盖上游数小时短时故障');
+assert(!/type: 'empty_data'[^\n]*maxAttempts: 2/.test(orchestrator), '空数据不得越过任务定义提前终止重试');
 assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*hour: 8, minute: 0/.test(definitions), '可转债行情同步必须改为次日 08:00 执行');
 assert(/jobCode: 'convertible_bond_valuation_refresh'[^\n]*hour: 8, minute: 15/.test(definitions), '可转债估值必须改为 08:15 执行');
 assert(/jobCode: 'convertible_bond_valuation_refresh'[\s\S]*dataDatePolicy: 'previous_trading_day'/.test(definitions), '可转债估值任务必须按上一个交易日校验数据水位');
@@ -105,8 +109,12 @@ assert(/last_sent_at=CASE WHEN ops\.alert_notifications\.status IN \('acknowledg
 assert(/sanitizeJobError\(alert\.summary \|\| '', 4000\)/.test(alertMailer) && /sanitizeAlertRecord\(rows\[0\]\)/.test(alertMailer), '历史告警在邮件发送和确认接口返回前必须再次脱敏');
 assert(/stop_unit_if_present portfolio-worker-health\.timer/.test(deployScript) && /health_timer_preexisting/.test(deployScript), '首次部署时不存在的健康检查单元不得导致部署或回滚失败');
 assert(/WHERE slot_id=\$1 AND status <> 'resolved' AND alert_type <> 'recovery'/.test(alertMailer) && /worker:offline[\s\S]*status <> 'resolved'/.test(health), '人工确认后的故障恢复仍必须关闭故障告警且不得重复处理恢复邮件');
-assert(/ACTIVE_ALERT_WHERE/.test(alertMailer) && /alert_type='recovery' AND status IN \('sent','suppressed'\)/.test(alertMailer)
-  && /WHERE \$\{ACTIVE_ALERT_WHERE\} GROUP BY status/.test(slots), '已发送的恢复通知不得继续计入待处理告警');
+assert(/ACTIVE_ALERT_WHERE/.test(alertMailer)
+  && /external_api_switch','external_api_interface_failover/.test(alertMailer)
+  && /status IN \('sent','suppressed'\)/.test(alertMailer)
+  && /WHERE \$\{ACTIVE_ALERT_WHERE\} GROUP BY status/.test(slots), '已发送的恢复和主备切换通知不得继续计入待处理告警');
+assert(/holidaySyncMonthly/.test(scheduler) && /24 \* 60 \* 60 \* 1000/.test(scheduler)
+  && !/30 \* 24 \* 3600 \* 1000/.test(scheduler), '月度休市检查不得使用超过 Node 上限的 30 天定时器');
 assert(/subject: sanitizeJobError\(alert\.subject/.test(slots) && /audits: audits\.rows\.map/.test(slots), '任务详情中的历史告警标题和审计记录必须脱敏');
 assert(/health_timer_enabled=0/.test(deployScript) && /health_timer_active=0/.test(deployScript)
   && /systemctl disable portfolio-worker-health\.timer/.test(deployScript), '部署回滚必须恢复健康定时器原有启用和运行状态');

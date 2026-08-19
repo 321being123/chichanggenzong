@@ -3,9 +3,21 @@ const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { fetchTencentQuotes } = require('./tencentQuote');
 
 const FINANCIAL_TTL_DAYS = 30;
+// 单批最多 15 家：每家公司并发请求 3 个财务接口，45 次请求低于主、备 Token 的每分钟预算，
+// 并为本任务的行情请求及随后任务保留余量。批次之间跨分钟，避免缓存集中到期时形成请求洪峰。
+const FINANCIAL_REFRESH_BATCH_SIZE = 15;
 const CONVERTIBLE_PREFIX = /^(110|111|113|118|123|127|128)/;
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function nextFinancialBatchDelay(now = Date.now()) {
+  return (Math.floor(now / 60000) + 1) * 60000 + 1000 - now;
+}
+
+async function waitForNextFinancialBatch(remaining) {
+  const delay = nextFinancialBatchDelay();
+  console.log(`[可转债安全] 财务同步分批保护：本批完成，${remaining} 只待处理，${Math.ceil(delay / 1000)} 秒后继续`);
+  await sleep(delay);
+}
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
@@ -117,23 +129,28 @@ async function backfillMissingEquity(stocks, valuations, cache, today) {
     const cached = cache.get(stock.stk_code);
     return finite(valuation.pb) == null && !(cached && finite(cached.data && cached.data.shareholder_equity) != null);
   });
-  for (const stock of pending) {
-    try {
-      const data = await tushareQuery('balancesheet', { ts_code: stock.stk_code },
-        'ts_code,f_ann_date,end_date,report_type,total_hldr_eqy_exc_min_int');
-      const latest = tsRows(data)
-        .filter(row => row.end_date && (!row.f_ann_date || row.f_ann_date <= today) && String(row.report_type) === '1')
-        .sort((a, b) => String(b.f_ann_date || '').localeCompare(String(a.f_ann_date || '')))[0];
-      if (!latest || finite(latest.total_hldr_eqy_exc_min_int) == null) continue;
-      const previous = cache.get(stock.stk_code);
-      const merged = Object.assign({}, previous ? previous.data : {}, {
-        shareholder_equity: finite(latest.total_hldr_eqy_exc_min_int),
-        report_end_date: (previous && previous.data.report_end_date) || latest.end_date,
-        announced_at: (previous && previous.data.announced_at) || latest.f_ann_date,
-      });
-      await saveFinancialCache(stock.stk_code, stock.stk_short_name, merged);
-      cache.set(stock.stk_code, { stock_name: stock.stk_short_name, data: merged, fetched_at: Date.now() });
-    } catch (_) {}
+  for (let offset = 0; offset < pending.length; offset += FINANCIAL_REFRESH_BATCH_SIZE) {
+    const batch = pending.slice(offset, offset + FINANCIAL_REFRESH_BATCH_SIZE);
+    for (const stock of batch) {
+      try {
+        const data = await tushareQuery('balancesheet', { ts_code: stock.stk_code },
+          'ts_code,f_ann_date,end_date,report_type,total_hldr_eqy_exc_min_int');
+        const latest = tsRows(data)
+          .filter(row => row.end_date && (!row.f_ann_date || row.f_ann_date <= today) && String(row.report_type) === '1')
+          .sort((a, b) => String(b.f_ann_date || '').localeCompare(String(a.f_ann_date || '')))[0];
+        if (!latest || finite(latest.total_hldr_eqy_exc_min_int) == null) continue;
+        const previous = cache.get(stock.stk_code);
+        const merged = Object.assign({}, previous ? previous.data : {}, {
+          shareholder_equity: finite(latest.total_hldr_eqy_exc_min_int),
+          report_end_date: (previous && previous.data.report_end_date) || latest.end_date,
+          announced_at: (previous && previous.data.announced_at) || latest.f_ann_date,
+        });
+        await saveFinancialCache(stock.stk_code, stock.stk_short_name, merged);
+        cache.set(stock.stk_code, { stock_name: stock.stk_short_name, data: merged, fetched_at: Date.now() });
+      } catch (_) {}
+    }
+    const remaining = Math.max(pending.length - offset - batch.length, 0);
+    if (remaining > 0) await waitForNextFinancialBatch(remaining);
   }
 }
 
@@ -146,25 +163,30 @@ async function refreshFinancials(stocks, today) {
       finite(cached.data.total_assets) == null || Date.now() - cached.fetched_at >= ttl;
   });
   const concurrency = Math.max(1, Math.min(6, Number(process.env.BOND_SAFETY_TUSHARE_CONCURRENCY) || 3));
-  let cursor = 0;
   let windowCount = 0, fullCount = 0;
-  async function worker() {
-    while (cursor < pending.length) {
-      const stock = pending[cursor++];
-      const cached = cache.get(stock.stk_code);
-      const startDate = financialWindowStart(cached);
-      if (startDate) windowCount++; else fullCount++;
-      try {
-        const data = await fetchOneFinancial(stock, today, startDate);
-        if (data) {
-          await saveFinancialCache(stock.stk_code, stock.stk_short_name, data);
-          cache.set(stock.stk_code, { stock_name: stock.stk_short_name, data, fetched_at: Date.now() });
-        }
-      } catch (_) {}
-      await sleep(Math.max(50, Number(process.env.BOND_SAFETY_TUSHARE_DELAY_MS) || 200));
+  for (let offset = 0; offset < pending.length; offset += FINANCIAL_REFRESH_BATCH_SIZE) {
+    const batch = pending.slice(offset, offset + FINANCIAL_REFRESH_BATCH_SIZE);
+    let cursor = 0;
+    async function worker() {
+      while (cursor < batch.length) {
+        const stock = batch[cursor++];
+        const cached = cache.get(stock.stk_code);
+        const startDate = financialWindowStart(cached);
+        if (startDate) windowCount++; else fullCount++;
+        try {
+          const data = await fetchOneFinancial(stock, today, startDate);
+          if (data) {
+            await saveFinancialCache(stock.stk_code, stock.stk_short_name, data);
+            cache.set(stock.stk_code, { stock_name: stock.stk_short_name, data, fetched_at: Date.now() });
+          }
+        } catch (_) {}
+        await sleep(Math.max(50, Number(process.env.BOND_SAFETY_TUSHARE_DELAY_MS) || 200));
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(concurrency, batch.length) }, worker));
+    const remaining = Math.max(pending.length - offset - batch.length, 0);
+    if (remaining > 0) await waitForNextFinancialBatch(remaining);
   }
-  await Promise.all(Array.from({ length: concurrency }, worker));
   console.log(`[可转债安全] 财务同步：${pending.length} 只待更新，其中增量窗口 ${windowCount} 只、首次全量 ${fullCount} 只`);
   return cache;
 }
@@ -286,5 +308,7 @@ module.exports = {
   isActiveBond,
   preferredSecurityName,
   selectFinancialReport,
+  FINANCIAL_REFRESH_BATCH_SIZE,
+  nextFinancialBatchDelay,
   fetchTushareBondSafetySource,
 };

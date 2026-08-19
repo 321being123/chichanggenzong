@@ -1914,6 +1914,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     Promise.all([
       needsPriceDetails ? fetchCninfoEventsByYear(stockCode, announcementWindowStart, end, '转股价格').catch(() => [])
         : fetchCninfoEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
+      fetchSseEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
       fetchSzseEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
       fetchCninfoEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
       fetchSseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),

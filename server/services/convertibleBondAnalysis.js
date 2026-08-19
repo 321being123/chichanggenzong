@@ -318,6 +318,13 @@ function parseCouponRates(text) {
   return values;
 }
 
+function couponRowsFromClause(text) {
+  return parseCouponRates(text).map((coupon_rate, index) => ({
+    interest_year: index + 1,
+    coupon_rate,
+  }));
+}
+
 function parseMoney(text, fallback = null) {
   const raw = String(text || '').trim();
   const match = raw.match(/(\d+(?:\.\d+)?)\s*元/);
@@ -1871,7 +1878,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const cachedValuations = await loadCachedStockValuations(stockCode, isoDate(startDate));
   const stockStart = incrementalStart(cachedStockDaily, start);
   const valuationStart = incrementalStart(cachedValuations, start);
-  const announcementStart = String(profile.list_date || '').replace(/-/g,'') || start;
+  // cb_basic 的 list_date 对部分已上市转债为空；此时必须回退到发行生效日，
+  // 否则公告检索只覆盖最近窗口，历史转股价调整会永久缺失。
+  const announcementStart = String(profile.list_date || profile.value_date || '').replace(/-/g,'') || start;
   // P1 整改：财务报表与公告增量——日常刷新只补本地最新水位往前的重叠窗口；force 全量补历史时回退上市日
   const financialWaterMark = forceAll ? null : await latestStockFinancialEnd(stockCode);
   const financialWindowStart = financialWaterMark
@@ -1954,10 +1963,19 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     for (const row of freshValuations) await saveStockValuation(client, ids.stockId, row, sources.tushare);
     await saveRatingHistory(client, ids.bondId, tsRows(ratingData), sources.tushare);
     await saveRatingOutlooks(client, ids.bondId, ratingOutlooks);
-    if (couponData) await saveCouponSchedule(client, ids.bondId, tsRows(couponData), sources.tushare);
+    const upstreamCouponRows = couponData ? tsRows(couponData) : [];
+    if (upstreamCouponRows.length) await saveCouponSchedule(client, ids.bondId, upstreamCouponRows, sources.tushare);
     if (holderData) await saveFundHolding(client, ids.bondId, tsRows(holderData), sources.tushare);
     if (reportHolding) await saveReportFundHolding(client, ids.bondId, reportHolding, sources.cninfo || sources.calculated);
-    if (prospectusDetails) await saveProspectusDetails(client, ids.bondId, profile, prospectusDetails, sources.cninfo || sources.calculated);
+    const clauseCouponRows = couponRowsFromClause(profile.rate_clause);
+    const detailsToSave = prospectusDetails
+      ? Object.assign({}, prospectusDetails, {
+        coupon_rates: prospectusDetails.coupon_rates && prospectusDetails.coupon_rates.length
+          ? prospectusDetails.coupon_rates
+          : (!upstreamCouponRows.length ? clauseCouponRows : []),
+      })
+      : (!upstreamCouponRows.length && clauseCouponRows.length ? { coupon_rates: clauseCouponRows } : null);
+    if (detailsToSave) await saveProspectusDetails(client, ids.bondId, profile, detailsToSave, sources.cninfo || sources.calculated);
     await saveAnnouncementHistories(client, ids.bondId, announcements, profile, sources.cninfo || sources.calculated,
       noRevisionPeriods, priceChangeDetails);
     if (reportPriceHistory) {
@@ -2275,7 +2293,7 @@ async function getConvertibleBondSnapshot(value) {
 
 module.exports = {
   finite, yuanToHundredMillion, isoDate, normalizeBondCode, instrumentStatus, remainingYears, pricePairFromReason, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState,
-  annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, parseMoney, yieldToMaturity,
+  annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause, parseMoney, yieldToMaturity,
   cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart,

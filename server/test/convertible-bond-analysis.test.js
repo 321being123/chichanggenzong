@@ -1,7 +1,7 @@
 const assert = require('assert');
 const {
   normalizeBondCode, isoDate, instrumentStatus, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
-  earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates,
+  earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause,
   yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor,
 } = require('../services/convertibleBondAnalysis');
@@ -71,6 +71,9 @@ const timeline = estimatePutTimeline(putRows, putTerm, 10, '20260630', calendar,
 assert.strictEqual(timeline.remaining_days, 14);
 assert.ok(timeline.trigger_date);
 assert.deepStrictEqual(parseCouponRates('第一年0.3%、第二年0.5%、第三年1.0%'), [0.3,0.5,1]);
+assert.deepStrictEqual(couponRowsFromClause('20230222-20240221,票面利率:0.30%;20240222-20250221,票面利率:0.50%'), [
+  { interest_year: 1, coupon_rate: 0.3 }, { interest_year: 2, coupon_rate: 0.5 },
+]);
 assert.ok(Math.abs(yieldToMaturity(95,[{years:1,amount:5},{years:2,amount:105}])-0.078)<0.002);
 assert.ok(Math.abs(annualizedRedemptionYield(95,101,2) - (Math.sqrt(101/95)-1)) < 1e-10);
 assert.ok(Math.abs(annualizedRedemptionYield(95,101,2,0.2) - (Math.sqrt(100.8/95)-1)) < 1e-10);

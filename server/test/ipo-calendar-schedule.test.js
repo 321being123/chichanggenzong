@@ -20,4 +20,6 @@ const permissionError = summarizeIpoPythonError('Traceback (most recent call las
 assert.ok(permissionError.includes('权限不足') && !permissionError.includes('Traceback') && permissionError.length < 150);
 const jobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipoCalendarRefresh.js'), 'utf8');
 assert.ok(jobSource.includes("PYTHONUTF8: '1'") && jobSource.includes("PYTHONIOENCODING: 'utf-8'"));
+assert.match(jobSource, /parseTushareFailovers/, 'Python 成功切备用后的接口标记未进入日报解析链');
+assert.match(jobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入日报任务');
 console.log('PASS=9 FAIL=0');

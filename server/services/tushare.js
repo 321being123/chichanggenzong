@@ -1,6 +1,12 @@
 const https = require('https');
-const { withExternalCallGuard, openExternalCircuit } = require('./externalCallGuard');
-const { getProviderRuntime, recordProviderSwitch } = require('./externalApiConfig');
+const {
+  withExternalCallGuard,
+  openExternalCircuit,
+  closeExternalCircuit,
+  releaseExternalCircuitProbe,
+  tokenFingerprint,
+} = require('./externalCallGuard');
+const { getProviderRuntime } = require('./externalApiConfig');
 
 const API_URL = 'https://api.tushare.pro';
 const PRIMARY_SOURCE = 'tushare';
@@ -14,7 +20,8 @@ class TushareRequestError extends Error {
     this.errorType = details.errorType || (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' ? 'rate_limit' : 'network');
     this.statusCode = details.statusCode || null;
     this.apiName = details.apiName || '';
-    this.source = 'tushare';
+    this.source = details.source || 'tushare';
+    this.tokenFingerprint = details.tokenFingerprint || '';
     this.upstreamCode = details.upstreamCode == null ? null : details.upstreamCode;
     this.retryable = !['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'AUTH_ERROR', 'PERMISSION_DENIED', 'INVALID_PARAMETER'].includes(code);
   }
@@ -23,11 +30,18 @@ class TushareRequestError extends Error {
 function classifyUpstreamError(payload, statusCode, apiName) {
   const code = payload && payload.code;
   const message = String(payload && (payload.msg || payload.message) || `Tushare HTTP ${statusCode || 'error'}`);
-  if (code === 2002 || code === 40101 || /token|权限|permission|积分不足|没有接口|无权限/i.test(message)) {
-    return new TushareRequestError(code === 40101 ? 'AUTH_ERROR' : 'PERMISSION_DENIED', message,
+  if (statusCode === 401 || code === 401 || code === 40101 || /token\s*(无效|错误)|无效 token|invalid token|token is invalid/i.test(message)) {
+    return new TushareRequestError('AUTH_ERROR', message,
       { errorType: 'permission', statusCode, apiName, upstreamCode: code });
   }
-  if (statusCode === 429 || /429|频率|频次|配额|rate.?limit|quota/i.test(message)) {
+  if (statusCode === 403 || code === 2002 || /权限|permission|积分不足|没有接口|无权限/i.test(message)) {
+    return new TushareRequestError('PERMISSION_DENIED', message,
+      { errorType: 'permission', statusCode, apiName, upstreamCode: code });
+  }
+  if (/当日|每日|当天|日频|今日.*次数|次数.*耗尽|额度.*耗尽|配额.*耗尽|daily.*quota|daily.*limit/i.test(message)) {
+    return new TushareRequestError('QUOTA_EXHAUSTED', message, { errorType: 'rate_limit', statusCode, apiName, upstreamCode: code });
+  }
+  if (statusCode === 429 || /429|频率|频次|限速|配额|rate.?limit|quota/i.test(message)) {
     return new TushareRequestError('RATE_LIMIT', message, { errorType: 'rate_limit', statusCode, apiName, upstreamCode: code });
   }
   if (/参数|parameter|invalid/i.test(message)) {
@@ -44,6 +58,7 @@ function failoverEligible(error) {
 
 function requestWithToken(apiName, params, fields, token, guardSource, dataset) {
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
+  const fingerprint = tokenFingerprint(token);
   const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
     const request = https.request(API_URL, {
       method: 'POST',
@@ -60,8 +75,24 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
         if (response.statusCode !== 200 || !payload || payload.code !== 0) {
           const error = classifyUpstreamError(payload, response.statusCode, apiName);
           if (error.errorType === 'rate_limit') {
-            await openExternalCircuit(guardSource, error.message, `${guardSource}:${apiName}`).catch(() => {});
+            const circuit = await openExternalCircuit(guardSource, error.message, {
+              // 上游日额度属于当前接口；本系统总预算由 externalCallGuard 单独写入 Token 级 '*'.
+              apiName,
+              tokenFingerprint: fingerprint,
+              errorCode: error.code,
+              errorType: error.errorType,
+            }).catch(() => null);
+            error.recoverAt = circuit && circuit.recoverAt || null;
+          } else if (error.code === 'AUTH_ERROR' || error.code === 'PERMISSION_DENIED') {
+            await openExternalCircuit(guardSource, error.message, {
+              apiName: error.code === 'AUTH_ERROR' ? '*' : apiName,
+              tokenFingerprint: fingerprint,
+              errorCode: error.code,
+              errorType: error.errorType,
+            }).catch(() => {});
           }
+          error.source = guardSource;
+          error.tokenFingerprint = fingerprint;
           return reject(error);
         }
         const data = payload.data;
@@ -75,6 +106,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
         if (data.items.length === 0) {
           return reject(new TushareRequestError('EMPTY_DATA', `Tushare ${apiName} 返回空数据`, { errorType: 'empty_data', apiName, statusCode: response.statusCode }));
         }
+        await closeExternalCircuit(guardSource, apiName, fingerprint).catch(() => {});
         resolve(data);
       });
     });
@@ -87,9 +119,13 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
     });
     request.write(body);
     request.end();
-  }), `${guardSource}:${apiName}`);
-  return guardedRequest.catch(error => {
+  }), { apiName, tokenFingerprint: fingerprint });
+  return guardedRequest.catch(async error => {
     if (error && error.name === 'TushareRequestError') error.source = guardSource;
+    if (error && !error.apiName) error.apiName = apiName;
+    if (error && !error.tokenFingerprint) error.tokenFingerprint = fingerprint;
+    // 恢复探测遇到网络、空数据或结构错误时，释放探测占用并短暂退避，避免永久卡死。
+    await releaseExternalCircuitProbe(guardSource, apiName, fingerprint).catch(() => {});
     throw error;
   });
 }
@@ -112,19 +148,21 @@ async function tushareQuery(apiName, params = {}, fields = '') {
 
   const dataset = `${apiName}:${JSON.stringify(params || {})}:${fields || ''}`;
   let lastError = null;
+  let primaryFailure = null;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     try {
       const result = await requestWithToken(apiName, params, fields, candidate.token, candidate.source, dataset);
-      if (candidate.source === PRIMARY_SOURCE && runtime.mode === 'auto' && runtime.lastSwitch?.mode === 'backup') {
-        await recordProviderSwitch('tushare', 'primary', '主 Token 已恢复，自动切回主 Token', { automatic: true });
+      if (candidate.source === BACKUP_SOURCE && primaryFailure && runtime.mode === 'auto') {
+        const { notifyTushareFailover } = require('./externalApiConfig');
+        await notifyTushareFailover(apiName, 'primary', 'backup', primaryFailure.message, primaryFailure.recoverAt).catch(() => {});
       }
       return result;
     } catch (error) {
       lastError = error;
       if (index === candidates.length - 1 || !failoverEligible(error)) throw error;
       if (candidate.source === PRIMARY_SOURCE && runtime.mode === 'auto') {
-        await recordProviderSwitch('tushare', 'backup', error.message || '主 Token 请求失败，自动切换备用 Token', { automatic: true });
+        primaryFailure = error;
       }
     }
   }

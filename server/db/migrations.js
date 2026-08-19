@@ -3032,6 +3032,31 @@ async function migration077ConvertibleBondListMetrics() {
   `);
 }
 
+// ========== 078：按 Token＋接口隔离外部熔断 ==========
+async function migration078ExternalCircuits() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ops.external_circuits (
+      source TEXT NOT NULL,
+      api_name TEXT NOT NULL,
+      token_fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','closed')),
+      opened_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      recover_at TIMESTAMPTZ,
+      probe_in_flight BOOLEAN NOT NULL DEFAULT false,
+      error_code TEXT,
+      error_type TEXT,
+      detail TEXT,
+      last_success_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (source, api_name, token_fingerprint)
+    );
+    CREATE INDEX IF NOT EXISTS idx_external_circuits_open
+      ON ops.external_circuits(source, state, recover_at);
+    -- 预算表只负责调用计数；旧版本熔断列不再参与路由判断。
+    ALTER TABLE ops.external_call_budgets DROP COLUMN IF EXISTS circuit_open;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -3110,6 +3135,7 @@ const MIGRATIONS = [
   { version: '075_job_execution_protection', up: migration075JobExecutionProtection },
   { version: '076_external_call_protection', up: migration076ExternalCallProtection },
   { version: '077_convertible_bond_list_metrics', up: migration077ConvertibleBondListMetrics },
+  { version: '078_external_circuits', up: migration078ExternalCircuits },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3654,6 +3680,7 @@ module.exports = {
   migration075JobExecutionProtection,
   migration076ExternalCallProtection,
   migration077ConvertibleBondListMetrics,
+  migration078ExternalCircuits,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

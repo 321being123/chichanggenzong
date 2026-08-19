@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # 局部单元验证：桩掉重型依赖后导入真实脚本，测试本次两处修复（隔离样本，避免无关规则干扰）
+import contextlib
+import io
+import json
 import os
 import sys, types
 from pathlib import Path
@@ -8,7 +11,11 @@ for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2",
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
 import importlib.util
+import _common as common
+import external_call_guard as call_guard
 from sse_listing_parser import parse_sse_listing_detail, parse_sse_listing_index
+from _common import _classify_tushare_error, TushareRequestError, _emit_tushare_failover
+from external_call_guard import _circuit_api
 spec = importlib.util.spec_from_file_location(
     "ipo_daily_report_fix",
     Path(__file__).resolve().parent / "ipo_daily_report.py",
@@ -22,6 +29,116 @@ PASS = []
 def check(name, cond, detail=""):
     PASS.append(cond)
     print(f"[{'PASS' if cond else 'FAIL'}] {name}  {detail}")
+
+
+# ---------- Tushare 业务错误统一分类：HTTP 200 也必须进入接口熔断链 ----------
+check("HTTP 200频率超限分类为RATE_LIMIT",
+      _classify_tushare_error(40203, "频率超限") == "RATE_LIMIT")
+check("HTTP 200当日次数耗尽分类为QUOTA_EXHAUSTED",
+      _classify_tushare_error(40203, "当日调用次数已耗尽") == "QUOTA_EXHAUSTED")
+check("HTTP 200 Token 数字错误码分类为AUTH_ERROR",
+      _classify_tushare_error(401, "Unauthorized") == "AUTH_ERROR")
+check("HTTP 200权限数字错误码分类为PERMISSION_DENIED",
+      _classify_tushare_error(2002, "接口不可用") == "PERMISSION_DENIED")
+check("上游接口日额度保持接口级熔断",
+      _circuit_api("rt_min", "QUOTA_EXHAUSTED") == "rt_min")
+check("Tushare业务错误保留api_name",
+      TushareRequestError("RATE_LIMIT", "频率超限", "tushare", "rt_min", "fingerprint").api_name == "rt_min")
+marker_output = io.StringIO()
+with contextlib.redirect_stderr(marker_output):
+    _emit_tushare_failover("rt_min", TushareRequestError("RATE_LIMIT", "频率超限", "tushare", "rt_min", "fingerprint"))
+marker = json.loads(marker_output.getvalue().split(" ", 1)[1])
+check("Python备用切换标记保留接口名", marker["api_name"] == "rt_min" and marker["to_role"] == "backup")
+
+
+class _FakeCursor:
+    def __init__(self):
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+
+
+class _FakeConnection:
+    def __init__(self):
+        self.cursor_obj = _FakeCursor()
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+fake_connection = _FakeConnection()
+original_db_connect = call_guard._db_connect
+call_guard._db_connect = lambda: fake_connection
+try:
+    call_guard.close_external_circuit("tushare", "rt_min", "fingerprint")
+    call_guard.release_external_circuit_probe("tushare", "rt_min", "fingerprint")
+finally:
+    call_guard._db_connect = original_db_connect
+close_sql, close_params = fake_connection.cursor_obj.calls[0]
+release_sql, release_params = fake_connection.cursor_obj.calls[1]
+check("Python Token级关闭同时覆盖通配熔断",
+      "api_name=ANY(%s)" in close_sql and close_params[1] == ["rt_min", "*"])
+check("Python Token级退避同时覆盖通配熔断",
+      "api_name=ANY(%s)" in release_sql and release_params[2] == ["rt_min", "*"])
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
+original_guarded_urlopen = common.guarded_urlopen
+original_primary_token = common.TUSHARE_TOKEN
+original_backup_token = common.TUSHARE_BACKUP_TOKEN
+original_token_mode = common.TUSHARE_TOKEN_MODE
+original_guard_enabled = os.environ.get("EXTERNAL_CALL_GUARD")
+try:
+    fake_responses = iter([
+        {"code": 40203, "msg": "rt_min 频率超限"},
+        {"code": 0, "data": {"fields": ["ts_code", "close"], "items": [["000001.SZ", 10]]}},
+    ])
+    common.TUSHARE_TOKEN = "unit-primary"
+    common.TUSHARE_BACKUP_TOKEN = "unit-backup"
+    common.TUSHARE_TOKEN_MODE = "auto"
+    os.environ["EXTERNAL_CALL_GUARD"] = "0"
+    common.guarded_urlopen = lambda *_args, **_kwargs: _FakeResponse(next(fake_responses))
+    fallback_output = io.StringIO()
+    with contextlib.redirect_stderr(fallback_output):
+        fallback_rows = common._tushare("rt_min", {"ts_code": "000001.SZ"}, "ts_code,close")
+    fallback_marker = json.loads(fallback_output.getvalue().split(" ", 1)[1])
+    check("Python业务限流自动切备用", fallback_rows == [{"ts_code": "000001.SZ", "close": 10}]
+          and fallback_marker["api_name"] == "rt_min")
+finally:
+    common.guarded_urlopen = original_guarded_urlopen
+    common.TUSHARE_TOKEN = original_primary_token
+    common.TUSHARE_BACKUP_TOKEN = original_backup_token
+    common.TUSHARE_TOKEN_MODE = original_token_mode
+    if original_guard_enabled is None:
+        os.environ.pop("EXTERNAL_CALL_GUARD", None)
+    else:
+        os.environ["EXTERNAL_CALL_GUARD"] = original_guard_enabled
 
 
 # ---------- 测试1：_extract_controller_names 收紧正则（隔离「后缀命中」路径） ----------

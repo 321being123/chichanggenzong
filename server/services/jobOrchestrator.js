@@ -2,7 +2,6 @@ const { pool, startJobRun } = require('../db');
 const { fork, execFile } = require('child_process');
 const path = require('path');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
-const { openExternalCircuit } = require('./externalCallGuard');
 const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
@@ -57,10 +56,16 @@ function classifyFailure(error, result = {}) {
   const source = String((error && error.source) || result.source || '').toLowerCase() || null;
   const apiName = String((error && error.apiName) || result.apiName || '').trim() || null;
   const message = String((error && error.message) || result.error || error || '任务执行失败');
-  if (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|配额|rate.?limit|quota/i.test(message)) {
+  if (code === 'QUOTA_EXHAUSTED' || /当日|每日|当天|日频|次数.*耗尽|额度.*耗尽|配额.*耗尽|daily.*quota|daily.*limit/i.test(message)) {
+    return { code: code || 'QUOTA_EXHAUSTED', type: 'rate_limit', retryable: false, source, apiName, message };
+  }
+  if (code === 'RATE_LIMIT' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|频次|限速|配额|rate.?limit|quota/i.test(message)) {
     return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: false, source, apiName, message };
   }
-  if (code === 'AUTH_ERROR' || code === 'PERMISSION_DENIED' || code === 'INVALID_PARAMETER' || type === 'permission' || /权限|token|参数错误|invalid parameter/i.test(message)) {
+  if (code === 'AUTH_ERROR' || /token\s*(无效|错误)|无效 token|invalid token|401/i.test(message)) {
+    return { code: code || 'AUTH_ERROR', type: 'permission', retryable: false, source, apiName, message };
+  }
+  if (code === 'PERMISSION_DENIED' || code === 'INVALID_PARAMETER' || type === 'permission' || /权限|permission|积分不足|没有接口|无权限|参数错误|invalid parameter/i.test(message)) {
     return { code: code || 'NON_RETRYABLE', type: 'non_retryable', retryable: false, source, apiName, message };
   }
   if (code === 'EMPTY_DATA' || type === 'empty_data' || /数据为空|返回空|empty data/i.test(message)) {
@@ -198,18 +203,25 @@ function runJobInIsolatedProcess(jobCode, reason, businessDate, context, signal)
     }
     child.once('message', message => message && message.ok
       ? finish(resolve, message.result)
-      : finish(reject, Object.assign(new Error(message && message.error || 'job child process failed'), {
-        code: message && message.errorCode,
-        errorType: message && message.errorType,
-         retryable: message && message.retryable,
-         source: message && message.source,
-         dataset: message && message.dataset,
-         externalCallCount: message && message.externalCallCount,
-         externalSources: message && message.externalSources,
-       })));
+      : finish(reject, childErrorFromMessage(message)));
     child.once('error', error => finish(reject, error));
     child.once('exit', code => { if (!settled) finish(reject, new Error(`job child process exited ${code} without result`)); });
     child.send({ jobCode, reason, businessDate, context: context || {} });
+  });
+}
+
+function childErrorFromMessage(message) {
+  return Object.assign(new Error(message && message.error || 'job child process failed'), {
+    code: message && message.errorCode,
+    errorType: message && message.errorType,
+    retryable: message && message.retryable,
+    source: message && message.source,
+    dataset: message && message.dataset,
+    apiName: message && message.apiName,
+    tokenFingerprint: message && message.tokenFingerprint,
+    recoverAt: message && message.recoverAt,
+    externalCallCount: message && message.externalCallCount,
+    externalSources: message && message.externalSources,
   });
 }
 
@@ -232,12 +244,10 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const configuredMax = Number(definition.maxAttempts || 3);
   const maxAttempts = Math.min(configuredMax, Number(failure.maxAttempts || (definition.retryPolicy === 'external' ? 3 : configuredMax)));
   const noRetry = definition.retryPolicy === 'no_retry' || failure.retryable === false;
-  if (failure.type === 'rate_limit' && failure.source) {
-    const circuitSource = /^tushare(?:_backup)?$/i.test(failure.source) && failure.apiName
-      ? `${failure.source}:${failure.apiName}` : failure.source;
-    await openExternalCircuit(failure.source, message, circuitSource).catch(() => {});
-  }
-  const normalized = normalizeJobResult({ ...result, error: message, errorCode: failure.code, errorType: failure.type }, result.externalCalls);
+  // Tushare 熔断由底层请求在拿到 Token 指纹后持久化；编排层没有指纹时禁止创建全局熔断。
+  const normalized = normalizeJobResult({
+    ...result, error: message, errorCode: failure.code, errorType: failure.type, apiName: failure.apiName,
+  }, result.externalCalls);
   if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
     const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId);
@@ -402,6 +412,9 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       errorType: error.errorType,
       source: error.source,
       dataset: error.dataset,
+      apiName: error.apiName,
+      tokenFingerprint: error.tokenFingerprint,
+      recoverAt: error.recoverAt,
       externalCalls: Number(error.externalCallCount || 0),
       externalSources: error.externalSources || {},
     };
@@ -481,4 +494,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage };

@@ -55,6 +55,18 @@ function normalizeTestRole(value) {
   return ['primary', 'backup', 'current'].includes(String(value || '')) ? String(value) : 'current';
 }
 
+const TUSHARE_TEST_PROBES = {
+  trade_cal: { params: { exchange: 'SSE', start_date: '20200102', end_date: '20200102' }, fields: 'cal_date,is_open' },
+  rt_min: { params: { ts_code: '000001.SZ', freq: '1MIN' }, fields: 'ts_code,time,close' },
+  new_share: { params: { start_date: '20200101', end_date: '20200102' }, fields: 'ts_code,name,ipo_date' },
+  cb_daily: { params: { ts_code: '110000.SH', start_date: '20200102', end_date: '20200102' }, fields: 'ts_code,trade_date,close' },
+};
+
+function normalizeTestApi(value) {
+  const name = String(value || 'trade_cal').trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(TUSHARE_TEST_PROBES, name) ? name : 'trade_cal';
+}
+
 function safeTestMessage(message, token) {
   let text = String(message || 'API 测试失败').replace(/\s+/g, ' ').trim();
   if (token) text = text.split(String(token)).join('***');
@@ -76,12 +88,14 @@ function normalizeReturnedData(data) {
   return { fields, items, truncated: sourceItems.length > items.length };
 }
 
-function readTushareHealth(token) {
+function readTushareHealth(token, apiName = 'trade_cal') {
+  const probeName = normalizeTestApi(apiName);
+  const probe = TUSHARE_TEST_PROBES[probeName];
   const body = JSON.stringify({
-    api_name: 'trade_cal',
+    api_name: probeName,
     token,
-    params: { exchange: 'SSE', start_date: '20200102', end_date: '20200102' },
-    fields: 'cal_date,is_open',
+    params: probe.params,
+    fields: probe.fields,
   });
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
@@ -100,7 +114,14 @@ function readTushareHealth(token) {
         }
         if (response.statusCode !== 200 || !payload || payload.code !== 0) {
           const upstreamCode = payload && payload.code != null ? `（代码 ${payload.code}）` : '';
-          return reject(new Error(`${payload && (payload.msg || payload.message) || `HTTP ${response.statusCode || '未知'}`}${upstreamCode}`));
+          const error = new Error(`${payload && (payload.msg || payload.message) || `HTTP ${response.statusCode || '未知'}`}${upstreamCode}`);
+          error.code = response.statusCode === 401 || /token\s*(无效|错误)|invalid token|无效 token/i.test(error.message)
+            ? 'AUTH_ERROR' : response.statusCode === 403 || /权限|permission|积分不足|没有接口|无权限/i.test(error.message)
+              ? 'PERMISSION_DENIED' : /当日|每日|次数.*耗尽|额度.*耗尽|配额.*耗尽/i.test(error.message)
+                ? 'QUOTA_EXHAUSTED' : /429|频率|频次|限速|配额|rate.?limit|quota/i.test(error.message)
+                  ? 'RATE_LIMIT' : 'UPSTREAM_ERROR';
+          error.apiName = probeName;
+          return reject(error);
         }
         const data = payload.data;
         if (data && (!Array.isArray(data.fields) || !Array.isArray(data.items))) {
@@ -110,6 +131,7 @@ function readTushareHealth(token) {
           latency_ms: Date.now() - startedAt,
           data_count: data && Array.isArray(data.items) ? data.items.length : 0,
           returned_data: normalizeReturnedData(data),
+          api_name: probeName,
         });
       });
     });
@@ -137,15 +159,16 @@ function normalizeStoredTestResult(result) {
   };
 }
 
-async function recordProviderTestResult(provider, role, result) {
+async function recordProviderTestResult(provider, role, apiName, result) {
   const store = await readStore();
   store.providers = store.providers || {};
   const current = store.providers[provider] || {};
   current.testResults = current.testResults || {};
-  current.testResults[role] = normalizeStoredTestResult(result);
+  const key = `${role}:${normalizeTestApi(apiName || result && result.api_name)}`;
+  current.testResults[key] = normalizeStoredTestResult(result);
   store.providers[provider] = current;
   await writeStore(store);
-  return current.testResults[role];
+  return current.testResults[key];
 }
 
 async function readStore() {
@@ -180,18 +203,19 @@ async function getProviderRuntime(provider = 'tushare') {
     backup,
     mode: normalizeMode(item.mode),
     notifyOnSwitch: item.notifyOnSwitch !== false,
-    lastSwitch: item.lastSwitch || null,
+    lastSwitch: item.lastSwitch && item.lastSwitch.automatic === false ? item.lastSwitch : null,
     updatedAt: item.updatedAt || null,
     testResults: item.testResults || {},
   };
 }
 
-async function testProviderAvailability(provider = 'tushare', role = 'current') {
+async function testProviderAvailability(provider = 'tushare', role = 'current', apiName = 'trade_cal') {
   if (!PROVIDERS[provider]) throw new Error('不支持的外部 API');
   const runtime = await getProviderRuntime(provider);
   const requestedRole = normalizeTestRole(role);
+  const requestedApi = provider === 'tushare' ? normalizeTestApi(apiName) : '';
   const targetRole = requestedRole === 'current'
-    ? (runtime.mode === 'backup' || (runtime.mode === 'auto' && runtime.lastSwitch?.mode === 'backup') ? 'backup' : 'primary')
+    ? (runtime.mode === 'backup' ? 'backup' : 'primary')
     : requestedRole;
   const token = runtime[targetRole];
   const checkedAt = new Date().toISOString();
@@ -206,11 +230,11 @@ async function testProviderAvailability(provider = 'tushare', role = 'current') 
       latency_ms: null,
       data_count: null,
       checked_at: checkedAt,
-      api_name: provider === 'tushare' ? 'trade_cal' : '',
+      api_name: requestedApi,
     };
   } else if (provider === 'tushare') {
     try {
-      const health = await readTushareHealth(token);
+      const health = await readTushareHealth(token, requestedApi);
       result = {
         ok: true,
         status: 'available',
@@ -219,7 +243,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current') 
         message: '连接成功，Token 可用',
         ...health,
         checked_at: checkedAt,
-        api_name: 'trade_cal',
+        api_name: requestedApi,
       };
     } catch (error) {
       result = {
@@ -231,7 +255,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current') 
         latency_ms: Date.now() - Date.parse(checkedAt),
         data_count: null,
         checked_at: checkedAt,
-        api_name: 'trade_cal',
+        api_name: requestedApi,
       };
     }
   } else {
@@ -247,7 +271,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current') 
       api_name: '',
     };
   }
-  await recordProviderTestResult(provider, targetRole, result);
+  await recordProviderTestResult(provider, targetRole, requestedApi, result);
   return result;
 }
 
@@ -255,6 +279,7 @@ async function getExternalApiSettings() {
   const result = {};
   for (const provider of Object.keys(PROVIDERS)) {
     const item = await getProviderRuntime(provider);
+    const { getExternalCircuitStatuses } = require('./externalCallGuard');
     result[provider] = {
       provider: item.provider,
       label: item.label,
@@ -269,6 +294,7 @@ async function getExternalApiSettings() {
         if (safe) acc[role] = safe;
         return acc;
       }, {}),
+      circuits: await getExternalCircuitStatuses(provider, { primary: item.primary, backup: item.backup }),
     };
   }
   return result;
@@ -279,6 +305,10 @@ async function saveProviderSettings(provider, input = {}) {
   const store = await readStore();
   store.providers = store.providers || {};
   const current = store.providers[provider] || {};
+  const previousPrimary = decryptSecret(current.primary) || envSecret(provider, 'primary');
+  const previousBackup = decryptSecret(current.backup) || envSecret(provider, 'backup');
+  const primaryChanged = (typeof input.primary_token === 'string' && input.primary_token.trim()) || input.clear_primary === true;
+  const backupChanged = (typeof input.backup_token === 'string' && input.backup_token.trim()) || input.clear_backup === true;
   if (typeof input.primary_token === 'string' && input.primary_token.trim()) current.primary = encryptSecret(input.primary_token.trim());
   if (typeof input.backup_token === 'string' && input.backup_token.trim()) current.backup = encryptSecret(input.backup_token.trim());
   if (input.clear_primary === true) delete current.primary;
@@ -288,7 +318,34 @@ async function saveProviderSettings(provider, input = {}) {
   current.updatedAt = new Date().toISOString();
   store.providers[provider] = current;
   await writeStore(store);
+  if (provider === 'tushare' && (primaryChanged || backupChanged)) {
+    const { invalidateExternalCircuits, tokenFingerprint } = require('./externalCallGuard');
+    if (primaryChanged && previousPrimary) await invalidateExternalCircuits(provider, tokenFingerprint(previousPrimary));
+    if (backupChanged && previousBackup) await invalidateExternalCircuits(`${provider}_backup`, tokenFingerprint(previousBackup));
+  }
   return getProviderRuntime(provider);
+}
+
+async function notifyTushareFailover(apiName, fromRole, toRole, reason, recoverAt = null) {
+  const runtime = await getProviderRuntime('tushare');
+  if (runtime.notifyOnSwitch === false) return;
+  const recovery = recoverAt ? new Date(recoverAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : 'Token 配置变化后再测';
+  const api = String(apiName || '未知接口').slice(0, 64);
+  const from = fromRole === 'primary' ? '主Token' : '备用Token';
+  const to = toRole === 'primary' ? '主Token' : '备用Token';
+  try {
+    const { sendAlert } = require('./jobAlertMailer');
+    await sendAlert({
+      alertKey: `external-api:tushare:${fromRole}:${api}`,
+      alertType: 'external_api_interface_failover',
+      severity: 'warning',
+      jobCode: 'external_api:tushare',
+      subject: `${api}：${from} → ${to}`,
+      summary: `${api}：${from} → ${to}\n原因：${String(reason || '接口不可用').slice(0, 240)}\n预计恢复：${recovery}\n其他 Tushare 接口继续按各自熔断状态路由。`,
+    });
+  } catch (_) {
+    // 告警失败不影响接口路由。
+  }
 }
 
 async function recordProviderSwitch(provider, mode, reason = '', options = {}) {
@@ -327,12 +384,6 @@ async function recordProviderSwitch(provider, mode, reason = '', options = {}) {
 async function switchProvider(provider, mode, options = {}) {
   const target = normalizeMode(mode);
   await saveProviderSettings(provider, { mode: target });
-  if (provider === 'tushare') {
-    const { resetExternalCallGuard, resetExternalCallGuardPersistence } = require('./externalCallGuard');
-    resetExternalCallGuard();
-    await resetExternalCallGuardPersistence('tushare');
-    await resetExternalCallGuardPersistence('tushare_backup');
-  }
   if (target !== 'auto') await recordProviderSwitch(provider, target, options.reason || '后台手动切换', { manual: true, automatic: false, force: true });
   return getProviderRuntime(provider);
 }
@@ -347,6 +398,7 @@ module.exports = {
   getExternalApiSettings,
   testProviderAvailability,
   recordProviderTestResult,
+  notifyTushareFailover,
   saveProviderSettings,
   recordProviderSwitch,
   switchProvider,

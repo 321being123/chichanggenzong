@@ -49,6 +49,9 @@ const slotSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobSc
 assert.match(slotSource, /resultSummary\?\.window_end/, '任务成功判定未使用同步结果日期兜底');
 const orchestratorSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobOrchestrator.js'), 'utf8');
 assert.match(orchestratorSource, /\['fresh', 'already-ran-today'\]/, '已完成任务仍会被当作跳过反复补偿');
+const historyJobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipoHistorySync.js'), 'utf8');
+assert.match(historyJobSource, /parseTushareFailovers/, 'Python 成功切备用后的接口标记未进入 Node 解析链');
+assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入');
 const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');

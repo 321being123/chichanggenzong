@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { notifyJobFailure } = require('../services/jobAlertMailer');
-const { getProviderRuntime } = require('../services/externalApiConfig');
+const { getProviderRuntime, notifyTushareFailover } = require('../services/externalApiConfig');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_daily_report.py');
@@ -57,6 +57,22 @@ function summarizeIpoPythonError(value) {
   return finalLine.replace(/\s+/g, ' ').slice(0, 500);
 }
 
+function parseTushareFailovers(value) {
+  return String(value || '').split(/\r?\n/).map(line => {
+    const match = line.match(/^\[tushare-failover\]\s*(\{.*\})$/);
+    if (!match) return null;
+    try { return JSON.parse(match[1]); } catch (_) { return null; }
+  }).filter(item => item && item.api_name);
+}
+
+async function notifyTushareFailovers(failovers = []) {
+  for (const item of failovers) {
+    await notifyTushareFailover(
+      item.api_name, item.from_role || 'primary', item.to_role || 'backup', item.reason, item.recover_at
+    ).catch(() => {});
+  }
+}
+
 function runWith(executable, runtime) {
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
@@ -81,7 +97,8 @@ function runWith(executable, runtime) {
       const statsMatch = error.match(/\[external-call-stats\]\s*(\{.*\})/);
       let stats = {};
       try { stats = statsMatch ? JSON.parse(statsMatch[1]) : {}; } catch (_) {}
-      if (code === 0) return resolve({ output, externalCalls: Number(stats.total || 0), externalSources: stats.sources || {} });
+      const failovers = parseTushareFailovers(error);
+      if (code === 0) return resolve({ output, failovers, externalCalls: Number(stats.total || 0), externalSources: stats.sources || {} });
       const message = summarizeIpoPythonError(error || output || `exit ${code}`);
       const failure = new Error(message);
       if (/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN)\]/.test(message)) {
@@ -91,9 +108,13 @@ function runWith(executable, runtime) {
         failure.code = 'DATASET_LOCKED'; failure.errorType = 'in_progress';
       } else if (/\[UPSTREAM_5XX\]/.test(message)) {
         failure.code = 'UPSTREAM_5XX'; failure.errorType = 'network';
+      } else if (/\[(AUTH_ERROR|PERMISSION_DENIED)\]/.test(message)) {
+        failure.code = message.match(/\[(AUTH_ERROR|PERMISSION_DENIED)\]/)[1]; failure.errorType = 'permission';
       }
-      const sourceMatch = message.match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/);
+      const sourceMatch = message.match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/);
       if (sourceMatch) failure.source = sourceMatch[1];
+      const apiMatch = message.match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
+      if (apiMatch) failure.apiName = apiMatch[1];
       reject(failure);
     });
   });
@@ -108,13 +129,19 @@ async function runIpoCalendarRefreshRaw(reason = 'scheduled') {
     for (const executable of pythonCandidates()) {
       try {
         const output = await runWith(executable, runtime);
+        await notifyTushareFailovers(output.failovers);
         console.log(`[ipo-calendar] ${reason} 更新完成 (${executable})`);
-        return { ok: true, executable, output: output.output, externalCalls: output.externalCalls, externalSources: output.externalSources };
+        return { ok: true, executable, output: output.output, failovers: output.failovers, externalCalls: output.externalCalls, externalSources: output.externalSources };
       } catch (error) { errors.push(`${executable}: ${summarizeIpoPythonError(error.message)}`); }
     }
     const failure = new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
-    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/)).find(Boolean);
-    if (typed) { failure.code = typed[1]; failure.source = typed[2]; failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : 'rate_limit'; }
+    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/)).find(Boolean);
+    if (typed) {
+      failure.code = typed[1]; failure.source = typed[2];
+      failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : 'rate_limit';
+      const apiMatch = errors.join(' ').match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
+      if (apiMatch) failure.apiName = apiMatch[1];
+    }
     throw failure;
   } finally { running = false; }
 }

@@ -85,15 +85,19 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     mock(429, { code: 40203, msg: '频率限制' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'RATE_LIMIT' && error.retryable === false);
     const circuitRows = await require('../db/connection').pool.query(
-      `SELECT source,circuit_open FROM ops.external_call_budgets
-        WHERE (source=$1 OR source=$2) AND window_type='day'
-          AND window_key=(timezone('Asia/Shanghai', now()))::date::text`,
-      ['tushare', 'tushare:daily']
+      `SELECT source,api_name,state FROM ops.external_circuits
+        WHERE source=$1 AND token_fingerprint=$2`,
+      ['tushare', guard.tokenFingerprint('test-token')]
     );
-    assert.strictEqual(circuitRows.rows.find(row => row.source === 'tushare')?.circuit_open, false,
-      '单个 Tushare 接口限流不得熔断整个 Tushare 数据源');
-    assert.strictEqual(circuitRows.rows.find(row => row.source === 'tushare:daily')?.circuit_open, true,
+    assert.strictEqual(circuitRows.rows.find(row => row.api_name === '*'), undefined,
+      '单个 Tushare 接口限流不得创建 Token 全局熔断');
+    assert.strictEqual(circuitRows.rows.find(row => row.api_name === 'daily')?.state, 'open',
       '限流熔断必须记录到具体接口');
+    const budgetColumns = await require('../db/connection').pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema='ops' AND table_name='external_call_budgets' AND column_name='circuit_open'`
+    );
+    assert.strictEqual(budgetColumns.rowCount, 0, '预算表不得继续保存熔断状态');
 
     mock(200, { code: 0, data: { fields: ['cal_date'], items: [['20260812']] } });
     const unaffected = await tushareQuery('trade_cal');
@@ -125,10 +129,13 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     assert.strictEqual(guardedExternalCalls, 1, '同一数据集并发时外部 API 实际调用次数必须为 1');
     await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error => error.code === 'QUOTA_EXHAUSTED');
     const budgetRows = await require('../db/connection').pool.query(
-      `SELECT call_count,circuit_open FROM ops.external_call_budgets WHERE source=$1 AND window_type='day'`, [guardSource]
+      `SELECT call_count FROM ops.external_call_budgets WHERE source=$1 AND window_type='day'`, [guardSource]
     );
     assert.strictEqual(budgetRows.rows[0].call_count, 1, '每日预算必须跨调用持久化计数');
-    assert.strictEqual(budgetRows.rows[0].circuit_open, true, '每日额度耗尽必须持久化熔断');
+    const quotaCircuit = await require('../db/connection').pool.query(
+      `SELECT api_name,state FROM ops.external_circuits WHERE source=$1 AND token_fingerprint='none'`, [guardSource]
+    );
+    assert.strictEqual(quotaCircuit.rows.find(row => row.api_name === '*')?.state, 'open', '每日额度耗尽必须持久化 Token 级熔断');
     await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
     delete process.env[`${guardEnv}_PER_MINUTE_BUDGET`];
     delete process.env[`${guardEnv}_DAILY_BUDGET`];

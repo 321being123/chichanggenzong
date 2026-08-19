@@ -11,13 +11,21 @@ sudo 提权走免密（服务器 sudoers 已配置 NOPASSWD），全程不依赖
 import os
 import json
 import re
+import sys
 import urllib.request
 import urllib.error
 import time
 import tempfile
 import subprocess
 import shutil
-from external_call_guard import guarded_urlopen
+from external_call_guard import (
+    guarded_urlopen,
+    open_external_circuit,
+    close_external_circuit,
+    release_external_circuit_probe,
+    token_fingerprint,
+    enabled,
+)
 
 # ============ 引号转义（4 份脚本完全一致） ============
 def shlex_quote(s):
@@ -90,6 +98,47 @@ def _tushare_failover_eligible(error=None, message=""):
     return bool(re.search(r"token|权限|permission|积分不足|没有接口|无权限|频率|频次|配额|rate.?limit|quota", str(message), re.I))
 
 
+class TushareRequestError(RuntimeError):
+    def __init__(self, code, message, source, api_name, fingerprint, recover_at=None):
+        super().__init__(message)
+        self.code = code
+        self.error_type = "rate_limit" if code in {"RATE_LIMIT", "QUOTA_EXHAUSTED"} else "permission" if code in {"AUTH_ERROR", "PERMISSION_DENIED"} else "upstream"
+        self.source = source
+        self.api_name = api_name
+        self.token_fingerprint = fingerprint
+        self.recover_at = recover_at
+
+    def __str__(self):
+        return f"[{self.code}][{self.source}][{self.api_name}] {super().__str__()}"
+
+
+def _emit_tushare_failover(api_name, error):
+    recover_at = getattr(error, "recover_at", None)
+    if hasattr(recover_at, "isoformat"):
+        recover_at = recover_at.isoformat()
+    payload = {
+        "api_name": str(api_name or "")[:64],
+        "from_role": "primary",
+        "to_role": "backup",
+        "reason": str(error or "接口不可用")[:240],
+        "recover_at": recover_at,
+    }
+    print("[tushare-failover] " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")), file=sys.stderr, flush=True)
+
+
+def _classify_tushare_error(code, message):
+    text = str(message or "")
+    if code in {401, 40101} or re.search(r"token\s*(无效|错误)|无效 token|invalid token", text, re.I):
+        return "AUTH_ERROR"
+    if code == 2002 or re.search(r"权限|permission|积分不足|没有接口|无权限", text, re.I):
+        return "PERMISSION_DENIED"
+    if re.search(r"当日|每日|当天|日频|次数.*耗尽|额度.*耗尽|配额.*耗尽|daily.*quota|daily.*limit", text, re.I):
+        return "QUOTA_EXHAUSTED"
+    if re.search(r"429|频率|频次|限速|配额|rate.?limit|quota", text, re.I):
+        return "RATE_LIMIT"
+    return "UPSTREAM_ERROR"
+
+
 def _tushare(api_name, params, fields):
     """统一直连 Tushare Pro 官方 POST API。"""
     candidates = [(TUSHARE_TOKEN, "tushare"), (TUSHARE_BACKUP_TOKEN, "tushare_backup")]
@@ -102,6 +151,7 @@ def _tushare(api_name, params, fields):
         raise RuntimeError("当前 Tushare 模式未配置可用 Token")
     dataset = api_name + json.dumps(params or {}, ensure_ascii=False, separators=(',', ':')) + (fields or '')
     last_error = None
+    primary_failure = None
     for index, (token, source) in enumerate(candidates):
         body = json.dumps({
             "api_name": api_name,
@@ -116,13 +166,30 @@ def _tushare(api_name, params, fields):
             method="POST",
         )
         try:
-            with guarded_urlopen(request, timeout=30, source=source, dataset=dataset) as response:
+            fingerprint = token_fingerprint(token)
+            with guarded_urlopen(
+                request, timeout=30, source=source, dataset=dataset,
+                api_name=api_name, token_fingerprint_value=fingerprint,
+            ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             if payload.get("code") != 0:
                 message = payload.get("msg") or payload.get("code")
-                if index < len(candidates) - 1 and _tushare_failover_eligible(message=message):
+                error_code = _classify_tushare_error(payload.get("code"), message)
+                recover_at = _recover_at(error_code) if enabled() else None
+                if enabled() and error_code in {"AUTH_ERROR", "PERMISSION_DENIED", "RATE_LIMIT", "QUOTA_EXHAUSTED"}:
+                    open_external_circuit(
+                        source,
+                        "*" if error_code == "AUTH_ERROR" else api_name,
+                        fingerprint,
+                        error_code,
+                        f"Tushare {api_name} 错误: {message}",
+                    )
+                error = TushareRequestError(error_code, f"Tushare {api_name} 错误: {message}", source, api_name, fingerprint, recover_at)
+                if index < len(candidates) - 1 and _tushare_failover_eligible(error=error, message=message):
+                    last_error = error
+                    primary_failure = error if source == "tushare" else primary_failure
                     continue
-                raise RuntimeError(f"Tushare {api_name} 错误: {message}")
+                raise error
             data = payload.get("data") or {}
             fields_out = data.get("fields")
             items = data.get("items")
@@ -130,11 +197,21 @@ def _tushare(api_name, params, fields):
                 raise RuntimeError(f"Tushare {api_name} 响应结构异常")
             if any(not isinstance(row, list) or len(row) != len(fields_out) for row in items):
                 raise RuntimeError(f"Tushare {api_name} 字段与数据列数不一致")
+            if enabled():
+                close_external_circuit(source, api_name, fingerprint)
+            if source == "tushare_backup" and primary_failure is not None:
+                _emit_tushare_failover(api_name, primary_failure)
             return [dict(zip(fields_out, row)) for row in items]
         except Exception as error:
             last_error = error
+            if enabled():
+                try:
+                    release_external_circuit_probe(source, api_name, fingerprint)
+                except Exception:
+                    pass
             if index == len(candidates) - 1 or not _tushare_failover_eligible(error=error, message=str(error)):
                 raise
+            primary_failure = error if source == "tushare" else primary_failure
     raise last_error
 
 

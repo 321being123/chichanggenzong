@@ -1026,9 +1026,10 @@ function renderSettingsTabs(el, s) {
     '<label>切换通知</label><label style="display:flex;align-items:center;gap:8px;"><input id="set-tushare-notify" type="checkbox" ' + (apiSettings.notify_on_switch !== false ? 'checked' : '') + '>主备切换时发送后台告警</label></div>' +
     '<div style="font-size:12px;color:#777;margin-top:16px;">当前模式：' + modeLabel + (apiSwitch ? '；最近切换：' + escapeHtml(apiSwitch.switched_at || '') + '（' + escapeHtml(apiSwitch.reason || '') + '）' : '') + '</div>' +
     '<div style="display:flex;gap:10px;margin-top:18px;"><button class="btn btn-primary" onclick="saveExternalApiSettings()">保存 API 参数</button><button class="btn btn-outline" onclick="switchExternalApiMode(\'tushare\')">手动应用当前模式</button></div>' +
-    '<div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">API 可用性测试</div><div style="font-size:12px;color:#777;margin-bottom:10px;">点击后仅测试指定凭据，不会自动切换主备；测试接口为 trade_cal。</div>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(apiTests.primary, '主 API') + renderExternalApiTestResult(apiTests.backup, '备用 API') + '</div></div></div></div>';
+     '<div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">API 可用性测试</div><div style="font-size:12px;color:#777;margin-bottom:10px;">请选择接口后测试指定 Token；不会自动切换主备。rt_min 返回空行也表示接口已被接受，不能用 trade_cal 代替权限验证。</div>' +
+     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><label for="set-tushare-test-api" style="font-size:12px;color:#555;">测试接口</label><select id="set-tushare-test-api" style="padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;"><option value="trade_cal">trade_cal（基础）</option><option value="rt_min">rt_min（实时分钟）</option><option value="new_share">new_share（新股）</option><option value="cb_daily">cb_daily（转债日线）</option></select></div>' +
+     '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
+     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + '</div></div></div>';
   switchSettingsTab(settingsTab);
 }
 function renderExternalApiTestResult(result, label) {
@@ -1036,7 +1037,24 @@ function renderExternalApiTestResult(result, label) {
   const status = result.status === 'available' ? '可用' : result.status === 'not_configured' ? '未配置' : '不可用';
   const color = result.ok ? '#16803c' : '#c62828';
   const latency = result.latency_ms == null ? '' : ' · ' + Number(result.latency_ms) + ' ms';
-  return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;font-size:12px;"><div style="color:#555;">' + label + '：<span style="font-weight:600;color:' + color + ';">' + status + '</span>' + latency + '</div><div style="color:#888;margin-top:4px;word-break:break-all;">' + escapeHtml(result.message || '') + (result.checked_at ? ' · ' + escapeHtml(result.checked_at) : '') + '</div>' + renderExternalApiReturnedData(result.returned_data) + '</div>';
+   return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;font-size:12px;"><div style="color:#555;">' + label + ' · ' + escapeHtml(result.api_name || '未知接口') + '：<span style="font-weight:600;color:' + color + ';">' + status + '</span>' + latency + '</div><div style="color:#888;margin-top:4px;word-break:break-all;">' + escapeHtml(result.message || '') + (result.checked_at ? ' · ' + escapeHtml(result.checked_at) : '') + '</div>' + renderExternalApiReturnedData(result.returned_data) + '</div>';
+ }
+function getLatestExternalApiTest(tests, role) {
+  if (!tests) return null;
+  if (tests[role] && tests[role].api_name) return tests[role];
+  const values = Object.keys(tests).filter(function (key) { return key.indexOf(role + ':') === 0; }).map(function (key) { return tests[key]; }).filter(Boolean);
+  values.sort(function (a, b) { return String(b.checked_at || '').localeCompare(String(a.checked_at || '')); });
+  return values[0] || null;
+}
+function renderExternalApiCircuits(circuits) {
+  if (!Array.isArray(circuits) || !circuits.length) return '<div style="margin-top:12px;color:#888;font-size:12px;">当前没有接口熔断。</div>';
+  let html = '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;"><div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">当前接口熔断</div>';
+  circuits.forEach(function (item) {
+    const role = item.source_role === 'primary' ? '主Token' : item.source_role === 'backup' ? '备用Token' : item.source_role;
+    const recovery = item.recover_at ? new Date(item.recover_at).toLocaleString('zh-CN', { hour12: false }) : 'Token 配置变化后再测';
+    html += '<div style="padding:8px 10px;background:#fff8e1;border-radius:6px;margin-top:6px;font-size:12px;color:#6d4c00;">' + escapeHtml(item.api_name || '*') + '：' + escapeHtml(role) + '熔断；原因：' + escapeHtml(item.detail || item.error_code || '上游错误') + '；预计恢复：' + escapeHtml(recovery) + '</div>';
+  });
+  return html + '</div>';
 }
 function renderExternalApiReturnedData(data) {
   if (!data || !Array.isArray(data.fields)) return '';
@@ -1087,8 +1105,9 @@ async function testExternalApiAvailability(provider, role) {
   const originalText = button ? button.textContent : '';
   if (button) { button.disabled = true; button.textContent = '测试中...'; }
   const label = role === 'primary' ? '主' : role === 'backup' ? '备用' : '当前';
+  const apiName = (document.getElementById('set-tushare-test-api') || {}).value || 'trade_cal';
   try {
-    const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role }) });
+    const r = await fetch(api('/api/admin/settings/external-api/' + encodeURIComponent(provider) + '/test'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: role, api_name: apiName }) });
     const d = await r.json();
     if (!r.ok) { showToast(d.error || '测试失败'); if (button) { button.disabled = false; button.textContent = originalText; } return; }
     showToast((d.result && d.result.ok ? label + ' API 可用' : label + ' API 不可用：' + ((d.result && d.result.message) || '请检查配置')));

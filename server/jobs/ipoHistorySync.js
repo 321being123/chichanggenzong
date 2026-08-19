@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { getProviderRuntime } = require('../services/externalApiConfig');
+const { getProviderRuntime, notifyTushareFailover } = require('../services/externalApiConfig');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_history_sync.py');
@@ -42,6 +42,22 @@ function pythonCandidates() {
     process.platform === 'win32' ? 'py' : 'python3', 'python'].filter(Boolean);
 }
 
+function parseTushareFailovers(value) {
+  return String(value || '').split(/\r?\n/).map(line => {
+    const match = line.match(/^\[tushare-failover\]\s*(\{.*\})$/);
+    if (!match) return null;
+    try { return JSON.parse(match[1]); } catch (_) { return null; }
+  }).filter(item => item && item.api_name);
+}
+
+async function notifyTushareFailovers(failovers = []) {
+  for (const item of failovers) {
+    await notifyTushareFailover(
+      item.api_name, item.from_role || 'primary', item.to_role || 'backup', item.reason, item.recover_at
+    ).catch(() => {});
+  }
+}
+
 function runWith(executable, runtime) {
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
@@ -64,12 +80,17 @@ function runWith(executable, runtime) {
       if (code !== 0) {
         const message = (error || output || `exit ${code}`).trim();
         const failure = new Error(message);
-        const typed = message.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/);
-        if (typed) { failure.code = typed[1]; failure.source = typed[2]; failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : 'rate_limit'; }
+        const typed = message.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/);
+        if (typed) {
+          failure.code = typed[1]; failure.source = typed[2];
+          failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : 'rate_limit';
+          const apiMatch = message.match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
+          if (apiMatch) failure.apiName = apiMatch[1];
+        }
         return reject(failure);
       }
       const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '{}';
-      try { resolve(JSON.parse(line)); }
+      try { resolve({ ...JSON.parse(line), failovers: parseTushareFailovers(error) }); }
       catch (_) { reject(new Error(`同步脚本返回了无法识别的结果: ${line.slice(0, 300)}`)); }
     });
   });
@@ -107,6 +128,7 @@ async function runIpoHistorySync(reason = 'scheduled') {
     for (const executable of pythonCandidates()) {
       try {
         const result = await runWith(executable, runtime);
+        await notifyTushareFailovers(result.failovers);
         const detail = JSON.stringify({ reason, executable, retryOf, ...result });
         await finishJobRun(runId, true, detail);
         console.log(`[ipo-history] ${reason} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
@@ -116,8 +138,13 @@ async function runIpoHistorySync(reason = 'scheduled') {
       }
     }
     const failure = new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
-    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX)\]\[([^\]]+)\]/)).find(Boolean);
-    if (typed) { failure.code = typed[1]; failure.source = typed[2]; failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : 'rate_limit'; }
+    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/)).find(Boolean);
+    if (typed) {
+      failure.code = typed[1]; failure.source = typed[2];
+      failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : 'rate_limit';
+      const apiMatch = errors.join(' ').match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
+      if (apiMatch) failure.apiName = apiMatch[1];
+    }
     throw failure;
   } catch (error) {
     await finishJobRun(runId, false, JSON.stringify({ reason, error: error.message.slice(0, 1000) }));

@@ -11,6 +11,17 @@ function send(message) {
 
 process.on('message', async message => {
   try {
+    if (process.env.NODE_ENV === 'test' && message && message.jobCode === '__test_tushare_api_propagation') {
+      const error = new Error('模拟 rt_min 业务限流');
+      error.code = 'RATE_LIMIT';
+      error.errorType = 'rate_limit';
+      error.source = 'tushare';
+      error.dataset = 'rt_min:test';
+      error.apiName = 'rt_min';
+      error.tokenFingerprint = 'test-fingerprint';
+      error.recoverAt = '2026-08-20T00:00:01.000Z';
+      throw error;
+    }
     if (message.businessDate) process.env.JOB_BUSINESS_DATE = String(message.businessDate).slice(0, 10);
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
     const stats = getExternalCallStats();
@@ -28,6 +39,9 @@ process.on('message', async message => {
       retryable: error && error.retryable,
       source: error && error.source,
       dataset: error && error.dataset,
+      apiName: error && error.apiName,
+      tokenFingerprint: error && error.tokenFingerprint,
+      recoverAt: error && error.recoverAt,
       externalCallCount: Number(error && error.externalCalls || stats.total),
       externalSources: stats.sources,
     });

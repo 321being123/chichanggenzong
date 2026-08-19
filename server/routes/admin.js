@@ -628,13 +628,14 @@ router.post('/settings/external-api/:provider/switch', asyncHandler(async (req, 
 router.post('/settings/external-api/:provider/test', asyncHandler(async (req, res) => {
   const provider = String(req.params.provider || '').trim();
   const role = String(req.body && req.body.role || 'current').trim();
+  const apiName = String(req.body && req.body.api_name || 'trade_cal').trim();
   if (!EXTERNAL_API_PROVIDERS[provider]) return res.status(400).json({ error: '不支持的外部 API' });
   if (!['primary', 'backup', 'current'].includes(role)) return res.status(400).json({ error: '测试目标非法' });
-  const result = await testProviderAvailability(provider, role);
+  const result = await testProviderAvailability(provider, role, apiName);
   await audit(req, 'settings_external_api_test', provider, {
     result: result.ok ? 'success' : 'failure',
     detail: `${result.role === 'primary' ? '主' : '备用'} API 测试：${result.message}`,
-    metadata: { provider, role: result.role, status: result.status, latency_ms: result.latency_ms },
+    metadata: { provider, role: result.role, api_name: result.api_name, status: result.status, latency_ms: result.latency_ms },
   });
   const settings = await getExternalApiSettings();
   res.json({ ok: result.ok, result, settings: settings[provider] });

@@ -1,12 +1,13 @@
 """Python 自动任务共用的外部请求预算、熔断和数据集锁。"""
 import atexit
+import hashlib
 import json
 import os
 import re
 import sys
 import time
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
@@ -20,7 +21,7 @@ def enabled():
 
 
 class ExternalCallGuardError(RuntimeError):
-    def __init__(self, code, message, source, dataset):
+    def __init__(self, code, message, source, dataset, api_name="", token_fingerprint="", recover_at=None):
         super().__init__(message)
         self.code = code
         self.error_type = {
@@ -30,9 +31,13 @@ class ExternalCallGuardError(RuntimeError):
         }.get(code, "circuit_open")
         self.source = source
         self.dataset = dataset
+        self.api_name = api_name or ""
+        self.token_fingerprint = token_fingerprint or ""
+        self.recover_at = recover_at
 
     def __str__(self):
-        return f"[{self.code}][{self.source}] {super().__str__()}"
+        api = f"[{self.api_name}]" if self.api_name else ""
+        return f"[{self.code}][{self.source}]{api} {super().__str__()}"
 
 
 def _db_connect():
@@ -58,14 +63,18 @@ def _source_key(source):
     return str(source or "python-http")
 
 
-def _circuit_key(source, dataset=""):
-    """Tushare 的限流按接口隔离，不能让 rt_min 熔断 new_share。"""
-    source_key = _source_key(source)
-    if source_key.startswith("tushare"):
+def token_fingerprint(token):
+    value = str(token or "")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else "none"
+
+
+def _api_name(source, dataset="", api_name=None):
+    if api_name:
+        return str(api_name)[:64]
+    if _source_key(source).startswith("tushare"):
         match = re.match(r"^([A-Za-z0-9_]+)", str(dataset or ""))
-        if match:
-            return f"{source_key}:{match.group(1)}"
-    return source_key
+        return match.group(1)[:64] if match else "*"
+    return "*"
 
 
 def _env_key(source):
@@ -99,9 +108,78 @@ def _record(source):
     _stats["sources"][key] = int(_stats["sources"].get(key, 0)) + 1
 
 
-def _consume(conn, source, dataset, circuit_source=None):
+def _next_minute_at():
+    now = time.time()
+    return datetime.fromtimestamp((int(now // 60) + 1) * 60 + 1, tz=ZoneInfo("UTC"))
+
+
+def _next_shanghai_day_at():
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    return (now.replace(hour=0, minute=0, second=1, microsecond=0) + timedelta(days=1)).astimezone(ZoneInfo("UTC"))
+
+
+def _recover_at(code):
+    if code == "RATE_LIMIT":
+        return _next_minute_at()
+    if code == "QUOTA_EXHAUSTED":
+        return _next_shanghai_day_at()
+    return None
+
+
+def _circuit_api(api_name, code):
+    # 只有 Token 认证失效或调用方明确传入 '*' 时才扩大到整个 Token。
+    # 上游接口自己的当日额度仍然绑定当前接口；本系统总预算由 _consume 显式传入 '*'.
+    return "*" if code == "AUTH_ERROR" else (api_name or "*")
+
+
+def _upsert_circuit(cur, source, api_name, fingerprint, code, detail, recover_at):
+    cur.execute(
+        """INSERT INTO ops.external_circuits
+           (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,error_code,error_type,detail)
+           VALUES(%s,%s,%s,'open',%s,%s,%s,%s,%s)
+           ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
+           state='open',recover_at=EXCLUDED.recover_at,probe_in_flight=false,
+           error_code=EXCLUDED.error_code,error_type=EXCLUDED.error_type,
+           detail=EXCLUDED.detail,opened_at=now(),updated_at=now()""",
+        (source, _circuit_api(api_name, code), fingerprint, recover_at, False,
+         code, "rate_limit" if code in {"RATE_LIMIT", "QUOTA_EXHAUSTED"} else "circuit_open",
+         str(detail or "")[:1000]),
+    )
+
+
+def _check_circuit(cur, source, api_name, fingerprint, dataset):
+    names = [api_name, "*"] if api_name != "*" else ["*"]
+    cur.execute(
+        """SELECT api_name,recover_at,probe_in_flight,error_code,detail
+             FROM ops.external_circuits
+            WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s AND state='open'
+            ORDER BY CASE WHEN api_name='*' THEN 0 ELSE 1 END
+            FOR UPDATE""",
+        (source, names, fingerprint),
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+    circuit_api, recover_at, probe_in_flight, code, detail = row
+    if recover_at is not None and recover_at <= datetime.now(ZoneInfo("UTC")) and not probe_in_flight:
+        cur.execute(
+            """UPDATE ops.external_circuits SET probe_in_flight=true,updated_at=now()
+                WHERE source=%s AND api_name=%s AND token_fingerprint=%s""",
+            (source, circuit_api, fingerprint),
+        )
+        return
+    scope = "Token" if circuit_api == "*" else f"接口 {circuit_api}"
+    raise ExternalCallGuardError(
+        "CIRCUIT_OPEN", f"{source} {scope}已熔断，等待恢复探测", source, dataset,
+        api_name=circuit_api if circuit_api != "*" else api_name,
+        token_fingerprint=fingerprint, recover_at=recover_at,
+    )
+
+
+def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fingerprint_value="none"):
     source = _source_key(source)
-    circuit_source = _source_key(circuit_source or _circuit_key(source, dataset))
+    api_name = _api_name(source, dataset, api_name)
+    fingerprint = str(token_fingerprint_value or "none")
     day_key = _date_text()
     minute_key = f"{day_key}:{_minute_key()}"
     day_limit = _limit(source, "day")
@@ -109,21 +187,10 @@ def _consume(conn, source, dataset, circuit_source=None):
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(hashtext('external_budget:' || %s))", (source,))
-            cur.execute(
-                """SELECT call_count,circuit_open FROM ops.external_call_budgets
-                   WHERE source=%s AND window_type='day' AND window_key=%s FOR UPDATE""",
-                (source, day_key),
-            )
+            cur.execute("""SELECT call_count FROM ops.external_call_budgets
+                           WHERE source=%s AND window_type='day' AND window_key=%s FOR UPDATE""", (source, day_key))
             day_row = cur.fetchone()
-            cur.execute(
-                """SELECT circuit_open FROM ops.external_call_budgets
-                   WHERE source=%s AND window_type='day' AND window_key=%s FOR UPDATE""",
-                (circuit_source, day_key),
-            )
-            circuit_row = cur.fetchone() if circuit_source != source else day_row
-            if ((circuit_source == source and day_row and day_row[1])
-                    or (circuit_source != source and circuit_row and circuit_row[0])):
-                raise ExternalCallGuardError("CIRCUIT_OPEN", f"{source} 数据源今日已熔断，停止自动请求", source, dataset)
+            _check_circuit(cur, source, api_name, fingerprint, dataset)
             cur.execute(
                 """SELECT call_count FROM ops.external_call_budgets
                    WHERE source=%s AND window_type='minute' AND window_key=%s FOR UPDATE""",
@@ -133,18 +200,15 @@ def _consume(conn, source, dataset, circuit_source=None):
             day_count = int(day_row[0] if day_row else 0)
             minute_count = int(minute_row[0] if minute_row else 0)
             if minute_count >= minute_limit:
-                raise ExternalCallGuardError("RATE_LIMIT", f"{source} 已达到每分钟请求预算 {minute_limit}", source, dataset)
-            if day_count >= day_limit:
-                cur.execute(
-                    """INSERT INTO ops.external_call_budgets
-                       (source,window_type,window_key,call_count,budget_limit,circuit_open,last_error)
-                       VALUES(%s,'day',%s,%s,%s,true,%s)
-                       ON CONFLICT(source,window_type,window_key) DO UPDATE SET
-                       circuit_open=true,last_error=EXCLUDED.last_error,updated_at=now()""",
-                    (source, day_key, day_count, day_limit, f"达到当日请求预算 {day_limit}"),
-                )
+                recover_at = _recover_at("RATE_LIMIT")
+                _upsert_circuit(cur, source, api_name, fingerprint, "RATE_LIMIT", f"{source} 已达到每分钟请求预算 {minute_limit}", recover_at)
                 conn.commit()
-                raise ExternalCallGuardError("QUOTA_EXHAUSTED", f"{source} 已达到当日请求预算 {day_limit}", source, dataset)
+                raise ExternalCallGuardError("RATE_LIMIT", f"{source} {api_name} 已达到每分钟请求预算 {minute_limit}", source, dataset, api_name, fingerprint, recover_at)
+            if day_count >= day_limit:
+                recover_at = _recover_at("QUOTA_EXHAUSTED")
+                _upsert_circuit(cur, source, "*", fingerprint, "QUOTA_EXHAUSTED", f"{source} 已达到当日请求预算 {day_limit}", recover_at)
+                conn.commit()
+                raise ExternalCallGuardError("QUOTA_EXHAUSTED", f"{source} 已达到当日请求预算 {day_limit}", source, dataset, "*", fingerprint, recover_at)
             cur.execute(
                 """INSERT INTO ops.external_call_budgets
                    (source,window_type,window_key,call_count,budget_limit)
@@ -167,25 +231,53 @@ def _consume(conn, source, dataset, circuit_source=None):
         raise
 
 
-def _open_circuit(source, detail, dataset=None, circuit_source=None):
-    circuit_source = _source_key(circuit_source or _circuit_key(source, dataset))
+def _open_circuit(source, detail, api_name="*", token_fingerprint_value="none", code="RATE_LIMIT", recover_at=None):
+    conn = _db_connect()
+    try:
+        with conn.cursor() as cur:
+            _upsert_circuit(cur, _source_key(source), api_name, token_fingerprint_value, code, detail, recover_at if recover_at is not None else _recover_at(code))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def open_external_circuit(source, api_name, token_fingerprint_value, code, detail):
+    _open_circuit(source, detail, api_name, token_fingerprint_value, code)
+
+
+def close_external_circuit(source, api_name, token_fingerprint_value):
     conn = _db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO ops.external_call_budgets
-                   (source,window_type,window_key,call_count,budget_limit,circuit_open,last_error)
-                   VALUES(%s,'day',%s,0,%s,true,%s)
-                   ON CONFLICT(source,window_type,window_key) DO UPDATE SET
-                   circuit_open=true,last_error=EXCLUDED.last_error,updated_at=now()""",
-                (circuit_source, _date_text(), _limit(circuit_source, "day"), detail or "上游限流或配额错误"),
+                """UPDATE ops.external_circuits SET state='closed',probe_in_flight=false,last_success_at=now(),updated_at=now()
+                    WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s""",
+                (_source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none")),
             )
         conn.commit()
     finally:
         conn.close()
 
 
-def with_external_call_guard(source, dataset, fn, circuit_source=None):
+def release_external_circuit_probe(source, api_name, token_fingerprint_value, retry_seconds=5):
+    conn = _db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE ops.external_circuits
+                    SET probe_in_flight=false,
+                          recover_at=now() + (%s * interval '1 second'),
+                          updated_at=now()
+                    WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s
+                      AND state='open' AND probe_in_flight=true""",
+                (max(float(retry_seconds or 5), 1), _source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none")),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=None, token_fingerprint_value="none"):
     if not enabled():
         return fn()
     conn = _db_connect()
@@ -197,7 +289,7 @@ def with_external_call_guard(source, dataset, fn, circuit_source=None):
             locked = bool(cur.fetchone()[0])
         if not locked:
             raise ExternalCallGuardError("DATASET_LOCKED", "同一数据集正在由其他 Worker 请求中", _source_key(source), dataset)
-        _consume(conn, source, dataset, circuit_source)
+        _consume(conn, source, dataset, circuit_source, api_name, token_fingerprint_value)
         _record(source)
         return fn()
     finally:
@@ -242,7 +334,7 @@ def _dataset(url, params=None, body=None):
     return normalized[:1000]
 
 
-def guarded_urlopen(request, timeout=30, source=None, dataset=None):
+def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=None, token_fingerprint_value="none"):
     """在不修改 urllib 全局行为的前提下保护单次请求。"""
     if not enabled():
         from urllib.request import urlopen
@@ -257,20 +349,28 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None):
             response = urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             if error.code == 429:
-                _open_circuit(source, str(error), dataset=dataset)
-                raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset) from error
+                _open_circuit(source, str(error), api_name or _api_name(source, dataset), token_fingerprint_value, "RATE_LIMIT")
+                raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value, _recover_at("RATE_LIMIT")) from error
+            if error.code in {401, 403}:
+                code = "AUTH_ERROR" if error.code == 401 else "PERMISSION_DENIED"
+                _open_circuit(source, str(error), "*" if code == "AUTH_ERROR" else api_name or _api_name(source, dataset), token_fingerprint_value, code)
+                raise ExternalCallGuardError(code, f"{source} 接口 HTTP {error.code}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value) from error
             if error.code >= 500:
-                raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {error.code}", source, dataset) from error
+                raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {error.code}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value) from error
             raise
         status = int(getattr(response, "status", getattr(response, "code", 200)) or 200)
         if status == 429:
-            _open_circuit(source, f"HTTP {status}", dataset=dataset)
-            raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset)
+            _open_circuit(source, f"HTTP {status}", api_name or _api_name(source, dataset), token_fingerprint_value, "RATE_LIMIT")
+            raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value, _recover_at("RATE_LIMIT"))
+        if status in {401, 403}:
+            code = "AUTH_ERROR" if status == 401 else "PERMISSION_DENIED"
+            _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else api_name or _api_name(source, dataset), token_fingerprint_value, code)
+            raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value)
         if status >= 500:
-            raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset)
+            raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value)
         return response
 
-    return with_external_call_guard(source, dataset, perform)
+    return with_external_call_guard(source, dataset, perform, api_name=api_name, token_fingerprint_value=token_fingerprint_value)
 
 
 def install_requests_guard():
@@ -292,10 +392,14 @@ def install_requests_guard():
             response = original(session, method, url, **kwargs)
             status = int(response.status_code or 0)
             if status == 429:
-                _open_circuit(source, f"HTTP {status}", dataset=dataset)
-                raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset)
+                _open_circuit(source, f"HTTP {status}", _api_name(source, dataset), "none", "RATE_LIMIT")
+                raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset, _api_name(source, dataset), "none", _recover_at("RATE_LIMIT"))
+            if status in {401, 403}:
+                code = "AUTH_ERROR" if status == 401 else "PERMISSION_DENIED"
+                _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else _api_name(source, dataset), "none", code)
+                raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, _api_name(source, dataset), "none")
             if status >= 500:
-                raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset)
+                raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset, _api_name(source, dataset), "none")
             return response
 
         return with_external_call_guard(source, dataset, perform)

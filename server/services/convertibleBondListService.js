@@ -443,7 +443,10 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
   const requestedDate = tradeDate || await latestTradeDate();
   const publishedDate = tradeDate ? null : await latestPublishedTradeDate();
   const stale = !tradeDate && (!publishedDate || (requestedDate && publishedDate < requestedDate));
-  const date = !tradeDate || !publishedDate || publishedDate < requestedDate ? (publishedDate || requestedDate) : requestedDate;
+  // 发布快照可能短暂领先底层行情（例如列表已发布 8 月 18 日，行情仍只到 8 月 17 日）。
+  // 默认读取时不能拿领先日期去查底层行情，否则会把整张列表误判为空；显式指定日期仍保持精确查询。
+  const date = !tradeDate && publishedDate && requestedDate && publishedDate <= requestedDate
+    ? publishedDate : requestedDate;
   if (!date) return { trade_date: null, updated_at: null, count: 0, data: [] };
   const universe = await fetchUniverseRows(date);
   if (!universe.length) return { trade_date: date, updated_at: null, count: 0, data: [] };

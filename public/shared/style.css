@@ -111,7 +111,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .table-header h3 { font-size: 14px; font-weight: 600; color: #1a1a2e; }
  .biz-table-scroll { overflow-x: auto; overflow-y: visible; background: #fff; }
  .biz-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
- .biz-table th { position: relative; height: 40px; padding: 10px 9px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
+ .biz-table th { position: relative; min-width: 72px; max-width: 104px; height: 52px; box-sizing: border-box; padding: 8px 9px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: normal; line-height: 1.35; overflow-wrap: break-word; border-bottom: 1px solid #f0f0f0; }
+ .biz-table th .biz-table-head-label { display: block; display: -webkit-box; max-width: 84px; max-height: 2.7em; overflow: hidden; line-height: 1.35; text-wrap: balance; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
  .biz-table th.sortable, .biz-table th[onclick], .biz-table th[data-key] { cursor: pointer; user-select: none; }
  .biz-table th:hover { background: #edf5ff; color: #175a93; }
  .biz-table th.is-sorted { background: #e4effa; color: #175a93; box-shadow: inset 0 -3px 0 #2a67a0; }
@@ -145,8 +146,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
  .biz-table-note-cell { white-space: normal !important; text-align: left !important; line-height: 1.55; }
  .biz-table-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
  .biz-table-floating-head .biz-table { min-width: 0; margin: 0; transform: translateX(0); }
- .biz-table-floating-head .biz-table thead, .biz-table-floating-head .biz-table tr { height: 40px; }
- .biz-table-floating-head .biz-table th { display: table-cell; height: 40px; box-sizing: border-box; vertical-align: middle; }
+ .biz-table-floating-head .biz-table thead, .biz-table-floating-head .biz-table tr { height: 52px; }
+ .biz-table-floating-head .biz-table th { display: table-cell; height: 52px; box-sizing: border-box; vertical-align: middle; }
  .biz-table-floating-scroll { position: fixed; bottom: 0; z-index: 95; height: 18px; overflow-x: auto; overflow-y: hidden; background: #fff; border-top: 1px solid #dfe3eb; }
  .biz-table-floating-scroll-inner { height: 1px; }
  table { width: 100%; border-collapse: collapse; font-size: 13px; }

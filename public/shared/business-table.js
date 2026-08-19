@@ -25,6 +25,33 @@
     return true;
   }
 
+  function normalizeHeaderCells(table) {
+    if (!table || !table.querySelectorAll) return;
+    table.querySelectorAll('th').forEach(function (cell) {
+      var hasLabel = false;
+      Array.prototype.forEach.call(cell.children, function (child) {
+        if (child.classList && child.classList.contains('biz-table-head-label')) hasLabel = true;
+      });
+      if (hasLabel) return;
+      var labelNodes = [];
+      Array.prototype.forEach.call(cell.childNodes, function (node) {
+        if (node.nodeType === 1 && node.classList && node.classList.contains('biz-sort-indicator')) return;
+        labelNodes.push(node);
+      });
+      if (!labelNodes.length) return;
+      var label = document.createElement('span');
+      label.className = 'biz-table-head-label';
+      labelNodes.forEach(function (node) { label.appendChild(node); });
+      cell.insertBefore(label, cell.firstChild);
+    });
+  }
+
+  function normalizeHeaders(container) {
+    container = container || document;
+    if (container.matches && container.matches('.biz-table')) normalizeHeaderCells(container);
+    if (container.querySelectorAll) container.querySelectorAll('.biz-table').forEach(normalizeHeaderCells);
+  }
+
   function ensureHosts(instance) {
     if (!instance.headHost) {
       instance.headHost = document.createElement('div');
@@ -51,6 +78,7 @@
     var scroll = findWithin(instance.root, instance.scrollSelector || '.biz-table-scroll');
     var head = table && table.querySelector('thead');
     if (!table || !scroll || !head || !instance.sticky) return;
+    normalizeHeaderCells(table);
     ensureHosts(instance);
     instance.table = table;
     instance.scroll = scroll;
@@ -94,6 +122,8 @@
   }
 
   function sync(instance) {
+    var currentTable = findWithin(instance.root, instance.tableSelector || '.biz-table');
+    if (currentTable) normalizeHeaderCells(currentTable);
     if (!instance.sticky || !isVisible(instance)) {
       if (instance.headHost) instance.headHost.hidden = true;
       if (instance.scrollHost) instance.scrollHost.hidden = true;
@@ -159,6 +189,7 @@
     root = resolve(root);
     if (!root) return null;
     options = options || {};
+    normalizeHeaders(root);
     var instance = root.__bizTableInstance;
     if (!instance) {
       instance = {
@@ -180,6 +211,7 @@
 
   function attachAll(container, options) {
     container = resolve(container) || document;
+    normalizeHeaders(container);
     var roots = [];
     if (container.matches && container.matches('.biz-table-scroll')) roots.push(container);
     if (container.querySelectorAll) container.querySelectorAll('.biz-table-scroll').forEach(function (node) { roots.push(node); });
@@ -187,6 +219,7 @@
     scheduleSync();
   }
 
+  normalizeHeaders(document);
   window.BusinessTable = { attach: attach, attachAll: attachAll, sync: scheduleSync };
   window.addEventListener('scroll', scheduleSync, { passive: true });
   window.addEventListener('resize', scheduleSync);
@@ -195,7 +228,10 @@
     new MutationObserver(function (records) {
       records.forEach(function (record) {
         record.addedNodes.forEach(function (node) {
-          if (node.nodeType === 1 && node.closest && node.closest('.admin-main')) attachAll(node);
+          if (node.nodeType === 1) {
+            normalizeHeaders(node);
+            if (node.closest && node.closest('.admin-main')) attachAll(node);
+          }
         });
       });
     }).observe(document.body, { childList: true, subtree: true });

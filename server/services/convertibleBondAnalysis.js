@@ -734,10 +734,10 @@ function latestFullReport(events) {
 
 function pythonCandidates() {
   const root = path.resolve(__dirname, '..', '..');
-  const venv = process.platform === 'win32'
-    ? path.join(root, 'venv', 'Scripts', 'python.exe')
-    : path.join(root, 'venv', 'bin', 'python');
-  return [process.env.IPO_PYTHON_PATH, fs.existsSync(venv) ? venv : null,
+  const venvs = process.platform === 'win32'
+    ? [path.join(root, 'venv', 'Scripts', 'python.exe')]
+    : [path.join(root, 'venv', 'bin', 'python'), path.join(root, 'ipo-report', 'venv', 'bin', 'python')];
+  return [process.env.IPO_PYTHON_PATH, ...venvs.filter(candidate => fs.existsSync(candidate)),
     process.platform === 'win32' ? 'py' : 'python3', 'python'].filter(Boolean);
 }
 

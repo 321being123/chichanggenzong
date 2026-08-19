@@ -500,7 +500,7 @@
     <div class="stock-analysis-toolbar table-wrap">
       <select id="security-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value)"><option value="">选择持仓或自选</option></select>
       <div class="security-analysis-search">
-        <input id="stock-analysis-code" name="security-analysis-query" type="search" autocomplete="new-password" data-autofill-ignore autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-controls="stock-analysis-suggestions" aria-expanded="false">
+        <textarea id="stock-analysis-code" name="security-analysis-query" rows="1" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-multiline="false" aria-controls="stock-analysis-suggestions" aria-expanded="false"></textarea>
         <div id="stock-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
       </div>
       <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit()">开始分析</button>

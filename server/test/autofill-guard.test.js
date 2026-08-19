@@ -13,15 +13,16 @@ assert.ok(guard.includes('MutationObserver'), '自动填充守门器必须覆盖
 assert.ok(guard.includes("isPasswordField(el) ? 'new-password' : 'off'"), '只有密码输入框可以使用 new-password，普通输入框必须使用 off');
 assert.ok(guard.includes('data-lpignore'), '普通输入框必须标记 LastPass 忽略');
 assert.ok(guard.includes('data-1p-ignore'), '普通输入框必须标记 1Password 忽略');
-assert.ok(index.includes('src="shared/autofill-guard.js?v=3"'), '主页面必须加载最新自动填充守门器');
-assert.ok(index.includes('id="stock-analysis-code" name="security-analysis-query" type="search" autocomplete="off"'), '证券搜索框不得被识别为账号框');
+assert.ok(guard.includes("data-autofill-ignore"), '浏览器兼容防护必须支持显式忽略标记');
+assert.ok(index.includes('src="shared/autofill-guard.js?v=4"'), '主页面必须加载最新自动填充守门器');
+assert.ok(index.includes('id="stock-analysis-code" name="security-analysis-query" type="search" autocomplete="new-password" data-autofill-ignore'), '证券搜索框不得被识别为账号框');
 assert.ok(login.includes('id="username"') && login.includes('autocomplete="username"'), '登录账号字段必须保留账号自动填充');
 assert.ok(login.includes('id="password"') && login.includes('autocomplete="current-password"'), '登录密码字段必须保留密码自动填充');
 assert.ok(login.includes('id="email-code"') && login.includes('autocomplete="one-time-code"'), '验证码字段不得被识别为账号密码');
 assert.ok(dialog.includes('id="project-dialog-input" autocomplete="off"'), '动态提示输入框必须禁止密码管理器接管');
 pageFiles.forEach((file) => {
   const html = fs.readFileSync(path.join(root, 'public', file), 'utf8');
-  assert.ok(html.includes('shared/autofill-guard.js?v=3'), `${file} 必须加载最新自动填充守门器`);
+  assert.ok(html.includes('shared/autofill-guard.js?v=4'), `${file} 必须加载最新自动填充守门器`);
 });
 const nonCredentialPasswordIds = ['admin-pwd-input', 'model-key'];
 nonCredentialPasswordIds.forEach((id) => {

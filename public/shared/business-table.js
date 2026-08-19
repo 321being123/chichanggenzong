@@ -43,7 +43,26 @@
       label.className = 'biz-table-head-label';
       labelNodes.forEach(function (node) { label.appendChild(node); });
       cell.insertBefore(label, cell.firstChild);
+      splitLongHeaderLabel(label);
     });
+  }
+
+  function splitLongHeaderLabel(label) {
+    var target = label;
+    while (target.children.length === 1 && target.firstElementChild && target.firstElementChild.classList &&
+      !target.firstElementChild.classList.contains('biz-sort-indicator')) target = target.firstElementChild;
+    if (target.children.length) return;
+    var text = String(target.textContent || '').trim();
+    var chars = Array.from(text);
+    if (chars.length <= 6) return;
+    var breakAt = -1;
+    for (var i = 3; i <= chars.length - 2; i++) {
+      if (chars[i] === '(' || chars[i] === '（') { breakAt = i; break; }
+    }
+    if (breakAt < 0) breakAt = Math.ceil(chars.length / 2);
+    target.textContent = chars.slice(0, breakAt).join('');
+    target.appendChild(document.createElement('br'));
+    target.appendChild(document.createTextNode(chars.slice(breakAt).join('')));
   }
 
   function normalizeHeaders(container) {

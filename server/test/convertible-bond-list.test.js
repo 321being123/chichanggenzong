@@ -111,8 +111,8 @@ check('前端含上市转债子页、脚本和只读接口', () => {
   const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
   const sharedTable = fs.readFileSync(path.join(root, 'public', 'shared', 'business-table.js'), 'utf8');
   assert.ok(sharedCss.includes('.biz-table th.sortable') && sharedCss.includes('cursor: pointer') && sharedCss.includes('.biz-table th.is-sorted'), '共享表格缺少手势光标和选中列样式');
-  assert.ok(sharedCss.includes('max-width: 88px') && sharedCss.includes('min-width: 60px') && sharedCss.includes('-webkit-line-clamp: 2'), '共享表格长标题必须限制宽度并最多显示两行');
-  assert.ok(sharedTable.includes('biz-table-head-label') && sharedTable.includes('normalizeHeaders'), '共享表格必须统一包裹表头标题');
+  assert.ok(sharedCss.includes('.biz-table-head-label { display: inline-block;') && !sharedCss.includes('min-width: 60px; max-width: 88px'), '共享表格表头不得主动预留固定列宽');
+  assert.ok(sharedTable.includes('biz-table-head-label') && sharedTable.includes('normalizeHeaders') && sharedTable.includes('splitLongHeaderLabel'), '共享表格必须统一处理长标题换行');
   assert.ok(sharedCss.includes('.biz-sort-indicator { position: absolute;') && sharedCss.includes('left: 50%'), '排序图标未固定在标题上方，可能导致列宽变化');
   assert.ok(js.includes('bond-list-stale') && js.includes('data.stale'));
   const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-safety.css'), 'utf8');

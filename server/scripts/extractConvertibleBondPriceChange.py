@@ -14,8 +14,11 @@ def date_text(match):
 
 
 def extract_one(url):
-    if not url.startswith("https://static.cninfo.com.cn/"):
-        raise ValueError("仅允许读取巨潮资讯官方 PDF")
+    if not (url.startswith("https://static.cninfo.com.cn/")
+            or url.startswith("https://www.sse.com.cn/")
+            or url.startswith("https://big5.sse.com.cn/")
+            or url.startswith("https://disc.static.szse.cn/")):
+        raise ValueError("仅允许读取巨潮资讯或交易所官方 PDF")
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         data = response.read(12 * 1024 * 1024 + 1)

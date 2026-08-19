@@ -111,8 +111,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .table-header h3 { font-size: 14px; font-weight: 600; color: #1a1a2e; }
  .biz-table-scroll { overflow-x: auto; overflow-y: visible; background: #fff; }
  .biz-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; background: #fff; }
- .biz-table th { position: relative; min-width: 72px; max-width: 104px; height: 52px; box-sizing: border-box; padding: 8px 9px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: normal; line-height: 1.35; overflow-wrap: break-word; border-bottom: 1px solid #f0f0f0; }
- .biz-table th .biz-table-head-label { display: block; display: -webkit-box; max-width: 84px; max-height: 2.7em; overflow: hidden; line-height: 1.35; text-wrap: balance; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+ .biz-table th { position: relative; min-width: 60px; max-width: 88px; height: 52px; box-sizing: border-box; padding: 8px 6px; background: #fafbfc; color: #555; font-weight: 700; text-align: center; white-space: normal; line-height: 1.35; overflow-wrap: break-word; border-bottom: 1px solid #f0f0f0; }
+ .biz-table th .biz-table-head-label { display: block; display: -webkit-box; max-width: 76px; max-height: 2.7em; overflow: hidden; line-height: 1.35; text-wrap: balance; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
  .biz-table th.sortable, .biz-table th[onclick], .biz-table th[data-key] { cursor: pointer; user-select: none; }
  .biz-table th:hover { background: #edf5ff; color: #175a93; }
  .biz-table th.is-sorted { background: #e4effa; color: #175a93; box-shadow: inset 0 -3px 0 #2a67a0; }
@@ -176,7 +176,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 /* 兼容历史检查：旧版表头吸顶已由 business-table.js 的页面级浮动表头统一接管。 */
 /* .arb-data-table thead th { position: sticky; } */
 .arb-data-table { width: max-content !important; min-width: 100%; border-collapse: separate; border-spacing: 0; }
-.arb-data-table th, .arb-data-table td { white-space: nowrap; }
+.arb-data-table td { white-space: nowrap; }
 .arb-data-table-a_stock { min-width: 2050px; }
 .arb-data-table-hk_privatisation { min-width: 1650px; }
 .arb-data-table-hk_rights { min-width: 1550px; }

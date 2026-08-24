@@ -251,13 +251,13 @@ async function withExternalCallGuard(source, dataset, businessDate, fn, circuitS
   const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
   try {
     await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
-    return await fn();
+    return await fn(lock.client);
   } finally {
     await releaseExternalDatasetLock(lock);
   }
 }
 
-async function openExternalCircuit(source, detail = '', circuitSource = source, options = {}) {
+async function openExternalCircuit(source, detail = '', circuitSource = source, options = {}, providedClient = null) {
   const key = sourceKey(source);
   const supplied = circuitSource && typeof circuitSource === 'object' ? circuitSource : options;
   const guardOptions = normalizeGuardOptions(source, circuitSource, supplied, '');
@@ -265,19 +265,20 @@ async function openExternalCircuit(source, detail = '', circuitSource = source, 
   const errorType = supplied && supplied.errorType || '';
   const recoverAt = supplied && Object.prototype.hasOwnProperty.call(supplied, 'recoverAt')
     ? supplied.recoverAt : recoverAtFor(code);
-  const client = await getPool().connect();
+  const client = providedClient || await getPool().connect();
   try {
     await upsertCircuit(client, key, guardOptions.apiName, guardOptions.tokenFingerprint,
       code, errorType || (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' ? 'rate_limit' : 'circuit_open'), detail, recoverAt);
   } finally {
-    client.release();
+    if (!providedClient) client.release();
   }
   return { source: key, apiName: circuitApiName(guardOptions.apiName, code), recoverAt };
 }
 
-async function closeExternalCircuit(source, apiName, fingerprint = 'none') {
+async function closeExternalCircuit(source, apiName, fingerprint = 'none', providedClient = null) {
   const key = sourceKey(source);
-  await getPool().query(
+  const queryable = providedClient || getPool();
+  await queryable.query(
     `UPDATE ops.external_circuits
         SET state='closed',probe_in_flight=false,last_success_at=now(),updated_at=now()
       WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3`,

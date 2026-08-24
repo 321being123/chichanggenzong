@@ -59,7 +59,7 @@ function failoverEligible(error) {
 function requestWithToken(apiName, params, fields, token, guardSource, dataset) {
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
   const fingerprint = tokenFingerprint(token);
-  const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
+  const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, guardClient => new Promise((resolve, reject) => {
     const request = https.request(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
@@ -81,7 +81,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
               tokenFingerprint: fingerprint,
               errorCode: error.code,
               errorType: error.errorType,
-            }).catch(() => null);
+            }, {}, guardClient).catch(() => null);
             error.recoverAt = circuit && circuit.recoverAt || null;
           } else if (error.code === 'AUTH_ERROR' || error.code === 'PERMISSION_DENIED') {
             await openExternalCircuit(guardSource, error.message, {
@@ -89,7 +89,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
               tokenFingerprint: fingerprint,
               errorCode: error.code,
               errorType: error.errorType,
-            }).catch(() => {});
+            }, {}, guardClient).catch(() => {});
           }
           error.source = guardSource;
           error.tokenFingerprint = fingerprint;
@@ -106,7 +106,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
         if (data.items.length === 0) {
           return reject(new TushareRequestError('EMPTY_DATA', `Tushare ${apiName} 返回空数据`, { errorType: 'empty_data', apiName, statusCode: response.statusCode }));
         }
-        await closeExternalCircuit(guardSource, apiName, fingerprint).catch(() => {});
+        await closeExternalCircuit(guardSource, apiName, fingerprint, guardClient).catch(() => {});
         resolve(data);
       });
     });

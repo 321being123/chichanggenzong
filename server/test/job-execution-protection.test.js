@@ -20,6 +20,8 @@ const stockJob = read('server/jobs/stockAnalysisRefresh.js');
 const slotService = read('server/services/jobScheduleSlots.js');
 const adminUi = read('public/js/admin.js');
 const pythonGuard = read('ipo-report/external_call_guard.py');
+const externalGuard = read('server/services/externalCallGuard.js');
+const tushareClient = read('server/services/tushare.js');
 
 for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(definition.retryPolicy, `${definition.jobCode} 缺少 retryPolicy`);
@@ -41,6 +43,9 @@ assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCo
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
 assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
+assert.ok(/return await fn\(lock\.client\)/.test(externalGuard)
+  && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient\)/.test(tushareClient)
+  && /}, \{\}, guardClient\)\.catch/.test(tushareClient), 'Tushare 请求收尾必须复用数据集锁连接，禁止连接池互等');
 assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) && /EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoHistorySync.js')), 'Python 自动任务子进程必须开启外部请求保护');
 assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=now\(\)\+/.test(orchestrator), '过期运行记录必须自动回收且活动任务必须续租');
 assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');
@@ -115,18 +120,32 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     const guardSource = `test_guard_${process.pid}_${Date.now()}`;
     const guardEnv = guardSource.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
     process.env[`${guardEnv}_PER_MINUTE_BUDGET`] = '20';
-    process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
+    process.env[`${guardEnv}_DAILY_BUDGET`] = '20';
     let guardedExternalCalls = 0;
-    const guarded = await Promise.allSettled([
-      guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => new Promise(resolve => {
-        guardedExternalCalls += 1;
-        setTimeout(() => resolve('called'), 50);
-      })),
-      guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => Promise.resolve('duplicate')),
-    ]);
+    let firstEntered;
+    let releaseFirst;
+    const firstEnteredPromise = new Promise(resolve => { firstEntered = resolve; });
+    const firstFinishedPromise = new Promise(resolve => { releaseFirst = resolve; });
+    const firstGuarded = guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', async () => {
+      guardedExternalCalls += 1;
+      firstEntered();
+      await firstFinishedPromise;
+      return 'called';
+    });
+    await firstEnteredPromise;
+    const secondGuarded = guard.withExternalCallGuard(guardSource, 'dataset-a', '2026-08-15', () => Promise.resolve('duplicate'));
+    // 让 Node 在等待第一个请求释放锁期间，不把预期的 DATASET_LOCKED 视为未处理拒绝。
+    secondGuarded.catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 100));
+    releaseFirst();
+    const guarded = await Promise.allSettled([firstGuarded, secondGuarded]);
     assert.strictEqual(guarded.filter(item => item.status === 'fulfilled').length, 1, '同一数据集并发只能有一个请求者');
     assert.strictEqual(guarded.find(item => item.status === 'rejected').reason.code, 'DATASET_LOCKED');
     assert.strictEqual(guardedExternalCalls, 1, '同一数据集并发时外部 API 实际调用次数必须为 1');
+    await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
+    guard.resetExternalCallGuard();
+    process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
+    await guard.consumeExternalCall(guardSource, 'dataset-quota-first');
     await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error => error.code === 'QUOTA_EXHAUSTED');
     const budgetRows = await require('../db/connection').pool.query(
       `SELECT call_count FROM ops.external_call_budgets WHERE source=$1 AND window_type='day'`, [guardSource]

@@ -162,6 +162,7 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     const { pool } = require('../db/connection');
     const { claimSlot, completeSlot, listDueSlots, enqueueManualJob, syncScheduleSlots, expectedDataDate } = require('../services/jobScheduleSlots');
     assert.strictEqual(expectedDataDate('convertible_bond_valuation_refresh', '2026-02-24'), '2026-02-13', '前一交易日必须跳过春节休市日');
+    assert.strictEqual(expectedDataDate('convertible_bond_universe_refresh', '2026-08-24'), '2026-08-21', '周一行情主档应校验上一个交易日');
     const claimTime = new Date(Date.now() - 60 * 1000);
     const claimInsert = await pool.query(
       `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,next_attempt_at)

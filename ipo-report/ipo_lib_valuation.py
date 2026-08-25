@@ -750,6 +750,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         if sector_label:
             sector_mult = sector_boost
             estimated = math.floor(estimated * sector_mult)
+            estimated = _floor_listing_band(estimated)
             tag = "顶级赛道修正" if sector_boost >= 2 else "赛道修正"
             detail_parts.append(f"🚀 {tag}: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
         else:
@@ -827,6 +828,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     # 赛道热度修正：真实基础 × 赛道系数（乘一次，与 XGBoost 路径口径一致）
     if sector_label:
         estimated = math.floor(estimated * sector_boost)
+        estimated = _floor_listing_band(estimated)
     # 市场温度整体衰减
     temp = _MARKET_TEMP["level"]
     temp_mult = get_temp_listing_multiplier()

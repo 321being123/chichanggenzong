@@ -219,3 +219,21 @@ function todayCN() {
   var p = function (n) { return String(n).padStart(2, '0'); };
   return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
 }
+
+// 行情时间统一换算为北京时间日期，收盘价只能写入它实际所属的交易日。
+function quoteDateCN(value) {
+  if (!value) return null;
+  var date = new Date(value);
+  if (isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function isTradingDateCN(dateStr) {
+  var match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  var year = Number(match[1]), month = Number(match[2]), dayOfMonth = Number(match[3]);
+  var date = new Date(Date.UTC(year, month - 1, dayOfMonth));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== dayOfMonth) return false;
+  var weekday = date.getUTCDay();
+  return weekday >= 1 && weekday <= 5 && !isCnHoliday(dateStr);
+}

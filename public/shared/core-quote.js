@@ -119,6 +119,7 @@ async function refreshAllPrices() {
   
   // 并发请求，每次10只
   const concurrency = 10;
+  var validatedPriceQuotes = new Map();
   for (let i = 0; i < codes.length; i += concurrency) {
     const batch = codes.slice(i, i + concurrency);
     const results = await Promise.all(batch.map(async (c) => {
@@ -127,14 +128,20 @@ async function refreshAllPrices() {
     }));
     results.forEach((result, idx) => {
       const c = batch[idx];
-      const pos = data.positions.find(p => p.code === c);
+      const matchingPositions = data.positions.filter(p => p.code === c);
+      const pos = matchingPositions[0];
       if (pos) {
         if (result && result.price) {
           var price = result.price;
           // 港股存港币价格，不转汇率
-          pos.price = price;
-          if (result.name && !pos.name) pos.name = result.name;
+          matchingPositions.forEach(function(position) {
+            position.price = price;
+            if (result.name && !position.name) position.name = result.name;
+          });
           priceChangeMap[c] = result.change;
+          if (quoteDateCN(result.quote_time) === todayCN()) {
+            validatedPriceQuotes.set(c, { price: price, name: result.name || pos.name || '', quote_time: result.quote_time });
+          }
           ok++;
         } else {
           if (c === '404002') priceChangeMap['404002'] = 0;
@@ -203,7 +210,7 @@ async function refreshAllPrices() {
     showToast('行情刷新完成: ' + ok + ' 只全部成功');
   }
   // 记录每日收盘价
-  saveDailyPricesToDB();
+  saveDailyPricesToDB(validatedPriceQuotes);
 }
 
 /**
@@ -270,22 +277,27 @@ async function doAutoRefresh() {
   return doRefresh();
 }
 
-async function saveDailyPricesToDB() {
+async function saveDailyPricesToDB(validatedQuotes) {
   try {
     // 只在收盘后才记录（A股15:00 / 港股16:00），且今天已记录过就跳过
     if (isMarketOpen()) return;
-    if (data._dailyPricesSaved === todayCN()) return;
-    var prices = data.positions.map(function(p) {
-      return { code: p.code, name: p.name, price: p.price || 0 };
-    }).filter(function(p) { return p.code && p.price > 0; });
+    var writeDate = todayCN();
+    if (!isTradingDateCN(writeDate)) return;
+    if (data._dailyPricesSaved === writeDate) return;
+    if (!validatedQuotes || validatedQuotes.size === 0) return;
+    var prices = Array.from(validatedQuotes.entries()).map(function(entry) {
+      var quote = entry[1] || {};
+      return { code: entry[0], name: quote.name || '', price: quote.price || 0, quote_time: quote.quote_time || null };
+    }).filter(function(p) { return p.code && p.price > 0 && quoteDateCN(p.quote_time) === writeDate; });
     if (prices.length === 0) return;
-    await fetch(api('/api/daily-prices/' + encodeURIComponent(currentAccount)), {
+    var response = await fetch(api('/api/daily-prices/' + encodeURIComponent(currentAccount)), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prices: prices, date: todayCN() })
+      body: JSON.stringify({ prices: prices, date: writeDate })
     });
-    data._dailyPricesSaved = todayCN();
-    try { localStorage.setItem('_dailyPricesSaved_' + currentAccount, todayCN()); } catch(e) {}
+    if (!response.ok) throw new Error('收盘价保存失败：HTTP ' + response.status);
+    data._dailyPricesSaved = writeDate;
+    try { localStorage.setItem('_dailyPricesSaved_' + currentAccount, writeDate); } catch(e) {}
   } catch(e) {}
 }
 

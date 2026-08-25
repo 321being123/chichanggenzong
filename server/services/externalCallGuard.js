@@ -7,6 +7,9 @@ function getPool() {
   return pool;
 }
 const counters = new Map();
+// 同一进程内先做一次快速抢占，避免第二个调用因等待数据库连接而在
+// 第一个调用释放 PostgreSQL advisory lock 后又继续执行。
+const localDatasetLocks = new Set();
 
 function limit(name, fallback) {
   const value = Number(process.env[name]);
@@ -248,12 +251,21 @@ async function releaseExternalDatasetLock(lock) {
 
 async function withExternalCallGuard(source, dataset, businessDate, fn, circuitSource = source) {
   const guardOptions = normalizeGuardOptions(source, circuitSource, {}, dataset);
-  const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
+  const localKey = `${sourceKey(source)}:${String(dataset || 'unknown')}:${String(businessDate || nowParts().day).slice(0, 10)}`;
+  if (localDatasetLocks.has(localKey)) {
+    throw new ExternalCallGuardError('DATASET_LOCKED', '同一数据集正在由其他 Worker 请求中', sourceKey(source), dataset);
+  }
+  localDatasetLocks.add(localKey);
   try {
-    await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
-    return await fn(lock.client);
+    const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
+    try {
+      await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
+      return await fn(lock.client);
+    } finally {
+      await releaseExternalDatasetLock(lock);
+    }
   } finally {
-    await releaseExternalDatasetLock(lock);
+    localDatasetLocks.delete(localKey);
   }
 }
 
@@ -339,6 +351,7 @@ async function getExternalCircuitStatuses(source = 'tushare', tokens = {}) {
 
 function resetExternalCallGuard() {
   counters.clear();
+  localDatasetLocks.clear();
 }
 
 async function resetExternalCallGuardPersistence(source = null) {

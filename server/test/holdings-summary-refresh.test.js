@@ -63,9 +63,16 @@ assert.ok(returns.includes('data.navAttribution = _j2.data.navAttribution'), '�
 assert.ok(tables.includes('导入口径切换差异') && tables.includes('importBasisAdjustment'), '涨跌浮框未展示首次口径切换差异');
 assert.strictEqual(context.countTradingDaysBetween('2026-08-15', '2026-08-17'), 0, '周末不应被算作完整交易日');
 assert.strictEqual(context.countTradingDaysBetween('2026-08-13', '2026-08-17'), 1, '周四到周一应识别中间的周五交易日');
+assert.strictEqual(context.quoteDateCN('2026-08-24T15:00:00+08:00'), '2026-08-24', '行情日期必须按北京时间解析');
+assert.strictEqual(context.isTradingDateCN('2026-08-22'), false, '页面不得在周末写入收盘价');
+assert.ok(quote.includes('quoteDateCN(result.quote_time) === todayCN()'), '页面必须验证行情时间属于当天后才能写收盘价');
+assert.ok(quote.includes('Array.from(validatedQuotes.entries())') && quote.includes('quote_time: quote.quote_time') && quote.includes('if (!response.ok) throw new Error'), '页面必须按代码去重后把行情时间交给服务端复核，且保存失败不得标记完成');
+assert.ok(quote.includes('matchingPositions.forEach(function(position)'), '同一证券存在多条持仓时必须统一更新为同一份最新行情');
 const incompleteTip = context.buildChangeTipHtml(100, 1, 0, 0, null, null, null, null, true);
 assert.ok(incompleteTip.includes('归因不完整，未进行明细加总'), '归因不完整时必须明确提示未进行明细加总');
 assert.ok(!incompleteTip.includes('合计 = 股价影响 + 汇率影响'), '归因不完整时不得伪装成明细已闭合');
+const partialTip = context.buildChangeTipHtml(100, 1, null, null, null, null, null, null, true, ['404002'], 'missing_exact_price_or_fx');
+assert.ok(partialTip.includes('404002') && partialTip.includes('—'), '归因不完整时必须显示缺失标的并以破折号表示未计算项');
 const driftTip = context.buildChangeTipHtml(100, 1, 70, 20, 0, null, 10, null, false);
 assert.ok(driftTip.includes('未归因差额') && driftTip.includes('合计 = 股价影响 + 汇率影响 + 其他变动 + 未归因差额'), '存在明显残差时必须在浮框中展示并纳入合计');
 

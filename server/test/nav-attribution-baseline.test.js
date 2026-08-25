@@ -12,7 +12,7 @@ const previousDay = (() => {
 const originalQuery = pool.query;
 pool.query = async (sql) => {
   if (sql.includes('FROM daily_prices')) {
-    return { rows: [{ date: previousDay, code: '600000', price: 11 }, { date: previousDay, code: '160719', price: 11 }] };
+    return { rows: [{ date: previousDay, code: '600000', price: 11 }, { date: previousDay, code: '160719', price: 11 }, { date: previousDay, code: '600001', price: 10 }, { date: previousDay, code: '600002', price: 10 }] };
   }
   if (sql.includes('FROM market.fx_rates')) return { rows: [] };
   throw new Error('unexpected query in baseline attribution test');
@@ -55,6 +55,56 @@ pool.query = async (sql) => {
     }, 1440);
     assert.strictEqual(Math.round(anchored.priceImpact), 120, '当前持仓校正后应按120份计算价格影响');
     assert.strictEqual(Math.round(anchored.snapshotDrift), 0, '导入快照锚定后归因必须闭合');
+
+    const newBuy = await computeNavAttribution('u', 'a', {
+      hkRate: 1,
+      cashBase: 100000,
+      cashFlows: [],
+      trades: [{ trade_date: today, code: '00762', direction: 'buy', quantity: 4000, amount_cny: 19593.0888, quote_currency: 'CNY' }],
+      positions: [{ code: '00762', price: 5.805, quantity: 4000, subtype: '港股' }],
+      navHistory: [
+        { date: previousDay, totalAsset: 100000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: previousDay + 'T23:59:59.000Z' },
+        { date: today, totalAsset: 103626.9112, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T23:59:59.000Z' }
+      ]
+    }, 103626.9112);
+    assert.strictEqual(newBuy.complete, true, '基准日后新买入不应要求基准日价格');
+    assert.deepStrictEqual(newBuy.missingCodes, [], '基准日后新买入不应被列为缺失');
+    assert.strictEqual(Math.round(newBuy.priceImpact), 0, '新买入不应计入基准日前价格影响');
+    assert.strictEqual(Math.round(newBuy.snapshotDrift), 0, '新买入归因必须闭合');
+
+    const partialBuy = await computeNavAttribution('u', 'a', {
+      hkRate: 1,
+      cashBase: 1000,
+      cashFlows: [],
+      trades: [
+        { trade_date: '2026-08-01', code: '600001', direction: 'buy', quantity: 100, amount_cny: 1000, quote_currency: 'CNY' },
+        { trade_date: today, code: '600001', direction: 'buy', quantity: 50, amount_cny: 550, quote_currency: 'CNY' }
+      ],
+      positions: [{ code: '600001', price: 12, quantity: 150, subtype: '沪市' }],
+      navHistory: [
+        { date: previousDay, totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: previousDay + 'T23:59:59.000Z' },
+        { date: today, totalAsset: 1250, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T23:59:59.000Z' }
+      ]
+    }, 1250);
+    assert.strictEqual(Math.round(partialBuy.priceImpact), 200, '加仓只对基准日已有数量计算价格影响');
+    assert.strictEqual(Math.round(partialBuy.snapshotDrift), 0, '加仓归因必须闭合');
+
+    const fullSell = await computeNavAttribution('u', 'a', {
+      hkRate: 1,
+      cashBase: 1000,
+      cashFlows: [],
+      trades: [
+        { trade_date: '2026-08-01', code: '600002', direction: 'buy', quantity: 100, price: 10, amount_cny: 1000, quote_currency: 'CNY' },
+        { trade_date: today, code: '600002', direction: 'sell', quantity: 100, price: 11, amount_cny: 1100, quote_currency: 'CNY' }
+      ],
+      positions: [],
+      navHistory: [
+        { date: previousDay, totalAsset: 1000, hkRate: 1, snapshotSource: 'legacy', snapshot_at: previousDay + 'T23:59:59.000Z' },
+        { date: today, totalAsset: 1100, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T23:59:59.000Z' }
+      ]
+    }, 1100);
+    assert.strictEqual(fullSell.complete, true, '清仓后不应要求当前持仓价格');
+    assert.strictEqual(Math.round(fullSell.snapshotDrift), 0, '清仓归因必须闭合');
     console.log('nav attribution baseline tests passed');
   } finally {
     pool.query = originalQuery;

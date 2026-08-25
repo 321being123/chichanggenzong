@@ -2,6 +2,7 @@
 const https = require('https');
 const { pool } = require('../db/connection');
 const { tushareQuery } = require('./tushare');
+const { isCnHoliday } = require('../config/holidays');
 const {
   fetchTencentQuotes,
   isConvertibleBondCode,
@@ -34,6 +35,50 @@ function tsRows(data) {
   if (!data || !Array.isArray(data.items)) return [];
   const fields = data.fields || [];
   return data.items.map((it) => { const o = {}; fields.forEach((f, i) => o[f] = it[i]); return o; });
+}
+
+// 行情时间统一换算为北京时间日期，供收盘价落库前做事实日期校验。
+function quoteDateCN(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function isCnTradingDate(dateStr) {
+  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const dayOfMonth = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, dayOfMonth));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== dayOfMonth) return false;
+  const weekday = date.getUTCDay();
+  return weekday >= 1 && weekday <= 5 && !isCnHoliday(dateStr);
+}
+
+function validateDailyPriceBatch(dateStr, prices) {
+  const date = String(dateStr || '').slice(0, 10);
+  if (!isCnTradingDate(date)) return { ok: false, error: '收盘价日期不是交易日' };
+  const invalidCodes = (prices || []).filter(item => quoteDateCN(item && item.quote_time) !== date)
+    .map(item => String(item && item.code || '')).filter(Boolean);
+  if (invalidCodes.length) {
+    return { ok: false, error: '行情日期与收盘价日期不一致', invalidCodes };
+  }
+  return { ok: true, date };
+}
+
+function normalizeDailyQuoteRow(row) {
+  const close = row && row.close != null ? Number(row.close) : (row && row.price != null ? Number(row.price) : null);
+  const pctChg = row && row.pct_chg != null ? Number(row.pct_chg) : (row && row.change_pct != null ? Number(row.change_pct) : null);
+  let preClose = row && row.pre_close != null ? Number(row.pre_close) : null;
+  if (preClose == null && close != null && pctChg != null && pctChg !== -100) preClose = close / (1 + pctChg / 100);
+  return {
+    close: Number.isFinite(close) ? close : null,
+    pre_close: Number.isFinite(preClose) ? preClose : null,
+    pct_chg: Number.isFinite(pctChg) ? pctChg : null,
+    quote_time: row && row.quote_time ? row.quote_time : tushareTradeTime(row && row.trade_date),
+  };
 }
 
 async function loadInstrumentCache() {
@@ -85,12 +130,7 @@ async function loadDailyCache() {
       `SELECT symbol AS ts_code, price, change_pct, quote_time, fetched_at
          FROM market_quote_cache WHERE source = 'tushare_daily'`
     );
-    const map = new Map(rows.map(row => [row.ts_code, {
-      close: row.price == null ? null : Number(row.price),
-      pre_close: row.price != null && row.change_pct != null && Number(row.change_pct) !== -100
-        ? Number(row.price) / (1 + Number(row.change_pct) / 100) : null,
-      pct_chg: row.change_pct == null ? null : Number(row.change_pct),
-    }]));
+    const map = new Map(rows.map(row => [row.ts_code, normalizeDailyQuoteRow(row)]));
     const newest = rows.reduce((value, row) => Math.max(value, new Date(row.fetched_at).getTime() || 0), 0);
     return { map, newest };
   } catch (_) {
@@ -200,7 +240,7 @@ function ensureTsDaily() {
     const rows = tsRows(d);
     if (!rows.length) return cached.map;
     const map = new Map();
-    rows.forEach(r => { if (r.ts_code) map.set(r.ts_code, { close: parseFloat(r.close), pre_close: parseFloat(r.pre_close), pct_chg: parseFloat(r.pct_chg) }); });
+    rows.forEach(r => { if (r.ts_code) map.set(r.ts_code, normalizeDailyQuoteRow(r)); });
     await saveDailyCache(rows);
     return map;
   });
@@ -258,7 +298,8 @@ async function fetchQuoteByCode(code) {
   const d = daily.get(tsCode);
   const name = names.get(tsCode) || '';
   if (d && d.close != null && !isNaN(d.close)) {
-    return { price: d.close, name, code: c, change: (d.pct_chg != null && !isNaN(d.pct_chg)) ? d.pct_chg : null };
+    return { price: d.close, name, code: c, change: (d.pct_chg != null && !isNaN(d.pct_chg)) ? d.pct_chg : null,
+      quote_time: d.quote_time || null, source: 'tushare_daily' };
   }
   // 有名称但无价格（停牌/数据延迟）：尝试腾讯 fallback
   if (name) {
@@ -308,5 +349,6 @@ module.exports = {
   httpsGet, tushareQuery, tsRows, toTsCode,
   ensureTsNames, ensureTsDaily, ensureTsRealtime,
   withSingleFlight, NEG_TTL_MS,
-  fetchQuoteByCode, tsDateStr, normDate, todayCN
+  fetchQuoteByCode, tsDateStr, normDate, todayCN,
+  quoteDateCN, isCnTradingDate, validateDailyPriceBatch, normalizeDailyQuoteRow,
 };

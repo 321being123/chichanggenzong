@@ -39,17 +39,6 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
   const priceDates = new Set();
   dpRows.forEach(function (r) { dpMap.set(r.code + '|' + r.date, r.price); priceDates.add(r.date); });
   if (priceDates.size === 0) return { ok: true, days: 0 };
-  // 前向填充：返回某 code 在目标日及之前最近一个交易日的有价收盘价（缺价持仓兜底，保证快照连续）
-  function recentPrice(code, d) {
-    let best = null;
-    for (const [k, v] of dpMap) {
-      const idx = k.indexOf('|');
-      const c = k.slice(0, idx); const dt = k.slice(idx + 1);
-      if (c === code && dt <= d) { if (best === null || dt > best.dt) best = { dt: dt, price: v }; }
-    }
-    return best ? best.price : null;
-  }
-
   const navByDate = new Map();
   navs.forEach(function (n) { navByDate.set(n.date, n); });
 
@@ -74,14 +63,23 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
   // 现金-as-of 某日（open/adjust 不产生现金）
   function cashAsOf(date) {
     let c = cashBase;
+    let incomplete = false;
     cfs.forEach(function (f) { if (f.date <= date) c += (f.amount || 0); });
     trades.forEach(function (t) {
       if (tradeDay(t) > date) return;
       if (t.direction === 'open' || t.direction === 'adjust') return;
       const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
-      c += (t.direction === 'buy') ? -(t.amount || 0) - fee : (t.amount || 0) - fee;
+      const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
+        (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
+      const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
+      if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') {
+        incomplete = true;
+        return;
+      }
+      const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
+      c += (t.direction === 'buy') ? -settled - fee : settled - fee;
     });
-    return c;
+    return { value: c, incomplete };
   }
 
   const today = cnDate(new Date());
@@ -119,16 +117,16 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
     const mvs = [];
     for (const [code, info] of held) {
       if (info.qty === 0) continue;
-      let price = code ? dpMap.get(code + '|' + d) : null;
-      if (price == null) price = recentPrice(code, d); // 当日缺价 → 前向填充最近交易日收盘价（兜底，保证连续）
-      if (price == null && /(退债|退市)/.test(String(info.name || ''))) price = 0;
+      const price = code ? dpMap.get(code + '|' + d) : null;
       if (price == null) { incomplete = true; break; }
       if (info.subtype === '港股' && !(hkRate > 0)) { incomplete = true; break; }
       mvs.push(price * info.qty * (info.subtype === '港股' ? hkRate : 1));
     }
     if (incomplete) continue; // 仍无任何可用价 → 跳过那天
 
-    const totalAsset = cashAsOf(d) + mvs.reduce(function (s, v) { return s + v; }, 0);
+    const cash = cashAsOf(d);
+    if (cash.incomplete) continue;
+    const totalAsset = cash.value + mvs.reduce(function (s, v) { return s + v; }, 0);
     const invested = investedAt(navs, cfs, cashBase, d);
 
     if (!prev) {
@@ -153,10 +151,6 @@ async function runNavSnapshotJob() {
   let total = 0, accountCount = 0;
   try {
     const hkRate = await getCurrentFxRate();
-    if (!(hkRate > 0)) {
-      await finishJobRun(runId, false, '全局港币汇率缺失，跳过净值快照');
-      return { ok: false, days: 0, error: '全局港币汇率缺失' };
-    }
     const { rows: accountRows } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
     for (const account of accountRows) {
       const accountName = account.account_name;

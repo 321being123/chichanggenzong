@@ -5,6 +5,7 @@ const express = require('express');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { isValuationStale } = require('../services/convertibleBondValuationService');
 
 const bondValuationRouter = require('../routes/bondValuation');
 
@@ -16,6 +17,11 @@ function check(name, fn) {
 }
 
 async function main() {
+  check('stale 始终返回布尔值', () => {
+    assert.strictEqual(isValuationStale('2026-08-24', '2026-08-24', null), false);
+    assert.strictEqual(isValuationStale('2026-08-23', '2026-08-24', null), true);
+    assert.strictEqual(isValuationStale('2026-08-23', '2026-08-23', '2026-08-24'), true);
+  });
   const frontendSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'bond-valuation.js'), 'utf8');
   check('前端评价筛选使用稳定分类字段', () => {
     assert.ok(frontendSource.includes('r.eval_class !== f.final_evaluation'));
@@ -100,7 +106,7 @@ async function main() {
       assert.strictEqual(Number((j.counts || {})['风险折价'] || 0), riskRows.length);
       for (const row of riskRows) assert.strictEqual(row.eval_class, '风险折价');
     });
-    // 数据新鲜度红线：估值日不得落后最新行情日
+    // 数据新鲜度：行情先到而估值尚未完成时，接口必须明确标记 stale。
     const { pool } = require('../db');
     const currentCodes = j.data.map(row => row.bond_code);
     const { rows: invalidRows } = await pool.query(
@@ -122,8 +128,14 @@ async function main() {
       assert.deepStrictEqual(invalidRows, [], '仍有不可交易转债: ' + invalidRows.map(x => x.canonical_code).join(',')));
     const { rows: mktRows } = await pool.query('SELECT MAX(trade_date)::text AS d FROM market.convertible_bond_daily_metrics');
     const latestMkt = mktRows[0] && mktRows[0].d ? String(mktRows[0].d).slice(0, 10) : null;
-    check('估值日不过期（=最新行情日）', () => {
-      assert.ok(!latestMkt || j.as_of_date === latestMkt, '估值日 ' + j.as_of_date + ' 落后最新行情日 ' + latestMkt);
+    check('估值日不超前行情日', () => {
+      assert.ok(!latestMkt || j.as_of_date <= latestMkt, '估值日 ' + j.as_of_date + ' 超前最新行情日 ' + latestMkt);
+    });
+    check('估值日落后时明确标记 stale', () => {
+      if (latestMkt && j.as_of_date < latestMkt) {
+        assert.strictEqual(j.stale, true, '估值日落后但接口未标记 stale');
+        assert.strictEqual(j.latest_market_date, latestMkt, '接口返回的最新行情日不一致');
+      }
     });
   } else {
     console.log('  (本地无估值数据，跳过行级校验)');

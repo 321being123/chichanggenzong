@@ -3,6 +3,7 @@
 // 说明：核心判定 pickMissingCodes 与时间zone 辅助函数均为纯函数，无需数据库/网络即可回归。
 const assert = require('assert');
 const mc = require('../jobs/marketClose');
+const { historicalApiFor } = require('../jobs/replayNav');
 
 const results = [];
 function check(name, fn) {
@@ -50,6 +51,17 @@ check('某市场无任何持仓：返回空', () => {
 });
 check('已有代码集合为空且持仓为空：返回空', () => {
   assert.deepStrictEqual(mc.pickMissingCodes([], new Set(), isA), []);
+});
+check('非标准证券显式进入覆盖检查，不再静默漏掉', () => {
+  assert.strictEqual(mc.isUncoveredPosition('404002', { name: '搜特退债', quantity: 1000 }), true);
+  assert.strictEqual(mc.isUncoveredPosition('600000', { name: '浦发银行', quantity: 1000 }), false);
+  assert.strictEqual(mc.isUncoveredPosition('404002', { name: '搜特退债', quantity: 0 }), false);
+});
+check('历史回补按证券类型路由，禁止统一走股票日线', () => {
+  assert.strictEqual(historicalApiFor('00762', { subtype: '港股' }), 'hk_daily');
+  assert.strictEqual(historicalApiFor('113575', { subtype: '可转债' }), 'cb_daily');
+  assert.strictEqual(historicalApiFor('510900', { subtype: '基金/ETF' }), 'fund_daily');
+  assert.strictEqual(historicalApiFor('600000', { subtype: '沪市' }), 'daily');
 });
 
 console.log('B. 时区辅助函数 —— P0-4：显式东八区，不受容器本地时区影响');

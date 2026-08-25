@@ -5,6 +5,7 @@
 // Tushare 拉不到的缺口日 → 跳过那天（保留原快照），不近似。
 const { pool, loadAccountData, saveDailyPrices, upsertNav } = require('../db');
 const { tushareQuery, tsRows, toTsCode, normDate } = require('../services/market');
+const classifyCode = require('../../public/js/code-classify');
 const { isCnHoliday } = require('../config/holidays');
 const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
 const { getCurrentFxRate } = require('../services/fxRate');
@@ -20,11 +21,22 @@ function isTradingDay(d) {
   return !isCnHoliday(cnDate(d || new Date()));
 }
 
-// 用 Tushare 拉一只代码在 [start, end] 的历史收盘，按日期 upsert 进 daily_prices。
+function historicalApiFor(code, position = {}) {
+  const rawCode = String(code || '').trim().toUpperCase();
+  const info = classifyCode(rawCode, position.name || '');
+  const subtype = String(position.subtype || (info && info.subtype) || '');
+  const type = String(position.type || (info && info.type) || '');
+  if (subtype === '港股' || /^\d{5}$/.test(rawCode)) return 'hk_daily';
+  if (subtype === '可转债' || type === '债权' || /债/.test(String(position.name || '')) || /^(11|12)\d{4}$/.test(rawCode)) return 'cb_daily';
+  if (subtype.indexOf('基金') >= 0 || subtype.indexOf('ETF') >= 0 || type === '基金') return 'fund_daily';
+  return 'daily';
+}
+
+// 用对应证券类型的 Tushare 历史接口拉取 [start, end] 收盘，按日期 upsert 进 daily_prices。
 // 成功返回 true（至少写回一条）；失败/无数据返回 false。
-async function backfillDailyPrices(username, accountName, code, start, end) {
+async function backfillDailyPrices(username, accountName, code, start, end, position = {}) {
   const tsCode = toTsCode(code);
-  const api = tsCode.endsWith('.HK') ? 'hk_daily' : 'daily';
+  const api = historicalApiFor(code, position);
   const sd = String(start).replace(/-/g, '');
   const ed = String(end).replace(/-/g, '');
   let data = null;
@@ -216,4 +228,4 @@ async function recomputeNav(username, accountName, fromDate) {
   return { ok: true, days: affected };
 }
 
-module.exports = { recomputeNav, backfillDailyPrices, isTradingDay, cnDate };
+module.exports = { recomputeNav, backfillDailyPrices, historicalApiFor, isTradingDay, cnDate };

@@ -125,10 +125,14 @@ function quantityAsOf(data, date, snapshotAt) {
       map.set(code, row);
     }
   }
-  // 没有完整交易历史的持仓，按当前持仓补入，避免把券商导入的“持仓仍由本系统维护”误判为零。
+  // 没有完整交易历史的持仓，按当前持仓补入；但基准日之后已经发生过交易的代码
+  // 不能这样补入，否则会把“基准日后的新买入”错误地算成基准日已有持仓。
   for (const p of (data.positions || [])) {
     const code = String(p.code || '');
-    if (code && !map.has(code)) map.set(code, { quantity: Number(p.quantity) || 0, subtype: p.subtype || '' });
+    if (!code || map.has(code)) continue;
+    const hasFutureTrade = trades.some((t) => String(t.code || '') === code &&
+      String(t.trade_date || t.date || '').slice(0, 10) > date);
+    if (!hasFutureTrade) map.set(code, { quantity: Number(p.quantity) || 0, subtype: p.subtype || '' });
   }
   // 导入快照是历史锚点；若锚点之后到基准日没有交易，而当前持仓已被校正，
   // 以当前持仓现状为准，避免旧快照数量把合法的子账户拆分重复误判为重复交易。
@@ -156,6 +160,42 @@ function quantityAsOf(data, date, snapshotAt) {
   return map;
 }
 
+function aggregateCurrentPositions(positions) {
+  const map = new Map();
+  for (const p of (positions || [])) {
+    const code = String(p.code || '');
+    if (!code) continue;
+    const current = map.get(code);
+    if (!current) {
+      map.set(code, { ...p, code, quantity: Number(p.quantity) || 0 });
+      continue;
+    }
+    current.quantity += Number(p.quantity) || 0;
+    if (!current.price && Number(p.price) > 0) current.price = Number(p.price);
+    if (!current.subtype && p.subtype) current.subtype = p.subtype;
+    if (!current.name && p.name) current.name = p.name;
+  }
+  return map;
+}
+
+function tradePriceAtEnd(data, code, startDate, endDate, startAt, endAt) {
+  const rows = (data.trades || []).filter((t) => String(t.code || '') === code &&
+    t.direction === 'sell' && eventInInterval(t, dateKey(t.trade_date || t.date), startDate, endDate, startAt, endAt) &&
+    Number(t.price) > 0).sort((a, b) => (eventTimestamp(a) || 0) - (eventTimestamp(b) || 0));
+  return rows.length ? Number(rows[rows.length - 1].price) : null;
+}
+
+function priceAt(priceMap, date, code, isHk) {
+  const variants = [code];
+  // 历史导入可能把港股五位代码补成六位；只对已确认港股做兼容，避免误合并 A 股代码。
+  if (isHk && /^\d{5}$/.test(code)) variants.push(code.padStart(6, '0'));
+  for (const variant of variants) {
+    const value = priceMap.get(date + '|' + variant);
+    if (value != null) return value;
+  }
+  return null;
+}
+
 async function computeNavAttribution(username, accountName, data, currentTotal) {
   const navs = (data.navHistory || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
   if (navs.length < 2) return { complete: false, reason: 'not_enough_snapshots' };
@@ -181,38 +221,46 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
       ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [currentDate]
   );
   const fxByDate = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
-  const fallbackCurrent = Number(data.hkRate) > 0 ? Number(data.hkRate) : null;
-  // 已保存快照中的汇率是历史事实，行情表只能作为缺失时的明确回退，不能静默覆盖。
+  // 已保存快照中的汇率是历史事实，行情表只能作为缺失时的明确回退，不能静默使用当前汇率。
   const rateAt = (date, nav) => Number(nav && nav.hkRate) > 0 ? Number(nav.hkRate) :
-    (Number(fxByDate.get(date)) > 0 ? Number(fxByDate.get(date)) : fallbackCurrent);
+    (Number(fxByDate.get(date)) > 0 ? Number(fxByDate.get(date)) : null);
   const prevRate = rateAt(prevDate, previous);
   const lastRate = liveEnd && Number(data.hkRate) > 0 ? Number(data.hkRate) : rateAt(currentDate, last);
-  const currentByCode = new Map((data.positions || []).map(p => [String(p.code), p]));
+  const currentByCode = aggregateCurrentPositions(data.positions);
   const prevAt = timestamp(previous.snapshot_at);
   const lastAt = liveEnd ? Date.now() : timestamp(last.snapshot_at);
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
   const priceImpact = { value: 0 };
   const fxImpact = { value: 0 };
+  const quantityImpact = { value: 0 };
   const previousMarketValue = { value: 0, complete: true };
   const missing = [];
   const codes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
   for (const code of codes) {
     const q = prevQty.get(code) || { quantity: 0, subtype: (currentByCode.get(code) || {}).subtype || '' };
     const qty = Number(q.quantity) || 0;
-    if (qty === 0) continue;
     const p = currentByCode.get(code);
-    const prevPrice = priceMap.get(prevDate + '|' + code);
-    const lastPrice = liveEnd && p ? Number(p.price) : priceMap.get(currentDate + '|' + code);
     const isHk = q.subtype === '港股' || (p && p.subtype === '港股');
-    if (!(prevPrice > 0) || !(lastPrice > 0) || (isHk && !(prevRate > 0 && lastRate > 0))) {
+    const prevPrice = priceAt(priceMap, prevDate, code, isHk);
+    const tradePrice = tradePriceAtEnd(data, code, prevDate, currentDate, prevAt, lastAt);
+    const lastPrice = liveEnd && p ? Number(p.price) : priceAt(priceMap, currentDate, code, isHk);
+    const endPrice = lastPrice > 0 ? lastPrice : tradePrice;
+    const currentQty = p ? Number(p.quantity) || 0 : 0;
+    if ((qty > 0 && (!(prevPrice > 0) || !(endPrice > 0))) || (currentQty > 0 && !(endPrice > 0)) ||
+      ((qty > 0 || currentQty > 0) && isHk && !(prevRate > 0 && lastRate > 0))) {
       missing.push(code);
       previousMarketValue.complete = false;
       continue;
     }
     const baseFx = isHk ? prevRate : 1;
-    previousMarketValue.value += prevPrice * qty * baseFx;
-    priceImpact.value += (lastPrice - prevPrice) * qty * baseFx;
-    if (isHk) fxImpact.value += lastPrice * qty * (lastRate - prevRate);
+    const endFx = isHk ? lastRate : 1;
+    if (qty > 0) {
+      previousMarketValue.value += prevPrice * qty * baseFx;
+      priceImpact.value += (endPrice - prevPrice) * qty * baseFx;
+      if (isHk) fxImpact.value += endPrice * qty * (lastRate - prevRate);
+    }
+    // 数量变化归入交易/数量影响：新买入不要求基准日价格，清仓也不要求当前行情。
+    quantityImpact.value += (currentQty - qty) * endPrice * endFx;
   }
   const ledgerChange = { value: 0 };
   let currencyIncomplete = false;
@@ -250,7 +298,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     Number.isFinite(Number(previous.systemMarketValueAtSnapshot)) && Number.isFinite(Number(previous.marketValueCny))
     ? Number(previous.systemMarketValueAtSnapshot) - Number(previous.marketValueCny)
     : null;
-  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - ledgerChange.value - (importBasisAdjustment || 0) : null;
+  const tradeImpact = ledgerChange.value + quantityImpact.value;
+  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact - (importBasisAdjustment || 0) : null;
   return {
     complete,
     reason: complete ? null : (currencyIncomplete ? 'missing_trade_currency_settlement' : 'missing_exact_price_or_fx'),
@@ -262,6 +311,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     priceImpact: priceImpact.value,
     fxImpact: fxImpact.value,
     ledgerChange: ledgerChange.value,
+    quantityImpact: quantityImpact.value,
+    tradeImpact,
     importBasisAdjustment,
     snapshotDrift: drift,
     authorityMode: data.authoritativeTotalAsset != null,

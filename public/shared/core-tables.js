@@ -122,9 +122,10 @@ function bindChangeTip(el, changeAmt, changePct) {
   if (!el) return;
   // 归因只使用后端统一计算结果，避免前端现金端公式制造未归因项。
   var attribution = data.navAttribution || { complete: false };
-  var priceImpact = attribution.complete ? Number(attribution.priceImpact) || 0 : 0;
-  var fxImpact = attribution.complete ? Number(attribution.fxImpact) || 0 : 0;
-  var otherChange = attribution.complete ? Number(attribution.ledgerChange) || 0 : null;
+  var priceImpact = Number.isFinite(Number(attribution.priceImpact)) ? Number(attribution.priceImpact) : null;
+  var fxImpact = Number.isFinite(Number(attribution.fxImpact)) ? Number(attribution.fxImpact) : null;
+  var otherChange = Number.isFinite(Number(attribution.tradeImpact)) ? Number(attribution.tradeImpact) :
+    (Number.isFinite(Number(attribution.ledgerChange)) ? Number(attribution.ledgerChange) : null);
   var importBasisAdjustment = attribution.importBasisAdjustment == null ? null : Number(attribution.importBasisAdjustment);
   var snapshotDrift = attribution.complete && Number.isFinite(Number(attribution.snapshotDrift)) ? Number(attribution.snapshotDrift) : null;
   var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_calculated') : null;
@@ -138,7 +139,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete, attribution.missingCodes, attribution.reason);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -149,23 +150,24 @@ function bindChangeTip(el, changeAmt, changePct) {
   el.onmouseleave = function () { tip.style.display = 'none'; };
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete, missingCodes, incompleteReason) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
+  var impact = function (v) { return v == null ? '<span style="color:#9aa0a6;">—</span>' : '<span style="color:' + col(v) + ';">' + arrow(v) + ' ' + sign(v) + '</span>'; };
   var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
   // 低于分币级别的残差属于浮点/四舍五入误差，不在浮框中制造噪音。
   var visibleDrift = snapshotDrift != null && Math.abs(snapshotDrift) >= 0.005 ? snapshotDrift : null;
   var html = '' +
     '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
-      '<div>股价/债价涨跌影响：<span style="color:' + col(priceImpact) + ';">' + arrow(priceImpact) + ' ' + sign(priceImpact) + '</span></div>' +
+      '<div>股价/债价涨跌影响：' + impact(priceImpact) + '</div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">各持仓（今价−昨价）×数量×昨日快照汇率，仅反映价格变动</div>' +
-      '<div>汇率影响：<span style="color:' + col(fxImpact) + ';">' + arrow(fxImpact) + ' ' + sign(fxImpact) + '</span></div>' +
+      '<div>汇率影响：' + impact(fxImpact) + '</div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港股今价 ×（今日汇率−昨日快照汇率），反映港币兑人民币波动</div>';
   if (otherChange != null) {
     html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、现金流入流出等</div>';
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、数量变化及现金流入流出等</div>';
   }
   if (importBasisAdjustment != null && Number.isFinite(importBasisAdjustment)) {
     html += '<div>导入口径切换差异：<span style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
@@ -177,7 +179,11 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
       : '现金从最近券商导入余额续算；持仓市值已完全按系统价格、数量和汇率计算，不保留导入差额。') + '</div>';
   }
   if (attributionIncomplete) {
-    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">缺少上一基准日的完整收盘价或汇率，本次不伪造价格/汇率归因。</div>';
+    var reasonText = incompleteReason === 'missing_trade_currency_settlement' ? '存在港股交易缺少人民币结算金额' : '缺少上一基准日的完整收盘价或汇率';
+    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">' + reasonText + '；以下仅显示已有完整数据的标的，合计暂不闭合。</div>';
+    if (Array.isArray(missingCodes) && missingCodes.length) {
+      html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">缺失标的：' + missingCodes.slice(0, 12).join('、') + (missingCodes.length > 12 ? ' 等' : '') + '</div>';
+    }
   }
   if (attributionIncomplete) {
     html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计：<span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span>（归因不完整，未进行明细加总）</div>';

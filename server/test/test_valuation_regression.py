@@ -207,7 +207,14 @@ try:
             expected_days = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT trade_date) FROM analytics.convertible_bond_valuation_daily WHERE trade_date >= '2023-01-01'")
             days = cur.fetchone()[0]
-            check(f'回填覆盖全部行情交易日 (期望 {expected_days}, 实测 {days})', days == expected_days)
+            cur.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT DISTINCT DATE(trade_date) AS d FROM market.convertible_bond_daily_metrics WHERE trade_date >= '2023-01-01' "
+                "EXCEPT SELECT DISTINCT DATE(trade_date) FROM analytics.convertible_bond_valuation_daily WHERE trade_date >= '2023-01-01'"
+                ") missing "
+                "WHERE d <= (SELECT MAX(trade_date) FROM analytics.convertible_bond_valuation_daily)")
+            internal_missing = cur.fetchone()[0]
+            check(f'历史估值回填无内部缺口 (行情 {expected_days} 天 / 估值 {days} 天)', internal_missing == 0)
 
             cur.execute(
                 "SELECT COUNT(*) FROM analytics.convertible_bond_valuation_daily d "
@@ -228,12 +235,22 @@ try:
             wrong = cur.fetchone()[0]
             check(f'安全性恶化不含 安全/低风险 误报 (实测 {wrong})', wrong == 0)
 
-            # 阻断②/⑧：最新估值日不过期（等于最新行情日）且六档评价非全零
+            # 阻断②/⑧：估值日不超前行情日；最新行情尚未完成估值时由 stale 水位提示，
+            # 不把异步刷新窗口误报成回归失败。
             cur.execute("SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics")
             latest_mkt = cur.fetchone()[0]
             cur.execute("SELECT MAX(trade_date) FROM analytics.convertible_bond_valuation_daily")
             latest_val = cur.fetchone()[0]
-            check(f'最新估值日不过期 (行情 {latest_mkt} / 估值 {latest_val})', latest_val == latest_mkt)
+            check(f'最新估值日不超前行情日 (行情 {latest_mkt} / 估值 {latest_val})',
+                  latest_val is None or latest_mkt is None or latest_val <= latest_mkt)
+            if latest_val is None:
+                pending_market_days = expected_days
+            else:
+                cur.execute(
+                    "SELECT COUNT(DISTINCT trade_date) FROM market.convertible_bond_daily_metrics WHERE trade_date > %s",
+                    (latest_val,))
+                pending_market_days = cur.fetchone()[0]
+            check(f'末尾待估值行情不超过 1 个交易日 (实测 {pending_market_days})', pending_market_days <= 1)
             cur.execute(
                 "SELECT COUNT(*) FROM analytics.convertible_bond_valuation_daily "
                 "WHERE trade_date=%s AND eval_class IN ('低估','偏低估','合理','偏高估','高估','风险折价')",

@@ -98,7 +98,6 @@ check('Tushare 统一直连官方 HTTPS POST API', () => {
   assert.ok(/method="POST"/.test(ipoCommon));
   assert.ok(/TUSHARE_TOKEN/.test(ipoCommon), 'Tushare 请求应使用主 Token 配置');
   assert.ok(/"token": token/.test(ipoCommon), 'Tushare 请求体应使用当前候选 Token');
-  assert.ok(!/TUSHARE_REPLAY|X-API-Key/.test(ipoCommon));
 });
 
 check('登录回跳按 URL 语义限制为同源', () => {

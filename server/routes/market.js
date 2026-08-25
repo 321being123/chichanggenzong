@@ -49,8 +49,8 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
       name: names.get(ts) || (quote && quote.name) || '',
       code: c,
       change: (change != null && !isNaN(change)) ? change : null,
-      quote_time: quote ? quote.quote_time : null,
-      source: quote ? quote.source : 'tushare'
+      quote_time: quote ? quote.quote_time : (d && d.quote_time || null),
+      source: quote ? quote.source : 'tushare_daily'
     };
   });
 

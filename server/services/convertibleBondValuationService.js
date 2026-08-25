@@ -19,6 +19,13 @@ function rangeCutoff(range) {
   return d.toISOString().slice(0, 10);
 }
 
+function isValuationStale(tradeDate, expectedDate, latestMarketDate) {
+  return Boolean(tradeDate && (
+    (expectedDate && tradeDate < expectedDate) ||
+    (latestMarketDate && tradeDate < latestMarketDate)
+  ));
+}
+
 // ---- 基础：模型版本与最新估值日 ----
 async function getActiveModel() {
   const { rows } = await pool.query(
@@ -92,6 +99,10 @@ async function getList(asOf, filters = {}) {
   const model = await getActiveModel();
   const tradeDate = asOf || (await getLatestTradeDate());
   if (!tradeDate) return null;
+  const { rows: [marketDateRow] } = await pool.query(
+    'SELECT MAX(trade_date) AS d FROM market.convertible_bond_daily_metrics'
+  );
+  const latestMarketDate = marketDateRow && marketDateRow.d ? isoDate(marketDateRow.d) : null;
   // 默认列表即使展示的是上一有效快照，也必须按当前预期交易日剔除已退市、
   // 已到期或已停止转股的债券；显式查询历史日期时则按该历史日还原范围。
   const universeDate = asOf ? tradeDate : expectedTradeDate();
@@ -148,7 +159,8 @@ async function getList(asOf, filters = {}) {
     as_of_date: tradeDate,
     expected_trade_date: expected,
     updated_at: heatRow && heatRow.updated_at ? heatRow.updated_at : null,
-    stale: tradeDate < expected,
+    latest_market_date: latestMarketDate,
+    stale: isValuationStale(tradeDate, expected, latestMarketDate),
     model_version: latestModel.model_version || null,
     formula_version: latestModel.formula_version || null,
     universe_version: latestModel.universe_version || null,
@@ -377,6 +389,7 @@ async function getValuationByCodes(codes) {
 
 module.exports = {
   EVAL_ORDER,
+  isValuationStale,
   getActiveModel,
   getLatestTradeDate,
   getList,

@@ -9,7 +9,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
 const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
-const { fetchQuoteByCode, todayCN, toTsCode } = require('../services/market');
+const { fetchQuoteByCode, todayCN, toTsCode, validateDailyPriceBatch } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const tradeLedger = require('../services/tradeLedger');
@@ -495,7 +495,10 @@ router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), 
     const name = decodeURIComponent(req.params.name);
     const { prices, date } = req.body;
     if (!prices || !prices.length) return res.json({ ok: true });
-    await saveDailyPrices(req.session.user, name, date || todayCN(), prices);
+    const targetDate = date || todayCN();
+    const validation = validateDailyPriceBatch(targetDate, prices);
+    if (!validation.ok) return res.status(400).json(validation);
+    await saveDailyPrices(req.session.user, name, validation.date, prices);
     res.json({ ok: true });
   } catch(e) {
     res.status(500).json({ error: e.message });

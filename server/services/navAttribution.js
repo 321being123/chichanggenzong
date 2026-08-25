@@ -148,8 +148,10 @@ function quantityAsOf(data, date, snapshotAt) {
   // 导入快照是历史锚点；若锚点之后到基准日没有交易，而当前持仓已被校正，
   // 以当前持仓现状为准，避免旧快照数量把合法的子账户拆分重复误判为重复交易。
   if (importedAnchor) {
-    for (const p of (data.positions || [])) {
-      const code = String(p.code || '');
+    // 同一证券可能因分批持仓/导入拆分而有多行，必须先合并数量，
+    // 不能逐行覆盖基准数量（否则最后一行会丢掉前面批次）。
+    const currentByCode = aggregateCurrentPositions(data.positions);
+    for (const [code, p] of currentByCode) {
       if (!code) continue;
       const changedAfter = trades.some((t) => String(t.trade_date || t.date || '').slice(0, 10) > date && String(t.code || '') === code);
       if (changedAfter) continue;

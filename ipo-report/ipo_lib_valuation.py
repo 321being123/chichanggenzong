@@ -3,6 +3,7 @@ import requests
 import json
 import os
 import re
+import math
 from collections import defaultdict
 import time
 from datetime import datetime, timedelta
@@ -638,13 +639,13 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0):
         estimated = float(_XGB_MODEL.predict(xgb.DMatrix(features, feature_names=_XGB_FEATURES))[0])
         if (_XGB_FEATURE_INFO or {}).get("target_transform") == "log1p_nonnegative_return":
             estimated = float(np.expm1(estimated))
-        estimated = int(round(max(estimated, 0)))
+        estimated = math.floor(max(estimated, 0))
 
         # XGBoost动态校准：按板块基准 + 市场温度调整
         xgb_boost = _calc_xgb_boost(stock_detail, estimated)
         if xgb_boost != 1.0:
             old_est = estimated
-            estimated = int(round(estimated * xgb_boost))
+            estimated = math.floor(estimated * xgb_boost)
             detail_parts = [
                 f"📊 预估首日涨幅: {estimated}%（🤖 XGBoost模型，校准系数×{xgb_boost}）",
                 f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lr}% 流通{cmv:.1f}亿",
@@ -676,9 +677,8 @@ def _get_lot_size(stock_code):
 
 def _format_listing_summary(estimated, stock_detail, temp):
     """生成上市结论文字，包含预计单签收益
-    涨幅按最接近的50%梯度展示，单签收益按万元整数向下取整"""
-    # 125% 应展示为约150%，避免 Python round 的“银行家舍入”把它算成100%。
-    est_step = ((estimated + 25) // 50) * 50
+    涨幅按50%梯度向下取整展示，单签收益按万元整数向下取整"""
+    est_step = (math.floor(max(estimated, 0)) // 50) * 50
     issue_price = None
     if stock_detail:
         try:
@@ -745,14 +745,14 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         # 叠加赛道热度修正：真实基础 × 赛道系数（乘一次，线性可预期，不用非线性放大公式）
         if sector_label:
             sector_mult = sector_boost
-            estimated = int(round(estimated * sector_mult))
+            estimated = math.floor(estimated * sector_mult)
             tag = "顶级赛道修正" if sector_boost >= 2 else "赛道修正"
             detail_parts.append(f"🚀 {tag}: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
         else:
             detail_parts.append(f"🚀 赛道修正: 未命中热门赛道（×1.00）→{estimated}%")
         # 市场温度衰减
         temp_mult = get_temp_listing_multiplier()
-        estimated = int(round(estimated * temp_mult))
+        estimated = math.floor(estimated * temp_mult)
         detail_parts.append(f"🌡️ 温度衰减: {temp}（×{temp_mult}）→{estimated}%")
         # 模型更新时间
         if trained_at:
@@ -821,11 +821,11 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
 
     # 赛道热度修正：真实基础 × 赛道系数（乘一次，与 XGBoost 路径口径一致）
     if sector_label:
-        estimated = int(round(estimated * sector_boost))
+        estimated = math.floor(estimated * sector_boost)
     # 市场温度整体衰减
     temp = _MARKET_TEMP["level"]
     temp_mult = get_temp_listing_multiplier()
-    estimated = int(round(estimated * temp_mult))
+    estimated = math.floor(estimated * temp_mult)
 
     # 生成预测文本
     summary = _format_listing_summary(estimated, stock_detail, temp)

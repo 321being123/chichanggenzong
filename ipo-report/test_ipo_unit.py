@@ -242,8 +242,23 @@ try:
         {"stock_code": "301668", "issue_price": 84.46},
         "热市",
     )
-    check("新股125%按50%档位显示150%", "约150%" in summary_125, "summary=%r" % summary_125)
-    check("新股摘要包含单签收益", "预计首日单签收益6万元" in summary_125, "summary=%r" % summary_125)
+    check("新股125%按50%档位向下显示100%", "约100%" in summary_125, "summary=%r" % summary_125)
+    check("新股摘要包含单签收益", "预计首日单签收益4万元" in summary_125, "summary=%r" % summary_125)
+    _old_xgb_for_floor = _val._xgb_predict_listing
+    _old_sector_for_floor = _val.detect_stock_hot_sector
+    _old_temp_multiplier_for_floor = _val.get_temp_listing_multiplier
+    _val._xgb_predict_listing = lambda *args, **kwargs: (125.99, ["测试"], None)
+    _val.detect_stock_hot_sector = lambda *args, **kwargs: ("", 1.0)
+    _val.get_temp_listing_multiplier = lambda: 1.0
+    floored = _val.get_listing_analysis(
+        "stock", 10, None, None,
+        stock_detail={"stock_code": "001234", "issue_price": 10},
+    )
+    check("新股预计涨幅向下取整", floored.get("predicted_return") == 125,
+          "predicted_return=%r" % floored.get("predicted_return"))
+    _val._xgb_predict_listing = _old_xgb_for_floor
+    _val.detect_stock_hot_sector = _old_sector_for_floor
+    _val.get_temp_listing_multiplier = _old_temp_multiplier_for_floor
     sector = _val.detect_stock_hot_sector("测试", "印制电路板（PCB）研发和生产", "电子元器件")
     check("PCB赛道无历史样本时按中性系数识别", sector[0] in ("PCB", "印制电路板") and sector[1] == 1.0,
           "sector=%r" % (sector,))

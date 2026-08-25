@@ -423,7 +423,7 @@ function ipoRenderHistory(type, rows) {
       ipoPending(it.online_lottery_rate, ipoWanfenCell),
       ipoPending(it.fund_raised),
       ipoPending(it.circulation_mv, function (v) { return ipoNumFixed(v, 2); }),
-      it.has_prediction ? ipoPctCell(it.pred_return == null ? it.pred_return : Math.floor(Number(it.pred_return)), 0) : '无历史预测',
+      it.has_prediction ? ipoPctCell(it.pred_return) : '无历史预测',
       ipoFirstDayStatus(it),
       ipoFmt(profit)
     ];

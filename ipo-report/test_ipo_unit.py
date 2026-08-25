@@ -254,7 +254,7 @@ try:
         "stock", 10, None, None,
         stock_detail={"stock_code": "001234", "issue_price": 10},
     )
-    check("新股预计涨幅向下取整", floored.get("predicted_return") == 125,
+    check("新股预计涨幅按50%档位向下取整", floored.get("predicted_return") == 100,
           "predicted_return=%r" % floored.get("predicted_return"))
     _val._xgb_predict_listing = _old_xgb_for_floor
     _val.detect_stock_hot_sector = _old_sector_for_floor

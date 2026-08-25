@@ -675,10 +675,14 @@ def _get_lot_size(stock_code):
     # 深市主板 / 创业板 / 科创板
     return 500
 
+def _floor_listing_band(estimated):
+    """将最终预计涨幅按50%档位向下取整。"""
+    return (math.floor(max(estimated, 0)) // 50) * 50
+
 def _format_listing_summary(estimated, stock_detail, temp):
     """生成上市结论文字，包含预计单签收益
     涨幅按50%梯度向下取整展示，单签收益按万元整数向下取整"""
-    est_step = (math.floor(max(estimated, 0)) // 50) * 50
+    est_step = _floor_listing_band(estimated)
     issue_price = None
     if stock_detail:
         try:
@@ -753,6 +757,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         # 市场温度衰减
         temp_mult = get_temp_listing_multiplier()
         estimated = math.floor(estimated * temp_mult)
+        estimated = _floor_listing_band(estimated)
         detail_parts.append(f"🌡️ 温度衰减: {temp}（×{temp_mult}）→{estimated}%")
         # 模型更新时间
         if trained_at:
@@ -826,6 +831,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     temp = _MARKET_TEMP["level"]
     temp_mult = get_temp_listing_multiplier()
     estimated = math.floor(estimated * temp_mult)
+    estimated = _floor_listing_band(estimated)
 
     # 生成预测文本
     summary = _format_listing_summary(estimated, stock_detail, temp)

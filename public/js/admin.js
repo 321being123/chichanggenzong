@@ -588,7 +588,7 @@ function jobDescription(job) {
   }
   const map = {
     bond_safety_refresh: '每日早 6:30 刷新可转债安全评分快照，供转债筛选与风险面板使用。',
-    convertible_bond_universe_refresh: '每日 18:00 增量同步可转债全量数据（含价格、条款、评级、正股等）；数据不完整时次日 08:00 自动重试。',
+    convertible_bond_universe_refresh: '每日 08:00 按上一交易日同步可转债全量数据（含价格、条款、评级、正股等）；目标日数据不完整时有限回看并自动重试。',
     hk_rate: '每日自动抓取港币兑人民币汇率并写入所有账户，用于港股持仓的人民币估值。',
     index_baseline: '首次启动或新增账户时，自动补齐净值起点之前的沪深300/上证/中证500/恒生等指数基准点位。',
     index_recent: '每日补齐最近交易日的指数点位，确保收益对比图数据连续。',
@@ -614,7 +614,10 @@ function jobStatusTag(status) {
   return '<span class="tag">' + escapeHtml(jobStatusLabel(status)) + '</span>';
 }
 function fmtTime(t) {
-  return t ? String(t).replace('T', ' ').slice(0, 19) : '—';
+  if (!t) return '—';
+  const date = new Date(t);
+  if (Number.isNaN(date.getTime())) return String(t).replace('T', ' ').slice(0, 19);
+  return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
 
 function renderJobsLegacy() {
@@ -631,7 +634,7 @@ function renderJobsLegacy() {
         '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">港币汇率</span><span>每个交易日港股收盘后更新港币兑人民币汇率，用于港股持仓人民币估值。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">可转债安全评分（06:30）</span><span>每日刷新可转债安全评分快照，供转债筛选与风险面板使用。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（18:00）</span><span>每日增量同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果；数据不完整时次日 08:00 自动重试。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（08:00 / 08:15）</span><span>08:00 按上一交易日同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果；目标日数据不完整时有限回看并自动重试。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">打新日历与日报（工作日 18:00）</span><span>自动生成并更新 IPO/打新日历和每日打新日报。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">股市波动指标（18:45）</span><span>同步中债收益率、沪深指数估值、恒指市盈率等数据，并重新计算股市波动指标。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">个股分析（20:30）</span><span>刷新用户关注个股的估值、财务和情绪等深度分析数据。</span></div>' +
@@ -1273,7 +1276,7 @@ function renderOps() {
     '<div class="ops-grid">' +
       opsCard('可转债安全性刷新', '手动触发全部可转债安全评分快照刷新（每日 06:30 自动跑，此处用于立即生效或补救）。',
         '<button class="btn btn-primary" id="ops-bond-safety-refresh" onclick="opsRefreshBondSafety()">立即刷新</button>') +
-      opsCard('可转债估值刷新', '手动触发估值与预警模型重算（每日 18:00 后自动跑）。',
+      opsCard('可转债估值刷新', '手动触发估值与预警模型重算（每日行情同步完成后自动跑）。',
         '<button class="btn btn-primary" id="ops-bond-valuation-refresh" onclick="opsRefreshBondValuation()">立即刷新</button>') +
       opsCard('美国十年期国债收益率', '由 Tushare us_tycr.y10 自动同步，并用于港股格雷厄姆指数计算。',
         '<span style="color:#55705d;">定时任务自动更新，无需手工导入</span>') +

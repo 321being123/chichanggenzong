@@ -50,17 +50,25 @@ function normalizeJobResult(result, externalCalls = 0) {
   };
 }
 
+function recoveryDelayMinutes(recoverAt) {
+  const timestamp = recoverAt ? new Date(recoverAt).getTime() : NaN;
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) return null;
+  return Math.max(1, Math.ceil((timestamp - Date.now()) / 60000));
+}
+
 function classifyFailure(error, result = {}) {
   const code = String((error && (error.code || error.errorCode)) || result.errorCode || '').toUpperCase();
   const type = String((error && (error.errorType || error.type)) || result.errorType || '').toLowerCase();
   const source = String((error && error.source) || result.source || '').toLowerCase() || null;
   const apiName = String((error && error.apiName) || result.apiName || '').trim() || null;
+  const recoverAt = (error && error.recoverAt) || result.recoverAt || null;
   const message = String((error && error.message) || result.error || error || '任务执行失败');
   if (code === 'QUOTA_EXHAUSTED' || /当日|每日|当天|日频|次数.*耗尽|额度.*耗尽|配额.*耗尽|daily.*quota|daily.*limit/i.test(message)) {
     return { code: code || 'QUOTA_EXHAUSTED', type: 'rate_limit', retryable: false, source, apiName, message };
   }
   if (code === 'RATE_LIMIT' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|频次|限速|配额|rate.?limit|quota/i.test(message)) {
-    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: false, source, apiName, message };
+    const delayMinutes = recoveryDelayMinutes(recoverAt);
+    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: true, ...(delayMinutes ? { delayMinutes } : {}), source, apiName, message };
   }
   if (code === 'AUTH_ERROR' || /token\s*(无效|错误)|无效 token|invalid token|401/i.test(message)) {
     return { code: code || 'AUTH_ERROR', type: 'permission', retryable: false, source, apiName, message };
@@ -220,9 +228,17 @@ function childErrorFromMessage(message) {
     apiName: message && message.apiName,
     tokenFingerprint: message && message.tokenFingerprint,
     recoverAt: message && message.recoverAt,
+    dataDiagnostics: message && message.dataDiagnostics,
     externalCallCount: message && message.externalCallCount,
     externalSources: message && message.externalSources,
   });
+}
+
+function resolveMaxAttempts(definition, failure = {}) {
+  const configuredMax = Number(definition && definition.maxAttempts || 3);
+  const requestedMax = Number(failure && failure.maxAttempts);
+  const failureMax = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : configuredMax;
+  return Math.min(configuredMax, failureMax);
 }
 
 async function markRunFailed(runId, detail, failure = null, result = {}) {
@@ -241,8 +257,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const definition = getJobDefinition(slot.job_code);
   const failure = classifyFailure(error, result);
   const message = sanitizeJobError(failure.message || '任务执行失败');
-  const configuredMax = Number(definition.maxAttempts || 3);
-  const maxAttempts = Math.min(configuredMax, Number(failure.maxAttempts || (definition.retryPolicy === 'external' ? 3 : configuredMax)));
+  const maxAttempts = resolveMaxAttempts(definition, failure);
   const noRetry = definition.retryPolicy === 'no_retry' || failure.retryable === false;
   // Tushare 熔断由底层请求在拿到 Token 指纹后持久化；编排层没有指纹时禁止创建全局熔断。
   const normalized = normalizeJobResult({
@@ -413,8 +428,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       source: error.source,
       dataset: error.dataset,
       apiName: error.apiName,
-      tokenFingerprint: error.tokenFingerprint,
       recoverAt: error.recoverAt,
+      dataDiagnostics: error.dataDiagnostics,
       externalCalls: Number(error.externalCallCount || 0),
       externalSources: error.externalSources || {},
     };
@@ -494,4 +509,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, resolveMaxAttempts };

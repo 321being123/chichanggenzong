@@ -37,7 +37,7 @@ assert.ok(/freshnessGate/.test(orchestrator) && /externalCalls: 0/.test(orchestr
 assert.ok(/DURABLE_JOB_RUN/.test(orchestrator) && /唯一 job_runs/.test(read('server/db/jobs.js')), '子进程不得创建嵌套 job_runs');
 const valuationRunner = valuation.slice(valuation.indexOf('async function runRefreshChain'), valuation.indexOf('function nextShanghaiDelay'));
 assert.ok(!/syncConvertibleBondUniverseWithBackfill/.test(valuationRunner), '估值 Runner 不得嵌套可转债行情同步');
-assert.ok(/complete\.length \/ priced\.length >= 0\.8/.test(bondAnalysis), '可转债半成品行情不得覆盖完整行情日');
+assert.ok(/derivedCoverage >= 0\.8/.test(bondAnalysis) && /minimumPriced/.test(bondAnalysis), '可转债半成品行情不得覆盖完整行情日');
 assert.ok(/runRefreshChain\(reason, businessDate\)/.test(read('server/services/jobRunners.js')), '人工补跑估值必须沿用计划业务日期');
 assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCodes/.test(stockAnalysisJob), '无股票基础档案不得阻断整批分析任务');
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');

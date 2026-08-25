@@ -8,7 +8,7 @@ function isSensitiveKey(key) {
   if (['password', 'passwd', 'pwd', 'pass', 'secret', 'token', 'authorization', 'credential', 'credentials'].includes(joined)) return true;
   if (['password', 'passwd', 'pwd', 'pass', 'secret', 'token', 'authorization', 'credential', 'credentials'].includes(lastWord)) return true;
   return ['apikey', 'apisecretkey', 'accesstoken', 'refreshtoken', 'clientsecret', 'smtppass', 'smtppassword',
-    'dbpass', 'dbpassword', 'databaseurl', 'connectionstring', 'privatekey', 'passwordhash', 'tokenhash'].some(value => joined.endsWith(value));
+    'dbpass', 'dbpassword', 'databaseurl', 'connectionstring', 'privatekey', 'passwordhash', 'tokenhash', 'tokenfingerprint'].some(value => joined.endsWith(value));
 }
 
 function sanitizeJobError(value, maxLength = 2000) {

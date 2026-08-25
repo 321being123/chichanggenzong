@@ -35,8 +35,11 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     }
     case 'holiday_sync':
       return require('../jobs/holidaySync').ensureHolidaysCurrent().then(() => ({ ok: true }));
-    case 'convertible_bond_universe_refresh':
-      return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason);
+    case 'convertible_bond_universe_refresh': {
+      const { expectedDataDate } = require('./jobScheduleSlots');
+      const targetTradeDate = expectedDataDate('convertible_bond_universe_refresh', businessDate);
+      return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason, { targetTradeDate });
+    }
     case 'convertible_bond_valuation_refresh':
       return require('../jobs/convertibleBondRefresh').runRefreshChain(reason, businessDate);
     case 'ipo_calendar_refresh':

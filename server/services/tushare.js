@@ -56,7 +56,7 @@ function failoverEligible(error) {
   return Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
 }
 
-function requestWithToken(apiName, params, fields, token, guardSource, dataset) {
+function requestWithToken(apiName, params, fields, token, guardSource, dataset, options = {}) {
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
   const fingerprint = tokenFingerprint(token);
   const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, guardClient => new Promise((resolve, reject) => {
@@ -103,7 +103,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
         if (data.items.some(row => !Array.isArray(row) || row.length !== data.fields.length)) {
           return reject(new TushareRequestError('INVALID_RESPONSE', `Tushare ${apiName} 数据列数不一致`, { apiName, statusCode: response.statusCode }));
         }
-        if (data.items.length === 0) {
+        if (data.items.length === 0 && !options.allowEmpty) {
           return reject(new TushareRequestError('EMPTY_DATA', `Tushare ${apiName} 返回空数据`, { errorType: 'empty_data', apiName, statusCode: response.statusCode }));
         }
         await closeExternalCircuit(guardSource, apiName, fingerprint, guardClient).catch(() => {});
@@ -130,7 +130,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset) 
   });
 }
 
-async function tushareQuery(apiName, params = {}, fields = '') {
+async function tushareQuery(apiName, params = {}, fields = '', options = {}) {
   const runtime = await getProviderRuntime('tushare');
   const allCandidates = [
     { token: runtime.primary, source: PRIMARY_SOURCE },
@@ -152,7 +152,7 @@ async function tushareQuery(apiName, params = {}, fields = '') {
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     try {
-      const result = await requestWithToken(apiName, params, fields, candidate.token, candidate.source, dataset);
+      const result = await requestWithToken(apiName, params, fields, candidate.token, candidate.source, dataset, options);
       if (candidate.source === BACKUP_SOURCE && primaryFailure && runtime.mode === 'auto') {
         const { notifyTushareFailover } = require('./externalApiConfig');
         await notifyTushareFailover(apiName, 'primary', 'backup', primaryFailure.message, primaryFailure.recoverAt).catch(() => {});

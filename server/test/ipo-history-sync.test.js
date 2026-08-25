@@ -53,7 +53,7 @@ const historyJobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipo
 assert.match(historyJobSource, /parseTushareFailovers/, 'Python 成功切备用后的接口标记未进入 Node 解析链');
 assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入');
 const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
-assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason\)/, '可转债任务没有向调度器返回结果水位');
+assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate: backfillOpts\.targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');
 assert.match(bondJobSource, /BOND_ISSUE_RESULT_SCRIPT/, '新债发行结果补全脚本未接入');
 

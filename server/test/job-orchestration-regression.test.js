@@ -8,6 +8,7 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 const adminRoute = read('server/routes/admin.js');
 const slots = read('server/services/jobScheduleSlots.js');
 const orchestrator = read('server/services/jobOrchestrator.js');
+const jobRunners = read('server/services/jobRunners.js');
 const scheduler = read('server/scheduler.js');
 const alertMailer = read('server/services/jobAlertMailer.js');
 const testRunner = read('server/test/run-all.js');
@@ -61,6 +62,8 @@ assert(!/type: 'empty_data'[^\n]*maxAttempts: 2/.test(orchestrator), '空数据�
 assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*hour: 8, minute: 0/.test(definitions), '可转债行情同步必须改为次日 08:00 执行');
 assert(/jobCode: 'convertible_bond_valuation_refresh'[^\n]*hour: 8, minute: 15/.test(definitions), '可转债估值必须改为 08:15 执行');
 assert(/jobCode: 'convertible_bond_valuation_refresh'[\s\S]*dataDatePolicy: 'previous_trading_day'/.test(definitions), '可转债估值任务必须按上一个交易日校验数据水位');
+assert(/expectedDataDate\('convertible_bond_universe_refresh', businessDate\)/.test(jobRunners)
+  && /targetTradeDate/.test(jobRunners), '可转债行情 Runner 必须把计划业务日期转换为目标交易日并传入主同步');
 assert(!/notifyJobFailure/.test(jobsDb), '底层 job_runs 完成记录不得绕过统一执行器直接发送首次失败告警');
 assert(/claimAlertDelivery/.test(alertMailer) && /status='sending'/.test(alertMailer), '邮件投递必须先原子领取，避免重复发送');
 assert(/connectionTimeout: 10 \* 1000/.test(config) && /greetingTimeout: 10 \* 1000/.test(config) && /socketTimeout: 10 \* 1000/.test(config), 'SMTP 必须配置 10 秒超时');

@@ -42,6 +42,7 @@ process.on('message', async message => {
       apiName: error && error.apiName,
       tokenFingerprint: error && error.tokenFingerprint,
       recoverAt: error && error.recoverAt,
+      dataDiagnostics: error && error.dataDiagnostics,
       externalCallCount: Number(error && error.externalCalls || stats.total),
       externalSources: stats.sources,
     });

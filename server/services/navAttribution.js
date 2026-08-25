@@ -75,9 +75,20 @@ function latestImportedPositionAnchor(data, date) {
   const snapshots = (data.positionSnapshots || []).filter((s) => dateKey(s.snapshotDate || s.date) <= date);
   if (!snapshots.length) return null;
 
-  let rows = imported && imported.importBatchId
-    ? snapshots.filter((s) => String(s.snapshotId) === String(imported.importBatchId))
-    : [];
+  // 人工校准快照是对旧导入锚点的明确修订；同一账户存在更晚的校准快照时，
+  // 必须优先使用它，否则旧批次会遮蔽修复后的基准数量。
+  const importedDate = imported ? dateKey(imported.date) : '';
+  const manualDates = snapshots
+    .filter((s) => String(s.source || '') === 'manual_reconciliation')
+    .map((s) => dateKey(s.snapshotDate || s.date))
+    .filter((d) => d > importedDate);
+  const latestManualDate = manualDates.length ? manualDates.reduce((max, d) => d > max ? d : max, '') : '';
+  let rows = latestManualDate
+    ? snapshots.filter((s) => String(s.source || '') === 'manual_reconciliation' &&
+        dateKey(s.snapshotDate || s.date) === latestManualDate)
+    : (imported && imported.importBatchId
+      ? snapshots.filter((s) => String(s.snapshotId) === String(imported.importBatchId))
+      : []);
   if (!rows.length) {
     const latestDate = imported ? dateKey(imported.date) : snapshots.reduce((max, s) => {
       const d = dateKey(s.snapshotDate || s.date);

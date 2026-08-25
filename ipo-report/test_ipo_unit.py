@@ -10,6 +10,7 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_daily_report as m
+import ipo_lib_fetch as fetch
 import _common as common
 import calendar_core
 from ipo_lib_liquidity import calculate_adjustment_from_samples, liquidity_bucket, robust_mean
@@ -40,6 +41,25 @@ check("小规模按1亿元梯度分组",
       and liquidity_bucket(2.1)[0] == liquidity_bucket(2.9)[0]
       and liquidity_bucket(1.9)[0] != liquidity_bucket(2.1)[0])
 check("小样本平均使用中位数", robust_mean([1, 2, 100]) == 2)
+
+print("== 招股书主营业务/赛道提取 ==")
+try:
+    highkai_fixture = (
+        "四、发行人主营业务情况 "
+        "公司专业从事精密流体控制领域中关键控制部件及相关设备的研发、生产与销售。 "
+        "公司所属行业领域 □新一代信息技术 □新材料 √高端装备 □新能源 "
+        "五、发行人报告期的主要财务数据和财务指标"
+    )
+    parsed_business = fetch._extract_main_business(highkai_fixture) or ""
+    check("主营业务不误取目录/财务章节",
+          "精密流体控制领域中关键控制部件及相关设备的研发、生产与销售" in parsed_business
+          and "财务数据" not in parsed_business,
+          "结果=%r" % parsed_business)
+    check("主营赛道读取高端装备",
+          "所属行业：高端装备" in parsed_business,
+          "结果=%r" % parsed_business)
+except Exception as e:
+    ERR.append("主营业务/赛道提取: " + str(e))
 
 recent_liquidity_samples = [
     {"circulation_scale": scale, "residual_pp": residual}

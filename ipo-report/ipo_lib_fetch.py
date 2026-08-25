@@ -945,36 +945,71 @@ def _has_sector_keyword(text):
 def _extract_main_business(text):
     """从招股书PDF全文提取主营业务描述与所属行业（启发式）。
 
-    优先取『公司主要从事/主营业务为』整句，并附『所属行业』分类，
-    确保含半导体/集成电路/芯片等赛道关键词，供赛道判定使用。
+    优先取『公司专业/主要从事』正文整句，并附招股书里的行业赛道分类，
+    供报告展示和赛道判定使用。招股书目录也会出现“主营业务/所属行业”，
+    因此不能直接取首次匹配结果。
     """
-    # PyMuPDF 常在句子中间插入换行，先折叠换行让句子连续，避免正则截断。
-    text = text.replace("\r", " ").replace("\n", " ")
-    biz = None
-    ind = None
+    # PyMuPDF 常在句子中间插入换行，先折叠空白让句子连续，避免正则截断。
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+
+    def clean_candidate(value):
+        value = re.sub(r'\s+', '', str(value or '')).strip('：:，,；;')
+        # 目录中的省略点和财务章节标题是本次高凯技术误读的根源，直接丢弃。
+        if not value or re.search(r'\.{3,}|…{2,}|财务数据|财务指标|目录|报告期的主要', value):
+            return ''
+        if not re.search(r'研发|生产|销售|制造|提供|经营|产品|设备|材料|服务|控制|从事', value):
+            return ''
+        return value[:200]
+
+    # 正文优先：公司“专业从事”是科创板招股书最稳定的主营业务表述。
+    # 每种句式都遍历候选，避免首个匹配落在目录或风险提示章节。
+    biz = ''
     for pat in [
-        r'公司主要从事([^。]{6,200})',
-        r'发行人主营业务[为:：]?\s*([^。]{6,200})',
-        r'公司主营业务[为:：是]?\s*([^。]{6,200})',
-        r'主营业务[为:：]\s*([^。]{6,200})',
+        r'(?:公司|发行人)专业从事\s*([^。；;]{8,260})',
+        r'(?:公司|发行人)主要从事\s*([^。；;]{8,260})',
+        r'(?:公司|发行人)专门从事\s*([^。；;]{8,260})',
+        r'(?:公司|发行人)主营业务[为是：:]\s*([^。；;]{8,260})',
+        r'主营业务[为：:]\s*([^。；;]{8,260})',
     ]:
-        m = re.search(pat, text)
-        if m:
-            biz = m.group(1).strip().lstrip('：:')
+        for m in re.finditer(pat, text):
+            biz = clean_candidate(m.group(1))
+            if biz:
+                break
+        if biz:
             break
-    # 所属行业：招股书有多处“所属行业”，需避开“所属行业及市场发展情况良好”等套话，
-    # 优先取含赛道关键词的那一句（如“…集成电路制造”），并取最短者让展示更干净。
-    ind_cands = []
-    for m in re.finditer(r'所属行业[为:：]?\s*([^。]{2,120})', text):
-        cand = m.group(1).strip().lstrip('：:')
-        if _has_sector_keyword(cand):
-            # 截到第一个逗号，让行业名称更干净（如“半导体和集成电路行业”）
-            comma = cand.find("，")
-            if comma > 0:
-                cand = cand[:comma]
-            ind_cands.append(cand)
-    if ind_cands:
-        ind = min(ind_cands, key=len)
+
+    # 行业赛道优先取“所属行业领域”勾选项，例如“√高端装备”；
+    # 再取“主要业务领域属于……”等明确分类，最后才回退到标准行业名称。
+    ind = ''
+    checked = re.search(
+        r'所属行业领域.{0,180}?[√✓✔☑]\s*([^\s□■☐☒]{2,24})',
+        text,
+    )
+    if checked:
+        ind = checked.group(1).strip('，。；;：:')
+
+    if not ind:
+        sector = re.search(
+            r'(?:主要业务领域|所处行业领域)属于[^。；;]{0,80}?["“]?'
+            r'(?:\d+(?:\.\d+)?\s*)?(高端装备|新一代信息技术|新材料|新能源|节能环保|生物医药|半导体|集成电路)',
+            text,
+        )
+        if sector:
+            ind = sector.group(1)
+
+    if not ind:
+        standard = re.search(
+            r'(?:公司|发行人)(?:所处|所属)行业(?:为|属于)[：:、“"]?'
+            r'([^。；;，,」”"]{2,40})',
+            text,
+        )
+        if standard:
+            ind = re.sub(r'^C\d+\s*', '', standard.group(1)).strip()
+
+    if ind:
+        ind = re.sub(r'\s+', '', ind).strip('，。；;：:')[:40]
+        if not ind or re.search(r'财务|报告期|目录|情况良好', ind):
+            ind = ''
     if biz and ind:
         return f"{biz}；所属行业：{ind}"
     return biz or ind or None

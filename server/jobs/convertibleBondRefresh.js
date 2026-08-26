@@ -4,6 +4,9 @@ const { execFile } = require('child_process');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnalysis');
 const { buildDailyMetrics } = require('../services/convertibleBondListService');
+const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
+const { syncConvertibleBondSuspensions } = require('../services/convertibleBondSuspensionSync');
+const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { dailyConsistencyStats } = require('./consistencyStats');
 
@@ -127,6 +130,20 @@ async function runRefreshChain(reason, businessDate = null) {
   }
 
   let listResult = null;
+  let redemptionResult = null;
+  try {
+    try {
+      const suspensionResult = await syncConvertibleBondSuspensions({ startDate: completeness.expected, endDate: completeness.expected });
+      if (suspensionResult.ok) console.log(`[bond-redemption] 正股停牌日同步完成：${suspensionResult.count} 条`);
+    } catch (error) {
+      console.warn('[bond-redemption] 正股停牌日同步失败，继续使用已缓存停牌日：', error.message);
+    }
+    redemptionResult = await calculateConvertibleBondCallStatus(completeness.expected);
+    console.log(`[bond-redemption] 强赎进度完成：${redemptionResult.count} 只，完整 ${redemptionResult.complete} 只`);
+  } catch (error) {
+    // 强赎监控是派生展示链路，失败时不阻断已有上市列表和估值链路。
+    console.error('[bond-redemption] 强赎进度失败，保留上一份有效数据：', error.message);
+  }
   try {
     listResult = await buildDailyMetrics({ tradeDate: completeness.expected, reason });
     console.log(`[bond-list] 上市转债列表完成：${listResult.count} 条，完整 ${listResult.complete} 条`);
@@ -141,6 +158,7 @@ async function runRefreshChain(reason, businessDate = null) {
     else console.log('[bond-valuation] 每日估值完成:', result.detail);
     return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,
       datasets: [
+        { code: 'convertible_bond_redemption', status: redemptionResult ? 'succeeded' : 'stale', dataAsOf: redemptionResult ? completeness.expected : null },
         { code: 'convertible_bond_list_metrics', status: listResult ? 'succeeded' : 'stale', dataAsOf: listResult ? completeness.expected : null },
         { code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected },
       ], result, listResult };
@@ -169,8 +187,12 @@ function scheduleConvertibleBondRefresh() {
 
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE,
     () => require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill('daily_incremental'));
+  scheduleDaily(7, 45, async () => {
+    const result = await syncConvertibleBondCallAnnouncements();
+    console.log(`[bond-redemption] 官方公告同步完成：发现 ${result.discovered} 条，匹配 ${result.matched} 条`);
+  });
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE + 15, () => runRefreshChain('daily_valuation'));
-  console.log('[bond-analysis] 已调度：每日 08:00 同步行情，08:15 刷新估值（上海时间）');
+  console.log('[bond-analysis] 已调度：每日 07:45 同步强赎公告，08:00 同步行情，08:15 刷新估值（上海时间）');
 }
 
 module.exports = {

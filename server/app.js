@@ -19,6 +19,7 @@ const ipoRouter = require('./routes/ipo');
 const bondSafetyRouter = require('./routes/bondSafety');
 const bondCycleRouter = require('./routes/bondCycle');
 const bondValuationRouter = require('./routes/bondValuation');
+const bondRedemptionRouter = require('./routes/bondRedemption');
 const stockAnalysisRouter = require('./routes/stockAnalysis');
 const bondAnalysisRouter = require('./routes/bondAnalysis');
 const knowledgeRouter = require('./routes/knowledge');
@@ -110,6 +111,7 @@ async function start() {
   app.use('/api/bond-safety', bondSafetyRouter); // 可转债安全性：数据库快照读取/管理员刷新
   app.use('/api/bond-cycle', bondCycleRouter);    // 可转债周期：只读聚合查询
   app.use('/api/bond-valuation', bondValuationRouter); // 可转债估值：列表/详情/历史/预警/刷新
+  app.use('/api/bond-redemption', bondRedemptionRouter); // 可转债强赎监控：统一状态只读查询
   app.use('/api/knowledge', knowledgeRouter);    // 知识分享：文章/分类/评论/公开分享
   app.use('/api/market-volatility', marketVolatilityRouter); // 股市波动：格雷厄姆指数与仓位纪律
   app.use('/api', positionComparisonRouter);     // 仓位对比：公开状态/标杆列表/对比/复制测算

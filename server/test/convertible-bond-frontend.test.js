@@ -6,6 +6,7 @@ const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'bond-analysis.js'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 const priceChangeAudit = fs.readFileSync(path.join(root, 'server', 'scripts', 'auditConvertibleBondPriceChanges.js'), 'utf8');
+const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
 
 assert.ok(html.includes('data-main="stock-analysis"'), '缺少个券分析导航入口（研究工具下拉子项）');
@@ -37,5 +38,12 @@ assert.ok(script.includes('bond-analysis-delisted') && script.includes('已退�
 assert.ok(css.includes('.bond-analysis-summary .bond-analysis-delisted'), '退市标识缺少样式');
 assert.ok(!/tushareQuery\(['"]cb_price_chg/.test(service + priceChangeAudit),
   '转股价历史只能走公告解析链路，不得重新调用无权限的 cb_price_chg');
+assert.ok(service.includes('analytics.convertible_bond_announcement_history'), '股债分析历史必须读取统一公告事实视图');
+assert.ok(!service.includes("fetchCninfoEvents(stockCode, announcementWindowStart, end, '转股价格')")
+  && !service.includes("fetchSseEvents(stockCode, announcementWindowStart, end, '转股价格')")
+  && !service.includes("fetchSzseEvents(stockCode, announcementWindowStart, end, '转股价格')"),
+  '股债分析请求不得再次直接抓取转股价公告');
+assert.ok(service.includes('syncConvertibleBondAnnouncementHistories') && runner.includes('convertible_bond_announcement_history_sync'),
+  '下修和转股价公告必须由独立同步任务入库');
 
 console.log('convertible bond frontend tests passed');

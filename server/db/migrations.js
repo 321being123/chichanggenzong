@@ -3057,6 +3057,541 @@ async function migration078ExternalCircuits() {
   `);
 }
 
+// ========== 079：可转债强赎统一状态与官方事件 ==========
+// 强赎进度统一写入 trigger_daily；官方公告单独保存，页面及其他模块只读 latest 视图。
+async function migration079ConvertibleBondRedemption() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES ('convertible_bond_redemption_announcements','可转债强赎公告','official',5)
+    ON CONFLICT(source_code) DO UPDATE SET
+      source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,priority=EXCLUDED.priority;
+
+    CREATE TABLE IF NOT EXISTS event.convertible_bond_call_events (
+      event_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL CHECK (event_type IN ('warning','exercise','waive','implementation','completion')),
+      announced_at DATE NOT NULL,
+      no_call_until DATE,
+      redemption_record_date DATE,
+      last_trade_date DATE,
+      last_conversion_date DATE,
+      redemption_price NUMERIC(20,8),
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+      document_id BIGINT REFERENCES event.documents(document_id) ON DELETE SET NULL,
+      source_key TEXT NOT NULL,
+      source_url TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      parse_status TEXT NOT NULL DEFAULT 'partial' CHECK (parse_status IN ('complete','partial','failed')),
+      parser_version TEXT NOT NULL DEFAULT '1',
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source_id,source_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_call_events_instrument_date
+      ON event.convertible_bond_call_events(instrument_id,announced_at DESC,event_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_cb_call_events_type_date
+      ON event.convertible_bond_call_events(event_type,announced_at DESC);
+
+    ALTER TABLE analytics.convertible_bond_trigger_daily
+      ADD COLUMN IF NOT EXISTS data_status TEXT NOT NULL DEFAULT 'complete';
+    CREATE INDEX IF NOT EXISTS idx_cb_trigger_call_latest
+      ON analytics.convertible_bond_trigger_daily(instrument_id,trigger_type,trade_date DESC,calculated_at DESC);
+  `);
+
+  await pool.query(`
+    DROP VIEW IF EXISTS analytics.convertible_bond_call_latest CASCADE;
+    CREATE VIEW analytics.convertible_bond_call_latest AS
+    WITH latest_trigger AS (
+      SELECT DISTINCT ON (instrument_id)
+             instrument_id,trade_date,trigger_price,close_price,matched_days,required_days,
+             observation_days,status AS calculated_status,formula_version,diagnostics,
+             data_status,calculated_at
+        FROM analytics.convertible_bond_trigger_daily
+       WHERE trigger_type='call'
+       ORDER BY instrument_id,trade_date DESC,calculated_at DESC
+    ),
+    latest_term AS (
+      SELECT DISTINCT ON (instrument_id)
+             instrument_id,trigger_ratio,observation_days AS term_observation_days,
+             required_days AS term_required_days,clause_text,term_id
+        FROM fundamental.convertible_bond_terms
+       WHERE term_type='call'
+         AND effective_from <= CURRENT_DATE
+         AND (effective_to IS NULL OR effective_to > CURRENT_DATE)
+       ORDER BY instrument_id,effective_from DESC,term_id DESC
+    ),
+    latest_event AS (
+      SELECT DISTINCT ON (instrument_id)
+             instrument_id,event_id,event_type,announced_at,no_call_until,
+             redemption_record_date,last_trade_date,last_conversion_date,
+             redemption_price,document_id,source_url,title,parse_status,
+             parser_version,details
+        FROM event.convertible_bond_call_events
+       ORDER BY instrument_id,announced_at DESC,event_id DESC
+    )
+    SELECT i.instrument_id,
+           i.canonical_code AS ts_code,
+           split_part(i.canonical_code,'.',1) AS security_code,
+           i.name AS bond_name,
+           p.stock_instrument_id,
+           s.canonical_code AS stock_code,
+           s.name AS stock_name,
+           p.current_conv_price AS current_conv_price,
+           lterm.trigger_ratio,
+           COALESCE(lt.trigger_price,
+             CASE WHEN lterm.trigger_ratio IS NOT NULL AND p.current_conv_price IS NOT NULL
+                  THEN p.current_conv_price * lterm.trigger_ratio END) AS trigger_price,
+           lt.close_price AS stock_close,
+           CASE WHEN COALESCE(lt.trigger_price,
+                    CASE WHEN lterm.trigger_ratio IS NOT NULL AND p.current_conv_price IS NOT NULL
+                         THEN p.current_conv_price * lterm.trigger_ratio END) > 0
+                     AND lt.close_price IS NOT NULL
+                THEN lt.close_price / COALESCE(lt.trigger_price,
+                    CASE WHEN lterm.trigger_ratio IS NOT NULL AND p.current_conv_price IS NOT NULL
+                         THEN p.current_conv_price * lterm.trigger_ratio END) - 1 END AS distance_to_trigger_pct,
+           lt.trade_date,lt.matched_days,lt.required_days,lt.observation_days,
+           CASE WHEN lt.required_days IS NOT NULL AND lt.matched_days IS NOT NULL
+                THEN GREATEST(lt.required_days - lt.matched_days,0) END AS remaining_days,
+           lt.calculated_status,lt.formula_version,lt.diagnostics,lt.data_status,lt.calculated_at,
+           le.event_id,le.event_type AS official_status,le.announced_at,le.no_call_until,
+           le.redemption_record_date,le.last_trade_date,le.last_conversion_date,
+           le.redemption_price,le.document_id,le.source_url,le.title AS announcement_title,
+           le.parse_status AS announcement_parse_status,le.parser_version AS announcement_parser_version,
+           le.details AS announcement_details,
+           CASE
+             WHEN le.event_type='completion' THEN 'completed'
+             WHEN le.event_type IN ('exercise','implementation') THEN 'announced'
+             WHEN le.event_type='waive' AND (le.no_call_until IS NULL OR le.no_call_until >= COALESCE(lt.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN lt.calculated_status='met' THEN 'met_pending'
+             WHEN lt.calculated_status='tracking' AND lt.required_days - lt.matched_days BETWEEN 1 AND 5 THEN 'near'
+             WHEN lt.calculated_status='tracking' THEN 'tracking'
+             WHEN lt.calculated_status='not_active' THEN 'inactive'
+             ELSE 'incomplete'
+           END AS business_status,
+           p.remain_size,p.maturity_date,p.conv_start_date,p.conv_end_date,p.conv_stop_date
+      FROM core.instruments i
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+      LEFT JOIN latest_trigger lt ON lt.instrument_id=i.instrument_id
+      LEFT JOIN latest_term lterm ON lterm.instrument_id=i.instrument_id
+      LEFT JOIN latest_event le ON le.instrument_id=i.instrument_id
+     WHERE i.asset_class='convertible_bond';
+  `);
+
+  // 统一债券视图继续保持原列契约，只将官方已知的停止转股日纳入有效生命周期。
+  await pool.query(`
+    DROP VIEW IF EXISTS public.bond_unified CASCADE;
+    CREATE VIEW public.bond_unified AS
+    SELECT
+      i.instrument_id,
+      i.canonical_code AS bond_code,
+      split_part(i.canonical_code, '.', 1) AS security_code,
+      i.name AS bond_name,
+      COALESCE(ev.listing_date::date, i.list_date) AS listing_date,
+      i.delist_date,
+      i.status,
+      p.bond_full_name,
+      p.stock_instrument_id,
+      p.issue_size,
+      p.remain_size,
+      p.par_value,
+      p.first_conv_price,
+      p.current_conv_price AS conv_price,
+      p.value_date,
+      p.maturity_date,
+      p.conv_start_date,
+      p.conv_end_date,
+      CASE
+        WHEN p.conv_stop_date IS NULL THEN call_stop.last_conversion_date
+        WHEN call_stop.last_conversion_date IS NULL THEN p.conv_stop_date
+        ELSE LEAST(p.conv_stop_date,call_stop.last_conversion_date)
+      END AS conv_stop_date,
+      p.coupon_rate,
+      p.issue_rating,
+      p.newest_rating AS rating,
+      p.rating_company,
+      p.guarantor,
+      p.guarantee_type,
+      p.fundraising_purpose,
+      p.cb_type,
+      p.maturity_call_price,
+      iss.issue_type,
+      iss.issue_size_100m_yuan,
+      iss.shareholder_allotment_ratio_yuan_per_share AS shd_ration_ratio,
+      iss.online_size_100m_yuan AS onl_size,
+      iss.offline_size_100m_yuan AS offl_size,
+      iss.online_purchase_accounts_10k AS onl_pch_num,
+      iss.shareholder_allotment_quantity AS shd_ration_size,
+      iss.issue_price_yuan AS bh_issue_price,
+      ev.ann_date,
+      ev.res_ann_date,
+      ev.shd_ration_record_date,
+      ev.onl_date,
+      perf.first_day_return,
+      s.canonical_code AS stock_code,
+      COALESCE(s.name, '') AS stock_name,
+      COALESCE(p.newest_rating, p.issue_rating) AS display_rating,
+      p.current_conv_price AS display_conv_price,
+      COALESCE(iss.issue_size_100m_yuan, p.issue_size / 100000000.0) AS display_issue_size
+    FROM core.instruments i
+    LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+    LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
+    LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+    LEFT JOIN LATERAL (
+      SELECT
+        MAX(event_date) FILTER (WHERE event_type='issue_announcement')::text AS ann_date,
+        MAX(event_date) FILTER (WHERE event_type='result_announcement')::text AS res_ann_date,
+        MAX(event_date) FILTER (WHERE event_type='shareholder_record')::text AS shd_ration_record_date,
+        MAX(event_date) FILTER (WHERE event_type='online_subscription')::text AS onl_date,
+        MAX(event_date) FILTER (WHERE event_type='listing')::text AS listing_date
+      FROM event.instrument_events e WHERE e.instrument_id=i.instrument_id
+    ) ev ON true
+    LEFT JOIN LATERAL (
+      SELECT MIN(COALESCE(last_conversion_date,last_trade_date)) AS last_conversion_date
+        FROM event.convertible_bond_call_events ce
+       WHERE ce.instrument_id=i.instrument_id
+         AND ce.event_type IN ('exercise','implementation','completion')
+    ) call_stop ON true
+    LEFT JOIN LATERAL (
+      SELECT return_pct AS first_day_return
+        FROM analytics.convertible_bond_listing_performance lp
+       WHERE lp.instrument_id=i.instrument_id AND lp.measurement_type='first_non_limit_day'
+       ORDER BY lp.calculated_at DESC LIMIT 1
+    ) perf ON true
+   WHERE i.asset_class='convertible_bond';
+  `);
+}
+
+// ========== 080：强赎计算交易日历与数据质量 ==========
+// 强赎窗口必须使用真实交易日；同时保留上游交易日原始记录，供补数、审计和其他模块复用。
+async function migration080ConvertibleBondRedemptionQuality() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.trade_calendar (
+      exchange TEXT NOT NULL,
+      trade_date DATE NOT NULL,
+      is_open BOOLEAN NOT NULL,
+      source_code TEXT NOT NULL DEFAULT 'tushare',
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (exchange, trade_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_market_trade_calendar_open_date
+      ON market.trade_calendar(exchange, trade_date DESC) WHERE is_open;
+  `);
+}
+
+// ========== 081：强赎状态与条款窗口统一修复 ==========
+// 强赎页面、上市列表和股债分析全部读取同一状态视图；同时修复历史条款中把“到期后五个交易日”
+// 误识别为强赎窗口的问题，避免出现 observation_days=5、required_days=30 的反向数据。
+async function migration081ConvertibleBondRedemptionUnifiedStatus() {
+  const { parseWindow } = require('../services/convertibleBondAnalysis');
+  const { rows: terms } = await pool.query(
+    `SELECT term_id,clause_text
+       FROM fundamental.convertible_bond_terms
+      WHERE term_type='call'`
+  );
+  for (const term of terms) {
+    const window = parseWindow(term.clause_text);
+    if (!(window.observation_days > 0 && window.required_days > 0)) continue;
+    await pool.query(
+      `UPDATE fundamental.convertible_bond_terms
+          SET observation_days=$2,required_days=$3
+        WHERE term_id=$1`,
+      [term.term_id, window.observation_days, window.required_days]
+    );
+  }
+
+  const { rows: rawView } = await pool.query(
+    `SELECT 1 FROM pg_views WHERE schemaname='analytics' AND viewname='convertible_bond_call_latest_raw'`
+  );
+  if (!rawView.length) {
+    await pool.query('ALTER VIEW analytics.convertible_bond_call_latest RENAME TO convertible_bond_call_latest_raw');
+  }
+  await pool.query('DROP VIEW IF EXISTS analytics.convertible_bond_call_latest');
+  await pool.query(`
+    CREATE VIEW analytics.convertible_bond_call_latest AS
+    SELECT r.instrument_id,r.ts_code,r.security_code,r.bond_name,r.stock_instrument_id,
+           r.stock_code,r.stock_name,r.current_conv_price,r.trigger_ratio,r.trigger_price,
+           r.stock_close,r.distance_to_trigger_pct,r.trade_date,r.matched_days,r.required_days,
+           r.observation_days,r.remaining_days,r.calculated_status,r.formula_version,r.diagnostics,
+           r.data_status,r.calculated_at,r.event_id,r.official_status,r.announced_at,r.no_call_until,
+           r.redemption_record_date,r.last_trade_date,r.last_conversion_date,r.redemption_price,
+           r.document_id,r.source_url,r.announcement_title,r.announcement_parse_status,
+           r.announcement_parser_version,r.announcement_details,
+           CASE
+             WHEN r.official_status='completion' THEN 'completed'
+             WHEN r.official_status IN ('exercise','implementation') THEN 'announced'
+             WHEN r.official_status='waive'
+                  AND (r.no_call_until IS NULL OR r.no_call_until >= COALESCE(r.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN r.data_status <> 'complete' THEN 'incomplete'
+             WHEN r.maturity_date IS NOT NULL
+                  AND r.maturity_date <= ((SELECT COALESCE(MAX(trade_date),CURRENT_DATE)
+                                             FROM market.convertible_bond_daily_metrics) + INTERVAL '30 days') THEN 'maturity_near'
+             WHEN r.calculated_status='met' THEN 'met_pending'
+             WHEN r.calculated_status='tracking' AND r.required_days-r.matched_days BETWEEN 1 AND 5 THEN 'near'
+             WHEN r.calculated_status='tracking' THEN 'tracking'
+             WHEN r.calculated_status='not_active' THEN 'inactive'
+             ELSE 'incomplete'
+           END AS business_status,
+           r.remain_size,r.maturity_date,r.conv_start_date,r.conv_end_date,r.conv_stop_date
+      FROM analytics.convertible_bond_call_latest_raw r;
+  `);
+}
+
+// ========== 082：强赎窗口识别正股停牌日 ==========
+// 正股停牌日没有收盘价，不属于行情漏数；单独落库供强赎计算和其他模块复用。
+async function migration082StockSuspensionCalendar() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market.stock_suspend_calendar (
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      trade_date DATE NOT NULL,
+      suspend_type TEXT NOT NULL DEFAULT 'S',
+      suspend_reason TEXT,
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (instrument_id, trade_date, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_stock_suspend_calendar_date
+      ON market.stock_suspend_calendar(trade_date DESC, instrument_id);
+  `);
+}
+
+// ========== 083：强赎实施后的债券生命周期 ==========
+// 公告中的最后交易日已过去时，转债即从“在市”切换到“历史退市”，不再依赖 Tushare 较晚的摘牌日期。
+async function migration083ConvertibleBondCallLifecycle() {
+  await pool.query(`
+    CREATE OR REPLACE VIEW public.bond_unified AS
+    SELECT
+      i.instrument_id,
+      i.canonical_code AS bond_code,
+      split_part(i.canonical_code, '.', 1) AS security_code,
+      i.name AS bond_name,
+      COALESCE(ev.listing_date::date, i.list_date) AS listing_date,
+      i.delist_date,
+      CASE
+        WHEN i.status='delisted' THEN 'delisted'
+        WHEN COALESCE(call_stop.last_trade_date, call_stop.last_conversion_date) IS NOT NULL
+         AND COALESCE(call_stop.last_trade_date, call_stop.last_conversion_date)
+             <= CURRENT_DATE
+        THEN 'delisted'
+        ELSE i.status
+      END AS status,
+      p.bond_full_name,
+      p.stock_instrument_id,
+      p.issue_size,
+      p.remain_size,
+      p.par_value,
+      p.first_conv_price,
+      p.current_conv_price AS conv_price,
+      p.value_date,
+      p.maturity_date,
+      p.conv_start_date,
+      p.conv_end_date,
+      CASE
+        WHEN p.conv_stop_date IS NULL THEN call_stop.last_conversion_date
+        WHEN call_stop.last_conversion_date IS NULL THEN p.conv_stop_date
+        ELSE LEAST(p.conv_stop_date,call_stop.last_conversion_date)
+      END AS conv_stop_date,
+      p.coupon_rate,
+      p.issue_rating,
+      p.newest_rating AS rating,
+      p.rating_company,
+      p.guarantor,
+      p.guarantee_type,
+      p.fundraising_purpose,
+      p.cb_type,
+      p.maturity_call_price,
+      iss.issue_type,
+      iss.issue_size_100m_yuan,
+      iss.shareholder_allotment_ratio_yuan_per_share AS shd_ration_ratio,
+      iss.online_size_100m_yuan AS onl_size,
+      iss.offline_size_100m_yuan AS offl_size,
+      iss.online_purchase_accounts_10k AS onl_pch_num,
+      iss.shareholder_allotment_quantity AS shd_ration_size,
+      iss.issue_price_yuan AS bh_issue_price,
+      ev.ann_date,
+      ev.res_ann_date,
+      ev.shd_ration_record_date,
+      ev.onl_date,
+      perf.first_day_return,
+      s.canonical_code AS stock_code,
+      COALESCE(s.name, '') AS stock_name,
+      COALESCE(p.newest_rating, p.issue_rating) AS display_rating,
+      p.current_conv_price AS display_conv_price,
+      COALESCE(iss.issue_size_100m_yuan, p.issue_size / 100000000.0) AS display_issue_size
+    FROM core.instruments i
+    LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+    LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
+    LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+    LEFT JOIN LATERAL (
+      SELECT
+        MAX(event_date) FILTER (WHERE event_type='issue_announcement')::text AS ann_date,
+        MAX(event_date) FILTER (WHERE event_type='result_announcement')::text AS res_ann_date,
+        MAX(event_date) FILTER (WHERE event_type='shareholder_record')::text AS shd_ration_record_date,
+        MAX(event_date) FILTER (WHERE event_type='online_subscription')::text AS onl_date,
+        MAX(event_date) FILTER (WHERE event_type='listing')::text AS listing_date
+      FROM event.instrument_events e WHERE e.instrument_id=i.instrument_id
+    ) ev ON true
+    LEFT JOIN LATERAL (
+      SELECT MAX(last_trade_date) AS last_trade_date,
+             MAX(COALESCE(last_conversion_date,last_trade_date)) AS last_conversion_date
+        FROM event.convertible_bond_call_events ce
+       WHERE ce.instrument_id=i.instrument_id
+         AND ce.event_type IN ('exercise','implementation','completion')
+    ) call_stop ON true
+    LEFT JOIN LATERAL (
+      SELECT return_pct AS first_day_return
+        FROM analytics.convertible_bond_listing_performance lp
+       WHERE lp.instrument_id=i.instrument_id AND lp.measurement_type='first_non_limit_day'
+       ORDER BY lp.calculated_at DESC LIMIT 1
+    ) perf ON true
+   WHERE i.asset_class='convertible_bond';
+  `);
+}
+
+// ========== 084：强赎生命周期按当前日生效 ==========
+// 行情可能滞后一个交易日，但最后交易日已过时不能继续把转债当作在市标的。
+async function migration084ConvertibleBondCallLifecycleCurrentDate() {
+  await migration083ConvertibleBondCallLifecycle();
+}
+
+// ========== 085：不提前赎回公告状态修复 ==========
+// 公告解析器偶尔会把公告日写入 no_call_until，导致最新的“不提前赎回”公告被误判为已过期，
+// 进而又显示为“已满足待确认”。公告日不是截止日；在没有明确截止日时，应以最新公告为准。
+async function migration085ConvertibleBondWaiveAnnouncementStatus() {
+  await pool.query(`
+    UPDATE event.convertible_bond_call_events
+       SET no_call_until=NULL,updated_at=now()
+     WHERE event_type='waive'
+       AND no_call_until IS NOT NULL
+       AND no_call_until <= announced_at;
+  `);
+  await pool.query(`
+    CREATE OR REPLACE VIEW analytics.convertible_bond_call_latest AS
+    SELECT r.instrument_id,r.ts_code,r.security_code,r.bond_name,r.stock_instrument_id,
+           r.stock_code,r.stock_name,r.current_conv_price,r.trigger_ratio,r.trigger_price,
+           r.stock_close,r.distance_to_trigger_pct,r.trade_date,r.matched_days,r.required_days,
+           r.observation_days,r.remaining_days,r.calculated_status,r.formula_version,r.diagnostics,
+           r.data_status,r.calculated_at,r.event_id,r.official_status,r.announced_at,r.no_call_until,
+           r.redemption_record_date,r.last_trade_date,r.last_conversion_date,r.redemption_price,
+           r.document_id,r.source_url,r.announcement_title,r.announcement_parse_status,
+           r.announcement_parser_version,r.announcement_details,
+           CASE
+             WHEN r.official_status='completion' THEN 'completed'
+             WHEN r.official_status IN ('exercise','implementation') THEN 'announced'
+             WHEN r.official_status='waive'
+                  AND (r.no_call_until IS NULL OR r.no_call_until >= COALESCE(r.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN r.data_status <> 'complete' THEN 'incomplete'
+             WHEN r.maturity_date IS NOT NULL
+                  AND r.maturity_date <= ((SELECT COALESCE(MAX(trade_date),CURRENT_DATE)
+                                             FROM market.convertible_bond_daily_metrics) + INTERVAL '30 days') THEN 'maturity_near'
+             WHEN r.calculated_status='met' THEN 'met_pending'
+             WHEN r.calculated_status='tracking' AND r.required_days-r.matched_days BETWEEN 1 AND 5 THEN 'near'
+             WHEN r.calculated_status='tracking' THEN 'tracking'
+             WHEN r.calculated_status='not_active' THEN 'inactive'
+             ELSE 'incomplete'
+           END AS business_status,
+           r.remain_size,r.maturity_date,r.conv_start_date,r.conv_end_date,r.conv_stop_date
+      FROM analytics.convertible_bond_call_latest_raw r;
+  `);
+}
+
+// ========== 086：可转债公告事实统一读取视图 ==========
+// 强赎、不下修、转股价调整均已落库；股债分析只读此视图，不再临时抓取并重复解析公告。
+async function migration086ConvertibleBondAnnouncementHistoryView() {
+  await pool.query(`
+    DROP VIEW IF EXISTS analytics.convertible_bond_announcement_history;
+    CREATE VIEW analytics.convertible_bond_announcement_history AS
+    SELECT event_id AS fact_id,instrument_id,'call'::text AS fact_type,event_type,
+           announced_at,COALESCE(last_conversion_date,last_trade_date) AS effective_date,
+           no_call_until AS valid_until,NULL::date AS next_eligible_date,
+           NULL::numeric AS price_before,NULL::numeric AS price_after,title AS summary,
+           source_id,document_id,source_url,parse_status AS parser_status,
+           parser_version,raw_payload
+      FROM event.convertible_bond_call_events
+    UNION ALL
+    SELECT history_id AS fact_id,instrument_id,'no_revision'::text AS fact_type,NULL::text AS event_type,
+           announced_at,NULL::date AS effective_date,valid_until,next_eligible_date,
+           NULL::numeric AS price_before,NULL::numeric AS price_after,summary,
+           source_id,document_id,COALESCE(raw_payload->>'url',raw_payload->>'source_url') AS source_url,
+           COALESCE(raw_payload->>'parser_status','complete') AS parser_status,
+           COALESCE(raw_payload->>'parser_version','') AS parser_version,raw_payload
+      FROM fundamental.convertible_bond_no_revision_history
+    UNION ALL
+    SELECT NULL::bigint AS fact_id,instrument_id,'price_change'::text AS fact_type,NULL::text AS event_type,
+           publish_date AS announced_at,change_date AS effective_date,NULL::date AS valid_until,
+           NULL::date AS next_eligible_date,price_before,price_after,reason AS summary,
+           source_id,document_id,COALESCE(raw_payload->>'url',raw_payload->>'source_url') AS source_url,
+           COALESCE(raw_payload->>'parser_status','complete') AS parser_status,
+           COALESCE(raw_payload->>'price_change_parser_version','') AS parser_version,raw_payload
+      FROM fundamental.convertible_bond_price_changes;
+    CREATE INDEX IF NOT EXISTS idx_cb_no_revision_instrument_date
+      ON fundamental.convertible_bond_no_revision_history(instrument_id,announced_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cb_price_changes_instrument_date
+      ON fundamental.convertible_bond_price_changes(instrument_id,change_date DESC);
+  `);
+}
+
+// ========== 087：同日强赎公告有效期合并 ==========
+// 公司公告与券商核查意见可能同日入库；同日以最长明确“不提前赎回”期限作为统一有效期。
+async function migration087ConvertibleBondWaiveSameDayValidity() {
+  await pool.query(`
+    UPDATE event.convertible_bond_call_events e
+       SET no_call_until=v.max_no_call_until,updated_at=now()
+      FROM (
+        SELECT instrument_id,announced_at,MAX(no_call_until) AS max_no_call_until
+          FROM event.convertible_bond_call_events
+         WHERE event_type='waive' AND no_call_until IS NOT NULL
+         GROUP BY instrument_id,announced_at
+      ) v
+     WHERE e.instrument_id=v.instrument_id AND e.announced_at=v.announced_at
+       AND e.event_type='waive' AND e.no_call_until IS DISTINCT FROM v.max_no_call_until;
+  `);
+}
+
+// ========== 088：强赎日期事实回填 =============
+// 最新提示公告偶尔只更新赎回进度、不重复列出日期；展示层仍应沿用同一转债历史公告中最近的明确日期。
+async function migration088ConvertibleBondCallDateFallback() {
+  await pool.query(`
+    CREATE OR REPLACE VIEW analytics.convertible_bond_call_latest AS
+    WITH event_dates AS (
+      SELECT instrument_id,
+             MAX(redemption_record_date) AS redemption_record_date,
+             MAX(last_trade_date) AS last_trade_date,
+             MAX(last_conversion_date) AS last_conversion_date,
+             MAX(redemption_price) AS redemption_price
+        FROM event.convertible_bond_call_events
+       WHERE event_type IN ('exercise','implementation','completion')
+       GROUP BY instrument_id
+    )
+    SELECT r.instrument_id,r.ts_code,r.security_code,r.bond_name,r.stock_instrument_id,
+           r.stock_code,r.stock_name,r.current_conv_price,r.trigger_ratio,r.trigger_price,
+           r.stock_close,r.distance_to_trigger_pct,r.trade_date,r.matched_days,r.required_days,
+           r.observation_days,r.remaining_days,r.calculated_status,r.formula_version,r.diagnostics,
+           r.data_status,r.calculated_at,r.event_id,r.official_status,r.announced_at,r.no_call_until,
+           CASE WHEN r.official_status IN ('exercise','implementation','completion')
+                THEN COALESCE(r.redemption_record_date,d.redemption_record_date)
+                ELSE r.redemption_record_date END AS redemption_record_date,
+           CASE WHEN r.official_status IN ('exercise','implementation','completion')
+                THEN COALESCE(r.last_trade_date,d.last_trade_date)
+                ELSE r.last_trade_date END AS last_trade_date,
+           CASE WHEN r.official_status IN ('exercise','implementation','completion')
+                THEN COALESCE(r.last_conversion_date,d.last_conversion_date)
+                ELSE r.last_conversion_date END AS last_conversion_date,
+           CASE WHEN r.official_status IN ('exercise','implementation','completion')
+                THEN COALESCE(r.redemption_price,d.redemption_price)::numeric(20,8)
+                ELSE r.redemption_price END AS redemption_price,
+           r.document_id,r.source_url,r.announcement_title,r.announcement_parse_status,
+           r.announcement_parser_version,r.announcement_details,r.business_status,
+           r.remain_size,r.maturity_date,r.conv_start_date,r.conv_end_date,r.conv_stop_date
+      FROM analytics.convertible_bond_call_latest_raw r
+      LEFT JOIN event_dates d ON d.instrument_id=r.instrument_id;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -3136,6 +3671,16 @@ const MIGRATIONS = [
   { version: '076_external_call_protection', up: migration076ExternalCallProtection },
   { version: '077_convertible_bond_list_metrics', up: migration077ConvertibleBondListMetrics },
   { version: '078_external_circuits', up: migration078ExternalCircuits },
+  { version: '079_convertible_bond_redemption', up: migration079ConvertibleBondRedemption },
+  { version: '080_convertible_bond_redemption_quality', up: migration080ConvertibleBondRedemptionQuality },
+  { version: '081_convertible_bond_redemption_unified_status', up: migration081ConvertibleBondRedemptionUnifiedStatus },
+  { version: '082_stock_suspension_calendar', up: migration082StockSuspensionCalendar },
+  { version: '083_convertible_bond_call_lifecycle', up: migration083ConvertibleBondCallLifecycle },
+  { version: '084_convertible_bond_call_lifecycle_current_date', up: migration084ConvertibleBondCallLifecycleCurrentDate },
+  { version: '085_convertible_bond_waive_announcement_status', up: migration085ConvertibleBondWaiveAnnouncementStatus },
+  { version: '086_convertible_bond_announcement_history_view', up: migration086ConvertibleBondAnnouncementHistoryView },
+  { version: '087_convertible_bond_waive_same_day_validity', up: migration087ConvertibleBondWaiveSameDayValidity },
+  { version: '088_convertible_bond_call_date_fallback', up: migration088ConvertibleBondCallDateFallback },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -3681,6 +4226,15 @@ module.exports = {
   migration076ExternalCallProtection,
   migration077ConvertibleBondListMetrics,
   migration078ExternalCircuits,
+  migration079ConvertibleBondRedemption,
+  migration080ConvertibleBondRedemptionQuality,
+  migration081ConvertibleBondRedemptionUnifiedStatus,
+  migration082StockSuspensionCalendar,
+  migration083ConvertibleBondCallLifecycle,
+  migration084ConvertibleBondCallLifecycleCurrentDate,
+  migration085ConvertibleBondWaiveAnnouncementStatus,
+  migration086ConvertibleBondAnnouncementHistoryView,
+  migration087ConvertibleBondWaiveSameDayValidity,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

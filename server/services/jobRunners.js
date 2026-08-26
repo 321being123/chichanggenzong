@@ -40,6 +40,17 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       const targetTradeDate = expectedDataDate('convertible_bond_universe_refresh', businessDate);
       return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason, { targetTradeDate });
     }
+    case 'convertible_bond_redemption_announcement_sync':
+      return require('../services/convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements({
+        toDate: businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined,
+      });
+    case 'convertible_bond_announcement_history_sync':
+      return require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({
+        tsCodes: context.tsCodes || context.bondCodes || [],
+        fromDate: context.fromDate,
+        toDate: businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : context.toDate,
+        limit: context.limit,
+      });
     case 'convertible_bond_valuation_refresh':
       return require('../jobs/convertibleBondRefresh').runRefreshChain(reason, businessDate);
     case 'ipo_calendar_refresh':

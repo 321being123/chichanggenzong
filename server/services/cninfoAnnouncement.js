@@ -190,7 +190,7 @@ const CNINFO_MAX_PAGES = 100;
 
 // 搜索巨潮公告（自动翻页：按 totalAnnouncement / hasMore 遍历全部结果）
 // 默认关键词 = 发现关键词 + 后续进程关键词（终止/完成/换股实施等），确保事件状态可被更新
-async function searchAnnouncements({ fromDate, toDate, keywords, exchanges } = {}) {
+async function searchAnnouncements({ fromDate, toDate, keywords, exchanges, stock = '' } = {}) {
   const kws = keywords && keywords.length ? keywords : [...DISCOVERY_KEYWORDS, ...UPDATE_KEYWORDS];
   const exs = exchanges && exchanges.length ? exchanges : ['sse', 'szse'];
   const results = [];
@@ -205,7 +205,7 @@ async function searchAnnouncements({ fromDate, toDate, keywords, exchanges } = {
           column: ex,
           tabName: 'fulltext',
           plate: '',
-          stock: '',
+          stock: String(stock || ''),
           searchkey: kw,
           secid: '',
           category: '',

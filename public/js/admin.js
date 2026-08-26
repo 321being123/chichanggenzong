@@ -469,6 +469,8 @@ const JOB_LABELS = {
   hk_rate: '港币汇率更新',
   bond_safety_refresh: '可转债安全评分',
   convertible_bond_universe_refresh: '可转债行情同步',
+  convertible_bond_redemption_announcement_sync: '可转债强赎公告同步',
+  convertible_bond_announcement_history_sync: '可转债下修与转股价公告事实同步',
   convertible_bond_valuation_refresh: '可转债估值预警',
   stock_analysis_refresh: '个股分析刷新',
   ipo_calendar_refresh: '打新日历与日报',

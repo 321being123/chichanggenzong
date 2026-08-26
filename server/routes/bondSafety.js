@@ -4,6 +4,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const { RATINGS } = require('../services/bondSafety');
 const { getLatestSnapshot, refreshBondSafety, isConfigured } = require('../services/bondSafetyService');
+const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBondRedemptionService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
 const { auditEvent } = require('../db');
 
@@ -25,13 +26,19 @@ router.get('/bonds', asyncHandler(async (req, res) => {
     });
   }
   const allData = Array.isArray(snapshot.data) ? snapshot.data : [];
-  const data = requestedRating ? allData.filter(row => row.safety === requestedRating) : allData;
+  const callStates = await getLatestCallStateBySecurityCodes(allData.map(row => row.bond_code));
+  const enriched = allData.map(row => {
+    const code = String(row.bond_code || '').trim().toUpperCase().replace(/\.(SH|SZ|BJ|HK)$/, '');
+    const callState = callStates.get(code);
+    return { ...row, call_status: callState ? callState.business_status : 'incomplete' };
+  });
+  const data = requestedRating ? enriched.filter(row => row.safety === requestedRating) : enriched;
   res.json({
     configured: isConfigured(),
     updated_at: snapshot.refreshed_at,
     source_updated_at: snapshot.source_updated_at,
     count: data.length,
-    total: allData.length,
+    total: enriched.length,
     data,
     diagnostics: snapshot.diagnostics || null,
   });

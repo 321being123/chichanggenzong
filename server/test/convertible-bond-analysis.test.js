@@ -33,6 +33,8 @@ assert.strictEqual(tsDateStr(new Date('2026-07-14T15:59:59Z')), '20260714');
 assert.strictEqual(parseTriggerRatio('连续30个交易日中至少15个交易日高于转股价格的130%'), 1.3);
 assert.deepStrictEqual(parseWindow('连续30个交易日中至少15个交易日'), { observation_days:30, required_days:15 });
 assert.deepStrictEqual(parseWindow('连续三十个交易日中至少十五个交易日'), { observation_days:30, required_days:15 });
+assert.deepStrictEqual(parseWindow('期满后五个交易日内赎回；连续三十个交易日中至少有十五个交易日'), { observation_days:30, required_days:15 });
+assert.deepStrictEqual(parseWindow('连续30个交易日内至少有15个交易日'), { observation_days:30, required_days:15 });
 assert.strictEqual(earliestPutDate('2030-01-01', '最后两个计息年度'), '2028-01-01');
 assert.deepStrictEqual(currentPutPeriod('2027-07-15', '最后两个计息年度', '2026-07-22'), {
   active:true, eligible_from:'2025-07-15', period_start:'2026-07-15', period_end:'2027-07-14',

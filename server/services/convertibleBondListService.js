@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { pool } = require('../db');
 const { fetchTencentQuotes } = require('./tencentQuote');
+const { getLatestCallStateMap } = require('./convertibleBondRedemptionService');
 const {
   finite, isoDate, normalizeBondCode, remainingYears, annualizedVolatility,
   parseTriggerRatio, earliestPutDate, estimatePutTimeline, futureTradeCalendar,
@@ -164,13 +165,12 @@ async function fetchUniverseRows(tradeDate) {
              p.stock_instrument_id,p.bond_short_name,p.remain_size,
              p.maturity_date,p.value_date,p.current_conv_price,p.rate_clause,p.coupon_rate,p.maturity_call_price,
              p.raw_payload AS profile_payload,p.newest_rating,p.issue_rating,
-             b.canonical_code,b.name AS instrument_name,b.status,b.list_date,b.delist_date,
+             b.canonical_code,b.name AS instrument_name,u.status,b.list_date,b.delist_date,
              s.canonical_code AS stock_code,s.name AS stock_name,
              sb.stock_trade_date,sb.stock_close,sb.stock_prev_close,sv.stock_pb,sv.stock_dividend_yield,sv.stock_market_cap,
              f.data AS financial_data,f.report_end_date AS financial_period_end,
              fh.report_date AS fund_report_date,fh.remain_size_ratio AS fund_ratio,
              fh.holding_quantity AS fund_quantity,
-             call_term.trigger_ratio AS call_trigger_ratio,
              put_term.trigger_ratio AS put_trigger_ratio,
              put_term.observation_days AS put_observation_days,
              put_term.required_days AS put_required_days,
@@ -178,6 +178,7 @@ async function fetchUniverseRows(tradeDate) {
         FROM market.convertible_bond_daily_metrics m
         JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=m.instrument_id
         JOIN core.instruments b ON b.instrument_id=m.instrument_id
+        JOIN public.bond_unified u ON u.instrument_id=m.instrument_id
         LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
         LEFT JOIN LATERAL (
           SELECT MAX(trade_date) FILTER (WHERE rn=1) AS stock_trade_date,
@@ -203,14 +204,6 @@ async function fetchUniverseRows(tradeDate) {
            ORDER BY report_date DESC LIMIT 1
         ) fh ON true
         LEFT JOIN LATERAL (
-          SELECT trigger_ratio
-            FROM fundamental.convertible_bond_terms
-           WHERE instrument_id=m.instrument_id AND term_type='call'
-             AND effective_from <= $1::date
-             AND (effective_to IS NULL OR effective_to >= $1::date)
-           ORDER BY effective_from DESC,term_id DESC LIMIT 1
-        ) call_term ON true
-        LEFT JOIN LATERAL (
           SELECT trigger_ratio,observation_days,required_days,clause_text
             FROM fundamental.convertible_bond_terms
            WHERE instrument_id=m.instrument_id AND term_type='put'
@@ -219,17 +212,34 @@ async function fetchUniverseRows(tradeDate) {
            ORDER BY effective_from DESC,term_id DESC LIMIT 1
         ) put_term ON true
        WHERE m.trade_date=$1::date
-         AND b.status='listed'
+         AND u.status='listed'
          AND (b.list_date IS NULL OR b.list_date <= $1::date)
          AND (b.delist_date IS NULL OR b.delist_date > $1::date)
          AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)
          AND (p.conv_end_date IS NULL OR p.conv_end_date >= $1::date)
-         AND (p.conv_stop_date IS NULL OR p.conv_stop_date > $1::date)
+         AND (u.conv_stop_date IS NULL OR u.conv_stop_date > $1::date)
        ORDER BY m.instrument_id,m.source_id DESC
     )
     SELECT * FROM bond_rows ORDER BY canonical_code
   `, [tradeDate]);
   return rows;
+}
+
+async function attachCallStates(rows) {
+  const states = await getLatestCallStateMap((rows || []).map(row => row.instrument_id));
+  return (rows || []).map(row => {
+    const state = states.get(Number(row.instrument_id));
+    return Object.assign({}, row, {
+      call_trigger_price: state ? numberOrNull(state.trigger_price) : null,
+      call_matched_days: state ? numberOrNull(state.matched_days) : null,
+      call_required_days: state ? numberOrNull(state.required_days) : null,
+      call_observation_days: state ? numberOrNull(state.observation_days) : null,
+      call_remaining_days: state ? numberOrNull(state.remaining_days) : null,
+      call_business_status: state ? state.business_status : 'incomplete',
+      call_data_status: state ? state.data_status : 'incomplete',
+      call_announcement_title: state ? state.announcement_title : null,
+    });
+  });
 }
 
 async function fetchStockHistory(stockIds, tradeDate) {
@@ -290,9 +300,8 @@ function calculateRow(row, stockRows, coupons) {
   const riskFreeRate = finite(process.env.CB_RISK_FREE_RATE) == null ? 0.015 : finite(process.env.CB_RISK_FREE_RATE);
   const optionValue = blackScholesConvertible(stockPrice, numberOrNull(row.current_conv_price), years, volatility, riskFreeRate, stockDividend);
   const theoreticalValue = bondValue != null && optionValue != null ? bondValue + optionValue : null;
-  const callRatio = numberOrNull(row.call_trigger_ratio) == null ? parseTriggerRatio(profileClause(row, 'call_clause')) : numberOrNull(row.call_trigger_ratio);
-  const callTrigger = callRatio != null && numberOrNull(row.current_conv_price) != null
-    ? numberOrNull(row.current_conv_price) * callRatio : null;
+  // 强赎触发价由统一强赎状态视图提供；列表计算只复制，不重新解析条款或相乘。
+  const callTrigger = numberOrNull(row.call_trigger_price);
   const marketCap = numberOrNull(row.stock_market_cap);
   const remainSize = numberOrNull(row.remain_size);
   const financial = row.financial_data || {};
@@ -346,7 +355,7 @@ function calculateRow(row, stockRows, coupons) {
   addMissing('stock_volatility', volatility, stockHistory.length >= 30);
   addMissing('theoretical_option_value', optionValue, stockPrice > 0 && numberOrNull(row.current_conv_price) > 0 && years > 0 && volatility != null);
   addMissing('theoretical_value', theoreticalValue, bondValue != null && optionValue != null);
-  addMissing('call_trigger_price', callTrigger, callRatio != null && numberOrNull(row.current_conv_price) > 0);
+  addMissing('call_trigger_price', callTrigger, row.call_required_days != null);
   addMissing('bond_market_cap_ratio', bondMarketCapRatio, remainSize != null && marketCap > 0);
   addMissing('asset_liability_ratio', financialRatio);
   addMissing('fund_holding_ratio', fundRatio);
@@ -394,7 +403,7 @@ function calculateRow(row, stockRows, coupons) {
 async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}) {
   const date = tradeDate || await latestTradeDate();
   if (!date) throw new Error('暂无可转债行情分区，无法生成列表指标');
-  const universe = await fetchUniverseRows(date);
+  const universe = await attachCallStates(await fetchUniverseRows(date));
   if (!universe.length) throw new Error(`交易日 ${date} 没有可转债列表样本`);
   const stocks = await fetchStockHistory([...new Set(universe.map(row => row.stock_instrument_id).filter(Boolean))], date);
   const couponMap = await fetchCoupons(universe.map(row => row.instrument_id));
@@ -448,7 +457,7 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
   const date = !tradeDate && publishedDate && requestedDate && publishedDate <= requestedDate
     ? publishedDate : requestedDate;
   if (!date) return { trade_date: null, updated_at: null, count: 0, data: [] };
-  const universe = await fetchUniverseRows(date);
+  const universe = await attachCallStates(await fetchUniverseRows(date));
   if (!universe.length) return { trade_date: date, updated_at: null, count: 0, data: [] };
   const [{ rows: metricRows }, safetyRatings] = await Promise.all([
     pool.query(`
@@ -515,7 +524,13 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
       theoretical_value: metric.theoretical_value == null ? null : Number(metric.theoretical_value),
       theoretical_deviation: metric.theoretical_deviation_pct == null ? null : Number(metric.theoretical_deviation_pct),
       stock_volatility: metric.stock_volatility == null ? null : Number(metric.stock_volatility),
-      call_trigger_price: metric.call_trigger_price == null ? null : Number(metric.call_trigger_price),
+      call_trigger_price: row.call_trigger_price == null ? null : Number(row.call_trigger_price),
+      call_status: row.call_business_status || 'incomplete',
+      call_matched_days: row.call_matched_days == null ? null : Number(row.call_matched_days),
+      call_required_days: row.call_required_days == null ? null : Number(row.call_required_days),
+      call_remaining_days: row.call_remaining_days == null ? null : Number(row.call_remaining_days),
+      call_data_status: row.call_data_status || 'incomplete',
+      call_announcement_title: row.call_announcement_title || null,
       bond_market_cap_ratio: metric.bond_market_cap_ratio == null ? null : Number(metric.bond_market_cap_ratio),
       asset_liability_ratio: metric.asset_liability_ratio == null ? null : Number(metric.asset_liability_ratio),
       fund_holding_ratio: metric.fund_holding_ratio == null ? null : Number(metric.fund_holding_ratio),

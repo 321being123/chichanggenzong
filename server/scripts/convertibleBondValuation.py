@@ -438,12 +438,14 @@ def load_bond_profiles():
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT i.canonical_code, p.maturity_date, p.conv_end_date, p.conv_stop_date, "
+                "SELECT i.canonical_code, p.maturity_date, p.conv_end_date, "
+                "COALESCE(c.last_conversion_date, p.conv_stop_date) AS conv_stop_date, "
                 "p.cb_type, s.status AS stock_status, s.delist_date AS stock_delist_date, "
                 "i.list_date AS bond_list_date, i.delist_date AS bond_delist_date, i.status AS bond_status "
                 "FROM fundamental.convertible_bond_profiles p "
                 "JOIN core.instruments i ON i.instrument_id = p.instrument_id "
-                "LEFT JOIN core.instruments s ON s.instrument_id = p.stock_instrument_id"
+                "LEFT JOIN core.instruments s ON s.instrument_id = p.stock_instrument_id "
+                "LEFT JOIN analytics.convertible_bond_call_latest c ON c.instrument_id = p.instrument_id"
             )
             for row in cur.fetchall():
                 out[row[0]] = {

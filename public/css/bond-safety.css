@@ -31,10 +31,10 @@
 .bond-indicator-exempt { background:#e8eaf6; color:#283593; }
 .bond-safety-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }
 .bond-safety-error { color:#b3261e; }
-.bond-list-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,#2563a8,#3f82c4); color:#fff; }
+.bond-list-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,#3f51b5,#5c6bc0); color:#fff; }
 .bond-list-hero h2 { margin:0 0 8px; font-size:22px; color:#fff; }
-.bond-list-hero p { margin:0; color:#e3f0ff; font-size:13px; line-height:1.65; }
-.bond-list-updated { color:#e3f0ff; font-size:12px; text-align:right; white-space:nowrap; }
+.bond-list-hero p { margin:0; color:#d9e7f5; font-size:13px; line-height:1.65; }
+.bond-list-updated { color:#d9e7f5; font-size:12px; text-align:right; white-space:nowrap; }
 .bond-list-stale { margin:0 0 12px; padding:8px 12px; border-radius:8px; background:#fff8e1; color:#7a5b00; font-size:12px; }
 .bond-list-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; }
 .bond-list-toolbar input,.bond-list-toolbar select { height:36px; border:1px solid #d8dee8; border-radius:7px; background:#fff; padding:0 10px; color:#273142; }
@@ -46,6 +46,8 @@
 .bond-list-floating-scroll { position:fixed; bottom:0; display:none; }
 .bond-list-link { color:#1769aa; cursor:pointer; }
 .bond-list-link:hover { text-decoration:underline; }
+.bond-lifecycle-mark { display:inline-block; margin-left:4px; color:#d93025; font-size:16px; font-weight:700; line-height:1; cursor:help; vertical-align:-1px; }
+.bond-lifecycle-mark-call,.bond-lifecycle-mark-maturity { color:#d93025; }
 .bond-list-up { color:#d93025; font-weight:600; }
 .bond-list-down { color:#137333; font-weight:600; }
 .bond-list-empty { padding:70px 20px; text-align:center; color:#7a8495; line-height:1.8; }

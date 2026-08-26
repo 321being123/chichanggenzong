@@ -47,6 +47,7 @@ function mapListRow(r) {
   return {
     bond_code: r.bond_code,
     bond_name: r.bond_name,
+    call_status: r.call_status || 'incomplete',
     stock_name: r.stock_name || '',
     safety_level: r.safety_level || '',
     credit_warning: r.credit_warning || '无',
@@ -81,11 +82,14 @@ const LIST_SELECT = `
          v.neutral_market_extra, v.predicted_relative_extra, v.diagnostics, v.calculated_at,
          v.model_year, v.quote_lag_days, v.historical_safety, v.confidence_level,
          i.canonical_code AS bond_code, i.name AS bond_name,
+         c.business_status AS call_status,
          s.name AS stock_name,
          CASE COALESCE(al.alert_rank, 0) WHEN 2 THEN '重要' WHEN 1 THEN '关注' ELSE '无' END AS alert_level
   FROM analytics.convertible_bond_valuation_daily v
   JOIN core.instruments i ON i.instrument_id = v.instrument_id
   JOIN fundamental.convertible_bond_profiles p ON p.instrument_id = v.instrument_id
+  JOIN public.bond_unified u ON u.instrument_id = v.instrument_id
+  LEFT JOIN analytics.convertible_bond_call_latest c ON c.instrument_id = v.instrument_id
   LEFT JOIN core.instruments s ON s.instrument_id = p.stock_instrument_id
   LEFT JOIN (
     SELECT a.instrument_id, MAX(CASE a.alert_level WHEN '重要' THEN 2 WHEN '关注' THEN 1 ELSE 0 END) AS alert_rank
@@ -108,11 +112,12 @@ async function getList(asOf, filters = {}) {
   const universeDate = asOf ? tradeDate : expectedTradeDate();
   const where = [
     'v.trade_date = $1',
+    "u.status = 'listed'",
     '(i.list_date IS NULL OR i.list_date <= $2::date)',
     '(i.delist_date IS NULL OR i.delist_date > $2::date)',
     '(p.maturity_date IS NULL OR p.maturity_date >= $2::date)',
     '(p.conv_end_date IS NULL OR p.conv_end_date >= $2::date)',
-    '(p.conv_stop_date IS NULL OR p.conv_stop_date > $2::date)',
+    '(u.conv_stop_date IS NULL OR u.conv_stop_date > $2::date)',
     "(p.cb_type IS NULL OR p.cb_type IN ('CB', ''))",
     "(s.status IS NULL OR s.status = 'listed')",
     '(s.delist_date IS NULL OR s.delist_date > $2::date)',
@@ -217,6 +222,7 @@ async function getBondDetail(code, asOf) {
   return {
     bond_code: cur.bond_code,
     bond_name: cur.bond_name,
+    call_status: cur.call_status,
     stock_name: cur.stock_name,
     quote_date: cur.quote_date,
     quote_lag_days: r.quote_lag_days,

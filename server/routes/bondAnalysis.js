@@ -46,8 +46,9 @@ router.get('/search/securities', asyncHandler(async (req, res) => {
        SELECT substring(b.canonical_code,1,6),b.canonical_code,p.bond_short_name,'bond',COALESCE(s.name,'')
          FROM fundamental.convertible_bond_profiles p
          JOIN core.instruments b ON b.instrument_id=p.instrument_id
+         JOIN public.bond_unified bu ON bu.instrument_id=b.instrument_id
          LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-        WHERE b.status <> 'delisted'
+        WHERE bu.status='listed'
           AND (b.delist_date IS NULL OR b.delist_date > CURRENT_DATE)
           AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)
           AND (p.conv_end_date IS NULL OR p.conv_end_date >= CURRENT_DATE)

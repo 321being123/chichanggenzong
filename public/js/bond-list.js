@@ -22,6 +22,11 @@ var BOND_LIST_PERCENT = { change_pct:1, stock_change_pct:1, conversion_premium:1
   maturity_yield_pre_tax:1, put_yield_pre_tax:1, put_yield_after_tax:1 };
 
 function bondListText(value) { return value === null || value === undefined || value === '' ? '—' : String(value); }
+function bondListLifecycleMarker(status) {
+  if (status === 'announced' || status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
+  return '';
+}
 function bondListNumber(value, digits) { var n = Number(value); return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '—'; }
 function bondListPercent(value) { var n = Number(value); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '—'; }
 function bondListDate(value) { return value ? String(value).slice(0, 10) : '—'; }
@@ -31,7 +36,7 @@ function bondListSafety(value) {
   return '<span class="bond-rating bond-rating-' + cls + '">' + escapeHtml(rating) + '</span>';
 }
 function bondListCell(row, key) {
-  if (key === 'bond_code' || key === 'bond_name') return '<span class="bond-list-link" onclick="bondListJump(\'' + escapeHtml(row.ts_code || row.bond_code) + '\')">' + escapeHtml(bondListText(row[key])) + '</span>';
+  if (key === 'bond_code' || key === 'bond_name') return '<span class="bond-list-link" onclick="bondListJump(\'' + escapeHtml(row.ts_code || row.bond_code) + '\')">' + escapeHtml(bondListText(row[key])) + '</span>' + (key === 'bond_name' ? bondListLifecycleMarker(row.call_status) : '');
   if (key === 'rating') return escapeHtml(bondListText(row[key]));
   if (key === 'safety') return bondListSafety(row[key]);
   if (key.indexOf('date') >= 0) return escapeHtml(bondListDate(row[key]));

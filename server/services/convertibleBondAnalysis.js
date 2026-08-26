@@ -11,6 +11,7 @@ const cycleService = require('./convertibleBondCycleService');
 const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysisFreshness');
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
+const { getLatestCallState } = require('./convertibleBondRedemptionService');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -147,9 +148,13 @@ function chineseNumber(value) {
 }
 
 function parseWindow(text) {
-  const clause = String(text || '');
-  const days = [...clause.matchAll(/([一二两三四五六七八九十\d]+)个交易日/g)].map(match => chineseNumber(match[1])).filter(Boolean);
-  return { observation_days: days[0] || null, required_days: days[1] || null };
+  const clause = String(text || '').replace(/\s+/g, '');
+  // 只识别“连续 N 个交易日中至少 M 个交易日”，避免把“到期后五个交易日内”等日期描述混入窗口。
+  const window = clause.match(/([一二两三四五六七八九十\d]+)个交易日(?:中|内)至少(?:有)?([一二两三四五六七八九十\d]+)个交易日/);
+  if (window) {
+    return { observation_days: chineseNumber(window[1]), required_days: chineseNumber(window[2]) };
+  }
+  return { observation_days: null, required_days: null };
 }
 
 function earliestPutDate(maturityDate, clause) {
@@ -1507,12 +1512,27 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
   } finally { await releaseJob('convertible_bond_universe_refresh'); }
 }
 
-// 扫描最近窗口内的开市日（按时间正序），用于检测空缺
-async function getRecentOpenDays(days = 90) {
-  const end = tsDateStr(new Date());
-  const start = tsDateStr(addDays(new Date(), -days));
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: start, end_date: end, is_open: '1' }, 'cal_date,is_open');
-  return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort();
+// 扫描最近窗口内的开市日（按时间正序），并将交易日历落库供强赎、周期等模块复用。
+async function getRecentOpenDays(days = 90, endDate = null) {
+  const endValue = endDate ? new Date(`${String(endDate).slice(0, 10)}T00:00:00+08:00`) : new Date();
+  const end = tsDateStr(endValue);
+  const start = tsDateStr(addDays(endValue, -days));
+  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: start, end_date: end }, 'cal_date,is_open');
+  const rows = tsRows(data).filter(row => row.cal_date).map(row => ({
+    exchange: 'SSE', trade_date: isoDate(row.cal_date), is_open: String(row.is_open) === '1', raw_payload: row,
+  })).filter(row => row.trade_date);
+  if (rows.length) {
+    await pool.query(
+      `INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code,raw_payload)
+       SELECT x.exchange,x.trade_date,x.is_open,'tushare',x.raw_payload
+         FROM jsonb_to_recordset($1::jsonb) AS x(exchange text,trade_date date,is_open boolean,raw_payload jsonb)
+       ON CONFLICT(exchange,trade_date) DO UPDATE SET
+         is_open=EXCLUDED.is_open,source_code=EXCLUDED.source_code,
+         raw_payload=EXCLUDED.raw_payload,ingested_at=now()`,
+      [JSON.stringify(rows)]
+    );
+  }
+  return rows.filter(row => row.is_open).map(row => row.trade_date).sort();
 }
 
 // 自动补齐历史空缺：主同步之后调用，扫描游标之前（含游标当天）窗口内「事实表缺失/坏数据」的交易日，逐日重算周期指标。
@@ -1572,6 +1592,8 @@ async function backfillCycleGaps({ windowDays = 90 } = {}) {
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
   const result = await syncConvertibleBondUniverse(reason, { targetTradeDate: backfillOpts.targetTradeDate });
   await backfillCycleGaps(backfillOpts);
+  // 正股行情是强赎计算的直接输入；主同步成功后顺带补齐最近窗口内的缺口，避免只更新转债而遗漏正股。
+  await backfillUnderlyingStockMarket({ windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90) });
   return result;
 }
 
@@ -1592,14 +1614,22 @@ async function loadSafety(code) {
 }
 
 async function loadExtraData(instrumentId) {
-  const [ratings, changes, noRevision, coupons, holdings] = await Promise.all([
+  const [ratings, history, coupons, holdings] = await Promise.all([
     pool.query('SELECT rating_date,announced_at,rating_company,rating,rating_outlook FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date DESC', [instrumentId]),
-    pool.query("SELECT publish_date,change_date,initial_price,price_before,price_after,reason,COALESCE(raw_payload->>'url',raw_payload->>'source_url') AS source_url,(raw_payload->>'revision_floor_price')::numeric AS revision_floor_price FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1 ORDER BY change_date DESC", [instrumentId]),
-    pool.query("SELECT announced_at,valid_until,next_eligible_date,summary,raw_payload->>'url' AS source_url FROM fundamental.convertible_bond_no_revision_history WHERE instrument_id=$1 ORDER BY announced_at DESC", [instrumentId]),
+    pool.query("SELECT * FROM analytics.convertible_bond_announcement_history WHERE instrument_id=$1 AND fact_type IN ('price_change','no_revision') ORDER BY effective_date DESC NULLS LAST,announced_at DESC", [instrumentId]),
     pool.query('SELECT interest_year,coupon_rate,pay_date,pre_tax_interest,after_tax_interest FROM fundamental.convertible_bond_coupon_schedule WHERE instrument_id=$1 ORDER BY interest_year', [instrumentId]),
     pool.query('SELECT report_date,fund_count,holding_quantity,holding_market_value,remain_size_ratio FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1 ORDER BY report_date DESC LIMIT 1', [instrumentId]),
   ]);
-  return { ratings: ratings.rows, price_changes: normalizePriceChanges(changes.rows), no_revision_history: noRevision.rows, coupons: coupons.rows, fund_holding: holdings.rows[0] || null };
+  const changes = history.rows.filter(row => row.fact_type === 'price_change').map(row => ({
+    publish_date: row.announced_at, change_date: row.effective_date, price_before: row.price_before,
+    price_after: row.price_after, reason: row.summary, source_url: row.source_url,
+    revision_floor_price: row.raw_payload && row.raw_payload.revision_floor_price,
+  }));
+  const noRevision = history.rows.filter(row => row.fact_type === 'no_revision').map(row => ({
+    announced_at: row.announced_at, valid_until: row.valid_until, next_eligible_date: row.next_eligible_date,
+    summary: row.summary, source_url: row.source_url,
+  }));
+  return { ratings: ratings.rows, price_changes: normalizePriceChanges(changes), no_revision_history: noRevision, coupons: coupons.rows, fund_holding: holdings.rows[0] || null };
 }
 
 async function latestFinancial(stockTsCode) {
@@ -1623,22 +1653,71 @@ async function loadProspectusCache(tsCode) {
 
 async function loadNoRevisionCache(tsCode) {
   const { rows } = await pool.query(
-    `SELECT h.announced_at,h.valid_until,h.next_eligible_date,h.summary,
-       h.raw_payload->>'parser_version' AS parser_version
-     FROM fundamental.convertible_bond_no_revision_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
-     WHERE i.canonical_code=$1 ORDER BY h.announced_at DESC`, [tsCode]
+    `SELECT h.announced_at,h.valid_until,h.next_eligible_date,h.summary,h.parser_version
+       FROM analytics.convertible_bond_announcement_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
+      WHERE i.canonical_code=$1 AND h.fact_type='no_revision' ORDER BY h.announced_at DESC`, [tsCode]
   );
   return rows;
 }
 
 async function loadPriceChangeCache(tsCode) {
   const { rows } = await pool.query(
-    `SELECT h.change_date,h.price_before,h.price_after,COALESCE(h.raw_payload->>'url',h.raw_payload->>'source_url') AS source_url,
-       h.raw_payload->>'price_change_parser_version' AS parser_version
-     FROM fundamental.convertible_bond_price_changes h JOIN core.instruments i ON i.instrument_id=h.instrument_id
-     WHERE i.canonical_code=$1 ORDER BY h.change_date DESC`, [tsCode]
+    `SELECT h.effective_date AS change_date,h.price_before,h.price_after,h.source_url,h.parser_version
+       FROM analytics.convertible_bond_announcement_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
+      WHERE i.canonical_code=$1 AND h.fact_type='price_change' ORDER BY h.effective_date DESC`, [tsCode]
   );
   return rows;
+}
+
+// 公告事实入库链：只负责抓取并解析“不下修/转股价格调整”公告，分析接口不再直接访问公告源。
+async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate = null, toDate = null, limit = 50 } = {}) {
+  const end = isoDate(toDate) || tsDateStr(new Date());
+  const normalizedCodes = (Array.isArray(tsCodes) ? tsCodes : [tsCodes]).map(normalizeBondCode).filter(Boolean);
+  const params = [];
+  const clauses = ["i.asset_class='convertible_bond'"];
+  if (normalizedCodes.length) { params.push(normalizedCodes); clauses.push(`i.canonical_code=ANY($${params.length}::text[])`); }
+  const limitValue = Math.max(1, Math.min(Number(limit) || 50, 500));
+  params.push(limitValue);
+  const { rows: profiles } = await pool.query(
+    `SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.value_date,p.list_date,
+            s.canonical_code AS stock_code
+       FROM core.instruments i
+       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+       LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY i.canonical_code LIMIT $${params.length}`,
+    params
+  );
+  const results = [];
+  for (const profile of profiles) {
+    const start = isoDate(fromDate) || isoDate(profile.list_date) || isoDate(profile.value_date) || end;
+    const sourcePromises = [fetchCninfoEventsByYear(profile.stock_code, start, end, '转股价格')];
+    if (String(profile.stock_code || '').endsWith('.SH')) sourcePromises.push(fetchSseEvents(profile.stock_code, start, end, '转股价格'));
+    if (String(profile.stock_code || '').endsWith('.SZ')) sourcePromises.push(fetchSzseEvents(profile.stock_code, start, end, '转股价格'));
+    const settled = await Promise.allSettled(sourcePromises);
+    const announcements = [...new Map(settled.flatMap(item => item.status === 'fulfilled' ? item.value : [])
+      .map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+    const noRevisionCache = await loadNoRevisionCache(profile.ts_code);
+    const priceChangeCache = await loadPriceChangeCache(profile.ts_code);
+    const noRevisionPeriods = await extractNoRevisionPeriods(announcements, noRevisionCache);
+    const priceChangeDetails = await extractPriceChangeDetails(announcements, priceChangeCache);
+    if (announcements.length) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const sources = await sourceIds(client);
+        await saveAnnouncementHistories(client, profile.instrument_id, announcements, profile,
+          sources.cninfo || sources.calculated, noRevisionPeriods, priceChangeDetails);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally { client.release(); }
+    }
+    results.push({ ts_code: profile.ts_code, discovered: announcements.length,
+      no_revision: noRevisionPeriods.length, price_changes: priceChangeDetails.length });
+  }
+  return { ok: true, fromDate: isoDate(fromDate) || null, toDate: end, count: results.length, results };
 }
 
 async function loadRatingSourceCache(tsCode) {
@@ -1715,13 +1794,18 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
   if (!(await tryClaimJob(jobName))) return { skipped: true, reason: 'already_running' };
   const runId = await startJobRun(jobName);
   let filledDays = 0;
+  let savedBars = 0;
+  let savedValuations = 0;
+  let emptyDays = 0;
+  let repairedBars = 0;
   try {
     const { rows } = await pool.query(
       `SELECT DISTINCT s.canonical_code,s.instrument_id
        FROM fundamental.convertible_bond_profiles p
        JOIN core.instruments b ON b.instrument_id=p.instrument_id
        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-       WHERE b.status <> 'delisted' AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)`
+       JOIN public.bond_unified u ON u.instrument_id=b.instrument_id
+       WHERE u.status='listed' AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)`
     );
     const instrumentMap = new Map(rows.map(row => [row.canonical_code, row.instrument_id]));
     const openDays = await getRecentOpenDays(windowDays);
@@ -1738,15 +1822,18 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
       );
       if (coverage.rows[0].bars >= instrumentMap.size * 0.9 && coverage.rows[0].valuations >= instrumentMap.size * 0.9) continue;
       const [dailyData, valuationData] = await Promise.all([
-        tushareQuery('daily', { trade_date: tradeDate }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
-        tushareQuery('daily_basic', { trade_date: tradeDate }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
+        tushareQuery('daily', { trade_date: tradeDate }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true }),
+        tushareQuery('daily_basic', { trade_date: tradeDate }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { allowEmpty: true }),
       ]);
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await saveFullStockMarketPartition(client, instrumentMap, tsRows(dailyData), tsRows(valuationData), source.tushare);
+        const saved = await saveFullStockMarketPartition(client, instrumentMap, tsRows(dailyData), tsRows(valuationData), source.tushare);
         await client.query('COMMIT');
-        filledDays += 1;
+        savedBars += saved.bars;
+        savedValuations += saved.valuations;
+        if (saved.bars || saved.valuations) filledDays += 1;
+        else emptyDays += 1;
       } catch (error) {
         await client.query('ROLLBACK');
         throw error;
@@ -1755,8 +1842,48 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
       }
       if (filledDays % 20 === 0) console.log(`[股债分析缓存] 已补齐 ${filledDays} 个交易日`);
     }
-    await finishJobRun(runId, true, `补齐 ${filledDays} 个交易日，覆盖 ${instrumentMap.size} 只正股`);
-    return { skipped: false, filled_days: filledDays, stock_count: instrumentMap.size };
+    // 批量按交易日接口可能因上游行数限制遗漏少量证券；再按正股代码补一次最近30个开市日，
+    // 只处理确实存在缺口的证券，避免“整体覆盖率90%”掩盖单券缺失。
+    const recentDays = openDays.slice(-30);
+    if (recentDays.length) {
+      const { rows: missingStocks } = await pool.query(
+        `SELECT s.canonical_code,s.instrument_id
+           FROM core.instruments s
+          WHERE s.instrument_id=ANY($1::bigint[])
+            AND (SELECT COUNT(DISTINCT b.trade_date)
+                   FROM market.daily_bars b
+                  WHERE b.instrument_id=s.instrument_id
+                    AND b.trade_date=ANY($2::date[])
+                    AND b.source_id=$3) < $4
+          ORDER BY s.canonical_code`,
+        [[...instrumentMap.values()], recentDays.map(isoDate), source.tushare, recentDays.length]
+      );
+      const repairLimit = Math.max(Number(process.env.CONVERTIBLE_BOND_STOCK_REPAIR_LIMIT) || 80, 1);
+      const repairTargets = missingStocks.slice(0, repairLimit);
+      for (const stock of repairTargets) {
+        const daily = await tushareQuery('daily', {
+          ts_code: stock.canonical_code,
+          start_date: recentDays[0].replace(/-/g, ''),
+          end_date: recentDays[recentDays.length - 1].replace(/-/g, ''),
+        }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const saved = await saveFullStockMarketPartition(client, instrumentMap, tsRows(daily), [], source.tushare);
+          await client.query('COMMIT');
+          repairedBars += saved.bars;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally { client.release(); }
+      }
+      if (missingStocks.length > repairTargets.length) {
+        console.warn(`[股债分析缓存] 最近30个交易日仍有 ${missingStocks.length - repairTargets.length} 只正股待按代码补水，已处理 ${repairTargets.length} 只`);
+      }
+      if (repairedBars) console.log(`[股债分析缓存] 按正股代码补齐 ${repairedBars} 行最近行情`);
+    }
+    await finishJobRun(runId, true, `补齐 ${filledDays} 个交易日（行情 ${savedBars} 行、估值 ${savedValuations} 行、按代码补 ${repairedBars} 行，空日 ${emptyDays}），覆盖 ${instrumentMap.size} 只正股`);
+    return { skipped: false, filled_days: filledDays, saved_bars: savedBars, saved_valuations: savedValuations, repaired_bars: repairedBars, empty_days: emptyDays, stock_count: instrumentMap.size };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;
@@ -1871,11 +1998,9 @@ async function latestAnnouncementBaseline(tsCode) {
   if (!tsCode) return null;
   const { rows } = await pool.query(
     `SELECT max(d) AS event_date FROM (
-       SELECT max(announced_at) AS d FROM fundamental.convertible_bond_no_revision_history h
-         JOIN core.instruments i ON i.instrument_id = h.instrument_id WHERE i.canonical_code = $1
-       UNION ALL
-       SELECT max(change_date) FROM fundamental.convertible_bond_price_changes c
-         JOIN core.instruments i ON i.instrument_id = c.instrument_id WHERE i.canonical_code = $1
+       SELECT max(h.announced_at) AS d FROM analytics.convertible_bond_announcement_history h
+         JOIN core.instruments i ON i.instrument_id = h.instrument_id
+        WHERE i.canonical_code = $1 AND h.fact_type IN ('no_revision','price_change')
        UNION ALL
        SELECT max(rating_date) FROM fundamental.convertible_bond_ratings r
          JOIN core.instruments i ON i.instrument_id = r.instrument_id WHERE i.canonical_code = $1
@@ -1968,7 +2093,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const prospectusCache = await loadProspectusCache(tsCode);
   const noRevisionCache = await loadNoRevisionCache(tsCode);
   const priceChangeCache = await loadPriceChangeCache(tsCode);
-  const needsPriceDetails = priceChangeCache.some(row => row.parser_version !== '3');
   const ratingSourceCache = await loadRatingSourceCache(tsCode);
   const needsProspectus = !prospectusCache.fundraising_purpose || Number(prospectusCache.coupon_count) === 0 || prospectusCache.parser_version !== '4';
   // 分红明细只在估值接口缺少股息率时才参与计算，已有股息率时可按 TTL 跳过全量拉取
@@ -1984,10 +2108,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     hasCachedDividendYield ? gate('bond_dividend', fetchDividend, null) : fetchDividend(),
     fetchTencentQuotes([tsCode, stockCode]),
     Promise.all([
-      needsPriceDetails ? fetchCninfoEventsByYear(stockCode, announcementWindowStart, end, '转股价格').catch(() => [])
-        : fetchCninfoEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
-      fetchSseEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
-      fetchSzseEvents(stockCode, announcementWindowStart, end, '转股价格').catch(() => []),
       fetchCninfoEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
       fetchSseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
       fetchSzseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
@@ -2009,8 +2129,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     event_date: profile.list_date || profile.value_date,
   }]) : announcements;
   const prospectusDetails = needsProspectus ? await extractProspectusDetails(prospectusEvents) : null;
-  const noRevisionPeriods = await extractNoRevisionPeriods(announcements, noRevisionCache);
-  const priceChangeDetails = await extractPriceChangeDetails(announcements, priceChangeCache);
+  // 公告事实由独立同步链路写入数据库；分析只读取已落库历史，禁止在个券请求中重复抓取/解析。
+  const noRevisionPeriods = noRevisionCache;
+  const priceChangeDetails = priceChangeCache;
   const currentResetWindow = resetWindowState(noRevisionPeriods);
   const putPeriod = currentPutPeriod(profile.maturity_date, profile.put_clause, end);
   const putOpportunity = putOpportunityState(announcements, putPeriod.period_start, putPeriod.period_end);
@@ -2049,8 +2170,6 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
       })
       : (!upstreamCouponRows.length && clauseCouponRows.length ? { coupon_rates: clauseCouponRows } : null);
     if (detailsToSave) await saveProspectusDetails(client, ids.bondId, profile, detailsToSave, sources.cninfo || sources.calculated);
-    await saveAnnouncementHistories(client, ids.bondId, announcements, profile, sources.cninfo || sources.calculated,
-      noRevisionPeriods, priceChangeDetails);
     if (reportPriceHistory) {
       if (reportPriceHistory.price_changes.length) {
         const reportDates = reportPriceHistory.price_changes.map(row => isoDate(row.change_date)).filter(Boolean).sort();
@@ -2078,8 +2197,8 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     }
     const simplifiedTerms = { call: simplifyClause('call', profile.call_clause), reset: simplifyClause('reset', profile.reset_clause), put: simplifyClause('put', profile.put_clause) };
     const putActive = putPeriod.active && !putOpportunity.used;
+    // 强赎进度由统一强赎计算链写入 trigger_daily；此处只保存下修/回售，避免股债分析再次计算一套口径。
     const progresses = {
-      call: triggerProgress(stockDaily, simplifiedTerms.call, profile.conv_price),
       reset: triggerProgress(stockDaily, simplifiedTerms.reset, profile.conv_price, currentResetWindow.active, currentResetWindow.eligible_from),
       put: triggerProgress(stockDaily, simplifiedTerms.put, profile.conv_price, putActive, putPeriod.period_start),
     };
@@ -2101,6 +2220,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   }
 
   const code = tsCode.slice(0,6), stockShortCode = stockCode.slice(0,6);
+  const unifiedCallState = await getLatestCallState(ids.bondId);
   const liveBond = liveQuotes.get(code), liveStock = liveQuotes.get(stockShortCode);
   // 同口径校验：转债与正股实时行情必须同属一个交易日，否则整组退回同一交易日收盘数据
   const quoteDay = (quote) => (quote && quote.quote_time ? String(quote.quote_time).slice(0, 10) : null);
@@ -2135,7 +2255,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const putActive = targetPutPeriod.active && !putOpportunity.used;
   const resetWindow = resetWindowState(extras.no_revision_history);
   const triggerState = {
-    call: triggerProgress(stockDaily, termDetails.call, convPrice),
+    call: unifiedCallState || {},
     reset: triggerProgress(stockDaily, termDetails.reset, convPrice, resetWindow.active, resetWindow.eligible_from),
     put: triggerProgress(stockDaily, termDetails.put, convPrice, putActive, putStartDate),
   };
@@ -2181,12 +2301,19 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
       source: synchronizedLive ? 'tencent' : 'tushare_close', synchronized: !quotePairMismatched },
     basic: {
       convert_price: convPrice, convert_value: convValue, convert_premium: convPremium,
-      call_trigger_price: triggerState.call.trigger_price, reset_trigger_price: triggerState.reset.trigger_price,
+      call_trigger_price: unifiedCallState && unifiedCallState.trigger_price,
+      call_status: unifiedCallState && unifiedCallState.business_status,
+      call_data_status: unifiedCallState && unifiedCallState.data_status,
+      call_trade_date: unifiedCallState && isoDate(unifiedCallState.trade_date),
+      call_trigger_day_count: unifiedCallState && unifiedCallState.matched_days,
+      call_remaining_days: unifiedCallState && unifiedCallState.remaining_days,
+      call_announcement: unifiedCallState && unifiedCallState.announcement_title,
+      reset_trigger_price: triggerState.reset.trigger_price,
       put_trigger_price: triggerState.put.trigger_price,
-      call_day_count: triggerState.call.matched_days, reset_day_count: triggerState.reset.matched_days,
+      call_day_count: unifiedCallState && unifiedCallState.matched_days, reset_day_count: triggerState.reset.matched_days,
       put_day_count: triggerState.put.matched_days,
-      call_required_days: triggerState.call.required_days, reset_required_days: triggerState.reset.required_days,
-      put_required_days: triggerState.put.required_days, call_met: triggerState.call.met, reset_met: triggerState.reset.met,
+      call_required_days: unifiedCallState && unifiedCallState.required_days, reset_required_days: triggerState.reset.required_days,
+      put_required_days: triggerState.put.required_days, call_met: unifiedCallState && unifiedCallState.calculated_status === 'met', reset_met: triggerState.reset.met,
       put_met: triggerState.put.met, put_active: putActive, put_observed_days: triggerState.put.observed_days,
       put_opportunity_used: putOpportunity.used,
       put_opportunity_announcement: putOpportunity.event ? putOpportunity.event.title : null,
@@ -2336,6 +2463,16 @@ async function getConvertibleBondSnapshot(value) {
   const latestConvPriceChangeDate = latest.rows[0] && latest.rows[0].conv_change_date;
   const latestStockTradeDate = latest.rows[0] && latest.rows[0].stock_date;
   const currentFinancialEnd = latest.rows[0] && latest.rows[0].report_end_date;
+  const latestCallState = await getLatestCallState(r.instrument_id);
+  const today = isoDate(new Date());
+  const callLastTradeDate = latestCallState && isoDate(latestCallState.last_trade_date);
+  const callLastConversionDate = latestCallState && isoDate(latestCallState.last_conversion_date);
+  const callLifecycleDate = callLastTradeDate || callLastConversionDate;
+  const callDelisted = Boolean(latestCallState
+    && ['implementation', 'completion'].includes(latestCallState.official_status)
+    && callLifecycleDate && callLifecycleDate <= today);
+  const effectiveDelistDate = callDelisted && callLifecycleDate
+    && (!delistDate || callLifecycleDate < delistDate) ? callLifecycleDate : delistDate;
   // 失效检查必须按「当前分析日期」重算条款指纹，再与快照水位（写入时按快照日期锁定）比较；
   // 若快照生成后条款被修订（新增/调整有效条款），两者不一致即触发 terms_changed，使旧快照自动失效。
   // 注意：不可传 snapshotAsOf，否则永远查到快照当时条款，修订后旧快照永远不会被判失效。
@@ -2354,10 +2491,26 @@ async function getConvertibleBondSnapshot(value) {
     currentTermsHash,
     watermark: r.source_watermark,
   });
+  const basic = Object.assign({}, payload.basic || {});
+  if (latestCallState) {
+    Object.assign(basic, {
+      call_trigger_price: latestCallState.trigger_price,
+      call_status: latestCallState.business_status,
+      call_data_status: latestCallState.data_status,
+      call_trade_date: isoDate(latestCallState.trade_date),
+      call_trigger_day_count: latestCallState.matched_days,
+      call_day_count: latestCallState.matched_days,
+      call_required_days: latestCallState.required_days,
+      call_remaining_days: latestCallState.remaining_days,
+      call_met: latestCallState.calculated_status === 'met',
+      call_announcement: latestCallState.announcement_title || null,
+    });
+  }
   return Object.assign({}, payload, {
+    basic,
     cached_at: r.created_at,
-    delist_date: delistDate,
-    is_delisted: r.status === 'delisted' || Boolean(delistDate && delistDate <= isoDate(new Date())),
+    delist_date: effectiveDelistDate,
+    is_delisted: r.status === 'delisted' || callDelisted || Boolean(delistDate && delistDate <= today),
     needs_refresh: r.formula_bundle_version !== FORMULA_VERSION || freshness.needs_refresh,
     formula_version: r.formula_bundle_version,
     freshness,
@@ -2370,7 +2523,7 @@ module.exports = {
   cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
   mergeDailyRows, incrementalStart,
-  syncConvertibleBondUniverse, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
+  syncConvertibleBondUniverse, syncConvertibleBondAnnouncementHistories, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,

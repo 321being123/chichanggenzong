@@ -10,6 +10,11 @@ var esc = function (s) {
 function num(v, d) { var n = Number(v); return Number.isFinite(n) ? n.toFixed(d == null ? 2 : d) : '—'; }
 function pctv(v, d) { return (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—' : num(Number(v), d == null ? 2 : d) + '%'; }
 function api(p) { return (typeof BASE_URL !== 'undefined' && BASE_URL) ? BASE_URL + p : p; }
+function bondValLifecycleMarker(status) {
+  if (status === 'announced' || status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
+  return '';
+}
 
 var bondValState = { data: null, loading: false, sortKey: '__default__', sortDir: 'asc', detailCode: null };
 
@@ -170,7 +175,7 @@ function renderBondValTable() {
       if (col.k === 'fair_range') txt = r.fair_price_low != null ? (num(r.fair_price_low, 1) + '～' + num(r.fair_price_high, 1)) : '—';
       else if (col.p) txt = pctv(v);
       else if (col.n) txt = num(v, 1);
-      else if (col.k === 'bond_name') txt = esc(v) + (r.data_status === '新上市观察期' ? '<span class="bond-val-new-listing" title="上市满 40 个交易日后自动进入正式估值">新上市</span>' : '');
+      else if (col.k === 'bond_name') txt = esc(v) + bondValLifecycleMarker(r.call_status) + (r.data_status === '新上市观察期' ? '<span class="bond-val-new-listing" title="上市满 40 个交易日后自动进入正式估值">新上市</span>' : '');
       else if (col.k === 'alert_level') txt = (v && v !== '无') ? '<span class="val-alert ' + (v === '重要' ? 'val-alert-imp' : 'val-alert-att') + '">' + esc(v) + '</span>' : '—';
       else if (col.k === 'final_evaluation') txt = '<span class="' + (EVAL_CLASS[v] || '') + '">' + esc(v || '—') + '</span>';
       else txt = (v == null || v === '') ? '—' : esc(v);
@@ -269,7 +274,7 @@ function renderBondValDetail(d, hist, alerts) {
   var b = d.breakdown;
   var html = '';
   html += '<div class="bond-val-detail-bar"><button class="btn btn-outline btn-sm" onclick="closeBondValDetail()">← 返回列表</button>' +
-    '<span class="bond-val-detail-title">' + esc(d.bond_name) + '（' + esc(d.bond_code) + '）</span>' +
+    '<span class="bond-val-detail-title">' + esc(d.bond_name) + bondValLifecycleMarker(cur.call_status) + '（' + esc(d.bond_code) + '）</span>' +
     '<button class="btn btn-outline btn-sm" onclick="switchMain(\'stock-analysis\');setTimeout(function(){securityAnalysisSelect(\'' + esc(d.bond_code) + '\')},150)" title="查看完整债券分析（条款、评级、正股财务等）">📊 完整分析</button>' +
     '<span class="val-alert-tag ' + (EVAL_CLASS[cur.eval_class] || '') + '">' + esc(cur.final_evaluation) + '</span></div>';
 

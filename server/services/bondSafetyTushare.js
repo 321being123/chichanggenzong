@@ -236,17 +236,29 @@ async function latestMarketPartition(dates, options = {}) {
     ['stockPrices', 'daily', 'ts_code,trade_date,close,pct_chg'],
   ];
   const diagnostics = [];
+  const expectedBondCount = Math.max(Number(options.expectedBondCount) || 0, 0);
+  const minimumBondRows = expectedBondCount > 0
+    ? Math.min(expectedBondCount, Math.max(100, Math.ceil(expectedBondCount * 0.9)))
+    : 1;
   for (const tradeDate of dates.slice(0, 5)) {
     const result = {};
     await Promise.all(specs.map(async ([key, apiName, fields]) => {
       result[key] = await latestMarketRows(apiName, [tradeDate], fields, options);
     }));
-    const complete = specs.every(([key]) => result[key] && result[key].rows.length > 0);
+    const bondRows = result.bondDaily && result.bondDaily.rows || [];
+    const pricedBondRows = bondRows.filter(row => finite(row.close) > 0).length;
+    const marketComplete = specs.every(([key]) => result[key] && result[key].rows.length > 0);
+    const coverageComplete = !expectedBondCount || pricedBondRows >= minimumBondRows;
+    const complete = marketComplete && coverageComplete;
     if (complete) return { tradeDate, ...result, diagnostics };
     diagnostics.push({
       tradeDate,
       status: 'incomplete',
       rows: Object.fromEntries(specs.map(([key, apiName]) => [apiName, result[key].rows.length])),
+      expectedBondCount,
+      pricedBondRows,
+      minimumBondRows,
+      coverage: expectedBondCount ? Number((pricedBondRows / expectedBondCount).toFixed(4)) : null,
     });
   }
   return { tradeDate: null, bondDaily: { tradeDate: null, rows: [], diagnostics: [] }, stockDaily: { tradeDate: null, rows: [], diagnostics: [] }, stockPrices: { tradeDate: null, rows: [], diagnostics: [] }, diagnostics };
@@ -273,7 +285,7 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
   if (!basics.length || !dates.length) throw new Error('Tushare 未返回在市可转债或交易日数据');
 
   const [market, tencent] = await Promise.all([
-    latestMarketPartition(dates),
+    latestMarketPartition(dates, { expectedBondCount: basics.length }),
     fetchTencentQuotes(basics.flatMap(row => [row.ts_code, row.stk_code])),
   ]);
   const { bondDaily, stockDaily, stockPrices } = market;

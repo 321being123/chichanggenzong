@@ -28,6 +28,13 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
     'cb_daily:20260824', 'daily_basic:20260824', 'daily:20260824',
   ]);
 
+  const lowCoverage = await latestMarketPartition(['20260825'], {
+    expectedBondCount: 100,
+    query: async (apiName, params, fields, options) => response([{ ts_code: '000001.SZ', trade_date: params.trade_date, close: 10 }]),
+  });
+  assert.strictEqual(lowCoverage.tradeDate, null, '行情覆盖率不足时不得形成安全评分快照');
+  assert.strictEqual(lowCoverage.diagnostics[0].coverage, 0.01);
+
   await assert.rejects(
     () => latestMarketPartition(['20260825'], {
       query: async () => { const error = new Error('权限不足'); error.code = 'PERMISSION_DENIED'; throw error; },

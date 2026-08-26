@@ -88,12 +88,12 @@ async function saveSnapshot(result, sourceUpdatedAt, reason) {
   return rows[0];
 }
 
-async function refreshBondSafety(reason = 'manual') {
+async function refreshBondSafety(reason = 'manual', options = {}) {
   const claimed = await tryClaimJob(JOB_NAME);
   if (!claimed) return { skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
-    const source = await fetchBondSafetySource();
+    const source = await fetchBondSafetySource(process.env, options.targetTradeDate || null);
     if (!source.companyRows.length || !source.bondRows.length) {
       throw new Error('数据源返回空数据，已保留上一份有效快照');
     }

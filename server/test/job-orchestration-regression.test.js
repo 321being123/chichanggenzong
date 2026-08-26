@@ -58,6 +58,8 @@ assert(/systemctl enable portfolio-server\.service portfolio-worker\.service/.te
 assert(/maxAttempts: 4/.test(definitions), '任务最大尝试次数必须包含首次执行和三次自动重试');
 assert(/jobCode: 'bond_safety_refresh'[^\n]*retryDelaysMinutes: \[15, 60, 240\][^\n]*maxAttempts: 4/.test(definitions), '可转债安全评分必须覆盖上游数小时短时故障');
 assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*retryDelaysMinutes: \[15, 60, 240\][^\n]*maxAttempts: 4/.test(definitions), '可转债行情同步必须覆盖上游数小时短时故障');
+assert(/expectedDataDate\('bond_safety_refresh', businessDate\)/.test(jobRunners)
+  && /runBondSafetyRefresh\(reason, \{ targetTradeDate \}\)/.test(jobRunners), '可转债安全评分必须按计划业务日期传入目标交易日');
 assert(!/type: 'empty_data'[^\n]*maxAttempts: 2/.test(orchestrator), '空数据不得越过任务定义提前终止重试');
 assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*hour: 8, minute: 0/.test(definitions), '可转债行情同步必须改为次日 08:00 执行');
 assert(/jobCode: 'convertible_bond_valuation_refresh'[^\n]*hour: 8, minute: 15/.test(definitions), '可转债估值必须改为 08:15 执行');

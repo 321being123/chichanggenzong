@@ -2,7 +2,11 @@
 async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, context = {}) {
   switch (jobCode) {
     case 'bond_safety_refresh':
-      return require('../jobs/bondSafetyRefresh').runBondSafetyRefresh(reason);
+      {
+        const { expectedDataDate } = require('./jobScheduleSlots');
+        const targetTradeDate = expectedDataDate('bond_safety_refresh', businessDate);
+        return require('../jobs/bondSafetyRefresh').runBondSafetyRefresh(reason, { targetTradeDate });
+      }
     case 'hk_rate':
       return require('../jobs/hkRate').runHkRateJob();
     case 'nav_snapshot':

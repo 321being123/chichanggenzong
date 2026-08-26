@@ -193,19 +193,63 @@ async function refreshFinancials(stocks, today) {
   return cache;
 }
 
-async function latestOpenDates(today) {
-  const start = new Date(); start.setDate(start.getDate() - 20);
-  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: tsDateStr(start), end_date: today, is_open: '1' }, 'cal_date,is_open');
+function normalizeTradeDate(value) {
+  const text = String(value || '').trim().replace(/-/g, '');
+  return /^\d{8}$/.test(text)
+    ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`
+    : null;
+}
+
+async function latestOpenDates(endDate) {
+  const end = normalizeTradeDate(endDate) || tsDateStr(new Date());
+  const start = new Date(`${end}T00:00:00+08:00`); start.setDate(start.getDate() - 20);
+  const data = await tushareQuery('trade_cal', { exchange: 'SSE', start_date: tsDateStr(start), end_date: end.replace(/-/g, ''), is_open: '1' }, 'cal_date,is_open');
   return tsRows(data).filter(row => String(row.is_open) === '1').map(row => row.cal_date).sort().reverse();
 }
 
-async function latestMarketRows(apiName, dates, fields) {
+async function latestMarketRows(apiName, dates, fields, options = {}) {
+  const query = options.query || tushareQuery;
+  const diagnostics = [];
   for (const tradeDate of dates.slice(0, 5)) {
-    const data = await tushareQuery(apiName, { trade_date: tradeDate }, fields);
+    let data;
+    try {
+      // 空数据表示该分区尚未发布，允许继续回查；权限、限流、网络错误必须继续抛出。
+      data = await query(apiName, { trade_date: tradeDate }, fields, { allowEmpty: true });
+    } catch (error) {
+      if (error && (error.code === 'EMPTY_DATA' || error.errorType === 'empty_data')) {
+        diagnostics.push({ apiName, tradeDate, status: 'empty', rows: 0 });
+        continue;
+      }
+      throw error;
+    }
     const rows = tsRows(data);
-    if (rows.length) return { tradeDate, rows };
+    if (rows.length) return { tradeDate, rows, diagnostics };
+    diagnostics.push({ apiName, tradeDate, status: 'empty', rows: 0 });
   }
-  return { tradeDate: null, rows: [] };
+  return { tradeDate: null, rows: [], diagnostics };
+}
+
+async function latestMarketPartition(dates, options = {}) {
+  const specs = [
+    ['bondDaily', 'cb_daily', 'ts_code,trade_date,close,pct_chg'],
+    ['stockDaily', 'daily_basic', 'ts_code,trade_date,pe_ttm,pe,pb,dv_ttm,total_mv'],
+    ['stockPrices', 'daily', 'ts_code,trade_date,close,pct_chg'],
+  ];
+  const diagnostics = [];
+  for (const tradeDate of dates.slice(0, 5)) {
+    const result = {};
+    await Promise.all(specs.map(async ([key, apiName, fields]) => {
+      result[key] = await latestMarketRows(apiName, [tradeDate], fields, options);
+    }));
+    const complete = specs.every(([key]) => result[key] && result[key].rows.length > 0);
+    if (complete) return { tradeDate, ...result, diagnostics };
+    diagnostics.push({
+      tradeDate,
+      status: 'incomplete',
+      rows: Object.fromEntries(specs.map(([key, apiName]) => [apiName, result[key].rows.length])),
+    });
+  }
+  return { tradeDate: null, bondDaily: { tradeDate: null, rows: [], diagnostics: [] }, stockDaily: { tradeDate: null, rows: [], diagnostics: [] }, stockPrices: { tradeDate: null, rows: [], diagnostics: [] }, diagnostics };
 }
 
 function normalizeIndustry(value) {
@@ -215,25 +259,42 @@ function normalizeIndustry(value) {
   return text;
 }
 
-async function fetchTushareBondSafetySource() {
-  const today = tsDateStr(new Date());
+async function fetchTushareBondSafetySource(env = process.env, targetTradeDate = null) {
+  const asOfDate = normalizeTradeDate(targetTradeDate) || tsDateStr(new Date());
+  const strictTargetDate = Boolean(normalizeTradeDate(targetTradeDate));
   const [basicData, stockData, dates] = await Promise.all([
     tushareQuery('cb_basic', {}, 'ts_code,bond_short_name,stk_code,stk_short_name,list_date,delist_date,maturity_date,conv_end_date,conv_stop_date,conv_price'),
     tushareQuery('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,name,industry'),
-    latestOpenDates(today),
+    latestOpenDates(asOfDate),
   ]);
   const stockRows = tsRows(stockData);
   const listedStocks = new Set(stockRows.map(row => row.ts_code));
-  const basics = tsRows(basicData).filter(row => isActiveBond(row, today, listedStocks));
+  const basics = tsRows(basicData).filter(row => isActiveBond(row, asOfDate, listedStocks));
   if (!basics.length || !dates.length) throw new Error('Tushare 未返回在市可转债或交易日数据');
 
-  const [bondDaily, stockDaily, stockPrices, tencent] = await Promise.all([
-    latestMarketRows('cb_daily', dates, 'ts_code,trade_date,close,pct_chg'),
-    latestMarketRows('daily_basic', dates, 'ts_code,trade_date,pe_ttm,pe,pb,dv_ttm,total_mv'),
-    latestMarketRows('daily', dates, 'ts_code,trade_date,close,pct_chg'),
+  const [market, tencent] = await Promise.all([
+    latestMarketPartition(dates),
     fetchTencentQuotes(basics.flatMap(row => [row.ts_code, row.stk_code])),
   ]);
-  if (!bondDaily.rows.length || !stockDaily.rows.length || !stockPrices.rows.length) throw new Error('Tushare 最新交易日行情为空，保留上一份快照');
+  const { bondDaily, stockDaily, stockPrices } = market;
+  if (!bondDaily.rows.length || !stockDaily.rows.length || !stockPrices.rows.length) {
+    const error = new Error('Tushare 最新交易日行情为空，保留上一份快照');
+    error.code = 'EMPTY_DATA';
+    error.errorType = 'empty_data';
+    error.source = 'tushare';
+    error.apiName = 'daily/daily_basic/cb_daily';
+    error.dataDiagnostics = { targetTradeDate: asOfDate, strictTargetDate, dates, market: market.diagnostics, bondDaily: bondDaily.diagnostics, stockDaily: stockDaily.diagnostics, stockPrices: stockPrices.diagnostics };
+    throw error;
+  }
+  if (strictTargetDate && market.tradeDate !== asOfDate.replace(/-/g, '')) {
+    const error = new Error(`Tushare 目标交易日 ${asOfDate} 行情尚未形成完整数据，保留上一份快照`);
+    error.code = 'EMPTY_DATA';
+    error.errorType = 'empty_data';
+    error.source = 'tushare';
+    error.apiName = 'daily/daily_basic/cb_daily';
+    error.dataDiagnostics = { targetTradeDate: asOfDate, strictTargetDate, dates, market };
+    throw error;
+  }
 
   const bondQuotes = new Map(bondDaily.rows.map(row => [row.ts_code, row]));
   const tradableBasics = basics.filter(row => {
@@ -245,8 +306,8 @@ async function fetchTushareBondSafetySource() {
 
   const uniqueStocks = Array.from(new Map(tradableBasics.map(row => [row.stk_code, row])).values());
   const valuations = new Map(stockDaily.rows.map(row => [row.ts_code, row]));
-  const financials = await refreshFinancials(uniqueStocks, today);
-  await backfillMissingEquity(uniqueStocks, valuations, financials, today);
+  const financials = await refreshFinancials(uniqueStocks, asOfDate);
+  await backfillMissingEquity(uniqueStocks, valuations, financials, asOfDate);
   const industries = new Map(stockRows.map(row => [row.ts_code, normalizeIndustry(row.industry)]));
   const stockCloses = new Map(stockPrices.rows.map(row => [row.ts_code, row]));
 
@@ -309,6 +370,10 @@ module.exports = {
   derivePb,
   isActiveBond,
   preferredSecurityName,
+  normalizeTradeDate,
+  latestOpenDates,
+  latestMarketRows,
+  latestMarketPartition,
   selectFinancialReport,
   FINANCIAL_REFRESH_BATCH_SIZE,
   nextFinancialBatchDelay,

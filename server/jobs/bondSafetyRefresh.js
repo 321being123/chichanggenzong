@@ -10,19 +10,41 @@ function nextShanghaiDelay(hour = 6, minute = 30, now = new Date()) {
   return target - now.getTime();
 }
 
-async function runBondSafetyRefresh(reason = 'scheduled') {
+function shanghaiDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now);
+  const get = type => parts.find(part => part.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+async function runBondSafetyRefresh(reason = 'scheduled', options = {}) {
   if (!isConfigured()) return { skipped: true, reason: 'not_configured' };
   try {
-    return await refreshBondSafety(reason);
+    return await refreshBondSafety(reason, options);
   } catch (error) {
     console.error('[bond-safety] 定时刷新失败，保留上一份有效数据:', error.message);
-    return { ok: false, skipped: true, reason: 'failed', error: error.message, errorCode: error.code, errorType: error.errorType || error.type, source: error.source };
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'failed',
+      error: error.message,
+      errorCode: error.code,
+      errorType: error.errorType || error.type,
+      source: error.source,
+      apiName: error.apiName,
+      recoverAt: error.recoverAt,
+      dataDiagnostics: error.dataDiagnostics,
+    };
   }
 }
 
 function scheduleBondSafetyRefresh() {
   async function runAndReschedule() {
-    await runBondSafetyRefresh('scheduled');
+    const { expectedDataDate } = require('../services/jobScheduleSlots');
+    await runBondSafetyRefresh('scheduled', {
+      targetTradeDate: expectedDataDate('bond_safety_refresh', shanghaiDate()),
+    });
     const timer = setTimeout(runAndReschedule, nextShanghaiDelay());
     if (timer.unref) timer.unref();
   }

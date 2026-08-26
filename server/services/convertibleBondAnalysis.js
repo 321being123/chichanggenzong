@@ -1821,10 +1821,12 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
         [[...instrumentMap.values()], isoDate(tradeDate), source.tushare]
       );
       if (coverage.rows[0].bars >= instrumentMap.size * 0.9 && coverage.rows[0].valuations >= instrumentMap.size * 0.9) continue;
-      const [dailyData, valuationData] = await Promise.all([
-        tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true }),
-        tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { allowEmpty: true }),
-      ]);
+      // 补历史时严格串行调用并限速，避免 daily + daily_basic 并发把单 Token
+      // 每分钟 60 次预算耗尽；日期参数统一使用 Tushare 的 YYYYMMDD。
+      const dailyData = await tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      const valuationData = await tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { allowEmpty: true });
+      await new Promise(resolve => setTimeout(resolve, 1200));
       const client = await pool.connect();
       try {
         await client.query('BEGIN');

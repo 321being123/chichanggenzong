@@ -60,6 +60,7 @@ function completeRows(count) {
   const analysisSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
   assert.ok(analysisSource.includes("tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }"), '正股日行情补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
   assert.ok(analysisSource.includes("tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }"), '正股估值补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
+  assert.ok(analysisSource.includes('setTimeout(resolve, 1200)'), '正股历史补齐必须在外部调用之间限速');
   console.log('convertible bond refresh regression tests passed');
 })().catch(error => {
   console.error(error);

@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const {
   latestFullBondDaily,
   activeProfile,
@@ -55,6 +57,9 @@ function completeRows(count) {
   assert.strictEqual(resolveMaxAttempts({ maxAttempts: 4, retryPolicy: 'external' }, {}), 4, '外部任务必须执行配置的四次尝试');
   assert.strictEqual(classifyFailure({ code: 'RATE_LIMIT', errorType: 'rate_limit', recoverAt: new Date(Date.now() + 120000) }).retryable, true, '临时限流应按恢复时间重试');
   assert.strictEqual(sanitizeJobResult({ tokenFingerprint: 'sensitive' }).tokenFingerprint, '[已脱敏]');
+  const analysisSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+  assert.ok(analysisSource.includes("tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }"), '正股日行情补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
+  assert.ok(analysisSource.includes("tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }"), '正股估值补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
   console.log('convertible bond refresh regression tests passed');
 })().catch(error => {
   console.error(error);

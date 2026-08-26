@@ -1822,8 +1822,8 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
       );
       if (coverage.rows[0].bars >= instrumentMap.size * 0.9 && coverage.rows[0].valuations >= instrumentMap.size * 0.9) continue;
       const [dailyData, valuationData] = await Promise.all([
-        tushareQuery('daily', { trade_date: tradeDate }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true }),
-        tushareQuery('daily_basic', { trade_date: tradeDate }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { allowEmpty: true }),
+        tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true }),
+        tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { allowEmpty: true }),
       ]);
       const client = await pool.connect();
       try {

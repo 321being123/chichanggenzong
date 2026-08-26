@@ -156,8 +156,8 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
   }
   const results = [];
   for (const bond of bonds) {
-    const observationDays = numberOrNull(bond.observation_days) || 30;
-    const requiredDays = numberOrNull(bond.required_days) || 15;
+    const observationDays = numberOrNull(bond.observation_days);
+    const requiredDays = numberOrNull(bond.required_days);
     const ratio = numberOrNull(bond.trigger_ratio);
     const noCallUntil = dateText(bond.no_call_until);
     const eligibleDates = openDates
@@ -306,7 +306,7 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
     pool.query(`SELECT MAX(trade_date)::text AS trade_date
                   FROM market.trade_calendar
                  WHERE exchange='SSE' AND is_open
-                   AND trade_date <= (now() AT TIME ZONE 'Asia/Shanghai')::date`),
+                   AND trade_date < (now() AT TIME ZONE 'Asia/Shanghai')::date`),
   ]);
   const summary = { announced: 0, met_pending: 0, near: 0, maturity_near: 0, tracking: 0, waived: 0, completed: 0, incomplete: 0 };
   for (const row of summaryResult.rows) {

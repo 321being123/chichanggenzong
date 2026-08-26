@@ -64,11 +64,17 @@ function pickInstrument(item, candidates) {
     const securityCode = String(row.security_code || '');
     return bondName && title.includes(bondName) || securityCode && title.includes(securityCode);
   });
-  return (nameMatches[0] || candidates[0]).instrument_id;
+  if (nameMatches.length === 1) return nameMatches[0].instrument_id;
+  // 同一正股可能同时发行多只转债；无法从公告标题唯一匹配时必须进入待确认，
+  // 不能默认取第一只，否则会把公告事实写到另一只转债上。
+  if (candidates.length === 1) return candidates[0].instrument_id;
+  return null;
 }
 
 async function parseOfficialDocuments(items, maxUrls = 50) {
-  const urls = [...new Set((items || []).map(item => item.fileLink).filter(Boolean))].slice(0, maxUrls);
+  const uniqueUrls = [...new Set((items || []).map(item => item.fileLink).filter(Boolean))];
+  const limit = Number.isFinite(Number(maxUrls)) && Number(maxUrls) > 0 ? Number(maxUrls) : uniqueUrls.length;
+  const urls = uniqueUrls.slice(0, limit);
   if (!urls.length) return new Map();
   const root = path.join(__dirname, '..', '..');
   const script = path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py');
@@ -90,6 +96,16 @@ async function parseOfficialDocuments(items, maxUrls = 50) {
     }
   }
   return parsed;
+}
+
+function eventParseComplete(eventType, dates) {
+  const value = dates || {};
+  if (eventType === 'exercise' || eventType === 'implementation') {
+    return Boolean(value.lastTradeDate && value.lastConversionDate);
+  }
+  if (eventType === 'waive') return Boolean(value.noCallUntil);
+  if (eventType === 'completion') return Boolean(value.redemptionRecordDate || value.redemptionPrice != null);
+  return false;
 }
 
 async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchanges = ['sse', 'szse'], stock = '', keywords = null } = {}) {
@@ -123,7 +139,9 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
     ? announcementsRaw.filter(item => stockCodes.includes(String(item.stockCode || '').slice(0, 6)))
     : announcementsRaw;
   const classified = announcements.filter(item => classifyCallEvent(item.title));
-  const parsedDocuments = await parseOfficialDocuments(classified, stockCodes.length ? 500 : 50);
+  // 正常同步也必须处理全部公告；分批由 parseOfficialDocuments 内部完成，不能以“前50份”
+  // 作为成功条件，否则近期公告排序变化会让部分已公告转债永久缺日期。
+  const parsedDocuments = await parseOfficialDocuments(classified, classified.length);
   const client = await pool.connect();
   let runId = null;
   let matched = 0;
@@ -147,7 +165,7 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
       const announcedDate = isoDate(item.announcedAt) || start;
       if (eventType === 'waive' && dates.noCallUntil && dates.noCallUntil <= announcedDate) dates.noCallUntil = null;
       if (documentDates.redemption_price != null) dates.redemptionPrice = documentDates.redemption_price;
-      if (dates.noCallUntil || dates.lastTradeDate || dates.lastConversionDate || dates.redemptionRecordDate || dates.redemptionPrice != null) dates.parseStatus = 'complete';
+      dates.parseStatus = eventParseComplete(eventType, dates) ? 'complete' : 'partial';
       const sourceKey = String(item.sourceKey || item.fileLink || `${item.announcedAt}:${item.stockCode}:${item.title}`);
       const raw = JSON.stringify(item.rawPayload || item);
       const hash = crypto.createHash('sha256').update(raw).digest('hex');
@@ -203,4 +221,4 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   return { ok: true, fromDate: start, toDate: end, discovered: announcements.length, classified: classified.length, matched, runId };
 }
 
-module.exports = { classifyCallEvent, eventDates, syncConvertibleBondCallAnnouncements };
+module.exports = { classifyCallEvent, eventDates, eventParseComplete, pickInstrument, syncConvertibleBondCallAnnouncements };

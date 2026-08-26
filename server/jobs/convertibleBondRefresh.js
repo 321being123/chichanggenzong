@@ -195,10 +195,56 @@ function scheduleConvertibleBondRefresh() {
   console.log('[bond-analysis] 已调度：每日 07:45 同步强赎公告，08:00 同步行情，08:15 刷新估值（上海时间）');
 }
 
+// 新版本发布后，即使当天 08:15 的估值槽已经成功，强赎计算也可能尚未按新公式生成。
+// 启动时只检查本地覆盖率，缺失时补跑派生计算；不重新请求行情或公告接口。
+async function runRedemptionStartupCatchup() {
+  const jobCode = 'convertible_bond_redemption_refresh';
+  if (!(await tryClaimJob(jobCode))) return { skipped: true, reason: 'locked' };
+  try {
+    const { rows } = await pool.query(`
+      WITH market_date AS (
+        SELECT MAX(trade_date)::date AS trade_date FROM market.convertible_bond_daily_metrics
+      ), eligible AS (
+        SELECT p.instrument_id
+          FROM fundamental.convertible_bond_profiles p
+          JOIN core.instruments i ON i.instrument_id=p.instrument_id
+          JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
+          JOIN market.convertible_bond_daily_metrics dm
+            ON dm.instrument_id=p.instrument_id AND dm.trade_date=(SELECT trade_date FROM market_date)
+         WHERE i.asset_class='convertible_bond' AND i.status='listed' AND u.status='listed'
+           AND (i.list_date IS NULL OR i.list_date <= (SELECT trade_date FROM market_date))
+           AND (i.delist_date IS NULL OR i.delist_date > (SELECT trade_date FROM market_date))
+           AND (u.maturity_date IS NULL OR u.maturity_date >= (SELECT trade_date FROM market_date))
+           AND (u.conv_end_date IS NULL OR u.conv_end_date >= (SELECT trade_date FROM market_date))
+           AND (u.conv_stop_date IS NULL OR u.conv_stop_date > (SELECT trade_date FROM market_date))
+      ), calculated AS (
+        SELECT COUNT(DISTINCT instrument_id)::int AS count
+          FROM analytics.convertible_bond_trigger_daily
+         WHERE trigger_type='call' AND formula_version='call-v1'
+           AND trade_date=(SELECT trade_date FROM market_date)
+      )
+      SELECT (SELECT trade_date::text FROM market_date) AS trade_date,
+             (SELECT COUNT(*)::int FROM eligible) AS eligible_count,
+             calculated.count AS calculated_count
+        FROM calculated`);
+    const row = rows[0] || {};
+    const eligible = Number(row.eligible_count || 0);
+    const calculated = Number(row.calculated_count || 0);
+    if (!row.trade_date || !eligible || calculated >= eligible) {
+      return { skipped: true, reason: 'coverage_ok', tradeDate: row.trade_date || null, eligible, calculated };
+    }
+    const result = await calculateConvertibleBondCallStatus(row.trade_date);
+    return { ...result, reason: 'startup_catchup', eligible, calculatedBefore: calculated };
+  } finally {
+    await releaseJob(jobCode);
+  }
+}
+
 module.exports = {
   nextShanghaiDelay,
   bootstrapConvertibleBonds,
   refreshCompleteness,
+  runRedemptionStartupCatchup,
   runRefreshChain,
   runDailyValuation,
   scheduleConvertibleBondRefresh,

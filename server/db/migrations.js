@@ -3592,6 +3592,54 @@ async function migration088ConvertibleBondCallDateFallback() {
   `);
 }
 
+// ========== 089：强赎状态按公式版本发布 =============
+// 新版全市场计算完成前，旧的个券分析记录不能冒充新版强赎进度；保留证券和公告事实，
+// 将旧公式的计算字段清空并标记为 incomplete，等待 call-v1 首次覆盖。
+async function migration089ConvertibleBondCallFormulaPublication() {
+  const { rows: current } = await pool.query(
+    `SELECT 1 FROM pg_views WHERE schemaname='analytics' AND viewname='convertible_bond_call_latest'`
+  );
+  const { rows: legacy } = await pool.query(
+    `SELECT 1 FROM pg_views WHERE schemaname='analytics' AND viewname='convertible_bond_call_latest_legacy'`
+  );
+  if (current.length && !legacy.length) {
+    await pool.query('ALTER VIEW analytics.convertible_bond_call_latest RENAME TO convertible_bond_call_latest_legacy');
+  }
+  await pool.query(`
+    DROP VIEW IF EXISTS analytics.convertible_bond_call_latest;
+    CREATE VIEW analytics.convertible_bond_call_latest AS
+    SELECT r.instrument_id,r.ts_code,r.security_code,r.bond_name,r.stock_instrument_id,
+           r.stock_code,r.stock_name,r.current_conv_price,r.trigger_ratio,
+           CASE WHEN r.formula_version='call-v1' THEN r.trigger_price END AS trigger_price,
+           CASE WHEN r.formula_version='call-v1' THEN r.stock_close END AS stock_close,
+           CASE WHEN r.formula_version='call-v1' THEN r.distance_to_trigger_pct END AS distance_to_trigger_pct,
+           CASE WHEN r.formula_version='call-v1' THEN r.trade_date END AS trade_date,
+           CASE WHEN r.formula_version='call-v1' THEN r.matched_days END AS matched_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.required_days END AS required_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.observation_days END AS observation_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.remaining_days END AS remaining_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.calculated_status ELSE 'unknown' END AS calculated_status,
+           CASE WHEN r.formula_version='call-v1' THEN r.formula_version END AS formula_version,
+           CASE WHEN r.formula_version='call-v1' THEN r.diagnostics ELSE jsonb_build_object('reason','formula_version_not_published') END AS diagnostics,
+           CASE WHEN r.formula_version='call-v1' THEN r.data_status ELSE 'incomplete' END AS data_status,
+           CASE WHEN r.formula_version='call-v1' THEN r.calculated_at END AS calculated_at,
+           r.event_id,r.official_status,r.announced_at,r.no_call_until,
+           r.redemption_record_date,r.last_trade_date,r.last_conversion_date,r.redemption_price,
+           r.document_id,r.source_url,r.announcement_title,r.announcement_parse_status,
+           r.announcement_parser_version,r.announcement_details,
+           CASE
+             WHEN r.official_status='completion' THEN 'completed'
+             WHEN r.official_status IN ('exercise','implementation') THEN 'announced'
+             WHEN r.official_status='waive'
+                  AND (r.no_call_until IS NULL OR r.no_call_until >= COALESCE(r.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN r.formula_version='call-v1' THEN r.business_status
+             ELSE 'incomplete'
+           END AS business_status,
+           r.remain_size,r.maturity_date,r.conv_start_date,r.conv_end_date,r.conv_stop_date
+      FROM analytics.convertible_bond_call_latest_legacy r;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -3681,6 +3729,7 @@ const MIGRATIONS = [
   { version: '086_convertible_bond_announcement_history_view', up: migration086ConvertibleBondAnnouncementHistoryView },
   { version: '087_convertible_bond_waive_same_day_validity', up: migration087ConvertibleBondWaiveSameDayValidity },
   { version: '088_convertible_bond_call_date_fallback', up: migration088ConvertibleBondCallDateFallback },
+  { version: '089_convertible_bond_call_formula_publication', up: migration089ConvertibleBondCallFormulaPublication },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

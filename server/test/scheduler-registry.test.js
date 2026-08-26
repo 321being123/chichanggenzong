@@ -15,7 +15,7 @@ const EXPECTED_SCHEDULED = [
   'holidaySyncMonthly'
 ];
 const EXPECTED_STARTUP = [
-  'holidaySync', 'backfillCloses', 'indexBaseline', 'hkTradeRulesStartup', 'ipoHistoryStartupCatchup'
+  'holidaySync', 'backfillCloses', 'indexBaseline', 'hkTradeRulesStartup', 'ipoHistoryStartupCatchup', 'redemptionStartupCatchup'
 ];
 
 const sameSet = (a, b) => {

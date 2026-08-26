@@ -3,8 +3,16 @@ var bondRedemptionState = { rows: [], filtered: [], loaded: false, loading: fals
 var BOND_REDEMPTION_REFRESH_MS = 15 * 60 * 1000;
 
 function bondRedemptionText(value) { return value === null || value === undefined || value === '' ? '—' : String(value); }
-function bondRedemptionNum(value, digits) { var n = Number(value); return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '—'; }
-function bondRedemptionPct(value) { var n = Number(value); return Number.isFinite(n) ? (n * 100).toFixed(1) + '%' : '—'; }
+function bondRedemptionNum(value, digits) {
+  if (value === null || value === undefined || value === '') return '—';
+  var n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '—';
+}
+function bondRedemptionPct(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  var n = Number(value);
+  return Number.isFinite(n) ? (n * 100).toFixed(1) + '%' : '—';
+}
 function bondRedemptionDate(value) {
   if (!value) return '—';
   var text = String(value);

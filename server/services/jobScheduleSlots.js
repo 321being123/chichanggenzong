@@ -412,7 +412,8 @@ async function queryDataAsOf(jobCode, businessDate) {
     return normalizeDataAsOf(loadHolidays().updatedAt);
   }
   const queries = {
-    bond_safety_refresh: `SELECT COALESCE(source_updated_at, refreshed_at) AS data_as_of FROM bond_safety_snapshots ORDER BY refreshed_at DESC LIMIT 1`,
+    // 手动回查可能晚于正式快照写入、但数据日期更旧；水位必须取所有快照中的最新数据日期。
+    bond_safety_refresh: `SELECT MAX(COALESCE(source_updated_at, refreshed_at)) AS data_as_of FROM bond_safety_snapshots`,
     hk_rate: `SELECT max(rate_date)::text AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
     nav_snapshot: `SELECT max(date)::text AS data_as_of FROM nav_history`,
     index_baseline: `SELECT max(date)::text AS data_as_of FROM index_history`,

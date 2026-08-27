@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { latestMarketPartition, normalizeTradeDate } = require('../services/bondSafetyTushare');
+const { filterPublicBonds, latestMarketPartition, normalizeTradeDate } = require('../services/bondSafetyTushare');
 
 function response(rows) {
   const fields = ['ts_code', 'trade_date', 'close'];
@@ -12,6 +12,21 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
   assert.strictEqual(normalizeTradeDate('20260825'), '2026-08-25');
   assert.strictEqual(normalizeTradeDate('2026-08-25'), '2026-08-25');
   assert.strictEqual(normalizeTradeDate('not-a-date'), null);
+
+  const publicBonds = await filterPublicBonds([
+    { ts_code: '110815.SH' },
+    { ts_code: '110817.SH' },
+    { ts_code: '127033.SZ' },
+  ], {
+    query: async (sql, params) => {
+      assert.deepStrictEqual(params, [['110815.SH', '110817.SH', '127033.SZ']]);
+      return { rows: [
+        { canonical_code: '110815.SH', issue_type: '定向' },
+        { canonical_code: '110817.SH', issue_type: '定向' },
+      ] };
+    },
+  });
+  assert.deepStrictEqual(publicBonds.map(row => row.ts_code), ['127033.SZ'], '定向债券不得进入安全评分预期集合');
 
   const queried = [];
   const selected = await latestMarketPartition(['20260825', '20260824'], {

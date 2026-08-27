@@ -7,6 +7,7 @@ const FINANCIAL_TTL_DAYS = 30;
 // 并为本任务的行情请求及随后任务保留余量。批次之间跨分钟，避免缓存集中到期时形成请求洪峰。
 const FINANCIAL_REFRESH_BATCH_SIZE = 15;
 const CONVERTIBLE_PREFIX = /^(110|111|113|118|123|127|128)/;
+const NON_PUBLIC_ISSUE_TYPES = new Set(['定向', '私募']);
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function nextFinancialBatchDelay(now = Date.now()) {
@@ -29,13 +30,36 @@ function preferredSecurityName(quote, fallback) {
 }
 
 function isActiveBond(row, today, listedStocks) {
-  return Boolean(row && row.list_date && row.list_date <= today &&
-    (!row.delist_date || row.delist_date > today) &&
-    (!row.maturity_date || row.maturity_date >= today) &&
-    (!row.conv_end_date || row.conv_end_date >= today) &&
-    (!row.conv_stop_date || row.conv_stop_date > today) &&
+  const targetDate = normalizeTradeDate(today) || String(today || '').trim();
+  const listDate = normalizeTradeDate(row && row.list_date);
+  const delistDate = normalizeTradeDate(row && row.delist_date);
+  const maturityDate = normalizeTradeDate(row && row.maturity_date);
+  const convEndDate = normalizeTradeDate(row && row.conv_end_date);
+  const convStopDate = normalizeTradeDate(row && row.conv_stop_date);
+  return Boolean(row && listDate && listDate <= targetDate &&
+    (!delistDate || delistDate > targetDate) &&
+    (!maturityDate || maturityDate >= targetDate) &&
+    (!convEndDate || convEndDate >= targetDate) &&
+    (!convStopDate || convStopDate > targetDate) &&
     CONVERTIBLE_PREFIX.test(row.ts_code) &&
     (!listedStocks || listedStocks.has(row.stk_code)));
+}
+
+async function filterPublicBonds(rows, client = pool) {
+  const candidates = Array.from(new Set((rows || [])
+    .map(row => String(row && row.ts_code || '').trim().toUpperCase())
+    .filter(Boolean)));
+  if (!candidates.length) return rows || [];
+  const result = await client.query(`
+    SELECT i.canonical_code, v.issue_type
+      FROM core.instruments i
+      JOIN fundamental.convertible_bond_issuance v ON v.instrument_id=i.instrument_id
+     WHERE i.canonical_code = ANY($1::text[])
+  `, [candidates]);
+  const excluded = new Set((result.rows || [])
+    .filter(row => NON_PUBLIC_ISSUE_TYPES.has(String(row.issue_type || '').trim()))
+    .map(row => String(row.canonical_code || '').trim().toUpperCase()));
+  return (rows || []).filter(row => !excluded.has(String(row && row.ts_code || '').trim().toUpperCase()));
 }
 
 function selectFinancialReport(indicators, balances, incomes, today) {
@@ -281,7 +305,8 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
   ]);
   const stockRows = tsRows(stockData);
   const listedStocks = new Set(stockRows.map(row => row.ts_code));
-  const basics = tsRows(basicData).filter(row => isActiveBond(row, asOfDate, listedStocks));
+  const activeBasics = tsRows(basicData).filter(row => isActiveBond(row, asOfDate, listedStocks));
+  const basics = await filterPublicBonds(activeBasics);
   if (!basics.length || !dates.length) throw new Error('Tushare 未返回在市可转债或交易日数据');
 
   const [market, tencent] = await Promise.all([
@@ -381,6 +406,7 @@ module.exports = {
   finite,
   derivePb,
   isActiveBond,
+  filterPublicBonds,
   preferredSecurityName,
   normalizeTradeDate,
   latestOpenDates,

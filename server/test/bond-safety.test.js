@@ -110,6 +110,14 @@ check('已到期或已停止转股的转债被过滤', () => {
   assert.strictEqual(isActiveBond(Object.assign({}, base, { maturity_date: '20240814' }), '20260717', listed), false);
   assert.strictEqual(isActiveBond(Object.assign({}, base, { maturity_date: '20270416', conv_stop_date: null }), '20260717', listed), true);
 });
+check('Tushare YYYYMMDD 生命周期日期按目标日正确过滤', () => {
+  const base = { ts_code: '127033.SZ', stk_code: '002822.SZ', list_date: '20210524' };
+  const listed = new Set(['002822.SZ']);
+  assert.strictEqual(isActiveBond(Object.assign({}, base, { delist_date: '20260105' }), '2026-08-26', listed), false);
+  assert.strictEqual(isActiveBond(Object.assign({}, base, { maturity_date: '20260105' }), '2026-08-26', listed), false);
+  assert.strictEqual(isActiveBond(Object.assign({}, base, { conv_end_date: '20260105' }), '2026-08-26', listed), false);
+  assert.strictEqual(isActiveBond(Object.assign({}, base, { conv_stop_date: '20260105' }), '2026-08-26', listed), false);
+});
 check('PB缺失时可按总市值和归母净资产补算正负市净率', () => {
   assert.strictEqual(derivePb(10000, 50000000), 2);
   assert.strictEqual(derivePb(10000, -50000000), -2);

@@ -1,0 +1,7 @@
+# 仅对本项目生效：项目事实以 Git 仓库知识库为准。
+[features]
+memories = false
+
+[memories]
+use_memories = false
+generate_memories = false

@@ -126,6 +126,25 @@ jobs:
           print('全部 JSON 文件格式合法')
           PY
 
+  # 项目知识治理：代码/配置变更必须同步命中的权威文档
+  knowledge-governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 校验知识入口与变更路由
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            node scripts/check-knowledge.js --base "origin/${{ github.base_ref }}"
+          else
+            node scripts/check-knowledge.js --base HEAD^
+          fi
+
   # 秘密扫描：检测仓库历史与当前代码中泄露的密钥/密码（trufflehog 免费开源，替代需许可证的 gitleaks）
   secret-scan:
     runs-on: ubuntu-latest

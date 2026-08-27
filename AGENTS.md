@@ -2,6 +2,10 @@
 
 ## 项目长期记忆与架构文档
 
+- 本项目的统一记忆入口是 `docs/知识索引.md`，机器路由是 `governance/knowledge-map.json`。每次任务先读索引，再按任务描述和实际改动文件匹配路由；禁止默认全量读取历史文档。
+- 命中路由后必须阅读其 `read` 列出的权威文档；实际改动触发的 `update` 文档必须同步更新。根因不明、跨模块、数据、权限、安全、调度或部署问题必须扩大阅读范围。
+- Bug 必须从数据源、数据库、服务、接口、页面和运行环境检查根因，并核查同类对象/功能；重大或重复问题按 `docs/incidents/README.md` 留下根因、同类范围和回归证据。
+- 交付前运行 `npm.cmd run check:knowledge`；本项目事实只写入 Git 仓库，平台私有 Memory 不作为事实来源或裁决依据。Codex 项目级原生 Memory 已在 `.codex/config.toml` 关闭。
 - `docs/技术架构.md` 是整个项目技术架构的权威入口，也是后续开发和维护的长期项目记忆；开始涉及架构、数据、接口、任务、配置或部署的工作前，必须先阅读相关章节。
 - 每次修改影响技术栈、目录职责、请求链路、数据模型、读写边界、外部数据源、后台任务、配置项或部署方式时，必须在交付前同步更新 `docs/技术架构.md` 的原有对应章节及“最后核对日期”。
 - 文档必须以当前代码和已验证运行状态为准；发现不一致时就地修正，不另建内容重复的架构文档。单次整改过程和历史记录继续放整改报告或 `CHANGELOG.md`。
@@ -23,9 +27,9 @@
 
 ## 本机 PostgreSQL 固定信息（每次本地验收前必读）
 
-- 本机已安装并验证 PostgreSQL 16.4（Windows x64 免安装版），程序目录为 `C:\pg\pgsql\bin`，数据目录为 `C:\pg\pgdata`，本地业务库为 `portfolio`。
+- 本机唯一现役 PostgreSQL 实例为 17.2（Windows x64 免安装版），程序目录为 `C:\pgsql\bin`，数据目录为 `C:\pgdata`，监听 `localhost:5432`，本地业务库为 `portfolio`。
 - 该实例未注册为 Windows 服务，且未加入系统 `PATH`。`Get-Service *postgres*` 无结果或 `Get-Command psql` 找不到命令，均不能作为“本机未安装 PostgreSQL”的依据。
-- 在得出“本机没有数据库”的结论前，必须先检查 `C:\pg\pgsql\bin\pg_ctl.exe`、`C:\pg\pgsql\bin\psql.exe` 和 `C:\pg\pgdata\PG_VERSION`；文件存在但实例未运行时，应按需启动，不能重新安装。
+- 在得出“本机没有数据库”的结论前，必须先检查 `C:\pgsql\bin\pg_ctl.exe`、`C:\pgsql\bin\psql.exe` 和 `C:\pgdata\PG_VERSION`；文件存在但实例未运行时，应按需启动，不能重新安装。
 - 数据库连接账号、密码等敏感配置只从项目根目录 `.env` 读取，禁止把密码复制进规则、文档或代码。
 - 启动、状态检查、连接和停止命令见 `deploy/本地验证交接文档.md` 的“本机 PostgreSQL 固定信息”章节。
 

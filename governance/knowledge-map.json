@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "requiredFiles": [
+    "docs/知识索引.md",
+    "docs/技术架构.md",
+    "docs/生产部署流程.md",
+    "docs/decisions/README.md",
+    "docs/incidents/README.md",
+    "docs/tasks/README.md"
+  ],
+  "routes": [
+    {
+      "id": "database",
+      "risk": "high",
+      "paths": ["server/db/**", "server/migrations/**", "migrations/**", "**/*schema*.sql"],
+      "keywords": ["数据库", "迁移", "字段", "索引", "schema"],
+      "read": ["docs/技术架构.md"],
+      "update": ["docs/技术架构.md"],
+      "checks": ["npm.cmd run test:all"],
+      "expandOn": ["历史数据", "单位", "时间口径", "回滚"]
+    },
+    {
+      "id": "background-job",
+      "risk": "high",
+      "paths": ["server/jobs/**", "server/worker.js", "server/**/worker*.js"],
+      "keywords": ["任务", "调度", "worker", "定时"],
+      "read": ["docs/技术架构.md"],
+      "update": ["docs/技术架构.md"],
+      "checks": ["npm.cmd run test:all"],
+      "expandOn": ["幂等", "重试", "补偿", "告警"]
+    },
+    {
+      "id": "api",
+      "risk": "high",
+      "paths": ["server/routes/**", "server/middleware/**"],
+      "keywords": ["接口", "路由", "鉴权", "权限", "API"],
+      "read": ["docs/技术架构.md"],
+      "update": ["docs/技术架构.md"],
+      "checks": ["npm.cmd run test:all"],
+      "expandOn": ["兼容", "权限", "错误格式"]
+    },
+    {
+      "id": "data-service",
+      "risk": "high",
+      "paths": ["server/services/**", "server/providers/**"],
+      "keywords": ["数据源", "缓存", "计算", "行情", "服务"],
+      "read": ["docs/技术架构.md"],
+      "update": ["docs/技术架构.md"],
+      "checks": ["npm.cmd run test:all"],
+      "expandOn": ["外部 API", "缓存", "增量", "失败保留"]
+    },
+    {
+      "id": "frontend",
+      "risk": "medium",
+      "paths": ["public/**"],
+      "keywords": ["页面", "前端", "交互", "样式"],
+      "read": ["docs/技术架构.md"],
+      "update": ["docs/技术架构.md"],
+      "checks": ["npm.cmd run test:all"],
+      "expandOn": ["权限", "共享组件", "用户流程"]
+    },
+    {
+      "id": "deployment",
+      "risk": "high",
+      "paths": ["deploy/**", ".github/workflows/**", "server.js", "package.json", "package-lock.json", ".env.example"],
+      "keywords": ["部署", "环境变量", "服务", "依赖", "CI"],
+      "read": ["docs/技术架构.md", "docs/生产部署流程.md"],
+      "update": ["docs/技术架构.md", "docs/生产部署流程.md"],
+      "checks": ["npm.cmd run check:knowledge"],
+      "expandOn": ["回滚", "密钥", "生产", "版本"]
+    }
+  ]
+}

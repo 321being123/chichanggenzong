@@ -89,6 +89,20 @@ const currentCalendar = [{ date: "2026-08-18", apply_stocks: [], apply_bonds: []
 check("日报日期与日历一致时显示建议", sandbox.ipoRenderAdvice(adviceMd, { reportDate: "20260818", calendar: currentCalendar }).indexOf("测试转债") >= 0);
 check("日报落后日历时隐藏旧建议", sandbox.ipoRenderAdvice(adviceMd, { reportDate: "20260817", calendar: currentCalendar }).indexOf("旧建议已隐藏") >= 0);
 
+const emptyAdviceMd = "## 📋 结论\n\n---\n## 一、明日可申购\n\n> 明日无可申购的新股或新债。";
+const emptySummary = { apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };
+sandbox._ipoTodayStr = () => "2026-08-27";
+check("最新空日报明确提示无打新建议",
+  sandbox.ipoRenderAdvice(emptyAdviceMd, {
+    reportDate: "20260828", calendar: [], summary: emptySummary
+  }).indexOf("2026-08-28 没有打新建议的股和债") >= 0);
+check("旧空日报仍隐藏",
+  sandbox.ipoRenderAdvice(emptyAdviceMd, {
+    reportDate: "20260819", calendar: [], summary: emptySummary
+  }).indexOf("旧建议已隐藏") >= 0);
+check("沪市主板标签完整", sandbox.ipoBoard("600000", "新股") === "沪市主板");
+check("深市主板标签完整", sandbox.ipoBoard("000001", "新股") === "深市主板");
+
 console.log("\n===== 前端结果汇总 =====");
 console.log("PASS=%d  FAIL=%d", PASS, FAIL);
 console.log(FAIL === 0 ? "OK" : "HAS_ISSUES");

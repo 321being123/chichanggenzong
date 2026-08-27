@@ -42,6 +42,26 @@ check("小规模按1亿元梯度分组",
       and liquidity_bucket(1.9)[0] != liquidity_bucket(2.1)[0])
 check("小样本平均使用中位数", robust_mean([1, 2, 100]) == 2)
 
+print("== 打新日报空结果与板块结论 ==")
+try:
+    original_accuracy_lines = m._build_accuracy_lines
+    m._build_accuracy_lines = lambda days=90: []
+    empty_report = m.generate_markdown(
+        "2026年08月28日", "周五", [], [], [], [], sector_boost_info=[]
+    )
+    check("无申购/上市时明确提示无打新建议",
+          "2026年08月28日没有打新建议的股和债。" in empty_report)
+    board_report = m.generate_markdown(
+        "2026年08月28日", "周五", [], [],
+        [{"name": "电科思仪", "code": "600000", "listing_analysis": {"summary": "预计上市"}}],
+        [], sector_boost_info=[]
+    )
+    check("结论显示沪市主板",
+          "电科思仪-沪市主板" in board_report)
+finally:
+    if 'original_accuracy_lines' in locals():
+        m._build_accuracy_lines = original_accuracy_lines
+
 print("== 招股书主营业务/赛道提取 ==")
 try:
     highkai_fixture = (

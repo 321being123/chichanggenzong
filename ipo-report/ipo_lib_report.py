@@ -247,16 +247,16 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
     lines.append("")
 
     def _get_market(code):
-        code_str = str(code)
-        if code_str.startswith("688"):
+        code_str = str(code or "")
+        if code_str.startswith(("688", "118")):
             return "科创板"
-        if code_str.startswith("30"):
+        if code_str.startswith(("300", "301", "123")):
             return "创业板"
-        if code_str.startswith(("60", "11", "118")):
-            return "沪市"
-        if code_str.startswith(("00", "12", "123")):
-            return "深市"
-        return ""
+        if code_str.startswith(("60", "110", "111", "113")):
+            return "沪市主板"
+        if code_str.startswith(("00", "127", "128")):
+            return "深市主板"
+        return _market_type_to_board_key("", code_str)
 
     # 上市结论
     listing_items = []
@@ -284,14 +284,16 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
         apply_items.append(f"{s['name']}-{market}（{advice}）")
     for b in apply_bonds:
         advice = b.get("advice", "可以申购")
-        rating = ""
-        if b.get("has_detail") and b["detail"].get("rating"):
-            rating = b["detail"]["rating"].replace(" ", "")
-        apply_items.append(f"{b['name']}（{advice}）")
+        market = _get_market(b["code"])
+        apply_items.append(f"{b['name']}-{market}（{advice}）")
     if apply_items:
         lines.append("**打新**")
         for item in apply_items:
             lines.append(f"- {item}")
+        lines.append("")
+    if not listing_items and not apply_items:
+        lines.append("**打新**")
+        lines.append(f"- {date_display}没有打新建议的股和债。")
         lines.append("")
 
     # ========== 一、明日可申购 ==========

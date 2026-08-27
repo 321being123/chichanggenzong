@@ -38,12 +38,14 @@ function ipoBoard(code, type) {
   if (type === '新债') {
     if (/^118/.test(c)) return '科创板';
     if (/^123/.test(c)) return '创业板';
-    if (/^(110|111|113|127|128)/.test(c)) return '主板';
+    if (/^(110|111|113)/.test(c)) return '沪市主板';
+    if (/^(127|128)/.test(c)) return '深市主板';
     return '';
   }
   if (/^688/.test(c)) return '科创板';
   if (/^(300|301)/.test(c)) return '创业板';
-  if (/^(000|001|002|003|600|601|603|605)/.test(c)) return '主板';
+  if (/^(000|001|002|003)/.test(c)) return '深市主板';
+  if (/^(600|601|603|605)/.test(c)) return '沪市主板';
   return '';
 }
 
@@ -200,6 +202,7 @@ async function loadIpo() {
     var cal = await rc.json();
     if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md, {
       reportDate: rep && rep.report_date,
+      summary: rep && rep.summary,
       calendar: cal && cal.calendar
     });
     if (calendar) calendar.innerHTML = ipoRenderCalendar(cal.calendar || []);
@@ -228,7 +231,14 @@ function ipoRenderAdvice(md, context) {
   if (!md) return ipoRenderAdviceStatus('打新建议暂不可用', '当前没有可展示的日报建议。');
   var reportDate = ipoNormalizeDate(context.reportDate);
   var calendar = Array.isArray(context.calendar) ? context.calendar : null;
-  if (reportDate && calendar && !calendar.some(function (day) { return String(day.date || '').slice(0, 10) === reportDate; })) {
+  var summary = context.summary || {};
+  var summaryKeys = ['apply_stocks', 'apply_bonds', 'list_stocks', 'list_bonds'];
+  var emptyReport = summaryKeys.every(function (key) {
+    return Array.isArray(summary[key]) && summary[key].length === 0;
+  });
+  var today = _ipoTodayStr();
+  if (reportDate && calendar && !calendar.some(function (day) { return String(day.date || '').slice(0, 10) === reportDate; })
+      && !(emptyReport && reportDate >= today)) {
     return ipoRenderAdviceStatus('打新建议暂不可用', '日报日期 ' + reportDate + ' 已落后于当前打新日历，旧建议已隐藏，等待最新日报生成。');
   }
   var lines = String(md).split('\n');
@@ -236,7 +246,11 @@ function ipoRenderAdvice(md, context) {
   for (var i = 0; i < lines.length; i++) {
     if (lines[i].indexOf('##') === 0 && lines[i].indexOf('结论') >= 0) { start = i + 1; break; }
   }
-  if (start < 0) return '';
+  if (start < 0) {
+    return emptyReport && reportDate >= today
+      ? ipoRenderAdviceStatus('打新建议', reportDate + ' 没有打新建议的股和债。')
+      : '';
+  }
   var groups = [];        // [{head, items:[]}]
   var cur = null;
   for (var j = start; j < lines.length; j++) {
@@ -248,7 +262,12 @@ function ipoRenderAdvice(md, context) {
     var mItem = ln.match(/^-\s+(.+)$/);                   // - 条目
     if (mItem && cur) { cur.items.push(mItem[1]); }
   }
-  if (!groups.length) return ipoRenderAdviceStatus('打新建议', reportDate ? reportDate + ' 暂无申购或上市建议。' : '当前暂无申购或上市建议。');
+  if (!groups.length) {
+    if (emptyReport && reportDate >= today) {
+      return ipoRenderAdviceStatus('打新建议', reportDate + ' 没有打新建议的股和债。');
+    }
+    return ipoRenderAdviceStatus('打新建议', reportDate ? reportDate + ' 暂无申购或上市建议。' : '当前暂无申购或上市建议。');
+  }
   var html = '<div class="table-wrap" style="margin-top:18px;">';
   html += '<div class="table-header"><h3>打新建议</h3>' + (reportDate ? '<span style="font-size:12px;color:#999;">建议日期：' + escapeHtml(reportDate) + '</span>' : '') + '</div>';
   html += '<div class="ipo-content" style="padding:14px 18px;">';

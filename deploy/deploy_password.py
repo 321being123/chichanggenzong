@@ -48,6 +48,8 @@ def run_sudo(client, command, timeout=240):
 
 
 def run_local(args):
+    if args[:2] == ['git', 'fetch'] and os.name == 'nt':
+        args = ['git', '-c', 'core.sshCommand=C:/Windows/System32/OpenSSH/ssh.exe', *args[1:]]
     result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True)
     if result.returncode:
         message = (result.stderr or result.stdout).strip()

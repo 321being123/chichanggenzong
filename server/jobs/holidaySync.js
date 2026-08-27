@@ -1,5 +1,5 @@
 // ========== 休市日年度自愈：每月核对官方日历（Tushare trade_cal），不一致则重写本地 JSON（零部署） ==========
-// 由 worker 进程调用（pm2 常驻），不依赖 WorkBuddy 自动化，跨年自动跟上。
+// 由 systemd 托管的 worker 进程调用，不依赖 WorkBuddy 自动化，跨年自动跟上。
 const { tushareQuery, normDate } = require('../services/market');
 const { loadHolidays, saveHolidays, getCoveredYear } = require('../config/holidays');
 

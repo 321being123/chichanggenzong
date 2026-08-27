@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""一次性部署：可转债周期模块上线
+"""历史一次性部署脚本（已废弃，禁止执行）。
+
+当前生产统一使用 deploy/deploy_password.py + systemd；保留本文件仅供历史追溯。
+
+旧方案：可转债周期模块上线
 1) 服务器 git fetch + reset --hard origin/master
 2) pm2 restart（启动时自动跑迁移021建表）
 3) 轮询等待 analytics.convertible_bond_cycle_daily 表出现
@@ -23,6 +27,10 @@ def ssh_run(client, cmd, timeout=300, sudo=False):
     return stdout.channel.recv_exit_status(), out, err
 
 def main():
+    print("此历史部署脚本已废弃，请使用 deploy/deploy_password.py。", file=sys.stderr)
+    return 1
+
+    # 以下代码仅保留历史记录，不再执行。
     if not os.path.exists(KEY_PATH):
         print("缺少 SSH 密钥：" + KEY_PATH); sys.exit(1)
     client = paramiko.SSHClient()

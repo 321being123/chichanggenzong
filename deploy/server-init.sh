@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # 持仓管理系统 · 腾讯云一键部署脚本
-# 用法（在服务器网页终端粘贴）：
+# 历史用法（已禁用，不要执行）：
 #   curl -fsSL https://raw.githubusercontent.com/321being123/chichanggenzong/master/deploy/server-init.sh | sudo bash
-# 说明：自动安装 Node22 / PostgreSQL / Nginx / pm2，拉取 GitHub 代码，建库建账号，
-#       生成 .env，配置 HTTP 反代，用 pm2 守护启动。幂等，可重复运行。
+# 历史脚本：旧方案曾使用 PM2，当前生产已改为 systemd。
+# 禁止继续使用；请改用 deploy/deploy_password.py 按标准流程部署。
+echo "此初始化脚本已废弃，请使用 deploy/deploy_password.py。" >&2
+exit 1
 
 set -euo pipefail
 

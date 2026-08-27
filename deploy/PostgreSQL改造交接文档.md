@@ -1,6 +1,8 @@
 # PostgreSQL 存储改造 — 交接文档
 
-> ⚠️ **Docker 已废弃**：本项目当前使用腾讯云裸机 + pm2 + Nginx 部署，**不支持 Docker 部署**。Dockerfile / docker-compose.yml / .dockerignore 已删除，文末涉及 Docker 的条目仅供历史参考。
+> ⚠️ **历史交接文档**：本文记录 PostgreSQL 改造期间的旧方案。Docker 和 PM2
+> 均已废弃，当前生产统一使用 systemd；请以
+> [生产部署流程](../docs/生产部署流程.md) 为准。文末旧命令仅供历史参考。
 
 > 生成时间：2026-07-08
 > 负责人：戴存在（daicunzai）

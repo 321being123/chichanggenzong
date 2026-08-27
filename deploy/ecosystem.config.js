@@ -1,3 +1,4 @@
+// 历史 PM2 兼容配置：当前生产已改用 systemd，不要使用本文件部署。
 // pm2 启动配置：进程守护 + 崩溃自启 + 开机自启
 // 用法：在服务器项目目录下执行 `pm2 start deploy/ecosystem.config.js`
 //       然后 `pm2 save` 将当前进程固化，`pm2 startup` 设置开机自启

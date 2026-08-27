@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { parseArgs, runCheck, splitGitOutput } = require('../../scripts/check-knowledge');
+const { collectVersionErrors, parseArgs, runCheck, splitGitOutput, workingTreeFiles } = require('../../scripts/check-knowledge');
 
 function write(rootDir, relativePath, content = '') {
   const filePath = path.join(rootDir, relativePath);
@@ -62,9 +62,39 @@ function testStagedOptionIsRecognized() {
   assert.strictEqual(parseArgs(['--staged']).staged, true);
 }
 
+function testDefaultWorktreeCollectionIncludesUntrackedBusinessFiles() {
+  const rootDir = createFixture();
+  const git = require('child_process');
+  const init = git.spawnSync('git', ['init', '-q'], { cwd: rootDir, encoding: 'utf8' });
+  assert.strictEqual(init.status, 0, init.stderr);
+  write(rootDir, 'public/panel.js', 'window.panel = true;\n');
+  assert.ok(
+    workingTreeFiles(rootDir).includes('public/panel.js'),
+    '默认工作区收集必须包含未跟踪的业务文件'
+  );
+}
+
+function testTrackedPreCommitHookChecksStagedKnowledgeChanges() {
+  const hookPath = path.resolve(__dirname, '../../.githooks/pre-commit');
+  assert.ok(fs.existsSync(hookPath), '缺少受版本控制的 pre-commit 知识门禁');
+  assert.match(fs.readFileSync(hookPath, 'utf8'), /node scripts\/check-knowledge\.js --staged/);
+}
+
+function testVersionMismatchIsRejected() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'knowledge-version-'));
+  write(rootDir, 'package.json', JSON.stringify({ version: '1.0.0', appVersion: '1.0.0' }));
+  write(rootDir, 'package-lock.json', JSON.stringify({ version: '1.0.0', packages: { '': { version: '1.0.1' } } }));
+  write(rootDir, 'CHANGELOG.md', '## 2026-08-27 · 1.0.0\n');
+  write(rootDir, 'public/changelog.json', JSON.stringify([{ version: '1.0.0', items: ['修复：测试'] }]));
+  assert.match(collectVersionErrors(rootDir).join('\n'), /package-lock\.json/);
+}
+
 testArchitectureChangeNeedsDocumentation();
 testArchitectureChangePassesWithDocumentation();
 testMissingRequiredKnowledgeEntryFails();
 testGitOutputPreservesChinesePaths();
 testStagedOptionIsRecognized();
-console.log('knowledge-governance: 5 项检查，失败 0');
+testDefaultWorktreeCollectionIncludesUntrackedBusinessFiles();
+testTrackedPreCommitHookChecksStagedKnowledgeChanges();
+testVersionMismatchIsRejected();
+console.log('knowledge-governance: 8 项检查，失败 0');

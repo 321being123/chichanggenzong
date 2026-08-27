@@ -1,11 +1,26 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.join(__dirname, '..', '..');
 const tables = fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.js'), 'utf8');
 const trade = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
 const ledger = fs.readFileSync(path.join(root, 'server', 'services', 'tradeLedger.js'), 'utf8');
+
+// “今日盈亏”必须按行情涨跌计算，不能误用上一条净值快照价格。
+// 例如当前价 4.83、行情涨跌 0%、旧快照价 4.81、数量 3000 时，结果应为 0 而不是 +60。
+const todayProfitSource = tables.slice(
+  tables.indexOf('function getTodayProfit'),
+  tables.indexOf('// 估值列颜色')
+);
+const todayProfitSandbox = {
+  previousPriceMap: { '600219': 4.81 },
+  priceChangeMap: { '600219': 0 },
+  data: { hkRate: 0.868 }
+};
+vm.runInNewContext(`${todayProfitSource}; result = getTodayProfit({ code: '600219', price: 4.83, quantity: 3000 });`, todayProfitSandbox);
+assert.strictEqual(todayProfitSandbox.result, 0, '涨跌为0%时，今日盈亏不能沿用旧快照价格计算');
 
 assert.ok(
   tables.includes("filter(function(p) { return Number(p.quantity) > 0; })"),
@@ -21,14 +36,10 @@ assert.ok(
   ledger.includes("sec.quantity > 0"),
   '服务端账本事务缺少数量判断（0 时删除持仓）'
 );
-// 2026-08-07：拆分「股价影响」时必须用真实昨收价，否则行情涨跌幅反推会产生 ~4 元级精度误差，流入「其他变动」
 assert.ok(
-  tables.includes("previousPriceMap[position.code]"),
-  'getTodayProfit 未优先使用 previousPriceMap 真实昨收价'
-);
-assert.ok(
-  tables.includes("previousPriceMap[position.code] != null"),
-  'getTodayProfit 未正确判断 previousPriceMap 存在性'
+  todayProfitSource.includes('var change = priceChangeMap[position.code];') &&
+    !todayProfitSource.includes('previousPriceMap[position.code]'),
+  'getTodayProfit 必须使用实时行情涨跌，不能读取净值归因基准价'
 );
 
 console.log('zero quantity position tests passed');

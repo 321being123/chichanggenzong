@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent
 CHANGELOG_JSON = ROOT / 'public' / 'changelog.json'
 CHANGELOG_MD = ROOT / 'CHANGELOG.md'
 PACKAGE_JSON = ROOT / 'package.json'
+PACKAGE_LOCK = ROOT / 'package-lock.json'
 
 
 def _atomic_write(path, text):
@@ -120,9 +121,15 @@ def main():
 
     if args.bump_package:
         pkg = json.loads(PACKAGE_JSON.read_text(encoding='utf-8'))
+        lock = json.loads(PACKAGE_LOCK.read_text(encoding='utf-8'))
+        if not isinstance(lock.get('packages'), dict) or not isinstance(lock['packages'].get(''), dict):
+            sys.exit('package-lock.json 缺少根包版本信息')
         pkg['version'] = args.version
         pkg['appVersion'] = args.version
+        lock['version'] = args.version
+        lock['packages']['']['version'] = args.version
         _atomic_write(PACKAGE_JSON, json.dumps(pkg, ensure_ascii=False, indent=2) + '\n')
+        _atomic_write(PACKAGE_LOCK, json.dumps(lock, ensure_ascii=False, indent=2) + '\n')
 
     if existing is not None:
         print(f'已向版本 {args.version} 追加 {len(added)} 条说明（该版本现共 {len(merged)} 条）')

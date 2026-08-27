@@ -335,17 +335,12 @@ let sortState = { col: null, dir: 'asc' };
 let filterState = { type: '', subtype: '' };
 
 function getTodayProfit(position, overrideRate) {
+  // 持仓表的“今日盈亏”必须对应行情的今日涨跌；previousPriceMap 是净值归因基准价，
+  // 可能是上一条净值快照日，不能拿来代替今日昨收价。
+  var change = priceChangeMap[position.code];
   var price = Number(position.price);
-  if (!(price > 0)) return null;
-  var previousClose = null;
-  // 优先用 daily_prices 里的真实昨收价，避免行情涨跌幅反推产生精度误差
-  if (previousPriceMap && previousPriceMap[position.code] != null && previousPriceMap[position.code] > 0) {
-    previousClose = Number(previousPriceMap[position.code]);
-  } else {
-    var change = priceChangeMap[position.code];
-    if (change == null || change <= -100) return null;
-    previousClose = price / (1 + change / 100);
-  }
+  if (change == null || !(price > 0) || change <= -100) return null;
+  var previousClose = price / (1 + change / 100);
   // 默认用今日汇率；浮框拆分「股价影响」时传入昨日快照汇率(overrideRate)，
   // 使「股价影响 + 汇率影响」精确等于港股市值变动，消除价格×汇率交叉项残差
   var exchangeRate = position.subtype === '港股'

@@ -36,6 +36,33 @@ function loadMap(rootDir, errors) {
   }
 }
 
+function collectVersionErrors(rootDir) {
+  const errors = [];
+  if (!fs.existsSync(path.join(rootDir, 'package.json'))) return errors;
+  const readJson = relativePath => {
+    try { return JSON.parse(fs.readFileSync(path.join(rootDir, relativePath), 'utf8')); }
+    catch (error) { errors.push(`无法读取版本文件 ${relativePath}：${error.message}`); return null; }
+  };
+  const pkg = readJson('package.json');
+  const lock = readJson('package-lock.json');
+  const changelog = readJson('public/changelog.json');
+  let changelogMd = '';
+  try { changelogMd = fs.readFileSync(path.join(rootDir, 'CHANGELOG.md'), 'utf8'); }
+  catch (error) { errors.push(`无法读取版本文件 CHANGELOG.md：${error.message}`); }
+  if (!pkg || !lock || !changelog || !changelogMd) return errors;
+  const expected = pkg.appVersion;
+  if (!expected || pkg.version !== expected) errors.push('package.json 的 version 与 appVersion 必须一致。');
+  if (lock.version !== expected || !lock.packages || !lock.packages[''] || lock.packages[''].version !== expected) {
+    errors.push('package-lock.json 的 version 与根包 version 必须和 package.json.appVersion 一致。');
+  }
+  if (!Array.isArray(changelog) || !changelog[0] || changelog[0].version !== expected) {
+    errors.push('public/changelog.json 最新版本必须和 package.json.appVersion 一致。');
+  }
+  const markdownVersion = (changelogMd.match(/^##\s+[^\n]*·\s*([^\s]+)\s*$/m) || [])[1];
+  if (markdownVersion !== expected) errors.push('CHANGELOG.md 最新版本必须和 package.json.appVersion 一致。');
+  return errors;
+}
+
 function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] } = {}) {
   const errors = [];
   const map = loadMap(rootDir, errors);
@@ -47,6 +74,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
     }
   }
 
+  errors.push(...collectVersionErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const matchedRoutes = [];
   for (const route of map.routes) {
@@ -105,13 +133,30 @@ function stagedFiles(rootDir) {
   return splitGitOutput(result.stdout);
 }
 
+function commandFiles(rootDir, args) {
+  const result = childProcess.spawnSync('git', args, { cwd: rootDir, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`无法读取 Git 变更：${(result.stderr || '').trim()}`);
+  }
+  return splitGitOutput(result.stdout);
+}
+
+function workingTreeFiles(rootDir) {
+  return [...new Set([
+    ...commandFiles(rootDir, ['diff', '--name-only', '-z']),
+    ...commandFiles(rootDir, ['diff', '--cached', '--name-only', '-z']),
+    ...commandFiles(rootDir, ['ls-files', '--others', '--exclude-standard', '-z'])
+  ])].sort();
+}
+
 function main() {
   let options;
   try {
     options = parseArgs(process.argv.slice(2));
     if (options.base && options.staged) throw new Error('--base 与 --staged 不能同时使用');
     if (options.base) options.changedFiles = filesSinceBase(options.rootDir, options.base);
-    if (options.staged) options.changedFiles = stagedFiles(options.rootDir);
+    else if (options.staged) options.changedFiles = stagedFiles(options.rootDir);
+    else if (options.changedFiles.length === 0) options.changedFiles = workingTreeFiles(options.rootDir);
   } catch (error) {
     console.error(`知识治理检查失败：${error.message}`);
     process.exit(2);
@@ -130,4 +175,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { globMatches, parseArgs, runCheck, splitGitOutput };
+module.exports = { collectVersionErrors, globMatches, parseArgs, runCheck, splitGitOutput, workingTreeFiles };

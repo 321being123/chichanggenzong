@@ -4,6 +4,7 @@
 import json
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,7 +47,32 @@ def run_sudo(client, command, timeout=240):
     return output
 
 
+def run_local(args):
+    result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True)
+    if result.returncode:
+        message = (result.stderr or result.stdout).strip()
+        raise SystemExit(f"发布前置校验失败：{' '.join(args)}\n{message}")
+    return result.stdout.strip()
+
+
+def verify_release_ready():
+    if '--confirm-production' not in sys.argv[1:]:
+        raise SystemExit('拒绝部署：必须显式传入 --confirm-production，且取得用户线上部署授权。')
+    if run_local(['git', 'status', '--porcelain']):
+        raise SystemExit('发布前置校验失败：本地工作区存在未提交修改。')
+    if run_local(['git', 'branch', '--show-current']) != 'master':
+        raise SystemExit('发布前置校验失败：只能从 master 分支部署。')
+    run_local(['git', 'fetch', 'origin'])
+    local_commit = run_local(['git', 'rev-parse', 'HEAD'])
+    remote_commit = run_local(['git', 'rev-parse', 'origin/master'])
+    if local_commit != remote_commit:
+        raise SystemExit('发布前置校验失败：本地 HEAD 必须与 origin/master 完全一致。')
+    run_local(['npm.cmd', 'run', 'check:knowledge'])
+    return local_commit
+
+
 def main():
+    local_commit = verify_release_ready()
     local_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["appVersion"]
     client = paramiko.SSHClient()
     client.load_system_host_keys()
@@ -121,6 +147,7 @@ def main():
             "&& systemctl stop portfolio-server.service "
             "&& code_updated=1 "
             "&& git reset --hard origin/master "
+            "&& test \"$(git rev-parse HEAD)\" = " + shlex.quote(local_commit) + " "
             "&& npm ci --omit=dev "
             "&& install -d -o portfolio-app -g portfolio-app -m 0755 ipo-report/data ipo-report/history_reports ipo-report/individual "
             "&& chown -R portfolio-app:portfolio-app ipo-report/data ipo-report/history_reports ipo-report/individual "

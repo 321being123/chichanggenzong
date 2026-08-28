@@ -3645,6 +3645,8 @@ async function migration089ConvertibleBondCallFormulaPublication() {
 // 由下游公开上市转债范围统一排除，避免破坏历史追溯。
 async function migration090ConvertibleBondRevisionMonitor() {
   await pool.query(`
+    BEGIN;
+    SELECT pg_advisory_xact_lock(904091);
     ALTER TABLE fundamental.convertible_bond_terms
       ADD COLUMN IF NOT EXISTS revision_direction TEXT NOT NULL DEFAULT '',
       ADD COLUMN IF NOT EXISTS comparison_operator TEXT NOT NULL DEFAULT '',
@@ -3692,6 +3694,7 @@ async function migration090ConvertibleBondRevisionMonitor() {
       ON event.convertible_bond_revision_events(instrument_id,announced_at DESC,event_id DESC);
     CREATE INDEX IF NOT EXISTS idx_cb_revision_events_type_date
       ON event.convertible_bond_revision_events(event_type,announced_at DESC);
+    COMMIT;
   `);
 
   const { parseWindow, parseTriggerRatio } = require('../services/convertibleBondAnalysis');
@@ -3723,6 +3726,8 @@ async function migration090ConvertibleBondRevisionMonitor() {
 
 async function rebuildConvertibleBondRevisionLatestView() {
   await pool.query(`
+    BEGIN;
+    SELECT pg_advisory_xact_lock(904091);
     DROP VIEW IF EXISTS analytics.convertible_bond_revision_latest;
     CREATE VIEW analytics.convertible_bond_revision_latest AS
     WITH market_date AS (
@@ -3829,6 +3834,7 @@ async function rebuildConvertibleBondRevisionLatestView() {
        AND (p.maturity_date IS NULL OR p.maturity_date >= COALESCE((SELECT trade_date FROM market_date),CURRENT_DATE))
        AND (p.conv_end_date IS NULL OR p.conv_end_date >= COALESCE((SELECT trade_date FROM market_date),CURRENT_DATE))
        AND (p.conv_stop_date IS NULL OR p.conv_stop_date > COALESCE((SELECT trade_date FROM market_date),CURRENT_DATE));
+    COMMIT;
   `);
 }
 

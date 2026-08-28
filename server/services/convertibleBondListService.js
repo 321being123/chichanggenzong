@@ -213,6 +213,7 @@ async function fetchUniverseRows(tradeDate) {
         ) put_term ON true
        WHERE m.trade_date=$1::date
          AND u.status='listed'
+         AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
          AND (b.list_date IS NULL OR b.list_date <= $1::date)
          AND (b.delist_date IS NULL OR b.delist_date > $1::date)
          AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)

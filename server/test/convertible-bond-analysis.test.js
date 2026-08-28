@@ -2,8 +2,8 @@ const assert = require('assert');
 const {
   normalizeBondCode, isoDate, instrumentStatus, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
   earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause,
-  yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
-  mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor,
+  yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
+  mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, announcementSourceKey,
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
 
@@ -35,6 +35,7 @@ assert.deepStrictEqual(parseWindow('连续30个交易日中至少15个交易日'
 assert.deepStrictEqual(parseWindow('连续三十个交易日中至少十五个交易日'), { observation_days:30, required_days:15 });
 assert.deepStrictEqual(parseWindow('期满后五个交易日内赎回；连续三十个交易日中至少有十五个交易日'), { observation_days:30, required_days:15 });
 assert.deepStrictEqual(parseWindow('连续30个交易日内至少有15个交易日'), { observation_days:30, required_days:15 });
+assert.deepStrictEqual(parseWindow('当公司股票在任意三十个连续交易日中至少有十五个交易日的收盘价格低于当期转股价格的85%时', 'reset'), { observation_days:30, required_days:15 });
 assert.strictEqual(earliestPutDate('2030-01-01', '最后两个计息年度'), '2028-01-01');
 assert.deepStrictEqual(currentPutPeriod('2027-07-15', '最后两个计息年度', '2026-07-22'), {
   active:true, eligible_from:'2025-07-15', period_start:'2026-07-15', period_end:'2027-07-14',
@@ -51,6 +52,9 @@ assert.ok(annualizedVolatility(rows) > 0);
 const reset = simplifyClause('reset', '当公司股票在任意连续三十个交易日中至少有十五个交易日的收盘价格低于当期转股价格的85%时，修正后的转股价格不得低于每股净资产');
 assert.strictEqual(reset.ratio, 0.85);
 assert.ok(reset.text.includes('30个交易日') && reset.note.includes('净资产'));
+const upwardOnlyReset = simplifyClause('reset', '转股价格向上修正150%时，修正后的转股价格为原转股价格的150%');
+assert.strictEqual(upwardOnlyReset.parse_status, 'failed');
+assert.strictEqual(upwardOnlyReset.parse_reason, 'upward_revision_clause');
 const progress = triggerProgress(Array.from({length:30},(_,i)=>({trade_date:String(20260701+i),close:i<16?8:9})), reset, 10);
 assert.strictEqual(progress.matched_days, 16);
 assert.strictEqual(progress.met, true);
@@ -97,6 +101,17 @@ assert.strictEqual(revisionDecision('关于预计触发转股价格向下修正�
 assert.strictEqual(revisionDecision('关于不向下修正某转债转股价格的公告'), 'no_revision');
 assert.strictEqual(revisionDecision('关于向下修正某转债转股价格的公告'), 'revised');
 assert.strictEqual(revisionDecision('关于可转换公司债券转股价格调整的公告'), 'adjusted');
+assert.strictEqual(revisionEventDecision('关于预计触发转股价格向下修正条件的提示性公告'), 'trigger_notice');
+assert.strictEqual(revisionEventDecision('关于提议向下修正转股价格的公告'), 'proposal');
+assert.strictEqual(revisionEventDecision('关于向下修正转股价格议案未获股东大会通过的公告'), 'meeting_rejected');
+assert.strictEqual(revisionEventDecision('关于向下修正转股价格方案经股东大会审议通过的公告'), 'meeting_approved');
+assert.strictEqual(revisionEventDecision('关于向下修正转股价格实施的公告'), 'implemented');
+assert.strictEqual(revisionEventDecision('关于不向下修正转股价格的公告'), null);
+assert.strictEqual(
+  announcementSourceKey({ source: 'cninfo', source_number: 'ANN-001', url: 'https://old.example/a.pdf' }),
+  announcementSourceKey({ source: 'cninfo', source_number: 'ANN-001', url: 'https://new.example/a.pdf' }),
+  '同一官方公告编号即使附件地址变化也必须保持同一去重键'
+);
 assert.deepStrictEqual(
   mergeDailyRows([{trade_date:'2026-07-25',close:100},{trade_date:'2026-07-24',close:99}], [{trade_date:'20260725',close:101}])
     .map(row => [row.trade_date,row.close]),

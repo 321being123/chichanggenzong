@@ -119,7 +119,9 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
             split_part(i.canonical_code,'.',1) AS security_code,i.name AS bond_name
        FROM fundamental.convertible_bond_profiles p
        JOIN core.instruments i ON i.instrument_id=p.instrument_id
-       JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id`
+       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
+       JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+      WHERE i.status='listed' AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`
   );
   const byStockCode = new Map();
   for (const row of instruments) {

@@ -16,11 +16,13 @@ function switchBondSub(sub) {
   var valuation = document.getElementById('sub-bond-valuation');
   var list = document.getElementById('sub-bond-list');
   var redemption = document.getElementById('sub-bond-redemption');
+  var revision = document.getElementById('sub-bond-revision');
   if (safety) safety.hidden = (sub !== 'safety');
   if (cycle) cycle.hidden = (sub !== 'cycle');
   if (valuation) valuation.hidden = (sub !== 'valuation');
   if (list) list.hidden = (sub !== 'list');
   if (redemption) redemption.hidden = (sub !== 'redemption');
+  if (revision) revision.hidden = (sub !== 'revision');
   var tabs = document.querySelectorAll('.bond-sub-tab');
   for (var i = 0; i < tabs.length; i++) tabs[i].classList.toggle('active', tabs[i].dataset.sub === sub);
   var params = new URLSearchParams(window.location.search);
@@ -29,19 +31,21 @@ function switchBondSub(sub) {
   else if (sub === 'valuation') params.set('sub', 'valuation');
   else if (sub === 'list') params.set('sub', 'list');
   else if (sub === 'redemption') params.set('sub', 'redemption');
+  else if (sub === 'revision') params.set('sub', 'revision');
   else params.delete('sub');
   history.replaceState(null, '', '/?' + params.toString());
   if (sub === 'cycle') loadBondCycle();
   else if (sub === 'valuation') loadBondValuation();
   else if (sub === 'list' && typeof loadBondList === 'function') loadBondList();
   else if (sub === 'redemption' && typeof loadBondRedemption === 'function') loadBondRedemption();
+  else if (sub === 'revision' && typeof loadBondRevision === 'function') loadBondRevision();
 }
 
 function initBondCycleSub() {
   if (window.__bondCycleControlsReady) {
     var p = new URLSearchParams(window.location.search);
     var sub = p.get('sub');
-    switchBondSub(sub === 'cycle' ? 'cycle' : (sub === 'valuation' ? 'valuation' : (sub === 'list' ? 'list' : (sub === 'redemption' ? 'redemption' : 'safety'))));
+    switchBondSub(sub === 'cycle' ? 'cycle' : (sub === 'valuation' ? 'valuation' : (sub === 'list' ? 'list' : (sub === 'redemption' ? 'redemption' : (sub === 'revision' ? 'revision' : 'safety')))));
     return;
   }
   window.__bondCycleControlsReady = true;
@@ -76,7 +80,7 @@ function initBondCycleSub() {
   }
   var p2 = new URLSearchParams(window.location.search);
   var sub2 = p2.get('sub');
-  switchBondSub(sub2 === 'cycle' ? 'cycle' : (sub2 === 'valuation' ? 'valuation' : (sub2 === 'list' ? 'list' : (sub2 === 'redemption' ? 'redemption' : 'safety'))));
+  switchBondSub(sub2 === 'cycle' ? 'cycle' : (sub2 === 'valuation' ? 'valuation' : (sub2 === 'list' ? 'list' : (sub2 === 'redemption' ? 'redemption' : (sub2 === 'revision' ? 'revision' : 'safety')))));
 }
 
 async function loadBondCycle() {

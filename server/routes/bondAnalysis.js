@@ -49,6 +49,7 @@ router.get('/search/securities', asyncHandler(async (req, res) => {
          JOIN public.bond_unified bu ON bu.instrument_id=b.instrument_id
          LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
         WHERE bu.status='listed'
+          AND (bu.issue_type IS NULL OR bu.issue_type NOT IN ('定向','私募'))
           AND (b.delist_date IS NULL OR b.delist_date > CURRENT_DATE)
           AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)
           AND (p.conv_end_date IS NULL OR p.conv_end_date >= CURRENT_DATE)

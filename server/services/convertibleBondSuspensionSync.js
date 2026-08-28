@@ -23,8 +23,10 @@ async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
     pool.query(`
       SELECT DISTINCT s.instrument_id, s.canonical_code
         FROM fundamental.convertible_bond_profiles p
+        LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
         JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-       WHERE p.stock_instrument_id IS NOT NULL`),
+       WHERE p.stock_instrument_id IS NOT NULL
+         AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`),
     pool.query(`SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1`),
     tushareQuery('suspend_d', { start_date: from, end_date: to },
       'ts_code,trade_date,suspend_type,suspend_reason', { allowEmpty: true }),

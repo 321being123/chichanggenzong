@@ -2,7 +2,7 @@
 // 运行：node server/test/data-convergence-bond-master.test.js
 // 目的：收敛可转债标准数据读取链路。
 //   - 可转债主档与正股关联统一读取者 = bondDataService（bond_unified 视图）。
-//   - 统一读取者 getActiveBondCodes() 与标准视图（bond_unified WHERE status='listed'）集合一致。
+//   - 统一读取者 getActiveBondCodes() 与公开上市标准视图（排除定向/私募）集合一致。
 //   - 标准主档存在正股关联时，统一视图 stock_code 必须全覆盖。
 // 依赖本地 PostgreSQL（portfolio 库）；连不上时优雅跳过（不影响通过）。不写入任何数据。
 const assert = require('assert');
@@ -25,7 +25,9 @@ function check(name, fn) {
     // 1) 双读核对：统一读取者 getActiveBondCodes() 与权威 SQL 集合一致（顺序无关）
     const svcCodes = await bondSvc.getActiveBondCodes();
     const { rows: sqlRows } = await pool.query(
-      `SELECT bond_code FROM public.bond_unified WHERE status='listed' ORDER BY bond_code`);
+      `SELECT bond_code FROM public.bond_unified
+        WHERE status='listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向','私募'))
+        ORDER BY bond_code`);
     const sqlCodes = sqlRows.map(r => r.bond_code);
     check('双读核对：getActiveBondCodes() ≡ 权威 SQL（bond_unified 在市债券集合一致）', () => {
       assert.deepStrictEqual(svcCodes.slice().sort(), sqlCodes.slice().sort(),

@@ -91,6 +91,7 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
       WHERE i.asset_class='convertible_bond'
         AND i.status='listed'
         AND u.status='listed'
+        AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
         AND (i.list_date IS NULL OR i.list_date <= $1::date)
         AND (i.delist_date IS NULL OR i.delist_date > $1::date)
         AND (u.maturity_date IS NULL OR u.maturity_date >= $1::date)
@@ -247,6 +248,7 @@ function buildCallWhere({ status, query, date }) {
   const marketAsOf = `(SELECT COALESCE(MAX(trade_date), CURRENT_DATE) FROM market.convertible_bond_daily_metrics)`;
   const clauses = [
     `u.status='listed'`,
+    `(u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))`,
     `(u.delist_date IS NULL OR u.delist_date > ${marketAsOf})`,
     `(u.maturity_date IS NULL OR u.maturity_date >= ${marketAsOf})`,
     `(u.conv_end_date IS NULL OR u.conv_end_date >= ${marketAsOf})`,

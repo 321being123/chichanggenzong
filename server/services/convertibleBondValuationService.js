@@ -113,6 +113,7 @@ async function getList(asOf, filters = {}) {
   const where = [
     'v.trade_date = $1',
     "u.status = 'listed'",
+    "(u.issue_type IS NULL OR u.issue_type NOT IN ('定向', '私募'))",
     '(i.list_date IS NULL OR i.list_date <= $2::date)',
     '(i.delist_date IS NULL OR i.delist_date > $2::date)',
     '(p.maturity_date IS NULL OR p.maturity_date >= $2::date)',

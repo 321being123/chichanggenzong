@@ -25,7 +25,8 @@ async function filterInactiveBonds(snapshot) {
         AND (maturity_date IS NULL OR maturity_date >= $2::date)
         AND (conv_end_date IS NULL OR conv_end_date >= $2::date)
         AND (conv_stop_date IS NULL OR conv_stop_date > $2::date)
-        AND (cb_type IS NULL OR cb_type IN ('CB', ''))`,
+        AND (cb_type IS NULL OR cb_type IN ('CB', ''))
+        AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))`,
     [codes, today]
   );
   // 构建活跃码集合，兼容带后缀和不带后缀的匹配

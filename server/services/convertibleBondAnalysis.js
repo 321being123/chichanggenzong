@@ -28,6 +28,7 @@ const ISSUE_FIELDS = 'ts_code,ann_date,res_ann_date,issue_size,issue_price,issue
 const STOCK_STATUS_FIELDS = 'ts_code,list_status';
 const FORMULA_VERSION = '3';
 const CN_OFFSET_MS = 8 * 3600 * 1000;
+const ANNOUNCEMENT_OVERLAP_DAYS = 3;
 // 允许按 TTL 跳过上游的静态/低频数据组。行情与公告不在此列：
 // 行情已有 7 天重叠增量，公告参与回售、下修等当期判定，跳过会改变分析结论。
 const GATED_BOND_DATASETS = ['cb_basic', 'cb_rating', 'cb_rate', 'top10_cb_holders', 'bond_dividend'];
@@ -147,14 +148,28 @@ function chineseNumber(value) {
   return digits[text] || null;
 }
 
-function parseWindow(text) {
+function parseWindow(text, type = '') {
   const clause = String(text || '').replace(/\s+/g, '');
-  // 只识别“连续 N 个交易日中至少 M 个交易日”，避免把“到期后五个交易日内”等日期描述混入窗口。
-  const window = clause.match(/([一二两三四五六七八九十\d]+)个交易日(?:中|内)至少(?:有)?([一二两三四五六七八九十\d]+)个交易日/);
-  if (window) {
-    return { observation_days: chineseNumber(window[1]), required_days: chineseNumber(window[2]) };
+  // 条款常见两种顺序：“连续30个交易日中至少15个”与“任意30个连续交易日中至少15个”。
+  // 只识别带“至少”的窗口，避免把“到期后五个交易日内”等日期描述误当观察窗口。
+  const number = '[一二两三四五六七八九十百\\d]+';
+  const patterns = [
+    new RegExp(`(?:任意)?(${number})个连续交易日(?:中|内)至少(?:有)?(${number})个交易日`, 'g'),
+    new RegExp(`连续(${number})个交易日(?:中|内)至少(?:有)?(${number})个交易日`, 'g'),
+  ];
+  const candidates = [];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(clause))) {
+      candidates.push({ observation_days: chineseNumber(match[1]), required_days: chineseNumber(match[2]), index: match.index });
+    }
   }
-  return { observation_days: null, required_days: null };
+  if (!candidates.length) return { observation_days: null, required_days: null };
+  // 一个公告可能同时写向上和向下修正；下修条款优先选带“低于/下修”上下文的窗口。
+  const selected = type === 'reset'
+    ? candidates.find(item => /(向下修正|下修|低于)/.test(clause.slice(Math.max(0, item.index - 90), item.index + 130))) || candidates[0]
+    : candidates[0];
+  return { observation_days: selected.observation_days, required_days: selected.required_days };
 }
 
 function earliestPutDate(maturityDate, clause) {
@@ -223,8 +238,12 @@ function annualizedVolatility(rows) {
 function simplifyClause(type, text) {
   const clause = String(text || '').replace(/\s+/g, ' ').trim();
   if (!clause) return { text: null, note: null, ratio: null, observation_days: null, required_days: null, comparison: null };
+  if (type === 'reset' && /向上修正/.test(clause) && !/(向下修正|下修)/.test(clause)) {
+    return { text: null, note: null, ratio: null, observation_days: null, required_days: null, comparison: null,
+      parse_status: 'failed', parse_reason: 'upward_revision_clause' };
+  }
   const ratio = parseTriggerRatio(clause);
-  const window = parseWindow(clause);
+  const window = parseWindow(clause, type);
   const observation = window.observation_days || 30;
   const required = window.required_days || (type === 'put' ? observation : 15);
   const percent = ratio == null ? null : Number((ratio * 100).toFixed(2));
@@ -237,7 +256,7 @@ function simplifyClause(type, text) {
   }
   const netAsset = clause.match(/(?:不得|不应)低于[^。；]{0,30}(?:每股)?净资产[^。；]*/);
   return { text: summary || clause, note: netAsset ? netAsset[0] : null, ratio, observation_days: observation,
-    required_days: required, comparison };
+    required_days: required, comparison, parse_status: ratio != null && observation > 0 && required > 0 && required <= observation ? 'complete' : 'partial' };
 }
 
 function triggerProgress(rows, term, convertPrice, active = true, eligibleFrom = null) {
@@ -505,19 +524,32 @@ async function saveTerms(client, instrumentId, profile, tushareSource) {
     ['put', profile.put_clause], ['call', profile.call_clause], ['reset', profile.reset_clause],
     ['maturity_call', profile.maturity_call_price]
   ];
-  await client.query("DELETE FROM fundamental.convertible_bond_terms WHERE instrument_id=$1 AND term_type='conversion'", [instrumentId]);
+  await client.query("DELETE FROM fundamental.convertible_bond_terms WHERE instrument_id=$1 AND term_type IN ('conversion','reset')", [instrumentId]);
   for (const [type, clause] of entries) {
     if (!clause) continue;
-    const window = parseWindow(clause);
+    // 定向发行债券偶尔把“向上修正150%”写入 reset_clause；这不是下修条款。
+    if (type === 'reset' && /向上修正/.test(String(clause)) && !/(向下修正|下修)/.test(String(clause))) continue;
+    const window = parseWindow(clause, type);
+    const ratio = parseTriggerRatio(clause);
+    const compact = String(clause).replace(/\s+/g, '');
+    const parseStatus = ratio != null && window.observation_days > 0 && window.required_days > 0 && window.required_days <= window.observation_days
+      ? 'complete' : 'partial';
+    const direction = type === 'reset' ? 'down' : '';
+    const comparison = type === 'call' ? 'gte' : type === 'reset' || type === 'put' ? 'lt' : '';
+    const netAsset = /(?:不得|不应)低于[^。；]{0,30}(?:每股)?净资产/.test(compact);
     await client.query(
       `INSERT INTO fundamental.convertible_bond_terms
-       (instrument_id,term_type,effective_from,clause_text,trigger_ratio,observation_days,required_days,source_id,source_key,raw_payload)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+       (instrument_id,term_type,effective_from,clause_text,trigger_ratio,observation_days,required_days,source_id,source_key,raw_payload,
+        revision_direction,comparison_operator,parse_status,parser_version,net_asset_floor_applicable)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)
        ON CONFLICT(instrument_id,term_type,effective_from,source_key) DO UPDATE SET clause_text=EXCLUDED.clause_text,
          trigger_ratio=EXCLUDED.trigger_ratio,observation_days=EXCLUDED.observation_days,required_days=EXCLUDED.required_days,
-         raw_payload=EXCLUDED.raw_payload`,
-      [instrumentId, type, isoDate(profile.list_date) || '0001-01-01', String(clause), parseTriggerRatio(clause),
-        window.observation_days, window.required_days, tushareSource, `cb_basic:${profile.ts_code}:${type}`, JSON.stringify({ clause })]
+         revision_direction=EXCLUDED.revision_direction,comparison_operator=EXCLUDED.comparison_operator,
+         parse_status=EXCLUDED.parse_status,parser_version=EXCLUDED.parser_version,
+         net_asset_floor_applicable=EXCLUDED.net_asset_floor_applicable,raw_payload=EXCLUDED.raw_payload`,
+      [instrumentId, type, isoDate(profile.list_date) || '0001-01-01', String(clause), ratio,
+        window.observation_days, window.required_days, tushareSource, `cb_basic:${profile.ts_code}:${type}`, JSON.stringify({ clause, parse_status: parseStatus, parser_version: 'terms-v2', compact }),
+        direction, comparison, parseStatus, 'terms-v2', netAsset]
     );
   }
 }
@@ -554,6 +586,55 @@ async function saveProfile(client, profile, sources, subscriptionDate = null) {
   );
   await saveTerms(client, bondId, profile, sources.tushare);
   return { bondId, stockId };
+}
+
+function revisionEventDecision(title) {
+  const text = String(title || '').replace(/\s+/g, '');
+  if (!/(向下修正|下修|低于当期转股价格)/.test(text)) return null;
+  if (/不向下修正|不下修|不修正/.test(text)) return null;
+  if (/未(?:获|经)?[^。；，,]{0,12}通过|未通过|否决/.test(text)) return 'meeting_rejected';
+  if (/终止|取消/.test(text)) return 'terminated';
+  if (/实施|生效|结果/.test(text)) return 'implemented';
+  if (/股东大会.{0,16}(通过|审议通过)|通过.{0,16}(下修|向下修正)/.test(text)) return 'meeting_approved';
+  if (/股东大会.{0,16}(通知|召开|审议)|提交.{0,16}股东大会/.test(text)) return 'meeting_notice';
+  if (/提议|拟向下修正|建议/.test(text)) return 'proposal';
+  if (/触发|满足|提示性|可能/.test(text)) return 'trigger_notice';
+  return null;
+}
+
+function announcementSourceKey(event) {
+  const source = String(event && event.source || 'official').toLowerCase();
+  const number = event && (event.source_number || event.announcement_number || event.announcement_id);
+  return `${source}:${String(number || (event && event.url) || `${event && event.event_date || ''}:${event && event.title || ''}`).trim()}`;
+}
+
+async function saveRevisionEvents(client, instrumentId, announcements, priceChangeDetails, sourceId) {
+  const priceMap = new Map((priceChangeDetails || []).map(item => [item.source_url, item]));
+  for (const event of announcements || []) {
+    const eventType = revisionEventDecision(event.title);
+    if (!eventType || !isoDate(event.event_date)) continue;
+    const detail = priceMap.get(event.url) || {};
+    const before = finite(detail.price_before), after = finite(detail.price_after), floor = finite(detail.revision_floor_price);
+    const sourceKey = `revision:${announcementSourceKey(event)}`;
+    await client.query(
+      `INSERT INTO event.convertible_bond_revision_events
+       (instrument_id,event_type,announced_at,effective_date,price_before,revision_floor_price,price_after,reached_floor,
+        summary,source_id,source_key,source_number,source_url,title,parse_status,parser_version,details,raw_payload)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'revision-v1',$16::jsonb,$17::jsonb)
+       ON CONFLICT(source_id,source_key) DO UPDATE SET event_type=EXCLUDED.event_type,
+         effective_date=COALESCE(EXCLUDED.effective_date,event.convertible_bond_revision_events.effective_date),
+         price_before=COALESCE(EXCLUDED.price_before,event.convertible_bond_revision_events.price_before),
+         revision_floor_price=COALESCE(EXCLUDED.revision_floor_price,event.convertible_bond_revision_events.revision_floor_price),
+         price_after=COALESCE(EXCLUDED.price_after,event.convertible_bond_revision_events.price_after),
+         reached_floor=COALESCE(EXCLUDED.reached_floor,event.convertible_bond_revision_events.reached_floor),
+         summary=EXCLUDED.summary,source_number=EXCLUDED.source_number,title=EXCLUDED.title,parse_status=EXCLUDED.parse_status,
+         parser_version=EXCLUDED.parser_version,details=EXCLUDED.details,raw_payload=EXCLUDED.raw_payload,updated_at=now()` ,
+      [instrumentId, eventType, isoDate(event.event_date), isoDate(detail.change_date), before, floor, after,
+        after != null && floor != null ? Math.abs(after - floor) <= 0.005 : null, event.title || '', sourceId, sourceKey,
+        event.source_number || '', event.url || '', event.title || '', eventType === 'implemented' && after == null ? 'partial' : 'complete',
+        JSON.stringify(Object.assign({}, event, { price_change: detail })), JSON.stringify(event)]
+    );
+  }
 }
 
 async function saveIssueFacts(client, issue, instrumentId, sourceId, runId = null, listingDate = null) {
@@ -1062,7 +1143,8 @@ function revisionDecision(title) {
 }
 
 async function saveAnnouncementHistories(client, instrumentId, events, profile, sourceId, noRevisionPeriods = [], priceChangeDetails = []) {
-  const matched = (events || []).filter(event => announcementMatchesBond(event, profile));
+  const matched = [...new Map((events || []).map(event => [announcementSourceKey(event), event])).values()]
+    .filter(event => announcementMatchesBond(event, profile));
   const periodMap = new Map(noRevisionPeriods.map(row => [isoDate(row.announced_at), row]));
   const priceMap = new Map(priceChangeDetails.map(row => [row.source_url, row]));
   await client.query(
@@ -1670,33 +1752,55 @@ async function loadPriceChangeCache(tsCode) {
 }
 
 // 公告事实入库链：只负责抓取并解析“不下修/转股价格调整”公告，分析接口不再直接访问公告源。
-async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate = null, toDate = null, limit = 50 } = {}) {
+async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate = null, toDate = null, limit = null } = {}) {
   const end = isoDate(toDate) || tsDateStr(new Date());
   const normalizedCodes = (Array.isArray(tsCodes) ? tsCodes : [tsCodes]).map(normalizeBondCode).filter(Boolean);
+  const globalSync = !normalizedCodes.length && !fromDate;
+  const cursorResult = globalSync ? await pool.query(
+    `SELECT last_success_date::text AS last_success_date,last_error
+       FROM ops.sync_cursors
+      WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'`
+  ) : { rows: [] };
+  const cursorDate = cursorResult.rows[0] && isoDate(cursorResult.rows[0].last_success_date);
+  const scanStart = fromDate ? isoDate(fromDate) : (cursorDate
+    ? isoDate(addDays(new Date(`${cursorDate}T00:00:00+08:00`), -ANNOUNCEMENT_OVERLAP_DAYS)) : null);
   const params = [];
-  const clauses = ["i.asset_class='convertible_bond'"];
+  const clauses = ["i.asset_class='convertible_bond'", "i.status='listed'",
+    "(iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))",
+    `EXISTS (SELECT 1 FROM market.convertible_bond_daily_metrics active_dm
+              WHERE active_dm.instrument_id=i.instrument_id
+                AND active_dm.trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics))`,
+    '(i.list_date IS NULL OR i.list_date <= $1::date)'];
+  params.push(end);
   if (normalizedCodes.length) { params.push(normalizedCodes); clauses.push(`i.canonical_code=ANY($${params.length}::text[])`); }
-  const limitValue = Math.max(1, Math.min(Number(limit) || 50, 500));
+  const defaultLimit = globalSync ? 2000 : 50;
+  const limitValue = Math.max(1, Math.min(limit == null ? defaultLimit : (Number(limit) || 50), 2000));
   params.push(limitValue);
   const { rows: profiles } = await pool.query(
     `SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.value_date,p.list_date,
             s.canonical_code AS stock_code
        FROM core.instruments i
        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
        LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
       WHERE ${clauses.join(' AND ')}
       ORDER BY i.canonical_code LIMIT $${params.length}`,
     params
   );
   const results = [];
+  const sourceFailures = [];
   for (const profile of profiles) {
-    const start = isoDate(fromDate) || isoDate(profile.list_date) || isoDate(profile.value_date) || end;
+    const start = scanStart || isoDate(profile.list_date) || isoDate(profile.value_date) || end;
     const sourcePromises = [fetchCninfoEventsByYear(profile.stock_code, start, end, '转股价格')];
     if (String(profile.stock_code || '').endsWith('.SH')) sourcePromises.push(fetchSseEvents(profile.stock_code, start, end, '转股价格'));
     if (String(profile.stock_code || '').endsWith('.SZ')) sourcePromises.push(fetchSzseEvents(profile.stock_code, start, end, '转股价格'));
     const settled = await Promise.allSettled(sourcePromises);
+    const rejected = settled.filter(item => item.status === 'rejected');
+    if (rejected.length) {
+      sourceFailures.push({ ts_code: profile.ts_code, messages: rejected.map(item => String(item.reason && item.reason.message || item.reason || 'unknown')).slice(0, 3) });
+    }
     const announcements = [...new Map(settled.flatMap(item => item.status === 'fulfilled' ? item.value : [])
-      .map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+      .map(event => [announcementSourceKey(event), event])).values()];
     const noRevisionCache = await loadNoRevisionCache(profile.ts_code);
     const priceChangeCache = await loadPriceChangeCache(profile.ts_code);
     const noRevisionPeriods = await extractNoRevisionPeriods(announcements, noRevisionCache);
@@ -1708,16 +1812,47 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         const sources = await sourceIds(client);
         await saveAnnouncementHistories(client, profile.instrument_id, announcements, profile,
           sources.cninfo || sources.calculated, noRevisionPeriods, priceChangeDetails);
+        await saveRevisionEvents(client, profile.instrument_id, announcements, priceChangeDetails,
+          sources.cninfo || sources.calculated);
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
+        if (globalSync) {
+          await pool.query(
+            `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_attempt_at,last_error,retry_count,updated_at)
+             VALUES('convertible_bond_announcement_history','official_announcements',now(),$1,1,now())
+             ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_attempt_at=now(),last_error=$1,
+               retry_count=ops.sync_cursors.retry_count+1,updated_at=now()`,
+            [String(error.message || error).slice(0, 1000)]
+          );
+        }
         throw error;
       } finally { client.release(); }
     }
     results.push({ ts_code: profile.ts_code, discovered: announcements.length,
       no_revision: noRevisionPeriods.length, price_changes: priceChangeDetails.length });
   }
-  return { ok: true, fromDate: isoDate(fromDate) || null, toDate: end, count: results.length, results };
+  if (sourceFailures.length) {
+    const message = `公告源同步失败：${sourceFailures.slice(0, 10).map(item => `${item.ts_code}:${item.messages.join('|')}`).join('; ')}`.slice(0, 1000);
+    if (globalSync) {
+      await pool.query(
+        `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_attempt_at,last_error,retry_count,updated_at)
+         VALUES('convertible_bond_announcement_history','official_announcements',now(),$1,1,now())
+         ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_attempt_at=now(),last_error=$1,
+           retry_count=ops.sync_cursors.retry_count+1,updated_at=now()`, [message]
+      );
+    }
+    throw new Error(message);
+  }
+  if (globalSync) {
+    await pool.query(
+      `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_attempt_at,last_error,retry_count,updated_at)
+       VALUES('convertible_bond_announcement_history','official_announcements',$1,now(),''::text,0,now())
+       ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=EXCLUDED.last_success_date,
+         last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`, [end]
+    );
+  }
+  return { ok: true, fromDate: scanStart || null, toDate: end, count: results.length, cursorDate: cursorDate || null, results };
 }
 
 async function loadRatingSourceCache(tsCode) {
@@ -1803,9 +1938,12 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
       `SELECT DISTINCT s.canonical_code,s.instrument_id
        FROM fundamental.convertible_bond_profiles p
        JOIN core.instruments b ON b.instrument_id=p.instrument_id
+       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
        JOIN public.bond_unified u ON u.instrument_id=b.instrument_id
-       WHERE u.status='listed' AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)`
+       WHERE u.status='listed'
+         AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+         AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)`
     );
     const instrumentMap = new Map(rows.map(row => [row.canonical_code, row.instrument_id]));
     const openDays = await getRecentOpenDays(windowDays);
@@ -2523,8 +2661,8 @@ module.exports = {
   finite, yuanToHundredMillion, isoDate, normalizeBondCode, instrumentStatus, remainingYears, pricePairFromReason, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState,
   annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause, parseMoney, yieldToMaturity,
   cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
-  blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision,
-  mergeDailyRows, incrementalStart,
+  blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
+  mergeDailyRows, incrementalStart, ANNOUNCEMENT_OVERLAP_DAYS, announcementSourceKey,
   syncConvertibleBondUniverse, syncConvertibleBondAnnouncementHistories, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
   loadSafety, latestFinancial,
   DAILY_FIELDS,

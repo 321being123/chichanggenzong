@@ -154,7 +154,9 @@ async function loadBondCalendar(days) {
             i.canonical_code AS secu_code, i.name
        FROM event.instrument_events e
        JOIN core.instruments i ON i.instrument_id=e.instrument_id
+       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=e.instrument_id
       WHERE i.asset_class='convertible_bond'
+        AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
         AND e.event_type IN ('online_subscription','listing')
         AND e.event_date >= CURRENT_DATE
         AND e.event_date < CURRENT_DATE + ($1::int * INTERVAL '1 day')

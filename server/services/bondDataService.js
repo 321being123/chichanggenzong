@@ -47,7 +47,7 @@ async function getBondList(filters = {}) {
 async function getBondDetail(code) {
   const cleanCode = String(code || '').trim().toUpperCase().split('.')[0];
   const { rows } = await pool.query(
-    "SELECT * FROM public.bond_unified WHERE split_part(bond_code, '.', 1) = $1",
+    "SELECT * FROM public.bond_unified WHERE split_part(bond_code, '.', 1) = $1 AND (issue_type IS NULL OR issue_type NOT IN ('定向','私募'))",
     [cleanCode]
   );
   return rows[0] || null;
@@ -57,7 +57,7 @@ async function getBondDetail(code) {
 async function getBondBySecurityCode(securityCode) {
   const clean = securityCode.includes('.') ? securityCode.split('.')[0] : securityCode;
   const { rows } = await pool.query(
-    "SELECT * FROM public.bond_unified WHERE bond_code LIKE $1",
+    "SELECT * FROM public.bond_unified WHERE bond_code LIKE $1 AND (issue_type IS NULL OR issue_type NOT IN ('定向','私募'))",
     [clean + '.%']
   );
   return rows[0] || null;
@@ -122,7 +122,8 @@ async function getBondHistoryList(limit = 50) {
 // 活跃可转债 codes 列表（过滤已退市/到期/停止转股）
 async function getActiveBondCodes() {
   const { rows } = await pool.query(
-    `SELECT bond_code FROM public.bond_unified WHERE status = 'listed'`
+    `SELECT bond_code FROM public.bond_unified
+      WHERE status = 'listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))`
   );
   return rows.map(r => r.bond_code);
 }
@@ -131,7 +132,8 @@ async function getActiveBondCodes() {
 async function getRatingDistribution() {
   const { rows } = await pool.query(
     `SELECT display_rating AS rating, COUNT(*) AS cnt
-     FROM public.bond_unified WHERE status = 'listed'
+     FROM public.bond_unified
+     WHERE status = 'listed' AND (issue_type IS NULL OR issue_type NOT IN ('定向', '私募'))
      GROUP BY display_rating ORDER BY cnt DESC`
   );
   return rows;

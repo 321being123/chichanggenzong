@@ -248,6 +248,19 @@ function eventCategory(title) {
   return found ? found[0] : '其他';
 }
 
+// 三家官方公告返回的编号字段不完全一致，统一保留原始公告来源编号；
+// 没有编号时才退回附件路径，避免补发/更正公告因 URL 变化产生重复事实。
+function officialAnnouncementNumber(row) {
+  if (!row || typeof row !== 'object') return null;
+  const fields = [
+    'announcementId', 'announcement_id', 'annId', 'ann_id', 'id', 'docId', 'doc_id',
+    'BULLETIN_ID', 'NOTICE_ID', 'INFO_CODE', 'infoCode', 'announcementNo', 'noticeNo',
+    'adjunctUrl', 'attachPath', 'URL',
+  ];
+  const value = fields.map(field => row[field]).find(item => item !== null && item !== undefined && String(item).trim());
+  return value == null ? null : String(value).trim();
+}
+
 async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
   const code = tsCode.slice(0, 6);
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://www.cninfo.com.cn/', 'X-Requested-With': 'XMLHttpRequest' };
@@ -266,7 +279,7 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
       const eventDate = row.announcementTime ? tsDateStr(new Date(Number(row.announcementTime))) : dateText(row.announcementDate);
       const title = String(row.announcementTitle || '').replace(/<[^>]+>/g, '');
       const url = row.adjunctUrl ? `https://static.cninfo.com.cn/${String(row.adjunctUrl).replace(/^\//, '')}` : '';
-      events.push({ source: 'cninfo', event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
+      events.push({ source: 'cninfo', source_number: officialAnnouncementNumber(row), event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
     }
     if (!payload.hasMore || rows.length === 0) break;
   }
@@ -274,7 +287,7 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
     const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '');
     return allEvents.filter(event => String(event.title || '').includes(searchKey));
   }
-  return [...new Map(events.map(event => [event.url || `${event.event_date}:${event.title}`, event])).values()];
+  return [...new Map(events.map(event => [`${event.source}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event])).values()];
 }
 
 async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey) {
@@ -300,7 +313,7 @@ async function fetchSseLatestReport(tsCode) {
   const report = rows.filter(row => /(?:年报|半年报)$/.test(String(row.BULLETIN_TYPE || '')) && !/摘要/.test(String(row.TITLE || '')) && row.URL)
     .sort((a,b) => String(b.SSEDATE || '').localeCompare(String(a.SSEDATE || '')))[0];
   if (!report) return null;
-  return { source: 'sse', event_date: String(report.SSEDATE || '').replace(/-/g, ''), title: report.TITLE,
+  return { source: 'sse', source_number: officialAnnouncementNumber(report), event_date: String(report.SSEDATE || '').replace(/-/g, ''), title: report.TITLE,
     url: `https://big5.sse.com.cn/site/cht/www.sse.com.cn${report.URL}`, category: '定期报告', is_official: true, raw: report };
 }
 
@@ -314,7 +327,7 @@ async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
   const rows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
   const start = isoDate(startDate), end = isoDate(endDate);
   return rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(row => ({
-    source: 'sse', event_date: String(row.SSEDATE || '').replace(/-/g, ''), title: row.TITLE || '',
+    source: 'sse', source_number: officialAnnouncementNumber(row), event_date: String(row.SSEDATE || '').replace(/-/g, ''), title: row.TITLE || '',
     url: `https://big5.sse.com.cn/site/cht/www.sse.com.cn${row.URL}`, category: eventCategory(row.TITLE || ''), is_official: true, raw: row,
   }));
 }
@@ -327,7 +340,7 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
     headers: { 'Content-Type': 'application/json', Referer: 'https://www.szse.cn/disclosure/listed/fixed/index.html',
       'X-Requested-With': 'XMLHttpRequest' }, body });
   return (payload.data || []).filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(row => ({
-    source: 'szse', event_date: String(row.publishTime || '').slice(0, 10).replace(/-/g, ''), title: row.title || '',
+    source: 'szse', source_number: officialAnnouncementNumber(row), event_date: String(row.publishTime || '').slice(0, 10).replace(/-/g, ''), title: row.title || '',
     url: `https://disc.static.szse.cn/download${row.attachPath}`, category: eventCategory(row.title || ''), is_official: true, raw: row,
   }));
 }

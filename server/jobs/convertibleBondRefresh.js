@@ -5,6 +5,7 @@ const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('..
 const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnalysis');
 const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
+const { calculateConvertibleBondRevisionStatus } = require('../services/convertibleBondRevisionService');
 const { syncConvertibleBondSuspensions } = require('../services/convertibleBondSuspensionSync');
 const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
@@ -131,6 +132,7 @@ async function runRefreshChain(reason, businessDate = null) {
 
   let listResult = null;
   let redemptionResult = null;
+  let revisionResult = null;
   try {
     try {
       const suspensionResult = await syncConvertibleBondSuspensions({ startDate: completeness.expected, endDate: completeness.expected });
@@ -143,6 +145,13 @@ async function runRefreshChain(reason, businessDate = null) {
   } catch (error) {
     // 强赎监控是派生展示链路，失败时不阻断已有上市列表和估值链路。
     console.error('[bond-redemption] 强赎进度失败，保留上一份有效数据：', error.message);
+  }
+  try {
+    revisionResult = await calculateConvertibleBondRevisionStatus(completeness.expected);
+    console.log(`[bond-revision] 下修进度完成：${revisionResult.count} 只，完整 ${revisionResult.complete} 只`);
+  } catch (error) {
+    // 下修监控是派生展示链路，失败时保留上一份有效快照，不阻断其他可转债链路。
+    console.error('[bond-revision] 下修进度失败，保留上一份有效数据：', error.message);
   }
   try {
     listResult = await buildDailyMetrics({ tradeDate: completeness.expected, reason });
@@ -158,6 +167,7 @@ async function runRefreshChain(reason, businessDate = null) {
     else console.log('[bond-valuation] 每日估值完成:', result.detail);
     return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,
       datasets: [
+        { code: 'convertible_bond_revision', status: revisionResult ? 'succeeded' : 'stale', dataAsOf: revisionResult ? completeness.expected : null },
         { code: 'convertible_bond_redemption', status: redemptionResult ? 'succeeded' : 'stale', dataAsOf: redemptionResult ? completeness.expected : null },
         { code: 'convertible_bond_list_metrics', status: listResult ? 'succeeded' : 'stale', dataAsOf: listResult ? completeness.expected : null },
         { code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected },
@@ -187,12 +197,16 @@ function scheduleConvertibleBondRefresh() {
 
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE,
     () => require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill('daily_incremental'));
+  scheduleDaily(7, 40, async () => {
+    const result = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({});
+    console.log(`[bond-revision] 公告事实增量完成：${result.count} 只，扫描 ${result.fromDate || '首次全量'} 至 ${result.toDate}`);
+  });
   scheduleDaily(7, 45, async () => {
     const result = await syncConvertibleBondCallAnnouncements();
     console.log(`[bond-redemption] 官方公告同步完成：发现 ${result.discovered} 条，匹配 ${result.matched} 条`);
   });
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE + 15, () => runRefreshChain('daily_valuation'));
-  console.log('[bond-analysis] 已调度：每日 07:45 同步强赎公告，08:00 同步行情，08:15 刷新估值（上海时间）');
+  console.log('[bond-analysis] 已调度：每日 07:40 同步下修公告，07:45 同步强赎公告，08:00 同步行情，08:15 刷新估值（上海时间）');
 }
 
 // 新版本发布后，即使当天 08:15 的估值槽已经成功，强赎计算也可能尚未按新公式生成。
@@ -208,10 +222,12 @@ async function runRedemptionStartupCatchup() {
         SELECT p.instrument_id
           FROM fundamental.convertible_bond_profiles p
           JOIN core.instruments i ON i.instrument_id=p.instrument_id
+          LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
           JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
           JOIN market.convertible_bond_daily_metrics dm
             ON dm.instrument_id=p.instrument_id AND dm.trade_date=(SELECT trade_date FROM market_date)
          WHERE i.asset_class='convertible_bond' AND i.status='listed' AND u.status='listed'
+           AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
            AND (i.list_date IS NULL OR i.list_date <= (SELECT trade_date FROM market_date))
            AND (i.delist_date IS NULL OR i.delist_date > (SELECT trade_date FROM market_date))
            AND (u.maturity_date IS NULL OR u.maturity_date >= (SELECT trade_date FROM market_date))

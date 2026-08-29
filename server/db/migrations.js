@@ -3862,6 +3862,11 @@ async function migration091ConvertibleBondRevisionListedOnly() {
 // ========== 092：下修监控视图轻量化 =============
 // 以最新交易日行情为驱动，按单券索引读取条款、进度和公告，避免展开无关的强赎/上市表现全量视图。
 async function migration092ConvertibleBondRevisionViewLean() {
+  // 092 在 100 之前执行；旧生产库尚未有该列，先补齐再重建视图。
+  await pool.query(`
+    ALTER TABLE analytics.convertible_bond_trigger_daily
+      ADD COLUMN IF NOT EXISTS minimum_future_days INTEGER;
+  `);
   await rebuildConvertibleBondRevisionLatestView();
 }
 

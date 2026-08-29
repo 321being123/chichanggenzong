@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.6.4.21",
-  "appVersion": "0.6.4.21",
+  "version": "0.6.4.22",
+  "appVersion": "0.6.4.22",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {

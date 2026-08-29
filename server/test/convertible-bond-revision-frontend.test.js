@@ -61,10 +61,11 @@ assert.ok(analysis.includes("['no_revision', 'revised', 'adjusted']") && analysi
 assert.ok(analysis.includes('cachedAnnouncements') && analysis.includes('cached_reparse'), '公告源失败时必须支持从库内官方 PDF 重新解析');
 assert.ok(analysis.includes('loadRevisionEventCache') && analysis.includes('revision_event_cache'), '历史实施公告必须支持定点重解析正文锁定期');
 assert.ok(analysis.includes('retryFailed') && analysis.includes('changed_count') && analysis.includes('no_revision_evidence'), '公告解析重试和增量计数缺少闭环');
+assert.ok(analysis.includes('resolveConvertibleBondSymbolicLocks') && analysis.includes('symbolic_reference_type') && analysis.includes('symbolic_check_from'), '季度报告董事会无固定日期锁定缺少每日定点解析');
 assert.ok(analysis.includes('fetchSseEventsBatch') && analysis.includes('fetchSzseEventsBatch') && analysis.includes('fetchCninfoEventsBatch'), '公告同步必须支持交易所批量主取和巨潮备取');
 assert.ok(analysis.includes('settled[0].status === \'rejected\'') && !analysis.includes('!primaryEvents.length && (stockCode.endsWith(\'.SH\')'), '正常空公告不得触发巨潮备取');
 assert.ok(refresh.includes('calculateConvertibleBondRevisionStatus') && refresh.includes("convertible_bond_revision"), '每日链路未计算下修进度');
-assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConvertibleBondAnnouncementHistories'), '兼容调度未执行下修公告增量');
+assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConvertibleBondAnnouncementHistories') && refresh.includes('resolveConvertibleBondSymbolicLocks'), '兼容调度未执行下修公告增量和董事会锁定核查');
 assert.ok(refresh.includes('pending_parse') && refresh.includes('cachedOnly: true'), '启动补漏未处理公告解析积压');
 assert.ok(jobs.includes("convertible_bond_announcement_history_sync") && jobs.includes('hour: 7, minute: 40'), '下修公告任务未纳入日常调度');
 for (const [name, source] of Object.entries({ redemptionSync, suspensionSync, ipo, bondAnalysis })) {

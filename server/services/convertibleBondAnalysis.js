@@ -1074,7 +1074,8 @@ async function extractNoRevisionPeriods(events, cachedRows, { allowFailed = fals
     const decision = revisionDecision(event.title);
     const cache = cached.get(isoDate(event.event_date)) || {};
     const cacheComplete = cache.parser_version === '7'
-      && (cache.no_revision_evidence === true || cache.lock_declared === true);
+      && (cache.no_revision_evidence === true || cache.lock_declared === true)
+      && cache.symbolic_lock !== null;
     return ['no_revision', 'revised', 'adjusted'].includes(decision) && event.url
       && (!cacheComplete || (allowFailed && cache.reparse_status === 'failed'))
       && (allowFailed || cache.reparse_status !== 'failed');
@@ -1307,6 +1308,11 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
             lock_declared: Boolean(period.lock_declared),
             no_revision_evidence: Boolean(period.no_revision_evidence),
             parser_version: period.parser_version || null,
+            symbolic_lock: Boolean(period.symbolic_lock),
+            symbolic_reference_type: period.symbolic_reference_type || null,
+            symbolic_report_period: period.symbolic_report_period || null,
+            symbolic_check_from: period.symbolic_check_from || null,
+            symbolic_resolution_status: period.symbolic_resolution_status || (period.symbolic_reference_type ? 'pending' : null),
           }))]
       );
     }
@@ -1879,7 +1885,12 @@ async function loadNoRevisionCache(tsCode) {
     `SELECT h.announced_at,h.valid_until,h.next_eligible_date,h.summary,h.source_url,h.parser_version,
             COALESCE((h.raw_payload->>'lock_declared')::boolean,false) AS lock_declared,
             COALESCE((h.raw_payload->>'no_revision_evidence')::boolean,false) AS no_revision_evidence,
-            COALESCE(h.raw_payload->'reparse'->>'status','') AS reparse_status
+            COALESCE(h.raw_payload->'reparse'->>'status','') AS reparse_status,
+            CASE WHEN h.raw_payload ? 'symbolic_lock' THEN (h.raw_payload->>'symbolic_lock')::boolean END AS symbolic_lock,
+            h.raw_payload->>'symbolic_reference_type' AS symbolic_reference_type,
+            h.raw_payload->>'symbolic_report_period' AS symbolic_report_period,
+            h.raw_payload->>'symbolic_check_from' AS symbolic_check_from,
+            h.raw_payload->>'symbolic_resolution_status' AS symbolic_resolution_status
        FROM analytics.convertible_bond_announcement_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
       WHERE i.canonical_code=$1 AND h.fact_type='no_revision' ORDER BY h.announced_at DESC`, [tsCode]
   );
@@ -2087,6 +2098,88 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   }
   return { ok: true, fromDate: scanStart || null, toDate: end, count: results.length, changed_count: changedCount,
     cursorDate: cursorDate || null, results };
+}
+
+function symbolicReportPattern(period) {
+  const match = String(period || '').match(/^(20\d{2})-Q3$/);
+  return match ? new RegExp(`${match[1]}年(?:第?三季度|三季度)报告`) : null;
+}
+
+async function nextOpenTradeDate(date) {
+  const { rows } = await pool.query(
+    `SELECT MIN(trade_date)::text AS trade_date
+       FROM market.trade_calendar
+      WHERE exchange='SSE' AND is_open AND trade_date>$1::date`, [isoDate(date)]
+  );
+  return rows[0] && isoDate(rows[0].trade_date);
+}
+
+// 无固定日期的不下修锁定：先按季度报告披露窗口保持锁定，临近窗口后每日扫描交易所公告，
+// 找到审议该季度报告的董事会公告后，再把锁定期改成真实会议日和下一交易日。
+async function resolveConvertibleBondSymbolicLocks({ force = false } = {}) {
+  const jobName = 'convertible_bond_symbolic_lock_resolver';
+  if (!(await tryClaimJob(jobName))) return { skipped: true, reason: 'already_running' };
+  const failures = [];
+  let scanned = 0, resolved = 0, skipped = 0;
+  try {
+    const today = isoDate(new Date());
+    const { rows } = await pool.query(`
+      SELECT DISTINCT ON (h.instrument_id)
+             h.history_id,h.instrument_id,h.announced_at::text,h.raw_payload,
+             s.canonical_code AS stock_code
+        FROM fundamental.convertible_bond_no_revision_history h
+        JOIN core.instruments i ON i.instrument_id=h.instrument_id
+        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=h.instrument_id
+        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+       WHERE h.raw_payload->>'symbolic_reference_type'='quarterly_report_board_meeting'
+         AND COALESCE(h.raw_payload->>'symbolic_resolution_status','pending')<>'resolved'
+       ORDER BY h.instrument_id,h.announced_at DESC,h.history_id DESC`);
+    for (const row of rows) {
+      const raw = row.raw_payload || {};
+      const checkFrom = isoDate(raw.symbolic_check_from);
+      if (!force && checkFrom && today < checkFrom) { skipped++; continue; }
+      scanned++;
+      try {
+        const pattern = symbolicReportPattern(raw.symbolic_report_period);
+        if (!pattern) continue;
+        const stockCode = String(row.stock_code || '');
+        const fetcher = stockCode.endsWith('.SH') ? fetchSseEvents : stockCode.endsWith('.SZ') ? fetchSzseEvents : null;
+        if (!fetcher) continue;
+        const events = await fetcher(stockCode, checkFrom || row.announced_at, today, '');
+        const reports = events.filter(event => pattern.test(String(event.title || '').replace(/\s+/g, ''))
+          && isoDate(event.event_date) && isoDate(event.event_date) >= (checkFrom || row.announced_at));
+        if (!reports.length) continue;
+        const reportDate = reports.map(event => isoDate(event.event_date)).sort()[0];
+        const boardEvents = events.filter(event => /董事会/.test(String(event.title || '').replace(/\s+/g, ''))
+          && isoDate(event.event_date) >= reportDate
+          && isoDate(event.event_date) <= isoDate(addDays(new Date(`${reportDate}T00:00:00+08:00`), 31)));
+        if (!boardEvents.length) continue;
+        const boardEvent = boardEvents.sort((a, b) => String(a.event_date).localeCompare(String(b.event_date)))[0];
+        const meetingDate = isoDate(boardEvent.event_date);
+        const nextEligible = await nextOpenTradeDate(meetingDate);
+        if (!nextEligible) continue;
+        await pool.query(
+          `UPDATE fundamental.convertible_bond_no_revision_history
+              SET valid_until=$2::date,next_eligible_date=$3::date,
+                  raw_payload=COALESCE(raw_payload,'{}'::jsonb) || jsonb_build_object(
+                    'symbolic_resolution_status','resolved',
+                    'symbolic_report_announced_at',$4::text,
+                    'symbolic_board_meeting_date',$2::text,
+                    'symbolic_board_source_url',$5::text,
+                    'symbolic_board_title',$6::text,
+                    'symbolic_resolved_at',now())
+            WHERE history_id=$1`,
+          [row.history_id, meetingDate, nextEligible, reportDate, boardEvent.url || '', boardEvent.title || '']
+        );
+        resolved++;
+      } catch (error) {
+        failures.push({ ts_code: row.stock_code, message: String(error && error.message || error).slice(0, 300) });
+      }
+    }
+    return { ok: true, scanned, resolved, skipped, failures };
+  } finally {
+    await releaseJob(jobName);
+  }
 }
 
 async function loadRatingSourceCache(tsCode) {
@@ -2897,7 +2990,7 @@ module.exports = {
   cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
   mergeDailyRows, incrementalStart, ANNOUNCEMENT_OVERLAP_DAYS, announcementSourceKey,
-  syncConvertibleBondUniverse, syncConvertibleBondAnnouncementHistories, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
+  syncConvertibleBondUniverse, syncConvertibleBondAnnouncementHistories, resolveConvertibleBondSymbolicLocks, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,

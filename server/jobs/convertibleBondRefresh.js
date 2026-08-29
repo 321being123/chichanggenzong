@@ -198,6 +198,8 @@ function scheduleConvertibleBondRefresh() {
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE,
     () => require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill('daily_incremental'));
   scheduleDaily(7, 40, async () => {
+    const symbolic = await require('../services/convertibleBondAnalysis').resolveConvertibleBondSymbolicLocks();
+    if (symbolic.resolved) console.log(`[bond-revision] 董事会锁定已按官方公告解析 ${symbolic.resolved} 只`);
     const result = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({});
     console.log(`[bond-revision] 公告事实增量完成：${result.count} 只，扫描 ${result.fromDate || '首次全量'} 至 ${result.toDate}`);
   });

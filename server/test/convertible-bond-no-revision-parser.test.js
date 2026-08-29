@@ -79,6 +79,20 @@ const symbolicParsed = JSON.parse(symbolic.stdout);
 assert.strictEqual(symbolicParsed.lock_declared, true);
 assert.strictEqual(symbolicParsed.next_eligible_date, null);
 
+const quarterBoardFixture = [
+  '公司于2026年8月28日召开第五届董事会第十六次会议，审议通过本次不向下修正丝路转债转股价格，',
+  '同时，自本次董事会审议通过之日起至公司召开审议《2026年第三季度报告》的董事会会议之日，',
+  '如再次触发丝路转债转股价格向下修正条件，公司亦不提出向下修正方案。',
+  '下一触发期间从公司召开审议《2026年第三季度报告》的董事会会议之日后一交易日重新起算。',
+].join('');
+const quarterBoard = spawnSync(python, ['-c', code, modulePath, quarterBoardFixture], { encoding: 'utf8' });
+assert.strictEqual(quarterBoard.status, 0, quarterBoard.stderr || quarterBoard.stdout);
+const quarterBoardParsed = JSON.parse(quarterBoard.stdout);
+assert.strictEqual(quarterBoardParsed.symbolic_lock, true);
+assert.strictEqual(quarterBoardParsed.symbolic_reference_type, 'quarterly_report_board_meeting');
+assert.strictEqual(quarterBoardParsed.symbolic_report_period, '2026-Q3');
+assert.strictEqual(quarterBoardParsed.symbolic_check_from, '2026-11-01');
+
 const maturityFixture = [
   '公司于2026年7月21日召开董事会，决定本次不向下修正转股价格；',
   '自本次董事会审议通过后至债券到期日（2026年11月4日），',

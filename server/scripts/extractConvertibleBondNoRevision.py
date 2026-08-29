@@ -81,9 +81,16 @@ def extract_period(text):
     # 有些公告把锁定期写成“至某次董事会会议召开之日”，没有可直接落库的日期。
     # 这类公告仍必须标记为锁定，等后续董事会公告给出新的重新起算日。
     symbolic_lock = bool(re.search(
-        r"至.{0,80}?(?:董事会|股东大会).{0,30}?召开之日.{0,200}?亦?不提.{0,5}?出.{0,30}?(?:向下修正|下修)",
+        r"(?:至|到).{0,180}?(?:董事会(?:会议)?之日|董事会.{0,30}?召开之日).{0,220}?"
+        r"(?:亦?不提.{0,5}?出|不再.{0,12}?(?:下修|向下修正)|不向下修正)",
         decision_text,
     ))
+    # “至公司召开审议《2026年第三季度报告》的董事会会议之日”没有固定日期，
+    # 但可以从报告期识别出应开始每日核查真实董事会公告的时间。
+    report_reference = re.search(r"(20\d{2})年(?:第?三季度|三季度)报告", decision_text)
+    symbolic_reference_type = "quarterly_report_board_meeting" if symbolic_lock and report_reference else None
+    symbolic_report_period = f"{report_reference.group(1)}-Q3" if report_reference else None
+    symbolic_check_from = f"{report_reference.group(1)}-11-01" if symbolic_reference_type else None
     if not period:
         explicit_ranges = list(re.finditer(r"(?:自|即)?[（(]?" + DATE_PATTERN + r"(?:起)?至" + DATE_PATTERN, decision_text))
         valid_ranges = [item for item in explicit_ranges if not decision_date or match_date(item, 4) >= decision_date]
@@ -128,6 +135,10 @@ def extract_period(text):
         "next_eligible_date": restart_date.isoformat() if restart_date else None,
         "lock_declared": bool(duration or period or restart_matches or after_first_trade_matches
                                or bulletin_ends or named_ends or explicit_range or next_day_restart or symbolic_lock),
+        "symbolic_lock": symbolic_lock,
+        "symbolic_reference_type": symbolic_reference_type,
+        "symbolic_report_period": symbolic_report_period,
+        "symbolic_check_from": symbolic_check_from,
         # 普通权益分派公告也会出现停牌/复牌日期，只有正文明确出现不下修决定
         # 时才允许把解析出的日期作为下修锁定期。
         "no_revision_evidence": bool(re.search(r"(?:不向下修正|不下修|不修正)", decision_text)),

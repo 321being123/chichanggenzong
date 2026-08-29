@@ -58,6 +58,22 @@ test('巨潮默认搜索关键词包含 UPDATE_KEYWORDS（终止/完成/换股�
   assert.ok(all.includes('要约收购报告书'), 'missing 发现关键词');
 });
 
+test('巨潮单个关键词最多拉取两页，且可在不等待的测试环境验证', async () => {
+  const calls = [];
+  const response = JSON.stringify({
+    totalAnnouncement: 999,
+    announcements: [{ announcementId: 'one', announcementTitle: '现金选择权', adjunctUrl: 'x' }],
+  });
+  await cninfo.searchAnnouncements({
+    fromDate: '2026-08-01', toDate: '2026-08-01', keywords: ['现金选择权'], exchanges: ['sse'],
+    _httpRequest: async (_url, options) => { calls.push(options.body); return response; },
+    requestDelayMs: 0,
+  });
+  assert.strictEqual(calls.length, cninfo.CNINFO_MAX_PAGES);
+  assert.strictEqual(cninfo.CNINFO_MAX_PAGES, 2);
+  assert.ok(cninfo.CNINFO_REQUEST_DELAY_MS >= 3000);
+});
+
 // ===== 港交所：result 为 JSON 字符串需解析 =====
 test('港交所 result 为 JSON 字符串时正确解析数组', () => {
   const payload = JSON.stringify({

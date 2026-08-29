@@ -77,6 +77,12 @@ function sourceKey(source) {
 
 function budgetLimits(key) {
   const envKey = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  if (key === 'cninfo') {
+    return {
+      minute: limit(`${envKey}_PER_MINUTE_BUDGET`, 20),
+      day: limit(`${envKey}_DAILY_BUDGET`, 300),
+    };
+  }
   return {
     minute: limit(`${envKey}_PER_MINUTE_BUDGET`, key === 'tushare' ? 120 : 60),
     day: limit(`${envKey}_DAILY_BUDGET`, key === 'tushare' ? 4000 : 2000),

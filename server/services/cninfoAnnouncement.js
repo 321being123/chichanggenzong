@@ -186,11 +186,18 @@ function parseCNINFODate(time) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const CNINFO_PAGE_SIZE = 30;
-const CNINFO_MAX_PAGES = 100;
+// 单个关键词只取前两页（最多 60 条）。公告同步每天都从游标增量执行，
+// 不能因一个高频关键词在一次任务内翻完历史结果而挤占巨潮额度。
+const CNINFO_MAX_PAGES = 2;
+// 巨潮对同一来源的实际限流通常比系统预算更严格；留出余量，避免短时间突发。
+const CNINFO_REQUEST_DELAY_MS = 3200;
 
 // 搜索巨潮公告（自动翻页：按 totalAnnouncement / hasMore 遍历全部结果）
 // 默认关键词 = 发现关键词 + 后续进程关键词（终止/完成/换股实施等），确保事件状态可被更新
-async function searchAnnouncements({ fromDate, toDate, keywords, exchanges, stock = '' } = {}) {
+async function searchAnnouncements({
+  fromDate, toDate, keywords, exchanges, stock = '',
+  _httpRequest = httpRequest, requestDelayMs = CNINFO_REQUEST_DELAY_MS,
+} = {}) {
   const kws = keywords && keywords.length ? keywords : [...DISCOVERY_KEYWORDS, ...UPDATE_KEYWORDS];
   const exs = exchanges && exchanges.length ? exchanges : ['sse', 'szse'];
   const results = [];
@@ -216,14 +223,14 @@ async function searchAnnouncements({ fromDate, toDate, keywords, exchanges, stoc
           isHLtitle: 'true',
         }).toString();
 
-        const text = await httpRequest(BASE_URL + SEARCH_PATH, { method: 'POST', body });
+        const text = await _httpRequest(BASE_URL + SEARCH_PATH, { method: 'POST', body });
         const { items, hasMore } = parseSearchResponse(text);
         results.push(...items);
         if (!hasMore || items.length === 0) break;
         pageNum++;
-        await sleep(500);
+        await sleep(requestDelayMs);
       }
-      await sleep(500);
+      await sleep(requestDelayMs);
     }
   }
   return results;
@@ -237,4 +244,7 @@ module.exports = {
   UPDATE_KEYWORDS,
   httpRequest,
   ALLOWED_DOMAIN,
+  CNINFO_PAGE_SIZE,
+  CNINFO_MAX_PAGES,
+  CNINFO_REQUEST_DELAY_MS,
 };

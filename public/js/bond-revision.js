@@ -10,7 +10,7 @@ var BOND_REVISION_COLUMNS = [
   ['stock_name','正股名称'],['stock_close','正股价'],['current_conv_price','转股价'],['conversion_value','转股价值'],['conversion_premium_pct','转股溢价率'],
   ['stock_pb','正股PB'],['net_asset_floor_applicable','净资产底线'],['trigger_ratio','下修比例'],['trigger_price','下修触发价'],['distance_to_trigger_pct','距触发'],['matched_days','下修进度'],
   ['no_revision_valid_until','锁定至'],['next_eligible_date','重新起算日'],['official_announced_at','公告日'],['meeting_date','股东大会日'],
-  ['price_after','新转股价'],['effective_date','生效日'],['reached_floor','是否到底'],['reset_clause','下修条款'],['official_source_url','公告']
+  ['price_after','新转股价'],['effective_date','生效日'],['reached_floor','是否到底'],['official_source_url','公告']
 ];
 var BOND_REVISION_PERCENT = { conversion_premium_pct: true, distance_to_trigger_pct: true, trigger_ratio: true };
 var BOND_REVISION_NUMBER = { bond_close: true, remain_size: true, stock_close: true, current_conv_price: true, conversion_value: true, stock_pb: true, trigger_price: true, price_after: true };
@@ -40,7 +40,6 @@ function bondRevisionCell(row, key) {
   if (BOND_REVISION_PERCENT[key]) return escapeHtml(bondRevisionPercent(row[key]));
   if (BOND_REVISION_NUMBER[key]) return escapeHtml(bondRevisionNumber(row[key], key === 'current_conv_price' ? 3 : 2));
   if (key.indexOf('date') >= 0) return escapeHtml(bondRevisionDate(row[key]));
-  if (key === 'reset_clause') return '<span title="' + escapeHtml(bondRevisionText(row[key])) + '">' + escapeHtml(bondRevisionText(row[key])) + '</span>';
   return escapeHtml(bondRevisionText(row[key]));
 }
 function bondRevisionApplyFilters() {

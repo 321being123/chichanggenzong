@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const page = fs.readFileSync(path.join(root, 'public', 'js', 'bond-revision.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'public', 'css', 'bond-revision.css'), 'utf8');
+const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'server', 'routes', 'bondRevision.js'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionService.js'), 'utf8');
@@ -17,29 +18,47 @@ const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'co
 const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
 const ipo = fs.readFileSync(path.join(root, 'server', 'routes', 'ipo.js'), 'utf8');
 const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAnalysis.js'), 'utf8');
+const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
 assert.ok(html.includes('css/bond-revision.css') && html.includes('js/bond-revision.js'), '下修资源未接入首页');
 assert.ok(page.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
 assert.ok(page.includes('bond-revision-near') && page.includes('business_status'), '下修页缺少临近触发筛选和状态展示');
+assert.ok(!page.includes("'reset_clause','下修条款'"), '下修页不应展示原始下修条款列');
 assert.ok(cycle.includes("sub === 'revision'") && cycle.includes('loadBondRevision'), '二级导航未接入下修页');
 assert.ok(route.includes("router.get('/')") || route.includes("router.get('/',"), '下修接口缺少只读路由');
 assert.ok(route.includes('getBondRevisionOverview'), '下修接口未读取统一服务');
 assert.ok(service.includes('analytics.convertible_bond_revision_latest') && service.includes("FORMULA_VERSION = 'reset-v2'"), '下修服务未使用统一视图和版本公式');
 assert.ok(service.includes("NOT IN ('定向','私募')"), '下修服务必须排除定向私募债券');
+assert.ok(service.includes('ORDER BY CASE r.business_status') && service.includes('COALESCE(r.remaining_days,9999)'), '下修接口必须使用数据库状态排序');
+assert.ok(!service.includes('sortedRows'), '下修接口不应再以内存排序替代数据库排序');
+assert.ok(!service.includes("'reset_clause'"), '下修接口不应返回原始下修条款字段');
 assert.ok(analysis.includes('convertible_bond_announcement_history') && analysis.includes('last_success_date') && analysis.includes('scanStart'), '公告同步未按游标增量');
 assert.ok(analysis.includes('OVERLAP_DAYS') || analysis.includes('minusCalendarDays'), '公告同步缺少重叠窗口');
 assert.ok(migration.includes('090_convertible_bond_revision_monitor') && migration.includes('091_convertible_bond_revision_listed_only')
+  && migration.includes('092_convertible_bond_revision_view_lean')
+  && migration.includes('093_convertible_bond_revision_term_parser')
+  && migration.includes('094_convertible_bond_revision_proposal_expiry')
+  && migration.includes('095_convertible_bond_revision_symbolic_lock')
   && migration.includes('event.convertible_bond_revision_events') && migration.includes('analytics.convertible_bond_revision_latest')
-  && migration.includes('JOIN latest_market md'), '下修迁移缺少事件表、统一视图或上市范围约束');
+  && migration.includes('FROM latest_market md') && migration.includes('LEFT JOIN LATERAL'), '下修迁移缺少事件表、统一视图或轻量取数路径');
+const revisionView = migration.slice(migration.indexOf('async function rebuildConvertibleBondRevisionLatestView'), migration.indexOf('// ========== 091：'));
+assert.ok(!revisionView.includes('public.bond_unified'), '下修视图不应展开强赎/上市表现统一视图');
 assert.ok(service.includes('active_dm') && service.includes('remaining_days'), '下修计算未限定当前行情日或缺少剩余天数');
 assert.ok(analysis.includes('sourceFailures') && analysis.includes('defaultLimit'), '公告同步未保护来源失败或首次全量数量');
+assert.ok(analysis.includes("decision === 'no_revision' || period.lock_declared"), '转股价调整公告正文中的不下修决定必须入库');
+assert.ok(analysis.includes('cachedAnnouncements') && analysis.includes('cached_reparse'), '公告源失败时必须支持从库内官方 PDF 重新解析');
 assert.ok(refresh.includes('calculateConvertibleBondRevisionStatus') && refresh.includes("convertible_bond_revision"), '每日链路未计算下修进度');
 assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConvertibleBondAnnouncementHistories'), '兼容调度未执行下修公告增量');
 assert.ok(jobs.includes("convertible_bond_announcement_history_sync") && jobs.includes('hour: 7, minute: 40'), '下修公告任务未纳入日常调度');
 for (const [name, source] of Object.entries({ redemptionSync, suspensionSync, ipo, bondAnalysis })) {
   assert.ok(source.includes("NOT IN ('定向','私募')"), `${name} 未排除定向私募债券`);
 }
+assert.ok(stockAnalysisService.includes("channelCode: ['listedNotice_disc']") && stockAnalysisService.includes('payload.announceCount'), '深交所公告必须使用上市公司公告频道并支持分页');
 assert.ok(css.includes('.bond-revision-stats') && css.includes('.bond-revision-status'), '下修样式缺少概览和状态类');
+assert.ok(sharedCss.includes('--bond-feature-gradient-start') && html.includes('bond-feature-hero'), '下修页未复用可转债功能页统一视觉');
+assert.ok(sharedCss.includes('.bond-feature-toolbar input:not([type=checkbox])')
+  && sharedCss.includes('.bond-feature-toolbar input[type=checkbox]')
+  && sharedCss.includes('font-size:13px'), '可转债工具栏必须使用固定字号并排除复选框通用输入样式');
 
 console.log('convertible bond revision frontend tests passed');

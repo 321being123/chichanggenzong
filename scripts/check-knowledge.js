@@ -7,6 +7,43 @@ function normalize(filePath) {
   return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
+const RELEASE_METADATA_FILES = new Set(['package.json', 'package-lock.json', 'CHANGELOG.md', 'public/changelog.json']);
+
+function readGitFile(rootDir, relativePath) {
+  const result = childProcess.spawnSync('git', ['show', `HEAD:${relativePath}`], {
+    cwd: rootDir, encoding: 'utf8'
+  });
+  return result.status === 0 ? result.stdout : null;
+}
+
+function releaseFileHasRuntimeChange(rootDir, relativePath) {
+  if (!['package.json', 'package-lock.json'].includes(relativePath)) return false;
+  const currentPath = path.join(rootDir, relativePath);
+  const baseText = readGitFile(rootDir, relativePath);
+  if (!baseText || !fs.existsSync(currentPath)) return true;
+  try {
+    const current = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
+    const base = JSON.parse(baseText);
+    delete current.version;
+    delete current.appVersion;
+    delete base.version;
+    delete base.appVersion;
+    if (relativePath === 'package-lock.json') {
+      if (current.packages && current.packages['']) delete current.packages[''].version;
+      if (base.packages && base.packages['']) delete base.packages[''].version;
+    }
+    return JSON.stringify(current) !== JSON.stringify(base);
+  } catch (_) {
+    return true;
+  }
+}
+
+function isReleaseMetadataOnly(rootDir, files) {
+  const normalized = files.map(normalize).filter(Boolean);
+  if (!normalized.length || !normalized.every(file => RELEASE_METADATA_FILES.has(file))) return false;
+  return !normalized.some(file => releaseFileHasRuntimeChange(rootDir, file));
+}
+
 function globMatches(pattern, filePath) {
   const escaped = normalize(pattern)
     .replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
@@ -76,6 +113,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
 
   errors.push(...collectVersionErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
+  const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];
   for (const route of map.routes) {
     if (!route.id || !Array.isArray(route.paths) || !Array.isArray(route.update)) {
@@ -84,6 +122,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
     }
     const matchedFiles = files.filter(file => route.paths.some(pattern => globMatches(pattern, file)));
     if (matchedFiles.length === 0) continue;
+    if (releaseMetadataOnly && (route.id === 'deployment' || route.id === 'frontend')) continue;
     matchedRoutes.push({ id: route.id, files: matchedFiles, risk: route.risk || 'unknown' });
     for (const updateFile of route.update) {
       if (!files.includes(normalize(updateFile))) {
@@ -175,4 +214,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { collectVersionErrors, globMatches, parseArgs, runCheck, splitGitOutput, workingTreeFiles };
+module.exports = { collectVersionErrors, globMatches, isReleaseMetadataOnly, parseArgs, runCheck, splitGitOutput, workingTreeFiles };

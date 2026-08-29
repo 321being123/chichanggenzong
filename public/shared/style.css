@@ -143,7 +143,40 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
  .biz-table--matrix { min-width: max(1100px, 100%); }
  .biz-table--matrix th, .biz-table--matrix td { min-width: 96px; }
  .biz-table--preview { width: max-content; min-width: 100%; }
- .biz-table-note-cell { white-space: normal !important; text-align: left !important; line-height: 1.55; }
+.biz-table-note-cell { white-space: normal !important; text-align: left !important; line-height: 1.55; }
+
+/* ===== 可转债功能页统一视觉（强赎 / 下修 / 安全性） ===== */
+:root {
+  --bond-feature-gradient-start: #3f51b5;
+  --bond-feature-gradient-end: #5c6bc0;
+  --bond-feature-text: #172033;
+  --bond-feature-muted: #7a8495;
+  --bond-feature-input-border: #d8dee8;
+  --bond-feature-focus: #1a237e;
+  --bond-feature-link: #1769aa;
+}
+.bond-feature-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,var(--bond-feature-gradient-start),var(--bond-feature-gradient-end)); color:#fff; }
+.bond-feature-hero h2 { margin:0 0 8px; font-size:22px; color:#fff; }
+.bond-feature-hero p { margin:0; color:#d9e7f5; font-size:13px; line-height:1.65; }
+.bond-feature-updated { color:#d9e7f5; font-size:12px; text-align:right; white-space:nowrap; }
+.bond-feature-stats { display:grid; gap:10px; margin-bottom:16px; }
+.bond-feature-stat { background:#fff; border:1px solid #e7ebf0; border-radius:10px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+.bond-feature-stat span { display:block; color:var(--bond-feature-muted); font-size:12px; }
+.bond-feature-stat strong { display:block; margin-top:4px; font-size:22px; color:var(--bond-feature-text); }
+.bond-feature-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; font-size:13px; }
+.bond-feature-toolbar input:not([type=checkbox]),.bond-feature-toolbar select { height:36px; border:1px solid var(--bond-feature-input-border); border-radius:7px; background:#fff; padding:0 10px; color:#273142; font-family:inherit; font-size:13px; outline:none; }
+.bond-feature-toolbar input:not([type=checkbox]) { min-width:220px; }
+.bond-feature-toolbar label { display:inline-flex; align-items:center; gap:6px; color:#273142; font-size:13px; white-space:nowrap; }
+.bond-feature-toolbar input[type=checkbox] { width:14px; height:14px; margin:0; flex:0 0 14px; accent-color:var(--bond-feature-focus); }
+.bond-feature-toolbar input:not([type=checkbox]):focus,.bond-feature-toolbar select:focus { border-color:var(--bond-feature-focus); box-shadow:0 0 0 2px rgba(26,35,126,.08); }
+.bond-feature-toolbar input:not([type=checkbox])::placeholder { color:var(--bond-feature-muted); }
+.bond-feature-quality { color:var(--bond-feature-muted); font-size:12px; }
+.bond-feature-link { color:var(--bond-feature-link); cursor:pointer; }
+@media (max-width:760px) {
+  .bond-feature-hero { display:block; padding:18px; }
+  .bond-feature-updated { text-align:left; margin-top:8px; white-space:normal; }
+  .bond-feature-toolbar input:not([type=checkbox]) { min-width:0; flex:1 1 170px; }
+}
  .biz-table-floating-head { position: fixed; z-index: 89; overflow: hidden; min-height: 40px; background: #fff; box-shadow: 0 2px 6px rgba(31,42,68,.12); pointer-events: auto; }
  .biz-table-floating-head .biz-table { min-width: 0; margin: 0; transform: translateX(0); }
  .biz-table-floating-head .biz-table thead, .biz-table-floating-head .biz-table tr { height: 52px; }

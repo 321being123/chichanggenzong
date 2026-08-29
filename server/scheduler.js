@@ -14,7 +14,7 @@ const { scheduleIpoCalendarRefresh } = require('./jobs/ipoCalendarRefresh');
 const { scheduleIpoHistorySync, runIpoHistoryStartupCatchup } = require('./jobs/ipoHistorySync');
 const { scheduleStockAnalysisRefresh } = require('./jobs/stockAnalysisRefresh');
 const { scheduleConvertibleBondRefresh } = require('./jobs/convertibleBondRefresh');
-const { runRedemptionStartupCatchup } = require('./jobs/convertibleBondRefresh');
+const { runRedemptionStartupCatchup, runRevisionStartupCatchup } = require('./jobs/convertibleBondRefresh');
 const { scheduleMarketVolatilitySync } = require('./jobs/marketVolatilitySync');
 const { scheduleHkTradeRulesSync, runHkTradeRulesSync } = require('./jobs/hkTradeRulesSync');
 const { scheduleArbitrageSync } = require('./jobs/arbitrageSync');
@@ -53,7 +53,8 @@ const STARTUP_TASKS = [
   { name: 'indexBaseline', run: () => runIndexBaselineJob() },
   { name: 'hkTradeRulesStartup', run: () => runHkTradeRulesSync('startup') },
   { name: 'ipoHistoryStartupCatchup', run: () => runIpoHistoryStartupCatchup() },
-  { name: 'redemptionStartupCatchup', run: () => runRedemptionStartupCatchup() }
+  { name: 'redemptionStartupCatchup', run: () => runRedemptionStartupCatchup() },
+  { name: 'revisionStartupCatchup', run: () => runRevisionStartupCatchup() }
 ];
 
 // 周期调度注册（调用即按 cron/间隔排期，不阻塞）
@@ -83,7 +84,7 @@ const SCHEDULER_REGISTRY = {
 
 async function runStartupTasks() {
   const tasks = process.env.DURABLE_SCHEDULER !== '0'
-    ? STARTUP_TASKS.filter(t => ['holidaySync', 'indexBaseline', 'redemptionStartupCatchup'].includes(t.name))
+    ? STARTUP_TASKS.filter(t => ['holidaySync', 'indexBaseline', 'redemptionStartupCatchup', 'revisionStartupCatchup'].includes(t.name))
     : STARTUP_TASKS;
   for (const t of tasks) {
     try { await t.run(); }

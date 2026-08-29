@@ -1,17 +1,8 @@
-/* 下修监控页面专属布局；表格滚动和吸顶沿用 shared/style.css。 */
-.bond-revision-hero { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; padding:22px 24px 12px; }
-.bond-revision-hero h2 { margin:0 0 8px; }
-.bond-revision-hero p { margin:0; color:#687385; }
-.bond-revision-updated { color:#7b8794; white-space:nowrap; padding-top:6px; }
-.bond-revision-stats { display:grid; grid-template-columns:repeat(6,minmax(110px,1fr)); gap:10px; padding:0 24px 18px; }
-.bond-revision-stat { border:1px solid #e5e9ef; border-radius:8px; padding:11px 12px; background:#fff; }
-.bond-revision-stat span { display:block; color:#7b8794; font-size:12px; }
-.bond-revision-stat strong { display:block; margin-top:4px; color:#26364a; font-size:20px; }
-.bond-revision-toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.bond-revision-toolbar input[type=search] { min-width:230px; }
-.bond-revision-quality { color:#7b8794; font-size:13px; }
-.bond-revision-empty { padding:32px; text-align:center; color:#7b8794; }
-.bond-revision-link { color:#2477a8; cursor:pointer; }
+/* 下修监控页面专属布局；基础视觉沿用 shared/style.css。 */
+.bond-revision-stats { display:grid; grid-template-columns:repeat(6,minmax(120px,1fr)); gap:10px; margin-bottom:16px; }
+.bond-revision-toolbar input[type=search] { min-width:220px; }
+.bond-revision-empty { padding:32px; text-align:center; color:var(--bond-feature-muted); }
+.bond-revision-link { color:var(--bond-feature-link); cursor:pointer; }
 .bond-revision-status { display:inline-block; padding:2px 7px; border-radius:10px; font-size:12px; white-space:nowrap; }
 .bond-revision-status-implemented,.bond-revision-status-approved { color:#137333; background:#e6f4ea; }
 .bond-revision-status-proposed,.bond-revision-status-meeting_pending { color:#b06000; background:#fff3d6; }
@@ -19,4 +10,4 @@
 .bond-revision-status-locked { color:#5f6368; background:#f1f3f4; }
 .bond-revision-status-tracking { color:#2367a6; background:#e8f1fb; }
 .bond-revision-status-terminated,.bond-revision-status-incomplete { color:#6b7280; background:#f3f4f6; }
-@media (max-width: 900px) { .bond-revision-stats { grid-template-columns:repeat(3,minmax(100px,1fr)); } .bond-revision-hero { display:block; } .bond-revision-updated { padding-top:10px; } }
+@media (max-width: 760px) { .bond-revision-stats { grid-template-columns:repeat(2,minmax(100px,1fr)); } .bond-revision-toolbar input[type=search] { min-width:0; flex:1 1 170px; } }

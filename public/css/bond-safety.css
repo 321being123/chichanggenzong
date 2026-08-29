@@ -1,18 +1,18 @@
 .bond-safety-shell { width:100%; }
-.bond-safety-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,#3f51b5,#5c6bc0); color:#fff; }
+.bond-safety-hero { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:16px; padding:22px; border-radius:14px; background:linear-gradient(135deg,var(--bond-feature-gradient-start),var(--bond-feature-gradient-end)); color:#fff; }
 .bond-safety-hero h2 { margin:0 0 8px; font-size:22px; color:#fff; }
 .bond-safety-hero p { margin:0; color:#d9e7f5; font-size:13px; line-height:1.65; }
 .bond-safety-updated { color:#d9e7f5; font-size:12px; text-align:right; white-space:nowrap; }
 .bond-safety-stats { display:grid; grid-template-columns:repeat(4,minmax(100px,1fr)); gap:10px; margin-bottom:16px; }
 .bond-safety-stat { background:#fff; border:1px solid #e7ebf0; border-radius:10px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
-.bond-safety-stat span { color:#7a8495; font-size:12px; }
-.bond-safety-stat strong { display:block; margin-top:4px; font-size:22px; color:#172033; }
+.bond-safety-stat span { color:var(--bond-feature-muted); font-size:12px; }
+.bond-safety-stat strong { display:block; margin-top:4px; font-size:22px; color:var(--bond-feature-text); }
 .bond-safety-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:14px 16px; border-bottom:1px solid #edf0f4; }
 .bond-safety-toolbar input,.bond-safety-toolbar select { height:36px; border:1px solid #d8dee8; border-radius:7px; background:#fff; padding:0 10px; color:#273142; }
 .bond-safety-toolbar input { min-width:220px; }
 .bond-safety-spacer { flex:1; }
 .bond-safety-quality { font-size:12px; color:#7a8495; }
-.bond-safety-code { color:#1769aa; font-variant-numeric:tabular-nums; }
+.bond-safety-code { color:var(--bond-feature-link); font-variant-numeric:tabular-nums; }
 .bond-safety-link { cursor:pointer; text-decoration:none; }
 .bond-safety-link:hover { text-decoration:underline; }
 .bond-safety-number { text-align:center; font-variant-numeric:tabular-nums; }

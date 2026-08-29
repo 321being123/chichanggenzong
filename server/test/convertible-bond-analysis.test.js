@@ -36,6 +36,8 @@ assert.deepStrictEqual(parseWindow('连续三十个交易日中至少十五个�
 assert.deepStrictEqual(parseWindow('期满后五个交易日内赎回；连续三十个交易日中至少有十五个交易日'), { observation_days:30, required_days:15 });
 assert.deepStrictEqual(parseWindow('连续30个交易日内至少有15个交易日'), { observation_days:30, required_days:15 });
 assert.deepStrictEqual(parseWindow('当公司股票在任意三十个连续交易日中至少有十五个交易日的收盘价格低于当期转股价格的85%时', 'reset'), { observation_days:30, required_days:15 });
+assert.deepStrictEqual(parseWindow('当公司股票在任意连续三十个交易日中有十五个交易日的收盘价格低于当期转股价格的85%时', 'reset'), { observation_days:30, required_days:15 });
+assert.deepStrictEqual(parseWindow('任意连续30个交易日内有15个交易日低于转股价格的85%', 'reset'), { observation_days:30, required_days:15 });
 assert.strictEqual(earliestPutDate('2030-01-01', '最后两个计息年度'), '2028-01-01');
 assert.deepStrictEqual(currentPutPeriod('2027-07-15', '最后两个计息年度', '2026-07-22'), {
   active:true, eligible_from:'2025-07-15', period_start:'2026-07-15', period_end:'2027-07-14',
@@ -106,6 +108,7 @@ assert.strictEqual(revisionEventDecision('关于提议向下修正转股价格�
 assert.strictEqual(revisionEventDecision('关于向下修正转股价格议案未获股东大会通过的公告'), 'meeting_rejected');
 assert.strictEqual(revisionEventDecision('关于向下修正转股价格方案经股东大会审议通过的公告'), 'meeting_approved');
 assert.strictEqual(revisionEventDecision('关于向下修正转股价格实施的公告'), 'implemented');
+assert.strictEqual(revisionEventDecision('关于向下修正“芳源转债”转股价格暨转股停牌的公告'), 'implemented');
 assert.strictEqual(revisionEventDecision('关于不向下修正转股价格的公告'), null);
 assert.strictEqual(
   announcementSourceKey({ source: 'cninfo', source_number: 'ANN-001', url: 'https://old.example/a.pdf' }),

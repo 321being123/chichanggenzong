@@ -7,12 +7,12 @@
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
-<link rel="stylesheet" href="shared/style.css?v=40">
-<link rel="stylesheet" href="css/bond-safety.css?v=23">
+<link rel="stylesheet" href="shared/style.css?v=41">
+<link rel="stylesheet" href="css/bond-safety.css?v=24">
 <link rel="stylesheet" href="css/bond-cycle.css?v=5">
 <link rel="stylesheet" href="css/bond-valuation.css?v=7">
-<link rel="stylesheet" href="css/bond-redemption.css?v=4">
-<link rel="stylesheet" href="css/bond-revision.css?v=1">
+<link rel="stylesheet" href="css/bond-redemption.css?v=5">
+<link rel="stylesheet" href="css/bond-revision.css?v=2">
 <link rel="stylesheet" href="css/stock-analysis.css?v=13">
 <link rel="stylesheet" href="css/market-volatility.css?v=5">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css">
@@ -687,28 +687,28 @@
 
     <!-- 子页：可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
     <div id="sub-bond-safety" class="bond-sub-page">
-      <div class="bond-safety-hero">
+      <div class="bond-safety-hero bond-feature-hero">
         <div>
           <h2>可转债安全性</h2>
           <p>基于利息保障、短期偿债能力和负债水平的三指标评级。行情仅供研究参考，不构成投资建议。</p>
         </div>
-        <div class="bond-safety-updated" id="bond-safety-updated">正在读取数据...</div>
+        <div class="bond-safety-updated bond-feature-updated" id="bond-safety-updated">正在读取数据...</div>
       </div>
-      <div class="bond-safety-stats">
-        <div class="bond-safety-stat"><span>安全</span><strong data-bond-rating-count="安全">0</strong></div>
-        <div class="bond-safety-stat"><span>低风险</span><strong data-bond-rating-count="低风险">0</strong></div>
-        <div class="bond-safety-stat"><span>中风险</span><strong data-bond-rating-count="中风险">0</strong></div>
-        <div class="bond-safety-stat"><span>高风险</span><strong data-bond-rating-count="高风险">0</strong></div>
+      <div class="bond-safety-stats bond-feature-stats">
+        <div class="bond-safety-stat bond-feature-stat"><span>安全</span><strong data-bond-rating-count="安全">0</strong></div>
+        <div class="bond-safety-stat bond-feature-stat"><span>低风险</span><strong data-bond-rating-count="低风险">0</strong></div>
+        <div class="bond-safety-stat bond-feature-stat"><span>中风险</span><strong data-bond-rating-count="中风险">0</strong></div>
+        <div class="bond-safety-stat bond-feature-stat"><span>高风险</span><strong data-bond-rating-count="高风险">0</strong></div>
       </div>
       <div class="table-wrap">
-        <div class="bond-safety-toolbar">
+        <div class="bond-safety-toolbar bond-feature-toolbar">
           <input id="bond-safety-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondSafetyApplyFilters()">
           <select id="bond-safety-rating" onchange="bondSafetyApplyFilters()" aria-label="按安全性筛选">
             <option value="">全部评级</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option>
           </select>
-          <span class="bond-safety-quality" id="bond-safety-visible"></span>
+          <span class="bond-safety-quality bond-feature-quality" id="bond-safety-visible"></span>
           <span class="bond-safety-spacer"></span>
-          <span class="bond-safety-quality" id="bond-safety-quality"></span>
+          <span class="bond-safety-quality bond-feature-quality" id="bond-safety-quality"></span>
           <button class="btn btn-outline btn-sm" id="bond-safety-export" onclick="exportBondSafety()">导出Excel</button>
         </div>
         <div id="bond-safety-table"><div class="bond-safety-empty">正在加载安全性数据...</div></div>
@@ -824,30 +824,30 @@
 
     <!-- 子页：可转债强赎监控（页面只读统一强赎状态视图） -->
     <div id="sub-bond-redemption" class="bond-sub-page" hidden>
-      <div class="bond-redemption-hero">
+      <div class="bond-redemption-hero bond-feature-hero">
         <div>
           <h2>可转债强赎监控</h2>
           <p>统一读取强赎条款、正股触发进度和官方公告；股债分析、上市列表与估值共用同一份强赎状态。</p>
         </div>
-        <div class="bond-redemption-updated" id="bond-redemption-updated">正在读取数据...</div>
+        <div class="bond-redemption-updated bond-feature-updated" id="bond-redemption-updated">正在读取数据...</div>
       </div>
-      <div class="bond-redemption-stats" id="bond-redemption-stats">
-        <div class="bond-redemption-stat"><span>已公告强赎</span><strong data-call-status="announced">0</strong></div>
-        <div class="bond-redemption-stat"><span>临近到期</span><strong data-call-status="maturity_near">0</strong></div>
-        <div class="bond-redemption-stat"><span>已满足待确认</span><strong data-call-status="met_pending">0</strong></div>
-        <div class="bond-redemption-stat"><span>接近触发</span><strong data-call-status="near">0</strong></div>
-        <div class="bond-redemption-stat"><span>跟踪中</span><strong data-call-status="tracking">0</strong></div>
-        <div class="bond-redemption-stat"><span>数据不完整</span><strong data-call-status="incomplete">0</strong></div>
+      <div class="bond-redemption-stats bond-feature-stats" id="bond-redemption-stats">
+        <div class="bond-redemption-stat bond-feature-stat"><span>已公告强赎</span><strong data-call-status="announced">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>临近到期</span><strong data-call-status="maturity_near">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>已满足待确认</span><strong data-call-status="met_pending">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>接近触发</span><strong data-call-status="near">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>跟踪中</span><strong data-call-status="tracking">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>数据不完整</span><strong data-call-status="incomplete">0</strong></div>
       </div>
       <div class="table-wrap">
-        <div class="bond-redemption-toolbar">
+        <div class="bond-redemption-toolbar bond-feature-toolbar">
           <input id="bond-redemption-search" name="bond-redemption-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" oninput="bondRedemptionApplyFilters()">
           <select id="bond-redemption-status" onchange="bondRedemptionApplyFilters()" aria-label="按强赎状态筛选">
             <option value="">全部状态</option><option value="announced">已公告强赎</option><option value="maturity_near">临近到期</option>
             <option value="met_pending">已满足待确认</option><option value="near">接近触发</option><option value="tracking">跟踪中</option><option value="waived">不提前赎回</option><option value="completed">已完成</option><option value="incomplete">数据不完整</option>
           </select>
           <button class="btn btn-outline btn-sm" onclick="loadBondRedemption(true)">刷新</button>
-          <span class="bond-redemption-quality" id="bond-redemption-visible"></span>
+          <span class="bond-redemption-quality bond-feature-quality" id="bond-redemption-visible"></span>
         </div>
         <div id="bond-redemption-table"><div class="bond-redemption-empty">正在加载强赎数据...</div></div>
       </div>
@@ -855,23 +855,23 @@
 
     <!-- 子页：下修监控（页面只读统一下修状态视图） -->
     <div id="sub-bond-revision" class="bond-sub-page" hidden>
-      <div class="bond-revision-hero">
+      <div class="bond-revision-hero bond-feature-hero">
         <div>
           <h2>可转债下修监控</h2>
           <p>展示公开上市转债的下修触发进度、不下修锁定期及官方下修事件。数据仅供研究参考，不构成投资建议。</p>
         </div>
-        <div class="bond-revision-updated" id="bond-revision-updated">正在读取数据...</div>
+        <div class="bond-revision-updated bond-feature-updated" id="bond-revision-updated">正在读取数据...</div>
       </div>
-      <div class="bond-revision-stats">
-        <div class="bond-revision-stat"><span>已实施</span><strong data-revision-status="implemented">0</strong></div>
-        <div class="bond-revision-stat"><span>股东大会待审</span><strong data-revision-status="meeting_pending">0</strong></div>
-        <div class="bond-revision-stat"><span>已提议下修</span><strong data-revision-status="proposed">0</strong></div>
-        <div class="bond-revision-stat"><span>已满足待公告</span><strong data-revision-status="met_pending">0</strong></div>
-        <div class="bond-revision-stat"><span>接近触发</span><strong data-revision-status="near">0</strong></div>
-        <div class="bond-revision-stat"><span>数据不完整</span><strong data-revision-status="incomplete">0</strong></div>
+      <div class="bond-revision-stats bond-feature-stats">
+        <div class="bond-revision-stat bond-feature-stat"><span>已实施</span><strong data-revision-status="implemented">0</strong></div>
+        <div class="bond-revision-stat bond-feature-stat"><span>股东大会待审</span><strong data-revision-status="meeting_pending">0</strong></div>
+        <div class="bond-revision-stat bond-feature-stat"><span>已提议下修</span><strong data-revision-status="proposed">0</strong></div>
+        <div class="bond-revision-stat bond-feature-stat"><span>已满足待公告</span><strong data-revision-status="met_pending">0</strong></div>
+        <div class="bond-revision-stat bond-feature-stat"><span>接近触发</span><strong data-revision-status="near">0</strong></div>
+        <div class="bond-revision-stat bond-feature-stat"><span>数据不完整</span><strong data-revision-status="incomplete">0</strong></div>
       </div>
       <div class="table-wrap">
-        <div class="bond-revision-toolbar">
+        <div class="bond-revision-toolbar bond-feature-toolbar">
           <input id="bond-revision-search" name="bond-revision-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" oninput="bondRevisionApplyFilters()">
           <select id="bond-revision-status" onchange="bondRevisionApplyFilters()" aria-label="按下修状态筛选">
             <option value="">全部状态</option><option value="proposed">已提议下修</option><option value="meeting_pending">股东大会待审</option>
@@ -881,7 +881,7 @@
           </select>
           <label><input id="bond-revision-near" type="checkbox" onchange="bondRevisionApplyFilters()"> 仅看临近或已满足</label>
           <button class="btn btn-outline btn-sm" onclick="loadBondRevision(true)">刷新</button>
-          <span class="bond-revision-quality" id="bond-revision-visible"></span>
+          <span class="bond-revision-quality bond-feature-quality" id="bond-revision-visible"></span>
         </div>
         <div id="bond-revision-table"><div class="bond-revision-empty">正在加载下修数据...</div></div>
       </div>
@@ -1184,7 +1184,7 @@
 <script src="js/code-classify.js?v=3"></script>
 <script src="js/utils.js?v=6"></script>
 <script src="shared/dialog.js?v=1"></script>
-<!-- 旧版静态检查兼容标记：shared/style.css?v=31；实际样式版本为 v40。 -->
+<!-- 旧版静态检查兼容标记：shared/style.css?v=31；实际样式版本为 v41。 -->
 <script src="shared/business-table.js?v=1"></script>
 <script src="shared/core-quote.js?v=20260818a"></script>
 <script src="shared/core-tables.js?v=20260818e"></script>
@@ -1203,7 +1203,7 @@
 <script src="js/bond-valuation.js?v=9"></script>
 <script src="js/bond-list.js?v=17"></script>
 <script src="js/bond-redemption.js?v=4"></script>
-<script src="js/bond-revision.js?v=1"></script>
+<script src="js/bond-revision.js?v=2"></script>
 <script src="js/stock-analysis.js?v=13"></script>
 <script src="js/bond-analysis.js?v=7"></script>
 <script src="js/stock-analysis-statements.js?v=3"></script>

@@ -37,7 +37,7 @@ assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-searc
 assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));
 assert.ok(page.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
 assert.ok(page.includes("'年' +") && page.includes('bondRedemptionDate(data.trade_date)'), '强赎页日期必须统一显示为中文年月日');
-assert.ok(/\.bond-redemption-hero\{[^}]*background:linear-gradient\(135deg,#3f51b5,#5c6bc0\)/.test(redemptionCss), '强赎说明区必须沿用安全性说明区颜色');
+assert.ok(redemptionCss.includes('var(--bond-feature-gradient-start)') && redemptionCss.includes('var(--bond-feature-gradient-end)'), '强赎说明区必须沿用可转债功能页统一颜色');
 assert.ok(/\.bond-list-hero \{[^}]*background:linear-gradient\(135deg,#3f51b5,#5c6bc0\)/.test(safetyCss), '上市转债说明区必须沿用安全性说明区颜色');
 assert.ok(cycle.includes("sub === 'redemption'") && cycle.includes('loadBondRedemption'));
 assert.ok(migration.includes('079_convertible_bond_redemption') && migration.includes('analytics.convertible_bond_call_latest'));
@@ -64,7 +64,7 @@ assert.ok(redemptionService.includes("WHEN 'announced' THEN 1 WHEN 'maturity_nea
 assert.ok(redemptionSync.includes("'即将到期'") && redemptionSync.includes("'停止交易'") && redemptionSync.includes("'到期兑付'"), '强赎公告检索必须覆盖到期赎回提示公告');
 assert.ok(redemptionSync.includes('eventParseComplete') && redemptionSync.includes('classified.length'), '强赎公告必须解析全部分类公告并按事件类型校验关键日期');
 assert.ok(redemptionSync.includes('return null') && redemptionSync.includes('不能默认取第一只'), '同一正股多只转债时禁止模糊匹配');
-assert.ok(redemptionCss.includes('color:#172033') && redemptionCss.includes('.bond-redemption-toolbar input,.bond-redemption-toolbar select') && redemptionCss.includes('font-size:13px'), '强赎卡片文字和输入控件必须沿用统一 UI 颜色与样式');
+assert.ok((redemptionCss.includes('color:#172033') || redemptionCss.includes('var(--bond-feature-text)')) && redemptionCss.includes('.bond-redemption-toolbar input,.bond-redemption-toolbar select') && redemptionCss.includes('font-size:13px'), '强赎卡片文字和输入控件必须沿用统一 UI 颜色与样式');
 assert.ok(page.includes("['last_trade_date','停止交易日']") && page.includes("['last_conversion_date','停止转股日']") && !page.includes("['announcement_title','最新公告']"), '强赎表格应显示停止交易日、停止转股日并移除最新公告列');
 assert.ok(callEventParser.includes('PARTIAL_DATE') && callEventParser.includes('停止交易日') && callEventParser.includes('停止转股日') && callEventParser.includes('parser_version": "2"'), '强赎公告解析必须支持不重复年份的停止交易/停止转股日期');
 assert.ok(list.includes('getLatestCallStateMap') && list.includes('JOIN public.bond_unified u'));

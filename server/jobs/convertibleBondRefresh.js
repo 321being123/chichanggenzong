@@ -256,11 +256,45 @@ async function runRedemptionStartupCatchup() {
   }
 }
 
+// 启动补漏：只在公告游标或下修派生结果落后时执行，正常启动不重复请求外部接口。
+// 公告游标落后时沿用公告服务的 3 日重叠窗口，成功后再重算当前行情日。
+async function runRevisionStartupCatchup() {
+  const jobCode = 'convertible_bond_revision_refresh';
+  if (!(await tryClaimJob(jobCode))) return { skipped: true, reason: 'locked' };
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        (SELECT MAX(trade_date)::text FROM market.convertible_bond_daily_metrics) AS market_date,
+        (SELECT MAX(trade_date)::text FROM analytics.convertible_bond_trigger_daily
+          WHERE trigger_type='reset' AND formula_version='reset-v2') AS state_date,
+        (SELECT last_success_date::text FROM ops.sync_cursors
+          WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements') AS announcement_date,
+        (SELECT MAX(trade_date)::text FROM market.trade_calendar
+          WHERE exchange='SSE' AND is_open
+            AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date) AS expected_date`);
+    const row = rows[0] || {};
+    if (!row.market_date) return { skipped: true, reason: 'no_market_data' };
+    let announcement = null;
+    const announcementStale = !row.announcement_date || String(row.announcement_date).slice(0, 10) < String(row.expected_date || row.market_date).slice(0, 10);
+    if (announcementStale) {
+      announcement = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({});
+    }
+    const needsCalculation = !row.state_date || String(row.state_date).slice(0, 10) < String(row.market_date).slice(0, 10) || announcementStale;
+    const calculation = needsCalculation
+      ? await calculateConvertibleBondRevisionStatus(row.market_date)
+      : { skipped: true, reason: 'coverage_ok', tradeDate: row.market_date };
+    return { ok: true, reason: 'startup_catchup', announcement, calculation };
+  } finally {
+    await releaseJob(jobCode);
+  }
+}
+
 module.exports = {
   nextShanghaiDelay,
   bootstrapConvertibleBonds,
   refreshCompleteness,
   runRedemptionStartupCatchup,
+  runRevisionStartupCatchup,
   runRefreshChain,
   runDailyValuation,
   scheduleConvertibleBondRefresh,

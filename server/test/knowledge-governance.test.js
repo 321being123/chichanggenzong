@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { collectVersionErrors, parseArgs, runCheck, splitGitOutput, workingTreeFiles } = require('../../scripts/check-knowledge');
+const { collectVersionErrors, isReleaseMetadataOnly, parseArgs, runCheck, splitGitOutput, workingTreeFiles } = require('../../scripts/check-knowledge');
 
 function write(rootDir, relativePath, content = '') {
   const filePath = path.join(rootDir, relativePath);
@@ -89,6 +89,14 @@ function testVersionMismatchIsRejected() {
   assert.match(collectVersionErrors(rootDir).join('\n'), /package-lock\.json/);
 }
 
+function testReleaseMetadataDoesNotRequireArchitectureDocs() {
+  const rootDir = createFixture();
+  write(rootDir, 'public/changelog.json', '[]');
+  const result = runCheck({ rootDir, changedFiles: ['public/changelog.json'] });
+  assert.strictEqual(isReleaseMetadataOnly(rootDir, ['public/changelog.json']), true);
+  assert.strictEqual(result.ok, true, result.errors.join('\n'));
+}
+
 testArchitectureChangeNeedsDocumentation();
 testArchitectureChangePassesWithDocumentation();
 testMissingRequiredKnowledgeEntryFails();
@@ -97,4 +105,5 @@ testStagedOptionIsRecognized();
 testDefaultWorktreeCollectionIncludesUntrackedBusinessFiles();
 testTrackedPreCommitHookChecksStagedKnowledgeChanges();
 testVersionMismatchIsRejected();
-console.log('knowledge-governance: 8 项检查，失败 0');
+testReleaseMetadataDoesNotRequireArchitectureDocs();
+console.log('knowledge-governance: 9 项检查，失败 0');

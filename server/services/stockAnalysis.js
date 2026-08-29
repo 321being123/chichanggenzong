@@ -290,15 +290,23 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
   return [...new Map(events.map(event => [`${event.source}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event])).values()];
 }
 
-async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey) {
+async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey, options = {}) {
   const startYear = Number(String(startDate || '').slice(0, 4));
   const endYear = Number(String(endDate || '').slice(0, 4));
   if (!startYear || !endYear) return fetchCninfoEvents(tsCode, startDate, endDate, searchKey);
-  const groups = await Promise.all(Array.from({ length: endYear - startYear + 1 }, (_, index) => {
+  const groups = [];
+  // 每个年度查询都会先请求一次同一只股票的 orgId；并发执行会互相抢同一数据集锁。
+  // 顺序查询也能避免在巨潮一分钟预算下瞬时打满请求数。
+  for (let index = 0; index <= endYear - startYear; index += 1) {
     const year = startYear + index;
-    return fetchCninfoEvents(tsCode, year === startYear ? startDate : `${year}0101`,
-      year === endYear ? endDate : `${year}1231`, searchKey).catch(() => []);
-  }));
+    try {
+      groups.push(await fetchCninfoEvents(tsCode, year === startYear ? startDate : `${year}0101`,
+        year === endYear ? endDate : `${year}1231`, searchKey));
+    } catch (error) {
+      if (options.propagateErrors) throw error;
+      groups.push([]);
+    }
+  }
   return groups.flat();
 }
 
@@ -334,12 +342,19 @@ async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
 
 async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
   if (!String(tsCode || '').endsWith('.SZ')) return [];
-  const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [tsCode.slice(0, 6)],
-    channelCode: ['fixed_disc'], pageSize: 100, pageNum: 1 });
-  const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
-    headers: { 'Content-Type': 'application/json', Referer: 'https://www.szse.cn/disclosure/listed/fixed/index.html',
-      'X-Requested-With': 'XMLHttpRequest' }, body });
-  return (payload.data || []).filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(row => ({
+  const pageSize = 100;
+  const rows = [];
+  for (let pageNum = 1; pageNum <= 20; pageNum += 1) {
+    const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [tsCode.slice(0, 6)],
+      channelCode: ['listedNotice_disc'], pageSize, pageNum });
+    const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Referer: 'https://www.szse.cn/disclosure/listed/notice/index.html',
+        'X-Requested-With': 'XMLHttpRequest' }, body });
+    const pageRows = Array.isArray(payload.data) ? payload.data : [];
+    rows.push(...pageRows);
+    if (pageNum * pageSize >= Number(payload.announceCount || pageRows.length) || !pageRows.length) break;
+  }
+  return rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(row => ({
     source: 'szse', source_number: officialAnnouncementNumber(row), event_date: String(row.publishTime || '').slice(0, 10).replace(/-/g, ''), title: row.title || '',
     url: `https://disc.static.szse.cn/download${row.attachPath}`, category: eventCategory(row.title || ''), is_official: true, raw: row,
   }));

@@ -8,6 +8,7 @@
 .bond-revision-status-proposed,.bond-revision-status-meeting_pending { color:#b06000; background:#fff3d6; }
 .bond-revision-status-met_pending,.bond-revision-status-near { color:#b42318; background:#fdecea; }
 .bond-revision-status-locked { color:#5f6368; background:#f1f3f4; }
+.bond-revision-status-floor_blocked { color:#7a4e00; background:#fff4d6; }
 .bond-revision-status-tracking { color:#2367a6; background:#e8f1fb; }
 .bond-revision-status-terminated,.bond-revision-status-incomplete { color:#6b7280; background:#f3f4f6; }
 @media (max-width: 760px) { .bond-revision-stats { grid-template-columns:repeat(2,minmax(100px,1fr)); } .bond-revision-toolbar input[type=search] { min-width:0; flex:1 1 170px; } }

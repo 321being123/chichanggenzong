@@ -49,7 +49,16 @@ assert.strictEqual(afterFirstTradeParsed.next_eligible_date, '2026-07-17');
 const countingFixture = '公司于2026年7月13日召开董事会，决定未来两个月内不下修，即2026年7月14日至2026年9月13日。自2026年9月14日起算。';
 const counting = spawnSync(python, ['-c', code, modulePath, countingFixture], { encoding: 'utf8' });
 assert.strictEqual(counting.status, 0, counting.stderr || counting.stdout);
-assert.strictEqual(JSON.parse(counting.stdout).next_eligible_date, '2026-09-14');
+const countingParsed = JSON.parse(counting.stdout);
+assert.strictEqual(countingParsed.next_eligible_date, '2026-09-14');
+assert.strictEqual(countingParsed.lock_declared, true);
+
+const noDurationFixture = '公司于2026年3月7日召开董事会，决定本次不向下修正转股价格。';
+const noDuration = spawnSync(python, ['-c', code, modulePath, noDurationFixture], { encoding: 'utf8' });
+assert.strictEqual(noDuration.status, 0, noDuration.stderr || noDuration.stdout);
+const noDurationParsed = JSON.parse(noDuration.stdout);
+assert.strictEqual(noDurationParsed.lock_declared, false);
+assert.strictEqual(noDurationParsed.no_revision_evidence, true);
 
 const symbolicFixture = [
   '公司董事会决定本次不向下修正转股价格。',
@@ -73,5 +82,19 @@ assert.strictEqual(maturity.status, 0, maturity.stderr || maturity.stdout);
 const maturityParsed = JSON.parse(maturity.stdout);
 assert.strictEqual(maturityParsed.valid_until, '2026-11-04');
 assert.strictEqual(maturityParsed.next_eligible_date, '2026-11-05');
+
+// 已实施下修公告正文也可能声明一段时间内不得再次下修（火星转债样例）。
+const implementedLockFixture = [
+  '董事会决定将转股价格由33.10元/股向下修正为16.00元/股，修正后的转股价格自2026年8月7日起生效。',
+  '自2026年8月6日至2026年9月30日，如再次触发转股价格的向下修正条件，公司将不再进行下修。',
+  '下一触发转股价格修正条件的时间从2026年10月1日重新起算。',
+].join('');
+const implementedLock = spawnSync(python, ['-c', code, modulePath, implementedLockFixture], { encoding: 'utf8' });
+assert.strictEqual(implementedLock.status, 0, implementedLock.stderr || implementedLock.stdout);
+const implementedLockParsed = JSON.parse(implementedLock.stdout);
+assert.strictEqual(implementedLockParsed.valid_until, '2026-09-30');
+assert.strictEqual(implementedLockParsed.next_eligible_date, '2026-10-01');
+assert.strictEqual(implementedLockParsed.lock_declared, true);
+assert.strictEqual(implementedLockParsed.no_revision_evidence, false);
 
 console.log('convertible bond no-revision parser tests passed');

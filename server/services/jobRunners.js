@@ -54,6 +54,13 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
         fromDate: context.fromDate,
         toDate: businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : context.toDate,
         limit: context.limit,
+        cachedOnly: false,
+      });
+    case 'convertible_bond_announcement_reparse':
+      return require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({
+        cachedOnly: true,
+        retryFailed: true,
+        limit: context.limit,
       });
     case 'convertible_bond_valuation_refresh':
       return require('../jobs/convertibleBondRefresh').runRefreshChain(reason, businessDate);

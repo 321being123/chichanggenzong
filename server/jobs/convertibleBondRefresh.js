@@ -269,17 +269,36 @@ async function runRevisionStartupCatchup() {
           WHERE trigger_type='reset' AND formula_version='reset-v2') AS state_date,
         (SELECT last_success_date::text FROM ops.sync_cursors
           WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements') AS announcement_date,
+        (SELECT COUNT(*)::int FROM (
+           SELECT DISTINCT ON (instrument_id)
+                  parser_version,next_eligible_date,raw_payload
+             FROM analytics.convertible_bond_announcement_history
+            WHERE fact_type='no_revision'
+            ORDER BY instrument_id,announced_at DESC,fact_id DESC
+        ) latest_no_revision
+         WHERE next_eligible_date IS NULL
+           AND (parser_version IS DISTINCT FROM '7'
+                OR NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+           AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_parse,
+        (SELECT COUNT(*)::int FROM ops.sync_cursors
+          WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'
+            AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors,
         (SELECT MAX(trade_date)::text FROM market.trade_calendar
           WHERE exchange='SSE' AND is_open
             AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date) AS expected_date`);
     const row = rows[0] || {};
     if (!row.market_date) return { skipped: true, reason: 'no_market_data' };
     let announcement = null;
-    const announcementStale = !row.announcement_date || String(row.announcement_date).slice(0, 10) < String(row.expected_date || row.market_date).slice(0, 10);
+    const announcementStale = !row.announcement_date || String(row.announcement_date).slice(0, 10) < String(row.expected_date || row.market_date).slice(0, 10)
+      || Number(row.announcement_errors || 0) > 0;
     if (announcementStale) {
       announcement = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({});
+    } else if (Number(row.pending_parse || 0) > 0) {
+      announcement = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({ cachedOnly: true });
     }
-    const needsCalculation = !row.state_date || String(row.state_date).slice(0, 10) < String(row.market_date).slice(0, 10) || announcementStale;
+    const needsCalculation = !row.state_date || String(row.state_date).slice(0, 10) < String(row.market_date).slice(0, 10)
+      || announcementStale || Boolean(announcement && announcement.changed_count);
     const calculation = needsCalculation
       ? await calculateConvertibleBondRevisionStatus(row.market_date)
       : { skipped: true, reason: 'coverage_ok', tradeDate: row.market_date };

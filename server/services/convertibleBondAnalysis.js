@@ -1056,15 +1056,30 @@ function runNoRevisionExtractor(executable, events) {
   });
 }
 
-async function extractNoRevisionPeriods(events, cachedRows) {
-  // 只保留标题明确表达“不向下修正”的缓存；旧版本曾把普通转股价调整和
-  // 已实施下修误写成锁定记录，若继续带入会把重新起算日推回错误日期。
+async function extractNoRevisionPeriods(events, cachedRows, { allowFailed = false } = {}) {
+  // 保留正文解析确认过锁定期的实施公告；旧版本只按标题筛“不向下修正”，
+  // 会漏掉“已下修但公告正文规定一段时间内不得再次下修”的公告。
   const cached = new Map((cachedRows || [])
-    .filter(row => /(?:不向下修正|不下修|不修正)/.test(String(row.summary || '')))
+    .filter(row => /(?:不向下修正|不下修|不修正)/.test(String(row.summary || ''))
+      || row.lock_declared === true || row.no_revision_evidence === true)
     .map(row => [isoDate(row.announced_at), row]));
-  // 不下修决定有时写在“转股价格调整”公告正文中，不能只凭标题筛选。
-  const candidates = (events || []).filter(event => revisionDecision(event.title) && event.url &&
-    (cached.get(isoDate(event.event_date)) || {}).parser_version !== '7').slice(0, 10);
+  // 不下修决定或锁定期有时写在“转股价格调整/实施”公告正文中，不能只凭标题筛选。
+  const candidates = (events || []).filter(event => {
+    const decision = revisionDecision(event.title);
+    const cache = cached.get(isoDate(event.event_date)) || {};
+    const cacheComplete = cache.parser_version === '7'
+      && (cache.no_revision_evidence === true || cache.lock_declared === true);
+    return ['no_revision', 'revised', 'adjusted'].includes(decision) && event.url
+      && (!cacheComplete || (allowFailed && cache.reparse_status === 'failed'))
+      && (allowFailed || cache.reparse_status !== 'failed');
+  }).slice(0, 10);
+  const markFailure = (event, reason) => {
+    const row = cached.get(isoDate(event && event.event_date));
+    if (row) {
+      row.reparse_status = 'failed';
+      row.reparse_reason = reason;
+    }
+  };
   if (candidates.length) {
     let extracted = null;
     let lastError = null;
@@ -1074,6 +1089,7 @@ async function extractNoRevisionPeriods(events, cachedRows) {
     if (!extracted) {
       // 单只债券的 PDF 解析失败不能阻断全市场公告回填；保留该券已有缓存，下一次重叠窗口再补偿。
       console.warn('[bond-revision] 不下修期限解析失败，保留缓存并继续处理其他债券:', lastError && lastError.message);
+      candidates.forEach(event => markFailure(event, 'parser_execution_failed'));
       return [...cached.values()].sort((a,b) => String(b.announced_at).localeCompare(String(a.announced_at)));
     }
     for (const item of extracted || []) {
@@ -1081,9 +1097,15 @@ async function extractNoRevisionPeriods(events, cachedRows) {
       const announcedAt = isoDate(event && event.event_date);
       const nextEligible = isoDate(item.next_eligible_date);
       const explicitTitle = /(?:不向下修正|不下修|不修正)/.test(String(event && event.title || ''));
-      if (!item.lock_declared || (!explicitTitle && !item.no_revision_evidence)
-        || (nextEligible && announcedAt && nextEligible < announcedAt)) {
+      const lockEvidence = explicitTitle || item.no_revision_evidence === true || item.lock_declared === true;
+      // 普通实施公告没有锁定期是正常结果，不应被记录成解析失败；只有正文明确了
+      // 不下修或锁定期，才作为 no_revision 事实返回并写入历史表。
+      if (!lockEvidence) continue;
+      // 明确“不下修”但公告未承诺锁定期限时，仍是有效事实；这类记录不应
+      // 阻断数学计数，只需保持 lock_declared=false、next_eligible_date=null。
+      if ((nextEligible && announcedAt && nextEligible < announcedAt)) {
         console.warn(`[bond-revision] 不下修期限解析不完整，跳过该条并保留缓存：${event ? event.title : item.source_url}`);
+        markFailure(event, 'parser_output_incomplete');
         continue;
       }
       if (event) cached.set(isoDate(event.event_date), Object.assign(item, { announced_at: isoDate(event.event_date) }));
@@ -1191,6 +1213,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
           JSON.stringify(Object.assign({}, event, {
             lock_start_date: period.lock_start_date || null,
             lock_declared: Boolean(period.lock_declared),
+            no_revision_evidence: Boolean(period.no_revision_evidence),
             parser_version: period.parser_version || null,
           }))]
       );
@@ -1761,7 +1784,10 @@ async function loadProspectusCache(tsCode) {
 
 async function loadNoRevisionCache(tsCode) {
   const { rows } = await pool.query(
-    `SELECT h.announced_at,h.valid_until,h.next_eligible_date,h.summary,h.source_url,h.parser_version
+    `SELECT h.announced_at,h.valid_until,h.next_eligible_date,h.summary,h.source_url,h.parser_version,
+            COALESCE((h.raw_payload->>'lock_declared')::boolean,false) AS lock_declared,
+            COALESCE((h.raw_payload->>'no_revision_evidence')::boolean,false) AS no_revision_evidence,
+            COALESCE(h.raw_payload->'reparse'->>'status','') AS reparse_status
        FROM analytics.convertible_bond_announcement_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
       WHERE i.canonical_code=$1 AND h.fact_type='no_revision' ORDER BY h.announced_at DESC`, [tsCode]
   );
@@ -1777,11 +1803,28 @@ async function loadPriceChangeCache(tsCode) {
   return rows;
 }
 
+// 定点补回历史实施公告正文中的锁定期：只在明确传入债券代码的 cachedOnly
+// 重解析中读取事件事实，避免启动补漏把全市场所有实施公告重复下载。
+async function loadRevisionEventCache(tsCode) {
+  const { rows } = await pool.query(
+    `SELECT e.announced_at,e.source_url,e.source_number,e.title
+       FROM event.convertible_bond_revision_events e
+       JOIN core.instruments i ON i.instrument_id=e.instrument_id
+      WHERE i.canonical_code=$1 AND e.event_type='implemented' AND NULLIF(e.source_url,'') IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM analytics.convertible_bond_announcement_history h
+           WHERE h.instrument_id=e.instrument_id AND h.fact_type='no_revision' AND h.source_url=e.source_url
+        )
+      ORDER BY e.announced_at DESC,e.event_id DESC LIMIT 10`, [tsCode]
+  );
+  return rows;
+}
+
 // 公告事实入库链：只负责抓取并解析“不下修/转股价格调整”公告，分析接口不再直接访问公告源。
-async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate = null, toDate = null, limit = null } = {}) {
+async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate = null, toDate = null, limit = null, cachedOnly = false, retryFailed = false } = {}) {
   const end = isoDate(toDate) || tsDateStr(new Date());
   const normalizedCodes = (Array.isArray(tsCodes) ? tsCodes : [tsCodes]).map(normalizeBondCode).filter(Boolean);
-  const globalSync = !normalizedCodes.length && !fromDate;
+  const globalSync = !normalizedCodes.length && !fromDate && !cachedOnly;
   const cursorResult = globalSync ? await pool.query(
     `SELECT last_success_date::text AS last_success_date,last_error
        FROM ops.sync_cursors
@@ -1815,6 +1858,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   );
   const results = [];
   const sourceFailures = [];
+  let changedCount = 0;
   for (const profile of profiles) {
     const start = scanStart || isoDate(profile.list_date) || isoDate(profile.value_date) || end;
     const stockCode = String(profile.stock_code || '');
@@ -1823,10 +1867,11 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
       : stockCode.endsWith('.SZ')
         ? () => fetchSzseEvents(stockCode, start, end, '转股价格')
         : () => fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true });
-    const settled = await Promise.allSettled([primary()]);
-    const primaryEvents = settled[0].status === 'fulfilled' ? (settled[0].value || []) : [];
+    // cachedOnly 只重跑库内官方 PDF，不重新请求公告列表，专门用于补齐旧解析器积压。
+    const settled = cachedOnly ? [] : await Promise.allSettled([primary()]);
+    const primaryEvents = settled[0] && settled[0].status === 'fulfilled' ? (settled[0].value || []) : [];
     // 交易所公告是主源；仅主源无结果时才补查巨潮，控制调用预算并保留深市兜底。
-    if (!primaryEvents.length && (stockCode.endsWith('.SH') || stockCode.endsWith('.SZ'))) {
+    if (!cachedOnly && !primaryEvents.length && (stockCode.endsWith('.SH') || stockCode.endsWith('.SZ'))) {
       settled.push(await fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true })
         .then(value => ({ status: 'fulfilled', value }))
         .catch(reason => ({ status: 'rejected', reason })));
@@ -1836,19 +1881,36 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
       .map(event => [announcementSourceKey(event), event])).values()];
     const noRevisionCache = await loadNoRevisionCache(profile.ts_code);
     const priceChangeCache = await loadPriceChangeCache(profile.ts_code);
+    const revisionEventCache = cachedOnly && normalizedCodes.length
+      ? await loadRevisionEventCache(profile.ts_code) : [];
     // 来源临时失败时，仍可用库内已有的官方 PDF 重新跑新版解析器。
-    const cachedAnnouncements = noRevisionCache.filter(row => row.source_url && row.parser_version !== '7').map(row => ({
+    // 只回放该债最新一条仍待解析的公告，避免每次启动重复下载同一债券的历史 PDF。
+    const latestNoRevision = noRevisionCache[0];
+    const cachedRow = latestNoRevision && latestNoRevision.source_url
+      && latestNoRevision.next_eligible_date == null
+      && (latestNoRevision.parser_version !== '7'
+        || (!latestNoRevision.lock_declared && !latestNoRevision.no_revision_evidence))
+      && (retryFailed || latestNoRevision.reparse_status !== 'failed')
+      ? latestNoRevision : null;
+    const cachedAnnouncements = cachedRow ? [{
+      source: String(cachedRow.source_url).includes('szse.cn') ? 'szse' : (String(cachedRow.source_url).includes('sse.com.cn') ? 'sse' : 'cninfo'),
+      source_number: cachedRow.source_url, event_date: isoDate(cachedRow.announced_at), title: cachedRow.summary || '',
+      url: cachedRow.source_url, category: '转股价格', is_official: true, raw: { cached_reparse: true },
+    }] : [];
+    const cachedRevisionAnnouncements = revisionEventCache.map(row => ({
       source: String(row.source_url).includes('szse.cn') ? 'szse' : (String(row.source_url).includes('sse.com.cn') ? 'sse' : 'cninfo'),
-      source_number: row.source_url, event_date: isoDate(row.announced_at), title: row.summary || '',
-      url: row.source_url, category: '转股价格', is_official: true, raw: { cached_reparse: true },
+      source_number: row.source_number || row.source_url, event_date: isoDate(row.announced_at), title: row.title || '',
+      url: row.source_url, category: '转股价格', is_official: true, raw: { cached_reparse: true, revision_event_cache: true },
     }));
-    const announcements = [...new Map([...freshAnnouncements, ...cachedAnnouncements]
+    const announcements = [...new Map([...freshAnnouncements, ...cachedAnnouncements, ...cachedRevisionAnnouncements]
       .map(event => [announcementSourceKey(event), event])).values()];
     if (rejected.length && !announcements.length) {
       sourceFailures.push({ ts_code: profile.ts_code, messages: rejected.map(item => String(item.reason && item.reason.message || item.reason || 'unknown')).slice(0, 3) });
     }
-    const noRevisionPeriods = await extractNoRevisionPeriods(announcements, noRevisionCache);
+    const noRevisionPeriods = await extractNoRevisionPeriods(announcements, noRevisionCache, { allowFailed: retryFailed || !cachedOnly });
     const priceChangeDetails = await extractPriceChangeDetails(announcements, priceChangeCache);
+    const cachedReparseChanged = Boolean(cachedRow && noRevisionPeriods.some(row => isoDate(row.announced_at) === isoDate(cachedRow.announced_at)
+      && row.reparse_status !== 'failed' && row.parser_version === '7'));
     if (announcements.length) {
       const client = await pool.connect();
       try {
@@ -1858,6 +1920,17 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
           sources.cninfo || sources.calculated, noRevisionPeriods, priceChangeDetails);
         await saveRevisionEvents(client, profile.instrument_id, announcements, priceChangeDetails,
           sources.cninfo || sources.calculated);
+        for (const failure of noRevisionPeriods.filter(row => row.reparse_status === 'failed')) {
+          await client.query(
+            `UPDATE fundamental.convertible_bond_no_revision_history
+                SET raw_payload=jsonb_set(COALESCE(raw_payload,'{}'::jsonb),'{reparse}',
+                  COALESCE(raw_payload->'reparse','{}'::jsonb) || jsonb_build_object(
+                    'parser_version','7','status','failed','attempted_at',now(),
+                    'reason',$3::text,'attempts',COALESCE((raw_payload->'reparse'->>'attempts')::int,0)+1))
+              WHERE instrument_id=$1 AND announced_at=$2::date`,
+            [profile.instrument_id, isoDate(failure.announced_at), failure.reparse_reason || 'parser_output_incomplete']
+          );
+        }
         await client.query('COMMIT');
       } catch (error) {
         await client.query('ROLLBACK');
@@ -1873,6 +1946,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         throw error;
       } finally { client.release(); }
     }
+    if (freshAnnouncements.length || priceChangeDetails.length || cachedReparseChanged) changedCount++;
     results.push({ ts_code: profile.ts_code, discovered: freshAnnouncements.length,
       no_revision: noRevisionPeriods.length, price_changes: priceChangeDetails.length });
   }
@@ -1896,7 +1970,8 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
          last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`, [end]
     );
   }
-  return { ok: true, fromDate: scanStart || null, toDate: end, count: results.length, cursorDate: cursorDate || null, results };
+  return { ok: true, fromDate: scanStart || null, toDate: end, count: results.length, changed_count: changedCount,
+    cursorDate: cursorDate || null, results };
 }
 
 async function loadRatingSourceCache(tsCode) {

@@ -126,7 +126,8 @@ def extract_period(text):
         "lock_start_date": lock_start.isoformat() if lock_start else None,
         "valid_until": lock_end.isoformat() if lock_end else None,
         "next_eligible_date": restart_date.isoformat() if restart_date else None,
-        "lock_declared": bool(duration or period or restart_matches or after_first_trade_matches or bulletin_ends or named_ends or next_day_restart or symbolic_lock),
+        "lock_declared": bool(duration or period or restart_matches or after_first_trade_matches
+                               or bulletin_ends or named_ends or explicit_range or next_day_restart or symbolic_lock),
         # 普通权益分派公告也会出现停牌/复牌日期，只有正文明确出现不下修决定
         # 时才允许把解析出的日期作为下修锁定期。
         "no_revision_evidence": bool(re.search(r"(?:不向下修正|不下修|不修正)", decision_text)),

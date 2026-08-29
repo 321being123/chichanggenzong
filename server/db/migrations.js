@@ -3744,6 +3744,14 @@ async function rebuildConvertibleBondRevisionLatestView() {
            p.current_conv_price,p.remain_size,p.maturity_date,p.conv_start_date,p.conv_end_date,p.conv_stop_date,
            iss.issue_type,md.trade_date,md.close AS bond_close,md.conversion_value,md.conversion_premium_pct,
            sb.trade_date AS stock_trade_date,sb.close AS stock_close,sv.pb AS stock_pb,
+           CASE WHEN t.net_asset_floor_applicable AND sb.trade_date = sv.trade_date
+                      AND sb.close > 0 AND sv.pb > 0
+                THEN sb.close / sv.pb END AS net_asset_floor_value,
+           CASE WHEN tr.calculated_status='floor_blocked' THEN true
+                WHEN t.net_asset_floor_applicable AND p.current_conv_price > 0
+                      AND sb.trade_date = sv.trade_date
+                      AND sb.close > 0 AND sv.pb > 0
+                THEN p.current_conv_price <= sb.close / sv.pb END AS net_asset_floor_blocked,
            t.term_id,t.trigger_ratio,t.observation_days,t.required_days,t.clause_text AS reset_clause,
            t.revision_direction,t.comparison_operator,t.parse_status AS term_parse_status,t.parser_version AS term_parser_version,
            t.net_asset_floor_applicable,t.effective_from AS term_effective_from,
@@ -3759,24 +3767,48 @@ async function rebuildConvertibleBondRevisionLatestView() {
            CASE WHEN tr.close_price IS NOT NULL AND tr.trigger_price > 0
                 THEN tr.close_price / tr.trigger_price - 1 END AS distance_to_trigger_pct,
            CASE
-             WHEN ev.event_type='implemented' THEN 'implemented'
+             -- 集思录只把最近 3 个交易日的已实施/未通过事件置顶；历史事件保留详情，但恢复数学计数。
+             WHEN ev.event_type='implemented'
+              AND (SELECT COUNT(*) FROM market.trade_calendar tc_event
+                     WHERE tc_event.exchange='SSE' AND tc_event.is_open
+                       AND tc_event.trade_date > ev.announced_at
+                       AND tc_event.trade_date <= md.trade_date) < 3 THEN 'implemented'
              WHEN ev.event_type='meeting_approved' THEN 'approved'
              WHEN ev.event_type='meeting_notice' THEN 'meeting_pending'
              -- 董事会提议通常应在一个月内进入股东会流程；超过 30 个自然日仍无后续公告，
              -- 不再作为“当前待处理”展示，避免把历史提议累计到今天。
              WHEN ev.event_type='proposal'
               AND ev.announced_at >= (md.trade_date - INTERVAL '30 days') THEN 'proposed'
-             WHEN ev.event_type IN ('meeting_rejected','terminated') THEN 'terminated'
+             WHEN ev.event_type IN ('meeting_rejected','terminated')
+              AND (SELECT COUNT(*) FROM market.trade_calendar tc_event
+                     WHERE tc_event.exchange='SSE' AND tc_event.is_open
+                       AND tc_event.trade_date > ev.announced_at
+                       AND tc_event.trade_date <= md.trade_date) < 3 THEN 'terminated'
+             -- 明确不下修但新版解析尚未完成时，禁止继续沿用旧窗口计数。
+             WHEN nr.announced_at IS NOT NULL
+              AND nr.next_eligible_date IS NULL
+              AND (nr.parser_version IS DISTINCT FROM '7'
+                   OR NOT (COALESCE(nr.no_revision_evidence,false) OR COALESCE(nr.lock_declared,false))) THEN 'incomplete'
              WHEN (nr.next_eligible_date IS NOT NULL AND nr.next_eligible_date > COALESCE(tr.trade_date,(SELECT trade_date FROM market_date),CURRENT_DATE))
                OR (nr.next_eligible_date IS NULL AND nr.lock_declared) THEN 'locked'
              WHEN t.parse_status <> 'complete' OR tr.data_status <> 'complete' OR tr.trade_date IS NULL THEN 'incomplete'
+             -- 当前转股价已不高于募集说明书约定的每股净资产，继续累计数学触发日
+             -- 没有可执行意义；保留进度明细，但从“已满足待公告/接近触发”中排除。
+             WHEN tr.calculated_status='floor_blocked' THEN 'floor_blocked'
+             WHEN tr.calculated_status IN ('met','tracking')
+              AND t.net_asset_floor_applicable
+              AND p.current_conv_price > 0 AND sb.trade_date = sv.trade_date
+              AND sb.close > 0 AND sv.pb > 0
+              AND p.current_conv_price <= sb.close / sv.pb THEN 'floor_blocked'
              WHEN tr.calculated_status='met' THEN 'met_pending'
-             WHEN tr.calculated_status='tracking' AND COALESCE(tr.minimum_future_days,tr.required_days-tr.matched_days) BETWEEN 1 AND 5 THEN 'near'
+             WHEN tr.calculated_status='tracking' AND GREATEST(tr.required_days-tr.matched_days,0) BETWEEN 1 AND 5 THEN 'near'
              WHEN tr.calculated_status='tracking' THEN 'tracking'
              ELSE 'incomplete'
            END AS business_status,
            CASE WHEN tr.required_days IS NOT NULL AND tr.matched_days IS NOT NULL
-                THEN COALESCE(tr.minimum_future_days,GREATEST(tr.required_days-tr.matched_days,0)) END AS remaining_days
+               THEN GREATEST(tr.required_days-tr.matched_days,0) END AS remaining_days,
+           CASE WHEN tr.required_days IS NOT NULL AND tr.matched_days IS NOT NULL
+               THEN COALESCE(tr.minimum_future_days,GREATEST(tr.required_days-tr.matched_days,0)) END AS rolling_remaining_days
       FROM latest_market md
       JOIN core.instruments i ON i.instrument_id=md.instrument_id
       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
@@ -3813,8 +3845,9 @@ async function rebuildConvertibleBondRevisionLatestView() {
                                                             FROM market.trade_calendar tc0
                                                            WHERE tc0.exchange='SSE' AND tc0.is_open)
                             AND tc.trade_date >= nr0.next_eligible_date), nr0.next_eligible_date) AS next_eligible_date,
-               summary,
-               COALESCE((raw_payload->>'lock_declared')::boolean,false) AS lock_declared
+               summary,COALESCE((raw_payload->>'parser_version'),'') AS parser_version,
+               COALESCE((raw_payload->>'lock_declared')::boolean,false) AS lock_declared,
+               COALESCE((raw_payload->>'no_revision_evidence')::boolean,false) AS no_revision_evidence
           FROM fundamental.convertible_bond_no_revision_history nr0
          WHERE nr0.instrument_id=i.instrument_id
          ORDER BY nr0.announced_at DESC,nr0.history_id DESC LIMIT 1
@@ -4013,6 +4046,52 @@ async function migration100ConvertibleBondRevisionRollingRemainingDays() {
   await rebuildConvertibleBondRevisionLatestView();
 }
 
+// ========== 101：下修状态与集思录口径对齐 =============
+// 已实施/未通过事件仅在最近 3 个交易日置顶；历史事件回到数学计数。
+// 同时把未完成的新版本“不下修”解析标记为 incomplete，避免继续累计旧窗口。
+async function migration101ConvertibleBondRevisionStatusParity() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 102：下修解析质量门槛修正 =============
+// 仅对“没有下一次日期且解析版本/正文证据缺失”的记录置为 incomplete；
+// 已有有效下一次日期的历史旧版本仍按原有锁定日期参与计算。
+async function migration102ConvertibleBondRevisionQualityGateFix() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 103：明确不下修但未承诺期限的公告 =============
+// 新版解析器确认正文明确“不下修”即可作为有效事实；没有锁定期限时继续使用
+// 数学窗口，不再把该券误报为数据不完整。旧版本记录仍保持质量门槛，等待重解析。
+async function migration103ConvertibleBondRevisionNoRevisionEvidence() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 104：实施公告正文锁定期口径 =============
+// 实施公告正文也可能规定一段时间内不得再次下修；正文证据或锁定期任一成立
+// 即视为解析完成，避免已落库的实施事件被错误标记为待解析/数学状态。
+async function migration104ConvertibleBondRevisionImplementedLockEvidence() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 105：下修净资产底线限制 =============
+// 转股价已经不高于募集说明书约定的每股净资产时，数学触发不再代表可执行下修。
+async function migration105ConvertibleBondRevisionNetAssetFloor() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 106：下修净资产底线状态视图补强 =============
+// 兼容迁移 105 已执行的数据库，确保视图同时识别已落库的 floor_blocked 计算状态。
+async function migration106ConvertibleBondRevisionNetAssetFloorViewFix() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 107：下修净资产底线同日口径 =============
+// 正股收盘价与 PB 必须来自同一交易日，避免行情或估值水位错位导致误判。
+async function migration107ConvertibleBondRevisionNetAssetFloorSameDay() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4114,6 +4193,13 @@ const MIGRATIONS = [
   { version: '098_convertible_bond_revision_calendar_date_fix', up: migration098ConvertibleBondRevisionCalendarDateFix },
   { version: '099_convertible_bond_revision_body_evidence_cleanup', up: migration099ConvertibleBondRevisionBodyEvidenceCleanup },
   { version: '100_convertible_bond_revision_rolling_remaining_days', up: migration100ConvertibleBondRevisionRollingRemainingDays },
+  { version: '101_convertible_bond_revision_status_parity', up: migration101ConvertibleBondRevisionStatusParity },
+  { version: '102_convertible_bond_revision_quality_gate_fix', up: migration102ConvertibleBondRevisionQualityGateFix },
+  { version: '103_convertible_bond_revision_no_revision_evidence', up: migration103ConvertibleBondRevisionNoRevisionEvidence },
+  { version: '104_convertible_bond_revision_implemented_lock_evidence', up: migration104ConvertibleBondRevisionImplementedLockEvidence },
+  { version: '105_convertible_bond_revision_net_asset_floor', up: migration105ConvertibleBondRevisionNetAssetFloor },
+  { version: '106_convertible_bond_revision_net_asset_floor_view_fix', up: migration106ConvertibleBondRevisionNetAssetFloorViewFix },
+  { version: '107_convertible_bond_revision_net_asset_floor_same_day', up: migration107ConvertibleBondRevisionNetAssetFloorSameDay },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

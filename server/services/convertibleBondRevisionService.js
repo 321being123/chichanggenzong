@@ -8,7 +8,7 @@ const NEAR_REMAINING_DAYS = 5;
 const REVISION_SELECT_FIELDS = [
   'business_status','security_code','ts_code','bond_name','bond_close','remain_size','stock_instrument_id',
   'stock_name','stock_code','current_conv_price','conversion_value','conversion_premium_pct',
-  'net_asset_floor_applicable','trigger_ratio','trigger_price','distance_to_trigger_pct','matched_days','required_days','remaining_days',
+  'net_asset_floor_applicable','net_asset_floor_value','net_asset_floor_blocked','trigger_ratio','trigger_price','distance_to_trigger_pct','matched_days','required_days','remaining_days','rolling_remaining_days',
   'observation_days','minimum_future_days','no_revision_announced_at','no_revision_valid_until','next_eligible_date','official_announced_at',
   'meeting_date','price_after','effective_date','reached_floor','official_source_url','official_source_number',
   'official_title','official_summary','trade_date','maturity_date','conv_start_date','conv_end_date',
@@ -206,7 +206,15 @@ async function loadLatestStockMetrics(stockIds, targetDate) {
   for (const row of valuations.rows) {
     const key = String(row.instrument_id);
     if (!result.has(key)) result.set(key, {});
-    result.get(key).stock_pb = numberOrNull(row.pb);
+    const item = result.get(key);
+    item.stock_pb = numberOrNull(row.pb);
+    // Tushare daily_basic 的 PB 采用最近一期已披露净资产，收盘价 / PB
+    // 可还原同一口径的每股净资产；必须与 PB 使用同一交易日，避免行情水位错位。
+    const valuationTradeDate = dateText(row.trade_date);
+    item.net_asset_floor_value = item.stock_trade_date === valuationTradeDate
+      && item.stock_close > 0 && item.stock_pb > 0
+      ? Number((item.stock_close / item.stock_pb).toFixed(8)) : null;
+    item.net_asset_floor_trade_date = valuationTradeDate;
   }
   return result;
 }
@@ -232,30 +240,32 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
   const requiredDays = numberOrNull(bond.required_days);
   const currentPrice = effectiveConversionPrice(bond.current_conv_price, changes, openDates[0]);
   const triggerPrice = ratio != null && currentPrice > 0 ? currentPrice * ratio : null;
+  const netAssetFloorApplicable = bond.net_asset_floor_applicable === true || String(bond.net_asset_floor_applicable || '').toLowerCase() === 'true';
+  const netAssetFloorValue = numberOrNull(bond.net_asset_floor_value);
+  // 募集说明书约定转股价不得低于每股净资产；当前转股价已经不高于
+  // 净资产时，数学上虽可能满足触发条件，但实际没有可执行的下修空间。
+  const netAssetFloorBlocked = netAssetFloorApplicable && currentPrice > 0
+    && netAssetFloorValue != null && currentPrice <= netAssetFloorValue;
   const nextEligible = dateText(bond.next_eligible_date);
   const locked = nextEligible ? openDates[0] < nextEligible : Boolean(bond.no_revision_lock_declared);
-  // 下修条款写的是“存续期间”，起算点应为发行/条款生效日；转股开始日不是下修观察窗口的门槛。
-  // 现有历史数据把初始条款 effective_from 写成上市日，优先回到 value_date；真正后续修订仍使用修订生效日。
+  // 下修条款写的是“存续期间”，但上市前没有可交易的转债观察样本，不能把上市前
+  // 正股行情计入窗口；起点取发行/条款生效日与上市日的较晚者。转股开始日仍不是门槛。
+  // 现有历史数据把初始条款 effective_from 写成上市日，优先回到 value_date，再与 list_date 取较晚者。
   const termDate = dateText(bond.effective_from);
   const listDate = dateText(bond.list_date);
   const valueDate = dateText(bond.value_date);
   const baseStart = valueDate && (!termDate || termDate === listDate || termDate === '0001-01-01')
     ? valueDate : (termDate || valueDate || listDate);
   const revisionStart = successfulRevisionStartDate(changes, openDates[0]);
-  const startDate = [baseStart, nextEligible, revisionStart].filter(Boolean).sort().pop() || null;
+  // 不下修锁定只影响业务状态，不应把历史观察窗口清空。集思录仍展示锁定前的
+  // 数学进度；只有已知的下一次可起算日且当前未锁定时，才从该日期重新起算。
+  const startDate = [baseStart, listDate, revisionStart, ...(locked ? [] : [nextEligible])]
+    .filter(Boolean).sort().pop() || null;
   if (!isValidTerm(bond) || !bond.stock_instrument_id || !openDates.length) {
     return {
       instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice: null,
       matchedDays: null, requiredDays, observationDays, minimumFutureDays: null, status: 'unknown', dataStatus: 'incomplete',
       diagnostics: { formula: FORMULA_VERSION, reason: !isValidTerm(bond) ? 'invalid_reset_term' : 'missing_trade_calendar', term_id: bond.term_id || null },
-    };
-  }
-  if (locked) {
-    return {
-      instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice: null,
-      matchedDays: 0, requiredDays, observationDays, minimumFutureDays: null, status: 'not_active', dataStatus: 'complete',
-      diagnostics: { formula: FORMULA_VERSION, term_id: bond.term_id || null, no_revision_until: bond.next_eligible_date,
-        eligible_from: nextEligible, locked: true },
     };
   }
   if (startDate && openDates[0] < startDate) {
@@ -280,7 +290,9 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
     ? rows.filter(row => row.conversion_price > 0 && row.close < row.conversion_price * ratio).length : null;
   const closePrice = rows[0] ? rows[0].close : null;
   const dataStatus = missingDates.length || rows.length < eligibleDates.length - suspendedDates.length ? 'incomplete' : 'complete';
-  const status = dataStatus !== 'complete' ? 'unknown' : (matchedDays >= requiredDays ? 'met' : 'tracking');
+  const status = locked ? 'not_active'
+    : (dataStatus !== 'complete' ? 'unknown' : (netAssetFloorBlocked ? 'floor_blocked'
+      : (matchedDays >= requiredDays ? 'met' : 'tracking')));
   let minimumFutureDays = null;
   if (dataStatus === 'complete' && ratio != null && requiredDays != null && observationDays != null) {
     const rowByDate = new Map(rows.map(row => [row.trade_date, row]));
@@ -309,6 +321,13 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
       eligible_from: eligibleDates[eligibleDates.length - 1] || null, next_eligible_date: nextEligible,
       conversion_change_count: changes.length, conversion_price_source: changes.length ? 'price_changes_plus_profile' : 'profile_current',
       successful_revision_start_date: revisionStart,
+      net_asset_floor_applicable: netAssetFloorApplicable,
+      net_asset_floor_value: netAssetFloorValue,
+      net_asset_floor_source: netAssetFloorValue != null ? 'stock_close_div_pb' : null,
+      net_asset_floor_trade_date: bond.net_asset_floor_trade_date || null,
+      net_asset_floor_blocked: netAssetFloorBlocked,
+      locked: locked || undefined,
+      no_revision_until: locked ? nextEligible : undefined,
       distance_to_trigger_pct: closePrice != null && triggerPrice > 0 ? Number((closePrice / triggerPrice - 1).toFixed(8)) : null,
     },
   };
@@ -320,15 +339,19 @@ async function calculateConvertibleBondRevisionStatus(tradeDate = null) {
   const bonds = await loadRevisionBonds(targetDate);
   const stockIds = [...new Set(bonds.map(row => row.stock_instrument_id).filter(Boolean))];
   const instrumentIds = bonds.map(row => row.instrument_id);
-  const [openDates, stockBars, changes] = await Promise.all([
+  const [openDates, stockBars, changes, stockMetrics] = await Promise.all([
     loadOpenTradeDates(targetDate), loadStockBars(stockIds, targetDate), loadPriceChanges(instrumentIds, targetDate),
+    loadLatestStockMetrics(stockIds, targetDate),
   ]);
   if (!openDates.length) throw new Error(`交易日历缺失：${targetDate}，请先同步 trade_cal`);
   const suspensions = await loadSuspensions(stockIds, openDates);
-  const results = bonds.map(bond => buildResetResult(
-    bond, stockBars.get(bond.stock_instrument_id) || [], changes.get(bond.instrument_id) || [],
+  const results = bonds.map(bond => {
+    const metrics = stockMetrics.get(String(bond.stock_instrument_id)) || {};
+    return buildResetResult(
+    { ...bond, ...metrics }, stockBars.get(bond.stock_instrument_id) || [], changes.get(bond.instrument_id) || [],
     openDates, suspensions.get(bond.stock_instrument_id) || new Set()
-  ));
+    );
+  });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -380,9 +403,9 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
   const order = `ORDER BY CASE r.business_status
       WHEN 'proposed' THEN 1 WHEN 'meeting_pending' THEN 2 WHEN 'approved' THEN 3
       WHEN 'met_pending' THEN 4 WHEN 'near' THEN 5 WHEN 'locked' THEN 6
-      WHEN 'tracking' THEN 7 WHEN 'implemented' THEN 8 ELSE 9 END,
+      WHEN 'floor_blocked' THEN 7 WHEN 'tracking' THEN 8 WHEN 'implemented' THEN 9 ELSE 10 END,
     COALESCE(r.remaining_days,9999),r.security_code LIMIT $${filter.values.length + 1}`;
-  const [rowsResult, summaryResult, marketResult, stateResult, expectedResult] = await Promise.all([
+  const [rowsResult, summaryResult, marketResult, stateResult, expectedResult, qualityResult] = await Promise.all([
     // 视图已按当前交易日行情和单券索引取数，排序与截断交给数据库完成。
     pool.query(`SELECT ${REVISION_SELECT_FIELDS} ${base} ${order}`, [...filter.values, safeLimit]),
     pool.query(`SELECT r.business_status,count(*)::int AS count ${base} GROUP BY r.business_status`, filter.values),
@@ -392,9 +415,33 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
                   FROM market.trade_calendar
                  WHERE exchange='SSE' AND is_open
                    AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
+    pool.query(`WITH latest_no_revision AS (
+                  SELECT DISTINCT ON (instrument_id)
+                         instrument_id,parser_version,next_eligible_date,raw_payload
+                    FROM analytics.convertible_bond_announcement_history
+                   WHERE fact_type='no_revision'
+                   ORDER BY instrument_id,announced_at DESC,fact_id DESC
+                )
+                SELECT
+                  (SELECT COUNT(*)::int FROM latest_no_revision
+                    WHERE next_eligible_date IS NULL
+                      AND (parser_version IS DISTINCT FROM '7'
+                           OR NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                                   OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                      AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_no_revision_parse,
+                  (SELECT COUNT(*)::int FROM latest_no_revision
+                    WHERE next_eligible_date IS NULL
+                      AND (parser_version IS DISTINCT FROM '7'
+                           OR NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                                   OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                      AND COALESCE(raw_payload->'reparse'->>'status','') = 'failed') AS terminal_no_revision_parse,
+                  (SELECT COUNT(*)::int FROM ops.sync_cursors
+                    WHERE scope_key='convertible_bond_announcement_history'
+                      AND dataset_code='official_announcements'
+                      AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors`),
   ]);
   const summary = { implemented: 0, approved: 0, meeting_pending: 0, proposed: 0, terminated: 0,
-    met_pending: 0, near: 0, locked: 0, tracking: 0, incomplete: 0 };
+    met_pending: 0, near: 0, locked: 0, floor_blocked: 0, tracking: 0, incomplete: 0 };
   for (const row of summaryResult.rows) {
     if (Object.prototype.hasOwnProperty.call(summary, row.business_status)) summary[row.business_status] = row.count;
     else summary.incomplete += row.count;
@@ -402,10 +449,18 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
   const marketDate = dateText(marketResult.rows[0] && marketResult.rows[0].trade_date);
   const stateDate = dateText(stateResult.rows[0] && stateResult.rows[0].trade_date);
   const expectedDate = dateText(expectedResult.rows[0] && expectedResult.rows[0].trade_date);
+  const qualityRow = qualityResult.rows[0] || {};
+  const quality = {
+    status: (Number(qualityRow.pending_no_revision_parse || 0) > 0 || Number(qualityRow.announcement_errors || 0) > 0) ? 'degraded' : 'ok',
+    pending_no_revision_parse: Number(qualityRow.pending_no_revision_parse || 0),
+    terminal_no_revision_parse: Number(qualityRow.terminal_no_revision_parse || 0),
+    announcement_errors: Number(qualityRow.announcement_errors || 0),
+  };
   const stockMetrics = await loadLatestStockMetrics(rowsResult.rows.map(row => row.stock_instrument_id), marketDate);
   return {
     trade_date: stateDate || marketDate, market_trade_date: marketDate, expected_trade_date: expectedDate,
-    stale: Boolean(expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate)), summary,
+    stale: Boolean(quality.status === 'degraded' || (expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate))),
+    quality, summary,
     data: rowsResult.rows.map(row => Object.assign({}, row, stockMetrics.get(String(row.stock_instrument_id)) || {}, {
       trade_date: dateText(row.trade_date), stock_trade_date: dateText(row.stock_trade_date),
       no_revision_announced_at: dateText(row.no_revision_announced_at), no_revision_valid_until: dateText(row.no_revision_valid_until),

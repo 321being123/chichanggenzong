@@ -44,6 +44,21 @@ assert.strictEqual(result.matchedDays, 2);
 assert.strictEqual(result.triggerPrice, 8.5);
 assert.strictEqual(result.minimumFutureDays, 0);
 
+const floorBlockedResult = buildResetResult({ ...bond, net_asset_floor_applicable: true, net_asset_floor_value: 11 }, [
+  { trade_date: '2026-08-27', close: 8 },
+  { trade_date: '2026-08-26', close: 8 },
+  { trade_date: '2026-08-25', close: 8 },
+], [], openDates, new Set());
+assert.strictEqual(floorBlockedResult.status, 'floor_blocked');
+assert.strictEqual(floorBlockedResult.diagnostics.net_asset_floor_blocked, true);
+
+const floorStillActionable = buildResetResult({ ...bond, current_conv_price: 12, net_asset_floor_applicable: true, net_asset_floor_value: 11 }, [
+  { trade_date: '2026-08-27', close: 8 },
+  { trade_date: '2026-08-26', close: 8 },
+  { trade_date: '2026-08-25', close: 8 },
+], [], openDates, new Set());
+assert.strictEqual(floorStillActionable.status, 'met');
+
 const rollingResult = buildResetResult({ ...bond, observation_days: 3, required_days: 2 }, [
   { trade_date: '2026-08-27', close: 9 },
   { trade_date: '2026-08-26', close: 9 },
@@ -73,7 +88,8 @@ const lockedResult = buildResetResult({ ...bond, next_eligible_date: '2026-09-01
 ], [], openDates, new Set());
 assert.strictEqual(lockedResult.status, 'not_active');
 assert.strictEqual(lockedResult.dataStatus, 'complete');
-assert.strictEqual(lockedResult.matchedDays, 0);
+assert.strictEqual(lockedResult.matchedDays, 3);
+assert.strictEqual(lockedResult.minimumFutureDays, 0);
 
 const unresolvedLock = buildResetResult({ ...bond, no_revision_lock_declared: true }, [
   { trade_date: '2026-08-27', close: 8 },
@@ -81,7 +97,7 @@ const unresolvedLock = buildResetResult({ ...bond, no_revision_lock_declared: tr
   { trade_date: '2026-08-25', close: 8 },
 ], [], openDates, new Set());
 assert.strictEqual(unresolvedLock.status, 'not_active');
-assert.strictEqual(unresolvedLock.matchedDays, 0);
+assert.strictEqual(unresolvedLock.matchedDays, 3);
 
 const convStartDoesNotBlock = buildResetResult({ ...bond, conv_start_date: '2026-09-01' }, [
   { trade_date: '2026-08-27', close: 8 },
@@ -90,6 +106,15 @@ const convStartDoesNotBlock = buildResetResult({ ...bond, conv_start_date: '2026
 ], [], openDates, new Set());
 assert.strictEqual(convStartDoesNotBlock.status, 'met');
 assert.strictEqual(convStartDoesNotBlock.diagnostics.not_started, undefined);
+const newlyListed = buildResetResult({ ...bond, value_date: '2026-08-01', list_date: '2026-08-25', effective_from: '2026-08-25' }, [
+  { trade_date: '2026-08-27', close: 8 },
+  { trade_date: '2026-08-26', close: 8 },
+  { trade_date: '2026-08-25', close: 8 },
+  { trade_date: '2026-08-24', close: 8 },
+  { trade_date: '2026-08-23', close: 8 },
+], [], ['2026-08-27', '2026-08-26', '2026-08-25', '2026-08-24', '2026-08-23'], new Set());
+assert.strictEqual(newlyListed.matchedDays, 3);
+assert.deepStrictEqual(newlyListed.diagnostics.expected_dates, ['2026-08-27', '2026-08-26', '2026-08-25']);
 const restarted = buildResetResult({ ...bond, next_eligible_date: '2026-08-26' }, [
   { trade_date: '2026-08-27', close: 8 },
   { trade_date: '2026-08-26', close: 8 },

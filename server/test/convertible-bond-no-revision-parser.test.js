@@ -4,10 +4,17 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..', '..');
-const python = process.platform === 'win32'
-  ? path.join(root, 'venv', 'Scripts', 'python.exe')
-  : path.join(root, 'venv', 'bin', 'python');
-if (!fs.existsSync(python)) {
+const pythonCandidates = process.platform === 'win32'
+  ? [
+      path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe'),
+      path.join(root, 'venv', 'Scripts', 'python.exe'),
+    ]
+  : [
+      path.join(root, 'ipo-report', 'venv', 'bin', 'python'),
+      path.join(root, 'venv', 'bin', 'python'),
+    ];
+const python = pythonCandidates.find(file => fs.existsSync(file));
+if (!python) {
   console.log('[SKIP] 未找到项目 Python，跳过不下修公告解析测试');
   process.exit(0);
 }

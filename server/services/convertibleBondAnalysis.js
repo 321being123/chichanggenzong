@@ -2,7 +2,8 @@ const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('..
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { TushareRequestError } = require('./tushare');
 const { fetchTencentQuotes } = require('./tencentQuote');
-const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport } = require('./stockAnalysis');
+const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport,
+  fetchSseEventsBatch, fetchSzseEventsBatch, fetchCninfoEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -495,8 +496,12 @@ function fallbackPe(valuation, marketCap, incomeRows) {
 }
 
 async function sourceIds(client = pool) {
-  const { rows } = await client.query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','cninfo','calculated')`);
+  const { rows } = await client.query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','cninfo','sse','szse','calculated')`);
   return Object.fromEntries(rows.map(row => [row.source_code, row.source_id]));
+}
+
+function announcementSourceId(event, sources, fallback) {
+  return (sources && sources[String(event && event.source || '').toLowerCase()]) || fallback;
 }
 
 async function ensureInstrument(client, tsCode, name, assetClass, listDate, delistDate, subscriptionDate = null) {
@@ -613,10 +618,11 @@ function announcementSourceKey(event) {
   return `${source}:${String(number || (event && event.url) || `${event && event.event_date || ''}:${event && event.title || ''}`).trim()}`;
 }
 
-async function saveRevisionEvents(client, instrumentId, announcements, priceChangeDetails, sourceId) {
+async function saveRevisionEvents(client, instrumentId, announcements, priceChangeDetails, sourceId, sources = null) {
   const priceMap = new Map((priceChangeDetails || []).map(item => [item.source_url, item]));
   for (const event of announcements || []) {
     const detail = priceMap.get(event.url) || {};
+    const eventSourceId = announcementSourceId(event, sources, sourceId);
     const before = finite(detail.price_before), after = finite(detail.price_after), floor = finite(detail.revision_floor_price);
     let eventType = revisionEventDecision(event.title);
     // 公告标题有时只写“向下修正……公告”，但正文解析已经落出转股价变动；
@@ -641,7 +647,7 @@ async function saveRevisionEvents(client, instrumentId, announcements, priceChan
          summary=EXCLUDED.summary,source_number=EXCLUDED.source_number,title=EXCLUDED.title,parse_status=EXCLUDED.parse_status,
          parser_version=EXCLUDED.parser_version,details=EXCLUDED.details,raw_payload=EXCLUDED.raw_payload,updated_at=now()` ,
       [instrumentId, eventType, isoDate(event.event_date), isoDate(detail.change_date), before, floor, after,
-        after != null && floor != null ? Math.abs(after - floor) <= 0.005 : null, event.title || '', sourceId, sourceKey,
+        after != null && floor != null ? Math.abs(after - floor) <= 0.005 : null, event.title || '', eventSourceId, sourceKey,
         event.source_number || '', event.url || '', event.title || '', eventType === 'implemented' && after == null ? 'partial' : 'complete',
         JSON.stringify(Object.assign({}, event, { price_change: detail })), JSON.stringify(event)]
     );
@@ -1181,6 +1187,91 @@ function announcementMatchesBond(event, profile) {
   return (name && title.includes(name)) || title.includes(String(profile.ts_code || '').slice(0,6)) || /可转换公司债券|可转债|转债/.test(title);
 }
 
+const REVISION_ANNOUNCEMENT_KEYWORDS = ['转股价格', '转股价', '不下修', '不向下修正', '下修'];
+const CNINFO_BACKUP_ANNOUNCEMENT_KEYWORDS = ['转股价格', '转股价', '下修'];
+
+function announcementDateWindows(startDate, endDate) {
+  const end = isoDate(endDate);
+  const start = isoDate(startDate) || end;
+  if (!start || !end || start > end) return [];
+  const windows = [];
+  let cursor = new Date(`${start}T00:00:00+08:00`);
+  while (isoDate(cursor) <= end) {
+    const yearEnd = `${isoDate(cursor).slice(0, 4)}-12-31`;
+    const windowEnd = yearEnd < end ? yearEnd : end;
+    windows.push({ start: isoDate(cursor), end: windowEnd });
+    cursor = addDays(new Date(`${windowEnd}T00:00:00+08:00`), 1);
+  }
+  return windows;
+}
+
+function uniqueAnnouncementEvents(events) {
+  return [...new Map((events || []).map(event => [announcementSourceKey(event), event])).values()];
+}
+
+function revisionAnnouncementEvents(events) {
+  return uniqueAnnouncementEvents(events).filter(event => /转股价格|转股价|下修|不向下修正|不下修/.test(String(event.title || '').replace(/\s+/g, '')));
+}
+
+function matchesUnassignedAnnouncement(event, profile) {
+  const title = String(event && event.title || ''), name = String(profile && profile.bond_short_name || '');
+  const numbered = name.match(/^(.*)转\d+$/);
+  if (numbered && title.includes(`${numbered[1]}转债`) && !title.includes(name)) return false;
+  return (name && title.includes(name))
+    || title.includes(String(profile && profile.ts_code || '').slice(0, 6))
+    || title.includes(String(profile && profile.stock_code || '').slice(0, 6));
+}
+
+async function collectAnnouncementSource(fetcher, windows, keywords) {
+  const events = [], failures = [];
+  for (const window of windows) {
+    for (const keyword of keywords) {
+      try {
+        const result = await fetcher(window.start, window.end, keyword);
+        events.push(...(result && result.events || []));
+        if (result && result.complete === false) failures.push(`${window.start}~${window.end}/${keyword || 'all'}:分页未完整`);
+      } catch (error) {
+        failures.push(`${window.start}~${window.end}/${keyword || 'all'}:${String(error && error.message || error).slice(0, 180)}`);
+      }
+    }
+  }
+  return { events: uniqueAnnouncementEvents(events), failures };
+}
+
+async function collectConvertibleBondAnnouncementMarket(market, startDate, endDate) {
+  const windows = announcementDateWindows(startDate, endDate);
+  const primaryFetcher = market === 'SH' ? fetchSseEventsBatch : fetchSzseEventsBatch;
+  const primary = await collectAnnouncementSource(primaryFetcher, windows, market === 'SZ' ? [''] : REVISION_ANNOUNCEMENT_KEYWORDS);
+  if (!primary.failures.length) return { events: revisionAnnouncementEvents(primary.events), failed: false, messages: [] };
+
+  // 主源明确失败或分页不完整才启用巨潮；“查询成功但没有公告”不触发备源，避免再次放大请求量。
+  const cninfo = await collectAnnouncementSource(
+    (start, end, keyword) => fetchCninfoEventsBatch(start, end, market, keyword),
+    windows, CNINFO_BACKUP_ANNOUNCEMENT_KEYWORDS
+  );
+  const merged = revisionAnnouncementEvents([...primary.events, ...cninfo.events]);
+  if (!cninfo.failures.length) return { events: merged, failed: false, messages: [] };
+
+  // anns_d 需要单独权限，默认关闭；已明确配置时作为最后一道可选备源。
+  if (/^(1|true|yes)$/i.test(String(process.env.ANNOUNCEMENT_TUSHARE_FALLBACK || ''))) {
+    const tushare = await collectAnnouncementSource(fetchTushareAnnouncementBatch, windows, ['']);
+    const all = revisionAnnouncementEvents([...merged, ...tushare.events]);
+    if (!tushare.failures.length) return { events: all, failed: false, messages: [] };
+    return { events: all, failed: true, messages: [...primary.failures, ...cninfo.failures, ...tushare.failures].slice(0, 6) };
+  }
+  return { events: merged, failed: true, messages: [...primary.failures, ...cninfo.failures].slice(0, 6) };
+}
+
+function eventsForAnnouncementProfile(events, profile, startDate) {
+  const start = isoDate(startDate);
+  return (events || []).filter(event => {
+    const eventDate = isoDate(event.event_date);
+    if (!eventDate || (start && eventDate < start)) return false;
+    if (event.stock_code && profile.stock_code) return event.stock_code === profile.stock_code;
+    return matchesUnassignedAnnouncement(event, profile);
+  });
+}
+
 function revisionDecision(title) {
   const text = String(title || '');
   if (/不向下修正|不下修|不修正.{0,12}转股价/.test(text)) return 'no_revision';
@@ -1189,7 +1280,7 @@ function revisionDecision(title) {
   return /(?:可转换公司债券)?转股价格调整的公告|调整.{0,20}转股价格的公告/.test(text) ? 'adjusted' : null;
 }
 
-async function saveAnnouncementHistories(client, instrumentId, events, profile, sourceId, noRevisionPeriods = [], priceChangeDetails = []) {
+async function saveAnnouncementHistories(client, instrumentId, events, profile, sourceId, noRevisionPeriods = [], priceChangeDetails = [], sources = null) {
   const matched = [...new Map((events || []).map(event => [announcementSourceKey(event), event])).values()]
     .filter(event => announcementMatchesBond(event, profile));
   const periodMap = new Map(noRevisionPeriods.map(row => [isoDate(row.announced_at), row]));
@@ -1202,6 +1293,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
   for (const event of matched) {
     const title = String(event.title || ''), announced = isoDate(event.event_date);
     if (!announced) continue;
+    const eventSourceId = announcementSourceId(event, sources, sourceId);
     const decision = revisionDecision(title);
     const period = periodMap.get(announced) || {};
     if (decision === 'no_revision' || period.lock_declared) {
@@ -1209,7 +1301,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
         `INSERT INTO fundamental.convertible_bond_no_revision_history(instrument_id,announced_at,valid_until,next_eligible_date,summary,source_id,raw_payload)
          VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(instrument_id,announced_at) DO UPDATE SET valid_until=EXCLUDED.valid_until,
            next_eligible_date=EXCLUDED.next_eligible_date,summary=EXCLUDED.summary,raw_payload=EXCLUDED.raw_payload`,
-        [instrumentId, announced, isoDate(period.valid_until), isoDate(period.next_eligible_date), title, sourceId,
+        [instrumentId, announced, isoDate(period.valid_until), isoDate(period.next_eligible_date), title, eventSourceId,
           JSON.stringify(Object.assign({}, event, {
             lock_start_date: period.lock_start_date || null,
             lock_declared: Boolean(period.lock_declared),
@@ -1227,7 +1319,7 @@ async function saveAnnouncementHistories(client, instrumentId, events, profile, 
          VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(instrument_id,change_date) DO UPDATE SET publish_date=EXCLUDED.publish_date,
            price_before=COALESCE(EXCLUDED.price_before,fundamental.convertible_bond_price_changes.price_before),
            price_after=COALESCE(EXCLUDED.price_after,fundamental.convertible_bond_price_changes.price_after),reason=EXCLUDED.reason,raw_payload=EXCLUDED.raw_payload`,
-        [instrumentId, announced, changeDate, finite(detail.price_before), finite(detail.price_after), title, sourceId,
+        [instrumentId, announced, changeDate, finite(detail.price_before), finite(detail.price_after), title, eventSourceId,
           JSON.stringify(Object.assign({}, event, {
             revision_floor_price: finite(detail.revision_floor_price),
             price_change_parser_version: detail.parser_version || '3',
@@ -1859,23 +1951,46 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   const results = [];
   const sourceFailures = [];
   let changedCount = 0;
+  const batchMode = globalSync && !cachedOnly;
+  const batchResults = {};
+  if (batchMode) {
+    const batchStart = scanStart || profiles.map(profile => isoDate(profile.list_date) || isoDate(profile.value_date)).filter(Boolean).sort()[0] || end;
+    const markets = [...new Set(profiles.map(profile => String(profile.stock_code || '').endsWith('.SH') ? 'SH' : String(profile.stock_code || '').endsWith('.SZ') ? 'SZ' : ''))].filter(Boolean);
+    const collected = await Promise.all(markets.map(async market => [market, await collectConvertibleBondAnnouncementMarket(market, batchStart, end)]));
+    for (const [market, value] of collected) batchResults[market] = value;
+  }
+  const recordedBatchFailures = new Set();
   for (const profile of profiles) {
     const start = scanStart || isoDate(profile.list_date) || isoDate(profile.value_date) || end;
     const stockCode = String(profile.stock_code || '');
-    const primary = stockCode.endsWith('.SH')
-      ? () => fetchSseEvents(stockCode, start, end, '转股价格')
-      : stockCode.endsWith('.SZ')
-        ? () => fetchSzseEvents(stockCode, start, end, '转股价格')
-        : () => fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true });
+    const market = stockCode.endsWith('.SH') ? 'SH' : stockCode.endsWith('.SZ') ? 'SZ' : '';
     // cachedOnly 只重跑库内官方 PDF，不重新请求公告列表，专门用于补齐旧解析器积压。
-    const settled = cachedOnly ? [] : await Promise.allSettled([primary()]);
-    const primaryEvents = settled[0] && settled[0].status === 'fulfilled' ? (settled[0].value || []) : [];
-    // 交易所公告是主源；仅主源无结果时才补查巨潮，控制调用预算并保留深市兜底。
-    if (!cachedOnly && !primaryEvents.length && (stockCode.endsWith('.SH') || stockCode.endsWith('.SZ'))) {
-      settled.push(await fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true })
-        .then(value => ({ status: 'fulfilled', value }))
-        .catch(reason => ({ status: 'rejected', reason })));
+    let settled;
+    if (batchMode) {
+      const batch = batchResults[market] || { events: [], failed: true, messages: ['未找到对应市场批量公告结果'] };
+      if (batch.failed && !recordedBatchFailures.has(market)) {
+        sourceFailures.push({ ts_code: `${market || 'unknown'}:batch`, messages: batch.messages });
+        recordedBatchFailures.add(market);
+      }
+      settled = [{ status: 'fulfilled', value: eventsForAnnouncementProfile(batch.events, profile, start),
+        reason: batch.failed ? new Error(batch.messages.join('|') || '公告批量来源失败') : null }];
+    } else if (cachedOnly) {
+      settled = [];
+    } else {
+      const primary = market === 'SH'
+        ? () => fetchSseEvents(stockCode, start, end, '转股价格')
+        : market === 'SZ'
+          ? () => fetchSzseEvents(stockCode, start, end, '转股价格')
+          : () => fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true });
+      settled = await Promise.allSettled([primary()]);
+      // 只有主源明确报错才查巨潮；正常空结果可能表示这只债在窗口内没有相关公告。
+      if (settled[0] && settled[0].status === 'rejected' && (market === 'SH' || market === 'SZ')) {
+        settled.push(await fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true, allowBroadFallback: false })
+          .then(value => ({ status: 'fulfilled', value }))
+          .catch(reason => ({ status: 'rejected', reason })));
+      }
     }
+    const primaryEvents = settled[0] && settled[0].status === 'fulfilled' ? (settled[0].value || []) : [];
     const rejected = settled.filter(item => item.status === 'rejected');
     const freshAnnouncements = [...new Map(settled.flatMap(item => item.status === 'fulfilled' ? item.value : [])
       .map(event => [announcementSourceKey(event), event])).values()];
@@ -1917,9 +2032,9 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         await client.query('BEGIN');
         const sources = await sourceIds(client);
         await saveAnnouncementHistories(client, profile.instrument_id, announcements, profile,
-          sources.cninfo || sources.calculated, noRevisionPeriods, priceChangeDetails);
+          sources.cninfo || sources.calculated, noRevisionPeriods, priceChangeDetails, sources);
         await saveRevisionEvents(client, profile.instrument_id, announcements, priceChangeDetails,
-          sources.cninfo || sources.calculated);
+          sources.cninfo || sources.calculated, sources);
         for (const failure of noRevisionPeriods.filter(row => row.reparse_status === 'failed')) {
           await client.query(
             `UPDATE fundamental.convertible_bond_no_revision_history

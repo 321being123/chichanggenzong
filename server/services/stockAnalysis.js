@@ -211,7 +211,7 @@ async function setSyncState(tsCode, dataset, successDate, error) {
 }
 
 function requestJson(url, options = {}) {
-  const source = /cninfo\.com\.cn/i.test(url) ? 'cninfo' : 'stock-analysis';
+  const source = sourceForUrl(url);
   return withExternalCallGuard(source, `request:${url}:${options.body || ''}`, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
     const req = https.request(url, {
       method: options.method || 'GET', timeout: options.timeout || 10000,
@@ -235,6 +235,16 @@ function requestJson(url, options = {}) {
     if (options.body) req.write(options.body);
     req.end();
   }));
+}
+
+function sourceForUrl(url) {
+  const text = String(url || '');
+  if (/cninfo\.com\.cn/i.test(text)) return 'cninfo';
+  if (/sse\.com\.cn/i.test(text)) return 'sse';
+  if (/szse\.cn/i.test(text)) return 'szse';
+  if (/xueqiu\.com/i.test(text)) return 'xueqiu';
+  if (/eastmoney\.com/i.test(text)) return 'guba';
+  return 'stock-analysis';
 }
 
 function eventCategory(title) {
@@ -261,7 +271,51 @@ function officialAnnouncementNumber(row) {
   return value == null ? null : String(value).trim();
 }
 
-async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
+function announcementStockCode(row, market = '') {
+  if (!row || typeof row !== 'object') return '';
+  const value = [
+    row.stock_code, row.stockCode, row.stock_code_value, row.secCode, row.SECURITY_CODE,
+    row.SECURITYCODE, row.PRODUCTID, row.productId, row.ts_code, row.tsCode,
+  ].find(item => item !== null && item !== undefined && String(item).trim());
+  const code = String(value || '').match(/\d{6}/);
+  if (!code || !market) return code ? code[0] : '';
+  return `${code[0]}.${market}`;
+}
+
+function announcementUrl(prefix, value) {
+  const text = String(value || '');
+  if (!text) return '';
+  return /^https?:\/\//i.test(text) ? text : `${prefix}${text}`;
+}
+
+function dedupeAnnouncementEvents(events) {
+  return [...new Map((events || []).map(event => [
+    `${event.source}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`,
+    event,
+  ])).values()];
+}
+
+function mapSseAnnouncement(row) {
+  const title = String(row && (row.TITLE || row.title) || '');
+  return {
+    source: 'sse', source_number: officialAnnouncementNumber(row), stock_code: announcementStockCode(row, 'SH'),
+    event_date: String(row && (row.SSEDATE || row.publishDate) || '').replace(/-/g, ''), title,
+    url: announcementUrl('https://big5.sse.com.cn/site/cht/www.sse.com.cn', row && (row.URL || row.url)),
+    category: eventCategory(title), is_official: true, raw: row,
+  };
+}
+
+function mapSzseAnnouncement(row) {
+  const title = String(row && (row.title || row.TITLE) || '');
+  return {
+    source: 'szse', source_number: officialAnnouncementNumber(row), stock_code: announcementStockCode(row, 'SZ'),
+    event_date: String(row && (row.publishTime || row.publishDate) || '').slice(0, 10).replace(/-/g, ''), title,
+    url: announcementUrl('https://disc.static.szse.cn/download', row && (row.attachPath || row.attach_path)),
+    category: eventCategory(title), is_official: true, raw: row,
+  };
+}
+
+async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '', options = {}) {
   const code = tsCode.slice(0, 6);
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://www.cninfo.com.cn/', 'X-Requested-With': 'XMLHttpRequest' };
   const searchBody = new URLSearchParams({ keyWord: code, maxNum: '10' }).toString();
@@ -279,12 +333,12 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
       const eventDate = row.announcementTime ? tsDateStr(new Date(Number(row.announcementTime))) : dateText(row.announcementDate);
       const title = String(row.announcementTitle || '').replace(/<[^>]+>/g, '');
       const url = row.adjunctUrl ? `https://static.cninfo.com.cn/${String(row.adjunctUrl).replace(/^\//, '')}` : '';
-      events.push({ source: 'cninfo', source_number: officialAnnouncementNumber(row), event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
+      events.push({ source: 'cninfo', source_number: officialAnnouncementNumber(row), stock_code: announcementStockCode(row, stockExchange(tsCode)), event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
     }
     if (!payload.hasMore || rows.length === 0) break;
   }
-  if (searchKey && !events.length) {
-    const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '');
+  if (searchKey && !events.length && options.allowBroadFallback !== false) {
+    const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '', options);
     return allEvents.filter(event => String(event.title || '').includes(searchKey));
   }
   return [...new Map(events.map(event => [`${event.source}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event])).values()];
@@ -293,7 +347,7 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '') {
 async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey, options = {}) {
   const startYear = Number(String(startDate || '').slice(0, 4));
   const endYear = Number(String(endDate || '').slice(0, 4));
-  if (!startYear || !endYear) return fetchCninfoEvents(tsCode, startDate, endDate, searchKey);
+  if (!startYear || !endYear) return fetchCninfoEvents(tsCode, startDate, endDate, searchKey, options);
   const groups = [];
   // 每个年度查询都会先请求一次同一只股票的 orgId；并发执行会互相抢同一数据集锁。
   // 顺序查询也能避免在巨潮一分钟预算下瞬时打满请求数。
@@ -301,7 +355,7 @@ async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey, op
     const year = startYear + index;
     try {
       groups.push(await fetchCninfoEvents(tsCode, year === startYear ? startDate : `${year}0101`,
-        year === endYear ? endDate : `${year}1231`, searchKey));
+        year === endYear ? endDate : `${year}1231`, searchKey, options));
     } catch (error) {
       if (options.propagateErrors) throw error;
       groups.push([]);
@@ -334,10 +388,7 @@ async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
     { headers: { Referer: 'https://www.sse.com.cn/' } });
   const rows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
   const start = isoDate(startDate), end = isoDate(endDate);
-  return rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(row => ({
-    source: 'sse', source_number: officialAnnouncementNumber(row), event_date: String(row.SSEDATE || '').replace(/-/g, ''), title: row.TITLE || '',
-    url: `https://big5.sse.com.cn/site/cht/www.sse.com.cn${row.URL}`, category: eventCategory(row.TITLE || ''), is_official: true, raw: row,
-  }));
+  return rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(mapSseAnnouncement);
 }
 
 async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
@@ -354,10 +405,80 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
     rows.push(...pageRows);
     if (pageNum * pageSize >= Number(payload.announceCount || pageRows.length) || !pageRows.length) break;
   }
-  return rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(row => ({
-    source: 'szse', source_number: officialAnnouncementNumber(row), event_date: String(row.publishTime || '').slice(0, 10).replace(/-/g, ''), title: row.title || '',
-    url: `https://disc.static.szse.cn/download${row.attachPath}`, category: eventCategory(row.title || ''), is_official: true, raw: row,
-  }));
+  return rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
+}
+
+// 交易所公告支持按市场/日期批量查询。返回 complete=false 时说明到达页数上限，调用方必须走备源，不能把部分结果当成完整成功。
+async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
+  const pageSize = 100, maxPages = 20, rows = [];
+  let complete = true;
+  for (let pageNo = 1; pageNo <= maxPages; pageNo += 1) {
+    const params = new URLSearchParams({ isPagination: 'true', productId: '', keyWord: keyword,
+      securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
+      'pageHelp.pageSize': String(pageSize), 'pageHelp.pageNo': String(pageNo),
+      'pageHelp.beginPage': String(pageNo), 'pageHelp.endPage': String(pageNo) });
+    const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
+      { headers: { Referer: 'https://www.sse.com.cn/' } });
+    const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
+    rows.push(...pageRows);
+    if (!pageRows.length || pageRows.length < pageSize) break;
+    if (pageNo === maxPages) complete = false;
+  }
+  return { events: dedupeAnnouncementEvents(rows.filter(row => row.URL).map(mapSseAnnouncement)), complete, fetched: rows.length };
+}
+
+async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
+  const pageSize = 100, maxPages = 20, rows = [];
+  let complete = true;
+  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+    const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [],
+      channelCode: ['listedNotice_disc'], pageSize, pageNum });
+    const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Referer: 'https://www.szse.cn/disclosure/listed/notice/index.html',
+        'X-Requested-With': 'XMLHttpRequest' }, body });
+    const pageRows = Array.isArray(payload.data) ? payload.data : [];
+    rows.push(...pageRows);
+    const announceCount = Number(payload.announceCount);
+    if (!pageRows.length || pageRows.length < pageSize
+      || (Number.isFinite(announceCount) && announceCount > 0 && pageNum * pageSize >= announceCount)) break;
+    if (pageNum === maxPages) complete = false;
+  }
+  const events = rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
+  return { events: dedupeAnnouncementEvents(events), complete, fetched: rows.length };
+}
+
+async function fetchCninfoEventsBatch(startDate, endDate, market, searchKey = '') {
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://www.cninfo.com.cn/', 'X-Requested-With': 'XMLHttpRequest' };
+  const pageSize = 100, maxPages = 5, rows = [];
+  let complete = true;
+  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+    const body = new URLSearchParams({ pageNum: String(pageNum), pageSize: String(pageSize), stock: '', searchkey: searchKey,
+      tabName: 'fulltext', column: market === 'SH' ? 'sse' : 'szse', plate: market === 'SH' ? 'sh' : 'sz',
+      seDate: `${isoDate(startDate)}~${isoDate(endDate)}` }).toString();
+    const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
+    const pageRows = Array.isArray(payload.announcements) ? payload.announcements : [];
+    rows.push(...pageRows);
+    if (!payload.hasMore || !pageRows.length || pageRows.length < pageSize) break;
+    if (pageNum === maxPages) complete = false;
+  }
+  const events = rows.map(row => {
+    const eventDate = row.announcementTime ? tsDateStr(new Date(Number(row.announcementTime))) : dateText(row.announcementDate);
+    const title = String(row.announcementTitle || '').replace(/<[^>]+>/g, '');
+    const url = row.adjunctUrl ? announcementUrl('https://static.cninfo.com.cn/', row.adjunctUrl) : '';
+    return { source: 'cninfo', source_number: officialAnnouncementNumber(row), stock_code: announcementStockCode(row, market), event_date: eventDate,
+      title, url, category: eventCategory(title), is_official: true, raw: row };
+  }).filter(event => event.url && (!searchKey || event.title.includes(searchKey)));
+  return { events: dedupeAnnouncementEvents(events), complete, fetched: rows.length };
+}
+
+async function fetchTushareAnnouncementBatch(startDate, endDate) {
+  const data = await tushareQuery('anns_d', { start_date: dateText(startDate), end_date: dateText(endDate) }, 'ts_code,ann_date,title,url', { allowEmpty: true });
+  const rows = tsRows(data);
+  const events = rows.map(row => ({ source: 'tushare', source_number: `${row.ts_code || ''}:${row.ann_date || ''}:${row.title || ''}`,
+    stock_code: announcementStockCode(row, String(row.ts_code || '').endsWith('.SH') ? 'SH' : 'SZ'), event_date: dateText(row.ann_date),
+    title: String(row.title || ''), url: String(row.url || ''), category: eventCategory(row.title || ''), is_official: false, raw: row }))
+    .filter(event => event.event_date && event.title && event.url);
+  return { events: dedupeAnnouncementEvents(events), complete: true, fetched: rows.length };
 }
 
 async function fetchSzseLatestReport(tsCode, startDate, endDate) {
@@ -924,4 +1045,5 @@ async function listUserStocks(username) {
 
 module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
   refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
-  fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport };
+  fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport, fetchSseEventsBatch, fetchSzseEventsBatch,
+  fetchCninfoEventsBatch, fetchTushareAnnouncementBatch, sourceForUrl };

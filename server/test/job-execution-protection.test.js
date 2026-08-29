@@ -45,7 +45,8 @@ assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
 assert.ok(/return await fn\(lock\.client\)/.test(externalGuard)
   && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient\)/.test(tushareClient)
-  && /}, \{\}, guardClient\)\.catch/.test(tushareClient), 'Tushare 请求收尾必须复用数据集锁连接，禁止连接池互等');
+  && /}, \{\}, guardClient\)\.catch/.test(tushareClient)
+  && /circuitScopeLabel/.test(externalGuard), 'Tushare 请求收尾必须复用数据集锁连接，禁止连接池互等');
 assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) && /EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoHistorySync.js')), 'Python 自动任务子进程必须开启外部请求保护');
 assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=now\(\)\+/.test(orchestrator), '过期运行记录必须自动回收且活动任务必须续租');
 assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');

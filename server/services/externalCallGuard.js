@@ -113,6 +113,11 @@ function circuitApiName(apiName, code) {
   return code === 'AUTH_ERROR' ? '*' : String(apiName || '*').slice(0, 64);
 }
 
+function circuitScopeLabel(source, apiName) {
+  if (apiName !== '*') return `接口 ${apiName}`;
+  return /^tushare(?:_backup)?$/i.test(String(source || '')) ? 'Token' : '来源';
+}
+
 async function upsertCircuit(client, source, apiName, fingerprint, code, errorType, detail, recoverAt) {
   await client.query(
     `INSERT INTO ops.external_circuits
@@ -149,7 +154,7 @@ async function assertCircuitAvailable(client, source, apiName, fingerprint, data
     );
     return;
   }
-  const scope = row.api_name === '*' ? 'Token' : `接口 ${row.api_name}`;
+  const scope = circuitScopeLabel(key, row.api_name);
   throw new ExternalCallGuardError('CIRCUIT_OPEN', `${key} ${scope}已熔断，等待恢复探测`, key, dataset, {
     apiName: row.api_name === '*' ? apiName : row.api_name,
     tokenFingerprint: fingerprint,
@@ -397,4 +402,5 @@ module.exports = {
   resetExternalCallGuard,
   resetExternalCallGuardPersistence,
   getExternalCallStats,
+  circuitScopeLabel,
 };

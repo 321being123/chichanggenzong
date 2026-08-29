@@ -4092,6 +4092,21 @@ async function migration107ConvertibleBondRevisionNetAssetFloorSameDay() {
   await rebuildConvertibleBondRevisionLatestView();
 }
 
+// ========== 108：可转债公告交易所来源登记 =============
+// 公告事实保留实际命中的交易所来源，巨潮和可选 Tushare 仅作为备源。
+async function migration108ConvertibleBondAnnouncementSources() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES
+      ('sse','上交所公告','official',5),
+      ('szse','深交所公告','official',5)
+    ON CONFLICT(source_code) DO UPDATE SET
+      source_name=EXCLUDED.source_name,
+      source_type=EXCLUDED.source_type,
+      priority=EXCLUDED.priority;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4200,6 +4215,7 @@ const MIGRATIONS = [
   { version: '105_convertible_bond_revision_net_asset_floor', up: migration105ConvertibleBondRevisionNetAssetFloor },
   { version: '106_convertible_bond_revision_net_asset_floor_view_fix', up: migration106ConvertibleBondRevisionNetAssetFloorViewFix },
   { version: '107_convertible_bond_revision_net_asset_floor_same_day', up: migration107ConvertibleBondRevisionNetAssetFloorSameDay },
+  { version: '108_convertible_bond_announcement_sources', up: migration108ConvertibleBondAnnouncementSources },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -4754,6 +4770,7 @@ module.exports = {
   migration085ConvertibleBondWaiveAnnouncementStatus,
   migration086ConvertibleBondAnnouncementHistoryView,
   migration087ConvertibleBondWaiveSameDayValidity,
+  migration108ConvertibleBondAnnouncementSources,
   migration092ConvertibleBondRevisionViewLean,
   ensureMigrationsTable,
   runMigration,

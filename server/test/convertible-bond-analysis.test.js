@@ -6,6 +6,7 @@ const {
   mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, announcementSourceKey,
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
+const { sourceForUrl } = require('../services/stockAnalysis');
 
 assert.strictEqual(normalizeBondCode('113001'), '113001.SH');
 assert.strictEqual(normalizeBondCode('123001.SZ'), '123001.SZ');
@@ -110,6 +111,9 @@ assert.strictEqual(revisionEventDecision('关于向下修正转股价格方案�
 assert.strictEqual(revisionEventDecision('关于向下修正转股价格实施的公告'), 'implemented');
 assert.strictEqual(revisionEventDecision('关于向下修正“芳源转债”转股价格暨转股停牌的公告'), 'implemented');
 assert.strictEqual(revisionEventDecision('关于不向下修正转股价格的公告'), null);
+assert.strictEqual(sourceForUrl('https://query.sse.com.cn/security/stock/queryCompanyBulletin.do'), 'sse');
+assert.strictEqual(sourceForUrl('https://www.szse.cn/api/disc/announcement/annList'), 'szse');
+assert.strictEqual(sourceForUrl('https://www.cninfo.com.cn/new/hisAnnouncement/query'), 'cninfo');
 assert.strictEqual(
   announcementSourceKey({ source: 'cninfo', source_number: 'ANN-001', url: 'https://old.example/a.pdf' }),
   announcementSourceKey({ source: 'cninfo', source_number: 'ANN-001', url: 'https://new.example/a.pdf' }),

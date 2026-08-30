@@ -45,13 +45,10 @@ async function upsertCursor(scopeKey, dataset, lastSuccessDate, lastSourceUpdate
     INSERT INTO ops.sync_cursors(scope_key, dataset_code, last_success_date, last_source_update, last_attempt_at, last_error, retry_count, updated_at)
     VALUES($1,$2,$3,$4,now(),$5,0,now())
     ON CONFLICT(scope_key, dataset_code) DO UPDATE SET
-      last_success_date = CASE
-        WHEN EXCLUDED.last_error <> '' THEN ops.sync_cursors.last_success_date
-        ELSE GREATEST(
-          COALESCE(ops.sync_cursors.last_success_date, '1900-01-01'::date),
-          COALESCE(EXCLUDED.last_success_date, '1900-01-01'::date)
-        )
-      END,
+      last_success_date = GREATEST(
+        COALESCE(ops.sync_cursors.last_success_date, '1900-01-01'::date),
+        COALESCE(EXCLUDED.last_success_date, '1900-01-01'::date)
+      ),
       last_source_update = COALESCE(EXCLUDED.last_source_update, ops.sync_cursors.last_source_update),
       last_attempt_at = now(),
       last_error = EXCLUDED.last_error,

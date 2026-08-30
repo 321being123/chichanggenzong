@@ -162,7 +162,7 @@ function ok(fields = ['value'], items = [['ok']]) {
     const probeResults = await Promise.allSettled([
       guard.withExternalCallGuard('tushare', 'probe-a', '2026-08-18', async () => {
         probeCalls += 1;
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 250));
         return 'ok';
       }, { apiName: 'rt_min', tokenFingerprint: newFp }),
       guard.withExternalCallGuard('tushare', 'probe-b', '2026-08-18', async () => {
@@ -212,6 +212,44 @@ function ok(fields = ['value'], items = [['ok']]) {
     assert.strictEqual(releasedGlobal.rows[0].probe_in_flight, false);
     assert.ok(new Date(releasedGlobal.rows[0].recover_at).getTime() > Date.now());
     await guard.closeExternalCircuit('tushare', 'rt_min', newFp);
+
+    // 通用 Guard 的探测成功必须自动关闭来源熔断，不能依赖某个适配器自行补写。
+    const genericFingerprint = 'generic-probe-test';
+    await guard.openExternalCircuit('cninfo-test', 'generic-success', {
+      apiName: '*', tokenFingerprint: genericFingerprint, errorCode: 'RATE_LIMIT',
+      recoverAt: new Date(Date.now() - 1000),
+    });
+    const genericSuccess = await guard.withExternalCallGuard(
+      'cninfo-test', 'generic-success', '2026-08-18', async () => 'generic-ok',
+      { apiName: '*', tokenFingerprint: genericFingerprint }
+    );
+    assert.strictEqual(genericSuccess, 'generic-ok');
+    const genericClosed = await pool.query(
+      "SELECT state,probe_in_flight FROM ops.external_circuits WHERE source='cninfo-test' AND api_name='*' AND token_fingerprint=$1",
+      [genericFingerprint]
+    );
+    assert.strictEqual(genericClosed.rows[0].state, 'closed');
+    assert.strictEqual(genericClosed.rows[0].probe_in_flight, false);
+
+    // 通用 Guard 的探测失败必须释放租约并留下短暂退避。
+    await guard.openExternalCircuit('cninfo-test', 'generic-failure', {
+      apiName: '*', tokenFingerprint: genericFingerprint, errorCode: 'RATE_LIMIT',
+      recoverAt: new Date(Date.now() - 1000),
+    });
+    await assert.rejects(
+      () => guard.withExternalCallGuard(
+        'cninfo-test', 'generic-failure', '2026-08-18', async () => { throw new Error('generic probe failed'); },
+        { apiName: '*', tokenFingerprint: genericFingerprint }
+      ),
+      /generic probe failed/
+    );
+    const genericReleased = await pool.query(
+      "SELECT probe_in_flight,recover_at FROM ops.external_circuits WHERE source='cninfo-test' AND api_name='*' AND token_fingerprint=$1",
+      [genericFingerprint]
+    );
+    assert.strictEqual(genericReleased.rows[0].probe_in_flight, false);
+    assert.ok(new Date(genericReleased.rows[0].recover_at).getTime() > Date.now());
+    await guard.resetExternalCallGuardPersistence('cninfo-test');
 
     // 恢复探测遇到网络错误时必须释放占用，并留下短暂退避，不能永久卡住。
     await guard.openExternalCircuit('tushare', 'probe-failure', {

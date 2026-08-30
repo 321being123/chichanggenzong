@@ -281,7 +281,15 @@ async function withExternalCallGuard(source, dataset, businessDate, fn, circuitS
     let guardResult = null;
     try {
       guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
-      return await fn(lock.client, guardResult);
+      const result = await fn(lock.client, guardResult);
+      // 恢复探测成功后立即关闭对应熔断；否则下一次同来源请求会继续被旧熔断拦截。
+      if (guardResult && guardResult.probeToken) {
+        await closeExternalCircuit(
+          guardOptions.circuitSource, guardOptions.apiName, guardOptions.tokenFingerprint,
+          lock.client, guardResult.probeToken
+        );
+      }
+      return result;
     } catch (error) {
       // 所有使用统一 Guard 的来源都要释放探测租约；不能只依赖 Tushare 自己的 catch。
       // 这样 CNInfo、港交所等通用 HTTP 适配器在网络异常或响应格式错误时也不会留下占用。

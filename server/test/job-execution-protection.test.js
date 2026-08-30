@@ -43,7 +43,7 @@ assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCo
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
 assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
-assert.ok(/return await fn\(lock\.client, guardResult\)/.test(externalGuard)
+assert.ok(/const result = await fn\(lock\.client, guardResult\)/.test(externalGuard)
   && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient, probeToken\)/.test(tushareClient)
   && /}, \{\}, guardClient\)\.catch/.test(tushareClient)
   && /circuitScopeLabel/.test(externalGuard), 'Tushare 请求收尾必须复用数据集锁连接，禁止连接池互等');

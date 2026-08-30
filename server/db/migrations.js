@@ -3697,7 +3697,7 @@ async function migration090ConvertibleBondRevisionMonitor() {
     COMMIT;
   `);
 
-  const { parseWindow, parseTriggerRatio } = require('../services/convertibleBondAnalysis');
+  const { parseWindow, parseTriggerRatio, hasNetAssetFloorClause } = require('../services/convertibleBondAnalysis');
   const { rows: terms } = await pool.query(
     `SELECT term_id,term_type,clause_text FROM fundamental.convertible_bond_terms`
   );
@@ -3711,7 +3711,7 @@ async function migration090ConvertibleBondRevisionMonitor() {
     const parseStatus = term.term_type === 'reset' && direction === 'up'
       ? 'failed' : (ratio != null && window.observation_days > 0 && window.required_days > 0 && window.required_days <= window.observation_days ? 'complete' : 'partial');
     const comparison = term.term_type === 'call' ? 'gte' : term.term_type === 'reset' || term.term_type === 'put' ? 'lt' : '';
-    const netAsset = /(?:不得|不应)低于[^。；]{0,30}(?:每股)?净资产/.test(compact);
+    const netAsset = hasNetAssetFloorClause(compact);
     await pool.query(
       `UPDATE fundamental.convertible_bond_terms
           SET revision_direction=$2,comparison_operator=$3,parse_status=$4,parser_version='terms-v2',
@@ -4107,6 +4107,23 @@ async function migration108ConvertibleBondAnnouncementSources() {
   `);
 }
 
+// ========== 109：下修净资产底线条款同义表达补齐 =============
+// “价格不低于最近一期经审计的每股净资产”与“不得低于每股净资产”含义相同；
+// 旧正则漏掉前者，导致太能转债等转债没有进入净资产底线保护。
+async function migration109ConvertibleBondRevisionNetAssetFloorPhrase() {
+  const { hasNetAssetFloorClause } = require('../services/convertibleBondAnalysis');
+  const { rows } = await pool.query(
+    `SELECT term_id,clause_text FROM fundamental.convertible_bond_terms WHERE term_type='reset'`
+  );
+  for (const term of rows) {
+    await pool.query(
+      `UPDATE fundamental.convertible_bond_terms SET net_asset_floor_applicable=$2 WHERE term_id=$1`,
+      [term.term_id, hasNetAssetFloorClause(term.clause_text)]
+    );
+  }
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4216,6 +4233,7 @@ const MIGRATIONS = [
   { version: '106_convertible_bond_revision_net_asset_floor_view_fix', up: migration106ConvertibleBondRevisionNetAssetFloorViewFix },
   { version: '107_convertible_bond_revision_net_asset_floor_same_day', up: migration107ConvertibleBondRevisionNetAssetFloorSameDay },
   { version: '108_convertible_bond_announcement_sources', up: migration108ConvertibleBondAnnouncementSources },
+  { version: '109_convertible_bond_revision_net_asset_floor_phrase', up: migration109ConvertibleBondRevisionNetAssetFloorPhrase },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

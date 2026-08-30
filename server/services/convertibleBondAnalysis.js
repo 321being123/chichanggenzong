@@ -176,6 +176,11 @@ function parseWindow(text, type = '') {
   return { observation_days: selected.observation_days, required_days: selected.required_days };
 }
 
+function hasNetAssetFloorClause(text) {
+  const clause = String(text || '').replace(/\s+/g, '');
+  return /(?:不得低于|不应低于|应不低于|不低于)[^。；]{0,60}(?:每股)?净资产/.test(clause);
+}
+
 function earliestPutDate(maturityDate, clause) {
   const dateText = isoDate(maturityDate);
   if (!dateText) return null;
@@ -258,7 +263,7 @@ function simplifyClause(type, text) {
     if (type === 'reset') summary = `任意连续${observation}个交易日中，至少${required}个交易日收盘价低于转股价的${percent}%`;
     if (type === 'put') summary = `最后计息年度的回售期内，连续${observation}个交易日收盘价低于转股价的${percent}%`;
   }
-  const netAsset = clause.match(/(?:不得|不应)低于[^。；]{0,30}(?:每股)?净资产[^。；]*/);
+  const netAsset = clause.match(/(?:不得低于|不应低于|应不低于|不低于)[^。；]{0,60}(?:每股)?净资产[^。；]*/);
   return { text: summary || clause, note: netAsset ? netAsset[0] : null, ratio, observation_days: observation,
     required_days: required, comparison, parse_status: ratio != null && observation > 0 && required > 0 && required <= observation ? 'complete' : 'partial' };
 }
@@ -544,7 +549,7 @@ async function saveTerms(client, instrumentId, profile, tushareSource) {
       ? 'complete' : 'partial';
     const direction = type === 'reset' ? 'down' : '';
     const comparison = type === 'call' ? 'gte' : type === 'reset' || type === 'put' ? 'lt' : '';
-    const netAsset = /(?:不得|不应)低于[^。；]{0,30}(?:每股)?净资产/.test(compact);
+    const netAsset = hasNetAssetFloorClause(compact);
     await client.query(
       `INSERT INTO fundamental.convertible_bond_terms
        (instrument_id,term_type,effective_from,clause_text,trigger_ratio,observation_days,required_days,source_id,source_key,raw_payload,
@@ -2986,7 +2991,7 @@ async function getConvertibleBondSnapshot(value) {
 
 module.exports = {
   finite, yuanToHundredMillion, isoDate, normalizeBondCode, instrumentStatus, remainingYears, pricePairFromReason, normalizePriceChange, normalizePriceChanges, parseTriggerRatio, parseWindow, earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState,
-  annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause, parseMoney, yieldToMaturity,
+  annualizedVolatility, simplifyClause, hasNetAssetFloorClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause, parseMoney, yieldToMaturity,
   cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
   mergeDailyRows, incrementalStart, ANNOUNCEMENT_OVERLAP_DAYS, announcementSourceKey,

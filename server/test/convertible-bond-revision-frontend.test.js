@@ -47,6 +47,7 @@ assert.ok(migration.includes('090_convertible_bond_revision_monitor') && migrati
   && migration.includes('105_convertible_bond_revision_net_asset_floor')
   && migration.includes('106_convertible_bond_revision_net_asset_floor_view_fix')
   && migration.includes('107_convertible_bond_revision_net_asset_floor_same_day')
+  && migration.includes('109_convertible_bond_revision_net_asset_floor_phrase')
   && migration.includes('event.convertible_bond_revision_events') && migration.includes('analytics.convertible_bond_revision_latest')
   && migration.includes('FROM latest_market md') && migration.includes('LEFT JOIN LATERAL'), '下修迁移缺少事件表、统一视图或轻量取数路径');
 const revisionView = migration.slice(migration.indexOf('async function rebuildConvertibleBondRevisionLatestView'), migration.indexOf('// ========== 091：'));
@@ -55,6 +56,7 @@ assert.ok(service.includes('active_dm') && service.includes('remaining_days'), '
 assert.ok(service.includes('quality') && service.includes('pending_no_revision_parse') && service.includes('terminal_no_revision_parse') && service.includes('announcement_errors'), '下修接口缺少公告质量门禁');
 assert.ok(service.includes('rolling_remaining_days'), '下修接口缺少滚动剩余天数字段');
 assert.ok(service.includes('net_asset_floor_value') && service.includes('floor_blocked'), '下修接口未按净资产底线排除不可执行下修');
+assert.ok(service.includes('implicitSseNoRevisionRestartDate') && service.includes('loadRevisionResponseHistory'), '下修计算缺少上交所次日未公告的隐含重新起算');
 assert.ok(analysis.includes('sourceFailures') && analysis.includes('defaultLimit'), '公告同步未保护来源失败或首次全量数量');
 assert.ok(analysis.includes("decision === 'no_revision' || period.lock_declared"), '转股价调整公告正文中的不下修决定必须入库');
 assert.ok(analysis.includes("['no_revision', 'revised', 'adjusted']") && analysis.includes('cacheComplete'), '实施公告正文锁定期必须进入不下修解析链');

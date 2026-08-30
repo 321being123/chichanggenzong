@@ -1,6 +1,6 @@
 const assert = require('assert');
 const {
-  FORMULA_VERSION, effectiveConversionPrice, successfulRevisionStartDate, isValidTerm, buildResetResult,
+  FORMULA_VERSION, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
 } = require('../services/convertibleBondRevisionService');
 
 assert.strictEqual(FORMULA_VERSION, 'reset-v2');
@@ -130,5 +130,28 @@ const revised = buildResetResult(bond, [
 ], [{ change_date: '2026-08-26', price_before: 12, price_after: 10, reason: '关于向下修正转股价格的公告' }], openDates, new Set());
 assert.strictEqual(revised.matchedDays, 2);
 assert.strictEqual(revised.diagnostics.successful_revision_start_date, '2026-08-26');
+
+// 斯达转债：8 月 6 日达到 15/30，8 月 7 日没有上交所规定的“修正/不修正”公告，
+// 应视为本次不修正，并从 8 月 7 日重新起算，而不是继续沿用 8 月 6 日前的 21 天。
+const sseOpenDates = [
+  '2026-08-28','2026-08-27','2026-08-26','2026-08-25','2026-08-24','2026-08-21','2026-08-20','2026-08-19',
+  '2026-08-18','2026-08-17','2026-08-14','2026-08-13','2026-08-12','2026-08-11','2026-08-10','2026-08-07',
+  '2026-08-06','2026-08-05','2026-08-04','2026-08-03','2026-07-31','2026-07-30','2026-07-29','2026-07-28',
+  '2026-07-27','2026-07-24','2026-07-23','2026-07-22','2026-07-21','2026-07-20','2026-07-17',
+];
+const sseBars = sseOpenDates.map(date => ({
+  trade_date: date,
+  close: date >= '2026-07-17' && date <= '2026-08-14' ? 80 : 120,
+}));
+const sseBond = { ...bond, ts_code: '113702.SH', current_conv_price: 104.79, observation_days: 30, required_days: 15, value_date: '2026-06-01', list_date: '2026-06-01', effective_from: '2026-06-01' };
+assert.strictEqual(implicitSseNoRevisionRestartDate(sseBond, sseBars, [], sseOpenDates, '2026-06-01', []), '2026-08-07');
+assert.strictEqual(implicitSseNoRevisionRestartDate({ ...sseBond, ts_code: '127108.SZ' }, sseBars, [], sseOpenDates, '2026-06-01', []), null);
+const sseRestarted = buildResetResult(sseBond, sseBars, [], sseOpenDates, new Set());
+assert.strictEqual(sseRestarted.diagnostics.implicit_sse_no_revision_restart_date, '2026-08-07');
+assert.strictEqual(sseRestarted.matchedDays, 6);
+assert.strictEqual(sseRestarted.status, 'tracking');
+const sseResponded = buildResetResult({ ...sseBond, revision_responses: [{ event_type: 'no_revision', announced_at: '2026-08-07' }] }, sseBars, [], sseOpenDates, new Set());
+assert.strictEqual(sseResponded.diagnostics.implicit_sse_no_revision_restart_date, null);
+assert.strictEqual(sseResponded.status, 'met');
 
 console.log('convertible bond revision tests passed');

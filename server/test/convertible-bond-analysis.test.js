@@ -1,6 +1,6 @@
 const assert = require('assert');
 const {
-  normalizeBondCode, isoDate, instrumentStatus, remainingYears, parseTriggerRatio, parseWindow, yuanToHundredMillion,
+  normalizeBondCode, isoDate, instrumentStatus, remainingYears, parseTriggerRatio, parseWindow, hasNetAssetFloorClause, yuanToHundredMillion,
   earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause,
   yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
   mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, announcementSourceKey,
@@ -55,6 +55,8 @@ assert.ok(annualizedVolatility(rows) > 0);
 const reset = simplifyClause('reset', '当公司股票在任意连续三十个交易日中至少有十五个交易日的收盘价格低于当期转股价格的85%时，修正后的转股价格不得低于每股净资产');
 assert.strictEqual(reset.ratio, 0.85);
 assert.ok(reset.text.includes('30个交易日') && reset.note.includes('净资产'));
+assert.strictEqual(hasNetAssetFloorClause('修正后的价格不低于最近一期经审计的每股净资产'), true);
+assert.ok(simplifyClause('reset', '修正后的价格不低于最近一期经审计的每股净资产').note.includes('净资产'));
 const upwardOnlyReset = simplifyClause('reset', '转股价格向上修正150%时，修正后的转股价格为原转股价格的150%');
 assert.strictEqual(upwardOnlyReset.parse_status, 'failed');
 assert.strictEqual(upwardOnlyReset.parse_reason, 'upward_revision_clause');

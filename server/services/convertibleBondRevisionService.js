@@ -62,6 +62,74 @@ function successfulRevisionStartDate(changes, targetDate) {
   }).map(change => dateText(change.change_date)).sort().pop() || null;
 }
 
+function implicitSseNoRevisionRestartDate(bond, stockBars, changes, openDates, startDate, responses = []) {
+  if (!/\.SH$/i.test(String(bond && bond.ts_code || '')) || !isValidTerm(bond) || !openDates.length) return null;
+  const ratio = numberOrNull(bond.trigger_ratio);
+  const observationDays = numberOrNull(bond.observation_days);
+  const requiredDays = numberOrNull(bond.required_days);
+  const targetDate = openDates[0];
+  const orderedDates = openDates.slice().reverse().filter(date => !startDate || date >= startDate);
+  const stockMap = new Map((stockBars || []).map(row => [dateText(row.trade_date), numberOrNull(row.close)]));
+  const responseRows = (responses || []).map(row => ({
+    event_type: String(row.event_type || ''), announced_at: dateText(row.announced_at),
+  })).filter(row => row.announced_at);
+  let cycleStart = startDate || orderedDates[0];
+  let latestRestart = null;
+  while (cycleStart && cycleStart <= targetDate) {
+    const cycleDates = orderedDates.filter(date => date >= cycleStart);
+    let triggerDate = null;
+    for (let index = 0; index < cycleDates.length; index += 1) {
+      const date = cycleDates[index];
+      const windowStart = Math.max(0, index - observationDays + 1);
+      const flags = cycleDates.slice(windowStart, index + 1).map(item => {
+        const close = stockMap.get(item);
+        const conversionPrice = effectiveConversionPrice(bond.current_conv_price, changes, item);
+        return close != null && conversionPrice > 0 && close < conversionPrice * ratio;
+      });
+      if (flags.filter(Boolean).length >= requiredDays) {
+        triggerDate = date;
+        break;
+      }
+    }
+    if (!triggerDate) break;
+    const triggerIndex = orderedDates.indexOf(triggerDate);
+    const nextDate = triggerIndex >= 0 && triggerIndex + 1 < orderedDates.length
+      ? orderedDates[triggerIndex + 1] : null;
+    // 触发发生在当前交易日，次一交易日尚未到达时不能提前视为“不修正”。
+    if (!nextDate || nextDate > targetDate) break;
+    const hasResponse = responseRows.some(row => row.announced_at >= triggerDate
+      && row.announced_at <= nextDate && row.event_type !== 'trigger_notice');
+    if (hasResponse) break;
+    latestRestart = nextDate;
+    cycleStart = nextDate;
+  }
+  return latestRestart;
+}
+
+async function loadRevisionResponseHistory(instrumentIds, targetDate) {
+  const result = new Map();
+  if (!instrumentIds.length) return result;
+  const [events, noRevision] = await Promise.all([
+    pool.query(
+      `SELECT instrument_id,event_type,announced_at::text
+         FROM event.convertible_bond_revision_events
+        WHERE instrument_id=ANY($1::bigint[]) AND announced_at <= $2::date
+        ORDER BY instrument_id,announced_at,event_id`, [instrumentIds, targetDate]
+    ),
+    pool.query(
+      `SELECT instrument_id,'no_revision' AS event_type,announced_at::text
+         FROM fundamental.convertible_bond_no_revision_history
+        WHERE instrument_id=ANY($1::bigint[]) AND announced_at <= $2::date
+        ORDER BY instrument_id,announced_at,history_id`, [instrumentIds, targetDate]
+    ),
+  ]);
+  for (const row of [...events.rows, ...noRevision.rows]) {
+    if (!result.has(row.instrument_id)) result.set(row.instrument_id, []);
+    result.get(row.instrument_id).push(row);
+  }
+  return result;
+}
+
 function isValidTerm(term) {
   return term && term.parse_status === 'complete'
     && numberOrNull(term.trigger_ratio) > 0
@@ -257,9 +325,13 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
   const baseStart = valueDate && (!termDate || termDate === listDate || termDate === '0001-01-01')
     ? valueDate : (termDate || valueDate || listDate);
   const revisionStart = successfulRevisionStartDate(changes, openDates[0]);
+  const calculationStart = [baseStart, listDate, revisionStart, ...(locked ? [] : [nextEligible])]
+    .filter(Boolean).sort().pop() || null;
+  const implicitRestart = locked ? null
+    : implicitSseNoRevisionRestartDate(bond, stockBars, changes, openDates, calculationStart, bond.revision_responses || []);
   // 不下修锁定只影响业务状态，不应把历史观察窗口清空。集思录仍展示锁定前的
   // 数学进度；只有已知的下一次可起算日且当前未锁定时，才从该日期重新起算。
-  const startDate = [baseStart, listDate, revisionStart, ...(locked ? [] : [nextEligible])]
+  const startDate = [calculationStart, implicitRestart]
     .filter(Boolean).sort().pop() || null;
   if (!isValidTerm(bond) || !bond.stock_instrument_id || !openDates.length) {
     return {
@@ -321,6 +393,7 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
       eligible_from: eligibleDates[eligibleDates.length - 1] || null, next_eligible_date: nextEligible,
       conversion_change_count: changes.length, conversion_price_source: changes.length ? 'price_changes_plus_profile' : 'profile_current',
       successful_revision_start_date: revisionStart,
+      implicit_sse_no_revision_restart_date: implicitRestart,
       net_asset_floor_applicable: netAssetFloorApplicable,
       net_asset_floor_value: netAssetFloorValue,
       net_asset_floor_source: netAssetFloorValue != null ? 'stock_close_div_pb' : null,
@@ -339,16 +412,17 @@ async function calculateConvertibleBondRevisionStatus(tradeDate = null) {
   const bonds = await loadRevisionBonds(targetDate);
   const stockIds = [...new Set(bonds.map(row => row.stock_instrument_id).filter(Boolean))];
   const instrumentIds = bonds.map(row => row.instrument_id);
-  const [openDates, stockBars, changes, stockMetrics] = await Promise.all([
+  const [openDates, stockBars, changes, stockMetrics, responseHistory] = await Promise.all([
     loadOpenTradeDates(targetDate), loadStockBars(stockIds, targetDate), loadPriceChanges(instrumentIds, targetDate),
-    loadLatestStockMetrics(stockIds, targetDate),
+    loadLatestStockMetrics(stockIds, targetDate), loadRevisionResponseHistory(instrumentIds, targetDate),
   ]);
   if (!openDates.length) throw new Error(`交易日历缺失：${targetDate}，请先同步 trade_cal`);
   const suspensions = await loadSuspensions(stockIds, openDates);
   const results = bonds.map(bond => {
     const metrics = stockMetrics.get(String(bond.stock_instrument_id)) || {};
     return buildResetResult(
-    { ...bond, ...metrics }, stockBars.get(bond.stock_instrument_id) || [], changes.get(bond.instrument_id) || [],
+      { ...bond, ...metrics, revision_responses: responseHistory.get(bond.instrument_id) || [] },
+      stockBars.get(bond.stock_instrument_id) || [], changes.get(bond.instrument_id) || [],
     openDates, suspensions.get(bond.stock_instrument_id) || new Set()
     );
   });
@@ -475,6 +549,6 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
 
 module.exports = {
   FORMULA_VERSION, OVERLAP_DAYS, NEAR_REMAINING_DAYS,
-  dateText, addDays, effectiveConversionPrice, successfulRevisionStartDate, isValidTerm, buildResetResult,
+  dateText, addDays, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
   calculateConvertibleBondRevisionStatus, getBondRevisionOverview,
 };

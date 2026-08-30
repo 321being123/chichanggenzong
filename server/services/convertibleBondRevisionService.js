@@ -3,6 +3,7 @@
 const { pool } = require('../db');
 
 const FORMULA_VERSION = 'reset-v2';
+const CALCULATION_LOGIC_VERSION = 'reset-logic-20260830-1';
 const OVERLAP_DAYS = 3;
 const NEAR_REMAINING_DAYS = 5;
 const REVISION_SELECT_FIELDS = [
@@ -337,14 +338,14 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
     return {
       instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice: null,
       matchedDays: null, requiredDays, observationDays, minimumFutureDays: null, status: 'unknown', dataStatus: 'incomplete',
-      diagnostics: { formula: FORMULA_VERSION, reason: !isValidTerm(bond) ? 'invalid_reset_term' : 'missing_trade_calendar', term_id: bond.term_id || null },
+      diagnostics: { formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, reason: !isValidTerm(bond) ? 'invalid_reset_term' : 'missing_trade_calendar', term_id: bond.term_id || null },
     };
   }
   if (startDate && openDates[0] < startDate) {
     return {
       instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice: null,
       matchedDays: 0, requiredDays, observationDays, minimumFutureDays: null, status: 'not_active', dataStatus: 'complete',
-      diagnostics: { formula: FORMULA_VERSION, term_id: bond.term_id || null, eligible_from: startDate, not_started: true,
+      diagnostics: { formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, term_id: bond.term_id || null, eligible_from: startDate, not_started: true,
         start_date_source: valueDate && baseStart === valueDate ? 'value_date' : 'term_effective_from' },
     };
   }
@@ -387,7 +388,7 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
     instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice, matchedDays,
     requiredDays, observationDays, minimumFutureDays, status, dataStatus,
     diagnostics: {
-      formula: FORMULA_VERSION, minimum_future_days_algorithm: 'rolling-v1', term_id: bond.term_id || null, stock_instrument_id: bond.stock_instrument_id || null,
+      formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, minimum_future_days_algorithm: 'rolling-v1', term_id: bond.term_id || null, stock_instrument_id: bond.stock_instrument_id || null,
       expected_dates: eligibleDates, missing_dates: missingDates, suspended_dates: suspendedDates,
       stock_bar_count: rows.length, expected_observation_days: eligibleDates.length - suspendedDates.length,
       eligible_from: eligibleDates[eligibleDates.length - 1] || null, next_eligible_date: nextEligible,
@@ -548,7 +549,7 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
 }
 
 module.exports = {
-  FORMULA_VERSION, OVERLAP_DAYS, NEAR_REMAINING_DAYS,
+  FORMULA_VERSION, CALCULATION_LOGIC_VERSION, OVERLAP_DAYS, NEAR_REMAINING_DAYS,
   dateText, addDays, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
   calculateConvertibleBondRevisionStatus, getBondRevisionOverview,
 };

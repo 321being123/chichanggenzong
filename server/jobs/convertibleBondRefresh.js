@@ -5,7 +5,7 @@ const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('..
 const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnalysis');
 const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
-const { calculateConvertibleBondRevisionStatus } = require('../services/convertibleBondRevisionService');
+const { calculateConvertibleBondRevisionStatus, CALCULATION_LOGIC_VERSION } = require('../services/convertibleBondRevisionService');
 const { syncConvertibleBondSuspensions } = require('../services/convertibleBondSuspensionSync');
 const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
@@ -269,6 +269,10 @@ async function runRevisionStartupCatchup() {
         (SELECT MAX(trade_date)::text FROM market.convertible_bond_daily_metrics) AS market_date,
         (SELECT MAX(trade_date)::text FROM analytics.convertible_bond_trigger_daily
           WHERE trigger_type='reset' AND formula_version='reset-v2') AS state_date,
+        (SELECT COALESCE(bool_and(COALESCE(diagnostics->>'calculation_logic_version','') = $1), false)
+           FROM analytics.convertible_bond_trigger_daily
+          WHERE trigger_type='reset' AND formula_version='reset-v2'
+            AND trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics)) AS logic_version_current,
         (SELECT last_success_date::text FROM ops.sync_cursors
           WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements') AS announcement_date,
         (SELECT COUNT(*)::int FROM (
@@ -288,7 +292,7 @@ async function runRevisionStartupCatchup() {
             AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors,
         (SELECT MAX(trade_date)::text FROM market.trade_calendar
           WHERE exchange='SSE' AND is_open
-            AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date) AS expected_date`);
+            AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date) AS expected_date`, [CALCULATION_LOGIC_VERSION]);
     const row = rows[0] || {};
     if (!row.market_date) return { skipped: true, reason: 'no_market_data' };
     let announcement = null;
@@ -300,6 +304,7 @@ async function runRevisionStartupCatchup() {
       announcement = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({ cachedOnly: true });
     }
     const needsCalculation = !row.state_date || String(row.state_date).slice(0, 10) < String(row.market_date).slice(0, 10)
+      || row.logic_version_current !== true
       || announcementStale || Boolean(announcement && announcement.changed_count);
     const calculation = needsCalculation
       ? await calculateConvertibleBondRevisionStatus(row.market_date)

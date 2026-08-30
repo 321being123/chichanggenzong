@@ -1,9 +1,10 @@
 const assert = require('assert');
 const {
-  FORMULA_VERSION, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
+  FORMULA_VERSION, CALCULATION_LOGIC_VERSION, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
 } = require('../services/convertibleBondRevisionService');
 
 assert.strictEqual(FORMULA_VERSION, 'reset-v2');
+assert.strictEqual(CALCULATION_LOGIC_VERSION, 'reset-logic-20260830-1');
 const term = {
   term_id: 10, trigger_ratio: 0.85, observation_days: 3, required_days: 2,
   effective_from: '2026-08-01', conv_start_date: '2026-08-01',

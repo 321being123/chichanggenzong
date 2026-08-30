@@ -28,7 +28,7 @@ assert.ok(!page.includes("'reset_clause','下修条款'"), '下修页不应展�
 assert.ok(cycle.includes("sub === 'revision'") && cycle.includes('loadBondRevision'), '二级导航未接入下修页');
 assert.ok(route.includes("router.get('/')") || route.includes("router.get('/',"), '下修接口缺少只读路由');
 assert.ok(route.includes('getBondRevisionOverview'), '下修接口未读取统一服务');
-assert.ok(service.includes('analytics.convertible_bond_revision_latest') && service.includes("FORMULA_VERSION = 'reset-v2'"), '下修服务未使用统一视图和版本公式');
+assert.ok(service.includes('analytics.convertible_bond_revision_latest') && service.includes("FORMULA_VERSION = 'reset-v2'") && service.includes('CALCULATION_LOGIC_VERSION'), '下修服务未使用统一视图和版本公式');
 assert.ok(service.includes("NOT IN ('定向','私募')"), '下修服务必须排除定向私募债券');
 assert.ok(service.includes('ORDER BY CASE r.business_status') && service.includes('COALESCE(r.remaining_days,9999)'), '下修接口必须使用数据库状态排序');
 assert.ok(!service.includes('sortedRows'), '下修接口不应再以内存排序替代数据库排序');

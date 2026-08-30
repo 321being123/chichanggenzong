@@ -76,7 +76,11 @@ assert(/WORKER_DRAIN_TIMEOUT_MS: '60000'/.test(read('deploy/ecosystem.config.js'
 assert(/kill_timeout: 3000000/.test(read('deploy/ecosystem.config.js')) && /TimeoutStopSec=50min/.test(read('deploy/portfolio-worker.service')), '部署管理器必须覆盖最长任务的排空时间');
 assert(/systemctl stop portfolio-worker\.service/.test(deployScript) && /systemctl stop portfolio-server\.service/.test(deployScript) && /systemctl start portfolio-server\.service portfolio-worker\.service/.test(deployScript), '部署必须先停止服务再更新代码，完成后再启动');
 assert(/stop_unit_if_present portfolio-worker-health\.timer/.test(deployScript) && /stop_unit_if_present portfolio-worker-health\.service/.test(deployScript), '部署期间必须暂停已安装的独立 Worker 健康检查，避免停机误报');
-assert(/worker:overdue-slots:recovered/.test(health), '逾期任务恢复后必须发送恢复告警');
+assert(!/worker:overdue-slots/.test(health) && /DELETE FROM ops\.worker_heartbeats/.test(health), '健康检查不得重复制造全局逾期告警，且必须定期清理旧心跳');
+assert(/waiting_external/.test(slots) && /waitForExternalSlot/.test(slots) && /attempt_count=GREATEST\(attempt_count-1,0\)/.test(slots), '外部限流或额度耗尽必须进入等待恢复状态且不消耗业务重试次数');
+assert(/workerIdForRole/.test(slots) && /IS DISTINCT FROM/.test(slots) && /heartbeat\('worker', 'stopped'\)/.test(read('server/worker.js')), 'Worker 心跳必须固定为主机加角色，重启更新原记录并在退出时标记停止');
+assert(/probe_owner/.test(migrations) && /probe_token/.test(read('server/services/externalCallGuard.js')) && /probe_lease_until/.test(read('server/services/externalCallGuard.js')), '外部熔断探测必须使用租约和令牌隔离不同进程');
+assert(/arbitrage_sync: `SELECT LEAST/.test(slots) && /convertible_bond_announcement_history_sync:/.test(slots), '多来源任务的数据水位必须按最慢来源核验');
 assert(/migration063AlertSendingStatus/.test(migrations), '数据库必须支持告警投递中状态');
 assert(/migration070RemoveDuplicateLegacyPriceDates/.test(migrations) && /DELETE FROM daily_prices/.test(migrations), '收盘价日期归一后必须清理已存在标准日期对应的旧格式重复行');
 assert(/job_alert_resend/.test(adminRoute) && /result: 'failure'/.test(adminRoute), '邮件重发失败必须写入管理员审计');

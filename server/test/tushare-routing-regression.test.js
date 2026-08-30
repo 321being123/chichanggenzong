@@ -229,6 +229,24 @@ function ok(fields = ['value'], items = [['ok']]) {
     );
     assert.strictEqual(releasedProbe.rows[0].probe_in_flight, false);
     assert.ok(new Date(releasedProbe.rows[0].recover_at).getTime() > Date.now());
+
+    // Worker 在恢复探测请求期间异常退出后，过期的探测占用必须自动回收。
+    await guard.resetExternalCallGuardPersistence('tushare');
+    await guard.openExternalCircuit('tushare', 'stale-probe', {
+      apiName: 'rt_min', tokenFingerprint: newFp, errorCode: 'RATE_LIMIT',
+      recoverAt: new Date(Date.now() - 1000),
+    });
+    await pool.query(
+      `UPDATE ops.external_circuits
+          SET probe_in_flight=true,updated_at=now() - interval '10 minutes'
+        WHERE source='tushare' AND api_name='rt_min' AND token_fingerprint=$1`, [newFp]
+    );
+    const staleProbeResult = await guard.withExternalCallGuard(
+      'tushare', 'stale-probe', '2026-08-18', async () => 'stale-recovered',
+      { apiName: 'rt_min', tokenFingerprint: newFp }
+    );
+    assert.strictEqual(staleProbeResult, 'stale-recovered');
+    await guard.closeExternalCircuit('tushare', 'rt_min', newFp);
     await guard.resetExternalCallGuardPersistence('tushare');
     await guard.resetExternalCallGuardPersistence('tushare_backup');
 

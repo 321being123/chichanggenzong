@@ -31,8 +31,8 @@ for (const definition of definitions.JOB_DEFINITIONS) {
 }
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
-assert.ok(/WHERE \(status='pending' OR \(status='failed' AND next_attempt_at IS NOT NULL/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
-assert.ok(/status IN \('pending','failed'\)/.test(slots), '领取任务不得领取 degraded');
+assert.ok(/WHERE \(status='pending'[\s\S]*status IN \('failed','waiting_external'\)/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
+assert.ok(/status IN \('pending','failed','waiting_external'\)/.test(slots), '领取任务不得领取 degraded');
 assert.ok(/freshnessGate/.test(orchestrator) && /externalCalls: 0/.test(orchestrator), '外部任务必须先执行本地新鲜度门禁');
 assert.ok(/DURABLE_JOB_RUN/.test(orchestrator) && /唯一 job_runs/.test(read('server/db/jobs.js')), '子进程不得创建嵌套 job_runs');
 const valuationRunner = valuation.slice(valuation.indexOf('async function runRefreshChain'), valuation.indexOf('function nextShanghaiDelay'));
@@ -43,8 +43,8 @@ assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCo
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
 assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
-assert.ok(/return await fn\(lock\.client\)/.test(externalGuard)
-  && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient\)/.test(tushareClient)
+assert.ok(/return await fn\(lock\.client, guardResult\)/.test(externalGuard)
+  && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient, probeToken\)/.test(tushareClient)
   && /}, \{\}, guardClient\)\.catch/.test(tushareClient)
   && /circuitScopeLabel/.test(externalGuard), 'Tushare 请求收尾必须复用数据集锁连接，禁止连接池互等');
 assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) && /EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoHistorySync.js')), 'Python 自动任务子进程必须开启外部请求保护');

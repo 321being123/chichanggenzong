@@ -1,6 +1,7 @@
 // 外部请求预算、接口熔断和数据集并发锁。
 // 预算与熔断分表，且熔断绑定不可逆 Token 指纹，多个 Worker 共用同一状态。
 const crypto = require('crypto');
+const os = require('os');
 let pool = null;
 function getPool() {
   if (!pool) pool = require('../db/connection').pool;
@@ -10,6 +11,8 @@ const counters = new Map();
 // 同一进程内先做一次快速抢占，避免第二个调用因等待数据库连接而在
 // 第一个调用释放 PostgreSQL advisory lock 后又继续执行。
 const localDatasetLocks = new Set();
+const PROBE_LEASE_MS = 5 * 60 * 1000;
+const PROBE_OWNER = `${os.hostname()}:${process.pid}:${crypto.randomUUID()}`;
 
 function limit(name, fallback) {
   const value = Number(process.env[name]);
@@ -121,10 +124,11 @@ function circuitScopeLabel(source, apiName) {
 async function upsertCircuit(client, source, apiName, fingerprint, code, errorType, detail, recoverAt) {
   await client.query(
     `INSERT INTO ops.external_circuits
-       (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,error_code,error_type,detail)
-     VALUES($1,$2,$3,'open',$4,false,$5,$6,$7)
+       (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,probe_owner,probe_token,probe_lease_until,error_code,error_type,detail)
+     VALUES($1,$2,$3,'open',$4,false,NULL,NULL,NULL,$5,$6,$7)
      ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
        state='open', recover_at=EXCLUDED.recover_at, probe_in_flight=false,
+       probe_owner=NULL, probe_token=NULL, probe_lease_until=NULL,
        error_code=EXCLUDED.error_code, error_type=EXCLUDED.error_type,
        detail=EXCLUDED.detail, opened_at=now(), updated_at=now()`,
     [sourceKey(source), circuitApiName(apiName, code), String(fingerprint || 'none'), recoverAt,
@@ -132,12 +136,13 @@ async function upsertCircuit(client, source, apiName, fingerprint, code, errorTy
   );
 }
 
-async function assertCircuitAvailable(client, source, apiName, fingerprint, dataset) {
+async function assertCircuitAvailable(client, source, apiName, fingerprint, dataset, probeOwner = PROBE_OWNER) {
   const key = sourceKey(source);
   const names = apiName === '*' ? ['*'] : [apiName, '*'];
   const { rows } = await client.query(
-    `SELECT api_name,recover_at,probe_in_flight,error_code,error_type,detail,
-            (recover_at IS NOT NULL AND recover_at <= now()) AS probe_ready
+    `SELECT api_name,recover_at,probe_in_flight,probe_owner,probe_token,probe_lease_until,error_code,error_type,detail,updated_at,
+            (recover_at IS NOT NULL AND recover_at <= now()) AS probe_ready,
+            (probe_in_flight AND COALESCE(probe_lease_until, COALESCE(updated_at,opened_at) + interval '5 minutes') < now()) AS stale_probe
        FROM ops.external_circuits
       WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3 AND state='open'
       ORDER BY CASE WHEN api_name='*' THEN 0 ELSE 1 END
@@ -146,13 +151,17 @@ async function assertCircuitAvailable(client, source, apiName, fingerprint, data
   const row = rows[0];
   if (!row) return;
   const recoverAt = row.recover_at || null;
-  if (row.probe_ready && !row.probe_in_flight) {
+  // Worker 被强制终止时无法执行 finally，回收超过租期的探测占用，避免熔断永久卡死。
+  if (row.probe_ready && (!row.probe_in_flight || row.stale_probe)) {
+    const probeToken = crypto.randomUUID();
     await client.query(
-      `UPDATE ops.external_circuits SET probe_in_flight=true,updated_at=now()
+      `UPDATE ops.external_circuits
+          SET probe_in_flight=true, probe_owner=$4, probe_token=$5,
+              probe_lease_until=now()+($6::integer * interval '1 millisecond'), updated_at=now()
         WHERE source=$1 AND api_name=$2 AND token_fingerprint=$3`,
-      [key, row.api_name, String(fingerprint || 'none')]
+      [key, row.api_name, String(fingerprint || 'none'), probeOwner, probeToken, PROBE_LEASE_MS]
     );
-    return;
+    return { probeToken, probeApiName: row.api_name };
   }
   const scope = circuitScopeLabel(key, row.api_name);
   throw new ExternalCallGuardError('CIRCUIT_OPEN', `${key} ${scope}已熔断，等待恢复探测`, key, dataset, {
@@ -188,7 +197,7 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
       `SELECT call_count FROM ops.external_call_budgets
         WHERE source=$1 AND window_type='day' AND window_key=$2 FOR UPDATE`, [key, dayKey]
     );
-    await assertCircuitAvailable(client, key, guardOptions.apiName, guardOptions.tokenFingerprint, dataset);
+    const probe = await assertCircuitAvailable(client, key, guardOptions.apiName, guardOptions.tokenFingerprint, dataset);
     const { rows: minuteRows } = await client.query(
       `SELECT call_count FROM ops.external_call_budgets
         WHERE source=$1 AND window_type='minute' AND window_key=$2 FOR UPDATE`, [key, minuteKey]
@@ -227,7 +236,7 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
     );
     await client.query('COMMIT');
     const item = localCount(key, day, minute);
-    return { source: key, dataset, minuteCount: item.minuteCount, dayCount: item.dayCount };
+    return { source: key, dataset, minuteCount: item.minuteCount, dayCount: item.dayCount, ...(probe || {}) };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -270,8 +279,8 @@ async function withExternalCallGuard(source, dataset, businessDate, fn, circuitS
   try {
     const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
     try {
-      await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
-      return await fn(lock.client);
+      const guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
+      return await fn(lock.client, guardResult);
     } finally {
       await releaseExternalDatasetLock(lock);
     }
@@ -298,27 +307,29 @@ async function openExternalCircuit(source, detail = '', circuitSource = source, 
   return { source: key, apiName: circuitApiName(guardOptions.apiName, code), recoverAt };
 }
 
-async function closeExternalCircuit(source, apiName, fingerprint = 'none', providedClient = null) {
+async function closeExternalCircuit(source, apiName, fingerprint = 'none', providedClient = null, probeToken = null) {
   const key = sourceKey(source);
   const queryable = providedClient || getPool();
   await queryable.query(
     `UPDATE ops.external_circuits
-        SET state='closed',probe_in_flight=false,last_success_at=now(),updated_at=now()
-      WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3`,
-    [key, [String(apiName || '*').slice(0, 64), '*'], String(fingerprint || 'none')]
+        SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,last_success_at=now(),updated_at=now()
+      WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3
+        AND ($4::text IS NULL OR probe_token=$4)`,
+    [key, [String(apiName || '*').slice(0, 64), '*'], String(fingerprint || 'none'), probeToken]
   );
 }
 
-async function releaseExternalCircuitProbe(source, apiName, fingerprint = 'none', retryMs = 5000) {
+async function releaseExternalCircuitProbe(source, apiName, fingerprint = 'none', retryMs = 5000, probeToken = null) {
   const key = sourceKey(source);
   await getPool().query(
     `UPDATE ops.external_circuits
-        SET probe_in_flight=false,
+        SET probe_in_flight=false, probe_owner=NULL, probe_token=NULL, probe_lease_until=NULL,
             recover_at=now() + ($4 * interval '1 millisecond'),
             updated_at=now()
       WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3
-        AND state='open' AND probe_in_flight=true`,
-    [key, [String(apiName || '*').slice(0, 64), '*'], String(fingerprint || 'none'), Math.max(Number(retryMs) || 5000, 1000)]
+        AND state='open' AND probe_in_flight=true
+        AND ($5::text IS NULL OR probe_token=$5)`,
+    [key, [String(apiName || '*').slice(0, 64), '*'], String(fingerprint || 'none'), Math.max(Number(retryMs) || 5000, 1000), probeToken]
   );
 }
 

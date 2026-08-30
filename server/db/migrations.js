@@ -4124,6 +4124,28 @@ async function migration109ConvertibleBondRevisionNetAssetFloorPhrase() {
   await rebuildConvertibleBondRevisionLatestView();
 }
 
+// ========== 110：后台告警与运行状态治理 =============
+// 熔断探测使用带所有者的租约，任务状态区分“等待外部来源恢复”，并清理已废弃的全局逾期告警。
+async function migration110BackgroundAlertRuntimeGovernance() {
+  await pool.query(`
+    ALTER TABLE ops.external_circuits ADD COLUMN IF NOT EXISTS probe_owner TEXT;
+    ALTER TABLE ops.external_circuits ADD COLUMN IF NOT EXISTS probe_token TEXT;
+    ALTER TABLE ops.external_circuits ADD COLUMN IF NOT EXISTS probe_lease_until TIMESTAMPTZ;
+    UPDATE ops.external_circuits
+       SET probe_lease_until=COALESCE(probe_lease_until, COALESCE(updated_at, opened_at) + interval '5 minutes')
+     WHERE probe_in_flight=true AND probe_lease_until IS NULL;
+
+    ALTER TABLE ops.job_schedule_slots DROP CONSTRAINT IF EXISTS job_schedule_slots_status_check;
+    ALTER TABLE ops.job_schedule_slots
+      ADD CONSTRAINT job_schedule_slots_status_check
+      CHECK (status IN ('pending','running','succeeded','degraded','failed','blocked','skipped','waiting_external'));
+
+    UPDATE ops.alert_notifications
+       SET status='resolved', resolved_at=COALESCE(resolved_at, now()), updated_at=now()
+     WHERE alert_key='worker:overdue-slots' AND status NOT IN ('resolved','acknowledged');
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4234,6 +4256,7 @@ const MIGRATIONS = [
   { version: '107_convertible_bond_revision_net_asset_floor_same_day', up: migration107ConvertibleBondRevisionNetAssetFloorSameDay },
   { version: '108_convertible_bond_announcement_sources', up: migration108ConvertibleBondAnnouncementSources },
   { version: '109_convertible_bond_revision_net_asset_floor_phrase', up: migration109ConvertibleBondRevisionNetAssetFloorPhrase },
+  { version: '110_background_alert_runtime_governance', up: migration110BackgroundAlertRuntimeGovernance },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

@@ -59,7 +59,10 @@ function failoverEligible(error) {
 function requestWithToken(apiName, params, fields, token, guardSource, dataset, options = {}) {
   const body = JSON.stringify({ api_name: apiName, token, params: params || {}, fields: fields || '' });
   const fingerprint = tokenFingerprint(token);
-  const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, guardClient => new Promise((resolve, reject) => {
+  let probeToken = null;
+  const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, (guardClient, guardResult) => {
+    probeToken = guardResult && guardResult.probeToken || null;
+    return new Promise((resolve, reject) => {
     const request = https.request(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
@@ -106,7 +109,7 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
         if (data.items.length === 0 && !options.allowEmpty) {
           return reject(new TushareRequestError('EMPTY_DATA', `Tushare ${apiName} 返回空数据`, { errorType: 'empty_data', apiName, statusCode: response.statusCode }));
         }
-        await closeExternalCircuit(guardSource, apiName, fingerprint, guardClient).catch(() => {});
+        await closeExternalCircuit(guardSource, apiName, fingerprint, guardClient, probeToken).catch(() => {});
         resolve(data);
       });
     });
@@ -119,13 +122,14 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
     });
     request.write(body);
     request.end();
-  }), { apiName, tokenFingerprint: fingerprint });
+    });
+  }, { apiName, tokenFingerprint: fingerprint });
   return guardedRequest.catch(async error => {
     if (error && error.name === 'TushareRequestError') error.source = guardSource;
     if (error && !error.apiName) error.apiName = apiName;
     if (error && !error.tokenFingerprint) error.tokenFingerprint = fingerprint;
     // 恢复探测遇到网络、空数据或结构错误时，释放探测占用并短暂退避，避免永久卡死。
-    await releaseExternalCircuitProbe(guardSource, apiName, fingerprint).catch(() => {});
+    await releaseExternalCircuitProbe(guardSource, apiName, fingerprint, 5000, probeToken).catch(() => {});
     throw error;
   });
 }

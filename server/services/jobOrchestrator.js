@@ -5,7 +5,7 @@ const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
-  claimSlot, completeSlot, deferSlot, touchSlot, queryDataAsOf, isDataAsOfFresh,
+  claimSlot, completeSlot, deferSlot, waitForExternalSlot, touchSlot, queryDataAsOf, isDataAsOfFresh,
 } = require('./jobScheduleSlots');
 
 let executorStarted = false;
@@ -64,11 +64,13 @@ function classifyFailure(error, result = {}) {
   const recoverAt = (error && error.recoverAt) || result.recoverAt || null;
   const message = String((error && error.message) || result.error || error || '任务执行失败');
   if (code === 'QUOTA_EXHAUSTED' || /当日|每日|当天|日频|次数.*耗尽|额度.*耗尽|配额.*耗尽|daily.*quota|daily.*limit/i.test(message)) {
-    return { code: code || 'QUOTA_EXHAUSTED', type: 'rate_limit', retryable: false, source, apiName, message };
+    return { code: code || 'QUOTA_EXHAUSTED', type: 'rate_limit', retryable: true,
+      ...(recoverAt ? { recoverAt } : {}), source, apiName, message };
   }
   if (code === 'RATE_LIMIT' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|频次|限速|配额|rate.?limit|quota/i.test(message)) {
     const delayMinutes = recoveryDelayMinutes(recoverAt);
-    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: true, ...(delayMinutes ? { delayMinutes } : {}), source, apiName, message };
+    return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: true,
+      ...(delayMinutes ? { delayMinutes } : {}), ...(recoverAt ? { recoverAt } : {}), source, apiName, message };
   }
   if (code === 'AUTH_ERROR' || /token\s*(无效|错误)|无效 token|invalid token|401/i.test(message)) {
     return { code: code || 'AUTH_ERROR', type: 'permission', retryable: false, source, apiName, message };
@@ -263,6 +265,30 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const normalized = normalizeJobResult({
     ...result, error: message, errorCode: failure.code, errorType: failure.type, apiName: failure.apiName,
   }, result.externalCalls);
+  const externalRecoveryFailure = definition.retryPolicy !== 'no_retry'
+    && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(failure.code);
+  if (externalRecoveryFailure) {
+    const retryAt = failure.recoverAt || (failure.delayMinutes
+      ? new Date(Date.now() + Number(failure.delayMinutes) * 60000)
+      : new Date(Date.now() + 60 * 1000));
+    await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+    const waiting = await waitForExternalSlot(slot.slot_id, message, {
+      ...sanitizeJobResult(normalized), retryInMinutes: failure.delayMinutes || null,
+    }, retryAt, runId);
+    if (waiting && !(slot.result_summary && slot.result_summary.waitingExternal)) {
+      const { notifyJobFailure } = require('./jobAlertMailer');
+      await notifyJobFailure({
+        jobCode: slot.job_code,
+        slotId: slot.slot_id,
+        alertKey: `slot:${slot.slot_id}:external-wait`,
+        alertType: 'failure_warning',
+        severity: 'warning',
+        subject: `后台任务等待外部来源恢复：${definition.label}`,
+        summary: `外部来源暂时不可用，任务将在 ${new Date(waiting.next_attempt_at).toISOString()} 后自动继续，不消耗业务重试次数。${message}`,
+      }).catch(mailError => console.warn('[job-alert] 外部等待告警处理失败:', mailError.message));
+    }
+    return waiting;
+  }
   if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
     const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId);

@@ -4,6 +4,7 @@ process.env.JOB_PROCESS_ROLE = 'worker';
 const { initSchema, pool } = require('./db');
 const { startScheduler, waitForStartupTasks, stopJobOrchestrationObserver } = require('./scheduler');
 const { stopDurableExecutor, JOB_DEFINITIONS } = require('./services/jobOrchestrator');
+const { heartbeat } = require('./services/jobScheduleSlots');
 
 async function main() {
   if (process.env.NODE_ENV !== 'production') {
@@ -32,6 +33,7 @@ async function shutdown(signal) {
   stopJobOrchestrationObserver();
   await waitForStartupTasks().catch(() => {});
   await stopDurableExecutor(drainMs).catch(() => {});
+  await heartbeat('worker', 'stopped').catch(error => console.warn('[worker] 停止心跳标记失败:', error.message));
   await pool.end().catch(() => {});
   clearTimeout(hard);
   process.exit(0);

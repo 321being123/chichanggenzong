@@ -52,6 +52,18 @@ function previousDate(dateTextValue) {
   return d.toISOString().slice(0, 10);
 }
 
+// 计划实例的执行日有两种口径：
+//   afterTradingDay：收盘日的次日执行。适用于收盘后才产生的数据（盘后公告、完整行情），
+//     这样周五收盘后的数据周六就能同步，不必等到下周一；遇节假日自动落在假期第一天
+//     （因为前一天是最后一个交易日），假期其余日期因前一天没有收盘而不再执行。
+//   weekdays：交易日当天执行。适用于收盘价、净值等当天即可取到的数据。
+// 两者都复用 isWeekday，已内置节假日判断。
+function isSlotDayAllowed(dateTextValue, definition) {
+  if (definition.afterTradingDay) return isWeekday(previousDate(dateTextValue));
+  if (definition.weekdays) return isWeekday(dateTextValue);
+  return true;
+}
+
 function expectedDataDate(jobCode, businessDate) {
   const normalized = normalizeBusinessDate(businessDate);
   if (!normalized) return null;
@@ -249,11 +261,11 @@ async function syncScheduleSlots(now = new Date()) {
   for (const definition of JOB_DEFINITIONS) {
     if (definition.manualOnly) continue;
     const candidateDates = allDates.filter(date =>
-      (!definition.weekdays || isWeekday(date)) && (!definition.monthly || date.slice(8, 10) === '01'));
+      isSlotDayAllowed(date, definition) && (!definition.monthly || date.slice(8, 10) === '01'));
     const dates = definition.catchupMode === 'latest_only' ? candidateDates.slice(0, 1) : allDates;
     for (const businessDate of dates) {
       if (definition.monthly && businessDate.slice(8, 10) !== '01') continue;
-      if (definition.weekdays && !isWeekday(businessDate)) continue;
+      if (!isSlotDayAllowed(businessDate, definition)) continue;
       const scheduledFor = scheduledDate(businessDate, definition.hour, definition.minute);
       const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
       if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
@@ -811,4 +823,5 @@ module.exports = {
   WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
+  isSlotDayAllowed, isWeekday, previousDate,
 };

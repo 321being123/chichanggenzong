@@ -278,9 +278,20 @@ async function withExternalCallGuard(source, dataset, businessDate, fn, circuitS
   localDatasetLocks.add(localKey);
   try {
     const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
+    let guardResult = null;
     try {
-      const guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
+      guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
       return await fn(lock.client, guardResult);
+    } catch (error) {
+      // 所有使用统一 Guard 的来源都要释放探测租约；不能只依赖 Tushare 自己的 catch。
+      // 这样 CNInfo、港交所等通用 HTTP 适配器在网络异常或响应格式错误时也不会留下占用。
+      if (guardResult && guardResult.probeToken) {
+        await releaseExternalCircuitProbe(
+          guardOptions.circuitSource, guardOptions.apiName, guardOptions.tokenFingerprint,
+          5000, guardResult.probeToken
+        ).catch(() => {});
+      }
+      throw error;
     } finally {
       await releaseExternalDatasetLock(lock);
     }

@@ -39,13 +39,19 @@ async function getCursor(scopeKey, dataset) {
   return rows.length ? rows[0] : null;
 }
 
-// 写入/更新游标
+// 写入/更新游标：失败只能记录错误，不能把已有成功水位回退到重叠窗口起点。
 async function upsertCursor(scopeKey, dataset, lastSuccessDate, lastSourceUpdate, error) {
   await pool.query(`
     INSERT INTO ops.sync_cursors(scope_key, dataset_code, last_success_date, last_source_update, last_attempt_at, last_error, retry_count, updated_at)
     VALUES($1,$2,$3,$4,now(),$5,0,now())
     ON CONFLICT(scope_key, dataset_code) DO UPDATE SET
-      last_success_date = COALESCE(EXCLUDED.last_success_date, ops.sync_cursors.last_success_date),
+      last_success_date = CASE
+        WHEN EXCLUDED.last_error <> '' THEN ops.sync_cursors.last_success_date
+        ELSE GREATEST(
+          COALESCE(ops.sync_cursors.last_success_date, '1900-01-01'::date),
+          COALESCE(EXCLUDED.last_success_date, '1900-01-01'::date)
+        )
+      END,
       last_source_update = COALESCE(EXCLUDED.last_source_update, ops.sync_cursors.last_source_update),
       last_attempt_at = now(),
       last_error = EXCLUDED.last_error,
@@ -502,7 +508,7 @@ async function retryPendingDocuments(limit = 20) {
 
 // 执行同步
 // 游标规则：某窗口内有任一条公告入库失败（或整窗拉取失败），则不推进游标，
-// 并把 last_success_date 指向该窗口起点，下一次增量同步会重新拉取该窗口并重试失败记录（入库幂等）。
+// 保留已有成功水位，下一次增量同步会从重叠窗口重新拉取并重试失败记录（入库幂等）。
 async function runSync(windows, isFirst) {
   const results = { hkex: { total: 0, errors: [], failureDetails: [] }, cninfo: { total: 0, errors: [], failureDetails: [] } };
 

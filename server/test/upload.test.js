@@ -131,6 +131,36 @@ async function main() {
     assert.strictEqual(items[0].code, '00152');
     assert.strictEqual(require('../../public/js/code-classify')(items[0].code, items[0].name).subtype, '港股');
   });
+  await check('导入主档纠正江西铜业六位港股代码', async () => {
+    const items = await router.normalizeImportedItems([
+      { kind: 'trade', code: '000358', name: '江西铜业股份', price: 40.28, quantity: 1000 }
+    ], async (_sql, params) => {
+      assert.deepStrictEqual(params[0], ['000358', '00358']);
+      return { rows: [{ canonical_code: '00358.HK', name: '江西铜业股份', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' }] };
+    });
+    assert.strictEqual(items[0].code, '00358');
+    assert.strictEqual(items[0].subtype, '港股');
+    assert.strictEqual(items[0].quote_currency, 'HKD');
+  });
+  await check('主档存在 A 股同码时不误改为港股', async () => {
+    const items = await router.normalizeImportedItems([
+      { kind: 'trade', code: '000001', name: '平安银行', price: 10, quantity: 100 }
+    ], async () => ({ rows: [
+      { canonical_code: '00001.HK', name: '长江实业集团', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' },
+      { canonical_code: '000001.SZ', name: '平安银行', market: 'CN', exchange_code: 'SZSE', currency_code: 'CNY' }
+    ] }));
+    assert.strictEqual(items[0].code, '000001');
+    assert.strictEqual(items[0].subtype, undefined);
+  });
+  await check('A 股主档缺失且名称不匹配时不误改为港股', async () => {
+    const items = await router.normalizeImportedItems([
+      { kind: 'position', code: '000858', name: '五粮液', price: 100, quantity: 100 }
+    ], async () => ({ rows: [
+      { canonical_code: '00858.HK', name: '精优药业', market: 'HK', exchange_code: 'HKEX', currency_code: 'HKD' }
+    ] }));
+    assert.strictEqual(items[0].code, '000858');
+    assert.strictEqual(items[0].subtype, undefined);
+  });
   await check('复杂对账单（无核心列）返回 null 走大模型', () => {
     const items = router.buildStructuredItems([
       ['序号', '资金账号', '摘要', '发生额', '结余'],

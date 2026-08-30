@@ -17,6 +17,7 @@ const { pool } = require('../db/connection');
 const { round } = require('../db/util');
 const { todayCN } = require('../services/market');
 const classifyCode = require('../../public/js/code-classify');
+const { resolveAmbiguousSecurity } = require('./securityIdentity');
 
 // 业务错误（带 status，路由按 400/409 返回）
 function bizError(msg, status = 400) {
@@ -204,12 +205,13 @@ async function checkVersionInTxn(client, username, accountName, expectedVersion)
 async function applyTrade(username, accountName, trade, externalClient = null, expectedVersion = null) {
   const t = Object.assign({}, trade);
   const rawCode = String(t.code == null ? '' : t.code).trim();
-  const normalizedCode = classifyCode.normalizeCode(rawCode, t.name);
+  const identity = await resolveAmbiguousSecurity(rawCode, t.name, externalClient ? externalClient.query.bind(externalClient) : null);
+  const normalizedCode = identity ? identity.code : classifyCode.normalizeCode(rawCode, t.name);
   if (normalizedCode) {
     t.code = normalizedCode;
-    // 只有代码被名称校正/补齐时才同步覆盖分类，避免改变现有自定义品种选择。
-    if (normalizedCode !== rawCode) {
-      const codeInfo = classifyCode(normalizedCode, t.name);
+    // 代码被主档校正/补齐时同步覆盖分类，避免港股沿用六位 A 股分类。
+    if (identity || normalizedCode !== rawCode) {
+      const codeInfo = identity || classifyCode(normalizedCode, t.name);
       if (codeInfo) {
         t.type = codeInfo.type;
         t.subtype = codeInfo.subtype;

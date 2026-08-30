@@ -14,6 +14,7 @@ const { getActiveSorted, recordStatus } = require('../services/aiModels');
 const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
 const { upsertIndexPoints } = require('../db');
 const normalizeCode = require('../../public/js/code-classify.js').normalizeCode;
+const { normalizeImportedItems } = require('../services/securityIdentity');
 
 // 图片校验：仅接受图片 MIME + 文件魔数，解码后不超过 10MB；返回错误信息字符串或 null
 function validateImage(image) {
@@ -178,8 +179,7 @@ router.post('/api/vision-parse', requireLogin, rateLimit({ prefix: 'ai', windowM
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return res.json({ items: [] });
 
-    const items = JSON.parse(jsonMatch[0]);
-    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code, it.name); });
+    const items = await normalizeImportedItems(JSON.parse(jsonMatch[0]));
     res.json({ items: items });
   } catch (e) {
     res.json({ error: '识别失败: ' + e.message });
@@ -295,7 +295,7 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
 
     // 结构化直解析优先：表头清晰的（持仓历史/对账单等）直接提取，不走大模型
     const structured = buildStructuredItems(rows);
-    if (structured) return res.json({ items: structured });
+    if (structured) return res.json({ items: await normalizeImportedItems(structured) });
 
     // AI 输入截断，避免超大表格放大 token 成本（最多约 5 万字符）
     const rowsJson = JSON.stringify(rows);
@@ -309,8 +309,7 @@ router.post('/api/excel-parse', requireLogin, rateLimit({ prefix: 'ai', windowMs
     const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return res.json({ items: [] });
 
-    const items = JSON.parse(jsonMatch[0]);
-    items.forEach(it => { if (it && it.code) it.code = normalizeCode(it.code, it.name); });
+    const items = await normalizeImportedItems(JSON.parse(jsonMatch[0]));
     res.json({ items: items });
   } catch (e) {
     res.json({ error: '解析失败: ' + e.message });
@@ -361,5 +360,6 @@ router.detectExcelMapping = detectExcelMapping;
 router.buildStructuredItems = buildStructuredItems;
 router.parseNumericCell = parseNumericCell;
 router.normalizeDateCell = normalizeDateCell;
+router.normalizeImportedItems = normalizeImportedItems;
 
 module.exports = router;

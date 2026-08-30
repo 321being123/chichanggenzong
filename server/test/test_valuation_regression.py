@@ -2,7 +2,7 @@
 # 可转债估值 Python 端回归测试（原生 assert，不依赖 pytest）
 # 覆盖整改中修复的 7 个真 bug + 数据库落地完整性
 # 运行：./venv/Scripts/python.exe server/test/test_valuation_regression.py
-import sys, os, time, json
+import sys, os, time, json, datetime as _dt, inspect
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import server.scripts.convertibleBondValuation as m
@@ -136,6 +136,54 @@ check('中风险低分位不触发进入低位', "估值进入低位" not in m._
 missing_row = dict(base_row); missing_row["data_status"] = "数据不足"
 check('数据从完整变为不足才触发', "数据不足" in m._alert_state_of(missing_row, prev_row={"status": "完整", "safety": "中风险"}))
 check('首日即不足不误触发状态变化', "数据不足" not in m._alert_state_of(missing_row, prev_row=None))
+
+
+# =====================================================================
+# 单元：估值断档发现与游标单调推进（防复发）
+# =====================================================================
+print('== 单元：估值断档发现与游标单调推进 (防复发) ==')
+class _GapProbeCursor:
+    def __init__(self):
+        self.sql = ''
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+
+    def fetchall(self):
+        return [(pd.Timestamp('2026-08-20').date(),), (pd.Timestamp('2026-08-25').date(),)]
+
+
+class _GapProbeConnection:
+    def __init__(self):
+        self.cursor_probe = _GapProbeCursor()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return self.cursor_probe
+
+
+gap_probe = _GapProbeConnection()
+original_db_connect = m.db_connect
+m.db_connect = lambda: gap_probe
+try:
+    gap_dates = m._find_valuation_gap_dates()
+finally:
+    m.db_connect = original_db_connect
+check('刷新差集能识别游标已越过的历史断档',
+      gap_dates == [pd.Timestamp('2026-08-20').date(), pd.Timestamp('2026-08-25').date()]
+      and 'LEFT JOIN valuation_dates' in gap_probe.cursor_probe.sql)
+check('日常刷新实际调用差集检查', '_find_valuation_gap_dates()' in inspect.getsource(m.cmd_refresh))
 
 
 # =====================================================================
@@ -301,6 +349,23 @@ try:
             ]
             check(f'年度误差校准截止日早于预测年 (异常 {leakage})', not leakage)
 
+            # 在事务内验证补旧断档不会把已完成的更晚游标倒退，随后回滚。
+            cur.execute(
+                "SELECT last_success_date FROM ops.sync_cursors "
+                "WHERE scope_key='convertible_bond_valuation' AND dataset_code='daily_valuation'"
+            )
+            cursor_before = cur.fetchone()[0]
+            if cursor_before:
+                m._advance_valuation_cursor(cursor_before - _dt.timedelta(days=1), conn)
+                cur.execute(
+                    "SELECT last_success_date FROM ops.sync_cursors "
+                    "WHERE scope_key='convertible_bond_valuation' AND dataset_code='daily_valuation'"
+                )
+                cursor_after = cur.fetchone()[0]
+                check('补旧断档不使估值游标倒退', cursor_after == cursor_before)
+            else:
+                check('补旧断档不使估值游标倒退', False, '估值游标为空')
+
             # 在事务内验证同一状态可于不同交易日再次触发，随后回滚，不污染数据库。
             cur.execute("SELECT instrument_id FROM analytics.convertible_bond_valuation_daily ORDER BY trade_date DESC LIMIT 1")
             test_iid = cur.fetchone()[0]
@@ -311,7 +376,7 @@ try:
                     "VALUES(%s,%s,'回归测试-恢复后再次触发','关注','同一状态',%s,false)",
                     (test_iid, event_date, model["model_version"]),
                 )
-            check('恢复后可在新交易日再次触发相同状态', True)
+                check('恢复后可在新交易日再次触发相同状态', True)
             conn.rollback()
 except RuntimeError as e:
     if str(e) == '__CI_EMPTY_VALUATION_DATA__':

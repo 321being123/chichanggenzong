@@ -114,6 +114,43 @@ def db_connect():
     )
 
 
+def _find_valuation_gap_dates():
+    """找出行情已有、估值尚未落库的交易日，供刷新任务发现游标已越过的断档。"""
+    sql = """
+      WITH market_dates AS (
+        SELECT DISTINCT trade_date::date AS trade_date
+          FROM market.convertible_bond_daily_metrics
+         WHERE trade_date >= DATE '2021-01-01'
+      ), valuation_dates AS (
+        SELECT DISTINCT trade_date::date AS trade_date
+          FROM analytics.convertible_bond_valuation_daily
+         WHERE trade_date >= DATE '2021-01-01'
+      )
+      SELECT m.trade_date
+        FROM market_dates m
+        LEFT JOIN valuation_dates v ON v.trade_date = m.trade_date
+       WHERE v.trade_date IS NULL
+       ORDER BY m.trade_date
+    """
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return [row[0] for row in cur.fetchall()]
+
+
+def _advance_valuation_cursor(last_ok, conn):
+    """只把估值游标向前推进；补旧断档时不能覆盖更晚的成功水位。"""
+    if not last_ok:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE ops.sync_cursors SET last_success_date="
+            "GREATEST(COALESCE(last_success_date, %s), %s) "
+            "WHERE scope_key='convertible_bond_valuation' AND dataset_code='daily_valuation'",
+            (last_ok, last_ok),
+        )
+
+
 # ----------------------------------------------------------------------------
 # 数据准备（保留全部历史行情行；不过滤，缺失由推算阶段判定“数据不足”）
 # ----------------------------------------------------------------------------
@@ -1658,14 +1695,10 @@ def cmd_backfill(start="2021-01-01", end=None, window_start=None):
                              profile_map=profile_map)
         total += n
         last_ok = d
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE ops.sync_cursors SET last_success_date=%s "
-                "WHERE scope_key='convertible_bond_valuation' AND dataset_code='daily_valuation'",
-                (last_ok,),
-            )
-        conn.commit()
+    if last_ok:
+        with db_connect() as conn:
+            _advance_valuation_cursor(last_ok, conn)
+            conn.commit()
     print(f"历史回填完成：{len(dates)} 个交易日，合计 {total} 只正式估值（不生成实时预警）")
 
 
@@ -1680,6 +1713,7 @@ def cmd_refresh():
     latest = latest_usable_trade_date(prepared)
     if latest is None:
         raise RuntimeError("没有核心字段完整的可转债行情日，等待上游补齐")
+    gap_dates = _find_valuation_gap_dates()
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1695,6 +1729,17 @@ def cmd_refresh():
         latest = latest_usable_trade_date(prepared)
         if latest is None:
             raise RuntimeError("没有核心字段完整的可转债行情日，等待上游补齐")
+    # 不能只看游标之后：游标可能已越过中间断档。发现历史断档时读全量并连续回填到最新可用日。
+    internal_gaps = [d for d in gap_dates if d <= latest]
+    if internal_gaps:
+        window_start = None
+        prepared = _build_prepared(None)
+        latest = latest_usable_trade_date(prepared)
+        if latest is None:
+            raise RuntimeError("没有核心字段完整的可转债行情日，等待上游补齐")
+        internal_gaps = [d for d in gap_dates if d <= latest]
+        cmd_backfill(internal_gaps[0].isoformat(), latest.isoformat(), window_start=None)
+        last_success = latest
     dates = sorted(set(prepared["trade_date"].dt.date))
     missing = [d for d in dates if last_success and last_success < d < latest]
     if missing:

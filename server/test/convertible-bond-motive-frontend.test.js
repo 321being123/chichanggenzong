@@ -21,10 +21,12 @@ assert.ok(html.includes('motive-inputs') && !html.includes('motive-sources') && 
 assert.ok(html.includes('href="/?main=bond-safety&sub=revision"') && html.indexOf('bond-motive-back') < html.indexOf('bond-feature-hero'), '返回链接应位于蓝色标题外');
 assert.ok(script.includes('raw_value') && script.includes('input_snapshot') && script.includes('financialText') && script.includes('cycleText') && script.includes('proposalHistoryText') && !script.includes('motive-json'), '详情页原始输入展示不符合要求');
 assert.ok(script.includes('motive-core') && script.includes('dimensionNames') && script.includes('calculations'), '详情页缺少核心动机或五维计算项');
+assert.ok(script.includes('dimensionScoreTotal') && script.includes('motive-dimension-total') && script.includes('五项合计'), '详情页缺少五项评分合计');
 assert.ok(script.includes('bond_price_percentile') && script.includes('remain_issue_ratio') && script.includes('market_cap') && script.includes('亿元') && script.includes("toFixed(2)"), '详情页未格式化百分位、比例、金额或年数');
 assert.ok(script.includes("'false': '否'") && script.includes('displayText'), '详情页仍可能展示英文状态值');
 assert.ok(!script.includes('sourceCell') && !script.includes('source_references'), '详情页不应展示来源引用');
 assert.ok(css.includes('.motive-calculations') && !css.includes('.motive-json'), '详情页计算项或JSON样式不符合要求');
+assert.ok(css.includes('.motive-input-table') && css.includes('table-layout:fixed') && css.includes('overflow-wrap:anywhere') && css.includes('.motive-hero h1') && css.includes('align-items:center'), '详情页长文本换行或标题垂直居中样式缺失');
 assert.ok(!script.includes('Tushare') && !script.includes('tushareQuery'), '详情页不得调用外部数据接口');
 
 console.log('convertible-bond-motive-frontend.test.js 通过');

@@ -105,15 +105,33 @@
     var summary = data.score_summary || {};
     var bond = data.bond || {};
     var dimensionNames = { history:'历史行为', pressure:'财务压力', conversion:'转股约束', governance:'治理压力', market:'市场环境' };
+    var dimensions = data.dimension_calculations || [];
+    var dimensionScoreTotal = 0;
+    var scoredDimensionCount = 0;
+    dimensions.forEach(function (item) {
+      var rawScore = item && item.score;
+      if (rawScore == null || rawScore === '') return;
+      var score = Number(rawScore);
+      if (Number.isFinite(score)) {
+        dimensionScoreTotal += score;
+        scoredDimensionCount += 1;
+      }
+    });
+    var totalElement = document.getElementById('motive-dimension-total');
+    if (totalElement) {
+      var totalText = scoredDimensionCount ? value(dimensionScoreTotal, 1) + ' / 100 分' : '—';
+      if (scoredDimensionCount && scoredDimensionCount < 5) totalText += '（已计' + scoredDimensionCount + '/5项）';
+      totalElement.textContent = '五项合计：' + totalText;
+    }
     document.getElementById('motive-title').textContent = (bond.bond_name || bond.ts_code || '可转债') + ' · 下修博弈详情';
     document.getElementById('motive-updated').textContent = '评分日期：' + (summary.trade_date || '—') + ' · 模型：' + (data.model_version || '—') + ' · 计算时间：' + String(data.calculated_at || '—').replace('T', ' ').slice(0, 19);
     var cards = [['动机评分', value(summary.motive_score, 1) + ' / 100'], ['触发成熟度', value(summary.maturity_score, 1) + ' / 100'], ['动机等级', summary.classification || '—'], ['安全性', summary.safety_level || '未评级'], ['数据质量', displayText(summary.quality_status) + '（' + percent(summary.completeness_rate) + '）']];
     document.getElementById('motive-summary').innerHTML = cards.map(function (item) { return '<div class="bond-feature-stat motive-summary-card"><span>' + escapeHtml(item[0]) + '</span><strong>' + escapeHtml(item[1]) + '</strong></div>'; }).join('');
     var core = '<div class="motive-core"><strong>核心动机</strong>' + list(data.core_motives) + '<strong>当前阻断</strong>' + list(data.blockers) + '</div>';
-    document.getElementById('motive-dimensions').innerHTML = core + ((data.dimension_calculations || []).map(function (item) { return '<div class="motive-dimension"><span>' + escapeHtml(dimensionNames[item.dimension] || item.dimension) + '</span><strong>' + value(item.score, 1) + ' 分</strong>' + list(item.items) + calculations(item.calculations) + '</div>'; }).join('') || '<div>暂无维度数据</div>');
+    document.getElementById('motive-dimensions').innerHTML = core + (dimensions.map(function (item) { return '<div class="motive-dimension"><span>' + escapeHtml(dimensionNames[item.dimension] || item.dimension) + '</span><strong>' + value(item.score, 1) + ' 分</strong>' + list(item.items) + calculations(item.calculations) + '</div>'; }).join('') || '<div>暂无维度数据</div>');
     var ex = data.executability_calculation || {};
     document.getElementById('motive-executable').innerHTML = '<div class="motive-kv">' + [['状态', displayText(ex.status)], ['估算底价', value(ex.floor_price, 3)], ['估算下修空间', percent(ex.space)], ['估算下修后转股价值', value(ex.post_conversion_value, 2)], ['转股价值提升', value(ex.value_uplift, 2)]].map(function (item) { return '<div><span>' + escapeHtml(item[0]) + '</span><strong>' + escapeHtml(item[1] == null ? '—' : String(item[1])) + '</strong></div>'; }).join('') + '</div>' + list(ex.blockers);
-    document.getElementById('motive-inputs').innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr><th>指标</th><th>说明</th><th>单位</th><th>规则</th><th>变化</th><th>数据日期</th><th>状态</th></tr></thead><tbody>' + (data.input_snapshot || []).map(function (item) { return '<tr><td>' + escapeHtml(item.label || item.metric || item.field) + '</td><td class="motive-raw-value">' + snapshotValue(item) + '</td><td>' + escapeHtml(displayUnit(item)) + '</td><td>' + escapeHtml(item.rule || '—') + '</td><td>' + prettyValue(item.delta) + '</td><td>' + escapeHtml(item.data_date || '—') + '</td><td>' + escapeHtml(displayText(item.status || '')) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+    document.getElementById('motive-inputs').innerHTML = '<div class="biz-table-scroll"><table class="biz-table motive-input-table"><thead><tr><th>指标</th><th>说明</th><th>单位</th><th>规则</th><th>变化</th><th>数据日期</th><th>状态</th></tr></thead><tbody>' + (data.input_snapshot || []).map(function (item) { return '<tr><td>' + escapeHtml(item.label || item.metric || item.field) + '</td><td class="motive-raw-value">' + snapshotValue(item) + '</td><td>' + escapeHtml(displayUnit(item)) + '</td><td>' + escapeHtml(item.rule || '—') + '</td><td>' + prettyValue(item.delta) + '</td><td>' + escapeHtml(item.data_date || '—') + '</td><td>' + escapeHtml(displayText(item.status || '')) + '</td></tr>'; }).join('') + '</tbody></table></div>';
     document.getElementById('motive-content').hidden = false;
     document.getElementById('motive-error').hidden = true;
   }

@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.6.5.6",
-  "appVersion": "0.6.5.6",
+  "version": "0.6.5.7",
+  "appVersion": "0.6.5.7",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
@@ -14,7 +14,8 @@
     "check:knowledge": "node scripts/check-knowledge.js",
     "setup:hooks": "node scripts/install-git-hooks.js",
     "audit:bonds": "node server/scripts/auditHeldConvertibleBondNoRevision.js",
-    "backfill:terms-hash": "node server/scripts/backfillTermsHash.js"
+    "backfill:terms-hash": "node server/scripts/backfillTermsHash.js",
+    "backtest:motive": "node server/scripts/backtestConvertibleBondMotive.js --apply --backfill-scores"
   },
   "dependencies": {
     "@mozilla/readability": "0.6.0",

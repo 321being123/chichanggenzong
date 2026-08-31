@@ -4,8 +4,12 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { tushareQuery, tsRows } = require('./market');
 
-const MOTIVE_MODEL_VERSION = 'motive-v1';
+// 评分规则移除无效的“剩余规模低于发行规模”和跨债种市场热度加分，必须升级模型版本，避免旧快照混入新规则。
+const MOTIVE_MODEL_VERSION = 'motive-v1.1';
+// 历史公告前样本外回测尚未通过前，禁止把研究分转换为预测等级；完成回测后需升级模型版本并显式打开。
+const MOTIVE_MODEL_CALIBRATED = false;
 const CYCLE_VERSION = 'cycle-v1';
+const MAX_HOLDER_CALLS_PER_RUN = 10;
 const BOND_CODE_RE = /^(110|111|113|118|123|127|128)\d{3}\.(SH|SZ)$/i;
 
 function finite(value) {
@@ -293,7 +297,6 @@ function scorePressure(input) {
   if (p.remainSize != null && cash != null && trading != null && cash + trading > 0 && p.remainSize > cash + trading) {
     values.push(p.remainSize > (cash + trading) * 2 ? 8 : 6); items.push('剩余债务高于现金及交易性资产');
   }
-  if (p.remainSize != null && p.issueSize != null && p.issueSize > 0 && p.remainSize / p.issueSize < 1) { values.push(3); items.push('剩余规模已低于发行规模'); }
   if (debt != null && ebitda != null && debt > 0 && ebitda / debt < 0.05) { values.push(3); items.push('EBITDA覆盖负债能力偏弱'); }
   if (currentRatio != null && currentRatio < 1) { values.push(3); items.push('流动比率低于1'); }
   if (revenue != null && interest != null && revenue > 0 && interest / revenue > 0.1) { values.push(2); items.push('利息费用率偏高'); }
@@ -337,15 +340,16 @@ function scoreGovernance(input) {
 }
 
 function scoreMarket(input) {
-  const items = [], values = [], bondClose = finite(input.bondClose);
+  const items = [], contextItems = [], values = [], bondClose = finite(input.bondClose);
   if (bondClose != null && bondClose < 100) { values.push(4); items.push('转债价格低于面值'); }
   else if (bondClose != null && bondClose < 110) { values.push(2); items.push('转债价格接近面值'); }
   const bondRank = percentileRank(input.bondPriceHistory, bondClose);
   if (bondRank != null && bondRank <= 0.2) { values.push(2); items.push('转债价格处于自身历史低位'); }
   const proposalRank = percentileRank(input.proposalHistory, input.proposalMonthlyCount != null ? input.proposalMonthlyCount : input.proposalCount || 0);
-  if (proposalRank != null && proposalRank >= 0.6) { values.push(2); items.push('近期下修提议频率较高'); }
-  if (input.industryProposalPressure) { values.push(2); items.push('同行业近期下修提议偏多'); }
-  return { score: clamp(values.reduce((a, b) => a + b, 0), 0, 10), items };
+  // 其他转债的下修只能作为市场背景，不能直接证明本债发行人有下修动机，因此不计入单债评分。
+  if (proposalRank != null && proposalRank >= 0.6) contextItems.push('近期全市场下修提议偏多（仅作市场背景，不计入本债动机分）');
+  if (input.industryProposalPressure) contextItems.push('同行近期下修提议偏多（仅作市场背景，不计入本债动机分）');
+  return { score: clamp(values.reduce((a, b) => a + b, 0), 0, 10), items, contextItems };
 }
 
 function calculateExecutability(input) {
@@ -428,8 +432,8 @@ function buildDimensionCalculations(input) {
     market: [
       item('bond_close', '转债价格', input.bondClose, '元', '<100加4分，<110加2分'),
       item('bond_price_percentile', '转债历史价格分位', percentileRank(input.bondPriceHistory, input.bondClose), '百分位', '≤20%加2分'),
-      item('proposal_monthly_count', '当月下修提议次数', input.proposalMonthlyCount, '次', '与历史月度序列比较，≥60%分位加2分'),
-      item('industry_proposal_pressure', '同行近期提议压力', input.industryProposalPressure, '状态', '近90日≥2次或占近一年季度比例偏高加2分'),
+      item('proposal_monthly_count', '当月下修提议次数', input.proposalMonthlyCount, '次', '仅作市场背景参考，不计入本债动机分'),
+      item('industry_proposal_pressure', '同行近期提议压力', input.industryProposalPressure, '状态', '仅作市场背景参考，不计入本债动机分'),
     ],
   };
 }
@@ -448,18 +452,21 @@ function buildMotiveScore(input = {}) {
     ...(governanceHolders >= 25 ? ['大股东仍持债，相关股东可能需要回避表决'] : []),
     ...(input.profile && input.profile.issueSize > 0 && input.profile.remainSize != null && input.profile.remainSize / input.profile.issueSize < 0.2 ? ['剩余规模较小，促转股必要性偏弱'] : []),
     ...(input.safetyLevel && /高风险|high/i.test(String(input.safetyLevel)) ? ['安全性评级偏高风险，动机不等于安全'] : []),
+    ...(qualityStatus !== 'complete' ? ['核心输入未完整，暂不输出预测等级'] : []),
+    ...(!MOTIVE_MODEL_CALIBRATED && input.modelCalibrated !== true ? ['历史样本外回测未通过，暂不输出预测等级'] : []),
     ...(qualityStatus === 'incomplete' ? ['关键输入不完整'] : []),
   ])];
-  // partial 仍然有可解释的已得分项；只有关键输入完全不足时才判定为无有效评分。
-  const hasUsableInput = qualityStatus !== 'incomplete';
+  // 部分输入缺失或模型尚未完成样本外校准时，不能把研究分数转换成预测等级。
+  const hasUsableInput = qualityStatus === 'complete' && (MOTIVE_MODEL_CALIBRATED || input.modelCalibrated === true);
   const motiveLevel = !hasUsableInput ? 'unavailable' : motiveScore >= 70 ? 'research_high' : motiveScore >= 50 ? 'has_motive' : 'weak';
+  const unavailableReason = qualityStatus !== 'complete' ? '数据不完整，暂不判断' : '研究评分未完成历史校准，暂不判断';
   return {
     motiveScore, maturityScore, motiveLevel,
-    classification: motiveLevel === 'research_high' ? '研究评分≥70（待历史校准）' : motiveLevel === 'has_motive' ? '存在下修动机（研究评分）' : motiveLevel === 'weak' ? '动机偏弱' : '暂无足够数据',
+    classification: motiveLevel === 'research_high' ? '研究评分≥70（待历史校准）' : motiveLevel === 'has_motive' ? '存在下修动机（研究评分）' : motiveLevel === 'weak' ? '动机偏弱（研究评分）' : unavailableReason,
     dimensions: { history: history.score, pressure: pressure.score, conversion: conversion.score, governance: governance.score, market: market.score },
     dimensionItems: { history: history.items, pressure: pressure.items, conversion: conversion.items, governance: governance.items, market: market.items },
     dimensionCalculations: buildDimensionCalculations({ ...input, qualityStatus }),
-    executability: executable, coreMotives, blockers,
+    marketContext: market.contextItems || [], executability: executable, coreMotives, blockers,
   };
 }
 
@@ -555,7 +562,8 @@ function buildFinancial(reports, cache) {
     return period || String(b.announced_at || '').localeCompare(String(a.announced_at || ''));
   });
   // 财务指标必须来自同一报告期；只有完全没有标准财报时才回退到已按公告日筛选过的缓存。
-  const period = orderedReports[0] && dateText(orderedReports[0].period_end);
+  const period = orderedReports[0] && dateText(orderedReports[0].period_end)
+    || dateText(cache && (cache.report_end_date || cache.period_end || cache.end_date));
   const periodReports = period ? orderedReports.filter(row => dateText(row.period_end) === period) : [];
   const rows = periodReports.length ? periodReports.map(row => row.raw_payload || row) : cache && cache.data ? [cache.data] : [];
   const cash = rawReportValue(rows, ['money_cap', 'monetary_cap', 'cash_cash_equivalents', 'cash_equivalents']);
@@ -686,7 +694,7 @@ async function loadMotiveInput(tsCode, tradeDate, db = pool) {
   };
 }
 
-async function calculateBondRevisionMotive(tsCode, tradeDate, client = pool) {
+async function calculateBondRevisionMotive(tsCode, tradeDate, client = pool, options = {}) {
   // 读取阶段有多条并行查询，使用连接池避免在同一个 PostgreSQL client 上并发 query；结果写入仍由调用方事务负责。
   const input = await loadMotiveInput(tsCode, tradeDate, pool);
   if (!input) return null;
@@ -694,7 +702,8 @@ async function calculateBondRevisionMotive(tsCode, tradeDate, client = pool) {
   const snapshot = inputSnapshot(input);
   const refs = sourceReferences(input);
   const result = { ...score, input, inputSnapshot: snapshot, sourceReferences: refs, inputHash: inputHash(snapshot) };
-  await saveRevisionCycles(client, input.instrumentId, input.cycles, input.termId);
+  // 历史回填只补评分快照，不重建周期表；否则按历史日期逐条回填会把未来周期删掉。
+  if (options.persistCycles !== false) await saveRevisionCycles(client, input.instrumentId, input.cycles, input.termId);
   await client.query(
     `INSERT INTO analytics.convertible_bond_revision_motive_daily
      (instrument_id,trade_date,model_version,motive_score,history_score,pressure_score,conversion_score,governance_score,market_score,maturity_score,
@@ -711,7 +720,7 @@ async function calculateBondRevisionMotive(tsCode, tradeDate, client = pool) {
     [input.instrumentId, tradeDate, MOTIVE_MODEL_VERSION, score.motiveScore, score.dimensions.history, score.dimensions.pressure, score.dimensions.conversion,
       score.dimensions.governance, score.dimensions.market, score.maturityScore, score.executability.status, score.executability.floorPrice, score.executability.space,
       score.executability.postValue, score.executability.uplift, input.safetyLevel || '', score.motiveLevel, score.classification, JSON.stringify(score.coreMotives), JSON.stringify(score.blockers),
-      JSON.stringify({ dimensions: score.dimensions, dimension_items: score.dimensionItems, dimension_calculations: score.dimensionCalculations, maturity_score: score.maturityScore, executability: score.executability }),
+      JSON.stringify({ dimensions: score.dimensions, dimension_items: score.dimensionItems, dimension_calculations: score.dimensionCalculations, market_context: score.marketContext, maturity_score: score.maturityScore, executability: score.executability }),
       JSON.stringify(snapshot), JSON.stringify(refs), input.tradeDate, result.inputHash, input.qualityRate, input.qualityStatus]
   );
   return result;
@@ -785,6 +794,7 @@ async function getBondRevisionMotiveDetail({ tsCode, tradeDate = null }) {
     bond: { ts_code: row.ts_code, bond_name: row.bond_name, stock_code: row.stock_code, stock_name: row.stock_name },
     score_summary: { motive_score: finite(row.motive_score), maturity_score: finite(row.maturity_score), motive_level: row.motive_level, classification: row.classification, safety_level: row.safety_level, quality_status: row.quality_status, completeness_rate: finite(row.completeness_rate), trade_date: dateText(row.trade_date) },
     dimension_calculations: Object.entries((row.components && row.components.dimensions) || {}).map(([key, value]) => ({ dimension: key, score: value, items: (row.components.dimension_items && row.components.dimension_items[key]) || [], calculations: (row.components.dimension_calculations && row.components.dimension_calculations[key]) || [] })),
+    market_context: row.components && row.components.market_context || [],
     executability_calculation: { status: row.executability_status, floor_price: finite(row.estimated_floor_price), space: finite(row.estimated_space), post_conversion_value: finite(row.estimated_post_conversion_value), value_uplift: finite(row.estimated_value_uplift), blockers: row.blockers || [] },
     input_snapshot: row.input_snapshot || [], source_references: row.source_refs || [], core_motives: row.core_motives || [], blockers: row.blockers || [],
     model_version: row.model_version, calculated_at: row.calculated_at, input_hash: row.input_hash,
@@ -866,6 +876,8 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
   const { rows: sourceRows } = await pool.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','calculated')");
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));
   let holderCount = 0, pledgeCount = 0, externalCalls = 0;
+  let holderDeferredCount = 0, pledgeDeferredCount = 0;
+  let holderCallsThisRun = 0;
   const failures = [];
   const pledgeByCompany = new Map();
   const controllerNamesByCompany = new Map();
@@ -876,14 +888,17 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
   for (const bond of bonds) {
     let holderRows = [];
     let holderError = null;
-    if (!holderStopError) {
+    let holderAttempted = false;
+    if (!holderStopError && holderCallsThisRun < MAX_HOLDER_CALLS_PER_RUN) {
+      holderAttempted = true;
+      holderCallsThisRun += 1;
       try {
         const { rows: holderWatermark } = await pool.query(
           'SELECT max(report_date)::text AS report_date FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1', [bond.instrument_id]
         );
         const holderParams = { ts_code: bond.ts_code, end_date: date.replace(/-/g, '') };
         if (holderWatermark[0] && holderWatermark[0].report_date) holderParams.start_date = dateMinusDays(holderWatermark[0].report_date, 30).replace(/-/g, '');
-        holderRows = tsRows(await tushareQuery('top10_cb_holders', holderParams, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio'));
+        holderRows = tsRows(await tushareQuery('top10_cb_holders', holderParams, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio', { allowEmpty: true }));
         externalCalls += 1;
       } catch (error) {
         holderError = error;
@@ -891,16 +906,22 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
         failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
       }
     }
+    if (!holderAttempted) holderDeferredCount += 1;
 
     let pledgeRows = [];
     let pledgeError = null;
+    let pledgeAttempted = false;
     if (bond.company_id && bond.stock_code) {
       const cached = pledgeByCompany.get(bond.company_id);
-      if (cached && cached.rows) pledgeRows = cached.rows;
+      if (cached && cached.rows) {
+        pledgeAttempted = true;
+        pledgeRows = cached.rows;
+      }
       else if (!cached && !pledgeStopError) {
+        pledgeAttempted = true;
         try {
           const pledgeParams = { ts_code: bond.stock_code, end_date: date.replace(/-/g, '') };
-          pledgeRows = tsRows(await tushareQuery('pledge_stat', pledgeParams, 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio'));
+          pledgeRows = tsRows(await tushareQuery('pledge_stat', pledgeParams, 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio', { allowEmpty: true }));
           externalCalls += 1;
           pledgeByCompany.set(bond.company_id, { rows: pledgeRows });
         } catch (error) {
@@ -910,8 +931,12 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
           failures.push({ tsCode: bond.ts_code, dataset: 'pledge_stat', error: errorText(error) });
         }
       }
-      if (!pledgeRows.length && cached && cached.error) pledgeError = cached.error;
+      if (!pledgeRows.length && cached && cached.error) {
+        pledgeAttempted = true;
+        pledgeError = cached.error;
+      }
     }
+    if (bond.company_id && !pledgeAttempted) pledgeDeferredCount += 1;
 
     let relatedNames = [];
     if (holderRows.length && bond.company_id) {
@@ -936,7 +961,10 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
         holderCount += await saveConvertibleBondHolderPositions(client, bond.instrument_id, holderRows, sourceMap.tushare, relatedNames);
         const reportDate = holderRows.map(row => dateText(row.end_date)).filter(Boolean).sort().pop() || date;
         await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', successDate: reportDate });
-      } else if (holderError) {
+      } else if (holderAttempted && !holderError) {
+        // 正常空结果也推进业务日水位，避免每批反复请求同一对象；空结果不生成持有人事实。
+        await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', successDate: date });
+      } else if (holderAttempted && holderError) {
         await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', error: errorText(holderError) });
       }
       if (bond.company_id && pledgeRows.length) {
@@ -944,7 +972,10 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
         pledgeCount += await saveCompanyPledgeSnapshots(client, bond.company_id, pledgeRows, sourceMap.tushare);
         const pledgeDate = pledgeRows.map(row => dateText(row.end_date)).filter(Boolean).sort().pop() || date;
         await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', successDate: pledgeDate });
-      } else if (bond.company_id && pledgeError) {
+      } else if (bond.company_id && pledgeAttempted && !pledgeError) {
+        // 记录“已尝试且为空”，后续补偿仍可按 last_attempt_at 复查，但不会覆盖已有快照。
+        await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', successDate: date });
+      } else if (bond.company_id && pledgeAttempted && pledgeError) {
         await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', error: errorText(pledgeError) });
       }
       await client.query('COMMIT');
@@ -953,11 +984,13 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
       failures.push({ tsCode: bond.ts_code, dataset: 'persistence', error: errorText(error) });
     } finally { client.release(); }
   }
-  return { ok: failures.length === 0, status: failures.length ? 'degraded' : 'succeeded', businessDate: date, bonds: bonds.length, holderCount, pledgeCount, externalCalls, failures };
+  const deferred = holderDeferredCount + pledgeDeferredCount;
+  return { ok: failures.length === 0, status: failures.length ? 'degraded' : deferred ? 'partial' : 'succeeded', businessDate: date, bonds: bonds.length,
+    holderCount, pledgeCount, externalCalls, deferred, holderDeferredCount, pledgeDeferredCount, failures };
 }
 
 module.exports = {
-  MOTIVE_MODEL_VERSION, CYCLE_VERSION, dateText, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles,
+  MOTIVE_MODEL_VERSION, MOTIVE_MODEL_CALIBRATED, CYCLE_VERSION, dateText, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles,
   scoreHistory, scorePressure, scoreConversion, scoreGovernance, scoreMarket, calculateExecutability, calculateMaturity, buildFinancial, buildMotiveScore,
   saveConvertibleBondHolderPositions, saveCompanyPledgeSnapshots, loadMotiveInput, calculateBondRevisionMotive,
   calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetail, syncRevisionMotiveInputs,

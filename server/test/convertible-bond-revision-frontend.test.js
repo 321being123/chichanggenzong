@@ -21,11 +21,12 @@ const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAn
 const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
-assert.ok(html.includes('css/bond-revision.css?v=3') && html.includes('js/bond-revision.js?v=44'), '下修资源未接入首页');
+assert.ok(html.includes('css/bond-revision.css?v=3') && html.includes('js/bond-revision.js?v=45'), '下修资源未接入首页');
 assert.ok(fs.existsSync(path.join(root, 'public', 'bond-revision-motive.html')) && fs.existsSync(path.join(root, 'public', 'js', 'bond-revision-motive.js')), '缺少下修动机详情页');
 assert.ok(page.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
 assert.ok(page.includes('target="_blank"') && page.includes('noopener noreferrer'), '下修动机列表应在新页面打开');
 assert.ok(page.includes('bond-revision-near') && page.includes('business_status'), '下修页缺少临近触发筛选和状态展示');
+assert.ok(page.includes('BOND_REVISION_OBSERVED') && page.includes('已提议下修（事实）') && page.includes("motive_quality_status !== 'complete'"), '已确定下修和数据不完整时不得展示预测等级');
 assert.ok(!page.includes("'reset_clause','下修条款'"), '下修页不应展示原始下修条款列');
 assert.ok(cycle.includes("sub === 'revision'") && cycle.includes('loadBondRevision'), '二级导航未接入下修页');
 assert.ok(route.includes("router.get('/')") || route.includes("router.get('/',"), '下修接口缺少只读路由');
@@ -60,7 +61,7 @@ assert.ok(service.includes('active_dm') && service.includes('remaining_days'), '
 assert.ok(service.includes('quality') && service.includes('pending_no_revision_parse') && service.includes('terminal_no_revision_parse') && service.includes('announcement_errors'), '下修接口缺少公告质量门禁');
 assert.ok(service.includes('rolling_remaining_days'), '下修接口缺少滚动剩余天数字段');
 assert.ok(service.includes('net_asset_floor_value') && service.includes('floor_blocked'), '下修接口未按净资产底线排除不可执行下修');
-assert.ok(service.includes('convertible_bond_revision_motive_daily') && service.includes('MOTIVE_SELECT_FIELDS'), '下修列表未接入动机等级快照');
+assert.ok(service.includes('convertible_bond_revision_motive_daily') && service.includes('MOTIVE_SELECT_FIELDS') && service.includes('MOTIVE_MODEL_VERSION'), '下修列表未接入当前版本动机等级快照');
 assert.ok(service.includes('implicitSseNoRevisionRestartDate') && service.includes('loadRevisionResponseHistory'), '下修计算缺少上交所次日未公告的隐含重新起算');
 assert.ok(analysis.includes('sourceFailures') && analysis.includes('defaultLimit'), '公告同步未保护来源失败或首次全量数量');
 assert.ok(analysis.includes("decision === 'no_revision' || period.lock_declared"), '转股价调整公告正文中的不下修决定必须入库');

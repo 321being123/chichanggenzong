@@ -6,7 +6,7 @@ const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnal
 const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
 const { calculateConvertibleBondRevisionStatus, CALCULATION_LOGIC_VERSION } = require('../services/convertibleBondRevisionService');
-const { calculateConvertibleBondRevisionMotiveScores } = require('../services/convertibleBondRevisionMotiveService');
+const { calculateConvertibleBondRevisionMotiveScores, MOTIVE_MODEL_VERSION } = require('../services/convertibleBondRevisionMotiveService');
 const { syncConvertibleBondSuspensions } = require('../services/convertibleBondSuspensionSync');
 const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
@@ -282,7 +282,7 @@ async function runRevisionStartupCatchup() {
         (SELECT MAX(trade_date)::text FROM analytics.convertible_bond_trigger_daily
           WHERE trigger_type='reset' AND formula_version='reset-v2') AS state_date,
         (SELECT MAX(trade_date)::text FROM analytics.convertible_bond_revision_motive_daily
-          WHERE model_version='motive-v1') AS motive_date,
+           WHERE model_version=$2) AS motive_date,
         (SELECT COALESCE(bool_and(COALESCE(diagnostics->>'calculation_logic_version','') = $1), false)
            FROM analytics.convertible_bond_trigger_daily
           WHERE trigger_type='reset' AND formula_version='reset-v2'
@@ -306,7 +306,7 @@ async function runRevisionStartupCatchup() {
             AND NULLIF(last_error,'') IS NOT NULL) AS announcement_errors,
         (SELECT MAX(trade_date)::text FROM market.trade_calendar
           WHERE exchange='SSE' AND is_open
-            AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date) AS expected_date`, [CALCULATION_LOGIC_VERSION]);
+             AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date) AS expected_date`, [CALCULATION_LOGIC_VERSION, MOTIVE_MODEL_VERSION]);
     const row = rows[0] || {};
     if (!row.market_date) return { skipped: true, reason: 'no_market_data' };
     let announcement = null;

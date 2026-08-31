@@ -5,7 +5,8 @@ var BOND_REVISION_STATUS = {
   terminated: '未通过/已终止', met_pending: '已满足待公告', near: '接近触发', locked: '不下修锁定期', floor_blocked: '净资产底线限制',
   tracking: '跟踪中', incomplete: '数据不完整'
 };
-var BOND_REVISION_MOTIVE = { research_high: '研究评分≥70（待校准）', has_motive: '存在动机', weak: '动机偏弱', unavailable: '暂无数据' };
+var BOND_REVISION_MOTIVE = { research_high: '研究评分≥70（待校准）', has_motive: '存在动机（研究评分）', weak: '动机偏弱（研究评分）', unavailable: '暂不判断' };
+var BOND_REVISION_OBSERVED = { proposed: '已提议下修（事实）', meeting_pending: '已进入表决流程（事实）', approved: '股东大会已通过（事实）', implemented: '已实施下修（事实）', terminated: '下修流程已终止（事实）' };
 var BOND_REVISION_COLUMNS = [
   ['business_status','状态'],['motive_level','动机等级'],['security_code','代码'],['bond_name','转债名称'],['bond_close','转债现价'],['remain_size','剩余规模(亿元)'],
   ['stock_name','正股名称'],['stock_close','正股价'],['current_conv_price','转股价'],['conversion_value','转股价值'],['conversion_premium_pct','转股溢价率'],
@@ -32,7 +33,8 @@ function bondRevisionJump(code) {
 function bondRevisionCell(row, key) {
   if (key === 'business_status') return bondRevisionStatus(row[key]);
   if (key === 'motive_level') {
-    if (!row[key] || row.motive_quality_status === 'incomplete' || row[key] === 'unavailable') return '暂无数据';
+    if (BOND_REVISION_OBSERVED[row.business_status]) return '<span class="bond-revision-motive-observed">' + escapeHtml(BOND_REVISION_OBSERVED[row.business_status]) + '</span>';
+    if (!row[key] || row.motive_quality_status !== 'complete' || row[key] === 'unavailable') return '暂不判断';
     var code = encodeURIComponent(String(row.ts_code || ''));
     return '<a class="bond-revision-motive-link" href="/bond-revision-motive.html?code=' + code + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(BOND_REVISION_MOTIVE[row[key]] || row[key]) + '</a>';
   }

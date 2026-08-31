@@ -1,6 +1,7 @@
 // 可转债下修监控：统一计算层与只读列表查询。
 // 页面只读取 analytics.convertible_bond_revision_latest；公告、行情和计算均在后台任务中完成。
 const { pool } = require('../db');
+const { MOTIVE_MODEL_VERSION } = require('./convertibleBondRevisionMotiveService');
 
 const FORMULA_VERSION = 'reset-v2';
 const CALCULATION_LOGIC_VERSION = 'reset-logic-20260830-1';
@@ -480,7 +481,7 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
     LEFT JOIN LATERAL (
       SELECT motive_level,trade_date,motive_score,model_version,quality_status,executability_status
         FROM analytics.convertible_bond_revision_motive_daily md
-       WHERE md.instrument_id=r.instrument_id
+       WHERE md.instrument_id=r.instrument_id AND md.model_version='${MOTIVE_MODEL_VERSION}'
        ORDER BY md.trade_date DESC,md.calculated_at DESC LIMIT 1
     ) motive ON true
     WHERE ${filter.clauses.join(' AND ')}`;

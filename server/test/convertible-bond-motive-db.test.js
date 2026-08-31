@@ -2,6 +2,7 @@
 const assert = require('assert');
 const { pool } = require('../db');
 const { calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetail, loadMotiveInput, MOTIVE_MODEL_VERSION } = require('../services/convertibleBondRevisionMotiveService');
+const { getBondRevisionOverview } = require('../services/convertibleBondRevisionService');
 
 const FIXTURE_BOND_CODE = '128992.SZ';
 let fixtureCreated = false;
@@ -112,6 +113,11 @@ async function cleanupFixture() {
   assert.strictEqual(persisted[0].count, candidates.length, '评分结果应全部落库且可幂等覆盖');
   assert.strictEqual(persisted[0].bad_score, 0, '评分范围约束应生效');
   assert.strictEqual(persisted[0].bad_quality, 0, '完整度范围约束应生效');
+
+  const overview = await getBondRevisionOverview({ limit: 2000 });
+  assert.ok(overview.data.every(row => !row.motive_model_version || row.motive_model_version === MOTIVE_MODEL_VERSION), '下修列表不得混入旧模型版本快照');
+  const observed = overview.data.find(row => ['proposed', 'meeting_pending', 'approved', 'implemented', 'terminated'].includes(row.business_status));
+  if (observed) assert.notStrictEqual(observed.motive_level, 'weak', '已确定下修状态不得继续展示预测性的动机偏弱');
 
   const detail = await getBondRevisionMotiveDetail({ tsCode: candidates[0].canonical_code, tradeDate: date });
   assert.ok(detail && detail.score_summary.trade_date === date, '详情必须读取指定交易日快照');

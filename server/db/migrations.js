@@ -4345,6 +4345,37 @@ async function migration114ConvertibleBondHolderGovernanceIndex() {
   `);
 }
 
+// ========== 115：可转债下修动机回测结果 ==========
+// 回测结果必须和模型版本、样本窗口绑定，未达标时由评分服务继续保持 unavailable。
+async function migration115ConvertibleBondRevisionMotiveBacktest() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_revision_motive_backtests (
+      backtest_id BIGSERIAL PRIMARY KEY,
+      model_version TEXT NOT NULL,
+      sample_start_date DATE NOT NULL,
+      sample_end_date DATE NOT NULL,
+      oos_start_date DATE,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      complete_count INTEGER NOT NULL DEFAULT 0,
+      proposal_count INTEGER NOT NULL DEFAULT 0,
+      baseline_proposal_rate NUMERIC(12,8),
+      high_score_count INTEGER NOT NULL DEFAULT 0,
+      high_score_proposal_rate NUMERIC(12,8),
+      monotonic BOOLEAN NOT NULL DEFAULT false,
+      net_return_after_cost NUMERIC(14,8),
+      issuer_count INTEGER NOT NULL DEFAULT 0,
+      oos_sample_count INTEGER NOT NULL DEFAULT 0,
+      pass BOOLEAN NOT NULL DEFAULT false,
+      blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
+      metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(model_version,sample_start_date,sample_end_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_motive_backtest_latest
+      ON analytics.convertible_bond_revision_motive_backtests(model_version,calculated_at DESC);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4460,6 +4491,7 @@ const MIGRATIONS = [
   { version: '112_convertible_bond_revision_motive_integrity', up: migration112ConvertibleBondRevisionMotiveIntegrity },
   { version: '113_convertible_bond_revision_cycle_fields', up: migration113ConvertibleBondRevisionCycleFields },
   { version: '114_convertible_bond_holder_governance_index', up: migration114ConvertibleBondHolderGovernanceIndex },
+  { version: '115_convertible_bond_revision_motive_backtest', up: migration115ConvertibleBondRevisionMotiveBacktest },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -5020,6 +5052,7 @@ module.exports = {
   migration112ConvertibleBondRevisionMotiveIntegrity,
   migration113ConvertibleBondRevisionCycleFields,
   migration114ConvertibleBondHolderGovernanceIndex,
+  migration115ConvertibleBondRevisionMotiveBacktest,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

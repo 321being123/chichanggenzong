@@ -63,3 +63,4 @@ huatai_backup_*.json
 
 # 临时调试脚本（本地产物，禁止入库）
 tmp_debug_*.js
+_tmp*

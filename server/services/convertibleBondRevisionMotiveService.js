@@ -864,6 +864,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
   let holderStopError = null;
   let pledgeStopError = null;
   const errorText = error => String(error && error.message || error).slice(0, 300);
+  const isEndpointStopError = error => Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
   for (const bond of bonds) {
     let holderRows = [];
     let holderError = null;
@@ -878,8 +879,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
         externalCalls += 1;
       } catch (error) {
         holderError = error;
-        // 同一接口的任意请求错误都停止当前批次，避免逐债重复触发限频/熔断；下一批按缺失事实优先继续。
-        holderStopError = error;
+        if (isEndpointStopError(error)) holderStopError = error;
         failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
       }
     }
@@ -897,7 +897,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
           pledgeByCompany.set(bond.company_id, { rows: pledgeRows });
         } catch (error) {
           pledgeError = error;
-          pledgeStopError = error;
+          if (isEndpointStopError(error)) pledgeStopError = error;
           pledgeByCompany.set(bond.company_id, { error });
           failures.push({ tsCode: bond.ts_code, dataset: 'pledge_stat', error: errorText(error) });
         }

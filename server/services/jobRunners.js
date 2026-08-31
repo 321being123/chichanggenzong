@@ -48,6 +48,15 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../services/convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements({
         toDate: businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined,
       });
+    case 'convertible_bond_revision_motive_inputs_sync':
+      return require('../services/convertibleBondRevisionMotiveService').syncRevisionMotiveInputs({
+        businessDate: businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined,
+        limit: context.limit,
+      });
+    case 'convertible_bond_revision_motive_calculate':
+      return require('../services/convertibleBondRevisionMotiveService').calculateConvertibleBondRevisionMotiveScores(
+        businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined
+      );
     case 'convertible_bond_announcement_history_sync':
       return require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({
         tsCodes: context.tsCodes || context.bondCodes || [],

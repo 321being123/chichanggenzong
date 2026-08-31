@@ -13,6 +13,7 @@ const { evaluateConvertibleBondFreshness, CONV_PRICE_EPS } = require('./analysis
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { getLatestCallState } = require('./convertibleBondRedemptionService');
+const { saveConvertibleBondHolderPositions } = require('./convertibleBondRevisionMotiveService');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -2631,7 +2632,11 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     await saveRatingOutlooks(client, ids.bondId, ratingOutlooks);
     const upstreamCouponRows = couponData ? tsRows(couponData) : [];
     if (upstreamCouponRows.length) await saveCouponSchedule(client, ids.bondId, upstreamCouponRows, sources.tushare);
-    if (holderData) await saveFundHolding(client, ids.bondId, tsRows(holderData), sources.tushare);
+    if (holderData) {
+      const holderRows = tsRows(holderData);
+      await saveFundHolding(client, ids.bondId, holderRows, sources.tushare);
+      await saveConvertibleBondHolderPositions(client, ids.bondId, holderRows, sources.tushare);
+    }
     if (reportHolding) await saveReportFundHolding(client, ids.bondId, reportHolding, sources.cninfo || sources.calculated);
     const clauseCouponRows = couponRowsFromClause(profile.rate_clause);
     const detailsToSave = prospectusDetails

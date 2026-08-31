@@ -15,6 +15,8 @@ const REVISION_SELECT_FIELDS = [
   'official_title','official_summary','trade_date','maturity_date','conv_start_date','conv_end_date',
   'conv_stop_date','issue_type','official_event_type',
 ].map(field => `r.${field}`).join(',');
+const MOTIVE_SELECT_FIELDS = `motive.motive_level,motive.trade_date AS motive_trade_date,motive.motive_score,
+  motive.model_version AS motive_model_version,motive.model_version AS model_version,motive.quality_status AS motive_quality_status,motive.executability_status AS motive_executability_status`;
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -474,7 +476,14 @@ function buildRevisionWhere({ status = '', query = '', near = false } = {}) {
 async function getBondRevisionOverview({ status = '', query = '', near = false, limit = 2000 } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 2000, 1), 2000);
   const filter = buildRevisionWhere({ status: String(status || '').trim(), query: String(query || '').trim().slice(0, 50), near: Boolean(near) });
-  const base = `FROM analytics.convertible_bond_revision_latest r WHERE ${filter.clauses.join(' AND ')}`;
+  const base = `FROM analytics.convertible_bond_revision_latest r
+    LEFT JOIN LATERAL (
+      SELECT motive_level,trade_date,motive_score,model_version,quality_status,executability_status
+        FROM analytics.convertible_bond_revision_motive_daily md
+       WHERE md.instrument_id=r.instrument_id
+       ORDER BY md.trade_date DESC,md.calculated_at DESC LIMIT 1
+    ) motive ON true
+    WHERE ${filter.clauses.join(' AND ')}`;
   const order = `ORDER BY CASE r.business_status
       WHEN 'proposed' THEN 1 WHEN 'meeting_pending' THEN 2 WHEN 'approved' THEN 3
       WHEN 'met_pending' THEN 4 WHEN 'near' THEN 5 WHEN 'locked' THEN 6
@@ -482,7 +491,7 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
     COALESCE(r.remaining_days,9999),r.security_code LIMIT $${filter.values.length + 1}`;
   const [rowsResult, summaryResult, marketResult, stateResult, expectedResult, qualityResult] = await Promise.all([
     // 视图已按当前交易日行情和单券索引取数，排序与截断交给数据库完成。
-    pool.query(`SELECT ${REVISION_SELECT_FIELDS} ${base} ${order}`, [...filter.values, safeLimit]),
+    pool.query(`SELECT ${REVISION_SELECT_FIELDS},${MOTIVE_SELECT_FIELDS} ${base} ${order}`, [...filter.values, safeLimit]),
     pool.query(`SELECT r.business_status,count(*)::int AS count ${base} GROUP BY r.business_status`, filter.values),
     pool.query(`SELECT MAX(trade_date)::text AS trade_date FROM market.convertible_bond_daily_metrics`),
     pool.query(`SELECT MAX(trade_date)::text AS trade_date FROM analytics.convertible_bond_trigger_daily WHERE trigger_type='reset' AND formula_version=$1`, [FORMULA_VERSION]),

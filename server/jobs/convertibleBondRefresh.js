@@ -6,6 +6,7 @@ const { syncConvertibleBondUniverse } = require('../services/convertibleBondAnal
 const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
 const { calculateConvertibleBondRevisionStatus, CALCULATION_LOGIC_VERSION } = require('../services/convertibleBondRevisionService');
+const { calculateConvertibleBondRevisionMotiveScores } = require('../services/convertibleBondRevisionMotiveService');
 const { syncConvertibleBondSuspensions } = require('../services/convertibleBondSuspensionSync');
 const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
@@ -133,6 +134,7 @@ async function runRefreshChain(reason, businessDate = null) {
   let listResult = null;
   let redemptionResult = null;
   let revisionResult = null;
+  let motiveResult = null;
   try {
     try {
       const suspensionResult = await syncConvertibleBondSuspensions({ startDate: completeness.expected, endDate: completeness.expected });
@@ -153,6 +155,15 @@ async function runRefreshChain(reason, businessDate = null) {
     // 下修监控是派生展示链路，失败时保留上一份有效快照，不阻断其他可转债链路。
     console.error('[bond-revision] 下修进度失败，保留上一份有效数据：', error.message);
   }
+  if (revisionResult) {
+    try {
+      motiveResult = await calculateConvertibleBondRevisionMotiveScores(completeness.expected);
+      console.log(`[bond-revision-motive] 动机评分完成：${motiveResult.count} 只，完整 ${motiveResult.complete} 只`);
+    } catch (error) {
+      // 动机评分是研究派生链路，失败不覆盖上一份评分，也不阻断估值。
+      console.error('[bond-revision-motive] 动机评分失败，保留上一份有效数据：', error.message);
+    }
+  }
   try {
     listResult = await buildDailyMetrics({ tradeDate: completeness.expected, reason });
     console.log(`[bond-list] 上市转债列表完成：${listResult.count} 条，完整 ${listResult.complete} 条`);
@@ -168,6 +179,7 @@ async function runRefreshChain(reason, businessDate = null) {
     return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,
       datasets: [
         { code: 'convertible_bond_revision', status: revisionResult ? 'succeeded' : 'stale', dataAsOf: revisionResult ? completeness.expected : null },
+        { code: 'convertible_bond_revision_motive', status: motiveResult ? 'succeeded' : 'stale', dataAsOf: motiveResult ? completeness.expected : null },
         { code: 'convertible_bond_redemption', status: redemptionResult ? 'succeeded' : 'stale', dataAsOf: redemptionResult ? completeness.expected : null },
         { code: 'convertible_bond_list_metrics', status: listResult ? 'succeeded' : 'stale', dataAsOf: listResult ? completeness.expected : null },
         { code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected },
@@ -269,6 +281,8 @@ async function runRevisionStartupCatchup() {
         (SELECT MAX(trade_date)::text FROM market.convertible_bond_daily_metrics) AS market_date,
         (SELECT MAX(trade_date)::text FROM analytics.convertible_bond_trigger_daily
           WHERE trigger_type='reset' AND formula_version='reset-v2') AS state_date,
+        (SELECT MAX(trade_date)::text FROM analytics.convertible_bond_revision_motive_daily
+          WHERE model_version='motive-v1') AS motive_date,
         (SELECT COALESCE(bool_and(COALESCE(diagnostics->>'calculation_logic_version','') = $1), false)
            FROM analytics.convertible_bond_trigger_daily
           WHERE trigger_type='reset' AND formula_version='reset-v2'
@@ -309,7 +323,11 @@ async function runRevisionStartupCatchup() {
     const calculation = needsCalculation
       ? await calculateConvertibleBondRevisionStatus(row.market_date)
       : { skipped: true, reason: 'coverage_ok', tradeDate: row.market_date };
-    return { ok: true, reason: 'startup_catchup', announcement, calculation };
+    const needsMotive = !row.motive_date || String(row.motive_date).slice(0, 10) < String(row.market_date).slice(0, 10);
+    const motive = needsMotive
+      ? await calculateConvertibleBondRevisionMotiveScores(row.market_date)
+      : null;
+    return { ok: true, reason: 'startup_catchup', announcement, calculation, motive };
   } finally {
     await releaseJob(jobCode);
   }

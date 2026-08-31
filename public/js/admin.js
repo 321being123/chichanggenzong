@@ -470,6 +470,8 @@ const JOB_LABELS = {
   bond_safety_refresh: '可转债安全评分',
   convertible_bond_universe_refresh: '可转债行情同步',
   convertible_bond_redemption_announcement_sync: '可转债强赎公告同步',
+  convertible_bond_revision_motive_inputs_sync: '下修动机输入增量同步',
+  convertible_bond_revision_motive_calculate: '下修动机评分计算',
   convertible_bond_announcement_history_sync: '可转债下修与转股价公告事实同步',
   convertible_bond_announcement_reparse: '可转债旧公告重新解析',
   convertible_bond_valuation_refresh: '可转债估值预警',

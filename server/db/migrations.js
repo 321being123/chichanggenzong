@@ -4146,6 +4146,205 @@ async function migration110BackgroundAlertRuntimeGovernance() {
   `);
 }
 
+// ========== 111：可转债下修动机评分数据层 =============
+// 持有人、质押和评分均采用事实快照/版本化结果；空响应不覆盖旧数据，评分详情可复现。
+async function migration111ConvertibleBondRevisionMotive() {
+  await pool.query(`
+    BEGIN;
+    SELECT pg_advisory_xact_lock(904111);
+
+    CREATE TABLE IF NOT EXISTS fundamental.convertible_bond_holder_positions (
+      position_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      report_date DATE NOT NULL,
+      announced_at DATE,
+      holder_rank INTEGER,
+      holder_name TEXT NOT NULL DEFAULT '',
+      holder_name_normalized TEXT NOT NULL DEFAULT '',
+      holder_type TEXT NOT NULL DEFAULT 'other',
+      hold_amount NUMERIC(30,4),
+      hold_ratio NUMERIC(20,10),
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+      source_key TEXT NOT NULL,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source_id,source_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_holder_positions_latest
+      ON fundamental.convertible_bond_holder_positions(instrument_id,report_date DESC,holder_rank);
+
+    CREATE TABLE IF NOT EXISTS event.convertible_bond_holder_change_events (
+      holder_change_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      announced_at DATE NOT NULL,
+      holder_name TEXT NOT NULL DEFAULT '',
+      holder_name_normalized TEXT NOT NULL DEFAULT '',
+      change_type TEXT NOT NULL DEFAULT 'unknown',
+      change_amount NUMERIC(30,4),
+      change_ratio NUMERIC(20,10),
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+      source_key TEXT NOT NULL,
+      source_url TEXT NOT NULL DEFAULT '',
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source_id,source_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_holder_change_events_latest
+      ON event.convertible_bond_holder_change_events(instrument_id,announced_at DESC);
+
+    CREATE TABLE IF NOT EXISTS fundamental.company_pledge_snapshots (
+      pledge_id BIGSERIAL PRIMARY KEY,
+      company_id BIGINT NOT NULL REFERENCES core.companies(company_id) ON DELETE CASCADE,
+      as_of_date DATE NOT NULL,
+      announced_at DATE,
+      pledge_ratio NUMERIC(20,10),
+      pledged_shares NUMERIC(30,4),
+      unpledged_shares NUMERIC(30,4),
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id),
+      source_key TEXT NOT NULL,
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source_id,source_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_company_pledge_snapshots_latest
+      ON fundamental.company_pledge_snapshots(company_id,as_of_date DESC,announced_at DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_revision_cycles (
+      cycle_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      cycle_no INTEGER NOT NULL,
+      cycle_start_date DATE,
+      trigger_date DATE,
+      proposal_date DATE,
+      decision_date DATE,
+      implementation_date DATE,
+      outcome TEXT NOT NULL DEFAULT 'open',
+      proposal_type TEXT NOT NULL DEFAULT '',
+      no_revision BOOLEAN NOT NULL DEFAULT false,
+      lock_until DATE,
+      term_id BIGINT REFERENCES fundamental.convertible_bond_terms(term_id) ON DELETE SET NULL,
+      cycle_version TEXT NOT NULL,
+      evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(instrument_id,cycle_no,cycle_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_revision_cycles_lookup
+      ON analytics.convertible_bond_revision_cycles(instrument_id,cycle_start_date DESC,cycle_no DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.convertible_bond_revision_motive_daily (
+      motive_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      trade_date DATE NOT NULL,
+      model_version TEXT NOT NULL,
+      motive_score NUMERIC(10,4),
+      history_score NUMERIC(10,4),
+      pressure_score NUMERIC(10,4),
+      conversion_score NUMERIC(10,4),
+      governance_score NUMERIC(10,4),
+      market_score NUMERIC(10,4),
+      maturity_score NUMERIC(10,4),
+      executability_status TEXT NOT NULL DEFAULT 'incomplete',
+      estimated_floor_price NUMERIC(24,8),
+      estimated_space NUMERIC(20,10),
+      estimated_post_conversion_value NUMERIC(24,8),
+      estimated_value_uplift NUMERIC(24,8),
+      safety_level TEXT NOT NULL DEFAULT '',
+      motive_level TEXT NOT NULL DEFAULT 'unavailable',
+      classification TEXT NOT NULL DEFAULT '',
+      core_motives JSONB NOT NULL DEFAULT '[]'::jsonb,
+      blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
+      components JSONB NOT NULL DEFAULT '{}'::jsonb,
+      input_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb,
+      source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+      input_data_date DATE,
+      input_hash TEXT NOT NULL DEFAULT '',
+      completeness_rate NUMERIC(10,6) NOT NULL DEFAULT 0,
+      quality_status TEXT NOT NULL DEFAULT 'incomplete',
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(instrument_id,trade_date,model_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cb_revision_motive_latest
+      ON analytics.convertible_bond_revision_motive_daily(instrument_id,trade_date DESC,calculated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cb_revision_motive_filter
+      ON analytics.convertible_bond_revision_motive_daily(motive_level,executability_status,trade_date DESC);
+    COMMIT;
+  `);
+}
+
+// ========== 112：可转债下修动机评分数据完整性 =============
+// 对已有 111 表做幂等增量升级，补齐单位换算后的字段、持有人变动前后值和评分范围约束。
+async function migration112ConvertibleBondRevisionMotiveIntegrity() {
+  await pool.query(`
+    BEGIN;
+    SELECT pg_advisory_xact_lock(904112);
+
+    ALTER TABLE fundamental.convertible_bond_holder_positions
+      ADD COLUMN IF NOT EXISTS is_controller_related BOOLEAN NOT NULL DEFAULT false;
+
+    ALTER TABLE event.convertible_bond_holder_change_events
+      ADD COLUMN IF NOT EXISTS before_amount NUMERIC(30,4),
+      ADD COLUMN IF NOT EXISTS after_amount NUMERIC(30,4),
+      ADD COLUMN IF NOT EXISTS before_ratio NUMERIC(20,10),
+      ADD COLUMN IF NOT EXISTS after_ratio NUMERIC(20,10),
+      ADD COLUMN IF NOT EXISTS is_cleared BOOLEAN NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS change_start_date DATE,
+      ADD COLUMN IF NOT EXISTS change_end_date DATE;
+
+    ALTER TABLE fundamental.company_pledge_snapshots
+      ADD COLUMN IF NOT EXISTS pledge_count INTEGER,
+      ADD COLUMN IF NOT EXISTS total_shares NUMERIC(30,4);
+
+    ALTER TABLE analytics.convertible_bond_revision_cycles
+      ADD COLUMN IF NOT EXISTS first_match_date DATE,
+      ADD COLUMN IF NOT EXISTS cycle_end_date DATE,
+      ADD COLUMN IF NOT EXISTS short_label TEXT NOT NULL DEFAULT 'unknown';
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_cb_holder_change_type') THEN
+        ALTER TABLE event.convertible_bond_holder_change_events
+          ADD CONSTRAINT chk_cb_holder_change_type
+          CHECK (change_type IN ('new','cleared','increase','decrease','unknown'));
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_cb_motive_score_ranges') THEN
+        ALTER TABLE analytics.convertible_bond_revision_motive_daily
+          ADD CONSTRAINT chk_cb_motive_score_ranges CHECK (
+            (motive_score IS NULL OR motive_score BETWEEN 0 AND 100) AND
+            (history_score IS NULL OR history_score BETWEEN 0 AND 25) AND
+            (pressure_score IS NULL OR pressure_score BETWEEN 0 AND 30) AND
+            (conversion_score IS NULL OR conversion_score BETWEEN 0 AND 20) AND
+            (governance_score IS NULL OR governance_score BETWEEN 0 AND 15) AND
+            (market_score IS NULL OR market_score BETWEEN 0 AND 10) AND
+            (maturity_score IS NULL OR maturity_score BETWEEN 0 AND 100) AND
+            completeness_rate BETWEEN 0 AND 1
+          );
+      END IF;
+    END $$;
+
+    CREATE INDEX IF NOT EXISTS idx_cb_holder_change_business_dates
+      ON event.convertible_bond_holder_change_events(instrument_id,change_start_date,change_end_date);
+    COMMIT;
+  `);
+}
+
+// ========== 113：可转债下修周期字段补齐 =============
+async function migration113ConvertibleBondRevisionCycleFields() {
+  await pool.query(`
+    ALTER TABLE analytics.convertible_bond_revision_cycles
+      ADD COLUMN IF NOT EXISTS first_match_date DATE,
+      ADD COLUMN IF NOT EXISTS cycle_end_date DATE,
+      ADD COLUMN IF NOT EXISTS short_label TEXT NOT NULL DEFAULT 'unknown';
+  `);
+}
+
+// ========== 114：可转债持有人治理检索索引 =============
+async function migration114ConvertibleBondHolderGovernanceIndex() {
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_cb_holder_positions_controller
+      ON fundamental.convertible_bond_holder_positions(instrument_id,is_controller_related,report_date DESC);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4257,6 +4456,10 @@ const MIGRATIONS = [
   { version: '108_convertible_bond_announcement_sources', up: migration108ConvertibleBondAnnouncementSources },
   { version: '109_convertible_bond_revision_net_asset_floor_phrase', up: migration109ConvertibleBondRevisionNetAssetFloorPhrase },
   { version: '110_background_alert_runtime_governance', up: migration110BackgroundAlertRuntimeGovernance },
+  { version: '111_convertible_bond_revision_motive', up: migration111ConvertibleBondRevisionMotive },
+  { version: '112_convertible_bond_revision_motive_integrity', up: migration112ConvertibleBondRevisionMotiveIntegrity },
+  { version: '113_convertible_bond_revision_cycle_fields', up: migration113ConvertibleBondRevisionCycleFields },
+  { version: '114_convertible_bond_holder_governance_index', up: migration114ConvertibleBondHolderGovernanceIndex },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -4813,6 +5016,10 @@ module.exports = {
   migration087ConvertibleBondWaiveSameDayValidity,
   migration108ConvertibleBondAnnouncementSources,
   migration092ConvertibleBondRevisionViewLean,
+  migration111ConvertibleBondRevisionMotive,
+  migration112ConvertibleBondRevisionMotiveIntegrity,
+  migration113ConvertibleBondRevisionCycleFields,
+  migration114ConvertibleBondHolderGovernanceIndex,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

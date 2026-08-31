@@ -5,8 +5,9 @@ var BOND_REVISION_STATUS = {
   terminated: '未通过/已终止', met_pending: '已满足待公告', near: '接近触发', locked: '不下修锁定期', floor_blocked: '净资产底线限制',
   tracking: '跟踪中', incomplete: '数据不完整'
 };
+var BOND_REVISION_MOTIVE = { research_high: '研究评分≥70（待校准）', has_motive: '存在动机', weak: '动机偏弱', unavailable: '暂无数据' };
 var BOND_REVISION_COLUMNS = [
-  ['business_status','状态'],['security_code','代码'],['bond_name','转债名称'],['bond_close','转债现价'],['remain_size','剩余规模(亿元)'],
+  ['business_status','状态'],['motive_level','动机等级'],['security_code','代码'],['bond_name','转债名称'],['bond_close','转债现价'],['remain_size','剩余规模(亿元)'],
   ['stock_name','正股名称'],['stock_close','正股价'],['current_conv_price','转股价'],['conversion_value','转股价值'],['conversion_premium_pct','转股溢价率'],
   ['stock_pb','正股PB'],['net_asset_floor_applicable','净资产底线'],['net_asset_floor_value','每股净资产'],['trigger_ratio','下修比例'],['trigger_price','下修触发价'],['distance_to_trigger_pct','距触发'],['matched_days','下修进度'],['remaining_days','当前还差'],['rolling_remaining_days','滚动最快还需'],
   ['no_revision_valid_until','锁定至'],['next_eligible_date','重新起算日'],['official_announced_at','公告日'],['meeting_date','股东大会日'],
@@ -30,6 +31,11 @@ function bondRevisionJump(code) {
 }
 function bondRevisionCell(row, key) {
   if (key === 'business_status') return bondRevisionStatus(row[key]);
+  if (key === 'motive_level') {
+    if (!row[key] || row.motive_quality_status === 'incomplete' || row[key] === 'unavailable') return '暂无数据';
+    var code = encodeURIComponent(String(row.ts_code || ''));
+    return '<a class="bond-revision-motive-link" href="/bond-revision-motive.html?code=' + code + '">' + escapeHtml(BOND_REVISION_MOTIVE[row[key]] || row[key]) + '</a>';
+  }
   if (key === 'security_code' || key === 'bond_name') {
     return '<span class="bond-revision-link" onclick="bondRevisionJump(\'' + escapeHtml(row.ts_code || row.security_code) + '\')">' + escapeHtml(bondRevisionText(row[key])) + '</span>';
   }

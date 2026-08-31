@@ -829,6 +829,10 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
        AND md.trade_date=(SELECT max(trade_date) FROM market.convertible_bond_daily_metrics WHERE trade_date <= $1::date)
       LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id
       LEFT JOIN core.company_instruments ci ON ci.instrument_id=p.stock_instrument_id AND ci.relation_type='issued_by'
+      LEFT JOIN ops.sync_cursors hcur ON hcur.instrument_id=p.instrument_id
+       AND hcur.scope_key=('convertible_bond:' || p.instrument_id::text) AND hcur.dataset_code='top10_cb_holders'
+      LEFT JOIN ops.sync_cursors pcur ON pcur.company_id=ci.company_id
+       AND pcur.scope_key=('company:' || ci.company_id::text) AND pcur.dataset_code='pledge_stat'
       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
       LEFT JOIN LATERAL (
         SELECT max(last_trade_date) AS last_trade_date,
@@ -850,10 +854,14 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
                 SELECT 1 FROM fundamental.convertible_bond_holder_positions hp
                  WHERE hp.instrument_id=p.instrument_id
               ) THEN 1 ELSE 0 END,
+              CASE WHEN hcur.last_attempt_at IS NULL THEN 0 ELSE 1 END,
+              hcur.last_attempt_at ASC NULLS FIRST,
               CASE WHEN ci.company_id IS NULL OR EXISTS (
                 SELECT 1 FROM fundamental.company_pledge_snapshots cps
                  WHERE cps.company_id=ci.company_id
               ) THEN 1 ELSE 0 END,
+              CASE WHEN pcur.last_attempt_at IS NULL THEN 0 ELSE 1 END,
+              pcur.last_attempt_at ASC NULLS FIRST,
               i.canonical_code LIMIT $2`, [date, Math.min(Math.max(Number(limit) || 2000, 1), 2000)]);
   const { rows: sourceRows } = await pool.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','calculated')");
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));

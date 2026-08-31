@@ -24,6 +24,7 @@ assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-re
 assert.ok(html.includes('css/bond-revision.css?v=3') && html.includes('js/bond-revision.js?v=44'), '下修资源未接入首页');
 assert.ok(fs.existsSync(path.join(root, 'public', 'bond-revision-motive.html')) && fs.existsSync(path.join(root, 'public', 'js', 'bond-revision-motive.js')), '缺少下修动机详情页');
 assert.ok(page.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
+assert.ok(page.includes('target="_blank"') && page.includes('noopener noreferrer'), '下修动机列表应在新页面打开');
 assert.ok(page.includes('bond-revision-near') && page.includes('business_status'), '下修页缺少临近触发筛选和状态展示');
 assert.ok(!page.includes("'reset_clause','下修条款'"), '下修页不应展示原始下修条款列');
 assert.ok(cycle.includes("sub === 'revision'") && cycle.includes('loadBondRevision'), '二级导航未接入下修页');
@@ -74,7 +75,7 @@ assert.ok(refresh.includes('calculateConvertibleBondRevisionStatus') && refresh.
 assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConvertibleBondAnnouncementHistories') && refresh.includes('resolveConvertibleBondSymbolicLocks'), '兼容调度未执行下修公告增量和董事会锁定核查');
 assert.ok(refresh.includes('pending_parse') && refresh.includes('cachedOnly: true'), '启动补漏未处理公告解析积压');
 assert.ok(jobs.includes("convertible_bond_announcement_history_sync") && jobs.includes('hour: 7, minute: 40'), '下修公告任务未纳入日常调度');
-assert.ok(jobs.includes('convertible_bond_revision_motive_inputs_sync') && jobs.includes('hour: 7, minute: 20'), '动机输入同步任务未纳入日常调度');
+assert.ok(jobs.includes('convertible_bond_revision_motive_inputs_sync') && jobs.includes('hour: 7, minute: 20') && jobs.includes('catchupWindowMinutes: 4320'), '动机输入同步任务未纳入日常调度或周末补偿');
 for (const [name, source] of Object.entries({ redemptionSync, suspensionSync, ipo, bondAnalysis })) {
   assert.ok(source.includes("NOT IN ('定向','私募')"), `${name} 未排除定向私募债券`);
 }

@@ -1,5 +1,6 @@
 .bond-motive-page { max-width:1180px; margin:0 auto; padding:24px 18px 48px; }
-.bond-motive-back { color:var(--bond-feature-link); text-decoration:none; font-size:14px; }
+.bond-motive-back { display:inline-block; margin:0 0 12px; color:var(--bond-feature-link); text-decoration:none; font-size:14px; font-weight:500; }
+.bond-motive-back:hover { text-decoration:underline; }
 .bond-motive-page h1 { margin:14px 0 6px; }
 .bond-motive-page h2 { margin:0 0 14px; font-size:18px; }
 .motive-summary-grid { grid-template-columns:repeat(5,minmax(140px,1fr)); margin:20px 0; }

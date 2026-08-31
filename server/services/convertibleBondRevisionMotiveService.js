@@ -821,7 +821,6 @@ async function saveSyncCursor(client, { instrumentId = null, companyId = null, s
 }
 
 async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = {}) {
-  if (process.env.TUSHARE_ENABLE_5000_ENDPOINTS !== '1') return { ok: false, status: 'blocked', reason: 'tushare_5000_disabled', externalCalls: 0 };
   const date = dateText(businessDate) || dateText(new Date());
   const { rows: bonds } = await pool.query(`SELECT p.instrument_id,p.stock_instrument_id,i.canonical_code AS ts_code,si.canonical_code AS stock_code,ci.company_id
       FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.instrument_id
@@ -844,18 +843,57 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
      ORDER BY i.canonical_code LIMIT $2`, [date, Math.min(Math.max(Number(limit) || 2000, 1), 2000)]);
   const { rows: sourceRows } = await pool.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','calculated')");
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));
-  let holderCount = 0, pledgeCount = 0, externalCalls = 0; const failures = []; const pledgeByCompany = new Map(); const controllerNamesByCompany = new Map();
+  let holderCount = 0, pledgeCount = 0, externalCalls = 0;
+  const failures = [];
+  const pledgeByCompany = new Map();
+  const controllerNamesByCompany = new Map();
+  let holderPermissionError = null;
+  let pledgePermissionError = null;
+  const errorText = error => String(error && error.message || error).slice(0, 300);
+  const isPermissionError = error => Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(error.code));
   for (const bond of bonds) {
-    try {
-      const { rows: holderWatermark } = await pool.query(
-        'SELECT max(report_date)::text AS report_date FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1', [bond.instrument_id]
-      );
-      const holderParams = { ts_code: bond.ts_code, end_date: date.replace(/-/g, '') };
-      if (holderWatermark[0] && holderWatermark[0].report_date) holderParams.start_date = dateMinusDays(holderWatermark[0].report_date, 30).replace(/-/g, '');
-      const holderRows = tsRows(await tushareQuery('top10_cb_holders', holderParams, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio'));
-      externalCalls += 1;
-      let relatedNames = [];
-      if (bond.company_id) {
+    let holderRows = [];
+    let holderError = null;
+    if (!holderPermissionError) {
+      try {
+        const { rows: holderWatermark } = await pool.query(
+          'SELECT max(report_date)::text AS report_date FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1', [bond.instrument_id]
+        );
+        const holderParams = { ts_code: bond.ts_code, end_date: date.replace(/-/g, '') };
+        if (holderWatermark[0] && holderWatermark[0].report_date) holderParams.start_date = dateMinusDays(holderWatermark[0].report_date, 30).replace(/-/g, '');
+        holderRows = tsRows(await tushareQuery('top10_cb_holders', holderParams, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio'));
+        externalCalls += 1;
+      } catch (error) {
+        holderError = error;
+        if (isPermissionError(error)) holderPermissionError = error;
+        failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
+      }
+    }
+
+    let pledgeRows = [];
+    let pledgeError = null;
+    if (bond.company_id && bond.stock_code) {
+      const cached = pledgeByCompany.get(bond.company_id);
+      if (cached && cached.rows) pledgeRows = cached.rows;
+      else if (!cached && !pledgePermissionError) {
+        try {
+          const pledgeParams = { ts_code: bond.stock_code, end_date: date.replace(/-/g, '') };
+          pledgeRows = tsRows(await tushareQuery('pledge_stat', pledgeParams, 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio'));
+          externalCalls += 1;
+          pledgeByCompany.set(bond.company_id, { rows: pledgeRows });
+        } catch (error) {
+          pledgeError = error;
+          if (isPermissionError(error)) pledgePermissionError = error;
+          pledgeByCompany.set(bond.company_id, { error });
+          failures.push({ tsCode: bond.ts_code, dataset: 'pledge_stat', error: errorText(error) });
+        }
+      }
+      if (!pledgeRows.length && cached && cached.error) pledgeError = cached.error;
+    }
+
+    let relatedNames = [];
+    if (holderRows.length && bond.company_id) {
+      try {
         if (!controllerNamesByCompany.has(bond.company_id)) {
           const { rows: controllerRows } = await pool.query(`SELECT controller_name FROM core.company_controllers
              WHERE company_id=$1 AND (valid_from IS NULL OR valid_from <= $2::date) AND (valid_to IS NULL OR valid_to >= $2::date)
@@ -863,44 +901,35 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
           controllerNamesByCompany.set(bond.company_id, controllerRows.map(row => row.controller_name).filter(Boolean));
         }
         relatedNames = controllerNamesByCompany.get(bond.company_id) || [];
-      }
-      let pledgeRows = null;
-      if (bond.company_id && bond.stock_code && !pledgeByCompany.has(bond.company_id)) {
-        const pledgeParams = { ts_code: bond.stock_code, end_date: date.replace(/-/g, '') };
-        pledgeRows = tsRows(await tushareQuery('pledge_stat', pledgeParams, 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio'));
-        externalCalls += 1;
-        pledgeByCompany.set(bond.company_id, pledgeRows);
-      } else if (bond.company_id) pledgeRows = pledgeByCompany.get(bond.company_id) || [];
-
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        if (holderRows.length) {
-          await saveSyncRawPayload(client, sourceMap.tushare, 'top10_cb_holders', `${bond.ts_code}:${date}`, date, holderRows);
-          holderCount += await saveConvertibleBondHolderPositions(client, bond.instrument_id, holderRows, sourceMap.tushare, relatedNames);
-          const reportDate = holderRows.map(row => dateText(row.end_date)).filter(Boolean).sort().pop() || date;
-          await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', successDate: reportDate });
-        }
-        if (bond.company_id && pledgeRows && pledgeRows.length) {
-          await saveSyncRawPayload(client, sourceMap.tushare, 'pledge_stat', `${bond.company_id}:${bond.stock_code}:${date}`, date, pledgeRows);
-          pledgeCount += await saveCompanyPledgeSnapshots(client, bond.company_id, pledgeRows, sourceMap.tushare);
-          const pledgeDate = pledgeRows.map(row => dateText(row.end_date)).filter(Boolean).sort().pop() || date;
-          await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', successDate: pledgeDate });
-        }
-        await client.query('COMMIT');
       } catch (error) {
-        try { await client.query('ROLLBACK'); } catch (_) {}
-        throw error;
-      } finally { client.release(); }
-    } catch (error) {
-      failures.push({ tsCode: bond.ts_code, error: String(error.message || error).slice(0, 300) });
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', error: String(error.message || error).slice(0, 300) });
-        await client.query('COMMIT');
-      } catch (_) { try { await client.query('ROLLBACK'); } catch (__) {} } finally { client.release(); }
+        failures.push({ tsCode: bond.ts_code, dataset: 'company_controllers', error: errorText(error) });
+      }
     }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (holderRows.length) {
+        await saveSyncRawPayload(client, sourceMap.tushare, 'top10_cb_holders', `${bond.ts_code}:${date}`, date, holderRows);
+        holderCount += await saveConvertibleBondHolderPositions(client, bond.instrument_id, holderRows, sourceMap.tushare, relatedNames);
+        const reportDate = holderRows.map(row => dateText(row.end_date)).filter(Boolean).sort().pop() || date;
+        await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', successDate: reportDate });
+      } else if (holderError) {
+        await saveSyncCursor(client, { instrumentId: bond.instrument_id, scopeKey: `convertible_bond:${bond.instrument_id}`, datasetCode: 'top10_cb_holders', error: errorText(holderError) });
+      }
+      if (bond.company_id && pledgeRows.length) {
+        await saveSyncRawPayload(client, sourceMap.tushare, 'pledge_stat', `${bond.company_id}:${bond.stock_code}:${date}`, date, pledgeRows);
+        pledgeCount += await saveCompanyPledgeSnapshots(client, bond.company_id, pledgeRows, sourceMap.tushare);
+        const pledgeDate = pledgeRows.map(row => dateText(row.end_date)).filter(Boolean).sort().pop() || date;
+        await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', successDate: pledgeDate });
+      } else if (bond.company_id && pledgeError) {
+        await saveSyncCursor(client, { companyId: bond.company_id, scopeKey: `company:${bond.company_id}`, datasetCode: 'pledge_stat', error: errorText(pledgeError) });
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      failures.push({ tsCode: bond.ts_code, dataset: 'persistence', error: errorText(error) });
+    } finally { client.release(); }
   }
   return { ok: failures.length === 0, status: failures.length ? 'degraded' : 'succeeded', businessDate: date, bonds: bonds.length, holderCount, pledgeCount, externalCalls, failures };
 }

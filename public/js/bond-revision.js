@@ -34,7 +34,7 @@ function bondRevisionCell(row, key) {
   if (key === 'motive_level') {
     if (!row[key] || row.motive_quality_status === 'incomplete' || row[key] === 'unavailable') return '暂无数据';
     var code = encodeURIComponent(String(row.ts_code || ''));
-    return '<a class="bond-revision-motive-link" href="/bond-revision-motive.html?code=' + code + '">' + escapeHtml(BOND_REVISION_MOTIVE[row[key]] || row[key]) + '</a>';
+    return '<a class="bond-revision-motive-link" href="/bond-revision-motive.html?code=' + code + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(BOND_REVISION_MOTIVE[row[key]] || row[key]) + '</a>';
   }
   if (key === 'security_code' || key === 'bond_name') {
     return '<span class="bond-revision-link" onclick="bondRevisionJump(\'' + escapeHtml(row.ts_code || row.security_code) + '\')">' + escapeHtml(bondRevisionText(row[key])) + '</span>';

@@ -825,8 +825,11 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
   const { rows: bonds } = await pool.query(`SELECT p.instrument_id,p.stock_instrument_id,i.canonical_code AS ts_code,si.canonical_code AS stock_code,ci.company_id
       FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.instrument_id
       JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
+      JOIN market.convertible_bond_daily_metrics md ON md.instrument_id=i.instrument_id
+       AND md.trade_date=(SELECT max(trade_date) FROM market.convertible_bond_daily_metrics WHERE trade_date <= $1::date)
       LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id
       LEFT JOIN core.company_instruments ci ON ci.instrument_id=p.stock_instrument_id AND ci.relation_type='issued_by'
+      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
       LEFT JOIN LATERAL (
         SELECT max(last_trade_date) AS last_trade_date,
                max(COALESCE(last_conversion_date,last_trade_date)) AS last_conversion_date
@@ -836,25 +839,36 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
      WHERE i.asset_class='convertible_bond' AND i.status='listed' AND u.status='listed'
        AND (p.cb_type IS NULL OR p.cb_type IN ('CB',''))
        AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
+       AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+       AND (i.list_date IS NULL OR i.list_date <= $1::date)
+       AND (i.delist_date IS NULL OR i.delist_date > $1::date)
        AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)
        AND (p.conv_end_date IS NULL OR p.conv_end_date >= $1::date)
        AND (p.conv_stop_date IS NULL OR p.conv_stop_date > $1::date)
        AND (COALESCE(call_stop.last_trade_date,call_stop.last_conversion_date) IS NULL OR COALESCE(call_stop.last_trade_date,call_stop.last_conversion_date) > $1::date)
-     ORDER BY i.canonical_code LIMIT $2`, [date, Math.min(Math.max(Number(limit) || 2000, 1), 2000)]);
+     ORDER BY CASE WHEN EXISTS (
+                SELECT 1 FROM fundamental.convertible_bond_holder_positions hp
+                 WHERE hp.instrument_id=p.instrument_id
+              ) THEN 1 ELSE 0 END,
+              CASE WHEN ci.company_id IS NULL OR EXISTS (
+                SELECT 1 FROM fundamental.company_pledge_snapshots cps
+                 WHERE cps.company_id=ci.company_id
+              ) THEN 1 ELSE 0 END,
+              i.canonical_code LIMIT $2`, [date, Math.min(Math.max(Number(limit) || 2000, 1), 2000)]);
   const { rows: sourceRows } = await pool.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','calculated')");
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));
   let holderCount = 0, pledgeCount = 0, externalCalls = 0;
   const failures = [];
   const pledgeByCompany = new Map();
   const controllerNamesByCompany = new Map();
-  let holderPermissionError = null;
-  let pledgePermissionError = null;
+  let holderStopError = null;
+  let pledgeStopError = null;
   const errorText = error => String(error && error.message || error).slice(0, 300);
-  const isPermissionError = error => Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(error.code));
+  const isEndpointStopError = error => Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
   for (const bond of bonds) {
     let holderRows = [];
     let holderError = null;
-    if (!holderPermissionError) {
+    if (!holderStopError) {
       try {
         const { rows: holderWatermark } = await pool.query(
           'SELECT max(report_date)::text AS report_date FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1', [bond.instrument_id]
@@ -865,7 +879,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
         externalCalls += 1;
       } catch (error) {
         holderError = error;
-        if (isPermissionError(error)) holderPermissionError = error;
+        if (isEndpointStopError(error)) holderStopError = error;
         failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
       }
     }
@@ -875,7 +889,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
     if (bond.company_id && bond.stock_code) {
       const cached = pledgeByCompany.get(bond.company_id);
       if (cached && cached.rows) pledgeRows = cached.rows;
-      else if (!cached && !pledgePermissionError) {
+      else if (!cached && !pledgeStopError) {
         try {
           const pledgeParams = { ts_code: bond.stock_code, end_date: date.replace(/-/g, '') };
           pledgeRows = tsRows(await tushareQuery('pledge_stat', pledgeParams, 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio'));
@@ -883,7 +897,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
           pledgeByCompany.set(bond.company_id, { rows: pledgeRows });
         } catch (error) {
           pledgeError = error;
-          if (isPermissionError(error)) pledgePermissionError = error;
+          if (isEndpointStopError(error)) pledgeStopError = error;
           pledgeByCompany.set(bond.company_id, { error });
           failures.push({ tsCode: bond.ts_code, dataset: 'pledge_stat', error: errorText(error) });
         }

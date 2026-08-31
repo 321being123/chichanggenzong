@@ -3,6 +3,56 @@ const assert = require('assert');
 const { pool } = require('../db');
 const { calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetail, loadMotiveInput, MOTIVE_MODEL_VERSION } = require('../services/convertibleBondRevisionMotiveService');
 
+const FIXTURE_BOND_CODE = '128992.SZ';
+let fixtureCreated = false;
+
+async function ensureEmptyDatabaseFixture(date) {
+  const { rows } = await pool.query(`
+    SELECT 1
+      FROM market.convertible_bond_daily_metrics md
+      JOIN core.instruments i ON i.instrument_id=md.instrument_id
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+     WHERE md.trade_date=$1::date AND i.asset_class='convertible_bond' AND i.status='listed'
+     LIMIT 1`, [date]);
+  if (rows.length) return;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const bondResult = await client.query(`
+      INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,status,list_date)
+      VALUES ($1,'CI动机评分测试转债','convertible_bond','A股','SZSE','CNY','listed',$2::date)
+      ON CONFLICT (canonical_code) DO NOTHING
+      RETURNING instrument_id`, [FIXTURE_BOND_CODE, date]);
+    if (!bondResult.rows.length) {
+      await client.query('ROLLBACK');
+      return;
+    }
+    const instrumentId = bondResult.rows[0].instrument_id;
+    await client.query(`
+      INSERT INTO fundamental.convertible_bond_profiles(
+        instrument_id,bond_full_name,bond_short_name,cb_type,par_value,issue_size,remain_size,
+        maturity_date,conv_end_date,current_conv_price
+      ) VALUES ($1,'CI动机评分测试转债','CI动机评分测试转债','CB',100,100000000,50000000,$2::date,$2::date,10)`, [instrumentId, '2028-08-28']);
+    await client.query(`
+      INSERT INTO market.convertible_bond_daily_metrics(
+        instrument_id,trade_date,source_id,close,conversion_value,conversion_premium_pct
+      ) VALUES ($1,$2::date,(SELECT source_id FROM ops.data_sources WHERE source_code='calculated' LIMIT 1),100,85,17)`, [instrumentId, date]);
+    await client.query('COMMIT');
+    fixtureCreated = true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function cleanupFixture() {
+  if (!fixtureCreated) return;
+  await pool.query('DELETE FROM core.instruments WHERE canonical_code=$1', [FIXTURE_BOND_CODE]);
+}
+
 (async () => {
   try {
     await pool.query('SELECT 1');
@@ -13,6 +63,7 @@ const { calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetai
   }
 
   const date = '2026-08-28';
+  await ensureEmptyDatabaseFixture(date);
   const { rows: candidates } = await pool.query(`
     SELECT DISTINCT i.canonical_code
       FROM market.convertible_bond_daily_metrics md
@@ -80,10 +131,12 @@ const { calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetai
        ('fundamental','company_pledge_snapshots','total_shares')
      )`);
   assert.strictEqual(requiredColumns.length, 5, '112 迁移补齐的审计列应存在');
+  await cleanupFixture();
   await pool.end();
   console.log(`convertible-bond-motive-db.test.js 通过：${result.count} 只候选、0 失败、评分结果全部落库`);
 })().catch(async error => {
   console.error('convertible-bond-motive-db.test.js 失败：', error && error.stack || error);
+  await cleanupFixture().catch(() => {});
   await pool.end().catch(() => {});
   process.exit(1);
 });

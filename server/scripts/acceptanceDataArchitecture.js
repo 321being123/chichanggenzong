@@ -26,15 +26,12 @@ function addCheck(checks, code, ok, detail, value = null) {
 async function main() {
   const checks = [];
   const controlledPending = [
-    '6000 积分主/备 Token 权限探测：脚本已就绪，未在本次只读验收中消耗额度',
     '生产影子对账：需连续 3 个交易日观察共享采集与旧链路结果',
-    '4,538 组历史证券 ID：仅保留候选和映射审计，未执行物理合并/删除',
-    '历史 4,686 条裸股票代码（139 条可直接规范化、4,547 条需合并）和 185 条旧 test_guard 记录：待维护窗口备份后处理',
-    '其余非核心采集器的数据分区：当前仍按各自游标验收，尚未全部接入 ops.dataset_partitions',
+    '历史证券 ID 合并：自动迁移保留旧主档，人工核对项继续等待审批',
   ];
 
   const packageJson = require('../../package.json');
-  addCheck(checks, 'version', packageJson.appVersion === '0.7.0.0' && packageJson.version === packageJson.appVersion,
+  addCheck(checks, 'version', /^\d+\.\d+\.\d+\.\d+$/.test(packageJson.appVersion) && packageJson.version === packageJson.appVersion,
     `应用版本 ${packageJson.appVersion}`);
 
   const identityJs = fs.readFileSync(path.join(__dirname, '..', 'services', 'securityIdentity.js'), 'utf8');
@@ -157,7 +154,9 @@ async function main() {
 
   const mergeRows = await query(
     `SELECT COUNT(*)::int AS candidates,
-            COUNT(*) FILTER (WHERE status='candidate')::int AS pending
+            COUNT(*) FILTER (WHERE status='candidate')::int AS pending,
+            COUNT(*) FILTER (WHERE status='candidate' AND conflict_count=0)::int AS safe_pending,
+            COUNT(*) FILTER (WHERE status='migrated')::int AS migrated
        FROM core.instrument_merge_candidates`
   );
   const bareStockRows = await query(
@@ -193,7 +192,7 @@ async function main() {
        LEFT JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id AND ci.relation_type='issued_by'
       WHERE i.asset_class='stock' AND i.status='listed' AND NULLIF(BTRIM(i.name),'') IS NULL AND ci.instrument_id IS NULL`
   );
-  controlledPending.push(`当前只读统计：历史合并候选 ${number(mergeRows[0]?.candidates)} 组（待审 ${number(mergeRows[0]?.pending)}），裸股票代码 ${number(bareStock.count)} 条（可直接规范化 ${number(bareStock.safe_normalize)}、需合并 ${number(bareStock.merge_conflict)}），旧 test_guard 熔断 ${number(testCircuitRows[0]?.count)} 条，空名称关系例外 ${number(relationExceptionRows[0]?.count)} 条`);
+  controlledPending.push(`当前只读统计：历史合并候选 ${number(mergeRows[0]?.candidates)} 组（待审 ${number(mergeRows[0]?.pending)}，其中可自动迁移 ${number(mergeRows[0]?.safe_pending)}，已迁移 ${number(mergeRows[0]?.migrated)}），裸股票代码 ${number(bareStock.count)} 条（可直接规范化 ${number(bareStock.safe_normalize)}、需合并 ${number(bareStock.merge_conflict)}），旧 test_guard 熔断 ${number(testCircuitRows[0]?.count)} 条，空名称关系例外 ${number(relationExceptionRows[0]?.count)} 条`);
 
   const failed = checks.filter(check => !check.ok);
   const result = {

@@ -4,6 +4,7 @@ const { runJobByCode } = require('./jobRunners');
 const { getJobDefinition } = require('./jobDefinitions');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { getExternalCallStats } = require('./externalCallGuard');
+const { publishJobDatasets } = require('./datasetPartitionRegistry');
 
 function send(message) {
   if (typeof process.send === 'function') process.send(message, () => process.exit(message.ok ? 0 : 1));
@@ -29,6 +30,8 @@ process.on('message', async message => {
     process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
     process.env.JOB_EXTERNAL_CALL_LIMIT = String(Math.max(Number(definition.maxExternalCallsPerRun) || 0, 0));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
+    // 非核心任务统一登记最新数据分区；登记失败只记录，不影响已成功的业务任务。
+    await publishJobDatasets(message.jobCode, message.businessDate, result);
     const stats = getExternalCallStats();
     const normalized = result && typeof result === 'object'
       ? { ...result, externalCalls: Number(result.externalCalls || stats.total), externalSources: result.externalSources || stats.sources }

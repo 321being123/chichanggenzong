@@ -34,11 +34,25 @@ for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(Array.isArray(definition.externalApis), `${definition.jobCode} 缺少 externalApis`);
   assert.ok(Array.isArray(definition.producesDatasets), `${definition.jobCode} 缺少 producesDatasets`);
   assert.ok(Array.isArray(definition.consumesDatasets), `${definition.jobCode} 缺少 consumesDatasets`);
+  assert.ok(Array.isArray(definition.datasetDependencies), `${definition.jobCode} 缺少 datasetDependencies`);
   assert.ok(Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
 }
-assert.ok(definitions.JOB_DEFINITIONS.reduce((sum, job) => sum + Number(job.maxExternalCallsPerRun || 0), 0) <= 80,
+assert.ok(definitions.JOB_DEFINITIONS.reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0) <= 80,
   '常规任务声明调用预算不得超过每日80次目标');
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
+const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
+const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
+assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外部接口');
+assert.strictEqual(ipoReport.maxExternalCallsPerRun, 0, '打新日报外部调用预算必须为0');
+assert.deepStrictEqual(ipoReport.dependencyCodes, ['ipo_history_sync'], '打新日报必须依赖IPO事实同步');
+assert.deepStrictEqual(ipoReport.datasetDependencies, [{
+  datasetCode: 'ipo_history', scopeKey: 'GLOBAL', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed'
+}], '打新日报必须依赖当天通过质量门禁的IPO事实分区');
+assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 1, 'IPO核心事实阶段只允许一次new_share调用');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 15, 'IPO晚间补全必须使用独立调用预算');
+assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share')).length, 1,
+  'new_share在任务契约中只能有一个采集者');
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
 assert.ok(/WHERE \(status='pending'[\s\S]*status IN \('failed','waiting_external'\)/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
 assert.ok(/status IN \('pending','failed','waiting_external'\)/.test(slots), '领取任务不得领取 degraded');

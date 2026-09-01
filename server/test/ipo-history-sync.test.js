@@ -1,14 +1,16 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { nextIpoHistorySyncDelay, pythonCandidates, SCRIPT } = require('../jobs/ipoHistorySync');
+const { nextIpoHistorySyncDelay, nextIpoHistorySchedule, pythonCandidates, SCRIPT } = require('../jobs/ipoHistorySync');
 
 function instant(text) { return new Date(text); }
 
-// 2026-08-11 19:00 上海时间 -> 当日 19:30，30 分钟后。
+// 2026-08-11 19:00 上海时间 -> 当日 19:30 补全，30 分钟后。
 assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-11T11:00:00Z')), 30 * 60 * 1000);
-// 周五 20:00 上海时间 -> 下周一 19:30。
-assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-14T12:00:00Z')), 71.5 * 60 * 60 * 1000);
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:00:00Z')).mode, 'enrichment');
+// 周五 20:00 上海时间 -> 下周一 18:00 核心事实同步。
+assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-14T12:00:00Z')), 70 * 60 * 60 * 1000);
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-14T12:00:00Z')).mode, 'core');
 assert.ok(fs.existsSync(SCRIPT), '独立新股历史同步脚本不存在');
 assert.ok(pythonCandidates().length > 0, '没有 Python 候选解释器');
 
@@ -20,6 +22,11 @@ assert.match(source, /first_day_retry_count,0\) < 3/, '首日涨幅补偿未限�
 assert.match(source, /def enrich_stock_missing_details\(/, '缺失详情没有定点补全函数');
 assert.match(source, /historical_enrichment/, '详情补全未保留来源记录');
 assert.match(source, /pending_not_due/, '数据质量未区分尚未到期字段');
+assert.match(source, /"quality_status": "passed"/, 'IPO事实分区缺少质量通过状态');
+assert.match(source, /"target_date": target_date/, 'IPO事实分区缺少目标日期');
+assert.match(source, /"security_set_hash": security_set_hash/, 'IPO事实分区缺少证券集合哈希');
+assert.match(source, /"ingestion_run_id": run_id/, 'IPO事实分区缺少采集批次');
+assert.match(source, /"missing_listing_date_count": missing_listing_date_count/, 'IPO事实分区缺少上市日缺失诊断');
 
 const routeSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'ipo.js'), 'utf8');
 assert.match(routeSource, /history_stage/, '新股历史没有阶段字段');
@@ -65,5 +72,7 @@ assert.match(bondRefreshSource, /ipo-report.*venv.*bin.*python/, '估值任务�
 
 const reportSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_report.py'), 'utf8');
 assert.match(reportSource, /ipo_date=COALESCE\(\?, ipo_date\)/, '日报详情保存仍遗漏 ipo_date');
+assert.match(reportSource, /def reconcile_report_calendar_sets\(/, '日报发布前缺少日历证券集合对账');
+assert.match(reportSource, /拒绝发布并保留上一份有效结果/, '集合不一致时没有拒绝覆盖旧日报');
 
-console.log('OK ipo-history-sync: 增量窗口、失败保留、补偿次数、申购日保存和 19:30 调度均已覆盖');
+console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事实和19:30补全调度均已覆盖');

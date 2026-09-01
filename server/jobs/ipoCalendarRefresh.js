@@ -25,7 +25,7 @@ function nextIpoRefreshDelay(now = new Date()) {
     const day = new Date(Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day) + offset));
     const weekday = day.getUTCDay();
     if (weekday === 0 || weekday === 6) continue;
-    const target = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 18, 0, 0);
+    const target = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 18, 5, 0);
     if (target > current) return target - current;
   }
   return 24 * 60 * 60 * 1000;
@@ -73,9 +73,10 @@ async function notifyTushareFailovers(failovers = []) {
   }
 }
 
-function runWith(executable, runtime) {
+function runWith(executable, runtime, targetDate) {
   return new Promise((resolve, reject) => {
-    const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
+    const scriptArgs = targetDate ? [SCRIPT, targetDate] : [SCRIPT];
+    const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', ...scriptArgs] : scriptArgs;
     const child = spawn(executable, args, {
       cwd: PROJECT_ROOT,
       env: {
@@ -83,7 +84,7 @@ function runWith(executable, runtime) {
         TUSHARE_TOKEN: runtime.primary || '',
         TUSHARE_BACKUP_TOKEN: runtime.backup || '',
         TUSHARE_TOKEN_MODE: runtime.mode || 'auto',
-        EXTERNAL_CALL_GUARD: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8'
+        EXTERNAL_CALL_GUARD: '1', IPO_REPORT_DATABASE_ONLY: '1', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8'
       },
       windowsHide: true,
     });
@@ -120,7 +121,7 @@ function runWith(executable, runtime) {
   });
 }
 
-async function runIpoCalendarRefreshRaw(reason = 'scheduled') {
+async function runIpoCalendarRefreshRaw(reason = 'scheduled', targetDate) {
   if (running) return { skipped: true };
   running = true;
   const errors = [];
@@ -128,7 +129,7 @@ async function runIpoCalendarRefreshRaw(reason = 'scheduled') {
     const runtime = await getProviderRuntime('tushare');
     for (const executable of pythonCandidates()) {
       try {
-        const output = await runWith(executable, runtime);
+        const output = await runWith(executable, runtime, targetDate);
         await notifyTushareFailovers(output.failovers);
         console.log(`[ipo-calendar] ${reason} 更新完成 (${executable})`);
         return { ok: true, executable, output: output.output, failovers: output.failovers, externalCalls: output.externalCalls, externalSources: output.externalSources };
@@ -153,7 +154,7 @@ async function runIpoCalendarRefresh(reason = 'scheduled', context = {}) {
   const managedSlotId = Number(context.slotId) || null;
   try {
     runId = await startJobRun(JOB);
-    const result = await runIpoCalendarRefreshRaw(reason);
+    const result = await runIpoCalendarRefreshRaw(reason, context.targetDate);
     await finishJobRun(runId, true, JSON.stringify({ reason, executable: result.executable, externalCalls: result.externalCalls, externalSources: result.externalSources, output: String(result.output || '').slice(-2000) }));
     return result;
   } catch (error) {
@@ -209,14 +210,14 @@ function scheduleIpoCalendarRefresh() {
   function scheduleNext() {
     const delay = nextIpoRefreshDelay();
     const timer = setTimeout(async () => {
-      try { await runIpoCalendarRefresh('weekday-18:00'); }
+      try { await runIpoCalendarRefresh('weekday-18:05'); }
       catch (error) { console.error('[ipo-calendar] 更新失败:', error.message); }
       scheduleNext();
     }, delay);
     if (timer.unref) timer.unref();
   }
   scheduleNext();
-  console.log('[ipo-calendar] 已调度：工作日 18:00（上海时间）');
+  console.log('[ipo-calendar] 已调度：工作日 18:05（上海时间）');
 }
 
 module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, runIpoCalendarStartupCatchup, scheduleIpoCalendarRefresh, pythonCandidates, summarizeIpoPythonError };

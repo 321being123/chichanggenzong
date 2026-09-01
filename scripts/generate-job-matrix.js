@@ -2,22 +2,37 @@
 // 从 JOB_DEFINITIONS 生成任务-接口-数据集矩阵，避免专项方案与代码任务清单漂移。
 const fs = require('fs');
 const path = require('path');
-const { JOB_DEFINITIONS } = require('../server/services/jobDefinitions');
+const { JOB_DEFINITIONS, externalCallLimitForMode, declaredDailyExternalCallBudget } = require('../server/services/jobDefinitions');
 
 const outputPath = path.join(__dirname, '..', 'docs', '任务接口数据集矩阵.generated.md');
 
 function scheduleOf(job) {
   if (job.manualOnly) return '人工';
   if (job.monthly) return `每月 ${String(job.hour).padStart(2, '0')}:${String(job.minute).padStart(2, '0')}`;
-  return `${String(job.hour).padStart(2, '0')}:${String(job.minute).padStart(2, '0')}`;
+  return [
+    `${String(job.hour).padStart(2, '0')}:${String(job.minute).padStart(2, '0')}`,
+    ...(job.additionalSchedules || []).map(item =>
+      `${String(item.hour).padStart(2, '0')}:${String(item.minute).padStart(2, '0')}（${item.mode || '补充'}）`
+    ),
+  ].join('<br>');
 }
 
 function cell(values) {
   return (Array.isArray(values) ? values : []).join('<br>') || '—';
 }
 
+function budgetCell(job) {
+  if (!(job.additionalSchedules || []).length) return String(externalCallLimitForMode(job));
+  return [
+    `core: ${externalCallLimitForMode(job, 'core')}`,
+    ...(job.additionalSchedules || []).map(item =>
+      `${item.mode || '补充'}: ${externalCallLimitForMode(job, item.mode || 'core')}`
+    ),
+  ].join('<br>');
+}
+
 function render() {
-  const total = JOB_DEFINITIONS.reduce((sum, job) => sum + Number(job.maxExternalCallsPerRun || 0), 0);
+  const total = JOB_DEFINITIONS.reduce((sum, job) => sum + declaredDailyExternalCallBudget(job), 0);
   const scheduled = JOB_DEFINITIONS.filter(job => !job.manualOnly).length;
   const manual = JOB_DEFINITIONS.filter(job => job.manualOnly).length;
   const lines = [
@@ -30,7 +45,7 @@ function render() {
     '|---|---|---|---|---|---:|',
   ];
   for (const job of JOB_DEFINITIONS) {
-    lines.push(`| ${job.jobCode} | ${scheduleOf(job)} | ${cell(job.externalApis)} | ${cell(job.producesDatasets)} | ${cell(job.consumesDatasets)} | ${Number(job.maxExternalCallsPerRun || 0)} |`);
+    lines.push(`| ${job.jobCode} | ${scheduleOf(job)} | ${cell(job.externalApis)} | ${cell(job.producesDatasets)} | ${cell(job.consumesDatasets)} | ${budgetCell(job)} |`);
   }
   lines.push('', '<!-- JOB_MATRIX_GENERATED_END -->', '');
   return lines.join('\n');

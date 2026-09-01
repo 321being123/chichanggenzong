@@ -88,7 +88,7 @@ assert(/job_alert_resend/.test(adminRoute) && /result: 'failure'/.test(adminRout
 assert(/sendRecoverySummary/.test(alertMailer) && /status='sending'/.test(alertMailer), 'SMTP 恢复后必须合并补发历史告警且不能覆盖人工状态');
 assert(/emailConfigured/.test(read('public/js/admin.js')) && /投递失败/.test(read('public/js/admin.js')), '后台必须显示邮件告警配置与投递状态');
 assert(/jobDisplayText\(alert\.summary/.test(adminUi) && /text\.match\(\/\\uFFFD\/g\)/.test(adminUi), '后台必须压缩超长告警并隐藏无法还原的历史乱码');
-assert(/const JOB_LABELS/.test(adminUi) && /ipo_history_sync: '新股历史同步'/.test(adminUi) && /arbitrage_reparse: '套利公告重新解析'/.test(adminUi), '所有后台任务必须使用中文名称');
+assert(/const JOB_LABELS/.test(adminUi) && /ipo_history_sync: 'IPO事实同步'/.test(adminUi) && /arbitrage_reparse: '套利公告重新解析'/.test(adminUi), '所有后台任务必须使用中文名称');
 const scheduledJobCodes = [...definitions.matchAll(/jobCode: '([^']+)'/g)].map(match => match[1]);
 assert(scheduledJobCodes.filter(code => !code.startsWith('market_close:')).every(code => new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':').test(adminUi)), '任务定义中的每个任务都必须有中文名称映射');
 assert(/function formatJobDetail/.test(adminUi) && /jobDisplayText\(j\.detail/.test(adminUi) && /jobTriggerLabel/.test(adminUi), '任务运行详情和触发方式必须转换为中文说明');

@@ -10,6 +10,16 @@
   ],
   "routes": [
     {
+      "id": "solution-design",
+      "risk": "high",
+      "paths": ["AGENTS.md", "governance/knowledge-map.json"],
+      "keywords": ["方案", "根本解决方案", "架构设计", "整体架构", "统一任务", "数据链路", "调度", "重构建议"],
+      "read": ["docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md"],
+      "update": ["AGENTS.md", "governance/knowledge-map.json"],
+      "checks": ["npm.cmd run check:knowledge"],
+      "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用"]
+    },
+    {
       "id": "database",
       "risk": "high",
       "paths": ["server/db/**", "server/migrations/**", "migrations/**", "**/*schema*.sql"],

@@ -314,7 +314,7 @@ check("申能转债公告编号解析", detail["announcement_number"] == "2026-1
 check("申能转债官方来源标记", detail["is_official"] and detail["event_type"] == "convertible_bond_listing",
       f"source={detail['source_class']}, event={detail['event_type']}")
 
-# ---------- 测试7：上市首日腾讯行情与转股溢价率 ----------
+# ---------- 测试7：行情解析兼容、数据库只读取价与转股溢价率 ----------
 tencent_payload = 'v_sz123277="51~玉禾转债~123277~130.000~100.000~130.000";'.encode('gbk')
 check("带交易所后缀的深市转债可正确解析腾讯价格",
       mod._parse_tencent_bond_price(tencent_payload, "123277.SZ") == 130.0)
@@ -328,8 +328,10 @@ check("玉禾转债转股价值按同步正股价计算", transfer_value == 99.5
 check("玉禾转债转股溢价率按真实债价计算", premium_ratio == 30.56, f"premium_ratio={premium_ratio}")
 _, missing_premium = mod.calculate_conversion_metrics(16.28, 16.35, None)
 check("已上市债价缺失时不伪造面值溢价率", missing_premium is None)
-check("腾讯同步只覆盖正股价格、不覆盖Tushare基本面",
-      '"price": live_stock["price"]' in fetch_source and '**{k: v for k, v in live_stock.items()' not in fetch_source)
+quote_reader = fetch_source[fetch_source.index("def fetch_stock_quote("):fetch_source.index("def _fetch_stock_industry(")]
+check("日报正股行情只读数据库且不回退外部接口",
+      "market.daily_bars" in quote_reader and "market.daily_valuations" in quote_reader
+      and "_fetch_quote_tencent(" not in quote_reader and "_get_tushare_pro(" not in quote_reader)
 
 print("\n结果:", "ALL PASS" if all(PASS) else f"{PASS.count(False)} FAILED")
 sys.exit(0 if all(PASS) else 1)

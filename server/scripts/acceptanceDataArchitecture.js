@@ -6,7 +6,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { pool } = require('../db/connection');
-const { JOB_DEFINITIONS } = require('../services/jobDefinitions');
+const { JOB_DEFINITIONS, declaredDailyExternalCallBudget } = require('../services/jobDefinitions');
 
 const JSON_OUTPUT = process.argv.includes('--json');
 
@@ -136,7 +136,7 @@ async function main() {
   addCheck(checks, 'durable_job_queue', queueRows.length === 1,
     '计划实例、租约和 waiting_external 状态均由 PostgreSQL 持久化', queueRows[0] || {});
 
-  const declaredCalls = JOB_DEFINITIONS.reduce((sum, job) => sum + Number(job.maxExternalCallsPerRun || 0), 0);
+  const declaredCalls = JOB_DEFINITIONS.reduce((sum, job) => sum + declaredDailyExternalCallBudget(job), 0);
   addCheck(checks, 'job_matrix_budget', JOB_DEFINITIONS.length === 23 && declaredCalls <= 80,
     `任务定义 ${JOB_DEFINITIONS.length} 个，声明预算 ${declaredCalls}/日（目标≤80，硬上限100）`,
     { jobs: JOB_DEFINITIONS.length, declaredCalls });

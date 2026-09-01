@@ -6,16 +6,15 @@ _str_date / fetch_calendar / build_upcoming_calendar，导致"改一处漏一处
 （历史上就因 _str_date 只认带横杠日期而反复漏数据）。
 
 现统一到本模块，两个脚本都从此处 import，从源头消除重复。
-本模块零重依赖（仅 urllib + 标准库），不引入 tushare 库 / fitz / psycopg2。
+本模块只读取 PostgreSQL 中已入库的新股事实、交易日历和可转债标准事件。
 """
 
 import os
 import re
 import json
-import urllib.request
 from datetime import datetime, timedelta
 
-from _common import _load_env, _tushare
+from _common import _load_env
 
 _load_env()
 
@@ -44,45 +43,31 @@ def _str_date(val):
 
 
 def next_trading_date(start_date=None):
-    """返回 start_date 之后的下一个实际交易日，兼容周末和法定节假日。"""
+    """从已入库交易日历返回 start_date 之后的下一个交易日。"""
     start = start_date or datetime.now()
     if not isinstance(start, datetime):
         start = datetime.combine(start, datetime.min.time())
-    begin = start.date() + timedelta(days=1)
-    end = begin + timedelta(days=31)
+    import db_pg
+    conn = db_pg.connect()
     try:
-        rows = _tushare(
-            "trade_cal",
-            {
-                "exchange": "SSE",
-                "start_date": begin.strftime("%Y%m%d"),
-                "end_date": end.strftime("%Y%m%d"),
-                "is_open": "1",
-            },
-            "cal_date,is_open",
-        )
-        open_dates = sorted(
-            _str_date(row.get("cal_date"))
-            for row in rows
-            if str(row.get("is_open")) == "1" and _str_date(row.get("cal_date"))
-        )
-        if open_dates:
-            return datetime.strptime(open_dates[0], "%Y-%m-%d")
-    except Exception as exc:
-        print(f"[日历] 实际交易日查询失败，暂按工作日兜底: {exc}")
-
-    # 上游不可用时只作为兜底，避免报告任务因日期查询暂时失败而中断。
-    candidate = begin
-    while candidate.weekday() >= 5:
-        candidate += timedelta(days=1)
-    return datetime.combine(candidate, datetime.min.time())
+        row = conn.execute(
+            "SELECT trade_date::text FROM market.trade_calendar "
+            "WHERE exchange='SSE' AND is_open=true AND trade_date>?::date "
+            "ORDER BY trade_date LIMIT 1",
+            (start.date().isoformat(),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise RuntimeError(f"trade_calendar 没有 {start.date().isoformat()} 之后的已入库交易日")
+    return datetime.strptime(str(row[0])[:10], "%Y-%m-%d")
 
 
-# ============ Tushare REST 调用（零依赖，不依赖 tushare 库）—— 已收口到 _common.py ============
+# ============ 已入库标准事实读取 ============
 
 
 def fetch_calendar_entries(start_date=None, end_date=None, full=False):
-    """获取新股/新债日历数据（Tushare: new_share + cb_issue + cb_basic）。
+    """从 ipo_history 与标准可转债事件表读取新股/新债日历。
 
     增量优化（整改报告 P1）：默认只拉近期窗口，不再每次全量拉取。
     - 默认窗口：今天前60天 ~ 今天后90天（覆盖已公告未上市 + 未来90天申购/上市）。
@@ -101,115 +86,43 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
             end_date = (today + timedelta(days=90)).strftime("%Y-%m-%d")
     win_start = _str_date(start_date) or (today - timedelta(days=60)).strftime("%Y-%m-%d")
     win_end = _str_date(end_date) or (today + timedelta(days=90)).strftime("%Y-%m-%d")
-    sd_int = str(start_date).replace("-", "") if (not full and start_date) else None
-    ed_int = str(end_date).replace("-", "") if (not full and end_date) else None
-
-    all_data = []
-    new_share_ok = False
-
-    # 1. 新股：申购日 ipo_date / 上市日 issue_date（服务端按日期窗口过滤）
+    import db_pg
+    conn = db_pg.connect()
     try:
-        params = {}
-        if sd_int:
-            params["start_date"] = sd_int
-        if ed_int:
-            params["end_date"] = ed_int
-        df = _tushare("new_share", params, "ts_code,name,ipo_date,issue_date")
-        if not df:
-            raise RuntimeError("Tushare new_share 返回空结果")
-        new_share_ok = True
-        for r in df:
-            ts_code = str(r.get("ts_code") or "")
-            if not ts_code:
-                continue
-            code6 = ts_code.split(".")[0]
-            abbr = str(r.get("name") or "")
-            ipo = r.get("ipo_date")
-            issue = r.get("issue_date")
-            if ipo:
-                all_data.append({
-                    "TRADE_DATE": _str_date(ipo), "DATE_TYPE": "申购",
-                    "SECURITY_TYPE": "0", "SECURITY_NAME_ABBR": abbr,
-                    "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                })
-            if issue:
-                all_data.append({
-                    "TRADE_DATE": _str_date(issue), "DATE_TYPE": "上市",
-                    "SECURITY_TYPE": "0", "SECURITY_NAME_ABBR": abbr,
-                    "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                })
-    except Exception as e:
-        print(f"[日历] 新股获取失败: {e}")
-
-    # 2. 新债申购：cb_issue.onl_date（服务端按日期窗口过滤）
-    df2 = []
-    try:
-        if not new_share_ok:
-            raise RuntimeError("新股日历数据源失败，任务不得标记成功")
-        params2 = {}
-        if sd_int:
-            params2["start_date"] = sd_int
-        if ed_int:
-            params2["end_date"] = ed_int
-        df2 = _tushare("cb_issue", params2, CB_ISSUE_FIELDS)
-        for r in df2:
-            ts_code = str(r.get("ts_code") or "")
-            if not ts_code:
-                continue
-            code6 = ts_code.split(".")[0]
-            abbr = str(r.get("onl_name") or "")
-            onl = r.get("onl_date")
-            if onl:
-                all_data.append({
-                    "TRADE_DATE": _str_date(onl), "DATE_TYPE": "申购",
-                    "SECURITY_TYPE": "1", "SECURITY_NAME_ABBR": abbr,
-                    "SECURITY_CODE": code6, "SECUCODE": ts_code,
-                })
-    except Exception as e:
-        print(f"[日历] 新债申购获取失败: {e}")
-
-    # 3. 新债上市：cb_basic.list_date（接口不支持日期范围，全量拉取后内存过滤窗口）
-    cb_basic_kept = 0
-    df3 = []
-    try:
-        df3 = _tushare("cb_basic", {}, CB_BASIC_FIELDS)
-        for r in df3:
-            ts_code = str(r.get("ts_code") or "")
-            if not ts_code:
-                continue
-            ld = r.get("list_date")
-            if not ld:
-                continue
-            ld_s = _str_date(ld)
-            if not full and ld_s and (ld_s < win_start or ld_s > win_end):
-                continue
-            code6 = ts_code.split(".")[0]
-            abbr = str(r.get("bond_short_name") or "")
-            all_data.append({
-                "TRADE_DATE": ld_s, "DATE_TYPE": "上市",
-                "SECURITY_TYPE": "1", "SECURITY_NAME_ABBR": abbr,
-                "SECURITY_CODE": code6, "SECUCODE": ts_code,
-            })
-            cb_basic_kept += 1
-    except Exception as e:
-        print(f"[日历] 新债上市获取失败: {e}")
-
-    # cb_issue 已成功时，即使 cb_basic 暂时失败，也要把发行事实先写入统一层。
-    if df2:
-        try:
-            from bond_data_layer import save_cb_issue_rows
-            rating_map = {
-                str(row.get("ts_code")): row.get("newest_rating") or row.get("issue_rating")
-                for row in df3 if row.get("ts_code")
-            }
-            save_cb_issue_rows(df2, df3, rating_map)
-        except Exception as exc:
-            print(f"[日历] 可转债标准化入库失败（保留已有数据）: {exc}")
+        rows = conn.execute(
+            """SELECT event_date,event_type,security_type,name,code,secu_code FROM (
+                 SELECT ipo_date AS event_date,'申购' AS event_type,'0' AS security_type,
+                        security_name AS name,security_code AS code,security_code AS secu_code
+                   FROM ipo_history WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                 UNION ALL
+                 SELECT listing_date,'上市','0',security_name,security_code,security_code
+                   FROM ipo_history WHERE listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                 UNION ALL
+                 SELECT e.event_date::text,
+                        CASE e.event_type WHEN 'online_subscription' THEN '申购' ELSE '上市' END,
+                        '1',i.name,split_part(i.canonical_code,'.',1),i.canonical_code
+                   FROM event.instrument_events e
+                   JOIN core.instruments i ON i.instrument_id=e.instrument_id
+                   LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=e.instrument_id
+                  WHERE i.asset_class='convertible_bond'
+                    AND e.event_type IN ('online_subscription','listing')
+                    AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+               ) facts
+              WHERE (? OR event_date BETWEEN ? AND ?)
+              ORDER BY event_date,security_type,code,event_type""",
+            (bool(full), win_start, win_end),
+        ).fetchall()
+    finally:
+        conn.close()
+    all_data = [{
+        "TRADE_DATE": _str_date(row[0]), "DATE_TYPE": row[1],
+        "SECURITY_TYPE": row[2], "SECURITY_NAME_ABBR": str(row[3] or ""),
+        "SECURITY_CODE": str(row[4] or ""), "SECUCODE": str(row[5] or ""),
+    } for row in rows]
+    cb_basic_kept = sum(1 for row in all_data if row["SECURITY_TYPE"] == "1" and row["DATE_TYPE"] == "上市")
 
     scope = "全量(不限窗口)" if full else f"{win_start}~{win_end}"
     print(f"[日历] 拉取完成 范围={scope} 共 {len(all_data)} 条（其中新债上市 {cb_basic_kept} 条）")
-    if not new_share_ok:
-        raise RuntimeError("新股日历数据源失败，任务不得标记成功")
     return all_data
 
 

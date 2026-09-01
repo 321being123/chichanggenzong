@@ -19,99 +19,42 @@ from sse_listing_parser import (
     parse_sse_listing_index,
 )
 
-# new_share 全量待发行列表进程内缓存：同一轮任务只拉一次，本地按 ts_code 匹配。
-# Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），
-# 每个标的都调一次会重复拉全量；缓存一次后本进程内复用。
-_NEW_SHARE_CACHE = None
 _bond_price_source = {}
 
 
-def _get_new_share_df(pro):
-    global _NEW_SHARE_CACHE
-    if _NEW_SHARE_CACHE is not None:
-        return _NEW_SHARE_CACHE
-    df = pro.new_share()
-    _NEW_SHARE_CACHE = df
-    return df
-
-
 def fetch_stock_detail(secu_code):
-    """获取新股详细发行信息（Tushare new_share）
+    """从 ipo_history 读取新股详细发行信息。
 
     对齐原东财 HTML 解析产出的字段：
     issue_price, issue_pe, online_date, list_date, fund_raised, total_shares,
     online_shares, online_lottery_rate, main_business, industry, circulation_mv
     """
     try:
-        pro = _get_tushare_pro()
-        if not pro:
+        conn = _init_ipo_db()
+        row = conn.execute(
+            """SELECT issue_price,issue_pe,ipo_date,listing_date,fund_raised,total_shares,
+                      online_shares,online_lottery_rate,subscribe_upper_limit,circulation_mv,
+                      main_business,industry,industry_pe
+                 FROM ipo_history WHERE security_code=? LIMIT 1""",
+            (str(secu_code or "").split(".")[0],),
+        ).fetchone()
+        conn.close()
+        if not row:
             return None
-        ts_code = _to_ts_code(secu_code)
-        df = _get_new_share_df(pro)
-        if df is None or df.empty:
-            return None
-        # Tushare new_share 的 ts_code 过滤在接口端不生效（返回全量待发行列表），
-        # 必须本地再按 ts_code 精确匹配；已上市股票不在待发行列表中 → 返回 None，
-        # 避免取到列表第一条（占位数据）污染历史记录。
-        sub = df[df["ts_code"] == ts_code] if "ts_code" in df.columns else df
-        if sub is None or sub.empty:
-            return None
-        r = sub.iloc[0]
-        info = {}
-        ip = _ts_float(r.get("price"))
-        ipe = _ts_float(r.get("pe"))
-        amount = _ts_float(r.get("amount"))            # 发行总量(万股)
-        market_amount = _ts_float(r.get("market_amount"))  # 网上发行量(万股)
-        ballot = _ts_float(r.get("ballot"))             # 中签率(%)
-        funds = _ts_float(r.get("funds"))              # 募资总额(亿元)
-        limit_amount = _ts_float(r.get("limit_amount"))   # 顶格申购上限(万股)
-
-        info["issue_price"] = ip
-        info["issue_pe"] = ipe
-        info["online_date"] = _str_date(r.get("ipo_date"))
-        info["list_date"] = _str_date(r.get("issue_date"))
-        # 募资总额：优先用 Tushare funds 字段(亿元)；缺失时按 发行总量(万股)*发行价/1e4 估算
-        if funds:
-            info["fund_raised"] = round(funds, 2)
-        elif amount and ip:
-            info["fund_raised"] = round(amount * ip / 1e4, 2)   # 亿元
-        info["total_shares"] = round(amount, 2) if amount else None  # 万股
-        if market_amount:
-            info["online_shares"] = round(market_amount, 2)  # 万股
-        if market_amount and ip:
-            info["circulation_mv"] = round(market_amount * ip / 1e4, 2)  # 亿元
-        if ballot is not None:
-            info["online_lottery_rate"] = ballot
-        # 顶格申购股数 / 需配市值
-        # Tushare new_share 的 limit_amount = 顶格申购上限(万股)
-        # （北交所=网上发行量×5%，沪/深为交易所设定值，单位均为万股）
-        if limit_amount:
-            info["limit_amount"] = limit_amount                            # 万股
-            info["subscribe_upper_limit"] = round(limit_amount, 2)         # 顶格申购上限(万股)
-            # 沪深/京规则统一：每1万市值可申1000股 → 需配市值(万元)=顶格股数/1000=limit_amount*10
-            info["subscribe_mv"] = round(limit_amount * 10, 1)             # 需配市值(万元)
-        biz = r.get("main_business")
-        biz = (biz[:200] if isinstance(biz, str) and len(biz) > 200 else biz) or ""
-        # new_share 对未上市新股常返回占位/截断文本（不含赛道关键词），
-        # 招股书为权威源：仅当招股书能取到含赛道关键词的主营业务时才覆盖。
-        if not _has_sector_keyword(biz):
-            pb = _fetch_stock_main_business(secu_code)
-            if pb:
-                biz = pb
-        info["main_business"] = biz
-        ind = (r.get("industry") or "").strip()
-        if not ind:
-            ind = _fetch_stock_industry(secu_code)   # 回退用 stock_basic 行业
-        info["industry"] = ind or ""
-        # 行业PE：用全市场行业中位数PE映射补全
-        info["industry_pe"] = _get_industry_pe_map().get(ind) if ind else None
-        return info if info else None
+        fields = ("issue_price", "issue_pe", "online_date", "list_date", "fund_raised", "total_shares",
+                  "online_shares", "online_lottery_rate", "subscribe_upper_limit", "circulation_mv",
+                  "main_business", "industry", "industry_pe")
+        info = dict(zip(fields, row))
+        if info.get("subscribe_upper_limit"):
+            info["limit_amount"] = float(info["subscribe_upper_limit"])
+            info["subscribe_mv"] = round(float(info["subscribe_upper_limit"]) * 10, 1)
+        return info
     except Exception as e:
         print(f"获取{secu_code}详情失败: {e}")
         return None
 
 def fetch_bond_detail(secu_code):
-    """从统一数据库读取债券发行详情；实时行情仍由后台日报单独补充。"""
+    """从统一数据库读取债券发行详情和最近已入库行情。"""
     try:
         row = get_bond_row(secu_code)
         if not row:
@@ -127,7 +70,7 @@ def fetch_bond_detail(secu_code):
         info["list_date"] = _str_date(row.get("listing_date"))
         info["rating"] = str(row.get("rating") or "").replace("sti", "").replace("STI", "")
 
-        # 2. 获取可转债交易价格（已上市→实时行情，未上市→面值100）
+        # 2. 获取可转债价格（已上市→最近已入库收盘价，未上市→面值100）
         bond_price = _fetch_bond_price(secu_code, info.get("list_date"))
         info["bond_price"] = bond_price
 
@@ -135,17 +78,6 @@ def fetch_bond_detail(secu_code):
         stock_code = info["stock_code"]
         if stock_code:
             stock_info = fetch_stock_quote(stock_code)
-            if not stock_info:
-                # fallback: 从HTML详情页获取正股价格
-                stock_info = fetch_stock_price_from_detail(secu_code)
-            bond_key = re.sub(r"\D", "", str(secu_code))[:6]
-            if _bond_price_source.get(bond_key) == "tencent":
-                live_stock = _fetch_quote_tencent(stock_code)
-                if live_stock and live_stock.get("price"):
-                    stock_info = {**(stock_info or {}), "price": live_stock["price"]}
-                else:
-                    # 两条行情必须同步；拿不到腾讯正股价时不展示混合口径的实时溢价率。
-                    info["bond_price"] = None
             if stock_info:
                 info["stock_price"] = stock_info.get("price")
                 info["stock_pe"] = stock_info.get("pe")
@@ -153,12 +85,6 @@ def fetch_bond_detail(secu_code):
                 info["stock_roe"] = stock_info.get("roe")
                 info["stock_market_cap"] = stock_info.get("market_cap")
                 info["stock_industry"] = stock_info.get("industry", "")
-
-        # 2.1 如果行情API没拿到行业，从东财个股页面获取
-        if not info.get("stock_industry") and stock_code:
-            industry = _fetch_stock_industry(stock_code)
-            if industry:
-                info["stock_industry"] = industry
 
         # 3. 计算转股价值和转股溢价率
         if info.get("convert_price") and info.get("stock_price"):
@@ -778,6 +704,11 @@ def calc_circulation_scale(info, bond_code=None):
         info["_circulation_source"] = cached.get("source_code") or "cninfo_announcements"
         return
 
+    if os.environ.get("IPO_REPORT_DATABASE_ONLY") == "1":
+        info["_note"] = "⚠️ 尚无已入库上市流通规模，日报只读数据库，不在生成阶段请求公告源"
+        info["_circulation_error"] = "database_fact_missing"
+        return
+
     placing = fetch_placing_result(
         stock_code,
         scale,
@@ -839,7 +770,7 @@ def _parse_tencent_bond_price(content, bond_code):
 
 
 def _fetch_bond_price(bond_code, list_date):
-    """获取可转债交易价格：已上市→实时行情，未上市→面值100"""
+    """读取最近已入库可转债收盘价；未上市债券使用面值100。"""
     code = re.sub(r"\D", "", str(bond_code))[:6]
     if code in _bond_price_cache:
         return _bond_price_cache[code]
@@ -855,28 +786,23 @@ def _fetch_bond_price(bond_code, list_date):
             pass
 
     if is_listed:
-        # 主源：腾讯转债实时行情；上市首日 Tushare 日线通常尚未更新。
         try:
-            qt_code = _get_qt_symbol(code, 'convertible_bond')
-            if not qt_code:
-                return None
-            resp = _get_session().get(f"https://qt.gtimg.cn/q={qt_code}", timeout=10)
-            price = _parse_tencent_bond_price(resp.content, code)
-            if price:
+            conn = _init_ipo_db()
+            row = conn.execute(
+                """SELECT m.close FROM market.convertible_bond_daily_metrics m
+                     JOIN core.instruments i ON i.instrument_id=m.instrument_id
+                    WHERE split_part(i.canonical_code,'.',1)=? AND m.close>0
+                    ORDER BY m.trade_date DESC,m.source_id DESC LIMIT 1""",
+                (code,),
+            ).fetchone()
+            conn.close()
+            price = float(row[0]) if row and row[0] is not None else None
+            if price and price > 0:
                 _bond_price_cache[code] = price
-                _bond_price_source[code] = "tencent"
+                _bond_price_source[code] = "database"
                 return price
         except Exception:
             pass
-
-        # 兜底：Tushare最近完整交易日收盘价。
-        price = _ts_fetch_bond_close(bond_code)
-        if price:
-            _bond_price_cache[code] = price
-            _bond_price_source[code] = "tushare"
-            return price
-
-        # 已上市但两路行情均失败时禁止伪装成面值100。
         return None
 
     # 未上市债券尚无市场成交价，申购报告按面值100计算参考溢价率。
@@ -885,29 +811,40 @@ def _fetch_bond_price(bond_code, list_date):
     return 100
 
 def fetch_stock_quote(stock_code):
-    """获取正股实时行情（PE/PB/ROE/股价/总市值/行业）- 带缓存"""
+    """读取正股最近已入库行情和估值。"""
     if stock_code in _stock_quote_cache:
         return _stock_quote_cache[stock_code]
 
-    # 主源：Tushare（daily_basic + fina_indicator）
-    result = _fetch_quote_tushare(stock_code)
-    if result:
+    try:
+        conn = _init_ipo_db()
+        row = conn.execute(
+            """SELECT b.close,v.pe_ttm,v.pb,v.total_market_cap
+                 FROM core.instruments i
+                 LEFT JOIN LATERAL (
+                   SELECT close,trade_date FROM market.daily_bars
+                    WHERE instrument_id=i.instrument_id ORDER BY trade_date DESC,source_id DESC LIMIT 1
+                 ) b ON true
+                 LEFT JOIN LATERAL (
+                   SELECT pe_ttm,pb,total_market_cap FROM market.daily_valuations
+                    WHERE instrument_id=i.instrument_id ORDER BY trade_date DESC,source_id DESC LIMIT 1
+                 ) v ON true
+                WHERE split_part(i.canonical_code,'.',1)=? AND i.asset_class='stock' LIMIT 1""",
+            (str(stock_code or "").split(".")[0],),
+        ).fetchone()
+        conn.close()
+        if not row or row[0] is None:
+            return None
+        result = {
+            "price": float(row[0]), "pe": float(row[1]) if row[1] is not None else None,
+            "pb": float(row[2]) if row[2] is not None else None, "roe": None,
+            "market_cap": float(row[3]) / 10000 if row[3] is not None else None,
+            "industry": "",
+        }
         _stock_quote_cache[stock_code] = result
         return result
-
-    # 兜底1：腾讯行情API（sandbox内可达，稳定）
-    result = _fetch_quote_tencent(stock_code)
-    if result:
-        _stock_quote_cache[stock_code] = result
-        return result
-
-    # 兜底2：东财push2行情API（可能受限）
-    result = _fetch_quote_eastmoney(stock_code)
-    if result:
-        _stock_quote_cache[stock_code] = result
-        return result
-
-    return None
+    except Exception as error:
+        print(f"数据库行情读取失败({stock_code}): {error}")
+        return None
 
 def _fetch_stock_industry(stock_code):
     """从 Tushare stock_basic 获取行业信息（替代东财）"""
@@ -1502,165 +1439,48 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
 _BONDS_MARKET_CACHE = None  # list of (code, bond_price, transfer_value, premium_pct, stock_code)
 
 def _fetch_all_bonds_market():
-    """
-    获取全市场可转债实时行情数据
-
-    数据源：东财 datacenter RPT_BOND_CB_LIST（全量329只，含代码+转股价+正股代码+到期日）
-          + 腾讯行情 API（批量获取转债现价+正股现价）
-
-    过滤：DELIST_DATE为None（未退市）且 EXPIRE_DATE 未过期
-
-    返回：[(code, bond_price, transfer_value, premium_pct, stock_code), ...]
-    """
+    """读取最近已发布批次的全市场转债行情。"""
     global _BONDS_MARKET_CACHE
     if _BONDS_MARKET_CACHE is not None:
         return _BONDS_MARKET_CACHE
-
-    import re as _re
-    from datetime import datetime
-
-    s = _get_session()
-    today = datetime.now()
-
-    # ── 1. 从东财 datacenter 获取所有转债基础信息 ──
-    url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-    codes = []
-    seen = set()
-    for page in range(1, 50):
-        params = {
-            "reportName": "RPT_BOND_CB_LIST",
-            "columns": "SECURITY_CODE,SECURITY_NAME_ABBR,CONVERT_STOCK_CODE,INITIAL_TRANSFER_PRICE,EXPIRE_DATE,DELIST_DATE,LISTING_DATE",
-            "pageNumber": page,
-            "pageSize": 100,
-            "sortTypes": -1,
-            "sortColumns": "SECURITY_CODE",
-            "source": "WEB",
-            "client": "WEB",
-        }
-        try:
-            resp = s.get(url, params=params, timeout=15)
-            data = resp.json()
-            if not (data.get("success") and data["result"] and data["result"]["data"]):
-                break
-            added = 0
-            for b in data["result"]["data"]:
-                sc = b.get("SECURITY_CODE", "")
-                if sc in seen:
-                    continue
-                seen.add(sc)
-
-                # 过滤已退市
-                if b.get("DELIST_DATE"):
-                    continue
-                # 过滤已到期
-                expire = b.get("EXPIRE_DATE")
-                if expire:
-                    try:
-                        if isinstance(expire, str):
-                            expire_dt = datetime.strptime(expire[:10], "%Y-%m-%d")
-                            if expire_dt < today:
-                                continue
-                    except (ValueError, TypeError):
-                        pass
-                # 过滤未上市（LISTING_DATE为空或还未到上市日期）
-                list_date = b.get("LISTING_DATE")
-                if not list_date:
-                    continue
-                try:
-                    if isinstance(list_date, str):
-                        ld = datetime.strptime(list_date[:10], "%Y-%m-%d")
-                        if ld > today:
-                            continue
-                except (ValueError, TypeError):
-                    pass
-
-                stock = b.get("CONVERT_STOCK_CODE")
-                tp = b.get("INITIAL_TRANSFER_PRICE")
-                if sc and stock and tp:
-                    codes.append((sc, stock, float(tp)))
-                    added += 1
-            if added == 0:
-                break
-        except Exception:
-            break
-
-    if not codes:
-        return None
-
-    # ── 2. 转债价格 + 正股价格 ──
-    # 主源：Tushare按交易日一次拉全市场（2个请求）
-    bond_prices, stock_prices = _ts_fetch_all_market_prices()
-
-    # 兜底：Tushare失败时用腾讯行情批量获取
-    if bond_prices is None:
-        bond_prices = {}
-        stock_prices = {}
-        all_qt = []
-        for sc, stock, tp in codes:
-            bond_symbol = _get_qt_symbol(sc, 'convertible_bond')
-            stock_symbol = _get_qt_symbol(stock, 'stock')
-            if bond_symbol:
-                all_qt.append(bond_symbol)
-            if stock_symbol:
-                all_qt.append(stock_symbol)
-
-        for i in range(0, len(all_qt), 50):
-            batch = all_qt[i:i + 50]
-            try:
-                resp = s.get(f"https://qt.gtimg.cn/q={','.join(batch)}", timeout=15)
-                for line in resp.text.strip().split(";"):
-                    m = _re.search(r'v_(\w+)="(.+)"', line.strip())
-                    if m:
-                        parts = m.group(2).split("~")
-                        if len(parts) >= 4 and parts[3]:
-                            code = parts[2]
-                            try:
-                                price = float(parts[3])
-                            except ValueError:
-                                continue
-                            if code in {c[0] for c in codes}:
-                                bond_prices[code] = price
-                            else:
-                                stock_prices[code] = price
-            except Exception:
-                continue
-
-    # ── 3. 计算转股价值和溢价率 ──
-    result = []
-    for sc, stock, tp in codes:
-        bp = bond_prices.get(sc)
-        sp = stock_prices.get(stock)
-        if bp and sp and tp > 0 and sp > 0:
-            tv = round(100.0 / tp * sp, 2)
-            premium = round((bp / tv - 1) * 100, 2)
-            result.append((sc, bp, tv, premium, stock))
-
-    _BONDS_MARKET_CACHE = result
-    return result
+    try:
+        conn = _init_ipo_db()
+        rows = conn.execute(
+            """WITH latest AS (SELECT MAX(trade_date) AS trade_date FROM market.convertible_bond_daily_metrics)
+               SELECT split_part(i.canonical_code,'.',1),m.close,m.conversion_value,m.conversion_premium_pct,
+                      split_part(s.canonical_code,'.',1)
+                 FROM market.convertible_bond_daily_metrics m
+                 JOIN latest d ON d.trade_date=m.trade_date
+                 JOIN core.instruments i ON i.instrument_id=m.instrument_id
+                 JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+                 LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+                WHERE m.close>0 AND m.conversion_value>0 AND m.conversion_premium_pct IS NOT NULL"""
+        ).fetchall()
+        conn.close()
+        _BONDS_MARKET_CACHE = [
+            (str(row[0]), float(row[1]), float(row[2]), float(row[3]), str(row[4] or ""))
+            for row in rows
+        ]
+    except Exception:
+        _BONDS_MARKET_CACHE = []
+    return _BONDS_MARKET_CACHE
 
 def _fetch_cb_index_change():
-    """获取中证转债指数(000832)近1月涨跌幅"""
+    """读取中证转债指数最近约一个月的已入库涨跌幅。"""
     try:
-        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-        params = {
-            "secid": "1.000832",
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "klt": "101",  # 日线
-            "fqt": 1,
-            "end": "20500101",
-            "lmt": 25,  # 取近25个交易日（约1个月）
-        }
-        resp = _get_session().get(url, params=params, timeout=10)
-        data = resp.json()
-        if data.get("data") and data["data"].get("klines"):
-            klines = data["data"]["klines"]
-            if len(klines) >= 2:
-                last = float(klines[-1].split(",")[2])
-                first = float(klines[0].split(",")[2])
-                if first > 0:
-                    change_pct = round((last - first) / first * 100, 2)
-                    return change_pct
+        conn = _init_ipo_db()
+        rows = conn.execute(
+            """SELECT b.close FROM market.daily_bars b
+                 JOIN core.instruments i ON i.instrument_id=b.instrument_id
+                WHERE split_part(i.canonical_code,'.',1)='000832' AND b.close>0
+                ORDER BY b.trade_date DESC,b.source_id DESC LIMIT 25"""
+        ).fetchall()
+        conn.close()
+        if len(rows) >= 2:
+            last = float(rows[0][0])
+            first = float(rows[-1][0])
+            if first > 0:
+                return round((last - first) / first * 100, 2)
     except Exception:
         pass
     return None

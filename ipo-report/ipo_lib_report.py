@@ -1,5 +1,6 @@
 # 本文件由 ipo_daily_report.py 物理拆分而来，函数体/常量未改动，仅调整文件归属。
 import requests
+import hashlib
 import json
 import os
 import re
@@ -136,8 +137,6 @@ def build_report(target_date):
             detail["stock_name"] = stock.get("name", "")
             stock["detail"] = detail
             stock["has_detail"] = True
-            # 存入数据库
-            _save_stock_detail_to_db(code, detail)
         else:
             stock["has_detail"] = False
 
@@ -190,10 +189,6 @@ def build_report(target_date):
                 bond["listing_analysis"] = {"summary": result, "detail": "", "price": None}
         else:
             bond["listing_analysis"] = {"summary": "预计首日涨幅 15%-30%", "detail": "数据不足", "price": None}
-
-    # 保存预测记录（用于后续跟踪准确率）
-    save_predictions(target_apply_stocks, target_apply_bonds,
-                     target_list_stocks, target_list_bonds, date_str)
 
     # 当前生效的赛道热度系数（动态，来自sector_heat.db，按系数降序）
     sector_boost_info = []
@@ -528,7 +523,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
 
     lines.append("---")
     lines.append("")
-    lines.append("*本报告由打新日报系统自动生成，数据来源：东方财富网、巨潮资讯网。*")
+    lines.append("*本报告由打新日报系统自动生成，数据来自已入库标准事实；原始来源留痕以数据库记录为准。*")
     lines.append("")
     lines.append("*⚠️ 流通规模说明：取自上市公司公告书「前十名可转换公司债券持有人」表格，以控股股东+实际控制人+一致行动人的配售量为限售依据，精确计算流通规模。若公告书未发布或解析失败，则不展示估算值，并注明失败原因。*")
     lines.append(f"*报告日期：{date_display} {weekday}*")
@@ -720,7 +715,7 @@ def generate_html(md_content, data):
             html += f'<tr><td>{r["sector"]}</td><td>{r["boost"]}</td><td>{r["avg_gain"]}%</td><td>{r["count"]}</td></tr>\n'
         html += '</table>\n</div>\n'
 
-    html += f'<div class="card">\n<p class="disclaimer">本报告由打新日报系统自动生成，数据来源：东方财富网、巨潮资讯网。<br>⚠️ 流通规模说明：取自上市公司公告书「前十名可转换公司债券持有人」表格，以控股股东+实际控制人+一致行动人的配售量为限售依据，精确计算流通规模。若公告书未发布或解析失败，则不展示估算值，并注明失败原因。<br>报告日期：{data["date_display"]} {data["weekday"]}</p>\n</div>\n'
+    html += f'<div class="card">\n<p class="disclaimer">本报告由打新日报系统自动生成，数据来自已入库标准事实；原始来源留痕以数据库记录为准。<br>⚠️ 流通规模说明：取自已入库上市公告书解析事实，以控股股东+实际控制人+一致行动人的配售量为限售依据。事实尚未入库时不在日报阶段请求公告源，也不展示估算值。<br>报告日期：{data["date_display"]} {data["weekday"]}</p>\n</div>\n'
     html += '</body>\n</html>'
 
     return html
@@ -808,6 +803,7 @@ def save_report_to_pg(md_content, html_content, data, date_str):
             "list_bonds": data.get("list_bonds"),
             "sector_boost_info": data.get("sector_boost_info"),
             "calendar": data.get("calendar"),
+            "publication_reconciliation": data.get("publication_reconciliation"),
         }
         conn.execute(
             """INSERT INTO ipo_reports (report_date, html, md, summary_json, created_at)
@@ -821,7 +817,45 @@ def save_report_to_pg(md_content, html_content, data, date_str):
         conn.close()
         print(f"[报告] 已写入 PostgreSQL: ipo_reports {date_str}")
     except Exception as e:
-        print(f"[报告] 写入 PostgreSQL 失败: {e}")
+        raise RuntimeError(f"[报告] 写入 PostgreSQL 失败: {e}") from e
+
+
+def reconcile_report_calendar_sets(target_date, data):
+    """发布前把日报证券集合与事实库日历集合逐项对账。"""
+    target_text = target_date.strftime("%Y-%m-%d")
+    calendar = fetch_calendar_entries(target_text, target_text)
+    expected = {key: set() for key in ("apply_stocks", "apply_bonds", "list_stocks", "list_bonds")}
+    for item in calendar:
+        code = str(item.get("SECURITY_CODE") or "").split(".")[0]
+        if not code:
+            continue
+        is_bond = item.get("SECURITY_TYPE") == "1"
+        if not is_bond and _is_bj_stock(code):
+            continue
+        prefix = "apply" if item.get("DATE_TYPE") == "申购" else "list"
+        expected[f"{prefix}_{'bonds' if is_bond else 'stocks'}"].add(code)
+    actual = {
+        key: {str(item.get("code") or "").split(".")[0] for item in data.get(key, []) if item.get("code")}
+        for key in expected
+    }
+    mismatches = {
+        key: {"calendar": sorted(expected[key]), "report": sorted(actual[key])}
+        for key in expected if expected[key] != actual[key]
+    }
+    if mismatches:
+        raise RuntimeError(f"日报与日历证券集合不一致，拒绝发布并保留上一份有效结果：{json.dumps(mismatches, ensure_ascii=False)}")
+    all_codes = sorted(set().union(*expected.values()))
+    result = {
+        "status": "passed", "target_date": target_text,
+        "apply_stock_count": len(expected["apply_stocks"]),
+        "apply_bond_count": len(expected["apply_bonds"]),
+        "listing_stock_count": len(expected["list_stocks"]),
+        "listing_bond_count": len(expected["list_bonds"]),
+        "security_codes": all_codes,
+        "security_set_hash": hashlib.sha256("\n".join(all_codes).encode("utf-8")).hexdigest(),
+    }
+    data["publication_reconciliation"] = result
+    return result
 
 def retrain_xgb_model():
     """实际涨幅回填后重训，确保当天预测使用最新样本。"""
@@ -839,8 +873,7 @@ def retrain_xgb_model():
 def main():
     """主函数 - 支持命令行传参指定日期"""
     # 上市后回填：从K线补全实际首日涨跌幅
-    _fetch_stock_listing_actuals()
-    # 先刷新新债上市行情，再回填预测结果，避免实际涨幅永远落后一轮。
+    # 事实补全由 19:30 的 ipo_history_sync 补全阶段负责；日报只读取已入库事实。
     detect_bond_market_temperature()
     # 预测跟踪：回填已上市的实际结果
     backfill_prediction_actuals()
@@ -875,6 +908,9 @@ def main():
         target_date = next_trading_date(datetime.now())
 
     md_content, data = build_report(target_date)
+    reconcile_report_calendar_sets(target_date, data)
+    save_predictions(data["apply_stocks"], data["apply_bonds"],
+                     data["list_stocks"], data["list_bonds"], target_date.strftime("%Y-%m-%d"))
 
     date_str = target_date.strftime("%Y%m%d")
 

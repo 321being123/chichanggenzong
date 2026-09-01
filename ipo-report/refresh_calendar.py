@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""一次性刷新打新日历 + 回填 ipo_history.ipo_date（申购日期）。
+"""从统一事实库一次性重建已有报告中的打新日历。
 
 背景：
 - 本地 ipo_reports 的 calendar 字段是历史某次生成时写入的，可能遗漏
   新近公告的申购日（如 长鑫科技 688825 2026-07-16）。
 - ipo_history 缺 ipo_date（申购日期）列，历史表无法展示申购日。
 
-实现：
-- 直接用 urllib 调 Tushare REST（不依赖 tushare 库 / fitz），
-  拉 new_share / cb_issue / cb_basic，复刻 fetch_calendar + build_upcoming_calendar
-  逻辑重建日历（days=90），写回最新报告的 calendar 字段。
-- 用 new_share 的 ipo_date 回填 ipo_history.ipo_date（仅匹配已存在代码）。
-仅本地数据更新，不触达线上、不部署。
+新股读取 ipo_history，新债读取 event.instrument_events，不调用外部接口。
 """
 import os
 import sys
@@ -26,15 +21,11 @@ from calendar_core import (
 )
 
 # ── 共用样板收口（_load_env / _tushare / psql_run 统一到 _common.py） ──
-from _common import _load_env, _tushare, psql_run, TUSHARE_TOKEN, TUSHARE_BACKUP_TOKEN
+from _common import _load_env, psql_run
 
 
 def main():
-    if not (TUSHARE_TOKEN or TUSHARE_BACKUP_TOKEN):
-        print("缺少 TUSHARE_TOKEN，退出")
-        sys.exit(1)
-
-    print("1) 拉取日历数据...")
+    print("1) 读取统一事实库...")
     calendar = fetch_calendar_entries()
     print(f"   日历原始条目: {len(calendar)}")
 
@@ -50,50 +41,6 @@ def main():
         f"'{cal_json_sql}'::jsonb) WHERE report_date = (SELECT max(report_date) FROM ipo_reports);"
     )
     print("   calendar 已更新")
-
-    # 3) 回填 ipo_date：取 new_share 的 ipo_date，匹配 ipo_history 已存在的代码
-    print("3) 回填 ipo_history.ipo_date ...")
-    rows = _tushare("new_share", {}, "ts_code,name,ipo_date")
-    ipo_map = {}
-    for r in rows:
-        ts_code = str(r.get("ts_code") or "")
-        code6 = ts_code.split(".")[0] if ts_code else ""
-        ipo = _str_date(r.get("ipo_date"))
-        if code6 and ipo:
-            ipo_map[code6] = ipo
-
-    # 现有代码
-    res = psql_run(
-        "SELECT security_code FROM ipo_history;",
-        ignore_error=True,
-    )
-    existing = set()
-    for line in (res.stdout or "").splitlines():
-        c = line.strip()
-        if c:
-            existing.add(c)
-
-    updates = []
-    for code, dt in ipo_map.items():
-        if code in existing:
-            updates.append((code, dt))
-
-    if updates:
-        sql_lines = [
-            f"UPDATE ipo_history SET ipo_date='{dt}' WHERE security_code='{code}';"
-            for code, dt in updates
-        ]
-        # 逐条执行（量不大，安全直观）
-        ok = 0
-        for sql in sql_lines:
-            try:
-                psql_run(sql)
-                ok += 1
-            except Exception as e:
-                print("   单条失败:", sql[:60], e)
-        print(f"   ipo_date 回填 {ok}/{len(updates)} 行")
-    else:
-        print("   无匹配代码，跳过")
 
     print("完成。")
 

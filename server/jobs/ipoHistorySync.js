@@ -19,13 +19,24 @@ function shanghaiParts(date = new Date()) {
 function nextIpoHistorySyncDelay(now = new Date()) {
   const p = shanghaiParts(now);
   const current = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  let next = null;
   for (let offset = 0; offset < 8; offset++) {
     const day = new Date(Date.UTC(+p.year, +p.month - 1, +p.day + offset));
     if (day.getUTCDay() === 0 || day.getUTCDay() === 6) continue;
-    const target = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 19, 30, 0);
-    if (target > current) return target - current;
+    for (const schedule of [{ hour: 18, minute: 0, mode: 'core' }, { hour: 19, minute: 30, mode: 'enrichment' }]) {
+      const target = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), schedule.hour, schedule.minute, 0);
+      if (target > current && (!next || target < next.target)) next = { target, ...schedule };
+    }
+    if (next) break;
   }
-  return 24 * 60 * 60 * 1000;
+  return next ? next.target - current : 24 * 60 * 60 * 1000;
+}
+
+function nextIpoHistorySchedule(now = new Date()) {
+  const delay = nextIpoHistorySyncDelay(now);
+  const target = new Date(now.getTime() + delay);
+  const p = shanghaiParts(target);
+  return { delay, mode: Number(p.hour) === 19 ? 'enrichment' : 'core' };
 }
 
 function pythonCandidates() {
@@ -58,9 +69,11 @@ async function notifyTushareFailovers(failovers = []) {
   }
 }
 
-function runWith(executable, runtime) {
+function runWith(executable, runtime, businessDate, mode) {
   return new Promise((resolve, reject) => {
-    const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', SCRIPT] : [SCRIPT];
+    const scriptArgs = [SCRIPT, '--mode', mode || 'core'];
+    if (businessDate) scriptArgs.push('--today', String(businessDate).slice(0, 10));
+    const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', ...scriptArgs] : scriptArgs;
     const child = spawn(executable, args, {
       cwd: PROJECT_ROOT,
       env: {
@@ -96,7 +109,8 @@ function runWith(executable, runtime) {
   });
 }
 
-async function runIpoHistorySync(reason = 'scheduled') {
+async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {}) {
+  const mode = context.mode === 'enrichment' ? 'enrichment' : 'core';
   const claimed = await tryClaimJob(JOB);
   if (!claimed) return { skipped: true, reason: 'locked' };
   let runId = null;
@@ -111,10 +125,10 @@ async function runIpoHistorySync(reason = 'scheduled') {
         ORDER BY id DESC LIMIT 1`,
       [JOB]
     );
-    if (prior.rowCount && prior.rows[0].status === 'done') {
+    if (mode === 'core' && prior.rowCount && prior.rows[0].status === 'done') {
       return { skipped: true, reason: 'already-ran-today' };
     }
-    if (prior.rowCount && prior.rows[0].status === 'failed') {
+    if (mode === 'core' && prior.rowCount && prior.rows[0].status === 'failed') {
       runId = prior.rows[0].id;
       retryOf = String(prior.rows[0].detail || '').slice(0, 1000);
       await pool.query(
@@ -127,11 +141,11 @@ async function runIpoHistorySync(reason = 'scheduled') {
     }
     for (const executable of pythonCandidates()) {
       try {
-        const result = await runWith(executable, runtime);
+        const result = await runWith(executable, runtime, businessDate, mode);
         await notifyTushareFailovers(result.failovers);
         const detail = JSON.stringify({ reason, executable, retryOf, ...result });
         await finishJobRun(runId, true, detail);
-        console.log(`[ipo-history] ${reason} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
+        console.log(`[ipo-history] ${reason}/${mode} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
         return result;
       } catch (error) {
         errors.push(`${executable}: ${error.message}`);
@@ -163,30 +177,31 @@ function previousWeekday(ymd) {
 async function runIpoHistoryStartupCatchup(now = new Date()) {
   const p = shanghaiParts(now);
   const today = `${p.year}-${p.month}-${p.day}`;
-  const expected = +p.hour >= 20 ? today : previousWeekday(today);
+  const expected = +p.hour >= 18 ? today : previousWeekday(today);
   const { rows } = await pool.query(
     'SELECT last_success_date::text AS d FROM ops.sync_cursors WHERE scope_key=$1 AND dataset_code=$2',
     ['global:ipo_history', 'new_share']
   );
   const last = rows[0] && rows[0].d ? String(rows[0].d).slice(0, 10) : '';
   if (last >= expected) return { skipped: true, reason: 'fresh', last, expected };
-  return runIpoHistorySync('startup-catchup');
+  return runIpoHistorySync('startup-catchup', today, { mode: 'core' });
 }
 
 function scheduleIpoHistorySync() {
   function scheduleNext() {
+    const next = nextIpoHistorySchedule();
     const timer = setTimeout(async () => {
-      try { await runIpoHistorySync('weekday-19:30'); }
+      try { await runIpoHistorySync(`weekday-${next.mode === 'core' ? '18:00' : '19:30'}`, undefined, { mode: next.mode }); }
       catch (error) { console.error('[ipo-history] 同步失败:', error.message); }
       scheduleNext();
-    }, nextIpoHistorySyncDelay());
+    }, next.delay);
     if (timer.unref) timer.unref();
   }
   scheduleNext();
-  console.log('[ipo-history] 已调度：工作日 19:30（上海时间）');
+  console.log('[ipo-history] 已调度：工作日 18:00 核心事实；19:30 非紧急补全（上海时间）');
 }
 
 module.exports = {
   SCRIPT, nextIpoHistorySyncDelay, runIpoHistorySync,
-  runIpoHistoryStartupCatchup, scheduleIpoHistorySync, pythonCandidates,
+  runIpoHistoryStartupCatchup, scheduleIpoHistorySync, pythonCandidates, nextIpoHistorySchedule,
 };

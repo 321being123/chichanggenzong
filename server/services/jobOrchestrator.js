@@ -120,9 +120,11 @@ async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null)
       `SELECT COUNT(*)::int AS count, MAX(s.business_date)::text AS business_date
         FROM job_runs r
          JOIN ops.job_schedule_slots s ON s.slot_id=r.slot_id
+         JOIN ops.job_schedule_slots current_slot ON current_slot.slot_id=(SELECT slot_id FROM job_runs WHERE id=$1)
         WHERE r.id<>$1 AND r.job=$2 AND r.status='done' AND r.trigger_type='scheduled'
           AND (SELECT trigger_type FROM job_runs WHERE id=$1)='scheduled'
-          AND s.business_date=(SELECT business_date FROM ops.job_schedule_slots WHERE slot_id=(SELECT slot_id FROM job_runs WHERE id=$1))`,
+          AND s.business_date=current_slot.business_date
+          AND COALESCE(s.request_payload->>'mode','core')=COALESCE(current_slot.request_payload->>'mode','core')`,
       [runId, jobCode]
     );
     if (Number(duplicateRows[0]?.count || 0) > 0 && duplicateRows[0]?.business_date) {
@@ -371,6 +373,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
   const runContext = {
     slotId: claimed.slot_id,
     force: Boolean(claimed.request_payload && claimed.request_payload.force === true),
+    mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
     failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)
       ? claimed.result_summary.failedDatasets : [],
     externalCallCount: Number(claimed.result_summary && claimed.result_summary.externalCalls || 0),
@@ -378,9 +381,11 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
   try {
     runId = await startManagedRun(claimed, reason);
-    if (definition.freshnessGate && !runContext.force) {
+    if (definition.freshnessGate && !runContext.force && runContext.mode !== 'enrichment') {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
-      if (dataAsOf && isDataAsOfFresh(dataAsOf, claimed.business_date, definition)) {
+      const datasetsPublished = !definition.strictDatasetPublication
+        || await require('./datasetPartitionRegistry').areJobDatasetsPublished(claimed.job_code, claimed.business_date);
+      if (datasetsPublished && dataAsOf && isDataAsOfFresh(dataAsOf, claimed.business_date, definition)) {
         const freshResult = normalizeJobResult({ ok: true, status: 'fresh', dataAsOf, externalCalls: 0 });
         await finishManagedRun(runId, claimed.job_code, true, freshResult);
         await completeSlot(claimed.slot_id, 'succeeded', freshResult, null, runId);

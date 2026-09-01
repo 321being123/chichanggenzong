@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const { runJobByCode } = require('./jobRunners');
-const { getJobDefinition } = require('./jobDefinitions');
+const { getJobDefinition, externalCallLimitForMode } = require('./jobDefinitions');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { getExternalCallStats } = require('./externalCallGuard');
 const { publishJobDatasets } = require('./datasetPartitionRegistry');
@@ -27,15 +27,16 @@ process.on('message', async message => {
     if (message.businessDate) process.env.JOB_BUSINESS_DATE = String(message.businessDate).slice(0, 10);
     // 任务契约中的 maxExternalCallsPerRun 必须在运行时生效；0 表示该任务禁止任何外部请求。
     const definition = getJobDefinition(message.jobCode);
+    const mode = String(message.context && message.context.mode || 'core');
     process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
-    process.env.JOB_EXTERNAL_CALL_LIMIT = String(Math.max(Number(definition.maxExternalCallsPerRun) || 0, 0));
+    process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimitForMode(definition, mode));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
     // 非核心任务统一登记最新数据分区；登记失败只记录，不影响已成功的业务任务。
-    await publishJobDatasets(message.jobCode, message.businessDate, result);
+    const datasetPublications = await publishJobDatasets(message.jobCode, message.businessDate, result);
     const stats = getExternalCallStats();
     const normalized = result && typeof result === 'object'
-      ? { ...result, externalCalls: Number(result.externalCalls || stats.total), externalSources: result.externalSources || stats.sources }
-      : { ok: true, result, externalCalls: stats.total, externalSources: stats.sources };
+      ? { ...result, datasets: result.datasets || datasetPublications, externalCalls: Number(result.externalCalls || stats.total), externalSources: result.externalSources || stats.sources }
+      : { ok: true, result, datasets: datasetPublications, externalCalls: stats.total, externalSources: stats.sources };
     send({ ok: true, result: normalized });
   } catch (error) {
     const stats = getExternalCallStats();

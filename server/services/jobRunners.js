@@ -20,7 +20,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'stock_analysis_refresh':
       return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason, context);
     case 'ipo_history_sync':
-      return require('../jobs/ipoHistorySync').runIpoHistorySync(reason);
+      return require('../jobs/ipoHistorySync').runIpoHistorySync(reason, businessDate, context);
     case 'hk_trade_rules_sync':
       return require('../jobs/hkTradeRulesSync').runHkTradeRulesSync(reason);
     case 'arbitrage_sync':

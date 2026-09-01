@@ -6,6 +6,7 @@
 任何空结果、异常响应或字段结构错误都会使任务失败，且不覆盖旧数据。
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -365,12 +366,129 @@ def mark_cursor(cur, today, error=None):
         """, (SCOPE_KEY, DATASET_CODE, today))
 
 
-def run(today=None):
+def start_ingestion_run(cur, start, end, today):
+    cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1")
+    source = cur.fetchone()
+    if not source:
+        raise RuntimeError("缺少 tushare 数据源登记")
+    cur.execute(
+        """INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
+           VALUES(%s,%s,%s,'running') RETURNING run_id""",
+        (source[0], DATASET_CODE, Json({
+            "business_date": today.isoformat(),
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        })),
+    )
+    return int(cur.fetchone()[0])
+
+
+def finish_ingestion_run(cur, run_id, status, row_count=0, error=""):
+    cur.execute(
+        """UPDATE ops.ingestion_runs
+              SET status=%s,row_count=%s,error_message=%s,finished_at=now()
+            WHERE run_id=%s""",
+        (status, int(row_count or 0), str(error or "")[:500], run_id),
+    )
+
+
+def next_trade_date(cur, today):
+    cur.execute(
+        """SELECT trade_date::text FROM market.trade_calendar
+            WHERE exchange='SSE' AND is_open=true AND trade_date>%s::date
+            ORDER BY trade_date LIMIT 1""",
+        (today.isoformat(),),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise RuntimeError(f"trade_calendar 没有 {today.isoformat()} 之后的已入库交易日，拒绝发布 IPO 事实分区")
+    return str(row[0])[:10]
+
+
+def _set_hash(codes):
+    normalized = sorted({str(code or "").split(".")[0] for code in codes if code})
+    return hashlib.sha256("\n".join(normalized).encode("utf-8")).hexdigest(), normalized
+
+
+def publication_quality(cur, records, today, run_id):
+    target_date = next_trade_date(cur, today)
+    source_apply = {row["security_code"] for row in records if row.get("ipo_date") == target_date}
+    source_listing = {row["security_code"] for row in records if row.get("listing_date") == target_date}
+    cur.execute(
+        """SELECT security_code,security_name,ipo_date,listing_date
+             FROM ipo_history
+            WHERE ipo_date=%s OR listing_date=%s""",
+        (target_date, target_date),
+    )
+    db_rows = cur.fetchall()
+    db_apply = {row[0] for row in db_rows if row[2] == target_date}
+    db_listing = {row[0] for row in db_rows if row[3] == target_date}
+    missing_identity = sorted({row[0] for row in db_rows if not row[0] or not str(row[1] or "").strip()})
+    source_with_listing = {row["security_code"] for row in records if row.get("listing_date")}
+    if source_with_listing:
+        cur.execute(
+            """SELECT security_code FROM ipo_history
+                WHERE security_code=ANY(%s) AND (listing_date IS NULL OR listing_date='')""",
+            (list(source_with_listing),),
+        )
+        unpersisted_listing = sorted(row[0] for row in cur.fetchall())
+    else:
+        unpersisted_listing = []
+    cur.execute(
+        """SELECT COUNT(*) FROM ipo_history
+            WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+              AND ipo_date<=%s AND (listing_date IS NULL OR listing_date='')""",
+        (today.isoformat(),),
+    )
+    missing_listing_date_count = int(cur.fetchone()[0] or 0)
+    all_codes = source_apply | source_listing | db_apply | db_listing
+    security_set_hash, security_codes = _set_hash(all_codes)
+    errors = []
+    if source_apply != db_apply:
+        errors.append(f"申购集合不一致 source={sorted(source_apply)} db={sorted(db_apply)}")
+    if source_listing != db_listing:
+        errors.append(f"上市集合不一致 source={sorted(source_listing)} db={sorted(db_listing)}")
+    if unpersisted_listing:
+        errors.append(f"上游已有上市日但事实表仍为空：{unpersisted_listing}")
+    if missing_identity:
+        errors.append(f"目标日证券缺代码或名称：{missing_identity}")
+    if errors:
+        raise RuntimeError("IPO事实质量门禁失败：" + "；".join(errors))
+    return {
+        "quality_status": "passed",
+        "target_date": target_date,
+        "apply_security_count": len(db_apply),
+        "listing_security_count": len(db_listing),
+        "security_count": len(db_apply | db_listing),
+        "security_codes": security_codes,
+        "security_set_hash": security_set_hash,
+        "ingestion_run_id": run_id,
+        "missing_listing_date_count": missing_listing_date_count,
+        "source_missing_listing_date_count": sum(1 for row in records if row.get("ipo_date") and not row.get("listing_date")),
+        "unpersisted_listing_date_count": len(unpersisted_listing),
+    }
+
+
+def run(today=None, mode="core"):
     today = today or date.today()
     connection = pg_connect()
+    run_id = None
     try:
+        if mode == "enrichment":
+            with connection.cursor() as cur:
+                first_day = backfill_first_day(cur, datetime.now())
+                enrichment = enrich_stock_missing_details(cur, today)
+                quality = update_quality(cur, today)
+            connection.commit()
+            return {
+                "ok": True, "mode": "enrichment", "dataAsOf": today.isoformat(),
+                "first_day": first_day, "enrichment": enrichment, "quality": quality,
+                "publishDatasets": False,
+            }
         with connection.cursor() as cur:
             start, end, bootstrap = sync_window(cur, today)
+            run_id = start_ingestion_run(cur, start, end, today)
+        connection.commit()
         fields = "ts_code,sub_code,name,ipo_date,issue_date,amount,market_amount,price,pe,limit_amount,funds,ballot"
         raw_rows = tushare_query(
             "new_share",
@@ -385,30 +503,27 @@ def run(today=None):
             raise RuntimeError("Tushare new_share 返回重复证券代码")
         with connection.cursor() as cur:
             inserted, refreshed = upsert_shares(cur, records)
-            first_day = backfill_first_day(cur, datetime.now())
-            enrichment = enrich_stock_missing_details(cur, today)
             quality = update_quality(cur, today)
-            listed_source = {row["security_code"] for row in records if row["listing_date"] and row["listing_date"] <= today.isoformat()}
-            cur.execute("SELECT security_code FROM ipo_history WHERE security_code = ANY(%s)", (list(listed_source),))
-            listed_db = {row[0] for row in cur.fetchall()}
-            calendar_diff = len(listed_source - listed_db)
-            if calendar_diff:
-                raise RuntimeError(f"日历与历史表仍相差 {calendar_diff} 只")
+            dataset_diagnostics = publication_quality(cur, records, today, run_id)
             mark_cursor(cur, today)
+            finish_ingestion_run(cur, run_id, "success", len(records))
         connection.commit()
         return {
-            "ok": True, "source": "tushare.new_share", "bootstrap": bootstrap,
+            "ok": True, "mode": "core", "source": "tushare.new_share", "bootstrap": bootstrap,
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),
-            "first_day": first_day, "quality": quality, "calendar_diff": calendar_diff,
-            "enrichment": enrichment,
+            "quality": quality, "calendar_diff": 0, "dataAsOf": today.isoformat(),
+            "datasetDiagnostics": {"ipo_history": dataset_diagnostics},
         }
     except Exception as exc:
         connection.rollback()
         try:
             with connection.cursor() as cur:
-                mark_cursor(cur, today, exc)
+                if mode == "core":
+                    mark_cursor(cur, today, exc)
+                    if run_id is not None:
+                        finish_ingestion_run(cur, run_id, "failed", 0, exc)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -420,10 +535,11 @@ def run(today=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
+    parser.add_argument("--mode", choices=("core", "enrichment"), default="core")
     args = parser.parse_args()
     today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
     try:
-        result = run(today)
+        result = run(today, args.mode)
         result.update({"externalCalls": get_external_call_stats()["total"], "externalSources": get_external_call_stats()["sources"]})
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     except Exception as exc:

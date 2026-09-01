@@ -477,7 +477,7 @@ const JOB_LABELS = {
   convertible_bond_valuation_refresh: '可转债估值预警',
   stock_analysis_refresh: '个股分析刷新',
   ipo_calendar_refresh: '打新日历与日报',
-  ipo_history_sync: '新股历史同步',
+  ipo_history_sync: 'IPO事实同步',
   market_volatility_sync: '股市波动指标同步',
   hk_trade_rules_sync: '港股每手股数同步',
   arbitrage_sync: '套利公告同步',

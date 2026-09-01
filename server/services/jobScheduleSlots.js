@@ -80,15 +80,59 @@ function expectedDataDate(jobCode, businessDate) {
   return cursor;
 }
 
-async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'scheduled') {
+async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'scheduled', requestPayload = {}) {
   const { rows } = await pool.query(
-    `INSERT INTO ops.job_schedule_slots(job_code, scheduled_for, business_date, trigger_type, next_attempt_at)
-     VALUES ($1,$2,$3,$4,$2)
-     ON CONFLICT(job_code, scheduled_for) DO UPDATE SET updated_at=now()
+    `INSERT INTO ops.job_schedule_slots(job_code, scheduled_for, business_date, trigger_type, next_attempt_at,request_payload)
+     VALUES ($1,$2,$3,$4,$2,$5::jsonb)
+     ON CONFLICT(job_code, scheduled_for) DO UPDATE SET request_payload=EXCLUDED.request_payload,updated_at=now()
      RETURNING *`,
-    [jobCode, scheduledFor, businessDate, triggerType]
+    [jobCode, scheduledFor, businessDate, triggerType, JSON.stringify(requestPayload || {})]
   );
   return rows[0] || null;
+}
+
+async function taskDependencyStates(slot, dependencies) {
+  if (!dependencies.length) return new Map();
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (job_code) job_code,status
+       FROM ops.job_schedule_slots
+      WHERE business_date=$1::date AND job_code=ANY($2::text[])
+        AND scheduled_for <= $3::timestamptz
+      ORDER BY job_code,scheduled_for DESC`,
+    [slot.business_date, dependencies, slot.scheduled_for]
+  );
+  return new Map(rows.map(row => [row.job_code, row.status]));
+}
+
+async function datasetDependencyState(slot, definition) {
+  const requirements = definition.datasetDependencies || [];
+  if (!requirements.length) return { ready: true, failed: false, detail: '' };
+  const failures = [];
+  for (const requirement of requirements) {
+    const partitionKey = String(slot.business_date).slice(0, 10);
+    const { rows } = await pool.query(
+      `SELECT status,is_stale,diagnostics
+         FROM ops.dataset_partitions
+        WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date
+        ORDER BY updated_at DESC LIMIT 1`,
+      [requirement.datasetCode, requirement.scopeKey || '', partitionKey]
+    );
+    const partition = rows[0];
+    if (!partition) {
+      failures.push(`${requirement.datasetCode}@${partitionKey}=missing`);
+      continue;
+    }
+    const qualityStatus = partition.diagnostics && partition.diagnostics.quality_status;
+    if (partition.status !== 'published' || partition.is_stale
+        || (requirement.requireQualityStatus && qualityStatus !== requirement.requireQualityStatus)) {
+      failures.push(`${requirement.datasetCode}@${partitionKey}=${partition.status}/${qualityStatus || 'unknown'}`);
+    }
+  }
+  return {
+    ready: failures.length === 0,
+    failed: failures.length > 0,
+    detail: failures.join(', '),
+  };
 }
 
 async function enqueueManualJob(jobCode, requestPayload = {}) {
@@ -172,13 +216,10 @@ async function reconcileSlot(slot) {
   }
   if (slot.status === 'blocked') {
     const dependencies = definition.dependencyCodes || [];
-    if (dependencies.length) {
-      const { rows: dependencyRows } = await pool.query(
-        'SELECT job_code,status FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[])',
-        [slot.business_date, dependencies]
-      );
-      const states = new Map(dependencyRows.map(row => [row.job_code, row.status]));
-      if (dependencies.every(code => states.get(code) === 'succeeded')) {
+    if (dependencies.length || (definition.datasetDependencies || []).length) {
+      const states = await taskDependencyStates(slot, dependencies);
+      const datasets = await datasetDependencyState(slot, definition);
+      if (dependencies.every(code => states.get(code) === 'succeeded') && datasets.ready) {
         const { rows: releasedRows } = await pool.query(
           `UPDATE ops.job_schedule_slots
               SET status='pending', next_attempt_at=now(), last_error=NULL, updated_at=now()
@@ -266,39 +307,41 @@ async function syncScheduleSlots(now = new Date()) {
     for (const businessDate of dates) {
       if (definition.monthly && businessDate.slice(8, 10) !== '01') continue;
       if (!isSlotDayAllowed(businessDate, definition)) continue;
-      const scheduledFor = scheduledDate(businessDate, definition.hour, definition.minute);
-      const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
-      if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
-      const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate);
-      const current = await reconcileSlot(slot);
-      if (current.status === 'pending' && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
-        const { notifyJobFailure } = require('./jobAlertMailer');
-        await notifyJobFailure({
-          jobCode: definition.jobCode,
-          slotId: current.slot_id,
-          alertKey: `slot:${current.slot_id}:late`,
-          alertType: 'late',
-          subject: `后台任务漏跑：${definition.label}`,
-          summary: `计划时间 ${scheduledFor.toISOString()} 后仍未完成，请在后台任务页面补跑或确认接管。`,
-        }).catch(error => console.warn('[job-alert] 漏跑告警处理失败:', error.message));
+      const schedules = [
+        { hour: definition.hour, minute: definition.minute, mode: 'core' },
+        ...(definition.additionalSchedules || []),
+      ];
+      for (const schedule of schedules) {
+        const scheduledFor = scheduledDate(businessDate, schedule.hour, schedule.minute);
+        const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
+        if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
+        const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', { mode: schedule.mode || 'core' });
+        const current = await reconcileSlot(slot);
+        if (current.status === 'pending' && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
+          const { notifyJobFailure } = require('./jobAlertMailer');
+          await notifyJobFailure({
+            jobCode: definition.jobCode,
+            slotId: current.slot_id,
+            alertKey: `slot:${current.slot_id}:late`,
+            alertType: 'late',
+            subject: `后台任务漏跑：${definition.label}`,
+            summary: `计划时间 ${scheduledFor.toISOString()} 后仍未完成，请在后台任务页面补跑或确认接管。`,
+          }).catch(error => console.warn('[job-alert] 漏跑告警处理失败:', error.message));
+        }
+        created.push(current);
       }
-      created.push(current);
     }
   }
   return { ok: true, count: created.length, slots: created };
 }
 
 async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled') {
-  const lookup = await pool.query('SELECT job_code,business_date::text AS business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const lookup = await pool.query('SELECT job_code,business_date::text AS business_date,scheduled_for FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!lookup.rows[0]) return null;
   const definition = getJobDefinition(lookup.rows[0].job_code);
   const dependencies = definition.dependencyCodes || [];
   if (dependencies.length) {
-    const dependencyRows = await pool.query(
-      'SELECT job_code,status FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[])',
-      [lookup.rows[0].business_date, dependencies]
-    );
-    const states = new Map(dependencyRows.rows.map(row => [row.job_code, row.status]));
+    const states = await taskDependencyStates(lookup.rows[0], dependencies);
     if (dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)))) {
       await pool.query(
         `UPDATE ops.job_schedule_slots
@@ -310,6 +353,19 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
       return null;
     }
     if (dependencies.some(code => !states.has(code) || ['pending', 'running', 'waiting_external'].includes(states.get(code)))) return null;
+  }
+  const datasets = await datasetDependencyState(lookup.rows[0], definition);
+  if (!datasets.ready) {
+    if (datasets.failed) {
+      await pool.query(
+        `UPDATE ops.job_schedule_slots
+            SET status='blocked', last_error=$2, next_attempt_at=NULL,
+                lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
+          WHERE slot_id=$1 AND status IN ('pending','failed','degraded','waiting_external')`,
+        [slotId, `依赖数据分区未发布：${datasets.detail}`]
+      );
+    }
+    return null;
   }
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots
@@ -383,11 +439,7 @@ async function listDueSlots(limit = 20) {
     if (Number(slot.attempt_count || 0) >= (definition.maxAttempts || 3)) continue;
     const dependencies = definition.dependencyCodes || [];
     if (dependencies.length) {
-      const dependencyRows = await pool.query(
-        'SELECT job_code,status FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[])',
-        [slot.business_date, dependencies]
-      );
-      const states = new Map(dependencyRows.rows.map(row => [row.job_code, row.status]));
+      const states = await taskDependencyStates(slot, dependencies);
       const dependencyFailed = dependencies.some(code => ['failed', 'degraded', 'blocked'].includes(states.get(code)));
       const dependencyPending = dependencies.some(code => !states.has(code) || ['pending', 'running', 'waiting_external'].includes(states.get(code)));
       if (dependencyFailed) {
@@ -421,6 +473,31 @@ async function listDueSlots(limit = 20) {
         );
         slot.status = 'pending';
       }
+    }
+    const datasets = await datasetDependencyState(slot, definition);
+    if (!datasets.ready) {
+      if (datasets.failed) {
+        const blocked = await pool.query(
+          `UPDATE ops.job_schedule_slots
+              SET status='blocked', last_error=$2, next_attempt_at=NULL,
+                  lease_owner=NULL, lease_until=NULL, heartbeat_at=now(), updated_at=now()
+            WHERE slot_id=$1 AND status <> 'blocked'
+            RETURNING *`,
+          [slot.slot_id, `依赖数据分区未发布：${datasets.detail}`]
+        );
+        if (blocked.rows[0]) {
+          const { notifyJobFailure } = require('./jobAlertMailer');
+          await notifyJobFailure({
+            jobCode: slot.job_code,
+            slotId: slot.slot_id,
+            alertKey: `slot:${slot.slot_id}:dataset-blocked`,
+            alertType: 'dependency_blocked',
+            subject: `后台任务数据依赖未发布：${definition.label}`,
+            summary: `任务未执行，已保留上一份有效结果。${datasets.detail}`,
+          }).catch(error => console.warn('[job-alert] 数据依赖阻断告警失败:', error.message));
+        }
+      }
+      continue;
     }
     due.push(slot);
   }
@@ -671,7 +748,12 @@ async function getJobSlot(slotId) {
   const definition = getJobDefinition(rows[0].job_code);
   const [runs, dependencies, alerts, audits] = await Promise.all([
     pool.query('SELECT id,job,status,started_at,finished_at,detail,attempt_no,trigger_type,worker_id,heartbeat_at,error_code,error_type,external_call_count,external_sources,datasets FROM job_runs WHERE slot_id=$1 OR id=$2 ORDER BY id DESC LIMIT 20', [slotId, rows[0].last_run_id || 0]),
-    pool.query('SELECT job_code,status,scheduled_for,data_as_of,last_error FROM ops.job_schedule_slots WHERE business_date=$1::date AND job_code=ANY($2::text[]) ORDER BY scheduled_for', [rows[0].business_date, definition.dependencyCodes || []]),
+    pool.query(`SELECT DISTINCT ON (job_code) job_code,status,scheduled_for,data_as_of,last_error
+                  FROM ops.job_schedule_slots
+                 WHERE business_date=$1::date AND job_code=ANY($2::text[])
+                   AND scheduled_for <= $3::timestamptz
+                 ORDER BY job_code,scheduled_for DESC`,
+      [rows[0].business_date, definition.dependencyCodes || [], rows[0].scheduled_for]),
     pool.query('SELECT alert_id,alert_key,alert_type,severity,status,subject,summary,send_attempts,last_sent_at,next_send_at,last_send_error FROM ops.alert_notifications WHERE slot_id=$1 ORDER BY alert_id DESC LIMIT 20', [slotId]),
     pool.query("SELECT id,actor,action,target,detail,result,request_id,metadata,created_at FROM admin_audit_log WHERE target=$1 OR metadata->>'slotId'=$1 ORDER BY id DESC LIMIT 20", [String(slotId)]),
   ]);

@@ -51,26 +51,45 @@ async function readSnapshot(datasetCode, executor = pool.query.bind(pool)) {
 
 async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool.query.bind(pool)) {
   const snapshot = await readSnapshot(datasetCode, executor);
-  if (!snapshot.dataAsOf || snapshot.rowCount <= 0) return { ...snapshot, reason: 'empty_or_no_date' };
+  const dataAsOf = dateValue(options.dataAsOf) || snapshot.dataAsOf;
+  const rowCount = Number.isFinite(Number(options.rowCount)) ? Number(options.rowCount) : snapshot.rowCount;
+  if (!dataAsOf || rowCount <= 0) return { ...snapshot, reason: 'empty_or_no_date' };
   const partitionKey = dateValue(options.partitionKey) || snapshot.dataAsOf;
   const published = await publishDatasetPartition(datasetCode, snapshot.scopeKey, {
     partitionKey,
-    dataAsOf: snapshot.dataAsOf,
-    rowCount: snapshot.rowCount,
+    dataAsOf,
+    rowCount,
     sourceId: options.sourceId || null,
-    diagnostics: { registry: true, table: DATASET_PARTITION_REGISTRY[datasetCode].table, reason: options.reason || 'snapshot' },
+    diagnostics: {
+      registry: true,
+      table: DATASET_PARTITION_REGISTRY[datasetCode].table,
+      reason: options.reason || 'snapshot',
+      ...(options.diagnostics || {}),
+    },
   }, executor);
-  return { ...snapshot, published: Boolean(published), partitionKey };
+  return { ...snapshot, dataAsOf, rowCount, published: Boolean(published), partitionKey };
 }
 
 async function publishJobDatasets(jobCode, businessDate, result) {
-  if (result && result.ok === false) return [];
+  if (result && (result.ok === false || result.publishDatasets === false)) return [];
   const definition = getJobDefinition(jobCode);
   const datasets = (definition.producesDatasets || []).filter(code => DATASET_PARTITION_REGISTRY[code]);
   const results = await Promise.all(datasets.map(async datasetCode => {
     try {
-      return await publishDatasetSnapshot(datasetCode, { partitionKey: businessDate, reason: `job:${jobCode}` });
+      const diagnostics = result && result.datasetDiagnostics && result.datasetDiagnostics[datasetCode] || {};
+      const publication = await publishDatasetSnapshot(datasetCode, {
+        partitionKey: businessDate,
+        dataAsOf: result && (result.dataAsOf || result.data_as_of),
+        rowCount: diagnostics.partition_row_count,
+        diagnostics,
+        reason: `job:${jobCode}`,
+      });
+      if (definition.strictDatasetPublication && !publication.published) {
+        throw new Error(`${datasetCode} 数据分区未发布：${publication.reason || 'unknown'}`);
+      }
+      return publication;
     } catch (error) {
+      if (definition.strictDatasetPublication) throw error;
       console.warn(`[dataset-partition] ${datasetCode} 发布失败：${error.message}`);
       return { published: false, datasetCode, reason: 'publish_error', error: error.message };
     }
@@ -78,4 +97,25 @@ async function publishJobDatasets(jobCode, businessDate, result) {
   return results;
 }
 
-module.exports = { DATASET_PARTITION_REGISTRY, readSnapshot, publishDatasetSnapshot, publishJobDatasets };
+async function areJobDatasetsPublished(jobCode, businessDate) {
+  const definition = getJobDefinition(jobCode);
+  const datasets = (definition.producesDatasets || []).filter(code => DATASET_PARTITION_REGISTRY[code]);
+  if (!datasets.length) return true;
+  const partitionKey = dateValue(businessDate);
+  if (!partitionKey) return false;
+  const { rows } = await pool.query(
+    `SELECT dataset_code,status,is_stale,diagnostics
+       FROM ops.dataset_partitions
+      WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`,
+    [datasets, partitionKey]
+  );
+  const byCode = new Map(rows.map(row => [row.dataset_code, row]));
+  return datasets.every(code => {
+    const row = byCode.get(code);
+    if (!row || row.status !== 'published' || row.is_stale) return false;
+    if (code === 'ipo_history') return row.diagnostics && row.diagnostics.quality_status === 'passed';
+    return true;
+  });
+}
+
+module.exports = { DATASET_PARTITION_REGISTRY, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished };

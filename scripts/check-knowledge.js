@@ -100,6 +100,20 @@ function collectVersionErrors(rootDir) {
   return errors;
 }
 
+function collectGeneratedMatrixErrors(rootDir) {
+  // 纯知识路由单测只构造 docs/governance，不复制业务代码；没有任务定义时无需运行业务矩阵门禁。
+  // 真实项目根目录必须同时具备任务定义和生成器，缺任一项都应直接报错。
+  const definitionsPath = path.join(rootDir, 'server', 'services', 'jobDefinitions.js');
+  if (!fs.existsSync(definitionsPath)) return [];
+  const generatorPath = path.join(rootDir, 'scripts', 'generate-job-matrix.js');
+  if (!fs.existsSync(generatorPath)) return ['缺少任务矩阵生成器：scripts/generate-job-matrix.js'];
+  const result = childProcess.spawnSync(process.execPath, [generatorPath, '--check'], {
+    cwd: rootDir, encoding: 'utf8'
+  });
+  if (result.status === 0) return [];
+  return [`任务-接口-数据集矩阵与 JOB_DEFINITIONS 不一致：${String(result.stderr || result.stdout || '').trim()}`];
+}
+
 function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] } = {}) {
   const errors = [];
   const map = loadMap(rootDir, errors);
@@ -112,6 +126,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
   }
 
   errors.push(...collectVersionErrors(rootDir));
+  errors.push(...collectGeneratedMatrixErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];
@@ -214,4 +229,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { collectVersionErrors, globMatches, isReleaseMetadataOnly, parseArgs, runCheck, splitGitOutput, workingTreeFiles };
+module.exports = { collectVersionErrors, collectGeneratedMatrixErrors, globMatches, isReleaseMetadataOnly, parseArgs, runCheck, splitGitOutput, workingTreeFiles };

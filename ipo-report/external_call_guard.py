@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+import uuid
 import urllib.error
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -14,10 +15,21 @@ from zoneinfo import ZoneInfo
 
 _stats = {"total": 0, "sources": {}}
 _requests_installed = False
+_run_call_count = 0
+_probe_owner = f"{os.uname().nodename if hasattr(os, 'uname') else os.environ.get('COMPUTERNAME', 'python')}:{os.getpid()}:{uuid.uuid4()}"
+_probe_lease_seconds = 300
 
 
 def enabled():
-    return os.environ.get("EXTERNAL_CALL_GUARD", "") == "1"
+    configured = os.environ.get("EXTERNAL_CALL_GUARD")
+    # 默认开启；生产环境禁止通过环境变量关闭，开发/测试仍可显式 EXTERNAL_CALL_GUARD=0。
+    environments = {
+        str(os.environ.get("NODE_ENV", "")).strip().lower(),
+        str(os.environ.get("APP_ENV", "")).strip().lower(),
+    }
+    if configured == "0" and "production" in environments:
+        return True
+    return configured != "0"
 
 
 class ExternalCallGuardError(RuntimeError):
@@ -27,6 +39,7 @@ class ExternalCallGuardError(RuntimeError):
         self.error_type = {
             "RATE_LIMIT": "rate_limit",
             "QUOTA_EXHAUSTED": "rate_limit",
+            "BUDGET_WAIT": "rate_limit",
             "DATASET_LOCKED": "in_progress",
         }.get(code, "circuit_open")
         self.source = source
@@ -83,7 +96,7 @@ def _env_key(source):
 
 def _limit(source, window):
     name = f"{_env_key(source)}_{'PER_MINUTE_BUDGET' if window == 'minute' else 'DAILY_BUDGET'}"
-    fallback = 120 if source == "tushare" and window == "minute" else 4000 if source == "tushare" else 60 if window == "minute" else 2000
+    fallback = 120 if source == "tushare" and window == "minute" else 100 if source == "tushare" else 60 if window == "minute" else 2000
     try:
         value = int(os.environ.get(name, fallback))
     except (TypeError, ValueError):
@@ -118,9 +131,11 @@ def _next_shanghai_day_at():
     return (now.replace(hour=0, minute=0, second=1, microsecond=0) + timedelta(days=1)).astimezone(ZoneInfo("UTC"))
 
 
-def _recover_at(code):
-    if code == "RATE_LIMIT":
+def _recover_at(code, window=None):
+    if code == "RATE_LIMIT" or (code == "BUDGET_WAIT" and window != "day"):
         return _next_minute_at()
+    if code == "BUDGET_WAIT" and window == "day":
+        return _next_shanghai_day_at()
     if code == "QUOTA_EXHAUSTED":
         return _next_shanghai_day_at()
     return None
@@ -135,13 +150,14 @@ def _circuit_api(api_name, code):
 def _upsert_circuit(cur, source, api_name, fingerprint, code, detail, recover_at):
     cur.execute(
         """INSERT INTO ops.external_circuits
-           (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,error_code,error_type,detail)
-           VALUES(%s,%s,%s,'open',%s,%s,%s,%s,%s)
+           (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,probe_owner,probe_token,probe_lease_until,error_code,error_type,detail)
+           VALUES(%s,%s,%s,'open',%s,false,NULL,NULL,NULL,%s,%s,%s)
            ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
            state='open',recover_at=EXCLUDED.recover_at,probe_in_flight=false,
+           probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
            error_code=EXCLUDED.error_code,error_type=EXCLUDED.error_type,
            detail=EXCLUDED.detail,opened_at=now(),updated_at=now()""",
-        (source, _circuit_api(api_name, code), fingerprint, recover_at, False,
+        (source, _circuit_api(api_name, code), fingerprint, recover_at,
          code, "rate_limit" if code in {"RATE_LIMIT", "QUOTA_EXHAUSTED"} else "circuit_open",
          str(detail or "")[:1000]),
     )
@@ -150,7 +166,9 @@ def _upsert_circuit(cur, source, api_name, fingerprint, code, detail, recover_at
 def _check_circuit(cur, source, api_name, fingerprint, dataset):
     names = [api_name, "*"] if api_name != "*" else ["*"]
     cur.execute(
-        """SELECT api_name,recover_at,probe_in_flight,error_code,detail
+        """SELECT api_name,recover_at,probe_in_flight,probe_token,probe_lease_until,error_code,detail,updated_at,
+                    (recover_at IS NOT NULL AND recover_at <= now()) AS probe_ready,
+                    (probe_in_flight AND COALESCE(probe_lease_until, COALESCE(updated_at,opened_at) + interval '5 minutes') < now()) AS stale_probe
              FROM ops.external_circuits
             WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s AND state='open'
             ORDER BY CASE WHEN api_name='*' THEN 0 ELSE 1 END
@@ -160,14 +178,17 @@ def _check_circuit(cur, source, api_name, fingerprint, dataset):
     row = cur.fetchone()
     if not row:
         return
-    circuit_api, recover_at, probe_in_flight, code, detail = row
-    if recover_at is not None and recover_at <= datetime.now(ZoneInfo("UTC")) and not probe_in_flight:
+    circuit_api, recover_at, probe_in_flight, old_probe_token, probe_lease_until, code, detail, updated_at, probe_ready, stale_probe = row
+    if probe_ready and (not probe_in_flight or stale_probe):
+        probe_token = str(uuid.uuid4())
         cur.execute(
-            """UPDATE ops.external_circuits SET probe_in_flight=true,updated_at=now()
+            """UPDATE ops.external_circuits
+                  SET probe_in_flight=true,probe_owner=%s,probe_token=%s,
+                      probe_lease_until=now() + (%s * interval '1 second'),updated_at=now()
                 WHERE source=%s AND api_name=%s AND token_fingerprint=%s""",
-            (source, circuit_api, fingerprint),
+            (_probe_owner, probe_token, _probe_lease_seconds, source, circuit_api, fingerprint),
         )
-        return
+        return {"probe_token": probe_token, "probe_api_name": circuit_api}
     scope = "Token" if circuit_api == "*" else f"接口 {circuit_api}"
     raise ExternalCallGuardError(
         "CIRCUIT_OPEN", f"{source} {scope}已熔断，等待恢复探测", source, dataset,
@@ -177,6 +198,14 @@ def _check_circuit(cur, source, api_name, fingerprint, dataset):
 
 
 def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fingerprint_value="none"):
+    global _run_call_count
+    if os.environ.get("JOB_EXTERNAL_CALL_LIMIT_ACTIVE") == "1":
+        try:
+            run_limit = float(os.environ.get("JOB_EXTERNAL_CALL_LIMIT", "0"))
+        except (TypeError, ValueError):
+            run_limit = 0
+        if run_limit >= 0 and _run_call_count >= run_limit:
+            raise ExternalCallGuardError("JOB_BUDGET_EXCEEDED", f"{source} 已达到本任务声明的外部请求上限 {int(run_limit)}", source, dataset, api_name or "*")
     source = _source_key(source)
     api_name = _api_name(source, dataset, api_name)
     fingerprint = str(token_fingerprint_value or "none")
@@ -186,46 +215,27 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
     minute_limit = _limit(source, "minute")
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_xact_lock(hashtext('external_budget:' || %s))", (source,))
-            cur.execute("""SELECT call_count FROM ops.external_call_budgets
-                           WHERE source=%s AND window_type='day' AND window_key=%s FOR UPDATE""", (source, day_key))
-            day_row = cur.fetchone()
-            _check_circuit(cur, source, api_name, fingerprint, dataset)
+            probe = _check_circuit(cur, source, api_name, fingerprint, dataset)
+            # 日/分钟预算由 ops.consume_external_call_budget 统一原子更新
+            # ops.external_call_budgets，Node/Python 共用同一入口。
             cur.execute(
-                """SELECT call_count FROM ops.external_call_budgets
-                   WHERE source=%s AND window_type='minute' AND window_key=%s FOR UPDATE""",
-                (source, minute_key),
+                """SELECT allowed,wait_window,day_count,minute_count
+                     FROM ops.consume_external_call_budget(%s,%s,%s,%s,%s)""",
+                (source, day_key, minute_key, day_limit, minute_limit),
             )
-            minute_row = cur.fetchone()
-            day_count = int(day_row[0] if day_row else 0)
-            minute_count = int(minute_row[0] if minute_row else 0)
-            if minute_count >= minute_limit:
-                recover_at = _recover_at("RATE_LIMIT")
-                _upsert_circuit(cur, source, api_name, fingerprint, "RATE_LIMIT", f"{source} 已达到每分钟请求预算 {minute_limit}", recover_at)
+            budget_row = cur.fetchone() or (False, "day", 0, 0)
+            allowed, wait_window, day_count, minute_count = budget_row
+            if not allowed and wait_window == "minute":
+                recover_at = _recover_at("BUDGET_WAIT", "minute")
                 conn.commit()
-                raise ExternalCallGuardError("RATE_LIMIT", f"{source} {api_name} 已达到每分钟请求预算 {minute_limit}", source, dataset, api_name, fingerprint, recover_at)
-            if day_count >= day_limit:
-                recover_at = _recover_at("QUOTA_EXHAUSTED")
-                _upsert_circuit(cur, source, "*", fingerprint, "QUOTA_EXHAUSTED", f"{source} 已达到当日请求预算 {day_limit}", recover_at)
+                raise ExternalCallGuardError("BUDGET_WAIT", f"{source} {api_name} 已达到每分钟请求预算 {minute_limit}，等待下一窗口", source, dataset, api_name, fingerprint, recover_at)
+            if not allowed and wait_window == "day":
+                recover_at = _recover_at("BUDGET_WAIT", "day")
                 conn.commit()
-                raise ExternalCallGuardError("QUOTA_EXHAUSTED", f"{source} 已达到当日请求预算 {day_limit}", source, dataset, "*", fingerprint, recover_at)
-            cur.execute(
-                """INSERT INTO ops.external_call_budgets
-                   (source,window_type,window_key,call_count,budget_limit)
-                   VALUES(%s,'day',%s,1,%s)
-                   ON CONFLICT(source,window_type,window_key) DO UPDATE SET
-                   call_count=ops.external_call_budgets.call_count+1,updated_at=now()""",
-                (source, day_key, day_limit),
-            )
-            cur.execute(
-                """INSERT INTO ops.external_call_budgets
-                   (source,window_type,window_key,call_count,budget_limit)
-                   VALUES(%s,'minute',%s,1,%s)
-                   ON CONFLICT(source,window_type,window_key) DO UPDATE SET
-                   call_count=ops.external_call_budgets.call_count+1,updated_at=now()""",
-                (source, minute_key, minute_limit),
-            )
+                raise ExternalCallGuardError("BUDGET_WAIT", f"{source} 已达到当日请求预算 {day_limit}，等待下一交易日", source, dataset, "*", fingerprint, recover_at)
         conn.commit()
+        _run_call_count += 1
+        return probe or {}
     except Exception:
         conn.rollback()
         raise
@@ -245,32 +255,34 @@ def open_external_circuit(source, api_name, token_fingerprint_value, code, detai
     _open_circuit(source, detail, api_name, token_fingerprint_value, code)
 
 
-def close_external_circuit(source, api_name, token_fingerprint_value):
+def close_external_circuit(source, api_name, token_fingerprint_value, probe_token=None):
     conn = _db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE ops.external_circuits SET state='closed',probe_in_flight=false,last_success_at=now(),updated_at=now()
-                    WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s""",
-                (_source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none")),
+                """UPDATE ops.external_circuits SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,last_success_at=now(),updated_at=now()
+                    WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s
+                      AND (%s IS NULL OR probe_token=%s)""",
+                (_source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none"), probe_token, probe_token),
             )
         conn.commit()
     finally:
         conn.close()
 
 
-def release_external_circuit_probe(source, api_name, token_fingerprint_value, retry_seconds=5):
+def release_external_circuit_probe(source, api_name, token_fingerprint_value, retry_seconds=5, probe_token=None):
     conn = _db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE ops.external_circuits
-                    SET probe_in_flight=false,
+                    SET probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
                           recover_at=now() + (%s * interval '1 second'),
                           updated_at=now()
                     WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s
-                      AND state='open' AND probe_in_flight=true""",
-                (max(float(retry_seconds or 5), 1), _source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none")),
+                      AND state='open' AND probe_in_flight=true
+                      AND (%s IS NULL OR probe_token=%s)""",
+                (max(float(retry_seconds or 5), 1), _source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none"), probe_token, probe_token),
             )
         conn.commit()
     finally:
@@ -289,9 +301,19 @@ def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=
             locked = bool(cur.fetchone()[0])
         if not locked:
             raise ExternalCallGuardError("DATASET_LOCKED", "同一数据集正在由其他 Worker 请求中", _source_key(source), dataset)
-        _consume(conn, source, dataset, circuit_source, api_name, token_fingerprint_value)
+        probe = _consume(conn, source, dataset, circuit_source, api_name, token_fingerprint_value)
         _record(source)
-        return fn()
+        result = fn()
+        if probe.get("probe_token"):
+            close_external_circuit(source, probe.get("probe_api_name") or api_name, token_fingerprint_value, probe.get("probe_token"))
+        return result
+    except Exception:
+        if 'probe' in locals() and probe.get("probe_token"):
+            try:
+                release_external_circuit_probe(source, probe.get("probe_api_name") or api_name, token_fingerprint_value, 5, probe.get("probe_token"))
+            except Exception:
+                pass
+        raise
     finally:
         if locked:
             try:

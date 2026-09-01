@@ -9,6 +9,7 @@ import math
 from datetime import datetime
 
 import db_pg
+from instrument_identity import resolve_provider_code, ensure_instrument
 
 
 def _num(value):
@@ -33,20 +34,16 @@ def _date(value):
     return f"{text[:4]}-{text[4:6]}-{text[6:8]}" if len(text) == 8 and text.isdigit() else None
 
 
-def _ts_code(code):
+def _ts_code(code, conn=None):
     text = str(code or "").strip().upper()
-    if "." not in text:
-        text = text.zfill(6) + (".SZ" if text.startswith("12") else ".SH")
-    return text
+    return resolve_provider_code(text, "tushare", "ts_code", conn, "convertible_bond") or text or None
 
 
-def _stock_code(code):
+def _stock_code(code, conn=None):
     text = str(code or "").strip().upper()
     if not text:
         return None
-    if "." in text:
-        return text
-    return text.zfill(6) + (".SZ" if text.startswith(("0", "3")) else ".SH")
+    return resolve_provider_code(text, "tushare", "ts_code", conn, "stock") or text
 
 
 def _raw_key(ts_code, row):
@@ -84,8 +81,8 @@ def save_cb_issue_rows(issue_rows, basic_rows=None, rating_map=None, dry=False):
             if not ts_code:
                 continue
             basic = basic_map.get(ts_code, {})
-            code = _ts_code(ts_code)
-            stock = _stock_code(basic.get("stk_code") or raw.get("stk_code"))
+            code = _ts_code(ts_code, conn)
+            stock = _stock_code(basic.get("stk_code") or raw.get("stk_code"), conn)
             name = str(basic.get("bond_short_name") or raw.get("onl_name") or ts_code)
             listing_date = _date(basic.get("list_date"))
             if dry:
@@ -102,32 +99,22 @@ def save_cb_issue_rows(issue_rows, basic_rows=None, rating_map=None, dry=False):
                 (run_id, source_id, _raw_key(ts_code, raw), payload_text,
                  hashlib.sha256(payload_text.encode("utf-8")).hexdigest()),
             )
-            cur.execute(
-                """INSERT INTO core.instruments(canonical_code,name,asset_class,market,list_date,status,raw_data)
-                   VALUES(%s,%s,'convertible_bond','CN',%s::date,
-                     CASE WHEN %s::date IS NULL THEN 'announced'
-                          WHEN %s::date > CURRENT_DATE THEN 'pending_listing' ELSE 'listed' END,
-                     %s::jsonb)
-                   ON CONFLICT(canonical_code) DO UPDATE SET
-                     name=COALESCE(NULLIF(core.instruments.name,''),EXCLUDED.name),
-                     list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
-                     status=CASE WHEN EXCLUDED.list_date IS NULL THEN core.instruments.status
-                                 WHEN EXCLUDED.list_date > CURRENT_DATE THEN 'pending_listing' ELSE 'listed' END,
-                     raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()
-                   RETURNING instrument_id""",
-                (code, name, listing_date, listing_date, listing_date, payload_text),
+            bond_master = ensure_instrument(
+                code, name=name, asset_class="convertible_bond", market="CN",
+                exchange_code="SSE" if code.endswith(".SH") else "SZSE", currency_code="CNY",
+                list_date=listing_date,
+                status=("announced" if not listing_date else "pending_listing" if listing_date > datetime.now().strftime("%Y-%m-%d") else "listed"),
+                raw_data=payload, company_name=None, conn=conn,
             )
-            instrument_id = cur.fetchone()[0]
+            instrument_id = bond_master["instrument_id"]
             stock_id = None
             if stock:
-                cur.execute(
-                    """INSERT INTO core.instruments(canonical_code,name,asset_class,market)
-                       VALUES(%s,%s,'stock','CN')
-                       ON CONFLICT(canonical_code) DO UPDATE SET name=COALESCE(NULLIF(core.instruments.name,''),EXCLUDED.name),updated_at=now()
-                       RETURNING instrument_id""",
-                    (stock, basic.get("stk_short_name") or stock),
+                stock_master = ensure_instrument(
+                    stock, name=basic.get("stk_short_name") or stock, asset_class="stock", market="CN",
+                    exchange_code="SSE" if stock.endswith(".SH") else "SZSE", currency_code="CNY", status="listed",
+                    raw_data=basic, company_name=basic.get("stk_short_name") or stock, conn=conn,
                 )
-                stock_id = cur.fetchone()[0]
+                stock_id = stock_master["instrument_id"]
             issue_size = _issue_size_100m(raw.get("issue_size"))
             cur.execute(
                 """INSERT INTO fundamental.convertible_bond_profiles

@@ -4376,6 +4376,282 @@ async function migration115ConvertibleBondRevisionMotiveBacktest() {
   `);
 }
 
+// ========== 116：指数标准身份与供应商代码映射 =============
+// 前端只传标准代码，Tushare/腾讯/新浪代码由 core.instrument_identifiers 统一解析。
+async function migration116IndexInstrumentIdentifiers() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES ('sina','新浪行情','quote',30)
+    ON CONFLICT(source_code) DO UPDATE SET source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,priority=EXCLUDED.priority;
+
+    INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,status,raw_data)
+    VALUES
+      ('000300.SH','沪深300','index','CN','SSE','CNY','listed','{"seed":"index-identifiers"}'::jsonb),
+      ('000001.SH','上证指数','index','CN','SSE','CNY','listed','{"seed":"index-identifiers"}'::jsonb),
+      ('000905.SH','中证500','index','CN','SSE','CNY','listed','{"seed":"index-identifiers"}'::jsonb),
+      ('HSI.HK','恒生指数','index','HK','HKEX','HKD','listed','{"seed":"index-identifiers"}'::jsonb)
+    ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,asset_class=EXCLUDED.asset_class,
+      market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,currency_code=EXCLUDED.currency_code,updated_at=now();
+
+    INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
+    SELECT i.instrument_id,d.source_id,x.identifier_type,x.identifier_value,NULL
+      FROM (VALUES
+        ('000300.SH','tushare','ts_code','000300.SH'),('000300.SH','tencent','quote_symbol','sh000300'),('000300.SH','sina','symbol','sh000300'),
+        ('000001.SH','tushare','ts_code','000001.SH'),('000001.SH','tencent','quote_symbol','sh000001'),('000001.SH','sina','symbol','sh000001'),
+        ('000905.SH','tushare','ts_code','000905.SH'),('000905.SH','tencent','quote_symbol','sh000905'),('000905.SH','sina','symbol','sh000905'),
+        ('HSI.HK','tencent','quote_symbol','hkHSI'),('HSI.HK','sina','symbol','hkHSI')
+      ) AS x(canonical_code,source_code,identifier_type,identifier_value)
+      JOIN core.instruments i ON i.canonical_code=x.canonical_code
+      JOIN ops.data_sources d ON d.source_code=x.source_code
+    ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING;
+  `);
+}
+
+// ========== 117：数据集分区发布水位 =============
+// 采集成功、计算成功和可供页面读取是三个状态；页面只能读取 published 分区。
+async function migration117DatasetPartitions() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ops.dataset_partitions (
+      partition_id BIGSERIAL PRIMARY KEY,
+      dataset_code TEXT NOT NULL,
+      scope_key TEXT NOT NULL DEFAULT '',
+      partition_key DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'loading'
+        CHECK (status IN ('loading','published','rejected','stale')),
+      data_as_of DATE,
+      published_at TIMESTAMPTZ,
+      is_stale BOOLEAN NOT NULL DEFAULT false,
+      stale_reason TEXT NOT NULL DEFAULT '',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      source_id SMALLINT REFERENCES ops.data_sources(source_id),
+      diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(dataset_code,scope_key,partition_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dataset_partitions_latest
+      ON ops.dataset_partitions(dataset_code,scope_key,status,partition_key DESC);
+  `);
+}
+
+// ========== 118：证券历史合并候选（只记录审计结果，不自动删除旧ID） =============
+// 历史证券主档合并是高风险操作。先保存候选、外键影响量和冲突说明，
+// 由 dry-run 报告及人工审批驱动后续映射；本迁移不改写业务事实。
+async function migration118InstrumentMergeCandidates() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS core.instrument_merge_candidates (
+      candidate_id BIGSERIAL PRIMARY KEY,
+      primary_instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id),
+      duplicate_instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id),
+      reason TEXT NOT NULL DEFAULT '',
+      impact_counts JSONB NOT NULL DEFAULT '{}'::jsonb,
+      conflict_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'candidate'
+        CHECK (status IN ('candidate','approved','migrated','rejected')),
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      reviewed_at TIMESTAMPTZ,
+      notes TEXT NOT NULL DEFAULT '',
+      UNIQUE(primary_instrument_id,duplicate_instrument_id),
+      CHECK (primary_instrument_id <> duplicate_instrument_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_instrument_merge_candidates_status
+      ON core.instrument_merge_candidates(status,generated_at DESC);
+  `);
+}
+
+// ========== 119：Tushare daily_basic 股息率单位纠正 =============
+// daily_basic.dv_ttm 的单位是百分数点（例如 5 表示 5%），标准层 dividend_yield_ttm 统一存比例小数。
+// 仅依据已留存的 ops.raw_records 原始字段回填，不按数值大小猜测，避免误伤极端股息率。
+async function migration119NormalizeDividendYieldUnit() {
+  await pool.query(`
+    WITH source_rows AS (
+      SELECT DISTINCT ON (payload->>'ts_code', payload->>'trade_date')
+             payload->>'ts_code' AS ts_code,
+             to_date(payload->>'trade_date','YYYYMMDD') AS trade_date,
+             NULLIF(payload->>'dv_ttm','')::numeric / 100 AS dividend_yield_ttm
+        FROM ops.raw_records r
+        JOIN ops.data_sources d ON d.source_id=r.source_id AND d.source_code='tushare'
+       WHERE r.dataset_code='daily_basic'
+         AND payload->>'ts_code' IS NOT NULL
+         AND payload->>'trade_date' ~ '^[0-9]{8}$'
+         AND payload->>'dv_ttm' IS NOT NULL
+         AND NULLIF(payload->>'dv_ttm','') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+       ORDER BY payload->>'ts_code', payload->>'trade_date', r.ingested_at DESC, r.raw_record_id DESC
+    )
+    UPDATE market.daily_valuations v
+       SET dividend_yield_ttm=s.dividend_yield_ttm, ingested_at=now()
+      FROM source_rows s
+      JOIN core.instruments i ON i.canonical_code=s.ts_code
+     WHERE v.instrument_id=i.instrument_id AND v.trade_date=s.trade_date
+       AND s.dividend_yield_ttm IS NOT NULL
+  `);
+}
+
+// ========== 120：历史无原始留痕的 Tushare 股息率修复 =============
+// 119 已按原始记录精确回填；老库部分日期没有 raw_records，但来源仍明确为 Tushare。
+// 结合字段契约（dv_ttm 百分数点）和全量分布校验，仅修复 1～100 的异常百分数点，并留下审计标记。
+async function migration120RepairLegacyDividendYieldUnit() {
+  await pool.query(`
+    ALTER TABLE market.daily_valuations ADD COLUMN IF NOT EXISTS data_quality JSONB NOT NULL DEFAULT '{}'::jsonb;
+    UPDATE market.daily_valuations v
+       SET dividend_yield_ttm=v.dividend_yield_ttm/100,
+           data_quality=v.data_quality || '{"dividend_yield_unit":"percent_point_normalized","repair":"migration120"}'::jsonb,
+           ingested_at=now()
+      FROM ops.data_sources d
+     WHERE d.source_id=v.source_id AND d.source_code='tushare'
+       AND v.dividend_yield_ttm > 1 AND v.dividend_yield_ttm <= 100
+  `);
+}
+
+// ========== 121：已有标准数据的分区水位初始化 =============
+// 让升级后的页面立即能识别数据日期；后续采集任务继续按同一表更新。
+async function migration121BackfillDatasetPartitions() {
+  await pool.query(`
+    INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,diagnostics)
+    SELECT 'bond_daily','CN',MAX(trade_date),'published',MAX(trade_date),now(),false,'',COUNT(*),'{"backfill":"migration121"}'::jsonb
+      FROM market.convertible_bond_daily_metrics WHERE trade_date IS NOT NULL HAVING COUNT(*)>0
+    ON CONFLICT(dataset_code,scope_key,partition_key) DO NOTHING;
+    INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,diagnostics)
+    SELECT 'stock_daily','CN',MAX(trade_date),'published',MAX(trade_date),now(),false,'',COUNT(*),'{"backfill":"migration121"}'::jsonb
+      FROM market.daily_bars WHERE trade_date IS NOT NULL HAVING COUNT(*)>0
+    ON CONFLICT(dataset_code,scope_key,partition_key) DO NOTHING;
+    INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,diagnostics)
+    SELECT 'stock_valuation','CN',MAX(trade_date),'published',MAX(trade_date),now(),false,'',COUNT(*),'{"backfill":"migration121"}'::jsonb
+      FROM market.daily_valuations WHERE trade_date IS NOT NULL HAVING COUNT(*)>0
+    ON CONFLICT(dataset_code,scope_key,partition_key) DO NOTHING;
+    INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,diagnostics)
+    SELECT 'stock_adj_factor','CN',MAX(trade_date),'published',MAX(trade_date),now(),false,'',COUNT(*),'{"backfill":"migration121"}'::jsonb
+      FROM market.adjustment_factors WHERE trade_date IS NOT NULL HAVING COUNT(*)>0
+    ON CONFLICT(dataset_code,scope_key,partition_key) DO NOTHING;
+    INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,diagnostics)
+    SELECT 'bond_valuation','CN',MAX(trade_date),'published',MAX(trade_date),now(),false,'',COUNT(*),'{"backfill":"migration121"}'::jsonb
+      FROM analytics.convertible_bond_valuation_daily WHERE trade_date IS NOT NULL HAVING COUNT(*)>0
+    ON CONFLICT(dataset_code,scope_key,partition_key) DO NOTHING;
+    INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,diagnostics)
+    SELECT 'bond_safety_snapshot','CN',MAX(COALESCE(source_updated_at,refreshed_at))::date,'published',MAX(COALESCE(source_updated_at,refreshed_at))::date,now(),false,'',MAX(row_count),'{"backfill":"migration121"}'::jsonb
+      FROM bond_safety_snapshots WHERE COALESCE(source_updated_at,refreshed_at) IS NOT NULL HAVING COUNT(*)>0
+    ON CONFLICT(dataset_code,scope_key,partition_key) DO NOTHING;
+  `);
+}
+
+// ========== 122：历史股票类型与公司关系归一 =============
+// 旧链路曾把股票写成 equity，且没有同步 core.companies/company_instruments。
+// 本迁移只做可逆的类型归一和幂等关系补齐，不合并证券 ID、不删除任何事实。
+async function migration122NormalizeLegacyStockIdentity() {
+  await pool.query(`
+    WITH candidates AS (
+      SELECT instrument_id, NULLIF(BTRIM(name), '') AS legal_name,
+             CASE WHEN upper(market) = 'HK' OR currency_code = 'HKD' THEN 'HK' ELSE 'CN' END AS country_code
+        FROM core.instruments
+       WHERE asset_class IN ('stock','equity') AND NULLIF(BTRIM(name), '') IS NOT NULL
+    ), company_rows AS (
+      INSERT INTO core.companies(legal_name,short_name,country_code,raw_data)
+      SELECT legal_name,legal_name,country_code,'{"backfill":"migration122"}'::jsonb
+        FROM candidates
+       GROUP BY legal_name,country_code
+      ON CONFLICT(country_code,legal_name) DO UPDATE
+        SET short_name=CASE WHEN core.companies.short_name='' THEN EXCLUDED.short_name ELSE core.companies.short_name END,
+            updated_at=now()
+      RETURNING company_id,legal_name,country_code
+    )
+    INSERT INTO core.company_instruments(company_id,instrument_id,relation_type,valid_from)
+    SELECT c.company_id,x.instrument_id,'issued_by',i.list_date
+      FROM candidates x
+      JOIN company_rows c ON c.legal_name=x.legal_name AND c.country_code=x.country_code
+      JOIN core.instruments i ON i.instrument_id=x.instrument_id
+    ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE
+      SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from);
+
+    UPDATE core.instruments
+       SET asset_class='stock',updated_at=now()
+     WHERE asset_class='equity';
+  `);
+}
+
+// ========== 123：补齐迁移122遗漏的公司-证券关系 =============
+// PostgreSQL 数据修改 CTE 的变更对同一语句普通表读取不可见；迁移122已建好公司，
+// 本步单独按现存公司补关系，保证旧库升级和新库初始化最终结果一致。
+async function migration123BackfillStockCompanyRelations() {
+  await pool.query(`
+    INSERT INTO core.company_instruments(company_id,instrument_id,relation_type,valid_from)
+    SELECT c.company_id,i.instrument_id,'issued_by',i.list_date
+      FROM core.instruments i
+      JOIN core.companies c
+        ON c.legal_name=NULLIF(BTRIM(i.name),'')
+       AND c.country_code=CASE WHEN upper(i.market)='HK' OR i.currency_code='HKD' THEN 'HK' ELSE 'CN' END
+     WHERE i.asset_class='stock' AND NULLIF(BTRIM(i.name),'') IS NOT NULL
+    ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE
+      SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from);
+  `);
+}
+
+// ========== 124：统一外部调用预算原子扣减入口 =============
+// Node 与 Python 必须通过同一数据库函数扣减日/分钟预算，避免两套 SQL
+// 在并发下出现语义漂移。函数只负责预算与计数，熔断/探测仍由 Guard 负责。
+async function migration124ExternalCallBudgetFunction() {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION ops.consume_external_call_budget(
+      p_source text,
+      p_day_key text,
+      p_minute_key text,
+      p_day_limit integer,
+      p_minute_limit integer
+    )
+    RETURNS TABLE(allowed boolean, wait_window text, day_count integer, minute_count integer)
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      v_day_count integer := 0;
+      v_minute_count integer := 0;
+    BEGIN
+      IF NULLIF(BTRIM(p_source), '') IS NULL THEN
+        RAISE EXCEPTION 'external budget source is required';
+      END IF;
+      IF p_day_limit IS NULL OR p_day_limit <= 0 OR p_minute_limit IS NULL OR p_minute_limit <= 0 THEN
+        RAISE EXCEPTION 'external budget limits must be positive';
+      END IF;
+
+      PERFORM pg_advisory_xact_lock(hashtext('external_budget:' || p_source));
+
+      SELECT call_count INTO v_day_count
+        FROM ops.external_call_budgets
+       WHERE source=p_source AND window_type='day' AND window_key=p_day_key
+       FOR UPDATE;
+      SELECT call_count INTO v_minute_count
+        FROM ops.external_call_budgets
+       WHERE source=p_source AND window_type='minute' AND window_key=p_minute_key
+       FOR UPDATE;
+      v_day_count := COALESCE(v_day_count, 0);
+      v_minute_count := COALESCE(v_minute_count, 0);
+
+      IF v_minute_count >= p_minute_limit THEN
+        RETURN QUERY SELECT false, 'minute'::text, v_day_count, v_minute_count;
+        RETURN;
+      END IF;
+      IF v_day_count >= p_day_limit THEN
+        RETURN QUERY SELECT false, 'day'::text, v_day_count, v_minute_count;
+        RETURN;
+      END IF;
+
+      INSERT INTO ops.external_call_budgets(source,window_type,window_key,call_count,budget_limit)
+      VALUES(p_source,'day',p_day_key,1,p_day_limit)
+      ON CONFLICT(source,window_type,window_key) DO UPDATE
+        SET call_count=ops.external_call_budgets.call_count+1,
+            budget_limit=EXCLUDED.budget_limit,
+            updated_at=now();
+      INSERT INTO ops.external_call_budgets(source,window_type,window_key,call_count,budget_limit)
+      VALUES(p_source,'minute',p_minute_key,1,p_minute_limit)
+      ON CONFLICT(source,window_type,window_key) DO UPDATE
+        SET call_count=ops.external_call_budgets.call_count+1,
+            budget_limit=EXCLUDED.budget_limit,
+            updated_at=now();
+
+      RETURN QUERY SELECT true, NULL::text, v_day_count + 1, v_minute_count + 1;
+    END;
+    $$;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4492,6 +4768,15 @@ const MIGRATIONS = [
   { version: '113_convertible_bond_revision_cycle_fields', up: migration113ConvertibleBondRevisionCycleFields },
   { version: '114_convertible_bond_holder_governance_index', up: migration114ConvertibleBondHolderGovernanceIndex },
   { version: '115_convertible_bond_revision_motive_backtest', up: migration115ConvertibleBondRevisionMotiveBacktest },
+  { version: '116_index_instrument_identifiers', up: migration116IndexInstrumentIdentifiers },
+  { version: '117_dataset_partitions', up: migration117DatasetPartitions },
+  { version: '118_instrument_merge_candidates', up: migration118InstrumentMergeCandidates },
+  { version: '119_normalize_dividend_yield_unit', up: migration119NormalizeDividendYieldUnit },
+  { version: '120_repair_legacy_dividend_yield_unit', up: migration120RepairLegacyDividendYieldUnit },
+  { version: '121_backfill_dataset_partitions', up: migration121BackfillDatasetPartitions },
+  { version: '122_normalize_legacy_stock_identity', up: migration122NormalizeLegacyStockIdentity },
+  { version: '123_backfill_stock_company_relations', up: migration123BackfillStockCompanyRelations },
+  { version: '124_external_call_budget_function', up: migration124ExternalCallBudgetFunction },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -5053,6 +5338,15 @@ module.exports = {
   migration113ConvertibleBondRevisionCycleFields,
   migration114ConvertibleBondHolderGovernanceIndex,
   migration115ConvertibleBondRevisionMotiveBacktest,
+  migration116IndexInstrumentIdentifiers,
+  migration117DatasetPartitions,
+  migration118InstrumentMergeCandidates,
+  migration119NormalizeDividendYieldUnit,
+  migration120RepairLegacyDividendYieldUnit,
+  migration121BackfillDatasetPartitions,
+  migration122NormalizeLegacyStockIdentity,
+  migration123BackfillStockCompanyRelations,
+  migration124ExternalCallBudgetFunction,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

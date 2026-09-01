@@ -20,6 +20,7 @@ from psycopg2.extras import Json, RealDictCursor
 
 from _common import _load_env, _tushare
 from external_call_guard import guarded_urlopen, get_external_call_stats
+from instrument_identity import resolve_provider_code
 
 _load_env()
 
@@ -175,8 +176,9 @@ def upsert_shares(cur, records):
 
 
 def _tencent_first_close(code, listing_date):
-    prefix = "sh" if str(code).startswith("6") else "sz"
-    qt_code = prefix + str(code)
+    qt_code = resolve_provider_code(code, "tencent", "quote_symbol", asset_class="stock")
+    if not qt_code:
+        return None
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,30,qfq"
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with guarded_urlopen(request, timeout=12, source="tencent", dataset=f"history-kline:{qt_code}:{listing_date}") as response:

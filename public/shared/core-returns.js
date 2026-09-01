@@ -326,10 +326,11 @@ async function fetchIndexKline(secid, days) {
 
 // 指数 secid 映射（东方财富格式；A股15:00收盘 / 港股16:00收盘，kline 自动取已收盘日）
 const INDEX_SECID = {
-  '沪深300': 'sh000300',
-  '上证指数': 'sh000001',
-  '中证500': 'sh000905',
-  '恒生指数': 'hkHSI'
+  // 前端只传标准证券代码；供应商 secid 由服务端 instrument_identifiers 解析。
+  '沪深300': '000300.SH',
+  '上证指数': '000001.SH',
+  '中证500': '000905.SH',
+  '恒生指数': 'HSI.HK'
 };
 
 // 日期跨度（天）：从给定日期到今天，用于按真实时间区间拉取指数K线
@@ -521,10 +522,10 @@ async function renderNavVsIndexChart(canvasId, opts) {
     try {
       const days = period > 0 ? period : Math.max(250, daysBetween(navData[0].date));
       const results = await Promise.all([
-        fetchIndexKline('sh000300', days + 30),
-        fetchIndexKline('sh000001', days + 30),
-        fetchIndexKline('sh000905', days + 30),
-        fetchIndexKline('hkHSI', days + 30)
+        fetchIndexKline(INDEX_SECID['沪深300'], days + 30),
+        fetchIndexKline(INDEX_SECID['上证指数'], days + 30),
+        fetchIndexKline(INDEX_SECID['中证500'], days + 30),
+        fetchIndexKline(INDEX_SECID['恒生指数'], days + 30)
       ]);
       if (!hs300Data.length) hs300Data = normalizeIndexData(results[0], navData);
       if (!shData.length) shData = normalizeIndexData(results[1], navData);

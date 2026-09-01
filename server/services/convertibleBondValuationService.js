@@ -2,6 +2,7 @@
 const { pool } = require('../db');
 const { getLatestCycle } = require('./convertibleBondCycleService');
 const { expectedTradeDate } = require('../routes/bondCycle');
+const { getDatasetMetadata } = require('./datasetPartitions');
 
 const EVAL_ORDER = { '低估': 0, '偏低估': 1, '合理': 2, '偏高估': 3, '高估': 4, '风险折价': 5, '数据不足': 6 };
 
@@ -161,8 +162,13 @@ async function getList(asOf, filters = {}) {
     [tradeDate, latestModel.model_version || '']
   );
   const cycle = await getLatestCycle();
+  const partition = await getDatasetMetadata('bond_valuation', 'CN');
   return {
     as_of_date: tradeDate,
+    data_as_of: partition.data_as_of || tradeDate,
+    published_at: partition.published_at,
+    is_stale: Boolean(partition.is_stale || isValuationStale(tradeDate, expected, latestMarketDate)),
+    stale_reason: partition.stale_reason || (isValuationStale(tradeDate, expected, latestMarketDate) ? '估值日落后于最新交易日' : ''),
     expected_trade_date: expected,
     updated_at: heatRow && heatRow.updated_at ? heatRow.updated_at : null,
     latest_market_date: latestMarketDate,

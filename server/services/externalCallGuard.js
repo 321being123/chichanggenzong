@@ -13,6 +13,7 @@ const counters = new Map();
 const localDatasetLocks = new Set();
 const PROBE_LEASE_MS = 5 * 60 * 1000;
 const PROBE_OWNER = `${os.hostname()}:${process.pid}:${crypto.randomUUID()}`;
+let runCallCount = 0;
 
 function limit(name, fallback) {
   const value = Number(process.env[name]);
@@ -36,7 +37,8 @@ class ExternalCallGuardError extends Error {
     super(message);
     this.name = 'ExternalCallGuardError';
     this.code = code;
-    this.errorType = code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' ? 'rate_limit'
+    this.errorType = code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' ? 'rate_limit'
+      : code === 'JOB_BUDGET_EXCEEDED' ? 'non_retryable'
       : code === 'DATASET_LOCKED' ? 'in_progress' : 'circuit_open';
     this.source = source;
     this.dataset = dataset;
@@ -88,8 +90,15 @@ function budgetLimits(key) {
   }
   return {
     minute: limit(`${envKey}_PER_MINUTE_BUDGET`, key === 'tushare' ? 120 : 60),
-    day: limit(`${envKey}_DAILY_BUDGET`, key === 'tushare' ? 4000 : 2000),
+    // 自动化主 Token 的硬上限：每个自然日最多 100 次；人工/探测需显式使用独立进程和预算。
+    day: limit(`${envKey}_DAILY_BUDGET`, key === 'tushare' ? 100 : 2000),
   };
+}
+
+function jobRunLimit() {
+  if (process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE !== '1') return null;
+  const value = Number(process.env.JOB_EXTERNAL_CALL_LIMIT);
+  return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function nextMinuteAt() {
@@ -104,8 +113,9 @@ function nextShanghaiDayAt() {
   return new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day) + 1) - 8 * 3600 * 1000 + 1000);
 }
 
-function recoverAtFor(code) {
-  if (code === 'RATE_LIMIT') return nextMinuteAt();
+function recoverAtFor(code, windowType = null) {
+  if (code === 'RATE_LIMIT' || (code === 'BUDGET_WAIT' && windowType !== 'day')) return nextMinuteAt();
+  if (code === 'BUDGET_WAIT' && windowType === 'day') return nextShanghaiDayAt();
   if (code === 'QUOTA_EXHAUSTED') return nextShanghaiDayAt();
   return null;
 }
@@ -185,56 +195,42 @@ function localCount(key, day, minute) {
 async function consumeExternalCall(source, dataset = '', providedClient = null, circuitSource = source, options = {}) {
   const key = sourceKey(source);
   const guardOptions = normalizeGuardOptions(source, circuitSource, options, dataset);
+  const runLimit = jobRunLimit();
+  if (runLimit != null && runCallCount >= runLimit) {
+    throw new ExternalCallGuardError('JOB_BUDGET_EXCEEDED', `${key} 已达到本任务声明的外部请求上限 ${runLimit}`, key, dataset, {
+      apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint,
+    });
+  }
   const { minute, day } = nowParts();
   const limits = budgetLimits(key);
   const client = providedClient || await getPool().connect();
   try {
     await client.query('BEGIN');
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('external_budget:' || $1))", [key]);
     const dayKey = day;
     const minuteKey = `${day}:${minute}`;
-    const { rows: dayRows } = await client.query(
-      `SELECT call_count FROM ops.external_call_budgets
-        WHERE source=$1 AND window_type='day' AND window_key=$2 FOR UPDATE`, [key, dayKey]
-    );
     const probe = await assertCircuitAvailable(client, key, guardOptions.apiName, guardOptions.tokenFingerprint, dataset);
-    const { rows: minuteRows } = await client.query(
-      `SELECT call_count FROM ops.external_call_budgets
-        WHERE source=$1 AND window_type='minute' AND window_key=$2 FOR UPDATE`, [key, minuteKey]
+    // 日/分钟预算由数据库原子函数统一扣减，Node/Python 共用同一入口。
+    const { rows: budgetRows } = await client.query(
+      'SELECT * FROM ops.consume_external_call_budget($1,$2,$3,$4,$5)',
+      [key, dayKey, minuteKey, limits.day, limits.minute]
     );
-    const dayCount = Number(dayRows[0]?.call_count || 0);
-    const minuteCount = Number(minuteRows[0]?.call_count || 0);
-    if (minuteCount >= limits.minute) {
-      const recoverAt = recoverAtFor('RATE_LIMIT');
-      await upsertCircuit(client, key, guardOptions.apiName, guardOptions.tokenFingerprint,
-        'RATE_LIMIT', 'rate_limit', `${key} 已达到每分钟请求预算 ${limits.minute}`, recoverAt);
+    const budget = budgetRows[0] || {};
+    if (!budget.allowed && budget.wait_window === 'minute') {
+      const recoverAt = recoverAtFor('BUDGET_WAIT', 'minute');
       await client.query('COMMIT');
-      throw new ExternalCallGuardError('RATE_LIMIT', `${key} ${guardOptions.apiName} 已达到每分钟请求预算 ${limits.minute}`, key, dataset, {
-        apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint, recoverAt,
+      throw new ExternalCallGuardError('BUDGET_WAIT', `${key} ${guardOptions.apiName} 已达到每分钟请求预算 ${limits.minute}，等待下一窗口`, key, dataset, {
+        apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'minute',
       });
     }
-    if (dayCount >= limits.day) {
-      const recoverAt = recoverAtFor('QUOTA_EXHAUSTED');
-      await upsertCircuit(client, key, '*', guardOptions.tokenFingerprint,
-        'QUOTA_EXHAUSTED', 'rate_limit', `${key} 已达到当日请求预算 ${limits.day}`, recoverAt);
+    if (!budget.allowed && budget.wait_window === 'day') {
+      const recoverAt = recoverAtFor('BUDGET_WAIT', 'day');
       await client.query('COMMIT');
-      throw new ExternalCallGuardError('QUOTA_EXHAUSTED', `${key} 已达到当日请求预算 ${limits.day}`, key, dataset, {
-        apiName: '*', tokenFingerprint: guardOptions.tokenFingerprint, recoverAt,
+      throw new ExternalCallGuardError('BUDGET_WAIT', `${key} 已达到当日请求预算 ${limits.day}，等待下一交易日`, key, dataset, {
+        apiName: '*', tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'day',
       });
     }
-    await client.query(
-      `INSERT INTO ops.external_call_budgets(source,window_type,window_key,call_count,budget_limit)
-       VALUES($1,'day',$2,1,$3)
-       ON CONFLICT(source,window_type,window_key) DO UPDATE SET call_count=ops.external_call_budgets.call_count+1,updated_at=now()`,
-      [key, dayKey, limits.day]
-    );
-    await client.query(
-      `INSERT INTO ops.external_call_budgets(source,window_type,window_key,call_count,budget_limit)
-       VALUES($1,'minute',$2,1,$3)
-       ON CONFLICT(source,window_type,window_key) DO UPDATE SET call_count=ops.external_call_budgets.call_count+1,updated_at=now()`,
-      [key, minuteKey, limits.minute]
-    );
     await client.query('COMMIT');
+    runCallCount += 1;
     const item = localCount(key, day, minute);
     return { source: key, dataset, minuteCount: item.minuteCount, dayCount: item.dayCount, ...(probe || {}) };
   } catch (error) {
@@ -319,7 +315,7 @@ async function openExternalCircuit(source, detail = '', circuitSource = source, 
   const client = providedClient || await getPool().connect();
   try {
     await upsertCircuit(client, key, guardOptions.apiName, guardOptions.tokenFingerprint,
-      code, errorType || (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' ? 'rate_limit' : 'circuit_open'), detail, recoverAt);
+      code, errorType || (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' ? 'rate_limit' : 'circuit_open'), detail, recoverAt);
   } finally {
     if (!providedClient) client.release();
   }
@@ -393,6 +389,7 @@ async function getExternalCircuitStatuses(source = 'tushare', tokens = {}) {
 function resetExternalCallGuard() {
   counters.clear();
   localDatasetLocks.clear();
+  runCallCount = 0;
 }
 
 async function resetExternalCallGuardPersistence(source = null) {

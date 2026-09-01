@@ -3,6 +3,7 @@
 // 不调用 Tushare（调用方传入 cb_daily 行）。
 const { pool } = require('../db');
 const cycle = require('./convertibleBondCycle');
+const { ensureInstrumentIdentity } = require('./securityIdentity');
 
 const { toNumber, aggregateDaily, finalizeCycle, computePercentile, cycleLevel, LOOKBACK_DAYS, FORMULA_VERSION, UNIVERSE_VERSION, ANOMALY_REASONS } = cycle;
 
@@ -25,20 +26,13 @@ async function resolveInstruments(client, rows) {
   const map = new Map(existing.map(r => [r.canonical_code, r.instrument_id]));
   const missing = codes.filter(c => !map.has(c));
   if (missing.length) {
-    const params = [];
-    const values = missing.map((code) => {
-      const base = params.length;
-      const mkt = code.endsWith('.SH') ? 'SSE' : 'SZSE';
-      params.push(code, code, 'convertible_bond', 'CN', mkt, null, null, 'listed');
-      return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`;
-    });
-    const ins = await client.query(
-      `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,list_date,delist_date,status)
-       VALUES ${values.join(',')}
-       ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,updated_at=now() RETURNING instrument_id, canonical_code`,
-      params
-    );
-    for (const r of ins.rows) map.set(r.canonical_code, r.instrument_id);
+    for (const code of missing) {
+      const master = await ensureInstrumentIdentity({
+        canonicalCode: code, name: code, assetClass: 'convertible_bond', market: 'CN',
+        exchangeCode: code.endsWith('.SH') ? 'SSE' : 'SZSE', currencyCode: 'CNY', status: 'listed', companyName: null,
+      }, client.query.bind(client));
+      map.set(code, master.instrumentId);
+    }
   }
   return map;
 }

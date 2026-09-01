@@ -67,7 +67,7 @@ function classifyFailure(error, result = {}) {
     return { code: code || 'QUOTA_EXHAUSTED', type: 'rate_limit', retryable: true,
       ...(recoverAt ? { recoverAt } : {}), source, apiName, message };
   }
-  if (code === 'RATE_LIMIT' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|频次|限速|配额|rate.?limit|quota/i.test(message)) {
+  if (code === 'BUDGET_WAIT' || code === 'RATE_LIMIT' || code === 'CIRCUIT_OPEN' || type === 'rate_limit' || type === 'circuit_open' || /429|频率|频次|限速|配额|预算|rate.?limit|quota/i.test(message)) {
     const delayMinutes = recoveryDelayMinutes(recoverAt);
     return { code: code || 'RATE_LIMIT', type: 'rate_limit', retryable: true,
       ...(delayMinutes ? { delayMinutes } : {}), ...(recoverAt ? { recoverAt } : {}), source, apiName, message };
@@ -266,7 +266,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
     ...result, error: message, errorCode: failure.code, errorType: failure.type, apiName: failure.apiName,
   }, result.externalCalls);
   const externalRecoveryFailure = definition.retryPolicy !== 'no_retry'
-    && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(failure.code);
+    && ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(failure.code);
   if (externalRecoveryFailure) {
     const retryAt = failure.recoverAt || (failure.delayMinutes
       ? new Date(Date.now() + Number(failure.delayMinutes) * 60000)

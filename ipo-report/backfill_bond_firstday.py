@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import db_pg
 from _common import _load_env, get_tushare_pro
 from bond_data_layer import update_listing_performance
+from instrument_identity import resolve_provider_code
 
 _load_env()
 
@@ -55,19 +56,20 @@ if pro is None:
     raise RuntimeError("TUSHARE_TOKEN/TUSHARE_BACKUP_TOKEN 未配置")
 
 
-def _ts_code(code):
-    return code[:6] + ('.SH' if code.startswith('11') else '.SZ')
-
-
 ok = skip = 0
 for instrument_id, code, name, ld in rows:
     ld = str(ld)[:10]
     ldd = ld.replace('-', '')
+    ts_code = resolve_provider_code(code, 'tushare', 'ts_code', conn=conn, asset_class='convertible_bond')
+    if not ts_code:
+        print(f"  {code} 缺少统一 Tushare 代码映射，跳过")
+        skip += 1
+        continue
     # Tushare cb_daily 限 200次/分钟；触发限流时休眠重试，而非跳过
     df = None
     for attempt in range(4):
         try:
-            df = pro.cb_daily(ts_code=_ts_code(code), start_date=ldd, end_date='20991231')
+            df = pro.cb_daily(ts_code=ts_code, start_date=ldd, end_date='20991231')
             break
         except Exception as e:
             msg = str(e)

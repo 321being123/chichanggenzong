@@ -1,7 +1,7 @@
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { TushareRequestError } = require('./tushare');
-const { fetchTencentQuotes } = require('./tencentQuote');
+const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
 const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport,
   fetchSseEventsBatch, fetchSzseEventsBatch, fetchCninfoEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
 const { spawn } = require('child_process');
@@ -14,6 +14,8 @@ const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
   recordQualityIssue, resolveQualityIssue } = require('./datasetCursors');
 const { getLatestCallState } = require('./convertibleBondRedemptionService');
 const { saveConvertibleBondHolderPositions } = require('./convertibleBondRevisionMotiveService');
+const { publishDatasetPartition } = require('./datasetPartitions');
+const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -27,7 +29,9 @@ const PROFILE_FIELDS = [
 ].join(',');
 const DAILY_FIELDS = 'ts_code,trade_date,pre_close,open,high,low,close,change,pct_chg,vol,amount,bond_value,bond_over_rate,cb_value,cb_over_rate';
 const ISSUE_FIELDS = 'ts_code,ann_date,res_ann_date,issue_size,issue_price,issue_type,shd_ration_record_date,shd_ration_ratio,onl_date,onl_size,onl_pch_num,offl_size,shd_ration_size';
-const STOCK_STATUS_FIELDS = 'ts_code,list_status';
+// 主采集一次拉回完整股票主档，既用于筛选转债正股，也用于建立股票标准层。
+// 不增加接口次数，只扩展同一 stock_basic 请求的字段。
+const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,list_date,list_status';
 const FORMULA_VERSION = '3';
 const CN_OFFSET_MS = 8 * 3600 * 1000;
 const ANNOUNCEMENT_OVERLAP_DAYS = 3;
@@ -511,26 +515,97 @@ function announcementSourceId(event, sources, fallback) {
 }
 
 async function ensureInstrument(client, tsCode, name, assetClass, listDate, delistDate, subscriptionDate = null) {
-  const market = tsCode.endsWith('.SH') ? 'SSE' : 'SZSE';
-  const { rows } = await client.query(
-    `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,list_date,delist_date,status)
-     VALUES($1,$2,$3,'CN',$4,$5,$6,$7)
-     ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,asset_class=EXCLUDED.asset_class,
-       exchange_code=EXCLUDED.exchange_code,list_date=COALESCE(EXCLUDED.list_date,core.instruments.list_date),
-       delist_date=COALESCE(EXCLUDED.delist_date,core.instruments.delist_date),
-       status=CASE WHEN $8::date IS NOT NULL AND EXCLUDED.status IN ('announced','subscribing') THEN EXCLUDED.status
-                   WHEN EXCLUDED.list_date IS NULL AND EXCLUDED.delist_date IS NULL
-                   THEN core.instruments.status ELSE EXCLUDED.status END,updated_at=now()
-     RETURNING instrument_id`,
-    [tsCode, name || tsCode, assetClass, market, isoDate(listDate), isoDate(delistDate),
-      assetClass === 'convertible_bond'
-        ? (listDate || delistDate || subscriptionDate
-          ? instrumentStatus(delistDate, isoDate(new Date()), listDate, subscriptionDate)
-          : 'announced')
-        : 'listed',
-      isoDate(subscriptionDate)]
+  tsCode = await resolveCanonicalCode(tsCode, assetClass, client);
+  if (!tsCode) throw new Error(`证券代码无法解析：${name || ''}`);
+  const market = tsCode.endsWith('.SH') ? 'SSE' : tsCode.endsWith('.BJ') ? 'BSE' : 'SZSE';
+  const result = await ensureInstrumentIdentity({
+    canonicalCode: tsCode, name: name || tsCode, assetClass, market: 'CN', exchangeCode: market,
+    currencyCode: 'CNY', listDate: isoDate(listDate), status: assetClass === 'convertible_bond'
+      ? (listDate || delistDate || subscriptionDate ? instrumentStatus(delistDate, isoDate(new Date()), listDate, subscriptionDate) : 'announced') : 'listed',
+    rawData: { delist_date: isoDate(delistDate), subscription_date: isoDate(subscriptionDate) }, companyName: null,
+  }, client.query.bind(client));
+  if (isoDate(delistDate)) await client.query('UPDATE core.instruments SET delist_date=COALESCE(delist_date,$2::date) WHERE instrument_id=$1', [result.instrumentId, isoDate(delistDate)]);
+  return result.instrumentId;
+}
+
+// 一次性把 stock_basic 主档写入统一证券层。行情按交易日全市场落库时，
+// 不能只为可转债正股建 instrument，否则 daily/daily_basic 会再次退化为散落旧表。
+async function ensureStockUniverse(client, stockRows, sourceId = null) {
+  const rows = [...new Map((stockRows || [])
+    .map(row => [String(row.ts_code || '').trim().toUpperCase(), row])
+    .filter(([code]) => /^[0-9]{6}\.(SH|SZ|BJ)$/.test(code))).values()];
+  if (!rows.length) return new Map();
+  const payload = rows.map(row => ({
+    ts_code: String(row.ts_code).trim().toUpperCase(),
+    name: String(row.name || row.ts_code || '').trim(),
+    list_date: isoDate(row.list_date),
+    status: String(row.list_status || 'L').trim().toUpperCase() === 'L' ? 'listed' : 'inactive',
+    raw_data: row,
+  }));
+  await client.query(
+    `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data)
+     SELECT x.ts_code,x.name,'stock','CN',
+            CASE WHEN x.ts_code LIKE '%.SH' THEN 'SSE' WHEN x.ts_code LIKE '%.BJ' THEN 'BSE' ELSE 'SZSE' END,
+            'CNY',x.list_date,x.status,x.raw_data
+       FROM jsonb_to_recordset($1::jsonb) AS x(ts_code text,name text,list_date date,status text,raw_data jsonb)
+     ON CONFLICT(canonical_code) DO UPDATE SET
+       name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE core.instruments.name END,
+       asset_class='stock',market='CN',exchange_code=EXCLUDED.exchange_code,currency_code='CNY',
+       list_date=COALESCE(EXCLUDED.list_date,core.instruments.list_date),status=EXCLUDED.status,
+       raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()`,
+    [JSON.stringify(payload)]
   );
-  return rows[0].instrument_id;
+  const codes = payload.map(row => row.ts_code);
+  const { rows: instruments } = await client.query(
+    `SELECT instrument_id,canonical_code FROM core.instruments WHERE canonical_code=ANY($1::text[])`, [codes]
+  );
+  const instrumentMap = new Map(instruments.map(row => [row.canonical_code, row.instrument_id]));
+  // 股票主档必须同时建立公司实体与证券关系，分析/三表查询以 company_id 归属，不能只留下孤立 instrument。
+  await client.query(
+    `WITH stock_rows AS (
+       SELECT DISTINCT ON (NULLIF(x.name,'')) NULLIF(x.name,'') AS legal_name, x.name, x.raw_data
+         FROM jsonb_to_recordset($1::jsonb) AS x(ts_code text,name text,list_date date,status text,raw_data jsonb)
+        WHERE NULLIF(x.name,'') IS NOT NULL
+     )
+     INSERT INTO core.companies(legal_name,short_name,country_code,raw_data)
+     SELECT legal_name,name,'CN',raw_data FROM stock_rows
+     ON CONFLICT(country_code,legal_name) DO UPDATE SET short_name=EXCLUDED.short_name,raw_data=core.companies.raw_data || EXCLUDED.raw_data,updated_at=now()`,
+    [JSON.stringify(payload)]
+  );
+  await client.query(
+    `INSERT INTO core.company_instruments(company_id,instrument_id,relation_type,valid_from)
+     SELECT c.company_id,i.instrument_id,'issued_by',i.list_date
+       FROM core.instruments i JOIN core.companies c ON c.country_code='CN' AND c.legal_name=i.name
+      WHERE i.canonical_code=ANY($1::text[])
+     ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from)`,
+    [codes]
+  );
+  const { rows: sources } = await client.query(
+    `SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','eastmoney','sina')`
+  );
+  const sourceMap = Object.fromEntries(sources.map(row => [row.source_code, row.source_id]));
+  const identifiers = [];
+  for (const row of payload) {
+    const instrumentId = instrumentMap.get(row.ts_code);
+    if (!instrumentId) continue;
+    identifiers.push({ instrument_id: instrumentId, source_id: sourceMap.tushare || sourceId, identifier_type: 'ts_code', identifier_value: row.ts_code, valid_from: row.list_date || '0001-01-01' });
+    const quote = describeTencentCode(row.ts_code);
+    if (sourceMap.tencent && quote?.symbol) identifiers.push({ instrument_id: instrumentId, source_id: sourceMap.tencent, identifier_type: 'quote_symbol', identifier_value: quote.symbol, valid_from: row.list_date || '0001-01-01' });
+    const match = row.ts_code.match(/^(\d{5,6})\.(SH|SZ|BJ)$/);
+    if (match && sourceMap.eastmoney) identifiers.push({ instrument_id: instrumentId, source_id: sourceMap.eastmoney, identifier_type: 'f10_code', identifier_value: `${match[2]}${match[1]}`, valid_from: row.list_date || '0001-01-01' });
+    if (match && sourceMap.sina) identifiers.push({ instrument_id: instrumentId, source_id: sourceMap.sina, identifier_type: 'symbol', identifier_value: `${match[2].toLowerCase()}${match[1]}`, valid_from: row.list_date || '0001-01-01' });
+  }
+  if (identifiers.length) {
+    await client.query(
+      `INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
+       SELECT x.instrument_id,x.source_id,x.identifier_type,x.identifier_value,x.valid_from
+         FROM jsonb_to_recordset($1::jsonb) AS x(instrument_id bigint,source_id smallint,identifier_type text,identifier_value text,valid_from date)
+        WHERE x.source_id IS NOT NULL
+       ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,
+      [JSON.stringify(identifiers)]
+    );
+  }
+  return instrumentMap;
 }
 
 async function saveTerms(client, instrumentId, profile, tushareSource) {
@@ -1566,7 +1641,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       latestTradeDates(targetTradeDate),
     ]);
     const allBasicRows = tsRows(basicData);
-    const listedStockCodes = new Set(tsRows(stockStatusData)
+    const stockStatusRows = tsRows(stockStatusData);
+    const listedStockCodes = new Set(stockStatusRows
       .map(row => String(row.ts_code || '').trim().toUpperCase())
       .filter(Boolean));
     const today = tsDateStr(new Date());
@@ -1588,6 +1664,10 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     }
     const profiles = [...profileMap.values()];
     const activeCodes = new Set(basics.map(row => row.ts_code));
+    const profileStockCodes = new Map();
+    for (const profile of profiles) {
+      if (profile.stk_code) profileStockCodes.set(profile.ts_code, await resolveCanonicalCode(profile.stk_code, 'stock').catch(() => profile.stk_code));
+    }
     const daily = await latestFullBondDaily(dates, {
       activeCodes,
       expectedBondCount: basics.length,
@@ -1602,12 +1682,14 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       error.dataDiagnostics = { targetTradeDate, reason: daily.reason, candidates: daily.diagnostics };
       throw error;
     }
-    const [stockDailyData, stockValuationData] = await Promise.all([
+    const [stockDailyData, stockValuationData, stockAdjustmentData] = await Promise.all([
       tushareQuery('daily', { trade_date: daily.tradeDate }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
       tushareQuery('daily_basic', { trade_date: daily.tradeDate }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
+      tushareQuery('adj_factor', { trade_date: daily.tradeDate }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
     ]);
     const stockDailyRows = tsRows(stockDailyData);
     const stockValuationRows = tsRows(stockValuationData);
+    const stockAdjustmentRows = tsRows(stockAdjustmentData);
     const profileByCode = new Map(profiles.map(row => [row.ts_code, row]));
     const stockCloseByCode = new Map(stockDailyRows.map(row => [row.ts_code, finite(row.close)]));
     // Tushare cb_daily 偶发只返回价格、不返回转股价值/溢价率；用同日正股收盘价和转股价补齐，
@@ -1616,7 +1698,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       .filter(row => activeCodes.has(row.ts_code))
       .map(row => {
         const profile = profileByCode.get(row.ts_code);
-        const stockClose = profile ? stockCloseByCode.get(profile.stk_code) : null;
+        const stockClose = profile ? stockCloseByCode.get(profileStockCodes.get(profile.ts_code) || profile.stk_code) : null;
         const conversionPrice = profile ? finite(profile.conv_price) : null;
         const close = finite(row.close);
         const conversionValue = finite(row.cb_value) != null
@@ -1655,11 +1737,12 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
            JOIN core.instruments i ON i.instrument_id = p.instrument_id`);
       for (const row of prevRows.rows) prevConvPrice.set(row.ts_code, finite(row.current_conv_price));
 
-      const stockInstrumentMap = new Map();
+      const stockInstrumentMap = await ensureStockUniverse(client, stockStatusRows, sources.tushare);
       for (const profile of profiles) {
         const ids = await saveProfile(client, profile, sources, issueMap.get(profile.ts_code)?.onl_date);
         await saveIssueFacts(client, issueMap.get(profile.ts_code), ids.bondId, sources.tushare, ingestionRunId, profile.list_date);
-        if (profile.stk_code && ids.stockId) stockInstrumentMap.set(profile.stk_code, ids.stockId);
+        const stockCode = profileStockCodes.get(profile.ts_code) || profile.stk_code;
+        if (stockCode && ids.stockId) stockInstrumentMap.set(stockCode, ids.stockId);
         const quote = dailyMap.get(profile.ts_code);
         if (quote) await saveDailyBar(client, ids.bondId, quote, sources.tushare);
         const before = prevConvPrice.get(profile.ts_code);
@@ -1669,7 +1752,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         }
         saved += 1;
       }
-      await saveFullStockMarketPartition(client, stockInstrumentMap, stockDailyRows, stockValuationRows, sources.tushare);
+      await saveFullStockMarketPartition(client, stockInstrumentMap, stockDailyRows, stockValuationRows, sources.tushare, stockAdjustmentRows);
       await client.query(
         `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count)
          VALUES('convertible_bond_universe','cb_basic_cb_daily',$1,now(),now(),'',0)
@@ -1698,6 +1781,28 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     if (convPriceChanges.length) {
       console.log(`[主同步] 检测到 ${convPriceChanges.length} 只转债转股价变动：${convPriceChanges.map(c => c.ts_code).join(',')}`);
       await handleConvPriceChanges(convPriceChanges);
+    }
+    // 正股停牌日是强赎/下修计算的共同输入：由行情主采集链路集中拉取一次，
+    // 估值与分析任务只读 market.stock_suspend_calendar，不得在派生任务内重复调用 suspend_d。
+    let suspensionResult = { ok: true, skipped: true, reason: 'not_requested' };
+    try {
+      const { syncConvertibleBondSuspensions } = require('./convertibleBondSuspensionSync');
+      suspensionResult = await syncConvertibleBondSuspensions({ startDate: daily.tradeDate, endDate: daily.tradeDate });
+      if (suspensionResult.ok) console.log(`[主同步] 正股停牌日已入库（${suspensionResult.count} 条，行情日期 ${daily.tradeDate}）`);
+    } catch (suspensionError) {
+      suspensionResult = { ok: false, error: suspensionError.message };
+      console.warn('[主同步] 正股停牌日同步失败，保留上一份停牌日缓存：', suspensionError.message);
+    }
+    try {
+      await Promise.all([
+        publishDatasetPartition('bond_daily', 'CN', { dataAsOf: daily.tradeDate, rowCount: activeDailyRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('stock_daily', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockDailyRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('stock_valuation', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockValuationRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('stock_adj_factor', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockAdjustmentRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('stock_suspend_calendar', 'CN', { dataAsOf: daily.tradeDate, rowCount: suspensionResult.count || 0, sourceId: tushareSourceId, status: suspensionResult.ok ? 'published' : 'stale', isStale: !suspensionResult.ok, staleReason: suspensionResult.error || '' }),
+      ]);
+    } catch (partitionError) {
+      console.warn('[主同步] 数据集分区水位写入失败（不覆盖已入库事实）：', partitionError.message);
     }
     // 评级历史自动补齐（独立事务，失败不影响主同步；缺评级的转债逐只从 Tushare 拉取）
     try { await backfillMissingRatings(reason); }
@@ -1740,6 +1845,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       dataDiagnostics: daily.diagnostics,
       listing_performance: listingPerformance,
       issue_results: issueResults,
+      suspension: suspensionResult,
     };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
@@ -2206,13 +2312,13 @@ async function saveStockValuation(client, stockId, row, sourceId) {
      ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET pe_static=EXCLUDED.pe_static,pe_ttm=EXCLUDED.pe_ttm,
        pb=EXCLUDED.pb,dividend_yield_ttm=EXCLUDED.dividend_yield_ttm,total_market_cap=EXCLUDED.total_market_cap,
        circulating_market_cap=EXCLUDED.circulating_market_cap,ingested_at=now()`,
-    [stockId, isoDate(row.trade_date), sourceId, finite(row.pe), finite(row.pe_ttm), finite(row.pb), finite(row.dv_ttm),
+    [stockId, isoDate(row.trade_date), sourceId, finite(row.pe), finite(row.pe_ttm), finite(row.pb), finite(row.dv_ttm) == null ? null : finite(row.dv_ttm) / 100,
       finite(row.total_mv) == null ? null : finite(row.total_mv) * 10000,
       finite(row.circ_mv) == null ? null : finite(row.circ_mv) * 10000]
   );
 }
 
-async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, valuationRows, sourceId) {
+async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, valuationRows, sourceId, adjustmentRows = []) {
   const bars = (dailyRows || []).map(row => {
     const instrumentId = instrumentMap.get(row.ts_code);
     return instrumentId ? {
@@ -2236,7 +2342,8 @@ async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, va
     return instrumentId ? {
       instrument_id: instrumentId, trade_date: isoDate(row.trade_date),
       pe_static: finite(row.pe), pe_ttm: finite(row.pe_ttm), pb: finite(row.pb),
-      dividend_yield_ttm: finite(row.dv_ttm),
+      // Tushare daily_basic.dv_ttm 是百分数点（5 表示 5%），标准层统一存小数（0.05）。
+      dividend_yield_ttm: finite(row.dv_ttm) == null ? null : finite(row.dv_ttm) / 100,
       total_market_cap: finite(row.total_mv) == null ? null : finite(row.total_mv) * 10000,
       circulating_market_cap: finite(row.circ_mv) == null ? null : finite(row.circ_mv) * 10000,
     } : null;
@@ -2254,7 +2361,23 @@ async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, va
       [JSON.stringify(valuations), sourceId]
     );
   }
-  return { bars: bars.length, valuations: valuations.length };
+  const factors = (adjustmentRows || []).map(row => {
+    const instrumentId = instrumentMap.get(row.ts_code);
+    const factor = finite(row.adj_factor);
+    return instrumentId && factor != null && isoDate(row.trade_date)
+      ? { instrument_id: instrumentId, trade_date: isoDate(row.trade_date), adj_factor: factor }
+      : null;
+  }).filter(Boolean);
+  if (factors.length) {
+    await client.query(
+      `INSERT INTO market.adjustment_factors(instrument_id,trade_date,source_id,adj_factor)
+       SELECT x.instrument_id,x.trade_date,$2,x.adj_factor
+         FROM jsonb_to_recordset($1::jsonb) AS x(instrument_id bigint,trade_date date,adj_factor numeric)
+       ON CONFLICT(instrument_id,trade_date,source_id) DO UPDATE SET adj_factor=EXCLUDED.adj_factor,ingested_at=now()`,
+      [JSON.stringify(factors), sourceId]
+    );
+  }
+  return { bars: bars.length, valuations: valuations.length, factors: factors.length };
 }
 
 async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {

@@ -8,6 +8,7 @@ const {
   normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks,
 } = require('../services/stockAnalysis');
 const { getStockStatements } = require('../services/stockStatements');
+const { getDatasetMetadata } = require('../services/datasetPartitions');
 
 async function validStock(req, res, next) {
   const tsCode = normalizeStockCode(req.params.ts_code);
@@ -61,8 +62,12 @@ router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) 
   const snapshot = await getSnapshot(req.stockTsCode);
   if (!snapshot) return res.status(404).json({ error: '尚未建档，请刷新该股票' });
   try {
-    const current = await buildAnalysis(req.stockTsCode);
-    res.json(Object.assign(current, { refreshed_at: snapshot.refreshed_at, source_updated_at: snapshot.source_updated_at, diagnostics: snapshot.diagnostics, needs_refresh: snapshot.needs_refresh, freshness: snapshot.freshness }));
+    const current = await buildAnalysis(req.stockTsCode, { readOnly: true });
+    const partition = await getDatasetMetadata('stock_daily', 'CN');
+    res.json(Object.assign(current, { refreshed_at: snapshot.refreshed_at, source_updated_at: snapshot.source_updated_at,
+      data_as_of: partition.data_as_of || current.latest_market_trade_date || null, published_at: partition.published_at,
+      is_stale: partition.is_stale, stale_reason: partition.stale_reason,
+      diagnostics: snapshot.diagnostics, needs_refresh: snapshot.needs_refresh, freshness: snapshot.freshness }));
   } catch (_) {
     res.json(snapshot);
   }

@@ -40,6 +40,29 @@ function dateMinusDays(value, days) {
   return result.toISOString().slice(0, 10);
 }
 
+// top10_cb_holders 不提供公告日。历史评分使用法定最晚披露日作为保守可见日，
+// 宁可晚用，也不能把报告期结束日当成市场已经可见而产生未来数据泄漏。
+function holderAvailableDate(row) {
+  const announcedAt = dateText(row && row.announced_at);
+  if (announcedAt) return announcedAt;
+  const reportDate = dateText(row && row.report_date);
+  if (!reportDate) return null;
+  const year = Number(reportDate.slice(0, 4));
+  const monthDay = reportDate.slice(5);
+  if (monthDay === '12-31') return `${year + 1}-04-30`;
+  if (monthDay === '06-30') return `${year}-08-31`;
+  if (monthDay === '03-31') return `${year}-04-30`;
+  if (monthDay === '09-30') return `${year}-10-31`;
+  return null;
+}
+
+function researchLevel(percentile, score) {
+  if (finite(score) == null || finite(percentile) == null) return 'unavailable';
+  if (Number(percentile) >= 0.8) return 'relative_high';
+  if (Number(percentile) >= 0.4) return 'relative_medium';
+  return 'relative_low';
+}
+
 function normalizeBondCode(value) {
   const text = String(value || '').trim().toUpperCase();
   return BOND_CODE_RE.test(text) ? text : null;
@@ -345,7 +368,7 @@ function scoreMarket(input) {
   else if (bondClose != null && bondClose < 110) { values.push(2); items.push('转债价格接近面值'); }
   const bondRank = percentileRank(input.bondPriceHistory, bondClose);
   if (bondRank != null && bondRank <= 0.2) { values.push(2); items.push('转债价格处于自身历史低位'); }
-  const proposalRank = percentileRank(input.proposalHistory, input.proposalMonthlyCount != null ? input.proposalMonthlyCount : input.proposalCount || 0);
+  const proposalRank = percentileRank(input.proposalHistory, input.proposalCount || 0);
   // 其他转债的下修只能作为市场背景，不能直接证明本债发行人有下修动机，因此不计入单债评分。
   if (proposalRank != null && proposalRank >= 0.6) contextItems.push('近期全市场下修提议偏多（仅作市场背景，不计入本债动机分）');
   if (input.industryProposalPressure) contextItems.push('同行近期下修提议偏多（仅作市场背景，不计入本债动机分）');
@@ -432,7 +455,6 @@ function buildDimensionCalculations(input) {
     market: [
       item('bond_close', '转债价格', input.bondClose, '元', '<100加4分，<110加2分'),
       item('bond_price_percentile', '转债历史价格分位', percentileRank(input.bondPriceHistory, input.bondClose), '百分位', '≤20%加2分'),
-      item('proposal_monthly_count', '当月下修提议次数', input.proposalMonthlyCount, '次', '仅作市场背景参考，不计入本债动机分'),
       item('industry_proposal_pressure', '同行近期提议压力', input.industryProposalPressure, '状态', '仅作市场背景参考，不计入本债动机分'),
     ],
   };
@@ -470,19 +492,19 @@ function buildMotiveScore(input = {}) {
   };
 }
 
-function snapshotRow(field, label, value, unit, dataDate, source, rule = '', delta = null, businessKey = '', apiName = '', ingestedAt = null) {
+function snapshotRow(field, label, value, unit, dataDate, source, rule = '', delta = null, businessKey = '', apiName = '', ingestedAt = null, statusOverride = '') {
   const present = value !== null && value !== undefined && value !== '';
   return {
     field, metric: field, label, value: present ? value : null, raw_value: present ? value : null, unit,
     rule, delta, data_date: dateText(dataDate), source, business_key: businessKey, api_name: apiName,
-    ingested_at: ingestedAt || null, status: present ? 'present' : 'missing',
+    ingested_at: ingestedAt || null, status: statusOverride || (present ? 'present' : 'missing'),
   };
 }
 
 function inputSnapshot(input) {
   const p = input.profile || {}, f = input.financial || {}, meta = input.sourceMeta || {};
   const structured = value => value == null ? null : JSON.stringify(value);
-  const holderSummary = (input.holders || []).map(row => ({ report_date: dateText(row.report_date), holder_name: row.holder_name,
+  const holderSummary = (input.holders || []).filter(row => row.reportKind === 'latest' || row.reportKind === 'initial').map(row => ({ report_date: dateText(row.report_date), holder_name: row.holder_name,
     holder_type: row.holder_type, hold_amount: finite(row.hold_amount), hold_ratio: finite(row.hold_ratio), related: Boolean(row.related), report_kind: row.reportKind }));
   const cycleSummary = (input.cycles || []).map(row => ({ cycle_no: row.cycle_no, cycle_start_date: dateText(row.cycle_start_date),
     trigger_date: dateText(row.trigger_date), proposal_date: dateText(row.proposal_date), decision_date: dateText(row.decision_date),
@@ -502,13 +524,12 @@ function inputSnapshot(input) {
     snapshotRow('matched_days', '已满足天数', input.matchedDays, '天', input.tradeDate, 'analytics.convertible_bond_trigger_daily', '与必要天数比较', null, input.tsCode, '本地计算', meta.trigger_calculated_at),
     snapshotRow('required_days', '必要天数', input.requiredDays, '天', input.tradeDate, 'analytics.convertible_bond_trigger_daily', '与已满足天数比较', null, input.tsCode, '本地计算', meta.trigger_calculated_at),
     snapshotRow('remaining_days', '剩余观察天数', input.remainingDays, '天', input.tradeDate, 'analytics.convertible_bond_trigger_daily', '成熟度评分', null, input.tsCode, '本地计算', meta.trigger_calculated_at),
-    snapshotRow('pledge_ratio', '股权质押比例', input.pledgeRatio, '%', input.pledgeDate, 'fundamental.company_pledge_snapshots', '20%/40%分段加分', null, input.companyId || '', 'pledge_stat', meta.pledge_ingested_at),
+    snapshotRow('pledge_ratio', '股权质押比例', input.pledgeRatio, '%', input.pledgeDate, 'fundamental.company_pledge_snapshots', '20%/40%分段加分；正常空结果表示该截止日未返回质押统计，不按未知错误处理', null, input.companyId || '', 'pledge_stat', meta.pledge_ingested_at, input.pledgeObservationStatus),
     snapshotRow('safety_level', '安全性结果', input.safetyLevel, '等级', input.tradeDate, 'bond_safety_snapshots', '仅展示，不抵消动机分', null, input.tsCode, '本地计算', meta.safety_refreshed_at),
-    snapshotRow('financial_metrics', '财务指标说明', structured(f), '说明', f.report_period, 'fundamental.financial_reports', '同一报告期内取数', null, input.companyId || '', 'financial_reports', meta.financial_ingested_at),
-    snapshotRow('controller', '控制人快照', structured(input.controller), 'JSON', input.controllerDate || input.tradeDate, 'core.company_controllers', '控制人类型/持股比例', null, input.companyId || '', 'company_controllers', meta.controller_announced_at),
-    snapshotRow('holder_positions', '前十大持有人快照', structured(holderSummary), 'JSON', input.holderDate, 'fundamental.convertible_bond_holder_positions', '最新报告期与初始报告期对比', null, input.tsCode, 'top10_cb_holders', meta.holder_ingested_at),
+    snapshotRow('financial_metrics', '财务指标说明', structured(f), '说明', f.report_period, f.source_table || 'fundamental.financial_reports', '同一报告期内取数', null, input.companyId || input.stockCode || '', f.source_api || 'financial_reports', meta.financial_ingested_at),
+    snapshotRow('controller', '控制人快照', structured(input.controller), '说明', input.controllerDate || input.tradeDate, 'core.company_controllers', '控制人类型/持股比例', null, input.companyId || '', 'company_controllers', meta.controller_announced_at),
+    snapshotRow('holder_positions', '前十大持有人快照', structured(holderSummary), '说明', input.holderDate, 'fundamental.convertible_bond_holder_positions', '最新报告期与初始报告期对比', null, input.tsCode, 'top10_cb_holders', meta.holder_ingested_at),
     snapshotRow('revision_cycles', '历史下修情况', structured(cycleSummary), '说明', input.tradeDate, 'analytics.convertible_bond_revision_cycles', '按时间说明过去的下修过程', null, input.tsCode, '本地计算', meta.cycle_calculated_at),
-    snapshotRow('proposal_history', '市场每月提议下修次数', structured(input.proposalHistory || []), '说明', input.tradeDate, 'event.convertible_bond_revision_events', '看市场最近每个月提议下修的数量', null, input.tsCode, '本地事件', meta.event_latest_at),
     snapshotRow('put_progress', '回售触发进度', input.putProgress, '分', input.tradeDate, 'analytics.analysis_snapshots', '回售触发迹象最高加6分', null, input.tsCode, '本地快照', meta.analysis_as_of_date),
     snapshotRow('quality_status', '输入质量状态', input.qualityStatus, '状态', input.tradeDate, '本地评分质量门槛', 'complete/partial/incomplete', null, input.tsCode, '本地计算'),
   ];
@@ -527,7 +548,7 @@ function sourceReferences(input) {
     { group: '治理压力', table: 'fundamental.convertible_bond_holder_positions', data_date: dateText(input.holderDate), source: 'Tushare结果入库', business_key: input.tsCode, api_name: 'top10_cb_holders', ingested_at: meta.holder_ingested_at },
     { group: '治理压力', table: 'fundamental.company_pledge_snapshots', data_date: dateText(input.pledgeDate), source: 'Tushare结果入库', business_key: input.companyId || '', api_name: 'pledge_stat', ingested_at: meta.pledge_ingested_at },
     { group: '治理压力', table: 'core.company_controllers', data_date: dateText(input.controllerDate), source: '本地公司事实库', business_key: input.companyId || '', api_name: 'company_controllers', ingested_at: meta.controller_announced_at },
-    { group: '财务压力', table: 'fundamental.financial_reports', data_date: dateText(input.financialDate), source: '已入库财报事实', business_key: input.companyId || '', api_name: 'financial_reports', ingested_at: meta.financial_ingested_at },
+    { group: '财务压力', table: input.financial && input.financial.source_table || 'fundamental.financial_reports', data_date: dateText(input.financialDate), source: input.financial && input.financial.source_table === 'bond_safety_financial_cache' ? '已入库正股财务缓存' : '已入库财报事实', business_key: input.companyId || input.stockCode || '', api_name: input.financial && input.financial.source_api || 'financial_reports', ingested_at: meta.financial_ingested_at },
     { group: '安全性', table: 'bond_safety_snapshots', data_date: dateText(meta.safety_refreshed_at), source: '本地安全性快照', business_key: input.tsCode, api_name: 'bond_safety_snapshots', ingested_at: meta.safety_refreshed_at },
   ];
   (input.events || []).filter(row => row.source_url).forEach(row => refs.push({
@@ -566,19 +587,22 @@ function buildFinancial(reports, cache) {
     || dateText(cache && (cache.report_end_date || cache.period_end || cache.end_date));
   const periodReports = period ? orderedReports.filter(row => dateText(row.period_end) === period) : [];
   const rows = periodReports.length ? periodReports.map(row => row.raw_payload || row) : cache && cache.data ? [cache.data] : [];
-  const cash = rawReportValue(rows, ['money_cap', 'monetary_cap', 'cash_cash_equivalents', 'cash_equivalents']);
+  const cash = rawReportValue(rows, ['money_cap', 'monetary_cap', 'cash_cash_equivalents', 'cash_equivalents', 'cash']);
   const trading = rawReportValue(rows, ['tradable_fin_assets', 'trading_fin_assets', 'trading_assets']);
-  const liabilities = rawReportValue(rows, ['total_liab', 'total_liabilities']);
+  const liabilities = rawReportValue(rows, ['total_liab', 'total_liabilities', 'total_liability']);
   const assets = rawReportValue(rows, ['total_assets']);
-  const revenue = rawReportValue(rows, ['total_revenue', 'revenue']);
+  const revenue = rawReportValue(rows, ['total_revenue', 'revenue', 'operating_revenue']);
   const interest = rawReportValue(rows, ['fin_exp_int_exp', 'interest_expense', 'finan_exp']);
   const currentRatio = rawReportValue(rows, ['current_ratio', 'current_ratio_value']);
   const ebit = rawReportValue(rows, ['ebit', 'operating_profit']);
   const depreciation = rawReportValue(rows, ['depr_fa_coga_dpba', 'depreciation']);
   const amortization = rawReportValue(rows, ['amort_intang_assets', 'amortization']);
+  const fromStandardReports = periodReports.length > 0;
   return { cash, trading_assets: trading, total_liabilities: liabilities, total_assets: assets, current_ratio: currentRatio, revenue, interest_expense: interest,
     ebitda: ebit == null ? null : ebit + (depreciation || 0) + (amortization || 0), report_period: period,
-    announced_at: periodReports[0] && dateText(periodReports[0].announced_at) || dateText(cache && cache.announced_at) };
+    announced_at: periodReports[0] && dateText(periodReports[0].announced_at) || dateText(cache && cache.announced_at),
+    source_table: fromStandardReports ? 'fundamental.financial_reports' : cache && cache.data ? 'bond_safety_financial_cache' : 'fundamental.financial_reports',
+    source_api: fromStandardReports ? 'financial_reports' : cache && cache.data ? 'bond_safety_financial_cache' : 'financial_reports' };
 }
 
 async function loadMotiveInput(tsCode, tradeDate, db = pool) {
@@ -615,11 +639,15 @@ async function loadMotiveInput(tsCode, tradeDate, db = pool) {
   );
   if (!rows.length) return null;
   const base = rows[0];
-  const [events, noRevision, holders, pledge, controllers, financial, cache, safety, analysisSnapshot, stockBars, bondBars, history, proposal, industry, triggerHistory] = await Promise.all([
+  const [events, noRevision, holders, pledge, pledgeCursor, controllers, financial, cache, safety, analysisSnapshot, stockBars, bondBars, history, proposal, industry, triggerHistory] = await Promise.all([
     db.query(`SELECT event_type,announced_at,meeting_date,effective_date,title,summary,source_url,source_number,updated_at FROM event.convertible_bond_revision_events WHERE instrument_id=$1 AND announced_at <= $2 ORDER BY announced_at,event_id`, [base.instrument_id, tradeDate]),
     db.query(`SELECT announced_at,valid_until,next_eligible_date,summary FROM analytics.convertible_bond_announcement_history WHERE instrument_id=$1 AND fact_type='no_revision' AND announced_at <= $2 ORDER BY announced_at`, [base.instrument_id, tradeDate]),
-    db.query(`SELECT report_date,announced_at,holder_name,holder_name_normalized,holder_type,hold_amount,hold_ratio,ingested_at FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1 AND announced_at IS NOT NULL AND announced_at <= $2 ORDER BY report_date DESC,holder_rank`, [base.instrument_id, tradeDate]),
+    db.query(`SELECT report_date,announced_at,holder_name,holder_name_normalized,holder_type,hold_amount,hold_ratio,ingested_at FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1 AND report_date <= $2 ORDER BY report_date DESC,holder_rank`, [base.instrument_id, tradeDate]),
     base.company_id ? db.query(`SELECT as_of_date,announced_at,pledge_ratio,pledged_shares,unpledged_shares,ingested_at FROM fundamental.company_pledge_snapshots WHERE company_id=$1 AND announced_at IS NOT NULL AND announced_at <= $2 ORDER BY as_of_date DESC,announced_at DESC,pledge_id DESC LIMIT 1`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
+    base.company_id ? db.query(`SELECT last_success_date,last_attempt_at FROM ops.sync_cursors
+      WHERE company_id=$1 AND scope_key=('company:' || $1::text) AND dataset_code='pledge_stat'
+        AND COALESCE(last_error,'')='' AND last_success_date <= $2::date
+      ORDER BY last_success_date DESC,last_attempt_at DESC LIMIT 1`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
     base.company_id ? db.query(`SELECT controller_name,controller_type,control_ratio,announced_at FROM core.company_controllers WHERE company_id=$1 AND (announced_at IS NULL OR announced_at <= $2::date) AND (valid_from IS NULL OR valid_from <= $2::date) AND (valid_to IS NULL OR valid_to >= $2::date) ORDER BY is_current DESC,announced_at DESC,controller_id DESC LIMIT 1`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
     base.company_id ? db.query(`SELECT report_kind,period_end,announced_at,raw_payload,ingested_at FROM fundamental.financial_reports WHERE company_id=$1 AND period_end <= $2::date AND announced_at IS NOT NULL AND announced_at <= $2::date ORDER BY period_end DESC,announced_at DESC,report_id DESC LIMIT 20`, [base.company_id, tradeDate]) : Promise.resolve({ rows: [] }),
     base.stock_code ? db.query('SELECT data,report_end_date,announced_at,fetched_at FROM bond_safety_financial_cache WHERE ts_code=$1 AND announced_at IS NOT NULL AND announced_at::date <= $2::date ORDER BY fetched_at DESC LIMIT 1', [base.stock_code, tradeDate]) : Promise.resolve({ rows: [] }),
@@ -643,7 +671,10 @@ async function loadMotiveInput(tsCode, tradeDate, db = pool) {
                WHERE instrument_id=$1 AND trigger_type='reset' AND formula_version='reset-v2' AND data_status='complete' AND trade_date <= $2::date
                ORDER BY trade_date`, [base.instrument_id, tradeDate]),
   ]);
-  const holderRows = holders.rows;
+  const holderRows = holders.rows.filter(row => {
+    const availableAt = holderAvailableDate(row);
+    return availableAt && availableAt <= tradeDate;
+  });
   const latestDate = holderRows[0] && dateText(holderRows[0].report_date);
   const initialDate = holderRows.length ? holderRows.map(row => dateText(row.report_date)).filter(Boolean).sort()[0] : null;
   const controller = controllers.rows[0] || {};
@@ -658,13 +689,14 @@ async function loadMotiveInput(tsCode, tradeDate, db = pool) {
   const vwapRows = stockRows.filter(row => finite(row.volume) > 0 && finite(row.amount) != null);
   const stockVwap = vwapRows.length ? vwapRows.slice(0, 20).reduce((sum, row) => sum + Number(row.amount) * 10, 0) / vwapRows.slice(0, 20).reduce((sum, row) => sum + Number(row.volume), 0) : null;
   const financialData = buildFinancial(financial.rows, cache.rows[0]);
-  const currentMonth = `${String(tradeDate).slice(0, 7)}-01`;
-  const proposalMonthlyCount = Number((history.rows.find(row => dateText(row.period) === currentMonth) || {}).count || 0);
   const industryRecent = Number(industry.rows[0] && industry.rows[0].recent_count || 0);
   const industryYear = Number(industry.rows[0] && industry.rows[0].year_count || 0);
+  const pledgeRow = pledge.rows[0] || null;
+  const pledgeObservedAt = pledgeRow && dateText(pledgeRow.as_of_date)
+    || pledgeCursor.rows[0] && dateText(pledgeCursor.rows[0].last_success_date);
   const quality = qualityRate({ bondClose: base.bond_close, stockClose: base.stock_close, profile: {
     currentConvPrice: base.current_conv_price, maturityDate: dateText(base.maturity_date), issueSize: finite(base.issue_size), remainSize: finite(base.remain_size)
-  }, financialDate: financialData.report_period, holderDate: latestDate, pledgeDate: pledge.rows[0] && pledge.rows[0].as_of_date });
+  }, financialDate: financialData.report_period, holderDate: latestDate, pledgeDate: pledgeObservedAt });
   const cycles = buildRevisionCycles(events.rows, noRevision.rows, triggerHistory.rows);
   return {
     instrumentId: base.instrument_id, tsCode, tradeDate, bondName: base.bond_name || base.bond_short_name, stockCode: base.stock_code, stockName: base.stock_name,
@@ -679,16 +711,17 @@ async function loadMotiveInput(tsCode, tradeDate, db = pool) {
     remainingDays: finite(base.required_days) != null && finite(base.matched_days) != null ? Math.max(0, finite(base.required_days) - finite(base.matched_days)) : null,
     rollingRemainingDays: finite(base.rolling_remaining_days), netAssetFloorApplicable: Boolean(base.net_asset_floor_applicable),
     locked, financial: financialData, financialDate: financialData.report_period, safetyLevel: safetyItem.safety || safetyItem.safety_level || '',
-    holders: holderData, holderDate: latestDate, pledgeRatio: pledge.rows[0] && finite(pledge.rows[0].pledge_ratio), pledgeDate: pledge.rows[0] && dateText(pledge.rows[0].as_of_date),
+    holders: holderData, holderDate: latestDate, pledgeRatio: pledgeRow && finite(pledgeRow.pledge_ratio), pledgeDate: pledgeObservedAt,
+    pledgeObservationStatus: pledgeRow ? 'present' : pledgeObservedAt ? 'observed_empty' : 'missing',
     controller: { ...controller, name: controller.controller_name, type: controller.controller_type, ratio: finite(controller.control_ratio) }, controllerDate: controller.announced_at && dateText(controller.announced_at),
     cycles, events: events.rows, noRevision: noRevision.rows, bondPriceHistory: bondBars.rows.map(row => finite(row.close)),
-    proposalCount: Number(proposal.rows[0] && proposal.rows[0].count || 0), proposalMonthlyCount, proposalHistory: history.rows.map(row => finite(row.count)),
+    proposalCount: Number(proposal.rows[0] && proposal.rows[0].count || 0), proposalHistory: history.rows.map(row => finite(row.count)),
     industryProposalPressure: industryRecent > 0 && (industryRecent >= 2 || industryRecent * 4 >= Math.max(industryYear, 1)),
     putProgress: (() => { const basic = analysisSnapshot.rows[0] && analysisSnapshot.rows[0].payload && analysisSnapshot.rows[0].payload.basic || {}; const required = finite(basic.put_required_days); const matched = finite(basic.put_day_count); return basic.put_met ? 6 : required && matched != null ? Math.min(6, matched / required * 6) : 0; })(),
     qualityStatus: quality.status, qualityRate: quality.rate, termId: base.term_id,
     sourceMeta: { market_ingested_at: base.market_ingested_at, stock_ingested_at: base.stock_ingested_at, valuation_ingested_at: base.valuation_ingested_at,
       trigger_calculated_at: base.trigger_calculated_at, profile_ingested_at: null, holder_ingested_at: holderRows[0] && holderRows[0].ingested_at,
-      pledge_ingested_at: pledge.rows[0] && pledge.rows[0].ingested_at, financial_ingested_at: financial.rows[0] && financial.rows[0].ingested_at,
+      pledge_ingested_at: pledge.rows[0] && pledge.rows[0].ingested_at, financial_ingested_at: financial.rows[0] && financial.rows[0].ingested_at || cache.rows[0] && cache.rows[0].fetched_at,
       controller_announced_at: controller.announced_at, cycle_calculated_at: null, event_latest_at: events.rows.length ? events.rows[events.rows.length - 1].announced_at : null,
       event_latest_ingested_at: null, safety_refreshed_at: safety.rows[0] && (safety.rows[0].source_updated_at || safety.rows[0].refreshed_at), analysis_as_of_date: analysisSnapshot.rows[0] && analysisSnapshot.rows[0].as_of_date },
   };
@@ -783,16 +816,36 @@ async function getBondRevisionMotiveDetail({ tsCode, tradeDate = null }) {
   let dateClause = '';
   if (tradeDate) { params.push(dateText(tradeDate)); dateClause = ` AND m.trade_date=$${params.length}::date`; }
   const { rows } = await pool.query(
-    `SELECT m.*,i.canonical_code AS ts_code,i.name AS bond_name,p.stock_instrument_id,si.canonical_code AS stock_code,si.name AS stock_name
+    `SELECT m.*,i.canonical_code AS ts_code,i.name AS bond_name,p.stock_instrument_id,si.canonical_code AS stock_code,si.name AS stock_name,
+            (SELECT count(*) FILTER (WHERE peer.motive_score <= m.motive_score)::numeric / NULLIF(count(*),0)
+               FROM analytics.convertible_bond_revision_motive_daily peer
+              WHERE peer.trade_date=m.trade_date AND peer.model_version=m.model_version) AS research_percentile
        FROM analytics.convertible_bond_revision_motive_daily m JOIN core.instruments i ON i.instrument_id=m.instrument_id
        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id
       WHERE i.canonical_code=$1 AND m.model_version=$2${dateClause} ORDER BY m.trade_date DESC,m.calculated_at DESC LIMIT 1`, params
   );
-  if (!rows.length) return null;
+  if (!rows.length) {
+    const { rows: bonds } = await pool.query(`SELECT i.canonical_code AS ts_code,i.name AS bond_name,si.canonical_code AS stock_code,si.name AS stock_name
+      FROM core.instruments i JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      LEFT JOIN core.instruments si ON si.instrument_id=p.stock_instrument_id WHERE i.canonical_code=$1 LIMIT 1`, [code]);
+    if (!bonds.length) return null;
+    return {
+      bond: bonds[0], score_summary: { motive_score: null, maturity_score: null, motive_level: 'unavailable',
+        research_level: 'unavailable', research_percentile: null, classification: '尚未生成评分快照', safety_level: '',
+        quality_status: 'incomplete', completeness_rate: 0, trade_date: tradeDate || null },
+      dimension_calculations: [], market_context: [], executability_calculation: {}, input_snapshot: [], source_references: [],
+      core_motives: [], blockers: ['尚未生成评分快照，请等待下一次下修动机计算任务'], model_version: MOTIVE_MODEL_VERSION,
+      calculated_at: null, input_hash: null,
+    };
+  }
   const row = rows[0];
+  const percentile = finite(row.research_percentile);
   return {
     bond: { ts_code: row.ts_code, bond_name: row.bond_name, stock_code: row.stock_code, stock_name: row.stock_name },
-    score_summary: { motive_score: finite(row.motive_score), maturity_score: finite(row.maturity_score), motive_level: row.motive_level, classification: row.classification, safety_level: row.safety_level, quality_status: row.quality_status, completeness_rate: finite(row.completeness_rate), trade_date: dateText(row.trade_date) },
+    score_summary: { motive_score: finite(row.motive_score), maturity_score: finite(row.maturity_score), motive_level: row.motive_level,
+      research_level: researchLevel(percentile, row.motive_score), research_percentile: percentile,
+      classification: row.classification, safety_level: row.safety_level, quality_status: row.quality_status,
+      completeness_rate: finite(row.completeness_rate), trade_date: dateText(row.trade_date) },
     dimension_calculations: Object.entries((row.components && row.components.dimensions) || {}).map(([key, value]) => ({ dimension: key, score: value, items: (row.components.dimension_items && row.components.dimension_items[key]) || [], calculations: (row.components.dimension_calculations && row.components.dimension_calculations[key]) || [] })),
     market_context: row.components && row.components.market_context || [],
     executability_calculation: { status: row.executability_status, floor_price: finite(row.estimated_floor_price), space: finite(row.estimated_space), post_conversion_value: finite(row.estimated_post_conversion_value), value_uplift: finite(row.estimated_value_uplift), blockers: row.blockers || [] },
@@ -990,7 +1043,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
 }
 
 module.exports = {
-  MOTIVE_MODEL_VERSION, MOTIVE_MODEL_CALIBRATED, CYCLE_VERSION, dateText, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles,
+  MOTIVE_MODEL_VERSION, MOTIVE_MODEL_CALIBRATED, CYCLE_VERSION, dateText, holderAvailableDate, researchLevel, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles,
   scoreHistory, scorePressure, scoreConversion, scoreGovernance, scoreMarket, calculateExecutability, calculateMaturity, buildFinancial, buildMotiveScore,
   saveConvertibleBondHolderPositions, saveCompanyPledgeSnapshots, loadMotiveInput, calculateBondRevisionMotive,
   calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetail, syncRevisionMotiveInputs,

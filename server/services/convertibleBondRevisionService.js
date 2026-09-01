@@ -2,6 +2,7 @@
 // 页面只读取 analytics.convertible_bond_revision_latest；公告、行情和计算均在后台任务中完成。
 const { pool } = require('../db');
 const { MOTIVE_MODEL_VERSION } = require('./convertibleBondRevisionMotiveService');
+const { getDatasetMetadata } = require('./datasetPartitions');
 
 const FORMULA_VERSION = 'reset-v2';
 const CALCULATION_LOGIC_VERSION = 'reset-logic-20260830-1';
@@ -17,7 +18,8 @@ const REVISION_SELECT_FIELDS = [
   'conv_stop_date','issue_type','official_event_type',
 ].map(field => `r.${field}`).join(',');
 const MOTIVE_SELECT_FIELDS = `motive.motive_level,motive.trade_date AS motive_trade_date,motive.motive_score,
-  motive.model_version AS motive_model_version,motive.model_version AS model_version,motive.quality_status AS motive_quality_status,motive.executability_status AS motive_executability_status`;
+  motive.research_percentile,motive.model_version AS motive_model_version,motive.model_version AS model_version,
+  motive.quality_status AS motive_quality_status,motive.executability_status AS motive_executability_status`;
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -479,7 +481,10 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
   const filter = buildRevisionWhere({ status: String(status || '').trim(), query: String(query || '').trim().slice(0, 50), near: Boolean(near) });
   const base = `FROM analytics.convertible_bond_revision_latest r
     LEFT JOIN LATERAL (
-      SELECT motive_level,trade_date,motive_score,model_version,quality_status,executability_status
+      SELECT motive_level,trade_date,motive_score,model_version,quality_status,executability_status,
+             (SELECT count(*) FILTER (WHERE peer.motive_score <= md.motive_score)::numeric / NULLIF(count(*),0)
+                FROM analytics.convertible_bond_revision_motive_daily peer
+               WHERE peer.trade_date=md.trade_date AND peer.model_version=md.model_version) AS research_percentile
         FROM analytics.convertible_bond_revision_motive_daily md
        WHERE md.instrument_id=r.instrument_id AND md.model_version='${MOTIVE_MODEL_VERSION}'
        ORDER BY md.trade_date DESC,md.calculated_at DESC LIMIT 1
@@ -542,9 +547,14 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
     announcement_errors: Number(qualityRow.announcement_errors || 0),
   };
   const stockMetrics = await loadLatestStockMetrics(rowsResult.rows.map(row => row.stock_instrument_id), marketDate);
+  const partition = await getDatasetMetadata('bond_daily', 'CN');
   return {
     trade_date: stateDate || marketDate, market_trade_date: marketDate, expected_trade_date: expectedDate,
-    stale: Boolean(quality.status === 'degraded' || (expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate))),
+    data_as_of: partition.data_as_of || stateDate || marketDate,
+    published_at: partition.published_at,
+    is_stale: Boolean(partition.is_stale || quality.status === 'degraded' || (expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate))),
+    stale_reason: partition.stale_reason || (quality.status === 'degraded' ? '质量检查未通过' : ''),
+    stale: Boolean(partition.is_stale || quality.status === 'degraded' || (expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate))),
     quality, summary,
     data: rowsResult.rows.map(row => Object.assign({}, row, stockMetrics.get(String(row.stock_instrument_id)) || {}, {
       trade_date: dateText(row.trade_date), stock_trade_date: dateText(row.stock_trade_date),
@@ -554,6 +564,10 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
       maturity_date: dateText(row.maturity_date), conv_start_date: dateText(row.conv_start_date),
       conv_end_date: dateText(row.conv_end_date), conv_stop_date: dateText(row.conv_stop_date),
       remain_size: numberOrNull(row.remain_size) == null ? null : numberOrNull(row.remain_size) / 100000000,
+      research_percentile: numberOrNull(row.research_percentile),
+      research_level: numberOrNull(row.motive_score) == null || numberOrNull(row.research_percentile) == null ? 'unavailable'
+        : numberOrNull(row.research_percentile) >= 0.8 ? 'relative_high'
+          : numberOrNull(row.research_percentile) >= 0.4 ? 'relative_medium' : 'relative_low',
     })),
   };
 }

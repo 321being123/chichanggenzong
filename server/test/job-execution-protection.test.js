@@ -21,14 +21,23 @@ const slotService = read('server/services/jobScheduleSlots.js');
 const adminUi = read('public/js/admin.js');
 const pythonGuard = read('ipo-report/external_call_guard.py');
 const externalGuard = read('server/services/externalCallGuard.js');
+const testRunner = read('server/test/run-all.js');
 const tushareClient = read('server/services/tushare.js');
+const identitySource = read('server/services/securityIdentity.js');
+const financialArchitecture = read('server/services/financialDataArchitecture.js');
 
 for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(definition.retryPolicy, `${definition.jobCode} 缺少 retryPolicy`);
   assert.ok(Array.isArray(definition.externalSources), `${definition.jobCode} 缺少 externalSources`);
   assert.ok(definition.catchupMode, `${definition.jobCode} 缺少 catchupMode`);
   assert.ok(definition.dataDatePolicy, `${definition.jobCode} 缺少 dataDatePolicy`);
+  assert.ok(Array.isArray(definition.externalApis), `${definition.jobCode} 缺少 externalApis`);
+  assert.ok(Array.isArray(definition.producesDatasets), `${definition.jobCode} 缺少 producesDatasets`);
+  assert.ok(Array.isArray(definition.consumesDatasets), `${definition.jobCode} 缺少 consumesDatasets`);
+  assert.ok(Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
 }
+assert.ok(definitions.JOB_DEFINITIONS.reduce((sum, job) => sum + Number(job.maxExternalCallsPerRun || 0), 0) <= 80,
+  '常规任务声明调用预算不得超过每日80次目标');
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
 assert.ok(/WHERE \(status='pending'[\s\S]*status IN \('failed','waiting_external'\)/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
@@ -37,12 +46,24 @@ assert.ok(/freshnessGate/.test(orchestrator) && /externalCalls: 0/.test(orchestr
 assert.ok(/DURABLE_JOB_RUN/.test(orchestrator) && /唯一 job_runs/.test(read('server/db/jobs.js')), '子进程不得创建嵌套 job_runs');
 const valuationRunner = valuation.slice(valuation.indexOf('async function runRefreshChain'), valuation.indexOf('function nextShanghaiDelay'));
 assert.ok(!/syncConvertibleBondUniverseWithBackfill/.test(valuationRunner), '估值 Runner 不得嵌套可转债行情同步');
+assert.ok(!/syncConvertibleBondSuspensions/.test(valuationRunner), '估值 Runner 不得重复调用 suspend_d，停牌日由行情主采集链路统一拉取');
 assert.ok(/derivedCoverage >= 0\.8/.test(bondAnalysis) && /minimumPriced/.test(bondAnalysis), '可转债半成品行情不得覆盖完整行情日');
 assert.ok(/runRefreshChain\(reason, businessDate\)/.test(read('server/services/jobRunners.js')), '人工补跑估值必须沿用计划业务日期');
 assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCodes/.test(stockAnalysisJob), '无股票基础档案不得阻断整批分析任务');
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
 assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
+assert.ok(/ops\.consume_external_call_budget/.test(externalGuard) && /ops\.consume_external_call_budget/.test(pythonGuard), 'Node/Python 预算扣减必须共用数据库原子函数');
+assert.ok(/configured == "0"/.test(pythonGuard) && /production/.test(pythonGuard) && /return configured != "0"/.test(pythonGuard),
+  'Python Guard 必须默认开启且生产环境不可关闭');
+assert.ok(/BUDGET_WAIT/.test(externalGuard) && /BUDGET_WAIT/.test(orchestrator),
+  '内部预算耗尽必须进入等待状态，不得误开来源熔断');
+assert.ok(/TEST_DATABASE/.test(testRunner) && /cleanupTestArtifacts/.test(testRunner)
+  && /test_guard_%/.test(testRunner) && /cninfo-test/.test(testRunner),
+  '全量测试必须使用隔离库，并在前后清理测试专属熔断记录');
+assert.ok(identitySource.includes("regexp_replace(canonical_code,'\\\\D'"),
+  '标准代码解析必须按非数字字符查询，不能退化为按字母 D 查询');
+assert.ok(/assetClass='stock'/.test(financialArchitecture), '股票标准层不得继续写入 equity 类型');
 assert.ok(/const result = await fn\(lock\.client, guardResult\)/.test(externalGuard)
   && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient, probeToken\)/.test(tushareClient)
   && /}, \{\}, guardClient\)\.catch/.test(tushareClient)
@@ -104,6 +125,11 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
         WHERE table_schema='ops' AND table_name='external_call_budgets' AND column_name='circuit_open'`
     );
     assert.strictEqual(budgetColumns.rowCount, 0, '预算表不得继续保存熔断状态');
+    const budgetFunction = await require('../db/connection').pool.query(
+      `SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='ops' AND p.proname='consume_external_call_budget'`
+    );
+    assert.strictEqual(budgetFunction.rowCount, 1, 'Node/Python 必须共用数据库预算原子入口');
 
     mock(200, { code: 0, data: { fields: ['cal_date'], items: [['20260812']] } });
     const unaffected = await tushareQuery('trade_cal');
@@ -147,7 +173,9 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     guard.resetExternalCallGuard();
     process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
     await guard.consumeExternalCall(guardSource, 'dataset-quota-first');
-    await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error => error.code === 'QUOTA_EXHAUSTED');
+    await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error =>
+      error.code === 'BUDGET_WAIT' && error.errorType === 'rate_limit' && Boolean(error.recoverAt),
+    '本系统预算耗尽应等待窗口，不得伪装成 Token 熔断');
     const budgetRows = await require('../db/connection').pool.query(
       `SELECT call_count FROM ops.external_call_budgets WHERE source=$1 AND window_type='day'`, [guardSource]
     );
@@ -155,7 +183,7 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     const quotaCircuit = await require('../db/connection').pool.query(
       `SELECT api_name,state FROM ops.external_circuits WHERE source=$1 AND token_fingerprint='none'`, [guardSource]
     );
-    assert.strictEqual(quotaCircuit.rows.find(row => row.api_name === '*')?.state, 'open', '每日额度耗尽必须持久化 Token 级熔断');
+    assert.strictEqual(quotaCircuit.rows.length, 0, '本系统每日预算耗尽不得写入 Token 级熔断');
     await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
     delete process.env[`${guardEnv}_PER_MINUTE_BUDGET`];
     delete process.env[`${guardEnv}_DAILY_BUDGET`];

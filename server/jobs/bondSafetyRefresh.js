@@ -19,9 +19,10 @@ function shanghaiDate(now = new Date()) {
 }
 
 async function runBondSafetyRefresh(reason = 'scheduled', options = {}) {
-  if (!isConfigured()) return { skipped: true, reason: 'not_configured' };
+  const localOnly = options.readOnly === true || !/^manual/.test(String(reason || ''));
+  if (!localOnly && !isConfigured()) return { skipped: true, reason: 'not_configured' };
   try {
-    return await refreshBondSafety(reason, options);
+    return await refreshBondSafety(reason, Object.assign({}, options, { readOnly: localOnly }));
   } catch (error) {
     console.error('[bond-safety] 定时刷新失败，保留上一份有效数据:', error.message);
     return {

@@ -23,9 +23,12 @@ assert.ok(service.includes('announced_at IS NOT NULL AND announced_at <= $2'), '
 assert.ok(service.includes('same report period') || service.includes('同一报告期'), '财务指标应锁定同一报告期');
 assert.ok(html.includes('motive-inputs') && !html.includes('motive-sources') && html.includes('返回可转债监控'), '详情页结构不完整');
 assert.ok(html.includes('href="/?main=bond-safety&sub=revision"') && html.indexOf('bond-motive-back') < html.indexOf('bond-feature-hero'), '返回链接应位于蓝色标题外');
-assert.ok(script.includes('raw_value') && script.includes('input_snapshot') && script.includes('financialText') && script.includes('cycleText') && script.includes('proposalHistoryText') && !script.includes('motive-json'), '详情页原始输入展示不符合要求');
+assert.ok(script.includes('raw_value') && script.includes('input_snapshot') && script.includes('financialText') && script.includes('cycleText') && script.includes('holderText') && script.includes('controllerText') && !script.includes('proposalHistoryText') && !script.includes('motive-json'), '详情页原始输入展示不符合要求');
+assert.ok(script.includes('<details class="motive-calculations" open>') && script.includes('motive-cycle-line'), '计算项应默认展开且历史下修应逐轮换行');
+assert.ok(!service.includes("proposal_monthly_count") && !service.includes("市场每月提议下修次数"), '无意义的市场每月提议次数不应再进入详情输入或计算项');
 assert.ok(script.includes('motive-core') && script.includes('dimensionNames') && script.includes('calculations'), '详情页缺少核心动机或五维计算项');
 assert.ok(script.includes('dimensionScoreTotal') && script.includes('motive-dimension-total') && script.includes('五项合计'), '详情页缺少五项评分合计');
+assert.ok(script.includes('研究等级') && script.includes('relative_high') && script.includes('observed_empty'), '详情页缺少相对研究等级或空质押核验状态');
 assert.ok(script.includes('bond_price_percentile') && script.includes('remain_issue_ratio') && script.includes('market_cap') && script.includes('亿元') && script.includes("toFixed(2)"), '详情页未格式化百分位、比例、金额或年数');
 assert.ok(script.includes("'false': '否'") && script.includes('displayText'), '详情页仍可能展示英文状态值');
 assert.ok(!script.includes('sourceCell') && !script.includes('source_references'), '详情页不应展示来源引用');

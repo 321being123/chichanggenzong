@@ -14,6 +14,7 @@ import sys, os, time
 sys.path.insert(0, os.path.dirname(__file__))
 import psycopg2
 from ipo_daily_report import _get_tushare_pro
+from instrument_identity import resolve_provider_code
 
 pro = _get_tushare_pro()
 if not pro:
@@ -72,10 +73,11 @@ print(f"可转债候选: {len(bonds)} 只")
 total_inserted = 0
 total_failed = 0
 for idx, (instrument_id, canonical_code) in enumerate(bonds):
-    ts_code = str(canonical_code).upper()
-    if '.' not in ts_code:
-        # 按前缀补交易所后缀（估值引擎 canonical_code 通常已带后缀）
-        ts_code = ts_code + ('.SH' if str(canonical_code).startswith(('11', '113', '118', '110')) else '.SZ')
+    ts_code = resolve_provider_code(canonical_code, 'tushare', 'ts_code', conn=conn, asset_class='convertible_bond')
+    if not ts_code:
+        total_failed += 1
+        print(f"  {canonical_code} 缺少统一 Tushare 代码映射，跳过")
+        continue
     # 每只用独立保存点：单只失败 rollback 到保存点，不影响其他转债
     sp = f"sp_{idx}"
     if not dry:

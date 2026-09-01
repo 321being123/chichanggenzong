@@ -9,6 +9,7 @@ const {
   tsDateStr, normDate, ensureTsNames, ensureTsDaily
 } = require('../services/market');
 const { fetchTencentQuotes, isConvertibleBondCode, normalizeCode } = require('../services/tencentQuote');
+const { resolveInstrument, resolveProviderCode } = require('../services/securityIdentity');
 
 router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   const code = req.params.code.trim().toUpperCase().replace(/\s/g, '');
@@ -83,8 +84,21 @@ router.get('/hkrate', requireLogin, asyncHandler(async (req, res) => {
 router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
   const { secid, days } = req.query;
   if (!secid) return res.json([]);
+  const requestedSecid = String(secid).trim();
+  let instrument = null;
+  if (/^\d{5,6}\.(SH|SZ|BJ|HK)$/i.test(requestedSecid)) {
+    instrument = await resolveInstrument({ canonicalCode: requestedSecid }).catch(() => null);
+  } else if (/^[a-z]{2}\d{6}$/i.test(requestedSecid) || /^hkHSI$/i.test(requestedSecid)) {
+    instrument = await resolveInstrument({ sourceCode: 'sina', identifierType: 'symbol', identifierValue: requestedSecid }).catch(() => null);
+  }
+  const tencentSymbol = instrument
+    ? await resolveProviderCode({ instrumentId: instrument.instrument_id, sourceCode: 'tencent', identifierType: 'quote_symbol' }).catch(() => null)
+    : null;
+  const sinaSymbol = instrument
+    ? await resolveProviderCode({ instrumentId: instrument.instrument_id, sourceCode: 'sina', identifierType: 'symbol' }).catch(() => null)
+    : null;
   try {
-    if (secid === 'hkHSI') {
+    if (requestedSecid === 'hkHSI' || tencentSymbol === 'hkHSI') {
       // 恒生指数：腾讯 web.ifzq hkfqkline 历史日K（服务器实测可用，替代原 qt.gtimg 实时单点）
       // 返回 data.hkHSI.day：每条 [日期,开,收,高,低,...]，收盘价在 index 2
       const lim = Math.min(Math.max(parseInt(days) || 365, 250), 1500);
@@ -108,9 +122,11 @@ router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
       }
       return res.json([]);
     }
-    // A股指数：Tushare index_daily（优先）
-    if (/^s[hz]\d{6}$/i.test(secid)) {
-      const tsCode = secid.slice(2) + (secid.slice(0, 2).toLowerCase() === 'sh' ? '.SH' : '.SZ');
+    // A股指数：Tushare index_daily（优先）。前端传标准代码，供应商代码只从映射表读取。
+    const tsCode = instrument
+      ? await resolveProviderCode({ instrumentId: instrument.instrument_id, sourceCode: 'tushare', identifierType: 'ts_code' }).catch(() => null)
+      : null;
+    if (tsCode) {
       const daysN = Math.min(parseInt(days) || 365, 2500);
       const end = tsDateStr(new Date());
       const dt = new Date(); dt.setDate(dt.getDate() - daysN);
@@ -121,10 +137,11 @@ router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
       if (rows.length > 0) return res.json(rows);
       // Tushare 无数据（如 token 失效/无权限）→ 落到下方新浪兜底，避免指数线空白
     }
+    if (!sinaSymbol) return res.json([]);
     // A股三指数兜底：新浪历史K线
     const datalen = Math.min(parseInt(days) || 365, 500);
     const sinaText = await new Promise((resolve, reject) => {
-      https.get('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' + secid + '&scale=240&ma=no&datalen=' + datalen, {
+      https.get('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' + encodeURIComponent(sinaSymbol) + '&scale=240&ma=no&datalen=' + datalen, {
         timeout: 10000,
         headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn' }
       }, (resp) => {

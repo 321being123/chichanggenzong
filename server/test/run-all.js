@@ -8,10 +8,12 @@
 //          以 continue-on-error 运行，不阻断普通 PR。
 // 每个文件进程隔离（互不污染状态），汇总通过/失败数量并给出非零退出码。
 // 用法：node server/test/run-all.js
+require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { Client } = require('pg');
 
 const testDir = __dirname;
 const rootDir = path.join(__dirname, '..', '..');
@@ -20,7 +22,72 @@ let pass = 0, fail = 0, skip = 0;
 const failed = [];
 const isCI = process.env.CI === '1';
 // 所有测试子进程统一隔离真实邮件；空字符串可阻止 dotenv 从开发机 .env 回填真实收件人。
-const testEnv = { ...process.env, NODE_ENV: 'test', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '' };
+// Python Guard 生产默认开启；测试进程显式关闭，避免纯函数回归因本机数据库状态产生外部副作用。
+const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '' };
+const TEST_DATABASE = String(process.env.PGTESTDATABASE || 'portfolio_test').replace(/[^a-zA-Z0-9_]/g, '_');
+
+function testDatabaseConfig() {
+  const configured = process.env.DATABASE_URL;
+  if (configured) {
+    const url = new URL(configured);
+    url.pathname = '/' + TEST_DATABASE;
+    return { connectionString: url.toString() };
+  }
+  return {
+    host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5432),
+    user: process.env.PGUSER || 'postgres', password: process.env.PGPASSWORD || '', database: TEST_DATABASE,
+  };
+}
+
+// 测试用例会故意创建 test_guard_* / cninfo-test 熔断记录验证持久化行为。
+// 测试库是从业务库模板复制而来，必须在每轮测试前后清掉这些测试专属记录，
+// 防止历史测试数据进入验收统计；绝不连接或修改业务库。
+async function cleanupTestArtifacts() {
+  const client = new Client(testDatabaseConfig());
+  try {
+    await client.connect();
+    await client.query(`
+      DELETE FROM ops.external_call_budgets
+       WHERE source LIKE 'test_guard_%' OR source = 'cninfo-test'
+    `);
+    await client.query(`
+      DELETE FROM ops.external_circuits
+       WHERE source LIKE 'test_guard_%' OR source = 'cninfo-test'
+    `);
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+async function ensureTestDatabase() {
+  // 测试必须运行在独立数据库；首次运行从当前业务库复制结构和本地样例数据。
+  const configured = process.env.DATABASE_URL;
+  let adminConfig;
+  if (configured) {
+    const url = new URL(configured);
+    url.pathname = '/postgres';
+    adminConfig = { connectionString: url.toString() };
+  } else {
+    adminConfig = {
+      host: process.env.PGHOST || 'localhost', port: Number(process.env.PGPORT || 5432),
+      user: process.env.PGUSER || 'postgres', password: process.env.PGPASSWORD || '', database: 'postgres',
+    };
+  }
+  const client = new Client(adminConfig);
+  try {
+    await client.connect();
+    const exists = await client.query('SELECT 1 FROM pg_database WHERE datname=$1', [TEST_DATABASE]);
+    if (!exists.rowCount) {
+      const source = String(process.env.PGDATABASE || 'portfolio').replace(/[^a-zA-Z0-9_]/g, '_');
+      if (source !== TEST_DATABASE) await client.query(`CREATE DATABASE "${TEST_DATABASE}" TEMPLATE "${source}"`);
+      else await client.query(`CREATE DATABASE "${TEST_DATABASE}"`);
+    }
+  } finally {
+    await client.end().catch(() => {});
+  }
+  delete testEnv.DATABASE_URL;
+  testEnv.PGDATABASE = TEST_DATABASE;
+}
 
 function runNode(file) {
   const r = spawnSync(process.execPath, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: testEnv });
@@ -109,15 +176,34 @@ function runPython() {
   }
 }
 
-runNodeGlob();
-runExtraNode();
-runPython();
+(async () => {
+  try {
+    await ensureTestDatabase();
+    await cleanupTestArtifacts();
+  } catch (error) {
+    console.error('测试隔离库初始化失败：', error.message);
+    process.exit(1);
+  }
+  try {
+    runNodeGlob();
+    runExtraNode();
+    runPython();
+  } finally {
+    try {
+      await cleanupTestArtifacts();
+    } catch (error) {
+      fail++;
+      failed.push('test-artifact-cleanup');
+      console.error('测试专属熔断记录清理失败：', error.message);
+    }
+  }
 
-console.log('\n========================================');
-console.log('通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
-  (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
-if (isCI && skip > 0) {
-  console.log('CI 模式下不允许跳过关键测试（共跳过 ' + skip + ' 项），判定失败');
-  process.exit(1);
-}
-process.exit(fail ? 1 : 0);
+  console.log('\n========================================');
+  console.log('测试库 ' + TEST_DATABASE + ' · 通过 ' + pass + ' · 失败 ' + fail + ' · 跳过 ' + skip +
+    (fail ? ' · 失败项：' + failed.join('、') : (skip ? '' : ' · 全部通过 ✅')));
+  if (isCI && skip > 0) {
+    console.log('CI 模式下不允许跳过关键测试（共跳过 ' + skip + ' 项），判定失败');
+    process.exit(1);
+  }
+  process.exit(fail ? 1 : 0);
+})();

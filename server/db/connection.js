@@ -6,6 +6,15 @@ const crypto = require('crypto');
 const { Pool } = require('pg');
 const { DEFAULT_FEE_SETTINGS } = require('../../public/shared/core-fees');
 
+if (String(process.env.NODE_ENV || '').toLowerCase() === 'test') {
+  const databaseName = process.env.DATABASE_URL
+    ? (() => { try { return new URL(process.env.DATABASE_URL).pathname.slice(1); } catch (_) { return ''; } })()
+    : (process.env.PGDATABASE || '');
+  if (!/(^|_)(test|migtest)(_|$)/i.test(databaseName)) {
+    throw new Error(`测试进程拒绝连接非隔离数据库：${databaseName || '(未设置)'}`);
+  }
+}
+
 // DATA_DIR 指向项目根目录下的 data/（本文件位于 server/db，故需上溯两级）
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });

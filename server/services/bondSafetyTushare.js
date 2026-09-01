@@ -353,6 +353,7 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
     const value = valuations.get(stock.stk_code) || {};
     const liveStock = tencent.get(String(stock.stk_code).split('.')[0]);
     return Object.assign({
+      identity_key: stock.stk_code,
       company: preferredSecurityName(liveStock, stock.stk_short_name),
       industry: industries.get(stock.stk_code) || '',
       has_cb: 1,
@@ -380,6 +381,7 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
     const calculatedPb = derivePb(valuation.total_mv,
       cachedFinancial && cachedFinancial.data && cachedFinancial.data.shareholder_equity);
     return {
+      identity_key: bond.stk_code,
       bond_code: String(bond.ts_code),
       bond_name: preferredSecurityName(liveBond, bond.bond_short_name),
       stock_name: preferredSecurityName(liveStock, bond.stk_short_name),
@@ -402,6 +404,74 @@ async function fetchTushareBondSafetySource(env = process.env, targetTradeDate =
   };
 }
 
+// 定时评分只读取共享标准层，避免与可转债主同步重复请求同一批接口。
+// 手动刷新仍可显式走上游（fetchTushareBondSafetySource），以便补漏。
+async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
+  const date = normalizeTradeDate(targetTradeDate);
+  const { rows } = await require('../db/connection').pool.query(`
+    WITH market_day AS (
+      SELECT COALESCE($1::date, MAX(trade_date)) AS trade_date
+        FROM market.convertible_bond_daily_metrics
+    ), bonds AS (
+      SELECT i.instrument_id,i.canonical_code AS bond_code,i.name AS bond_name,
+             s.canonical_code AS stock_code,s.name AS stock_name,p.stock_instrument_id,
+             dm.trade_date,dm.close,dm.conversion_value,dm.conversion_premium_pct,
+             p.current_conv_price AS convert_price,
+             COALESCE(v.pe_ttm,v.pe_static) AS pe_ttm,v.pe_static,v.pb,v.dividend_yield_ttm,
+             v.total_market_cap,s.raw_data AS stock_raw
+        FROM market_day md
+        JOIN market.convertible_bond_daily_metrics dm ON dm.trade_date=md.trade_date
+        JOIN core.instruments i ON i.instrument_id=dm.instrument_id AND i.asset_class='convertible_bond'
+        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+        LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        LEFT JOIN LATERAL (
+          SELECT * FROM market.daily_valuations x
+           WHERE x.instrument_id=p.stock_instrument_id AND x.trade_date=dm.trade_date
+           ORDER BY x.source_id DESC LIMIT 1
+        ) v ON true
+       WHERE i.status='listed' AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
+         AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
+    )
+    SELECT b.*,ci.company_id,
+           ind.raw_payload AS indicator_payload, bal.raw_payload AS balance_payload,
+           inc.raw_payload AS income_payload,
+           COALESCE(n.industry_name,b.stock_raw->>'industry','') AS industry
+      FROM bonds b
+      LEFT JOIN core.company_instruments ci ON ci.instrument_id=b.stock_instrument_id
+      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.is_current_version ORDER BY r.period_end DESC,r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.is_current_version ORDER BY r.period_end DESC,r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.is_current_version ORDER BY r.period_end DESC,r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
+      LEFT JOIN LATERAL (SELECT n.industry_name FROM core.company_industry_memberships m JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE m.company_id=ci.company_id AND m.is_current ORDER BY m.announced_at DESC NULLS LAST LIMIT 1) n ON true
+  `, [date || null]);
+  if (!rows.length) throw new Error('标准层暂无可转债行情，安全评分暂不覆盖');
+  const pick = (row, key, fallback) => row && row[key] != null ? row[key] : fallback;
+  const companyRows = [];
+  const companySeen = new Set();
+  const bondRows = rows.map(row => {
+    const income = row.income_payload || {}, balance = row.balance_payload || {}, indicator = row.indicator_payload || {};
+    const company = String(row.stock_name || row.stock_code || '').trim();
+    const identityKey = row.stock_instrument_id || row.company_id || row.stock_code || company;
+    if (company && !companySeen.has(String(identityKey))) {
+      companySeen.add(String(identityKey));
+      companyRows.push({ identity_key: identityKey, company, industry: row.industry || '', has_cb: 1, financial_available: Boolean(row.income_payload || row.balance_payload || row.indicator_payload),
+        market_cap: row.total_market_cap == null ? null : Number(row.total_market_cap),
+        interest_expense: pick(income, 'fin_exp_int_exp', pick(income, 'int_exp', null)),
+        ebit: pick(income, 'ebit', pick(income, 'operate_profit', null)),
+        cash: pick(balance, 'money_cap', null), trading_fin_assets: pick(balance, 'trad_asset', null),
+        interest_bearing_debt: pick(indicator, 'interestdebt', null), total_liability: pick(balance, 'total_liab', null),
+        current_liability: pick(balance, 'total_cur_liab', null),
+      });
+    }
+    const dividendYield = row.dividend_yield_ttm == null ? null : Number(row.dividend_yield_ttm) * 100;
+    return { identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, bond_code: row.bond_code, bond_name: row.bond_name, stock_name: row.stock_name || '',
+      pe_ttm: row.pe_ttm, pb: row.pb, dividend_yield: dividendYield, bond_price: row.close,
+      change_pct: null, double_low: row.close != null && row.conversion_premium_pct != null ? Number(row.close) + Number(row.conversion_premium_pct) : null,
+      convert_premium: row.conversion_premium_pct, convert_price: row.convert_price, convert_value: row.conversion_value };
+  });
+  const tradeDate = rows[0].trade_date ? new Date(rows[0].trade_date).toISOString().slice(0, 10) : null;
+  return { companyRows, bondRows, sourceUpdatedAt: tradeDate ? `${tradeDate}T15:00:00+08:00` : null, dataAsOf: tradeDate };
+}
+
 module.exports = {
   finite,
   derivePb,
@@ -416,4 +486,5 @@ module.exports = {
   FINANCIAL_REFRESH_BATCH_SIZE,
   nextFinancialBatchDelay,
   fetchTushareBondSafetySource,
+  fetchBondSafetySourceFromDatabase,
 };

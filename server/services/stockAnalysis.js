@@ -8,6 +8,7 @@ const { persistCollectedData, saveCollectedEvents, saveAnalysisResults } = requi
 const { statementApiFields } = require('./stockStatements');
 const { evaluateStockFreshness, isoDateSafe } = require('./analysisFreshness');
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess } = require('./datasetCursors');
+const { resolveProviderCode } = require('./securityIdentity');
 
 const FORMULA_VERSION = '1';
 const DAY = 86400000;
@@ -35,12 +36,6 @@ function isOrdinaryAStock(tsCode) {
   if (!normalizeStockCode(tsCode)) return false;
   const code = tsCode.slice(0, 6);
   return /^(60|68|00|30|43|83|87|92)/.test(code) && !/^(110|111|113|118|123|127|128)/.test(code);
-}
-
-function stockExchange(tsCode) {
-  if (String(tsCode || '').endsWith('.SH')) return 'SH';
-  if (String(tsCode || '').endsWith('.BJ')) return 'BJ';
-  return 'SZ';
 }
 
 function versionKey(row) {
@@ -85,8 +80,9 @@ function controllerType(name) {
 
 async function fetchActualController(tsCode) {
   try {
-    const prefix = stockExchange(tsCode);
-    const payload = await requestJson(`https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax?code=${prefix}${tsCode.slice(0, 6)}`);
+    const f10Code = await resolveProviderCode({ canonicalCode: tsCode, sourceCode: 'eastmoney', identifierType: 'f10_code' });
+    if (!f10Code) return null;
+    const payload = await requestJson(`https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax?code=${encodeURIComponent(f10Code)}`);
     const raw = Array.isArray(payload.sjkzr) ? payload.sjkzr[0] : payload.sjkzr;
     if (!raw || !raw.HOLDER_NAME) return null;
     return { name: String(raw.HOLDER_NAME), type: controllerType(raw.HOLDER_NAME), hold_ratio: finite(raw.HOLD_RATIO), source: '东方财富F10' };
@@ -235,6 +231,13 @@ function requestJson(url, options = {}) {
     if (options.body) req.write(options.body);
     req.end();
   }));
+}
+
+// 交易所字段用于公告接口的栏目选择，不作为外部供应商证券标识；供应商代码统一走 securityIdentity。
+function stockExchange(tsCode) {
+  if (String(tsCode || '').endsWith('.SH')) return 'SH';
+  if (String(tsCode || '').endsWith('.BJ')) return 'BJ';
+  return 'SZ';
 }
 
 function sourceForUrl(url) {
@@ -488,7 +491,8 @@ async function fetchSzseLatestReport(tsCode, startDate, endDate) {
 
 async function fetchXueqiuEvents(tsCode, startDate, endDate) {
   try {
-    const symbol = `${stockExchange(tsCode)}${tsCode.slice(0, 6)}`;
+    const symbol = await resolveProviderCode({ canonicalCode: tsCode, sourceCode: 'xueqiu', identifierType: 'symbol' });
+    if (!symbol) return [];
     const url = `https://xueqiu.com/statuses/search.json?count=20&comment=0&symbol=${symbol}&hl=0&source=all&sort=time&page=1&q=`;
     const payload = await requestJson(url, { headers: { Referer: `https://xueqiu.com/S/${symbol}` } });
     return (payload.list || payload.statuses || []).map(row => ({
@@ -502,7 +506,8 @@ async function fetchXueqiuEvents(tsCode, startDate, endDate) {
 
 async function fetchGubaEvents(tsCode, startDate, endDate) {
   try {
-    const code = tsCode.slice(0, 6);
+    const code = await resolveProviderCode({ canonicalCode: tsCode, sourceCode: 'eastmoney', identifierType: 'guba_code' });
+    if (!code) return [];
     const url = `https://gbapi.eastmoney.com/webarticlelist/api/Article/Articlelist?code=${code}&sorttype=1&ps=20&from=CommonBaPost`;
     const payload = await requestJson(url, { headers: { Referer: `https://guba.eastmoney.com/list,${code}.html` } });
     const rows = payload.re || payload.data?.re || payload.data || [];
@@ -680,7 +685,7 @@ async function loadData(tsCode) {
     dividends: dividends.rows.map(r => r.data), forecasts: forecasts.rows.map(r => r.data), valuations: valuations.rows, events: events.rows };
 }
 
-async function buildAnalysis(tsCode) {
+async function buildAnalysis(tsCode, options = {}) {
   const data = await loadData(tsCode);
   if (!data.meta || !data.income.length) throw new Error('股票尚未完成财务建档');
   const today = tsDateStr(new Date());
@@ -694,7 +699,7 @@ async function buildAnalysis(tsCode) {
   const latestBalance = balanceMap.get(latestIncome && latestIncome.end_date) || [...balanceMap.values()].sort((a, b) => b.end_date.localeCompare(a.end_date))[0] || {};
   const latestIndicator = indicatorMap.get(latestBalance.end_date) || [...indicatorMap.values()].sort((a, b) => b.end_date.localeCompare(a.end_date))[0] || {};
   const latestValuation = data.valuations[data.valuations.length - 1] || {};
-  const quoteMap = await fetchTencentQuotes([tsCode]);
+  const quoteMap = options.readOnly ? new Map() : await fetchTencentQuotes([tsCode]);
   const rawQuote = quoteMap.get(normalizeCode(tsCode));
   // 腾讯旧缓存（上游失败保留）不能当实时行情：只有报价时间是当天，才算有效实时报价
   const liveQuote = rawQuote && isoDateSafe(rawQuote.quote_time) === isoDate(today) ? rawQuote : null;
@@ -873,6 +878,12 @@ async function latestForecastAnnDate(tsCode) {
 async function refreshStockAnalysis(rawCode, reason = 'manual', options = {}) {
   const tsCode = normalizeStockCode(rawCode);
   if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
+  // 定时任务只做标准层本地计算，避免对每只股票重复请求同一行情/财务接口。
+  if (options.readOnly === true) {
+    const analysis = await buildAnalysis(tsCode, { readOnly: true });
+    await saveAnalysisResults(tsCode, Object.assign({}, analysis, { diagnostics: { reason, read_only: true } }));
+    return analysis;
+  }
   const today = tsDateStr(new Date());
 
   // 低频数据组按 TTL 门控：TTL 内且本地已有可用旧值时跳过上游，避免重复拉取

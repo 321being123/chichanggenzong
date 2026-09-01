@@ -6,6 +6,7 @@ const { runNavSnapshotJob } = require('./navSnapshot');
 const { runIndexRecentJob } = require('./indexBaseline');
 const { runHkRateJob } = require('./hkRate');
 const { backfillDailyPrices } = require('./replayNav');
+const sharedQuotePromises = new Map();
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
 const MARKET_CLOSE_TIMES = [
@@ -67,7 +68,7 @@ function nextRunDelay(h, m) {
 }
 
 // 带重试的行情抓取：Tushare 偶发 null / 港股腾讯抖动 → 重试 2 次，间隔 1s
-async function fetchWithRetry(code, tries, requestBudget, expectedDate) {
+async function fetchWithRetry(code, tries, requestBudget, expectedDate, quoteMap = null) {
   for (let i = 0; i < tries; i++) {
     if (requestBudget && requestBudget.used >= requestBudget.limit) {
       const error = new Error(`收盘行情请求预算已用尽（${requestBudget.limit}）`);
@@ -77,7 +78,7 @@ async function fetchWithRetry(code, tries, requestBudget, expectedDate) {
     }
     if (requestBudget) requestBudget.used += 1;
     try {
-      const q = await fetchQuoteByCode(code);
+      const q = quoteMap ? (quoteMap.get(code) || quoteMap.get(String(code).replace(/\.(SH|SZ|BJ|HK)$/i, ''))) : await fetchQuoteByCode(code);
       if (q && q.price && (!expectedDate || (q.quote_time && fmtCN(q.quote_time) === expectedDate))) return q;
     } catch (e) {}
     if (i < tries - 1) await new Promise(r => setTimeout(r, 1000));
@@ -98,7 +99,7 @@ function pickMissingCodes(positions, existingCodes, matchFn) {
 // 幂等到「代码」级别：只抓取当日该市场持仓中【尚未记录】的代码，
 // 因此 A 股先写入后，可转债/ETF 不会被整体跳过；部分缺失也能补齐。
 // 返回 { recorded, failed, error }；error=true 表示有持仓却全部抓取失败
-async function recordCloseOne(username, accountName, label, matchFn, dateStr, requestBudget) {
+async function recordCloseOne(username, accountName, label, matchFn, dateStr, requestBudget, context = {}) {
   const cnDate = dateStr || cnDateStr();
 
   const result = await loadAccountData(username, accountName);
@@ -139,7 +140,7 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
     return { recorded, failed, skipped, error: recorded === 0 && failed > 0 };
   }
   for (const pos of missing) {
-    const q = await fetchWithRetry(pos.code, 2, requestBudget, cnDate);
+    const q = await fetchWithRetry(pos.code, 2, requestBudget, cnDate, context.quoteMap || null);
     if (q && q.price) {
       prices.push({ code: pos.code, name: pos.name || q.name || '', price: q.price });
       recorded++;
@@ -152,16 +153,32 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
   return { recorded, failed, skipped, error };
 }
 
+// 同一交易日四个市场收盘任务共用一次腾讯批量行情结果；后续市场只读本进程缓存。
+async function getSharedQuoteMap(cnDate) {
+  const key = String(cnDate || cnDateStr());
+  if (sharedQuotePromises.has(key)) return sharedQuotePromises.get(key);
+  const promise = (async () => {
+    const { rows } = await pool.query("SELECT code FROM positions WHERE code IS NOT NULL AND code <> ''");
+    const codes = [...new Set(rows.map(row => String(row.code || '').trim()).filter(code =>
+      /^(00|30|43|48|50|51|60|68|83|87|92|11|12|15|16|[0-9]{5})/.test(code)
+    ))];
+    return require('../services/tencentQuote').fetchTencentQuotes(codes, { businessDate: key });
+  })().catch(error => { sharedQuotePromises.delete(key); throw error; });
+  sharedQuotePromises.set(key, promise);
+  return promise;
+}
+
 // 为所有账户记录某市场某交易日收盘价；任一证券失败都进入统一有限重试，避免部分账户缺数却显示成功。
 async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   const cnDate = dateStr || cnDateStr();
   const totalLimit = Math.max(Number(process.env.MARKET_CLOSE_REQUEST_BUDGET) || 2000, 1);
   const previousCalls = Math.max(Number(context.externalCallCount) || 0, 0);
   const requestBudget = { used: 0, limit: Math.max(totalLimit - previousCalls, 0) };
+  const quoteMap = cnDate === cnDateStr() ? (context.quoteMap || await getSharedQuoteMap(cnDate)) : null;
   const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
   let recorded = 0, failed = 0, skipped = 0;
   for (const account of accounts) {
-    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget)
+    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, { quoteMap })
       .catch(error => {
         if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code)) {
           error.externalCalls = previousCalls + requestBudget.used;

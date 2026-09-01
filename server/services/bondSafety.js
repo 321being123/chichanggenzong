@@ -17,6 +17,16 @@ function finiteNumber(value) {
   return typeof cleaned === 'number' && Number.isFinite(cleaned) ? cleaned : null;
 }
 
+// 正股评级必须按证券/公司身份关联；名称只作为没有标准身份的旧接口兼容键，不能覆盖同名公司。
+function ratingKey(row) {
+  const identity = row && (row.identity_key ?? row.stock_instrument_id ?? row.company_id);
+  if (identity !== null && identity !== undefined && String(identity).trim()) return `identity:${String(identity).trim()}`;
+  const company = row && (row.company != null ? row.company : row.stock_name) != null
+    ? String(row.company != null ? row.company : row.stock_name).trim()
+    : '';
+  return `name:${company}`;
+}
+
 function hasConvertibleBond(value) {
   const cleaned = cleanValue(value);
   return Number.isFinite(Number(cleaned)) && Number(cleaned) === 1;
@@ -84,23 +94,24 @@ function buildRatingIndex(companyRows) {
     if (!row || !hasConvertibleBond(row.has_cb)) continue;
     eligibleCompanies += 1;
     const company = String(row.company == null ? '' : row.company);
-    if (!company) continue;
+    const key = ratingKey(row);
+    if (key === 'name:') continue;
     const result = rateCompany(row);
     if (result.missing_fields.length) {
       incompleteCompanies.push({ company, fields: result.missing_fields });
     }
-    if (index.has(company)) {
-      const previous = index.get(company);
-      duplicateCompanies.push({ company, ratings: [previous.rating, result.rating] });
+    if (index.has(key)) {
+      const previous = index.get(key);
+      duplicateCompanies.push({ company, key, ratings: [previous.rating, result.rating] });
       // 同名公司的冲突结果不可静默覆盖；让本次刷新失败，继续提供上一份有效快照。
       if (previous.rating !== result.rating) {
-        const error = new Error(`公司数据存在冲突的重复名称：${company}`);
+        const error = new Error(`公司数据存在冲突的重复名称：${company || key}`);
         error.code = 'DUPLICATE_COMPANY_CONFLICT';
         throw error;
       }
       continue;
     }
-    index.set(company, result);
+    index.set(key, result);
   }
 
   return { index, eligibleCompanies, incompleteCompanies, duplicateCompanies };
@@ -149,7 +160,7 @@ function evaluateBondSafety(companyRows, bondRows, sourceUpdatedAt) {
     .filter(row => row && !/数据来源于|数据来源/.test(String(row.bond_code == null ? '' : row.bond_code)))
     .map(row => {
       const stockName = String(row.stock_name == null ? '' : row.stock_name);
-      const rating = ratingState.index.get(stockName);
+      const rating = ratingState.index.get(ratingKey(row));
       if (!rating && stockName) unmatchedStocks.add(stockName);
       return normalizeBondRow(row, rating || null, sourceUpdatedAt);
     })

@@ -7,10 +7,10 @@ const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
 const { calculateConvertibleBondRevisionStatus, CALCULATION_LOGIC_VERSION } = require('../services/convertibleBondRevisionService');
 const { calculateConvertibleBondRevisionMotiveScores, MOTIVE_MODEL_VERSION } = require('../services/convertibleBondRevisionMotiveService');
-const { syncConvertibleBondSuspensions } = require('../services/convertibleBondSuspensionSync');
 const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { dailyConsistencyStats } = require('./consistencyStats');
+const { publishDatasetPartition } = require('../services/datasetPartitions');
 
 const VALUATION_JOB = 'convertible_bond_valuation_refresh';
 const DAILY_REFRESH_HOUR = 8;
@@ -48,6 +48,13 @@ async function runDailyValuation(reason = 'scheduled', expectedDate = expectedTr
       });
     });
     const detail = output.split('\n').slice(-3).join(' | ') || `${reason}: ok`;
+    const { rows: countRows } = await pool.query(
+      'SELECT COUNT(*)::int AS count FROM analytics.convertible_bond_valuation_daily WHERE trade_date=$1::date', [expectedDate]
+    );
+    await publishDatasetPartition('bond_valuation', 'CN', {
+      partitionKey: expectedDate, dataAsOf: expectedDate, rowCount: Number(countRows[0]?.count || 0),
+      diagnostics: { job: VALUATION_JOB },
+    });
     await finishJobRun(runId, true, detail);
     return { ok: true, detail };
   } catch (error) {
@@ -136,12 +143,6 @@ async function runRefreshChain(reason, businessDate = null) {
   let revisionResult = null;
   let motiveResult = null;
   try {
-    try {
-      const suspensionResult = await syncConvertibleBondSuspensions({ startDate: completeness.expected, endDate: completeness.expected });
-      if (suspensionResult.ok) console.log(`[bond-redemption] 正股停牌日同步完成：${suspensionResult.count} 条`);
-    } catch (error) {
-      console.warn('[bond-redemption] 正股停牌日同步失败，继续使用已缓存停牌日：', error.message);
-    }
     redemptionResult = await calculateConvertibleBondCallStatus(completeness.expected);
     console.log(`[bond-redemption] 强赎进度完成：${redemptionResult.count} 只，完整 ${redemptionResult.complete} 只`);
   } catch (error) {

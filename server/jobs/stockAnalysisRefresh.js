@@ -52,7 +52,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const failureDetails = [];
     for (const stock of stocks) {
       try {
-        await refreshStockAnalysis(stock.ts_code, reason);
+        await refreshStockAnalysis(stock.ts_code, reason, { readOnly: true });
         ok++;
         await markDatasetSuccess(datasetScope('stock', stock.ts_code), ANALYSIS_DATASET,
           { lastSuccessDate: new Date().toISOString().slice(0, 10) });
@@ -76,7 +76,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const recovered = [];
     for (const tsCode of failures) {
       try {
-        await refreshStockAnalysis(tsCode, `${reason}-retry`, { force: true });
+        await refreshStockAnalysis(tsCode, `${reason}-retry`, { force: true, readOnly: true });
         ok++; failed--; recovered.push(tsCode);
         await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET,
           { lastSuccessDate: new Date().toISOString().slice(0, 10) });

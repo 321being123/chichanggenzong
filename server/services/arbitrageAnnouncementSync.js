@@ -6,6 +6,7 @@ const cninfo = require('./cninfoAnnouncement');
 const parser = require('./arbitrageParser');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { fetchTencentQuotes } = require('./tencentQuote');
+const { ensureInstrumentIdentity } = require('./securityIdentity');
 const {
   cleanSecurityText,
   firstSecurityCode,
@@ -145,12 +146,8 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
         const exchange = scope === 'hkex' ? 'SEHK'
           : (ann.exchange === 'SSE' ? 'SSE' : ann.exchange === 'SZSE' ? 'SZSE' : ann.exchange === 'BSE' ? 'BSE' : 'SZSE');
         const currency = scope === 'hkex' || /^2\d{5}$/.test(String(ann.stockCode || '')) ? 'HKD' : 'CNY';
-        const { rows: newIns } = await client.query(
-          `INSERT INTO core.instruments(canonical_code, name, asset_class, market, exchange_code, currency_code, status)
-           VALUES($1,$2,$3,$4,$5,$6,'listed') ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name RETURNING instrument_id`,
-          [code, ann.stockName || '', assetClass, market, exchange, currency]
-        );
-        instrumentId = newIns[0].instrument_id;
+        const master = await ensureInstrumentIdentity({ canonicalCode: code, name: ann.stockName || '', assetClass, market, exchangeCode: exchange, currencyCode: currency, status: 'listed', companyName: ann.stockName || '' }, client.query.bind(client));
+        instrumentId = master.instrumentId;
       }
     }
 

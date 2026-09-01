@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const https = require('https');
 const { SECRET } = require('../config');
 const { getConfig, setConfig } = require('../db/config');
+const { withExternalCallGuard, tokenFingerprint } = require('./externalCallGuard');
 
 const CONFIG_KEY = 'external_api_configs';
 const PROVIDERS = {
@@ -57,9 +58,30 @@ function normalizeTestRole(value) {
 
 const TUSHARE_TEST_PROBES = {
   trade_cal: { params: { exchange: 'SSE', start_date: '20200102', end_date: '20200102' }, fields: 'cal_date,is_open' },
+  stock_basic: { params: { ts_code: '000001.SZ' }, fields: 'ts_code,name,list_status' },
+  daily: { params: { ts_code: '000001.SZ', start_date: '20200102', end_date: '20200103' }, fields: 'ts_code,trade_date,close' },
+  daily_basic: { params: { ts_code: '000001.SZ', trade_date: '20200102' }, fields: 'ts_code,trade_date,pb,total_mv' },
+  adj_factor: { params: { ts_code: '000001.SZ', start_date: '20200102', end_date: '20200103' }, fields: 'ts_code,trade_date,adj_factor' },
+  income: { params: { ts_code: '000001.SZ', period: '20191231' }, fields: 'ts_code,ann_date,end_date,total_revenue,n_income_attr_p' },
+  income_vip: { params: { period: '20191231' }, fields: 'ts_code,ann_date,end_date,total_revenue,n_income_attr_p' },
+  balancesheet: { params: { ts_code: '000001.SZ', period: '20191231' }, fields: 'ts_code,ann_date,end_date,total_assets,total_liab' },
+  balancesheet_vip: { params: { period: '20191231' }, fields: 'ts_code,ann_date,end_date,total_assets,total_liab' },
+  cashflow: { params: { ts_code: '000001.SZ', period: '20191231' }, fields: 'ts_code,ann_date,end_date,n_cashflow_act' },
+  cashflow_vip: { params: { period: '20191231' }, fields: 'ts_code,ann_date,end_date,n_cashflow_act' },
+  fina_indicator: { params: { ts_code: '000001.SZ', period: '20191231' }, fields: 'ts_code,ann_date,end_date,roe,roa' },
+  fina_indicator_vip: { params: { period: '20191231' }, fields: 'ts_code,ann_date,end_date,roe,roa' },
+  forecast: { params: { ts_code: '000001.SZ', period: '20201231' }, fields: 'ts_code,ann_date,end_date,type' },
+  dividend: { params: { ts_code: '000001.SZ' }, fields: 'ts_code,ann_date,end_date,div_proc' },
   rt_min: { params: { ts_code: '000001.SZ', freq: '1MIN' }, fields: 'ts_code,time,close' },
   new_share: { params: { start_date: '20200101', end_date: '20200102' }, fields: 'ts_code,name,ipo_date' },
+  cb_basic: { params: { ts_code: '110000.SH' }, fields: 'ts_code,bond_short_name,stk_code' },
   cb_daily: { params: { ts_code: '110000.SH', start_date: '20200102', end_date: '20200102' }, fields: 'ts_code,trade_date,close' },
+  cb_issue: { params: { ts_code: '110000.SH' }, fields: 'ts_code,ann_date,issue_size' },
+  cb_price_chg: { params: { ts_code: '110000.SH' }, fields: 'ts_code,change_date,convert_price_before,convert_price_after' },
+  index_daily: { params: { ts_code: '000300.SH', start_date: '20200102', end_date: '20200102' }, fields: 'ts_code,trade_date,close' },
+  index_member_all: { params: { ts_code: '000300.SH' }, fields: 'index_code,con_code,in_date' },
+  top10_cb_holders: { params: { ts_code: '110000.SH', end_date: '20200102' }, fields: 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio' },
+  pledge_stat: { params: { ts_code: '000001.SZ', end_date: '20200102' }, fields: 'ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio' },
 };
 
 function normalizeTestApi(value) {
@@ -71,6 +93,14 @@ function safeTestMessage(message, token) {
   let text = String(message || 'API 测试失败').replace(/\s+/g, ' ').trim();
   if (token) text = text.split(String(token)).join('***');
   return text.slice(0, 240);
+}
+
+function probeStatus(error) {
+  const code = String(error && error.code || '').toUpperCase();
+  if (code === 'PERMISSION_DENIED') return 'permission_denied';
+  if (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' || code === 'CIRCUIT_OPEN') return 'rate_limited';
+  if (code === 'EMPTY_DATA') return 'empty_but_accepted';
+  return 'error';
 }
 
 function normalizeReturnedData(data) {
@@ -234,10 +264,19 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
     };
   } else if (provider === 'tushare') {
     try {
-      const health = await readTushareHealth(token, requestedApi);
+      // 权限探测也是一次真实上游调用，必须经过与业务请求相同的预算、
+      // 熔断和数据集锁；否则管理员点一次测试就能绕过限速。
+      const guardSource = targetRole === 'backup' ? 'tushare_backup' : 'tushare';
+      const health = await withExternalCallGuard(
+        guardSource,
+        `permission_probe:${requestedApi}`,
+        null,
+        () => readTushareHealth(token, requestedApi),
+        { circuitSource: guardSource, apiName: requestedApi, tokenFingerprint: tokenFingerprint(token) }
+      );
       result = {
         ok: true,
-        status: 'available',
+        status: health.data_count === 0 ? 'empty_but_accepted' : 'available',
         provider,
         role: targetRole,
         message: '连接成功，Token 可用',
@@ -248,7 +287,7 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
     } catch (error) {
       result = {
         ok: false,
-        status: 'unavailable',
+        status: probeStatus(error),
         provider,
         role: targetRole,
         message: safeTestMessage(error.message || error, token),

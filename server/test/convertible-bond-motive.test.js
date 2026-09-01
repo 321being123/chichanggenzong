@@ -1,10 +1,15 @@
 const assert = require('assert');
 const {
-  dateText, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles, buildMotiveScore, scorePressure, scoreMarket, calculateExecutability, buildFinancial,
+  dateText, holderAvailableDate, researchLevel, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles, buildMotiveScore, scorePressure, scoreMarket, calculateExecutability, buildFinancial,
 } = require('../services/convertibleBondRevisionMotiveService');
 
 assert.strictEqual(normalizeBondCode('113001.SH'), '113001.SH');
 assert.strictEqual(dateText(new Date('2026-08-27T16:00:00.000Z')), '2026-08-28', 'PostgreSQL DATE 应按上海日历日读取');
+assert.strictEqual(holderAvailableDate({ report_date: '2025-12-31' }), '2026-04-30', '年报持有人缺公告日时应保守延后至法定披露日');
+assert.strictEqual(holderAvailableDate({ report_date: '2026-06-30' }), '2026-08-31', '中报持有人缺公告日时应保守延后至法定披露日');
+assert.strictEqual(researchLevel(0.85, 20), 'relative_high');
+assert.strictEqual(researchLevel(0.5, 15), 'relative_medium');
+assert.strictEqual(researchLevel(0.2, 8), 'relative_low');
 assert.strictEqual(normalizeBondCode('113001'), null, '详情接口不接受无交易所后缀代码');
 assert.strictEqual(normalizeHolderName('某某股份有限公司'), '某某');
 assert.strictEqual(holderType('某某基金管理有限公司'), 'fund');
@@ -30,6 +35,10 @@ assert.strictEqual(financial.total_assets, 110);
 const cachedFinancial = buildFinancial([], { report_end_date: '20260630', announced_at: '20260818', data: { total_assets: 200, total_liab: 80 } });
 assert.strictEqual(cachedFinancial.report_period, '2026-06-30', '无标准关联财报时应使用已按公告日筛选的财务缓存报告期');
 assert.strictEqual(cachedFinancial.total_assets, 200);
+const safetyCachedFinancial = buildFinancial([], { report_end_date: '20260630', announced_at: '20260818', data: { cash: 120, total_liability: 80, trading_fin_assets: 20, interest_expense: 3 } });
+assert.strictEqual(safetyCachedFinancial.cash, 120, '正股财务缓存的 cash 字段应能进入下修动机财务指标');
+assert.strictEqual(safetyCachedFinancial.total_liabilities, 80, '正股财务缓存的 total_liability 字段应能进入下修动机财务指标');
+assert.strictEqual(safetyCachedFinancial.source_table, 'bond_safety_financial_cache', '缓存回退时详情应标明实际数据来源');
 
 const cycles = buildRevisionCycles([
   { event_type: 'proposal', announced_at: '2023-01-01', title: '提议下修' },
@@ -85,7 +94,7 @@ const marketContext = scoreMarket({
   bondClose: 105,
   bondPriceHistory: [100, 105, 110],
   proposalHistory: [0, 1, 2],
-  proposalMonthlyCount: 2,
+  proposalCount: 2,
   industryProposalPressure: true,
 });
 assert.strictEqual(marketContext.score, 2, '其他转债下修和同行下修不得计入本债动机分');

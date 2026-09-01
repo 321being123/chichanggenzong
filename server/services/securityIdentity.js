@@ -4,6 +4,30 @@
 const classifyCode = require('../../public/js/code-classify');
 const { pool } = require('../db/connection');
 
+// 运行时供应商代码解析缓存：映射表是事实来源，进程缓存只承担降压，不能成为第二份主档。
+const IDENTIFIER_CACHE_TTL_MS = 10 * 60 * 1000;
+const IDENTIFIER_CACHE_MAX = 5000;
+const identifierCache = new Map();
+
+function cacheKey(parts) { return parts.map(value => String(value == null ? '' : value).trim().toUpperCase()).join('|'); }
+
+function readIdentifierCache(key) {
+  const entry = identifierCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) { identifierCache.delete(key); return undefined; }
+  // Map 作为一个轻量 LRU，命中后移到队尾。
+  identifierCache.delete(key);
+  identifierCache.set(key, entry);
+  return entry.value;
+}
+
+function writeIdentifierCache(key, value) {
+  identifierCache.delete(key);
+  identifierCache.set(key, { value, expiresAt: Date.now() + IDENTIFIER_CACHE_TTL_MS });
+  while (identifierCache.size > IDENTIFIER_CACHE_MAX) identifierCache.delete(identifierCache.keys().next().value);
+  return value;
+}
+
 function cleanCode(rawCode) {
   return String(rawCode == null ? '' : rawCode).trim().toUpperCase()
     .replace(/\.(SH|SZ|BJ|HK|US)$/i, '')
@@ -121,4 +145,212 @@ async function normalizeImportedItems(items, executor) {
   });
 }
 
-module.exports = { resolveAmbiguousSecurity, normalizeImportedItems };
+function normalizedCanonicalCode(value) {
+  const text = String(value == null ? '' : value).trim().toUpperCase();
+  return text || null;
+}
+
+async function resolveCanonicalCode(rawCode, assetClass = 'stock', executor) {
+  const text = normalizedCanonicalCode(rawCode);
+  if (!text) return null;
+  if (/\.[A-Z]{2}$/.test(text)) return text;
+  const digits = text.replace(/\D/g, '');
+  if (!/^\d{5,6}$/.test(digits)) return text;
+  const query = executor || pool.query.bind(pool);
+  const matches = await query(
+    `SELECT canonical_code FROM core.instruments
+      WHERE asset_class=$2 AND regexp_replace(canonical_code,'\\D','','g')=$1
+      ORDER BY instrument_id LIMIT 2`, [digits, assetClass]
+  );
+  if (matches.rows.length === 1) return matches.rows[0].canonical_code;
+  if (matches.rows.length > 1) throw new Error(`证券代码存在多个主档匹配：${rawCode}`);
+  if (digits.length === 5 && assetClass === 'stock') return `${digits.padStart(5, '0')}.HK`;
+  const code = digits.padStart(6, '0');
+  if (assetClass === 'convertible_bond') return `${code}${/^11/.test(code) ? '.SH' : '.SZ'}`;
+  if (assetClass === 'stock') {
+    if (/^(6|68)/.test(code)) return `${code}.SH`;
+    if (/^(4|8|92)/.test(code)) return `${code}.BJ`;
+    return `${code}.SZ`;
+  }
+  return text;
+}
+
+async function resolveInstrument({ instrumentId = null, canonicalCode = null, sourceCode = null, identifierType = null, identifierValue = null } = {}, executor) {
+  const id = Number.isSafeInteger(Number(instrumentId)) && Number(instrumentId) > 0 ? Number(instrumentId) : null;
+  const canonical = normalizedCanonicalCode(canonicalCode);
+  const source = sourceCode ? String(sourceCode).trim().toLowerCase() : null;
+  const type = identifierType ? String(identifierType).trim() : null;
+  const value = identifierValue == null ? null : String(identifierValue).trim();
+  if (!id && !canonical && !(source && type && value)) return null;
+  const key = cacheKey(['instrument', id || '', canonical || '', source || '', type || '', value || '']);
+  const cached = readIdentifierCache(key);
+  if (cached !== undefined) return cached;
+  const query = executor || pool.query.bind(pool);
+  let result;
+  if (id) {
+    result = await query(
+      `SELECT instrument_id,canonical_code,name,asset_class,market,exchange_code,currency_code
+         FROM core.instruments WHERE instrument_id=$1 LIMIT 1`, [id]
+    );
+  } else if (canonical) {
+    result = await query(
+      `SELECT instrument_id,canonical_code,name,asset_class,market,exchange_code,currency_code
+         FROM core.instruments WHERE upper(canonical_code)=upper($1) LIMIT 1`, [canonical]
+    );
+  } else {
+    result = await query(
+      `SELECT i.instrument_id,i.canonical_code,i.name,i.asset_class,i.market,i.exchange_code,i.currency_code
+         FROM core.instrument_identifiers x
+         JOIN core.instruments i ON i.instrument_id=x.instrument_id
+         JOIN ops.data_sources d ON d.source_id=x.source_id
+        WHERE lower(d.source_code)=lower($1) AND x.identifier_type=$2
+          AND upper(x.identifier_value)=upper($3)
+          AND (x.valid_from IS NULL OR x.valid_from<=CURRENT_DATE)
+          AND (x.valid_to IS NULL OR x.valid_to>=CURRENT_DATE)
+        ORDER BY x.valid_from DESC NULLS LAST,x.identifier_id DESC LIMIT 2`, [source, type, value]
+    );
+    if (result.rows.length > 1) throw new Error(`供应商代码映射存在歧义：${source}/${type}/${value}`);
+  }
+  return writeIdentifierCache(key, result.rows[0] || null);
+}
+
+function deriveProviderIdentifier(canonicalCode, sourceCode, identifierType) {
+  const canonical = normalizedCanonicalCode(canonicalCode);
+  const source = String(sourceCode || '').trim().toLowerCase();
+  const type = String(identifierType || '').trim();
+  if (!canonical) return null;
+  if (source === 'tushare' && type === 'ts_code') return canonical;
+  const match = canonical.match(/^(\d{5,6})\.(SH|SZ|BJ|HK)$/i);
+  if (!match) return null;
+  const bare = match[1];
+  const exchange = match[2].toUpperCase();
+  if (source === 'tencent' && type === 'quote_symbol') {
+    const { describeTencentCode } = require('./tencentQuote');
+    return describeTencentCode(canonical)?.symbol || null;
+  }
+  if (source === 'eastmoney' && type === 'f10_code') return `${exchange}${bare}`;
+  if (source === 'eastmoney' && type === 'guba_code') return bare;
+  if (source === 'sina' && type === 'symbol') return `${exchange.toLowerCase()}${bare}`;
+  if (source === 'xueqiu' && type === 'symbol') return `${exchange}${bare}`;
+  return null;
+}
+
+async function resolveProviderIdentifier({ instrumentId = null, canonicalCode = null, sourceCode, identifierType, identifierValue = null } = {}, executor) {
+  const source = String(sourceCode || '').trim().toLowerCase();
+  const type = String(identifierType || '').trim();
+  if (!source || !type) return null;
+  const inputValue = identifierValue == null ? null : String(identifierValue).trim();
+  const key = cacheKey(['provider', instrumentId || '', canonicalCode || '', source, type, inputValue || '']);
+  const cached = readIdentifierCache(key);
+  if (cached !== undefined) return cached;
+  const query = executor || pool.query.bind(pool);
+  let instrument = await resolveInstrument({ instrumentId, canonicalCode, sourceCode: inputValue ? source : null, identifierType: inputValue ? type : null, identifierValue: inputValue }, query);
+  if (!instrument && inputValue) return writeIdentifierCache(key, null);
+  if (!instrument) return writeIdentifierCache(key, null);
+  const existing = await query(
+    `SELECT x.identifier_value,x.valid_from,x.valid_to,d.source_code
+       FROM core.instrument_identifiers x JOIN ops.data_sources d ON d.source_id=x.source_id
+      WHERE x.instrument_id=$1 AND lower(d.source_code)=lower($2) AND x.identifier_type=$3
+        AND (x.valid_from IS NULL OR x.valid_from<=CURRENT_DATE)
+        AND (x.valid_to IS NULL OR x.valid_to>=CURRENT_DATE)
+      ORDER BY x.valid_from DESC NULLS LAST,x.identifier_id DESC LIMIT 1`,
+    [instrument.instrument_id, source, type]
+  );
+  let value = existing.rows[0]?.identifier_value || null;
+  if (!value) {
+    value = deriveProviderIdentifier(instrument.canonical_code, source, type);
+    if (value) {
+      const sourceRows = await query('SELECT source_id FROM ops.data_sources WHERE lower(source_code)=lower($1) LIMIT 1', [source]);
+      const sourceId = sourceRows.rows[0]?.source_id;
+      if (!sourceId) return writeIdentifierCache(key, null);
+      await query(
+        `INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
+         VALUES($1,$2,$3,$4,CURRENT_DATE)
+         ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,
+        [instrument.instrument_id, sourceId, type, value]
+      );
+      const verify = await query(
+        `SELECT i.instrument_id,i.canonical_code,x.identifier_value
+           FROM core.instrument_identifiers x JOIN core.instruments i ON i.instrument_id=x.instrument_id
+          WHERE x.source_id=$1 AND x.identifier_type=$2 AND x.identifier_value=$3
+            AND (x.valid_to IS NULL OR x.valid_to>=CURRENT_DATE)
+          LIMIT 2`, [sourceId, type, value]
+      );
+      if (verify.rows.length !== 1 || Number(verify.rows[0].instrument_id) !== Number(instrument.instrument_id)) return writeIdentifierCache(key, null);
+    }
+  }
+  if (!value) return writeIdentifierCache(key, null);
+  const result = { instrument_id: instrument.instrument_id, canonical_code: instrument.canonical_code, identifier_value: value, source_code: source, identifier_type: type };
+  writeIdentifierCache(key, result);
+  writeIdentifierCache(cacheKey(['provider', instrument.instrument_id, '', source, type, '']), result);
+  return result;
+}
+
+async function resolveProviderCode(input = {}, executor) {
+  const args = typeof input === 'string' ? { canonicalCode: input } : input;
+  const result = await resolveProviderIdentifier(args, executor);
+  return result ? result.identifier_value : null;
+}
+
+// 统一主档写入口：所有新增证券先写 core.instruments，再写供应商映射及公司-证券关系。
+// executor 可传事务 client.query，保证主档、公司和映射同一事务提交。
+async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass = 'stock', market = 'CN', exchangeCode = '', currencyCode = 'CNY', listDate = null, status = 'listed', rawData = {}, companyName = null, relationType = 'issued_by', identifiers = [] } = {}, executor) {
+  const canonical = normalizedCanonicalCode(canonicalCode);
+  if (!canonical) throw new Error('证券主档缺少 canonicalCode');
+  const query = executor || pool.query.bind(pool);
+  const instrumentResult = await query(
+    `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data)
+     VALUES($1,$2,$3,$4,$5,$6,$7::date,$8,$9::jsonb)
+     ON CONFLICT(canonical_code) DO UPDATE SET
+       name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE core.instruments.name END,
+       asset_class=EXCLUDED.asset_class,market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,
+       currency_code=EXCLUDED.currency_code,list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
+       status=EXCLUDED.status,raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()
+     RETURNING instrument_id,canonical_code,name`,
+    [canonical, String(name || ''), assetClass, market, exchangeCode, currencyCode, listDate || null, status, JSON.stringify(rawData || {})]
+  );
+  const instrument = instrumentResult.rows[0];
+  if (!instrument) throw new Error(`证券主档写入失败：${canonical}`);
+  let companyId = null;
+  const company = String(companyName == null ? (assetClass === 'stock' ? name : '') : companyName).trim();
+  if (company) {
+    const companyResult = await query(
+      `INSERT INTO core.companies(legal_name,short_name,country_code,raw_data)
+       VALUES($1,$2,$3,$4::jsonb)
+       ON CONFLICT(country_code,legal_name) DO UPDATE SET short_name=EXCLUDED.short_name,raw_data=core.companies.raw_data || EXCLUDED.raw_data,updated_at=now()
+       RETURNING company_id`,
+      [company, String(name || company), market === 'HK' ? 'HK' : 'CN', JSON.stringify(rawData || {})]
+    );
+    companyId = companyResult.rows[0]?.company_id || null;
+    if (companyId) await query(
+      `INSERT INTO core.company_instruments(company_id,instrument_id,relation_type,valid_from)
+       VALUES($1,$2,$3,$4::date) ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from)`,
+      [companyId, instrument.instrument_id, relationType, listDate || null]
+    );
+  }
+  const sourceRows = await query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code=ANY($1::text[])`, [['tushare', 'tencent', 'eastmoney', 'sina', 'xueqiu']]);
+  const sourceMap = Object.fromEntries(sourceRows.rows.map(row => [row.source_code, row.source_id]));
+  const wanted = identifiers.length ? identifiers : [
+    ['tushare', 'ts_code', deriveProviderIdentifier(canonical, 'tushare', 'ts_code')],
+    ['tencent', 'quote_symbol', deriveProviderIdentifier(canonical, 'tencent', 'quote_symbol')],
+    ['eastmoney', 'f10_code', deriveProviderIdentifier(canonical, 'eastmoney', 'f10_code')],
+    ['eastmoney', 'guba_code', deriveProviderIdentifier(canonical, 'eastmoney', 'guba_code')],
+    ['sina', 'symbol', deriveProviderIdentifier(canonical, 'sina', 'symbol')],
+    ['xueqiu', 'symbol', deriveProviderIdentifier(canonical, 'xueqiu', 'symbol')],
+  ];
+  for (const item of wanted) {
+    const [sourceCode, identifierType, identifierValue] = item;
+    const sourceId = sourceMap[String(sourceCode || '').toLowerCase()];
+    if (!sourceId || !identifierValue) continue;
+    await query(
+      `INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
+       VALUES($1,$2,$3,$4,$5::date) ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,
+      [instrument.instrument_id, sourceId, identifierType, identifierValue, listDate || '0001-01-01']
+    );
+  }
+  return { instrumentId: instrument.instrument_id, canonicalCode: instrument.canonical_code, companyId };
+}
+
+function clearIdentifierCache() { identifierCache.clear(); }
+
+module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, clearIdentifierCache };

@@ -55,7 +55,11 @@ function pickArray(payload, keys, label) {
   throw new Error(`${label}接口未返回数组，请在 bondSafetyFetcher.js 中补充字段适配`);
 }
 
-async function fetchBondSafetySource(env = process.env, targetTradeDate = null) {
+async function fetchBondSafetySource(env = process.env, targetTradeDate = null, options = {}) {
+  if (options && options.readOnly) {
+    const { fetchBondSafetySourceFromDatabase } = require('./bondSafetyTushare');
+    return fetchBondSafetySourceFromDatabase(targetTradeDate);
+  }
   if (!isConfigured(env)) {
     const error = new Error('可转债安全性数据源尚未配置');
     error.code = 'BOND_SAFETY_NOT_CONFIGURED';

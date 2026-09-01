@@ -5,6 +5,7 @@
 //   3) 缓存缺失时允许一次受限批量补取（Tushare hk_basic），补取成功先落库再计算
 //   4) 查询不到每手股数时不默认按 100 股处理
 const { pool } = require('../db/connection');
+const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { tushareQuery, tsRows, todayCN } = require('./market');
 
 // ========== A 股交易单位（市场规则，不落库） ==========
@@ -154,13 +155,8 @@ async function syncHkTradeRules() {
       const listDate = /^\d{8}$/.test(String(row.list_date || '')) ? `${String(row.list_date).slice(0,4)}-${String(row.list_date).slice(4,6)}-${String(row.list_date).slice(6,8)}` : null;
 
       // 1) core.instruments 主档（缺失则补，兼容性：不覆盖已有 raw_data）
-      const inst = (await client.query(
-        `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data)
-         VALUES($1,$2,'equity','HK','HKEX','HKD',$3,'listed',$4::jsonb)
-         ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,currency_code=EXCLUDED.currency_code,list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),status=EXCLUDED.status,updated_at=now()
-         RETURNING instrument_id`,
-        [tsCode, name, listDate, JSON.stringify({ trade_unit: lot })]
-      )).rows[0];
+      const master = await ensureInstrumentIdentity({ canonicalCode: tsCode, name, assetClass: 'stock', market: 'HK', exchangeCode: 'HKEX', currencyCode: 'HKD', listDate: listDate, status: 'listed', rawData: { trade_unit: lot }, companyName: name }, client.query.bind(client));
+      const inst = { instrument_id: master.instrumentId };
 
       // 2) core.instrument_identifiers（ts_code）
       await client.query(

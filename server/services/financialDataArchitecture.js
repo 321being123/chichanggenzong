@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { pool } = require('../db/connection');
-const { describeTencentCode } = require('./tencentQuote');
+const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { STOCK_FORMULA_VERSION } = require('./analysisFreshness');
 
 function asDate(value) {
@@ -45,20 +45,10 @@ async function ensureMaster(client, tsCode, sources, metadata) {
   if(!legacy){const current=(await client.query(`SELECT canonical_code ts_code,name,market,to_char(list_date,'YYYYMMDD') list_date,raw_data data FROM core.instruments WHERE canonical_code=$1`,[tsCode])).rows[0];legacy=current?{...current,industry:current.data?.industry||''}:null;}
   if(!legacy)throw new Error(`缺少证券基础资料：${tsCode}`);
   const raw=legacy.data||{},exchange=tsCode.endsWith('.SH')?'SSE':tsCode.endsWith('.BJ')?'BSE':'SZSE';
-  const currency=tsCode.endsWith('.HK')?'HKD':'CNY',assetClass='equity';
-  const company=(await client.query(`INSERT INTO core.companies(legal_name,short_name,country_code,raw_data)
-    VALUES($1,$2,$3,$4::jsonb) ON CONFLICT(country_code,legal_name) DO UPDATE SET short_name=EXCLUDED.short_name,raw_data=EXCLUDED.raw_data,updated_at=now()
-    RETURNING company_id`,[legacy.name||tsCode,legacy.name||'',tsCode.endsWith('.HK')?'HK':'CN',JSON.stringify(raw)])).rows[0];
-  const instrument=(await client.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) ON CONFLICT(canonical_code) DO UPDATE SET name=EXCLUDED.name,market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,currency_code=EXCLUDED.currency_code,list_date=EXCLUDED.list_date,raw_data=EXCLUDED.raw_data,updated_at=now()
-    RETURNING instrument_id`,[tsCode,legacy.name||'',assetClass,legacy.market||'',exchange,currency,asDate(legacy.list_date),'listed',JSON.stringify(raw)])).rows[0];
-  await client.query(`INSERT INTO core.company_instruments(company_id,instrument_id,valid_from) VALUES($1,$2,$3)
-    ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from)`,[company.company_id,instrument.instrument_id,asDate(legacy.list_date)]);
-  const tencentCode=describeTencentCode(tsCode);
-  for(const [sourceCode,type,value] of [['tushare','ts_code',tsCode],['tencent','quote_symbol',tencentCode.symbol],['eastmoney','f10_code',tsCode]]){
-    await client.query(`INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
-      VALUES($1,$2,$3,$4,$5) ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,[instrument.instrument_id,sources[sourceCode],type,value,asDate(legacy.list_date)]);
-  }
+  const currency=tsCode.endsWith('.HK')?'HKD':'CNY',assetClass='stock';
+  const master = await ensureInstrumentIdentity({ canonicalCode: tsCode, name: legacy.name || '', assetClass, market: legacy.market || (tsCode.endsWith('.HK') ? 'HK' : 'CN'), exchangeCode: exchange, currencyCode: currency, listDate: asDate(legacy.list_date), status: 'listed', rawData: raw, companyName: legacy.name || tsCode }, client.query.bind(client));
+  const company = { company_id: master.companyId };
+  const instrument = { instrument_id: master.instrumentId };
   const industryName=raw.industry||legacy.industry||'',system=raw.industry_system||'Tushare基础行业',levelText=raw.industry_level||'';
   if(industryName){
     const taxonomyCode=/申万/.test(system)?'SW2021':'TUSHARE_BASIC';

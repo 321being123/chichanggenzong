@@ -12,6 +12,7 @@ from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_ent
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env, TUSHARE_TOKEN, TUSHARE_BACKUP_TOKEN, get_tushare_pro
 from external_call_guard import install_requests_guard
+from instrument_identity import resolve_provider_code, resolve_canonical_code
 
 install_requests_guard()
 
@@ -61,21 +62,18 @@ _stock_quote_cache = {}
 
 _bond_price_cache = {}
 
-def _get_qt_prefix(code):
-    """
-    根据证券代码返回腾讯行情前缀 (sh/sz)
-    
-    规则：
-    - 沪市：6xxxxx（沪市主板）、11xxxx（沪市转债）、118xxx（科创板转债）
-    - 深市：0xxxxx/3xxxxx（深市主板/创业板）、12xxxx（深市转债）、123xxx（创业板转债）
-    - 科创板股票：688xxx → sh
-    - 北交所：4xxxxx/8xxxxx → 暂用sz（腾讯行情可能不支持）
-    """
-    code_str = str(code)
-    # 沪市判断
-    if code_str.startswith(("6", "11", "118", "688")):
-        return "sh"
-    return "sz"
+def _get_qt_symbol(code, asset_class=None):
+    """通过统一证券身份表读取腾讯行情代码；缺映射时拒绝猜测。"""
+    return resolve_provider_code(code, 'tencent', 'quote_symbol', asset_class=asset_class)
+
+
+def _get_qt_prefix(code, asset_class=None):
+    """返回已登记腾讯代码的市场前缀，禁止在业务层按数字前缀自行推断。"""
+    symbol = _get_qt_symbol(code, asset_class)
+    if not symbol:
+        return None
+    prefix = str(symbol).strip().lower()[:2]
+    return prefix if prefix in ('sh', 'sz', 'bj', 'hk') else None
 
 _TUSHARE_PRO = None
 
@@ -105,15 +103,11 @@ def _ts_float(val):
 
 def _to_ts_code(code):
     """A股/转债代码 → Tushare ts_code（SH/SZ/BJ）"""
-    code = str(code).strip()
-    if '.' in code:                       # 已是 ts_code（如 300750.SZ），先剥后缀
-        code = code.split('.')[0]
-    code = code.zfill(6)
-    if code[0] == '6' or code.startswith('11'):   # 沪市股票/沪市转债(110/113/118)
-        return f"{code}.SH"
-    if code.startswith(('8', '92', '43')):        # 北交所
-        return f"{code}.BJ"
-    return f"{code}.SZ"                           # 深市股票/深市转债(12x)
+    mapped = resolve_provider_code(code, 'tushare', 'ts_code')
+    if mapped:
+        return mapped
+    # 主档暂时没有该标的时仍由统一身份模块提供受控标准化；业务层不复制后缀规则。
+    return resolve_canonical_code(str(code or '').strip().upper(), asset_class=None) or None
 
 def _ts_latest_trade_date(pro):
     """获取最近一个交易日(YYYYMMDD)，取最近10天内开市日最大值"""
@@ -319,4 +313,4 @@ def _sync_ipo_history(records):
         print(f"[校准] 回填 {updated} 条LD_CLOSE_CHANGE")
     return inserted
 
-__all__ = ['OUTPUT_DIR', 'CALENDAR_API', 'DETAIL_API', 'BOND_DETAIL_URL', 'HEADERS', '_session', '_get_session', '_get_cninfo_session', '_stock_quote_cache', '_bond_price_cache', '_get_qt_prefix', '_TUSHARE_PRO', '_get_tushare_pro', '_ts_float', '_to_ts_code', '_ts_latest_trade_date', '_ts_fetch_roe', '_fetch_quote_tushare', '_ts_fetch_bond_close', '_ts_fetch_all_market_prices', 'BOARD_BASE', '_CALIBRATE_MONTHS', '_BOARD_CALIBRATED', '_IPO_DB_PATH', '_init_ipo_db', '_sync_ipo_history']
+__all__ = ['OUTPUT_DIR', 'CALENDAR_API', 'DETAIL_API', 'BOND_DETAIL_URL', 'HEADERS', '_session', '_get_session', '_get_cninfo_session', '_stock_quote_cache', '_bond_price_cache', '_get_qt_symbol', '_get_qt_prefix', '_TUSHARE_PRO', '_get_tushare_pro', '_ts_float', '_to_ts_code', '_ts_latest_trade_date', '_ts_fetch_roe', '_fetch_quote_tushare', '_ts_fetch_bond_close', '_ts_fetch_all_market_prices', 'BOARD_BASE', '_CALIBRATE_MONTHS', '_BOARD_CALIBRATED', '_IPO_DB_PATH', '_init_ipo_db', '_sync_ipo_history']

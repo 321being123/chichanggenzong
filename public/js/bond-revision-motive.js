@@ -13,8 +13,10 @@
     'true': '是', 'false': '否', 'open': '进行中', 'pass': '通过', 'locked': '锁定期',
     'floor_blocked': '底价受阻', 'insufficient_space': '下修空间不足', 'complete': '完整',
     'partial': '部分完整', 'incomplete': '不完整', 'present': '有数据', 'missing': '缺失',
+    'observed_empty': '已核验，未返回记录',
     'unknown': '未知', 'no_revision': '明确不下修', 'implemented': '已实施', 'approved': '已通过',
-    'rejected': '未通过', 'proposal': '已提议', 'tracking': '跟踪中', 'met': '已满足'
+    'rejected': '未通过', 'proposal': '已提议', 'tracking': '跟踪中', 'met': '已满足',
+    'fund': '基金', 'company': '公司', 'financial': '金融机构', 'individual': '个人', 'other': '其他'
   };
   function displayText(item) {
     if (item == null || item === '') return '—';
@@ -33,7 +35,7 @@
     return escapeHtml(displayText(item));
   }
   function displayUnit(item) {
-    if (['financial_metrics', 'revision_cycles', 'proposal_history'].indexOf(item && item.metric) >= 0) return '说明';
+    if (['financial_metrics', 'revision_cycles', 'holder_positions', 'controller'].indexOf(item && item.metric) >= 0) return '说明';
     return ['market_cap', 'remain_size', 'issue_size'].indexOf(item && item.metric) >= 0 ? '亿元' : (item && item.unit || '');
   }
   function chineseDate(date) {
@@ -60,7 +62,7 @@
         ['ebitda', '息税折旧摊销前利润', moneyText]
       ];
       return fields.map(function (field) { return field[1] + '：' + field[2](data && data[field[0]]); }).join('；');
-    } catch (_) { return displayText(raw); }
+    } catch (_) { return escapeHtml(displayText(raw)); }
   }
   function cycleText(raw) {
     try {
@@ -77,29 +79,46 @@
         if (cycle.lock_until) parts.push('锁定期至' + chineseDate(cycle.lock_until));
         if (!cycle.decision_date && !cycle.implementation_date && outcomeText[cycle.outcome]) parts.push(outcomeText[cycle.outcome]);
         if (parts.length === 1) parts.push(outcomeText[cycle.outcome] || '暂无更多记录');
-        return parts.join('，');
-      }).join('；');
-    } catch (_) { return displayText(raw); }
+        return '<div class="motive-cycle-line">' + escapeHtml(parts.join('，')) + '</div>';
+      }).join('');
+    } catch (_) { return escapeHtml(displayText(raw)); }
   }
-  function proposalHistoryText(raw) {
+  function holderText(raw) {
     try {
-      var history = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (!Array.isArray(history) || !history.length) return '暂无市场下修提议记录';
-      var total = history.reduce(function (sum, item) { return sum + (Number(item) || 0); }, 0);
-      var sequence = history.map(function (item) { return (Number(item) || 0) + '次'; }).join('、');
-      return '这是市场按月提出下修的次数，共' + history.length + '个月，合计' + total + '次；从最早到最新依次为：' + sequence + '。';
-    } catch (_) { return displayText(raw); }
+      var holders = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!Array.isArray(holders) || !holders.length) return '<span>暂无前十大持有人数据</span>';
+      return '<div class="motive-holder-list">' + holders.map(function (holder, index) {
+        var name = escapeHtml(holder && holder.holder_name || '未知持有人');
+        var type = displayText(holder && holder.holder_type);
+        var amount = holder && holder.hold_amount != null && Number.isFinite(Number(holder.hold_amount)) ? Number(holder.hold_amount).toLocaleString('zh-CN') + '张' : '持仓量未知';
+        var ratio = holder && holder.hold_ratio != null && Number.isFinite(Number(holder.hold_ratio)) ? Number(holder.hold_ratio).toFixed(2) + '%' : '占比未知';
+        var date = holder && holder.report_date ? chineseDate(holder.report_date) : '报告期未知';
+        var related = holder && holder.related ? ' · 关联方' : '';
+        return '<div class="motive-holder-line"><span>' + (index + 1) + '. ' + name + '</span><span>' + escapeHtml(type + ' · ' + amount + ' · ' + ratio + related + ' · ' + date) + '</span></div>';
+      }).join('') + '</div>';
+    } catch (_) { return escapeHtml(displayText(raw)); }
+  }
+  function controllerText(raw) {
+    try {
+      var controller = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (!controller || typeof controller !== 'object' || !Object.keys(controller).length) return '<span>暂无控制人数据</span>';
+      var name = controller.controller_name || controller.name || '控制人未披露';
+      var type = displayText(controller.controller_type || controller.type);
+      var ratio = controller.control_ratio != null || controller.ratio != null ? value(controller.control_ratio != null ? controller.control_ratio : controller.ratio) + '%' : '持股比例未知';
+      return escapeHtml(type + ' · ' + name + ' · 持股' + ratio);
+    } catch (_) { return escapeHtml(displayText(raw)); }
   }
   function snapshotValue(item) {
     var raw = item.raw_value == null ? item.value : item.raw_value;
     if (item.metric === 'financial_metrics') return escapeHtml(financialText(raw));
-    if (item.metric === 'revision_cycles') return escapeHtml(cycleText(raw));
-    if (item.metric === 'proposal_history') return escapeHtml(proposalHistoryText(raw));
+    if (item.metric === 'revision_cycles') return cycleText(raw);
+    if (item.metric === 'holder_positions') return holderText(raw);
+    if (item.metric === 'controller') return controllerText(raw);
     return prettyValue(raw, item.metric);
   }
   function calculations(items) {
     if (!items || !items.length) return '';
-    return '<details class="motive-calculations"><summary>查看计算项</summary><div class="biz-table-scroll"><table class="biz-table"><thead><tr><th>指标</th><th>原始值</th><th>单位</th><th>规则</th><th>分值变化</th></tr></thead><tbody>' + items.map(function (item) { return '<tr><td>' + escapeHtml(item.label || item.metric || '') + '</td><td>' + prettyValue(item.raw_value, item.metric) + '</td><td>' + escapeHtml(item.unit || '') + '</td><td>' + escapeHtml(item.rule || '') + '</td><td>' + prettyValue(item.delta) + '</td></tr>'; }).join('') + '</tbody></table></div></details>';
+    return '<details class="motive-calculations" open><summary>查看计算项</summary><div class="biz-table-scroll"><table class="biz-table"><thead><tr><th>指标</th><th>原始值</th><th>单位</th><th>规则</th><th>分值变化</th></tr></thead><tbody>' + items.map(function (item) { return '<tr><td>' + escapeHtml(item.label || item.metric || '') + '</td><td>' + prettyValue(item.raw_value, item.metric) + '</td><td>' + escapeHtml(item.unit || '') + '</td><td>' + escapeHtml(item.rule || '') + '</td><td>' + prettyValue(item.delta) + '</td></tr>'; }).join('') + '</tbody></table></div></details>';
   }
   function render(data) {
     var summary = data.score_summary || {};
@@ -125,7 +144,8 @@
     }
     document.getElementById('motive-title').textContent = (bond.bond_name || bond.ts_code || '可转债') + ' · 下修博弈详情';
     document.getElementById('motive-updated').textContent = '评分日期：' + (summary.trade_date || '—') + ' · 模型：' + (data.model_version || '—') + ' · 计算时间：' + String(data.calculated_at || '—').replace('T', ' ').slice(0, 19);
-    var cards = [['动机评分', value(summary.motive_score, 1) + ' / 100'], ['触发成熟度', value(summary.maturity_score, 1) + ' / 100'], ['动机等级', summary.classification || '—'], ['安全性', summary.safety_level || '未评级'], ['数据质量', displayText(summary.quality_status) + '（' + percent(summary.completeness_rate) + '）']];
+    var researchNames = { relative_high:'较高（同日全市场前20%）', relative_medium:'中等', relative_low:'较低', unavailable:'尚无评分' };
+    var cards = [['动机评分', summary.motive_score == null ? '—' : value(summary.motive_score, 1) + ' / 100'], ['触发成熟度', summary.maturity_score == null ? '—' : value(summary.maturity_score, 1) + ' / 100'], ['研究等级', researchNames[summary.research_level] || '尚无评分'], ['安全性', summary.safety_level || '未评级'], ['数据质量', displayText(summary.quality_status) + '（' + percent(summary.completeness_rate) + '）']];
     document.getElementById('motive-summary').innerHTML = cards.map(function (item) { return '<div class="bond-feature-stat motive-summary-card"><span>' + escapeHtml(item[0]) + '</span><strong>' + escapeHtml(item[1]) + '</strong></div>'; }).join('');
     var marketContext = data.market_context || [];
     var core = '<div class="motive-core"><strong>核心动机</strong>' + list(data.core_motives) + '<strong>当前阻断</strong>' + list(data.blockers) + (marketContext.length ? '<strong>市场背景（不计入本债动机分）</strong>' + list(marketContext) : '') + '</div>';

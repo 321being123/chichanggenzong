@@ -25,7 +25,9 @@ const isoDate = value => {
   })).filter(row => row.instrument_id && row.trade_date);
   const valuations = tsRows(valuationData).map(row => ({
     instrument_id: instrumentMap.get(row.ts_code), trade_date: isoDate(row.trade_date),
-    pe_static: row.pe, pe_ttm: row.pe_ttm, pb: row.pb, dividend_yield_ttm: row.dv_ttm,
+    pe_static: row.pe, pe_ttm: row.pe_ttm, pb: row.pb,
+    // Tushare dv_ttm 单位为百分数点，标准层要求比例小数。
+    dividend_yield_ttm: row.dv_ttm == null ? null : Number(row.dv_ttm) / 100,
     total_market_cap: row.total_mv == null ? null : Number(row.total_mv) * 10000,
     circulating_market_cap: row.circ_mv == null ? null : Number(row.circ_mv) * 10000,
   })).filter(row => row.instrument_id && row.trade_date && [row.pe_static,row.pe_ttm,row.pb,row.dividend_yield_ttm,row.total_market_cap,row.circulating_market_cap].some(value => value != null));

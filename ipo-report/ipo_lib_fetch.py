@@ -857,7 +857,9 @@ def _fetch_bond_price(bond_code, list_date):
     if is_listed:
         # 主源：腾讯转债实时行情；上市首日 Tushare 日线通常尚未更新。
         try:
-            qt_code = f"{_get_qt_prefix(code)}{code}"
+            qt_code = _get_qt_symbol(code, 'convertible_bond')
+            if not qt_code:
+                return None
             resp = _get_session().get(f"https://qt.gtimg.cn/q={qt_code}", timeout=10)
             price = _parse_tencent_bond_price(resp.content, code)
             if price:
@@ -1170,7 +1172,9 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
 def _fetch_quote_tencent(stock_code):
     """腾讯行情API - 数据格式稳定，sandbox内可达"""
     try:
-        qt_code = f"{_get_qt_prefix(stock_code)}{stock_code}"
+        qt_code = _get_qt_symbol(stock_code, 'stock')
+        if not qt_code:
+            return None
         url = f"https://qt.gtimg.cn/q={qt_code}"
         resp = _get_session().get(url, timeout=10)
         text = resp.text
@@ -1335,7 +1339,10 @@ def _fetch_all_a_stock_list():
         """批量查询股票名称"""
         if not codes:
             return {}
-        qt_codes = [f"{_get_qt_prefix(c)}{c}" for c in codes]
+        qt_codes = [_get_qt_symbol(c, 'stock') for c in codes]
+        qt_codes = [code for code in qt_codes if code]
+        if not qt_codes:
+            return {}
         try:
             url = f"https://qt.gtimg.cn/q={','.join(qt_codes)}"
             resp = s.get(url, timeout=15)
@@ -1438,8 +1445,9 @@ def _fetch_bond_listing_data_from_api(cutoff_date):
     # 注：此逻辑会越过首日限制，可能产生 204%/147% 等值，为旧逻辑既定行为。
     gains = []
     for code, name, ld in bonds:
-        prefix = _get_qt_prefix(code)
-        qt_code = f"{prefix}{code}"
+        qt_code = _get_qt_symbol(code, 'convertible_bond')
+        if not qt_code:
+            continue
         # 取上市日后第2个交易日收盘价（避开首日涨跌幅限制）
         kline_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,365,qfq"
         try:
@@ -1589,8 +1597,12 @@ def _fetch_all_bonds_market():
         stock_prices = {}
         all_qt = []
         for sc, stock, tp in codes:
-            all_qt.append(f"{_get_qt_prefix(sc)}{sc}")
-            all_qt.append(f"{_get_qt_prefix(stock)}{stock}")
+            bond_symbol = _get_qt_symbol(sc, 'convertible_bond')
+            stock_symbol = _get_qt_symbol(stock, 'stock')
+            if bond_symbol:
+                all_qt.append(bond_symbol)
+            if stock_symbol:
+                all_qt.append(stock_symbol)
 
         for i in range(0, len(all_qt), 50):
             batch = all_qt[i:i + 50]
@@ -1681,8 +1693,9 @@ def _fetch_stock_listing_actuals():
     for code, name, listing_date, issue_price in candidates:
         try:
             ld = listing_date[:10]
-            prefix = _get_qt_prefix(code)
-            qt_code = f"{prefix}{code}"
+            qt_code = _get_qt_symbol(code, 'stock')
+            if not qt_code:
+                continue
             kline_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,365,qfq"
             resp = s.get(kline_url, timeout=10)
             kdata = resp.json()

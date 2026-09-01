@@ -1,6 +1,7 @@
 const https = require('https');
 const { pool } = require('../db/connection');
 const { withExternalCallGuard } = require('./externalCallGuard');
+const { resolveCanonicalCode, resolveInstrument, resolveProviderCode } = require('./securityIdentity');
 
 const SOURCE = 'tencent';
 const DEFAULT_TTL_MS = 60 * 1000;
@@ -155,9 +156,35 @@ async function saveCache(quotes) {
   }
 }
 
+async function resolveTencentDescriptor(rawCode) {
+  const original = String(rawCode || '').trim().toUpperCase();
+  if (!original) return null;
+  // 恒生指数是统一主档中的特殊指数标识，不按股票代码猜测交易所。
+  if (original === 'HKHSI') return { code: 'HSI', market: 'hk', symbol: 'hkHSI' };
+
+  try {
+    let symbol = null;
+    const sourceInstrument = /^(SH|SZ|BJ|HK)\d{5,6}$/i.test(original)
+      ? await resolveInstrument({ sourceCode: SOURCE, identifierType: 'quote_symbol', identifierValue: original })
+      : null;
+    if (sourceInstrument) {
+      symbol = await resolveProviderCode({ instrumentId: sourceInstrument.instrument_id, sourceCode: SOURCE, identifierType: 'quote_symbol' });
+    } else {
+      const assetClass = isConvertibleBondCode(original) ? 'convertible_bond' : 'stock';
+      const canonical = await resolveCanonicalCode(original, assetClass);
+      if (canonical) symbol = await resolveProviderCode({ canonicalCode: canonical, sourceCode: SOURCE, identifierType: 'quote_symbol' });
+    }
+    if (!symbol) return null;
+    if (String(symbol).toLowerCase() === 'hkHSI'.toLowerCase()) return { code: 'HSI', market: 'hk', symbol: 'hkHSI' };
+    return describeTencentCode(symbol);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function fetchTencentQuotes(rawCodes, options = {}) {
-  const descriptors = Array.from(new Map((rawCodes || [])
-    .map(describeTencentCode).filter(Boolean).map(item => [item.symbol, item])).values());
+  const resolved = await Promise.all((rawCodes || []).map(resolveTencentDescriptor));
+  const descriptors = Array.from(new Map(resolved.filter(Boolean).map(item => [item.symbol, item])).values());
   if (!descriptors.length) return new Map();
   const symbols = descriptors.map(item => item.symbol);
   const cached = await loadCache(symbols);

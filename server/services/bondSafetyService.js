@@ -1,8 +1,26 @@
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { evaluateBondSafety } = require('./bondSafety');
 const { fetchBondSafetySource, isConfigured } = require('./bondSafetyFetcher');
+const { publishDatasetPartition } = require('./datasetPartitions');
 
 const JOB_NAME = 'bond_safety_refresh';
+
+function stableIdentity(row, companyRow = false) {
+  if (!row) return null;
+  const value = companyRow
+    ? (row.identity_key ?? row.stock_instrument_id ?? row.company_id ?? row.stock_code ?? row.stk_code ?? row.ts_code)
+    : (row.identity_key ?? row.stock_instrument_id ?? row.company_id ?? row.stock_code ?? row.stk_code);
+  return value === null || value === undefined || !String(value).trim() ? null : String(value).trim();
+}
+
+function assertStableIdentity(source) {
+  const missingCompany = (source.companyRows || []).filter(row => !stableIdentity(row, true)).length;
+  const missingBond = (source.bondRows || []).filter(row => !stableIdentity(row, false)).length;
+  if (!missingCompany && !missingBond) return;
+  const error = new Error(`安全性数据缺少正股代码或身份ID（公司 ${missingCompany} 条，债券 ${missingBond} 条），拒绝按名称匹配`);
+  error.code = 'IDENTITY_REQUIRED';
+  throw error;
+}
 
 function shanghaiDate() {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -94,12 +112,15 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
   if (!claimed) return { skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
-    const source = await fetchBondSafetySource(process.env, options.targetTradeDate || null);
+    const source = await fetchBondSafetySource(process.env, options.targetTradeDate || null, { readOnly: options.readOnly === true });
     if (!source.companyRows.length || !source.bondRows.length) {
       throw new Error('数据源返回空数据，已保留上一份有效快照');
     }
+    assertStableIdentity(source);
     const result = evaluateBondSafety(source.companyRows, source.bondRows, source.sourceUpdatedAt);
     const snapshot = await saveSnapshot(result, source.sourceUpdatedAt, reason);
+    const dataAsOf = source.dataAsOf || (source.sourceUpdatedAt ? String(source.sourceUpdatedAt).slice(0, 10) : null);
+    if (dataAsOf) await publishDatasetPartition('bond_safety_snapshot', 'CN', { partitionKey: dataAsOf, dataAsOf, rowCount: snapshot.row_count, diagnostics: result.diagnostics || {} });
     await finishJobRun(runId, true, `刷新 ${snapshot.row_count} 条；未匹配 ${result.diagnostics.unmatched_stock_count} 条`);
     return { skipped: false, snapshot };
   } catch (error) {
@@ -110,4 +131,4 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
   }
 }
 
-module.exports = { getLatestSnapshot, refreshBondSafety, isConfigured };
+module.exports = { getLatestSnapshot, refreshBondSafety, isConfigured, stableIdentity, assertStableIdentity };

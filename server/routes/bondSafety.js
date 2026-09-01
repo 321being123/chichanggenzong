@@ -7,6 +7,7 @@ const { getLatestSnapshot, refreshBondSafety, isConfigured } = require('../servi
 const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBondRedemptionService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
 const { auditEvent } = require('../db');
+const { getDatasetMetadata } = require('../services/datasetPartitions');
 
 router.get('/bonds', asyncHandler(async (req, res) => {
   const requestedRating = String(req.query.rating || '').trim();
@@ -14,6 +15,7 @@ router.get('/bonds', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: '未知的安全性评级' });
   }
   const snapshot = await getLatestSnapshot();
+  const partition = await getDatasetMetadata('bond_safety_snapshot', 'CN');
   if (!snapshot) {
     return res.json({
       configured: isConfigured(),
@@ -23,6 +25,10 @@ router.get('/bonds', asyncHandler(async (req, res) => {
       total: 0,
       data: [],
       diagnostics: null,
+      data_as_of: partition.data_as_of,
+      published_at: partition.published_at,
+      is_stale: partition.is_stale,
+      stale_reason: partition.stale_reason,
     });
   }
   const allData = Array.isArray(snapshot.data) ? snapshot.data : [];
@@ -41,6 +47,10 @@ router.get('/bonds', asyncHandler(async (req, res) => {
     total: enriched.length,
     data,
     diagnostics: snapshot.diagnostics || null,
+    data_as_of: partition.data_as_of || (snapshot.source_updated_at ? String(snapshot.source_updated_at).slice(0, 10) : null),
+    published_at: partition.published_at,
+    is_stale: partition.is_stale,
+    stale_reason: partition.stale_reason,
   });
 }));
 

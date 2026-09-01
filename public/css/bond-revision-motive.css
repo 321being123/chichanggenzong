@@ -44,4 +44,9 @@
 .motive-input-table th:nth-child(6) { width:10%; }
 .motive-input-table th:nth-child(7) { width:10%; }
 .motive-input-table .motive-raw-value { max-width:none; }
+.motive-cycle-line { margin:0 0 6px; }
+.motive-cycle-line:last-child { margin-bottom:0; }
+.motive-holder-line { display:flex; justify-content:space-between; gap:12px; padding:4px 0; border-bottom:1px solid #eef2f7; }
+.motive-holder-line:last-child { border-bottom:0; }
 @media (max-width:760px) { .motive-summary-grid,.motive-kv { grid-template-columns:repeat(2,minmax(120px,1fr)); } .motive-section { padding:15px; } }
+@media (max-width:760px) { .motive-holder-line { display:block; } .motive-holder-line span { display:block; } }

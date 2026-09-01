@@ -7,6 +7,9 @@ import os
 import sys, types
 from pathlib import Path
 
+# 这是纯单元测试，显式关闭外部请求 Guard；生产脚本未配置时仍默认开启。
+os.environ.setdefault("EXTERNAL_CALL_GUARD", "0")
+
 for _m in ("fitz", "db_pg", "tushare", "xgboost", "numpy", "pandas", "psycopg2", "requests"):
     sys.modules.setdefault(_m, types.ModuleType(_m))
 
@@ -29,6 +32,26 @@ PASS = []
 def check(name, cond, detail=""):
     PASS.append(cond)
     print(f"[{'PASS' if cond else 'FAIL'}] {name}  {detail}")
+
+
+# Python Guard 默认开启；只有测试/离线诊断显式 opt-out，生产环境不能关闭。
+_guard_env_backup = {key: os.environ.get(key) for key in ("EXTERNAL_CALL_GUARD", "NODE_ENV", "APP_ENV")}
+try:
+    os.environ.pop("EXTERNAL_CALL_GUARD", None)
+    os.environ.pop("NODE_ENV", None)
+    os.environ.pop("APP_ENV", None)
+    check("Guard 未配置时默认开启", call_guard.enabled() is True)
+    os.environ["EXTERNAL_CALL_GUARD"] = "0"
+    os.environ["NODE_ENV"] = "production"
+    check("生产环境显式关闭仍保持开启", call_guard.enabled() is True)
+    os.environ["NODE_ENV"] = "test"
+    check("测试环境可显式关闭 Guard", call_guard.enabled() is False)
+finally:
+    for _key, _value in _guard_env_backup.items():
+        if _value is None:
+            os.environ.pop(_key, None)
+        else:
+            os.environ[_key] = _value
 
 
 # ---------- Tushare 业务错误统一分类：HTTP 200 也必须进入接口熔断链 ----------

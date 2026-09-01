@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const { runJobByCode } = require('./jobRunners');
+const { getJobDefinition } = require('./jobDefinitions');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { getExternalCallStats } = require('./externalCallGuard');
 
@@ -23,6 +24,10 @@ process.on('message', async message => {
       throw error;
     }
     if (message.businessDate) process.env.JOB_BUSINESS_DATE = String(message.businessDate).slice(0, 10);
+    // 任务契约中的 maxExternalCallsPerRun 必须在运行时生效；0 表示该任务禁止任何外部请求。
+    const definition = getJobDefinition(message.jobCode);
+    process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
+    process.env.JOB_EXTERNAL_CALL_LIMIT = String(Math.max(Number(definition.maxExternalCallsPerRun) || 0, 0));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
     const stats = getExternalCallStats();
     const normalized = result && typeof result === 'object'

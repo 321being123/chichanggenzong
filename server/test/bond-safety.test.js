@@ -2,6 +2,7 @@ const assert = require('assert');
 const { cleanValue, rateCompany, evaluateBondSafety } = require('../services/bondSafety');
 const { pickArray, authHeaders, isConfigured } = require('../services/bondSafetyFetcher');
 const { nextShanghaiDelay } = require('../jobs/bondSafetyRefresh');
+const { assertStableIdentity } = require('../services/bondSafetyService');
 const {
   finite, derivePb, isActiveBond, preferredSecurityName,
   FINANCIAL_REFRESH_BATCH_SIZE, nextFinancialBatchDelay,
@@ -79,6 +80,29 @@ check('同名公司评级冲突时拒绝刷新', () => {
   assert.throws(() => evaluateBondSafety([
     company(), company({ ebit: 0, cash: 0, trading_fin_assets: 0, total_liability: 5000 })
   ], []), /冲突的重复名称/);
+});
+check('同名正股按身份键分别关联评级', () => {
+  const result = evaluateBondSafety([
+    company({ identity_key: '600000.SH', company: '同名公司' }),
+    company({ identity_key: '000001.SZ', company: '同名公司', ebit: 0, cash: 0, trading_fin_assets: 0, total_liability: 5000 }),
+  ], [
+    { bond_code: 'B1', stock_name: '同名公司', identity_key: '600000.SH', bond_price: 101 },
+    { bond_code: 'B2', stock_name: '同名公司', identity_key: '000001.SZ', bond_price: 102 },
+  ]);
+  const ratings = Object.fromEntries(result.data.map(row => [row.bond_code, row.safety]));
+  assert.strictEqual(ratings.B1, '安全');
+  assert.strictEqual(ratings.B2, '高风险');
+  assert.strictEqual(result.diagnostics.duplicate_companies.length, 0);
+});
+check('安全性刷新拒绝无正股身份的外部数据', () => {
+  assert.throws(() => assertStableIdentity({
+    companyRows: [{ company: '仅名称公司', has_cb: 1 }],
+    bondRows: [{ bond_code: 'B1', stock_name: '仅名称公司' }],
+  }), /IDENTITY_REQUIRED|拒绝按名称匹配/);
+  assert.doesNotThrow(() => assertStableIdentity({
+    companyRows: [{ identity_key: '600000.SH', company: '同名公司', has_cb: 1 }],
+    bondRows: [{ bond_code: 'B1', identity_key: '600000.SH', stock_name: '同名公司' }],
+  }));
 });
 
 console.log('C. API 适配与调度边界');

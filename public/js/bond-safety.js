@@ -42,6 +42,15 @@ function bondSafetyRating(rating) {
   return '<span class="bond-rating bond-rating-' + cls + '">' + escapeHtml(rating || '未评级') + '</span>';
 }
 
+function bondSafetyUpdatedText(data) {
+  var d = data || {};
+  var dataDate = d.data_as_of || d.trade_date || (d.source_updated_at ? String(d.source_updated_at).slice(0, 10) : '');
+  var parts = [dataDate ? '数据日期：' + dataDate : '尚无成功快照'];
+  if (d.is_stale || d.stale) parts.push('数据过期' + (d.stale_reason ? '：' + d.stale_reason : ''));
+  if (d.updated_at) parts.push('系统刷新：' + new Date(d.updated_at).toLocaleString('zh-CN'));
+  return parts.join(' · ');
+}
+
 function bondSafetyIndicator(value) {
   var number = Number(value);
   if (value !== '' && value !== null && value !== undefined && isFinite(number)) return escapeHtml(number.toFixed(2));
@@ -188,7 +197,7 @@ async function loadBondSafety(force) {
     bondSafetyState.rows = Array.isArray(d.data) ? d.data : [];
     bondSafetyState.loaded = true;
     var updated = document.getElementById('bond-safety-updated');
-    if (updated) updated.textContent = d.updated_at ? '系统刷新：' + new Date(d.updated_at).toLocaleString('zh-CN') : '尚无成功快照';
+    if (updated) updated.textContent = bondSafetyUpdatedText(d);
     bondSafetyRenderStats(d);
     if (!d.data.length && !d.configured) {
       if (el) el.innerHTML = '<div class="bond-safety-empty">数据源尚未配置。管理员完成 API 配置后，系统会自动生成第一份快照。</div>';

@@ -4,12 +4,11 @@
 // 浏览器: <script src="/js/code-classify.js"> 注入全局 classifyCode
 // Node:    const classifyCode = require('./public/js/code-classify.js');
 //
-// 返回: { type, subtype, market, isHK, secids }
+// 返回: { type, subtype, market, isHK }
 //   type    '股权' | '债权'
 //   subtype '沪市' | '深市' | '京市' | '港股' | '美股' | '可转债' | '信用债'
 //   market  'sh' | 'sz' | 'bj' | 'hk' | 'kcb' | 'us'
 //   isHK    boolean
-//   secids  东方财富行情 secid 候选列表（fetchQuoteByCode 使用）
 //
 // 额外工具: classifyCode.normalizeCode(rawCode)
 //   根据分类结果补齐证券代码前导零：A股/基金/可转债 6位，港股 5位，美股不变。
@@ -92,18 +91,7 @@
       type = '股权'; subtype = '沪市'; market = 'sh';
     }
 
-    // 东方财富行情 secid 候选列表
-    var secids = [];
-    if (isHK) {
-      secids.push('0.' + code.padStart(5, '0') + '.hk');
-    } else if (market === 'sh' || market === 'kcb') {
-      secids.push('1.' + code);   // 沪市（主板/科创/基金/ETF/LOF/可转债）
-      secids.push('0.' + code);   // 兜底
-    } else if (market === 'sz' || market === 'bj') {
-      secids.push('0.' + code);   // 深市/北交所
-    }
-
-    return { type: type, subtype: subtype, market: market, isHK: isHK, secids: secids };
+    return { type: type, subtype: subtype, market: market, isHK: isHK };
   }
 
   function normalizeCode(rawCode, rawName) {

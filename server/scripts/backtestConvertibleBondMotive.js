@@ -107,10 +107,10 @@ function summarize(rows) {
     buckets[name] = { count: values.length, proposals: values.filter(row => row.label === 'proposed').length,
       proposalRate: rate(values.filter(row => row.label === 'proposed').length, values.length) };
   }
-  const returns = rows.map(row => row.netReturn).filter(value => Number.isFinite(value));
   const issuers = new Set(rows.map(row => row.instrument_id));
   const years = new Set(rows.map(row => String(row.signal_date).slice(0, 4)));
   const highRows = rows.filter(row => row.bucket === '70+');
+  const highReturns = highRows.map(row => row.netReturn).filter(value => Number.isFinite(value));
   const highIssuers = new Set(highRows.map(row => row.instrument_id));
   const highYears = new Set(highRows.map(row => String(row.signal_date).slice(0, 4)));
   const proposalCount = rows.filter(row => row.label === 'proposed').length;
@@ -125,8 +125,8 @@ function summarize(rows) {
     monotonic: buckets['<50'].proposalRate != null && buckets['50-69'].proposalRate != null && buckets['70+'].proposalRate != null
       && buckets['<50'].proposalRate <= buckets['50-69'].proposalRate
       && buckets['50-69'].proposalRate <= buckets['70+'].proposalRate,
-    netReturnAfterCost: returns.length ? returns.reduce((sum, value) => sum + value, 0) / returns.length : null,
-    returnSampleCount: returns.length,
+    netReturnAfterCost: highReturns.length ? highReturns.reduce((sum, value) => sum + value, 0) / highReturns.length : null,
+    returnSampleCount: highReturns.length,
     issuerCount: issuers.size,
     yearCount: years.size,
     highIssuerCount: highIssuers.size,

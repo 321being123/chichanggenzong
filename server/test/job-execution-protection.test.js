@@ -30,6 +30,25 @@ const runnerProcess = read('server/services/jobRunnerProcess.js');
 const motiveService = read('server/services/convertibleBondRevisionMotiveService.js');
 const alertMailer = read('server/services/jobAlertMailer.js');
 
+const budgetEnvBackup = {};
+for (const key of ['TUSHARE_PER_MINUTE_BUDGET', 'TUSHARE_DAILY_BUDGET', 'TUSHARE_BACKUP_PER_MINUTE_BUDGET', 'TUSHARE_BACKUP_DAILY_BUDGET', 'CNINFO_PER_MINUTE_BUDGET', 'CNINFO_DAILY_BUDGET', 'TENCENT_PER_MINUTE_BUDGET', 'TENCENT_DAILY_BUDGET']) {
+  budgetEnvBackup[key] = process.env[key];
+  delete process.env[key];
+}
+const budgetGuard = require('../services/externalCallGuard');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare'), { minute: 450, day: 5000 },
+  '主 Tushare 默认预算必须给正常增量和晚间任务留出余量');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare_backup'), { minute: 450, day: 5000 },
+  '备用 Tushare 必须与主 Token 使用相同内部保护线');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: 20, day: 500 },
+  '巨潮默认日预算必须覆盖生产已观测峰值');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tencent'), { minute: null, day: null },
+  '腾讯当前不设置本系统分钟/日预算');
+for (const [key, value] of Object.entries(budgetEnvBackup)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(definition.retryPolicy, `${definition.jobCode} 缺少 retryPolicy`);
   assert.ok(Array.isArray(definition.externalSources), `${definition.jobCode} 缺少 externalSources`);
@@ -114,7 +133,7 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
 (async () => {
   const originalRequest = require('https').request;
   const originalToken = process.env.TUSHARE_TOKEN;
-  const guard = require('../services/externalCallGuard');
+  const guard = budgetGuard;
   process.env.TUSHARE_TOKEN = 'test-token';
   try {
     const https = require('https');

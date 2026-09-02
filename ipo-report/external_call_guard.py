@@ -22,6 +22,18 @@ except (TypeError, ValueError):
 _probe_owner = f"{os.uname().nodename if hasattr(os, 'uname') else os.environ.get('COMPUTERNAME', 'python')}:{os.getpid()}:{uuid.uuid4()}"
 _probe_lease_seconds = 300
 
+# 这是系统内部保护线，不等同于上游官方配额；必须与 Node Guard 保持一致。
+_DEFAULT_EXTERNAL_BUDGETS = {
+    "tushare": {"minute": 450, "day": 5000},
+    # 备用 Token 的积分/权限独立核验；按用户要求与主 Token 使用相同内部保护线。
+    "tushare_backup": {"minute": 450, "day": 5000},
+    # 生产近期开销峰值已达到345次/日，300次会误伤正常增量任务。
+    "cninfo": {"minute": 20, "day": 500},
+    # 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
+    "tencent": {"minute": None, "day": None},
+    "default": {"minute": 60, "day": 2000},
+}
+
 
 def enabled():
     configured = os.environ.get("EXTERNAL_CALL_GUARD")
@@ -99,12 +111,15 @@ def _env_key(source):
 
 def _limit(source, window):
     name = f"{_env_key(source)}_{'PER_MINUTE_BUDGET' if window == 'minute' else 'DAILY_BUDGET'}"
-    fallback = 120 if source == "tushare" and window == "minute" else 100 if source == "tushare" else 60 if window == "minute" else 2000
+    fallback = _DEFAULT_EXTERNAL_BUDGETS.get(source, _DEFAULT_EXTERNAL_BUDGETS["default"])[window]
+    configured = os.environ.get(name)
+    if configured is None and fallback is None:
+        return None
     try:
-        value = int(os.environ.get(name, fallback))
+        value = int(configured if configured is not None else fallback)
     except (TypeError, ValueError):
         value = fallback
-    return value if value > 0 else fallback
+    return value if value is not None and value > 0 else fallback
 
 
 def _date_text():
@@ -224,23 +239,24 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
     try:
         with conn.cursor() as cur:
             probe = _check_circuit(cur, source, api_name, fingerprint, dataset)
-            # 日/分钟预算由 ops.consume_external_call_budget 统一原子更新
-            # ops.external_call_budgets，Node/Python 共用同一入口。
-            cur.execute(
-                """SELECT allowed,wait_window,day_count,minute_count
-                     FROM ops.consume_external_call_budget(%s,%s,%s,%s,%s)""",
-                (source, day_key, minute_key, day_limit, minute_limit),
-            )
-            budget_row = cur.fetchone() or (False, "day", 0, 0)
-            allowed, wait_window, day_count, minute_count = budget_row
-            if not allowed and wait_window == "minute":
-                recover_at = _recover_at("BUDGET_WAIT", "minute")
-                conn.commit()
-                raise ExternalCallGuardError("BUDGET_WAIT", f"{source} {api_name} 已达到每分钟请求预算 {minute_limit}，等待下一窗口", source, dataset, api_name, fingerprint, recover_at)
-            if not allowed and wait_window == "day":
-                recover_at = _recover_at("BUDGET_WAIT", "day")
-                conn.commit()
-                raise ExternalCallGuardError("BUDGET_WAIT", f"{source} 已达到当日请求预算 {day_limit}，等待下一交易日", source, dataset, "*", fingerprint, recover_at)
+            if day_limit is not None and minute_limit is not None:
+                # 日/分钟预算由 ops.consume_external_call_budget 统一原子更新
+                # ops.external_call_budgets，Node/Python 共用同一入口。
+                cur.execute(
+                    """SELECT allowed,wait_window,day_count,minute_count
+                         FROM ops.consume_external_call_budget(%s,%s,%s,%s,%s)""",
+                    (source, day_key, minute_key, day_limit, minute_limit),
+                )
+                budget_row = cur.fetchone() or (False, "day", 0, 0)
+                allowed, wait_window, day_count, minute_count = budget_row
+                if not allowed and wait_window == "minute":
+                    recover_at = _recover_at("BUDGET_WAIT", "minute")
+                    conn.commit()
+                    raise ExternalCallGuardError("BUDGET_WAIT", f"{source} {api_name} 已达到每分钟请求预算 {minute_limit}，等待下一窗口", source, dataset, api_name, fingerprint, recover_at)
+                if not allowed and wait_window == "day":
+                    recover_at = _recover_at("BUDGET_WAIT", "day")
+                    conn.commit()
+                    raise ExternalCallGuardError("BUDGET_WAIT", f"{source} 已达到当日请求预算 {day_limit}，等待下一交易日", source, dataset, "*", fingerprint, recover_at)
         conn.commit()
         _run_call_count += 1
         return probe or {}

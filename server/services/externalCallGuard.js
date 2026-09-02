@@ -20,6 +20,20 @@ function limit(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+// 这是系统内部保护线，不等同于上游官方配额。
+// 主 Tushare 已确认 6000 积分：官方上限 500 次/分钟，常规接口无每日总量限制；
+// 这里按 90% 取安全速率（保留50次/分钟余量），并按生产近期开销峰值1397次/日留出两倍以上余量。
+const DEFAULT_EXTERNAL_BUDGETS = Object.freeze({
+  tushare: { minute: 450, day: 5000 },
+  // 备用 Token 的积分/权限独立核验；按用户要求与主 Token 使用相同内部保护线。
+  tushare_backup: { minute: 450, day: 5000 },
+  // 生产近期开销峰值已达到345次/日，300次会误伤正常增量任务。
+  cninfo: { minute: 20, day: 500 },
+  // 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
+  tencent: { minute: null, day: null },
+  default: { minute: 60, day: 2000 },
+});
+
 function nowParts(now = Date.now()) {
   const date = new Date(now);
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -80,20 +94,16 @@ function sourceKey(source) {
   return key;
 }
 
-function budgetLimits(key) {
+function getExternalBudgetLimits(key) {
   const envKey = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  if (key === 'cninfo') {
-    return {
-      minute: limit(`${envKey}_PER_MINUTE_BUDGET`, 20),
-      day: limit(`${envKey}_DAILY_BUDGET`, 300),
-    };
-  }
+  const defaults = DEFAULT_EXTERNAL_BUDGETS[key] || DEFAULT_EXTERNAL_BUDGETS.default;
   return {
-    minute: limit(`${envKey}_PER_MINUTE_BUDGET`, key === 'tushare' ? 120 : 60),
-    // 自动化主 Token 的硬上限：每个自然日最多 100 次；人工/探测需显式使用独立进程和预算。
-    day: limit(`${envKey}_DAILY_BUDGET`, key === 'tushare' ? 100 : 2000),
+    minute: limit(`${envKey}_PER_MINUTE_BUDGET`, defaults.minute),
+    day: limit(`${envKey}_DAILY_BUDGET`, defaults.day),
   };
 }
+
+const budgetLimits = getExternalBudgetLimits;
 
 function jobRunLimit() {
   if (process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE !== '1') return null;
@@ -209,25 +219,27 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
     const dayKey = day;
     const minuteKey = `${day}:${minute}`;
     const probe = await assertCircuitAvailable(client, key, guardOptions.apiName, guardOptions.tokenFingerprint, dataset);
-    // 日/分钟预算由数据库原子函数统一扣减，Node/Python 共用同一入口。
-    const { rows: budgetRows } = await client.query(
-      'SELECT * FROM ops.consume_external_call_budget($1,$2,$3,$4,$5)',
-      [key, dayKey, minuteKey, limits.day, limits.minute]
-    );
-    const budget = budgetRows[0] || {};
-    if (!budget.allowed && budget.wait_window === 'minute') {
-      const recoverAt = recoverAtFor('BUDGET_WAIT', 'minute');
-      await client.query('COMMIT');
-      throw new ExternalCallGuardError('BUDGET_WAIT', `${key} ${guardOptions.apiName} 已达到每分钟请求预算 ${limits.minute}，等待下一窗口`, key, dataset, {
-        apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'minute',
-      });
-    }
-    if (!budget.allowed && budget.wait_window === 'day') {
-      const recoverAt = recoverAtFor('BUDGET_WAIT', 'day');
-      await client.query('COMMIT');
-      throw new ExternalCallGuardError('BUDGET_WAIT', `${key} 已达到当日请求预算 ${limits.day}，等待下一交易日`, key, dataset, {
-        apiName: '*', tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'day',
-      });
+    if (limits.minute != null && limits.day != null) {
+      // 日/分钟预算由数据库原子函数统一扣减，Node/Python 共用同一入口。
+      const { rows: budgetRows } = await client.query(
+        'SELECT * FROM ops.consume_external_call_budget($1,$2,$3,$4,$5)',
+        [key, dayKey, minuteKey, limits.day, limits.minute]
+      );
+      const budget = budgetRows[0] || {};
+      if (!budget.allowed && budget.wait_window === 'minute') {
+        const recoverAt = recoverAtFor('BUDGET_WAIT', 'minute');
+        await client.query('COMMIT');
+        throw new ExternalCallGuardError('BUDGET_WAIT', `${key} ${guardOptions.apiName} 已达到每分钟请求预算 ${limits.minute}，等待下一窗口`, key, dataset, {
+          apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'minute',
+        });
+      }
+      if (!budget.allowed && budget.wait_window === 'day') {
+        const recoverAt = recoverAtFor('BUDGET_WAIT', 'day');
+        await client.query('COMMIT');
+        throw new ExternalCallGuardError('BUDGET_WAIT', `${key} 已达到当日请求预算 ${limits.day}，等待下一交易日`, key, dataset, {
+          apiName: '*', tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'day',
+        });
+      }
     }
     await client.query('COMMIT');
     runCallCount += 1;
@@ -434,5 +446,6 @@ module.exports = {
   resetExternalCallGuardPersistence,
   getExternalCallStats,
   setExternalCallCount,
+  getExternalBudgetLimits,
   circuitScopeLabel,
 };

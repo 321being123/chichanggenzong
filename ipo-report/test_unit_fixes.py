@@ -19,6 +19,7 @@ import external_call_guard as call_guard
 from sse_listing_parser import parse_sse_listing_detail, parse_sse_listing_index
 from _common import _classify_tushare_error, TushareRequestError, _emit_tushare_failover
 from external_call_guard import _circuit_api
+from external_call_guard import _limit
 spec = importlib.util.spec_from_file_location(
     "ipo_daily_report_fix",
     Path(__file__).resolve().parent / "ipo_daily_report.py",
@@ -75,6 +76,31 @@ with contextlib.redirect_stderr(marker_output):
     _emit_tushare_failover("rt_min", TushareRequestError("RATE_LIMIT", "频率超限", "tushare", "rt_min", "fingerprint"))
 marker = json.loads(marker_output.getvalue().split(" ", 1)[1])
 check("Python备用切换标记保留接口名", marker["api_name"] == "rt_min" and marker["to_role"] == "backup")
+
+# Node/Python 两端的来源保护线必须一致；环境覆盖仍由实际部署配置决定。
+_budget_env_backup = {key: os.environ.get(key) for key in (
+    "TUSHARE_PER_MINUTE_BUDGET", "TUSHARE_DAILY_BUDGET",
+    "TUSHARE_BACKUP_PER_MINUTE_BUDGET", "TUSHARE_BACKUP_DAILY_BUDGET",
+    "CNINFO_PER_MINUTE_BUDGET", "CNINFO_DAILY_BUDGET",
+    "TENCENT_PER_MINUTE_BUDGET", "TENCENT_DAILY_BUDGET",
+)}
+try:
+    for _key in _budget_env_backup:
+        os.environ.pop(_key, None)
+    check("主Tushare默认预算调整为450次/分钟、5000次/日",
+          _limit("tushare", "minute") == 450 and _limit("tushare", "day") == 5000)
+    check("备用Tushare与主Token使用相同内部保护线",
+          _limit("tushare_backup", "minute") == 450 and _limit("tushare_backup", "day") == 5000)
+    check("巨潮默认日预算调整为500次",
+          _limit("cninfo", "minute") == 20 and _limit("cninfo", "day") == 500)
+    check("腾讯不设置本系统分钟/日预算",
+          _limit("tencent", "minute") is None and _limit("tencent", "day") is None)
+finally:
+    for _key, _value in _budget_env_backup.items():
+        if _value is None:
+            os.environ.pop(_key, None)
+        else:
+            os.environ[_key] = _value
 
 
 class _FakeCursor:

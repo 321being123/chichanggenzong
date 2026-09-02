@@ -40,7 +40,7 @@ function render() {
     '# 任务-接口-数据集矩阵（代码生成）',
     '',
     '> 此文件由 `scripts/generate-job-matrix.js` 从 `server/services/jobDefinitions.js` 生成，禁止手工修改。',
-    `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）；每日预算计入合计：${total}/日，目标上限 80，硬上限 100。单次上限用于单个计划批次，括号内为每日预算计入值。`,
+    `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）；每日预算计入合计：${total}/日（任务报表，不是来源日限额）。单次上限用于单个计划批次，括号内为每日预算计入值。`,
     '',
     '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 单次最大外部调用 |',
     '|---|---|---|---|---|---:|',

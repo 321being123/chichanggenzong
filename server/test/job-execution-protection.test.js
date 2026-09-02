@@ -94,8 +94,10 @@ assert.ok(/alert_type='failure_warning' AND EXISTS/.test(alertMailer)
 assert.ok(/TEST_DATABASE/.test(testRunner) && /cleanupTestArtifacts/.test(testRunner)
   && /test_guard_%/.test(testRunner) && /cninfo-test/.test(testRunner),
   '全量测试必须使用隔离库，并在前后清理测试专属熔断记录');
-assert.ok(identitySource.includes("regexp_replace(canonical_code,'\\\\D'"),
-  '标准代码解析必须按非数字字符查询，不能退化为按字母 D 查询');
+assert.ok(/async function resolveCanonicalCode/.test(identitySource)
+  && /assetClass === 'convertible_bond'/.test(identitySource)
+  && /\^\(4\|8\|92\)/.test(identitySource),
+  '标准代码解析必须按统一市场规则生成标准代码，不能退化为按历史主档扫描');
 assert.ok(/assetClass='stock'/.test(financialArchitecture), '股票标准层不得继续写入 equity 类型');
 assert.ok(/const result = await fn\(lock\.client, guardResult\)/.test(externalGuard)
   && /closeExternalCircuit\(guardSource, apiName, fingerprint, guardClient, probeToken\)/.test(tushareClient)

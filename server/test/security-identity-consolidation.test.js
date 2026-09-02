@@ -1,0 +1,20 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const { resolveCanonicalCode } = require('../services/securityIdentity');
+
+(async () => {
+  assert.strictEqual(await resolveCanonicalCode('601919', 'stock'), '601919.SH');
+  assert.strictEqual(await resolveCanonicalCode('601198', 'stock'), '601198.SH');
+  assert.strictEqual(await resolveCanonicalCode('000672', 'stock'), '000672.SZ');
+  assert.strictEqual(await resolveCanonicalCode('920002', 'stock'), '920002.BJ');
+  assert.strictEqual(await resolveCanonicalCode('900901', 'stock'), '900901.SH');
+  assert.strictEqual(await resolveCanonicalCode('123175', 'convertible_bond'), '123175.SZ');
+  assert.strictEqual(await resolveCanonicalCode('113575.SH', 'convertible_bond'), '113575.SH');
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'services', 'securityIdentity.js'), 'utf8');
+  assert.ok(source.includes('证券已经有关联公司时必须复用'), '主档写入必须复用已有公司关系');
+  assert.ok(source.includes("c.raw_data->>'ts_code'=$3"), '公司关系应优先使用官方 ts_code');
+  assert.ok(!source.includes('matches.rows.length > 1'), '标准代码解析不得因历史重复主档抛歧义');
+  console.log('security identity consolidation tests passed');
+})().catch(error => { console.error(error); process.exit(1); });

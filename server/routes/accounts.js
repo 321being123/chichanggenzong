@@ -9,7 +9,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
 const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
-const { fetchQuoteByCode, todayCN, toTsCode, validateDailyPriceBatch } = require('../services/market');
+const { fetchQuotesByCodes, todayCN, toTsCode, validateDailyPriceBatch } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const tradeLedger = require('../services/tradeLedger');
@@ -289,15 +289,14 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
   if (result.positions && result.positions.length > 0) {
     result.changes = {};
     const codes = result.positions.map(p => p.code).filter(Boolean);
-    // 并发拉取行情，超时3秒
-    await Promise.all(codes.map(async (code) => {
-      try {
-        const q = await fetchQuoteByCode(code);
+    // 所有持仓一次批量取行情，避免按证券逐只访问上游。
+    try {
+      const quotes = await fetchQuotesByCodes(codes);
+      codes.forEach(code => {
+        const q = quotes[code];
         if (q && q.change != null) result.changes[code] = q.change;
-        // 搜特退债已退市，涨跌幅默认0
-        if (!q && code === '404002') result.changes['404002'] = 0;
-      } catch (e) {}
-    }));
+      });
+    } catch (e) {}
     // 附加可转债估值对照表（仅取可转债 6 位代码，一次批量查询；失败不影响持仓加载）
     try {
       const bondCodes = codes

@@ -71,9 +71,11 @@ async function main() {
 
   await check('行情与收盘价路由接入日期校验', async () => {
     const routesDir = path.join(__dirname, '..', 'routes');
+    const servicesDir = path.join(__dirname, '..', 'services');
     const marketRoute = fs.readFileSync(path.join(routesDir, 'market.js'), 'utf8');
+    const marketService = fs.readFileSync(path.join(servicesDir, 'market.js'), 'utf8');
     const accountsRoute = fs.readFileSync(path.join(routesDir, 'accounts.js'), 'utf8');
-    assert.ok(marketRoute.includes("quote_time: quote ? quote.quote_time : (d && d.quote_time || null)"), '批量行情回退未透传 Tushare 日期');
+    assert.ok(marketService.includes("quote_time: quote ? quote.quote_time : (d && d.quote_time || null)"), '批量行情回退未透传 Tushare 日期');
     assert.ok(accountsRoute.includes('validateDailyPriceBatch(targetDate, prices)'), '收盘价写接口未执行服务端日期校验');
   });
 

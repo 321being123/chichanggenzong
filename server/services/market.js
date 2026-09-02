@@ -310,6 +310,47 @@ async function fetchQuoteByCode(code) {
   return null;
 }
 
+// 页面统一批量行情入口：一批证券最多触发一次腾讯请求，Tushare 日线仅作 A 股回退。
+async function fetchQuotesByCodes(codes) {
+  const requested = [...new Set((codes || []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean))];
+  const result = {};
+  if (!requested.length) return result;
+  const stockCodes = [], bondCodes = [], hkCodes = [];
+  requested.forEach(c => {
+    if (toTsCode(c).endsWith('.HK')) hkCodes.push(c);
+    else if (isConvertibleBondCode(c)) bondCodes.push(c);
+    else stockCodes.push(c);
+  });
+  const [names, daily, tencent] = await Promise.all([
+    stockCodes.length ? ensureTsNames().catch(() => new Map()) : Promise.resolve(new Map()),
+    stockCodes.length ? ensureTsDaily().catch(() => new Map()) : Promise.resolve(new Map()),
+    fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes)).catch(() => new Map()),
+  ]);
+  stockCodes.forEach(c => {
+    const ts = toTsCode(c);
+    const d = daily.get(ts);
+    const quote = tencent.get(normalizeCode(c));
+    const price = quote ? quote.price : (d ? d.close : null);
+    const change = quote && quote.change != null ? quote.change : (d ? d.pct_chg : null);
+    result[c] = {
+      price: price != null && !isNaN(price) ? price : null,
+      name: names.get(ts) || (quote && quote.name) || '', code: c,
+      change: change != null && !isNaN(change) ? change : null,
+      quote_time: quote ? quote.quote_time : (d && d.quote_time || null),
+      source: quote ? quote.source : 'tushare_daily',
+    };
+  });
+  bondCodes.concat(hkCodes).forEach(c => {
+    const quote = tencent.get(normalizeCode(c));
+    result[c] = quote ? {
+      price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change,
+      quote_time: quote.quote_time, source: quote.source,
+    } : { price: null, name: '', code: c, change: null };
+  });
+  if (requested.includes('404002')) result['404002'] = { price: null, name: '搜特退债', code: '404002', change: 0 };
+  return result;
+}
+
 // 东八区日期 YYYYMMDD（Tushare 参数专用，避免服务器非东八区时差一天）
 function tsDateStr(d) {
   const cn = new Date(d.getTime() + 8 * 3600 * 1000);
@@ -339,6 +380,6 @@ module.exports = {
   httpsGet, tushareQuery, tsRows, toTsCode,
   ensureTsNames, ensureTsDaily, ensureTsRealtime,
   withSingleFlight, NEG_TTL_MS,
-  fetchQuoteByCode, tsDateStr, normDate, todayCN,
+  fetchQuoteByCode, fetchQuotesByCodes, tsDateStr, normDate, todayCN,
   quoteDateCN, isCnTradingDate, validateDailyPriceBatch, normalizeDailyQuoteRow,
 };

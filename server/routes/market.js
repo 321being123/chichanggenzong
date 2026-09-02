@@ -5,10 +5,9 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin } = require('../middleware/auth');
 const {
-  fetchQuoteByCode, tushareQuery, tsRows, toTsCode,
-  tsDateStr, normDate, ensureTsNames, ensureTsDaily
+  fetchQuoteByCode, fetchQuotesByCodes, tushareQuery, tsRows,
+  tsDateStr, normDate
 } = require('../services/market');
-const { fetchTencentQuotes, isConvertibleBondCode, normalizeCode } = require('../services/tencentQuote');
 const { resolveInstrument, resolveProviderCode } = require('../services/securityIdentity');
 
 router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
@@ -20,55 +19,7 @@ router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
 // 批量行情（刷新用）：A股/可转债/港股统一走腾讯实时，Tushare 日线仅作回退
 router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   const codes = (req.query.codes || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  const result = {};
-  if (!codes.length) return res.json(result);
-
-  const stockCodes = [], bondCodes = [], hkCodes = [];
-  codes.forEach(c => {
-    if (toTsCode(c).endsWith('.HK')) hkCodes.push(c);
-    else if (isConvertibleBondCode(c)) bondCodes.push(c);
-    else stockCodes.push(c);
-  });
-
-  // A 股实时价格和涨跌幅优先使用腾讯同一条行情，Tushare 名称/日线只作回退。
-  // 辅助数据源失败时不能阻断腾讯实时行情返回。
-  const [names, daily, tencent] = await Promise.all([
-    stockCodes.length ? ensureTsNames().catch(() => new Map()) : Promise.resolve(new Map()),
-    stockCodes.length ? ensureTsDaily().catch(() => new Map()) : Promise.resolve(new Map()),
-    fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes)).catch(() => new Map()),
-  ]);
-  stockCodes.forEach(c => {
-    const ts = toTsCode(c);
-    const d = daily.get(ts);
-    const quote = tencent.get(normalizeCode(c));
-    const price = quote ? quote.price : (d ? d.close : null);
-    let change = null;
-    if (quote && quote.change != null) change = quote.change;
-    else if (d) change = d.pct_chg;
-    result[c] = {
-      price: (price != null && !isNaN(price)) ? price : null,
-      name: names.get(ts) || (quote && quote.name) || '',
-      code: c,
-      change: (change != null && !isNaN(change)) ? change : null,
-      quote_time: quote ? quote.quote_time : (d && d.quote_time || null),
-      source: quote ? quote.source : 'tushare_daily'
-    };
-  });
-
-  // 可转债和港股统一走腾讯批量接口；缓存命中时不访问上游。
-  bondCodes.concat(hkCodes).forEach(c => {
-    const quote = tencent.get(normalizeCode(c));
-    result[c] = quote ? {
-      price: quote.price,
-      name: quote.name || c,
-      code: normalizeCode(c),
-      change: quote.change,
-      quote_time: quote.quote_time,
-      source: quote.source,
-    } : { price: null, name: '', code: c, change: null };
-  });
-
-  res.json(result);
+  res.json(await fetchQuotesByCodes(codes));
 }));
 
 // 港币→人民币汇率代理（抓取逻辑见 server/jobs/hkRate.js，单点真相，供路由与定时任务共用）

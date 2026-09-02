@@ -6,7 +6,7 @@ const assert = require('assert');
 const { pool } = require('../db');
 const { buildStandardTermsHash } = require('../services/convertibleBondAnalysis');
 
-const TEST_CODE = 'TESTDATE.SH'; // 不会与真实债券冲突（真实转债以 11x/113 开头）
+const TEST_CODE = '119999.SH'; // 不会与真实债券冲突
 
 (async () => {
   // 1) 建临时债券主档

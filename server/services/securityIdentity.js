@@ -156,20 +156,12 @@ async function resolveCanonicalCode(rawCode, assetClass = 'stock', executor) {
   if (/\.[A-Z]{2}$/.test(text)) return text;
   const digits = text.replace(/\D/g, '');
   if (!/^\d{5,6}$/.test(digits)) return text;
-  const query = executor || pool.query.bind(pool);
-  const matches = await query(
-    `SELECT canonical_code FROM core.instruments
-      WHERE asset_class=$2 AND regexp_replace(canonical_code,'\\D','','g')=$1
-      ORDER BY instrument_id LIMIT 2`, [digits, assetClass]
-  );
-  if (matches.rows.length === 1) return matches.rows[0].canonical_code;
-  if (matches.rows.length > 1) throw new Error(`证券代码存在多个主档匹配：${rawCode}`);
   if (digits.length === 5 && assetClass === 'stock') return `${digits.padStart(5, '0')}.HK`;
   const code = digits.padStart(6, '0');
   if (assetClass === 'convertible_bond') return `${code}${/^11/.test(code) ? '.SH' : '.SZ'}`;
   if (assetClass === 'stock') {
-    if (/^(6|68)/.test(code)) return `${code}.SH`;
     if (/^(4|8|92)/.test(code)) return `${code}.BJ`;
+    if (/^(6|9)/.test(code)) return `${code}.SH`;
     return `${code}.SZ`;
   }
   return text;
@@ -314,19 +306,39 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
   let companyId = null;
   const company = String(companyName == null ? (assetClass === 'stock' ? name : '') : companyName).trim();
   if (company) {
-    const companyResult = await query(
-      `INSERT INTO core.companies(legal_name,short_name,country_code,raw_data)
-       VALUES($1,$2,$3,$4::jsonb)
-       ON CONFLICT(country_code,legal_name) DO UPDATE SET short_name=EXCLUDED.short_name,raw_data=core.companies.raw_data || EXCLUDED.raw_data,updated_at=now()
-       RETURNING company_id`,
-      [company, String(name || company), market === 'HK' ? 'HK' : 'CN', JSON.stringify(rawData || {})]
+    // 公司名称会随 ST/XD 等简称变化；证券已经有关联公司时必须复用，避免名称变化制造第二套公司主档。
+    const existingCompany = await query(
+      `SELECT c.company_id
+         FROM core.company_instruments ci
+         JOIN core.companies c ON c.company_id=ci.company_id
+        WHERE ci.instrument_id=$1 AND ci.relation_type=$2
+        ORDER BY CASE WHEN c.raw_data->>'ts_code'=$3 THEN 0
+                      WHEN c.raw_data->>'backfill'='migration122' THEN 2 ELSE 1 END,
+                 ci.valid_from DESC NULLS LAST,c.company_id
+        LIMIT 1`, [instrument.instrument_id, relationType, canonical]
     );
-    companyId = companyResult.rows[0]?.company_id || null;
-    if (companyId) await query(
-      `INSERT INTO core.company_instruments(company_id,instrument_id,relation_type,valid_from)
-       VALUES($1,$2,$3,$4::date) ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from)`,
-      [companyId, instrument.instrument_id, relationType, listDate || null]
-    );
+    companyId = existingCompany.rows[0]?.company_id || null;
+    if (companyId) {
+      await query(
+        `UPDATE core.companies SET short_name=$2,raw_data=raw_data || $3::jsonb,updated_at=now()
+          WHERE company_id=$1`,
+        [companyId, String(name || company), JSON.stringify(rawData || {})]
+      );
+    } else {
+      const companyResult = await query(
+        `INSERT INTO core.companies(legal_name,short_name,country_code,raw_data)
+         VALUES($1,$2,$3,$4::jsonb)
+         ON CONFLICT(country_code,legal_name) DO UPDATE SET short_name=EXCLUDED.short_name,raw_data=core.companies.raw_data || EXCLUDED.raw_data,updated_at=now()
+         RETURNING company_id`,
+        [company, String(name || company), market === 'HK' ? 'HK' : 'CN', JSON.stringify(rawData || {})]
+      );
+      companyId = companyResult.rows[0]?.company_id || null;
+      if (companyId) await query(
+        `INSERT INTO core.company_instruments(company_id,instrument_id,relation_type,valid_from)
+         VALUES($1,$2,$3,$4::date) ON CONFLICT(company_id,instrument_id,relation_type) DO UPDATE SET valid_from=COALESCE(core.company_instruments.valid_from,EXCLUDED.valid_from)`,
+        [companyId, instrument.instrument_id, relationType, listDate || null]
+      );
+    }
   }
   const sourceRows = await query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code=ANY($1::text[])`, [['tushare', 'tencent', 'eastmoney', 'sina', 'xueqiu']]);
   const sourceMap = Object.fromEntries(sourceRows.rows.map(row => [row.source_code, row.source_id]));

@@ -28,8 +28,11 @@ assert.strictEqual(describeTencentCode('BJ920002').symbol, 'bj920002', '北交�
 assert.deepStrictEqual(quoteLookupKeys(describeTencentCode('00751.HK')), ['00751', '00751.HK']);
 assert.strictEqual(isConvertibleBondCode('128044'), true);
 
+const marketServiceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'market.js'), 'utf8');
 const marketRouteSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
-assert.ok(marketRouteSource.includes('fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes))'), '批量行情应统一调用腾讯实时行情');
+assert.ok(marketServiceSource.includes('fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes))'), '批量行情应统一调用腾讯实时行情');
+assert.ok(marketServiceSource.includes('async function fetchQuotesByCodes'), '行情服务必须提供统一批量入口');
+assert.ok(marketRouteSource.includes('fetchQuotesByCodes(codes)'), '行情路由必须调用统一批量入口');
 assert.ok(!marketRouteSource.includes('ensureTsRealtime(stockCodes)'), '页面批量行情不得调用 Tushare rt_min');
 assert.strictEqual(parsed.get('sz128044').price, 101.234);
 assert.strictEqual(parsed.get('sz128044').change, 1.25);

@@ -4652,6 +4652,195 @@ async function migration124ExternalCallBudgetFunction() {
   `);
 }
 
+// ========== 125：历史证券主档收敛到唯一标准代码 =============
+// 删除可唯一映射的历史主档并迁移其业务外键；同时清理无效主档和重复公司关系，
+// 最后用数据库约束阻止裸代码、错误市场代码和同数字重复主档再次写入。
+async function migration125ConsolidateInstrumentMasters() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(904125)');
+    await client.query(`
+      CREATE TEMP TABLE tmp_instrument_merge(old_id bigint PRIMARY KEY,target_id bigint NOT NULL) ON COMMIT DROP;
+      INSERT INTO tmp_instrument_merge(old_id,target_id)
+      SELECT old.instrument_id,target.instrument_id
+        FROM core.instruments old
+        JOIN core.instruments target
+          ON target.asset_class=old.asset_class
+         AND target.canonical_code=CASE
+           WHEN old.asset_class='stock' AND length(regexp_replace(old.canonical_code,'\\D','','g'))=5
+             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.HK'
+           WHEN old.asset_class='stock' AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^(4|8|92)'
+             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.BJ'
+           WHEN old.asset_class='stock' AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^(6|9)'
+             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SH'
+           WHEN old.asset_class='stock'
+             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SZ'
+           WHEN old.asset_class='convertible_bond' AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^11'
+             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SH'
+           WHEN old.asset_class='convertible_bond'
+             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SZ'
+           ELSE old.canonical_code END
+       WHERE old.asset_class IN ('stock','convertible_bond')
+         AND old.instrument_id<>target.instrument_id
+         AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^\\d{5,6}$';
+
+      CREATE TEMP TABLE tmp_removed_companies(company_id bigint PRIMARY KEY) ON COMMIT DROP;
+      INSERT INTO tmp_removed_companies(company_id)
+      SELECT DISTINCT ci.company_id FROM core.company_instruments ci
+       WHERE ci.instrument_id IN (SELECT old_id FROM tmp_instrument_merge)
+      ON CONFLICT DO NOTHING;
+
+      DELETE FROM core.company_instruments
+       WHERE instrument_id IN (SELECT old_id FROM tmp_instrument_merge);
+      DELETE FROM core.instrument_merge_candidates
+       WHERE duplicate_instrument_id IN (SELECT old_id FROM tmp_instrument_merge)
+          OR primary_instrument_id IN (SELECT old_id FROM tmp_instrument_merge);
+    `);
+
+    // 所有引用证券主档的业务外键统一改到标准 ID；公司关系和候选表已按各自语义单独处理。
+    await client.query(`
+      DO $$ DECLARE r record;
+      BEGIN
+        FOR r IN
+          SELECT n.nspname AS schema_name,t.relname AS table_name,a.attname AS column_name
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid=c.conrelid
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=c.conkey[1]
+           WHERE c.contype='f' AND c.confrelid='core.instruments'::regclass
+             AND NOT (n.nspname='core' AND t.relname IN ('company_instruments','instrument_merge_candidates'))
+        LOOP
+          EXECUTE format('UPDATE %I.%I x SET %I=m.target_id FROM tmp_instrument_merge m WHERE x.%I=m.old_id',
+                         r.schema_name,r.table_name,r.column_name,r.column_name);
+        END LOOP;
+      END $$;
+      DELETE FROM core.instruments WHERE instrument_id IN (SELECT old_id FROM tmp_instrument_merge);
+    `);
+
+    // 删除明确无效的 nan / HTML 拼接主档；空缺的转债正股关系恢复为 NULL。
+    await client.query(`
+      CREATE TEMP TABLE tmp_invalid_instruments(instrument_id bigint PRIMARY KEY) ON COMMIT DROP;
+      INSERT INTO tmp_invalid_instruments
+      SELECT instrument_id FROM core.instruments
+       WHERE lower(canonical_code)='nan.sh' OR lower(canonical_code) LIKE '%<br/>%';
+      INSERT INTO tmp_removed_companies(company_id)
+      SELECT DISTINCT company_id FROM core.company_instruments
+       WHERE instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments)
+      ON CONFLICT DO NOTHING;
+      UPDATE fundamental.convertible_bond_profiles
+         SET stock_instrument_id=NULL,updated_at=now()
+       WHERE stock_instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments);
+      DELETE FROM core.instrument_merge_candidates
+       WHERE primary_instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments)
+          OR duplicate_instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments);
+      DELETE FROM core.company_instruments
+       WHERE instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments);
+      DELETE FROM core.instruments
+       WHERE instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments);
+
+      -- 没有同代码标准主档的存量裸代码原地标准化，保留其 instrument_id 和全部事实关联。
+      UPDATE core.instruments i SET
+        canonical_code=CASE
+          WHEN i.asset_class='stock' AND length(regexp_replace(i.canonical_code,'\\D','','g'))=5
+            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.HK'
+          WHEN i.asset_class='stock' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^(4|8|92)'
+            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.BJ'
+          WHEN i.asset_class='stock' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^(6|9)'
+            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.SH'
+          WHEN i.asset_class='stock'
+            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.SZ'
+          WHEN i.asset_class='convertible_bond' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^11'
+            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.SH'
+          ELSE regexp_replace(i.canonical_code,'\\D','','g') || '.SZ' END,
+        updated_at=now()
+       WHERE i.asset_class IN ('stock','convertible_bond')
+         AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^\\d{5,6}$'
+         AND i.canonical_code !~ '^\\d{5,6}\\.(SH|SZ|BJ|HK)$';
+
+      UPDATE core.instruments SET
+        market='CN',currency_code='CNY',
+        exchange_code=CASE WHEN canonical_code LIKE '%.SH' THEN 'SSE'
+                           WHEN canonical_code LIKE '%.SZ' THEN 'SZSE' ELSE 'BSE' END,
+        updated_at=now()
+       WHERE asset_class IN ('stock','convertible_bond') AND canonical_code ~ '^\\d{6}\\.(SH|SZ|BJ)$';
+      UPDATE core.instruments SET market='HK',currency_code='HKD',exchange_code='HKEX',updated_at=now()
+       WHERE asset_class='stock' AND canonical_code ~ '^\\d{5}\\.HK$';
+    `);
+
+    // 每只证券只保留一条 issued_by，公司优先级：官方 ts_code > 非回填 > migration122 回填。
+    await client.query(`
+      CREATE TEMP TABLE tmp_extra_company_relations(company_id bigint,instrument_id bigint,relation_type text) ON COMMIT DROP;
+      INSERT INTO tmp_extra_company_relations
+      SELECT company_id,instrument_id,relation_type FROM (
+        SELECT ci.*,
+               row_number() OVER (PARTITION BY ci.instrument_id,ci.relation_type ORDER BY
+                 CASE WHEN c.raw_data->>'ts_code'=i.canonical_code THEN 0
+                      WHEN c.raw_data->>'backfill'='migration122' THEN 2 ELSE 1 END,
+                 ci.valid_from DESC NULLS LAST,ci.company_id) AS rn
+          FROM core.company_instruments ci
+          JOIN core.companies c ON c.company_id=ci.company_id
+          JOIN core.instruments i ON i.instrument_id=ci.instrument_id
+         WHERE ci.relation_type='issued_by'
+      ) ranked WHERE rn>1;
+      INSERT INTO tmp_removed_companies(company_id)
+      SELECT DISTINCT company_id FROM tmp_extra_company_relations ON CONFLICT DO NOTHING;
+      DELETE FROM core.company_instruments ci USING tmp_extra_company_relations x
+       WHERE ci.company_id=x.company_id AND ci.instrument_id=x.instrument_id AND ci.relation_type=x.relation_type;
+      DELETE FROM core.instrument_merge_candidates;
+
+      DO $$ DECLARE r record;
+      BEGIN
+        FOR r IN SELECT company_id FROM tmp_removed_companies LOOP
+          BEGIN
+            DELETE FROM core.companies c WHERE c.company_id=r.company_id
+              AND NOT EXISTS (SELECT 1 FROM core.company_instruments ci WHERE ci.company_id=c.company_id);
+          EXCEPTION WHEN foreign_key_violation THEN NULL;
+          END;
+        END LOOP;
+      END $$;
+
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_instruments_stock_canonical') THEN
+          ALTER TABLE core.instruments ADD CONSTRAINT chk_instruments_stock_canonical CHECK (
+            asset_class<>'stock' OR upper(market) NOT IN ('CN','HK') OR
+            (upper(market)='CN' AND canonical_code ~ '^\\d{6}\\.(SH|SZ|BJ)$') OR
+            (upper(market)='HK' AND canonical_code ~ '^\\d{5}\\.HK$'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_instruments_cb_canonical') THEN
+          ALTER TABLE core.instruments ADD CONSTRAINT chk_instruments_cb_canonical CHECK (
+            asset_class<>'convertible_bond' OR upper(market)<>'CN' OR canonical_code ~ '^\\d{6}\\.(SH|SZ)$');
+        END IF;
+      END $$;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_instruments_numeric_identity
+        ON core.instruments(asset_class,(regexp_replace(canonical_code,'\\D','','g')))
+       WHERE (asset_class='stock' AND canonical_code ~ '^\\d{5,6}\\.(SH|SZ|BJ|HK)$')
+          OR (asset_class='convertible_bond' AND canonical_code ~ '^\\d{6}\\.(SH|SZ)$');
+    `);
+
+    const checks = await client.query(`
+      SELECT
+        (SELECT count(*) FROM (
+          SELECT asset_class,regexp_replace(canonical_code,'\\D','','g') digits
+            FROM core.instruments
+           WHERE (asset_class='stock' AND canonical_code ~ '^\\d{5,6}\\.(SH|SZ|BJ|HK)$')
+              OR (asset_class='convertible_bond' AND canonical_code ~ '^\\d{6}\\.(SH|SZ)$')
+           GROUP BY asset_class,digits HAVING count(*)>1) d) AS duplicate_groups,
+        (SELECT count(*) FROM core.instruments WHERE lower(canonical_code)='nan.sh' OR lower(canonical_code) LIKE '%<br/>%') AS invalid_rows,
+        (SELECT count(*) FROM (SELECT instrument_id FROM core.company_instruments WHERE relation_type='issued_by' GROUP BY instrument_id HAVING count(*)>1) c) AS duplicate_companies,
+        (SELECT count(*) FROM core.instrument_merge_candidates) AS pending_candidates
+    `);
+    const failed = Object.entries(checks.rows[0]).filter(([, value]) => Number(value) !== 0);
+    if (failed.length) throw new Error('证券主档收敛验收失败：' + failed.map(([key, value]) => `${key}=${value}`).join(','));
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4777,6 +4966,7 @@ const MIGRATIONS = [
   { version: '122_normalize_legacy_stock_identity', up: migration122NormalizeLegacyStockIdentity },
   { version: '123_backfill_stock_company_relations', up: migration123BackfillStockCompanyRelations },
   { version: '124_external_call_budget_function', up: migration124ExternalCallBudgetFunction },
+  { version: '125_consolidate_instrument_masters', up: migration125ConsolidateInstrumentMasters },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -5347,6 +5537,7 @@ module.exports = {
   migration122NormalizeLegacyStockIdentity,
   migration123BackfillStockCompanyRelations,
   migration124ExternalCallBudgetFunction,
+  migration125ConsolidateInstrumentMasters,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

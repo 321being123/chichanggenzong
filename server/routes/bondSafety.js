@@ -3,7 +3,7 @@ const router = express.Router();
 const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const { RATINGS } = require('../services/bondSafety');
-const { getLatestSnapshot, refreshBondSafety, isConfigured } = require('../services/bondSafetyService');
+const { getLatestSnapshot, refreshBondSafety } = require('../services/bondSafetyService');
 const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBondRedemptionService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
 const { auditEvent } = require('../db');
@@ -68,9 +68,8 @@ router.get('/export', asyncHandler(async (req, res) => {
 }));
 
 router.post('/refresh', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
-  if (!isConfigured()) return res.status(503).json({ error: '数据源尚未配置' });
   try {
-    const result = await refreshBondSafety('manual:' + req.session.user);
+    const result = await refreshBondSafety('manual:' + req.session.user, { readOnly: true });
     if (result.skipped) {
       await auditEvent({ actor: req.session.user, action: 'bond_safety_refresh', target: 'all', result: 'failure', requestId: req.id, detail: '已有刷新任务正在运行' });
       return res.status(409).json({ error: '已有刷新任务正在运行，请稍后再试' });

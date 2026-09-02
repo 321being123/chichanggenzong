@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { cleanValue, rateCompany, evaluateBondSafety } = require('../services/bondSafety');
 const { pickArray, authHeaders, isConfigured } = require('../services/bondSafetyFetcher');
 const { nextShanghaiDelay } = require('../jobs/bondSafetyRefresh');
@@ -161,6 +163,14 @@ check('财务刷新每批最多45次请求并跨分钟续跑', () => {
   const source = require('fs').readFileSync(require('path').resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
   assert.strictEqual((source.match(/if \(remaining > 0\) await waitForNextFinancialBatch\(remaining\)/g) || []).length, 2);
   assert.ok(/Math\.min\(3, Number\(process\.env\.BOND_SAFETY_TUSHARE_CONCURRENCY\)/.test(source));
+});
+check('人工安全评分与任务契约一致，只读已入库标准层', () => {
+  const refreshJob = fs.readFileSync(path.resolve(__dirname, '..', 'jobs', 'bondSafetyRefresh.js'), 'utf8');
+  const runner = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'jobRunners.js'), 'utf8');
+  const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');
+  assert.ok(refreshJob.includes('const readOnly = options.readOnly !== false'));
+  assert.ok(runner.includes('targetTradeDate, readOnly: true'));
+  assert.ok(service.includes('options.readOnly !== false'));
 });
 
 const pass = results.filter(r => r[0] === 'PASS').length;

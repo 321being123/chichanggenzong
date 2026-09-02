@@ -112,7 +112,7 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
   if (!claimed) return { skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
-    const source = await fetchBondSafetySource(process.env, options.targetTradeDate || null, { readOnly: options.readOnly === true });
+    const source = await fetchBondSafetySource(process.env, options.targetTradeDate || null, { readOnly: options.readOnly !== false });
     if (!source.companyRows.length || !source.bondRows.length) {
       throw new Error('数据源返回空数据，已保留上一份有效快照');
     }

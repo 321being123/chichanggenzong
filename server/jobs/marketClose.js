@@ -6,6 +6,7 @@ const { runNavSnapshotJob } = require('./navSnapshot');
 const { runIndexRecentJob } = require('./indexBaseline');
 const { runHkRateJob } = require('./hkRate');
 const { backfillDailyPrices } = require('./replayNav');
+const { getExternalCallStats } = require('../services/externalCallGuard');
 const classifyCode = require('../../public/js/code-classify');
 const sharedQuotePromises = new Map();
 
@@ -68,19 +69,38 @@ function nextRunDelay(h, m) {
   return Math.max(epoch - Date.now(), 5000);
 }
 
-// 带重试的行情抓取：Tushare 偶发 null / 港股腾讯抖动 → 重试 2 次，间隔 1s
+function quoteForCode(quoteMap, code) {
+  if (!quoteMap) return null;
+  const value = String(code || '').trim();
+  return quoteMap.get(value) || quoteMap.get(value.replace(/\.(SH|SZ|BJ|HK)$/i, '')) || null;
+}
+
+function isUsableQuote(quote, expectedDate) {
+  return Boolean(quote && quote.price > 0 && (!expectedDate || (quote.quote_time && fmtCN(quote.quote_time) === expectedDate)));
+}
+
+function mergeQuoteMaps(target, source) {
+  if (!target || !source) return target;
+  source.forEach((quote, key) => target.set(key, quote));
+  return target;
+}
+
+// 带重试的行情抓取。共享批量结果缺失时由 recordCloseOne 统一批量补取；
+// 这里读取 Map 只属于本地校验，不能把本地重复检查计入外部请求数。
 async function fetchWithRetry(code, tries, requestBudget, expectedDate, quoteMap = null) {
   for (let i = 0; i < tries; i++) {
-    if (requestBudget && requestBudget.used >= requestBudget.limit) {
-      const error = new Error(`收盘行情请求预算已用尽（${requestBudget.limit}）`);
-      error.code = 'QUOTA_EXHAUSTED';
-      error.errorType = 'rate_limit';
-      throw error;
+    if (!quoteMap) {
+      if (requestBudget && requestBudget.used >= requestBudget.limit) {
+        const error = new Error(`收盘行情请求预算已用尽（${requestBudget.limit}）`);
+        error.code = 'QUOTA_EXHAUSTED';
+        error.errorType = 'rate_limit';
+        throw error;
+      }
+      if (requestBudget) requestBudget.used += 1;
     }
-    if (requestBudget) requestBudget.used += 1;
     try {
-      const q = quoteMap ? (quoteMap.get(code) || quoteMap.get(String(code).replace(/\.(SH|SZ|BJ|HK)$/i, ''))) : await fetchQuoteByCode(code);
-      if (q && q.price && (!expectedDate || (q.quote_time && fmtCN(q.quote_time) === expectedDate))) return q;
+      const q = quoteMap ? quoteForCode(quoteMap, code) : await fetchQuoteByCode(code);
+      if (isUsableQuote(q, expectedDate)) return q;
     } catch (e) {}
     if (i < tries - 1) await new Promise(r => setTimeout(r, 1000));
   }
@@ -140,6 +160,9 @@ async function recordCloseOne(username, accountName, label, matchFn, dateStr, re
     }
     return { recorded, failed, skipped, error: recorded === 0 && failed > 0 };
   }
+  if (context.quoteMap && context.refreshMissingQuotes) {
+    await context.refreshMissingQuotes(missing.map(pos => pos.code));
+  }
   for (const pos of missing) {
     const q = await fetchWithRetry(pos.code, 2, requestBudget, cnDate, context.quoteMap || null);
     if (q && q.price) {
@@ -176,13 +199,23 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   const previousCalls = Math.max(Number(context.externalCallCount) || 0, 0);
   const requestBudget = { used: 0, limit: Math.max(totalLimit - previousCalls, 0) };
   const quoteMap = cnDate === cnDateStr() ? (context.quoteMap || await getSharedQuoteMap(cnDate)) : null;
+  const refreshAttempted = new Set();
+  const refreshMissingQuotes = quoteMap ? async codes => {
+    const candidates = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))]
+      .filter(code => !refreshAttempted.has(code) && !isUsableQuote(quoteForCode(quoteMap, code), cnDate));
+    candidates.forEach(code => refreshAttempted.add(code));
+    if (!candidates.length) return;
+    const { fetchTencentQuotes } = require('../services/tencentQuote');
+    const refreshed = await fetchTencentQuotes(candidates, { businessDate: cnDate, force: true });
+    mergeQuoteMaps(quoteMap, refreshed);
+  } : null;
   const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
   let recorded = 0, failed = 0, skipped = 0;
   for (const account of accounts) {
-    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, { quoteMap })
+    const r = await recordCloseOne(account.username, account.account_name, label, matchFn, cnDate, requestBudget, { quoteMap, refreshMissingQuotes })
       .catch(error => {
-        if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code)) {
-          error.externalCalls = previousCalls + requestBudget.used;
+        if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN', 'DATASET_LOCKED'].includes(error.code)) {
+          error.externalCalls = getExternalCallStats().total;
           throw error;
         }
         return { recorded: 0, failed: 1, error: true };
@@ -194,10 +227,10 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   if (failed > 0) {
     // 失败必须按统一执行器重试：if (failed > 0) throw new Error(...)
     const error = new Error(`收盘记录存在缺失 (${label} ${cnDate})：成功 ${recorded}，失败 ${failed}`);
-    error.externalCalls = previousCalls + requestBudget.used;
+    error.externalCalls = getExternalCallStats().total;
     throw error;
   }
-  return { recorded, failed, skipped, externalCalls: previousCalls + requestBudget.used };
+  return { recorded, failed, skipped, externalCalls: getExternalCallStats().total };
 }
 
 function recentTradingDays(count) {
@@ -340,4 +373,4 @@ function scheduleAllMarketCloses() {
   }
 }
 
-module.exports = { scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay };
+module.exports = { scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps };

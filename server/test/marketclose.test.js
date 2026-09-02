@@ -2,6 +2,8 @@
 // 运行：node server/test/marketclose.test.js
 // 说明：核心判定 pickMissingCodes 与时间zone 辅助函数均为纯函数，无需数据库/网络即可回归。
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const mc = require('../jobs/marketClose');
 const { historicalApiFor } = require('../jobs/replayNav');
 
@@ -51,6 +53,22 @@ check('某市场无任何持仓：返回空', () => {
 });
 check('已有代码集合为空且持仓为空：返回空', () => {
   assert.deepStrictEqual(mc.pickMissingCodes([], new Set(), isA), []);
+});
+check('共享行情缺失时支持按代码读取后续补取结果', () => {
+  const quoteMap = new Map([['sz160719', { code: '160719', price: 1.9, quote_time: '2026-09-02T15:14:00+08:00' }]]);
+  assert.strictEqual(mc.quoteForCode(quoteMap, '160719'), null, '腾讯映射键应使用统一代码或代码.市场，不应误认供应商 symbol');
+  quoteMap.set('160719', { code: '160719', price: 1.9, quote_time: '2026-09-02T15:14:00+08:00' });
+  assert.strictEqual(mc.isUsableQuote(mc.quoteForCode(quoteMap, '160719'), '2026-09-02'), true);
+  assert.strictEqual(mc.isUsableQuote({ code: '160719', price: 1.9, quote_time: '2026-09-01T15:14:00+08:00' }, '2026-09-02'), false);
+  mc.mergeQuoteMaps(quoteMap, new Map([['160719.SZ', { code: '160719', price: 1.91 }]]));
+  assert.strictEqual(quoteMap.get('160719.SZ').price, 1.91);
+});
+check('批量行情缺失只允许一次有界补取，不能重复检查同一份空 Map', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketClose.js'), 'utf8');
+  assert.ok(source.includes('refreshMissingQuotes'), '收盘任务必须有缺失代码补取入口');
+  assert.ok(source.includes('force: true'), '缺失代码补取必须强制刷新腾讯缓存');
+  assert.ok(source.includes('const refreshAttempted = new Set()'), '补取必须按代码去重并限制在本次任务一次');
+  assert.ok(source.includes('getExternalCallStats().total'), '任务外部调用数必须来自统一 Guard 实际计数');
 });
 check('非标准证券显式进入覆盖检查，不再静默漏掉', () => {
   assert.strictEqual(mc.isUncoveredPosition('404002', { name: '搜特退债', quantity: 1000 }), true);

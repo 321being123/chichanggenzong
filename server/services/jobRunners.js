@@ -5,7 +5,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       {
         const { expectedDataDate } = require('./jobScheduleSlots');
         const targetTradeDate = expectedDataDate('bond_safety_refresh', businessDate);
-        return require('../jobs/bondSafetyRefresh').runBondSafetyRefresh(reason, { targetTradeDate });
+        return require('../jobs/bondSafetyRefresh').runBondSafetyRefresh(reason, { targetTradeDate, readOnly: true });
       }
     case 'hk_rate':
       return require('../jobs/hkRate').runHkRateJob();

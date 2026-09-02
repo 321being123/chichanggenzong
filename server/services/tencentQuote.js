@@ -1,7 +1,13 @@
 const https = require('https');
 const { pool } = require('../db/connection');
 const { withExternalCallGuard } = require('./externalCallGuard');
-const { resolveCanonicalCode, resolveInstrument, resolveProviderCode } = require('./securityIdentity');
+const classifyCode = require('../../public/js/code-classify');
+const {
+  resolveCanonicalCode,
+  resolveInstrument,
+  resolveProviderCode,
+  ensureInstrumentIdentity,
+} = require('./securityIdentity');
 
 const SOURCE = 'tencent';
 const DEFAULT_TTL_MS = 60 * 1000;
@@ -21,9 +27,8 @@ function describeTencentCode(rawCode) {
   let market = explicit ? explicit.toLowerCase() : '';
   if (!market && /^\d{5}$/.test(code)) market = 'hk';
   if (!market && /^\d{6}$/.test(code)) {
-    if (code.startsWith('11') || code[0] === '6' || code[0] === '5') market = 'sh';
-    else if (code[0] === '4' || code[0] === '8' || code.startsWith('92')) market = 'bj';
-    else market = 'sz';
+    const info = classifyCode(code);
+    market = info && info.market === 'kcb' ? 'sh' : (info && info.market) || '';
   }
   if (!['sh', 'sz', 'bj', 'hk'].includes(market)) return null;
   const normalized = market === 'hk' ? code.padStart(5, '0') : code.padStart(6, '0');
@@ -33,6 +38,10 @@ function describeTencentCode(rawCode) {
 function isConvertibleBondCode(rawCode) {
   const code = normalizeCode(rawCode);
   return /^\d{6}$/.test(code) && /^(110|111|113|118|123|127|128)/.test(code);
+}
+
+function isFundEtfCode(rawCode) {
+  return classifyCode.isFundEtfCode(normalizeCode(rawCode));
 }
 
 function quoteLookupKeys(item) {
@@ -174,6 +183,31 @@ async function resolveTencentDescriptor(rawCode) {
       const canonical = await resolveCanonicalCode(original, assetClass);
       if (canonical) symbol = await resolveProviderCode({ canonicalCode: canonical, sourceCode: SOURCE, identifierType: 'quote_symbol' });
     }
+    // 历史持仓可能早于统一证券主档迁移，基金/ETF 因不在 stock_basic 中尤其常见。
+    // 先由统一身份写入口补齐最小主档和腾讯映射，再继续走同一映射读取链路。
+    if (!symbol && isFundEtfCode(original)) {
+      const canonical = await resolveCanonicalCode(original, 'stock');
+      if (canonical) {
+        try {
+          const fallbackDescriptor = describeTencentCode(canonical);
+          await ensureInstrumentIdentity({
+            canonicalCode: canonical,
+            assetClass: 'stock',
+            market: 'CN',
+            exchangeCode: canonical.endsWith('.SH') ? 'SSE' : 'SZSE',
+            currencyCode: 'CNY',
+            rawData: { identity_backfill: 'tencent_quote_fund_etf' },
+            companyName: '',
+            // 基金不在 Tushare stock_basic 中，补主档时只写已验证的腾讯映射，
+            // 避免把基金代码伪装成 Tushare 股票代码供其他链路误用。
+            identifiers: fallbackDescriptor ? [[SOURCE, 'quote_symbol', fallbackDescriptor.symbol]] : [],
+          });
+          symbol = await resolveProviderCode({ canonicalCode: canonical, sourceCode: SOURCE, identifierType: 'quote_symbol' });
+        } catch (_) {}
+        // 数据库暂不可用时仍允许本次行情直连腾讯；成功值会按正常路径进入缓存。
+        if (!symbol) symbol = describeTencentCode(canonical)?.symbol || null;
+      }
+    }
     if (!symbol) return null;
     if (String(symbol).toLowerCase() === 'hkHSI'.toLowerCase()) return { code: 'HSI', market: 'hk', symbol: 'hkHSI' };
     return describeTencentCode(symbol);
@@ -229,6 +263,7 @@ module.exports = {
   normalizeCode,
   describeTencentCode,
   isConvertibleBondCode,
+  isFundEtfCode,
   parseQuoteTime,
   parseTencentQuoteText,
   quoteLookupKeys,

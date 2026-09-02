@@ -4,6 +4,7 @@ const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const { isCnHoliday } = require('../config/holidays');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
+const classifyCode = require('../../public/js/code-classify');
 
 const HOSTNAME = os.hostname();
 
@@ -561,7 +562,7 @@ async function queryDataAsOf(jobCode, businessDate) {
     'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)' AND COALESCE(p.name,'') !~ '(债|转债)'`,
     'market_close:港股': `char_length(p.code)=5`,
     'market_close:可转债': `p.code ~ '^(11|12)'`,
-    'market_close:LOF/ETF': `p.code ~ '^(15|16|50|51)' AND char_length(p.code)=6`,
+    'market_close:LOF/ETF': `p.code ~ '${classifyCode.FUND_ETF_SQL_PREFIX}' AND char_length(p.code)=6`,
   };
   const marketPredicate = marketClosePredicates[jobCode];
   const sql = queries[jobCode] || (marketPredicate

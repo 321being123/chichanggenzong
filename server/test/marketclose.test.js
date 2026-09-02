@@ -14,7 +14,7 @@ function check(name, fn) {
 // 与 MARKET_CLOSE_TIMES 一致的代码前缀判定（测试内镜像，避免耦合内部配置）
 const isA = c => /^(00|30|60|68|[48])/.test(c);
 const isBond = c => /^(11|12)/.test(c);
-const isETF = c => /^(15|16|50|51)/.test(c) && c.length === 6;
+const isETF = c => /^(5|15|16|17|180|181|184)/.test(c) && c.length === 6;
 
 const pos = (code, name) => ({ code, name: name || code });
 

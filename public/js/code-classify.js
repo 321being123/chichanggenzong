@@ -6,7 +6,7 @@
 //
 // 返回: { type, subtype, market, isHK }
 //   type    '股权' | '债权'
-//   subtype '沪市' | '深市' | '京市' | '港股' | '美股' | '可转债' | '信用债'
+//   subtype '沪市' | '深市' | '京市' | '港股' | '美股' | '可转债' | '信用债' | '基金/ETF'
 //   market  'sh' | 'sz' | 'bj' | 'hk' | 'kcb' | 'us'
 //   isHK    boolean
 //
@@ -50,6 +50,17 @@
     return code;
   }
 
+  // 交易所代码段（按六位交易代码）：
+  // - 沪市 5xxxxx：基金、ETF、LOF、基础设施 REITs（含后续扩展段）；
+  // - 深市 15/16/17xxxxx：基金、ETF、LOF；180/181xxx：基础设施/商业不动产基金；184xxx：封闭式基金。
+  // 这些代码不能按普通股票的“6/9 沪市、其余深市”规则推断。
+  var FUND_ETF_SQL_PREFIX = '^(5|15|16|17|180|181|184)';
+
+  function isFundEtfCode(rawCode) {
+    var code = resolveCode(rawCode);
+    return /^\d{6}$/.test(code) && (code.charAt(0) === '5' || /^(15|16|17|180|181|184)/.test(code));
+  }
+
   function classifyCode(rawCode) {
     if (!rawCode) return null;
     var rawName = arguments.length > 1 ? arguments[1] : '';
@@ -74,20 +85,25 @@
       if (first1 === '1' && (first2 === '11' || first3 === '113')) market = 'sh';
     } else if (first2 === '13') {
       type = '债权'; subtype = '信用债'; market = 'sh';
+    } else if (isFundEtfCode(code)) {
+      type = '股权'; subtype = '基金/ETF'; market = first1 === '5' ? 'sh' : 'sz';
     } else if (first3 === '688' || first1 === '6') {
       type = '股权'; subtype = '沪市'; market = (first3 === '688') ? 'kcb' : 'sh';
     } else if (first2 === '00' || first2 === '30') {
       type = '股权'; subtype = '深市'; market = 'sz';
-    } else if (first3 === '159') {
-      // 深市 ETF/LOF
-      type = '股权'; subtype = '基金/ETF'; market = 'sz';
-    } else if (first2 === '15' || first2 === '16' || first2 === '50' || first2 === '51' || first2 === '56' || first2 === '58') {
-      // 沪市 LOF(15/16 开头)、封闭式基金/ETF/REITs(50/51/56/58 开头)
-      type = '股权'; subtype = '基金/ETF'; market = 'sh';
+    } else if (first2 === '20') {
+      // 深市 B 股
+      type = '股权'; subtype = '深市'; market = 'sz';
+    } else if (first3 === '900') {
+      // 沪市 B 股
+      type = '股权'; subtype = '沪市'; market = 'sh';
+    } else if (/^1895/.test(code)) {
+      // 深市跨境债券：189500-189999（其余 1xxxxx 代码段不能仅凭首位臆测）
+      type = '债权'; subtype = '信用债'; market = 'sz';
     } else if (first3 === '920' || first1 === '4' || first1 === '8') {
       type = '股权'; subtype = '京市'; market = 'bj';
     } else {
-      // 其他 6 位数字（基金/ETF/5 开头等）默认归入沪市，双市场尝试
+      // 其他 6 位数字按沪市兼容规则处理，具体基金/ETF 前缀已在上面单独覆盖
       type = '股权'; subtype = '沪市'; market = 'sh';
     }
 
@@ -112,6 +128,8 @@
   }
 
   classifyCode.normalizeCode = normalizeCode;
+  classifyCode.isFundEtfCode = isFundEtfCode;
+  classifyCode.FUND_ETF_SQL_PREFIX = FUND_ETF_SQL_PREFIX;
 
   return classifyCode;
 });

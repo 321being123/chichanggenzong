@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { toTsCode } = require('../services/market');
-const { describeTencentCode, isConvertibleBondCode, parseQuoteTime, parseTencentQuoteText, quoteLookupKeys } = require('../services/tencentQuote');
+const { describeTencentCode, isConvertibleBondCode, isFundEtfCode, parseQuoteTime, parseTencentQuoteText, quoteLookupKeys } = require('../services/tencentQuote');
 const { evaluateBondSafety } = require('../services/bondSafety');
 
 const fields = Array(33).fill('');
@@ -19,6 +19,13 @@ const parsedBj = parseTencentQuoteText(`v_bj920002="${bjFields.join('~')}";`);
 
 assert.strictEqual(toTsCode('128044'), '128044.SZ', '12x 深市转债必须映射到 .SZ');
 assert.strictEqual(toTsCode('113575'), '113575.SH', '11x 沪市转债必须映射到 .SH');
+assert.strictEqual(toTsCode('160719'), '160719.SZ', '16 开头 LOF 必须映射到深市');
+assert.strictEqual(toTsCode('161226'), '161226.SZ', '16 开头 LOF 必须映射到深市');
+assert.strictEqual(toTsCode('511880'), '511880.SH', '51 开头 ETF 必须映射到沪市');
+assert.strictEqual(toTsCode('180101'), '180101.SZ', '180 开头 REITs 必须映射到深市');
+assert.strictEqual(toTsCode('181001'), '181001.SZ', '181 开头商业不动产 REITs 必须映射到深市');
+assert.strictEqual(toTsCode('520500'), '520500.SH', '52 开头 ETF 必须映射到沪市');
+assert.strictEqual(toTsCode('189500'), '189500.SZ', '1895 开头深市跨境债必须映射到深市');
 assert.strictEqual(describeTencentCode('128044').symbol, 'sz128044');
 assert.strictEqual(describeTencentCode('113575.SH').symbol, 'sh113575');
 assert.strictEqual(describeTencentCode('SH128044').symbol, 'sh128044', '显式市场前缀优先于代码推断');
@@ -27,10 +34,16 @@ assert.strictEqual(describeTencentCode('920002.BJ').symbol, 'bj920002', '北交�
 assert.strictEqual(describeTencentCode('BJ920002').symbol, 'bj920002', '北交所前缀必须被识别');
 assert.deepStrictEqual(quoteLookupKeys(describeTencentCode('00751.HK')), ['00751', '00751.HK']);
 assert.strictEqual(isConvertibleBondCode('128044'), true);
+assert.strictEqual(isFundEtfCode('160719'), true);
+assert.strictEqual(isFundEtfCode('511880'), true);
+assert.strictEqual(isFundEtfCode('180101'), true);
+assert.strictEqual(isFundEtfCode('181001'), true);
+assert.strictEqual(isFundEtfCode('520500'), true);
+assert.strictEqual(isFundEtfCode('600519'), false);
 
 const marketServiceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'market.js'), 'utf8');
 const marketRouteSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
-assert.ok(marketServiceSource.includes('fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes))'), '批量行情应统一调用腾讯实时行情');
+assert.ok(marketServiceSource.includes('fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes))'), '批量行情应统一调用腾讯实时行情');
 assert.ok(marketServiceSource.includes('async function fetchQuotesByCodes'), '行情服务必须提供统一批量入口');
 assert.ok(marketRouteSource.includes('fetchQuotesByCodes(codes)'), '行情路由必须调用统一批量入口');
 assert.ok(!marketRouteSource.includes('ensureTsRealtime(stockCodes)'), '页面批量行情不得调用 Tushare rt_min');
@@ -47,4 +60,4 @@ const result = evaluateBondSafety([], [{
 }]);
 assert.strictEqual(Object.hasOwn(result.data[0], 'convert_update_date'), false, '输出表格数据不再包含最近转股更新日');
 
-console.log('PASS=16 FAIL=0');
+console.log('PASS=22 FAIL=0');

@@ -6,6 +6,7 @@ const { runNavSnapshotJob } = require('./navSnapshot');
 const { runIndexRecentJob } = require('./indexBaseline');
 const { runHkRateJob } = require('./hkRate');
 const { backfillDailyPrices } = require('./replayNav');
+const classifyCode = require('../../public/js/code-classify');
 const sharedQuotePromises = new Map();
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
@@ -13,7 +14,7 @@ const MARKET_CLOSE_TIMES = [
   { h: 15, m: 10, label: 'A股',     match: (code, position) => /^(00|30|60|68|[48])/.test(code) && !/(债|转债)/.test(String(position && position.name || '')) },
   { h: 16, m: 10, label: '港股',    match: code => code.length === 5 },
   { h: 15, m: 10, label: '可转债',   match: code => /^(11|12)/.test(code) },
-  { h: 15, m: 10, label: 'LOF/ETF', match: code => /^(15|16|50|51)/.test(code) && code.length === 6 },
+  { h: 15, m: 10, label: 'LOF/ETF', match: code => classifyCode.isFundEtfCode(code) },
   { h: 15, m: 10, label: '非标准证券', match: (code, position) => isUncoveredPosition(code, position) },
 ];
 

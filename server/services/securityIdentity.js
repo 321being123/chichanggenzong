@@ -161,9 +161,11 @@ function canonicalizeSecurityCode(rawCode, assetClass = 'stock') {
   const code = digits.padStart(6, '0');
   if (assetClass === 'convertible_bond') return `${code}${/^11/.test(code) ? '.SH' : '.SZ'}`;
   if (assetClass === 'stock') {
-    if (/^(4|8|92)/.test(code)) return `${code}.BJ`;
-    if (/^(6|9)/.test(code)) return `${code}.SH`;
-    return `${code}.SZ`;
+    // 市场后缀统一读取前后端共用的代码分类规则，基金/ETF/REITs、B股和北交所不再各写一套前缀。
+    const info = classifyCode(code);
+    const suffix = info && (info.market === 'sh' || info.market === 'kcb') ? 'SH'
+      : info && info.market === 'bj' ? 'BJ' : 'SZ';
+    return `${code}.${suffix}`;
   }
   return text;
 }

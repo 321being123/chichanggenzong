@@ -9,6 +9,7 @@ const {
   normalizeCode,
 } = require('./tencentQuote');
 const { canonicalizeSecurityCode } = require('./securityIdentity');
+const classifyCode = require('../../public/js/code-classify');
 
 // 通用 HTTPS GET（支持 gbk 解码）
 function httpsGet(url, encoding) {
@@ -252,7 +253,7 @@ async function fetchQuoteByCode(code) {
   if (c === '404002') return { price: null, name: '搜特退债', code: c, change: null };
 
   const tsCode = toTsCode(c);
-  if (tsCode.endsWith('.HK') || isConvertibleBondCode(c)) {
+  if (tsCode.endsWith('.HK') || isConvertibleBondCode(c) || classifyCode.isFundEtfCode(c)) {
     try {
       const quotes = await fetchTencentQuotes([c]);
       const quote = quotes.get(normalizeCode(c));
@@ -304,21 +305,22 @@ async function fetchQuoteByCode(code) {
   return null;
 }
 
-// 页面统一批量行情入口：一批证券最多触发一次腾讯请求，Tushare 日线仅作 A 股回退。
+// 页面统一批量行情入口：一批证券最多触发一次腾讯请求，Tushare 日线仅作普通 A 股回退。
 async function fetchQuotesByCodes(codes) {
   const requested = [...new Set((codes || []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean))];
   const result = {};
   if (!requested.length) return result;
-  const stockCodes = [], bondCodes = [], hkCodes = [];
+  const stockCodes = [], fundCodes = [], bondCodes = [], hkCodes = [];
   requested.forEach(c => {
     if (toTsCode(c).endsWith('.HK')) hkCodes.push(c);
     else if (isConvertibleBondCode(c)) bondCodes.push(c);
+    else if (classifyCode.isFundEtfCode(c)) fundCodes.push(c);
     else stockCodes.push(c);
   });
   const [names, daily, tencent] = await Promise.all([
     stockCodes.length ? ensureTsNames().catch(() => new Map()) : Promise.resolve(new Map()),
     stockCodes.length ? ensureTsDaily().catch(() => new Map()) : Promise.resolve(new Map()),
-    fetchTencentQuotes(stockCodes.concat(bondCodes, hkCodes)).catch(() => new Map()),
+    fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes)).catch(() => new Map()),
   ]);
   stockCodes.forEach(c => {
     const ts = toTsCode(c);
@@ -334,7 +336,7 @@ async function fetchQuotesByCodes(codes) {
       source: quote ? quote.source : 'tushare_daily',
     };
   });
-  bondCodes.concat(hkCodes).forEach(c => {
+  fundCodes.concat(bondCodes, hkCodes).forEach(c => {
     const quote = tencent.get(normalizeCode(c));
     result[c] = quote ? {
       price: quote.price, name: quote.name || c, code: normalizeCode(c), change: quote.change,

@@ -4661,29 +4661,56 @@ async function migration125ConsolidateInstrumentMasters() {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(904125)');
     await client.query(`
+      -- 先为所有可识别的股票/转债计算唯一标准代码，再按“标准代码优先、其次标准格式、最后主档 ID”选唯一保留行。
+      -- 这样既能处理裸代码，也能处理 836660.SH.SH 这类错误后缀；即使标准目标原本不存在，也能先合并后改名。
+      CREATE TEMP TABLE tmp_instrument_expected(
+        instrument_id bigint PRIMARY KEY,
+        asset_class text NOT NULL,
+        expected_code text NOT NULL
+      ) ON COMMIT DROP;
+      INSERT INTO tmp_instrument_expected(instrument_id,asset_class,expected_code)
+      SELECT i.instrument_id,i.asset_class,CASE
+        WHEN i.asset_class='stock' AND length(regexp_replace(i.canonical_code,'[^0-9]','','g'))=5
+          THEN regexp_replace(i.canonical_code,'[^0-9]','','g') || '.HK'
+        WHEN i.asset_class='stock' AND regexp_replace(i.canonical_code,'[^0-9]','','g') ~ '^(4|8|92)'
+          THEN regexp_replace(i.canonical_code,'[^0-9]','','g') || '.BJ'
+        WHEN i.asset_class='stock' AND regexp_replace(i.canonical_code,'[^0-9]','','g') ~ '^(6|9)'
+          THEN regexp_replace(i.canonical_code,'[^0-9]','','g') || '.SH'
+        WHEN i.asset_class='stock'
+          THEN regexp_replace(i.canonical_code,'[^0-9]','','g') || '.SZ'
+        WHEN i.asset_class='convertible_bond' AND regexp_replace(i.canonical_code,'[^0-9]','','g') ~ '^11'
+          THEN regexp_replace(i.canonical_code,'[^0-9]','','g') || '.SH'
+        ELSE regexp_replace(i.canonical_code,'[^0-9]','','g') || '.SZ' END
+        FROM core.instruments i
+       WHERE i.asset_class IN ('stock','convertible_bond')
+         AND regexp_replace(i.canonical_code,'[^0-9]','','g') ~ '^[0-9]{5,6}$';
+
+      CREATE TEMP TABLE tmp_instrument_survivors(
+        asset_class text NOT NULL,
+        expected_code text NOT NULL,
+        survivor_id bigint NOT NULL,
+        PRIMARY KEY(asset_class,expected_code)
+      ) ON COMMIT DROP;
+      INSERT INTO tmp_instrument_survivors(asset_class,expected_code,survivor_id)
+      SELECT asset_class,expected_code,(array_agg(instrument_id ORDER BY
+        CASE WHEN canonical_code=expected_code THEN 0
+             WHEN canonical_code ~ '^[0-9]{5,6}\\.(SH|SZ|BJ|HK)$' THEN 1
+             ELSE 2 END,
+        instrument_id))[1]
+        FROM (
+          SELECT e.asset_class,e.expected_code,e.instrument_id,i.canonical_code
+            FROM tmp_instrument_expected e
+            JOIN core.instruments i ON i.instrument_id=e.instrument_id
+        ) ranked
+       GROUP BY asset_class,expected_code;
+
       CREATE TEMP TABLE tmp_instrument_merge(old_id bigint PRIMARY KEY,target_id bigint NOT NULL) ON COMMIT DROP;
       INSERT INTO tmp_instrument_merge(old_id,target_id)
-      SELECT old.instrument_id,target.instrument_id
-        FROM core.instruments old
-        JOIN core.instruments target
-          ON target.asset_class=old.asset_class
-         AND target.canonical_code=CASE
-           WHEN old.asset_class='stock' AND length(regexp_replace(old.canonical_code,'\\D','','g'))=5
-             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.HK'
-           WHEN old.asset_class='stock' AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^(4|8|92)'
-             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.BJ'
-           WHEN old.asset_class='stock' AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^(6|9)'
-             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SH'
-           WHEN old.asset_class='stock'
-             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SZ'
-           WHEN old.asset_class='convertible_bond' AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^11'
-             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SH'
-           WHEN old.asset_class='convertible_bond'
-             THEN regexp_replace(old.canonical_code,'\\D','','g') || '.SZ'
-           ELSE old.canonical_code END
-       WHERE old.asset_class IN ('stock','convertible_bond')
-         AND old.instrument_id<>target.instrument_id
-         AND regexp_replace(old.canonical_code,'\\D','','g') ~ '^\\d{5,6}$';
+      SELECT e.instrument_id,s.survivor_id
+        FROM tmp_instrument_expected e
+        JOIN tmp_instrument_survivors s
+          ON s.asset_class=e.asset_class AND s.expected_code=e.expected_code
+       WHERE e.instrument_id<>s.survivor_id;
 
       CREATE TEMP TABLE tmp_removed_companies(company_id bigint PRIMARY KEY) ON COMMIT DROP;
       INSERT INTO tmp_removed_companies(company_id)
@@ -4739,24 +4766,12 @@ async function migration125ConsolidateInstrumentMasters() {
       DELETE FROM core.instruments
        WHERE instrument_id IN (SELECT instrument_id FROM tmp_invalid_instruments);
 
-      -- 没有同代码标准主档的存量裸代码原地标准化，保留其 instrument_id 和全部事实关联。
-      UPDATE core.instruments i SET
-        canonical_code=CASE
-          WHEN i.asset_class='stock' AND length(regexp_replace(i.canonical_code,'\\D','','g'))=5
-            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.HK'
-          WHEN i.asset_class='stock' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^(4|8|92)'
-            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.BJ'
-          WHEN i.asset_class='stock' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^(6|9)'
-            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.SH'
-          WHEN i.asset_class='stock'
-            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.SZ'
-          WHEN i.asset_class='convertible_bond' AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^11'
-            THEN regexp_replace(i.canonical_code,'\\D','','g') || '.SH'
-          ELSE regexp_replace(i.canonical_code,'\\D','','g') || '.SZ' END,
-        updated_at=now()
-       WHERE i.asset_class IN ('stock','convertible_bond')
-         AND regexp_replace(i.canonical_code,'\\D','','g') ~ '^\\d{5,6}$'
-         AND i.canonical_code !~ '^\\d{5,6}\\.(SH|SZ|BJ|HK)$';
+      -- 先合并再改名，避免 canonical_code 的既有唯一约束阻止错误后缀归一化。
+      UPDATE core.instruments i SET canonical_code=e.expected_code,updated_at=now()
+        FROM tmp_instrument_expected e
+        JOIN tmp_instrument_survivors s
+          ON s.asset_class=e.asset_class AND s.expected_code=e.expected_code
+       WHERE i.instrument_id=s.survivor_id AND i.canonical_code<>e.expected_code;
 
       UPDATE core.instruments SET
         market='CN',currency_code='CNY',

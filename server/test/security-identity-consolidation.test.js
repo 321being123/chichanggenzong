@@ -18,5 +18,7 @@ const migrationsSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migra
   assert.ok(source.includes("c.raw_data->>'ts_code'=$3"), '公司关系应优先使用官方 ts_code');
   assert.ok(!source.includes('matches.rows.length > 1'), '标准代码解析不得因历史重复主档抛歧义');
   assert.ok(migrationsSource.includes("pg_advisory_lock(904000)") && migrationsSource.includes("pg_advisory_unlock(904000)"), 'Web/Worker 并发启动时必须串行执行数据库迁移');
+  assert.ok(migrationsSource.includes('tmp_instrument_expected') && migrationsSource.includes('tmp_instrument_survivors'), '主档迁移必须先按标准代码选唯一保留行，再处理错误后缀');
+  assert.ok(migrationsSource.includes("regexp_replace(i.canonical_code,'[^0-9]','','g')"), '主档迁移必须使用明确的数字提取规则');
   console.log('security identity consolidation tests passed');
 })().catch(error => { console.error(error); process.exit(1); });

@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { filterPublicBonds, latestMarketPartition, normalizeTradeDate } = require('../services/bondSafetyTushare');
 
 function response(rows) {
@@ -57,6 +59,9 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
     error => error.code === 'PERMISSION_DENIED',
     '权限错误不能被当作空数据吞掉',
   );
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
+  assert.ok(source.includes('dm.trade_date::text AS trade_date'), '安全评分读取 PostgreSQL DATE 必须先转为日历日期文本');
+  assert.ok(source.includes('const tradeDate = normalizeTradeDate(rows[0] && rows[0].trade_date)'), '安全评分不得把 PostgreSQL DATE 直接转成 ISO 日期');
   console.log('bond safety date fallback tests passed');
 })().catch(error => {
   console.error(error);

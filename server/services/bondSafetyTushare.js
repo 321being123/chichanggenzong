@@ -415,7 +415,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
     ), bonds AS (
       SELECT i.instrument_id,i.canonical_code AS bond_code,i.name AS bond_name,
              s.canonical_code AS stock_code,s.name AS stock_name,p.stock_instrument_id,
-             dm.trade_date,dm.close,dm.conversion_value,dm.conversion_premium_pct,
+             dm.trade_date::text AS trade_date,dm.close,dm.conversion_value,dm.conversion_premium_pct,
              p.current_conv_price AS convert_price,
              COALESCE(v.pe_ttm,v.pe_static) AS pe_ttm,v.pe_static,v.pb,v.dividend_yield_ttm,
              v.total_market_cap,s.raw_data AS stock_raw
@@ -468,7 +468,9 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
       change_pct: null, double_low: row.close != null && row.conversion_premium_pct != null ? Number(row.close) + Number(row.conversion_premium_pct) : null,
       convert_premium: row.conversion_premium_pct, convert_price: row.convert_price, convert_value: row.conversion_value };
   });
-  const tradeDate = rows[0].trade_date ? new Date(rows[0].trade_date).toISOString().slice(0, 10) : null;
+  // PostgreSQL DATE 可能由 pg 按本地时区解析为 Date；不能直接 toISOString，
+  // 否则上海时区的交易日会被回退一天。统一按日历日期文本读取。
+  const tradeDate = normalizeTradeDate(rows[0] && rows[0].trade_date);
   return { companyRows, bondRows, sourceUpdatedAt: tradeDate ? `${tradeDate}T15:00:00+08:00` : null, dataAsOf: tradeDate };
 }
 

@@ -164,7 +164,8 @@ def main():
             "&& systemctl enable portfolio-server.service portfolio-worker.service "
             "&& systemctl start portfolio-server.service portfolio-worker.service "
             "&& systemctl enable --now portfolio-worker-health.timer "
-            "&& sleep 10 "
+            # 迁移125需处理全量历史主档，启动耗时可能超过10秒；健康检查采用60秒有界轮询，避免服务已能启动却被过早回滚。
+            "&& for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1 && break; sleep 2; done "
             "&& systemctl is-active --quiet portfolio-server.service portfolio-worker.service portfolio-worker-health.timer "
             "&& systemctl is-enabled --quiet portfolio-server.service portfolio-worker.service portfolio-worker-health.timer "
             "&& health_json=$(curl -fsS http://127.0.0.1:3000/health) "

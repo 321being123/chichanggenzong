@@ -110,7 +110,7 @@ assert(/send_attempts > 0/.test(alertMailer) && !/claimRecoverySummaryAlerts\(li
 assert(/sanitizeJobError/.test(alertMailer) && /sanitizeJobError/.test(orchestrator) && /sanitizeJobError/.test(read('server/services/jobRunnerProcess.js')), '任务错误进入数据库和邮件前必须统一脱敏');
 assert(/activeRuns === 0 && !executing/.test(orchestrator) && /notifyStopWaiters/.test(orchestrator) && /waitForStartupTasks/.test(read('server/worker.js')), 'Worker 停机必须等待完整执行器轮次和启动任务');
 assert(/executorTimer = setInterval\(tick, 60 \* 1000\)/.test(orchestrator) && !/executorTimer\.unref/.test(orchestrator), '持久化执行器必须作为独立 Worker 保活句柄，不能在启动任务结束后自动退出');
-assert(/sleep 10/.test(deployScript) && /health_json=/.test(deployScript) && !/time\.sleep\(5\)/.test(deployScript), '最终健康与版本检查必须在可回滚部署事务内完成');
+assert(/seq 1 30/.test(deployScript) && /health_json=/.test(deployScript) && !/time\.sleep\(5\)/.test(deployScript), '最终健康与版本检查必须在可回滚部署事务内完成');
 assert(/pg_try_advisory_lock\(hashtext\('ops\.alert_notifications\.recovery_summary'\)\)/.test(alertMailer) && /pg_advisory_unlock/.test(alertMailer), 'SMTP 恢复摘要必须使用跨进程全局锁');
 assert(/MAX_RECOVERY_SUMMARY_ATTEMPTS = 3/.test(alertMailer) && /recovery_attempts < \$3/.test(alertMailer) && /065_alert_recovery_attempts/.test(migrations), 'SMTP 恢复摘要最多尝试3次并持久化计数');
 assert(/sanitizeJobResult/.test(orchestrator) && /sanitizeJobResult/.test(slots) && /sanitizeJobError/.test(jobsDb), '任务错误和结果写入数据库前必须递归脱敏');

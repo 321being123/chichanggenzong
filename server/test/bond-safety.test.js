@@ -168,9 +168,11 @@ check('人工安全评分与任务契约一致，只读已入库标准层', () =
   const refreshJob = fs.readFileSync(path.resolve(__dirname, '..', 'jobs', 'bondSafetyRefresh.js'), 'utf8');
   const runner = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'jobRunners.js'), 'utf8');
   const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');
+  const route = fs.readFileSync(path.resolve(__dirname, '..', 'routes', 'bondSafety.js'), 'utf8');
   assert.ok(refreshJob.includes('const readOnly = options.readOnly !== false'));
   assert.ok(runner.includes('targetTradeDate, readOnly: true'));
   assert.ok(service.includes('options.readOnly !== false'));
+  assert.ok(/\{ isConfigured \} = require\('\.\.\/services\/bondSafetyFetcher'\)/.test(route));
 });
 
 const pass = results.filter(r => r[0] === 'PASS').length;

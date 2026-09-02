@@ -4,6 +4,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, requireCapability } = require('../middleware/auth');
 const { RATINGS } = require('../services/bondSafety');
 const { getLatestSnapshot, refreshBondSafety } = require('../services/bondSafetyService');
+const { isConfigured } = require('../services/bondSafetyFetcher');
 const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBondRedemptionService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
 const { auditEvent } = require('../db');

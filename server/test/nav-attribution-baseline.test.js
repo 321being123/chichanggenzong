@@ -105,6 +105,23 @@ pool.query = async (sql) => {
     }, 1100);
     assert.strictEqual(fullSell.complete, true, '清仓后不应要求当前持仓价格');
     assert.strictEqual(Math.round(fullSell.snapshotDrift), 0, '清仓归因必须闭合');
+
+    const delistedBond = await computeNavAttribution('u', 'a', {
+      hkRate: 1,
+      cashBase: 0,
+      cashFlows: [],
+      trades: [{ trade_date: '2026-07-01', code: '404002', direction: 'open', quantity: 1000, price: 2.362 }],
+      positions: [{ code: '404002', name: '搜特退债', price: 2.362, quantity: 1000, type: '股权', subtype: '京市' }],
+      navHistory: [
+        { date: previousDay, totalAsset: 2362, hkRate: 1, snapshotSource: 'legacy', snapshot_at: previousDay + 'T23:59:59.000Z' },
+        { date: today, totalAsset: 2362, hkRate: 1, snapshotSource: 'legacy', snapshot_at: today + 'T23:59:59.000Z' }
+      ]
+    }, 2362);
+    assert.strictEqual(delistedBond.complete, true, '退市债填写最后退市价后应能完整归因');
+    assert.deepStrictEqual(delistedBond.missingCodes, [], '退市债固定价不应再列为缺失标的');
+    assert.deepStrictEqual(delistedBond.manualPriceCodes, ['404002'], '应记录使用手工退市价的标的');
+    assert.strictEqual(Math.round(delistedBond.snapshotDrift), 0, '退市债固定价归因必须闭合');
+
     console.log('nav attribution baseline tests passed');
   } finally {
     pool.query = originalQuery;

@@ -209,6 +209,31 @@ function priceAt(priceMap, date, code, isHk) {
   return null;
 }
 
+// 退市债券可能已没有外部行情，但持仓里保留了用户填写的最后退市价。
+// 仅对明确标记为退市债的证券启用该固定价，避免把普通证券的旧价格误当成归因依据。
+function isDelistedBond(row, code) {
+  const plainCode = String(code || row && (row.code || row.instrumentCode) || '')
+    .toUpperCase().replace(/\.(SH|SZ|BJ|HK|US)$/i, '');
+  const name = String(row && row.name || '').replace(/\s+/g, '');
+  return plainCode === '404002' || /退债|退市债|退市转债/.test(name);
+}
+
+function manualDelistedPrice(data, code, currentPosition) {
+  const candidates = [];
+  if (isDelistedBond(currentPosition, code)) candidates.push(currentPosition && currentPosition.price);
+  for (const snapshot of (data.positionSnapshots || [])) {
+    if (String(snapshot.code || snapshot.instrumentCode || '') !== String(code)) continue;
+    if (isDelistedBond(snapshot, code)) candidates.push(snapshot.price);
+  }
+  // 已清仓的退市债没有当前持仓时，最后一笔成交价仍可作为同一固定价兜底。
+  for (const trade of (data.trades || []).slice().reverse()) {
+    if (String(trade.code || '') !== String(code)) continue;
+    if (isDelistedBond(trade, code)) candidates.push(trade.price);
+  }
+  const price = candidates.find(value => Number.isFinite(Number(value)) && Number(value) > 0);
+  return price == null ? null : Number(price);
+}
+
 async function computeNavAttribution(username, accountName, data, currentTotal) {
   const navs = (data.navHistory || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
   if (navs.length < 2) return { complete: false, reason: 'not_enough_snapshots' };
@@ -248,17 +273,23 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const quantityImpact = { value: 0 };
   const previousMarketValue = { value: 0, complete: true };
   const missing = [];
+  const manualPriceCodes = [];
   const codes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
   for (const code of codes) {
     const q = prevQty.get(code) || { quantity: 0, subtype: (currentByCode.get(code) || {}).subtype || '' };
     const qty = Number(q.quantity) || 0;
     const p = currentByCode.get(code);
     const isHk = q.subtype === '港股' || (p && p.subtype === '港股');
-    const prevPrice = priceAt(priceMap, prevDate, code, isHk);
+    const storedPrevPrice = priceAt(priceMap, prevDate, code, isHk);
+    const fixedDelistedPrice = manualDelistedPrice(data, code, p);
+    const prevPrice = storedPrevPrice > 0 ? storedPrevPrice : fixedDelistedPrice;
     const tradePrice = tradePriceAtEnd(data, code, prevDate, currentDate, prevAt, lastAt);
     const lastPrice = liveEnd && p ? Number(p.price) : priceAt(priceMap, currentDate, code, isHk);
-    const endPrice = lastPrice > 0 ? lastPrice : tradePrice;
+    const endPrice = lastPrice > 0 ? lastPrice : (tradePrice > 0 ? tradePrice : fixedDelistedPrice);
     const currentQty = p ? Number(p.quantity) || 0 : 0;
+    if (fixedDelistedPrice != null && (storedPrevPrice == null || !(storedPrevPrice > 0) || !(lastPrice > 0))) {
+      manualPriceCodes.push(code);
+    }
     if ((qty > 0 && (!(prevPrice > 0) || !(endPrice > 0))) || (currentQty > 0 && !(endPrice > 0)) ||
       ((qty > 0 || currentQty > 0) && isHk && !(prevRate > 0 && lastRate > 0))) {
       missing.push(code);
@@ -317,6 +348,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     complete,
     reason: complete ? null : (currencyIncomplete ? 'missing_trade_currency_settlement' : 'missing_exact_price_or_fx'),
     missingCodes: [...new Set(missing)],
+    manualPriceCodes: [...new Set(manualPriceCodes)],
     previousDate: prevDate,
     currentDate,
     previousTotalAsset: previousTotal,

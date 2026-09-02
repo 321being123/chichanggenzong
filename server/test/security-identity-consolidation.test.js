@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { resolveCanonicalCode } = require('../services/securityIdentity');
+const migrationsSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
 
 (async () => {
   assert.strictEqual(await resolveCanonicalCode('601919', 'stock'), '601919.SH');
@@ -16,5 +17,6 @@ const { resolveCanonicalCode } = require('../services/securityIdentity');
   assert.ok(source.includes('证券已经有关联公司时必须复用'), '主档写入必须复用已有公司关系');
   assert.ok(source.includes("c.raw_data->>'ts_code'=$3"), '公司关系应优先使用官方 ts_code');
   assert.ok(!source.includes('matches.rows.length > 1'), '标准代码解析不得因历史重复主档抛歧义');
+  assert.ok(migrationsSource.includes("pg_advisory_lock(904000)") && migrationsSource.includes("pg_advisory_unlock(904000)"), 'Web/Worker 并发启动时必须串行执行数据库迁移');
   console.log('security identity consolidation tests passed');
 })().catch(error => { console.error(error); process.exit(1); });

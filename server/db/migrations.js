@@ -5363,13 +5363,22 @@ async function migration048TightenAccountLedger() {
 
 // 版本化迁移执行器：只跑 schema_migrations 里没有记录过的步骤
 async function runMigrations() {
-  await ensureMigrationsTable();
-  const { rows } = await pool.query('SELECT version FROM schema_migrations');
-  const applied = new Set(rows.map(r => r.version));
-  for (const m of MIGRATIONS) {
-    if (applied.has(m.version)) continue;
-    console.log('[migrate] 执行升级步骤', m.version);
-    await runMigration(m.up, m.version);
+  // Web 与 Worker 会并行启动；迁移函数使用连接池，必须用独立会话锁住整个迁移序列，
+  // 否则两个进程可能同时创建同一唯一索引或重复执行同一迁移。
+  const lockClient = await pool.connect();
+  try {
+    await lockClient.query('SELECT pg_advisory_lock(904000)');
+    await ensureMigrationsTable();
+    const { rows } = await pool.query('SELECT version FROM schema_migrations');
+    const applied = new Set(rows.map(r => r.version));
+    for (const m of MIGRATIONS) {
+      if (applied.has(m.version)) continue;
+      console.log('[migrate] 执行升级步骤', m.version);
+      await runMigration(m.up, m.version);
+    }
+  } finally {
+    await lockClient.query('SELECT pg_advisory_unlock(904000)').catch(() => {});
+    lockClient.release();
   }
 }
 

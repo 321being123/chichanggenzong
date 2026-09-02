@@ -50,11 +50,19 @@ const STOCK_CODES = [
   check(normalizeStockCode('') === null, '空字符串应返回 null');
   check(normalizeStockCode(null) === null, 'null 应返回 null');
   check(normalizeStockCode('600000.SH') === '600000.SH', '已带后缀应原样返回');
+  check(normalizeStockCode('920002.SH') === '920002.BJ', '92开头代码即使误带.SH也必须纠正为.BJ');
+  check(normalizeStockCode('600519.BJ') === '600519.SH', '沪市代码误带.BJ必须纠正为.SH');
+  check(toTsCode('920002.SH') === '920002.BJ', '行情代码构造器必须校验92开头代码后缀');
+  check(toTsCode('600519.BJ') === '600519.SH', '行情代码构造器必须校验沪市代码后缀');
   try {
     const { rows: r1 } = await pool.query("SELECT normalize_stock_code('') AS v");
     check(r1[0].v === null, 'SQL 空字符串应返回 null');
     const { rows: r2 } = await pool.query("SELECT normalize_stock_code('000001.SZ') AS v");
     check(r2[0].v === '000001.SZ', 'SQL 已带后缀应原样返回');
+    const { rows: r3 } = await pool.query("SELECT normalize_stock_code('920002.SH') AS v");
+    check(r3[0].v === '920002.BJ', 'SQL 92开头代码误带.SH必须纠正为.BJ');
+    const { rows: r4 } = await pool.query("SELECT normalize_stock_code('600519.BJ') AS v");
+    check(r4[0].v === '600519.SH', 'SQL 沪市代码误带.BJ必须纠正为.SH');
   } catch (e) {
     console.error('SQL 边界核对失败: ' + e.message);
     failures++;

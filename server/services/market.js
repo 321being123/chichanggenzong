@@ -8,6 +8,7 @@ const {
   isConvertibleBondCode,
   normalizeCode,
 } = require('./tencentQuote');
+const { canonicalizeSecurityCode } = require('./securityIdentity');
 
 // 通用 HTTPS GET（支持 gbk 解码）
 function httpsGet(url, encoding) {
@@ -160,16 +161,9 @@ async function saveDailyCache(rows) {
 // 任意代码 → Tushare ts_code（A股/港股/可转债/ETF/REITs）
 function toTsCode(code) {
   const c = (code || '').trim().toUpperCase().replace(/\s/g, '');
-  if (c.endsWith('.HK')) return c;
-  if (c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ')) return c;
-  if (/^\d{6}$/.test(c)) {
-    if (c.startsWith('12')) return c + '.SZ';
-    if (c[0] === '6' || c[0] === '5' || c.startsWith('11')) return c + '.SH';
-    if (c[0] === '8' || c[0] === '4' || c.startsWith('20') || c.startsWith('92')) return c + '.BJ';
-    return c + '.SZ';
-  }
-  if (/^\d{5}$/.test(c)) return c + '.HK';
-  return c;
+  if (!c) return c;
+  const assetClass = isConvertibleBondCode(c) ? 'convertible_bond' : 'stock';
+  return canonicalizeSecurityCode(c, assetClass) || c;
 }
 
 // ============ 行情缓存 single-flight（P1-4）============

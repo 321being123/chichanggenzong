@@ -150,10 +150,11 @@ function normalizedCanonicalCode(value) {
   return text || null;
 }
 
-async function resolveCanonicalCode(rawCode, assetClass = 'stock', executor) {
+// 按统一主档规则校验并生成标准代码。即使输入带了交易所后缀，也不能盲目信任；
+// 例如 920002.SH 必须纠正为 920002.BJ，600519.BJ 必须纠正为 600519.SH。
+function canonicalizeSecurityCode(rawCode, assetClass = 'stock') {
   const text = normalizedCanonicalCode(rawCode);
   if (!text) return null;
-  if (/\.[A-Z]{2}$/.test(text)) return text;
   const digits = text.replace(/\D/g, '');
   if (!/^\d{5,6}$/.test(digits)) return text;
   if (digits.length === 5 && assetClass === 'stock') return `${digits.padStart(5, '0')}.HK`;
@@ -165,6 +166,10 @@ async function resolveCanonicalCode(rawCode, assetClass = 'stock', executor) {
     return `${code}.SZ`;
   }
   return text;
+}
+
+async function resolveCanonicalCode(rawCode, assetClass = 'stock', executor) {
+  return canonicalizeSecurityCode(rawCode, assetClass);
 }
 
 async function resolveInstrument({ instrumentId = null, canonicalCode = null, sourceCode = null, identifierType = null, identifierValue = null } = {}, executor) {
@@ -287,7 +292,7 @@ async function resolveProviderCode(input = {}, executor) {
 // 统一主档写入口：所有新增证券先写 core.instruments，再写供应商映射及公司-证券关系。
 // executor 可传事务 client.query，保证主档、公司和映射同一事务提交。
 async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass = 'stock', market = 'CN', exchangeCode = '', currencyCode = 'CNY', listDate = null, status = 'listed', rawData = {}, companyName = null, relationType = 'issued_by', identifiers = [] } = {}, executor) {
-  const canonical = normalizedCanonicalCode(canonicalCode);
+  const canonical = canonicalizeSecurityCode(canonicalCode, assetClass);
   if (!canonical) throw new Error('证券主档缺少 canonicalCode');
   const query = executor || pool.query.bind(pool);
   const instrumentResult = await query(
@@ -365,4 +370,4 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
 
 function clearIdentifierCache() { identifierCache.clear(); }
 
-module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, clearIdentifierCache };
+module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, clearIdentifierCache };

@@ -7,14 +7,11 @@
 // 主档、发行事实、生命周期事件和上市表现由迁移 058 的标准表分别写入；
 // 本服务不再回读或写入历史兼容表。
 const { pool } = require('../db');
+const { canonicalizeSecurityCode } = require('./securityIdentity');
 
-// 六位正股代码 → 标准代码（补后缀）。规则必须与迁移 035 的 normalize_stock_code() SQL 函数保持一致：
-// 0/3 开头 → 深市 .SZ，其余 → 沪市 .SH；已带后缀则原样返回。
+// 正股代码 → 标准代码（补后缀并校验已有后缀），规则与 SQL normalize_stock_code() 保持一致。
 function normalizeStockCode(code) {
-  const raw = String(code || '').trim();
-  if (!raw) return null;
-  if (raw.includes('.')) return raw;
-  return /^(0|3)/.test(raw) ? raw + '.SZ' : raw + '.SH';
+  return canonicalizeSecurityCode(code, 'stock');
 }
 
 // 全量可转债列表（基础信息）

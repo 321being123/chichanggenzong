@@ -1620,7 +1620,7 @@ async function migration034BondProfileListDate() {
 }
 
 // ========== 035：bond_unified 正股代码兜底（迁移期保护） ==========
-// 正股代码补后缀规则必须与 bondDataService.normalizeStockCode() 保持一致（0/3 开头 → 深市，其余 → 沪市）。
+// 初始版本只提供 0/3 开头深市、其余沪市的兜底；迁移126会替换为统一市场规则并校验后缀冲突。
 async function migration035BondUnifiedStkFallback() {
   await pool.query(`
     CREATE OR REPLACE FUNCTION normalize_stock_code(raw TEXT) RETURNS TEXT AS $$
@@ -4856,6 +4856,32 @@ async function migration125ConsolidateInstrumentMasters() {
   }
 }
 
+// ========== 126：正股代码后缀冲突校验 =============
+// bond_unified 的历史兜底函数也必须遵守统一市场规则，不能直接信任输入后缀。
+async function migration126NormalizeStockCodeSuffix() {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION normalize_stock_code(raw TEXT) RETURNS TEXT AS $$
+      WITH value AS (
+        SELECT upper(btrim(raw)) AS text
+      ), digits AS (
+        SELECT text,regexp_replace(text,'[^0-9]','','g') AS code FROM value
+      )
+      SELECT CASE
+        WHEN raw IS NULL OR text='' THEN NULL
+        WHEN text ~ '^(SH|SZ|BJ|HK)?[0-9]{5}(\\.(SH|SZ|BJ|HK))?$'
+          THEN lpad(code,5,'0') || '.HK'
+        WHEN text ~ '^(SH|SZ|BJ|HK)?[0-9]{6}(\\.(SH|SZ|BJ|HK))?$'
+          THEN code || CASE
+            WHEN code ~ '^(4|8|92)' THEN '.BJ'
+            WHEN code ~ '^(6|9)' THEN '.SH'
+            ELSE '.SZ' END
+        ELSE text
+      END
+      FROM digits;
+    $$ LANGUAGE sql IMMUTABLE;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -4982,6 +5008,7 @@ const MIGRATIONS = [
   { version: '123_backfill_stock_company_relations', up: migration123BackfillStockCompanyRelations },
   { version: '124_external_call_budget_function', up: migration124ExternalCallBudgetFunction },
   { version: '125_consolidate_instrument_masters', up: migration125ConsolidateInstrumentMasters },
+  { version: '126_normalize_stock_code_suffix', up: migration126NormalizeStockCodeSuffix },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -5562,6 +5589,7 @@ module.exports = {
   migration123BackfillStockCompanyRelations,
   migration124ExternalCallBudgetFunction,
   migration125ConsolidateInstrumentMasters,
+  migration126NormalizeStockCodeSuffix,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

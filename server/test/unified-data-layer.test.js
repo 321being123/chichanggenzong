@@ -26,17 +26,19 @@ async function checkAsync(name, fn) {
     const bondSvc = require('../../server/services/bondDataService');
     const stockSvc = require('../../server/services/stockDataService');
 
-    // 1) 035 迁移的 normalize_stock_code 函数存在且规则正确
+    // 1) 035/126 迁移的 normalize_stock_code 函数存在且规则正确
     const fnRows = await pool.query(
       `SELECT prosrc FROM pg_proc WHERE proname='normalize_stock_code'`
     );
-    check('normalize_stock_code 函数已创建（035）', () => {
+    check('normalize_stock_code 函数已创建（035/126）', () => {
       assert.ok(fnRows.rows.length > 0, '缺少 normalize_stock_code 函数');
-      assert.ok(/raw ~ '\^\(0\|3\)'/.test(fnRows.rows[0].prosrc), '深市规则缺失（0/3 → .SZ）');
+      assert.ok(/92/.test(fnRows.rows[0].prosrc) && /BJ/.test(fnRows.rows[0].prosrc), '北交所规则缺失（92 → .BJ）');
     });
     const fnResult = await pool.query(
       `SELECT normalize_stock_code('000001') AS sz, normalize_stock_code('600000') AS sh,
-              normalize_stock_code('300750') AS cyb, normalize_stock_code('600000.SH') AS passthrough`
+              normalize_stock_code('300750') AS cyb, normalize_stock_code('600000.SH') AS passthrough,
+              normalize_stock_code('920002.SH') AS bj_conflict,
+              normalize_stock_code('600519.BJ') AS sh_conflict`
     );
     check('normalize_stock_code 规则正确', () => {
       const r = fnResult.rows[0];
@@ -44,6 +46,8 @@ async function checkAsync(name, fn) {
       assert.strictEqual(r.sh, '600000.SH');
       assert.strictEqual(r.cyb, '300750.SZ');
       assert.strictEqual(r.passthrough, '600000.SH');
+      assert.strictEqual(r.bj_conflict, '920002.BJ');
+      assert.strictEqual(r.sh_conflict, '600519.SH');
     });
 
     // 2) 标准档案有正股代码的债券，统一视图 stock_code 缺失数为 0

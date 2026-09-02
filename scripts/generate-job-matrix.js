@@ -22,13 +22,14 @@ function cell(values) {
 }
 
 function budgetCell(job) {
-  if (!(job.additionalSchedules || []).length) return String(externalCallLimitForMode(job));
-  return [
+  const values = !(job.additionalSchedules || []).length ? [String(externalCallLimitForMode(job))] : [
     `core: ${externalCallLimitForMode(job, 'core')}`,
     ...(job.additionalSchedules || []).map(item =>
       `${item.mode || '补充'}: ${externalCallLimitForMode(job, item.mode || 'core')}`
     ),
-  ].join('<br>');
+  ];
+  const daily = Number.isFinite(Number(job.dailyBudget)) ? `（每日计入 ${Number(job.dailyBudget)}）` : '';
+  return `${values.join('<br>')}${daily}`;
 }
 
 function render() {
@@ -39,7 +40,7 @@ function render() {
     '# 任务-接口-数据集矩阵（代码生成）',
     '',
     '> 此文件由 `scripts/generate-job-matrix.js` 从 `server/services/jobDefinitions.js` 生成，禁止手工修改。',
-    `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）；声明调用预算合计：${total}/日，目标上限 80，硬上限 100。`,
+    `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）；每日预算计入合计：${total}/日，目标上限 80，硬上限 100。单次上限用于单个计划批次，括号内为每日预算计入值。`,
     '',
     '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 单次最大外部调用 |',
     '|---|---|---|---|---|---:|',

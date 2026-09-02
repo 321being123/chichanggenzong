@@ -3,7 +3,7 @@ require('dotenv').config();
 const { runJobByCode } = require('./jobRunners');
 const { getJobDefinition, externalCallLimitForMode } = require('./jobDefinitions');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { getExternalCallStats } = require('./externalCallGuard');
+const { getExternalCallStats, setExternalCallCount } = require('./externalCallGuard');
 const { publishJobDatasets } = require('./datasetPartitionRegistry');
 
 function send(message) {
@@ -28,6 +28,7 @@ process.on('message', async message => {
     // 任务契约中的 maxExternalCallsPerRun 必须在运行时生效；0 表示该任务禁止任何外部请求。
     const definition = getJobDefinition(message.jobCode);
     const mode = String(message.context && message.context.mode || 'core');
+    setExternalCallCount(message.context && message.context.externalCallCount);
     process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
     process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimitForMode(definition, mode));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
@@ -40,6 +41,7 @@ process.on('message', async message => {
     send({ ok: true, result: normalized });
   } catch (error) {
     const stats = getExternalCallStats();
+    const errorExternalCalls = error && (error.externalCalls ?? error.externalCallCount);
     send({
       ok: false,
       error: sanitizeJobError(error && error.message || error),
@@ -52,8 +54,8 @@ process.on('message', async message => {
       tokenFingerprint: error && error.tokenFingerprint,
       recoverAt: error && error.recoverAt,
       dataDiagnostics: error && error.dataDiagnostics,
-      externalCallCount: Number(error && error.externalCalls || stats.total),
-      externalSources: stats.sources,
+      externalCallCount: Number(errorExternalCalls ?? stats.total),
+      externalSources: error && error.externalSources || stats.sources,
     });
   }
 });

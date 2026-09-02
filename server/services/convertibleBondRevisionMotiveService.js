@@ -938,6 +938,7 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
   let pledgeStopError = null;
   const errorText = error => String(error && error.message || error).slice(0, 300);
   const isEndpointStopError = error => Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
+  const isRunBudgetBoundaryError = error => Boolean(error && error.code === 'JOB_BUDGET_EXCEEDED');
   for (const bond of bonds) {
     let holderRows = [];
     let holderError = null;
@@ -955,8 +956,14 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
         externalCalls += 1;
       } catch (error) {
         holderError = error;
-        if (isEndpointStopError(error)) holderStopError = error;
-        failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
+        if (isRunBudgetBoundaryError(error)) {
+          // 达到本批次上限是正常分批边界，不是单只证券失败；保留游标不动，留到下一批。
+          holderAttempted = false;
+          holderStopError = error;
+        } else {
+          if (isEndpointStopError(error)) holderStopError = error;
+          failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
+        }
       }
     }
     if (!holderAttempted) holderDeferredCount += 1;
@@ -979,9 +986,15 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
           pledgeByCompany.set(bond.company_id, { rows: pledgeRows });
         } catch (error) {
           pledgeError = error;
-          if (isEndpointStopError(error)) pledgeStopError = error;
-          pledgeByCompany.set(bond.company_id, { error });
-          failures.push({ tsCode: bond.ts_code, dataset: 'pledge_stat', error: errorText(error) });
+          if (isRunBudgetBoundaryError(error)) {
+            pledgeAttempted = false;
+            pledgeStopError = error;
+            pledgeByCompany.set(bond.company_id, { deferred: true });
+          } else {
+            if (isEndpointStopError(error)) pledgeStopError = error;
+            pledgeByCompany.set(bond.company_id, { error });
+            failures.push({ tsCode: bond.ts_code, dataset: 'pledge_stat', error: errorText(error) });
+          }
         }
       }
       if (!pledgeRows.length && cached && cached.error) {

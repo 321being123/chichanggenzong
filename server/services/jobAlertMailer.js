@@ -9,7 +9,19 @@ const MAX_RECOVERY_SUMMARY_ATTEMPTS = 3;
 // 故障告警在人工确认或任务恢复前保持待处理；一次性通知发送后不再算待处理。
 const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
         AND NOT (alert_type IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
-          AND status IN ('sent','suppressed'))`;
+          AND status IN ('sent','suppressed'))
+        AND NOT (alert_type='failure_warning' AND EXISTS (
+          SELECT 1 FROM ops.alert_notifications newer
+           WHERE newer.slot_id=ops.alert_notifications.slot_id
+             AND newer.alert_type='failure'
+             AND newer.status NOT IN ('resolved','acknowledged')
+        ))
+        AND NOT (alert_type='late' AND EXISTS (
+          SELECT 1 FROM ops.alert_notifications blocker
+           WHERE blocker.slot_id=ops.alert_notifications.slot_id
+             AND blocker.alert_type='dependency_blocked'
+             AND blocker.status NOT IN ('resolved','acknowledged')
+        ))`;
 
 function productionAlertsEnabled() {
   return process.env.NODE_ENV === 'production';

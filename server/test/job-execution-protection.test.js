@@ -25,6 +25,10 @@ const testRunner = read('server/test/run-all.js');
 const tushareClient = read('server/services/tushare.js');
 const identitySource = read('server/services/securityIdentity.js');
 const financialArchitecture = read('server/services/financialDataArchitecture.js');
+const ipoHistoryJob = read('server/jobs/ipoHistorySync.js');
+const runnerProcess = read('server/services/jobRunnerProcess.js');
+const motiveService = read('server/services/convertibleBondRevisionMotiveService.js');
+const alertMailer = read('server/services/jobAlertMailer.js');
 
 for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(definition.retryPolicy, `${definition.jobCode} 缺少 retryPolicy`);
@@ -39,6 +43,11 @@ for (const definition of definitions.JOB_DEFINITIONS) {
 }
 assert.ok(definitions.JOB_DEFINITIONS.reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0) <= 80,
   '常规任务声明调用预算不得超过每日80次目标');
+assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
+assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
+assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_redemption_announcement_sync').dailyBudget, 2, '强赎任务每日预算计入值必须独立于单次上限');
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_redemption_announcement_sync').maxExternalCallsPerRun, 40, '强赎任务单次上限必须覆盖批量分页');
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
 const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
 const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
@@ -72,6 +81,16 @@ assert.ok(/configured == "0"/.test(pythonGuard) && /production/.test(pythonGuard
   'Python Guard 必须默认开启且生产环境不可关闭');
 assert.ok(/BUDGET_WAIT/.test(externalGuard) && /BUDGET_WAIT/.test(orchestrator),
   '内部预算耗尽必须进入等待状态，不得误开来源熔断');
+assert.ok(/JOB_EXTERNAL_CALL_USED/.test(pythonGuard) && /_budget_date_text/.test(pythonGuard)
+  && /return \{"total": _run_call_count/.test(pythonGuard), 'Python 必须继承累计调用数且预算日不能使用业务日期');
+assert.ok(/setExternalCallCount/.test(externalGuard) && /setExternalCallCount\(message\.context/.test(runnerProcess),
+  'Node 子进程必须继承计划实例累计调用数');
+assert.ok(/JOB_BUDGET_EXCEEDED/.test(ipoHistoryJob) && /error\.code !== 'ENOENT'/.test(ipoHistoryJob)
+  && /externalCallCount = structured\.externalCalls/.test(ipoHistoryJob), 'IPO 业务/API错误不得换解释器重跑，且必须透传结构化预算信息');
+assert.ok(/isRunBudgetBoundaryError/.test(motiveService) && /holderAttempted = false/.test(motiveService)
+  && /pledgeAttempted = false/.test(motiveService), '下修动机达到批次上限必须顺延而非制造单债失败');
+assert.ok(/alert_type='failure_warning' AND EXISTS/.test(alertMailer)
+  && /alert_type='late' AND EXISTS/.test(alertMailer), '同一计划的预警和下游逾期告警必须归并');
 assert.ok(/TEST_DATABASE/.test(testRunner) && /cleanupTestArtifacts/.test(testRunner)
   && /test_guard_%/.test(testRunner) && /cninfo-test/.test(testRunner),
   '全量测试必须使用隔离库，并在前后清理测试专属熔断记录');

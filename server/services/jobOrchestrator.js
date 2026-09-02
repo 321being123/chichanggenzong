@@ -63,6 +63,9 @@ function classifyFailure(error, result = {}) {
   const apiName = String((error && error.apiName) || result.apiName || '').trim() || null;
   const recoverAt = (error && error.recoverAt) || result.recoverAt || null;
   const message = String((error && error.message) || result.error || error || '任务执行失败');
+  if (code === 'JOB_BUDGET_EXCEEDED' || type === 'non_retryable') {
+    return { code: code || 'JOB_BUDGET_EXCEEDED', type: 'non_retryable', retryable: false, source, apiName, message };
+  }
   if (code === 'QUOTA_EXHAUSTED' || /当日|每日|当天|日频|次数.*耗尽|额度.*耗尽|配额.*耗尽|daily.*quota|daily.*limit/i.test(message)) {
     return { code: code || 'QUOTA_EXHAUSTED', type: 'rate_limit', retryable: true,
       ...(recoverAt ? { recoverAt } : {}), source, apiName, message };

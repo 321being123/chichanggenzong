@@ -41,12 +41,15 @@ try:
     os.environ.pop("NODE_ENV", None)
     os.environ.pop("APP_ENV", None)
     check("Guard 未配置时默认开启", call_guard.enabled() is True)
+    os.environ["JOB_BUSINESS_DATE"] = "2000-01-01"
+    check("预算日不受补跑业务日期污染", call_guard._budget_date_text() != "2000-01-01")
     os.environ["EXTERNAL_CALL_GUARD"] = "0"
     os.environ["NODE_ENV"] = "production"
     check("生产环境显式关闭仍保持开启", call_guard.enabled() is True)
     os.environ["NODE_ENV"] = "test"
     check("测试环境可显式关闭 Guard", call_guard.enabled() is False)
 finally:
+    os.environ.pop("JOB_BUSINESS_DATE", None)
     for _key, _value in _guard_env_backup.items():
         if _value is None:
             os.environ.pop(_key, None)

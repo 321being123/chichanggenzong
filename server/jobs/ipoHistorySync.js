@@ -69,7 +69,7 @@ async function notifyTushareFailovers(failovers = []) {
   }
 }
 
-function runWith(executable, runtime, businessDate, mode) {
+function runWith(executable, runtime, businessDate, mode, externalCallCount = 0) {
   return new Promise((resolve, reject) => {
     const scriptArgs = [SCRIPT, '--mode', mode || 'core'];
     if (businessDate) scriptArgs.push('--today', String(businessDate).slice(0, 10));
@@ -81,7 +81,8 @@ function runWith(executable, runtime, businessDate, mode) {
         TUSHARE_TOKEN: runtime.primary || '',
         TUSHARE_BACKUP_TOKEN: runtime.backup || '',
         TUSHARE_TOKEN_MODE: runtime.mode || 'auto',
-        EXTERNAL_CALL_GUARD: '1'
+        EXTERNAL_CALL_GUARD: '1',
+        JOB_EXTERNAL_CALL_USED: String(Math.max(Number(externalCallCount) || 0, 0)),
       },
       windowsHide: true
     });
@@ -93,11 +94,25 @@ function runWith(executable, runtime, businessDate, mode) {
       if (code !== 0) {
         const message = (error || output || `exit ${code}`).trim();
         const failure = new Error(message);
-        const typed = message.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/);
+        const jsonLine = error.split(/\r?\n/).map(line => line.trim()).filter(Boolean).reverse().find(line => line.startsWith('{'));
+        let structured = null;
+        try { structured = jsonLine ? JSON.parse(jsonLine) : null; } catch (_) {}
+        if (structured && structured.error) {
+          failure.message = structured.error;
+          failure.code = structured.errorCode || undefined;
+          failure.errorType = structured.errorType || undefined;
+          failure.source = structured.source || undefined;
+          failure.dataset = structured.dataset || undefined;
+          failure.apiName = structured.apiName || undefined;
+          failure.recoverAt = structured.recoverAt || undefined;
+          failure.externalCallCount = structured.externalCalls;
+          failure.externalSources = structured.externalSources;
+        }
+        const typed = message.match(/\[(BUDGET_WAIT|JOB_BUDGET_EXCEEDED|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/);
         if (typed) {
           failure.code = typed[1]; failure.source = typed[2];
-          failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : 'rate_limit';
-          const apiMatch = message.match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
+          failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : typed[1] === 'JOB_BUDGET_EXCEEDED' ? 'non_retryable' : 'rate_limit';
+          const apiMatch = message.match(/\[(?:BUDGET_WAIT|JOB_BUDGET_EXCEEDED|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
           if (apiMatch) failure.apiName = apiMatch[1];
         }
         return reject(failure);
@@ -141,7 +156,7 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
     }
     for (const executable of pythonCandidates()) {
       try {
-        const result = await runWith(executable, runtime, businessDate, mode);
+        const result = await runWith(executable, runtime, businessDate, mode, context.externalCallCount);
         await notifyTushareFailovers(result.failovers);
         const detail = JSON.stringify({ reason, executable, retryOf, ...result });
         await finishJobRun(runId, true, detail);
@@ -149,14 +164,17 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
         return result;
       } catch (error) {
         errors.push(`${executable}: ${error.message}`);
+        // 只有解释器不存在才尝试下一个候选；业务/API错误不能换解释器重跑，
+        // 否则同一失败会重复消耗额度并制造重复告警。
+        if (error && error.code !== 'ENOENT') throw error;
       }
     }
     const failure = new Error(errors.length ? errors.join(' | ') : '未找到可用的 Python 解释器');
-    const typed = errors.map(item => item.match(/\[(RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/)).find(Boolean);
+    const typed = errors.map(item => item.match(/\[(BUDGET_WAIT|JOB_BUDGET_EXCEEDED|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[([^\]]+)\]/)).find(Boolean);
     if (typed) {
       failure.code = typed[1]; failure.source = typed[2];
-      failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : 'rate_limit';
-      const apiMatch = errors.join(' ').match(/\[(?:RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
+      failure.errorType = typed[1] === 'DATASET_LOCKED' ? 'in_progress' : typed[1] === 'UPSTREAM_5XX' ? 'network' : ['AUTH_ERROR', 'PERMISSION_DENIED'].includes(typed[1]) ? 'permission' : typed[1] === 'JOB_BUDGET_EXCEEDED' ? 'non_retryable' : 'rate_limit';
+      const apiMatch = errors.join(' ').match(/\[(?:BUDGET_WAIT|JOB_BUDGET_EXCEEDED|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|DATASET_LOCKED|UPSTREAM_5XX|AUTH_ERROR|PERMISSION_DENIED)\]\[[^\]]+\]\[([^\]]+)\]/);
       if (apiMatch) failure.apiName = apiMatch[1];
     }
     throw failure;

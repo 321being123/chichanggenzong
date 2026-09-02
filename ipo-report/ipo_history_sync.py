@@ -543,7 +543,21 @@ def main():
         result.update({"externalCalls": get_external_call_stats()["total"], "externalSources": get_external_call_stats()["sources"]})
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
+        recover_at = getattr(exc, "recover_at", None)
+        if hasattr(recover_at, "isoformat"):
+            recover_at = recover_at.isoformat()
+        print(json.dumps({
+            "ok": False,
+            "error": str(exc),
+            "errorCode": getattr(exc, "code", None),
+            "errorType": getattr(exc, "error_type", None),
+            "source": getattr(exc, "source", None),
+            "dataset": getattr(exc, "dataset", None),
+            "apiName": getattr(exc, "api_name", None),
+            "recoverAt": recover_at,
+            "externalCalls": get_external_call_stats()["total"],
+            "externalSources": get_external_call_stats()["sources"],
+        }, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
         return 1
     return 0
 

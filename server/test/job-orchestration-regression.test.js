@@ -25,6 +25,7 @@ const arbitrageJob = read('server/jobs/arbitrageSync.js');
 const arbitrageSync = read('server/services/arbitrageAnnouncementSync.js');
 const arbitrageParser = read('server/services/arbitrageParser.js');
 const arbitrageService = read('server/services/arbitrageService.js');
+const ipoHistoryJob = read('server/jobs/ipoHistorySync.js');
 
 assert(!/runSlot\(slot,\s*'manual-retry'\)/.test(adminRoute), 'Web 路由不应直接执行人工补跑');
 assert(/retryJobSlot\(slotId\)/.test(adminRoute), '人工补跑必须进入计划队列');
@@ -53,10 +54,15 @@ assert(/NODE_ENV: 'test'/.test(testRunner) && /ALERT_EMAIL_TO: ''/.test(testRunn
 assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.alertType\)/.test(alertMailer), '持续异常不得绕过去重周期重复发信');
 assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾期告警');
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
+assert(/code === 'JOB_BUDGET_EXCEEDED' \|\| type === 'non_retryable'/.test(orchestrator), '任务批次预算边界不得进入自动重试');
+assert(/JOB_EXTERNAL_CALL_USED/.test(ipoHistoryJob) && /BUDGET_WAIT/.test(ipoHistoryJob)
+  && /error\.code !== 'ENOENT'/.test(ipoHistoryJob), 'IPO 子进程必须传递累计预算并禁止业务错误换解释器重跑');
 assert(/r\.trigger_type='scheduled'/.test(orchestrator) && /SELECT trigger_type FROM job_runs WHERE id=\$1/.test(orchestrator), '重复成功告警不得把人工补跑或自动重试误判为重复定时任务');
 assert(/systemctl enable portfolio-server\.service portfolio-worker\.service/.test(deployScript), 'Web 与 Worker 服务必须配置开机自启');
 assert(/maxAttempts: 4/.test(definitions), '任务最大尝试次数必须包含首次执行和三次自动重试');
 assert(/jobCode: 'bond_safety_refresh'[^\n]*retryDelaysMinutes: \[15, 60, 240\][^\n]*maxAttempts: 4/.test(definitions), '可转债安全评分必须覆盖上游数小时短时故障');
+assert(/jobCode: 'bond_safety_refresh'[^\n]*hour: 8, minute: 30/.test(definitions)
+  && /dependencyCodes: \['convertible_bond_universe_refresh'\]/.test(definitions), '可转债安全评分必须在主链之后并声明依赖');
 assert(/jobCode: 'convertible_bond_universe_refresh'[^\n]*retryDelaysMinutes: \[15, 60, 240\][^\n]*maxAttempts: 4/.test(definitions), '可转债行情同步必须覆盖上游数小时短时故障');
 assert(/expectedDataDate\('bond_safety_refresh', businessDate\)/.test(jobRunners)
   && /runBondSafetyRefresh\(reason, \{ targetTradeDate \}\)/.test(jobRunners), '可转债安全评分必须按计划业务日期传入目标交易日');

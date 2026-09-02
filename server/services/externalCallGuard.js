@@ -392,6 +392,11 @@ function resetExternalCallGuard() {
   runCallCount = 0;
 }
 
+function setExternalCallCount(value) {
+  const count = Number(value);
+  runCallCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
 async function resetExternalCallGuardPersistence(source = null) {
   const { day } = nowParts();
   if (source) {
@@ -407,11 +412,10 @@ async function resetExternalCallGuardPersistence(source = null) {
 }
 
 function getExternalCallStats() {
-  let total = 0;
+  let total = runCallCount;
   const sources = {};
   for (const [source, item] of counters.entries()) {
     sources[source] = Number(item.dayCount || 0);
-    total += sources[source];
   }
   return { total, sources };
 }
@@ -429,5 +433,6 @@ module.exports = {
   resetExternalCallGuard,
   resetExternalCallGuardPersistence,
   getExternalCallStats,
+  setExternalCallCount,
   circuitScopeLabel,
 };

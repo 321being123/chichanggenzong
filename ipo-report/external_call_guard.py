@@ -15,7 +15,10 @@ from zoneinfo import ZoneInfo
 
 _stats = {"total": 0, "sources": {}}
 _requests_installed = False
-_run_call_count = 0
+try:
+    _run_call_count = max(int(os.environ.get("JOB_EXTERNAL_CALL_USED", "0")), 0)
+except (TypeError, ValueError):
+    _run_call_count = 0
 _probe_owner = f"{os.uname().nodename if hasattr(os, 'uname') else os.environ.get('COMPUTERNAME', 'python')}:{os.getpid()}:{uuid.uuid4()}"
 _probe_lease_seconds = 300
 
@@ -108,6 +111,11 @@ def _date_text():
     business_date = os.environ.get("JOB_BUSINESS_DATE", "").strip()
     if business_date:
         return business_date[:10]
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+
+
+def _budget_date_text():
+    """API预算按真实请求发生日计算，不能使用补跑任务的数据业务日。"""
     return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
 
 
@@ -209,7 +217,7 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
     source = _source_key(source)
     api_name = _api_name(source, dataset, api_name)
     fingerprint = str(token_fingerprint_value or "none")
-    day_key = _date_text()
+    day_key = _budget_date_text()
     minute_key = f"{day_key}:{_minute_key()}"
     day_limit = _limit(source, "day")
     minute_limit = _limit(source, "minute")
@@ -432,7 +440,8 @@ def install_requests_guard():
 
 
 def get_external_call_stats():
-    return {"total": _stats["total"], "sources": dict(_stats["sources"])}
+    # total 要包含同一任务前序 Node/子进程已消耗的请求数，避免跨进程重置任务额度。
+    return {"total": _run_call_count, "sources": dict(_stats["sources"])}
 
 
 def _emit_stats():

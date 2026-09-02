@@ -28,7 +28,7 @@ const DEFAULT_JOB_OPTIONS = {
 };
 
 const JOB_DEFINITION_SOURCE = [
-  { jobCode: 'bond_safety_refresh', label: '可转债安全评分', hour: 6, minute: 30, weekdays: true, afterTradingDay: true, deadlineMinutes: 120, dataDatePolicy: 'previous_trading_day', freshnessGate: true, sourceDescription: '已配置的公司与可转债资料接口', mayConsumeQuota: true, externalSources: ['tushare', '公告'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
+  { jobCode: 'bond_safety_refresh', label: '可转债安全评分', hour: 8, minute: 30, weekdays: true, afterTradingDay: true, deadlineMinutes: 120, dataDatePolicy: 'previous_trading_day', freshnessGate: true, dependencyCodes: ['convertible_bond_universe_refresh'], sourceDescription: '已配置的公司与可转债资料接口', mayConsumeQuota: true, externalSources: ['tushare', '公告'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'market_close:A股', label: 'A股收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯行情接口', mayConsumeQuota: true, externalSources: ['tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'market_close:可转债', label: '可转债收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯行情接口', mayConsumeQuota: true, externalSources: ['tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'market_close:LOF/ETF', label: 'LOF/ETF收盘数据', hour: 15, minute: 10, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯行情接口', mayConsumeQuota: true, externalSources: ['tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
@@ -58,19 +58,19 @@ const JOB_DEFINITION_SOURCE = [
 const JOB_CONTRACTS = {
   // 安全评分只读取共享收盘批次与财务标准层；外部同步由 universe/financial 任务负责。
   'bond_safety_refresh': { externalApis: [], producesDatasets: ['bond_safety_snapshot'], consumesDatasets: ['bond_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
-  'market_close:A股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 4 },
-  'market_close:可转债': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 4 },
-  'market_close:LOF/ETF': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 4 },
+  'market_close:A股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 64, dailyBudget: 4 },
+  'market_close:可转债': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 32, dailyBudget: 4 },
+  'market_close:LOF/ETF': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 16, dailyBudget: 4 },
   'hk_rate': { externalApis: ['exchange_rate'], producesDatasets: ['hk_fx_rate'], consumesDatasets: [], maxExternalCallsPerRun: 1 },
-  'market_close:港股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 4 },
+  'market_close:港股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 48, dailyBudget: 4 },
   'nav_snapshot': { externalApis: [], producesDatasets: ['nav_snapshot'], consumesDatasets: ['account_daily_prices'], maxExternalCallsPerRun: 0 },
   'index_recent': { externalApis: ['index_daily'], producesDatasets: ['index_daily'], consumesDatasets: [], maxExternalCallsPerRun: 2 },
   'ipo_calendar_refresh': { externalApis: [], producesDatasets: ['ipo_calendar'], consumesDatasets: ['ipo_history', 'trade_calendar', 'bond_issuance_events'], maxExternalCallsPerRun: 0 },
-  'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'cb_issue', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 8 },
-  'convertible_bond_redemption_announcement_sync': { externalApis: ['cninfo'], producesDatasets: ['bond_redemption_events'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 2 },
+  'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'cb_issue', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 16, dailyBudget: 8 },
+  'convertible_bond_redemption_announcement_sync': { externalApis: ['cninfo'], producesDatasets: ['bond_redemption_events'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 40, dailyBudget: 2 },
   'convertible_bond_revision_motive_inputs_sync': { externalApis: ['top10_cb_holders', 'pledge_stat'], producesDatasets: ['bond_motive_inputs'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 10 },
   'convertible_bond_revision_motive_calculate': { externalApis: [], producesDatasets: ['bond_motive_scores'], consumesDatasets: ['bond_motive_inputs', 'bond_daily'], maxExternalCallsPerRun: 0 },
-  'convertible_bond_announcement_history_sync': { externalApis: ['cninfo', 'sse', 'szse'], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 4 },
+  'convertible_bond_announcement_history_sync': { externalApis: ['cninfo', 'sse', 'szse'], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 20, dailyBudget: 4 },
   'convertible_bond_announcement_reparse': { externalApis: [], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_announcement_documents'], maxExternalCallsPerRun: 0 },
   'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: 6 },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },
@@ -78,7 +78,7 @@ const JOB_CONTRACTS = {
   // 个股分析定时任务为数据库只读计算；财务/行情采集由共享批次和独立增量任务完成。
   'stock_analysis_refresh': { externalApis: [], producesDatasets: ['stock_analysis_snapshot'], consumesDatasets: ['stock_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
   'hk_trade_rules_sync': { externalApis: ['hk_basic'], producesDatasets: ['hk_trade_rules'], consumesDatasets: [], maxExternalCallsPerRun: 2 },
-  'arbitrage_sync': { externalApis: ['hkex', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 4 },
+  'arbitrage_sync': { externalApis: ['hkex', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 12, dailyBudget: 4 },
   'arbitrage_reparse': { externalApis: [], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: 0 },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 1 },
 };
@@ -104,6 +104,9 @@ function externalCallLimitForMode(definition, mode = 'core') {
 
 function declaredDailyExternalCallBudget(definition) {
   if (!definition || definition.manualOnly) return externalCallLimitForMode(definition);
+  if (Number.isFinite(Number(definition.dailyBudget)) && Number(definition.dailyBudget) >= 0) {
+    return Number(definition.dailyBudget);
+  }
   const schedules = [{ mode: 'core' }, ...(definition.additionalSchedules || [])];
   return schedules.reduce((sum, schedule) => sum + externalCallLimitForMode(definition, schedule.mode || 'core'), 0);
 }

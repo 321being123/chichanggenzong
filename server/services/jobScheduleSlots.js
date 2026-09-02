@@ -110,7 +110,13 @@ async function datasetDependencyState(slot, definition) {
   if (!requirements.length) return { ready: true, failed: false, detail: '' };
   const failures = [];
   for (const requirement of requirements) {
-    const partitionKey = String(slot.business_date).slice(0, 10);
+    // node-postgres 对 date 字段默认返回 Date；直接 String(Date).slice(0, 10)
+    // 会得到“Wed Sep 02”，再传给 PostgreSQL::date 就会导致整个调度轮次失败。
+    const partitionKey = normalizeBusinessDate(slot.business_date);
+    if (!partitionKey) {
+      failures.push(`${requirement.datasetCode}@invalid-business-date`);
+      continue;
+    }
     const { rows } = await pool.query(
       `SELECT status,is_stale,diagnostics
          FROM ops.dataset_partitions

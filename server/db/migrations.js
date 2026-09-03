@@ -5179,6 +5179,122 @@ async function migration127SourceEndpointPolicies() {
   `);
 }
 
+// ========== 128：Tushare 双账号能力分级与官方文档规则 =============
+// 主账号 6000 积分、备用账号 2000 积分分别按官方频率/权限表配置；
+// 备用账号的 90000 次日线是单凭据跨接口止损线（官方单接口每日 100000 次），
+// 不是根据历史峰值拍定。巨潮既有 20 次/分钟、500 次/日保护线保持不变。
+async function migration128TushareDualAccountPolicy() {
+  await pool.query(`
+    UPDATE ops.source_endpoint_policies p
+       SET points_required=6000, permission_mode='points',
+           official_per_minute_limit=500, official_daily_limit=NULL,
+           internal_per_minute_limit=450, internal_daily_limit=NULL,
+           max_concurrency=3,
+           notes='主 Tushare 账号：6000积分；官方500次/分钟，常规接口无每日总量；内部保留50次/分钟余量'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id AND ds.source_code='tushare'
+       AND p.api_name='*' AND p.credential_profile='primary';
+
+    UPDATE ops.source_endpoint_policies p
+       SET points_required=2000, permission_mode='points',
+           official_per_minute_limit=200, official_daily_limit=100000,
+           internal_per_minute_limit=180, internal_daily_limit=90000,
+           max_concurrency=2,
+           notes='备用 Tushare 账号：2000积分；官方200次/分钟、单接口每日100000次；内部保留20次/分钟并设90000次凭据止损线'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id AND ds.source_code='tushare'
+       AND p.api_name='*' AND p.credential_profile='backup';
+
+    UPDATE ops.source_endpoint_policies p
+       SET enabled=false,
+           notes='历史匿名 Tushare 策略已停用；运行时必须明确使用6000积分主账号或2000积分备用账号'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id AND ds.source_code='tushare'
+       AND p.api_name='*' AND p.credential_profile='anonymous';
+
+    WITH rules(api_name,points_required,official_per_minute_limit,row_limit,official_doc_url,
+               primary_minute,backup_minute,primary_enabled,backup_enabled,notes) AS (
+      VALUES
+        ('trade_cal',2000,NULL::integer,NULL::integer,'https://tushare.pro/document/2?doc_id=26',450,180,true,true,'官方最低2000积分，频率按积分档位保护'),
+        ('stock_basic',2000,50,6000,'https://tushare.pro/document/1?doc_id=25',45,45,true,true,'官方每次最多6000行、50次/分钟'),
+        ('daily',120,NULL,6000,'https://tushare.pro/document/1?doc_id=27',450,180,true,true,'官方最低120积分、每次最多6000行，分钟规则按积分档位'),
+        ('daily_basic',2000,NULL,6000,'https://tushare.pro/document/2?doc_id=32',450,180,true,true,'官方页面注明5000积分以上无总量限制；备用账号仍受内部日止损'),
+        ('adj_factor',NULL,NULL,6000,'https://tushare.pro/document/1?doc_id=28',450,180,true,true,'官方页面未公布独立频率，沿用积分档位保护'),
+        ('income',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
+        ('income_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=33',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('balancesheet',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
+        ('balancesheet_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=36',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('cashflow',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=44',450,180,true,true,'官方权限按接口核验'),
+        ('cashflow_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=44',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('fina_indicator',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=79',450,180,true,true,'官方单只股票最多100行，至少2000积分'),
+        ('fina_indicator_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=79',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('forecast',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
+        ('dividend',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
+        ('new_share',120,NULL,2000,'https://tushare.pro/document/2?doc_id=123',450,180,true,true,'官方每次最多2000行，最低120积分'),
+        ('cb_basic',2000,NULL,2000,'https://tushare.pro/document/2?doc_id=185',450,180,true,true,'官方每次最多2000行，最低2000积分'),
+        ('cb_daily',2000,NULL,2000,'https://tushare.pro/document/2?doc_id=187',450,180,true,true,'官方每次最多2000行，最低2000积分'),
+        ('cb_issue',2000,NULL,2000,'https://tushare.pro/document/2?doc_id=186',450,180,true,true,'官方每次最多2000行，最低2000积分'),
+        ('cb_rating',2000,NULL,3000,'https://tushare.pro/document/2?doc_id=458',450,180,true,true,'官方每次最多3000行，最低2000积分'),
+        ('index_daily',2000,NULL,NULL,'https://tushare.pro/document/1?doc_id=95',450,180,true,true,'官方权限按接口核验'),
+        ('index_dailybasic',4000,NULL,3000,'https://tushare.pro/document/2?doc_id=128',450,NULL,true,false,'官方权限矩阵要求4000积分，2000积分备用账号不得调用'),
+        ('index_member_all',2000,NULL,2000,'https://tushare.pro/document/2?doc_id=335',450,180,true,true,'官方单次最多2000行，最低2000积分'),
+        ('pledge_stat',2000,NULL,1000,'https://tushare.pro/document/2?doc_id=110',450,180,true,true,'官方每次最多1000行，最低2000积分'),
+        ('top10_cb_holders',5000,NULL,3000,'https://tushare.pro/document/2?doc_id=342',30,NULL,true,false,'官方最低5000积分；30次/分钟为生产实测内部保护，官方页面未公布独立频率'),
+        ('hk_basic',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
+        ('cn_m',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=314',450,180,true,true,'官方权限按接口核验'),
+        ('us_tycr',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=313',450,180,true,true,'官方权限按接口核验'),
+        ('fina_mainbz',2000,NULL,100,'https://tushare.pro/document/2?doc_id=81',450,180,true,true,'官方单次最多100行，至少2000积分'),
+        ('stock_company',120,NULL,NULL,'https://tushare.pro/document/2?doc_id=112',450,180,true,true,'官方单次最多4500条，最低120积分'),
+        ('suspend_d',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=214',450,180,true,true,'官方权限按接口核验')
+    )
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,points_required,permission_mode,
+       official_per_minute_limit,official_daily_limit,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,retry_policy,official_doc_url,enabled,notes)
+    SELECT ds.source_id,r.api_name,p.profile,r.points_required,'points',r.official_per_minute_limit,
+           CASE WHEN p.profile='backup' THEN 100000 ELSE NULL END,
+           CASE WHEN p.profile='primary' THEN r.primary_minute ELSE r.backup_minute END,
+           CASE WHEN p.profile='backup' THEN 90000 ELSE NULL END,
+           CASE WHEN p.profile='primary' THEN 3 ELSE 2 END,0,r.row_limit,30000,'preserve_last_success',
+           '{"max_attempts":1,"backoff_ms":0,"jitter_ms":0,"retry_on":[]}'::jsonb,r.official_doc_url,
+           CASE WHEN p.profile='primary' THEN r.primary_enabled ELSE r.backup_enabled END,r.notes
+      FROM ops.data_sources ds
+      CROSS JOIN rules r
+      CROSS JOIN (VALUES ('primary'),('backup')) p(profile)
+     WHERE ds.source_code='tushare'
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+      points_required=EXCLUDED.points_required,permission_mode=EXCLUDED.permission_mode,
+      official_per_minute_limit=EXCLUDED.official_per_minute_limit,official_daily_limit=EXCLUDED.official_daily_limit,
+      internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,internal_daily_limit=EXCLUDED.internal_daily_limit,
+      max_concurrency=EXCLUDED.max_concurrency,row_limit=EXCLUDED.row_limit,official_doc_url=EXCLUDED.official_doc_url,
+      enabled=CASE WHEN ops.source_endpoint_policies.permission_status IN ('permission_denied','not_configured')
+                   THEN false ELSE EXCLUDED.enabled END,
+      notes=EXCLUDED.notes,updated_at=now();
+
+    UPDATE ops.source_endpoint_policies p
+       SET internal_per_minute_limit=20,internal_daily_limit=500,
+           notes='巨潮历史发生熔断；保留来源级20次/分钟、500次/日保护线，不以峰值替换'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id AND ds.source_code='cninfo'
+       AND p.api_name='*' AND p.credential_profile='anonymous';
+
+    UPDATE ops.source_endpoint_policies p
+       SET internal_per_minute_limit=1,internal_daily_limit=24,min_interval_ms=3600000,
+           official_doc_url='https://www.exchangerate-api.com/docs/free',
+           notes='官方免费接口每日更新；文档建议每24小时请求一次，异常429按20分钟退避'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id AND ds.source_code='exchange-rate'
+       AND p.api_name='*' AND p.credential_profile='anonymous';
+  `);
+}
+
+// ========== 129：Tushare 双账号策略修复重放 =============
+// 迁移128发布后发现部分环境可能已登记旧版128，重放同一组幂等策略，
+// 确保四个财务VIP接口、匿名旧策略和主备额度在升级后最终一致。
+async function migration129TushareDualAccountPolicyRepair() {
+  await migration128TushareDualAccountPolicy();
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5307,6 +5423,8 @@ const MIGRATIONS = [
   { version: '125_consolidate_instrument_masters', up: migration125ConsolidateInstrumentMasters },
   { version: '126_normalize_stock_code_suffix', up: migration126NormalizeStockCodeSuffix },
   { version: '127_source_endpoint_policies', up: migration127SourceEndpointPolicies },
+  { version: '128_tushare_dual_account_policy', up: migration128TushareDualAccountPolicy },
+  { version: '129_tushare_dual_account_policy_repair', up: migration129TushareDualAccountPolicyRepair },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -5889,6 +6007,8 @@ module.exports = {
   migration125ConsolidateInstrumentMasters,
   migration126NormalizeStockCodeSuffix,
   migration127SourceEndpointPolicies,
+  migration128TushareDualAccountPolicy,
+  migration129TushareDualAccountPolicyRepair,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

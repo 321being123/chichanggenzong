@@ -63,6 +63,33 @@ function pgConfig(dbName) {
     const m = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
     check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, expectedMigrationCount); });
 
+    const dualAccountPolicies = await db.pool.query(
+      `SELECT p.api_name,p.credential_profile,p.points_required,p.internal_per_minute_limit,
+              p.internal_daily_limit,p.enabled
+         FROM ops.source_endpoint_policies p
+         JOIN ops.data_sources ds ON ds.source_id=p.source_id
+        WHERE ds.source_code='tushare'
+          AND (p.api_name='*' OR p.api_name = ANY($1::text[]))
+          AND p.credential_profile IN ('primary','backup')
+        ORDER BY p.api_name,p.credential_profile`,
+      [['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']]
+    );
+    const policyMap = new Map(dualAccountPolicies.rows.map(row => [`${row.api_name}:${row.credential_profile}`, row]));
+    check('迁移128写入双账号及VIP权限矩阵', () => {
+      assert.deepStrictEqual(
+        [policyMap.get('*:primary').internal_per_minute_limit, policyMap.get('*:primary').internal_daily_limit],
+        [450, null]
+      );
+      assert.deepStrictEqual(
+        [policyMap.get('*:backup').internal_per_minute_limit, policyMap.get('*:backup').internal_daily_limit],
+        [180, 90000]
+      );
+      for (const apiName of ['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']) {
+        assert.strictEqual(policyMap.get(`${apiName}:primary`).points_required, 5000, `${apiName}主账号积分门槛错误`);
+        assert.strictEqual(policyMap.get(`${apiName}:backup`).enabled, false, `${apiName}备用账号必须禁用`);
+      }
+    });
+
     const knowledgeConstraints = await db.pool.query(
       `SELECT conname FROM pg_constraint
        WHERE conname = ANY($1::text[])`,

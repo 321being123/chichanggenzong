@@ -4,6 +4,7 @@ const { searchAnnouncements } = require('./cninfoAnnouncement');
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
 const DATASET_CODE = 'convertible_bond_redemption_announcements';
@@ -85,7 +86,8 @@ async function parseOfficialDocuments(items, maxUrls = 50) {
     const batch = urls.slice(index, index + 10);
     try {
       const output = await new Promise((resolve, reject) => {
-        execFile(python, [script, ...batch], { cwd: root, timeout: 2 * 60 * 1000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+        execFile(python, [script, ...batch], { cwd: root, env: childProcessEnv({ PYTHONUTF8: '1' }), timeout: 2 * 60 * 1000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+          mergeExternalCallStatsFromStderr(stderr);
           if (error) { error.detail = String(stderr || error.message); reject(error); return; }
           resolve(String(stdout || '[]'));
         });

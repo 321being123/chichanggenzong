@@ -121,6 +121,10 @@ async function syncCredentialFingerprint(sourceCode, credentialProfile, fingerpr
             permission_status=CASE WHEN $4 THEN 'unknown' ELSE permission_status END,
             last_verified_at=CASE WHEN $4 THEN NULL ELSE last_verified_at END,
             verification_message=CASE WHEN $4 THEN NULL ELSE verification_message END,
+            enabled=CASE WHEN $4
+                              AND credential_fingerprint IS DISTINCT FROM $3
+                              AND permission_status IN ('permission_denied','not_configured')
+                         THEN true ELSE enabled END,
             updated_at=now()
       WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1)
         AND credential_profile=$2`, [sourceCode,credentialProfile,String(fingerprint),resetPermission]
@@ -133,10 +137,19 @@ async function recordEndpointPermission(sourceCode, credentialProfile, apiName, 
   await pool.query(
     `INSERT INTO ops.source_endpoint_policies
        (source_id,api_name,credential_profile,credential_fingerprint,permission_status,last_verified_at,verification_message,enabled)
-     SELECT ds.source_id,$2,$3,$4,$5,now(),$6,true FROM ops.data_sources ds WHERE ds.source_code=$1
+     SELECT ds.source_id,$2,$3,$4,$5,now(),$6,
+            CASE WHEN $5 IN ('permission_denied','not_configured') THEN false ELSE true END
+       FROM ops.data_sources ds WHERE ds.source_code=$1
      ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
        credential_fingerprint=EXCLUDED.credential_fingerprint,permission_status=EXCLUDED.permission_status,
-       last_verified_at=EXCLUDED.last_verified_at,verification_message=EXCLUDED.verification_message,updated_at=now()`,
+       last_verified_at=EXCLUDED.last_verified_at,verification_message=EXCLUDED.verification_message,
+       enabled=CASE WHEN EXCLUDED.permission_status IN ('permission_denied','not_configured')
+                    THEN false
+                    WHEN EXCLUDED.permission_status IN ('available','empty_but_accepted')
+                     AND ops.source_endpoint_policies.permission_status IN ('permission_denied','not_configured')
+                    THEN true
+                    ELSE ops.source_endpoint_policies.enabled END,
+       updated_at=now()`,
     [sourceCode,String(apiName).slice(0,64),credentialProfile,String(fingerprint || 'none'),status,String(result && result.message || '').slice(0,240)]
   );
 }

@@ -16,6 +16,7 @@ const { getLatestCallState } = require('./convertibleBondRedemptionService');
 const { saveConvertibleBondHolderPositions } = require('./convertibleBondRevisionMotiveService');
 const { publishDatasetPartition } = require('./datasetPartitions');
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
+const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -936,7 +937,7 @@ function runHoldingExtractor(executable, url) {
   const script = path.resolve(__dirname, '..', 'scripts', 'extractConvertibleBondFundHoldings.py');
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', script, url] : [script, url];
-    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
+    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: childProcessEnv({ PYTHONUTF8: '1' }), windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => child.kill(), 45000);
     child.stdout.on('data', chunk => { output += chunk.toString(); });
@@ -944,6 +945,7 @@ function runHoldingExtractor(executable, url) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || `基金持仓提取失败（${code}）`));
       try { resolve(JSON.parse(output)); } catch (_) { reject(new Error('基金持仓提取结果格式错误')); }
     });
@@ -972,7 +974,7 @@ function runPriceHistoryExtractor(executable, url, initialPrice, bondName) {
   if (bondName) scriptArgs.push('--bond-name', String(bondName));
   const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', ...scriptArgs] : scriptArgs;
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
+    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: childProcessEnv({ PYTHONUTF8: '1' }), windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => child.kill(), 60000);
     child.stdout.on('data', chunk => { output += chunk.toString(); });
@@ -980,6 +982,7 @@ function runPriceHistoryExtractor(executable, url, initialPrice, bondName) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || `定期报告转股价历史提取失败（${code}）`));
       try { resolve(JSON.parse(output)); } catch (_) { reject(new Error('定期报告转股价历史格式错误')); }
     });
@@ -1006,7 +1009,7 @@ function runRatingExtractor(executable, event) {
   const scriptArgs = [script, event.url, '--announcement-date', isoDate(event.event_date)];
   const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', ...scriptArgs] : scriptArgs;
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
+    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: childProcessEnv({ PYTHONUTF8: '1' }), windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => child.kill(), 45000);
     child.stdout.on('data', chunk => { output += chunk.toString(); });
@@ -1014,6 +1017,7 @@ function runRatingExtractor(executable, event) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || `评级报告提取失败（${code}）`));
       try { resolve(JSON.parse(output)); } catch (_) { reject(new Error('评级报告提取结果格式错误')); }
     });
@@ -1096,7 +1100,7 @@ function runProspectusExtractor(executable, url) {
   const script = path.resolve(__dirname, '..', 'scripts', 'extractConvertibleBondProspectus.py');
   return new Promise((resolve, reject) => {
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', script, url] : [script, url];
-    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
+    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: childProcessEnv({ PYTHONUTF8: '1' }), windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => child.kill(), 45000);
     child.stdout.on('data', chunk => { output += chunk.toString(); });
@@ -1104,6 +1108,7 @@ function runProspectusExtractor(executable, url) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || `募集说明书提取失败（${code}）`));
       try { resolve(JSON.parse(output)); } catch (_) { reject(new Error('募集说明书提取结果格式错误')); }
     });
@@ -1129,7 +1134,7 @@ function runNoRevisionExtractor(executable, events) {
   return new Promise((resolve, reject) => {
     const urls = events.map(event => event.url);
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', script, ...urls] : [script, ...urls];
-    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
+    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: childProcessEnv({ PYTHONUTF8: '1' }), windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => child.kill(), 60000);
     child.stdout.on('data', chunk => { output += chunk.toString(); });
@@ -1137,6 +1142,7 @@ function runNoRevisionExtractor(executable, events) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || `不下修公告提取失败（${code}）`));
       try { resolve(JSON.parse(output)); } catch (_) { reject(new Error('不下修公告提取结果格式错误')); }
     });
@@ -1207,7 +1213,7 @@ function runPriceChangeExtractor(executable, events) {
   return new Promise((resolve, reject) => {
     const urls = events.map(event => event.url);
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', script, ...urls] : [script, ...urls];
-    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: Object.assign({}, process.env, { PYTHONUTF8: '1' }), windowsHide: true });
+    const child = spawn(executable, args, { cwd: path.resolve(__dirname, '..', '..'), env: childProcessEnv({ PYTHONUTF8: '1' }), windowsHide: true });
     let output = '', error = '';
     const timer = setTimeout(() => child.kill(), 60000);
     child.stdout.on('data', chunk => { output += chunk.toString(); });
@@ -1215,6 +1221,7 @@ function runPriceChangeExtractor(executable, events) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || `转股价格公告提取失败（${code}）`));
       try { resolve(JSON.parse(output)); } catch (_) { reject(new Error('转股价格公告提取结果格式错误')); }
     });
@@ -1510,7 +1517,7 @@ function runBondFirstDayBackfill(executable) {
       : [BOND_FIRSTDAY_SCRIPT];
     const child = spawn(executable, args, {
       cwd: path.resolve(__dirname, '..', '..'),
-      env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
+      env: childProcessEnv({ PYTHONUTF8: '1' }),
       windowsHide: true,
     });
     let output = '', error = '';
@@ -1520,6 +1527,7 @@ function runBondFirstDayBackfill(executable) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || output || `新债上市表现补全失败（${code}）`));
       const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '{}';
       try { resolve(JSON.parse(line)); }
@@ -1536,7 +1544,7 @@ function runBondIssueResultBackfill(executable) {
     const limit = String(process.env.IPO_BOND_ISSUE_RESULT_LIMIT || '20');
     const child = spawn(executable, [...args, '--limit', limit], {
       cwd: path.resolve(__dirname, '..', '..'),
-      env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
+      env: childProcessEnv({ PYTHONUTF8: '1' }),
       windowsHide: true,
     });
     let output = '', error = '';
@@ -1546,6 +1554,7 @@ function runBondIssueResultBackfill(executable) {
     child.on('error', reject);
     child.on('close', code => {
       clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || output || `新债发行结果补全失败（${code}）`));
       const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '';
       const match = line.match(/update=(\d+)\s+skip=(\d+)\s+fail=(\d+)/);

@@ -24,6 +24,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backfill_lottery_rate import get_org_id, _download_pdf_text
 import db_pg
 import requests
+from external_call_guard import install_requests_guard
+
+install_requests_guard()
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
            "Referer": "https://data.eastmoney.com/"}

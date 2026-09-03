@@ -9,6 +9,29 @@ const {
   tsDateStr, normDate
 } = require('../services/market');
 const { resolveInstrument, resolveProviderCode } = require('../services/securityIdentity');
+const { withExternalCallGuard } = require('../services/externalCallGuard');
+
+function guardedTextGet(source, dataset, url, options = {}) {
+  return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
+    https.get(url, options, (resp) => {
+      let data = '';
+      resp.on('data', chunk => data += chunk);
+      resp.on('end', () => {
+        if (resp.statusCode === 429) {
+          const error = new Error(`${source} HTTP 429`);
+          error.code = 'RATE_LIMIT'; error.errorType = 'rate_limit'; error.source = source;
+          return reject(error);
+        }
+        if (resp.statusCode >= 500) {
+          const error = new Error(`${source} HTTP ${resp.statusCode}`);
+          error.code = 'UPSTREAM_5XX'; error.errorType = 'network'; error.source = source;
+          return reject(error);
+        }
+        resolve(data);
+      });
+    }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error(`${source} timeout`)); });
+  }));
+}
 
 router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   const code = req.params.code.trim().toUpperCase().replace(/\s/g, '');
@@ -53,16 +76,10 @@ router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
       // 恒生指数：腾讯 web.ifzq hkfqkline 历史日K（服务器实测可用，替代原 qt.gtimg 实时单点）
       // 返回 data.hkHSI.day：每条 [日期,开,收,高,低,...]，收盘价在 index 2
       const lim = Math.min(Math.max(parseInt(days) || 365, 250), 1500);
-      const hkText = await new Promise((resolve, reject) => {
-        https.get('https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,,,' + lim + ',qfq', {
-          timeout: 10000,
-          headers: { 'User-Agent': 'Mozilla/5.0' }
-        }, (resp) => {
-          let data = '';
-          resp.on('data', chunk => data += chunk);
-          resp.on('end', () => resolve(data));
-        }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-      });
+      const hkText = await guardedTextGet('tencent', `hsi-kline:${lim}`,
+        'https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get?param=hkHSI,day,,,' + lim + ',qfq', {
+          timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
       const json = JSON.parse(hkText);
       const dayArr = json && json.data && json.data.hkHSI && json.data.hkHSI.day;
       if (Array.isArray(dayArr)) {
@@ -91,16 +108,10 @@ router.get('/kline', requireLogin, asyncHandler(async (req, res) => {
     if (!sinaSymbol) return res.json([]);
     // A股三指数兜底：新浪历史K线
     const datalen = Math.min(parseInt(days) || 365, 500);
-    const sinaText = await new Promise((resolve, reject) => {
-      https.get('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' + encodeURIComponent(sinaSymbol) + '&scale=240&ma=no&datalen=' + datalen, {
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn' }
-      }, (resp) => {
-        let data = '';
-        resp.on('data', chunk => data += chunk);
-        resp.on('end', () => resolve(data));
-      }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    });
+    const sinaText = await guardedTextGet('sina', `index-kline:${sinaSymbol}:${datalen}`,
+      'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=' + encodeURIComponent(sinaSymbol) + '&scale=240&ma=no&datalen=' + datalen, {
+        timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn' }
+      });
     const arr = JSON.parse(sinaText);
     if (Array.isArray(arr)) {
       const result = arr.map(function (it) {

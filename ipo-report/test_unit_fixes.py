@@ -20,6 +20,7 @@ from sse_listing_parser import parse_sse_listing_detail, parse_sse_listing_index
 from _common import _classify_tushare_error, TushareRequestError, _emit_tushare_failover
 from external_call_guard import _circuit_api
 from external_call_guard import _limit
+from external_call_guard import _url_source
 spec = importlib.util.spec_from_file_location(
     "ipo_daily_report_fix",
     Path(__file__).resolve().parent / "ipo_daily_report.py",
@@ -87,10 +88,10 @@ _budget_env_backup = {key: os.environ.get(key) for key in (
 try:
     for _key in _budget_env_backup:
         os.environ.pop(_key, None)
-    check("主Tushare默认预算调整为450次/分钟、5000次/日",
-          _limit("tushare", "minute") == 450 and _limit("tushare", "day") == 5000)
-    check("备用Tushare与主Token使用相同内部保护线",
-          _limit("tushare_backup", "minute") == 450 and _limit("tushare_backup", "day") == 5000)
+    check("主Tushare按6000积分官方频率保护且不设日总量",
+          _limit("tushare", "minute") == 450 and _limit("tushare", "day") is None)
+    check("备用Tushare按2000积分官方频率和单凭据日止损线保护",
+          _limit("tushare_backup", "minute") == 180 and _limit("tushare_backup", "day") == 90000)
     check("巨潮默认日预算调整为500次",
           _limit("cninfo", "minute") == 20 and _limit("cninfo", "day") == 500)
     check("腾讯不设置本系统分钟/日预算",
@@ -101,6 +102,17 @@ finally:
             os.environ.pop(_key, None)
         else:
             os.environ[_key] = _value
+
+check("深交所静态公告地址归入szse来源",
+      _url_source("https://disc.static.szse.cn/download/disc/disk03.pdf") == "szse")
+check("历史回填脚本统一安装请求Guard",
+      all("from external_call_guard import install_requests_guard" in Path(_script).read_text(encoding="utf-8")
+          and "install_requests_guard()" in Path(_script).read_text(encoding="utf-8")
+          for _script in (
+              Path(__file__).resolve().parent / "backfill_ipo_detail.py",
+              Path(__file__).resolve().parent / "expand_data.py",
+              Path(__file__).resolve().parent / "stat_small_bond_premium.py",
+          )))
 
 
 class _FakeCursor:

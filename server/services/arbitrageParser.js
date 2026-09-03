@@ -7,6 +7,7 @@ const fs = require('fs');
 const { pool } = require('../db');
 const { hashString } = require('../db/util');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
+const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const {
   PARSER_VERSION,
   classifyDocumentRole,
@@ -100,7 +101,7 @@ function runPythonExtraction(url, targetCode) {
     if (targetCode) args.push('--target-code', String(targetCode));
     const child = spawn(py, args, {
       cwd: path.resolve(__dirname, '..', '..'),
-      env: Object.assign({}, process.env, { PYTHONUTF8: '1' }),
+      env: childProcessEnv({ PYTHONUTF8: '1' }),
       windowsHide: true,
       timeout: 120000,
     });
@@ -110,6 +111,7 @@ function runPythonExtraction(url, targetCode) {
     child.stderr.on('data', (d) => { err += d; });
     child.on('error', reject);
     child.on('close', (code) => {
+      mergeExternalCallStatsFromStderr(err);
       if (!out.trim()) return reject(new Error('parser empty output (code ' + code + '): ' + err.slice(0, 300)));
       try {
         const json = JSON.parse(out);

@@ -36,10 +36,10 @@ for (const key of ['TUSHARE_PER_MINUTE_BUDGET', 'TUSHARE_DAILY_BUDGET', 'TUSHARE
   delete process.env[key];
 }
 const budgetGuard = require('../services/externalCallGuard');
-assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare'), { minute: 450, day: 5000 },
-  '主 Tushare 默认预算必须给正常增量和晚间任务留出余量');
-assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare_backup'), { minute: 450, day: 5000 },
-  '备用 Tushare 必须与主 Token 使用相同内部保护线');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare'), { minute: 450, day: null },
+  '主 Tushare 必须按6000积分官方频率设置分钟保护，常规接口不设内部日总量');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare_backup'), { minute: 180, day: 90000 },
+  '备用 Tushare 必须按2000积分官方频率和单凭据日止损线保护');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: 20, day: 500 },
   '巨潮默认日预算必须覆盖生产已观测峰值');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tencent'), { minute: null, day: null },
@@ -109,6 +109,10 @@ assert.ok(/JOB_EXTERNAL_CALL_USED/.test(pythonGuard) && /_budget_date_text/.test
   && /return \{"total": _run_call_count/.test(pythonGuard), 'Python 必须继承累计调用数且预算日不能使用业务日期');
 assert.ok(/setExternalCallCount/.test(externalGuard) && /setExternalCallCount\(message\.context/.test(runnerProcess),
   'Node 子进程必须继承计划实例累计调用数');
+assert.ok(/childProcessEnv/.test(bondAnalysis) && /mergeExternalCallStatsFromStderr/.test(bondAnalysis)
+  && /childProcessEnv/.test(read('server/services/arbitrageParser.js'))
+  && /mergeExternalCallStatsFromStderr/.test(read('server/services/convertibleBondRedemptionSync.js')),
+  '历史 Python/PDF 子进程必须继承并回传统一 Guard 的累计调用数');
 assert.ok(/JOB_BUDGET_EXCEEDED/.test(ipoHistoryJob) && /error\.code !== 'ENOENT'/.test(ipoHistoryJob)
   && /externalCallCount = structured\.externalCalls/.test(ipoHistoryJob), 'IPO 业务/API错误不得换解释器重跑，且必须透传结构化预算信息');
 assert.ok(/isRunBudgetBoundaryError/.test(motiveService) && /holderAttempted = false/.test(motiveService)

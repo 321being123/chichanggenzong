@@ -21,13 +21,13 @@ function limit(name, fallback) {
 }
 
 // 这是系统内部保护线，不等同于上游官方配额。
-// 主 Tushare 已确认 6000 积分：官方上限 500 次/分钟，常规接口无每日总量限制；
-// 这里按 90% 取安全速率（保留50次/分钟余量），并按生产近期开销峰值1397次/日留出两倍以上余量。
+// 主账号为 6000 积分：按官方 500 次/分钟保留 50 次余量；常规接口官方无每日总量，故不设内部日线。
+// 备用账号为 2000 积分：按官方 200 次/分钟保留 20 次余量；官方单接口每日 100000 次，
+// 以 90000 次作为跨接口凭据级止损线，防止异常循环耗尽账号额度。
 const DEFAULT_EXTERNAL_BUDGETS = Object.freeze({
-  tushare: { minute: 450, day: 5000 },
-  // 备用 Token 的积分/权限独立核验；按用户要求与主 Token 使用相同内部保护线。
-  tushare_backup: { minute: 450, day: 5000 },
-  // 生产近期开销峰值已达到345次/日，300次会误伤正常增量任务。
+  tushare: { minute: 450, day: null },
+  tushare_backup: { minute: 180, day: 90000 },
+  // 巨潮曾发生熔断，保留既有来源级保护线，不用 Tushare 规则替代。
   cninfo: { minute: 20, day: 500 },
   // 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
   tencent: { minute: null, day: null },
@@ -456,6 +456,42 @@ function setExternalCallCount(value) {
   runCallCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
+// Python 子进程在退出时通过 stderr 回传累计调用数；父进程合并后，计划实例的
+// external_call_count 与跨进程实际请求保持一致，后续子进程也会继承最新累计值。
+function mergeExternalCallStats(stats = {}) {
+  const total = Number(stats.total);
+  if (Number.isFinite(total) && total >= 0) runCallCount = Math.max(runCallCount, Math.floor(total));
+  const sourceCounts = stats.sources && typeof stats.sources === 'object' ? stats.sources : {};
+  const parts = nowParts();
+  Object.entries(sourceCounts).forEach(([source, value]) => {
+    const count = Number(value);
+    if (!Number.isFinite(count) || count <= 0) return;
+    const key = `${source}:child`;
+    const item = counters.get(key);
+    if (!item || item.day !== parts.day || item.minute !== parts.minute) {
+      counters.set(key, { day: parts.day, minute: parts.minute, minuteCount: count, dayCount: count });
+      return;
+    }
+    item.minuteCount += count;
+    item.dayCount += count;
+  });
+}
+
+function mergeExternalCallStatsFromStderr(stderr) {
+  const text = String(stderr || '');
+  const matches = [...text.matchAll(/\[external-call-stats\]\s+(\{[^\r\n]+\})/g)];
+  if (!matches.length) return null;
+  try {
+    const stats = JSON.parse(matches[matches.length - 1][1]);
+    mergeExternalCallStats(stats);
+    return stats;
+  } catch (_) { return null; }
+}
+
+function childProcessEnv(extra = {}) {
+  return Object.assign({}, process.env, extra, { JOB_EXTERNAL_CALL_USED: String(getExternalCallStats().total) });
+}
+
 async function resetExternalCallGuardPersistence(source = null) {
   const { day } = nowParts();
   if (source) {
@@ -513,6 +549,9 @@ module.exports = {
   resetExternalCallGuardPersistence,
   getExternalCallStats,
   setExternalCallCount,
+  mergeExternalCallStats,
+  mergeExternalCallStatsFromStderr,
+  childProcessEnv,
   getExternalBudgetLimits,
   circuitScopeLabel,
 };

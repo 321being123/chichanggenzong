@@ -2,6 +2,11 @@ import argparse
 import json
 import re
 import urllib.request
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'ipo-report'))
+from external_call_guard import guarded_urlopen
 
 import fitz
 
@@ -112,7 +117,7 @@ def extract(url):
     if not url.startswith("https://static.cninfo.com.cn/"):
         raise ValueError("仅允许读取巨潮资讯官方 PDF")
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with guarded_urlopen(request, timeout=30, source=None, dataset=f"bond-prospectus-pdf:{url}") as response:
         data = response.read(30 * 1024 * 1024 + 1)
     if len(data) > 30 * 1024 * 1024:
         raise ValueError("PDF 文件超过 30MB")

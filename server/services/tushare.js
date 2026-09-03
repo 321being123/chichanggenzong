@@ -12,6 +12,41 @@ const API_URL = 'https://api.tushare.pro';
 const PRIMARY_SOURCE = 'tushare';
 const BACKUP_SOURCE = 'tushare_backup';
 
+// 账号能力只按 Tushare 官方积分门槛做静态预筛选；具体权限仍以数据库中的
+// 接口探测结果为准。这样 2000 积分备用账号不会拿明知需要更高积分的接口去撞上游。
+const ACCOUNT_POINTS = Object.freeze({ primary: 6000, backup: 2000 });
+const ENDPOINT_MIN_POINTS = Object.freeze({
+  trade_cal: 2000,
+  stock_basic: 2000,
+  daily: 120,
+  adj_factor: 2000,
+  daily_basic: 2000,
+  income: 2000,
+  income_vip: 5000,
+  balancesheet: 2000,
+  balancesheet_vip: 5000,
+  cashflow: 2000,
+  cashflow_vip: 5000,
+  fina_indicator: 2000,
+  fina_indicator_vip: 5000,
+  forecast: 2000,
+  dividend: 2000,
+  fina_mainbz: 2000,
+  cb_basic: 2000,
+  cb_issue: 2000,
+  cb_daily: 2000,
+  cb_rating: 2000,
+  pledge_stat: 2000,
+  new_share: 120,
+  index_dailybasic: 4000,
+  top10_cb_holders: 5000,
+});
+
+function supportsTushareApi(apiName, profile) {
+  const required = ENDPOINT_MIN_POINTS[String(apiName || '').trim()];
+  return required == null || required <= Number(ACCOUNT_POINTS[profile] || 0);
+}
+
 class TushareRequestError extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -138,13 +173,20 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
 async function tushareQuery(apiName, params = {}, fields = '', options = {}) {
   const runtime = await getProviderRuntime('tushare');
   const allCandidates = [
-    { token: runtime.primary, source: PRIMARY_SOURCE },
-    { token: runtime.backup, source: BACKUP_SOURCE },
+    { token: runtime.primary, source: PRIMARY_SOURCE, profile: 'primary' },
+    { token: runtime.backup, source: BACKUP_SOURCE, profile: 'backup' },
   ];
-  const candidates = (runtime.mode === 'primary' ? allCandidates.slice(0, 1)
+  const configuredCandidates = (runtime.mode === 'primary' ? allCandidates.slice(0, 1)
     : runtime.mode === 'backup' ? allCandidates.slice(1)
       : allCandidates).filter(item => item.token);
+  const candidates = configuredCandidates.filter(item => supportsTushareApi(apiName, item.profile));
   if (!candidates.length) {
+    if (configuredCandidates.length) {
+      throw new TushareRequestError(
+        'PERMISSION_DENIED', `Tushare ${apiName} 不在当前账号积分能力范围内`,
+        { errorType: 'permission', apiName }
+      );
+    }
     throw new TushareRequestError(
       'AUTH_ERROR', `Tushare 未配置${runtime.mode === 'backup' ? '备用' : ''} Token，无法调用外部数据接口`,
       { errorType: 'permission', apiName }
@@ -174,4 +216,4 @@ async function tushareQuery(apiName, params = {}, fields = '', options = {}) {
   throw lastError;
 }
 
-module.exports = { tushareQuery, TushareRequestError };
+module.exports = { tushareQuery, TushareRequestError, supportsTushareApi, ACCOUNT_POINTS, ENDPOINT_MIN_POINTS };

@@ -13,6 +13,9 @@ import pandas as pd
 import numpy as np
 import requests
 import re
+from external_call_guard import install_requests_guard
+
+install_requests_guard()
 
 s = requests.Session()
 s.headers.update({'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'})

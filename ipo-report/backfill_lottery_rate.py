@@ -23,6 +23,9 @@ except Exception as e:
     print("PyMuPDF 未安装:", e); sys.exit(1)
 
 import requests
+from external_call_guard import install_requests_guard
+
+install_requests_guard()
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
            "Referer": "https://data.eastmoney.com/"}

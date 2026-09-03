@@ -6,6 +6,8 @@ const { pool } = require('../db/connection');
 const guard = require('../services/externalCallGuard');
 const externalApiConfig = require('../services/externalApiConfig');
 const { saveProviderSettings, getExternalApiSettings } = externalApiConfig;
+const { supportsTushareApi } = require('../services/tushare');
+const { syncCredentialFingerprint, recordEndpointPermission } = require('../services/sourceEndpointPolicy');
 
 process.env.NODE_ENV = 'test';
 process.env.ALERT_EMAIL_TO = '';
@@ -91,6 +93,18 @@ function ok(fields = ['value'], items = [['ok']]) {
       { payload: ok(['ts_code', 'close'], [['000001.SZ', 10]]) },
     ]);
     const { tushareQuery } = require('../services/tushare');
+    assert.strictEqual(supportsTushareApi('index_dailybasic', 'primary'), true,
+      '6000积分主账号应允许 index_dailybasic');
+    assert.strictEqual(supportsTushareApi('index_dailybasic', 'backup'), false,
+      '2000积分备用账号不得调用官方要求4000积分的 index_dailybasic');
+    assert.strictEqual(supportsTushareApi('top10_cb_holders', 'backup'), false,
+      '2000积分备用账号不得调用官方要求5000积分的 top10_cb_holders');
+    for (const apiName of ['income_vip', 'balancesheet_vip', 'cashflow_vip', 'fina_indicator_vip']) {
+      assert.strictEqual(supportsTushareApi(apiName, 'primary'), true,
+        `6000积分主账号应允许 ${apiName}`);
+      assert.strictEqual(supportsTushareApi(apiName, 'backup'), false,
+        `2000积分备用账号不得调用官方要求5000积分的 ${apiName}`);
+    }
     const realtime = await tushareQuery('rt_min', { ts_code: '000001.SZ', freq: '1MIN' }, 'ts_code,close');
     assert.deepStrictEqual(realtime, { fields: ['ts_code', 'close'], items: [['000001.SZ', 10]] });
     assert.strictEqual(failoverNotices.length, 1, '备用成功后才发送一次接口切换告警');
@@ -168,6 +182,47 @@ function ok(fields = ['value'], items = [['ok']]) {
       "SELECT 1 FROM ops.external_circuits WHERE source='tushare' AND token_fingerprint=$1", [primaryFp]
     );
     assert.strictEqual(oldRows.rowCount, 0);
+
+    // 权限拒绝后更换 Token 或探测成功，接口策略必须恢复启用，不能永久卡死。
+    const recoveryApi = 'recovery_probe';
+    const recoveryFp = 'recovery-old-fingerprint';
+    await recordEndpointPermission('tushare', 'primary', recoveryApi, recoveryFp,
+      { status: 'permission_denied', message: '测试权限拒绝' });
+    let recoveryPolicy = await pool.query(
+      `SELECT enabled,permission_status,credential_fingerprint
+         FROM ops.source_endpoint_policies
+        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code='tushare')
+          AND api_name=$1 AND credential_profile='primary'`, [recoveryApi]
+    );
+    assert.strictEqual(recoveryPolicy.rows[0].enabled, false);
+    assert.strictEqual(recoveryPolicy.rows[0].permission_status, 'permission_denied');
+    await recordEndpointPermission('tushare', 'primary', recoveryApi, recoveryFp,
+      { status: 'available', ok: true, message: '测试权限恢复' });
+    recoveryPolicy = await pool.query(
+      `SELECT enabled,permission_status
+         FROM ops.source_endpoint_policies
+        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code='tushare')
+          AND api_name=$1 AND credential_profile='primary'`, [recoveryApi]
+    );
+    assert.strictEqual(recoveryPolicy.rows[0].enabled, true);
+    assert.strictEqual(recoveryPolicy.rows[0].permission_status, 'available');
+    await recordEndpointPermission('tushare', 'primary', recoveryApi, recoveryFp,
+      { status: 'permission_denied', message: '测试再次拒绝' });
+    await syncCredentialFingerprint('tushare', 'primary', 'recovery-new-fingerprint');
+    recoveryPolicy = await pool.query(
+      `SELECT enabled,permission_status,credential_fingerprint
+         FROM ops.source_endpoint_policies
+        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code='tushare')
+          AND api_name=$1 AND credential_profile='primary'`, [recoveryApi]
+    );
+    assert.strictEqual(recoveryPolicy.rows[0].enabled, true);
+    assert.strictEqual(recoveryPolicy.rows[0].permission_status, 'unknown');
+    assert.strictEqual(recoveryPolicy.rows[0].credential_fingerprint, 'recovery-new-fingerprint');
+    await pool.query(
+      `DELETE FROM ops.source_endpoint_policies
+        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code='tushare')
+          AND api_name=$1 AND credential_profile='primary'`, [recoveryApi]
+    );
 
     // 恢复探测并发时，只允许一个 Worker 进入真实请求。
     const newFp = guard.tokenFingerprint('new-primary-test-token');
@@ -320,6 +375,11 @@ function ok(fields = ['value'], items = [['ok']]) {
     guard.resetExternalCallGuard();
     await guard.resetExternalCallGuardPersistence('tushare');
     await guard.resetExternalCallGuardPersistence('tushare_backup');
+    await pool.query(
+      `DELETE FROM ops.source_endpoint_policies
+        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code='tushare')
+          AND api_name='recovery_probe' AND credential_profile='primary'`
+    ).catch(() => {});
     await pool.query('DELETE FROM ops.data_sources WHERE source_code=$1', [genericSource]).catch(() => {});
     if (originalPrimary === undefined) delete process.env.TUSHARE_TOKEN;
     else process.env.TUSHARE_TOKEN = originalPrimary;

@@ -23,11 +23,12 @@ _probe_owner = f"{os.uname().nodename if hasattr(os, 'uname') else os.environ.ge
 _probe_lease_seconds = 300
 
 # 这是系统内部保护线，不等同于上游官方配额；必须与 Node Guard 保持一致。
+# 主账号 6000 积分：官方 500 次/分钟，常规接口无每日总量；备用账号 2000 积分：
+# 官方 200 次/分钟、单接口每日 100000 次，内部分别保留 20 次/分钟和 90000 次凭据止损线。
 _DEFAULT_EXTERNAL_BUDGETS = {
-    "tushare": {"minute": 450, "day": 5000},
-    # 备用 Token 的积分/权限独立核验；按用户要求与主 Token 使用相同内部保护线。
-    "tushare_backup": {"minute": 450, "day": 5000},
-    # 生产近期开销峰值已达到345次/日，300次会误伤正常增量任务。
+    "tushare": {"minute": 450, "day": None},
+    "tushare_backup": {"minute": 180, "day": 90000},
+    # 巨潮曾发生熔断，保留既有来源级保护线。
     "cninfo": {"minute": 20, "day": 500},
     # 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
     "tencent": {"minute": None, "day": None},
@@ -402,6 +403,8 @@ def _url_source(url):
         return "eastmoney"
     if "sse.com.cn" in host:
         return "sse"
+    if "szse.cn" in host:
+        return "szse"
     if "hkex" in host:
         return "hkex"
     if "er-api" in host:

@@ -6,6 +6,9 @@ import re
 import sqlite3
 import time
 import os
+from external_call_guard import install_requests_guard
+
+install_requests_guard()
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipo_history.db")
 

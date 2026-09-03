@@ -10,6 +10,9 @@ import json
 import re
 import os
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'ipo-report'))
+from external_call_guard import guarded_urlopen
+
 def load_env():
     """加载 .env 环境变量（与项目其他 Python 脚本一致）"""
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,7 +58,7 @@ def download_pdf(url, dest):
         req = urllib.request.Request(url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
         })
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with guarded_urlopen(req, timeout=30, source=None, dataset=f"arbitrage-pdf:{url}") as resp:
             content_length = resp.headers.get('Content-Length')
             if content_length and int(content_length) > max_bytes:
                 return False, 'PDF exceeds size limit'

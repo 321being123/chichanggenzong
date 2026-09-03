@@ -5,7 +5,7 @@ const { MOTIVE_MODEL_VERSION } = require('./convertibleBondRevisionMotiveService
 const { getDatasetMetadata } = require('./datasetPartitions');
 
 const FORMULA_VERSION = 'reset-v2';
-const CALCULATION_LOGIC_VERSION = 'reset-logic-20260830-1';
+const CALCULATION_LOGIC_VERSION = 'reset-logic-20260903-1';
 const OVERLAP_DAYS = 3;
 const NEAR_REMAINING_DAYS = 5;
 const REVISION_SELECT_FIELDS = [
@@ -41,6 +41,11 @@ function addDays(value, days) {
   const date = new Date(`${dateText(value)}T00:00:00+08:00`);
   date.setUTCDate(date.getUTCDate() + days);
   return dateText(date);
+}
+
+function firstOpenDateAfter(openDates, date) {
+  const boundary = dateText(date);
+  return (openDates || []).map(dateText).filter(item => item && (!boundary || item > boundary)).sort()[0] || null;
 }
 
 function effectiveConversionPrice(currentPrice, changes, date) {
@@ -169,7 +174,9 @@ async function loadRevisionBonds(targetDate) {
             term.clause_text,term.revision_direction,term.comparison_operator,term.parse_status,term.parser_version,
             term.net_asset_floor_applicable,no_revision.announced_at AS no_revision_announced_at,
             no_revision.valid_until AS no_revision_valid_until,no_revision.next_eligible_date,
-            no_revision.lock_declared AS no_revision_lock_declared
+            no_revision.lock_declared AS no_revision_lock_declared,
+            no_revision.parser_version AS no_revision_parser_version,
+            no_revision.no_revision_evidence
        FROM core.instruments i
        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
        JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
@@ -190,8 +197,10 @@ async function loadRevisionBonds(targetDate) {
                              AND nr0.next_eligible_date >= (SELECT MIN(tc0.trade_date)
                                                              FROM market.trade_calendar tc0
                                                             WHERE tc0.exchange='SSE' AND tc0.is_open)
-                             AND tc.trade_date >= nr0.next_eligible_date), nr0.next_eligible_date) AS next_eligible_date,
-                COALESCE((raw_payload->>'lock_declared')::boolean,false) AS lock_declared
+                            AND tc.trade_date >= nr0.next_eligible_date), nr0.next_eligible_date) AS next_eligible_date,
+                COALESCE((raw_payload->>'lock_declared')::boolean,false) AS lock_declared,
+                COALESCE(raw_payload->>'parser_version','') AS parser_version,
+                COALESCE((raw_payload->>'no_revision_evidence')::boolean,false) AS no_revision_evidence
            FROM fundamental.convertible_bond_no_revision_history nr0
           WHERE nr0.instrument_id=i.instrument_id AND nr0.announced_at <= $1::date
           ORDER BY nr0.announced_at DESC,nr0.history_id DESC LIMIT 1
@@ -321,7 +330,21 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
   const netAssetFloorBlocked = netAssetFloorApplicable && currentPrice > 0
     && netAssetFloorValue != null && currentPrice <= netAssetFloorValue;
   const nextEligible = dateText(bond.next_eligible_date);
-  const locked = nextEligible ? openDates[0] < nextEligible : Boolean(bond.no_revision_lock_declared);
+  const noRevisionDate = dateText(bond.no_revision_announced_at);
+  const noRevisionLockDeclared = Boolean(bond.no_revision_lock_declared);
+  const hasParserVersion = Object.prototype.hasOwnProperty.call(bond, 'no_revision_parser_version');
+  // 旧解析器可能把“无固定期限”的公告错误写成到期日；在 v7 重解析前，
+  // 不能把这个日期当成真实锁定期继续参与计算。
+  const legacyMalformedNoRevision = Boolean(nextEligible)
+    && hasParserVersion
+    && String(bond.no_revision_parser_version || '') !== '7'
+    && !noRevisionLockDeclared;
+  const effectiveNextEligible = legacyMalformedNoRevision ? null : nextEligible;
+  const locked = effectiveNextEligible ? openDates[0] < effectiveNextEligible : noRevisionLockDeclared;
+  // 明确不下修但没有固定期限时，也要结束上一轮观察，
+  // 从公告后的首个有效交易日重新计数。
+  const noRevisionRestart = !locked && noRevisionDate
+    ? firstOpenDateAfter(openDates, noRevisionDate) : null;
   // 下修条款写的是“存续期间”，但上市前没有可交易的转债观察样本，不能把上市前
   // 正股行情计入窗口；起点取发行/条款生效日与上市日的较晚者。转股开始日仍不是门槛。
   // 现有历史数据把初始条款 effective_from 写成上市日，优先回到 value_date，再与 list_date 取较晚者。
@@ -331,7 +354,8 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
   const baseStart = valueDate && (!termDate || termDate === listDate || termDate === '0001-01-01')
     ? valueDate : (termDate || valueDate || listDate);
   const revisionStart = successfulRevisionStartDate(changes, openDates[0]);
-  const calculationStart = [baseStart, listDate, revisionStart, ...(locked ? [] : [nextEligible])]
+  const calculationStart = [baseStart, listDate, revisionStart,
+    ...(locked ? [] : [effectiveNextEligible, noRevisionRestart])]
     .filter(Boolean).sort().pop() || null;
   const implicitRestart = locked ? null
     : implicitSseNoRevisionRestartDate(bond, stockBars, changes, openDates, calculationStart, bond.revision_responses || []);
@@ -343,7 +367,8 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
     return {
       instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice: null,
       matchedDays: null, requiredDays, observationDays, minimumFutureDays: null, status: 'unknown', dataStatus: 'incomplete',
-      diagnostics: { formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, reason: !isValidTerm(bond) ? 'invalid_reset_term' : 'missing_trade_calendar', term_id: bond.term_id || null },
+      diagnostics: { formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, reason: !isValidTerm(bond) ? 'invalid_reset_term' : 'missing_trade_calendar', term_id: bond.term_id || null,
+        no_revision_announced_at: noRevisionDate, no_revision_restart_date: noRevisionRestart },
     };
   }
   if (startDate && openDates[0] < startDate) {
@@ -351,6 +376,7 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
       instrumentId: bond.instrument_id, tradeDate: openDates[0], triggerPrice, closePrice: null,
       matchedDays: 0, requiredDays, observationDays, minimumFutureDays: null, status: 'not_active', dataStatus: 'complete',
       diagnostics: { formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, term_id: bond.term_id || null, eligible_from: startDate, not_started: true,
+        no_revision_announced_at: noRevisionDate, no_revision_restart_date: noRevisionRestart,
         start_date_source: valueDate && baseStart === valueDate ? 'value_date' : 'term_effective_from' },
     };
   }
@@ -396,7 +422,10 @@ function buildResetResult(bond, stockBars, changes, openDates, suspensions) {
       formula: FORMULA_VERSION, calculation_logic_version: CALCULATION_LOGIC_VERSION, minimum_future_days_algorithm: 'rolling-v1', term_id: bond.term_id || null, stock_instrument_id: bond.stock_instrument_id || null,
       expected_dates: eligibleDates, missing_dates: missingDates, suspended_dates: suspendedDates,
       stock_bar_count: rows.length, expected_observation_days: eligibleDates.length - suspendedDates.length,
-      eligible_from: eligibleDates[eligibleDates.length - 1] || null, next_eligible_date: nextEligible,
+      eligible_from: eligibleDates[eligibleDates.length - 1] || null, next_eligible_date: effectiveNextEligible,
+      raw_next_eligible_date: nextEligible, no_revision_announced_at: noRevisionDate,
+      no_revision_restart_date: noRevisionRestart,
+      restart_source: noRevisionRestart ? 'explicit_no_revision' : (effectiveNextEligible ? 'declared_lock' : null),
       conversion_change_count: changes.length, conversion_price_source: changes.length ? 'price_changes_plus_profile' : 'profile_current',
       successful_revision_start_date: revisionStart,
       implicit_sse_no_revision_restart_date: implicitRestart,
@@ -506,25 +535,41 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
                  WHERE exchange='SSE' AND is_open
                    AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
     pool.query(`WITH latest_no_revision AS (
+                  SELECT DISTINCT ON (h.instrument_id)
+                         h.instrument_id,h.announced_at,h.parser_version,h.next_eligible_date,h.raw_payload
+                    FROM analytics.convertible_bond_announcement_history h
+                    JOIN core.instruments current_i ON current_i.instrument_id=h.instrument_id
+                   WHERE h.fact_type='no_revision' AND current_i.status='listed'
+                   ORDER BY h.instrument_id,h.announced_at DESC,h.fact_id DESC
+                ), latest_revision_event AS (
                   SELECT DISTINCT ON (instrument_id)
-                         instrument_id,parser_version,next_eligible_date,raw_payload
-                    FROM analytics.convertible_bond_announcement_history
-                   WHERE fact_type='no_revision'
-                   ORDER BY instrument_id,announced_at DESC,fact_id DESC
+                         instrument_id,announced_at,event_type
+                    FROM event.convertible_bond_revision_events
+                   ORDER BY instrument_id,announced_at DESC,event_id DESC
                 )
                 SELECT
                   (SELECT COUNT(*)::int FROM latest_no_revision
-                    WHERE next_eligible_date IS NULL
-                      AND (parser_version IS DISTINCT FROM '7'
-                           OR NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
-                                   OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                    WHERE ((parser_version IS DISTINCT FROM '7'
+                            AND (next_eligible_date IS NULL
+                                 OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                           OR (next_eligible_date IS NULL
+                               AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
                       AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_no_revision_parse,
                   (SELECT COUNT(*)::int FROM latest_no_revision
-                    WHERE next_eligible_date IS NULL
-                      AND (parser_version IS DISTINCT FROM '7'
-                           OR NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
-                                   OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                    WHERE ((parser_version IS DISTINCT FROM '7'
+                            AND (next_eligible_date IS NULL
+                                 OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                           OR (next_eligible_date IS NULL
+                               AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
                       AND COALESCE(raw_payload->'reparse'->>'status','') = 'failed') AS terminal_no_revision_parse,
+                  (SELECT COUNT(*)::int
+                     FROM analytics.convertible_bond_revision_latest r
+                     JOIN latest_no_revision nr ON nr.instrument_id=r.instrument_id
+                     LEFT JOIN latest_revision_event ev ON ev.instrument_id=r.instrument_id
+                    WHERE nr.announced_at >= COALESCE(ev.announced_at, DATE '0001-01-01')
+                      AND r.business_status IN ('proposed','meeting_pending','approved','terminated')) AS decision_status_conflicts,
                   (SELECT COUNT(*)::int FROM ops.sync_cursors
                     WHERE scope_key='convertible_bond_announcement_history'
                       AND dataset_code='official_announcements'
@@ -541,9 +586,13 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
   const expectedDate = dateText(expectedResult.rows[0] && expectedResult.rows[0].trade_date);
   const qualityRow = qualityResult.rows[0] || {};
   const quality = {
-    status: (Number(qualityRow.pending_no_revision_parse || 0) > 0 || Number(qualityRow.announcement_errors || 0) > 0) ? 'degraded' : 'ok',
+    status: (Number(qualityRow.pending_no_revision_parse || 0) > 0
+      || Number(qualityRow.terminal_no_revision_parse || 0) > 0
+      || Number(qualityRow.decision_status_conflicts || 0) > 0
+      || Number(qualityRow.announcement_errors || 0) > 0) ? 'degraded' : 'ok',
     pending_no_revision_parse: Number(qualityRow.pending_no_revision_parse || 0),
     terminal_no_revision_parse: Number(qualityRow.terminal_no_revision_parse || 0),
+    decision_status_conflicts: Number(qualityRow.decision_status_conflicts || 0),
     announcement_errors: Number(qualityRow.announcement_errors || 0),
   };
   const stockMetrics = await loadLatestStockMetrics(rowsResult.rows.map(row => row.stock_instrument_id), marketDate);
@@ -574,6 +623,6 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
 
 module.exports = {
   FORMULA_VERSION, CALCULATION_LOGIC_VERSION, OVERLAP_DAYS, NEAR_REMAINING_DAYS,
-  dateText, addDays, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
+  dateText, addDays, firstOpenDateAfter, effectiveConversionPrice, successfulRevisionStartDate, implicitSseNoRevisionRestartDate, isValidTerm, buildResetResult,
   calculateConvertibleBondRevisionStatus, getBondRevisionOverview,
 };

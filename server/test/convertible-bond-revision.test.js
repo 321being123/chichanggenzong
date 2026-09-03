@@ -4,7 +4,7 @@ const {
 } = require('../services/convertibleBondRevisionService');
 
 assert.strictEqual(FORMULA_VERSION, 'reset-v2');
-assert.strictEqual(CALCULATION_LOGIC_VERSION, 'reset-logic-20260830-1');
+assert.strictEqual(CALCULATION_LOGIC_VERSION, 'reset-logic-20260903-1');
 const term = {
   term_id: 10, trigger_ratio: 0.85, observation_days: 3, required_days: 2,
   effective_from: '2026-08-01', conv_start_date: '2026-08-01',
@@ -123,6 +123,27 @@ const restarted = buildResetResult({ ...bond, next_eligible_date: '2026-08-26' }
 ], [], openDates, new Set());
 assert.strictEqual(restarted.matchedDays, 2);
 assert.strictEqual(restarted.dataStatus, 'complete');
+
+const noRevisionReset = buildResetResult({ ...bond, no_revision_announced_at: '2026-08-25', no_revision_parser_version: '7' }, [
+  { trade_date: '2026-08-27', close: 8 },
+  { trade_date: '2026-08-26', close: 8 },
+  { trade_date: '2026-08-25', close: 9 },
+], [], openDates, new Set());
+assert.strictEqual(noRevisionReset.matchedDays, 2);
+assert.strictEqual(noRevisionReset.diagnostics.no_revision_restart_date, '2026-08-26');
+
+const legacyMalformedNoRevision = buildResetResult({ ...bond,
+  no_revision_announced_at: '2026-08-25', no_revision_parser_version: '6',
+  next_eligible_date: '2027-07-15', no_revision_lock_declared: false,
+}, [
+  { trade_date: '2026-08-27', close: 8 },
+  { trade_date: '2026-08-26', close: 8 },
+  { trade_date: '2026-08-25', close: 9 },
+], [], openDates, new Set());
+assert.strictEqual(legacyMalformedNoRevision.matchedDays, 2);
+assert.strictEqual(legacyMalformedNoRevision.diagnostics.next_eligible_date, null);
+assert.strictEqual(legacyMalformedNoRevision.diagnostics.raw_next_eligible_date, '2027-07-15');
+assert.strictEqual(legacyMalformedNoRevision.diagnostics.restart_source, 'explicit_no_revision');
 
 const revised = buildResetResult(bond, [
   { trade_date: '2026-08-27', close: 8 },

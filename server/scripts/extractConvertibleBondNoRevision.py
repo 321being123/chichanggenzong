@@ -75,6 +75,18 @@ def extract_period(text):
     )
     if after_first_trade_date and (not restart_date or after_first_trade_date > restart_date):
         restart_date = after_first_trade_date
+    # “自某日起，若再次触发下修条件，届时再决定是否行使权利”只给出新一轮
+    # 可观察起点，不等于把债券到期日当作锁定终点。
+    eligibility_matches = list(re.finditer(
+        r"(?:自|从)" + DATE_PATTERN + r"(?:起|开始).{0,80}?(?:若|如).{0,20}?(?:再次)?触发.{0,40}?(?:下修|向下修正)",
+        decision_text,
+    ))
+    eligibility_start_date = max(
+        (match_date(item) for item in eligibility_matches),
+        default=None,
+    )
+    if eligibility_start_date and (not restart_date or eligibility_start_date > restart_date):
+        restart_date = eligibility_start_date
     duration = re.search(duration_pattern, decision_text)
     duration_value = chinese_number(duration.group(1)) if duration else None
     months = duration_value * 12 if duration and duration.group(2) == "年" else duration_value
@@ -97,7 +109,11 @@ def extract_period(text):
     symbolic_report_period = f"{report_reference.group(1)}-Q3" if report_reference else None
     symbolic_check_from = f"{report_reference.group(1)}-11-01" if symbolic_reference_type else None
     if not period:
-        explicit_ranges = list(re.finditer(r"(?:自|即)?[（(]?" + DATE_PATTERN + r"(?:起)?至" + DATE_PATTERN, decision_text))
+        explicit_ranges = list(re.finditer(
+            r"(?:自|即)?[（(]?" + DATE_PATTERN + r"(?:起)?至" + DATE_PATTERN +
+            r"[^。；]{0,120}?(?:不再|亦?不提|不向下修正|不下修)",
+            decision_text,
+        ))
         valid_ranges = [item for item in explicit_ranges if not decision_date or match_date(item, 4) >= decision_date]
         explicit_range = max(valid_ranges, key=lambda item: match_date(item, 4), default=None)
         if explicit_range:
@@ -108,9 +124,11 @@ def extract_period(text):
     if bulletin_ends:
         lock_start = decision_date
         lock_end = max(bulletin_ends)
-    # “至债券到期日（2026年11月4日）”等命名日期同样是明确锁定终点。
+    # “至债券到期日（2026年11月4日），如再次触发...亦不提出下修方案”
+    # 这类日期只有在同一条锁定承诺中出现时才是锁定终点；发行条款中的
+    # “债券存续期至到期日（...）”不能被误识别为下修锁定。
     named_ends = [match_date(item) for item in re.finditer(
-        r"至[^。；]{0,60}?[（(]" + DATE_PATTERN + r"[）)]",
+        r"至[^。；]{0,60}?[（(]" + DATE_PATTERN + r"[）)][^。；]{0,100}?(?:亦?不提.{0,5}?出|不再.{0,12}?(?:下修|向下修正)|不向下修正)",
         decision_text,
     )]
     if named_ends:

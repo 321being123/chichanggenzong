@@ -66,6 +66,20 @@ assert.strictEqual(noDuration.status, 0, noDuration.stderr || noDuration.stdout)
 const noDurationParsed = JSON.parse(noDuration.stdout);
 assert.strictEqual(noDurationParsed.lock_declared, false);
 assert.strictEqual(noDurationParsed.no_revision_evidence, true);
+assert.strictEqual(noDurationParsed.next_eligible_date, null);
+
+const explicitRestartFixture = [
+  '关于不向下修正康泰转2转股价格的公告。',
+  '本次不向下修正康泰转2转股价格。',
+  '自2026年8月24日起，若再次触发康泰转2转股价格的向下修正条款，届时公司将按照相关规定履行审议程序。',
+  '债券存续期至债券到期日（2027年7月14日）。',
+].join('');
+const explicitRestart = spawnSync(python, ['-c', code, modulePath, explicitRestartFixture], { encoding: 'utf8' });
+assert.strictEqual(explicitRestart.status, 0, explicitRestart.stderr || explicitRestart.stdout);
+const explicitRestartParsed = JSON.parse(explicitRestart.stdout);
+assert.strictEqual(explicitRestartParsed.lock_declared, false);
+assert.strictEqual(explicitRestartParsed.valid_until, '2026-08-23');
+assert.strictEqual(explicitRestartParsed.next_eligible_date, '2026-08-24');
 
 const symbolicFixture = [
   '公司董事会决定本次不向下修正转股价格。',

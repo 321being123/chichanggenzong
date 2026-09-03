@@ -1163,15 +1163,18 @@ async function extractNoRevisionPeriods(events, cachedRows, { allowFailed = fals
     const cacheComplete = cache.parser_version === '7'
       && (cache.no_revision_evidence === true || cache.lock_declared === true)
       && cache.symbolic_lock !== null;
+    const forcedCachedReparse = Boolean(event.raw && event.raw.cached_reparse);
     return ['no_revision', 'revised', 'adjusted'].includes(decision) && event.url
-      && (!cacheComplete || (allowFailed && cache.reparse_status === 'failed'))
+      && (forcedCachedReparse || !cacheComplete || (allowFailed && cache.reparse_status === 'failed'))
       && (allowFailed || cache.reparse_status !== 'failed');
   }).slice(0, 10);
   const markFailure = (event, reason) => {
-    const row = cached.get(isoDate(event && event.event_date));
+    const key = isoDate(event && event.event_date);
+    const row = cached.get(key) || (cachedRows || []).find(item => isoDate(item.announced_at) === key);
     if (row) {
       row.reparse_status = 'failed';
       row.reparse_reason = reason;
+      cached.set(key, row);
     }
   };
   if (candidates.length) {
@@ -1186,15 +1189,20 @@ async function extractNoRevisionPeriods(events, cachedRows, { allowFailed = fals
       candidates.forEach(event => markFailure(event, 'parser_execution_failed'));
       return [...cached.values()].sort((a,b) => String(b.announced_at).localeCompare(String(a.announced_at)));
     }
+    const parsedUrls = new Set();
     for (const item of extracted || []) {
       const event = candidates.find(candidate => candidate.url === item.source_url);
       const announcedAt = isoDate(event && event.event_date);
+      if (event) parsedUrls.add(event.url);
       const nextEligible = isoDate(item.next_eligible_date);
       const explicitTitle = /(?:不向下修正|不下修|不修正)/.test(String(event && event.title || ''));
       const lockEvidence = explicitTitle || item.no_revision_evidence === true || item.lock_declared === true;
       // 普通实施公告没有锁定期是正常结果，不应被记录成解析失败；只有正文明确了
       // 不下修或锁定期，才作为 no_revision 事实返回并写入历史表。
-      if (!lockEvidence) continue;
+      if (!lockEvidence) {
+        if (event && event.raw && event.raw.cached_reparse) markFailure(event, 'no_revision_evidence_not_found');
+        continue;
+      }
       // 明确“不下修”但公告未承诺锁定期限时，仍是有效事实；这类记录不应
       // 阻断数学计数，只需保持 lock_declared=false、next_eligible_date=null。
       if ((nextEligible && announcedAt && nextEligible < announcedAt)) {
@@ -1204,6 +1212,8 @@ async function extractNoRevisionPeriods(events, cachedRows, { allowFailed = fals
       }
       if (event) cached.set(isoDate(event.event_date), Object.assign(item, { announced_at: isoDate(event.event_date) }));
     }
+    candidates.filter(event => event.raw && event.raw.cached_reparse && !parsedUrls.has(event.url))
+      .forEach(event => markFailure(event, 'no_revision_evidence_not_found'));
   }
   return [...cached.values()].sort((a,b) => String(b.announced_at).localeCompare(String(a.announced_at)));
 }
@@ -2067,10 +2077,31 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   params.push(end);
   if (normalizedCodes.length) { params.push(normalizedCodes); clauses.push(`i.canonical_code=ANY($${params.length}::text[])`); }
   const defaultLimit = globalSync ? 2000 : 50;
-  const limitValue = Math.max(1, Math.min(limit == null ? defaultLimit : (Number(limit) || 50), 2000));
+  if (cachedOnly && !normalizedCodes.length) {
+    clauses.push(`EXISTS (
+      SELECT 1
+        FROM analytics.convertible_bond_announcement_history pending_no_revision
+       WHERE pending_no_revision.instrument_id=i.instrument_id
+         AND pending_no_revision.fact_type='no_revision'
+         AND pending_no_revision.fact_id=(SELECT h_latest.fact_id
+                                            FROM analytics.convertible_bond_announcement_history h_latest
+                                           WHERE h_latest.instrument_id=i.instrument_id
+                                             AND h_latest.fact_type='no_revision'
+                                           ORDER BY h_latest.announced_at DESC,h_latest.fact_id DESC LIMIT 1)
+         AND ((pending_no_revision.parser_version IS DISTINCT FROM '7'
+               AND (pending_no_revision.next_eligible_date IS NULL
+                    OR NOT COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false)))
+              OR (pending_no_revision.next_eligible_date IS NULL
+                  AND NOT (COALESCE((pending_no_revision.raw_payload->>'no_revision_evidence')::boolean,false)
+                           OR COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false))))
+         AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'failed'
+    )`);
+  }
+  const effectiveDefaultLimit = cachedOnly && !normalizedCodes.length ? 10 : defaultLimit;
+  const limitValue = Math.max(1, Math.min(limit == null ? effectiveDefaultLimit : (Number(limit) || 50), 2000));
   params.push(limitValue);
   const { rows: profiles } = await pool.query(
-    `SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.value_date,p.list_date,
+    `SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.value_date,p.list_date,p.maturity_date,
             s.canonical_code AS stock_code
        FROM core.instruments i
        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
@@ -2133,10 +2164,24 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     // 来源临时失败时，仍可用库内已有的官方 PDF 重新跑新版解析器。
     // 只回放该债最新一条仍待解析的公告，避免每次启动重复下载同一债券的历史 PDF。
     const latestNoRevision = noRevisionCache[0];
-    const cachedRow = latestNoRevision && latestNoRevision.source_url
+    const maturityDate = isoDate(profile.maturity_date);
+    const legacyMaturityCandidate = latestNoRevision
+      && String(latestNoRevision.parser_version || '') === '7'
+      && latestNoRevision.valid_until
+      && maturityDate
+      && (isoDate(latestNoRevision.valid_until) === maturityDate
+        || isoDate(latestNoRevision.next_eligible_date) === maturityDate)
+      && latestNoRevision.reparse_status !== 'maturity_checked';
+    const parserNeedsReparse = latestNoRevision
+      && String(latestNoRevision.parser_version || '') !== '7'
+      && (latestNoRevision.next_eligible_date == null || !latestNoRevision.lock_declared);
+    const currentParserNeedsReparse = latestNoRevision
+      && String(latestNoRevision.parser_version || '') === '7'
       && latestNoRevision.next_eligible_date == null
-      && (latestNoRevision.parser_version !== '7'
-        || (!latestNoRevision.lock_declared && !latestNoRevision.no_revision_evidence))
+      && !latestNoRevision.lock_declared
+      && !latestNoRevision.no_revision_evidence;
+    const cachedRow = latestNoRevision && latestNoRevision.source_url
+      && (parserNeedsReparse || currentParserNeedsReparse || legacyMaturityCandidate)
       && (retryFailed || latestNoRevision.reparse_status !== 'failed')
       ? latestNoRevision : null;
     const cachedAnnouncements = cachedRow ? [{
@@ -2176,6 +2221,16 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
                     'reason',$3::text,'attempts',COALESCE((raw_payload->'reparse'->>'attempts')::int,0)+1))
               WHERE instrument_id=$1 AND announced_at=$2::date`,
             [profile.instrument_id, isoDate(failure.announced_at), failure.reparse_reason || 'parser_output_incomplete']
+          );
+        }
+        if (legacyMaturityCandidate && cachedRow && cachedRow.source_url) {
+          await client.query(
+            `UPDATE fundamental.convertible_bond_no_revision_history
+                SET raw_payload=jsonb_set(COALESCE(raw_payload,'{}'::jsonb),'{reparse}',
+                  COALESCE(raw_payload->'reparse','{}'::jsonb) || jsonb_build_object(
+                    'status','maturity_checked','attempted_at',now(),'reason','legacy_maturity_date_check'))
+              WHERE instrument_id=$1 AND announced_at=$2::date`,
+            [profile.instrument_id, isoDate(cachedRow.announced_at)]
           );
         }
         await client.query('COMMIT');

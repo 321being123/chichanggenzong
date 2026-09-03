@@ -297,10 +297,12 @@ async function runRevisionStartupCatchup() {
             WHERE fact_type='no_revision'
             ORDER BY instrument_id,announced_at DESC,fact_id DESC
         ) latest_no_revision
-         WHERE next_eligible_date IS NULL
-           AND (parser_version IS DISTINCT FROM '7'
-                OR NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
-                        OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+         WHERE ((parser_version IS DISTINCT FROM '7'
+                 AND (next_eligible_date IS NULL
+                      OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                OR (next_eligible_date IS NULL
+                    AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
+                             OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
            AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_parse,
         (SELECT COUNT(*)::int FROM ops.sync_cursors
           WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'

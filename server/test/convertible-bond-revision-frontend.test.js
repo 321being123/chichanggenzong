@@ -53,12 +53,18 @@ assert.ok(migration.includes('090_convertible_bond_revision_monitor') && migrati
   && migration.includes('107_convertible_bond_revision_net_asset_floor_same_day')
   && migration.includes('109_convertible_bond_revision_net_asset_floor_phrase')
   && migration.includes('111_convertible_bond_revision_motive')
+  && migration.includes('132_convertible_bond_revision_decision_timeline')
+  && migration.includes('133_convertible_bond_revision_legacy_false_facts')
   && migration.includes('event.convertible_bond_revision_events') && migration.includes('analytics.convertible_bond_revision_latest')
   && migration.includes('FROM latest_market md') && migration.includes('LEFT JOIN LATERAL'), '下修迁移缺少事件表、统一视图或轻量取数路径');
+assert.ok(migration.includes('ev.announced_at >= nr.announced_at') && migration.includes('ev.announced_at > nr.announced_at')
+  && migration.includes("nr.announced_at >= COALESCE(ev.announced_at"), '下修视图未按事实公告时间线决定状态优先级');
 const revisionView = migration.slice(migration.indexOf('async function rebuildConvertibleBondRevisionLatestView'), migration.indexOf('// ========== 091：'));
 assert.ok(!revisionView.includes('public.bond_unified'), '下修视图不应展开强赎/上市表现统一视图');
 assert.ok(service.includes('active_dm') && service.includes('remaining_days'), '下修计算未限定当前行情日或缺少剩余天数');
 assert.ok(service.includes('quality') && service.includes('pending_no_revision_parse') && service.includes('terminal_no_revision_parse') && service.includes('announcement_errors'), '下修接口缺少公告质量门禁');
+assert.ok(service.includes('decision_status_conflicts') && service.includes('latest_revision_event'), '下修接口缺少事实时间线冲突审计');
+assert.ok(service.includes('firstOpenDateAfter') && service.includes('legacyMalformedNoRevision'), '下修计算缺少不下修公告后的重新起算和旧解析结果保护');
 assert.ok(service.includes('rolling_remaining_days'), '下修接口缺少滚动剩余天数字段');
 assert.ok(service.includes('net_asset_floor_value') && service.includes('floor_blocked'), '下修接口未按净资产底线排除不可执行下修');
 assert.ok(service.includes('convertible_bond_revision_motive_daily') && service.includes('MOTIVE_SELECT_FIELDS') && service.includes('MOTIVE_MODEL_VERSION'), '下修列表未接入当前版本动机等级快照');
@@ -68,6 +74,7 @@ assert.ok(analysis.includes('sourceFailures') && analysis.includes('defaultLimit
 assert.ok(analysis.includes("decision === 'no_revision' || period.lock_declared"), '转股价调整公告正文中的不下修决定必须入库');
 assert.ok(analysis.includes("['no_revision', 'revised', 'adjusted']") && analysis.includes('cacheComplete'), '实施公告正文锁定期必须进入不下修解析链');
 assert.ok(analysis.includes('cachedAnnouncements') && analysis.includes('cached_reparse'), '公告源失败时必须支持从库内官方 PDF 重新解析');
+assert.ok(analysis.includes('parserNeedsReparse') && analysis.includes('latestNoRevision.next_eligible_date == null || !latestNoRevision.lock_declared'), '旧解析器产生的未来日期未进入定点重解析候选');
 assert.ok(analysis.includes('loadRevisionEventCache') && analysis.includes('revision_event_cache'), '历史实施公告必须支持定点重解析正文锁定期');
 assert.ok(analysis.includes('retryFailed') && analysis.includes('changed_count') && analysis.includes('no_revision_evidence'), '公告解析重试和增量计数缺少闭环');
 assert.ok(analysis.includes('resolveConvertibleBondSymbolicLocks') && analysis.includes('symbolic_reference_type') && analysis.includes('symbolic_check_from'), '季度报告董事会无固定日期锁定缺少每日定点解析');
@@ -75,7 +82,7 @@ assert.ok(analysis.includes('fetchSseEventsBatch') && analysis.includes('fetchSz
 assert.ok(analysis.includes('settled[0].status === \'rejected\'') && !analysis.includes('!primaryEvents.length && (stockCode.endsWith(\'.SH\')'), '正常空公告不得触发巨潮备取');
 assert.ok(refresh.includes('calculateConvertibleBondRevisionStatus') && refresh.includes("convertible_bond_revision"), '每日链路未计算下修进度');
 assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConvertibleBondAnnouncementHistories') && refresh.includes('resolveConvertibleBondSymbolicLocks'), '兼容调度未执行下修公告增量和董事会锁定核查');
-assert.ok(refresh.includes('pending_parse') && refresh.includes('cachedOnly: true'), '启动补漏未处理公告解析积压');
+assert.ok(refresh.includes('pending_parse') && refresh.includes('cachedOnly: true') && refresh.includes('parser_version IS DISTINCT FROM'), '启动补漏未处理旧解析器积压');
 assert.ok(jobs.includes("convertible_bond_announcement_history_sync") && jobs.includes('hour: 7, minute: 40'), '下修公告任务未纳入日常调度');
 assert.ok(jobs.includes('convertible_bond_revision_motive_inputs_sync') && jobs.includes('hour: 7, minute: 20') && jobs.includes('catchupWindowMinutes: 4320'), '动机输入同步任务未纳入日常调度或周末补偿');
 for (const [name, source] of Object.entries({ redemptionSync, suspensionSync, ipo, bondAnalysis })) {

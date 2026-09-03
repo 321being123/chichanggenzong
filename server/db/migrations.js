@@ -3769,21 +3769,38 @@ async function rebuildConvertibleBondRevisionLatestView() {
            CASE
              -- 集思录只把最近 3 个交易日的已实施/未通过事件置顶；历史事件保留详情，但恢复数学计数。
              WHEN ev.event_type='implemented'
+              AND (nr.announced_at IS NULL OR ev.announced_at >= nr.announced_at)
               AND (SELECT COUNT(*) FROM market.trade_calendar tc_event
                      WHERE tc_event.exchange='SSE' AND tc_event.is_open
                        AND tc_event.trade_date > ev.announced_at
                        AND tc_event.trade_date <= md.trade_date) < 3 THEN 'implemented'
-             WHEN ev.event_type='meeting_approved' THEN 'approved'
-             WHEN ev.event_type='meeting_notice' THEN 'meeting_pending'
+             WHEN ev.event_type='meeting_approved'
+              AND (nr.announced_at IS NULL OR ev.announced_at > nr.announced_at) THEN 'approved'
+             WHEN ev.event_type='meeting_notice'
+              AND (nr.announced_at IS NULL OR ev.announced_at > nr.announced_at) THEN 'meeting_pending'
              -- 董事会提议通常应在一个月内进入股东会流程；超过 30 个自然日仍无后续公告，
              -- 不再作为“当前待处理”展示，避免把历史提议累计到今天。
              WHEN ev.event_type='proposal'
+              AND (nr.announced_at IS NULL OR ev.announced_at > nr.announced_at)
               AND ev.announced_at >= (md.trade_date - INTERVAL '30 days') THEN 'proposed'
              WHEN ev.event_type IN ('meeting_rejected','terminated')
+              AND (nr.announced_at IS NULL OR ev.announced_at > nr.announced_at)
               AND (SELECT COUNT(*) FROM market.trade_calendar tc_event
                      WHERE tc_event.exchange='SSE' AND tc_event.is_open
                        AND tc_event.trade_date > ev.announced_at
                        AND tc_event.trade_date <= md.trade_date) < 3 THEN 'terminated'
+             -- 新的不下修事实优先于旧的提议/表决事件；旧解析器带出的未来日期
+             -- 在 v7 重解析完成前只能标记不完整，不能继续伪装成锁定期。
+             WHEN nr.announced_at IS NOT NULL
+              AND nr.announced_at >= COALESCE(ev.announced_at, DATE '0001-01-01')
+              AND nr.parser_version IS DISTINCT FROM '7'
+              AND NOT nr.lock_declared
+              AND nr.next_eligible_date IS NOT NULL THEN 'incomplete'
+             WHEN nr.announced_at IS NOT NULL
+              AND nr.announced_at >= COALESCE(ev.announced_at, DATE '0001-01-01')
+              AND ((nr.next_eligible_date IS NOT NULL
+                    AND nr.next_eligible_date > COALESCE(tr.trade_date,(SELECT trade_date FROM market_date),CURRENT_DATE))
+                   OR (nr.next_eligible_date IS NULL AND nr.lock_declared)) THEN 'locked'
              -- 明确不下修但新版解析尚未完成时，禁止继续沿用旧窗口计数。
              WHEN nr.announced_at IS NOT NULL
               AND nr.next_eligible_date IS NULL
@@ -5334,6 +5351,26 @@ async function migration131IpoSectorExposureCalibration() {
   `);
 }
 
+// ========== 132：可转债下修事实时间线优先级 =============
+// 新的不下修事实必须覆盖旧提议/表决事件；同时重建视图让已落库的历史数据立即采用新口径。
+async function migration132ConvertibleBondRevisionDecisionTimeline() {
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
+// ========== 133：清理旧解析器写入的无证据不下修事实 =============
+// 普通权益分派/转股价调整公告不能仅因旧解析器写入过 no_revision_history 就继续影响状态。
+// 保留标题明确不下修、正文已有证据或明确锁定期的记录，其余旧版本无证据记录清理后由官方源重建。
+async function migration133ConvertibleBondRevisionLegacyFalseFacts() {
+  await pool.query(`
+    DELETE FROM fundamental.convertible_bond_no_revision_history
+     WHERE summary !~ '(不向下修正|不下修|不修正)'
+       AND COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)=false
+       AND COALESCE((raw_payload->>'lock_declared')::boolean,false)=false
+       AND COALESCE(raw_payload->>'parser_version','') <> '7';
+  `);
+  await rebuildConvertibleBondRevisionLatestView();
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5466,6 +5503,8 @@ const MIGRATIONS = [
   { version: '129_tushare_dual_account_policy_repair', up: migration129TushareDualAccountPolicyRepair },
   { version: '130_tushare_vip_backup_minute_limit', up: migration130TushareVipBackupMinuteLimit },
   { version: '131_ipo_sector_exposure_calibration', up: migration131IpoSectorExposureCalibration },
+  { version: '132_convertible_bond_revision_decision_timeline', up: migration132ConvertibleBondRevisionDecisionTimeline },
+  { version: '133_convertible_bond_revision_legacy_false_facts', up: migration133ConvertibleBondRevisionLegacyFalseFacts },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

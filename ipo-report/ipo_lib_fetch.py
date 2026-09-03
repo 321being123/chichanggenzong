@@ -34,7 +34,7 @@ def fetch_stock_detail(secu_code):
         row = conn.execute(
             """SELECT issue_price,issue_pe,ipo_date,listing_date,fund_raised,total_shares,
                       online_shares,online_lottery_rate,subscribe_upper_limit,circulation_mv,
-                      main_business,industry,industry_pe
+                      main_business,industry,industry_pe,business_exposure
                  FROM ipo_history WHERE security_code=? LIMIT 1""",
             (str(secu_code or "").split(".")[0],),
         ).fetchone()
@@ -43,8 +43,13 @@ def fetch_stock_detail(secu_code):
             return None
         fields = ("issue_price", "issue_pe", "online_date", "list_date", "fund_raised", "total_shares",
                   "online_shares", "online_lottery_rate", "subscribe_upper_limit", "circulation_mv",
-                  "main_business", "industry", "industry_pe")
+                  "main_business", "industry", "industry_pe", "business_exposure")
         info = dict(zip(fields, row))
+        if isinstance(info.get("business_exposure"), str):
+            try:
+                info["business_exposure"] = json.loads(info["business_exposure"])
+            except (TypeError, ValueError):
+                info["business_exposure"] = None
         if info.get("subscribe_upper_limit"):
             info["limit_amount"] = float(info["subscribe_upper_limit"])
             info["subscribe_mv"] = round(float(info["subscribe_upper_limit"]) * 10, 1)
@@ -1104,6 +1109,13 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
     if industry:
         detail['industry_pe'] = _get_industry_pe_map().get(industry)
     detail['main_business'] = (_fetch_stock_main_business(code) or '')[:200]
+    try:
+        from ipo_lib_sector import analyze_business_exposure
+        detail['business_exposure'] = analyze_business_exposure(
+            '', detail['main_business'], detail.get('industry', '')
+        )
+    except Exception:
+        detail['business_exposure'] = None
     return detail
 
 def _fetch_quote_tencent(stock_code):

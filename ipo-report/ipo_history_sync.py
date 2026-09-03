@@ -242,7 +242,8 @@ def enrich_stock_missing_details(cur, today, limit=10):
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry
         FROM ipo_history
        WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
-         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL)
+         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
+              OR business_exposure = '{}'::jsonb)
          AND COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s
        ORDER BY ipo_date DESC,security_code LIMIT %s
     """, (today_text, today_text, int(limit)))
@@ -258,20 +259,25 @@ def enrich_stock_missing_details(cur, today, limit=10):
         meta = {"attempted_on": today_text, "source": "stock_basic/cninfo/valuation"}
         try:
             detail = fetch_stock_historical_detail(code, existing_industry) or {}
+            business_exposure = detail.get("business_exposure")
             changed = any(detail.get(field) not in (None, "") for field in QUALITY_DETAIL_FIELDS)
+            changed = changed or bool(isinstance(business_exposure, dict) and business_exposure.get("exposures"))
             if changed:
                 cur.execute("""
                   UPDATE ipo_history SET
                     industry=COALESCE(NULLIF(industry,''),NULLIF(%s,'')),
                     industry_pe=COALESCE(industry_pe,%s),
                     main_business=COALESCE(NULLIF(main_business,''),NULLIF(%s,'')),
+                    business_exposure=COALESCE(NULLIF(%s::jsonb,'{}'::jsonb),business_exposure),
                     source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object('historical_enrichment',%s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
                 """, (detail.get("industry"), detail.get("industry_pe"), detail.get("main_business"),
-                      Json(detail), code))
+                      Json(business_exposure) if business_exposure else None, Json(detail), code))
                 updated += 1
                 meta["updated_fields"] = [field for field in QUALITY_DETAIL_FIELDS if detail.get(field) not in (None, "")]
+                if isinstance(business_exposure, dict) and business_exposure.get("exposures"):
+                    meta["updated_fields"].append("business_exposure")
             else:
                 meta["result"] = "no_new_value"
         except Exception as exc:
@@ -287,7 +293,8 @@ def enrich_stock_missing_details(cur, today, limit=10):
     cur.execute("""
       SELECT count(*) FROM ipo_history
        WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
-         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL)
+         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
+              OR business_exposure = '{}'::jsonb)
     """, (today_text,))
     remaining = int(cur.fetchone()[0] or 0)
     return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining}

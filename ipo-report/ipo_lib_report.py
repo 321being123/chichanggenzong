@@ -20,6 +20,17 @@ from ipo_lib_valuation import *
 from ipo_lib_sector import *
 from ipo_lib_prediction import *
 
+def _business_exposure_for_detail(detail):
+    """保存主营业务时同步保存结构化下游暴露，失败不阻断原有IPO事实。"""
+    try:
+        from ipo_lib_sector import analyze_business_exposure
+        return analyze_business_exposure(
+            detail.get("stock_name", ""), detail.get("main_business", ""), detail.get("industry", ""),
+            stored=detail.get("business_exposure")
+        )
+    except Exception:
+        return None
+
 def _save_stock_detail_to_db(code, detail):
     """将新股详细发行数据存入ipo_history数据库"""
     if not detail:
@@ -33,6 +44,7 @@ def _save_stock_detail_to_db(code, detail):
         os_ = detail.get("online_shares")
         cmv = round(os_ * ip / 10000, 2) if os_ and ip else None
         pe_ratio = round(ind_pe / ipe, 2) if ind_pe and ipe else None
+        business_exposure = _business_exposure_for_detail(detail)
 
         conn.execute("""
             UPDATE ipo_history SET
@@ -49,6 +61,7 @@ def _save_stock_detail_to_db(code, detail):
                 industry=COALESCE(NULLIF(?, ''), industry),
                 circulation_mv=COALESCE(?, circulation_mv),
                 pe_ratio=COALESCE(?, pe_ratio),
+                business_exposure=COALESCE(?::jsonb, business_exposure),
                 ipo_date=COALESCE(?, ipo_date)
             WHERE security_code=?
         """, (
@@ -65,6 +78,7 @@ def _save_stock_detail_to_db(code, detail):
             detail.get("industry"),
             cmv,
             pe_ratio,
+            json.dumps(business_exposure, ensure_ascii=False) if business_exposure else None,
             detail.get("online_date"),
             code,
         ))
@@ -513,7 +527,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
         lines.append("---")
         lines.append("## 📊 当前赛道热度系数（每日动态校准）")
         lines.append("")
-        lines.append("> 系数 = 该赛道或行业新股上市首日平均涨幅 / 150，封顶 3.0；未命中热门赛道时按所属行业兜底，无行业历史时使用中性系数 1.0。")
+        lines.append("> 系数 = 该赛道相对同期全市场新股的稳健表现，按样本数向 1.0 平滑收缩并限制在安全范围；公司同时按产品和下游应用拆分，信息不足时保留方向判断但降低可信度。")
         lines.append("")
         lines.append("| 赛道 | 热度系数 | 新股首日均值 | 样本数 |")
         lines.append("|------|----------|----------------|--------|")
@@ -709,7 +723,7 @@ def generate_html(md_content, data):
     sb = data.get("sector_boost_info", [])
     if sb:
         html += '<div class="card">\n<h2>📊 当前赛道热度系数（每日动态校准）</h2>\n'
-        html += '<p class="subtitle">系数 = 该赛道或行业新股上市首日平均涨幅 / 150，封顶 3.0；未命中热门赛道时按所属行业兜底，无行业历史时使用中性系数 1.0。</p>\n'
+        html += '<p class="subtitle">系数 = 该赛道相对同期全市场新股的稳健表现，按样本数向 1.0 平滑收缩并限制在安全范围；公司同时按产品和下游应用拆分，信息不足时保留方向判断但降低可信度。</p>\n'
         html += '<table>\n<tr><th>赛道</th><th>热度系数</th><th>新股首日均值</th><th>样本数</th></tr>\n'
         for r in sb:
             html += f'<tr><td>{r["sector"]}</td><td>{r["boost"]}</td><td>{r["avg_gain"]}%</td><td>{r["count"]}</td></tr>\n'

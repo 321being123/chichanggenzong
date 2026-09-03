@@ -331,10 +331,18 @@ router.get('/history', async (req, res) => {
                 ${stockHistoryStageSql('h')} AS history_stage,
                 ${stockFieldStatusSql('h')} AS field_status,
                 to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD') AS data_as_of,
-                p.pred_return AS pred_return, COALESCE(p.has_prediction, false) AS has_prediction
+                p.pred_return AS pred_return,
+                p.base_pred_return AS base_pred_return,
+                p.sector_adjustment_pp AS sector_adjustment_pp,
+                p.sector_multiplier AS sector_multiplier,
+                p.sector_confidence AS sector_confidence,
+                p.prediction_context AS prediction_context,
+                COALESCE(p.has_prediction, false) AS has_prediction
          FROM ipo_history h
          LEFT JOIN LATERAL (
-           SELECT pred_return, true AS has_prediction FROM predictions
+           SELECT pred_return, base_pred_return, sector_adjustment_pp,
+                  sector_multiplier, sector_confidence, prediction_context,
+                  true AS has_prediction FROM predictions
            WHERE type = 'stock' AND code = h.security_code AND pred_return IS NOT NULL
            ORDER BY pred_date DESC LIMIT 1
          ) p ON true

@@ -90,10 +90,16 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
                 pred_price = _price_from_return((s.get("detail") or {}).get("issue_price"), pred_return)
         advice = s.get("advice", "")
         listing_date = pred_date
+        context = analysis.get("prediction_context") if isinstance(analysis, dict) else None
 
         rows.append(("stock", s["code"], s["name"], listing_date,
                       pred_date, pred_return, pred_price, advice,
-                      today_str))
+                      today_str,
+                      analysis.get("base_predicted_return") if isinstance(analysis, dict) else None,
+                      analysis.get("sector_adjustment_pp") if isinstance(analysis, dict) else None,
+                      analysis.get("sector_multiplier") if isinstance(analysis, dict) else None,
+                      analysis.get("sector_confidence") if isinstance(analysis, dict) else None,
+                      json.dumps(context or {}, ensure_ascii=False, default=str)))
 
     for b in apply_bonds + list_bonds:
         analysis = b.get("listing_analysis", {})
@@ -128,6 +134,14 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
 
     for row in rows:
         try:
+            if len(row) == 14:
+                conn.execute("""
+                INSERT OR REPLACE INTO predictions
+                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at,
+                     base_pred_return, sector_adjustment_pp, sector_multiplier, sector_confidence, prediction_context)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
+                """, row)
+                continue
             if len(row) == 17:
                 conn.execute("""
                 INSERT OR REPLACE INTO predictions

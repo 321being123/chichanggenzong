@@ -735,6 +735,23 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     main_business = stock_detail.get("main_business", "")
     industry = stock_detail.get("industry", "")
     sector_label, sector_boost = detect_stock_hot_sector(stock_name, main_business, industry)
+    # 赛道只允许作为受控修正，不能让单个宽泛标签把基础预测放大数倍。
+    try:
+        sector_boost = max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(sector_boost or 1.0)))
+    except (TypeError, ValueError, NameError):
+        sector_boost = 1.0
+    sector_context = get_stock_sector_context(
+        stock_name, main_business, industry, stored=stock_detail.get("business_exposure")
+    )
+    # 已落库的招股书暴露包含更可靠的权重时，预测与展示必须使用同一份上下文。
+    stored_exposure = stock_detail.get("business_exposure")
+    if isinstance(stored_exposure, dict) and stored_exposure.get("exposures"):
+        sector_label = sector_context.get("label") or sector_label
+        sector_boost = sector_context.get("multiplier", sector_boost)
+        try:
+            sector_boost = max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(sector_boost or 1.0)))
+        except (TypeError, ValueError, NameError):
+            sector_boost = 1.0
     temp = _MARKET_TEMP["level"]
 
     # 尝试XGBoost预测
@@ -746,12 +763,15 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
     if xgb_result is not None and xgb_result[0] > 0:
         estimated, detail_parts, trained_at = (xgb_result[0], xgb_result[1], xgb_result[2] if len(xgb_result) > 2 else None)
-        # 叠加赛道热度修正：真实基础 × 赛道系数（乘一次，线性可预期，不用非线性放大公式）
+        base_estimated = estimated
+        # 叠加赛道热度修正：系数已由历史相对中位数和样本权重收缩，且有上下限。
         if sector_label:
             sector_mult = sector_boost
             estimated = int(round(estimated * sector_mult))
-            tag = "顶级赛道修正" if sector_boost >= 2 else "赛道修正"
-            detail_parts.append(f"🚀 {tag}: {sector_label}（×{sector_mult:.2f}）→{estimated}%")
+            detail_parts.append(
+                f"🚀 赛道修正: {sector_label}（×{sector_mult:.2f}，"
+                f"业务可信度{sector_context.get('confidence', 0):.2f}）→{estimated}%"
+            )
         else:
             detail_parts.append(f"🚀 赛道修正: 未命中热门赛道（×1.00）→{estimated}%")
         # 市场温度衰减
@@ -764,7 +784,23 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
 
         summary = _format_listing_summary(estimated, stock_detail, temp)
 
-        return {"summary": summary, "detail": "\n".join(detail_parts), "price": None, "predicted_return": estimated}
+        base_with_temp = int(round(base_estimated * temp_mult))
+        return {
+            "summary": summary,
+            "detail": "\n".join(detail_parts),
+            "price": None,
+            "predicted_return": estimated,
+            "base_predicted_return": base_with_temp,
+            "sector_adjustment_pp": estimated - base_with_temp,
+            "sector_multiplier": sector_boost if sector_label else 1.0,
+            "sector_confidence": sector_context.get("confidence", 0.0),
+            "prediction_context": {
+                "sector_label": sector_label,
+                "sector_multiplier": sector_boost if sector_label else 1.0,
+                "sector_confidence": sector_context.get("confidence", 0.0),
+                "sector_components": sector_context.get("components", []),
+            },
+        }
 
     # ── 回退：改进版线性模型 ──
     # 使用板块中位数，避免全市场少数千倍涨幅样本拉高预测。
@@ -823,13 +859,15 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         elif cmv > 20:
             estimated = estimated * 0.88
 
-    # 赛道热度修正：真实基础 × 赛道系数（乘一次，与 XGBoost 路径口径一致）
+    # 赛道热度修正：有效系数已按样本数收缩并限制在安全范围。
+    base_estimated = int(round(estimated))
     if sector_label:
         estimated = int(round(estimated * sector_boost))
     # 市场温度整体衰减
     temp = _MARKET_TEMP["level"]
     temp_mult = get_temp_listing_multiplier()
     estimated = int(round(estimated * temp_mult))
+    base_with_temp = int(round(base_estimated * temp_mult))
 
     # 生成预测文本
     summary = _format_listing_summary(estimated, stock_detail, temp)
@@ -839,7 +877,10 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     detail_parts.append(f"🏢 板块基准: {board_base}%（近12月中位数）")
     detail_parts.append(f"🌡️ 市场温度: {temp}（衰减系数×{temp_mult}）")
     if sector_label:
-        detail_parts.append(f"🚀 热门赛道: {sector_label}（赛道系数×{sector_boost:.2f}）")
+        detail_parts.append(
+            f"🚀 热门赛道: {sector_label}（赛道系数×{sector_boost:.2f}，"
+            f"业务可信度{sector_context.get('confidence', 0):.2f}）"
+        )
     else:
         detail_parts.append("🚀 热门赛道: 未命中（赛道系数×1.00）")
     if lottery_rate is not None:
@@ -859,6 +900,16 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         "detail": " | ".join(detail_parts),
         "price": None,
         "predicted_return": estimated,
+        "base_predicted_return": base_with_temp,
+        "sector_adjustment_pp": estimated - base_with_temp,
+        "sector_multiplier": sector_boost if sector_label else 1.0,
+        "sector_confidence": sector_context.get("confidence", 0.0),
+        "prediction_context": {
+            "sector_label": sector_label,
+            "sector_multiplier": sector_boost if sector_label else 1.0,
+            "sector_confidence": sector_context.get("confidence", 0.0),
+            "sector_components": sector_context.get("components", []),
+        },
     }
 
 __all__ = ['get_temp_pe_penalty', 'get_temp_temp_score_penalty', 'get_temp_listing_multiplier', '_get_market_premium_curve', '_estimate_initial_premium_by_iteration', '_calc_xgb_boost', 'estimate_bond_listing_price', 'get_valuation_advice', '_XGB_MODEL', '_XGB_FEATURES', '_XGB_FEATURE_INFO', '_XGB_MEDIAN_VALS', '_XGB_TRAINED_AT', '_load_xgb_model', '_xgb_predict_listing', '_get_lot_size', '_format_listing_summary', 'get_listing_analysis']

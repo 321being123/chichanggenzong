@@ -5316,6 +5316,24 @@ async function migration130TushareVipBackupMinuteLimit() {
   `);
 }
 
+// ========== 131：IPO业务下游暴露与风口校准字段 =============
+// 保存招股书提取出的产品→下游证据，风口校准仍沿用原 sector_heat 表，
+// 避免把宽泛行业词误当成当前热点，也便于历史预测追溯。
+async function migration131IpoSectorExposureCalibration() {
+  await pool.query(`
+    ALTER TABLE ipo_history
+      ADD COLUMN IF NOT EXISTS business_exposure JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE predictions
+      ADD COLUMN IF NOT EXISTS base_pred_return REAL,
+      ADD COLUMN IF NOT EXISTS sector_adjustment_pp REAL,
+      ADD COLUMN IF NOT EXISTS sector_multiplier REAL,
+      ADD COLUMN IF NOT EXISTS sector_confidence REAL,
+      ADD COLUMN IF NOT EXISTS prediction_context JSONB NOT NULL DEFAULT '{}'::jsonb;
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_business_exposure
+      ON ipo_history USING gin (business_exposure);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5447,6 +5465,7 @@ const MIGRATIONS = [
   { version: '128_tushare_dual_account_policy', up: migration128TushareDualAccountPolicy },
   { version: '129_tushare_dual_account_policy_repair', up: migration129TushareDualAccountPolicyRepair },
   { version: '130_tushare_vip_backup_minute_limit', up: migration130TushareVipBackupMinuteLimit },
+  { version: '131_ipo_sector_exposure_calibration', up: migration131IpoSectorExposureCalibration },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

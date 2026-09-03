@@ -5,6 +5,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
+from statistics import median
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
@@ -43,9 +44,105 @@ NEW_STOCK_HOT_SECTORS = {
     "消费电子": 0.3, "汽车电子": 0.5,
 }
 
+# “新材料”不是最终需求行业。先把主营业务拆到可观察的下游，再把下游
+# 的历史新股表现合并，避免看到一个宽泛词就直接套用高倍数。
+_BUSINESS_EXPOSURE_RULES = (
+    ("光伏", "光伏", ("光伏", "太阳能", "硅片", "电池片", "组件", "逆变器")),
+    ("PCB", "PCB", ("PCB", "印制电路板")),
+    ("消费电子", "消费电子", ("3C", "消费电子", "手机", "电脑", "可穿戴")),
+    ("电子封装", "消费电子", ("电子封装", "封装材料", "封装", "封装胶")),
+    ("半导体", "半导体", ("半导体", "芯片", "晶圆", "集成电路", "先进封装")),
+    ("新能源汽车", "汽车电子", ("新能源汽车", "新能源车", "汽车电子", "动力电池", "电驱")),
+    ("储能", "储能", ("储能", "储能系统")),
+    ("医疗", "医疗器械", ("医疗", "医药", "医疗器械", "诊断")),
+    ("军工", "军工", ("军工", "航空航天", "航天")),
+)
+
+# 运行时的有效系数与样本数独立保存。NEW_STOCK_HOT_SECTORS 仍保留为兼容
+# 旧调用方的展示字典，但不再把源码默认值当作真实风口倍数。
+SECTOR_EFFECTIVE_BOOSTS = {}
+SECTOR_SAMPLE_COUNTS = {}
+SECTOR_CALIBRATION_DAYS = 365
+SECTOR_MULTIPLIER_MIN = 0.80
+SECTOR_MULTIPLIER_MAX = 1.50
+
 def _default_sector_boost(sector_key):
     """源码中写死的默认赛道热度系数（动态计算异常/归零时回退用）"""
     return NEW_STOCK_HOT_SECTORS.get(sector_key, 0)
+
+
+def _robust_median(values):
+    """返回稳健中位数；小样本也保留信号，但不使用极端平均值。"""
+    clean = []
+    for value in values:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value == value:
+            clean.append(value)
+    return median(clean) if clean else None
+
+
+def analyze_business_exposure(stock_name, main_business, industry, stored=None):
+    """从主营业务提取“产品→下游”暴露度，返回可持久化的解释结果。
+
+    招股书没有收入占比时，不把暴露度粗暴置零：对明确出现的下游按证据
+    均分，并降低 confidence；只有宽泛的“新材料”时才使用低置信度兜底。
+    """
+    if isinstance(stored, dict) and stored.get("exposures"):
+        return stored
+
+    text = f"{stock_name or ''} {main_business or ''} {industry or ''}"
+    normalized = text.upper()
+    matches = []
+    for label, sector_key, keywords in _BUSINESS_EXPOSURE_RULES:
+        found = [kw for kw in keywords if kw.upper() in normalized]
+        if found:
+            # 有“收入/客户/产品/应用”证据时可信度更高；仅行业名命中时保守。
+            evidence = any(marker in text for marker in ("收入", "客户", "产品", "应用", "销售"))
+            matches.append({
+                "label": label,
+                "sector_key": sector_key,
+                "keywords": found,
+                "weight": 0.0,
+                "evidence_level": "explicit" if evidence else "keyword",
+            })
+
+    generic = any(term in normalized for term in ("新材料", "先进材料", "化工材料"))
+    if matches:
+        total = sum(1.0 for _ in matches)
+        for item in matches:
+            item["weight"] = round(1.0 / total, 4)
+        confidence = 0.78 if any(item["evidence_level"] == "explicit" for item in matches) else 0.55
+    elif generic:
+        matches = [{
+            "label": "新材料",
+            "sector_key": "新材料",
+            "keywords": ["新材料"],
+            "weight": 1.0,
+            "evidence_level": "generic",
+        }]
+        confidence = 0.30
+    else:
+        return {"exposures": [], "confidence": 0.0, "status": "missing", "source": "text"}
+
+    return {
+        "exposures": matches,
+        "confidence": confidence,
+        "status": "complete" if confidence >= 0.7 else "partial",
+        "source": "stored" if stored else "prospectus_text",
+    }
+
+
+def _effective_sector_multiplier(sector_key, fallback=1.0):
+    value = SECTOR_EFFECTIVE_BOOSTS.get(sector_key)
+    if value is None:
+        return fallback
+    try:
+        return max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(value)))
+    except (TypeError, ValueError):
+        return fallback
 
 
 _SECTOR_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sector_heat.db")
@@ -86,14 +183,19 @@ def _init_sector_db():
 
 def calibrate_sector_boost():
     """
-    用已上市新股的首日涨幅重算赛道热度系数（数据驱动，非全市场板块涨幅）。
-    数据来源：ipo_history 表（security_code, security_name, main_business, industry, ld_close_change）。
-    样本数 = 该赛道新股只数；系数 = 新股首日涨幅均值的归一化（0~3，平均150%->1.0，450%+封顶）。
+    用已上市新股的首日涨幅重算赛道热度系数（数据驱动，保留历史风口效果）。
+
+    旧算法把赛道绝对均值除以150后直接当乘数，导致“新材料”这类宽泛
+    标签在3只样本时也可能变成2.68倍。新算法改用同窗口全市场中位数作
+    基准，再按样本数平滑收缩到1.0；系数仍写回原 sector_heat 表，避免
+    新增平行事实表。
     """
     from collections import defaultdict
     from datetime import datetime
 
     conn = _init_sector_db()
+    SECTOR_EFFECTIVE_BOOSTS.clear()
+    SECTOR_SAMPLE_COUNTS.clear()
 
     # 行业兜底系数每次按最新历史数据重建，避免同一进程重复校准时残留旧行业。
     for key in [k for k in NEW_STOCK_HOT_SECTORS if k.startswith("行业:")]:
@@ -103,44 +205,50 @@ def calibrate_sector_boost():
     conn.execute("DELETE FROM sector_heat")
 
     # 已上市新股：主营业务 / 行业 / 上市首日涨跌幅
+    cutoff = (datetime.now() - timedelta(days=SECTOR_CALIBRATION_DAYS)).strftime("%Y-%m-%d")
     rows = conn.execute(
-        "SELECT security_code, security_name, main_business, industry, ld_close_change FROM ipo_history"
+        """SELECT security_code, security_name, market_type, listing_date,
+                  main_business, industry, ld_close_change
+             FROM ipo_history
+            WHERE listing_date >= ? AND ld_close_change IS NOT NULL""",
+        (cutoff,),
     ).fetchall()
 
     sector_gains = defaultdict(list)
-    for code, name, mb, ind, ld in rows:
-        if ld is None:
+    benchmark_gains = []
+    for code, name, market_type, listing_date, mb, ind, ld in rows:
+        if ld is None or str(market_type or "") == "北交所":
             continue
-        text = f"{name} {mb or ''} {ind or ''}"
-        normalized = text.upper()
-        best, best_boost = None, 0
-        for kw, boost in NEW_STOCK_HOT_SECTORS.items():
-            if kw.startswith("行业:"):
-                continue
-            if kw.upper() in normalized and boost > best_boost:
-                best_boost = boost
-                best = kw
-        if best:
-            sector_gains[best].append(ld)
+        benchmark_gains.append(ld)
+        exposure = analyze_business_exposure(name, mb, ind)
+        for item in exposure.get("exposures", []):
+            sector_gains[item["sector_key"]].append(ld)
         # 所有新股同时沉淀所属行业热度，供未命中热门关键词的新股统一兜底。
         industry_name = str(ind or "").strip()
         if industry_name and industry_name.lower() not in ("nan", "none", "-"):
             sector_gains[f"行业:{industry_name}"].append(ld)
 
+    benchmark = _robust_median(benchmark_gains)
+    if benchmark is None or benchmark <= 0:
+        benchmark = 150.0
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for sector_key, gains in sector_gains.items():
         if not gains:
             continue
-        avg = sum(gains) / len(gains)
-        calculated = round(min(3.0, avg / 150.0), 2)
-        fallback = _default_sector_boost(sector_key)
-        if sector_key.startswith("行业:") and not fallback:
-            fallback = 1.0
-        # 破发或异常样本不允许把预测乘成零/负数；无有效热度时回到默认或中性系数。
-        boost = calculated if calculated > 0 else fallback
+        robust_gain = _robust_median(gains)
+        if robust_gain is None:
+            continue
+        # 这是“相对同期市场”的历史效果，不再是绝对涨幅/150。
+        raw_ratio = max(0.50, min(2.00, robust_gain / benchmark))
+        sample_weight = len(gains) / (len(gains) + 5.0)
+        boost = 1.0 + (raw_ratio - 1.0) * sample_weight
+        boost = round(max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, boost)), 3)
+        SECTOR_SAMPLE_COUNTS[sector_key] = len(gains)
+        SECTOR_EFFECTIVE_BOOSTS[sector_key] = boost
         conn.execute(
             "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
-            (sector_key, round(avg, 2), len(gains), boost, now_str),
+            (sector_key, round(robust_gain, 2), len(gains), boost, now_str),
         )
     conn.commit()
 
@@ -152,11 +260,9 @@ def calibrate_sector_boost():
     updated = []
     for sector_key, boost, avg_gain, count in rows:
         old = NEW_STOCK_HOT_SECTORS.get(sector_key, "?")
-        fallback = _default_sector_boost(sector_key)
-        if sector_key.startswith("行业:") and not fallback:
-            fallback = 1.0
-        NEW_STOCK_HOT_SECTORS[sector_key] = boost if boost and boost > 0 else fallback
-        updated.append(f"{sector_key}: {old}→{boost}（{count}只新股, 首日均值{avg_gain}%）")
+        effective = _effective_sector_multiplier(sector_key, 1.0)
+        NEW_STOCK_HOT_SECTORS[sector_key] = effective
+        updated.append(f"{sector_key}: {old}→{effective}（{count}只新股, 稳健首日中位数{avg_gain}%）")
 
     if updated:
         print(f"[赛道热度] 赛道系数已更新（共{len(rows)}个赛道）")
@@ -313,26 +419,41 @@ def detect_hot_sector(bond_name, stock_name, stock_industry=""):
     return None, 0
 
 def detect_stock_hot_sector(stock_name, main_business, industry):
-    """检测新股赛道：热门关键词优先，所属行业兜底，最后使用中性系数。"""
-    search_text = f"{stock_name} {main_business} {industry}"
-    normalized = search_text.upper()
-    best_label, best_boost = None, 0
-    for keyword, boost in NEW_STOCK_HOT_SECTORS.items():
-        if keyword.startswith("行业:"):
-            continue
-        if keyword.upper() in normalized:
-            if boost > best_boost:
-                best_boost = boost
-                best_label = keyword
-    if best_label:
-        return best_label, best_boost
+    """检测新股赛道，按产品/下游暴露度合并多个赛道信号。"""
+    context = get_stock_sector_context(stock_name, main_business, industry)
+    return context["label"], context["multiplier"]
 
-    industry_name = str(industry or "").strip()
-    if industry_name and industry_name.lower() not in ("nan", "none", "-"):
-        industry_boost = NEW_STOCK_HOT_SECTORS.get(f"行业:{industry_name}", 1.0)
-        return industry_name, industry_boost if industry_boost and industry_boost > 0 else 1.0
 
-    return "其他赛道", 1.0
+def get_stock_sector_context(stock_name, main_business, industry, stored=None):
+    """返回可解释的赛道判断，保留兼容的二元 detect_stock_hot_sector 接口。"""
+    exposure = analyze_business_exposure(stock_name, main_business, industry, stored=stored)
+    items = exposure.get("exposures", [])
+    if not items:
+        industry_name = str(industry or "").strip()
+        key = f"行业:{industry_name}" if industry_name and industry_name.lower() not in ("nan", "none", "-") else ""
+        multiplier = _effective_sector_multiplier(key, 1.0) if key else 1.0
+        return {"label": industry_name or "其他赛道", "multiplier": multiplier,
+                "confidence": 0.25 if key else 0.0, "exposure": exposure}
+
+    weighted_delta = 0.0
+    labels = []
+    components = []
+    for item in items:
+        key = item.get("sector_key") or item.get("label")
+        multiplier = _effective_sector_multiplier(key, 1.0)
+        weight = float(item.get("weight") or 0.0)
+        weighted_delta += weight * (multiplier - 1.0)
+        labels.append(item.get("label") or key)
+        components.append({"label": item.get("label") or key, "sector_key": key,
+                           "weight": weight, "multiplier": multiplier,
+                           "sample_count": SECTOR_SAMPLE_COUNTS.get(key, 0)})
+
+    # 业务证据不足时仍保留方向判断，但把加成向中性收缩，而不是直接置零。
+    confidence = float(exposure.get("confidence") or 0.0)
+    multiplier = 1.0 + weighted_delta * confidence
+    multiplier = round(max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, multiplier)), 3)
+    return {"label": "、".join(dict.fromkeys(labels)), "multiplier": multiplier,
+            "confidence": confidence, "exposure": exposure, "components": components}
 
 def _get_board_key_from_code(code):
     """从股票代码获取板块键"""
@@ -352,15 +473,14 @@ def _sync_sector_boost_from_db():
     避免源码硬编码默认值与运行时实际值不一致（防止误读旧值）"""
     try:
         conn = _init_sector_db()
-        rows = conn.execute("SELECT sector_key, boost FROM sector_heat").fetchall()
-        for sector_key, boost in rows:
-            # DB 中异常归零时，回退源码静态默认值
-            fallback = _default_sector_boost(sector_key)
-            if sector_key.startswith("行业:") and not fallback:
-                fallback = 1.0
-            NEW_STOCK_HOT_SECTORS[sector_key] = boost if boost and boost > 0 else fallback
+        rows = conn.execute("SELECT sector_key, boost, stock_count FROM sector_heat").fetchall()
+        for sector_key, boost, stock_count in rows:
+            effective = boost if boost and boost > 0 else 1.0
+            SECTOR_EFFECTIVE_BOOSTS[sector_key] = effective
+            SECTOR_SAMPLE_COUNTS[sector_key] = int(stock_count or 0)
+            NEW_STOCK_HOT_SECTORS[sector_key] = effective
         conn.close()
     except Exception:
         pass  # DB缺失或无数据时保留源码默认系数
 
-__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']
+__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', 'SECTOR_EFFECTIVE_BOOSTS', 'SECTOR_SAMPLE_COUNTS', 'SECTOR_MULTIPLIER_MIN', 'SECTOR_MULTIPLIER_MAX', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', 'analyze_business_exposure', 'get_stock_sector_context', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']

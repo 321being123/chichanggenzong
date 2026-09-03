@@ -280,6 +280,35 @@ try:
     no_industry_fallback = _val.detect_stock_hot_sector("测试", "普通产品研发和生产", "")
     check("行业缺失时仍有中性赛道系数", no_industry_fallback == ("其他赛道", 1.0),
           "sector=%r" % (no_industry_fallback,))
+    exposure = _val.analyze_business_exposure(
+        "贝特利",
+        "电子材料和化工新材料的研发、生产与销售，产品涵盖导电材料、有机硅材料和涂层材料，广泛应用于光伏、3C电子、电子封装、医疗、新能源汽车等领域",
+        "计算机、通信和其他电子设备制造业",
+    )
+    check("主营业务拆分多个下游", len(exposure.get("exposures", [])) >= 4,
+          "exposure=%r" % (exposure,))
+    check("多下游权重归一", abs(sum(x.get("weight", 0) for x in exposure.get("exposures", [])) - 1.0) < 0.001,
+          "exposure=%r" % (exposure,))
+    context = _val.get_stock_sector_context(
+        "贝特利",
+        "电子材料和化工新材料的研发、生产与销售，广泛应用于光伏、3C电子、电子封装、医疗、新能源汽车等领域",
+        "计算机、通信和其他电子设备制造业",
+    )
+    check("多下游风口默认不超过安全上限", context.get("multiplier", 0) <= 1.5,
+          "context=%r" % (context,))
+    _old_detect_for_cap = _val.detect_stock_hot_sector
+    _old_xgb_for_cap = _val._xgb_predict_listing
+    _old_temp_for_cap = _val.get_temp_listing_multiplier
+    _val.detect_stock_hot_sector = lambda *args, **kwargs: ("新材料", 2.68)
+    _val._xgb_predict_listing = lambda *args, **kwargs: (308, ["测试"], None)
+    _val.get_temp_listing_multiplier = lambda: 1.0
+    capped = _val.get_listing_analysis("stock", 12.1, None, None,
+                                       stock_detail={"stock_code": "301697", "stock_name": "贝特利"})
+    check("风口倍数超过安全范围时受控", capped.get("predicted_return", 999) <= 462,
+          "predicted_return=%r" % (capped.get("predicted_return"),))
+    _val.detect_stock_hot_sector = _old_detect_for_cap
+    _val._xgb_predict_listing = _old_xgb_for_cap
+    _val.get_temp_listing_multiplier = _old_temp_for_cap
     _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']
     _val.fetch_market_heat = lambda: {"index_level": "中性", "avg_premium": 0.30, "index_1m": 0.0}
     _val.calculate_liquidity_adjustment = lambda cs, *_args: {

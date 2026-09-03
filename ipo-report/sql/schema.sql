@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS ipo_history (
   main_business         TEXT,
   industry              TEXT,
   circulation_mv        REAL,
-  pe_ratio              REAL
+  pe_ratio              REAL,
+  business_exposure     JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -49,6 +50,11 @@ CREATE TABLE IF NOT EXISTS predictions (
   liquidity_sample_count INTEGER,
   valuation_model_version TEXT,
   valuation_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+  base_pred_return REAL,
+  sector_adjustment_pp REAL,
+  sector_multiplier REAL,
+  sector_confidence REAL,
+  prediction_context JSONB NOT NULL DEFAULT '{}'::jsonb,
   UNIQUE (type, code, pred_date)
 );
 

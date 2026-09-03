@@ -2093,7 +2093,15 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
                     OR NOT COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false)))
               OR (pending_no_revision.next_eligible_date IS NULL
                   AND NOT (COALESCE((pending_no_revision.raw_payload->>'no_revision_evidence')::boolean,false)
-                           OR COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false))))
+                           OR COALESCE((pending_no_revision.raw_payload->>'lock_declared')::boolean,false)))
+              OR (pending_no_revision.parser_version = '7'
+                  AND EXISTS (
+                    SELECT 1 FROM fundamental.convertible_bond_profiles maturity_profile
+                     WHERE maturity_profile.instrument_id=pending_no_revision.instrument_id
+                       AND (pending_no_revision.next_eligible_date=maturity_profile.maturity_date
+                            OR pending_no_revision.valid_until=maturity_profile.maturity_date)
+                  )
+                  AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'maturity_checked'))
          AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'failed'
     )`);
   }

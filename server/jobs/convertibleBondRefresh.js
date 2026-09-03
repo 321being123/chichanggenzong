@@ -292,7 +292,7 @@ async function runRevisionStartupCatchup() {
           WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements') AS announcement_date,
         (SELECT COUNT(*)::int FROM (
            SELECT DISTINCT ON (instrument_id)
-                  parser_version,next_eligible_date,raw_payload
+                  instrument_id,parser_version,valid_until,next_eligible_date,raw_payload
              FROM analytics.convertible_bond_announcement_history
             WHERE fact_type='no_revision'
             ORDER BY instrument_id,announced_at DESC,fact_id DESC
@@ -302,7 +302,15 @@ async function runRevisionStartupCatchup() {
                       OR NOT COALESCE((raw_payload->>'lock_declared')::boolean,false)))
                 OR (next_eligible_date IS NULL
                     AND NOT (COALESCE((raw_payload->>'no_revision_evidence')::boolean,false)
-                             OR COALESCE((raw_payload->>'lock_declared')::boolean,false))))
+                             OR COALESCE((raw_payload->>'lock_declared')::boolean,false)))
+                OR (parser_version = '7'
+                    AND EXISTS (
+                      SELECT 1 FROM fundamental.convertible_bond_profiles maturity_profile
+                       WHERE maturity_profile.instrument_id=latest_no_revision.instrument_id
+                         AND (latest_no_revision.next_eligible_date=maturity_profile.maturity_date
+                              OR latest_no_revision.valid_until=maturity_profile.maturity_date)
+                    )
+                    AND COALESCE(raw_payload->'reparse'->>'status','') <> 'maturity_checked'))
            AND COALESCE(raw_payload->'reparse'->>'status','') <> 'failed') AS pending_parse,
         (SELECT COUNT(*)::int FROM ops.sync_cursors
           WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'

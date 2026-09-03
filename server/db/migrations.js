@@ -5221,13 +5221,13 @@ async function migration128TushareDualAccountPolicy() {
         ('daily_basic',2000,NULL,6000,'https://tushare.pro/document/2?doc_id=32',450,180,true,true,'官方页面注明5000积分以上无总量限制；备用账号仍受内部日止损'),
         ('adj_factor',NULL,NULL,6000,'https://tushare.pro/document/1?doc_id=28',450,180,true,true,'官方页面未公布独立频率，沿用积分档位保护'),
         ('income',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
-        ('income_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=33',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('income_vip',5000,500,NULL,'https://tushare.pro/document/2?doc_id=33',450,180,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
         ('balancesheet',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
-        ('balancesheet_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=36',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('balancesheet_vip',5000,500,NULL,'https://tushare.pro/document/2?doc_id=36',450,180,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
         ('cashflow',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=44',450,180,true,true,'官方权限按接口核验'),
-        ('cashflow_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=44',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('cashflow_vip',5000,500,NULL,'https://tushare.pro/document/2?doc_id=44',450,180,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
         ('fina_indicator',2000,NULL,NULL,'https://tushare.pro/document/2?doc_id=79',450,180,true,true,'官方单只股票最多100行，至少2000积分'),
-        ('fina_indicator_vip',5000,NULL,NULL,'https://tushare.pro/document/2?doc_id=79',450,NULL,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
+        ('fina_indicator_vip',5000,500,NULL,'https://tushare.pro/document/2?doc_id=79',450,180,true,false,'官方完整版财务接口要求5000积分，2000积分备用账号不得调用'),
         ('forecast',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
         ('dividend',2000,NULL,NULL,NULL,450,180,true,true,'官方权限按接口核验'),
         ('new_share',120,NULL,2000,'https://tushare.pro/document/2?doc_id=123',450,180,true,true,'官方每次最多2000行，最低120积分'),
@@ -5293,6 +5293,27 @@ async function migration128TushareDualAccountPolicy() {
 // 确保四个财务VIP接口、匿名旧策略和主备额度在升级后最终一致。
 async function migration129TushareDualAccountPolicyRepair() {
   await migration128TushareDualAccountPolicy();
+}
+
+// ========== 130：Tushare VIP策略字段补齐 =============
+// 已登记128/129的环境也必须补齐VIP接口的官方频率与主备内部保护，
+// 即使后台误操作重新启用备用VIP接口，也不能失去分钟级止损。
+async function migration130TushareVipBackupMinuteLimit() {
+  await pool.query(`
+    UPDATE ops.source_endpoint_policies p
+       SET points_required=5000,
+           official_per_minute_limit=500,
+           official_daily_limit=CASE WHEN p.credential_profile='backup' THEN 100000 ELSE NULL END,
+           internal_per_minute_limit=CASE WHEN p.credential_profile='backup' THEN 180 ELSE 450 END,
+           internal_daily_limit=CASE WHEN p.credential_profile='backup' THEN 90000 ELSE NULL END,
+           enabled=CASE WHEN p.credential_profile='backup' THEN false ELSE p.enabled END,
+           updated_at=now()
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id
+       AND ds.source_code='tushare'
+       AND p.api_name IN ('income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip')
+       AND p.credential_profile IN ('primary','backup');
+  `);
 }
 
 const MIGRATIONS = [
@@ -5425,6 +5446,7 @@ const MIGRATIONS = [
   { version: '127_source_endpoint_policies', up: migration127SourceEndpointPolicies },
   { version: '128_tushare_dual_account_policy', up: migration128TushareDualAccountPolicy },
   { version: '129_tushare_dual_account_policy_repair', up: migration129TushareDualAccountPolicyRepair },
+  { version: '130_tushare_vip_backup_minute_limit', up: migration130TushareVipBackupMinuteLimit },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6009,6 +6031,7 @@ module.exports = {
   migration127SourceEndpointPolicies,
   migration128TushareDualAccountPolicy,
   migration129TushareDualAccountPolicyRepair,
+  migration130TushareVipBackupMinuteLimit,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

@@ -64,7 +64,8 @@ function pgConfig(dbName) {
     check('全部迁移记录已登记', () => { assert.strictEqual(m.rows[0].c, expectedMigrationCount); });
 
     const dualAccountPolicies = await db.pool.query(
-      `SELECT p.api_name,p.credential_profile,p.points_required,p.internal_per_minute_limit,
+      `SELECT p.api_name,p.credential_profile,p.points_required,p.official_per_minute_limit,
+              p.internal_per_minute_limit,
               p.internal_daily_limit,p.enabled
          FROM ops.source_endpoint_policies p
          JOIN ops.data_sources ds ON ds.source_id=p.source_id
@@ -86,6 +87,8 @@ function pgConfig(dbName) {
       );
       for (const apiName of ['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']) {
         assert.strictEqual(policyMap.get(`${apiName}:primary`).points_required, 5000, `${apiName}主账号积分门槛错误`);
+        assert.strictEqual(policyMap.get(`${apiName}:primary`).official_per_minute_limit, 500, `${apiName}官方频率错误`);
+        assert.strictEqual(policyMap.get(`${apiName}:backup`).internal_per_minute_limit, 180, `${apiName}备用止损频率错误`);
         assert.strictEqual(policyMap.get(`${apiName}:backup`).enabled, false, `${apiName}备用账号必须禁用`);
       }
     });

@@ -4,6 +4,7 @@ const https = require('https');
 const { SECRET } = require('../config');
 const { getConfig, setConfig } = require('../db/config');
 const { withExternalCallGuard, tokenFingerprint } = require('./externalCallGuard');
+const { listSourceEndpointPolicies, syncCredentialFingerprint, recordEndpointPermission } = require('./sourceEndpointPolicy');
 
 const CONFIG_KEY = 'external_api_configs';
 const PROVIDERS = {
@@ -311,6 +312,9 @@ async function testProviderAvailability(provider = 'tushare', role = 'current', 
     };
   }
   await recordProviderTestResult(provider, targetRole, requestedApi, result);
+  if (provider === 'tushare' && requestedApi) {
+    await recordEndpointPermission(provider, targetRole, requestedApi, token ? tokenFingerprint(token) : 'none', result);
+  }
   return result;
 }
 
@@ -334,6 +338,7 @@ async function getExternalApiSettings() {
         return acc;
       }, {}),
       circuits: await getExternalCircuitStatuses(provider, { primary: item.primary, backup: item.backup }),
+      endpoint_policies: await listSourceEndpointPolicies(provider),
     };
   }
   return result;
@@ -361,6 +366,9 @@ async function saveProviderSettings(provider, input = {}) {
     const { invalidateExternalCircuits, tokenFingerprint } = require('./externalCallGuard');
     if (primaryChanged && previousPrimary) await invalidateExternalCircuits(provider, tokenFingerprint(previousPrimary));
     if (backupChanged && previousBackup) await invalidateExternalCircuits(`${provider}_backup`, tokenFingerprint(previousBackup));
+    const updated = await getProviderRuntime(provider);
+    await syncCredentialFingerprint(provider, 'primary', tokenFingerprint(updated.primary));
+    await syncCredentialFingerprint(provider, 'backup', tokenFingerprint(updated.backup));
   }
   return getProviderRuntime(provider);
 }

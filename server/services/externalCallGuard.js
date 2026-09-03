@@ -52,11 +52,12 @@ class ExternalCallGuardError extends Error {
     this.name = 'ExternalCallGuardError';
     this.code = code;
     this.errorType = code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' ? 'rate_limit'
-      : code === 'JOB_BUDGET_EXCEEDED' ? 'non_retryable'
+      : ['JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'POLICY_DISABLED'].includes(code) ? 'non_retryable'
       : code === 'DATASET_LOCKED' ? 'in_progress' : 'circuit_open';
     this.source = source;
     this.dataset = dataset;
     this.apiName = details.apiName || '';
+    this.credentialProfile = details.credentialProfile || '';
     this.tokenFingerprint = details.tokenFingerprint || '';
     this.recoverAt = details.recoverAt || null;
     this.retryable = false;
@@ -84,6 +85,9 @@ function normalizeGuardOptions(source, circuitSource, options = {}, dataset = ''
   const configuredSource = typeof circuitSource === 'string' ? circuitSource : supplied.circuitSource;
   return {
     circuitSource: sourceKey(configuredSource || source),
+    budgetSource: budgetSourceKey(source),
+    credentialProfile: ['primary', 'backup', 'anonymous'].includes(String(supplied.credentialProfile || ''))
+      ? String(supplied.credentialProfile) : defaultCredentialProfile(source),
     apiName: String(supplied.apiName || deriveApiName(source, configuredSource, dataset) || '*').slice(0, 64),
     tokenFingerprint: String(supplied.tokenFingerprint || 'none').slice(0, 128),
   };
@@ -92,6 +96,16 @@ function normalizeGuardOptions(source, circuitSource, options = {}, dataset = ''
 function sourceKey(source) {
   const key = String(source || 'unknown');
   return key;
+}
+
+function budgetSourceKey(source) {
+  const key = sourceKey(source);
+  return key.toLowerCase() === 'tushare_backup' ? 'tushare' : key;
+}
+
+function defaultCredentialProfile(source) {
+  const key = sourceKey(source).toLowerCase();
+  return key === 'tushare_backup' ? 'backup' : key === 'tushare' ? 'primary' : 'anonymous';
 }
 
 function getExternalBudgetLimits(key) {
@@ -211,40 +225,64 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
       apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint,
     });
   }
-  const { minute, day } = nowParts();
-  const limits = budgetLimits(key);
   const client = providedClient || await getPool().connect();
   try {
     await client.query('BEGIN');
-    const dayKey = day;
-    const minuteKey = `${day}:${minute}`;
     const probe = await assertCircuitAvailable(client, key, guardOptions.apiName, guardOptions.tokenFingerprint, dataset);
-    if (limits.minute != null && limits.day != null) {
-      // 日/分钟预算由数据库原子函数统一扣减，Node/Python 共用同一入口。
-      const { rows: budgetRows } = await client.query(
-        'SELECT * FROM ops.consume_external_call_budget($1,$2,$3,$4,$5)',
-        [key, dayKey, minuteKey, limits.day, limits.minute]
-      );
-      const budget = budgetRows[0] || {};
-      if (!budget.allowed && budget.wait_window === 'minute') {
-        const recoverAt = recoverAtFor('BUDGET_WAIT', 'minute');
+    // 旧 ops.consume_external_call_budget 仅保留迁移兼容；实际限额由 reserve_external_call 读取策略。
+    const { rows: budgetRows } = await client.query(
+      'SELECT * FROM ops.reserve_external_call($1,$2,$3,$4)',
+      [guardOptions.budgetSource, guardOptions.apiName, guardOptions.credentialProfile, guardOptions.tokenFingerprint]
+    );
+    const budget = budgetRows[0] || {};
+    if (!budget.allowed) {
+      const reason = String(budget.reason || 'policy_missing');
+      if (reason === 'policy_missing' || reason === 'policy_disabled') {
         await client.query('COMMIT');
-        throw new ExternalCallGuardError('BUDGET_WAIT', `${key} ${guardOptions.apiName} 已达到每分钟请求预算 ${limits.minute}，等待下一窗口`, key, dataset, {
-          apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'minute',
+        throw new ExternalCallGuardError(reason === 'policy_disabled' ? 'POLICY_DISABLED' : 'POLICY_NOT_CONFIGURED',
+          `${guardOptions.budgetSource} ${guardOptions.apiName} 未配置可用接口策略`, key, dataset, {
+            apiName: guardOptions.apiName, credentialProfile: guardOptions.credentialProfile,
+            tokenFingerprint: guardOptions.tokenFingerprint,
+          });
+      }
+      if (reason === 'permission_denied') {
+        await client.query('COMMIT');
+        throw new ExternalCallGuardError('PERMISSION_DENIED', `${guardOptions.budgetSource} ${guardOptions.apiName} 权限策略禁止调用`, key, dataset, {
+          apiName: guardOptions.apiName, credentialProfile: guardOptions.credentialProfile,
+          tokenFingerprint: guardOptions.tokenFingerprint,
         });
       }
-      if (!budget.allowed && budget.wait_window === 'day') {
-        const recoverAt = recoverAtFor('BUDGET_WAIT', 'day');
-        await client.query('COMMIT');
-        throw new ExternalCallGuardError('BUDGET_WAIT', `${key} 已达到当日请求预算 ${limits.day}，等待下一交易日`, key, dataset, {
-          apiName: '*', tokenFingerprint: guardOptions.tokenFingerprint, recoverAt, budgetWindow: 'day',
+      const dayWait = reason === 'day' || reason === 'credential_day';
+      const recoverAt = budget.wait_until || recoverAtFor('BUDGET_WAIT', dayWait ? 'day' : 'minute');
+      await client.query('COMMIT');
+      throw new ExternalCallGuardError('BUDGET_WAIT',
+        `${guardOptions.budgetSource} ${guardOptions.apiName} 已达到${dayWait ? '日' : reason === 'concurrency' ? '并发或间隔' : '分钟'}保护线，等待恢复`,
+        key, dataset, {
+          apiName: guardOptions.apiName, credentialProfile: guardOptions.credentialProfile,
+          tokenFingerprint: guardOptions.tokenFingerprint, recoverAt,
+          budgetWindow: dayWait ? 'day' : reason,
         });
-      }
     }
     await client.query('COMMIT');
     runCallCount += 1;
-    const item = localCount(key, day, minute);
-    return { source: key, dataset, minuteCount: item.minuteCount, dayCount: item.dayCount, ...(probe || {}) };
+    const parts = nowParts();
+    const statKey = `${guardOptions.budgetSource}:${guardOptions.apiName}:${guardOptions.tokenFingerprint}`;
+    const item = localCount(statKey, parts.day, parts.minute);
+    const concurrencySlot = budget.concurrency_slot == null ? null : Number(budget.concurrency_slot);
+    if (!providedClient && concurrencySlot != null) {
+      await releaseExternalCallSlot(guardOptions.budgetSource, guardOptions.apiName,
+        guardOptions.tokenFingerprint, concurrencySlot, client);
+    }
+    return {
+      source: guardOptions.budgetSource, dataset, apiName: guardOptions.apiName,
+      credentialProfile: guardOptions.credentialProfile, tokenFingerprint: guardOptions.tokenFingerprint,
+      minuteCount: Number(budget.minute_count || item.minuteCount),
+      dayCount: Number(budget.day_count || item.dayCount),
+      concurrencySlot: providedClient ? concurrencySlot : null,
+      timeoutMs: budget.timeout_ms == null ? 30000 : Number(budget.timeout_ms),
+      retryPolicy: budget.retry_policy || {}, emptyPolicy: budget.empty_policy || 'preserve_last_success',
+      ...(probe || {}),
+    };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -277,15 +315,22 @@ async function releaseExternalDatasetLock(lock) {
   lock.client.release();
 }
 
+async function releaseExternalCallSlot(source, apiName, fingerprint = 'none', slot = null, providedClient = null) {
+  if (slot == null || !Number.isFinite(Number(slot))) return;
+  const queryable = providedClient || getPool();
+  const lockKey = `external_slot:${budgetSourceKey(source)}:${String(apiName || '*').slice(0, 64)}:${String(fingerprint || 'none')}:${Math.floor(Number(slot))}`;
+  await queryable.query('SELECT pg_advisory_unlock(hashtextextended($1,0))', [lockKey]).catch(() => {});
+}
+
 async function withExternalCallGuard(source, dataset, businessDate, fn, circuitSource = source) {
   const guardOptions = normalizeGuardOptions(source, circuitSource, {}, dataset);
-  const localKey = `${sourceKey(source)}:${String(dataset || 'unknown')}:${String(businessDate || nowParts().day).slice(0, 10)}`;
+  const localKey = `${guardOptions.budgetSource}:${String(dataset || 'unknown')}:${String(businessDate || nowParts().day).slice(0, 10)}`;
   if (localDatasetLocks.has(localKey)) {
     throw new ExternalCallGuardError('DATASET_LOCKED', '同一数据集正在由其他 Worker 请求中', sourceKey(source), dataset);
   }
   localDatasetLocks.add(localKey);
   try {
-    const lock = await acquireExternalDatasetLock(source, dataset, businessDate);
+    const lock = await acquireExternalDatasetLock(guardOptions.budgetSource, dataset, businessDate);
     let guardResult = null;
     try {
       guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
@@ -309,6 +354,8 @@ async function withExternalCallGuard(source, dataset, businessDate, fn, circuitS
       }
       throw error;
     } finally {
+      await releaseExternalCallSlot(guardOptions.budgetSource, guardOptions.apiName, guardOptions.tokenFingerprint,
+        guardResult && guardResult.concurrencySlot, lock.client);
       await releaseExternalDatasetLock(lock);
     }
   } finally {
@@ -412,11 +459,27 @@ function setExternalCallCount(value) {
 async function resetExternalCallGuardPersistence(source = null) {
   const { day } = nowParts();
   if (source) {
-    await getPool().query(
-      'DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source=$2 OR source LIKE $2 || \':%\')',
-      [day, source]
-    );
-    await getPool().query('DELETE FROM ops.external_circuits WHERE source=$1 OR source LIKE $1 || \':%\'', [source]);
+    const sourceName = sourceKey(source);
+    const budgetSource = budgetSourceKey(sourceName);
+    if (sourceName.toLowerCase() === 'tushare_backup') {
+      await getPool().query(
+        "DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source='tushare_backup' OR (source='tushare' AND credential_profile='backup'))",
+        [day]
+      );
+      await getPool().query("DELETE FROM ops.external_circuits WHERE source='tushare_backup' OR source LIKE 'tushare_backup:%'", []);
+    } else if (sourceName.toLowerCase() === 'tushare') {
+      await getPool().query(
+        "DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source='tushare' AND credential_profile IN ('primary','legacy'))",
+        [day]
+      );
+      await getPool().query("DELETE FROM ops.external_circuits WHERE source='tushare' OR source LIKE 'tushare:%'", []);
+    } else {
+      await getPool().query(
+        'DELETE FROM ops.external_call_budgets WHERE window_key=$1 AND (source=$2 OR source LIKE $2 || \':%\')',
+        [day, sourceName]
+      );
+      await getPool().query('DELETE FROM ops.external_circuits WHERE source=$1 OR source LIKE $1 || \':%\'', [sourceName]);
+    }
     return;
   }
   await getPool().query('DELETE FROM ops.external_call_budgets WHERE window_key=$1', [day]);
@@ -426,10 +489,13 @@ async function resetExternalCallGuardPersistence(source = null) {
 function getExternalCallStats() {
   let total = runCallCount;
   const sources = {};
+  const endpoints = {};
   for (const [source, item] of counters.entries()) {
-    sources[source] = Number(item.dayCount || 0);
+    const sourceName = String(source).split(':')[0];
+    sources[sourceName] = Number(sources[sourceName] || 0) + Number(item.dayCount || 0);
+    endpoints[source] = Number(item.dayCount || 0);
   }
-  return { total, sources };
+  return { total, sources, endpoints };
 }
 
 module.exports = {
@@ -440,6 +506,7 @@ module.exports = {
   openExternalCircuit,
   closeExternalCircuit,
   releaseExternalCircuitProbe,
+  releaseExternalCallSlot,
   invalidateExternalCircuits,
   getExternalCircuitStatuses,
   resetExternalCallGuard,

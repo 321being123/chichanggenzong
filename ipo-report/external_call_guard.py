@@ -91,6 +91,16 @@ def _source_key(source):
     return str(source or "python-http")
 
 
+def _budget_source(source):
+    source = _source_key(source)
+    return "tushare" if source.lower() == "tushare_backup" else source
+
+
+def _credential_profile(source):
+    source = _source_key(source).lower()
+    return "backup" if source == "tushare_backup" else "primary" if source == "tushare" else "anonymous"
+
+
 def token_fingerprint(token):
     value = str(token or "")
     return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else "none"
@@ -230,36 +240,46 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
         if run_limit >= 0 and _run_call_count >= run_limit:
             raise ExternalCallGuardError("JOB_BUDGET_EXCEEDED", f"{source} 已达到本任务声明的外部请求上限 {int(run_limit)}", source, dataset, api_name or "*")
     source = _source_key(source)
+    budget_source = _budget_source(source)
     api_name = _api_name(source, dataset, api_name)
+    credential_profile = _credential_profile(source)
     fingerprint = str(token_fingerprint_value or "none")
-    day_key = _budget_date_text()
-    minute_key = f"{day_key}:{_minute_key()}"
-    day_limit = _limit(source, "day")
-    minute_limit = _limit(source, "minute")
     try:
         with conn.cursor() as cur:
             probe = _check_circuit(cur, source, api_name, fingerprint, dataset)
-            if day_limit is not None and minute_limit is not None:
-                # 日/分钟预算由 ops.consume_external_call_budget 统一原子更新
-                # ops.external_call_budgets，Node/Python 共用同一入口。
-                cur.execute(
-                    """SELECT allowed,wait_window,day_count,minute_count
-                         FROM ops.consume_external_call_budget(%s,%s,%s,%s,%s)""",
-                    (source, day_key, minute_key, day_limit, minute_limit),
-                )
-                budget_row = cur.fetchone() or (False, "day", 0, 0)
-                allowed, wait_window, day_count, minute_count = budget_row
-                if not allowed and wait_window == "minute":
-                    recover_at = _recover_at("BUDGET_WAIT", "minute")
+            # 旧 ops.consume_external_call_budget 仅保留迁移兼容；实际限额必须由策略函数读取。
+            # reserve_external_call 最终仍原子写入 ops.external_call_budgets，Node/Python 共用同一计数。
+            cur.execute(
+                """SELECT allowed,reason,wait_until,day_count,minute_count,
+                              effective_daily_limit,effective_minute_limit,timeout_ms,
+                              retry_policy,empty_policy,concurrency_slot
+                     FROM ops.reserve_external_call(%s,%s,%s,%s)""",
+                (budget_source, api_name, credential_profile, fingerprint),
+            )
+            budget = cur.fetchone() or (False, "policy_missing", None, 0, 0, None, None, 30000, {}, "preserve_last_success", None)
+            allowed, reason, wait_until, day_count, minute_count, day_limit, minute_limit, timeout_ms, retry_policy, empty_policy, concurrency_slot = budget
+            if not allowed:
+                if reason in {"policy_missing", "policy_disabled"}:
                     conn.commit()
-                    raise ExternalCallGuardError("BUDGET_WAIT", f"{source} {api_name} 已达到每分钟请求预算 {minute_limit}，等待下一窗口", source, dataset, api_name, fingerprint, recover_at)
-                if not allowed and wait_window == "day":
-                    recover_at = _recover_at("BUDGET_WAIT", "day")
+                    code = "POLICY_DISABLED" if reason == "policy_disabled" else "POLICY_NOT_CONFIGURED"
+                    raise ExternalCallGuardError(code, f"{budget_source} {api_name} 未配置可用接口策略", source, dataset, api_name, fingerprint)
+                if reason == "permission_denied":
                     conn.commit()
-                    raise ExternalCallGuardError("BUDGET_WAIT", f"{source} 已达到当日请求预算 {day_limit}，等待下一交易日", source, dataset, "*", fingerprint, recover_at)
+                    raise ExternalCallGuardError("PERMISSION_DENIED", f"{budget_source} {api_name} 权限策略禁止调用", source, dataset, api_name, fingerprint)
+                day_wait = reason in {"day", "credential_day"}
+                recover_at = wait_until or _recover_at("BUDGET_WAIT", "day" if day_wait else "minute")
+                conn.commit()
+                raise ExternalCallGuardError("BUDGET_WAIT", f"{budget_source} {api_name} 已达到保护线，等待恢复", source, dataset, api_name, fingerprint, recover_at)
         conn.commit()
         _run_call_count += 1
-        return probe or {}
+        return {
+            **(probe or {}), "source": budget_source, "api_name": api_name,
+            "credential_profile": credential_profile, "token_fingerprint": fingerprint,
+            "day_count": int(day_count or 0), "minute_count": int(minute_count or 0),
+            "timeout_ms": int(timeout_ms or 30000), "retry_policy": retry_policy or {},
+            "empty_policy": empty_policy or "preserve_last_success",
+            "concurrency_slot": concurrency_slot,
+        }
     except Exception:
         conn.rollback()
         raise
@@ -313,11 +333,27 @@ def release_external_circuit_probe(source, api_name, token_fingerprint_value, re
         conn.close()
 
 
+def release_external_call_slot(source, api_name, token_fingerprint_value="none", slot=None, conn=None):
+    if slot is None:
+        return
+    lock_key = f"external_slot:{_budget_source(source)}:{str(api_name or '*')[:64]}:{str(token_fingerprint_value or 'none')}:{int(slot)}"
+    own_conn = conn is None
+    client = conn or _db_connect()
+    try:
+        with client.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s,0))", (lock_key,))
+        if own_conn:
+            client.commit()
+    finally:
+        if own_conn:
+            client.close()
+
+
 def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=None, token_fingerprint_value="none"):
     if not enabled():
         return fn()
     conn = _db_connect()
-    lock_key = f"{_source_key(source)}:{dataset or 'unknown'}:{_date_text()}"
+    lock_key = f"{_budget_source(source)}:{dataset or 'unknown'}:{_date_text()}"
     locked = False
     try:
         with conn.cursor() as cur:
@@ -339,6 +375,12 @@ def with_external_call_guard(source, dataset, fn, circuit_source=None, api_name=
                 pass
         raise
     finally:
+        if 'probe' in locals() and probe.get("concurrency_slot") is not None:
+            try:
+                release_external_call_slot(source, probe.get("api_name") or api_name, token_fingerprint_value,
+                                           probe.get("concurrency_slot"), conn)
+            except Exception:
+                pass
         if locked:
             try:
                 with conn.cursor() as cur:

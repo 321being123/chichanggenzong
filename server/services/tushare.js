@@ -63,10 +63,11 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
   const guardedRequest = withExternalCallGuard(guardSource, dataset, process.env.JOB_BUSINESS_DATE, (guardClient, guardResult) => {
     probeToken = guardResult && guardResult.probeToken || null;
     return new Promise((resolve, reject) => {
-    const request = https.request(API_URL, {
+      const requestTimeout = Number(guardResult && guardResult.timeoutMs);
+      const request = https.request(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 30000,
+      timeout: Number.isFinite(requestTimeout) && requestTimeout > 0 ? requestTimeout : 30000,
     }, response => {
       let responseBody = '';
       response.setEncoding('utf8');

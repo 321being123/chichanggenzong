@@ -185,6 +185,35 @@ async function reconcileSlot(slot) {
   // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
   // 必须先让统一执行器领取并生成新的 manual_retry 运行记录。
   if (slot.status === 'pending' && slot.trigger_type === 'manual_retry') return slot;
+  // 同一业务日、同一阶段如果已有更晚的实例成功，旧失败/阻断实例已经被后续执行接管。
+  // 关闭旧实例告警，避免一次恢复在后台长期留下“待处理”假象；不重放旧实例。
+  if (['failed', 'waiting_external', 'blocked', 'degraded'].includes(slot.status)) {
+    const mode = String(slot.request_payload && slot.request_payload.mode || 'core');
+    const { rows: laterSuccess } = await pool.query(
+      `SELECT slot_id
+         FROM ops.job_schedule_slots
+        WHERE job_code=$1 AND business_date=$2::date AND status='succeeded'
+          AND slot_id<>$3 AND scheduled_for>$4::timestamptz
+          AND COALESCE(request_payload->>'mode','core')=$5
+        ORDER BY scheduled_for DESC, slot_id DESC LIMIT 1`,
+      [slot.job_code, slot.business_date, slot.slot_id, slot.scheduled_for, mode]
+    );
+    if (laterSuccess[0]) {
+      const { rows: superseded } = await pool.query(
+        `UPDATE ops.job_schedule_slots
+            SET status='skipped', next_attempt_at=NULL,
+                last_error='同业务日后续实例已成功完成，本实例不再执行',
+                lease_owner=NULL, lease_until=NULL, updated_at=now()
+          WHERE slot_id=$1 AND status IN ('failed','waiting_external','blocked','degraded')
+          RETURNING *`, [slot.slot_id]
+      );
+      if (superseded[0]) {
+        const { resolveJobSlotAlerts } = require('./jobAlertMailer');
+        await resolveJobSlotAlerts(superseded[0]).catch(error => console.warn('[job-alert] 后续成功实例收敛旧告警失败:', error.message));
+        return superseded[0];
+      }
+    }
+  }
   // 外部来源限流/额度恢复前不消耗业务重试次数；恢复后由统一执行器继续执行。
   if (['failed', 'waiting_external'].includes(slot.status)
       && definition.reconcileByWatermark === true) {

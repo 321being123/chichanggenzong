@@ -77,8 +77,13 @@ assert.deepStrictEqual(ipoReport.datasetDependencies, [{
   datasetCode: 'ipo_history', scopeKey: 'GLOBAL', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed'
 }], '打新日报必须依赖当天通过质量门禁的IPO事实分区');
 assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
-assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 1, 'IPO核心事实阶段只允许一次new_share调用');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 3, 'IPO核心事实阶段必须允许一次失败后的重试');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 15, 'IPO晚间补全必须使用独立调用预算');
+assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');
+assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, 10, '指数补齐上限必须覆盖双账户五指数完整一轮');
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refresh').maxExternalCallsPerRun, 600, '可转债主链上限必须覆盖主同步及历史补漏');
+assert.strictEqual(definitions.getJobDefinition('index_recent').dataDatePolicy, 'previous_trading_day', '指数补齐应按最近完整交易日验收');
+assert.strictEqual(definitions.getJobDefinition('arbitrage_sync').maxExternalCallsPerRun, 600, '套利公告单批上限必须覆盖两个适配器的分页边界');
 assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share')).length, 1,
   'new_share在任务契约中只能有一个采集者');
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
@@ -134,6 +139,8 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
   const originalRequest = require('https').request;
   const originalToken = process.env.TUSHARE_TOKEN;
   const guard = budgetGuard;
+  const guardPool = require('../db/connection').pool;
+  let guardSource;
   process.env.TUSHARE_TOKEN = 'test-token';
   try {
     const https = require('https');
@@ -199,8 +206,24 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     mock(200, { code: 2002, msg: '没有接口访问权限' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'PERMISSION_DENIED' && error.errorType === 'permission' && error.retryable === false);
 
-    const guardSource = `test_guard_${process.pid}_${Date.now()}`;
+    guardSource = `test_guard_${process.pid}_${Date.now()}`;
     const guardEnv = guardSource.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    await guardPool.query(
+      `INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+       VALUES($1,$1,'test',999) ON CONFLICT(source_code) DO NOTHING`, [guardSource]
+    );
+    const guardSourceRow = await guardPool.query(
+      `SELECT source_id FROM ops.data_sources WHERE source_code=$1`, [guardSource]
+    );
+    await guardPool.query(
+      `INSERT INTO ops.source_endpoint_policies
+         (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit)
+       VALUES($1,'*','anonymous',20,20)
+       ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+         internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
+         internal_daily_limit=EXCLUDED.internal_daily_limit,
+         enabled=true,permission_status='unknown'`, [guardSourceRow.rows[0].source_id]
+    );
     process.env[`${guardEnv}_PER_MINUTE_BUDGET`] = '20';
     process.env[`${guardEnv}_DAILY_BUDGET`] = '20';
     let guardedExternalCalls = 0;
@@ -226,6 +249,11 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     assert.strictEqual(guardedExternalCalls, 1, '同一数据集并发时外部 API 实际调用次数必须为 1');
     await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
     guard.resetExternalCallGuard();
+    await guardPool.query(
+      `UPDATE ops.source_endpoint_policies SET internal_daily_limit=1
+       WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1)
+         AND api_name='*' AND credential_profile='anonymous'`, [guardSource]
+    );
     process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
     await guard.consumeExternalCall(guardSource, 'dataset-quota-first');
     await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error =>
@@ -240,6 +268,9 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     );
     assert.strictEqual(quotaCircuit.rows.length, 0, '本系统每日预算耗尽不得写入 Token 级熔断');
     await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
+    await guardPool.query(
+      `DELETE FROM ops.data_sources WHERE source_code=$1`, [guardSource]
+    );
     delete process.env[`${guardEnv}_PER_MINUTE_BUDGET`];
     delete process.env[`${guardEnv}_DAILY_BUDGET`];
 
@@ -310,6 +341,9 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     guard.resetExternalCallGuard();
     await guard.resetExternalCallGuardPersistence('tushare');
     await guard.resetExternalCallGuardPersistence('tushare_backup');
+    if (guardSource) {
+      await guardPool.query('DELETE FROM ops.data_sources WHERE source_code=$1', [guardSource]).catch(() => {});
+    }
     if (originalToken === undefined) delete process.env.TUSHARE_TOKEN;
     else process.env.TUSHARE_TOKEN = originalToken;
     await require('../db/connection').pool.end();

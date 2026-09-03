@@ -4882,6 +4882,303 @@ async function migration126NormalizeStockCodeSuffix() {
   `);
 }
 
+// ========== 127：来源＋接口＋凭据策略与精确调用计数 =============
+// 策略、运行状态和计数分离：策略是可维护配置，运行状态只保存最小间隔，
+// 预算表保存每次真实请求的精确计数。Node/Python 均只能调用 reserve_external_call，
+// 不允许从调用方传入限额，避免“表里有配置、运行时仍按旧默认值限流”。
+async function migration127SourceEndpointPolicies() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority) VALUES
+      ('exchange-rate','汇率接口','official',20),
+      ('chinabond','中债收益率','official',20),
+      ('csindex','中证指数','official',20),
+      ('hsi-official','恒生指数','official',20),
+      ('stock-analysis','个股分析接口','official',20),
+      ('bond-safety','可转债安全性接口','official',20),
+      ('hkex','港交所披露易','official',10)
+    ON CONFLICT(source_code) DO UPDATE SET
+      source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,
+      priority=EXCLUDED.priority;
+
+    CREATE TABLE IF NOT EXISTS ops.source_endpoint_policies (
+      policy_id BIGSERIAL PRIMARY KEY,
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id) ON DELETE CASCADE,
+      api_name TEXT NOT NULL CHECK (api_name='*' OR api_name ~ '^[A-Za-z0-9_.:-]{1,64}$'),
+      credential_profile TEXT NOT NULL DEFAULT 'anonymous'
+        CHECK (credential_profile IN ('primary','backup','anonymous')),
+      credential_fingerprint TEXT NOT NULL DEFAULT 'none',
+      points_required INTEGER CHECK (points_required IS NULL OR points_required >= 0),
+      permission_mode TEXT NOT NULL DEFAULT 'unknown',
+      permission_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (permission_status IN ('unknown','available','permission_denied','rate_limited','not_configured','empty_but_accepted','error')),
+      official_per_minute_limit INTEGER CHECK (official_per_minute_limit IS NULL OR official_per_minute_limit > 0),
+      official_daily_limit INTEGER CHECK (official_daily_limit IS NULL OR official_daily_limit > 0),
+      internal_per_minute_limit INTEGER CHECK (internal_per_minute_limit IS NULL OR internal_per_minute_limit > 0),
+      internal_daily_limit INTEGER CHECK (internal_daily_limit IS NULL OR internal_daily_limit > 0),
+      max_concurrency INTEGER NOT NULL DEFAULT 1 CHECK (max_concurrency > 0),
+      min_interval_ms INTEGER NOT NULL DEFAULT 0 CHECK (min_interval_ms >= 0),
+      row_limit INTEGER CHECK (row_limit IS NULL OR row_limit > 0),
+      timeout_ms INTEGER NOT NULL DEFAULT 30000 CHECK (timeout_ms > 0),
+      empty_policy TEXT NOT NULL DEFAULT 'preserve_last_success',
+      retry_policy JSONB NOT NULL DEFAULT '{"max_attempts":1,"backoff_ms":0,"jitter_ms":0,"retry_on":[]}'::jsonb,
+      official_doc_url TEXT,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      last_verified_at TIMESTAMPTZ,
+      verification_message TEXT,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(source_id,api_name,credential_profile)
+    );
+    CREATE INDEX IF NOT EXISTS idx_source_endpoint_policies_lookup
+      ON ops.source_endpoint_policies(source_id,credential_profile,api_name);
+    CREATE INDEX IF NOT EXISTS idx_source_endpoint_policies_enabled
+      ON ops.source_endpoint_policies(enabled,source_id);
+
+    CREATE TABLE IF NOT EXISTS ops.source_endpoint_runtime (
+      source_id SMALLINT NOT NULL REFERENCES ops.data_sources(source_id) ON DELETE CASCADE,
+      api_name TEXT NOT NULL,
+      credential_fingerprint TEXT NOT NULL DEFAULT 'none',
+      next_allowed_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY(source_id,api_name,credential_fingerprint)
+    );
+
+    ALTER TABLE ops.external_call_budgets
+      ADD COLUMN IF NOT EXISTS api_name TEXT NOT NULL DEFAULT '*',
+      ADD COLUMN IF NOT EXISTS credential_profile TEXT NOT NULL DEFAULT 'legacy',
+      ADD COLUMN IF NOT EXISTS credential_fingerprint TEXT NOT NULL DEFAULT 'legacy',
+      ADD COLUMN IF NOT EXISTS policy_id BIGINT REFERENCES ops.source_endpoint_policies(policy_id) ON DELETE SET NULL;
+    ALTER TABLE ops.external_call_budgets ALTER COLUMN budget_limit DROP NOT NULL;
+    ALTER TABLE ops.external_call_budgets DROP CONSTRAINT IF EXISTS external_call_budgets_pkey;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='external_call_budgets_dimensional_pkey') THEN
+        ALTER TABLE ops.external_call_budgets
+          ADD CONSTRAINT external_call_budgets_dimensional_pkey
+          PRIMARY KEY(source,api_name,credential_fingerprint,window_type,window_key);
+      END IF;
+    END $$;
+    CREATE INDEX IF NOT EXISTS idx_external_call_budgets_credential_window
+      ON ops.external_call_budgets(source,credential_fingerprint,window_type,window_key);
+    CREATE INDEX IF NOT EXISTS idx_external_call_budgets_api_window
+      ON ops.external_call_budgets(source,api_name,window_type,window_key);
+
+    -- 先写来源级兜底策略，再写 Tushare 主/备和已知接口策略；不覆盖管理员已改配置。
+    WITH defaults(source_code,minute_limit,day_limit) AS (
+      VALUES
+        ('tencent',NULL::integer,NULL::integer),
+        ('cninfo',20,500),
+        ('tushare',450,5000),
+        ('exchange-rate',60,2000),('chinabond',60,2000),('csindex',60,2000),
+        ('hsi-official',60,2000),('stock-analysis',60,2000),('bond-safety',60,2000),
+        ('hkex',60,2000),('sse',60,2000),('szse',60,2000),('eastmoney',60,2000),
+        ('sina',60,2000),('xueqiu',20,500),('guba',20,500)
+    )
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,timeout_ms,official_doc_url)
+    SELECT ds.source_id,'*','anonymous',d.minute_limit,d.day_limit,1,0,30000,
+           CASE WHEN d.source_code='tushare' THEN 'https://tushare.pro/document/1?doc_id=108' ELSE NULL END
+      FROM defaults d JOIN ops.data_sources ds ON ds.source_code=d.source_code
+    ON CONFLICT(source_id,api_name,credential_profile) DO NOTHING;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,timeout_ms,official_doc_url)
+    SELECT ds.source_id,'*',p.profile,450,5000,3,0,30000,'https://tushare.pro/document/1?doc_id=108'
+      FROM ops.data_sources ds
+      CROSS JOIN (VALUES ('primary'),('backup')) p(profile)
+     WHERE ds.source_code='tushare'
+    ON CONFLICT(source_id,api_name,credential_profile) DO NOTHING;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,official_doc_url)
+    SELECT ds.source_id,a.api_name,p.profile,'https://tushare.pro/document/1?doc_id=108'
+      FROM ops.data_sources ds
+      CROSS JOIN (VALUES
+        ('trade_cal'),('stock_basic'),('daily'),('daily_basic'),('adj_factor'),
+        ('income'),('balancesheet'),('cashflow'),('fina_indicator'),('forecast'),
+        ('dividend'),('rt_min'),('new_share'),('cb_basic'),('cb_daily'),('cb_issue'),
+        ('cb_price_chg'),('cb_rating'),('index_daily'),('index_dailybasic'),
+        ('index_member_all'),('top10_cb_holders'),('pledge_stat'),('hk_basic'),
+        ('cn_m'),('us_tycr'),('fina_mainbz'),('stock_company'),('anns_d'),
+        ('cb_rate'),('disclosure_date'),('suspend_d')
+      ) a(api_name)
+      CROSS JOIN (VALUES ('primary'),('backup')) p(profile)
+     WHERE ds.source_code='tushare'
+    ON CONFLICT(source_id,api_name,credential_profile) DO NOTHING;
+
+    CREATE OR REPLACE FUNCTION ops.reserve_external_call(
+      p_source TEXT,
+      p_api_name TEXT,
+      p_credential_profile TEXT,
+      p_credential_fingerprint TEXT
+    )
+    RETURNS TABLE(
+      allowed BOOLEAN,
+      reason TEXT,
+      wait_until TIMESTAMPTZ,
+      policy_id BIGINT,
+      day_count INTEGER,
+      minute_count INTEGER,
+      effective_daily_limit INTEGER,
+      effective_minute_limit INTEGER,
+      timeout_ms INTEGER,
+      retry_policy JSONB,
+      empty_policy TEXT,
+      concurrency_slot INTEGER
+    )
+    LANGUAGE plpgsql
+    AS $fn$
+    DECLARE
+      v_source TEXT := NULLIF(BTRIM(p_source),'');
+      v_api TEXT := LEFT(COALESCE(NULLIF(BTRIM(p_api_name),''),'*'),64);
+      v_profile TEXT := CASE WHEN p_credential_profile IN ('primary','backup','anonymous') THEN p_credential_profile ELSE 'anonymous' END;
+      v_fingerprint TEXT := COALESCE(NULLIF(BTRIM(p_credential_fingerprint),''),'none');
+      v_source_id SMALLINT;
+      v_exact ops.source_endpoint_policies%ROWTYPE;
+      v_base ops.source_endpoint_policies%ROWTYPE;
+      v_policy_id BIGINT;
+      v_enabled BOOLEAN;
+      v_permission TEXT;
+      v_minute_limit INTEGER;
+      v_day_limit INTEGER;
+      v_credential_minute_limit INTEGER;
+      v_credential_day_limit INTEGER;
+      v_official_minute INTEGER;
+      v_official_day INTEGER;
+      v_concurrency INTEGER;
+      v_interval INTEGER;
+      v_timeout INTEGER;
+      v_retry JSONB;
+      v_empty TEXT;
+      v_day_key TEXT;
+      v_minute_key TEXT;
+      v_next TIMESTAMPTZ;
+      v_day_count INTEGER := 0;
+      v_minute_count INTEGER := 0;
+      v_credential_day_count INTEGER := 0;
+      v_credential_minute_count INTEGER := 0;
+      v_slot INTEGER := NULL;
+      v_lock_key TEXT;
+      v_i INTEGER;
+    BEGIN
+      IF v_source IS NULL THEN
+        RETURN QUERY SELECT false,'policy_missing',NULL::timestamptz,NULL::bigint,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      SELECT source_id INTO v_source_id FROM ops.data_sources WHERE source_code=v_source AND enabled=true;
+      IF v_source_id IS NULL THEN
+        RETURN QUERY SELECT false,'policy_missing',NULL::timestamptz,NULL::bigint,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      SELECT * INTO v_base FROM ops.source_endpoint_policies
+       WHERE source_id=v_source_id AND api_name='*' AND credential_profile=v_profile;
+      SELECT * INTO v_exact FROM ops.source_endpoint_policies
+       WHERE source_id=v_source_id AND api_name=v_api AND credential_profile=v_profile;
+      IF v_base.policy_id IS NULL AND v_exact.policy_id IS NULL THEN
+        RETURN QUERY SELECT false,'policy_missing',NULL::timestamptz,NULL::bigint,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      v_policy_id := COALESCE(v_exact.policy_id,v_base.policy_id);
+      v_enabled := COALESCE(v_exact.enabled,v_base.enabled,false);
+      v_permission := COALESCE(NULLIF(v_exact.permission_status,''),NULLIF(v_base.permission_status,''),'unknown');
+      IF NOT v_enabled THEN
+        RETURN QUERY SELECT false,'policy_disabled',NULL::timestamptz,v_policy_id,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      IF v_permission IN ('permission_denied','not_configured') THEN
+        RETURN QUERY SELECT false,'permission_denied',NULL::timestamptz,v_policy_id,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      v_minute_limit := COALESCE(v_exact.internal_per_minute_limit,v_base.internal_per_minute_limit);
+      v_day_limit := COALESCE(v_exact.internal_daily_limit,v_base.internal_daily_limit);
+      v_official_minute := COALESCE(v_exact.official_per_minute_limit,v_base.official_per_minute_limit);
+      v_official_day := COALESCE(v_exact.official_daily_limit,v_base.official_daily_limit);
+      IF v_official_minute IS NOT NULL AND (v_minute_limit IS NULL OR v_minute_limit > v_official_minute) THEN v_minute_limit := v_official_minute; END IF;
+      IF v_official_day IS NOT NULL AND (v_day_limit IS NULL OR v_day_limit > v_official_day) THEN v_day_limit := v_official_day; END IF;
+      v_credential_minute_limit := COALESCE(v_base.internal_per_minute_limit,v_minute_limit);
+      v_credential_day_limit := COALESCE(v_base.internal_daily_limit,v_day_limit);
+      IF v_official_minute IS NOT NULL AND (v_credential_minute_limit IS NULL OR v_credential_minute_limit > v_official_minute) THEN v_credential_minute_limit := v_official_minute; END IF;
+      IF v_official_day IS NOT NULL AND (v_credential_day_limit IS NULL OR v_credential_day_limit > v_official_day) THEN v_credential_day_limit := v_official_day; END IF;
+      v_concurrency := COALESCE(v_exact.max_concurrency,v_base.max_concurrency,1);
+      v_interval := COALESCE(v_exact.min_interval_ms,v_base.min_interval_ms,0);
+      v_timeout := COALESCE(v_exact.timeout_ms,v_base.timeout_ms,30000);
+      v_retry := COALESCE(v_exact.retry_policy,v_base.retry_policy,'{}'::jsonb);
+      v_empty := COALESCE(v_exact.empty_policy,v_base.empty_policy,'preserve_last_success');
+
+      PERFORM pg_advisory_xact_lock(hashtextextended('external_budget:'||v_source||':'||v_fingerprint,0));
+      v_day_key := to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD');
+      v_minute_key := floor(extract(epoch FROM clock_timestamp())/60)::bigint::text;
+      INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint)
+        VALUES(v_source_id,v_api,v_fingerprint)
+        ON CONFLICT(source_id,api_name,credential_fingerprint) DO NOTHING;
+      SELECT next_allowed_at INTO v_next FROM ops.source_endpoint_runtime
+       WHERE source_id=v_source_id AND api_name=v_api AND credential_fingerprint=v_fingerprint FOR UPDATE;
+      IF v_next IS NOT NULL AND v_next > clock_timestamp() THEN
+        RETURN QUERY SELECT false,'interval',v_next,v_policy_id,0,0,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      SELECT COALESCE(call_count,0) INTO v_day_count FROM ops.external_call_budgets
+       WHERE source=v_source AND api_name=v_api AND credential_fingerprint=v_fingerprint AND window_type='day' AND window_key=v_day_key FOR UPDATE;
+      SELECT COALESCE(call_count,0) INTO v_minute_count FROM ops.external_call_budgets
+       WHERE source=v_source AND api_name=v_api AND credential_fingerprint=v_fingerprint AND window_type='minute' AND window_key=v_minute_key FOR UPDATE;
+      v_day_count := COALESCE(v_day_count,0);
+      v_minute_count := COALESCE(v_minute_count,0);
+      SELECT COALESCE(SUM(call_count),0)::integer INTO v_credential_day_count FROM ops.external_call_budgets
+       WHERE source=v_source AND credential_fingerprint=v_fingerprint AND api_name<>'*' AND window_type='day' AND window_key=v_day_key;
+      SELECT COALESCE(SUM(call_count),0)::integer INTO v_credential_minute_count FROM ops.external_call_budgets
+       WHERE source=v_source AND credential_fingerprint=v_fingerprint AND api_name<>'*' AND window_type='minute' AND window_key=v_minute_key;
+      IF v_minute_limit IS NOT NULL AND v_minute_count >= v_minute_limit THEN
+        RETURN QUERY SELECT false,'minute',NULL::timestamptz,v_policy_id,v_day_count,v_minute_count,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      IF v_day_limit IS NOT NULL AND v_day_count >= v_day_limit THEN
+        RETURN QUERY SELECT false,'day',NULL::timestamptz,v_policy_id,v_day_count,v_minute_count,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      IF v_credential_minute_limit IS NOT NULL AND v_credential_minute_count >= v_credential_minute_limit THEN
+        RETURN QUERY SELECT false,'credential_minute',NULL::timestamptz,v_policy_id,v_day_count,v_minute_count,v_credential_day_limit,v_credential_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      IF v_credential_day_limit IS NOT NULL AND v_credential_day_count >= v_credential_day_limit THEN
+        RETURN QUERY SELECT false,'credential_day',NULL::timestamptz,v_policy_id,v_day_count,v_minute_count,v_credential_day_limit,v_credential_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      FOR v_i IN 0..(v_concurrency-1) LOOP
+        v_lock_key := 'external_slot:'||v_source||':'||v_api||':'||v_fingerprint||':'||v_i;
+        IF pg_try_advisory_lock(hashtextextended(v_lock_key,0)) THEN v_slot := v_i; EXIT; END IF;
+      END LOOP;
+      IF v_slot IS NULL THEN
+        RETURN QUERY SELECT false,'concurrency',clock_timestamp()+interval '1 second',v_policy_id,v_day_count,v_minute_count,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      INSERT INTO ops.external_call_budgets(source,api_name,credential_profile,credential_fingerprint,window_type,window_key,call_count,budget_limit,policy_id)
+        VALUES(v_source,v_api,v_profile,v_fingerprint,'day',v_day_key,1,v_day_limit,v_policy_id)
+        ON CONFLICT(source,api_name,credential_fingerprint,window_type,window_key) DO UPDATE SET
+          call_count=ops.external_call_budgets.call_count+1,credential_profile=EXCLUDED.credential_profile,
+          budget_limit=EXCLUDED.budget_limit,policy_id=EXCLUDED.policy_id,updated_at=now();
+      INSERT INTO ops.external_call_budgets(source,api_name,credential_profile,credential_fingerprint,window_type,window_key,call_count,budget_limit,policy_id)
+        VALUES(v_source,v_api,v_profile,v_fingerprint,'minute',v_minute_key,1,v_minute_limit,v_policy_id)
+        ON CONFLICT(source,api_name,credential_fingerprint,window_type,window_key) DO UPDATE SET
+          call_count=ops.external_call_budgets.call_count+1,credential_profile=EXCLUDED.credential_profile,
+          budget_limit=EXCLUDED.budget_limit,policy_id=EXCLUDED.policy_id,updated_at=now();
+      UPDATE ops.source_endpoint_runtime
+         SET next_allowed_at=CASE WHEN v_interval>0 THEN clock_timestamp()+(v_interval*interval '1 millisecond') ELSE NULL END,
+             updated_at=now()
+       WHERE source_id=v_source_id AND api_name=v_api AND credential_fingerprint=v_fingerprint;
+      RETURN QUERY SELECT true,'allowed',NULL::timestamptz,v_policy_id,v_day_count+1,v_minute_count+1,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,v_slot;
+    EXCEPTION WHEN OTHERS THEN
+      IF v_slot IS NOT NULL THEN
+        PERFORM pg_advisory_unlock(hashtextextended('external_slot:'||v_source||':'||v_api||':'||v_fingerprint||':'||v_slot,0));
+      END IF;
+      RAISE;
+    END;
+    $fn$;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5009,6 +5306,7 @@ const MIGRATIONS = [
   { version: '124_external_call_budget_function', up: migration124ExternalCallBudgetFunction },
   { version: '125_consolidate_instrument_masters', up: migration125ConsolidateInstrumentMasters },
   { version: '126_normalize_stock_code_suffix', up: migration126NormalizeStockCodeSuffix },
+  { version: '127_source_endpoint_policies', up: migration127SourceEndpointPolicies },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -5590,6 +5888,7 @@ module.exports = {
   migration124ExternalCallBudgetFunction,
   migration125ConsolidateInstrumentMasters,
   migration126NormalizeStockCodeSuffix,
+  migration127SourceEndpointPolicies,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

@@ -1037,7 +1037,7 @@ function renderSettingsTabs(el, s) {
      '<div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">API 可用性测试</div><div style="font-size:12px;color:#777;margin-bottom:10px;">请选择接口后测试指定 Token；不会自动切换主备。rt_min 返回空行也表示接口已被接受，不能用 trade_cal 代替权限验证。</div>' +
      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><label for="set-tushare-test-api" style="font-size:12px;color:#555;">测试接口</label><select id="set-tushare-test-api" style="padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;"><option value="trade_cal">trade_cal（基础）</option><option value="rt_min">rt_min（实时分钟）</option><option value="new_share">new_share（新股）</option><option value="cb_daily">cb_daily（转债日线）</option></select></div>' +
      '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
-     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + '</div></div></div>';
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + renderEndpointPolicyPanel(apiSettings.endpoint_policies) + '</div></div></div>';
   switchSettingsTab(settingsTab);
 }
 function renderExternalApiTestResult(result, label) {
@@ -1081,6 +1081,36 @@ function renderExternalApiReturnedData(data) {
   if (!rows.length) html += '<div style="color:#888;margin-top:3px;">0 行</div>';
   if (data.truncated) html += '<div style="color:#888;margin-top:3px;">仅展示前 5 行</div>';
   return html;
+}
+function renderEndpointPolicyPanel(policies) {
+  const values = Array.isArray(policies) ? policies.filter(function (p) { return p.source_code === 'tushare'; }) : [];
+  window.__externalEndpointPolicies = values;
+  if (!values.length) return '<div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;color:#888;font-size:12px;">接口策略尚未初始化，请先完成数据库迁移。</div>';
+  let html = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">接口限流策略</div><div style="font-size:12px;color:#777;margin-bottom:8px;">限额按“来源＋接口＋凭据”执行；修改后即时生效，Token 只显示角色，不显示密钥。</div><div class="biz-table-scroll"><table class="biz-table biz-table--preview" style="font-size:12px;"><thead><tr><th>接口</th><th>凭据</th><th>权限</th><th>分钟</th><th>日</th><th>并发</th><th>间隔(ms)</th><th>启用</th></tr></thead><tbody>';
+  values.forEach(function (p, index) {
+    html += '<tr data-policy-index="' + index + '"><td>' + escapeHtml(p.api_name || '*') + '</td><td>' + (p.credential_profile === 'primary' ? '主' : p.credential_profile === 'backup' ? '备' : '匿名') + '</td><td>' + escapeHtml(p.permission_status || 'unknown') + '</td>';
+    html += '<td><input data-policy-field="internal_per_minute_limit" value="' + (p.internal_per_minute_limit == null ? '' : p.internal_per_minute_limit) + '" style="width:62px;"></td><td><input data-policy-field="internal_daily_limit" value="' + (p.internal_daily_limit == null ? '' : p.internal_daily_limit) + '" style="width:62px;"></td><td><input data-policy-field="max_concurrency" value="' + (p.max_concurrency == null ? 1 : p.max_concurrency) + '" style="width:45px;"></td><td><input data-policy-field="min_interval_ms" value="' + (p.min_interval_ms == null ? 0 : p.min_interval_ms) + '" style="width:62px;"></td><td><input type="checkbox" data-policy-field="enabled" ' + (p.enabled !== false ? 'checked' : '') + '></td></tr>';
+  });
+  return html + '</tbody></table></div><button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="saveEndpointPolicies()">保存接口策略</button></div>';
+}
+async function saveEndpointPolicies() {
+  const values = Array.isArray(window.__externalEndpointPolicies) ? window.__externalEndpointPolicies : [];
+  const policies = values.map(function (p, index) {
+    const row = document.querySelector('[data-policy-index="' + index + '"]');
+    const copy = Object.assign({}, p);
+    if (!row) return copy;
+    row.querySelectorAll('[data-policy-field]').forEach(function (input) {
+      const field = input.dataset.policyField;
+      copy[field] = input.type === 'checkbox' ? input.checked : (input.value === '' ? null : Number(input.value));
+    });
+    return copy;
+  });
+  try {
+    const r = await fetch(api('/api/admin/settings/external-api/tushare/policies'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ policies: policies }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || '保存接口策略失败'); return; }
+    showToast('接口策略已保存'); renderSettings();
+  } catch (e) { showToast('网络错误'); }
 }
 function switchSettingsTab(tab) {
   settingsTab = tab;

@@ -33,6 +33,7 @@ assert(/reasonForSlot\(slot\)/.test(orchestrator) && /slot\.trigger_type === 'ma
 assert(/slot\.status === 'pending' && slot\.trigger_type === 'manual_retry'/.test(slots), '人工补跑不得被旧的失败运行记录立即回滚');
 assert(/trigger_type='auto_retry'/.test(slots), '失败退避后必须标记为自动重试');
 assert(/dependencyCodes/.test(slots) && /claimSlot/.test(slots), '领取任务前必须检查依赖');
+assert(/同业务日后续实例已成功完成/.test(slots) && /status='skipped'/.test(slots), '后续成功实例必须收敛旧失败/阻断槽位及告警');
 assert(/normalizeBusinessDate\(slot\.business_date\)/.test(slots), '数据分区依赖校验必须兼容 PostgreSQL date 返回的 Date 对象');
 assert(/benchmark_code='CSI300'/.test(slots) && /benchmark_code='CSIALL'/.test(slots) && /source_code='chinabond'/.test(slots) && /source_code='tushare_us_tycr'/.test(slots), '市场波动水位必须逐项检查必要来源');
 assert(/重新校验发现业务数据水位落后/.test(slots), '重新校验发现水位落后时必须落库为降级');
@@ -92,6 +93,7 @@ assert(/last_success_date = GREATEST\([\s\S]*ops\.sync_cursors\.last_success_dat
 assert(/migration063AlertSendingStatus/.test(migrations), '数据库必须支持告警投递中状态');
 assert(/migration070RemoveDuplicateLegacyPriceDates/.test(migrations) && /DELETE FROM daily_prices/.test(migrations), '收盘价日期归一后必须清理已存在标准日期对应的旧格式重复行');
 assert(/job_alert_resend/.test(adminRoute) && /result: 'failure'/.test(adminRoute), '邮件重发失败必须写入管理员审计');
+assert(/router\.get\('\/jobs\/alerts'/.test(adminRoute) && /status: req\.query\.status \|\| 'open'/.test(adminRoute), '告警接口默认只返回待处理记录');
 assert(/sendRecoverySummary/.test(alertMailer) && /status='sending'/.test(alertMailer), 'SMTP 恢复后必须合并补发历史告警且不能覆盖人工状态');
 assert(/emailConfigured/.test(read('public/js/admin.js')) && /投递失败/.test(read('public/js/admin.js')), '后台必须显示邮件告警配置与投递状态');
 assert(/jobDisplayText\(alert\.summary/.test(adminUi) && /text\.match\(\/\\uFFFD\/g\)/.test(adminUi), '后台必须压缩超长告警并隐藏无法还原的历史乱码');

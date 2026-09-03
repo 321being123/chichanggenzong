@@ -59,6 +59,7 @@ function ok(fields = ['value'], items = [['ok']]) {
   const originalConfig = await getConfig('external_api_configs', '');
   const originalNotify = externalApiConfig.notifyTushareFailover;
   const failoverNotices = [];
+  const genericSource = 'cninfo-test';
   try {
     process.env.TUSHARE_TOKEN = 'primary-test-token';
     process.env.TUSHARE_BACKUP_TOKEN = 'backup-test-token';
@@ -67,6 +68,22 @@ function ok(fields = ['value'], items = [['ok']]) {
     guard.resetExternalCallGuard();
     await guard.resetExternalCallGuardPersistence('tushare');
     await guard.resetExternalCallGuardPersistence('tushare_backup');
+    await pool.query(
+      `INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+       VALUES($1,$1,'test',999) ON CONFLICT(source_code) DO NOTHING`, [genericSource]
+    );
+    const genericSourceRow = await pool.query(
+      `SELECT source_id FROM ops.data_sources WHERE source_code=$1`, [genericSource]
+    );
+    await pool.query(
+      `INSERT INTO ops.source_endpoint_policies
+         (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit)
+       VALUES($1,'*','anonymous',20,20)
+       ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+         internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
+         internal_daily_limit=EXCLUDED.internal_daily_limit,
+         enabled=true,permission_status='unknown'`, [genericSourceRow.rows[0].source_id]
+    );
 
     // HTTP 200 + 业务频率错误必须识别，且只熔断主 Token 的 rt_min。
     mockResponses([
@@ -303,6 +320,7 @@ function ok(fields = ['value'], items = [['ok']]) {
     guard.resetExternalCallGuard();
     await guard.resetExternalCallGuardPersistence('tushare');
     await guard.resetExternalCallGuardPersistence('tushare_backup');
+    await pool.query('DELETE FROM ops.data_sources WHERE source_code=$1', [genericSource]).catch(() => {});
     if (originalPrimary === undefined) delete process.env.TUSHARE_TOKEN;
     else process.env.TUSHARE_TOKEN = originalPrimary;
     if (originalBackup === undefined) delete process.env.TUSHARE_BACKUP_TOKEN;

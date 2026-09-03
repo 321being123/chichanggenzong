@@ -22,10 +22,13 @@ const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 const {
   PROVIDERS: EXTERNAL_API_PROVIDERS,
   getExternalApiSettings,
+  getProviderRuntime,
   testProviderAvailability,
   saveProviderSettings,
   switchProvider,
 } = require('../services/externalApiConfig');
+const { upsertSourceEndpointPolicy } = require('../services/sourceEndpointPolicy');
+const { tokenFingerprint } = require('../services/externalCallGuard');
 
 // PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
 // 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
@@ -223,7 +226,7 @@ router.post('/jobs/slots/:slotId/acknowledge', asyncHandler(async (req, res) => 
   res.json({ ok: true, slot });
 }));
 router.get('/jobs/alerts', asyncHandler(async (req, res) => {
-  res.json({ list: await listAlerts({ status: req.query.status, limit: req.query.limit }) });
+  res.json({ list: await listAlerts({ status: req.query.status || 'open', limit: req.query.limit }) });
 }));
 router.get('/jobs/notifications', asyncHandler(async (req, res) => {
   res.json({ list: await listAlerts({ status: req.query.status || 'open', limit: req.query.limit }) });
@@ -639,6 +642,35 @@ router.post('/settings/external-api/:provider/test', asyncHandler(async (req, re
   });
   const settings = await getExternalApiSettings();
   res.json({ ok: result.ok, result, settings: settings[provider] });
+}));
+
+// 外部 API 接口策略：只接受规则字段，凭据指纹由服务端当前主/备 Token 计算，客户端不能提交。
+router.put('/settings/external-api/:provider/policies', asyncHandler(async (req, res) => {
+  const provider = String(req.params.provider || '').trim();
+  if (!EXTERNAL_API_PROVIDERS[provider]) return res.status(400).json({ error: '不支持的外部 API' });
+  const input = req.body && Array.isArray(req.body.policies) ? req.body.policies : [req.body || {}];
+  if (!input.length || input.length > 100) return res.status(400).json({ error: '策略数量非法' });
+  if (input.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return res.status(400).json({ error: '策略格式非法' });
+  const runtime = await getProviderRuntime(provider);
+  for (const item of input) {
+    const profile = String(item.credential_profile || item.credentialProfile || 'anonymous');
+    if (!['primary', 'backup', 'anonymous'].includes(profile)) return res.status(400).json({ error: '凭据角色非法' });
+    const token = profile === 'primary' ? runtime.primary : profile === 'backup' ? runtime.backup : '';
+    await upsertSourceEndpointPolicy({
+      ...item,
+      source_code: provider,
+      credential_profile: profile,
+      credential_fingerprint: tokenFingerprint(token),
+    });
+  }
+  await audit(req, 'settings_external_api_policies', provider, {
+    detail: `更新${input.length}条接口策略`, metadata: {
+      provider, count: input.length,
+      api_names: input.map(item => String(item.api_name || item.apiName || '*').slice(0, 64)),
+    },
+  });
+  const settings = await getExternalApiSettings();
+  res.json({ ok: true, settings: settings[provider] });
 }));
 
 // ====== 套利机会审核 ======

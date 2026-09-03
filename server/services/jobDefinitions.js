@@ -35,7 +35,7 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'hk_rate', label: '港币汇率更新', hour: 16, minute: 15, weekdays: true, deadlineMinutes: 90, dataDatePolicy: 'latest_available', freshnessGate: true, sourceDescription: '港币汇率接口', mayConsumeQuota: true, externalSources: ['exchange-rate'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'market_close:港股', label: '港股收盘数据', hour: 16, minute: 10, weekdays: true, deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: '腾讯行情接口', mayConsumeQuota: true, externalSources: ['tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'nav_snapshot', label: '净值快照', hour: 16, minute: 20, weekdays: true, deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: true, retryPolicy: 'local' },
-  { jobCode: 'index_recent', label: '指数每日补齐', hour: 16, minute: 20, weekdays: true, deadlineMinutes: 120, dataDatePolicy: 'same_day', freshnessGate: true, sourceDescription: 'Tushare 指数接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'index_recent', label: '指数每日补齐', hour: 16, minute: 20, weekdays: true, deadlineMinutes: 120, dataDatePolicy: 'previous_trading_day', freshnessGate: true, sourceDescription: 'Tushare 指数接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'ipo_calendar_refresh', label: '打新日历与日报', hour: 18, minute: 5, weekdays: true, deadlineMinutes: 240, catchupWindowMinutes: 4200, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, importance: 'high', dependencyCodes: ['ipo_history_sync'], datasetDependencies: [{ datasetCode: 'ipo_history', scopeKey: 'GLOBAL', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed' }], sourceDescription: '已发布新股事实、交易日历与可转债标准事件表', retryPolicy: 'local' },
   { jobCode: 'convertible_bond_universe_refresh', label: '可转债行情同步（共享收盘采集）', hour: 8, minute: 0, weekdays: true, afterTradingDay: true, catchupMode: 'latest_only', dataDatePolicy: 'previous_trading_day', freshnessGate: true, sourceDescription: '腾讯行情与 Tushare 接口；同时发布股票日行情、估值、复权因子和停牌分区', mayConsumeQuota: true, externalSources: ['tencent', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4, collectorRole: 'shared_cn_market_eod' },
   { jobCode: 'convertible_bond_redemption_announcement_sync', label: '可转债强赎公告同步', hour: 7, minute: 45, weekdays: true, afterTradingDay: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: false, requiresDataWatermark: false, sourceDescription: '巨潮资讯官方公告', mayConsumeQuota: true, externalSources: ['巨潮资讯'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
@@ -60,13 +60,16 @@ const JOB_CONTRACTS = {
   'bond_safety_refresh': { externalApis: [], producesDatasets: ['bond_safety_snapshot'], consumesDatasets: ['bond_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
   'market_close:A股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 64, dailyBudget: 4 },
   'market_close:可转债': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 32, dailyBudget: 4 },
-  'market_close:LOF/ETF': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 16, dailyBudget: 4 },
+  // 最近生产完整补取需要 30 个腾讯批次；32 留少量余量，来源级 Guard 仍负责上游异常保护。
+  'market_close:LOF/ETF': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 32, dailyBudget: 4 },
   'hk_rate': { externalApis: ['exchange_rate'], producesDatasets: ['hk_fx_rate'], consumesDatasets: [], maxExternalCallsPerRun: 1 },
   'market_close:港股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: 48, dailyBudget: 4 },
   'nav_snapshot': { externalApis: [], producesDatasets: ['nav_snapshot'], consumesDatasets: ['account_daily_prices'], maxExternalCallsPerRun: 0 },
-  'index_recent': { externalApis: ['index_daily'], producesDatasets: ['index_daily'], consumesDatasets: [], maxExternalCallsPerRun: 2 },
+  // 每个净值账户补 5 个指数；当前生产双账户一轮最多 10 次，不能用 2 次上限截断完整补齐。
+  'index_recent': { externalApis: ['index_daily'], producesDatasets: ['index_daily'], consumesDatasets: [], maxExternalCallsPerRun: 10, dailyBudget: 2 },
   'ipo_calendar_refresh': { externalApis: [], producesDatasets: ['ipo_calendar'], consumesDatasets: ['ipo_history', 'trade_calendar', 'bond_issuance_events'], maxExternalCallsPerRun: 0 },
-  'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'cb_issue', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 16, dailyBudget: 8 },
+  // 主同步还包含 90 天周期补漏、评级/发行结果补齐和正股行情补漏；生产历史峰值 281 次，600 为单批止损边界。
+  'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'cb_issue', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 8 },
   'convertible_bond_redemption_announcement_sync': { externalApis: ['cninfo'], producesDatasets: ['bond_redemption_events'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 40, dailyBudget: 2 },
   'convertible_bond_revision_motive_inputs_sync': { externalApis: ['top10_cb_holders', 'pledge_stat'], producesDatasets: ['bond_motive_inputs'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 10 },
   'convertible_bond_revision_motive_calculate': { externalApis: [], producesDatasets: ['bond_motive_scores'], consumesDatasets: ['bond_motive_inputs', 'bond_daily'], maxExternalCallsPerRun: 0 },
@@ -74,11 +77,14 @@ const JOB_CONTRACTS = {
   'convertible_bond_announcement_reparse': { externalApis: [], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_announcement_documents'], maxExternalCallsPerRun: 0 },
   'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: 6 },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },
-  'ipo_history_sync': { externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'stock_company', 'cninfo'], producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: 15, modeExternalCallLimits: { core: 1, enrichment: 15 } },
+  // 核心成功路径只需 1 次 new_share；3 次允许一次失败后的重试，避免跨尝试累计 1 次后无法恢复。
+  'ipo_history_sync': { externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'stock_company', 'cninfo'], producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: 15, modeExternalCallLimits: { core: 3, enrichment: 15 } },
   // 个股分析定时任务为数据库只读计算；财务/行情采集由共享批次和独立增量任务完成。
   'stock_analysis_refresh': { externalApis: [], producesDatasets: ['stock_analysis_snapshot'], consumesDatasets: ['stock_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
   'hk_trade_rules_sync': { externalApis: ['hk_basic'], producesDatasets: ['hk_trade_rules'], consumesDatasets: [], maxExternalCallsPerRun: 2 },
-  'arbitrage_sync': { externalApis: ['hkex', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 12, dailyBudget: 4 },
+  // 港交所 10 个分类最多各翻 50 页，巨潮 17 个关键词×2 市场最多各翻 2 页；
+  // 600 次覆盖适配器自身上限，来源级 Guard 仍负责更细的分钟/日预算。
+  'arbitrage_sync': { externalApis: ['hkex', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 4 },
   'arbitrage_reparse': { externalApis: [], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: 0 },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 1 },
 };

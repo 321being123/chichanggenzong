@@ -103,6 +103,17 @@ check("旧空日报仍隐藏",
 check("沪市主板标签完整", sandbox.ipoBoard("600000", "新股") === "沪市主板");
 check("深市主板标签完整", sandbox.ipoBoard("000001", "新股") === "深市主板");
 
+console.log("== F. 新股历史预测涨幅详情入口 ==");
+const predictionLink = sandbox.ipoStockPredictionCell({
+  has_prediction: true, pred_return: 196.69, security_code: "301697"
+});
+check("预测涨幅链接到对应打新详情", predictionLink.indexOf("ipo-report.html?code=301697") >= 0);
+check("预测涨幅保留显示值", predictionLink.indexOf("+196.69%") >= 0);
+check("详情链接新窗口打开", predictionLink.indexOf('target="_blank"') >= 0);
+check("无预测时不生成详情链接", sandbox.ipoStockPredictionCell({
+  has_prediction: false, security_code: "301697"
+}) === "无历史预测");
+
 console.log("\n===== 前端结果汇总 =====");
 console.log("PASS=%d  FAIL=%d", PASS, FAIL);
 console.log(FAIL === 0 ? "OK" : "HAS_ISSUES");

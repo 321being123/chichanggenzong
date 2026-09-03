@@ -71,6 +71,15 @@ function ipoPctCell(val, decimals) {
   return '<span class="' + cls + '">' + s + '</span>';
 }
 
+// 新股历史预测涨幅：有预测且有证券代码时，点击进入该股票的打新详情。
+function ipoStockPredictionCell(it) {
+  var cell = it.has_prediction ? ipoPctCell(it.pred_return) : '无历史预测';
+  if (!it.has_prediction || !it.security_code) return cell;
+  return '<a href="ipo-report.html?code=' + encodeURIComponent(it.security_code) +
+    '" target="_blank" rel="noopener" style="color:#1a73e8;text-decoration:none;white-space:nowrap;" title="查看打新详情">' +
+    cell + '</a>';
+}
+
 // 中签率：数据单位为百分比(如 0.05 表示 0.05%)，转为"万分之几" = 值×100，保留3位小数。
 function ipoWanfenCell(v) {
   if (v === null || v === undefined || v === '') return '<span>-</span>';
@@ -442,7 +451,7 @@ function ipoRenderHistory(type, rows) {
       ipoPending(it.online_lottery_rate, ipoWanfenCell),
       ipoPending(it.fund_raised),
       ipoPending(it.circulation_mv, function (v) { return ipoNumFixed(v, 2); }),
-      it.has_prediction ? ipoPctCell(it.pred_return) : '无历史预测',
+      ipoStockPredictionCell(it),
       ipoFirstDayStatus(it),
       ipoFmt(profit)
     ];

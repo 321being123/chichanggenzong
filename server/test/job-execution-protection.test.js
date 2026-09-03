@@ -275,7 +275,7 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     delete process.env[`${guardEnv}_DAILY_BUDGET`];
 
     const { pool } = require('../db/connection');
-    const { claimSlot, completeSlot, listDueSlots, enqueueManualJob, syncScheduleSlots, expectedDataDate } = require('../services/jobScheduleSlots');
+    const { claimSlot, completeSlot, listDueSlots, enqueueManualJob, ensureSlot, syncScheduleSlots, expectedDataDate } = require('../services/jobScheduleSlots');
     assert.strictEqual(expectedDataDate('convertible_bond_valuation_refresh', '2026-02-24'), '2026-02-13', '前一交易日必须跳过春节休市日');
     assert.strictEqual(expectedDataDate('convertible_bond_universe_refresh', '2026-08-24'), '2026-08-21', '周一行情主档应校验上一个交易日');
     const claimTime = new Date(Date.now() - 60 * 1000);
@@ -297,6 +297,14 @@ assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_ov
     const manualExisting = await enqueueManualJob('market_close:A股');
     assert.strictEqual(String(manualExisting.slot_id), String(manualInsert.rows[0].slot_id), '非强制手动补跑应复用同日可执行计划');
     await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [manualInsert.rows[0].slot_id]);
+
+    const forcedManualInsert = await pool.query(
+      `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,trigger_type,next_attempt_at,request_payload)
+       VALUES('market_close:A股',$1,CURRENT_DATE,'pending','manual_retry',$1,'{"mode":"core","force":true}'::jsonb) RETURNING slot_id`, [claimTime]
+    );
+    const forcedManualSlot = await ensureSlot('market_close:A股', claimTime, '2099-01-01', 'scheduled', { mode: 'core' });
+    assert.strictEqual(forcedManualSlot.request_payload.force, true, '调度同步不得覆盖人工强制补跑标记');
+    await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [forcedManualInsert.rows[0].slot_id]);
 
     const staleInsert = await pool.query(
       `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,attempt_count,next_attempt_at)

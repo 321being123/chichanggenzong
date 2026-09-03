@@ -85,7 +85,14 @@ async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'sc
   const { rows } = await pool.query(
     `INSERT INTO ops.job_schedule_slots(job_code, scheduled_for, business_date, trigger_type, next_attempt_at,request_payload)
      VALUES ($1,$2,$3,$4,$2,$5::jsonb)
-     ON CONFLICT(job_code, scheduled_for) DO UPDATE SET request_payload=EXCLUDED.request_payload,updated_at=now()
+     ON CONFLICT(job_code, scheduled_for) DO UPDATE SET
+       request_payload=CASE
+         WHEN ops.job_schedule_slots.trigger_type IN ('manual_retry','auto_retry')
+              AND ops.job_schedule_slots.status IN ('pending','running','failed','waiting_external')
+           THEN ops.job_schedule_slots.request_payload
+         ELSE EXCLUDED.request_payload
+       END,
+       updated_at=now()
      RETURNING *`,
     [jobCode, scheduledFor, businessDate, triggerType, JSON.stringify(requestPayload || {})]
   );

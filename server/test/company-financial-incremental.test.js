@@ -51,5 +51,6 @@ assert.ok(jobSource.includes("strictDatasetPublication: true"));
 assert.ok(backfillSource.includes("valueOf('--offset'"));
 assert.ok(serviceSource.includes('targets.slice(offset, offset + limit)'));
 assert.ok(serviceSource.includes('market.convertible_bond_daily_metrics'));
+assert.ok(serviceSource.includes("apiName === 'fina_indicator_vip'"));
 
 console.log('company financial incremental tests passed');

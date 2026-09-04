@@ -195,7 +195,11 @@ async function buildSyncQueue(targets, options = {}, client = pool) {
 
 async function queryRows(apiName, params, fields, query = tushareQuery) {
   const payload = await query(apiName, params, fields, { allowEmpty: true });
-  return tsRows(payload).filter(row => String(row.report_type || '') === '1');
+  return tsRows(payload).map(row => {
+    // Tushare 财务 VIP 指标接口实际响应不返回 report_type；其接口结果为合并报表口径，补齐标准层所需的 type=1。
+    if (apiName === 'fina_indicator_vip' && !Object.prototype.hasOwnProperty.call(row, 'report_type')) return { ...row, report_type: '1' };
+    return row;
+  }).filter(row => String(row.report_type || '') === '1');
 }
 
 async function fetchDisclosureCandidates(targets, options = {}) {

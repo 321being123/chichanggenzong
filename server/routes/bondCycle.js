@@ -4,6 +4,7 @@ const asyncHandler = require('../middleware/async');
 const svc = require('../services/convertibleBondCycleService');
 const cycle = require('../services/convertibleBondCycle');
 const { isTradingDay } = require('../jobs/marketClose');
+const { applyPublicCache } = require('../middleware/publicCache');
 
 const FORMULA_VERSION = cycle.FORMULA_VERSION;
 const UNIVERSE_VERSION = cycle.UNIVERSE_VERSION;
@@ -36,12 +37,25 @@ const DIAGNOSTICS = {
   minimum_coverage_ratio: cycle.MIN_COVERAGE,
 };
 
+function sampleHistory(rows, maxPoints) {
+  const limit = Math.max(2, Math.min(800, Number(maxPoints) || 800));
+  if (!Array.isArray(rows) || rows.length <= limit) return rows || [];
+  const sampled = [];
+  for (let i = 0; i < limit; i++) sampled.push(rows[Math.round(i * (rows.length - 1) / (limit - 1))]);
+  return sampled;
+}
+
 router.get('/', asyncHandler(async (req, res) => {
   const range = String(req.query.range || '5y');
   if (!['1y', '3y', '5y', 'all'].includes(range)) {
     return res.status(400).json({ error: '非法的 range 参数，仅支持 1y / 3y / 5y / all' });
   }
+  const homeView = String(req.query.view || '').toLowerCase() === 'home';
   const latest = await svc.getLatestCycle(FORMULA_VERSION, UNIVERSE_VERSION);
+  const latestVersion = latest
+    ? [latest.trade_date, latest.calculated_at, FORMULA_VERSION, UNIVERSE_VERSION, range, homeView ? 'home' : 'full', homeView ? (req.query.maxPoints || '800') : ''].join('|')
+    : ['empty', FORMULA_VERSION, UNIVERSE_VERSION, range, homeView ? 'home' : 'full', homeView ? (req.query.maxPoints || '800') : ''].join('|');
+  if (applyPublicCache(req, res, latestVersion)) return;
   if (!latest) {
     return res.json({
       formula_version: FORMULA_VERSION,
@@ -60,6 +74,19 @@ router.get('/', asyncHandler(async (req, res) => {
   const sourceTradeDate = isoDate(latest.trade_date);
   const expected = expectedTradeDate();
   const stale = sourceTradeDate < expected;
+  const fullHistory = history.map((r) => ({
+    date: isoDate(r.trade_date),
+    cycle_level: r.cycle_level,
+    rolling_percentile: r.rolling_percentile,
+    composite_value: r.composite_value,
+    median_price: r.median_price,
+    median_conversion_premium_pct: r.median_conversion_premium_pct,
+    median_conversion_value: r.median_conversion_value,
+    premium_weight: r.premium_weight,
+    bond_count: r.bond_count,
+    coverage_ratio: r.coverage_ratio,
+  }));
+  const responseHistory = homeView ? sampleHistory(fullHistory, req.query.maxPoints) : fullHistory;
   res.json({
     formula_version: FORMULA_VERSION,
     universe_version: UNIVERSE_VERSION,
@@ -80,18 +107,8 @@ router.get('/', asyncHandler(async (req, res) => {
       premium_count: latest.premium_count,
       coverage_ratio: latest.coverage_ratio,
     },
-    history: history.map((r) => ({
-      date: isoDate(r.trade_date),
-      cycle_level: r.cycle_level,
-      rolling_percentile: r.rolling_percentile,
-      composite_value: r.composite_value,
-      median_price: r.median_price,
-      median_conversion_premium_pct: r.median_conversion_premium_pct,
-      median_conversion_value: r.median_conversion_value,
-      premium_weight: r.premium_weight,
-      bond_count: r.bond_count,
-      coverage_ratio: r.coverage_ratio,
-    })),
+    history: responseHistory,
+    view: homeView ? 'home' : 'full',
     diagnostics: DIAGNOSTICS,
   });
 }));

@@ -1,4 +1,4 @@
-const { pool, loadAccountData } = require('../db');
+const { pool, loadAccountSummary } = require('../db');
 
 const BENCHMARKS = { CN: ['CSI300', 'CSIALL'], HK: ['HSI'] };
 const INDEX_NAMES = { CSI300: '沪深300', CSIALL: '中证全指', HSI: '恒生指数' };
@@ -51,13 +51,20 @@ async function getSetting(username, account, market, benchmark) {
   return rows[0] || null;
 }
 async function getAccountPosition(username, account) {
-  const data = await loadAccountData(username, account);
+  const data = await loadAccountSummary(username, account);
   return accountPosition(data.positions || [], data.cash, data.hkRate);
 }
-async function getOverview(username, account, market, benchmark) {
-  const [setting, latest, position, indexPoint] = await Promise.all([
+async function loadRows(market, benchmark) {
+  const { rows } = await pool.query(`SELECT trade_date::text AS trade_date, pe::float8 AS pe, earnings_yield_pct::float8 AS earnings_yield_pct,
+                       sovereign_yield_pct::float8 AS sovereign_yield_pct, sovereign_yield_date::text AS sovereign_yield_date,
+                       graham_index_pct::float8 AS graham_index_pct, data_status
+                FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2 ORDER BY trade_date`, [market, benchmark]);
+  return rows;
+}
+async function getOverview(username, account, market, benchmark, rowsOverride = null) {
+  const [setting, latestRows, position, indexPoint] = await Promise.all([
     username && account ? getSetting(username, account, market, benchmark) : null,
-    pool.query(`SELECT trade_date::text AS trade_date, pe::float8 AS pe, earnings_yield_pct::float8 AS earnings_yield_pct,
+    rowsOverride ? Promise.resolve({ rows: rowsOverride.slice(-1) }) : pool.query(`SELECT trade_date::text AS trade_date, pe::float8 AS pe, earnings_yield_pct::float8 AS earnings_yield_pct,
                        sovereign_yield_pct::float8 AS sovereign_yield_pct, sovereign_yield_date::text AS sovereign_yield_date,
                        graham_index_pct::float8 AS graham_index_pct, data_status
                 FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2
@@ -65,20 +72,24 @@ async function getOverview(username, account, market, benchmark) {
     username && account ? getAccountPosition(username, account) : Promise.resolve({ actualPosition: null, hasUs: false }),
     pool.query('SELECT close::float8 AS value, date::text AS trade_date FROM index_history WHERE name=$1 ORDER BY date DESC LIMIT 1', [INDEX_NAMES[benchmark]])
   ]);
-  const current = latest.rows[0] || null;
+  const current = latestRows.rows[0] || null;
   const recommended = setting && current && current.data_status !== 'missing' ? recommendedPosition(current.graham_index_pct, setting.lower, setting.upper) : null;
   return { market, benchmark, current, indexPoint: indexPoint.rows[0] || null, setting: setting && { ...setting, ladder: ladder(setting.lower, setting.upper) }, recommendedPosition: recommended,
     actualPosition: position.actualPosition, deviation: deviation(position.actualPosition, recommended), hasUsPosition: position.hasUs };
 }
-async function getHistory(market, benchmark, range) {
+async function getHistory(market, benchmark, range, rowsOverride = null) {
   const years = { '1y': 1, '3y': 3, '5y': 5, '10y': 10, '20y': 20, all: null }[range];
   const params = [market, benchmark];
   let cutoff = '';
   if (years) { params.push(years); cutoff = "AND trade_date >= CURRENT_DATE - ($3::text || ' years')::interval"; }
-  const { rows } = await pool.query(`SELECT trade_date::text AS date, graham_index_pct::float8 AS value, pe::float8 AS pe,
+  const { rows } = rowsOverride ? { rows: rowsOverride.map(row => ({ date: row.trade_date, value: row.graham_index_pct, pe: row.pe,
+    sovereign_yield_pct: row.sovereign_yield_pct, data_status: row.data_status })) } : await pool.query(`SELECT trade_date::text AS date, graham_index_pct::float8 AS value, pe::float8 AS pe,
     sovereign_yield_pct::float8 AS sovereign_yield_pct, data_status
     FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2 ${cutoff} ORDER BY trade_date`, params);
-  return rows;
+  if (!cutoff || !rowsOverride) return rows;
+  const cutoffDate = new Date(); cutoffDate.setUTCFullYear(cutoffDate.getUTCFullYear() - years);
+  const cutoffText = cutoffDate.toISOString().slice(0, 10);
+  return rows.filter(row => String(row.date || '').slice(0, 10) >= cutoffText);
 }
 async function saveSetting(username, account, market, benchmark, lowerBoundary, upperBoundary, version) {
   const previous = await getSetting(username, account, market, benchmark);
@@ -97,4 +108,4 @@ async function saveSetting(username, account, market, benchmark, lowerBoundary, 
     return { ...pair, version: nextVersion, ladder: ladder(pair.lower, pair.upper) };
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 }
-module.exports = { BENCHMARKS, validMarketBenchmark, ladder, recommendedPosition, boundaries, accountPosition, deviation, getOverview, getHistory, saveSetting };
+module.exports = { BENCHMARKS, validMarketBenchmark, ladder, recommendedPosition, boundaries, accountPosition, deviation, loadRows, getOverview, getHistory, saveSetting };

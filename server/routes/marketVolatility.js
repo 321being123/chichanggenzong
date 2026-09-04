@@ -9,6 +9,7 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const { calculateGraham } = require('../jobs/marketVolatilitySync');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const { applyPublicCache } = require('../middleware/publicCache');
 
 function rateDate(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
@@ -90,12 +91,35 @@ router.get('/home-cycle', asyncHandler(async (req, res) => {
   if (!['1y','3y','5y','10y','20y','all'].includes(range)) return res.status(400).json({ error: '时间范围不合法' });
   const config = await homeCycleConfig();
   const isGraham = config.metric === 'graham';
+  // 配置版本 + 参考账户最新数据版本用于条件请求；未变化时不再传输历史图表。
+  let cacheVersion = [config.metric, config.market, config.benchmark, config.reference_username, config.reference_account, range].join('|');
+  try {
+    const metricTable = config.metric === 'graham'
+      ? `analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2`
+      : config.metric === 'm2_market_cap'
+        ? `analytics.m2_market_cap_daily WHERE TRUE`
+        : `market.index_valuation_history WHERE index_code=$1 AND valuation_method='market_cap_weighted'`;
+    const calculatedColumn = config.metric === 'pe' || config.metric === 'pb' ? 'ingested_at' : 'calculated_at';
+    const params = config.metric === 'm2_market_cap' ? [] : [config.metric === 'graham' ? config.market : config.benchmark,
+      ...(config.metric === 'graham' ? [config.benchmark] : [])];
+    const { rows } = await pool.query(
+      `SELECT COALESCE(MAX(trade_date)::text, '1900-01-01') AS latest_date,
+              COALESCE(MAX(${calculatedColumn})::text, '') AS latest_calculated
+         FROM ${metricTable}`,
+      params
+    );
+    if (rows[0]) cacheVersion += '|' + rows[0].latest_date + '|' + rows[0].latest_calculated;
+  } catch (e) {}
+  if (applyPublicCache(req, res, cacheVersion)) return;
+  const sourceRows = isGraham
+    ? await svc.loadRows(config.market, config.benchmark)
+    : await cycleMetrics.loadRows(config.metric, config.market, config.benchmark);
   const overview = isGraham
-    ? await svc.getOverview(config.reference_username, config.reference_account, config.market, config.benchmark)
-    : await cycleMetrics.getOverview(config.reference_username, config.reference_account, config.metric, config.market, config.benchmark);
+    ? await svc.getOverview(config.reference_username, config.reference_account, config.market, config.benchmark, sourceRows)
+    : await cycleMetrics.getOverview(config.reference_username, config.reference_account, config.metric, config.market, config.benchmark, sourceRows);
   const history = isGraham
-    ? await svc.getHistory(config.market, config.benchmark, range)
-    : await cycleMetrics.getHistory(config.metric, config.market, config.benchmark, range);
+    ? await svc.getHistory(config.market, config.benchmark, range, sourceRows)
+    : await cycleMetrics.getHistory(config.metric, config.market, config.benchmark, range, sourceRows);
   const { actualPosition, deviation, hasUsPosition, ...publicOverview } = overview || {};
   res.json({ ...publicHomeConfig(config), overview: publicOverview, history });
 }));

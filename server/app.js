@@ -82,8 +82,9 @@ async function start() {
   app.use(redirectUnauthenticated);
   // 安全响应头（必须在静态资源之前注册，确保 HTML/JS/CSS 均携带 CSP / X-Frame-Options 等头）
   app.use(securityHeaders);
-  // 静态资源不缓存（开发期频繁改动，避免浏览器缓存旧版 HTML/JS/CSS 导致功能异常）
+  // 开发期静态资源不缓存；生产由 Nginx 按版本参数管理 7 天缓存，避免 Node 与 Nginx 返回冲突的 Cache-Control。
   app.use(function noCacheStatic(req, res, next) {
+    if (process.env.NODE_ENV === 'production') return next();
     if (req.path.startsWith('/api')) return next();
     const ext = path.extname(req.path).toLowerCase();
     if (ext === '' || ['.html', '.js', '.css'].includes(ext)) {

@@ -7,17 +7,48 @@ const { getLatestSnapshot, refreshBondSafety } = require('../services/bondSafety
 const { isConfigured } = require('../services/bondSafetyFetcher');
 const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBondRedemptionService');
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
-const { auditEvent } = require('../db');
+const { auditEvent, pool } = require('../db');
 const { getDatasetMetadata } = require('../services/datasetPartitions');
 const { publishJobDatasets } = require('../services/datasetPartitionRegistry');
+const { applyPublicCache } = require('../middleware/publicCache');
 
 router.get('/bonds', asyncHandler(async (req, res) => {
   const requestedRating = String(req.query.rating || '').trim();
+  const summaryView = String(req.query.view || '').toLowerCase() === 'summary';
   if (requestedRating && !RATINGS.includes(requestedRating)) {
     return res.status(400).json({ error: '未知的安全性评级' });
   }
   const snapshot = await getLatestSnapshot();
   const partition = await getDatasetMetadata('bond_safety_snapshot', 'CN');
+  // 完整列表还会附加强赎状态；把其最新计算/公告更新时间和行情水位纳入版本，
+  // 避免安全性快照未变但 call_status 已变化时错误返回 304。
+  let callStateVersion = '';
+  if (!summaryView) {
+    try {
+      const { rows } = await pool.query(`
+        SELECT
+          (SELECT COALESCE(MAX(calculated_at)::text, '')
+             FROM analytics.convertible_bond_trigger_daily
+            WHERE trigger_type='call') AS trigger_calculated_at,
+          (SELECT COALESCE(MAX(updated_at)::text, '')
+             FROM event.convertible_bond_call_events) AS event_updated_at,
+          (SELECT COALESCE(MAX(event_id)::text, '')
+             FROM event.convertible_bond_call_events) AS event_id,
+          (SELECT COALESCE(MAX(trade_date)::text, '')
+             FROM market.convertible_bond_daily_metrics) AS market_trade_date`);
+      callStateVersion = rows[0]
+        ? [rows[0].trigger_calculated_at, rows[0].event_updated_at, rows[0].event_id,
+          rows[0].market_trade_date].join('|')
+        : '';
+    } catch (e) {
+      // 兼容旧库：状态版本查询失败不阻断原有列表读取，部署后由日志和 nginx 验收发现。
+    }
+  }
+  const currentDateCN = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const cacheVersion = [snapshot && snapshot.refreshed_at, snapshot && snapshot.source_updated_at,
+    partition.data_as_of, partition.published_at, requestedRating || 'all', summaryView ? 'summary' : 'full',
+    currentDateCN, callStateVersion].join('|');
+  if (applyPublicCache(req, res, cacheVersion)) return;
   if (!snapshot) {
     return res.json({
       configured: isConfigured(),
@@ -34,6 +65,25 @@ router.get('/bonds', asyncHandler(async (req, res) => {
     });
   }
   const allData = Array.isArray(snapshot.data) ? snapshot.data : [];
+  if (summaryView) {
+    const filtered = requestedRating ? allData.filter(row => row.safety === requestedRating) : allData;
+    const safetyCounts = { '安全': 0, '低风险': 0, '中风险': 0, '高风险': 0 };
+    filtered.forEach(row => { if (Object.prototype.hasOwnProperty.call(safetyCounts, row.safety)) safetyCounts[row.safety]++; });
+    return res.json({
+      configured: isConfigured(),
+      updated_at: snapshot.refreshed_at,
+      source_updated_at: snapshot.source_updated_at,
+      count: filtered.length,
+      total: filtered.length,
+      data: [],
+      safety_counts: safetyCounts,
+      diagnostics: snapshot.diagnostics || null,
+      data_as_of: partition.data_as_of || (snapshot.source_updated_at ? String(snapshot.source_updated_at).slice(0, 10) : null),
+      published_at: partition.published_at,
+      is_stale: partition.is_stale,
+      stale_reason: partition.stale_reason,
+    });
+  }
   const callStates = await getLatestCallStateBySecurityCodes(allData.map(row => row.bond_code));
   const enriched = allData.map(row => {
     const code = String(row.bond_code || '').trim().toUpperCase().replace(/\.(SH|SZ|BJ|HK)$/, '');

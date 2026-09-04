@@ -188,6 +188,86 @@ async function loadAccountData(username, accountName) {
   return result;
 }
 
+// 首页轻量账户摘要：只读取当前持仓、最新净值和现金汇总，不读取交易明细/净值历史/指数历史，
+// 也不触发行情、估值或归因计算。进入持仓管理时仍使用上面的完整 loadAccountData。
+async function loadAccountSummary(username, accountName) {
+  const [positionsResult, navResult, accountResult, versionResult, cashFlowResult, tradeResult] = await Promise.all([
+    pool.query(
+      'SELECT id, code, name, price::float8 AS price, quantity::float8 AS quantity, cost::float8 AS cost, type, subtype, note, instrument_id FROM positions WHERE username=$1 AND account_name=$2',
+      [username, accountName]
+    ),
+    pool.query(
+      `SELECT date, nav::float8 AS nav, total_asset::float8 AS "totalAsset", invested,
+              hk_rate::float8 AS "hkRate", cash_cny::float8 AS "cashCny",
+              snapshot_source AS "snapshotSource", is_locked AS "isLocked"
+         FROM nav_history WHERE username=$1 AND account_name=$2
+        ORDER BY date DESC LIMIT 1`,
+      [username, accountName]
+    ),
+    pool.query(
+      `SELECT a.cash_base::float8 AS cash_base,
+              COALESCE((SELECT rate::float8 FROM market.fx_rates
+                          WHERE base_currency='HKD' AND quote_currency='CNY'
+                            AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+                          ORDER BY rate_date DESC, fetched_at DESC LIMIT 1), a.hk_rate::float8) AS hk_rate,
+              a.broker, b.import_unit
+         FROM accounts a LEFT JOIN brokers b ON a.broker=b.code
+        WHERE a.username=$1 AND a.account_name=$2`,
+      [username, accountName]
+    ),
+    pool.query(
+      'SELECT version, pos_version, trade_version, nav_version, cashflow_version FROM account_data WHERE username=$1 AND account_name=$2',
+      [username, accountName]
+    ),
+    pool.query(
+      'SELECT COALESCE(SUM(amount), 0)::float8 AS cash_flow_net FROM cash_flows WHERE username=$1 AND account_name=$2',
+      [username, accountName]
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(CASE
+                WHEN direction IN ('open','adjust') THEN 0
+                WHEN quote_currency='HKD' AND amount_cny IS NULL THEN 0
+                WHEN direction='buy' THEN -(COALESCE(amount_cny, amount) + COALESCE(commission,0) + COALESCE(stamp_tax,0) + COALESCE(transfer_fee,0) + COALESCE(other_fee,0))
+                ELSE COALESCE(amount_cny, amount) - COALESCE(commission,0) - COALESCE(stamp_tax,0) - COALESCE(transfer_fee,0) - COALESCE(other_fee,0)
+              END), 0)::float8 AS trade_net,
+              COALESCE(BOOL_OR(direction NOT IN ('open','adjust') AND quote_currency='HKD' AND amount_cny IS NULL), false) AS cash_data_incomplete
+         FROM trades WHERE username=$1 AND account_name=$2`,
+      [username, accountName]
+    )
+  ]);
+  const account = accountResult.rows[0] || {};
+  const nav = navResult.rows[0] || {};
+  const versions = versionResult.rows[0] || {};
+  const cashBase = Number(account.cash_base) || 0;
+  const hkRate = Number(account.hk_rate) > 0 ? Number(account.hk_rate) : 0.868;
+  const ledgerCash = cashBase + (Number(cashFlowResult.rows[0] && cashFlowResult.rows[0].cash_flow_net) || 0) +
+    (Number(tradeResult.rows[0] && tradeResult.rows[0].trade_net) || 0);
+  // 账户首页现金沿用账本口径；历史快照现金可能是导入日锚点，不能直接当作当前余额。
+  const cash = ledgerCash;
+  return {
+    summary: true,
+    positions: positionsResult.rows,
+    trades: [],
+    navHistory: [],
+    cashFlows: [],
+    positionSnapshots: [],
+    indexHistory: [],
+    cash,
+    cashBase,
+    hkRate,
+    totalAsset: Number.isFinite(Number(nav.totalAsset)) ? Number(nav.totalAsset) : null,
+    invested: Number.isFinite(Number(nav.invested)) ? Number(nav.invested) : null,
+    cashDataIncomplete: !!(tradeResult.rows[0] && tradeResult.rows[0].cash_data_incomplete),
+    _broker: account.broker || 'other',
+    _brokerImportUnit: account.import_unit || 'sheet',
+    version: Number(versions.version) || 0,
+    posVersion: Number(versions.pos_version) || 0,
+    tradeVersion: Number(versions.trade_version) || 0,
+    navVersion: Number(versions.nav_version) || 0,
+    cashflowVersion: Number(versions.cashflow_version) || 0,
+  };
+}
+
 // 按持仓 code 批量关联 core.instruments.instrument_id（仓位对比统一证券身份用）。
 // 匹配规则与 bondDataService 一致：优先精确 code（如 600519 / 00700.HK / 113050.SH），
 // 再尝试去掉交易所后缀的纯数字匹配；未匹配返回 null（由回填/同步补偿，不影响保存）。
@@ -796,6 +876,7 @@ async function renameAccountData(username, oldName, newName) {
 
 module.exports = {
   loadAccountData,
+  loadAccountSummary,
   saveAccountData,
   buildInstrumentIdMap,
   saveDailyPrices,

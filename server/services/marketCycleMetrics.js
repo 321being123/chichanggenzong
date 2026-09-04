@@ -1,4 +1,4 @@
-const { pool, loadAccountData } = require('../db');
+const { pool, loadAccountSummary } = require('../db');
 
 const METRICS = {
   pe: { direction: 'lower_is_cheaper', label: '市盈率（PE-TTM）' },
@@ -93,6 +93,10 @@ async function metricRows(metric, market, benchmark) {
   return rows;
 }
 
+async function loadRows(metric, market, benchmark) {
+  return metricRows(metric, market, benchmark);
+}
+
 async function getSetting(username, account, metric, market, benchmark) {
   if (!username || !account) return null;
   const { rows } = await pool.query(`SELECT lower_boundary::float8 AS lower, upper_boundary::float8 AS upper, version
@@ -104,7 +108,7 @@ async function getSetting(username, account, metric, market, benchmark) {
 
 async function actualPosition(username, account) {
   if (!username || !account) return null;
-  const data = await loadAccountData(username, account);
+  const data = await loadAccountSummary(username, account);
   let equity = 0, total = Number(data.cash) || 0;
   for (const row of data.positions || []) {
     const value = Number(row.price || 0) * Number(row.quantity || 0) * (row.subtype === '港股' ? Number(data.hkRate || 0) : 1);
@@ -114,9 +118,9 @@ async function actualPosition(username, account) {
   return total > 0 ? Number((equity / total * 100).toFixed(2)) : null;
 }
 
-async function getOverview(username, account, metric, market, benchmark) {
+async function getOverview(username, account, metric, market, benchmark, rowsOverride = null) {
   if (!validMetric(metric)) return null;
-  const rows = await metricRows(metric, market, benchmark);
+  const rows = rowsOverride || await metricRows(metric, market, benchmark);
   const current = rows.at(-1) || null;
   if (!current) return { metric, market, benchmark, direction: METRICS[metric].direction, current: null };
   const stats = metricStats(rows);
@@ -137,8 +141,8 @@ async function getOverview(username, account, metric, market, benchmark) {
   };
 }
 
-async function getHistory(metric, market, benchmark, range) {
-  const rows = await metricRows(metric, market, benchmark);
+async function getHistory(metric, market, benchmark, range, rowsOverride = null) {
+  const rows = rowsOverride || await metricRows(metric, market, benchmark);
   const cutoff = rangeCutoff(range);
   return cutoff ? rows.filter(row => row.date >= cutoff) : rows;
 }
@@ -172,5 +176,5 @@ async function saveSetting(username, account, metric, market, benchmark, lower, 
 
 module.exports = {
   METRICS, validMetric, rangeCutoff, metricStats, metricLadder, metricRecommendedPosition,
-  getOverview, getHistory, saveSetting,
+  loadRows, getOverview, getHistory, saveSetting,
 };

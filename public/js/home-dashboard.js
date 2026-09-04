@@ -46,13 +46,14 @@ function renderHomeIpo(calendar) {
 
 function renderHomeBonds(payload) {
   var rows = payload && (payload.data || payload.rows) || [];
-  var counts = { '安全':0, '低风险':0, '中风险':0, '高风险':0 };
-  rows.forEach(function(row) { if (Object.prototype.hasOwnProperty.call(counts,row.safety)) counts[row.safety]++; });
-  homeSetText('home-bond-count', String(rows.length));
+  var counts = payload && payload.safety_counts ? payload.safety_counts : { '安全':0, '低风险':0, '中风险':0, '高风险':0 };
+  if (!payload || !payload.safety_counts) rows.forEach(function(row) { if (Object.prototype.hasOwnProperty.call(counts,row.safety)) counts[row.safety]++; });
+  var totalCount = payload && Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
+  homeSetText('home-bond-count', String(totalCount));
   homeSetText('home-bond-safe', '安全 ' + counts['安全']);
   homeSetText('home-bond-risk', '高风险 ' + counts['高风险']);
   var colors = { '安全':'#19a463', '低风险':'#7bbf45', '中风险':'#f3b33d', '高风险':'#e05a47' };
-  var total = rows.length || 1, el = document.getElementById('home-bond-distribution');
+  var total = totalCount || 1, el = document.getElementById('home-bond-distribution');
   if (!el) return;
   el.innerHTML = Object.keys(counts).map(function(key) {
     var pct = counts[key] / total * 100;
@@ -234,7 +235,7 @@ async function loadHomeMarketCycles() {
   homeMarketCyclesLoading = true;
   try {
     var responses = await Promise.all([
-      fetch(api('/api/bond-cycle?range=all')),
+      fetch(api('/api/bond-cycle?range=all&view=home&maxPoints=800')),
       fetch(api('/api/market-volatility/home-cycle?range=20y'))
     ]);
     if (!responses[0].ok || !responses[1].ok) throw new Error('市场周期数据读取失败');
@@ -286,7 +287,7 @@ async function loadHomeDashboard() {
   if (homeDashboardLoading) return;
   homeDashboardLoading = true;
   try {
-    var results = await Promise.all([fetch(api('/api/ipo/calendar?days=90')), fetch(api('/api/bond-safety/bonds'))]);
+    var results = await Promise.all([fetch(api('/api/ipo/calendar?days=90')), fetch(api('/api/bond-safety/bonds?view=summary'))]);
     if (!results[0].ok || !results[1].ok) throw new Error('首页数据读取失败');
     var calendar = await results[0].json(), bonds = await results[1].json();
     renderHomeIpo(calendar.calendar || []);

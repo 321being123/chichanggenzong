@@ -7,11 +7,12 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership, requireAdmin } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
-const { loadUser, updateUserAccounts, loadAccountData, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
+const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
 const { fetchQuotesByCodes, todayCN, toTsCode, validateDailyPriceBatch } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
+const { applyPrivateCache } = require('../middleware/publicCache');
 const tradeLedger = require('../services/tradeLedger');
 
 // 乐观锁版本必填中间件（2026-08-04 第二轮修复）：核心业务写接口必须携带 ?version=，
@@ -275,6 +276,12 @@ router.put('/accounts/broker', requireLogin, asyncHandler(async (req, res) => {
 
 router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   const name = decodeURIComponent(req.params.name);
+  if (String(req.query.scope || '').toLowerCase() === 'summary') {
+    const summary = await loadAccountSummary(req.session.user, name);
+    if (applyPrivateCache(req, res, [req.session.user, name, summary.version, summary.posVersion,
+      summary.tradeVersion, summary.navVersion, summary.cashflowVersion].join('|'))) return;
+    return res.json(summary);
+  }
   const result = await loadAccountData(req.session.user, name);
   // 附加券商信息（供前端判断交易数量单位转换：华泰等券商上交所债券以「手」录入需×10）
   const { rows: acctRows } = await pool.query(

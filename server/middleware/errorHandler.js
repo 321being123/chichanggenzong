@@ -1,6 +1,20 @@
 // ========== 统一错误处理、请求追踪与结构化日志（P2-2）==========
 // 零额外依赖，全部用内置模块，避免引入新包。
 const crypto = require('crypto');
+const { monitorEventLoopDelay } = require('perf_hooks');
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+const eventLoopSampleTimer = setInterval(() => {
+  const nsToMs = (value) => Number((value / 1e6).toFixed(1));
+  console.log('[event-loop]', JSON.stringify({
+    ts: new Date().toISOString(),
+    p50Ms: nsToMs(eventLoopDelay.percentile(50)),
+    p95Ms: nsToMs(eventLoopDelay.percentile(95)),
+    maxMs: nsToMs(eventLoopDelay.max),
+  }));
+  eventLoopDelay.reset();
+}, 60000);
+eventLoopSampleTimer.unref();
 
 // 请求 ID：便于跨日志关联一次请求（支持上游透传 X-Request-Id）
 function requestId(req, res, next) {

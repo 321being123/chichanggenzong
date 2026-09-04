@@ -57,6 +57,7 @@ module.exports = {
   listAudit: config.listAudit,
   AUDIT_MODULES: config.AUDIT_MODULES,
   loadAccountData: accounts.loadAccountData,
+  loadAccountSummary: accounts.loadAccountSummary,
   saveAccountData: accounts.saveAccountData,
   buildInstrumentIdMap: accounts.buildInstrumentIdMap,
   saveDailyPrices: accounts.saveDailyPrices,

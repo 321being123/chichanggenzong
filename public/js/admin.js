@@ -463,6 +463,7 @@ async function doDeleteBroker(code) {
 
 // ====== 定时任务监控 ======
 const JOB_LABELS = {
+  company_financial_incremental_sync: '公司财务增量同步',
   index_baseline: '指数基线补齐',
   index_recent: '指数每日补齐',
   nav_snapshot: '净值快照',

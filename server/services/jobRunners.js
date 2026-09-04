@@ -1,6 +1,8 @@
 // 后台人工补跑入口。使用现有任务实现，避免在管理路由里复制业务逻辑。
 async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, context = {}) {
   switch (jobCode) {
+    case 'company_financial_incremental_sync':
+      return require('../jobs/companyFinancialIncrementalSync').runCompanyFinancialIncrementalSync(reason, context);
     case 'bond_safety_refresh':
       {
         const { expectedDataDate } = require('./jobScheduleSlots');

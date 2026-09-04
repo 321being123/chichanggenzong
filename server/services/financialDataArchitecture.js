@@ -16,6 +16,17 @@ function marketMultiple(value){const n=finite(value);return n===0?null:n;}
 
 function hash(value) { return crypto.createHash('sha256').update(String(value||'')).digest('hex'); }
 
+function stablePayload(value) {
+  if (Array.isArray(value)) return value.map(stablePayload);
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((out, key) => {
+      out[key] = stablePayload(value[key]);
+      return out;
+    }, {});
+  }
+  return value;
+}
+
 async function sourceIds(client) {
   const {rows}=await client.query('SELECT source_code,source_id FROM ops.data_sources');
   return Object.fromEntries(rows.map(row=>[row.source_code,row.source_id]));
@@ -106,19 +117,47 @@ const FACT_MAP={
 
 function periodType(endDate){const suffix=String(endDate||'').slice(4);return suffix==='1231'?'annual':suffix==='0630'?'semiannual':suffix==='0331'?'q1':suffix==='0930'?'q3':'other';}
 
-function rowVersion(row){return hash([row.end_date,row.ann_date,row.f_ann_date,row.report_type,row.comp_type,row.update_flag,row.div_proc,row.ex_date,row.pay_date,row.type].join('|'));}
+function rowVersion(row){
+  const metadata = [row.end_date,row.ann_date,row.f_ann_date,row.report_type,row.comp_type,row.update_flag,row.div_proc,row.ex_date,row.pay_date,row.type].join('|');
+  return hash(`${metadata}|payload:${hash(JSON.stringify(stablePayload(row || {})))}`);
+}
 
-async function syncReportRows(client, rows, kind, companyId, sourceId) {
-  for(const data of rows){if(!asDate(data.end_date))continue;const sourceVersion=rowVersion(data),announced=asDate(data.f_ann_date||data.ann_date);
-    const report=(await client.query(`INSERT INTO fundamental.financial_reports(company_id,report_kind,period_end,period_type,announced_at,source_id,source_version,update_flag,raw_payload)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) ON CONFLICT(company_id,report_kind,period_end,source_id,source_version)
-      DO UPDATE SET announced_at=EXCLUDED.announced_at,update_flag=EXCLUDED.update_flag,raw_payload=EXCLUDED.raw_payload,ingested_at=now() RETURNING report_id`,
-      [companyId,kind,asDate(data.end_date),periodType(data.end_date),announced,sourceId,sourceVersion,data.update_flag||'',JSON.stringify(data)])).rows[0];
-    for(const [sourceField,metricCode] of Object.entries(FACT_MAP[kind]||{})){const value=finite(data[sourceField]);if(value===null)continue;const unit=/roe|roa|coverage/.test(metricCode)?'percent':'currency';
+async function syncReportRows(client, rows, kind, companyId, sourceId, options = {}) {
+  for(const data of rows){
+    if(!asDate(data.end_date))continue;
+    if(options.reportTypeOnly && String(data.report_type || '') !== String(options.reportTypeOnly))continue;
+    const sourceVersion=rowVersion(data),announced=asDate(data.ann_date),fAnnDate=asDate(data.f_ann_date||data.ann_date);
+    let rawRecordId = null;
+    if (options.runId && sourceId) {
+      const rawKey = `${companyId}:${kind}:${asDate(data.end_date)}:${announced || ''}:${fAnnDate || ''}:${data.report_type || ''}:${data.update_flag || ''}`;
+      const raw = (await client.query(`INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
+        VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)
+        ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
+        DO UPDATE SET run_id=EXCLUDED.run_id
+        RETURNING raw_record_id`,
+        [options.runId, sourceId, `stock_financial_${kind}`, rawKey, fAnnDate || announced, JSON.stringify(data), hash(JSON.stringify(stablePayload(data)))]
+      )).rows[0];
+      rawRecordId = raw && raw.raw_record_id;
+    }
+    const report=(await client.query(`INSERT INTO fundamental.financial_reports(company_id,report_kind,period_end,period_type,announced_at,f_ann_date,report_type,comp_type,source_id,source_version,update_flag,raw_record_id,raw_payload)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb) ON CONFLICT(company_id,report_kind,period_end,source_id,source_version)
+      DO UPDATE SET announced_at=COALESCE(EXCLUDED.announced_at,fundamental.financial_reports.announced_at),
+        f_ann_date=COALESCE(EXCLUDED.f_ann_date,fundamental.financial_reports.f_ann_date),
+        report_type=COALESCE(NULLIF(EXCLUDED.report_type,''),fundamental.financial_reports.report_type),
+        comp_type=COALESCE(NULLIF(EXCLUDED.comp_type,''),fundamental.financial_reports.comp_type),
+        update_flag=COALESCE(NULLIF(EXCLUDED.update_flag,''),fundamental.financial_reports.update_flag),
+        raw_record_id=COALESCE(EXCLUDED.raw_record_id,fundamental.financial_reports.raw_record_id),
+        raw_payload=EXCLUDED.raw_payload,ingested_at=now() RETURNING report_id`,
+      [companyId,kind,asDate(data.end_date),periodType(data.end_date),announced,fAnnDate,String(data.report_type || ''),String(data.comp_type || ''),sourceId,sourceVersion,data.update_flag||'',rawRecordId,JSON.stringify(data)])).rows[0];
+    await client.query(`UPDATE fundamental.financial_reports
+      SET f_ann_date=COALESCE($2,f_ann_date),report_type=COALESCE(NULLIF($3,''),report_type),comp_type=COALESCE(NULLIF($4,''),comp_type),statement_scope=CASE WHEN $3='1' THEN 'consolidated' ELSE statement_scope END,
+      raw_record_id=COALESCE($5,raw_record_id)
+      WHERE report_id=$1`, [report.report_id, fAnnDate, String(data.report_type || ''), String(data.comp_type || ''), rawRecordId]);
+    for(const [sourceField,metricCode] of Object.entries(FACT_MAP[kind]||{})){const value=finite(data[sourceField]);if(value===null)continue;const unit=metricCode==='interest_coverage'?'multiple':/roe|roa/.test(metricCode)?'percent':'currency';
       await client.query(`INSERT INTO fundamental.financial_facts(report_id,statement_type,metric_code,numeric_value,unit_code,currency_code,source_field)
         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(report_id,metric_code) DO UPDATE SET numeric_value=EXCLUDED.numeric_value,unit_code=EXCLUDED.unit_code,source_field=EXCLUDED.source_field`,[report.report_id,kind,metricCode,value,unit,unit==='currency'?'CNY':null,sourceField]);}
   }
-  await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`,[companyId,kind]);
+  await client.query(`WITH ranked AS (SELECT report_id,row_number() OVER(PARTITION BY company_id,report_kind,period_end ORDER BY CASE WHEN report_type='1' THEN 0 ELSE 1 END,announced_at DESC NULLS LAST,ingested_at DESC,report_id DESC) rn FROM fundamental.financial_reports WHERE company_id=$1 AND report_kind=$2) UPDATE fundamental.financial_reports r SET is_current_version=(ranked.rn=1) FROM ranked WHERE r.report_id=ranked.report_id`,[companyId,kind]);
 }
 
 async function syncReportTable(client, table, kind, tsCode, companyId, sourceId) {
@@ -284,4 +323,4 @@ async function backfillLegacyFinancialData() {
   return results;
 }
 
-module.exports={asDate,finite,analysisMetricValues,persistCollectedData,saveCollectedEvents,saveAnalysisResults,syncStockToArchitecture,backfillLegacyFinancialData};
+module.exports={asDate,finite,analysisMetricValues,persistCollectedData,saveCollectedEvents,saveAnalysisResults,syncStockToArchitecture,backfillLegacyFinancialData,hash,rowVersion,stablePayload,syncReportRows};

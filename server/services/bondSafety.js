@@ -126,6 +126,9 @@ function indicatorValue(result, key) {
 
 function normalizeBondRow(row, rating, sourceUpdatedAt) {
   return {
+    stock_instrument_id: row.stock_instrument_id ?? null,
+    company_id: row.company_id ?? null,
+    stock_code: row.stock_code || row.stk_code || '',
     bond_code: String(row.bond_code == null ? '' : row.bond_code),
     bond_name: String(row.bond_name == null ? '' : row.bond_name),
     stock_name: String(row.stock_name == null ? '' : row.stock_name),

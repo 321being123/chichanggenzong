@@ -13,6 +13,7 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   index_daily: { scopeKey: 'GLOBAL', table: 'public.index_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
   ipo_calendar: { scopeKey: 'GLOBAL', table: 'public.ipo_reports', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('report_date')} AS data_as_of` },
   bond_master: { scopeKey: 'CN', table: 'public.bond_unified', whereSql: "WHERE status='listed'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfStandaloneSql: "SELECT MAX(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='convertible_bond_universe' AND dataset_code IN ('cb_basic_cb_daily','cb_issue')" },
+  stock_financial_reports: { scopeKey: 'CN', table: 'fundamental.financial_reports', whereSql: "WHERE report_type='1' AND is_current_version=true", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: "SELECT MAX(COALESCE(f_ann_date,announced_at,period_end))::text AS data_as_of" },
   stock_suspend_calendar: { scopeKey: 'CN', table: 'market.stock_suspend_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   bond_redemption_events: { scopeKey: 'CN', table: 'event.convertible_bond_call_events', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
   bond_motive_inputs: { scopeKey: 'CN', table: 'fundamental.convertible_bond_holder_positions', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(report_date)::text AS data_as_of' },
@@ -21,6 +22,8 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   market_volatility: { scopeKey: 'GLOBAL', table: 'market.market_valuation_daily', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   ipo_history: { scopeKey: 'GLOBAL', table: 'public.ipo_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT MAX(CASE WHEN updated_at::text ~ '^\\d{4}-\\d{2}-\\d{2}' THEN updated_at::date END) AS data_as_of` },
   stock_analysis_snapshot: { scopeKey: 'CN', table: 'analytics.analysis_snapshots', whereSql: "WHERE snapshot_type='stock_analysis'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(as_of_date)::text AS data_as_of' },
+  bond_safety_snapshot: { scopeKey: 'CN', snapshotSql: `SELECT row_count,COALESCE(source_updated_at,refreshed_at)::date::text AS data_as_of
+    FROM bond_safety_snapshots WHERE publication_status='published' ORDER BY id DESC LIMIT 1`, table: 'bond_safety_snapshots' },
   hk_trade_rules: { scopeKey: 'HK', table: 'market.instrument_trade_rules', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(valid_from)::text AS data_as_of' },
   arbitrage_cases: { scopeKey: 'GLOBAL', table: 'event.arbitrage_cases', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
   trade_calendar: { scopeKey: 'GLOBAL', table: 'market.trade_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
@@ -39,6 +42,11 @@ function dateValue(value) {
 async function readSnapshot(datasetCode, executor = pool.query.bind(pool)) {
   const definition = DATASET_PARTITION_REGISTRY[datasetCode];
   if (!definition) return { published: false, reason: 'not_registered', datasetCode };
+  if (definition.snapshotSql) {
+    const result = await executor(definition.snapshotSql);
+    const row = result.rows[0] || {};
+    return { published: false, datasetCode, scopeKey: definition.scopeKey, rowCount: Number(row.row_count || 0), dataAsOf: dateValue(row.data_as_of) };
+  }
   const from = ` FROM ${definition.table} ${definition.whereSql || ''}`;
   const countResult = await executor(`${definition.countSql}${from}`);
   const dateResult = definition.dataAsOfStandaloneSql

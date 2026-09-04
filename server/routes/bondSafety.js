@@ -9,6 +9,7 @@ const { getLatestCallStateBySecurityCodes } = require('../services/convertibleBo
 const { filterAndSortRows, buildBondSafetyWorkbook } = require('../services/bondSafetyExport');
 const { auditEvent } = require('../db');
 const { getDatasetMetadata } = require('../services/datasetPartitions');
+const { publishJobDatasets } = require('../services/datasetPartitionRegistry');
 
 router.get('/bonds', asyncHandler(async (req, res) => {
   const requestedRating = String(req.query.rating || '').trim();
@@ -75,6 +76,7 @@ router.post('/refresh', requireCapability('ops_manage'), asyncHandler(async (req
       await auditEvent({ actor: req.session.user, action: 'bond_safety_refresh', target: 'all', result: 'failure', requestId: req.id, detail: '已有刷新任务正在运行' });
       return res.status(409).json({ error: '已有刷新任务正在运行，请稍后再试' });
     }
+    await publishJobDatasets('bond_safety_refresh', String(result.dataAsOf || new Date().toISOString()).slice(0, 10), result);
     await auditEvent({ actor: req.session.user, action: 'bond_safety_refresh', target: 'all', result: 'success', requestId: req.id, metadata: { count: result.snapshot ? result.snapshot.row_count : 0 } });
     res.json({ ok: true, updated_at: result.snapshot.refreshed_at, count: result.snapshot.row_count });
   } catch (error) {

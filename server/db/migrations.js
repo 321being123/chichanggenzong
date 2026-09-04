@@ -5371,6 +5371,65 @@ async function migration133ConvertibleBondRevisionLegacyFalseFacts() {
   await rebuildConvertibleBondRevisionLatestView();
 }
 
+// ========== 134：财务增量同步与安全性快照发布门禁 =============
+// 财务报告补齐公告日、报表类型和原始版本字段；安全性快照只允许通过质量门禁的
+// 记录进入 published，历史全量未评级结果改为 rejected，读取端动态回退上一份有效快照。
+async function migration134CompanyFinancialIncrementalSync() {
+  await pool.query(`
+    ALTER TABLE fundamental.financial_reports
+      ADD COLUMN IF NOT EXISTS f_ann_date DATE,
+      ADD COLUMN IF NOT EXISTS report_type TEXT NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS comp_type TEXT NOT NULL DEFAULT '';
+
+    UPDATE fundamental.financial_reports
+       SET f_ann_date=COALESCE(f_ann_date,announced_at),
+           report_type=COALESCE(NULLIF(report_type,''),NULLIF(raw_payload->>'report_type',''),''),
+           comp_type=COALESCE(NULLIF(comp_type,''),NULLIF(raw_payload->>'comp_type',''),'')
+     WHERE f_ann_date IS NULL OR report_type='' OR comp_type='';
+
+    CREATE INDEX IF NOT EXISTS idx_financial_reports_current_period
+      ON fundamental.financial_reports(company_id,report_kind,report_type,is_current_version,period_end DESC);
+
+    ALTER TABLE bond_safety_snapshots
+      ADD COLUMN IF NOT EXISTS publication_status TEXT NOT NULL DEFAULT 'published',
+      ADD COLUMN IF NOT EXISTS publication_reason TEXT NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS quality_gate JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname='ck_bond_safety_snapshot_publication_status'
+           AND conrelid='bond_safety_snapshots'::regclass
+      ) THEN
+        ALTER TABLE bond_safety_snapshots
+          ADD CONSTRAINT ck_bond_safety_snapshot_publication_status
+          CHECK (publication_status IN ('published','rejected'));
+      END IF;
+    END $$;
+
+    UPDATE bond_safety_snapshots
+       SET publication_status='rejected',
+           publication_reason='历史快照为全量未评级结果',
+           quality_gate=jsonb_build_object(
+             'migrated_rejected',true,
+             'reason','all_unrated_snapshot'
+           )
+     WHERE row_count > 0
+       AND COALESCE(NULLIF(diagnostics->'rating_counts'->>'未评级',''),'0')::integer >= row_count;
+
+    UPDATE ops.dataset_partitions p
+       SET status='stale',is_stale=true,
+           stale_reason='对应安全性快照已被质量门禁判定为全量未评级',updated_at=now()
+     WHERE p.dataset_code='bond_safety_snapshot'
+       AND EXISTS (
+         SELECT 1 FROM bond_safety_snapshots s
+          WHERE s.publication_status='rejected'
+            AND COALESCE(s.source_updated_at,s.refreshed_at)::date=p.partition_key
+       );
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5505,6 +5564,7 @@ const MIGRATIONS = [
   { version: '131_ipo_sector_exposure_calibration', up: migration131IpoSectorExposureCalibration },
   { version: '132_convertible_bond_revision_decision_timeline', up: migration132ConvertibleBondRevisionDecisionTimeline },
   { version: '133_convertible_bond_revision_legacy_false_facts', up: migration133ConvertibleBondRevisionLegacyFalseFacts },
+  { version: '134_company_financial_incremental_sync', up: migration134CompanyFinancialIncrementalSync },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6090,6 +6150,7 @@ module.exports = {
   migration128TushareDualAccountPolicy,
   migration129TushareDualAccountPolicyRepair,
   migration130TushareVipBackupMinuteLimit,
+  migration134CompanyFinancialIncrementalSync,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

@@ -1,7 +1,6 @@
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { evaluateBondSafety } = require('./bondSafety');
 const { fetchBondSafetySource, isConfigured } = require('./bondSafetyFetcher');
-const { publishDatasetPartition } = require('./datasetPartitions');
 
 const JOB_NAME = 'bond_safety_refresh';
 
@@ -71,13 +70,84 @@ async function filterInactiveBonds(snapshot) {
 async function getLatestSnapshot() {
   const { rows } = await pool.query(
     `SELECT id, refreshed_at, source_updated_at, row_count, data, diagnostics, refresh_reason,
-            dominant_risk_level, total_bonds_count
-       FROM bond_safety_snapshots ORDER BY id DESC LIMIT 1`
+            dominant_risk_level, total_bonds_count, publication_status, publication_reason, quality_gate
+       FROM bond_safety_snapshots
+      WHERE publication_status='published'
+      ORDER BY id DESC LIMIT 1`
   );
   return rows[0] ? filterInactiveBonds(rows[0]) : null;
 }
 
-async function saveSnapshot(result, sourceUpdatedAt, reason) {
+async function getPreviousPublishedSnapshot() {
+  const { rows } = await pool.query(
+    `SELECT id, row_count, data, diagnostics, total_bonds_count
+       FROM bond_safety_snapshots
+      WHERE publication_status='published'
+      ORDER BY id DESC LIMIT 1`
+  );
+  return rows[0] || null;
+}
+
+function bondSnapshotKey(row) {
+  return String(row && (row.bond_code || row.stock_instrument_id || row.company_id || row.stock_code || '')).trim();
+}
+
+function ratedCount(rows) {
+  return (rows || []).filter(row => String(row && row.safety || '未评级') !== '未评级').length;
+}
+
+function publicationQualityGate(result, previous = null) {
+  const data = Array.isArray(result && result.data) ? result.data : [];
+  const diagnostics = result && result.diagnostics || {};
+  const previousData = previous && Array.isArray(previous.data) ? previous.data : [];
+  const expectedBonds = Math.max(
+    Number(diagnostics.expected_bond_count) || 0,
+    Number(previous && (previous.total_bonds_count || previous.row_count)) || 0,
+    Number(diagnostics.bond_rows) || data.length
+  );
+  const currentRated = ratedCount(data);
+  const previousRated = ratedCount(previousData);
+  const currentUnrated = data.length - currentRated;
+  const previousUnrated = previousData.length - previousRated;
+  const completeCompanies = Number(diagnostics.financial_complete_companies || 0);
+  const eligibleCompanies = Number(diagnostics.eligible_companies || 0);
+  const financialCoverage = eligibleCompanies ? completeCompanies / eligibleCompanies : 0;
+  const ratingCoverage = data.length ? currentRated / data.length : 0;
+  const commonPrevious = new Map(previousData.map(row => [bondSnapshotKey(row), row]).filter(([key]) => key));
+  const commonCurrent = data.filter(row => commonPrevious.has(bondSnapshotKey(row)));
+  const commonPreviousRated = commonCurrent.filter(row => String(commonPrevious.get(bondSnapshotKey(row)).safety || '未评级') !== '未评级').length;
+  const commonCurrentRated = ratedCount(commonCurrent);
+  const commonCoverageDrop = commonPreviousRated ? 1 - (commonCurrentRated / commonPreviousRated) : 0;
+  const failures = [];
+  if (expectedBonds > 0 && data.length < Math.ceil(expectedBonds * 0.95)) failures.push('可转债记录数低于预期完整度95%');
+  if (!eligibleCompanies || financialCoverage < 0.95) failures.push('财务完整公司覆盖率低于95%');
+  if (!data.length || ratingCoverage < 0.95) failures.push('有评级可转债覆盖率低于95%');
+  if (previousData.length && currentUnrated > previousUnrated + Math.max(5, Math.ceil(previousData.length * 0.05))) failures.push('未评级数量异常增加');
+  if (commonPreviousRated && commonCoverageDrop > 0.02) failures.push('共有转债有评级覆盖率下降超过2%');
+  const periods = [...new Set((diagnostics.financial_report_periods || []).filter(Boolean).map(value => String(value).slice(0, 10)))];
+  if (periods.length > 1) failures.push('三类财务报表报告期不一致');
+  return {
+    ok: failures.length === 0,
+    failures,
+    expected_bond_count: expectedBonds,
+    record_count: data.length,
+    financial_complete_companies: completeCompanies,
+    eligible_companies: eligibleCompanies,
+    financial_coverage: Number(financialCoverage.toFixed(4)),
+    rated_count: currentRated,
+    rating_coverage: Number(ratingCoverage.toFixed(4)),
+    previous_rated_count: previousRated,
+    common_bond_count: commonCurrent.length,
+    common_previous_rated: commonPreviousRated,
+    common_current_rated: commonCurrentRated,
+    common_rating_coverage_drop: Number(commonCoverageDrop.toFixed(4)),
+    previous_unrated_count: previousUnrated,
+    current_unrated_count: currentUnrated,
+    financial_report_periods: periods,
+  };
+}
+
+async function saveSnapshot(result, sourceUpdatedAt, reason, publicationStatus = 'published', qualityGate = {}) {
   // 从 data 数组中提取汇总统计
   const data = result.data;
   const totalBonds = data.length;
@@ -94,15 +164,19 @@ async function saveSnapshot(result, sourceUpdatedAt, reason) {
 
   const { rows } = await pool.query(
     `INSERT INTO bond_safety_snapshots
-       (source_updated_at, row_count, data, diagnostics, refresh_reason, dominant_risk_level, total_bonds_count)
-     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7)
-     RETURNING id, refreshed_at, source_updated_at, row_count, data, diagnostics, refresh_reason, dominant_risk_level, total_bonds_count`,
-    [sourceUpdatedAt || null, data.length, JSON.stringify(data), JSON.stringify(result.diagnostics), reason, dominantLevel, totalBonds]
+       (source_updated_at, row_count, data, diagnostics, refresh_reason, dominant_risk_level, total_bonds_count,
+        publication_status, publication_reason, quality_gate)
+     VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9, $10::jsonb)
+     RETURNING id, refreshed_at, source_updated_at, row_count, data, diagnostics, refresh_reason, dominant_risk_level,
+               total_bonds_count, publication_status, publication_reason, quality_gate`,
+    [sourceUpdatedAt || null, data.length, JSON.stringify(data), JSON.stringify(result.diagnostics), reason, dominantLevel, totalBonds,
+      publicationStatus, publicationStatus === 'published' ? '' : (qualityGate.failures || []).join('；'), JSON.stringify(qualityGate)]
   );
-  // MVP 只保留最近 30 次成功快照；失败不会覆盖最后成功数据。
+  // 只按 published 快照保留最近 30 份；拒绝记录不能挤掉可回退的有效数据。
   await pool.query(
     `DELETE FROM bond_safety_snapshots WHERE id NOT IN
-       (SELECT id FROM bond_safety_snapshots ORDER BY id DESC LIMIT 30)`
+       (SELECT id FROM bond_safety_snapshots WHERE publication_status='published' ORDER BY id DESC LIMIT 30)
+       AND publication_status='published'`
   );
   return rows[0];
 }
@@ -118,11 +192,28 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
     }
     assertStableIdentity(source);
     const result = evaluateBondSafety(source.companyRows, source.bondRows, source.sourceUpdatedAt);
-    const snapshot = await saveSnapshot(result, source.sourceUpdatedAt, reason);
+    const previous = await getPreviousPublishedSnapshot();
+    const companyPeriods = [...new Set((source.companyRows || []).map(row => row.financial_report_end_date).filter(Boolean))];
+    result.diagnostics = Object.assign({}, result.diagnostics, {
+      expected_bond_count: source.expectedBondCount || source.bondRows.length,
+      financial_complete_companies: (source.companyRows || []).filter(row => row.financial_available === true).length,
+      financial_report_periods: companyPeriods,
+    });
+    const qualityGate = publicationQualityGate(result, previous);
+    result.diagnostics.publication_quality_gate = qualityGate;
+    if (!qualityGate.ok) {
+      await saveSnapshot(result, source.sourceUpdatedAt, reason, 'rejected', qualityGate);
+      const error = new Error(`安全性快照质量门禁失败：${qualityGate.failures.join('；')}`);
+      error.code = 'DATA_QUALITY_GATE_FAILED';
+      error.errorType = 'data_quality';
+      error.dataDiagnostics = { qualityGate, result: result.diagnostics };
+      throw error;
+    }
+    const snapshot = await saveSnapshot(result, source.sourceUpdatedAt, reason, 'published', qualityGate);
     const dataAsOf = source.dataAsOf || (source.sourceUpdatedAt ? String(source.sourceUpdatedAt).slice(0, 10) : null);
-    if (dataAsOf) await publishDatasetPartition('bond_safety_snapshot', 'CN', { partitionKey: dataAsOf, dataAsOf, rowCount: snapshot.row_count, diagnostics: result.diagnostics || {} });
     await finishJobRun(runId, true, `刷新 ${snapshot.row_count} 条；未匹配 ${result.diagnostics.unmatched_stock_count} 条`);
-    return { skipped: false, snapshot };
+    return { ok: true, skipped: false, snapshot, dataAsOf, publishDatasets: true,
+      datasetDiagnostics: { bond_safety_snapshot: { partition_row_count: snapshot.row_count, quality_gate: qualityGate } }, qualityGate };
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;
@@ -131,4 +222,4 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
   }
 }
 
-module.exports = { getLatestSnapshot, refreshBondSafety, isConfigured, stableIdentity, assertStableIdentity };
+module.exports = { getLatestSnapshot, refreshBondSafety, isConfigured, stableIdentity, assertStableIdentity, publicationQualityGate };

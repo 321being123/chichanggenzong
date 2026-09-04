@@ -66,20 +66,17 @@ function selectFinancialReport(indicators, balances, incomes, today) {
   // 兼容旧的三参数调用 selectFinancialReport(indicators, balances, today)。
   if (typeof incomes === 'string' && today === undefined) { today = incomes; incomes = []; }
   const indicatorByPeriod = new Map();
-  (indicators || []).filter(row => row.end_date && (!row.ann_date || row.ann_date <= today))
+  (indicators || []).filter(row => row.end_date && String(row.report_type || '') === '1' && (!row.ann_date || row.ann_date <= today))
     .sort((a, b) => String(b.ann_date || '').localeCompare(String(a.ann_date || '')))
     .forEach(row => { if (!indicatorByPeriod.has(row.end_date)) indicatorByPeriod.set(row.end_date, row); });
   const balanceByPeriod = new Map();
-  (balances || []).filter(row => row.end_date && (!row.f_ann_date || row.f_ann_date <= today))
-    .sort((a, b) => {
-      const report = (String(a.report_type) === '1' ? -1 : 0) - (String(b.report_type) === '1' ? -1 : 0);
-      return report || String(b.f_ann_date || '').localeCompare(String(a.f_ann_date || ''));
-    })
+  (balances || []).filter(row => row.end_date && String(row.report_type || '') === '1' && (!row.f_ann_date || row.f_ann_date <= today))
+    .sort((a, b) => String(b.f_ann_date || '').localeCompare(String(a.f_ann_date || '')))
     .forEach(row => { if (!balanceByPeriod.has(row.end_date)) balanceByPeriod.set(row.end_date, row); });
   const period = Array.from(indicatorByPeriod.keys()).filter(value => balanceByPeriod.has(value)).sort().reverse()[0];
   if (!period) return null;
   const fi = indicatorByPeriod.get(period), bs = balanceByPeriod.get(period);
-  const income = (incomes || []).filter(row => row.end_date === period && (!row.f_ann_date || row.f_ann_date <= today))
+  const income = (incomes || []).filter(row => row.end_date === period && String(row.report_type || '') === '1' && (!row.f_ann_date || row.f_ann_date <= today))
     .sort((a, b) => String(b.f_ann_date || b.ann_date || '').localeCompare(String(a.f_ann_date || a.ann_date || '')))[0] || {};
   const directInterest = finite(income.fin_exp_int_exp) != null ? finite(income.fin_exp_int_exp) : finite(income.int_exp);
   const derivedInterest = finite(fi.ebit_to_interest) && finite(fi.ebit) != null
@@ -134,7 +131,7 @@ function financialWindowStart(cached) {
 async function fetchOneFinancial(stock, today, startDate) {
   const dateParams = startDate ? { start_date: startDate } : {};
   const [fiData, bsData, incomeData] = await Promise.all([
-    tushareQuery('fina_indicator', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,end_date,ebit,ebit_to_interest,interestdebt'),
+    tushareQuery('fina_indicator', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,end_date,report_type,ebit,ebit_to_interest,interestdebt'),
       tushareQuery('balancesheet', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,f_ann_date,end_date,report_type,money_cap,trad_asset,total_assets,total_cur_liab,total_liab,total_hldr_eqy_exc_min_int'),
     tushareQuery('income', Object.assign({ ts_code: stock.stk_code }, dateParams), 'ts_code,ann_date,f_ann_date,end_date,report_type,fin_exp_int_exp,int_exp'),
   ]);
@@ -434,13 +431,22 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
     )
     SELECT b.*,ci.company_id,
            ind.raw_payload AS indicator_payload, bal.raw_payload AS balance_payload,
-           inc.raw_payload AS income_payload,
+           inc.raw_payload AS income_payload, fp.period_end::text AS financial_report_end_date,
            COALESCE(n.industry_name,b.stock_raw->>'industry','') AS industry
       FROM bonds b
       LEFT JOIN core.company_instruments ci ON ci.instrument_id=b.stock_instrument_id
-      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.is_current_version ORDER BY r.period_end DESC,r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.is_current_version ORDER BY r.period_end DESC,r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.is_current_version ORDER BY r.period_end DESC,r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
+      LEFT JOIN LATERAL (
+        SELECT r.period_end
+          FROM fundamental.financial_reports r
+         WHERE r.company_id=ci.company_id AND r.report_kind IN ('income','balance','indicator')
+           AND r.report_type='1' AND r.is_current_version
+         GROUP BY r.period_end
+        HAVING COUNT(DISTINCT r.report_kind)=3
+         ORDER BY r.period_end DESC LIMIT 1
+      ) fp ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
       LEFT JOIN LATERAL (SELECT n.industry_name FROM core.company_industry_memberships m JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE m.company_id=ci.company_id AND m.is_current ORDER BY m.announced_at DESC NULLS LAST LIMIT 1) n ON true
   `, [date || null]);
   if (!rows.length) throw new Error('标准层暂无可转债行情，安全评分暂不覆盖');
@@ -453,7 +459,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
     const identityKey = row.stock_instrument_id || row.company_id || row.stock_code || company;
     if (company && !companySeen.has(String(identityKey))) {
       companySeen.add(String(identityKey));
-      companyRows.push({ identity_key: identityKey, company, industry: row.industry || '', has_cb: 1, financial_available: Boolean(row.income_payload || row.balance_payload || row.indicator_payload),
+      companyRows.push({ identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, company_id: row.company_id, company, industry: row.industry || '', has_cb: 1, financial_available: Boolean(row.financial_report_end_date && row.income_payload && row.balance_payload && row.indicator_payload), financial_report_end_date: row.financial_report_end_date || null,
         market_cap: row.total_market_cap == null ? null : Number(row.total_market_cap),
         interest_expense: pick(income, 'fin_exp_int_exp', pick(income, 'int_exp', null)),
         ebit: pick(income, 'ebit', pick(income, 'operate_profit', null)),
@@ -463,7 +469,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
       });
     }
     const dividendYield = row.dividend_yield_ttm == null ? null : Number(row.dividend_yield_ttm) * 100;
-    return { identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, bond_code: row.bond_code, bond_name: row.bond_name, stock_name: row.stock_name || '',
+    return { identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, company_id: row.company_id, stock_code: row.stock_code, bond_code: row.bond_code, bond_name: row.bond_name, stock_name: row.stock_name || '',
       pe_ttm: row.pe_ttm, pb: row.pb, dividend_yield: dividendYield, bond_price: row.close,
       change_pct: null, double_low: row.close != null && row.conversion_premium_pct != null ? Number(row.close) + Number(row.conversion_premium_pct) : null,
       convert_premium: row.conversion_premium_pct, convert_price: row.convert_price, convert_value: row.conversion_value };

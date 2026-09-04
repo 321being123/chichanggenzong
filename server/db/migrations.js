@@ -5430,6 +5430,28 @@ async function migration134CompanyFinancialIncrementalSync() {
   `);
 }
 
+// ========== 135：汇率预算等待与历史误熔断修复 =============
+// 统一汇率最小请求间隔为 24 小时；清理 0.7.0.27 之前把内部日预算等待误写成
+// 永久来源熔断的历史记录，保留原错误码和详情供审计。
+async function migration135ExchangeRateBudgetRecovery() {
+  await pool.query(`
+    UPDATE ops.source_endpoint_policies p
+       SET internal_per_minute_limit=1, internal_daily_limit=24, min_interval_ms=86400000,
+           official_doc_url='https://www.exchangerate-api.com/docs/free',
+           notes='官方免费接口每日更新；文档建议每24小时请求一次；内部预算等待不写来源熔断，真实429按分钟退避'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id AND ds.source_code='exchange-rate'
+       AND p.api_name='*' AND p.credential_profile='anonymous';
+
+    UPDATE ops.external_circuits
+       SET state='closed', recover_at=NULL, probe_in_flight=false,
+           probe_owner=NULL, probe_token=NULL, probe_lease_until=NULL, updated_at=now()
+     WHERE source='exchange-rate' AND api_name='*' AND token_fingerprint='none'
+       AND state='open' AND error_code='CIRCUIT_OPEN' AND recover_at IS NULL
+       AND detail LIKE '%达到日保护线%';
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5565,6 +5587,7 @@ const MIGRATIONS = [
   { version: '132_convertible_bond_revision_decision_timeline', up: migration132ConvertibleBondRevisionDecisionTimeline },
   { version: '133_convertible_bond_revision_legacy_false_facts', up: migration133ConvertibleBondRevisionLegacyFalseFacts },
   { version: '134_company_financial_incremental_sync', up: migration134CompanyFinancialIncrementalSync },
+  { version: '135_exchange_rate_budget_recovery', up: migration135ExchangeRateBudgetRecovery },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6151,6 +6174,7 @@ module.exports = {
   migration129TushareDualAccountPolicyRepair,
   migration130TushareVipBackupMinuteLimit,
   migration134CompanyFinancialIncrementalSync,
+  migration135ExchangeRateBudgetRecovery,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

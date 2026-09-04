@@ -35,7 +35,18 @@ async function fetchHkRate() {
       if (!isNaN(rate) && rate > 0) return rate;
     }
   } catch (e) {
-    if (e && e.errorType === 'rate_limit') await openExternalCircuit(e.source || 'exchange-rate', e.message).catch(() => {});
+    // 本系统自己的 BUDGET_WAIT 只表示“暂时不该发起请求”，不能升级成来源熔断。
+    // 只有真实上游限流/额度错误才写入熔断，并完整保留恢复时间和接口范围。
+    if (e && e.errorType === 'rate_limit' && e.code !== 'BUDGET_WAIT') {
+      await openExternalCircuit(e.source || 'exchange-rate', e.message, e.source || 'exchange-rate', {
+        errorCode: e.code,
+        errorType: e.errorType,
+        recoverAt: e.recoverAt,
+        apiName: e.apiName || '*',
+        credentialProfile: e.credentialProfile || 'anonymous',
+        tokenFingerprint: e.tokenFingerprint || 'none',
+      }).catch(() => {});
+    }
     if (e && e.code) throw e;
   }
   return null;

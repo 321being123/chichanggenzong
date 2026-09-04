@@ -131,7 +131,9 @@ async function prepareUnifiedEstimation(myUsername, myAccountName, benchRow) {
     loadEffectivePositions(benchRow.username, benchRow.account_name),
     loadAccountCash(myUsername, myAccountName),
     loadAccountCash(benchRow.username, benchRow.account_name),
-    ensureHkRate().then(r => r.ok ? r.rate : getCurrentFxRate()),
+    ensureHkRate()
+      .then(r => r.ok ? r.rate : getCurrentFxRate())
+      .catch(() => getCurrentFxRate()),
   ]);
   const codes = [...new Set([...myPositions, ...benchPositions].map(p => String(p.code || '').trim()).filter(Boolean))];
   const quotes = codes.length ? await fetchTencentQuotes(codes) : new Map();

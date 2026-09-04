@@ -2,12 +2,14 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const {
-  currentReportPeriods, isDisclosureSeason, stateForTarget,
+  currentReportPeriods, isDisclosureSeason, stateForTarget, fetchCompanyReports,
+  selectCompanyBatch, shouldAbortFinancialBatch,
 } = require('../services/companyFinancialIncrementalSync');
 const { rowVersion } = require('../services/financialDataArchitecture');
 const { publicationQualityGate } = require('../services/bondSafetyService');
 
-assert.deepStrictEqual(currentReportPeriods('2026-09-04'), ['20260630', '20260331', '20251231', '20250930']);
+assert.deepStrictEqual(currentReportPeriods('2026-09-04'), ['20260630', '20260331']);
+assert.deepStrictEqual(currentReportPeriods('2026-10-01'), ['20260930', '20260630']);
 assert.strictEqual(isDisclosureSeason('2026-09-04'), true);
 assert.strictEqual(isDisclosureSeason('2026-07-15'), false);
 assert.notStrictEqual(rowVersion({ end_date: '20260630', report_type: '1', ebit: 1 }), rowVersion({ end_date: '20260630', report_type: '1', ebit: 2 }));
@@ -51,8 +53,39 @@ assert.ok(jobSource.includes("strictDatasetPublication: true"));
 assert.ok(backfillSource.includes("valueOf('--offset'"));
 assert.ok(serviceSource.includes('pendingTargets.slice(offset, offset + limit)'));
 assert.ok(serviceSource.includes('market.convertible_bond_daily_metrics'));
-assert.ok(serviceSource.includes("apiName === 'fina_indicator_vip'"));
+assert.ok(serviceSource.includes("['fina_indicator', 'fina_indicator_vip'].includes(apiName)"));
 assert.ok(serviceSource.includes('options.resume === false'));
 assert.ok(backfillSource.includes("const resume = !has('--force')"));
+assert.ok(serviceSource.includes('return listCurrentBondUnderlyingTargets(client)'));
+assert.ok(!serviceSource.includes("'holding' AS reason") && !serviceSource.includes("'ipo' AS reason"));
+assert.ok(serviceSource.includes("i.status='listed'") && serviceSource.includes("iss.issue_type NOT IN ('定向','私募')"));
+assert.ok(backfillSource.includes('includeHistoricalGaps: true'));
+assert.strictEqual(shouldAbortFinancialBatch({ code: 'JOB_BUDGET_EXCEEDED' }), true);
 
-console.log('company financial incremental tests passed');
+const previousActive = process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE;
+const previousLimit = process.env.JOB_EXTERNAL_CALL_LIMIT;
+process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
+process.env.JOB_EXTERNAL_CALL_LIMIT = '80';
+const batch = selectCompanyBatch(Array.from({ length: 20 }, (_, index) => ({ companyId: index + 1, needs: ['income', 'balance', 'cashflow', 'indicator'] })), 20, { usedCalls: 2 });
+assert.strictEqual(batch.length, 19);
+if (previousActive == null) delete process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE;
+else process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = previousActive;
+if (previousLimit == null) delete process.env.JOB_EXTERNAL_CALL_LIMIT;
+else process.env.JOB_EXTERNAL_CALL_LIMIT = previousLimit;
+
+(async () => {
+  const result = await fetchCompanyReports(
+    { tsCode: '600000.SH', needs: ['indicator'] },
+    {
+      reportPeriods: ['20260630'],
+      preferVip: false,
+      query: async () => ({ fields: ['ts_code', 'ann_date', 'end_date', 'roe'], items: [['600000.SH', '20260830', '20260630', 8.5]] }),
+    }
+  );
+  assert.strictEqual(result.results.indicator.length, 1);
+  assert.strictEqual(result.results.indicator[0].report_type, '1');
+  console.log('company financial incremental tests passed');
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

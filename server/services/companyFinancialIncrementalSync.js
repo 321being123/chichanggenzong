@@ -5,6 +5,7 @@ const { tushareQuery, tsRows, toTsCode, tsDateStr } = require('./market');
 const { statementApiFields } = require('./stockStatements');
 const { syncReportRows } = require('./financialDataArchitecture');
 const { markDatasetFailure, markDatasetSuccess } = require('./datasetCursors');
+const { getExternalCallStats } = require('./externalCallGuard');
 
 const JOB_NAME = 'company_financial_incremental_sync';
 const REPORT_KINDS = ['income', 'balance', 'cashflow', 'indicator'];
@@ -35,8 +36,11 @@ function previousDate(value, days) {
 function currentReportPeriods(asOfDate = tsDateStr(new Date())) {
   const today = normalizeDate(asOfDate) || tsDateStr(new Date());
   const year = Number(today.slice(0, 4));
-  const periods = [`${year}0630`, `${year}0331`, `${year - 1}1231`, `${year - 1}0930`];
-  return periods.filter(period => period <= today.replace(/-/g, ''));
+  const periods = [year, year - 1]
+    .flatMap(value => ['1231', '0930', '0630', '0331'].map(suffix => `${value}${suffix}`))
+    .filter(period => period <= today.replace(/-/g, ''))
+    .sort().reverse();
+  return periods.slice(0, 2);
 }
 
 function isDisclosureSeason(asOfDate = tsDateStr(new Date())) {
@@ -58,41 +62,7 @@ function uniqueTarget(targets) {
 }
 
 async function listTargetCompanies(client = pool) {
-  const queries = [
-    `SELECT i.instrument_id,i.canonical_code AS ts_code,ci.company_id,'holding' AS reason
-       FROM positions p
-       JOIN core.instruments i ON (i.instrument_id=p.instrument_id OR i.canonical_code=p.code OR split_part(i.canonical_code,'.',1)=p.code)
-       JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id
-      WHERE i.asset_class='stock'`,
-    `SELECT i.instrument_id,i.canonical_code AS ts_code,ci.company_id,'watchlist' AS reason
-       FROM stock_watchlist w
-       JOIN core.instruments i ON i.canonical_code=w.ts_code
-       JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id
-      WHERE i.asset_class='stock'`,
-    `SELECT s.instrument_id,s.canonical_code AS ts_code,ci.company_id,'convertible_bond' AS reason
-       FROM public.bond_unified b
-       JOIN core.instruments s ON s.instrument_id=b.stock_instrument_id
-       JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
-      WHERE b.status='listed'
-        AND (b.issue_type IS NULL OR b.issue_type NOT IN ('定向','私募'))
-        AND s.asset_class='stock'`,
-    `SELECT i.instrument_id,i.canonical_code AS ts_code,ci.company_id,'ipo' AS reason
-       FROM ipo_history h
-       JOIN core.instruments i ON split_part(i.canonical_code,'.',1)=h.security_code
-       JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id
-      WHERE h.security_code ~ '^[0-9]{6}$' AND i.asset_class='stock'`,
-  ];
-  const rows = [];
-  for (const sql of queries) {
-    try {
-      const result = await client.query(sql);
-      rows.push(...result.rows.map(row => ({ companyId: row.company_id, instrumentId: row.instrument_id, tsCode: row.ts_code, reasons: [row.reason] })));
-    } catch (error) {
-      // 旧库可能尚未有 IPO 或持仓兼容表；不影响其他目标集合。
-      if (!/does not exist|不存在/i.test(String(error.message || ''))) throw error;
-    }
-  }
-  return uniqueTarget(rows);
+  return listCurrentBondUnderlyingTargets(client);
 }
 
 async function listCurrentBondUnderlyingTargets(client = pool) {
@@ -105,9 +75,11 @@ async function listCurrentBondUnderlyingTargets(client = pool) {
       JOIN market.convertible_bond_daily_metrics dm ON dm.trade_date=md.trade_date
       JOIN core.instruments i ON i.instrument_id=dm.instrument_id AND i.asset_class='convertible_bond'
       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
       JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id AND s.asset_class='stock'
       JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
      WHERE i.status='listed'
+       AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
        AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
        AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
      ORDER BY s.canonical_code
@@ -181,15 +153,20 @@ async function buildSyncQueue(targets, options = {}, client = pool) {
   const disclosureCodes = new Set((options.disclosureRows || []).map(row => String(row.ts_code || '').trim().toUpperCase()));
   return (targets || []).map(target => {
     const state = stateForTarget(target, states.get(String(target.companyId)) || [], options);
-    const dueKinds = REPORT_KINDS.filter(kind => retryDue(cursors.get(`company:${target.companyId}:${kind}`)));
     const disclosed = disclosureCodes.has(String(target.tsCode).toUpperCase());
-    const needs = [...new Set([
-      ...state.missingKinds,
-      ...(state.missingPeriods.length ? REPORT_KINDS : []),
-      ...(disclosed ? REPORT_KINDS : []),
-      ...dueKinds,
-      ...(options.force ? REPORT_KINDS : []),
-    ])];
+    const candidateKinds = new Set();
+    if (state.missingKinds.length) state.missingKinds.forEach(kind => candidateKinds.add(kind));
+    if (state.missingPeriods.length && (disclosed || options.includeHistoricalGaps === true)) {
+      REPORT_KINDS.forEach(kind => candidateKinds.add(kind));
+    }
+    REPORT_KINDS.filter(kind => retryDue(cursors.get(`company:${target.companyId}:${kind}`)))
+      .forEach(kind => candidateKinds.add(kind));
+    if (options.force) REPORT_KINDS.forEach(kind => candidateKinds.add(kind));
+    const needs = [...candidateKinds].filter(kind => {
+      if (options.force) return true;
+      const cursor = cursors.get(`company:${target.companyId}:${kind}`);
+      return !cursor || !cursor.last_error || retryDue(cursor);
+    });
     return needs.length ? { ...target, needs, state } : null;
   }).filter(Boolean);
 }
@@ -197,10 +174,17 @@ async function buildSyncQueue(targets, options = {}, client = pool) {
 async function queryRows(apiName, params, fields, query = tushareQuery) {
   const payload = await query(apiName, params, fields, { allowEmpty: true });
   return tsRows(payload).map(row => {
-    // Tushare 财务 VIP 指标接口实际响应不返回 report_type；其接口结果为合并报表口径，补齐标准层所需的 type=1。
-    if (apiName === 'fina_indicator_vip' && !Object.prototype.hasOwnProperty.call(row, 'report_type')) return { ...row, report_type: '1' };
+    // Tushare 标准和 VIP 财务指标接口均不返回 report_type；按接口的合并指标口径补齐标准层 type=1。
+    if (['fina_indicator', 'fina_indicator_vip'].includes(apiName)
+      && !Object.prototype.hasOwnProperty.call(row, 'report_type')) return { ...row, report_type: '1' };
     return row;
   }).filter(row => String(row.report_type || '') === '1');
+}
+
+function shouldAbortFinancialBatch(error) {
+  return ['JOB_BUDGET_EXCEEDED', 'BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN',
+    'AUTH_ERROR', 'PERMISSION_DENIED', 'POLICY_DISABLED', 'POLICY_NOT_CONFIGURED']
+    .includes(String(error && error.code || '').toUpperCase());
 }
 
 async function fetchDisclosureCandidates(targets, options = {}) {
@@ -248,6 +232,7 @@ async function fetchCompanyReports(target, options = {}) {
         results[kind] = [...new Map(split.map(row => [`${row.end_date}:${row.ann_date || ''}:${row.update_flag || ''}`, row])).values()];
       }
     } catch (error) {
+      if (shouldAbortFinancialBatch(error)) throw error;
       errors[kind] = error;
       results[kind] = [];
     }
@@ -310,6 +295,23 @@ async function latestFinancialDataAsOf(client = pool) {
   return { dataAsOf: rows[0] && rows[0].data_as_of ? String(rows[0].data_as_of).slice(0, 10) : null, rowCount: Number(rows[0] && rows[0].row_count || 0) };
 }
 
+function selectCompanyBatch(queue, requestedLimit, options = {}) {
+  const limit = Math.max(1, Number(requestedLimit || 20));
+  const configuredCallLimit = process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE === '1'
+    ? Number(process.env.JOB_EXTERNAL_CALL_LIMIT) : null;
+  if (!Number.isFinite(configuredCallLimit)) return (queue || []).slice(0, limit);
+  const usedCalls = Number(options.usedCalls ?? getExternalCallStats().total ?? 0);
+  let availableCalls = Math.max(0, configuredCallLimit - usedCalls - 2);
+  const batch = [];
+  for (const target of (queue || []).slice(0, limit)) {
+    const expectedCalls = Math.max(1, (target.needs || REPORT_KINDS).length);
+    if (expectedCalls > availableCalls) break;
+    batch.push(target);
+    availableCalls -= expectedCalls;
+  }
+  return batch;
+}
+
 async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options = {}) {
   if (!(await tryClaimJob(JOB_NAME))) return { ok: false, skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
@@ -333,7 +335,7 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
         datasetDiagnostics: { stock_financial_reports: { partition_row_count: latest.rowCount, queue_count: 0 } }, reason };
     }
     const limit = Math.max(1, Number(options.companyLimit || process.env.FINANCIAL_SYNC_COMPANY_BATCH_SIZE || 20));
-    const batch = queue.slice(0, limit);
+    const batch = selectCompanyBatch(queue, limit);
     const failures = [];
     let changed = 0;
     for (const target of batch) {
@@ -350,11 +352,15 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
     const remaining = Math.max(queue.length - batch.length, 0);
     const latest = await latestFinancialDataAsOf();
     const complete = failures.length === 0 && remaining === 0;
-    const result = { ok: complete, status: complete ? 'succeeded' : 'degraded', changed: changed > 0, dataAsOf: latest.dataAsOf,
+    const ok = failures.length === 0;
+    const result = { ok, status: complete ? 'succeeded' : ok ? 'partial' : 'degraded', changed: changed > 0, dataAsOf: latest.dataAsOf,
       publishDatasets: complete && changed > 0, externalCallCount: null, processed: batch.length, queued: queue.length, remaining,
       failures, reason, datasetDiagnostics: { stock_financial_reports: { partition_row_count: latest.rowCount, queue_count: queue.length, processed_count: batch.length, failed_count: failures.length } } };
-    await finishJobRun(runId, complete, complete ? `处理 ${batch.length} 家公司，新增或更新 ${changed} 家` : `财务增量未完整完成：失败 ${failures.length} 家，剩余 ${remaining} 家`);
-    if (!complete) result.error = `财务增量未完整完成：失败 ${failures.length} 家，剩余 ${remaining} 家`;
+    const detail = complete ? `处理 ${batch.length} 家公司，新增或更新 ${changed} 家`
+      : failures.length ? `财务增量未完整完成：失败 ${failures.length} 家，剩余 ${remaining} 家`
+        : `本批处理 ${batch.length} 家公司，剩余 ${remaining} 家等待后续增量批次`;
+    await finishJobRun(runId, ok, detail);
+    if (!ok) result.error = detail;
     return result;
   } catch (error) {
     await finishJobRun(runId, false, error.message);
@@ -367,21 +373,17 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
 async function enqueueCompanyFinancialSyncByCode(rawCode, reason = 'request') {
   const tsCode = toTsCode(String(rawCode || '').trim());
   if (!/^\d{6}\.(SH|SZ|BJ)$/.test(tsCode)) return { queued: false, reason: 'invalid_code' };
-  const { rows } = await pool.query(
-    `SELECT i.instrument_id,ci.company_id FROM core.instruments i
-      JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id
-     WHERE i.canonical_code=$1 AND i.asset_class='stock' LIMIT 1`, [tsCode]
-  );
-  if (!rows[0]) return { queued: false, reason: 'identity_missing' };
+  const target = (await listCurrentBondUnderlyingTargets()).find(item => item.tsCode === tsCode);
+  if (!target) return { queued: false, reason: 'not_current_listed_bond_underlying' };
   for (const kind of REPORT_KINDS) {
     await pool.query(
       `INSERT INTO ops.sync_cursors(company_id,instrument_id,scope_key,dataset_code,last_attempt_at,last_error,retry_count)
        VALUES($1,$2,$3,'financial',now(),$4,1)
        ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_attempt_at=now(),last_error=EXCLUDED.last_error,retry_count=ops.sync_cursors.retry_count+1,updated_at=now()`,
-      [rows[0].company_id, rows[0].instrument_id, `company:${rows[0].company_id}:${kind}`, `${reason}: 等待财务增量任务处理`]
+      [target.companyId, target.instrumentId, `company:${target.companyId}:${kind}`, `${reason}: 等待财务增量任务处理`]
     );
   }
-  return { queued: true, companyId: rows[0].company_id, tsCode };
+  return { queued: true, companyId: target.companyId, tsCode };
 }
 
 async function runCompanyFinancialBackfill(options = {}) {
@@ -392,7 +394,7 @@ async function runCompanyFinancialBackfill(options = {}) {
   const reportPeriods = options.reportPeriods || currentReportPeriods(options.asOfDate);
   const pendingTargets = options.resume === false
     ? targets
-    : await buildSyncQueue(targets, { reportPeriods, force: false });
+    : await buildSyncQueue(targets, { reportPeriods, force: false, includeHistoricalGaps: true });
   const limit = Math.max(1, Number(options.companyLimit || targets.length));
   const offset = Math.max(0, Number(options.offset || 0));
   const results = [];
@@ -406,6 +408,6 @@ async function runCompanyFinancialBackfill(options = {}) {
 module.exports = {
   JOB_NAME, REPORT_KINDS, REPORT_SPECS, normalizeDate, currentReportPeriods, isDisclosureSeason, uniqueTarget,
   listTargetCompanies, listCurrentBondUnderlyingTargets, readCompanyStates, stateForTarget, buildSyncQueue, fetchDisclosureCandidates,
-  fetchCompanyReports, persistCompanyReports, latestFinancialDataAsOf, runCompanyFinancialIncrementalSync,
+  fetchCompanyReports, persistCompanyReports, latestFinancialDataAsOf, selectCompanyBatch, shouldAbortFinancialBatch, runCompanyFinancialIncrementalSync,
   enqueueCompanyFinancialSyncByCode, runCompanyFinancialBackfill,
 };

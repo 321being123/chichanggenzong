@@ -41,7 +41,7 @@ async function main() {
   const targets = targetScope === 'bond_underlyings'
     ? await listCurrentBondUnderlyingTargets()
     : allTargets;
-  const pendingTargets = resume ? await buildSyncQueue(targets, { reportPeriods, force: false }) : targets;
+  const pendingTargets = resume ? await buildSyncQueue(targets, { reportPeriods, force: false, includeHistoricalGaps: true }) : targets;
   const preview = {
     mode: apply ? 'apply' : 'dry-run',
     targetCount: targets.length,

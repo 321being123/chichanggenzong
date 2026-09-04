@@ -4,7 +4,7 @@
 require('dotenv').config();
 
 const { pool, runMigrations } = require('../db');
-const { listTargetCompanies, runCompanyFinancialBackfill } = require('../services/companyFinancialIncrementalSync');
+const { listTargetCompanies, listCurrentBondUnderlyingTargets, runCompanyFinancialBackfill } = require('../services/companyFinancialIncrementalSync');
 
 const argv = process.argv.slice(2);
 const has = flag => argv.includes(flag);
@@ -38,7 +38,7 @@ async function main() {
   await runMigrations();
   const allTargets = await listTargetCompanies();
   const targets = targetScope === 'bond_underlyings'
-    ? allTargets.filter(target => (target.reasons || []).includes('convertible_bond'))
+    ? await listCurrentBondUnderlyingTargets()
     : allTargets;
   const preview = {
     mode: apply ? 'apply' : 'dry-run',

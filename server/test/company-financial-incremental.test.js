@@ -50,5 +50,6 @@ assert.ok(jobSource.includes("jobCode: 'company_financial_incremental_sync'"));
 assert.ok(jobSource.includes("strictDatasetPublication: true"));
 assert.ok(backfillSource.includes("valueOf('--offset'"));
 assert.ok(serviceSource.includes('targets.slice(offset, offset + limit)'));
+assert.ok(serviceSource.includes('market.convertible_bond_daily_metrics'));
 
 console.log('company financial incremental tests passed');

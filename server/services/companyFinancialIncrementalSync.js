@@ -95,6 +95,30 @@ async function listTargetCompanies(client = pool) {
   return uniqueTarget(rows);
 }
 
+async function listCurrentBondUnderlyingTargets(client = pool) {
+  const { rows } = await client.query(`
+    WITH market_day AS (
+      SELECT MAX(trade_date) AS trade_date FROM market.convertible_bond_daily_metrics
+    )
+    SELECT DISTINCT s.instrument_id,s.canonical_code AS ts_code,p.stock_instrument_id,ci.company_id
+      FROM market_day md
+      JOIN market.convertible_bond_daily_metrics dm ON dm.trade_date=md.trade_date
+      JOIN core.instruments i ON i.instrument_id=dm.instrument_id AND i.asset_class='convertible_bond'
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id AND s.asset_class='stock'
+      JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
+     WHERE i.status='listed'
+       AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
+       AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
+  `);
+  return uniqueTarget(rows.map(row => ({
+    companyId: row.company_id,
+    instrumentId: row.stock_instrument_id || row.instrument_id,
+    tsCode: row.ts_code,
+    reasons: ['convertible_bond'],
+  })));
+}
+
 async function readCompanyStates(targets, client = pool) {
   const companyIds = [...new Set((targets || []).map(target => target.companyId).filter(Boolean))];
   if (!companyIds.length) return new Map();
@@ -358,7 +382,7 @@ async function enqueueCompanyFinancialSyncByCode(rawCode, reason = 'request') {
 async function runCompanyFinancialBackfill(options = {}) {
   const allTargets = await listTargetCompanies();
   const targets = options.targetScope === 'bond_underlyings'
-    ? allTargets.filter(target => (target.reasons || []).includes('convertible_bond'))
+    ? await listCurrentBondUnderlyingTargets()
     : allTargets;
   const reportPeriods = options.reportPeriods || currentReportPeriods(options.asOfDate);
   const limit = Math.max(1, Number(options.companyLimit || targets.length));
@@ -373,7 +397,7 @@ async function runCompanyFinancialBackfill(options = {}) {
 
 module.exports = {
   JOB_NAME, REPORT_KINDS, REPORT_SPECS, normalizeDate, currentReportPeriods, isDisclosureSeason, uniqueTarget,
-  listTargetCompanies, readCompanyStates, stateForTarget, buildSyncQueue, fetchDisclosureCandidates,
+  listTargetCompanies, listCurrentBondUnderlyingTargets, readCompanyStates, stateForTarget, buildSyncQueue, fetchDisclosureCandidates,
   fetchCompanyReports, persistCompanyReports, latestFinancialDataAsOf, runCompanyFinancialIncrementalSync,
   enqueueCompanyFinancialSyncByCode, runCompanyFinancialBackfill,
 };

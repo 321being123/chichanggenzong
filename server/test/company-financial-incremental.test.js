@@ -49,8 +49,10 @@ assert.ok(routeSource.includes('enqueueCompanyFinancialSyncByCode'));
 assert.ok(jobSource.includes("jobCode: 'company_financial_incremental_sync'"));
 assert.ok(jobSource.includes("strictDatasetPublication: true"));
 assert.ok(backfillSource.includes("valueOf('--offset'"));
-assert.ok(serviceSource.includes('targets.slice(offset, offset + limit)'));
+assert.ok(serviceSource.includes('pendingTargets.slice(offset, offset + limit)'));
 assert.ok(serviceSource.includes('market.convertible_bond_daily_metrics'));
 assert.ok(serviceSource.includes("apiName === 'fina_indicator_vip'"));
+assert.ok(serviceSource.includes('options.resume === false'));
+assert.ok(backfillSource.includes("const resume = !has('--force')"));
 
 console.log('company financial incremental tests passed');

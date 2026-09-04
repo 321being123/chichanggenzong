@@ -110,6 +110,7 @@ async function listCurrentBondUnderlyingTargets(client = pool) {
      WHERE i.status='listed'
        AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
        AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
+     ORDER BY s.canonical_code
   `);
   return uniqueTarget(rows.map(row => ({
     companyId: row.company_id,
@@ -389,14 +390,17 @@ async function runCompanyFinancialBackfill(options = {}) {
     ? await listCurrentBondUnderlyingTargets()
     : allTargets;
   const reportPeriods = options.reportPeriods || currentReportPeriods(options.asOfDate);
+  const pendingTargets = options.resume === false
+    ? targets
+    : await buildSyncQueue(targets, { reportPeriods, force: false });
   const limit = Math.max(1, Number(options.companyLimit || targets.length));
   const offset = Math.max(0, Number(options.offset || 0));
   const results = [];
-  for (const target of targets.slice(offset, offset + limit)) {
+  for (const target of pendingTargets.slice(offset, offset + limit)) {
     const reportResult = await fetchCompanyReports({ ...target, needs: REPORT_KINDS }, { ...options, reportPeriods, force: true });
     results.push({ target, persisted: await persistCompanyReports({ ...target, needs: REPORT_KINDS }, reportResult, options) });
   }
-  return { ok: results.every(item => item.persisted.ok), total: targets.length, offset, processed: results.length, results };
+  return { ok: results.every(item => item.persisted.ok), total: pendingTargets.length, targetTotal: targets.length, offset, processed: results.length, results };
 }
 
 module.exports = {

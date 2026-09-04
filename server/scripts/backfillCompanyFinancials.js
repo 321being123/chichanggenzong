@@ -4,7 +4,7 @@
 require('dotenv').config();
 
 const { pool, runMigrations } = require('../db');
-const { listTargetCompanies, listCurrentBondUnderlyingTargets, runCompanyFinancialBackfill } = require('../services/companyFinancialIncrementalSync');
+const { listTargetCompanies, listCurrentBondUnderlyingTargets, buildSyncQueue, runCompanyFinancialBackfill } = require('../services/companyFinancialIncrementalSync');
 
 const argv = process.argv.slice(2);
 const has = flag => argv.includes(flag);
@@ -28,6 +28,7 @@ async function main() {
   const asOfDate = valueOf('--as-of') || null;
   const targetScope = valueOf('--scope', 'bond_underlyings');
   const offset = Math.max(0, Number(valueOf('--offset', '0')) || 0);
+  const resume = !has('--force');
   const preferVip = has('--prefer-vip');
   const maxCalls = Math.max(1, Number(valueOf('--max-calls', process.env.FINANCIAL_BACKFILL_MAX_CALLS || '80')) || 80);
 
@@ -40,15 +41,18 @@ async function main() {
   const targets = targetScope === 'bond_underlyings'
     ? await listCurrentBondUnderlyingTargets()
     : allTargets;
+  const pendingTargets = resume ? await buildSyncQueue(targets, { reportPeriods, force: false }) : targets;
   const preview = {
     mode: apply ? 'apply' : 'dry-run',
     targetCount: targets.length,
+    pendingCount: pendingTargets.length,
     offset,
-    selectedCount: Math.max(0, Math.min(limit, targets.length - offset)),
+    resume,
+    selectedCount: Math.max(0, Math.min(limit, pendingTargets.length - offset)),
     targetScope,
     reportPeriods,
     maxCalls,
-    sample: targets.slice(offset, offset + Math.min(limit, 10)).map(target => ({ tsCode: target.tsCode, companyId: target.companyId, reasons: target.reasons })),
+    sample: pendingTargets.slice(offset, offset + Math.min(limit, 10)).map(target => ({ tsCode: target.tsCode, companyId: target.companyId, reasons: target.reasons })),
   };
   if (!apply) {
     console.log(JSON.stringify(preview, null, 2));
@@ -57,7 +61,7 @@ async function main() {
 
   process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
   process.env.JOB_EXTERNAL_CALL_LIMIT = String(maxCalls);
-  const result = await runCompanyFinancialBackfill({ companyLimit: limit, offset, reportPeriods, asOfDate, preferVip, targetScope });
+  const result = await runCompanyFinancialBackfill({ companyLimit: limit, offset, reportPeriods, asOfDate, preferVip, targetScope, resume });
   console.log(JSON.stringify({ ...preview, result }, null, 2));
   if (!result.ok) process.exitCode = 2;
 }

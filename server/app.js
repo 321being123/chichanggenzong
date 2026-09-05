@@ -52,7 +52,7 @@ async function start() {
   try {
     await initSchema();
     await ensureAdmin();
-    await migrateFromJson();
+    if (process.env.DISABLE_RUNTIME_MIGRATIONS !== '1') await migrateFromJson();
     await ensureAiModelsInit();
     console.log('数据库初始化完成');
   } catch (e) {

@@ -8,7 +8,7 @@ const { safeParseExcel } = require('../services/excelSafe');
 const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
-const { assertSafeUrl } = require('../services/ai');
+const { assertSafeUrl, fetchSafeAi } = require('../services/ai');
 const { ALLOWED_VISION_MODELS } = require('../config');
 const { getActiveSorted, recordStatus } = require('../services/aiModels');
 const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
@@ -41,14 +41,11 @@ function pickVisionModel(model) {
 
 const RETRYABLE_AI_STATUS = new Set([502, 503, 504]);
 
-async function fetchAiWithRetry(endpoint, options, fetchImpl = fetch, delays = [1000, 2500]) {
+async function fetchAiWithRetry(endpoint, options, fetchImpl = fetch, delays = [1000, 2500], extraHosts = []) {
   let lastError;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      const response = await fetchImpl(endpoint, {
-        ...options,
-        signal: AbortSignal.timeout(60000)
-      });
+      const response = await fetchSafeAi(endpoint, { ...options, signal: AbortSignal.timeout(60000) }, extraHosts, fetchImpl);
       if (!RETRYABLE_AI_STATUS.has(response.status) || attempt === delays.length) return response;
     } catch (e) {
       lastError = e;
@@ -87,7 +84,7 @@ async function callAiFallback(messages, maxTokens, clientModel) {
           'Authorization': 'Bearer ' + (m.apiKey || process.env.VISION_API_KEY)
         },
         body: JSON.stringify({ model: m.model, messages: messages, max_tokens: maxTokens, temperature: 0 })
-      });
+      }, fetch, [1000, 2500], dbHosts);
       if (!response.ok) {
         const errText = await response.text();
         throw new Error(response.status + ' ' + String(errText).slice(0, 200));

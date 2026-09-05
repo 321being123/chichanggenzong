@@ -29,10 +29,16 @@ if (process.env.PGSSL === 'true') {
     : { rejectUnauthorized: false };
 }
 
+const migrationRole = String(process.env.MIGRATION_ROLE || '').trim();
+if (migrationRole && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(migrationRole)) {
+  throw new Error('MIGRATION_ROLE 格式非法');
+}
+const roleOptions = migrationRole ? { options: `-c role=${migrationRole}` } : {};
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl,
+      ...roleOptions,
     })
   : new Pool({
       host: process.env.PGHOST || 'localhost',
@@ -42,6 +48,7 @@ const pool = process.env.DATABASE_URL
       database: process.env.PGDATABASE || 'portfolio',
       max: 10,
       ssl,
+      ...roleOptions,
     });
 
 module.exports = { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS };

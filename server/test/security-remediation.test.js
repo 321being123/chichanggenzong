@@ -32,6 +32,7 @@ const envExample = read('deploy/.env.example');
 const initScript = read('deploy/server-init.sh');
 const securityMiddleware = read('server/middleware/security.js');
 const aiModels = read('server/services/aiModels.js');
+const aiService = read('server/services/ai.js');
 const profile = read('server/routes/profile.js');
 const indexHtml = read('public/index.html');
 const nginxHttps = read('deploy/nginx-portfolio.conf');
@@ -113,6 +114,22 @@ check('AI 地址换源时必须同时提交新密钥', () => {
 check('后台 AI 连通性测试复用 SSRF 地址校验', () => {
   const testRoute = admin.slice(admin.indexOf("router.post('/models/:id/test'"), admin.indexOf("// ====== 操作审计 ======"));
   assert.ok(/assertSafeUrl\(m\.apiUrl,\s*\[modelHost\]\)/.test(testRoute));
+});
+
+check('AI 跳转逐跳解析并固定公网目标', () => {
+  assert.ok(/fetchSafeAi/.test(aiService));
+  assert.ok(/dns\.lookup/.test(aiService));
+  assert.ok(/禁止跨域跳转/.test(aiService));
+  assert.ok(/redirect: 'manual'/.test(aiService));
+});
+
+check('模型产物与发布代码支持分离目录', () => {
+  const runtime = read('ipo-report/model_runtime.py');
+  const train = read('ipo-report/train_xgb_model.py');
+  assert.ok(/IPO_MODEL_DIR/.test(runtime));
+  assert.ok(/get_model_dir/.test(train));
+  assert.ok(/runtime\/models\/ipo/.test(read('deploy/portfolio-server.service')));
+  assert.ok(/migrate_ipo_model_artifacts/.test(read('deploy/migrate_ipo_model_artifacts.py')) || fs.existsSync(path.join(ROOT, 'deploy', 'migrate_ipo_model_artifacts.py')));
 });
 
 check('数据库备份模板强制加密并使用受保护目录', () => {

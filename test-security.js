@@ -332,6 +332,9 @@ const next = () => {}; // 占位，实际测试用闭包捕获
     assert.ok(csp.includes("base-uri 'self'"), '应约束 base-uri');
     assert.ok(csp.includes("form-action 'self'"), '应约束 form-action');
     assert.ok(csp.includes("frame-ancestors 'none'"), '应保持 frame-ancestors');
+    assert.ok(/script-src 'self' [^;]*'sha256-/.test(csp), '内联 script 应使用内容哈希');
+    assert.ok(!csp.includes("script-src 'self' 'unsafe-inline'"), 'script-src 不应整体放开内联脚本');
+    assert.ok(csp.includes("script-src-attr 'unsafe-inline'"), '事件属性需单独隔离，便于后续迁移');
     assert.ok(headers['X-Frame-Options'] === 'DENY', '应保持 X-Frame-Options');
   });
 

@@ -39,8 +39,30 @@ function csrfMiddleware(req, res, next) {
 }
 
 // ========== 安全响应头（类 helmet 核心头，无额外依赖） ==========
-// 注意：本应用大量使用内联脚本/样式与 onclick，故 CSP 暂仅约束到 self + unsafe-inline + data:（二维码图片用 data URL）。
-// 待 P2-2 移除内联事件后可进一步收紧 CSP。
+// 静态 HTML 的内联脚本/样式使用构建时哈希；动态事件属性暂时单独保留在
+// script-src-attr/style-src-attr，避免把整个 script/style 元素重新放开。
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+function inlineHashes(tag) {
+  const dir = path.join(__dirname, '..', '..', 'public');
+  const hashes = new Set();
+  for (const file of ['index.html', 'login.html', 'admin.html', 'ipo-report.html', 'share-knowledge.html']) {
+    let html;
+    try { html = fs.readFileSync(path.join(dir, file), 'utf8'); } catch (_) { continue; }
+    const re = new RegExp(`<${tag}\\b(?![^>]*\\bsrc=)[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
+    let match;
+    while ((match = re.exec(html))) {
+      hashes.add(`'sha256-${crypto.createHash('sha256').update(match[1], 'utf8').digest('base64')}'`);
+    }
+  }
+  return [...hashes];
+}
+
+const CSP_INLINE_SCRIPT_HASHES = inlineHashes('script');
+const CSP_INLINE_STYLE_HASHES = inlineHashes('style');
+
 function securityHeaders(req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -50,11 +72,15 @@ function securityHeaders(req, res, next) {
   if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
+  const scriptSources = ["'self'", ...CSP_INLINE_SCRIPT_HASHES].join(' ');
+  const styleSources = ["'self'", ...CSP_INLINE_STYLE_HASHES].join(' ');
   const csp = [
     "default-src 'self'",
     "base-uri 'self'",
-    "script-src 'self' 'unsafe-inline'",
-    "style-src 'self' 'unsafe-inline'",
+    `script-src ${scriptSources}`,
+    "script-src-attr 'unsafe-inline'",
+    `style-src ${styleSources}`,
+    "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: https:",
     "connect-src 'self'",
     "form-action 'self'",
@@ -64,4 +90,4 @@ function securityHeaders(req, res, next) {
   next();
 }
 
-module.exports = { redirectUnauthenticated, isAllowedOrigin, csrfMiddleware, securityHeaders };
+module.exports = { redirectUnauthenticated, isAllowedOrigin, csrfMiddleware, securityHeaders, CSP_INLINE_SCRIPT_HASHES, CSP_INLINE_STYLE_HASHES };

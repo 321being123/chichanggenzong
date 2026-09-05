@@ -12,6 +12,7 @@ import numpy as np
 from datetime import datetime
 from _common import _load_env
 import db_pg
+from model_runtime import get_model_dir
 
 _load_env()
 warnings.filterwarnings("ignore")
@@ -19,8 +20,10 @@ warnings.filterwarnings("ignore")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "ipo_history.db")
-MODEL_PATH = os.path.join(DATA_DIR, "ipo_xgb_model.json")
-FEATURES_PATH = os.path.join(DATA_DIR, "ipo_xgb_features.json")
+MODEL_DIR = get_model_dir()
+MODEL_PATH = os.path.join(MODEL_DIR, "ipo_xgb_model.json")
+FEATURES_PATH = os.path.join(MODEL_DIR, "ipo_xgb_features.json")
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ── 1. 加载数据 ──
 # 生产历史数据已迁移至 PostgreSQL。SQLite 仅保留为旧环境兼容回退，

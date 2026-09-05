@@ -6003,8 +6003,21 @@ async function runMigrations() {
   }
 }
 
+async function assertSchemaReady() {
+  const latest = MIGRATIONS[MIGRATIONS.length - 1];
+  if (!latest) throw new Error('未定义数据库迁移版本');
+  const table = await pool.query("SELECT to_regclass('public.schema_migrations') AS name");
+  if (!table.rows[0] || !table.rows[0].name) throw new Error('数据库迁移表不存在，请先使用迁移账号执行迁移');
+  const applied = await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1', [latest.version]);
+  if (applied.rowCount === 0) throw new Error(`数据库未完成最新迁移 ${latest.version}，请先使用迁移账号执行迁移`);
+}
+
 // 兼容旧调用点（server/app.js、server/worker.js、test-integration.js）：语义不变，改走版本化迁移
 async function initSchema() {
+  if (process.env.DISABLE_RUNTIME_MIGRATIONS === '1') {
+    await assertSchemaReady();
+    return;
+  }
   await runMigrations();
 }
 
@@ -6119,6 +6132,7 @@ async function migrateToStructured() {
 
 module.exports = {
   MIGRATIONS,
+  assertSchemaReady,
   migration001Init,
   migration002BondSafetySnapshots,
   migration003MarketDataCache,

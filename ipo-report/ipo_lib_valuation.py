@@ -17,6 +17,7 @@ from ipo_lib_fetch import *
 from ipo_lib_sector import *
 from ipo_lib_prediction import *
 from ipo_lib_liquidity import calculate_liquidity_adjustment
+from model_runtime import get_model_dir
 
 def get_temp_pe_penalty(issue_pe, industry_pe):
     """
@@ -549,7 +550,7 @@ def _load_xgb_model():
     import numpy as np
     import xgboost as xgb
 
-    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    model_dir = get_model_dir()
     model_path = os.path.join(model_dir, "ipo_xgb_model.json")
     feat_path = os.path.join(model_dir, "ipo_xgb_features.json")
 

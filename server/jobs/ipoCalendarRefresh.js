@@ -47,7 +47,7 @@ function pythonCandidates() {
 function summarizeIpoPythonError(value) {
   const text = String(value || '').replace(/\r/g, '').trim();
   if (/Permission denied/i.test(text) && /ipo_xgb_model\.json/i.test(text)) {
-    return 'XGBoost 模型文件写入失败：ipo-report/data/ipo_xgb_model.json 权限不足，请重新部署以修复目录归属。';
+    return 'XGBoost 模型文件写入失败：运行时模型目录权限不足，请检查 IPO_MODEL_DIR 及其目录归属。';
   }
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
   const useful = lines.filter(line => !/^Traceback \(most recent call last\):$/.test(line)

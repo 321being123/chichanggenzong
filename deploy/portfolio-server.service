@@ -10,6 +10,7 @@ WorkingDirectory=/opt/portfolio
 Environment=NODE_ENV=production
 # Web 进程固定关闭后台调度，全部后台任务由独立 worker 进程承担（见 portfolio-worker.service）
 Environment=DISABLE_SCHEDULER=1
+Environment=DISABLE_RUNTIME_MIGRATIONS=1
 ExecStart=/usr/bin/node /opt/portfolio/server.js
 Restart=always
 RestartSec=5
@@ -21,8 +22,8 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
-# 仅允许运行时数据、报告和休市日历写入；代码、依赖、.git 和发布配置保持只读。
-ReadWritePaths=/opt/portfolio/data /opt/portfolio/ipo-report/data /opt/portfolio/ipo-report/history_reports /opt/portfolio/ipo-report/individual /opt/portfolio/server/config/holidays.json
+# 仅允许运行时数据、报告、模型和休市日历写入；代码、依赖、.git 和发布配置保持只读。
+ReadWritePaths=/opt/portfolio/data /opt/portfolio/runtime/models/ipo /opt/portfolio/ipo-report/data /opt/portfolio/ipo-report/history_reports /opt/portfolio/ipo-report/individual /opt/portfolio/server/config/holidays.json
 StandardOutput=journal
 StandardError=journal
 

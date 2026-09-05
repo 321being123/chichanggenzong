@@ -2,6 +2,7 @@
 // 目标：伪造 MIME 的非图片被拒；超大图被拒；客户端无法指定名单外的高成本模型。
 const assert = require('assert');
 const router = require('../routes/import');
+const { fetchSafeAi } = require('../services/ai');
 const { safeParseExcel } = require('../services/excelSafe');
 
 let passed = 0;
@@ -60,7 +61,7 @@ async function main() {
     const response = await router.fetchAiWithRetry('https://example.com', {}, async () => {
       calls++;
       return { status: calls < 3 ? 503 : 200, ok: calls === 3 };
-    }, [0, 0]);
+    }, [0, 0], ['example.com']);
     assert.strictEqual(response.status, 200);
     assert.strictEqual(calls, 3);
   });
@@ -70,9 +71,31 @@ async function main() {
     const response = await router.fetchAiWithRetry('https://example.com', {}, async () => {
       calls++;
       return { status: 400, ok: false };
-    }, [0, 0]);
+    }, [0, 0], ['example.com']);
     assert.strictEqual(response.status, 400);
     assert.strictEqual(calls, 1);
+  });
+
+  await check('AI 同源跳转逐跳校验并手动跟随', async () => {
+    let calls = 0;
+    const response = await fetchSafeAi('https://example.com/v1', {}, ['example.com'], async (url, options) => {
+      calls++;
+      assert.strictEqual(options.redirect, 'manual');
+      if (calls === 1) return { status: 307, headers: { get: name => name === 'location' ? '/v2' : null } };
+      return { status: 200, ok: true };
+    });
+    assert.strictEqual(response.status, 200);
+    assert.strictEqual(calls, 2);
+  });
+
+  await check('AI 跨域跳转被拒绝且不转发请求', async () => {
+    await assert.rejects(
+      () => fetchSafeAi('https://example.com/v1', { headers: { Authorization: 'Bearer test' } }, ['example.com'], async () => ({
+        status: 302,
+        headers: { get: name => name === 'location' ? 'https://other.example/v2' : null }
+      })),
+      /跨域跳转/
+    );
   });
 
   // ===== Excel 结构化直解析（表头清晰不走大模型）=====

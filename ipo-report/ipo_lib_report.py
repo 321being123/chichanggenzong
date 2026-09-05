@@ -19,6 +19,7 @@ from ipo_lib_fetch import *
 from ipo_lib_valuation import *
 from ipo_lib_sector import *
 from ipo_lib_prediction import *
+from model_runtime import get_model_dir
 
 def _business_exposure_for_detail(detail):
     """保存主营业务时同步保存结构化下游暴露，失败不阻断原有IPO事实。"""
@@ -168,7 +169,7 @@ def build_report(target_date):
     # 新股上市预测必须使用 XGBoost。模型或依赖不可用时中止生成，
     # 防止静默写入板块规则模型的结果而页面无法察觉。
     if any(stock.get("has_detail") for stock in target_list_stocks) and not _load_xgb_model():
-        raise RuntimeError("新股 XGBoost 模型不可用，已中止生成日报；请检查 ipo-report/data 下的模型文件及 xgboost 依赖")
+        raise RuntimeError("新股 XGBoost 模型不可用，已中止生成日报；请检查 %s 下的模型文件及 xgboost 依赖" % get_model_dir())
 
     for stock in target_apply_stocks:
         if stock.get("has_detail"):

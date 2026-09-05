@@ -2,6 +2,7 @@
 .worktrees/
 data/portfolio.db
 data/.secret
+runtime/
 server/data/
 .env
 .env.local

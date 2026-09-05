@@ -5,10 +5,43 @@
 """
 import os
 import sys
+import json
+import tempfile
 import traceback
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _ensure_test_model():
+    """生产模型是运行时产物；单元测试缺少外部模型时生成临时最小模型。"""
+    model_dir = os.environ.get("IPO_MODEL_DIR", "").strip()
+    if not model_dir:
+        model_dir = tempfile.mkdtemp(prefix="portfolio-ipo-model-")
+        os.environ["IPO_MODEL_DIR"] = model_dir
+    model_path = os.path.join(model_dir, "ipo_xgb_model.json")
+    features_path = os.path.join(model_dir, "ipo_xgb_features.json")
+    if os.path.exists(model_path) and os.path.exists(features_path):
+        return
+    import numpy as np
+    import xgboost as xgb
+    features = [
+        "issue_price", "issue_pe", "industry_pe", "fund_raised",
+        "online_shares", "total_shares", "lottery_rate", "oversub_multiple",
+        "circ_mv", "sub_limit", "pe_ratio", "circ_mv_log", "fund_log",
+        "price_times_pe", "lottery_inv", "circ_per_lot", "pe_squared",
+    ]
+    matrix = np.array([[20, 25, 30, 10, 1, 2, 0.03, 2000, 5, 1, 25, 1.8, 2.4, 5, 32, 161, 0.625],
+                       [30, 35, 40, 20, 2, 4, 0.04, 2500, 8, 2, 35, 2.2, 3.0, 10.5, 24, 195, 1.225]], dtype=float)
+    train = xgb.DMatrix(matrix, label=np.array([0.0, 0.0]), feature_names=features)
+    booster = xgb.train({"objective": "reg:squarederror", "max_depth": 1, "eta": 0.1, "verbosity": 0}, train, num_boost_round=1)
+    os.makedirs(model_dir, exist_ok=True)
+    booster.save_model(model_path)
+    with open(features_path, "w", encoding="utf-8") as handle:
+        json.dump({"features": features, "medians": {}, "trained_at": "test", "target_transform": ""}, handle)
+
+
+_ensure_test_model()
 import ipo_daily_report as m
 import ipo_lib_fetch as fetch
 import _common as common

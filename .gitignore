@@ -3,6 +3,8 @@
 data/portfolio.db
 data/.secret
 runtime/
+ipo-report/data/ipo_xgb_model.json
+ipo-report/data/ipo_xgb_features.json
 server/data/
 .env
 .env.local

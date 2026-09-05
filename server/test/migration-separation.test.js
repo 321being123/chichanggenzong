@@ -17,6 +17,7 @@ assert.match(migrations, /数据库未完成最新迁移/);
 assert.match(connection, /MIGRATION_ROLE/);
 assert.match(connection, /options: `-c role=\$\{migrationRole\}`/);
 assert.match(runner, /MIGRATION_DATABASE_URL/);
+assert.match(runner, /MIGRATION_ENV_FILE/);
 assert.match(webUnit, /Environment=DISABLE_RUNTIME_MIGRATIONS=1/);
 assert.match(workerUnit, /Environment=DISABLE_RUNTIME_MIGRATIONS=1/);
 console.log('migration-separation: 迁移账号入口、运行时版本检查和 systemd 开关通过');

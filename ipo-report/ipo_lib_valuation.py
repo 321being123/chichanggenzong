@@ -669,9 +669,9 @@ def _get_lot_size(stock_code):
     # 北交所
     if code_str.startswith(("8", "920", "43")):
         return 100
-    # 沪市主板
+    # 沪市主板全面注册制后，新股申购单位为500股
     if code_str.startswith(("60",)):
-        return 1000
+        return 500
     # 深市主板 / 创业板 / 科创板
     return 500
 

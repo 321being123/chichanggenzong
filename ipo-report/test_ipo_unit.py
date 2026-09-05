@@ -256,6 +256,13 @@ try:
     )
     check("新股125%按50%档位向下显示100%", "约100%" in summary_125, "summary=%r" % summary_125)
     check("新股摘要包含单签收益", "预计首日单签收益4万元" in summary_125, "summary=%r" % summary_125)
+    summary_sh_main = _val._format_listing_summary(
+        100,
+        {"stock_code": "603448", "issue_price": 62.65},
+        "热市",
+    )
+    check("沪市主板新股按500股/签计算", "预计首日单签收益3万元" in summary_sh_main,
+          "summary=%r" % summary_sh_main)
     _old_xgb_for_floor = _val._xgb_predict_listing
     _old_sector_for_floor = _val.detect_stock_hot_sector
     _old_temp_multiplier_for_floor = _val.get_temp_listing_multiplier

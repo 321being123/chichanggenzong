@@ -22,19 +22,39 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/portfolio}"
+PRODUCTION_DB="${PGDATABASE:-portfolio}"
 TARGET_DB="${RESTORE_DRILL_DATABASE:-portfolio_restore_drill_$(date +%Y%m%d_%H%M%S)}"
 KEEP_DATABASE="${RESTORE_DRILL_KEEP_DATABASE:-0}"
+REMOTE_URI="${RESTORE_DRILL_BACKUP_URI:-}"
+DOWNLOAD_DIR=""
+
+cleanup_download() {
+  if [ -n "$DOWNLOAD_DIR" ] && [ -d "$DOWNLOAD_DIR" ]; then
+    rm -rf -- "$DOWNLOAD_DIR"
+  fi
+}
 
 if [[ ! "$TARGET_DB" =~ ^portfolio_restore_drill_[0-9]{8}_[0-9]{6}$ ]]; then
   echo "错误：恢复演练数据库名必须匹配 portfolio_restore_drill_YYYYMMDD_HHMMSS" >&2
   exit 1
 fi
-if [ "$TARGET_DB" = "${PGDATABASE:-portfolio}" ]; then
+if [ "$TARGET_DB" = "$PRODUCTION_DB" ]; then
   echo "错误：拒绝把生产数据库作为恢复演练目标" >&2
   exit 1
 fi
 
 latest="${1:-}"
+if [ -z "$latest" ] && [ -n "$REMOTE_URI" ]; then latest="$REMOTE_URI"; fi
+if [[ "$latest" == s3://* ]]; then
+  [[ "$latest" =~ ^s3://[A-Za-z0-9][A-Za-z0-9._-]{1,62}(/[^[:space:]]+)?\.gpg$ ]] || { echo "错误：异地恢复地址必须指向 s3://bucket/path/file.gpg" >&2; exit 1; }
+  command -v aws >/dev/null 2>&1 || { echo "错误：异地恢复需要 aws 客户端" >&2; exit 1; }
+  DOWNLOAD_DIR="$(mktemp -d /tmp/portfolio-restore.XXXXXX)"
+  endpoint_args=()
+  if [ -n "${BACKUP_STORAGE_ENDPOINT:-}" ]; then endpoint_args+=(--endpoint-url "$BACKUP_STORAGE_ENDPOINT"); fi
+  aws s3 cp "$latest" "$DOWNLOAD_DIR/$(basename "$latest")" --only-show-errors "${endpoint_args[@]}"
+  aws s3 cp "$latest.sha256" "$DOWNLOAD_DIR/$(basename "$latest").sha256" --only-show-errors "${endpoint_args[@]}"
+  latest="$DOWNLOAD_DIR/$(basename "$latest")"
+fi
 if [ -z "$latest" ]; then
   latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.gpg' -printf '%T@ %p\n' 2>/dev/null | sort -nr | sed -n '1s/^[^ ]* //p')"
 fi
@@ -57,10 +77,26 @@ command -v gunzip >/dev/null 2>&1 || { echo "错误：缺少 gunzip" >&2; exit 1
 command -v runuser >/dev/null 2>&1 || { echo "错误：缺少 runuser" >&2; exit 1; }
 
 PG_LOCAL=(runuser -u postgres -- env -u PGHOST -u PGPORT -u PGUSER -u PGPASSWORD)
+KEY_TABLES=(public.users public.accounts public.positions public.trades public.nav_history core.instruments)
+declare -A PRODUCTION_COUNTS
+for table in "${KEY_TABLES[@]}"; do
+  count="$("${PG_LOCAL[@]}" psql -X -At --dbname="$PRODUCTION_DB" -c "SELECT count(*) FROM $table;")"
+  case "$count" in ''|*[!0-9]*) echo "错误：无法读取生产表 $table 的行数" >&2; exit 1;; esac
+  PRODUCTION_COUNTS["$table"]="$count"
+done
+
+cleanup_failed=0
 cleanup() {
+  local rc=$?
   if [ "$KEEP_DATABASE" != "1" ]; then
-    "${PG_LOCAL[@]}" dropdb --if-exists --maintenance-db=postgres "$TARGET_DB" >/dev/null 2>&1 || true
+    if ! "${PG_LOCAL[@]}" dropdb --if-exists --maintenance-db=postgres "$TARGET_DB" >/dev/null 2>&1; then
+      cleanup_failed=1
+      echo "错误：恢复演练临时库清理失败：$TARGET_DB" >&2
+    fi
   fi
+  cleanup_download
+  if [ "$cleanup_failed" -ne 0 ] && [ "$rc" -eq 0 ]; then rc=1; fi
+  exit "$rc"
 }
 trap cleanup EXIT
 
@@ -82,4 +118,16 @@ if [ "$table_count" -lt 1 ]; then
   echo "错误：恢复后没有发现用户对象" >&2
   exit 1
 fi
+case "$migration_count" in ''|*[!0-9]*) echo "错误：schema_migrations 行数无法读取" >&2; exit 1;; esac
+if [ "$migration_count" -lt 1 ]; then
+  echo "错误：恢复后没有迁移记录" >&2
+  exit 1
+fi
+for table in "${KEY_TABLES[@]}"; do
+  restored_count="$("${PG_LOCAL[@]}" psql -X -At --dbname="$TARGET_DB" -c "SELECT count(*) FROM $table;")"
+  if [ "$restored_count" != "${PRODUCTION_COUNTS[$table]}" ]; then
+    echo "错误：关键表 $table 对账失败（生产 ${PRODUCTION_COUNTS[$table]}，恢复 $restored_count）" >&2
+    exit 1
+  fi
+done
 echo "恢复演练通过：用户对象 $table_count 个，schema_migrations $migration_count 条"

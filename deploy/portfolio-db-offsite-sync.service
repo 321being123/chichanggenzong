@@ -12,7 +12,9 @@ WorkingDirectory=/opt/portfolio
 EnvironmentFile=/opt/portfolio/.env
 EnvironmentFile=/etc/portfolio/backup.env
 Environment=BACKUP_DIR=/var/backups/portfolio
+Environment=REQUIRE_ENCRYPTION=1
 ExecStart=/usr/bin/env bash /opt/portfolio/scripts/sync_encrypted_backups.sh
+ExecStartPost=/usr/bin/node /opt/portfolio/server/scripts/sendBackupFailureAlert.js --resolve portfolio-db-offsite-sync.service
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

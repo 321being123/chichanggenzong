@@ -17,6 +17,7 @@ Environment=REQUIRE_ENCRYPTION=1
 Environment=GNUPGHOME=/var/lib/portfolio-backup/gnupg
 ExecStartPre=/usr/bin/install -d -m 0700 -o root -g root /var/lib/portfolio-backup/gnupg
 ExecStart=/usr/bin/env bash /opt/portfolio/scripts/backup_db.sh
+ExecStartPost=/usr/bin/node /opt/portfolio/server/scripts/sendBackupFailureAlert.js --resolve portfolio-db-backup.service
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

@@ -442,8 +442,9 @@ async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
     const pageRows = Array.isArray(payload.data) ? payload.data : [];
     rows.push(...pageRows);
     const announceCount = Number(payload.announceCount);
-    if (!pageRows.length || pageRows.length < pageSize
-      || (Number.isFinite(announceCount) && announceCount > 0 && pageNum * pageSize >= announceCount)) break;
+    if (!pageRows.length) break;
+    if (Number.isFinite(announceCount) && announceCount > 0 && rows.length >= announceCount) break;
+    if (!Number.isFinite(announceCount) && pageRows.length < pageSize) break;
     if (pageNum === maxPages) complete = false;
   }
   const events = rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);

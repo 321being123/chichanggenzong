@@ -5452,6 +5452,48 @@ async function migration135ExchangeRateBudgetRecovery() {
   `);
 }
 
+// ========== 136：可转债到期兑付临期状态与强赎公告状态对齐 =============
+// 089 发布公式视图时沿用了旧状态字段，但遗漏了 081 的 maturity_near 派生逻辑；
+// 这里在最终公开视图补回临期状态，且保留官方公告优先级。
+async function migration136ConvertibleBondRedemptionStatusParity() {
+  await pool.query(`
+    CREATE OR REPLACE VIEW analytics.convertible_bond_call_latest AS
+    SELECT r.instrument_id,r.ts_code,r.security_code,r.bond_name,r.stock_instrument_id,
+           r.stock_code,r.stock_name,r.current_conv_price,r.trigger_ratio,
+           CASE WHEN r.formula_version='call-v1' THEN r.trigger_price END AS trigger_price,
+           CASE WHEN r.formula_version='call-v1' THEN r.stock_close END AS stock_close,
+           CASE WHEN r.formula_version='call-v1' THEN r.distance_to_trigger_pct END AS distance_to_trigger_pct,
+           CASE WHEN r.formula_version='call-v1' THEN r.trade_date END AS trade_date,
+           CASE WHEN r.formula_version='call-v1' THEN r.matched_days END AS matched_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.required_days END AS required_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.observation_days END AS observation_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.remaining_days END AS remaining_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.calculated_status ELSE 'unknown' END AS calculated_status,
+           CASE WHEN r.formula_version='call-v1' THEN r.formula_version END AS formula_version,
+           CASE WHEN r.formula_version='call-v1' THEN r.diagnostics ELSE jsonb_build_object('reason','formula_version_not_published') END AS diagnostics,
+           CASE WHEN r.formula_version='call-v1' THEN r.data_status ELSE 'incomplete' END AS data_status,
+           CASE WHEN r.formula_version='call-v1' THEN r.calculated_at END AS calculated_at,
+           r.event_id,r.official_status,r.announced_at,r.no_call_until,
+           r.redemption_record_date,r.last_trade_date,r.last_conversion_date,r.redemption_price,
+           r.document_id,r.source_url,r.announcement_title,r.announcement_parse_status,
+           r.announcement_parser_version,r.announcement_details,
+           CASE
+             WHEN r.official_status='completion' THEN 'completed'
+             WHEN r.official_status IN ('exercise','implementation') THEN 'announced'
+             WHEN r.official_status='waive'
+                  AND (r.no_call_until IS NULL OR r.no_call_until >= COALESCE(r.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN COALESCE(r.data_status,'incomplete') <> 'complete' THEN 'incomplete'
+             WHEN r.maturity_date IS NOT NULL
+                  AND r.maturity_date <= ((SELECT COALESCE(MAX(trade_date),CURRENT_DATE)
+                                             FROM market.convertible_bond_daily_metrics) + INTERVAL '30 days')
+                  THEN 'maturity_near'
+             ELSE r.business_status
+           END AS business_status,
+           r.remain_size,r.maturity_date,r.conv_start_date,r.conv_end_date,r.conv_stop_date
+      FROM analytics.convertible_bond_call_latest_legacy r;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5588,6 +5630,7 @@ const MIGRATIONS = [
   { version: '133_convertible_bond_revision_legacy_false_facts', up: migration133ConvertibleBondRevisionLegacyFalseFacts },
   { version: '134_company_financial_incremental_sync', up: migration134CompanyFinancialIncrementalSync },
   { version: '135_exchange_rate_budget_recovery', up: migration135ExchangeRateBudgetRecovery },
+  { version: '136_convertible_bond_redemption_status_parity', up: migration136ConvertibleBondRedemptionStatusParity },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6189,6 +6232,7 @@ module.exports = {
   migration130TushareVipBackupMinuteLimit,
   migration134CompanyFinancialIncrementalSync,
   migration135ExchangeRateBudgetRecovery,
+  migration136ConvertibleBondRedemptionStatusParity,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

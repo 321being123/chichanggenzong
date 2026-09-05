@@ -520,9 +520,9 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
     ) motive ON true
     WHERE ${filter.clauses.join(' AND ')}`;
   const order = `ORDER BY CASE r.business_status
-      WHEN 'proposed' THEN 1 WHEN 'meeting_pending' THEN 2 WHEN 'approved' THEN 3
-      WHEN 'met_pending' THEN 4 WHEN 'near' THEN 5 WHEN 'locked' THEN 6
-      WHEN 'floor_blocked' THEN 7 WHEN 'tracking' THEN 8 WHEN 'implemented' THEN 9 ELSE 10 END,
+      WHEN 'implemented' THEN 1 WHEN 'proposed' THEN 2 WHEN 'meeting_pending' THEN 3
+      WHEN 'approved' THEN 4 WHEN 'met_pending' THEN 5 WHEN 'near' THEN 6
+      WHEN 'locked' THEN 7 WHEN 'floor_blocked' THEN 8 WHEN 'tracking' THEN 9 ELSE 10 END,
     COALESCE(r.remaining_days,9999),r.security_code LIMIT $${filter.values.length + 1}`;
   const [rowsResult, summaryResult, marketResult, stateResult, expectedResult, qualityResult] = await Promise.all([
     // 视图已按当前交易日行情和单券索引取数，排序与截断交给数据库完成。

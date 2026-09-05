@@ -31,7 +31,7 @@ function classifyCallEvent(title) {
   if (!/(赎回|转债|强赎|转股)/.test(text)) return null;
   if (/不提前赎回|不行使.*赎回|不实施.*赎回|暂不赎回/.test(text)) return 'waive';
   if (/实施结果|赎回结果|完成赎回|赎回完成/.test(text)) return 'completion';
-  if (/赎回实施|实施.*赎回|停止交易|最后交易日|最后转股日|赎回公告/.test(text)) return 'implementation';
+  if (/赎回实施|实施.*赎回|到期兑付|到期偿付|兑付暨摘牌|到期赎回|停止交易|最后交易日|最后转股日|赎回公告/.test(text)) return 'implementation';
   if (/可能触发|触发条件|强赎提示/.test(text)) return 'warning';
   if (/强赎|提前赎回|触发.*赎回|可能触发/.test(text)) return 'exercise';
   return null;

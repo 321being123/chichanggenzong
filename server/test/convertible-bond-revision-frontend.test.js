@@ -35,6 +35,7 @@ assert.ok(route.includes('motive-detail') && route.includes('尚无评分数据'
 assert.ok(service.includes('analytics.convertible_bond_revision_latest') && service.includes("FORMULA_VERSION = 'reset-v2'") && service.includes('CALCULATION_LOGIC_VERSION'), '下修服务未使用统一视图和版本公式');
 assert.ok(service.includes("NOT IN ('定向','私募')"), '下修服务必须排除定向私募债券');
 assert.ok(service.includes('ORDER BY CASE r.business_status') && service.includes('COALESCE(r.remaining_days,9999)'), '下修接口必须使用数据库状态排序');
+assert.ok(/WHEN 'implemented' THEN 1[\s\S]*WHEN 'proposed' THEN 2/.test(service), '已实施下修必须排在列表前列');
 assert.ok(!service.includes('sortedRows'), '下修接口不应再以内存排序替代数据库排序');
 assert.ok(!service.includes("'reset_clause'"), '下修接口不应返回原始下修条款字段');
 assert.ok(analysis.includes('convertible_bond_announcement_history') && analysis.includes('last_success_date') && analysis.includes('scanStart'), '公告同步未按游标增量');

@@ -13,11 +13,12 @@ EnvironmentFile=/opt/portfolio/.env
 EnvironmentFile=/etc/portfolio/backup.env
 Environment=BACKUP_DIR=/var/backups/portfolio
 Environment=REQUIRE_ENCRYPTION=1
+Environment=GNUPGHOME=/var/lib/portfolio-backup/gnupg
+ExecStartPre=/usr/bin/install -d -m 0700 -o root -g root /var/lib/portfolio-backup/gnupg
 ExecStart=/usr/bin/env bash /opt/portfolio/scripts/backup_db.sh
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/backups/portfolio
-
+ReadWritePaths=/var/backups/portfolio /var/lib/portfolio-backup

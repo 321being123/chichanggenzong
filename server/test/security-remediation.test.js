@@ -128,8 +128,8 @@ check('模型产物与发布代码支持分离目录', () => {
   const train = read('ipo-report/train_xgb_model.py');
   assert.ok(/IPO_MODEL_DIR/.test(runtime));
   assert.ok(/get_model_dir/.test(train));
-  assert.ok(/runtime\/models\/ipo/.test(read('deploy/portfolio-server.service')));
-  assert.ok(/install -d -o portfolio-app -g portfolio-app -m 0750 runtime runtime\/models runtime\/models\/ipo/.test(read('deploy/deploy_password.py')));
+  assert.ok(/\/var\/lib\/portfolio\/models\/ipo/.test(read('deploy/portfolio-server.service')));
+  assert.ok(/install -d -o portfolio-app -g portfolio-app -m 0750 \/var\/lib\/portfolio \/var\/lib\/portfolio\/models \/var\/lib\/portfolio\/models\/ipo/.test(read('deploy/deploy_password.py')));
   assert.ok(/migrate_ipo_model_artifacts/.test(read('deploy/migrate_ipo_model_artifacts.py')) || fs.existsSync(path.join(ROOT, 'deploy', 'migrate_ipo_model_artifacts.py')));
 });
 

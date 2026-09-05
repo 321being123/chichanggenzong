@@ -23,7 +23,7 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
 # 仅允许运行时数据、报告、模型和休市日历写入；代码、依赖、.git 和发布配置保持只读。
-ReadWritePaths=/opt/portfolio/data /opt/portfolio/runtime/models/ipo /opt/portfolio/ipo-report/data /opt/portfolio/ipo-report/history_reports /opt/portfolio/ipo-report/individual /opt/portfolio/server/config/holidays.json
+ReadWritePaths=/opt/portfolio/data /var/lib/portfolio/models/ipo /opt/portfolio/ipo-report/data /opt/portfolio/ipo-report/history_reports /opt/portfolio/ipo-report/individual /opt/portfolio/server/config/holidays.json
 StandardOutput=journal
 StandardError=journal
 

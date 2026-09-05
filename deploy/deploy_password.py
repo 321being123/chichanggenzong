@@ -160,7 +160,7 @@ def main():
             "&& nginx -t "
             "&& systemctl reload nginx "
             "&& npm ci --omit=dev "
-            "&& install -d -o portfolio-app -g portfolio-app -m 0750 runtime runtime/models runtime/models/ipo "
+            "&& install -d -o portfolio-app -g portfolio-app -m 0750 /var/lib/portfolio /var/lib/portfolio/models /var/lib/portfolio/models/ipo "
             "&& install -d -o portfolio-app -g portfolio-app -m 0755 ipo-report/data ipo-report/history_reports ipo-report/individual "
             "&& chown -R portfolio-app:portfolio-app ipo-report/data ipo-report/history_reports ipo-report/individual "
             "&& (grep -q '^TRUST_PROXY=' .env "

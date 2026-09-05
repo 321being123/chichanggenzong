@@ -14,7 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = PROJECT_ROOT / "ipo-report" / "data"
-DEFAULT_TARGET = Path("/opt/portfolio/runtime/models/ipo")
+DEFAULT_TARGET = Path("/var/lib/portfolio/models/ipo")
 MODEL_FILES = ("ipo_xgb_model.json", "ipo_xgb_features.json")
 
 

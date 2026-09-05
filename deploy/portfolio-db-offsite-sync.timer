@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Portfolio encrypted backup offsite sync
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=portfolio-db-offsite-sync.service
+
+[Install]
+WantedBy=timers.target

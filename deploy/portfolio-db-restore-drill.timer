@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly Portfolio isolated PostgreSQL restore drill
+
+[Timer]
+OnCalendar=*-*-01 05:00:00
+Persistent=true
+RandomizedDelaySec=30m
+Unit=portfolio-db-restore-drill.service
+
+[Install]
+WantedBy=timers.target

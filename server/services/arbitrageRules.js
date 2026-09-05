@@ -40,6 +40,8 @@ function classifyDocumentRole(title) {
 function classifyRiskAnnouncement(title) {
   const text = cleanSecurityText(title);
   if (!text) return null;
+  // “审核问询函回复/答复”是对监管问题的反馈，不是新的风险节点。
+  if (classifyProgressAnnouncement(text)?.progressType === 'regulatory_query_response') return null;
   if (/(立案告知书|立案调查|调查通知书|调查告知书)/.test(text)) {
     return { riskType: 'regulatory_investigation', severity: 'high', penalty: 25, label: '监管立案调查' };
   }
@@ -48,6 +50,19 @@ function classifyRiskAnnouncement(title) {
   }
   if (/(问询函|监管工作函|监管函)/.test(text)) {
     return { riskType: 'regulatory_query', severity: 'low', penalty: 8, label: '监管问询' };
+  }
+  return null;
+}
+
+// 公告进展识别：后续回复和注册/申报稿代表事项继续推进，不能按“问询”字样直接扣分。
+function classifyProgressAnnouncement(title) {
+  const text = cleanSecurityText(title);
+  if (!text) return null;
+  if (/(问询函|监管工作函|监管函).{0,16}(回复|答复)|(?:回复|答复).{0,16}(问询函|监管工作函|监管函)/.test(text)) {
+    return { progressType: 'regulatory_query_response', label: '已回复监管问询', points: 8 };
+  }
+  if (/(报告书|报告|申请).{0,12}(注册稿|申报稿)|(注册稿|申报稿).{0,12}(报告书|报告|申请)/.test(text)) {
+    return { progressType: 'registration_filing', label: '已进入注册/申报稿阶段', points: 6 };
   }
   return null;
 }
@@ -142,6 +157,7 @@ module.exports = {
   firstSecurityName,
   classifyDocumentRole,
   classifyRiskAnnouncement,
+  classifyProgressAnnouncement,
   documentRolePriority,
   buildEventKey,
   sanitizeOfferor,

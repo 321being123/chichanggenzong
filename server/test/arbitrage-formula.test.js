@@ -186,5 +186,23 @@ test('换股成功概率：监管立案会作为可解释的负面因素扣分',
   assert.ok(r.successProbabilityFactors.some(f => f.points === -25));
 });
 
+test('换股成功概率：问询回复与注册稿属于推进，不应被判定为低概率', () => {
+  const r = svc.estimateSwapSuccess({
+    review_status: 'approved',
+    event_status: 'proposed',
+    parse_status: 'validated',
+    terms_confidence: 0.9,
+  }, [
+    { document_id: 1, title: '关于收到审核问询函的公告', announced_at: '2026-08-10' },
+    { document_id: 2, title: '关于审核问询函的回复', announced_at: '2026-08-17' },
+    { document_id: 3, title: '换股吸收合并报告书（注册稿）', announced_at: '2026-08-27' },
+  ]);
+  assert.equal(r.successProbability, 84);
+  assert.equal(r.successProbabilityLabel, '较高');
+  assert.equal(r.riskEvents.length, 0);
+  assert.ok(r.successProbabilityFactors.some(f => f.label === '已回复监管问询' && f.points === 8));
+  assert.ok(r.successProbabilityFactors.some(f => f.label === '已进入注册/申报稿阶段' && f.points === 6));
+});
+
 console.log('\nPASS=' + pass + ' FAIL=' + fail);
 process.exit(fail > 0 ? 1 : 0);

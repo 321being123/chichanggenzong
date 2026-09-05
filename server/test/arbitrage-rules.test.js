@@ -71,3 +71,10 @@ test('监管立案公告识别为风险节点，不是终止公告', () => {
   assert.equal(risk.severity, 'high');
   assert.equal(rules.classifyDocumentRole('大智慧：关于收到中国证监会立案告知书的公告'), 'risk');
 });
+
+test('审核问询函回复识别为推进，不作为监管风险', () => {
+  const progress = rules.classifyProgressAnnouncement('关于审核问询函的回复');
+  assert.equal(progress.progressType, 'regulatory_query_response');
+  assert.equal(rules.classifyRiskAnnouncement('关于审核问询函的回复'), null);
+  assert.equal(rules.classifyRiskAnnouncement('关于收到审核问询函的公告').riskType, 'regulatory_query');
+});

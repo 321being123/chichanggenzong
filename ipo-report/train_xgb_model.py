@@ -1,7 +1,7 @@
 """
 训练XGBoost新股首日涨幅预测模型（无pandas依赖）
 数据来源：ipo_history.db
-模型输出：data/ipo_xgb_model.json
+模型输出：IPO_MODEL_DIR/ipo_xgb_model.json
 """
 import sqlite3
 import os
@@ -198,7 +198,7 @@ for i in idx_sorted[:10]:
 
 # ── 5. 保存 ──
 # 先写同目录临时文件再替换，避免旧模型文件由部署用户创建时无法直接覆盖。
-model_fd, model_tmp = tempfile.mkstemp(prefix="ipo_xgb_model_", suffix=".json", dir=DATA_DIR)
+model_fd, model_tmp = tempfile.mkstemp(prefix="ipo_xgb_model_", suffix=".json", dir=MODEL_DIR)
 os.close(model_fd)
 try:
     model.save_model(model_tmp)
@@ -219,7 +219,7 @@ info = {
     "target_transform": "log1p_nonnegative_return",
     "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 }
-features_fd, features_tmp = tempfile.mkstemp(prefix="ipo_xgb_features_", suffix=".json", dir=DATA_DIR)
+features_fd, features_tmp = tempfile.mkstemp(prefix="ipo_xgb_features_", suffix=".json", dir=MODEL_DIR)
 os.close(features_fd)
 try:
     with open(features_tmp, "w", encoding="utf-8") as f:

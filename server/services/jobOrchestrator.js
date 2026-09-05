@@ -35,9 +35,14 @@ function reasonForSlot(slot) {
   return 'scheduled';
 }
 
+function hasSkippedSignal(value) {
+  if (!value || !value.skipped) return false;
+  return !Array.isArray(value.skipped) || value.skipped.length > 0;
+}
+
 function normalizeJobResult(result, externalCalls = 0) {
   const value = result && typeof result === 'object' ? { ...result } : {};
-  const skippedFresh = value.skipped && ['fresh', 'already-ran-today'].includes(value.reason);
+  const skippedFresh = hasSkippedSignal(value) && ['fresh', 'already-ran-today'].includes(value.reason);
   const failed = value.ok === false || value.status === 'failed' || Boolean(value.error);
   const status = value.status || (skippedFresh ? 'fresh' : failed ? 'failed' : value.partial ? 'partial' : 'succeeded');
   return {
@@ -415,34 +420,35 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     });
     const rawResult = await Promise.race([task, timeout]);
     const result = normalizeJobResult(rawResult);
+    const hasSkipped = hasSkippedSignal(result);
 
     if (result && result.unsupported) {
       await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'blocked', result, result.error, runId);
       return result;
     }
-    if (result && result.skipped && ['failed', 'error'].includes(result.reason)) {
+    if (hasSkipped && ['failed', 'error'].includes(result.reason)) {
       await failOrRetry(claimed, result.error || result.reason, runId, result);
       return result;
     }
-    if (result && result.skipped && ['fresh', 'already-ran-today'].includes(result.reason)) {
+    if (hasSkipped && ['fresh', 'already-ran-today'].includes(result.reason)) {
       result.status = 'fresh';
       await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'succeeded', result, null, runId);
       return result;
     }
-    if (result && result.skipped && result.reason !== 'not_configured') {
+    if (hasSkipped && result.reason !== 'not_configured') {
       const failure = classifyFailure(result.error || result.reason, result);
       await finishManagedRun(runId, claimed.job_code, false, result, failure);
       await deferSlot(claimed.slot_id, result.reason || '任务被其他实例占用', result, 5, runId);
       return result;
     }
-    if (result && result.skipped && result.reason === 'not_configured') {
+    if (hasSkipped && result.reason === 'not_configured') {
       await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'skipped', result, '当前任务未配置，保留上一份有效数据', runId);
       return result;
     }
-    if (result && result.ok === false && !result.skipped) {
+    if (result && result.ok === false && !hasSkipped) {
       await failOrRetry(claimed, result.error, runId, result);
       return result;
     }
@@ -543,4 +549,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, resolveMaxAttempts };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, resolveMaxAttempts, hasSkippedSignal };

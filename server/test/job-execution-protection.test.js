@@ -138,6 +138,10 @@ assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSou
 assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_overview_latest/.test(stockJob)
   && /const dataAsOf = stocks\.length && failed === 0 \? await latestStockAnalysisDate\(\) : null/.test(stockJob)
   && /watermarkNotRequired: stocks\.length === 0/.test(stockJob), '个股分析成功水位必须来自实际入库，无目标时不得误报');
+assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
+  && /!Array\.isArray\(value\.skipped\) \|\| value\.skipped\.length > 0/.test(orchestrator)
+  && /const hasSkipped = hasSkippedSignal\(result\)/.test(orchestrator)
+  && /result\.ok === false && !hasSkipped/.test(orchestrator), '空的跳过列表不得把成功任务误判为失败');
 
 (async () => {
   const originalRequest = require('https').request;

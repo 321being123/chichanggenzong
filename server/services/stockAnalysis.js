@@ -431,7 +431,8 @@ async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
 }
 
 async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
-  const pageSize = 100, maxPages = 20, rows = [];
+  // 全市场扫描只取首批，未取完立即交给带关键词检索的巨潮备源，给正文解析预留任务预算。
+  const pageSize = 100, maxPages = 1, rows = [];
   let complete = true;
   for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
     const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [],

@@ -65,7 +65,7 @@ assert.ok(redemptionService.includes('expectedMarketDate') && redemptionService.
 assert.ok(redemptionService.includes('stock_suspend_calendar') && redemptionService.includes('suspended_dates'), '强赎计算必须区分停牌日与真正缺失日');
 assert.ok(redemptionService.includes("WHEN 'announced' THEN 1 WHEN 'maturity_near' THEN 2 WHEN 'met_pending' THEN 3"), '强赎列表排序必须先公告、再临近到期、再已满足待确认');
 assert.ok(redemptionSync.includes("'即将到期'") && redemptionSync.includes("'停止交易'") && redemptionSync.includes("'到期兑付'"), '强赎公告检索必须覆盖到期赎回提示公告');
-assert.ok(stockAnalysis.includes('rows.length >= announceCount') && stockAnalysis.includes('!Number.isFinite(announceCount)'), '深交所公告分页必须按公告总数判断完整性');
+assert.ok(stockAnalysis.includes('rows.length >= announceCount') && stockAnalysis.includes('!Number.isFinite(announceCount)') && stockAnalysis.includes('maxPages = 1'), '深交所公告分页必须按公告总数判断完整性并为备源预留预算');
 assert.ok(redemptionSync.includes('eventParseComplete') && redemptionSync.includes('classified.length'), '强赎公告必须解析全部分类公告并按事件类型校验关键日期');
 assert.ok(redemptionSync.includes('return null') && redemptionSync.includes('不能默认取第一只'), '同一正股多只转债时禁止模糊匹配');
 assert.ok((redemptionCss.includes('color:#172033') || redemptionCss.includes('var(--bond-feature-text)')) && redemptionCss.includes('.bond-redemption-toolbar input,.bond-redemption-toolbar select') && redemptionCss.includes('font-size:13px'), '强赎卡片文字和输入控件必须沿用统一 UI 颜色与样式');

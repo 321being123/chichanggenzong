@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 发布维护阶段使用迁移账号执行数据库升级；Web/Worker 只做版本检查。
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 if (!process.env.MIGRATION_DATABASE_URL) {
   console.error('缺少 MIGRATION_DATABASE_URL');
   process.exit(2);

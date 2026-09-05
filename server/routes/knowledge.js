@@ -154,9 +154,9 @@ function buildTree(rows) {
 
 // ---------- 分类目录树 ----------
 // P2-6：读取接口不再写库（默认分类由迁移 018 幂等种子）
-router.get('/categories', async (req, res) => {
+router.get('/categories', optionalLogin, async (req, res) => {
   try {
-    const username = req.session && req.session.user;
+    const username = req.authUser && req.authUser.username;
     const r = await pool.query(
       `SELECT id, name, parent_id, sort_order,
               COALESCE(owner_username = $1, false) AS can_manage
@@ -302,10 +302,12 @@ router.delete('/categories/:id', requireLogin, requireCategoryOwner, async (req,
 });
 
 // ---------- 文章列表 ----------
-router.get('/articles', async (req, res) => {
+router.get('/articles', optionalLogin, async (req, res) => {
   try {
-    const isLogin = !!req.session.user;
-    const me = isLogin ? await getUserKsInfo(req.session.user) : { isAdmin: false, canWrite: false, username: null };
+    // 只信任 optionalLogin 校验后的 req.authUser，禁止用已吊销会话直接读取草稿。
+    const username = req.authUser && req.authUser.username;
+    const isLogin = !!username;
+    const me = isLogin ? await getUserKsInfo(username) : { isAdmin: false, canWrite: false, username: null };
     const categoryId = req.query.category_id ? parseInt(req.query.category_id, 10) : null;
     const q = req.query.q ? String(req.query.q).trim() : '';
     const params = [];
@@ -319,7 +321,7 @@ router.get('/articles', async (req, res) => {
       }
     } else if (me.canWrite) {
       where = 'WHERE (a.status=$1 OR a.author_username=$2) ';
-      params.push('published', req.session.user);
+      params.push('published', username);
     } else {
       where = "WHERE a.status='published' ";
     }
@@ -346,8 +348,8 @@ router.get('/articles', async (req, res) => {
     const r = await pool.query(sql, params);
     const rows = r.rows.map(a => ({
       ...a,
-      can_edit: me.canWrite && a.author_username === req.session.user,
-      can_delete: me.canWrite && a.author_username === req.session.user,
+      can_edit: me.canWrite && a.author_username === username,
+      can_delete: me.canWrite && a.author_username === username,
     }));
     res.json(rows);
   } catch (e) {
@@ -617,15 +619,16 @@ router.post('/articles/:id/view', async (req, res) => {
 
 // ---------- 评论（楼中楼嵌套） ----------
 // 返回嵌套结构：一级评论（parent_id IS NULL）+ 其下 replies 数组
-router.get('/articles/:id/comments', async (req, res) => {
+router.get('/articles/:id/comments', optionalLogin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const article = await getRawArticle(id);
     if (!article) return res.status(404).json({ error: '文章不存在或未发布' });
     if (article.status !== 'published') {
-      if (!req.session.user) return res.status(404).json({ error: '文章不存在或未发布' });
-      const access = await getUserKsInfo(req.session.user);
-      if (!access.isAdmin && article.author_username !== req.session.user) {
+      const username = req.authUser && req.authUser.username;
+      if (!username) return res.status(404).json({ error: '文章不存在或未发布' });
+      const access = await getUserKsInfo(username);
+      if (!access.isAdmin && article.author_username !== username) {
         return res.status(404).json({ error: '文章不存在或未发布' });
       }
     }
@@ -638,10 +641,11 @@ router.get('/articles/:id/comments', async (req, res) => {
        WHERE c.article_id=$1 ORDER BY c.created_at ASC`,
       [id]
     );
-    const me = req.session && req.session.user ? await getUserKsInfo(req.session.user) : { isAdmin: false, username: null };
+    const username = req.authUser && req.authUser.username;
+    const me = username ? await getUserKsInfo(username) : { isAdmin: false, username: null };
     const all = r.rows.map(c => ({
       ...c,
-      can_delete: me.isAdmin || c.author_username === req.session.user,
+      can_delete: me.isAdmin || c.author_username === username,
     }));
     const buildTree = () => {
       const map = new Map();

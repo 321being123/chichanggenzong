@@ -183,12 +183,17 @@ check('安全性完整列表缓存版本覆盖强赎状态，静态响应只保�
     const nginx = fs.readFileSync(path.resolve(__dirname, '..', '..', 'deploy', file), 'utf8');
     assert.strictEqual((nginx.match(/proxy_hide_header Cache-Control/g) || []).length, 2,
       file + ' 的两个静态 location 都必须隐藏 Node 上游 Cache-Control');
+    const apiLocationIndex = nginx.indexOf('location ^~ /api/');
     const dynamicLocationIndex = nginx.indexOf('location / {');
-    const connectionLimitIndex = nginx.indexOf('limit_conn portfolio_conn 30;');
-    assert.strictEqual((nginx.match(/limit_conn portfolio_conn 30;/g) || []).length, 1,
-      file + ' 只能保留一个连接限制');
-    assert.ok(connectionLimitIndex > dynamicLocationIndex,
-      file + ' 的连接限制必须位于动态 location 内，不能限制静态资源');
+    const staticLocationIndex = nginx.indexOf('location ~* [.](js|css)$');
+    assert.strictEqual((nginx.match(/limit_conn portfolio_conn 30;/g) || []).length, 2,
+      file + ' 的 API 与页面动态 location 都必须保留连接限制');
+    assert.ok(apiLocationIndex >= 0 && dynamicLocationIndex > staticLocationIndex,
+      file + ' 的动态 location 顺序不符合预期');
+    assert.ok(nginx.slice(apiLocationIndex, staticLocationIndex).includes('limit_conn portfolio_conn 30;'),
+      file + ' 的 API location 缺少连接限制');
+    assert.ok(nginx.slice(dynamicLocationIndex).includes('limit_conn portfolio_conn 30;'),
+      file + ' 的页面动态 location 缺少连接限制');
   });
 });
 

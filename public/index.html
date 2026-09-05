@@ -1334,11 +1334,19 @@ async function loadProfile() {
 
 // 保存个人资料（头像取当前 myProfile.avatar，未上传则保留服务端值）
 async function saveProfile() {
+  const nextEmail = (document.getElementById('profile-email').value || '').trim();
+  const oldEmail = (myProfile && myProfile.email || '').trim();
+  let currentPassword;
+  if (nextEmail.toLowerCase() !== oldEmail.toLowerCase()) {
+    currentPassword = window.prompt('修改邮箱需要输入当前密码：');
+    if (currentPassword === null) return;
+  }
   const payload = {
     nickname: (document.getElementById('profile-nickname').value || '').trim(),
     bio: document.getElementById('profile-bio').value,
     avatar: (myProfile && myProfile.avatar) || '',
-    email: (document.getElementById('profile-email').value || '').trim()
+    email: nextEmail,
+    ...(currentPassword ? { currentPassword } : {})
   };
   try {
     const r = await fetch(api('/api/profile'), {

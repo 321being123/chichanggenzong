@@ -29,6 +29,7 @@ const {
 } = require('../services/externalApiConfig');
 const { upsertSourceEndpointPolicy } = require('../services/sourceEndpointPolicy');
 const { tokenFingerprint } = require('../services/externalCallGuard');
+const { assertSafeUrl } = require('../services/ai');
 
 // PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
 // 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
@@ -418,6 +419,9 @@ router.post('/models/:id/test', asyncHandler(async (req, res) => {
   if (!m) return res.status(404).json({ error: '模型不存在' });
   const t0 = Date.now();
   try {
+    // 管理员可配置自定义 HTTPS 域名，但连通性测试仍必须拒绝私网、回环和非 HTTPS 地址。
+    const modelHost = new URL(m.apiUrl).hostname.toLowerCase();
+    assertSafeUrl(m.apiUrl, [modelHost]);
     const r = await fetch(m.apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + m.apiKey },

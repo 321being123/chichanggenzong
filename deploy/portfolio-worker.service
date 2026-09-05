@@ -15,6 +15,16 @@ ExecStart=/usr/bin/node /opt/portfolio/server/worker.js
 TimeoutStopSec=50min
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+# Worker 仅写运行时数据、报告、模型和休市日历，禁止改写代码与 .git。
+ReadWritePaths=/opt/portfolio/data /opt/portfolio/ipo-report/data /opt/portfolio/ipo-report/history_reports /opt/portfolio/ipo-report/individual /opt/portfolio/server/config/holidays.json
 StandardOutput=journal
 StandardError=journal
 

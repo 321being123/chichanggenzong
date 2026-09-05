@@ -7,4 +7,12 @@ Type=oneshot
 User=portfolio-app
 WorkingDirectory=/opt/portfolio
 Environment=NODE_ENV=production
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
 ExecStart=/usr/bin/node /opt/portfolio/server/scripts/checkWorkerHealth.js

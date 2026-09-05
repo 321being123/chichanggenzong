@@ -30,6 +30,14 @@ const ipoCommon = read('ipo-report/_common.py');
 const ipoRoute = read('server/routes/ipo.js');
 const envExample = read('deploy/.env.example');
 const initScript = read('deploy/server-init.sh');
+const securityMiddleware = read('server/middleware/security.js');
+const aiModels = read('server/services/aiModels.js');
+const profile = read('server/routes/profile.js');
+const indexHtml = read('public/index.html');
+const nginxHttps = read('deploy/nginx-portfolio.conf');
+const nginxHttp = read('deploy/nginx-portfolio-http.conf');
+const backupUnit = read('deploy/portfolio-db-backup.service');
+const backupTimer = read('deploy/portfolio-db-backup.timer');
 const sshScripts = [
   'ipo-report/_common.py',
   'deploy/deploy_password.py',
@@ -65,6 +73,32 @@ check('知识写入和所有权守卫前统一校验登录态', () => {
   assert.ok(/req\.authUser/.test(detailRoute), '文章详情仍信任未经验证的 session.user');
 });
 
+check('知识公开入口校验已吊销会话', () => {
+  assert.ok(/router\.get\('\/categories',\s*optionalLogin/.test(knowledge));
+  assert.ok(/router\.get\('\/articles',\s*optionalLogin/.test(knowledge));
+  assert.ok(/router\.get\('\/articles\/:id\/comments',\s*optionalLogin/.test(knowledge));
+  const list = knowledge.slice(knowledge.indexOf("router.get('/articles',"), knowledge.indexOf("router.get('/articles/:id',"));
+  assert.ok(/req\.authUser/.test(list));
+  assert.ok(!/req\.session\.user/.test(list));
+});
+
+check('CSRF 覆盖 PATCH 等所有非安全方法', () => {
+  assert.ok(/!\['GET',\s*'HEAD',\s*'OPTIONS'\]\.includes\(req\.method\)/.test(securityMiddleware));
+});
+
+check('API 路径优先于静态后缀缓存规则', () => {
+  [nginxHttps, nginxHttp].forEach(function (cfg) {
+    const api = cfg.indexOf('location ^~ /api/');
+    const staticJs = cfg.indexOf('location ~* [.](js|css)$');
+    assert.ok(api >= 0 && staticJs > api, '缺少 /api/ 优先 location');
+  });
+});
+
+check('AI 模型密钥入库前加密、读取时解密', () => {
+  assert.ok(/encryptSecret\(copy\.apiKey\)/.test(aiModels));
+  assert.ok(/decryptSecret\(m\.apiKey\)/.test(aiModels));
+});
+
 check('知识权限开关同步唯一能力字段并撤销旧会话', () => {
   const body = users.slice(users.indexOf('async function setKnowledgeEnabled'), users.indexOf('async function adminSetPassword'));
   assert.ok(/knowledge_write/.test(body));
@@ -74,6 +108,25 @@ check('知识权限开关同步唯一能力字段并撤销旧会话', () => {
 check('AI 地址换源时必须同时提交新密钥', () => {
   assert.ok(/new URL\([^\n]+\)\.origin/.test(admin));
   assert.ok(/API Key/.test(admin.slice(admin.indexOf("router.put('/models/:id'"), admin.indexOf("router.delete('/models/:id'"))));
+});
+
+check('后台 AI 连通性测试复用 SSRF 地址校验', () => {
+  const testRoute = admin.slice(admin.indexOf("router.post('/models/:id/test'"), admin.indexOf("// ====== 操作审计 ======"));
+  assert.ok(/assertSafeUrl\(m\.apiUrl,\s*\[modelHost\]\)/.test(testRoute));
+});
+
+check('数据库备份模板强制加密并使用受保护目录', () => {
+  assert.ok(/REQUIRE_ENCRYPTION=1/.test(backupUnit));
+  assert.ok(/EnvironmentFile=\/etc\/portfolio\/backup\.env/.test(backupUnit));
+  assert.ok(/ReadWritePaths=\/var\/backups\/portfolio/.test(backupUnit));
+  assert.ok(/OnCalendar=\*-\*-\* 03:30:00/.test(backupTimer));
+});
+
+check('个人敏感资料变更要求复核并限流', () => {
+  assert.ok(/currentPassword/.test(profile));
+  assert.ok(/修改邮箱需要验证当前密码/.test(profile));
+  assert.ok(/profile-password/.test(profile) && /max:\s*5/.test(profile));
+  assert.ok(/修改邮箱需要输入当前密码/.test(indexHtml));
 });
 
 check('链接抓取使用固定到已验证公网 IP 的连接', () => {

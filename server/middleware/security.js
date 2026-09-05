@@ -19,7 +19,8 @@ function isAllowedOrigin(origin) {
 
 // CSRF 防护：仅允许指定来源；同源 Referer 放行，否则写请求必须有白名单内的 Origin
 function csrfMiddleware(req, res, next) {
-  if (req.method === 'PUT' || req.method === 'POST' || req.method === 'DELETE') {
+  // 所有可能改变状态的 HTTP 方法都必须经过来源检查；PATCH 不能遗漏。
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     const origin = req.headers['origin'];
     const referer = req.headers['referer'];
     // 同源（无 Origin 但 Referer 指向本机）放行；否则写请求必须有白名单内的 Origin

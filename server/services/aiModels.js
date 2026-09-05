@@ -2,6 +2,7 @@
 // 模型列表存 platform_config 表的 ai_models 键（JSON 数组），供管理后台增删改与图片/Excel识别兜底调用共用。
 // 调用状态（成功/失败/耗时）存模块级内存，重启清零（单实例可接受，避免为瞬态数据开表）。
 const { getConfig, setConfig } = require('../db');
+const { encryptSecret, decryptSecret } = require('./externalApiConfig');
 
 const CONFIG_KEY = 'ai_models';
 
@@ -13,12 +14,22 @@ async function getModels() {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
+    return Array.isArray(arr) ? arr.map(function (m) {
+      return m && typeof m === 'object'
+        ? Object.assign({}, m, { apiKey: decryptSecret(m.apiKey) })
+        : m;
+    }) : [];
   } catch (e) { return []; }
 }
 
 async function saveModels(list) {
-  await setConfig(CONFIG_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+  const encoded = (Array.isArray(list) ? list : []).map(function (m) {
+    if (!m || typeof m !== 'object') return m;
+    const copy = Object.assign({}, m);
+    if (copy.apiKey && !String(copy.apiKey).startsWith('enc:v1:')) copy.apiKey = encryptSecret(copy.apiKey);
+    return copy;
+  });
+  await setConfig(CONFIG_KEY, JSON.stringify(encoded));
 }
 
 // 启用中的模型按 order 升序（order 最小者即默认模型）
@@ -55,7 +66,16 @@ function getStatus(id) {
 async function ensureAiModelsInit() {
   try {
     const list = await getModels();
-    if (list.length) return;
+    if (list.length) {
+      // 存量配置可能是旧版明文；启动时通过同一保存入口迁移为密文。
+      const raw = await getConfig(CONFIG_KEY, '');
+      let rawList = [];
+      try { rawList = JSON.parse(raw); } catch (e) {}
+      if (Array.isArray(rawList) && rawList.some(m => m && m.apiKey && !String(m.apiKey).startsWith('enc:v1:'))) {
+        await saveModels(list);
+      }
+      return;
+    }
     if (!process.env.VISION_API_KEY) return;
     await saveModels([{
       id: 'm_' + Date.now(),

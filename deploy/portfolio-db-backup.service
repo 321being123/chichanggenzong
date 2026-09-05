@@ -1,0 +1,23 @@
+[Unit]
+Description=Portfolio PostgreSQL encrypted backup
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/portfolio
+# .env 提供数据库连接参数；/etc/portfolio/backup.env 仅由 root 保存备份口令。
+EnvironmentFile=/opt/portfolio/.env
+EnvironmentFile=/etc/portfolio/backup.env
+Environment=BACKUP_DIR=/var/backups/portfolio
+Environment=REQUIRE_ENCRYPTION=1
+ExecStart=/usr/bin/env bash /opt/portfolio/scripts/backup_db.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/portfolio
+

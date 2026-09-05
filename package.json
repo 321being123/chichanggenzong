@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.7.0.34",
-  "appVersion": "0.7.0.34",
+  "version": "0.7.0.35",
+  "appVersion": "0.7.0.35",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
@@ -45,6 +45,8 @@
     "node": ">=22"
   },
   "overrides": {
+    "qs": "6.16.0",
+    "@xmldom/xmldom": "0.8.15",
     "body-parser": "^1.20.6",
     "uuid": "^11.1.1",
     "brace-expansion": "^5.0.9",

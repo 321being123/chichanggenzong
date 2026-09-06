@@ -249,6 +249,11 @@ except Exception as e:
 # ===== 2. _to_ts_code 后缀处理（修复：已带后缀不得再拼 .SZ）=====
 print("== 2. _to_ts_code 后缀处理 ==")
 try:
+    import instrument_identity as _instrument_identity
+    check("统一身份模块无映射时补深市后缀",
+          _instrument_identity._derive_canonical_code("301677") == "301677.SZ")
+    check("统一身份模块无映射时补沪市后缀",
+          _instrument_identity._derive_canonical_code("600000") == "600000.SH")
     check("_to_ts_code 已带后缀不双拼", m._to_ts_code("300750.SZ") == "300750.SZ",
           "得到 %r" % m._to_ts_code("300750.SZ"))
     check("_to_ts_code 无后缀补.SZ", m._to_ts_code("301677") == "301677.SZ")

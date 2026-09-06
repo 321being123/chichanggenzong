@@ -199,9 +199,15 @@ def _derive_canonical_code(value, asset_class=None):
     if len(digits) not in (5, 6):
         return text
     code = digits.zfill(6)
-    if asset_class == "convertible_bond" or (asset_class is None and code.startswith(("11", "12"))):
+    # 未指定品种时，兼容打新入口同时处理 A 股和可转债；市场后缀仍只在身份模块统一推导。
+    inferred_asset_class = asset_class
+    if inferred_asset_class is None and len(digits) == 6:
+        inferred_asset_class = "convertible_bond" if code.startswith(("11", "12")) else "stock"
+    if inferred_asset_class is None:
+        return text
+    if inferred_asset_class == "convertible_bond":
         return f"{code}.{'SH' if code.startswith('11') else 'SZ'}"
-    if asset_class == "stock":
+    if inferred_asset_class == "stock":
         if code.startswith(("6", "68")):
             return f"{code}.SH"
         if code.startswith(("4", "8", "92", "43")):

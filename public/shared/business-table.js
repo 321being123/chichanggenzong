@@ -74,6 +74,36 @@
     if (container.querySelectorAll) container.querySelectorAll('.biz-table').forEach(normalizeHeaderCells);
   }
 
+  // 名称列附带代码，原代码列与排序入口完整保留；不改业务字段和列序。
+  function prepareIdentity(table) {
+    if (table.__mobileIdentity || !table.closest('#bond-list-table, #bond-safety-table, #bond-redemption-table, #bond-revision-table, .position-list-scroll')) return;
+    var head = table.tHead;
+    if (!head || head.rows.length !== 1) return;
+    var cells = Array.from(head.rows[0].cells);
+    function label(cell) { var el = cell.querySelector('.biz-table-head-label') || cell; return el.textContent.replace(/\s/g, ''); }
+    var nameIndex = cells.findIndex(function (cell) { return /^(转债名称|债券名称|名称)$/.test(label(cell)); });
+    var codeIndex = cells.findIndex(function (cell) { return /^(代码|债券代码)$/.test(label(cell)); });
+    if (nameIndex < 0 || codeIndex < 0) return;
+    cells[nameIndex].classList.add('biz-identity');
+    Array.from(table.tBodies).forEach(function (body) { Array.from(body.rows).forEach(function (row) {
+      if (row.cells.length !== cells.length) return;
+      var cell = row.cells[nameIndex], code = document.createElement('small');
+      cell.classList.add('biz-identity'); code.className = 'biz-identity-code'; code.textContent = row.cells[codeIndex].textContent.trim(); cell.appendChild(code);
+    }); });
+    table.__mobileIdentity = true;
+  }
+
+  function stickyTop(instance) {
+    var topEl = resolve(instance.top || (instance.root.closest && instance.root.closest('.admin-main') ? '.admin-topbar' : null));
+    var top = topEl && topEl.getClientRects().length ? topEl.getBoundingClientRect().bottom : 0;
+    document.querySelectorAll('.nav, .main-page.active .holdings-header, .main-page.active > .bond-header, .main-page.active .mv-header, .admin-topbar').forEach(function (el) {
+      if (!el.getClientRects().length) return;
+      var rect = el.getBoundingClientRect();
+      if (rect.top <= top + 1) top = Math.max(top, rect.bottom);
+    });
+    return Math.max(0, top);
+  }
+
   function ensureHosts(instance) {
     if (!instance.headHost) {
       instance.headHost = document.createElement('div');
@@ -101,6 +131,7 @@
     var head = table && table.querySelector('thead');
     if (!table || !scroll || !head || !instance.sticky) return;
     normalizeHeaderCells(table);
+    prepareIdentity(table);
     ensureHosts(instance);
     instance.table = table;
     instance.scroll = scroll;
@@ -111,6 +142,7 @@
     var floatingHead = head.cloneNode(true);
     var sourceCells = head.querySelectorAll('th');
     floatingHead.querySelectorAll('th').forEach(function (cell, index) {
+      cell.removeAttribute('id');
       if (sourceCells[index]) {
         cell.onclick = function () { sourceCells[index].click(); };
         cell.style.width = sourceCells[index].getBoundingClientRect().width + 'px';
@@ -145,7 +177,14 @@
 
   function sync(instance) {
     var currentTable = findWithin(instance.root, instance.tableSelector || '.biz-table');
-    if (currentTable) normalizeHeaderCells(currentTable);
+    if (currentTable) { normalizeHeaderCells(currentTable); prepareIdentity(currentTable); }
+    var currentScroll = findWithin(instance.root, instance.scrollSelector || '.biz-table-scroll');
+    if (currentScroll && (!instance.hint || !instance.hint.isConnected)) {
+      instance.hint = document.createElement('div'); instance.hint.className = 'biz-table-scroll-hint';
+      instance.hint.textContent = '左右滑动查看完整数据'; instance.hint.hidden = true; currentScroll.before(instance.hint);
+      currentScroll.tabIndex = 0; currentScroll.setAttribute('role', 'region'); currentScroll.setAttribute('aria-label', '数据表格，可左右滑动查看完整数据');
+    }
+    if (instance.hint) instance.hint.hidden = !isVisible(instance) || !currentScroll || currentScroll.scrollWidth <= currentScroll.clientWidth + 1;
     if (!instance.sticky || !isVisible(instance)) {
       if (instance.headHost) instance.headHost.hidden = true;
       if (instance.scrollHost) instance.scrollHost.hidden = true;
@@ -164,8 +203,7 @@
     instance.table = table;
     instance.scroll = scroll;
     syncFloatingWidths(instance, table, head, scroll);
-    var topEl = resolve(instance.top || (instance.root.closest && instance.root.closest('.admin-main') ? '.admin-topbar' : null));
-    var top = topEl ? topEl.getBoundingClientRect().bottom : 0;
+    var top = stickyTop(instance);
     var sourceRect = table.getBoundingClientRect();
     var headRect = head.getBoundingClientRect();
     var headRow = head.querySelector('tr');
@@ -182,6 +220,9 @@
       syncFloatingWidths(instance, table, head, scroll);
       floating.style.height = height + 'px';
       floating.style.transform = 'translateX(-' + scroll.scrollLeft + 'px)';
+      floating.querySelectorAll('.biz-identity').forEach(function (cell) {
+        cell.style.transform = window.innerWidth <= 760 ? 'translateX(' + scroll.scrollLeft + 'px)' : '';
+      });
     } else {
       instance.headHost.hidden = true;
     }
@@ -203,6 +244,13 @@
     framePending = true;
     window.requestAnimationFrame(function () {
       framePending = false;
+      instances = instances.filter(function (instance) {
+        if (instance.root.isConnected) return true;
+        if (instance.headHost) instance.headHost.remove();
+        if (instance.scrollHost) instance.scrollHost.remove();
+        if (instance.hint) instance.hint.remove();
+        return false;
+      });
       instances.forEach(sync);
     });
   }
@@ -211,6 +259,11 @@
     root = resolve(root);
     if (!root) return null;
     options = options || {};
+    if (!options.auto) instances = instances.filter(function (item) {
+      if (!item.auto || item.root === root || !root.contains(item.root)) return true;
+      if (item.hint) item.hint.remove();
+      delete item.root.__bizTableInstance; return false;
+    });
     normalizeHeaders(root);
     var instance = root.__bizTableInstance;
     if (!instance) {
@@ -219,6 +272,7 @@
         page: options.page,
         top: options.top,
         sticky: options.sticky !== false,
+        auto: Boolean(options.auto),
         tableSelector: options.tableSelector,
         scrollSelector: options.scrollSelector
       };
@@ -242,6 +296,16 @@
   }
 
   normalizeHeaders(document);
+  function discover(container) {
+    var roots = [];
+    if (container.matches && container.matches('.biz-table-scroll')) roots.push(container);
+    if (container.querySelectorAll) roots = roots.concat(Array.from(container.querySelectorAll('.biz-table-scroll')));
+    roots.forEach(function (node) {
+      // 业务入口已挂到父容器时，不重复创建浮动表头与提示。
+      if (!node.__bizTableInstance && !instances.some(function (item) { return item.root.contains(node); })) attach(node, { sticky: false, auto: true });
+    });
+  }
+  discover(document);
   window.BusinessTable = { attach: attach, attachAll: attachAll, sync: scheduleSync };
   window.addEventListener('scroll', scheduleSync, { passive: true });
   window.addEventListener('resize', scheduleSync);
@@ -252,7 +316,7 @@
         record.addedNodes.forEach(function (node) {
           if (node.nodeType === 1) {
             normalizeHeaders(node);
-            if (node.closest && node.closest('.admin-main')) attachAll(node);
+            discover(node);
           }
         });
       });

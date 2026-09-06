@@ -2,12 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>投资笔记 · 存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="shared/style.css?v=20">
+<link rel="stylesheet" href="shared/style.css?v=0.8.0.6">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css?v=20260904">
-<link rel="stylesheet" href="css/knowledge.css?v=6">
+<link rel="stylesheet" href="css/knowledge.css?v=0.8.0.6">
 <script src="shared/autofill-guard.js?v=5"></script>
 <style>
   body { margin: 0; background: #f0f2f5; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #333; }
@@ -17,7 +17,10 @@
   .share-top h2 { margin: 8px 0 0; color: #1a1a2e; font-weight: 700; }
   .ks-meta { justify-content: center; }
   .ks-comment-form textarea { background: #fff; }
+
+@media (max-width:760px) { .share-wrap { padding:16px 12px 40px; } .share-top a { display:inline-flex; align-items:center; min-height:44px; } }
 </style>
+<script src="shared/mobile-ui.js?v=1" defer></script>
 </head>
 <body>
 <div class="share-wrap">
@@ -44,7 +47,7 @@
 <script src="vendor/marked.min.js?v=20260904"></script>
 <script src="vendor/dompurify.min.js?v=20260904"></script>
 <script src="shared/md-safe.js?v=2"></script>
-<script src="shared/dialog.js?v=1"></script>
+<script src="shared/dialog.js?v=0.8.0.6"></script>
 <script>
 function api(path) { return path; }
 function escapeHtml(str) {

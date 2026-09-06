@@ -1604,3 +1604,166 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .pc-page-empty { text-align: center; color: #98a2b3; font-size: 13px; padding: 60px 0; }
 .pc-page-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
 @media (max-width: 720px) { .pc-page { padding: 14px 12px; } }
+
+/* ===== 全站移动端标准：正文 760px，导航 900px ===== */
+:root { --site-nav-height: 52px; }
+.mobile-nav-toggle, .mobile-current-page, .mobile-disclosure, .mobile-account-tools { display: none; }
+.mobile-nav-panel[hidden], .mobile-nav-backdrop[hidden] { display: none; }
+.mobile-nav-backdrop { position: fixed; inset: 0; z-index: 1090; background: rgba(0,0,0,.4); }
+.mobile-nav-panel { position: fixed; z-index: 1100; top: calc(8px + env(safe-area-inset-top,0px)); left: 12px; right: 12px; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)); overflow-y: auto; padding: 12px; border-radius: 10px; background: #fff; color: #273142; }
+.mobile-menu-close { display: block; margin-left: auto; padding: 10px 16px; min-height: 44px; border: 1px solid #d8dee8; border-radius: 7px; background: #fff; color: #1a237e; }
+.mobile-overlay-open { overflow: hidden; }
+.mobile-dialog-header, .mobile-dialog-content { display: contents; }
+.mobile-filter-details { display: contents; }
+.biz-table-scroll-hint { display: none; }
+.biz-identity-code { display: none; }
+.nav-left { min-width: 0; flex-shrink: 1; }
+.main-nav { min-width: 0; }
+.nav-inner > .nav-left { flex: 1; }
+@media (min-width: 901px) {
+  .main-nav { overflow-x: auto; }
+  .main-tab { flex-shrink: 0; }
+}
+@media (max-width: 900px) {
+  .nav { height: auto; padding: env(safe-area-inset-top,0px) 0 0; }
+  .nav-inner { height: 52px; padding: 0 12px; gap: 8px; }
+  .nav-left { flex: 0 1 auto !important; }
+  .mobile-current-page { display: block; flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-nav-toggle { display: block; margin-left: auto; min-width: 60px; min-height: 44px; border: 1px solid currentColor; border-radius: 7px; background: transparent; color: inherit; padding: 6px 12px; font: inherit; flex-shrink: 0; }
+  .mobile-nav-panel .main-nav { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 12px 0; gap: 6px; }
+  .mobile-nav-panel .main-tab { height: auto; min-height: 48px; padding: 10px 12px; color: #273142; background: #f5f6fa; border-radius: 7px; font-size: 15px; text-decoration: none; }
+  .mobile-nav-panel .main-tab.active { color: #1a237e; background: #e8eaf6; font-weight: 600; }
+  .mobile-nav-panel .main-tab::after { display: none; }
+  .mobile-nav-panel .nav-right { display: block; width: 100%; margin: 0; overflow: visible; }
+  .mobile-nav-panel #top-user, .mobile-nav-panel .nav-user { width: 100%; }
+  .mobile-nav-panel .nav-user > .nav-avatar { display: none; }
+  .mobile-nav-panel .nav-user-menu { display: flex; position: static; flex-wrap: wrap; width: 100%; min-width: 0; padding: 0; box-shadow: none; border: 0; background: transparent; }
+  .mobile-nav-panel .nav-user-item, .mobile-nav-panel .top-login-link { min-height: 44px; padding: 12px; color: #1a237e; font-size: 14px; }
+  .mobile-nav-panel .guest-avatar { width: auto; height: auto; min-height: 44px; color: #1a237e; background: #eef1fb; }
+  .mobile-nav-panel .guest-avatar::after { content: '登录 / 注册'; margin-left: 8px; font-size: 14px; }
+  .holdings-header, #main-market-volatility .mv-header, .bond-header { top: var(--site-nav-height); }
+  .sub-nav { max-width: 100%; padding: 0 12px; }
+  .sub-nav-tabs, .bond-sub-nav { min-width: 0; overflow-x: auto; }
+  .sub-nav-tabs > button, .bond-sub-tab { flex-shrink: 0; }
+  .admin-main { margin-left: 0; min-width: 0; }
+  .admin-topbar { position: sticky; top: 0; z-index: 100; height: auto; min-height: 56px; padding: calc(6px + env(safe-area-inset-top,0px)) 12px 6px; gap: 12px; }
+  .admin-topbar h1 { flex: 1; min-width: 0; font-size: 16px; }
+  .admin-content { padding: 14px 12px; }
+  .mobile-nav-panel .admin-sidebar { display: flex; position: static; width: 100%; box-shadow: none; background: #fff; color: #273142; }
+  .mobile-nav-panel .admin-brand { font-size: 16px; padding: 12px; text-align: left; }
+  .mobile-nav-panel .admin-menu-item { min-height: 44px; font-size: 15px; padding: 12px; text-align: left; color: #273142; }
+  .mobile-nav-panel .admin-menu-item.active { background: #e8eaf6; color: #1a237e; }
+  .mobile-nav-panel .admin-sidebar-foot #admin-user, .mobile-nav-panel .admin-link { font-size: 14px; color: #1a237e; }
+  .mobile-nav-panel .admin-link { display: inline-flex; align-items: center; min-height: 44px; }
+}
+@media (max-width: 760px) {
+  body { font-size: 15px; }
+  .main-page, .page, .feature-page-shell, .home-dashboard-shell, .table-wrap,
+  .stock-analysis-section, .stock-analysis-chart, .admin-view, .ks-shell, .ks-read-layout { min-width: 0; max-width: 100%; }
+  .feature-page-shell, .page, #main-home, #main-profile, #main-changelog, .pc-page { padding: 14px 12px; }
+  .page > *, .feature-page-shell > *, .home-section > *, .chart-grid > *, .stats > * { min-width: 0; }
+  #page-positions, #page-earnings, #main-ipo > .feature-page-shell, #main-arbitrage > .feature-page-shell { padding-left: 12px; padding-right: 12px; }
+  #page-earnings #earnings-table { margin-left: 0; margin-right: 0; }
+  .stats { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+  #page-dashboard .stats > :first-child { grid-column: 1 / -1; }
+  .stat-card { padding: 14px; }
+  .stat-card .value { font-size: 20px; overflow-wrap: anywhere; }
+  .stat-card .stat-top { flex-wrap: wrap; gap: 4px; }
+  .chart-grid, .home-hero-article-grid, .home-market-cycle-grid, .home-capability-grid,
+  .home-content-grid-secondary .home-side-stack { grid-template-columns: minmax(0,1fr); }
+  .home-module-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+  .home-module-card { padding: 14px; min-width: 0; }
+  .home-module-card > strong { font-size: 18px; overflow-wrap: anywhere; }
+  .home-module-meta { flex-wrap: wrap; }
+  .home-latest-feature, .home-detail-card, .home-cycle-card, .chart-box { padding: 16px; }
+  .home-latest-feature-head, .home-detail-title { flex-wrap: wrap; gap: 10px; }
+  .home-latest-feature-head h2 { font-size: 22px; }
+  .home-cycle-chart { min-height: 260px; }
+  .home-cycle-chart svg { width: 100%; height: auto; }
+  .home-event-tag { display: inline-block; }
+  .home-overview-row { grid-template-columns: 70px minmax(0,1fr); }
+  .home-overview-row .home-event-tag { grid-column: 2; justify-self: start; }
+  .holdings-header .sub-nav { height: 46px; }
+  .mobile-account-tools { display: block; padding: 8px 12px; background: #fff; }
+  .mobile-account-tools .sub-nav-right { display: block; margin: 0; }
+  .mobile-account-tools .nav-account { gap: 8px; }
+  .mobile-account-tools select { flex: 1; width: auto; max-width: none; background: #fff; color: #273142; border: 1px solid #d8dee8; }
+  .mobile-account-tools .btn-refresh, .mobile-account-tools .btn-account-add { color: #1a237e; border: 1px solid #d8dee8; background: #fff; }
+  .sub-nav .nav-tab { padding: 0 12px; }
+  .sub-nav-tabs { width: 100%; }
+  .bond-feature-hero, .stock-analysis-hero { padding: 16px; display: block; }
+  .bond-feature-hero h2, .stock-analysis-hero h2 { font-size: 22px; }
+  .bond-feature-stats, .bond-val-cards, .bond-cycle-cards, .bond-cycle-metrics,
+  .stock-analysis-grid, .stock-analysis-period-summary, .motive-summary-grid, .motive-kv { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+  .bond-feature-stat, .bond-val-card, .stock-analysis-metric { min-width: 0; padding: 12px; overflow-wrap: anywhere; }
+  .bond-feature-toolbar, .stock-analysis-toolbar, .bond-val-toolbar, .table-header { padding: 12px; gap: 8px; align-items: stretch; }
+  .bond-feature-toolbar input:not([type=checkbox]), .bond-feature-toolbar select,
+  .stock-analysis-toolbar input, .stock-analysis-toolbar select, .stock-analysis-toolbar textarea,
+  .bond-val-toolbar input, .bond-val-toolbar select { font-size: 16px; min-height: 44px; min-width: 0; max-width: 100%; }
+  .bond-feature-toolbar input[type=search], .bond-val-toolbar input[type=search], .security-analysis-search { flex: 1 1 100%; width: 100%; }
+  .security-analysis-suggestions { width: 100%; max-width: 100%; }
+  .bond-feature-toolbar label { min-height: 44px; white-space: normal; }
+  .bond-feature-toolbar input[type=checkbox] { width: 14px; height: 14px; min-height: 0; }
+  #stock-analysis-updated { white-space: normal; margin-top: 8px; }
+  .stock-analysis-section { padding: 14px; }
+  .stock-analysis-view-tabs { width: 100%; }
+  .stock-analysis-view-tabs button { flex-shrink: 0; }
+  .biz-table { font-size: 13px; }
+  .biz-table td { padding: 10px 9px; }
+  .biz-table td a, .biz-table th.sortable, .biz-table th[onclick], .biz-table th[data-key] { min-height: 44px; }
+  .biz-table td a { display: inline-flex; align-items: center; }
+  .biz-table-scroll { min-width: 0; overscroll-behavior-x: contain; }
+  .biz-table-scroll-hint:not([hidden]) { display: block; padding: 8px 12px; font-size: 12px; color: #667085; background: #fafbfc; }
+  .biz-table .biz-identity { position: sticky; left: 0; z-index: 2; min-width: 96px; width: 112px; max-width: 112px; white-space: normal; overflow-wrap: anywhere; background: #fff; box-shadow: 2px 0 3px rgba(0,0,0,.06); }
+  .biz-table th.biz-identity { background: #fafbfc; z-index: 3; }
+  .biz-identity-code { display: block; font-size: 12px; color: #7a8495; font-weight: normal; white-space: nowrap; }
+  .biz-table-floating-scroll { display: none; }
+  .bond-val-table-scroll { max-height: none; min-height: 0; overflow-y: visible; }
+  .mv-chart-wrap svg { touch-action: pan-y pinch-zoom; }
+  .mv-boundary-hit { pointer-events: none; }
+  .mv-hero, .mv-controls, .stock-analysis-valuation-head { flex-wrap: wrap; }
+  .mv-controls input { max-width: 100%; }
+  .app-tooltip, .home-cycle-tooltip, .mv-tooltip, .stock-analysis-chart-tooltip { min-width: 0; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; z-index: 10001; }
+  button, .btn, .modal-close, .nav-avatar, .top-login-link { min-height: 44px; min-width: 44px; }
+  input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=file]), select, textarea { font-size: 16px !important; min-height: 44px; max-width: 100%; }
+  .form-row, .form-row-2col { grid-template-columns: minmax(0,1fr); }
+  .form-group, .form-group input, .form-group select { min-width: 0; }
+  .date-range-control { width: 100%; flex-wrap: wrap; }
+  .date-range-control label { width: 100%; justify-content: space-between; }
+  .vision-row { flex-direction: column; }
+  .vision-qr { width: 100%; }
+  .modal-overlay { padding: calc(8px + env(safe-area-inset-top,0px)) 8px calc(8px + env(safe-area-inset-bottom,0px)); }
+  .modal-overlay .modal { display: flex; flex-direction: column; width: 100%; min-width: 0; max-width: 100%; padding: 16px; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)); overflow: hidden; }
+  .mobile-dialog-header { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding-bottom: 10px; }
+  .mobile-dialog-header h2 { flex: 1; margin: 0; padding: 0; }
+  .mobile-dialog-header .modal-close { position: static; flex-shrink: 0; }
+  .mobile-dialog-content { display: block; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+  .modal-actions { flex: 0 0 auto; flex-wrap: wrap; padding-top: 12px; margin-top: 0; }
+  .modal-actions .btn { flex: 1; }
+  .project-dialog-overlay .modal { width: 400px; }
+  .modal [style*="grid-template-columns"], .admin-view [style*="grid-template-columns"] { grid-template-columns: minmax(0,1fr) !important; }
+  .modal table:not(.biz-table) { display: block; max-width: 100%; overflow-x: auto; }
+  .toast { width: max-content; max-width: calc(100vw - 24px); bottom: calc(16px + env(safe-area-inset-bottom,0px)); white-space: normal; overflow-wrap: anywhere; }
+  .profile-card { padding: 16px; }
+  .profile-head, .profile-card-head, .info-row, .acct-add { flex-wrap: wrap; gap: 8px; }
+  .info-row > * { min-width: 0; overflow-wrap: anywhere; }
+  .ops-grid { grid-template-columns: minmax(0,1fr); }
+  .admin-view input, .admin-view select { min-width: 0 !important; }
+  .admin-table-wrap, .admin-view .biz-table-scroll { max-width: 100%; }
+  .pc-page-actions { flex-wrap: wrap; }
+  .mobile-disclosure { display: inline-flex; align-items: center; justify-content: space-between; min-height: 44px; width: 100%; padding: 10px 12px; border: 1px solid #d8dee8; border-radius: 7px; background: #fff; color: #1a237e; font: inherit; }
+  .mobile-disclosure::after { content: '＋'; margin-left: 8px; }
+  .mobile-disclosure[aria-expanded=true]::after { content: '−'; }
+  #main-ipo .ipo-content { padding:12px !important; }
+  #main-ipo .ipo-calendar-group { padding-left:8px !important; }
+  #main-ipo .ipo-calendar-security { padding:8px 0 8px 4px !important; line-height:1.8; }
+  .ipo-calendar-security a { display:inline-flex; align-items:center; min-height:44px; }
+  .arb-table-scroll { max-height:none; overflow-y:visible; }
+  .pc-select { max-width:100%; }
+  .mobile-filter-details { display:none; }
+  .mobile-filter-details.mobile-expanded { display:flex; flex:1 1 100%; flex-wrap:wrap; gap:8px; }
+  .mobile-filter-details select { flex:1 1 100%; }
+  .bond-list-toolbar input[type=search] { flex:1 1 100%; width:100%; }
+  .mobile-overlay-open .modal-overlay { top:var(--mobile-viewport-top,0px); bottom:auto; height:var(--mobile-viewport-height,100vh); height:var(--mobile-viewport-height,100dvh); }
+  .modal-overlay .modal { max-height:calc(var(--mobile-viewport-height,100vh) - 32px); max-height:calc(var(--mobile-viewport-height,100dvh) - 32px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)); }
+}

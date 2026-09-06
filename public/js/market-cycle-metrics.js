@@ -152,7 +152,8 @@ function mvcRenderChart(lower,upper){
   var step=Math.max(1,Math.ceil(source.length/1000)),data=source.filter(function(_,index){return index%step===0||index===source.length-1;});
   var values=data.map(function(row){return Number(row.value);}).filter(Number.isFinite);if(Number.isFinite(lower))values.push(lower);if(Number.isFinite(upper))values.push(upper);
   var min=Math.min.apply(null,values),max=Math.max.apply(null,values),pad=Math.max((max-min)*.1,.01);min-=pad;max+=pad;
-  var W=1000,H=320,L=58,R=20,T=18,B=36,ph=H-T-B;function x(i){return L+i*(W-L-R)/Math.max(data.length-1,1)}function y(v){return T+(max-v)*ph/Math.max(max-min,.000001)}
+  if(window.ChartInteraction)ChartInteraction.watch(root,function(){mvcRenderChart(lower,upper);});
+  var W=window.ChartInteraction?ChartInteraction.width(root,1000):1000,H=320,L=58,R=20,T=18,B=36,ph=H-T-B;function x(i){return L+i*(W-L-R)/Math.max(data.length-1,1)}function y(v){return T+(max-v)*ph/Math.max(max-min,.000001)}
   var path=data.map(function(row,index){return (index?'L':'M')+x(index).toFixed(1)+' '+y(Number(row.value)).toFixed(1);}).join(' '),svg=[];
   for(var grid=0;grid<5;grid++){var gy=T+grid*ph/4;svg.push('<line class="mv-grid" x1="'+L+'" y1="'+gy+'" x2="'+(W-R)+'" y2="'+gy+'"/><text x="4" y="'+(gy+4)+'" class="mv-axis">'+mvcNum(max-grid*(max-min)/4,2)+'</text>');}
   svg.push('<path class="mv-line" d="'+path+'"/>');
@@ -161,8 +162,7 @@ function mvcRenderChart(lower,upper){
   root.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="'+mvcEsc(mvcMeta[mvcState.metric].label)+'历史图">'+svg.join('')+'</svg><div class="mv-tooltip" hidden></div>';
   var chart=root.querySelector('svg');
   root.querySelectorAll('[data-mvc-boundary]').forEach(function(line){line.addEventListener('pointerdown',function(event){mvcBeginDrag(event,line.dataset.mvcBoundary,min,max);});});
-  chart.addEventListener('pointermove',function(event){mvcShowTooltip(event,chart,data,L,R,W);});
-  chart.addEventListener('pointerleave',function(){var tooltip=root.querySelector('.mv-tooltip');if(tooltip)tooltip.hidden=true;});
+  ChartInteraction.bind(chart,root.querySelector('.mv-tooltip'),function(event){mvcShowTooltip(event,chart,data,L,R,W);},function(){root.querySelector('.mv-tooltip').hidden=true;});
 }
 function mvcShowTooltip(event,chart,data,left,right,width){
   if(!data.length||chart.classList.contains('mv-dragging'))return;
@@ -178,6 +178,7 @@ function mvcShowTooltip(event,chart,data,left,right,width){
   tooltip.innerHTML=lines.join('<br>');tooltip.style.left=Math.min(Math.max(event.clientX-box.left+12,8),box.width-220)+'px';tooltip.style.top=Math.max(event.clientY-box.top+12,8)+'px';tooltip.hidden=false;
 }
 function mvcBeginDrag(event,boundary,min,max){
+  if(event.pointerType === 'touch' || window.innerWidth <= 760)return;
   var chart=document.querySelector('#mvc-chart svg'),lowerInput=document.getElementById('mvc-lower'),upperInput=document.getElementById('mvc-upper');
   if(!chart)return;event.preventDefault();event.stopPropagation();chart.classList.add('mv-dragging');chart.setPointerCapture(event.pointerId);var tooltip=document.querySelector('#mvc-chart .mv-tooltip');if(tooltip)tooltip.hidden=true;
   var lower=Number(lowerInput.value),upper=Number(upperInput.value);

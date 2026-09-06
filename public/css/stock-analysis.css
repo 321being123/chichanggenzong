@@ -60,3 +60,13 @@
 #bond-analysis-price-history .bond-analysis-table th:nth-child(7){width:36%}
 #bond-analysis-price-history .bond-analysis-table th:nth-child(8){width:8%}
 @media(max-width:720px){.bond-analysis-table{min-width:680px}.bond-analysis-section{padding-left:10px;padding-right:10px}.bond-analysis-section h3{margin-left:-10px;margin-right:-10px}}
+
+@media (max-width:760px) {
+  .stock-analysis-grid, .stock-analysis-period-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .stock-analysis-toolbar select, .stock-analysis-toolbar input, .security-analysis-search { min-width:0; max-width:100%; }
+  .stock-analysis-toolbar .security-analysis-search { width:100%; }
+  .stock-analysis-section { padding:14px; }
+  .stock-analysis-chart-tooltip { min-width:0; max-width:calc(100vw - 24px); }
+  .stock-analysis-chart-legend { position:sticky; left:0; justify-content:flex-start; gap:10px; }
+  .stock-analysis-valuation-head, .stock-analysis-period-head { flex-wrap:wrap; gap:10px; }
+}

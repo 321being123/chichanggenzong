@@ -103,7 +103,7 @@
       '</tr>';
     }).join('');
     var html =
-      '<h2>选择对比标杆</h2><span class="modal-close" onclick="PositionComparison.closeSelf()">&times;</span>' +
+      '<h2>选择对比标杆</h2><button type="button" class="modal-close" aria-label="关闭" onclick="PositionComparison.closeSelf()">&times;</button>' +
       '<p style="font-size:12px;color:#888;margin:-6px 0 12px;">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
       '<div class="table-wrap" style="margin-bottom:0;"><div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-bench-table">' +
         '<thead><tr><th>账户</th><th>公开类型</th><th>持仓更新时间</th><th>证券只数</th><th>操作</th></tr></thead>' +

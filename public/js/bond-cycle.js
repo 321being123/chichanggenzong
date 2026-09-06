@@ -317,6 +317,7 @@ function renderHistoryChart(history) {
       tip.style.top = topPx + 'px';
     };
     hit.onmouseleave = function () { if (tip) tip.style.display = 'none'; };
+    if (window.ChartInteraction) ChartInteraction.adapt(hit, tip);
   }
 }
 

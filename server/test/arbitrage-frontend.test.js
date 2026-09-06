@@ -7,6 +7,8 @@ const frontend = fs.readFileSync(path.join(root, 'public', 'js', 'arbitrage.js')
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'arbitrageService.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const style = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
+const { JSDOM } = require('jsdom');
+const document = new JSDOM(html).window.document;
 
 assert.ok(frontend.includes('num(r.refPrice)'), '换股参考价必须显示参考证券现价');
 assert.ok(!frontend.includes("'<td>' + num(r.theoreticalPrice)"), '换股参考价不得误用理论换股价');
@@ -30,9 +32,11 @@ assert.ok(!frontend.includes('onclick="openArbDetail(' + "' + r.case_id"), '套�
 assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("params.delete('case')"), '套利详情必须具有独立URL页面状态');
 assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
-assert.ok(html.includes('shared/style.css?v=31'), '全局样式缓存版本未更新');
-assert.ok(html.includes('js/arbitrage.js?v=11'), '套利前端缓存版本未更新');
-assert.ok(html.includes('js/navigation.js?v=6'), '导航缓存版本未更新');
+const styleLink = document.querySelector('link[href^="shared/style.css?v="]');
+assert.ok(styleLink && new URL(styleLink.href, 'http://localhost').searchParams.get('v') && styleLink.getAttribute('href') !== 'shared/style.css?v=31', '全局样式必须使用更新后的缓存版本');
+assert.ok(document.querySelector('script[src="js/arbitrage.js?v=11"]'), '套利前端缓存版本未更新');
+const navigationScript = document.querySelector('script[src^="js/navigation.js?v="]');
+assert.ok(navigationScript && new URL(navigationScript.src, 'http://localhost').searchParams.get('v') && navigationScript.getAttribute('src') !== 'js/navigation.js?v=6', '导航必须使用更新后的缓存版本');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');
 assert.ok(frontend.includes('d.cashChoicePremium') && frontend.includes('d.cashExpectedReturn'), '详情必须显示现金选择权两种收益口径');
 assert.ok(frontend.includes('d.fixedSwapPremium') && frontend.includes('d.liveSwapReturn'), '详情必须显示固定换股和实时换股指标');

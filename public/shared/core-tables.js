@@ -148,6 +148,11 @@ function bindChangeTip(el, changeAmt, changePct) {
     tip.style.top = (r.bottom + 8) + 'px';
   };
   el.onmouseleave = function () { tip.style.display = 'none'; };
+  el.tabIndex = 0;
+  el.onclick = function (event) { el.onmouseenter(); if (window.ChartInteraction) ChartInteraction.place(tip, event); };
+  el.onfocus = el.onmouseenter;
+  el.onblur = el.onmouseleave;
+
 }
 
 function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete, missingCodes, incompleteReason) {

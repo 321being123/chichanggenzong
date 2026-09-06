@@ -552,7 +552,7 @@ function bindBondValChartTips(box) {
   }
   var svgs = box.querySelectorAll('.bond-val-svg[data-tip-id]');
   for (var i = 0; i < svgs.length; i++) {
-    svgs[i].addEventListener('mousemove', function (e) {
+    ChartInteraction.bind(svgs[i], tip, function (e) {
       var entry = bondValChartTipStore[this.getAttribute('data-tip-id')];
       if (!entry || !entry.data.length) return;
       var rect = this.getBoundingClientRect();
@@ -576,7 +576,6 @@ function bindBondValChartTips(box) {
       if (top < 8) top = Math.min(e.clientY + 18, window.innerHeight - tip.offsetHeight - 8);
       tip.style.left = Math.max(8, left) + 'px';
       tip.style.top = Math.max(8, top) + 'px';
-    });
-    svgs[i].addEventListener('mouseleave', function () { tip.style.display = 'none'; });
+    }, function () { tip.style.display = 'none'; });
   }
 }

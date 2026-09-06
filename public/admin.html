@@ -2,12 +2,13 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="base-url" content="">
 <title>管理后台 - 存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="shared/style.css?v=22">
+<link rel="stylesheet" href="shared/style.css?v=0.8.0.6">
 <script src="shared/autofill-guard.js?v=5"></script>
+<script src="shared/mobile-ui.js?v=1" defer></script>
 </head>
 <body>
 
@@ -58,7 +59,7 @@
 <div class="modal-overlay" id="admin-modal">
   <div class="modal" id="admin-modal-box">
     <h2 id="admin-modal-title">提示</h2>
-    <span class="modal-close" onclick="closeAdminModal()">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeAdminModal()">&times;</button>
     <div id="admin-modal-body"></div>
     <div class="modal-actions" id="admin-modal-actions"></div>
   </div>
@@ -67,8 +68,8 @@
 <div class="toast" id="toast"></div>
 
 <script src="js/utils.js"></script>
-<script src="shared/dialog.js?v=1"></script>
-<script src="shared/business-table.js?v=1"></script>
+<script src="shared/dialog.js?v=0.8.0.6"></script>
+<script src="shared/business-table.js?v=0.8.0.6"></script>
 <script src="js/admin.js?v=7"></script>
 </body>
 </html>

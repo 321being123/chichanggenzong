@@ -2,22 +2,23 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="base-url" content="">
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js?v=20260904" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous" defer></script>
-<link rel="stylesheet" href="shared/style.css?v=42">
+<link rel="stylesheet" href="shared/style.css?v=0.8.0.6">
 <link rel="stylesheet" href="css/bond-safety.css?v=24">
-<link rel="stylesheet" href="css/bond-cycle.css?v=5">
-<link rel="stylesheet" href="css/bond-valuation.css?v=7">
+<link rel="stylesheet" href="css/bond-cycle.css?v=0.8.0.6">
+<link rel="stylesheet" href="css/bond-valuation.css?v=0.8.0.6">
 <link rel="stylesheet" href="css/bond-redemption.css?v=5">
 <link rel="stylesheet" href="css/bond-revision.css?v=3">
-<link rel="stylesheet" href="css/stock-analysis.css?v=13">
+<link rel="stylesheet" href="css/stock-analysis.css?v=0.8.0.6">
 <link rel="stylesheet" href="css/market-volatility.css?v=5">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css?v=20260904">
-<link rel="stylesheet" href="css/knowledge.css?v=17">
+<link rel="stylesheet" href="css/knowledge.css?v=0.8.0.6">
 <script src="shared/autofill-guard.js?v=5"></script>
+<script src="shared/mobile-ui.js?v=1" defer></script>
 </head>
 <body>
 
@@ -270,15 +271,15 @@
         <div class="form-group"><label>方向</label><select id="trade-dir" onchange="autoCalcTrade()"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="autoCalcTrade()"></div>
-        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="autoCalcTrade()" placeholder="股/张/份"><span id="trade-qty-hint" style="display:none;font-size:11px;color:#e65100;margin-left:4px;">⚠ 华泰/招商证券上交所债券：1手=10张，自动转换</span></div>
-        <div class="form-group"><label>成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;"></div>
+        <div class="form-group"><label>价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="autoCalcTrade()" inputmode="decimal"></div>
+        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="autoCalcTrade()" placeholder="股/张/份" inputmode="decimal"><span id="trade-qty-hint" style="display:none;font-size:11px;color:#e65100;margin-left:4px;">⚠ 华泰/招商证券上交所债券：1手=10张，自动转换</span></div>
+        <div class="form-group"><label>成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;" inputmode="decimal"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>手续费 (¥) <span class="auto-hint">自动</span></label><input id="trade-commission" type="number" step="any" placeholder="自动算"></div>
-        <div class="form-group"><label>印花税 (¥)</label><input id="trade-stamp" type="number" step="any" placeholder="自动算"></div>
-        <div class="form-group"><label>过户费 (¥)</label><input id="trade-transfer" type="number" step="any" placeholder="自动算"></div>
-        <div class="form-group"><label>其他费 (¥)</label><input id="trade-other" type="number" step="any" placeholder="自动算"></div>
+        <div class="form-group"><label>手续费 (¥) <span class="auto-hint">自动</span></label><input id="trade-commission" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label>印花税 (¥)</label><input id="trade-stamp" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label>过户费 (¥)</label><input id="trade-transfer" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label>其他费 (¥)</label><input id="trade-other" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option><option value="现金">现金</option></select></div>
@@ -368,6 +369,8 @@
 
     <div class="ks-shell">
       <aside class="ks-sidebar">
+        <button type="button" class="mobile-disclosure" id="mobile-knowledge-categories">文章分类</button>
+        <div id="ks-sidebar-content">
         <div class="ks-sidebar-head">
           <div>
             <strong>内容导航</strong>
@@ -396,6 +399,7 @@
           </div>
         </div>
         <div id="ks-actions" class="ks-actions"></div>
+      </div>
       </aside>
 
       <main class="ks-main">
@@ -451,6 +455,7 @@
             </div>
             <aside id="ks-read-outline-wrap" class="ks-read-outline-wrap hidden">
               <div class="ks-read-outline-title">文章目录</div>
+              <button type="button" class="mobile-disclosure" id="mobile-knowledge-outline">文章目录</button>
               <div id="ks-read-outline"></div>
             </aside>
           </div>
@@ -604,8 +609,8 @@
         </div>
         <div id="mvc-detail" class="mv-setting-note"></div>
         <div class="mvc-boundary-controls" id="mvc-boundary-controls" hidden>
-          <label>最低边界 <input id="mvc-lower" type="number" min="0.000001" step="0.01"></label>
-          <label>最高边界 <input id="mvc-upper" type="number" min="0.000001" step="0.01"></label>
+          <label>最低边界 <input id="mvc-lower" type="number" min="0.000001" step="0.01" inputmode="decimal"></label>
+          <label>最高边界 <input id="mvc-upper" type="number" min="0.000001" step="0.01" inputmode="decimal"></label>
         </div>
         <div class="mv-chart-wrap"><div id="mvc-chart"></div><div class="mv-actions"><button class="btn btn-outline btn-sm" id="mvc-home" hidden>设为首页</button><button class="btn btn-primary btn-sm" id="mvc-save" disabled>保存边界</button><button class="btn btn-outline btn-sm" id="mvc-reset">取消</button></div></div>
         <div class="table-wrap"><div class="table-header"><h3>仓位阶梯</h3></div><div id="mvc-ladder"></div></div>
@@ -930,7 +935,7 @@
         </div>
       </div>
       <div class="form-group"><label>简介</label><textarea id="profile-bio" maxlength="200" placeholder="介绍一下自己..."></textarea></div>
-      <div class="form-group"><label>邮箱</label><input id="profile-email" type="email" placeholder="用于接收通知"></div>
+      <div class="form-group"><label>邮箱</label><input id="profile-email" type="email" placeholder="用于接收通知" inputmode="email"></div>
       <button class="btn btn-primary" onclick="saveProfile()">保存资料</button>
     </div>
 
@@ -967,7 +972,7 @@
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal">
     <h2 id="modal-title">编辑持仓</h2>
-    <span class="modal-close" onclick="closeModal('modal-overlay')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-overlay')">&times;</button>
     <div id="modal-body"></div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-overlay')">取消</button>
@@ -980,7 +985,7 @@
 <div class="modal-overlay" id="modal-delete">
   <div class="modal" style="width:380px;">
     <h2>确认删除</h2>
-    <span class="modal-close" onclick="closeModal('modal-delete')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-delete')">&times;</button>
     <p style="font-size:14px;color:#666;margin-bottom:18px;" id="delete-msg">确定要删除该持仓吗？</p>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-delete')">取消</button>
@@ -993,7 +998,7 @@
 <div class="modal-overlay" id="modal-conflict" style="z-index:2000;">
   <div class="modal" style="width:420px;">
     <h2>导入数据冲突</h2>
-    <span class="modal-close" onclick="closeModal('modal-conflict')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-conflict')">&times;</button>
     <p style="font-size:14px;color:#666;margin-bottom:18px;line-height:1.6;">导入的 Excel 中有日期与线上净值记录重叠。请选择处理方式：</p>
     <div class="modal-actions" style="flex-direction:column;gap:10px;">
       <button class="btn btn-primary" id="conflict-import-btn">导入数据覆盖线上（用 Excel 净值替换冲突日）</button>
@@ -1006,7 +1011,7 @@
 <div class="modal-overlay" id="modal-nav-mgmt" style="z-index:2100;">
   <div class="modal" style="width:520px;">
     <h2>管理历史数据</h2>
-    <span class="modal-close" onclick="closeModal('modal-nav-mgmt')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-mgmt')">&times;</button>
     <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">
       误导入到错误账户时用这里还原。每次导入历史数据前会自动拍一份快照。
     </p>
@@ -1026,7 +1031,7 @@
 <div class="modal-overlay" id="modal-nav-clear-confirm" style="z-index:2200;">
   <div class="modal" style="width:420px;">
     <h2>清空历史数据</h2>
-    <span class="modal-close" onclick="closeModal('modal-nav-clear-confirm')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-clear-confirm')">&times;</button>
     <p id="nav-clear-confirm-text" style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px;">将删除除最近一天外的全部历史净值记录，此操作不可撤销（除非有备份可还原）。确定继续？</p>
     <div class="modal-actions">
       <button class="btn btn-danger" onclick="doClearNavHistory()">确认清空</button>
@@ -1039,7 +1044,7 @@
 <div class="modal-overlay" id="modal-nav-restore-confirm" style="z-index:2200;">
   <div class="modal" style="width:420px;">
     <h2>还原历史数据</h2>
-    <span class="modal-close" onclick="closeModal('modal-nav-restore-confirm')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-restore-confirm')">&times;</button>
     <p style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px;">确认把当前账户的历史净值恢复到上次导入前的快照？当前数据会被覆盖。</p>
     <div class="modal-actions">
       <button class="btn btn-primary" onclick="doRestoreNavHistory()">确认还原</button>
@@ -1052,7 +1057,7 @@
 <div class="modal-overlay" id="modal-import-progress" style="z-index:2000;">
   <div class="modal" style="width:440px;">
     <h2 id="import-progress-title">正在导入历史净值</h2>
-    <span class="modal-close" onclick="closeModal('modal-import-progress')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-import-progress')">&times;</button>
     <div id="import-progress-body">
       <div style="display:flex;align-items:center;margin-bottom:14px;">
         <div class="spinner" id="import-spinner"></div>
@@ -1075,7 +1080,7 @@
 <div class="modal-overlay" id="modal-mapping" style="z-index:2100;">
   <div class="modal" style="width:520px;">
     <h2>请匹配 Excel 列</h2>
-    <span class="modal-close" onclick="closeMappingModal()">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeMappingModal()">&times;</button>
     <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">未能自动识别「日期」或「净值」列，请手动选择每一列对应的字段（带 * 为必填）。</p>
     <div id="mapping-fields"></div>
     <div style="margin:14px 0 6px;font-size:13px;color:#333;">预览（前 5 行）：</div>
@@ -1091,11 +1096,11 @@
 <div class="modal-overlay" id="modal-nav-edit" style="z-index:2200;">
   <div class="modal" style="width:420px;">
     <h2 id="nav-edit-title">新增净值记录</h2>
-    <span class="modal-close" onclick="closeModal('modal-nav-edit')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-edit')">&times;</button>
     <div class="form-group"><label>日期 *（YYYY-MM-DD）</label><input id="nav-edit-date" placeholder="如 2024-01-01"></div>
-    <div class="form-group"><label>净值 *（以 1.0000 为基准）</label><input id="nav-edit-nav" type="number" step="0.0001" placeholder="1.0000"></div>
-    <div class="form-group"><label>总市值（可选）</label><input id="nav-edit-total" type="number" step="0.01" placeholder="留空则不计"></div>
-    <div class="form-group"><label>本金/投入（可选）</label><input id="nav-edit-invested" type="number" step="0.01" placeholder="留空则用现金流累加"></div>
+    <div class="form-group"><label>净值 *（以 1.0000 为基准）</label><input id="nav-edit-nav" type="number" step="0.0001" placeholder="1.0000" inputmode="decimal"></div>
+    <div class="form-group"><label>总市值（可选）</label><input id="nav-edit-total" type="number" step="0.01" placeholder="留空则不计" inputmode="decimal"></div>
+    <div class="form-group"><label>本金/投入（可选）</label><input id="nav-edit-invested" type="number" step="0.01" placeholder="留空则用现金流累加" inputmode="decimal"></div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('modal-nav-edit')">取消</button>
       <button class="btn btn-primary" onclick="saveNavEdit()">保存</button>
@@ -1107,13 +1112,13 @@
 <div class="modal-overlay" id="modal-add">
   <div class="modal">
     <h2 id="modal-title">新增持仓</h2>
-    <span class="modal-close" onclick="closeModal('modal-add')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-add')">&times;</button>
     <div class="form-row-2col">
       <div class="form-group"><label>证券代码</label><input id="modal-code" placeholder="如 601919"></div>
       <div class="form-group"><label>证券名称</label><input id="modal-name" placeholder="自动获取"></div>
-      <div class="form-group"><label>现价</label><input id="modal-price" type="number" step="0.001" placeholder="0.000"></div>
-      <div class="form-group"><label>数量</label><input id="modal-qty" type="number" step="1" placeholder="0"></div>
-      <div class="form-group"><label>成本价</label><input id="modal-cost" type="number" step="0.001" placeholder="同现价"></div>
+      <div class="form-group"><label>现价</label><input id="modal-price" type="number" step="0.001" placeholder="0.000" inputmode="decimal"></div>
+      <div class="form-group"><label>数量</label><input id="modal-qty" type="number" step="1" placeholder="0" inputmode="decimal"></div>
+      <div class="form-group"><label>成本价</label><input id="modal-cost" type="number" step="0.001" placeholder="同现价" inputmode="decimal"></div>
       <div class="form-group"><label>类型</label>
         <select id="modal-type">
           <option value="股权">股权</option>
@@ -1148,7 +1153,7 @@
 <div class="modal-overlay" id="modal-feesettings">
   <div class="modal" style="width:640px;max-width:94vw;">
     <h2>⚙ 税费设置</h2>
-    <span class="modal-close" onclick="closeModal('modal-feesettings')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-feesettings')">&times;</button>
     <p style="font-size:12px;color:#888;margin:-6px 0 12px;">佣金费率、最低佣金可自行设定；印花税、过户费等为交易所默认规则（一般无需改动，交易所调整时可自动更新）。</p>
     <div id="fee-settings-body"></div>
     <div class="modal-actions">
@@ -1162,7 +1167,7 @@
 <div class="modal-overlay" id="modal-account">
   <div class="modal">
     <h2>账户管理</h2>
-    <span class="modal-close" onclick="closeModal('modal-account')">&times;</span>
+    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-account')">&times;</button>
 
     <div class="acct-section">
       <div class="acct-section-title">我的账户</div>
@@ -1181,45 +1186,45 @@
   <a href="https://beian.mps.gov.cn/#/query/webSearch?code=11011402056694" target="_blank" rel="noreferrer">京公网安备11011402056694号</a>
 </footer>
 
+<script src="shared/chart-interaction.js?v=1" defer></script>
 <script src="js/code-classify.js?v=5" defer></script>
 <script src="js/utils.js?v=6" defer></script>
-<script src="shared/dialog.js?v=1" defer></script>
-<!-- 旧版静态检查兼容标记：shared/style.css?v=31；实际样式版本为 v42。 -->
-<script src="shared/business-table.js?v=1" defer></script>
+<script src="shared/dialog.js?v=0.8.0.6" defer></script>
+<script src="shared/business-table.js?v=0.8.0.6" defer></script>
 <script src="shared/core-quote.js?v=20260818a" defer></script>
-<script src="shared/core-tables.js?v=20260818e" defer></script>
+<script src="shared/core-tables.js?v=0.8.0.6" defer></script>
 <script src="shared/core-fees.js?v=1" defer></script>
 <script src="shared/core-trade.js?v=20260815a" defer></script>
 <script src="shared/nav-math.js?v=1" defer></script>
 <script src="shared/core-returns.js?v=20260818a" defer></script>
 <script src="shared/core-earnings.js?v=20260817a" defer></script>
 <script src="shared/core-account.js?v=20260815b" defer></script>
-<script src="shared/date-range-control.js?v=1" defer></script>
+<script src="shared/date-range-control.js?v=0.8.0.6" defer></script>
 <script src="vendor/marked.min.js?v=20260904" defer></script>
 <script src="vendor/dompurify.min.js?v=20260904" defer></script>
-<script src="js/ipo.js?v=14" defer></script>
+<script src="js/ipo.js?v=0.8.0.6" defer></script>
 <script src="js/bond-safety.js?v=12" defer></script>
-<script src="js/bond-cycle.js?v=6" defer></script>
-<script src="js/bond-valuation.js?v=9" defer></script>
+<script src="js/bond-cycle.js?v=0.8.0.6" defer></script>
+<script src="js/bond-valuation.js?v=0.8.0.6" defer></script>
 <script src="js/bond-list.js?v=17" defer></script>
 <script src="js/bond-redemption.js?v=4" defer></script>
 <script src="js/bond-revision.js?v=46" defer></script>
-<script src="js/stock-analysis.js?v=13" defer></script>
+<script src="js/stock-analysis.js?v=0.8.0.6" defer></script>
 <script src="js/bond-analysis.js?v=7" defer></script>
 <script src="js/stock-analysis-statements.js?v=3" defer></script>
-<script src="js/stock-analysis-chart.js?v=12" defer></script>
-<script src="js/stock-analysis-valuation-chart.js?v=5" defer></script>
-<script src="js/market-volatility.js?v=12" defer></script>
-<script src="js/market-cycle-metrics.js?v=9" defer></script>
-<script src="js/home-dashboard.js?v=16" defer></script>
-<script src="js/position-comparison.js?v=3" defer></script>
+<script src="js/stock-analysis-chart.js?v=0.8.0.6" defer></script>
+<script src="js/stock-analysis-valuation-chart.js?v=0.8.0.6" defer></script>
+<script src="js/market-volatility.js?v=0.8.0.6" defer></script>
+<script src="js/market-cycle-metrics.js?v=0.8.0.6" defer></script>
+<script src="js/home-dashboard.js?v=0.8.0.6" defer></script>
+<script src="js/position-comparison.js?v=0.8.0.6" defer></script>
 <script src="vendor/vditor/dist/index.min.js?v=20260904" defer></script>
 <script src="shared/md-safe.js?v=2" defer></script>
 <script src="js/knowledge.js?v=23" defer></script>
 <script src="js/access-policy.js?v=1" defer></script>
 <script src="js/session.js?v=1" defer></script>
 <script src="js/arbitrage.js?v=11" defer></script>
-<script src="js/navigation.js?v=6" defer></script>
+<script src="js/navigation.js?v=0.8.0.6" defer></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;

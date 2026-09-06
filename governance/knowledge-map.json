@@ -63,11 +63,11 @@
       "id": "frontend",
       "risk": "medium",
       "paths": ["public/**"],
-      "keywords": ["页面", "前端", "交互", "样式"],
+      "keywords": ["页面", "前端", "交互", "样式", "移动端", "手机", "响应式"],
       "read": ["docs/技术架构.md"],
       "update": ["docs/技术架构.md"],
       "checks": ["npm.cmd run test:all"],
-      "expandOn": ["权限", "共享组件", "用户流程"]
+      "expandOn": ["权限", "共享组件", "用户流程", "移动端兼容", "触屏交互"]
     },
     {
       "id": "deployment",

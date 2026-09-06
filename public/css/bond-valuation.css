@@ -88,3 +88,10 @@
   .bond-val-toolbar input[type=search], .bond-val-toolbar select { min-width: 0; flex: 1 1 170px; }
   .bond-val-spacer { display: none; }
 }
+
+@media (max-width:760px) {
+  .bond-val-table-scroll { max-height:none; min-height:0; }
+  .bond-val-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .bond-val-card { min-width:0; }
+  .bond-val-chart-tooltip { min-width:0; max-width:calc(100vw - 24px); }
+}

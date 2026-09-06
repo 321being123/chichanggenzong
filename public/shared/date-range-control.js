@@ -3,7 +3,7 @@
   function render(options) {
     var id=options.id,start=validDate(options.start),end=validDate(options.end),active=Number(options.activeYears)||0,presets=options.presets||[50,30,20,10,5,3];
     return '<div class="date-range-control" data-date-range="'+id+'"><strong>'+String(options.label||'选择时间')+'</strong>'+
-      '<label>开始日期<input type="date" data-role="start" value="'+start+'"></label><label>结束日期<input type="date" data-role="end" value="'+end+'"></label>'+
+      '<label>开始日期<input type="date" id="'+id+'-start" data-role="start" value="'+start+'"></label><label>结束日期<input type="date" id="'+id+'-end" data-role="end" value="'+end+'"></label>'+
       '<div class="date-range-presets">'+presets.map(function(n){return '<button type="button" data-years="'+n+'" class="'+(active===n?'is-active':'')+'">'+n+'年</button>';}).join('')+'</div></div>';
   }
   function bind(container, options) {

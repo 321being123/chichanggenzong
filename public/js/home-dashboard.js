@@ -96,7 +96,7 @@ function homeCyclePath(rows, field, xAt, yAt) {
 
 function homeCycleAxisLabels(rows, xAt, height) {
   var out = [], last = Math.max(rows.length - 1, 0);
-  [0, .25, .5, .75, 1].forEach(function(ratio) {
+  (window.innerWidth <= 760 ? [0, .5, 1] : [0, .25, .5, .75, 1]).forEach(function(ratio) {
     var index = Math.round(last * ratio);
     if (!rows[index]) return;
     out.push('<text class="home-cycle-axis" x="' + xAt(index) + '" y="' + (height - 9) + '" text-anchor="middle">' +
@@ -122,6 +122,7 @@ function homeBindCycleTooltip(root, rows, left, right, width, formatter) {
     tip.style.top = Math.max(event.clientY - box.top + 12, 8) + 'px';
   };
   hit.onmouseleave = function() { tip.hidden = true; };
+  if (window.ChartInteraction) ChartInteraction.adapt(hit, tip);
 }
 
 function renderHomeBondCycle(payload) {
@@ -132,11 +133,12 @@ function renderHomeBondCycle(payload) {
     homeSetText('home-bond-cycle-summary', '暂无可用数据');
     return;
   }
+  if (window.ChartInteraction) ChartInteraction.watch(root, function () { renderHomeBondCycle(payload); });
   var latest = payload.latest || rows[rows.length - 1];
   homeSetText('home-bond-cycle-summary', String(payload.source_trade_date || rows[rows.length - 1].date).slice(0, 10) +
     ' · 周期分位 ' + homeCycleNumber(latest.rolling_percentile, 1) + '% · 综合估值 ' + homeCycleNumber(latest.composite_value, 2));
 
-  var W=1100,H=300,L=58,R=58,T=18,B=36,plotH=H-T-B;
+  var W=window.ChartInteraction ? ChartInteraction.width(root,1100) : 1100,H=window.innerWidth<=760?260:300,L=58,R=58,T=18,B=36,plotH=H-T-B;
   var compositeRange = homeCycleRange(rows.map(function(row) { return row.composite_value; }));
   var percentileRange = { min:0, max:100 };
   if (!compositeRange) { root.innerHTML = '<div class="home-overview-empty">暂无可用数据</div>'; return; }
@@ -189,6 +191,7 @@ function renderHomeMarketCycle(payload) {
     homeSetText('home-market-summary', '暂无可用数据');
     return;
   }
+  if (window.ChartInteraction) ChartInteraction.watch(root, function () { renderHomeMarketCycle(payload); });
   var currentDate = metric === 'graham' ? current.trade_date : current.date;
   var currentValue = Number(current[meta.currentField]);
   var recommended = overview.recommendedPosition;
@@ -201,7 +204,7 @@ function renderHomeMarketCycle(payload) {
   var values = rows.map(function(row) { return row.value; }).concat(ladder.map(function(row) { return row.value; }));
   var range = homeCycleRange(values);
   if (!range) { root.innerHTML = '<div class="home-overview-empty">暂无可用数据</div>'; return; }
-  var W=1100,H=300,L=58,R=58,T=18,B=36,plotH=H-T-B;
+  var W=window.ChartInteraction ? ChartInteraction.width(root,1100) : 1100,H=window.innerWidth<=760?260:300,L=58,R=58,T=18,B=36,plotH=H-T-B;
   function xAt(index) { return L + index * (W-L-R) / Math.max(rows.length-1, 1); }
   function yAt(value) { return T + (range.max-value) * plotH / (range.max-range.min); }
   var svg = [];

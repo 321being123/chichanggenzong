@@ -343,12 +343,12 @@ function _ipoTodayStr() {
 
 function ipoCalendarRow(label, items, color) {
   // 每只股票或转债单独一行，避免同一天多只横向挤在一起
-  var html = '<div style="padding:5px 0 5px 18px;border-left:3px solid #eef1f6;margin-left:4px;font-size:13px;">';
+  var html = '<div class="ipo-calendar-group" style="padding:5px 0 5px 18px;border-left:3px solid #eef1f6;margin-left:4px;font-size:13px;">';
   html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
   html += '<span style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:' + color + ';border-radius:4px;padding:1px 4px;">' + escapeHtml(label) + '</span>';
   html += '<span style="color:#666;font-size:12px;">' + items.length + ' 只</span></div>';
   items.forEach(function (it) {
-    html += '<div style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(it.name || '-') + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
+    html += '<div class="ipo-calendar-security" style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(it.name || '-') + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
     html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
     html += ipoBoardBadge(it.code, it.type);
     html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';

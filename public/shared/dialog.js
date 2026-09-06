@@ -32,7 +32,8 @@
     document.addEventListener('keydown', function (event) {
       if (!overlay.classList.contains('show')) return;
       if (event.key === 'Escape') settle(null);
-      if (event.key === 'Enter' && dialogMode !== 'prompt') settle(true);
+      // 按钮由浏览器处理 Enter，不能把取消/关闭按钮的 Enter 转成确认。
+      if (event.key === 'Enter' && dialogMode !== 'prompt' && event.target === overlay) settle(true);
     });
     return overlay;
   }

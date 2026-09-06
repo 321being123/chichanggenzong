@@ -25,6 +25,7 @@ function switchMain(main, noPushState) {
   document.querySelectorAll('.main-page').forEach(function (p) { p.classList.remove('active'); });
   const mp = document.getElementById('main-' + main);
   if (mp) mp.classList.add('active');
+  if (window.MobileUI) { window.MobileUI.closeMenus(); window.MobileUI.syncNavigation(); }
   if (main === 'profile') loadProfile();
   if (main === 'changelog') loadChangelogPage();
   if (main === 'ipo') loadIpo();

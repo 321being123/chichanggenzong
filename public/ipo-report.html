@@ -2,9 +2,10 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>打新日报 · 报告详情</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="shared/style.css?v=0.8.0.6">
 <link rel="preload" href="/vendor/marked.min.js?v=20260904" as="script">
 <link rel="preload" href="/vendor/dompurify.min.js?v=20260904" as="script">
 <script src="shared/autofill-guard.js?v=5"></script>
@@ -44,11 +45,14 @@
   .md strong { color:#111; }
   .state { text-align:center; color:var(--muted); padding:60px 0; font-size:14px; }
   .state.err { color:var(--red); }
+
+@media (max-width:760px) { .topbar { flex-wrap:wrap; gap:8px; padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px; } .wrap { padding:16px 12px 40px; } .md { padding:20px 16px; font-size:16px; } .md h1 { font-size:22px; } .md img { max-width:100%; height:auto; } .md table, .md pre { display:block; max-width:100%; overflow-x:auto; } .md table th, .md table td { min-width:80px; } .btn-back { min-height:44px; } }
 </style>
+<script src="shared/mobile-ui.js?v=1" defer></script>
 </head>
 <body>
   <div class="topbar">
-    <button class="btn-back" onclick="history.length>1?history.back():window.close()">← 返回</button>
+    <button class="btn-back" onclick="document.referrer && new URL(document.referrer).origin === location.origin ? history.back() : location.assign('/?main=ipo')">← 返回</button>
     <img class="topbar-logo" src="/favicon.svg" alt="">
     <span class="title">打新日报</span>
     <span class="date" id="rpt-date"></span>

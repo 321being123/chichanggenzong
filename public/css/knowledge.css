@@ -1645,3 +1645,35 @@
     flex-direction: column;
   }
 }
+
+/* 手机阅读与分类复用原内容、原目录。 */
+@media (max-width:760px) {
+  .ks-page { padding:14px 12px; }
+  .ks-sidebar-head { display:none; }
+  #ks-sidebar-content { display:none; }
+  #ks-sidebar-content.mobile-expanded { display:block; }
+  .ks-tree { display:block; overflow-x:visible; }
+  .ks-tree-item { min-height:44px; padding:10px !important; white-space:normal; }
+  .ks-article-list { grid-template-columns:minmax(0,1fr); }
+  .ks-read-layout { display:flex; flex-direction:column; }
+  .ks-read-outline-wrap:not(.hidden) { display:block !important; order:-1; position:static; width:100%; max-height:none; margin-bottom:12px; }
+  .ks-read-outline-title { display:none; }
+  #ks-read-outline { display:none; max-height:40vh; overflow:auto; }
+  #ks-read-outline.mobile-expanded { display:block; }
+  #ks-read-outline li > span { display:block; min-height:44px; padding:10px 0; }
+  .ks-article, .ks-comments { padding:20px 16px; }
+  .ks-content { font-size:16px; line-height:1.75; overflow-wrap:anywhere; }
+  .ks-content img, .ks-content video, .ks-content iframe { max-width:100%; height:auto; }
+  .ks-content table, .ks-content pre { display:block; max-width:100%; overflow-x:auto; }
+  .ks-content h1, .ks-content h2, .ks-content h3, .ks-content h4 { scroll-margin-top:calc(var(--site-nav-height) + 12px); }
+  .ks-edit-actions, .ks-edit-topbar, .ks-reader-actions, .ks-card-meta { flex-wrap:wrap; }
+  .ks-editor-card { min-width:0; padding:8px; }
+  .ks-editor-card .vditor-toolbar { max-width:100%; overflow-x:auto; }
+  .ks-editor-card .vditor-toolbar button { min-width:44px; min-height:44px; }
+  .ks-hero { padding:20px 16px; }
+  .ks-tree-item .ks-tree-name { white-space:normal; }
+  .ks-table-picker { position:fixed; top:calc(var(--site-nav-height) + 12px); left:12px; right:12px; width:auto; max-height:60vh; overflow:auto; }
+  .ks-table-picker-grid { grid-template-columns:repeat(10,44px); }
+  .ks-table-picker-grid button { width:44px; height:44px; }
+  .ks-table-picker-grid button::before { content:attr(data-row) '×' attr(data-column); font-size:11px; }
+}

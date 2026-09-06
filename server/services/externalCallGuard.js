@@ -31,6 +31,9 @@ const DEFAULT_EXTERNAL_BUDGETS = Object.freeze({
   cninfo: { minute: 20, day: 500 },
   // 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
   tencent: { minute: null, day: null },
+  // 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。
+  sse: { minute: null, day: null },
+  szse: { minute: null, day: null },
   default: { minute: 60, day: 2000 },
 });
 

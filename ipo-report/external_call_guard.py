@@ -32,6 +32,9 @@ _DEFAULT_EXTERNAL_BUDGETS = {
     "cninfo": {"minute": 20, "day": 500},
     # 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
     "tencent": {"minute": None, "day": None},
+    # 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。
+    "sse": {"minute": None, "day": None},
+    "szse": {"minute": None, "day": None},
     "default": {"minute": 60, "day": 2000},
 }
 

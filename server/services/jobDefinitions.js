@@ -75,7 +75,8 @@ const JOB_CONTRACTS = {
   'convertible_bond_redemption_announcement_sync': { externalApis: ['cninfo'], producesDatasets: ['bond_redemption_events'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 40, dailyBudget: 2 },
   'convertible_bond_revision_motive_inputs_sync': { externalApis: ['top10_cb_holders', 'pledge_stat'], producesDatasets: ['bond_motive_inputs'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 10 },
   'convertible_bond_revision_motive_calculate': { externalApis: [], producesDatasets: ['bond_motive_scores'], consumesDatasets: ['bond_motive_inputs', 'bond_daily'], maxExternalCallsPerRun: 0 },
-  'convertible_bond_announcement_history_sync': { externalApis: ['cninfo', 'sse', 'szse'], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 20, dailyBudget: 4 },
+  // 交易所批量公告及官方 PDF 解析会产生多次请求；600 覆盖适配器边界，交易所来源不再设置分钟/日内部预算。
+  'convertible_bond_announcement_history_sync': { externalApis: ['cninfo', 'sse', 'szse'], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 600, dailyBudget: 4 },
   'convertible_bond_announcement_reparse': { externalApis: [], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_announcement_documents'], maxExternalCallsPerRun: 0 },
   'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: 6 },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },

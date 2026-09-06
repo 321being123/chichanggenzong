@@ -31,7 +31,7 @@ const motiveService = read('server/services/convertibleBondRevisionMotiveService
 const alertMailer = read('server/services/jobAlertMailer.js');
 
 const budgetEnvBackup = {};
-for (const key of ['TUSHARE_PER_MINUTE_BUDGET', 'TUSHARE_DAILY_BUDGET', 'TUSHARE_BACKUP_PER_MINUTE_BUDGET', 'TUSHARE_BACKUP_DAILY_BUDGET', 'CNINFO_PER_MINUTE_BUDGET', 'CNINFO_DAILY_BUDGET', 'TENCENT_PER_MINUTE_BUDGET', 'TENCENT_DAILY_BUDGET']) {
+for (const key of ['TUSHARE_PER_MINUTE_BUDGET', 'TUSHARE_DAILY_BUDGET', 'TUSHARE_BACKUP_PER_MINUTE_BUDGET', 'TUSHARE_BACKUP_DAILY_BUDGET', 'CNINFO_PER_MINUTE_BUDGET', 'CNINFO_DAILY_BUDGET', 'TENCENT_PER_MINUTE_BUDGET', 'TENCENT_DAILY_BUDGET', 'SSE_PER_MINUTE_BUDGET', 'SSE_DAILY_BUDGET', 'SZSE_PER_MINUTE_BUDGET', 'SZSE_DAILY_BUDGET']) {
   budgetEnvBackup[key] = process.env[key];
   delete process.env[key];
 }
@@ -44,6 +44,10 @@ assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: 
   '巨潮默认日预算必须覆盖生产已观测峰值');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tencent'), { minute: null, day: null },
   '腾讯当前不设置本系统分钟/日预算');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('sse'), { minute: null, day: null },
+  '上交所公告不得设置本系统分钟/日预算');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('szse'), { minute: null, day: null },
+  '深交所公告不得设置本系统分钟/日预算');
 for (const [key, value] of Object.entries(budgetEnvBackup)) {
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
@@ -82,6 +86,7 @@ assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'),
 assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');
 assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, 10, '指数补齐上限必须覆盖双账户五指数完整一轮');
 assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refresh').maxExternalCallsPerRun, 600, '可转债主链上限必须覆盖主同步及历史补漏');
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_announcement_history_sync').maxExternalCallsPerRun, 600, '可转债公告同步上限必须覆盖交易所批量请求和官方 PDF 解析');
 assert.strictEqual(definitions.getJobDefinition('index_recent').dataDatePolicy, 'previous_trading_day', '指数补齐应按最近完整交易日验收');
 assert.strictEqual(definitions.getJobDefinition('arbitrage_sync').maxExternalCallsPerRun, 600, '套利公告单批上限必须覆盖两个适配器的分页边界');
 assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share')).length, 1,

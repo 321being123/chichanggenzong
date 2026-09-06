@@ -5494,6 +5494,33 @@ async function migration136ConvertibleBondRedemptionStatusParity() {
   `);
 }
 
+// ========== 137：交易所公告取消内部调用预算 =============
+// 上交所、深交所公告接口没有已知的官方分钟/日上限；此前的 60 次/分钟、2000 次/日
+// 是本系统自行设置的保护线，会截断公告事实同步并制造重复告警。保留并发槽位，
+// 仅取消内部分钟/日计数，真实 HTTP 异常仍由 Guard 处理。
+async function migration137ConvertibleBondExchangeAnnouncementUnlimited() {
+  await pool.query(`
+    UPDATE ops.source_endpoint_policies p
+       SET internal_per_minute_limit=NULL,
+           internal_daily_limit=NULL,
+           min_interval_ms=0,
+           notes='交易所公告不使用本系统分钟/日预算；保留并发去重和真实上游异常处理',
+           updated_at=now()
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id
+       AND ds.source_code IN ('sse','szse')
+       AND p.api_name='*'
+       AND p.credential_profile='anonymous';
+
+    UPDATE ops.source_endpoint_runtime r
+       SET next_allowed_at=NULL,
+           updated_at=now()
+      FROM ops.data_sources ds
+     WHERE r.source_id=ds.source_id
+       AND ds.source_code IN ('sse','szse');
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5631,6 +5658,7 @@ const MIGRATIONS = [
   { version: '134_company_financial_incremental_sync', up: migration134CompanyFinancialIncrementalSync },
   { version: '135_exchange_rate_budget_recovery', up: migration135ExchangeRateBudgetRecovery },
   { version: '136_convertible_bond_redemption_status_parity', up: migration136ConvertibleBondRedemptionStatusParity },
+  { version: '137_convertible_bond_exchange_announcement_unlimited', up: migration137ConvertibleBondExchangeAnnouncementUnlimited },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6233,6 +6261,7 @@ module.exports = {
   migration134CompanyFinancialIncrementalSync,
   migration135ExchangeRateBudgetRecovery,
   migration136ConvertibleBondRedemptionStatusParity,
+  migration137ConvertibleBondExchangeAnnouncementUnlimited,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

@@ -98,6 +98,7 @@ async function fetchUnifiedHKRate() {
 async function refreshAllPrices() {
   const codes = [...new Set(data.positions.map(p => p.code).filter(Boolean))];
   if (codes.length === 0) { showToast('没有持仓需要刷新'); return; }
+  var todayIsTradingDate = typeof isTradingDateCN === 'function' ? isTradingDateCN(todayCN()) : true;
   showToast('正在获取 ' + codes.length + ' 只行情...');
   let ok = 0, fail = 0;
   // 导入日按行情增量更新券商持仓总值；次日起直接切到系统绝对持仓市值。
@@ -138,13 +139,13 @@ async function refreshAllPrices() {
             position.price = price;
             if (result.name && !position.name) position.name = result.name;
           });
-          priceChangeMap[c] = result.change;
+          priceChangeMap[c] = todayIsTradingDate ? result.change : null;
           if (quoteDateCN(result.quote_time) === todayCN()) {
             validatedPriceQuotes.set(c, { price: price, name: result.name || pos.name || '', quote_time: result.quote_time });
           }
           ok++;
         } else {
-          if (c === '404002') priceChangeMap['404002'] = 0;
+          if (c === '404002') priceChangeMap['404002'] = todayIsTradingDate ? 0 : null;
           if (!pos.type) {
             const rec = recognizeCode(c);
             if (rec) { pos.type = rec.type; pos.subtype = rec.subtype; }

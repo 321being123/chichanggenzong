@@ -241,9 +241,13 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const historicalPrevious = navs[navs.length - 2];
   const storedLastDate = dateKey(last.date);
   const todayDate = dateKey(new Date());
+  // 延迟加载，避免 market → externalApiConfig → db → accounts → navAttribution 的循环依赖。
+  const { isCnTradingDate } = require('./market');
+  const isTradingToday = isCnTradingDate(todayDate);
   // 页面有当前系统总资产时，最后一条已保存快照就是当前计算的基准。
   // 这样周二会按“周一快照 → 周二当前行情”计算，不会重复把周日/更早区间算进来。
-  const liveEnd = currentTotal != null && storedLastDate <= todayDate;
+  const liveEnd = currentTotal != null && storedLastDate <= todayDate &&
+    (isTradingToday || storedLastDate === todayDate);
   const previous = liveEnd && storedLastDate < todayDate ? last : historicalPrevious;
   const prevDate = dateKey(previous.date);
   const currentDate = liveEnd ? todayDate : storedLastDate;

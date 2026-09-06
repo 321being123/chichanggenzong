@@ -7,6 +7,7 @@ const root = path.join(__dirname, '..', '..');
 const tables = fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.js'), 'utf8');
 const trade = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
 const ledger = fs.readFileSync(path.join(root, 'server', 'services', 'tradeLedger.js'), 'utf8');
+const accountsRoute = fs.readFileSync(path.join(root, 'server', 'routes', 'accounts.js'), 'utf8');
 
 // “今日盈亏”必须按行情涨跌计算，不能误用上一条净值快照价格。
 // 例如当前价 4.83、行情涨跌 0%、旧快照价 4.81、数量 3000 时，结果应为 0 而不是 +60。
@@ -25,6 +26,10 @@ assert.strictEqual(todayProfitSandbox.result, 0, '涨跌为0%时，今日盈亏�
 assert.ok(
   tables.includes("filter(function(p) { return Number(p.quantity) > 0; })"),
   '持仓列表未过滤数量为0的历史记录'
+);
+assert.ok(
+  accountsRoute.includes("filter((p) => Number(p.quantity) > 0)"),
+  '持仓导出未过滤数量为0的历史记录'
 );
 // 2026-08-03 账本整改：清仓由服务端统一交易事务处理（recomputeSecurity 重放后数量为 0 → 删除持仓行）。
 // 前端不再自行实现清仓逻辑（删除原前端断言的旧实现）。

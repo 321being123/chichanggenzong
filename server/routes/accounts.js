@@ -9,7 +9,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { validateAccountData, isValidAccountName } = require('../middleware/validate');
 const { loadUser, updateUserAccounts, loadAccountData, loadAccountSummary, saveAccountData, migrateToStructured, saveDailyPrices, syncUserAccounts, loadBrokers, isValidBroker, getAccountBrokers, updateAccountBroker, pool, backupNavHistory, restoreNavHistory, clearNavHistory, deleteAccountData, renameAccountData, upsertNav } = require('../db');
 const { round } = require('../db/util');
-const { fetchQuotesByCodes, todayCN, toTsCode, validateDailyPriceBatch } = require('../services/market');
+const { fetchQuotesByCodes, todayCN, isCnTradingDate, toTsCode, validateDailyPriceBatch } = require('../services/market');
 const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const { applyPrivateCache } = require('../middleware/publicCache');
@@ -313,14 +313,17 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
   if (result.positions && result.positions.length > 0) {
     result.changes = {};
     const codes = result.positions.map(p => p.code).filter(Boolean);
-    // 所有持仓一次批量取行情，避免按证券逐只访问上游。
-    try {
-      const quotes = await fetchQuotesByCodes(codes);
-      codes.forEach(code => {
-        const q = quotes[code];
-        if (q && q.change != null) result.changes[code] = q.change;
-      });
-    } catch (e) {}
+    // 休市日不读取并展示最近交易日涨跌，避免把旧行情误标成“今日涨跌”。
+    if (isCnTradingDate(todayCN())) {
+      // 所有持仓一次批量取行情，避免按证券逐只访问上游。
+      try {
+        const quotes = await fetchQuotesByCodes(codes);
+        codes.forEach(code => {
+          const q = quotes[code];
+          if (q && q.change != null) result.changes[code] = q.change;
+        });
+      } catch (e) {}
+    }
     // 附加可转债估值对照表（仅取可转债 6 位代码，一次批量查询；失败不影响持仓加载）
     try {
       const bondCodes = codes
@@ -464,7 +467,7 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
   try {
     const name = decodeURIComponent(req.params.name);
     const result = await loadAccountData(req.session.user, name);
-    const positions = result.positions || [];
+    const positions = (result.positions || []).filter((p) => Number(p.quantity) > 0);
     const hkRate = result.hkRate || 0.868;
 
     const rows = [['代码', '代码', '正股/转债名称', '现价', '持有数量', '人民币市值', '持仓比例', '类型', '细类']];

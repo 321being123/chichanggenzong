@@ -9,7 +9,8 @@ function renderStats() {
   // 计算今日涨跌：今日已有快照时对比前一条；今日尚未落快照时对比最近一条。
   // 导入日之后跨过一个完整交易日仍没有系统快照时，不把多日变化冒充成今日涨跌。
   var changeAmt = 0, changePct = 0, hasChange = false;
-  if (data.navHistory && data.navHistory.length >= 2) {
+  var todayIsTradingDate = typeof isTradingDateCN === 'function' ? isTradingDateCN(todayCN()) : true;
+  if (todayIsTradingDate && data.navHistory && data.navHistory.length >= 2) {
     var latest = data.navHistory[data.navHistory.length - 1];
     var base = latest;
     if (latest.date === todayCN()) base = data.navHistory[data.navHistory.length - 2];
@@ -85,6 +86,14 @@ function renderStats() {
       bindChangeTip(scEl, changeAmt, changePct);
     } else {
       scEl.textContent = '-';
+      scEl.style.color = '';
+      scEl.style.cursor = '';
+      scEl.removeAttribute('tabindex');
+      scEl.onmouseenter = null;
+      scEl.onmouseleave = null;
+      scEl.onclick = null;
+      scEl.onfocus = null;
+      scEl.onblur = null;
     }
   }
   if (el('stat-equity')) el('stat-equity').textContent = fmt(s.equityVal);

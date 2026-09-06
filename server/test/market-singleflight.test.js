@@ -77,6 +77,7 @@ async function main() {
     const accountsRoute = fs.readFileSync(path.join(routesDir, 'accounts.js'), 'utf8');
     assert.ok(marketService.includes("quote_time: quote ? quote.quote_time : (d && d.quote_time || null)"), '批量行情回退未透传 Tushare 日期');
     assert.ok(accountsRoute.includes('validateDailyPriceBatch(targetDate, prices)'), '收盘价写接口未执行服务端日期校验');
+    assert.ok(accountsRoute.includes('isCnTradingDate(todayCN())'), '休市日不应读取并展示最近交易日涨跌');
   });
 
   console.log('\n通过 ' + passed + ' 项');

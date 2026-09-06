@@ -114,6 +114,7 @@ async function loadKnowledge() {
     ksRenderTree();
     ksRenderList();
     ksShowView('list');
+    if (window.SiteTelemetry) window.SiteTelemetry.trackPage('knowledge.list', 'knowledge', 'nav');
   } catch (e) {
     showToast('投资笔记加载失败: ' + (e.message || e));
   }
@@ -357,6 +358,10 @@ async function ksOpenArticle(id) {
   if (!r.ok) { showToast('文章不存在或未发布'); return; }
   const a = await r.json();
   ksState.currentArticle = a;
+  if (window.SiteTelemetry) {
+    window.SiteTelemetry.trackPage('knowledge.detail', 'knowledge', 'article');
+    window.SiteTelemetry.trackEvent('detail_open', { page_key: 'knowledge.detail', module: 'knowledge', entry: 'list', properties: { detail_type: 'article' } });
+  }
   ksEl('ks-read-title').textContent = a.title || '无标题';
   const date = (a.published_at || a.updated_at || '').toString().slice(0, 19).replace('T', ' ');
   let meta = '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +

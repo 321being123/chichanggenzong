@@ -26,6 +26,17 @@ function switchMain(main, noPushState) {
   const mp = document.getElementById('main-' + main);
   if (mp) mp.classList.add('active');
   if (window.MobileUI) { window.MobileUI.closeMenus(); window.MobileUI.syncNavigation(); }
+  if (window.SiteTelemetry && main !== 'bond-safety') {
+    var telemetryPageMap = {
+      home: 'home', profile: 'profile', changelog: 'changelog', ipo: 'ipo.calendar',
+      'stock-analysis': 'stock.analysis', 'market-volatility': 'market.volatility',
+      arbitrage: new URLSearchParams(window.location.search).get('case') ? 'arbitrage.detail' : 'arbitrage.list', knowledge: 'knowledge.list'
+    };
+    var telemetryPage = main === 'holdings'
+      ? ({ positions: 'holdings.positions', earnings: 'holdings.nav', trades: 'holdings.trades' }[new URLSearchParams(window.location.search).get('sub')] || 'holdings.dashboard')
+      : telemetryPageMap[main];
+    if (telemetryPage) window.SiteTelemetry.trackPage(telemetryPage, main, 'nav');
+  }
   if (main === 'profile') loadProfile();
   if (main === 'changelog') loadChangelogPage();
   if (main === 'ipo') loadIpo();

@@ -30,6 +30,7 @@ const {
 const { upsertSourceEndpointPolicy } = require('../services/sourceEndpointPolicy');
 const { tokenFingerprint } = require('../services/externalCallGuard');
 const { assertSafeUrl, fetchSafeAi } = require('../services/ai');
+const siteAnalytics = require('../services/siteAnalytics');
 
 // PERM-02：后台入口仅要求员工身份（管理员或任一后台能力），具体接口按路径前缀再校验对应能力。
 // 后端独立校验——前端菜单可隐藏，但不能作为安全边界。
@@ -41,7 +42,8 @@ function adminCapabilityForPath(p) {
   if (normalized.indexOf('/users') === 0) return 'user_manage';
   if (normalized.indexOf('/knowledge') === 0) return 'content_manage';
   if (normalized.indexOf('/brokers') === 0 || normalized.indexOf('/jobs') === 0 || normalized.indexOf('/holidays') === 0 ||
-      normalized.indexOf('/models') === 0 || normalized.indexOf('/settings') === 0 || normalized.indexOf('/arbitrage') === 0) return 'ops_manage';
+      normalized.indexOf('/models') === 0 || normalized.indexOf('/settings') === 0 || normalized.indexOf('/arbitrage') === 0 ||
+      normalized.indexOf('/analytics') === 0) return 'ops_manage';
   return null; // /overview、/audit 等仅要求员工身份
 }
 router.use(function (req, res, next) {
@@ -64,6 +66,28 @@ function audit(req, action, target, opt) {
 router.get('/overview', asyncHandler(async (req, res) => {
   res.json(await adminOverview());
 }));
+
+// 网站数据看板：后端再次校验 ops_manage，不能仅依赖前端菜单隐藏。
+function analyticsQuery(req) {
+  return { range: req.query.range, include_internal: req.query.include_internal === '1' ? '1' : '0' };
+}
+function analyticsHandler(loader) {
+  return asyncHandler(async (req, res) => {
+    try {
+      const data = await loader(analyticsQuery(req));
+      res.setHeader('Cache-Control', 'private, max-age=30');
+      res.json(data);
+    } catch (error) {
+      console.warn('[site-analytics] 看板查询失败:', error.message);
+      res.status(503).json({ ok: false, error: '统计暂不可用，请稍后重试', coverage: { status: 'query_failed' }, rid: req.id || '-' });
+    }
+  });
+}
+router.get('/analytics/overview', requireCapability('ops_manage'), analyticsHandler(siteAnalytics.getOverview));
+router.get('/analytics/traffic', requireCapability('ops_manage'), analyticsHandler(siteAnalytics.getTraffic));
+router.get('/analytics/behavior', requireCapability('ops_manage'), analyticsHandler(siteAnalytics.getBehavior));
+router.get('/analytics/runtime', requireCapability('ops_manage'), analyticsHandler(siteAnalytics.getRuntime));
+router.get('/analytics/data-health', requireCapability('ops_manage'), analyticsHandler(siteAnalytics.getDataHealth));
 
 // ====== 用户管理 ======
 router.get('/users', asyncHandler(async (req, res) => {

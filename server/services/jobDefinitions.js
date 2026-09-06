@@ -53,6 +53,7 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'arbitrage_sync', label: '套利公告同步', hour: 21, minute: 30, weekdays: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, requiresDataWatermark: true, reconcileByWatermark: true, sourceDescription: '港交所与巨潮资讯公告接口', mayConsumeQuota: true, externalSources: ['港交所', '巨潮资讯'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'arbitrage_reparse', label: '套利公告重新解析', manualOnly: true, requiresDataWatermark: false, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: '已入库公告 PDF 与本地解析器' },
   { jobCode: 'holiday_sync', label: '休市日历月度同步', hour: 7, minute: 0, weekdays: false, monthly: true, deadlineMinutes: 1440, catchupWindowMinutes: 43200, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'high', sourceDescription: 'Tushare 交易日历接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'site_analytics_retention', label: '网站统计数据保留清理', hour: 2, minute: 0, weekdays: false, deadlineMinutes: 120, catchupWindowMinutes: 360, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'normal', sourceDescription: '本地网站统计事实表与运行采样表', mayConsumeQuota: false, externalSources: [], externalApis: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
 ];
 
 // 任务→接口→数据集契约是生成矩阵和预算门禁的唯一输入；没有外部接口的计算任务必须显式保持空数组。
@@ -90,6 +91,7 @@ const JOB_CONTRACTS = {
   'arbitrage_sync': { externalApis: ['hkex', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 4 },
   'arbitrage_reparse': { externalApis: [], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: 0 },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 1 },
+  'site_analytics_retention': { externalApis: [], producesDatasets: ['site_events', 'site_runtime_minute'], consumesDatasets: [], maxExternalCallsPerRun: 0 },
 };
 
 const JOB_DEFINITIONS = JOB_DEFINITION_SOURCE.map(item => ({

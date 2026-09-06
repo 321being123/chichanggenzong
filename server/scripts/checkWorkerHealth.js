@@ -2,6 +2,7 @@ require('dotenv').config();
 const { execFileSync } = require('child_process');
 const { pool } = require('../db');
 const { sendAlert, sendDueAlerts, sendRecoveryAlert } = require('../services/jobAlertMailer');
+const { collectNginxRuntime } = require('../services/nginxRuntimeCollector');
 
 function serviceIsActive() {
   if (process.platform === 'win32') return true;
@@ -12,6 +13,7 @@ function serviceIsActive() {
 }
 
 async function main() {
+  await collectNginxRuntime().catch(error => console.warn('[worker-health] Nginx 采样失败:', error.message));
   await sendDueAlerts(20).catch(error => console.warn('[worker-health] 邮件重试失败:', error.message));
   await pool.query(
     `DELETE FROM ops.worker_heartbeats

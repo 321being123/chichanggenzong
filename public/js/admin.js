@@ -11,6 +11,7 @@ const usersLimit = 20;
 
 const VIEW_TITLES = {
   overview: '概览仪表盘',
+  analytics: '网站数据看板',
   users: '用户管理',
   brokers: '券商管理',
   jobs: '定时任务',
@@ -24,6 +25,7 @@ const VIEW_TITLES = {
 
 // 后台视图所需能力（无映射者仅需任一后台能力即可访问，与后端 requireStaff 一致）
 const VIEW_CAPABILITY = {
+  analytics: 'ops_manage',
   users: 'user_manage',
   brokers: 'ops_manage',
   jobs: 'ops_manage',
@@ -116,6 +118,7 @@ function switchView(view) {
   const title = document.getElementById('admin-title');
   if (title) title.textContent = VIEW_TITLES[view] || '管理后台';
   if (view === 'overview') renderOverview();
+  else if (view === 'analytics') renderAnalytics();
   else if (view === 'users') renderUsers();
   else if (view === 'brokers') renderBrokers();
   else if (view === 'jobs') renderJobs();
@@ -484,6 +487,7 @@ const JOB_LABELS = {
   arbitrage_sync: '套利公告同步',
   arbitrage_reparse: '套利公告重新解析',
   holiday_sync: '休市日历同步',
+  site_analytics_retention: '网站统计数据保留清理',
   manual_backfill: '手动补漏收盘数据',
   manual_holiday_sync: '手动核对休市日历',
 };
@@ -608,6 +612,7 @@ function jobDescription(job) {
     arbitrage_sync: '每日同步港交所和巨潮资讯的套利公告，并更新事件状态。',
     arbitrage_reparse: '按指定事件重新解析已入库公告，补齐套利条款和风险字段。',
     holiday_sync: '每月自动核对交易所法定休市日，确保「是否交易日」判断准确。',
+    site_analytics_retention: '每天凌晨清理超过保留期限的网站匿名统计和运行采样。',
     manual_backfill: '手动触发：查询每个账户已落库日期范围内缺失的交易日，再重新抓取补齐。',
     manual_holiday_sync: '手动触发：立即从交易所日历重新拉取并校正当年休市日。'
   };

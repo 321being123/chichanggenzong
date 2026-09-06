@@ -54,7 +54,9 @@ function inlineHashes(tag) {
     const re = new RegExp(`<${tag}\\b(?![^>]*\\bsrc=)[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
     let match;
     while ((match = re.exec(html))) {
-      hashes.add(`'sha256-${crypto.createHash('sha256').update(match[1], 'utf8').digest('base64')}'`);
+      // 浏览器解析 HTML 时会把 CRLF/CR 统一为 LF；哈希也必须按同一口径计算。
+      const normalizedContent = match[1].replace(/\r\n?/g, '\n');
+      hashes.add(`'sha256-${crypto.createHash('sha256').update(normalizedContent, 'utf8').digest('base64')}'`);
     }
   }
   return [...hashes];

@@ -14,6 +14,23 @@ const { recomputeNav } = require('../jobs/replayNav');
 const { getValuationByCodes } = require('../services/convertibleBondValuationService');
 const { applyPrivateCache } = require('../middleware/publicCache');
 const tradeLedger = require('../services/tradeLedger');
+const { recordServerEvent } = require('../services/siteAnalytics');
+
+function navImportCountBucket(count) {
+  const n = Number(count) || 0;
+  if (n <= 0) return '0';
+  if (n <= 10) return '1_10';
+  if (n <= 50) return '11_50';
+  if (n <= 200) return '51_200';
+  return '200_plus';
+}
+
+function recordNavImportEvent(req, username, batchId, count) {
+  return recordServerEvent('import_result', {
+    pageKey: 'holdings.nav', module: 'holdings',
+    properties: { import_type: 'nav', result: 'success', count_bucket: navImportCountBucket(count) }
+  }, { req, username, dedupeKey: 'nav-import:' + batchId }).catch(() => {});
+}
 
 // 乐观锁版本必填中间件（2026-08-04 第二轮修复）：核心业务写接口必须携带 ?version=，
 // 缺失/非法 → 400，防止并发保护被"不带版本号"绕过。一致性校验在事务内 checkVersionInTxn 完成。
@@ -850,6 +867,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
       }
       await client.query('COMMIT');
       const result = await loadAccountData(username, accountName);
+      recordNavImportEvent(req, username, oldBatch[0].id, Number(oldBatch[0].rowCount || records.length));
       return res.json({ ok: true, idempotent: true, batchId: oldBatch[0].id, count: Number(oldBatch[0].rowCount || records.length), data: result });
     }
     // 乐观锁（2026-08-04）：版本不一致 → 409；幂等重试已在上面无写入返回，不受旧版本影响。
@@ -1028,6 +1046,7 @@ router.post('/nav/import', requireLogin, asyncHandler(assertOwnership), requireV
     );
     await client.query('COMMIT');
     const result = await loadAccountData(username, accountName);
+    recordNavImportEvent(req, username, importBatchId, normalizedRecords.length);
     res.json({ ok: true, batchId: importBatchId, count: normalizedRecords.length, duplicates: duplicateCount, deletedLegacyRows, data: result });
   } catch (e) {
     await client.query('ROLLBACK');

@@ -6,9 +6,10 @@
 <meta name="base-url" content="">
 <title>管理后台 - 存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="shared/style.css?v=0.8.0.6">
+<link rel="stylesheet" href="shared/style.css?v=0.8.0.8">
 <script src="shared/autofill-guard.js?v=5"></script>
 <script src="shared/mobile-ui.js?v=1" defer></script>
+<script src="shared/telemetry.js?v=0.8.0.8" defer></script>
 </head>
 <body>
 
@@ -18,6 +19,7 @@
     <div class="admin-brand">📊 管理后台</div>
     <nav class="admin-menu" id="admin-menu">
       <button class="admin-menu-item active" data-view="overview">概览仪表盘</button>
+      <button class="admin-menu-item" data-view="analytics">网站数据看板</button>
       <button class="admin-menu-item" data-view="users">用户管理</button>
       <button class="admin-menu-item" data-view="brokers">券商管理</button>
       <button class="admin-menu-item" data-view="jobs">定时任务</button>
@@ -42,6 +44,7 @@
     </header>
     <div class="admin-content">
       <section class="admin-view active" id="view-overview"></section>
+      <section class="admin-view" id="view-analytics"></section>
       <section class="admin-view" id="view-users"></section>
       <section class="admin-view" id="view-brokers"></section>
       <section class="admin-view" id="view-jobs"></section>
@@ -68,8 +71,9 @@
 <div class="toast" id="toast"></div>
 
 <script src="js/utils.js"></script>
-<script src="shared/dialog.js?v=0.8.0.6"></script>
-<script src="shared/business-table.js?v=0.8.0.6"></script>
-<script src="js/admin.js?v=7"></script>
+<script src="shared/dialog.js?v=0.8.0.8"></script>
+<script src="shared/business-table.js?v=0.8.0.8"></script>
+<script src="js/admin-analytics.js?v=0.8.0.8"></script>
+<script src="js/admin.js?v=0.8.0.8"></script>
 </body>
 </html>

@@ -163,6 +163,9 @@
   }
   fetch('/api/bond-revision/' + encodeURIComponent(code) + '/motive-detail', { cache: 'no-store' })
     .then(function (response) { if (!response.ok) throw new Error(response.status === 404 ? '尚无评分数据' : '读取失败'); return response.json(); })
-    .then(render)
+    .then(function (data) {
+      render(data);
+      if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.revision', module: 'bond', entry: 'motive-detail', detail_key: 'motive', properties: { detail_type: 'motive' } });
+    })
     .catch(function (error) { document.getElementById('motive-error').textContent = error.message || '读取失败'; });
 }());

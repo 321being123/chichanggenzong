@@ -89,6 +89,7 @@ function switchArbTab(type) {
   if (title) title.textContent = ARB_TITLES[type] || type;
   var detail = document.getElementById('arb-detail');
   if (detail) detail.hidden = true;
+  if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.list', 'arbitrage', 'tab');
   loadArbitrage();
 }
 
@@ -250,6 +251,7 @@ async function openArbDetail(caseId, skipPush) {
   var detail = document.getElementById('arb-detail');
   if (!detail) return;
   detail.hidden = false;
+  if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.detail', 'arbitrage', 'list');
   detail.innerHTML = '<div style="padding:20px;color:#999;">\u52a0\u8f7d\u4e2d...</div>';
 
   try {
@@ -257,6 +259,7 @@ async function openArbDetail(caseId, skipPush) {
     if (!r.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + r.status);
     var d = await r.json();
     renderArbDetail(d);
+    if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'arbitrage.detail', module: 'arbitrage', entry: 'list', detail_key: String(caseId), properties: { detail_type: 'arbitrage' } });
   } catch (e) {
     detail.innerHTML = '<div style="padding:20px;color:#d93025;">\u52a0\u8f7d\u5931\u8d25\uff1a' + esc(e.message) + '</div>' +
       '<button class="btn btn-outline btn-sm" onclick="closeArbDetail()">\u2190 \u8fd4\u56de\u5957\u5229\u5217\u8868</button>';
@@ -405,5 +408,6 @@ function closeArbDetail(skipPush) {
   if (detail) { detail.hidden = true; detail.innerHTML = ''; }
   var listView = document.getElementById('arb-list-view');
   if (listView) listView.hidden = false;
+  if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.list', 'arbitrage', 'back');
   arbState.detailCaseId = null;
 }

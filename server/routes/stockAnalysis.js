@@ -10,6 +10,7 @@ const {
 const { enqueueCompanyFinancialSyncByCode } = require('../services/companyFinancialIncrementalSync');
 const { getStockStatements } = require('../services/stockStatements');
 const { getDatasetMetadata } = require('../services/datasetPartitions');
+const { recordServerEvent } = require('../services/siteAnalytics');
 
 async function validStock(req, res, next) {
   const tsCode = normalizeStockCode(req.params.ts_code);
@@ -35,16 +36,21 @@ router.post('/watchlist', requireLogin, rateLimit({ prefix: 'stock-watchlist', w
   getKey: req => req.session.user, message: '自选股操作过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   const tsCode = normalizeStockCode(req.body && req.body.ts_code);
   if (!tsCode || !isOrdinaryAStock(tsCode)) return res.status(400).json({ error: '请输入有效的A股代码' });
-  await pool.query(
+  const watchlistInsert = await pool.query(
     `INSERT INTO stock_watchlist (username,ts_code,name) VALUES ($1,$2,'')
      ON CONFLICT (username,ts_code) DO NOTHING`, [req.session.user, tsCode]
   );
+  const recordWatchlistEvent = () => recordServerEvent('watchlist_add_success', {
+    pageKey: 'stock.analysis', module: 'stock'
+  }, { req, username: req.session.user, dedupeKey: `watchlist:${req.session.user}:${tsCode}:${Math.floor(Date.now() / 60000)}` }).catch(() => {});
   try {
     const analysis = await refreshStockAnalysis(tsCode, `watchlist:${req.session.user}`, { readOnly: true });
     await pool.query('UPDATE stock_watchlist SET name=$3 WHERE username=$1 AND ts_code=$2', [req.session.user, tsCode, analysis.name || '']);
+    if (watchlistInsert.rowCount > 0) recordWatchlistEvent();
     res.json({ ok: true, stock: { ts_code: tsCode, name: analysis.name }, analysis });
   } catch (error) {
     const queued = await enqueueCompanyFinancialSyncByCode(tsCode, `watchlist:${req.session.user}`);
+    if (watchlistInsert.rowCount > 0) recordWatchlistEvent();
     res.status(202).json({ ok: true, stock: { ts_code: tsCode, name: '' }, queued, warning: error.message });
   }
 }));

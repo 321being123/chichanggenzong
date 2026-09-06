@@ -5521,6 +5521,82 @@ async function migration137ConvertibleBondExchangeAnnouncementUnlimited() {
   `);
 }
 
+// ========== 138：网站数据看板事实与运行采样 =============
+// 只保存聚合后的匿名标识和白名单事件；不保存完整 URL、搜索词、持仓、金额、邮箱或令牌。
+async function migration138SiteAnalytics() {
+  await pool.query(`
+    ALTER TABLE ops.sync_cursors
+      ADD COLUMN IF NOT EXISTS cursor_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+    CREATE TABLE IF NOT EXISTS ops.site_events (
+      event_id TEXT PRIMARY KEY,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      occurred_at TIMESTAMPTZ NOT NULL,
+      visitor_key TEXT,
+      user_key TEXT,
+      session_key TEXT,
+      page_view_id TEXT,
+      event_name TEXT NOT NULL CHECK (event_name IN (
+        'page_view','engagement','detail_open','filter_apply','register_view',
+        'register_submit','register_success','watchlist_add_success','import_result','telemetry_init'
+      )),
+      page_key TEXT NOT NULL CHECK (page_key ~ '^[a-z][a-z0-9._-]{0,63}$'),
+      module TEXT NOT NULL DEFAULT '',
+      entry TEXT NOT NULL DEFAULT '',
+      device_type TEXT NOT NULL DEFAULT 'unknown' CHECK (device_type IN ('mobile','desktop','tablet','unknown')),
+      source_domain TEXT NOT NULL DEFAULT '',
+      is_internal BOOLEAN NOT NULL DEFAULT false,
+      data_version INTEGER NOT NULL DEFAULT 1 CHECK (data_version > 0),
+      properties JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(properties)='object' AND pg_column_size(properties) <= 4096)
+    );
+    CREATE INDEX IF NOT EXISTS idx_site_events_occurred ON ops.site_events(occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_site_events_name_time ON ops.site_events(event_name, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_site_events_page_time ON ops.site_events(page_key, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_site_events_visitor_time ON ops.site_events(visitor_key, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_site_events_user_time ON ops.site_events(user_key, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_site_events_session_time ON ops.site_events(session_key, occurred_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ops.site_runtime_minute (
+      runtime_id BIGSERIAL PRIMARY KEY,
+      layer TEXT NOT NULL CHECK (layer IN ('app','nginx')),
+      bucket_start TIMESTAMPTZ NOT NULL,
+      batch_id TEXT NOT NULL,
+      process_instance TEXT NOT NULL DEFAULT '',
+      route_key TEXT NOT NULL DEFAULT '',
+      request_kind TEXT NOT NULL DEFAULT 'unknown',
+      request_count BIGINT NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+      status_2xx BIGINT NOT NULL DEFAULT 0 CHECK (status_2xx >= 0),
+      status_3xx BIGINT NOT NULL DEFAULT 0 CHECK (status_3xx >= 0),
+      status_4xx BIGINT NOT NULL DEFAULT 0 CHECK (status_4xx >= 0),
+      status_429 BIGINT NOT NULL DEFAULT 0 CHECK (status_429 >= 0),
+      status_5xx BIGINT NOT NULL DEFAULT 0 CHECK (status_5xx >= 0),
+      duration_buckets JSONB NOT NULL DEFAULT '{}'::jsonb,
+      bytes_sent BIGINT NOT NULL DEFAULT 0 CHECK (bytes_sent >= 0),
+      error_count BIGINT NOT NULL DEFAULT 0 CHECK (error_count >= 0),
+      sample_type TEXT NOT NULL DEFAULT 'request',
+      coverage_status TEXT NOT NULL DEFAULT 'complete',
+      event_loop_p50_ms NUMERIC(12,1),
+      event_loop_p95_ms NUMERIC(12,1),
+      event_loop_max_ms NUMERIC(12,1),
+      source_file TEXT NOT NULL DEFAULT '',
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(layer, batch_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_site_runtime_bucket ON ops.site_runtime_minute(bucket_start DESC);
+    CREATE INDEX IF NOT EXISTS idx_site_runtime_layer_bucket ON ops.site_runtime_minute(layer, bucket_start DESC);
+
+    INSERT INTO platform_config(key, value)
+      VALUES ('site_analytics_enabled_at', to_char(now(), 'YYYY-MM-DD HH24:MI:SSOF'))
+      ON CONFLICT (key) DO NOTHING;
+  `);
+}
+
+// ========== 139：网站运行采样单独记录 429 =============
+async function migration139SiteAnalytics429() {
+  await pool.query(`ALTER TABLE ops.site_runtime_minute
+    ADD COLUMN IF NOT EXISTS status_429 BIGINT NOT NULL DEFAULT 0`);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5659,6 +5735,8 @@ const MIGRATIONS = [
   { version: '135_exchange_rate_budget_recovery', up: migration135ExchangeRateBudgetRecovery },
   { version: '136_convertible_bond_redemption_status_parity', up: migration136ConvertibleBondRedemptionStatusParity },
   { version: '137_convertible_bond_exchange_announcement_unlimited', up: migration137ConvertibleBondExchangeAnnouncementUnlimited },
+  { version: '138_site_analytics', up: migration138SiteAnalytics },
+  { version: '139_site_analytics_429', up: migration139SiteAnalytics429 },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6262,6 +6340,7 @@ module.exports = {
   migration135ExchangeRateBudgetRecovery,
   migration136ConvertibleBondRedemptionStatusParity,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
+  migration138SiteAnalytics,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

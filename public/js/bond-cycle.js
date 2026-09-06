@@ -34,6 +34,7 @@ function switchBondSub(sub) {
   else if (sub === 'revision') params.set('sub', 'revision');
   else params.delete('sub');
   history.replaceState(null, '', '/?' + params.toString());
+  if (window.SiteTelemetry) window.SiteTelemetry.trackPage('bond.' + sub, 'bond', 'subnav');
   if (sub === 'cycle') loadBondCycle();
   else if (sub === 'valuation') loadBondValuation();
   else if (sub === 'list' && typeof loadBondList === 'function') loadBondList();

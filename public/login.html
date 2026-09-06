@@ -6,7 +6,7 @@
 <meta name="base-url" content="">
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="shared/style.css?v=0.8.0.6">
+<link rel="stylesheet" href="shared/style.css?v=0.8.0.8">
 <script src="shared/autofill-guard.js?v=5"></script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -62,6 +62,7 @@ body {
 @media (max-width:760px) { .login-page { min-height:calc(100dvh - var(--site-nav-height)); padding:16px 12px; align-items:flex-start; } .login-box { width:100%; max-width:400px; padding:24px 18px; } .login-box .pwd-toggle { right:2px; } .login-box .form-group input { padding-right:48px; } }
 </style>
 <script src="shared/mobile-ui.js?v=1" defer></script>
+<script src="shared/telemetry.js?v=0.8.0.8" defer></script>
 </head>
 <body>
 <div class="nav">
@@ -262,6 +263,7 @@ function toggleMode() {
     ? '已有账号？<a onclick="toggleMode()">返回登录</a>'
     : '<a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
   applyAuthConfig();
+  if (isRegister && window.SiteTelemetry) window.SiteTelemetry.trackEvent('register_view', { page_key: 'register', module: 'auth', entry: 'switch', properties: { step: 'form' } });
 }
 
 function toggleForgotMode() {
@@ -452,9 +454,10 @@ function submit() {
   submitting = true;
   document.getElementById('submit-btn').disabled = true;
   showToast('注册中...');
+  if (window.SiteTelemetry) window.SiteTelemetry.trackEvent('register_submit', { page_key: 'register', module: 'auth', entry: 'submit', properties: { step: 'form' } });
   fetch(api('/api/register'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   }).then(r => r.json().then(data => ({ status: r.status, data })))
   .then(({ status, data }) => {

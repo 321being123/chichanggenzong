@@ -278,6 +278,7 @@ async function bondAnalysisLoad(refresh, ctx) {
       return bondAnalysisLoad(true, ctx);
     }
     bondAnalysisRender(analysis, ctx);
+    if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.analysis', module: 'bond', entry: ctx || 'analysis', detail_key: securityAnalysisState.code || 'bond', properties: { detail_type: 'bond' } });
     if(!response.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true, ctx); }
   finally { securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';} }

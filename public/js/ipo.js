@@ -463,5 +463,6 @@ function ipoSwitchHist(type) {
   document.querySelectorAll('[data-ipo-hist]').forEach(function (b) {
     b.classList.toggle('active', b.getAttribute('data-ipo-hist') === type);
   });
+  if (window.SiteTelemetry) window.SiteTelemetry.trackEvent('filter_apply', { page_key: 'ipo.calendar', module: 'ipo', entry: 'history', properties: { filter_name: 'history_' + type } });
   ipoLoadHistory(type);
 }

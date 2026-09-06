@@ -7,6 +7,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { requireLogin, checkLocked, recordFail, clearFail, checkRegLimit, isAdminIdentity, hasCapability, CAPABILITY_WHITELIST } = require('../middleware/auth');
 const { mailer, REGISTER_CODE } = require('../config');
 const { registerUser, hashPwd, verifyPwd, isLegacyHash, changePassword, upgradePasswordHash, syncUserAccounts, getUserProfile, getUserAuth, getUserForPasswordReset, updateUserProfile, updateLastLogin, getConfig } = require('../db');
+const { recordServerEvent } = require('../services/siteAnalytics');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESET_CODE_TTL_MS = 5 * 60 * 1000;
@@ -88,6 +89,9 @@ router.post('/register', registerIpLimit, asyncHandler(async (req, res) => {
   await syncUserAccounts(username, ['默认账户']).catch(() => {});
   req.session.user = username;
   req.session.authVersion = 1; // 新用户会话版本（DEFAULT 1）
+  recordServerEvent('register_success', { pageKey: 'register', module: 'auth' }, {
+    req, username, dedupeKey: 'register:' + username
+  }).catch(() => {});
   res.json({ ok: true, username });
 }));
 

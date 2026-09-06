@@ -12,6 +12,15 @@ const eventLoopSampleTimer = setInterval(() => {
     p95Ms: nsToMs(eventLoopDelay.percentile(95)),
     maxMs: nsToMs(eventLoopDelay.max),
   }));
+  try {
+    const analytics = require('../services/siteAnalytics');
+    analytics.recordEventLoopSample({
+      p50Ms: nsToMs(eventLoopDelay.percentile(50)),
+      p95Ms: nsToMs(eventLoopDelay.percentile(95)),
+      maxMs: nsToMs(eventLoopDelay.max),
+    });
+    analytics.flushRuntimeMinute().catch(() => {});
+  } catch (_) {}
   eventLoopDelay.reset();
 }, 60000);
 eventLoopSampleTimer.unref();
@@ -38,6 +47,7 @@ function accessLog(req, res, next) {
     };
     if (res.statusCode >= 500) console.error('[access]', JSON.stringify(line));
     else console.log('[access]', JSON.stringify(line));
+    try { require('../services/siteAnalytics').recordAppRequest(req, res, start); } catch (_) {}
   });
   next();
 }

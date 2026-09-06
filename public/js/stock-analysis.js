@@ -158,7 +158,7 @@ async function stockAnalysisAddWatchlist() {
   if (!code) return showToast('请输入股票代码');
   stockAnalysisSetMessage('正在添加自选股并建立财务档案...');
   try {
-    var response = await fetch(api('/api/stock-analysis/watchlist'), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ts_code:code}) });
+    var response = await fetch(api('/api/stock-analysis/watchlist'), { method:'POST', headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({'Content-Type':'application/json'}) : {'Content-Type':'application/json'}, body:JSON.stringify({ts_code:code}) });
     var payload = await response.json();
     if (!response.ok && response.status !== 202) throw new Error(payload.error || '添加失败');
     stockAnalysisState.loaded = false;
@@ -186,6 +186,7 @@ async function stockAnalysisRemoveWatchlist() {
 
 function stockAnalysisRender(d) {
   stockAnalysisState.data = d; stockAnalysisSetMessage('');
+  if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'stock.analysis', module: 'stock', entry: 'analysis', detail_key: d.ts_code || stockAnalysisState.selected || 'stock', properties: { detail_type: 'stock' } });
   var bondContent = document.getElementById('bond-analysis-content'); if (bondContent) bondContent.style.display = 'none';
   var content = document.getElementById('stock-analysis-content'); if (content) content.style.display = 'block';
   var buEl=document.getElementById('bond-analysis-updated'); if(buEl) buEl.style.display='none';

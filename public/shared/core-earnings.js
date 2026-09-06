@@ -8,6 +8,11 @@ function initNav() {
       document.querySelectorAll('.page').forEach(function (p) { p.classList.remove('active'); });
       tab.classList.add('active');
       var pageId = 'page-' + tab.dataset.page;
+      if (window.SiteTelemetry) {
+        var holdingPageMap = { dashboard: 'dashboard', positions: 'positions', earnings: 'nav', trades: 'trades' };
+        var holdingPage = holdingPageMap[tab.dataset.page];
+        if (holdingPage) window.SiteTelemetry.trackPage('holdings.' + holdingPage, 'holdings', 'subnav');
+      }
       var page = document.getElementById(pageId);
       if (page) {
         page.classList.add('active');
@@ -399,7 +404,7 @@ async function importFundExcel(event) {
     const base64 = await fileToBase64(file);
     const r = await fetch(api('/api/excel-history-parse'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file: base64 })
     });
     const d = await r.json().catch(function () { return {}; });
@@ -484,7 +489,7 @@ async function finishImport(rows, mapping) {
     var importBody = { account: currentAccount, records: importedRecords, mode: 'merge' };
     var r = await fetch(api('/api/nav/import?version=' + (dataVersion != null ? dataVersion : '')), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: typeof window !== 'undefined' && window.SiteTelemetry ? window.SiteTelemetry.getHeaders({ 'Content-Type': 'application/json' }) : { 'Content-Type': 'application/json' },
       body: JSON.stringify(importBody)
     });
     var j = await r.json().catch(function(){ return {}; });

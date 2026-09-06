@@ -8,6 +8,7 @@ const { initSchema, migrateFromJson, ensureAdmin, DATA_DIR, pool } = require('./
 const { ensureAiModelsInit } = require('./services/aiModels');
 const { redirectUnauthenticated, csrfMiddleware, securityHeaders } = require('./middleware/security');
 const { requestId, accessLog, errorHandler } = require('./middleware/errorHandler');
+const { getDependencyHealth } = require('./services/siteAnalytics');
 const authRouter = require('./routes/auth');
 const accountsRouter = require('./routes/accounts');
 const marketRouter = require('./routes/market');
@@ -27,6 +28,7 @@ const knowledgeRouter = require('./routes/knowledge');
 const marketVolatilityRouter = require('./routes/marketVolatility');
 const positionComparisonRouter = require('./routes/positionComparison');
 const arbitrageRouter = require('./routes/arbitrage');
+const telemetryRouter = require('./routes/telemetry');
 // 单一后台任务注册清单（Web 兼容模式与独立 Worker 共用）：见 server/scheduler.js
 const { startScheduler } = require('./scheduler');
 
@@ -36,9 +38,20 @@ app.disable('x-powered-by');
 // 不接受任意跳数，避免客户端伪造转发头绕过限流/IP 识别。
 app.set('trust proxy', process.env.TRUST_PROXY === 'loopback' ? 'loopback' : false);
 
+// 统计接口单独限制请求体，不能因为它是公开入口而继承 15MB 的业务上传上限。
+app.use(function telemetryBodyLimit(req, res, next) {
+  if (req.method === 'POST' && req.path === '/api/telemetry/events' && Number(req.headers['content-length'] || 0) > 32 * 1024) {
+    return res.status(413).json({ error: '统计请求过大' });
+  }
+  next();
+});
 // 启动前的基础中间件（不依赖 Redis）：请求体解析 + 请求追踪/访问日志
 // 上限 15mb：10MB 图片经 Base64 后约 13.3MB，超过原 10mb 会被 body-parser 直接拒绝（P1-7）
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '15mb', verify: function (req, res, buffer) {
+  if (req.method === 'POST' && req.path === '/api/telemetry/events' && buffer.length > 32 * 1024) {
+    const error = new Error('统计请求过大'); error.status = 413; throw error;
+  }
+} }));
 app.use(requestId);
 app.use(accessLog);
 
@@ -100,6 +113,7 @@ async function start() {
   app.use(csrfMiddleware);
 
   // 路由挂载
+  app.use('/api/telemetry', telemetryRouter);
   app.use('/api', authRouter);
   app.use('/api', accountsRouter);
   app.use('/api', marketRouter);
@@ -123,9 +137,11 @@ async function start() {
   // 健康检查（无需登录）：liveness 与 readiness 供反向代理/编排探测
   app.get('/health', (req, res) => res.json({ status: 'ok', version: appVersion, ts: Date.now() }));
   app.get('/ready', async (req, res) => {
-    const checks = { db: false, redis: redis.ready };
-    try { await pool.query('SELECT 1'); checks.db = true; } catch (e) {}
-    res.status(checks.db ? 200 : 503).json({ status: checks.db ? 'ready' : 'not_ready', checks, ts: Date.now() });
+    const dependency = await getDependencyHealth();
+    const checks = { db: dependency.database.ready, dbStatus: dependency.database.status, redis: dependency.redis.ready, redisStatus: dependency.redis.status };
+    const redisRequired = dependency.redis.required;
+    const ready = checks.db && (!redisRequired || checks.redis);
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready', checks, ts: Date.now() });
   });
 
   // 统一错误处理（兜底所有未捕获异常，输出结构化日志并返回 JSON）

@@ -220,8 +220,16 @@
       syncFloatingWidths(instance, table, head, scroll);
       floating.style.height = height + 'px';
       floating.style.transform = 'translateX(-' + scroll.scrollLeft + 'px)';
-      floating.querySelectorAll('.biz-identity').forEach(function (cell) {
-        cell.style.transform = window.innerWidth <= 760 ? 'translateX(' + scroll.scrollLeft + 'px)' : '';
+      var sourceIdentityCells = head.querySelectorAll('.biz-identity');
+      var floatingIdentityCells = floating.querySelectorAll('.biz-identity');
+      floatingIdentityCells.forEach(function (cell, index) {
+        if (window.innerWidth > 760 || !sourceIdentityCells[index]) {
+          cell.style.transform = '';
+          return;
+        }
+        // 以源表头的实际位置对齐，避免把横向滚动量重复补偿到浮动表头。
+        var delta = sourceIdentityCells[index].getBoundingClientRect().left - cell.getBoundingClientRect().left;
+        cell.style.transform = 'translateX(' + delta + 'px)';
       });
     } else {
       instance.headHost.hidden = true;

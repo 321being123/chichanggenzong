@@ -153,7 +153,7 @@ async function tables() {
   floating.querySelector('th.biz-identity').click();
   ok(w.sorted === 1, '浮动表头点击只转发一次原排序');
   host.querySelector('.biz-table-scroll').scrollLeft = 150; w.BusinessTable.sync(); await tick();
-  ok(floating.querySelector('th.biz-identity').style.transform === 'translateX(150px)', '手机浮动身份列补偿横向偏移');
+  ok(floating.querySelector('th.biz-identity').style.transform === 'translateX(0px)', '手机浮动身份列按源表头位置对齐，不重复补偿横向偏移');
   host.innerHTML = table; w.BusinessTable.sync(); await tick();
   ok(host.querySelectorAll('.biz-table-scroll-hint').length === 1 && host.querySelector('td.biz-identity'), '筛选重绘后恢复提示与身份列');
   d.getElementById('main-bond-safety').classList.remove('active'); w.BusinessTable.sync(); await tick();

@@ -69,6 +69,11 @@ check('周期说明与图表提示使用统一主题', () => {
   assert.ok(html.includes('bond-cycle-help-tip app-tooltip'), '周期说明未使用统一主题');
   assert.ok(html.includes('bond-cycle-tip app-tooltip'), '周期图表提示未使用统一主题');
 });
+check('导出图片包含 1px 黑色边框', () => {
+  assert.ok(js.includes('ctx.setTransform(1, 0, 0, 1, 0, 0)'), '导出时未切换到物理像素坐标');
+  assert.ok(js.includes("ctx.strokeStyle = '#000'"), '导出图片边框不是黑色');
+  assert.ok(js.includes('ctx.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1)'), '导出图片缺少 1px 边框');
+});
 
 console.log('E. 曲线字段映射（整改 P1-4）');
 check('存在指标→接口字段映射 BC_METRIC_FIELDS', () => {

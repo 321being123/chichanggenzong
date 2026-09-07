@@ -470,6 +470,13 @@ function exportBondCycleChart() {
     var img = new Image();
     img.onload = function() {
       ctx.drawImage(img, padX, svgTop, svgW, svgH);
+      // Canvas 已按 2 倍分辨率绘制，切回物理像素坐标后描边，确保导出图为 1px 黑色边框。
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0.5, 0.5, canvas.width - 1, canvas.height - 1);
+      ctx.restore();
       var a = document.createElement('a');
       a.download = '可转债周期_' + dateStr.replace(/\//g, '-').replace(/\s/g, '') + '_' + range + '.png';
       a.href = canvas.toDataURL('image/png');

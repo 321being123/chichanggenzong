@@ -36,8 +36,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .analytics-coverage-no_sample, .analytics-coverage-unknown { color:#b26a00; }
 .analytics-coverage-query_failed { color:#d93025; }
 .analytics-dependency { color:#667085; }
-.site-analytics-control { position:fixed; right:12px; bottom:10px; z-index:1000; display:flex; align-items:center; gap:8px; padding:7px 9px; color:#64748b; background:rgba(255,255,255,.94); border:1px solid #e2e8f0; border-radius:8px; box-shadow:0 3px 12px rgba(15,23,42,.08); font-size:12px; }
-.site-analytics-control button { min-height:28px; padding:3px 8px; color:#2563eb; background:transparent; border:1px solid currentColor; border-radius:6px; cursor:pointer; }
 
 @media (max-width:760px) {
   .analytics-toolbar { align-items:stretch; gap:10px; }
@@ -50,7 +48,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   .analytics-stats { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
   .analytics-stats .stat-card { min-height:96px; padding:12px; }
   .analytics-bar-row { grid-template-columns:minmax(80px,1fr) minmax(60px,1.6fr) 52px; gap:6px; }
-  .site-analytics-control { right:10px; bottom:8px; left:10px; justify-content:space-between; }
 }
 .site-footer a { color: inherit; text-decoration: none; }
 .site-footer a:hover { color: #283593; }

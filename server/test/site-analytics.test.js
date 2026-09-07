@@ -1,7 +1,14 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 process.env.SITE_ANALYTICS_SECRET = 'a'.repeat(32);
 const analytics = require('../services/siteAnalytics');
 const { parseNginxLine, extractCompleteLines } = require('../services/nginxRuntimeCollector');
+const telemetryClient = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'shared', 'telemetry.js'), 'utf8');
+const sharedStyle = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'shared', 'style.css'), 'utf8');
+
+assert.ok(!telemetryClient.includes('site-analytics-control'), '前端不应再渲染底部匿名统计提示');
+assert.ok(!sharedStyle.includes('.site-analytics-control'), '不应保留底部匿名统计提示样式');
 
 const valid = analytics.sanitizeEvent({
   event_id: 'event-12345678', event_name: 'filter_apply', page_key: 'ipo.calendar',

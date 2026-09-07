@@ -153,23 +153,9 @@
         if (queue.length && !retryTimer) retryTimer = setTimeout(function () { retryTimer = 0; flush(); }, retryDelayMs);
       });
   }
-  function setupOptOutControl() {
-    if (!document.body || document.getElementById('site-analytics-control')) return;
-    var control = document.createElement('div');
-    control.id = 'site-analytics-control'; control.className = 'site-analytics-control';
-    control.innerHTML = '<span>仅收集匿名页面使用统计</span><button type="button"></button>';
-    var button = control.querySelector('button');
-    function update() { button.textContent = disabled() ? '开启统计' : '关闭统计'; }
-    button.onclick = function () {
-      if (disabled()) { window.SiteTelemetry.enable(); update(); return; }
-      window.SiteTelemetry.disable(); update();
-    };
-    update(); document.body.appendChild(control);
-  }
   function init() {
     var page = pageForLocation();
     if (!page) return;
-    setupOptOutControl();
     if (disabled()) return;
     initialSourceDomain = referrerDomain();
     sessionId = getSessionId();

@@ -22,11 +22,12 @@ def listing_candidates(days=60, codes=None, limit=5):
             "e.event_date >= CURRENT_DATE - (%s * INTERVAL '1 day')",
             "i.asset_class='convertible_bond'",
             "(iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))",
-            "l.instrument_id IS NULL",
         ]
         if codes:
             params.append([str(code).split('.')[0] for code in codes if str(code).strip()])
             clauses.append("split_part(i.canonical_code,'.',1)=ANY(%s)")
+        else:
+            clauses.append("l.instrument_id IS NULL")
         params.append(max(int(limit), 1))
         rows = conn.execute(
             f"""SELECT DISTINCT ON (i.instrument_id)
@@ -51,9 +52,10 @@ def listing_candidates(days=60, codes=None, limit=5):
 
 def sync_liquidity(days=60, codes=None, limit=5):
     rows = listing_candidates(days=days, codes=codes, limit=limit)
+    forced_codes = {str(code).split('.')[0] for code in (codes or []) if str(code).strip()}
     result = {"ok": True, "candidates": len(rows), "saved": 0, "skipped": 0, "failed": 0, "failures": []}
     for code, bond_name, listing_date, stock_code, stock_name, issue_scale in rows:
-        if get_listing_liquidity(code):
+        if code not in forced_codes and get_listing_liquidity(code):
             result["skipped"] += 1
             continue
         if not stock_code or not issue_scale:

@@ -94,6 +94,8 @@ assert.match(bondJobSource, /BOND_LIQUIDITY_SCRIPT/, '新债流通规模补全�
 const liquiditySource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'sync_bond_listing_liquidity.py'), 'utf8');
 assert.match(liquiditySource, /event_type='listing'/, '流通规模补全没有按上市事件增量筛选');
 assert.match(liquiditySource, /l\.instrument_id IS NULL/, '流通规模补全没有跳过已入库事实');
+assert.match(liquiditySource, /if code not in forced_codes and get_listing_liquidity\(code\)/, '指定代码定向重算没有覆盖旧流通规模事实');
+assert.match(liquiditySource, /else:\s*\n\s*clauses\.append\("l\.instrument_id IS NULL"\)/, '指定代码定向重算不应改变普通增量跳过规则');
 assert.match(fetchSource, /_parse_listed_bond_quantity/, '上市公告书明确上市数量没有解析兜底');
 assert.match(fetchSource, /listed_quantity_fallback/, '上市数量兜底没有保留质量标记');
 

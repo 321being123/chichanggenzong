@@ -277,15 +277,21 @@ def _parse_listed_bond_quantity(text):
 
 
 def _parse_issue_result_liquidity(text, issue_scale):
-    """用发行结果公告的原股东配售总量，形成可审计的流通规模兜底值。"""
-    compact = re.sub(r'\s+', '', str(text or ''))
+    """用发行结果公告中的控股股东体系配售量，形成可审计的流通规模值。"""
+    raw_text = str(text or '')
     ps_zhang = None
-    patterns = (
-        r'原股东.{0,120}?配售(?:数量|数|可配售数量)?[为：:]?(?P<quantity>[\d,]+)(?P<unit>手|张)',
-        r'原股东.{0,120}?配售.{0,120}?(?P<quantity>[\d,]+)(?P<unit>手|张)',
+
+    # 发行结果公告通常同时披露：原股东合计配售量，以及其中控股股东、
+    # 实际控制人及一致行动人的配售量。后者才是本项目“限售依据”，不能
+    # 把前者整体当成限售，否则会把原股东中可流通部分也错误扣除。
+    controller_patterns = (
+        r'控\s*股\s*股\s*东\s*[、,，]?\s*实\s*际\s*控\s*制\s*人\s*(?:及其\s*)?一\s*致\s*行\s*动\s*人'
+        r'[\s\S]{0,160}?(?P<quantity>[\d,]+)\s*(?P<unit>手|张)?',
+        r'控\s*股\s*股\s*东[\s\S]{0,20}?实\s*际\s*控\s*制\s*人[\s\S]{0,20}?一\s*致\s*行\s*动\s*人'
+        r'[\s\S]{0,160}?(?P<quantity>[\d,]+)\s*(?P<unit>手|张)?',
     )
-    for pattern in patterns:
-        match = re.search(pattern, compact)
+    for pattern in controller_patterns:
+        match = re.search(pattern, raw_text)
         if not match:
             continue
         try:
@@ -294,6 +300,7 @@ def _parse_issue_result_liquidity(text, issue_scale):
             continue
         ps_zhang = value * (10 if match.group('unit') == '手' else 1)
         break
+
     try:
         total_zhang = int(float(issue_scale) * 100000000 / 100)
     except (TypeError, ValueError):
@@ -311,8 +318,8 @@ def _parse_issue_result_liquidity(text, issue_scale):
         "ctrl_zhang": ps_zhang,
         "total_zhang": total_zhang,
         "ctrl_ratio": round(ps_zhang / total_zhang * 100, 2),
-        "source": "发行结果公告（原股东配售总量估算，等待上市公告书持有人明细校准）",
-        "quality": "estimated_original_shareholder_allotment",
+        "source": "发行结果公告（控股股东、实际控制人及一致行动人配售量）",
+        "quality": "issue_result_controller_allotment",
         "error": None,
     }
 
@@ -620,6 +627,7 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
         source_type = ""
         listing_target = None
         issue_result_target = None
+        issue_result_targets = []
         for ann in announcements:
             title = ann.get("announcementTitle", "")
             normalized_title = re.sub(r"\s+", "", title)
@@ -629,8 +637,15 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
         for ann in announcements:
             title = ann.get("announcementTitle", "")
             if ("中签" in title and "配售" in title) or "发行结果" in title:
-                issue_result_target = ann
-                break
+                issue_result_targets.append(ann)
+        # 同一发行可能有多份结果公告：优先使用同时披露原股东及
+        # 控股股东体系配售量的“中签率/优先配售结果”公告。
+        issue_result_targets.sort(
+            key=lambda ann: 0 if "中签率" in ann.get("announcementTitle", "")
+            and "配售" in ann.get("announcementTitle", "") else 1
+        )
+        if issue_result_targets:
+            issue_result_target = issue_result_targets[0]
         if listing_target:
             target = listing_target
             source_type = "上市公告书"
@@ -661,17 +676,25 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
                 "error": download_error,
             }
 
+        def _try_issue_result_controller_fallback():
+            for candidate in issue_result_targets:
+                if candidate is target:
+                    continue
+                issue_text, _ = _download_cninfo_pdf_text(candidate)
+                fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
+                if fallback:
+                    return fallback
+            return None
+
         if source_type == "上市公告书":
             # ---- 从上市公告书解析精确限售数据 ----
             holders = _parse_bond_top10_holders(text)
             if not holders:
                 # 上市公告书的版式可能没有可解析的前十名持有人表格。
                 # 先尝试发行结果公告的原股东配售总量，再使用上市公告书明确的上市数量。
-                if issue_result_target and issue_result_target is not target:
-                    issue_text, _ = _download_cninfo_pdf_text(issue_result_target)
-                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
-                    if fallback:
-                        return fallback
+                fallback = _try_issue_result_controller_fallback()
+                if fallback:
+                    return fallback
                 fallback = _listed_quantity_fallback(text)
                 if fallback:
                     return fallback
@@ -685,11 +708,9 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
             controller_names, controlled_entities = _extract_controller_names(text, holders)
 
             if not controller_names and not controlled_entities:
-                if issue_result_target and issue_result_target is not target:
-                    issue_text, _ = _download_cninfo_pdf_text(issue_result_target)
-                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
-                    if fallback:
-                        return fallback
+                fallback = _try_issue_result_controller_fallback()
+                if fallback:
+                    return fallback
                 fallback = _listed_quantity_fallback(text)
                 if fallback:
                     return fallback
@@ -704,11 +725,9 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
             locked_holders = _match_controller_holders(holders, controller_names, controlled_entities)
 
             if not locked_holders:
-                if issue_result_target and issue_result_target is not target:
-                    issue_text, _ = _download_cninfo_pdf_text(issue_result_target)
-                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
-                    if fallback:
-                        return fallback
+                fallback = _try_issue_result_controller_fallback()
+                if fallback:
+                    return fallback
                 fallback = _listed_quantity_fallback(text)
                 if fallback:
                     return fallback

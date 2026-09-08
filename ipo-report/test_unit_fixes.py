@@ -27,6 +27,7 @@ spec = importlib.util.spec_from_file_location(
 )
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+import ipo_lib_fetch as fetch_mod
 
 PASS = []
 
@@ -243,6 +244,23 @@ yuhe_ctrl_zhang = sum(item[1] for item in yuhe_locked)
 yuhe_total_zhang = mod._derive_total_zhang(yuhe_ctrl_zhang, sum(item[2] for item in yuhe_locked), 15.0)
 yuhe_circulation = round((yuhe_total_zhang - yuhe_ctrl_zhang) * 100 / 100000000, 4)
 check("玉禾流通规模约8.03亿元", 8.0 < yuhe_circulation < 8.1, f"circulation={yuhe_circulation}亿")
+
+# 发行结果公告同时披露原股东合计配售量和控股股东体系配售量。
+# 流通规模必须扣除后者，不能把原股东合计配售量整体当成限售量。
+fengmao_issue_result = """
+原股东优先配售 5,651,932 张
+其中：控股股东、实际控制人及其一致行动人
+4,551,066
+4,551,066
+100%
+""".strip()
+fengmao_liquidity = fetch_mod._parse_issue_result_liquidity(fengmao_issue_result, 6.075298)
+check("发行结果公告优先使用控股股东体系配售量",
+      fengmao_liquidity and fengmao_liquidity["ctrl_zhang"] == 4_551_066,
+      f"result={fengmao_liquidity}")
+check("丰茂转债流通规模约1.52亿元",
+      fengmao_liquidity and fengmao_liquidity["circulation_scale"] == 1.5242,
+      f"result={fengmao_liquidity}")
 
 # 巨潮实际最多返回30条，不能因请求50条却只收到30条而误判为末页。
 fetch_source = open(os.path.join(os.path.dirname(__file__), "ipo_lib_fetch.py"), encoding="utf-8").read()

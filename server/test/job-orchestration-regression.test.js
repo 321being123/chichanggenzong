@@ -90,6 +90,7 @@ assert(/waiting_external/.test(slots) && /waitForExternalSlot/.test(slots) && /a
 assert(/workerIdForRole/.test(slots) && /IS DISTINCT FROM/.test(slots) && /heartbeat\('worker', 'stopped'\)/.test(read('server/worker.js')), 'Worker 心跳必须固定为主机加角色，重启更新原记录并在退出时标记停止');
 assert(/probe_owner/.test(migrations) && /probe_token/.test(read('server/services/externalCallGuard.js')) && /probe_lease_until/.test(read('server/services/externalCallGuard.js')), '外部熔断探测必须使用租约和令牌隔离不同进程');
 assert(/arbitrage_sync: `SELECT LEAST/.test(slots) && /convertible_bond_announcement_history_sync:/.test(slots), '多来源任务的数据水位必须按最慢来源核验');
+assert(/normalizeCursorDate\(cursor\.last_success_date\)/.test(arbitrageSync), '公告增量同步必须把 PostgreSQL 日期游标按上海自然日归一化');
 assert(/last_success_date = GREATEST\([\s\S]*ops\.sync_cursors\.last_success_date[\s\S]*EXCLUDED\.last_success_date/.test(arbitrageSync), '公告来源失败时不得把已有成功游标回退到重叠窗口起点');
 assert(/migration063AlertSendingStatus/.test(migrations), '数据库必须支持告警投递中状态');
 assert(/migration070RemoveDuplicateLegacyPriceDates/.test(migrations) && /DELETE FROM daily_prices/.test(migrations), '收盘价日期归一后必须清理已存在标准日期对应的旧格式重复行');

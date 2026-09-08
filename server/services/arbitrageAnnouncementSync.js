@@ -32,6 +32,13 @@ function todayShanghaiDate(now = new Date()) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+function normalizeCursorDate(value) {
+  if (!value) return null;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return value.trim();
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : todayShanghaiDate(date);
+}
+
 // 获取数据源 ID
 async function getSourceId(sourceCode) {
   const { rows } = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1', [sourceCode]);
@@ -447,9 +454,7 @@ async function runIncrementalSync() {
 
   for (const [scopeName, cfg] of Object.entries(SCOPES)) {
     const cursor = await getCursor('arbitrage_' + scopeName, cfg.dataset);
-    const fromDate = cursor && cursor.last_success_date
-      ? String(cursor.last_success_date).slice(0, 10)
-      : today;
+    const fromDate = cursor && normalizeCursorDate(cursor.last_success_date) || today;
     for (const window of generateMonthWindows(fromDate, today)) {
       windows.push({ scope: scopeName, ...window });
     }
@@ -591,5 +596,6 @@ module.exports = {
   isGenericControlChangeTermination,
   classifyRiskAnnouncement,
   todayShanghaiDate,
+  normalizeCursorDate,
   SCOPES,
 };

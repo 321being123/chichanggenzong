@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const parser = require('../services/arbitrageParser');
-assert.strictEqual(parser.PARSER_VERSION, '2.0.4', 'A/H 现金条款修复必须提升解析器版本，确保历史文档重新解析');
+assert.strictEqual(parser.PARSER_VERSION, '2.0.5', 'A/H 现金条款修复必须提升解析器版本，确保历史文档重新解析');
 
 test('PDF 解析重试入口统一阻止未到期和超过上限的调用', () => {
   const future = new Date(Date.now() + 60_000).toISOString();
@@ -160,6 +160,13 @@ test('A/H并列现金退出价只提取A股人民币价格，并支持实施公�
     '中金公司A股、H股异议股东收购请求权价格分别调整为34.57元/股、18.60港元/股。',
   ].join(' '), '601995');
   assert.equal(paired.cash_offer_price, 34.57);
+
+  const canonicalPaired = parseSnippet([
+    '证券代码：601995 证券简称：中金公司。',
+    '中金公司A股、H股异议股东收购请求权价格分别调整为34.80元/股、18.86港元/股。',
+    '中金公司A股、H股异议股东收购请求权价格分别调整为34.57元/股、18.60港元/股。',
+  ].join(' '), '601995.SH');
+  assert.equal(canonicalPaired.cash_offer_price, 34.57);
 
   const implementation = parseSnippet(
     '证券代码：601995。A股异议股东收购请求权行权价格为34.57元/股。',

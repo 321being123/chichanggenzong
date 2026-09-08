@@ -560,6 +560,11 @@ def parse_fields(text, target_code=None):
     if not text:
         return result
 
+    # 调用方通常传入标准证券代码（如 601995.SH）；正文规则只使用数字代码。
+    # 统一去掉市场后缀，确保 A/H 现金条款隔离和目标代码校验实际生效。
+    if target_code is not None:
+        target_code = re.sub(r'\.[A-Za-z]+$', '', str(target_code).strip())
+
     # 归一化空白：PDF 抽取常在「公司名」与「换股价格」之间插入换行，
     # 导致跨行无法匹配；压成单空格不影响其他正则（它们都用 \s*）。
     text = re.sub(r'\s+', ' ', text)

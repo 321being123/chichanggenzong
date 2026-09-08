@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const parser = require('../services/arbitrageParser');
+assert.strictEqual(parser.PARSER_VERSION, '2.0.4', 'A/H 现金条款修复必须提升解析器版本，确保历史文档重新解析');
 
 test('PDF 解析重试入口统一阻止未到期和超过上限的调用', () => {
   const future = new Date(Date.now() + 60_000).toISOString();

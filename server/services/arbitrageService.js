@@ -456,7 +456,7 @@ async function reparseCase(caseId) {
   if (!rows.length) return null;
   const row = rows[0];
   const { rows: docRows } = await pool.query(`
-    SELECT d.document_id,d.url,d.title,acd.document_role
+    SELECT d.document_id,d.url,d.title,acd.document_role,acd.parser_version
     FROM event.arbitrage_case_documents acd
     JOIN event.documents d ON acd.document_id=d.document_id
     WHERE acd.case_id=$1 AND d.url ~* '\\.pdf$'
@@ -473,7 +473,9 @@ async function reparseCase(caseId) {
     if (role === 'terminal' || role === 'risk') continue;
     eligibleCount++;
     try {
-      const payload = await parser.parseAndStoreDocument(caseId, doc.document_id, doc.url, row.canonical_code, role, true, true);
+      // 首次版本升级会强制解析旧版本文档；同一案件因来源限速进入重试时，已成功文档走缓存，只补未完成文档。
+      const forceDocument = doc.parser_version !== parser.PARSER_VERSION;
+      const payload = await parser.parseAndStoreDocument(caseId, doc.document_id, doc.url, row.canonical_code, role, forceDocument, true);
       if (payload) parsedCount++;
       else failedCount++;
     } catch (err) {

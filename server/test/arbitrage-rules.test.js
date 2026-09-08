@@ -20,6 +20,10 @@ test('换股吸收合并报告书识别为正式条款文件，差异表不冒�
   assert.equal(rules.classifyDocumentRole('换股吸收合并报告书（草案）与预案差异情况对比表'), 'proposal');
 });
 
+test('A股异议股东收购请求权实施公告进入条款更新角色', () => {
+  assert.equal(rules.classifyDocumentRole('中金公司A股异议股东收购请求权实施公告'), 'amendment');
+});
+
 test('稳定事件键不受公告抓取顺序影响', () => {
   const args = { market: 'CN', strategyType: 'a_share_swap', canonicalCode: '601059', announcedAt: '2025-12-18' };
   assert.equal(rules.buildEventKey(args), 'CN:a_share_swap:601059:2025-12-18');

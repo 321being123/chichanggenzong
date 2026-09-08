@@ -24,6 +24,14 @@ const SCOPES = {
   cninfo: { sourceCode: 'cninfo_announcements', dataset: 'cninfo_announcements', adapter: cninfo },
 };
 
+function todayShanghaiDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 // 获取数据源 ID
 async function getSourceId(sourceCode) {
   const { rows } = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1', [sourceCode]);
@@ -426,21 +434,21 @@ function generateMonthWindows(fromDate, toDate) {
 
 // 首次 1 年同步
 async function runFirstSync() {
-  const today = new Date().toISOString().slice(0, 10);
-  const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const today = todayShanghaiDate();
+  const oneYearAgo = todayShanghaiDate(new Date(Date.now() - 365 * 24 * 60 * 60 * 1000));
   const windows = generateMonthWindows(oneYearAgo, today);
   return runSync(windows, true);
 }
 
 // 增量同步
 async function runIncrementalSync() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayShanghaiDate();
   const windows = [];
 
   for (const [scopeName, cfg] of Object.entries(SCOPES)) {
     const cursor = await getCursor('arbitrage_' + scopeName, cfg.dataset);
     const fromDate = cursor && cursor.last_success_date
-      ? new Date(cursor.last_success_date).toISOString().slice(0, 10)
+      ? String(cursor.last_success_date).slice(0, 10)
       : today;
     for (const window of generateMonthWindows(fromDate, today)) {
       windows.push({ scope: scopeName, ...window });
@@ -582,5 +590,6 @@ module.exports = {
   detectUpdate,
   isGenericControlChangeTermination,
   classifyRiskAnnouncement,
+  todayShanghaiDate,
   SCOPES,
 };

@@ -177,7 +177,13 @@ function parseCNINFODate(time) {
   if (!time) return null;
   // announcementTime 是毫秒时间戳
   if (typeof time === 'number') {
-    return new Date(time).toISOString().slice(0, 10);
+    const date = new Date(time);
+    if (Number.isNaN(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+    return `${values.year}-${values.month}-${values.day}`;
   }
   const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(time));
   if (m) return m[1];
@@ -239,6 +245,7 @@ async function searchAnnouncements({
 module.exports = {
   searchAnnouncements,
   parseSearchResponse,
+  parseCNINFODate,
   normalizeAdjunctUrl,
   DISCOVERY_KEYWORDS,
   UPDATE_KEYWORDS,

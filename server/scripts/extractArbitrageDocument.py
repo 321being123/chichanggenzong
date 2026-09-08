@@ -112,6 +112,13 @@ RE_NAMED_CASH_RIGHT = re.compile(
     r'(?:異議股東|异议股东)?(?:收購請求權|收购请求权|現金選擇權|现金选择权)(?:的)?(?:價格|价格)'
     r'[^。；]{0,260}?(\d+(?:\.\d+)?)\s*元\s*(?:/|／)?\s*股', re.I)
 
+# A 股公告可能在同一句中并列披露 A 股元/股与 H 股港元/股，且实施公告常写作“行权价格”。
+# 对六位普通 A 股代码优先取明确的 A 股人民币条款，避免把 H 股港元价格串入 A 股现金退出价。
+RE_A_SHARE_CASH_RIGHT = re.compile(
+    r'A\s*股[^。；]{0,180}?(?:异议股东)?(?:收购请求权|现金选择权)'
+    r'[^。；]{0,30}?(?:行权)?价格[^。；]{0,180}?'
+    r'(\d+(?:\.\d+)?)\s*元\s*(?:/|／)?\s*股', re.I)
+
 # 港股私有化复合对价：部分方案除现金选择外还实物分派另一家公司股份，
 # 公告会同时披露「现金选择」和包含分派估值的「每股理论总额」。
 RE_HK_SCHEME_CASH = re.compile(
@@ -477,6 +484,22 @@ def parse_fields(text, target_code=None):
     # 若已知 target_code，按目标公司简称选择距离最近的现金条款，避免多标的合并互相串价。
     cash_val = None
     cash_ev = None
+    has_explicit_a_cash = False
+
+    is_standard_a_share = bool(
+        target_code
+        and re.fullmatch(r'\d{6}', str(target_code))
+        and not re.fullmatch(r'2\d{5}', str(target_code))
+    )
+
+    # 先处理明确的 A 股人民币条款。取正文最后一条，覆盖报告书中“原价格→调整后价格”的历史并列披露。
+    if is_standard_a_share:
+        a_cash_matches = list(RE_A_SHARE_CASH_RIGHT.finditer(text))
+        if a_cash_matches:
+            cash_m = a_cash_matches[-1]
+            cash_val = _to_num(cash_m.group(1))
+            cash_ev = {'field': 'cash_offer_price', 'value': cash_m.group(1), 'pos': cash_m.start()}
+            has_explicit_a_cash = cash_val is not None
 
     # 做法：根据 target_code 反查公司简称，再取该简称附近的现金选择权/要约价格。
     if target_code and cash_val is None:
@@ -486,6 +509,9 @@ def parse_fields(text, target_code=None):
             best_dist = float('inf')
             name_pat = re.compile(re.escape(short_name))
             for _m in RE_CASH_OFFER.finditer(text):
+                # A 股目标不能使用 H 股港元/港币现金条款；B 股转 H 股不走此限制。
+                if is_standard_a_share and re.search(r'港幣|港元|港币|HKD|HK\$', _m.group(0), re.I):
+                    continue
                 _v = _to_num(_m.group(1))
                 if _v is None or _v <= 0:
                     continue
@@ -516,13 +542,15 @@ def parse_fields(text, target_code=None):
 
     if cash_val is None:
         for _m in RE_CASH_OFFER.finditer(text):
+            if is_standard_a_share and re.search(r'港幣|港元|港币|HKD|HK\$', _m.group(0), re.I):
+                continue
             _v = _to_num(_m.group(1))
             if _v is not None and _v > 0:
                 cash_val = _v
                 cash_ev = {'field': 'cash_offer_price', 'value': _m.group(1), 'pos': _m.start()}
                 break
     # 同一报告可能同时保留初始价和除权除息后的现行价；目标公司具名的“调整为”条款优先。
-    if target_code:
+    if target_code and not has_explicit_a_cash:
         short_name = _infer_short_name_by_code(text, target_code)
         if short_name:
             adjusted_patterns = [

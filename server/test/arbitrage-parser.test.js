@@ -152,6 +152,21 @@ test('正式报告中的除权除息调整价优先于历史价格', () => {
   assert.equal(parsed.reference_swap_price, 36.68);
 });
 
+test('A/H并列现金退出价只提取A股人民币价格，并支持实施公告的行权价格', () => {
+  const paired = parseSnippet([
+    '证券代码：601995 证券简称：中金公司。',
+    '中金公司A股、H股异议股东收购请求权价格分别调整为34.80元/股、18.86港元/股。',
+    '中金公司A股、H股异议股东收购请求权价格分别调整为34.57元/股、18.60港元/股。',
+  ].join(' '), '601995');
+  assert.equal(paired.cash_offer_price, 34.57);
+
+  const implementation = parseSnippet(
+    '证券代码：601995。A股异议股东收购请求权行权价格为34.57元/股。',
+    '601995',
+  );
+  assert.equal(implementation.cash_offer_price, 34.57);
+});
+
 test('供股比例可推导每股所需整数供股权份数并识别临时代码', () => {
   const parsed = parseSnippet('股份代號：01234。供股權代碼：02999。按每持有2股獲發1股供股股份，供股價為每股港幣6.25元。', '01234');
   assert.equal(parsed.rights_units_per_new_share, 2);

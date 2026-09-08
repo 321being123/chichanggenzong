@@ -50,6 +50,11 @@ test('巨潮证券名称中的 em 高亮标签会被清除', () => {
   assert.strictEqual(items[0].stockName, '湘财股份');
 });
 
+test('巨潮毫秒时间戳按上海本地日期解析，不提前归到前一天', () => {
+  assert.strictEqual(cninfo.parseCNINFODate(1788796800000), '2026-09-08');
+  assert.strictEqual(sync.todayShanghaiDate(new Date('2026-09-07T16:30:00.000Z')), '2026-09-08');
+});
+
 test('巨潮默认搜索关键词包含 UPDATE_KEYWORDS（终止/完成/换股实施）', () => {
   const all = [...cninfo.DISCOVERY_KEYWORDS, ...cninfo.UPDATE_KEYWORDS];
   assert.ok(all.includes('终止'), 'missing 终止');

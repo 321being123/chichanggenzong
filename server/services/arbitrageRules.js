@@ -26,6 +26,7 @@ function classifyDocumentRole(title) {
   const text = cleanSecurityText(title);
   if (classifyRiskAnnouncement(text)) return 'risk';
   if (/(完成过户|完成過戶|实施结果|實施結果|申报结果|申報結果|终止|終止|失效|撤回)/.test(text)) return 'terminal';
+  if (/(收购请求权|收購請求權|现金选择权|現金選擇權).{0,20}(实施公告|實施公告|行权公告|行權公告)/.test(text)) return 'amendment';
   if (/(董事会报告|董事會報告|财务顾问|財務顧問|法律意见|法律意見|估值报告|估值報告|核查意见|核查意見)/.test(text)) return 'advice';
   if (/(修订|修訂|补充|補充|更新)/.test(text)) return 'amendment';
   if (/(要约收购报告书|要約收購報告書|交易报告书|交易報告書|换股吸收合并.*报告书|換股吸收合併.*報告書|联合公告|聯合公告|计划安排|計劃安排)/.test(text)

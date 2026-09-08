@@ -1,5 +1,5 @@
 // ========== 套利公告同步调度任务 ==========
-// 每天 21:30（上海时间）增量同步，启动时执行断点补偿检查
+// 每天 08:30（上海时间）增量同步，启动时执行断点补偿检查
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const sync = require('../services/arbitrageAnnouncementSync');
 const { pool } = require('../db');
@@ -7,7 +7,7 @@ const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 
 const SYNC_JOB = 'arbitrage_sync';
 
-function nextShanghaiDelay(hour = 21, minute = 30, now = new Date()) {
+function nextShanghaiDelay(hour = 8, minute = 30, now = new Date()) {
   const shanghai = new Date(now.getTime() + 8 * 3600 * 1000);
   let target = Date.UTC(
     shanghai.getUTCFullYear(), shanghai.getUTCMonth(), shanghai.getUTCDate(),

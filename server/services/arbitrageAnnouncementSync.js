@@ -558,7 +558,13 @@ async function runSync(windows, isFirst) {
         const safeError = sanitizeJobError(err.message || err, 1000);
         await finishIngestionRun(runId, 0, safeError);
         results[scopeName].errors.push(`${win.from}~${win.to}: ${safeError}`);
-        results[scopeName].failureDetails.push({ code: err.code || 'JOB_FAILED', errorType: err.errorType || err.type || 'unknown', source: err.source || scopeName, error: err.message });
+        results[scopeName].failureDetails.push({
+          code: err.code || 'JOB_FAILED',
+          errorType: err.errorType || err.type || 'unknown',
+          source: err.source || scopeName,
+          recoverAt: err.recoverAt || null,
+          error: err.message,
+        });
         windowFailed = true;
         lastError = `${win.from}~${win.to}: ${safeError}`;
       }

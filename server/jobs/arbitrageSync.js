@@ -32,7 +32,18 @@ async function runArbitrageSync(reason = 'scheduled') {
       const sourceError = errors.length ? `；数据源错误：${errors.slice(0, 5).join(' | ')}` : '';
       const error = `套利公告同步未完整成功：PDF待重试 ${parsePending}，已达上限 ${parseExhausted}${sourceError}`;
       await finishJobRun(runId, false, error);
-      return { ok: false, error, detail, result, ...(failure ? { errorCode: failure.code, errorType: failure.errorType, source: failure.source } : {}) };
+      return {
+        ok: false,
+        error,
+        detail,
+        result,
+        ...(failure ? {
+          errorCode: failure.code,
+          errorType: failure.errorType,
+          source: failure.source,
+          recoverAt: failure.recoverAt,
+        } : {}),
+      };
     }
     await finishJobRun(runId, true, detail);
     return { ok: true, detail, result };

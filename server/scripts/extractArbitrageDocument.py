@@ -79,6 +79,16 @@ def download_pdf(url, dest):
     except Exception as e:
         if os.path.exists(dest):
             os.remove(dest)
+        if getattr(e, 'code', None):
+            recover_at = getattr(e, 'recover_at', None)
+            return False, {
+                'message': str(e),
+                'code': str(getattr(e, 'code', '')),
+                'error_type': getattr(e, 'error_type', None),
+                'source': getattr(e, 'source', None),
+                'api_name': getattr(e, 'api_name', None),
+                'recover_at': recover_at.isoformat() if recover_at else None,
+            }
         return False, str(e)
 
 # ========== 正则提取模式 ==========
@@ -947,7 +957,17 @@ def main():
         temp_pdf = tempfile.mktemp(suffix='.pdf')
         ok, err = download_pdf(source, temp_pdf)
         if not ok:
-            print(json.dumps({'error': f'Download failed: {err}'}))
+            if isinstance(err, dict):
+                print(json.dumps({
+                    'error': f"Download failed: {err.get('message', '')}",
+                    'error_code': err.get('code'),
+                    'error_type': err.get('error_type'),
+                    'source': err.get('source'),
+                    'api_name': err.get('api_name'),
+                    'recover_at': err.get('recover_at'),
+                }, ensure_ascii=False))
+            else:
+                print(json.dumps({'error': f'Download failed: {err}'}))
             sys.exit(1)
         file_path = temp_pdf
 

@@ -125,6 +125,11 @@ function runPythonExtraction(url, targetCode) {
             error.source = typed[2];
             error.apiName = typed[3] || '*';
           }
+          if (json.error_code) error.code = String(json.error_code).toUpperCase();
+          if (json.error_type) error.errorType = String(json.error_type);
+          if (json.source) error.source = String(json.source);
+          if (json.api_name) error.apiName = String(json.api_name);
+          if (json.recover_at) error.recoverAt = json.recover_at;
           return reject(error);
         }
         resolve(json);

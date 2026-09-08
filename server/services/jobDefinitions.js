@@ -56,7 +56,7 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'hk_ipo_postclose', label: '港股 IPO 盘后事实同步', hour: 18, minute: 10, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, dailyBudget: 0, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所配售结果、标题检索与事实层', mayConsumeQuota: true, externalSources: ['hkex'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'hk_ipo_enrichment', label: '港股 IPO 官方文件与日线补全', hour: 19, minute: 40, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, dailyBudget: 0, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所官方招股书/配售结果 PDF 与 hk_daily 上市后首日/五日覆盖', mayConsumeQuota: true, externalSources: ['hkex', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'arbitrage_sync', label: '套利公告同步', hour: 8, minute: 30, weekdays: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, requiresDataWatermark: true, reconcileByWatermark: true, sourceDescription: '港交所与巨潮资讯公告接口', mayConsumeQuota: true, externalSources: ['港交所', '巨潮资讯'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'arbitrage_reparse', label: '套利公告重新解析', manualOnly: true, requiresDataWatermark: false, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: '已入库公告 PDF 与本地解析器' },
+  { jobCode: 'arbitrage_reparse', label: '套利公告重新解析', manualOnly: true, requiresDataWatermark: false, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: '已入库官方公告 PDF 链接与本地解析器', mayConsumeQuota: true, externalSources: ['巨潮资讯', '港交所'], externalApis: ['cninfo', 'hkex'], maxExternalCallsPerRun: 600 },
   { jobCode: 'holiday_sync', label: '休市日历月度同步', hour: 7, minute: 0, weekdays: false, monthly: true, deadlineMinutes: 1440, catchupWindowMinutes: 43200, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'high', sourceDescription: 'Tushare 交易日历接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'site_analytics_retention', label: '网站统计数据保留清理', hour: 2, minute: 0, weekdays: false, deadlineMinutes: 120, catchupWindowMinutes: 360, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'normal', sourceDescription: '本地网站统计事实表与运行采样表', mayConsumeQuota: false, externalSources: [], externalApis: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
 ];
@@ -98,7 +98,9 @@ const JOB_CONTRACTS = {
   // 港交所 10 个分类最多各翻 50 页，巨潮 17 个关键词×2 市场最多各翻 2 页；
   // 600 次覆盖适配器自身上限，来源级 Guard 仍负责更细的分钟/日预算。
   'arbitrage_sync': { externalApis: ['hkex', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 4 },
-  'arbitrage_reparse': { externalApis: [], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: 0 },
+  // 重解析需要从已入库的巨潮/港交所官方 PDF 链接重新下载正文，再交给本地解析器。
+  // 600 次覆盖批量案件的 PDF 下载边界，来源级 Guard 仍负责更细的预算与并发保护。
+  'arbitrage_reparse': { externalApis: ['cninfo', 'hkex'], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: 600 },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 1 },
   'site_analytics_retention': { externalApis: [], producesDatasets: ['site_events', 'site_runtime_minute'], consumesDatasets: [], maxExternalCallsPerRun: 0 },
 };

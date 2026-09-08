@@ -64,8 +64,9 @@ for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(Array.isArray(definition.datasetDependencies), `${definition.jobCode} 缺少 datasetDependencies`);
   assert.ok(Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
 }
-assert.ok(definitions.JOB_DEFINITIONS.reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0) <= 80,
-  '常规任务声明调用预算不得超过每日80次目标');
+assert.ok(definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
+  .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0) <= 80,
+  '常规定时任务声明调用预算不得超过每日80次目标');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
 assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');
@@ -89,6 +90,8 @@ assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refre
 assert.strictEqual(definitions.getJobDefinition('convertible_bond_announcement_history_sync').maxExternalCallsPerRun, 600, '可转债公告同步上限必须覆盖交易所批量请求和官方 PDF 解析');
 assert.strictEqual(definitions.getJobDefinition('index_recent').dataDatePolicy, 'previous_trading_day', '指数补齐应按最近完整交易日验收');
 assert.strictEqual(definitions.getJobDefinition('arbitrage_sync').maxExternalCallsPerRun, 600, '套利公告单批上限必须覆盖两个适配器的分页边界');
+assert.strictEqual(definitions.getJobDefinition('arbitrage_reparse').maxExternalCallsPerRun, 600, '套利公告重解析上限必须覆盖已入库官方 PDF 下载');
+assert.deepStrictEqual(definitions.getJobDefinition('arbitrage_reparse').externalApis, ['cninfo', 'hkex'], '套利公告重解析必须声明官方 PDF 来源');
 assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share')).length, 1,
   'new_share在任务契约中只能有一个采集者');
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');

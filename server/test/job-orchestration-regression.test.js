@@ -162,7 +162,7 @@ assert(/const hasFailedDocument = docs\.some[\s\S]*if \(hasFailedDocument\)[\s\S
 assert(/acd\.parse_status='failed' AND acd\.document_role IN \('amendment','terms','summary','proposal'\)/.test(arbitrageParser), '只有条款类公告解析失败才可阻止案件验证，历史风险或终态文档不得污染条款状态');
 assert(/const payload = await parser\.parseAndStoreDocument/.test(arbitrageSync) && /if \(!payload\) continue/.test(arbitrageSync), 'PDF 解析被重试规则拦截时不得误计为解析成功');
 assert(/pg_try_advisory_lock\(\$1,\$2\)/.test(arbitrageParser) && /pg_advisory_unlock\(\$1,\$2\)/.test(arbitrageParser), 'PDF 解析资格判断和外部调用必须受文档级跨进程锁保护');
-assert(/const forceDocument = doc\.parser_version !== parser\.PARSER_VERSION/.test(arbitrageService)
+assert(/const forceDocument = doc\.parser_version !== parser\.PARSER_VERSION \|\| doc\.parse_status !== 'validated'/.test(arbitrageService)
   && /parseAndStoreDocument\(caseId,[\s\S]*forceDocument, true\)/.test(arbitrageService), '人工重新解析必须在同一文档锁内重置解析次数，并跳过同版本已成功公告');
 assert(/retrySignal/.test(arbitrageService) && /errorCode: String\(err\.code\)\.toUpperCase\(\)/.test(arbitrageService)
   && /errorCode: result\.errorCode/.test(arbitrageReparse), '套利重解析必须保留来源限速信号，交由统一等待队列恢复');

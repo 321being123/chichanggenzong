@@ -475,7 +475,7 @@ async function reparseCase(caseId) {
     eligibleCount++;
     try {
       // 首次版本升级会强制解析旧版本文档；同一案件因来源限速进入重试时，已成功文档走缓存，只补未完成文档。
-      const forceDocument = doc.parser_version !== parser.PARSER_VERSION;
+      const forceDocument = doc.parser_version !== parser.PARSER_VERSION || doc.parse_status !== 'validated';
       const payload = await parser.parseAndStoreDocument(caseId, doc.document_id, doc.url, row.canonical_code, role, forceDocument, true);
       if (payload) parsedCount++;
       else failedCount++;

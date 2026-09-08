@@ -92,8 +92,8 @@ try:
           _limit("tushare", "minute") == 450 and _limit("tushare", "day") is None)
     check("备用Tushare按2000积分官方频率和单凭据日止损线保护",
           _limit("tushare_backup", "minute") == 180 and _limit("tushare_backup", "day") == 90000)
-    check("巨潮默认日预算调整为500次",
-          _limit("cninfo", "minute") == 20 and _limit("cninfo", "day") == 500)
+    check("巨潮取消来源级日预算，仅保留分钟保护",
+          _limit("cninfo", "minute") == 20 and _limit("cninfo", "day") is None)
     check("腾讯不设置本系统分钟/日预算",
           _limit("tencent", "minute") is None and _limit("tencent", "day") is None)
 finally:

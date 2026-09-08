@@ -40,8 +40,8 @@ assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare'), { minute:
   '主 Tushare 必须按6000积分官方频率设置分钟保护，常规接口不设内部日总量');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare_backup'), { minute: 180, day: 90000 },
   '备用 Tushare 必须按2000积分官方频率和单凭据日止损线保护');
-assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: 20, day: 500 },
-  '巨潮默认日预算必须覆盖生产已观测峰值');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: 20, day: null },
+  '巨潮不预设来源级日总量，只保留分钟保护并记录日调用量');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tencent'), { minute: null, day: null },
   '腾讯当前不设置本系统分钟/日预算');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('sse'), { minute: null, day: null },

@@ -9,6 +9,11 @@ import sys
 import json
 import re
 import os
+import hashlib
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'ipo-report'))
 from external_call_guard import guarded_urlopen
@@ -45,8 +50,136 @@ def extract_text_from_pdf(file_path):
     except Exception as e:
         return None, str(e)
 
+
+PDF_CACHE_TTL_DAYS = 30
+PDF_CACHE_MAX_BYTES = 5 * 1024 * 1024 * 1024
+
+
+def pdf_cache_dir():
+    """公告 PDF 缓存目录，默认落在项目 data/，由 Worker 的写入白名单保护。"""
+    configured = str(os.environ.get('ARBITRAGE_PDF_CACHE_DIR', '') or '').strip()
+    if configured:
+        return Path(configured)
+    root = Path(__file__).resolve().parents[2]
+    return root / 'data' / 'arbitrage_pdf_cache'
+
+
+def pdf_cache_limits():
+    """读取可调缓存边界；无效配置回退到 30 天/5 GiB。"""
+    try:
+        ttl_days = int(os.environ.get('ARBITRAGE_PDF_CACHE_TTL_DAYS', PDF_CACHE_TTL_DAYS))
+    except (TypeError, ValueError):
+        ttl_days = PDF_CACHE_TTL_DAYS
+    try:
+        max_bytes = int(os.environ.get('ARBITRAGE_PDF_CACHE_MAX_BYTES', PDF_CACHE_MAX_BYTES))
+    except (TypeError, ValueError):
+        max_bytes = PDF_CACHE_MAX_BYTES
+    return max(ttl_days, 1), max(max_bytes, 1 * 1024 * 1024)
+
+
+def pdf_cache_path(url, cache_dir=None):
+    """按官方 URL 稳定命名，避免同一公告重复保存。"""
+    digest = hashlib.sha256(str(url).encode('utf-8')).hexdigest()
+    return Path(cache_dir or pdf_cache_dir()) / f'{digest}.pdf'
+
+
+def cleanup_pdf_cache(cache_dir=None, now=None):
+    """先清理超过 TTL 的文件，再按最旧优先将总量压回上限。"""
+    directory = Path(cache_dir or pdf_cache_dir())
+    directory.mkdir(parents=True, exist_ok=True)
+    ttl_days, max_bytes = pdf_cache_limits()
+    current = float(now if now is not None else time.time())
+    cutoff = current - ttl_days * 24 * 60 * 60
+    files = []
+    deleted_expired = 0
+    deleted_overflow = 0
+
+    # .part 是下载中间文件，异常退出后也按同一保留期回收。
+    for path in directory.glob('*'):
+        if not path.is_file() or path.suffix.lower() not in {'.pdf', '.part'}:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < cutoff:
+            try:
+                path.unlink()
+                deleted_expired += 1
+            except OSError:
+                pass
+            continue
+        if path.suffix.lower() == '.pdf':
+            files.append((stat.st_mtime, stat.st_size, path))
+
+    total_bytes = sum(size for _, size, _ in files)
+    for _, size, path in sorted(files, key=lambda item: (item[0], str(item[2]))):
+        if total_bytes <= max_bytes:
+            break
+        try:
+            path.unlink()
+            total_bytes -= size
+            deleted_overflow += 1
+        except OSError:
+            pass
+
+    return {
+        'total_bytes': max(total_bytes, 0),
+        'file_count': max(len(files) - deleted_overflow, 0),
+        'deleted_expired': deleted_expired,
+        'deleted_overflow': deleted_overflow,
+        'ttl_days': ttl_days,
+        'max_bytes': max_bytes,
+    }
+
+
+def get_cached_pdf(url, cache_dir=None, now=None):
+    """返回仍在保留期内的缓存文件；命中时不触发外部请求。"""
+    directory = Path(cache_dir or pdf_cache_dir())
+    cleanup_pdf_cache(directory, now=now)
+    path = pdf_cache_path(url, directory)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    ttl_days, _ = pdf_cache_limits()
+    current = float(now if now is not None else time.time())
+    if stat.st_size <= 0 or stat.st_mtime < current - ttl_days * 24 * 60 * 60:
+        return None
+    return path
+
+
+def download_pdf_to_cache(url):
+    """下载到缓存目录并原子改名；解析失败也保留 PDF 供后续重试复用。"""
+    directory = pdf_cache_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    cached = get_cached_pdf(url, directory)
+    if cached:
+        return cached, True, None
+
+    fd, temp_path = tempfile.mkstemp(prefix='arbitrage-', suffix='.part', dir=str(directory))
+    os.close(fd)
+    ok, err = download_pdf(url, temp_path)
+    if not ok:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        return None, False, err
+    target = pdf_cache_path(url, directory)
+    try:
+        os.replace(temp_path, target)
+    except OSError:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        return None, False, 'PDF cache replace failed'
+    cleanup_pdf_cache(directory)
+    return target, False, None
+
 def download_pdf(url, dest):
-    """下载 PDF 到本地临时文件"""
+    """下载 PDF 到指定路径；调用方负责决定是临时文件还是 30 天缓存。"""
     import urllib.request
     default_limit = 50 * 1024 * 1024
     try:
@@ -948,15 +1081,12 @@ def main():
         else:
             i += 1
 
-    temp_pdf = None
     file_path = source
 
     # 如果是 URL，先下载
     if source.startswith('http'):
-        import tempfile
-        temp_pdf = tempfile.mktemp(suffix='.pdf')
-        ok, err = download_pdf(source, temp_pdf)
-        if not ok:
+        file_path, cache_hit, err = download_pdf_to_cache(source)
+        if file_path is None:
             if isinstance(err, dict):
                 print(json.dumps({
                     'error': f"Download failed: {err.get('message', '')}",
@@ -969,12 +1099,11 @@ def main():
             else:
                 print(json.dumps({'error': f'Download failed: {err}'}))
             sys.exit(1)
-        file_path = temp_pdf
+    else:
+        cache_hit = False
 
     # 提取文本
     text, err = extract_text_from_pdf(file_path)
-    if temp_pdf and os.path.exists(temp_pdf):
-        os.remove(temp_pdf)
 
     if err:
         print(json.dumps({'error': f'PDF extraction failed: {err}'}))
@@ -987,6 +1116,8 @@ def main():
         result = {'error': 'parse_fields failed: ' + str(e), 'source': source}
     result['text_length'] = len(text) if text else 0
     result['source'] = source
+    result['pdf_cache_hit'] = cache_hit
+    result['pdf_cache_ttl_days'] = pdf_cache_limits()[0]
 
     output = json.dumps(result, ensure_ascii=False, indent=2)
     if output_path:

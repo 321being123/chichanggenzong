@@ -93,6 +93,18 @@ function pgConfig(dbName) {
       }
     });
 
+    const cninfoPolicy = await db.pool.query(
+      `SELECT p.api_name,p.credential_profile,p.internal_per_minute_limit,p.internal_daily_limit
+         FROM ops.source_endpoint_policies p
+         JOIN ops.data_sources ds ON ds.source_id=p.source_id
+        WHERE ds.source_code='cninfo'
+        ORDER BY p.api_name,p.credential_profile`
+    );
+    check('迁移145取消巨潮来源级日保护但保留分钟保护', () => {
+      assert.ok(cninfoPolicy.rows.length > 0, '缺少巨潮策略');
+      assert.ok(cninfoPolicy.rows.every(row => row.internal_per_minute_limit === 20 && row.internal_daily_limit === null));
+    });
+
     const knowledgeConstraints = await db.pool.query(
       `SELECT conname FROM pg_constraint
        WHERE conname = ANY($1::text[])`,

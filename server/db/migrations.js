@@ -5853,6 +5853,20 @@ async function migration144HkIpoP0Audit() {
   `);
 }
 
+// ========== 145：巨潮取消来源级日保护线 =============
+// 巨潮当前只保留分钟级内部保护；日调用量继续精确计数，但不由本站预设总量拦截，
+// 只有真实上游 429/额度错误才进入 external_circuits 并记录 opened_at/recover_at。
+async function migration145CninfoUnlimitedDailyBudget() {
+  await pool.query(`
+    UPDATE ops.source_endpoint_policies p
+       SET internal_daily_limit=NULL,
+           notes='巨潮仅保留20次/分钟内部保护；日调用量只计数不拦截，真实上游429/额度错误才记录熔断'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id
+       AND ds.source_code='cninfo';
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5998,6 +6012,7 @@ const MIGRATIONS = [
   { version: '142_hong_kong_ipo_facts', up: migration142HongKongIpoFacts },
   { version: '143_market_scoped_numeric_identity', up: migration143MarketScopedNumericIdentity },
   { version: '144_hk_ipo_p0_audit', up: migration144HkIpoP0Audit },
+  { version: '145_cninfo_unlimited_daily_budget', up: migration145CninfoUnlimitedDailyBudget },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

@@ -4,6 +4,7 @@ const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const sync = require('../services/arbitrageAnnouncementSync');
 const { pool } = require('../db');
 const { sanitizeJobError } = require('../services/jobErrorSanitizer');
+const { cleanupArbitragePdfCache } = require('../services/arbitragePdfCache');
 
 const SYNC_JOB = 'arbitrage_sync';
 
@@ -21,6 +22,7 @@ async function runArbitrageSync(reason = 'scheduled') {
   if (!(await tryClaimJob(SYNC_JOB))) return { skipped: true, reason: 'already_running' };
   let runId = null;
   try {
+    const pdfCache = cleanupArbitragePdfCache();
     runId = await startJobRun(SYNC_JOB);
     const result = await sync.runIncrementalSync();
     const errors = [...(result.hkex.errors || []), ...(result.cninfo.errors || [])];
@@ -36,6 +38,7 @@ async function runArbitrageSync(reason = 'scheduled') {
         ok: false,
         error,
         detail,
+        pdfCache,
         result,
         ...(failure ? {
           errorCode: failure.code,
@@ -46,7 +49,7 @@ async function runArbitrageSync(reason = 'scheduled') {
       };
     }
     await finishJobRun(runId, true, detail);
-    return { ok: true, detail, result };
+    return { ok: true, detail, pdfCache, result };
   } catch (error) {
     const safeError = sanitizeJobError(error.message || error, 1000);
     await finishJobRun(runId, false, safeError);

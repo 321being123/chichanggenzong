@@ -2,7 +2,7 @@
 // 数据源：https://www.cninfo.com.cn/new/hisAnnouncement/query
 // 用途：检索 A 股要约收购、现金选择权、换股吸收合并等公告
 const https = require('https');
-const { withExternalCallGuard } = require('./externalCallGuard');
+const { withExternalCallGuard, openExternalCircuit } = require('./externalCallGuard');
 
 const BASE_URL = 'https://www.cninfo.com.cn';
 const SEARCH_PATH = '/new/hisAnnouncement/query';
@@ -87,9 +87,22 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
   });
 }
 
-function httpRequest(urlStr, options = {}) {
-  return withExternalCallGuard('cninfo', `announcement:${urlStr}`, process.env.JOB_BUSINESS_DATE,
-    () => rawHttpRequest(urlStr, options));
+async function httpRequest(urlStr, options = {}) {
+  try {
+    return await withExternalCallGuard('cninfo', `announcement:${urlStr}`, process.env.JOB_BUSINESS_DATE,
+      () => rawHttpRequest(urlStr, options));
+  } catch (error) {
+    // 只有巨潮真实返回的 429/额度错误才记录来源熔断；本站 BUDGET_WAIT 不写熔断。
+    if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED'].includes(String(error.code || '').toUpperCase())) {
+      await openExternalCircuit('cninfo', error.message, {
+        apiName: '*',
+        errorCode: error.code,
+        errorType: error.errorType,
+        recoverAt: error.recoverAt,
+      }).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 // 规范化附件链接

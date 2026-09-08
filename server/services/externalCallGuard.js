@@ -27,8 +27,8 @@ function limit(name, fallback) {
 const DEFAULT_EXTERNAL_BUDGETS = Object.freeze({
   tushare: { minute: 450, day: null },
   tushare_backup: { minute: 180, day: 90000 },
-  // 巨潮曾发生熔断，保留既有来源级保护线，不用 Tushare 规则替代。
-  cninfo: { minute: 20, day: 500 },
+  // 巨潮只保留分钟级内部保护；日调用量只计数，不预设来源总量。
+  cninfo: { minute: 20, day: null },
   // 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
   tencent: { minute: null, day: null },
   // 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。

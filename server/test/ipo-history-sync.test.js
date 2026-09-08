@@ -89,6 +89,13 @@ const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'co
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate: backfillOpts\.targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');
 assert.match(bondJobSource, /BOND_ISSUE_RESULT_SCRIPT/, '新债发行结果补全脚本未接入');
+assert.match(bondJobSource, /backfillBondListingLiquidity/, '新债流通规模没有进入现有生命周期同步链路');
+assert.match(bondJobSource, /BOND_LIQUIDITY_SCRIPT/, '新债流通规模补全脚本未接入');
+const liquiditySource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'sync_bond_listing_liquidity.py'), 'utf8');
+assert.match(liquiditySource, /event_type='listing'/, '流通规模补全没有按上市事件增量筛选');
+assert.match(liquiditySource, /l\.instrument_id IS NULL/, '流通规模补全没有跳过已入库事实');
+assert.match(fetchSource, /_parse_listed_bond_quantity/, '上市公告书明确上市数量没有解析兜底');
+assert.match(fetchSource, /listed_quantity_fallback/, '上市数量兜底没有保留质量标记');
 
 const migrationSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
 assert.match(migrationSource, /071_deduplicate_instrument_events/, '重复发行事件没有独立迁移');

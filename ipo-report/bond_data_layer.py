@@ -260,6 +260,7 @@ def save_listing_liquidity(code, payload, listing_date=None):
     source_detail = {
         "source": payload.get("source"),
         "source_class": payload.get("source_class"),
+        "quality": payload.get("quality", "exact_controller_holder_match"),
     }
     cur.execute(
         """INSERT INTO analytics.convertible_bond_listing_liquidity

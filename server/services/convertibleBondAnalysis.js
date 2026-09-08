@@ -21,6 +21,7 @@ const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externa
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
 const BOND_ISSUE_RESULT_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_shd.py');
+const BOND_LIQUIDITY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'sync_bond_listing_liquidity.py');
 const PROFILE_FIELDS = [
   'ts_code','bond_full_name','bond_short_name','cb_type','stk_code','stk_short_name','maturity','par','issue_price',
   'issue_size','remain_size','value_date','maturity_date','rate_type','coupon_rate','add_rate','pay_per_year',
@@ -1547,6 +1548,48 @@ async function backfillBondIssueResults(reason = 'scheduled') {
   throw new Error(errors.join(' | ') || '未找到可用的 Python 解释器');
 }
 
+function runBondLiquidityBackfill(executable) {
+  return new Promise((resolve, reject) => {
+    const args = path.basename(executable).toLowerCase() === 'py'
+      ? ['-3', BOND_LIQUIDITY_SCRIPT]
+      : [BOND_LIQUIDITY_SCRIPT];
+    const days = String(process.env.IPO_BOND_LIQUIDITY_DAYS || '60');
+    const limit = String(process.env.IPO_BOND_LIQUIDITY_LIMIT || '5');
+    const child = spawn(executable, [...args, '--days', days, '--limit', limit], {
+      cwd: path.resolve(__dirname, '..', '..'),
+      env: childProcessEnv({ PYTHONUTF8: '1' }),
+      windowsHide: true,
+    });
+    let output = '', error = '';
+    const timer = setTimeout(() => child.kill(), 25 * 60 * 1000);
+    child.stdout.on('data', chunk => { output += chunk.toString(); });
+    child.stderr.on('data', chunk => { error += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', code => {
+      clearTimeout(timer);
+      mergeExternalCallStatsFromStderr(error);
+      if (code !== 0) return reject(new Error(error || output || `新债流通规模补全失败（${code}）`));
+      const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '{}';
+      try { resolve(JSON.parse(line)); }
+      catch (_) { reject(new Error(`新债流通规模补全结果格式错误: ${line.slice(0, 300)}`)); }
+    });
+  });
+}
+
+async function backfillBondListingLiquidity(reason = 'scheduled') {
+  if (!fs.existsSync(BOND_LIQUIDITY_SCRIPT)) return { ok: false, skipped: true, reason: 'script_missing' };
+  const errors = [];
+  for (const executable of pythonCandidates()) {
+    try {
+      const result = await runBondLiquidityBackfill(executable);
+      return { ...result, reason };
+    } catch (error) {
+      errors.push(`${executable}: ${error.message}`);
+    }
+  }
+  throw new Error(errors.join(' | ') || '未找到可用的 Python 解释器');
+}
+
 // 转股价发生变动时只登记数据问题，后续由历史公告解析链路补齐详情。
 async function handleConvPriceChanges(changes) {
   for (const change of changes) {
@@ -2153,6 +2196,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   }
   let lifecycle = null;
   let redemption = null;
+  let listingLiquidity = null;
   if (globalSync) {
     const officialEvents = uniqueAnnouncementEvents(Object.values(batchResults).flatMap(value => value && value.events || []));
     lifecycle = await require('./convertibleBondLifecycleSync').syncConvertibleBondLifecycleFacts({
@@ -2160,6 +2204,17 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
       officialEvents,
       includeTushare: mode === 'calendar',
     });
+    // 17:30 日历槽已经负责上市生命周期；在同一槽内增量抓取上市公告书，
+    // 避免日报生成阶段再访问巨潮，也不新增并行定时任务。
+    if (mode === 'calendar') {
+      try {
+        listingLiquidity = await backfillBondListingLiquidity('calendar_sync');
+        console.log(`[上市流通规模] 候选${listingLiquidity.candidates || 0}，保存${listingLiquidity.saved || 0}，失败${listingLiquidity.failed || 0}`);
+      } catch (liquidityError) {
+        listingLiquidity = { ok: false, error: liquidityError.message };
+        console.warn('[上市流通规模] 自动补全失败（不影响公告生命周期同步）：', liquidityError.message);
+      }
+    }
     redemption = await require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements({
       fromDate: scanStart || end,
       toDate: end,
@@ -2176,12 +2231,17 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   }
   return {
     ok: true, mode, dataAsOf: end, fromDate: scanStart || null, toDate: end, count: results.length, changed_count: changedCount,
-    cursorDate: cursorDate || null, lifecycle, redemption,
+    cursorDate: cursorDate || null, lifecycle, listingLiquidity, redemption,
     datasetDiagnostics: {
       bond_issuance_events: {
         quality_status: 'passed',
         issue_count: Number(lifecycle && lifecycle.issueCount || 0),
         official_count: Number(lifecycle && lifecycle.officialCount || 0),
+      },
+      bond_listing_liquidity: {
+        quality_status: listingLiquidity && listingLiquidity.ok !== false ? 'passed' : 'stale',
+        saved: Number(listingLiquidity && listingLiquidity.saved || 0),
+        failed: Number(listingLiquidity && listingLiquidity.failed || 0),
       },
       bond_announcement_facts: { quality_status: 'passed', changed_count: changedCount },
       bond_redemption_events: {
@@ -3110,5 +3170,5 @@ module.exports = {
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,
-  backfillMissingRatings, backfillBondFirstDayPerformance, backfillBondIssueResults,
+  backfillMissingRatings, backfillBondFirstDayPerformance, backfillBondIssueResults, backfillBondListingLiquidity,
 };

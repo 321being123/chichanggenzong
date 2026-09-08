@@ -255,6 +255,104 @@ def _parse_bond_top10_holders(text):
 
     return entries if entries else None
 
+
+def _parse_listed_bond_quantity(text):
+    """读取上市公告书明确给出的可转债上市数量（张）。"""
+    compact = re.sub(r'\s+', '', str(text or ''))
+    patterns = (
+        r'可转换公司债券上市数量[：:]\d[\d,]*(?:\.\d+)?(?:（万元）|\(万元\))(?P<zhang>[\d,]+)张',
+        r'可转换公司债券上市数量[：:](?P<zhang>[\d,]+)张',
+        r'上市数量[：:](?P<zhang>[\d,]+)张',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, compact)
+        if match:
+            try:
+                quantity = int(match.group('zhang').replace(',', ''))
+            except (TypeError, ValueError):
+                continue
+            if quantity > 0:
+                return quantity
+    return None
+
+
+def _parse_issue_result_liquidity(text, issue_scale):
+    """用发行结果公告的原股东配售总量，形成可审计的流通规模兜底值。"""
+    compact = re.sub(r'\s+', '', str(text or ''))
+    ps_zhang = None
+    patterns = (
+        r'原股东.{0,120}?配售(?:数量|数|可配售数量)?[为：:]?(?P<quantity>[\d,]+)(?P<unit>手|张)',
+        r'原股东.{0,120}?配售.{0,120}?(?P<quantity>[\d,]+)(?P<unit>手|张)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, compact)
+        if not match:
+            continue
+        try:
+            value = int(match.group('quantity').replace(',', ''))
+        except (TypeError, ValueError):
+            continue
+        ps_zhang = value * (10 if match.group('unit') == '手' else 1)
+        break
+    try:
+        total_zhang = int(float(issue_scale) * 100000000 / 100)
+    except (TypeError, ValueError):
+        total_zhang = 0
+    if not ps_zhang or total_zhang <= 0 or ps_zhang >= total_zhang:
+        return None
+    lock_scale = round(ps_zhang * 100 / 100000000, 4)
+    circulation_scale = round((total_zhang - ps_zhang) * 100 / 100000000, 4)
+    return {
+        "status": "ok",
+        "source_code": "cninfo_announcements",
+        "source_class": "cninfo_issue_result",
+        "lock_scale": lock_scale,
+        "circulation_scale": circulation_scale,
+        "ctrl_zhang": ps_zhang,
+        "total_zhang": total_zhang,
+        "ctrl_ratio": round(ps_zhang / total_zhang * 100, 2),
+        "source": "发行结果公告（原股东配售总量估算，等待上市公告书持有人明细校准）",
+        "quality": "estimated_original_shareholder_allotment",
+        "error": None,
+    }
+
+
+def _listed_quantity_fallback(text):
+    """上市公告书缺少持有人拆分时，使用公告明确的上市数量，并保留质量标记。"""
+    total_zhang = _parse_listed_bond_quantity(text)
+    if not total_zhang:
+        return None
+    circulation_scale = round(total_zhang * 100 / 100000000, 4)
+    return {
+        "status": "ok",
+        "source_code": "cninfo_announcements",
+        "source_class": "cninfo_listing_book_listed_quantity",
+        "lock_scale": 0,
+        "circulation_scale": circulation_scale,
+        "ctrl_zhang": 0,
+        "total_zhang": total_zhang,
+        "ctrl_ratio": 0,
+        "source": "上市公告书（公告明确上市数量兜底，未解析持有人拆分）",
+        "quality": "listed_quantity_fallback",
+        "error": None,
+    }
+
+
+def _download_cninfo_pdf_text(target):
+    """下载并提取一条巨潮公告 PDF，统一关闭临时会话。"""
+    session = _get_cninfo_session()
+    try:
+        pdf_url = f"http://static.cninfo.com.cn/{target['adjunctUrl']}"
+        response = session.get(pdf_url, timeout=30)
+        if response.status_code != 200:
+            return None, f"PDF下载失败(HTTP {response.status_code})"
+        doc = fitz.open(stream=response.content, filetype='pdf')
+        text = "".join(page.get_text() for page in doc)
+        doc.close()
+        return text, None
+    finally:
+        session.close()
+
 _FUND_HOLDER_RE = re.compile(r'基金|ETF|指数|证券投资|资产管理计划|资管计划|公募|私募')
 
 
@@ -516,23 +614,29 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
             if total_announcement is not None and len(seen) >= int(total_announcement):
                 break
 
-        # 优先找上市公告书，没有则尝试发行结果公告
+        # 优先找上市公告书，没有则尝试发行结果公告；保留两个候选，
+        # 因为部分上市公告书只有“上市数量”，持有人表格需从发行结果公告兜底。
         target = None
         source_type = ""
+        listing_target = None
+        issue_result_target = None
         for ann in announcements:
             title = ann.get("announcementTitle", "")
             normalized_title = re.sub(r"\s+", "", title)
             if "上市公告书" in normalized_title and ("可转换" in normalized_title or "可转债" in normalized_title):
-                target = ann
-                source_type = "上市公告书"
+                listing_target = ann
                 break
-        if not target:
-            for ann in announcements:
-                title = ann.get("announcementTitle", "")
-                if ("中签" in title and "配售" in title) or "发行结果" in title:
-                    target = ann
-                    source_type = "发行结果公告"
-                    break
+        for ann in announcements:
+            title = ann.get("announcementTitle", "")
+            if ("中签" in title and "配售" in title) or "发行结果" in title:
+                issue_result_target = ann
+                break
+        if listing_target:
+            target = listing_target
+            source_type = "上市公告书"
+        elif issue_result_target:
+            target = issue_result_target
+            source_type = "发行结果公告"
 
         if not target:
             cn_session.close()
@@ -547,29 +651,30 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
                 result["error"] = _listing_notice_error(notice)
             return result
 
-        # 下载PDF
-        pdf_url = f"http://static.cninfo.com.cn/{target['adjunctUrl']}"
-        resp_pdf = cn_session.get(pdf_url, timeout=30)
         cn_session.close()
-        if resp_pdf.status_code != 200:
+        text, download_error = _download_cninfo_pdf_text(target)
+        if download_error:
             return {
                 "status": "error",
                 "source_code": "cninfo_announcements",
                 "source_class": "cninfo_listing_book" if source_type == "上市公告书" else "cninfo_issue_result",
-                "error": f"PDF下载失败(HTTP {resp_pdf.status_code})",
+                "error": download_error,
             }
-
-        # 解析PDF文本
-        doc = fitz.open(stream=resp_pdf.content, filetype='pdf')
-        text = ""
-        for page in doc:
-            text += page.get_text()
-        doc.close()
 
         if source_type == "上市公告书":
             # ---- 从上市公告书解析精确限售数据 ----
             holders = _parse_bond_top10_holders(text)
             if not holders:
+                # 上市公告书的版式可能没有可解析的前十名持有人表格。
+                # 先尝试发行结果公告的原股东配售总量，再使用上市公告书明确的上市数量。
+                if issue_result_target and issue_result_target is not target:
+                    issue_text, _ = _download_cninfo_pdf_text(issue_result_target)
+                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
+                    if fallback:
+                        return fallback
+                fallback = _listed_quantity_fallback(text)
+                if fallback:
+                    return fallback
                 return {
                     "status": "error",
                     "source_code": "cninfo_announcements",
@@ -580,6 +685,14 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
             controller_names, controlled_entities = _extract_controller_names(text, holders)
 
             if not controller_names and not controlled_entities:
+                if issue_result_target and issue_result_target is not target:
+                    issue_text, _ = _download_cninfo_pdf_text(issue_result_target)
+                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
+                    if fallback:
+                        return fallback
+                fallback = _listed_quantity_fallback(text)
+                if fallback:
+                    return fallback
                 return {
                     "status": "error",
                     "source_code": "cninfo_announcements",
@@ -591,6 +704,14 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
             locked_holders = _match_controller_holders(holders, controller_names, controlled_entities)
 
             if not locked_holders:
+                if issue_result_target and issue_result_target is not target:
+                    issue_text, _ = _download_cninfo_pdf_text(issue_result_target)
+                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
+                    if fallback:
+                        return fallback
+                fallback = _listed_quantity_fallback(text)
+                if fallback:
+                    return fallback
                 holder_summary = '、'.join(f'{n}' for n, a, _ in holders[:5])
                 return {
                     "status": "error",
@@ -645,23 +766,15 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
 
         else:
             # ---- 发行结果公告：只有原股东配售总量，没有控股股东级别的细分解 ----
-            total_zhang = int(issue_scale * 100000000 / 100)
-            ps_zhang = None
-            m = re.search(r"原股东.{0,20}[配售].*?(\d[\d,]*)\s*手", text)
-            if m:
-                ps_zhang = int(m.group(1).replace(",", "")) * 10  # 手→张
-
-            web_zhang = None
-            m = re.search(r"网上社会公众投资者.{0,20}认购.*?(\d[\d,]*)\s*手", text)
-            if m:
-                web_zhang = int(m.group(1).replace(",", "")) * 10  # 手→张
-
+            result = _parse_issue_result_liquidity(text, issue_scale)
+            if result:
+                return result
             notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
             result = {
                 "status": "error",
                 "source_code": "cninfo_announcements",
                 "source_class": "cninfo_issue_result",
-                "error": f"仅找到发行结果公告，该公告仅有原股东配售总量(ps_zhang={ps_zhang}手)，无法区分控股股东/实控人的具体配售量，需等待上市公告书发布",
+                "error": "发行结果公告未解析出有效的原股东配售数量，无法形成流通规模",
             }
             if notice:
                 result["listing_notice"] = notice

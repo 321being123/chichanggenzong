@@ -115,7 +115,18 @@ function runPythonExtraction(url, targetCode) {
       if (!out.trim()) return reject(new Error('parser empty output (code ' + code + '): ' + err.slice(0, 300)));
       try {
         const json = JSON.parse(out);
-        if (json.error) return reject(new Error(json.error));
+        if (json.error) {
+          const message = String(json.error);
+          const typed = message.match(/\[(BUDGET_WAIT|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN)\]\[([^\]]+)\](?:\[([^\]]+)\])?/i);
+          const error = new Error(message);
+          if (typed) {
+            error.code = typed[1].toUpperCase();
+            error.errorType = ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED'].includes(error.code) ? 'rate_limit' : 'circuit_open';
+            error.source = typed[2];
+            error.apiName = typed[3] || '*';
+          }
+          return reject(error);
+        }
         resolve(json);
       } catch (e) {
         reject(new Error('parser output not JSON: ' + out.slice(0, 300)));

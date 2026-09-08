@@ -511,6 +511,41 @@ def _infer_short_name_by_code(text, code):
         return m2.group(1).strip()
     return None
 
+def _select_target_a_cash_matches(text, matches, short_name):
+    """从多标的报告的 A 股现金条款中只保留目标公司对应的条款。"""
+    if not short_name or not matches:
+        return matches
+
+    # 先收集报告中的证券简称。对每个价格，取其前方窗口内最近出现的公司名，
+    # 只有最近公司名是目标公司时才认定为目标条款。
+    names = []
+    for m in re.finditer(
+        r'(?:股票简称|证券简称|股票簡稱)[:：\s]*([^\s，。；、:：]{2,20})',
+        text,
+        re.I,
+    ):
+        name = m.group(1).strip()
+        if name and name not in names:
+            names.append(name)
+    if short_name not in names:
+        names.append(short_name)
+
+    target_norm = _norm_name(short_name)
+    selected = []
+    for price_match in matches:
+        window_start = max(0, price_match.start() - 600)
+        window = text[window_start:price_match.start()]
+        nearest_name = None
+        nearest_end = -1
+        for name in names:
+            for name_match in re.finditer(_flex_name_pattern(name), window):
+                if name_match.end() > nearest_end:
+                    nearest_name = name
+                    nearest_end = name_match.end()
+        if nearest_name and _norm_name(nearest_name) == target_norm:
+            selected.append(price_match)
+    return selected
+
 
 def _cn_yy(s):
     return {"五":"25","六":"26","七":"27","八":"28","九":"29"}.get(s, s)
@@ -639,10 +674,17 @@ def parse_fields(text, target_code=None):
         and re.fullmatch(r'\d{6}', str(target_code))
         and not re.fullmatch(r'2\d{5}', str(target_code))
     )
+    short_name = _infer_short_name_by_code(text, target_code) if target_code else None
 
-    # 先处理明确的 A 股人民币条款。取正文最后一条，覆盖报告书中“原价格→调整后价格”的历史并列披露。
+    # 先处理明确的 A 股人民币条款。已知目标公司时必须先按简称定位，
+    # 不能因为中金/东兴/信达在同一份报告书中并列披露，就把全文最后一条价格给所有案件。
     if is_standard_a_share:
         a_cash_matches = list(RE_A_SHARE_CASH_RIGHT.finditer(text))
+        if short_name and a_cash_matches:
+            target_matches = _select_target_a_cash_matches(text, a_cash_matches, short_name)
+            # 找不到目标简称时保持空集，后续改走目标公司具名条款，
+            # 不能把其他公司的 A 股价格当作当前目标价格。
+            a_cash_matches = target_matches
         if a_cash_matches:
             cash_m = a_cash_matches[-1]
             cash_val = _to_num(cash_m.group(1))
@@ -651,7 +693,6 @@ def parse_fields(text, target_code=None):
 
     # 做法：根据 target_code 反查公司简称，再取该简称附近的现金选择权/要约价格。
     if target_code and cash_val is None:
-        short_name = _infer_short_name_by_code(text, target_code)
         if short_name:
             best = None
             best_dist = float('inf')
@@ -688,7 +729,9 @@ def parse_fields(text, target_code=None):
                 cash_val, cash_m = named_best
                 cash_ev = {'field': 'cash_offer_price', 'value': cash_m.group(1), 'pos': cash_m.start()}
 
-    if cash_val is None:
+    # 已知 A 股目标但正文找不到该公司具名条款时，不使用其他公司的现金价兜底，
+    # 让案件进入不完整状态，避免跨主体串价。
+    if cash_val is None and not (is_standard_a_share and short_name):
         for _m in RE_CASH_OFFER.finditer(text):
             if is_standard_a_share and re.search(r'港幣|港元|港币|HKD|HK\$', _m.group(0), re.I):
                 continue

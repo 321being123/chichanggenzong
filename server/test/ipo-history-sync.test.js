@@ -29,11 +29,37 @@ assert.match(source, /"ingestion_run_id": run_id/, 'IPO事实分区缺少采集�
 assert.match(source, /"missing_listing_date_count": missing_listing_date_count/, 'IPO事实分区缺少上市日缺失诊断');
 
 const routeSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'ipo.js'), 'utf8');
+const hkexSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'hkexIpo.js'), 'utf8');
 assert.match(routeSource, /history_stage/, '新股历史没有阶段字段');
 assert.match(routeSource, /field_status/, '新股历史没有字段质量状态');
 assert.match(routeSource, /loadStockCalendar\(days\)/, '打新日历没有读取历史事实表');
 assert.match(routeSource, /h\.ipo_date <= to_char\(\(timezone\('Asia\/Shanghai', now\(\)\)\)::date/, '新股历史仍只按上市日过滤');
 assert.match(routeSource, /'industry'.*pending/s, '未上市新股行业字段未标记待补全');
+assert.match(routeSource, /security_name_cn/, '港股历史没有中文名称字段');
+assert.match(routeSource, /actual_return/, '港股历史没有实际涨幅字段');
+assert.match(routeSource, /lot_profit/, '港股历史没有单签收益字段');
+assert.match(routeSource, /online_lottery_rate/, '港股历史没有一手中签率字段');
+assert.match(routeSource, /allotment_at/, '港股历史没有配售结果日期字段');
+assert.match(routeSource, /application_fee_hkd/, '港股历史没有申请费用字段');
+assert.match(routeSource, /brokerage_fee_hkd/, '港股历史没有佣金字段');
+assert.match(routeSource, /public_oversubscription/, '港股历史没有超额认购倍数字段');
+assert.match(routeSource, /greenshoe_details/, '港股历史没有绿鞋保护字段');
+assert.match(routeSource, /greenshoe_protection_ratio/, '港股历史没有绿鞋保护比例字段');
+assert.match(routeSource, /greenshoe_final_public_offer_shares/, '港股历史没有最终公开发售股数字段');
+assert.match(hkexSource, /overAllocatedShares[\s\S]*publicOfferShares/, '绿鞋比例缺少历史缺口补全条件');
+assert.match(hkexSource, /finalPublicOfferShares/, '港股配发没有保存回拨后最终公开发售股数');
+assert.match(hkexSource, /final_public_offer_after_reallocation/, '绿鞋比例没有锁定回拨后最终公开发售口径');
+const ipoPageSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'ipo.js'), 'utf8');
+assert.match(ipoPageSource, /发行价（港元）/, '港股发行价标题没有标注港元');
+assert.match(ipoPageSource, /ipoHkStageLabel/, '港股阶段没有中文映射');
+assert.match(ipoPageSource, /ipoIntegerCell/, '港股每手股数没有整数格式化');
+assert.match(ipoPageSource, /ipoHkAllotmentCell/, '港股配售结果没有展示日期和一手中签率');
+assert.match(ipoPageSource, /申请费用（含佣金及征费，港元）/, '港股申请费用标题没有说明口径');
+assert.match(ipoPageSource, /预测涨幅.*实际涨幅.*单签收益（港元）/, '港股历史缺少三项表现列');
+assert.match(ipoPageSource, /超额认购倍数/, '港股历史缺少超额认购倍数列');
+assert.match(ipoPageSource, /ipoHkGreenshoeCell/, '港股历史缺少绿鞋保护展示');
+assert.match(ipoPageSource, /绿鞋\/公开发售/, '港股历史没有展示绿鞋保护比例');
+assert.match(ipoPageSource, /ratioRaw === null/, '绿鞋比例空值不能误显示为 0%');
 
 const bondSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'bondDataService.js'), 'utf8');
 assert.match(bondSource, /first_day_return/, '新债历史没有首日表现质量状态');

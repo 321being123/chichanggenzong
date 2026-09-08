@@ -25,6 +25,8 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   bond_safety_snapshot: { scopeKey: 'CN', snapshotSql: `SELECT row_count,COALESCE(source_updated_at,refreshed_at)::date::text AS data_as_of
     FROM bond_safety_snapshots WHERE publication_status='published' ORDER BY id DESC LIMIT 1`, table: 'bond_safety_snapshots' },
   hk_trade_rules: { scopeKey: 'HK', table: 'market.instrument_trade_rules', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(valid_from)::text AS data_as_of' },
+  hk_trade_calendar: { scopeKey: 'HK', table: 'market.trade_calendar', whereSql: "WHERE exchange='HKEX'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  hk_ipo_facts: { scopeKey: 'HK', table: 'public.ipo_history', whereSql: "WHERE market_code='HK'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT MAX(CASE WHEN updated_at::text ~ '^\\d{4}-\\d{2}-\\d{2}' THEN updated_at::date END) AS data_as_of` },
   arbitrage_cases: { scopeKey: 'GLOBAL', table: 'event.arbitrage_cases', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
   trade_calendar: { scopeKey: 'GLOBAL', table: 'market.trade_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
 });

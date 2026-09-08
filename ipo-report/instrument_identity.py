@@ -127,7 +127,7 @@ def clear_cache():
     _CACHE.clear()
 
 
-def ensure_instrument(canonical_code, name="", asset_class="stock", market="CN", exchange_code="", currency_code="CNY", list_date=None, status="listed", raw_data=None, company_name=None, conn=None):
+def ensure_instrument(canonical_code, name="", asset_class="stock", market="CN", exchange_code="", currency_code="CNY", list_date=None, status="listed", raw_data=None, company_name=None, identifiers=None, conn=None):
     """统一主档写入口；调用方可传入已有事务连接。"""
     own = conn is None
     connection = conn or db_pg.connect()
@@ -138,7 +138,9 @@ def ensure_instrument(canonical_code, name="", asset_class="stock", market="CN",
                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                    ON CONFLICT(canonical_code) DO UPDATE SET name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE core.instruments.name END,
                      asset_class=EXCLUDED.asset_class,market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,currency_code=EXCLUDED.currency_code,
-                     list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),status=EXCLUDED.status,
+                      list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
+                      status=CASE WHEN core.instruments.status='listed' AND EXCLUDED.status<>'listed'
+                                  THEN core.instruments.status ELSE EXCLUDED.status END,
                      raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()
                    RETURNING instrument_id""",
                 (str(canonical_code).strip().upper(), str(name or ""), asset_class, market, exchange_code, currency_code, list_date, status, json.dumps(raw_data or {}, ensure_ascii=False, default=str)),
@@ -160,15 +162,17 @@ def ensure_instrument(canonical_code, name="", asset_class="stock", market="CN",
                        VALUES(%s,%s,'issued_by',%s) ON CONFLICT(company_id,instrument_id,relation_type) DO NOTHING""",
                     (company_id, instrument_id, list_date),
                 )
-            cur.execute("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','eastmoney','sina')")
+            cur.execute("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','tencent','eastmoney','sina','xueqiu','hkex_announcements')")
             sources = {row[1]: row[0] for row in cur.fetchall()}
-            values = [
-                ("tushare", "ts_code", resolve_provider_code(canonical_code, "tushare", "ts_code", connection, asset_class)),
-            ]
-            for source, identifier_type in (("tencent", "quote_symbol"), ("eastmoney", "f10_code"), ("eastmoney", "guba_code"), ("sina", "symbol")):
-                value = resolve_provider_code(canonical_code, source, identifier_type, connection, asset_class)
-                if value:
-                    values.append((source, identifier_type, value))
+            values = list(identifiers or [])
+            if not values:
+                values = [
+                    ("tushare", "ts_code", resolve_provider_code(canonical_code, "tushare", "ts_code", connection, asset_class)),
+                ]
+                for source, identifier_type in (("tencent", "quote_symbol"), ("eastmoney", "f10_code"), ("eastmoney", "guba_code"), ("sina", "symbol")):
+                    value = resolve_provider_code(canonical_code, source, identifier_type, connection, asset_class)
+                    if value:
+                        values.append((source, identifier_type, value))
             for source, identifier_type, value in values:
                 if not value or sources.get(source) is None:
                     continue

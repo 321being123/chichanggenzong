@@ -21,7 +21,7 @@ from psycopg2.extras import Json, RealDictCursor
 
 from _common import _load_env, _tushare
 from external_call_guard import guarded_urlopen, get_external_call_stats
-from instrument_identity import resolve_provider_code
+from instrument_identity import ensure_instrument, resolve_canonical_code, resolve_provider_code
 
 _load_env()
 
@@ -93,6 +93,7 @@ def normalize_share(row):
     return {
         "security_code": code,
         "security_name": str(row.get("name") or "").strip(),
+        "market_code": "CN",
         "market_type": market_type,
         "board_key": board_key,
         "ipo_date": _date_text(row.get("ipo_date")),
@@ -106,6 +107,7 @@ def normalize_share(row):
         "online_lottery_rate": _positive(row.get("ballot")),
         "subscribe_upper_limit": _positive(row.get("limit_amount")),
         "circulation_mv": circulation_mv,
+        "ipo_status": "active",
         "source_payload": row,
     }
 
@@ -136,23 +138,48 @@ def sync_window(cur, today):
     return today - timedelta(days=730), today + timedelta(days=90), True
 
 
-def upsert_shares(cur, records):
+def upsert_shares(cur, records, as_of=None):
     codes = [row["security_code"] for row in records]
     cur.execute("SELECT security_code FROM ipo_history WHERE security_code = ANY(%s)", (codes,))
     existing = {row[0] for row in cur.fetchall()}
+    for record in records:
+        as_of_text = as_of.isoformat() if hasattr(as_of, "isoformat") else date.today().isoformat()
+        listing_text = str(record.get("listing_date") or "")[:10]
+        record["ipo_status"] = "listed" if listing_text and listing_text <= as_of_text else "active"
+        canonical = resolve_canonical_code(record["security_code"], "stock", cur.connection)
+        if not canonical:
+            raise ValueError(f"无法为 IPO 记录解析统一证券身份：{record['security_code']}")
+        exchange = "SH" if canonical.endswith(".SH") else ("BJ" if canonical.endswith(".BJ") else "SZ")
+        master = ensure_instrument(
+            canonical,
+            name=record.get("security_name") or canonical,
+            asset_class="stock",
+            market="CN",
+            exchange_code=exchange,
+            currency_code="CNY",
+            list_date=record.get("listing_date"),
+            status=record.get("ipo_status") or "active",
+            raw_data={"ipo_history": True, "source_payload": record.get("source_payload") or {}},
+            company_name=record.get("security_name") or canonical,
+            conn=cur.connection,
+        )
+        record["instrument_id"] = master["instrument_id"]
     sql = """
         INSERT INTO ipo_history AS old (
-          security_code,security_name,market_type,listing_date,board_key,updated_at,
+          security_code,security_name,market_code,market_type,listing_date,board_key,updated_at,
           issue_price,issue_pe,fund_raised,total_shares,online_shares,online_lottery_rate,
-          subscribe_upper_limit,circulation_mv,ipo_date,issue_pe_status,source_payload
+          subscribe_upper_limit,circulation_mv,ipo_date,issue_pe_status,source_payload,
+          instrument_id,ipo_status,ipo_status_at
         ) VALUES (
-          %(security_code)s,%(security_name)s,%(market_type)s,%(listing_date)s,%(board_key)s,
+          %(security_code)s,%(security_name)s,%(market_code)s,%(market_type)s,%(listing_date)s,%(board_key)s,
           to_char(now(),'YYYY-MM-DD HH24:MI:SS'),%(issue_price)s,%(issue_pe)s,%(fund_raised)s,
           %(total_shares)s,%(online_shares)s,%(online_lottery_rate)s,%(subscribe_upper_limit)s,
-          %(circulation_mv)s,%(ipo_date)s,%(issue_pe_status)s,%(source_payload)s
+          %(circulation_mv)s,%(ipo_date)s,%(issue_pe_status)s,%(source_payload)s,
+          %(instrument_id)s,%(ipo_status)s,now()
         )
         ON CONFLICT (security_code) DO UPDATE SET
           security_name=COALESCE(NULLIF(EXCLUDED.security_name,''),old.security_name),
+          market_code=COALESCE(NULLIF(EXCLUDED.market_code,''),old.market_code),
           market_type=COALESCE(NULLIF(EXCLUDED.market_type,''),old.market_type),
           listing_date=COALESCE(EXCLUDED.listing_date,old.listing_date),
           board_key=COALESCE(NULLIF(EXCLUDED.board_key,''),old.board_key),
@@ -166,6 +193,10 @@ def upsert_shares(cur, records):
           circulation_mv=COALESCE(EXCLUDED.circulation_mv,old.circulation_mv),
           ipo_date=COALESCE(EXCLUDED.ipo_date,old.ipo_date),
           issue_pe_status=CASE WHEN EXCLUDED.issue_pe_status<>'pending' THEN EXCLUDED.issue_pe_status ELSE old.issue_pe_status END,
+          instrument_id=COALESCE(EXCLUDED.instrument_id,old.instrument_id),
+          ipo_status=CASE WHEN old.ipo_status='listed' OR EXCLUDED.ipo_status='listed' THEN 'listed'
+                          ELSE COALESCE(NULLIF(EXCLUDED.ipo_status,''),old.ipo_status) END,
+          ipo_status_at=now(),
           source_payload=COALESCE(old.source_payload,'{}'::jsonb) || EXCLUDED.source_payload,
           updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
     """
@@ -200,7 +231,7 @@ def backfill_first_day(cur, now):
     cur.execute("""
       SELECT security_code,listing_date,issue_price,first_day_retry_count,first_day_last_attempt_at
         FROM ipo_history
-       WHERE listing_date >= %s AND listing_date <= %s AND ld_close_change IS NULL
+       WHERE market_code='CN' AND listing_date >= %s AND listing_date <= %s AND ld_close_change IS NULL
          AND issue_price IS NOT NULL AND COALESCE(first_day_retry_count,0) < 3
     """, (cutoff.isoformat(), today.isoformat()))
     updated = attempted = failed = 0
@@ -241,7 +272,7 @@ def enrich_stock_missing_details(cur, today, limit=10):
     cur.execute("""
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry
         FROM ipo_history
-       WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
          AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
               OR business_exposure = '{}'::jsonb)
          AND COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s
@@ -292,7 +323,7 @@ def enrich_stock_missing_details(cur, today, limit=10):
 
     cur.execute("""
       SELECT count(*) FROM ipo_history
-       WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
          AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
               OR business_exposure = '{}'::jsonb)
     """, (today_text,))
@@ -307,7 +338,7 @@ def update_quality(cur, today):
              issue_pe,issue_pe_status,industry,industry_pe,main_business,ld_close_change,
              COALESCE(data_quality_status,'{}'::jsonb)
         FROM ipo_history
-       WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
          AND ipo_date >= %s
     """, (today.isoformat(), (today - timedelta(days=730)).isoformat()))
     missing_records = 0
@@ -424,7 +455,7 @@ def publication_quality(cur, records, today, run_id):
     cur.execute(
         """SELECT security_code,security_name,ipo_date,listing_date
              FROM ipo_history
-            WHERE ipo_date=%s OR listing_date=%s""",
+            WHERE market_code='CN' AND (ipo_date=%s OR listing_date=%s)""",
         (target_date, target_date),
     )
     db_rows = cur.fetchall()
@@ -435,7 +466,7 @@ def publication_quality(cur, records, today, run_id):
     if source_with_listing:
         cur.execute(
             """SELECT security_code FROM ipo_history
-                WHERE security_code=ANY(%s) AND (listing_date IS NULL OR listing_date='')""",
+                WHERE market_code='CN' AND security_code=ANY(%s) AND (listing_date IS NULL OR listing_date='')""",
             (list(source_with_listing),),
         )
         unpersisted_listing = sorted(row[0] for row in cur.fetchall())
@@ -443,7 +474,7 @@ def publication_quality(cur, records, today, run_id):
         unpersisted_listing = []
     cur.execute(
         """SELECT COUNT(*) FROM ipo_history
-            WHERE ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+            WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
               AND ipo_date<=%s AND (listing_date IS NULL OR listing_date='')""",
         (today.isoformat(),),
     )
@@ -509,7 +540,7 @@ def run(today=None, mode="core"):
         if len(codes) != len(set(codes)):
             raise RuntimeError("Tushare new_share 返回重复证券代码")
         with connection.cursor() as cur:
-            inserted, refreshed = upsert_shares(cur, records)
+            inserted, refreshed = upsert_shares(cur, records, today)
             quality = update_quality(cur, today)
             dataset_diagnostics = publication_quality(cur, records, today, run_id)
             mark_cursor(cur, today)

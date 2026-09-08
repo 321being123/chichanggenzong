@@ -304,7 +304,12 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
        name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE core.instruments.name END,
        asset_class=EXCLUDED.asset_class,market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,
        currency_code=EXCLUDED.currency_code,list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
-       status=EXCLUDED.status,raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()
+       status=CASE
+                WHEN core.instruments.status IN ('introduction','gem_transfer','de_spac') THEN core.instruments.status
+                WHEN core.instruments.status='listed' AND EXCLUDED.status<>'listed' THEN core.instruments.status
+                ELSE EXCLUDED.status
+              END,
+       raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()
      RETURNING instrument_id,canonical_code,name`,
     [canonical, String(name || ''), assetClass, market, exchangeCode, currencyCode, listDate || null, status, JSON.stringify(rawData || {})]
   );
@@ -347,7 +352,7 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
       );
     }
   }
-  const sourceRows = await query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code=ANY($1::text[])`, [['tushare', 'tencent', 'eastmoney', 'sina', 'xueqiu']]);
+  const sourceRows = await query(`SELECT source_id,source_code FROM ops.data_sources WHERE source_code=ANY($1::text[])`, [['tushare', 'tencent', 'eastmoney', 'sina', 'xueqiu', 'hkex_announcements']]);
   const sourceMap = Object.fromEntries(sourceRows.rows.map(row => [row.source_code, row.source_id]));
   const wanted = identifiers.length ? identifiers : [
     ['tushare', 'ts_code', deriveProviderIdentifier(canonical, 'tushare', 'ts_code')],

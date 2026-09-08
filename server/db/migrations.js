@@ -5597,6 +5597,262 @@ async function migration139SiteAnalytics429() {
     ADD COLUMN IF NOT EXISTS status_429 BIGINT NOT NULL DEFAULT 0`);
 }
 
+// ========== 140：IPO 事实复用统一证券身份（方案第 17 节） =============
+// 首批只做兼容性加法：保留 security_code 主键，新增市场、生命周期和 instrument_id，
+// 让已有 A 股读写不受影响，同时为港股上市前后复用同一主档提供幂等关联。
+async function migration140IpoInstrumentIdentity() {
+  await pool.query(`
+    ALTER TABLE public.ipo_history
+      ADD COLUMN IF NOT EXISTS instrument_id BIGINT,
+      ADD COLUMN IF NOT EXISTS market_code TEXT NOT NULL DEFAULT 'CN',
+      ADD COLUMN IF NOT EXISTS ipo_status TEXT NOT NULL DEFAULT 'active',
+      ADD COLUMN IF NOT EXISTS ipo_status_at TIMESTAMPTZ;
+
+    UPDATE public.ipo_history
+       SET market_code='CN'
+     WHERE market_code IS NULL OR market_code='';
+
+    UPDATE public.ipo_history
+       SET ipo_status=CASE
+         WHEN listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+              AND listing_date::date <= (timezone('Asia/Shanghai', now()))::date THEN 'listed'
+         WHEN ipo_status IS NULL OR ipo_status='' THEN 'active'
+         ELSE ipo_status
+       END,
+       ipo_status_at=COALESCE(ipo_status_at, now());
+
+    WITH candidates AS (
+      SELECT h.security_code, MIN(i.instrument_id) AS instrument_id
+        FROM public.ipo_history h
+        JOIN core.instruments i
+          ON i.asset_class='stock'
+         AND i.market='CN'
+         AND regexp_replace(i.canonical_code,'[^0-9]','','g')=
+             regexp_replace(h.security_code,'[^0-9]','','g')
+       WHERE h.market_code='CN' AND h.instrument_id IS NULL
+       GROUP BY h.security_code
+      HAVING COUNT(DISTINCT i.instrument_id)=1
+    )
+    UPDATE public.ipo_history h
+       SET instrument_id=c.instrument_id
+      FROM candidates c
+     WHERE h.security_code=c.security_code AND h.instrument_id IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_instrument_id
+      ON public.ipo_history(instrument_id);
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_market_ipo_date
+      ON public.ipo_history(market_code,ipo_date DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_ipo_history_market_instrument
+      ON public.ipo_history(market_code,instrument_id)
+      WHERE instrument_id IS NOT NULL;
+
+    UPDATE ops.source_endpoint_policies p
+       SET official_per_minute_limit=NULL,
+           official_daily_limit=NULL,
+           internal_per_minute_limit=60,
+           internal_daily_limit=2000,
+           max_concurrency=1,
+           min_interval_ms=500,
+           row_limit=100,
+           timeout_ms=15000,
+           notes='港交所官方入口与分类事实；60次/分钟、2000次/日为本项目内部保护线，不是港交所官方配额；适配器响应上限5MB、分页100条、最多50页'
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id
+       AND ds.source_code='hkex'
+       AND p.api_name='*'
+       AND p.credential_profile='anonymous';
+  `);
+
+  const fk = await pool.query(`
+    SELECT 1 FROM pg_constraint
+     WHERE conname='fk_ipo_history_instrument_id'
+       AND conrelid='public.ipo_history'::regclass
+  `);
+  if (fk.rowCount === 0) {
+    await pool.query(`
+      ALTER TABLE public.ipo_history
+        ADD CONSTRAINT fk_ipo_history_instrument_id
+        FOREIGN KEY (instrument_id) REFERENCES core.instruments(instrument_id)
+        ON DELETE SET NULL NOT VALID
+    `);
+  }
+
+  const statusCheck = await pool.query(`
+    SELECT 1 FROM pg_constraint
+     WHERE conname='ck_ipo_history_status'
+       AND conrelid='public.ipo_history'::regclass
+  `);
+  if (statusCheck.rowCount === 0) {
+    await pool.query(`
+      ALTER TABLE public.ipo_history
+        ADD CONSTRAINT ck_ipo_history_status CHECK (ipo_status IN (
+          'active','priced','allotted','listed','postponed','withdrawn','rejected',
+          'lapsed','returned','cancelled','introduction','gem_transfer','de_spac'
+        )) NOT VALID
+    `);
+  }
+}
+
+// ========== 141：补齐既有 IPO 事实的缺失主档 =============
+// 迁移 140 只回填已有主档；对历史 IPO 中尚未进入股票主档的证券，按明确市场规则创建候选身份，
+// 避免同一 IPO 事实长期悬空。后续正式主档同步仍可复用并更新这条 instrument_id。
+async function migration141BackfillIpoIdentityGaps() {
+  await pool.query(`
+    WITH missing AS (
+      SELECT h.security_code, h.security_name, h.listing_date, h.ipo_status,
+             CASE
+               WHEN h.security_code ~ '^(920|82|83|87|43)' THEN h.security_code || '.BJ'
+               WHEN h.security_code ~ '^(6|68)' THEN h.security_code || '.SH'
+               ELSE h.security_code || '.SZ'
+             END AS canonical_code
+        FROM public.ipo_history h
+       WHERE h.market_code='CN' AND h.instrument_id IS NULL
+         AND h.security_code ~ '^[0-9]{6}$'
+    )
+    INSERT INTO core.instruments(
+      canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data
+    )
+    SELECT canonical_code,COALESCE(NULLIF(security_name,''),canonical_code),'stock','CN',
+           split_part(canonical_code,'.',2),'CNY',
+           CASE WHEN listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN listing_date::date END,
+           COALESCE(NULLIF(ipo_status,''),'active'),
+           jsonb_build_object('backfill','migration141','ipo_history',true)
+      FROM missing
+    ON CONFLICT(canonical_code) DO UPDATE SET
+      name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE core.instruments.name END,
+      list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
+      status=CASE WHEN core.instruments.status='listed' AND EXCLUDED.status<>'listed'
+                  THEN core.instruments.status ELSE EXCLUDED.status END,
+      raw_data=core.instruments.raw_data || EXCLUDED.raw_data,
+      updated_at=now();
+
+    UPDATE public.ipo_history h
+       SET instrument_id=i.instrument_id
+      FROM core.instruments i
+     WHERE h.market_code='CN'
+       AND h.instrument_id IS NULL
+       AND i.asset_class='stock' AND i.market='CN'
+       AND i.canonical_code=CASE
+         WHEN h.security_code ~ '^(920|82|83|87|43)' THEN h.security_code || '.BJ'
+         WHEN h.security_code ~ '^(6|68)' THEN h.security_code || '.SH'
+         ELSE h.security_code || '.SZ'
+       END;
+  `);
+}
+
+// ========== 142：港股 IPO 事实字段、事件阶段与研究快照 =============
+// 只扩展事实层，不生成正式投资建议。港股公开发行的阶段日期、费用和结构字段允许为空，
+// 由官方披露易/新上市公告逐步补齐；空值必须在接口中明确为待公告或待补全。
+async function migration142HongKongIpoFacts() {
+  await pool.query(`
+    -- 港股五位代码与 A 股六位代码可能去前导零后相同，唯一性必须包含市场维度。
+    DROP INDEX IF EXISTS uq_instruments_numeric_identity;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_instruments_numeric_identity
+      ON core.instruments(asset_class,upper(market),(regexp_replace(canonical_code,'\\D','','g')))
+      WHERE (asset_class='stock' AND canonical_code ~ '^\\d{5,6}\\.(SH|SZ|BJ|HK)$')
+         OR (asset_class='convertible_bond' AND canonical_code ~ '^\\d{6}\\.(SH|SZ)$');
+
+    ALTER TABLE public.ipo_history
+      ADD COLUMN IF NOT EXISTS offer_open_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS offer_close_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS pricing_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS allotment_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS listing_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS issue_price_low NUMERIC(20,8),
+      ADD COLUMN IF NOT EXISTS issue_price_high NUMERIC(20,8),
+      ADD COLUMN IF NOT EXISTS issue_price_final NUMERIC(20,8),
+      ADD COLUMN IF NOT EXISTS lot_size_shares NUMERIC(20,4),
+      ADD COLUMN IF NOT EXISTS lot_amount_hkd NUMERIC(20,4),
+      ADD COLUMN IF NOT EXISTS application_fee_hkd NUMERIC(20,4),
+      ADD COLUMN IF NOT EXISTS brokerage_fee_hkd NUMERIC(20,4),
+      ADD COLUMN IF NOT EXISTS public_offer_ratio NUMERIC(12,8),
+      ADD COLUMN IF NOT EXISTS international_offer_ratio NUMERIC(12,8),
+      ADD COLUMN IF NOT EXISTS cornerstone_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS greenshoe_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS source_documents JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS data_completeness JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS facts_published_at TIMESTAMPTZ;
+
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_hk_offer_open
+      ON public.ipo_history(market_code,offer_open_at)
+      WHERE market_code='HK';
+    CREATE INDEX IF NOT EXISTS idx_ipo_history_hk_listing_at
+      ON public.ipo_history(market_code,listing_at)
+      WHERE market_code='HK';
+
+    ALTER TABLE event.instrument_events ADD COLUMN IF NOT EXISTS event_at TIMESTAMPTZ;
+    UPDATE event.instrument_events SET event_at=event_date::timestamptz WHERE event_at IS NULL;
+    ALTER TABLE event.instrument_events DROP CONSTRAINT IF EXISTS instrument_events_event_type_check;
+    ALTER TABLE event.instrument_events DROP CONSTRAINT IF EXISTS ck_instrument_events_event_type;
+    ALTER TABLE event.instrument_events ADD CONSTRAINT ck_instrument_events_event_type CHECK (event_type IN (
+      'issue_announcement','shareholder_record','online_subscription','result_announcement','listing',
+      'offer_open','offer_close','pricing','allotment_result','hk_listing'
+    )) NOT VALID;
+    CREATE INDEX IF NOT EXISTS idx_instrument_events_event_at
+      ON event.instrument_events(event_type,event_at DESC);
+
+    CREATE TABLE IF NOT EXISTS analytics.ipo_recommendation_snapshots (
+      snapshot_id BIGSERIAL PRIMARY KEY,
+      instrument_id BIGINT NOT NULL REFERENCES core.instruments(instrument_id) ON DELETE CASCADE,
+      market_code TEXT NOT NULL CHECK (market_code IN ('CN','HK')),
+      stage TEXT NOT NULL CHECK (stage IN ('facts','research','formal')),
+      as_of_date DATE NOT NULL,
+      model_version TEXT NOT NULL,
+      score NUMERIC(12,6),
+      advice TEXT,
+      risk_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
+      input_completeness JSONB NOT NULL DEFAULT '{}'::jsonb,
+      data_as_of DATE,
+      published_at TIMESTAMPTZ,
+      is_stale BOOLEAN NOT NULL DEFAULT false,
+      stale_reason TEXT NOT NULL DEFAULT '',
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(instrument_id,stage,as_of_date,model_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ipo_recommendation_snapshots_market_date
+      ON analytics.ipo_recommendation_snapshots(market_code,as_of_date DESC,stage);
+  `);
+}
+
+// ========== 143：证券数字代码唯一性补充市场维度 =============
+// 兼容已经执行 142 的数据库；00700.HK 与 000700.SZ 不能因去前导零后相同而互相阻塞。
+async function migration143MarketScopedNumericIdentity() {
+  await pool.query(`
+    DROP INDEX IF EXISTS uq_instruments_numeric_identity;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_instruments_numeric_identity
+      ON core.instruments(asset_class,upper(market),(regexp_replace(canonical_code,'\\D','','g')))
+      WHERE (asset_class='stock' AND canonical_code ~ '^\\d{5,6}\\.(SH|SZ|BJ|HK)$')
+         OR (asset_class='convertible_bond' AND canonical_code ~ '^\\d{6}\\.(SH|SZ)$');
+  `);
+}
+
+// ========== 144：港股 IPO P0 探针、覆盖与回测审计 =============
+async function migration144HkIpoP0Audit() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS analytics.hk_ipo_backtests (
+      backtest_id BIGSERIAL PRIMARY KEY,
+      model_version TEXT NOT NULL,
+      from_date DATE NOT NULL,
+      to_date DATE NOT NULL,
+      candidate_count INTEGER NOT NULL DEFAULT 0,
+      eligible_count INTEGER NOT NULL DEFAULT 0,
+      test_count INTEGER NOT NULL DEFAULT 0,
+      first_day_coverage NUMERIC(8,6) NOT NULL DEFAULT 0,
+      five_day_coverage NUMERIC(8,6) NOT NULL DEFAULT 0,
+      metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+      windows JSONB NOT NULL DEFAULT '[]'::jsonb,
+      gate_status TEXT NOT NULL CHECK (gate_status IN ('blocked','passed')),
+      gate_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+      input_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_hk_ipo_backtests_created
+      ON analytics.hk_ipo_backtests(created_at DESC);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -5737,6 +5993,11 @@ const MIGRATIONS = [
   { version: '137_convertible_bond_exchange_announcement_unlimited', up: migration137ConvertibleBondExchangeAnnouncementUnlimited },
   { version: '138_site_analytics', up: migration138SiteAnalytics },
   { version: '139_site_analytics_429', up: migration139SiteAnalytics429 },
+  { version: '140_ipo_instrument_identity', up: migration140IpoInstrumentIdentity },
+  { version: '141_backfill_ipo_identity_gaps', up: migration141BackfillIpoIdentityGaps },
+  { version: '142_hong_kong_ipo_facts', up: migration142HongKongIpoFacts },
+  { version: '143_market_scoped_numeric_identity', up: migration143MarketScopedNumericIdentity },
+  { version: '144_hk_ipo_p0_audit', up: migration144HkIpoP0Audit },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6341,6 +6602,11 @@ module.exports = {
   migration136ConvertibleBondRedemptionStatusParity,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
+  migration140IpoInstrumentIdentity,
+  migration141BackfillIpoIdentityGaps,
+  migration142HongKongIpoFacts,
+  migration143MarketScopedNumericIdentity,
+  migration144HkIpoP0Audit,
   ensureMigrationsTable,
   runMigration,
   runMigrations,

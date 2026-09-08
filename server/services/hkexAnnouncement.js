@@ -7,7 +7,9 @@ const { withExternalCallGuard } = require('./externalCallGuard');
 
 const BASE_URL = 'https://www1.hkexnews.hk';
 const SEARCH_PATH = '/search/titleSearchServlet.do';
-const ALLOWED_DOMAIN = 'www1.hkexnews.hk';
+// 仅允许港交所官方站点：披露易 www1/www2 与新上市页面主站/备用站。
+const ALLOWED_DOMAINS = new Set(['www1.hkexnews.hk', 'www2.hkexnews.hk', 'www.hkex.com.hk', 'www2.hkex.com.hk']);
+const ALLOWED_DOMAIN = 'www1.hkexnews.hk'; // 兼容旧调用方；新入口统一使用 ALLOWED_DOMAINS
 
 // 方案 4.2 检索分类：港交所「披露易」的二级分类代码（t2code）
 // 顶层类目固定为 t1code=10000（Announcements and Notices），category=0，实际分类放入 t2code。
@@ -24,10 +26,10 @@ const HKEX_CATEGORIES = [
 const TIMEOUT_MS = 15000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB
 
-function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
+function rawHttpRequest(urlStr, { method = 'GET', body, responseType = 'text', maxResponseBytes = MAX_RESPONSE_BYTES } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(urlStr);
-    if (u.hostname !== ALLOWED_DOMAIN) {
+    if (!ALLOWED_DOMAINS.has(u.hostname)) {
       return reject(new Error('Domain not in whitelist: ' + u.hostname));
     }
     const options = {
@@ -51,10 +53,10 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
         // 跟随重定向，但校验目标域名
         const redirectUrl = new URL(res.headers.location, urlStr).href;
         const redirectHost = new URL(redirectUrl).hostname;
-        if (redirectHost !== ALLOWED_DOMAIN) {
+        if (!ALLOWED_DOMAINS.has(redirectHost)) {
           return reject(new Error('Redirect to non-whitelisted domain: ' + redirectHost));
         }
-          return resolve(rawHttpRequest(redirectUrl, { method, body }));
+        return resolve(rawHttpRequest(redirectUrl, { method, body, responseType, maxResponseBytes }));
       }
       if (res.statusCode !== 200) {
         const error = new Error('HKEX HTTP ' + res.statusCode);
@@ -67,7 +69,7 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
       let totalLen = 0;
       res.on('data', (chunk) => {
         totalLen += chunk.length;
-        if (totalLen > MAX_RESPONSE_BYTES) {
+        if (totalLen > maxResponseBytes) {
           req.destroy();
           reject(new Error('Response exceeds size limit'));
           return;
@@ -75,7 +77,8 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
         chunks.push(chunk);
       });
       res.on('end', () => {
-        resolve(Buffer.concat(chunks).toString('utf8'));
+        const buffer = Buffer.concat(chunks);
+        resolve(responseType === 'buffer' ? buffer : buffer.toString('utf8'));
       });
     });
     req.on('timeout', () => { req.destroy(); reject(new Error('HKEX request timeout')); });
@@ -103,7 +106,7 @@ function normalizeFileLink(link) {
   const full = link.startsWith('http') ? link : (BASE_URL + link);
   try {
     const u = new URL(full);
-    if (u.hostname !== ALLOWED_DOMAIN) return '';
+    if (!ALLOWED_DOMAINS.has(u.hostname)) return '';
     return full;
   } catch { return ''; }
 }
@@ -178,7 +181,7 @@ const HKEX_MAX_PAGES = 50;
 // 构造官方披露易 titleSearchServlet.do 检索 URL（严格对齐官方请求契约）
 //   lang=zh；searchType=1；sortDir=0；t2Gcode 为空；category=0；t1code=10000（公告及通函顶层类目）；
 //   实际二级分类放入 t2code；fromDate/toDate 使用 YYYYMMDD；documentType=-1。
-function buildSearchUrl(category, fromDate, toDate, rowRange) {
+function buildSearchUrl(category, fromDate, toDate, rowRange, { t1code = '10000', t2Gcode = '' } = {}) {
   const params = new URLSearchParams({
     lang: 'zh',
     searchType: '1',
@@ -186,10 +189,10 @@ function buildSearchUrl(category, fromDate, toDate, rowRange) {
     market: 'SEHK',
     fromDate: toHKEXDate(fromDate),
     toDate: toHKEXDate(toDate),
-    t1code: '10000',
+    t1code: String(t1code),
     t2code: category,
     t3code: '-2',
-    t2Gcode: '',
+    t2Gcode: String(t2Gcode),
     documentType: '-1',
     sortByOptions: 'DateTime',
     sortDir: '0',
@@ -200,7 +203,7 @@ function buildSearchUrl(category, fromDate, toDate, rowRange) {
 }
 
 // 搜索港交所公告（自动翻页：按 hasNextRow + rowRange 遍历全部结果）
-async function searchAnnouncements({ fromDate, toDate, categories, _httpRequest } = {}) {
+async function searchAnnouncements({ fromDate, toDate, categories, t1code = '10000', t2Gcode = '', _httpRequest } = {}) {
   const fetch = _httpRequest || httpRequest;
   const cats = categories && categories.length ? categories : HKEX_CATEGORIES;
   const results = [];
@@ -208,7 +211,7 @@ async function searchAnnouncements({ fromDate, toDate, categories, _httpRequest 
     // 首批请求从 HKEX_PAGE_SIZE(100) 开始：港交所 rowRange=0 返回 0 条，rowRange=100 才返回数据
     let rowRange = HKEX_PAGE_SIZE;
     for (let page = 0; page < HKEX_MAX_PAGES; page++) {
-      const url = buildSearchUrl(cat, fromDate, toDate, rowRange);
+      const url = buildSearchUrl(cat, fromDate, toDate, rowRange, { t1code, t2Gcode });
       const text = await fetch(url);
       const { items, hasNextRow } = parseSearchResponse(text);
       results.push(...items);
@@ -228,4 +231,5 @@ module.exports = {
   HKEX_CATEGORIES,
   httpRequest,
   ALLOWED_DOMAIN,
+  ALLOWED_DOMAINS,
 };

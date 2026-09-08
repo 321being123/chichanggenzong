@@ -656,6 +656,11 @@
     <div class="table-wrap" style="margin-top:18px;">
       <div class="table-header">
         <h3>打新日历</h3>
+        <div style="display:flex;gap:6px;">
+          <button class="period-btn active" data-ipo-market="CN" onclick="ipoSwitchMarket('CN')">A股</button>
+          <button class="period-btn" data-ipo-market="HK" onclick="ipoSwitchMarket('HK')">港股</button>
+          <button class="period-btn" data-ipo-market="ALL" onclick="ipoSwitchMarket('ALL')">全部</button>
+        </div>
       </div>
       <div class="ipo-content" style="padding:18px;">
         <div id="ipo-calendar"></div>
@@ -666,8 +671,9 @@
       <div class="table-header">
         <h3>打新历史</h3>
         <div style="display:flex;gap:6px;">
-          <button class="period-btn active" data-ipo-hist="stock" onclick="ipoSwitchHist('stock')">新股</button>
-          <button class="period-btn" data-ipo-hist="bond" onclick="ipoSwitchHist('bond')">新债</button>
+          <button class="period-btn active" data-ipo-hist="stock" onclick="ipoSwitchHist('stock')">A股</button>
+          <button class="period-btn" data-ipo-hist="hk_stock" onclick="ipoSwitchHist('hk_stock')">港股</button>
+          <button class="period-btn" data-ipo-hist="bond" onclick="ipoSwitchHist('bond')">可转债</button>
         </div>
       </div>
       <div style="padding:18px;">
@@ -1203,7 +1209,7 @@
 <script src="shared/date-range-control.js?v=0.8.0.8" defer></script>
 <script src="vendor/marked.min.js?v=20260904" defer></script>
 <script src="vendor/dompurify.min.js?v=20260904" defer></script>
-<script src="js/ipo.js?v=0.8.0.8" defer></script>
+<script src="js/ipo.js?v=0.8.0.15" defer></script>
 <script src="js/bond-safety.js?v=12" defer></script>
 <script src="js/bond-cycle.js?v=0.8.0.12" defer></script>
 <script src="js/bond-valuation.js?v=0.8.0.8" defer></script>

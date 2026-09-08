@@ -6,6 +6,7 @@ const path = require('path');
 const { pool } = require('../db');
 const { requireLogin } = require('../middleware/auth');
 const { getBondBySecurityCode, getBondHistoryList } = require('../services/bondDataService');
+const { getHkFormalGateStatus } = require('../services/hkIpoBacktest');
 
 function isBeijingStock(code) {
   return /^(920|82|83|87|43)/.test(String(code || ''));
@@ -56,6 +57,24 @@ function valueOrDash(value, suffix = '') {
 function calendarDay(date) {
   return { date, weekday: new Intl.DateTimeFormat('zh-CN', { weekday: 'short', timeZone: 'Asia/Shanghai' }).format(new Date(`${date}T00:00:00+08:00`)),
     apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };
+}
+
+function mergeCalendarDays(...calendars) {
+  const byDate = new Map();
+  for (const calendar of calendars.flat()) {
+    if (!calendar || !calendar.date) continue;
+    const target = byDate.get(calendar.date) || calendarDay(calendar.date);
+    for (const key of ['apply_stocks', 'apply_bonds', 'list_stocks', 'list_bonds']) {
+      const existing = target[key] || [];
+      const incoming = Array.isArray(calendar[key]) ? calendar[key] : [];
+      const unique = new Map(existing.concat(incoming).map(item => [
+        item.secu_code || item.code || item.name || '', item,
+      ]));
+      target[key] = [...unique.values()];
+    }
+    byDate.set(calendar.date, target);
+  }
+  return [...byDate.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
 
 function trimCalendar(calendar, days) {
@@ -111,32 +130,32 @@ function stockFieldStatusSql(alias = 'h') {
   )`;
 }
 
-async function loadStockCalendar(days) {
+async function loadStockCalendar(days, market = 'CN') {
   const { rows } = await pool.query(
     `WITH bounds AS (
        SELECT (timezone('Asia/Shanghai', now()))::date AS start_date,
               (timezone('Asia/Shanghai', now()))::date + ($1::int * INTERVAL '1 day') AS end_date
      ), stock_events AS (
-       SELECT h.ipo_date AS event_date, 'apply' AS event_type,
+       SELECT CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END AS event_date, 'apply' AS event_type,
               h.security_code AS code, h.security_name AS name
          FROM ipo_history h, bounds b
-        WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-          AND h.ipo_date >= to_char(b.start_date, 'YYYY-MM-DD')
-          AND h.ipo_date < to_char(b.end_date, 'YYYY-MM-DD')
-          AND COALESCE(h.market_type, '') <> '北交所'
-          AND h.security_code !~ '^(920|82|83|87|43)'
+         WHERE h.market_code=$2
+           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) ~ '^\\d{4}-\\d{2}-\\d{2}$'
+           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) >= to_char(b.start_date, 'YYYY-MM-DD')
+          AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) < to_char(b.end_date, 'YYYY-MM-DD')
+          AND ($2='HK' OR (COALESCE(h.market_type, '') <> '北交所' AND h.security_code !~ '^(920|82|83|87|43)'))
        UNION ALL
-       SELECT h.listing_date AS event_date, 'listing' AS event_type,
+       SELECT CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END AS event_date, 'listing' AS event_type,
               h.security_code AS code, h.security_name AS name
          FROM ipo_history h, bounds b
-        WHERE h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-          AND h.listing_date >= to_char(b.start_date, 'YYYY-MM-DD')
-          AND h.listing_date < to_char(b.end_date, 'YYYY-MM-DD')
-          AND COALESCE(h.market_type, '') <> '北交所'
-          AND h.security_code !~ '^(920|82|83|87|43)'
+         WHERE h.market_code=$2
+           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) ~ '^\\d{4}-\\d{2}-\\d{2}$'
+           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) >= to_char(b.start_date, 'YYYY-MM-DD')
+          AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) < to_char(b.end_date, 'YYYY-MM-DD')
+          AND ($2='HK' OR (COALESCE(h.market_type, '') <> '北交所' AND h.security_code !~ '^(920|82|83|87|43)'))
      )
      SELECT event_date AS date,event_type,code,name
-       FROM stock_events ORDER BY event_date,code,event_type`, [days]
+       FROM stock_events ORDER BY event_date,code,event_type`, [days, market]
   );
   const groups = new Map();
   for (const row of rows) {
@@ -243,7 +262,7 @@ async function buildCalendarReport(code) {
     const detail = await pool.query(
       `SELECT market_type, ipo_date, listing_date, issue_price, issue_pe, industry_pe,
               industry, main_business, subscribe_upper_limit
-       FROM ipo_history WHERE security_code=$1 LIMIT 1`,
+       FROM ipo_history WHERE security_code=$1 AND market_code='CN' LIMIT 1`,
       [code]
     );
     const row = detail.rows[0] || {};
@@ -309,11 +328,71 @@ router.get('/reports', async (req, res) => {
 // 打新历史（集思录式列表）
 router.get('/history', async (req, res) => {
   try {
-    const type = req.query.type === 'bond' ? 'bond' : 'stock';
+    const type = req.query.type === 'bond' ? 'bond' : (req.query.type === 'hk_stock' ? 'hk_stock' : 'stock');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 200);
     let rows;
     if (type === 'bond') {
       rows = await getBondHistoryList(limit);
+    } else if (type === 'hk_stock') {
+      const r = await pool.query(
+        `SELECT h.security_code,h.security_name,
+                COALESCE(NULLIF(q.name,''),h.security_name) AS security_name_cn,
+                h.market_type,h.ipo_status,
+                COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) AS offer_open_date,
+                to_char(h.offer_close_at,'YYYY-MM-DD') AS offer_close_date,
+                to_char(h.pricing_at,'YYYY-MM-DD') AS pricing_date,
+                to_char(h.allotment_at,'YYYY-MM-DD') AS allotment_date,
+                COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) AS listing_date,
+                h.issue_price_low,h.issue_price_high,h.issue_price_final,h.lot_size_shares,h.lot_amount_hkd,
+                h.application_fee_hkd,h.brokerage_fee_hkd,h.online_lottery_rate,h.oversubscribe_multiple AS public_oversubscription,
+                NULLIF(h.greenshoe_details->>'protectionRatioPct','')::numeric AS greenshoe_protection_ratio,
+                NULLIF(h.greenshoe_details->>'initialPublicOfferShares','')::numeric AS greenshoe_initial_public_offer_shares,
+                NULLIF(h.greenshoe_details->>'finalPublicOfferShares','')::numeric AS greenshoe_final_public_offer_shares,
+                (SELECT document->'parserEvidence'->>'publicOversubscriptionQualifier'
+                   FROM jsonb_array_elements(COALESCE(h.source_documents,'[]'::jsonb)) document
+                  WHERE document->>'type'='allotment_result'
+                    AND document->'parserEvidence'->>'publicOversubscriptionQualifier' IS NOT NULL
+                  ORDER BY document->>'announcedAt' DESC NULLS LAST
+                  LIMIT 1) AS public_oversubscription_qualifier,
+                h.public_offer_ratio,h.international_offer_ratio,
+                h.cornerstone_details,h.greenshoe_details,h.source_documents,h.data_completeness,
+                perf.listing_close,
+                CASE WHEN h.issue_price_final IS NOT NULL AND h.issue_price_final > 0 AND perf.listing_close IS NOT NULL
+                     THEN ROUND(((perf.listing_close / h.issue_price_final - 1) * 100)::numeric, 2) END AS actual_return,
+                CASE WHEN h.issue_price_final IS NOT NULL AND perf.listing_close IS NOT NULL AND h.lot_size_shares IS NOT NULL
+                     THEN ROUND(((perf.listing_close - h.issue_price_final) * h.lot_size_shares)::numeric, 2) END AS lot_profit,
+                h.facts_published_at AS published_at,
+                to_char(h.facts_published_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD') AS data_as_of,
+                NULL::numeric AS pred_return,NULL::numeric AS score,'facts' AS stage,'待事实完整后校准' AS advice,
+                (h.facts_published_at IS NULL OR h.facts_published_at < now() - interval '2 days') AS is_stale,
+                CASE WHEN h.facts_published_at IS NULL THEN '缺少事实更新时间'
+                     WHEN h.facts_published_at < now() - interval '2 days' THEN '事实超过 2 天未更新'
+                     ELSE '' END AS stale_reason
+           FROM ipo_history h
+           LEFT JOIN LATERAL (
+             SELECT q.name
+               FROM market_quote_cache q
+              WHERE q.source='tencent'
+                AND q.symbol='hk' || replace(h.security_code,'.HK','')
+              ORDER BY q.fetched_at DESC
+              LIMIT 1
+           ) q ON true
+           LEFT JOIN LATERAL (
+             SELECT d.close AS listing_close
+              FROM market.daily_bars d
+              WHERE d.instrument_id=h.instrument_id
+                AND d.trade_date >= CASE
+                  WHEN h.listing_at IS NOT NULL THEN h.listing_at::date
+                  WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date
+                END
+              ORDER BY d.trade_date,d.source_id DESC
+              LIMIT 1
+           ) perf ON true
+          WHERE h.market_code='HK'
+          ORDER BY COALESCE(h.offer_open_at,h.listing_at,h.facts_published_at) DESC NULLS LAST,h.security_code
+          LIMIT $1`, [limit]
+      );
+      rows = r.rows;
     } else {
       // 集思录式列：代码/名称/发行价/发行PE/行业PE/行业/发行总数/申购上限/顶格申购需配市值/中签率%/募资/上市日/首日涨幅
       // 预测涨幅：关联 predictions 表（取该代码最新一条有效预测），无预测则显示空
@@ -346,8 +425,9 @@ router.get('/history', async (req, res) => {
            WHERE type = 'stock' AND code = h.security_code AND pred_return IS NOT NULL
            ORDER BY pred_date DESC LIMIT 1
          ) p ON true
-         WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-           AND h.ipo_date <= to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD')
+          WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+            AND h.market_code='CN'
+            AND h.ipo_date <= to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD')
            AND COALESCE(h.market_type, '') <> '北交所'
            AND h.security_code !~ '^(920|82|83|87|43)'
          ORDER BY h.ipo_date DESC, NULLIF(h.listing_date, '') DESC NULLS LAST, h.security_code LIMIT $1`,
@@ -355,7 +435,8 @@ router.get('/history', async (req, res) => {
       );
       rows = r.rows;
     }
-    res.json({ type, rows });
+    const formalGate = type === 'hk_stock' ? await getHkFormalGateStatus() : null;
+    res.json({ type, rows, ...(formalGate ? { formal_gate: formalGate } : {}) });
   } catch (e) {
     res.status(500).json({ error: '读取打新历史失败' });
   }
@@ -365,18 +446,15 @@ router.get('/history', async (req, res) => {
 router.get('/calendar', async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days || '30', 10) || 30, 90);
-    const [stockCalendar, bondCalendar] = await Promise.all([
-      loadStockCalendar(days),
-      loadBondCalendar(days),
+    const market = String(req.query.market || 'CN').toUpperCase();
+    const selectedMarket = ['CN', 'HK', 'ALL'].includes(market) ? market : 'CN';
+    const cnCalendar = selectedMarket === 'HK' ? [] : await loadStockCalendar(days);
+    const [hkCalendar, bondCalendar] = await Promise.all([
+      selectedMarket === 'CN' ? [] : loadStockCalendar(days, 'HK'),
+      selectedMarket === 'HK' ? [] : loadBondCalendar(days),
     ]);
-    const byDate = new Map(stockCalendar.map(day => [day.date, { ...calendarDay(day.date), ...day }]));
-    for (const day of bondCalendar) {
-      const target = byDate.get(day.date) || calendarDay(day.date);
-      target.apply_bonds = day.apply_bonds;
-      target.list_bonds = day.list_bonds;
-      byDate.set(day.date, target);
-    }
-    res.json({ days, calendar: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)) });
+    const calendar = mergeCalendarDays(cnCalendar, hkCalendar, bondCalendar);
+    res.json({ days, market: selectedMarket, calendar });
   } catch (e) {
     res.status(500).json({ error: '读取打新日历失败' });
   }
@@ -386,8 +464,39 @@ router.get('/calendar', async (req, res) => {
 router.get('/report/code', async (req, res) => {
   try {
     const code = String(req.query.code || '');
-    if (!/^[0-9A-Za-z]+$/.test(code)) {
+    if (!/^[0-9A-Za-z.]+$/.test(code)) {
       return res.status(400).json({ error: '非法 code' });
+    }
+    const hkCode = /^\d{1,5}(?:\.HK)?$/i.test(code)
+      ? `${String(code).replace(/\.HK$/i, '').padStart(5, '0')}.HK` : null;
+    if (hkCode) {
+      const fact = await pool.query(
+        `SELECT security_code,security_name,market_type,ipo_status,
+                COALESCE(to_char(offer_open_at,'YYYY-MM-DD'),ipo_date) AS offer_open_date,
+                to_char(offer_close_at,'YYYY-MM-DD') AS offer_close_date,
+                to_char(pricing_at,'YYYY-MM-DD') AS pricing_date,
+                to_char(allotment_at,'YYYY-MM-DD') AS allotment_date,
+                COALESCE(to_char(listing_at,'YYYY-MM-DD'),listing_date) AS listing_date,
+                issue_price_low,issue_price_high,issue_price_final,lot_size_shares,lot_amount_hkd,
+                application_fee_hkd,brokerage_fee_hkd,facts_published_at
+           FROM ipo_history WHERE market_code='HK' AND security_code=$1 LIMIT 1`, [hkCode]
+      );
+      if (fact.rows[0]) {
+        const row = fact.rows[0];
+        const lines = [
+          `# 📄 港股 IPO 事实 — ${row.security_name || hkCode}（${hkCode}）`, '',
+          '## 当前状态', `- **阶段**：${row.ipo_status || 'active'}`, `- **板块**：${row.market_type || '待补全'}`,
+          '', '## 关键日期', `- **公开发售开始**：${row.offer_open_date || '待公告'}`, `- **公开发售结束**：${row.offer_close_date || '待公告'}`,
+          `- **定价日**：${row.pricing_date || '待公告'}`, `- **配售结果**：${row.allotment_date || '待公告'}`, `- **上市日**：${row.listing_date || '待公告'}`,
+          '', '## 申购事实', `- **发行价区间**：${row.issue_price_low == null ? '待公告' : row.issue_price_low + '–' + (row.issue_price_high == null ? row.issue_price_low : row.issue_price_high) + ' 港元'}`,
+          `- **最终发行价**：${row.issue_price_final == null ? '待公告' : row.issue_price_final + ' 港元'}`,
+          `- **每手股数**：${row.lot_size_shares == null ? '待公告' : row.lot_size_shares}`, `- **每手资金**：${row.lot_amount_hkd == null ? '待公告' : row.lot_amount_hkd + ' 港元'}`,
+          `- **申请费用（含佣金及征费）**：${row.application_fee_hkd == null ? '待公告' : row.application_fee_hkd + ' 港元'}`, `- **经纪佣金**：${row.brokerage_fee_hkd == null ? '待公告' : row.brokerage_fee_hkd + ' 港元'}`,
+          '', '## 研究状态', '- 当前仅展示官方事实；研究评分与正式建议待历史样本、质量门禁和回测完成后开放。',
+          `- **事实更新时间**：${row.facts_published_at || '暂无'}`,
+        ];
+        return res.json({ code: hkCode, market: 'HK', stage: 'facts', score: null, advice: null, md: lines.join('\n') });
+      }
     }
     // 数据库报告会随补数和重新生成及时更新；仓库内单债文件只是部署兜底，不能遮住新数据。
     const reports = await pool.query(
@@ -413,3 +522,4 @@ router.get('/report/code', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.mergeCalendarDays = mergeCalendarDays;

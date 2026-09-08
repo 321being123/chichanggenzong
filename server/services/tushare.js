@@ -40,6 +40,7 @@ const ENDPOINT_MIN_POINTS = Object.freeze({
   new_share: 120,
   index_dailybasic: 4000,
   top10_cb_holders: 5000,
+  hk_tradecal: 2000,
 });
 
 function supportsTushareApi(apiName, profile) {

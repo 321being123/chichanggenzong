@@ -25,6 +25,14 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/ipoHistorySync').runIpoHistorySync(reason, businessDate, context);
     case 'hk_trade_rules_sync':
       return require('../jobs/hkTradeRulesSync').runHkTradeRulesSync(reason);
+    case 'hk_trade_calendar_sync':
+      return require('../jobs/hkTradeCalendarSyncJob').runHkTradeCalendarSync(reason, context);
+    case 'hk_ipo_preopen':
+      return require('../jobs/hkIpoSync').runHkIpoSync('preopen', reason, context);
+    case 'hk_ipo_postclose':
+      return require('../jobs/hkIpoSync').runHkIpoSync('postclose', reason, context);
+    case 'hk_ipo_enrichment':
+      return require('../jobs/hkIpoSync').runHkIpoSync('enrichment', reason, context);
     case 'arbitrage_sync':
       return require('../jobs/arbitrageSync').runArbitrageSync(reason);
     case 'arbitrage_reparse': {

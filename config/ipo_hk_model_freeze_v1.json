@@ -1,0 +1,56 @@
+{
+  "model_version": "hk-ipo-research-v1.1",
+  "scope": "HK",
+  "visible_feature_fields": [
+    "issue_price_low",
+    "issue_price_high",
+    "public_offer_ratio",
+    "international_offer_ratio",
+    "lot_size_shares"
+  ],
+  "score": {
+    "base_max": 100,
+    "thresholds": {
+      "strong": 85,
+      "preferred": 78,
+      "observe": 65
+    }
+  },
+  "cost_assumptions": {
+    "application_fee_hkd": 100,
+    "brokerage_fee_hkd": 0,
+    "financing_rate_annual": 0.08,
+    "sell_cost_rate": 0.001,
+    "holding_days": 1,
+    "fx_buffer_hkd": 0
+  },
+  "walk_forward": {
+    "training_months": 6,
+    "test_months": 3,
+    "minimum_test_samples": 20,
+    "conservative_return_quantile": 0.25
+  },
+  "formal_gate": {
+    "implementation_status": "research_only",
+    "minimum_eligible_samples": 80,
+    "minimum_recommended_samples": 15,
+    "recommended_score_threshold": 78,
+    "minimum_first_day_coverage": 0.95,
+    "minimum_five_day_coverage": 0.95,
+    "minimum_walk_forward_windows": 3,
+    "minimum_test_samples": 20,
+    "max_break_even_rate_gap": 0.1
+  },
+  "formal_validation": {
+    "implementation_version": "hk-ipo-formal-audit-v1",
+    "posterior_method": "jeffreys_beta_plus_wilson_90",
+    "break_even_posterior_mean_max": 0.12,
+    "break_even_upper_90_max": 0.25,
+    "net_profit_lower_90_min": 0.65,
+    "net_profit_median_min_hkd": 0,
+    "max_group_concentration": 0.5,
+    "min_group_observations": 5,
+    "requires_win_probability": true,
+    "requires_concentration_group": true
+  }
+}

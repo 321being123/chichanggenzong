@@ -22,6 +22,7 @@ const jobsDb = read('server/db/jobs.js');
 const migrations = read('server/db/migrations.js');
 const marketClose = read('server/jobs/marketClose.js');
 const arbitrageJob = read('server/jobs/arbitrageSync.js');
+const arbitrageReparse = read('server/jobs/arbitrageReparse.js');
 const arbitrageSync = read('server/services/arbitrageAnnouncementSync.js');
 const arbitrageParser = read('server/services/arbitrageParser.js');
 const arbitrageService = read('server/services/arbitrageService.js');
@@ -163,6 +164,8 @@ assert(/const payload = await parser\.parseAndStoreDocument/.test(arbitrageSync)
 assert(/pg_try_advisory_lock\(\$1,\$2\)/.test(arbitrageParser) && /pg_advisory_unlock\(\$1,\$2\)/.test(arbitrageParser), 'PDF 解析资格判断和外部调用必须受文档级跨进程锁保护');
 assert(/const forceDocument = doc\.parser_version !== parser\.PARSER_VERSION/.test(arbitrageService)
   && /parseAndStoreDocument\(caseId,[\s\S]*forceDocument, true\)/.test(arbitrageService), '人工重新解析必须在同一文档锁内重置解析次数，并跳过同版本已成功公告');
+assert(/retrySignal/.test(arbitrageService) && /errorCode: String\(err\.code\)\.toUpperCase\(\)/.test(arbitrageService)
+  && /errorCode: result\.errorCode/.test(arbitrageReparse), '套利重解析必须保留来源限速信号，交由统一等待队列恢复');
 assert(/if \(failedCount\)[\s\S]*status: 'failed'[\s\S]*任务将进入统一重试/.test(arbitrageService), '人工重新解析只要仍有公告失败就必须进入统一重试和告警，不能以部分成功掩盖缺数');
 assert(/if \(!eligibleCount\) return \{ caseId, status: 'skipped'/.test(arbitrageService), '只有风险或终态公告时应明确跳过，不能误报解析失败并反复重试');
 assert(/enqueueManualJob\('arbitrage_sync'\)/.test(arbitrageService) && !/setImmediate\(async \(\) =>[\s\S]*runIncrementalSync/.test(arbitrageService), '后台手动套利同步必须进入持久化任务队列');

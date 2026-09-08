@@ -20,7 +20,19 @@ async function runArbitrageReparse(caseId, reason = 'manual-retry') {
     if (result.status === 'failed') {
       const error = sanitizeJobError(result.message || '公告重新解析失败', 1000);
       await finishJobRun(runId, false, error);
-      return { ok: false, error, caseId, result };
+      return {
+        ok: false,
+        error,
+        caseId,
+        result,
+        ...(result.errorCode ? {
+          errorCode: result.errorCode,
+          errorType: result.errorType,
+          source: result.source,
+          apiName: result.apiName,
+          recoverAt: result.recoverAt,
+        } : {}),
+      };
     }
     await finishJobRun(runId, true, result.message || `套利事件 ${caseId} 重新解析完成`);
     return { ok: true, caseId, reason, result };

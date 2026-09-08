@@ -468,6 +468,7 @@ async function reparseCase(caseId) {
   let parsedCount = 0;
   let failedCount = 0;
   let eligibleCount = 0;
+  let retrySignal = null;
   for (const doc of docRows) {
     const role = parserRole(doc.title, doc.document_role);
     if (role === 'terminal' || role === 'risk') continue;
@@ -480,11 +481,22 @@ async function reparseCase(caseId) {
       else failedCount++;
     } catch (err) {
       failedCount++;
+      if (!retrySignal && ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(String(err.code || '').toUpperCase())) {
+        retrySignal = {
+          errorCode: String(err.code).toUpperCase(),
+          errorType: err.errorType,
+          source: err.source,
+          apiName: err.apiName,
+          recoverAt: err.recoverAt,
+        };
+      }
       console.error(`[arbitrage] case ${caseId} document ${doc.document_id} parse failed:`, sanitizeJobError(err.message || err, 500));
     }
   }
   if (!eligibleCount) return { caseId, status: 'skipped', message: '该事件没有需要重新解析的条款类 PDF 公告', extracted: null };
-  if (!parsedCount) return { caseId, status: 'failed', message: `${failedCount}份公告均解析失败`, extracted: null };
+  if (!parsedCount) {
+    return { caseId, status: 'failed', message: `${failedCount}份公告均解析失败`, extracted: null, ...(retrySignal || {}) };
+  }
   const rebuilt = await parser.rebuildCaseTerms(caseId);
   if (failedCount) {
     return {
@@ -492,6 +504,7 @@ async function reparseCase(caseId) {
       ...rebuilt,
       status: 'failed',
       message: `已解析${parsedCount}份公告，但仍有${failedCount}份失败，任务将进入统一重试`,
+      ...(retrySignal || {}),
     };
   }
   return {

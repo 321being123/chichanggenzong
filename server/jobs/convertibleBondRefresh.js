@@ -7,7 +7,6 @@ const { buildDailyMetrics } = require('../services/convertibleBondListService');
 const { calculateConvertibleBondCallStatus } = require('../services/convertibleBondRedemptionService');
 const { calculateConvertibleBondRevisionStatus, CALCULATION_LOGIC_VERSION } = require('../services/convertibleBondRevisionService');
 const { calculateConvertibleBondRevisionMotiveScores, MOTIVE_MODEL_VERSION } = require('../services/convertibleBondRevisionMotiveService');
-const { syncConvertibleBondCallAnnouncements } = require('../services/convertibleBondRedemptionSync');
 const { expectedTradeDate } = require('../routes/bondCycle');
 const { dailyConsistencyStats } = require('./consistencyStats');
 const { publishDatasetPartition } = require('../services/datasetPartitions');
@@ -213,15 +212,12 @@ function scheduleConvertibleBondRefresh() {
   scheduleDaily(7, 40, async () => {
     const symbolic = await require('../services/convertibleBondAnalysis').resolveConvertibleBondSymbolicLocks();
     if (symbolic.resolved) console.log(`[bond-revision] 董事会锁定已按官方公告解析 ${symbolic.resolved} 只`);
-    const result = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({});
-    console.log(`[bond-revision] 公告事实增量完成：${result.count} 只，扫描 ${result.fromDate || '首次全量'} 至 ${result.toDate}`);
+    const result = await require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({ mode: 'core' });
+    console.log(`[bond-announcement] 统一公告同步完成：扫描 ${result.fromDate || '首次全量'} 至 ${result.toDate}`);
   });
-  scheduleDaily(7, 45, async () => {
-    const result = await syncConvertibleBondCallAnnouncements();
-    console.log(`[bond-redemption] 官方公告同步完成：发现 ${result.discovered} 条，匹配 ${result.matched} 条`);
-  });
+  scheduleDaily(17, 30, () => require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({ mode: 'calendar' }));
   scheduleDaily(DAILY_REFRESH_HOUR, DAILY_REFRESH_MINUTE + 15, () => runRefreshChain('daily_valuation'));
-  console.log('[bond-analysis] 已调度：每日 07:40 同步下修公告，07:45 同步强赎公告，08:00 同步行情，08:15 刷新估值（上海时间）');
+  console.log('[bond-analysis] 已调度：每日 07:40/17:30 统一同步可转债公告与生命周期，08:00 同步行情，08:15 刷新估值（上海时间）');
 }
 
 // 新版本发布后，即使当天 08:15 的估值槽已经成功，强赎计算也可能尚未按新公式生成。

@@ -70,17 +70,22 @@ assert.ok(definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
 assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');
-assert.strictEqual(definitions.getJobDefinition('convertible_bond_redemption_announcement_sync').dailyBudget, 2, '强赎任务每日预算计入值必须独立于单次上限');
-assert.strictEqual(definitions.getJobDefinition('convertible_bond_redemption_announcement_sync').maxExternalCallsPerRun, 40, '强赎任务单次上限必须覆盖批量分页');
+assert.ok(!definitions.JOB_DEFINITIONS.some(item => item.jobCode === 'convertible_bond_redemption_announcement_sync'), '强赎公告不得保留第二个定时采集任务');
+const unifiedBondAnnouncements = definitions.getJobDefinition('convertible_bond_announcement_history_sync');
+assert.ok(unifiedBondAnnouncements.externalApis.includes('cb_issue') && unifiedBondAnnouncements.producesDatasets.includes('bond_redemption_events'),
+  '统一可转债公告任务必须同时承担发行事实和强赎事件');
+assert.ok(unifiedBondAnnouncements.additionalSchedules.some(item => item.mode === 'calendar' && item.hour === 17 && item.minute === 30),
+  '统一可转债公告任务必须在打新日历前执行晚间增量');
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
 const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
 const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
 assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外部接口');
 assert.strictEqual(ipoReport.maxExternalCallsPerRun, 0, '打新日报外部调用预算必须为0');
-assert.deepStrictEqual(ipoReport.dependencyCodes, ['ipo_history_sync'], '打新日报必须依赖IPO事实同步');
-assert.deepStrictEqual(ipoReport.datasetDependencies, [{
-  datasetCode: 'ipo_history', scopeKey: 'GLOBAL', partitionDatePolicy: 'business_date', requireQualityStatus: 'passed'
-}], '打新日报必须依赖当天通过质量门禁的IPO事实分区');
+assert.deepStrictEqual(ipoReport.dependencyCodes, ['ipo_history_sync', 'convertible_bond_announcement_history_sync'],
+  '打新日报必须同时依赖IPO事实和可转债生命周期同步');
+assert.ok(ipoReport.datasetDependencies.some(item => item.datasetCode === 'ipo_history' && item.requireQualityStatus === 'passed')
+  && ipoReport.datasetDependencies.some(item => item.datasetCode === 'bond_issuance_events' && item.requireQualityStatus === 'passed'),
+  '打新日报必须依赖当天通过质量门禁的新股和新债事实分区');
 assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 3, 'IPO核心事实阶段必须允许一次失败后的重试');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 15, 'IPO晚间补全必须使用独立调用预算');

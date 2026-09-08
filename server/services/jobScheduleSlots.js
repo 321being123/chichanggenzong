@@ -344,17 +344,18 @@ async function syncScheduleSlots(now = new Date()) {
   const created = [];
   for (const definition of JOB_DEFINITIONS) {
     if (definition.manualOnly) continue;
-    const candidateDates = allDates.filter(date =>
-      isSlotDayAllowed(date, definition) && (!definition.monthly || date.slice(8, 10) === '01'));
-    const dates = definition.catchupMode === 'latest_only' ? candidateDates.slice(0, 1) : allDates;
-    for (const businessDate of dates) {
-      if (definition.monthly && businessDate.slice(8, 10) !== '01') continue;
-      if (!isSlotDayAllowed(businessDate, definition)) continue;
-      const schedules = [
-        { hour: definition.hour, minute: definition.minute, mode: 'core' },
-        ...(definition.additionalSchedules || []),
-      ];
-      for (const schedule of schedules) {
+    const schedules = [
+      { hour: definition.hour, minute: definition.minute, mode: 'core' },
+      ...(definition.additionalSchedules || []),
+    ];
+    for (const schedule of schedules) {
+      const scheduleDefinition = { ...definition, ...schedule };
+      const candidateDates = allDates.filter(date =>
+        isSlotDayAllowed(date, scheduleDefinition) && (!scheduleDefinition.monthly || date.slice(8, 10) === '01'));
+      const dates = definition.catchupMode === 'latest_only' ? candidateDates.slice(0, 1) : allDates;
+      for (const businessDate of dates) {
+        if (scheduleDefinition.monthly && businessDate.slice(8, 10) !== '01') continue;
+        if (!isSlotDayAllowed(businessDate, scheduleDefinition)) continue;
         const scheduledFor = scheduledDate(businessDate, schedule.hour, schedule.minute);
         const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
         if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;

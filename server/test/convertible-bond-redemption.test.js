@@ -77,6 +77,8 @@ assert.ok(list.includes('call_status') && fs.readFileSync(path.join(root, 'publi
 assert.ok(fs.readFileSync(path.join(root, 'public', 'js', 'bond-safety.js'), 'utf8').includes('bondSafetyLifecycleMarker'), '安全性列表必须展示名称标识');
 assert.ok(valuation.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-valuation.js'), 'utf8').includes('bondValLifecycleMarker'), '估值列表必须复用统一强赎状态并展示名称标识');
 assert.ok(analysis.includes('callDelisted') && analysis.includes('effectiveDelistDate'), '股债分析必须识别已强赎且已停止交易的历史转债');
-assert.ok(runner.includes("convertible_bond_redemption_announcement_sync") && runner.includes('syncConvertibleBondCallAnnouncements'), '公告同步必须有正式调度执行入口');
+assert.ok(runner.includes("convertible_bond_announcement_history_sync")
+  && analysis.includes("require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements"),
+  '强赎公告必须由统一可转债公告任务采集并分发');
 assert.ok(valuation.includes('JOIN public.bond_unified u'));
 console.log('convertible bond redemption tests passed');

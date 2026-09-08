@@ -52,13 +52,17 @@ check(isSlotDayAllowed('2026-09-28', AFTER_TRADING_DAY) === false, '假期后的
 for (const jobCode of [
   'bond_safety_refresh',
   'convertible_bond_announcement_history_sync',
-  'convertible_bond_redemption_announcement_sync',
   'convertible_bond_universe_refresh',
   'convertible_bond_valuation_refresh',
 ]) {
   const def = JOB_DEFINITIONS.find(item => item.jobCode === jobCode);
   check(def && def.afterTradingDay === true, `${jobCode} 应声明 afterTradingDay`);
 }
+
+const unifiedAnnouncement = JOB_DEFINITIONS.find(item => item.jobCode === 'convertible_bond_announcement_history_sync');
+const calendarSchedule = unifiedAnnouncement.additionalSchedules.find(item => item.mode === 'calendar');
+check(calendarSchedule && calendarSchedule.afterTradingDay === false && calendarSchedule.weekdays === true,
+  '可转债公告晚间日历槽必须按交易日当天执行');
 
 // 6. 收盘后跑的任务维持「交易日当天」口径，不受本次改动影响
 for (const jobCode of ['market_close:A股', 'market_close:可转债', 'nav_snapshot', 'ipo_calendar_refresh']) {

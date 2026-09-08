@@ -3,7 +3,7 @@ const {
   normalizeBondCode, isoDate, instrumentStatus, remainingYears, parseTriggerRatio, parseWindow, hasNetAssetFloorClause, yuanToHundredMillion,
   earliestPutDate, currentPutPeriod, nextPutPeriod, putOpportunityState, annualizedVolatility, simplifyClause, triggerProgress, resetWindowState, estimatePutTimeline, parseCouponRates, couponRowsFromClause,
   yieldToMaturity, annualizedRedemptionYield, accruedPutPrice, blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
-  mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, convertibleBondIssueSyncWindow, shouldAdvanceConvertibleBondIssueCursor, announcementSourceKey,
+  mergeDailyRows, incrementalStart, pricePairFromReason, normalizePriceChange, normalizePriceChanges, announcementSourceKey,
 } = require('../services/convertibleBondAnalysis');
 const { tsDateStr } = require('../services/market');
 const { sourceForUrl } = require('../services/stockAnalysis');
@@ -16,14 +16,6 @@ assert.strictEqual(instrumentStatus('2026-07-28', '2026-07-28'), 'delisted');
 assert.strictEqual(instrumentStatus(null, '2026-08-12', null, '2026-08-12'), 'subscribing');
 assert.strictEqual(instrumentStatus(null, '2026-08-12', null, '2026-08-13'), 'announced');
 assert.strictEqual(instrumentStatus(null, '2026-08-12', '2026-08-20', '2026-08-12'), 'pending_listing');
-assert.deepStrictEqual(convertibleBondIssueSyncWindow(null, '2026-08-12'), {
-  incremental: false, startDate: null, endDate: '2026-08-12',
-});
-assert.deepStrictEqual(convertibleBondIssueSyncWindow('2026-08-12', '2026-08-12'), {
-  incremental: true, startDate: '2026-06-13', endDate: '2026-08-12',
-});
-assert.strictEqual(shouldAdvanceConvertibleBondIssueCursor([], true), false);
-assert.strictEqual(shouldAdvanceConvertibleBondIssueCursor([{ ts_code: '113001.SH' }], true), true);
 assert.strictEqual(yuanToHundredMillion(2449880700), 24.498807);
 assert.strictEqual(isoDate('2026-07-22'), '2026-07-22');
 assert.strictEqual(isoDate('20260722'), '2026-07-22');

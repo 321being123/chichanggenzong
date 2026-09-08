@@ -110,7 +110,19 @@ function eventParseComplete(eventType, dates) {
   return false;
 }
 
-async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchanges = ['sse', 'szse'], stock = '', keywords = null } = {}) {
+function callItemsFromOfficialEvents(events) {
+  return (events || []).map(item => ({
+    sourceKey: item.source_number || item.url || `${item.event_date || ''}:${item.stock_code || ''}:${item.title || ''}`,
+    fileLink: item.url || '',
+    title: item.title || '',
+    announcedAt: isoDate(item.event_date),
+    stockCode: String(item.stock_code || '').slice(0, 6),
+    exchange: String(item.source || '').toUpperCase(),
+    rawPayload: item.raw || item,
+  }));
+}
+
+async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchanges = ['sse', 'szse'], stock = '', keywords = null, officialEvents = null } = {}) {
   const end = isoDate(toDate) || new Date().toISOString().slice(0, 10);
   const start = isoDate(fromDate) || new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10);
   const sourceRows = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1', [SOURCE_CODE]);
@@ -133,12 +145,14 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   }
   // 巨潮 stock 参数需要“证券代码,orgId”，只传 6 位代码会返回空结果；批量补历史时改为全局检索后按证券代码过滤。
   const stockCodes = String(stock || '').split(',').map(value => value.trim()).filter(value => /^\d{6}$/.test(value));
-  const announcementsRaw = await searchAnnouncements({ fromDate: start, toDate: end,
-    stock: stockCodes.length ? '' : stock,
-    keywords: keywords && keywords.length ? keywords : [
-      '强赎', '提前赎回', '不提前赎回', '暂不赎回', '不行使赎回', '不实施赎回',
-      '赎回实施', '实施赎回', '赎回结果', '到期兑付', '即将到期', '停止交易', '最后交易日',
-    ], exchanges });
+  const announcementsRaw = Array.isArray(officialEvents)
+    ? callItemsFromOfficialEvents(officialEvents)
+    : await searchAnnouncements({ fromDate: start, toDate: end,
+      stock: stockCodes.length ? '' : stock,
+      keywords: keywords && keywords.length ? keywords : [
+        '强赎', '提前赎回', '不提前赎回', '暂不赎回', '不行使赎回', '不实施赎回',
+        '赎回实施', '实施赎回', '赎回结果', '到期兑付', '即将到期', '停止交易', '最后交易日',
+      ], exchanges });
   const announcements = stockCodes.length
     ? announcementsRaw.filter(item => stockCodes.includes(String(item.stockCode || '').slice(0, 6)))
     : announcementsRaw;
@@ -225,4 +239,4 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   return { ok: true, fromDate: start, toDate: end, discovered: announcements.length, classified: classified.length, matched, runId };
 }
 
-module.exports = { classifyCallEvent, eventDates, eventParseComplete, pickInstrument, syncConvertibleBondCallAnnouncements };
+module.exports = { classifyCallEvent, eventDates, eventParseComplete, pickInstrument, callItemsFromOfficialEvents, syncConvertibleBondCallAnnouncements };

@@ -456,7 +456,7 @@ async function reparseCase(caseId) {
   if (!rows.length) return null;
   const row = rows[0];
   const { rows: docRows } = await pool.query(`
-    SELECT d.document_id,d.url,d.title,acd.document_role,acd.parser_version
+    SELECT d.document_id,d.url,d.title,acd.document_role,acd.parser_version,acd.parse_status
     FROM event.arbitrage_case_documents acd
     JOIN event.documents d ON acd.document_id=d.document_id
     WHERE acd.case_id=$1 AND d.url ~* '\\.pdf$'

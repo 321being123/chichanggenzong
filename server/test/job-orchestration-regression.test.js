@@ -166,6 +166,7 @@ assert(/const typed = message\.match\(\/\\\[\(BUDGET_WAIT\|RATE_LIMIT\|QUOTA_EXH
 assert(/pg_try_advisory_lock\(\$1,\$2\)/.test(arbitrageParser) && /pg_advisory_unlock\(\$1,\$2\)/.test(arbitrageParser), 'PDF 解析资格判断和外部调用必须受文档级跨进程锁保护');
 assert(/const forceDocument = doc\.parser_version !== parser\.PARSER_VERSION \|\| doc\.parse_status !== 'validated'/.test(arbitrageService)
   && /parseAndStoreDocument\(caseId,[\s\S]*forceDocument, true\)/.test(arbitrageService), '人工重新解析必须在同一文档锁内重置解析次数，并跳过同版本已成功公告');
+assert(/acd\.parser_version,acd\.parse_status/.test(arbitrageService), '人工重新解析查询必须读取文档解析状态，避免重复下载已验证公告');
 assert(/retrySignal/.test(arbitrageService) && /errorCode: String\(err\.code\)\.toUpperCase\(\)/.test(arbitrageService)
   && /errorCode: result\.errorCode/.test(arbitrageReparse), '套利重解析必须保留来源限速信号，交由统一等待队列恢复');
 assert(/if \(failedCount\)[\s\S]*status: 'failed'[\s\S]*任务将进入统一重试/.test(arbitrageService), '人工重新解析只要仍有公告失败就必须进入统一重试和告警，不能以部分成功掩盖缺数');

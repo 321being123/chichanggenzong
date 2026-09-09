@@ -15,6 +15,7 @@ assert.strictEqual(classifyProgress({ matchedDays: 3, requiredDays: 15, observat
 assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-08-31', lastConversionDate: '2026-09-03' }), true);
 assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-08-31' }), false);
 assert.strictEqual(classifyCallEvent('南方航空关于“南航转债”到期兑付暨摘牌的第三次提示性公告'), 'implementation');
+assert.strictEqual(classifyCallEvent('洽洽食品关于“洽洽转债”即将到期及停止交易的提示性公告'), 'implementation');
 assert.strictEqual(pickInstrument({ title: '关于转债的公告' }, [
   { instrument_id: 1, bond_name: '甲转债', security_code: '123001' },
   { instrument_id: 2, bond_name: '乙转债', security_code: '123002' },
@@ -53,6 +54,11 @@ assert.ok(migration.includes('086_convertible_bond_announcement_history_view') &
 assert.ok(migration.includes('088_convertible_bond_call_date_fallback') && migration.includes('历史公告中最近的明确日期'), '强赎日期缺失时必须从历史公告回填');
 assert.ok(migration.includes('089_convertible_bond_call_formula_publication') && migration.includes('formula_version_not_published') && migration.includes("r.formula_version='call-v1'"), '强赎页面不得混用旧公式个券记录');
 assert.ok(migration.includes('136_convertible_bond_redemption_status_parity') && migration.includes("THEN 'maturity_near'"), '最终强赎视图必须恢复临期状态');
+assert.ok(migration.includes('147_convertible_bond_call_announcement_precedence')
+  && migration.includes('latest_decision_event')
+  && migration.includes("event_type IN ('exercise','implementation','waive','completion')")
+  && migration.includes("COALESCE(e.event_type,r.official_status) IN ('exercise','implementation')"),
+  '已公告强赎不能被后续 warning 事件覆盖，提前赎回与到期赎回都必须保持 announced');
 assert.ok(migration.includes('087_convertible_bond_waive_same_day_validity'), '同日公司公告与核查意见必须合并有效期');
 assert.ok(migration.includes('CREATE VIEW public.bond_unified'));
 const redemptionService = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionService.js'), 'utf8');

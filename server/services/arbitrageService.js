@@ -40,7 +40,7 @@ const PUBLIC_CASE_FILTER = `
     FROM event.arbitrage_case_documents acd_terminal
     JOIN event.documents d_terminal ON d_terminal.document_id = acd_terminal.document_id
     WHERE acd_terminal.case_id = c.case_id
-      AND COALESCE(d_terminal.title, '') ~* '(终止|終止|完成过户|完成過戶|过户完成|過戶完成|交割完成|交割完毕|交割完畢|实施结果|實施結果|申报结果|申報結果|供股.{0,12}结果|供股.{0,12}結果|私有化.{0,12}完成|privati[sz]ation.{0,20}completed|lapsed|terminated|withdrawn)'
+      AND COALESCE(d_terminal.title, '') ~* '(终止([^上]|$)|終止([^上]|$)|完成过户|完成過戶|过户完成|過戶完成|交割完成|交割完毕|交割完畢|实施结果|實施結果|申报结果|申報結果|供股.{0,12}结果|供股.{0,12}結果|私有化.{0,12}完成|privati[sz]ation.{0,20}completed|lapsed|terminated|withdrawn)'
   )
   AND NOT EXISTS (
     SELECT 1

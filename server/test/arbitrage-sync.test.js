@@ -74,6 +74,15 @@ test('标题分类：完成公告不能新建进行中案件', () => {
   assert.strictEqual(sync.classifyTitle('关于现金选择权申报结果的公告', 'cninfo'), null);
 });
 
+test('换股吸收合并的终止上市公告不应关闭套利案件', () => {
+  const title = '关于公司A股股票连续停牌直至终止上市、实施换股吸收合并的提示性公告';
+  assert.strictEqual(sync.detectUpdate(title), null);
+  assert.deepStrictEqual(sync.detectUpdate('关于终止本次换股吸收合并交易的公告'), {
+    status: 'terminated',
+    strategyType: 'a_share_swap',
+  });
+});
+
 test('标题分类：港股私有化', () => {
   assert.strictEqual(sync.classifyTitle('建议私有化公告', 'hkex'), 'hk_privatisation');
 });
@@ -111,6 +120,9 @@ test('终止公告：控制权变更/协议转让终止可识别为终态', () =
     '关于控股股东及相关方终止协议转让暨公司控制权变更事项终止的公告'
   ), true);
   assert.strictEqual(sync.isGenericControlChangeTermination('关于工商变更登记的公告'), false);
+  assert.strictEqual(sync.isGenericControlChangeTermination(
+    '关于公司股票终止上市暨控制权变更事项的提示性公告'
+  ), false);
 });
 
 // ===== 调度注册 =====

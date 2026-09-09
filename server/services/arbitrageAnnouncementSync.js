@@ -391,7 +391,9 @@ function detectUpdate(title) {
   // 无关「完成」场景直接排除（工商变更登记、股份回购、年报、权益分派、利润分配等）
   const unrelatedComplete = /工商登记|变更登记|股份回购|回购|年报|季报|权益分派|利润分配|现金分红|减资|股权激励|可转债/.test(title);
 
-  const isTerminate = /终止(本次|本次要约|筹划|实施|本次交易|该次|本次重大|本次重组|私有化)?/.test(title)
+  // “终止上市”是换股吸收合并中被吸收方退市的进程，不代表套利事项终止；
+  // 其他“终止本次交易/要约”等明确终态仍按原规则处理。
+  const isTerminate = /(?:终止(?!上市)|終止(?!上市))(本次|本次要约|筹划|实施|本次交易|该次|本次重大|本次重组|私有化)?/.test(title)
     || /lapsed|terminated|withdrawn/i.test(title);
   const isComplete = !unrelatedComplete
     && /(完成|完成過戶|实施结果|實施結果|申报结果|申報結果|供股.{0,12}结果|供股.{0,12}結果|已实施|已實施|生效.*撤回上市地位)/.test(title);
@@ -412,7 +414,7 @@ function detectUpdate(title) {
 // 控制权变更/协议转让整体终止的公告，标题可能不再出现“要约收购”等策略词。
 function isGenericControlChangeTermination(text) {
   if (!text) return false;
-  return /(终止|撤回|取消)/.test(text)
+  return /(?:终止(?!上市)|終止(?!上市)|撤回|取消)/.test(text)
     && /(控制权变更|协议转让)/.test(text);
 }
 

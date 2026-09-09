@@ -5879,6 +5879,70 @@ async function migration146ConvertibleBondDataStatusConstraint() {
   `);
 }
 
+// ========== 147：可转债强赎公告状态优先级 =============
+// warning 只是触发提示，不能覆盖已经公告的提前赎回或到期赎回；否则状态会从“已公告强赎”回退成数学进度“跟踪中”。
+// 到期兑付/停止交易公告在同步层归入 implementation，与提前赎回公告统一展示为 announced。
+async function migration147ConvertibleBondCallAnnouncementPrecedence() {
+  await pool.query(`
+    CREATE OR REPLACE VIEW analytics.convertible_bond_call_latest AS
+    WITH latest_decision_event AS (
+      SELECT DISTINCT ON (instrument_id)
+             instrument_id,event_id,event_type,announced_at,no_call_until,
+             redemption_record_date,last_trade_date,last_conversion_date,
+             redemption_price,document_id,source_url,title,parse_status,
+             parser_version,details
+        FROM event.convertible_bond_call_events
+       WHERE event_type IN ('exercise','implementation','waive','completion')
+       ORDER BY instrument_id,announced_at DESC,event_id DESC
+    )
+    SELECT r.instrument_id,r.ts_code,r.security_code,r.bond_name,r.stock_instrument_id,
+           r.stock_code,r.stock_name,r.current_conv_price,r.trigger_ratio,
+           CASE WHEN r.formula_version='call-v1' THEN r.trigger_price END AS trigger_price,
+           CASE WHEN r.formula_version='call-v1' THEN r.stock_close END AS stock_close,
+           CASE WHEN r.formula_version='call-v1' THEN r.distance_to_trigger_pct END AS distance_to_trigger_pct,
+           CASE WHEN r.formula_version='call-v1' THEN r.trade_date END AS trade_date,
+           CASE WHEN r.formula_version='call-v1' THEN r.matched_days END AS matched_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.required_days END AS required_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.observation_days END AS observation_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.remaining_days END AS remaining_days,
+           CASE WHEN r.formula_version='call-v1' THEN r.calculated_status ELSE 'unknown' END AS calculated_status,
+           CASE WHEN r.formula_version='call-v1' THEN r.formula_version END AS formula_version,
+           CASE WHEN r.formula_version='call-v1' THEN r.diagnostics ELSE jsonb_build_object('reason','formula_version_not_published') END AS diagnostics,
+           CASE WHEN r.formula_version='call-v1' THEN r.data_status ELSE 'incomplete' END AS data_status,
+           CASE WHEN r.formula_version='call-v1' THEN r.calculated_at END AS calculated_at,
+           COALESCE(e.event_id,r.event_id) AS event_id,
+           COALESCE(e.event_type,r.official_status) AS official_status,
+           COALESCE(e.announced_at,r.announced_at) AS announced_at,
+           COALESCE(e.no_call_until,r.no_call_until) AS no_call_until,
+           COALESCE(e.redemption_record_date,r.redemption_record_date) AS redemption_record_date,
+           COALESCE(e.last_trade_date,r.last_trade_date) AS last_trade_date,
+           COALESCE(e.last_conversion_date,r.last_conversion_date) AS last_conversion_date,
+           COALESCE(e.redemption_price,r.redemption_price) AS redemption_price,
+           COALESCE(e.document_id,r.document_id) AS document_id,
+           COALESCE(e.source_url,r.source_url) AS source_url,
+           COALESCE(e.title,r.announcement_title) AS announcement_title,
+           COALESCE(e.parse_status,r.announcement_parse_status) AS announcement_parse_status,
+           COALESCE(e.parser_version,r.announcement_parser_version) AS announcement_parser_version,
+           COALESCE(e.details,r.announcement_details) AS announcement_details,
+           CASE
+             WHEN COALESCE(e.event_type,r.official_status)='completion' THEN 'completed'
+             WHEN COALESCE(e.event_type,r.official_status) IN ('exercise','implementation') THEN 'announced'
+             WHEN COALESCE(e.event_type,r.official_status)='waive'
+                  AND (COALESCE(e.no_call_until,r.no_call_until) IS NULL
+                       OR COALESCE(e.no_call_until,r.no_call_until) >= COALESCE(r.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN COALESCE(r.data_status,'incomplete') <> 'complete' THEN 'incomplete'
+             WHEN r.maturity_date IS NOT NULL
+                  AND r.maturity_date <= ((SELECT COALESCE(MAX(trade_date),CURRENT_DATE)
+                                             FROM market.convertible_bond_daily_metrics) + INTERVAL '30 days')
+                  THEN 'maturity_near'
+             ELSE r.business_status
+           END AS business_status,
+           r.remain_size,r.maturity_date,r.conv_start_date,r.conv_end_date,r.conv_stop_date
+      FROM analytics.convertible_bond_call_latest_legacy r
+      LEFT JOIN latest_decision_event e ON e.instrument_id=r.instrument_id;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6026,6 +6090,7 @@ const MIGRATIONS = [
   { version: '144_hk_ipo_p0_audit', up: migration144HkIpoP0Audit },
   { version: '145_cninfo_unlimited_daily_budget', up: migration145CninfoUnlimitedDailyBudget },
   { version: '146_convertible_bond_data_status_constraint', up: migration146ConvertibleBondDataStatusConstraint },
+  { version: '147_convertible_bond_call_announcement_precedence', up: migration147ConvertibleBondCallAnnouncementPrecedence },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6628,6 +6693,7 @@ module.exports = {
   migration134CompanyFinancialIncrementalSync,
   migration135ExchangeRateBudgetRecovery,
   migration136ConvertibleBondRedemptionStatusParity,
+  migration147ConvertibleBondCallAnnouncementPrecedence,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

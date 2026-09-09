@@ -16,6 +16,7 @@ assert.ok(frontend.includes('cashChoicePremium') && frontend.includes('cashExpec
 assert.ok(frontend.includes('fixedSwapPremium') && frontend.includes('liveSwapReturn'), '固定换股溢折价与实时换股收益必须分开');
 assert.ok(frontend.includes('\\u4e0d\\u9002\\u7528'), '现金选择权行的换股字段应明确显示“不适用”');
 assert.ok(service.includes('COALESCE(c.cash_choice_price,c.offer_price) > 0'), '有现金选择权的合并方必须保留');
+assert.ok(service.includes('终止([^上]|$)'), '公开列表终态兜底不得把“终止上市”误判为交易终止');
 assert.ok(frontend.includes('r.swapEligible'), '合并方自身的换股字段必须显示不适用');
 assert.ok(service.includes("regexp_replace(i.name,'<[^>]+>','','g')"), '公开证券名称必须清理 HTML 标签');
 assert.ok(frontend.includes('r.description') && frontend.includes('arb-note-cell'), '套利列表必须展示备注列');

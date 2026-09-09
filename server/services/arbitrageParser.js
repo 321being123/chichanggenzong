@@ -210,7 +210,10 @@ async function resolveInstrumentByCode(raw) {
     return null;
   }
   // 仅返回有名称的有效证券；空名记录（早期错误链接产生的垃圾）一律排除，避免链到脏数据
-  const canonicalCandidates = canonical === code ? [canonical, `${code}.${exchange}`] : [canonical];
+  const marketSuffix = exchange === 'SSE' ? 'SH' : (exchange === 'SZSE' ? 'SZ' : null);
+  const canonicalCandidates = canonical === code
+    ? [canonical, marketSuffix ? `${code}.${marketSuffix}` : canonical]
+    : [canonical];
   const { rows } = await pool.query(`
     SELECT instrument_id
       FROM core.instruments

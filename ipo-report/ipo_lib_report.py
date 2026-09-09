@@ -21,6 +21,21 @@ from ipo_lib_sector import *
 from ipo_lib_prediction import *
 from model_runtime import get_model_dir
 
+def _stock_sector_display(detail):
+    """返回面向用户的赛道标签，区分行业兜底和资料缺失。"""
+    detail = detail if isinstance(detail, dict) else {}
+    _normalize_stock_detail(detail)
+    context = get_stock_sector_context(
+        detail.get("stock_name", ""), detail.get("main_business", ""), detail.get("industry", ""),
+        stored=detail.get("business_exposure"),
+    )
+    status = context.get("classification_status", "missing")
+    if status == "missing":
+        return "待补全"
+    if status == "industry_fallback":
+        return f"{context.get('label') or '行业'}（行业兜底）"
+    return context.get("label") or "待补全"
+
 def _business_exposure_for_detail(detail):
     """保存主营业务时同步保存结构化下游暴露，失败不阻断原有IPO事实。"""
     try:
@@ -37,6 +52,7 @@ def _save_stock_detail_to_db(code, detail):
     if not detail:
         return
     try:
+        _normalize_stock_detail(detail)
         conn = _init_ipo_db()
         # 计算衍生字段
         ip = detail.get("issue_price")
@@ -341,6 +357,9 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     lines.append(f"#### {s['name']}（{s['code']}）")
                     lines.append(f"- **申购建议**：{s.get('advice', '待评估')}")
                     lines.append(f"- **分析理由**：{s.get('reason', '待分析')}")
+                    sector_label = _stock_sector_display(d)
+                    lines.append(f"- **所属行业**：{d.get('industry') or '待补全'}")
+                    lines.append(f"- **业务赛道**：{sector_label}")
                     if d.get("main_business"):
                         lines.append(f"- **主营业务**：{d['main_business']}")
                     if d.get("issue_price"):
@@ -464,6 +483,9 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     lines.append(f"- **首日预估**：{summary}")
                     if detail_text:
                         lines.append(f"- **预测详情**：{detail_text}")
+                    sector_label = _stock_sector_display(d)
+                    lines.append(f"- **所属行业**：{d.get('industry') or '待补全'}")
+                    lines.append(f"- **业务赛道**：{sector_label}")
                     if d.get("main_business"):
                         lines.append(f"- **主营业务**：{d['main_business']}")
                     if d.get("issue_price"):

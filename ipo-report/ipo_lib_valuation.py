@@ -744,15 +744,17 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     sector_context = get_stock_sector_context(
         stock_name, main_business, industry, stored=stock_detail.get("business_exposure")
     )
-    # 已落库的招股书暴露包含更可靠的权重时，预测与展示必须使用同一份上下文。
-    stored_exposure = stock_detail.get("business_exposure")
-    if isinstance(stored_exposure, dict) and stored_exposure.get("exposures"):
-        sector_label = sector_context.get("label") or sector_label
-        sector_boost = sector_context.get("multiplier", sector_boost)
-        try:
-            sector_boost = max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(sector_boost or 1.0)))
-        except (TypeError, ValueError, NameError):
-            sector_boost = 1.0
+    # 预测与展示统一使用同一份上下文；无行业/主营时不再把“其他赛道”当成有效分类。
+    classification_status = sector_context.get("classification_status", "missing")
+    sector_label = sector_context.get("label") or sector_label
+    sector_boost = sector_context.get("multiplier", sector_boost)
+    try:
+        sector_boost = max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(sector_boost or 1.0)))
+    except (TypeError, ValueError, NameError):
+        sector_boost = 1.0
+    if classification_status == "missing":
+        sector_label = ""
+        sector_boost = 1.0
     temp = _MARKET_TEMP["level"]
 
     # 尝试XGBoost预测
@@ -769,12 +771,13 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         if sector_label:
             sector_mult = sector_boost
             estimated = int(round(estimated * sector_mult))
+            label_prefix = "行业兜底 " if classification_status == "industry_fallback" else ""
             detail_parts.append(
-                f"🚀 赛道修正: {sector_label}（×{sector_mult:.2f}，"
+                f"🚀 赛道修正: {label_prefix}{sector_label}（×{sector_mult:.2f}，"
                 f"业务可信度{sector_context.get('confidence', 0):.2f}）→{estimated}%"
             )
         else:
-            detail_parts.append(f"🚀 赛道修正: 未命中热门赛道（×1.00）→{estimated}%")
+            detail_parts.append(f"🚀 赛道修正: 待补全（×1.00，未做赛道修正）→{estimated}%")
         # 市场温度衰减
         temp_mult = get_temp_listing_multiplier()
         estimated = int(round(estimated * temp_mult))
@@ -799,6 +802,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
                 "sector_label": sector_label,
                 "sector_multiplier": sector_boost if sector_label else 1.0,
                 "sector_confidence": sector_context.get("confidence", 0.0),
+                "sector_status": classification_status,
                 "sector_components": sector_context.get("components", []),
             },
         }
@@ -878,12 +882,13 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     detail_parts.append(f"🏢 板块基准: {board_base}%（近12月中位数）")
     detail_parts.append(f"🌡️ 市场温度: {temp}（衰减系数×{temp_mult}）")
     if sector_label:
+        label_prefix = "行业兜底 " if classification_status == "industry_fallback" else ""
         detail_parts.append(
-            f"🚀 热门赛道: {sector_label}（赛道系数×{sector_boost:.2f}，"
+            f"🚀 热门赛道: {label_prefix}{sector_label}（赛道系数×{sector_boost:.2f}，"
             f"业务可信度{sector_context.get('confidence', 0):.2f}）"
         )
     else:
-        detail_parts.append("🚀 热门赛道: 未命中（赛道系数×1.00）")
+        detail_parts.append("🚀 热门赛道: 待补全（赛道系数×1.00，未做赛道修正）")
     if lottery_rate is not None:
         detail_parts.append(f"📋 中签率: {lottery_rate}%")
     if cmv is not None:
@@ -909,6 +914,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             "sector_label": sector_label,
             "sector_multiplier": sector_boost if sector_label else 1.0,
             "sector_confidence": sector_context.get("confidence", 0.0),
+            "sector_status": classification_status,
             "sector_components": sector_context.get("components", []),
         },
     }

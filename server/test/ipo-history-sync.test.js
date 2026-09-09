@@ -67,6 +67,11 @@ assert.match(bondSource, /history_stage/, '新债历史没有阶段字段');
 assert.match(bondSource, /data_as_of/, '新债历史没有数据日期');
 const fetchSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_fetch.py'), 'utf8');
 assert.match(fetchSource, /existing_industry=None/, '详情补全没有复用已有行业值');
+assert.match(fetchSource, /_split_embedded_industry/, '旧主营文本未拆分行业字段');
+assert.match(fetchSource, /仪器仪表/, '行业PE缺少仪器仪表行业别名');
+const sectorSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_sector.py'), 'utf8');
+assert.match(sectorSource, /电子测量仪器/, '电子测量仪器未纳入赛道识别');
+assert.match(sectorSource, /classification_status/, '赛道分类未区分行业兜底与资料缺失');
 
 const firstDaySource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py'), 'utf8');
 assert.match(firstDaySource, /NOT EXISTS/, '新债上市表现补偿未按事实表缺口筛选');
@@ -106,6 +111,7 @@ const bondRefreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'co
 assert.match(bondRefreshSource, /ipo-report.*venv.*bin.*python/, '估值任务没有 Linux Python 解释器兜底');
 
 const reportSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_report.py'), 'utf8');
+assert.match(reportSource, /所属行业/, '新股日报详情未展示所属行业');
 assert.match(reportSource, /ipo_date=COALESCE\(\?, ipo_date\)/, '日报详情保存仍遗漏 ipo_date');
 assert.match(reportSource, /def reconcile_report_calendar_sets\(/, '日报发布前缺少日历证券集合对账');
 assert.match(reportSource, /拒绝发布并保留上一份有效结果/, '集合不一致时没有拒绝覆盖旧日报');

@@ -325,6 +325,21 @@ try:
     no_industry_fallback = _val.detect_stock_hot_sector("测试", "普通产品研发和生产", "")
     check("行业缺失时仍有中性赛道系数", no_industry_fallback == ("其他赛道", 1.0),
           "sector=%r" % (no_industry_fallback,))
+    business, embedded_industry = fetch._split_embedded_industry(
+        "电子测量技术的研究和产品开发；所属行业：仪器仪表制造业"
+    )
+    check("旧主营文本可拆分行业", business == "电子测量技术的研究和产品开发" and embedded_industry == "仪器仪表制造业",
+          "business=%r industry=%r" % (business, embedded_industry))
+    electronic_measurement = _val.get_stock_sector_context(
+        "电科思仪", business, embedded_industry,
+    )
+    check("电子测量仪器正确识别赛道", electronic_measurement.get("label") == "电子测量仪器"
+          and electronic_measurement.get("classification_status") == "matched"
+          and electronic_measurement.get("confidence", 0) > 0,
+          "context=%r" % (electronic_measurement,))
+    missing_context = _val.get_stock_sector_context("测试", "", "")
+    check("行业和主营缺失时标记待补全", missing_context.get("classification_status") == "missing",
+          "context=%r" % (missing_context,))
     exposure = _val.analyze_business_exposure(
         "贝特利",
         "电子材料和化工新材料的研发、生产与销售，产品涵盖导电材料、有机硅材料和涂层材料，广泛应用于光伏、3C电子、电子封装、医疗、新能源汽车等领域",

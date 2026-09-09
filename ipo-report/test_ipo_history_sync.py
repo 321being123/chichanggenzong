@@ -3,6 +3,7 @@
 import os
 import sys
 import traceback
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_history_sync as sync
@@ -37,6 +38,21 @@ try:
     cur.execute("SELECT issue_price,online_shares,circulation_mv,ipo_date FROM ipo_history WHERE security_code='999999'")
     row = cur.fetchone()
     check("空值不覆盖旧值", inserted2 == 0 and refreshed2 == 1 and tuple(row) == (20.0, 500.0, 1.0, "2026-08-01"), str(row))
+    cur.execute(
+        "UPDATE ipo_history SET main_business=%s, industry='', business_exposure='{}'::jsonb WHERE security_code='999999'",
+        ("电子测量技术的研究和产品开发；所属行业：仪器仪表制造业",),
+    )
+    normalized = sync.normalize_stored_details(cur, date(2026, 9, 9))
+    cur.execute("SELECT main_business,industry,business_exposure FROM ipo_history WHERE security_code='999999'")
+    detail = cur.fetchone()
+    check(
+        "已入库主营文本归一化",
+        normalized["updated"] >= 1
+        and detail[0] == "电子测量技术的研究和产品开发"
+        and detail[1] == "仪器仪表制造业"
+        and detail[2].get("exposures", [{}])[0].get("label") == "电子测量仪器",
+        str(detail),
+    )
     conn.rollback()
     cur.close()
     conn.close()

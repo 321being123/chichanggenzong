@@ -22,6 +22,31 @@ from sse_listing_parser import (
 _bond_price_source = {}
 
 
+def _split_embedded_industry(main_business):
+    """兼容旧数据：把主营业务末尾拼接的“所属行业”拆成独立字段。"""
+    text = re.sub(r'\s+', ' ', str(main_business or '')).strip()
+    if not text:
+        return '', ''
+    match = re.search(r'(?:^|[；;])\s*所属行业\s*[:：]\s*(.+?)\s*$', text)
+    if not match:
+        return text, ''
+    industry = re.split(r'[；;]', match.group(1), maxsplit=1)[0].strip(' ：:，,。')
+    business = text[:match.start()].strip(' ；;，,')
+    return business or text, industry[:80]
+
+
+def _normalize_stock_detail(info):
+    """统一新股详情中的行业/主营字段，供数据库读取和外部补全共同复用。"""
+    if not isinstance(info, dict):
+        return info
+    business, embedded_industry = _split_embedded_industry(info.get('main_business'))
+    if embedded_industry:
+        if not str(info.get('industry') or '').strip():
+            info['industry'] = embedded_industry
+        info['main_business'] = business
+    return info
+
+
 def fetch_stock_detail(secu_code):
     """从 ipo_history 读取新股详细发行信息。
 
@@ -45,6 +70,7 @@ def fetch_stock_detail(secu_code):
                   "online_shares", "online_lottery_rate", "subscribe_upper_limit", "circulation_mv",
                   "main_business", "industry", "industry_pe", "business_exposure")
         info = dict(zip(fields, row))
+        _normalize_stock_detail(info)
         if isinstance(info.get("business_exposure"), str):
             try:
                 info["business_exposure"] = json.loads(info["business_exposure"])
@@ -1238,9 +1264,13 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
         return None
     industry = _fetch_stock_industry(code) or str(existing_industry or '').strip()
     detail = {'industry': industry or ''}
-    if industry:
-        detail['industry_pe'] = _get_industry_pe_map().get(industry)
     detail['main_business'] = (_fetch_stock_main_business(code) or '')[:200]
+    _normalize_stock_detail(detail)
+    if detail.get('industry'):
+        industry_pe_map = _get_industry_pe_map()
+        detail['industry_pe'] = industry_pe_map.get(detail['industry'])
+        if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:
+            detail['industry_pe'] = industry_pe_map.get('电器仪表')
     try:
         from ipo_lib_sector import analyze_business_exposure
         detail['business_exposure'] = analyze_business_exposure(
@@ -1692,4 +1722,4 @@ def _fetch_stock_listing_actuals():
     if updated > 0:
         print(f"[回填] 从K线回填 {updated} 只股票的首日涨幅")
 
-__all__ = ['fetch_stock_detail', 'fetch_stock_historical_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']
+__all__ = ['fetch_stock_detail', 'fetch_stock_historical_detail', '_split_embedded_industry', '_normalize_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']

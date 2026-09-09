@@ -266,6 +266,56 @@ def backfill_first_day(cur, now):
     return {"attempted": attempted, "updated": updated, "pending": failed}
 
 
+def normalize_stored_details(cur, today, target_date=None):
+    """用已入库的主营文本恢复行业，并重算结构化赛道暴露；不访问外部接口。"""
+    from ipo_lib_fetch import _split_embedded_industry
+    from ipo_lib_sector import analyze_business_exposure
+
+    clauses = [
+        "market_code='CN'",
+        "(NULLIF(main_business,'') IS NOT NULL OR NULLIF(industry,'') IS NOT NULL)",
+        "(main_business LIKE '%%所属行业%%' OR NULLIF(industry,'') IS NULL OR business_exposure IS NULL OR business_exposure='{}'::jsonb)",
+    ]
+    params = []
+    if target_date:
+        clauses.append("(ipo_date=%s OR listing_date=%s)")
+        params.extend([target_date.isoformat(), target_date.isoformat()])
+    cur.execute(
+        """SELECT security_code,security_name,main_business,industry,business_exposure
+             FROM ipo_history WHERE """ + " AND ".join(clauses), params,
+    )
+    updated = 0
+    for code, name, main_business, industry, stored_exposure in cur.fetchall():
+        business, embedded_industry = _split_embedded_industry(main_business)
+        normalized_industry = str(industry or '').strip() or embedded_industry
+        exposure = analyze_business_exposure(name or '', business, normalized_industry, stored=stored_exposure)
+        old_exposure = stored_exposure if isinstance(stored_exposure, dict) else {}
+        changed = (
+            business != str(main_business or '').strip()
+            or normalized_industry != str(industry or '').strip()
+            or exposure != old_exposure
+        )
+        if not changed:
+            continue
+        cur.execute(
+            """UPDATE ipo_history SET
+                    main_business=COALESCE(NULLIF(%s,''),main_business),
+                    industry=COALESCE(NULLIF(%s,''),industry),
+                    business_exposure=COALESCE(%s::jsonb,business_exposure),
+                    source_payload=COALESCE(source_payload,'{}'::jsonb)
+                      || jsonb_build_object('profile_normalization',%s::jsonb),
+                    updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+                WHERE security_code=%s""",
+            (business, normalized_industry, Json(exposure), Json({
+                "normalized_on": today.isoformat(),
+                "industry": normalized_industry,
+                "business_exposure": exposure,
+            }), code),
+        )
+        updated += 1
+    return {"updated": updated}
+
+
 def enrich_stock_missing_details(cur, today, limit=10):
     """定点补全历史新股详情；不依赖 new_share 的待发行列表。"""
     today_text = today.isoformat()
@@ -514,12 +564,14 @@ def run(today=None, mode="core"):
     try:
         if mode == "enrichment":
             with connection.cursor() as cur:
+                normalized = normalize_stored_details(cur, today)
                 first_day = backfill_first_day(cur, datetime.now())
                 enrichment = enrich_stock_missing_details(cur, today)
                 quality = update_quality(cur, today)
             connection.commit()
             return {
                 "ok": True, "mode": "enrichment", "dataAsOf": today.isoformat(),
+                "normalization": normalized,
                 "first_day": first_day, "enrichment": enrichment, "quality": quality,
                 "publishDatasets": False,
             }
@@ -541,6 +593,7 @@ def run(today=None, mode="core"):
             raise RuntimeError("Tushare new_share 返回重复证券代码")
         with connection.cursor() as cur:
             inserted, refreshed = upsert_shares(cur, records, today)
+            normalization = normalize_stored_details(cur, today)
             quality = update_quality(cur, today)
             dataset_diagnostics = publication_quality(cur, records, today, run_id)
             mark_cursor(cur, today)
@@ -550,6 +603,7 @@ def run(today=None, mode="core"):
             "ok": True, "mode": "core", "source": "tushare.new_share", "bootstrap": bootstrap,
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
+            "normalization": normalization,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),
             "quality": quality, "calendar_diff": 0, "dataAsOf": today.isoformat(),
             "datasetDiagnostics": {"ipo_history": dataset_diagnostics},

@@ -49,6 +49,7 @@ NEW_STOCK_HOT_SECTORS = {
 _BUSINESS_EXPOSURE_RULES = (
     ("光伏", "光伏", ("光伏", "太阳能", "硅片", "电池片", "组件", "逆变器")),
     ("PCB", "PCB", ("PCB", "印制电路板")),
+    ("电子测量仪器", "高端装备", ("电子测量仪器", "电子测量", "测试测量", "测量仪器")),
     ("消费电子", "消费电子", ("3C", "消费电子", "手机", "电脑", "可穿戴")),
     ("电子封装", "消费电子", ("电子封装", "封装材料", "封装", "封装胶")),
     ("半导体", "半导体", ("半导体", "芯片", "晶圆", "集成电路", "先进封装")),
@@ -433,7 +434,9 @@ def get_stock_sector_context(stock_name, main_business, industry, stored=None):
         key = f"行业:{industry_name}" if industry_name and industry_name.lower() not in ("nan", "none", "-") else ""
         multiplier = _effective_sector_multiplier(key, 1.0) if key else 1.0
         return {"label": industry_name or "其他赛道", "multiplier": multiplier,
-                "confidence": 0.25 if key else 0.0, "exposure": exposure}
+                "confidence": 0.25 if key else 0.0,
+                "classification_status": "industry_fallback" if key else "missing",
+                "exposure": exposure}
 
     weighted_delta = 0.0
     labels = []
@@ -453,7 +456,8 @@ def get_stock_sector_context(stock_name, main_business, industry, stored=None):
     multiplier = 1.0 + weighted_delta * confidence
     multiplier = round(max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, multiplier)), 3)
     return {"label": "、".join(dict.fromkeys(labels)), "multiplier": multiplier,
-            "confidence": confidence, "exposure": exposure, "components": components}
+            "confidence": confidence, "classification_status": "matched",
+            "exposure": exposure, "components": components}
 
 def _get_board_key_from_code(code):
     """从股票代码获取板块键"""

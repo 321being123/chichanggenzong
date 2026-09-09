@@ -210,7 +210,14 @@ async function resolveInstrumentByCode(raw) {
     return null;
   }
   // 仅返回有名称的有效证券；空名记录（早期错误链接产生的垃圾）一律排除，避免链到脏数据
-  const { rows } = await pool.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1 AND coalesce(name,\'\') <> \'\'', [canonical]);
+  const canonicalCandidates = canonical === code ? [canonical, `${code}.${exchange}`] : [canonical];
+  const { rows } = await pool.query(`
+    SELECT instrument_id
+      FROM core.instruments
+     WHERE canonical_code=ANY($1::text[]) AND coalesce(name,'') <> ''
+     ORDER BY CASE WHEN canonical_code=$2 THEN 0 ELSE 1 END
+     LIMIT 1
+  `, [canonicalCandidates, canonical]);
   if (rows.length) return rows[0].instrument_id;
   // 不再自动建空名证券：公告里抓到的代码可能是噪声（如文档编号），未知代码返回 null，由调用方走名称回查
   return null;

@@ -13,6 +13,10 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   index_daily: { scopeKey: 'GLOBAL', table: 'public.index_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
   ipo_calendar: { scopeKey: 'GLOBAL', table: 'public.ipo_reports', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('report_date')} AS data_as_of` },
   bond_master: { scopeKey: 'CN', table: 'public.bond_unified', whereSql: "WHERE status='listed'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfStandaloneSql: "SELECT MAX(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'" },
+  bond_daily: { scopeKey: 'CN', table: 'market.convertible_bond_daily_metrics', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  stock_daily: { scopeKey: 'CN', table: 'market.daily_bars', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  stock_valuation: { scopeKey: 'CN', table: 'market.daily_valuations', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  stock_adj_factor: { scopeKey: 'CN', table: 'market.adjustment_factors', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   stock_financial_reports: { scopeKey: 'CN', table: 'fundamental.financial_reports', whereSql: "WHERE report_type='1' AND is_current_version=true", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: "SELECT MAX(COALESCE(f_ann_date,announced_at,period_end))::text AS data_as_of" },
   stock_suspend_calendar: { scopeKey: 'CN', table: 'market.stock_suspend_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   bond_redemption_events: { scopeKey: 'CN', table: 'event.convertible_bond_call_events', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
@@ -64,7 +68,9 @@ async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool
   const snapshot = await readSnapshot(datasetCode, executor);
   const dataAsOf = dateValue(options.dataAsOf) || snapshot.dataAsOf;
   const rowCount = Number.isFinite(Number(options.rowCount)) ? Number(options.rowCount) : snapshot.rowCount;
-  if (!dataAsOf || rowCount <= 0) return { ...snapshot, reason: 'empty_or_no_date' };
+  const diagnostics = options.diagnostics || {};
+  const allowEmpty = options.allowEmpty === true || diagnostics.coverage_status === 'verified_no_suspension';
+  if (!dataAsOf || (rowCount <= 0 && !allowEmpty)) return { ...snapshot, reason: 'empty_or_no_date' };
   const partitionKey = dateValue(options.partitionKey) || snapshot.dataAsOf;
   const published = await publishDatasetPartition(datasetCode, snapshot.scopeKey, {
     partitionKey,
@@ -75,16 +81,26 @@ async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool
       registry: true,
       table: DATASET_PARTITION_REGISTRY[datasetCode].table,
       reason: options.reason || 'snapshot',
-      ...(options.diagnostics || {}),
+      ...diagnostics,
     },
   }, executor);
   return { ...snapshot, dataAsOf, rowCount, published: Boolean(published), partitionKey };
 }
 
 async function publishJobDatasets(jobCode, businessDate, result) {
-  if (result && (result.ok === false || result.publishDatasets === false)) return [];
   const definition = getJobDefinition(jobCode);
-  const datasets = (definition.producesDatasets || []).filter(code => DATASET_PARTITION_REGISTRY[code]);
+  const declaredDatasets = definition.producesDatasets || [];
+  const datasets = declaredDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
+  if (result && result.ok === false) return [];
+  if (result && result.publishDatasets === false) {
+    if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate))) {
+      throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
+    }
+    return [];
+  }
+  if (definition.strictDatasetPublication && (!datasets.length || datasets.length !== declaredDatasets.length)) {
+    throw new Error(`${jobCode} 的 producesDatasets 存在未登记白名单，已拒绝发布`);
+  }
   const results = await Promise.all(datasets.map(async datasetCode => {
     try {
       const diagnostics = result && result.datasetDiagnostics && result.datasetDiagnostics[datasetCode] || {};
@@ -92,6 +108,7 @@ async function publishJobDatasets(jobCode, businessDate, result) {
         partitionKey: businessDate,
         dataAsOf: result && (result.dataAsOf || result.data_as_of),
         rowCount: diagnostics.partition_row_count,
+        allowEmpty: diagnostics.coverage_status === 'verified_no_suspension',
         diagnostics,
         reason: `job:${jobCode}`,
       });
@@ -105,12 +122,18 @@ async function publishJobDatasets(jobCode, businessDate, result) {
       return { published: false, datasetCode, reason: 'publish_error', error: error.message };
     }
   }));
+  if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate))) {
+    throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
+  }
   return results;
 }
 
 async function areJobDatasetsPublished(jobCode, businessDate) {
   const definition = getJobDefinition(jobCode);
-  const datasets = (definition.producesDatasets || []).filter(code => DATASET_PARTITION_REGISTRY[code]);
+  const declaredDatasets = definition.producesDatasets || [];
+  const datasets = declaredDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
+  // 严格任务的声明必须全部落在注册表中；过滤为空时必须失败关闭，不能把“没有检查对象”当成已完成。
+  if (definition.strictDatasetPublication && (!datasets.length || datasets.length !== declaredDatasets.length)) return false;
   if (!datasets.length) return true;
   const partitionKey = dateValue(businessDate);
   if (!partitionKey) return false;
@@ -125,6 +148,7 @@ async function areJobDatasetsPublished(jobCode, businessDate) {
     const row = byCode.get(code);
     if (!row || row.status !== 'published' || row.is_stale) return false;
     if (code === 'ipo_history') return row.diagnostics && row.diagnostics.quality_status === 'passed';
+    if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';
     return true;
   });
 }

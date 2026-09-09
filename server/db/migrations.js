@@ -5867,6 +5867,18 @@ async function migration145CninfoUnlimitedDailyBudget() {
   `);
 }
 
+// ========== 146：可转债派生数据状态边界 =============
+// waived 是业务状态，不写入 data_status；数据状态只允许 complete/incomplete/pending，避免两套口径混计。
+async function migration146ConvertibleBondDataStatusConstraint() {
+  await pool.query(`
+    ALTER TABLE analytics.convertible_bond_trigger_daily
+      DROP CONSTRAINT IF EXISTS chk_cb_trigger_data_status;
+    ALTER TABLE analytics.convertible_bond_trigger_daily
+      ADD CONSTRAINT chk_cb_trigger_data_status
+      CHECK (data_status IN ('complete','incomplete','pending'));
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6013,6 +6025,7 @@ const MIGRATIONS = [
   { version: '143_market_scoped_numeric_identity', up: migration143MarketScopedNumericIdentity },
   { version: '144_hk_ipo_p0_audit', up: migration144HkIpoP0Audit },
   { version: '145_cninfo_unlimited_daily_budget', up: migration145CninfoUnlimitedDailyBudget },
+  { version: '146_convertible_bond_data_status_constraint', up: migration146ConvertibleBondDataStatusConstraint },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

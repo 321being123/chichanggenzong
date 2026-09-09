@@ -5,6 +5,7 @@ const { getJobDefinition, externalCallLimitForMode } = require('./jobDefinitions
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { getExternalCallStats, setExternalCallCount } = require('./externalCallGuard');
 const { publishJobDatasets } = require('./datasetPartitionRegistry');
+const { expectedDataDate } = require('./jobScheduleSlots');
 
 function send(message) {
   if (typeof process.send === 'function') process.send(message, () => process.exit(message.ok ? 0 : 1));
@@ -32,8 +33,10 @@ process.on('message', async message => {
     process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
     process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimitForMode(definition, mode));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
-    // 非核心任务统一登记最新数据分区；登记失败只记录，不影响已成功的业务任务。
-    const datasetPublications = await publishJobDatasets(message.jobCode, message.businessDate, result);
+    const resultDate = result && (result.dataAsOf || result.data_as_of || result.trade_date || result.dataDate);
+    const partitionDate = String(resultDate || expectedDataDate(message.jobCode, message.businessDate) || message.businessDate || '').slice(0, 10);
+    // 统一按结果数据日登记分区；严格发布任务的登记失败会交由编排器重试。
+    const datasetPublications = await publishJobDatasets(message.jobCode, partitionDate, result);
     const stats = getExternalCallStats();
     const normalized = result && typeof result === 'object'
       ? { ...result, datasets: result.datasets || datasetPublications, externalCalls: Number(result.externalCalls || stats.total), externalSources: result.externalSources || stats.sources }

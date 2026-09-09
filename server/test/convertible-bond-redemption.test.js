@@ -34,7 +34,7 @@ const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convert
 const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-redemption"'));
-assert.ok(html.includes('js/bond-redemption.js?v=4'));
+assert.ok(html.includes('js/bond-redemption.js?v=5'));
 assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-search"') && html.includes('data-autofill-ignore'), '强赎搜索框必须明确为非认证输入');
 assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));
 assert.ok(page.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
@@ -62,7 +62,7 @@ assert.ok(redemptionService.includes('JOIN market.convertible_bond_daily_metrics
 assert.ok(redemptionService.includes('m.trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics)'));
 assert.ok(redemptionService.includes('PARTITION BY instrument_id,trade_date'), '正股日线必须先按交易日去重');
 assert.ok(redemptionService.includes('expectedMarketDate') && redemptionService.includes('latestMarketDate < expectedMarketDate'), '强赎新鲜度必须纳入交易日历最新交易日');
-assert.ok(redemptionService.includes('stock_suspend_calendar') && redemptionService.includes('suspended_dates'), '强赎计算必须区分停牌日与真正缺失日');
+assert.ok(redemptionService.includes('stock_suspend_calendar') && redemptionService.includes('suspended_dates') && redemptionService.includes('c.diagnostics'), '强赎计算必须区分停牌日与真正缺失日并返回诊断');
 assert.ok(redemptionService.includes("WHEN 'announced' THEN 1 WHEN 'maturity_near' THEN 2 WHEN 'met_pending' THEN 3"), '强赎列表排序必须先公告、再临近到期、再已满足待确认');
 assert.ok(redemptionSync.includes("'即将到期'") && redemptionSync.includes("'停止交易'") && redemptionSync.includes("'到期兑付'"), '强赎公告检索必须覆盖到期赎回提示公告');
 assert.ok(stockAnalysis.includes('rows.length >= announceCount') && stockAnalysis.includes('!Number.isFinite(announceCount)') && stockAnalysis.includes('maxPages = 1'), '深交所公告分页必须按公告总数判断完整性并为备源预留预算');

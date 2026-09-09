@@ -54,7 +54,67 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'convertible_bond_universe_refresh': {
       const { expectedDataDate } = require('./jobScheduleSlots');
       const targetTradeDate = expectedDataDate('convertible_bond_universe_refresh', businessDate);
-      return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason, { targetTradeDate });
+      if (process.env.NODE_ENV === 'test' && context.testScenario === 'suspension-failure') {
+        return {
+          ok: false,
+          status: 'partial',
+          error: '模拟停牌数据集失败',
+          errorCode: 'DATASET_INCOMPLETE',
+          errorType: 'data_quality',
+          dataAsOf: targetTradeDate,
+          failedDatasets: ['stock_suspend_calendar'],
+          missingDates: [targetTradeDate],
+          publishDatasets: false,
+          testRunnerMode: 'suspension-failure',
+        };
+      }
+      if (process.env.NODE_ENV === 'test' && context.testScenario === 'suspension-rate-limit') {
+        return {
+          ok: false,
+          status: 'partial',
+          error: '模拟 suspend_d 限流',
+          errorCode: 'RATE_LIMIT',
+          errorType: 'rate_limit',
+          source: 'tushare',
+          apiName: 'suspend_d',
+          recoverAt: new Date(Date.now() + 60000).toISOString(),
+          dataAsOf: targetTradeDate,
+          failedDatasets: ['stock_suspend_calendar'],
+          missingDates: [targetTradeDate],
+          publishDatasets: false,
+          testRunnerMode: 'suspension-rate-limit',
+        };
+      }
+      if (process.env.NODE_ENV === 'test' && context.testScenario === 'suspension-success') {
+        const { publishDatasetPartition } = require('./datasetPartitions');
+        await publishDatasetPartition('stock_suspend_calendar', 'CN', {
+          partitionKey: targetTradeDate,
+          dataAsOf: targetTradeDate,
+          rowCount: 0,
+          diagnostics: {
+            api_name: 'suspend_d',
+            query_status: 'success',
+            coverage_status: 'verified_no_suspension',
+          },
+        });
+        return {
+          ok: true,
+          status: 'succeeded',
+          dataAsOf: targetTradeDate,
+          trade_date: targetTradeDate,
+          failedDatasets: [],
+          missingDates: [],
+          publishDatasets: false,
+          testRunnerMode: 'suspension-only',
+          receivedFailedDatasets: context.failedDatasets || [],
+        };
+      }
+      return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason, {
+        targetTradeDate,
+        failedDatasets: context.failedDatasets || [],
+        windowDays: context.windowDays,
+        slotId: context.slotId,
+      });
     }
     case 'convertible_bond_revision_motive_inputs_sync':
       return require('../services/convertibleBondRevisionMotiveService').syncRevisionMotiveInputs({

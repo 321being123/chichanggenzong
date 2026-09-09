@@ -5,7 +5,7 @@ const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
-  claimSlot, completeSlot, deferSlot, waitForExternalSlot, touchSlot, queryDataAsOf, isDataAsOfFresh,
+  claimSlot, completeSlot, deferSlot, waitForExternalSlot, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
 } = require('./jobScheduleSlots');
 
 let executorStarted = false;
@@ -16,6 +16,7 @@ let activeRuns = 0;
 const activeControllers = new Set();
 const activeRunMeta = new Set();
 const stopWaiters = [];
+const DEFAULT_DATASET_FAILURE_THRESHOLD = 3;
 
 function notifyStopWaiters() {
   if (activeRuns === 0 && !executing) stopWaiters.splice(0).forEach(resolve => resolve());
@@ -96,6 +97,67 @@ function classifyFailure(error, result = {}) {
     return { code: code || 'NETWORK_ERROR', type: 'network', retryable: true, source, apiName, message };
   }
   return { code: code || 'JOB_FAILED', type: type || 'unknown', retryable: true, source, apiName, message };
+}
+
+function incompleteDatasets(definition, result = {}) {
+  const declared = new Set(definition && definition.producesDatasets || []);
+  return [...new Set((result.failedDatasets || []).map(String).filter(code => declared.has(code)))];
+}
+
+async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
+  const definition = getJobDefinition(slot.job_code);
+  const failed = incompleteDatasets(definition, normalized);
+  if (!failed.length) return null;
+  const previous = slot.result_summary && slot.result_summary.datasetFailureCounts || {};
+  const counts = {};
+  for (const dataset of definition.producesDatasets || []) {
+    counts[dataset] = failed.includes(dataset) ? Number(previous[dataset] || 0) + 1 : 0;
+  }
+  const threshold = Math.max(Number(definition.datasetFailureThreshold) || DEFAULT_DATASET_FAILURE_THRESHOLD, 1);
+  const blockedDatasets = failed.filter(dataset => counts[dataset] >= threshold);
+  normalized.datasetFailureCounts = counts;
+  normalized.datasetBreaker = { threshold, failedDatasets: failed, blockedDatasets };
+  if (!blockedDatasets.length) return null;
+  const summary = sanitizeJobResult(normalized);
+  await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='blocked',last_run_id=COALESCE($2,last_run_id),
+            result_summary=$3::jsonb,last_error=$4,next_attempt_at=NULL,
+            lease_owner=NULL,lease_until=NULL,heartbeat_at=now(),updated_at=now()
+      WHERE slot_id=$1 AND status='running' RETURNING *`,
+    [slot.slot_id, runId, JSON.stringify(summary), sanitizeJobError(`数据集 ${blockedDatasets.join(',')} 连续 ${threshold} 次未完成，任务已暂停，等待人工处理`)]
+  );
+  const blocked = rows[0] || null;
+  if (blocked) {
+    const { notifyJobFailure } = require('./jobAlertMailer');
+    await notifyJobFailure({
+      jobCode: slot.job_code,
+      slotId: slot.slot_id,
+      alertKey: `slot:${slot.slot_id}:dataset-breaker`,
+      alertType: 'data_quality',
+      severity: 'critical',
+      subject: `后台任务数据集连续未完成：${definition.label}`,
+      summary: `数据集 ${blockedDatasets.join('、')} 已连续 ${threshold} 次未完成，任务已暂停，避免重复拉取全市场数据。请处理数据源后手动重试。`,
+    }).catch(error => console.warn('[job-alert] 数据集熔断告警失败:', error.message));
+  }
+  return blocked;
+}
+
+async function notifyIncompleteDataset(slot, result) {
+  const missingDates = result.missingDates || result.missing_dates || [];
+  if (!missingDates.length) return;
+  const definition = getJobDefinition(slot.job_code);
+  const { notifyJobFailure } = require('./jobAlertMailer');
+  await notifyJobFailure({
+    jobCode: slot.job_code,
+    slotId: slot.slot_id,
+    alertKey: `slot:${slot.slot_id}:dataset-incomplete`,
+    alertType: 'data_quality',
+    severity: 'warning',
+    subject: `后台任务存在数据缺口：${definition.label}`,
+    summary: `数据集 ${incompleteDatasets(definition, result).join('、') || '未指定'} 未完成，缺失日期：${missingDates.slice(0, 20).join('、')}。`,
+  }).catch(error => console.warn('[job-alert] 数据缺口告警失败:', error.message));
 }
 
 async function startManagedRun(slot, reason) {
@@ -275,6 +337,11 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const normalized = normalizeJobResult({
     ...result, error: message, errorCode: failure.code, errorType: failure.type, apiName: failure.apiName,
   }, result.externalCalls);
+  // Runner 明确返回未完成数据集，说明已经发生真实采集尝试；限流/额度错误也必须累计。
+  // freshnessGate 自身不会进入 failOrRetry，因此只读检查未命中不会被误计为失败。
+  await notifyIncompleteDataset(slot, normalized);
+  const blocked = await applyDatasetFailureBreaker(slot, runId, normalized, failure);
+  if (blocked) return blocked;
   const externalRecoveryFailure = definition.retryPolicy !== 'no_retry'
     && ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(failure.code);
   if (externalRecoveryFailure) {
@@ -385,14 +452,17 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)
       ? claimed.result_summary.failedDatasets : [],
     externalCallCount: Number(claimed.result_summary && claimed.result_summary.externalCalls || 0),
+    ...(process.env.NODE_ENV === 'test' && claimed.request_payload && claimed.request_payload.testScenario
+      ? { testScenario: String(claimed.request_payload.testScenario) } : {}),
   };
 
   try {
     runId = await startManagedRun(claimed, reason);
     if (definition.freshnessGate && !runContext.force && runContext.mode !== 'enrichment') {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
+      const partitionDate = expectedDataDate(claimed.job_code, claimed.business_date);
       const datasetsPublished = !definition.strictDatasetPublication
-        || await require('./datasetPartitionRegistry').areJobDatasetsPublished(claimed.job_code, claimed.business_date);
+        || await require('./datasetPartitionRegistry').areJobDatasetsPublished(claimed.job_code, partitionDate);
       if (datasetsPublished && dataAsOf && isDataAsOfFresh(dataAsOf, claimed.business_date, definition)) {
         const freshResult = normalizeJobResult({ ok: true, status: 'fresh', dataAsOf, externalCalls: 0 });
         await finishManagedRun(runId, claimed.job_code, true, freshResult);

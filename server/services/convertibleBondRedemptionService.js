@@ -284,7 +284,7 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
       `SELECT c.instrument_id,c.ts_code,c.security_code,c.bond_name,c.stock_code,c.stock_name,
               m.close AS bond_close,m.market_trade_date,c.stock_close,c.current_conv_price,c.trigger_ratio,c.trigger_price,
               c.distance_to_trigger_pct,c.trade_date,c.matched_days,c.required_days,c.observation_days,
-              c.remaining_days,c.calculated_status,c.official_status,c.business_status,c.data_status,
+              c.remaining_days,c.calculated_status,c.official_status,c.business_status,c.data_status,c.diagnostics,
               c.announced_at,c.no_call_until,c.redemption_record_date,c.last_trade_date,
               c.last_conversion_date,c.redemption_price,c.source_url,c.announcement_title,
               c.announcement_parse_status,c.remain_size,c.maturity_date,c.conv_start_date,c.conv_end_date,

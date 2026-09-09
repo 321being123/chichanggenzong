@@ -25,17 +25,21 @@ function bondRedemptionDate(value) {
   parts.forEach(function (part) { values[part.type] = part.value; });
   return values.year + '年' + values.month + '月' + values.day + '日';
 }
-function bondRedemptionStatus(value) {
+function bondRedemptionStatus(value, row) {
   var labels = { announced: '已公告强赎', met_pending: '已满足待确认', near: '接近触发', maturity_near: '临近到期', tracking: '跟踪中', waived: '不提前赎回', completed: '已完成', inactive: '已失效', incomplete: '数据不完整' };
   var cls = String(value || 'incomplete').replace(/[^a-z_]/g, '');
-  return '<span class="bond-redemption-status bond-redemption-status-' + cls + '">' + escapeHtml(labels[value] || '数据不完整') + '</span>';
+  var missing = row && row.diagnostics && Array.isArray(row.diagnostics.missing_dates) ? row.diagnostics.missing_dates : [];
+  var warning = missing.length
+    ? '<span class="bond-redemption-data-warning" title="' + escapeHtml('停牌记录缺失：' + missing.join('、')) + '">停牌记录缺失：' + escapeHtml(missing.join('、')) + '</span>'
+    : '';
+  return '<span class="bond-redemption-status bond-redemption-status-' + cls + '">' + escapeHtml(labels[value] || '数据不完整') + '</span>' + warning;
 }
 function bondRedemptionApplyFilters() {
   var search = String((document.getElementById('bond-redemption-search') || {}).value || '').trim().toLowerCase();
   var status = String((document.getElementById('bond-redemption-status') || {}).value || '');
   bondRedemptionState.filtered = bondRedemptionState.rows.filter(function (row) {
     var hit = !search || [row.security_code, row.ts_code, row.bond_name, row.stock_code, row.stock_name].some(function (v) { return String(v || '').toLowerCase().indexOf(search) >= 0; });
-    return hit && (!status || row.business_status === status || (status === 'incomplete' && row.data_status !== 'complete'));
+    return hit && (!status || row.business_status === status);
   });
   bondRedemptionRender();
 }
@@ -43,7 +47,7 @@ function bondRedemptionCell(row, key) {
   if (key === 'security_code' || key === 'bond_name') {
     return '<span class="bond-redemption-link" onclick="bondRedemptionJump(\'' + escapeHtml(row.ts_code || row.security_code) + '\')">' + escapeHtml(bondRedemptionText(row[key])) + '</span>';
   }
-  if (key === 'business_status') return bondRedemptionStatus(row[key]);
+  if (key === 'business_status') return bondRedemptionStatus(row[key], row);
   if (key === 'distance_to_trigger_pct') return escapeHtml(bondRedemptionPct(row[key]));
   if (key === 'bond_close' || key === 'stock_close' || key === 'current_conv_price' || key === 'trigger_price') return escapeHtml(bondRedemptionNum(row[key], 2));
   if (key === 'remain_size') return escapeHtml(bondRedemptionNum(row[key], 3));

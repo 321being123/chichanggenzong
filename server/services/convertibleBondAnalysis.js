@@ -15,6 +15,13 @@ const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess,
 const { getLatestCallState } = require('./convertibleBondRedemptionService');
 const { saveConvertibleBondHolderPositions } = require('./convertibleBondRevisionMotiveService');
 const { publishDatasetPartition } = require('./datasetPartitions');
+const {
+  mergeDateRanges,
+  findSuspensionCoverageGaps,
+  publishSuspensionCoverage,
+  markSuspensionCoverageStale,
+  syncSuspensionIntervals,
+} = require('./convertibleBondSuspensionSync');
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 
@@ -1731,19 +1738,49 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       suspensionResult = await syncConvertibleBondSuspensions({ startDate: daily.tradeDate, endDate: daily.tradeDate });
       if (suspensionResult.ok) console.log(`[主同步] 正股停牌日已入库（${suspensionResult.count} 条，行情日期 ${daily.tradeDate}）`);
     } catch (suspensionError) {
-      suspensionResult = { ok: false, error: suspensionError.message };
+      suspensionResult = {
+        ok: false,
+        status: 'failed',
+        queryStatus: 'failed',
+        error: suspensionError.message,
+        errorCode: suspensionError.code || 'SUSPENSION_SYNC_FAILED',
+        errorType: suspensionError.errorType || 'data_quality',
+      };
       console.warn('[主同步] 正股停牌日同步失败，保留上一份停牌日缓存：', suspensionError.message);
     }
+    let partitionPublicationError = null;
     try {
       await Promise.all([
+        publishDatasetPartition('bond_master', 'CN', { dataAsOf: daily.tradeDate, partitionKey: daily.tradeDate, rowCount: profiles.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
         publishDatasetPartition('bond_daily', 'CN', { dataAsOf: daily.tradeDate, rowCount: activeDailyRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
         publishDatasetPartition('stock_daily', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockDailyRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
         publishDatasetPartition('stock_valuation', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockValuationRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
         publishDatasetPartition('stock_adj_factor', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockAdjustmentRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
-        publishDatasetPartition('stock_suspend_calendar', 'CN', { dataAsOf: daily.tradeDate, rowCount: suspensionResult.count || 0, sourceId: tushareSourceId, status: suspensionResult.ok ? 'published' : 'stale', isStale: !suspensionResult.ok, staleReason: suspensionResult.error || '' }),
       ]);
     } catch (partitionError) {
+      partitionPublicationError = partitionError;
       console.warn('[主同步] 数据集分区水位写入失败（不覆盖已入库事实）：', partitionError.message);
+    }
+    // suspend_d 的空结果是“已核验无停牌”，只有接口失败才登记 unknown/stale；失败时不覆盖已有行数。
+    try {
+      if (suspensionResult.ok) {
+        await publishDatasetPartition('stock_suspend_calendar', 'CN', {
+          dataAsOf: daily.tradeDate,
+          partitionKey: daily.tradeDate,
+          rowCount: suspensionResult.count || 0,
+          sourceId: tushareSourceId,
+          diagnostics: {
+            api_name: 'suspend_d',
+            query_status: 'success',
+            coverage_status: suspensionResult.count ? 'suspensions_found' : 'verified_no_suspension',
+          },
+        });
+      } else {
+        await markSuspensionCoverageStale({ startDate: daily.tradeDate, endDate: daily.tradeDate, sourceId: tushareSourceId, error: suspensionResult.error });
+      }
+    } catch (suspensionPartitionError) {
+      partitionPublicationError = partitionPublicationError || suspensionPartitionError;
+      console.warn('[主同步] 停牌数据集分区水位写入失败：', suspensionPartitionError.message);
     }
     // 评级历史自动补齐（独立事务，失败不影响主同步；缺评级的转债逐只从 Tushare 拉取）
     try { await backfillMissingRatings(reason); }
@@ -1776,18 +1813,43 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       await cycleClient.query('ROLLBACK').catch(() => {});
       console.warn('[cycle] 当日周期计算失败（不影响主同步）：', cycErr.message);
     } finally { cycleClient.release(); }
-    await finishJobRun(runId, true, `${reason}：同步 ${saved} 只，行情日期 ${daily.tradeDate}，上市表现 ${listingPerformance.updated || 0} 只`);
-    return {
+    const failedDatasets = [];
+    if (!suspensionResult.ok) failedDatasets.push('stock_suspend_calendar');
+    if (partitionPublicationError) failedDatasets.push('dataset_publication');
+    const complete = failedDatasets.length === 0;
+    const result = {
+      ok: complete,
+      status: complete ? 'succeeded' : 'partial',
       skipped: false,
       count: saved,
       trade_date: isoDate(daily.tradeDate),
+      dataAsOf: isoDate(daily.tradeDate),
       target_trade_date: targetTradeDate,
       coverage: daily.coverage,
       dataDiagnostics: daily.diagnostics,
       listing_performance: listingPerformance,
       issue_results: issueResults,
       suspension: suspensionResult,
+      failedDatasets,
+      missingDates: suspensionResult.ok ? (suspensionResult.missingDates || []) : [isoDate(daily.tradeDate)],
+      publishDatasets: false,
+      datasetDiagnostics: {
+        bond_master: { partition_row_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
+        bond_daily: { partition_row_count: activeDailyRows.length, dataAsOf: isoDate(daily.tradeDate) },
+        stock_daily: { partition_row_count: stockDailyRows.length, dataAsOf: isoDate(daily.tradeDate) },
+        stock_valuation: { partition_row_count: stockValuationRows.length, dataAsOf: isoDate(daily.tradeDate) },
+        stock_adj_factor: { partition_row_count: stockAdjustmentRows.length, dataAsOf: isoDate(daily.tradeDate) },
+        stock_suspend_calendar: {
+          partition_row_count: suspensionResult.count || 0,
+          dataAsOf: isoDate(daily.tradeDate),
+          coverage_status: suspensionResult.ok
+            ? (suspensionResult.count ? 'suspensions_found' : 'verified_no_suspension') : 'unknown',
+          query_status: suspensionResult.ok ? 'success' : 'failed',
+        },
+      },
     };
+    await finishJobRun(runId, complete, `${reason}：同步 ${saved} 只，行情日期 ${daily.tradeDate}，${complete ? '停牌与分区均已完成' : `未完成数据集：${failedDatasets.join(',')}`}`);
+    return result;
   } catch (error) {
     await finishJobRun(runId, false, error.message);
     throw error;
@@ -1871,8 +1933,67 @@ async function backfillCycleGaps({ windowDays = 90 } = {}) {
 
 // 每日主同步 + 自动补齐遗漏的交易日：某天任务失败或部署晚于点，下次运行时主同步更新最新日，backfill 顺手把漏的那天补上，不留永久缺口。
 // backfillOpts 透传给 backfillCycleGaps（如手动脚本传 { windowDays: 4000 } 补全量历史）。
+async function repairConvertibleBondSuspensionCoverage(targetTradeDate, windowDays = 90) {
+  const openDays = await getRecentOpenDays(Math.max(Number(windowDays) || 90, 90), targetTradeDate);
+  if (!openDays.length) return { ok: true, status: 'no_open_days', missingDates: [], ranges: [] };
+  const sources = await sourceIds();
+  if (!sources.tushare) {
+    return { ok: false, status: 'source_missing', error: 'Tushare 数据源未登记', errorCode: 'DATASET_INCOMPLETE', missingDates: openDays };
+  }
+  const gaps = await findSuspensionCoverageGaps({
+    startDate: openDays[0],
+    endDate: openDays[openDays.length - 1],
+    stockSourceId: sources.tushare,
+    suspensionSourceId: sources.tushare,
+  });
+  const missingDates = gaps.map(row => row.tradeDate);
+  const ranges = mergeDateRanges(missingDates, openDays);
+  const result = await syncSuspensionIntervals(ranges);
+  return { ...result, missingDates, ranges, gapDiagnostics: gaps };
+}
+
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
-  const result = await syncConvertibleBondUniverse(reason, { targetTradeDate: backfillOpts.targetTradeDate });
+  const targetTradeDate = isoDate(backfillOpts.targetTradeDate) || defaultBondTargetTradeDate();
+  const failedDatasets = [...new Set((backfillOpts.failedDatasets || []).map(String).filter(Boolean))];
+  // 停牌数据集失败时只续跑停牌区间，不再重拉整套可转债、股票行情和估值。
+  if (failedDatasets.length && failedDatasets.every(code => code === 'stock_suspend_calendar')) {
+    const suspension = await repairConvertibleBondSuspensionCoverage(targetTradeDate, backfillOpts.windowDays);
+    return {
+      ok: suspension.ok,
+      status: suspension.ok ? 'succeeded' : 'partial',
+      dataAsOf: targetTradeDate,
+      trade_date: targetTradeDate,
+      failedDatasets: suspension.ok ? [] : ['stock_suspend_calendar'],
+      missingDates: suspension.missingDates || [],
+      suspension,
+      publishDatasets: false,
+      datasetDiagnostics: { stock_suspend_calendar: { publish: false, coverage_status: suspension.ok ? 'repaired' : 'unknown' } },
+      ...(suspension.ok ? {} : {
+        error: suspension.error || '停牌数据集未完成',
+        errorCode: suspension.errorCode || 'DATASET_INCOMPLETE',
+        errorType: 'data_quality',
+      }),
+    };
+  }
+  const result = await syncConvertibleBondUniverse(reason, { targetTradeDate });
+  const suspensionCoverage = await repairConvertibleBondSuspensionCoverage(targetTradeDate, backfillOpts.windowDays);
+  if (!suspensionCoverage.ok) {
+    result.ok = false;
+    result.status = 'partial';
+    result.error = suspensionCoverage.error || '停牌数据集未完成';
+    result.errorCode = suspensionCoverage.errorCode || 'DATASET_INCOMPLETE';
+    result.errorType = 'data_quality';
+    result.failedDatasets = [...new Set([...(result.failedDatasets || []), 'stock_suspend_calendar'])];
+    result.missingDates = suspensionCoverage.missingDates || [];
+  } else {
+    result.failedDatasets = (result.failedDatasets || []).filter(code => code !== 'stock_suspend_calendar');
+    result.missingDates = [];
+    if (!result.failedDatasets.length) {
+      result.ok = true;
+      result.status = 'succeeded';
+    }
+  }
+  result.suspensionCoverage = suspensionCoverage;
   await backfillCycleGaps(backfillOpts);
   // 正股行情是强赎计算的直接输入；主同步成功后顺带补齐最近窗口内的缺口，避免只更新转债而遗漏正股。
   await backfillUnderlyingStockMarket({ windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90) });
@@ -2449,14 +2570,18 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
     for (const tradeDate of openDays) {
       const coverage = await pool.query(
         `SELECT
-           COUNT(DISTINCT b.instrument_id)::int AS bars,
-           COUNT(DISTINCT v.instrument_id)::int AS valuations
+           COUNT(DISTINCT i.instrument_id) FILTER (WHERE sc.instrument_id IS NULL)::int AS expected,
+           COUNT(DISTINCT b.instrument_id) FILTER (WHERE sc.instrument_id IS NULL)::int AS bars,
+           COUNT(DISTINCT v.instrument_id) FILTER (WHERE sc.instrument_id IS NULL)::int AS valuations
          FROM (SELECT unnest($1::bigint[]) AS instrument_id) i
+         LEFT JOIN market.stock_suspend_calendar sc
+           ON sc.instrument_id=i.instrument_id AND sc.trade_date=$2::date AND sc.source_id=$3
          LEFT JOIN market.daily_bars b ON b.instrument_id=i.instrument_id AND b.trade_date=$2::date AND b.source_id=$3
          LEFT JOIN market.daily_valuations v ON v.instrument_id=i.instrument_id AND v.trade_date=$2::date AND v.source_id=$3`,
         [[...instrumentMap.values()], isoDate(tradeDate), source.tushare]
       );
-      if (coverage.rows[0].bars >= instrumentMap.size * 0.9 && coverage.rows[0].valuations >= instrumentMap.size * 0.9) continue;
+      const expectedCount = Number(coverage.rows[0].expected || 0);
+      if (!expectedCount || (coverage.rows[0].bars >= expectedCount * 0.9 && coverage.rows[0].valuations >= expectedCount * 0.9)) continue;
       // 补历史时严格串行调用并限速，避免 daily + daily_basic 并发形成请求洪峰；
       // 日期参数统一使用 Tushare 的 YYYYMMDD。
       const dailyData = await tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount', { allowEmpty: true });
@@ -2488,11 +2613,23 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
         `SELECT s.canonical_code,s.instrument_id
            FROM core.instruments s
           WHERE s.instrument_id=ANY($1::bigint[])
+            AND (SELECT COUNT(*)
+                   FROM unnest($2::date[]) AS d(trade_date)
+                  WHERE NOT EXISTS (
+                    SELECT 1 FROM market.stock_suspend_calendar sc
+                     WHERE sc.instrument_id=s.instrument_id AND sc.trade_date=d.trade_date AND sc.source_id=$3
+                  )) > 0
             AND (SELECT COUNT(DISTINCT b.trade_date)
                    FROM market.daily_bars b
                   WHERE b.instrument_id=s.instrument_id
                     AND b.trade_date=ANY($2::date[])
-                    AND b.source_id=$3) < $4
+                    AND b.source_id=$3)
+                < (SELECT COUNT(*)
+                     FROM unnest($2::date[]) AS d(trade_date)
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM market.stock_suspend_calendar sc
+                       WHERE sc.instrument_id=s.instrument_id AND sc.trade_date=d.trade_date AND sc.source_id=$3
+                    ))
           ORDER BY s.canonical_code`,
         [[...instrumentMap.values()], recentDays.map(isoDate), source.tushare, recentDays.length]
       );

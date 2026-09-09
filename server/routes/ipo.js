@@ -528,7 +528,9 @@ router.get('/report/code', async (req, res) => {
       ? `${String(code).replace(/\.HK$/i, '').padStart(5, '0')}.HK` : null;
     if (hkCode) {
       const fact = await pool.query(
-        `SELECT security_code,security_name,security_name_cn,market_type,ipo_status,
+        `SELECT security_code,security_name,
+                COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
+                market_type,ipo_status,
                 COALESCE(to_char(offer_open_at,'YYYY-MM-DD'),ipo_date) AS offer_open_date,
                 to_char(offer_close_at,'YYYY-MM-DD') AS offer_close_date,
                 to_char(pricing_at,'YYYY-MM-DD') AS pricing_date,
@@ -537,15 +539,23 @@ router.get('/report/code', async (req, res) => {
                 issue_price_low,issue_price_high,issue_price_final,lot_size_shares,lot_amount_hkd,
                 application_fee_hkd,brokerage_fee_hkd,oversubscribe_multiple,greenshoe_details,facts_published_at,
                 (SELECT s.subscription_multiple FROM analytics.hk_ipo_market_snapshots s
-                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(ipo_history.security_code,'\\D','','g')
+                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
                     AND s.signal_type='subscription' ORDER BY s.observed_at DESC LIMIT 1) AS subscription_live_multiple,
                 (SELECT s.grey_market_change_pct FROM analytics.hk_ipo_market_snapshots s
-                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(ipo_history.security_code,'\\D','','g')
+                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
                     AND s.signal_type='grey_market' AND s.source_code='livermore' ORDER BY s.observed_at DESC LIMIT 1) AS livermore_grey_market_change_pct,
                 (SELECT s.grey_market_change_pct FROM analytics.hk_ipo_market_snapshots s
-                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(ipo_history.security_code,'\\D','','g')
+                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
                     AND s.signal_type='grey_market' AND s.source_code='futu-public' ORDER BY s.observed_at DESC LIMIT 1) AS futu_grey_market_change_pct
-           FROM ipo_history WHERE market_code='HK' AND security_code=$1 LIMIT 1`, [hkCode]
+           FROM ipo_history h
+           LEFT JOIN LATERAL (
+             SELECT name
+               FROM market_quote_cache
+              WHERE source='tencent' AND symbol='hk' || replace(h.security_code,'.HK','')
+              ORDER BY fetched_at DESC
+              LIMIT 1
+           ) q ON true
+          WHERE h.market_code='HK' AND h.security_code=$1 LIMIT 1`, [hkCode]
       );
       if (fact.rows[0]) {
         const row = fact.rows[0];

@@ -7,7 +7,7 @@ const {
   allotmentTitleLooksLikeIpo,
 } = require('../services/hkexIpo');
 const { normalizeCalendarRows } = require('../jobs/hkTradeCalendarSync');
-const { rowsFromProbe, runHkIpoSync } = require('../jobs/hkIpoSync');
+const { rowsFromProbe, runHkIpoSync, persistTencentNames } = require('../jobs/hkIpoSync');
 const { syncHkexAllotmentFacts, shouldPersistAllotmentFacts } = require('../services/hkexIpo');
 
 const listingHtml = `
@@ -37,6 +37,9 @@ for (const target of buildProbePlan()) {
   assert.strictEqual(new URL(target.url).protocol, 'https:');
   assert.ok(['www.hkex.com.hk', 'www2.hkex.com.hk', 'www1.hkexnews.hk', 'www2.hkexnews.hk'].includes(new URL(target.url).hostname));
 }
+const probePlan = buildProbePlan();
+assert.ok(probePlan.some(target => target.documentType === 'prospectus' && /predefineddocuments=6/.test(target.url)), '招股书探针必须使用港交所官方预定义文档入口');
+assert.ok(probePlan.some(target => target.documentType === 'allotment_result' && /predefineddocuments=4/.test(target.url)), '配发结果探针必须使用港交所官方预定义文档入口');
 
 const calendar = normalizeCalendarRows([{ cal_date: '20260910', is_open: '1' }, { trade_date: '2026-09-11', is_open: 0 }]);
 assert.deepStrictEqual(calendar.map(row => row.tradeDate), ['2026-09-10', '2026-09-11']);
@@ -75,6 +78,19 @@ assert.strictEqual(
 );
 
 (async () => {
+  const statements = [];
+  const persistedNames = await persistTencentNames(new Map([
+    ['03231', { code: '03231', market: 'hk', name: '优地机器人' }],
+    ['03231.HK', { code: '03231', market: 'hk', name: '优地机器人' }],
+    ['09976', { code: '09976', market: 'hk', name: '江波龙' }],
+    ['02523', { code: '02523', market: 'hk', name: 'EKH LIMITED' }],
+  ]), {
+    executor: async (sql, params) => { statements.push({ sql, params }); return { rowCount: 1 }; },
+  });
+  assert.strictEqual(persistedNames.named, 2, '只应写入含中文的腾讯行情名称');
+  assert.strictEqual(persistedNames.persisted, 2, '腾讯中文名应回填港股 IPO 事实表');
+  assert.strictEqual(statements[0].params[0], '03231.HK');
+
   const failed = await runHkIpoSync('preopen', 'test', { probe: { targets: [{ ok: false, error: 'network' }] } });
   assert.strictEqual(failed.ok, false);
   assert.strictEqual(failed.publishDatasets, false);

@@ -43,10 +43,12 @@ assert.strictEqual(isFundEtfCode('600519'), false);
 
 const marketServiceSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'market.js'), 'utf8');
 const marketRouteSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'market.js'), 'utf8');
+const tencentQuoteSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'tencentQuote.js'), 'utf8');
 assert.ok(marketServiceSource.includes('fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes))'), '批量行情应统一调用腾讯实时行情');
 assert.ok(marketServiceSource.includes('async function fetchQuotesByCodes'), '行情服务必须提供统一批量入口');
 assert.ok(marketRouteSource.includes('fetchQuotesByCodes(codes)'), '行情路由必须调用统一批量入口');
 assert.ok(!marketRouteSource.includes('ensureTsRealtime(stockCodes)'), '页面批量行情不得调用 Tushare rt_min');
+assert.ok(tencentQuoteSource.includes("/\\.HK$/i.test(canonical)"), '缺少 provider 映射的港股代码必须允许按 hk##### 规则兜底');
 assert.strictEqual(parsed.get('sz128044').price, 101.234);
 assert.strictEqual(parsed.get('sz128044').change, 1.25);
 assert.strictEqual(parsed.get('sz128044').quote_time, '2026-07-17T14:59:59+08:00');

@@ -182,6 +182,11 @@ async function resolveTencentDescriptor(rawCode) {
       const assetClass = isConvertibleBondCode(original) ? 'convertible_bond' : 'stock';
       const canonical = await resolveCanonicalCode(original, assetClass);
       if (canonical) symbol = await resolveProviderCode({ canonicalCode: canonical, sourceCode: SOURCE, identifierType: 'quote_symbol' });
+      // 港股 IPO 新发现代码可能尚未完成 provider identifier 回填；
+      // 港股代码格式本身已能唯一确定腾讯 hk#####，允许本次先取行情并由缓存沉淀名称。
+      if (!symbol && canonical && /\.HK$/i.test(canonical)) {
+        symbol = describeTencentCode(canonical)?.symbol || null;
+      }
     }
     // 历史持仓可能早于统一证券主档迁移，基金/ETF 因不在 stock_basic 中尤其常见。
     // 先由统一身份写入口补齐最小主档和腾讯映射，再继续走同一映射读取链路。

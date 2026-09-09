@@ -133,6 +133,7 @@ function parseLivermoreHistory(payload) {
     securityCode: normalizeCode(item.stock_code || item.code || item.stockCode),
     securityName: String(item.stock_name || item.stock_name_cn || item.name || '').trim(),
     issueDate: normalizeDate(item.issue_date || item.listing_date || item.listDate),
+    offerCloseDate: normalizeDate(item.expiration_date || item.offer_close_date || item.internet_cutofftime),
     subscriptionMultiple: finiteNumber(item.over_subscribed_multiple || item.subscription_multiple),
     greyMarketPrice: finiteNumber(item.actualquotation_price || item.dark_price || item.open_px),
     greyMarketChangePct: finiteNumber(item.actualquotation_change_rate || item.dark_change_rate || item.px_close_rate_dark),
@@ -172,7 +173,7 @@ function parseFutuIpoHtml(html) {
 
 async function loadIpoMap(executor = pool) {
   const { rows } = await executor.query(`
-    SELECT security_code,instrument_id,offer_open_at,offer_close_at,listing_at,listing_date
+    SELECT security_code,instrument_id,ipo_status,offer_open_at,offer_close_at,listing_at,listing_date
       FROM public.ipo_history
      WHERE market_code='HK'
   `);
@@ -184,11 +185,32 @@ async function loadIpoMap(executor = pool) {
   return map;
 }
 
-function isOfferOpen(row, now = new Date()) {
-  if (!row || !row.offer_open_at || !row.offer_close_at) return false;
+function isOfferOpen(row, now = new Date(), sourceCloseDate = null) {
+  if (!row || !row.offer_open_at) return false;
   const open = new Date(row.offer_open_at);
-  const close = new Date(row.offer_close_at);
+  const closeValue = row.offer_close_at || sourceCloseDate || '';
+  const closeText = String(closeValue).trim();
+  const close = /^\d{4}-\d{2}-\d{2}$/.test(closeText)
+    ? new Date(`${closeText}T23:59:59+08:00`)
+    : new Date(closeValue);
   return Number.isFinite(open.getTime()) && Number.isFinite(close.getTime()) && open <= now && now <= close;
+}
+
+function sourceObservedAt(item, fallbackDate = null) {
+  return normalizeObservedAt(
+    item && item.raw && (item.raw.last_update_time || item.raw.update_at || item.raw.create_at),
+    fallbackDate || item && item.issueDate
+  );
+}
+
+function isCurrentSubscriptionRecord(item, ipo, businessDate, now = new Date()) {
+  if (!item || item.subscriptionMultiple === null || item.subscriptionMultiple <= 0) return false;
+  // 历史接口同时返回 expiration_date；只有明确未过申购截止日才可作为“申购中”信号，
+  // 防止把上市后的最终倍数倒灌回申购期。
+  const closeDate = item.offerCloseDate;
+  const targetDate = normalizeDate(businessDate);
+  if (!closeDate || !targetDate || closeDate < targetDate) return false;
+  return isOfferOpen(ipo, now, closeDate);
 }
 
 async function persistRaw(sourceCode, datasetCode, sourceKey, payload, executor = pool) {
@@ -250,12 +272,20 @@ async function syncHkIpoMarketSignals({
     try {
       const payload = await guardedFetch('livermore', 'hk_ipo_current', 'hk_ipo_subscription_signals', LIVERMORE_CURRENT_URL, 'json', fetchImpl, guardImpl, businessDate);
       await persistRaw('livermore', 'hk_ipo_subscription_signals', businessDate, payload);
+      if (payload && payload.code !== undefined && Number(payload.code) !== 0) {
+        throw new Error(`利弗莫尔申购接口返回 ${payload.msg_cn || payload.msg || `code=${payload.code}`}`);
+      }
       const rows = parseLivermoreCurrent(payload);
       result.subscription.fetched = true;
       result.subscription.rows = rows.length;
+      if (!rows.length) {
+        result.ok = false;
+        result.status = 'degraded';
+        result.errors.push({ source: 'livermore', dataset: 'subscription', error: '申购接口返回空数据，未生成实时倍数' });
+      }
       for (const item of rows) {
         const ipo = map.get(item.securityCode);
-        if (!ipo || !isOfferOpen(ipo)) continue;
+        if (!ipo || !isOfferOpen(ipo, new Date(), item.offerCloseDate)) continue;
         await persistName(item.securityCode, item.securityName);
         if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'livermore', signalType: 'subscription', dataDate: businessDate, subscriptionMultiple: item.subscriptionMultiple, rawPayload: item.raw })) result.subscription.saved += 1;
       }
@@ -280,9 +310,14 @@ async function syncHkIpoMarketSignals({
       result.livermoreGrey.rows += rows.length;
       for (const item of rows) {
         const ipo = map.get(item.securityCode);
-        if (!ipo || (item.greyMarketPrice === null && item.greyMarketChangePct === null)) continue;
+        if (!ipo) continue;
         await persistName(item.securityCode, item.securityName);
-        if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'livermore', signalType: 'grey_market', dataDate: item.issueDate || businessDate, observedAt: normalizeObservedAt(item.raw.last_update_time, item.issueDate) || null, greyMarketPrice: item.greyMarketPrice, greyMarketChangePct: item.greyMarketChangePct, rawPayload: item.raw })) result.livermoreGrey.saved += 1;
+        if (item.greyMarketPrice !== null || item.greyMarketChangePct !== null) {
+          if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'livermore', signalType: 'grey_market', dataDate: item.issueDate || businessDate, observedAt: sourceObservedAt(item) || null, greyMarketPrice: item.greyMarketPrice, greyMarketChangePct: item.greyMarketChangePct, rawPayload: item.raw })) result.livermoreGrey.saved += 1;
+        }
+        if (isCurrentSubscriptionRecord(item, ipo, businessDate)) {
+          if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'livermore', signalType: 'subscription', dataDate: businessDate, observedAt: sourceObservedAt(item, businessDate) || null, subscriptionMultiple: item.subscriptionMultiple, rawPayload: { ...item.raw, signal_origin: 'history_window_fallback' } })) result.subscription.saved += 1;
+        }
       }
     }
   } catch (error) {
@@ -319,5 +354,7 @@ module.exports = {
   parseLivermoreHistory,
   parseLivermoreCurrent,
   parseFutuIpoHtml,
+  isOfferOpen,
+  isCurrentSubscriptionRecord,
   syncHkIpoMarketSignals,
 };

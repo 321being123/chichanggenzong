@@ -1266,7 +1266,7 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}
           public_offer_ratio,international_offer_ratio,cornerstone_details,greenshoe_details,source_documents,
           data_completeness,facts_published_at,updated_at
         ) VALUES($1,$2,$3,$4,$5,'HK',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25::jsonb,
-          CASE WHEN $4 IS NOT NULL OR $8 IS NOT NULL OR $9 IS NOT NULL OR $10 IS NOT NULL OR $11 IS NOT NULL OR $12 IS NOT NULL OR $15 IS NOT NULL OR $16 IS NOT NULL THEN now() END,
+          CASE WHEN $4::date IS NOT NULL OR $8::date IS NOT NULL OR $9::date IS NOT NULL OR $10::date IS NOT NULL OR $11::date IS NOT NULL OR $12::date IS NOT NULL OR $15::numeric IS NOT NULL OR $16::integer IS NOT NULL THEN now() END,
           to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
         ON CONFLICT(security_code) DO UPDATE SET
           security_name=COALESCE(NULLIF(EXCLUDED.security_name,''),ipo_history.security_name),

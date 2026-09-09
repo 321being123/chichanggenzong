@@ -1,5 +1,6 @@
 const { runHkexIpoProbe, persistHkexProbe, upsertHkIpoFacts, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
 const { syncHkDailyCoverage } = require('../services/hkDailyCoverage');
+const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 
 function rowsFromProbe(probe) {
   const rows = [];
@@ -77,6 +78,17 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   let nonPublicListings = null;
   let prospectusFacts = null;
   let allotmentFacts = null;
+  let marketSignals = null;
+  if (mode === 'preopen' || mode === 'enrichment') {
+    try {
+      marketSignals = await syncHkIpoMarketSignals({
+        mode,
+        ...(context.marketSignalOptions || {}),
+      });
+    } catch (error) {
+      marketSignals = { ok: false, status: 'failed', error: error.message || String(error) };
+    }
+  }
   if (mode === 'enrichment') {
     if (context.syncNonPublic !== false) {
       try {
@@ -120,10 +132,10 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   }
   if (!rows.length) {
     // 空结果不能被解释为“没有新股”：保留探针证据，并让调度器按失败/降级处理。
-    return { ok: false, mode, reason: 'no_verified_rows', probe, probePersistence, historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, dailyCoverage, rows: 0, publishDatasets: false, degraded: true };
+    return { ok: false, mode, reason: 'no_verified_rows', probe, probePersistence, historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, dailyCoverage, marketSignals, rows: 0, publishDatasets: false, degraded: true };
   }
   const result = await upsertHkIpoFacts(rows);
-  return { ...result, mode, probePersistence, historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, dailyCoverage, probeTargets: (probe.targets || []).length, dataAsOf: new Date().toISOString().slice(0, 10) };
+  return { ...result, mode, probePersistence, historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, dailyCoverage, marketSignals, probeTargets: (probe.targets || []).length, dataAsOf: new Date().toISOString().slice(0, 10) };
 }
 
 module.exports = { runHkIpoSync, rowsFromProbe };

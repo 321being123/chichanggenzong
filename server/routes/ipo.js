@@ -54,6 +54,19 @@ function valueOrDash(value, suffix = '') {
   return value === null || value === undefined || value === '' ? '暂无' : `${value}${suffix}`;
 }
 
+function assessHkGreenshoe(details, protectionRatio) {
+  const item = details && typeof details === 'object' ? details : {};
+  const status = String(item.status || '').toLowerCase();
+  const ratio = Number(protectionRatio ?? item.protectionRatioPct);
+  if (status === 'exercised' || status === 'over_allocated' || (Number.isFinite(ratio) && ratio > 0)) {
+    return '偏利好：有稳价安排';
+  }
+  if (status === 'not_exercised') return '中性：机制存在，未行使';
+  if (status === 'not_available' || status === 'no_over_allocation') return '偏不利：缺少绿鞋保护';
+  if (status === 'not_disclosed' || !status) return '待确认';
+  return '中性：机制待确认';
+}
+
 function calendarDay(date) {
   return { date, weekday: new Intl.DateTimeFormat('zh-CN', { weekday: 'short', timeZone: 'Asia/Shanghai' }).format(new Date(`${date}T00:00:00+08:00`)),
     apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };
@@ -137,8 +150,13 @@ async function loadStockCalendar(days, market = 'CN') {
               (timezone('Asia/Shanghai', now()))::date + ($1::int * INTERVAL '1 day') AS end_date
      ), stock_events AS (
        SELECT CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END AS event_date, 'apply' AS event_type,
-              h.security_code AS code, h.security_name AS name
-         FROM ipo_history h, bounds b
+              h.security_code AS code, COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name
+         FROM ipo_history h
+         LEFT JOIN LATERAL (
+           SELECT q.name FROM market_quote_cache q
+            WHERE q.source='tencent' AND q.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
+            ORDER BY q.fetched_at DESC LIMIT 1
+         ) q ON true, bounds b
          WHERE h.market_code=$2
            AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) ~ '^\\d{4}-\\d{2}-\\d{2}$'
            AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) >= to_char(b.start_date, 'YYYY-MM-DD')
@@ -146,8 +164,13 @@ async function loadStockCalendar(days, market = 'CN') {
           AND ($2='HK' OR (COALESCE(h.market_type, '') <> '北交所' AND h.security_code !~ '^(920|82|83|87|43)'))
        UNION ALL
        SELECT CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END AS event_date, 'listing' AS event_type,
-              h.security_code AS code, h.security_name AS name
-         FROM ipo_history h, bounds b
+              h.security_code AS code, COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name
+         FROM ipo_history h
+         LEFT JOIN LATERAL (
+           SELECT q.name FROM market_quote_cache q
+            WHERE q.source='tencent' AND q.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
+            ORDER BY q.fetched_at DESC LIMIT 1
+         ) q ON true, bounds b
          WHERE h.market_code=$2
            AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) ~ '^\\d{4}-\\d{2}-\\d{2}$'
            AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) >= to_char(b.start_date, 'YYYY-MM-DD')
@@ -336,7 +359,7 @@ router.get('/history', async (req, res) => {
     } else if (type === 'hk_stock') {
       const r = await pool.query(
         `SELECT h.security_code,h.security_name,
-                COALESCE(NULLIF(q.name,''),h.security_name) AS security_name_cn,
+                COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
                 h.market_type,h.ipo_status,
                 COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) AS offer_open_date,
                 to_char(h.offer_close_at,'YYYY-MM-DD') AS offer_close_date,
@@ -345,6 +368,16 @@ router.get('/history', async (req, res) => {
                 COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) AS listing_date,
                 h.issue_price_low,h.issue_price_high,h.issue_price_final,h.lot_size_shares,h.lot_amount_hkd,
                 h.application_fee_hkd,h.brokerage_fee_hkd,h.online_lottery_rate,h.oversubscribe_multiple AS public_oversubscription,
+                live.subscription_multiple AS subscription_live_multiple,
+                live.source_code AS subscription_live_source,
+                live.observed_at AS subscription_live_observed_at,
+                (live.observed_at IS NULL OR live.observed_at < now() - interval '1 day') AS subscription_live_stale,
+                livermore_grey.grey_market_price_hkd AS livermore_grey_market_price_hkd,
+                livermore_grey.grey_market_change_pct AS livermore_grey_market_change_pct,
+                livermore_grey.observed_at AS livermore_grey_market_observed_at,
+                futu_grey.grey_market_price_hkd AS futu_grey_market_price_hkd,
+                futu_grey.grey_market_change_pct AS futu_grey_market_change_pct,
+                futu_grey.observed_at AS futu_grey_market_observed_at,
                 NULLIF(h.greenshoe_details->>'protectionRatioPct','')::numeric AS greenshoe_protection_ratio,
                 NULLIF(h.greenshoe_details->>'initialPublicOfferShares','')::numeric AS greenshoe_initial_public_offer_shares,
                 NULLIF(h.greenshoe_details->>'finalPublicOfferShares','')::numeric AS greenshoe_final_public_offer_shares,
@@ -378,6 +411,27 @@ router.get('/history', async (req, res) => {
               LIMIT 1
            ) q ON true
            LEFT JOIN LATERAL (
+             SELECT s.subscription_multiple,s.source_code,s.observed_at
+               FROM analytics.hk_ipo_market_snapshots s
+              WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g') AND s.signal_type='subscription'
+              ORDER BY s.observed_at DESC
+              LIMIT 1
+           ) live ON true
+           LEFT JOIN LATERAL (
+             SELECT s.grey_market_price_hkd,s.grey_market_change_pct,s.observed_at
+               FROM analytics.hk_ipo_market_snapshots s
+              WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g') AND s.signal_type='grey_market' AND s.source_code='livermore'
+              ORDER BY s.observed_at DESC
+              LIMIT 1
+           ) livermore_grey ON true
+           LEFT JOIN LATERAL (
+             SELECT s.grey_market_price_hkd,s.grey_market_change_pct,s.observed_at
+               FROM analytics.hk_ipo_market_snapshots s
+              WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g') AND s.signal_type='grey_market' AND s.source_code='futu-public'
+              ORDER BY s.observed_at DESC
+              LIMIT 1
+           ) futu_grey ON true
+           LEFT JOIN LATERAL (
              SELECT d.close AS listing_close
               FROM market.daily_bars d
               WHERE d.instrument_id=h.instrument_id
@@ -392,7 +446,10 @@ router.get('/history', async (req, res) => {
           ORDER BY COALESCE(h.offer_open_at,h.listing_at,h.facts_published_at) DESC NULLS LAST,h.security_code
           LIMIT $1`, [limit]
       );
-      rows = r.rows;
+      rows = r.rows.map(row => ({
+        ...row,
+        greenshoe_assessment: assessHkGreenshoe(row.greenshoe_details, row.greenshoe_protection_ratio),
+      }));
     } else {
       // 集思录式列：代码/名称/发行价/发行PE/行业PE/行业/发行总数/申购上限/顶格申购需配市值/中签率%/募资/上市日/首日涨幅
       // 预测涨幅：关联 predictions 表（取该代码最新一条有效预测），无预测则显示空
@@ -471,20 +528,29 @@ router.get('/report/code', async (req, res) => {
       ? `${String(code).replace(/\.HK$/i, '').padStart(5, '0')}.HK` : null;
     if (hkCode) {
       const fact = await pool.query(
-        `SELECT security_code,security_name,market_type,ipo_status,
+        `SELECT security_code,security_name,security_name_cn,market_type,ipo_status,
                 COALESCE(to_char(offer_open_at,'YYYY-MM-DD'),ipo_date) AS offer_open_date,
                 to_char(offer_close_at,'YYYY-MM-DD') AS offer_close_date,
                 to_char(pricing_at,'YYYY-MM-DD') AS pricing_date,
                 to_char(allotment_at,'YYYY-MM-DD') AS allotment_date,
                 COALESCE(to_char(listing_at,'YYYY-MM-DD'),listing_date) AS listing_date,
                 issue_price_low,issue_price_high,issue_price_final,lot_size_shares,lot_amount_hkd,
-                application_fee_hkd,brokerage_fee_hkd,facts_published_at
+                application_fee_hkd,brokerage_fee_hkd,oversubscribe_multiple,greenshoe_details,facts_published_at,
+                (SELECT s.subscription_multiple FROM analytics.hk_ipo_market_snapshots s
+                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(ipo_history.security_code,'\\D','','g')
+                    AND s.signal_type='subscription' ORDER BY s.observed_at DESC LIMIT 1) AS subscription_live_multiple,
+                (SELECT s.grey_market_change_pct FROM analytics.hk_ipo_market_snapshots s
+                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(ipo_history.security_code,'\\D','','g')
+                    AND s.signal_type='grey_market' AND s.source_code='livermore' ORDER BY s.observed_at DESC LIMIT 1) AS livermore_grey_market_change_pct,
+                (SELECT s.grey_market_change_pct FROM analytics.hk_ipo_market_snapshots s
+                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(ipo_history.security_code,'\\D','','g')
+                    AND s.signal_type='grey_market' AND s.source_code='futu-public' ORDER BY s.observed_at DESC LIMIT 1) AS futu_grey_market_change_pct
            FROM ipo_history WHERE market_code='HK' AND security_code=$1 LIMIT 1`, [hkCode]
       );
       if (fact.rows[0]) {
         const row = fact.rows[0];
         const lines = [
-          `# 📄 港股 IPO 事实 — ${row.security_name || hkCode}（${hkCode}）`, '',
+          `# 📄 港股 IPO 事实 — ${row.security_name_cn || row.security_name || '中文名待补'}（${hkCode}）`, '',
           '## 当前状态', `- **阶段**：${row.ipo_status || 'active'}`, `- **板块**：${row.market_type || '待补全'}`,
           '', '## 关键日期', `- **公开发售开始**：${row.offer_open_date || '待公告'}`, `- **公开发售结束**：${row.offer_close_date || '待公告'}`,
           `- **定价日**：${row.pricing_date || '待公告'}`, `- **配售结果**：${row.allotment_date || '待公告'}`, `- **上市日**：${row.listing_date || '待公告'}`,
@@ -492,6 +558,11 @@ router.get('/report/code', async (req, res) => {
           `- **最终发行价**：${row.issue_price_final == null ? '待公告' : row.issue_price_final + ' 港元'}`,
           `- **每手股数**：${row.lot_size_shares == null ? '待公告' : row.lot_size_shares}`, `- **每手资金**：${row.lot_amount_hkd == null ? '待公告' : row.lot_amount_hkd + ' 港元'}`,
           `- **申请费用（含佣金及征费）**：${row.application_fee_hkd == null ? '待公告' : row.application_fee_hkd + ' 港元'}`, `- **经纪佣金**：${row.brokerage_fee_hkd == null ? '待公告' : row.brokerage_fee_hkd + ' 港元'}`,
+          `- **申购期认购倍数**：${row.subscription_live_multiple == null ? '暂无盘中数据' : row.subscription_live_multiple + ' 倍（来源：利弗莫尔）'}`,
+          `- **最终超额认购倍数**：${row.oversubscribe_multiple == null ? '待配售结果' : row.oversubscribe_multiple + ' 倍'}`,
+          `- **绿鞋判断**：${assessHkGreenshoe(row.greenshoe_details, null)}`,
+          `- **利弗莫尔暗盘涨幅**：${row.livermore_grey_market_change_pct == null ? '暂无' : row.livermore_grey_market_change_pct + '%'}`,
+          `- **富途暗盘涨幅**：${row.futu_grey_market_change_pct == null ? '暂无' : row.futu_grey_market_change_pct + '%'}`,
           '', '## 研究状态', '- 当前仅展示官方事实；研究评分与正式建议待历史样本、质量门禁和回测完成后开放。',
           `- **事实更新时间**：${row.facts_published_at || '暂无'}`,
         ];
@@ -523,3 +594,4 @@ router.get('/report/code', async (req, res) => {
 
 module.exports = router;
 module.exports.mergeCalendarDays = mergeCalendarDays;
+module.exports.assessHkGreenshoe = assessHkGreenshoe;

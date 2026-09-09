@@ -80,6 +80,11 @@ function ipoHkStageLabel(status) {
   return labels[String(status || '').toLowerCase()] || '待确认';
 }
 
+function ipoHkNameCell(name, code) {
+  var display = /[\u3400-\u9fff]/.test(String(name || '')) ? String(name) : '中文名待补';
+  return ipoExBadge(code) + escapeHtml(display);
+}
+
 function ipoIntegerCell(v) {
   if (v === null || v === undefined || v === '') return '<span>待补全</span>';
   var n = Number(v);
@@ -104,9 +109,23 @@ function ipoHkOversubscriptionCell(it) {
   return qualifier + n.toFixed(2) + '倍';
 }
 
+function ipoHkLiveOversubscriptionCell(it) {
+  var stage = String(it.ipo_status || '').toLowerCase();
+  if (stage !== 'active' && stage !== 'offer_open') return '<span>—</span>';
+  if (it.subscription_live_multiple === null || it.subscription_live_multiple === undefined || it.subscription_live_multiple === '') {
+    return '<span>暂无盘中数据</span>';
+  }
+  var n = Number(it.subscription_live_multiple);
+  if (!isFinite(n) || n <= 0) return '<span>暂无盘中数据</span>';
+  var source = String(it.subscription_live_source || '') === 'livermore' ? '利弗莫尔' : String(it.subscription_live_source || '外部来源');
+  var time = it.subscription_live_observed_at ? String(it.subscription_live_observed_at).slice(0, 16).replace('T', ' ') : '';
+  var stale = it.subscription_live_stale ? '（可能过期）' : '';
+  return escapeHtml(source + ' ' + n.toFixed(2) + '倍' + stale) + (time ? '<br><small style="color:#999;">' + escapeHtml(time) + '</small>' : '');
+}
+
 function ipoHkGreenshoeCell(it) {
   var details = it && it.greenshoe_details;
-  if (!details || typeof details !== 'object' || !Object.keys(details).length) return '<span>待补全</span>';
+  if (!details || typeof details !== 'object' || !Object.keys(details).length) return '<span>待确认</span>';
   var status = String(details.status || '').toLowerCase();
   var labels = {
     exercised: '已行使',
@@ -116,7 +135,7 @@ function ipoHkGreenshoeCell(it) {
     over_allocated: '保护中',
     not_disclosed: '未披露'
   };
-  var label = labels[status] || '待确认';
+  var label = it.greenshoe_assessment || labels[status] || '待确认';
   var extras = [];
   var shares = Number(details.overAllocatedShares);
   if (isFinite(shares) && shares > 0) extras.push('超配' + Math.round(shares).toLocaleString('zh-CN') + '股');
@@ -434,7 +453,8 @@ function ipoCalendarRow(label, items, color) {
   html += '<span style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:' + color + ';border-radius:4px;padding:1px 4px;">' + escapeHtml(label) + '</span>';
   html += '<span style="color:#666;font-size:12px;">' + items.length + ' 只</span></div>';
   items.forEach(function (it) {
-    html += '<div class="ipo-calendar-security" style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(it.name || '-') + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
+    var calendarName = String(it.code || '').toUpperCase().indexOf('.HK') >= 0 && !/[\u3400-\u9fff]/.test(String(it.name || '')) ? '中文名待补' : (it.name || '-');
+    html += '<div class="ipo-calendar-security" style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(calendarName) + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
     html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
     html += ipoBoardBadge(it.code, it.type);
     html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';
@@ -501,12 +521,13 @@ function ipoRenderHistory(type, rows) {
   }
 
   if (type === 'hk_stock') {
-    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '超额认购倍数', '绿鞋保护', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
+    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期认购倍数（每日）', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
     var hkRows = rows.map(function (it) {
       return [
-        escapeHtml(it.security_code || ''), ipoNameCell(it.security_name_cn || it.security_name, it.security_code),
+        escapeHtml(it.security_code || ''), ipoHkNameCell(it.security_name_cn || it.security_name, it.security_code),
         ipoHkStageLabel(it.ipo_status), ipoPending(it.offer_open_date), ipoHkAllotmentCell(it),
-        ipoHkOversubscriptionCell(it), ipoHkGreenshoeCell(it),
+        ipoHkLiveOversubscriptionCell(it), ipoHkOversubscriptionCell(it), ipoHkGreenshoeCell(it),
+        ipoPctCell(it.livermore_grey_market_change_pct), ipoPctCell(it.futu_grey_market_change_pct),
         ipoPending(it.listing_date), ipoPending(it.issue_price_final, function (v) { return ipoNumFixed(v, 3); }),
         ipoPending(it.lot_size_shares, ipoIntegerCell), ipoPending(it.lot_amount_hkd, function (v) { return ipoNumFixed(v, 2); }),
         ipoPending(it.application_fee_hkd, function (v) { return ipoNumFixed(v, 2); }),

@@ -5943,6 +5943,109 @@ async function migration147ConvertibleBondCallAnnouncementPrecedence() {
   `);
 }
 
+// ========== 148：港股 IPO 中文名称与市场信号快照 =============
+// 中文名只作为展示字段；申购期认购倍数与暗盘涨幅为非官方市场信号，必须与官方最终倍数分开保存。
+async function migration148HkIpoMarketSignals() {
+  await pool.query(`
+    ALTER TABLE public.ipo_history
+      ADD COLUMN IF NOT EXISTS security_name_cn TEXT;
+
+    WITH latest AS (
+      SELECT DISTINCT ON (symbol) symbol,name
+        FROM market_quote_cache
+       WHERE source='tencent' AND name ~ '[一-龥]'
+       ORDER BY symbol,fetched_at DESC
+    )
+    UPDATE public.ipo_history h
+       SET security_name_cn=latest.name
+      FROM latest
+     WHERE h.market_code='HK'
+       AND latest.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
+       AND COALESCE(NULLIF(h.security_name_cn,''),'')='';
+
+    -- 三家境外注册实体没有独立中文挂牌名，使用公开资料中已广泛使用的中文品牌别名，
+    -- 仅作为展示兜底，不覆盖后续官方/行情源提供的中文名称。
+    UPDATE public.ipo_history h
+       SET security_name_cn=names.security_name_cn
+      FROM (VALUES
+        ('00100.HK','稀宇科技-WP'),
+        ('03887.HK','哈希控股'),
+        ('06880.HK','魔门塔-W')
+      ) AS names(security_code,security_name_cn)
+     WHERE h.market_code='HK' AND h.security_code=names.security_code
+       AND COALESCE(NULLIF(h.security_name_cn,''),'')='';
+
+    CREATE TABLE IF NOT EXISTS analytics.hk_ipo_market_snapshots (
+      snapshot_id BIGSERIAL PRIMARY KEY,
+      security_code TEXT NOT NULL,
+      instrument_id BIGINT REFERENCES core.instruments(instrument_id) ON DELETE SET NULL,
+      source_code TEXT NOT NULL,
+      signal_type TEXT NOT NULL CHECK (signal_type IN ('subscription','grey_market')),
+      data_date DATE NOT NULL,
+      observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      subscription_multiple NUMERIC(20,6),
+      grey_market_price_hkd NUMERIC(20,6),
+      grey_market_change_pct NUMERIC(20,6),
+      raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(security_code,source_code,signal_type,data_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_hk_ipo_market_snapshots_lookup
+      ON analytics.hk_ipo_market_snapshots(security_code,signal_type,observed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_hk_ipo_market_snapshots_date
+      ON analytics.hk_ipo_market_snapshots(data_date DESC,source_code,signal_type);
+
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority) VALUES
+      ('livermore','利弗莫尔公开新股数据','broker_public',30),
+      ('futu-public','富途公开新股页面','broker_public',31)
+    ON CONFLICT(source_code) DO UPDATE SET
+      source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,priority=EXCLUDED.priority;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,official_doc_url,notes)
+    SELECT ds.source_id,'*','anonymous',10,8,1,1000,200,15000,'preserve_last_success',
+           'https://1877.jesselivermore.com/','公开页面/接口为补充信号，不是港交所官方事实源；空结果保留旧快照'
+      FROM ops.data_sources ds WHERE ds.source_code='livermore'
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+      internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
+      internal_daily_limit=EXCLUDED.internal_daily_limit,
+      min_interval_ms=EXCLUDED.min_interval_ms,row_limit=EXCLUDED.row_limit,
+      timeout_ms=EXCLUDED.timeout_ms,empty_policy=EXCLUDED.empty_policy,
+      official_doc_url=EXCLUDED.official_doc_url,notes=EXCLUDED.notes,updated_at=now();
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,official_doc_url,notes)
+    SELECT ds.source_id,'*','anonymous',5,3,1,1000,200,15000,'preserve_last_success',
+           'https://www.futunn.com/quote/hk/ipo','公开网页抓取为补充信号；富途正式接口需另行配置授权'
+      FROM ops.data_sources ds WHERE ds.source_code='futu-public'
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+      internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
+      internal_daily_limit=EXCLUDED.internal_daily_limit,
+      min_interval_ms=EXCLUDED.min_interval_ms,row_limit=EXCLUDED.row_limit,
+      timeout_ms=EXCLUDED.timeout_ms,empty_policy=EXCLUDED.empty_policy,
+      official_doc_url=EXCLUDED.official_doc_url,notes=EXCLUDED.notes,updated_at=now();
+  `);
+}
+
+// ========== 149：港股 IPO 中文展示别名补齐 =============
+// 仅补齐没有官方中文挂牌名且行情源也未提供中文名的三家境外注册实体；后续可靠中文源可覆盖。
+async function migration149HkIpoChineseAliases() {
+  await pool.query(`
+    UPDATE public.ipo_history h
+       SET security_name_cn=names.security_name_cn
+      FROM (VALUES
+        ('00100.HK','稀宇科技-WP'),
+        ('03887.HK','哈希控股'),
+        ('06880.HK','魔门塔-W')
+      ) AS names(security_code,security_name_cn)
+     WHERE h.market_code='HK' AND h.security_code=names.security_code
+       AND COALESCE(NULLIF(h.security_name_cn,''),'')='';
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6091,6 +6194,8 @@ const MIGRATIONS = [
   { version: '145_cninfo_unlimited_daily_budget', up: migration145CninfoUnlimitedDailyBudget },
   { version: '146_convertible_bond_data_status_constraint', up: migration146ConvertibleBondDataStatusConstraint },
   { version: '147_convertible_bond_call_announcement_precedence', up: migration147ConvertibleBondCallAnnouncementPrecedence },
+  { version: '148_hk_ipo_market_signals', up: migration148HkIpoMarketSignals },
+  { version: '149_hk_ipo_chinese_aliases', up: migration149HkIpoChineseAliases },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6694,6 +6799,8 @@ module.exports = {
   migration135ExchangeRateBudgetRecovery,
   migration136ConvertibleBondRedemptionStatusParity,
   migration147ConvertibleBondCallAnnouncementPrecedence,
+  migration148HkIpoMarketSignals,
+  migration149HkIpoChineseAliases,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

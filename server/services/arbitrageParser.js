@@ -177,6 +177,22 @@ const TERMS_COLUMNS = [
   'description',
 ];
 
+const SWAP_BUNDLE_FIELDS = ['target_swap_price', 'reference_swap_price', 'swap_ratio'];
+
+function parserCandidate(doc) {
+  const payload = doc?.parsed_payload || {};
+  return payload.validated || payload.raw || payload;
+}
+
+// 最新修订公告有时只补充换股比例，不重复完整换股价；重建时应优先使用
+// 最近一份包含完整换股条款的公告，避免把已有换股价覆盖为空。
+function selectSwapBundle(docs) {
+  const candidates = docs.map((doc) => parserCandidate(doc));
+  return candidates.find((candidate) => SWAP_BUNDLE_FIELDS.every((field) => candidate[field] != null))
+    || candidates.find((candidate) => SWAP_BUNDLE_FIELDS.some((field) => candidate[field] != null))
+    || null;
+}
+
 // 按代码解析/创建证券（5 位→港股，6 位→A股）
 async function resolveInstrumentByCode(raw) {
   const code = String(raw || '').replace(/\D/g, '');
@@ -385,21 +401,19 @@ async function rebuildCaseTerms(caseId) {
     || documentRolePriority(b.document_role) - documentRolePriority(a.document_role));
 
   const merged = { evidence: [], reference_codes: [], reference_names: [], rights_codes: [] };
-  const swapFields = ['target_swap_price', 'reference_swap_price', 'swap_ratio'];
-  let swapBundleChosen = false;
-  for (const doc of usableDocs) {
-    const payload = doc.parsed_payload || {};
-    const candidate = payload.validated || payload.raw || payload;
-    if (!swapBundleChosen && swapFields.some((field) => candidate[field] != null)) {
-      for (const field of swapFields) {
-        if (candidate[field] != null) merged[field] = candidate[field];
-      }
-      merged.reference_codes = Array.isArray(candidate.reference_codes) ? candidate.reference_codes : [];
-      merged.reference_names = Array.isArray(candidate.reference_names) ? candidate.reference_names : [];
-      swapBundleChosen = true;
+  const swapCandidate = selectSwapBundle(usableDocs);
+  const swapBundleChosen = Boolean(swapCandidate);
+  if (swapCandidate) {
+    for (const field of SWAP_BUNDLE_FIELDS) {
+      if (swapCandidate[field] != null) merged[field] = swapCandidate[field];
     }
+    merged.reference_codes = Array.isArray(swapCandidate.reference_codes) ? swapCandidate.reference_codes : [];
+    merged.reference_names = Array.isArray(swapCandidate.reference_names) ? swapCandidate.reference_names : [];
+  }
+  for (const doc of usableDocs) {
+    const candidate = parserCandidate(doc);
     for (const field of MERGE_FIELDS) {
-      if (swapFields.includes(field)) continue;
+      if (SWAP_BUNDLE_FIELDS.includes(field)) continue;
       if (merged[field] == null && candidate[field] != null) merged[field] = candidate[field];
     }
     for (const field of ['reference_codes', 'reference_names', 'rights_codes', 'target_codes']) {
@@ -546,6 +560,7 @@ async function resolveParseFailure(caseId) {
 module.exports = {
   runPythonExtraction,
   mapParserFields,
+  selectSwapBundle,
   applyExtractedTerms,
   parseAndStoreDocument,
   rebuildCaseTerms,

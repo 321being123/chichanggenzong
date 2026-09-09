@@ -17,6 +17,24 @@ test('PDF 解析重试入口统一阻止未到期和超过上限的调用', () =
   }, true).shouldParse, true);
 });
 
+test('案件重建优先保留完整换股条款，不被只有比例的修订公告覆盖', () => {
+  const selected = parser.selectSwapBundle([
+    { parsed_payload: { validated: { swap_ratio: 0.4376, reference_codes: ['601995'] } } },
+    { parsed_payload: { validated: {
+      target_swap_price: 16.05,
+      reference_swap_price: 36.68,
+      swap_ratio: 0.437568,
+      reference_codes: ['601995'],
+    } } },
+  ]);
+  assert.deepEqual(selected, {
+    target_swap_price: 16.05,
+    reference_swap_price: 36.68,
+    swap_ratio: 0.437568,
+    reference_codes: ['601995'],
+  });
+});
+
 test('创维集团复合私有化对价：只按现金计算，公司估值写入备注', () => {
   const code = [
     'import importlib.util, json, sys',

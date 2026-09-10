@@ -23,7 +23,7 @@ except Exception as e:
     print("PyMuPDF 未安装:", e); sys.exit(1)
 
 import requests
-from external_call_guard import install_requests_guard
+from external_call_guard import ExternalCallGuardError, install_requests_guard
 
 install_requests_guard()
 
@@ -53,6 +53,8 @@ def get_org_id(code):
                     _org_id_cache[code] = it["orgId"]
                     return it["orgId"]
             break
+        except ExternalCallGuardError:
+            raise
         except Exception as e:
             if attempt < 2:
                 time.sleep(3)
@@ -102,6 +104,8 @@ def _download_pdf_text(s, ann):
     url = adj if adj.startswith("http") else "http://static.cninfo.com.cn/" + adj.lstrip("/")
     try:
         g = s.get(url, timeout=30)
+    except ExternalCallGuardError:
+        raise
     except Exception:
         return None
     if g.status_code != 200:

@@ -93,6 +93,7 @@ async function buildCnStockLiveReport(code) {
   }
   const pending = Array.isArray(quality.pending_not_due) ? quality.pending_not_due : [];
   const missing = Array.isArray(quality.missing_fields) ? quality.missing_fields : [];
+  const fieldStates = quality.field_states && typeof quality.field_states === 'object' ? quality.field_states : {};
   const pendingLabels = {
     listing_date: '上市日期',
     online_lottery_rate: '网上中签率',
@@ -138,6 +139,9 @@ async function buildCnStockLiveReport(code) {
   const unresolvedDetail = missing.filter(field => missingLabels[field]);
   if (unresolvedDetail.length) {
     lines.push('', '## 资料补全状态', ...unresolvedDetail.map(field => `- **${missingLabels[field]}**：发行资料已到，但当前尚未解析成功，系统会继续重试`));
+  }
+  if (fieldStates.industry_pe && fieldStates.industry_pe.status === 'source_unavailable') {
+    lines.push('', '## 暂无可用来源', '- **行业市盈率**：当前同行样本不足或行业名称无法匹配，系统低频复查，不影响行业、赛道和主营业务完整状态');
   }
   if (row.ld_close_change != null) {
     lines.push('', '## 上市结果', `- **首日收盘涨幅**：${row.ld_close_change}%`);
@@ -218,6 +222,7 @@ function stockFieldStatusSql(alias = 'h') {
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,
     'industry_pe', CASE WHEN ${alias}.industry_pe IS NOT NULL THEN 'value'
+      WHEN ${alias}.data_quality_status->'field_states'->'industry_pe'->>'status' = 'source_unavailable' THEN 'source_unavailable'
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,
     'main_business', CASE WHEN NULLIF(${alias}.main_business, '') IS NOT NULL THEN 'value'
@@ -413,6 +418,15 @@ router.get('/report', async (req, res) => {
       );
       row = r.rows[0];
     } else {
+      const countResult = await pool.query(
+        `SELECT COUNT(*)::int AS total FROM ipo_history h
+          WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+            AND h.market_code='CN'
+            AND h.ipo_date <= to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD')
+            AND COALESCE(h.market_type, '') <> '北交所'
+            AND h.security_code !~ '^(920|82|83|87|43)'`
+      );
+      total = countResult.rows[0] ? countResult.rows[0].total : 0;
       const r = await pool.query(
         'SELECT report_date, md, html, summary_json FROM ipo_reports ORDER BY report_date DESC LIMIT 1'
       );
@@ -554,6 +568,15 @@ router.get('/history', async (req, res) => {
     } else {
       // 集思录式列：代码/名称/发行价/发行PE/行业PE/行业/发行总数/申购上限/顶格申购需配市值/中签率%/募资/上市日/首日涨幅
       // 预测涨幅：关联 predictions 表（取该代码最新一条有效预测），无预测则显示空
+      const countResult = await pool.query(
+        `SELECT COUNT(*)::int AS total FROM ipo_history h
+          WHERE h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+            AND h.market_code='CN'
+            AND h.ipo_date <= to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD')
+            AND COALESCE(h.market_type, '') <> '北交所'
+            AND h.security_code !~ '^(920|82|83|87|43)'`
+      );
+      total = countResult.rows[0] ? countResult.rows[0].total : 0;
       const r = await pool.query(
         `              SELECT h.security_code, h.security_name, h.ipo_date,
                 h.issue_price, h.issue_pe, h.industry_pe, h.fund_raised,
@@ -588,8 +611,8 @@ router.get('/history', async (req, res) => {
             AND h.ipo_date <= to_char((timezone('Asia/Shanghai', now()))::date, 'YYYY-MM-DD')
            AND COALESCE(h.market_type, '') <> '北交所'
            AND h.security_code !~ '^(920|82|83|87|43)'
-         ORDER BY h.ipo_date DESC, NULLIF(h.listing_date, '') DESC NULLS LAST, h.security_code LIMIT $1`,
-        [limit]
+         ORDER BY h.ipo_date DESC, NULLIF(h.listing_date, '') DESC NULLS LAST, h.security_code LIMIT $1 OFFSET $2`,
+        [limit, offset]
       );
       rows = r.rows;
     }

@@ -89,8 +89,8 @@ assert.ok(ipoReport.datasetDependencies.some(item => item.datasetCode === 'ipo_h
 assert.ok(ipoReport.additionalSchedules.some(item => item.mode === 'enrichment' && item.hour === 19 && item.minute === 45),
   '打新日报必须在晚间资料补全后刷新发行阶段预测');
 assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
-assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 15, 'IPO核心事实阶段必须覆盖发行资料补全');
-assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 15, 'IPO晚间补全必须使用独立调用预算');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 600, 'IPO核心阶段只应保留异常循环止损线');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 600, 'IPO晚间补全只应保留异常循环止损线');
 assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');
 assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, 10, '指数补齐上限必须覆盖双账户五指数完整一轮');
 assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refresh').maxExternalCallsPerRun, 600, '可转债主链上限必须覆盖主同步及历史补漏');

@@ -7,6 +7,8 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_history_sync as sync
+import ipo_lib_fetch
+from ipo_lib_fetch import _extract_main_business
 
 PASS, FAIL, ERR = [], [], []
 
@@ -26,6 +28,10 @@ try:
     check("募资额派生", loss["fund_raised"] == 2.0)
     check("公开发行市值派生", loss["circulation_mv"] == 1.0)
     check("亏损企业状态", loss["issue_pe"] is None and loss["issue_pe_status"] == "loss")
+
+    long_business = "公司主要从事" + "高性能云端人工智能芯片研发设计销售及配套软件服务" * 10 + "。"
+    extracted = _extract_main_business(long_business)
+    check("主营业务全文不截断", extracted is not None and len(extracted) > 200, str(len(extracted or "")))
 
     conn = sync.pg_connect()
     cur = conn.cursor()
@@ -53,6 +59,49 @@ try:
         and detail[2].get("exposures", [{}])[0].get("label") == "电子测量仪器",
         str(detail),
     )
+
+    current_codes = [str(970000 + index) for index in range(25)]
+    historical_codes = [str(970025 + index) for index in range(40)]
+    cur.executemany(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,listing_date,ipo_status)
+             VALUES(%s,%s,'CN',%s,%s,%s)
+             ON CONFLICT(security_code) DO UPDATE SET industry=NULL,industry_pe=NULL,main_business=NULL,
+               business_exposure='{}'::jsonb,data_quality_status='{}'::jsonb,ipo_date=EXCLUDED.ipo_date,
+               listing_date=EXCLUDED.listing_date,ipo_status=EXCLUDED.ipo_status""",
+        [
+            (code, "当前发行" + code, "2026-09-11", None, "active")
+            for code in current_codes
+        ] + [
+            (code, "历史新股" + code, "2026-08-01", "2026-08-10", "listed")
+            for code in historical_codes
+        ],
+    )
+    calls = []
+    original_fetch = ipo_lib_fetch.fetch_stock_historical_detail
+
+    def fake_fetch(code, existing_industry=None):
+        calls.append(code)
+        return {
+            "industry": "半导体",
+            "industry_pe": 30.0,
+            "main_business": "高性能芯片研发设计销售及相关软件服务" * 15,
+            "business_exposure": {
+                "status": "complete", "confidence": 0.9,
+                "exposures": [{"label": "半导体", "weight": 1.0}],
+            },
+        }
+
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_fetch
+    try:
+        result = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), target_date=date(2026, 9, 11), priority_codes=current_codes
+        )
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("资料补全无固定8条上限", result["attempted"] >= 65, str(result))
+    check("当前发行25条全部优先", set(calls[:25]) == set(current_codes), str(calls[:25]))
+    cur.execute("SELECT min(length(main_business)) FROM ipo_history WHERE security_code=ANY(%s)", (current_codes,))
+    check("长主营业务完整入库", int(cur.fetchone()[0] or 0) > 200)
     conn.rollback()
     cur.close()
     conn.close()

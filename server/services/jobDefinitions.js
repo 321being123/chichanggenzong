@@ -84,8 +84,8 @@ const JOB_CONTRACTS = {
   'convertible_bond_announcement_reparse': { externalApis: [], producesDatasets: ['bond_announcement_facts'], consumesDatasets: ['bond_announcement_documents'], maxExternalCallsPerRun: 0 },
   'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: 6 },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },
-  // 核心阶段刷新 new_share 后，还要为目标申购日补全发行资料；单次硬上限15次，日计划预算25次，优先保障发行阶段。
-  'ipo_history_sync': { externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'stock_company', 'cninfo'], producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: 15, dailyBudget: 25, modeExternalCallLimits: { core: 15, enrichment: 15 } },
+  // 不限制业务候选条数；600 仅是异常循环止损线，真实请求仍受来源/接口 Guard 保护并可跨批续跑。
+  'ipo_history_sync': { externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'stock_company', 'cninfo'], producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 25, modeExternalCallLimits: { core: 600, enrichment: 600 } },
   // 个股分析定时任务为数据库只读计算；财务/行情采集由共享批次和独立增量任务完成。
   'stock_analysis_refresh': { externalApis: [], producesDatasets: ['stock_analysis_snapshot'], consumesDatasets: ['stock_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
   'hk_trade_rules_sync': { externalApis: ['hk_basic'], producesDatasets: ['hk_trade_rules'], consumesDatasets: [], maxExternalCallsPerRun: 2 },

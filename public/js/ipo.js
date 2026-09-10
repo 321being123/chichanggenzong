@@ -526,7 +526,7 @@ async function ipoLoadHistoryPage(type, offset) {
     var d = await r.json();
     if (el) {
       var html = ipoRenderHistory(type, d.rows || []);
-      if (type === 'hk_stock' && Number(d.total) > 0) {
+      if ((type === 'hk_stock' || type === 'stock') && Number(d.total) > 0) {
         var total = Number(d.total);
         var shownEnd = pageOffset + (d.rows || []).length;
         html += '<div class="ipo-history-pagination" style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;color:#777;font-size:12px;">';

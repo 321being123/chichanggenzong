@@ -20,7 +20,7 @@ import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
 from _common import _load_env, _tushare
-from external_call_guard import guarded_urlopen, get_external_call_stats
+from external_call_guard import ExternalCallGuardError, guarded_urlopen, get_external_call_stats
 from instrument_identity import ensure_instrument, resolve_canonical_code, resolve_provider_code
 
 _load_env()
@@ -227,14 +227,15 @@ def _tencent_first_close(code, listing_date):
 
 def backfill_first_day(cur, now):
     today = now.date()
-    cutoff = today - timedelta(days=14)
     cur.execute("""
       SELECT security_code,listing_date,issue_price,first_day_retry_count,first_day_last_attempt_at
         FROM ipo_history
-       WHERE market_code='CN' AND listing_date >= %s AND listing_date <= %s AND ld_close_change IS NULL
-         AND issue_price IS NOT NULL AND COALESCE(first_day_retry_count,0) < 3
-    """, (cutoff.isoformat(), today.isoformat()))
+       WHERE market_code='CN' AND listing_date <= %s AND ld_close_change IS NULL
+         AND issue_price IS NOT NULL
+       ORDER BY listing_date DESC,security_code
+    """, (today.isoformat(),))
     updated = attempted = failed = 0
+    stopped = None
     for row in cur.fetchall():
         code, listing_text, issue_price, _, last_attempt = row
         try:
@@ -248,6 +249,10 @@ def backfill_first_day(cur, now):
         attempted += 1
         try:
             close = _tencent_first_close(code, listing.isoformat())
+        except ExternalCallGuardError as exc:
+            stopped = {"code": exc.code, "recover_at": exc.recover_at}
+            attempted -= 1
+            break
         except Exception:
             close = None
         if close and float(issue_price) > 0:
@@ -263,7 +268,7 @@ def backfill_first_day(cur, now):
                 first_day_last_attempt_at=now() WHERE security_code=%s
             """, (code,))
             failed += 1
-    return {"attempted": attempted, "updated": updated, "pending": failed}
+    return {"attempted": attempted, "updated": updated, "pending": failed, "stopped": stopped}
 
 
 def normalize_stored_details(cur, today, target_date=None):
@@ -316,54 +321,80 @@ def normalize_stored_details(cur, today, target_date=None):
     return {"updated": updated}
 
 
-def enrich_stock_missing_details(cur, today, limit=8, target_date=None, retry_same_day=False):
-    """发行阶段优先补全新股资料，剩余名额再处理历史缺口。"""
+def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None):
+    """不限业务条数补全资料；当前发行优先，历史缺口按 Guard 边界续跑。"""
     today_text = today.isoformat()
     target_text = str(target_date)[:10] if target_date else ""
+    priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
+    mandatory_gap = """(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+              OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
+              OR NOT (business_exposure ? 'exposures'))"""
     cur.execute("""
-      SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry
+      SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry,
+             main_business,industry_pe,business_exposure
         FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-         AND ipo_date >= (%s::date - INTERVAL '730 days')::text
-         AND ipo_date <= (%s::date + INTERVAL '30 days')::text
-         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
-              OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
-              OR NOT (business_exposure ? 'exposures'))
-         AND (%s::boolean OR COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s)
-       ORDER BY CASE WHEN ipo_date=%s OR listing_date=%s THEN 0
+         AND (""" + mandatory_gap + """ OR (
+              industry_pe IS NULL
+              AND COALESCE(data_quality_status->'field_states'->'industry_pe'->>'retry_after','') <= %s
+         ))
+         AND (COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s
+              OR (%s::boolean AND security_code=ANY(%s::text[])))
+       ORDER BY CASE WHEN security_code=ANY(%s::text[]) THEN 0
+                     WHEN ipo_status='active' THEN 1 ELSE 2 END,
+                CASE WHEN """ + mandatory_gap + """ THEN 0 ELSE 1 END,
+                CASE WHEN ipo_date=%s OR listing_date=%s THEN 0
                      WHEN ipo_date>%s OR listing_date>%s THEN 1 ELSE 2 END,
                 CASE WHEN ipo_date >= %s THEN ipo_date END ASC NULLS LAST,
                 CASE WHEN listing_date >= %s THEN listing_date END ASC NULLS LAST,
-                ipo_date DESC,security_code LIMIT %s
-    """, (today_text, today_text, retry_same_day, today_text,
+                ipo_date DESC,security_code
+    """, (today_text, today_text, retry_same_day, priority_codes,
+          priority_codes,
           target_text, target_text, target_text, target_text,
-          target_text, target_text, int(limit)))
+          target_text, target_text))
     candidates = cur.fetchall()
     if not candidates:
-        return {"attempted": 0, "updated": 0, "failed": 0, "remaining": 0}
+        return {"attempted": 0, "updated": 0, "failed": 0, "remaining": 0,
+                "remaining_by_field": {}, "stopped": None}
 
     from ipo_lib_fetch import fetch_stock_historical_detail
 
     attempted = updated = failed = 0
-    for code, prior_status, existing_industry in candidates:
+    stopped = None
+    for code, prior_status, existing_industry, existing_business, existing_industry_pe, existing_exposure in candidates:
         attempted += 1
         meta = {"attempted_on": today_text, "source": "stock_basic/cninfo/valuation"}
         try:
             detail = fetch_stock_historical_detail(code, existing_industry) or {}
             business_exposure = detail.get("business_exposure")
-            changed = any(detail.get(field) not in (None, "") for field in QUALITY_DETAIL_FIELDS)
-            changed = changed or bool(isinstance(business_exposure, dict) and business_exposure.get("exposures"))
+            resolved_industry = str(existing_industry or detail.get("industry") or '').strip()
+            resolved_business = max(
+                (str(existing_business or '').strip(), str(detail.get("main_business") or '').strip()),
+                key=len,
+            )
+            resolved_industry_pe = existing_industry_pe if existing_industry_pe is not None else detail.get("industry_pe")
+            resolved_exposure = business_exposure if (
+                isinstance(business_exposure, dict) and business_exposure.get("exposures")
+            ) else existing_exposure
+            changed = (
+                resolved_industry != str(existing_industry or '').strip()
+                or resolved_business != str(existing_business or '').strip()
+                or resolved_industry_pe != existing_industry_pe
+                or resolved_exposure != existing_exposure
+            )
             if changed:
                 cur.execute("""
                   UPDATE ipo_history SET
                     industry=COALESCE(NULLIF(industry,''),NULLIF(%s,'')),
                     industry_pe=COALESCE(industry_pe,%s),
-                    main_business=COALESCE(NULLIF(main_business,''),NULLIF(%s,'')),
+                    main_business=CASE
+                      WHEN length(COALESCE(%s,'')) > length(COALESCE(main_business,'')) THEN %s
+                      ELSE main_business END,
                     business_exposure=COALESCE(NULLIF(%s::jsonb,'{}'::jsonb),business_exposure),
                     source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object('historical_enrichment',%s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
-                """, (detail.get("industry"), detail.get("industry_pe"), detail.get("main_business"),
+                """, (detail.get("industry"), detail.get("industry_pe"), detail.get("main_business"), detail.get("main_business"),
                       Json(business_exposure) if business_exposure else None, Json(detail), code))
                 updated += 1
                 meta["updated_fields"] = [field for field in QUALITY_DETAIL_FIELDS if detail.get(field) not in (None, "")]
@@ -371,27 +402,48 @@ def enrich_stock_missing_details(cur, today, limit=8, target_date=None, retry_sa
                     meta["updated_fields"].append("business_exposure")
             else:
                 meta["result"] = "no_new_value"
+            field_states = {
+                "industry": {"status": "value" if resolved_industry else "retryable"},
+                "main_business": {"status": "value" if resolved_business else "retryable"},
+                "business_exposure": {"status": "value" if isinstance(resolved_exposure, dict) and resolved_exposure.get("exposures") else "retryable"},
+                "industry_pe": {"status": "value" if resolved_industry_pe is not None else "source_unavailable"},
+            }
+            if resolved_industry_pe is None:
+                field_states["industry_pe"].update({
+                    "reason": "insufficient_or_unmatched_industry_sample",
+                    "retry_after": (today + timedelta(days=7)).isoformat(),
+                })
+        except ExternalCallGuardError as exc:
+            stopped = {"code": exc.code, "recover_at": exc.recover_at}
+            attempted -= 1
+            break
         except Exception as exc:
             failed += 1
             meta["error"] = str(exc)[:300]
+            field_states = (prior_status or {}).get("field_states", {})
         cur.execute("""
           UPDATE ipo_history
              SET data_quality_status=COALESCE(data_quality_status,'{}'::jsonb)
-               || jsonb_build_object('enrichment',%s::jsonb)
+               || jsonb_build_object('enrichment',%s::jsonb,'field_states',%s::jsonb)
            WHERE security_code=%s
-        """, (Json(meta), code))
+        """, (Json(meta), Json(field_states), code))
 
     cur.execute("""
-      SELECT count(*) FROM ipo_history
+      SELECT
+        count(*) FILTER (WHERE NULLIF(industry,'') IS NULL),
+        count(*) FILTER (WHERE industry_pe IS NULL),
+        count(*) FILTER (WHERE NULLIF(main_business,'') IS NULL),
+        count(*) FILTER (WHERE business_exposure IS NULL OR business_exposure='{}'::jsonb
+                          OR NOT (business_exposure ? 'exposures'))
+      FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-         AND ipo_date >= (%s::date - INTERVAL '730 days')::text
-         AND ipo_date <= (%s::date + INTERVAL '30 days')::text
-         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
-              OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
-              OR NOT (business_exposure ? 'exposures'))
-    """, (today_text, today_text))
-    remaining = int(cur.fetchone()[0] or 0)
-    return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining}
+    """)
+    counts = cur.fetchone()
+    remaining_by_field = dict(zip(("industry", "industry_pe", "main_business", "business_exposure"),
+                                  (int(value or 0) for value in counts)))
+    remaining = sum(remaining_by_field.values())
+    return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining,
+            "remaining_by_field": remaining_by_field, "stopped": stopped}
 
 
 def update_quality(cur, today):
@@ -402,9 +454,7 @@ def update_quality(cur, today):
              COALESCE(data_quality_status,'{}'::jsonb)
         FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-         AND ipo_date <= (%s::date + INTERVAL '30 days')::text
-         AND ipo_date >= %s
-    """, (today.isoformat(), (today - timedelta(days=730)).isoformat()))
+    """)
     missing_records = 0
     missing_fields = 0
     for row in cur.fetchall():
@@ -416,8 +466,11 @@ def update_quality(cur, today):
         missing = [field for field in QUALITY_BASE_FIELDS if values.get(field) in (None, "")]
         if values.get("issue_pe") in (None, "") and values.get("issue_pe_status") != "loss":
             missing.append("issue_pe")
+        prior = values.get("prior_status") if isinstance(values.get("prior_status"), dict) else {}
+        prior_field_states = prior.get("field_states") if isinstance(prior.get("field_states"), dict) else {}
         for field in QUALITY_DETAIL_FIELDS:
-            if values.get(field) in (None, ""):
+            prior_state = prior_field_states.get(field) if isinstance(prior_field_states.get(field), dict) else {}
+            if values.get(field) in (None, "") and prior_state.get("status") != "source_unavailable":
                 missing.append(field)
         exposure = values.get("business_exposure")
         if not isinstance(exposure, dict) or not exposure.get("exposures"):
@@ -438,13 +491,22 @@ def update_quality(cur, today):
             missing = [field for field in missing if field not in pending]
         elif values.get("ld_close_change") in (None, ""):
             missing.append("ld_close_change")
-        prior = values.get("prior_status") if isinstance(values.get("prior_status"), dict) else {}
+        field_states = dict(prior_field_states)
+        for field in QUALITY_DETAIL_FIELDS:
+            if values.get(field) not in (None, ""):
+                field_states[field] = {"status": "value"}
+            elif field not in field_states:
+                field_states[field] = {"status": "retryable"}
+        field_states["business_exposure"] = {
+            "status": "value" if isinstance(exposure, dict) and exposure.get("exposures") else "retryable"
+        }
         status = {
             "status": "missing" if missing else "complete",
             "missing_fields": missing,
             "pending_not_due": pending,
             "stage": "listed" if listed else "subscribed",
             "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "field_states": field_states,
         }
         if prior.get("enrichment"):
             status["enrichment"] = prior["enrichment"]
@@ -604,9 +666,11 @@ def _refresh_new_share_snapshot(cur, today):
         raise RuntimeError("晚间 new_share 返回重复证券代码")
     inserted, refreshed = upsert_shares(cur, records, today)
     mark_cursor(cur, today)
+    current_codes = [row["security_code"] for row in records if row.get("ipo_status") != "listed"]
     return {
         "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
         "window_start": start.isoformat(), "window_end": end.isoformat(),
+        "current_security_codes": current_codes,
     }
 
 
@@ -619,11 +683,12 @@ def run(today=None, mode="core"):
             with connection.cursor() as cur:
                 refreshed_snapshot = _refresh_new_share_snapshot(cur, today)
                 normalized = normalize_stored_details(cur, today)
-                first_day = backfill_first_day(cur, datetime.now())
-                # 晚间补全优先处理下一交易日即将上市的新股，确保发行公告阶段的详情先于历史缺口落库。
+                # 当前发行资料先于首日表现和历史欠账，避免共享请求保护被低优先级任务占用。
                 enrichment = enrich_stock_missing_details(
-                    cur, today, limit=8, target_date=next_trade_date(cur, today), retry_same_day=True
+                    cur, today, target_date=next_trade_date(cur, today), retry_same_day=True,
+                    priority_codes=refreshed_snapshot.get("current_security_codes", []),
                 )
+                first_day = backfill_first_day(cur, datetime.now())
                 quality = update_quality(cur, today)
             connection.commit()
             return {
@@ -653,7 +718,8 @@ def run(today=None, mode="core"):
             inserted, refreshed = upsert_shares(cur, records, today)
             normalization = normalize_stored_details(cur, today)
             issuance_enrichment = enrich_stock_missing_details(
-                cur, today, limit=8, target_date=next_trade_date(cur, today)
+                cur, today, target_date=next_trade_date(cur, today),
+                priority_codes=[row["security_code"] for row in records if row.get("ipo_status") != "listed"],
             )
             quality = update_quality(cur, today)
             dataset_diagnostics = publication_quality(cur, records, today, run_id)

@@ -58,6 +58,8 @@ async function main() {
   j = await r.json();
   check('type=stock', () => assert.strictEqual(j.type, 'stock'));
   check('rows 为数组', () => assert.ok(Array.isArray(j.rows)));
+  check('A股返回分页总数', () => assert.ok(Number.isInteger(j.total) && j.total >= (j.rows || []).length));
+  check('A股返回 limit/offset', () => assert.strictEqual(j.limit, 20) && assert.strictEqual(j.offset, 0));
   if (Array.isArray(j.rows) && j.rows.length) {
     const row = j.rows[0];
     for (const k of ['security_code', 'security_name', 'listing_date', 'ld_close_change']) {

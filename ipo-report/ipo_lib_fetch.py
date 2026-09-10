@@ -12,6 +12,7 @@ from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_ent
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
+from external_call_guard import ExternalCallGuardError
 from bond_data_layer import get_bond_row, get_listing_liquidity, save_listing_liquidity
 from sse_listing_parser import (
     SSE_LISTING_INDEX_URL,
@@ -1021,6 +1022,8 @@ def _fetch_stock_industry(stock_code):
             ind = df.iloc[0].get("industry")
             if ind:
                 return str(ind)
+    except ExternalCallGuardError:
+        raise
     except Exception:
         pass
     return ""
@@ -1061,17 +1064,17 @@ def _extract_main_business(text):
             return ''
         if not re.search(r'研发|生产|销售|制造|提供|经营|产品|设备|材料|服务|控制|从事', value):
             return ''
-        return value[:200]
+        return value
 
     # 正文优先：公司“专业从事”是科创板招股书最稳定的主营业务表述。
     # 每种句式都遍历候选，避免首个匹配落在目录或风险提示章节。
     biz = ''
     for pat in [
-        r'(?:公司|发行人)专业从事\s*([^。；;]{8,260})',
-        r'(?:公司|发行人)主要从事\s*([^。；;]{8,260})',
-        r'(?:公司|发行人)专门从事\s*([^。；;]{8,260})',
-        r'(?:公司|发行人)主营业务[为是：:]\s*([^。；;]{8,260})',
-        r'主营业务[为：:]\s*([^。；;]{8,260})',
+        r'(?:公司|发行人)专业从事\s*([^。；;]{8,1000})',
+        r'(?:公司|发行人)主要从事\s*([^。；;]{8,1000})',
+        r'(?:公司|发行人)专门从事\s*([^。；;]{8,1000})',
+        r'(?:公司|发行人)主营业务[为是：:]\s*([^。；;]{8,1000})',
+        r'主营业务[为：:]\s*([^。；;]{8,1000})',
     ]:
         for m in re.finditer(pat, text):
             biz = clean_candidate(m.group(1))
@@ -1136,17 +1139,27 @@ def fetch_prospectus_main_business(stock_code):
         end = d.strftime("%Y-%m-%d")
 
         def _scan(skip_notice):
-            for page in range(1, 7):
+            page = 1
+            seen_pages = set()
+            while True:
                 data = {"pageNum": page, "pageSize": 30, "stock": "%s,%s" % (code, org),
                         "tabName": "fulltext", "column": column, "plate": plate,
                         "seDate": "%s~%s" % (start, end)}
                 try:
                     r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
-                    anns = r.json().get("announcements") or []
+                    payload = r.json()
+                    anns = payload.get("announcements") or []
+                    total = int(payload.get("totalAnnouncement") or 0)
+                except ExternalCallGuardError:
+                    raise
                 except Exception:
                     break
                 if not anns:
                     break
+                page_signature = tuple(str(a.get("announcementId") or a.get("adjunctUrl") or '') for a in anns)
+                if page_signature in seen_pages:
+                    break
+                seen_pages.add(page_signature)
                 for a in anns:
                     t = a.get("announcementTitle", "")
                     if "招股说明书" not in t:
@@ -1159,6 +1172,9 @@ def fetch_prospectus_main_business(stock_code):
                         mb = _extract_main_business(text)
                         if mb:
                             return mb
+                if total and page * 30 >= total:
+                    break
+                page += 1
             return ""
 
         # 优先完整招股说明书；实在没有再退而求其次（避免取到提示性公告的占位文本）
@@ -1166,6 +1182,8 @@ def fetch_prospectus_main_business(stock_code):
         if mb:
             return mb
         return _scan(skip_notice=False)
+    except ExternalCallGuardError:
+        raise
     except Exception:
         return ""
 
@@ -1178,6 +1196,8 @@ def _fetch_stock_main_business(stock_code):
         mb = fetch_prospectus_main_business(stock_code)
         if mb:
             return mb
+    except ExternalCallGuardError:
+        raise
     except Exception:
         pass
     try:
@@ -1189,6 +1209,8 @@ def _fetch_stock_main_business(stock_code):
                 biz = df.iloc[0].get("main_business")
                 if biz:
                     return str(biz).strip()
+    except ExternalCallGuardError:
+        raise
     except Exception:
         pass
     return ""
@@ -1253,6 +1275,8 @@ def _get_industry_pe_map():
             mid = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
             _INDUSTRY_PE_MAP[ind] = round(mid, 1)
         print(f"行业PE映射构建完成: {len(_INDUSTRY_PE_MAP)} 个行业 (基准日 {last_date})")
+    except ExternalCallGuardError:
+        raise
     except Exception as e:
         print(f"行业PE映射构建失败: {e}")
     return _INDUSTRY_PE_MAP
@@ -1264,7 +1288,7 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
         return None
     industry = _fetch_stock_industry(code) or str(existing_industry or '').strip()
     detail = {'industry': industry or ''}
-    detail['main_business'] = (_fetch_stock_main_business(code) or '')[:200]
+    detail['main_business'] = _fetch_stock_main_business(code) or ''
     _normalize_stock_detail(detail)
     if detail.get('industry'):
         industry_pe_map = _get_industry_pe_map()

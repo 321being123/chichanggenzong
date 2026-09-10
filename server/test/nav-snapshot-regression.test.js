@@ -8,7 +8,8 @@ const tables = fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.
 
 assert(/latestPositionAnchor/.test(snapshot), '净值快照必须识别历史持仓锚点');
 assert(/manual_reconciliation/.test(snapshot) && /snapshotSource === 'imported'/.test(snapshot), '净值快照必须优先使用人工校准或券商导入快照');
-assert(/tradeDay\(t\) <= anchor\.anchorDate/.test(snapshot), '净值快照只能重放锚点之后的交易');
+assert(/codeCutoffs/.test(snapshot) && /人工快照可能只校准部分证券/.test(snapshot), '部分人工校准不得覆盖券商全量持仓底座');
+assert(/tradeDay\(t\) <= cutoff/.test(snapshot), '净值快照只能重放对应证券锚点之后的交易');
 assert(/holdingCode\(t\.code, t\.name\)/.test(snapshot), '净值快照必须兼容历史港股代码别名');
 assert(/missingCodes/.test(snapshot) && /failedDatasets: \['nav_snapshot'\]/.test(snapshot), '缺行情代码必须返回可诊断的失败结果');
 assert(/failedAccounts/.test(snapshot) && /result\.ok/.test(snapshot), '单账户失败不得再被整体任务伪装为成功');

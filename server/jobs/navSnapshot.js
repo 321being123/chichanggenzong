@@ -60,40 +60,55 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
   function tradeDay(t) { return String(t.trade_date || (t.date || '')).slice(0, 10); }
 
   // 券商导入/人工校准快照是指定时点的持仓事实，优先于旧交易历史；
-  // 只重放快照之后的交易，避免把快照前的交易再次累加。
+  // 人工快照可能只校准部分证券：以最近券商导入快照作全量底座，再按证券覆盖人工校准行，
+  // 各证券只重放其对应锚点之后的交易，避免把快照前的交易再次累加。
   function latestPositionAnchor(date) {
     const snapshots = (data.positionSnapshots || []).filter(s => {
       const d = dateText(s.snapshotDate || s.date);
       return d && d <= date;
     });
-    const manualDates = snapshots
-      .filter(s => String(s.source || '') === 'manual_reconciliation')
-      .map(s => dateText(s.snapshotDate || s.date));
-    if (manualDates.length) {
-      const anchorDate = manualDates.reduce((max, d) => d > max ? d : max, '');
-      return {
-        anchorDate,
-        rows: snapshots.filter(s => String(s.source || '') === 'manual_reconciliation' &&
-          dateText(s.snapshotDate || s.date) === anchorDate)
-      };
-    }
     const imports = (data.navHistory || []).filter(n => n.snapshotSource === 'imported' && n.isLocked !== false &&
       dateText(n.date) <= date)
       .sort((a, b) => dateText(a.date).localeCompare(dateText(b.date)) ||
         String(a.snapshot_at || '').localeCompare(String(b.snapshot_at || '')));
     const imported = imports.length ? imports[imports.length - 1] : null;
-    if (!imported) return null;
-    let rows = imported.importBatchId
+    const importedRows = imported && imported.importBatchId
       ? snapshots.filter(s => String(s.snapshotId || '') === String(imported.importBatchId))
       : [];
-    if (!rows.length) {
+    let rows = importedRows.slice();
+    if (imported && !rows.length) {
       const importedDate = dateText(imported.date);
       rows = snapshots.filter(s => dateText(s.snapshotDate || s.date) === importedDate);
     }
-    return rows.length ? { anchorDate: rows.reduce((max, s) => {
-      const d = dateText(s.snapshotDate || s.date);
-      return d > max ? d : max;
-    }, ''), rows } : null;
+    const manualDates = snapshots
+      .filter(s => String(s.source || '') === 'manual_reconciliation')
+      .map(s => dateText(s.snapshotDate || s.date));
+    const manualDate = manualDates.length ? manualDates.reduce((max, d) => d > max ? d : max, '') : '';
+    const manualRows = manualDate
+      ? snapshots.filter(s => String(s.source || '') === 'manual_reconciliation' &&
+        dateText(s.snapshotDate || s.date) === manualDate)
+      : [];
+    const codeCutoffs = new Map();
+    for (const s of rows) {
+      const code = holdingCode(s.code || s.instrumentCode, s.name);
+      if (code) codeCutoffs.set(code, imported ? dateText(imported.date) : dateText(s.snapshotDate || s.date));
+    }
+    const manualCodes = new Set();
+    for (const s of manualRows) {
+      const code = holdingCode(s.code || s.instrumentCode, s.name);
+      if (!code) continue;
+      rows = rows.filter(existing => holdingCode(existing.code || existing.instrumentCode, existing.name) !== code);
+      rows.push(s);
+      manualCodes.add(code);
+      codeCutoffs.set(code, manualDate);
+    }
+    if (!rows.length) return null;
+    return {
+      anchorDate: [imported ? dateText(imported.date) : '', manualDate].filter(Boolean).sort().pop() || '',
+      rows,
+      codeCutoffs,
+      manualCodes
+    };
   }
 
   // 持仓-as-of 某日（与券商/人工快照锚定规则一致；adjust = 目标数量绝对设置）
@@ -114,8 +129,9 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
       }
     }
     trades.forEach(function (t) {
-      if (tradeDay(t) > date || (anchor && tradeDay(t) <= anchor.anchorDate)) return;
       const code = holdingCode(t.code, t.name);
+      const cutoff = anchor && (anchor.codeCutoffs.get(code) || anchor.anchorDate);
+      if (tradeDay(t) > date || (cutoff && tradeDay(t) <= cutoff)) return;
       const info = classifyCode(code, t.name) || {};
       const cur = m.get(code) || { qty: 0, subtype: t.subtype || info.subtype, name: positionNames.get(code) || t.name || '' };
       const q = Number(t.quantity) || 0;

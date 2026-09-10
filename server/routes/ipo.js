@@ -108,6 +108,10 @@ async function buildCnStockLiveReport(code) {
   const sectorSampleCount = topSector.sample_count == null ? null : Number(topSector.sample_count);
   const appliedSectorMultiplier = context.sector_multiplier ?? row.sector_multiplier;
   const sectorConfidence = context.sector_confidence ?? row.sector_confidence;
+  const calculation = context.calculation_detail && typeof context.calculation_detail === 'object'
+    ? context.calculation_detail : {};
+  const adviceCalculation = context.advice_calculation && typeof context.advice_calculation === 'object'
+    ? context.advice_calculation : {};
   const missingLabels = {
     industry: '所属行业',
     industry_pe: '行业市盈率',
@@ -154,6 +158,57 @@ async function buildCnStockLiveReport(code) {
         ? `×${Number(appliedSectorMultiplier).toFixed(2)}${sectorConfidence != null ? `（业务可信度${Number(sectorConfidence).toFixed(2)}）` : ''}`
         : '未做赛道修正'}`,
     );
+    if (calculation.model) {
+      const featureLabels = {
+        issue_price: '发行价', issue_pe: '发行PE', industry_pe: '行业PE',
+        fund_raised: '募资规模', online_shares: '网上发行量', total_shares: '发行总量',
+        online_lottery_rate: '网上中签率', oversubscribe_multiple: '超额认购倍数',
+        circulation_mv: '流通市值', subscribe_upper_limit: '申购上限', pe_ratio: 'PE比值',
+        circulation_mv_log: '流通市值对数', fund_raised_log: '募资规模对数',
+        price_times_pe: '发行价×PE', lottery_rate_inverse: '中签率倒数',
+        circulation_per_lot: '流通市值/中签率', issue_pe_squared: '发行PE平方',
+      };
+      const features = calculation.model_features && typeof calculation.model_features === 'object'
+        ? calculation.model_features : {};
+      const featureStatus = calculation.model_feature_status && typeof calculation.model_feature_status === 'object'
+        ? calculation.model_feature_status : {};
+      const featureText = Object.entries(features).map(([key, value]) => {
+        const label = featureLabels[key] || key;
+        const status = featureStatus[key] === '补位' ? '（补位）' : '';
+        const number = value == null || value === '' ? '暂无' : Number.isFinite(Number(value)) ? Number(value).toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') : String(value);
+        return `${label}=${number}${status}`;
+      });
+      lines.push('', '## 预测计算明细',
+        `- **模型**：${calculation.model}（${calculation.model_stage || stage}）`,
+        `- **模型输入**：${featureText.length ? featureText.join('；') : '暂无'}`,
+        `- **XGBoost原始输出**：${valueOrDash(calculation.raw_model_return, '%')}`,
+        `- **模型校准**：板块基准${valueOrDash(calculation.board_base, '%')}，校准系数${valueOrDash(calculation.model_calibration_multiplier, '')}，校准后${valueOrDash(calculation.model_calibrated_return, '%')}`,
+        `- **赛道计算**：${calculation.sector_formula || '暂无'}`,
+        `- **赛道修正后**：${valueOrDash(calculation.sector_return, '%')}`,
+        `- **市场温度修正**：${valueOrDash(calculation.market_temperature)}，系数${valueOrDash(calculation.temperature_multiplier, '')}，最终${valueOrDash(calculation.final_return, '%')}`,
+        `- **最终可能区间**：${calculation.range_low != null && calculation.range_high != null ? `${calculation.range_low}%～${calculation.range_high}%` : '暂无'}`,
+      );
+      const components = Array.isArray(context.sector_components) ? context.sector_components : [];
+      if (components.length) {
+        lines.push('- **赛道成分**：', ...components.map(item => {
+          const component = item && typeof item === 'object' ? item : {};
+          return `  - ${component.label || component.sector_key || '未知赛道'}：权重${component.weight ?? '暂无'}，历史系数×${component.multiplier ?? '暂无'}，样本${component.sample_count ?? '暂无'}只`;
+        }
+        ));
+      }
+    }
+    if (Array.isArray(adviceCalculation.steps) && adviceCalculation.steps.length) {
+      lines.push('', '## 打新建议评分明细',
+        `- **综合评分**：${valueOrDash(adviceCalculation.score, '分')}`,
+        `- **市场状态**：${valueOrDash(adviceCalculation.market_temperature)}${adviceCalculation.break_rate != null ? `，破发率${adviceCalculation.break_rate}%` : ''}`,
+        ...adviceCalculation.steps.map(step => {
+          const before = step.before == null ? '起始' : `${step.before}分`;
+          const after = step.after == null ? '暂无' : `${step.after}分`;
+          const note = step.note ? `（${step.note}）` : '';
+          return `- ${step.step || '评分步骤'}：${before} × ${step.multiplier ?? 1} = ${after}${note}`;
+        }),
+      );
+    }
   }
   if (pending.length) {
     lines.push('', '## 尚未公布数据', ...pending.map(field => `- **${pendingLabels[field] || field}**：发行结果公告后更新`));

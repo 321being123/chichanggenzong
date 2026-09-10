@@ -190,12 +190,15 @@ def build_report(target_date):
     for stock in target_apply_stocks:
         if stock.get("has_detail"):
             d = stock["detail"]
-            stock["advice"], stock["reason"] = get_valuation_advice(
-                "stock", d.get("issue_pe"), d.get("industry_pe"), stock_detail=d
+            advice_result = get_valuation_advice(
+                "stock", d.get("issue_pe"), d.get("industry_pe"),
+                stock_detail=d, return_detail=True
             )
+            stock["advice"], stock["reason"], stock["advice_calculation"] = advice_result
             stock["listing_analysis"] = get_listing_analysis(
                 "stock", d.get("issue_price"), d.get("issue_pe"), d.get("industry_pe"),
-                stock_detail=d, prediction_stage="issuance"
+                stock_detail=d, prediction_stage="issuance",
+                advice_calculation=stock.get("advice_calculation")
             )
 
     for bond in target_apply_bonds:
@@ -371,6 +374,33 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     analysis = s.get("listing_analysis", {})
                     if isinstance(analysis, dict) and analysis.get("summary"):
                         lines.append(f"- **可能涨幅**：{analysis['summary']}")
+                    if isinstance(analysis, dict) and analysis.get("detail"):
+                        lines.append(f"- **预测计算明细**：{analysis['detail']}")
+                    prediction_context = analysis.get("prediction_context") if isinstance(analysis, dict) else {}
+                    prediction_calculation = prediction_context.get("calculation_detail") if isinstance(prediction_context, dict) else {}
+                    if isinstance(prediction_calculation, dict) and prediction_calculation.get("model_features"):
+                        feature_text = "；".join(
+                            f"{key}={value}"
+                            + ("（补位）" if prediction_calculation.get("model_feature_status", {}).get(key) == "补位" else "")
+                            for key, value in prediction_calculation["model_features"].items()
+                        )
+                        lines.append(f"- **模型输入明细**：{feature_text}")
+                        lines.append(
+                            f"- **模型结果链**：原始{prediction_calculation.get('raw_model_return', '暂无')}%"
+                            f" → 模型校准后{prediction_calculation.get('model_calibrated_return', '暂无')}%"
+                            f" → 赛道修正后{prediction_calculation.get('sector_return', '暂无')}%"
+                            f" → 温度修正后{prediction_calculation.get('final_return', '暂无')}%"
+                        )
+                    advice_calculation = s.get("advice_calculation") or {}
+                    if advice_calculation.get("steps"):
+                        lines.append(f"- **建议评分结果**：{advice_calculation.get('score')}分")
+                        lines.append("- **建议评分计算**：")
+                        for step in advice_calculation["steps"]:
+                            before = "起始" if step.get("before") is None else f"{step.get('before')}分"
+                            after = f"{step.get('after')}分"
+                            multiplier = step.get("multiplier", 1)
+                            note = f"（{step.get('note')}）" if step.get("note") else ""
+                            lines.append(f"  - {step.get('step')}：{before} × {multiplier} = {after}{note}")
                     sector_label = _stock_sector_display(d)
                     lines.append(f"- **所属行业**：{d.get('industry') or '待补全'}")
                     lines.append(f"- **业务赛道**：{sector_label}")
@@ -567,7 +597,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
         lines.append("---")
         lines.append("## 📊 当前赛道热度系数（每日动态校准）")
         lines.append("")
-        lines.append("> 系数 = 该赛道相对同期全市场新股的稳健表现，按样本数向 1.0 平滑收缩并限制在安全范围；公司同时按产品和下游应用拆分，信息不足时保留方向判断但降低可信度。")
+        lines.append("> 系数 = 该赛道相对同期全市场新股的稳健表现，直接使用“赛道稳健中位数÷全市场稳健中位数”；不做样本收缩或最终系数上下限。公司同时按产品和下游应用拆分，业务可信度只描述赛道分类证据。")
         lines.append("")
         lines.append("| 赛道 | 热度系数 | 新股首日均值 | 样本数 |")
         lines.append("|------|----------|----------------|--------|")
@@ -769,7 +799,7 @@ def generate_html(md_content, data):
     sb = data.get("sector_boost_info", [])
     if sb:
         html += '<div class="card">\n<h2>📊 当前赛道热度系数（每日动态校准）</h2>\n'
-        html += '<p class="subtitle">系数 = 该赛道相对同期全市场新股的稳健表现，按样本数向 1.0 平滑收缩并限制在安全范围；公司同时按产品和下游应用拆分，信息不足时保留方向判断但降低可信度。</p>\n'
+        html += '<p class="subtitle">系数 = 该赛道相对同期全市场新股的稳健表现，直接使用“赛道稳健中位数÷全市场稳健中位数”；不做样本收缩或最终系数上下限。公司同时按产品和下游应用拆分，业务可信度只描述赛道分类证据。</p>\n'
         html += '<table>\n<tr><th>赛道</th><th>热度系数</th><th>新股首日均值</th><th>样本数</th></tr>\n'
         for r in sb:
             html += f'<tr><td>{r["sector"]}</td><td>{r["boost"]}</td><td>{r["avg_gain"]}%</td><td>{r["count"]}</td></tr>\n'

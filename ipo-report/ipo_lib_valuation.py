@@ -357,7 +357,7 @@ def estimate_bond_listing_price(transfer_value, circulation_scale, rating,
         "liquidity_calibration": liquidity_calibration,
     }, None
 
-def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_detail=None):
+def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_detail=None, return_detail=False):
     """基于估值给出打新建议（2025-2026年零破发环境适配版）"""
     if item_type == "bond":
         # 可转债申购建议：零破发环境一律顶格，出现破发后按评级分档
@@ -378,9 +378,6 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     if stock_detail is None:
         stock_detail = {}
 
-    if item_type == "stock" and _MARKET_TEMP.get("level") == "热市" and _MARKET_TEMP.get("break_rate") == 0:
-        return "顶格申购", "当前新股市场为热市且零破发，中签即赚"
-
     stock_code = stock_detail.get("stock_code", "")
     stock_name = stock_detail.get("stock_name", "")
     main_business = stock_detail.get("main_business", "")
@@ -391,6 +388,27 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     # 判断板块
     board_base = estimate_board_base(stock_code)
 
+    temp = _MARKET_TEMP.get("level", "热市")
+    score_trace = [{
+        "step": "板块基准",
+        "before": None,
+        "multiplier": 1.0,
+        "after": int(board_base),
+        "note": f"{stock_code or '未知代码'} → {board_base}分",
+    }]
+
+    def apply_score(step, multiplier, note=""):
+        nonlocal score
+        before = score
+        score = int(score * multiplier)
+        score_trace.append({
+            "step": step,
+            "before": before,
+            "multiplier": round(float(multiplier), 4),
+            "after": score,
+            "note": note,
+        })
+
     # 检测热门赛道
     sector_label, sector_boost = detect_stock_hot_sector(stock_name, main_business, industry)
 
@@ -399,46 +417,50 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
 
     if sector_label:
         # 赛道加成
-        score = int(score * (1 + sector_boost * 0.3))
+        sector_score_multiplier = 1 + sector_boost * 0.3
+        apply_score("赛道评分修正", sector_score_multiplier,
+                    f"{sector_label}，历史热度系数×{sector_boost:.3f}")
 
     # 市场温度 + PE修正
     temp_pe = get_temp_pe_penalty(issue_pe, industry_pe)
-    score = int(score * temp_pe)
+    apply_score("发行PE/行业PE修正", temp_pe,
+                f"发行PE={issue_pe if issue_pe is not None else '暂无'}，行业PE={industry_pe if industry_pe is not None else '暂无'}")
 
     # 市场温度整体衰减
-    score = get_temp_temp_score_penalty(score)
+    temp_score_multiplier = 1.0 if temp == "热市" else (0.85 if temp == "常温" else 0.5)
+    apply_score("市场温度评分修正", temp_score_multiplier, temp)
 
     # 发行价修正：低价股涨幅通常更大，高价股压制
     if issue_price:
         if issue_price < 15:
-            score = int(score * 1.15)
+            apply_score("发行价修正", 1.15, f"发行价={issue_price}元，低价")
         elif issue_price < 30:
-            score = int(score * 1.05)
+            apply_score("发行价修正", 1.05, f"发行价={issue_price}元，中低价")
         elif issue_price > 50:
-            score = int(score * 0.90)
+            apply_score("发行价修正", 0.90, f"发行价={issue_price}元，高价")
 
     # 募资规模修正：超大募资可能压制涨幅
     if fund_raised and fund_raised > 50:
-        score = int(score * 0.85)
+        apply_score("募资规模修正", 0.85, f"募资规模={fund_raised}亿元")
 
     # 中签率修正：中签率越低 = 申购越热 = 涨幅越大
     lottery_rate = stock_detail.get("online_lottery_rate")
     lottery_reason = ""
     if lottery_rate is not None and lottery_rate > 0:
         if lottery_rate < 0.02:
-            score = int(score * 1.15)
+            apply_score("中签率修正", 1.15, f"中签率={lottery_rate}，极低")
             lottery_reason = "极低中签率"
         elif lottery_rate < 0.03:
-            score = int(score * 1.10)
+            apply_score("中签率修正", 1.10, f"中签率={lottery_rate}，低")
             lottery_reason = "低中签率"
         elif lottery_rate < 0.05:
-            score = int(score * 1.05)
+            apply_score("中签率修正", 1.05, f"中签率={lottery_rate}，较低")
             lottery_reason = "较低中签率"
         elif lottery_rate > 0.12:
-            score = int(score * 0.88)
+            apply_score("中签率修正", 0.88, f"中签率={lottery_rate}，高")
             lottery_reason = "高中签率"
         elif lottery_rate > 0.08:
-            score = int(score * 0.95)
+            apply_score("中签率修正", 0.95, f"中签率={lottery_rate}，较高")
             lottery_reason = "较高中签率"
 
     # 首日流通市值修正：流通盘越小越容易被炒作
@@ -446,19 +468,19 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     cmv_reason = ""
     if cmv is not None and cmv > 0:
         if cmv < 3:
-            score = int(score * 1.25)
+            apply_score("流通市值修正", 1.25, f"首日流通市值={cmv}亿元，极小")
             cmv_reason = "极小流通盘"
         elif cmv < 6:
-            score = int(score * 1.15)
+            apply_score("流通市值修正", 1.15, f"首日流通市值={cmv}亿元，小")
             cmv_reason = "小流通盘"
         elif cmv < 10:
-            score = int(score * 1.05)
+            apply_score("流通市值修正", 1.05, f"首日流通市值={cmv}亿元，较小")
             cmv_reason = "较小流通盘"
         elif cmv > 50:
-            score = int(score * 0.80)
+            apply_score("流通市值修正", 0.80, f"首日流通市值={cmv}亿元，超大")
             cmv_reason = "超大流通盘"
         elif cmv > 20:
-            score = int(score * 0.90)
+            apply_score("流通市值修正", 0.90, f"首日流通市值={cmv}亿元，较大")
             cmv_reason = "较大流通盘"
 
     # 机构超额认购倍数：倍数越高 = 机构越看好
@@ -466,16 +488,14 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     oversub_reason = ""
     if oversub is not None and oversub > 0:
         if oversub > 5000:
-            score = int(score * 1.10)
+            apply_score("机构认购倍数修正", 1.10, f"超额认购倍数={oversub}，高")
             oversub_reason = "高认购倍数"
         elif oversub > 3000:
-            score = int(score * 1.05)
+            apply_score("机构认购倍数修正", 1.05, f"超额认购倍数={oversub}，较高")
             oversub_reason = "较高认购倍数"
         elif oversub < 500:
-            score = int(score * 0.92)
+            apply_score("机构认购倍数修正", 0.92, f"超额认购倍数={oversub}，低")
             oversub_reason = "低认购倍数"
-
-    temp = _MARKET_TEMP["level"]
 
     # 生成理由中的额外因子说明
     extra_reasons = []
@@ -527,6 +547,28 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
             advice = "放弃申购"
             reason = "冷市+高估值，破发风险较大"
 
+    hot_zero_break = item_type == "stock" and temp == "热市" and _MARKET_TEMP.get("break_rate") == 0
+    if hot_zero_break:
+        advice = "顶格申购"
+        reason = "当前新股市场为热市且零破发，中签即赚"
+    score_trace.append({
+        "step": "建议结论",
+        "before": score,
+        "multiplier": 1.0,
+        "after": score,
+        "note": f"{advice}；{reason}",
+    })
+    advice_detail = {
+        "score": score,
+        "market_temperature": temp,
+        "break_rate": _MARKET_TEMP.get("break_rate"),
+        "sector_label": sector_label or "",
+        "sector_multiplier": sector_boost if sector_label else 1.0,
+        "steps": score_trace,
+        "decision_override": "热市且零破发直接顶格申购" if hot_zero_break else "",
+    }
+    if return_detail:
+        return advice, reason, advice_detail
     return advice, reason
 
 _XGB_MODEL = None
@@ -639,10 +681,31 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
             lottery_inv, circ_per_lot, pe_squared
         ]])
 
-        estimated = float(_XGB_MODEL.predict(xgb.DMatrix(features, feature_names=_XGB_FEATURES))[0])
+        model_output = float(_XGB_MODEL.predict(xgb.DMatrix(features, feature_names=_XGB_FEATURES))[0])
         if (_XGB_FEATURE_INFO or {}).get("target_transform") == "log1p_nonnegative_return":
-            estimated = float(np.expm1(estimated))
-        estimated = int(round(max(estimated, 0)))
+            model_output = float(np.expm1(model_output))
+        raw_model_return = int(round(model_output))
+        estimated = int(round(max(model_output, 0)))
+
+        model_feature_values = {
+            "issue_price": ip,
+            "issue_pe": ipe,
+            "industry_pe": ind_pe,
+            "fund_raised": fr,
+            "online_shares": os_,
+            "total_shares": ts,
+            "online_lottery_rate": lr,
+            "oversubscribe_multiple": ov,
+            "circulation_mv": cmv,
+            "subscribe_upper_limit": sl,
+            "pe_ratio": pr,
+            "circulation_mv_log": cmv_log,
+            "fund_raised_log": fund_log,
+            "price_times_pe": price_times_pe,
+            "lottery_rate_inverse": lottery_inv,
+            "circulation_per_lot": circ_per_lot,
+            "issue_pe_squared": pe_squared,
+        }
 
         # XGBoost动态校准：按板块基准 + 市场温度调整
         xgb_boost = _calc_xgb_boost(stock_detail, estimated)
@@ -661,7 +724,21 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
                 f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lottery_text} 流通{cmv:.1f}亿",
             ]
 
-        return estimated, detail_parts, _XGB_TRAINED_AT, sorted(set(imputed_fields))
+        board_key = _get_board_key_from_code(stock_detail.get("stock_code", ""))
+        return estimated, detail_parts, _XGB_TRAINED_AT, sorted(set(imputed_fields)), {
+            "model_output": model_output,
+            "raw_model_return": raw_model_return,
+            "model_calibration_multiplier": xgb_boost,
+            "model_calibrated_return": estimated,
+            "board_key": board_key,
+            "board_base": BOARD_BASE.get(board_key, 200),
+            "market_temperature": _MARKET_TEMP.get("level"),
+            "model_features": model_feature_values,
+            "model_feature_status": {
+                key: ("补位" if key in imputed_fields else "实际")
+                for key in model_feature_values
+            },
+        }
     except Exception as e:
         print(f"[XGBoost] 预测失败: {e}")
         return None
@@ -740,7 +817,7 @@ def _summary_with_prediction_range(summary, low, high, prediction_stage):
     return f"{summary}，可能区间{low}%～{high}%（{_prediction_stage_label(prediction_stage)}）"
 
 def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_detail=None, stock_detail=None,
-                         prediction_stage="listing"):
+                         prediction_stage="listing", advice_calculation=None):
     """上市首日表现预估（2025-2026年零破发环境适配版）"""
     if item_type == "bond":
         if bond_detail:
@@ -768,9 +845,9 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     main_business = stock_detail.get("main_business", "")
     industry = stock_detail.get("industry", "")
     sector_label, sector_boost = detect_stock_hot_sector(stock_name, main_business, industry)
-    # 赛道只允许作为受控修正，不能让单个宽泛标签把基础预测放大数倍。
+    # 赛道系数直接使用历史相对表现，不再设置上下限或额外保护。
     try:
-        sector_boost = max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(sector_boost or 1.0)))
+        sector_boost = float(sector_boost) if sector_boost is not None else 1.0
     except (TypeError, ValueError, NameError):
         sector_boost = 1.0
     sector_context = get_stock_sector_context(
@@ -781,7 +858,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     sector_label = sector_context.get("label") or sector_label
     sector_boost = sector_context.get("multiplier", sector_boost)
     try:
-        sector_boost = max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(sector_boost or 1.0)))
+        sector_boost = float(sector_boost) if sector_boost is not None else 1.0
     except (TypeError, ValueError, NameError):
         sector_boost = 1.0
     if classification_status == "missing":
@@ -799,8 +876,9 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     if xgb_result is not None and xgb_result[0] > 0:
         estimated, detail_parts, trained_at = (xgb_result[0], xgb_result[1], xgb_result[2] if len(xgb_result) > 2 else None)
         imputed_fields = xgb_result[3] if len(xgb_result) > 3 else []
+        model_calculation = xgb_result[4] if len(xgb_result) > 4 and isinstance(xgb_result[4], dict) else {}
         base_estimated = estimated
-        # 叠加赛道热度修正：系数已由历史相对中位数和样本权重收缩，且有上下限。
+        # 叠加赛道热度修正：直接使用历史相对表现系数。
         if sector_label:
             sector_mult = sector_boost
             estimated = int(round(estimated * sector_mult))
@@ -811,6 +889,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             )
         else:
             detail_parts.append(f"🚀 赛道修正: 待补全（×1.00，未做赛道修正）→{estimated}%")
+        sector_estimated = estimated
         # 市场温度衰减
         temp_mult = get_temp_listing_multiplier()
         estimated = int(round(estimated * temp_mult))
@@ -818,6 +897,15 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         # 模型更新时间
         if trained_at:
             detail_parts.append(f"🕐 XGBoost模型更新: {trained_at}")
+
+        detail_parts.append(
+            f"🧮 计算链: XGBoost原始{model_calculation.get('raw_model_return', '暂无')}%"
+            f" → 模型校准后{base_estimated}%"
+            f" → 赛道修正后{sector_estimated}%"
+            f" → 温度修正后{estimated}%"
+        )
+        if imputed_fields:
+            detail_parts.append(f"⚠️ 模型补位字段: {', '.join(sorted(set(imputed_fields)))}")
 
         prediction_low, prediction_high = _prediction_range(estimated, prediction_stage, imputed_fields)
         summary = _summary_with_prediction_range(
@@ -854,6 +942,26 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
                 "sector_confidence": sector_context.get("confidence", 0.0),
                 "sector_status": classification_status,
                 "sector_components": sector_context.get("components", []),
+                "calculation_detail": {
+                    "model": "XGBoost",
+                    "model_stage": prediction_stage,
+                    "model_features": model_calculation.get("model_features", {}),
+                    "model_feature_status": model_calculation.get("model_feature_status", {}),
+                    "model_output": model_calculation.get("model_output"),
+                    "raw_model_return": model_calculation.get("raw_model_return"),
+                    "model_calibration_multiplier": model_calculation.get("model_calibration_multiplier"),
+                    "model_calibrated_return": base_estimated,
+                    "board_key": model_calculation.get("board_key"),
+                    "board_base": model_calculation.get("board_base"),
+                    "sector_return": sector_estimated,
+                    "market_temperature": temp,
+                    "temperature_multiplier": temp_mult,
+                    "final_return": estimated,
+                    "range_low": prediction_low,
+                    "range_high": prediction_high,
+                    "sector_formula": "加权赛道历史表现比值；不设置上下限、不做样本收缩，业务可信度仅作分类标注",
+                },
+                "advice_calculation": advice_calculation or {},
             },
         }
 
@@ -914,7 +1022,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         elif cmv > 20:
             estimated = estimated * 0.88
 
-    # 赛道热度修正：有效系数已按样本数收缩并限制在安全范围。
+    # 赛道热度修正：直接使用历史相对表现系数。
     base_estimated = int(round(estimated))
     if sector_label:
         estimated = int(round(estimated * sector_boost))
@@ -990,6 +1098,19 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             "sector_confidence": sector_context.get("confidence", 0.0),
             "sector_status": classification_status,
             "sector_components": sector_context.get("components", []),
+            "calculation_detail": {
+                "model": "线性兜底模型",
+                "model_stage": prediction_stage,
+                "board_base": board_base,
+                "sector_return": int(round(estimated / temp_mult)) if temp_mult else estimated,
+                "market_temperature": temp,
+                "temperature_multiplier": temp_mult,
+                "final_return": estimated,
+                "range_low": prediction_low,
+                "range_high": prediction_high,
+                "sector_formula": "加权赛道历史表现比值；不设置上下限、不做样本收缩，业务可信度仅作分类标注",
+            },
+            "advice_calculation": advice_calculation or {},
         },
     }
 

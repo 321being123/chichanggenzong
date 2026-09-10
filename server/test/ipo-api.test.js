@@ -107,6 +107,10 @@ async function main() {
     assert.match(routeSource, /预测模型.*XGBoost/);
     assert.match(routeSource, /热度赛道/);
     assert.match(routeSource, /赛道热度系数/);
+    assert.match(routeSource, /预测计算明细/);
+    assert.match(routeSource, /打新建议评分明细/);
+    assert.match(routeSource, /calculation_detail/);
+    assert.match(routeSource, /advice_calculation/);
     assert.match(routeSource, /p\.base_pred_return/);
     assert.match(routeSource, /p\.sector_multiplier/);
   });

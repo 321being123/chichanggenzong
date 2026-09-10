@@ -1,6 +1,7 @@
 # 本文件由 ipo_daily_report.py 物理拆分而来，函数体/常量未改动，仅调整文件归属。
 import requests
 import json
+import math
 import os
 import re
 from collections import defaultdict
@@ -64,8 +65,6 @@ _BUSINESS_EXPOSURE_RULES = (
 SECTOR_EFFECTIVE_BOOSTS = {}
 SECTOR_SAMPLE_COUNTS = {}
 SECTOR_CALIBRATION_DAYS = 365
-SECTOR_MULTIPLIER_MIN = 0.80
-SECTOR_MULTIPLIER_MAX = 1.50
 
 def _default_sector_boost(sector_key):
     """源码中写死的默认赛道热度系数（动态计算异常/归零时回退用）"""
@@ -83,6 +82,16 @@ def _robust_median(values):
         if value == value:
             clean.append(value)
     return median(clean) if clean else None
+
+
+def _compute_sector_multiplier(robust_gain, benchmark):
+    """直接返回赛道历史表现相对全市场基准的比值。"""
+    if benchmark is None or float(benchmark) == 0:
+        raise ValueError("赛道热度基准不可为0")
+    value = float(robust_gain) / float(benchmark)
+    if not math.isfinite(value):
+        raise ValueError("赛道热度比值无效")
+    return round(value, 3)
 
 
 def analyze_business_exposure(stock_name, main_business, industry, stored=None):
@@ -141,7 +150,8 @@ def _effective_sector_multiplier(sector_key, fallback=1.0):
     if value is None:
         return fallback
     try:
-        return max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, float(value)))
+        value = float(value)
+        return value if math.isfinite(value) else fallback
     except (TypeError, ValueError):
         return fallback
 
@@ -187,9 +197,9 @@ def calibrate_sector_boost():
     用已上市新股的首日涨幅重算赛道热度系数（数据驱动，保留历史风口效果）。
 
     旧算法把赛道绝对均值除以150后直接当乘数，导致“新材料”这类宽泛
-    标签在3只样本时也可能变成2.68倍。新算法改用同窗口全市场中位数作
-    基准，再按样本数平滑收缩到1.0；系数仍写回原 sector_heat 表，避免
-    新增平行事实表。
+    标签在3只样本时也可能变成2.68倍。新算法改用同窗口全市场稳健中位数
+    作基准，直接使用“赛道稳健中位数÷全市场稳健中位数”；不做样本收缩，
+    也不设置最终系数上下限。系数仍写回原 sector_heat 表，避免新增平行事实表。
     """
     from collections import defaultdict
     from datetime import datetime
@@ -240,11 +250,8 @@ def calibrate_sector_boost():
         robust_gain = _robust_median(gains)
         if robust_gain is None:
             continue
-        # 这是“相对同期市场”的历史效果，不再是绝对涨幅/150。
-        raw_ratio = max(0.50, min(2.00, robust_gain / benchmark))
-        sample_weight = len(gains) / (len(gains) + 5.0)
-        boost = 1.0 + (raw_ratio - 1.0) * sample_weight
-        boost = round(max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, boost)), 3)
+        # 这是“相对同期市场”的历史效果，不再做上下限或小样本收缩。
+        boost = _compute_sector_multiplier(robust_gain, benchmark)
         SECTOR_SAMPLE_COUNTS[sector_key] = len(gains)
         SECTOR_EFFECTIVE_BOOSTS[sector_key] = boost
         conn.execute(
@@ -451,10 +458,9 @@ def get_stock_sector_context(stock_name, main_business, industry, stored=None):
                            "weight": weight, "multiplier": multiplier,
                            "sample_count": SECTOR_SAMPLE_COUNTS.get(key, 0)})
 
-    # 业务证据不足时仍保留方向判断，但把加成向中性收缩，而不是直接置零。
+    # 可信度只描述赛道分类证据，不再折扣赛道历史表现系数。
     confidence = float(exposure.get("confidence") or 0.0)
-    multiplier = 1.0 + weighted_delta * confidence
-    multiplier = round(max(SECTOR_MULTIPLIER_MIN, min(SECTOR_MULTIPLIER_MAX, multiplier)), 3)
+    multiplier = round(1.0 + weighted_delta, 3)
     return {"label": "、".join(dict.fromkeys(labels)), "multiplier": multiplier,
             "confidence": confidence, "classification_status": "matched",
             "exposure": exposure, "components": components}
@@ -487,4 +493,4 @@ def _sync_sector_boost_from_db():
     except Exception:
         pass  # DB缺失或无数据时保留源码默认系数
 
-__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', 'SECTOR_EFFECTIVE_BOOSTS', 'SECTOR_SAMPLE_COUNTS', 'SECTOR_MULTIPLIER_MIN', 'SECTOR_MULTIPLIER_MAX', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', 'analyze_business_exposure', 'get_stock_sector_context', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']
+__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', 'SECTOR_EFFECTIVE_BOOSTS', 'SECTOR_SAMPLE_COUNTS', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', 'analyze_business_exposure', 'get_stock_sector_context', '_compute_sector_multiplier', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']

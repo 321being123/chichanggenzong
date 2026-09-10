@@ -289,6 +289,14 @@ try:
         stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
     )
     check("新股热市且零破发一律顶格申购", hot_zero_advice[0] == "顶格申购", "实得=%s" % (hot_zero_advice,))
+    advice_with_detail = _val.get_valuation_advice(
+        "stock", 38.19, None,
+        stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
+        return_detail=True,
+    )
+    check("打新建议保留逐步评分明细",
+          len(advice_with_detail) == 3 and len(advice_with_detail[2].get("steps", [])) >= 3,
+          "实得=%s" % (advice_with_detail,))
     _val._MARKET_TEMP.clear()
     _val._MARKET_TEMP.update(_old_market_temp)
     check("XGBoost模型文件可加载", _val._load_xgb_model())
@@ -297,7 +305,10 @@ try:
         "industry_pe": 35, "fund_raised": 10, "online_lottery_rate": 0.03,
         "circulation_mv": 5,
     })
-    check("XGBoost可完成新股预测", model_prediction is not None)
+    check("XGBoost可完成新股预测并保留输入明细",
+           model_prediction is not None and len(model_prediction) >= 5
+           and model_prediction[4].get("model_features"),
+           "模型输入明细已生成")
     issuance_prediction = _val.get_listing_analysis(
         "stock", 20, 30, 35,
         stock_detail={
@@ -312,6 +323,10 @@ try:
     check("结果未公布时输出可能区间", issuance_prediction.get("prediction_range_low") is not None
           and issuance_prediction.get("prediction_range_high") is not None
           and "online_lottery_rate" in issuance_prediction.get("prediction_context", {}).get("result_fields_pending", []))
+    check("XGBoost预测保留计算链",
+          issuance_prediction.get("prediction_context", {}).get("calculation_detail", {}).get("model") in ("XGBoost", "线性兜底模型")
+          and issuance_prediction.get("prediction_context", {}).get("calculation_detail", {}).get("final_return") is not None,
+          "context=%r" % (issuance_prediction.get("prediction_context"),))
     summary_125 = _val._format_listing_summary(
         125,
         {"stock_code": "301668", "issue_price": 84.46},
@@ -379,19 +394,39 @@ try:
         "电子材料和化工新材料的研发、生产与销售，广泛应用于光伏、3C电子、电子封装、医疗、新能源汽车等领域",
         "计算机、通信和其他电子设备制造业",
     )
-    check("多下游风口默认不超过安全上限", context.get("multiplier", 0) <= 1.5,
-          "context=%r" % (context,))
+    old_sector_effective = dict(_val.SECTOR_EFFECTIVE_BOOSTS)
+    _val.SECTOR_EFFECTIVE_BOOSTS.clear()
+    _val.SECTOR_EFFECTIVE_BOOSTS.update({
+        "光伏": 2.68, "消费电子": 2.68, "医疗器械": 2.68, "汽车电子": 2.68,
+    })
+    uncapped_context = _val.get_stock_sector_context(
+        "贝特利",
+        "电子材料和化工新材料的研发、生产与销售，广泛应用于光伏、3C电子、电子封装、医疗、新能源汽车等领域",
+        "计算机、通信和其他电子设备制造业",
+    )
+    check("多下游赛道系数不受1.5上限限制", uncapped_context.get("multiplier", 0) > 1.5,
+          "context=%r" % (uncapped_context,))
+    _val.SECTOR_EFFECTIVE_BOOSTS.clear()
+    _val.SECTOR_EFFECTIVE_BOOSTS.update(old_sector_effective)
+    check("赛道系数直接使用历史表现比值",
+          abs(_val._compute_sector_multiplier(371.73, 213.4369) - 1.742) < 0.001)
     _old_detect_for_cap = _val.detect_stock_hot_sector
+    _old_context_for_cap = _val.get_stock_sector_context
     _old_xgb_for_cap = _val._xgb_predict_listing
     _old_temp_for_cap = _val.get_temp_listing_multiplier
     _val.detect_stock_hot_sector = lambda *args, **kwargs: ("新材料", 2.68)
+    _val.get_stock_sector_context = lambda *args, **kwargs: {
+        "label": "新材料", "multiplier": 2.68, "confidence": 0.78,
+        "classification_status": "matched", "components": [],
+    }
     _val._xgb_predict_listing = lambda *args, **kwargs: (308, ["测试"], None)
     _val.get_temp_listing_multiplier = lambda: 1.0
-    capped = _val.get_listing_analysis("stock", 12.1, None, None,
-                                       stock_detail={"stock_code": "301697", "stock_name": "贝特利"})
-    check("风口倍数超过安全范围时受控", capped.get("predicted_return", 999) <= 462,
-          "predicted_return=%r" % (capped.get("predicted_return"),))
+    uncapped = _val.get_listing_analysis("stock", 12.1, None, None,
+                                         stock_detail={"stock_code": "301697", "stock_name": "贝特利"})
+    check("风口倍数取消1.5上限", uncapped.get("predicted_return") == 825,
+          "predicted_return=%r" % (uncapped.get("predicted_return"),))
     _val.detect_stock_hot_sector = _old_detect_for_cap
+    _val.get_stock_sector_context = _old_context_for_cap
     _val._xgb_predict_listing = _old_xgb_for_cap
     _val.get_temp_listing_multiplier = _old_temp_for_cap
     _val._fetch_all_bonds_market = lambda: []          # 空列表 -> 走 fallback: base_premium = market['avg_premium']

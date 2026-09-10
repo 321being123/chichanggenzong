@@ -319,7 +319,7 @@ def normalize_stored_details(cur, today, target_date=None):
 def enrich_stock_missing_details(cur, today, limit=8, target_date=None, retry_same_day=False):
     """发行阶段优先补全新股资料，剩余名额再处理历史缺口。"""
     today_text = today.isoformat()
-    target_text = target_date.isoformat() if hasattr(target_date, "isoformat") else ""
+    target_text = str(target_date)[:10] if target_date else ""
     cur.execute("""
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry
         FROM ipo_history
@@ -330,11 +330,14 @@ def enrich_stock_missing_details(cur, today, limit=8, target_date=None, retry_sa
               OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
               OR NOT (business_exposure ? 'exposures'))
          AND (%s::boolean OR COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s)
-       ORDER BY CASE WHEN ipo_date=%s THEN 0
-                     WHEN ipo_date > %s THEN 1 ELSE 2 END,
+       ORDER BY CASE WHEN ipo_date=%s OR listing_date=%s THEN 0
+                     WHEN ipo_date>%s OR listing_date>%s THEN 1 ELSE 2 END,
                 CASE WHEN ipo_date >= %s THEN ipo_date END ASC NULLS LAST,
+                CASE WHEN listing_date >= %s THEN listing_date END ASC NULLS LAST,
                 ipo_date DESC,security_code LIMIT %s
-    """, (today_text, today_text, retry_same_day, today_text, target_text, today_text, today_text, int(limit)))
+    """, (today_text, today_text, retry_same_day, today_text,
+          target_text, target_text, target_text, target_text,
+          target_text, target_text, int(limit)))
     candidates = cur.fetchall()
     if not candidates:
         return {"attempted": 0, "updated": 0, "failed": 0, "remaining": 0}

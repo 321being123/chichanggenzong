@@ -20,6 +20,8 @@ assert.match(source, /返回空结果，已拒绝推进水位/, '空接口未阻
 assert.match(source, /COALESCE\(EXCLUDED\.issue_price,old\.issue_price\)/, '空发行价可能覆盖旧值');
 assert.match(source, /first_day_retry_count,0\) < 3/, '首日涨幅补偿未限制为 3 次');
 assert.match(source, /def enrich_stock_missing_details\(/, '缺失详情没有定点补全函数');
+assert.match(source, /target_text = str\(target_date\)\[:10\] if target_date else ""/, '发行阶段目标日字符串未标准化');
+assert.match(source, /ipo_date=%s OR listing_date=%s/, '晚间补全未优先处理目标日上市新股');
 assert.match(source, /historical_enrichment/, '详情补全未保留来源记录');
 assert.match(source, /def _refresh_new_share_snapshot\(/, '晚间阶段没有重新刷新发行公告');
 assert.match(source, /retry_same_day=True/, '晚间阶段没有允许同日重试发行资料');

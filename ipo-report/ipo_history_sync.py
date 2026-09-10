@@ -616,7 +616,10 @@ def run(today=None, mode="core"):
                 refreshed_snapshot = _refresh_new_share_snapshot(cur, today)
                 normalized = normalize_stored_details(cur, today)
                 first_day = backfill_first_day(cur, datetime.now())
-                enrichment = enrich_stock_missing_details(cur, today, limit=8, retry_same_day=True)
+                # 晚间补全优先处理下一交易日即将上市的新股，确保发行公告阶段的详情先于历史缺口落库。
+                enrichment = enrich_stock_missing_details(
+                    cur, today, limit=8, target_date=next_trade_date(cur, today), retry_same_day=True
+                )
                 quality = update_quality(cur, today)
             connection.commit()
             return {

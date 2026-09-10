@@ -247,8 +247,13 @@ async function fetchStockHistory(stockIds, tradeDate) {
   if (!stockIds.length) return new Map();
   const { rows } = await pool.query(`
     SELECT instrument_id,trade_date,close
-      FROM market.daily_bars
-     WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= $2::date AND close > 0
+      FROM (
+        SELECT instrument_id,trade_date,close,
+               ROW_NUMBER() OVER (PARTITION BY instrument_id ORDER BY trade_date DESC) AS rn
+          FROM market.daily_bars
+         WHERE instrument_id=ANY($1::bigint[]) AND trade_date <= $2::date AND close > 0
+      ) history
+     WHERE rn <= 251
      ORDER BY instrument_id,trade_date DESC
   `, [stockIds, tradeDate]);
   const history = new Map();

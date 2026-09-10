@@ -105,11 +105,25 @@ async function refreshAllPrices() {
   var systemPositionValueBeforeRefresh = getSystemPositionValue();
 
   // 批量拉取行情（A股走Tushare实时，港股走腾讯）
-  let allQuotes = {};
-  try {
-    const rr = await fetch(api('/api/quotes?codes=' + encodeURIComponent(codes.join(','))));
-    if (rr.ok) allQuotes = await rr.json() || {};
-  } catch (e) {}
+  // 页面刷新只允许一次批量请求；批量异常时最多再做一次同样的批量重试，
+  // 禁止退化成“批量失败后逐只请求”的 N+1 模式。
+  const fetchQuoteBatch = async function (batchCodes) {
+    if (!batchCodes.length) return {};
+    try {
+      const rr = await fetch(api('/api/quotes?codes=' + encodeURIComponent(batchCodes.join(','))));
+      if (rr.ok) return await rr.json() || {};
+    } catch (e) {}
+    return {};
+  };
+  let allQuotes = await fetchQuoteBatch(codes);
+  const retryCodes = codes.filter(function (code) {
+    // 搜特退债是已知退市标的，无实时价格，不应触发无意义的二次请求。
+    return code !== '404002' && (!allQuotes[code] || !(Number(allQuotes[code].price) > 0));
+  });
+  if (retryCodes.length) {
+    const retryQuotes = await fetchQuoteBatch(retryCodes);
+    Object.keys(retryQuotes).forEach(function (code) { allQuotes[code] = retryQuotes[code]; });
+  }
 
   // 获取港币→人民币汇率（港股通用）
   var hkRate = await fetchHKRate();
@@ -124,8 +138,7 @@ async function refreshAllPrices() {
   for (let i = 0; i < codes.length; i += concurrency) {
     const batch = codes.slice(i, i + concurrency);
     const results = await Promise.all(batch.map(async (c) => {
-      if (allQuotes[c] && allQuotes[c].price) return allQuotes[c];
-      return await fetchQuote(c, true);
+      return allQuotes[c] || null;
     }));
     results.forEach((result, idx) => {
       const c = batch[idx];
@@ -197,8 +210,7 @@ async function refreshAllPrices() {
   // recordNav 会返回最新归因；重新绑定总资产浮框，使首次口径切换说明立即生效。
   if (pricesSaved && typeof renderStats === 'function') renderStats();
   renderReturnsChart();
-  // 指数对比线后台同步（增量拉取 + 批量写库），不阻塞总资产与页面渲染
-  syncIndexPoints().catch(function(){});
+  // 指数对比线由 Worker 的 index_recent 任务增量入库，页面只读取账户数据快照。
   const failedCodes = codes.filter(c => {
     const p = data.positions.find(x => x.code === c);
     return p && (!p.price || !p.name);

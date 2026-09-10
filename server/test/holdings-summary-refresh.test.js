@@ -68,6 +68,10 @@ assert.strictEqual(context.isTradingDateCN('2026-08-22'), false, '页面不得�
 assert.ok(tables.includes('isTradingDateCN(todayCN())'), '休市日不得展示今日总资产涨跌');
 assert.ok(quote.includes('todayIsTradingDate ? result.change : null'), '休市日不得把最近交易日涨跌写入持仓行情');
 assert.ok(quote.includes('quoteDateCN(result.quote_time) === todayCN()'), '页面必须验证行情时间属于当天后才能写收盘价');
+assert.ok(quote.includes('fetchQuoteBatch') && quote.includes('retryCodes'), '持仓刷新必须使用有界批量重试');
+assert.ok(!quote.includes('return await fetchQuote(c, true)'), '持仓批量失败后不得退化成逐只行情请求');
+assert.ok(!quote.includes('syncIndexPoints().catch(function(){});'), '持仓刷新不得在浏览器侧同步外部指数行情');
+assert.ok(!returns.includes('/api/kline') && !returns.includes('fetchIndexKline'), '收益图缺失指数快照时不得在页面侧回源外部行情');
 assert.ok(quote.includes('Array.from(validatedQuotes.entries())') && quote.includes('quote_time: quote.quote_time') && quote.includes('if (!response.ok) throw new Error'), '页面必须按代码去重后把行情时间交给服务端复核，且保存失败不得标记完成');
 assert.ok(quote.includes('matchingPositions.forEach(function(position)'), '同一证券存在多条持仓时必须统一更新为同一份最新行情');
 const incompleteTip = context.buildChangeTipHtml(100, 1, 0, 0, null, null, null, null, true);

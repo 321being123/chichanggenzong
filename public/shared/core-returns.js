@@ -313,34 +313,6 @@ function renderReturnsStats() {
   document.getElementById('ret-days').textContent = data.navHistory.length;
 }
 
-async function fetchIndexKline(secid, days) {
-  try {
-    const r = await fetch(api('/api/kline?secid=' + encodeURIComponent(secid) + '&days=' + (days || 365)));
-    if (r.ok) {
-      const data = await r.json();
-      if (data && data.length > 0) return data;
-    }
-  } catch(e) {}
-  return [];
-}
-
-// 指数 secid 映射（东方财富格式；A股15:00收盘 / 港股16:00收盘，kline 自动取已收盘日）
-const INDEX_SECID = {
-  // 前端只传标准证券代码；供应商 secid 由服务端 instrument_identifiers 解析。
-  '沪深300': '000300.SH',
-  '上证指数': '000001.SH',
-  '中证500': '000905.SH',
-  '恒生指数': 'HSI.HK'
-};
-
-// 日期跨度（天）：从给定日期到今天，用于按真实时间区间拉取指数K线
-// （旧逻辑用 navHistory.length*2，稀疏或跨多年的净值历史会拉不到足够的指数区间）
-function daysBetween(dateStr) {
-  const d = new Date(dateStr);
-  const now = new Date();
-  return Math.max(1, Math.ceil((now - d) / 86400000));
-}
-
 // 基准日解析：净值首日若为非交易日(周末/节假日)，回退到最近的前一个交易日
 // （含该周周五），保证指数归一化基准有对应收盘点位，避免整条指数线被丢弃
 function resolveBaselineDate(navFirstDate, indexMap) {
@@ -352,50 +324,6 @@ function resolveBaselineDate(navFirstDate, indexMap) {
     if (indexMap[ds] != null) return ds;
   }
   return null;
-}
-
-// 刷新行情时同步指数收盘点位快照（对齐股票每日价格逻辑）
-// 一次拉取较长区间补齐历史交易日，使对比曲线按交易日连续、平滑
-// 拉取后增量写入独立 index_history 表（消除 JSON 读写放大），内存 data.indexHistory 仅作图表数据源
-async function syncIndexPoints() {
-  try {
-    if (!data.indexHistory) data.indexHistory = [];
-    const firstNavDate = (data.navHistory && data.navHistory.length) ? data.navHistory[0].date : null;
-    // 增量起点：本地已有历史的最新日期；本地为空（首次）才从净值首日全量补齐
-    let latestDate = null;
-    for (const h of data.indexHistory) { if (!latestDate || h.date > latestDate) latestDate = h.date; }
-    const baseDate = latestDate || firstNavDate;
-    // 首次拉全量；之后只拉「最新日期 → 今天」+ 容错 buffer（几天），不再每次从头拉
-    const days = baseDate ? Math.max(latestDate ? 5 : 250, daysBetween(baseDate)) : 250;
-    const names = Object.keys(INDEX_SECID);
-    const results = await Promise.all(names.map(function (n) {
-      return fetchIndexKline(INDEX_SECID[n], days + 5);
-    }));
-    var byDate = {};
-    data.indexHistory.forEach(function (h) { byDate[h.date] = h; });
-    names.forEach(function (n, i) {
-      (results[i] || []).forEach(function (pt) {
-        if (!byDate[pt.date]) byDate[pt.date] = { date: pt.date };
-        byDate[pt.date][n] = pt.close;
-      });
-    });
-    data.indexHistory = Object.keys(byDate).sort().map(function (d) { return byDate[d]; });
-    // 增量写入独立表：只发送「本地最新日期之后」的新增点，不再每次全量重传
-    try {
-      const points = [];
-      data.indexHistory.forEach(function (h) {
-        if (latestDate && h.date <= latestDate) return;
-        names.forEach(function (n) { if (h[n] != null) points.push({ date: h.date, name: n, close: h[n] }); });
-      });
-      if (points.length > 0) {
-        await fetch(api('/api/index-history'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account: currentAccount, points: points })
-        });
-      }
-    } catch (e) { /* 指数入库失败不影响主流程 */ }
-  } catch (e) { /* 指数快照失败不影响主流程 */ }
 }
 
 // 从指定日期往前（含当天）找第一个有值的交易日收盘，用于把指数对齐到净值（可能落在周末）的日期
@@ -418,21 +346,6 @@ function getIndexSeries(name, navData) {
   var baseDate = resolveBaselineDate(navData[0].date, map);
   if (baseDate == null) return null;
   var firstClose = map[baseDate];
-  return navData.map(function (d) {
-    var v = carryBackward(map, d.date);
-    return { date: d.date, val: v == null ? null : v / firstClose };
-  });
-}
-
-// 实时 kline 兜底归一化（修复：基准用净值第一天对应点位，而非拉取区间第一天）
-function normalizeIndexData(indexData, navData) {
-  if (indexData.length === 0 || navData.length === 0) return [];
-  const map = {};
-  indexData.forEach(function (d) { map[d.date] = d.close; });
-  // 基准日：净值首日若为非交易日(周末/节假日)，回退到最近的前一个交易日(含该周周五)
-  const baseDate = resolveBaselineDate(navData[0].date, map);
-  if (baseDate == null) return [];
-  const firstClose = map[baseDate];
   return navData.map(function (d) {
     var v = carryBackward(map, d.date);
     return { date: d.date, val: v == null ? null : v / firstClose };
@@ -513,26 +426,11 @@ async function renderNavVsIndexChart(canvasId, opts) {
     return navBaseVal !== 0 ? +(Number(d.nav || 1) / navBaseVal).toFixed(4) : null;
   });
 
-  // 指数序列：优先本地快照（按交易日连续、平滑），缺失时实时拉取兜底
+  // 指数序列只使用本地快照；缺失时等待后台 index_recent 任务补齐，不在页面请求时访问外部源。
   var hs300Data = getIndexSeries('沪深300', navData) || [];
   var shData = getIndexSeries('上证指数', navData) || [];
   var zzData = getIndexSeries('中证500', navData) || [];
   var hsidata = getIndexSeries('恒生指数', navData) || [];
-  if (!hs300Data.length || !shData.length || !zzData.length || !hsidata.length) {
-    try {
-      const days = period > 0 ? period : Math.max(250, daysBetween(navData[0].date));
-      const results = await Promise.all([
-        fetchIndexKline(INDEX_SECID['沪深300'], days + 30),
-        fetchIndexKline(INDEX_SECID['上证指数'], days + 30),
-        fetchIndexKline(INDEX_SECID['中证500'], days + 30),
-        fetchIndexKline(INDEX_SECID['恒生指数'], days + 30)
-      ]);
-      if (!hs300Data.length) hs300Data = normalizeIndexData(results[0], navData);
-      if (!shData.length) shData = normalizeIndexData(results[1], navData);
-      if (!zzData.length) zzData = normalizeIndexData(results[2], navData);
-      if (!hsidata.length) hsidata = normalizeIndexData(results[3], navData);
-    } catch (e) { /* 指数数据加载失败不阻塞 */ }
-  }
 
   var datasets = [{
     label: '持仓净值',

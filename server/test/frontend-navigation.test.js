@@ -53,6 +53,13 @@ ok(html.includes('ACCESS_POLICY.isPublic(requestedMain)'), 'URL 解析应改用 
 ok(!/var publicMain/.test(html), 'index.html 不应再保留独立 publicMain 变量');
 ok(!/publicMain\.includes/.test(html), 'index.html 不应再引用 publicMain');
 
+// 可转债子页初始化必须只加载当前 URL 对应的子页，避免上市列表首开重复请求安全性整表。
+ok(nav.includes('if (typeof initBondCycleSub === \'function\') initBondCycleSub();') &&
+  !nav.includes('{ loadBondSafety(); if (typeof initBondCycleSub'),
+  '进入可转债列表时不得额外加载安全性列表');
+ok(html.includes('initBondCycleSub 已按当前 URL 恢复可转债子页') && !html.includes('switchBondSub(requestedSub);'),
+  '初始化后不得再次重复加载可转债子页');
+
 // 4) 所有导航入口（data-main）与页面容器（#main-）都必须在 allowedPages 中
 const navMains = [];
 const navRe = /data-main="([^"]+)"/g;

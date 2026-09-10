@@ -104,7 +104,9 @@ check('前端含上市转债子页、脚本和只读接口', () => {
   ['最快回售触发日', '最快回售剩余年限', '预期回售到账日', '回售到账税前收益', '回售到账税后收益'].forEach(function(title) {
     assert.ok(!js.includes("'" + title + "'"), '列表仍展示已取消列：' + title);
   });
-  assert.ok(js.includes('BOND_LIST_REFRESH_MS') && js.includes('refresh=1') && js.includes('setInterval'), '列表缺少15分钟自动刷新');
+  assert.ok(js.includes('BOND_LIST_REFRESH_MS') && js.includes('refresh=1') && js.includes('setInterval'), '列表缺少15分钟快照重读和手动行情刷新');
+  assert.ok(js.includes('loadBondList(false)'), '列表定时器必须只重读数据库快照');
+  assert.ok(!js.includes('if (!bondListState.loaded) forceRefresh = true'), '列表首开不得强制刷新外部行情');
   assert.ok(js.includes('bondListRefresh'), '列表缺少手动刷新函数');
   assert.ok(js.includes('bond-list-up') && js.includes('bond-list-down'), '涨跌幅缺少红涨绿跌样式');
   assert.ok(js.includes('biz-sort-indicator') && js.includes('aria-sort="'), '列表表头缺少正逆序标识或排序状态');

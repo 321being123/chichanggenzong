@@ -337,7 +337,7 @@ router.post('/api/excel-history-parse', requireLogin, rateLimit({ prefix: 'ai', 
   }
 }));
 
-// ========== 指数历史点增量写入（前端 syncIndexPoints 调用） ==========
+// ========== 指数历史点增量写入（兼容旧客户端；当前由 Worker 维护） ==========
 router.post('/api/index-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
     const { account, points } = req.body;

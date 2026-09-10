@@ -100,17 +100,16 @@ function bondListStartAutoRefresh() {
   if (bondListState.refreshTimer) return;
   bondListState.refreshTimer = setInterval(function() {
     var page = document.getElementById('sub-bond-list');
-    if (page && !page.hidden) loadBondList(true);
+    // 定时器只重新读取数据库快照；腾讯实时行情仅由用户点击“刷新行情”主动触发。
+    if (page && !page.hidden) loadBondList(false);
   }, BOND_LIST_REFRESH_MS);
 }
 function bondListRefresh() { loadBondList(true); }
 async function loadBondList(forceRefresh) {
   forceRefresh = Boolean(forceRefresh);
-  if (!bondListState.loaded) forceRefresh = true;
   if (bondListState.loading) return;
-  if (!forceRefresh && bondListState.loaded) {
+  if (!forceRefresh && bondListState.loaded && Date.now() - bondListState.lastRefreshAt < BOND_LIST_REFRESH_MS) {
     bondListApplyFilters();
-    if (Date.now() - bondListState.lastRefreshAt >= BOND_LIST_REFRESH_MS) loadBondList(true);
     return;
   }
   bondListState.loading = true;

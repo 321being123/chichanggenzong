@@ -40,7 +40,11 @@ function switchMain(main, noPushState) {
   if (main === 'profile') loadProfile();
   if (main === 'changelog') loadChangelogPage();
   if (main === 'ipo') loadIpo();
-  if (main === 'bond-safety') { loadBondSafety(); if (typeof initBondCycleSub === 'function') initBondCycleSub(); }
+  if (main === 'bond-safety') {
+    // initBondCycleSub 会按 URL 子页只加载当前内容，避免进入上市列表时额外加载整张安全性表。
+    if (typeof initBondCycleSub === 'function') initBondCycleSub();
+    else loadBondSafety();
+  }
   if (main === 'stock-analysis') loadStockAnalysis();
   if (main === 'market-volatility') loadMarketVolatility();
   if (main === 'arbitrage') loadArbitrage();

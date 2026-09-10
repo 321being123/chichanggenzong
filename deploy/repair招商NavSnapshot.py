@@ -31,7 +31,7 @@ BEGIN
   SELECT COUNT(*) INTO trade_count
    FROM trades
    WHERE account_name = '招商证券账户'
-     AND code = '000152'
+     AND code IN ('000152', '00152')
      AND COALESCE(trade_date, left(date, 10)) = '2026-08-12'
      AND name = '深圳国际';
   IF trade_count <> 1 THEN
@@ -64,7 +64,7 @@ BEGIN
     JOIN nav_position_snapshots good
       ON good.snapshot_id = bad.snapshot_id AND good.instrument_code = '00152'
    WHERE bad.account_name = '招商证券账户' AND bad.instrument_code = '000152';
-  IF bad_count <> 4 OR good_count <> bad_count THEN
+  IF bad_count NOT IN (0, 4) OR (bad_count = 4 AND good_count <> bad_count) THEN
     RAISE EXCEPTION '招商证券历史持仓快照重复关系异常: bad=% good=%', bad_count, good_count;
   END IF;
 END $$;
@@ -86,7 +86,7 @@ UPDATE trades t
      LIMIT 1
   ) fx
  WHERE t.account_name = '招商证券账户'
-   AND t.code = '000152'
+   AND t.code IN ('000152', '00152')
    AND COALESCE(t.trade_date, left(t.date, 10)) = '2026-08-12'
    AND t.name = '深圳国际';
 

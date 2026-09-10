@@ -316,18 +316,25 @@ def normalize_stored_details(cur, today, target_date=None):
     return {"updated": updated}
 
 
-def enrich_stock_missing_details(cur, today, limit=10):
-    """定点补全历史新股详情；不依赖 new_share 的待发行列表。"""
+def enrich_stock_missing_details(cur, today, limit=8, target_date=None, retry_same_day=False):
+    """发行阶段优先补全新股资料，剩余名额再处理历史缺口。"""
     today_text = today.isoformat()
+    target_text = target_date.isoformat() if hasattr(target_date, "isoformat") else ""
     cur.execute("""
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry
         FROM ipo_history
-       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+         AND ipo_date >= (%s::date - INTERVAL '730 days')::text
+         AND ipo_date <= (%s::date + INTERVAL '30 days')::text
          AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
-              OR business_exposure = '{}'::jsonb)
-         AND COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s
-       ORDER BY ipo_date DESC,security_code LIMIT %s
-    """, (today_text, today_text, int(limit)))
+              OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
+              OR NOT (business_exposure ? 'exposures'))
+         AND (%s::boolean OR COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s)
+       ORDER BY CASE WHEN ipo_date=%s THEN 0
+                     WHEN ipo_date > %s THEN 1 ELSE 2 END,
+                CASE WHEN ipo_date >= %s THEN ipo_date END ASC NULLS LAST,
+                ipo_date DESC,security_code LIMIT %s
+    """, (today_text, today_text, retry_same_day, today_text, target_text, today_text, today_text, int(limit)))
     candidates = cur.fetchall()
     if not candidates:
         return {"attempted": 0, "updated": 0, "failed": 0, "remaining": 0}
@@ -373,10 +380,13 @@ def enrich_stock_missing_details(cur, today, limit=10):
 
     cur.execute("""
       SELECT count(*) FROM ipo_history
-       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+         AND ipo_date >= (%s::date - INTERVAL '730 days')::text
+         AND ipo_date <= (%s::date + INTERVAL '30 days')::text
          AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL OR NULLIF(main_business,'') IS NULL
-              OR business_exposure = '{}'::jsonb)
-    """, (today_text,))
+              OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
+              OR NOT (business_exposure ? 'exposures'))
+    """, (today_text, today_text))
     remaining = int(cur.fetchone()[0] or 0)
     return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining}
 
@@ -384,26 +394,31 @@ def enrich_stock_missing_details(cur, today, limit=10):
 def update_quality(cur, today):
     cur.execute("""
       SELECT security_code,ipo_date,listing_date,issue_price,total_shares,online_shares,
-             online_lottery_rate,subscribe_upper_limit,fund_raised,circulation_mv,
-             issue_pe,issue_pe_status,industry,industry_pe,main_business,ld_close_change,
+             online_lottery_rate,oversubscribe_multiple,subscribe_upper_limit,fund_raised,circulation_mv,
+             issue_pe,issue_pe_status,industry,industry_pe,main_business,business_exposure,ld_close_change,
              COALESCE(data_quality_status,'{}'::jsonb)
         FROM ipo_history
-       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ipo_date <= %s
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+         AND ipo_date <= (%s::date + INTERVAL '30 days')::text
          AND ipo_date >= %s
     """, (today.isoformat(), (today - timedelta(days=730)).isoformat()))
     missing_records = 0
     missing_fields = 0
     for row in cur.fetchall():
         values = dict(zip(("security_code", "ipo_date", "listing_date", "issue_price", "total_shares",
-                           "online_shares", "online_lottery_rate", "subscribe_upper_limit", "fund_raised",
+                           "online_shares", "online_lottery_rate", "oversubscribe_multiple",
+                           "subscribe_upper_limit", "fund_raised",
                            "circulation_mv", "issue_pe", "issue_pe_status", "industry", "industry_pe",
-                           "main_business", "ld_close_change", "prior_status"), row))
+                           "main_business", "business_exposure", "ld_close_change", "prior_status"), row))
         missing = [field for field in QUALITY_BASE_FIELDS if values.get(field) in (None, "")]
         if values.get("issue_pe") in (None, "") and values.get("issue_pe_status") != "loss":
             missing.append("issue_pe")
         for field in QUALITY_DETAIL_FIELDS:
             if values.get(field) in (None, ""):
                 missing.append(field)
+        exposure = values.get("business_exposure")
+        if not isinstance(exposure, dict) or not exposure.get("exposures"):
+            missing.append("business_exposure")
         listing_text = str(values.get("listing_date") or "")[:10]
         valid_listing = (
             len(listing_text) == 10 and listing_text[4] == "-" and listing_text[7] == "-"
@@ -413,7 +428,7 @@ def update_quality(cur, today):
         pending = []
         if not listed:
             pending.append("listing_date")
-            for field in QUALITY_DETAIL_FIELDS:
+            for field in ("online_lottery_rate", "oversubscribe_multiple"):
                 if values.get(field) in (None, ""):
                     pending.append(field)
             missing = [field for field in missing if field not in pending]
@@ -503,7 +518,7 @@ def publication_quality(cur, records, today, run_id):
     source_apply = {row["security_code"] for row in records if row.get("ipo_date") == target_date}
     source_listing = {row["security_code"] for row in records if row.get("listing_date") == target_date}
     cur.execute(
-        """SELECT security_code,security_name,ipo_date,listing_date
+        """SELECT security_code,security_name,ipo_date,listing_date,industry,main_business,business_exposure
              FROM ipo_history
             WHERE market_code='CN' AND (ipo_date=%s OR listing_date=%s)""",
         (target_date, target_date),
@@ -512,6 +527,15 @@ def publication_quality(cur, records, today, run_id):
     db_apply = {row[0] for row in db_rows if row[2] == target_date}
     db_listing = {row[0] for row in db_rows if row[3] == target_date}
     missing_identity = sorted({row[0] for row in db_rows if not row[0] or not str(row[1] or "").strip()})
+    missing_issuance_detail = sorted(
+        row[0] for row in db_rows
+        if row[2] == target_date and (
+            not str(row[4] or '').strip()
+            or not str(row[5] or '').strip()
+            or not isinstance(row[6], dict)
+            or not row[6].get('exposures')
+        )
+    )
     source_with_listing = {row["security_code"] for row in records if row.get("listing_date")}
     if source_with_listing:
         cur.execute(
@@ -540,6 +564,8 @@ def publication_quality(cur, records, today, run_id):
         errors.append(f"上游已有上市日但事实表仍为空：{unpersisted_listing}")
     if missing_identity:
         errors.append(f"目标日证券缺代码或名称：{missing_identity}")
+    if missing_issuance_detail:
+        errors.append(f"目标日新股发行资料未补全（行业/主营业务/业务赛道）：{missing_issuance_detail}")
     if errors:
         raise RuntimeError("IPO事实质量门禁失败：" + "；".join(errors))
     return {
@@ -557,6 +583,29 @@ def publication_quality(cur, records, today, run_id):
     }
 
 
+def _refresh_new_share_snapshot(cur, today):
+    """晚间先刷新一次 new_share，覆盖 Tushare 19 点后的发行公告变更。"""
+    start, end, _ = sync_window(cur, today)
+    fields = "ts_code,sub_code,name,ipo_date,issue_date,amount,market_amount,price,pe,limit_amount,funds,ballot"
+    raw_rows = tushare_query(
+        "new_share",
+        {"start_date": start.strftime("%Y%m%d"), "end_date": end.strftime("%Y%m%d")},
+        fields,
+    )
+    if not raw_rows:
+        return {"fetched": 0, "inserted": 0, "refreshed": 0, "verified_empty": True}
+    records = [normalize_share(row) for row in raw_rows]
+    codes = [row["security_code"] for row in records]
+    if len(codes) != len(set(codes)):
+        raise RuntimeError("晚间 new_share 返回重复证券代码")
+    inserted, refreshed = upsert_shares(cur, records, today)
+    mark_cursor(cur, today)
+    return {
+        "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
+        "window_start": start.isoformat(), "window_end": end.isoformat(),
+    }
+
+
 def run(today=None, mode="core"):
     today = today or date.today()
     connection = pg_connect()
@@ -564,13 +613,15 @@ def run(today=None, mode="core"):
     try:
         if mode == "enrichment":
             with connection.cursor() as cur:
+                refreshed_snapshot = _refresh_new_share_snapshot(cur, today)
                 normalized = normalize_stored_details(cur, today)
                 first_day = backfill_first_day(cur, datetime.now())
-                enrichment = enrich_stock_missing_details(cur, today)
+                enrichment = enrich_stock_missing_details(cur, today, limit=8, retry_same_day=True)
                 quality = update_quality(cur, today)
             connection.commit()
             return {
                 "ok": True, "mode": "enrichment", "dataAsOf": today.isoformat(),
+                "refreshed_snapshot": refreshed_snapshot,
                 "normalization": normalized,
                 "first_day": first_day, "enrichment": enrichment, "quality": quality,
                 "publishDatasets": False,
@@ -594,6 +645,9 @@ def run(today=None, mode="core"):
         with connection.cursor() as cur:
             inserted, refreshed = upsert_shares(cur, records, today)
             normalization = normalize_stored_details(cur, today)
+            issuance_enrichment = enrich_stock_missing_details(
+                cur, today, limit=8, target_date=next_trade_date(cur, today)
+            )
             quality = update_quality(cur, today)
             dataset_diagnostics = publication_quality(cur, records, today, run_id)
             mark_cursor(cur, today)
@@ -604,6 +658,7 @@ def run(today=None, mode="core"):
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
             "normalization": normalization,
+            "issuance_enrichment": issuance_enrichment,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),
             "quality": quality, "calendar_diff": 0, "dataAsOf": today.isoformat(),
             "datasetDiagnostics": {"ipo_history": dataset_diagnostics},

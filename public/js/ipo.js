@@ -166,7 +166,12 @@ function ipoPctCell(val, decimals) {
 
 // 新股历史预测涨幅：有预测且有证券代码时，点击进入该股票的打新详情。
 function ipoStockPredictionCell(it) {
+  var context = it && it.prediction_context && typeof it.prediction_context === 'object' ? it.prediction_context : {};
   var cell = it.has_prediction ? ipoPctCell(it.pred_return) : '无历史预测';
+  if (it.has_prediction && context.prediction_range_low != null && context.prediction_range_high != null) {
+    cell += '<br><small style="color:#777;white-space:nowrap;">区间 ' +
+      escapeHtml(String(context.prediction_range_low) + '%～' + String(context.prediction_range_high) + '%') + '</small>';
+  }
   if (!it.has_prediction || !it.security_code) return cell;
   return '<a href="ipo-report.html?code=' + encodeURIComponent(it.security_code) +
     '" target="_blank" rel="noopener" style="color:#1a73e8;text-decoration:none;white-space:nowrap;" title="查看打新详情">' +

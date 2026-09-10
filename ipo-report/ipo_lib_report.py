@@ -184,7 +184,7 @@ def build_report(target_date):
     # 4. 生成估值建议（只在有对应类型时计算）
     # 新股上市预测必须使用 XGBoost。模型或依赖不可用时中止生成，
     # 防止静默写入板块规则模型的结果而页面无法察觉。
-    if any(stock.get("has_detail") for stock in target_list_stocks) and not _load_xgb_model():
+    if any(stock.get("has_detail") for stock in target_apply_stocks + target_list_stocks) and not _load_xgb_model():
         raise RuntimeError("新股 XGBoost 模型不可用，已中止生成日报；请检查 %s 下的模型文件及 xgboost 依赖" % get_model_dir())
 
     for stock in target_apply_stocks:
@@ -192,6 +192,10 @@ def build_report(target_date):
             d = stock["detail"]
             stock["advice"], stock["reason"] = get_valuation_advice(
                 "stock", d.get("issue_pe"), d.get("industry_pe"), stock_detail=d
+            )
+            stock["listing_analysis"] = get_listing_analysis(
+                "stock", d.get("issue_price"), d.get("issue_pe"), d.get("industry_pe"),
+                stock_detail=d, prediction_stage="issuance"
             )
 
     for bond in target_apply_bonds:
@@ -364,6 +368,9 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     lines.append(f"#### {s['name']}（{s['code']}）")
                     lines.append(f"- **申购建议**：{s.get('advice', '待评估')}")
                     lines.append(f"- **分析理由**：{s.get('reason', '待分析')}")
+                    analysis = s.get("listing_analysis", {})
+                    if isinstance(analysis, dict) and analysis.get("summary"):
+                        lines.append(f"- **可能涨幅**：{analysis['summary']}")
                     sector_label = _stock_sector_display(d)
                     lines.append(f"- **所属行业**：{d.get('industry') or '待补全'}")
                     lines.append(f"- **业务赛道**：{sector_label}")
@@ -375,6 +382,9 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                         lines.append(f"- **发行市盈率**：{d['issue_pe']}")
                     if d.get("fund_raised"):
                         lines.append(f"- **募集资金**：{d['fund_raised']}亿元")
+                    pending = (analysis.get("prediction_context") or {}).get("result_fields_pending", []) if isinstance(analysis, dict) else []
+                    if pending:
+                        lines.append(f"- **待公布数据**：{ '、'.join(pending) }（已用发行阶段模型估算）")
                     lines.append("")
 
         # 新债申购
@@ -635,6 +645,12 @@ def generate_html(md_content, data):
                     d = s["detail"]
                     html += f'<div class="stock-item"><h4>{s["name"]}（{s["code"]}）</h4>'
                     html += f'<p><strong>建议：</strong>{s.get("advice","待评估")} — {s.get("reason","")}</p>'
+                    analysis = s.get("listing_analysis", {})
+                    if isinstance(analysis, dict) and analysis.get("summary"):
+                        html += f'<p><strong>可能涨幅：</strong>{analysis["summary"]}</p>'
+                    pending = (analysis.get("prediction_context") or {}).get("result_fields_pending", []) if isinstance(analysis, dict) else []
+                    if pending:
+                        html += f'<p><strong>待公布数据：</strong>{"、".join(pending)}（已用发行阶段模型估算）</p>'
                     if d.get("main_business"):
                         html += f'<p><strong>主营业务：</strong>{d["main_business"]}</p>'
                     html += '</div>\n'

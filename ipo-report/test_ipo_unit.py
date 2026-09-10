@@ -298,6 +298,20 @@ try:
         "circulation_mv": 5,
     })
     check("XGBoost可完成新股预测", model_prediction is not None)
+    issuance_prediction = _val.get_listing_analysis(
+        "stock", 20, 30, 35,
+        stock_detail={
+            "stock_code": "688001", "stock_name": "发行阶段测试股",
+            "issue_price": 20, "issue_pe": 30, "industry_pe": 35,
+            "industry": "专用设备", "main_business": "高端装备研发与生产",
+        },
+        prediction_stage="issuance",
+    )
+    check("申购阶段生成可能涨幅", issuance_prediction.get("prediction_stage") == "issuance"
+          and issuance_prediction.get("predicted_return") is not None)
+    check("结果未公布时输出可能区间", issuance_prediction.get("prediction_range_low") is not None
+          and issuance_prediction.get("prediction_range_high") is not None
+          and "online_lottery_rate" in issuance_prediction.get("prediction_context", {}).get("result_fields_pending", []))
     summary_125 = _val._format_listing_summary(
         125,
         {"stock_code": "301668", "issue_price": 84.46},

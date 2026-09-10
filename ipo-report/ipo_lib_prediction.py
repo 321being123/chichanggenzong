@@ -89,7 +89,8 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
             if pred_price is None:
                 pred_price = _price_from_return((s.get("detail") or {}).get("issue_price"), pred_return)
         advice = s.get("advice", "")
-        listing_date = pred_date
+        detail = s.get("detail") if isinstance(s.get("detail"), dict) else {}
+        listing_date = detail.get("list_date") or detail.get("listing_date") or pred_date
         context = analysis.get("prediction_context") if isinstance(analysis, dict) else None
 
         rows.append(("stock", s["code"], s["name"], listing_date,

@@ -21,7 +21,10 @@ assert.match(source, /COALESCE\(EXCLUDED\.issue_price,old\.issue_price\)/, '空�
 assert.match(source, /first_day_retry_count,0\) < 3/, '首日涨幅补偿未限制为 3 次');
 assert.match(source, /def enrich_stock_missing_details\(/, '缺失详情没有定点补全函数');
 assert.match(source, /historical_enrichment/, '详情补全未保留来源记录');
+assert.match(source, /def _refresh_new_share_snapshot\(/, '晚间阶段没有重新刷新发行公告');
+assert.match(source, /retry_same_day=True/, '晚间阶段没有允许同日重试发行资料');
 assert.match(source, /pending_not_due/, '数据质量未区分尚未到期字段');
+assert.match(source, /business_exposure/, '发行阶段质量没有覆盖业务赛道');
 assert.match(source, /"quality_status": "passed"/, 'IPO事实分区缺少质量通过状态');
 assert.match(source, /"target_date": target_date/, 'IPO事实分区缺少目标日期');
 assert.match(source, /"security_set_hash": security_set_hash/, 'IPO事实分区缺少证券集合哈希');
@@ -34,7 +37,10 @@ assert.match(routeSource, /history_stage/, '新股历史没有阶段字段');
 assert.match(routeSource, /field_status/, '新股历史没有字段质量状态');
 assert.match(routeSource, /loadStockCalendar\(days\)/, '打新日历没有读取历史事实表');
 assert.match(routeSource, /h\.ipo_date <= to_char\(\(timezone\('Asia\/Shanghai', now\(\)\)\)::date/, '新股历史仍只按上市日过滤');
-assert.match(routeSource, /'industry'.*pending/s, '未上市新股行业字段未标记待补全');
+assert.match(routeSource, /'industry', CASE WHEN[\s\S]*ipo_date[\s\S]*'missing'/, '发行阶段行业缺失没有标记为待补全资料');
+assert.match(routeSource, /buildCnStockLiveReport/, '个股详情没有实时读取已入库发行资料');
+assert.match(routeSource, /尚未公布数据/, '个股详情没有区分发行结果待公布字段');
+assert.match(routeSource, /'oversubscribe_multiple'/, '新股历史没有超额认购倍数状态字段');
 assert.match(routeSource, /security_name_cn/, '港股历史没有中文名称字段');
 assert.match(routeSource, /actual_return/, '港股历史没有实际涨幅字段');
 assert.match(routeSource, /lot_profit/, '港股历史没有单签收益字段');
@@ -113,6 +119,8 @@ assert.match(bondRefreshSource, /ipo-report.*venv.*bin.*python/, '估值任务�
 
 const reportSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_report.py'), 'utf8');
 assert.match(reportSource, /所属行业/, '新股日报详情未展示所属行业');
+assert.match(reportSource, /prediction_stage="issuance"/, '申购阶段没有生成可能涨幅预测');
+assert.match(reportSource, /result_fields_pending/, '申购阶段没有标记尚未公布的结果字段');
 assert.match(reportSource, /ipo_date=COALESCE\(\?, ipo_date\)/, '日报详情保存仍遗漏 ipo_date');
 assert.match(reportSource, /def reconcile_report_calendar_sets\(/, '日报发布前缺少日历证券集合对账');
 assert.match(reportSource, /拒绝发布并保留上一份有效结果/, '集合不一致时没有拒绝覆盖旧日报');

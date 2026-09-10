@@ -86,8 +86,10 @@ assert.deepStrictEqual(ipoReport.dependencyCodes, ['ipo_history_sync', 'converti
 assert.ok(ipoReport.datasetDependencies.some(item => item.datasetCode === 'ipo_history' && item.requireQualityStatus === 'passed')
   && ipoReport.datasetDependencies.some(item => item.datasetCode === 'bond_issuance_events' && item.requireQualityStatus === 'passed'),
   '打新日报必须依赖当天通过质量门禁的新股和新债事实分区');
+assert.ok(ipoReport.additionalSchedules.some(item => item.mode === 'enrichment' && item.hour === 19 && item.minute === 45),
+  '打新日报必须在晚间资料补全后刷新发行阶段预测');
 assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
-assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 3, 'IPO核心事实阶段必须允许一次失败后的重试');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 15, 'IPO核心事实阶段必须覆盖发行资料补全');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 15, 'IPO晚间补全必须使用独立调用预算');
 assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');
 assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, 10, '指数补齐上限必须覆盖双账户五指数完整一轮');
@@ -352,7 +354,8 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
           WHERE job_code='ipo_calendar_refresh' AND scheduled_for >= $1 AND scheduled_for < $2`,
         [catchupStart, catchupEnd]
       );
-      assert.strictEqual(latestOnlyRows.rows[0].count, 1, 'latest_only 补跑窗口缺失多天时只能生成一个实例');
+      assert.strictEqual(latestOnlyRows.rows[0].count, 1 + ipoReport.additionalSchedules.length,
+        'latest_only 补跑窗口按每个已声明时段各生成一个实例');
     } finally {
       const testSlots = await pool.query(
         `SELECT slot_id FROM ops.job_schedule_slots WHERE scheduled_for >= $1 AND scheduled_for < $2`,

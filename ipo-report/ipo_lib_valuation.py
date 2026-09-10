@@ -574,7 +574,7 @@ def _load_xgb_model():
         print(f"[XGBoost] 模型加载失败: {e}")
         return False
 
-def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0):
+def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, prediction_stage="listing"):
     """
     用XGBoost模型预测首日涨幅
     返回 (estimated, detail_parts) 或 None
@@ -586,10 +586,12 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0):
         return None
 
     try:
+        imputed_fields = []
         # 构建特征向量
         def get_val(key, default=np.nan):
             v = stock_detail.get(key)
             if v is None:
+                imputed_fields.append(key)
                 v = _XGB_MEDIAN_VALS.get(key, default)
             try:
                 return float(v) if v is not None else default
@@ -647,17 +649,19 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0):
         if xgb_boost != 1.0:
             old_est = estimated
             estimated = int(round(estimated * xgb_boost))
+            lottery_text = f"{lr}%" if "online_lottery_rate" not in imputed_fields else "待结果公告"
             detail_parts = [
                 f"📊 预估首日涨幅: {estimated}%（🤖 XGBoost模型，校准系数×{xgb_boost}）",
-                f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lr}% 流通{cmv:.1f}亿",
+                f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lottery_text} 流通{cmv:.1f}亿",
             ]
         else:
+            lottery_text = f"{lr}%" if "online_lottery_rate" not in imputed_fields else "待结果公告"
             detail_parts = [
                 f"📊 预估首日涨幅: {estimated}%（🤖 XGBoost模型）",
-                f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lr}% 流通{cmv:.1f}亿",
+                f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lottery_text} 流通{cmv:.1f}亿",
             ]
 
-        return estimated, detail_parts, _XGB_TRAINED_AT
+        return estimated, detail_parts, _XGB_TRAINED_AT, sorted(set(imputed_fields))
     except Exception as e:
         print(f"[XGBoost] 预测失败: {e}")
         return None
@@ -708,7 +712,35 @@ def _format_listing_summary(estimated, stock_detail, temp):
     else:
         return f"预计首日涨幅{part}"
 
-def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_detail=None, stock_detail=None):
+
+def _prediction_range(estimated, prediction_stage, imputed_fields=None):
+    """根据模型样本外误差给出研究区间；结果未公布时自动扩大不确定性。"""
+    info = _XGB_FEATURE_INFO or {}
+    try:
+        test_mae = float(info.get("test_mae"))
+    except (TypeError, ValueError):
+        test_mae = 0.0
+    width = max(60.0, min(250.0, test_mae * 0.6 if test_mae > 0 else 90.0))
+    if prediction_stage == "issuance" and imputed_fields:
+        width *= 1.15
+    low = max(0, int(round(float(estimated) - width)))
+    high = int(round(float(estimated) + width))
+    return low, high
+
+
+def _prediction_stage_label(prediction_stage):
+    return {
+        "issuance": "发行公告版",
+        "result": "发行结果版",
+        "listing": "上市前版",
+    }.get(prediction_stage, "研究估算")
+
+
+def _summary_with_prediction_range(summary, low, high, prediction_stage):
+    return f"{summary}，可能区间{low}%～{high}%（{_prediction_stage_label(prediction_stage)}）"
+
+def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_detail=None, stock_detail=None,
+                         prediction_stage="listing"):
     """上市首日表现预估（2025-2026年零破发环境适配版）"""
     if item_type == "bond":
         if bond_detail:
@@ -758,14 +790,15 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     temp = _MARKET_TEMP["level"]
 
     # 尝试XGBoost预测
-    xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
+    xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost, prediction_stage)
     # 自动纠正：XGB对极端样本（如超大盘股）偶发输出<=0%，强制重加载模型重试一次；
     # 若重试仍异常或不可用，则落入下方线性模型兜底（不会写出误导性的0%）
     if xgb_result is not None and xgb_result[0] <= 0:
         _XGB_MODEL = None
-        xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost)
+        xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost, prediction_stage)
     if xgb_result is not None and xgb_result[0] > 0:
         estimated, detail_parts, trained_at = (xgb_result[0], xgb_result[1], xgb_result[2] if len(xgb_result) > 2 else None)
+        imputed_fields = xgb_result[3] if len(xgb_result) > 3 else []
         base_estimated = estimated
         # 叠加赛道热度修正：系数已由历史相对中位数和样本权重收缩，且有上下限。
         if sector_label:
@@ -786,7 +819,11 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         if trained_at:
             detail_parts.append(f"🕐 XGBoost模型更新: {trained_at}")
 
-        summary = _format_listing_summary(estimated, stock_detail, temp)
+        prediction_low, prediction_high = _prediction_range(estimated, prediction_stage, imputed_fields)
+        summary = _summary_with_prediction_range(
+            _format_listing_summary(estimated, stock_detail, temp),
+            prediction_low, prediction_high, prediction_stage,
+        )
 
         base_with_temp = int(round(base_estimated * temp_mult))
         return {
@@ -798,7 +835,20 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             "sector_adjustment_pp": estimated - base_with_temp,
             "sector_multiplier": sector_boost if sector_label else 1.0,
             "sector_confidence": sector_context.get("confidence", 0.0),
+            "prediction_stage": prediction_stage,
+            "prediction_stage_label": _prediction_stage_label(prediction_stage),
+            "prediction_range_low": prediction_low,
+            "prediction_range_high": prediction_high,
             "prediction_context": {
+                "prediction_stage": prediction_stage,
+                "prediction_stage_label": _prediction_stage_label(prediction_stage),
+                "prediction_range_low": prediction_low,
+                "prediction_range_high": prediction_high,
+                "model_imputed_fields": imputed_fields,
+                "result_fields_pending": [
+                    field for field in ("online_lottery_rate", "oversubscribe_multiple")
+                    if stock_detail.get(field) in (None, "")
+                ],
                 "sector_label": sector_label,
                 "sector_multiplier": sector_boost if sector_label else 1.0,
                 "sector_confidence": sector_context.get("confidence", 0.0),
@@ -875,7 +925,15 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     base_with_temp = int(round(base_estimated * temp_mult))
 
     # 生成预测文本
-    summary = _format_listing_summary(estimated, stock_detail, temp)
+    prediction_low, prediction_high = _prediction_range(
+        estimated, prediction_stage,
+        [field for field in ("online_lottery_rate", "oversubscribe_multiple")
+         if stock_detail.get(field) in (None, "")],
+    )
+    summary = _summary_with_prediction_range(
+        _format_listing_summary(estimated, stock_detail, temp),
+        prediction_low, prediction_high, prediction_stage,
+    )
 
     detail_parts = []
     detail_parts.append(f"📊 预估首日涨幅: {estimated}%")
@@ -910,7 +968,23 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         "sector_adjustment_pp": estimated - base_with_temp,
         "sector_multiplier": sector_boost if sector_label else 1.0,
         "sector_confidence": sector_context.get("confidence", 0.0),
+        "prediction_stage": prediction_stage,
+        "prediction_stage_label": _prediction_stage_label(prediction_stage),
+        "prediction_range_low": prediction_low,
+        "prediction_range_high": prediction_high,
         "prediction_context": {
+            "prediction_stage": prediction_stage,
+            "prediction_stage_label": _prediction_stage_label(prediction_stage),
+            "prediction_range_low": prediction_low,
+            "prediction_range_high": prediction_high,
+            "model_imputed_fields": [
+                field for field in ("online_lottery_rate", "oversubscribe_multiple")
+                if stock_detail.get(field) in (None, "")
+            ],
+            "result_fields_pending": [
+                field for field in ("online_lottery_rate", "oversubscribe_multiple")
+                if stock_detail.get(field) in (None, "")
+            ],
             "sector_label": sector_label,
             "sector_multiplier": sector_boost if sector_label else 1.0,
             "sector_confidence": sector_context.get("confidence", 0.0),

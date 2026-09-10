@@ -54,6 +54,98 @@ function valueOrDash(value, suffix = '') {
   return value === null || value === undefined || value === '' ? '暂无' : `${value}${suffix}`;
 }
 
+function cnStockSector(row) {
+  const exposure = row && row.business_exposure && typeof row.business_exposure === 'object'
+    ? row.business_exposure : {};
+  const items = Array.isArray(exposure.exposures) ? exposure.exposures : [];
+  const top = items.find(item => item && item.label);
+  if (top) return `${top.label}${exposure.confidence != null ? `（可信度${Number(exposure.confidence).toFixed(2)}）` : ''}`;
+  return row && row.industry ? `${row.industry}（行业兜底）` : '待补全';
+}
+
+async function buildCnStockLiveReport(code) {
+  const result = await pool.query(
+    `SELECT h.security_code,h.security_name,h.market_type,h.ipo_date,h.listing_date,
+            h.issue_price,h.issue_pe,h.industry_pe,h.industry,h.main_business,
+            h.subscribe_upper_limit,h.fund_raised,h.total_shares,h.online_shares,
+            h.online_lottery_rate,h.oversubscribe_multiple,h.ld_close_change,
+            h.business_exposure,h.data_quality_status,
+            p.pred_return,p.pred_date,p.prediction_context
+       FROM ipo_history h
+       LEFT JOIN LATERAL (
+         SELECT pred_return,pred_date,prediction_context
+           FROM predictions
+          WHERE type='stock' AND code=h.security_code
+          ORDER BY pred_date DESC,updated_at DESC NULLS LAST
+          LIMIT 1
+       ) p ON true
+      WHERE h.market_code='CN' AND h.security_code=$1
+      LIMIT 1`, [code]
+  );
+  const row = result.rows[0];
+  if (!row) return '';
+  const context = row.prediction_context && typeof row.prediction_context === 'object'
+    ? row.prediction_context : {};
+  let quality = row.data_quality_status && typeof row.data_quality_status === 'object'
+    ? row.data_quality_status : {};
+  if (typeof row.data_quality_status === 'string') {
+    try { quality = JSON.parse(row.data_quality_status); } catch (_) { quality = {}; }
+  }
+  const pending = Array.isArray(quality.pending_not_due) ? quality.pending_not_due : [];
+  const missing = Array.isArray(quality.missing_fields) ? quality.missing_fields : [];
+  const pendingLabels = {
+    listing_date: '上市日期',
+    online_lottery_rate: '网上中签率',
+    oversubscribe_multiple: '最终超额认购倍数',
+  };
+  const missingLabels = {
+    industry: '所属行业',
+    industry_pe: '行业市盈率',
+    main_business: '主营业务',
+    business_exposure: '业务赛道',
+  };
+  const prediction = row.pred_return == null
+    ? '待计算'
+    : `${row.pred_return}%${context.prediction_range_low != null && context.prediction_range_high != null
+      ? `（可能区间${context.prediction_range_low}%～${context.prediction_range_high}%）` : ''}`;
+  const stage = context.prediction_stage_label || '研究估算';
+  const lines = [
+    `# 📄 打新详情 — ${row.security_name || code}（${code}）`,
+    '',
+    '## 基本资料',
+    `- **市场板块**：${valueOrDash(row.market_type)}`,
+    `- **所属行业**：${valueOrDash(row.industry)}`,
+    `- **业务赛道**：${cnStockSector(row)}`,
+    `- **主营业务**：${valueOrDash(row.main_business)}`,
+    `- **发行价格**：${valueOrDash(row.issue_price, '元')}`,
+    `- **发行市盈率**：${valueOrDash(row.issue_pe)}`,
+    `- **行业市盈率**：${valueOrDash(row.industry_pe)}`,
+    `- **募集资金**：${valueOrDash(row.fund_raised, '亿元')}`,
+    `- **发行总量**：${valueOrDash(row.total_shares, '万股')}`,
+    `- **网上发行量**：${valueOrDash(row.online_shares, '万股')}`,
+    `- **顶格申购上限**：${valueOrDash(row.subscribe_upper_limit, '万股')}`,
+    `- **申购日期**：${valueOrDash(row.ipo_date)}`,
+    `- **上市日期**：${valueOrDash(row.listing_date)}`,
+    '',
+    '## 发行阶段预测',
+    `- **可能涨幅**：${prediction}`,
+    `- **预测版本**：${stage}`,
+    `- **预测日期**：${valueOrDash(row.pred_date)}`,
+  ];
+  if (pending.length) {
+    lines.push('', '## 尚未公布数据', ...pending.map(field => `- **${pendingLabels[field] || field}**：发行结果公告后更新`));
+  }
+  const unresolvedDetail = missing.filter(field => missingLabels[field]);
+  if (unresolvedDetail.length) {
+    lines.push('', '## 资料补全状态', ...unresolvedDetail.map(field => `- **${missingLabels[field]}**：发行资料已到，但当前尚未解析成功，系统会继续重试`));
+  }
+  if (row.ld_close_change != null) {
+    lines.push('', '## 上市结果', `- **首日收盘涨幅**：${row.ld_close_change}%`);
+  }
+  lines.push('', `> 资料状态：${quality.status === 'complete' ? '完整' : '部分待补全'}；详情读取已入库事实，不在页面请求时调用外部接口。`);
+  return lines.join('\n');
+}
+
 function assessHkGreenshoe(details, protectionRatio) {
   const item = details && typeof details === 'object' ? details : {};
   const status = String(item.status || '').toLowerCase();
@@ -120,18 +212,21 @@ function stockFieldStatusSql(alias = 'h') {
       ELSE 'pending'
     END,
     'issue_price', CASE WHEN ${alias}.issue_price IS NOT NULL THEN 'value' ELSE 'missing' END,
+    'online_lottery_rate', CASE WHEN ${alias}.online_lottery_rate IS NOT NULL THEN 'value' ELSE 'pending' END,
+    'oversubscribe_multiple', CASE WHEN ${alias}.oversubscribe_multiple IS NOT NULL THEN 'value' ELSE 'pending' END,
     'industry', CASE WHEN NULLIF(${alias}.industry, '') IS NOT NULL THEN 'value'
-      WHEN ${alias}.listing_date IS NULL OR ${alias}.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'pending'
-      WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
-      ELSE 'missing' END,
+      WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
+      ELSE 'pending' END,
     'industry_pe', CASE WHEN ${alias}.industry_pe IS NOT NULL THEN 'value'
-      WHEN ${alias}.listing_date IS NULL OR ${alias}.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'pending'
-      WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
-      ELSE 'missing' END,
+      WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
+      ELSE 'pending' END,
     'main_business', CASE WHEN NULLIF(${alias}.main_business, '') IS NOT NULL THEN 'value'
-      WHEN ${alias}.listing_date IS NULL OR ${alias}.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'pending'
-      WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
-      ELSE 'missing' END,
+      WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
+      ELSE 'pending' END,
+    'business_exposure', CASE
+      WHEN ${alias}.business_exposure ? 'exposures' THEN 'value'
+      WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
+      ELSE 'pending' END,
     'ld_close_change', CASE WHEN ${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN
       CASE
         WHEN ${alias}.listing_date::date > (timezone('Asia/Shanghai', now()))::date THEN 'pending'
@@ -462,7 +557,7 @@ router.get('/history', async (req, res) => {
       const r = await pool.query(
         `              SELECT h.security_code, h.security_name, h.ipo_date,
                 h.issue_price, h.issue_pe, h.industry_pe, h.fund_raised,
-                h.total_shares, h.online_shares, h.online_lottery_rate,
+                h.total_shares, h.online_shares, h.online_lottery_rate, h.oversubscribe_multiple,
                 COALESCE(
                   h.circulation_mv,
                   ROUND((COALESCE(h.online_shares, h.total_shares) * h.issue_price / 10000.0)::numeric, 2)::double precision
@@ -584,6 +679,10 @@ router.get('/report/code', async (req, res) => {
         ];
         return res.json({ code: hkCode, market: 'HK', stage: 'facts', score: null, advice: null, md: lines.join('\n') });
       }
+    }
+    const liveCn = await buildCnStockLiveReport(code);
+    if (liveCn) {
+      return res.json({ code, market: 'CN', stage: 'facts', score: null, advice: null, md: liveCn });
     }
     // 数据库报告会随补数和重新生成及时更新；仓库内单债文件只是部署兜底，不能遮住新数据。
     const reports = await pool.query(

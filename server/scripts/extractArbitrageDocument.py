@@ -619,7 +619,19 @@ def parse_fields(text, target_code=None):
 
     result['observed_codes'] = list(ordered_codes)
     if target_code and re.fullmatch(r'\d{5,6}', str(target_code)):
-        result['target_code_match'] = str(target_code) in ordered_codes
+        # 港交所英文公告经常把 01788 写成 1788；两者是同一个港股代码。
+        # A 股仍要求完整六位代码匹配，避免放宽后误合并不同证券。
+        if len(str(target_code)) == 5:
+            matching_codes = [
+                code for code in ordered_codes
+                if re.fullmatch(r'\d{3,5}', str(code))
+                and str(code).zfill(5) == str(target_code)
+            ]
+            result['target_code_match'] = bool(matching_codes)
+            for code in matching_codes:
+                ordered_codes.remove(code)
+        else:
+            result['target_code_match'] = str(target_code) in ordered_codes
 
     # 若调用方已告知目标证券代码，将其置顶，避免从财务顾问报告/合并方段落里取错价格
     if target_code and re.fullmatch(r'\d{5,6}', str(target_code)):

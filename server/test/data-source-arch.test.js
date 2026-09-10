@@ -6,7 +6,7 @@
 //  3) 数据集级版本控制：后台写入净值后，旧浏览器保存持仓不覆盖新净值（8.2 并发验收）
 //  4) P0-1：连续两次保存不误报冲突（保存成功后数据集版本同步更新）
 //  5) 账户删除原子（走 db 层 deleteAccountData 真实函数 + users.accounts 同步）：删除后重建同名不出现旧数据
-//  6) 账户重命名原子（走 db 层 renameAccountData 真实函数）：业务表/元数据/列表全部改名，旧名可重建
+//  6) 账户重命名原子（走 db 层 renameAccountData 真实函数）：业务表/元数据/列表全部改名，旧名可重建，兼容历史错额交易
 //  7) 静态边界：业务代码不再读取 JSON 五类业务数组
 // 全部使用专用测试数据并在 finally 清理，绝不触碰真实账户数据。
 const assert = require('assert');
@@ -187,12 +187,40 @@ function payload(over) {
     // ---------- 5) 账户重命名原子（走 db 层真实函数 renameAccountData） ----------
     await checkAsync('重命名账户：renameAccountData 全表原子改名 + users.accounts 同步', async () => {
       // 无论断言成败都恢复原名，避免 id(sha256) 残留导致后续用例主键冲突
+      const amountConstraint = await pool.query(
+        `SELECT convalidated FROM pg_constraint
+           WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`
+      );
       try {
         // 确保 users.accounts 列表含被重命名账户（重建同名用例不更新列表，这里补上）
         await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`,
           [U, JSON.stringify([A, A + '_保留'])]);
+        const { rows: accountRows } = await pool.query(
+          'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [U, A]
+        );
+        assert.ok(accountRows[0] && accountRows[0].id, '重命名前应存在账户主键');
+        const oldAccountId = accountRows[0].id;
+        // 模拟迁移 046/047 兼容的历史错额交易：约束允许存量违反，但改 account_name 时会重新检查。
+        await pool.query('ALTER TABLE trades DROP CONSTRAINT IF EXISTS chk_trades_amount_rel');
+        await pool.query(
+          `INSERT INTO trades (id, username, account_name, account_id, date, trade_date, executed_at,
+                               code, name, direction, price, quantity, amount)
+           VALUES ('rename_legacy_trade',$1,$2,$3,'2026-01-02 09:30','2026-01-02','2026-01-02 09:30',
+                   '600519','贵州茅台','buy',10,100,999)`, [U, A, oldAccountId]
+        );
+        await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+          CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02) NOT VALID`);
         const r = await renameAccountData(U, A, A + '_新名');
         assert.strictEqual(r.ok, true);
+        const { rows: renamedAccountRows } = await pool.query(
+          'SELECT id FROM accounts WHERE username=$1 AND account_name=$2', [U, A + '_新名']
+        );
+        assert.strictEqual(renamedAccountRows[0].id, oldAccountId, '重命名不得更换不可变 account_id');
+        const { rows: renamedTradeRows } = await pool.query(
+          'SELECT amount::float8 AS amount FROM trades WHERE username=$1 AND account_name=$2 AND id=$3',
+          [U, A + '_新名', 'rename_legacy_trade']
+        );
+        assert.strictEqual(renamedTradeRows[0].amount, 999, '历史错额交易应随账户成功改名');
         // 新名下应有数据
         const d = await loadAccountData(U, A + '_新名');
         assert.ok(Array.isArray(d.navHistory) && d.navHistory.length === 1, '新名应能读到数据，实际=' + (d.navHistory || []).length);
@@ -203,7 +231,7 @@ function payload(over) {
         const list = JSON.parse(u[0].accounts);
         assert.ok(list.includes(A + '_新名'), 'users.accounts 应含新名');
         assert.ok(!list.includes(A), 'users.accounts 不应再含旧名');
-        // 旧名可重建（id 哈希已随新名更新，不冲突）
+        // 旧名可重建（原账户保留旧 account_id 时，重新创建应自动使用新的 ID）
         const rb = await saveAccountData(U, A, payload({ navHistory: [{ date: '2026-03-01', nav: 1.2, totalAsset: 12000, invested: 8000 }] }), 0);
         assert.ok(rb && rb.version >= 1, '旧名重建应成功');
         const d3 = await loadAccountData(U, A);
@@ -219,6 +247,15 @@ function payload(over) {
         await pool.query('DELETE FROM account_data WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
         await pool.query('DELETE FROM accounts WHERE username=$1 AND account_name=$2', [U, A + '_新名']);
       } finally {
+        const currentAmountConstraint = await pool.query(
+          `SELECT 1 FROM pg_constraint
+             WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`
+        );
+        if (amountConstraint.rowCount > 0 && currentAmountConstraint.rowCount === 0) {
+          const notValid = amountConstraint.rows[0].convalidated ? '' : ' NOT VALID';
+          await pool.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+            CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02)${notValid}`);
+        }
         // 确保恢复到 A 名下的干净状态
         await cleanup();
         await pool.query(`UPDATE users SET accounts=$2::jsonb::text WHERE username=$1`, [U, JSON.stringify([A])]);

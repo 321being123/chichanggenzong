@@ -1,4 +1,4 @@
-const PARSER_VERSION = '2.0.6';
+const PARSER_VERSION = '2.0.7';
 
 function cleanSecurityText(value) {
   return String(value || '')

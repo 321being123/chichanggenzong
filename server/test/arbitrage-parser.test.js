@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const parser = require('../services/arbitrageParser');
-assert.strictEqual(parser.PARSER_VERSION, '2.0.6', 'A/H 现金条款修复必须提升解析器版本，确保历史文档重新解析');
+assert.strictEqual(parser.PARSER_VERSION, '2.0.7', '港股代码归一化修复必须提升解析器版本，确保历史文档重新解析');
 
 test('PDF 解析重试入口统一阻止未到期和超过上限的调用', () => {
   const future = new Date(Date.now() + 60_000).toISOString();
@@ -100,6 +100,16 @@ test('港股私有化：现金注销价优先于购股权行使价', () => {
   });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout).cash_offer_price, 3);
+});
+
+test('港股代码前导零归一：01788.HK 与公告中的 1788 视为同一标的', () => {
+  const parsed = parseSnippet(
+    'Stock Code: 1788。每股计划股份现金注销价3.00港元。',
+    '01788.HK',
+  );
+  assert.equal(parsed.target_code_match, true);
+  assert.equal(parsed.target_codes[0], '01788');
+  assert.equal(parsed.cash_offer_price, 3);
 });
 
 function parseSnippet(text, targetCode) {

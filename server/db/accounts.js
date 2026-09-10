@@ -455,7 +455,14 @@ async function saveAccountData(username, accountName, data, expectedVersion = nu
     }
     // P2-3：账户元数据（cash_base/hk_rate/fee_settings）结构化落库，作为唯一权威来源（JSON 不再兜底）
     // hk_rate_updated_at：首次插入=now()；仅当 hk_rate 值变化时更新（用户手动改汇率也算真实变更，迁移 039）。
-    const acctId = crypto.createHash('sha256').update(username + '\n' + accountName).digest('hex');
+    const deterministicAcctId = crypto.createHash('sha256').update(username + '\n' + accountName).digest('hex');
+    // 重命名后的账户保留原 account_id；旧名称重新创建时，确定性 ID 可能仍被原账户占用，改用随机 ID。
+    const { rows: idOwners } = await client.query(
+      'SELECT username, account_name FROM accounts WHERE id=$1', [deterministicAcctId]
+    );
+    const acctId = idOwners[0] && (idOwners[0].username !== username || idOwners[0].account_name !== accountName)
+      ? crypto.randomUUID()
+      : deterministicAcctId;
     const { rows: fxRows } = await client.query(
       `SELECT rate::float8 AS rate FROM market.fx_rates
         WHERE base_currency='HKD' AND quote_currency='CNY'
@@ -844,21 +851,42 @@ async function deleteAccountData(username, accountName) {
 
 // 重命名账户：单事务内把所有业务表 + 账户元数据 + 兼容 JSON + users.accounts 列表改为新名
 // （只改 account_name，不搬运/复制任何数据；失败整体回滚）。
-// ⚠️ accounts.id = sha256(username+accountName) 是确定性哈希主键（业务表不引用它），
-//    重命名时必须同步更新为新名的哈希，否则旧名重建账户会主键冲突（报告 3.7 重命名缺陷）。
+// account_id 是不可变账户主键，重命名不能修改 accounts.id 或子表 account_id。
+// 历史交易可能违反 NOT VALID 的 amount 关系约束；PostgreSQL 更新这些旧行时仍会检查，
+// 因此改名事务内暂时移除并按原验证状态恢复该约束。
 async function renameAccountData(username, oldName, newName) {
-  const dup = await pool.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2', [username, newName]);
-  if (dup.rowCount > 0) return { ok: false, conflict: '该名称已被使用' };
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const dup = await client.query('SELECT 1 FROM accounts WHERE username=$1 AND account_name=$2', [username, newName]);
+    if (dup.rowCount > 0) {
+      await client.query('ROLLBACK');
+      return { ok: false, conflict: '该名称已被使用' };
+    }
+    const oldAccount = await client.query(
+      'SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE', [username, oldName]
+    );
+    if (oldAccount.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return { ok: false, conflict: '原账户不存在' };
+    }
+    const amountConstraint = await client.query(
+      `SELECT convalidated FROM pg_constraint
+         WHERE conname='chk_trades_amount_rel' AND conrelid='trades'::regclass`
+    );
+    if (amountConstraint.rowCount > 0) {
+      await client.query('ALTER TABLE trades DROP CONSTRAINT chk_trades_amount_rel');
+    }
     const tables = ['positions', 'trades', 'nav_history', 'cash_flows', 'daily_prices', 'index_history', 'account_data'];
     for (const t of tables) {
       await client.query(`UPDATE ${t} SET account_name=$3 WHERE username=$1 AND account_name=$2`, [username, oldName, newName]);
     }
-    // accounts 表：id 与新名哈希保持一致（sha256 确定性主键，业务表不引用 id，可安全更新）
-    const newId = crypto.createHash('sha256').update(username + '\n' + newName).digest('hex');
-    await client.query('UPDATE accounts SET id=$3, account_name=$4, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2', [username, oldName, newId, newName]);
+    await client.query('UPDATE accounts SET account_name=$3, updated_at=to_char(now(),\'YYYY-MM-DD HH24:MI:SS\') WHERE username=$1 AND account_name=$2', [username, oldName, newName]);
+    if (amountConstraint.rowCount > 0) {
+      const notValid = amountConstraint.rows[0].convalidated ? '' : ' NOT VALID';
+      await client.query(`ALTER TABLE trades ADD CONSTRAINT chk_trades_amount_rel
+        CHECK (direction IN ('open','adjust') OR amount IS NULL OR ABS(amount - ROUND(price*quantity, 2)) < 0.02)${notValid}`);
+    }
     // 同步 users.accounts 列表
     const u = await loadUsers();
     if (u[username] && Array.isArray(u[username].accounts)) {

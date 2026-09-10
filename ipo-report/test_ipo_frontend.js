@@ -40,6 +40,7 @@ check("'NaN' -> -", sandbox.ipoFmt("NaN") === "-");
 check("NaN(number) -> -", sandbox.ipoFmt(NaN) === "-");
 check("正常数透传", sandbox.ipoFmt(500) === 500);
 check("带单位", sandbox.ipoFmt(500, "亿") === "500亿");
+check("固定两位小数", sandbox.ipoNumFixed(1052.5519348, 2) === "1052.55");
 
 console.log("== B. ipoShdRatioPct (股东配售率 = 总配售张数/(规模亿×1e6)×100%) ==");
 // 浦发：shd_ration_size=263622080, issue_size=500 -> 52.72%

@@ -570,7 +570,7 @@ function ipoRenderHistory(type, rows) {
         ipoShdShares(it),                          // 配售10张所需股数 = 1000/每股配售额(元)
         ipoBondField(it, 'onl_size', it.onl_size), // 网上上限(亿)：结果公告后才应出现
         ipoBondField(it, 'onl_pch_num', it.onl_pch_num, function (v) {
-          return ipoFmt(v) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '');
+          return ipoNumFixed(v, 2) + (ipoExchange(it.security_code) === '深' ? '（估算）' : '');
         }),                                        // 申请户数(万)
         ipoPctCell(it.pred_return),               // 预测涨幅%：模型预测上市涨幅（无预测则显示 -）
         ipoPctCell(it.first_day_return)            // 上市涨幅% = 上市首日收盘 - 100

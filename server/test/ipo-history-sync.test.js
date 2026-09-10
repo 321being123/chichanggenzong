@@ -78,7 +78,8 @@ assert.match(firstDaySource, /NOT EXISTS/, '新债上市表现补偿未按事实
 assert.match(firstDaySource, /"remaining"/, '新债上市表现补偿没有输出剩余缺口');
 const issueResultSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'backfill_bond_shd.py'), 'utf8');
 assert.match(issueResultSource, /online_purchase_accounts_10k=COALESCE\(%s,/, '发行结果户数回填单位被重复缩放');
-assert.match(issueResultSource, /listing_date <= CURRENT_DATE/, '发行结果补全会误处理未来上市债券');
+assert.match(issueResultSource, /res_ann_date::date <= CURRENT_DATE/, '发行结果补全没有按结果公告到期时间筛选');
+assert.match(issueResultSource, /re\.sub\(r'\\s\+'/, '发行结果 PDF 拆行会导致申请户数漏解析');
 assert.match(issueResultSource, /source_field_unavailable/, '发行结果缺口没有质量分类');
 assert.match(firstDaySource, /listing_date < CURRENT_DATE/, '首日表现补全会误处理尚未形成首日行情的债券');
 assert.match(firstDaySource, /source_unavailable/, '首日表现缺口没有质量分类');

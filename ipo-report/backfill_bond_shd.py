@@ -83,6 +83,8 @@ def find_rate(text):
 
 def find_pch(text):
     """网上有效申购户数(户) -> 万户；深市新债无'户数'，用配号总数(个)÷1000估算户数(每账户约1000配号) -> 万户。"""
+    # PDF 经常把“申购户数”“配号总数”和数字拆成多行；先去掉版面空白再匹配。
+    text = re.sub(r'\s+', '', text or '')
     # 优先真实户数（沪市及深市老债公告直接给'户'）
     for pat in [
         r'网上有效申购户数[为:：]?\s*([0-9][0-9,\s]{3,})\s*户',
@@ -207,9 +209,9 @@ def main():
         cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date, res_ann_date "
                     "FROM public.bond_unified WHERE security_code=%s", (args.code,))
     else:
-        # 只抓能真正改善的：配售率缺失(shd占位/空) 或 户数缺失(沪市取真实户数，深市取公告配号总数兜底)
+        # 结果公告已到期即可补全，不依赖可能晚到或暂缺的上市日期。
         cur.execute("SELECT instrument_id, security_code, bond_name, stock_code, display_issue_size, shd_ration_size, onl_pch_num, onl_date, res_ann_date "
-                    "FROM public.bond_unified WHERE listing_date IS NOT NULL AND listing_date <= CURRENT_DATE "
+                    "FROM public.bond_unified WHERE res_ann_date IS NOT NULL AND res_ann_date::date <= CURRENT_DATE "
                     "AND (issue_type IS NULL OR issue_type NOT IN ('定向','私募')) "
                     "AND (shd_ration_size IS NULL OR shd_ration_size <= 100 OR onl_pch_num IS NULL) "
                     "ORDER BY onl_date DESC")

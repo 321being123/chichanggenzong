@@ -430,7 +430,8 @@ def update_quality(cur, today):
         listed = valid_listing and listing_text <= today.isoformat()
         pending = []
         if not listed:
-            pending.append("listing_date")
+            if values.get("listing_date") in (None, ""):
+                pending.append("listing_date")
             for field in ("online_lottery_rate", "oversubscribe_multiple"):
                 if values.get(field) in (None, ""):
                     pending.append(field)

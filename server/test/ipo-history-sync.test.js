@@ -22,6 +22,7 @@ assert.match(source, /first_day_retry_count,0\) < 3/, '首日涨幅补偿未限�
 assert.match(source, /def enrich_stock_missing_details\(/, '缺失详情没有定点补全函数');
 assert.match(source, /target_text = str\(target_date\)\[:10\] if target_date else ""/, '发行阶段目标日字符串未标准化');
 assert.match(source, /ipo_date=%s OR listing_date=%s/, '晚间补全未优先处理目标日上市新股');
+assert.match(source, /if values\.get\("listing_date"\) in \(None, ""\)/, '已有上市日期仍被误标为待公告');
 assert.match(source, /historical_enrichment/, '详情补全未保留来源记录');
 assert.match(source, /def _refresh_new_share_snapshot\(/, '晚间阶段没有重新刷新发行公告');
 assert.match(source, /retry_same_day=True/, '晚间阶段没有允许同日重试发行资料');

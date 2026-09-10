@@ -21,6 +21,47 @@ from ipo_lib_sector import *
 from ipo_lib_prediction import *
 from model_runtime import get_model_dir
 
+IPO_MODEL_FEATURE_META = {
+    "issue_price": ("发行价", "元/股"),
+    "issue_pe": ("发行PE", "倍"),
+    "industry_pe": ("行业PE", "倍"),
+    "fund_raised": ("募资规模", "亿元"),
+    "online_shares": ("网上发行量", "万股"),
+    "total_shares": ("发行总量", "万股"),
+    "online_lottery_rate": ("网上中签率", "%"),
+    "oversubscribe_multiple": ("超额认购倍数", "倍"),
+    "circulation_mv": ("流通市值", "亿元"),
+    "subscribe_upper_limit": ("申购上限", "万股"),
+    "pe_ratio": ("PE比值", "无单位：发行PE÷行业PE"),
+    "circulation_mv_log": ("流通市值对数", "无单位：log1p(流通市值)"),
+    "fund_raised_log": ("募资规模对数", "无单位：log1p(募资规模)"),
+    "price_times_pe": ("发行价×PE", "无单位：发行价×发行PE÷100"),
+    "lottery_rate_inverse": ("中签率倒数", "无单位：1÷(中签率+0.001)"),
+    "circulation_per_lot": ("流通市值/中签率", "无单位：流通市值÷(中签率+0.001)"),
+    "issue_pe_squared": ("发行PE平方", "无单位：发行PE²÷1000"),
+}
+
+
+def _format_model_feature_value(value):
+    if value is None or value == "":
+        return "暂无"
+    try:
+        return f"{float(value):.4f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_model_features(prediction_calculation):
+    features = prediction_calculation.get("model_features") or {}
+    statuses = prediction_calculation.get("model_feature_status") or {}
+    parts = []
+    for key, value in features.items():
+        label, unit = IPO_MODEL_FEATURE_META.get(key, (key, "无单位：模型字段"))
+        status = "（补位）" if statuses.get(key) == "补位" else ""
+        parts.append(f"{label}（{unit}）={_format_model_feature_value(value)}{status}")
+    return "；".join(parts)
+
+
 def _stock_sector_display(detail):
     """返回面向用户的赛道标签，区分行业兜底和资料缺失。"""
     detail = detail if isinstance(detail, dict) else {}
@@ -379,11 +420,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     prediction_context = analysis.get("prediction_context") if isinstance(analysis, dict) else {}
                     prediction_calculation = prediction_context.get("calculation_detail") if isinstance(prediction_context, dict) else {}
                     if isinstance(prediction_calculation, dict) and prediction_calculation.get("model_features"):
-                        feature_text = "；".join(
-                            f"{key}={value}"
-                            + ("（补位）" if prediction_calculation.get("model_feature_status", {}).get(key) == "补位" else "")
-                            for key, value in prediction_calculation["model_features"].items()
-                        )
+                        feature_text = _format_model_features(prediction_calculation)
                         lines.append(f"- **模型输入明细**：{feature_text}")
                         lines.append(
                             f"- **模型结果链**：原始{prediction_calculation.get('raw_model_return', '暂无')}%"

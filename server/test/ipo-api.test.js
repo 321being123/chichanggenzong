@@ -113,6 +113,11 @@ async function main() {
     assert.match(routeSource, /advice_calculation/);
     assert.match(routeSource, /p\.base_pred_return/);
     assert.match(routeSource, /p\.sector_multiplier/);
+    assert.match(routeSource, /发行价.*元\/股/);
+    assert.match(routeSource, /募资规模.*亿元/);
+    assert.match(routeSource, /发行PE.*倍/);
+    assert.match(routeSource, /PE比值.*无单位.*发行PE÷行业PE/);
+    assert.match(routeSource, /模型字段/);
   });
   check('单债详情优先读取数据库报告', () => {
     const dbRead = routeSource.indexOf("SELECT md FROM ipo_reports WHERE md LIKE $1");

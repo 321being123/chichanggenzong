@@ -163,6 +163,10 @@ assert(/WITH failed_document AS[\s\S]*UPDATE event\.arbitrage_case_documents[\s\
 assert(/const hasFailedDocument = docs\.some[\s\S]*if \(hasFailedDocument\)[\s\S]*status: 'incomplete'/.test(arbitrageParser), '重建条款时只要仍有失败公告，案件就不能恢复为已验证');
 assert(/acd\.parse_status='failed' AND acd\.document_role IN \('amendment','terms','summary','proposal'\)/.test(arbitrageParser), '只有条款类公告解析失败才可阻止案件验证，历史风险或终态文档不得污染条款状态');
 assert(/const payload = await parser\.parseAndStoreDocument/.test(arbitrageSync) && /if \(!payload\) continue/.test(arbitrageSync), 'PDF 解析被重试规则拦截时不得误计为解析成功');
+assert(/async function retryPendingDocuments\(\)/.test(arbitrageSync)
+  && /results\.recovery = await retryPendingDocuments\(\)/.test(arbitrageSync)
+  && !/retryPendingDocuments\(20\)/.test(arbitrageSync)
+  && !/LIMIT \$3/.test(arbitrageSync), '套利旧版本公告不得再受固定20份补解析上限影响');
 assert(/const typed = message\.match\(\/\\\[\(BUDGET_WAIT\|RATE_LIMIT\|QUOTA_EXHAUSTED\|CIRCUIT_OPEN\)/.test(arbitrageParser)
   && /error\.code = typed\[1\]\.toUpperCase\(\)/.test(arbitrageParser)
   && /json\.recover_at/.test(arbitrageParser), 'Python 解析器的来源限速错误和恢复时间必须透传给统一任务编排');

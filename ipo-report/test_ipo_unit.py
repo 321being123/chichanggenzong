@@ -43,6 +43,7 @@ def _ensure_test_model():
 
 _ensure_test_model()
 import ipo_daily_report as m
+import ipo_lib_report as report_lib
 import ipo_lib_fetch as fetch
 import _common as common
 import calendar_core
@@ -309,6 +310,14 @@ try:
            model_prediction is not None and len(model_prediction) >= 5
            and model_prediction[4].get("model_features"),
            "模型输入明细已生成")
+    model_feature_text = report_lib._format_model_features({
+        "model_features": {"issue_price": 20, "pe_ratio": 0.8, "online_shares": 1},
+        "model_feature_status": {"online_shares": "补位"},
+    })
+    check("模型输入明细带单位和派生含义",
+          "发行价（元/股）=20" in model_feature_text
+          and "PE比值（无单位：发行PE÷行业PE）=0.8" in model_feature_text
+          and "网上发行量（万股）=1（补位）" in model_feature_text)
     issuance_prediction = _val.get_listing_analysis(
         "stock", 20, 30, 35,
         stock_detail={

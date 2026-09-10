@@ -54,6 +54,26 @@ function valueOrDash(value, suffix = '') {
   return value === null || value === undefined || value === '' ? '暂无' : `${value}${suffix}`;
 }
 
+const IPO_MODEL_FEATURE_META = {
+  issue_price: { label: '发行价', unit: '元/股' },
+  issue_pe: { label: '发行PE', unit: '倍' },
+  industry_pe: { label: '行业PE', unit: '倍' },
+  fund_raised: { label: '募资规模', unit: '亿元' },
+  online_shares: { label: '网上发行量', unit: '万股' },
+  total_shares: { label: '发行总量', unit: '万股' },
+  online_lottery_rate: { label: '网上中签率', unit: '%' },
+  oversubscribe_multiple: { label: '超额认购倍数', unit: '倍' },
+  circulation_mv: { label: '流通市值', unit: '亿元' },
+  subscribe_upper_limit: { label: '申购上限', unit: '万股' },
+  pe_ratio: { label: 'PE比值', unit: '无单位：发行PE÷行业PE' },
+  circulation_mv_log: { label: '流通市值对数', unit: '无单位：log1p(流通市值)' },
+  fund_raised_log: { label: '募资规模对数', unit: '无单位：log1p(募资规模)' },
+  price_times_pe: { label: '发行价×PE', unit: '无单位：发行价×发行PE÷100' },
+  lottery_rate_inverse: { label: '中签率倒数', unit: '无单位：1÷(中签率+0.001)' },
+  circulation_per_lot: { label: '流通市值/中签率', unit: '无单位：流通市值÷(中签率+0.001)' },
+  issue_pe_squared: { label: '发行PE平方', unit: '无单位：发行PE²÷1000' },
+};
+
 function cnStockSector(row) {
   const exposure = row && row.business_exposure && typeof row.business_exposure === 'object'
     ? row.business_exposure : {};
@@ -159,24 +179,15 @@ async function buildCnStockLiveReport(code) {
         : '未做赛道修正'}`,
     );
     if (calculation.model) {
-      const featureLabels = {
-        issue_price: '发行价', issue_pe: '发行PE', industry_pe: '行业PE',
-        fund_raised: '募资规模', online_shares: '网上发行量', total_shares: '发行总量',
-        online_lottery_rate: '网上中签率', oversubscribe_multiple: '超额认购倍数',
-        circulation_mv: '流通市值', subscribe_upper_limit: '申购上限', pe_ratio: 'PE比值',
-        circulation_mv_log: '流通市值对数', fund_raised_log: '募资规模对数',
-        price_times_pe: '发行价×PE', lottery_rate_inverse: '中签率倒数',
-        circulation_per_lot: '流通市值/中签率', issue_pe_squared: '发行PE平方',
-      };
       const features = calculation.model_features && typeof calculation.model_features === 'object'
         ? calculation.model_features : {};
       const featureStatus = calculation.model_feature_status && typeof calculation.model_feature_status === 'object'
         ? calculation.model_feature_status : {};
       const featureText = Object.entries(features).map(([key, value]) => {
-        const label = featureLabels[key] || key;
+        const meta = IPO_MODEL_FEATURE_META[key] || { label: key, unit: '无单位：模型字段' };
         const status = featureStatus[key] === '补位' ? '（补位）' : '';
         const number = value == null || value === '' ? '暂无' : Number.isFinite(Number(value)) ? Number(value).toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') : String(value);
-        return `${label}=${number}${status}`;
+        return `${meta.label}（${meta.unit}）=${number}${status}`;
       });
       lines.push('', '## 预测计算明细',
         `- **模型**：${calculation.model}（${calculation.model_stage || stage}）`,

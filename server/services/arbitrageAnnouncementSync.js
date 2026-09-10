@@ -465,8 +465,9 @@ async function runIncrementalSync() {
   return runSync(windows, false);
 }
 
-// 每次同步顺带补跑少量未解析/旧版本核心公告，避免一次网络波动或版本升级造成永久漏项。
-async function retryPendingDocuments(limit = 20) {
+// 每次同步顺带补跑所有未解析/旧版本核心公告；不再用固定条数让旧案件长期排队。
+// 单次任务的 maxExternalCallsPerRun 和来源级 Guard 仍负责外部请求止损，触发保护线时停止本轮补跑。
+async function retryPendingDocuments() {
   const { rows } = await pool.query(`
     SELECT acd.case_id,acd.document_id,acd.document_role,d.url,i.canonical_code
     FROM event.arbitrage_case_documents acd
@@ -483,31 +484,45 @@ async function retryPendingDocuments(limit = 20) {
       )
       AND d.url ~* '\\.pdf($|\\?)'
     ORDER BY d.announced_at DESC,acd.document_id DESC
-    LIMIT $3
-  `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS, Math.max(1, Math.min(Number(limit) || 20, 100))]);
+  `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
   const touched = new Set();
-  const result = { attempted: rows.length, parsed: 0, failed: 0 };
+  const result = { attempted: 0, parsed: 0, failed: 0 };
+  const stopCodes = new Set([
+    'BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN',
+    'JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'POLICY_DISABLED', 'PERMISSION_DENIED',
+  ]);
   for (const doc of rows) {
+    result.attempted++;
     try {
       const payload = await parser.parseAndStoreDocument(doc.case_id, doc.document_id, doc.url, doc.canonical_code, doc.document_role, true);
       if (!payload) continue;
       touched.add(String(doc.case_id));
       result.parsed++;
-    } catch (_) {
+    } catch (err) {
+      const code = String(err && err.code || '').toUpperCase();
+      if (stopCodes.has(code)) {
+        result.waitingExternal = true;
+        result.errorCode = code;
+        result.recoverAt = err.recoverAt || null;
+        break;
+      }
       result.failed++;
     }
   }
   for (const caseId of touched) await parser.rebuildCaseTerms(caseId);
   const { rows: retryState } = await pool.query(`
     SELECT
-      COUNT(*) FILTER (WHERE acd.parse_attempts < $2)::int AS pending,
-      COUNT(*) FILTER (WHERE acd.parse_attempts >= $2)::int AS exhausted
+      COUNT(*) FILTER (WHERE
+        acd.parser_version IS DISTINCT FROM $1
+        OR (acd.parse_status='failed' AND acd.parse_attempts < $2)
+        OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL)
+      )::int AS pending,
+      COUNT(*) FILTER (WHERE acd.parse_status='failed' AND acd.parser_version=$1 AND acd.parse_attempts >= $2)::int AS exhausted
     FROM event.arbitrage_case_documents acd
     JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
     JOIN event.documents d ON d.document_id=acd.document_id
     WHERE c.event_status NOT IN ('completed','terminated','expired')
       AND acd.document_role IN ('amendment','terms','summary','proposal')
-      AND acd.parse_status='failed' AND acd.parser_version=$1
       AND d.url ~* '\\.pdf($|\\?)'
   `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
   result.pending = Number(retryState[0] && retryState[0].pending || 0);
@@ -587,7 +602,7 @@ async function runSync(windows, isFirst) {
     }
   }
 
-  results.recovery = await retryPendingDocuments(20);
+  results.recovery = await retryPendingDocuments();
 
   return results;
 }

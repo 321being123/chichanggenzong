@@ -70,10 +70,12 @@ async function buildCnStockLiveReport(code) {
             h.subscribe_upper_limit,h.fund_raised,h.total_shares,h.online_shares,
             h.online_lottery_rate,h.oversubscribe_multiple,h.ld_close_change,
             h.business_exposure,h.data_quality_status,
-            p.pred_return,p.pred_date,p.prediction_context
+            p.pred_return,p.pred_date,p.base_pred_return,p.sector_adjustment_pp,
+            p.sector_multiplier,p.sector_confidence,p.prediction_context
        FROM ipo_history h
        LEFT JOIN LATERAL (
-         SELECT pred_return,pred_date,prediction_context
+         SELECT pred_return,pred_date,base_pred_return,sector_adjustment_pp,
+                sector_multiplier,sector_confidence,prediction_context
            FROM predictions
           WHERE type='stock' AND code=h.security_code
           ORDER BY pred_date DESC,updated_at DESC NULLS LAST
@@ -99,6 +101,13 @@ async function buildCnStockLiveReport(code) {
     online_lottery_rate: '网上中签率',
     oversubscribe_multiple: '最终超额认购倍数',
   };
+  const sectorLabel = context.sector_label || '';
+  const sectorComponents = Array.isArray(context.sector_components) ? context.sector_components : [];
+  const topSector = sectorComponents.find(item => item && (item.label || item.sector_key)) || {};
+  const sectorHeatMultiplier = topSector.multiplier == null ? null : Number(topSector.multiplier);
+  const sectorSampleCount = topSector.sample_count == null ? null : Number(topSector.sample_count);
+  const appliedSectorMultiplier = context.sector_multiplier ?? row.sector_multiplier;
+  const sectorConfidence = context.sector_confidence ?? row.sector_confidence;
   const missingLabels = {
     industry: '所属行业',
     industry_pe: '行业市盈率',
@@ -133,6 +142,19 @@ async function buildCnStockLiveReport(code) {
     `- **预测版本**：${stage}`,
     `- **预测日期**：${valueOrDash(row.pred_date)}`,
   ];
+  if (row.pred_return != null) {
+    lines.splice(lines.length - 3, 0,
+      '- **预测模型**：XGBoost（发行阶段模型）',
+      `- **模型基准涨幅**：${valueOrDash(row.base_pred_return, '%')}`,
+      `- **热度赛道**：${valueOrDash(sectorLabel || null)}`,
+      `- **赛道热度系数**：${sectorHeatMultiplier != null && Number.isFinite(sectorHeatMultiplier)
+        ? `×${sectorHeatMultiplier.toFixed(2)}${sectorSampleCount != null && Number.isFinite(sectorSampleCount) ? `（样本${sectorSampleCount}只）` : ''}`
+        : '暂无'}`,
+      `- **赛道修正**：${appliedSectorMultiplier != null && Number.isFinite(Number(appliedSectorMultiplier))
+        ? `×${Number(appliedSectorMultiplier).toFixed(2)}${sectorConfidence != null ? `（业务可信度${Number(sectorConfidence).toFixed(2)}）` : ''}`
+        : '未做赛道修正'}`,
+    );
+  }
   if (pending.length) {
     lines.push('', '## 尚未公布数据', ...pending.map(field => `- **${pendingLabels[field] || field}**：发行结果公告后更新`));
   }

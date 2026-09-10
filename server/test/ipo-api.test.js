@@ -103,6 +103,13 @@ async function main() {
 
   // 数据库报告必须优先于仓库内可能过期的 individual Markdown。
   const routeSource = require('fs').readFileSync(require.resolve('../routes/ipo'), 'utf8');
+  check('A股详情使用XGBoost并展示热度赛道', () => {
+    assert.match(routeSource, /预测模型.*XGBoost/);
+    assert.match(routeSource, /热度赛道/);
+    assert.match(routeSource, /赛道热度系数/);
+    assert.match(routeSource, /p\.base_pred_return/);
+    assert.match(routeSource, /p\.sector_multiplier/);
+  });
   check('单债详情优先读取数据库报告', () => {
     const dbRead = routeSource.indexOf("SELECT md FROM ipo_reports WHERE md LIKE $1");
     const fileRead = routeSource.indexOf('fs.existsSync(file)', dbRead);

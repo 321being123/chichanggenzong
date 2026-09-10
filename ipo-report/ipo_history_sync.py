@@ -60,6 +60,10 @@ def _positive(value):
     return number if number > 0 else None
 
 
+def _recover_at_text(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
 def _market_fields(ts_code):
     code = str(ts_code or "").split(".")[0]
     if code.startswith("688"):
@@ -250,7 +254,7 @@ def backfill_first_day(cur, now):
         try:
             close = _tencent_first_close(code, listing.isoformat())
         except ExternalCallGuardError as exc:
-            stopped = {"code": exc.code, "recover_at": exc.recover_at}
+            stopped = {"code": exc.code, "recover_at": _recover_at_text(exc.recover_at)}
             attempted -= 1
             break
         except Exception:
@@ -414,7 +418,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     "retry_after": (today + timedelta(days=7)).isoformat(),
                 })
         except ExternalCallGuardError as exc:
-            stopped = {"code": exc.code, "recover_at": exc.recover_at}
+            stopped = {"code": exc.code, "recover_at": _recover_at_text(exc.recover_at)}
             attempted -= 1
             break
         except Exception as exc:

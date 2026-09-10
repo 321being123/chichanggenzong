@@ -3,7 +3,7 @@
 import os
 import sys
 import traceback
-from datetime import date
+from datetime import date, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_history_sync as sync
@@ -26,6 +26,7 @@ try:
     })
     check("日期标准化", loss["ipo_date"] == "2026-08-01" and loss["listing_date"] == "2026-08-11")
     check("募资额派生", loss["fund_raised"] == 2.0)
+    check("Guard恢复时间可序列化", sync._recover_at_text(datetime(2026, 9, 10, 22, 0)) == "2026-09-10T22:00:00")
     check("公开发行市值派生", loss["circulation_mv"] == 1.0)
     check("亏损企业状态", loss["issue_pe"] is None and loss["issue_pe_status"] == "loss")
 

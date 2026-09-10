@@ -6046,6 +6046,33 @@ async function migration149HkIpoChineseAliases() {
   `);
 }
 
+// ========== 150：港股 IPO 华盛公开盘中备源 =============
+// Livermore 盘中接口返回空/升级提示时，使用华盛公开接口的预计孖展倍数；
+// 该来源只作为非官方补充信号，最终超购倍数仍以港交所配售结果为准。
+async function migration150HkIpoVbkrFallback() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority) VALUES
+      ('vbkr-public','华盛公开新股数据（捷利交易宝汇总）','broker_public',29)
+    ON CONFLICT(source_code) DO UPDATE SET
+      source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,priority=EXCLUDED.priority;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,official_doc_url,notes)
+    SELECT ds.source_id,'hk_ipo_current','anonymous',5,3,1,1000,200,15000,'preserve_last_success',
+           'https://www.vbkr.com/ipo/hk/v2/ipo-hk-index',
+           'Livermore 空/升级时的公开备源；字段为预计孖展，不是港交所最终超购事实'
+      FROM ops.data_sources ds WHERE ds.source_code='vbkr-public'
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+      internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
+      internal_daily_limit=EXCLUDED.internal_daily_limit,
+      max_concurrency=EXCLUDED.max_concurrency,
+      min_interval_ms=EXCLUDED.min_interval_ms,row_limit=EXCLUDED.row_limit,
+      timeout_ms=EXCLUDED.timeout_ms,empty_policy=EXCLUDED.empty_policy,
+      official_doc_url=EXCLUDED.official_doc_url,notes=EXCLUDED.notes,updated_at=now();
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6196,6 +6223,7 @@ const MIGRATIONS = [
   { version: '147_convertible_bond_call_announcement_precedence', up: migration147ConvertibleBondCallAnnouncementPrecedence },
   { version: '148_hk_ipo_market_signals', up: migration148HkIpoMarketSignals },
   { version: '149_hk_ipo_chinese_aliases', up: migration149HkIpoChineseAliases },
+  { version: '150_hk_ipo_vbkr_fallback', up: migration150HkIpoVbkrFallback },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6801,6 +6829,7 @@ module.exports = {
   migration147ConvertibleBondCallAnnouncementPrecedence,
   migration148HkIpoMarketSignals,
   migration149HkIpoChineseAliases,
+  migration150HkIpoVbkrFallback,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

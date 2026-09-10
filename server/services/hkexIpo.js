@@ -42,6 +42,7 @@ const HKEX_ALLOTMENT_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIp
 const HKEX_PROSPECTUS_DATASET = 'hkex_ipo_prospectus';
 const HKEX_PROSPECTUS_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoProspectus.py');
 const HKEX_NON_PUBLIC_DATASET = 'hkex_ipo_non_public_classification';
+const HKEX_CANCELLATION_DATASET = 'hkex_ipo_cancellation_notice';
 const HKEX_NON_PUBLIC_LISTINGS = Object.freeze([
   {
     securityCode: '06887.HK', ipoStatus: 'introduction', listingMethod: 'introduction',
@@ -375,6 +376,24 @@ function shouldPersistAllotmentFacts(parsed, lotteryParserStatus, feeParserStatu
   );
 }
 
+// 只有带当前解析器证据的配发 PDF 才能阻止下一轮重新检索。
+// 旧数据里曾把同一份文件同时标成 prospectus/allotment_result，
+// 仅凭“有 URL”会长期复用错误文件，导致 03231 等记录一直待补全。
+function isVerifiedAllotmentDocument(document) {
+  const evidence = document && document.parserEvidence;
+  if (!evidence || evidence.factsParserVersion !== HKEX_ALLOTMENT_FACTS_PARSER_VERSION) return false;
+  return ['parsed', 'missing'].includes(evidence.oversubscriptionParserStatus)
+    && ['parsed', 'missing'].includes(evidence.lotteryParserStatus)
+    && ['parsed', 'missing'].includes(evidence.feeParserStatus);
+}
+
+function isUsableProspectusDocument(document) {
+  if (!document || document.type !== 'prospectus' || !document.url) return false;
+  if (document.parserStatus === 'parsed') return true;
+  const evidence = document.parserEvidence || {};
+  return Boolean(evidence.offerCloseAt && evidence.lotSizeShares);
+}
+
 async function syncHkexAllotmentFacts({
   fromDate = '2025-08-04',
   toDate = todayShanghai(),
@@ -488,7 +507,7 @@ async function syncHkexAllotmentFacts({
   try {
     const candidatesNeedingSearch = candidates.filter(row => {
       const document = (Array.isArray(row.source_documents) ? row.source_documents : [])
-        .find(item => item && item.type === 'allotment_result' && item.url);
+        .find(isVerifiedAllotmentDocument);
       return !document;
     });
     if (candidatesNeedingSearch.length) {
@@ -507,11 +526,12 @@ async function syncHkexAllotmentFacts({
       }
     }
     const selected = new Map();
-    // 已经落库的官方配发 PDF 直接复用 URL，避免重复检索标题接口；只有缺少
-    // 官方文件的证券才回退到 15100 标题检索。
+    // 已经由当前解析器验证过的官方配发 PDF 才直接复用；历史上误分类或
+    // 只有“待解析”标记的文件必须重新走 15100 标题检索。
     for (const row of candidates) {
       const document = (Array.isArray(row.source_documents) ? row.source_documents : [])
-        .find(item => item && item.type === 'allotment_result' && item.url);
+        .filter(isVerifiedAllotmentDocument)
+        .sort((a, b) => String(b.announcedAt || '').localeCompare(String(a.announcedAt || '')))[0];
       if (!document) continue;
       const code = String(row.security_code || '').split('.')[0].padStart(5, '0');
       selected.set(code, {
@@ -521,7 +541,7 @@ async function syncHkexAllotmentFacts({
         title: document.title || 'HKEX allotment result',
       });
     }
-    for (const item of announcements) {
+    for (const item of announcements.sort((a, b) => String(b.announcedAt || '').localeCompare(String(a.announcedAt || '')))) {
       const code = String(item.stockCode || '').padStart(5, '0');
       if (!byCode.has(code) || selected.has(code)) continue;
       selected.set(code, item);
@@ -776,6 +796,101 @@ async function syncHkexNonPublicListings({
   }
 }
 
+function cancellationTitleLooksLikeIpo(title, rawPayload) {
+  const text = `${title || ''} ${JSON.stringify(rawPayload || {})}`;
+  if (!/(cancel|withdraw|not\s+(?:to\s+)?proceed|terminate|撤回|取消上市|终止上市|不再进行|撤销上市)/i.test(text)) return false;
+  // “延期/推迟”不等于取消，不能把仍可能恢复的项目标成终止。
+  return !/(postpon|延期|推迟|延迟)/i.test(text);
+}
+
+async function syncHkexCancelledListings({
+  fromDate = shiftIsoDate(todayShanghai(), -180),
+  toDate = todayShanghai(),
+  limit = 50,
+  executor = pool.query.bind(pool),
+  fetchImpl = httpRequest,
+  searchImpl = searchAnnouncements,
+} = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fromDate)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(toDate)) || fromDate > toDate) {
+    throw new Error('港股取消上市公告日期范围无效');
+  }
+  const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
+  if (!source.rows[0]) throw new Error('港交所数据源未登记');
+  const candidateResult = await executor(`
+    SELECT security_code,security_name,instrument_id,source_documents,data_completeness
+      FROM public.ipo_history
+     WHERE market_code='HK'
+       AND ipo_status IN ('active','priced','allotted','postponed')
+       AND allotment_at IS NULL
+       AND offer_open_at::date BETWEEN $1::date AND $2::date
+     ORDER BY offer_open_at DESC,security_code
+     LIMIT $3`, [fromDate, toDate, Math.max(0, Number(limit) || 0)]);
+  const candidates = new Map(candidateResult.rows.map(row => [String(row.security_code), row]));
+  if (!candidates.size) return { ok: true, status: 'succeeded', candidates: 0, searched: 0, matched: 0, enriched: 0, failures: [], fromDate, toDate };
+  const run = await executor(
+    `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
+     VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
+    [source.rows[0].source_id, HKEX_CANCELLATION_DATASET, JSON.stringify({ fromDate, toDate, limit, candidateCount: candidates.size })]
+  );
+  const runId = run.rows[0].run_id;
+  const failures = [];
+  let enriched = 0;
+  try {
+    const announcements = await searchImpl({ fromDate, toDate, categories: ['17600'], _httpRequest: fetchImpl });
+    const selected = new Map();
+    for (const item of announcements.filter(row => row && row.fileLink && cancellationTitleLooksLikeIpo(row.title, row.rawPayload))) {
+      const code = canonicalHkCode(item.stockCode);
+      if (candidates.has(code) && !selected.has(code)) selected.set(code, item);
+    }
+    for (const [code, item] of selected) {
+      const current = candidates.get(code);
+      try {
+        const url = assertOfficialUrl(item.fileLink);
+        const body = await fetchImpl(url, { responseType: 'buffer', maxResponseBytes: 20 * 1024 * 1024 });
+        const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+        const sourceDocuments = mergeSourceDocuments(current.source_documents, {
+          type: 'listing_cancellation', url, title: item.title || 'HKEX cancellation notice',
+          announcedAt: item.announcedAt || null, language: 'en', contentSha256: responseSha256,
+          parserStatus: 'official_title_match_v1',
+        });
+        const completeness = {
+          ...(current.data_completeness && typeof current.data_completeness === 'object' ? current.data_completeness : {}),
+          publicOfferEligibility: 'excluded', exclusionReason: 'cancelled',
+        };
+        await executor(
+          `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
+           VALUES($1,$2,$3,$4,now(),$5::jsonb,$6)
+           ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now()`,
+          [runId, source.rows[0].source_id, HKEX_CANCELLATION_DATASET, `${code}|${url}`, JSON.stringify({
+            securityCode: code, sourceUrl: url, title: item.title || null, announcedAt: item.announcedAt || null,
+            responseBytes: buffer.length, responseSha256, parserStatus: 'official_title_match_v1',
+          }), responseSha256]
+        );
+        await executor(`
+          UPDATE public.ipo_history
+             SET ipo_status='cancelled',ipo_status_at=COALESCE(ipo_status_at,now()),source_documents=$2::jsonb,
+                 data_completeness=$3::jsonb,facts_published_at=now(),updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+           WHERE market_code='HK' AND security_code=$1`, [code, JSON.stringify(sourceDocuments), JSON.stringify(completeness)]);
+        if (current.instrument_id) {
+          await executor(`UPDATE core.instruments SET status='cancelled',raw_data=raw_data || $2::jsonb,updated_at=now() WHERE instrument_id=$1`,
+            [current.instrument_id, JSON.stringify({ source: 'hkex_announcements', evidenceUrl: url })]);
+        }
+        enriched += 1;
+      } catch (error) {
+        failures.push({ code, stage: 'fetch_or_persist', error: error.message || String(error) });
+      }
+    }
+    const status = failures.length ? (enriched ? 'degraded' : 'failed') : 'succeeded';
+    await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
+      [runId, status, enriched, failures.map(item => `${item.code}:${item.error}`).join('; ').slice(0, 2000)]);
+    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, enriched, failures, fromDate, toDate };
+  } catch (error) {
+    await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
+    throw error;
+  }
+}
+
 async function syncHkexProspectusFacts({
   fromDate = '2025-08-04',
   toDate = todayShanghai(),
@@ -847,7 +962,7 @@ async function syncHkexProspectusFacts({
     const documentsByCode = new Map();
     const candidatesNeedingSearch = candidates.filter(candidate => {
       const existing = (Array.isArray(candidate.source_documents) ? candidate.source_documents : [])
-        .filter(document => document && document.type === 'prospectus' && document.url);
+        .filter(isUsableProspectusDocument);
       if (existing.length) {
         documentsByCode.set(String(candidate.security_code), existing.map(document => ({
           fileLink: document.url,
@@ -1343,10 +1458,14 @@ module.exports = {
   fetchHkexNewListingReports,
   HKEX_NON_PUBLIC_LISTINGS,
   syncHkexNonPublicListings,
+  syncHkexCancelledListings,
+  cancellationTitleLooksLikeIpo,
   resolveHkexEnglishPdfUrl,
   parseHkexAllotmentPdf,
   allotmentTitleLooksLikeIpo,
   shouldPersistAllotmentFacts,
+  isVerifiedAllotmentDocument,
+  isUsableProspectusDocument,
   parseHkexProspectusPdf,
   syncHkexAllotmentFacts,
   syncHkexProspectusFacts,

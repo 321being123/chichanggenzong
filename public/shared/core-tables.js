@@ -17,7 +17,9 @@ function renderStats() {
     var gapDays = daysBetweenDates(base.date, todayCN());
     var tradingGapDays = countTradingDaysBetween(base.date, todayCN());
     var importedGap = latest.snapshotSource === 'imported' && latest.date !== todayCN() && tradingGapDays > 0;
-    if (gapDays != null && gapDays <= 4 && !importedGap) {
+    // “今日涨跌”只能使用上一交易日快照；缺少中间交易日时不能把多日变化冒充今日变化。
+    var hasPreviousTradingSnapshot = tradingGapDays === 0;
+    if (gapDays != null && gapDays <= 4 && !importedGap && hasPreviousTradingSnapshot) {
       changeAmt = s.total - base.totalAsset;
       changePct = base.totalAsset > 0 ? (changeAmt / base.totalAsset * 100) : 0;
       hasChange = true;

@@ -91,6 +91,17 @@ try:
     )
     check("结论显示沪市主板",
           "电科思仪-沪市主板" in board_report)
+    board_report = m.generate_markdown(
+        "2026年08月28日", "周五", [], [],
+        [
+            {"name": "科创测试", "code": "688001", "listing_analysis": {"summary": "预计上市"}},
+            {"name": "创业测试", "code": "301001", "listing_analysis": {"summary": "预计上市"}},
+            {"name": "北交测试", "code": "920001", "listing_analysis": {"summary": "预计上市"}},
+        ], [], sector_boost_info=[]
+    )
+    check("结论显示沪市科创板", "科创测试-沪市科创板" in board_report)
+    check("结论显示深市创业板", "创业测试-深市创业板" in board_report)
+    check("结论显示京市主板", "北交测试-京市主板" in board_report)
 finally:
     if 'original_accuracy_lines' in locals():
         m._build_accuracy_lines = original_accuracy_lines

@@ -46,9 +46,9 @@
 
 ## 本机 PostgreSQL 固定信息（每次本地验收前必读）
 
-- 本机唯一现役 PostgreSQL 实例为 17.2（Windows x64 免安装版），程序目录为 `C:\pgsql\bin`，数据目录为 `C:\pgdata`，监听 `localhost:5432`，本地业务库为 `portfolio`。
+- 本机唯一现役 PostgreSQL 实例为 17.2（Windows x64 免安装版），程序目录为 `E:\pgsql\bin`，数据目录为 `E:\pgdata`，监听 `localhost:5432`，本地业务库为 `portfolio`。
 - 该实例未注册为 Windows 服务，且未加入系统 `PATH`。`Get-Service *postgres*` 无结果或 `Get-Command psql` 找不到命令，均不能作为“本机未安装 PostgreSQL”的依据。
-- 在得出“本机没有数据库”的结论前，必须先检查 `C:\pgsql\bin\pg_ctl.exe`、`C:\pgsql\bin\psql.exe` 和 `C:\pgdata\PG_VERSION`；文件存在但实例未运行时，应按需启动，不能重新安装。
+- 在得出“本机没有数据库”的结论前，必须先检查 `E:\pgsql\bin\pg_ctl.exe`、`E:\pgsql\bin\psql.exe` 和 `E:\pgdata\PG_VERSION`；文件存在但实例未运行时，应按需启动，不能重新安装。
 - 数据库连接账号、密码等敏感配置只从项目根目录 `.env` 读取，禁止把密码复制进规则、文档或代码。
 - 启动、状态检查、连接和停止命令见 `deploy/本地验证交接文档.md` 的“本机 PostgreSQL 固定信息”章节。
 

@@ -353,10 +353,14 @@ router.get('/history', async (req, res) => {
   try {
     const type = req.query.type === 'bond' ? 'bond' : (req.query.type === 'hk_stock' ? 'hk_stock' : 'stock');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 200);
+    const offset = Math.max(parseInt(req.query.offset || '0', 10) || 0, 0);
     let rows;
+    let total = null;
     if (type === 'bond') {
       rows = await getBondHistoryList(limit);
     } else if (type === 'hk_stock') {
+      const countResult = await pool.query("SELECT COUNT(*)::int AS total FROM ipo_history WHERE market_code='HK'");
+      total = countResult.rows[0] ? countResult.rows[0].total : 0;
       const r = await pool.query(
         `SELECT h.security_code,h.security_name,
                 COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
@@ -371,6 +375,8 @@ router.get('/history', async (req, res) => {
                 live.subscription_multiple AS subscription_live_multiple,
                 live.source_code AS subscription_live_source,
                 live.observed_at AS subscription_live_observed_at,
+                (live.raw_payload->>'signal_kind') AS subscription_live_kind,
+                (live.raw_payload->>'signal_origin') AS subscription_live_origin,
                 (live.observed_at IS NULL OR live.observed_at < now() - interval '1 day') AS subscription_live_stale,
                 livermore_grey.grey_market_price_hkd AS livermore_grey_market_price_hkd,
                 livermore_grey.grey_market_change_pct AS livermore_grey_market_change_pct,
@@ -411,7 +417,7 @@ router.get('/history', async (req, res) => {
               LIMIT 1
            ) q ON true
            LEFT JOIN LATERAL (
-             SELECT s.subscription_multiple,s.source_code,s.observed_at
+             SELECT s.subscription_multiple,s.source_code,s.observed_at,s.raw_payload
                FROM analytics.hk_ipo_market_snapshots s
               WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g') AND s.signal_type='subscription'
               ORDER BY s.observed_at DESC
@@ -444,7 +450,7 @@ router.get('/history', async (req, res) => {
            ) perf ON true
           WHERE h.market_code='HK'
           ORDER BY COALESCE(h.offer_open_at,h.listing_at,h.facts_published_at) DESC NULLS LAST,h.security_code
-          LIMIT $1`, [limit]
+          LIMIT $1 OFFSET $2`, [limit, offset]
       );
       rows = r.rows.map(row => ({
         ...row,
@@ -493,7 +499,7 @@ router.get('/history', async (req, res) => {
       rows = r.rows;
     }
     const formalGate = type === 'hk_stock' ? await getHkFormalGateStatus() : null;
-    res.json({ type, rows, ...(formalGate ? { formal_gate: formalGate } : {}) });
+    res.json({ type, rows, ...(total !== null ? { total, limit, offset } : {}), ...(formalGate ? { formal_gate: formalGate } : {}) });
   } catch (e) {
     res.status(500).json({ error: '读取打新历史失败' });
   }
@@ -568,7 +574,7 @@ router.get('/report/code', async (req, res) => {
           `- **最终发行价**：${row.issue_price_final == null ? '待公告' : row.issue_price_final + ' 港元'}`,
           `- **每手股数**：${row.lot_size_shares == null ? '待公告' : row.lot_size_shares}`, `- **每手资金**：${row.lot_amount_hkd == null ? '待公告' : row.lot_amount_hkd + ' 港元'}`,
           `- **申请费用（含佣金及征费）**：${row.application_fee_hkd == null ? '待公告' : row.application_fee_hkd + ' 港元'}`, `- **经纪佣金**：${row.brokerage_fee_hkd == null ? '待公告' : row.brokerage_fee_hkd + ' 港元'}`,
-          `- **申购期认购倍数**：${row.subscription_live_multiple == null ? '暂无盘中数据' : row.subscription_live_multiple + ' 倍（来源：利弗莫尔）'}`,
+          `- **申购期认购倍数**：${row.subscription_live_multiple == null ? '暂无盘中数据' : row.subscription_live_multiple + ' 倍（来源：' + (row.subscription_live_source === 'vbkr-public' ? '华盛公开新股页' : '利弗莫尔') + '）'}`,
           `- **最终超额认购倍数**：${row.oversubscribe_multiple == null ? '待配售结果' : row.oversubscribe_multiple + ' 倍'}`,
           `- **绿鞋判断**：${assessHkGreenshoe(row.greenshoe_details, null)}`,
           `- **利弗莫尔暗盘涨幅**：${row.livermore_grey_market_change_pct == null ? '暂无' : row.livermore_grey_market_change_pct + '%'}`,

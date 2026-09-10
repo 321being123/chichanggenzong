@@ -88,6 +88,16 @@ const adviceMd = "## 📋 结论\n\n**上市**\n- 测试转债-深市（150元�
 const currentCalendar = [{ date: "2026-08-18", apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [{ code: "123456", name: "测试转债" }] }];
 check("日报日期与日历一致时显示建议", sandbox.ipoRenderAdvice(adviceMd, { reportDate: "20260818", calendar: currentCalendar }).indexOf("测试转债") >= 0);
 check("日报落后日历时隐藏旧建议", sandbox.ipoRenderAdvice(adviceMd, { reportDate: "20260817", calendar: currentCalendar }).indexOf("旧建议已隐藏") >= 0);
+const legacyAdviceMd = "## 📋 结论\n\n**打新**\n- 中塑股份-创业板（顶格申购）\n- 科创测试-科创板（可以申购）";
+const legacySummary = {
+  apply_stocks: [
+    { code: "301001", name: "中塑股份" },
+    { code: "688001", name: "科创测试" }
+  ], apply_bonds: [], list_stocks: [], list_bonds: []
+};
+const legacyAdviceHtml = sandbox.ipoRenderAdvice(legacyAdviceMd, { reportDate: "20260818", summary: legacySummary });
+check("旧创业板文案补齐深市", legacyAdviceHtml.indexOf("中塑股份-深市创业板") >= 0);
+check("旧科创板文案补齐沪市", legacyAdviceHtml.indexOf("科创测试-沪市科创板") >= 0);
 
 const emptyAdviceMd = "## 📋 结论\n\n---\n## 一、明日可申购\n\n> 明日无可申购的新股或新债。";
 const emptySummary = { apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };

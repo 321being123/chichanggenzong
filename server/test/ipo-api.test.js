@@ -67,6 +67,14 @@ async function main() {
     check('listing_date 无 nan', () => assert.strictEqual(nan.length, 0));
   }
 
+  // 3.5 港股历史默认批量读取并返回分页总数，避免只展示前 50 条
+  console.log('== 3.5 GET /api/ipo/history?type=hk_stock ==');
+  r = await fetch(base + '/api/ipo/history?type=hk_stock&limit=200&offset=0');
+  check('港股 HTTP 200', () => assert.strictEqual(r.status, 200));
+  j = await r.json();
+  check('港股返回分页总数', () => assert.ok(Number.isInteger(j.total) && j.total >= (j.rows || []).length));
+  check('港股返回 limit/offset', () => assert.strictEqual(j.limit, 200) && assert.strictEqual(j.offset, 0));
+
   // 4. 已上市新债
   console.log('== 4. GET /api/ipo/history?type=bond ==');
   r = await fetch(base + '/api/ipo/history?type=bond&limit=20');

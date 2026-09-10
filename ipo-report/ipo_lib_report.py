@@ -273,16 +273,23 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
     lines.append("")
 
     def _get_market(code):
-        code_str = str(code or "")
+        code_str = str(code or "").strip().split(".")[0]
+        if code_str.startswith(("920", "82", "83", "87", "88", "89", "43")):
+            return "京市主板"
         if code_str.startswith(("688", "118")):
-            return "科创板"
+            return "沪市科创板"
         if code_str.startswith(("300", "301", "123")):
-            return "创业板"
+            return "深市创业板"
         if code_str.startswith(("60", "110", "111", "113")):
             return "沪市主板"
         if code_str.startswith(("00", "127", "128")):
             return "深市主板"
-        return _market_type_to_board_key("", code_str)
+        board = _market_type_to_board_key("", code_str)
+        return {
+            "科创板": "沪市科创板",
+            "创业板": "深市创业板",
+            "北交所": "京市主板",
+        }.get(board, board)
 
     # 上市结论
     listing_items = []

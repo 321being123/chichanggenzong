@@ -117,10 +117,14 @@ function ipoHkLiveOversubscriptionCell(it) {
   }
   var n = Number(it.subscription_live_multiple);
   if (!isFinite(n) || n <= 0) return '<span>暂无盘中数据</span>';
-  var source = String(it.subscription_live_source || '') === 'livermore' ? '利弗莫尔' : String(it.subscription_live_source || '外部来源');
+  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛（捷利数据）' };
+  var source = sourceMap[String(it.subscription_live_source || '')] || String(it.subscription_live_source || '外部来源');
+  var kind = String(it.subscription_live_kind || '').toLowerCase();
+  var origin = String(it.subscription_live_origin || '').toLowerCase();
+  var label = kind === 'margin_estimate' || origin === 'history_window_fallback' ? '预计孖展' : '申购';
   var time = it.subscription_live_observed_at ? String(it.subscription_live_observed_at).slice(0, 16).replace('T', ' ') : '';
   var stale = it.subscription_live_stale ? '（可能过期）' : '';
-  return escapeHtml(source + ' ' + n.toFixed(2) + '倍' + stale) + (time ? '<br><small style="color:#999;">' + escapeHtml(time) + '</small>' : '');
+  return escapeHtml(source + label + ' ' + n.toFixed(2) + '倍' + stale) + (time ? '<br><small style="color:#999;">' + escapeHtml(time) + '</small>' : '');
 }
 
 function ipoHkGreenshoeCell(it) {
@@ -340,6 +344,45 @@ function ipoRenderAdviceStatus(title, message) {
     '<div class="ipo-content" style="padding:14px 18px;color:#8a6d3b;background:#fffaf0;">' + escapeHtml(message) + '</div></div>';
 }
 
+// 打新建议统一显示“名称-市场板块”；兼容历史日报中的旧板块文案。
+function ipoAdviceMarketBoard(code) {
+  var c = String(code || '').trim().split('.')[0];
+  if (/^(920|82|83|87|88|89|43)/.test(c)) return '京市主板';
+  if (/^(688|118)/.test(c)) return '沪市科创板';
+  if (/^(300|301|123)/.test(c)) return '深市创业板';
+  if (/^(600|601|603|605|110|111|113)/.test(c)) return '沪市主板';
+  if (/^(000|001|002|003|127|128)/.test(c)) return '深市主板';
+  return '';
+}
+
+function ipoAdviceItemLabel(item, groupHead, summary) {
+  var text = String(item || '');
+  var open = text.indexOf('（');
+  if (open < 0) return text;
+  var head = text.slice(0, open);
+  var detail = text.slice(open);
+  var suffixMatch = head.match(/^(.*?)-(沪市主板|深市主板|沪市科创板|深市创业板|京市主板|沪市|深市|京市|科创板|创业板|北交所)$/);
+  var name = suffixMatch ? suffixMatch[1] : head;
+  var oldLabel = suffixMatch ? suffixMatch[2] : '';
+  var keys = groupHead === '上市' ? ['list_stocks', 'list_bonds'] : ['apply_stocks', 'apply_bonds'];
+  var rows = [];
+  (keys || []).forEach(function (key) {
+    if (summary && Array.isArray(summary[key])) rows = rows.concat(summary[key]);
+  });
+  var row = rows.find(function (candidate) {
+    return String(candidate && (candidate.name || candidate.security_name) || '') === name;
+  });
+  var label = ipoAdviceMarketBoard(row && (row.code || row.security_code || row.secu_code));
+  if (!label) {
+    label = {
+      '科创板': '沪市科创板', '创业板': '深市创业板', '北交所': '京市主板',
+      '沪市': '沪市主板', '深市': '深市主板', '京市': '京市主板'
+    }[oldLabel] || oldLabel;
+  }
+  if (!label) return text;
+  return name + '-' + label + detail;
+}
+
 function ipoRenderAdvice(md, context) {
   context = context || {};
   if (!md) return ipoRenderAdviceStatus('打新建议暂不可用', '当前没有可展示的日报建议。');
@@ -389,7 +432,7 @@ function ipoRenderAdvice(md, context) {
     html += '<div style="margin-bottom:8px;"><span style="font-size:13px;color:#333;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';
     html += '<ul style="margin:0 0 10px;padding-left:22px;">';
     g.items.forEach(function (it) {
-      html += '<li style="margin-bottom:4px;color:#333;font-size:13px;">' + escapeHtml(it);
+      html += '<li style="margin-bottom:4px;color:#333;font-size:13px;">' + escapeHtml(ipoAdviceItemLabel(it, g.head, summary));
       html += '</li>';
     });
     html += '</ul>';
@@ -465,13 +508,29 @@ function ipoCalendarRow(label, items, color) {
 
 // ========== 打新历史（集思录式列表） ==========
 async function ipoLoadHistory(type) {
+  return ipoLoadHistoryPage(type, 0);
+}
+
+async function ipoLoadHistoryPage(type, offset) {
   var el = document.getElementById('ipo-history');
   if (el) el.innerHTML = '<div class="empty-state">加载中...</div>';
   try {
-    var r = await fetch(api('/api/ipo/history?type=' + type + '&limit=50'));
+    var pageSize = 200;
+    var pageOffset = Math.max(Number(offset) || 0, 0);
+    var r = await fetch(api('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset));
     var d = await r.json();
     if (el) {
-      el.innerHTML = ipoRenderHistory(type, d.rows || []);
+      var html = ipoRenderHistory(type, d.rows || []);
+      if (type === 'hk_stock' && Number(d.total) > 0) {
+        var total = Number(d.total);
+        var shownEnd = pageOffset + (d.rows || []).length;
+        html += '<div class="ipo-history-pagination" style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;color:#777;font-size:12px;">';
+        html += '<span>共 ' + total + ' 条</span>';
+        if (pageOffset > 0) html += '<button type="button" onclick="ipoLoadHistoryPage(\'' + escapeHtml(type) + '\',' + Math.max(0, pageOffset - pageSize) + ')">上一页</button>';
+        if (shownEnd < total) html += '<button type="button" onclick="ipoLoadHistoryPage(\'' + escapeHtml(type) + '\',' + shownEnd + ')">加载下一页</button>';
+        html += '</div>';
+      }
+      el.innerHTML = html;
       if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-ipo', top: '.nav' });
     }
   } catch (e) {
@@ -521,7 +580,7 @@ function ipoRenderHistory(type, rows) {
   }
 
   if (type === 'hk_stock') {
-    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期认购倍数（每日）', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
+    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期预计孖展倍数（每日）', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
     var hkRows = rows.map(function (it) {
       return [
         escapeHtml(it.security_code || ''), ipoHkNameCell(it.security_name_cn || it.security_name, it.security_code),

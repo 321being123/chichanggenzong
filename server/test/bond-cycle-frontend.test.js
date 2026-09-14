@@ -49,6 +49,12 @@ check('定义 switchBondSub / loadBondCycle / initBondCycleSub', () => {
   assert.ok(js.includes('function loadBondCycle('), '缺少 loadBondCycle');
   assert.ok(js.includes('function initBondCycleSub('), '缺少 initBondCycleSub');
 });
+check('安全性子页切换会加载安全性数据', () => {
+  assert.ok(/if \(sub === 'safety' && typeof loadBondSafety === 'function'\) loadBondSafety\(\);/.test(js),
+    '安全性子页未接入 loadBondSafety');
+  assert.ok(/else if \(sub === 'cycle'\) loadBondCycle\(\);/.test(js),
+    '周期子页分支被安全性分支破坏');
+});
 check('只读接口路径为 /api/bond-cycle', () => assert.ok(js.includes("/api/bond-cycle?range="), '前端未接入 /api/bond-cycle'));
 check('页面只展示、不复制后端公式', () => {
   assert.ok(!js.includes('function computeWeight'), '前端不应自行实现权重公式');

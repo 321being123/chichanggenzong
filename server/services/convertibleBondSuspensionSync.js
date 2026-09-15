@@ -82,13 +82,23 @@ async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
   const sourceId = sourceResult.rows[0] && sourceResult.rows[0].source_id;
   if (!sourceId) return { ok: false, status: 'source_missing', count: 0, queryStatus: 'not_run' };
   const instrumentMap = new Map(stocks.map(row => [row.canonical_code, row.instrument_id]));
-  const rows = tsRows(data).map(row => ({
-    instrument_id: instrumentMap.get(row.ts_code),
-    trade_date: isoDate(row.trade_date),
-    suspend_type: String(row.suspend_type || 'S'),
-    suspend_reason: row.suspend_reason || null,
-    raw_payload: row,
-  })).filter(row => row.instrument_id && row.trade_date);
+  // suspend_d 可能同日返回“复牌(R)”和“停牌(S)”两条记录；表的唯一键按证券+日期，
+  // 先去重并优先保留停牌事实，避免 PostgreSQL ON CONFLICT 同一批次重复更新报错。
+  const rowMap = new Map();
+  for (const row of tsRows(data)) {
+    const mapped = {
+      instrument_id: instrumentMap.get(row.ts_code),
+      trade_date: isoDate(row.trade_date),
+      suspend_type: String(row.suspend_type || 'S'),
+      suspend_reason: row.suspend_reason || null,
+      raw_payload: row,
+    };
+    if (!mapped.instrument_id || !mapped.trade_date) continue;
+    const key = `${mapped.instrument_id}:${mapped.trade_date}`;
+    const previous = rowMap.get(key);
+    if (!previous || (previous.suspend_type !== 'S' && mapped.suspend_type === 'S')) rowMap.set(key, mapped);
+  }
+  const rows = [...rowMap.values()];
 
   const client = await pool.connect();
   try {

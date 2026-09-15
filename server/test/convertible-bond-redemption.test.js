@@ -72,12 +72,14 @@ assert.ok(migration.includes('087_convertible_bond_waive_same_day_validity'), '�
 assert.ok(migration.includes('CREATE VIEW public.bond_unified'));
 const redemptionService = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionService.js'), 'utf8');
 const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8');
+const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
 const callEventParser = fs.readFileSync(path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py'), 'utf8');
 assert.ok(redemptionService.includes('JOIN market.convertible_bond_daily_metrics dm'));
 assert.ok(redemptionService.includes('m.trade_date=(SELECT MAX(trade_date) FROM market.convertible_bond_daily_metrics)'));
 assert.ok(redemptionService.includes('PARTITION BY instrument_id,trade_date'), '正股日线必须先按交易日去重');
 assert.ok(redemptionService.includes('expectedMarketDate') && redemptionService.includes('latestMarketDate < expectedMarketDate'), '强赎新鲜度必须纳入交易日历最新交易日');
 assert.ok(redemptionService.includes('stock_suspend_calendar') && redemptionService.includes('suspended_dates') && redemptionService.includes('c.diagnostics'), '强赎计算必须区分停牌日与真正缺失日并返回诊断');
+assert.ok(suspensionSync.includes('const rowMap = new Map') && suspensionSync.includes("mapped.suspend_type === 'S'"), '同日复牌/停牌重复返回必须先去重并优先保留停牌事实');
 assert.ok(redemptionService.includes("WHEN 'announced' THEN 1 WHEN 'maturity_near' THEN 2 WHEN 'met_pending' THEN 3"), '强赎列表排序必须先公告、再临近到期、再已满足待确认');
 assert.ok(redemptionSync.includes("'即将到期'") && redemptionSync.includes("'停止交易'") && redemptionSync.includes("'到期兑付'"), '强赎公告检索必须覆盖到期赎回提示公告');
 assert.ok(stockAnalysis.includes('rows.length >= announceCount') && stockAnalysis.includes('!Number.isFinite(announceCount)') && stockAnalysis.includes('maxPages = 1'), '深交所公告分页必须按公告总数判断完整性并为备源预留预算');
@@ -132,6 +134,5 @@ assert.ok(redemptionService.includes('preConversion') && redemptionService.inclu
 assert.ok(redemptionSync.includes('现金管理') && redemptionSync.includes('明确转债证据'), '现金管理公告不得误识别为转债强赎事件');
 assert.ok(analysis.includes('DATASET_INCOMPLETE') && analysis.includes('markStockDailyBackfillStale')
   && !analysis.includes('source.tushare, recentDays.length'), '正股补水失败必须标记分区过期，且不再传入多余 SQL 参数');
-const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
 assert.ok(suspensionSync.includes('JOIN public.bond_unified u') && suspensionSync.includes("u.status='listed'"), '停牌覆盖目标必须按当前在市转债选择，不能依赖历史行情日');
 console.log('convertible bond redemption tests passed');

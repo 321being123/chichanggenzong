@@ -124,7 +124,7 @@ function runStaticContracts() {
   assert.ok(/row\.diagnostics\.missing_dates/.test(frontend)
     && !/row\.data_status !== 'complete'/.test(frontend),
     '页面必须显示停牌缺口，且 waived 不得混入数据不完整筛选');
-  assert.ok(read('public/index.html').includes('js/bond-redemption.js?v=5'), '强赎页面脚本版本必须更新');
+  assert.ok(read('public/index.html').includes('js/bond-redemption.js?v=6'), '强赎页面脚本版本必须更新');
 
   const migrations = read('server/db/migrations.js');
   assert.ok(/migration146ConvertibleBondDataStatusConstraint/.test(migrations)

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-14",
+  "lastReviewed": "2026-09-15",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -19,6 +19,32 @@
       "update": ["AGENTS.md", "governance/knowledge-map.json"],
       "checks": ["npm.cmd run check:knowledge"],
       "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用"]
+    },
+    {
+      "id": "convertible-bond-redemption",
+      "risk": "high",
+      "paths": [
+        "server/services/convertibleBondRedemptionService.js",
+        "server/services/convertibleBondRedemptionSync.js",
+        "server/scripts/extractConvertibleBondCallEvent.py",
+        "server/routes/bondRedemption.js",
+        "public/js/bond-redemption.js",
+        "docs/可转债强赎监控页面_设计方案.md",
+        "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md"
+      ],
+      "keywords": ["强赎", "提前赎回", "不提前赎回", "强赎锁定期", "暂不强赎", "赎回实施", "赎回结果"],
+      "read": [
+        "docs/技术架构.md",
+        "docs/可转债强赎监控页面_设计方案.md",
+        "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md"
+      ],
+      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
+      "expandOn": ["历史公告", "解析版本", "任务水位", "状态优先级", "数据质量", "历史回补"]
     },
     {
       "id": "hk-ipo-development",

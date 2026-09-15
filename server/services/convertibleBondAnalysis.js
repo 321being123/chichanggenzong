@@ -2121,7 +2121,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   if (normalizedCodes.length) { params.push(normalizedCodes); clauses.push(`i.canonical_code=ANY($${params.length}::text[])`); }
   const defaultLimit = globalSync ? 2000 : 50;
   if (cachedOnly && !normalizedCodes.length) {
-    clauses.push(`EXISTS (
+    clauses.push(`(EXISTS (
       SELECT 1
         FROM analytics.convertible_bond_announcement_history pending_no_revision
        WHERE pending_no_revision.instrument_id=i.instrument_id
@@ -2146,7 +2146,14 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
                   )
                   AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'maturity_checked'))
          AND COALESCE(pending_no_revision.raw_payload->'reparse'->>'status','') <> 'failed'
-    )`);
+       ) OR EXISTS (
+           SELECT 1 FROM event.convertible_bond_call_events pending_call
+            WHERE pending_call.instrument_id=i.instrument_id
+              AND pending_call.source_url <> ''
+              AND (pending_call.parser_version IS DISTINCT FROM 'call-event-v3'
+                   OR pending_call.parse_status <> 'complete')
+         )
+    ))`);
   }
   const effectiveDefaultLimit = cachedOnly && !normalizedCodes.length ? 10 : defaultLimit;
   const limitValue = Math.max(1, Math.min(limit == null ? effectiveDefaultLimit : (Number(limit) || 50), 2000));
@@ -2341,6 +2348,14 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
       toDate: end,
       officialEvents,
     });
+  } else if (cachedOnly) {
+    redemption = await require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements({
+      fromDate: scanStart || '2000-01-01',
+      toDate: end,
+      cachedOnly: true,
+      retryFailed,
+      limit: limitValue,
+    });
   }
   if (globalSync) {
     await pool.query(
@@ -2367,9 +2382,18 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
       },
       bond_announcement_facts: { quality_status: 'passed', changed_count: changedCount },
       bond_redemption_events: {
-        quality_status: 'passed',
+        quality_status: redemption && redemption.diagnostics && redemption.diagnostics.quality_status || 'failed',
         discovered: Number(redemption && redemption.discovered || 0),
+        call_candidates: Number(redemption && redemption.call_candidates || 0),
         matched: Number(redemption && redemption.matched || 0),
+        documents_ready: Number(redemption && redemption.documents_ready || 0),
+        parse_complete: Number(redemption && redemption.parse_complete || 0),
+        parse_partial: Number(redemption && redemption.parse_partial || 0),
+        unmatched: Number(redemption && redemption.unmatched || 0),
+        download_failed: Number(redemption && redemption.download_failed || 0),
+        extract_failed: Number(redemption && redemption.extract_failed || 0),
+        pending_old_parser: Number(redemption && redemption.pending_old_parser || 0),
+        projection_advanced: Boolean(redemption && redemption.diagnostics && redemption.diagnostics.projection_advanced),
       },
     },
     results,

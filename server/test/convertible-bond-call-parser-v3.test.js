@@ -1,0 +1,57 @@
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const root = path.join(__dirname, '..', '..');
+const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'convertible-bond-call-v3.json'), 'utf8'));
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bond-call-v3-test-'));
+try {
+  const texts = {};
+  const metadata = {};
+  for (const item of Object.values(fixture)) {
+    texts[item.url] = item.text;
+    metadata[item.url] = { title: item.title, announced_at: item.announced_at, event_type: item.event_type || 'waive', content_hash: `pdf-${item.url.split('/').pop()}` };
+  }
+  const textFile = path.join(tempDir, 'texts.json');
+  const metadataFile = path.join(tempDir, 'metadata.json');
+  fs.writeFileSync(textFile, JSON.stringify(texts), 'utf8');
+  fs.writeFileSync(metadataFile, JSON.stringify(metadata), 'utf8');
+  const python = path.join(root, 'venv', 'Scripts', 'python.exe');
+  const script = path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py');
+  const result = spawnSync(python, [script, '--text-json', textFile, '--metadata-json', metadataFile], { cwd: root, encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr || '解析器进程失败');
+  const rows = new Map(JSON.parse(result.stdout).map(row => [row.source_url, row]));
+  const range = rows.get(fixture.range.url);
+  assert.strictEqual(range.no_call_until, '2026-11-25');
+  assert.strictEqual(range.validity_basis, 'explicit_range');
+  assert.strictEqual(range.lock_start_date, '2026-05-26');
+  assert.strictEqual(range.next_count_start_date, '2026-11-26');
+  assert.strictEqual(range.parse_status, 'complete');
+  assert.strictEqual(range.content_hash, 'pdf-call-range.pdf');
+  assert.ok(range.text_hash && range.evidence.no_call_until);
+  const ambiguousRange = rows.get(fixture.ambiguous_range.url);
+  assert.strictEqual(ambiguousRange.no_call_until, '2026-11-25');
+  assert.strictEqual(ambiguousRange.validity_basis, 'explicit_range');
+  assert.strictEqual(ambiguousRange.parse_status, 'complete');
+  assert.strictEqual(rows.get(fixture.cross_year.url).no_call_until, '2026-06-19');
+  assert.strictEqual(rows.get(fixture.through_maturity.url).validity_basis, 'through_maturity');
+  assert.strictEqual(rows.get(fixture.through_maturity.url).parse_status, 'complete');
+  assert.strictEqual(rows.get(fixture.partial.url).parse_status, 'partial');
+  assert.ok(rows.get(fixture.partial.url).errors.includes('no_call_deadline_not_found'));
+  const exercise = rows.get(fixture.exercise.url);
+  assert.strictEqual(exercise.event_type, 'exercise');
+  assert.strictEqual(exercise.decision_date, '2026-08-07');
+  assert.strictEqual(exercise.parse_status, 'complete');
+  assert.ok(exercise.evidence.decision_date);
+  const triggerRange = rows.get(fixture.trigger_range_not_lock.url);
+  assert.strictEqual(triggerRange.no_call_until, null);
+  assert.strictEqual(triggerRange.validity_basis, 'unknown');
+  assert.strictEqual(triggerRange.parse_status, 'partial');
+  assert.ok(triggerRange.errors.includes('no_call_deadline_not_after_decision'));
+  assert.strictEqual(triggerRange.evidence.no_call_until_candidate, '2026-06-08');
+  console.log('convertible bond call parser v3 tests passed');
+} finally {
+  fs.rmSync(tempDir, { recursive: true, force: true });
+}

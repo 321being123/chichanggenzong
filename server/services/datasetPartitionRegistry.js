@@ -147,7 +147,7 @@ async function areJobDatasetsPublished(jobCode, businessDate) {
   return datasets.every(code => {
     const row = byCode.get(code);
     if (!row || row.status !== 'published' || row.is_stale) return false;
-    if (code === 'ipo_history') return row.diagnostics && row.diagnostics.quality_status === 'passed';
+    if (code === 'ipo_history' || code === 'bond_redemption_events') return row.diagnostics && row.diagnostics.quality_status === 'passed';
     if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';
     return true;
   });

@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { effectiveConversionPrice, classifyProgress } = require('../services/convertibleBondRedemptionService');
-const { classifyCallEvent, eventParseComplete, pickInstrument } = require('../services/convertibleBondRedemptionSync');
+const { classifyCallEvent, eventParseComplete, pickInstrument, callItemsFromOfficialEvents } = require('../services/convertibleBondRedemptionSync');
 
 assert.strictEqual(effectiveConversionPrice(10, [{ change_date: '2026-08-10', price_before: 10, price_after: 9 }], '2026-08-09'), 10);
 assert.strictEqual(effectiveConversionPrice(10, [{ change_date: '2026-08-10', price_before: 10, price_after: 9 }], '2026-08-10'), 9);
@@ -12,6 +12,10 @@ assert.strictEqual(classifyProgress({ matchedDays: 3, requiredDays: 15, observat
 assert.strictEqual(classifyProgress({ matchedDays: 3, requiredDays: 15, observationDays: 30, expectedObservationDays: 28,
   bars: Array(28).fill({}), triggerPrice: 12, closePrice: 11,
   missingDates: ['2026-07-14', '2026-07-15'], suspendedDates: ['2026-07-14', '2026-07-15'] }).dataStatus, 'complete');
+assert.deepStrictEqual(classifyProgress({ locked: true, matchedDays: 30, requiredDays: 15, observationDays: 30,
+  bars: Array(30).fill({}), triggerPrice: 12, closePrice: 13 }), { status: 'not_active', dataStatus: 'complete', distance: null });
+assert.strictEqual(eventParseComplete('exercise', { decisionDate: '2026-08-07' }), true);
+assert.strictEqual(eventParseComplete('exercise', {}), false);
 assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-08-31', lastConversionDate: '2026-09-03' }), true);
 assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-08-31' }), false);
 assert.strictEqual(classifyCallEvent('南方航空关于“南航转债”到期兑付暨摘牌的第三次提示性公告'), 'implementation');
@@ -35,7 +39,7 @@ const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convert
 const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-redemption"'));
-assert.ok(html.includes('js/bond-redemption.js?v=5'));
+assert.ok(html.includes('js/bond-redemption.js?v=6'));
 assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-search"') && html.includes('data-autofill-ignore'), '强赎搜索框必须明确为非认证输入');
 assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));
 assert.ok(page.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
@@ -76,7 +80,7 @@ assert.ok(redemptionSync.includes('eventParseComplete') && redemptionSync.includ
 assert.ok(redemptionSync.includes('return null') && redemptionSync.includes('不能默认取第一只'), '同一正股多只转债时禁止模糊匹配');
 assert.ok((redemptionCss.includes('color:#172033') || redemptionCss.includes('var(--bond-feature-text)')) && redemptionCss.includes('.bond-redemption-toolbar input,.bond-redemption-toolbar select') && redemptionCss.includes('font-size:13px'), '强赎卡片文字和输入控件必须沿用统一 UI 颜色与样式');
 assert.ok(page.includes("['last_trade_date','停止交易日']") && page.includes("['last_conversion_date','停止转股日']") && !page.includes("['announcement_title','最新公告']"), '强赎表格应显示停止交易日、停止转股日并移除最新公告列');
-assert.ok(callEventParser.includes('PARTIAL_DATE') && callEventParser.includes('停止交易日') && callEventParser.includes('停止转股日') && callEventParser.includes('parser_version": "2"'), '强赎公告解析必须支持不重复年份的停止交易/停止转股日期');
+assert.ok(callEventParser.includes('PARTIAL_DATE') && callEventParser.includes('停止交易日') && callEventParser.includes('停止转股日') && callEventParser.includes('call-event-v3') && callEventParser.includes('content_hash'), '强赎公告解析必须支持不重复年份的停止交易/停止转股日期并保留正文哈希');
 assert.ok(list.includes('getLatestCallStateMap') && list.includes('JOIN public.bond_unified u'));
 assert.ok(analysis.includes('getLatestCallState') && analysis.includes('call_status'));
 assert.ok(list.includes('call_status') && fs.readFileSync(path.join(root, 'public', 'js', 'bond-list.js'), 'utf8').includes('bondListLifecycleMarker'), '上市列表必须复用统一强赎状态并展示名称标识');
@@ -87,4 +91,33 @@ assert.ok(runner.includes("convertible_bond_announcement_history_sync")
   && analysis.includes("require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements"),
   '强赎公告必须由统一可转债公告任务采集并分发');
 assert.ok(valuation.includes('JOIN public.bond_unified u'));
+assert.ok(redemptionSync.includes('convertible_bond_call_projection:call-event-v3') && redemptionSync.includes('event.documents')
+  && redemptionSync.includes('pending_old_parser'), '强赎同步必须独立维护正文解析水位、文档缓存和旧解析器积压');
+assert.strictEqual(callItemsFromOfficialEvents([{ instrument_id: 319, source_number: 'replay-1', url: 'https://static.cninfo.com.cn/replay.pdf' }])[0].instrumentId, 319,
+  '缓存回放必须保留已有事件的证券身份，不能因正股代码缺失重新模糊匹配');
+assert.strictEqual(callItemsFromOfficialEvents([{ instrument_id: 319, source_number: 'replay-2', url: 'https://static.cninfo.com.cn/finalpage/2026-08-08/replay.pdf', announcementTime: 1786118400000 }])[0].announcedAt, '2026-08-08',
+  '公告回放必须优先使用官方公告时间，不能把 PostgreSQL Date 对象回退成批次起始日');
+assert.strictEqual(callItemsFromOfficialEvents([{ instrument_id: 319, source_number: 'replay-3', event_date: '2026-08-08', url: 'https://static.cninfo.com.cn/finalpage/2026-08-09/replay.pdf' }])[0].announcedAt, '2026-08-09',
+  '缓存回放应优先使用官方 PDF URL 日期，不能保留旧缓存的错误公告日');
+assert.ok(/SELECT e\.instrument_id AS "instrumentId"/.test(redemptionSync), '缓存重解析查询必须携带已有事件证券身份');
+assert.ok(/FILTER \(WHERE parser_version IS DISTINCT FROM \$1\)/.test(redemptionSync)
+  && !/WHERE parser_version IS DISTINCT FROM \$1 OR parse_status <> 'complete'/.test(redemptionSync),
+  '旧解析器积压统计不能把当前解析器的 partial 结果重复计入');
+assert.ok(redemptionSync.includes("COUNT(*) FILTER (WHERE parser_version=$1 AND parse_status <> 'complete')")
+  && redemptionSync.includes("issue_type='document_cache_miss'"),
+  '强赎质量门禁必须统计全局部分解析和文档失败，不能只看本批结果');
+assert.ok(redemptionSync.includes('reconcileCallQuality') && redemptionSync.includes("q.issue_type='unmatched_security'"),
+  '强赎质量问题在重放成功后必须幂等收敛历史遗留告警');
+assert.ok(redemptionSync.includes('new_parser_lower_quality') && redemptionSync.includes('preserved_previous_fact'),
+  '新版解析质量较低时必须保留旧有效事实并记录解析历史');
+assert.ok(redemptionSync.includes("eventType === 'waive'") && redemptionSync.includes('announcementDate'),
+  '锁定截止日只能归属于不强赎事件，公告日期必须支持缓存原始时间回放');
+assert.ok(redemptionSync.includes('e.no_call_until <= e.decision_date'),
+  '缓存重解析必须纳入截止日不晚于决策日的历史错误事实');
+assert.ok(redemptionSync.includes("e.event_type IN ('waive','exercise') AND NOT (COALESCE(e.details"),
+  '行使事件缺少决策日证据时必须进入缓存重解析队列');
+assert.ok(redemptionSync.includes("substring(e.source_url from '/(20[0-9]{2}-[0-9]{2}-[0-9]{2})/')::date"),
+  '缓存重解析必须纳入公告日与官方 PDF URL 日期不一致的历史错误事实');
+assert.ok(migration.includes('152_convertible_bond_call_evidence_and_lock_state') && migration.includes('decision_date')
+  && migration.includes('calendar_status'), '强赎迁移必须落库公告决策日、锁定依据和交易日历状态');
 console.log('convertible bond redemption tests passed');

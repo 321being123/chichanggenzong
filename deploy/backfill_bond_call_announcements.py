@@ -57,7 +57,7 @@ DB = "portfolio"
 REMOTE_JS = "/opt/portfolio/_tmp_bond_call_backfill.js"
 
 # 与 syncConvertibleBondCallAnnouncements 的默认关键词保持一致
-KEYWORDS_JS = ("['强赎','提前赎回','不提前赎回','暂不赎回','不行使赎回','不实施赎回',"
+KEYWORDS_JS = ("['强赎','提前赎回','不提前赎回','暂不赎回','不行使赎回','不行使提前赎回','不实施赎回',"
                "'赎回实施','实施赎回','赎回结果','到期兑付','即将到期','停止交易','最后交易日']")
 
 AUDIT_JS = r"""
@@ -80,6 +80,21 @@ const KEYWORDS = __KEYWORDS__;
     );
     const have = new Set(rows.map(r => r.source_key));
     console.log('DB_EVENTS_IN_WINDOW ' + rows.length);
+    const quality = await pool.query(
+      "SELECT parse_status,parser_version,COUNT(*)::int AS count FROM event.convertible_bond_call_events " +
+      "WHERE announced_at >= (DATE '__FROM__' - INTERVAL '10 days') GROUP BY parse_status,parser_version ORDER BY parser_version,parse_status"
+    );
+    console.log('DB_PARSE_QUALITY ' + JSON.stringify(quality.rows));
+    const documents = await pool.query(
+      "SELECT COUNT(*)::int AS count, COUNT(*) FILTER (WHERE raw_payload->'extraction'->>'status'='complete')::int AS ready " +
+      "FROM event.documents WHERE document_type='convertible_bond_call_announcement' AND announced_at >= (DATE '__FROM__' - INTERVAL '10 days')"
+    );
+    console.log('DB_DOCUMENT_CACHE ' + JSON.stringify(documents.rows[0] || {}));
+    const projection = await pool.query(
+      "SELECT last_success_date::text,last_error,retry_count FROM ops.sync_cursors " +
+      "WHERE scope_key='convertible_bond_call_projection:call-event-v3' AND dataset_code='bond_redemption_events'"
+    );
+    console.log('PROJECTION_CURSOR ' + JSON.stringify(projection.rows[0] || null));
     const missing = [...uniq.values()].filter(x => !have.has(x.sourceKey));
     console.log('MISSING ' + missing.length);
     for (const x of missing) {
@@ -112,10 +127,13 @@ const { syncConvertibleBondCallAnnouncements } = require('./server/services/conv
 
 VERIFY_SQL = """
 SELECT e.announced_at, e.event_type, split_part(i.canonical_code,'.',1) AS bond_code, i.name AS bond_name,
+       COALESCE(e.decision_date::text,'-') AS decision_date,
+       COALESCE(e.lock_start_date::text,'-') AS lock_start_date,
        COALESCE(e.no_call_until::text,'-') AS no_call_until,
+       COALESCE(e.validity_basis,'-') AS validity_basis,
        COALESCE(e.last_trade_date::text,'-') AS last_trade,
        COALESCE(e.last_conversion_date::text,'-') AS last_conv,
-       e.parse_status, left(e.title,46) AS title
+       e.parse_status, e.parser_version, e.document_id, left(e.title,46) AS title
   FROM event.convertible_bond_call_events e
   JOIN core.instruments i ON i.instrument_id = e.instrument_id
  WHERE e.announced_at >= DATE '__FROM__'

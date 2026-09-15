@@ -26,7 +26,7 @@ function bondRedemptionDate(value) {
   return values.year + '年' + values.month + '月' + values.day + '日';
 }
 function bondRedemptionStatus(value, row) {
-  var labels = { announced: '已公告强赎', met_pending: '已满足待确认', near: '接近触发', maturity_near: '临近到期', tracking: '跟踪中', waived: '不提前赎回', completed: '已完成', inactive: '已失效', incomplete: '数据不完整' };
+  var labels = { announced: '已公告强赎', met_pending: '已满足待确认', near: '接近触发', maturity_near: '临近到期', tracking: '跟踪中', waived: '不提前赎回', completed: '已完成', inactive: '已失效', not_active: '暂不适用', incomplete: '数据不完整' };
   var cls = String(value || 'incomplete').replace(/[^a-z_]/g, '');
   var missing = row && row.diagnostics && Array.isArray(row.diagnostics.missing_dates) ? row.diagnostics.missing_dates : [];
   var warning = missing.length
@@ -52,7 +52,7 @@ function bondRedemptionCell(row, key) {
   if (key === 'bond_close' || key === 'stock_close' || key === 'current_conv_price' || key === 'trigger_price') return escapeHtml(bondRedemptionNum(row[key], 2));
   if (key === 'remain_size') return escapeHtml(bondRedemptionNum(row[key], 3));
   if (key.indexOf('date') >= 0 || key === 'trade_date') return escapeHtml(bondRedemptionDate(row[key]));
-  if (key === 'matched_days') return escapeHtml(row.required_days ? (bondRedemptionText(row.matched_days) + ' / ' + bondRedemptionText(row.required_days) + ' | ' + bondRedemptionText(row.observation_days)) : '—');
+  if (key === 'matched_days') return row.business_status === 'waived' || row.calculated_status === 'not_active' ? '不适用' : escapeHtml(row.required_days ? (bondRedemptionText(row.matched_days) + ' / ' + bondRedemptionText(row.required_days) + ' | ' + bondRedemptionText(row.observation_days)) : '—');
   return escapeHtml(bondRedemptionText(row[key]));
 }
 var BOND_REDEMPTION_COLUMNS = [

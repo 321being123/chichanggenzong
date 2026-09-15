@@ -441,7 +441,7 @@ async function closeExternalCircuit(source, apiName, fingerprint = 'none', provi
   );
   const { resolveSourceEndpointAlerts } = require('./jobAlertMailer');
   for (const closedApiName of closedCircuitApiNames(rows)) {
-    await resolveSourceEndpointAlerts(key, closedApiName).catch(() => {});
+    await resolveSourceEndpointAlerts(key, closedApiName);
   }
   return rows;
 }
@@ -455,10 +455,7 @@ async function manuallyCloseExternalCircuit(source, apiName, fingerprint = 'none
       RETURNING source,api_name,token_fingerprint,state,updated_at`,
     [sourceKey(source), String(apiName || '*').slice(0, 64), String(fingerprint || 'none')]
   );
-  if (rows[0]) {
-    const { resolveSourceEndpointAlerts } = require('./jobAlertMailer');
-    await resolveSourceEndpointAlerts(rows[0].source, rows[0].api_name).catch(() => {});
-  }
+  // 手工关闭只解除下一次探测的阻断；没有 last_success_at 证据时不得关闭接口告警。
   return rows[0] || null;
 }
 

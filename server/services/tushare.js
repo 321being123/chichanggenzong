@@ -146,8 +146,12 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
         if (data.items.length === 0 && !options.allowEmpty) {
           return reject(new TushareRequestError('EMPTY_DATA', `Tushare ${apiName} 返回空数据`, { errorType: 'empty_data', apiName, statusCode: response.statusCode }));
         }
-        await closeExternalCircuit(guardSource, apiName, fingerprint, guardClient, probeToken).catch(() => {});
-        resolve(data);
+        try {
+          await closeExternalCircuit(guardSource, apiName, fingerprint, guardClient, probeToken);
+          resolve(data);
+        } catch (error) {
+          reject(error);
+        }
       });
     });
     request.on('error', error => reject(new TushareRequestError(

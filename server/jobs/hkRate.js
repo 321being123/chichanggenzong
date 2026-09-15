@@ -75,14 +75,16 @@ async function fetchHkRate() {
 async function ensureHkRate() {
   const snapshot = await getCurrentFxRateSnapshot();
   const fetchedAt = snapshot && snapshot.fetchedAt ? new Date(snapshot.fetchedAt).getTime() : NaN;
-  if (snapshot && Number.isFinite(fetchedAt) && Date.now() - fetchedAt < FRESH_RATE_MS) {
-    return { ok: true, status: 'fresh', reason: 'fresh', rate: snapshot.rate, rateDate: snapshot.rateDate, externalCalls: 0 };
+  const age = Date.now() - fetchedAt;
+  if (snapshot && Number.isFinite(fetchedAt) && age >= 0 && age < FRESH_RATE_MS) {
+    return { ok: true, status: 'fresh', reason: 'fresh', rate: snapshot.rate, rateDate: snapshot.rateDate, fetchedAt: snapshot.fetchedAt, externalCalls: 0 };
   }
   const rate = await fetchHkRate();
   try {
     await upsertFxRate(rate, { rateDate: cnDate(new Date()), sourceId: 7 });
+    const saved = await getCurrentFxRateSnapshot();
     const count = await syncLegacyAccountRates(rate);
-    return { ok: true, rate: rate, count: count };
+    return { ok: true, rate: rate, rateDate: saved && saved.rateDate, fetchedAt: saved && saved.fetchedAt, count: count };
   } catch (e) { throw structuredRateError(e, 'EXCHANGE_RATE_STORE_FAILED', 'database'); }
 }
 

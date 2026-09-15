@@ -58,6 +58,9 @@ assert(!/\['worker_offline', 'late', 'dependency_blocked'\]\.includes\(input\.al
 assert(!/force:\s*true/.test(health), '健康检查不得强制重复发送逾期告警');
 assert(/attempt_count \|\| 0\) === 2/.test(orchestrator) && /retry-warning/.test(orchestrator), '任务连续第二次失败必须发送预警');
 assert(/code === 'JOB_BUDGET_EXCEEDED' \|\| type === 'non_retryable'/.test(orchestrator), '任务批次预算边界不得进入自动重试');
+assert(/failure\.code === 'PERMISSION_DENIED'/.test(orchestrator)
+  && /requiresManualAction: true/.test(orchestrator)
+  && /completeSlot\([\s\S]*'blocked'/.test(orchestrator), '外部接口无权限必须阻塞并要求人工处理');
 assert(/JOB_EXTERNAL_CALL_USED/.test(ipoHistoryJob) && /BUDGET_WAIT/.test(ipoHistoryJob)
   && /error\.code !== 'ENOENT'/.test(ipoHistoryJob), 'IPO 子进程必须传递累计预算并禁止业务错误换解释器重跑');
 assert(/r\.trigger_type='scheduled'/.test(orchestrator) && /SELECT trigger_type FROM job_runs WHERE id=\$1/.test(orchestrator), '重复成功告警不得把人工补跑或自动重试误判为重复定时任务');

@@ -29,7 +29,7 @@ async function publishDatasetPartition(datasetCode, scopeKey, options = {}, exec
   if (published && status === 'published' && !stale
       && (!options.diagnostics || !options.diagnostics.quality_status || options.diagnostics.quality_status === 'passed')) {
     const { resolveDatasetAlerts } = require('./jobAlertMailer');
-    await resolveDatasetAlerts(datasetCode, scopeKey, partitionKey).catch(() => {});
+    await resolveDatasetAlerts(datasetCode, scopeKey, partitionKey);
   }
   return published;
 }

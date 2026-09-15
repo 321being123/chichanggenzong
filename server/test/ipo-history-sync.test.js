@@ -5,9 +5,12 @@ const { nextIpoHistorySyncDelay, nextIpoHistorySchedule, pythonCandidates, SCRIP
 
 function instant(text) { return new Date(text); }
 
-// 2026-08-11 19:00 上海时间 -> 当日 19:30 补全，30 分钟后。
+// 2026-08-11 19:00 上海时间 -> 当日 19:30 第二轮核心事实，30 分钟后。
 assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-11T11:00:00Z')), 30 * 60 * 1000);
-assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:00:00Z')).mode, 'enrichment');
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:00:00Z')).mode, 'core');
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:00:00Z')).hour, 19);
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:32:00Z')).mode, 'enrichment');
+assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-11T11:32:00Z')), 3 * 60 * 1000);
 // 周五 20:00 上海时间 -> 下周一 18:00 核心事实同步。
 assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-14T12:00:00Z')), 70 * 60 * 60 * 1000);
 assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-14T12:00:00Z')).mode, 'core');

@@ -81,14 +81,16 @@ const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
 const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
 assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外部接口');
 assert.strictEqual(ipoReport.maxExternalCallsPerRun, 0, '打新日报外部调用预算必须为0');
-assert.deepStrictEqual(ipoReport.dependencyCodes, ['ipo_history_sync', 'convertible_bond_announcement_history_sync'],
-  '打新日报必须同时依赖IPO事实和可转债生命周期同步');
+assert.deepStrictEqual(ipoReport.dependencyCodes, ['convertible_bond_announcement_history_sync'],
+  '打新日报仅应依赖可转债生命周期同步，IPO事实以当天分区质量门禁校验');
 assert.ok(ipoReport.datasetDependencies.some(item => item.datasetCode === 'ipo_history' && item.requireQualityStatus === 'passed')
   && ipoReport.datasetDependencies.some(item => item.datasetCode === 'bond_issuance_events' && item.requireQualityStatus === 'passed'),
   '打新日报必须依赖当天通过质量门禁的新股和新债事实分区');
 assert.ok(ipoReport.additionalSchedules.some(item => item.mode === 'enrichment' && item.hour === 19 && item.minute === 45),
   '打新日报必须在晚间资料补全后刷新发行阶段预测');
 assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
+assert.ok(ipoFacts.additionalSchedules.some(item => item.mode === 'core' && item.hour === 19 && item.minute === 30 && item.freshnessGate === false),
+  'IPO 19:30核心轮次不得被统一新鲜度短路跳过');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 600, 'IPO核心阶段只应保留异常循环止损线');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 600, 'IPO晚间补全只应保留异常循环止损线');
 assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');

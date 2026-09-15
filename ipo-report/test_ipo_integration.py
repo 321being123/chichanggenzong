@@ -121,8 +121,8 @@ except Exception as e:
     traceback.print_exc()
 
 
-# ===== 4. Python Guard 成功探测按实际作用域关闭告警 =====
-print("== 4. Python Guard 熔断告警收敛 ==")
+# ===== 4. Python Guard 成功探测只关闭熔断，告警由 Node 证据核对器收敛 =====
+print("== 4. Python Guard 熔断与告警职责边界 ==")
 source = "cninfo-test-python-close-%s-%s" % (os.getpid(), int(time.time() * 1000))
 alert_key = source + ":wildcard-alert"
 try:
@@ -151,7 +151,7 @@ try:
     cur.execute("SELECT status FROM ops.alert_notifications WHERE alert_key=%s", (alert_key,))
     alert = cur.fetchone()
     check("Python 通配熔断已关闭", circuit and circuit[0] == "closed")
-    check("Python 通配告警已按实际作用域关闭", alert and alert[0] == "resolved")
+    check("Python 不直接关闭告警", alert and alert[0] == "pending")
     cur.execute("DELETE FROM ops.alert_notifications WHERE alert_key=%s", (alert_key,))
     cur.execute("DELETE FROM ops.external_circuits WHERE source=%s", (source,))
     c.commit()

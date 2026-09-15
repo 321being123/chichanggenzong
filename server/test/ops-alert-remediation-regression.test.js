@@ -6,6 +6,9 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const { recoverySchedule } = require('../services/jobOrchestrator');
 const { cninfoApiName } = require('../services/cninfoAnnouncement');
 const { closedCircuitApiNames } = require('../services/externalCallGuard');
+const { verifyAlertScope } = require('../services/jobAlertMailer');
+const { isDataAsOfFresh } = require('../services/jobScheduleSlots');
+const { getJobDefinition } = require('../services/jobDefinitions');
 const { allCircuitsClosed, verifyScope } = require('../scripts/reconcileAlertHistory');
 
 function read(relative) {
@@ -44,6 +47,15 @@ assert(mailer.includes("scope_type=\'dataset\'"));
 assert(mailer.includes("scope_type=\'source_endpoint\'"));
 assert(mailer.includes("scope_type=\'slot\' AND scope_key=$1::text"));
 assert.deepStrictEqual(closedCircuitApiNames([{ api_name: '*' }, { api_name: 'topSearch' }, { api_name: '*' }]), ['*', 'topSearch']);
+{
+  const definition = getJobDefinition('hk_rate');
+  const now = new Date('2026-09-15T12:00:00Z');
+  assert.strictEqual(definition.freshnessMode, 'max_age');
+  assert.strictEqual(isDataAsOfFresh('2026-09-14T12:00:01Z', '2026-09-15', definition, now), true,
+    '港币汇率小于24小时应视为新鲜');
+  assert.strictEqual(isDataAsOfFresh('2026-09-14T12:00:00Z', '2026-09-15', definition, now), false,
+    '港币汇率达到24小时必须过期');
+}
 const orchestrator = read('server/services/jobOrchestrator.js');
 assert(orchestrator.includes('missingRecoverAtCount'));
 assert(orchestrator.includes('scopeType: \'dataset\''));
@@ -74,7 +86,9 @@ assert(cninfoPy.includes('def _record_forbidden'));
 assert(cninfoPy.includes('consecutive_forbidden_count'));
 assert(cninfoPy.includes('state["blocked"]'));
 assert(cninfoPy.includes('self.credential_profile') && cninfoPy.includes('self.budget_window'));
-assert(cninfoPy.includes("scope_type='source_endpoint'") && cninfoPy.includes('RETURNING api_name'));
+assert(cninfoPy.includes('RETURNING api_name') && !cninfoPy.includes("scope_type='source_endpoint'"),
+  'Python Guard 只关闭熔断，来源告警必须交给 Node 统一证据核对器');
+assert(mailer.includes('reconcileRecoveredSourceAlerts'), '健康检查必须核对 Python 探测成功后的来源告警');
 for (const relative of [
   'ipo-report/ipo_lib_common.py', 'ipo-report/ipo_lib_fetch.py',
   'ipo-report/backfill_lottery_rate.py', 'ipo-report/backfill_bond_shd.py',
@@ -100,6 +114,17 @@ async function verifyReconciliationEvidence() {
   );
   assert.strictEqual(missingCircuit.recovered, false);
   assert.strictEqual(missingCircuit.reason, 'circuit_evidence_missing');
+
+  const recoveredSource = await verifyAlertScope(
+    {
+      alert_type: 'failure', scope_type: 'source_endpoint', scope_key: 'cninfo:*',
+      last_seen_at: '2026-09-06T08:00:00.000Z',
+    },
+    async () => ({ rows: [
+      { source: 'cninfo', api_name: '*', state: 'closed', last_success_at: '2026-09-06T08:01:00.000Z' },
+    ] })
+  );
+  assert.strictEqual(recoveredSource.recovered, true, '来源探测成功且全部熔断关闭后才能自动关闭告警');
 
   const original = {
     slot_id: 10, job_code: 'convertible_bond_refresh', status: 'failed',

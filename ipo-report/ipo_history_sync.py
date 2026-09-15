@@ -36,6 +36,8 @@ QUALITY_BASE_FIELDS = (
     "ipo_date", "issue_price", "total_shares", "online_shares",
     "online_lottery_rate", "subscribe_upper_limit", "fund_raised", "circulation_mv",
 )
+# 中签率在发行结果公告后才具备；基础事实分区不能因尚未到披露时点而阻断。
+QUALITY_PUBLICATION_FIELDS = tuple(field for field in QUALITY_BASE_FIELDS if field != "online_lottery_rate")
 QUALITY_DETAIL_FIELDS = ("industry", "industry_pe", "main_business")
 
 
@@ -229,7 +231,7 @@ def _tencent_first_close(code, listing_date):
     return None
 
 
-def backfill_first_day(cur, now):
+def backfill_first_day(cur, now, raise_on_guard=False):
     today = now.date()
     cur.execute("""
       SELECT security_code,listing_date,issue_price,first_day_retry_count,first_day_last_attempt_at
@@ -254,6 +256,8 @@ def backfill_first_day(cur, now):
         try:
             close = _tencent_first_close(code, listing.isoformat())
         except ExternalCallGuardError as exc:
+            if raise_on_guard:
+                raise
             stopped = {"code": exc.code, "recover_at": _recover_at_text(exc.recover_at)}
             attempted -= 1
             break
@@ -325,7 +329,7 @@ def normalize_stored_details(cur, today, target_date=None):
     return {"updated": updated}
 
 
-def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None, only_codes=None):
+def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None, only_codes=None, raise_on_guard=False):
     """不限业务条数补全资料；当前发行优先，历史缺口按 Guard 边界续跑。"""
     today_text = today.isoformat()
     target_text = str(target_date)[:10] if target_date else ""
@@ -420,6 +424,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     "retry_after": (today + timedelta(days=7)).isoformat(),
                 })
         except ExternalCallGuardError as exc:
+            if raise_on_guard:
+                raise
             stopped = {"code": exc.code, "recover_at": _recover_at_text(exc.recover_at)}
             attempted -= 1
             break
@@ -452,9 +458,9 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             "remaining_by_field": remaining_by_field, "stopped": stopped}
 
 
-def update_quality(cur, today):
+def update_quality(cur, today, include_enrichment=True):
     cur.execute("""
-      SELECT security_code,ipo_date,listing_date,issue_price,total_shares,online_shares,
+      SELECT security_code,security_name,ipo_date,listing_date,issue_price,total_shares,online_shares,
              online_lottery_rate,oversubscribe_multiple,subscribe_upper_limit,fund_raised,circulation_mv,
              issue_pe,issue_pe_status,industry,industry_pe,main_business,business_exposure,ld_close_change,
              COALESCE(data_quality_status,'{}'::jsonb)
@@ -464,29 +470,35 @@ def update_quality(cur, today):
     missing_records = 0
     missing_fields = 0
     for row in cur.fetchall():
-        values = dict(zip(("security_code", "ipo_date", "listing_date", "issue_price", "total_shares",
+        values = dict(zip(("security_code", "security_name", "ipo_date", "listing_date", "issue_price", "total_shares",
                            "online_shares", "online_lottery_rate", "oversubscribe_multiple",
                            "subscribe_upper_limit", "fund_raised",
                            "circulation_mv", "issue_pe", "issue_pe_status", "industry", "industry_pe",
                            "main_business", "business_exposure", "ld_close_change", "prior_status"), row))
         missing = [field for field in QUALITY_BASE_FIELDS if values.get(field) in (None, "")]
+        if not str(values.get("security_code") or "").strip() or not str(values.get("security_name") or "").strip():
+            missing.append("identity")
+        ipo_text = str(values.get("ipo_date") or "")[:10]
+        listing_text = str(values.get("listing_date") or "")[:10]
+        valid_ipo = len(ipo_text) == 10 and ipo_text[4] == "-" and ipo_text[7] == "-" and ipo_text.replace("-", "").isdigit()
+        valid_listing = not listing_text or (len(listing_text) == 10 and listing_text[4] == "-" and listing_text[7] == "-" and listing_text.replace("-", "").isdigit())
+        if not valid_ipo:
+            missing.append("ipo_date")
+        if not valid_listing:
+            missing.append("listing_date")
         if values.get("issue_pe") in (None, "") and values.get("issue_pe_status") != "loss":
             missing.append("issue_pe")
         prior = values.get("prior_status") if isinstance(values.get("prior_status"), dict) else {}
         prior_field_states = prior.get("field_states") if isinstance(prior.get("field_states"), dict) else {}
-        for field in QUALITY_DETAIL_FIELDS:
-            prior_state = prior_field_states.get(field) if isinstance(prior_field_states.get(field), dict) else {}
-            if values.get(field) in (None, "") and prior_state.get("status") != "source_unavailable":
-                missing.append(field)
         exposure = values.get("business_exposure")
-        if not isinstance(exposure, dict) or not exposure.get("exposures"):
-            missing.append("business_exposure")
-        listing_text = str(values.get("listing_date") or "")[:10]
-        valid_listing = (
-            len(listing_text) == 10 and listing_text[4] == "-" and listing_text[7] == "-"
-            and listing_text.replace("-", "").isdigit()
-        )
-        listed = valid_listing and listing_text <= today.isoformat()
+        if include_enrichment:
+            for field in QUALITY_DETAIL_FIELDS:
+                prior_state = prior_field_states.get(field) if isinstance(prior_field_states.get(field), dict) else {}
+                if values.get(field) in (None, "") and prior_state.get("status") != "source_unavailable":
+                    missing.append(field)
+            if not isinstance(exposure, dict) or not exposure.get("exposures"):
+                missing.append("business_exposure")
+        listed = bool(listing_text) and valid_listing and listing_text <= today.isoformat()
         pending = []
         if not listed:
             if values.get("listing_date") in (None, ""):
@@ -498,14 +510,15 @@ def update_quality(cur, today):
         elif values.get("ld_close_change") in (None, ""):
             missing.append("ld_close_change")
         field_states = dict(prior_field_states)
-        for field in QUALITY_DETAIL_FIELDS:
-            if values.get(field) not in (None, ""):
-                field_states[field] = {"status": "value"}
-            elif field not in field_states:
-                field_states[field] = {"status": "retryable"}
-        field_states["business_exposure"] = {
-            "status": "value" if isinstance(exposure, dict) and exposure.get("exposures") else "retryable"
-        }
+        if include_enrichment:
+            for field in QUALITY_DETAIL_FIELDS:
+                if values.get(field) not in (None, ""):
+                    field_states[field] = {"status": "value"}
+                elif field not in field_states:
+                    field_states[field] = {"status": "retryable"}
+            field_states["business_exposure"] = {
+                "status": "value" if isinstance(exposure, dict) and exposure.get("exposures") else "retryable"
+            }
         status = {
             "status": "missing" if missing else "complete",
             "missing_fields": missing,
@@ -567,6 +580,29 @@ def finish_ingestion_run(cur, run_id, status, row_count=0, error=""):
     )
 
 
+def record_raw_new_share(cur, raw_rows, run_id):
+    """保存每次 new_share 原始响应；同载荷幂等，载荷变化保留新版本。"""
+    cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1")
+    source = cur.fetchone()
+    if not source:
+        raise RuntimeError("缺少 tushare 数据源登记")
+    saved = 0
+    for raw in raw_rows or []:
+        code = str(raw.get("ts_code") or "").strip()
+        if not code:
+            raise ValueError("new_share 原始响应缺少 ts_code")
+        payload_text = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        cur.execute(
+            """INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,payload,payload_hash)
+               VALUES(%s,%s,%s,%s,%s::jsonb,%s)
+               ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING""",
+            (run_id, source[0], DATASET_CODE, code,
+             payload_text, hashlib.sha256(payload_text.encode("utf-8")).hexdigest()),
+        )
+        saved += cur.rowcount
+    return saved
+
+
 def next_trade_date(cur, today):
     cur.execute(
         """SELECT trade_date::text FROM market.trade_calendar
@@ -590,7 +626,8 @@ def publication_quality(cur, records, today, run_id):
     source_apply = {row["security_code"] for row in records if row.get("ipo_date") == target_date}
     source_listing = {row["security_code"] for row in records if row.get("listing_date") == target_date}
     cur.execute(
-        """SELECT security_code,security_name,ipo_date,listing_date,industry,main_business,business_exposure
+        """SELECT security_code,security_name,ipo_date,listing_date,issue_price,total_shares,online_shares,
+                      online_lottery_rate,subscribe_upper_limit,fund_raised,circulation_mv,issue_pe,issue_pe_status
              FROM ipo_history
             WHERE market_code='CN' AND (ipo_date=%s OR listing_date=%s)""",
         (target_date, target_date),
@@ -599,15 +636,18 @@ def publication_quality(cur, records, today, run_id):
     db_apply = {row[0] for row in db_rows if row[2] == target_date}
     db_listing = {row[0] for row in db_rows if row[3] == target_date}
     missing_identity = sorted({row[0] for row in db_rows if not row[0] or not str(row[1] or "").strip()})
-    missing_issuance_detail = sorted(
-        row[0] for row in db_rows
-        if row[2] == target_date and (
-            not str(row[4] or '').strip()
-            or not str(row[5] or '').strip()
-            or not isinstance(row[6], dict)
-            or not row[6].get('exposures')
-        )
-    )
+    missing_base = []
+    for row in db_rows:
+        values = dict(zip(("security_code", "security_name", "ipo_date", "listing_date", "issue_price",
+                           "total_shares", "online_shares", "online_lottery_rate", "subscribe_upper_limit",
+                           "fund_raised", "circulation_mv", "issue_pe", "issue_pe_status"), row))
+        missing = [field for field in QUALITY_PUBLICATION_FIELDS if values.get(field) in (None, "")]
+        if values.get("issue_pe") in (None, "") and values.get("issue_pe_status") != "loss":
+            missing.append("issue_pe")
+        if not str(values.get("security_code") or "").strip() or not str(values.get("security_name") or "").strip():
+            missing.append("identity")
+        if missing:
+            missing_base.append({"security_code": values.get("security_code"), "fields": sorted(set(missing))})
     source_with_listing = {row["security_code"] for row in records if row.get("listing_date")}
     if source_with_listing:
         cur.execute(
@@ -636,12 +676,24 @@ def publication_quality(cur, records, today, run_id):
         errors.append(f"上游已有上市日但事实表仍为空：{unpersisted_listing}")
     if missing_identity:
         errors.append(f"目标日证券缺代码或名称：{missing_identity}")
-    if missing_issuance_detail:
-        errors.append(f"目标日新股发行资料未补全（行业/主营业务/业务赛道）：{missing_issuance_detail}")
+    if missing_base:
+        errors.append(f"目标日基础发行事实缺失：{missing_base}")
     if errors:
         raise RuntimeError("IPO事实质量门禁失败：" + "；".join(errors))
+    cur.execute(
+        """SELECT count(*) FROM ipo_history
+            WHERE market_code='CN' AND (ipo_date=%s OR listing_date=%s)
+              AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+                OR business_exposure IS NULL OR business_exposure='{}'::jsonb
+                OR NOT (business_exposure ? 'exposures'))""",
+        (target_date, target_date),
+    )
+    enrichment_missing_count = int(cur.fetchone()[0] or 0)
     return {
         "quality_status": "passed",
+        "enrichment_quality_status": "partial" if enrichment_missing_count else "passed",
+        "enrichment_missing_count": enrichment_missing_count,
+        "enrichment_checked_at": None,
         "target_date": target_date,
         "apply_security_count": len(db_apply),
         "listing_security_count": len(db_listing),
@@ -658,6 +710,7 @@ def publication_quality(cur, records, today, run_id):
 def _refresh_new_share_snapshot(cur, today):
     """晚间先刷新一次 new_share，覆盖 Tushare 19 点后的发行公告变更。"""
     start, end, _ = sync_window(cur, today)
+    run_id = start_ingestion_run(cur, start, end, today)
     fields = "ts_code,sub_code,name,ipo_date,issue_date,amount,market_amount,price,pe,limit_amount,funds,ballot"
     raw_rows = tushare_query(
         "new_share",
@@ -665,16 +718,20 @@ def _refresh_new_share_snapshot(cur, today):
         fields,
     )
     if not raw_rows:
-        return {"fetched": 0, "inserted": 0, "refreshed": 0, "verified_empty": True}
+        finish_ingestion_run(cur, run_id, "empty", 0, "new_share 返回空结果")
+        return {"fetched": 0, "inserted": 0, "refreshed": 0, "verified_empty": True, "ingestion_run_id": run_id}
     records = [normalize_share(row) for row in raw_rows]
     codes = [row["security_code"] for row in records]
     if len(codes) != len(set(codes)):
         raise RuntimeError("晚间 new_share 返回重复证券代码")
+    record_raw_new_share(cur, raw_rows, run_id)
     inserted, refreshed = upsert_shares(cur, records, today)
     mark_cursor(cur, today)
+    finish_ingestion_run(cur, run_id, "success", len(records))
     current_codes = [row["security_code"] for row in records if row.get("ipo_status") != "listed"]
     return {
         "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
+        "ingestion_run_id": run_id,
         "window_start": start.isoformat(), "window_end": end.isoformat(),
         "current_security_codes": current_codes,
     }
@@ -687,14 +744,21 @@ def run(today=None, mode="core"):
     try:
         if mode == "enrichment":
             with connection.cursor() as cur:
-                refreshed_snapshot = _refresh_new_share_snapshot(cur, today)
+                # 19:35 enrichment 不再重复调用 new_share；保留空快照契约兼容既有结果读取方。
+                refreshed_snapshot = {"current_security_codes": []}
                 normalized = normalize_stored_details(cur, today)
                 # 当前发行资料先于首日表现和历史欠账，避免共享请求保护被低优先级任务占用。
-                enrichment = enrich_stock_missing_details(
-                    cur, today, target_date=next_trade_date(cur, today), retry_same_day=True,
-                    priority_codes=refreshed_snapshot.get("current_security_codes", []),
-                )
-                first_day = backfill_first_day(cur, datetime.now())
+                try:
+                    enrichment = enrich_stock_missing_details(
+                        cur, today, target_date=next_trade_date(cur, today), retry_same_day=True,
+                        priority_codes=refreshed_snapshot.get("current_security_codes", []),
+                        raise_on_guard=True,
+                    )
+                    first_day = backfill_first_day(cur, datetime.now(), raise_on_guard=True)
+                except ExternalCallGuardError:
+                    # 已完成的资料补全先提交；随后把原始 Guard 错误交给 Node/Worker 进入 waiting_external。
+                    connection.commit()
+                    raise
                 quality = update_quality(cur, today)
             connection.commit()
             return {
@@ -721,13 +785,9 @@ def run(today=None, mode="core"):
         if len(codes) != len(set(codes)):
             raise RuntimeError("Tushare new_share 返回重复证券代码")
         with connection.cursor() as cur:
+            record_raw_new_share(cur, raw_rows, run_id)
             inserted, refreshed = upsert_shares(cur, records, today)
-            normalization = normalize_stored_details(cur, today)
-            issuance_enrichment = enrich_stock_missing_details(
-                cur, today, target_date=next_trade_date(cur, today),
-                priority_codes=[row["security_code"] for row in records if row.get("ipo_status") != "listed"],
-            )
-            quality = update_quality(cur, today)
+            quality = update_quality(cur, today, include_enrichment=False)
             dataset_diagnostics = publication_quality(cur, records, today, run_id)
             mark_cursor(cur, today)
             finish_ingestion_run(cur, run_id, "success", len(records))
@@ -736,8 +796,6 @@ def run(today=None, mode="core"):
             "ok": True, "mode": "core", "source": "tushare.new_share", "bootstrap": bootstrap,
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
-            "normalization": normalization,
-            "issuance_enrichment": issuance_enrichment,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),
             "quality": quality, "calendar_diff": 0, "dataAsOf": today.isoformat(),
             "datasetDiagnostics": {"ipo_history": dataset_diagnostics},

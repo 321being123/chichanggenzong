@@ -1,4 +1,5 @@
 const { pool } = require('../db/connection');
+const { auditEvent } = require('../db');
 const { mailer } = require('../config');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 
@@ -48,6 +49,137 @@ function alertScope(input = {}) {
   if (input.slotId != null) return { type: 'slot', key: String(input.slotId) };
   if (input.jobCode) return { type: 'job', key: String(input.jobCode) };
   return { type: null, key: null };
+}
+
+const DATA_BOUND_ALERT_TYPES = new Set(['data_quality', 'dependency_blocked']);
+
+function parseAlertScope(alert = {}) {
+  const type = String(alert.scope_type || '').trim();
+  const key = String(alert.scope_key || '').trim();
+  if (!type || !key) {
+    if (alert.slot_id != null) return { type: 'slot', key: String(alert.slot_id) };
+    if (alert.job_code) return { type: 'job', key: String(alert.job_code) };
+  }
+  return { type, key };
+}
+
+function allCircuitsClosed(rows) {
+  return Array.isArray(rows) && rows.length > 0 && rows.every(row => row.state === 'closed');
+}
+
+function slotMode(row) {
+  return String(row && row.request_payload && row.request_payload.mode || 'core');
+}
+
+function laterSlotLimit(historical) {
+  return historical ? 3 : 1;
+}
+
+// 运行时自动收敛和历史告警调和共用这一个证据入口；historical 只表示历史槽位额外需要连续三次成功。
+async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, params), options = {}) {
+  const scope = parseAlertScope(alert);
+  const historical = Boolean(options.historical);
+  const alertType = String(alert.alert_type || '');
+  if (scope.type === 'slot') {
+    const { rows } = await query(
+      `SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,request_payload,result_summary
+         FROM ops.job_schedule_slots WHERE slot_id=$1`, [scope.key]
+    );
+    const row = rows[0];
+    if (alertType === 'dependency_blocked' && row && row.status === 'succeeded') {
+      return { recovered: true, evidence: { mode: 'dependency_recovered_by_slot_success', original: row } };
+    }
+    if (DATA_BOUND_ALERT_TYPES.has(alertType)) {
+      return { recovered: false, evidence: row || null, reason: 'data_bound_alert_requires_dataset_evidence' };
+    }
+    if (row && row.status === 'succeeded') {
+      return { recovered: true, evidence: { mode: 'original_slot_recovered', original: row } };
+    }
+    if (!row || !row.job_code || !row.scheduled_for) {
+      return { recovered: false, evidence: row || null, reason: row ? 'original_slot_not_recovered' : 'slot_not_found' };
+    }
+    const limit = laterSlotLimit(historical);
+    const { rows: later } = await query(
+      `SELECT slot_id,status,business_date,scheduled_for,request_payload,result_summary
+         FROM ops.job_schedule_slots
+        WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
+          AND COALESCE(request_payload->>'mode','core')=$4
+        ORDER BY scheduled_for ASC,slot_id ASC LIMIT $5`,
+      [row.job_code, row.business_date, row.scheduled_for, slotMode(row), limit]
+    );
+    const recovered = later.length === limit && later.every(item => item.status === 'succeeded');
+    return {
+      recovered,
+      evidence: { mode: historical ? 'three_later_job_successes' : 'later_comparable_slot_success', original: row, later },
+      ...(recovered ? {} : { reason: 'insufficient_later_successes' }),
+    };
+  }
+  if (scope.type === 'job') {
+    if (DATA_BOUND_ALERT_TYPES.has(alertType)) {
+      return { recovered: false, evidence: null, reason: 'data_bound_alert_requires_dataset_evidence' };
+    }
+    const { rows } = await query(
+      `SELECT slot_id,status,business_date,scheduled_for,request_payload,result_summary
+         FROM ops.job_schedule_slots WHERE job_code=$1
+        ORDER BY scheduled_for DESC,slot_id DESC LIMIT 3`, [scope.key]
+    );
+    const recovered = rows.length === 3 && rows.every(row => row.status === 'succeeded');
+    return { recovered, evidence: rows, ...(recovered ? {} : { reason: 'insufficient_later_successes' }) };
+  }
+  if (scope.type === 'dataset') {
+    const parts = scope.key.split(':');
+    const datasetCode = parts.shift();
+    const partitionKey = parts.pop();
+    const datasetScope = parts.join(':');
+    if (!datasetCode || !partitionKey || !/^\d{4}-\d{2}-\d{2}$/.test(partitionKey)) {
+      return { recovered: false, evidence: null, reason: 'invalid_dataset_scope' };
+    }
+    const { rows } = await query(
+      `SELECT dataset_code,scope_key,partition_key::text,status,is_stale,diagnostics,published_at,updated_at
+         FROM ops.dataset_partitions
+        WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date
+        ORDER BY updated_at DESC LIMIT 1`, [datasetCode, datasetScope, partitionKey]
+    );
+    const row = rows[0];
+    const quality = row && row.diagnostics && row.diagnostics.quality_status;
+    const recovered = Boolean(row && row.status === 'published' && !row.is_stale && (!quality || quality === 'passed'));
+    return { recovered, evidence: row || null, ...(recovered ? {} : { reason: 'dataset_not_published_or_quality_failed' }) };
+  }
+  if (scope.type === 'source_endpoint') {
+    const separator = scope.key.indexOf(':');
+    const source = separator >= 0 ? scope.key.slice(0, separator) : scope.key;
+    const apiName = separator >= 0 ? scope.key.slice(separator + 1) : '*';
+    const params = apiName === '*'
+      ? [source]
+      : [source, [apiName, '*']];
+    const sql = apiName === '*'
+      ? `SELECT source,api_name,state,recover_at,last_success_at,updated_at
+           FROM ops.external_circuits WHERE source=$1 ORDER BY updated_at DESC`
+      : `SELECT source,api_name,state,recover_at,last_success_at,updated_at
+           FROM ops.external_circuits WHERE source=$1 AND api_name=ANY($2::text[]) ORDER BY updated_at DESC`;
+    const { rows } = await query(sql, params);
+    const lastSeen = alert.last_seen_at ? new Date(alert.last_seen_at).getTime() : NaN;
+    const hasNewProbeSuccess = rows.some(row => {
+      const successAt = row.last_success_at && new Date(row.last_success_at).getTime();
+      return Number.isFinite(successAt) && (!Number.isFinite(lastSeen) || successAt > lastSeen);
+    });
+    const recovered = allCircuitsClosed(rows) && hasNewProbeSuccess;
+    return {
+      recovered,
+      evidence: rows,
+      ...(!rows.length ? { reason: 'circuit_evidence_missing' } : !hasNewProbeSuccess ? { reason: 'probe_success_evidence_missing' } : {}),
+    };
+  }
+  return { recovered: false, evidence: null, reason: 'unknown_scope' };
+}
+
+async function recordResolutionFailure(error, context = {}) {
+  await auditEvent({
+    actor: 'system:worker', action: 'job_alert_resolution_failed',
+    target: context.alertId || context.scopeKey || '',
+    detail: error && error.message ? error.message : String(error), result: 'failure',
+    metadata: { scopeType: context.scopeType, scopeKey: context.scopeKey, caller: context.caller },
+  });
 }
 
 function sanitizeAlertRecord(alert) {
@@ -157,10 +289,15 @@ async function sendAlert(input, options = {}) {
     return { ok: true, suppressed: true, reason: 'non_production_environment' };
   }
   let alert = await upsertAlert(input);
+  const oneShotRecovery = ['recovery', 'worker_recovered', 'job_overdue_recovered', 'external_api_switch', 'external_api_interface_failover']
+    .includes(String(input.alertType || ''));
   const repeatWindowMs = 6 * 60 * 60 * 1000;
   const force = Boolean(options.force || input.force);
   const manual = Boolean(options.manual || input.manual);
   const minOccurrences = Number(options.minOccurrences || input.minOccurrences || 1);
+  if (oneShotRecovery && !manual && alert.last_sent_at) {
+    return { ok: true, suppressed: true, alertId: alert.alert_id, reason: 'recovery_already_sent' };
+  }
   if (force) {
     const { rows } = await pool.query(
       `UPDATE ops.alert_notifications
@@ -389,68 +526,153 @@ async function sendTestEmail() {
 async function sendRecoveryAlert(input) {
   return sendAlert(
     { ...input, alertType: input.alertType || 'recovery', severity: input.severity || 'info' },
-    { force: true }
+    { force: false, manual: false }
   );
+}
+
+async function resolveAlertsByCandidates(candidates, caller) {
+  const resolvedRows = [];
+  for (const alert of candidates) {
+    const verification = await verifyAlertScope(alert);
+    if (!verification.recovered) continue;
+    const { rows } = await pool.query(
+      `UPDATE ops.alert_notifications
+          SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+        WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
+          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+        RETURNING *`, [alert.alert_id]
+    );
+    if (rows[0]) resolvedRows.push({ ...rows[0], verification });
+  }
+  if (resolvedRows.length) {
+    const first = resolvedRows[0];
+    await sendRecoveryAlert({
+      alertKey: `slot:${first.slot_id || caller.slotId || 'job'}:recovered`,
+      alertType: 'recovery', severity: 'info', jobCode: first.job_code || caller.jobCode, slotId: caller.slotId,
+      subject: `后台任务已恢复：${first.job_code || caller.jobCode || '未知任务'}`,
+      summary: `计划实例 ${caller.slotId || '-'} 已恢复成功，已按证据关闭 ${resolvedRows.length} 条相关告警，数据日期：${formatAlertDate(caller.data_as_of)}`,
+    });
+  }
+  return resolvedRows.length;
+}
+
+async function loadResolutionCandidates(where, params) {
+  const { rows } = await pool.query(
+    `SELECT * FROM ops.alert_notifications
+       WHERE status NOT IN ('resolved','acknowledged')
+         AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+         AND (${where})`, params
+  );
+  return rows;
 }
 
 async function resolveJobSlotAlerts(slot) {
   if (!productionAlertsEnabled()) return 0;
-  const { rows } = await pool.query(
-      `UPDATE ops.alert_notifications
-        SET status='resolved', resolved_at=now(), sending_started_at=NULL, updated_at=now()
-      WHERE ((scope_type='slot' AND scope_key=$1::text)
-             OR (scope_type IS NULL AND slot_id=$1))
-        AND status <> 'resolved' AND alert_type <> 'recovery'
-      RETURNING *`, [slot.slot_id]
-  );
-  let jobRows = [];
-  if (slot.job_code) {
-    const recent = await pool.query(
-      `SELECT status FROM ops.job_schedule_slots
-        WHERE job_code=$1 ORDER BY scheduled_for DESC,slot_id DESC LIMIT 3`, [slot.job_code]
+  try {
+    const candidates = await loadResolutionCandidates(
+      `((scope_type='slot' AND scope_key=$1::text)
+          OR (scope_type IS NULL AND slot_id=$2::bigint)
+          OR (scope_type='job' AND scope_key=$3::text)
+          OR (slot_id=$2::bigint AND scope_type IN ('dataset','source_endpoint')))`
+      , [String(slot.slot_id), slot.slot_id, slot.job_code || '']
     );
-    if (recent.rows.length === 3 && recent.rows.every(item => item.status === 'succeeded')) {
-      const resolved = await pool.query(
-        `UPDATE ops.alert_notifications
-            SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-          WHERE scope_type='job' AND scope_key=$1
-            AND status NOT IN ('resolved','acknowledged') AND alert_type <> 'recovery'
-          RETURNING *`, [slot.job_code]
-      );
-      jobRows = resolved.rows;
-    }
+    return resolveAlertsByCandidates(candidates, slot);
+  } catch (error) {
+    await recordResolutionFailure(error, { caller: 'resolveJobSlotAlerts', slotId: slot.slot_id, scopeType: 'slot', scopeKey: String(slot.slot_id) });
+    throw error;
   }
-  const resolvedRows = [...rows, ...jobRows];
-  if (resolvedRows.length) await sendRecoveryAlert({
-    alertKey: `slot:${slot.slot_id}:recovered`,
-    alertType: 'recovery',
-    severity: 'info',
-    jobCode: resolvedRows[0].job_code,
-    slotId: slot.slot_id,
-    subject: `后台任务已恢复：${resolvedRows[0].job_code || slot.job_code}`,
-    summary: `计划实例 ${slot.slot_id} 已恢复成功，已关闭 ${resolvedRows.length} 条相关告警，数据日期：${formatAlertDate(slot.data_as_of)}`,
-  });
-  return resolvedRows.length;
 }
 
 async function resolveDatasetAlerts(datasetCode, scopeKey, partitionKey) {
   if (!productionAlertsEnabled()) return 0;
   const key = `${datasetCode}:${scopeKey || ''}:${String(partitionKey).slice(0, 10)}`;
-  const { rowCount } = await pool.query(
-    `UPDATE ops.alert_notifications SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-      WHERE scope_type='dataset' AND scope_key=$1 AND status NOT IN ('resolved','acknowledged')`, [key]
-  );
-  return rowCount;
+  try {
+    const candidates = await loadResolutionCandidates(`scope_type='dataset' AND scope_key=$1::text`, [key]);
+    return resolveAlertsByCandidates(candidates, { scopeType: 'dataset', scopeKey: key });
+  } catch (error) {
+    await recordResolutionFailure(error, { caller: 'resolveDatasetAlerts', scopeType: 'dataset', scopeKey: key });
+    throw error;
+  }
 }
 
 async function resolveSourceEndpointAlerts(source, apiName) {
   if (!productionAlertsEnabled()) return 0;
   const key = `${source}:${apiName || '*'}`;
-  const { rowCount } = await pool.query(
-    `UPDATE ops.alert_notifications SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-      WHERE scope_type='source_endpoint' AND scope_key=$1 AND status NOT IN ('resolved','acknowledged')`, [key]
-  );
-  return rowCount;
+  try {
+    const candidates = await loadResolutionCandidates(`scope_type='source_endpoint' AND scope_key=$1::text`, [key]);
+    return resolveAlertsByCandidates(candidates, { scopeType: 'source_endpoint', scopeKey: key });
+  } catch (error) {
+    await recordResolutionFailure(error, { caller: 'resolveSourceEndpointAlerts', scopeType: 'source_endpoint', scopeKey: key });
+    throw error;
+  }
+}
+
+// Python 任务的探测成功不会经过 Node 请求链路；健康检查周期性补做一次同样的
+// 来源证据核对，确保“熔断已关闭 + last_success_at 晚于告警”后才收敛告警。
+async function reconcileRecoveredSourceAlerts(limit = 100) {
+  if (!productionAlertsEnabled()) return 0;
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
+  try {
+    const { rows: candidates } = await pool.query(
+      `SELECT * FROM ops.alert_notifications
+        WHERE scope_type='source_endpoint'
+          AND status NOT IN ('resolved','acknowledged')
+          AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+        ORDER BY last_seen_at ASC, alert_id ASC LIMIT $1`, [safeLimit]
+    );
+    let resolved = 0;
+    for (const alert of candidates) {
+      const verification = await verifyAlertScope(alert);
+      if (!verification.recovered) continue;
+      const { rows } = await pool.query(
+        `UPDATE ops.alert_notifications
+            SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
+          RETURNING *`, [alert.alert_id]
+      );
+      if (!rows[0]) continue;
+      resolved += 1;
+      const scope = parseAlertScope(rows[0]);
+      await sendRecoveryAlert({
+        alertKey: `source:${scope.key}:recovered`, alertType: 'recovery', severity: 'info',
+        jobCode: rows[0].job_code || null, slotId: rows[0].slot_id || null,
+        subject: `外部来源已恢复：${scope.key}`,
+        summary: `来源 ${scope.key} 的全部相关熔断已关闭，且已记录新的探测成功时间；告警已按证据自动关闭。`,
+      });
+    }
+    return resolved;
+  } catch (error) {
+    await recordResolutionFailure(error, { caller: 'reconcileRecoveredSourceAlerts', scopeType: 'source_endpoint' });
+    throw error;
+  }
+}
+
+async function resolveWorkerOfflineAlert(alertId) {
+  if (!productionAlertsEnabled()) return 0;
+  try {
+    const { rows: workers } = await pool.query(
+      `SELECT worker_id FROM ops.worker_heartbeats
+        WHERE role='worker' AND status='running' AND last_seen_at >= now()-interval '2 minutes'
+        ORDER BY last_seen_at DESC LIMIT 1`
+    );
+    if (!workers.length) return 0;
+    const { rows } = await pool.query(
+      `UPDATE ops.alert_notifications
+          SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+        WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')
+        RETURNING *`, [alertId]
+    );
+    if (rows[0]) {
+      await sendRecoveryAlert({
+        alertKey: `worker:recovered:${rows[0].alert_id}`, alertType: 'worker_recovered', severity: 'info',
+        subject: '后台 Worker 已恢复', summary: '已重新收到 Worker 心跳，后台定时任务恢复运行。',
+      });
+    }
+    return rows.length;
+  } catch (error) {
+    await recordResolutionFailure(error, { caller: 'resolveWorkerOfflineAlert', alertId, scopeType: 'worker', scopeKey: 'worker:offline' });
+    throw error;
+  }
 }
 
 async function listAlerts(options = {}) {
@@ -507,6 +729,6 @@ async function acknowledgeAlert(alertId) {
 module.exports = {
   sendAlert, sendDueAlerts, sendRecoveryAlert, resolveJobSlotAlerts,
   resolveDatasetAlerts, resolveSourceEndpointAlerts,
-  notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
-  ACTIVE_ALERT_WHERE,
+  reconcileRecoveredSourceAlerts, resolveWorkerOfflineAlert, notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
+  ACTIVE_ALERT_WHERE, parseAlertScope, allCircuitsClosed, verifyAlertScope,
 };

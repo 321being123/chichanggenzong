@@ -370,22 +370,9 @@ def close_external_circuit(source, api_name, token_fingerprint_value, probe_toke
                     RETURNING api_name""",
                 (_source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none"), probe_token, probe_token),
             )
-            closed_api_names = sorted({str(row[0]) for row in cur.fetchall() if row and row[0]})
-            if closed_api_names:
-                cur.execute(
-                    """SELECT COUNT(*)=2 FROM information_schema.columns
-                        WHERE table_schema='ops' AND table_name='alert_notifications'
-                          AND column_name IN ('scope_type','scope_key')"""
-                )
-                if bool(cur.fetchone()[0]):
-                    scope_keys = [f"{_source_key(source)}:{name}" for name in closed_api_names]
-                    cur.execute(
-                        """UPDATE ops.alert_notifications
-                              SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
-                            WHERE scope_type='source_endpoint' AND scope_key=ANY(%s)
-                              AND status NOT IN ('resolved','acknowledged')""",
-                        (scope_keys,),
-                    )
+            # 告警状态由 Node 侧统一恢复证据校验器处理；Python Guard 只负责
+            # 关闭熔断并记录 last_success_at，避免“探测成功但无闭环证据”时误关告警。
+            cur.fetchall()
         conn.commit()
     finally:
         conn.close()

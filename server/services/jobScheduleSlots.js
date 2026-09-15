@@ -363,7 +363,9 @@ async function syncScheduleSlots(now = new Date()) {
         const scheduledFor = scheduledDate(businessDate, schedule.hour, schedule.minute);
         const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
         if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
-        const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', { mode: schedule.mode || 'core' });
+        const requestPayload = { mode: schedule.mode || 'core' };
+        if (Object.prototype.hasOwnProperty.call(schedule, 'freshnessGate')) requestPayload.freshnessGate = Boolean(schedule.freshnessGate);
+        const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', requestPayload);
         const current = await reconcileSlot(slot);
         if (current.status === 'pending' && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
           const { notifyJobFailure } = require('./jobAlertMailer');
@@ -559,14 +561,22 @@ function normalizeDataAsOf(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function isDataAsOfFresh(dataAsOf, businessDate, definition = {}) {
+function isDataAsOfFresh(dataAsOf, businessDate, definition = {}, now = new Date()) {
   if (!dataAsOf || !businessDate) return false;
   const actual = new Date(dataAsOf).getTime();
+  if (!Number.isFinite(actual)) return false;
+  if (definition.freshnessMode === 'max_age') {
+    const reference = new Date(now).getTime();
+    const maxAgeMinutes = Math.max(Number(definition.freshnessMaxAgeMinutes) || 0, 0);
+    if (!Number.isFinite(reference) || maxAgeMinutes <= 0) return false;
+    const age = reference - actual;
+    return age >= 0 && age < maxAgeMinutes * 60000;
+  }
   const expectedDate = expectedDataDate(definition.jobCode || '', businessDate);
   const expected = expectedDate ? new Date(`${expectedDate}T00:00:00Z`).getTime() : NaN;
   const maxLagDays = Math.max(Number(definition.freshnessMaxLagDays) || 0, 0);
   const earliestAccepted = expected - maxLagDays * 86400000;
-  return Number.isFinite(actual) && Number.isFinite(expected) && actual >= earliestAccepted;
+  return Number.isFinite(expected) && actual >= earliestAccepted;
 }
 
 async function queryDataAsOf(jobCode, businessDate) {
@@ -577,7 +587,7 @@ async function queryDataAsOf(jobCode, businessDate) {
   const queries = {
     // 手动回查可能晚于正式快照写入、但数据日期更旧；水位必须取所有快照中的最新数据日期。
     bond_safety_refresh: `SELECT MAX(COALESCE(source_updated_at, refreshed_at)) AS data_as_of FROM bond_safety_snapshots`,
-    hk_rate: `SELECT max(rate_date)::text AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
+    hk_rate: `SELECT max(fetched_at) AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
     nav_snapshot: `SELECT max(date)::text AS data_as_of FROM nav_history`,
     index_baseline: `SELECT max(date)::text AS data_as_of FROM index_history`,
     index_recent: `SELECT max(date)::text AS data_as_of FROM index_history`,
@@ -624,6 +634,7 @@ async function queryDataAsOf(jobCode, businessDate) {
   const normalizedBusinessDate = normalizeBusinessDate(businessDate);
   const { rows } = await pool.query(sql, marketPredicate ? [normalizedBusinessDate] : []);
   if (!rows[0] || !rows[0].data_as_of) return null;
+  if (jobCode === 'hk_rate') return normalizeDataAsOf(rows[0].data_as_of);
   const raw = String(rows[0].data_as_of).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00.000Z` : normalizeDataAsOf(rows[0].data_as_of);
 }

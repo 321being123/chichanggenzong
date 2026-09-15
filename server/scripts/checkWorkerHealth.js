@@ -1,7 +1,9 @@
 require('dotenv').config();
 const { execFileSync } = require('child_process');
 const { pool } = require('../db');
-const { sendAlert, sendDueAlerts, sendRecoveryAlert } = require('../services/jobAlertMailer');
+const {
+  sendAlert, sendDueAlerts, reconcileRecoveredSourceAlerts, resolveWorkerOfflineAlert,
+} = require('../services/jobAlertMailer');
 const { collectNginxRuntime } = require('../services/nginxRuntimeCollector');
 
 function serviceIsActive() {
@@ -15,6 +17,7 @@ function serviceIsActive() {
 async function main() {
   await collectNginxRuntime().catch(error => console.warn('[worker-health] Nginx 采样失败:', error.message));
   await sendDueAlerts(20).catch(error => console.warn('[worker-health] 邮件重试失败:', error.message));
+  await reconcileRecoveredSourceAlerts(100).catch(error => console.warn('[worker-health] 来源告警恢复核对失败:', error.message));
   await pool.query(
     `DELETE FROM ops.worker_heartbeats
       WHERE last_seen_at < now()-interval '7 days'
@@ -43,14 +46,7 @@ async function main() {
         WHERE alert_key='worker:offline' AND status <> 'resolved' LIMIT 1`
     );
     if (old.rows.length) {
-      await pool.query(`UPDATE ops.alert_notifications SET status='resolved', resolved_at=now(), updated_at=now() WHERE alert_id=$1`, [old.rows[0].alert_id]);
-      await sendRecoveryAlert({
-        alertKey: `worker:recovered:${old.rows[0].alert_id}`,
-        alertType: 'worker_recovered',
-        severity: 'info',
-        subject: '后台 Worker 已恢复',
-        summary: '已重新收到 Worker 心跳，后台定时任务恢复运行。',
-      });
+      await resolveWorkerOfflineAlert(old.rows[0].alert_id);
     }
   }
   await pool.end();

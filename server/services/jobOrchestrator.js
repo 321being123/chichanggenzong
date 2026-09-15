@@ -404,6 +404,38 @@ async function failOrRetry(slot, error, runId, result = {}) {
     }
     return waiting;
   }
+  // CNINFO 等外部接口明确返回 403/无权限时，重试不会改变结果；
+  // 将计划实例置为 blocked，并保留人工处理标记，避免继续消耗额度。
+  if (failure.code === 'PERMISSION_DENIED') {
+    const blockedSummary = {
+      ...sanitizeJobResult(normalized),
+      waitingExternal: false,
+      requiresManualAction: true,
+      permissionDenied: true,
+    };
+    await finishManagedRun(runId, slot.job_code, false, blockedSummary, failure).catch(() => {});
+    const completed = await completeSlot(
+      slot.slot_id,
+      'blocked',
+      blockedSummary,
+      `外部来源返回无权限，任务已暂停，等待人工处理：${message}`,
+      runId
+    );
+    const { notifyJobFailure } = require('./jobAlertMailer');
+    await notifyJobFailure({
+      jobCode: slot.job_code,
+      slotId: slot.slot_id,
+      ...(failure.source && failure.apiName ? {
+        scopeType: 'source_endpoint', scopeKey: `${failure.source}:${failure.apiName}`,
+      } : {}),
+      alertKey: `slot:${slot.slot_id}:permission-denied`,
+      alertType: 'failure',
+      severity: 'critical',
+      subject: `后台任务外部接口无权限：${definition.label}`,
+      summary: `接口 ${failure.apiName || failure.source || '外部来源'} 返回无权限，任务已阻塞，不再自动重试。请补充权限或切换来源后手动重试。${message}`,
+    }).catch(mailError => console.warn('[job-alert] 无权限阻塞告警失败:', mailError.message));
+    return completed;
+  }
   if (noRetry || Number(slot.attempt_count || 0) >= maxAttempts) {
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
     const completed = await completeSlot(slot.slot_id, 'failed', { ...sanitizeJobResult(normalized), attempts: slot.attempt_count }, message, runId);
@@ -496,10 +528,13 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     ...(process.env.NODE_ENV === 'test' && claimed.request_payload && claimed.request_payload.testScenario
       ? { testScenario: String(claimed.request_payload.testScenario) } : {}),
   };
+  const freshnessGateEnabled = claimed.request_payload
+    && Object.prototype.hasOwnProperty.call(claimed.request_payload, 'freshnessGate')
+    ? Boolean(claimed.request_payload.freshnessGate) : definition.freshnessGate;
 
   try {
     runId = await startManagedRun(claimed, reason);
-    if (definition.freshnessGate && !runContext.force && runContext.mode !== 'enrichment') {
+    if (freshnessGateEnabled && !runContext.force && runContext.mode !== 'enrichment') {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
       const partitionDate = expectedDataDate(claimed.job_code, claimed.business_date);
       const datasetsPublished = !definition.strictDatasetPublication

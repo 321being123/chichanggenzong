@@ -1,7 +1,7 @@
 # INC-0025：A 股 IPO 资料补全未接入交易所主源
 
-状态：跟踪中
-日期：2026-09-15
+状态：已修复，观察中
+日期：2026-09-15～2026-09-16
 
 ## 现象与影响
 
@@ -27,8 +27,10 @@ Tushare `new_share` → `ipo_history_sync` → `fetch_stock_historical_detail` �
 
 版本 `0.8.1.33` 接入：上交所 `queryCompanyBulletinNew.do`、深交所 `api/ras/infodisc/query`、北交所 `disclosureInfoController/zoneInfoResult.do`；官方 PDF 无效或正文解析失败才进入 CNINFO，最后才回退 Tushare `stock_company`。来源写入 `source_payload.historical_enrichment.main_business_source`，迁移 154 登记 `bse` 策略。
 
-本地回归覆盖交易所优先、交易所失败才走巨潮和 `bse.cn` 来源分类；全量测试、知识门禁及生产定向运行结果在发布后补录。
+`.33` 首次生产定向运行写入 301716 的深交所主营业务，但 920202 未命中，复核发现代码路由把所有 `9xxxx` 先判为上交所。`.34` 已将 `92xxxx` 北交所判断置前；生产重新执行定向补全后，301716、920202 均成功写入，来源分别为 `szse`、`bse`。随后通过标准人工补跑入口重新入队历史槽位 `764892`，`.34` 运行 `2890` 在处理其他历史缺口时仍因 CNINFO `topSearch` 熔断进入 `waiting_external`；`.35` 增加“巨潮备源熔断时继续尝试 Tushare `stock_company`”逻辑，避免单个备源阻断整批。
+
+本地回归覆盖交易所优先、交易所失败才走巨潮、`92xxxx` 路由、巨潮熔断时 Tushare 末级回退和 `bse.cn` 来源分类；全量测试 131/131 通过、知识门禁及任务矩阵检查通过。生产 `.35` 版本、迁移 154、Web/Worker/健康检查服务和 `/health` 均验收通过。
 
 ## 防复发措施与遗留风险
 
-任务契约明确声明 `sse/szse/bse/cninfo/stock_company`；架构文档固定主备顺序和官方域名。交易所反爬挑战页、接口改版或 PDF 版式变化仍会触发巨潮备源，不把 HTTP 200 的 HTML 挑战页当作成功；若交易所和巨潮同时不可用，继续保留等待状态和已有有效字段。
+任务契约明确声明 `sse/szse/bse/cninfo/stock_company`；架构文档固定主备顺序和官方域名。交易所反爬挑战页、接口改版或 PDF 版式变化仍会触发巨潮备源；巨潮权限/熔断时优先尝试 Tushare `stock_company`，只有末级回退也不可用才保留等待状态和已有有效字段。历史槽位 `764892` 的原始 blocked 证据保留，不直接改写历史状态。

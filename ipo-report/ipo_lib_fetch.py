@@ -12,6 +12,7 @@ from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_ent
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
 from ipo_lib_common import *
+from ipo_lib_common import _to_ts_code
 from external_call_guard import ExternalCallGuardError
 from bond_data_layer import get_bond_row, get_listing_liquidity, save_listing_liquidity
 from sse_listing_parser import (
@@ -1449,12 +1450,14 @@ def fetch_prospectus_main_business(stock_code, security_name=None):
 
 def _fetch_stock_main_business(stock_code, security_name=None):
     """主营业务：交易所官方招股书优先，巨潮和 Tushare 依次回退。"""
+    cninfo_error = None
     try:
         mb = fetch_prospectus_main_business(stock_code, security_name=security_name)
         if mb:
             return mb
-    except ExternalCallGuardError:
-        raise
+    except ExternalCallGuardError as exc:
+        # 巨潮是备源；其权限/熔断不能阻断最后的 Tushare stock_company 回退。
+        cninfo_error = exc
     except Exception:
         pass
     try:
@@ -1471,6 +1474,8 @@ def _fetch_stock_main_business(stock_code, security_name=None):
         raise
     except Exception:
         pass
+    if cninfo_error is not None:
+        raise cninfo_error
     return ""
 
 _INDUSTRY_PE_MAP = None

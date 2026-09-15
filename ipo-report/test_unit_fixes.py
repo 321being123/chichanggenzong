@@ -135,6 +135,44 @@ finally:
     fetch_mod._fetch_exchange_prospectus_main_business = _exchange_fetch_backup
     fetch_mod._fetch_cninfo_prospectus_main_business = _cninfo_fetch_backup
 
+_stock_main_backup = fetch_mod.fetch_prospectus_main_business
+_tushare_pro_backup = fetch_mod._get_tushare_pro
+_to_ts_code_backup = fetch_mod._to_ts_code
+try:
+    class _FakeCompanyFrame:
+        empty = False
+        iloc = None
+
+        def __init__(self):
+            self.iloc = self
+
+        def __getitem__(self, _index):
+            return self
+
+        def get(self, key):
+            return 'Tushare主营业务' if key == 'main_business' else None
+
+    class _FakeCompanyPro:
+        def stock_company(self, **_kwargs):
+            return _FakeCompanyFrame()
+
+    def _cninfo_blocked(*_args, **_kwargs):
+        raise call_guard.ExternalCallGuardError(
+            'CIRCUIT_OPEN', 'cninfo 已熔断', 'cninfo', 'topSearch', api_name='topSearch'
+        )
+
+    fetch_mod._MAIN_BUSINESS_SOURCE.clear()
+    fetch_mod.fetch_prospectus_main_business = _cninfo_blocked
+    fetch_mod._get_tushare_pro = lambda: _FakeCompanyPro()
+    fetch_mod._to_ts_code = lambda code: f'{code}.BJ'
+    value = fetch_mod._fetch_stock_main_business('920202', security_name='安达股份')
+    check("巨潮熔断时继续回退Tushare主营业务",
+          value == 'Tushare主营业务' and fetch_mod._MAIN_BUSINESS_SOURCE.get('920202') == 'tushare')
+finally:
+    fetch_mod.fetch_prospectus_main_business = _stock_main_backup
+    fetch_mod._get_tushare_pro = _tushare_pro_backup
+    fetch_mod._to_ts_code = _to_ts_code_backup
+
 check("深交所静态公告地址归入szse来源",
       _url_source("https://disc.static.szse.cn/download/disc/disk03.pdf") == "szse")
 check("历史回填脚本统一安装请求Guard",

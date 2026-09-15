@@ -114,6 +114,7 @@ assert.match(orchestratorSource, /\['fresh', 'already-ran-today'\]/, '已完成�
 const historyJobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipoHistorySync.js'), 'utf8');
 assert.match(historyJobSource, /parseTushareFailovers/, 'Python 成功切备用后的接口标记未进入 Node 解析链');
 assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入');
+assert.match(historyJobSource, /let scheduleMarker = mode === 'enrichment'/, 'IPO 失败路径必须保留可用的计划标记，不能因块级作用域异常丢失失败状态');
 const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');

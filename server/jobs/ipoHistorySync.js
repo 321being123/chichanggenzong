@@ -172,10 +172,11 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
   if (!claimed) return { skipped: true, reason: 'locked' };
   let runId = null;
   let retryOf = null;
+  let scheduleMarker = mode === 'enrichment' ? '19:35' : '18:00';
   const errors = [];
   try {
     const runtime = await getProviderRuntime('tushare');
-    const scheduleMarker = scheduleMarkerFromReason(reason)
+    scheduleMarker = scheduleMarkerFromReason(reason)
       || await scheduleMarkerFromSlot(context.slotId)
       || (mode === 'enrichment' ? '19:35' : '18:00');
     const priorRuns = await pool.query(

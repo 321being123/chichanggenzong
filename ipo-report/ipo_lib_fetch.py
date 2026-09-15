@@ -1474,8 +1474,8 @@ def _fetch_stock_main_business(stock_code, security_name=None):
         raise
     except Exception:
         pass
-    if cninfo_error is not None:
-        raise cninfo_error
+    # 巨潮权限/熔断属于已知不可用备源；末级 Tushare 无值时保留字段为 retryable，
+    # 由后续官方资料补偿，不让一个失效备源把整批 enrichment 变成等待。
     return ""
 
 _INDUSTRY_PE_MAP = None

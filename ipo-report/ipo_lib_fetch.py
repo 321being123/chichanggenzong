@@ -1204,13 +1204,25 @@ def _download_exchange_pdf_text(session, pdf_url, source):
         return None
 
 
+def _exchange_market_for_code(code):
+    """按证券代码前缀选择 IPO 招股书交易所；北交所 92 开头必须优先于上交所 9 开头。"""
+    digits = re.sub(r'\D', '', str(code or ''))
+    if digits.startswith('92') or digits.startswith(('4', '8')):
+        return 'bse'
+    if digits.startswith(('6', '9')):
+        return 'sse'
+    if digits.startswith(('0', '3')):
+        return 'szse'
+    return ''
+
+
 def _exchange_prospectus_candidates(stock_code, security_name=''):
     """返回交易所官方招股说明书候选：(source, url, title)。"""
     code = str(stock_code or '').split('.')[0]
     if not code:
         return []
     digits = re.sub(r'\D', '', code)
-    market = 'sse' if digits.startswith(('6', '9')) else 'szse' if digits.startswith(('0', '3')) else 'bse' if digits.startswith(('4', '8', '92')) else ''
+    market = _exchange_market_for_code(digits)
     if not market:
         return []
     today = datetime.now()

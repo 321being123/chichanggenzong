@@ -107,6 +107,9 @@ finally:
             os.environ[_key] = _value
 
 check("北交所官方链接来源分类正确", _url_source("https://www.bse.cn/disclosure/2026/example.pdf") == "bse")
+check("北交所92开头代码不误分到上交所",
+      fetch_mod._exchange_market_for_code("920202") == "bse"
+      and fetch_mod._exchange_market_for_code("688801") == "sse")
 
 # ---------- 测试1b：A股 IPO 招股书交易所优先、巨潮兜底 ----------
 _exchange_fetch_backup = fetch_mod._fetch_exchange_prospectus_main_business

@@ -1952,6 +1952,23 @@ async function repairConvertibleBondSuspensionCoverage(targetTradeDate, windowDa
   return { ...result, missingDates, ranges, gapDiagnostics: gaps };
 }
 
+async function markStockDailyBackfillStale(targetTradeDate, error) {
+  const tradeDate = isoDate(targetTradeDate);
+  if (!tradeDate) return;
+  const detail = JSON.stringify({
+    source: 'convertible_bond_stock_market_backfill',
+    query_status: 'failed',
+    error: String(error || '正股历史行情补漏失败').slice(0, 500),
+  });
+  await pool.query(
+    `UPDATE ops.dataset_partitions
+        SET status='stale',is_stale=true,stale_reason=$2,
+            diagnostics=COALESCE(diagnostics,'{}'::jsonb)||$3::jsonb,updated_at=now()
+      WHERE dataset_code='stock_daily' AND scope_key='CN' AND partition_key=$1::date`,
+    [tradeDate, '正股历史行情补漏失败，强赎计算输入未确认完整', detail]
+  );
+}
+
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
   const targetTradeDate = isoDate(backfillOpts.targetTradeDate) || defaultBondTargetTradeDate();
   const failedDatasets = [...new Set((backfillOpts.failedDatasets || []).map(String).filter(Boolean))];
@@ -1996,7 +2013,34 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
   result.suspensionCoverage = suspensionCoverage;
   await backfillCycleGaps(backfillOpts);
   // 正股行情是强赎计算的直接输入；主同步成功后顺带补齐最近窗口内的缺口，避免只更新转债而遗漏正股。
-  await backfillUnderlyingStockMarket({ windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90) });
+  let stockMarketBackfill;
+  try {
+    stockMarketBackfill = await backfillUnderlyingStockMarket({ windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90) });
+  } catch (stockError) {
+    await markStockDailyBackfillStale(targetTradeDate, stockError.message).catch(markError =>
+      console.warn('[股债分析缓存] 标记 stock_daily 分区失败：', markError.message));
+    result.ok = false;
+    result.status = 'partial';
+    result.error = `正股历史行情补漏失败：${stockError.message}`;
+    result.errorCode = stockError.code || 'DATASET_INCOMPLETE';
+    result.errorType = 'data_quality';
+    result.failedDatasets = [...new Set([...(result.failedDatasets || []), 'stock_daily'])];
+    result.missingDates = [...new Set([...(result.missingDates || []), targetTradeDate])];
+    result.stock_market_backfill = { ok: false, status: 'failed', error: stockError.message };
+    return result;
+  }
+  if (stockMarketBackfill && stockMarketBackfill.ok === false) {
+    await markStockDailyBackfillStale(targetTradeDate, stockMarketBackfill.error).catch(markError =>
+      console.warn('[股债分析缓存] 标记 stock_daily 分区失败：', markError.message));
+    result.ok = false;
+    result.status = 'partial';
+    result.error = stockMarketBackfill.error || '正股历史行情补漏未完成';
+    result.errorCode = stockMarketBackfill.errorCode || 'DATASET_INCOMPLETE';
+    result.errorType = 'data_quality';
+    result.failedDatasets = [...new Set([...(result.failedDatasets || []), 'stock_daily'])];
+    result.missingDates = [...new Set([...(result.missingDates || []), targetTradeDate])];
+  }
+  result.stock_market_backfill = stockMarketBackfill;
   return result;
 }
 
@@ -2634,7 +2678,7 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
     // 只处理确实存在缺口的证券，避免“整体覆盖率90%”掩盖单券缺失。
     const recentDays = openDays.slice(-30);
     if (recentDays.length) {
-      const { rows: missingStocks } = await pool.query(
+      const missingStockSql =
         `SELECT s.canonical_code,s.instrument_id
            FROM core.instruments s
           WHERE s.instrument_id=ANY($1::bigint[])
@@ -2651,13 +2695,13 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
                     AND b.source_id=$3)
                 < (SELECT COUNT(*)
                      FROM unnest($2::date[]) AS d(trade_date)
-                    WHERE NOT EXISTS (
-                      SELECT 1 FROM market.stock_suspend_calendar sc
-                       WHERE sc.instrument_id=s.instrument_id AND sc.trade_date=d.trade_date AND sc.source_id=$3
-                    ))
-          ORDER BY s.canonical_code`,
-        [[...instrumentMap.values()], recentDays.map(isoDate), source.tushare, recentDays.length]
-      );
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM market.stock_suspend_calendar sc
+                        WHERE sc.instrument_id=s.instrument_id AND sc.trade_date=d.trade_date AND sc.source_id=$3
+                     ))
+          ORDER BY s.canonical_code`;
+      const missingStockParams = [[...instrumentMap.values()], recentDays.map(isoDate), source.tushare];
+      const { rows: missingStocks } = await pool.query(missingStockSql, missingStockParams);
       const repairLimit = Math.max(Number(process.env.CONVERTIBLE_BOND_STOCK_REPAIR_LIMIT) || 80, 1);
       const repairTargets = missingStocks.slice(0, repairLimit);
       for (const stock of repairTargets) {
@@ -2678,7 +2722,17 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
         } finally { client.release(); }
       }
       if (missingStocks.length > repairTargets.length) {
-        console.warn(`[股债分析缓存] 最近30个交易日仍有 ${missingStocks.length - repairTargets.length} 只正股待按代码补水，已处理 ${repairTargets.length} 只`);
+        throw Object.assign(new Error(`最近30个交易日仍有 ${missingStocks.length - repairTargets.length} 只正股未完成行情补水（本次上限 ${repairLimit}）`), {
+          code: 'DATASET_INCOMPLETE',
+          errorType: 'data_quality',
+        });
+      }
+      const { rows: remainingStocks } = await pool.query(missingStockSql, missingStockParams);
+      if (remainingStocks.length) {
+        throw Object.assign(new Error(`最近30个交易日仍有 ${remainingStocks.length} 只正股行情缺口，不能标记任务成功`), {
+          code: 'DATASET_INCOMPLETE',
+          errorType: 'data_quality',
+        });
       }
       if (repairedBars) console.log(`[股债分析缓存] 按正股代码补齐 ${repairedBars} 行最近行情`);
     }

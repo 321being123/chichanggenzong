@@ -79,6 +79,11 @@ def add_months(value, months):
 
 def classify_event(text, title=""):
     value = compact(f"{title}{text}")
+    # “现金管理到期赎回”等理财公告不属于可转债事件；只有同时出现明确转债证据时才继续分类。
+    if re.search(r"现金管理|理财产品|结构性存款|闲置自有资金|委托理财", value) and not re.search(
+        r"可转债|转债|债券代码|最后交易日|最后转股日|赎回登记日|转股价|转股期", value
+    ):
+        return None
     if "不提前赎回" in value or "不行使赎回" in value or "不实施赎回" in value or "暂不赎回" in value:
         return "waive"
     if re.search(r"实施结果|赎回结果|完成赎回|赎回完成", value):

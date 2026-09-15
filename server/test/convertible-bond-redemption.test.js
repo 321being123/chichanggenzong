@@ -14,12 +14,15 @@ assert.strictEqual(classifyProgress({ matchedDays: 3, requiredDays: 15, observat
   missingDates: ['2026-07-14', '2026-07-15'], suspendedDates: ['2026-07-14', '2026-07-15'] }).dataStatus, 'complete');
 assert.deepStrictEqual(classifyProgress({ locked: true, matchedDays: 30, requiredDays: 15, observationDays: 30,
   bars: Array(30).fill({}), triggerPrice: 12, closePrice: 13 }), { status: 'not_active', dataStatus: 'complete', distance: null });
+assert.deepStrictEqual(classifyProgress({ notActive: true, matchedDays: 0, requiredDays: 15, observationDays: 30,
+  bars: [], triggerPrice: 12, closePrice: null }), { status: 'not_active', dataStatus: 'complete', distance: null });
 assert.strictEqual(eventParseComplete('exercise', { decisionDate: '2026-08-07' }), true);
 assert.strictEqual(eventParseComplete('exercise', {}), false);
 assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-08-31', lastConversionDate: '2026-09-03' }), true);
 assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-08-31' }), false);
 assert.strictEqual(classifyCallEvent('南方航空关于“南航转债”到期兑付暨摘牌的第三次提示性公告'), 'implementation');
 assert.strictEqual(classifyCallEvent('洽洽食品关于“洽洽转债”即将到期及停止交易的提示性公告'), 'implementation');
+assert.strictEqual(classifyCallEvent('关于使用部分闲置自有资金进行现金管理到期赎回的公告'), null);
 assert.strictEqual(pickInstrument({ title: '关于转债的公告' }, [
   { instrument_id: 1, bond_name: '甲转债', security_code: '123001' },
   { instrument_id: 2, bond_name: '乙转债', security_code: '123002' },
@@ -39,7 +42,8 @@ const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convert
 const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-redemption"'));
-assert.ok(html.includes('js/bond-redemption.js?v=6'));
+assert.ok(html.includes('js/bond-redemption.js?v=7'));
+assert.ok(html.includes('value="not_active">暂不适用</option>'), '强赎页必须可筛选转股期前的暂不适用状态');
 assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-search"') && html.includes('data-autofill-ignore'), '强赎搜索框必须明确为非认证输入');
 assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));
 assert.ok(page.includes('/api/bond-redemption?limit=2000'), '强赎页必须读取完整的在市证券集合');
@@ -120,4 +124,13 @@ assert.ok(redemptionSync.includes("substring(e.source_url from '/(20[0-9]{2}-[0-
   '缓存重解析必须纳入公告日与官方 PDF URL 日期不一致的历史错误事实');
 assert.ok(migration.includes('152_convertible_bond_call_evidence_and_lock_state') && migration.includes('decision_date')
   && migration.includes('calendar_status'), '强赎迁移必须落库公告决策日、锁定依据和交易日历状态');
+assert.ok(migration.includes('153_convertible_bond_call_pre_conversion_status')
+  && migration.includes("THEN 'not_active'") && migration.includes("THEN 'incomplete'")
+  && migration.includes('尚未进入转股期') && migration.includes('non_bond_finance_redemption'), '强赎最终视图必须区分转股期前与解析不完整公告');
+assert.ok(redemptionService.includes('preConversion') && redemptionService.includes('conversion_start_date'), '强赎计算必须从转股期开始日计数');
+assert.ok(redemptionSync.includes('现金管理') && redemptionSync.includes('明确转债证据'), '现金管理公告不得误识别为转债强赎事件');
+assert.ok(analysis.includes('DATASET_INCOMPLETE') && analysis.includes('markStockDailyBackfillStale')
+  && !analysis.includes('source.tushare, recentDays.length'), '正股补水失败必须标记分区过期，且不再传入多余 SQL 参数');
+const suspensionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondSuspensionSync.js'), 'utf8');
+assert.ok(suspensionSync.includes('JOIN public.bond_unified u') && suspensionSync.includes("u.status='listed'"), '停牌覆盖目标必须按当前在市转债选择，不能依赖历史行情日');
 console.log('convertible bond redemption tests passed');

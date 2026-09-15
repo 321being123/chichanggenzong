@@ -68,15 +68,13 @@ async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
   const [{ rows: stocks }, sourceResult, data] = await Promise.all([
     pool.query(`
       SELECT DISTINCT s.instrument_id, s.canonical_code
-        FROM fundamental.convertible_bond_profiles p
-        LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
-        JOIN market.convertible_bond_daily_metrics bm ON bm.instrument_id=p.instrument_id
-        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-       WHERE p.stock_instrument_id IS NOT NULL
-         AND bm.trade_date=(SELECT MAX(m.trade_date)
-                              FROM market.convertible_bond_daily_metrics m
-                             WHERE m.trade_date <= $1::date)
-         AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`, [isoDate(to)]),
+         FROM fundamental.convertible_bond_profiles p
+         LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
+         JOIN public.bond_unified u ON u.instrument_id=p.instrument_id
+         JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        WHERE p.stock_instrument_id IS NOT NULL
+          AND u.status='listed'
+          AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`),
     pool.query(`SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1`),
     tushareQuery('suspend_d', { start_date: from, end_date: to },
       'ts_code,trade_date,suspend_type,suspend_reason', { allowEmpty: true }),
@@ -136,12 +134,10 @@ async function findSuspensionCoverageGaps({ startDate, endDate, stockSourceId, s
        SELECT DISTINCT s.instrument_id
          FROM fundamental.convertible_bond_profiles p
          LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=p.instrument_id
-         JOIN market.convertible_bond_daily_metrics bm ON bm.instrument_id=p.instrument_id
+         JOIN public.bond_unified u ON u.instrument_id=p.instrument_id
          JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
         WHERE p.stock_instrument_id IS NOT NULL
-          AND bm.trade_date=(SELECT MAX(m.trade_date)
-                               FROM market.convertible_bond_daily_metrics m
-                              WHERE m.trade_date <= $2::date)
+          AND u.status='listed'
           AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
      ), open_days AS (
        SELECT trade_date

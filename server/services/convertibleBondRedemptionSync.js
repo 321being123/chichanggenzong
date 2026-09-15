@@ -58,6 +58,9 @@ function dateFromTitle(title, patterns) {
 function classifyCallEvent(title) {
   const text = String(title || '');
   if (!/(赎回|转债|强赎|转股)/.test(text)) return null;
+  // “现金管理到期赎回”等理财公告不属于可转债事件；只有同时出现明确转债证据时才继续分类。
+  if (/(现金管理|理财产品|结构性存款|闲置自有资金|委托理财)/.test(text)
+      && !/(可转债|转债|债券代码|最后交易日|最后转股日|赎回登记日|转股价|转股期)/.test(text)) return null;
   if (/不提前赎回|不行使.*赎回|不实施.*赎回|暂不赎回/.test(text)) return 'waive';
   if (/实施结果|赎回结果|完成赎回|赎回完成/.test(text)) return 'completion';
   if (/赎回实施|实施.*赎回|到期兑付|到期偿付|兑付暨摘牌|到期赎回|停止交易|最后交易日|最后转股日|赎回公告/.test(text)) return 'implementation';

@@ -29,8 +29,8 @@ function effectiveConversionPrice(currentPrice, changes, date) {
   return fallback;
 }
 
-function classifyProgress({ matchedDays, requiredDays, observationDays, expectedObservationDays = observationDays, bars = [], triggerPrice, closePrice, missingDates = [], suspendedDates = [], locked = false }) {
-  if (locked) return { status: 'not_active', dataStatus: 'complete', distance: null };
+function classifyProgress({ matchedDays, requiredDays, observationDays, expectedObservationDays = observationDays, bars = [], triggerPrice, closePrice, missingDates = [], suspendedDates = [], locked = false, notActive = false }) {
+  if (locked || notActive) return { status: 'not_active', dataStatus: 'complete', distance: null };
   const unresolvedMissingDates = missingDates.filter(date => !suspendedDates.includes(date));
   if (!(requiredDays > 0) || !(observationDays > 0) || !(expectedObservationDays > 0) || !(triggerPrice > 0)
       || bars.length < expectedObservationDays || unresolvedMissingDates.length) {
@@ -167,8 +167,10 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
     const ratio = numberOrNull(bond.trigger_ratio);
     const noCallUntil = dateText(bond.no_call_until) || (bond.validity_basis === 'through_maturity' ? dateText(bond.maturity_date) : null);
     const locked = bond.latest_event_type === 'waive' && (!noCallUntil || targetDate <= noCallUntil);
-    const eligibleDates = locked ? [] : openDates
-      .filter(date => !noCallUntil || date > noCallUntil)
+    const conversionStartDate = dateText(bond.conv_start_date);
+    const preConversion = Boolean(conversionStartDate && targetDate < conversionStartDate);
+    const eligibleDates = (locked || preConversion) ? [] : openDates
+      .filter(date => (!conversionStartDate || date >= conversionStartDate) && (!noCallUntil || date > noCallUntil))
       .slice(0, observationDays);
     const stockBars = new Map((barsByStock.get(bond.stock_instrument_id) || []).map(row => [row.trade_date, row]));
     const missingDates = eligibleDates.filter(date => !stockBars.has(date));
@@ -180,7 +182,7 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
       ...row,
       conversion_price: effectiveConversionPrice(bond.current_conv_price, changes, row.trade_date),
     }));
-    const matchedDays = locked ? null : ratio != null
+    const matchedDays = (locked || preConversion) ? null : ratio != null
       ? prices.filter(row => row.conversion_price > 0 && row.close >= row.conversion_price * ratio).length
       : null;
     const currentConversionPrice = effectiveConversionPrice(bond.current_conv_price, changes, targetDate);
@@ -192,7 +194,7 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
     const nextCountStartDate = explicitNextCountStartDate && noCallUntil && explicitNextCountStartDate > noCallUntil
       ? explicitNextCountStartDate : derivedNextCountStartDate;
     const classified = classifyProgress({ matchedDays, requiredDays, observationDays,
-      expectedObservationDays, bars: prices, triggerPrice, closePrice, missingDates, suspendedDates, locked });
+      expectedObservationDays, bars: prices, triggerPrice, closePrice, missingDates, suspendedDates, locked, notActive: preConversion });
     results.push({
       instrumentId: bond.instrument_id,
       tradeDate: targetDate,
@@ -213,6 +215,8 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
         suspended_dates: suspendedDates,
         expected_observation_days: expectedObservationDays,
         eligible_from: eligibleDates.length ? eligibleDates[eligibleDates.length - 1] : null,
+        conversion_start_date: conversionStartDate,
+        pre_conversion: preConversion,
         no_call_until: noCallUntil,
         decision_date: dateText(bond.decision_date),
         lock_start_date: dateText(bond.lock_start_date),
@@ -220,7 +224,8 @@ async function calculateConvertibleBondCallStatus(tradeDate = null) {
         lock_active: locked,
         calendar_status: calendarStatus,
         next_count_start_date: nextCountStartDate,
-        data_quality_reason: bond.event_details?.quality_reason || (calendarStatus === 'not_covered' && !locked ? '截止日后的交易日历尚未覆盖' : null),
+        data_quality_reason: preConversion ? '尚未进入转股期'
+          : bond.event_details?.quality_reason || (calendarStatus === 'not_covered' && !locked ? '截止日后的交易日历尚未覆盖' : null),
         announcement_parse_status: bond.announcement_parse_status || null,
         conversion_change_count: changes.length,
         conversion_price_source: changes.length ? 'price_changes_plus_profile' : 'profile_current',
@@ -311,7 +316,7 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
               c.calculated_at
          ${base}
         ORDER BY CASE c.business_status WHEN 'announced' THEN 1 WHEN 'maturity_near' THEN 2 WHEN 'met_pending' THEN 3
-                                       WHEN 'near' THEN 4 WHEN 'tracking' THEN 5 WHEN 'waived' THEN 6 ELSE 7 END,
+                                       WHEN 'near' THEN 4 WHEN 'tracking' THEN 5 WHEN 'waived' THEN 6 WHEN 'not_active' THEN 7 ELSE 8 END,
                  COALESCE(c.remaining_days,9999),c.security_code
         LIMIT $${filter.values.length + 1}`,
       [...filter.values, safeLimit]
@@ -330,7 +335,7 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
                  WHERE exchange='SSE' AND is_open
                    AND trade_date < (now() AT TIME ZONE 'Asia/Shanghai')::date`),
   ]);
-  const summary = { announced: 0, met_pending: 0, near: 0, maturity_near: 0, tracking: 0, waived: 0, completed: 0, incomplete: 0 };
+  const summary = { announced: 0, met_pending: 0, near: 0, maturity_near: 0, tracking: 0, waived: 0, completed: 0, not_active: 0, incomplete: 0 };
   for (const row of summaryResult.rows) {
     if (Object.prototype.hasOwnProperty.call(summary, row.business_status)) summary[row.business_status] = row.count;
     else summary.incomplete += row.count;

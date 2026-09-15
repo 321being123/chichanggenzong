@@ -849,6 +849,7 @@
         <div class="bond-redemption-stat bond-feature-stat"><span>已满足待确认</span><strong data-call-status="met_pending">0</strong></div>
         <div class="bond-redemption-stat bond-feature-stat"><span>接近触发</span><strong data-call-status="near">0</strong></div>
         <div class="bond-redemption-stat bond-feature-stat"><span>跟踪中</span><strong data-call-status="tracking">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>暂不适用</span><strong data-call-status="not_active">0</strong></div>
         <div class="bond-redemption-stat bond-feature-stat"><span>数据不完整</span><strong data-call-status="incomplete">0</strong></div>
       </div>
       <div class="table-wrap">
@@ -856,7 +857,7 @@
           <input id="bond-redemption-search" name="bond-redemption-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" oninput="bondRedemptionApplyFilters()">
           <select id="bond-redemption-status" onchange="bondRedemptionApplyFilters()" aria-label="按强赎状态筛选">
             <option value="">全部状态</option><option value="announced">已公告强赎</option><option value="maturity_near">临近到期</option>
-            <option value="met_pending">已满足待确认</option><option value="near">接近触发</option><option value="tracking">跟踪中</option><option value="waived">不提前赎回</option><option value="completed">已完成</option><option value="incomplete">数据不完整</option>
+            <option value="met_pending">已满足待确认</option><option value="near">接近触发</option><option value="tracking">跟踪中</option><option value="waived">不提前赎回</option><option value="completed">已完成</option><option value="not_active">暂不适用</option><option value="incomplete">数据不完整</option>
           </select>
           <button class="btn btn-outline btn-sm" onclick="loadBondRedemption(true)">刷新</button>
           <span class="bond-redemption-quality bond-feature-quality" id="bond-redemption-visible"></span>
@@ -1214,7 +1215,7 @@
 <script src="js/bond-cycle.js?v=0.8.1.22" defer></script>
 <script src="js/bond-valuation.js?v=0.8.0.8" defer></script>
 <script src="js/bond-list.js?v=0.8.1.11" defer></script>
-<script src="js/bond-redemption.js?v=6" defer></script>
+<script src="js/bond-redemption.js?v=7" defer></script>
 <script src="js/bond-revision.js?v=46" defer></script>
 <script src="js/stock-analysis.js?v=0.8.0.8" defer></script>
 <script src="js/bond-analysis.js?v=0.8.0.8" defer></script>

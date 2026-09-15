@@ -6233,6 +6233,136 @@ async function migration152ConvertibleBondCallEvidenceAndLockState() {
   `);
 }
 
+// ========== 153：转股期前状态与部分公告质量门禁 =============
+// 转股期开始前不应计算强赎触发进度；解析不完整的“行使/实施”事件也不能直接覆盖为已公告强赎。
+async function migration153ConvertibleBondCallPreConversionStatus() {
+  await pool.query(`
+    UPDATE event.convertible_bond_call_events
+       SET parse_status='failed',
+           details=COALESCE(details,'{}'::jsonb)||jsonb_build_object(
+             'quality_reason','non_bond_finance_redemption',
+             'reclassified_at',CURRENT_DATE::text),
+           updated_at=now()
+     WHERE event_type IN ('exercise','implementation')
+       AND title ~ '(现金管理|理财产品|结构性存款|闲置自有资金|委托理财)'
+       AND title !~ '(可转债|转债|债券代码|最后交易日|最后转股日|赎回登记日|转股价|转股期)';
+
+    CREATE OR REPLACE VIEW analytics.convertible_bond_call_latest AS
+    WITH latest_decision_event AS (
+      SELECT DISTINCT ON (instrument_id)
+             instrument_id,event_id,event_type,announced_at,decision_date,lock_start_date,no_call_until,validity_basis,
+             redemption_record_date,last_trade_date,last_conversion_date,redemption_price,document_id,source_url,title,
+             parse_status,parser_version,details
+        FROM event.convertible_bond_call_events
+       WHERE event_type IN ('exercise','implementation','waive','completion')
+       ORDER BY instrument_id,announced_at DESC,event_id DESC
+    ), event_state AS (
+      SELECT r.*,
+             e.event_id AS decision_event_id,e.event_type AS decision_event_type,e.announced_at AS decision_announced_at,
+             e.decision_date,e.lock_start_date,e.no_call_until AS decision_no_call_until,e.validity_basis,
+             e.redemption_record_date AS decision_redemption_record_date,e.last_trade_date AS decision_last_trade_date,
+             e.last_conversion_date AS decision_last_conversion_date,e.redemption_price AS decision_redemption_price,
+             e.document_id AS decision_document_id,e.source_url AS decision_source_url,e.title AS decision_title,
+             e.parse_status AS decision_parse_status,e.parser_version AS decision_parser_version,e.details AS decision_details,
+             COALESCE(e.no_call_until,
+               CASE WHEN e.validity_basis='through_maturity' THEN r.maturity_date END) AS effective_no_call_until
+        FROM analytics.convertible_bond_call_latest_legacy r
+        LEFT JOIN latest_decision_event e ON e.instrument_id=r.instrument_id
+    ), calendar_state AS (
+      SELECT s.*, next_calendar.next_count_start_date,
+             CASE
+               WHEN s.decision_event_type <> 'waive' THEN 'not_applicable'
+               WHEN s.effective_no_call_until IS NULL THEN 'not_covered'
+               WHEN next_calendar.next_count_start_date IS NOT NULL THEN 'covered'
+               ELSE 'not_covered'
+             END AS derived_calendar_status
+        FROM event_state s
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(
+                   CASE
+                     WHEN s.decision_details->>'next_count_start_date' ~ '^20[0-9]{2}-[0-9]{2}-[0-9]{2}$'
+                      AND EXISTS (
+                        SELECT 1 FROM market.trade_calendar explicit_tc
+                         WHERE explicit_tc.exchange='SSE' AND explicit_tc.is_open
+                           AND explicit_tc.trade_date=(s.decision_details->>'next_count_start_date')::date
+                      )
+                     THEN (s.decision_details->>'next_count_start_date')::date
+                   END,
+                   MIN(tc.trade_date)::date
+                 ) AS next_count_start_date
+            FROM market.trade_calendar tc
+           WHERE tc.exchange='SSE' AND tc.is_open
+             AND s.effective_no_call_until IS NOT NULL
+             AND tc.trade_date > s.effective_no_call_until
+        ) next_calendar ON true
+    )
+    SELECT s.instrument_id,s.ts_code,s.security_code,s.bond_name,s.stock_instrument_id,
+           s.stock_code,s.stock_name,s.current_conv_price,s.trigger_ratio,
+           CASE WHEN s.formula_version='call-v1' THEN s.trigger_price END AS trigger_price,
+           CASE WHEN s.formula_version='call-v1' THEN s.stock_close END AS stock_close,
+           CASE WHEN s.formula_version='call-v1' THEN s.distance_to_trigger_pct END AS distance_to_trigger_pct,
+           CASE WHEN s.formula_version='call-v1' THEN s.trade_date END AS trade_date,
+           CASE WHEN s.formula_version='call-v1' THEN s.matched_days END AS matched_days,
+           CASE WHEN s.formula_version='call-v1' THEN s.required_days END AS required_days,
+           CASE WHEN s.formula_version='call-v1' THEN s.observation_days END AS observation_days,
+           CASE WHEN s.formula_version='call-v1' THEN s.remaining_days END AS remaining_days,
+           CASE WHEN s.formula_version='call-v1' THEN s.calculated_status ELSE 'unknown' END AS calculated_status,
+           CASE WHEN s.formula_version='call-v1' THEN s.formula_version END AS formula_version,
+           CASE WHEN s.formula_version='call-v1' THEN
+                  CASE WHEN s.conv_start_date IS NOT NULL AND COALESCE(s.trade_date,CURRENT_DATE) < s.conv_start_date
+                       THEN COALESCE(s.diagnostics,'{}'::jsonb) || jsonb_build_object('pre_conversion',true,'conversion_start_date',s.conv_start_date)
+                       ELSE s.diagnostics END
+                ELSE jsonb_build_object('reason','formula_version_not_published') END AS diagnostics,
+           CASE WHEN s.formula_version='call-v1' THEN s.data_status ELSE 'incomplete' END AS data_status,
+           CASE WHEN s.formula_version='call-v1' THEN s.calculated_at END AS calculated_at,
+           COALESCE(s.decision_event_id,s.event_id) AS event_id,
+           COALESCE(s.decision_event_type,s.official_status) AS official_status,
+           COALESCE(s.decision_announced_at,s.announced_at) AS announced_at,
+           s.effective_no_call_until AS no_call_until,
+           COALESCE(s.decision_redemption_record_date,s.redemption_record_date) AS redemption_record_date,
+           COALESCE(s.decision_last_trade_date,s.last_trade_date) AS last_trade_date,
+           COALESCE(s.decision_last_conversion_date,s.last_conversion_date) AS last_conversion_date,
+           COALESCE(s.decision_redemption_price,s.redemption_price) AS redemption_price,
+           COALESCE(s.decision_document_id,s.document_id) AS document_id,
+           COALESCE(s.decision_source_url,s.source_url) AS source_url,
+           COALESCE(s.decision_title,s.announcement_title) AS announcement_title,
+           COALESCE(s.decision_parse_status,s.announcement_parse_status) AS announcement_parse_status,
+           COALESCE(s.decision_parser_version,s.announcement_parser_version) AS announcement_parser_version,
+           COALESCE(s.decision_details,s.announcement_details) AS announcement_details,
+           CASE
+             WHEN COALESCE(s.decision_event_type,s.official_status)='completion' THEN 'completed'
+             WHEN s.conv_start_date IS NOT NULL AND COALESCE(s.trade_date,CURRENT_DATE) < s.conv_start_date THEN 'not_active'
+             WHEN COALESCE(s.decision_event_type,s.official_status) IN ('exercise','implementation')
+                  AND COALESCE(s.decision_parse_status,s.announcement_parse_status,'partial')='complete' THEN 'announced'
+             WHEN COALESCE(s.decision_event_type,s.official_status) IN ('exercise','implementation') THEN 'incomplete'
+             WHEN COALESCE(s.decision_event_type,s.official_status)='waive'
+                  AND (s.effective_no_call_until IS NULL OR s.effective_no_call_until >= COALESCE(s.trade_date,CURRENT_DATE)) THEN 'waived'
+             WHEN COALESCE(s.decision_event_type,s.official_status)='waive'
+                  AND COALESCE(s.decision_parse_status,s.announcement_parse_status,'partial') <> 'complete' THEN 'incomplete'
+             WHEN COALESCE(s.data_status,'incomplete') <> 'complete' THEN 'incomplete'
+             WHEN s.maturity_date IS NOT NULL
+                  AND s.maturity_date <= ((SELECT COALESCE(MAX(trade_date),CURRENT_DATE)
+                                             FROM market.convertible_bond_daily_metrics) + INTERVAL '30 days')
+                  THEN 'maturity_near'
+             ELSE s.business_status
+           END AS business_status,
+           s.remain_size,s.maturity_date,s.conv_start_date,s.conv_end_date,s.conv_stop_date,
+           s.decision_date,s.lock_start_date,s.validity_basis,s.next_count_start_date,
+           s.derived_calendar_status AS calendar_status,
+           CASE
+             WHEN s.conv_start_date IS NOT NULL AND COALESCE(s.trade_date,CURRENT_DATE) < s.conv_start_date THEN '尚未进入转股期'
+             WHEN COALESCE(s.decision_event_type,s.official_status)='waive'
+                  AND COALESCE(s.decision_parse_status,s.announcement_parse_status,'partial') <> 'complete'
+                  AND s.effective_no_call_until IS NULL THEN '已公告不强赎，期限待确认'
+             WHEN s.derived_calendar_status='not_covered'
+                  AND s.effective_no_call_until IS NOT NULL
+                  AND COALESCE(s.trade_date,CURRENT_DATE) > s.effective_no_call_until THEN '截止日后的交易日历尚未覆盖'
+             ELSE NULL
+           END AS data_quality_reason
+      FROM calendar_state s;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6386,6 +6516,7 @@ const MIGRATIONS = [
   { version: '150_hk_ipo_vbkr_fallback', up: migration150HkIpoVbkrFallback },
   { version: '151_alert_scope_and_cninfo_backoff', up: migration151AlertScopeAndCninfoBackoff },
   { version: '152_convertible_bond_call_evidence_and_lock_state', up: migration152ConvertibleBondCallEvidenceAndLockState },
+  { version: '153_convertible_bond_call_pre_conversion_status', up: migration153ConvertibleBondCallPreConversionStatus },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6994,6 +7125,7 @@ module.exports = {
   migration150HkIpoVbkrFallback,
   migration151AlertScopeAndCninfoBackoff,
   migration152ConvertibleBondCallEvidenceAndLockState,
+  migration153ConvertibleBondCallPreConversionStatus,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

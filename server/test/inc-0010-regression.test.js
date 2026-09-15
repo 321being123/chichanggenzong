@@ -110,8 +110,8 @@ function runStaticContracts() {
     '停牌接口成功空结果必须登记为已核验无停牌');
   assert.ok(/query_status: 'failed'/.test(suspension) && /status='stale'/.test(suspension),
     '停牌接口失败必须登记未知/过期，不能伪造空结果');
-  assert.ok(/JOIN market\.convertible_bond_daily_metrics bm/.test(suspension),
-    '停牌同步和缺口扫描必须限定目标交易日的现役转债范围');
+  assert.ok(/JOIN public\.bond_unified u/.test(suspension) && /u\.status='listed'/.test(suspension),
+    '停牌同步和缺口扫描必须限定当前在市转债范围，不能依赖历史行情日');
 
   const registry = read('server/services/datasetPartitionRegistry.js');
   assert.ok(/datasets\.length !== declaredDatasets\.length/.test(registry)
@@ -124,7 +124,7 @@ function runStaticContracts() {
   assert.ok(/row\.diagnostics\.missing_dates/.test(frontend)
     && !/row\.data_status !== 'complete'/.test(frontend),
     '页面必须显示停牌缺口，且 waived 不得混入数据不完整筛选');
-  assert.ok(read('public/index.html').includes('js/bond-redemption.js?v=6'), '强赎页面脚本版本必须更新');
+  assert.ok(read('public/index.html').includes('js/bond-redemption.js?v=7'), '强赎页面脚本版本必须更新');
 
   const migrations = read('server/db/migrations.js');
   assert.ok(/migration146ConvertibleBondDataStatusConstraint/.test(migrations)

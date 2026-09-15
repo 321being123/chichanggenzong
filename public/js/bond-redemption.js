@@ -30,7 +30,7 @@ function bondRedemptionStatus(value, row) {
   var cls = String(value || 'incomplete').replace(/[^a-z_]/g, '');
   var missing = row && row.diagnostics && Array.isArray(row.diagnostics.missing_dates) ? row.diagnostics.missing_dates : [];
   var warning = missing.length
-    ? '<span class="bond-redemption-data-warning" title="' + escapeHtml('停牌记录缺失：' + missing.join('、')) + '">停牌记录缺失：' + escapeHtml(missing.join('、')) + '</span>'
+    ? '<span class="bond-redemption-data-warning" title="' + escapeHtml('行情/停牌证据缺失：' + missing.join('、')) + '">行情/停牌证据缺失：' + escapeHtml(missing.join('、')) + '</span>'
     : '';
   return '<span class="bond-redemption-status bond-redemption-status-' + cls + '">' + escapeHtml(labels[value] || '数据不完整') + '</span>' + warning;
 }

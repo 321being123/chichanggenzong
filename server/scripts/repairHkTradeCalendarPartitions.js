@@ -67,7 +67,7 @@ async function main() {
              (dataset_code,scope_key,partition_key,status,data_as_of,published_at,is_stale,stale_reason,row_count,source_id,diagnostics)
            VALUES('hk_trade_calendar','HK',$1::date,'published',$2::date,COALESCE($3::timestamptz,now()),false,'',$4,$5,
                   COALESCE($6::jsonb,'{}'::jsonb) || jsonb_build_object('repair', 'business_partition_backfill',
-                    'source_partition_id', $7, 'previous_target', COALESCE($8::jsonb,'null'::jsonb)))
+                    'source_partition_id', $7::bigint, 'previous_target', COALESCE($8::jsonb,'null'::jsonb)))
            ON CONFLICT(dataset_code,scope_key,partition_key) DO UPDATE SET
              status='published',data_as_of=EXCLUDED.data_as_of,published_at=EXCLUDED.published_at,
              is_stale=false,stale_reason='',row_count=EXCLUDED.row_count,source_id=EXCLUDED.source_id,

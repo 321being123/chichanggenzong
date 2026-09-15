@@ -2153,7 +2153,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
               AND (pending_call.parser_version IS DISTINCT FROM 'call-event-v3'
                    OR pending_call.parse_status <> 'complete')
          )
-    ))`);
+    )`);
   }
   const effectiveDefaultLimit = cachedOnly && !normalizedCodes.length ? 10 : defaultLimit;
   const limitValue = Math.max(1, Math.min(limit == null ? effectiveDefaultLimit : (Number(limit) || 50), 2000));

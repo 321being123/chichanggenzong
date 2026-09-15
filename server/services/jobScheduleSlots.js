@@ -196,6 +196,9 @@ async function reconcileSlot(slot) {
   // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
   // 必须先让统一执行器领取并生成新的 manual_retry 运行记录。
   if (slot.status === 'pending' && slot.trigger_type === 'manual_retry') return slot;
+  // 外部来源等待期间保留等待状态，不能被旧的失败运行记录在调度扫描时覆盖；
+  // 到达 next_attempt_at 后由统一执行器重新领取并继续执行。
+  if (slot.status === 'waiting_external') return slot;
   // 同一业务日、同一阶段如果已有更晚的实例成功，旧失败/阻断实例已经被后续执行接管。
   // 关闭旧实例告警，避免一次恢复在后台长期留下“待处理”假象；不重放旧实例。
   if (['failed', 'waiting_external', 'blocked', 'degraded'].includes(slot.status)) {

@@ -106,6 +106,7 @@ assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.in
 assert.ok(definitions.getJobDefinition('hk_trade_rules_sync').catchupMode === 'latest_only');
 assert.ok(/WHERE \(status='pending'[\s\S]*status IN \('failed','waiting_external'\)/.test(slots), 'degraded/blocked 不得直接进入待执行筛选');
 assert.ok(/status IN \('pending','failed','waiting_external'\)/.test(slots), '领取任务不得领取 degraded');
+assert.match(slots, /if \(slot\.status === 'waiting_external'\) return slot;/, '外部等待槽位不得被旧失败运行记录覆盖');
 assert.ok(/freshnessGate/.test(orchestrator) && /externalCalls: 0/.test(orchestrator), '外部任务必须先执行本地新鲜度门禁');
 assert.ok(/DURABLE_JOB_RUN/.test(orchestrator) && /唯一 job_runs/.test(read('server/db/jobs.js')), '子进程不得创建嵌套 job_runs');
 const valuationRunner = valuation.slice(valuation.indexOf('async function runRefreshChain'), valuation.indexOf('function nextShanghaiDelay'));

@@ -62,6 +62,17 @@ function recoveryDelayMinutes(recoverAt) {
   return Math.max(1, Math.ceil((timestamp - Date.now()) / 60000));
 }
 
+function recoverySchedule(slot, failure) {
+  const timestamp = failure.recoverAt ? new Date(failure.recoverAt).getTime() : NaN;
+  if (Number.isFinite(timestamp)) {
+    return { retryAt: new Date(Math.max(timestamp, Date.now())), missingCount: 0, delayMinutes: timestamp > Date.now() ? recoveryDelayMinutes(failure.recoverAt) : 0 };
+  }
+  const previous = Number(slot.result_summary && slot.result_summary.missingRecoverAtCount || 0);
+  const missingCount = previous + 1;
+  const delayMinutes = Math.min(30 * (2 ** Math.max(missingCount - 1, 0)), 120);
+  return { retryAt: new Date(Date.now() + delayMinutes * 60000), missingCount, delayMinutes };
+}
+
 function classifyFailure(error, result = {}) {
   const code = String((error && (error.code || error.errorCode)) || result.errorCode || '').toUpperCase();
   const type = String((error && (error.errorType || error.type)) || result.errorType || '').toLowerCase();
@@ -104,6 +115,11 @@ function incompleteDatasets(definition, result = {}) {
   return [...new Set((result.failedDatasets || []).map(String).filter(code => declared.has(code)))];
 }
 
+function datasetScopeKey(datasetCode) {
+  const registry = require('./datasetPartitionRegistry').DATASET_PARTITION_REGISTRY;
+  return registry[datasetCode] && registry[datasetCode].scopeKey || '';
+}
+
 async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   const definition = getJobDefinition(slot.job_code);
   const failed = incompleteDatasets(definition, normalized);
@@ -134,6 +150,8 @@ async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
     await notifyJobFailure({
       jobCode: slot.job_code,
       slotId: slot.slot_id,
+      scopeType: 'dataset',
+      scopeKey: `${blockedDatasets[0]}:${datasetScopeKey(blockedDatasets[0])}:${String(slot.business_date).slice(0, 10)}`,
       alertKey: `slot:${slot.slot_id}:dataset-breaker`,
       alertType: 'data_quality',
       severity: 'critical',
@@ -148,15 +166,17 @@ async function notifyIncompleteDataset(slot, result) {
   const missingDates = result.missingDates || result.missing_dates || [];
   if (!missingDates.length) return;
   const definition = getJobDefinition(slot.job_code);
+  const datasets = incompleteDatasets(definition, result);
   const { notifyJobFailure } = require('./jobAlertMailer');
   await notifyJobFailure({
     jobCode: slot.job_code,
     slotId: slot.slot_id,
+    ...(datasets[0] ? { scopeType: 'dataset', scopeKey: `${datasets[0]}:${datasetScopeKey(datasets[0])}:${String(slot.business_date).slice(0, 10)}` } : {}),
     alertKey: `slot:${slot.slot_id}:dataset-incomplete`,
     alertType: 'data_quality',
     severity: 'warning',
     subject: `后台任务存在数据缺口：${definition.label}`,
-    summary: `数据集 ${incompleteDatasets(definition, result).join('、') || '未指定'} 未完成，缺失日期：${missingDates.slice(0, 20).join('、')}。`,
+    summary: `数据集 ${datasets.join('、') || '未指定'} 未完成，缺失日期：${missingDates.slice(0, 20).join('、')}。`,
   }).catch(error => console.warn('[job-alert] 数据缺口告警失败:', error.message));
 }
 
@@ -301,6 +321,8 @@ function childErrorFromMessage(message) {
     dataset: message && message.dataset,
     apiName: message && message.apiName,
     tokenFingerprint: message && message.tokenFingerprint,
+    credentialProfile: message && message.credentialProfile,
+    budgetWindow: message && message.budgetWindow,
     recoverAt: message && message.recoverAt,
     dataDiagnostics: message && message.dataDiagnostics,
     externalCallCount: message && message.externalCallCount,
@@ -345,13 +367,29 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const externalRecoveryFailure = definition.retryPolicy !== 'no_retry'
     && ['BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(failure.code);
   if (externalRecoveryFailure) {
-    const retryAt = failure.recoverAt || (failure.delayMinutes
-      ? new Date(Date.now() + Number(failure.delayMinutes) * 60000)
-      : new Date(Date.now() + 60 * 1000));
+    const recovery = recoverySchedule(slot, failure);
+    if (recovery.missingCount >= 3) {
+      const blockedSummary = {
+        ...sanitizeJobResult(normalized), missingRecoverAtCount: recovery.missingCount,
+        waitingExternal: false, requiresManualAction: true,
+      };
+      await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
+      const completed = await completeSlot(slot.slot_id, 'blocked', blockedSummary,
+        `${message}；外部来源连续 3 次未提供恢复时间，已停止自动重试`, runId);
+      const { notifyJobFailure } = require('./jobAlertMailer');
+      await notifyJobFailure({
+        jobCode: slot.job_code, slotId: slot.slot_id,
+        alertKey: `slot:${slot.slot_id}:missing-recover-at`, alertType: 'failure', severity: 'critical',
+        subject: `后台任务缺少外部恢复时间：${definition.label}`,
+        summary: '外部来源连续 3 次未提供可用恢复时间，任务已转为阻塞并等待人工处理。' + message,
+      }).catch(mailError => console.warn('[job-alert] 恢复时间缺失告警失败:', mailError.message));
+      return completed;
+    }
     await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
     const waiting = await waitForExternalSlot(slot.slot_id, message, {
-      ...sanitizeJobResult(normalized), retryInMinutes: failure.delayMinutes || null,
-    }, retryAt, runId);
+      ...sanitizeJobResult(normalized), retryInMinutes: recovery.delayMinutes,
+      missingRecoverAtCount: recovery.missingCount,
+    }, recovery.retryAt, runId);
     if (waiting && !(slot.result_summary && slot.result_summary.waitingExternal)) {
       const { notifyJobFailure } = require('./jobAlertMailer');
       await notifyJobFailure({
@@ -373,6 +411,9 @@ async function failOrRetry(slot, error, runId, result = {}) {
     await notifyJobFailure({
       jobCode: slot.job_code,
       slotId: slot.slot_id,
+      ...(failure.source && failure.apiName ? {
+        scopeType: 'source_endpoint', scopeKey: `${failure.source}:${failure.apiName}`,
+      } : {}),
       alertKey: `slot:${slot.slot_id}:max-attempts`,
       alertType: 'failure',
       subject: `后台任务最终失败：${definition.label}`,
@@ -539,6 +580,9 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       dataset: error.dataset,
       apiName: error.apiName,
       recoverAt: error.recoverAt,
+      credentialProfile: error.credentialProfile,
+      tokenFingerprint: error.tokenFingerprint,
+      budgetWindow: error.budgetWindow,
       dataDiagnostics: error.dataDiagnostics,
       externalCalls: Number(error.externalCallCount || 0),
       externalSources: error.externalSources || {},
@@ -619,4 +663,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, resolveMaxAttempts, hasSkippedSignal };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal };

@@ -116,6 +116,7 @@ async function datasetDependencyState(slot, definition) {
   const requirements = definition.datasetDependencies || [];
   if (!requirements.length) return { ready: true, failed: false, detail: '' };
   const failures = [];
+  const scopeKeys = [];
   for (const requirement of requirements) {
     // node-postgres 对 date 字段默认返回 Date；直接 String(Date).slice(0, 10)
     // 会得到“Wed Sep 02”，再传给 PostgreSQL::date 就会导致整个调度轮次失败。
@@ -134,18 +135,21 @@ async function datasetDependencyState(slot, definition) {
     const partition = rows[0];
     if (!partition) {
       failures.push(`${requirement.datasetCode}@${partitionKey}=missing`);
+      scopeKeys.push(`${requirement.datasetCode}:${requirement.scopeKey || ''}:${partitionKey}`);
       continue;
     }
     const qualityStatus = partition.diagnostics && partition.diagnostics.quality_status;
     if (partition.status !== 'published' || partition.is_stale
         || (requirement.requireQualityStatus && qualityStatus !== requirement.requireQualityStatus)) {
       failures.push(`${requirement.datasetCode}@${partitionKey}=${partition.status}/${qualityStatus || 'unknown'}`);
+      scopeKeys.push(`${requirement.datasetCode}:${requirement.scopeKey || ''}:${partitionKey}`);
     }
   }
   return {
     ready: failures.length === 0,
     failed: failures.length > 0,
     detail: failures.join(', '),
+    scopeKeys,
   };
 }
 
@@ -534,6 +538,7 @@ async function listDueSlots(limit = 20) {
           await notifyJobFailure({
             jobCode: slot.job_code,
             slotId: slot.slot_id,
+            ...(datasets.scopeKeys && datasets.scopeKeys[0] ? { scopeType: 'dataset', scopeKey: datasets.scopeKeys[0] } : {}),
             alertKey: `slot:${slot.slot_id}:dataset-blocked`,
             alertType: 'dependency_blocked',
             subject: `后台任务数据依赖未发布：${definition.label}`,
@@ -696,8 +701,8 @@ async function deferSlot(slotId, errorMessage, resultSummary, delayMinutes = 5, 
 
 async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt = null, runId = null) {
   const parsedRetryAt = retryAt ? new Date(retryAt) : null;
-  const nextAttemptAt = parsedRetryAt && !Number.isNaN(parsedRetryAt.getTime()) && parsedRetryAt.getTime() > Date.now()
-    ? parsedRetryAt : new Date(Date.now() + 60 * 1000);
+  const nextAttemptAt = parsedRetryAt && !Number.isNaN(parsedRetryAt.getTime())
+    ? parsedRetryAt : new Date(Date.now() + 30 * 60 * 1000);
   const safeSummary = sanitizeJobResult({
     ...(resultSummary || {}),
     waitingExternal: true,

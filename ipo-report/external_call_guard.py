@@ -52,7 +52,8 @@ def enabled():
 
 
 class ExternalCallGuardError(RuntimeError):
-    def __init__(self, code, message, source, dataset, api_name="", token_fingerprint="", recover_at=None):
+    def __init__(self, code, message, source, dataset, api_name="", token_fingerprint="", recover_at=None,
+                 credential_profile=None, budget_window=None):
         super().__init__(message)
         self.code = code
         self.error_type = {
@@ -60,12 +61,20 @@ class ExternalCallGuardError(RuntimeError):
             "QUOTA_EXHAUSTED": "rate_limit",
             "BUDGET_WAIT": "rate_limit",
             "DATASET_LOCKED": "in_progress",
+            "PERMISSION_DENIED": "permission",
+            "AUTH_ERROR": "permission",
         }.get(code, "circuit_open")
         self.source = source
         self.dataset = dataset
         self.api_name = api_name or ""
         self.token_fingerprint = token_fingerprint or ""
         self.recover_at = recover_at
+        source_key = str(source or "").strip().lower()
+        self.credential_profile = credential_profile or (
+            "backup" if source_key == "tushare_backup" else
+            "primary" if source_key == "tushare" else "anonymous"
+        )
+        self.budget_window = budget_window or ""
 
     def __str__(self):
         api = f"[{self.api_name}]" if self.api_name else ""
@@ -116,6 +125,13 @@ def _api_name(source, dataset="", api_name=None):
     if _source_key(source).startswith("tushare"):
         match = re.match(r"^([A-Za-z0-9_]+)", str(dataset or ""))
         return match.group(1)[:64] if match else "*"
+    if _source_key(source).lower() == "cninfo":
+        value = str(dataset or "")
+        if "topSearch" in value:
+            return "topSearch"
+        if "hisAnnouncement" in value:
+            return "hisAnnouncement"
+        return "document"
     return "*"
 
 
@@ -273,7 +289,12 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
                 day_wait = reason in {"day", "credential_day"}
                 recover_at = wait_until or _recover_at("BUDGET_WAIT", "day" if day_wait else "minute")
                 conn.commit()
-                raise ExternalCallGuardError("BUDGET_WAIT", f"{budget_source} {api_name} 已达到保护线，等待恢复", source, dataset, api_name, fingerprint, recover_at)
+                raise ExternalCallGuardError(
+                    "BUDGET_WAIT", f"{budget_source} {api_name} 已达到保护线，等待恢复",
+                    source, dataset, api_name, fingerprint, recover_at,
+                    credential_profile=credential_profile,
+                    budget_window="day" if day_wait else reason,
+                )
         conn.commit()
         _run_call_count += 1
         return {
@@ -299,6 +320,41 @@ def _open_circuit(source, detail, api_name="*", token_fingerprint_value="none", 
         conn.close()
 
 
+def _record_forbidden(source, api_name, token_fingerprint_value="none", detail=""):
+    conn = _db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO ops.external_circuits
+                   (source,api_name,token_fingerprint,state,recover_at,error_code,error_type,detail,
+                    consecutive_forbidden_count,last_forbidden_at)
+                   VALUES(%s,%s,%s,'open',NULL,'RATE_LIMIT','rate_limit',%s,1,now())
+                   ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
+                     state='open',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
+                     consecutive_forbidden_count=CASE
+                       WHEN ops.external_circuits.last_forbidden_at < now()-interval '1 day' THEN 1
+                       ELSE ops.external_circuits.consecutive_forbidden_count+1 END,
+                     last_forbidden_at=now(),detail=EXCLUDED.detail,opened_at=now(),updated_at=now()
+                   RETURNING consecutive_forbidden_count""",
+                (_source_key(source), str(api_name or "*")[:64], str(token_fingerprint_value or "none"), str(detail or "")[:1000]),
+            )
+            count = int(cur.fetchone()[0] or 1)
+            blocked = count >= 5
+            delay_minutes = min(30 * (2 ** max(count - 1, 0)), 120)
+            recover_at = None if blocked else datetime.now(ZoneInfo("UTC")) + timedelta(minutes=delay_minutes)
+            code = "PERMISSION_DENIED" if blocked else "RATE_LIMIT"
+            cur.execute(
+                """UPDATE ops.external_circuits SET recover_at=%s,error_code=%s,error_type=%s,updated_at=now()
+                     WHERE source=%s AND api_name=%s AND token_fingerprint=%s""",
+                (recover_at, code, "permission" if blocked else "rate_limit", _source_key(source),
+                 str(api_name or "*")[:64], str(token_fingerprint_value or "none")),
+            )
+        conn.commit()
+        return {"count": count, "blocked": blocked, "recover_at": recover_at, "code": code}
+    finally:
+        conn.close()
+
+
 def open_external_circuit(source, api_name, token_fingerprint_value, code, detail):
     _open_circuit(source, detail, api_name, token_fingerprint_value, code)
 
@@ -308,11 +364,28 @@ def close_external_circuit(source, api_name, token_fingerprint_value, probe_toke
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """UPDATE ops.external_circuits SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,last_success_at=now(),updated_at=now()
+                """UPDATE ops.external_circuits SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,consecutive_forbidden_count=0,last_success_at=now(),updated_at=now()
                     WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s
-                      AND (%s IS NULL OR probe_token=%s)""",
+                      AND (%s IS NULL OR probe_token=%s)
+                    RETURNING api_name""",
                 (_source_key(source), [str(api_name or "*")[:64], "*"], str(token_fingerprint_value or "none"), probe_token, probe_token),
             )
+            closed_api_names = sorted({str(row[0]) for row in cur.fetchall() if row and row[0]})
+            if closed_api_names:
+                cur.execute(
+                    """SELECT COUNT(*)=2 FROM information_schema.columns
+                        WHERE table_schema='ops' AND table_name='alert_notifications'
+                          AND column_name IN ('scope_type','scope_key')"""
+                )
+                if bool(cur.fetchone()[0]):
+                    scope_keys = [f"{_source_key(source)}:{name}" for name in closed_api_names]
+                    cur.execute(
+                        """UPDATE ops.alert_notifications
+                              SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+                            WHERE scope_type='source_endpoint' AND scope_key=ANY(%s)
+                              AND status NOT IN ('resolved','acknowledged')""",
+                        (scope_keys,),
+                    )
         conn.commit()
     finally:
         conn.close()
@@ -325,7 +398,7 @@ def release_external_circuit_probe(source, api_name, token_fingerprint_value, re
             cur.execute(
                 """UPDATE ops.external_circuits
                     SET probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
-                          recover_at=now() + (%s * interval '1 second'),
+                           recover_at=GREATEST(COALESCE(recover_at,now()),now() + (%s * interval '1 second')),
                           updated_at=now()
                     WHERE source=%s AND api_name=ANY(%s) AND token_fingerprint=%s
                       AND state='open' AND probe_in_flight=true
@@ -446,9 +519,15 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=Non
                 _open_circuit(source, str(error), api_name or _api_name(source, dataset), token_fingerprint_value, "RATE_LIMIT")
                 raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value, _recover_at("RATE_LIMIT")) from error
             if error.code in {401, 403}:
+                endpoint = api_name or _api_name(source, dataset)
+                if error.code == 403 and _source_key(source).lower() == "cninfo":
+                    state = _record_forbidden(source, endpoint, token_fingerprint_value, str(error))
+                    raise ExternalCallGuardError(state["code"],
+                        f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次退避失败，需要人工处理" if state["blocked"] else "，等待退避后探测"),
+                        source, dataset, endpoint, token_fingerprint_value, state["recover_at"]) from error
                 code = "AUTH_ERROR" if error.code == 401 else "PERMISSION_DENIED"
-                _open_circuit(source, str(error), "*" if code == "AUTH_ERROR" else api_name or _api_name(source, dataset), token_fingerprint_value, code)
-                raise ExternalCallGuardError(code, f"{source} 接口 HTTP {error.code}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value) from error
+                _open_circuit(source, str(error), "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
+                raise ExternalCallGuardError(code, f"{source} 接口 HTTP {error.code}", source, dataset, endpoint, token_fingerprint_value) from error
             if error.code >= 500:
                 raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {error.code}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value) from error
             raise
@@ -457,9 +536,15 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=Non
             _open_circuit(source, f"HTTP {status}", api_name or _api_name(source, dataset), token_fingerprint_value, "RATE_LIMIT")
             raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value, _recover_at("RATE_LIMIT"))
         if status in {401, 403}:
+            endpoint = api_name or _api_name(source, dataset)
+            if status == 403 and _source_key(source).lower() == "cninfo":
+                state = _record_forbidden(source, endpoint, token_fingerprint_value, f"HTTP {status}")
+                raise ExternalCallGuardError(state["code"],
+                    f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次退避失败，需要人工处理" if state["blocked"] else "，等待退避后探测"),
+                    source, dataset, endpoint, token_fingerprint_value, state["recover_at"])
             code = "AUTH_ERROR" if status == 401 else "PERMISSION_DENIED"
-            _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else api_name or _api_name(source, dataset), token_fingerprint_value, code)
-            raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value)
+            _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
+            raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, endpoint, token_fingerprint_value)
         if status >= 500:
             raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset, api_name or _api_name(source, dataset), token_fingerprint_value)
         return response
@@ -489,9 +574,15 @@ def install_requests_guard():
                 _open_circuit(source, f"HTTP {status}", _api_name(source, dataset), "none", "RATE_LIMIT")
                 raise ExternalCallGuardError("RATE_LIMIT", f"{source} 接口 HTTP 429", source, dataset, _api_name(source, dataset), "none", _recover_at("RATE_LIMIT"))
             if status in {401, 403}:
+                endpoint = _api_name(source, dataset)
+                if status == 403 and _source_key(source).lower() == "cninfo":
+                    state = _record_forbidden(source, endpoint, "none", f"HTTP {status}")
+                    raise ExternalCallGuardError(state["code"],
+                        f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次退避失败，需要人工处理" if state["blocked"] else "，等待退避后探测"),
+                        source, dataset, endpoint, "none", state["recover_at"])
                 code = "AUTH_ERROR" if status == 401 else "PERMISSION_DENIED"
-                _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else _api_name(source, dataset), "none", code)
-                raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, _api_name(source, dataset), "none")
+                _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else endpoint, "none", code)
+                raise ExternalCallGuardError(code, f"{source} 接口 HTTP {status}", source, dataset, endpoint, "none")
             if status >= 500:
                 raise ExternalCallGuardError("UPSTREAM_5XX", f"{source} 接口 HTTP {status}", source, dataset, _api_name(source, dataset), "none")
             return response

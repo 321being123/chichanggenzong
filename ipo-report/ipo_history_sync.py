@@ -325,11 +325,12 @@ def normalize_stored_details(cur, today, target_date=None):
     return {"updated": updated}
 
 
-def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None):
+def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None, only_codes=None):
     """不限业务条数补全资料；当前发行优先，历史缺口按 Guard 边界续跑。"""
     today_text = today.isoformat()
     target_text = str(target_date)[:10] if target_date else ""
     priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
+    only_codes = sorted({str(code or '').split('.')[0] for code in (only_codes or []) if code})
     mandatory_gap = """(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
               OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
               OR NOT (business_exposure ? 'exposures'))"""
@@ -338,6 +339,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
              main_business,industry_pe,business_exposure
         FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+         AND (%s::boolean OR security_code=ANY(%s::text[]))
          AND (""" + mandatory_gap + """ OR (
               industry_pe IS NULL
               AND COALESCE(data_quality_status->'field_states'->'industry_pe'->>'retry_after','') <= %s
@@ -352,7 +354,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 CASE WHEN ipo_date >= %s THEN ipo_date END ASC NULLS LAST,
                 CASE WHEN listing_date >= %s THEN listing_date END ASC NULLS LAST,
                 ipo_date DESC,security_code
-    """, (today_text, today_text, retry_same_day, priority_codes,
+    """, (not bool(only_codes), only_codes, today_text, today_text, retry_same_day, priority_codes,
           priority_codes,
           target_text, target_text, target_text, target_text,
           target_text, target_text))
@@ -760,7 +762,39 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
     parser.add_argument("--mode", choices=("core", "enrichment"), default="core")
+    parser.add_argument("--target-codes", default="", help="仅预览指定代码的资料缺口，逗号分隔")
+    parser.add_argument("--apply-targeted", action="store_true", help="对 --target-codes 执行定向补齐；生产使用前必须备份并取得授权")
+    parser.add_argument("--confirm-production", action="store_true", help="生产定向补齐确认；必须同时取得用户授权")
     args = parser.parse_args()
+    target_codes = [item.strip().split('.')[0] for item in args.target_codes.split(',') if item.strip()]
+    if args.apply_targeted and not target_codes:
+        parser.error("--apply-targeted 必须同时传入 --target-codes")
+    if args.apply_targeted and os.getenv("NODE_ENV") == "production" and not args.confirm_production:
+        parser.error("生产定向补齐必须同时传入 --confirm-production")
+    if target_codes:
+        connection = pg_connect()
+        try:
+            with connection.cursor() as cur:
+                cur.execute("""SELECT security_code,security_name,industry,main_business,industry_pe,business_exposure,data_quality_status
+                                 FROM ipo_history WHERE security_code=ANY(%s::text[]) ORDER BY security_code""", (target_codes,))
+                rows = cur.fetchall()
+                preview = [{
+                    "security_code": row[0], "security_name": row[1], "industry": row[2],
+                    "main_business": row[3], "industry_pe": row[4], "business_exposure": row[5],
+                    "data_quality_status": row[6],
+                } for row in rows]
+                if not args.apply_targeted:
+                    print(json.dumps({"ok": True, "mode": "preview", "targets": preview}, ensure_ascii=False, default=str))
+                    return
+                result = enrich_stock_missing_details(
+                    cur, date.fromisoformat(args.today) if args.today else date.today(),
+                    retry_same_day=True, priority_codes=target_codes, only_codes=target_codes,
+                )
+            connection.commit()
+            print(json.dumps({"ok": True, "mode": "targeted", "codes": target_codes, "result": result}, ensure_ascii=False, default=str))
+            return
+        finally:
+            connection.close()
     today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
     try:
         result = run(today, args.mode)
@@ -779,6 +813,9 @@ def main():
             "dataset": getattr(exc, "dataset", None),
             "apiName": getattr(exc, "api_name", None),
             "recoverAt": recover_at,
+            "tokenFingerprint": getattr(exc, "token_fingerprint", None),
+            "credentialProfile": getattr(exc, "credential_profile", None),
+            "budgetWindow": getattr(exc, "budget_window", None),
             "externalCalls": get_external_call_stats()["total"],
             "externalSources": get_external_call_stats()["sources"],
         }, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)

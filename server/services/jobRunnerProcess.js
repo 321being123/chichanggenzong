@@ -33,9 +33,9 @@ process.on('message', async message => {
     process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
     process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimitForMode(definition, mode));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
-    const resultDate = result && (result.dataAsOf || result.data_as_of || result.trade_date || result.dataDate);
-    const partitionDate = String(resultDate || expectedDataDate(message.jobCode, message.businessDate) || message.businessDate || '').slice(0, 10);
-    // 统一按结果数据日登记分区；严格发布任务的登记失败会交由编排器重试。
+    const declaredPartition = result && (result.partitionKey || result.partition_key);
+    const partitionDate = String(declaredPartition || expectedDataDate(message.jobCode, message.businessDate) || message.businessDate || '').slice(0, 10);
+    // partition_key 表示业务分区，data_as_of 由结果水位单独保存；未来覆盖日不得替代业务日。
     const datasetPublications = await publishJobDatasets(message.jobCode, partitionDate, result);
     const stats = getExternalCallStats();
     const normalized = result && typeof result === 'object'
@@ -55,6 +55,8 @@ process.on('message', async message => {
       dataset: error && error.dataset,
       apiName: error && error.apiName,
       tokenFingerprint: error && error.tokenFingerprint,
+      credentialProfile: error && error.credentialProfile,
+      budgetWindow: error && error.budgetWindow,
       recoverAt: error && error.recoverAt,
       dataDiagnostics: error && error.dataDiagnostics,
       externalCallCount: Number(errorExternalCalls ?? stats.total),

@@ -45,18 +45,11 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   res.json(await fetchQuotesByCodes(codes));
 }));
 
-// 港币→人民币汇率代理（抓取逻辑见 server/jobs/hkRate.js，单点真相，供路由与定时任务共用）
-const { ensureHkRate, getCurrentFxRate } = require('../jobs/hkRate');
+// 港币→人民币汇率只读代理；外部刷新统一由 Worker 的 hk_rate 任务负责。
+const { getCurrentFxRate } = require('../jobs/hkRate');
 router.get('/hkrate', requireLogin, asyncHandler(async (req, res) => {
-  // 预算等待、上游限流或历史熔断都不能阻断页面读取；保留最近一次有效汇率。
-  let result = { ok: false };
-  try {
-    result = await ensureHkRate();
-  } catch (e) {
-    result = { ok: false, error: e && e.message ? e.message : String(e) };
-  }
-  const rate = result.ok ? result.rate : await getCurrentFxRate();
-  res.json({ rate: rate || 0.868, source: result.ok ? 'global' : 'global_cache' });
+  const rate = await getCurrentFxRate();
+  res.json({ rate: rate || 0.868, source: 'global_cache' });
 }));
 
 // 指数K线数据代理（多源：A股三指数走新浪，恒生走腾讯 web.ifzq 历史日K）

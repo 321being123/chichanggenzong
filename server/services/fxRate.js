@@ -28,18 +28,23 @@ async function getFxRate(rateDate) {
 }
 
 async function getCurrentFxRate() {
+  const snapshot = await getCurrentFxRateSnapshot();
+  return snapshot && snapshot.rate;
+}
+
+async function getCurrentFxRateSnapshot() {
   const today = cnDate(new Date());
-  const todayRate = await getFxRate(today);
-  if (todayRate) return todayRate;
   const { rows } = await pool.query(
-    `SELECT rate::float8 AS rate
+    `SELECT rate::float8 AS rate, rate_date::text AS rate_date, fetched_at
        FROM market.fx_rates
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
       ORDER BY rate_date DESC, fetched_at DESC
       LIMIT 1`,
     [today]
   );
-  return rows[0] && validRate(rows[0].rate);
+  const row = rows[0];
+  const rate = row && validRate(row.rate);
+  return rate ? { rate, rateDate: row.rate_date, fetchedAt: row.fetched_at || null } : null;
 }
 
 async function upsertFxRate(value, options = {}) {
@@ -69,4 +74,4 @@ async function syncLegacyAccountRates(rate) {
   return result.rowCount;
 }
 
-module.exports = { cnDate, validRate, getFxRate, getCurrentFxRate, upsertFxRate, syncLegacyAccountRates };
+module.exports = { cnDate, validRate, getFxRate, getCurrentFxRate, getCurrentFxRateSnapshot, upsertFxRate, syncLegacyAccountRates };

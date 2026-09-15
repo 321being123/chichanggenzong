@@ -43,6 +43,13 @@ function alertKeyFor({ alertKey, jobCode, slotId, alertType = 'failure' }) {
   return `${jobCode || 'unknown'}:${slotId || 'legacy'}:${alertType}`;
 }
 
+function alertScope(input = {}) {
+  if (input.scopeType && input.scopeKey) return { type: String(input.scopeType), key: String(input.scopeKey) };
+  if (input.slotId != null) return { type: 'slot', key: String(input.slotId) };
+  if (input.jobCode) return { type: 'job', key: String(input.jobCode) };
+  return { type: null, key: null };
+}
+
 function sanitizeAlertRecord(alert) {
   if (!alert) return null;
   return {
@@ -55,11 +62,14 @@ function sanitizeAlertRecord(alert) {
 
 async function upsertAlert(input) {
   const key = alertKeyFor(input);
+  const scope = alertScope(input);
   const { rows } = await pool.query(
-    `INSERT INTO ops.alert_notifications(alert_key,alert_type,severity,job_code,slot_id,subject,summary,next_send_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,now())
+    `INSERT INTO ops.alert_notifications(alert_key,alert_type,severity,job_code,slot_id,scope_type,scope_key,subject,summary,next_send_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
      ON CONFLICT(alert_key) DO UPDATE SET
-       summary=EXCLUDED.summary, subject=EXCLUDED.subject, last_seen_at=now(),
+       summary=EXCLUDED.summary, subject=EXCLUDED.subject,
+       scope_type=COALESCE(EXCLUDED.scope_type,ops.alert_notifications.scope_type),
+       scope_key=COALESCE(EXCLUDED.scope_key,ops.alert_notifications.scope_key), last_seen_at=now(),
        occurrence_count=ops.alert_notifications.occurrence_count+1,
        status=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN 'pending' ELSE ops.alert_notifications.status END,
        resolved_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.resolved_at END,
@@ -73,6 +83,7 @@ async function upsertAlert(input) {
        updated_at=now()
      RETURNING *`,
     [key, input.alertType || 'failure', input.severity || 'critical', input.jobCode || null, input.slotId || null,
+      scope.type, scope.key,
       sanitizeJobError(input.subject || `后台任务异常：${input.jobCode || '未知任务'}`, 500), sanitizeJobError(input.summary || '', 4000)]
   );
   return rows[0];
@@ -387,32 +398,74 @@ async function resolveJobSlotAlerts(slot) {
   const { rows } = await pool.query(
       `UPDATE ops.alert_notifications
         SET status='resolved', resolved_at=now(), sending_started_at=NULL, updated_at=now()
-      WHERE slot_id=$1 AND status <> 'resolved' AND alert_type <> 'recovery'
+      WHERE ((scope_type='slot' AND scope_key=$1::text)
+             OR (scope_type IS NULL AND slot_id=$1))
+        AND status <> 'resolved' AND alert_type <> 'recovery'
       RETURNING *`, [slot.slot_id]
   );
-  if (rows.length) await sendRecoveryAlert({
+  let jobRows = [];
+  if (slot.job_code) {
+    const recent = await pool.query(
+      `SELECT status FROM ops.job_schedule_slots
+        WHERE job_code=$1 ORDER BY scheduled_for DESC,slot_id DESC LIMIT 3`, [slot.job_code]
+    );
+    if (recent.rows.length === 3 && recent.rows.every(item => item.status === 'succeeded')) {
+      const resolved = await pool.query(
+        `UPDATE ops.alert_notifications
+            SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+          WHERE scope_type='job' AND scope_key=$1
+            AND status NOT IN ('resolved','acknowledged') AND alert_type <> 'recovery'
+          RETURNING *`, [slot.job_code]
+      );
+      jobRows = resolved.rows;
+    }
+  }
+  const resolvedRows = [...rows, ...jobRows];
+  if (resolvedRows.length) await sendRecoveryAlert({
     alertKey: `slot:${slot.slot_id}:recovered`,
     alertType: 'recovery',
     severity: 'info',
-    jobCode: rows[0].job_code,
+    jobCode: resolvedRows[0].job_code,
     slotId: slot.slot_id,
-    subject: `后台任务已恢复：${rows[0].job_code || slot.job_code}`,
-    summary: `计划实例 ${slot.slot_id} 已恢复成功，已关闭 ${rows.length} 条相关告警，数据日期：${formatAlertDate(slot.data_as_of)}`,
+    subject: `后台任务已恢复：${resolvedRows[0].job_code || slot.job_code}`,
+    summary: `计划实例 ${slot.slot_id} 已恢复成功，已关闭 ${resolvedRows.length} 条相关告警，数据日期：${formatAlertDate(slot.data_as_of)}`,
   });
-  return rows.length;
+  return resolvedRows.length;
+}
+
+async function resolveDatasetAlerts(datasetCode, scopeKey, partitionKey) {
+  if (!productionAlertsEnabled()) return 0;
+  const key = `${datasetCode}:${scopeKey || ''}:${String(partitionKey).slice(0, 10)}`;
+  const { rowCount } = await pool.query(
+    `UPDATE ops.alert_notifications SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+      WHERE scope_type='dataset' AND scope_key=$1 AND status NOT IN ('resolved','acknowledged')`, [key]
+  );
+  return rowCount;
+}
+
+async function resolveSourceEndpointAlerts(source, apiName) {
+  if (!productionAlertsEnabled()) return 0;
+  const key = `${source}:${apiName || '*'}`;
+  const { rowCount } = await pool.query(
+    `UPDATE ops.alert_notifications SET status='resolved',resolved_at=now(),sending_started_at=NULL,updated_at=now()
+      WHERE scope_type='source_endpoint' AND scope_key=$1 AND status NOT IN ('resolved','acknowledged')`, [key]
+  );
+  return rowCount;
 }
 
 async function listAlerts(options = {}) {
   const limit = Math.min(Math.max(parseInt(options.limit, 10) || 50, 1), 200);
   const status = String(options.status || '').toLowerCase();
   const open = status === 'open' || status === 'unresolved';
+  const history = status === 'history';
   const allowed = ['pending', 'sending', 'sent', 'suppressed', 'send_failed', 'resolved', 'acknowledged'];
   const exact = allowed.includes(status) ? status : null;
   const { rows } = await pool.query(
     `SELECT * FROM ops.alert_notifications
       WHERE ($1::boolean = false OR (${ACTIVE_ALERT_WHERE}))
         AND ($2::text IS NULL OR status=$2)
-      ORDER BY last_seen_at DESC LIMIT $3`, [open, exact, limit]
+        AND ($3::boolean = false OR status IN ('resolved','acknowledged'))
+      ORDER BY last_seen_at DESC LIMIT $4`, [open, exact, history, limit]
   );
   return rows.map(sanitizeAlertRecord);
 }
@@ -453,6 +506,7 @@ async function acknowledgeAlert(alertId) {
 
 module.exports = {
   sendAlert, sendDueAlerts, sendRecoveryAlert, resolveJobSlotAlerts,
+  resolveDatasetAlerts, resolveSourceEndpointAlerts,
   notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
   ACTIVE_ALERT_WHERE,
 };

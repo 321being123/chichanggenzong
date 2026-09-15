@@ -751,6 +751,9 @@ function renderJobs() {
     '<div class="acct-section-title">待处理告警</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>时间</th><th>任务</th><th>告警</th><th>状态</th><th>操作</th></tr></thead>' +
       '<tbody id="jobs-alerts-tbody"><tr><td colspan="5" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>' +
+    '<div class="acct-section-title">已恢复/已确认告警</div>' +
+    '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>时间</th><th>任务</th><th>告警</th><th>状态</th></tr></thead>' +
+      '<tbody id="jobs-alert-history-tbody"><tr><td colspan="4" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>' +
     '<div class="acct-section-title">最近运行记录</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>任务</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>触发方式</th><th>详情</th></tr></thead>' +
       '<tbody id="jobs-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>';
@@ -814,6 +817,7 @@ async function loadJobsData() {
   const slotBody = document.getElementById('jobs-slots-tbody');
   const runBody = document.getElementById('jobs-tbody');
   const alertBody = document.getElementById('jobs-alerts-tbody');
+  const alertHistoryBody = document.getElementById('jobs-alert-history-tbody');
   const summary = document.getElementById('jobs-summary');
   ensureJobMonitorControls();
   ensureJobMonitorAdvancedControls();
@@ -823,10 +827,11 @@ async function loadJobsData() {
       fetch(api('/api/admin/jobs/slots?limit=100' + jobSlotQuery())),
       fetch(api('/api/admin/jobs?limit=50')),
       fetch(api('/api/admin/jobs/notifications?limit=30')),
+      fetch(api('/api/admin/jobs/notifications?status=history&limit=30')),
     ]);
     const data = await Promise.all(responses.map(r => r.json()));
     if (responses.some(r => !r.ok)) throw new Error('load failed');
-    const overview = data[0], slots = data[1].list || [], runs = data[2], alerts = data[3].list || [];
+    const overview = data[0], slots = data[1].list || [], runs = data[2], alerts = data[3].list || [], alertHistory = data[4].list || [];
     if (summary) {
       const counts = (overview.counts || []).reduce((map, item) => { map[item.status] = item.count; return map; }, {});
       const alertCounts = (overview.alerts || []).reduce((map, item) => { map[item.status] = Number(item.count || 0); return map; }, {});
@@ -854,10 +859,14 @@ async function loadJobsData() {
     if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
       return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
     }).join('') : '<tr><td colspan="5" class="biz-table-state-cell">暂无待处理告警</td></tr>';
+    if (alertHistoryBody) alertHistoryBody.innerHTML = alertHistory.length ? alertHistory.map(function (alert) {
+      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="4" class="biz-table-state-cell">暂无历史告警</td></tr>';
   } catch (e) {
     if (slotBody) slotBody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
     if (runBody) runBody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
     if (alertBody) alertBody.innerHTML = '<tr><td colspan="5" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
+    if (alertHistoryBody) alertHistoryBody.innerHTML = '<tr><td colspan="4" class="biz-table-state-cell biz-table-error">加载失败，请刷新重试</td></tr>';
   }
 }
 

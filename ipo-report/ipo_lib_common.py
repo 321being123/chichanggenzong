@@ -54,7 +54,7 @@ def _get_cninfo_session():
         "User-Agent": HEADERS["User-Agent"],
         "Accept": "application/json",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": "http://www.cninfo.com.cn/",
+        "Referer": "https://www.cninfo.com.cn/",
     })
     return s
 

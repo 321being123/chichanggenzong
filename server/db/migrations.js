@@ -6073,6 +6073,37 @@ async function migration150HkIpoVbkrFallback() {
   `);
 }
 
+// ========== 151：告警作用域与巨潮 403 有界退避 =============
+async function migration151AlertScopeAndCninfoBackoff() {
+  await pool.query(`
+    ALTER TABLE ops.alert_notifications
+      ADD COLUMN IF NOT EXISTS scope_type TEXT,
+      ADD COLUMN IF NOT EXISTS scope_key TEXT;
+
+    UPDATE ops.alert_notifications
+       SET scope_type='slot', scope_key=slot_id::text
+     WHERE scope_type IS NULL AND slot_id IS NOT NULL;
+
+    UPDATE ops.alert_notifications
+       SET scope_type='job', scope_key=job_code
+     WHERE scope_type IS NULL AND slot_id IS NULL AND NULLIF(job_code,'') IS NOT NULL;
+
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='chk_alert_notifications_scope') THEN
+        ALTER TABLE ops.alert_notifications ADD CONSTRAINT chk_alert_notifications_scope
+          CHECK ((scope_type IS NULL AND scope_key IS NULL)
+              OR (scope_type IN ('slot','job','dataset','source_endpoint') AND NULLIF(scope_key,'') IS NOT NULL));
+      END IF;
+    END $$;
+    CREATE INDEX IF NOT EXISTS idx_alert_notifications_scope_status
+      ON ops.alert_notifications(scope_type,scope_key,status,last_seen_at DESC);
+
+    ALTER TABLE ops.external_circuits
+      ADD COLUMN IF NOT EXISTS consecutive_forbidden_count INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS last_forbidden_at TIMESTAMPTZ;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6224,6 +6255,7 @@ const MIGRATIONS = [
   { version: '148_hk_ipo_market_signals', up: migration148HkIpoMarketSignals },
   { version: '149_hk_ipo_chinese_aliases', up: migration149HkIpoChineseAliases },
   { version: '150_hk_ipo_vbkr_fallback', up: migration150HkIpoVbkrFallback },
+  { version: '151_alert_scope_and_cninfo_backoff', up: migration151AlertScopeAndCninfoBackoff },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -6830,6 +6862,7 @@ module.exports = {
   migration148HkIpoMarketSignals,
   migration149HkIpoChineseAliases,
   migration150HkIpoVbkrFallback,
+  migration151AlertScopeAndCninfoBackoff,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

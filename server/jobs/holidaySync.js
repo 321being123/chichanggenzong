@@ -1,7 +1,7 @@
 // ========== 休市日年度自愈：每月核对官方日历（Tushare trade_cal），不一致则重写本地 JSON（零部署） ==========
 // 由 systemd 托管的 worker 进程调用，不依赖 WorkBuddy 自动化，跨年自动跟上。
 const { tushareQuery, normDate } = require('../services/market');
-const { loadHolidays, saveHolidays, getCoveredYear } = require('../config/holidays');
+const { loadHolidays, saveHolidays, getCoveredYear, getHolidayLoadError } = require('../config/holidays');
 
 const REFRESH_DAYS = 30;
 
@@ -34,6 +34,8 @@ async function fetchTradeCal(year) {
 
 async function ensureHolidaysCurrent() {
   const obj = loadHolidays();
+  const loadError = getHolidayLoadError();
+  if (loadError) throw new Error(`运行时休市日历不可写或已损坏：${loadError.message}`);
   const year = new Date().getFullYear();
   const stale = daysSince(obj) > REFRESH_DAYS;
   const covered = getCoveredYear(obj);

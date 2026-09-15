@@ -131,7 +131,7 @@ assert(/rollback_failed=1/.test(deployScript) && /systemctl is-active --quiet po
 assert(/last_sent_at=CASE WHEN ops\.alert_notifications\.status IN \('acknowledged','resolved'\) THEN NULL/.test(alertMailer), '已恢复告警复发时必须清除旧发送时间，避免再次故障被抑制');
 assert(/sanitizeJobError\(alert\.summary \|\| '', 4000\)/.test(alertMailer) && /sanitizeAlertRecord\(rows\[0\]\)/.test(alertMailer), '历史告警在邮件发送和确认接口返回前必须再次脱敏');
 assert(/stop_unit_if_present portfolio-worker-health\.timer/.test(deployScript) && /health_timer_preexisting/.test(deployScript), '首次部署时不存在的健康检查单元不得导致部署或回滚失败');
-assert(/WHERE slot_id=\$1 AND status <> 'resolved' AND alert_type <> 'recovery'/.test(alertMailer) && /worker:offline[\s\S]*status <> 'resolved'/.test(health), '人工确认后的故障恢复仍必须关闭故障告警且不得重复处理恢复邮件');
+assert(/scope_type='slot' AND scope_key=\$1::text/.test(alertMailer) && /worker:offline[\s\S]*status <> 'resolved'/.test(health), '人工确认后的故障恢复仍必须关闭故障告警且不得重复处理恢复邮件');
 assert(/ACTIVE_ALERT_WHERE/.test(alertMailer)
   && /external_api_switch','external_api_interface_failover/.test(alertMailer)
   && /status IN \('sent','suppressed'\)/.test(alertMailer)

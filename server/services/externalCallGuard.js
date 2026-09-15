@@ -63,6 +63,7 @@ class ExternalCallGuardError extends Error {
     this.credentialProfile = details.credentialProfile || '';
     this.tokenFingerprint = details.tokenFingerprint || '';
     this.recoverAt = details.recoverAt || null;
+    this.budgetWindow = details.budgetWindow || '';
     this.retryable = false;
   }
 }
@@ -384,16 +385,81 @@ async function openExternalCircuit(source, detail = '', circuitSource = source, 
   return { source: key, apiName: circuitApiName(guardOptions.apiName, code), recoverAt };
 }
 
+async function recordExternalForbidden(source, apiName, fingerprint = 'none', detail = '') {
+  const key = sourceKey(source);
+  const endpoint = String(apiName || '*').slice(0, 64);
+  const token = String(fingerprint || 'none');
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `INSERT INTO ops.external_circuits
+         (source,api_name,token_fingerprint,state,recover_at,error_code,error_type,detail,
+          consecutive_forbidden_count,last_forbidden_at)
+       VALUES($1,$2,$3,'open',NULL,'RATE_LIMIT','rate_limit',$4,1,now())
+       ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
+         state='open',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
+         consecutive_forbidden_count=CASE
+           WHEN ops.external_circuits.last_forbidden_at < now()-interval '1 day' THEN 1
+           ELSE ops.external_circuits.consecutive_forbidden_count+1 END,
+         last_forbidden_at=now(),detail=EXCLUDED.detail,opened_at=now(),updated_at=now()
+       RETURNING consecutive_forbidden_count`, [key, endpoint, token, String(detail || '').slice(0, 1000)]
+    );
+    const count = Number(rows[0] && rows[0].consecutive_forbidden_count || 1);
+    const blocked = count >= 5;
+    const delayMinutes = Math.min(30 * (2 ** Math.max(count - 1, 0)), 120);
+    const recoverAt = blocked ? null : new Date(Date.now() + delayMinutes * 60000);
+    const code = blocked ? 'PERMISSION_DENIED' : 'RATE_LIMIT';
+    await client.query(
+      `UPDATE ops.external_circuits SET recover_at=$4,error_code=$5,error_type=$6,updated_at=now()
+        WHERE source=$1 AND api_name=$2 AND token_fingerprint=$3`,
+      [key, endpoint, token, recoverAt, code, blocked ? 'permission' : 'rate_limit']
+    );
+    await client.query('COMMIT');
+    return { source: key, apiName: endpoint, tokenFingerprint: token, count, blocked, recoverAt, code };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally { client.release(); }
+}
+
+function closedCircuitApiNames(rows = []) {
+  return [...new Set(rows.map(row => String(row && row.api_name || '').trim()).filter(Boolean))];
+}
+
 async function closeExternalCircuit(source, apiName, fingerprint = 'none', providedClient = null, probeToken = null) {
   const key = sourceKey(source);
   const queryable = providedClient || getPool();
-  await queryable.query(
+  const { rows } = await queryable.query(
     `UPDATE ops.external_circuits
-        SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,last_success_at=now(),updated_at=now()
+        SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
+            consecutive_forbidden_count=0,last_success_at=now(),updated_at=now()
       WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3
-        AND ($4::text IS NULL OR probe_token=$4)`,
+        AND ($4::text IS NULL OR probe_token=$4)
+      RETURNING api_name`,
     [key, [String(apiName || '*').slice(0, 64), '*'], String(fingerprint || 'none'), probeToken]
   );
+  const { resolveSourceEndpointAlerts } = require('./jobAlertMailer');
+  for (const closedApiName of closedCircuitApiNames(rows)) {
+    await resolveSourceEndpointAlerts(key, closedApiName).catch(() => {});
+  }
+  return rows;
+}
+
+async function manuallyCloseExternalCircuit(source, apiName, fingerprint = 'none') {
+  const { rows } = await getPool().query(
+    `UPDATE ops.external_circuits
+        SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
+            consecutive_forbidden_count=0,updated_at=now()
+      WHERE source=$1 AND api_name=$2 AND token_fingerprint=$3 AND state='open'
+      RETURNING source,api_name,token_fingerprint,state,updated_at`,
+    [sourceKey(source), String(apiName || '*').slice(0, 64), String(fingerprint || 'none')]
+  );
+  if (rows[0]) {
+    const { resolveSourceEndpointAlerts } = require('./jobAlertMailer');
+    await resolveSourceEndpointAlerts(rows[0].source, rows[0].api_name).catch(() => {});
+  }
+  return rows[0] || null;
 }
 
 async function releaseExternalCircuitProbe(source, apiName, fingerprint = 'none', retryMs = 5000, probeToken = null) {
@@ -401,7 +467,7 @@ async function releaseExternalCircuitProbe(source, apiName, fingerprint = 'none'
   await getPool().query(
     `UPDATE ops.external_circuits
         SET probe_in_flight=false, probe_owner=NULL, probe_token=NULL, probe_lease_until=NULL,
-            recover_at=now() + ($4 * interval '1 millisecond'),
+            recover_at=GREATEST(COALESCE(recover_at,now()),now() + ($4 * interval '1 millisecond')),
             updated_at=now()
       WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3
         AND state='open' AND probe_in_flight=true
@@ -543,7 +609,10 @@ module.exports = {
   consumeExternalCall,
   withExternalCallGuard,
   openExternalCircuit,
+  recordExternalForbidden,
+  closedCircuitApiNames,
   closeExternalCircuit,
+  manuallyCloseExternalCircuit,
   releaseExternalCircuitProbe,
   releaseExternalCallSlot,
   invalidateExternalCircuits,

@@ -44,8 +44,8 @@ def get_org_id(code):
         try:
             s = requests.Session()
             s.headers.update({"User-Agent": HEADERS["User-Agent"], "Accept": "application/json",
-                               "X-Requested-With": "XMLHttpRequest", "Referer": "http://www.cninfo.com.cn/"})
-            r = s.post("http://www.cninfo.com.cn/new/information/topSearch/query",
+                               "X-Requested-With": "XMLHttpRequest", "Referer": "https://www.cninfo.com.cn/"})
+            r = s.post("https://www.cninfo.com.cn/new/information/topSearch/query",
                        data={"keyWord": code, "maxNum": 10}, timeout=20)
             s.close()
             for it in r.json():
@@ -101,7 +101,7 @@ def _download_pdf_text(s, ann):
     adj = ann.get("adjunctUrl") or ""
     if not adj:
         return None
-    url = adj if adj.startswith("http") else "http://static.cninfo.com.cn/" + adj.lstrip("/")
+    url = adj if adj.startswith("http") else "https://static.cninfo.com.cn/" + adj.lstrip("/")
     try:
         g = s.get(url, timeout=30)
     except ExternalCallGuardError:
@@ -132,7 +132,7 @@ def fetch_cninfo_pdf_text(code, ipo_date=None):
         return None
     s = requests.Session()
     s.headers.update({"User-Agent": HEADERS["User-Agent"], "Accept": "application/json",
-                      "X-Requested-With": "XMLHttpRequest", "Referer": "http://www.cninfo.com.cn/"})
+                      "X-Requested-With": "XMLHttpRequest", "Referer": "https://www.cninfo.com.cn/"})
     plate = "sz" if code[0] in ('0', '3') else "sh"
     column = "szse" if code[0] in ('0', '3') else "shse"
     dt = __import__("datetime")
@@ -159,7 +159,7 @@ def fetch_cninfo_pdf_text(code, ipo_date=None):
         anns = None
         for attempt in range(3):
             try:
-                r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
+                r = s.post("https://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
                 j = r.json()
                 anns = j.get("announcements") or []
                 break

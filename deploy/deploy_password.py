@@ -165,7 +165,7 @@ def main():
             "&& systemctl reload nginx "
             "&& npm ci --omit=dev "
             "&& MIGRATION_ENV_FILE=/etc/portfolio/migration.env /usr/bin/node /opt/portfolio/server/scripts/runMigrations.js "
-            "&& install -d -o portfolio-app -g portfolio-app -m 0750 /var/lib/portfolio /var/lib/portfolio/models /var/lib/portfolio/models/ipo "
+            "&& install -d -o portfolio-app -g portfolio-app -m 0750 /var/lib/portfolio /var/lib/portfolio/models /var/lib/portfolio/models/ipo /opt/portfolio/data "
             "&& install -d -o portfolio-app -g portfolio-app -m 0755 ipo-report/data ipo-report/history_reports ipo-report/individual "
             "&& chown -R portfolio-app:portfolio-app ipo-report/data ipo-report/history_reports ipo-report/individual "
             "&& (grep -q '^TRUST_PROXY=' .env "

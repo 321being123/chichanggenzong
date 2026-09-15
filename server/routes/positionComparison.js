@@ -16,7 +16,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { pool, auditEvent } = require('../db');
 const { isValidAccountName } = require('../middleware/validate');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
-const { ensureHkRate, getCurrentFxRate } = require('../jobs/hkRate');
+const { getCurrentFxRate } = require('../jobs/hkRate');
 const {
   listBenchmarks, loadEffectivePositions, loadAccountCash, estimatePositions,
   missingQuotePositions, groupByField, similarity, compareSecurities, sanitizeSemiPublic,
@@ -131,16 +131,14 @@ async function prepareUnifiedEstimation(myUsername, myAccountName, benchRow) {
     loadEffectivePositions(benchRow.username, benchRow.account_name),
     loadAccountCash(myUsername, myAccountName),
     loadAccountCash(benchRow.username, benchRow.account_name),
-    ensureHkRate()
-      .then(r => r.ok ? r.rate : getCurrentFxRate())
-      .catch(() => getCurrentFxRate()),
+    getCurrentFxRate(),
   ]);
   const codes = [...new Set([...myPositions, ...benchPositions].map(p => String(p.code || '').trim()).filter(Boolean))];
   const quotes = codes.length ? await fetchTencentQuotes(codes) : new Map();
   let hkRate, hkRateTime;
   if (liveRate != null && liveRate > 0) {
     hkRate = liveRate;
-    hkRateTime = new Date().toISOString(); // 实时抓取成功：标记本次抓取时刻
+    hkRateTime = benchCash.hkRateUpdatedAt || myCash.hkRateUpdatedAt || null;
   } else {
     hkRate = (benchCash.hkRate > 0 ? benchCash.hkRate : (myCash.hkRate > 0 ? myCash.hkRate : 0.868));
     hkRateTime = benchCash.hkRateUpdatedAt || myCash.hkRateUpdatedAt || null; // 回退账户汇率：用账户更新时间

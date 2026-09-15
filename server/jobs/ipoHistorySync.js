@@ -105,6 +105,9 @@ function runWith(executable, runtime, businessDate, mode, externalCallCount = 0)
           failure.dataset = structured.dataset || undefined;
           failure.apiName = structured.apiName || undefined;
           failure.recoverAt = structured.recoverAt || undefined;
+          failure.tokenFingerprint = structured.tokenFingerprint || undefined;
+          failure.credentialProfile = structured.credentialProfile || undefined;
+          failure.budgetWindow = structured.budgetWindow || undefined;
           failure.externalCallCount = structured.externalCalls;
           failure.externalSources = structured.externalSources;
         }

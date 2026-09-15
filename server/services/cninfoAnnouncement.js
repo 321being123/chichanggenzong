@@ -2,7 +2,7 @@
 // 数据源：https://www.cninfo.com.cn/new/hisAnnouncement/query
 // 用途：检索 A 股要约收购、现金选择权、换股吸收合并等公告
 const https = require('https');
-const { withExternalCallGuard, openExternalCircuit } = require('./externalCallGuard');
+const { withExternalCallGuard, openExternalCircuit, recordExternalForbidden, ExternalCallGuardError } = require('./externalCallGuard');
 
 const BASE_URL = 'https://www.cninfo.com.cn';
 const SEARCH_PATH = '/new/hisAnnouncement/query';
@@ -10,6 +10,13 @@ const ALLOWED_DOMAIN = 'www.cninfo.com.cn';
 
 const TIMEOUT_MS = 15000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+function cninfoApiName(urlStr) {
+  const path = new URL(urlStr).pathname;
+  if (path.includes('/topSearch/')) return 'topSearch';
+  if (path.includes('/hisAnnouncement/')) return 'hisAnnouncement';
+  return 'document';
+}
 
 // 方案 4.3 A 股公告关键词
 const DISCOVERY_KEYWORDS = [
@@ -60,7 +67,7 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
     const req = https.request(options, (res) => {
       if (res.statusCode !== 200) {
         const error = new Error('CNINFO HTTP ' + res.statusCode);
-        error.code = res.statusCode === 429 ? 'RATE_LIMIT' : res.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
+        error.code = res.statusCode === 403 ? 'HTTP_403' : res.statusCode === 429 ? 'RATE_LIMIT' : res.statusCode >= 500 ? 'UPSTREAM_5XX' : 'UPSTREAM_ERROR';
         error.errorType = res.statusCode === 429 ? 'rate_limit' : res.statusCode >= 500 ? 'network' : 'upstream';
         error.source = 'cninfo';
         return reject(error);
@@ -88,14 +95,24 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
 }
 
 async function httpRequest(urlStr, options = {}) {
+  const apiName = cninfoApiName(urlStr);
   try {
     return await withExternalCallGuard('cninfo', `announcement:${urlStr}`, process.env.JOB_BUSINESS_DATE,
-      () => rawHttpRequest(urlStr, options));
+      () => rawHttpRequest(urlStr, options), { apiName, credentialProfile: 'anonymous', tokenFingerprint: 'none' });
   } catch (error) {
+    if (error && error.code === 'HTTP_403') {
+      const state = await recordExternalForbidden('cninfo', apiName, 'none', error.message);
+      throw new ExternalCallGuardError(
+        state.code,
+        state.blocked ? `cninfo 接口 ${apiName} 连续 5 次退避后仍返回 HTTP 403，需要人工处理` : `cninfo 接口 ${apiName} HTTP 403，等待退避后探测`,
+        'cninfo', `announcement:${urlStr}`,
+        { apiName, tokenFingerprint: 'none', credentialProfile: 'anonymous', recoverAt: state.recoverAt }
+      );
+    }
     // 只有巨潮真实返回的 429/额度错误才记录来源熔断；本站 BUDGET_WAIT 不写熔断。
     if (error && ['RATE_LIMIT', 'QUOTA_EXHAUSTED'].includes(String(error.code || '').toUpperCase())) {
       await openExternalCircuit('cninfo', error.message, {
-        apiName: '*',
+        apiName,
         errorCode: error.code,
         errorType: error.errorType,
         recoverAt: error.recoverAt,
@@ -267,4 +284,5 @@ module.exports = {
   CNINFO_PAGE_SIZE,
   CNINFO_MAX_PAGES,
   CNINFO_REQUEST_DELAY_MS,
+  cninfoApiName,
 };

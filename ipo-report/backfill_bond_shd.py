@@ -123,7 +123,7 @@ def fetch_announcements(stk_code, center_date):
         return []
     s = requests.Session()
     s.headers.update({"User-Agent": HEADERS["User-Agent"], "Accept": "application/json",
-                      "X-Requested-With": "XMLHttpRequest", "Referer": "http://www.cninfo.com.cn/"})
+                      "X-Requested-With": "XMLHttpRequest", "Referer": "https://www.cninfo.com.cn/"})
     plate = "sz" if stk_code[0] in ('0', '3') else "sh"
     column = "szse" if stk_code[0] in ('0', '3') else "shse"
     try:
@@ -141,7 +141,7 @@ def fetch_announcements(stk_code, center_date):
         anns = None
         for attempt in range(3):
             try:
-                r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
+                r = s.post("https://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
                 anns = r.json().get("announcements") or []
                 break
             except Exception:

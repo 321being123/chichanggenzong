@@ -2360,7 +2360,8 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         official_count: Number(lifecycle && lifecycle.officialCount || 0),
       },
       bond_listing_liquidity: {
-        quality_status: listingLiquidity && listingLiquidity.ok !== false ? 'passed' : 'stale',
+        quality_status: listingLiquidity && listingLiquidity.ok !== false && Number(listingLiquidity.failed || 0) === 0 ? 'passed' : 'stale',
+        status: listingLiquidity && listingLiquidity.status || (listingLiquidity && listingLiquidity.ok !== false ? 'succeeded' : 'stale'),
         saved: Number(listingLiquidity && listingLiquidity.saved || 0),
         failed: Number(listingLiquidity && listingLiquidity.failed || 0),
       },

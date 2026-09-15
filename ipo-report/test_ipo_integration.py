@@ -6,11 +6,13 @@ PostgreSQL 集成测试（仅依赖本地/CI 的 PostgreSQL，不调用外部行
 """
 import os
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ipo_daily_report as m
 import db_pg
+import external_call_guard
 import psycopg2
 
 PASS, FAIL, ERR = [], [], []
@@ -117,6 +119,55 @@ try:
 except Exception as e:
     ERR.append("save_report_to_pg: " + str(e))
     traceback.print_exc()
+
+
+# ===== 4. Python Guard 成功探测按实际作用域关闭告警 =====
+print("== 4. Python Guard 熔断告警收敛 ==")
+source = "cninfo-test-python-close-%s-%s" % (os.getpid(), int(time.time() * 1000))
+alert_key = source + ":wildcard-alert"
+try:
+    c = pg_conn()
+    cur = c.cursor()
+    cur.execute(
+        """INSERT INTO ops.external_circuits
+             (source,api_name,token_fingerprint,state,recover_at,error_code,error_type,detail)
+           VALUES(%s,'*','none','open',now()-interval '1 minute','RATE_LIMIT','rate_limit','test')""",
+        (source,),
+    )
+    cur.execute(
+        """INSERT INTO ops.alert_notifications
+             (alert_key,alert_type,severity,status,scope_type,scope_key,subject,summary)
+           VALUES(%s,'failure','critical','pending','source_endpoint',%s,'test','test')""",
+        (alert_key, source + ":*"),
+    )
+    c.commit()
+    c.close()
+
+    external_call_guard.close_external_circuit(source, "topSearch", "none")
+    c = pg_conn()
+    cur = c.cursor()
+    cur.execute("SELECT state FROM ops.external_circuits WHERE source=%s AND api_name='*'", (source,))
+    circuit = cur.fetchone()
+    cur.execute("SELECT status FROM ops.alert_notifications WHERE alert_key=%s", (alert_key,))
+    alert = cur.fetchone()
+    check("Python 通配熔断已关闭", circuit and circuit[0] == "closed")
+    check("Python 通配告警已按实际作用域关闭", alert and alert[0] == "resolved")
+    cur.execute("DELETE FROM ops.alert_notifications WHERE alert_key=%s", (alert_key,))
+    cur.execute("DELETE FROM ops.external_circuits WHERE source=%s", (source,))
+    c.commit()
+    c.close()
+except Exception as e:
+    ERR.append("python guard alert resolution: " + str(e))
+    traceback.print_exc()
+    try:
+        c = pg_conn()
+        cur = c.cursor()
+        cur.execute("DELETE FROM ops.alert_notifications WHERE alert_key=%s", (alert_key,))
+        cur.execute("DELETE FROM ops.external_circuits WHERE source=%s", (source,))
+        c.commit()
+        c.close()
+    except Exception:
+        pass
 
 
 # ===== 汇总 =====

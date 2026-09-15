@@ -178,16 +178,17 @@ def _get_org_id(stock_code):
     import time
     if stock_code in _org_id_cache:
         return _org_id_cache[stock_code]
+    last_error = None
     for attempt in range(3):
         try:
-            url = "http://www.cninfo.com.cn/new/information/topSearch/query"
+            url = "https://www.cninfo.com.cn/new/information/topSearch/query"
             # 使用独立session，避免共享的Eastmoney cookies干扰cninfo
             cn_session = requests.Session()
             cn_session.headers.update({
                 "User-Agent": HEADERS["User-Agent"],
                 "Accept": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
-                "Referer": "http://www.cninfo.com.cn/",
+                "Referer": "https://www.cninfo.com.cn/",
             })
             resp = cn_session.post(url, data={"keyWord": stock_code, "maxNum": 10},
                                  timeout=20)
@@ -197,11 +198,17 @@ def _get_org_id(stock_code):
                     _org_id_cache[stock_code] = item["orgId"]
                     return item["orgId"]
             break
+        except ExternalCallGuardError:
+            raise
         except Exception as e:
+            last_error = e
             if attempt < 2:
                 time.sleep(3)
-            else:
-                print(f"获取orgId失败({stock_code}): {e}")
+    if last_error is not None:
+        raise ExternalCallGuardError(
+            "UPSTREAM_5XX", f"获取orgId失败({stock_code}): {last_error}",
+            "cninfo", f"topSearch:{stock_code}", api_name="topSearch",
+        ) from last_error
     _org_id_cache[stock_code] = None
     return None
 
@@ -376,7 +383,7 @@ def _download_cninfo_pdf_text(target):
     """下载并提取一条巨潮公告 PDF，统一关闭临时会话。"""
     session = _get_cninfo_session()
     try:
-        pdf_url = f"http://static.cninfo.com.cn/{target['adjunctUrl']}"
+        pdf_url = f"https://static.cninfo.com.cn/{target['adjunctUrl']}"
         response = session.get(pdf_url, timeout=30)
         if response.status_code != 200:
             return None, f"PDF下载失败(HTTP {response.status_code})"
@@ -598,7 +605,7 @@ def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=Non
 
     try:
         # 搜索公告：365天范围 + 分页，避免近期公告超过第一页后漏检。
-        url = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
+        url = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
         today = datetime.now()
         end_date = today.strftime("%Y-%m-%d")
         start_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")
@@ -1131,7 +1138,7 @@ def fetch_prospectus_main_business(stock_code):
         s = requests.Session()
         s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                           "Accept": "application/json", "X-Requested-With": "XMLHttpRequest",
-                          "Referer": "http://www.cninfo.com.cn/"})
+                          "Referer": "https://www.cninfo.com.cn/"})
         plate = "sz" if code[0] in ('0', '3') else "sh"
         column = "szse" if code[0] in ('0', '3') else "shse"
         d = datetime.now()
@@ -1146,7 +1153,7 @@ def fetch_prospectus_main_business(stock_code):
                         "tabName": "fulltext", "column": column, "plate": plate,
                         "seDate": "%s~%s" % (start, end)}
                 try:
-                    r = s.post("http://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
+                    r = s.post("https://www.cninfo.com.cn/new/hisAnnouncement/query", data=data, timeout=20)
                     payload = r.json()
                     anns = payload.get("announcements") or []
                     total = int(payload.get("totalAnnouncement") or 0)

@@ -28,7 +28,7 @@ const {
   switchProvider,
 } = require('../services/externalApiConfig');
 const { upsertSourceEndpointPolicy } = require('../services/sourceEndpointPolicy');
-const { tokenFingerprint } = require('../services/externalCallGuard');
+const { tokenFingerprint, manuallyCloseExternalCircuit } = require('../services/externalCallGuard');
 const { assertSafeUrl, fetchSafeAi } = require('../services/ai');
 const siteAnalytics = require('../services/siteAnalytics');
 
@@ -275,6 +275,22 @@ router.post('/jobs/alerts/:alertId/acknowledge', asyncHandler(async (req, res) =
   }
   await audit(req, 'job_alert_acknowledge', String(alert.alert_id), { detail: '确认邮件告警' });
   res.json({ ok: true, alert });
+}));
+router.post('/jobs/circuits/resolve', asyncHandler(async (req, res) => {
+  const source = String(req.body && req.body.source || '').trim();
+  const apiName = String(req.body && req.body.apiName || '').trim();
+  const fingerprint = String(req.body && req.body.tokenFingerprint || 'none').trim();
+  const reason = String(req.body && req.body.reason || '').trim();
+  if (!source || !apiName || !reason) return res.status(400).json({ error: '缺少来源、接口或解除原因' });
+  const circuit = await manuallyCloseExternalCircuit(source, apiName, fingerprint);
+  if (!circuit) {
+    await audit(req, 'external_circuit_resolve', `${source}:${apiName}`, { result: 'failure', detail: '未找到开放熔断' });
+    return res.status(404).json({ error: '未找到对应的开放熔断' });
+  }
+  await audit(req, 'external_circuit_resolve', `${source}:${apiName}`, {
+    detail: reason.slice(0, 500), metadata: { source, apiName, tokenFingerprint: fingerprint },
+  });
+  res.json({ ok: true, circuit });
 }));
 router.post('/jobs/alert-email/test', asyncHandler(async (req, res) => {
   try {

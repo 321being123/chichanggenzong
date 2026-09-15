@@ -77,6 +77,11 @@ def sync_liquidity(days=60, codes=None, limit=5):
         except Exception as error:
             result["failed"] += 1
             result["failures"].append({"code": code, "error": str(error)[:500]})
+    if result["failed"]:
+        result["ok"] = False
+        result["status"] = "partial" if result["saved"] or result["skipped"] else "stale"
+    else:
+        result["status"] = "succeeded"
     return result
 
 

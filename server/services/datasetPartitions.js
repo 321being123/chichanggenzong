@@ -25,7 +25,13 @@ async function publishDatasetPartition(datasetCode, scopeKey, options = {}, exec
       String(options.staleReason || ''), Number(options.rowCount || 0), options.sourceId || null,
       JSON.stringify(options.diagnostics || {})]
   );
-  return result.rows[0] || null;
+  const published = result.rows[0] || null;
+  if (published && status === 'published' && !stale
+      && (!options.diagnostics || !options.diagnostics.quality_status || options.diagnostics.quality_status === 'passed')) {
+    const { resolveDatasetAlerts } = require('./jobAlertMailer');
+    await resolveDatasetAlerts(datasetCode, scopeKey, partitionKey).catch(() => {});
+  }
+  return published;
 }
 
 async function getLatestPublishedPartition(datasetCode, scopeKey = '') {

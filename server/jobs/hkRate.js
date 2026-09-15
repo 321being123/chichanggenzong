@@ -4,14 +4,30 @@
 // 抓取源与 /api/hkrate 路由一致（open.er-api.com），fetchHkRate 为单点真相，两者共用。
 const https = require('https');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { cnDate, upsertFxRate, syncLegacyAccountRates, getCurrentFxRate } = require('../services/fxRate');
-const { withExternalCallGuard, openExternalCircuit } = require('../services/externalCallGuard');
+const { cnDate, upsertFxRate, syncLegacyAccountRates, getCurrentFxRate, getCurrentFxRateSnapshot } = require('../services/fxRate');
+const { withExternalCallGuard, openExternalCircuit, ExternalCallGuardError } = require('../services/externalCallGuard');
+
+const FRESH_RATE_MS = 24 * 60 * 60 * 1000;
+
+function structuredRateError(error, fallbackCode = 'EXCHANGE_RATE_FETCH_FAILED', fallbackType = 'network') {
+  if (error && error.code) return error;
+  const wrapped = new ExternalCallGuardError(
+    fallbackCode,
+    error && error.message ? error.message : String(error || '港币汇率抓取失败'),
+    'exchange-rate',
+    'HKD:CNY',
+    { apiName: 'exchange_rate', credentialProfile: 'anonymous', tokenFingerprint: 'none' }
+  );
+  wrapped.errorType = fallbackType;
+  wrapped.retryable = true;
+  return wrapped;
+}
 
 // 抓取港币→人民币汇率（成功返回 number，失败返回 null）
 // 数据源 open.er-api.com：免费、无需 key，返回 rates.CNY = 1 HKD 兑多少人民币（约 0.865）
 async function fetchHkRate() {
   try {
-      const text = await withExternalCallGuard('exchange-rate', 'HKD:CNY', process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
+    const text = await withExternalCallGuard('exchange-rate', 'HKD:CNY', process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
       https.get('https://open.er-api.com/v6/latest/HKD', { timeout: 8000 }, (resp) => {
         let data = ''; resp.on('data', c => data += c);
         resp.on('end', () => {
@@ -28,12 +44,15 @@ async function fetchHkRate() {
           resolve(data);
         });
       }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
-    }));
-    const json = JSON.parse(text);
+    }), { apiName: 'exchange_rate', credentialProfile: 'anonymous', tokenFingerprint: 'none' });
+    let json;
+    try { json = JSON.parse(text); }
+    catch (error) { throw structuredRateError(error, 'INVALID_RESPONSE', 'parse'); }
     if (json && json.result === 'success' && json.rates && json.rates.CNY) {
       const rate = parseFloat(json.rates.CNY);
       if (!isNaN(rate) && rate > 0) return rate;
     }
+    throw structuredRateError(new Error('汇率接口响应缺少有效 CNY 汇率'), 'INVALID_RESPONSE', 'parse');
   } catch (e) {
     // 本系统自己的 BUDGET_WAIT 只表示“暂时不该发起请求”，不能升级成来源熔断。
     // 只有真实上游限流/额度错误才写入熔断，并完整保留恢复时间和接口范围。
@@ -42,28 +61,29 @@ async function fetchHkRate() {
         errorCode: e.code,
         errorType: e.errorType,
         recoverAt: e.recoverAt,
-        apiName: e.apiName || '*',
+        apiName: e.apiName || 'exchange_rate',
         credentialProfile: e.credentialProfile || 'anonymous',
         tokenFingerprint: e.tokenFingerprint || 'none',
       }).catch(() => {});
     }
-    if (e && e.code) throw e;
+    throw structuredRateError(e);
   }
-  return null;
 }
 
 // 抓取最新汇率并更新所有账户（全量覆盖，幂等；抓取失败则不更新）
 // hk_rate_updated_at 记录真实汇率更新时间（迁移 039），不随持仓保存/公开状态修改而更新
 async function ensureHkRate() {
+  const snapshot = await getCurrentFxRateSnapshot();
+  const fetchedAt = snapshot && snapshot.fetchedAt ? new Date(snapshot.fetchedAt).getTime() : NaN;
+  if (snapshot && Number.isFinite(fetchedAt) && Date.now() - fetchedAt < FRESH_RATE_MS) {
+    return { ok: true, status: 'fresh', reason: 'fresh', rate: snapshot.rate, rateDate: snapshot.rateDate, externalCalls: 0 };
+  }
   const rate = await fetchHkRate();
-  if (!rate) return { ok: false, rate: null };
   try {
     await upsertFxRate(rate, { rateDate: cnDate(new Date()), sourceId: 7 });
     const count = await syncLegacyAccountRates(rate);
     return { ok: true, rate: rate, count: count };
-  } catch (e) {
-    return { ok: false, rate: rate, error: e.message };
-  }
+  } catch (e) { throw structuredRateError(e, 'EXCHANGE_RATE_STORE_FAILED', 'database'); }
 }
 
 // 带幂等锁与执行记录的每日汇率任务
@@ -77,7 +97,12 @@ async function runHkRateJob() {
     await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || '抓取失败'));
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
-    result = { ok: false, rate: null, error: e.message || String(e), errorCode: e.code, errorType: e.errorType || e.type, source: e.source };
+    result = {
+      ok: false, rate: null, error: e.message || String(e), errorCode: e.code,
+      errorType: e.errorType || e.type, source: e.source, apiName: e.apiName,
+      recoverAt: e.recoverAt, tokenFingerprint: e.tokenFingerprint,
+      credentialProfile: e.credentialProfile, budgetWindow: e.budgetWindow,
+    };
   } finally {
     await releaseJob('hk_rate');
   }

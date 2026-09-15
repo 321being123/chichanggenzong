@@ -97,12 +97,40 @@ try:
           _limit("cninfo", "minute") == 20 and _limit("cninfo", "day") is None)
     check("腾讯不设置本系统分钟/日预算",
           _limit("tencent", "minute") is None and _limit("tencent", "day") is None)
+    check("交易所主源包含北交所且不设分钟/日预算",
+          _limit("bse", "minute") is None and _limit("bse", "day") is None)
 finally:
     for _key, _value in _budget_env_backup.items():
         if _value is None:
             os.environ.pop(_key, None)
         else:
             os.environ[_key] = _value
+
+check("北交所官方链接来源分类正确", _url_source("https://www.bse.cn/disclosure/2026/example.pdf") == "bse")
+
+# ---------- 测试1b：A股 IPO 招股书交易所优先、巨潮兜底 ----------
+_exchange_fetch_backup = fetch_mod._fetch_exchange_prospectus_main_business
+_cninfo_fetch_backup = fetch_mod._fetch_cninfo_prospectus_main_business
+try:
+    def _fake_exchange_success(code, security_name=''):
+        fetch_mod._MAIN_BUSINESS_SOURCE[str(code)] = 'szse'
+        return '交易所主营业务；所属行业：半导体'
+
+    fetch_mod._MAIN_BUSINESS_SOURCE.clear()
+    fetch_mod._fetch_exchange_prospectus_main_business = _fake_exchange_success
+    fetch_mod._fetch_cninfo_prospectus_main_business = lambda code: '巨潮主营业务'
+    value = fetch_mod.fetch_prospectus_main_business('301716', security_name='鸿富诚')
+    check("IPO主营业务交易所优先",
+          value.startswith('交易所主营业务') and fetch_mod._MAIN_BUSINESS_SOURCE.get('301716') == 'szse')
+
+    fetch_mod._fetch_exchange_prospectus_main_business = lambda code, security_name='': ''
+    fetch_mod._MAIN_BUSINESS_SOURCE.clear()
+    value = fetch_mod.fetch_prospectus_main_business('301716', security_name='鸿富诚')
+    check("交易所失败才走巨潮兜底",
+          value == '巨潮主营业务' and fetch_mod._MAIN_BUSINESS_SOURCE.get('301716') == 'cninfo')
+finally:
+    fetch_mod._fetch_exchange_prospectus_main_business = _exchange_fetch_backup
+    fetch_mod._fetch_cninfo_prospectus_main_business = _cninfo_fetch_backup
 
 check("深交所静态公告地址归入szse来源",
       _url_source("https://disc.static.szse.cn/download/disc/disk03.pdf") == "szse")

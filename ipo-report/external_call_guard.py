@@ -35,6 +35,7 @@ _DEFAULT_EXTERNAL_BUDGETS = {
     # 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。
     "sse": {"minute": None, "day": None},
     "szse": {"minute": None, "day": None},
+    "bse": {"minute": None, "day": None},
     "default": {"minute": 60, "day": 2000},
 }
 
@@ -468,6 +469,8 @@ def _url_source(url):
         return "sse"
     if "szse.cn" in host:
         return "szse"
+    if "bse.cn" in host or "bseinfo.net" in host:
+        return "bse"
     if "hkex" in host:
         return "hkex"
     if "er-api" in host:

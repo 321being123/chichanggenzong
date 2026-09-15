@@ -6363,6 +6363,50 @@ async function migration153ConvertibleBondCallPreConversionStatus() {
   `);
 }
 
+// ========== 154：A股 IPO 交易所招股书主源策略 =============
+// IPO 资料补全按交易所官方披露优先；巨潮资讯仅作为交易所候选、下载或解析失败时的备源。
+// 交易所接口不设置本系统分钟/日预算，只保留并发去重和真实上游异常保护。
+async function migration154IpoExchangeProspectusSources() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES ('bse','北交所公告','official',5)
+    ON CONFLICT(source_code) DO UPDATE
+      SET source_name=EXCLUDED.source_name,
+          source_type=EXCLUDED.source_type,
+          priority=EXCLUDED.priority;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+       max_concurrency,min_interval_ms,timeout_ms,official_doc_url,notes)
+    SELECT ds.source_id,'*','anonymous',NULL,NULL,1,0,30000,
+           'https://www.bse.cn/issue/issue_disclosure.html',
+           '北交所 IPO 官方披露；交易所主源，巨潮只作备源'
+      FROM ops.data_sources ds
+     WHERE ds.source_code='bse'
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE
+      SET internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
+          internal_daily_limit=EXCLUDED.internal_daily_limit,
+          max_concurrency=EXCLUDED.max_concurrency,
+          min_interval_ms=EXCLUDED.min_interval_ms,
+          timeout_ms=EXCLUDED.timeout_ms,
+          official_doc_url=EXCLUDED.official_doc_url,
+          notes=EXCLUDED.notes,
+          updated_at=now();
+
+    UPDATE ops.source_endpoint_policies p
+       SET internal_per_minute_limit=NULL,
+           internal_daily_limit=NULL,
+           min_interval_ms=0,
+           notes='A股 IPO 交易所官方招股书主源；保留并发去重和真实上游异常处理，巨潮只作备源',
+           updated_at=now()
+      FROM ops.data_sources ds
+     WHERE p.source_id=ds.source_id
+       AND ds.source_code IN ('sse','szse')
+       AND p.api_name='*'
+       AND p.credential_profile='anonymous';
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6517,6 +6561,7 @@ const MIGRATIONS = [
   { version: '151_alert_scope_and_cninfo_backoff', up: migration151AlertScopeAndCninfoBackoff },
   { version: '152_convertible_bond_call_evidence_and_lock_state', up: migration152ConvertibleBondCallEvidenceAndLockState },
   { version: '153_convertible_bond_call_pre_conversion_status', up: migration153ConvertibleBondCallPreConversionStatus },
+  { version: '154_ipo_exchange_prospectus_sources', up: migration154IpoExchangeProspectusSources },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7126,6 +7171,7 @@ module.exports = {
   migration151AlertScopeAndCninfoBackoff,
   migration152ConvertibleBondCallEvidenceAndLockState,
   migration153ConvertibleBondCallPreConversionStatus,
+  migration154IpoExchangeProspectusSources,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

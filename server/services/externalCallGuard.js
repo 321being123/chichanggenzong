@@ -34,6 +34,7 @@ const DEFAULT_EXTERNAL_BUDGETS = Object.freeze({
   // 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。
   sse: { minute: null, day: null },
   szse: { minute: null, day: null },
+  bse: { minute: null, day: null },
   default: { minute: 60, day: 2000 },
 });
 

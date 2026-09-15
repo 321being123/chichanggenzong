@@ -373,7 +373,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
     stopped = None
     for code, prior_status, existing_industry, existing_business, existing_industry_pe, existing_exposure in candidates:
         attempted += 1
-        meta = {"attempted_on": today_text, "source": "stock_basic/cninfo/valuation"}
+        meta = {"attempted_on": today_text, "source": "stock_basic/exchange/cninfo/tushare/valuation"}
         try:
             detail = fetch_stock_historical_detail(code, existing_industry) or {}
             business_exposure = detail.get("business_exposure")
@@ -410,6 +410,16 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 meta["updated_fields"] = [field for field in QUALITY_DETAIL_FIELDS if detail.get(field) not in (None, "")]
                 if isinstance(business_exposure, dict) and business_exposure.get("exposures"):
                     meta["updated_fields"].append("business_exposure")
+            elif detail.get("main_business_source"):
+                # 字段值已存在时仍保留本次实际命中的来源，便于审计主备顺序和后续重试。
+                cur.execute("""
+                  UPDATE ipo_history SET
+                    source_payload=COALESCE(source_payload,'{}'::jsonb)
+                      || jsonb_build_object('historical_enrichment',%s::jsonb),
+                    updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+                   WHERE security_code=%s
+                """, (Json(detail), code))
+                updated += 1
             else:
                 meta["result"] = "no_new_value"
             field_states = {

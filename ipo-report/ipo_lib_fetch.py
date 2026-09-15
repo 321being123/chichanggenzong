@@ -172,6 +172,9 @@ def fetch_bond_detail(secu_code):
         return None
 
 _org_id_cache = {}
+_STOCK_NAME_CACHE = {}
+_MAIN_BUSINESS_SOURCE = {}
+_EXCHANGE_PROSPECTUS_CACHE = {}
 
 def _get_org_id(stock_code):
     """从巨潮获取股票orgId（带重试，使用独立session避免cookie冲突）"""
@@ -1026,6 +1029,9 @@ def _fetch_stock_industry(stock_code):
         ts_code = _to_ts_code(stock_code)
         df = pro.stock_basic(ts_code=ts_code, fields="ts_code,industry,name")
         if df is not None and not df.empty:
+            name = df.iloc[0].get("name")
+            if name:
+                _STOCK_NAME_CACHE[str(stock_code or '').split('.')[0]] = str(name).strip()
             ind = df.iloc[0].get("industry")
             if ind:
                 return str(ind)
@@ -1127,8 +1133,226 @@ def _extract_main_business(text):
     return biz or ind or None
 
 
-def fetch_prospectus_main_business(stock_code):
-    """从巨潮招股说明书PDF提取主营业务（权威源，含真实主营业务与所属行业）。"""
+def _parse_jsonp_payload(text):
+    """解析交易所公开接口的 JSON/JSONP 响应。"""
+    raw = str(text or '').strip()
+    if not raw:
+        return None
+    if raw.startswith('{') or raw.startswith('['):
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+    left = raw.find('(')
+    right = raw.rfind(')')
+    if left < 0 or right <= left:
+        return None
+    try:
+        return json.loads(raw[left + 1:right])
+    except (TypeError, ValueError):
+        return None
+
+
+def _stock_name_from_database(stock_code):
+    """交易所按简称检索时，优先复用已入库 IPO 主档名称，不重复请求上游。"""
+    code = str(stock_code or '').split('.')[0]
+    if not code:
+        return ''
+    if _STOCK_NAME_CACHE.get(code):
+        return _STOCK_NAME_CACHE[code]
+    try:
+        conn = _init_ipo_db()
+        row = conn.execute(
+            "SELECT security_name FROM ipo_history WHERE security_code=? LIMIT 1", (code,)
+        ).fetchone()
+        conn.close()
+        name = str(row[0] or '').strip() if row else ''
+        if name:
+            _STOCK_NAME_CACHE[code] = name
+        return name
+    except Exception:
+        return ''
+
+
+def _download_exchange_pdf_text(session, pdf_url, source):
+    """下载交易所 PDF；挑战页/HTML 不视为成功，交由巨潮继续兜底。"""
+    if not pdf_url:
+        return None
+    try:
+        response = session.get(
+            pdf_url,
+            timeout=30,
+            headers={
+                'User-Agent': HEADERS['User-Agent'],
+                'Referer': 'https://www.sse.com.cn/ipo/' if source == 'sse'
+                    else 'https://www.szse.cn/listing/disclosure/ipo/index.html'
+                    if source == 'szse' else 'https://www.bse.cn/issue/issue_disclosure.html',
+                'Accept': 'application/pdf,*/*',
+            },
+        )
+        content = response.content or b''
+        if int(response.status_code or 0) != 200 or not content.lstrip().startswith(b'%PDF'):
+            return None
+        doc = fitz.open(stream=content, filetype='pdf')
+        text = ''.join(page.get_text() for page in doc)
+        doc.close()
+        return text or None
+    except ExternalCallGuardError:
+        # 交易所主源失败时必须继续走巨潮备源；主源熔断仍由 Guard 留痕。
+        return None
+    except Exception:
+        return None
+
+
+def _exchange_prospectus_candidates(stock_code, security_name=''):
+    """返回交易所官方招股说明书候选：(source, url, title)。"""
+    code = str(stock_code or '').split('.')[0]
+    if not code:
+        return []
+    digits = re.sub(r'\D', '', code)
+    market = 'sse' if digits.startswith(('6', '9')) else 'szse' if digits.startswith(('0', '3')) else 'bse' if digits.startswith(('4', '8', '92')) else ''
+    if not market:
+        return []
+    today = datetime.now()
+    start = (today - timedelta(days=365 * 5)).strftime('%Y-%m-%d')
+    end = today.strftime('%Y-%m-%d')
+    candidates = []
+    session = requests.Session()
+    session.headers.update({'User-Agent': HEADERS['User-Agent']})
+    try:
+        if market == 'sse':
+            response = session.get(
+                'https://query.sse.com.cn/security/stock/queryCompanyBulletinNew.do',
+                params={
+                    'jsonCallBack': 'ipoExchangeCallback', 'isPagination': 'true',
+                    'SECURITY_CODE': digits, 'BULLETIN_TYPE': '08',
+                    'pageHelp.pageSize': 30, 'pageHelp.cacheSize': 1,
+                    'pageHelp.pageNo': 1,
+                },
+                timeout=20,
+                headers={'Referer': 'https://www.sse.com.cn/ipo/', 'Accept': 'application/json'},
+            )
+            payload = _parse_jsonp_payload(response.text)
+            groups = (payload or {}).get('result') or (payload or {}).get('pageHelp', {}).get('data') or []
+            rows = []
+            for group in groups:
+                rows.extend(group if isinstance(group, list) else [group])
+            for row in rows:
+                if str(row.get('SECURITY_CODE') or '') != digits:
+                    continue
+                title = str(row.get('TITLE') or '')
+                normalized = re.sub(r'\s+', '', title)
+                if '招股说明书' not in normalized or '提示性' in normalized:
+                    continue
+                path = str(row.get('URL') or '')
+                if not path:
+                    continue
+                url = path if path.startswith('http') else 'https://www.sse.com.cn' + path
+                candidates.append(('sse', url, title))
+        elif market == 'szse':
+            keyword = str(security_name or '').strip() or code
+            response = session.get(
+                'https://www.szse.cn/api/ras/infodisc/query',
+                params={
+                    'pageIndex': 0, 'pageSize': 100, 'keywords': keyword,
+                    'disclosedStartDate': start, 'disclosedEndDate': end,
+                    'catalog': '', 'bizType': 1, 'boardCode': '', 'biztypsb': '',
+                    'random': str(time.time()),
+                },
+                timeout=20,
+                headers={'Referer': 'https://www.szse.cn/listing/disclosure/ipo/index.html', 'Accept': 'application/json'},
+            )
+            payload = _parse_jsonp_payload(response.text) or {}
+            for item in payload.get('data') or []:
+                for sub in item.get('subInfoDisclosureList') or []:
+                    title = str(sub.get('dfnm') or sub.get('configFileName') or '')
+                    normalized = re.sub(r'\s+', '', title)
+                    if '招股说明书' not in normalized or '提示性' in normalized:
+                        continue
+                    path = str(sub.get('dfpth') or sub.get('url') or '')
+                    if not path:
+                        continue
+                    if path.startswith('http'):
+                        url = path
+                    elif path.startswith('/UpFiles/'):
+                        url = 'https://reportdocs.static.szse.cn' + path
+                    else:
+                        url = 'https://www.szse.cn' + path
+                    candidates.append(('szse', url, title))
+        else:
+            fields = ('companyCd', 'companyName', 'disclosureTitle', 'disclosurePostTitle',
+                      'destFilePath', 'publishDate', 'xxfcbj', 'fileExt')
+            form = [
+                ('disclosureType', '9533'), ('disclosureTypes', '9533'),
+                ('page', '0'), ('companyCd', digits), ('fileName', ''),
+                ('inquiryList', ''), ('startTime', start), ('endTime', end),
+                ('keyword', ''), ('isLink', '1'), ('callback', 'ipoExchangeCallback'),
+            ]
+            form.extend(('needFields', field) for field in fields)
+            response = session.post(
+                'https://www.bse.cn/disclosureInfoController/zoneInfoResult.do',
+                data=form,
+                timeout=20,
+                headers={'Referer': 'https://www.bse.cn/issue/issue_disclosure.html', 'Accept': 'application/javascript'},
+            )
+            payload = _parse_jsonp_payload(response.text)
+            groups = (payload[0] if isinstance(payload, list) and payload else payload) or {}
+            for row in (groups.get('listInfo') or {}).get('content') or []:
+                title = str(row.get('disclosureTitle') or '') + str(row.get('disclosurePostTitle') or '')
+                normalized = re.sub(r'\s+', '', title)
+                if '招股说明书' not in normalized:
+                    continue
+                path = str(row.get('destFilePath') or '')
+                if not path:
+                    continue
+                url = path if path.startswith('http') else 'https://www.bse.cn' + path
+                candidates.append(('bse', url, title))
+    finally:
+        session.close()
+    # 同一版本可能在接口中重复出现；按日期/返回顺序去重，最新版本优先。
+    seen = set()
+    result = []
+    for source, url, title in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        result.append((source, url, title))
+    return result
+
+
+def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
+    """交易所主源：上交所/深交所/北交所招股说明书，失败返回空交由巨潮兜底。"""
+    code = str(stock_code or '').split('.')[0]
+    cache_key = code
+    if cache_key in _EXCHANGE_PROSPECTUS_CACHE:
+        source, value = _EXCHANGE_PROSPECTUS_CACHE[cache_key]
+        _MAIN_BUSINESS_SOURCE[code] = source
+        return value
+    try:
+        candidates = _exchange_prospectus_candidates(code, security_name or _stock_name_from_database(code))
+        if not candidates:
+            return ''
+        session = requests.Session()
+        session.headers.update({'User-Agent': HEADERS['User-Agent']})
+        try:
+            for source, url, _title in candidates:
+                text = _download_exchange_pdf_text(session, url, source)
+                if not text:
+                    continue
+                main_business = _extract_main_business(text)
+                if main_business:
+                    _EXCHANGE_PROSPECTUS_CACHE[cache_key] = (source, main_business)
+                    _MAIN_BUSINESS_SOURCE[code] = source
+                    return main_business
+        finally:
+            session.close()
+    except Exception:
+        return ''
+    return ''
+
+
+def _fetch_cninfo_prospectus_main_business(stock_code):
+    """从巨潮招股说明书PDF提取主营业务（交易所主源失败后的备源）。"""
     try:
         import backfill_lottery_rate as blr
         code = str(stock_code).split('.')[0]
@@ -1195,12 +1419,26 @@ def fetch_prospectus_main_business(stock_code):
         return ""
 
 
-def _fetch_stock_main_business(stock_code):
-    """主营业务：优先巨潮招股书PDF（权威，含真实主营业务与行业），Tushare stock_company 作回退。"""
-    # 招股书为权威源：对未上市新股，Tushare stock_company 常返回占位/截断文本，
-    # 故优先取招股书；取不到再回退 Tushare。
+def fetch_prospectus_main_business(stock_code, security_name=None):
+    """主营业务取数：交易所官方招股书优先，巨潮招股书兜底。"""
+    code = str(stock_code or '').split('.')[0]
+    _MAIN_BUSINESS_SOURCE.pop(code, None)
+    official = _fetch_exchange_prospectus_main_business(code, security_name or '')
+    if official:
+        return official
     try:
-        mb = fetch_prospectus_main_business(stock_code)
+        mb = _fetch_cninfo_prospectus_main_business(code)
+        if mb:
+            _MAIN_BUSINESS_SOURCE[code] = 'cninfo'
+        return mb
+    except ExternalCallGuardError:
+        raise
+
+
+def _fetch_stock_main_business(stock_code, security_name=None):
+    """主营业务：交易所官方招股书优先，巨潮和 Tushare 依次回退。"""
+    try:
+        mb = fetch_prospectus_main_business(stock_code, security_name=security_name)
         if mb:
             return mb
     except ExternalCallGuardError:
@@ -1215,6 +1453,7 @@ def _fetch_stock_main_business(stock_code):
             if df is not None and not df.empty:
                 biz = df.iloc[0].get("main_business")
                 if biz:
+                    _MAIN_BUSINESS_SOURCE[str(stock_code or '').split('.')[0]] = 'tushare'
                     return str(biz).strip()
     except ExternalCallGuardError:
         raise
@@ -1295,7 +1534,9 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
         return None
     industry = _fetch_stock_industry(code) or str(existing_industry or '').strip()
     detail = {'industry': industry or ''}
-    detail['main_business'] = _fetch_stock_main_business(code) or ''
+    security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
+    detail['main_business'] = _fetch_stock_main_business(code, security_name=security_name) or ''
+    detail['main_business_source'] = _MAIN_BUSINESS_SOURCE.get(code, '')
     _normalize_stock_detail(detail)
     if detail.get('industry'):
         industry_pe_map = _get_industry_pe_map()

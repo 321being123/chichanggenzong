@@ -2630,6 +2630,9 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
        JOIN public.bond_unified u ON u.instrument_id=b.instrument_id
        WHERE u.status='listed'
+         AND s.asset_class='stock'
+         AND s.list_date IS NOT NULL
+         AND (s.delist_date IS NULL OR s.delist_date >= CURRENT_DATE)
          AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
          AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)`
     );

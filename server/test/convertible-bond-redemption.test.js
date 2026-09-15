@@ -56,6 +56,7 @@ assert.ok(migration.includes('CREATE TABLE IF NOT EXISTS event.convertible_bond_
 assert.ok(migration.includes('CREATE VIEW analytics.convertible_bond_call_latest'));
 assert.ok(migration.includes('081_convertible_bond_redemption_unified_status'), '必须有统一状态与条款窗口修复迁移');
 assert.ok(migration.includes('082_stock_suspension_calendar') && migration.includes('stock_suspend_calendar'), '必须落库存股停牌日，避免误判行情缺失');
+assert.ok(analysis.includes("s.asset_class='stock'") && analysis.includes('s.list_date IS NOT NULL'), '正股行情补水不得把无上市日期的历史映射纳入完整性门控');
 assert.ok(migration.includes('084_convertible_bond_call_lifecycle_current_date') && migration.includes("THEN 'delisted'"), '强赎最后交易日过去后必须切换为历史退市');
 assert.ok(migration.includes('085_convertible_bond_waive_announcement_status') && migration.includes('公告日不是截止日'), '最新不提前赎回公告必须覆盖触发结果');
 assert.ok(migration.includes('086_convertible_bond_announcement_history_view') && migration.includes('analytics.convertible_bond_announcement_history'), '强赎、下修和转股价调整必须有统一公告事实视图');

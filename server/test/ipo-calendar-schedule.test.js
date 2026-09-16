@@ -21,6 +21,8 @@ assert.ok(permissionError.includes('权限不足') && !permissionError.includes(
 const jobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipoCalendarRefresh.js'), 'utf8');
 assert.ok(jobSource.includes("PYTHONUTF8: '1'") && jobSource.includes("PYTHONIOENCODING: 'utf-8'"));
 assert.ok(jobSource.includes("IPO_REPORT_DATABASE_ONLY: '1'"));
+const runnerSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobRunners.js'), 'utf8');
+assert.match(runnerSource, /case 'ipo_calendar_refresh':[\s\S]*expectedDataDate\('ipo_calendar_refresh', businessDate\)[\s\S]*targetDate/);
 const calendarSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'calendar_core.py'), 'utf8');
 assert.doesNotMatch(calendarSource, /new_share/, '日报日历不得直接调用new_share');
 assert.match(calendarSource, /FROM ipo_history/, '新股申购和上市事件必须读取ipo_history');

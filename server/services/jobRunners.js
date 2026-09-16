@@ -159,8 +159,14 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       });
     case 'convertible_bond_valuation_refresh':
       return require('../jobs/convertibleBondRefresh').runRefreshChain(reason, businessDate);
-    case 'ipo_calendar_refresh':
-      return require('../jobs/ipoCalendarRefresh').runIpoCalendarRefresh(reason, context);
+    case 'ipo_calendar_refresh': {
+      const { expectedDataDate } = require('./jobScheduleSlots');
+      const targetDate = expectedDataDate('ipo_calendar_refresh', businessDate);
+      return require('../jobs/ipoCalendarRefresh').runIpoCalendarRefresh(reason, {
+        ...context,
+        targetDate,
+      });
+    }
     default:
       if (jobCode && jobCode.indexOf('market_close:') === 0) {
         const label = jobCode.slice('market_close:'.length);

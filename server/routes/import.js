@@ -9,7 +9,7 @@ const asyncHandler = require('../middleware/async');
 const { requireLogin, assertOwnership } = require('../middleware/auth');
 const rateLimit = require('../middleware/rateLimit');
 const { assertSafeUrl, fetchSafeAi } = require('../services/ai');
-const { ALLOWED_VISION_MODELS } = require('../config');
+const { isVisionModelAllowed, getConfiguredVisionModel } = require('../config');
 const { getActiveSorted, recordStatus } = require('../services/aiModels');
 const { visionUploadTokens, TOKEN_TTL, setVisionToken, mobileUploadHtml, consumeVisionToken } = require('../services/vision');
 const { upsertIndexPoints } = require('../db');
@@ -34,8 +34,8 @@ function validateImage(image) {
 
 // 模型白名单（P1-7）：客户端不得任意指定高成本模型，仅放行服务端许可者，否则用默认模型
 function pickVisionModel(model) {
-  const fallback = process.env.VISION_MODEL || 'agnes-2.0-flash';
-  if (model && ALLOWED_VISION_MODELS.includes(model)) return model;
+  const fallback = getConfiguredVisionModel();
+  if (isVisionModelAllowed(model)) return model;
   return fallback;
 }
 

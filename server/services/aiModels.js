@@ -3,6 +3,7 @@
 // 调用状态（成功/失败/耗时）存模块级内存，重启清零（单实例可接受，避免为瞬态数据开表）。
 const { getConfig, setConfig } = require('../db');
 const { encryptSecret, decryptSecret } = require('./externalApiConfig');
+const { getConfiguredVisionModel } = require('../config');
 
 const CONFIG_KEY = 'ai_models';
 
@@ -80,7 +81,7 @@ async function ensureAiModelsInit() {
     await saveModels([{
       id: 'm_' + Date.now(),
       name: '默认模型',
-      model: process.env.VISION_MODEL || 'agnes-2.0-flash',
+      model: getConfiguredVisionModel(),
       apiUrl: process.env.VISION_API_URL || 'https://apihub.agnes-ai.com/v1/chat/completions',
       apiKey: process.env.VISION_API_KEY,
       enabled: true,

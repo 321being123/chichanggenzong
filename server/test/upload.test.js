@@ -47,13 +47,16 @@ async function main() {
   });
 
   await check('白名单内模型放行', () => {
-    assert.strictEqual(router.pickVisionModel('agnes-2.0-flash'), 'agnes-2.0-flash');
+    assert.strictEqual(router.pickVisionModel('agnes-2.5-flash'), 'agnes-2.5-flash');
+  });
+  await check('已废弃模型回落当前默认', () => {
+    assert.strictEqual(router.pickVisionModel('agnes-2.0-flash'), 'agnes-2.5-flash');
   });
   await check('名单外高成本模型回落默认', () => {
-    assert.strictEqual(router.pickVisionModel('gpt-4o-omni-ultra-expensive'), process.env.VISION_MODEL || 'agnes-2.0-flash');
+    assert.strictEqual(router.pickVisionModel('gpt-4o-omni-ultra-expensive'), 'agnes-2.5-flash');
   });
   await check('空模型回落默认', () => {
-    assert.strictEqual(router.pickVisionModel(''), process.env.VISION_MODEL || 'agnes-2.0-flash');
+    assert.strictEqual(router.pickVisionModel(''), 'agnes-2.5-flash');
   });
 
   await check('AI 503 自动重试后成功', async () => {

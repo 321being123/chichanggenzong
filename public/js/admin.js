@@ -1469,7 +1469,7 @@ function openModelForm(id) {
   const isEdit = !!id;
   let body = '<input type="hidden" id="model-id" value="' + (isEdit ? escapeHtml(id) : '') + '">' +
     '<div class="form-group"><label>名称（便于区分，如「默认模型」）</label><input id="model-name" placeholder="如 默认模型" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>模型名（如 agnes-2.0-flash）</label><input id="model-model" placeholder="如 agnes-2.0-flash" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
+    '<div class="form-group"><label>模型名（如 agnes-2.5-flash）</label><input id="model-model" placeholder="如 agnes-2.5-flash" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
     '<div class="form-group"><label>API 地址（必须是 HTTPS，如 https://apihub.agnes-ai.com/v1/chat/completions）</label><input id="model-url" placeholder="https://..." style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
     '<div class="form-group"><label>API Key' + (isEdit ? '（留空或显示打码串表示不修改）' : '') + '</label><input id="model-key" type="password" autocomplete="new-password" placeholder="粘贴 API Key" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
     '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;"><input type="checkbox" id="model-enabled" checked> 启用（参与识别兜底）</label>';

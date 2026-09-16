@@ -85,13 +85,13 @@ async function main() {
   await check('ensureAiModelsInit 空库且有 VISION_API_KEY 时写入一条默认模型', async () => {
     _store['ai_models'] = ''; // 清空
     process.env.VISION_API_KEY = 'sk-env-default';
-    process.env.VISION_MODEL = 'agnes-2.0-flash';
+    process.env.VISION_MODEL = 'agnes-2.5-flash';
     process.env.VISION_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
     await ensureAiModelsInit();
     const list = await getModels();
     assert.strictEqual(list.length, 1);
     assert.strictEqual(list[0].name, '默认模型');
-    assert.strictEqual(list[0].model, 'agnes-2.0-flash');
+    assert.strictEqual(list[0].model, 'agnes-2.5-flash');
     assert.strictEqual(list[0].apiKey, 'sk-env-default');
     assert.strictEqual(list[0].enabled, true);
   });

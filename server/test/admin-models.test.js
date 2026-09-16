@@ -72,7 +72,7 @@ async function main() {
 
   await check('POST /models 新增成功且分配 order', async () => {
     const r = await call('POST', '/api/admin/models', {
-      name: '默认模型', model: 'agnes-2.0-flash',
+      name: '默认模型', model: 'agnes-2.5-flash',
       apiUrl: 'https://apihub.agnes-ai.com/v1/chat/completions', apiKey: 'sk-real-key-1234', enabled: true
     });
     assert.strictEqual(r.status, 200);
@@ -113,7 +113,7 @@ async function main() {
     const list = (await call('GET', '/api/admin/models')).body.list;
     const target = list[0];
     const r = await call('PUT', '/api/admin/models/' + target.id, {
-      name: '默认模型改', model: 'agnes-2.0-flash',
+      name: '默认模型改', model: 'agnes-2.5-flash',
       apiUrl: 'https://apihub.agnes-ai.com/v1/chat/completions',
       apiKey: target.apiKey, // 前端回传的打码串
       enabled: true
@@ -130,7 +130,7 @@ async function main() {
     const list = (await call('GET', '/api/admin/models')).body.list;
     const target = list[0];
     const r = await call('PUT', '/api/admin/models/' + target.id, {
-      name: '默认模型改', model: 'agnes-2.0-flash',
+      name: '默认模型改', model: 'agnes-2.5-flash',
       apiUrl: 'https://apihub.agnes-ai.com/v1/chat/completions',
       apiKey: 'sk-new-key-9999', enabled: true
     });

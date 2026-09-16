@@ -6407,6 +6407,32 @@ async function migration154IpoExchangeProspectusSources() {
   `);
 }
 
+// ========== 155：Agnes 视觉模型迁移 =============
+// Agnes 官方已废弃 agnes-2.0-flash；将已保存的后台模型配置一次性迁移到兼容的新模型。
+async function migration155AgnesVisionModel() {
+  const { rows } = await pool.query(
+    `SELECT value FROM platform_config WHERE key='ai_models' FOR UPDATE`
+  );
+  if (!rows.length) return;
+
+  let models;
+  try { models = JSON.parse(rows[0].value || '[]'); } catch (e) { return; }
+  if (!Array.isArray(models)) return;
+
+  let changed = false;
+  const migrated = models.map(function (model) {
+    if (!model || typeof model !== 'object' || model.model !== 'agnes-2.0-flash') return model;
+    changed = true;
+    return Object.assign({}, model, { model: 'agnes-2.5-flash' });
+  });
+  if (changed) {
+    await pool.query(
+      `UPDATE platform_config SET value=$1,updated_at=now() WHERE key='ai_models'`,
+      [JSON.stringify(migrated)]
+    );
+  }
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6562,6 +6588,7 @@ const MIGRATIONS = [
   { version: '152_convertible_bond_call_evidence_and_lock_state', up: migration152ConvertibleBondCallEvidenceAndLockState },
   { version: '153_convertible_bond_call_pre_conversion_status', up: migration153ConvertibleBondCallPreConversionStatus },
   { version: '154_ipo_exchange_prospectus_sources', up: migration154IpoExchangeProspectusSources },
+  { version: '155_agnes_vision_model', up: migration155AgnesVisionModel },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7172,6 +7199,7 @@ module.exports = {
   migration152ConvertibleBondCallEvidenceAndLockState,
   migration153ConvertibleBondCallPreConversionStatus,
   migration154IpoExchangeProspectusSources,
+  migration155AgnesVisionModel,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

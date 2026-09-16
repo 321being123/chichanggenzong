@@ -25,9 +25,23 @@ const ALLOWED_HOSTS = (process.env.ALLOWED_ORIGIN || 'localhost,127.0.0.1')
 const AI_ALLOWED_HOSTS = (process.env.AI_ALLOWED_HOSTS || 'apihub.agnes-ai.com')
   .split(',').map(s => s.trim()).filter(Boolean);
 
+// Agnes 2.0 Flash 已废弃，统一使用官方当前模型；禁止旧环境变量把系统带回废弃模型。
+const DEFAULT_VISION_MODEL = 'agnes-2.5-flash';
+const DEPRECATED_VISION_MODELS = new Set(['agnes-2.0-flash']);
+
 // AI 视觉模型白名单（P1-7）：禁止客户端任意指定高成本模型，仅放行服务端许可的模型
-const ALLOWED_VISION_MODELS = (process.env.VISION_ALLOWED_MODELS || 'agnes-2.0-flash,agnes-2.5-pro-alpha')
+const ALLOWED_VISION_MODELS = (process.env.VISION_ALLOWED_MODELS || `${DEFAULT_VISION_MODEL},agnes-2.5-pro-alpha`)
   .split(',').map(s => s.trim()).filter(Boolean);
+
+function isVisionModelAllowed(model) {
+  return !!model && !DEPRECATED_VISION_MODELS.has(model) && ALLOWED_VISION_MODELS.includes(model);
+}
+
+function getConfiguredVisionModel() {
+  return isVisionModelAllowed(process.env.VISION_MODEL)
+    ? process.env.VISION_MODEL
+    : DEFAULT_VISION_MODEL;
+}
 
 const REGISTER_CODE = process.env.REGISTER_CODE;
 
@@ -81,4 +95,8 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
   });
 }
 
-module.exports = { PORT, SECRET, ALLOWED_HOSTS, AI_ALLOWED_HOSTS, ALLOWED_VISION_MODELS, REGISTER_CODE, redis, mailer, initRedis };
+module.exports = {
+  PORT, SECRET, ALLOWED_HOSTS, AI_ALLOWED_HOSTS, ALLOWED_VISION_MODELS,
+  DEFAULT_VISION_MODEL, isVisionModelAllowed, getConfiguredVisionModel,
+  REGISTER_CODE, redis, mailer, initRedis
+};

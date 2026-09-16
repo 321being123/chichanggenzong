@@ -84,8 +84,8 @@ const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
 const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
 assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外部接口');
 assert.strictEqual(ipoReport.maxExternalCallsPerRun, 0, '打新日报外部调用预算必须为0');
-assert.deepStrictEqual(ipoReport.dependencyCodes, ['convertible_bond_announcement_history_sync'],
-  '打新日报仅应依赖可转债生命周期同步，IPO事实以当天分区质量门禁校验');
+assert.deepStrictEqual(ipoReport.dependencyCodes || [], [],
+  '打新日报不得绑定整条任务状态，只能以当天事实分区质量门禁校验');
 assert.ok(ipoReport.datasetDependencies.some(item => item.datasetCode === 'ipo_history' && item.requireQualityStatus === 'passed')
   && ipoReport.datasetDependencies.some(item => item.datasetCode === 'bond_issuance_events' && item.requireQualityStatus === 'passed'),
   '打新日报必须依赖当天通过质量门禁的新股和新债事实分区');

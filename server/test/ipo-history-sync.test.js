@@ -37,6 +37,8 @@ assert.match(source, /historical_enrichment/, '详情补全未保留来源记录
 assert.match(source, /def _refresh_new_share_snapshot\(/, '晚间阶段没有重新刷新发行公告');
 assert.match(source, /retry_same_day=True/, '晚间阶段没有允许同日重试发行资料');
 assert.match(source, /pending_not_due/, '数据质量未区分尚未到期字段');
+assert.match(source, /AND \(\(%s::boolean AND security_code=ANY\(%s::text\[\]\)\)/, '定向补全未强制刷新指定代码的最新公告');
+assert.match(source, /quality = update_quality\(cur, date\.fromisoformat\(args\.today\)/, '定向补全后没有重新计算资料质量状态');
 assert.match(source, /business_exposure/, '发行阶段质量没有覆盖业务赛道');
 assert.match(source, /"quality_status": "passed"/, 'IPO事实分区缺少质量通过状态');
 assert.match(source, /"target_date": target_date/, 'IPO事实分区缺少目标日期');
@@ -54,6 +56,8 @@ assert.match(routeSource, /'industry', CASE WHEN[\s\S]*ipo_date[\s\S]*'missing'/
 assert.match(routeSource, /buildCnStockLiveReport/, '个股详情没有实时读取已入库发行资料');
 assert.match(routeSource, /尚未公布数据/, '个股详情没有区分发行结果待公布字段');
 assert.match(routeSource, /'oversubscribe_multiple'/, '新股历史没有超额认购倍数状态字段');
+assert.match(routeSource, /网上中签率/, '个股详情没有展示公告中签率');
+assert.match(routeSource, /超额认购倍数/, '个股详情没有展示公告申购倍数');
 assert.match(routeSource, /security_name_cn/, '港股历史没有中文名称字段');
 assert.match(routeSource, /COUNT\(\*\)::int AS total FROM ipo_history h/, 'A股历史没有返回总数');
 assert.match(routeSource, /LIMIT \$1 OFFSET \$2/, 'A股历史没有按 offset 分页');

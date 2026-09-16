@@ -157,6 +157,8 @@ async function buildCnStockLiveReport(code) {
     `- **募集资金**：${valueOrDash(row.fund_raised, '亿元')}`,
     `- **发行总量**：${valueOrDash(row.total_shares, '万股')}`,
     `- **网上发行量**：${valueOrDash(row.online_shares, '万股')}`,
+    `- **网上中签率**：${valueOrDash(row.online_lottery_rate, '%')}`,
+    `- **超额认购倍数**：${valueOrDash(row.oversubscribe_multiple, '倍')}`,
     `- **顶格申购上限**：${valueOrDash(row.subscribe_upper_limit, '万股')}`,
     `- **申购日期**：${valueOrDash(row.ipo_date)}`,
     `- **上市日期**：${valueOrDash(row.listing_date)}`,

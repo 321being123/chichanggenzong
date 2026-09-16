@@ -88,7 +88,7 @@ def fetch_stock_detail(secu_code):
         conn = _init_ipo_db()
         row = conn.execute(
             """SELECT issue_price,issue_pe,ipo_date,listing_date,fund_raised,total_shares,
-                      online_shares,online_lottery_rate,subscribe_upper_limit,circulation_mv,
+                      online_shares,online_lottery_rate,oversubscribe_multiple,subscribe_upper_limit,circulation_mv,
                       main_business,industry,industry_pe,business_exposure
                  FROM ipo_history WHERE security_code=? LIMIT 1""",
             (str(secu_code or "").split(".")[0],),
@@ -97,7 +97,7 @@ def fetch_stock_detail(secu_code):
         if not row:
             return None
         fields = ("issue_price", "issue_pe", "online_date", "list_date", "fund_raised", "total_shares",
-                  "online_shares", "online_lottery_rate", "subscribe_upper_limit", "circulation_mv",
+                  "online_shares", "online_lottery_rate", "oversubscribe_multiple", "subscribe_upper_limit", "circulation_mv",
                   "main_business", "industry", "industry_pe", "business_exposure")
         info = dict(zip(fields, row))
         _normalize_stock_detail(info)
@@ -207,6 +207,7 @@ _MAIN_BUSINESS_DOCUMENT = {}
 _EXCHANGE_PROSPECTUS_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
+_IPO_ISSUANCE_RESULT_DETAIL_CACHE = {}
 
 
 def _get_org_id(stock_code):
@@ -1472,8 +1473,11 @@ def _ipo_document_role(title):
         return ''
     if '招股说明书' in normalized:
         return 'prospectus'
+    if ('发行结果' in normalized or '中签率公告' in normalized
+            or '配售结果及网上中签结果' in normalized):
+        return 'issuance_result'
     if ('发行公告' in normalized and '发行安排' not in normalized
-            and '发行结果' not in normalized and '投资风险' not in normalized):
+            and '投资风险' not in normalized):
         return 'issuance_announcement'
     return ''
 
@@ -1619,6 +1623,16 @@ def _exchange_issuance_announcement_candidates(stock_code, security_name=''):
     ]
 
 
+def _exchange_issuance_result_candidates(stock_code, security_name=''):
+    """返回交易所官方发行结果公告候选：(source, url, title, date)。"""
+    return [
+        (source, url, title, announced_at)
+        for source, url, title, role, announced_at
+        in _exchange_ipo_document_candidates(stock_code, security_name)
+        if role == 'issuance_result'
+    ]
+
+
 def _parse_ipo_issuance_detail(text):
     """从 IPO 发行公告提取公告直接披露的行业和行业市盈率。"""
     compact = re.sub(r'\s+', '', str(text or ''))
@@ -1693,6 +1707,84 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
     except Exception:
         pass
     _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
+    return {}
+
+
+def _parse_ipo_issuance_result_detail(text):
+    """从发行结果/中签率公告提取网上有效申购倍数和最终中签率。"""
+    compact = re.sub(r'\s+', '', str(text or '')).replace(',', '').replace('，', '')
+    if not compact:
+        return {}
+
+    result = {}
+    # 发行结果公告通常披露的是“网上发行初步有效申购倍数”；若公告给出最终
+    # 有效倍数则优先采用最终口径。不要把网下机构认购倍数混入该字段。
+    for pattern in (
+        r'网上发行最终有效申购倍数(?:约为|为|约)?(\d+(?:\.\d+)?)倍',
+        r'网上投资者最终有效申购倍数(?:约为|为|约)?(\d+(?:\.\d+)?)倍',
+        r'网上发行初步有效申购倍数(?:约为|为|约)?(\d+(?:\.\d+)?)倍',
+        r'网上投资者有效申购倍数(?:约为|为|约)?(\d+(?:\.\d+)?)倍',
+        r'网上有效申购倍数(?:约为|为|约)?(\d+(?:\.\d+)?)倍',
+    ):
+        match = re.search(pattern, compact)
+        if match:
+            value = float(match.group(1))
+            if 0 < value < 1000000:
+                result['oversubscribe_multiple'] = value
+                break
+
+    for pattern in (
+        r'网上发行最终中签率(?:为|约为|约)?(\d+(?:\.\d+)?)%',
+        r'回拨机制启动后网上发行最终中签率(?:为|约为|约)?(\d+(?:\.\d+)?)%',
+        r'网上初步中签率(?:为|约为|约)?(\d+(?:\.\d+)?)%',
+        r'网上发行中签率(?:为|约为|约)?(\d+(?:\.\d+)?)%',
+    ):
+        match = re.search(pattern, compact)
+        if match:
+            value = float(match.group(1))
+            if 0 < value < 100:
+                result['online_lottery_rate'] = value
+                break
+    return result
+
+
+def _fetch_exchange_ipo_issuance_result_detail(stock_code, security_name=''):
+    """交易所发行结果主源：读取网上有效申购倍数和中签率。"""
+    code = str(stock_code or '').split('.')[0]
+    if code in _IPO_ISSUANCE_RESULT_DETAIL_CACHE:
+        return dict(_IPO_ISSUANCE_RESULT_DETAIL_CACHE[code])
+    try:
+        candidates = _exchange_issuance_result_candidates(
+            code, security_name or _stock_name_from_database(code)
+        )
+        if not candidates:
+            _IPO_ISSUANCE_RESULT_DETAIL_CACHE[code] = {}
+            return {}
+        session = requests.Session()
+        session.headers.update({'User-Agent': HEADERS['User-Agent']})
+        try:
+            for source, url, title, announced_at in candidates:
+                text = _download_exchange_pdf_text(session, url, source)
+                parsed = _parse_ipo_issuance_result_detail(text)
+                if not parsed:
+                    continue
+                parsed.update({
+                    'ipo_result_announcement_source': source,
+                    'ipo_result_announcement_url': url,
+                    'ipo_result_announcement_title': title,
+                    'ipo_result_announcement_date': announced_at or None,
+                    'ipo_result_announcement_content_hash': hashlib.sha256(
+                        str(text or '').encode('utf-8')
+                    ).hexdigest(),
+                    'ipo_result_announcement_parser_version': 'ipo-issuance-result-facts-v1',
+                })
+                _IPO_ISSUANCE_RESULT_DETAIL_CACHE[code] = dict(parsed)
+                return parsed
+        finally:
+            session.close()
+    except Exception:
+        pass
+    _IPO_ISSUANCE_RESULT_DETAIL_CACHE[code] = {}
     return {}
 
 
@@ -1947,12 +2039,14 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
         return None
     security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
     announcement_detail = _fetch_exchange_ipo_issuance_detail(code, security_name=security_name)
+    result_detail = _fetch_exchange_ipo_issuance_result_detail(code, security_name=security_name)
     industry = (
         str(announcement_detail.get('industry') or '').strip()
         or _fetch_stock_industry(code)
         or str(existing_industry or '').strip()
     )
     detail = dict(announcement_detail)
+    detail.update(result_detail)
     detail['industry'] = industry or ''
     if announcement_detail.get('industry'):
         detail['industry_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"

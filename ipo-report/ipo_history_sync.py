@@ -340,11 +340,12 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
               OR NOT (business_exposure ? 'exposures'))"""
     cur.execute("""
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry,
-             main_business,industry_pe,business_exposure
+             main_business,industry_pe,business_exposure,
+             online_lottery_rate,oversubscribe_multiple
         FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
          AND (%s::boolean OR security_code=ANY(%s::text[]))
-         AND (""" + mandatory_gap + """ OR (
+         AND ((%s::boolean AND security_code=ANY(%s::text[])) OR """ + mandatory_gap + """ OR (
               industry_pe IS NULL
               AND COALESCE(data_quality_status->'field_states'->'industry_pe'->>'retry_after','') <= %s
          ))
@@ -358,7 +359,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 CASE WHEN ipo_date >= %s THEN ipo_date END ASC NULLS LAST,
                 CASE WHEN listing_date >= %s THEN listing_date END ASC NULLS LAST,
                 ipo_date DESC,security_code
-    """, (not bool(only_codes), only_codes, today_text, today_text, retry_same_day, priority_codes,
+    """, (not bool(only_codes), only_codes, bool(only_codes), only_codes, today_text, today_text, retry_same_day, priority_codes,
           priority_codes,
           target_text, target_text, target_text, target_text,
           target_text, target_text))
@@ -371,7 +372,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
 
     attempted = updated = failed = 0
     stopped = None
-    for code, prior_status, existing_industry, existing_business, existing_industry_pe, existing_exposure in candidates:
+    for code, prior_status, existing_industry, existing_business, existing_industry_pe, existing_exposure, existing_lottery_rate, existing_oversubscribe in candidates:
         attempted += 1
         meta = {"attempted_on": today_text, "source": "stock_basic/exchange/cninfo/tushare/valuation"}
         try:
@@ -383,6 +384,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 key=len,
             )
             resolved_industry_pe = existing_industry_pe if existing_industry_pe is not None else detail.get("industry_pe")
+            resolved_lottery_rate = detail.get("online_lottery_rate") if detail.get("online_lottery_rate") not in (None, "") else existing_lottery_rate
+            resolved_oversubscribe = detail.get("oversubscribe_multiple") if detail.get("oversubscribe_multiple") not in (None, "") else existing_oversubscribe
             resolved_exposure = business_exposure if (
                 isinstance(business_exposure, dict) and business_exposure.get("exposures")
             ) else existing_exposure
@@ -390,6 +393,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 resolved_industry != str(existing_industry or '').strip()
                 or resolved_business != str(existing_business or '').strip()
                 or resolved_industry_pe != existing_industry_pe
+                or resolved_lottery_rate != existing_lottery_rate
+                or resolved_oversubscribe != existing_oversubscribe
                 or resolved_exposure != existing_exposure
             )
             if changed:
@@ -397,6 +402,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                   UPDATE ipo_history SET
                     industry=COALESCE(NULLIF(industry,''),NULLIF(%s,'')),
                     industry_pe=COALESCE(industry_pe,%s),
+                    online_lottery_rate=COALESCE(%s,online_lottery_rate),
+                    oversubscribe_multiple=COALESCE(%s,oversubscribe_multiple),
                     main_business=CASE
                       WHEN length(COALESCE(%s,'')) > length(COALESCE(main_business,'')) THEN %s
                       ELSE main_business END,
@@ -404,10 +411,16 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object('historical_enrichment',%s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
-                """, (detail.get("industry"), detail.get("industry_pe"), detail.get("main_business"), detail.get("main_business"),
+                """, (detail.get("industry"), detail.get("industry_pe"), resolved_lottery_rate if detail.get("online_lottery_rate") not in (None, "") else None,
+                      resolved_oversubscribe if detail.get("oversubscribe_multiple") not in (None, "") else None,
+                      detail.get("main_business"), detail.get("main_business"),
                       Json(business_exposure) if business_exposure else None, Json(detail), code))
                 updated += 1
                 meta["updated_fields"] = [field for field in QUALITY_DETAIL_FIELDS if detail.get(field) not in (None, "")]
+                meta["updated_fields"].extend(
+                    field for field in ("online_lottery_rate", "oversubscribe_multiple")
+                    if detail.get(field) not in (None, "")
+                )
                 if isinstance(business_exposure, dict) and business_exposure.get("exposures"):
                     meta["updated_fields"].append("business_exposure")
             elif detail.get("main_business_source"):
@@ -858,8 +871,9 @@ def main():
                     cur, date.fromisoformat(args.today) if args.today else date.today(),
                     retry_same_day=True, priority_codes=target_codes, only_codes=target_codes,
                 )
+                quality = update_quality(cur, date.fromisoformat(args.today) if args.today else date.today())
             connection.commit()
-            print(json.dumps({"ok": True, "mode": "targeted", "codes": target_codes, "result": result}, ensure_ascii=False, default=str))
+            print(json.dumps({"ok": True, "mode": "targeted", "codes": target_codes, "result": result, "quality": quality}, ensure_ascii=False, default=str))
             return
         finally:
             connection.close()

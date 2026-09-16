@@ -123,6 +123,14 @@ check("上交所IPO文件使用可下载的官方镜像",
           "/disclosure/listedinfo/announcement/c/new/2026-09-14/example.pdf", "sse"
       ).startswith("https://big5.sse.com.cn/site/cht/www.sse.com.cn/"))
 
+result_detail = fetch_mod._parse_ipo_issuance_result_detail("""
+由于本次网上发行初步有效申购倍数约为4,960.63 倍，超过100倍。
+回拨机制启动后，网上发行最终中签率为0.04703721%。
+""")
+check("IPO发行结果公告提取网上申购倍数和最终中签率",
+      result_detail.get("oversubscribe_multiple") == 4960.63
+      and result_detail.get("online_lottery_rate") == 0.04703721)
+
 prospectus_detail = fetch_mod._extract_main_business("""
 公司主营业务为大型重载离心压缩机、工艺流程用往复压缩机、核泵等高端装备的研发、制造和服务。
 根据国家统计局分类，公司从事的主营业务所属行业为“C34 通用设备制造业”之相关行业。
@@ -131,6 +139,7 @@ check("IPO招股书提取主营业务所属行业",
       "所属行业：通用设备制造业" in str(prospectus_detail))
 
 _issuance_fetch_backup = fetch_mod._fetch_exchange_ipo_issuance_detail
+_issuance_result_fetch_backup = fetch_mod._fetch_exchange_ipo_issuance_result_detail
 _stock_industry_backup = fetch_mod._fetch_stock_industry
 _stock_business_backup = fetch_mod._fetch_stock_main_business
 _industry_pe_map_backup = fetch_mod._get_industry_pe_map
@@ -141,6 +150,7 @@ try:
         'industry_pe': 40.94,
         'ipo_announcement_source': 'sse',
     }
+    fetch_mod._fetch_exchange_ipo_issuance_result_detail = lambda *_args, **_kwargs: {}
     fetch_mod._fetch_stock_industry = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError('发行公告已有行业时不应调用 Tushare 行业备源')
     )
@@ -156,6 +166,7 @@ try:
           and announcement_first.get('industry_pe_source') == 'sse_issuance_announcement')
 finally:
     fetch_mod._fetch_exchange_ipo_issuance_detail = _issuance_fetch_backup
+    fetch_mod._fetch_exchange_ipo_issuance_result_detail = _issuance_result_fetch_backup
     fetch_mod._fetch_stock_industry = _stock_industry_backup
     fetch_mod._fetch_stock_main_business = _stock_business_backup
     fetch_mod._get_industry_pe_map = _industry_pe_map_backup

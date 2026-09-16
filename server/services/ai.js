@@ -2,6 +2,10 @@
 // 仅允许向服务端白名单内的 HTTPS 公网地址发起请求，拒绝私网/回环/非常规协议。
 const dns = require('dns').promises;
 const net = require('net');
+// Node 内置 fetch 使用自带的 undici 版本，不能接收 npm undici 生成的
+// dispatcher；固定 IP 时必须同时使用同一 npm undici 实例的 fetch。
+const { fetch: pinnedFetch } = require('undici');
+const nativeFetch = globalThis.fetch;
 const { AI_ALLOWED_HOSTS } = require('../config');
 
 function isPublicIPv4(ip) {
@@ -54,15 +58,23 @@ const pinnedAgents = new Map();
 function createPinnedDispatcher(target) {
   const key = `${target.hostname}|${target.address}|${target.family}`;
   if (pinnedAgents.has(key)) return pinnedAgents.get(key);
-  const { Agent } = require('undici');
+  const { Agent, buildConnector } = require('undici');
+  // undici 8.x 的 Agent.connect 需要一个 connector 函数，不能把 lookup
+  // 回调放进 connect 配置对象（那会被误当成请求处理器并在发请求前报错）。
+  // 复用官方 connector，只把已完成公网校验的地址替换进去，并保留原主机名作 TLS SNI。
+  const baseConnector = buildConnector({});
+  const pinnedConnector = function (options, callback) {
+    const requestedHost = String((options && (options.hostname || options.host)) || '').toLowerCase();
+    if (requestedHost !== target.hostname) return callback(new Error('目标主机在连接前发生变化'));
+    return baseConnector({
+      ...options,
+      hostname: target.address,
+      host: target.address,
+      servername: target.hostname,
+    }, callback);
+  };
   const agent = new Agent({
-    connect: {
-      lookup(hostname, options, callback) {
-        if (String(hostname).toLowerCase() !== target.hostname) return callback(new Error('目标主机在连接前发生变化'));
-        if (options && options.all) return callback(null, [{ address: target.address, family: target.family }]);
-        return callback(null, target.address, target.family);
-      },
-    },
+    connect: pinnedConnector,
   });
   pinnedAgents.set(key, agent);
   return agent;
@@ -72,10 +84,12 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 // AI 请求手动跟随同源跳转，每一跳重新解析并固定公网 IP；跨源跳转一律拒绝，
 // 因而 Authorization 不会被转发到新来源。fetchImpl 参数用于无外网单元测试。
-async function fetchSafeAi(url, options = {}, extraHosts = [], fetchImpl = fetch) {
+async function fetchSafeAi(url, options = {}, extraHosts = [], fetchImpl = globalThis.fetch) {
   let current = String(url);
   let requestOptions = { ...options };
-  const usePinnedConnection = fetchImpl === fetch;
+  // 只有真正的 Node 内置 fetch 走固定 dispatcher；测试或调用方注入的 fetch
+  // 必须继续使用注入实现，避免把可控桩误切到外部网络请求。
+  const usePinnedConnection = fetchImpl === nativeFetch;
   if (!usePinnedConnection) assertSafeUrl(current, extraHosts);
   const original = usePinnedConnection
     ? await resolveSafeTarget(current, extraHosts)
@@ -88,7 +102,8 @@ async function fetchSafeAi(url, options = {}, extraHosts = [], fetchImpl = fetch
     if (target.url.origin !== originalOrigin) throw new Error('AI 服务禁止跨域跳转');
     if (!usePinnedConnection) assertSafeUrl(current, extraHosts);
     const headers = { ...(requestOptions.headers || {}) };
-    const response = await fetchImpl(current, {
+    const requestFetch = usePinnedConnection ? pinnedFetch : fetchImpl;
+    const response = await requestFetch(current, {
       ...requestOptions,
       headers,
       redirect: 'manual',

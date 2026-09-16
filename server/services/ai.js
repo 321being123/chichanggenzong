@@ -50,7 +50,9 @@ async function resolveSafeTarget(url, extraHosts) {
   let addresses;
   try { addresses = await dns.lookup(host, { all: true, verbatim: true }); } catch (_) { throw new Error('AI 服务域名解析失败'); }
   if (!addresses.length || addresses.some(a => !isPublicIp(a.address))) throw new Error('AI 服务解析到非公网地址');
-  const first = addresses[0];
+  // 生产服务器可能没有 IPv6 出口；在已完成公网校验的地址中优先选 IPv4，
+  // 没有 IPv4 时再使用 IPv6，避免把请求固定到不可达的首个 AAAA 记录。
+  const first = addresses.find(function (address) { return address.family === 4; }) || addresses[0];
   return { url: u, hostname: host, address: first.address, family: first.family };
 }
 

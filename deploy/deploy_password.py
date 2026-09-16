@@ -171,6 +171,7 @@ def main():
             "&& (grep -q '^TRUST_PROXY=' .env "
             "&& sed -i 's/^TRUST_PROXY=.*/TRUST_PROXY=loopback/' .env "
             "|| printf '\\nTRUST_PROXY=loopback\\n' >> .env) "
+            "&& if grep -q '^VISION_MODEL=agnes-2.0-flash$' .env; then sed -i 's/^VISION_MODEL=agnes-2.0-flash$/VISION_MODEL=agnes-2.5-flash/' .env; fi "
             "&& install -m 0644 deploy/portfolio-server.service /etc/systemd/system/portfolio-server.service "
             "&& install -m 0644 deploy/portfolio-worker.service /etc/systemd/system/portfolio-worker.service "
             "&& install -m 0644 deploy/portfolio-worker-health.service /etc/systemd/system/portfolio-worker-health.service "

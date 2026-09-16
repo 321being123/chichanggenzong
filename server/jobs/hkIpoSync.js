@@ -4,8 +4,6 @@ const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
 
-const MAX_TENCENT_NAME_BATCH = 80;
-
 function canonicalHkCode(rawCode) {
   const text = String(rawCode || '').trim().toUpperCase();
   const match = text.match(/^(?:HK)?(\d{1,5})(?:\.HK)?$/);
@@ -36,8 +34,10 @@ async function persistTencentNames(quoteMap, { executor = pool.query.bind(pool) 
   return { requested: quoteMap instanceof Map ? quoteMap.size : 0, named: updates.size, persisted, source: 'tencent' };
 }
 
-async function syncHkIpoTencentNames(seedCodes = [], { batchSize = MAX_TENCENT_NAME_BATCH, businessDate, ttlMs, executor = pool.query.bind(pool) } = {}) {
-  const limit = Math.min(MAX_TENCENT_NAME_BATCH, Math.max(1, Number(batchSize) || MAX_TENCENT_NAME_BATCH));
+async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, businessDate, ttlMs, executor = pool.query.bind(pool) } = {}) {
+  const configuredLimit = Number.isInteger(Number(batchSize)) && Number(batchSize) > 0 ? Number(batchSize) : null;
+  const candidateLimitClause = configuredLimit ? ' LIMIT $1' : '';
+  const candidateParams = configuredLimit ? [configuredLimit] : [];
   const candidates = await executor(`
     SELECT security_code
       FROM public.ipo_history
@@ -45,7 +45,8 @@ async function syncHkIpoTencentNames(seedCodes = [], { batchSize = MAX_TENCENT_N
        AND COALESCE(NULLIF(security_name_cn,''),'')=''
      ORDER BY CASE WHEN listing_at IS NOT NULL OR ipo_status='listed' THEN 0 ELSE 1 END,
               COALESCE(listing_at,NULLIF(updated_at,'')::timestamptz) DESC NULLS LAST,security_code
-     LIMIT $1`, [limit]);
+     ${candidateLimitClause}`, candidateParams);
+  const limit = configuredLimit || Number.MAX_SAFE_INTEGER;
   const codes = [];
   const seen = new Set();
   for (const raw of [...(Array.isArray(seedCodes) ? seedCodes : []), ...(candidates.rows || []).map(row => row.security_code)]) {
@@ -53,12 +54,21 @@ async function syncHkIpoTencentNames(seedCodes = [], { batchSize = MAX_TENCENT_N
     if (code && !seen.has(code)) { seen.add(code); codes.push(code); }
     if (codes.length >= limit) break;
   }
-  if (!codes.length) return { requested: 0, quoted: 0, named: 0, persisted: 0, source: 'tencent' };
+  const limited = configuredLimit !== null;
+  if (!codes.length) {
+    return {
+      ok: !limited, status: limited ? 'partial' : 'succeeded', limit: configuredLimit,
+      continuationRequired: limited, requested: 0, quoted: 0, named: 0, persisted: 0, source: 'tencent',
+    };
+  }
   const quotes = await fetchTencentQuotes(codes, { businessDate, ttlMs });
   const named = new Set();
   for (const quote of quotes.values()) if (quote && hasChineseName(quote.name)) named.add(canonicalHkCode(quote.code || quote.symbol));
   const persisted = await persistTencentNames(quotes, { executor });
-  return { ...persisted, requested: codes.length, quoted: quotes.size, candidateCount: candidates.rowCount || 0 };
+  return {
+    ...persisted, ok: !limited, status: limited ? 'partial' : 'succeeded', limit: configuredLimit,
+    continuationRequired: limited, requested: codes.length, quoted: quotes.size, candidateCount: candidates.rowCount || 0,
+  };
 }
 
 function rowsFromProbe(probe) {
@@ -165,11 +175,15 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     }
     if (context.syncProspectus !== false) {
       try {
+        const prospectusOptions = { ...(context.prospectusOptions || {}) };
+        if (prospectusOptions.limit == null) {
+          const envLimit = Number(process.env.HK_IPO_PROSPECTUS_LIMIT);
+          if (Number.isInteger(envLimit) && envLimit > 0) prospectusOptions.limit = envLimit;
+        }
         prospectusFacts = await syncHkexProspectusFacts({
-          ...(context.prospectusOptions || {}),
+          ...prospectusOptions,
           refreshSponsor: context.refreshSponsor === true || context.prospectusOptions?.refreshSponsor === true
             || String(process.env.HK_IPO_REFRESH_SPONSOR || '').toLowerCase() === 'true',
-          limit: context.prospectusOptions?.limit || Number(process.env.HK_IPO_PROSPECTUS_LIMIT || 18),
         });
       } catch (error) {
         prospectusFacts = { ok: false, status: 'failed', error: error.message || String(error) };
@@ -177,9 +191,13 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     }
     if (context.syncAllotment !== false) {
       try {
+        const allotmentOptions = { ...(context.allotmentOptions || {}) };
+        if (allotmentOptions.limit == null) {
+          const envLimit = Number(process.env.HK_IPO_ALLOTMENT_LIMIT);
+          if (Number.isInteger(envLimit) && envLimit > 0) allotmentOptions.limit = envLimit;
+        }
         allotmentFacts = await syncHkexAllotmentFacts({
-          ...(context.allotmentOptions || {}),
-          limit: context.allotmentOptions?.limit || Number(process.env.HK_IPO_ALLOTMENT_LIMIT || 20),
+          ...allotmentOptions,
         });
       } catch (error) {
         allotmentFacts = { ok: false, status: 'failed', error: error.message || String(error) };
@@ -187,9 +205,13 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     }
     if (context.syncDaily !== false) {
       try {
+        const dailyOptions = { ...(context.dailyOptions || {}) };
+        if (dailyOptions.limit == null) {
+          const envLimit = Number(process.env.HK_DAILY_SYNC_LIMIT);
+          if (Number.isInteger(envLimit) && envLimit > 0) dailyOptions.limit = envLimit;
+        }
         dailyCoverage = await syncHkDailyCoverage({
-          ...(context.dailyOptions || {}),
-          limit: context.dailyOptions?.limit || Number(process.env.HK_DAILY_SYNC_LIMIT || 20),
+          ...dailyOptions,
         });
       } catch (error) {
         dailyCoverage = { ok: false, status: 'failed', error: error.message || String(error) };

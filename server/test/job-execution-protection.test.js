@@ -28,7 +28,16 @@ const financialArchitecture = read('server/services/financialDataArchitecture.js
 const ipoHistoryJob = read('server/jobs/ipoHistorySync.js');
 const runnerProcess = read('server/services/jobRunnerProcess.js');
 const motiveService = read('server/services/convertibleBondRevisionMotiveService.js');
+const redemptionSync = read('server/services/convertibleBondRedemptionSync.js');
+const marketService = read('server/services/market.js');
+const hkIpoSync = read('server/jobs/hkIpoSync.js');
 const alertMailer = read('server/services/jobAlertMailer.js');
+const hkexIpo = read('server/services/hkexIpo.js');
+const hkexAnnouncement = read('server/services/hkexAnnouncement.js');
+const cninfoAnnouncement = read('server/services/cninfoAnnouncement.js');
+const hkDailyCoverage = read('server/services/hkDailyCoverage.js');
+const ipoFetch = read('ipo-report/ipo_lib_fetch.py');
+const stockAnalysisService = read('server/services/stockAnalysis.js');
 
 const budgetEnvBackup = {};
 for (const key of ['TUSHARE_PER_MINUTE_BUDGET', 'TUSHARE_DAILY_BUDGET', 'TUSHARE_BACKUP_PER_MINUTE_BUDGET', 'TUSHARE_BACKUP_DAILY_BUDGET', 'CNINFO_PER_MINUTE_BUDGET', 'CNINFO_DAILY_BUDGET', 'TENCENT_PER_MINUTE_BUDGET', 'TENCENT_DAILY_BUDGET', 'SSE_PER_MINUTE_BUDGET', 'SSE_DAILY_BUDGET', 'SZSE_PER_MINUTE_BUDGET', 'SZSE_DAILY_BUDGET']) {
@@ -36,12 +45,12 @@ for (const key of ['TUSHARE_PER_MINUTE_BUDGET', 'TUSHARE_DAILY_BUDGET', 'TUSHARE
   delete process.env[key];
 }
 const budgetGuard = require('../services/externalCallGuard');
-assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare'), { minute: 450, day: null },
-  '主 Tushare 必须按6000积分官方频率设置分钟保护，常规接口不设内部日总量');
-assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare_backup'), { minute: 180, day: 90000 },
-  '备用 Tushare 必须按2000积分官方频率和单凭据日止损线保护');
-assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: 20, day: null },
-  '巨潮不预设来源级日总量，只保留分钟保护并记录日调用量');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare'), { minute: null, day: null },
+  '主 Tushare 不得使用运行时来源级默认预算');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tushare_backup'), { minute: null, day: null },
+  '备用 Tushare 不得使用运行时来源级默认预算');
+assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('cninfo'), { minute: null, day: null },
+  '巨潮不得使用运行时来源级默认预算');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('tencent'), { minute: null, day: null },
   '腾讯当前不设置本系统分钟/日预算');
 assert.deepStrictEqual(budgetGuard.getExternalBudgetLimits('sse'), { minute: null, day: null },
@@ -128,6 +137,21 @@ assert.ok(/configured == "0"/.test(pythonGuard) && /production/.test(pythonGuard
   'Python Guard 必须默认开启且生产环境不可关闭');
 assert.ok(/BUDGET_WAIT/.test(externalGuard) && /BUDGET_WAIT/.test(orchestrator),
   '内部预算耗尽必须进入等待状态，不得误开来源熔断');
+assert.doesNotMatch(bondAnalysis, /IPO_BOND_LIQUIDITY_LIMIT \|\| ['"]5['"]/, '上市流通补全不得默认只处理5只');
+assert.doesNotMatch(bondAnalysis, /IPO_BOND_ISSUE_RESULT_LIMIT \|\| ['"]20['"]/, '发行结果补全不得默认只处理20只');
+assert.match(hkexIpo, /limit = null/, '港股 IPO 补全默认不得设置固定条数');
+assert.match(hkexIpo, /显式批次上限已启用，需后续复核剩余候选/, '港股 IPO 显式批次上限不得伪装成成功');
+assert.doesNotMatch(hkexIpo, /documents\.slice\(0,\s*3\)|uniqueParseDocuments\.slice\(0,\s*6\)/,
+  '港股招股书不得用固定文档数截断事实补全');
+assert.match(hkDailyCoverage, /limit = null/, '港股日线补全默认不得设置固定条数');
+assert.match(hkDailyCoverage, /显式批次上限后仍有候选对象，等待后续续跑/, '港股日线显式批次上限必须留下续跑证据');
+assert.doesNotMatch(hkexAnnouncement, /HKEX_MAX_PAGES\s*=\s*\d+/, '港交所公告不得设置固定页数上限');
+assert.doesNotMatch(cninfoAnnouncement, /CNINFO_MAX_PAGES\s*=\s*\d+/, '巨潮公告不得设置固定页数上限');
+assert.doesNotMatch(ipoFetch, /issue_targets\[:\s*3\]|issue_result_targets\[:\s*3\]/,
+  '交易所/巨潮发行结果公告不得按固定条数截断');
+assert.doesNotMatch(stockAnalysisService, /maxPages\s*=\s*\d+|page\s*<=\s*5|pageNum\s*<=\s*20/,
+  '股票公告采集不得在业务函数内写死页数上限');
+assert.match(hkDailyCoverage, /const batchSize = fetchImpl \?/, '无批量接口时港股日线必须逐证券处理全部候选');
 assert.ok(/JOB_EXTERNAL_CALL_USED/.test(pythonGuard) && /_budget_date_text/.test(pythonGuard)
   && /return \{"total": _run_call_count/.test(pythonGuard), 'Python 必须继承累计调用数且预算日不能使用业务日期');
 assert.ok(/setExternalCallCount/.test(externalGuard) && /setExternalCallCount\(message\.context/.test(runnerProcess),
@@ -140,6 +164,18 @@ assert.ok(/JOB_BUDGET_EXCEEDED/.test(ipoHistoryJob) && /error\.code !== 'ENOENT'
   && /externalCallCount = structured\.externalCalls/.test(ipoHistoryJob), 'IPO 业务/API错误不得换解释器重跑，且必须透传结构化预算信息');
 assert.ok(/isRunBudgetBoundaryError/.test(motiveService) && /holderAttempted = false/.test(motiveService)
   && /pledgeAttempted = false/.test(motiveService), '下修动机达到批次上限必须顺延而非制造单债失败');
+assert.match(motiveService, /syncRevisionMotiveInputs\(\{ businessDate = null, limit = null \}/,
+  '下修动机输入默认必须处理全部候选，不能隐藏 2000 条上限');
+assert.doesNotMatch(motiveService, /MAX_HOLDER_CALLS_PER_RUN|holderCallsThisRun\s*<\s*\d+/,
+  '下修动机输入不得自行设置接口调用条数上限，应由统一 Guard/Runner 止损');
+assert.match(redemptionSync, /retryFailed = false, limit = null/,
+  '强赎公告重解析默认必须处理全部缓存候选');
+assert.doesNotMatch(redemptionSync, /LIMIT \$4.*Math\.max\(1, Number\(limit\) \|\| 2000\)/,
+  '强赎公告重解析不得隐藏 2000 条上限');
+assert.doesNotMatch(marketService, /endsWith\('\.BJ'\)\)\.slice\(0, 1000\)/,
+  '实时行情请求不得自行截断到 1000 个证券');
+assert.match(hkIpoSync, /batchSize = null/);
+assert.match(hkIpoSync, /continuationRequired: limited/);
 assert.ok(/alert_type='failure_warning' AND EXISTS/.test(alertMailer)
   && /alert_type='late' AND EXISTS/.test(alertMailer), '同一计划的预警和下游逾期告警必须归并');
 assert.ok(/TEST_DATABASE/.test(testRunner) && /cleanupTestArtifacts/.test(testRunner)
@@ -238,7 +274,6 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'PERMISSION_DENIED' && error.errorType === 'permission' && error.retryable === false);
 
     guardSource = `test_guard_${process.pid}_${Date.now()}`;
-    const guardEnv = guardSource.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
     await guardPool.query(
       `INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
        VALUES($1,$1,'test',999) ON CONFLICT(source_code) DO NOTHING`, [guardSource]
@@ -249,14 +284,13 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     await guardPool.query(
       `INSERT INTO ops.source_endpoint_policies
          (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit)
-       VALUES($1,'*','anonymous',20,20)
+       VALUES($1,'*','anonymous',NULL,NULL),
+             ($1,'api_a','anonymous',20,20)
        ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
          internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
          internal_daily_limit=EXCLUDED.internal_daily_limit,
          enabled=true,permission_status='unknown'`, [guardSourceRow.rows[0].source_id]
     );
-    process.env[`${guardEnv}_PER_MINUTE_BUDGET`] = '20';
-    process.env[`${guardEnv}_DAILY_BUDGET`] = '20';
     let guardedExternalCalls = 0;
     let firstEntered;
     let releaseFirst;
@@ -283,11 +317,10 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     await guardPool.query(
       `UPDATE ops.source_endpoint_policies SET internal_daily_limit=1
        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1)
-         AND api_name='*' AND credential_profile='anonymous'`, [guardSource]
+         AND api_name='api_a' AND credential_profile='anonymous'`, [guardSource]
     );
-    process.env[`${guardEnv}_DAILY_BUDGET`] = '1';
-    await guard.consumeExternalCall(guardSource, 'dataset-quota-first');
-    await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b'), error =>
+    await guard.consumeExternalCall(guardSource, 'dataset-quota-first', null, guardSource, { apiName: 'api_a' });
+    await assert.rejects(() => guard.consumeExternalCall(guardSource, 'dataset-b', null, guardSource, { apiName: 'api_a' }), error =>
       error.code === 'BUDGET_WAIT' && error.errorType === 'rate_limit' && Boolean(error.recoverAt),
     '本系统预算耗尽应等待窗口，不得伪装成 Token 熔断');
     const budgetRows = await require('../db/connection').pool.query(
@@ -302,8 +335,6 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     await guardPool.query(
       `DELETE FROM ops.data_sources WHERE source_code=$1`, [guardSource]
     );
-    delete process.env[`${guardEnv}_PER_MINUTE_BUDGET`];
-    delete process.env[`${guardEnv}_DAILY_BUDGET`];
 
     const { pool } = require('../db/connection');
     const { claimSlot, completeSlot, listDueSlots, enqueueManualJob, ensureSlot, syncScheduleSlots, expectedDataDate } = require('../services/jobScheduleSlots');

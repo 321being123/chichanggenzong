@@ -3,6 +3,14 @@ process.env.NODE_ENV = 'test';
 
 const assert = require('assert');
 const { pool } = require('../db/connection');
+const { normalizePolicyInput } = require('../services/sourceEndpointPolicy');
+
+assert.throws(
+  () => normalizePolicyInput({ api_name: '*', internal_per_minute_limit: 10 }),
+  /来源级策略不得设置内部限额/,
+  '来源级策略不得重新引入内部预算'
+);
+assert.strictEqual(normalizePolicyInput({ api_name: 'api_a', internal_per_minute_limit: 10 }).internalPerMinuteLimit, 10);
 
 (async () => {
   const source = `test_policy_${process.pid}_${Date.now()}`;
@@ -37,8 +45,8 @@ const { pool } = require('../db/connection');
       `INSERT INTO ops.source_endpoint_policies
          (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
           max_concurrency,min_interval_ms)
-       VALUES
-         ($1,'*','primary',3,3,1,0),
+         VALUES
+         ($1,'*','primary',NULL,NULL,1,0),
          ($1,'api_a','primary',2,10,1,0),
          ($1,'api_b','primary',10,10,1,0)`, [sourceId]
     );
@@ -47,9 +55,8 @@ const { pool } = require('../db/connection');
     assert.strictEqual((await reserve('api_a', fingerprint)).allowed, true);
     assert.strictEqual((await reserve('api_a', fingerprint)).reason, 'minute',
       '同一接口必须按接口级分钟额度拦截');
-    assert.strictEqual((await reserve('api_b', fingerprint)).allowed, true);
-    assert.strictEqual((await reserve('api_b', fingerprint)).reason, 'credential_minute',
-      '同一凭据跨接口累计后必须按凭据级分钟额度拦截');
+    assert.strictEqual((await reserve('api_b', fingerprint)).allowed, true,
+      '接口A达到限制不得影响接口B');
     assert.strictEqual((await reserve('api_a', otherFingerprint)).allowed, true,
       '更换凭据后应使用独立的三维计数');
 
@@ -63,7 +70,7 @@ const { pool } = require('../db/connection');
     assert.ok(rows.rows.some(row => row.api_name === 'api_a' && row.credential_fingerprint === otherFingerprint));
     assert.ok(rows.rows.every(row => row.credential_profile === 'primary'));
 
-    console.log('source-endpoint-policy: 来源＋接口＋凭据精确计数与跨接口凭据额度通过');
+    console.log('source-endpoint-policy: 来源＋接口＋凭据精确计数与接口隔离通过');
   } finally {
     await client.query('DELETE FROM ops.data_sources WHERE source_code=$1', [source]).catch(() => {});
     client.release();

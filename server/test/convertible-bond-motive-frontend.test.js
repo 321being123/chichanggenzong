@@ -13,7 +13,8 @@ assert.ok(!service.includes('TUSHARE_ENABLE_5000_ENDPOINTS') && service.includes
 assert.ok(service.includes('holderStopError') && service.includes('pledgeStopError') && service.includes('RATE_LIMIT') && service.includes('CIRCUIT_OPEN') && service.includes('md.trade_date'), '同步任务应区分单对象空结果与接口限速并只处理当前行情候选');
 assert.ok(service.includes('hcur.last_attempt_at') && service.includes('pcur.last_attempt_at'), '单对象空结果应按最近尝试时间后置，避免补数批次反复卡在同一批');
 assert.ok(service.includes('holderAttempted && !holderError') && service.includes('pledgeAttempted && !pledgeError'), '正常空结果必须推进游标并保留后续复查机会');
-assert.ok(service.includes('MAX_HOLDER_CALLS_PER_RUN = 10') && service.includes('holderCallsThisRun < MAX_HOLDER_CALLS_PER_RUN'), '持有人接口每批最多10次，避免触发30次/分钟限频');
+assert.ok(!service.includes('MAX_HOLDER_CALLS_PER_RUN') && !service.includes('holderCallsThisRun'), '不得用业务代码自设持有人接口批次数量上限');
+assert.ok(service.includes('const configuredLimit') && service.includes('limitClause') && service.includes('continuationRequired'), '显式调试批次必须走统一限流并保留续跑语义');
 assert.ok(service.includes('holderAttempted && !holderError') && service.includes('pledgeAttempted && !pledgeError'), '未实际请求的对象不得被误记为空结果成功');
 assert.ok((service.match(/allowEmpty: true/g) || []).length >= 2, '持有人和质押接口的正常空结果不得被误记为失败');
 assert.ok(service.includes('raw_records') && service.includes('sync_cursors'), '同步任务缺少原始响应或游标留痕');

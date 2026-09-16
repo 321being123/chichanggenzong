@@ -80,7 +80,7 @@ function ok(fields = ['value'], items = [['ok']]) {
     await pool.query(
       `INSERT INTO ops.source_endpoint_policies
          (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit)
-       VALUES($1,'*','anonymous',20,20)
+       VALUES($1,'*','anonymous',NULL,NULL)
        ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
          internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
          internal_daily_limit=EXCLUDED.internal_daily_limit,

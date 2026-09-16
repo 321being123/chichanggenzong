@@ -71,7 +71,7 @@ assert.ok(service.includes('net_asset_floor_value') && service.includes('floor_b
 assert.ok(service.includes('convertible_bond_revision_motive_daily') && service.includes('MOTIVE_SELECT_FIELDS') && service.includes('MOTIVE_MODEL_VERSION'), '下修列表未接入当前版本动机等级快照');
 assert.ok(page.includes('BOND_REVISION_RESEARCH_LEVEL') && page.includes('research_level') && !page.includes("row.motive_quality_status !== 'complete'"), '动机等级必须按研究分位展示，且所有行都能进入详情页');
 assert.ok(service.includes('implicitSseNoRevisionRestartDate') && service.includes('loadRevisionResponseHistory'), '下修计算缺少上交所次日未公告的隐含重新起算');
-assert.ok(analysis.includes('sourceFailures') && analysis.includes('defaultLimit'), '公告同步未保护来源失败或首次全量数量');
+assert.ok(analysis.includes('sourceFailures') && analysis.includes('configuredLimit') && analysis.includes('continuationRequired'), '公告同步未保护来源失败或显式批次续跑语义');
 assert.ok(analysis.includes("decision === 'no_revision' || period.lock_declared"), '转股价调整公告正文中的不下修决定必须入库');
 assert.ok(analysis.includes("['no_revision', 'revised', 'adjusted']") && analysis.includes('cacheComplete'), '实施公告正文锁定期必须进入不下修解析链');
 assert.ok(analysis.includes('cachedAnnouncements') && analysis.includes('cached_reparse'), '公告源失败时必须支持从库内官方 PDF 重新解析');

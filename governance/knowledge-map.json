@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-15",
+  "lastReviewed": "2026-09-16",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -19,6 +19,53 @@
       "update": ["AGENTS.md", "governance/knowledge-map.json"],
       "checks": ["npm.cmd run check:knowledge"],
       "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用"]
+    },
+    {
+      "id": "announcement-data-source",
+      "risk": "high",
+      "paths": [
+        "server/services/arbitrageAnnouncementSync.js",
+        "server/services/convertibleBondAnalysis.js",
+        "server/services/convertibleBondRedemptionSync.js",
+        "server/services/jobDefinitions.js",
+        "ipo-report/ipo_history_sync.py",
+        "ipo-report/ipo_lib_fetch.py",
+        "ipo-report/sse_listing_parser.py",
+        "ipo-report/sync_bond_listing_liquidity.py"
+      ],
+      "keywords": ["公告数据源", "公告采集", "公告缓存", "公告游标", "交易所优先", "巨潮兜底", "公告原文"],
+      "read": [
+        "docs/技术架构.md",
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+      ],
+      "update": ["docs/技术架构.md", "docs/知识索引.md"],
+      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
+      "expandOn": ["跨业务重复调用", "覆盖水位", "PDF缓存", "解析版本", "失败重试"]
+    },
+    {
+      "id": "task-quality-governance",
+      "risk": "high",
+      "paths": [
+        "server/services/externalCallGuard.js",
+        "server/services/jobAlertMailer.js",
+        "server/services/jobDefinitions.js",
+        "server/services/jobOrchestrator.js",
+        "server/services/jobRecoveryEvidence.js",
+        "server/services/jobRunnerProcess.js",
+        "server/services/jobScheduleSlots.js",
+        "server/services/datasetPartitionRegistry.js",
+        "scripts/check-knowledge.js"
+      ],
+      "keywords": ["熔断", "任务完成", "数据质量", "隐性上限", "目标日", "游标", "告警恢复", "自动门禁"],
+      "read": [
+        "docs/技术架构.md",
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+      ],
+      "update": ["docs/技术架构.md", "docs/知识索引.md"],
+      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
+      "expandOn": ["接口作用域", "分区质量", "续跑", "恢复证据", "通用不变量"]
     },
     {
       "id": "convertible-bond-redemption",

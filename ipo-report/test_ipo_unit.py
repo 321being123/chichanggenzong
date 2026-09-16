@@ -386,6 +386,14 @@ try:
           and electronic_measurement.get("classification_status") == "matched"
           and electronic_measurement.get("confidence", 0) > 0,
           "context=%r" % (electronic_measurement,))
+    shengu_exposure = _val.analyze_business_exposure(
+        "沈鼓集团",
+        "大型重载离心压缩机、工艺流程用往复压缩机、核泵等高端装备研发设计、生产制造和全生命周期服务业务",
+        "通用设备制造业",
+    )
+    check("沈鼓集团主营业务识别高端装备赛道",
+          any(item.get("sector_key") == "高端装备" for item in shengu_exposure.get("exposures", [])),
+          "exposure=%r" % (shengu_exposure,))
     missing_context = _val.get_stock_sector_context("测试", "", "")
     check("行业和主营缺失时标记待补全", missing_context.get("classification_status") == "missing",
           "context=%r" % (missing_context,))

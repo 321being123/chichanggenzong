@@ -1,6 +1,7 @@
 # 本文件由 ipo_daily_report.py 物理拆分而来，函数体/常量未改动，仅调整文件归属。
 import requests
 import json
+import hashlib
 import os
 import re
 from collections import defaultdict
@@ -14,6 +15,7 @@ from _common import _load_env
 from ipo_lib_common import *
 from ipo_lib_common import _to_ts_code
 from external_call_guard import ExternalCallGuardError
+from document_pdf_cache import get_cached_pdf, put_cached_pdf
 from bond_data_layer import get_bond_row, get_listing_liquidity, save_listing_liquidity
 from sse_listing_parser import (
     SSE_LISTING_INDEX_URL,
@@ -22,6 +24,32 @@ from sse_listing_parser import (
 )
 
 _bond_price_source = {}
+
+
+def _cached_pdf_text(url):
+    """读取统一持久化 PDF 缓存；缓存损坏时按未命中处理并允许重新下载。"""
+    try:
+        cached = get_cached_pdf(url)
+        if not cached:
+            return None
+        content = cached.read_bytes()
+        if not content.lstrip().startswith(b"%PDF"):
+            return None
+        doc = fitz.open(stream=content, filetype="pdf")
+        try:
+            return "".join(page.get_text() for page in doc) or None
+        finally:
+            doc.close()
+    except Exception:
+        return None
+
+
+def _put_pdf_cache(url, content):
+    """缓存是加速层，落盘失败不能阻断官方资料解析。"""
+    try:
+        put_cached_pdf(url, content)
+    except Exception:
+        pass
 
 
 def _split_embedded_industry(main_business):
@@ -175,18 +203,20 @@ def fetch_bond_detail(secu_code):
 _org_id_cache = {}
 _STOCK_NAME_CACHE = {}
 _MAIN_BUSINESS_SOURCE = {}
+_MAIN_BUSINESS_DOCUMENT = {}
 _EXCHANGE_PROSPECTUS_CACHE = {}
+_EXCHANGE_IPO_DOCUMENT_CACHE = {}
+_IPO_ISSUANCE_DETAIL_CACHE = {}
+
 
 def _get_org_id(stock_code):
-    """从巨潮获取股票orgId（带重试，使用独立session避免cookie冲突）"""
-    import time
+    """从巨潮获取股票 orgId，供交易所主源失败时的备源查询使用。"""
     if stock_code in _org_id_cache:
         return _org_id_cache[stock_code]
     last_error = None
     for attempt in range(3):
         try:
             url = "https://www.cninfo.com.cn/new/information/topSearch/query"
-            # 使用独立session，避免共享的Eastmoney cookies干扰cninfo
             cn_session = requests.Session()
             cn_session.headers.update({
                 "User-Agent": HEADERS["User-Agent"],
@@ -194,8 +224,7 @@ def _get_org_id(stock_code):
                 "X-Requested-With": "XMLHttpRequest",
                 "Referer": "https://www.cninfo.com.cn/",
             })
-            resp = cn_session.post(url, data={"keyWord": stock_code, "maxNum": 10},
-                                 timeout=20)
+            resp = cn_session.post(url, data={"keyWord": stock_code, "maxNum": 10}, timeout=20)
             cn_session.close()
             for item in resp.json():
                 if item.get("code") == stock_code:
@@ -204,8 +233,8 @@ def _get_org_id(stock_code):
             break
         except ExternalCallGuardError:
             raise
-        except Exception as e:
-            last_error = e
+        except Exception as error:
+            last_error = error
             if attempt < 2:
                 time.sleep(3)
     if last_error is not None:
@@ -314,7 +343,7 @@ def _parse_listed_bond_quantity(text):
     return None
 
 
-def _parse_issue_result_liquidity(text, issue_scale):
+def _parse_issue_result_liquidity(text, issue_scale, source_code="cninfo_announcements", source_class=None, source_name=None):
     """用发行结果公告中的控股股东体系配售量，形成可审计的流通规模值。"""
     raw_text = str(text or '')
     ps_zhang = None
@@ -347,56 +376,47 @@ def _parse_issue_result_liquidity(text, issue_scale):
         return None
     lock_scale = round(ps_zhang * 100 / 100000000, 4)
     circulation_scale = round((total_zhang - ps_zhang) * 100 / 100000000, 4)
+    source_name = source_name or {
+        "sse": "上交所", "szse": "深交所", "cninfo_announcements": "巨潮资讯网",
+    }.get(source_code, source_code)
     return {
         "status": "ok",
-        "source_code": "cninfo_announcements",
-        "source_class": "cninfo_issue_result",
+        "source_code": source_code,
+        "source_class": source_class or f"{source_code}_issue_result",
         "lock_scale": lock_scale,
         "circulation_scale": circulation_scale,
         "ctrl_zhang": ps_zhang,
         "total_zhang": total_zhang,
         "ctrl_ratio": round(ps_zhang / total_zhang * 100, 2),
-        "source": "发行结果公告（控股股东、实际控制人及一致行动人配售量）",
+        "source": f"{source_name}官方发行结果公告（控股股东、实际控制人及一致行动人配售量）",
         "quality": "issue_result_controller_allotment",
         "error": None,
     }
 
 
-def _listed_quantity_fallback(text):
+def _listed_quantity_fallback(text, source_code="cninfo_announcements", source_class=None, source_name=None):
     """上市公告书缺少持有人拆分时，使用公告明确的上市数量，并保留质量标记。"""
     total_zhang = _parse_listed_bond_quantity(text)
     if not total_zhang:
         return None
     circulation_scale = round(total_zhang * 100 / 100000000, 4)
+    source_name = source_name or {
+        "sse": "上交所", "szse": "深交所", "cninfo_announcements": "巨潮资讯网",
+    }.get(source_code, source_code)
     return {
         "status": "ok",
-        "source_code": "cninfo_announcements",
-        "source_class": "cninfo_listing_book_listed_quantity",
+        "source_code": source_code,
+        "source_class": source_class or f"{source_code}_listing_book_listed_quantity",
         "lock_scale": 0,
         "circulation_scale": circulation_scale,
         "ctrl_zhang": 0,
         "total_zhang": total_zhang,
         "ctrl_ratio": 0,
-        "source": "上市公告书（公告明确上市数量兜底，未解析持有人拆分）",
+        "source": f"{source_name}官方上市公告书（公告明确上市数量兜底，未解析持有人拆分）",
         "quality": "listed_quantity_fallback",
         "error": None,
     }
 
-
-def _download_cninfo_pdf_text(target):
-    """下载并提取一条巨潮公告 PDF，统一关闭临时会话。"""
-    session = _get_cninfo_session()
-    try:
-        pdf_url = f"https://static.cninfo.com.cn/{target['adjunctUrl']}"
-        response = session.get(pdf_url, timeout=30)
-        if response.status_code != 200:
-            return None, f"PDF下载失败(HTTP {response.status_code})"
-        doc = fitz.open(stream=response.content, filetype='pdf')
-        text = "".join(page.get_text() for page in doc)
-        doc.close()
-        return text, None
-    finally:
-        session.close()
 
 _FUND_HOLDER_RE = re.compile(r'基金|ETF|指数|证券投资|资产管理计划|资管计划|公募|私募')
 
@@ -463,9 +483,10 @@ def _extract_controller_names(text, holders=None):
             if name:
                 controllers.add(name)
 
-    # 科创板公告常写作“控股股东、实际控制人基本信息如下：张三先生”。
+    # 上市公告书常写作“控股股东、实际控制人基本信息/具体情况如下：张三先生”。
     for m in re.finditer(
-        r'(?:控股股东[、和及]实际控制人|控股股东、实际控制人)[^。；]{0,30}?基本信息如下[：:]\s*'
+        r'(?:控股股东[、和及]实际控制人|控股股东、实际控制人)[^。；]{0,30}?'
+        r'(?:基本信息|具体情况)如下[：:]\s*'
         r'([\u4e00-\u9fa5]{2,4})(?:先生|女士)?',
         section,
     ):
@@ -534,8 +555,8 @@ def _sse_listing_page_url(page_num):
     return SSE_LISTING_INDEX_URL.replace("s_list.shtml", f"s_list_{page_num}.shtml")
 
 
-def _fetch_sse_listing_notice(bond_code=None, stock_name=None, max_pages=5):
-    """从上交所官方上市/退市公告中查找指定可转债，失败不影响巨潮主流程。"""
+def _fetch_sse_listing_notice(bond_code=None, stock_name=None, max_pages=None):
+    """从上交所官方上市/退市公告中查找指定可转债，仅用于补充生命周期诊断。"""
     code = re.sub(r"\D", "", str(bond_code or ""))
     name = str(stock_name or "").strip()
     if not code and not name:
@@ -546,11 +567,17 @@ def _fetch_sse_listing_notice(bond_code=None, stock_name=None, max_pages=5):
 
     try:
         session = _get_session()
-        for page_num in range(1, max_pages + 1):
+        page_num = 1
+        seen_pages = set()
+        while max_pages is None or page_num <= max_pages:
             response = session.get(_sse_listing_page_url(page_num), timeout=20)
             records = parse_sse_listing_index(response.text)
             if not records:
                 break
+            page_signature = tuple(str(item.get("url") or item.get("title") or "") for item in records)
+            if page_signature in seen_pages:
+                break
+            seen_pages.add(page_signature)
             for record in records:
                 if code and code not in record.get("title", "") and "可转" not in record.get("title", ""):
                     continue
@@ -564,6 +591,7 @@ def _fetch_sse_listing_notice(bond_code=None, stock_name=None, max_pages=5):
                     continue
                 _SSE_LISTING_CACHE[cache_key] = detail
                 return detail
+            page_num += 1
         _SSE_LISTING_CACHE[cache_key] = None
     except Exception as exc:
         print(f"查询上交所上市/退市公告失败({bond_code or stock_name}): {exc}")
@@ -577,281 +605,484 @@ def _listing_notice_error(notice):
     listing_date = notice.get("listing_date") or "未提取到上市日"
     return (
         f"已找到上交所正式上市公告（{bond_name}，上市日{listing_date}），"
-        "但该公告只确认上市信息，不包含前十名持有人及限售明细，仍需等待巨潮上市公告书"
+        "但当前未找到可解析的交易所官方上市公告书明细，暂不能形成流通规模"
     )
 
 
-def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=None):
-    """
-    从巨潮资讯网获取可转债**上市公告书**，提取精确限售数据。
+def _exchange_document_url(path, source_code):
+    """把交易所公告接口返回的相对路径转换为官方 PDF 地址。"""
+    raw = str(path or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    if source_code == "sse":
+        return "https://big5.sse.com.cn/site/cht/www.sse.com.cn" + (raw if raw.startswith("/") else f"/{raw}")
+    if source_code == "szse":
+        if raw.startswith("/download/"):
+            return "https://disc.static.szse.cn" + raw
+        return "https://disc.static.szse.cn/download" + (raw if raw.startswith("/") else f"/{raw}")
+    return None
 
-    算法：限售 = 控股股东 + 实控人（含其控制企业）+ 一致行动人配售量
-          流通 = 发行总量 - 限售
 
-    返回 dict: {"status": "ok"/"error",
-                "lock_scale": 限售规模(亿), "circulation_scale": 流通规模(亿),
-                "ctrl_zhang": 控股股东配售(张), "total_zhang": 发行总量(张),
-                "ctrl_ratio": 限售占比, "source": "上市公告书(明细)",
-                "error": "失败原因(仅error时)"}
-    """
-    org_id = _get_org_id(stock_code)
-    if not org_id:
-        notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
-        result = {
-            "status": "error",
-            "source_class": "cninfo_announcements",
-            "error": f"巨潮资讯网无法获取股票{stock_code}的orgId",
-        }
-        if notice:
-            result["listing_notice"] = notice
-            result["error"] = _listing_notice_error(notice)
-        return result
+def _exchange_bond_document_candidates(stock_code, listing_date=None):
+    """从上交所/深交所官方公告接口查找可转债上市公告书和发行结果公告。"""
+    code = re.sub(r"\D", "", str(stock_code or ""))
+    if not code:
+        return [], ""
+    if code.startswith(("6", "9")):
+        source_code = "sse"
+    elif code.startswith(("0", "3")):
+        source_code = "szse"
+    else:
+        return [], ""
 
     try:
-        # 搜索公告：365天范围 + 分页，避免近期公告超过第一页后漏检。
-        url = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
-        today = datetime.now()
-        end_date = today.strftime("%Y-%m-%d")
-        start_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")
-        plate = "sz" if len(stock_code) >= 3 and stock_code[0] in ('0', '3') else "sh"
+        listing_dt = datetime.strptime(str(listing_date)[:10], "%Y-%m-%d") if listing_date else None
+    except ValueError:
+        listing_dt = None
+    today = datetime.now()
+    start_dt = listing_dt - timedelta(days=60) if listing_dt else today - timedelta(days=3650)
+    end_dt = listing_dt + timedelta(days=180) if listing_dt else today
+    start_date, end_date = start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+    rows = []
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    try:
+        if source_code == "sse":
+            endpoint = "https://query.sse.com.cn/security/stock/queryCompanyBulletin.do"
+            page_num = 1
+            seen_pages = set()
+            while True:
+                payload = {
+                    "isPagination": "true", "productId": code,
+                    "keyWord": "可转换公司债券", "securityType": "0101,120100,020100,020200,120200",
+                    "beginDate": start_date, "endDate": end_date,
+                    "pageHelp.pageSize": "100", "pageHelp.pageNo": str(page_num),
+                    "pageHelp.beginPage": str(page_num), "pageHelp.endPage": str(page_num),
+                }
+                response = session.get(endpoint, params=payload, timeout=20,
+                                       headers={"Referer": "https://www.sse.com.cn/", "Accept": "application/json"})
+                result = _parse_jsonp_payload(response.text) or {}
+                page_help = result.get("pageHelp") or {}
+                page_rows = page_help.get("data") or []
+                if page_rows and isinstance(page_rows[0], list):
+                    page_rows = [item for group in page_rows for item in (group if isinstance(group, list) else [group])]
+                page_signature = tuple(str(item.get("URL") or item.get("TITLE") or item.get("SSEDATE") or "") for item in page_rows)
+                if page_signature and page_signature in seen_pages:
+                    break
+                if page_signature:
+                    seen_pages.add(page_signature)
+                rows.extend(page_rows)
+                total = int(page_help.get("total") or 0)
+                if not page_rows or (total and len(rows) >= total) or len(page_rows) < 100:
+                    break
+                page_num += 1
+        else:
+            endpoint = "https://www.szse.cn/api/disc/announcement/annList?random=0.1"
+            page_num = 1
+            seen_pages = set()
+            while True:
+                body = {
+                    "seDate": [start_date, end_date], "stock": [code],
+                    "channelCode": ["listedNotice_disc"], "pageSize": 50, "pageNum": page_num,
+                }
+                response = session.post(endpoint, json=body, timeout=20,
+                                        headers={"Content-Type": "application/json",
+                                                 "Referer": "https://www.szse.cn/disclosure/listed/notice/index.html",
+                                                 "X-Requested-With": "XMLHttpRequest"})
+                result = response.json() if response.content else {}
+                page_rows = result.get("data") or []
+                page_signature = tuple(str(item.get("URL") or item.get("url") or item.get("TITLE") or item.get("title") or "") for item in page_rows)
+                if page_signature and page_signature in seen_pages:
+                    break
+                if page_signature:
+                    seen_pages.add(page_signature)
+                rows.extend(page_rows)
+                total = int(result.get("announceCount") or 0)
+                if not page_rows or (total and len(rows) >= total) or len(page_rows) < 50:
+                    break
+                page_num += 1
+    finally:
+        # 这里只关闭本次公告查询会话，避免影响其它任务的连接池。
+        session.close()
 
-        # 带重试的公告查询
+    candidates = []
+    for row in rows:
+        title = str(row.get("TITLE") or row.get("title") or "").strip()
+        normalized = re.sub(r"\s+", "", title)
+        is_listing_book = "上市公告书" in normalized and ("可转换" in normalized or "可转债" in normalized)
+        is_issue_result = "发行结果" in normalized and ("可转换" in normalized or "可转债" in normalized)
+        if not (is_listing_book or is_issue_result):
+            continue
+        raw_path = row.get("URL") or row.get("attachPath") or row.get("url")
+        url = _exchange_document_url(raw_path, source_code)
+        if not url:
+            continue
+        date = str(row.get("SSEDATE") or row.get("publishTime") or row.get("publishDate") or "")[:10]
+        candidates.append({
+            "source_code": source_code,
+            "source_type": "listing_book" if is_listing_book else "issue_result",
+            "title": title,
+            "date": date,
+            "url": url,
+        })
+    candidates.sort(key=lambda item: item.get("date") or "", reverse=True)
+    return candidates, source_code
+
+
+def _download_exchange_bond_pdf_text(target):
+    """下载交易所官方可转债公告 PDF 并提取正文。"""
+    try:
+        cached_text = _cached_pdf_text(target["url"])
+        if cached_text:
+            return cached_text, None
+        session = _get_session()
+        response = session.get(
+            target["url"], timeout=30,
+            headers={
+                "User-Agent": HEADERS["User-Agent"],
+                "Referer": "https://www.sse.com.cn/" if target["source_code"] == "sse"
+                    else "https://www.szse.cn/disclosure/listed/notice/index.html",
+                "Accept": "application/pdf,*/*",
+            },
+        )
+        content = response.content or b""
+        if int(response.status_code or 0) != 200 or not content.lstrip().startswith(b"%PDF"):
+            return None, f"交易所官方 PDF 下载失败（HTTP {response.status_code} 或返回内容不是 PDF）"
+        _put_pdf_cache(target["url"], content)
+        doc = fitz.open(stream=content, filetype="pdf")
+        text = "".join(page.get_text() for page in doc)
+        doc.close()
+        return text or None, None if text else "交易所官方 PDF 未提取到正文"
+    except ExternalCallGuardError:
+        raise
+    except Exception as error:
+        return None, f"交易所官方 PDF 处理异常：{type(error).__name__}: {error}"
+
+
+def _download_cninfo_pdf_text(target):
+    """下载并提取一条巨潮公告 PDF，作为交易所主源失败时的兜底。"""
+    adjunct = str(target.get("adjunctUrl") or "").strip()
+    pdf_url = adjunct if adjunct.startswith("http") else f"https://static.cninfo.com.cn/{adjunct.lstrip('/')}"
+    cached_text = _cached_pdf_text(pdf_url)
+    if cached_text:
+        return cached_text, None
+    session = _get_cninfo_session()
+    try:
+        response = session.get(pdf_url, timeout=30)
+        if response.status_code != 200:
+            return None, f"PDF下载失败(HTTP {response.status_code})"
+        if not (response.content or b"").lstrip().startswith(b"%PDF"):
+            return None, "PDF下载失败(返回内容不是 PDF)"
+        _put_pdf_cache(pdf_url, response.content)
+        doc = fitz.open(stream=response.content, filetype="pdf")
+        text = "".join(page.get_text() for page in doc)
+        doc.close()
+        return text, None
+    finally:
+        session.close()
+
+
+def _parse_exchange_listing_book(
+    text, issue_scale, source_code, issue_texts=None, source_name=None,
+    source_class=None, issue_source_class=None,
+):
+    """按统一规则解析上市公告书；同一来源的发行结果公告作第一层兜底。"""
+    source_name = source_name or {
+        "sse": "上交所", "szse": "深交所", "cninfo_announcements": "巨潮资讯网",
+    }.get(source_code, source_code)
+    source_class = source_class or f"{source_code}_listing_book"
+    issue_source_class = issue_source_class or f"{source_code}_issue_result"
+    holders = _parse_bond_top10_holders(text)
+    issue_texts = issue_texts or []
+
+    def issue_result_fallback():
+        for issue_text in issue_texts:
+            fallback = _parse_issue_result_liquidity(
+                issue_text, issue_scale, source_code, issue_source_class, source_name,
+            )
+            if fallback:
+                return fallback
+        return None
+
+    if not holders:
+        fallback = issue_result_fallback() or _listed_quantity_fallback(
+            text, source_code, f"{source_code}_listing_book_listed_quantity", source_name,
+        )
+        if fallback:
+            return fallback
+        return {"status": "error", "source_code": source_code, "source_class": source_class,
+                "error": f"{source_name}官方上市公告书未能解析前十名可转换公司债券持有人表格"}
+
+    controller_names, controlled_entities = _extract_controller_names(text, holders)
+    if not controller_names and not controlled_entities:
+        fallback = issue_result_fallback() or _listed_quantity_fallback(
+            text, source_code, f"{source_code}_listing_book_listed_quantity", source_name,
+        )
+        if fallback:
+            return fallback
+        return {"status": "error", "source_code": source_code, "source_class": source_class,
+                "error": f"{source_name}官方上市公告书未能识别控股股东/实际控制人信息；前十名持有人明细："
+                         f"{'、'.join(f'{n}({a:,}张)' for n, a, _ in holders[:5])}"}
+
+    locked_holders = _match_controller_holders(holders, controller_names, controlled_entities)
+    if not locked_holders:
+        fallback = issue_result_fallback() or _listed_quantity_fallback(
+            text, source_code, f"{source_code}_listing_book_listed_quantity", source_name,
+        )
+        if fallback:
+            return fallback
+        holder_summary = "、".join(name for name, _amount, _pct in holders[:5])
+        return {"status": "error", "source_code": source_code, "source_class": source_class,
+                "error": f"控股股东/实控人未在前十名持有人（{holder_summary}…）中找到匹配项"}
+
+    ctrl_zhang = sum(amount for _name, amount, _pct in locked_holders)
+    ctrl_pct = sum(pct for _name, _amount, pct in locked_holders if pct is not None)
+    scale_total = int(issue_scale * 100000000 / 100)
+    corrected_note = ""
+    if ctrl_zhang > scale_total:
+        if ctrl_zhang / 100 <= scale_total:
+            locked_holders = [(name, int(amount / 100), pct) for name, amount, pct in locked_holders]
+            ctrl_zhang = sum(amount for _name, amount, _pct in locked_holders)
+            corrected_note = "（金额列已按100元面值折算修正）"
+        else:
+            return {"status": "error", "source_code": source_code, "source_class": source_class,
+                    "error": f"控股股东/实控人配售量({ctrl_zhang:,}张)超过发行总量({scale_total:,}张)，"
+                             f"{source_name}公告书表格解析异常，流通规模不可信"}
+
+    total_zhang = _derive_total_zhang(ctrl_zhang, ctrl_pct, issue_scale)
+    lock_scale = round(ctrl_zhang * 100 / 100000000, 4)
+    circulation_scale = round((total_zhang - ctrl_zhang) * 100 / 100000000, 4)
+    ctrl_ratio = round(ctrl_zhang / total_zhang * 100, 2) if total_zhang > 0 else 0
+    holder_details = "、".join(f"{name}({amount:,}张)" for name, amount, _pct in locked_holders)
+    return {
+        "status": "ok", "source_code": source_code, "source_class": source_class,
+        "lock_scale": lock_scale, "circulation_scale": circulation_scale,
+        "ctrl_zhang": ctrl_zhang, "total_zhang": total_zhang, "ctrl_ratio": ctrl_ratio,
+        "source": f"{source_name}官方上市公告书（{holder_details}）{corrected_note}",
+        "quality": f"{source_code}_listing_book_controller_holder_match", "error": None,
+    }
+
+
+def _fetch_exchange_placing_result(stock_code, issue_scale, bond_code=None, stock_name=None, listing_date=None):
+    """查询并解析交易所官方可转债上市公告书和发行结果公告。"""
+    source_code = ""
+    source_class = "exchange_listing_book"
+    try:
+        candidates, source_code = _exchange_bond_document_candidates(stock_code, listing_date)
+        source_class = f"{source_code}_listing_book" if source_code else "exchange_listing_book"
+        if not candidates:
+            notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name) if source_code == "sse" else None
+            result = {"status": "error", "source_code": source_code or "exchange",
+                      "source_class": source_class,
+                      "error": "未找到上交所/深交所官方可转债上市公告书或发行结果公告"}
+            if notice:
+                result["listing_notice"] = notice
+                result["error"] = _listing_notice_error(notice)
+            return result
+
+        listing_targets = [item for item in candidates if item["source_type"] == "listing_book"]
+        issue_targets = [item for item in candidates if item["source_type"] == "issue_result"]
+        listing_target = listing_targets[0] if listing_targets else None
+        issue_texts = []
+        # 发行结果公告可能存在更正/补充版本，不能用固定条数截断；
+        # 由去重、解析成功和任务安全止损控制执行边界。
+        for target in issue_targets:
+            text, _error = _download_exchange_bond_pdf_text(target)
+            if text:
+                issue_texts.append(text)
+
+        if listing_target:
+            text, download_error = _download_exchange_bond_pdf_text(listing_target)
+            if text:
+                return _parse_exchange_listing_book(text, issue_scale, source_code, issue_texts)
+            if issue_texts:
+                for issue_text in issue_texts:
+                    fallback = _parse_issue_result_liquidity(issue_text, issue_scale, source_code)
+                    if fallback:
+                        return fallback
+            return {"status": "error", "source_code": source_code, "source_class": f"{source_code}_listing_book",
+                    "error": download_error or "交易所官方上市公告书未能提取正文"}
+
+        for issue_text in issue_texts:
+            result = _parse_issue_result_liquidity(issue_text, issue_scale, source_code)
+            if result:
+                return result
+        return {"status": "error", "source_code": source_code,
+                "source_class": f"{source_code}_issue_result",
+                "error": "交易所官方发行结果公告未解析出有效的控股股东体系配售数量，无法形成流通规模"}
+    except ExternalCallGuardError as error:
+        return {"status": "error", "source_code": source_code or "exchange",
+                "source_class": source_class,
+                "error": f"交易所官方接口受限：{error}"}
+    except Exception as error:
+        return {"status": "error", "source_code": source_code or "exchange",
+                "source_class": source_class,
+                "error": f"交易所官方资料处理异常：{type(error).__name__}: {error}"}
+
+
+def _fetch_cninfo_placing_result(stock_code, issue_scale, bond_code=None, stock_name=None, listing_date=None):
+    """交易所未能形成结果时，从 CNINFO 查询同一份上市公告书作为兜底。"""
+    source_code = "cninfo_announcements"
+    source_class = "cninfo_listing_book"
+    try:
+        org_id = _get_org_id(stock_code)
+        if not org_id:
+            return {
+                "status": "error", "source_code": source_code, "source_class": source_class,
+                "error": f"巨潮资讯网无法获取股票{stock_code}的orgId",
+            }
+
+        url = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
+        try:
+            listing_dt = datetime.strptime(str(listing_date)[:10], "%Y-%m-%d") if listing_date else None
+        except ValueError:
+            listing_dt = None
+        today = datetime.now()
+        start_dt = listing_dt - timedelta(days=60) if listing_dt else today - timedelta(days=3650)
+        end_dt = listing_dt + timedelta(days=180) if listing_dt else today
+        start_date, end_date = start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+        plate = "sz" if str(stock_code).startswith(("0", "3")) else "sh"
+
         announcements = []
         cn_session = _get_cninfo_session()
-        seen = set()
-        # 巨潮接口即使传 pageSize=50，实际也可能只返回30条；不能用“返回数<请求数”
-        # 判断末页，否则公告较多的公司会在第一页后提前停止，漏掉上市公告书。
-        page_size = 30
-        total_announcement = None
-        for page_num in range(1, 13):
-            data = {
-                "pageNum": page_num, "pageSize": page_size,
-                "stock": f"{stock_code},{org_id}",
-                "tabName": "fulltext", "column": "szse" if plate == "sz" else "shse",
-                "plate": plate,
-                "seDate": f"{start_date}~{end_date}",
-            }
-            page_items = None
-            for attempt in range(3):
-                try:
-                    resp = cn_session.post(url, data=data, timeout=20)
-                    result = resp.json()
-                    page_items = result.get("announcements") or []
-                    total_announcement = result.get("totalAnnouncement") or result.get("totalRecordNum")
+        try:
+            seen = set()
+            page_size = 30
+            total_announcement = None
+            page_num = 1
+            seen_pages = set()
+            while True:
+                data = {
+                    "pageNum": page_num, "pageSize": page_size,
+                    "stock": f"{stock_code},{org_id}",
+                    "tabName": "fulltext", "column": "szse" if plate == "sz" else "shse",
+                    "plate": plate, "seDate": f"{start_date}~{end_date}",
+                }
+                page_items = None
+                for attempt in range(3):
+                    try:
+                        resp = cn_session.post(url, data=data, timeout=20)
+                        result = resp.json()
+                        page_items = result.get("announcements") or []
+                        total_announcement = result.get("totalAnnouncement") or result.get("totalRecordNum")
+                        break
+                    except Exception as error:
+                        if attempt == 2:
+                            raise error
+                        time.sleep(2)
+                for ann in page_items or []:
+                    key = (ann.get("announcementId"), ann.get("adjunctUrl"), ann.get("announcementTitle"))
+                    if key not in seen:
+                        seen.add(key)
+                        announcements.append(ann)
+                page_signature = tuple(str(ann.get("announcementId") or ann.get("adjunctUrl") or ann.get("announcementTitle") or "") for ann in page_items or [])
+                if page_signature and page_signature in seen_pages:
                     break
-                except Exception as e:
-                    if attempt == 2:
-                        cn_session.close()
-                        notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
-                        error = {"status": "error", "source_class": "cninfo_announcements", "error": f"公告查询接口异常: {e}"}
-                        if notice:
-                            error["listing_notice"] = notice
-                            error["error"] = _listing_notice_error(notice)
-                        return error
-                    time.sleep(2)
-            for ann in page_items or []:
-                key = (ann.get("announcementId"), ann.get("adjunctUrl"), ann.get("announcementTitle"))
-                if key not in seen:
-                    seen.add(key)
-                    announcements.append(ann)
-            if not page_items:
-                break
-            if total_announcement is not None and len(seen) >= int(total_announcement):
-                break
+                if page_signature:
+                    seen_pages.add(page_signature)
+                if not page_items:
+                    break
+                if total_announcement is not None and len(seen) >= int(total_announcement):
+                    break
+                page_num += 1
+        finally:
+            cn_session.close()
 
-        # 优先找上市公告书，没有则尝试发行结果公告；保留两个候选，
-        # 因为部分上市公告书只有“上市数量”，持有人表格需从发行结果公告兜底。
-        target = None
-        source_type = ""
         listing_target = None
-        issue_result_target = None
         issue_result_targets = []
         for ann in announcements:
-            title = ann.get("announcementTitle", "")
+            title = str(ann.get("announcementTitle") or "")
             normalized_title = re.sub(r"\s+", "", title)
             if "上市公告书" in normalized_title and ("可转换" in normalized_title or "可转债" in normalized_title):
                 listing_target = ann
                 break
         for ann in announcements:
-            title = ann.get("announcementTitle", "")
-            if ("中签" in title and "配售" in title) or "发行结果" in title:
+            title = str(ann.get("announcementTitle") or "")
+            if (("中签" in title and "配售" in title) or "发行结果" in title) and ann.get("adjunctUrl"):
                 issue_result_targets.append(ann)
-        # 同一发行可能有多份结果公告：优先使用同时披露原股东及
-        # 控股股东体系配售量的“中签率/优先配售结果”公告。
         issue_result_targets.sort(
             key=lambda ann: 0 if "中签率" in ann.get("announcementTitle", "")
             and "配售" in ann.get("announcementTitle", "") else 1
         )
-        if issue_result_targets:
-            issue_result_target = issue_result_targets[0]
+
+        issue_texts = []
+        # 巨潮结果公告同样不得按固定条数截断，避免前几份无法解析时漏掉有效版本。
+        for candidate in issue_result_targets:
+            issue_text, _error = _download_cninfo_pdf_text(candidate)
+            if issue_text:
+                issue_texts.append(issue_text)
+
         if listing_target:
-            target = listing_target
-            source_type = "上市公告书"
-        elif issue_result_target:
-            target = issue_result_target
-            source_type = "发行结果公告"
-
-        if not target:
-            cn_session.close()
-            notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
-            result = {
-                "status": "error",
-                "source_class": "cninfo_announcements",
-                "error": "巨潮365天分页检索未找到上市公告书或发行结果公告",
-            }
-            if notice:
-                result["listing_notice"] = notice
-                result["error"] = _listing_notice_error(notice)
-            return result
-
-        cn_session.close()
-        text, download_error = _download_cninfo_pdf_text(target)
-        if download_error:
+            text, download_error = _download_cninfo_pdf_text(listing_target)
+            if text:
+                return _parse_exchange_listing_book(
+                    text, issue_scale, source_code, issue_texts,
+                    source_name="巨潮资讯网", source_class="cninfo_listing_book",
+                    issue_source_class="cninfo_issue_result",
+                )
+            if issue_texts:
+                for issue_text in issue_texts:
+                    result = _parse_issue_result_liquidity(
+                        issue_text, issue_scale, source_code,
+                        "cninfo_issue_result", "巨潮资讯网",
+                    )
+                    if result:
+                        return result
             return {
-                "status": "error",
-                "source_code": "cninfo_announcements",
-                "source_class": "cninfo_listing_book" if source_type == "上市公告书" else "cninfo_issue_result",
-                "error": download_error,
+                "status": "error", "source_code": source_code, "source_class": source_class,
+                "error": download_error or "巨潮资讯网上市公告书未能提取正文",
             }
 
-        def _try_issue_result_controller_fallback():
-            for candidate in issue_result_targets:
-                if candidate is target:
-                    continue
-                issue_text, _ = _download_cninfo_pdf_text(candidate)
-                fallback = _parse_issue_result_liquidity(issue_text, issue_scale) if issue_text else None
-                if fallback:
-                    return fallback
-            return None
-
-        if source_type == "上市公告书":
-            # ---- 从上市公告书解析精确限售数据 ----
-            holders = _parse_bond_top10_holders(text)
-            if not holders:
-                # 上市公告书的版式可能没有可解析的前十名持有人表格。
-                # 先尝试发行结果公告的原股东配售总量，再使用上市公告书明确的上市数量。
-                fallback = _try_issue_result_controller_fallback()
-                if fallback:
-                    return fallback
-                fallback = _listed_quantity_fallback(text)
-                if fallback:
-                    return fallback
-                return {
-                    "status": "error",
-                    "source_code": "cninfo_announcements",
-                    "source_class": "cninfo_listing_book",
-                    "error": "上市公告书中未能解析前十名可转换公司债券持有人表格（PDF表格格式可能不被支持）",
-                }
-
-            controller_names, controlled_entities = _extract_controller_names(text, holders)
-
-            if not controller_names and not controlled_entities:
-                fallback = _try_issue_result_controller_fallback()
-                if fallback:
-                    return fallback
-                fallback = _listed_quantity_fallback(text)
-                if fallback:
-                    return fallback
-                return {
-                    "status": "error",
-                    "source_code": "cninfo_announcements",
-                    "source_class": "cninfo_listing_book",
-                    "error": f"上市公告书中未能识别控股股东/实际控制人信息；前十名持有人明细：{'、'.join(f'{n}({a:,}张)' for n,a,_ in holders[:5])}",
-                }
-
-            # 匹配：控股股东/实控人/控制企业 vs 前十名持有人
-            locked_holders = _match_controller_holders(holders, controller_names, controlled_entities)
-
-            if not locked_holders:
-                fallback = _try_issue_result_controller_fallback()
-                if fallback:
-                    return fallback
-                fallback = _listed_quantity_fallback(text)
-                if fallback:
-                    return fallback
-                holder_summary = '、'.join(f'{n}' for n, a, _ in holders[:5])
-                return {
-                    "status": "error",
-                    "source_code": "cninfo_announcements",
-                    "source_class": "cninfo_listing_book",
-                    "error": f"控股股东/实控人{controller_names}未在前十名持有人（{holder_summary}…）中找到匹配项",
-                }
-
-            # 计算
-            ctrl_zhang = sum(a for _, a, _ in locked_holders)
-            ctrl_pct = sum(p for _, _, p in locked_holders if p is not None)
-            # 发行总张数（兜底）：从 issue_scale 推算（亿→元→张）
-            scale_total = int(issue_scale * 100000000 / 100)
-
-            # 合理性校验：控股股东/实控人配售量为全体持有人的子集，不可能超过发行总量。
-            # 若超过，通常是PDF把"持有金额(元)"误读为"持有数量(张)"（面值100元/张，差100倍），
-            # 按100元面值折算自动修正；若折算后仍超过，则数据不可信，报错交由报告标注失败。
-            corrected_note = ""
-            if ctrl_zhang > scale_total:
-                if ctrl_zhang / 100 <= scale_total:
-                    locked_holders = [(n, int(a / 100), p) for n, a, p in locked_holders]
-                    ctrl_zhang = sum(a for _, a, _ in locked_holders)
-                    corrected_note = "（金额列已按100元面值折算修正）"
-                else:
-                    return {"status": "error",
-                            "source_code": "cninfo_announcements",
-                            "source_class": "cninfo_listing_book",
-                            "error": f"控股股东/实控人配售量({ctrl_zhang:,}张)超过发行总量({scale_total:,}张)，公告书表格解析异常，流通规模不可信"}
-
-            # 发行总张数：优先从公告书表格自身推导（控股股东持有量 ÷ 其占比%），
-            # 比 cb_issue 的 issue_scale 更准；issue_scale 仅作一致性兜底（见 _derive_total_zhang）。
-            total_zhang = _derive_total_zhang(ctrl_zhang, ctrl_pct, issue_scale)
-
-            lock_scale = round(ctrl_zhang * 100 / 100000000, 4)
-            circulation_scale = round((total_zhang - ctrl_zhang) * 100 / 100000000, 4)
-            ctrl_ratio = round(ctrl_zhang / total_zhang * 100, 2) if total_zhang > 0 else 0
-
-            holder_details = '、'.join(f'{n}({a:,}张)' for n, a, _ in locked_holders)
-
-            return {
-                "status": "ok",
-                "source_code": "cninfo_announcements",
-                "source_class": "cninfo_listing_book",
-                "lock_scale": lock_scale,
-                "circulation_scale": circulation_scale,
-                "ctrl_zhang": ctrl_zhang,
-                "total_zhang": total_zhang,
-                "ctrl_ratio": ctrl_ratio,
-                "source": f"上市公告书（{holder_details}）{corrected_note}",
-                "error": None,
-            }
-
-        else:
-            # ---- 发行结果公告：只有原股东配售总量，没有控股股东级别的细分解 ----
-            result = _parse_issue_result_liquidity(text, issue_scale)
+        for issue_text in issue_texts:
+            result = _parse_issue_result_liquidity(
+                issue_text, issue_scale, source_code,
+                "cninfo_issue_result", "巨潮资讯网",
+            )
             if result:
                 return result
-            notice = _fetch_sse_listing_notice(bond_code=bond_code, stock_name=stock_name)
-            result = {
-                "status": "error",
-                "source_code": "cninfo_announcements",
-                "source_class": "cninfo_issue_result",
-                "error": "发行结果公告未解析出有效的原股东配售数量，无法形成流通规模",
-            }
-            if notice:
-                result["listing_notice"] = notice
-                result["error"] = _listing_notice_error(notice)
-            return result
-
-    except Exception as e:
         return {
-            "status": "error",
-            "source_code": "cninfo_announcements",
-            "source_class": "cninfo_listing_book" if source_type == "上市公告书" else "cninfo_issue_result",
-            "error": f"处理异常: {type(e).__name__}: {str(e)}",
+            "status": "error", "source_code": source_code, "source_class": "cninfo_issue_result",
+            "error": "巨潮资讯网未找到或未解析出上市公告书/发行结果公告",
         }
+    except ExternalCallGuardError as error:
+        return {
+            "status": "error", "source_code": source_code, "source_class": source_class,
+            "error": f"CNINFO 兜底接口受限：{error}",
+        }
+    except Exception as error:
+        return {
+            "status": "error", "source_code": source_code, "source_class": source_class,
+            "error": f"CNINFO 兜底资料处理异常：{type(error).__name__}: {error}",
+        }
+
+
+def fetch_placing_result(stock_code, issue_scale, bond_code=None, stock_name=None, listing_date=None):
+    """交易所优先，交易所未形成结果时以 CNINFO 上市公告书作为兜底。"""
+    exchange_result = _fetch_exchange_placing_result(
+        stock_code, issue_scale, bond_code=bond_code,
+        stock_name=stock_name, listing_date=listing_date,
+    )
+    if exchange_result and exchange_result.get("status") == "ok":
+        return exchange_result
+
+    cninfo_result = _fetch_cninfo_placing_result(
+        stock_code, issue_scale, bond_code=bond_code,
+        stock_name=stock_name, listing_date=listing_date,
+    )
+    if exchange_result:
+        cninfo_result.setdefault("exchange_error", exchange_result.get("error"))
+        cninfo_result.setdefault("exchange_source_code", exchange_result.get("source_code"))
+        if exchange_result.get("listing_notice"):
+            cninfo_result.setdefault("listing_notice", exchange_result.get("listing_notice"))
+    return cninfo_result
 
 def calc_circulation_scale(info, bond_code=None):
     """
-    从上市公告书获取可转债精确流通规模。
+    从交易所官方上市公告书获取可转债精确流通规模。
 
-    精确方法：从巨潮资讯网下载上市公告书PDF，
-    解析"前十名可转换公司债券持有人"表格，
+    精确方法：从上交所/深交所官方 PDF 解析“前十名可转换公司债券持有人”表格，
     提取控股股东+实控人+一致行动人的配售量为限售依据。
 
     若获取失败，不返回估算值，而是记录明确失败原因。
@@ -871,7 +1102,10 @@ def calc_circulation_scale(info, bond_code=None):
     except Exception as error:
         cached = None
         print(f"读取流通规模缓存失败({resolved_bond_code}): {error}")
-    if cached:
+    # 旧版本可能留下巨潮来源缓存；普通补全必须重新走交易所，成功后覆盖旧事实。
+    # 数据库只读模式仍可展示旧事实，但不会发起任何外部请求。
+    cached_source = str((cached or {}).get("source_code") or "").lower()
+    if cached and (cached_source in {"sse", "szse"} or os.environ.get("IPO_REPORT_DATABASE_ONLY") == "1"):
         info["lock_scale"] = float(cached["lock_scale"])
         info["circulation_scale"] = float(cached["circulation_scale"])
         source_detail = cached.get("source_detail") or {}
@@ -889,6 +1123,7 @@ def calc_circulation_scale(info, bond_code=None):
         scale,
         bond_code=resolved_bond_code,
         stock_name=info.get("stock_name"),
+        listing_date=info.get("list_date"),
     )
     notice = placing.get("listing_notice") if placing else None
     if notice:
@@ -906,7 +1141,7 @@ def calc_circulation_scale(info, bond_code=None):
         info["lock_scale"] = placing["lock_scale"]
         info["circulation_scale"] = placing["circulation_scale"]
         info["_note"] = placing["source"]
-        info["_circulation_source"] = placing.get("source_class", "cninfo_listing_book")
+        info["_circulation_source"] = placing.get("source_class", "exchange_listing_book")
         try:
             save_listing_liquidity(resolved_bond_code, placing, info.get("list_date"))
         except Exception as error:
@@ -1117,6 +1352,15 @@ def _extract_main_business(text):
             ind = sector.group(1)
 
     if not ind:
+        classification = re.search(
+            r'(?:公司|发行人)(?:从事的)?主营业务(?:所处|所属)行业(?:为|属于)[：:、“"]?'
+            r'(?:[A-Z]\d{2,4}\s*)?([^。；;，,」”"]{2,40})',
+            text,
+        )
+        if classification:
+            ind = classification.group(1).strip()
+
+    if not ind:
         standard = re.search(
             r'(?:公司|发行人)(?:所处|所属)行业(?:为|属于)[：:、“"]?'
             r'([^。；;，,」”"]{2,40})',
@@ -1180,6 +1424,9 @@ def _download_exchange_pdf_text(session, pdf_url, source):
     if not pdf_url:
         return None
     try:
+        cached_text = _cached_pdf_text(pdf_url)
+        if cached_text:
+            return cached_text
         response = session.get(
             pdf_url,
             timeout=30,
@@ -1194,6 +1441,7 @@ def _download_exchange_pdf_text(session, pdf_url, source):
         content = response.content or b''
         if int(response.status_code or 0) != 200 or not content.lstrip().startswith(b'%PDF'):
             return None
+        _put_pdf_cache(pdf_url, content)
         doc = fitz.open(stream=content, filetype='pdf')
         text = ''.join(page.get_text() for page in doc)
         doc.close()
@@ -1217,8 +1465,21 @@ def _exchange_market_for_code(code):
     return ''
 
 
-def _exchange_prospectus_candidates(stock_code, security_name=''):
-    """返回交易所官方招股说明书候选：(source, url, title)。"""
+def _ipo_document_role(title):
+    """识别 IPO 官方文件角色；提示性公告不能作为正文来源。"""
+    normalized = re.sub(r'\s+', '', str(title or ''))
+    if not normalized or '提示性' in normalized:
+        return ''
+    if '招股说明书' in normalized:
+        return 'prospectus'
+    if ('发行公告' in normalized and '发行安排' not in normalized
+            and '发行结果' not in normalized and '投资风险' not in normalized):
+        return 'issuance_announcement'
+    return ''
+
+
+def _exchange_ipo_document_candidates(stock_code, security_name=''):
+    """返回交易所官方 IPO 文件候选：(source, url, title, role, date)。"""
     code = str(stock_code or '').split('.')[0]
     if not code:
         return []
@@ -1226,6 +1487,9 @@ def _exchange_prospectus_candidates(stock_code, security_name=''):
     market = _exchange_market_for_code(digits)
     if not market:
         return []
+    cache_key = (market, digits, str(security_name or '').strip())
+    if cache_key in _EXCHANGE_IPO_DOCUMENT_CACHE:
+        return list(_EXCHANGE_IPO_DOCUMENT_CACHE[cache_key])
     today = datetime.now()
     start = (today - timedelta(days=365 * 5)).strftime('%Y-%m-%d')
     end = today.strftime('%Y-%m-%d')
@@ -1254,14 +1518,14 @@ def _exchange_prospectus_candidates(stock_code, security_name=''):
                 if str(row.get('SECURITY_CODE') or '') != digits:
                     continue
                 title = str(row.get('TITLE') or '')
-                normalized = re.sub(r'\s+', '', title)
-                if '招股说明书' not in normalized or '提示性' in normalized:
+                role = _ipo_document_role(title)
+                if not role:
                     continue
                 path = str(row.get('URL') or '')
                 if not path:
                     continue
-                url = path if path.startswith('http') else 'https://www.sse.com.cn' + path
-                candidates.append(('sse', url, title))
+                url = _exchange_document_url(path, 'sse')
+                candidates.append(('sse', url, title, role, str(row.get('SSEDATE') or '')[:10]))
         elif market == 'szse':
             keyword = str(security_name or '').strip() or code
             response = session.get(
@@ -1279,8 +1543,8 @@ def _exchange_prospectus_candidates(stock_code, security_name=''):
             for item in payload.get('data') or []:
                 for sub in item.get('subInfoDisclosureList') or []:
                     title = str(sub.get('dfnm') or sub.get('configFileName') or '')
-                    normalized = re.sub(r'\s+', '', title)
-                    if '招股说明书' not in normalized or '提示性' in normalized:
+                    role = _ipo_document_role(title)
+                    if not role:
                         continue
                     path = str(sub.get('dfpth') or sub.get('url') or '')
                     if not path:
@@ -1291,7 +1555,8 @@ def _exchange_prospectus_candidates(stock_code, security_name=''):
                         url = 'https://reportdocs.static.szse.cn' + path
                     else:
                         url = 'https://www.szse.cn' + path
-                    candidates.append(('szse', url, title))
+                    announced_at = str(sub.get('ddtime') or sub.get('publishTime') or '')[:10]
+                    candidates.append(('szse', url, title, role, announced_at))
         else:
             fields = ('companyCd', 'companyName', 'disclosureTitle', 'disclosurePostTitle',
                       'destFilePath', 'publishDate', 'xxfcbj', 'fileExt')
@@ -1312,25 +1577,123 @@ def _exchange_prospectus_candidates(stock_code, security_name=''):
             groups = (payload[0] if isinstance(payload, list) and payload else payload) or {}
             for row in (groups.get('listInfo') or {}).get('content') or []:
                 title = str(row.get('disclosureTitle') or '') + str(row.get('disclosurePostTitle') or '')
-                normalized = re.sub(r'\s+', '', title)
-                if '招股说明书' not in normalized:
+                role = _ipo_document_role(title)
+                if not role:
                     continue
                 path = str(row.get('destFilePath') or '')
                 if not path:
                     continue
                 url = path if path.startswith('http') else 'https://www.bse.cn' + path
-                candidates.append(('bse', url, title))
+                candidates.append(('bse', url, title, role, str(row.get('publishDate') or '')[:10]))
     finally:
         session.close()
     # 同一版本可能在接口中重复出现；按日期/返回顺序去重，最新版本优先。
     seen = set()
     result = []
-    for source, url, title in candidates:
+    for source, url, title, role, announced_at in candidates:
         if url in seen:
             continue
         seen.add(url)
-        result.append((source, url, title))
+        result.append((source, url, title, role, announced_at))
+    _EXCHANGE_IPO_DOCUMENT_CACHE[cache_key] = list(result)
     return result
+
+
+def _exchange_prospectus_candidates(stock_code, security_name=''):
+    """返回交易所官方招股说明书候选：(source, url, title)。"""
+    return [
+        (source, url, title)
+        for source, url, title, role, _announced_at
+        in _exchange_ipo_document_candidates(stock_code, security_name)
+        if role == 'prospectus'
+    ]
+
+
+def _exchange_issuance_announcement_candidates(stock_code, security_name=''):
+    """返回交易所官方发行公告候选：(source, url, title, date)。"""
+    return [
+        (source, url, title, announced_at)
+        for source, url, title, role, announced_at
+        in _exchange_ipo_document_candidates(stock_code, security_name)
+        if role == 'issuance_announcement'
+    ]
+
+
+def _parse_ipo_issuance_detail(text):
+    """从 IPO 发行公告提取公告直接披露的行业和行业市盈率。"""
+    compact = re.sub(r'\s+', '', str(text or ''))
+    if not compact:
+        return {}
+
+    industry = ''
+    for pattern in (
+        r'所属行业名称及行业代码[：:]?([^（）()，。；;]{2,40})[（(][A-Z]\d{2,4}[）)]',
+        r'(?:发行人|公司)所属行业为[：:“"]?([^（）()，。；;]{2,40})[（(][A-Z]\d{2,4}[）)]',
+        r'(?:发行人|公司)从事的主营业务所属行业为[：:“"]?(?:[A-Z]\d{2,4})?([^”"，。；;]{2,40})',
+    ):
+        match = re.search(pattern, compact)
+        if match:
+            industry = match.group(1).strip('：:，,。；;“”"')
+            break
+
+    industry_pe = None
+    for pattern in (
+        r'所属行业T-?\d+日静态行业市盈率[：:]?(\d+(?:\.\d+)?)',
+        r'(?:该行业|所处行业)最近一个月平均静态市盈率为[：:]?(\d+(?:\.\d+)?)倍',
+    ):
+        match = re.search(pattern, compact)
+        if match:
+            value = float(match.group(1))
+            if 0 < value < 10000:
+                industry_pe = value
+                break
+
+    result = {}
+    if industry:
+        result['industry'] = industry[:80]
+    if industry_pe is not None:
+        result['industry_pe'] = industry_pe
+    return result
+
+
+def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
+    """交易所发行公告主源：只返回公告明确披露的行业与行业市盈率。"""
+    code = str(stock_code or '').split('.')[0]
+    if code in _IPO_ISSUANCE_DETAIL_CACHE:
+        return dict(_IPO_ISSUANCE_DETAIL_CACHE[code])
+    try:
+        candidates = _exchange_issuance_announcement_candidates(
+            code, security_name or _stock_name_from_database(code)
+        )
+        if not candidates:
+            _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
+            return {}
+        session = requests.Session()
+        session.headers.update({'User-Agent': HEADERS['User-Agent']})
+        try:
+            for source, url, title, announced_at in candidates:
+                text = _download_exchange_pdf_text(session, url, source)
+                detail = _parse_ipo_issuance_detail(text)
+                if not detail:
+                    continue
+                detail.update({
+                    'ipo_announcement_source': source,
+                    'ipo_announcement_url': url,
+                    'ipo_announcement_title': title,
+                    'ipo_announcement_date': announced_at or None,
+                    'ipo_announcement_content_hash': hashlib.sha256(
+                        str(text or '').encode('utf-8')
+                    ).hexdigest(),
+                    'ipo_announcement_parser_version': 'ipo-issuance-facts-v1',
+                })
+                _IPO_ISSUANCE_DETAIL_CACHE[code] = dict(detail)
+                return detail
+        finally:
+            session.close()
+    except Exception:
+        pass
+    _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
+    return {}
 
 
 def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
@@ -1356,12 +1719,45 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
                 if main_business:
                     _EXCHANGE_PROSPECTUS_CACHE[cache_key] = (source, main_business)
                     _MAIN_BUSINESS_SOURCE[code] = source
+                    _MAIN_BUSINESS_DOCUMENT[code] = {
+                        'source': source,
+                        'url': url,
+                        'title': _title,
+                        'content_hash': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                        'parser_version': 'ipo-prospectus-main-business-v2',
+                    }
                     return main_business
         finally:
             session.close()
     except Exception:
         return ''
     return ''
+
+
+def _download_cninfo_prospectus_pdf_text(session, announcement):
+    """读取或下载一份巨潮招股书 PDF，供 IPO 资料备源复用统一缓存。"""
+    adjunct = str(announcement.get("adjunctUrl") or "").strip()
+    if not adjunct:
+        return None
+    url = adjunct if adjunct.startswith("http") else f"https://static.cninfo.com.cn/{adjunct.lstrip('/')}"
+    cached_text = _cached_pdf_text(url)
+    if cached_text:
+        return cached_text
+    try:
+        response = session.get(url, timeout=30)
+        content = response.content or b""
+        if int(response.status_code or 0) != 200 or not content.lstrip().startswith(b"%PDF"):
+            return None
+        _put_pdf_cache(url, content)
+        doc = fitz.open(stream=content, filetype="pdf")
+        try:
+            return "".join(page.get_text() for page in doc) or None
+        finally:
+            doc.close()
+    except ExternalCallGuardError:
+        raise
+    except Exception:
+        return None
 
 
 def _fetch_cninfo_prospectus_main_business(stock_code):
@@ -1411,7 +1807,7 @@ def _fetch_cninfo_prospectus_main_business(stock_code):
                     # 跳过“提示性公告”等简短通知，只取完整招股说明书
                     if skip_notice and ("提示性" in t or "提示" in t):
                         continue
-                    text = blr._download_pdf_text(s, a)
+                    text = _download_cninfo_prospectus_pdf_text(s, a)
                     if text:
                         mb = _extract_main_business(text)
                         if mb:
@@ -1549,17 +1945,31 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
     code = str(secu_code or '').split('.')[0]
     if not code:
         return None
-    industry = _fetch_stock_industry(code) or str(existing_industry or '').strip()
-    detail = {'industry': industry or ''}
     security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
+    announcement_detail = _fetch_exchange_ipo_issuance_detail(code, security_name=security_name)
+    industry = (
+        str(announcement_detail.get('industry') or '').strip()
+        or _fetch_stock_industry(code)
+        or str(existing_industry or '').strip()
+    )
+    detail = dict(announcement_detail)
+    detail['industry'] = industry or ''
+    if announcement_detail.get('industry'):
+        detail['industry_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
     detail['main_business'] = _fetch_stock_main_business(code, security_name=security_name) or ''
     detail['main_business_source'] = _MAIN_BUSINESS_SOURCE.get(code, '')
+    if _MAIN_BUSINESS_DOCUMENT.get(code):
+        detail['main_business_document'] = dict(_MAIN_BUSINESS_DOCUMENT[code])
     _normalize_stock_detail(detail)
-    if detail.get('industry'):
+    if detail.get('industry') and detail.get('industry_pe') is None:
         industry_pe_map = _get_industry_pe_map()
         detail['industry_pe'] = industry_pe_map.get(detail['industry'])
         if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:
             detail['industry_pe'] = industry_pe_map.get('电器仪表')
+        if detail.get('industry_pe') is not None:
+            detail['industry_pe_source'] = 'tushare_derived_industry_median'
+    elif detail.get('industry_pe') is not None:
+        detail['industry_pe_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
     try:
         from ipo_lib_sector import analyze_business_exposure
         detail['business_exposure'] = analyze_business_exposure(

@@ -76,14 +76,14 @@ function pgConfig(dbName) {
       [['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']]
     );
     const policyMap = new Map(dualAccountPolicies.rows.map(row => [`${row.api_name}:${row.credential_profile}`, row]));
-    check('迁移128写入双账号及VIP权限矩阵', () => {
+    check('迁移128写入双账号及VIP权限矩阵（来源级不设内部限额）', () => {
       assert.deepStrictEqual(
         [policyMap.get('*:primary').internal_per_minute_limit, policyMap.get('*:primary').internal_daily_limit],
-        [450, null]
+        [null, null]
       );
       assert.deepStrictEqual(
         [policyMap.get('*:backup').internal_per_minute_limit, policyMap.get('*:backup').internal_daily_limit],
-        [180, 90000]
+        [null, null]
       );
       for (const apiName of ['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']) {
         assert.strictEqual(policyMap.get(`${apiName}:primary`).points_required, 5000, `${apiName}主账号积分门槛错误`);
@@ -100,9 +100,9 @@ function pgConfig(dbName) {
         WHERE ds.source_code='cninfo'
         ORDER BY p.api_name,p.credential_profile`
     );
-    check('迁移145取消巨潮来源级日保护但保留分钟保护', () => {
+    check('迁移156清除巨潮来源级内部保护线', () => {
       assert.ok(cninfoPolicy.rows.length > 0, '缺少巨潮策略');
-      assert.ok(cninfoPolicy.rows.every(row => row.internal_per_minute_limit === 20 && row.internal_daily_limit === null));
+      assert.ok(cninfoPolicy.rows.every(row => row.internal_per_minute_limit === null && row.internal_daily_limit === null));
     });
 
     const knowledgeConstraints = await db.pool.query(

@@ -79,7 +79,7 @@ with contextlib.redirect_stderr(marker_output):
 marker = json.loads(marker_output.getvalue().split(" ", 1)[1])
 check("Python备用切换标记保留接口名", marker["api_name"] == "rt_min" and marker["to_role"] == "backup")
 
-# Node/Python 两端的来源保护线必须一致；环境覆盖仍由实际部署配置决定。
+# Node/Python 两端均不得猜测来源级保护线；具体接口限制由数据库策略统一提供。
 _budget_env_backup = {key: os.environ.get(key) for key in (
     "TUSHARE_PER_MINUTE_BUDGET", "TUSHARE_DAILY_BUDGET",
     "TUSHARE_BACKUP_PER_MINUTE_BUDGET", "TUSHARE_BACKUP_DAILY_BUDGET",
@@ -89,15 +89,15 @@ _budget_env_backup = {key: os.environ.get(key) for key in (
 try:
     for _key in _budget_env_backup:
         os.environ.pop(_key, None)
-    check("主Tushare按6000积分官方频率保护且不设日总量",
-          _limit("tushare", "minute") == 450 and _limit("tushare", "day") is None)
-    check("备用Tushare按2000积分官方频率和单凭据日止损线保护",
-          _limit("tushare_backup", "minute") == 180 and _limit("tushare_backup", "day") == 90000)
-    check("巨潮取消来源级日预算，仅保留分钟保护",
-          _limit("cninfo", "minute") == 20 and _limit("cninfo", "day") is None)
-    check("腾讯不设置本系统分钟/日预算",
+    check("主Tushare不设置来源级预算",
+          _limit("tushare", "minute") is None and _limit("tushare", "day") is None)
+    check("备用Tushare不设置来源级预算",
+          _limit("tushare_backup", "minute") is None and _limit("tushare_backup", "day") is None)
+    check("巨潮不设置来源级预算",
+          _limit("cninfo", "minute") is None and _limit("cninfo", "day") is None)
+    check("腾讯不设置来源级预算",
           _limit("tencent", "minute") is None and _limit("tencent", "day") is None)
-    check("交易所主源包含北交所且不设分钟/日预算",
+    check("交易所主源不设置来源级预算",
           _limit("bse", "minute") is None and _limit("bse", "day") is None)
 finally:
     for _key, _value in _budget_env_backup.items():
@@ -110,6 +110,55 @@ check("北交所官方链接来源分类正确", _url_source("https://www.bse.cn
 check("北交所92开头代码不误分到上交所",
       fetch_mod._exchange_market_for_code("920202") == "bse"
       and fetch_mod._exchange_market_for_code("688801") == "sse")
+
+issuance_detail = fetch_mod._parse_ipo_issuance_detail("""
+所属行业名称及行业代码  通用设备制造业 （C34）
+所属行业 T-3 日静态行业市盈率  40.94
+""")
+check("IPO发行公告提取行业和行业市盈率",
+      issuance_detail.get("industry") == "通用设备制造业"
+      and issuance_detail.get("industry_pe") == 40.94)
+check("上交所IPO文件使用可下载的官方镜像",
+      fetch_mod._exchange_document_url(
+          "/disclosure/listedinfo/announcement/c/new/2026-09-14/example.pdf", "sse"
+      ).startswith("https://big5.sse.com.cn/site/cht/www.sse.com.cn/"))
+
+prospectus_detail = fetch_mod._extract_main_business("""
+公司主营业务为大型重载离心压缩机、工艺流程用往复压缩机、核泵等高端装备的研发、制造和服务。
+根据国家统计局分类，公司从事的主营业务所属行业为“C34 通用设备制造业”之相关行业。
+""")
+check("IPO招股书提取主营业务所属行业",
+      "所属行业：通用设备制造业" in str(prospectus_detail))
+
+_issuance_fetch_backup = fetch_mod._fetch_exchange_ipo_issuance_detail
+_stock_industry_backup = fetch_mod._fetch_stock_industry
+_stock_business_backup = fetch_mod._fetch_stock_main_business
+_industry_pe_map_backup = fetch_mod._get_industry_pe_map
+try:
+    fetch_mod._STOCK_NAME_CACHE['601091'] = '沈鼓集团'
+    fetch_mod._fetch_exchange_ipo_issuance_detail = lambda *_args, **_kwargs: {
+        'industry': '通用设备制造业',
+        'industry_pe': 40.94,
+        'ipo_announcement_source': 'sse',
+    }
+    fetch_mod._fetch_stock_industry = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError('发行公告已有行业时不应调用 Tushare 行业备源')
+    )
+    fetch_mod._get_industry_pe_map = lambda: (_ for _ in ()).throw(
+        AssertionError('发行公告已有行业市盈率时不应计算行业中位数')
+    )
+    fetch_mod._fetch_stock_main_business = lambda *_args, **_kwargs: '离心压缩机、往复压缩机和核泵等高端装备业务'
+    announcement_first = fetch_mod.fetch_stock_historical_detail('601091')
+    check("IPO行业和行业市盈率优先使用发行公告",
+          announcement_first.get('industry') == '通用设备制造业'
+          and announcement_first.get('industry_pe') == 40.94
+          and announcement_first.get('industry_source') == 'sse_issuance_announcement'
+          and announcement_first.get('industry_pe_source') == 'sse_issuance_announcement')
+finally:
+    fetch_mod._fetch_exchange_ipo_issuance_detail = _issuance_fetch_backup
+    fetch_mod._fetch_stock_industry = _stock_industry_backup
+    fetch_mod._fetch_stock_main_business = _stock_business_backup
+    fetch_mod._get_industry_pe_map = _industry_pe_map_backup
 
 # ---------- 测试1b：A股 IPO 招股书交易所优先、巨潮兜底 ----------
 _exchange_fetch_backup = fetch_mod._fetch_exchange_prospectus_main_business

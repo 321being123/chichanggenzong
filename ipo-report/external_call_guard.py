@@ -30,23 +30,6 @@ except (TypeError, ValueError):
 _probe_owner = f"{os.uname().nodename if hasattr(os, 'uname') else os.environ.get('COMPUTERNAME', 'python')}:{os.getpid()}:{uuid.uuid4()}"
 _probe_lease_seconds = 300
 
-# 这是系统内部保护线，不等同于上游官方配额；必须与 Node Guard 保持一致。
-# 主账号 6000 积分：官方 500 次/分钟，常规接口无每日总量；备用账号 2000 积分：
-# 官方 200 次/分钟、单接口每日 100000 次，内部分别保留 20 次/分钟和 90000 次凭据止损线。
-_DEFAULT_EXTERNAL_BUDGETS = {
-    "tushare": {"minute": 450, "day": None},
-    "tushare_backup": {"minute": 180, "day": 90000},
-    # 巨潮只保留分钟级内部保护；日调用量只计数，不预设来源总量。
-    "cninfo": {"minute": 20, "day": None},
-    # 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
-    "tencent": {"minute": None, "day": None},
-    # 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。
-    "sse": {"minute": None, "day": None},
-    "szse": {"minute": None, "day": None},
-    "bse": {"minute": None, "day": None},
-    "default": {"minute": 60, "day": 2000},
-}
-
 
 def enabled():
     configured = os.environ.get("EXTERNAL_CALL_GUARD")
@@ -149,16 +132,9 @@ def _env_key(source):
 
 
 def _limit(source, window):
-    name = f"{_env_key(source)}_{'PER_MINUTE_BUDGET' if window == 'minute' else 'DAILY_BUDGET'}"
-    fallback = _DEFAULT_EXTERNAL_BUDGETS.get(source, _DEFAULT_EXTERNAL_BUDGETS["default"])[window]
-    configured = os.environ.get(name)
-    if configured is None and fallback is None:
-        return None
-    try:
-        value = int(configured if configured is not None else fallback)
-    except (TypeError, ValueError):
-        value = fallback
-    return value if value is not None and value > 0 else fallback
+    """兼容旧诊断调用；来源级预算不再提供默认值，统一返回未知。"""
+    return None
+
 
 
 def _date_text():

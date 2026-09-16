@@ -1499,8 +1499,11 @@ function runBondIssueResultBackfill(executable) {
     const args = path.basename(executable).toLowerCase() === 'py'
       ? ['-3', BOND_ISSUE_RESULT_SCRIPT]
       : [BOND_ISSUE_RESULT_SCRIPT];
-    const limit = String(process.env.IPO_BOND_ISSUE_RESULT_LIMIT || '20');
-    const child = spawn(executable, [...args, '--limit', limit], {
+    const configuredLimit = Number(process.env.IPO_BOND_ISSUE_RESULT_LIMIT);
+    const childArgs = [...args];
+    // 默认处理全部待补对象；仅在人工调试时允许显式传入上限。
+    if (Number.isInteger(configuredLimit) && configuredLimit > 0) childArgs.push('--limit', String(configuredLimit));
+    const child = spawn(executable, childArgs, {
       cwd: path.resolve(__dirname, '..', '..'),
       env: childProcessEnv({ PYTHONUTF8: '1' }),
       windowsHide: true,
@@ -1517,7 +1520,8 @@ function runBondIssueResultBackfill(executable) {
       const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '';
       const match = line.match(/update=(\d+)\s+skip=(\d+)\s+fail=(\d+)/);
       if (!match) return reject(new Error(`新债发行结果补全结果格式错误: ${line.slice(0, 300)}`));
-      resolve({ updated: Number(match[1]), skipped: Number(match[2]), failed: Number(match[3]), limit: Number(limit) });
+      resolve({ updated: Number(match[1]), skipped: Number(match[2]), failed: Number(match[3]),
+        limit: Number.isInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : null });
     });
   });
 }
@@ -1556,8 +1560,11 @@ function runBondLiquidityBackfill(executable) {
       ? ['-3', BOND_LIQUIDITY_SCRIPT]
       : [BOND_LIQUIDITY_SCRIPT];
     const days = String(process.env.IPO_BOND_LIQUIDITY_DAYS || '60');
-    const limit = String(process.env.IPO_BOND_LIQUIDITY_LIMIT || '5');
-    const child = spawn(executable, [...args, '--days', days, '--limit', limit], {
+    const configuredLimit = Number(process.env.IPO_BOND_LIQUIDITY_LIMIT);
+    const childArgs = [...args, '--days', days];
+    // 默认处理全部近 60 天缺口；显式上限只作为人工调试/安全止损参数。
+    if (Number.isInteger(configuredLimit) && configuredLimit > 0) childArgs.push('--limit', String(configuredLimit));
+    const child = spawn(executable, childArgs, {
       cwd: path.resolve(__dirname, '..', '..'),
       env: childProcessEnv({ PYTHONUTF8: '1' }),
       windowsHide: true,
@@ -1572,7 +1579,10 @@ function runBondLiquidityBackfill(executable) {
       mergeExternalCallStatsFromStderr(error);
       if (code !== 0) return reject(new Error(error || output || `新债流通规模补全失败（${code}）`));
       const line = output.trim().split(/\r?\n/).filter(Boolean).pop() || '{}';
-      try { resolve(JSON.parse(line)); }
+      try {
+        const result = JSON.parse(line);
+        resolve({ ...result, limit: Number.isInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : null });
+      }
       catch (_) { reject(new Error(`新债流通规模补全结果格式错误: ${line.slice(0, 300)}`)); }
     });
   });
@@ -2213,7 +2223,7 @@ async function loadRevisionEventCache(tsCode) {
           SELECT 1 FROM analytics.convertible_bond_announcement_history h
            WHERE h.instrument_id=e.instrument_id AND h.fact_type='no_revision' AND h.source_url=e.source_url
         )
-      ORDER BY e.announced_at DESC,e.event_id DESC LIMIT 10`, [tsCode]
+       ORDER BY e.announced_at DESC,e.event_id DESC`, [tsCode]
   );
   return rows;
 }
@@ -2240,7 +2250,6 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     '(i.list_date IS NULL OR i.list_date <= $1::date)'];
   params.push(end);
   if (normalizedCodes.length) { params.push(normalizedCodes); clauses.push(`i.canonical_code=ANY($${params.length}::text[])`); }
-  const defaultLimit = globalSync ? 2000 : 50;
   if (cachedOnly && !normalizedCodes.length) {
     clauses.push(`(EXISTS (
       SELECT 1
@@ -2276,9 +2285,9 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
          )
     )`);
   }
-  const effectiveDefaultLimit = cachedOnly && !normalizedCodes.length ? 10 : defaultLimit;
-  const limitValue = Math.max(1, Math.min(limit == null ? effectiveDefaultLimit : (Number(limit) || 50), 2000));
-  params.push(limitValue);
+  const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
+  const limitClause = configuredLimit ? ` LIMIT $${params.length + 1}` : '';
+  if (configuredLimit) params.push(configuredLimit);
   const { rows: profiles } = await pool.query(
     `SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.value_date,p.list_date,p.maturity_date,
             s.canonical_code AS stock_code
@@ -2287,7 +2296,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
        LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
        LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
       WHERE ${clauses.join(' AND ')}
-      ORDER BY i.canonical_code LIMIT $${params.length}`,
+      ORDER BY i.canonical_code${limitClause}`,
     params
   );
   const results = [];
@@ -2471,10 +2480,10 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
       toDate: end,
       cachedOnly: true,
       retryFailed,
-      limit: limitValue,
+      limit: configuredLimit,
     });
   }
-  if (globalSync) {
+  if (globalSync && !configuredLimit) {
     await pool.query(
       `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_attempt_at,last_error,retry_count,updated_at)
        VALUES('convertible_bond_announcement_history','official_announcements',$1,now(),''::text,0,now())
@@ -2482,8 +2491,10 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
          last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`, [end]
     );
   }
+  const limited = configuredLimit !== null;
   return {
-    ok: true, mode, dataAsOf: end, fromDate: scanStart || null, toDate: end, count: results.length, changed_count: changedCount,
+    ok: !limited, status: limited ? 'partial' : 'succeeded', limit: configuredLimit, continuationRequired: limited,
+    mode, dataAsOf: end, fromDate: scanStart || null, toDate: end, count: results.length, changed_count: changedCount,
     cursorDate: cursorDate || null, lifecycle, listingLiquidity, redemption,
     datasetDiagnostics: {
       bond_issuance_events: {

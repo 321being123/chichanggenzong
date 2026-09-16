@@ -1,5 +1,5 @@
 // 运行：node server/test/ipo-instrument-identity.test.js
-// 第 17 节首批身份链回归：迁移、A 股兼容读写和港交所内部限制口径。
+// 第 17 节首批身份链回归：迁移、A 股兼容读写和接口级限制口径。
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -17,7 +17,8 @@ assert.match(migration, /ADD COLUMN IF NOT EXISTS instrument_id BIGINT/);
 assert.match(migration, /ADD COLUMN IF NOT EXISTS market_code TEXT NOT NULL DEFAULT 'CN'/);
 assert.match(migration, /fk_ipo_history_instrument_id/);
 assert.match(migration, /uq_ipo_history_market_instrument/);
-assert.match(migration, /60次\/分钟、2000次\/日为本项目内部保护线/);
+assert.match(migration, /156_endpoint_only_internal_limits/);
+assert.match(migration, /ck_source_endpoint_wildcard_no_internal_limits/);
 assert.match(sync, /ensure_instrument\(/);
 assert.match(sync, /"instrument_id"\] = master\["instrument_id"\]/);
 assert.match(sync, /market_code='CN'/);

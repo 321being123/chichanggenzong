@@ -119,14 +119,15 @@ async function stockAnalysisSelect(tsCode) {
     var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(tsCode)));
     if (response.status === 404) {
       if (!username) return stockAnalysisSetMessage('该股票暂未建档，登录后可刷新并建立分析数据。');
-      return stockAnalysisRefresh();
+      // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
+      return stockAnalysisSetMessage('该股票暂无分析快照，请点击“刷新数据”建立。');
     }
     var payload = await response.json();
     if (!response.ok) throw new Error(payload.error || '分析读取失败');
     if (payload.needs_refresh) {
       var reasons = payload.freshness && payload.freshness.reasons ? payload.freshness.reasons.map(function(r){return r.message;}).join('；') : '数据待更新';
-      if (!username) { showToast('数据待更新：' + reasons); }
-      else { return stockAnalysisRefresh(); }
+      // 页面打开只读本地快照；外部采集必须由用户明确点击“刷新数据”触发。
+      showToast('数据待更新：' + reasons);
     }
     stockAnalysisRender(payload);
   } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }

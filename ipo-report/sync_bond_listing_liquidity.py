@@ -13,7 +13,7 @@ from bond_data_layer import get_listing_liquidity, save_listing_liquidity
 from ipo_lib_fetch import fetch_placing_result
 
 
-def listing_candidates(days=60, codes=None, limit=5):
+def listing_candidates(days=60, codes=None, limit=None):
     conn = db_pg.connect()
     try:
         params = [max(int(days), 1)]
@@ -27,8 +27,12 @@ def listing_candidates(days=60, codes=None, limit=5):
             params.append([str(code).split('.')[0] for code in codes if str(code).strip()])
             clauses.append("split_part(i.canonical_code,'.',1)=ANY(%s)")
         else:
-            clauses.append("l.instrument_id IS NULL")
-        params.append(max(int(limit), 1))
+            # 旧版本写入的巨潮事实也需要迁移为交易所事实；新版本只跳过已用交易所来源核实的记录。
+            clauses.append("(l.instrument_id IS NULL OR l.source_code IS NULL OR l.source_code LIKE 'cninfo%')")
+        limit_value = max(int(limit or 0), 0)
+        limit_clause = " LIMIT %s" if limit_value else ""
+        if limit_value:
+            params.append(limit_value)
         rows = conn.execute(
             f"""SELECT DISTINCT ON (i.instrument_id)
                           split_part(i.canonical_code,'.',1),i.name,e.event_date::date,
@@ -42,7 +46,7 @@ def listing_candidates(days=60, codes=None, limit=5):
                      LEFT JOIN analytics.convertible_bond_listing_liquidity l ON l.instrument_id=i.instrument_id
                     WHERE {' AND '.join(clauses)}
                     ORDER BY i.instrument_id,e.event_date DESC
-                    LIMIT %s""",
+                    {limit_clause}""",
             params,
         ).fetchall()
         return rows
@@ -50,12 +54,13 @@ def listing_candidates(days=60, codes=None, limit=5):
         conn.close()
 
 
-def sync_liquidity(days=60, codes=None, limit=5):
+def sync_liquidity(days=60, codes=None, limit=None):
     rows = listing_candidates(days=days, codes=codes, limit=limit)
     forced_codes = {str(code).split('.')[0] for code in (codes or []) if str(code).strip()}
     result = {"ok": True, "candidates": len(rows), "saved": 0, "skipped": 0, "failed": 0, "failures": []}
     for code, bond_name, listing_date, stock_code, stock_name, issue_scale in rows:
-        if code not in forced_codes and get_listing_liquidity(code):
+        cached = get_listing_liquidity(code)
+        if code not in forced_codes and cached and cached.get("source_code") in ("sse", "szse"):
             result["skipped"] += 1
             continue
         if not stock_code or not issue_scale:
@@ -68,6 +73,7 @@ def sync_liquidity(days=60, codes=None, limit=5):
                 float(issue_scale),
                 bond_code=code,
                 stock_name=stock_name,
+                listing_date=listing_date,
             )
             if save_listing_liquidity(code, payload, listing_date):
                 result["saved"] += 1
@@ -82,13 +88,20 @@ def sync_liquidity(days=60, codes=None, limit=5):
         result["status"] = "partial" if result["saved"] or result["skipped"] else "stale"
     else:
         result["status"] = "succeeded"
+    # 显式上限只供人工调试；存在未处理候选时不得报告完整成功。
+    if int(limit or 0) > 0:
+        remaining = listing_candidates(days=days, codes=codes, limit=None)
+        result["remaining_candidates"] = len(remaining)
+        if remaining:
+            result["ok"] = False
+            result["status"] = "partial"
     return result
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=60)
-    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--limit", type=int, default=0, help="人工调试上限；默认处理全部待补缺口")
     parser.add_argument("--codes", default="", help="逗号分隔的债券代码")
     args = parser.parse_args()
     codes = [item.strip() for item in args.codes.split(',') if item.strip()]

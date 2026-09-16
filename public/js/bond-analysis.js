@@ -267,15 +267,15 @@ async function bondAnalysisLoad(refresh, ctx) {
     if(response.status===404&&!refresh){
       securityAnalysisState.loading=false;
       if(!username) return stockAnalysisSetMessage('该转债暂未建档，登录后可刷新并建立分析数据。', false, ctx);
-      return bondAnalysisLoad(true, ctx);
+      // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
+      return stockAnalysisSetMessage('该转债暂无分析快照，请点击“刷新数据”建立。', false, ctx);
     }
     var payload=await response.json(), analysis=payload.analysis||payload;
     if(!response.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
-    // 缓存版本过旧，自动触发刷新
+    // 缓存版本过旧时只提示，页面读取不自动触发外部采集。
     if (!refresh && analysis.needs_refresh) {
-      securityAnalysisState.loading = false;
-      if (!username) { bondAnalysisRender(analysis, ctx); return; }
-      return bondAnalysisLoad(true, ctx);
+      // 页面打开只读本地快照；外部采集必须由用户明确点击“刷新数据”触发。
+      showToast('数据待更新，请点击“刷新数据”进行更新。');
     }
     bondAnalysisRender(analysis, ctx);
     if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.analysis', module: 'bond', entry: ctx || 'analysis', detail_key: securityAnalysisState.code || 'bond', properties: { detail_type: 'bond' } });

@@ -176,7 +176,7 @@ function parseHKEXDate(dateStr) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const HKEX_PAGE_SIZE = 100;
-const HKEX_MAX_PAGES = 50;
+const HKEX_MAX_PAGES = null; // 兼容旧调用方，已废弃；默认不设公告页数上限
 
 // 构造官方披露易 titleSearchServlet.do 检索 URL（严格对齐官方请求契约）
 //   lang=zh；searchType=1；sortDir=0；t2Gcode 为空；category=0；t1code=10000（公告及通函顶层类目）；
@@ -210,10 +210,14 @@ async function searchAnnouncements({ fromDate, toDate, categories, t1code = '100
   for (const cat of cats) {
     // 首批请求从 HKEX_PAGE_SIZE(100) 开始：港交所 rowRange=0 返回 0 条，rowRange=100 才返回数据
     let rowRange = HKEX_PAGE_SIZE;
-    for (let page = 0; page < HKEX_MAX_PAGES; page++) {
+    const seenPages = new Set();
+    while (true) {
       const url = buildSearchUrl(cat, fromDate, toDate, rowRange, { t1code, t2Gcode });
       const text = await fetch(url);
       const { items, hasNextRow } = parseSearchResponse(text);
+      const pageSignature = items.map(item => item.sourceKey).join('|');
+      if (pageSignature && seenPages.has(pageSignature)) break;
+      if (pageSignature) seenPages.add(pageSignature);
       results.push(...items);
       if (!hasNextRow) break;
       rowRange += HKEX_PAGE_SIZE;

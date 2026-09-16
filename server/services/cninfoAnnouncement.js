@@ -222,10 +222,10 @@ function parseCNINFODate(time) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const CNINFO_PAGE_SIZE = 30;
-// 单个关键词只取前两页（最多 60 条）。公告同步每天都从游标增量执行，
-// 不能因一个高频关键词在一次任务内翻完历史结果而挤占巨潮额度。
-const CNINFO_MAX_PAGES = 2;
-// 巨潮对同一来源的实际限流通常比系统预算更严格；留出余量，避免短时间突发。
+// 不设置默认页数上限；以接口 hasMore/totalAnnouncement 和重复页检测结束。
+// 任务批次止损由统一 Runner/Guard 负责，不能在公告适配器内静默截断。
+const CNINFO_MAX_PAGES = null; // 兼容旧调用方，已废弃
+// 巨潮对同一来源的实际限流由接口策略/Guard 负责；请求间隔只作为节奏控制。
 const CNINFO_REQUEST_DELAY_MS = 3200;
 
 // 搜索巨潮公告（自动翻页：按 totalAnnouncement / hasMore 遍历全部结果）
@@ -241,7 +241,8 @@ async function searchAnnouncements({
   for (const ex of exs) {
     for (const kw of kws) {
       let pageNum = 1;
-      for (let page = 0; page < CNINFO_MAX_PAGES; page++) {
+      const seenPages = new Set();
+      while (true) {
         const body = new URLSearchParams({
           pageNum: String(pageNum),
           pageSize: String(CNINFO_PAGE_SIZE),
@@ -261,6 +262,9 @@ async function searchAnnouncements({
 
         const text = await _httpRequest(BASE_URL + SEARCH_PATH, { method: 'POST', body });
         const { items, hasMore } = parseSearchResponse(text);
+        const pageSignature = items.map(item => item.sourceKey).join('|');
+        if (pageSignature && seenPages.has(pageSignature)) break;
+        if (pageSignature) seenPages.add(pageSignature);
         results.push(...items);
         if (!hasMore || items.length === 0) break;
         pageNum++;

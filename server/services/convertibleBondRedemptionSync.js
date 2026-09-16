@@ -122,7 +122,7 @@ async function loadDocumentCache(urls) {
   return new Map(rows.map(row => [row.url, row]));
 }
 
-async function parseOfficialDocuments(items, maxUrls = 50, { cachedOnly = false } = {}) {
+async function parseOfficialDocuments(items, maxUrls = null, { cachedOnly = false } = {}) {
   const uniqueUrls = [...new Set((items || []).map(item => item.fileLink).filter(Boolean))];
   const limit = Number.isFinite(Number(maxUrls)) && Number(maxUrls) > 0 ? Number(maxUrls) : uniqueUrls.length;
   const urls = uniqueUrls.slice(0, limit);
@@ -343,12 +343,13 @@ async function reconcileCallQuality(client) {
 }
 
 async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchanges = ['sse', 'szse'], stock = '', keywords = null,
-  officialEvents = null, cachedOnly = false, retryFailed = false, limit = 2000 } = {}) {
+  officialEvents = null, cachedOnly = false, retryFailed = false, limit = null } = {}) {
   const end = isoDate(toDate) || new Date().toISOString().slice(0, 10);
   const start = isoDate(fromDate) || new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10);
   const sourceRows = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1', [SOURCE_CODE]);
   if (!sourceRows.rows[0]) throw new Error('强赎公告数据源尚未完成数据库迁移');
   const sourceId = sourceRows.rows[0].source_id;
+  const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
   const { rows: instruments } = await pool.query(
     `SELECT p.instrument_id,split_part(s.canonical_code,'.',1) AS stock_code,
             split_part(i.canonical_code,'.',1) AS security_code,i.name AS bond_name,p.bond_short_name,p.maturity_date
@@ -374,6 +375,11 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   const stockCodes = String(stock || '').split(',').map(value => value.trim()).filter(value => /^\d{6}$/.test(value));
   let announcements;
   if (cachedOnly) {
+    const limitClause = configuredLimit ? ' LIMIT $4' : '';
+    const retryPlaceholder = configuredLimit ? '$5' : '$4';
+    const queryParams = configuredLimit
+      ? [start, end, PARSER_VERSION, configuredLimit, retryFailed]
+      : [start, end, PARSER_VERSION, retryFailed];
     const pending = await pool.query(
       `SELECT e.instrument_id AS "instrumentId",e.source_key AS "sourceKey",e.source_url AS "fileLink",e.title,
               e.announced_at AS "announcedAt",split_part(s.canonical_code,'.',1) AS "stockCode",
@@ -393,8 +399,8 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
                     ELSE false END
             OR (e.source_url ~ '/20[0-9]{2}-[0-9]{2}-[0-9]{2}/'
                 AND e.announced_at IS DISTINCT FROM substring(e.source_url from '/(20[0-9]{2}-[0-9]{2}-[0-9]{2})/')::date))
-          AND ($5::boolean OR e.parse_status <> 'failed')
-        ORDER BY e.announced_at,e.event_id LIMIT $4`, [start, end, PARSER_VERSION, Math.max(1, Number(limit) || 2000), retryFailed]
+          AND (${retryPlaceholder}::boolean OR e.parse_status <> 'failed')
+        ORDER BY e.announced_at,e.event_id${limitClause}`, queryParams
     );
     announcements = pending.rows.map(row => ({ ...row, sourceKey: row.sourceKey, fileLink: row.fileLink,
       announcedAt: announcementDate({ announcedAt: row.announcedAt, fileLink: row.fileLink, rawPayload: row.rawPayload }),
@@ -574,7 +580,10 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
     );
     stats.unmatched = Math.max(stats.unmatched, openQuality.rows[0].unmatched);
     if (openQuality.rows[0].document_failures) stats.extract_failed = Math.max(stats.extract_failed, openQuality.rows[0].document_failures);
+    const limited = configuredLimit !== null;
+    stats.limited = limited;
     const qualityStatus = stats.download_failed || stats.extract_failed ? 'failed'
+      : limited ? 'stale'
       : stats.parse_partial || stats.unmatched || stats.pending_old_parser ? 'stale' : 'passed';
     const projectionComplete = qualityStatus === 'passed';
     if (projectionComplete) {
@@ -593,9 +602,10 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
         [PROJECTION_SCOPE, DATASET_CODE, JSON.stringify({ qualityStatus, stats }).slice(0, 500)]
       );
     }
-    await client.query(`UPDATE ops.ingestion_runs SET status='succeeded',row_count=$2,finished_at=now() WHERE run_id=$1`, [runId, stats.matched]);
+    const runStatus = projectionComplete ? 'succeeded' : qualityStatus === 'stale' ? 'degraded' : 'failed';
+    await client.query(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,finished_at=now() WHERE run_id=$1`, [runId, runStatus, stats.matched]);
     await client.query('COMMIT');
-    return { ok: true, fromDate: start, toDate: end, runId, ...stats,
+    return { ok: projectionComplete, status: runStatus, fromDate: start, toDate: end, runId, ...stats,
       diagnostics: { quality_status: qualityStatus, parser_version: PARSER_VERSION, projection_scope: PROJECTION_SCOPE,
         projection_advanced: projectionComplete, projection_last_success_date: projectionComplete ? end : null } };
   } catch (error) {

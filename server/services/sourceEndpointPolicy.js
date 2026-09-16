@@ -30,6 +30,11 @@ function normalizePolicyInput(input = {}) {
   const backoffMs = numberOrNull(retryPolicy.backoff_ms, { min: 0 });
   const jitterMs = numberOrNull(retryPolicy.jitter_ms, { min: 0 });
   if (maxAttempts == null || maxAttempts > 10) throw new Error('重试次数必须在1到10之间');
+  const internalPerMinuteLimit = numberOrNull(input.internal_per_minute_limit ?? input.internalPerMinuteLimit, { min: 1 });
+  const internalDailyLimit = numberOrNull(input.internal_daily_limit ?? input.internalDailyLimit, { min: 1 });
+  if (apiName === '*' && (internalPerMinuteLimit !== null || internalDailyLimit !== null)) {
+    throw new Error('来源级策略不得设置内部限额，请配置具体接口');
+  }
   return {
     apiName,
     credentialProfile,
@@ -39,8 +44,8 @@ function normalizePolicyInput(input = {}) {
     permissionStatus,
     officialPerMinuteLimit: numberOrNull(input.official_per_minute_limit ?? input.officialPerMinuteLimit, { min: 1 }),
     officialDailyLimit: numberOrNull(input.official_daily_limit ?? input.officialDailyLimit, { min: 1 }),
-    internalPerMinuteLimit: numberOrNull(input.internal_per_minute_limit ?? input.internalPerMinuteLimit, { min: 1 }),
-    internalDailyLimit: numberOrNull(input.internal_daily_limit ?? input.internalDailyLimit, { min: 1 }),
+    internalPerMinuteLimit,
+    internalDailyLimit,
     maxConcurrency: numberOrNull(input.max_concurrency ?? input.maxConcurrency ?? 1, { min: 1 }),
     minIntervalMs: numberOrNull(input.min_interval_ms ?? input.minIntervalMs ?? 0, { min: 0 }),
     rowLimit: numberOrNull(input.row_limit ?? input.rowLimit, { min: 1 }),

@@ -237,7 +237,7 @@ let TS_RT = { map: null, ts: 0, inflight: null, failedAt: 0 };
 function ensureTsRealtime(codes) {
   return withSingleFlight(TS_RT, 60000, async () => {
     const aShare = [...new Set((codes || []).map(toTsCode))]
-      .filter(c => c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ')).slice(0, 1000);
+      .filter(c => c.endsWith('.SH') || c.endsWith('.SZ') || c.endsWith('.BJ'));
     if (!aShare.length) return TS_RT.map || new Map();
     const d = await tushareQuery('rt_min', { ts_code: aShare.join(','), freq: '1MIN' }, 'ts_code,close');
     const map = new Map();

@@ -255,7 +255,11 @@ def save_listing_liquidity(code, payload, listing_date=None):
     if not instrument:
         cur.close(); conn.close()
         return False
-    cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='cninfo_announcements' LIMIT 1")
+    source_code = str(payload.get("source_code") or "").strip().lower()
+    if source_code not in {"sse", "szse", "cninfo_announcements"}:
+        cur.close(); conn.close()
+        return False
+    cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code=%s LIMIT 1", (source_code,))
     source = cur.fetchone()
     source_detail = {
         "source": payload.get("source"),
@@ -279,7 +283,7 @@ def save_listing_liquidity(code, payload, listing_date=None):
         (instrument[0], _date(listing_date or instrument[1]), payload.get("circulation_scale"),
          payload.get("lock_scale"), payload.get("ctrl_zhang"), payload.get("total_zhang"),
          payload.get("ctrl_ratio"), source[0] if source else None,
-         payload.get("source_code") or "cninfo_announcements",
+         source_code,
          json.dumps(source_detail, ensure_ascii=False, default=str)),
     )
     conn.commit(); cur.close(); conn.close()

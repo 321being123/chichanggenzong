@@ -4981,16 +4981,15 @@ async function migration127SourceEndpointPolicies() {
     CREATE INDEX IF NOT EXISTS idx_external_call_budgets_api_window
       ON ops.external_call_budgets(source,api_name,window_type,window_key);
 
-    -- 先写来源级兜底策略，再写 Tushare 主/备和已知接口策略；不覆盖管理员已改配置。
+    -- 先写来源级通配策略（不设置内部限额），再写 Tushare 主/备和已知接口策略；不覆盖管理员已改配置。
     WITH defaults(source_code,minute_limit,day_limit) AS (
       VALUES
-        ('tencent',NULL::integer,NULL::integer),
-        ('cninfo',20,500),
-        ('tushare',450,5000),
-        ('exchange-rate',60,2000),('chinabond',60,2000),('csindex',60,2000),
-        ('hsi-official',60,2000),('stock-analysis',60,2000),('bond-safety',60,2000),
-        ('hkex',60,2000),('sse',60,2000),('szse',60,2000),('eastmoney',60,2000),
-        ('sina',60,2000),('xueqiu',20,500),('guba',20,500)
+        ('tencent',NULL::integer,NULL::integer),('cninfo',NULL::integer,NULL::integer),
+        ('tushare',NULL::integer,NULL::integer),
+        ('exchange-rate',NULL::integer,NULL::integer),('chinabond',NULL::integer,NULL::integer),('csindex',NULL::integer,NULL::integer),
+        ('hsi-official',NULL::integer,NULL::integer),('stock-analysis',NULL::integer,NULL::integer),('bond-safety',NULL::integer,NULL::integer),
+        ('hkex',NULL::integer,NULL::integer),('sse',NULL::integer,NULL::integer),('szse',NULL::integer,NULL::integer),('eastmoney',NULL::integer,NULL::integer),
+        ('sina',NULL::integer,NULL::integer),('xueqiu',NULL::integer,NULL::integer),('guba',NULL::integer,NULL::integer)
     )
     INSERT INTO ops.source_endpoint_policies
       (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
@@ -5003,7 +5002,7 @@ async function migration127SourceEndpointPolicies() {
     INSERT INTO ops.source_endpoint_policies
       (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
        max_concurrency,min_interval_ms,timeout_ms,official_doc_url)
-    SELECT ds.source_id,'*',p.profile,450,5000,3,0,30000,'https://tushare.pro/document/1?doc_id=108'
+    SELECT ds.source_id,'*',p.profile,NULL,NULL,3,0,30000,'https://tushare.pro/document/1?doc_id=108'
       FROM ops.data_sources ds
       CROSS JOIN (VALUES ('primary'),('backup')) p(profile)
      WHERE ds.source_code='tushare'
@@ -5198,16 +5197,15 @@ async function migration127SourceEndpointPolicies() {
 
 // ========== 128：Tushare 双账号能力分级与官方文档规则 =============
 // 主账号 6000 积分、备用账号 2000 积分分别按官方频率/权限表配置；
-// 备用账号的 90000 次日线是单凭据跨接口止损线（官方单接口每日 100000 次），
-// 不是根据历史峰值拍定。巨潮既有 20 次/分钟、500 次/日保护线保持不变。
+// 来源级通配策略不设置内部总量，具体接口如有核验限制才写入对应 api_name。
 async function migration128TushareDualAccountPolicy() {
   await pool.query(`
     UPDATE ops.source_endpoint_policies p
        SET points_required=6000, permission_mode='points',
            official_per_minute_limit=500, official_daily_limit=NULL,
-           internal_per_minute_limit=450, internal_daily_limit=NULL,
+           internal_per_minute_limit=NULL, internal_daily_limit=NULL,
            max_concurrency=3,
-           notes='主 Tushare 账号：6000积分；官方500次/分钟，常规接口无每日总量；内部保留50次/分钟余量'
+           notes='主 Tushare 账号：6000积分；官方规则仅按具体接口策略执行，来源级不设内部总量'
       FROM ops.data_sources ds
      WHERE p.source_id=ds.source_id AND ds.source_code='tushare'
        AND p.api_name='*' AND p.credential_profile='primary';
@@ -5215,9 +5213,9 @@ async function migration128TushareDualAccountPolicy() {
     UPDATE ops.source_endpoint_policies p
        SET points_required=2000, permission_mode='points',
            official_per_minute_limit=200, official_daily_limit=100000,
-           internal_per_minute_limit=180, internal_daily_limit=90000,
+           internal_per_minute_limit=NULL, internal_daily_limit=NULL,
            max_concurrency=2,
-           notes='备用 Tushare 账号：2000积分；官方200次/分钟、单接口每日100000次；内部保留20次/分钟并设90000次凭据止损线'
+           notes='备用 Tushare 账号：2000积分；官方规则仅按具体接口策略执行，来源级不设内部总量'
       FROM ops.data_sources ds
      WHERE p.source_id=ds.source_id AND ds.source_code='tushare'
        AND p.api_name='*' AND p.credential_profile='backup';
@@ -5289,14 +5287,14 @@ async function migration128TushareDualAccountPolicy() {
       notes=EXCLUDED.notes,updated_at=now();
 
     UPDATE ops.source_endpoint_policies p
-       SET internal_per_minute_limit=20,internal_daily_limit=500,
-           notes='巨潮历史发生熔断；保留来源级20次/分钟、500次/日保护线，不以峰值替换'
+       SET internal_per_minute_limit=NULL,internal_daily_limit=NULL,
+           notes='巨潮来源级不设置内部限额；真实接口异常按具体接口熔断'
       FROM ops.data_sources ds
      WHERE p.source_id=ds.source_id AND ds.source_code='cninfo'
        AND p.api_name='*' AND p.credential_profile='anonymous';
 
     UPDATE ops.source_endpoint_policies p
-       SET internal_per_minute_limit=1,internal_daily_limit=24,min_interval_ms=3600000,
+       SET internal_per_minute_limit=NULL,internal_daily_limit=NULL,min_interval_ms=3600000,
            official_doc_url='https://www.exchangerate-api.com/docs/free',
            notes='官方免费接口每日更新；文档建议每24小时请求一次，异常429按20分钟退避'
       FROM ops.data_sources ds
@@ -5436,7 +5434,7 @@ async function migration134CompanyFinancialIncrementalSync() {
 async function migration135ExchangeRateBudgetRecovery() {
   await pool.query(`
     UPDATE ops.source_endpoint_policies p
-       SET internal_per_minute_limit=1, internal_daily_limit=24, min_interval_ms=86400000,
+       SET internal_per_minute_limit=NULL, internal_daily_limit=NULL, min_interval_ms=86400000,
            official_doc_url='https://www.exchangerate-api.com/docs/free',
            notes='官方免费接口每日更新；文档建议每24小时请求一次；内部预算等待不写来源熔断，真实429按分钟退避'
       FROM ops.data_sources ds
@@ -5649,13 +5647,13 @@ async function migration140IpoInstrumentIdentity() {
     UPDATE ops.source_endpoint_policies p
        SET official_per_minute_limit=NULL,
            official_daily_limit=NULL,
-           internal_per_minute_limit=60,
-           internal_daily_limit=2000,
+           internal_per_minute_limit=NULL,
+           internal_daily_limit=NULL,
            max_concurrency=1,
            min_interval_ms=500,
            row_limit=100,
            timeout_ms=15000,
-           notes='港交所官方入口与分类事实；60次/分钟、2000次/日为本项目内部保护线，不是港交所官方配额；适配器响应上限5MB、分页100条、最多50页'
+           notes='港交所官方入口与分类事实；来源级不设置内部限额；适配器响应上限5MB，分页不完整时保留游标重试'
       FROM ops.data_sources ds
      WHERE p.source_id=ds.source_id
        AND ds.source_code='hkex'
@@ -5854,13 +5852,14 @@ async function migration144HkIpoP0Audit() {
 }
 
 // ========== 145：巨潮取消来源级日保护线 =============
-// 巨潮当前只保留分钟级内部保护；日调用量继续精确计数，但不由本站预设总量拦截，
-// 只有真实上游 429/额度错误才进入 external_circuits 并记录 opened_at/recover_at。
+// 先清理历史来源级日保护；迁移156再统一清除来源级分钟/日内部限额。
+// 日调用量继续精确计数，但不由本站预设总量拦截，只有真实上游 429/额度错误
+// 才进入 external_circuits 并记录 opened_at/recover_at。
 async function migration145CninfoUnlimitedDailyBudget() {
   await pool.query(`
     UPDATE ops.source_endpoint_policies p
        SET internal_daily_limit=NULL,
-           notes='巨潮仅保留20次/分钟内部保护；日调用量只计数不拦截，真实上游429/额度错误才记录熔断'
+           notes='巨潮来源级日保护已取消；具体接口限制由接口策略单独登记，真实上游429/额度错误才记录熔断'
       FROM ops.data_sources ds
      WHERE p.source_id=ds.source_id
        AND ds.source_code='cninfo';
@@ -6005,7 +6004,7 @@ async function migration148HkIpoMarketSignals() {
     INSERT INTO ops.source_endpoint_policies
       (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
        max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,official_doc_url,notes)
-    SELECT ds.source_id,'*','anonymous',10,8,1,1000,200,15000,'preserve_last_success',
+    SELECT ds.source_id,'*','anonymous',NULL,NULL,1,1000,200,15000,'preserve_last_success',
            'https://1877.jesselivermore.com/','公开页面/接口为补充信号，不是港交所官方事实源；空结果保留旧快照'
       FROM ops.data_sources ds WHERE ds.source_code='livermore'
     ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
@@ -6018,7 +6017,7 @@ async function migration148HkIpoMarketSignals() {
     INSERT INTO ops.source_endpoint_policies
       (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
        max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,official_doc_url,notes)
-    SELECT ds.source_id,'*','anonymous',5,3,1,1000,200,15000,'preserve_last_success',
+    SELECT ds.source_id,'*','anonymous',NULL,NULL,1,1000,200,15000,'preserve_last_success',
            'https://www.futunn.com/quote/hk/ipo','公开网页抓取为补充信号；富途正式接口需另行配置授权'
       FROM ops.data_sources ds WHERE ds.source_code='futu-public'
     ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
@@ -6433,6 +6432,189 @@ async function migration155AgnesVisionModel() {
   }
 }
 
+// ========== 156：接口级预算唯一化 =============
+// 来源/凭据级内部数字保护线没有可靠上游依据，不能继续作为隐性总量限制。
+// 只保留具体 api_name 的已核验策略；来源级通配策略仅承载并发、间隔、权限等配置。
+async function migration156EndpointOnlyInternalLimits() {
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION ops.reserve_external_call(
+      p_source TEXT,
+      p_api_name TEXT,
+      p_credential_profile TEXT,
+      p_credential_fingerprint TEXT
+    )
+    RETURNS TABLE(
+      allowed BOOLEAN,
+      reason TEXT,
+      wait_until TIMESTAMPTZ,
+      policy_id BIGINT,
+      day_count INTEGER,
+      minute_count INTEGER,
+      effective_daily_limit INTEGER,
+      effective_minute_limit INTEGER,
+      timeout_ms INTEGER,
+      retry_policy JSONB,
+      empty_policy TEXT,
+      concurrency_slot INTEGER
+    )
+    LANGUAGE plpgsql
+    AS $fn$
+    DECLARE
+      v_source TEXT := NULLIF(BTRIM(p_source),'');
+      v_api TEXT := LEFT(COALESCE(NULLIF(BTRIM(p_api_name),''),'*'),64);
+      v_profile TEXT := CASE WHEN p_credential_profile IN ('primary','backup','anonymous') THEN p_credential_profile ELSE 'anonymous' END;
+      v_fingerprint TEXT := COALESCE(NULLIF(BTRIM(p_credential_fingerprint),''),'none');
+      v_source_id SMALLINT;
+      v_exact ops.source_endpoint_policies%ROWTYPE;
+      v_base ops.source_endpoint_policies%ROWTYPE;
+      v_policy_id BIGINT;
+      v_enabled BOOLEAN;
+      v_permission TEXT;
+      v_minute_limit INTEGER;
+      v_day_limit INTEGER;
+      v_official_minute INTEGER;
+      v_official_day INTEGER;
+      v_concurrency INTEGER;
+      v_interval INTEGER;
+      v_timeout INTEGER;
+      v_retry JSONB;
+      v_empty TEXT;
+      v_day_key TEXT;
+      v_minute_key TEXT;
+      v_next TIMESTAMPTZ;
+      v_day_count INTEGER := 0;
+      v_minute_count INTEGER := 0;
+      v_slot INTEGER := NULL;
+      v_lock_key TEXT;
+      v_i INTEGER;
+    BEGIN
+      IF v_source IS NULL THEN
+        RETURN QUERY SELECT false,'policy_missing',NULL::timestamptz,NULL::bigint,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      SELECT source_id INTO v_source_id FROM ops.data_sources WHERE source_code=v_source AND enabled=true;
+      IF v_source_id IS NULL THEN
+        RETURN QUERY SELECT false,'policy_missing',NULL::timestamptz,NULL::bigint,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      SELECT * INTO v_base FROM ops.source_endpoint_policies
+       WHERE source_id=v_source_id AND api_name='*' AND credential_profile=v_profile;
+      SELECT * INTO v_exact FROM ops.source_endpoint_policies
+       WHERE source_id=v_source_id AND api_name=v_api AND credential_profile=v_profile;
+      IF v_base.policy_id IS NULL AND v_exact.policy_id IS NULL THEN
+        RETURN QUERY SELECT false,'policy_missing',NULL::timestamptz,NULL::bigint,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      v_policy_id := COALESCE(v_exact.policy_id,v_base.policy_id);
+      v_enabled := COALESCE(v_exact.enabled,v_base.enabled,false);
+      v_permission := COALESCE(NULLIF(v_exact.permission_status,''),NULLIF(v_base.permission_status,''),'unknown');
+      IF NOT v_enabled THEN
+        RETURN QUERY SELECT false,'policy_disabled',NULL::timestamptz,v_policy_id,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      IF v_permission IN ('permission_denied','not_configured') THEN
+        RETURN QUERY SELECT false,'permission_denied',NULL::timestamptz,v_policy_id,0,0,NULL::integer,NULL::integer,30000,'{}'::jsonb,'preserve_last_success',NULL::integer;
+        RETURN;
+      END IF;
+      -- 只有精确 api_name 的内部限制可以生效；通配策略不得形成来源/凭据总量限制。
+      v_minute_limit := v_exact.internal_per_minute_limit;
+      v_day_limit := v_exact.internal_daily_limit;
+      v_official_minute := COALESCE(v_exact.official_per_minute_limit,v_base.official_per_minute_limit);
+      v_official_day := COALESCE(v_exact.official_daily_limit,v_base.official_daily_limit);
+      IF v_official_minute IS NOT NULL AND (v_minute_limit IS NULL OR v_minute_limit > v_official_minute) THEN v_minute_limit := v_official_minute; END IF;
+      IF v_official_day IS NOT NULL AND (v_day_limit IS NULL OR v_day_limit > v_official_day) THEN v_day_limit := v_official_day; END IF;
+      v_concurrency := COALESCE(v_exact.max_concurrency,v_base.max_concurrency,1);
+      v_interval := COALESCE(v_exact.min_interval_ms,v_base.min_interval_ms,0);
+      v_timeout := COALESCE(v_exact.timeout_ms,v_base.timeout_ms,30000);
+      v_retry := COALESCE(v_exact.retry_policy,v_base.retry_policy,'{}'::jsonb);
+      v_empty := COALESCE(v_exact.empty_policy,v_base.empty_policy,'preserve_last_success');
+
+      PERFORM pg_advisory_xact_lock(hashtextextended('external_budget:'||v_source||':'||v_fingerprint,0));
+      v_day_key := to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD');
+      v_minute_key := floor(extract(epoch FROM clock_timestamp())/60)::bigint::text;
+      INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint)
+        VALUES(v_source_id,v_api,v_fingerprint)
+        ON CONFLICT(source_id,api_name,credential_fingerprint) DO NOTHING;
+      SELECT next_allowed_at INTO v_next FROM ops.source_endpoint_runtime
+       WHERE source_id=v_source_id AND api_name=v_api AND credential_fingerprint=v_fingerprint FOR UPDATE;
+      IF v_next IS NOT NULL AND v_next > clock_timestamp() THEN
+        RETURN QUERY SELECT false,'interval',v_next,v_policy_id,0,0,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      SELECT COALESCE(call_count,0) INTO v_day_count FROM ops.external_call_budgets
+       WHERE source=v_source AND api_name=v_api AND credential_fingerprint=v_fingerprint AND window_type='day' AND window_key=v_day_key FOR UPDATE;
+      SELECT COALESCE(call_count,0) INTO v_minute_count FROM ops.external_call_budgets
+       WHERE source=v_source AND api_name=v_api AND credential_fingerprint=v_fingerprint AND window_type='minute' AND window_key=v_minute_key FOR UPDATE;
+      v_day_count := COALESCE(v_day_count,0);
+      v_minute_count := COALESCE(v_minute_count,0);
+      IF v_minute_limit IS NOT NULL AND v_minute_count >= v_minute_limit THEN
+        RETURN QUERY SELECT false,'minute',NULL::timestamptz,v_policy_id,v_day_count,v_minute_count,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      IF v_day_limit IS NOT NULL AND v_day_count >= v_day_limit THEN
+        RETURN QUERY SELECT false,'day',NULL::timestamptz,v_policy_id,v_day_count,v_minute_count,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      FOR v_i IN 0..(v_concurrency-1) LOOP
+        v_lock_key := 'external_slot:'||v_source||':'||v_api||':'||v_fingerprint||':'||v_i;
+        IF pg_try_advisory_lock(hashtextextended(v_lock_key,0)) THEN v_slot := v_i; EXIT; END IF;
+      END LOOP;
+      IF v_slot IS NULL THEN
+        RETURN QUERY SELECT false,'concurrency',clock_timestamp()+interval '1 second',v_policy_id,v_day_count,v_minute_count,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,NULL::integer;
+        RETURN;
+      END IF;
+      INSERT INTO ops.external_call_budgets(source,api_name,credential_profile,credential_fingerprint,window_type,window_key,call_count,budget_limit,policy_id)
+        VALUES(v_source,v_api,v_profile,v_fingerprint,'day',v_day_key,1,v_day_limit,v_policy_id)
+        ON CONFLICT(source,api_name,credential_fingerprint,window_type,window_key) DO UPDATE SET
+          call_count=ops.external_call_budgets.call_count+1,credential_profile=EXCLUDED.credential_profile,
+          budget_limit=EXCLUDED.budget_limit,policy_id=EXCLUDED.policy_id,updated_at=now();
+      INSERT INTO ops.external_call_budgets(source,api_name,credential_profile,credential_fingerprint,window_type,window_key,call_count,budget_limit,policy_id)
+        VALUES(v_source,v_api,v_profile,v_fingerprint,'minute',v_minute_key,1,v_minute_limit,v_policy_id)
+        ON CONFLICT(source,api_name,credential_fingerprint,window_type,window_key) DO UPDATE SET
+          call_count=ops.external_call_budgets.call_count+1,credential_profile=EXCLUDED.credential_profile,
+          budget_limit=EXCLUDED.budget_limit,policy_id=EXCLUDED.policy_id,updated_at=now();
+      UPDATE ops.source_endpoint_runtime
+         SET next_allowed_at=CASE WHEN v_interval>0 THEN clock_timestamp()+(v_interval*interval '1 millisecond') ELSE NULL END,
+             updated_at=now()
+       WHERE source_id=v_source_id AND api_name=v_api AND credential_fingerprint=v_fingerprint;
+      RETURN QUERY SELECT true,'allowed',NULL::timestamptz,v_policy_id,v_day_count+1,v_minute_count+1,v_day_limit,v_minute_limit,v_timeout,v_retry,v_empty,v_slot;
+    EXCEPTION WHEN OTHERS THEN
+      IF v_slot IS NOT NULL THEN
+        PERFORM pg_advisory_unlock(hashtextextended('external_slot:'||v_source||':'||v_api||':'||v_fingerprint||':'||v_slot,0));
+      END IF;
+      RAISE;
+    END;
+    $fn$;
+
+    UPDATE ops.source_endpoint_policies
+       SET internal_per_minute_limit=NULL,
+           internal_daily_limit=NULL,
+           notes=CASE
+             WHEN notes LIKE '%巨潮仅保留20次/分钟内部保护%' THEN
+               regexp_replace(notes,
+                 '巨潮仅保留20次/分钟内部保护；日调用量只计数不拦截，真实上游429/额度错误才记录熔断',
+                 '巨潮来源级不设置内部限额；具体接口限制由接口策略单独登记，真实上游429/额度错误才记录熔断')
+             WHEN COALESCE(notes,'')='' THEN '来源级内部限额已清除；限制必须登记到具体接口'
+             WHEN notes LIKE '%来源级内部限额已清除%' THEN notes
+             ELSE notes || '；来源级内部限额已清除，限制必须登记到具体接口'
+           END,
+           updated_at=now()
+     WHERE api_name='*'
+       AND (internal_per_minute_limit IS NOT NULL OR internal_daily_limit IS NOT NULL);
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='ck_source_endpoint_wildcard_no_internal_limits'
+      ) THEN
+        ALTER TABLE ops.source_endpoint_policies
+          ADD CONSTRAINT ck_source_endpoint_wildcard_no_internal_limits
+          CHECK (api_name <> '*' OR (internal_per_minute_limit IS NULL AND internal_daily_limit IS NULL));
+      END IF;
+    END $$;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6589,6 +6771,7 @@ const MIGRATIONS = [
   { version: '153_convertible_bond_call_pre_conversion_status', up: migration153ConvertibleBondCallPreConversionStatus },
   { version: '154_ipo_exchange_prospectus_sources', up: migration154IpoExchangeProspectusSources },
   { version: '155_agnes_vision_model', up: migration155AgnesVisionModel },
+  { version: '156_endpoint_only_internal_limits', up: migration156EndpointOnlyInternalLimits },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

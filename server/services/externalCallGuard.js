@@ -17,29 +17,6 @@ let runCallCount = 0;
 let slotExternalCallTotal = 0;
 let slotExternalCallLimit = null;
 
-function limit(name, fallback) {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-// 这是系统内部保护线，不等同于上游官方配额。
-// 主账号为 6000 积分：按官方 500 次/分钟保留 50 次余量；常规接口官方无每日总量，故不设内部日线。
-// 备用账号为 2000 积分：按官方 200 次/分钟保留 20 次余量；官方单接口每日 100000 次，
-// 以 90000 次作为跨接口凭据级止损线，防止异常循环耗尽账号额度。
-const DEFAULT_EXTERNAL_BUDGETS = Object.freeze({
-  tushare: { minute: 450, day: null },
-  tushare_backup: { minute: 180, day: 90000 },
-  // 巨潮只保留分钟级内部保护；日调用量只计数，不预设来源总量。
-  cninfo: { minute: 20, day: null },
-  // 腾讯当前没有触及内部预算，不设置本系统分钟/日限额；仍保留上游异常处理。
-  tencent: { minute: null, day: null },
-  // 交易所公告来源不设置本系统分钟/日限额；仍保留并发去重和真实上游异常处理。
-  sse: { minute: null, day: null },
-  szse: { minute: null, day: null },
-  bse: { minute: null, day: null },
-  default: { minute: 60, day: 2000 },
-});
-
 function nowParts(now = Date.now()) {
   const date = new Date(now);
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -115,13 +92,11 @@ function defaultCredentialProfile(source) {
   return key === 'tushare_backup' ? 'backup' : key === 'tushare' ? 'primary' : 'anonymous';
 }
 
-function getExternalBudgetLimits(key) {
-  const envKey = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-  const defaults = DEFAULT_EXTERNAL_BUDGETS[key] || DEFAULT_EXTERNAL_BUDGETS.default;
-  return {
-    minute: limit(`${envKey}_PER_MINUTE_BUDGET`, defaults.minute),
-    day: limit(`${envKey}_DAILY_BUDGET`, defaults.day),
-  };
+// 运行时不再按来源或凭据猜测预算；可用的接口限制只由
+// ops.source_endpoint_policies 的具体 api_name 策略提供。
+// 保留该函数仅为兼容旧调用方，返回空值不会参与 reserve_external_call。
+function getExternalBudgetLimits() {
+  return { minute: null, day: null };
 }
 
 const budgetLimits = getExternalBudgetLimits;

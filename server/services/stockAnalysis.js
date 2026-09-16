@@ -326,8 +326,11 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '', opt
   const stock = (Array.isArray(matches) ? matches : [matches]).find(item => item && String(item.code) === code);
   if (!stock || !stock.orgId) return [];
   const events = [];
-  for (let page = 1; page <= 5; page++) {
-    const body = new URLSearchParams({ pageNum: String(page), pageSize: '100', stock: `${code},${stock.orgId}`, searchkey: searchKey,
+  const pageSize = 100;
+  const seenPageSignatures = new Set();
+  let page = 1;
+  while (true) {
+    const body = new URLSearchParams({ pageNum: String(page), pageSize: String(pageSize), stock: `${code},${stock.orgId}`, searchkey: searchKey,
       tabName: 'fulltext', column: 'szse', plate: stockExchange(tsCode).toLowerCase(),
       seDate: `${isoDate(startDate)}~${isoDate(endDate)}` }).toString();
     const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
@@ -338,7 +341,13 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '', opt
       const url = row.adjunctUrl ? `https://static.cninfo.com.cn/${String(row.adjunctUrl).replace(/^\//, '')}` : '';
       events.push({ source: 'cninfo', source_number: officialAnnouncementNumber(row), stock_code: announcementStockCode(row, stockExchange(tsCode)), event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
     }
-    if (!payload.hasMore || rows.length === 0) break;
+    const signature = rows.map(row => String(row.announcementId || row.adjunctUrl || row.announcementTitle || '')).join('|');
+    if (signature && seenPageSignatures.has(signature)) break;
+    if (signature) seenPageSignatures.add(signature);
+    const total = Number(payload.totalAnnouncement || payload.totalRecordNum);
+    if (!rows.length || payload.hasMore === false || (payload.hasMore == null && rows.length < pageSize)
+      || (Number.isFinite(total) && total > 0 && events.length >= total)) break;
+    page += 1;
   }
   if (searchKey && !events.length && options.allowBroadFallback !== false) {
     const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '', options);
@@ -384,12 +393,24 @@ async function fetchSseLatestReport(tsCode) {
 
 async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
   if (!String(tsCode || '').endsWith('.SH')) return [];
-  const params = new URLSearchParams({ isPagination: 'true', productId: tsCode.slice(0, 6), keyWord: keyword,
-    securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
-    'pageHelp.pageSize': '100', 'pageHelp.pageNo': '1', 'pageHelp.beginPage': '1', 'pageHelp.endPage': '1' });
-  const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
-    { headers: { Referer: 'https://www.sse.com.cn/' } });
-  const rows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
+  const pageSize = 100, rows = [], seenPageSignatures = new Set();
+  let pageNo = 1;
+  while (true) {
+    const params = new URLSearchParams({ isPagination: 'true', productId: tsCode.slice(0, 6), keyWord: keyword,
+      securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
+      'pageHelp.pageSize': String(pageSize), 'pageHelp.pageNo': String(pageNo),
+      'pageHelp.beginPage': String(pageNo), 'pageHelp.endPage': String(pageNo) });
+    const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
+      { headers: { Referer: 'https://www.sse.com.cn/' } });
+    const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
+    rows.push(...pageRows);
+    const signature = pageRows.map(row => String(row.INFO_CODE || row.URL || row.TITLE || '')).join('|');
+    if (signature && seenPageSignatures.has(signature)) break;
+    if (signature) seenPageSignatures.add(signature);
+    const total = Number(payload && payload.pageHelp && (payload.pageHelp.total || payload.pageHelp.totalRecordNum));
+    if (!pageRows.length || pageRows.length < pageSize || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    pageNo += 1;
+  }
   const start = isoDate(startDate), end = isoDate(endDate);
   return rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(mapSseAnnouncement);
 }
@@ -398,7 +419,9 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
   if (!String(tsCode || '').endsWith('.SZ')) return [];
   const pageSize = 100;
   const rows = [];
-  for (let pageNum = 1; pageNum <= 20; pageNum += 1) {
+  const seenPageSignatures = new Set();
+  let pageNum = 1;
+  while (true) {
     const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [tsCode.slice(0, 6)],
       channelCode: ['listedNotice_disc'], pageSize, pageNum });
     const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
@@ -406,16 +429,24 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
         'X-Requested-With': 'XMLHttpRequest' }, body });
     const pageRows = Array.isArray(payload.data) ? payload.data : [];
     rows.push(...pageRows);
-    if (pageNum * pageSize >= Number(payload.announceCount || pageRows.length) || !pageRows.length) break;
+    const signature = pageRows.map(row => String(row.announcementId || row.id || row.attachPath || row.title || '')).join('|');
+    if (signature && seenPageSignatures.has(signature)) break;
+    if (signature) seenPageSignatures.add(signature);
+    const announceCount = Number(payload.announceCount);
+    if (!pageRows.length || (Number.isFinite(announceCount) && announceCount > 0 && rows.length >= announceCount)
+      || (!Number.isFinite(announceCount) && pageRows.length < pageSize)) break;
+    pageNum += 1;
   }
   return rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
 }
 
-// 交易所公告支持按市场/日期批量查询。返回 complete=false 时说明到达页数上限，调用方必须缩小窗口重试，不能把部分结果当成完整成功。
+// 交易所公告支持按市场/日期批量查询。分页由接口总数、短页或重复页结束；
+// 真正的任务止损交给统一 Runner/Guard，不能在业务函数内写死页数。
 async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
-  const pageSize = 100, maxPages = 20, rows = [];
+  const pageSize = 100, rows = [], seenPageSignatures = new Set();
   let complete = true;
-  for (let pageNo = 1; pageNo <= maxPages; pageNo += 1) {
+  let pageNo = 1;
+  while (true) {
     const params = new URLSearchParams({ isPagination: 'true', productId: '', keyWord: keyword,
       securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
       'pageHelp.pageSize': String(pageSize), 'pageHelp.pageNo': String(pageNo),
@@ -424,17 +455,23 @@ async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
       { headers: { Referer: 'https://www.sse.com.cn/' } });
     const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
     rows.push(...pageRows);
-    if (!pageRows.length || pageRows.length < pageSize) break;
-    if (pageNo === maxPages) complete = false;
+    const signature = pageRows.map(row => String(row.INFO_CODE || row.URL || row.TITLE || '')).join('|');
+    if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
+    if (signature) seenPageSignatures.add(signature);
+    const total = Number(payload && payload.pageHelp && (payload.pageHelp.total || payload.pageHelp.totalRecordNum));
+    if (!pageRows.length || pageRows.length < pageSize || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    pageNo += 1;
   }
   return { events: dedupeAnnouncementEvents(rows.filter(row => row.URL).map(mapSseAnnouncement)), complete, fetched: rows.length };
 }
 
 async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
-  // 交易所主链必须把分页取完；窗口过大时返回 complete=false，由调用方缩小日期范围重试。
-  const pageSize = 100, maxPages = 20, rows = [];
+  // 交易所主链必须把分页取完；重复页等异常返回 complete=false，
+  // 由统一 Runner 保留游标并重试，不能用固定页数截断业务结果。
+  const pageSize = 100, rows = [], seenPageSignatures = new Set();
   let complete = true;
-  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+  let pageNum = 1;
+  while (true) {
     const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [],
       channelCode: ['listedNotice_disc'], pageSize, pageNum });
     const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
@@ -443,10 +480,13 @@ async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
     const pageRows = Array.isArray(payload.data) ? payload.data : [];
     rows.push(...pageRows);
     const announceCount = Number(payload.announceCount);
+    const signature = pageRows.map(row => String(row.announcementId || row.id || row.attachPath || row.title || '')).join('|');
+    if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
+    if (signature) seenPageSignatures.add(signature);
     if (!pageRows.length) break;
     if (Number.isFinite(announceCount) && announceCount > 0 && rows.length >= announceCount) break;
     if (!Number.isFinite(announceCount) && pageRows.length < pageSize) break;
-    if (pageNum === maxPages) complete = false;
+    pageNum += 1;
   }
   const events = rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
   return { events: dedupeAnnouncementEvents(events), complete, fetched: rows.length };
@@ -454,17 +494,24 @@ async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
 
 async function fetchCninfoEventsBatch(startDate, endDate, market, searchKey = '') {
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://www.cninfo.com.cn/', 'X-Requested-With': 'XMLHttpRequest' };
-  const pageSize = 100, maxPages = 5, rows = [];
+  const pageSize = 100, rows = [], seenPageSignatures = new Set();
   let complete = true;
-  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
+  let pageNum = 1;
+  while (true) {
     const body = new URLSearchParams({ pageNum: String(pageNum), pageSize: String(pageSize), stock: '', searchkey: searchKey,
       tabName: 'fulltext', column: market === 'SH' ? 'sse' : 'szse', plate: market === 'SH' ? 'sh' : 'sz',
       seDate: `${isoDate(startDate)}~${isoDate(endDate)}` }).toString();
     const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
     const pageRows = Array.isArray(payload.announcements) ? payload.announcements : [];
     rows.push(...pageRows);
-    if (!payload.hasMore || !pageRows.length || pageRows.length < pageSize) break;
-    if (pageNum === maxPages) complete = false;
+    const signature = pageRows.map(row => String(row.announcementId || row.adjunctUrl || row.announcementTitle || '')).join('|');
+    if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
+    if (signature) seenPageSignatures.add(signature);
+    const total = Number(payload.totalAnnouncement || payload.totalRecordNum);
+    if (payload.hasMore === false || !pageRows.length || pageRows.length < pageSize
+      || (payload.hasMore == null && pageRows.length < pageSize)
+      || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    pageNum += 1;
   }
   const events = rows.map(row => {
     const eventDate = row.announcementTime ? tsDateStr(new Date(Number(row.announcementTime))) : dateText(row.announcementDate);

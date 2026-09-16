@@ -9,7 +9,6 @@ const MOTIVE_MODEL_VERSION = 'motive-v1.1';
 // 历史公告前样本外回测尚未通过前，禁止把研究分转换为预测等级；完成回测后需升级模型版本并显式打开。
 const MOTIVE_MODEL_CALIBRATED = false;
 const CYCLE_VERSION = 'cycle-v1';
-const MAX_HOLDER_CALLS_PER_RUN = 10;
 const BOND_CODE_RE = /^(110|111|113|118|123|127|128)\d{3}\.(SH|SZ)$/i;
 
 function finite(value) {
@@ -883,8 +882,11 @@ async function saveSyncCursor(client, { instrumentId = null, companyId = null, s
   );
 }
 
-async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = {}) {
+async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = {}) {
   const date = dateText(businessDate) || dateText(new Date());
+  const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
+  const limitClause = configuredLimit ? ' LIMIT $2' : '';
+  const queryParams = configuredLimit ? [date, configuredLimit] : [date];
   const { rows: bonds } = await pool.query(`SELECT p.instrument_id,p.stock_instrument_id,i.canonical_code AS ts_code,si.canonical_code AS stock_code,ci.company_id
       FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.instrument_id
       JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
@@ -925,12 +927,11 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
               ) THEN 1 ELSE 0 END,
               CASE WHEN pcur.last_attempt_at IS NULL THEN 0 ELSE 1 END,
               pcur.last_attempt_at ASC NULLS FIRST,
-              i.canonical_code LIMIT $2`, [date, Math.min(Math.max(Number(limit) || 2000, 1), 2000)]);
+              i.canonical_code${limitClause}`, queryParams);
   const { rows: sourceRows } = await pool.query("SELECT source_id,source_code FROM ops.data_sources WHERE source_code IN ('tushare','calculated')");
   const sourceMap = Object.fromEntries(sourceRows.map(row => [row.source_code, row.source_id]));
   let holderCount = 0, pledgeCount = 0, externalCalls = 0;
   let holderDeferredCount = 0, pledgeDeferredCount = 0;
-  let holderCallsThisRun = 0;
   const failures = [];
   const pledgeByCompany = new Map();
   const controllerNamesByCompany = new Map();
@@ -943,9 +944,8 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
     let holderRows = [];
     let holderError = null;
     let holderAttempted = false;
-    if (!holderStopError && holderCallsThisRun < MAX_HOLDER_CALLS_PER_RUN) {
+    if (!holderStopError) {
       holderAttempted = true;
-      holderCallsThisRun += 1;
       try {
         const { rows: holderWatermark } = await pool.query(
           'SELECT max(report_date)::text AS report_date FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1', [bond.instrument_id]
@@ -1051,8 +1051,10 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = 2000 } = 
     } finally { client.release(); }
   }
   const deferred = holderDeferredCount + pledgeDeferredCount;
-  return { ok: failures.length === 0, status: failures.length ? 'degraded' : deferred ? 'partial' : 'succeeded', businessDate: date, bonds: bonds.length,
-    holderCount, pledgeCount, externalCalls, deferred, holderDeferredCount, pledgeDeferredCount, failures };
+  const limited = configuredLimit !== null;
+  return { ok: failures.length === 0 && !limited, status: failures.length ? 'degraded' : (deferred || limited) ? 'partial' : 'succeeded', businessDate: date, bonds: bonds.length,
+    holderCount, pledgeCount, externalCalls, deferred, holderDeferredCount, pledgeDeferredCount, failures,
+    limit: configuredLimit, continuationRequired: Boolean(deferred || limited) };
 }
 
 module.exports = {

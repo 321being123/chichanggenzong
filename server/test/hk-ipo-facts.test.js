@@ -105,14 +105,14 @@ assert.strictEqual(
     },
   });
   assert.strictEqual(refreshResult.status, 'succeeded');
-  assert.strictEqual(refreshParams[3], true, '历史配发重解析必须显式传入 refreshLottery');
+  assert.strictEqual(refreshParams[2], true, '历史配发重解析必须显式传入 refreshLottery');
 
   let candidateSql = '';
   const defaultResult = await syncHkexAllotmentFacts({
     fromDate: '2025-08-04', toDate: '2026-09-08', limit: 0, refreshLottery: false,
     executor: async (sql, params) => {
       if (sql.includes("source_code='hkex_announcements'")) return { rows: [{ source_id: 1 }] };
-      if (sql.includes('FROM public.ipo_history')) { candidateSql = sql; assert.strictEqual(params[3], false); return { rows: [] }; }
+      if (sql.includes('FROM public.ipo_history')) { candidateSql = sql; assert.strictEqual(params[2], false); return { rows: [] }; }
       if (sql.includes('INSERT INTO ops.ingestion_runs')) return { rows: [{ run_id: 2 }] };
       return { rows: [] };
     },

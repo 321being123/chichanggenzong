@@ -9,6 +9,7 @@ const ExcelJS = require('exceljs');
 const { pool } = require('../db/connection');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { httpRequest, ALLOWED_DOMAINS, searchAnnouncements } = require('./hkexAnnouncement');
+const { readCachedPdf, writeCachedPdf } = require('./documentPdfCache');
 
 const HKEX_NEW_LISTING_TARGETS = Object.freeze([
   {
@@ -89,6 +90,24 @@ function assertOfficialUrl(url) {
     throw new Error(`HKEX URL 不在官方白名单：${parsed.hostname}`);
   }
   return parsed.href;
+}
+
+// 招股书、配发结果、取消上市和可转债上市资料共用同一份官方 PDF 缓存。
+// 命中缓存时不进入 Guard/外部请求；下载成功后先落盘再解析，解析失败也保留原文供后续重试。
+async function fetchOfficialPdfWithCache(url, fetchImpl, options = {}) {
+  const officialUrl = assertOfficialUrl(url);
+  let cached = null;
+  try { cached = readCachedPdf(officialUrl); } catch (_) {}
+  if (cached && cached.subarray(0, 5).toString('ascii') === '%PDF-') {
+    return { buffer: cached, cacheHit: true, url: officialUrl };
+  }
+  const body = await fetchImpl(officialUrl, options);
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body || '');
+  if (!buffer.length) throw new Error('官方 PDF 为空');
+  if (buffer.subarray(0, 5).toString('ascii') === '%PDF-') {
+    try { writeCachedPdf(officialUrl, buffer); } catch (_) {}
+  }
+  return { buffer, cacheHit: false, url: officialUrl };
 }
 
 function textOfHtml(value) {
@@ -397,7 +416,7 @@ function isUsableProspectusDocument(document) {
 async function syncHkexAllotmentFacts({
   fromDate = '2025-08-04',
   toDate = todayShanghai(),
-  limit = 20,
+  limit = null,
   refreshLottery = false,
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
@@ -408,6 +427,10 @@ async function syncHkexAllotmentFacts({
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
+  const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
+  const candidateLimitClause = candidateLimit ? ' LIMIT $6' : '';
+  const candidateParams = [fromDate, toDate, Boolean(refreshLottery), HKEX_ALLOTMENT_PARSER_VERSION, HKEX_ALLOTMENT_FACTS_PARSER_VERSION];
+  if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
     SELECT security_code,listing_at::date::text AS listing_date,to_char(allotment_at,'YYYY-MM-DD') AS allotment_date,
            lot_size_shares,online_lottery_rate,lot_amount_hkd,application_fee_hkd,brokerage_fee_hkd,
@@ -420,7 +443,7 @@ async function syncHkexAllotmentFacts({
          OR (ipo_status IN ('active','priced','allotted') AND allotment_at IS NULL)
        )
        AND (
-         $4::boolean
+         $3::boolean
          OR (
            (public_offer_ratio IS NULL OR international_offer_ratio IS NULL)
            AND NOT EXISTS (
@@ -452,7 +475,7 @@ async function syncHkexAllotmentFacts({
              SELECT 1
                FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
               WHERE document->>'type'='allotment_result'
-                AND document->'parserEvidence'->>'feeParserVersion'=$5
+                AND document->'parserEvidence'->>'feeParserVersion'=$4
                 AND document->'parserEvidence'->>'feeParserStatus' IN ('parsed','missing')
            )
          )
@@ -462,7 +485,7 @@ async function syncHkexAllotmentFacts({
              SELECT 1
                FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
               WHERE document->>'type'='allotment_result'
-                AND document->'parserEvidence'->>'factsParserVersion'=$6
+                AND document->'parserEvidence'->>'factsParserVersion'=$5
                 AND document->'parserEvidence'->>'oversubscriptionParserStatus' IN ('parsed','missing')
            )
          )
@@ -472,7 +495,7 @@ async function syncHkexAllotmentFacts({
              SELECT 1
                FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
               WHERE document->>'type'='allotment_result'
-                AND document->'parserEvidence'->>'factsParserVersion'=$6
+                AND document->'parserEvidence'->>'factsParserVersion'=$5
                 AND document->'parserEvidence'->>'greenshoeParserStatus' IN ('parsed','missing')
            )
          )
@@ -483,12 +506,12 @@ async function syncHkexAllotmentFacts({
        )
      ORDER BY CASE WHEN listing_at IS NULL THEN 0 ELSE 1 END,
               COALESCE(listing_at,NULLIF(updated_at,'')::timestamptz) DESC,security_code
-     LIMIT $3`, [fromDate, toDate, Math.max(0, Number(limit) || 0), Boolean(refreshLottery), HKEX_ALLOTMENT_PARSER_VERSION, HKEX_ALLOTMENT_FACTS_PARSER_VERSION]);
+     ${candidateLimitClause}`, candidateParams);
   const candidates = candidatesResult.rows;
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
      VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, HKEX_ALLOTMENT_DATASET, JSON.stringify({ fromDate, toDate, limit, refreshLottery: Boolean(refreshLottery), candidateCount: candidates.length })]
+    [source.rows[0].source_id, HKEX_ALLOTMENT_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, refreshLottery: Boolean(refreshLottery), candidateCount: candidates.length })]
   );
   const runId = run.rows[0].run_id;
   const byCode = new Map(candidates.map(row => [String(row.security_code).split('.')[0].padStart(5, '0'), row]));
@@ -555,8 +578,9 @@ async function syncHkexAllotmentFacts({
         continue;
       }
       try {
-        const body = await fetchImpl(englishUrl, { responseType: 'buffer' });
-        const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        const { buffer, url: cachedUrl } = await fetchOfficialPdfWithCache(
+          englishUrl, fetchImpl, { responseType: 'buffer' }
+        );
         const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
         const current = byCode.get(code);
         const parsed = await parseHkexAllotmentPdf(buffer, { lotSizeShares: current && current.lot_size_shares });
@@ -564,8 +588,8 @@ async function syncHkexAllotmentFacts({
           `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
            VALUES($1,$2,$3,$4,now(),$5::jsonb,$6)
            ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now(),payload=EXCLUDED.payload`,
-          [runId, source.rows[0].source_id, HKEX_ALLOTMENT_DATASET, `${code}|${englishUrl}`, JSON.stringify({
-            securityCode: `${code}.HK`, sourceUrl, englishUrl,
+          [runId, source.rows[0].source_id, HKEX_ALLOTMENT_DATASET, `${code}|${cachedUrl}`, JSON.stringify({
+            securityCode: `${code}.HK`, sourceUrl, englishUrl: cachedUrl,
             announcedAt: item.announcedAt || (current && current.allotment_date) || null,
             responseBytes: buffer.length, responseSha256, parser: parsed,
           }), responseSha256]
@@ -607,7 +631,7 @@ async function syncHkexAllotmentFacts({
         }
         const sourceDocuments = mergeSourceDocuments(current.source_documents, {
           type: 'allotment_result',
-          url: englishUrl,
+          url: cachedUrl,
           sourceUrl,
           title: item.title || 'HKEX allotment result',
           announcedAt: item.announcedAt || current.allotment_date || null,
@@ -686,12 +710,15 @@ async function syncHkexAllotmentFacts({
         failures.push({ code, stage: 'fetch_or_persist', error: error.message || String(error) });
       }
     }
-    const status = failures.length ? (enriched ? 'degraded' : 'failed') : 'succeeded';
+    const limited = candidateLimit !== null;
+    const status = failures.length ? (enriched ? 'degraded' : 'failed') : (limited ? 'degraded' : 'succeeded');
+    const statusMessage = failures.map(item => `${item.code || item.stage}:${item.error}`).join('; ')
+      || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(
       `UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, failures.map(item => `${item.code || item.stage}:${item.error}`).join('; ').slice(0, 2000)]
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]
     );
-    return { ok: status !== 'failed', status, runId, candidates: candidates.length, matched, enriched, failures, fromDate, toDate };
+    return { ok: status !== 'failed', status, runId, candidates: candidates.length, matched, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -704,7 +731,7 @@ async function syncHkexAllotmentFacts({
 async function syncHkexNonPublicListings({
   fromDate = '2025-08-04',
   toDate = todayShanghai(),
-  limit = 20,
+  limit = null,
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
 } = {}) {
@@ -713,7 +740,8 @@ async function syncHkexNonPublicListings({
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
-  const known = HKEX_NON_PUBLIC_LISTINGS.slice(0, Math.max(0, Number(limit) || 0));
+  const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
+  const known = candidateLimit ? HKEX_NON_PUBLIC_LISTINGS.slice(0, candidateLimit) : [...HKEX_NON_PUBLIC_LISTINGS];
   const candidateResult = await executor(`
     SELECT security_code,listing_at::date::text AS listing_date,source_documents,data_completeness,instrument_id
       FROM public.ipo_history
@@ -726,7 +754,7 @@ async function syncHkexNonPublicListings({
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
      VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, HKEX_NON_PUBLIC_DATASET, JSON.stringify({ fromDate, toDate, limit, candidateCount: selected.length })]
+    [source.rows[0].source_id, HKEX_NON_PUBLIC_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, candidateCount: selected.length })]
   );
   const runId = run.rows[0].run_id;
   let enriched = 0;
@@ -735,9 +763,9 @@ async function syncHkexNonPublicListings({
     for (const item of selected) {
       const current = candidates.get(item.securityCode);
       try {
-        const url = assertOfficialUrl(item.sourceUrl);
-        const body = await fetchImpl(url, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 });
-        const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        const { buffer, url } = await fetchOfficialPdfWithCache(
+          item.sourceUrl, fetchImpl, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 }
+        );
         const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
         const payload = {
           securityCode: item.securityCode,
@@ -786,10 +814,13 @@ async function syncHkexNonPublicListings({
         failures.push({ code: item.securityCode, stage: 'fetch_or_persist', error: error.message || String(error) });
       }
     }
-    const status = failures.length ? (enriched ? 'degraded' : 'failed') : 'succeeded';
+    const limited = candidateLimit !== null;
+    const status = failures.length ? (enriched ? 'degraded' : 'failed') : (limited ? 'degraded' : 'succeeded');
+    const statusMessage = failures.map(item => `${item.code}:${item.error}`).join('; ')
+      || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, failures.map(item => `${item.code}:${item.error}`).join('; ').slice(0, 2000)]);
-    return { ok: status !== 'failed', status, runId, candidates: selected.length, enriched, failures, fromDate, toDate };
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]);
+    return { ok: status !== 'failed', status, runId, candidates: selected.length, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -806,7 +837,7 @@ function cancellationTitleLooksLikeIpo(title, rawPayload) {
 async function syncHkexCancelledListings({
   fromDate = shiftIsoDate(todayShanghai(), -180),
   toDate = todayShanghai(),
-  limit = 50,
+  limit = null,
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
   searchImpl = searchAnnouncements,
@@ -816,6 +847,10 @@ async function syncHkexCancelledListings({
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
+  const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
+  const candidateLimitClause = candidateLimit ? ' LIMIT $3' : '';
+  const candidateParams = [fromDate, toDate];
+  if (candidateLimit) candidateParams.push(candidateLimit);
   const candidateResult = await executor(`
     SELECT security_code,security_name,instrument_id,source_documents,data_completeness
       FROM public.ipo_history
@@ -824,13 +859,13 @@ async function syncHkexCancelledListings({
        AND allotment_at IS NULL
        AND offer_open_at::date BETWEEN $1::date AND $2::date
      ORDER BY offer_open_at DESC,security_code
-     LIMIT $3`, [fromDate, toDate, Math.max(0, Number(limit) || 0)]);
+     ${candidateLimitClause}`, candidateParams);
   const candidates = new Map(candidateResult.rows.map(row => [String(row.security_code), row]));
   if (!candidates.size) return { ok: true, status: 'succeeded', candidates: 0, searched: 0, matched: 0, enriched: 0, failures: [], fromDate, toDate };
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
      VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, HKEX_CANCELLATION_DATASET, JSON.stringify({ fromDate, toDate, limit, candidateCount: candidates.size })]
+    [source.rows[0].source_id, HKEX_CANCELLATION_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, candidateCount: candidates.size })]
   );
   const runId = run.rows[0].run_id;
   const failures = [];
@@ -845,9 +880,9 @@ async function syncHkexCancelledListings({
     for (const [code, item] of selected) {
       const current = candidates.get(code);
       try {
-        const url = assertOfficialUrl(item.fileLink);
-        const body = await fetchImpl(url, { responseType: 'buffer', maxResponseBytes: 20 * 1024 * 1024 });
-        const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        const { buffer, url } = await fetchOfficialPdfWithCache(
+          item.fileLink, fetchImpl, { responseType: 'buffer', maxResponseBytes: 20 * 1024 * 1024 }
+        );
         const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
         const sourceDocuments = mergeSourceDocuments(current.source_documents, {
           type: 'listing_cancellation', url, title: item.title || 'HKEX cancellation notice',
@@ -881,10 +916,13 @@ async function syncHkexCancelledListings({
         failures.push({ code, stage: 'fetch_or_persist', error: error.message || String(error) });
       }
     }
-    const status = failures.length ? (enriched ? 'degraded' : 'failed') : 'succeeded';
+    const limited = candidateLimit !== null;
+    const status = failures.length ? (enriched ? 'degraded' : 'failed') : (limited ? 'degraded' : 'succeeded');
+    const statusMessage = failures.map(item => `${item.code}:${item.error}`).join('; ')
+      || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, failures.map(item => `${item.code}:${item.error}`).join('; ').slice(0, 2000)]);
-    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, enriched, failures, fromDate, toDate };
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]);
+    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -894,7 +932,7 @@ async function syncHkexCancelledListings({
 async function syncHkexProspectusFacts({
   fromDate = '2025-08-04',
   toDate = todayShanghai(),
-  limit = 18,
+  limit = null,
   refreshSponsor = false,
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
@@ -905,7 +943,10 @@ async function syncHkexProspectusFacts({
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
-  const candidateLimit = Math.max(0, Number(limit) || 0);
+  const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
+  const candidateLimitClause = candidateLimit ? ' LIMIT $4' : '';
+  const candidateParams = [fromDate, toDate, Boolean(refreshSponsor)];
+  if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
     SELECT security_code,listing_at::date::text AS listing_date,source_documents,data_completeness,
            issue_price_low,issue_price_high,issue_price_final,lot_size_shares,offer_open_at,offer_close_at
@@ -919,7 +960,7 @@ async function syncHkexProspectusFacts({
        AND COALESCE(data_completeness->>'status','retryable') <> 'pending_not_due'
        AND (
          issue_price_low IS NULL OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
-         OR ($4::boolean AND NOT EXISTS (
+         OR ($3::boolean AND NOT EXISTS (
            SELECT 1
              FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
             WHERE document->>'type'='prospectus'
@@ -932,7 +973,7 @@ async function syncHkexProspectusFacts({
                  WHERE document->>'type'='prospectus'
               ) THEN 0 ELSE 1 END,
               listing_at,security_code
-     LIMIT $3`, [fromDate, toDate, candidateLimit, Boolean(refreshSponsor)]);
+     ${candidateLimitClause}`, candidateParams);
   const candidates = candidatesResult.rows;
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
@@ -1017,7 +1058,7 @@ async function syncHkexProspectusFacts({
       })) if (value != null) aggregate[key] = value;
       const evidenceDocuments = [];
       const parseDocuments = [];
-      for (const document of documents.slice(0, 3)) {
+      for (const document of documents) {
         // 保荐人字段优先复用同一份官方招股书的英文版；英文版附录通常有
         // “3. Joint Sponsors”结构化名单，中文 PDF 的多栏抽取容易丢失公司名。
         if (refreshSponsor) {
@@ -1031,27 +1072,27 @@ async function syncHkexProspectusFacts({
       const uniqueParseDocuments = parseDocuments.filter((document, index, list) => (
         list.findIndex(item => item.fileLink === document.fileLink) === index
       ));
-      const documentLimit = refreshSponsor ? candidateLimit * 2 : candidateLimit;
-      for (const document of uniqueParseDocuments.slice(0, 6)) {
-        if (attempted >= documentLimit) break;
+      // 候选对象上限与证据文档数是两个不同维度；不得用固定文档数截断业务事实。
+      for (const document of uniqueParseDocuments) {
         attempted += 1;
         try {
-          const body = await fetchImpl(document.fileLink, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 });
-          const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+          const { buffer, url: cachedUrl } = await fetchOfficialPdfWithCache(
+            document.fileLink, fetchImpl, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 }
+          );
           const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
           const parsed = await parseHkexProspectusPdf(buffer);
           await executor(
             `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
              VALUES($1,$2,$3,$4,now(),$5::jsonb,$6)
              ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now(),payload=EXCLUDED.payload`,
-            [runId, source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, `${code}|${document.fileLink}`, JSON.stringify({
-              securityCode: code, sourceUrl: document.fileLink, originalSourceUrl: document.originalFileLink || document.fileLink,
+            [runId, source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, `${code}|${cachedUrl}`, JSON.stringify({
+              securityCode: code, sourceUrl: cachedUrl, originalSourceUrl: document.originalFileLink || cachedUrl,
               language: document.language || null, announcedAt: document.announcedAt || null,
               responseBytes: buffer.length, responseSha256, parser: parsed,
             }), responseSha256]
           );
           evidenceDocuments.push({
-            type: 'prospectus', url: document.fileLink, sourceUrl: document.originalFileLink || null,
+            type: 'prospectus', url: cachedUrl, sourceUrl: document.originalFileLink || null,
             language: document.language || null, title: document.title || 'HKEX prospectus',
             announcedAt: document.announcedAt || null, contentSha256: responseSha256,
             parserStatus: parsed.parserStatus, parserVersion: parsed.parserVersion || null,
@@ -1111,10 +1152,13 @@ async function syncHkexProspectusFacts({
       ]);
       enriched += 1;
     }
-    const status = failures.length ? (enriched ? 'degraded' : 'failed') : 'succeeded';
+    const limited = candidateLimit !== null;
+    const status = failures.length ? (enriched ? 'degraded' : 'failed') : (limited ? 'degraded' : 'succeeded');
+    const statusMessage = failures.map(item => `${item.code || item.stage}:${item.error}`).join('; ')
+      || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, failures.map(item => `${item.code || item.stage}:${item.error}`).join('; ').slice(0, 2000)]);
-    return { ok: status !== 'failed', status, runId, candidates: candidates.length, searched, attempted, enriched, failures, fromDate, toDate };
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]);
+    return { ok: status !== 'failed', status, runId, candidates: candidates.length, searched, attempted, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -1478,6 +1522,7 @@ module.exports = {
   isVerifiedAllotmentDocument,
   isUsableProspectusDocument,
   parseHkexProspectusPdf,
+  fetchOfficialPdfWithCache,
   syncHkexAllotmentFacts,
   syncHkexProspectusFacts,
   syncHkexHistoricalReports,

@@ -124,10 +124,13 @@ assert.match(bondJobSource, /BOND_LIQUIDITY_SCRIPT/, '新债流通规模补全�
 const liquiditySource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'sync_bond_listing_liquidity.py'), 'utf8');
 assert.match(liquiditySource, /event_type='listing'/, '流通规模补全没有按上市事件增量筛选');
 assert.match(liquiditySource, /l\.instrument_id IS NULL/, '流通规模补全没有跳过已入库事实');
-assert.match(liquiditySource, /if code not in forced_codes and get_listing_liquidity\(code\)/, '指定代码定向重算没有覆盖旧流通规模事实');
-assert.match(liquiditySource, /else:\s*\n\s*clauses\.append\("l\.instrument_id IS NULL"\)/, '指定代码定向重算不应改变普通增量跳过规则');
+assert.match(liquiditySource, /if code not in forced_codes and cached and cached\.get\("source_code"\) in \("sse", "szse"\)/, '普通增量跳过交易所已核实事实的规则缺失');
+assert.match(liquiditySource, /source_code LIKE 'cninfo%'/, '普通增量没有识别旧 CNINFO 流通规模事实');
 assert.match(fetchSource, /_parse_listed_bond_quantity/, '上市公告书明确上市数量没有解析兜底');
 assert.match(fetchSource, /listed_quantity_fallback/, '上市数量兜底没有保留质量标记');
+assert.match(fetchSource, /_fetch_exchange_placing_result/, '流通规模补全没有先调用交易所主源');
+assert.match(fetchSource, /_fetch_cninfo_placing_result/, '流通规模补全没有保留 CNINFO 兜底');
+assert.match(fetchSource, /exchange_result = _fetch_exchange_placing_result[\s\S]*?if exchange_result[\s\S]*?status\"\) == \"ok\"[\s\S]*?return exchange_result[\s\S]*?cninfo_result = _fetch_cninfo_placing_result/, 'CNINFO 没有严格排在交易所主源之后');
 
 const migrationSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
 assert.match(migrationSource, /071_deduplicate_instrument_events/, '重复发行事件没有独立迁移');

@@ -65,19 +65,20 @@ test('巨潮默认搜索关键词包含 UPDATE_KEYWORDS（终止/完成/换股�
   assert.ok(all.includes('要约收购报告书'), 'missing 发现关键词');
 });
 
-test('巨潮单个关键词最多拉取两页，且可在不等待的测试环境验证', async () => {
+test('巨潮公告按 hasMore/总数翻完，不使用固定两页截断', async () => {
   const calls = [];
-  const response = JSON.stringify({
-    totalAnnouncement: 999,
-    announcements: [{ announcementId: 'one', announcementTitle: '现金选择权', adjunctUrl: 'x' }],
-  });
+  const responses = [
+    { totalAnnouncement: 3, announcements: [{ announcementId: 'one', announcementTitle: '现金选择权', adjunctUrl: 'x1' }] },
+    { totalAnnouncement: 3, announcements: [{ announcementId: 'two', announcementTitle: '现金选择权', adjunctUrl: 'x2' }] },
+    { totalAnnouncement: 3, announcements: [{ announcementId: 'three', announcementTitle: '现金选择权', adjunctUrl: 'x3' }] },
+  ];
   await cninfo.searchAnnouncements({
     fromDate: '2026-08-01', toDate: '2026-08-01', keywords: ['现金选择权'], exchanges: ['sse'],
-    _httpRequest: async (_url, options) => { calls.push(options.body); return response; },
+    _httpRequest: async (_url, options) => { calls.push(options.body); return JSON.stringify(responses[calls.length - 1]); },
     requestDelayMs: 0,
   });
-  assert.strictEqual(calls.length, cninfo.CNINFO_MAX_PAGES);
-  assert.strictEqual(cninfo.CNINFO_MAX_PAGES, 2);
+  assert.strictEqual(calls.length, 3, '总数为3时必须完整读取3页');
+  assert.strictEqual(cninfo.CNINFO_MAX_PAGES, null, '公告适配器不得保留默认页数上限');
   assert.ok(cninfo.CNINFO_REQUEST_DELAY_MS >= 3000);
 });
 

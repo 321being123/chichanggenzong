@@ -114,7 +114,7 @@ function collectGeneratedMatrixErrors(rootDir) {
   return [`任务-接口-数据集矩阵与 JOB_DEFINITIONS 不一致：${String(result.stderr || result.stdout || '').trim()}`];
 }
 
-function collectInc0026ImplementationErrors(rootDir) {
+function collectTaskGovernanceImplementationErrors(rootDir) {
   const definitionsPath = path.join(rootDir, 'server', 'services', 'jobDefinitions.js');
   if (!fs.existsSync(definitionsPath)) return [];
   const read = relativePath => {
@@ -126,17 +126,61 @@ function collectInc0026ImplementationErrors(rootDir) {
   const orchestrator = read('server/services/jobOrchestrator.js');
   const evidence = read('server/services/jobRecoveryEvidence.js');
   const runner = read('server/services/jobRunnerProcess.js');
+  const externalGuard = read('server/services/externalCallGuard.js');
+  const sourcePolicy = read('server/services/sourceEndpointPolicy.js');
+  const hkexAnnouncement = read('server/services/hkexAnnouncement.js');
+  const cninfoAnnouncement = read('server/services/cninfoAnnouncement.js');
+  const stockAnalysis = read('server/services/stockAnalysis.js');
+  const hkexIpo = read('server/services/hkexIpo.js');
+  const convertibleBondAnalysis = read('server/services/convertibleBondAnalysis.js');
+  const motiveService = read('server/services/convertibleBondRevisionMotiveService.js');
+  const redemptionSync = read('server/services/convertibleBondRedemptionSync.js');
+  const marketService = read('server/services/market.js');
+  const stockFrontend = read('public/js/stock-analysis.js');
+  const bondFrontend = read('public/js/bond-analysis.js');
+
+  // 这些是跨业务不变量的最低实现门槛；事故测试仍可补充细节，但不能只靠事故编号保护。
   if (!/function continueSlot\(/.test(slots) || !/status='pending'/.test(slots) || !/attempt_count=GREATEST\(attempt_count-1,0\)/.test(slots)) {
-    errors.push('INC-0026 续批必须使用 continueSlot，并恢复正常 attempt_count 语义。');
+    errors.push('任务续批必须使用 continueSlot，并恢复正常 attempt_count 语义。');
   }
   if (!/slotExternalCallsTotal/.test(slots) || !/slotExternalCallsLimit/.test(runner)) {
-    errors.push('INC-0026 缺少槽位累计调用量与总止损实现。');
+    errors.push('任务缺少槽位累计调用量与总止损实现。');
   }
   if (!/continuationRequired/.test(orchestrator) || !/pendingStages/.test(orchestrator)) {
-    errors.push('INC-0026 缺少阶段级 partial 续跑编排。');
+    errors.push('任务缺少阶段级 partial 续跑编排。');
   }
   if (!/verifySlotRecoveryEvidence/.test(evidence)) {
-    errors.push('INC-0026 缺少中立恢复证据服务。');
+    errors.push('任务缺少中立恢复证据服务。');
+  }
+  if (!/ops\.external_circuits/.test(externalGuard) || !/recover_at/.test(externalGuard) || !/BUDGET_WAIT/.test(externalGuard)) {
+    errors.push('外部 Guard 必须统一使用 ops.external_circuits、recover_at 和 BUDGET_WAIT。');
+  }
+  if (!/apiName === '\*'/.test(sourcePolicy) || !/来源级策略不得设置内部限额/.test(sourcePolicy)) {
+    errors.push('来源接口策略必须拒绝通配来源的内部限额。');
+  }
+  if (/HKEX_MAX_PAGES\s*=\s*\d+/.test(hkexAnnouncement) || /CNINFO_MAX_PAGES\s*=\s*\d+/.test(cninfoAnnouncement)
+    || /maxPages\s*=\s*\d+|page\s*<=\s*5|pageNum\s*<=\s*20/.test(stockAnalysis)) {
+    errors.push('公告采集适配器不得在业务函数内写死固定页数上限。');
+  }
+  if (/documents\.slice\(0,\s*3\)|uniqueParseDocuments\.slice\(0,\s*6\)/.test(hkexIpo)) {
+    errors.push('招股书事实补全不得按固定文档数截断。');
+  }
+  if (/effectiveDefaultLimit|const defaultLimit = globalSync|limitValue = Math\.max\(1, Math\.min\(limit/.test(convertibleBondAnalysis)) {
+    errors.push('可转债公告历史同步不得设置隐藏候选条数上限。');
+  }
+  if (/MAX_HOLDER_CALLS_PER_RUN|syncRevisionMotiveInputs\(\{ businessDate = null, limit = 2000/.test(motiveService)) {
+    errors.push('下修动机输入不得设置来源接口级固定调用上限。');
+  }
+  if (/retryFailed = false, limit = 2000|LIMIT \$4.*Math\.max\(1, Number\(limit\) \|\| 2000\)/.test(redemptionSync)) {
+    errors.push('强赎公告重解析不得设置隐藏候选条数上限。');
+  }
+  if (/endsWith\('\.BJ'\)\)\.slice\(0,\s*1000\)/.test(marketService)) {
+    errors.push('实时行情请求不得自行截断证券集合。');
+  }
+  if (/return stockAnalysisRefresh\(\)/.test(stockFrontend)
+    || /response\.status===404&&!refresh[\s\S]*?return bondAnalysisLoad\(true/.test(bondFrontend)
+    || /if \(payload\.needs_refresh\)[\s\S]*?return stockAnalysisRefresh\(\)/.test(stockFrontend)) {
+    errors.push('分析页面读取不得在无快照或过期时自动触发外部刷新。');
   }
   return errors;
 }
@@ -154,7 +198,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
 
   errors.push(...collectVersionErrors(rootDir));
   errors.push(...collectGeneratedMatrixErrors(rootDir));
-  errors.push(...collectInc0026ImplementationErrors(rootDir));
+  errors.push(...collectTaskGovernanceImplementationErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];

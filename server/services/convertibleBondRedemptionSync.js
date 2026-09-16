@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const os = require('os');
 const { pool } = require('../db/connection');
-const { searchAnnouncements } = require('./cninfoAnnouncement');
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -401,13 +400,10 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
       announcedAt: announcementDate({ announcedAt: row.announcedAt, fileLink: row.fileLink, rawPayload: row.rawPayload }),
       stockCode: String(row.stockCode || '').slice(0, 6), rawPayload: row.rawPayload }));
   } else {
-    const raw = Array.isArray(officialEvents) ? callItemsFromOfficialEvents(officialEvents) : await searchAnnouncements({
-      fromDate: start, toDate: end, stock: stockCodes.length ? '' : stock,
-      keywords: keywords && keywords.length ? keywords : [
-        '强赎', '提前赎回', '不提前赎回', '暂不赎回', '不行使赎回', '不实施赎回', '赎回实施', '实施赎回',
-        '赎回结果', '到期兑付', '即将到期', '停止交易', '最后交易日'
-      ], exchanges
-    });
+    if (!Array.isArray(officialEvents)) {
+      throw new Error('强赎公告必须由统一交易所公告批次提供，禁止直接访问巨潮资讯');
+    }
+    const raw = callItemsFromOfficialEvents(officialEvents);
     announcements = stockCodes.length ? raw.filter(item => stockCodes.includes(String(item.stockCode || '').slice(0, 6))) : raw;
   }
   const classified = announcements.map(item => ({ ...item, eventType: item.eventType || classifyCallEvent(item.title) }))

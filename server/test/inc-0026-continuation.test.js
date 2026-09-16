@@ -16,6 +16,7 @@ const hkex = read('server/services/hkexIpo.js');
 const arbitrage = read('server/jobs/arbitrageSync.js');
 const market = read('server/jobs/marketVolatilitySync.js');
 const evidence = read('server/services/jobRecoveryEvidence.js');
+const { businessDateText } = require('../services/jobRecoveryEvidence');
 
 assert.ok(definitions.getJobDefinition('convertible_bond_universe_refresh').slotExternalCallsLimit > 0);
 assert.ok(definitions.getJobDefinition('company_financial_incremental_sync').slotExternalCallsLimit > 0);
@@ -41,5 +42,7 @@ assert.match(evidence, /FROM job_runs/);
 assert.match(evidence, /runResult\.ok === false/);
 assert.match(evidence, /failedDatasets/);
 assert.match(evidence, /expectedDataDate/);
+assert.strictEqual(businessDateText(new Date('2026-09-15T16:00:00.000Z')), '2026-09-16');
+assert.strictEqual(businessDateText('2026-09-16'), '2026-09-16');
 
 console.log('OK inc-0026-continuation: 32 项续批、总止损、目标日和终态约束通过');

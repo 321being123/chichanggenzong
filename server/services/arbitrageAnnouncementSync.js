@@ -2,11 +2,11 @@
 // 首次 1 年同步 + 增量同步 + 游标管理 + 原始记录入库 + 公告/事件标准化
 const { pool } = require('../db');
 const hkex = require('./hkexAnnouncement');
-const cninfo = require('./cninfoAnnouncement');
 const parser = require('./arbitrageParser');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
+const { fetchSseEventsBatch, fetchSzseEventsBatch } = require('./stockAnalysis');
 const {
   cleanSecurityText,
   firstSecurityCode,
@@ -19,9 +19,84 @@ const {
 
 const SYNC_JOB = 'arbitrage_sync';
 const MAX_PARSE_ATTEMPTS = 3;
+const EXCHANGE_SCAN_DAYS = 7;
+
+function normalizeAnnouncementDate(value) {
+  const text = String(value || '').replace(/-/g, '').slice(0, 8);
+  return /^\d{8}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}` : null;
+}
+
+function splitExchangeWindows(fromDate, toDate) {
+  const start = new Date(`${fromDate}T00:00:00Z`);
+  const end = new Date(`${toDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return [];
+  const windows = [];
+  for (let cursor = start; cursor <= end;) {
+    const windowEnd = new Date(Math.min(cursor.getTime() + (EXCHANGE_SCAN_DAYS - 1) * 86400000, end.getTime()));
+    windows.push({ from: cursor.toISOString().slice(0, 10), to: windowEnd.toISOString().slice(0, 10) });
+    cursor = new Date(windowEnd.getTime() + 86400000);
+  }
+  return windows;
+}
+
+function exchangeAnnouncementStockName(event) {
+  const raw = event && event.raw || {};
+  return cleanSecurityText(raw.SECURITY_NAME || raw.SECURITY_NAME_ABBR || raw.SECURITY_NAME_SHORT
+    || raw.secName || raw.stockName || raw.securityName || raw.name || '');
+}
+
+function mapExchangeArbitrageAnnouncement(event, scope) {
+  const code = String(event && event.stock_code || '').match(/\d{6}/);
+  const title = cleanSecurityText(event && event.title);
+  const announcedAt = normalizeAnnouncementDate(event && event.event_date);
+  return {
+    sourceKey: `${scope}:${event && (event.source_number || event.url || `${event.event_date || ''}:${event.stock_code || ''}:${title}`)}`,
+    fileLink: event && event.url || '',
+    title,
+    announcedAt,
+    stockCode: code ? code[0] : '',
+    stockName: exchangeAnnouncementStockName(event),
+    exchange: scope === 'sse' ? 'SSE' : 'SZSE',
+    rawPayload: event && event.raw || event,
+  };
+}
+
+function isRelevantExchangeArbitrageAnnouncement(event) {
+  const text = [event && event.title, event && event.raw && event.raw.LONG_TEXT].filter(Boolean).join(' ');
+  return Boolean(classifyRiskAnnouncement(text) || classifyTitle(text, 'sse') || detectUpdate(text)
+    || isGenericControlChangeTermination(text));
+}
+
+async function searchExchangeArbitrageAnnouncements(scope, { fromDate, toDate } = {}) {
+  const fetcher = scope === 'sse' ? fetchSseEventsBatch : fetchSzseEventsBatch;
+  if (!fetcher) throw new Error(`未配置交易所公告适配器：${scope}`);
+  const events = [];
+  for (const window of splitExchangeWindows(fromDate, toDate)) {
+    const result = await fetcher(window.from, window.to, '');
+    if (result && result.complete === false) {
+      const error = new Error(`${scope.toUpperCase()} 公告分页未完整，已停止推进套利同步游标`);
+      error.code = 'PAGINATION_INCOMPLETE';
+      error.errorType = 'data_quality';
+      error.source = scope;
+      throw error;
+    }
+    events.push(...(result && result.events || []));
+  }
+  return [...new Map(events
+    .filter(isRelevantExchangeArbitrageAnnouncement)
+    .map(event => [`${scope}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event]))
+    .values()].map(event => mapExchangeArbitrageAnnouncement(event, scope));
+}
+
+const exchangeAdapters = {
+  sse: { searchAnnouncements: params => searchExchangeArbitrageAnnouncements('sse', params) },
+  szse: { searchAnnouncements: params => searchExchangeArbitrageAnnouncements('szse', params) },
+};
+
 const SCOPES = {
   hkex: { sourceCode: 'hkex_announcements', dataset: 'hkex_announcements', adapter: hkex },
-  cninfo: { sourceCode: 'cninfo_announcements', dataset: 'cninfo_announcements', adapter: cninfo },
+  sse: { sourceCode: 'sse', dataset: 'sse_announcements', adapter: exchangeAdapters.sse },
+  szse: { sourceCode: 'szse', dataset: 'szse_announcements', adapter: exchangeAdapters.szse },
 };
 
 function todayShanghaiDate(now = new Date()) {
@@ -122,7 +197,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     stockName: firstSecurityName(ann.stockName),
     title: cleanSecurityText(ann.title),
   };
-  if (scope === 'cninfo' && /境内上市外资股转换上市地|B股转H股|B转H/.test(ann.title || '')
+  if (scope !== 'hkex' && /境内上市外资股转换上市地|B股转H股|B转H/.test(ann.title || '')
       && /^0\d{5}$/.test(String(ann.stockCode || ''))) {
     const bCode = '2' + String(ann.stockCode).slice(1);
     const quoteMap = await fetchTencentQuotes([bCode]);
@@ -247,7 +322,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     // 但它们仍然代表关联的 A 股套利事件已经终止（例如君亭酒店）。
     // 只在巨潮公告、已知标的、且明确出现“终止/撤回/取消”与控制权变更语义时处理，
     // 避免把普通工商变更或其他无关公告误关。
-    if (scope === 'cninfo' && isGenericControlChangeTermination(classificationText) && instrumentId) {
+    if (scope !== 'hkex' && isGenericControlChangeTermination(classificationText) && instrumentId) {
       const { rows: broadOpen } = await client.query(`
         SELECT case_id FROM event.arbitrage_cases
         WHERE target_instrument_id=$1
@@ -543,7 +618,7 @@ async function retryPendingDocuments() {
 // 游标规则：某窗口内有任一条公告入库失败（或整窗拉取失败），则不推进游标，
 // 保留已有成功水位，下一次增量同步会从重叠窗口重新拉取并重试失败记录（入库幂等）。
 async function runSync(windows, isFirst) {
-  const results = { hkex: { total: 0, errors: [], failureDetails: [] }, cninfo: { total: 0, errors: [], failureDetails: [] } };
+  const results = Object.fromEntries(Object.keys(SCOPES).map(scope => [scope, { total: 0, errors: [], failureDetails: [] }]));
 
   for (const [scopeName, cfg] of Object.entries(SCOPES)) {
     const sourceId = await getSourceId(cfg.sourceCode);
@@ -629,5 +704,8 @@ module.exports = {
   classifyRiskAnnouncement,
   todayShanghaiDate,
   normalizeCursorDate,
+  normalizeAnnouncementDate,
+  splitExchangeWindows,
+  searchExchangeArbitrageAnnouncements,
   SCOPES,
 };

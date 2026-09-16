@@ -79,10 +79,12 @@ assert.ok(analysis.includes('parserNeedsReparse') && analysis.includes('latestNo
 assert.ok(analysis.includes('loadRevisionEventCache') && analysis.includes('revision_event_cache'), '历史实施公告必须支持定点重解析正文锁定期');
 assert.ok(analysis.includes('retryFailed') && analysis.includes('changed_count') && analysis.includes('no_revision_evidence'), '公告解析重试和增量计数缺少闭环');
 assert.ok(analysis.includes('resolveConvertibleBondSymbolicLocks') && analysis.includes('symbolic_reference_type') && analysis.includes('symbolic_check_from'), '季度报告董事会无固定日期锁定缺少每日定点解析');
-assert.ok(analysis.includes('fetchSseEventsBatch') && analysis.includes('fetchSzseEventsBatch') && analysis.includes('fetchCninfoEventsBatch'), '公告同步必须支持交易所批量主取和巨潮备取');
+assert.ok(analysis.includes('fetchSseEventsBatch') && analysis.includes('fetchSzseEventsBatch') && !analysis.includes('fetchCninfoEventsBatch'), '公告同步必须只使用交易所批量公告主链');
 assert.ok(jobs.includes('convertible_bond_announcement_history_sync') && jobs.includes('maxExternalCallsPerRun: 600'), '公告事实同步不得继续使用20次内部单批上限');
 assert.ok(migration.includes('137_convertible_bond_exchange_announcement_unlimited') && migration.includes('internal_per_minute_limit=NULL') && migration.includes('internal_daily_limit=NULL') && migration.includes('min_interval_ms=0'), '交易所公告迁移必须取消分钟/日和间隔内部预算');
-assert.ok(analysis.includes('settled[0].status === \'rejected\'') && !analysis.includes('!primaryEvents.length && (stockCode.endsWith(\'.SH\')'), '正常空公告不得触发巨潮备取');
+assert.ok(analysis.includes('const rejected = settled.filter(item => item.status === \'rejected\')')
+  && !analysis.includes('fetchCninfoEventsByYear(stockCode, start, end, \'转股价格\'')
+  && !redemptionSync.includes("require('./cninfoAnnouncement')"), '交易所公告失败不得触发巨潮备取');
 assert.ok(refresh.includes('calculateConvertibleBondRevisionStatus') && refresh.includes("convertible_bond_revision"), '每日链路未计算下修进度');
 assert.ok(refresh.includes('scheduleDaily(7, 40') && refresh.includes('syncConvertibleBondAnnouncementHistories') && refresh.includes('resolveConvertibleBondSymbolicLocks'), '兼容调度未执行下修公告增量和董事会锁定核查');
 assert.ok(refresh.includes('pending_parse') && refresh.includes('cachedOnly: true') && refresh.includes('parser_version IS DISTINCT FROM'), '启动补漏未处理旧解析器积压');

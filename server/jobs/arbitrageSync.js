@@ -25,12 +25,14 @@ async function runArbitrageSync(reason = 'scheduled', context = {}) {
     const pdfCache = cleanupArbitragePdfCache();
     runId = await startJobRun(SYNC_JOB);
     const result = await sync.runIncrementalSync();
-    const errors = [...(result.hkex.errors || []), ...(result.cninfo.errors || [])];
-    const failure = [...(result.hkex.failureDetails || []), ...(result.cninfo.failureDetails || [])][0] || null;
+    const sourceResults = Object.keys(sync.SCOPES).map(scope => result[scope] || { total: 0, errors: [], failureDetails: [] });
+    const errors = sourceResults.flatMap(source => source.errors || []);
+    const failure = sourceResults.flatMap(source => source.failureDetails || [])[0] || null;
     const parsePending = Number(result.recovery && result.recovery.pending || 0);
     const parsePendingNotDue = Number(result.recovery && result.recovery.pendingNotDue || 0);
     const parseExhausted = Number(result.recovery && result.recovery.exhausted || 0);
-    const detail = `hkex:${result.hkex.total} cninfo:${result.cninfo.total} errors:${errors.length} parse_pending:${parsePending} parse_not_due:${parsePendingNotDue} parse_exhausted:${parseExhausted}`;
+    const sourceDetail = Object.keys(sync.SCOPES).map(scope => `${scope}:${(result[scope] && result[scope].total) || 0}`).join(' ');
+    const detail = `${sourceDetail} errors:${errors.length} parse_pending:${parsePending} parse_not_due:${parsePendingNotDue} parse_exhausted:${parseExhausted}`;
     if (errors.length) {
       const sourceError = errors.length ? `；数据源错误：${errors.slice(0, 5).join(' | ')}` : '';
       const error = `套利公告同步未完整成功：PDF待重试 ${parsePending}，已达上限 ${parseExhausted}${sourceError}`;
@@ -79,8 +81,8 @@ async function checkStartupBackfill() {
     const { rows } = await pool.query(`
       SELECT scope_key, last_success_date, last_error
       FROM ops.sync_cursors
-      WHERE scope_key LIKE 'arbitrage_%'
-    `);
+      WHERE scope_key = ANY($1::text[])
+    `, [Object.keys(sync.SCOPES).map(scope => 'arbitrage_' + scope)]);
     if (!rows.length) {
       // 从未同步过 → 不自动启动首次同步（需管理员手动触发）
       console.log('[arbitrage-sync] 首次同步尚未执行，等待管理员手动触发');

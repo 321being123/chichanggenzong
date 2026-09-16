@@ -11,15 +11,13 @@ async function main() {
     const result = await sync.runFirstSync();
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     console.log(`[arbitrage-backfill] 同步完成（${elapsed}s）`);
-    console.log('  HKEX:', result.hkex.total, '条', result.hkex.errors.length ? `错误${result.hkex.errors.length}条` : '');
-    console.log('  CNINFO:', result.cninfo.total, '条', result.cninfo.errors.length ? `错误${result.cninfo.errors.length}条` : '');
-    if (result.hkex.errors.length) {
-      console.log('  HKEX 错误详情:');
-      result.hkex.errors.slice(0, 10).forEach(e => console.log('    -', e));
-    }
-    if (result.cninfo.errors.length) {
-      console.log('  CNINFO 错误详情:');
-      result.cninfo.errors.slice(0, 10).forEach(e => console.log('    -', e));
+    for (const scope of Object.keys(sync.SCOPES)) {
+      const source = result[scope] || { total: 0, errors: [] };
+      console.log(`  ${scope.toUpperCase()}:`, source.total, '条', source.errors.length ? `错误${source.errors.length}条` : '');
+      if (source.errors.length) {
+        console.log(`  ${scope.toUpperCase()} 错误详情:`);
+        source.errors.slice(0, 10).forEach(e => console.log('    -', e));
+      }
     }
     process.exit(0);
   } catch (err) {

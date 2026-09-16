@@ -618,10 +618,11 @@ async function queryDataAsOf(jobCode, businessDate) {
     ipo_history_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='global:ipo_history'`,
     stock_analysis_refresh: `SELECT max(as_of_date)::text AS data_as_of FROM analytics.stock_overview_latest`,
     hk_trade_rules_sync: `SELECT max(source_updated_at)::text AS data_as_of FROM market.instrument_trade_rules`,
-    // 套利任务必须同时确认港交所和巨潮两个来源；取 max 会被单一来源的成功掩盖另一来源的落后。
+    // 套利任务必须同时确认港交所、上交所和深交所；取 max 会被单一来源的成功掩盖另一来源的落后。
     arbitrage_sync: `SELECT LEAST(
       COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_hkex' AND dataset_code='hkex_announcements'), '1900-01-01'::date),
-      COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_cninfo' AND dataset_code='cninfo_announcements'), '1900-01-01'::date)
+      COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_sse' AND dataset_code='sse_announcements'), '1900-01-01'::date),
+      COALESCE((SELECT max(last_success_date) FROM ops.sync_cursors WHERE scope_key='arbitrage_szse' AND dataset_code='szse_announcements'), '1900-01-01'::date)
     )::text AS data_as_of`,
     convertible_bond_announcement_history_sync: `SELECT max(last_success_date)::text AS data_as_of
       FROM ops.sync_cursors WHERE scope_key='convertible_bond_announcement_history' AND dataset_code='official_announcements'`,
@@ -684,13 +685,18 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
   if (!current.rows[0]) return null;
   const definition = getJobDefinition(current.rows[0].job_code);
   resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+  // 任何失败结果都不能被调用方传入的 succeeded 覆盖，避免后台显示假成功。
+  const resultFailed = resultSummary && (
+    resultSummary.ok === false || resultSummary.status === 'failed' || Boolean(resultSummary.error)
+  );
+  const effectiveStatus = requestedStatus === 'succeeded' && resultFailed ? 'failed' : requestedStatus;
   const skipWatermark = resultSummary && resultSummary.watermarkNotRequired === true;
   const requiresDataWatermark = definition.requiresDataWatermark !== false && !skipWatermark;
-  const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
+  const dataAsOf = effectiveStatus === 'succeeded' && requiresDataWatermark
     ? await resolveDataAsOf(current.rows[0].job_code, current.rows[0].business_date, resultSummary)
     : null;
-  const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark
-    && !isDataAsOfFresh(dataAsOf, current.rows[0].business_date, definition) ? 'degraded' : requestedStatus;
+  const nextStatus = effectiveStatus === 'succeeded' && requiresDataWatermark
+    && !isDataAsOfFresh(dataAsOf, current.rows[0].business_date, definition) ? 'degraded' : effectiveStatus;
   const finalError = nextStatus === 'degraded' && !errorMessage
     ? '任务完成但没有形成可确认的数据日期，请检查上游返回和入库结果'
     : errorMessage;

@@ -150,7 +150,7 @@ assert(/test -L \/etc\/systemd\/system\/\$unit/.test(deployScript) && /cp -a \/e
 assert(/if \(failed > 0\) throw new Error/.test(marketClose) && /失败 \$\{failed\}/.test(marketClose), '收盘任务任一证券失败都必须进入统一重试，不能以部分成功掩盖缺数');
 assert(/market_close:A股/.test(slots) && /market_close:港股/.test(slots) && /market_close:可转债/.test(slots)
   && /market_close:LOF\/ETF/.test(slots) && /COUNT\(dp\.code\)=COUNT\(\*\)/.test(slots), '收盘任务数据水位必须按对应市场逐项核对持仓价格');
-assert(/const errors = \[\.\.\.\(result\.hkex\.errors/.test(arbitrageJob) && /if \(errors\.length\)/.test(arbitrageJob)
+assert(/const sourceResults = Object\.keys\(sync\.SCOPES\)/.test(arbitrageJob) && /const errors = sourceResults\.flatMap/.test(arbitrageJob) && /if \(errors\.length\)/.test(arbitrageJob)
   && /parsePendingNotDue/.test(arbitrageJob) && /continuationBlocked/.test(arbitrageJob)
   && /finishJobRun\(runId, false, error\)/.test(arbitrageJob), '套利任一公告源局部失败必须记失败，PDF未到期等待，耗尽后转人工');
 assert(/066_arbitrage_parse_retry/.test(migrations) && /parse_attempts INTEGER NOT NULL DEFAULT 0/.test(migrations)

@@ -36,6 +36,14 @@ test('首日和末日窗口正确', () => {
   assert.strictEqual(windows[2].to, '2026-03-31');
 });
 
+test('交易所公告窗口按 7 天拆分，避免官方分页被截断', () => {
+  assert.deepStrictEqual(sync.splitExchangeWindows('2026-01-01', '2026-01-15'), [
+    { from: '2026-01-01', to: '2026-01-07' },
+    { from: '2026-01-08', to: '2026-01-14' },
+    { from: '2026-01-15', to: '2026-01-15' },
+  ]);
+});
+
 test('跨年窗口正确', () => {
   const windows = sync.generateMonthWindows('2025-12-01', '2026-01-31');
   assert.strictEqual(windows.length, 2);
@@ -132,11 +140,14 @@ test('调度任务已注册 arbitrageSync', () => {
 });
 
 // ===== 数据源配置 =====
-test('SCOPES 包含 hkex 和 cninfo 两个数据源', () => {
+test('SCOPES 只包含港交所、上交所、深交所', () => {
   assert.ok(sync.SCOPES.hkex, 'missing hkex scope');
-  assert.ok(sync.SCOPES.cninfo, 'missing cninfo scope');
+  assert.ok(sync.SCOPES.sse, 'missing sse scope');
+  assert.ok(sync.SCOPES.szse, 'missing szse scope');
+  assert.ok(!sync.SCOPES.cninfo, 'CNINFO 不能作为套利同步数据源');
   assert.strictEqual(sync.SCOPES.hkex.dataset, 'hkex_announcements');
-  assert.strictEqual(sync.SCOPES.cninfo.dataset, 'cninfo_announcements');
+  assert.strictEqual(sync.SCOPES.sse.dataset, 'sse_announcements');
+  assert.strictEqual(sync.SCOPES.szse.dataset, 'szse_announcements');
   assert.strictEqual(typeof sync.retryPendingDocuments, 'function');
 });
 

@@ -411,7 +411,7 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
   return rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
 }
 
-// 交易所公告支持按市场/日期批量查询。返回 complete=false 时说明到达页数上限，调用方必须走备源，不能把部分结果当成完整成功。
+// 交易所公告支持按市场/日期批量查询。返回 complete=false 时说明到达页数上限，调用方必须缩小窗口重试，不能把部分结果当成完整成功。
 async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
   const pageSize = 100, maxPages = 20, rows = [];
   let complete = true;
@@ -431,8 +431,8 @@ async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
 }
 
 async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
-  // 全市场扫描只取首批，未取完立即交给带关键词检索的巨潮备源，给正文解析预留任务预算。
-  const pageSize = 100, maxPages = 1, rows = [];
+  // 交易所主链必须把分页取完；窗口过大时返回 complete=false，由调用方缩小日期范围重试。
+  const pageSize = 100, maxPages = 20, rows = [];
   let complete = true;
   for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
     const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [],

@@ -3,7 +3,7 @@ const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { TushareRequestError } = require('./tushare');
 const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
 const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport,
-  fetchSseEventsBatch, fetchSzseEventsBatch, fetchCninfoEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
+  fetchSseEventsBatch, fetchSzseEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -1232,7 +1232,7 @@ function announcementMatchesBond(event, profile) {
 
 const REVISION_ANNOUNCEMENT_KEYWORDS = ['转股价格', '转股价', '不下修', '不向下修正', '下修'];
 const LIFECYCLE_ANNOUNCEMENT_KEYWORDS = ['可转债发行', '可转换公司债券发行', '可转债上市', '可转换公司债券上市'];
-const CALL_ANNOUNCEMENT_KEYWORDS = ['强赎', '提前赎回', '不提前赎回', '赎回实施', '赎回结果', '到期兑付', '停止交易'];
+const CALL_ANNOUNCEMENT_KEYWORDS = ['强赎', '提前赎回', '不提前赎回', '赎回实施', '赎回结果', '到期兑付', '即将到期', '停止交易', '最后交易日'];
 const UNIFIED_ANNOUNCEMENT_KEYWORDS = [...new Set([...REVISION_ANNOUNCEMENT_KEYWORDS, ...LIFECYCLE_ANNOUNCEMENT_KEYWORDS, ...CALL_ANNOUNCEMENT_KEYWORDS])];
 
 function announcementDateWindows(startDate, endDate) {
@@ -1296,22 +1296,17 @@ async function collectConvertibleBondAnnouncementMarket(market, startDate, endDa
   const primary = await collectAnnouncementSource(primaryFetcher, windows, market === 'SZ' ? [''] : UNIFIED_ANNOUNCEMENT_KEYWORDS);
   if (!primary.failures.length) return { events: relevantConvertibleBondAnnouncements(primary.events), failed: false, messages: [] };
 
-  // 主源明确失败或分页不完整才启用巨潮；“查询成功但没有公告”不触发备源，避免再次放大请求量。
-  const cninfo = await collectAnnouncementSource(
-    (start, end, keyword) => fetchCninfoEventsBatch(start, end, market, keyword),
-    windows, UNIFIED_ANNOUNCEMENT_KEYWORDS
-  );
-  const merged = relevantConvertibleBondAnnouncements([...primary.events, ...cninfo.events]);
-  if (!cninfo.failures.length) return { events: merged, failed: false, messages: [] };
+  // 交易所主源失败或分页不完整时保留失败状态，下一轮按游标重试；不再自动切换巨潮。
+  const exchangeEvents = relevantConvertibleBondAnnouncements(primary.events);
 
-  // anns_d 需要单独权限，默认关闭；已明确配置时作为最后一道可选备源。
+  // anns_d 需要单独权限，默认关闭；仅在管理员显式开启时作为独立的最后备源。
   if (/^(1|true|yes)$/i.test(String(process.env.ANNOUNCEMENT_TUSHARE_FALLBACK || ''))) {
     const tushare = await collectAnnouncementSource(fetchTushareAnnouncementBatch, windows, ['']);
-    const all = relevantConvertibleBondAnnouncements([...merged, ...tushare.events]);
+    const all = relevantConvertibleBondAnnouncements([...exchangeEvents, ...tushare.events]);
     if (!tushare.failures.length) return { events: all, failed: false, messages: [] };
-    return { events: all, failed: true, messages: [...primary.failures, ...cninfo.failures, ...tushare.failures].slice(0, 6) };
+    return { events: all, failed: true, messages: [...primary.failures, ...tushare.failures].slice(0, 6) };
   }
-  return { events: merged, failed: true, messages: [...primary.failures, ...cninfo.failures].slice(0, 6) };
+  return { events: exchangeEvents, failed: true, messages: primary.failures.slice(0, 6) };
 }
 
 function eventsForAnnouncementProfile(events, profile, startDate) {
@@ -2328,14 +2323,10 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         ? () => fetchSseEvents(stockCode, start, end, '转股价格')
         : market === 'SZ'
           ? () => fetchSzseEvents(stockCode, start, end, '转股价格')
-          : () => fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true });
+          : () => Promise.reject(Object.assign(new Error(`可转债正股缺少交易所市场映射：${stockCode}`), {
+            code: 'MISSING_EXCHANGE', errorType: 'data_quality', source: 'exchange',
+          }));
       settled = await Promise.allSettled([primary()]);
-      // 只有主源明确报错才查巨潮；正常空结果可能表示这只债在窗口内没有相关公告。
-      if (settled[0] && settled[0].status === 'rejected' && (market === 'SH' || market === 'SZ')) {
-        settled.push(await fetchCninfoEventsByYear(stockCode, start, end, '转股价格', { propagateErrors: true, allowBroadFallback: false })
-          .then(value => ({ status: 'fulfilled', value }))
-          .catch(reason => ({ status: 'rejected', reason })));
-      }
     }
     const primaryEvents = settled[0] && settled[0].status === 'fulfilled' ? (settled[0].value || []) : [];
     const rejected = settled.filter(item => item.status === 'rejected');

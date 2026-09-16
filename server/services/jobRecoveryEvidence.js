@@ -2,6 +2,18 @@
 const { pool } = require('../db/connection');
 const { getJobDefinition } = require('./jobDefinitions');
 
+function businessDateText(value) {
+  const text = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = value instanceof Date ? value : new Date(text);
+  if (Number.isNaN(date.getTime())) return text.slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  const fields = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return `${fields.year}-${fields.month}-${fields.day}`;
+}
+
 async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.query(sql, params), options = {}) {
   if (!slot || !slot.job_code || !['succeeded', 'degraded'].includes(options.candidateStatus || slot.status)) {
     return { recovered: false, reason: 'slot_not_successful', evidence: slot || null };
@@ -31,8 +43,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   }
   const datasets = definition.producesDatasets || [];
   const { expectedDataDate } = require('./jobScheduleSlots');
-  const businessDate = slot.business_date instanceof Date
-    ? slot.business_date.toISOString().slice(0, 10) : String(slot.business_date || '').slice(0, 10);
+  const businessDate = businessDateText(slot.business_date);
   const partitionKey = expectedDataDate(slot.job_code, businessDate) || businessDate;
   let datasetEvidence = [];
   if (definition.strictDatasetPublication && datasets.length && partitionKey) {
@@ -64,4 +75,4 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   return { recovered: true, evidence: { mode: 'slot_success_and_dataset_evidence', slot, run, datasets: datasetEvidence, partitionKey } };
 }
 
-module.exports = { verifySlotRecoveryEvidence };
+module.exports = { businessDateText, verifySlotRecoveryEvidence };

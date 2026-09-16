@@ -337,6 +337,16 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     assert.strictEqual(forcedManualSlot.request_payload.force, true, '调度同步不得覆盖人工强制补跑标记');
     await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [forcedManualInsert.rows[0].slot_id]);
 
+    const failedResultInsert = await pool.query(
+      `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,attempt_count,next_attempt_at)
+       VALUES('site_analytics_retention',$1,'2099-01-01','running',1,NULL) RETURNING slot_id`, [claimTime]
+    );
+    const failedResultSlot = await completeSlot(
+      failedResultInsert.rows[0].slot_id, 'succeeded', { ok: false, status: 'failed', error: '模拟失败' }, null, null
+    );
+    assert.strictEqual(failedResultSlot.status, 'failed', '失败结果不得被错误落为 succeeded');
+    await pool.query('DELETE FROM ops.job_schedule_slots WHERE slot_id=$1', [failedResultInsert.rows[0].slot_id]);
+
     const staleInsert = await pool.query(
       `INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,status,attempt_count,next_attempt_at)
        VALUES('stock_analysis_refresh',$1,'2099-01-01','running',1,NULL) RETURNING slot_id`, [claimTime]

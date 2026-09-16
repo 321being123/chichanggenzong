@@ -350,6 +350,14 @@ try:
     )
     check("沪市主板新股按500股/签计算", "预计首日单签收益3万元" in summary_sh_main,
           "summary=%r" % summary_sh_main)
+    summary_under_ten_thousand = _val._format_listing_summary(
+        100,
+        {"stock_code": "301001", "issue_price": 19.98},
+        "热市",
+    )
+    check("单签收益低于一万元时按千元向下取整",
+          "预计首日单签收益9千元" in summary_under_ten_thousand,
+          "summary=%r" % summary_under_ten_thousand)
     _old_xgb_for_floor = _val._xgb_predict_listing
     _old_sector_for_floor = _val.detect_stock_hot_sector
     _old_temp_multiplier_for_floor = _val.get_temp_listing_multiplier
@@ -362,6 +370,10 @@ try:
     )
     check("仅新股首日预估按50%档位向下取整", floored.get("predicted_return") == 126,
           "predicted_return=%r" % floored.get("predicted_return"))
+    check("打新建议摘要不显示涨幅区间和预测版本",
+          "可能区间" not in floored.get("summary", "")
+          and "上市前版" not in floored.get("summary", ""),
+          "summary=%r" % floored.get("summary"))
     _val._xgb_predict_listing = _old_xgb_for_floor
     _val.detect_stock_hot_sector = _old_sector_for_floor
     _val.get_temp_listing_multiplier = _old_temp_multiplier_for_floor

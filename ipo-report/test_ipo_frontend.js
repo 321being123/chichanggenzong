@@ -99,6 +99,15 @@ const legacySummary = {
 const legacyAdviceHtml = sandbox.ipoRenderAdvice(legacyAdviceMd, { reportDate: "20260818", summary: legacySummary });
 check("旧创业板文案补齐深市", legacyAdviceHtml.indexOf("中塑股份-深市创业板") >= 0);
 check("旧科创板文案补齐沪市", legacyAdviceHtml.indexOf("科创测试-沪市科创板") >= 0);
+const verboseAdviceMd = "## 📋 结论\n\n**上市**\n- 测试新股-创业板（预计首日涨幅约100%，预计首日单签收益9千元，可能区间40%～160%（上市前版））";
+const verboseAdviceHtml = sandbox.ipoRenderAdvice(verboseAdviceMd, {
+  reportDate: "20260818",
+  summary: { apply_stocks: [], apply_bonds: [], list_stocks: [{ code: "301002", name: "测试新股" }], list_bonds: [] }
+});
+check("旧日报建议隐藏涨幅区间和预测版本",
+  verboseAdviceHtml.indexOf("预计首日单签收益9千元") >= 0
+  && verboseAdviceHtml.indexOf("可能区间") === -1
+  && verboseAdviceHtml.indexOf("上市前版") === -1);
 
 const emptyAdviceMd = "## 📋 结论\n\n---\n## 一、明日可申购\n\n> 明日无可申购的新股或新债。";
 const emptySummary = { apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };

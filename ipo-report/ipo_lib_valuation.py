@@ -763,7 +763,7 @@ def _floor_listing_band(estimated):
 
 def _format_listing_summary(estimated, stock_detail, temp):
     """生成上市结论文字，包含预计单签收益
-    涨幅按50%梯度向下取整展示，单签收益按万元整数向下取整"""
+    涨幅按50%梯度向下取整展示；单签收益满万元按万元、低于万元按千元向下取整"""
     est_step = _floor_listing_band(estimated)
     issue_price = None
     if stock_detail:
@@ -772,11 +772,11 @@ def _format_listing_summary(estimated, stock_detail, temp):
         except (ValueError, TypeError):
             pass
 
-    single_lot_profit = None
+    single_lot_profit_yuan = None
     if issue_price and issue_price > 0:
         stock_code = stock_detail.get("stock_code") if stock_detail else None
         lot_size = _get_lot_size(stock_code)
-        single_lot_profit = issue_price * lot_size * est_step / 100 / 10000  # 万元
+        single_lot_profit_yuan = issue_price * lot_size * est_step / 100
 
     if temp == "冷市":
         return f"❄️ 预计首日涨幅 {est_step}%，冷市涨幅受限"
@@ -784,10 +784,15 @@ def _format_listing_summary(estimated, stock_detail, temp):
         part = f"{est_step}%+"
     else:
         part = f"约{est_step}%"
-    if single_lot_profit and single_lot_profit >= 0.01:
-        return f"预计首日涨幅{part}，预计首日单签收益{int(single_lot_profit)}万元"
+    if single_lot_profit_yuan and single_lot_profit_yuan >= 10000:
+        profit_text = f"{math.floor(single_lot_profit_yuan / 10000)}万元"
+    elif single_lot_profit_yuan and single_lot_profit_yuan >= 1000:
+        profit_text = f"{math.floor(single_lot_profit_yuan / 1000)}千元"
     else:
-        return f"预计首日涨幅{part}"
+        profit_text = None
+    if profit_text:
+        return f"预计首日涨幅{part}，预计首日单签收益{profit_text}"
+    return f"预计首日涨幅{part}"
 
 
 def _prediction_range(estimated, prediction_stage, imputed_fields=None):
@@ -812,9 +817,6 @@ def _prediction_stage_label(prediction_stage):
         "listing": "上市前版",
     }.get(prediction_stage, "研究估算")
 
-
-def _summary_with_prediction_range(summary, low, high, prediction_stage):
-    return f"{summary}，可能区间{low}%～{high}%（{_prediction_stage_label(prediction_stage)}）"
 
 def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_detail=None, stock_detail=None,
                          prediction_stage="listing", advice_calculation=None):
@@ -908,10 +910,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
             detail_parts.append(f"⚠️ 模型补位字段: {', '.join(sorted(set(imputed_fields)))}")
 
         prediction_low, prediction_high = _prediction_range(estimated, prediction_stage, imputed_fields)
-        summary = _summary_with_prediction_range(
-            _format_listing_summary(estimated, stock_detail, temp),
-            prediction_low, prediction_high, prediction_stage,
-        )
+        summary = _format_listing_summary(estimated, stock_detail, temp)
 
         base_with_temp = int(round(base_estimated * temp_mult))
         return {
@@ -1038,10 +1037,7 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         [field for field in ("online_lottery_rate", "oversubscribe_multiple")
          if stock_detail.get(field) in (None, "")],
     )
-    summary = _summary_with_prediction_range(
-        _format_listing_summary(estimated, stock_detail, temp),
-        prediction_low, prediction_high, prediction_stage,
-    )
+    summary = _format_listing_summary(estimated, stock_detail, temp)
 
     detail_parts = []
     detail_parts.append(f"📊 预估首日涨幅: {estimated}%")

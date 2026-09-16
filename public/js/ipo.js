@@ -361,7 +361,10 @@ function ipoAdviceMarketBoard(code) {
 }
 
 function ipoAdviceItemLabel(item, groupHead, summary) {
-  var text = String(item || '');
+  var text = String(item || '').replace(
+    /，可能区间-?\d+(?:\.\d+)?%～-?\d+(?:\.\d+)?%（(?:发行公告版|发行结果版|上市前版|研究估算)）/g,
+    ''
+  );
   var open = text.indexOf('（');
   if (open < 0) return text;
   var head = text.slice(0, open);

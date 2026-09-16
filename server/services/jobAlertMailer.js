@@ -2,6 +2,7 @@ const { pool } = require('../db/connection');
 const { auditEvent } = require('../db');
 const { mailer } = require('../config');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
+const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
 
 const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
@@ -93,7 +94,7 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
       return { recovered: false, evidence: row || null, reason: 'data_bound_alert_requires_dataset_evidence' };
     }
     if (row && row.status === 'succeeded') {
-      return { recovered: true, evidence: { mode: 'original_slot_recovered', original: row } };
+      return verifySlotRecoveryEvidence(row, query, { alertType });
     }
     if (!row || !row.job_code || !row.scheduled_for) {
       return { recovered: false, evidence: row || null, reason: row ? 'original_slot_not_recovered' : 'slot_not_found' };

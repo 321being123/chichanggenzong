@@ -1628,8 +1628,8 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     const listedStockCodes = new Set(stockStatusRows
       .map(row => String(row.ts_code || '').trim().toUpperCase())
       .filter(Boolean));
-    const today = tsDateStr(new Date());
-    const basics = allBasicRows.filter(row => activeProfile(row, today) && isUnderlyingStockListed(row, listedStockCodes));
+    // 计划业务日是事实判定日；补跑不能用机器当前日期把目标日的证券集合漂移到今天。
+    const basics = allBasicRows.filter(row => activeProfile(row, targetTradeDate) && isUnderlyingStockListed(row, listedStockCodes));
     if (!basics.length) throw new Error('Tushare 可转债基础数据为空，保留上一份数据');
     const profiles = basics;
     const activeCodes = new Set(basics.map(row => row.ts_code));
@@ -1881,10 +1881,10 @@ async function getRecentOpenDays(days = 90, endDate = null) {
 
 // 自动补齐历史空缺：主同步之后调用，扫描游标之前（含游标当天）窗口内「事实表缺失/坏数据」的交易日，逐日重算周期指标。
 // 无空缺时几乎零开销（一次 SQL 扫描）。windowDays 控制扫描范围：每日任务用默认 90 天足够，手动脚本可传更大值补全量历史。
-async function backfillCycleGaps({ windowDays = 90 } = {}) {
+async function backfillCycleGaps({ windowDays = 90, targetTradeDate = null } = {}) {
   const sourceId = await cycleService.getTushareSourceId();
   if (sourceId == null) { console.warn('[cycle-backfill] 未取得 tushare 数据源，跳过空缺补齐'); return; }
-  const openDays = await getRecentOpenDays(windowDays);
+  const openDays = await getRecentOpenDays(windowDays, targetTradeDate);
   if (!openDays.length) return;
   // 主同步只覆盖最新完整分区，因此游标之后、最新日之前的中间交易日也必须扫描。
   const gaps = await cycleService.findGapDays(openDays);
@@ -1972,6 +1972,7 @@ async function markStockDailyBackfillStale(targetTradeDate, error) {
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
   const targetTradeDate = isoDate(backfillOpts.targetTradeDate) || defaultBondTargetTradeDate();
   const failedDatasets = [...new Set((backfillOpts.failedDatasets || []).map(String).filter(Boolean))];
+  const pendingStages = new Set((backfillOpts.pendingStages || []).map(String));
   // 停牌数据集失败时只续跑停牌区间，不再重拉整套可转债、股票行情和估值。
   if (failedDatasets.length && failedDatasets.every(code => code === 'stock_suspend_calendar')) {
     const suspension = await repairConvertibleBondSuspensionCoverage(targetTradeDate, backfillOpts.windowDays);
@@ -1990,6 +1991,53 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
         errorCode: suspension.errorCode || 'DATASET_INCOMPLETE',
         errorType: 'data_quality',
       }),
+    };
+  }
+  // 正股行情补漏是独立阶段；续批只处理该阶段，避免重复拉取已完成的主链和周期数据。
+  if (pendingStages.has('stockMarketBackfill') || (failedDatasets.length && failedDatasets.every(code => code === 'stock_daily'))) {
+    const stockOnly = await backfillUnderlyingStockMarket({
+      windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90),
+      targetTradeDate,
+      continuationCount: backfillOpts.continuationCount,
+    });
+    if (stockOnly.continuationRequired) {
+      const continuationCount = Number(backfillOpts.continuationCount || 0) + 1;
+      const initialRemaining = Number(backfillOpts.initialRemaining || stockOnly.initialRemaining || stockOnly.remaining || 0);
+      const lastRemaining = Number(stockOnly.remaining || 0);
+      const previousRemaining = Number(backfillOpts.lastRemaining ?? initialRemaining);
+      const noProgressCount = backfillOpts.lastRemaining == null ? 0
+        : lastRemaining >= previousRemaining ? Number(backfillOpts.noProgressCount || 0) + 1 : 0;
+      const continuationMaxBatches = Number(backfillOpts.continuationMaxBatches || stockOnly.continuationMaxBatches || Math.ceil(initialRemaining / Math.max(Number(stockOnly.batchSize || 80), 1)) + 1);
+      const continuationStartedAt = backfillOpts.continuationStartedAt || stockOnly.continuationStartedAt || new Date().toISOString();
+      const continuationMaxAgeHours = Math.max(Number(backfillOpts.continuationMaxAgeHours || 24), 1);
+      const continuationAgeExceeded = Number.isFinite(Date.parse(continuationStartedAt))
+        && Date.now() - Date.parse(continuationStartedAt) >= continuationMaxAgeHours * 60 * 60 * 1000;
+      stockOnly.continuationCount = continuationCount;
+      stockOnly.initialRemaining = initialRemaining;
+      stockOnly.lastRemaining = lastRemaining;
+      stockOnly.noProgressCount = noProgressCount;
+      stockOnly.continuationMaxBatches = continuationMaxBatches;
+      stockOnly.continuationStartedAt = continuationStartedAt;
+      stockOnly.continuationMaxAgeHours = continuationMaxAgeHours;
+      stockOnly.pendingStages = ['stockMarketBackfill'];
+      stockOnly.nextAttemptInMinutes = 1;
+      if (noProgressCount >= 2 || (Number(backfillOpts.slotExternalCallsLimit || 0) > 0
+        && Number(backfillOpts.slotExternalCallsTotal || 0) >= Number(backfillOpts.slotExternalCallsLimit))
+        || continuationCount >= continuationMaxBatches || continuationAgeExceeded) {
+        stockOnly.continuationBlocked = true;
+        stockOnly.continuationStopReason = noProgressCount >= 2 ? '连续两批剩余量未下降，已停止自动续批'
+          : continuationAgeExceeded ? `续跑已超过${continuationMaxAgeHours}小时，已停止自动续批`
+            : '已达到续批停止线，已停止自动续批';
+      }
+    }
+    return {
+      ok: stockOnly.ok !== false && !stockOnly.continuationRequired,
+      status: stockOnly.continuationRequired ? 'partial' : stockOnly.ok === false ? 'degraded' : 'succeeded',
+      dataAsOf: targetTradeDate,
+      trade_date: targetTradeDate,
+      failedDatasets: stockOnly.continuationRequired || stockOnly.ok === false ? ['stock_daily'] : [],
+      publishDatasets: false,
+      ...stockOnly,
     };
   }
   const result = await syncConvertibleBondUniverse(reason, { targetTradeDate });
@@ -2011,11 +2059,15 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
     }
   }
   result.suspensionCoverage = suspensionCoverage;
-  await backfillCycleGaps(backfillOpts);
+  await backfillCycleGaps({ ...backfillOpts, targetTradeDate });
   // 正股行情是强赎计算的直接输入；主同步成功后顺带补齐最近窗口内的缺口，避免只更新转债而遗漏正股。
   let stockMarketBackfill;
   try {
-    stockMarketBackfill = await backfillUnderlyingStockMarket({ windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90) });
+    stockMarketBackfill = await backfillUnderlyingStockMarket({
+      windowDays: Math.max(Number(backfillOpts.windowDays) || 90, 90),
+      targetTradeDate,
+      continuationCount: backfillOpts.continuationCount,
+    });
   } catch (stockError) {
     await markStockDailyBackfillStale(targetTradeDate, stockError.message).catch(markError =>
       console.warn('[股债分析缓存] 标记 stock_daily 分区失败：', markError.message));
@@ -2029,7 +2081,7 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
     result.stock_market_backfill = { ok: false, status: 'failed', error: stockError.message };
     return result;
   }
-  if (stockMarketBackfill && stockMarketBackfill.ok === false) {
+  if (stockMarketBackfill && stockMarketBackfill.ok === false && !stockMarketBackfill.continuationRequired) {
     await markStockDailyBackfillStale(targetTradeDate, stockMarketBackfill.error).catch(markError =>
       console.warn('[股债分析缓存] 标记 stock_daily 分区失败：', markError.message));
     result.ok = false;
@@ -2041,6 +2093,36 @@ async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', bac
     result.missingDates = [...new Set([...(result.missingDates || []), targetTradeDate])];
   }
   result.stock_market_backfill = stockMarketBackfill;
+  if (stockMarketBackfill && stockMarketBackfill.continuationRequired) {
+    result.ok = true;
+    result.status = 'partial';
+    result.continuationRequired = true;
+    result.continuationCount = Number(backfillOpts.continuationCount || 0) + 1;
+    result.initialRemaining = Number(backfillOpts.initialRemaining || stockMarketBackfill.initialRemaining || stockMarketBackfill.remaining || 0);
+    result.lastRemaining = Number(stockMarketBackfill.remaining || 0);
+    const previousRemaining = backfillOpts.lastRemaining == null
+      ? Number(stockMarketBackfill.initialRemaining || result.initialRemaining) : Number(backfillOpts.lastRemaining);
+    result.noProgressCount = backfillOpts.lastRemaining == null
+      ? 0 : result.lastRemaining >= previousRemaining ? Number(backfillOpts.noProgressCount || 0) + 1 : 0;
+    result.continuationMaxBatches = Number(backfillOpts.continuationMaxBatches || stockMarketBackfill.continuationMaxBatches || Math.ceil(result.initialRemaining / Math.max(Number(stockMarketBackfill.batchSize || 80), 1)) + 1);
+    result.continuationStartedAt = backfillOpts.continuationStartedAt || stockMarketBackfill.continuationStartedAt || new Date().toISOString();
+    result.continuationMaxAgeHours = Math.max(Number(backfillOpts.continuationMaxAgeHours || 24), 1);
+    const continuationAgeExceeded = Number.isFinite(Date.parse(result.continuationStartedAt))
+      && Date.now() - Date.parse(result.continuationStartedAt) >= result.continuationMaxAgeHours * 60 * 60 * 1000;
+    result.pendingStages = ['stockMarketBackfill'];
+    result.failedDatasets = [...new Set([...(result.failedDatasets || []), 'stock_daily'])];
+    result.nextAttemptInMinutes = 1;
+    const definitionLimit = Number(backfillOpts.slotExternalCallsLimit || 0);
+    const slotTotal = Number(backfillOpts.slotExternalCallsTotal || 0) + Number(result.attemptExternalCalls || result.externalCalls || 0);
+    if (result.noProgressCount >= 2 || (definitionLimit > 0 && slotTotal >= definitionLimit)
+      || result.continuationCount >= Math.max(1, result.continuationMaxBatches) || continuationAgeExceeded) {
+      result.continuationBlocked = true;
+      result.continuationStopReason = result.noProgressCount >= 2 ? '连续两批剩余量未下降，已停止自动续批'
+        : definitionLimit > 0 && slotTotal >= definitionLimit ? '已达到计划实例累计外部请求上限，已停止自动续批'
+          : continuationAgeExceeded ? `续跑已超过${result.continuationMaxAgeHours}小时，已停止自动续批`
+            : '已达到续批最大批数，已停止自动续批';
+    }
+  }
   return result;
 }
 
@@ -2612,7 +2694,7 @@ async function saveFullStockMarketPartition(client, instrumentMap, dailyRows, va
   return { bars: bars.length, valuations: valuations.length, factors: factors.length };
 }
 
-async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
+async function backfillUnderlyingStockMarket({ windowDays = 500, targetTradeDate = null, continuationCount = 0 } = {}) {
   const jobName = 'convertible_bond_stock_market_backfill';
   if (!(await tryClaimJob(jobName))) return { skipped: true, reason: 'already_running' };
   const runId = await startJobRun(jobName);
@@ -2632,12 +2714,13 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
        WHERE u.status='listed'
          AND s.asset_class='stock'
          AND s.list_date IS NOT NULL
-         AND (s.delist_date IS NULL OR s.delist_date >= CURRENT_DATE)
+         AND (s.delist_date IS NULL OR s.delist_date >= $1::date)
          AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
-         AND (p.maturity_date IS NULL OR p.maturity_date >= CURRENT_DATE)`
+         AND (p.maturity_date IS NULL OR p.maturity_date >= $1::date)`,
+      [isoDate(targetTradeDate) || tsDateStr(new Date())]
     );
     const instrumentMap = new Map(rows.map(row => [row.canonical_code, row.instrument_id]));
-    const openDays = await getRecentOpenDays(windowDays);
+    const openDays = await getRecentOpenDays(windowDays, targetTradeDate);
     const source = await sourceIds();
     for (const tradeDate of openDays) {
       const coverage = await pool.query(
@@ -2724,18 +2807,22 @@ async function backfillUnderlyingStockMarket({ windowDays = 500 } = {}) {
           throw error;
         } finally { client.release(); }
       }
-      if (missingStocks.length > repairTargets.length) {
-        throw Object.assign(new Error(`最近30个交易日仍有 ${missingStocks.length - repairTargets.length} 只正股未完成行情补水（本次上限 ${repairLimit}）`), {
-          code: 'DATASET_INCOMPLETE',
-          errorType: 'data_quality',
-        });
-      }
       const { rows: remainingStocks } = await pool.query(missingStockSql, missingStockParams);
       if (remainingStocks.length) {
-        throw Object.assign(new Error(`最近30个交易日仍有 ${remainingStocks.length} 只正股行情缺口，不能标记任务成功`), {
-          code: 'DATASET_INCOMPLETE',
-          errorType: 'data_quality',
-        });
+        const detail = `最近30个交易日仍有 ${remainingStocks.length} 只正股行情缺口，本批已处理 ${repairTargets.length} 只`;
+        await finishJobRun(runId, true, detail);
+        return {
+          skipped: false, ok: false, status: 'partial', continuationRequired: true,
+          continuationCount: Number(continuationCount || 0) + 1,
+          initialRemaining: Number(missingStocks.length || 0), lastRemaining: Number(remainingStocks.length || 0),
+          batchSize: repairLimit,
+          continuationMaxBatches: Math.ceil(Number(missingStocks.length || 0) / repairLimit) + 1,
+          targetTradeDate: isoDate(targetTradeDate), filled_days: filledDays, saved_bars: savedBars,
+          saved_valuations: savedValuations, repaired_bars: repairedBars, empty_days: emptyDays,
+          stock_count: instrumentMap.size, remaining: remainingStocks.length,
+          failedDatasets: ['stock_daily'], pendingStages: ['stockMarketBackfill'],
+          datasetDiagnostics: { stock_daily: { query_status: 'partial', remaining_count: remainingStocks.length } },
+        };
       }
       if (repairedBars) console.log(`[股债分析缓存] 按正股代码补齐 ${repairedBars} 行最近行情`);
     }

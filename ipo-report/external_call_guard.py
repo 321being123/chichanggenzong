@@ -19,6 +19,14 @@ try:
     _run_call_count = max(int(os.environ.get("JOB_EXTERNAL_CALL_USED", "0")), 0)
 except (TypeError, ValueError):
     _run_call_count = 0
+try:
+    _slot_external_call_total = max(int(os.environ.get("JOB_SLOT_EXTERNAL_CALL_USED", "0")), 0)
+except (TypeError, ValueError):
+    _slot_external_call_total = 0
+try:
+    _slot_external_call_limit = max(int(os.environ.get("JOB_SLOT_EXTERNAL_CALL_LIMIT", "0")), 0)
+except (TypeError, ValueError):
+    _slot_external_call_limit = 0
 _probe_owner = f"{os.uname().nodename if hasattr(os, 'uname') else os.environ.get('COMPUTERNAME', 'python')}:{os.getpid()}:{uuid.uuid4()}"
 _probe_lease_seconds = 300
 
@@ -260,6 +268,8 @@ def _consume(conn, source, dataset, circuit_source=None, api_name=None, token_fi
             run_limit = 0
         if run_limit >= 0 and _run_call_count >= run_limit:
             raise ExternalCallGuardError("JOB_BUDGET_EXCEEDED", f"{source} 已达到本任务声明的外部请求上限 {int(run_limit)}", source, dataset, api_name or "*")
+    if _slot_external_call_limit > 0 and _slot_external_call_total + _run_call_count >= _slot_external_call_limit:
+        raise ExternalCallGuardError("JOB_BUDGET_EXCEEDED", f"{source} 已达到计划实例累计外部请求上限 {_slot_external_call_limit}", source, dataset, api_name or "*")
     source = _source_key(source)
     budget_source = _budget_source(source)
     api_name = _api_name(source, dataset, api_name)

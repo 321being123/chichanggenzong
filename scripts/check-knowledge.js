@@ -114,6 +114,33 @@ function collectGeneratedMatrixErrors(rootDir) {
   return [`任务-接口-数据集矩阵与 JOB_DEFINITIONS 不一致：${String(result.stderr || result.stdout || '').trim()}`];
 }
 
+function collectInc0026ImplementationErrors(rootDir) {
+  const definitionsPath = path.join(rootDir, 'server', 'services', 'jobDefinitions.js');
+  if (!fs.existsSync(definitionsPath)) return [];
+  const read = relativePath => {
+    const filePath = path.join(rootDir, relativePath);
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+  };
+  const errors = [];
+  const slots = read('server/services/jobScheduleSlots.js');
+  const orchestrator = read('server/services/jobOrchestrator.js');
+  const evidence = read('server/services/jobRecoveryEvidence.js');
+  const runner = read('server/services/jobRunnerProcess.js');
+  if (!/function continueSlot\(/.test(slots) || !/status='pending'/.test(slots) || !/attempt_count=GREATEST\(attempt_count-1,0\)/.test(slots)) {
+    errors.push('INC-0026 续批必须使用 continueSlot，并恢复正常 attempt_count 语义。');
+  }
+  if (!/slotExternalCallsTotal/.test(slots) || !/slotExternalCallsLimit/.test(runner)) {
+    errors.push('INC-0026 缺少槽位累计调用量与总止损实现。');
+  }
+  if (!/continuationRequired/.test(orchestrator) || !/pendingStages/.test(orchestrator)) {
+    errors.push('INC-0026 缺少阶段级 partial 续跑编排。');
+  }
+  if (!/verifySlotRecoveryEvidence/.test(evidence)) {
+    errors.push('INC-0026 缺少中立恢复证据服务。');
+  }
+  return errors;
+}
+
 function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] } = {}) {
   const errors = [];
   const map = loadMap(rootDir, errors);
@@ -127,6 +154,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
 
   errors.push(...collectVersionErrors(rootDir));
   errors.push(...collectGeneratedMatrixErrors(rootDir));
+  errors.push(...collectInc0026ImplementationErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];

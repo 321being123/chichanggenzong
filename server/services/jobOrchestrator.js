@@ -5,7 +5,7 @@ const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
-  claimSlot, completeSlot, deferSlot, waitForExternalSlot, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
+  claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
 } = require('./jobScheduleSlots');
 
 let executorStarted = false;
@@ -51,7 +51,12 @@ function normalizeJobResult(result, externalCalls = 0) {
     ok: !failed,
     status,
     dataAsOf: value.dataAsOf || value.data_as_of || value.trade_date || value.dataDate || null,
-    externalCalls: Number.isFinite(Number(value.externalCalls)) ? Number(value.externalCalls) : Number(externalCalls || 0),
+    attemptExternalCalls: Number.isFinite(Number(value.attemptExternalCalls))
+      ? Number(value.attemptExternalCalls)
+      : Number.isFinite(Number(value.externalCalls)) ? Number(value.externalCalls) : Number(externalCalls || 0),
+    externalCalls: Number.isFinite(Number(value.attemptExternalCalls))
+      ? Number(value.attemptExternalCalls)
+      : Number.isFinite(Number(value.externalCalls)) ? Number(value.externalCalls) : Number(externalCalls || 0),
     datasets: Array.isArray(value.datasets) ? value.datasets : [],
   };
 }
@@ -134,7 +139,7 @@ async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   normalized.datasetFailureCounts = counts;
   normalized.datasetBreaker = { threshold, failedDatasets: failed, blockedDatasets };
   if (!blockedDatasets.length) return null;
-  const summary = sanitizeJobResult(normalized);
+  const summary = sanitizeJobResult(await mergeSlotExternalCallSummary(slot.slot_id, normalized));
   await finishManagedRun(runId, slot.job_code, false, normalized, failure).catch(() => {});
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots
@@ -359,6 +364,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
   const normalized = normalizeJobResult({
     ...result, error: message, errorCode: failure.code, errorType: failure.type, apiName: failure.apiName,
   }, result.externalCalls);
+  normalized.slotExternalCallsLimit = Number(definition.slotExternalCallsLimit || 0) || null;
   // Runner 明确返回未完成数据集，说明已经发生真实采集尝试；限流/额度错误也必须累计。
   // freshnessGate 自身不会进入 failOrRetry，因此只读检查未命中不会被误计为失败。
   await notifyIncompleteDataset(slot, normalized);
@@ -524,7 +530,19 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
     failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)
       ? claimed.result_summary.failedDatasets : [],
-    externalCallCount: Number(claimed.result_summary && claimed.result_summary.externalCalls || 0),
+    externalCallCount: 0,
+    slotExternalCallsTotal: Number(claimed.result_summary && claimed.result_summary.slotExternalCallsTotal || 0),
+    slotExternalCallsLimit: Number(definition.slotExternalCallsLimit || 0) || null,
+    targetDate: claimed.result_summary && claimed.result_summary.targetDate || claimed.business_date,
+    pendingStages: claimed.result_summary && Array.isArray(claimed.result_summary.pendingStages)
+      ? claimed.result_summary.pendingStages : [],
+    continuationCount: Number(claimed.result_summary && claimed.result_summary.continuationCount || 0),
+    initialRemaining: claimed.result_summary && claimed.result_summary.initialRemaining,
+    lastRemaining: claimed.result_summary && claimed.result_summary.lastRemaining,
+    noProgressCount: Number(claimed.result_summary && claimed.result_summary.noProgressCount || 0),
+    continuationMaxBatches: claimed.result_summary && claimed.result_summary.continuationMaxBatches,
+    continuationStartedAt: claimed.result_summary && claimed.result_summary.continuationStartedAt,
+    continuationMaxAgeHours: Number(definition.continuationMaxAgeHours || 24),
     ...(process.env.NODE_ENV === 'test' && claimed.request_payload && claimed.request_payload.testScenario
       ? { testScenario: String(claimed.request_payload.testScenario) } : {}),
   };
@@ -566,6 +584,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     });
     const rawResult = await Promise.race([task, timeout]);
     const result = normalizeJobResult(rawResult);
+    result.slotExternalCallsLimit = Number(definition.slotExternalCallsLimit || 0) || null;
     const hasSkipped = hasSkippedSignal(result);
 
     if (result && result.unsupported) {
@@ -593,6 +612,34 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       await finishManagedRun(runId, claimed.job_code, true, result);
       await completeSlot(claimed.slot_id, 'skipped', result, '当前任务未配置，保留上一份有效数据', runId);
       return result;
+    }
+    if (result && result.continuationRequired === true) {
+      const slotLimit = Number(definition.slotExternalCallsLimit || 0);
+      const slotTotal = Number(runContext.slotExternalCallsTotal || 0) + Number(result.attemptExternalCalls || result.externalCalls || 0);
+      const continuationStartedAt = result.continuationStartedAt || runContext.continuationStartedAt || new Date().toISOString();
+      const continuationMaxAgeHours = Math.max(Number(result.continuationMaxAgeHours || runContext.continuationMaxAgeHours || 24), 1);
+      const continuationAgeExceeded = Number.isFinite(Date.parse(continuationStartedAt))
+        && Date.now() - Date.parse(continuationStartedAt) >= continuationMaxAgeHours * 60 * 60 * 1000;
+      result.continuationStartedAt = continuationStartedAt;
+      result.continuationMaxAgeHours = continuationMaxAgeHours;
+      if (slotLimit <= 0) {
+        result.continuationBlocked = true;
+        result.continuationStopReason = '续批任务未声明槽位累计外部请求上限，已停止自动续批';
+      } else if (slotTotal >= slotLimit && !result.continuationBlocked) {
+        result.continuationBlocked = true;
+        result.continuationStopReason = `已达到计划实例累计外部请求上限 ${slotLimit}，已停止自动续批`;
+      } else if (continuationAgeExceeded && !result.continuationBlocked) {
+        result.continuationBlocked = true;
+        result.continuationStopReason = `续跑已超过${continuationMaxAgeHours}小时，已停止自动续批`;
+      }
+      await finishManagedRun(runId, claimed.job_code, true, result);
+      if (result.continuationBlocked || result.continuationStopReason || result.blocked === true) {
+        await completeSlot(claimed.slot_id, 'blocked', result,
+          result.continuationStopReason || '续批达到停止条件，已暂停等待人工处理', runId);
+      } else {
+        await continueSlot(claimed.slot_id, result, result.nextAttemptInMinutes || 1, runId);
+      }
+      return { ok: true, result, continuation: true };
     }
     if (result && result.ok === false && !hasSkipped) {
       await failOrRetry(claimed, result.error, runId, result);

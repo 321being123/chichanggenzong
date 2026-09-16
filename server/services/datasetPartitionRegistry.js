@@ -92,9 +92,29 @@ async function publishJobDatasets(jobCode, businessDate, result) {
   const declaredDatasets = definition.producesDatasets || [];
   const datasets = declaredDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
   if (result && result.ok === false) return [];
+  // partial 仅表示本批有后续阶段，不能被严格发布门禁当成最终成功；续批完成后再由末批发布/校验。
+  if (result && result.continuationRequired === true) return [];
   if (result && result.publishDatasets === false) {
     if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate))) {
-      throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
+      const noChange = datasets.length > 0 && datasets.every(code => {
+        const diagnostics = result.datasetDiagnostics && result.datasetDiagnostics[code] || {};
+        return diagnostics.coverage_status === 'verified_no_change' && diagnostics.query_status === 'success';
+      });
+      if (noChange) {
+        await Promise.all(datasets.map(code => {
+          const diagnostics = result.datasetDiagnostics[code] || {};
+          return publishDatasetSnapshot(code, {
+            partitionKey: businessDate,
+            dataAsOf: result.dataAsOf || result.data_as_of,
+            rowCount: diagnostics.valid_report_rows ?? diagnostics.partition_row_count,
+            diagnostics,
+            reason: `job:${jobCode}:verified_no_change`,
+          });
+        }));
+      }
+      if (!(await areJobDatasetsPublished(jobCode, businessDate))) {
+        throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
+      }
     }
     return [];
   }

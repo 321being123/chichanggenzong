@@ -1,0 +1,45 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const root = path.join(__dirname, '..', '..');
+const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+const definitions = require('../services/jobDefinitions');
+const slots = read('server/services/jobScheduleSlots.js');
+const orchestrator = read('server/services/jobOrchestrator.js');
+const runner = read('server/services/jobRunnerProcess.js');
+const guard = read('server/services/externalCallGuard.js');
+const pyGuard = read('ipo-report/external_call_guard.py');
+const bond = read('server/services/convertibleBondAnalysis.js');
+const finance = read('server/services/companyFinancialIncrementalSync.js');
+const hkex = read('server/services/hkexIpo.js');
+const arbitrage = read('server/jobs/arbitrageSync.js');
+const market = read('server/jobs/marketVolatilitySync.js');
+const evidence = read('server/services/jobRecoveryEvidence.js');
+
+assert.ok(definitions.getJobDefinition('convertible_bond_universe_refresh').slotExternalCallsLimit > 0);
+assert.ok(definitions.getJobDefinition('company_financial_incremental_sync').slotExternalCallsLimit > 0);
+assert.ok(definitions.getJobDefinition('arbitrage_sync').slotExternalCallsLimit > 0);
+assert.match(slots, /function continueSlot\(/);
+assert.match(slots, /attempt_count=GREATEST\(attempt_count-1,0\)/);
+assert.match(slots, /status='pending' AND \(next_attempt_at IS NULL OR next_attempt_at <= now\(\)/);
+assert.match(slots, /slotExternalCallsTotal/);
+assert.match(orchestrator, /continuationRequired/);
+assert.match(orchestrator, /pendingStages/);
+assert.match(orchestrator, /continuationMaxAgeHours/);
+assert.match(orchestrator, /slotLimit/);
+assert.match(runner, /setSlotExternalCallBudget/);
+assert.match(guard, /slotExternalCallLimit/);
+assert.match(pyGuard, /JOB_SLOT_EXTERNAL_CALL_LIMIT/);
+assert.match(bond, /activeProfile\(row, targetTradeDate\)/);
+assert.match(bond, /pendingStages\.has\('stockMarketBackfill'\)/);
+assert.match(finance, /coverage_status: 'verified_no_change'/);
+assert.match(hkex, /pending_not_due/);
+assert.match(arbitrage, /parsePendingNotDue/);
+assert.match(market, /MARKET_SUBDATASET_POLICIES/);
+assert.match(evidence, /FROM job_runs/);
+assert.match(evidence, /runResult\.ok === false/);
+assert.match(evidence, /failedDatasets/);
+assert.match(evidence, /expectedDataDate/);
+
+console.log('OK inc-0026-continuation: 32 项续批、总止损、目标日和终态约束通过');

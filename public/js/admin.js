@@ -978,7 +978,15 @@ async function openJobSlotDetail(slotId) {
     const alerts = list(d.alerts, function (alert) { return '<li>' + escapeHtml(jobStatusLabel(alert.status)) + ' / 尝试 ' + Number(alert.send_attempts || 0) + ' / ' + escapeHtml(jobDisplayText(alert.last_send_error || alert.subject || '', 1000)) + '</li>'; }, '无告警记录');
     const audits = list(d.audits, function (audit) { return '<li>' + escapeHtml(audit.actor || '-') + ' / ' + escapeHtml(jobActionLabel(audit.action)) + ' / ' + escapeHtml(audit.created_at || '') + '</li>'; }, '无审计记录');
     const freshness = d.freshness_validation || {};
-    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
+    const summary = d.result_summary || {};
+    const continuation = '目标日期 ' + (summary.targetDate || summary.target_trade_date || d.business_date || '-') +
+      '；续批 ' + (summary.continuationRequired ? '是' : '否') +
+      '（第' + Number(summary.continuationCount || 0) + '批/上限' + Number(summary.continuationMaxBatches || 0) + '）' +
+      '；剩余 ' + (summary.lastRemaining ?? summary.remaining ?? '-') +
+      '；无进展 ' + Number(summary.noProgressCount || 0) +
+      '；槽位调用 ' + Number(summary.slotExternalCallsTotal || 0) + '/' + Number(summary.slotExternalCallsLimit || 0) +
+      '；待处理阶段 ' + ((summary.pendingStages || []).join('、') || '无');
+    const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
     openAdminModal('任务详情', html, '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
   } catch (e) { showToast('网络错误'); }
 }

@@ -3,7 +3,7 @@ require('dotenv').config();
 const { runJobByCode } = require('./jobRunners');
 const { getJobDefinition, externalCallLimitForMode } = require('./jobDefinitions');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { getExternalCallStats, setExternalCallCount } = require('./externalCallGuard');
+const { getExternalCallStats, setExternalCallCount, setSlotExternalCallBudget } = require('./externalCallGuard');
 const { publishJobDatasets } = require('./datasetPartitionRegistry');
 const { expectedDataDate } = require('./jobScheduleSlots');
 
@@ -29,9 +29,16 @@ process.on('message', async message => {
     // 任务契约中的 maxExternalCallsPerRun 必须在运行时生效；0 表示该任务禁止任何外部请求。
     const definition = getJobDefinition(message.jobCode);
     const mode = String(message.context && message.context.mode || 'core');
-    setExternalCallCount(message.context && message.context.externalCallCount);
+    // 每次续批从 0 统计本次请求；槽位累计量单独传入，避免跨批把单次上限误当总量。
+    setExternalCallCount(message.context && message.context.attemptExternalCallCount || 0);
+    setSlotExternalCallBudget(
+      message.context && message.context.slotExternalCallsTotal,
+      message.context && message.context.slotExternalCallsLimit
+    );
     process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
     process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimitForMode(definition, mode));
+    process.env.JOB_SLOT_EXTERNAL_CALL_USED = String(Number(message.context && message.context.slotExternalCallsTotal || 0));
+    process.env.JOB_SLOT_EXTERNAL_CALL_LIMIT = String(Number(message.context && message.context.slotExternalCallsLimit || 0));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});
     const declaredPartition = result && (result.partitionKey || result.partition_key);
     const partitionDate = String(declaredPartition || expectedDataDate(message.jobCode, message.businessDate) || message.businessDate || '').slice(0, 10);
@@ -39,8 +46,10 @@ process.on('message', async message => {
     const datasetPublications = await publishJobDatasets(message.jobCode, partitionDate, result);
     const stats = getExternalCallStats();
     const normalized = result && typeof result === 'object'
-      ? { ...result, datasets: result.datasets || datasetPublications, externalCalls: Number(result.externalCalls || stats.total), externalSources: result.externalSources || stats.sources }
-      : { ok: true, result, datasets: datasetPublications, externalCalls: stats.total, externalSources: stats.sources };
+      ? { ...result, datasets: result.datasets || datasetPublications,
+        attemptExternalCalls: Number(result.attemptExternalCalls ?? result.externalCalls ?? stats.total),
+        externalCalls: Number(result.attemptExternalCalls ?? result.externalCalls ?? stats.total), externalSources: result.externalSources || stats.sources }
+      : { ok: true, result, datasets: datasetPublications, attemptExternalCalls: stats.total, externalCalls: stats.total, externalSources: stats.sources };
     send({ ok: true, result: normalized });
   } catch (error) {
     const stats = getExternalCallStats();

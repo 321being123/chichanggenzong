@@ -233,6 +233,12 @@ async function reconcileSlot(slot) {
       && definition.reconcileByWatermark === true) {
     const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);
     if (isDataAsOfFresh(actualDataAsOf, slot.business_date, definition)) {
+      const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
+      const evidence = await verifySlotRecoveryEvidence(
+        { ...slot, status: 'succeeded', data_as_of: actualDataAsOf },
+        (sql, params) => pool.query(sql, params)
+      );
+      if (!evidence.recovered) return slot;
       const { rows: recoveredRows } = await pool.query(
         `UPDATE ops.job_schedule_slots
             SET status='succeeded', data_as_of=$2, last_error=NULL, updated_at=now()
@@ -250,6 +256,9 @@ async function reconcileSlot(slot) {
   if (slot.status === 'degraded' && definition.requiresDataWatermark !== false) {
     const actualDataAsOf = await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null);
     if (isDataAsOfFresh(actualDataAsOf, slot.business_date, definition)) {
+      const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
+      const evidence = await verifySlotRecoveryEvidence(slot, (sql, params) => pool.query(sql, params), { candidateStatus: 'succeeded' });
+      if (!evidence.recovered) return slot;
       const { rows: recoveredRows } = await pool.query(
         `UPDATE ops.job_schedule_slots
             SET status='succeeded', data_as_of=$2, last_error=NULL, updated_at=now()
@@ -304,6 +313,8 @@ async function reconcileSlot(slot) {
   const requestedStatus = run.status === 'done' ? 'succeeded' : 'failed';
   const requiresDataWatermark = definition.requiresDataWatermark !== false;
   const runResult = run.result_json && typeof run.result_json === 'object' ? run.result_json : {};
+  // 正常续批的本批运行记录虽然是 done，但槽位已经回到 pending；不能被恢复扫描误收敛为 succeeded。
+  if (run.status === 'done' && (runResult.continuationRequired === true || runResult.ok === false)) return slot;
   const skipWatermark = runResult.watermarkNotRequired === true;
   const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark && !skipWatermark
     ? await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null)
@@ -311,6 +322,14 @@ async function reconcileSlot(slot) {
   const nextStatus = requestedStatus === 'succeeded' && requiresDataWatermark && !skipWatermark
     && !isDataAsOfFresh(dataAsOf, slot.business_date, definition) ? 'degraded' : requestedStatus;
   const resultSummary = { ...runResult, source: 'job_runs', runId: run.id, detail: sanitizeJobError(run.detail || '') };
+  if (nextStatus === 'succeeded') {
+    const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
+    const evidence = await verifySlotRecoveryEvidence(
+      { ...slot, status: 'succeeded', data_as_of: dataAsOf || slot.data_as_of, result_summary: resultSummary },
+      (sql, params) => pool.query(sql, params)
+    );
+    if (!evidence.recovered) return slot;
+  }
   const updated = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status=$2, last_run_id=$3,
@@ -427,7 +446,7 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
             next_attempt_at=NULL, trigger_type=$3, updated_at=now()
       WHERE slot_id=$1 AND status IN ('pending','failed','waiting_external')
         AND attempt_count < $4
-        AND (status='pending' OR (next_attempt_at IS NOT NULL AND next_attempt_at<=now()))
+        AND (next_attempt_at IS NULL OR next_attempt_at<=now())
       RETURNING *, business_date::text AS business_date`,
     [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30]
   );
@@ -481,7 +500,7 @@ async function listDueSlots(limit = 20) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
   const { rows } = await pool.query(
     `SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s
-      WHERE (status='pending'
+      WHERE (status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
         OR (status IN ('failed','waiting_external') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()))
         AND scheduled_for <= now()
       ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, [safeLimit]
@@ -616,7 +635,9 @@ async function queryDataAsOf(jobCode, businessDate) {
       COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'), '1900-01-01'::date),
       COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'), '1900-01-01'::date),
-      COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'), '1900-01-01'::date)
+      COALESCE((SELECT max(trade_date) FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'), '1900-01-01'::date),
+      COALESCE((SELECT max(month) FROM market.money_supply_monthly WHERE market_code='CN'), '1900-01-01'::date),
+      COALESCE((SELECT max(trade_date) FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'), '1900-01-01'::date)
     )::text AS data_as_of`,
   };
   const marketClosePredicates = {
@@ -662,6 +683,7 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
   const current = await pool.query('SELECT job_code,business_date::text AS business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!current.rows[0]) return null;
   const definition = getJobDefinition(current.rows[0].job_code);
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
   const skipWatermark = resultSummary && resultSummary.watermarkNotRequired === true;
   const requiresDataWatermark = definition.requiresDataWatermark !== false && !skipWatermark;
   const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark
@@ -700,6 +722,7 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
 }
 
 async function deferSlot(slotId, errorMessage, resultSummary, delayMinutes = 5, runId = null) {
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status='failed', last_run_id=COALESCE($5,last_run_id), trigger_type='auto_retry',
@@ -717,6 +740,7 @@ async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt 
   const parsedRetryAt = retryAt ? new Date(retryAt) : null;
   const nextAttemptAt = parsedRetryAt && !Number.isNaN(parsedRetryAt.getTime())
     ? parsedRetryAt : new Date(Date.now() + 30 * 60 * 1000);
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
   const safeSummary = sanitizeJobResult({
     ...(resultSummary || {}),
     waitingExternal: true,
@@ -731,6 +755,45 @@ async function waitForExternalSlot(slotId, errorMessage, resultSummary, retryAt 
       WHERE slot_id=$1 AND status='running' RETURNING *`,
     [slotId, nextAttemptAt, JSON.stringify(safeSummary), runId,
       errorMessage ? sanitizeJobError(errorMessage) : null]
+  );
+  return rows[0] || null;
+}
+
+// 单槽位累计调用量必须由数据库原子累加，不能由多个 Worker 读旧值后覆盖。
+async function mergeSlotExternalCallSummary(slotId, resultSummary = {}) {
+  const attemptExternalCalls = Math.max(Number(
+    resultSummary.attemptExternalCalls ?? resultSummary.externalCalls ?? resultSummary.externalCallCount ?? 0
+  ) || 0, 0);
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET result_summary = COALESCE(result_summary, '{}'::jsonb) || $2::jsonb ||
+          jsonb_build_object('slotExternalCallsTotal',
+            COALESCE((COALESCE(result_summary, '{}'::jsonb)->>'slotExternalCallsTotal')::integer, 0) + $3::integer,
+            'attemptExternalCalls', $3::integer),
+            updated_at=now()
+      WHERE slot_id=$1 AND status='running'
+      RETURNING result_summary`,
+    [slotId, JSON.stringify(sanitizeJobResult(resultSummary || {})), attemptExternalCalls]
+  );
+  const stored = rows[0] && rows[0].result_summary || {};
+  const storedLimit = Number(stored.slotExternalCallsLimit || 0);
+  return { ...(resultSummary || {}), attemptExternalCalls, externalCalls: attemptExternalCalls,
+    slotExternalCallsTotal: Number(stored.slotExternalCallsTotal || 0),
+    slotExternalCallsLimit: Number(resultSummary.slotExternalCallsLimit || storedLimit) || null };
+}
+
+async function continueSlot(slotId, resultSummary = {}, delayMinutes = 1, runId = null) {
+  resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+  const nextAttemptAt = resultSummary.nextAttemptAt ? new Date(resultSummary.nextAttemptAt) : new Date(Date.now() + Math.max(Number(delayMinutes) || 1, 1) * 60000);
+  const safeNext = Number.isNaN(nextAttemptAt.getTime()) ? new Date(Date.now() + 60000) : nextAttemptAt;
+  const { rows } = await pool.query(
+    `UPDATE ops.job_schedule_slots
+        SET status='pending', last_run_id=COALESCE($4,last_run_id), trigger_type='auto_retry',
+            attempt_count=GREATEST(attempt_count-1,0), next_attempt_at=$2,
+            result_summary=$3::jsonb, last_error=NULL, lease_owner=NULL, lease_until=NULL,
+            heartbeat_at=now(), updated_at=now()
+      WHERE slot_id=$1 AND status='running' RETURNING *`,
+    [slotId, safeNext, JSON.stringify(sanitizeJobResult({ ...resultSummary, continuationRequired: true, nextAttemptAt: safeNext.toISOString() })), runId]
   );
   return rows[0] || null;
 }
@@ -966,7 +1029,7 @@ async function validateJobSlot(slotId) {
 
 module.exports = {
   WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
-  claimSlot, completeSlot, deferSlot, waitForExternalSlot, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
+  claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate,
 };

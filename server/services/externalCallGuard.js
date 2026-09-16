@@ -14,6 +14,8 @@ const localDatasetLocks = new Set();
 const PROBE_LEASE_MS = 5 * 60 * 1000;
 const PROBE_OWNER = `${os.hostname()}:${process.pid}:${crypto.randomUUID()}`;
 let runCallCount = 0;
+let slotExternalCallTotal = 0;
+let slotExternalCallLimit = null;
 
 function limit(name, fallback) {
   const value = Number(process.env[name]);
@@ -227,6 +229,11 @@ async function consumeExternalCall(source, dataset = '', providedClient = null, 
   const runLimit = jobRunLimit();
   if (runLimit != null && runCallCount >= runLimit) {
     throw new ExternalCallGuardError('JOB_BUDGET_EXCEEDED', `${key} 已达到本任务声明的外部请求上限 ${runLimit}`, key, dataset, {
+      apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint,
+    });
+  }
+  if (slotExternalCallLimit != null && slotExternalCallTotal + runCallCount >= slotExternalCallLimit) {
+    throw new ExternalCallGuardError('JOB_BUDGET_EXCEEDED', `${sourceKey(source)} 已达到计划实例累计外部请求上限 ${slotExternalCallLimit}`, sourceKey(source), dataset, {
       apiName: guardOptions.apiName, tokenFingerprint: guardOptions.tokenFingerprint,
     });
   }
@@ -516,11 +523,20 @@ function resetExternalCallGuard() {
   counters.clear();
   localDatasetLocks.clear();
   runCallCount = 0;
+  slotExternalCallTotal = 0;
+  slotExternalCallLimit = null;
 }
 
 function setExternalCallCount(value) {
   const count = Number(value);
   runCallCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+function setSlotExternalCallBudget(total, limit) {
+  const parsedTotal = Number(total);
+  const parsedLimit = Number(limit);
+  slotExternalCallTotal = Number.isFinite(parsedTotal) && parsedTotal > 0 ? Math.floor(parsedTotal) : 0;
+  slotExternalCallLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : null;
 }
 
 // Python 子进程在退出时通过 stderr 回传累计调用数；父进程合并后，计划实例的
@@ -619,6 +635,7 @@ module.exports = {
   resetExternalCallGuardPersistence,
   getExternalCallStats,
   setExternalCallCount,
+  setSlotExternalCallBudget,
   mergeExternalCallStats,
   mergeExternalCallStatsFromStderr,
   childProcessEnv,

@@ -914,8 +914,9 @@ async function syncHkexProspectusFacts({
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
        AND (
          listing_at::date BETWEEN $1::date AND $2::date
-         OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
+       OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
        )
+       AND COALESCE(data_completeness->>'status','retryable') <> 'pending_not_due'
        AND (
          issue_price_low IS NULL OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
          OR ($4::boolean AND NOT EXISTS (
@@ -1344,6 +1345,16 @@ function completenessForRow(row) {
   const fields = ['offerOpenDate', 'offerCloseDate', 'pricingDate', 'allotmentDate', 'listingDate', 'issuePriceFinal', 'lotSizeShares'];
   const result = {};
   for (const field of fields) result[field] = row[field] == null || row[field] === '' ? 'missing' : 'value';
+  const today = todayShanghai();
+  const offerClose = String(row.offerCloseDate || '').slice(0, 10);
+  const pendingNotDue = /^\d{4}-\d{2}-\d{2}$/.test(offerClose) && offerClose > today;
+  const hasMissing = fields.some(field => result[field] === 'missing');
+  result.status = pendingNotDue ? 'pending_not_due' : hasMissing ? 'retryable' : 'complete';
+  result.checked_at = new Date().toISOString();
+  result.next_retry_at = pendingNotDue ? `${offerClose}T00:00:00+08:00` : null;
+  result.reason = pendingNotDue ? '认购截止日前，配发/上市事实尚未到期' : '字段缺失，等待官方事实补全';
+  result.evidence_urls = (Array.isArray(row.sourceDocuments) ? row.sourceDocuments : [])
+    .map(item => item && item.url).filter(Boolean).slice(0, 10);
   return result;
 }
 

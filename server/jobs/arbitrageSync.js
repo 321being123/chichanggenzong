@@ -18,7 +18,7 @@ function nextShanghaiDelay(hour = 8, minute = 30, now = new Date()) {
   return target - now.getTime();
 }
 
-async function runArbitrageSync(reason = 'scheduled') {
+async function runArbitrageSync(reason = 'scheduled', context = {}) {
   if (!(await tryClaimJob(SYNC_JOB))) return { skipped: true, reason: 'already_running' };
   let runId = null;
   try {
@@ -28,9 +28,10 @@ async function runArbitrageSync(reason = 'scheduled') {
     const errors = [...(result.hkex.errors || []), ...(result.cninfo.errors || [])];
     const failure = [...(result.hkex.failureDetails || []), ...(result.cninfo.failureDetails || [])][0] || null;
     const parsePending = Number(result.recovery && result.recovery.pending || 0);
+    const parsePendingNotDue = Number(result.recovery && result.recovery.pendingNotDue || 0);
     const parseExhausted = Number(result.recovery && result.recovery.exhausted || 0);
-    const detail = `hkex:${result.hkex.total} cninfo:${result.cninfo.total} errors:${errors.length} parse_pending:${parsePending} parse_exhausted:${parseExhausted}`;
-    if (errors.length || parsePending || parseExhausted) {
+    const detail = `hkex:${result.hkex.total} cninfo:${result.cninfo.total} errors:${errors.length} parse_pending:${parsePending} parse_not_due:${parsePendingNotDue} parse_exhausted:${parseExhausted}`;
+    if (errors.length) {
       const sourceError = errors.length ? `；数据源错误：${errors.slice(0, 5).join(' | ')}` : '';
       const error = `套利公告同步未完整成功：PDF待重试 ${parsePending}，已达上限 ${parseExhausted}${sourceError}`;
       await finishJobRun(runId, false, error);
@@ -47,6 +48,18 @@ async function runArbitrageSync(reason = 'scheduled') {
           recoverAt: failure.recoverAt,
         } : {}),
       };
+    }
+    if (parseExhausted) {
+      const error = `套利公告解析达到最大尝试次数：${parseExhausted} 条，已转人工处理`;
+      await finishJobRun(runId, true, error);
+      return { ok: true, status: 'partial', continuationRequired: true, continuationBlocked: true,
+        continuationStopReason: error, pendingStages: ['pdfParse'], detail, pdfCache, result };
+    }
+    if (parsePending || parsePendingNotDue) {
+      await finishJobRun(runId, true, detail);
+      return { ok: true, status: 'partial', continuationRequired: true, continuationCount: Number(context.continuationCount || 0) + 1,
+        pendingStages: ['pdfParse'], nextAttemptAt: result.recovery && result.recovery.recoverAt || null,
+        nextAttemptInMinutes: parsePendingNotDue && !parsePending ? 30 : 1, detail, pdfCache, result };
     }
     await finishJobRun(runId, true, detail);
     return { ok: true, detail, pdfCache, result };

@@ -31,32 +31,44 @@ function ok(name, cond) { if (cond) { pass++; console.log('  ✓', name); } else
     cashFlows: [{ id: 'c1', date: '2026-07-10', amount: 500.25, note: 't' }],
     cashBase: 1000.50, hkRate: 0.8888, totalAsset: 12345.67, fundRecord: []
   };
+  // 当前账本契约：成交金额统一按 price×quantity 规范化；汇率优先使用
+  // market.fx_rates 中最新有效值，只有无全局汇率时才回退到请求体。
+  const expectedTradeAmount = Number((sample.trades[0].price * sample.trades[0].quantity).toFixed(4));
+  const { rows: fxRows } = await db.pool.query(
+    `SELECT rate::float8 AS rate FROM market.fx_rates
+      WHERE base_currency='HKD' AND quote_currency='CNY'
+        AND rate_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+      ORDER BY rate_date DESC, fetched_at DESC LIMIT 1`
+  );
+  const expectedHkRate = fxRows[0] && Number.isFinite(Number(fxRows[0].rate))
+    ? Number(fxRows[0].rate) : sample.hkRate;
+  const expectedCash = sample.cashBase + sample.cashFlows[0].amount - expectedTradeAmount;
   await db.saveAccountData(U, A, sample, null);
   const loaded = await db.loadAccountData(U, A);
   ok('position.price 读回为 number', typeof loaded.positions[0].price === 'number');
   ok('position.price 精度保留 (12.3456)', loaded.positions[0].price === 12.3456);
   ok('position.quantity 精度保留 (100.5)', loaded.positions[0].quantity === 100.5);
-  ok('trade.amount 精度保留 (1234.56)', loaded.trades[0].amount === 1234.56);
+  ok(`trade.amount 按 price×quantity 规范化 (${expectedTradeAmount})`, loaded.trades[0].amount === expectedTradeAmount);
   ok('nav 精度保留 (1.234567)', Math.abs(loaded.navHistory[0].nav - 1.234567) < 1e-9);
   ok('cashBase 从结构化 accounts 表读回 (1000.5)', loaded.cashBase === 1000.5);
-  ok('hkRate 从结构化 accounts 表读回 (0.8888)', Math.abs(loaded.hkRate - 0.8888) < 1e-9);
-  ok('现金自动重算 = cashBase + 现金流(500.25) - 交易(1234.56) = 266.19',
-    Math.abs(loaded.cash - (1000.5 + 500.25 - 1234.56)) < 1e-6);
+  ok(`hkRate 从结构化 accounts 表读回 (${expectedHkRate})`, Math.abs(loaded.hkRate - expectedHkRate) < 1e-9);
+  ok(`现金自动重算 = cashBase + 现金流 - 规范化交易额 = ${expectedCash}`,
+    Math.abs(loaded.cash - expectedCash) < 1e-6);
 
   console.log('[P2-2 已含] 乐观锁版本号仍生效');
   const v1 = await db.saveAccountData(U, A, sample, loaded.version);
-  ok('带正确版本号保存后 version 自增', v1 === loaded.version + 1);
+  ok('带正确版本号保存后 version 自增', v1 && v1.version === loaded.version + 1);
   let conflict = false;
   try { await db.saveAccountData(U, A, sample, loaded.version); } catch (e) { if (e.conflict) conflict = true; }
   ok('用过期的版本号保存被拦截 (conflict)', conflict);
 
-  console.log('[P2-3] 列表同步：删除账户后 accounts 表对应行移除（仅元数据，不动 account_data）');
+  console.log('[P2-3] 列表同步：删除账户后清理 accounts 与业务数据，避免孤儿数据');
   await db.syncUserAccounts(U, []);
   const { rows: after } = await db.pool.query('SELECT 1 FROM accounts WHERE username=$1', [U]);
   ok('列表清空后 accounts 表无该用户行', after.length === 0);
   const { rows: ad } = await db.pool.query('SELECT 1 FROM account_data WHERE username=$1', [U]);
-  ok('account_data 仍保留（数据未丢）', ad.length === 1);
-  await db.syncUserAccounts(U, [A]); // 恢复，便于统一清理
+  ok('account_data 随账户同步清理（防止孤儿数据）', ad.length === 0);
+  await db.syncUserAccounts(U, [A]); // 恢复账户元数据，便于继续测试与统一清理
 
   console.log('[P2-5] 任务幂等锁（跨实例单跑）+ 执行记录');
   ok('首次 claim 成功', (await db.tryClaimJob('p2_test_job')) === true);

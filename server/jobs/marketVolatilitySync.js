@@ -384,6 +384,35 @@ async function syncMarketCycleMetrics(full) {
   return result;
 }
 
+const MARKET_SUBDATASET_POLICIES = Object.freeze({
+  cn_yield: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='CN' AND tenor_years=10 AND source_code='chinabond'" },
+  csi300_pe: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSI300' AND source_code='csindex'" },
+  csi_all_pe: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='CN' AND benchmark_code='CSIALL' AND source_code='csindex'" },
+  hsi_pe: { maxLagDays: 45, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.market_valuation_daily WHERE market_code='HK' AND benchmark_code='HSI' AND source_code='hsi_official'" },
+  us_treasury_yield: { maxLagDays: 10, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'" },
+  m2: { maxLagMonths: 2, sql: "SELECT max(month)::text AS data_as_of FROM market.money_supply_monthly WHERE market_code='CN'" },
+  a_share_market_cap: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'" },
+  graham_csi300: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'" },
+  graham_csi_all: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'" },
+});
+
+async function readMarketSubdatasetFreshness(targetDate) {
+  const target = new Date(`${String(targetDate || dateStr(new Date())).slice(0, 10)}T00:00:00Z`);
+  const diagnostics = {};
+  for (const [code, policy] of Object.entries(MARKET_SUBDATASET_POLICIES)) {
+    const { rows } = await pool.query(policy.sql);
+    const raw = rows[0] && rows[0].data_as_of;
+    const dataAsOf = raw ? String(raw).slice(0, 10) : null;
+    const actual = dataAsOf ? new Date(`${dataAsOf}T00:00:00Z`) : null;
+    const lagDays = actual && !Number.isNaN(actual.getTime()) ? Math.max(0, Math.floor((target - actual) / 86400000)) : null;
+    const lagMonths = dataAsOf ? Math.max(0, (target.getUTCFullYear() - actual.getUTCFullYear()) * 12 + target.getUTCMonth() - actual.getUTCMonth()) : null;
+    const fresh = policy.maxLagMonths != null ? lagMonths != null && lagMonths <= policy.maxLagMonths : lagDays != null && lagDays <= policy.maxLagDays;
+    diagnostics[code] = { status: fresh ? 'fresh' : 'stale', data_as_of: dataAsOf, ...(lagDays == null ? {} : { lag_days: lagDays }), ...(lagMonths == null ? {} : { lag_months: lagMonths }), ...policy };
+    delete diagnostics[code].sql;
+  }
+  return diagnostics;
+}
+
 async function runMarketVolatilitySync(context = {}) {
   if (!(await tryClaimJob('market_volatility_sync'))) return { skipped: true, reason: 'locked' };
   const id = await startJobRun('market_volatility_sync');
@@ -402,7 +431,7 @@ async function runMarketVolatilitySync(context = {}) {
     }
   };
   try {
-    const end = dateStr(new Date());
+    const end = String(context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE || dateStr(new Date())).slice(0, 10);
     const seen = await pool.query("SELECT count(*)::int AS n FROM market.sovereign_yield_daily WHERE market_code='CN' AND source_code='chinabond'");
     const first = seen.rows[0].n === 0;
     const capSeen = await pool.query("SELECT count(*)::int AS n FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'");
@@ -415,6 +444,9 @@ async function runMarketVolatilitySync(context = {}) {
     await runDataset('us_treasury_yield', () => syncUsTreasuryYield(end));
     await runDataset('cycle_metrics', () => syncMarketCycleMetrics(cycleFirst));
     if (!failedDatasets.length) await calculateGraham();
+    const subdatasets = await readMarketSubdatasetFreshness(end).catch(error => ({ freshness_check: { status: 'failed', error: error.message } }));
+    const staleSubdatasets = Object.entries(subdatasets).filter(([, item]) => item && item.status === 'stale').map(([code]) => code);
+    staleSubdatasets.forEach(code => { if (!failedDatasets.includes(code)) failedDatasets.push(code); result[code] = { status: 'stale', ...subdatasets[code] }; });
     const ok = failedDatasets.length === 0;
     await finishJobRun(id, ok, JSON.stringify({ result, failedDatasets }));
     console.log('[市场周期] 本次同步汇总:', JSON.stringify({ result, failedDatasets }));
@@ -423,6 +455,8 @@ async function runMarketVolatilitySync(context = {}) {
       ok,
       status: ok ? 'succeeded' : 'partial',
       failedDatasets,
+      dataAsOf: ok ? end : Object.values(subdatasets).map(item => item && item.data_as_of).filter(Boolean).sort()[0] || end,
+      datasetDiagnostics: { market_volatility: { subdatasets, stale_subdatasets: staleSubdatasets, query_status: 'success' } },
       datasets: Object.keys(result).map(code => ({ code, status: failedDatasets.includes(code) ? 'failed' : 'succeeded' })),
       ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
     };

@@ -477,10 +477,11 @@ async function retryPendingDocuments() {
     WHERE c.event_status NOT IN ('completed','terminated','expired')
       AND acd.document_role IN ('amendment','terms','summary','proposal')
       AND (
-        acd.parser_version IS DISTINCT FROM $1
+        (acd.parser_version IS DISTINCT FROM $1 AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
         OR (acd.parse_status='failed' AND acd.parse_attempts < $2
             AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
-        OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL)
+        OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL
+            AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
       )
       AND d.url ~* '\\.pdf($|\\?)'
     ORDER BY d.announced_at DESC,acd.document_id DESC
@@ -513,10 +514,17 @@ async function retryPendingDocuments() {
   const { rows: retryState } = await pool.query(`
     SELECT
       COUNT(*) FILTER (WHERE
-        acd.parser_version IS DISTINCT FROM $1
-        OR (acd.parse_status='failed' AND acd.parse_attempts < $2)
-        OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL)
+        ((acd.parser_version IS DISTINCT FROM $1
+          OR (acd.parse_status='failed' AND acd.parse_attempts < $2)
+          OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL))
+         AND COALESCE(acd.next_parse_attempt_at, now()) <= now())
       )::int AS pending,
+      COUNT(*) FILTER (WHERE
+        ((acd.parser_version IS DISTINCT FROM $1
+          OR (acd.parse_status='failed' AND acd.parse_attempts < $2)
+          OR (acd.parse_status <> 'failed' AND acd.parsed_payload IS NULL))
+         AND acd.next_parse_attempt_at > now())
+      )::int AS pending_not_due,
       COUNT(*) FILTER (WHERE acd.parse_status='failed' AND acd.parser_version=$1 AND acd.parse_attempts >= $2)::int AS exhausted
     FROM event.arbitrage_case_documents acd
     JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
@@ -526,6 +534,7 @@ async function retryPendingDocuments() {
       AND d.url ~* '\\.pdf($|\\?)'
   `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
   result.pending = Number(retryState[0] && retryState[0].pending || 0);
+  result.pendingNotDue = Number(retryState[0] && retryState[0].pending_not_due || 0);
   result.exhausted = Number(retryState[0] && retryState[0].exhausted || 0);
   return result;
 }

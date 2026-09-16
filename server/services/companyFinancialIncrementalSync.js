@@ -61,14 +61,15 @@ function uniqueTarget(targets) {
   return [...map.values()];
 }
 
-async function listTargetCompanies(client = pool) {
-  return listCurrentBondUnderlyingTargets(client);
+async function listTargetCompanies(client = pool, targetTradeDate = null) {
+  if (!targetTradeDate) return listCurrentBondUnderlyingTargets(client);
+  return listCurrentBondUnderlyingTargets(client, targetTradeDate);
 }
 
-async function listCurrentBondUnderlyingTargets(client = pool) {
+async function listCurrentBondUnderlyingTargets(client = pool, targetTradeDate = null) {
   const { rows } = await client.query(`
     WITH market_day AS (
-      SELECT MAX(trade_date) AS trade_date FROM market.convertible_bond_daily_metrics
+      SELECT MAX(trade_date) FILTER (WHERE $1::date IS NULL OR trade_date <= $1::date) AS trade_date FROM market.convertible_bond_daily_metrics
     )
     SELECT DISTINCT s.instrument_id,s.canonical_code AS ts_code,p.stock_instrument_id,ci.company_id
       FROM market_day md
@@ -78,12 +79,13 @@ async function listCurrentBondUnderlyingTargets(client = pool) {
       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
       JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id AND s.asset_class='stock'
       JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
-     WHERE i.status='listed'
+     WHERE ($1::date IS NULL OR md.trade_date <= $1::date)
+       AND i.status='listed'
        AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
        AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
        AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
      ORDER BY s.canonical_code
-  `);
+  `, [targetTradeDate || null]);
   return uniqueTarget(rows.map(row => ({
     companyId: row.company_id,
     instrumentId: row.stock_instrument_id || row.instrument_id,
@@ -316,7 +318,7 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
   if (!(await tryClaimJob(JOB_NAME))) return { ok: false, skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
-    const targets = await listTargetCompanies();
+    const targets = await listTargetCompanies(pool, options.targetTradeDate || options.asOfDate || null);
     const reportPeriods = options.reportPeriods || currentReportPeriods(options.asOfDate);
     const localQueue = await buildSyncQueue(targets, { ...options, reportPeriods, disclosureRows: [] });
     // 披露季按活跃报告期刷新披露计划；非披露季只处理本地缺口、失败重试和新增公司。
@@ -331,8 +333,11 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
     if (!queue.length) {
       const latest = await latestFinancialDataAsOf();
       await finishJobRun(runId, true, '无新增财报、缺口或重试对象，未调用财务接口');
-      return { ok: true, status: 'succeeded', changed: false, externalCallCount: 0, publishDatasets: false, dataAsOf: latest.dataAsOf,
-        datasetDiagnostics: { stock_financial_reports: { partition_row_count: latest.rowCount, queue_count: 0 } }, reason };
+      return { ok: true, status: 'succeeded', changed: false, targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, externalCallCount: 0, publishDatasets: false, dataAsOf: latest.dataAsOf,
+        datasetDiagnostics: { stock_financial_reports: {
+          partition_row_count: latest.rowCount, valid_report_rows: latest.rowCount, target_count: targets.length,
+          queue_count: 0, changed_rows: 0, query_status: 'success', coverage_status: 'verified_no_change',
+        } }, reason };
     }
     const limit = Math.max(1, Number(options.companyLimit || process.env.FINANCIAL_SYNC_COMPANY_BATCH_SIZE || 20));
     const batch = selectCompanyBatch(queue, limit);
@@ -353,9 +358,26 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
     const latest = await latestFinancialDataAsOf();
     const complete = failures.length === 0 && remaining === 0;
     const ok = failures.length === 0;
-    const result = { ok, status: complete ? 'succeeded' : ok ? 'partial' : 'degraded', changed: changed > 0, dataAsOf: latest.dataAsOf,
+    const continuationRequired = ok && remaining > 0;
+    const continuationCount = Number(options.continuationCount || 0) + (continuationRequired ? 1 : 0);
+    const initialRemaining = Number(options.initialRemaining || queue.length);
+    const lastRemaining = remaining;
+    const previousRemaining = Number(options.lastRemaining ?? initialRemaining);
+    const noProgressCount = continuationRequired && lastRemaining >= previousRemaining
+      ? Number(options.noProgressCount || 0) + 1 : 0;
+    const continuationMaxBatches = Number(options.continuationMaxBatches || Math.ceil(initialRemaining / Math.max(batch.length, 1)) + 1);
+    const continuationStartedAt = continuationRequired
+      ? options.continuationStartedAt || new Date().toISOString() : options.continuationStartedAt || null;
+    const continuationAgeExceeded = continuationStartedAt
+      && Date.now() - new Date(continuationStartedAt).getTime() >= 24 * 60 * 60 * 1000;
+    const result = { ok, status: complete ? 'succeeded' : ok ? 'partial' : 'degraded', changed: changed > 0, targetDate: options.targetTradeDate || options.targetDate || options.asOfDate || null, dataAsOf: latest.dataAsOf,
       publishDatasets: complete && changed > 0, externalCallCount: null, processed: batch.length, queued: queue.length, remaining,
-      failures, reason, datasetDiagnostics: { stock_financial_reports: { partition_row_count: latest.rowCount, queue_count: queue.length, processed_count: batch.length, failed_count: failures.length } } };
+      failures, reason, continuationRequired, continuationCount, initialRemaining, lastRemaining, noProgressCount,
+      continuationMaxBatches, pendingStages: continuationRequired ? ['financialReports'] : [],
+      nextAttemptInMinutes: continuationRequired ? 1 : null,
+      continuationStartedAt,
+      ...(continuationRequired && (noProgressCount >= 2 || continuationAgeExceeded) ? { continuationBlocked: true, continuationStopReason: continuationAgeExceeded ? '续批超过 24 小时，已停止自动续批' : '连续两批剩余公司数量未下降，已停止自动续批' } : {}),
+      datasetDiagnostics: { stock_financial_reports: { partition_row_count: latest.rowCount, queue_count: queue.length, processed_count: batch.length, failed_count: failures.length } } };
     const detail = complete ? `处理 ${batch.length} 家公司，新增或更新 ${changed} 家`
       : failures.length ? `财务增量未完整完成：失败 ${failures.length} 家，剩余 ${remaining} 家`
         : `本批处理 ${batch.length} 家公司，剩余 ${remaining} 家等待后续增量批次`;

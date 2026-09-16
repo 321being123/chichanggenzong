@@ -64,9 +64,12 @@ for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(Array.isArray(definition.datasetDependencies), `${definition.jobCode} 缺少 datasetDependencies`);
   assert.ok(Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
 }
-assert.ok(definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
-  .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0) <= 80,
-  '常规定时任务声明调用预算不得超过每日80次目标');
+const declaredDailyBudget = definitions.JOB_DEFINITIONS
+  .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
+const scheduledDailyBudget = definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
+  .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
+assert.strictEqual(declaredDailyBudget, 680, '全量任务矩阵声明预算必须为680次/日（含人工止损边界）');
+assert.strictEqual(scheduledDailyBudget, 80, '常规定时任务的80次为历史Tushare规划目标，不得冒充跨来源总账');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
 assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');

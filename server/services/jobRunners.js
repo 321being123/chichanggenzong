@@ -2,7 +2,14 @@
 async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, context = {}) {
   switch (jobCode) {
     case 'company_financial_incremental_sync':
-      return require('../jobs/companyFinancialIncrementalSync').runCompanyFinancialIncrementalSync(reason, context);
+      {
+        const targetTradeDate = context.targetTradeDate || context.targetDate || businessDate;
+        return require('../jobs/companyFinancialIncrementalSync').runCompanyFinancialIncrementalSync(reason, {
+          ...context,
+          targetTradeDate,
+          asOfDate: context.asOfDate || targetTradeDate,
+        });
+      }
     case 'bond_safety_refresh':
       {
         const { expectedDataDate } = require('./jobScheduleSlots');
@@ -34,7 +41,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'hk_ipo_enrichment':
       return require('../jobs/hkIpoSync').runHkIpoSync('enrichment', reason, context);
     case 'arbitrage_sync':
-      return require('../jobs/arbitrageSync').runArbitrageSync(reason);
+      return require('../jobs/arbitrageSync').runArbitrageSync(reason, context);
     case 'arbitrage_reparse': {
       const { pool } = require('../db');
       const { rows } = await pool.query(
@@ -112,6 +119,16 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason, {
         targetTradeDate,
         failedDatasets: context.failedDatasets || [],
+        pendingStages: context.pendingStages || [],
+        continuationCount: context.continuationCount,
+        initialRemaining: context.initialRemaining,
+        lastRemaining: context.lastRemaining,
+        noProgressCount: context.noProgressCount,
+        continuationMaxBatches: context.continuationMaxBatches,
+        continuationStartedAt: context.continuationStartedAt,
+        continuationMaxAgeHours: context.continuationMaxAgeHours,
+        slotExternalCallsTotal: context.slotExternalCallsTotal,
+        slotExternalCallsLimit: context.slotExternalCallsLimit,
         windowDays: context.windowDays,
         slotId: context.slotId,
       });

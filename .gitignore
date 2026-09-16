@@ -2,6 +2,7 @@
 .worktrees/
 data/portfolio.db
 data/.secret
+data/holidays.json
 runtime/
 ipo-report/data/ipo_xgb_model.json
 ipo-report/data/ipo_xgb_features.json

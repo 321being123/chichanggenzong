@@ -86,6 +86,8 @@ assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外�
 assert.strictEqual(ipoReport.maxExternalCallsPerRun, 0, '打新日报外部调用预算必须为0');
 assert.deepStrictEqual(ipoReport.dependencyCodes || [], [],
   '打新日报不得绑定整条任务状态，只能以当天事实分区质量门禁校验');
+assert.strictEqual(ipoReport.requiresDataWatermark, false,
+  '只读打新日报已由事实分区质量门禁验收，不应再要求任务级日期水位');
 assert.ok(ipoReport.datasetDependencies.some(item => item.datasetCode === 'ipo_history' && item.requireQualityStatus === 'passed')
   && ipoReport.datasetDependencies.some(item => item.datasetCode === 'bond_issuance_events' && item.requireQualityStatus === 'passed'),
   '打新日报必须依赖当天通过质量门禁的新股和新债事实分区');

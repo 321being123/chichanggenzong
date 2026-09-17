@@ -722,7 +722,7 @@ async function syncHkexAllotmentFacts({
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(
       `UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']
     );
     return { ok: status !== 'failed', status, runId, candidates: candidates.length, matched, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
@@ -825,7 +825,7 @@ async function syncHkexNonPublicListings({
     const statusMessage = failures.map(item => `${item.code}:${item.error}`).join('; ')
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]);
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']);
     return { ok: status !== 'failed', status, runId, candidates: selected.length, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
@@ -927,7 +927,7 @@ async function syncHkexCancelledListings({
     const statusMessage = failures.map(item => `${item.code}:${item.error}`).join('; ')
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]);
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']);
     return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
@@ -1206,7 +1206,7 @@ async function syncHkexProspectusFacts({
     const statusMessage = failures.map(item => `${item.code || item.stage}:${item.error}`).join('; ')
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
-      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : null]);
+      [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']);
     return { ok: status !== 'failed', status, runId, candidates: candidates.length, searched, attempted, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});

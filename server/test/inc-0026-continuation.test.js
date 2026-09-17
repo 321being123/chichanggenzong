@@ -17,6 +17,7 @@ const arbitrage = read('server/jobs/arbitrageSync.js');
 const market = read('server/jobs/marketVolatilitySync.js');
 const evidence = read('server/services/jobRecoveryEvidence.js');
 const { businessDateText } = require('../services/jobRecoveryEvidence');
+const { datasetPartitionKeyForSlot } = require('../services/jobOrchestrator');
 
 assert.ok(definitions.JOB_DEFINITIONS.every(item => Number(item.slotExternalCallsLimit || 0) === 0));
 assert.strictEqual(definitions.getJobDefinition('convertible_bond_revision_motive_inputs_sync').maxExternalCallsPerRun, null);
@@ -29,6 +30,9 @@ assert.match(orchestrator, /continuationRequired/);
 assert.match(orchestrator, /pendingStages/);
 assert.match(orchestrator, /continuationMaxAgeHours/);
 assert.match(orchestrator, /slotLimit/);
+assert.match(orchestrator, /function datasetPartitionKeyForSlot\(slot, result = \{\}\)/);
+assert.match(orchestrator, /result\.targetTradeDate/);
+assert.match(orchestrator, /scopeKey: `\$\{blockedDatasets\[0\]\}:\$\{datasetScopeKey\(blockedDatasets\[0\]\)\}:\$\{partitionKey\}`/);
 assert.match(runner, /setSlotExternalCallBudget/);
 assert.match(guard, /slotExternalCallLimit/);
 assert.match(pyGuard, /JOB_SLOT_EXTERNAL_CALL_LIMIT/);
@@ -42,6 +46,17 @@ assert.match(evidence, /FROM job_runs/);
 assert.match(evidence, /runResult\.ok === false/);
 assert.match(evidence, /failedDatasets/);
 assert.match(evidence, /expectedDataDate/);
+assert.match(evidence, /SELECT dataset_code,scope_key,status/);
+assert.match(evidence, /byCodeAndScope/);
+assert.doesNotMatch(hkex, /statusMessage \? statusMessage\.slice\(0, 2000\) : null/);
+assert.strictEqual(datasetPartitionKeyForSlot(
+  { job_code: 'convertible_bond_universe_refresh', business_date: '2026-09-17' },
+  { targetTradeDate: '2026-09-16' },
+), '2026-09-16');
+assert.strictEqual(datasetPartitionKeyForSlot(
+  { job_code: 'convertible_bond_universe_refresh', business_date: '2026-09-17' },
+  {},
+), '2026-09-16');
 assert.strictEqual(businessDateText(new Date('2026-09-15T16:00:00.000Z')), '2026-09-16');
 assert.strictEqual(businessDateText('2026-09-16'), '2026-09-16');
 

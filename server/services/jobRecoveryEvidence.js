@@ -43,17 +43,22 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   }
   const datasets = definition.producesDatasets || [];
   const { expectedDataDate } = require('./jobScheduleSlots');
+  const { DATASET_PARTITION_REGISTRY } = require('./datasetPartitionRegistry');
   const businessDate = businessDateText(slot.business_date);
   const partitionKey = expectedDataDate(slot.job_code, businessDate) || businessDate;
   let datasetEvidence = [];
   if (definition.strictDatasetPublication && datasets.length && partitionKey) {
     const { rows } = await query(
-      `SELECT dataset_code,status,is_stale,diagnostics
+      `SELECT dataset_code,scope_key,status,is_stale,diagnostics
          FROM ops.dataset_partitions
         WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`, [datasets, partitionKey]
     );
-    const byCode = new Map(rows.map(row => [row.dataset_code, row]));
-    datasetEvidence = datasets.map(code => byCode.get(code) || { dataset_code: code, status: 'missing' });
+    const byCodeAndScope = new Map(rows.map(row => [`${row.dataset_code}:${row.scope_key}`, row]));
+    datasetEvidence = datasets.map(code => {
+      const expectedScopeKey = DATASET_PARTITION_REGISTRY[code]?.scopeKey || null;
+      return byCodeAndScope.get(`${code}:${expectedScopeKey}`)
+        || { dataset_code: code, scope_key: expectedScopeKey, status: 'missing' };
+    });
     const allPublished = datasetEvidence.every(row => {
       const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
       const qualityOk = !diagnostics.quality_status || diagnostics.quality_status === 'passed';

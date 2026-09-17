@@ -125,6 +125,22 @@ function datasetScopeKey(datasetCode) {
   return registry[datasetCode] && registry[datasetCode].scopeKey || '';
 }
 
+function datasetPartitionKeyForSlot(slot, result = {}) {
+  const candidates = [
+    result.targetTradeDate,
+    result.target_trade_date,
+    result.partitionKey,
+    result.partition_key,
+    ...(Array.isArray(result.missingDates) ? result.missingDates : []),
+    result.dataAsOf,
+    result.data_as_of,
+    expectedDataDate(slot.job_code, slot.business_date),
+    slot.business_date,
+  ];
+  return candidates.map(value => String(value || '').slice(0, 10))
+    .find(value => /^\d{4}-\d{2}-\d{2}$/.test(value)) || null;
+}
+
 async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   const definition = getJobDefinition(slot.job_code);
   const failed = incompleteDatasets(definition, normalized);
@@ -152,11 +168,12 @@ async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   const blocked = rows[0] || null;
   if (blocked) {
     const { notifyJobFailure } = require('./jobAlertMailer');
+    const partitionKey = datasetPartitionKeyForSlot(slot, normalized);
     await notifyJobFailure({
       jobCode: slot.job_code,
       slotId: slot.slot_id,
       scopeType: 'dataset',
-      scopeKey: `${blockedDatasets[0]}:${datasetScopeKey(blockedDatasets[0])}:${String(slot.business_date).slice(0, 10)}`,
+      scopeKey: `${blockedDatasets[0]}:${datasetScopeKey(blockedDatasets[0])}:${partitionKey}`,
       alertKey: `slot:${slot.slot_id}:dataset-breaker`,
       alertType: 'data_quality',
       severity: 'critical',
@@ -173,10 +190,11 @@ async function notifyIncompleteDataset(slot, result) {
   const definition = getJobDefinition(slot.job_code);
   const datasets = incompleteDatasets(definition, result);
   const { notifyJobFailure } = require('./jobAlertMailer');
+  const partitionKey = datasetPartitionKeyForSlot(slot, result);
   await notifyJobFailure({
     jobCode: slot.job_code,
     slotId: slot.slot_id,
-    ...(datasets[0] ? { scopeType: 'dataset', scopeKey: `${datasets[0]}:${datasetScopeKey(datasets[0])}:${String(slot.business_date).slice(0, 10)}` } : {}),
+    ...(datasets[0] ? { scopeType: 'dataset', scopeKey: `${datasets[0]}:${datasetScopeKey(datasets[0])}:${partitionKey}` } : {}),
     alertKey: `slot:${slot.slot_id}:dataset-incomplete`,
     alertType: 'data_quality',
     severity: 'warning',
@@ -742,4 +760,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot };

@@ -6645,6 +6645,24 @@ async function migration157AlertReconciliationAndPartialPartitions() {
   `);
 }
 
+// ========== 158：盘中实时汇率接口策略 =============
+// 盘中汇率使用独立接口名，避免沿用 open.er-api 每 24 小时一次的每日接口保护；
+// 上游官方分钟/日限额未知，只有本系统按页面刷新频率设置的 5 分钟最小间隔。
+async function migration158RealtimeExchangeRatePolicy() {
+  await pool.query(`
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,permission_mode,permission_status,
+       internal_per_minute_limit,internal_daily_limit,max_concurrency,min_interval_ms,
+       timeout_ms,empty_policy,notes)
+    SELECT ds.source_id,'exchange_rate_realtime','anonymous','unknown','unknown',
+           NULL,NULL,1,300000,10000,'preserve_last_success',
+           '盘中 HKDCNY=X 实时快照；上游官方限额未知，仅按本系统 5 分钟最小间隔保护'
+      FROM ops.data_sources ds
+     WHERE ds.source_code='exchange-rate'
+    ON CONFLICT(source_id,api_name,credential_profile) DO NOTHING;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6803,6 +6821,7 @@ const MIGRATIONS = [
   { version: '155_agnes_vision_model', up: migration155AgnesVisionModel },
   { version: '156_endpoint_only_internal_limits', up: migration156EndpointOnlyInternalLimits },
   { version: '157_alert_reconciliation_and_partial_partitions', up: migration157AlertReconciliationAndPartialPartitions },
+  { version: '158_realtime_exchange_rate_policy', up: migration158RealtimeExchangeRatePolicy },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7415,6 +7434,7 @@ module.exports = {
   migration154IpoExchangeProspectusSources,
   migration155AgnesVisionModel,
   migration157AlertReconciliationAndPartialPartitions,
+  migration158RealtimeExchangeRatePolicy,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

@@ -603,7 +603,7 @@ function jobDescription(job) {
   const map = {
     bond_safety_refresh: '每日 08:30 刷新可转债安全评分快照，供转债筛选与风险面板使用。',
     convertible_bond_universe_refresh: '每日 08:00 按上一交易日同步可转债全量数据（含价格、条款、评级、正股等）；目标日数据不完整时有限回看并自动重试。',
-    hk_rate: '每日自动抓取港币兑人民币汇率并写入所有账户，用于港股持仓的人民币估值。',
+    hk_rate: '港股交易时段按 5 分钟缓存抓取实时汇率；收盘后强制抓取一次最终值并写入所有账户。',
     index_baseline: '首次启动或新增账户时，自动补齐净值起点之前的沪深300/上证/中证500/恒生等指数基准点位。',
     index_recent: '每日补齐最近交易日的指数点位，确保收益对比图数据连续。',
     nav_snapshot: '收盘后根据当日收盘价自动计算并补齐每个账户的总资产与净值记录（nav_history）。',
@@ -644,10 +644,10 @@ function renderJobsLegacy() {
       '<div class="job-help-sub">以下自动任务由系统按周期执行；手动任务可随时点击触发，用于补救或立即生效。</div>' +
       '<div class="job-help-group"><b>自动任务</b>' +
         '<div class="job-help-item"><span class="job-help-name">A 股 / 可转债 / LOF·ETF 收盘数据（15:10）</span><span>每个交易日收盘后，抓取所有账户对应持仓的收盘价并写入 daily_prices。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">港股收盘数据（16:10）</span><span>抓取港股持仓收盘价；完成后依次触发当日净值快照、指数点位与港币汇率更新。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">港股收盘数据（16:10）</span><span>抓取港股持仓收盘价；随后由净值快照和港币汇率收盘任务使用当天最终数据。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">净值快照</span><span>根据已落库的收盘价，补齐每个账户的总资产和净值记录。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">指数基线与每日补齐</span><span>启动时补齐净值起点以来的指数基线；每个交易日收盘后补齐沪深300、上证、中证500、恒生等最新点位。</span></div>' +
-        '<div class="job-help-item"><span class="job-help-name">港币汇率</span><span>每个交易日港股收盘后更新港币兑人民币汇率，用于港股持仓人民币估值。</span></div>' +
+        '<div class="job-help-item"><span class="job-help-name">港币汇率</span><span>港股交易时段实时刷新，收盘后再抓一次最终汇率，用于港股持仓人民币估值。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">可转债安全评分（08:30）</span><span>每日刷新可转债安全评分快照，供转债筛选与风险面板使用。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">可转债行情、估值与预警（08:00 / 08:15）</span><span>08:00 按上一交易日同步可转债行情、条款、评级与正股信息，随后刷新估值和预警结果；目标日数据不完整时有限回看并自动重试。</span></div>' +
         '<div class="job-help-item"><span class="job-help-name">打新日历与日报（工作日 18:00）</span><span>自动生成并更新 IPO/打新日历和每日打新日报。</span></div>' +

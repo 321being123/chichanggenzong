@@ -17,7 +17,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
         return require('../jobs/bondSafetyRefresh').runBondSafetyRefresh(reason, { targetTradeDate, readOnly: true });
       }
     case 'hk_rate':
-      return require('../jobs/hkRate').runHkRateJob();
+      return require('../jobs/hkRate').runHkRateJob({ final: true });
     case 'nav_snapshot':
       return require('../jobs/navSnapshot').runNavSnapshotJob();
     case 'index_baseline':

@@ -70,9 +70,9 @@ async function fetchQuote(code, forceRefresh) {
   return null;
 }
 
-async function fetchHKRate() {
+async function fetchHKRate(realtime) {
   try {
-    const r = await fetch(api('/api/hkrate'));
+    const r = await fetch(api('/api/hkrate' + (realtime ? '?realtime=1' : '')));
     if (r.ok) {
       const d = await r.json();
       if (d && d.rate > 0) return d.rate;
@@ -125,8 +125,9 @@ async function refreshAllPrices() {
     Object.keys(retryQuotes).forEach(function (code) { allQuotes[code] = retryQuotes[code]; });
   }
 
-  // 获取港币→人民币汇率（港股通用）
-  var hkRate = await fetchHKRate();
+  // 港股交易时段请求实时汇率；非交易时段只读最近一次已落库值。
+  var hasHK = data.positions.some(function (p) { return p.subtype === '港股'; });
+  var hkRate = await fetchHKRate(hasHK && typeof isMarketOpen === 'function' && isMarketOpen());
   if (!hkRate || hkRate <= 0) hkRate = (Number(data.hkRate) > 0 ? Number(data.hkRate) : 0.868);
   unifiedHkRate = hkRate;
   unifiedHkRatePromise = Promise.resolve(hkRate);

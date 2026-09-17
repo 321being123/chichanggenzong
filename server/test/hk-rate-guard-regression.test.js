@@ -15,19 +15,25 @@ assert.ok(
 );
 assert.ok(/errorCode:\s*e\.code/.test(hkRate) && /recoverAt:\s*e\.recoverAt/.test(hkRate),
   '真实上游限流熔断必须保留错误码和恢复时间');
-assert.ok(/const rate = await getCurrentFxRate\(\)/.test(marketRoute)
-  && !/ensureHkRate\(\)/.test(marketRoute),
-  '汇率页面接口必须只读最近有效汇率，不能触发外部刷新');
+assert.ok(/ensureRealtimeHkRate/.test(marketRoute) && /realtimeRequested/.test(marketRoute)
+  && /const rate = await getCurrentFxRate\(\)/.test(marketRoute),
+  '汇率页面接口必须区分盘中实时刷新和普通缓存读取');
 assert.ok(/getCurrentFxRate\(\)/.test(positionRoute) && !/ensureHkRate\(\)/.test(positionRoute),
   '持仓对比必须只读汇率缓存，不能触发外部刷新');
 assert.ok(/getCurrentFxRateSnapshot\(\)/.test(hkRate) && /FRESH_RATE_MS/.test(hkRate)
   && /status: 'fresh'/.test(hkRate) && /externalCalls: 0/.test(hkRate),
   '汇率任务必须先做24小时新鲜度门禁');
+assert.ok(/REALTIME_RATE_MAX_AGE_MS/.test(hkRate)
+  && /exchange_rate_realtime/.test(hkRate)
+  && /ensureRealtimeHkRate\(\{ force: true \}\)/.test(hkRate),
+  '汇率必须支持盘中 5 分钟缓存和收盘强制刷新');
 assert.ok(/apiName: e\.apiName/.test(hkRate) && /credentialProfile: e\.credentialProfile/.test(hkRate)
   && /budgetWindow: e\.budgetWindow/.test(hkRate), '汇率任务必须完整传递结构化 Guard 字段');
 assert.ok(/migration135ExchangeRateBudgetRecovery/.test(migrations)
   && /min_interval_ms=86400000/.test(migrations)
-  && /detail LIKE '%达到日保护线%'/.test(migrations),
-  '必须提供汇率策略统一和历史误熔断恢复迁移');
+  && /detail LIKE '%达到日保护线%'/.test(migrations)
+  && /migration158RealtimeExchangeRatePolicy/.test(migrations)
+  && /exchange_rate_realtime/.test(migrations),
+  '必须提供每日汇率策略恢复和盘中实时接口策略迁移');
 
 console.log('港币汇率限额/熔断回归检查通过');

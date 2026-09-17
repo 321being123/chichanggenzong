@@ -355,7 +355,7 @@ function scheduleAllMarketCloses() {
           runMarketCloseJob(mkt.label, mkt.match)
             .then(() => {
               if (mkt.label !== '港股') return;
-              return runHkRateJob()
+              return runHkRateJob({ final: true })
                 .then((fx) => {
                   if (!fx || !fx.ok) return null;
                   return runNavSnapshotJob();

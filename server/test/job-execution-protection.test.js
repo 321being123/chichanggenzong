@@ -77,8 +77,8 @@ const declaredDailyBudget = definitions.JOB_DEFINITIONS
   .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
 const scheduledDailyBudget = definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
   .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
-assert.strictEqual(declaredDailyBudget, 674, '全量任务矩阵声明预算必须为674次/日（市场波动不再设置内部单批上限）');
-assert.strictEqual(scheduledDailyBudget, 74, '常规定时任务预算不得把市场波动内部单批上限计入每日预算');
+assert.strictEqual(declaredDailyBudget, 675, '全量任务矩阵声明预算必须为675次/日（市场波动不再设置内部单批上限）');
+assert.strictEqual(scheduledDailyBudget, 75, '常规定时任务预算不得把市场波动内部单批上限计入每日预算');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
 assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');

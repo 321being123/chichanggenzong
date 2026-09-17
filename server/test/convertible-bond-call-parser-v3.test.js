@@ -38,6 +38,12 @@ try {
   assert.strictEqual(rows.get(fixture.cross_year.url).no_call_until, '2026-06-19');
   assert.strictEqual(rows.get(fixture.through_maturity.url).validity_basis, 'through_maturity');
   assert.strictEqual(rows.get(fixture.through_maturity.url).parse_status, 'complete');
+  const maturityOperationalImpossibility = rows.get(fixture.maturity_operational_impossibility.url);
+  assert.strictEqual(maturityOperationalImpossibility.validity_basis, 'through_maturity');
+  assert.strictEqual(maturityOperationalImpossibility.parse_status, 'complete');
+  assert.strictEqual(maturityOperationalImpossibility.evidence.maturity_date, '2026-06-23');
+  assert.ok(maturityOperationalImpossibility.evidence.maturity_operational_impossibility);
+  assert.ok(!maturityOperationalImpossibility.errors.includes('decision_date_not_found'));
   assert.strictEqual(rows.get(fixture.partial.url).parse_status, 'partial');
   assert.ok(rows.get(fixture.partial.url).errors.includes('no_call_deadline_not_found'));
   const exercise = rows.get(fixture.exercise.url);

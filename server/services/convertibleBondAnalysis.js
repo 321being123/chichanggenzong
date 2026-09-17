@@ -1306,7 +1306,7 @@ async function collectAnnouncementSource(fetcher, windows, keywords) {
   return { events: uniqueAnnouncementEvents(events), failures };
 }
 
-async function collectConvertibleBondAnnouncementMarket(market, startDate, endDate) {
+async function collectConvertibleBondAnnouncementMarket(market, startDate, endDate, { allowFallback = true } = {}) {
   const windows = announcementDateWindows(startDate, endDate);
   const primaryFetcher = market === 'SH' ? fetchSseEventsBatch : fetchSzseEventsBatch;
   const keywords = market === 'SZ' ? [''] : UNIFIED_ANNOUNCEMENT_KEYWORDS;
@@ -1316,6 +1316,13 @@ async function collectConvertibleBondAnnouncementMarket(market, startDate, endDa
   // 交易所主源失败或分页不完整时，保留已取得的结果并自动切换巨潮；
   // 只有巨潮也失败/分页不完整，才把本轮标记为失败并保留游标重试。
   const exchangeEvents = relevantConvertibleBondAnnouncements(primary.events);
+  if (!allowFallback) {
+    return {
+      events: exchangeEvents,
+      failed: true,
+      messages: primary.failures.map(message => `交易所主源:${message}`).slice(0, 6),
+    };
+  }
   const cninfo = await collectAnnouncementSource(
     (windowStart, windowEnd, keyword) => fetchCninfoEventsBatch(windowStart, windowEnd, market, keyword),
     windows,

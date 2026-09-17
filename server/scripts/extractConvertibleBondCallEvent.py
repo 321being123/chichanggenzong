@@ -162,6 +162,23 @@ def extract_no_call(text, decision_date, year_hint):
             evidence["no_call_until"] = context[:500]
             return None, "through_maturity", next_count_start_date, evidence, errors
 
+        # 临近到期公告可能不写“直至到期”，而是明确说明债券即将到期，受赎回
+        # 实施最短间隔限制影响，已经无法再办理提前赎回。该表述等价于到期前
+        # 不再行使提前赎回权，但必须同时具备到期日和无法办理的正文证据，避免
+        # 把普通风险提示误判为锁定至到期。
+        maturity_hit = re.search(r"(?:将于|于)?\s*(" + DATE_TOKEN + r")\s*(?:到期|期限届满)", context)
+        operationally_impossible = re.search(
+            r"(?:预计|已经|已)?(?:无法|不能).{0,100}(?:办理|实施|行使)(?:提前)?赎回(?:业务|权)?",
+            context,
+        )
+        if maturity_hit and operationally_impossible:
+            maturity_date = parse_date_token(maturity_hit.group(1), context, year_hint)
+            if maturity_date and (not decision_date or maturity_date >= decision_date):
+                evidence["no_call_until"] = context[:500]
+                evidence["maturity_operational_impossibility"] = operationally_impossible.group(0)
+                evidence["maturity_date"] = maturity_date
+                return None, "through_maturity", next_count_start_date, evidence, errors
+
     candidates = []
     range_pattern = DATE_TOKEN + RANGE_SEPARATOR + DATE_TOKEN
     for phrase_start, context_start, context in contexts:
@@ -301,7 +318,7 @@ def extract_one(url, cached_text=None, metadata=None):
     no_call_until, validity_basis, next_count_start_date, evidence, errors = extract_no_call(text, decision_date, year_hint)
     if decision_evidence:
         evidence["decision_date"] = decision_evidence
-    elif event_type in ("waive", "exercise"):
+    elif event_type in ("waive", "exercise") and not evidence.get("maturity_operational_impossibility"):
         errors.append("decision_date_not_found")
     if event_type == "waive" and no_call_until and decision_date:
         try:

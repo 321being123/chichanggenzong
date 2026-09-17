@@ -111,6 +111,15 @@ function nextMinuteAt() {
   return new Date((Math.floor(Date.now() / 60000) + 1) * 60000 + 1000);
 }
 
+// 这是熔断恢复退避，不是上游接口额度。第一次真实限流等到下一个分钟窗口；
+// 连续命中同一接口的真实限流时逐步延长等待，避免每分钟再次撞击同一个上游限制。
+function rateLimitRecoverAt(attempt = 1) {
+  const n = Math.max(1, Number(attempt) || 1);
+  if (n === 1) return nextMinuteAt();
+  const delayMinutes = Math.min(120, 2 ** Math.min(n - 1, 7));
+  return new Date(Date.now() + delayMinutes * 60000);
+}
+
 function nextShanghaiDayAt() {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -119,8 +128,9 @@ function nextShanghaiDayAt() {
   return new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day) + 1) - 8 * 3600 * 1000 + 1000);
 }
 
-function recoverAtFor(code, windowType = null) {
-  if (code === 'RATE_LIMIT' || (code === 'BUDGET_WAIT' && windowType !== 'day')) return nextMinuteAt();
+function recoverAtFor(code, windowType = null, attempt = 1) {
+  if (code === 'RATE_LIMIT') return rateLimitRecoverAt(attempt);
+  if (code === 'BUDGET_WAIT' && windowType !== 'day') return nextMinuteAt();
   if (code === 'BUDGET_WAIT' && windowType === 'day') return nextShanghaiDayAt();
   if (code === 'QUOTA_EXHAUSTED') return nextShanghaiDayAt();
   return null;
@@ -137,21 +147,36 @@ function circuitScopeLabel(source, apiName) {
   return /^tushare(?:_backup)?$/i.test(String(source || '')) ? 'Token' : '来源';
 }
 
-async function upsertCircuit(client, source, apiName, fingerprint, code, errorType, detail, recoverAt) {
+async function upsertCircuit(client, source, apiName, fingerprint, code, errorType, detail, recoverAt, increaseRateLimitBackoff = false) {
   if (!recoverAt || Number.isNaN(new Date(recoverAt).getTime())) {
     throw new Error('临时熔断必须提供有效 recover_at；永久权限问题应写接口权限策略，不得写入熔断表');
   }
+  const circuitName = circuitApiName(apiName, code);
+  const previous = await client.query(
+    `SELECT consecutive_rate_limit_count
+       FROM ops.external_circuits
+      WHERE source=$1 AND api_name=$2 AND token_fingerprint=$3
+      FOR UPDATE`,
+    [sourceKey(source), circuitName, String(fingerprint || 'none')]
+  );
+  const rateLimitCount = code === 'RATE_LIMIT'
+    ? Number(previous.rows[0] && previous.rows[0].consecutive_rate_limit_count || 0) + 1
+    : 0;
+  const effectiveRecoverAt = increaseRateLimitBackoff
+    ? recoverAtFor(code, null, rateLimitCount)
+    : recoverAt;
   await client.query(
     `INSERT INTO ops.external_circuits
-       (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,probe_owner,probe_token,probe_lease_until,error_code,error_type,detail)
-     VALUES($1,$2,$3,'open',$4,false,NULL,NULL,NULL,$5,$6,$7)
+       (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,probe_owner,probe_token,probe_lease_until,error_code,error_type,detail,consecutive_rate_limit_count)
+     VALUES($1,$2,$3,'open',$4,false,NULL,NULL,NULL,$5,$6,$7,$8)
      ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
        state='open', recover_at=EXCLUDED.recover_at, probe_in_flight=false,
        probe_owner=NULL, probe_token=NULL, probe_lease_until=NULL,
        error_code=EXCLUDED.error_code, error_type=EXCLUDED.error_type,
-       detail=EXCLUDED.detail, opened_at=now(), updated_at=now()`,
-    [sourceKey(source), circuitApiName(apiName, code), String(fingerprint || 'none'), recoverAt,
-      String(code || 'CIRCUIT_OPEN').slice(0, 64), String(errorType || 'circuit_open').slice(0, 64), String(detail || '').slice(0, 1000)]
+       detail=EXCLUDED.detail, consecutive_rate_limit_count=EXCLUDED.consecutive_rate_limit_count,
+       opened_at=now(), updated_at=now()`,
+    [sourceKey(source), circuitName, String(fingerprint || 'none'), effectiveRecoverAt,
+      String(code || 'CIRCUIT_OPEN').slice(0, 64), String(errorType || 'circuit_open').slice(0, 64), String(detail || '').slice(0, 1000), rateLimitCount]
   );
 }
 
@@ -364,7 +389,8 @@ async function openExternalCircuit(source, detail = '', circuitSource = source, 
   const client = providedClient || await getPool().connect();
   try {
     await upsertCircuit(client, key, guardOptions.apiName, guardOptions.tokenFingerprint,
-      code, errorType || (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' ? 'rate_limit' : 'circuit_open'), detail, recoverAt);
+      code, errorType || (code === 'RATE_LIMIT' || code === 'QUOTA_EXHAUSTED' || code === 'BUDGET_WAIT' ? 'rate_limit' : 'circuit_open'), detail, recoverAt,
+      code === 'RATE_LIMIT' && !Object.prototype.hasOwnProperty.call(supplied || {}, 'recoverAt'));
   } finally {
     if (!providedClient) client.release();
   }
@@ -425,7 +451,7 @@ async function closeExternalCircuit(source, apiName, fingerprint = 'none', provi
   const { rows } = await queryable.query(
     `UPDATE ops.external_circuits
         SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
-            consecutive_forbidden_count=0,last_success_at=now(),updated_at=now()
+            consecutive_forbidden_count=0,consecutive_rate_limit_count=0,last_success_at=now(),updated_at=now()
       WHERE source=$1 AND api_name=ANY($2::text[]) AND token_fingerprint=$3
         AND ($4::text IS NULL OR probe_token=$4)
       RETURNING api_name`,
@@ -442,7 +468,7 @@ async function manuallyCloseExternalCircuit(source, apiName, fingerprint = 'none
   const { rows } = await getPool().query(
     `UPDATE ops.external_circuits
         SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
-            consecutive_forbidden_count=0,updated_at=now()
+            consecutive_forbidden_count=0,consecutive_rate_limit_count=0,updated_at=now()
       WHERE source=$1 AND api_name=$2 AND token_fingerprint=$3 AND state='open'
       RETURNING source,api_name,token_fingerprint,state,updated_at`,
     [sourceKey(source), String(apiName || '*').slice(0, 64), String(fingerprint || 'none')]

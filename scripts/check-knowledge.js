@@ -168,8 +168,10 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   }
   if (!/ck_source_endpoint_no_internal_limits/.test(migrations)
     || !/ck_external_circuits_open_recover_at/.test(migrations)
+    || !/160_rate_limit_recovery_backoff/.test(migrations)
+    || !/rateLimitRecoverAt/.test(externalGuard)
     || !/临时熔断必须提供有效 recover_at/.test(externalGuard)) {
-    errors.push('数据库必须禁止内部分钟/日限额，并保证所有 open 熔断都有 recover_at。');
+    errors.push('数据库必须禁止内部分钟/日限额，并保证所有 open 熔断都有 recover_at 和递增恢复退避。');
   }
   if (/HKEX_MAX_PAGES\s*=\s*\d+/.test(hkexAnnouncement) || /CNINFO_MAX_PAGES\s*=\s*\d+/.test(cninfoAnnouncement)
     || /maxPages\s*=\s*\d+|page\s*<=\s*5|pageNum\s*<=\s*20/.test(stockAnalysis)) {

@@ -201,6 +201,30 @@ function ok(fields = ['value'], items = [['ok']]) {
     await assert.rejects(() => tushareQuery('rt_min', { ts_code: '000001.SZ', freq: '1MIN' }, 'ts_code,close'));
     assert.strictEqual(failoverNotices.length, 0, '备用失败时不得发送已切换成功告警');
 
+    const backoffApi = 'rate_backoff_test';
+    const backoffFp = 'rate-backoff-test-fingerprint';
+    await guard.resetExternalCallGuardPersistence('tushare');
+    await guard.openExternalCircuit('tushare', 'first rate limit', {
+      apiName: backoffApi, tokenFingerprint: backoffFp, errorCode: 'RATE_LIMIT',
+    });
+    const firstBackoff = await pool.query(
+      `SELECT consecutive_rate_limit_count,recover_at
+         FROM ops.external_circuits
+        WHERE source='tushare' AND api_name=$1 AND token_fingerprint=$2`, [backoffApi, backoffFp]
+    );
+    await guard.openExternalCircuit('tushare', 'second rate limit', {
+      apiName: backoffApi, tokenFingerprint: backoffFp, errorCode: 'RATE_LIMIT',
+    });
+    const secondBackoff = await pool.query(
+      `SELECT consecutive_rate_limit_count,recover_at
+         FROM ops.external_circuits
+        WHERE source='tushare' AND api_name=$1 AND token_fingerprint=$2`, [backoffApi, backoffFp]
+    );
+    assert.strictEqual(Number(firstBackoff.rows[0].consecutive_rate_limit_count), 1);
+    assert.strictEqual(Number(secondBackoff.rows[0].consecutive_rate_limit_count), 2);
+    assert.ok(new Date(secondBackoff.rows[0].recover_at).getTime() > new Date(firstBackoff.rows[0].recover_at).getTime(), '连续真实限流必须递增恢复等待');
+    await guard.resetExternalCallGuardPersistence('tushare');
+
     // 更换主 Token 后，旧 Token 指纹对应的熔断必须失效。
     await guard.openExternalCircuit('tushare', 'old rt_min circuit', {
       apiName: 'rt_min', tokenFingerprint: primaryFp, errorCode: 'RATE_LIMIT',

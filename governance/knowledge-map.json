@@ -18,7 +18,7 @@
       "read": ["docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md"],
       "update": ["AGENTS.md", "governance/knowledge-map.json"],
       "checks": ["npm.cmd run check:knowledge"],
-      "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用"]
+      "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用", "恢复退避"]
     },
     {
       "id": "announcement-data-source",

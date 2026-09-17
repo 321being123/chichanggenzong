@@ -168,7 +168,8 @@ assert.ok(/childProcessEnv/.test(bondAnalysis) && /mergeExternalCallStatsFromStd
   '历史 Python/PDF 子进程必须继承并回传统一 Guard 的累计调用数');
 assert.ok(/JOB_BUDGET_EXCEEDED/.test(ipoHistoryJob) && /error\.code !== 'ENOENT'/.test(ipoHistoryJob)
   && /externalCallCount = structured\.externalCalls/.test(ipoHistoryJob), 'IPO 业务/API错误不得换解释器重跑，且必须透传结构化预算信息');
-assert.ok(/isRunBudgetBoundaryError/.test(motiveService) && /holderAttempted = false/.test(motiveService)
+assert.ok(/isRunBudgetBoundaryError/.test(motiveService)
+  && (/holderAttempted = false/.test(motiveService) || /holderDeferredCodes/.test(motiveService) && /isBudgetBoundary/.test(motiveService))
   && /pledgeAttempted = false/.test(motiveService), '下修动机达到批次上限必须顺延而非制造单债失败');
 assert.match(motiveService, /syncRevisionMotiveInputs\(\{ businessDate = null, limit = null \}/,
   '下修动机输入默认必须处理全部候选，不能隐藏 2000 条上限');

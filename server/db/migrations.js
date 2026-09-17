@@ -6734,6 +6734,25 @@ async function migration159VerifiedLimitsAndRecoverableCircuits() {
   `);
 }
 
+// ========== 160：真实限流熔断递增恢复退避 =============
+// 只记录连续真实 RATE_LIMIT 次数，用于延长熔断恢复等待；不把退避时间冒充上游额度。
+async function migration160RateLimitRecoveryBackoff() {
+  await pool.query(`
+    ALTER TABLE ops.external_circuits
+      ADD COLUMN IF NOT EXISTS consecutive_rate_limit_count INTEGER NOT NULL DEFAULT 0;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='ck_external_circuits_rate_limit_count'
+      ) THEN
+        ALTER TABLE ops.external_circuits
+          ADD CONSTRAINT ck_external_circuits_rate_limit_count
+          CHECK (consecutive_rate_limit_count >= 0);
+      END IF;
+    END $$;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6894,6 +6913,7 @@ const MIGRATIONS = [
   { version: '157_alert_reconciliation_and_partial_partitions', up: migration157AlertReconciliationAndPartialPartitions },
   { version: '158_realtime_exchange_rate_policy', up: migration158RealtimeExchangeRatePolicy },
   { version: '159_verified_limits_and_recoverable_circuits', up: migration159VerifiedLimitsAndRecoverableCircuits },
+  { version: '160_rate_limit_recovery_backoff', up: migration160RateLimitRecoveryBackoff },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7508,6 +7528,7 @@ module.exports = {
   migration157AlertReconciliationAndPartialPartitions,
   migration158RealtimeExchangeRatePolicy,
   migration159VerifiedLimitsAndRecoverableCircuits,
+  migration160RateLimitRecoveryBackoff,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

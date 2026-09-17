@@ -109,12 +109,13 @@ function pgConfig(dbName) {
 
     const protectionConstraints = await db.pool.query(
       `SELECT conname FROM pg_constraint WHERE conname = ANY($1::text[])`,
-      [['ck_source_endpoint_no_internal_limits', 'ck_external_circuits_open_recover_at']]
+      [['ck_source_endpoint_no_internal_limits', 'ck_external_circuits_open_recover_at', 'ck_external_circuits_rate_limit_count']]
     );
     check('迁移159建立禁止内部限额和熔断恢复时间约束', () => {
       const names = new Set(protectionConstraints.rows.map(row => row.conname));
       assert.ok(names.has('ck_source_endpoint_no_internal_limits'));
       assert.ok(names.has('ck_external_circuits_open_recover_at'));
+      assert.ok(names.has('ck_external_circuits_rate_limit_count'));
     });
 
     const knowledgeConstraints = await db.pool.query(

@@ -10,6 +10,10 @@ const MOTIVE_MODEL_VERSION = 'motive-v1.1';
 const MOTIVE_MODEL_CALIBRATED = false;
 const CYCLE_VERSION = 'cycle-v1';
 const BOND_CODE_RE = /^(110|111|113|118|123|127|128)\d{3}\.(SH|SZ)$/i;
+// Tushare 官方文档规定 top10cbholders 单次最多返回 3000 行；这是响应完整性边界，
+// 不是本系统自设的调用次数或业务处理上限。
+const TOP10_CB_HOLDERS_ROW_LIMIT = 3000;
+const TOP10_CB_HOLDERS_FIELDS = 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio';
 
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -37,6 +41,137 @@ function dateMinusDays(value, days) {
   const result = new Date(`${date}T00:00:00Z`);
   result.setUTCDate(result.getUTCDate() - Number(days || 0));
   return result.toISOString().slice(0, 10);
+}
+
+function ymd(value) {
+  const date = dateText(value);
+  return date ? date.replace(/-/g, '') : null;
+}
+
+function shiftYmd(value, days) {
+  const text = ymd(value);
+  if (!text) return null;
+  const date = new Date(`${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+function minYmd(values) {
+  return values.map(ymd).filter(Boolean).sort()[0] || null;
+}
+
+function midpointYmd(start, end) {
+  const startText = ymd(start), endText = ymd(end);
+  if (!startText || !endText || startText >= endText) return null;
+  const startDate = new Date(`${startText.slice(0, 4)}-${startText.slice(4, 6)}-${startText.slice(6, 8)}T00:00:00Z`);
+  const endDate = new Date(`${endText.slice(0, 4)}-${endText.slice(4, 6)}-${endText.slice(6, 8)}T00:00:00Z`);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) return null;
+  const midpoint = new Date(startDate.getTime() + Math.floor((endDate.getTime() - startDate.getTime()) / 2));
+  const result = midpoint.toISOString().slice(0, 10).replace(/-/g, '');
+  return result > startText && result < endText ? result : null;
+}
+
+// 批量读取 top10_cb_holders：同一请求支持多个 ts_code，达到官方行数上限时递归拆分。
+// 对首次全量数据，优先按代码拆分；单只债券仍达到上限时再按日期拆分，不能静默接受截断结果。
+async function fetchTop10CbHolderRowsBatched({
+  bonds = [], businessDate, query, rowLimit = TOP10_CB_HOLDERS_ROW_LIMIT,
+  stopOnError = () => false, isBudgetBoundary = () => false,
+} = {}) {
+  if (typeof query !== 'function') throw new Error('缺少 top10_cb_holders 批量查询函数');
+  const rowsByCode = new Map();
+  const errorsByCode = new Map();
+  const attemptedCodes = new Set();
+  const deferredCodes = new Set();
+  const targetEnd = ymd(businessDate);
+  let calls = 0;
+  let stopError = null;
+
+  function codesOf(batch) {
+    return [...new Set(batch.map(row => String(row.ts_code || '').trim().toUpperCase()).filter(Boolean))];
+  }
+
+  function markFailure(batch, error, { deferred = false, stop = false } = {}) {
+    for (const code of codesOf(batch)) {
+      if (deferred) deferredCodes.add(code);
+      else {
+        attemptedCodes.add(code);
+        errorsByCode.set(code, error);
+      }
+    }
+    if (stop && !stopError) stopError = error;
+  }
+
+  async function fetchBatch(batch, window = {}) {
+    if (!batch.length) return;
+    if (stopError) {
+      markFailure(batch, stopError, { deferred: true });
+      return;
+    }
+    const requestedCodes = codesOf(batch);
+    const hasExplicitStart = Object.prototype.hasOwnProperty.call(window, 'startDate');
+    const startDate = hasExplicitStart
+      ? ymd(window.startDate)
+      : minYmd(batch.map(row => dateMinusDays(row.holder_report_date, 30)));
+    const endDate = ymd(window.endDate) || targetEnd;
+    const params = { ts_code: requestedCodes.join(','), end_date: endDate };
+    if (startDate) params.start_date = startDate;
+
+    let rows;
+    try {
+      rows = await query(params);
+      calls += 1;
+      if (!Array.isArray(rows)) throw new Error('top10_cb_holders 返回结构无效');
+    } catch (error) {
+      if (isBudgetBoundary(error)) {
+        markFailure(batch, error, { deferred: true, stop: true });
+      } else {
+        markFailure(batch, error, { stop: stopOnError(error) });
+      }
+      return;
+    }
+
+    if (rows.length >= rowLimit) {
+      if (batch.length > 1) {
+        const middle = Math.ceil(batch.length / 2);
+        const childWindow = hasExplicitStart ? window : { endDate: window.endDate || targetEnd };
+        await fetchBatch(batch.slice(0, middle), childWindow);
+        await fetchBatch(batch.slice(middle), childWindow);
+        return;
+      }
+
+      // list_date 缺失时只用一个远早于现有可转债历史的技术下界做二分计算，
+      // 该值不是业务筛选条件，也不作为接口额度或完成边界。
+      const lowerBound = startDate || ymd(batch[0].list_date) || '19000101';
+      const middle = midpointYmd(lowerBound, endDate);
+      if (!middle) {
+        const error = Object.assign(new Error(`top10_cb_holders 单只债券仍返回 ${rowLimit} 行，无法安全拆分日期`), {
+          code: 'TOP10_CB_HOLDERS_ROW_LIMIT_EXCEEDED',
+        });
+        markFailure(batch, error, { stop: true });
+        return;
+      }
+      await fetchBatch(batch, { startDate: lowerBound, endDate: middle });
+      await fetchBatch(batch, { startDate: shiftYmd(middle, 1), endDate });
+      return;
+    }
+
+    const allowed = new Set(requestedCodes);
+    const grouped = new Map();
+    for (const row of rows) {
+      const code = String(row.ts_code || row.tscode || '').trim().toUpperCase();
+      if (!allowed.has(code)) continue;
+      if (!grouped.has(code)) grouped.set(code, []);
+      grouped.get(code).push(row);
+    }
+    for (const code of requestedCodes) {
+      attemptedCodes.add(code);
+      rowsByCode.set(code, [...(rowsByCode.get(code) || []), ...(grouped.get(code) || [])]);
+    }
+  }
+
+  await fetchBatch(bonds, { endDate: targetEnd });
+  return { rowsByCode, errorsByCode, attemptedCodes, deferredCodes, stopError, calls };
 }
 
 // top10_cb_holders 不提供公告日。历史评分使用法定最晚披露日作为保守可见日，
@@ -887,7 +1022,8 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
   const configuredLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
   const limitClause = configuredLimit ? ' LIMIT $2' : '';
   const queryParams = configuredLimit ? [date, configuredLimit] : [date];
-  const { rows: bonds } = await pool.query(`SELECT p.instrument_id,p.stock_instrument_id,i.canonical_code AS ts_code,si.canonical_code AS stock_code,ci.company_id
+  const { rows: bonds } = await pool.query(`SELECT p.instrument_id,p.stock_instrument_id,i.canonical_code AS ts_code,i.list_date,
+             si.canonical_code AS stock_code,ci.company_id,holder_wm.holder_report_date
       FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.instrument_id
       JOIN public.bond_unified u ON u.instrument_id=i.instrument_id
       JOIN market.convertible_bond_daily_metrics md ON md.instrument_id=i.instrument_id
@@ -898,6 +1034,11 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
        AND hcur.scope_key=('convertible_bond:' || p.instrument_id::text) AND hcur.dataset_code='top10_cb_holders'
       LEFT JOIN ops.sync_cursors pcur ON pcur.company_id=ci.company_id
        AND pcur.scope_key=('company:' || ci.company_id::text) AND pcur.dataset_code='pledge_stat'
+      LEFT JOIN LATERAL (
+        SELECT max(report_date)::text AS holder_report_date
+          FROM fundamental.convertible_bond_holder_positions hpwm
+         WHERE hpwm.instrument_id=p.instrument_id
+      ) holder_wm ON true
       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
       LEFT JOIN LATERAL (
         SELECT max(last_trade_date) AS last_trade_date,
@@ -940,33 +1081,50 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
   const errorText = error => String(error && error.message || error).slice(0, 300);
   const isEndpointStopError = error => Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
   const isRunBudgetBoundaryError = error => Boolean(error && error.code === 'JOB_BUDGET_EXCEEDED');
-  for (const bond of bonds) {
-    let holderRows = [];
-    let holderError = null;
-    let holderAttempted = false;
-    if (!holderStopError) {
-      holderAttempted = true;
-      try {
-        const { rows: holderWatermark } = await pool.query(
-          'SELECT max(report_date)::text AS report_date FROM fundamental.convertible_bond_holder_positions WHERE instrument_id=$1', [bond.instrument_id]
-        );
-        const holderParams = { ts_code: bond.ts_code, end_date: date.replace(/-/g, '') };
-        if (holderWatermark[0] && holderWatermark[0].report_date) holderParams.start_date = dateMinusDays(holderWatermark[0].report_date, 30).replace(/-/g, '');
-        holderRows = tsRows(await tushareQuery('top10_cb_holders', holderParams, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio', { allowEmpty: true }));
-        externalCalls += 1;
-      } catch (error) {
-        holderError = error;
-        if (isRunBudgetBoundaryError(error)) {
-          // 达到本批次上限是正常分批边界，不是单只证券失败；保留游标不动，留到下一批。
-          holderAttempted = false;
-          holderStopError = error;
-        } else {
-          if (isEndpointStopError(error)) holderStopError = error;
-          failures.push({ tsCode: bond.ts_code, dataset: 'top10_cb_holders', error: errorText(error) });
-        }
-      }
+  const holderRowsByCode = new Map();
+  const holderErrorsByCode = new Map();
+  const holderAttemptedCodes = new Set();
+  const holderDeferredCodes = new Set();
+  // 首次无水位数据与已有水位数据分开批量，避免一个新债券的全历史查询拖慢所有增量查询。
+  const holderGroups = [
+    bonds.filter(bond => !bond.holder_report_date),
+    bonds.filter(bond => Boolean(bond.holder_report_date)),
+  ];
+  for (const holderGroup of holderGroups) {
+    if (!holderGroup.length) continue;
+    if (holderStopError) {
+      holderGroup.forEach(bond => holderDeferredCodes.add(String(bond.ts_code).toUpperCase()));
+      continue;
     }
-    if (!holderAttempted) holderDeferredCount += 1;
+    const batchResult = await fetchTop10CbHolderRowsBatched({
+      bonds: holderGroup,
+      businessDate: date,
+      query: async params => tsRows(await tushareQuery('top10_cb_holders', params, TOP10_CB_HOLDERS_FIELDS, { allowEmpty: true })),
+      rowLimit: TOP10_CB_HOLDERS_ROW_LIMIT,
+      stopOnError: isEndpointStopError,
+      isBudgetBoundary: isRunBudgetBoundaryError,
+    });
+    externalCalls += batchResult.calls;
+    for (const [code, rows] of batchResult.rowsByCode) holderRowsByCode.set(code, rows);
+    for (const [code, error] of batchResult.errorsByCode) {
+      holderErrorsByCode.set(code, error);
+      failures.push({ tsCode: code, dataset: 'top10_cb_holders', error: errorText(error) });
+    }
+    for (const code of batchResult.attemptedCodes) holderAttemptedCodes.add(code);
+    for (const code of batchResult.deferredCodes) holderDeferredCodes.add(code);
+    if (batchResult.stopError) holderStopError = batchResult.stopError;
+  }
+  for (const bond of bonds) {
+    const code = String(bond.ts_code).toUpperCase();
+    if (!holderAttemptedCodes.has(code) && !holderErrorsByCode.has(code)) holderDeferredCodes.add(code);
+  }
+
+  for (const bond of bonds) {
+    const code = String(bond.ts_code).toUpperCase();
+    const holderRows = holderRowsByCode.get(code) || [];
+    const holderError = holderErrorsByCode.get(code) || null;
+    const holderAttempted = holderAttemptedCodes.has(code);
+    if (holderDeferredCodes.has(code)) holderDeferredCount += 1;
 
     let pledgeRows = [];
     let pledgeError = null;
@@ -1058,7 +1216,8 @@ async function syncRevisionMotiveInputs({ businessDate = null, limit = null } = 
 }
 
 module.exports = {
-  MOTIVE_MODEL_VERSION, MOTIVE_MODEL_CALIBRATED, CYCLE_VERSION, dateText, holderAvailableDate, researchLevel, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles,
+  MOTIVE_MODEL_VERSION, MOTIVE_MODEL_CALIBRATED, CYCLE_VERSION, TOP10_CB_HOLDERS_ROW_LIMIT, TOP10_CB_HOLDERS_FIELDS,
+  dateText, dateMinusDays, fetchTop10CbHolderRowsBatched, holderAvailableDate, researchLevel, normalizeBondCode, normalizeHolderName, holderType, saveHolderRow, diffHolderSnapshots, buildRevisionCycles,
   scoreHistory, scorePressure, scoreConversion, scoreGovernance, scoreMarket, calculateExecutability, calculateMaturity, buildFinancial, buildMotiveScore,
   saveConvertibleBondHolderPositions, saveCompanyPledgeSnapshots, loadMotiveInput, calculateBondRevisionMotive,
   calculateConvertibleBondRevisionMotiveScores, getBondRevisionMotiveDetail, syncRevisionMotiveInputs,

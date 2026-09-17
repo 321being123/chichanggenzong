@@ -1279,12 +1279,27 @@ async function collectAnnouncementSource(fetcher, windows, keywords) {
   const events = [], failures = [];
   for (const window of windows) {
     for (const keyword of keywords) {
-      try {
-        const result = await fetcher(window.start, window.end, keyword);
-        events.push(...(result && result.events || []));
-        if (result && result.complete === false) failures.push(`${window.start}~${window.end}/${keyword || 'all'}:分页未完整`);
-      } catch (error) {
-        failures.push(`${window.start}~${window.end}/${keyword || 'all'}:${String(error && error.message || error).slice(0, 180)}`);
+      let completed = false;
+      let lastFailure = '';
+      // 交易所偶发短页、重复页或网关超时时只重试一次；仍不完整就保留游标，避免静默漏公告。
+      for (let attempt = 1; attempt <= 2 && !completed; attempt += 1) {
+        try {
+          const result = await fetcher(window.start, window.end, keyword);
+          events.push(...(result && result.events || []));
+          if (!result || result.complete !== false) {
+            completed = true;
+          } else {
+            lastFailure = '分页未完整';
+          }
+        } catch (error) {
+          lastFailure = String(error && error.message || error).slice(0, 180);
+          // 熔断/权限类错误不会因立即重试恢复，直接交给备源和游标重试处理。
+          if (error && ['CIRCUIT_OPEN', 'AUTH_ERROR', 'PERMISSION_DENIED'].includes(error.code)) break;
+        }
+        if (!completed && attempt < 2) await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      if (!completed) {
+        failures.push(`${window.start}~${window.end}/${keyword || 'all'}:${lastFailure || '批量源未返回完整结果'}（已重试1次）`);
       }
     }
   }
@@ -1855,10 +1870,10 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     }
     const bondStatusByCode = new Map(profiles.map(profile => [profile.ts_code,
       classifyBondObjectStatus({ row: rawTargetRows.get(profile.ts_code) })]));
-    const bondStatusCounts = Object.fromEntries([...bondStatusByCode.values()].reduce((counts, status) => {
+    const bondStatusCounts = [...bondStatusByCode.values()].reduce((counts, status) => {
       counts[status] = (counts[status] || 0) + 1;
       return counts;
-    }, {}));
+    }, {});
     const recoveredCount = Math.max(0, targetRows.size - initialPricedCount);
     const unresolvedCodes = profiles.filter(profile => bondStatusByCode.get(profile.ts_code) === 'retryable_missing')
       .map(profile => profile.ts_code);
@@ -1873,7 +1888,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       objectStatusCounts: bondStatusCounts };
     const [stockDailyData, stockValuationData, stockAdjustmentData] = await Promise.all([
       tushareQuery('daily', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
-      tushareQuery('daily_basic', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
+      tushareQuery('daily_basic', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv', { failoverOnEmpty: true }),
       tushareQuery('adj_factor', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
     ]);
     const stockDailyRows = tsRows(stockDailyData);

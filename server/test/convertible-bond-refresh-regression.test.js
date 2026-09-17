@@ -58,6 +58,10 @@ function completeRows(count) {
   assert.strictEqual(classifyFailure({ code: 'RATE_LIMIT', errorType: 'rate_limit', recoverAt: new Date(Date.now() + 120000) }).retryable, true, '临时限流应按恢复时间重试');
   assert.strictEqual(sanitizeJobResult({ tokenFingerprint: 'sensitive' }).tokenFingerprint, '[已脱敏]');
   const analysisSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+  assert.ok(analysisSource.includes('const bondStatusCounts = [...bondStatusByCode.values()].reduce'),
+    '可转债行情状态统计必须直接接收 reduce 返回对象');
+  assert.ok(!analysisSource.includes('Object.fromEntries([...bondStatusByCode.values()].reduce'),
+    '可转债行情状态统计不得把普通对象再次当作可迭代 entries');
   assert.ok(analysisSource.includes("tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }"), '正股日行情补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
   assert.ok(analysisSource.includes("tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }"), '正股估值补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
   assert.ok(analysisSource.includes('setTimeout(resolve, 1200)'), '正股历史补齐必须在外部调用之间限速');

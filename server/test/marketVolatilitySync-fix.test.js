@@ -34,6 +34,8 @@ assert.ok(!/\brows\.length\b/.test(job.split('INSERT INTO market.a_share_market_
 assert.ok(job.includes('rows.length < 1000'), '回退未验证证券数量下限');
 assert.ok(job.includes('valid.length / rows.length < 0.8'), '回退未验证有效市值占比');
 assert.ok(job.includes('if (!fromUnified) await wait(350)'), '回退 Tushare 后未限流');
+assert.ok(job.includes('expectedTradeDate()'), '市场市值必须按已完成交易日取数，不能把盘中当日空数据当作故障');
+assert.ok(job.includes("{ failoverOnEmpty: true }"), 'daily_basic 空返回必须允许切换备用 Tushare 账号');
 
 // 验收结论
 console.log('marketVolatilitySync fix tests passed');

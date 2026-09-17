@@ -88,8 +88,10 @@ function classifyUpstreamError(payload, statusCode, apiName) {
     { errorType: statusCode >= 500 ? 'network' : 'upstream', statusCode, apiName, upstreamCode: code });
 }
 
-function failoverEligible(error) {
-  return Boolean(error && ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code));
+function failoverEligible(error, options = {}) {
+  if (!error) return false;
+  if (error.code === 'EMPTY_DATA' && options.failoverOnEmpty === true) return true;
+  return ['AUTH_ERROR', 'PERMISSION_DENIED', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN'].includes(error.code);
 }
 
 function requestWithToken(apiName, params, fields, token, guardSource, dataset, options = {}) {
@@ -212,7 +214,7 @@ async function tushareQuery(apiName, params = {}, fields = '', options = {}) {
       return result;
     } catch (error) {
       lastError = error;
-      if (index === candidates.length - 1 || !failoverEligible(error)) throw error;
+      if (index === candidates.length - 1 || !failoverEligible(error, options)) throw error;
       if (candidate.source === PRIMARY_SOURCE && runtime.mode === 'auto') {
         primaryFailure = error;
       }

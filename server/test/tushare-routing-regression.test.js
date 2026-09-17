@@ -53,6 +53,12 @@ function mockNetworkError(message = '测试网络错误') {
   };
 }
 
+async function resetTushareGuards() {
+  guard.resetExternalCallGuard();
+  await guard.resetExternalCallGuardPersistence('tushare');
+  await guard.resetExternalCallGuardPersistence('tushare_backup');
+}
+
 function ok(fields = ['value'], items = [['ok']]) {
   return { code: 0, data: { fields, items } };
 }
@@ -109,12 +115,22 @@ function ok(fields = ['value'], items = [['ok']]) {
     assert.deepStrictEqual(realtime, { fields: ['ts_code', 'close'], items: [['000001.SZ', 10]] });
     assert.strictEqual(failoverNotices.length, 1, '备用成功后才发送一次接口切换告警');
     assert.deepStrictEqual(failoverNotices[0].slice(0, 3), ['rt_min', 'primary', 'backup']);
+
     const primaryFp = guard.tokenFingerprint('primary-test-token');
     const circuits = await pool.query(
       "SELECT source,api_name,state FROM ops.external_circuits WHERE source='tushare' AND token_fingerprint=$1", [primaryFp]
     );
     assert.strictEqual(circuits.rows.find(row => row.api_name === 'rt_min')?.state, 'open');
     assert.strictEqual(circuits.rows.find(row => row.api_name === '*'), undefined);
+
+    // 全市场日线在收盘前可能返回空集；显式允许空集切备用账号，但默认行为仍不变。
+    await resetTushareGuards();
+    mockResponses([
+      { payload: ok(['ts_code', 'trade_date', 'total_mv'], []) },
+      { payload: ok(['ts_code', 'trade_date', 'total_mv'], [['000001.SZ', '20260916', 123]]) },
+    ]);
+    const dailyBasicFallback = await tushareQuery('daily_basic', { trade_date: '20260916' }, 'ts_code,trade_date,total_mv', { failoverOnEmpty: true });
+    assert.deepStrictEqual(dailyBasicFallback.items, [['000001.SZ', '20260916', 123]], 'daily_basic 空结果应按调用方意图切备用账号');
 
     // HTTP 200 + 单接口当日额度耗尽仍只熔断当前 Token 的 rt_min，不得升级为 Token 级 '*'.
     failoverNotices.length = 0;

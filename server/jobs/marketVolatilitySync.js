@@ -7,6 +7,7 @@ const path = require('path');
 const { pool, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { tushareQuery, tsRows, normDate } = require('../services/market');
 const { withExternalCallGuard, openExternalCircuit } = require('../services/externalCallGuard');
+const { expectedTradeDate } = require('../routes/bondCycle');
 
 function request(url, binary, source = 'market-volatility', dataset = url) {
   return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
@@ -276,7 +277,8 @@ async function syncMoneySupply() {
 }
 
 async function tradeMonthEnds(startYear, endYear) {
-  const result = [], today = tsDate(dateStr(new Date()));
+  // daily_basic 是收盘后数据；盘中不能把当天“已开市但尚未发布”的空结果当成接口故障。
+  const result = [], today = tsDate(expectedTradeDate());
   for (let year = startYear; year <= endYear; year++) {
     const data = await tushareQuery('trade_cal',
       { exchange: 'SSE', start_date: year + '0101', end_date: year + '1231', is_open: '1' },
@@ -326,7 +328,7 @@ async function syncAShareMarketCap(full) {
     // 2) 统一层覆盖不足或异常：回退 Tushare daily_basic（total_mv 单位：万元 → 亿元 = /10000）
     //    回退数据同样验证交易日、数量、有效市值占比；异常时保留上一份有效数据（不写库）。
     if (!(totalYi > 0)) {
-      const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv');
+      const data = await tushareQuery('daily_basic', { trade_date: day }, 'ts_code,trade_date,total_mv', { failoverOnEmpty: true });
       const rows = tsRows(data);
       if (rows.length < 1000) continue;
       const valid = rows.filter(row => Number.isFinite(Number(row.total_mv)) && Number(row.total_mv) > 0);

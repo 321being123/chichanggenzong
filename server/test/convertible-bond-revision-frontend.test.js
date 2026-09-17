@@ -80,6 +80,7 @@ assert.ok(analysis.includes('loadRevisionEventCache') && analysis.includes('revi
 assert.ok(analysis.includes('retryFailed') && analysis.includes('changed_count') && analysis.includes('no_revision_evidence'), '公告解析重试和增量计数缺少闭环');
 assert.ok(analysis.includes('resolveConvertibleBondSymbolicLocks') && analysis.includes('symbolic_reference_type') && analysis.includes('symbolic_check_from'), '季度报告董事会无固定日期锁定缺少每日定点解析');
 assert.ok(analysis.includes('fetchSseEventsBatch') && analysis.includes('fetchSzseEventsBatch') && analysis.includes('fetchCninfoEventsBatch'), '公告同步必须使用交易所主链并具备CNINFO分页备援');
+assert.ok(analysis.includes('attempt <= 2') && analysis.includes('分页未完整') && analysis.includes('已重试1次'), '公告批量源不完整时必须执行一次有界重试并保留失败提示');
 assert.ok(jobs.includes('convertible_bond_announcement_history_sync') && jobs.includes('maxExternalCallsPerRun: 600'), '公告事实同步不得继续使用20次内部单批上限');
 assert.ok(migration.includes('137_convertible_bond_exchange_announcement_unlimited') && migration.includes('internal_per_minute_limit=NULL') && migration.includes('internal_daily_limit=NULL') && migration.includes('min_interval_ms=0'), '交易所公告迁移必须取消分钟/日和间隔内部预算');
 assert.ok(analysis.includes('const rejected = settled.filter(item => item.status === \'rejected\')')

@@ -77,6 +77,7 @@ def main() -> None:
     compressed = export_baseline()
     remote_gzip = "/tmp/portfolio-bond-call-verified.json.gz"
     remote_json = "/tmp/portfolio-bond-call-verified.json"
+    remote_log = "/tmp/portfolio-bond-call-rebuild.log"
     client = paramiko.SSHClient()
     client.load_system_host_keys()
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
@@ -109,15 +110,15 @@ def main() -> None:
         print("===== 重建生产投影 =====")
         run_sudo(
             client,
-            "set -Eeuo pipefail; cd /opt/portfolio; "
+            "set -uo pipefail; cd /opt/portfolio; "
             f"sudo -u portfolio-app /usr/bin/node server/scripts/rebuildBondCallProjection.js "
             f"--baseline-json={remote_json} --history-start={history_start} --to-date={to_date} "
-            "--apply --confirm-production",
+            f"--apply --confirm-production > {remote_log} 2>&1; code=$?; cat {remote_log}; exit $code",
             timeout=7200,
         )
     finally:
         try:
-            run_sudo(client, f"rm -f {remote_gzip} {remote_json}")
+            run_sudo(client, f"rm -f {remote_gzip} {remote_json} {remote_log}")
         finally:
             client.close()
 

@@ -37,7 +37,20 @@ function eventKey(item) {
   return item.source_number || item.url || `${item.event_date || ''}:${item.stock_code || ''}:${item.title || ''}`;
 }
 
+function hasExplicitConvertibleEvidence(item) {
+  return /(?:可转债|可转换公司债券|转债|转股|债券代码)/.test(String(item && item.title || ''));
+}
+
 async function instrumentHints(events) {
+  const sourceKeys = [...new Set(events.map(eventKey).filter(Boolean))];
+  const existing = sourceKeys.length ? await pool.query(
+    `SELECT e.source_key,e.instrument_id
+       FROM event.convertible_bond_call_events e
+       JOIN ops.data_sources s ON s.source_id=e.source_id
+      WHERE s.source_code=$1 AND e.source_key=ANY($2::text[])`,
+    [SOURCE_CODE, sourceKeys]
+  ) : { rows: [] };
+  const existingByKey = new Map(existing.rows.map(row => [row.source_key, row.instrument_id]));
   const { rows } = await pool.query(`
     SELECT p.instrument_id,split_part(s.canonical_code,'.',1) AS stock_code,
            split_part(i.canonical_code,'.',1) AS security_code,
@@ -51,6 +64,8 @@ async function instrumentHints(events) {
     byStock.get(row.stock_code).push(row);
   }
   return events.map(event => {
+    const existingInstrumentId = existingByKey.get(eventKey(event));
+    if (existingInstrumentId) return { ...event, instrument_id: existingInstrumentId };
     const stockCode = String(event.stock_code || '').slice(0, 6);
     const candidates = byStock.get(stockCode) || [];
     const instrumentId = pickInstrument({ title: event.title || '' }, candidates);
@@ -137,11 +152,15 @@ async function rebuild() {
     ...await collectOfficialWindow(shiftDate(baselineTo, 1), toDate),
   ];
   const official = [...new Map(officialRaw.map(item => [eventKey(item), item])).values()];
-  const callCandidates = await instrumentHints(official.filter(item => classifyCallEvent(item.title)));
-  const unmatchedHints = callCandidates.filter(item => !item.instrument_id);
-  if (unmatchedHints.length) {
-    throw new Error(`交易所公告存在 ${unmatchedHints.length} 条证券无法唯一匹配，已停止重建`);
+  const hintedCandidates = await instrumentHints(official.filter(item => classifyCallEvent(item.title)));
+  const unmatchedHints = hintedCandidates.filter(item => !item.instrument_id);
+  const requiredUnmatched = unmatchedHints.filter(hasExplicitConvertibleEvidence);
+  if (requiredUnmatched.length) {
+    const samples = requiredUnmatched.slice(0, 8).map(item => `${item.stock_code || '-'}:${item.title || '-'}`);
+    throw new Error(`交易所可转债公告存在 ${requiredUnmatched.length} 条证券无法唯一匹配，已停止重建：${samples.join('；')}`);
   }
+  const callCandidates = hintedCandidates.filter(item => item.instrument_id);
+  const ignoredNonConvertibleCount = unmatchedHints.length - requiredUnmatched.length;
   if (callCandidates.length) {
     await syncConvertibleBondCallAnnouncements({
       fromDate: historyStart,
@@ -222,6 +241,7 @@ async function rebuild() {
         projection_advanced: true,
         baseline_count: baseline.events.length,
         official_count: officialKeys.length,
+        ignored_non_convertible_count: ignoredNonConvertibleCount,
         removed_superseded_count: removed.rowCount,
       },
       reason: 'verified_projection_rebuild',
@@ -246,6 +266,7 @@ async function rebuild() {
       toDate,
       baselineCount: baseline.events.length,
       officialCount: officialKeys.length,
+      ignoredNonConvertibleCount,
       targetCount: targetKeys.length,
       removedSupersededCount: removed.rowCount,
       retriedSlotIds,

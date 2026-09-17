@@ -72,13 +72,16 @@ for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(Array.isArray(definition.consumesDatasets), `${definition.jobCode} 缺少 consumesDatasets`);
   assert.ok(Array.isArray(definition.datasetDependencies), `${definition.jobCode} 缺少 datasetDependencies`);
   assert.ok(definition.maxExternalCallsPerRun === null || Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
+  if (definition.externalApis.length) {
+    assert.strictEqual(definition.maxExternalCallsPerRun, null, `${definition.jobCode} 不得配置臆造的任务调用数上限`);
+  }
 }
 const declaredDailyBudget = definitions.JOB_DEFINITIONS
   .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
 const scheduledDailyBudget = definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
   .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
-assert.strictEqual(declaredDailyBudget, 675, '全量任务矩阵声明预算必须为675次/日（市场波动不再设置内部单批上限）');
-assert.strictEqual(scheduledDailyBudget, 75, '常规定时任务预算不得把市场波动内部单批上限计入每日预算');
+assert.strictEqual(declaredDailyBudget, 0, '未核验的任务调用预算必须保持为空');
+assert.strictEqual(scheduledDailyBudget, 0, '定时任务不得汇总臆造调用预算');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
 assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');
@@ -105,18 +108,18 @@ assert.ok(ipoReport.additionalSchedules.some(item => item.mode === 'enrichment' 
 assert.ok(ipoFacts.externalApis.includes('new_share'), 'IPO事实同步必须是new_share采集者');
 assert.ok(ipoFacts.additionalSchedules.some(item => item.mode === 'core' && item.hour === 19 && item.minute === 30 && item.freshnessGate === false),
   'IPO 19:30核心轮次不得被统一新鲜度短路跳过');
-assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 600, 'IPO核心阶段只应保留异常循环止损线');
-assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 600, 'IPO晚间补全只应保留异常循环止损线');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), null, 'IPO核心阶段不得设置臆造调用上限');
+assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), null, 'IPO晚间补全不得设置臆造调用上限');
 const marketVolatility = definitions.getJobDefinition('market_volatility_sync');
 assert.strictEqual(marketVolatility.maxExternalCallsPerRun, null, '市场波动不得设置内部单批外部调用上限');
 assert.strictEqual(definitions.externalCallLimitForMode(marketVolatility), null, '市场波动应由来源级保护和任务超时负责止损');
-assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');
-assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, 10, '指数补齐上限必须覆盖双账户五指数完整一轮');
-assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refresh').maxExternalCallsPerRun, 600, '可转债主链上限必须覆盖主同步及历史补漏');
-assert.strictEqual(definitions.getJobDefinition('convertible_bond_announcement_history_sync').maxExternalCallsPerRun, 600, '可转债公告同步上限必须覆盖交易所批量请求和官方 PDF 解析');
+assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, null, 'LOF/ETF收盘不得设置臆造调用上限');
+assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, null, '指数补齐不得设置臆造调用上限');
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refresh').maxExternalCallsPerRun, null, '可转债主链不得设置臆造调用上限');
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_announcement_history_sync').maxExternalCallsPerRun, null, '可转债公告同步不得设置臆造调用上限');
 assert.strictEqual(definitions.getJobDefinition('index_recent').dataDatePolicy, 'previous_trading_day', '指数补齐应按最近完整交易日验收');
-assert.strictEqual(definitions.getJobDefinition('arbitrage_sync').maxExternalCallsPerRun, 600, '套利公告单批上限必须覆盖两个适配器的分页边界');
-assert.strictEqual(definitions.getJobDefinition('arbitrage_reparse').maxExternalCallsPerRun, 600, '套利公告重解析上限必须覆盖已入库官方 PDF 下载');
+assert.strictEqual(definitions.getJobDefinition('arbitrage_sync').maxExternalCallsPerRun, null, '套利公告不得设置臆造调用上限');
+assert.strictEqual(definitions.getJobDefinition('arbitrage_reparse').maxExternalCallsPerRun, null, '套利公告重解析不得设置臆造调用上限');
 assert.deepStrictEqual(definitions.getJobDefinition('arbitrage_reparse').externalApis, ['cninfo', 'hkex'], '套利公告重解析必须声明官方 PDF 来源');
 assert.strictEqual(definitions.JOB_DEFINITIONS.filter(job => job.externalApis.includes('new_share')).length, 1,
   'new_share在任务契约中只能有一个采集者');
@@ -271,10 +274,18 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     await resetTushareGuards();
     mock(200, { code: 40101, msg: 'token 无效' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'AUTH_ERROR' && error.retryable === false);
+    await require('../services/sourceEndpointPolicy').recordEndpointPermission(
+      'tushare', 'primary', '*', guard.tokenFingerprint('test-token'),
+      { status: 'available', ok: true, message: '测试恢复' }
+    );
 
     await resetTushareGuards();
     mock(200, { code: 2002, msg: '没有接口访问权限' });
     await assert.rejects(() => tushareQuery('daily'), error => error.code === 'PERMISSION_DENIED' && error.errorType === 'permission' && error.retryable === false);
+    await require('../services/sourceEndpointPolicy').recordEndpointPermission(
+      'tushare', 'primary', 'daily', guard.tokenFingerprint('test-token'),
+      { status: 'available', ok: true, message: '测试恢复' }
+    );
 
     guardSource = `test_guard_${process.pid}_${Date.now()}`;
     await guardPool.query(
@@ -286,12 +297,12 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     );
     await guardPool.query(
       `INSERT INTO ops.source_endpoint_policies
-         (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit)
+         (source_id,api_name,credential_profile,official_per_minute_limit,official_daily_limit)
        VALUES($1,'*','anonymous',NULL,NULL),
              ($1,'api_a','anonymous',20,20)
        ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
-         internal_per_minute_limit=EXCLUDED.internal_per_minute_limit,
-         internal_daily_limit=EXCLUDED.internal_daily_limit,
+         official_per_minute_limit=EXCLUDED.official_per_minute_limit,
+         official_daily_limit=EXCLUDED.official_daily_limit,
          enabled=true,permission_status='unknown'`, [guardSourceRow.rows[0].source_id]
     );
     let guardedExternalCalls = 0;
@@ -318,7 +329,7 @@ assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
     await require('../db/connection').pool.query('DELETE FROM ops.external_call_budgets WHERE source=$1', [guardSource]);
     guard.resetExternalCallGuard();
     await guardPool.query(
-      `UPDATE ops.source_endpoint_policies SET internal_daily_limit=1
+      `UPDATE ops.source_endpoint_policies SET official_daily_limit=1
        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code=$1)
          AND api_name='api_a' AND credential_profile='anonymous'`, [guardSource]
     );

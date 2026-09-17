@@ -76,7 +76,7 @@ function pgConfig(dbName) {
       [['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']]
     );
     const policyMap = new Map(dualAccountPolicies.rows.map(row => [`${row.api_name}:${row.credential_profile}`, row]));
-    check('迁移128写入双账号及VIP权限矩阵（来源级不设内部限额）', () => {
+    check('迁移159清除全部内部限额并保留双账号官方权限矩阵', () => {
       assert.deepStrictEqual(
         [policyMap.get('*:primary').internal_per_minute_limit, policyMap.get('*:primary').internal_daily_limit],
         [null, null]
@@ -88,7 +88,9 @@ function pgConfig(dbName) {
       for (const apiName of ['income_vip','balancesheet_vip','cashflow_vip','fina_indicator_vip']) {
         assert.strictEqual(policyMap.get(`${apiName}:primary`).points_required, 5000, `${apiName}主账号积分门槛错误`);
         assert.strictEqual(policyMap.get(`${apiName}:primary`).official_per_minute_limit, 500, `${apiName}官方频率错误`);
-        assert.strictEqual(policyMap.get(`${apiName}:backup`).internal_per_minute_limit, 180, `${apiName}备用止损频率错误`);
+        assert.strictEqual(policyMap.get(`${apiName}:primary`).internal_per_minute_limit, null, `${apiName}主账号不得保留内部频率`);
+        assert.strictEqual(policyMap.get(`${apiName}:backup`).internal_per_minute_limit, null, `${apiName}备用账号不得保留内部频率`);
+        assert.strictEqual(policyMap.get(`${apiName}:backup`).internal_daily_limit, null, `${apiName}备用账号不得保留内部日限额`);
         assert.strictEqual(policyMap.get(`${apiName}:backup`).enabled, false, `${apiName}备用账号必须禁用`);
       }
     });
@@ -103,6 +105,16 @@ function pgConfig(dbName) {
     check('迁移156清除巨潮来源级内部保护线', () => {
       assert.ok(cninfoPolicy.rows.length > 0, '缺少巨潮策略');
       assert.ok(cninfoPolicy.rows.every(row => row.internal_per_minute_limit === null && row.internal_daily_limit === null));
+    });
+
+    const protectionConstraints = await db.pool.query(
+      `SELECT conname FROM pg_constraint WHERE conname = ANY($1::text[])`,
+      [['ck_source_endpoint_no_internal_limits', 'ck_external_circuits_open_recover_at']]
+    );
+    check('迁移159建立禁止内部限额和熔断恢复时间约束', () => {
+      const names = new Set(protectionConstraints.rows.map(row => row.conname));
+      assert.ok(names.has('ck_source_endpoint_no_internal_limits'));
+      assert.ok(names.has('ck_external_circuits_open_recover_at'));
     });
 
     const knowledgeConstraints = await db.pool.query(

@@ -18,9 +18,9 @@ const market = read('server/jobs/marketVolatilitySync.js');
 const evidence = read('server/services/jobRecoveryEvidence.js');
 const { businessDateText } = require('../services/jobRecoveryEvidence');
 
-assert.ok(definitions.getJobDefinition('convertible_bond_universe_refresh').slotExternalCallsLimit > 0);
-assert.ok(definitions.getJobDefinition('company_financial_incremental_sync').slotExternalCallsLimit > 0);
-assert.ok(definitions.getJobDefinition('arbitrage_sync').slotExternalCallsLimit > 0);
+assert.ok(definitions.JOB_DEFINITIONS.every(item => Number(item.slotExternalCallsLimit || 0) === 0));
+assert.strictEqual(definitions.getJobDefinition('convertible_bond_revision_motive_inputs_sync').maxExternalCallsPerRun, null);
+assert.doesNotMatch(orchestrator, /续批任务未声明槽位累计外部请求上限/);
 assert.match(slots, /function continueSlot\(/);
 assert.match(slots, /attempt_count=GREATEST\(attempt_count-1,0\)/);
 assert.match(slots, /status='pending' AND \(next_attempt_at IS NULL OR next_attempt_at <= now\(\)/);

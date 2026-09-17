@@ -138,6 +138,9 @@ function circuitScopeLabel(source, apiName) {
 }
 
 async function upsertCircuit(client, source, apiName, fingerprint, code, errorType, detail, recoverAt) {
+  if (!recoverAt || Number.isNaN(new Date(recoverAt).getTime())) {
+    throw new Error('临时熔断必须提供有效 recover_at；永久权限问题应写接口权限策略，不得写入熔断表');
+  }
   await client.query(
     `INSERT INTO ops.external_circuits
        (source,api_name,token_fingerprint,state,recover_at,probe_in_flight,probe_owner,probe_token,probe_lease_until,error_code,error_type,detail)
@@ -379,9 +382,10 @@ async function recordExternalForbidden(source, apiName, fingerprint = 'none', de
       `INSERT INTO ops.external_circuits
          (source,api_name,token_fingerprint,state,recover_at,error_code,error_type,detail,
           consecutive_forbidden_count,last_forbidden_at)
-       VALUES($1,$2,$3,'open',NULL,'RATE_LIMIT','rate_limit',$4,1,now())
+       VALUES($1,$2,$3,'open',now()+interval '30 minutes','RATE_LIMIT','rate_limit',$4,1,now())
        ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
          state='open',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
+         recover_at=EXCLUDED.recover_at,
          consecutive_forbidden_count=CASE
            WHEN ops.external_circuits.last_forbidden_at < now()-interval '1 day' THEN 1
            ELSE ops.external_circuits.consecutive_forbidden_count+1 END,
@@ -394,11 +398,16 @@ async function recordExternalForbidden(source, apiName, fingerprint = 'none', de
     const recoverAt = blocked ? null : new Date(Date.now() + delayMinutes * 60000);
     const code = blocked ? 'PERMISSION_DENIED' : 'RATE_LIMIT';
     await client.query(
-      `UPDATE ops.external_circuits SET recover_at=$4,error_code=$5,error_type=$6,updated_at=now()
+      `UPDATE ops.external_circuits SET state=$4,recover_at=$5,error_code=$6,error_type=$7,updated_at=now()
         WHERE source=$1 AND api_name=$2 AND token_fingerprint=$3`,
-      [key, endpoint, token, recoverAt, code, blocked ? 'permission' : 'rate_limit']
+      [key, endpoint, token, blocked ? 'closed' : 'open', recoverAt, code, blocked ? 'permission' : 'rate_limit']
     );
     await client.query('COMMIT');
+    if (blocked) {
+      const { recordEndpointPermission } = require('./sourceEndpointPolicy');
+      await recordEndpointPermission(budgetSourceKey(key), defaultCredentialProfile(key), endpoint, token,
+        { status: 'permission_denied', message: detail }).catch(() => {});
+    }
     return { source: key, apiName: endpoint, tokenFingerprint: token, count, blocked, recoverAt, code };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

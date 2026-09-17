@@ -32,8 +32,8 @@ function normalizePolicyInput(input = {}) {
   if (maxAttempts == null || maxAttempts > 10) throw new Error('重试次数必须在1到10之间');
   const internalPerMinuteLimit = numberOrNull(input.internal_per_minute_limit ?? input.internalPerMinuteLimit, { min: 1 });
   const internalDailyLimit = numberOrNull(input.internal_daily_limit ?? input.internalDailyLimit, { min: 1 });
-  if (apiName === '*' && (internalPerMinuteLimit !== null || internalDailyLimit !== null)) {
-    throw new Error('来源级策略不得设置内部限额，请配置具体接口');
+  if (internalPerMinuteLimit !== null || internalDailyLimit !== null) {
+    throw new Error('禁止自行设置内部分钟/日限额；已核验上游限制写入 official_*，任务安全止损写入任务契约');
   }
   return {
     apiName,

@@ -622,10 +622,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
         && Date.now() - Date.parse(continuationStartedAt) >= continuationMaxAgeHours * 60 * 60 * 1000;
       result.continuationStartedAt = continuationStartedAt;
       result.continuationMaxAgeHours = continuationMaxAgeHours;
-      if (slotLimit <= 0) {
-        result.continuationBlocked = true;
-        result.continuationStopReason = '续批任务未声明槽位累计外部请求上限，已停止自动续批';
-      } else if (slotTotal >= slotLimit && !result.continuationBlocked) {
+      if (slotLimit > 0 && slotTotal >= slotLimit && !result.continuationBlocked) {
         result.continuationBlocked = true;
         result.continuationStopReason = `已达到计划实例累计外部请求上限 ${slotLimit}，已停止自动续批`;
       } else if (continuationAgeExceeded && !result.continuationBlocked) {

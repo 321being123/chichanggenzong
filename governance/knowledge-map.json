@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-16",
+  "lastReviewed": "2026-09-17",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -57,7 +57,7 @@
         "server/services/datasetPartitionRegistry.js",
         "scripts/check-knowledge.js"
       ],
-      "keywords": ["熔断", "任务完成", "数据质量", "隐性上限", "目标日", "游标", "告警恢复", "自动门禁"],
+      "keywords": ["熔断", "恢复时间", "内部限额", "任务完成", "数据质量", "隐性上限", "目标日", "游标", "告警恢复", "自动门禁"],
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",

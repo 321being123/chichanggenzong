@@ -6663,6 +6663,77 @@ async function migration158RealtimeExchangeRatePolicy() {
   `);
 }
 
+// ========== 159：移除臆造内部限额并强制熔断可恢复 =============
+// 已核验的上游限制只写 official_*；内部分钟/日数字不再承担接口限流。
+// 权限拒绝进入接口权限策略，临时熔断必须带 recover_at，避免永久卡死。
+async function migration159VerifiedLimitsAndRecoverableCircuits() {
+  await pool.query(`
+    UPDATE ops.source_endpoint_policies
+       SET internal_per_minute_limit=NULL,
+           internal_daily_limit=NULL,
+           notes=CASE
+             WHEN COALESCE(notes,'')='' THEN '内部分钟/日限额已清除；仅保留已核验的官方限制'
+             WHEN notes LIKE '%内部分钟/日限额已清除%' THEN notes
+             ELSE notes || '；内部分钟/日限额已清除，仅保留已核验的官方限制'
+           END,
+           updated_at=now()
+     WHERE internal_per_minute_limit IS NOT NULL OR internal_daily_limit IS NOT NULL;
+
+    ALTER TABLE ops.source_endpoint_policies
+      DROP CONSTRAINT IF EXISTS ck_source_endpoint_wildcard_no_internal_limits;
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='ck_source_endpoint_no_internal_limits'
+      ) THEN
+        ALTER TABLE ops.source_endpoint_policies
+          ADD CONSTRAINT ck_source_endpoint_no_internal_limits
+          CHECK (internal_per_minute_limit IS NULL AND internal_daily_limit IS NULL);
+      END IF;
+    END $$;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,credential_fingerprint,
+       permission_status,enabled,last_verified_at,verification_message,notes)
+    SELECT ds.source_id,
+           CASE WHEN ec.api_name='*' THEN '*' ELSE ec.api_name END,
+           CASE WHEN ec.source='tushare_backup' THEN 'backup'
+                WHEN ec.source='tushare' THEN 'primary' ELSE 'anonymous' END,
+           ec.token_fingerprint,'permission_denied',false,COALESCE(ec.updated_at,now()),
+           LEFT(COALESCE(ec.detail,'历史权限拒绝'),240),
+           '权限拒绝已从永久熔断迁移为接口权限阻塞'
+      FROM ops.external_circuits ec
+      JOIN ops.data_sources ds
+        ON ds.source_code=CASE WHEN ec.source='tushare_backup' THEN 'tushare' ELSE ec.source END
+     WHERE ec.state='open' AND ec.recover_at IS NULL
+       AND ec.error_code IN ('PERMISSION_DENIED','AUTH_ERROR')
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+      credential_fingerprint=EXCLUDED.credential_fingerprint,
+      permission_status='permission_denied',enabled=false,
+      last_verified_at=EXCLUDED.last_verified_at,
+      verification_message=EXCLUDED.verification_message,
+      notes=CASE WHEN COALESCE(ops.source_endpoint_policies.notes,'')=''
+                 THEN EXCLUDED.notes ELSE ops.source_endpoint_policies.notes || '；' || EXCLUDED.notes END,
+      updated_at=now();
+
+    UPDATE ops.external_circuits
+       SET state='closed',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,
+           probe_lease_until=NULL,updated_at=now()
+     WHERE state='open' AND recover_at IS NULL;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='ck_external_circuits_open_recover_at'
+      ) THEN
+        ALTER TABLE ops.external_circuits
+          ADD CONSTRAINT ck_external_circuits_open_recover_at
+          CHECK (state <> 'open' OR recover_at IS NOT NULL);
+      END IF;
+    END $$;
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6822,6 +6893,7 @@ const MIGRATIONS = [
   { version: '156_endpoint_only_internal_limits', up: migration156EndpointOnlyInternalLimits },
   { version: '157_alert_reconciliation_and_partial_partitions', up: migration157AlertReconciliationAndPartialPartitions },
   { version: '158_realtime_exchange_rate_policy', up: migration158RealtimeExchangeRatePolicy },
+  { version: '159_verified_limits_and_recoverable_circuits', up: migration159VerifiedLimitsAndRecoverableCircuits },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7435,6 +7507,7 @@ module.exports = {
   migration155AgnesVisionModel,
   migration157AlertReconciliationAndPartialPartitions,
   migration158RealtimeExchangeRatePolicy,
+  migration159VerifiedLimitsAndRecoverableCircuits,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

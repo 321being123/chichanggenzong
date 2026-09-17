@@ -7,10 +7,14 @@ const { normalizePolicyInput } = require('../services/sourceEndpointPolicy');
 
 assert.throws(
   () => normalizePolicyInput({ api_name: '*', internal_per_minute_limit: 10 }),
-  /来源级策略不得设置内部限额/,
+  /禁止自行设置内部分钟\/日限额/,
   '来源级策略不得重新引入内部预算'
 );
-assert.strictEqual(normalizePolicyInput({ api_name: 'api_a', internal_per_minute_limit: 10 }).internalPerMinuteLimit, 10);
+assert.throws(
+  () => normalizePolicyInput({ api_name: 'api_a', internal_per_minute_limit: 10 }),
+  /禁止自行设置内部分钟\/日限额/,
+  '具体接口也不得写入无依据的内部预算'
+);
 
 (async () => {
   const source = `test_policy_${process.pid}_${Date.now()}`;
@@ -43,7 +47,7 @@ assert.strictEqual(normalizePolicyInput({ api_name: 'api_a', internal_per_minute
     const sourceId = sourceRow.rows[0].source_id;
     await client.query(
       `INSERT INTO ops.source_endpoint_policies
-         (source_id,api_name,credential_profile,internal_per_minute_limit,internal_daily_limit,
+         (source_id,api_name,credential_profile,official_per_minute_limit,official_daily_limit,
           max_concurrency,min_interval_ms)
          VALUES
          ($1,'*','primary',NULL,NULL,1,0),
@@ -70,7 +74,7 @@ assert.strictEqual(normalizePolicyInput({ api_name: 'api_a', internal_per_minute
     assert.ok(rows.rows.some(row => row.api_name === 'api_a' && row.credential_fingerprint === otherFingerprint));
     assert.ok(rows.rows.every(row => row.credential_profile === 'primary'));
 
-    console.log('source-endpoint-policy: 来源＋接口＋凭据精确计数与接口隔离通过');
+    console.log('source-endpoint-policy: 官方接口限制、凭据精确计数与接口隔离通过');
   } finally {
     await client.query('DELETE FROM ops.data_sources WHERE source_code=$1', [source]).catch(() => {});
     client.release();

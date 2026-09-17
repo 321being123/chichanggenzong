@@ -154,7 +154,7 @@ function ok(fields = ['value'], items = [['ok']]) {
     const next = await tushareQuery('new_share', {}, 'ts_code');
     assert.deepStrictEqual(next, { fields: ['ts_code'], items: [['301000.SZ']] });
 
-    // 备用 Token 没有 rt_min 权限时，只记录两个 Token 的 rt_min，不写全局熔断。
+    // 备用 Token 没有 rt_min 权限时，只阻塞两个 Token 的 rt_min 策略，不写永久熔断。
     guard.resetExternalCallGuard();
     await guard.resetExternalCallGuardPersistence('tushare');
     await guard.resetExternalCallGuardPersistence('tushare_backup');
@@ -166,17 +166,29 @@ function ok(fields = ['value'], items = [['ok']]) {
       () => tushareQuery('rt_min', { ts_code: '000001.SZ', freq: '1MIN' }, 'ts_code,close'),
       error => error.code === 'PERMISSION_DENIED' && error.apiName === 'rt_min'
     );
-    const permissionCircuits = await pool.query(
-      "SELECT api_name,token_fingerprint FROM ops.external_circuits WHERE source IN ('tushare','tushare_backup')"
+    const permissionPolicies = await pool.query(
+      `SELECT api_name,credential_profile,permission_status,enabled
+         FROM ops.source_endpoint_policies
+        WHERE source_id=(SELECT source_id FROM ops.data_sources WHERE source_code='tushare')
+          AND api_name='rt_min' AND credential_profile IN ('primary','backup')`
     );
-    assert.strictEqual(permissionCircuits.rows.length, 2);
-    assert.ok(permissionCircuits.rows.every(row => row.api_name === 'rt_min'));
+    assert.strictEqual(permissionPolicies.rows.length, 2);
+    assert.ok(permissionPolicies.rows.every(row => row.permission_status === 'permission_denied' && row.enabled === false));
+    const permissionCircuits = await pool.query(
+      "SELECT 1 FROM ops.external_circuits WHERE source IN ('tushare','tushare_backup') AND state='open'"
+    );
+    assert.strictEqual(permissionCircuits.rows.length, 0, '永久权限问题不得保存为无恢复时间熔断');
     mockResponses([{ payload: ok(['ts_code'], [['301000.SZ']]) }]);
     const unaffected = await tushareQuery('new_share', {}, 'ts_code');
     assert.deepStrictEqual(unaffected.items, [['301000.SZ']], 'rt_min 权限失败不得阻断 new_share');
     const displayedSettings = await getExternalApiSettings();
-    assert.ok(displayedSettings.tushare.circuits.some(item => item.source_role === 'backup' && item.api_name === 'rt_min'),
-      '后台必须显示备用 Token 的接口熔断');
+    assert.ok(displayedSettings.tushare.endpoint_policies.some(item => item.credential_profile === 'backup'
+      && item.api_name === 'rt_min' && item.permission_status === 'permission_denied'),
+    '后台必须显示备用 Token 的接口权限阻塞');
+    await recordEndpointPermission('tushare', 'primary', 'rt_min', primaryFp,
+      { status: 'available', ok: true, message: '测试恢复' });
+    await recordEndpointPermission('tushare', 'backup', 'rt_min', guard.tokenFingerprint('backup-test-token'),
+      { status: 'available', ok: true, message: '测试恢复' });
 
     // 备用 Token 也失败时不能误报“已切换成功”。
     failoverNotices.length = 0;

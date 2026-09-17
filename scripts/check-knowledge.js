@@ -134,6 +134,8 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   const hkexIpo = read('server/services/hkexIpo.js');
   const convertibleBondAnalysis = read('server/services/convertibleBondAnalysis.js');
   const motiveService = read('server/services/convertibleBondRevisionMotiveService.js');
+  const jobDefinitions = read('server/services/jobDefinitions.js');
+  const migrations = read('server/db/migrations.js');
   const redemptionSync = read('server/services/convertibleBondRedemptionSync.js');
   const marketService = read('server/services/market.js');
   const stockFrontend = read('public/js/stock-analysis.js');
@@ -155,8 +157,19 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   if (!/ops\.external_circuits/.test(externalGuard) || !/recover_at/.test(externalGuard) || !/BUDGET_WAIT/.test(externalGuard)) {
     errors.push('外部 Guard 必须统一使用 ops.external_circuits、recover_at 和 BUDGET_WAIT。');
   }
-  if (!/apiName === '\*'/.test(sourcePolicy) || !/来源级策略不得设置内部限额/.test(sourcePolicy)) {
-    errors.push('来源接口策略必须拒绝通配来源的内部限额。');
+  if (!/禁止自行设置内部分钟\/日限额/.test(sourcePolicy)) {
+    errors.push('来源接口策略必须拒绝所有自行设置的内部分钟/日限额。');
+  }
+  if (/maxExternalCallsPerRun:\s*[1-9]\d*/.test(jobDefinitions)
+    || /slotExternalCallsLimit:\s*[1-9]\d*/.test(jobDefinitions)
+    || /dailyBudget:\s*[1-9]\d*/.test(jobDefinitions)
+    || /modeExternalCallLimits:\s*\{[^}]*[1-9]\d*/.test(jobDefinitions)) {
+    errors.push('任务契约不得写入无上游依据的调用数预算；使用官方接口策略、任务超时和无进展保护。');
+  }
+  if (!/ck_source_endpoint_no_internal_limits/.test(migrations)
+    || !/ck_external_circuits_open_recover_at/.test(migrations)
+    || !/临时熔断必须提供有效 recover_at/.test(externalGuard)) {
+    errors.push('数据库必须禁止内部分钟/日限额，并保证所有 open 熔断都有 recover_at。');
   }
   if (/HKEX_MAX_PAGES\s*=\s*\d+/.test(hkexAnnouncement) || /CNINFO_MAX_PAGES\s*=\s*\d+/.test(cninfoAnnouncement)
     || /maxPages\s*=\s*\d+|page\s*<=\s*5|pageNum\s*<=\s*20/.test(stockAnalysis)) {
@@ -170,6 +183,10 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   }
   if (/MAX_HOLDER_CALLS_PER_RUN|syncRevisionMotiveInputs\(\{ businessDate = null, limit = 2000/.test(motiveService)) {
     errors.push('下修动机输入不得设置来源接口级固定调用上限。');
+  }
+  if (!/convertible_bond_revision_motive_inputs_sync'[\s\S]*?maxExternalCallsPerRun:\s*null/.test(jobDefinitions)
+    || /续批任务未声明槽位累计外部请求上限/.test(orchestrator)) {
+    errors.push('下修动机输入不得按固定调用数截断，续批也不得因缺少臆造总量上限而永久阻塞。');
   }
   if (/retryFailed = false, limit = 2000|LIMIT \$4.*Math\.max\(1, Number\(limit\) \|\| 2000\)/.test(redemptionSync)) {
     errors.push('强赎公告重解析不得设置隐藏候选条数上限。');

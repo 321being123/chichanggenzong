@@ -2,7 +2,7 @@
 // 从 JOB_DEFINITIONS 生成任务-接口-数据集矩阵，避免专项方案与代码任务清单漂移。
 const fs = require('fs');
 const path = require('path');
-const { JOB_DEFINITIONS, externalCallLimitForMode, declaredDailyExternalCallBudget } = require('../server/services/jobDefinitions');
+const { JOB_DEFINITIONS, externalCallLimitForMode } = require('../server/services/jobDefinitions');
 
 const outputPath = path.join(__dirname, '..', 'docs', '任务接口数据集矩阵.generated.md');
 
@@ -22,27 +22,26 @@ function cell(values) {
 }
 
 function budgetCell(job) {
-  const values = !(job.additionalSchedules || []).length ? [String(externalCallLimitForMode(job))] : [
-    `core: ${externalCallLimitForMode(job, 'core')}`,
+  const label = value => value === null ? '不设内部调用数上限' : String(value);
+  const values = !(job.additionalSchedules || []).length ? [label(externalCallLimitForMode(job))] : [
+    `core: ${label(externalCallLimitForMode(job, 'core'))}`,
     ...(job.additionalSchedules || []).map(item =>
-      `${item.mode || '补充'}: ${externalCallLimitForMode(job, item.mode || 'core')}`
+      `${item.mode || '补充'}: ${label(externalCallLimitForMode(job, item.mode || 'core'))}`
     ),
   ];
-  const daily = Number.isFinite(Number(job.dailyBudget)) ? `（每日计入 ${Number(job.dailyBudget)}）` : '';
-  return `${values.join('<br>')}${daily}`;
+  return values.join('<br>');
 }
 
 function render() {
-  const total = JOB_DEFINITIONS.reduce((sum, job) => sum + declaredDailyExternalCallBudget(job), 0);
   const scheduled = JOB_DEFINITIONS.filter(job => !job.manualOnly).length;
   const manual = JOB_DEFINITIONS.filter(job => job.manualOnly).length;
   const lines = [
     '# 任务-接口-数据集矩阵（代码生成）',
     '',
     '> 此文件由 `scripts/generate-job-matrix.js` 从 `server/services/jobDefinitions.js` 生成，禁止手工修改。',
-    `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）；每日预算计入合计：${total}/日（任务报表，不是来源日限额）。单次上限用于单个计划批次，括号内为每日预算计入值。`,
+    `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）。联网任务不设置内部调用数额度；真实限制只来自已核验官方策略。`,
     '',
-    '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 单次最大外部调用 |',
+    '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 任务调用数约束 |',
     '|---|---|---|---|---|---:|',
   ];
   for (const job of JOB_DEFINITIONS) {
@@ -61,7 +60,7 @@ function main() {
       console.error(`任务矩阵与 JOB_DEFINITIONS 不一致，请运行：node scripts/generate-job-matrix.js\n期望文件：${path.relative(process.cwd(), outputPath)}`);
       process.exit(1);
     }
-    console.log(`任务矩阵校验通过：${JOB_DEFINITIONS.length} 个任务，预算声明 ${expected.match(/合计：([0-9]+)/)?.[1] || '?'} 次/日。`);
+    console.log(`任务矩阵校验通过：${JOB_DEFINITIONS.length} 个任务。`);
     return;
   }
   fs.writeFileSync(outputPath, expected, 'utf8');

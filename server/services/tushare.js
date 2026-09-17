@@ -7,6 +7,7 @@ const {
   tokenFingerprint,
 } = require('./externalCallGuard');
 const { getProviderRuntime } = require('./externalApiConfig');
+const { recordEndpointPermission } = require('./sourceEndpointPolicy');
 
 const API_URL = 'https://api.tushare.pro';
 const PRIMARY_SOURCE = 'tushare';
@@ -126,12 +127,10 @@ function requestWithToken(apiName, params, fields, token, guardSource, dataset, 
             }, {}, guardClient).catch(() => null);
             error.recoverAt = circuit && circuit.recoverAt || null;
           } else if (error.code === 'AUTH_ERROR' || error.code === 'PERMISSION_DENIED') {
-            await openExternalCircuit(guardSource, error.message, {
-              apiName: error.code === 'AUTH_ERROR' ? '*' : apiName,
-              tokenFingerprint: fingerprint,
-              errorCode: error.code,
-              errorType: error.errorType,
-            }, {}, guardClient).catch(() => {});
+            const profile = guardSource === BACKUP_SOURCE ? 'backup' : 'primary';
+            await recordEndpointPermission(PRIMARY_SOURCE, profile,
+              error.code === 'AUTH_ERROR' ? '*' : apiName, fingerprint,
+              { status: 'permission_denied', message: error.message }).catch(() => {});
           }
           error.source = guardSource;
           error.tokenFingerprint = fingerprint;

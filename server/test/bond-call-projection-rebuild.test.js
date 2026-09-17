@@ -12,6 +12,8 @@ const deploy = read('deploy/rebuild_bond_call_projection.py');
 
 assert.match(analysis, /allowFallback = true/);
 assert.match(analysis, /if \(!allowFallback\)/);
+assert.match(analysis, /error\.budgetWindow === 'concurrency'/);
+assert.match(rebuild, /guardRetryAttempts: 6/);
 assert.match(rebuild, /--apply/);
 assert.match(rebuild, /--confirm-production/);
 assert.match(rebuild, /allowFallback: false/);

@@ -76,7 +76,7 @@ async function instrumentHints(events) {
 async function collectOfficialWindow(fromDate, toDate) {
   if (!fromDate || !toDate || fromDate > toDate) return [];
   const results = await Promise.all(['SH', 'SZ'].map(market =>
-    collectConvertibleBondAnnouncementMarket(market, fromDate, toDate, { allowFallback: false })
+    collectConvertibleBondAnnouncementMarket(market, fromDate, toDate, { allowFallback: false, guardRetryAttempts: 6 })
       .then(result => ({ market, ...result }))
   ));
   const failures = results.filter(result => result.failed);

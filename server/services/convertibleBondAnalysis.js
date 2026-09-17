@@ -1275,14 +1275,16 @@ function matchesUnassignedAnnouncement(event, profile) {
     || title.includes(String(profile && profile.stock_code || '').slice(0, 6));
 }
 
-async function collectAnnouncementSource(fetcher, windows, keywords) {
+async function collectAnnouncementSource(fetcher, windows, keywords, { maxAttempts = 2 } = {}) {
   const events = [], failures = [];
   for (const window of windows) {
     for (const keyword of keywords) {
       let completed = false;
       let lastFailure = '';
       // 交易所偶发短页、重复页或网关超时时只重试一次；仍不完整就保留游标，避免静默漏公告。
-      for (let attempt = 1; attempt <= 2 && !completed; attempt += 1) {
+      const attempts = Math.max(2, Math.min(Number(maxAttempts) || 2, 6));
+      for (let attempt = 1; attempt <= attempts && !completed; attempt += 1) {
+        let retryDelayMs = 250;
         try {
           const result = await fetcher(window.start, window.end, keyword);
           events.push(...(result && result.events || []));
@@ -1293,24 +1295,29 @@ async function collectAnnouncementSource(fetcher, windows, keywords) {
           }
         } catch (error) {
           lastFailure = String(error && error.message || error).slice(0, 180);
+          if (error && error.code === 'BUDGET_WAIT' && error.budgetWindow === 'concurrency') {
+            const recoverDelay = error.recoverAt ? new Date(error.recoverAt).getTime() - Date.now() : 0;
+            retryDelayMs = Math.max(1000, Math.min(10000, recoverDelay + 250), attempt * 2000);
+          }
           // 熔断/权限类错误不会因立即重试恢复，直接交给备源和游标重试处理。
           if (error && ['CIRCUIT_OPEN', 'AUTH_ERROR', 'PERMISSION_DENIED'].includes(error.code)) break;
         }
-        if (!completed && attempt < 2) await new Promise(resolve => setTimeout(resolve, 250));
+        if (!completed && attempt < attempts) await new Promise(resolve => setTimeout(resolve, retryDelayMs));
       }
       if (!completed) {
-        failures.push(`${window.start}~${window.end}/${keyword || 'all'}:${lastFailure || '批量源未返回完整结果'}（已重试1次）`);
+        failures.push(`${window.start}~${window.end}/${keyword || 'all'}:${lastFailure || '批量源未返回完整结果'}（已重试${attempts - 1}次）`);
       }
     }
   }
   return { events: uniqueAnnouncementEvents(events), failures };
 }
 
-async function collectConvertibleBondAnnouncementMarket(market, startDate, endDate, { allowFallback = true } = {}) {
+async function collectConvertibleBondAnnouncementMarket(market, startDate, endDate,
+  { allowFallback = true, guardRetryAttempts = 2 } = {}) {
   const windows = announcementDateWindows(startDate, endDate);
   const primaryFetcher = market === 'SH' ? fetchSseEventsBatch : fetchSzseEventsBatch;
   const keywords = market === 'SZ' ? [''] : UNIFIED_ANNOUNCEMENT_KEYWORDS;
-  const primary = await collectAnnouncementSource(primaryFetcher, windows, keywords);
+  const primary = await collectAnnouncementSource(primaryFetcher, windows, keywords, { maxAttempts: guardRetryAttempts });
   if (!primary.failures.length) return { events: relevantConvertibleBondAnnouncements(primary.events), failed: false, messages: [] };
 
   // 交易所主源失败或分页不完整时，保留已取得的结果并自动切换巨潮；

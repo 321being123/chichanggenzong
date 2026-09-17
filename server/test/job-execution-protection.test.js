@@ -92,6 +92,9 @@ assert.ok(unifiedBondAnnouncements.externalApis.includes('cb_issue') && unifiedB
 assert.ok(unifiedBondAnnouncements.additionalSchedules.some(item => item.mode === 'calendar' && item.hour === 17 && item.minute === 30),
   '统一可转债公告任务必须在打新日历前执行晚间增量');
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
+assert.strictEqual(definitions.getJobDefinition('hk_ipo_enrichment').mode, 'enrichment', '港股 IPO 补全任务必须声明自身执行模式');
+assert.ok(/mode: definition\.mode \|\| 'core'/.test(slotService), '默认计划槽位必须继承任务声明的执行模式');
+assert.ok(/definition\.mode \|\| slot\.request_payload/.test(read('server/services/jobRecoveryEvidence.js')), '恢复证据必须优先使用任务声明模式');
 const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
 const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
 assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外部接口');

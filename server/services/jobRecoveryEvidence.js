@@ -73,7 +73,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
       return { recovered: false, reason: 'watermark_evidence_missing', evidence: { slot, run, expectedDataAsOf: partitionKey, actualDataAsOf: actual || null } };
     }
   }
-  const expectedMode = String(slot.request_payload && slot.request_payload.mode || 'core');
+  const expectedMode = String(definition.mode || slot.request_payload && slot.request_payload.mode || 'core');
   if (summary.mode && String(summary.mode) !== expectedMode) {
     return { recovered: false, reason: 'run_mode_mismatch', evidence: { slot, run, expectedMode, actualMode: summary.mode } };
   }

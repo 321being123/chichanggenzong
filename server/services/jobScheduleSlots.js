@@ -371,7 +371,7 @@ async function syncScheduleSlots(now = new Date()) {
   for (const definition of JOB_DEFINITIONS) {
     if (definition.manualOnly) continue;
     const schedules = [
-      { hour: definition.hour, minute: definition.minute, mode: 'core' },
+      { hour: definition.hour, minute: definition.minute, mode: definition.mode || 'core' },
       ...(definition.additionalSchedules || []),
     ];
     for (const schedule of schedules) {

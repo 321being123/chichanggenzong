@@ -6615,6 +6615,36 @@ async function migration156EndpointOnlyInternalLimits() {
   `);
 }
 
+// ========== 157：部分分区与历史告警核对运行态 =============
+// 部分事实允许页面展示，但不得被严格数据集依赖或告警恢复当作完整成功。
+async function migration157AlertReconciliationAndPartialPartitions() {
+  await pool.query(`
+    ALTER TABLE ops.dataset_partitions
+      DROP CONSTRAINT IF EXISTS dataset_partitions_status_check,
+      DROP CONSTRAINT IF EXISTS ck_dataset_partitions_status;
+    ALTER TABLE ops.dataset_partitions
+      ADD CONSTRAINT ck_dataset_partitions_status
+      CHECK (status IN ('loading','published','partial_published','rejected','stale'));
+
+    ALTER TABLE ops.alert_notifications
+      ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS next_check_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_alert_notifications_reconciliation_due
+      ON ops.alert_notifications(next_check_at, last_checked_at, alert_id)
+      WHERE status NOT IN ('resolved','acknowledged');
+    CREATE INDEX IF NOT EXISTS idx_alert_notifications_reconciliation_new
+      ON ops.alert_notifications(last_checked_at, next_check_at, alert_id)
+      WHERE status NOT IN ('resolved','acknowledged');
+
+    ALTER TABLE ops.source_endpoint_runtime
+      ADD COLUMN IF NOT EXISTS consecutive_fallback_count INTEGER NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS last_fallback_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS last_primary_success_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_source_endpoint_runtime_fallback
+      ON ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint,consecutive_fallback_count);
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6772,6 +6802,7 @@ const MIGRATIONS = [
   { version: '154_ipo_exchange_prospectus_sources', up: migration154IpoExchangeProspectusSources },
   { version: '155_agnes_vision_model', up: migration155AgnesVisionModel },
   { version: '156_endpoint_only_internal_limits', up: migration156EndpointOnlyInternalLimits },
+  { version: '157_alert_reconciliation_and_partial_partitions', up: migration157AlertReconciliationAndPartialPartitions },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7383,6 +7414,7 @@ module.exports = {
   migration153ConvertibleBondCallPreConversionStatus,
   migration154IpoExchangeProspectusSources,
   migration155AgnesVisionModel,
+  migration157AlertReconciliationAndPartialPartitions,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

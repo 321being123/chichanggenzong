@@ -90,6 +90,23 @@ function buildEventKey({ market, strategyType, canonicalCode, announcedAt, sourc
   return [market, strategyType, code, anchor].join(':');
 }
 
+// 跨交易所与巨潮只按证券、公告日和规范化标题合并；来源原生编号仅用于同源去重。
+function announcementMergeKey({ securityCode, announcedAt, title, market = 'CN' } = {}) {
+  const normalizedMarket = String(market || 'CN').toUpperCase();
+  const rawCode = String(securityCode || '').normalize('NFKC');
+  const code = normalizedMarket === 'HK'
+    ? ((rawCode.match(/\d{3,5}/) || [])[0] || '').padStart(5, '0')
+    : (rawCode.match(/\d{6}/) || [])[0] || '';
+  const compactDate = String(announcedAt || '').replace(/[^0-9]/g, '').slice(0, 8);
+  const date = /^\d{8}$/.test(compactDate)
+    ? `${compactDate.slice(0, 4)}-${compactDate.slice(4, 6)}-${compactDate.slice(6, 8)}`
+    : eventDateAnchor(announcedAt);
+  let normalizedTitle = cleanSecurityText(String(title || '').normalize('NFKC'));
+  normalizedTitle = normalizedTitle.replace(/^(?:【[^】]*】\s*)+/, '').replace(/\s+/g, '');
+  if (!code || !date || !normalizedTitle) return null;
+  return `${normalizedMarket}|${code}|${date}|${normalizedTitle}`;
+}
+
 const OFFEROR_NOISE = /(目录|目錄|核查|资格|能力|诚信|評估|评估|估值|交易标的|合并方|被合并方|以下简称|以下簡稱|提供|出具|名称|股份回购报告|\.{4,}|\/)/;
 
 function sanitizeOfferor(value) {
@@ -162,6 +179,7 @@ module.exports = {
   classifyProgressAnnouncement,
   documentRolePriority,
   buildEventKey,
+  announcementMergeKey,
   sanitizeOfferor,
   validateParsedTerms,
 };

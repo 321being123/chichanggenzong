@@ -3,7 +3,7 @@ const { tushareQuery, tsRows, tsDateStr } = require('./market');
 const { TushareRequestError } = require('./tushare');
 const { fetchTencentQuotes, describeTencentCode } = require('./tencentQuote');
 const { fetchCninfoEvents, fetchCninfoEventsByYear, fetchSseLatestReport, fetchSseEvents, fetchSzseEvents, fetchSzseLatestReport,
-  fetchSseEventsBatch, fetchSzseEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
+  fetchSseEventsBatch, fetchSzseEventsBatch, fetchCninfoEventsBatch, fetchTushareAnnouncementBatch } = require('./stockAnalysis');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -24,6 +24,7 @@ const {
 } = require('./convertibleBondSuspensionSync');
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
+const { sendAlert } = require('./jobAlertMailer');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -1293,20 +1294,31 @@ async function collectAnnouncementSource(fetcher, windows, keywords) {
 async function collectConvertibleBondAnnouncementMarket(market, startDate, endDate) {
   const windows = announcementDateWindows(startDate, endDate);
   const primaryFetcher = market === 'SH' ? fetchSseEventsBatch : fetchSzseEventsBatch;
-  const primary = await collectAnnouncementSource(primaryFetcher, windows, market === 'SZ' ? [''] : UNIFIED_ANNOUNCEMENT_KEYWORDS);
+  const keywords = market === 'SZ' ? [''] : UNIFIED_ANNOUNCEMENT_KEYWORDS;
+  const primary = await collectAnnouncementSource(primaryFetcher, windows, keywords);
   if (!primary.failures.length) return { events: relevantConvertibleBondAnnouncements(primary.events), failed: false, messages: [] };
 
-  // 交易所主源失败或分页不完整时保留失败状态，下一轮按游标重试；不再自动切换巨潮。
+  // 交易所主源失败或分页不完整时，保留已取得的结果并自动切换巨潮；
+  // 只有巨潮也失败/分页不完整，才把本轮标记为失败并保留游标重试。
   const exchangeEvents = relevantConvertibleBondAnnouncements(primary.events);
+  const cninfo = await collectAnnouncementSource(
+    (windowStart, windowEnd, keyword) => fetchCninfoEventsBatch(windowStart, windowEnd, market, keyword),
+    windows,
+    keywords
+  );
+  const officialEvents = relevantConvertibleBondAnnouncements([...exchangeEvents, ...cninfo.events]);
+  if (!cninfo.failures.length) return { events: officialEvents, failed: false, messages: [] };
 
   // anns_d 需要单独权限，默认关闭；仅在管理员显式开启时作为独立的最后备源。
   if (/^(1|true|yes)$/i.test(String(process.env.ANNOUNCEMENT_TUSHARE_FALLBACK || ''))) {
     const tushare = await collectAnnouncementSource(fetchTushareAnnouncementBatch, windows, ['']);
-    const all = relevantConvertibleBondAnnouncements([...exchangeEvents, ...tushare.events]);
+    const all = relevantConvertibleBondAnnouncements([...officialEvents, ...tushare.events]);
     if (!tushare.failures.length) return { events: all, failed: false, messages: [] };
-    return { events: all, failed: true, messages: [...primary.failures, ...tushare.failures].slice(0, 6) };
+    return { events: all, failed: true, messages: [...primary.failures.map(message => `交易所主源:${message}`),
+      ...cninfo.failures.map(message => `CNINFO备源:${message}`), ...tushare.failures.map(message => `Tushare备源:${message}`)].slice(0, 6) };
   }
-  return { events: exchangeEvents, failed: true, messages: primary.failures.slice(0, 6) };
+  return { events: officialEvents, failed: true, messages: [...primary.failures.map(message => `交易所主源:${message}`),
+    ...cninfo.failures.map(message => `CNINFO备源:${message}`)].slice(0, 6) };
 }
 
 function eventsForAnnouncementProfile(events, profile, startDate) {
@@ -1411,7 +1423,8 @@ async function latestFullBondDaily(dates, options = {}) {
   const expectedBondCount = Number(options.expectedBondCount || 0);
   const minimumPriced = expectedBondCount > 0 ? Math.min(expectedBondCount, Math.max(100, Math.ceil(expectedBondCount * 0.8))) : 1;
   const diagnostics = [];
-  for (const tradeDate of dates.slice(0, 5)) {
+  const targetOnly = options.targetOnly === true || options.targetTradeDate != null;
+  for (const tradeDate of dates.slice(0, targetOnly ? 1 : 5)) {
     let data;
     try {
       // 空数据是“这一天尚未发布”，不是 Token 或权限错误；允许继续回看前一交易日。
@@ -1437,7 +1450,9 @@ async function latestFullBondDaily(dates, options = {}) {
     const derivedCoverage = priced.length ? complete.length / priced.length : 0;
     const diagnostic = {
       tradeDate,
-      status: priced.length >= minimumPriced && derivedCoverage >= 0.8 ? 'usable' : 'incomplete',
+      status: targetOnly
+        ? (priced.length ? 'partial' : 'incomplete')
+        : (priced.length >= minimumPriced && derivedCoverage >= 0.8 ? 'usable' : 'incomplete'),
       rawRows: rows.length,
       pricedRows: priced.length,
       completeRows: complete.length,
@@ -1445,9 +1460,157 @@ async function latestFullBondDaily(dates, options = {}) {
       derivedCoverage: Number(derivedCoverage.toFixed(4)),
     };
     diagnostics.push(diagnostic);
-    if (diagnostic.status === 'usable') return { tradeDate, rows, diagnostics, coverage: diagnostic };
+    if (diagnostic.status === 'usable' || (targetOnly && diagnostic.status === 'partial')) {
+      return { tradeDate, rows, diagnostics, coverage: diagnostic };
+    }
   }
   return { tradeDate: null, rows: [], diagnostics, reason: diagnostics.some(item => item.status === 'incomplete') ? 'incomplete_data' : 'no_data' };
+}
+
+const BOND_GAP_QUEUE_SCHEMA_VERSION = 1;
+
+function bondGapQueueHash(codes) {
+  return crypto.createHash('sha256').update([...new Set(codes || [])].sort().join('|')).digest('hex');
+}
+
+function addCalendarDays(value, days) {
+  const date = new Date(`${isoDate(value)}T00:00:00+08:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setDate(date.getDate() + Number(days || 0));
+  return isoDate(date);
+}
+
+function addTradingDays(value, days) {
+  const text = isoDate(value);
+  const date = text ? new Date(`${text}T00:00:00Z`) : null;
+  if (!date || Number.isNaN(date.getTime())) return null;
+  let remaining = Math.max(0, Number(days) || 0);
+  while (remaining > 0) {
+    date.setUTCDate(date.getUTCDate() + 1);
+    if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) remaining -= 1;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function classifyBondObjectStatus({ row, lifecycleActive = true, sourceAvailable = true } = {}) {
+  if (!lifecycleActive) return 'not_applicable';
+  if (row && finite(row.close) > 0) return 'priced';
+  if (!sourceAvailable) return 'source_unavailable';
+  // 只有目标日 cb_daily 自身带出的债券成交量/金额均为 0，才认定为债券级无成交证据；
+  // 正股 suspend_d 不参与该判定。
+  if (row && isoDate(row.trade_date) && finite(row.vol) === 0 && finite(row.amount) === 0) return 'verified_no_trade';
+  return 'retryable_missing';
+}
+
+function buildBondGapQueue({ targetTradeDate, expectedCodes, missingCodes, previous = {} } = {}) {
+  const now = new Date().toISOString();
+  const expectedSet = new Set(expectedCodes || []);
+  const previousItems = previous && previous.items && typeof previous.items === 'object' ? previous.items : {};
+  const items = {};
+  for (const code of missingCodes || []) {
+    if (!expectedSet.has(code)) continue;
+    const old = previousItems[code] || {};
+    const attempted = Array.isArray(old.attempted_trade_days) ? old.attempted_trade_days.slice() : [];
+    if (!attempted.includes(isoDate(targetTradeDate))) attempted.push(isoDate(targetTradeDate));
+    const attempts = attempted.length;
+    items[code] = {
+      first_missing_trade_date: old.first_missing_trade_date || isoDate(targetTradeDate),
+      attempted_trade_days: attempted.slice(-20),
+      last_attempt_at: now,
+      next_retry_at: attempts >= 3 ? `${addTradingDays(targetTradeDate, 5)}T09:00:00+08:00` : now,
+      last_reason: old.last_reason || 'target_day_price_missing',
+      sources: Array.from(new Set([...(Array.isArray(old.sources) ? old.sources : []), 'tushare_cb_daily'])),
+      status: 'retryable_missing',
+    };
+  }
+  return {
+    schema_version: BOND_GAP_QUEUE_SCHEMA_VERSION,
+    dataset_code: 'bond_daily', scope_key: 'CN', target_trade_date: isoDate(targetTradeDate),
+    expected_set_hash: bondGapQueueHash(expectedCodes), updated_at: now, items,
+  };
+}
+
+async function readBondGapQueue(executor = pool.query.bind(pool)) {
+  const { rows } = await executor(
+    `SELECT cursor_payload FROM ops.sync_cursors
+      WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily' LIMIT 1`
+  );
+  const payload = rows[0] && rows[0].cursor_payload;
+  return payload && payload.bond_daily_gap_queue && typeof payload.bond_daily_gap_queue === 'object'
+    ? payload.bond_daily_gap_queue : null;
+}
+
+async function writeBondGapQueue(executor, queue) {
+  await executor(
+    `INSERT INTO ops.sync_cursors(scope_key,dataset_code,cursor_payload,last_attempt_at,last_error)
+     VALUES('convertible_bond_universe','cb_basic_cb_daily',jsonb_build_object('bond_daily_gap_queue',$1::jsonb),now(),'')
+     ON CONFLICT(scope_key,dataset_code) DO UPDATE SET
+       cursor_payload=jsonb_set(COALESCE(ops.sync_cursors.cursor_payload,'{}'::jsonb),'{bond_daily_gap_queue}',$1::jsonb,true),
+       last_attempt_at=now(),updated_at=now()`, [JSON.stringify(queue)]
+  );
+}
+
+function isTencentBondWindow(targetTradeDate, now = new Date(), recordedNextTradeDate = null) {
+  const target = isoDate(targetTradeDate);
+  if (!target || !(now instanceof Date) || Number.isNaN(now.getTime())) return false;
+  const local = new Date(now.getTime() + CN_OFFSET_MS);
+  const today = `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, '0')}-${String(local.getUTCDate()).padStart(2, '0')}`;
+  const hour = local.getUTCHours() + local.getUTCMinutes() / 60;
+  const targetStart = new Date(`${target}T15:00:00+08:00`).getTime();
+  if (now.getTime() < targetStart) return false;
+  let nextDate = isoDate(recordedNextTradeDate);
+  if (!nextDate) {
+    const next = new Date(`${target}T00:00:00Z`);
+    do { next.setUTCDate(next.getUTCDate() + 1); } while ([0, 6].includes(next.getUTCDay()));
+    nextDate = next.toISOString().slice(0, 10);
+  }
+  return today === target ? hour >= 15 : today === nextDate && hour < 9.25;
+}
+
+async function recordedNextBondTradeDate(targetTradeDate) {
+  const { rows } = await pool.query(
+    `SELECT MIN(trade_date)::text AS trade_date
+       FROM market.trade_calendar
+      WHERE exchange='SSE' AND is_open AND trade_date > $1::date`, [isoDate(targetTradeDate)]
+  );
+  return rows[0] && rows[0].trade_date ? isoDate(rows[0].trade_date) : null;
+}
+
+async function fetchTargetedBondDaily(codes, targetTradeDate) {
+  const rows = [];
+  const values = [...new Set(codes || [])];
+  for (let start = 0; start < values.length; start += 200) {
+    const data = await tushareQuery('cb_daily', {
+      ts_code: values.slice(start, start + 200).join(','), trade_date: String(targetTradeDate).replace(/-/g, ''),
+    }, DAILY_FIELDS, { allowEmpty: true });
+    rows.push(...tsRows(data));
+  }
+  return rows;
+}
+
+async function updateBondFallbackRuntime(usedFallback, targetTradeDate) {
+  const source = await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1");
+  if (!source.rows[0]) return null;
+  const result = await pool.query(
+    `INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint,consecutive_fallback_count,last_fallback_at,last_primary_success_at)
+     VALUES($1,'cb_daily','none',CASE WHEN $2::boolean THEN 1 ELSE 0 END,CASE WHEN $2::boolean THEN now() END,CASE WHEN $2::boolean THEN NULL ELSE now() END)
+     ON CONFLICT(source_id,api_name,credential_fingerprint) DO UPDATE SET
+       consecutive_fallback_count=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.consecutive_fallback_count+1 ELSE 0 END,
+       last_fallback_at=CASE WHEN $2::boolean THEN now() ELSE ops.source_endpoint_runtime.last_fallback_at END,
+       last_primary_success_at=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.last_primary_success_at ELSE now() END,
+       updated_at=now()
+     RETURNING consecutive_fallback_count,last_primary_success_at`, [source.rows[0].source_id, Boolean(usedFallback)]
+  );
+  const state = result.rows[0] || null;
+  if (usedFallback && state && Number(state.consecutive_fallback_count) >= 3) {
+    await sendAlert({
+      alertKey: 'source_fallback_degraded:tushare:cb_daily', alertType: 'source_fallback_degraded', severity: 'warning',
+      scopeType: 'source_endpoint', scopeKey: 'tushare:cb_daily', jobCode: 'convertible_bond_universe_refresh',
+      subject: 'Tushare cb_daily 连续退化',
+      summary: `目标日 ${targetTradeDate} 连续 ${state.consecutive_fallback_count} 轮需要腾讯行情补缺，主源完整性需检查。`,
+    });
+  }
+  return state;
 }
 
 function activeProfile(row, today) {
@@ -1646,20 +1809,72 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       activeCodes,
       expectedBondCount: basics.length,
       targetTradeDate,
+      targetOnly: true,
     });
-    if (!daily.rows.length) {
-      const error = new TushareRequestError(
-        'EMPTY_DATA',
-        `Tushare cb_daily 目标数据日 ${targetTradeDate} 无完整行情，已检查 ${daily.diagnostics.length} 个交易日，保留上一份数据`,
-        { errorType: 'empty_data', apiName: 'cb_daily' }
-      );
+    // 目标日固定为最近已完成交易日；部分返回先保存可信价格，缺失对象进入持久化队列。
+    const queueBefore = await readBondGapQueue();
+    // 队列跨目标日延续，才能识别同一代码连续多个交易日缺失；当前目标日只决定本轮数据写入。
+    const previousQueue = queueBefore && typeof queueBefore === 'object' ? queueBefore : null;
+    const rawTargetRows = new Map(daily.rows.filter(row => activeCodes.has(row.ts_code)).map(row => [row.ts_code, row]));
+    const targetRows = new Map([...rawTargetRows].filter(([, row]) => finite(row.close) > 0));
+    const initialPricedCount = targetRows.size;
+    const missingBeforeRetry = profiles.filter(profile => classifyBondObjectStatus({ row: rawTargetRows.get(profile.ts_code) }) === 'retryable_missing')
+      .map(profile => profile.ts_code);
+    const dueMissing = missingBeforeRetry.filter(code => {
+      const item = previousQueue && previousQueue.items && previousQueue.items[code];
+      return !item || !item.next_retry_at || new Date(item.next_retry_at).getTime() <= Date.now();
+    });
+    if (dueMissing.length) {
+      const targetedRows = await fetchTargetedBondDaily(dueMissing, targetTradeDate);
+      for (const row of targetedRows) {
+        if (!activeCodes.has(row.ts_code)) continue;
+        rawTargetRows.set(row.ts_code, row);
+        if (finite(row.close) > 0) targetRows.set(row.ts_code, row);
+      }
+    }
+    const missingBeforeTencent = profiles.filter(profile => classifyBondObjectStatus({ row: rawTargetRows.get(profile.ts_code) }) === 'retryable_missing')
+      .map(profile => profile.ts_code);
+    let tencentFallbackCount = 0;
+    const recordedNextTradeDate = missingBeforeTencent.length
+      ? await recordedNextBondTradeDate(targetTradeDate).catch(() => null) : null;
+    if (missingBeforeTencent.length && isTencentBondWindow(targetTradeDate, new Date(), recordedNextTradeDate)) {
+      const quotes = await fetchTencentQuotes(missingBeforeTencent, { businessDate: targetTradeDate });
+      for (const profile of profiles) {
+        if (!missingBeforeTencent.includes(profile.ts_code)) continue;
+        const quote = quotes.get(profile.ts_code) || quotes.get(profile.ts_code.slice(0, 6));
+        if (!quote || finite(quote.price) == null) continue;
+        const quoteRow = {
+          ts_code: profile.ts_code, trade_date: targetTradeDate.replace(/-/g, ''), close: quote.price,
+          pre_close: null, open: quote.price, high: quote.price, low: quote.price,
+          source: 'tencent', quote_time: quote.quote_time || null,
+        };
+        rawTargetRows.set(profile.ts_code, quoteRow);
+        targetRows.set(profile.ts_code, quoteRow);
+        tencentFallbackCount += 1;
+      }
+    }
+    const bondStatusByCode = new Map(profiles.map(profile => [profile.ts_code,
+      classifyBondObjectStatus({ row: rawTargetRows.get(profile.ts_code) })]));
+    const bondStatusCounts = Object.fromEntries([...bondStatusByCode.values()].reduce((counts, status) => {
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    }, {}));
+    const recoveredCount = Math.max(0, targetRows.size - initialPricedCount);
+    const unresolvedCodes = profiles.filter(profile => bondStatusByCode.get(profile.ts_code) === 'retryable_missing')
+      .map(profile => profile.ts_code);
+    if (!targetRows.size && ![...bondStatusByCode.values()].includes('verified_no_trade')) {
+      const error = new TushareRequestError('EMPTY_DATA', `可转债目标日 ${targetTradeDate} 无可信价格`, { errorType: 'empty_data', apiName: 'cb_daily' });
       error.dataDiagnostics = { targetTradeDate, reason: daily.reason, candidates: daily.diagnostics };
       throw error;
     }
+    daily.tradeDate = targetTradeDate;
+    daily.rows = [...targetRows.values()];
+    daily.coverage = { ...(daily.coverage || {}), targetTradeDate, unresolvedCount: unresolvedCodes.length, tencentFallbackCount,
+      objectStatusCounts: bondStatusCounts };
     const [stockDailyData, stockValuationData, stockAdjustmentData] = await Promise.all([
-      tushareQuery('daily', { trade_date: daily.tradeDate }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
-      tushareQuery('daily_basic', { trade_date: daily.tradeDate }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
-      tushareQuery('adj_factor', { trade_date: daily.tradeDate }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
+      tushareQuery('daily', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
+      tushareQuery('daily_basic', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
+      tushareQuery('adj_factor', { trade_date: targetTradeDate.replace(/-/g, '') }, 'ts_code,trade_date,adj_factor', { allowEmpty: true }),
     ]);
     const stockDailyRows = tsRows(stockDailyData);
     const stockValuationRows = tsRows(stockValuationData);
@@ -1687,6 +1902,32 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
           ? row : { ...row, cb_value: conversionValue, cb_over_rate: premium };
       });
     const dailyMap = new Map(activeDailyRows.map(row => [row.ts_code, row]));
+    const valuationMissingCodes = profiles.filter(profile => bondStatusByCode.get(profile.ts_code) === 'priced').filter(profile => {
+      const row = dailyMap.get(profile.ts_code);
+      return !row || finite(row.cb_value) == null || finite(row.bond_value) == null;
+    }).map(profile => profile.ts_code);
+    const gapQueue = buildBondGapQueue({
+      targetTradeDate, expectedCodes: profiles.map(profile => profile.ts_code),
+      missingCodes: unresolvedCodes, previous: previousQueue || {},
+    });
+    for (const code of unresolvedCodes) {
+      const row = dailyMap.get(code);
+      if (row && row.source === 'tencent' && gapQueue.items[code]) {
+        gapQueue.items[code].sources = Array.from(new Set([...(gapQueue.items[code].sources || []), 'tencent_recent_window']));
+        gapQueue.items[code].last_reason = 'tencent_recent_window_unverified_target_close';
+      }
+    }
+    const longMissingCodes = Object.entries(gapQueue.items)
+      .filter(([, item]) => Array.isArray(item.attempted_trade_days) && item.attempted_trade_days.length >= 3)
+      .map(([code]) => code);
+    if (longMissingCodes.length) {
+      await sendAlert({
+        alertKey: `bond_daily_gap:${targetTradeDate}`, alertType: 'data_quality', severity: 'warning',
+        scopeType: 'dataset', scopeKey: `bond_daily:CN:${targetTradeDate}`, jobCode: 'convertible_bond_universe_refresh',
+        subject: `可转债目标日缺价持续未补齐：${targetTradeDate}`,
+        summary: `目标日仍有 ${longMissingCodes.length} 只可转债连续至少 3 个交易日缺少债券级价格终态，已改为每 5 个交易日重试。`,
+      });
+    }
     const client = await pool.connect();
     let saved = 0;
     let tushareSourceId = null;
@@ -1710,7 +1951,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         const stockCode = profileStockCodes.get(profile.ts_code) || profile.stk_code;
         if (stockCode && ids.stockId) stockInstrumentMap.set(stockCode, ids.stockId);
         const quote = dailyMap.get(profile.ts_code);
-        if (quote) await saveDailyBar(client, ids.bondId, quote, sources.tushare);
+        if (quote) await saveDailyBar(client, ids.bondId, quote, quote.source === 'tencent' ? (sources.tencent || sources.tushare) : sources.tushare);
         const before = prevConvPrice.get(profile.ts_code);
         const after = finite(profile.conv_price);
         if (before != null && after != null && Math.abs(before - after) > CONV_PRICE_EPS) {
@@ -1722,14 +1963,20 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       await client.query(
         `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count)
          VALUES('convertible_bond_universe','cb_basic_cb_daily',$1,now(),now(),'',0)
-         ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=EXCLUDED.last_success_date,
+         ON CONFLICT(scope_key,dataset_code) DO UPDATE SET last_success_date=COALESCE(EXCLUDED.last_success_date,ops.sync_cursors.last_success_date),
            last_source_update=now(),last_attempt_at=now(),last_error='',retry_count=0,updated_at=now()`,
-        [isoDate(daily.tradeDate)]
+        [unresolvedCodes.length ? null : isoDate(daily.tradeDate)]
       );
+      await writeBondGapQueue(client.query.bind(client), gapQueue);
       await client.query('COMMIT');
       console.log(`[主同步] 可转债全量同步已提交（${saved} 只，行情日期 ${daily.tradeDate}）`);
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
+    if (tencentFallbackCount > 0 || unresolvedCodes.length === 0) {
+      await updateBondFallbackRuntime(tencentFallbackCount > 0, targetTradeDate).catch(error => {
+        console.warn('[主同步] 腾讯兜底运行态记录失败：', error.message);
+      });
+    }
     // 转股价变动的转债：记数据问题，后续由历史公告解析链路补齐（旧快照由新鲜度判定自动标记为需刷新）
     if (convPriceChanges.length) {
       console.log(`[主同步] 检测到 ${convPriceChanges.length} 只转债转股价变动：${convPriceChanges.map(c => c.ts_code).join(',')}`);
@@ -1757,7 +2004,19 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     try {
       await Promise.all([
         publishDatasetPartition('bond_master', 'CN', { dataAsOf: daily.tradeDate, partitionKey: daily.tradeDate, rowCount: profiles.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
-        publishDatasetPartition('bond_daily', 'CN', { dataAsOf: daily.tradeDate, rowCount: activeDailyRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
+        publishDatasetPartition('bond_daily', 'CN', {
+          dataAsOf: targetTradeDate, partitionKey: targetTradeDate, rowCount: activeDailyRows.length,
+          status: unresolvedCodes.length ? 'partial_published' : 'published', sourceId: tushareSourceId,
+          diagnostics: {
+            targetTradeDate, unresolved_count: unresolvedCodes.length,
+            expected_count: profiles.length, raw_count: rawTargetRows.size, priced_count: bondStatusCounts.priced || 0,
+            recovered_count: recoveredCount, verified_no_trade_count: bondStatusCounts.verified_no_trade || 0,
+            missing_codes: unresolvedCodes.slice(0, 50),
+            object_status_counts: bondStatusCounts,
+            price_quality: unresolvedCodes.length ? 'partial' : 'passed',
+            valuation_quality: valuationMissingCodes.length ? 'partial' : 'passed',
+          },
+        }),
         publishDatasetPartition('stock_daily', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockDailyRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
         publishDatasetPartition('stock_valuation', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockValuationRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
         publishDatasetPartition('stock_adj_factor', 'CN', { dataAsOf: daily.tradeDate, rowCount: stockAdjustmentRows.length, sourceId: tushareSourceId, diagnostics: { targetTradeDate } }),
@@ -1819,6 +2078,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       console.warn('[cycle] 当日周期计算失败（不影响主同步）：', cycErr.message);
     } finally { cycleClient.release(); }
     const failedDatasets = [];
+    if (unresolvedCodes.length) failedDatasets.push('bond_daily');
     if (!suspensionResult.ok) failedDatasets.push('stock_suspend_calendar');
     if (partitionPublicationError) failedDatasets.push('dataset_publication');
     const complete = failedDatasets.length === 0;
@@ -1831,7 +2091,16 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       dataAsOf: isoDate(daily.tradeDate),
       target_trade_date: targetTradeDate,
       coverage: daily.coverage,
-      dataDiagnostics: daily.diagnostics,
+      dataDiagnostics: {
+        targetTradeDate, candidates: daily.diagnostics, unresolved_count: unresolvedCodes.length,
+        unresolved_codes: unresolvedCodes.slice(0, 50),
+        object_status_counts: bondStatusCounts,
+        expected_count: profiles.length, raw_count: rawTargetRows.size, priced_count: bondStatusCounts.priced || 0,
+        recovered_count: recoveredCount, verified_no_trade_count: bondStatusCounts.verified_no_trade || 0,
+        price_quality: unresolvedCodes.length ? 'partial' : 'passed',
+        valuation_quality: valuationMissingCodes.length ? 'partial' : 'passed',
+        gap_queue: { key: 'bond_daily_gap_queue', expected_set_hash: gapQueue.expected_set_hash, remaining_count: Object.keys(gapQueue.items).length },
+      },
       listing_performance: listingPerformance,
       issue_results: issueResults,
       suspension: suspensionResult,
@@ -1840,7 +2109,15 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       publishDatasets: false,
       datasetDiagnostics: {
         bond_master: { partition_row_count: profiles.length, dataAsOf: isoDate(daily.tradeDate) },
-        bond_daily: { partition_row_count: activeDailyRows.length, dataAsOf: isoDate(daily.tradeDate) },
+        bond_daily: {
+          partition_row_count: activeDailyRows.length, dataAsOf: targetTradeDate,
+          status: unresolvedCodes.length ? 'partial_published' : 'published', unresolved_count: unresolvedCodes.length,
+          object_status_counts: bondStatusCounts,
+          expected_count: profiles.length, raw_count: rawTargetRows.size, priced_count: bondStatusCounts.priced || 0,
+          recovered_count: recoveredCount, verified_no_trade_count: bondStatusCounts.verified_no_trade || 0,
+          price_quality: unresolvedCodes.length ? 'partial' : 'passed',
+          valuation_quality: valuationMissingCodes.length ? 'partial' : 'passed',
+        },
         stock_daily: { partition_row_count: stockDailyRows.length, dataAsOf: isoDate(daily.tradeDate) },
         stock_valuation: { partition_row_count: stockValuationRows.length, dataAsOf: isoDate(daily.tradeDate) },
         stock_adj_factor: { partition_row_count: stockAdjustmentRows.length, dataAsOf: isoDate(daily.tradeDate) },
@@ -3475,6 +3752,8 @@ module.exports = {
   mergeDailyRows, incrementalStart, ANNOUNCEMENT_OVERLAP_DAYS, announcementSourceKey,
   relevantConvertibleBondAnnouncements, collectConvertibleBondAnnouncementMarket,
   syncConvertibleBondUniverse, syncConvertibleBondAnnouncementHistories, resolveConvertibleBondSymbolicLocks, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
+  bondGapQueueHash, buildBondGapQueue, readBondGapQueue, writeBondGapQueue, isTencentBondWindow, fetchTargetedBondDaily,
+  classifyBondObjectStatus, addTradingDays,
   loadSafety, latestFinancial,
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,

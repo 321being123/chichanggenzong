@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { pool } = require('../db');
 const { fetchTencentQuotes } = require('./tencentQuote');
+const { getLatestReadablePartition } = require('./datasetPartitions');
 const { getLatestCallStateMap } = require('./convertibleBondRedemptionService');
 const {
   finite, isoDate, normalizeBondCode, remainingYears, annualizedVolatility,
@@ -130,6 +131,11 @@ async function latestPublishedTradeDate() {
      WHERE formula_version=$1
   `, [FORMULA_VERSION]);
   return rows[0] && rows[0].trade_date ? safeDate(rows[0].trade_date) : null;
+}
+
+async function latestReadableTradeDate() {
+  const partition = await getLatestReadablePartition('bond_daily', 'CN');
+  return partition && (safeDate(partition.partition_key) || safeDate(partition.data_as_of));
 }
 
 async function latestSafetyRatings() {
@@ -455,16 +461,15 @@ async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}
 }
 
 async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQuotes = false } = {}) {
-  const requestedDate = tradeDate || await latestTradeDate();
+  const readablePartition = tradeDate ? null : await getLatestReadablePartition('bond_daily', 'CN');
+  const requestedDate = tradeDate || (readablePartition && safeDate(readablePartition.partition_key)) || await latestTradeDate();
   const publishedDate = tradeDate ? null : await latestPublishedTradeDate();
   const stale = !tradeDate && (!publishedDate || (requestedDate && publishedDate < requestedDate));
-  // 发布快照可能短暂领先底层行情（例如列表已发布 8 月 18 日，行情仍只到 8 月 17 日）。
-  // 默认读取时不能拿领先日期去查底层行情，否则会把整张列表误判为空；显式指定日期仍保持精确查询。
-  const date = !tradeDate && publishedDate && requestedDate && publishedDate <= requestedDate
-    ? publishedDate : requestedDate;
+  // 页面允许读取 partial_published；完整计算快照是否滞后单独由 stale 标记表达。
+  const date = requestedDate;
   if (!date) return { trade_date: null, updated_at: null, count: 0, data: [] };
   const universe = await attachCallStates(await fetchUniverseRows(date));
-  if (!universe.length) return { trade_date: date, updated_at: null, count: 0, data: [] };
+  if (!universe.length) return { trade_date: date, partition_status: readablePartition && readablePartition.status || null, updated_at: null, count: 0, data: [] };
   const [{ rows: metricRows }, safetyRatings] = await Promise.all([
     pool.query(`
       SELECT * FROM analytics.convertible_bond_list_metrics_daily
@@ -560,7 +565,10 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
   const quoteTimes = intraday.rows.flatMap(item => [item.bondQuote, item.stockQuote])
     .map(quote => quote && quote.quote_time).filter(Boolean).sort();
   return {
-    trade_date: date, requested_trade_date: requestedDate, stale, updated_at: latest,
+    trade_date: date, requested_trade_date: requestedDate, stale,
+    partition_status: readablePartition && readablePartition.status || null,
+    partition_diagnostics: readablePartition && readablePartition.diagnostics || {},
+    updated_at: latest,
     count: data.length, total: universe.length, data, formula_version: FORMULA_VERSION,
     quote_source: shouldRefreshQuotes ? 'tencent' : null,
     quote_status: shouldRefreshQuotes ? (intraday.error || intraday.liveCount < universe.length ? 'partial' : 'fresh') : 'daily',
@@ -569,4 +577,4 @@ async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQ
   };
 }
 
-module.exports = { FORMULA_VERSION, latestTradeDate, latestPublishedTradeDate, fetchUniverseRows, calculateRow, buildDailyMetrics, getBondList };
+module.exports = { FORMULA_VERSION, latestTradeDate, latestPublishedTradeDate, latestReadableTradeDate, fetchUniverseRows, calculateRow, buildDailyMetrics, getBondList };

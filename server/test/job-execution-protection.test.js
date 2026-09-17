@@ -71,14 +71,14 @@ for (const definition of definitions.JOB_DEFINITIONS) {
   assert.ok(Array.isArray(definition.producesDatasets), `${definition.jobCode} 缺少 producesDatasets`);
   assert.ok(Array.isArray(definition.consumesDatasets), `${definition.jobCode} 缺少 consumesDatasets`);
   assert.ok(Array.isArray(definition.datasetDependencies), `${definition.jobCode} 缺少 datasetDependencies`);
-  assert.ok(Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
+  assert.ok(definition.maxExternalCallsPerRun === null || Number.isFinite(Number(definition.maxExternalCallsPerRun)), `${definition.jobCode} 缺少 maxExternalCallsPerRun`);
 }
 const declaredDailyBudget = definitions.JOB_DEFINITIONS
   .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
 const scheduledDailyBudget = definitions.JOB_DEFINITIONS.filter(job => !job.manualOnly)
   .reduce((sum, job) => sum + definitions.declaredDailyExternalCallBudget(job), 0);
-assert.strictEqual(declaredDailyBudget, 680, '全量任务矩阵声明预算必须为680次/日（含人工止损边界）');
-assert.strictEqual(scheduledDailyBudget, 80, '常规定时任务的80次为历史Tushare规划目标，不得冒充跨来源总账');
+assert.strictEqual(declaredDailyBudget, 674, '全量任务矩阵声明预算必须为674次/日（市场波动不再设置内部单批上限）');
+assert.strictEqual(scheduledDailyBudget, 74, '常规定时任务预算不得把市场波动内部单批上限计入每日预算');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').hour, 8, '安全评分必须在共享主链之后执行');
 assert.strictEqual(definitions.getJobDefinition('bond_safety_refresh').minute, 30, '安全评分必须在08:30执行');
 assert.deepStrictEqual(definitions.getJobDefinition('bond_safety_refresh').dependencyCodes, ['convertible_bond_universe_refresh'], '安全评分必须依赖可转债主链');
@@ -107,6 +107,9 @@ assert.ok(ipoFacts.additionalSchedules.some(item => item.mode === 'core' && item
   'IPO 19:30核心轮次不得被统一新鲜度短路跳过');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'core'), 600, 'IPO核心阶段只应保留异常循环止损线');
 assert.strictEqual(definitions.externalCallLimitForMode(ipoFacts, 'enrichment'), 600, 'IPO晚间补全只应保留异常循环止损线');
+const marketVolatility = definitions.getJobDefinition('market_volatility_sync');
+assert.strictEqual(marketVolatility.maxExternalCallsPerRun, null, '市场波动不得设置内部单批外部调用上限');
+assert.strictEqual(definitions.externalCallLimitForMode(marketVolatility), null, '市场波动应由来源级保护和任务超时负责止损');
 assert.strictEqual(definitions.getJobDefinition('market_close:LOF/ETF').maxExternalCallsPerRun, 32, 'LOF/ETF收盘上限必须覆盖当前腾讯批量补取规模');
 assert.strictEqual(definitions.getJobDefinition('index_recent').maxExternalCallsPerRun, 10, '指数补齐上限必须覆盖双账户五指数完整一轮');
 assert.strictEqual(definitions.getJobDefinition('convertible_bond_universe_refresh').maxExternalCallsPerRun, 600, '可转债主链上限必须覆盖主同步及历史补漏');

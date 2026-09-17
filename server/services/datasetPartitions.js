@@ -10,6 +10,9 @@ async function publishDatasetPartition(datasetCode, scopeKey, options = {}, exec
   const dataAsOf = dateText(options.dataAsOf || partitionKey) || partitionKey;
   if (!datasetCode || !partitionKey) throw new Error(`数据集分区缺少有效日期：${datasetCode}`);
   const status = options.status || 'published';
+  if (!['loading', 'published', 'partial_published', 'rejected', 'stale'].includes(status)) {
+    throw new Error(`不支持的数据集分区状态：${status}`);
+  }
   const stale = status === 'stale' || Boolean(options.isStale);
   const result = await executor(
     `INSERT INTO ops.dataset_partitions
@@ -44,6 +47,17 @@ async function getLatestPublishedPartition(datasetCode, scopeKey = '') {
   return rows[0] || null;
 }
 
+// 仅供允许展示部分事实的页面使用；严格依赖、任务完成和告警恢复继续调用 getLatestPublishedPartition。
+async function getLatestReadablePartition(datasetCode, scopeKey = '') {
+  const { rows } = await pool.query(
+    `SELECT dataset_code,scope_key,partition_key::text,data_as_of::text,published_at,is_stale,stale_reason,row_count,diagnostics,status
+       FROM ops.dataset_partitions
+      WHERE dataset_code=$1 AND scope_key=$2 AND status IN ('published','partial_published')
+      ORDER BY partition_key DESC LIMIT 1`, [datasetCode, String(scopeKey || '')]
+  );
+  return rows[0] || null;
+}
+
 async function getDatasetMetadata(datasetCode, scopeKey = '') {
   const published = await getLatestPublishedPartition(datasetCode, scopeKey);
   if (published) return {
@@ -57,4 +71,4 @@ async function getDatasetMetadata(datasetCode, scopeKey = '') {
   return { data_as_of: null, published_at: null, is_stale: true, stale_reason: '尚无已发布数据分区', row_count: 0, diagnostics: {} };
 }
 
-module.exports = { dateText, publishDatasetPartition, getLatestPublishedPartition, getDatasetMetadata };
+module.exports = { dateText, publishDatasetPartition, getLatestPublishedPartition, getLatestReadablePartition, getDatasetMetadata };

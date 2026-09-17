@@ -249,6 +249,15 @@ function isCurrentSubscriptionRecord(item, ipo, businessDate, now = new Date()) 
   return isOfferOpen(ipo, now, closeDate);
 }
 
+function isQuotaOrCircuitError(error) {
+  const code = String(error && error.code || '').toUpperCase();
+  const type = String(error && error.errorType || '').toLowerCase();
+  const message = String(error && error.message || error || '').toLowerCase();
+  return ['RATE_LIMIT', 'QUOTA_EXHAUSTED', 'BUDGET_WAIT', 'CIRCUIT_OPEN'].includes(code)
+    || type === 'rate_limit' || type === 'circuit_open'
+    || /(daily|quota|rate.?limit|额度|限流|熔断|每日上限)/i.test(message);
+}
+
 async function persistRaw(sourceCode, datasetCode, sourceKey, payload, executor = pool) {
   const source = await executor.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
   if (!source.rows[0]) return;
@@ -303,6 +312,10 @@ async function syncHkIpoMarketSignals({
 } = {}) {
   const map = await loadIpoMap();
   const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0 }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
+  const blockedSources = new Set();
+  const markSourceBlocked = (source, error) => {
+    if (isQuotaOrCircuitError(error)) blockedSources.add(source);
+  };
 
   const syncVbkrCurrent = async () => {
     try {
@@ -343,6 +356,7 @@ async function syncHkIpoMarketSignals({
         result.errors.push({ source: 'vbkr-public', dataset: 'subscription', error: '公开新股接口返回空数据，未生成预计孖展' });
       }
     } catch (error) {
+      markSourceBlocked('vbkr-public', error);
       result.ok = false;
       result.status = 'degraded';
       result.errors.push({ source: 'vbkr-public', dataset: 'subscription', error: error.message || String(error) });
@@ -382,6 +396,7 @@ async function syncHkIpoMarketSignals({
         })) result.subscription.saved += 1;
       }
     } catch (error) {
+      markSourceBlocked('livermore', error);
       result.ok = false;
       result.status = 'degraded';
       result.errors.push({ source: 'livermore', dataset: 'subscription', error: error.message || String(error) });
@@ -392,7 +407,10 @@ async function syncHkIpoMarketSignals({
 
   await syncCurrent();
 
-  try {
+  if (blockedSources.has('livermore')) {
+    // 当前接口已确认额度/熔断时，同一轮不重复请求历史接口，避免继续消耗额度。
+    result.errors.push({ source: 'livermore', dataset: 'grey_market', error: '本轮已因来源额度或熔断跳过重复请求' });
+  } else try {
     const year = Number(String(businessDate).slice(0, 4)) || new Date().getFullYear();
     // 盘中接口经常返回“请升级”，申购期任务也要查历史接口兜底；
     // 暗盘历史只在晚间 enrichment 任务中抓取，避免增加开盘前调用量。
@@ -426,6 +444,7 @@ async function syncHkIpoMarketSignals({
       }
     }
   } catch (error) {
+    markSourceBlocked('livermore', error);
     result.ok = false;
     result.status = 'degraded';
     result.errors.push({ source: 'livermore', dataset: 'grey_market', error: error.message || String(error) });

@@ -232,17 +232,20 @@ const CNINFO_REQUEST_DELAY_MS = 3200;
 // 默认关键词 = 发现关键词 + 后续进程关键词（终止/完成/换股实施等），确保事件状态可被更新
 async function searchAnnouncements({
   fromDate, toDate, keywords, exchanges, stock = '',
-  _httpRequest = httpRequest, requestDelayMs = CNINFO_REQUEST_DELAY_MS,
+  _httpRequest = httpRequest, requestDelayMs = CNINFO_REQUEST_DELAY_MS, structured = false,
 } = {}) {
   const kws = keywords && keywords.length ? keywords : [...DISCOVERY_KEYWORDS, ...UPDATE_KEYWORDS];
   const exs = exchanges && exchanges.length ? exchanges : ['sse', 'szse'];
   const results = [];
+  const diagnostics = { pages: 0, repeated_pages: 0, queries: 0 };
+  let complete = true;
 
   for (const ex of exs) {
     for (const kw of kws) {
       let pageNum = 1;
       const seenPages = new Set();
       while (true) {
+        diagnostics.queries += 1;
         const body = new URLSearchParams({
           pageNum: String(pageNum),
           pageSize: String(CNINFO_PAGE_SIZE),
@@ -262,10 +265,12 @@ async function searchAnnouncements({
 
         const text = await _httpRequest(BASE_URL + SEARCH_PATH, { method: 'POST', body });
         const { items, hasMore } = parseSearchResponse(text);
+        diagnostics.pages += 1;
         const pageSignature = items.map(item => item.sourceKey).join('|');
-        if (pageSignature && seenPages.has(pageSignature)) break;
+        if (pageSignature && seenPages.has(pageSignature)) { diagnostics.repeated_pages += 1; complete = false; break; }
         if (pageSignature) seenPages.add(pageSignature);
         results.push(...items);
+        if (items.length === 0 && hasMore) complete = false;
         if (!hasMore || items.length === 0) break;
         pageNum++;
         await sleep(requestDelayMs);
@@ -273,7 +278,8 @@ async function searchAnnouncements({
       await sleep(requestDelayMs);
     }
   }
-  return results;
+  const unique = [...new Map(results.map(item => [item.sourceKey || `${item.announcedAt}:${item.title}`, item])).values()];
+  return structured ? { events: unique, complete, fetched: unique.length, diagnostics } : unique;
 }
 
 module.exports = {

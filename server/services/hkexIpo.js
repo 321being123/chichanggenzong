@@ -42,6 +42,7 @@ const HKEX_ALLOTMENT_FACTS_PARSER_VERSION = 'hk-ipo-allotment-facts-v5';
 const HKEX_ALLOTMENT_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoAllotment.py');
 const HKEX_PROSPECTUS_DATASET = 'hkex_ipo_prospectus';
 const HKEX_PROSPECTUS_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoProspectus.py');
+const HKEX_PROSPECTUS_NOT_APPLICABLE = new Set(['01355.HK', '01792.HK', '01822.HK']);
 const HKEX_NON_PUBLIC_DATASET = 'hkex_ipo_non_public_classification';
 const HKEX_CANCELLATION_DATASET = 'hkex_ipo_cancellation_notice';
 const HKEX_NON_PUBLIC_LISTINGS = Object.freeze([
@@ -371,6 +372,9 @@ function allotmentTitleLooksLikeIpo(title, rawPayload = null) {
     : '';
   const text = `${String(title || '')} ${payloadText}`.toLowerCase();
   if (!text || /供股|配售|rights issue|placing|share option|special purpose|供股股份/.test(text)) return false;
+  // 港交所会在正式配发结果后再发澄清/更正公告；这些文件没有完整的发售结构，
+  // 不能覆盖真正的配发结果 PDF。
+  if (/clarification announcement|correction announcement|supplementary announcement|澄清公告|更正公告|補充公告/.test(text)) return false;
   return /配發結果|分配結果|發售價及配發|分配公告|allotment results|offer price/.test(text);
 }
 
@@ -399,6 +403,8 @@ function shouldPersistAllotmentFacts(parsed, lotteryParserStatus, feeParserStatu
 // 旧数据里曾把同一份文件同时标成 prospectus/allotment_result，
 // 仅凭“有 URL”会长期复用错误文件，导致 03231 等记录一直待补全。
 function isVerifiedAllotmentDocument(document) {
+  const title = String(document && document.title || '').toLowerCase();
+  if (/(clarification announcement|correction announcement|supplementary announcement|澄清公告|更正公告|補充公告)/.test(title)) return false;
   const evidence = document && document.parserEvidence;
   if (!evidence || evidence.factsParserVersion !== HKEX_ALLOTMENT_FACTS_PARSER_VERSION) return false;
   return ['parsed', 'missing'].includes(evidence.oversubscriptionParserStatus)
@@ -953,11 +959,24 @@ async function syncHkexProspectusFacts({
      FROM public.ipo_history
      WHERE market_code='HK'
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
+       AND NOT EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
+          WHERE lower(COALESCE(document->>'title','') || ' ' || COALESCE(document->>'shortText',''))
+                ~ '(rights[ _-]?issue|供股|配售|placing|share option|special purpose)'
+       )
        AND (
          listing_at::date BETWEEN $1::date AND $2::date
        OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
        )
-       AND COALESCE(data_completeness->>'status','retryable') <> 'pending_not_due'
+       AND COALESCE(data_completeness#>>'{prospectus,status}',
+                    CASE WHEN data_completeness->>'status'='pending_not_due' THEN 'pending_not_due' ELSE 'retryable' END)
+             NOT IN ('not_applicable','terminal_missing','pending_not_due')
+       AND (
+         data_completeness#>>'{prospectus,status}' IS NULL
+         OR data_completeness#>>'{prospectus,status}' <> 'retryable'
+         OR (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now()
+       )
        AND (
          issue_price_low IS NULL OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
          OR ($3::boolean AND NOT EXISTS (
@@ -971,7 +990,10 @@ async function syncHkexProspectusFacts({
      ORDER BY CASE WHEN EXISTS (
                 SELECT 1 FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
                  WHERE document->>'type'='prospectus'
-              ) THEN 0 ELSE 1 END,
+              ) THEN 0
+              WHEN data_completeness#>>'{prospectus,status}'='retryable'
+                AND (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now() THEN 1
+              ELSE 2 END,
               listing_at,security_code
      ${candidateLimitClause}`, candidateParams);
   const candidates = candidatesResult.rows;
@@ -1042,9 +1064,30 @@ async function syncHkexProspectusFacts({
     }
     for (const candidate of candidates) {
       const code = String(candidate.security_code);
+      if (HKEX_PROSPECTUS_NOT_APPLICABLE.has(code)) {
+        const evidenceUrl = (Array.isArray(candidate.source_documents) ? candidate.source_documents : [])
+          .map(item => item && item.url).find(Boolean) || null;
+        await executor(
+          `UPDATE public.ipo_history
+              SET data_completeness=jsonb_set(COALESCE(data_completeness,'{}'::jsonb),'{prospectus}',$2::jsonb,true),
+                  updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+            WHERE market_code='HK' AND security_code=$1`,
+          [code, JSON.stringify({ status: 'not_applicable', checked_at: new Date().toISOString(), next_retry_at: null,
+            reason: '供股/配售对象，不适用普通 IPO 招股书', evidence_url: evidenceUrl })]
+        );
+        continue;
+      }
       const documents = (documentsByCode.get(code) || []).sort((a, b) => String(a.announcedAt || '').localeCompare(String(b.announcedAt || '')));
       if (!documents.length) {
         failures.push({ code, stage: 'search_match', error: '未找到官方发售以供认购 PDF' });
+        await executor(
+          `UPDATE public.ipo_history
+              SET data_completeness=jsonb_set(COALESCE(data_completeness,'{}'::jsonb),'{prospectus}',$2::jsonb,true),
+                  updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+            WHERE market_code='HK' AND security_code=$1`,
+          [code, JSON.stringify({ status: 'terminal_missing', checked_at: new Date().toISOString(),
+            next_retry_at: null, reason: '官方招股书窗口内未发现可核验文件', evidence_url: null })]
+        );
         continue;
       }
       const aggregate = {};
@@ -1127,14 +1170,20 @@ async function syncHkexProspectusFacts({
         if (index >= 0) sourceDocuments[index] = { ...sourceDocuments[index], ...document };
         else sourceDocuments.push(document);
       }
-      const completeness = {
-        ...(candidate.data_completeness && typeof candidate.data_completeness === 'object' ? candidate.data_completeness : {}),
+      const prospectusComplete = aggregate.issuePriceLow != null && aggregate.issuePriceHigh != null
+        && aggregate.lotSizeShares != null && aggregate.offerOpenAt != null && aggregate.offerCloseAt != null;
+      const prospectusCompleteness = {
+        status: prospectusComplete ? 'complete' : 'retryable', checked_at: new Date().toISOString(),
+        next_retry_at: prospectusComplete ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        reason: prospectusComplete ? '官方招股书已解析并保存证据' : '官方招股书已发现但核心字段仍缺失',
+        evidence_url: evidenceDocuments[0]?.url || documents[0]?.fileLink || null,
+        fields: {},
       };
       for (const [key, value] of Object.entries({
         issuePriceLow: aggregate.issuePriceLow, issuePriceHigh: aggregate.issuePriceHigh,
         lotSizeShares: aggregate.lotSizeShares, offerOpenDate: aggregate.offerOpenAt, offerCloseDate: aggregate.offerCloseAt,
         sponsorGroup: aggregate.sponsorGroup,
-      })) if (value != null) completeness[key] = 'value';
+      })) if (value != null) prospectusCompleteness.fields[key] = 'value';
       await executor(`
         UPDATE public.ipo_history
            SET issue_price_low=COALESCE(issue_price_low,$2),
@@ -1144,11 +1193,11 @@ async function syncHkexProspectusFacts({
                offer_open_at=COALESCE(offer_open_at,$5::timestamptz),
                offer_close_at=COALESCE(offer_close_at,$6::timestamptz),
                source_documents=$7::jsonb,
-               data_completeness=$8::jsonb,
+               data_completeness=jsonb_set(COALESCE(data_completeness,'{}'::jsonb),'{prospectus}',$8::jsonb,true),
                facts_published_at=now(),updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
          WHERE market_code='HK' AND security_code=$1`, [
         code, aggregate.issuePriceLow || null, aggregate.issuePriceHigh || null, aggregate.lotSizeShares || null,
-        aggregate.offerOpenAt || null, aggregate.offerCloseAt || null, JSON.stringify(sourceDocuments), JSON.stringify(completeness),
+        aggregate.offerOpenAt || null, aggregate.offerCloseAt || null, JSON.stringify(sourceDocuments), JSON.stringify(prospectusCompleteness),
       ]);
       enriched += 1;
     }

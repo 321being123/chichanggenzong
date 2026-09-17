@@ -8,6 +8,7 @@ const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
 const RECOVERY_SUMMARY_RETRY_MINUTES = 15;
 const MAX_RECOVERY_SUMMARY_ATTEMPTS = 3;
+const RECONCILIATION_COOLDOWN_MINUTES = [60, 360, 1440];
 // 故障告警在人工确认或任务恢复前保持待处理；一次性通知发送后不再算待处理。
 const ACTIVE_ALERT_WHERE = `status NOT IN ('resolved','acknowledged')
         AND NOT (alert_type IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
@@ -87,9 +88,6 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
          FROM ops.job_schedule_slots WHERE slot_id=$1`, [scope.key]
     );
     const row = rows[0];
-    if (alertType === 'dependency_blocked' && row && row.status === 'succeeded') {
-      return { recovered: true, evidence: { mode: 'dependency_recovered_by_slot_success', original: row } };
-    }
     if (DATA_BOUND_ALERT_TYPES.has(alertType)) {
       return { recovered: false, evidence: row || null, reason: 'data_bound_alert_requires_dataset_evidence' };
     }
@@ -165,6 +163,23 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
       return Number.isFinite(successAt) && (!Number.isFinite(lastSeen) || successAt > lastSeen);
     });
     const recovered = allCircuitsClosed(rows) && hasNewProbeSuccess;
+    if (alertType === 'source_fallback_degraded') {
+      const runtimeApi = apiName === '*' ? 'arbitrage' : apiName;
+      const { rows: runtime } = await query(
+        `SELECT r.consecutive_fallback_count,r.last_primary_success_at
+           FROM ops.source_endpoint_runtime r
+           JOIN ops.data_sources ds ON ds.source_id=r.source_id
+          WHERE ds.source_code=$1 AND r.api_name=$2`, [source, runtimeApi]
+      );
+      const runtimeRecovered = runtime.some(item => Number(item.consecutive_fallback_count || 0) === 0
+        && item.last_primary_success_at
+        && (!Number.isFinite(lastSeen) || new Date(item.last_primary_success_at).getTime() > lastSeen));
+      return {
+        recovered: allCircuitsClosed(rows) && runtimeRecovered,
+        evidence: { circuits: rows, runtime },
+        ...(!rows.length ? { reason: 'circuit_evidence_missing' } : !runtimeRecovered ? { reason: 'primary_source_recovery_evidence_missing' } : {}),
+      };
+    }
     return {
       recovered,
       evidence: rows,
@@ -197,8 +212,8 @@ async function upsertAlert(input) {
   const key = alertKeyFor(input);
   const scope = alertScope(input);
   const { rows } = await pool.query(
-    `INSERT INTO ops.alert_notifications(alert_key,alert_type,severity,job_code,slot_id,scope_type,scope_key,subject,summary,next_send_at)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+    `INSERT INTO ops.alert_notifications(alert_key,alert_type,severity,job_code,slot_id,scope_type,scope_key,subject,summary,next_send_at,next_check_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),now())
      ON CONFLICT(alert_key) DO UPDATE SET
        summary=EXCLUDED.summary, subject=EXCLUDED.subject,
        scope_type=COALESCE(EXCLUDED.scope_type,ops.alert_notifications.scope_type),
@@ -213,6 +228,7 @@ async function upsertAlert(input) {
        sending_started_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.sending_started_at END,
        last_sent_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN NULL ELSE ops.alert_notifications.last_sent_at END,
        next_send_at=CASE WHEN ops.alert_notifications.status IN ('acknowledged','resolved') THEN now() ELSE ops.alert_notifications.next_send_at END,
+       next_check_at=now(),
        updated_at=now()
      RETURNING *`,
     [key, input.alertType || 'failure', input.severity || 'critical', input.jobCode || null, input.slotId || null,
@@ -290,6 +306,7 @@ async function sendAlert(input, options = {}) {
     return { ok: true, suppressed: true, reason: 'non_production_environment' };
   }
   let alert = await upsertAlert(input);
+  const warning = String(input.severity || alert.severity || '').toLowerCase() === 'warning';
   const oneShotRecovery = ['recovery', 'worker_recovered', 'job_overdue_recovered', 'external_api_switch', 'external_api_interface_failover']
     .includes(String(input.alertType || ''));
   const repeatWindowMs = 6 * 60 * 60 * 1000;
@@ -298,6 +315,15 @@ async function sendAlert(input, options = {}) {
   const minOccurrences = Number(options.minOccurrences || input.minOccurrences || 1);
   if (oneShotRecovery && !manual && alert.last_sent_at) {
     return { ok: true, suppressed: true, alertId: alert.alert_id, reason: 'recovery_already_sent' };
+  }
+  // warning 首次只落库并进入每日摘要，不在故障现场即时发邮件；人工重发仍可显式发送。
+  if (warning && !manual && !force) {
+    await pool.query(
+      `UPDATE ops.alert_notifications
+          SET status='pending',next_send_at=NULL,next_check_at=now(),sending_started_at=NULL,updated_at=now()
+        WHERE alert_id=$1 AND status <> 'sending'`, [alert.alert_id]
+    );
+    return { ok: true, deferred: true, alertId: alert.alert_id, reason: 'warning_daily_summary' };
   }
   if (force) {
     const { rows } = await pool.query(
@@ -648,6 +674,75 @@ async function reconcileRecoveredSourceAlerts(limit = 100) {
   }
 }
 
+function reconciliationCooldownMinutes(alert) {
+  const occurrences = Math.max(1, Number(alert && alert.occurrence_count || 1));
+  return RECONCILIATION_COOLDOWN_MINUTES[Math.min(RECONCILIATION_COOLDOWN_MINUTES.length - 1, occurrences - 1)];
+}
+
+// 健康检查使用的历史告警公平扫描：新告警优先，其余按到期时间轮转，并保留无证据告警。
+async function reconcileHistoricalAlerts(limit = 100) {
+  if (!productionAlertsEnabled()) return { checked: 0, resolved: 0, skipped: true };
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 100);
+  const { rows: candidates } = await pool.query(
+    `SELECT * FROM ops.alert_notifications
+      WHERE status NOT IN ('resolved','acknowledged')
+        AND alert_type NOT IN ('recovery','worker_recovered','job_overdue_recovered','external_api_switch','external_api_interface_failover')
+        AND (last_checked_at IS NULL OR next_check_at IS NULL OR next_check_at <= now())
+      ORDER BY CASE WHEN last_checked_at IS NULL THEN 0 ELSE 1 END,
+               next_check_at ASC NULLS FIRST,last_checked_at ASC NULLS FIRST,last_seen_at ASC,alert_id ASC
+      LIMIT $1`, [safeLimit]
+  );
+  let resolved = 0;
+  for (const alert of candidates) {
+    let verification;
+    try {
+      verification = await verifyAlertScope(alert, undefined, { historical: true });
+    } catch (error) {
+      await recordResolutionFailure(error, { caller: 'reconcileHistoricalAlerts', alertId: alert.alert_id, scopeType: alert.scope_type, scopeKey: alert.scope_key });
+      continue;
+    }
+    if (verification.recovered) {
+      const { rows } = await pool.query(
+        `UPDATE ops.alert_notifications
+            SET status='resolved',resolved_at=now(),last_checked_at=now(),next_check_at=NULL,sending_started_at=NULL,updated_at=now()
+          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged') RETURNING alert_id`, [alert.alert_id]
+      );
+      resolved += rows.length;
+    } else {
+      const cooldown = reconciliationCooldownMinutes(alert);
+      await pool.query(
+        `UPDATE ops.alert_notifications
+            SET last_checked_at=now(),next_check_at=now()+($2 || ' minutes')::interval,updated_at=now()
+          WHERE alert_id=$1 AND status NOT IN ('resolved','acknowledged')`, [alert.alert_id, String(cooldown)]
+      );
+    }
+  }
+  return { checked: candidates.length, resolved };
+}
+
+async function reconcilePartialDataAlerts(limit = 100) {
+  if (!productionAlertsEnabled()) return { checked: 0, created: 0, skipped: true };
+  const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 100);
+  const { rows } = await pool.query(
+    `SELECT dataset_code,scope_key,partition_key::text,diagnostics
+       FROM ops.dataset_partitions
+      WHERE status='partial_published' AND partition_key <= (CURRENT_DATE - INTERVAL '2 days')::date
+      ORDER BY partition_key ASC,dataset_code ASC LIMIT $1`, [safeLimit]
+  );
+  let created = 0;
+  for (const row of rows) {
+    const result = await sendAlert({
+      alertKey: `partial_published:${row.dataset_code}:${row.scope_key}:${row.partition_key}`,
+      alertType: 'data_quality', severity: 'warning', scopeType: 'dataset',
+      scopeKey: `${row.dataset_code}:${row.scope_key}:${row.partition_key}`,
+      subject: `数据集分区长期部分发布：${row.dataset_code}`,
+      summary: `分区 ${row.dataset_code}/${row.scope_key}/${row.partition_key} 已超过 2 个日历日仍未完整，继续保留部分事实和缺口证据。`,
+    });
+    if (result && result.alertId) created += 1;
+  }
+  return { checked: rows.length, created };
+}
+
 async function resolveWorkerOfflineAlert(alertId) {
   if (!productionAlertsEnabled()) return 0;
   try {
@@ -730,6 +825,6 @@ async function acknowledgeAlert(alertId) {
 module.exports = {
   sendAlert, sendDueAlerts, sendRecoveryAlert, resolveJobSlotAlerts,
   resolveDatasetAlerts, resolveSourceEndpointAlerts,
-  reconcileRecoveredSourceAlerts, resolveWorkerOfflineAlert, notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
+  reconcileRecoveredSourceAlerts, reconcileHistoricalAlerts, reconcilePartialDataAlerts, resolveWorkerOfflineAlert, notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
   ACTIVE_ALERT_WHERE, parseAlertScope, allCircuitsClosed, verifyAlertScope,
 };

@@ -31,6 +31,7 @@ assert.strictEqual(isCurrentSubscriptionRecord({ subscriptionMultiple: 12.5, off
 assert.strictEqual(isCurrentSubscriptionRecord({ subscriptionMultiple: 12.5, offerCloseDate: '2026-09-02', raw: {} }, activeIpo, '2026-09-03', new Date('2026-09-03T08:00:00.000Z')), false);
 assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), true);
 assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v4', oversubscriptionParserStatus: 'parsed', lotteryParserStatus: 'parsed', feeParserStatus: 'parsed' } }), false);
+assert.strictEqual(isVerifiedAllotmentDocument({ title: 'GLOBAL OFFERING - CLARIFICATION ANNOUNCEMENT', parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'missing', feeParserStatus: 'missing' } }), false);
 assert.strictEqual(isUsableProspectusDocument({ type: 'prospectus', url: 'https://www1.hkexnews.hk/a.pdf', parserStatus: 'parsed' }), true);
 assert.strictEqual(isUsableProspectusDocument({ type: 'prospectus', url: 'https://www1.hkexnews.hk/a.pdf', parserStatus: 'partial', parserEvidence: { offerCloseAt: 'x' } }), false);
 assert.strictEqual(cancellationTitleLooksLikeIpo('Announcement - decision not to proceed with the global offering', {}), true);

@@ -353,7 +353,31 @@ async function syncAShareMarketCap(full) {
   return count;
 }
 
-async function calculateM2MarketCap() {
+async function m2MarketCapInputFreshness() {
+  const { rows } = await pool.query(`
+    SELECT
+      (SELECT max(month)::text FROM market.money_supply_monthly WHERE market_code='CN') AS m2_month,
+      (SELECT max(trade_date)::text FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic') AS cap_date`);
+  const row = rows[0] || {};
+  const today = new Date(`${dateStr(new Date())}T00:00:00Z`);
+  const m2Date = row.m2_month ? new Date(`${String(row.m2_month).slice(0, 10)}T00:00:00Z`) : null;
+  const capDate = row.cap_date ? new Date(`${String(row.cap_date).slice(0, 10)}T00:00:00Z`) : null;
+  const m2LagMonths = m2Date && !Number.isNaN(m2Date.getTime())
+    ? (today.getUTCFullYear() - m2Date.getUTCFullYear()) * 12 + today.getUTCMonth() - m2Date.getUTCMonth() : null;
+  const capLagDays = capDate && !Number.isNaN(capDate.getTime())
+    ? Math.floor((today - capDate) / 86400000) : null;
+  return {
+    m2_month: row.m2_month || null, cap_date: row.cap_date || null,
+    m2_lag_months: m2LagMonths, cap_lag_days: capLagDays,
+    fresh: m2LagMonths != null && m2LagMonths <= 2 && capLagDays != null && capLagDays <= 1,
+  };
+}
+
+async function calculateM2MarketCap(options = {}) {
+  if (options.requireFresh) {
+    const freshness = await m2MarketCapInputFreshness();
+    if (!freshness.fresh) return { status: 'stale', rowCount: 0, freshness };
+  }
   const result = await pool.query(`INSERT INTO analytics.m2_market_cap_daily
     (trade_date,m2_month,m2_100m_yuan,total_market_cap_100m_yuan,ratio_pct,data_status)
     SELECT c.trade_date,m.month,m.m2_100m_yuan,c.total_market_cap_100m_yuan,
@@ -370,17 +394,22 @@ async function calculateM2MarketCap() {
       m2_month=EXCLUDED.m2_month,m2_100m_yuan=EXCLUDED.m2_100m_yuan,
       total_market_cap_100m_yuan=EXCLUDED.total_market_cap_100m_yuan,
       ratio_pct=EXCLUDED.ratio_pct,data_status=EXCLUDED.data_status,calculated_at=now()`);
-  return result.rowCount;
+  return options.requireFresh ? { status: 'fresh', rowCount: result.rowCount } : result.rowCount;
 }
 
-async function syncMarketCycleMetrics(full) {
+async function syncMarketCycleMetrics(full, options = {}) {
   if (!(process.env.TUSHARE_TOKEN || process.env.TUSHARE_BACKUP_TOKEN)) return { skipped: 'TUSHARE_TOKEN/TUSHARE_BACKUP_TOKEN missing' };
+  const requested = new Set(options.stages || []);
+  const runAll = requested.size === 0;
+  const wants = stage => runAll || requested.has(stage);
   const result = {
-    csi300Valuation: await syncCsi300Valuation(full),
-    moneySupply: await syncMoneySupply(),
-    aShareMarketCap: await syncAShareMarketCap(full),
+    ...(wants('csi300_valuation') ? { csi300Valuation: await syncCsi300Valuation(full) } : {}),
+    ...(wants('m2') ? { moneySupply: await syncMoneySupply() } : {}),
+    ...(wants('a_share_market_cap') ? { aShareMarketCap: await syncAShareMarketCap(full) } : {}),
   };
-  result.m2MarketCap = await calculateM2MarketCap();
+  if (runAll || wants('m2') || wants('a_share_market_cap') || wants('m2_market_cap')) {
+    result.m2MarketCap = await calculateM2MarketCap({ requireFresh: true });
+  }
   return result;
 }
 
@@ -392,6 +421,7 @@ const MARKET_SUBDATASET_POLICIES = Object.freeze({
   us_treasury_yield: { maxLagDays: 10, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.sovereign_yield_daily WHERE market_code='US' AND tenor_years=10 AND source_code='tushare_us_tycr'" },
   m2: { maxLagMonths: 2, sql: "SELECT max(month)::text AS data_as_of FROM market.money_supply_monthly WHERE market_code='CN'" },
   a_share_market_cap: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM market.a_share_market_cap_daily WHERE source_code='tushare_daily_basic'" },
+  m2_market_cap: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.m2_market_cap_daily WHERE data_status='normal'" },
   graham_csi300: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSI300'" },
   graham_csi_all: { maxLagDays: 1, sql: "SELECT max(trade_date)::text AS data_as_of FROM analytics.graham_index_daily WHERE market_code='CN' AND benchmark_code='CSIALL'" },
 });
@@ -416,7 +446,8 @@ async function readMarketSubdatasetFreshness(targetDate) {
 async function runMarketVolatilitySync(context = {}) {
   if (!(await tryClaimJob('market_volatility_sync'))) return { skipped: true, reason: 'locked' };
   const id = await startJobRun('market_volatility_sync');
-  const requested = new Set((context.failedDatasets || []).map(item => typeof item === 'string' ? item : item && item.code).filter(Boolean));
+    const requested = new Set((context.failedDatasets || []).map(item => typeof item === 'string' ? item : item && item.code).filter(Boolean));
+    if (requested.has('cycle_metrics')) ['csi300_valuation', 'm2', 'a_share_market_cap', 'm2_market_cap'].forEach(code => requested.add(code));
   const failedDatasets = [];
   const failures = [];
   const result = {};
@@ -442,7 +473,14 @@ async function runMarketVolatilitySync(context = {}) {
     await runDataset('csi_all_pe', () => syncCsiIndexPe('CSIALL', '000985'));
     await runDataset('hsi_pe', () => syncHsiPe());
     await runDataset('us_treasury_yield', () => syncUsTreasuryYield(end));
-    await runDataset('cycle_metrics', () => syncMarketCycleMetrics(cycleFirst));
+    // 子阶段必须和 failedDatasets 使用同一代码，定向重试 m2 时不能重新抓取已经成功的指标。
+    const cycleStages = ['csi300_valuation', 'm2', 'a_share_market_cap'];
+    for (const stage of cycleStages) {
+      await runDataset(stage, () => syncMarketCycleMetrics(cycleFirst, { stages: [stage] }));
+    }
+    if (!requested.size || requested.has('cycle_metrics') || requested.has('m2') || requested.has('a_share_market_cap') || requested.has('m2_market_cap')) {
+      await runDataset('m2_market_cap', () => syncMarketCycleMetrics(false, { stages: ['m2_market_cap'] }));
+    }
     if (!failedDatasets.length) await calculateGraham();
     const subdatasets = await readMarketSubdatasetFreshness(end).catch(error => ({ freshness_check: { status: 'failed', error: error.message } }));
     const staleSubdatasets = Object.entries(subdatasets).filter(([, item]) => item && item.status === 'stale').map(([code]) => code);

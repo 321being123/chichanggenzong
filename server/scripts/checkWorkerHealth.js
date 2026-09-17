@@ -2,7 +2,7 @@ require('dotenv').config();
 const { execFileSync } = require('child_process');
 const { pool } = require('../db');
 const {
-  sendAlert, sendDueAlerts, reconcileRecoveredSourceAlerts, resolveWorkerOfflineAlert,
+  sendAlert, sendDueAlerts, reconcileRecoveredSourceAlerts, reconcileHistoricalAlerts, reconcilePartialDataAlerts, resolveWorkerOfflineAlert,
 } = require('../services/jobAlertMailer');
 const { collectNginxRuntime } = require('../services/nginxRuntimeCollector');
 
@@ -18,6 +18,8 @@ async function main() {
   await collectNginxRuntime().catch(error => console.warn('[worker-health] Nginx 采样失败:', error.message));
   await sendDueAlerts(20).catch(error => console.warn('[worker-health] 邮件重试失败:', error.message));
   await reconcileRecoveredSourceAlerts(100).catch(error => console.warn('[worker-health] 来源告警恢复核对失败:', error.message));
+  await reconcileHistoricalAlerts(100).catch(error => console.warn('[worker-health] 历史告警核对失败:', error.message));
+  await reconcilePartialDataAlerts(100).catch(error => console.warn('[worker-health] 部分数据集告警核对失败:', error.message));
   await pool.query(
     `DELETE FROM ops.worker_heartbeats
       WHERE last_seen_at < now()-interval '7 days'

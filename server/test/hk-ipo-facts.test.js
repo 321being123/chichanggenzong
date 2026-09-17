@@ -8,7 +8,7 @@ const {
 } = require('../services/hkexIpo');
 const { normalizeCalendarRows } = require('../jobs/hkTradeCalendarSync');
 const { rowsFromProbe, runHkIpoSync, persistTencentNames } = require('../jobs/hkIpoSync');
-const { syncHkexAllotmentFacts, shouldPersistAllotmentFacts } = require('../services/hkexIpo');
+const { syncHkexAllotmentFacts, syncHkexProspectusFacts, shouldPersistAllotmentFacts } = require('../services/hkexIpo');
 
 const listingHtml = `
   <table><tr><th>Stock Code</th><th>Name</th><th>Listing Date</th></tr>
@@ -76,6 +76,11 @@ assert.strictEqual(
   false,
   '供股配发结果不得进入港股 IPO 配发补全'
 );
+assert.strictEqual(
+  allotmentTitleLooksLikeIpo('全球發售', { SHORT_TEXT: '公告及通告 - [配發結果] - 澄清公告' }),
+  false,
+  '澄清配发公告不得覆盖正式配发结果'
+);
 
 (async () => {
   const statements = [];
@@ -139,5 +144,18 @@ assert.strictEqual(
     '配发结构缺失但公告费用已解析时，必须保留每手资金和申请费用'
   );
   assert.match(candidateSql, /feeParserStatus.*IN \('parsed','missing'\)/, '默认补全必须避免重复抓取已确认费用解析结果');
+
+  let prospectusSql = '';
+  const prospectusResult = await syncHkexProspectusFacts({
+    fromDate: '2025-08-04', toDate: '2026-09-08', limit: 0,
+    executor: async (sql) => {
+      if (sql.includes("source_code='hkex_announcements'")) return { rows: [{ source_id: 1 }] };
+      if (sql.includes('FROM public.ipo_history')) { prospectusSql = sql; return { rows: [] }; }
+      if (sql.includes('INSERT INTO ops.ingestion_runs')) return { rows: [{ run_id: 3 }] };
+      return { rows: [] };
+    },
+  });
+  assert.strictEqual(prospectusResult.status, 'succeeded');
+  assert.match(prospectusSql, /rights\[ _-\]\?issue|供股|placing/, '招股书补全不得为供股等非 IPO 记录检索官方招股书');
   console.log('hk-ipo-facts.test.js passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

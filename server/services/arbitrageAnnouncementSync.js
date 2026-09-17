@@ -2,11 +2,13 @@
 // 首次 1 年同步 + 增量同步 + 游标管理 + 原始记录入库 + 公告/事件标准化
 const { pool } = require('../db');
 const hkex = require('./hkexAnnouncement');
+const cninfo = require('./cninfoAnnouncement');
 const parser = require('./arbitrageParser');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { fetchTencentQuotes } = require('./tencentQuote');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { fetchSseEventsBatch, fetchSzseEventsBatch } = require('./stockAnalysis');
+const { sendAlert, resolveSourceEndpointAlerts } = require('./jobAlertMailer');
 const {
   cleanSecurityText,
   firstSecurityCode,
@@ -14,6 +16,7 @@ const {
   classifyDocumentRole,
   classifyRiskAnnouncement,
   buildEventKey,
+  announcementMergeKey,
   PARSER_VERSION,
 } = require('./arbitrageRules');
 
@@ -67,25 +70,79 @@ function isRelevantExchangeArbitrageAnnouncement(event) {
     || isGenericControlChangeTermination(text));
 }
 
-async function searchExchangeArbitrageAnnouncements(scope, { fromDate, toDate } = {}) {
-  const fetcher = scope === 'sse' ? fetchSseEventsBatch : fetchSzseEventsBatch;
+async function searchExchangeArbitrageAnnouncements(scope, { fromDate, toDate, _fetcher, _cninfo } = {}) {
+  const fetcher = _fetcher || (scope === 'sse' ? fetchSseEventsBatch : fetchSzseEventsBatch);
+  const backupAdapter = _cninfo || cninfo;
   if (!fetcher) throw new Error(`未配置交易所公告适配器：${scope}`);
   const events = [];
+  let usedFallback = false;
   for (const window of splitExchangeWindows(fromDate, toDate)) {
-    const result = await fetcher(window.from, window.to, '');
-    if (result && result.complete === false) {
-      const error = new Error(`${scope.toUpperCase()} 公告分页未完整，已停止推进套利同步游标`);
-      error.code = 'PAGINATION_INCOMPLETE';
-      error.errorType = 'data_quality';
-      error.source = scope;
-      throw error;
+    let result;
+    let primaryComplete = true;
+    try {
+      result = await fetcher(window.from, window.to, '');
+      primaryComplete = !(result && result.complete === false);
+    } catch (error) {
+      primaryComplete = false;
+      result = { events: [], diagnostics: { primary_error: error.message } };
     }
-    events.push(...(result && result.events || []));
+    if (!primaryComplete) {
+      const backup = await backupAdapter.searchAnnouncements({
+        fromDate: window.from, toDate: window.to,
+        exchanges: [scope],
+        keywords: ['要约收购', '现金选择权', '换股吸收合并', '供股', '终止', '完成'],
+        requestDelayMs: 0,
+        structured: true,
+      });
+      if (!backup.complete) {
+        const error = new Error(`${scope.toUpperCase()} 主源分页不完整且 CNINFO 备源也未完整`);
+        error.code = 'PAGINATION_INCOMPLETE';
+        error.errorType = 'data_quality';
+        error.source = scope;
+        throw error;
+      }
+      usedFallback = true;
+      events.push(...backup.events.map(event => ({ ...event, fallback_source: 'cninfo', primary_source: scope })));
+    } else {
+      events.push(...(result && result.events || []));
+    }
   }
-  return [...new Map(events
+  const output = [...new Map(events
     .filter(isRelevantExchangeArbitrageAnnouncement)
-    .map(event => [`${scope}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event]))
+    .map(event => [announcementMergeKey({ securityCode: event.stock_code, announcedAt: normalizeAnnouncementDate(event.event_date), title: event.title })
+      || `${scope}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event]))
     .values()].map(event => mapExchangeArbitrageAnnouncement(event, scope));
+  Object.defineProperty(output, 'fallbackUsed', { value: usedFallback, enumerable: false });
+  return output;
+}
+
+async function updateFallbackRuntime(scope, usedFallback) {
+  const sourceCode = scope === 'sse' ? 'sse' : 'szse';
+  const { rows } = await pool.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
+  if (!rows[0]) return null;
+  const runtime = await pool.query(
+    `INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint,consecutive_fallback_count,last_fallback_at,last_primary_success_at)
+     VALUES($1,'arbitrage','none',CASE WHEN $2::boolean THEN 1 ELSE 0 END,CASE WHEN $2::boolean THEN now() END,CASE WHEN $2::boolean THEN NULL ELSE now() END)
+     ON CONFLICT(source_id,api_name,credential_fingerprint) DO UPDATE SET
+       consecutive_fallback_count=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.consecutive_fallback_count+1 ELSE 0 END,
+       last_fallback_at=CASE WHEN $2::boolean THEN now() ELSE ops.source_endpoint_runtime.last_fallback_at END,
+       last_primary_success_at=CASE WHEN $2::boolean THEN ops.source_endpoint_runtime.last_primary_success_at ELSE now() END,
+       updated_at=now()
+     RETURNING consecutive_fallback_count,last_primary_success_at`, [rows[0].source_id, Boolean(usedFallback)]
+  );
+  const state = runtime.rows[0] || null;
+  if (!usedFallback) {
+    await resolveSourceEndpointAlerts(sourceCode, '*').catch(() => {});
+  }
+  if (usedFallback && state && Number(state.consecutive_fallback_count) >= 3) {
+    await sendAlert({
+      alertKey: `source_fallback_degraded:${sourceCode}:arbitrage`, alertType: 'source_fallback_degraded', severity: 'warning',
+      scopeType: 'source_endpoint', scopeKey: `${sourceCode}:*`, jobCode: SYNC_JOB,
+      subject: `${sourceCode.toUpperCase()} 公告主源连续退化`,
+      summary: `${sourceCode.toUpperCase()} 主源连续 ${state.consecutive_fallback_count} 轮使用 CNINFO 备源，需检查分页或接口可用性。`,
+    });
+  }
+  return state;
 }
 
 const exchangeAdapters = {
@@ -197,6 +254,8 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
     stockName: firstSecurityName(ann.stockName),
     title: cleanSecurityText(ann.title),
   };
+  const mergeKey = announcementMergeKey({ securityCode: ann.stockCode, announcedAt: ann.announcedAt, title: ann.title, market: scope === 'hkex' ? 'HK' : 'CN' });
+  ann.rawPayload = { ...(ann.rawPayload || {}), announcement_merge_key: mergeKey };
   if (scope !== 'hkex' && /境内上市外资股转换上市地|B股转H股|B转H/.test(ann.title || '')
       && /^0\d{5}$/.test(String(ann.stockCode || ''))) {
     const bCode = '2' + String(ann.stockCode).slice(1);
@@ -353,6 +412,17 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       // 合并优先级：先按「标的+策略」匹配进行中事件；无则按 source_key 幂等匹配（同一公告重复同步）
       let existing = instrumentId ? await findOpenCase(client, instrumentId, strategyType) : null;
       // 如果同标的同策略已有时间更晚的终态公告，当前历史方案只能归档，不能重新打开事件。
+      if (!existing && mergeKey) {
+        const { rows: merged } = await client.query(
+          `SELECT ac.case_id,ac.review_status
+             FROM event.documents d
+             JOIN event.arbitrage_case_documents acd ON acd.document_id=d.document_id
+             JOIN event.arbitrage_cases ac ON ac.case_id=acd.case_id
+            WHERE d.raw_payload->>'announcement_merge_key'=$1
+            ORDER BY ac.created_at ASC,ac.case_id ASC LIMIT 1`, [mergeKey]
+        );
+        existing = merged[0] || null;
+      }
       if (!existing && instrumentId && ann.announcedAt) {
         const { rows: terminal } = await client.query(`
           SELECT c.case_id,max(d.announced_at) AS terminal_date
@@ -636,14 +706,18 @@ async function runSync(windows, isFirst) {
           fromDate: win.from,
           toDate: win.to,
         });
+        if (scopeName === 'sse' || scopeName === 'szse') {
+          await updateFallbackRuntime(scopeName, Boolean(announcements.fallbackUsed));
+        }
         announcements.sort((a, b) => String(a.announcedAt || '').localeCompare(String(b.announcedAt || ''))
           || String(a.sourceKey || '').localeCompare(String(b.sourceKey || '')));
 
         let count = 0;
         for (const ann of announcements) {
           try {
-            const rawRecordId = await ingestRawRecord(runId, sourceId, cfg.dataset, ann);
-            await standardizeAnnouncement(sourceId, rawRecordId, ann, scopeName);
+            const actualSourceId = ann.fallback_source === 'cninfo' ? await getSourceId('cninfo') : sourceId;
+            const rawRecordId = await ingestRawRecord(runId, actualSourceId, cfg.dataset, ann);
+            await standardizeAnnouncement(actualSourceId, rawRecordId, ann, scopeName);
             count++;
           } catch (err) {
             const safeError = sanitizeJobError(err.message || err, 1000);

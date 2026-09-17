@@ -47,7 +47,7 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'convertible_bond_revision_motive_calculate', label: '下修动机评分计算', manualOnly: true, requiresDataWatermark: false, sourceDescription: '已入库下修、行情、财务、持有人和质押事实，数据库本地计算' },
   { jobCode: 'convertible_bond_announcement_history_sync', label: '可转债公告与生命周期同步', hour: 7, minute: 40, weekdays: true, afterTradingDay: true, additionalSchedules: [{ hour: 17, minute: 30, mode: 'calendar', afterTradingDay: false, weekdays: true }], catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, requiresDataWatermark: true, reconcileByWatermark: true, strictDatasetPublication: true, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: 'Tushare发行事实与上交所、深交所官方公告统一采集后按事件类型分发；17:30上市流通明细历史补全优先交易所官方资料，交易所不可用时以巨潮资讯兜底', mayConsumeQuota: true, externalSources: ['tushare', '上交所', '深交所', '巨潮资讯'], retryPolicy: 'external', retryDelaysMinutes: [15, 60, 240], maxAttempts: 4 },
   { jobCode: 'convertible_bond_announcement_reparse', label: '可转债旧公告重新解析', manualOnly: true, requiresDataWatermark: false, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: '已入库官方公告 PDF 与本地解析器' },
-  { jobCode: 'market_volatility_sync', label: '股市波动指标', hour: 18, minute: 45, weekdays: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: false, freshnessMaxLagDays: 45, sourceDescription: '中债、中证指数、恒生指数及美国十年期国债收益率替代基准；按子数据集分别校验新鲜度', mayConsumeQuota: true, externalSources: ['tushare', '中债', '中证指数', '恒生指数'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'market_volatility_sync', label: '股市波动指标', hour: 18, minute: 45, weekdays: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: false, freshnessMaxLagDays: 45, sourceDescription: '中债、中证指数、恒生指数及美国十年期国债收益率替代基准；按子数据集分别校验新鲜度', mayConsumeQuota: true, externalSources: ['tushare', '中债', '中证指数', '恒生指数'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3, slotExternalCallsLimit: 300 },
   { jobCode: 'convertible_bond_valuation_refresh', label: '可转债估值预警', hour: 8, minute: 15, weekdays: true, afterTradingDay: true, deadlineMinutes: 360, dataDatePolicy: 'previous_trading_day',
     dependencyCodes: ['convertible_bond_universe_refresh'], freshnessGate: true, retryPolicy: 'local' },
   { jobCode: 'ipo_history_sync', label: 'IPO事实同步', hour: 18, minute: 0, weekdays: true, additionalSchedules: [{ hour: 19, minute: 30, mode: 'core', freshnessGate: false }, { hour: 19, minute: 35, mode: 'enrichment' }], catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, strictDatasetPublication: true, deadlineMinutes: 240, sourceDescription: 'Tushare新股基础事实；发行资料补全按上交所/深交所/北交所官方招股书优先、巨潮兜底、Tushare最后回退', mayConsumeQuota: true, externalSources: ['tushare', 'tencent', '上交所', '深交所', '北交所', '巨潮资讯'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
@@ -80,13 +80,14 @@ const JOB_CONTRACTS = {
   'index_recent': { externalApis: ['index_daily'], producesDatasets: ['index_daily'], consumesDatasets: [], maxExternalCallsPerRun: 10, dailyBudget: 2 },
   'ipo_calendar_refresh': { externalApis: [], producesDatasets: ['ipo_calendar'], consumesDatasets: ['ipo_history', 'trade_calendar', 'bond_issuance_events'], maxExternalCallsPerRun: 0 },
   // 主同步还包含 90 天周期补漏、评级/发行结果补齐和正股行情补漏；生产历史峰值 281 次，600 为单批止损边界。
-  'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 7 },
+  'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d', 'tencent_quote'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 7 },
   'convertible_bond_revision_motive_inputs_sync': { externalApis: ['top10_cb_holders', 'pledge_stat'], producesDatasets: ['bond_motive_inputs'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 10 },
   'convertible_bond_revision_motive_calculate': { externalApis: [], producesDatasets: ['bond_motive_scores'], consumesDatasets: ['bond_motive_inputs', 'bond_daily'], maxExternalCallsPerRun: 0 },
   // 交易所批量公告及官方 PDF 解析会产生多次请求；600 覆盖适配器边界，交易所来源不再设置分钟/日内部预算。
   'convertible_bond_announcement_history_sync': { externalApis: ['cb_issue', 'sse', 'szse', 'cninfo'], producesDatasets: ['bond_announcement_facts', 'bond_issuance_events', 'bond_redemption_events'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: 600, dailyBudget: 6 },
   'convertible_bond_announcement_reparse': { externalApis: [], producesDatasets: ['bond_announcement_facts', 'bond_redemption_events'], consumesDatasets: ['bond_announcement_documents'], maxExternalCallsPerRun: 0 },
-  'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: 6 },
+  // 市场波动指标不设内部单批外部调用数上限；仍受来源级额度/熔断、并发和任务超时保护。
+  'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: null, slotExternalCallsLimit: 300 },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },
   // 不限制业务候选条数；600 仅是异常循环止损线，真实请求仍受来源/接口 Guard 保护并可跨批续跑。
   'ipo_history_sync': { externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'sse', 'szse', 'bse', 'cninfo', 'stock_company'], producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 25, modeExternalCallLimits: { core: 600, enrichment: 600 } },
@@ -99,7 +100,7 @@ const JOB_CONTRACTS = {
   'hk_ipo_enrichment': { externalApis: ['hkex_official_documents', 'hkex_cancellation_announcements', 'hkex_history_report', 'hk_daily', 'livermore_hk_ipo_history', 'vbkr_hk_ipo_current', 'futu_hk_ipo_page', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_cancellation_notice', 'hk_ipo_grey_market_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: 29 },
   // 港交所/交易所公告适配器按接口总数、短页和重复页翻页；600 次仅是任务级异常止损，
   // 不是公告条数或页数上限，来源级 Guard 仍负责真实上游异常和并发保护。
-  'arbitrage_sync': { externalApis: ['hkex', 'sse', 'szse'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 4 },
+  'arbitrage_sync': { externalApis: ['hkex', 'sse', 'szse', 'cninfo'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: 600, dailyBudget: 4 },
   // 重解析需要从已入库的巨潮/港交所官方 PDF 链接重新下载正文，再交给本地解析器。
   // 600 次覆盖批量案件的 PDF 下载边界，来源级 Guard 仍负责更细的预算与并发保护。
   'arbitrage_reparse': { externalApis: ['cninfo', 'hkex'], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: 600 },
@@ -123,16 +124,18 @@ function externalCallLimitForMode(definition, mode = 'core') {
   const limits = definition && definition.modeExternalCallLimits || {};
   const value = Object.prototype.hasOwnProperty.call(limits, mode)
     ? limits[mode] : definition && definition.maxExternalCallsPerRun;
+  // null 表示不设置本任务级单批上限；来源级额度、熔断、并发和任务超时仍然有效。
+  if (value === null) return null;
   return Math.max(Number(value) || 0, 0);
 }
 
 function declaredDailyExternalCallBudget(definition) {
-  if (!definition || definition.manualOnly) return externalCallLimitForMode(definition);
+  if (!definition || definition.manualOnly) return externalCallLimitForMode(definition) || 0;
   if (Number.isFinite(Number(definition.dailyBudget)) && Number(definition.dailyBudget) >= 0) {
     return Number(definition.dailyBudget);
   }
   const schedules = [{ mode: 'core' }, ...(definition.additionalSchedules || [])];
-  return schedules.reduce((sum, schedule) => sum + externalCallLimitForMode(definition, schedule.mode || 'core'), 0);
+  return schedules.reduce((sum, schedule) => sum + (externalCallLimitForMode(definition, schedule.mode || 'core') || 0), 0);
 }
 
 module.exports = { JOB_DEFINITIONS, getJobDefinition, externalCallLimitForMode, declaredDailyExternalCallBudget };

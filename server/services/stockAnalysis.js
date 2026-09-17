@@ -324,16 +324,21 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '', opt
   const searchBody = new URLSearchParams({ keyWord: code, maxNum: '10' }).toString();
   const matches = await requestJson('https://www.cninfo.com.cn/new/information/topSearch/query', { method: 'POST', headers, body: searchBody });
   const stock = (Array.isArray(matches) ? matches : [matches]).find(item => item && String(item.code) === code);
-  if (!stock || !stock.orgId) return [];
+  if (!stock || !stock.orgId) return options.structured
+    ? { events: [], complete: true, fetched: 0, diagnostics: { reason: 'org_id_not_found' } } : [];
   const events = [];
   const pageSize = 100;
   const seenPageSignatures = new Set();
+  let complete = true;
+  let pageCount = 0;
+  let totalCount = null;
   let page = 1;
   while (true) {
     const body = new URLSearchParams({ pageNum: String(page), pageSize: String(pageSize), stock: `${code},${stock.orgId}`, searchkey: searchKey,
       tabName: 'fulltext', column: 'szse', plate: stockExchange(tsCode).toLowerCase(),
       seDate: `${isoDate(startDate)}~${isoDate(endDate)}` }).toString();
     const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
+    pageCount += 1;
     const rows = payload.announcements || [];
     for (const row of rows) {
       const eventDate = row.announcementTime ? tsDateStr(new Date(Number(row.announcementTime))) : dateText(row.announcementDate);
@@ -342,18 +347,29 @@ async function fetchCninfoEvents(tsCode, startDate, endDate, searchKey = '', opt
       events.push({ source: 'cninfo', source_number: officialAnnouncementNumber(row), stock_code: announcementStockCode(row, stockExchange(tsCode)), event_date: eventDate, title, url, category: eventCategory(title), is_official: true, raw: row });
     }
     const signature = rows.map(row => String(row.announcementId || row.adjunctUrl || row.announcementTitle || '')).join('|');
-    if (signature && seenPageSignatures.has(signature)) break;
+    if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
     const total = Number(payload.totalAnnouncement || payload.totalRecordNum);
+    totalCount = Number.isFinite(total) ? total : totalCount;
     if (!rows.length || payload.hasMore === false || (payload.hasMore == null && rows.length < pageSize)
-      || (Number.isFinite(total) && total > 0 && events.length >= total)) break;
+      || (Number.isFinite(total) && total > 0 && events.length >= total)) {
+      if (payload.hasMore === true || (Number.isFinite(total) && total > events.length)) complete = false;
+      break;
+    }
     page += 1;
   }
   if (searchKey && !events.length && options.allowBroadFallback !== false) {
-    const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '', options);
-    return allEvents.filter(event => String(event.title || '').includes(searchKey));
+    const allEvents = await fetchCninfoEvents(tsCode, startDate, endDate, '', { ...options, allowBroadFallback: false });
+    const all = options.structured ? allEvents.events : allEvents;
+    const filtered = all.filter(event => String(event.title || '').includes(searchKey));
+    return options.structured
+      ? { events: filtered, complete: allEvents.complete, fetched: allEvents.fetched, diagnostics: { ...allEvents.diagnostics, broad_fallback: true } }
+      : filtered;
   }
-  return [...new Map(events.map(event => [`${event.source}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event])).values()];
+  const unique = [...new Map(events.map(event => [`${event.source}:${event.source_number || event.url || `${event.event_date}:${event.title}`}`, event])).values()];
+  return options.structured
+    ? { events: unique, complete, fetched: events.length, diagnostics: { pages: pageCount, total: totalCount } }
+    : unique;
 }
 
 async function fetchCninfoEventsByYear(tsCode, startDate, endDate, searchKey, options = {}) {
@@ -391,9 +407,11 @@ async function fetchSseLatestReport(tsCode) {
     url: `https://big5.sse.com.cn/site/cht/www.sse.com.cn${report.URL}`, category: '定期报告', is_official: true, raw: report };
 }
 
-async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
-  if (!String(tsCode || '').endsWith('.SH')) return [];
+async function fetchSseEvents(tsCode, startDate, endDate, keyword = '', options = {}) {
+  if (!String(tsCode || '').endsWith('.SH')) return options.structured ? { events: [], complete: true, fetched: 0, diagnostics: {} } : [];
   const pageSize = 100, rows = [], seenPageSignatures = new Set();
+  let complete = true;
+  let pageCount = 0;
   let pageNo = 1;
   while (true) {
     const params = new URLSearchParams({ isPagination: 'true', productId: tsCode.slice(0, 6), keyWord: keyword,
@@ -402,24 +420,31 @@ async function fetchSseEvents(tsCode, startDate, endDate, keyword = '') {
       'pageHelp.beginPage': String(pageNo), 'pageHelp.endPage': String(pageNo) });
     const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
       { headers: { Referer: 'https://www.sse.com.cn/' } });
+    pageCount += 1;
     const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
     rows.push(...pageRows);
     const signature = pageRows.map(row => String(row.INFO_CODE || row.URL || row.TITLE || '')).join('|');
-    if (signature && seenPageSignatures.has(signature)) break;
+    if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
     const total = Number(payload && payload.pageHelp && (payload.pageHelp.total || payload.pageHelp.totalRecordNum));
-    if (!pageRows.length || pageRows.length < pageSize || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    if (!pageRows.length || pageRows.length < pageSize || (Number.isFinite(total) && total > 0 && rows.length >= total)) {
+      if (Number.isFinite(total) && total > rows.length) complete = false;
+      break;
+    }
     pageNo += 1;
   }
   const start = isoDate(startDate), end = isoDate(endDate);
-  return rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(mapSseAnnouncement);
+  const events = rows.filter(row => row.URL && (!start || row.SSEDATE >= start) && (!end || row.SSEDATE <= end)).map(mapSseAnnouncement);
+  return options.structured ? { events: dedupeAnnouncementEvents(events), complete, fetched: rows.length, diagnostics: { pages: pageCount } } : events;
 }
 
-async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
-  if (!String(tsCode || '').endsWith('.SZ')) return [];
+async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '', options = {}) {
+  if (!String(tsCode || '').endsWith('.SZ')) return options.structured ? { events: [], complete: true, fetched: 0, diagnostics: {} } : [];
   const pageSize = 100;
   const rows = [];
   const seenPageSignatures = new Set();
+  let complete = true;
+  let pageCount = 0;
   let pageNum = 1;
   while (true) {
     const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [tsCode.slice(0, 6)],
@@ -427,17 +452,22 @@ async function fetchSzseEvents(tsCode, startDate, endDate, keyword = '') {
     const payload = await requestJson('https://www.szse.cn/api/disc/announcement/annList?random=0.1', { method: 'POST',
       headers: { 'Content-Type': 'application/json', Referer: 'https://www.szse.cn/disclosure/listed/notice/index.html',
         'X-Requested-With': 'XMLHttpRequest' }, body });
+    pageCount += 1;
     const pageRows = Array.isArray(payload.data) ? payload.data : [];
     rows.push(...pageRows);
     const signature = pageRows.map(row => String(row.announcementId || row.id || row.attachPath || row.title || '')).join('|');
-    if (signature && seenPageSignatures.has(signature)) break;
+    if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
     const announceCount = Number(payload.announceCount);
     if (!pageRows.length || (Number.isFinite(announceCount) && announceCount > 0 && rows.length >= announceCount)
-      || (!Number.isFinite(announceCount) && pageRows.length < pageSize)) break;
+      || (!Number.isFinite(announceCount) && pageRows.length < pageSize)) {
+      if (Number.isFinite(announceCount) && announceCount > rows.length) complete = false;
+      break;
+    }
     pageNum += 1;
   }
-  return rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
+  const events = rows.filter(row => row.attachPath && (!keyword || String(row.title || '').includes(keyword))).map(mapSzseAnnouncement);
+  return options.structured ? { events: dedupeAnnouncementEvents(events), complete, fetched: rows.length, diagnostics: { pages: pageCount } } : events;
 }
 
 // 交易所公告支持按市场/日期批量查询。分页由接口总数、短页或重复页结束；
@@ -446,6 +476,7 @@ async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
   const pageSize = 100, rows = [], seenPageSignatures = new Set();
   let complete = true;
   let pageNo = 1;
+  let observedPageSize = null;
   while (true) {
     const params = new URLSearchParams({ isPagination: 'true', productId: '', keyWord: keyword,
       securityType: '0101,120100,020100,020200,120200', beginDate: isoDate(startDate), endDate: isoDate(endDate),
@@ -455,11 +486,22 @@ async function fetchSseEventsBatch(startDate, endDate, keyword = '') {
       { headers: { Referer: 'https://www.sse.com.cn/' } });
     const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
     rows.push(...pageRows);
+    if (pageRows.length && observedPageSize === null) observedPageSize = pageRows.length;
     const signature = pageRows.map(row => String(row.INFO_CODE || row.URL || row.TITLE || '')).join('|');
     if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
     const total = Number(payload && payload.pageHelp && (payload.pageHelp.total || payload.pageHelp.totalRecordNum));
-    if (!pageRows.length || pageRows.length < pageSize || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    if (Number.isFinite(total) && total > 0 && rows.length >= total) break;
+    if (!pageRows.length) {
+      if (Number.isFinite(total) && total > rows.length) complete = false;
+      break;
+    }
+    if (observedPageSize !== null && pageRows.length < observedPageSize) {
+      // 不同交易所可能忽略请求的 pageSize（深交所实测每页固定50条）；
+      // 只有相对接口实际页面容量变短、且 total 仍表示还有数据时才判为不完整。
+      if (Number.isFinite(total) && total > rows.length) complete = false;
+      break;
+    }
     pageNo += 1;
   }
   return { events: dedupeAnnouncementEvents(rows.filter(row => row.URL).map(mapSseAnnouncement)), complete, fetched: rows.length };
@@ -471,6 +513,7 @@ async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
   const pageSize = 100, rows = [], seenPageSignatures = new Set();
   let complete = true;
   let pageNum = 1;
+  let observedPageSize = null;
   while (true) {
     const body = JSON.stringify({ seDate: [isoDate(startDate), isoDate(endDate)], stock: [],
       channelCode: ['listedNotice_disc'], pageSize, pageNum });
@@ -479,12 +522,21 @@ async function fetchSzseEventsBatch(startDate, endDate, keyword = '') {
         'X-Requested-With': 'XMLHttpRequest' }, body });
     const pageRows = Array.isArray(payload.data) ? payload.data : [];
     rows.push(...pageRows);
+    if (pageRows.length && observedPageSize === null) observedPageSize = pageRows.length;
     const announceCount = Number(payload.announceCount);
     const signature = pageRows.map(row => String(row.announcementId || row.id || row.attachPath || row.title || '')).join('|');
     if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
-    if (!pageRows.length) break;
+    if (!pageRows.length) {
+      if (Number.isFinite(announceCount) && announceCount > rows.length) complete = false;
+      break;
+    }
     if (Number.isFinite(announceCount) && announceCount > 0 && rows.length >= announceCount) break;
+    if (Number.isFinite(announceCount) && announceCount > rows.length
+      && observedPageSize !== null && pageRows.length < observedPageSize) {
+      complete = false;
+      break;
+    }
     if (!Number.isFinite(announceCount) && pageRows.length < pageSize) break;
     pageNum += 1;
   }
@@ -497,6 +549,7 @@ async function fetchCninfoEventsBatch(startDate, endDate, market, searchKey = ''
   const pageSize = 100, rows = [], seenPageSignatures = new Set();
   let complete = true;
   let pageNum = 1;
+  let observedPageSize = null;
   while (true) {
     const body = new URLSearchParams({ pageNum: String(pageNum), pageSize: String(pageSize), stock: '', searchkey: searchKey,
       tabName: 'fulltext', column: market === 'SH' ? 'sse' : 'szse', plate: market === 'SH' ? 'sh' : 'sz',
@@ -504,13 +557,20 @@ async function fetchCninfoEventsBatch(startDate, endDate, market, searchKey = ''
     const payload = await requestJson('https://www.cninfo.com.cn/new/hisAnnouncement/query', { method: 'POST', headers, body });
     const pageRows = Array.isArray(payload.announcements) ? payload.announcements : [];
     rows.push(...pageRows);
+    if (pageRows.length && observedPageSize === null) observedPageSize = pageRows.length;
     const signature = pageRows.map(row => String(row.announcementId || row.adjunctUrl || row.announcementTitle || '')).join('|');
     if (signature && seenPageSignatures.has(signature)) { complete = false; break; }
     if (signature) seenPageSignatures.add(signature);
     const total = Number(payload.totalAnnouncement || payload.totalRecordNum);
-    if (payload.hasMore === false || !pageRows.length || pageRows.length < pageSize
-      || (payload.hasMore == null && pageRows.length < pageSize)
-      || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    if (payload.hasMore === false || (Number.isFinite(total) && total > 0 && rows.length >= total)) break;
+    if (!pageRows.length) {
+      if (payload.hasMore === true || (Number.isFinite(total) && total > rows.length)) complete = false;
+      break;
+    }
+    if (observedPageSize !== null && pageRows.length < observedPageSize) {
+      if (payload.hasMore === true || (Number.isFinite(total) && total > rows.length)) complete = false;
+      break;
+    }
     pageNum += 1;
   }
   const events = rows.map(row => {

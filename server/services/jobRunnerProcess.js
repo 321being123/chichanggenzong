@@ -26,7 +26,7 @@ process.on('message', async message => {
       throw error;
     }
     if (message.businessDate) process.env.JOB_BUSINESS_DATE = String(message.businessDate).slice(0, 10);
-    // 任务契约中的 maxExternalCallsPerRun 必须在运行时生效；0 表示该任务禁止任何外部请求。
+    // 任务契约中的 maxExternalCallsPerRun 必须在运行时生效；0 表示禁止外部请求，null 表示不设本任务级上限。
     const definition = getJobDefinition(message.jobCode);
     const mode = String(message.context && message.context.mode || 'core');
     // 每次续批从 0 统计本次请求；槽位累计量单独传入，避免跨批把单次上限误当总量。
@@ -35,8 +35,14 @@ process.on('message', async message => {
       message.context && message.context.slotExternalCallsTotal,
       message.context && message.context.slotExternalCallsLimit
     );
-    process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
-    process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimitForMode(definition, mode));
+    const externalCallLimit = externalCallLimitForMode(definition, mode);
+    if (externalCallLimit === null) {
+      delete process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE;
+      delete process.env.JOB_EXTERNAL_CALL_LIMIT;
+    } else {
+      process.env.JOB_EXTERNAL_CALL_LIMIT_ACTIVE = '1';
+      process.env.JOB_EXTERNAL_CALL_LIMIT = String(externalCallLimit);
+    }
     process.env.JOB_SLOT_EXTERNAL_CALL_USED = String(Number(message.context && message.context.slotExternalCallsTotal || 0));
     process.env.JOB_SLOT_EXTERNAL_CALL_LIMIT = String(Number(message.context && message.context.slotExternalCallsLimit || 0));
     const result = await runJobByCode(message.jobCode, message.reason, message.businessDate, message.context || {});

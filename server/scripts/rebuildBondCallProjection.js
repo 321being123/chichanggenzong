@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const { pool } = require('../db/connection');
+const { tushareQuery, tsRows } = require('../services/market');
 const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
 const { retryJobSlot } = require('../services/jobScheduleSlots');
 const { collectConvertibleBondAnnouncementMarket } = require('../services/convertibleBondAnalysis');
@@ -15,6 +16,10 @@ const {
 
 const DATASET_CODE = 'bond_redemption_events';
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
+const HISTORICAL_IDENTITY_FIELDS = [
+  'ts_code', 'bond_short_name', 'stk_code', 'list_date', 'delist_date', 'maturity_date',
+  'conv_end_date', 'conv_stop_date',
+].join(',');
 
 function arg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -39,6 +44,48 @@ function eventKey(item) {
 
 function hasExplicitConvertibleEvidence(item) {
   return /(?:可转债|可转换公司债券|转债|转股|债券代码)/.test(String(item && item.title || ''));
+}
+
+function normalizedText(value) {
+  return String(value || '').normalize('NFKC').replace(/[“”‘’「」『』\s]/g, '');
+}
+
+function compactDate(value) {
+  const text = String(value || '').replace(/\D/g, '');
+  return /^20\d{6}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6)}` : isoDate(value);
+}
+
+function addCalendarDays(value, days) {
+  const date = compactDate(value);
+  if (!date) return null;
+  const parsed = new Date(`${date}T12:00:00+08:00`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function identityActiveForAnnouncement(row, eventDate) {
+  const announced = compactDate(eventDate);
+  const listed = compactDate(row.list_date);
+  const delistedGraceEnd = addCalendarDays(row.delist_date, 45);
+  return Boolean(announced && (!listed || listed <= announced) && (!delistedGraceEnd || announced <= delistedGraceEnd));
+}
+
+function pickAuthoritativeIdentity(event, candidates) {
+  const title = normalizedText(event && event.title);
+  const rows = Array.isArray(candidates) ? candidates : [];
+  const codeMatches = rows.filter(row => {
+    const code = String(row.ts_code || '').split('.')[0];
+    return code && title.includes(code);
+  });
+  if (codeMatches.length === 1) return codeMatches[0];
+  const nameMatches = rows.filter(row => {
+    const name = normalizedText(row.bond_short_name);
+    return name && title.includes(name);
+  });
+  const activeNameMatches = nameMatches.filter(row => identityActiveForAnnouncement(row, event && event.event_date));
+  if (activeNameMatches.length === 1) return activeNameMatches[0];
+  if (nameMatches.length === 1) return nameMatches[0];
+  return null;
 }
 
 async function instrumentHints(events) {
@@ -71,6 +118,80 @@ async function instrumentHints(events) {
     const instrumentId = pickInstrument({ title: event.title || '' }, candidates);
     return instrumentId ? { ...event, instrument_id: instrumentId } : event;
   });
+}
+
+async function historicalIdentityHints(events) {
+  if (!events.length) return { events: [], repairs: [] };
+  const authoritative = tsRows(await tushareQuery('cb_basic', {}, HISTORICAL_IDENTITY_FIELDS));
+  if (!authoritative.length) throw new Error('Tushare cb_basic 历史证券身份快照为空');
+  const { rows: identities } = await pool.query(`
+    SELECT i.instrument_id,i.canonical_code,x.identifier_value AS tushare_code
+      FROM core.instruments i
+      LEFT JOIN ops.data_sources s ON s.source_code='tushare'
+      LEFT JOIN core.instrument_identifiers x ON x.instrument_id=i.instrument_id
+        AND x.source_id=s.source_id AND x.identifier_type='ts_code'
+     WHERE i.asset_class='convertible_bond'`);
+  const byCode = new Map();
+  for (const row of identities) {
+    byCode.set(String(row.canonical_code || '').toUpperCase(), row);
+    if (row.tushare_code) byCode.set(String(row.tushare_code).toUpperCase(), row);
+  }
+  const byStock = new Map();
+  for (const row of authoritative) {
+    const stockCode = String(row.stk_code || '').slice(0, 6);
+    if (!stockCode) continue;
+    if (!byStock.has(stockCode)) byStock.set(stockCode, []);
+    byStock.get(stockCode).push(row);
+  }
+  const repairs = new Map();
+  const hinted = events.map(event => {
+    const stockCode = String(event.stock_code || '').slice(0, 6);
+    const authoritativeRow = pickAuthoritativeIdentity(event, byStock.get(stockCode) || []);
+    const identity = authoritativeRow && byCode.get(String(authoritativeRow.ts_code || '').toUpperCase());
+    if (!identity) return event;
+    const repair = { ...authoritativeRow, instrument_id: identity.instrument_id, canonical_code: identity.canonical_code };
+    const existing = repairs.get(String(identity.instrument_id));
+    if (existing && String(existing.ts_code) !== String(repair.ts_code)) {
+      throw new Error(`历史证券身份冲突：instrument_id=${identity.instrument_id}`);
+    }
+    repairs.set(String(identity.instrument_id), repair);
+    return { ...event, instrument_id: identity.instrument_id };
+  });
+  return { events: hinted, repairs: [...repairs.values()] };
+}
+
+async function applyHistoricalIdentityRepairs(client, repairs, asOfDate) {
+  if (!repairs.length) return 0;
+  const source = await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'");
+  if (!source.rows[0]) throw new Error('生产库缺少 Tushare 数据源');
+  for (const row of repairs) {
+    const listDate = compactDate(row.list_date);
+    const delistDate = compactDate(row.delist_date);
+    const status = delistDate && delistDate <= asOfDate ? 'delisted' : 'listed';
+    await client.query(
+      `UPDATE core.instruments
+          SET name=$2,list_date=COALESCE($3::date,list_date),delist_date=COALESCE($4::date,delist_date),
+              status=$5,updated_at=now()
+        WHERE instrument_id=$1 AND asset_class='convertible_bond'`,
+      [row.instrument_id, row.bond_short_name, listDate, delistDate, status]
+    );
+    await client.query(
+      `UPDATE fundamental.convertible_bond_profiles
+          SET bond_short_name=$2,list_date=COALESCE($3::date,list_date),maturity_date=COALESCE($4::date,maturity_date),
+              conv_end_date=COALESCE($5::date,conv_end_date),conv_stop_date=COALESCE($6::date,conv_stop_date),
+              raw_payload=COALESCE(raw_payload,'{}'::jsonb) || jsonb_build_object('cb_basic_identity',$7::jsonb),updated_at=now()
+        WHERE instrument_id=$1`,
+      [row.instrument_id, row.bond_short_name, listDate, compactDate(row.maturity_date),
+        compactDate(row.conv_end_date), compactDate(row.conv_stop_date), JSON.stringify(row)]
+    );
+    await client.query(
+      `INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)
+       VALUES($1,$2,'ts_code',$3,COALESCE($4::date,'0001-01-01'::date))
+       ON CONFLICT(source_id,identifier_type,identifier_value,valid_from) DO NOTHING`,
+      [row.instrument_id, source.rows[0].source_id, row.ts_code, listDate]
+    );
+  }
+  return repairs.length;
 }
 
 async function collectOfficialWindow(fromDate, toDate) {
@@ -152,9 +273,18 @@ async function rebuild() {
     ...await collectOfficialWindow(shiftDate(baselineTo, 1), toDate),
   ];
   const official = [...new Map(officialRaw.map(item => [eventKey(item), item])).values()];
-  const hintedCandidates = await instrumentHints(official.filter(item => classifyCallEvent(item.title)));
-  const unmatchedHints = hintedCandidates.filter(item => !item.instrument_id);
-  const requiredUnmatched = unmatchedHints.filter(hasExplicitConvertibleEvidence);
+  let hintedCandidates = await instrumentHints(official.filter(item => classifyCallEvent(item.title)));
+  let unmatchedHints = hintedCandidates.filter(item => !item.instrument_id);
+  let requiredUnmatched = unmatchedHints.filter(hasExplicitConvertibleEvidence);
+  let identityRepairs = [];
+  if (requiredUnmatched.length) {
+    const governed = await historicalIdentityHints(requiredUnmatched);
+    const governedByKey = new Map(governed.events.map(item => [eventKey(item), item]));
+    hintedCandidates = hintedCandidates.map(item => governedByKey.get(eventKey(item)) || item);
+    identityRepairs = governed.repairs;
+    unmatchedHints = hintedCandidates.filter(item => !item.instrument_id);
+    requiredUnmatched = unmatchedHints.filter(hasExplicitConvertibleEvidence);
+  }
   if (requiredUnmatched.length) {
     const samples = requiredUnmatched.slice(0, 8).map(item => `${item.stock_code || '-'}:${item.title || '-'}`);
     throw new Error(`交易所可转债公告存在 ${requiredUnmatched.length} 条证券无法唯一匹配，已停止重建：${samples.join('；')}`);
@@ -192,6 +322,7 @@ async function rebuild() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const historicalIdentityRepairCount = await applyHistoricalIdentityRepairs(client, identityRepairs, toDate);
     await importBaseline(client, baseline.events, sourceId);
     const targetKeys = [...new Set([...baseline.events.map(row => row.source_key), ...officialKeys])];
     const removed = await client.query(
@@ -241,6 +372,7 @@ async function rebuild() {
         projection_advanced: true,
         baseline_count: baseline.events.length,
         official_count: officialKeys.length,
+        historical_identity_repair_count: historicalIdentityRepairCount,
         ignored_non_convertible_count: ignoredNonConvertibleCount,
         removed_superseded_count: removed.rowCount,
       },
@@ -266,6 +398,7 @@ async function rebuild() {
       toDate,
       baselineCount: baseline.events.length,
       officialCount: officialKeys.length,
+      historicalIdentityRepairCount,
       ignoredNonConvertibleCount,
       targetCount: targetKeys.length,
       removedSupersededCount: removed.rowCount,
@@ -279,7 +412,11 @@ async function rebuild() {
   }
 }
 
-rebuild()
-  .then(result => console.log(`REBUILD_RESULT ${JSON.stringify(result)}`))
-  .catch(error => { console.error(`REBUILD_FAILED ${error.stack || error}`); process.exitCode = 1; })
-  .finally(() => pool.end().catch(() => {}));
+if (require.main === module) {
+  rebuild()
+    .then(result => console.log(`REBUILD_RESULT ${JSON.stringify(result)}`))
+    .catch(error => { console.error(`REBUILD_FAILED ${error.stack || error}`); process.exitCode = 1; })
+    .finally(() => pool.end().catch(() => {}));
+}
+
+module.exports = { compactDate, identityActiveForAnnouncement, pickAuthoritativeIdentity };

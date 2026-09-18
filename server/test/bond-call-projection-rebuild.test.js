@@ -73,6 +73,25 @@ assert.strictEqual(
   '123238.SZ'
 );
 
+const unlistedPrivatePlacementCandidates = [
+  { ts_code: '124022.SZ', bond_short_name: '楚天定转', stk_code: '300358.SZ', list_date: null, delist_date: null },
+  { ts_code: '123240.SZ', bond_short_name: '楚天转债', stk_code: '300358.SZ', list_date: '20240229', delist_date: '20251230' },
+];
+assert.strictEqual(
+  pickAuthoritativeIdentity(
+    { title: '楚天科技:关于预计触发可转债转股价格向下修正条件的提示性公告', event_date: '2024-09-06' },
+    unlistedPrivatePlacementCandidates
+  ).ts_code,
+  '123240.SZ'
+);
+assert.strictEqual(
+  pickAuthoritativeIdentity(
+    { title: '关于楚天定转转股事项的公告', event_date: '2024-09-06' },
+    unlistedPrivatePlacementCandidates
+  ).ts_code,
+  '124022.SZ'
+);
+
 const auxiliaryKeys = duplicatedAuxiliaryKeys([
   { source_number: 'issuer', instrument_id: 1, event_date: '2024-09-25', title: '关于不提前赎回天路转债的公告' },
   { source_number: 'review', instrument_id: 1, event_date: '2024-09-25', title: '关于不提前赎回天路转债的核查意见' },

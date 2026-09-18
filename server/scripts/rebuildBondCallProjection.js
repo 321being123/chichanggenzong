@@ -108,6 +108,8 @@ function pickAuthoritativeIdentity(event, candidates) {
   if (activeNameMatches.length === 1) return activeNameMatches[0];
   if (nameMatches.length === 1) return nameMatches[0];
   const activeMatches = rows.filter(row => identityActiveForAnnouncement(row, event && event.event_date));
+  const listedActiveMatches = activeMatches.filter(row => compactDate(row.list_date));
+  if (listedActiveMatches.length === 1) return listedActiveMatches[0];
   if (activeMatches.length === 1) return activeMatches[0];
   return null;
 }

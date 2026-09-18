@@ -24,6 +24,7 @@ assert.strictEqual(classifyCallEvent('南方航空关于“南航转债”到期
 assert.strictEqual(classifyCallEvent('洽洽食品关于“洽洽转债”即将到期及停止交易的提示性公告'), 'implementation');
 assert.strictEqual(classifyCallEvent('关于使用部分闲置自有资金进行现金管理到期赎回的公告'), null);
 assert.strictEqual(classifyCallEvent('关于预计触发可转债赎回条件的提示性公告'), 'warning');
+assert.strictEqual(classifyCallEvent('楚天科技:关于预计触发可转债转股价格向下修正条件的提示性公告'), null);
 assert.strictEqual(classifyCallEvent('关于可转债到期兑付结果暨股份变动的公告'), 'completion');
 assert.strictEqual(eventParseComplete('completion', { decisionDate: '2026-09-01' }), true);
 assert.strictEqual(pickInstrument({ title: '关于转债的公告' }, [

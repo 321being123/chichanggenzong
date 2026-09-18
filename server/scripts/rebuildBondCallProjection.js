@@ -1,11 +1,13 @@
 require('dotenv').config();
 
 const fs = require('fs');
+const path = require('path');
 const { pool } = require('../db/connection');
 const { tushareQuery, tsRows } = require('../services/market');
 const { publishDatasetSnapshot } = require('../services/datasetPartitionRegistry');
 const { retryJobSlot } = require('../services/jobScheduleSlots');
-const { collectConvertibleBondAnnouncementMarket } = require('../services/convertibleBondAnalysis');
+const { relevantConvertibleBondAnnouncements } = require('../services/convertibleBondAnalysis');
+const { fetchSseEvents, fetchSzseEvents } = require('../services/stockAnalysis');
 const {
   PARSER_VERSION,
   PROJECTION_SCOPE,
@@ -16,6 +18,8 @@ const {
 
 const DATASET_CODE = 'bond_redemption_events';
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
+const OFFICIAL_CHECKPOINT_VERSION = 1;
+const OFFICIAL_CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
 const HISTORICAL_IDENTITY_FIELDS = [
   'ts_code', 'bond_short_name', 'stk_code', 'list_date', 'delist_date', 'maturity_date',
   'conv_start_date', 'conv_end_date', 'conv_stop_date',
@@ -40,6 +44,37 @@ function shiftDate(value, days) {
 
 function eventKey(item) {
   return item.source_number || item.url || `${item.event_date || ''}:${item.stock_code || ''}:${item.title || ''}`;
+}
+
+function officialCheckpointPath(market, fromDate, toDate, root = path.join(process.cwd(), 'data', 'rebuild-cache')) {
+  return path.join(root, `bond-call-official-${market}-${fromDate}-${toDate}-v${OFFICIAL_CHECKPOINT_VERSION}.json`);
+}
+
+function readOfficialCheckpoint(filePath, market, fromDate, toDate) {
+  try {
+    const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (payload.schemaVersion !== OFFICIAL_CHECKPOINT_VERSION || payload.market !== market
+        || payload.fromDate !== fromDate || payload.toDate !== toDate
+        || !payload.savedAt || Date.now() - new Date(payload.savedAt).getTime() > OFFICIAL_CHECKPOINT_TTL_MS
+        || !payload.byCode || typeof payload.byCode !== 'object' || Array.isArray(payload.byCode)) return {};
+    return payload.byCode;
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeOfficialCheckpoint(filePath, market, fromDate, toDate, byCode) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify({
+    schemaVersion: OFFICIAL_CHECKPOINT_VERSION,
+    market,
+    fromDate,
+    toDate,
+    savedAt: new Date().toISOString(),
+    byCode,
+  }));
+  fs.renameSync(tempPath, filePath);
 }
 
 function hasExplicitConvertibleEvidence(item) {
@@ -221,17 +256,72 @@ async function applyHistoricalIdentityRepairs(client, repairs, asOfDate) {
   return repairs.length;
 }
 
+async function convertibleStockCodes(market, fromDate, toDate) {
+  const suffix = market === 'SH' ? '.SH' : '.SZ';
+  const { rows } = await pool.query(`
+    SELECT DISTINCT s.canonical_code
+      FROM fundamental.convertible_bond_profiles p
+      JOIN core.instruments b ON b.instrument_id=p.instrument_id
+      JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+     WHERE s.canonical_code LIKE '%' || $1
+       AND (COALESCE(b.list_date,p.list_date) IS NULL OR COALESCE(b.list_date,p.list_date) <= $3::date)
+       AND (COALESCE(b.delist_date,p.conv_stop_date,p.maturity_date) IS NULL
+            OR COALESCE(b.delist_date,p.conv_stop_date,p.maturity_date) >= $2::date - INTERVAL '45 days')
+     ORDER BY s.canonical_code`,
+    [suffix, fromDate, toDate]
+  );
+  return rows.map(row => row.canonical_code);
+}
+
+async function fetchOfficialStock(market, stockCode, fromDate, toDate) {
+  const fetcher = market === 'SH' ? fetchSseEvents : fetchSzseEvents;
+  let lastFailure = '';
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    let retryDelayMs = 250;
+    try {
+      const result = await fetcher(stockCode, fromDate, toDate, '', { structured: true });
+      if (result && result.complete !== false) return result.events || [];
+      lastFailure = '分页未完整';
+    } catch (error) {
+      lastFailure = String(error && error.message || error).slice(0, 180);
+      if (error && error.code === 'BUDGET_WAIT' && error.budgetWindow === 'concurrency') {
+        const recoverDelay = error.recoverAt ? new Date(error.recoverAt).getTime() - Date.now() : 0;
+        retryDelayMs = Math.max(1000, Math.min(10000, recoverDelay + 250), attempt * 2000);
+      }
+      if (error && ['CIRCUIT_OPEN', 'AUTH_ERROR', 'PERMISSION_DENIED'].includes(error.code)) break;
+    }
+    if (attempt < 6) await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+  }
+  throw new Error(`${market}/${stockCode}:${lastFailure || '未返回完整结果'}`);
+}
+
+async function collectOfficialMarketWindow(market, fromDate, toDate) {
+  const stockCodes = await convertibleStockCodes(market, fromDate, toDate);
+  const checkpointFile = officialCheckpointPath(market, fromDate, toDate);
+  const byCode = readOfficialCheckpoint(checkpointFile, market, fromDate, toDate);
+  let fetched = 0;
+  for (const stockCode of stockCodes) {
+    if (Object.prototype.hasOwnProperty.call(byCode, stockCode)) continue;
+    byCode[stockCode] = await fetchOfficialStock(market, stockCode, fromDate, toDate);
+    writeOfficialCheckpoint(checkpointFile, market, fromDate, toDate, byCode);
+    fetched += 1;
+    if (fetched % 25 === 0) {
+      const completed = stockCodes.filter(code => Object.prototype.hasOwnProperty.call(byCode, code)).length;
+      console.error(`REBUILD_PROGRESS ${market} ${fromDate}~${toDate} fetched=${fetched} completed=${completed}/${stockCodes.length}`);
+    }
+  }
+  const events = stockCodes.flatMap(stockCode => byCode[stockCode] || []);
+  return relevantConvertibleBondAnnouncements(events);
+}
+
 async function collectOfficialWindow(fromDate, toDate) {
   if (!fromDate || !toDate || fromDate > toDate) return [];
-  const results = await Promise.all(['SH', 'SZ'].map(market =>
-    collectConvertibleBondAnnouncementMarket(market, fromDate, toDate, { allowFallback: false, guardRetryAttempts: 6 })
-      .then(result => ({ market, ...result }))
-  ));
-  const failures = results.filter(result => result.failed);
-  if (failures.length) {
-    throw new Error(`交易所历史公告未完整：${failures.map(item => `${item.market}:${item.messages.join('|')}`).join('; ')}`);
+  try {
+    const results = await Promise.all(['SH', 'SZ'].map(market => collectOfficialMarketWindow(market, fromDate, toDate)));
+    return results.flat();
+  } catch (error) {
+    throw new Error(`交易所历史公告未完整：${error && error.message || error}`);
   }
-  return results.flatMap(result => result.events || []);
 }
 
 async function importBaseline(client, rows, sourceId) {
@@ -450,4 +540,12 @@ if (require.main === module) {
     .finally(() => pool.end().catch(() => {}));
 }
 
-module.exports = { compactDate, identityActiveForAnnouncement, pickAuthoritativeIdentity, duplicatedAuxiliaryKeys };
+module.exports = {
+  compactDate,
+  identityActiveForAnnouncement,
+  pickAuthoritativeIdentity,
+  duplicatedAuxiliaryKeys,
+  officialCheckpointPath,
+  readOfficialCheckpoint,
+  writeOfficialCheckpoint,
+};

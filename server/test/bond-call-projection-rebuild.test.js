@@ -1,5 +1,6 @@
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
@@ -9,20 +10,28 @@ const analysis = read('server/services/convertibleBondAnalysis.js');
 const exporter = read('server/scripts/exportVerifiedBondCallFacts.js');
 const rebuild = read('server/scripts/rebuildBondCallProjection.js');
 const deploy = read('deploy/rebuild_bond_call_projection.py');
-const { pickAuthoritativeIdentity, duplicatedAuxiliaryKeys } = require('../scripts/rebuildBondCallProjection');
+const {
+  pickAuthoritativeIdentity,
+  duplicatedAuxiliaryKeys,
+  officialCheckpointPath,
+  readOfficialCheckpoint,
+  writeOfficialCheckpoint,
+} = require('../scripts/rebuildBondCallProjection');
 
 assert.match(analysis, /allowFallback = true/);
 assert.match(analysis, /if \(!allowFallback\)/);
 assert.match(analysis, /error\.budgetWindow === 'concurrency'/);
-assert.match(rebuild, /guardRetryAttempts: 6/);
+assert.match(rebuild, /attempt <= 6/);
 assert.match(rebuild, /--apply/);
 assert.match(rebuild, /--confirm-production/);
-assert.match(rebuild, /allowFallback: false/);
 assert.match(rebuild, /交易所历史公告未完整/);
 assert.match(rebuild, /hasExplicitConvertibleEvidence/);
 assert.match(rebuild, /existingByKey/);
 assert.match(rebuild, /historical_identity_repair_count/);
 assert.match(rebuild, /tushareQuery\('cb_basic'/);
+assert.match(rebuild, /fetchSseEvents/);
+assert.match(rebuild, /fetchSzseEvents/);
+assert.doesNotMatch(rebuild, /fetchSzseEventsBatch/);
 assert.match(rebuild, /ignored_non_convertible_count/);
 assert.match(rebuild, /parser_version<>\$1 OR e\.parse_status<>'complete'/);
 assert.match(rebuild, /verified_projection_rebuild/);
@@ -98,5 +107,19 @@ const auxiliaryKeys = duplicatedAuxiliaryKeys([
   { source_number: 'only-review', instrument_id: 2, event_date: '2024-09-25', title: '关于提前赎回示例转债的法律意见书' },
 ]);
 assert.deepStrictEqual([...auxiliaryKeys], ['review']);
+
+const checkpointRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bond-call-checkpoint-'));
+try {
+  const checkpoint = officialCheckpointPath('SZ', '2024-09-01', '2025-02-23', checkpointRoot);
+  writeOfficialCheckpoint(checkpoint, 'SZ', '2024-09-01', '2025-02-23', {
+    '300358.SZ': [{ title: '关于预计触发可转债赎回条件的提示性公告' }],
+  });
+  assert.deepStrictEqual(readOfficialCheckpoint(checkpoint, 'SZ', '2024-09-01', '2025-02-23'), {
+    '300358.SZ': [{ title: '关于预计触发可转债赎回条件的提示性公告' }],
+  });
+  assert.deepStrictEqual(readOfficialCheckpoint(checkpoint, 'SH', '2024-09-01', '2025-02-23'), {});
+} finally {
+  fs.rmSync(checkpointRoot, { recursive: true, force: true });
+}
 
 console.log('bond call projection rebuild safeguards passed');

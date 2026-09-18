@@ -12,7 +12,8 @@ try {
   const metadata = {};
   for (const item of Object.values(fixture)) {
     texts[item.url] = item.text;
-    metadata[item.url] = { title: item.title, announced_at: item.announced_at, event_type: item.event_type || 'waive', content_hash: `pdf-${item.url.split('/').pop()}` };
+    metadata[item.url] = { title: item.title, announced_at: item.announced_at, content_hash: `pdf-${item.url.split('/').pop()}` };
+    if (item.event_type) metadata[item.url].event_type = item.event_type;
   }
   const textFile = path.join(tempDir, 'texts.json');
   const metadataFile = path.join(tempDir, 'metadata.json');
@@ -57,6 +58,14 @@ try {
   assert.strictEqual(triggerRange.parse_status, 'partial');
   assert.ok(triggerRange.errors.includes('no_call_deadline_not_after_decision'));
   assert.strictEqual(triggerRange.evidence.no_call_until_candidate, '2026-06-08');
+  const startMarkerRange = rows.get(fixture.range_with_start_marker.url);
+  assert.strictEqual(startMarkerRange.no_call_until, '2026-12-03');
+  assert.strictEqual(startMarkerRange.validity_basis, 'explicit_range');
+  assert.strictEqual(startMarkerRange.parse_status, 'complete');
+  assert.strictEqual(rows.get(fixture.expected_trigger.url).event_type, 'warning');
+  assert.strictEqual(rows.get(fixture.expected_trigger.url).parse_status, 'complete');
+  assert.strictEqual(rows.get(fixture.completion_result.url).event_type, 'completion');
+  assert.strictEqual(rows.get(fixture.completion_result.url).parse_status, 'complete');
   console.log('convertible bond call parser v3 tests passed');
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });

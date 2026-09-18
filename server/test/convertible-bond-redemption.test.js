@@ -23,6 +23,9 @@ assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-0
 assert.strictEqual(classifyCallEvent('南方航空关于“南航转债”到期兑付暨摘牌的第三次提示性公告'), 'implementation');
 assert.strictEqual(classifyCallEvent('洽洽食品关于“洽洽转债”即将到期及停止交易的提示性公告'), 'implementation');
 assert.strictEqual(classifyCallEvent('关于使用部分闲置自有资金进行现金管理到期赎回的公告'), null);
+assert.strictEqual(classifyCallEvent('关于预计触发可转债赎回条件的提示性公告'), 'warning');
+assert.strictEqual(classifyCallEvent('关于可转债到期兑付结果暨股份变动的公告'), 'completion');
+assert.strictEqual(eventParseComplete('completion', { decisionDate: '2026-09-01' }), true);
 assert.strictEqual(pickInstrument({ title: '关于转债的公告' }, [
   { instrument_id: 1, bond_name: '甲转债', security_code: '123001' },
   { instrument_id: 2, bond_name: '乙转债', security_code: '123002' },

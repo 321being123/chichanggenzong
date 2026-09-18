@@ -61,9 +61,9 @@ function classifyCallEvent(title) {
   if (/(现金管理|理财产品|结构性存款|闲置自有资金|委托理财)/.test(text)
       && !/(可转债|转债|债券代码|最后交易日|最后转股日|赎回登记日|转股价|转股期)/.test(text)) return null;
   if (/不提前赎回|不行使.*赎回|不实施.*赎回|暂不赎回/.test(text)) return 'waive';
-  if (/实施结果|赎回结果|完成赎回|赎回完成/.test(text)) return 'completion';
+  if (/实施结果|赎回结果|兑付结果|完成赎回|赎回完成/.test(text)) return 'completion';
   if (/赎回实施|实施.*赎回|到期兑付|到期偿付|兑付暨摘牌|到期赎回|停止交易|最后交易日|最后转股日|赎回公告/.test(text)) return 'implementation';
-  if (/可能触发|触发条件|强赎提示/.test(text)) return 'warning';
+  if (/可能触发|预计触发|触发条件|强赎提示/.test(text)) return 'warning';
   if (/强赎|提前赎回|触发.*赎回|可能触发/.test(text)) return 'exercise';
   return null;
 }
@@ -216,7 +216,7 @@ function eventParseComplete(eventType, dates) {
   if (eventType === 'exercise') return Boolean(value.decisionDate);
   if (eventType === 'implementation') return Boolean(value.lastTradeDate && value.lastConversionDate);
   if (eventType === 'waive') return Boolean(value.noCallUntil || value.validityBasis === 'through_maturity');
-  if (eventType === 'completion') return Boolean(value.redemptionRecordDate || value.redemptionPrice != null);
+  if (eventType === 'completion') return Boolean(value.decisionDate);
   return eventType === 'warning';
 }
 

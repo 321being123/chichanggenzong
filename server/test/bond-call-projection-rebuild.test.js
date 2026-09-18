@@ -9,7 +9,7 @@ const analysis = read('server/services/convertibleBondAnalysis.js');
 const exporter = read('server/scripts/exportVerifiedBondCallFacts.js');
 const rebuild = read('server/scripts/rebuildBondCallProjection.js');
 const deploy = read('deploy/rebuild_bond_call_projection.py');
-const { pickAuthoritativeIdentity } = require('../scripts/rebuildBondCallProjection');
+const { pickAuthoritativeIdentity, duplicatedAuxiliaryKeys } = require('../scripts/rebuildBondCallProjection');
 
 assert.match(analysis, /allowFallback = true/);
 assert.match(analysis, /if \(!allowFallback\)/);
@@ -72,5 +72,12 @@ assert.strictEqual(
   pickAuthoritativeIdentity({ title: '关于提前赎回可转换公司债券的法律意见书', event_date: '2024-02-10' }, genericCallCandidates).ts_code,
   '123238.SZ'
 );
+
+const auxiliaryKeys = duplicatedAuxiliaryKeys([
+  { source_number: 'issuer', instrument_id: 1, event_date: '2024-09-25', title: '关于不提前赎回天路转债的公告' },
+  { source_number: 'review', instrument_id: 1, event_date: '2024-09-25', title: '关于不提前赎回天路转债的核查意见' },
+  { source_number: 'only-review', instrument_id: 2, event_date: '2024-09-25', title: '关于提前赎回示例转债的法律意见书' },
+]);
+assert.deepStrictEqual([...auxiliaryKeys], ['review']);
 
 console.log('bond call projection rebuild safeguards passed');

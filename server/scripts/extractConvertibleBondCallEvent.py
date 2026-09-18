@@ -86,11 +86,11 @@ def classify_event(text, title=""):
         return None
     if "不提前赎回" in value or "不行使赎回" in value or "不实施赎回" in value or "暂不赎回" in value:
         return "waive"
-    if re.search(r"实施结果|赎回结果|完成赎回|赎回完成", value):
+    if re.search(r"实施结果|赎回结果|兑付结果|完成赎回|赎回完成", value):
         return "completion"
     if re.search(r"赎回实施|实施赎回|到期兑付|到期偿付|兑付暨摘牌|到期赎回|停止交易|最后交易日|最后转股日|赎回公告", value):
         return "implementation"
-    if re.search(r"可能触发|触发条件|强赎提示", value):
+    if re.search(r"可能触发|预计触发|触发条件|强赎提示", value):
         return "warning"
     if re.search(r"强赎|提前赎回|触发.*赎回|可能触发", value):
         return "exercise"
@@ -180,7 +180,7 @@ def extract_no_call(text, decision_date, year_hint):
                 return None, "through_maturity", next_count_start_date, evidence, errors
 
     candidates = []
-    range_pattern = DATE_TOKEN + RANGE_SEPARATOR + DATE_TOKEN
+    range_pattern = DATE_TOKEN + r"(?:起)?" + RANGE_SEPARATOR + DATE_TOKEN
     for phrase_start, context_start, context in contexts:
         next_count_start_date = None
         next_hit = re.search(r"(?:自|从)" + DATE_TOKEN + r".{0,50}(?:重新计算|重新起算|首个交易日|第一个交易日)", context)
@@ -197,6 +197,7 @@ def extract_no_call(text, decision_date, year_hint):
                 if len(split) != 2:
                     continue
                 left_raw, right_raw = split
+            left_raw = re.sub(r"起$", "", left_raw)
             left = parse_date_token(left_raw, context, year_hint)
             right = parse_date_token(right_raw, context, year_hint)
             if left and right and re.search(r"^\s*" + PARTIAL_DATE + r"\s*$", right_raw):
@@ -351,7 +352,7 @@ def extract_one(url, cached_text=None, metadata=None):
     ) or (
         event_type == "implementation" and last_trade_date and last_conversion_date
     ) or (
-        event_type == "completion" and (redemption_record_date or price is not None)
+        event_type == "completion" and decision_date
     ) or event_type == "warning"
     parse_status = "complete" if complete and not errors else "partial"
     return {

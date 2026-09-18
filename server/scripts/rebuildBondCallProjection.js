@@ -46,6 +46,28 @@ function hasExplicitConvertibleEvidence(item) {
   return /(?:可转债|可转换公司债券|转债|转股|债券代码)/.test(String(item && item.title || ''));
 }
 
+function isAuxiliaryCallDocument(item) {
+  return /(?:法律意见书|核查意见)(?:（[^）]*）)?$/.test(String(item && item.title || '').trim());
+}
+
+function duplicatedAuxiliaryKeys(events) {
+  const rows = Array.isArray(events) ? events : [];
+  const primary = rows.filter(item => item.instrument_id && !isAuxiliaryCallDocument(item));
+  const keys = new Set();
+  for (const item of rows.filter(row => row.instrument_id && isAuxiliaryCallDocument(row))) {
+    const date = compactDate(item.event_date);
+    const type = classifyCallEvent(item.title);
+    const duplicate = primary.some(row => {
+      if (String(row.instrument_id) !== String(item.instrument_id) || classifyCallEvent(row.title) !== type) return false;
+      const otherDate = compactDate(row.event_date);
+      if (!date || !otherDate) return false;
+      return Math.abs(new Date(`${date}T12:00:00+08:00`) - new Date(`${otherDate}T12:00:00+08:00`)) <= 3 * 86400000;
+    });
+    if (duplicate) keys.add(eventKey(item));
+  }
+  return keys;
+}
+
 function normalizedText(value) {
   return String(value || '').normalize('NFKC').replace(/[“”‘’「」『』\s]/g, '');
 }
@@ -292,7 +314,9 @@ async function rebuild() {
     const samples = requiredUnmatched.slice(0, 8).map(item => `${item.stock_code || '-'}:${item.title || '-'}`);
     throw new Error(`交易所可转债公告存在 ${requiredUnmatched.length} 条证券无法唯一匹配，已停止重建：${samples.join('；')}`);
   }
-  const callCandidates = hintedCandidates.filter(item => item.instrument_id);
+  const auxiliaryKeys = duplicatedAuxiliaryKeys(hintedCandidates);
+  const callCandidates = hintedCandidates.filter(item => item.instrument_id && !auxiliaryKeys.has(eventKey(item)));
+  const ignoredAuxiliaryCount = auxiliaryKeys.size;
   const ignoredNonConvertibleCount = unmatchedHints.length - requiredUnmatched.length;
   if (callCandidates.length) {
     await syncConvertibleBondCallAnnouncements({
@@ -377,6 +401,7 @@ async function rebuild() {
         official_count: officialKeys.length,
         historical_identity_repair_count: historicalIdentityRepairCount,
         ignored_non_convertible_count: ignoredNonConvertibleCount,
+        ignored_auxiliary_document_count: ignoredAuxiliaryCount,
         removed_superseded_count: removed.rowCount,
       },
       reason: 'verified_projection_rebuild',
@@ -403,6 +428,7 @@ async function rebuild() {
       officialCount: officialKeys.length,
       historicalIdentityRepairCount,
       ignoredNonConvertibleCount,
+      ignoredAuxiliaryCount,
       targetCount: targetKeys.length,
       removedSupersededCount: removed.rowCount,
       retriedSlotIds,
@@ -422,4 +448,4 @@ if (require.main === module) {
     .finally(() => pool.end().catch(() => {}));
 }
 
-module.exports = { compactDate, identityActiveForAnnouncement, pickAuthoritativeIdentity };
+module.exports = { compactDate, identityActiveForAnnouncement, pickAuthoritativeIdentity, duplicatedAuxiliaryKeys };

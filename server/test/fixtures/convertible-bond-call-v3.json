@@ -48,5 +48,23 @@
     "announced_at": "2026-06-09",
     "event_type": "waive",
     "text": "自2026年5月19日至2026年6月8日期间，公司股票已有15个交易日满足赎回条件。公司于2026年6月9日召开董事会，决定本次不行使提前赎回权，后续以正式公告为准。"
+  },
+  "range_with_start_marker": {
+    "url": "https://static.cninfo.com.cn/2026-09-04/range-with-start-marker.pdf",
+    "title": "关于不提前赎回优彩转债的公告",
+    "announced_at": "2026-09-04",
+    "text": "公司于2026年9月3日召开董事会，决定本次不提前赎回优彩转债，且自2026年9月4日起至2026年12月3日，公司均不行使提前赎回权。自2026年12月3日后的首个交易日起重新计算。"
+  },
+  "expected_trigger": {
+    "url": "https://static.cninfo.com.cn/2026-09-04/expected-trigger.pdf",
+    "title": "关于预计触发示例转债赎回条件的提示性公告",
+    "announced_at": "2026-09-04",
+    "text": "公司股票近期持续上涨，预计可能触发示例转债的有条件赎回条款，公司将持续关注并及时履行信息披露义务，请投资者注意风险。"
+  },
+  "completion_result": {
+    "url": "https://static.cninfo.com.cn/2026-09-04/completion-result.pdf",
+    "title": "关于示例转债到期兑付结果暨股份变动的公告",
+    "announced_at": "2026-09-04",
+    "text": "示例转债到期兑付工作已经完成，本次兑付结果及股份变动情况已经确认，公司将按照交易所要求完成后续信息披露工作。"
   }
 }

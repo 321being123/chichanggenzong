@@ -168,13 +168,17 @@ def extract_no_call(text, decision_date, year_hint):
         # 实施最短间隔限制影响，已经无法再办理提前赎回。该表述等价于到期前
         # 不再行使提前赎回权，但必须同时具备到期日和无法办理的正文证据，避免
         # 把普通风险提示误判为锁定至到期。
-        maturity_hit = re.search(r"(?:将于|于)?\s*(" + DATE_TOKEN + r")\s*(?:到期|期限届满)", context)
+        maturity_hit = re.search(
+            r"(?:将于|于)?\s*(" + DATE_TOKEN + r")\s*(?:到期|期限届满)"
+            r"|(?:到期日|期限届满日)(?:为|：|:)?\s*(" + DATE_TOKEN + r")",
+            context,
+        )
         operationally_impossible = re.search(
             r"(?:预计|已经|已)?(?:无法|不能).{0,100}(?:办理|实施|行使)(?:提前|有条件)?赎回(?:业务|权)?",
             context,
         )
         if maturity_hit and operationally_impossible:
-            maturity_date = parse_date_token(maturity_hit.group(1), context, year_hint)
+            maturity_date = parse_date_token(maturity_hit.group(1) or maturity_hit.group(7), context, year_hint)
             if maturity_date and (not decision_date or maturity_date >= decision_date):
                 evidence["no_call_until"] = context[:500]
                 evidence["maturity_operational_impossibility"] = operationally_impossible.group(0)

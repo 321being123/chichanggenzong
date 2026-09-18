@@ -55,6 +55,19 @@
     "announced_at": "2026-09-04",
     "text": "公司于2026年9月3日召开董事会，决定本次不提前赎回优彩转债，且自2026年9月4日起至2026年12月3日，公司均不行使提前赎回权。自2026年12月3日后的首个交易日起重新计算。"
   },
+  "range_with_month_typo": {
+    "url": "https://disc.static.szse.cn/2024-11-08/range-with-month-typo.pdf",
+    "title": "关于不提前赎回麒麟转债的公告",
+    "announced_at": "2024-11-08",
+    "text": "公司于2024年11月7日召开董事会，决定本次不提前赎回麒麟转债，并自本次董事会审议通过后12个月内（即2024年11月8月至2025年11月7日）均不行使提前赎回权。"
+  },
+  "unable_to_exercise_until_maturity": {
+    "url": "https://disc.static.szse.cn/2024-11-15/unable-to-exercise.pdf",
+    "title": "关于华源转债满足赎回条件但无法实施有条件赎回的公告",
+    "announced_at": "2024-11-15",
+    "event_type": "waive",
+    "text": "公司于2024年11月14日召开董事会审议通过相关议案。华源转债将于2024年11月27日到期，因触发日与到期日间隔不足15个交易日，公司无法实施有条件赎回。"
+  },
   "expected_trigger": {
     "url": "https://static.cninfo.com.cn/2026-09-04/expected-trigger.pdf",
     "title": "关于预计触发示例转债赎回条件的提示性公告",

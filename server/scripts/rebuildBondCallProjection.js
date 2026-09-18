@@ -82,7 +82,7 @@ function hasExplicitConvertibleEvidence(item) {
 }
 
 function isAuxiliaryCallDocument(item) {
-  return /(?:法律意见书|核查意见)(?:（[^）]*）)?$/.test(String(item && item.title || '').trim());
+  return /(?:法律意见书|核查意见|更正公告)(?:（[^）]*）)?$/.test(String(item && item.title || '').trim());
 }
 
 function duplicatedAuxiliaryKeys(events) {

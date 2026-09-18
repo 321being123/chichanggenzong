@@ -104,9 +104,10 @@ assert.strictEqual(
 const auxiliaryKeys = duplicatedAuxiliaryKeys([
   { source_number: 'issuer', instrument_id: 1, event_date: '2024-09-25', title: '关于不提前赎回天路转债的公告' },
   { source_number: 'review', instrument_id: 1, event_date: '2024-09-25', title: '关于不提前赎回天路转债的核查意见' },
+  { source_number: 'correction', instrument_id: 1, event_date: '2024-09-26', title: '关于不提前赎回天路转债公告的更正公告' },
   { source_number: 'only-review', instrument_id: 2, event_date: '2024-09-25', title: '关于提前赎回示例转债的法律意见书' },
 ]);
-assert.deepStrictEqual([...auxiliaryKeys], ['review']);
+assert.deepStrictEqual([...auxiliaryKeys], ['review', 'correction']);
 
 const checkpointRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bond-call-checkpoint-'));
 try {

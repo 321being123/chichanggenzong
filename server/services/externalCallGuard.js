@@ -55,11 +55,15 @@ function tokenFingerprint(token) {
 
 function deriveApiName(source, circuitSource, dataset) {
   const value = String(circuitSource || source || '');
+  const datasetText = String(dataset || '');
   const match = value.match(/^tushare(?:_backup)?:(.+)$/i);
   if (match && match[1]) return match[1].split(':')[0].slice(0, 64);
   if (/^tushare(?:_backup)?$/i.test(value)) {
-    const datasetName = String(dataset || '').split(':')[0].trim();
+    const datasetName = datasetText.split(':')[0].trim();
     return datasetName || '*';
+  }
+  if (/^(?:sse|szse)$/i.test(value) && /(?:api\/disc\/announcement|announcement\/annList)/i.test(datasetText)) {
+    return 'announcement_list';
   }
   return '*';
 }

@@ -141,6 +141,9 @@ assert.ok(/stock_basic\\s\+返回空数据/.test(stockAnalysisJob) && /skippedCo
 assert.ok(/duplicate-success:/.test(orchestrator), '同一任务和业务日期重复成功必须告警');
 assert.ok(/freshness_validation/.test(slotService) && /业务执行结果/.test(adminUi), '后台必须分开展示业务执行和新鲜度校验');
 assert.ok(/ops\.external_call_budgets/.test(pythonGuard) && /pg_try_advisory_lock/.test(pythonGuard), 'Python 自动任务必须复用 PostgreSQL API 预算和数据集锁');
+assert.ok(/announcement_list/.test(externalGuard) && /announcement_list/.test(pythonGuard)
+  && /bond-call-pdf:/.test(pythonGuard) && /return "document"/.test(pythonGuard),
+  '交易所公告列表与 PDF 正文必须使用独立接口并发槽位');
 assert.ok(/ops\.consume_external_call_budget/.test(externalGuard) && /ops\.consume_external_call_budget/.test(pythonGuard), 'Node/Python 预算扣减必须共用数据库原子函数');
 assert.ok(/configured == "0"/.test(pythonGuard) && /production/.test(pythonGuard) && /return configured != "0"/.test(pythonGuard),
   'Python Guard 必须默认开启且生产环境不可关闭');

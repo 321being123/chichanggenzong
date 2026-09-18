@@ -124,6 +124,12 @@ def _api_name(source, dataset="", api_name=None):
         if "hisAnnouncement" in value:
             return "hisAnnouncement"
         return "document"
+    if _source_key(source).lower() in {"sse", "szse"}:
+        value = str(dataset or "")
+        if value.startswith("bond-call-pdf:") or re.search(r"\.pdf(?:$|[?#])", value, re.IGNORECASE):
+            return "document"
+        if re.search(r"api/disc/announcement|announcement/annList", value, re.IGNORECASE):
+            return "announcement_list"
     return "*"
 
 

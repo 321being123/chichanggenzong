@@ -62,6 +62,14 @@ try {
   assert.strictEqual(startMarkerRange.no_call_until, '2026-12-03');
   assert.strictEqual(startMarkerRange.validity_basis, 'explicit_range');
   assert.strictEqual(startMarkerRange.parse_status, 'complete');
+  const typoRange = rows.get(fixture.range_with_month_typo.url);
+  assert.strictEqual(typoRange.no_call_until, '2025-11-07');
+  assert.strictEqual(typoRange.validity_basis, 'explicit_range');
+  assert.strictEqual(typoRange.parse_status, 'complete');
+  const unableToExercise = rows.get(fixture.unable_to_exercise_until_maturity.url);
+  assert.strictEqual(unableToExercise.validity_basis, 'through_maturity');
+  assert.strictEqual(unableToExercise.parse_status, 'complete');
+  assert.strictEqual(unableToExercise.evidence.maturity_date, '2024-11-27');
   assert.strictEqual(rows.get(fixture.expected_trigger.url).event_type, 'warning');
   assert.strictEqual(rows.get(fixture.expected_trigger.url).parse_status, 'complete');
   assert.strictEqual(rows.get(fixture.completion_result.url).event_type, 'completion');

@@ -18,11 +18,13 @@ DATE = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
 PARTIAL_DATE = r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?"
 DATE_TOKEN = rf"(?:{DATE}|{PARTIAL_DATE})"
 RANGE_SEPARATOR = r"\s*(?:至|到|—|-)\s*"
-NO_CALL_PATTERN = r"不提前赎回|不行使(?:提前)?赎回|不实施赎回|暂不赎回"
+NO_CALL_PATTERN = r"不提前赎回|不行使(?:提前)?赎回|不实施赎回|暂不赎回|(?:无法|不能)实施(?:有条件)?赎回"
 
 
 def compact(text):
-    return re.sub(r"\s+", "", str(text or ""))
+    value = re.sub(r"\s+", "", str(text or ""))
+    # 兼容公告中“2024年11月8月至……”这类把“日”误写成“月”的明显排版错误。
+    return re.sub(r"(20\d{2}年\d{1,2}月\d{1,2})月(?=至|到)", r"\1日", value)
 
 
 def valid_iso(year, month, day):
@@ -168,7 +170,7 @@ def extract_no_call(text, decision_date, year_hint):
         # 把普通风险提示误判为锁定至到期。
         maturity_hit = re.search(r"(?:将于|于)?\s*(" + DATE_TOKEN + r")\s*(?:到期|期限届满)", context)
         operationally_impossible = re.search(
-            r"(?:预计|已经|已)?(?:无法|不能).{0,100}(?:办理|实施|行使)(?:提前)?赎回(?:业务|权)?",
+            r"(?:预计|已经|已)?(?:无法|不能).{0,100}(?:办理|实施|行使)(?:提前|有条件)?赎回(?:业务|权)?",
             context,
         )
         if maturity_hit and operationally_impossible:

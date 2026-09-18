@@ -23,6 +23,8 @@ assert.strictEqual(eventParseComplete('implementation', { lastTradeDate: '2026-0
 assert.strictEqual(classifyCallEvent('南方航空关于“南航转债”到期兑付暨摘牌的第三次提示性公告'), 'implementation');
 assert.strictEqual(classifyCallEvent('洽洽食品关于“洽洽转债”即将到期及停止交易的提示性公告'), 'implementation');
 assert.strictEqual(classifyCallEvent('关于使用部分闲置自有资金进行现金管理到期赎回的公告'), null);
+assert.strictEqual(classifyCallEvent('关于使用可转债闲置募集资金进行现金管理到期赎回的进展公告'), null);
+assert.strictEqual(classifyCallEvent('关于华源转债满足赎回条件但无法实施有条件赎回的公告'), 'waive');
 assert.strictEqual(classifyCallEvent('关于预计触发可转债赎回条件的提示性公告'), 'warning');
 assert.strictEqual(classifyCallEvent('楚天科技:关于预计触发可转债转股价格向下修正条件的提示性公告'), null);
 assert.strictEqual(classifyCallEvent('关于可转债到期兑付结果暨股份变动的公告'), 'completion');
@@ -137,7 +139,7 @@ assert.ok(migration.includes('153_convertible_bond_call_pre_conversion_status')
   && migration.includes("THEN 'not_active'") && migration.includes("THEN 'incomplete'")
   && migration.includes('尚未进入转股期') && migration.includes('non_bond_finance_redemption'), '强赎最终视图必须区分转股期前与解析不完整公告');
 assert.ok(redemptionService.includes('preConversion') && redemptionService.includes('conversion_start_date'), '强赎计算必须从转股期开始日计数');
-assert.ok(redemptionSync.includes('现金管理') && redemptionSync.includes('明确转债证据'), '现金管理公告不得误识别为转债强赎事件');
+assert.ok(redemptionSync.includes('现金管理') && redemptionSync.includes('赎回对象是理财产品'), '现金管理公告不得误识别为转债强赎事件');
 assert.ok(analysis.includes('DATASET_INCOMPLETE') && analysis.includes('markStockDailyBackfillStale')
   && !analysis.includes('source.tushare, recentDays.length'), '正股补水失败必须标记分区过期，且不再传入多余 SQL 参数');
 assert.ok(suspensionSync.includes('JOIN public.bond_unified u') && suspensionSync.includes("u.status='listed'"), '停牌覆盖目标必须按当前在市转债选择，不能依赖历史行情日');

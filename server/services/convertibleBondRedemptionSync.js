@@ -57,13 +57,12 @@ function dateFromTitle(title, patterns) {
 function classifyCallEvent(title) {
   const text = String(title || '');
   if (!/(赎回|转债|强赎|转股)/.test(text)) return null;
-  // “现金管理到期赎回”等理财公告不属于可转债事件；只有同时出现明确转债证据时才继续分类。
-  if (/(现金管理|理财产品|结构性存款|闲置自有资金|委托理财)/.test(text)
-      && !/(可转债|转债|债券代码|最后交易日|最后转股日|赎回登记日|转股价|转股期)/.test(text)) return null;
+  // “使用可转债闲置募集资金进行现金管理到期赎回”等理财公告，赎回对象是理财产品而非可转债。
+  if (/(现金管理|理财产品|结构性存款|闲置(?:自有|募集)?资金|委托理财)/.test(text)) return null;
   // 转股价格向下修正属于下修监控，不得因“预计触发/转债”字样进入强赎投影。
   if (/(?:转股价格|转股价).*(?:下修|向下修正)|(?:下修|向下修正).*(?:转股价格|转股价)/.test(text)
       && !/(赎回|强赎|提前赎回)/.test(text)) return null;
-  if (/不提前赎回|不行使.*赎回|不实施.*赎回|暂不赎回/.test(text)) return 'waive';
+  if (/不提前赎回|不行使.*赎回|不实施.*赎回|暂不赎回|(?:无法|不能)实施.*赎回/.test(text)) return 'waive';
   if (/实施结果|赎回结果|兑付结果|完成赎回|赎回完成/.test(text)) return 'completion';
   if (/赎回实施|实施.*赎回|到期兑付|到期偿付|兑付暨摘牌|到期赎回|停止交易|最后交易日|最后转股日|赎回公告/.test(text)) return 'implementation';
   if (/可能触发|预计触发|触发条件|强赎提示/.test(text)) return 'warning';

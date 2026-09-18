@@ -56,4 +56,21 @@ assert.strictEqual(
   null
 );
 
+const genericCallCandidates = [
+  { ts_code: '123134.SZ', bond_short_name: '卡倍转债', stk_code: '300863.SZ', list_date: '20220118', delist_date: '20230323' },
+  { ts_code: '123238.SZ', bond_short_name: '卡倍转02', stk_code: '300863.SZ', list_date: '20240201', delist_date: '20250123' },
+];
+assert.strictEqual(
+  pickAuthoritativeIdentity({ title: '关于提前赎回可转换公司债券的法律意见书', event_date: '2023-03-10' }, genericCallCandidates).ts_code,
+  '123134.SZ'
+);
+assert.strictEqual(
+  pickAuthoritativeIdentity({ title: '关于提前赎回可转换公司债券的法律意见书', event_date: '2024-12-20' }, genericCallCandidates).ts_code,
+  '123238.SZ'
+);
+assert.strictEqual(
+  pickAuthoritativeIdentity({ title: '关于提前赎回可转换公司债券的法律意见书', event_date: '2024-02-10' }, genericCallCandidates).ts_code,
+  '123238.SZ'
+);
+
 console.log('bond call projection rebuild safeguards passed');

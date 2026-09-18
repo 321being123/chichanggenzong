@@ -18,7 +18,7 @@ const DATASET_CODE = 'bond_redemption_events';
 const SOURCE_CODE = 'convertible_bond_redemption_announcements';
 const HISTORICAL_IDENTITY_FIELDS = [
   'ts_code', 'bond_short_name', 'stk_code', 'list_date', 'delist_date', 'maturity_date',
-  'conv_end_date', 'conv_stop_date',
+  'conv_start_date', 'conv_end_date', 'conv_stop_date',
 ].join(',');
 
 function arg(name, fallback = '') {
@@ -85,6 +85,8 @@ function pickAuthoritativeIdentity(event, candidates) {
   const activeNameMatches = nameMatches.filter(row => identityActiveForAnnouncement(row, event && event.event_date));
   if (activeNameMatches.length === 1) return activeNameMatches[0];
   if (nameMatches.length === 1) return nameMatches[0];
+  const activeMatches = rows.filter(row => identityActiveForAnnouncement(row, event && event.event_date));
+  if (activeMatches.length === 1) return activeMatches[0];
   return null;
 }
 
@@ -178,11 +180,12 @@ async function applyHistoricalIdentityRepairs(client, repairs, asOfDate) {
     await client.query(
       `UPDATE fundamental.convertible_bond_profiles
           SET bond_short_name=$2,list_date=COALESCE($3::date,list_date),maturity_date=COALESCE($4::date,maturity_date),
-              conv_end_date=COALESCE($5::date,conv_end_date),conv_stop_date=COALESCE($6::date,conv_stop_date),
-              raw_payload=COALESCE(raw_payload,'{}'::jsonb) || jsonb_build_object('cb_basic_identity',$7::jsonb),updated_at=now()
+              conv_start_date=COALESCE($5::date,conv_start_date),conv_end_date=COALESCE($6::date,conv_end_date),
+              conv_stop_date=COALESCE($7::date,conv_stop_date),
+              raw_payload=COALESCE(raw_payload,'{}'::jsonb) || jsonb_build_object('cb_basic_identity',$8::jsonb),updated_at=now()
         WHERE instrument_id=$1`,
       [row.instrument_id, row.bond_short_name, listDate, compactDate(row.maturity_date),
-        compactDate(row.conv_end_date), compactDate(row.conv_stop_date), JSON.stringify(row)]
+        compactDate(row.conv_start_date), compactDate(row.conv_end_date), compactDate(row.conv_stop_date), JSON.stringify(row)]
     );
     await client.query(
       `INSERT INTO core.instrument_identifiers(instrument_id,source_id,identifier_type,identifier_value,valid_from)

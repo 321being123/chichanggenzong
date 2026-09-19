@@ -52,6 +52,10 @@ function completeRows(count) {
 
   assert.strictEqual(activeProfile({ ts_code: '113001.SH', list_date: '20260825' }, '20260824'), false, '未来上市债券不得进入已上市主档');
   assert.strictEqual(activeProfile({ ts_code: '113001.SH', list_date: '20260824' }, '20260824'), true);
+  assert.strictEqual(activeProfile({ ts_code: '113001.SH', list_date: '20200101', delist_date: '20260312' }, '2026-09-18'), false,
+    '带横线的目标日也必须排除历史退市债券');
+  assert.strictEqual(activeProfile({ ts_code: '113001.SH', list_date: null }, '2026-09-18'), false,
+    '没有上市事实的债券不得进入目标日行情集合');
   assert.strictEqual(isUnderlyingStockListed({ stk_code: '600000.SH' }, new Set(['600000.SH'])), true, '正股仍在上市才允许进入活跃主档');
   assert.strictEqual(isUnderlyingStockListed({ stk_code: '600000.SH' }, new Set(['000001.SZ'])), false, '正股已不在上市列表不得进入活跃主档');
   assert.strictEqual(resolveMaxAttempts({ maxAttempts: 4, retryPolicy: 'external' }, {}), 4, '外部任务必须执行配置的四次尝试');
@@ -62,6 +66,8 @@ function completeRows(count) {
     '可转债行情状态统计必须直接接收 reduce 返回对象');
   assert.ok(!analysisSource.includes('Object.fromEntries([...bondStatusByCode.values()].reduce'),
     '可转债行情状态统计不得把普通对象再次当作可迭代 entries');
+  assert.ok(analysisSource.includes('const basics = await filterPublicBonds(lifecycleCandidates)'),
+    '可转债行情预期集合必须排除定向和私募债券');
   assert.ok(analysisSource.includes("tushareQuery('daily', { trade_date: tradeDate.replace(/-/g, '') }"), '正股日行情补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
   assert.ok(analysisSource.includes("tushareQuery('daily_basic', { trade_date: tradeDate.replace(/-/g, '') }"), '正股估值补齐必须使用 Tushare 要求的 YYYYMMDD 日期');
   assert.ok(analysisSource.includes('setTimeout(resolve, 1200)'), '正股历史补齐必须在外部调用之间限速');

@@ -25,6 +25,7 @@ const {
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const { sendAlert } = require('./jobAlertMailer');
+const { isActiveBond, filterPublicBonds } = require('./bondSafetyTushare');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -1643,16 +1644,7 @@ async function updateBondFallbackRuntime(usedFallback, targetTradeDate) {
 }
 
 function activeProfile(row, today) {
-  const listed = String(row && row.list_date || '').replace(/-/g, '');
-  const delisted = String(row && row.delist_date || '').replace(/-/g, '');
-  const maturity = String(row && row.maturity_date || '').replace(/-/g, '');
-  const convertEnd = String(row && row.conv_end_date || '').replace(/-/g, '');
-  const convertStop = String(row && row.conv_stop_date || '').replace(/-/g, '');
-  return row && row.ts_code && BOND_PREFIX.test(String(row.ts_code).slice(0,6)) &&
-    (!listed || listed <= today) &&
-    (!delisted || delisted > today) &&
-    (!maturity || maturity >= today) && (!convertEnd || convertEnd >= today) &&
-    (!convertStop || convertStop > today);
+  return isActiveBond(row, today);
 }
 
 function isUnderlyingStockListed(row, listedStockCodes) {
@@ -1826,7 +1818,9 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       .map(row => String(row.ts_code || '').trim().toUpperCase())
       .filter(Boolean));
     // 计划业务日是事实判定日；补跑不能用机器当前日期把目标日的证券集合漂移到今天。
-    const basics = allBasicRows.filter(row => activeProfile(row, targetTradeDate) && isUnderlyingStockListed(row, listedStockCodes));
+    const lifecycleCandidates = allBasicRows.filter(row => activeProfile(row, targetTradeDate)
+      && isUnderlyingStockListed(row, listedStockCodes));
+    const basics = await filterPublicBonds(lifecycleCandidates);
     if (!basics.length) throw new Error('Tushare 可转债基础数据为空，保留上一份数据');
     const profiles = basics;
     const activeCodes = new Set(basics.map(row => row.ts_code));

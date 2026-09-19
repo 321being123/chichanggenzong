@@ -154,6 +154,22 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   if (!/verifySlotRecoveryEvidence/.test(evidence)) {
     errors.push('任务缺少中立恢复证据服务。');
   }
+  if (!/validateJobDefinitionSources/.test(jobDefinitions)
+    || !/getRegisteredJobDefinition/.test(jobDefinitions)
+    || !/JOB_DEFINITION_SOURCE/.test(jobDefinitions)) {
+    errors.push('任务契约必须在默认值合并前提供原始配置审计，并为执行/恢复路径提供已注册任务查询。');
+  }
+  if (!/resolveDatasetPartitionDate/.test(slots)
+    || !/partitionDatePolicy/.test(slots)
+    || !/unknown_job_definition/.test(evidence)) {
+    errors.push('任务数据集依赖必须消费 partitionDatePolicy，未知任务必须失败关闭。');
+  }
+  const alertMailer = read('server/services/jobAlertMailer.js');
+  if (!/ALERT_EVIDENCE_POLICIES/.test(alertMailer)
+    || !/api_name=\$2/.test(alertMailer)
+    || /api_name=ANY\(\$2::text\[\]\)/.test(alertMailer)) {
+    errors.push('告警必须使用证据策略注册表，并严格隔离具体接口与 source:* 通配作用域。');
+  }
   if (!/ops\.external_circuits/.test(externalGuard) || !/recover_at/.test(externalGuard) || !/BUDGET_WAIT/.test(externalGuard)) {
     errors.push('外部 Guard 必须统一使用 ops.external_circuits、recover_at 和 BUDGET_WAIT。');
   }
@@ -204,6 +220,23 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   return errors;
 }
 
+function collectJobContractErrors(rootDir) {
+  const definitionsPath = path.join(rootDir, 'server', 'services', 'jobDefinitions.js');
+  const registryPath = path.join(rootDir, 'server', 'services', 'datasetPartitionRegistry.js');
+  if (!fs.existsSync(definitionsPath) || !fs.existsSync(registryPath)) return [];
+  try {
+    const definitions = require(definitionsPath);
+    const registry = require(registryPath);
+    const audit = definitions.validateJobDefinitionSources({
+      datasetRegistry: registry.DATASET_PARTITION_REGISTRY,
+      strict: false,
+    });
+    return audit.ok ? [] : audit.errors.map(error => `任务契约审计失败：${error}`);
+  } catch (error) {
+    return [`任务契约审计无法执行：${error.message}`];
+  }
+}
+
 function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] } = {}) {
   const errors = [];
   const map = loadMap(rootDir, errors);
@@ -218,6 +251,7 @@ function runCheck({ rootDir = path.resolve(__dirname, '..'), changedFiles = [] }
   errors.push(...collectVersionErrors(rootDir));
   errors.push(...collectGeneratedMatrixErrors(rootDir));
   errors.push(...collectTaskGovernanceImplementationErrors(rootDir));
+  errors.push(...collectJobContractErrors(rootDir));
   const files = [...new Set(changedFiles.map(normalize).filter(Boolean))];
   const releaseMetadataOnly = isReleaseMetadataOnly(rootDir, files);
   const matchedRoutes = [];

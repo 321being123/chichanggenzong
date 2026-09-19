@@ -15,7 +15,7 @@
 //  - 同日现金流与净值边界：写交易/现金流时记录 nav_cash_cutoff，供前端同日更新净值判断
 const { pool } = require('../db/connection');
 const { round } = require('../db/util');
-const { todayCN } = require('../services/market');
+const { todayCN, fetchQuotesByCodes } = require('../services/market');
 const classifyCode = require('../../public/js/code-classify');
 const { resolveAmbiguousSecurity } = require('./securityIdentity');
 
@@ -234,7 +234,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
       );
       if (idDup.rows[0]) {
         if (ownTxn) await client.query('COMMIT');
-        return { ok: true, id: t.id, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
+        return { ok: true, id: t.id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
       }
     }
     // 乐观锁：独立事务时校验版本（外部事务由调用方统一校验一次）
@@ -289,7 +289,7 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
       );
       if (dup.rows[0]) {
         if (ownTxn) await client.query('COMMIT');
-        return { ok: true, id: dup.rows[0].id, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
+        return { ok: true, id: dup.rows[0].id, code: t.code, skipped: 'duplicate', cash: null, tradeDate: tradeDate };
       }
     }
     const isHk = String(t.subtype || '').trim() === '港股' || String(t.quote_currency || t.quoteCurrency || '').toUpperCase() === 'HKD';
@@ -363,12 +363,12 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
         [username, accountName, t.code]
       );
     } else if (sec.quantity > 0) {
-      // 首次建仓：cost=移动加权成本；price 用成交价作为初始行情价（后续行情刷新覆盖）
+      // 首次建仓：cost=移动加权成本；当前价等待交易提交后的行情刷新，不能把成交价当行情价。
       const posId = require('crypto').randomBytes(8).toString('hex');
       await client.query(
         `INSERT INTO positions (id, username, account_name, account_id, code, name, price, quantity, cost, type, subtype, note)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'')`,
-        [posId, username, accountName, accountId, t.code, t.name || '', price, sec.quantity, sec.cost, t.type || '股权', t.subtype || '']
+        [posId, username, accountName, accountId, t.code, t.name || '', 0, sec.quantity, sec.cost, t.type || '股权', t.subtype || '']
       );
     }
     // 标记净值边界 + 同步提升 account_data 总版本/交易版本（P0-1：防旧页面全量保存覆盖）
@@ -381,12 +381,71 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
     );
     const cash = await recomputeCash(client, username, accountName);
     if (ownTxn) await client.query('COMMIT');
-    return { ok: true, id: tradeId, cash: cash, tradeDate: tradeDate };
+    return { ok: true, id: tradeId, code: t.code, cash: cash, tradeDate: tradeDate };
   } catch (e) {
     if (ownTxn) await client.query('ROLLBACK');
     throw e;
   } finally {
     if (ownTxn) client.release();
+  }
+}
+
+// 交易事务提交后立即刷新受影响证券的当前行情。
+// 行情失败不回滚已经保存的交易；新持仓保持 price=0，由页面显示待刷新状态。
+// fetcher 仅用于确定性测试，生产默认使用统一批量行情入口并复用全局短 TTL 缓存。
+async function refreshPositionPrices(username, accountName, codes, options = {}) {
+  const uniqueCodes = [...new Set((codes || [])
+    .map(code => String(code == null ? '' : code).trim().toUpperCase())
+    .filter(Boolean))];
+  if (!uniqueCodes.length) return { ok: true, refreshed: [], unavailable: [] };
+
+  let quotes;
+  try {
+    const fetcher = options.fetchQuotesByCodes || fetchQuotesByCodes;
+    quotes = await fetcher(uniqueCodes, options.quoteOptions || {});
+  } catch (e) {
+    console.warn('[ledger] 交易已保存，但行情刷新失败:', e.message);
+    return { ok: false, refreshed: [], unavailable: uniqueCodes, error: '行情刷新失败' };
+  }
+
+  const refreshed = [];
+  const unavailable = [];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const code of uniqueCodes) {
+      const quote = quotes && (quotes[code] || quotes[String(code).toUpperCase()]);
+      const price = Number(quote && quote.price);
+      if (!Number.isFinite(price) || price <= 0) {
+        unavailable.push(code);
+        continue;
+      }
+      const result = await client.query(
+        `UPDATE positions SET price=$1
+           WHERE username=$2 AND account_name=$3 AND code=$4 AND quantity > 0`,
+        [round(price, 4), username, accountName, code]
+      );
+      if (result.rowCount > 0) refreshed.push({ code, price: round(price, 4), quoteTime: quote.quote_time || null });
+      else unavailable.push(code);
+    }
+    if (refreshed.length > 0) {
+      await client.query(
+        `INSERT INTO account_data (username, account_name, data, version, pos_version)
+         VALUES ($1,$2,'{}',0,0)
+         ON CONFLICT (username, account_name) DO UPDATE SET
+           pos_version=COALESCE(account_data.pos_version,0)+1,
+           version=COALESCE(account_data.version,0)+1`,
+        [username, accountName]
+      );
+    }
+    await client.query('COMMIT');
+    return { ok: true, refreshed, unavailable };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.warn('[ledger] 交易已保存，但行情价格落库失败:', e.message);
+    return { ok: false, refreshed: [], unavailable: uniqueCodes, error: '行情刷新失败' };
+  } finally {
+    client.release();
   }
 }
 
@@ -397,15 +456,17 @@ async function applyTrade(username, accountName, trade, externalClient = null, e
 async function applyTradesBatch(username, accountName, events, expectedVersion = null) {
   const client = await pool.connect();
   const ids = [];
+  const codes = [];
   try {
     await client.query('BEGIN');
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     for (const event of events) {
       const r = await applyTrade(username, accountName, event, client);
       ids.push(r.id);
+      if (r.code) codes.push(r.code);
     }
     await client.query('COMMIT');
-    return { ok: true, ids, added: ids.length };
+    return { ok: true, ids, codes: [...new Set(codes)], added: ids.length };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -581,6 +642,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
 module.exports = {
   applyTrade,
   applyTradesBatch,
+  refreshPositionPrices,
   checkVersionInTxn,
   loadLedgerResult,
   deleteTrade,

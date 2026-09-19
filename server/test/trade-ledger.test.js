@@ -67,7 +67,7 @@ const T = (over) => Object.assign({
       assert.ok(pos, '应有持仓');
       assert.strictEqual(pos.quantity, 100);
       assert.strictEqual(pos.cost, 1000, '首笔买入成本=成交价');
-      assert.strictEqual(pos.price, 1000, '新持仓初始现价=成交价');
+      assert.strictEqual(pos.price, 0, '新持仓等待行情刷新，不能把成交价当现价');
       // 现金 = 1,000,000 - (100000 + 5 + 0.2) = 899994.8
       assert.strictEqual(d.cash, 899994.8, '现金应扣除成交额+费用');
       // 交易含 trade_date
@@ -82,7 +82,7 @@ const T = (over) => Object.assign({
       assert.strictEqual(pos.quantity, 200);
       // 成本 = (1000*100 + 1100*100)/200 = 1050
       assert.strictEqual(pos.cost, 1050, '移动加权成本应为 1050');
-      assert.strictEqual(pos.price, 1000, '现价不应被交易覆盖（保留首建仓行情价）');
+      assert.strictEqual(pos.price, 0, '没有行情刷新时现价仍应保持待刷新');
     });
 
     // ---------- 3) 部分卖出 ----------
@@ -190,6 +190,21 @@ const T = (over) => Object.assign({
       // 成本移动加权：8b 留 50@1000 + 08-08 两笔 200@1000 + 08-09 一笔 100@900
       // (50*1000 + 200*1000 + 100*900) / 350 = 971.4286
       assert.ok(Math.abs(pos.cost - 971.4286) < 0.01, '成本应移动加权为 971.43，实际 ' + pos.cost);
+    });
+
+    await checkAsync('交易提交后刷新行情：只更新现价，不改变成本', async () => {
+      const before = await loadAccountData(U, A);
+      const beforePos = before.positions.find(p => p.code === '600519');
+      const beforeCost = beforePos.cost;
+      const result = await ledger.refreshPositionPrices(U, A, ['600519'], {
+        fetchQuotesByCodes: async () => ({ '600519': { price: 1501.23456, quote_time: '2026-08-09T15:00:00+08:00' } })
+      });
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.refreshed[0].price, 1501.2346);
+      const after = await loadAccountData(U, A);
+      const afterPos = after.positions.find(p => p.code === '600519');
+      assert.strictEqual(afterPos.price, 1501.2346, '行情刷新应更新当前价');
+      assert.strictEqual(afterPos.cost, beforeCost, '行情刷新不得改变成本');
     });
 
   } finally {

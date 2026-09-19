@@ -5,6 +5,7 @@ const path = require('path');
 const { JOB_DEFINITIONS, externalCallLimitForMode } = require('../server/services/jobDefinitions');
 
 const outputPath = path.join(__dirname, '..', 'docs', '任务接口数据集矩阵.generated.md');
+const traceabilityPath = path.join(__dirname, '..', 'governance', 'rule-traceability.json');
 
 function scheduleOf(job) {
   if (job.manualOnly) return '人工';
@@ -32,7 +33,39 @@ function budgetCell(job) {
   return values.join('<br>');
 }
 
+function loadTraceability() {
+  const traceability = JSON.parse(fs.readFileSync(traceabilityPath, 'utf8'));
+  if (!traceability || traceability.schemaVersion !== 1 || !Array.isArray(traceability.rules)) {
+    throw new Error('规则追踪矩阵必须包含 schemaVersion=1 和 rules 数组');
+  }
+  const ids = new Set();
+  for (const rule of traceability.rules) {
+    if (!rule || !rule.id || !rule.title || !rule.owner || !rule.status) throw new Error('规则追踪条目缺少 id/title/owner/status');
+    if (ids.has(rule.id)) throw new Error(`规则追踪 ID 重复：${rule.id}`);
+    ids.add(rule.id);
+    const implementation = rule.implementation || {};
+    const implementationPath = path.join(__dirname, '..', implementation.file || '');
+    if (!implementation.file || !implementation.symbol || !fs.existsSync(implementationPath)) {
+      throw new Error(`${rule.id} 的实现文件或符号声明无效`);
+    }
+    const implementationText = fs.readFileSync(implementationPath, 'utf8');
+    if (!implementationText.includes(implementation.symbol)) {
+      throw new Error(`${rule.id} 的实现符号不存在：${implementation.file}#${implementation.symbol}`);
+    }
+    if (!Array.isArray(rule.tests) || !rule.tests.length) throw new Error(`${rule.id} 缺少回归测试映射`);
+    for (const test of rule.tests) {
+      const testPath = path.join(__dirname, '..', test.file || '');
+      if (!test.file || !fs.existsSync(testPath)) throw new Error(`${rule.id} 的测试文件不存在：${test.file}`);
+      if (test.pattern && !fs.readFileSync(testPath, 'utf8').includes(test.pattern)) {
+        throw new Error(`${rule.id} 的测试标记不存在：${test.file}#${test.pattern}`);
+      }
+    }
+  }
+  return traceability;
+}
+
 function render() {
+  const traceability = loadTraceability();
   const scheduled = JOB_DEFINITIONS.filter(job => !job.manualOnly).length;
   const manual = JOB_DEFINITIONS.filter(job => job.manualOnly).length;
   const lines = [
@@ -46,6 +79,15 @@ function render() {
   ];
   for (const job of JOB_DEFINITIONS) {
     lines.push(`| ${job.jobCode} | ${scheduleOf(job)} | ${cell(job.externalApis)} | ${cell(job.producesDatasets)} | ${cell(job.consumesDatasets)} | ${budgetCell(job)} |`);
+  }
+  lines.push('', '## 规则—实现—测试追踪矩阵', '',
+    '> 规则来源：`governance/rule-traceability.json`。生成器会校验实现文件、实现符号和测试文件标记，防止规则只停留在文档。', '',
+    '| 规则 ID | 规则 | 实现符号 | 测试 | 责任人 | 状态 |',
+    '|---|---|---|---|---|---|');
+  for (const rule of traceability.rules) {
+    const implementation = `${rule.implementation.file}#${rule.implementation.symbol}`;
+    const tests = rule.tests.map(test => `${test.file}${test.pattern ? `#${test.pattern}` : ''}`).join('<br>');
+    lines.push(`| ${rule.id} | ${rule.title} | ${implementation} | ${tests} | ${rule.owner} | ${rule.status} |`);
   }
   lines.push('', '<!-- JOB_MATRIX_GENERATED_END -->', '');
   return lines.join('\n');

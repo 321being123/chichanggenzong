@@ -1,6 +1,6 @@
 // 任务恢复的中立证据层：调度器和告警层共用，避免只凭单一 data_as_of 把槽位误判为已完成。
 const { pool } = require('../db/connection');
-const { getJobDefinition } = require('./jobDefinitions');
+const { getRegisteredJobDefinition } = require('./jobDefinitions');
 
 function businessDateText(value) {
   const text = String(value || '').trim();
@@ -22,7 +22,10 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
     && ['data_quality', 'dependency_blocked'].includes(String(options.alertType))) {
     return { recovered: false, reason: 'data_bound_alert_requires_dataset_evidence', evidence: slot };
   }
-  const definition = getJobDefinition(slot.job_code);
+  const definition = getRegisteredJobDefinition(slot.job_code);
+  if (!definition) {
+    return { recovered: false, reason: 'unknown_job_definition', evidence: { slot } };
+  }
   const { rows: runRows } = await query(
     `SELECT id,slot_id,status,result_json,attempt_no,trigger_type
        FROM job_runs WHERE slot_id=$1 ORDER BY id DESC LIMIT 1`, [slot.slot_id]

@@ -1,6 +1,6 @@
 const os = require('os');
 const { pool } = require('../db/connection');
-const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
+const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES } = require('./jobDefinitions');
 const { isCnHoliday } = require('../config/holidays');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
@@ -81,7 +81,24 @@ function expectedDataDate(jobCode, businessDate) {
   return cursor;
 }
 
+function resolveDatasetPartitionDate(requirement = {}, slot = {}, definition = {}) {
+  const businessDate = normalizeBusinessDate(slot.business_date);
+  if (!businessDate) return null;
+  const policy = String(requirement.partitionDatePolicy || 'business_date');
+  if (!PARTITION_DATE_POLICIES.includes(policy)) {
+    throw new Error(`不支持的 partitionDatePolicy：${policy}`);
+  }
+  if (policy === 'business_date') return businessDate;
+  if (policy === 'expected_data_date') return expectedDataDate(definition.jobCode, businessDate);
+  let cursor = previousDate(businessDate);
+  while (!isWeekday(cursor)) cursor = previousDate(cursor);
+  return cursor;
+}
+
 async function ensureSlot(jobCode, scheduledFor, businessDate, triggerType = 'scheduled', requestPayload = {}) {
+  if (!getRegisteredJobDefinition(jobCode)) {
+    throw new Error(`未知任务 jobCode，禁止创建执行槽位：${jobCode}`);
+  }
   const { rows } = await pool.query(
     `INSERT INTO ops.job_schedule_slots(job_code, scheduled_for, business_date, trigger_type, next_attempt_at,request_payload)
      VALUES ($1,$2,$3,$4,$2,$5::jsonb)
@@ -115,12 +132,22 @@ async function taskDependencyStates(slot, dependencies) {
 async function datasetDependencyState(slot, definition) {
   const requirements = definition.datasetDependencies || [];
   if (!requirements.length) return { ready: true, failed: false, detail: '' };
+  if (!getRegisteredJobDefinition(definition.jobCode)) {
+    return { ready: false, failed: true, detail: 'unknown_job_definition', scopeKeys: [] };
+  }
   const failures = [];
   const scopeKeys = [];
   for (const requirement of requirements) {
     // node-postgres 对 date 字段默认返回 Date；直接 String(Date).slice(0, 10)
     // 会得到“Wed Sep 02”，再传给 PostgreSQL::date 就会导致整个调度轮次失败。
-    const partitionKey = normalizeBusinessDate(slot.business_date);
+    let partitionKey;
+    try {
+      partitionKey = resolveDatasetPartitionDate(requirement, slot, definition);
+    } catch (error) {
+      failures.push(`${requirement.datasetCode || 'unknown'}@invalid-partition-date-policy`);
+      scopeKeys.push(`${requirement.datasetCode || 'unknown'}:${requirement.scopeKey || ''}:invalid`);
+      continue;
+    }
     if (!partitionKey) {
       failures.push(`${requirement.datasetCode}@invalid-business-date`);
       continue;
@@ -1038,4 +1065,5 @@ module.exports = {
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate,
+  resolveDatasetPartitionDate, datasetDependencyState,
 };

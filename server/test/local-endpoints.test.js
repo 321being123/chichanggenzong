@@ -186,7 +186,10 @@ async function checkAsync(name, fn) {
       assert.strictEqual(imported.snapshotSource, 'imported', '导入来源应标记');
       assert.strictEqual(imported.isLocked, true, '导入行必须锁定');
       assert.strictEqual(imported.totalAsset, 10500, '导入日总资产应保留券商权威值');
-      assert.strictEqual(d1.authoritativeTotalAsset, 27000, '导入次日起应使用系统持仓绝对市值加导入后现金余额');
+      const expectedAuthoritative = (d1.positions || [])
+        .filter(p => Number(p.quantity) > 0)
+        .reduce((sum, p) => sum + Number(p.price || 0) * Number(p.quantity || 0), Number(d1.authoritativeCash || 0));
+      assert.strictEqual(d1.authoritativeTotalAsset, expectedAuthoritative, '导入次日起应使用系统持仓绝对市值加导入后现金余额');
       assert.ok(d1.version > d0.version, '导入后版本应提升');
     });
 

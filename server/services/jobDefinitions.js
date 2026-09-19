@@ -99,6 +99,12 @@ const JOB_CONTRACTS = {
   'site_analytics_retention': { externalApis: [], producesDatasets: ['site_events', 'site_runtime_minute'], consumesDatasets: [], maxExternalCallsPerRun: 0 },
 };
 
+const DATA_DATE_POLICIES = Object.freeze(['none', 'same_day', 'previous_trading_day', 'latest_available']);
+const PARTITION_DATE_POLICIES = Object.freeze(['business_date', 'previous_trading_day', 'expected_data_date']);
+const CONTRACT_FIELDS = Object.freeze([
+  'externalApis', 'producesDatasets', 'consumesDatasets', 'datasetDependencies', 'maxExternalCallsPerRun',
+]);
+
 const JOB_DEFINITIONS = JOB_DEFINITION_SOURCE.map(item => ({
   ...DEFAULT_JOB_OPTIONS,
   ...item,
@@ -107,8 +113,103 @@ const JOB_DEFINITIONS = JOB_DEFINITION_SOURCE.map(item => ({
 
 const JOB_DEFINITION_MAP = new Map(JOB_DEFINITIONS.map(item => [item.jobCode, item]));
 
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+// 在默认值合并前审计两层原始配置。默认模式只报告存量遗漏，严格模式供新增/修改任务门禁使用。
+function validateJobDefinitionSources({
+  source = JOB_DEFINITION_SOURCE,
+  contracts = JOB_CONTRACTS,
+  datasetRegistry = null,
+  strict = false,
+} = {}) {
+  const errors = [];
+  const warnings = [];
+  const sourceRows = Array.isArray(source) ? source : [];
+  const sourceCodes = sourceRows.map(item => item && item.jobCode).filter(Boolean);
+  const seen = new Set();
+  for (const code of sourceCodes) {
+    if (seen.has(code)) errors.push(`JOB_DEFINITION_SOURCE 重复 jobCode：${code}`);
+    seen.add(code);
+  }
+  for (const item of sourceRows) {
+    if (!item || !item.jobCode) {
+      errors.push('JOB_DEFINITION_SOURCE 存在缺少 jobCode 的任务');
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(item, 'dataDatePolicy')) {
+      if (!DATA_DATE_POLICIES.includes(item.dataDatePolicy)) {
+        errors.push(`${item.jobCode} 的 dataDatePolicy 非法：${item.dataDatePolicy}`);
+      }
+    } else if (strict) {
+      errors.push(`${item.jobCode} 原始定义缺少 dataDatePolicy，不能依赖默认值`);
+    } else {
+      warnings.push(`${item.jobCode} 原始定义缺少 dataDatePolicy，当前由默认值补齐`);
+    }
+    const requirements = Array.isArray(item.datasetDependencies) ? item.datasetDependencies : [];
+    for (const requirement of requirements) {
+      if (!requirement || !requirement.datasetCode) {
+        errors.push(`${item.jobCode} 存在缺少 datasetCode 的 datasetDependencies`);
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(requirement, 'partitionDatePolicy')) {
+        if (strict) errors.push(`${item.jobCode}.${requirement.datasetCode} 缺少 partitionDatePolicy，不能依赖默认值`);
+        else warnings.push(`${item.jobCode}.${requirement.datasetCode} 缺少 partitionDatePolicy，当前按 business_date 兼容`);
+      }
+      const policy = requirement.partitionDatePolicy || 'business_date';
+      if (!PARTITION_DATE_POLICIES.includes(policy)) {
+        errors.push(`${item.jobCode}.${requirement.datasetCode} 的 partitionDatePolicy 非法：${policy}`);
+      }
+      if (datasetRegistry && !datasetRegistry[requirement.datasetCode]) {
+        errors.push(`${item.jobCode}.${requirement.datasetCode} 未登记 DATASET_PARTITION_REGISTRY`);
+      }
+    }
+  }
+  const contractCodes = Object.keys(contracts || {});
+  for (const code of contractCodes) {
+    if (!seen.has(code)) errors.push(`JOB_CONTRACTS 存在孤儿 jobCode：${code}`);
+    const contract = contracts[code] || {};
+    for (const field of Object.keys(contract)) {
+      if (!CONTRACT_FIELDS.includes(field)) errors.push(`${code} 的契约字段不在允许范围：${field}`);
+      const sourceItem = sourceRows.find(item => item && item.jobCode === code);
+      if (sourceItem && Object.prototype.hasOwnProperty.call(sourceItem, field)
+        && !sameJson(sourceItem[field], contract[field])) {
+        errors.push(`${code}.${field} 在 JOB_DEFINITION_SOURCE 与 JOB_CONTRACTS 中冲突`);
+      }
+    }
+  }
+  for (const item of sourceRows) {
+    if (!item || !item.jobCode) continue;
+    const effective = { ...DEFAULT_JOB_OPTIONS, ...item, ...(contracts[item.jobCode] || {}) };
+    const consumes = new Set(Array.isArray(effective.consumesDatasets) ? effective.consumesDatasets : []);
+    for (const requirement of (Array.isArray(effective.datasetDependencies) ? effective.datasetDependencies : [])) {
+      if (requirement && requirement.datasetCode && !consumes.has(requirement.datasetCode)) {
+        errors.push(`${item.jobCode} 的硬依赖 ${requirement.datasetCode} 不在 consumesDatasets 中`);
+      }
+      if (datasetRegistry && requirement && requirement.datasetCode && !datasetRegistry[requirement.datasetCode]) {
+        errors.push(`${item.jobCode}.${requirement.datasetCode} 未登记 DATASET_PARTITION_REGISTRY`);
+      }
+    }
+  }
+  return { ok: errors.length === 0, errors, warnings, sourceCount: sourceRows.length, contractCount: contractCodes.length };
+}
+
+const JOB_DEFINITION_AUDIT = validateJobDefinitionSources({ datasetRegistry: null, strict: false });
+if (!JOB_DEFINITION_AUDIT.ok) {
+  throw new Error(`任务定义门禁失败：${JOB_DEFINITION_AUDIT.errors.join('；')}`);
+}
+
+function isKnownJobCode(jobCode) {
+  return JOB_DEFINITION_MAP.has(jobCode);
+}
+
+function getRegisteredJobDefinition(jobCode) {
+  return JOB_DEFINITION_MAP.get(jobCode) || null;
+}
+
 function getJobDefinition(jobCode) {
-  return JOB_DEFINITION_MAP.get(jobCode) || { ...DEFAULT_JOB_OPTIONS, jobCode, label: jobCode, deadlineMinutes: 180 };
+  return getRegisteredJobDefinition(jobCode) || { ...DEFAULT_JOB_OPTIONS, jobCode, label: jobCode, deadlineMinutes: 180 };
 }
 
 function externalCallLimitForMode(definition, mode = 'core') {
@@ -129,4 +230,8 @@ function declaredDailyExternalCallBudget(definition) {
   return schedules.reduce((sum, schedule) => sum + (externalCallLimitForMode(definition, schedule.mode || 'core') || 0), 0);
 }
 
-module.exports = { JOB_DEFINITIONS, getJobDefinition, externalCallLimitForMode, declaredDailyExternalCallBudget };
+module.exports = {
+  DEFAULT_JOB_OPTIONS, JOB_DEFINITION_SOURCE, JOB_CONTRACTS, JOB_DEFINITIONS, JOB_DEFINITION_AUDIT,
+  DATA_DATE_POLICIES, PARTITION_DATE_POLICIES, validateJobDefinitionSources,
+  isKnownJobCode, getRegisteredJobDefinition, getJobDefinition, externalCallLimitForMode, declaredDailyExternalCallBudget,
+};

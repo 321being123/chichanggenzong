@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "lastReviewed": "2026-09-19",
+  "rules": [
+    {
+      "id": "TASK-CONTRACT-001",
+      "title": "默认值合并前审计原始任务契约",
+      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "validateJobDefinitionSources" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "validateJobDefinitionSources" }],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "TASK-CONTRACT-002",
+      "title": "任务契约键冲突、孤儿键和硬依赖必须失败",
+      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "JOB_CONTRACTS" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "strict: true" }],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "TASK-DATE-001",
+      "title": "数据集依赖统一消费 partitionDatePolicy",
+      "implementation": { "file": "server/services/jobScheduleSlots.js", "symbol": "resolveDatasetPartitionDate" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "previous_trading_day" }, { "file": "server/test/inc-0010-regression.test.js", "pattern": "datasetDependencyState" }],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "TASK-DATE-002",
+      "title": "未知任务不得进入执行和恢复链路",
+      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "getRegisteredJobDefinition" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "unknown_job_definition" }],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-001",
+      "title": "告警类型必须有证据策略注册",
+      "implementation": { "file": "server/services/jobAlertMailer.js", "symbol": "ALERT_EVIDENCE_POLICIES" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "unknown_alert_type_requires_manual_review" }],
+      "owner": "运维治理",
+      "status": "verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-002",
+      "title": "具体来源接口不得使用 source:* 作为恢复证据",
+      "implementation": { "file": "server/services/jobAlertMailer.js", "symbol": "verifyAlertScope" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "wildcardMustNotRecoverConcrete" }],
+      "owner": "运维治理",
+      "status": "verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-003",
+      "title": "依赖阻塞恢复必须复用严格槽位证据",
+      "implementation": { "file": "server/services/jobRecoveryEvidence.js", "symbol": "verifySlotRecoveryEvidence" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "dependencyAlert" }],
+      "owner": "运维治理",
+      "status": "verified"
+    },
+    {
+      "id": "GOVERNANCE-001",
+      "title": "任务治理规则必须进入知识门禁",
+      "implementation": { "file": "scripts/check-knowledge.js", "symbol": "collectJobContractErrors" },
+      "tests": [{ "file": "server/test/knowledge-governance.test.js", "pattern": "runCheck" }],
+      "owner": "研发规范",
+      "status": "verified"
+    }
+  ]
+}

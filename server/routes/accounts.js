@@ -150,12 +150,15 @@ router.post('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOw
       // P1-4 服务端幂等：重复导入直接返回已存在，不重复写入。
       // 2026-08-04 第三轮修复：必须返回最新数据+版本——若第一次保存成功但响应丢失，
       // 重试命中后前端需要靠这里的 data 恢复最新状态，否则页面停留在旧数据/旧版本。
+      const quoteRefresh = await tradeLedger.refreshPositionPrices(req.session.user, name, [r.code || trade.code]);
       const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
-      return res.json({ ok: true, skipped: 'duplicate', id: r.id, data: fresh });
+      return res.json({ ok: true, skipped: 'duplicate', id: r.id, quoteRefresh, data: fresh });
     }
     // 返回服务端最新账户结果（前端直接刷新内存，方案阶段二第 8 条）
+    // 交易提交成功后立即刷新受影响证券，覆盖周末/收盘后新建持仓仍显示成交价的问题。
+    const quoteRefresh = await tradeLedger.refreshPositionPrices(req.session.user, name, [r.code || trade.code]);
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
-    res.json({ ok: true, id: r.id, cash: r.cash, tradeDate: r.tradeDate, data: fresh });
+    res.json({ ok: true, id: r.id, cash: r.cash, tradeDate: r.tradeDate, quoteRefresh, data: fresh });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -217,8 +220,9 @@ router.post('/accounts/:name/ledger/position-events', requireLogin, asyncHandler
   }
   try {
     const r = await tradeLedger.applyTrade(req.session.user, name, event, null, req.query.version);
+    const quoteRefresh = await tradeLedger.refreshPositionPrices(req.session.user, name, [r.code || event.code]);
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
-    res.json({ ok: true, id: r.id, data: fresh });
+    res.json({ ok: true, id: r.id, quoteRefresh, data: fresh });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
@@ -238,8 +242,9 @@ router.post('/accounts/:name/ledger/position-events/batch', requireLogin, asyncH
   }
   try {
     const r = await tradeLedger.applyTradesBatch(req.session.user, name, events, req.query.version);
+    const quoteRefresh = await tradeLedger.refreshPositionPrices(req.session.user, name, r.codes || events.map(event => event.code));
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
-    res.json({ ok: true, ids: r.ids, added: r.added, data: fresh });
+    res.json({ ok: true, ids: r.ids, added: r.added, quoteRefresh, data: fresh });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }

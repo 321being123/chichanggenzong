@@ -2,7 +2,7 @@ const { pool, startJobRun } = require('../db');
 const { fork, execFile } = require('child_process');
 const path = require('path');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
-const { JOB_DEFINITIONS, getJobDefinition } = require('./jobDefinitions');
+const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition } = require('./jobDefinitions');
 const {
   WORKER_ID, syncScheduleSlots, recoverExpiredSlots, listDueSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, queryDataAsOf, isDataAsOfFresh, expectedDataDate,
@@ -513,6 +513,14 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     notifyStopWaiters();
     return { ok: false, skipped: true, reason: 'not_claimed' };
   }
+  const definition = getRegisteredJobDefinition(claimed.job_code);
+  if (!definition) {
+    const message = `未知任务定义，禁止执行：${claimed.job_code}`;
+    await completeSlot(claimed.slot_id, 'blocked', { ok: false, unknownJobDefinition: true }, message).catch(() => {});
+    activeRuns -= 1;
+    notifyStopWaiters();
+    return { ok: false, skipped: true, reason: 'unknown_job_definition' };
+  }
   if (stopping) {
     await deferSlot(claimed.slot_id, 'Worker 正在停机，任务已回到补偿队列', { workerStopping: true }, 1).catch(() => {});
     activeRuns -= 1;
@@ -535,7 +543,6 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     ).catch(() => {});
   }, 60 * 1000);
   if (heartbeatTimer.unref) heartbeatTimer.unref();
-  const definition = getJobDefinition(claimed.job_code);
   const runMeta = {
     controller,
     startedAt: Date.now(),

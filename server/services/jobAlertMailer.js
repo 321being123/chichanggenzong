@@ -54,6 +54,23 @@ function alertScope(input = {}) {
 }
 
 const DATA_BOUND_ALERT_TYPES = new Set(['data_quality', 'dependency_blocked']);
+const NOTIFICATION_ONLY_ALERT_TYPES = new Set([
+  'recovery', 'worker_recovered', 'job_overdue_recovered', 'external_api_switch', 'external_api_interface_failover',
+]);
+
+// 故障告警的收敛策略注册表。未知类型允许写入和展示，但默认禁止自动关闭。
+const ALERT_EVIDENCE_POLICIES = Object.freeze({
+  failure: { autoResolve: true, verifier: 'slot_or_source', evidenceVersion: 1, scopes: ['slot', 'job', 'source_endpoint'] },
+  failure_warning: { autoResolve: true, verifier: 'slot_or_source', evidenceVersion: 1, scopes: ['slot', 'job', 'source_endpoint'] },
+  late: { autoResolve: true, verifier: 'slot', evidenceVersion: 1, scopes: ['slot', 'job'] },
+  degraded: { autoResolve: true, verifier: 'slot', evidenceVersion: 1, scopes: ['slot', 'job'] },
+  dependency_blocked: { autoResolve: true, verifier: 'slot_recovery_evidence', evidenceVersion: 1, scopes: ['slot', 'job'] },
+  data_quality: { autoResolve: true, verifier: 'dataset_partition', evidenceVersion: 1, scopes: ['dataset', 'slot', 'job'] },
+  source_fallback_degraded: { autoResolve: true, verifier: 'source_and_runtime', evidenceVersion: 1, scopes: ['source_endpoint'] },
+  duplicate_success: { autoResolve: false, verifier: 'manual', evidenceVersion: 1, scopes: ['slot', 'job'] },
+  worker_offline: { autoResolve: false, verifier: 'manual_worker_health', evidenceVersion: 1, scopes: ['job'] },
+  ...Object.fromEntries([...NOTIFICATION_ONLY_ALERT_TYPES].map(type => [type, { autoResolve: false, verifier: 'notification', evidenceVersion: 1, notificationOnly: true, scopes: [] }])),
+});
 
 function parseAlertScope(alert = {}) {
   const type = String(alert.scope_type || '').trim();
@@ -82,6 +99,13 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
   const scope = parseAlertScope(alert);
   const historical = Boolean(options.historical);
   const alertType = String(alert.alert_type || '');
+  const policy = ALERT_EVIDENCE_POLICIES[alertType];
+  if (!policy) {
+    return { recovered: false, evidence: null, reason: 'unknown_alert_type_requires_manual_review' };
+  }
+  if (policy.notificationOnly || policy.autoResolve === false) {
+    return { recovered: false, evidence: null, reason: policy.notificationOnly ? 'notification_only_alert' : 'alert_type_not_auto_resolvable' };
+  }
   if (scope.type === 'slot') {
     const { rows } = await query(
       `SELECT slot_id,job_code,business_date,status,scheduled_for,updated_at,request_payload,result_summary
@@ -152,13 +176,17 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
     const apiName = separator >= 0 ? scope.key.slice(separator + 1) : '*';
     const params = apiName === '*'
       ? [source]
-      : [source, [apiName, '*']];
+      : [source, apiName];
     const sql = apiName === '*'
       ? `SELECT source,api_name,state,recover_at,last_success_at,updated_at
            FROM ops.external_circuits WHERE source=$1 ORDER BY updated_at DESC`
       : `SELECT source,api_name,state,recover_at,last_success_at,updated_at
-           FROM ops.external_circuits WHERE source=$1 AND api_name=ANY($2::text[]) ORDER BY updated_at DESC`;
-    const { rows } = await query(sql, params);
+           FROM ops.external_circuits WHERE source=$1 AND api_name=$2 ORDER BY updated_at DESC`;
+    const { rows: queriedRows } = await query(sql, params);
+    // 查询和证据都做一次精确作用域过滤，避免错误 SQL、历史兼容层或测试替身把 source:* 混入具体接口。
+    const rows = apiName === '*'
+      ? queriedRows
+      : queriedRows.filter(row => String(row.api_name || '') === apiName);
     const lastSeen = alert.last_seen_at ? new Date(alert.last_seen_at).getTime() : NaN;
     const hasNewProbeSuccess = rows.some(row => {
       const successAt = row.last_success_at && new Date(row.last_success_at).getTime();
@@ -828,5 +856,5 @@ module.exports = {
   sendAlert, sendDueAlerts, sendRecoveryAlert, resolveJobSlotAlerts,
   resolveDatasetAlerts, resolveSourceEndpointAlerts,
   reconcileRecoveredSourceAlerts, reconcileHistoricalAlerts, reconcilePartialDataAlerts, resolveWorkerOfflineAlert, notifyJobFailure, sendTestEmail, listAlerts, resendAlert, acknowledgeAlert,
-  ACTIVE_ALERT_WHERE, parseAlertScope, allCircuitsClosed, verifyAlertScope,
+  ACTIVE_ALERT_WHERE, parseAlertScope, allCircuitsClosed, verifyAlertScope, ALERT_EVIDENCE_POLICIES,
 };

@@ -21,7 +21,7 @@ const { pool } = require('../db/connection');
 const { publishDatasetPartition } = require('../services/datasetPartitions');
 const { mergeDateRanges } = require('../services/convertibleBondSuspensionSync');
 const { DATASET_PARTITION_REGISTRY, areJobDatasetsPublished } = require('../services/datasetPartitionRegistry');
-const { expectedDataDate } = require('../services/jobScheduleSlots');
+const { expectedDataDate, datasetDependencyState } = require('../services/jobScheduleSlots');
 const { runSlot } = require('../services/jobOrchestrator');
 const definitions = require('../services/jobDefinitions');
 
@@ -191,12 +191,64 @@ async function verifyRateLimitBreaker(businessDate) {
   assert.strictEqual(blocked.next_attempt_at, null, '达到阈值后必须取消自动重试时间');
 }
 
+async function verifyPartitionDatePolicyWithDatabase() {
+  const businessDate = '2099-01-12';
+  const previousTradingDay = '2099-01-09';
+  const datasetCode = 'hk_trade_calendar';
+  await pool.query(
+    'DELETE FROM ops.dataset_partitions WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=ANY($3::date[])',
+    [datasetCode, 'HK', [businessDate, previousTradingDay]]
+  );
+  try {
+    await publishDatasetPartition(datasetCode, 'HK', {
+      partitionKey: previousTradingDay,
+      dataAsOf: previousTradingDay,
+      rowCount: 1,
+      status: 'published',
+      diagnostics: { quality_status: 'passed', test_fixture: 'partition-date-policy' },
+    });
+    const definition = {
+      ...definitions.getJobDefinition('hk_ipo_preopen'),
+      datasetDependencies: [{
+        datasetCode,
+        scopeKey: 'HK',
+        partitionDatePolicy: 'previous_trading_day',
+        requireQualityStatus: 'passed',
+      }],
+    };
+    const ready = await datasetDependencyState({ business_date: businessDate }, definition);
+    assert.strictEqual(ready.ready, true, '真实测试库必须按 previous_trading_day 命中前一交易日分区');
+    assert.strictEqual(ready.failed, false);
+
+    await pool.query(
+      'DELETE FROM ops.dataset_partitions WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=$3::date',
+      [datasetCode, 'HK', previousTradingDay]
+    );
+    await publishDatasetPartition(datasetCode, 'HK', {
+      partitionKey: businessDate,
+      dataAsOf: businessDate,
+      rowCount: 1,
+      status: 'published',
+      diagnostics: { quality_status: 'passed', test_fixture: 'partition-date-policy-wrong-day' },
+    });
+    const wrongDay = await datasetDependencyState({ business_date: businessDate }, definition);
+    assert.strictEqual(wrongDay.ready, false, '只有槽位业务日分区时不得误判前一交易日依赖已就绪');
+    assert.match(wrongDay.detail, /missing/);
+  } finally {
+    await pool.query(
+      'DELETE FROM ops.dataset_partitions WHERE dataset_code=$1 AND scope_key=$2 AND partition_key=ANY($3::date[])',
+      [datasetCode, 'HK', [businessDate, previousTradingDay]]
+    );
+  }
+}
+
 (async () => {
   const businessDates = ['2099-01-06', '2099-01-07'];
   const partitionDates = businessDates.map(date => expectedDataDate(JOB_CODE, date));
   try {
     await cleanupFixtures(businessDates, partitionDates);
     runStaticContracts();
+    await verifyPartitionDatePolicyWithDatabase();
     await verifyFailureThenSuspensionOnlyRecovery(businessDates[0]);
     await verifyRateLimitBreaker(businessDates[1]);
     console.log('INC-0010 regression tests passed: real orchestrator, partition date, retry and breaker');

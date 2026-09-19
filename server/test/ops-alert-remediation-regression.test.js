@@ -7,9 +7,10 @@ const { recoverySchedule } = require('../services/jobOrchestrator');
 const { cninfoApiName } = require('../services/cninfoAnnouncement');
 const { closedCircuitApiNames } = require('../services/externalCallGuard');
 const { verifyAlertScope } = require('../services/jobAlertMailer');
-const { isDataAsOfFresh } = require('../services/jobScheduleSlots');
-const { getJobDefinition } = require('../services/jobDefinitions');
+const { isDataAsOfFresh, resolveDatasetPartitionDate } = require('../services/jobScheduleSlots');
+const { getJobDefinition, getRegisteredJobDefinition, validateJobDefinitionSources } = require('../services/jobDefinitions');
 const { allCircuitsClosed, verifyScope } = require('../scripts/reconcileAlertHistory');
+const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
 
 function read(relative) {
   return fs.readFileSync(path.join(ROOT, relative), 'utf8');
@@ -109,7 +110,7 @@ async function verifyReconciliationEvidence() {
   assert.strictEqual(allCircuitsClosed([{ state: 'closed' }, { state: 'open' }]), false);
 
   const missingCircuit = await verifyScope(
-    { scope_type: 'source_endpoint', scope_key: 'cninfo:topSearch' },
+    { alert_type: 'failure', scope_type: 'source_endpoint', scope_key: 'cninfo:topSearch' },
     async () => ({ rows: [] })
   );
   assert.strictEqual(missingCircuit.recovered, false);
@@ -125,6 +126,27 @@ async function verifyReconciliationEvidence() {
     ] })
   );
   assert.strictEqual(recoveredSource.recovered, true, '来源探测成功且全部熔断关闭后才能自动关闭告警');
+
+  let sourceQuery;
+  const wildcardMustNotRecoverConcrete = await verifyAlertScope(
+    {
+      alert_type: 'failure', scope_type: 'source_endpoint', scope_key: 'cninfo:topSearch',
+      last_seen_at: '2026-09-06T08:00:00.000Z',
+    },
+    async (sql, params) => {
+      sourceQuery = { sql, params };
+      return { rows: [{ source: 'cninfo', api_name: '*', state: 'closed', last_success_at: '2026-09-06T08:01:00.000Z' }] };
+    }
+  );
+  assert.strictEqual(wildcardMustNotRecoverConcrete.recovered, false, '来源通配熔断不得恢复具体接口告警');
+  assert.deepStrictEqual(sourceQuery.params, ['cninfo', 'topSearch'], '具体接口告警必须按精确 api_name 查询');
+
+  const unknownAlert = await verifyAlertScope(
+    { alert_type: 'new_unknown_fault', scope_type: 'slot', scope_key: '10' },
+    async () => { throw new Error('未知告警类型不应访问恢复证据查询'); }
+  );
+  assert.strictEqual(unknownAlert.recovered, false);
+  assert.strictEqual(unknownAlert.reason, 'unknown_alert_type_requires_manual_review');
 
   const original = {
     slot_id: 10, job_code: 'convertible_bond_refresh', status: 'failed',
@@ -165,6 +187,19 @@ async function verifyReconciliationEvidence() {
   );
   assert.strictEqual(dependencyAlert.recovered, true,
     '依赖阻塞告警必须允许同槽位成功运行和完整恢复证据收敛');
+
+  assert.strictEqual(resolveDatasetPartitionDate({ partitionDatePolicy: 'business_date' }, { business_date: '2026-09-21' }, { jobCode: 'hk_ipo_preopen' }), '2026-09-21');
+  assert.strictEqual(resolveDatasetPartitionDate({ partitionDatePolicy: 'previous_trading_day' }, { business_date: '2026-09-21' }, { jobCode: 'hk_ipo_preopen' }), '2026-09-18');
+  assert.throws(() => resolveDatasetPartitionDate({ partitionDatePolicy: 'silently_same_day' }, { business_date: '2026-09-21' }, { jobCode: 'hk_ipo_preopen' }), /不支持的 partitionDatePolicy/);
+  assert.strictEqual(getRegisteredJobDefinition('unknown-job'), null);
+  const unknownRecovery = await verifySlotRecoveryEvidence({ slot_id: 99, job_code: 'unknown-job', status: 'succeeded' }, async () => {
+    throw new Error('未知任务不应查询运行记录');
+  });
+  assert.strictEqual(unknownRecovery.recovered, false);
+  assert.strictEqual(unknownRecovery.reason, 'unknown_job_definition');
+  assert.strictEqual(validateJobDefinitionSources({
+    source: [{ jobCode: 'sample' }], contracts: {}, strict: true,
+  }).ok, false, '严格契约门禁必须拒绝依赖默认 dataDatePolicy 的原始定义');
 }
 
 verifyReconciliationEvidence().then(() => {

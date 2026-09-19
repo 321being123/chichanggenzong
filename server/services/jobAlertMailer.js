@@ -88,7 +88,9 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
          FROM ops.job_schedule_slots WHERE slot_id=$1`, [scope.key]
     );
     const row = rows[0];
-    if (DATA_BOUND_ALERT_TYPES.has(alertType)) {
+    // dependency_blocked 允许复用同槽位成功运行 + 发布分区的严格证据；
+    // data_quality 仍必须使用 dataset 作用域，不能被单次任务成功掩盖。
+    if (DATA_BOUND_ALERT_TYPES.has(alertType) && alertType !== 'dependency_blocked') {
       return { recovered: false, evidence: row || null, reason: 'data_bound_alert_requires_dataset_evidence' };
     }
     if (row && row.status === 'succeeded') {

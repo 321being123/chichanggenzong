@@ -146,6 +146,25 @@ async function verifyReconciliationEvidence() {
     { alert_type: 'data_quality', scope_type: 'slot', scope_key: '10' }, query
   );
   assert.strictEqual(dataAlert.recovered, false, '数据质量告警不能被后续任务成功自动掩盖');
+
+  const dependencySlot = {
+    slot_id: 20, job_code: 'convertible_bond_valuation_refresh', business_date: '2026-09-19',
+    status: 'succeeded', request_payload: { mode: 'core' },
+    result_summary: { ok: true, status: 'succeeded', dataAsOf: '2026-09-18' },
+  };
+  const dependencyQuery = async sql => {
+    if (sql.includes('FROM ops.job_schedule_slots')) return { rows: [dependencySlot] };
+    if (sql.includes('FROM job_runs')) return { rows: [{
+      id: 21, slot_id: 20, status: 'done', attempt_no: 1, trigger_type: 'scheduled',
+      result_json: { ok: true, status: 'succeeded', dataAsOf: '2026-09-18' },
+    }] };
+    throw new Error(`未预期的依赖恢复查询：${sql}`);
+  };
+  const dependencyAlert = await verifyAlertScope(
+    { alert_type: 'dependency_blocked', scope_type: 'slot', scope_key: '20' }, dependencyQuery
+  );
+  assert.strictEqual(dependencyAlert.recovered, true,
+    '依赖阻塞告警必须允许同槽位成功运行和完整恢复证据收敛');
 }
 
 verifyReconciliationEvidence().then(() => {

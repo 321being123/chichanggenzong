@@ -213,6 +213,12 @@ async function tushareQuery(apiName, params = {}, fields = '', options = {}) {
       return result;
     } catch (error) {
       lastError = error;
+      // 主账号已得到明确的上游错误时，备用账号若仅因本地策略未配置/被禁用而无法尝试，
+      // 不得用本地策略错误覆盖主账号的真实错误（否则限流会被误报成“策略缺失”）。
+      if (candidate.source === BACKUP_SOURCE && primaryFailure
+        && ['POLICY_NOT_CONFIGURED', 'POLICY_DISABLED', 'PERMISSION_DENIED'].includes(error && error.code)) {
+        throw primaryFailure;
+      }
       if (index === candidates.length - 1 || !failoverEligible(error, options)) throw error;
       if (candidate.source === PRIMARY_SOURCE && runtime.mode === 'auto') {
         primaryFailure = error;

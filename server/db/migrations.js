@@ -6753,6 +6753,100 @@ async function migration160RateLimitRecoveryBackoff() {
   `);
 }
 
+// ========== 161：港股 IPO 市场快照时间线与规范化幂等 =============
+// 保留旧快照，取消“同日同源同类型只能一条”的约束；新写入按规范化业务内容哈希幂等，支持同日多时点留痕。
+async function migration161HkIpoMarketSnapshotTimeline() {
+  const client = await pool.connect();
+  const quoteIdent = value => `"${String(value).replace(/"/g, '""')}"`;
+  try {
+    await client.query('BEGIN');
+    const table = await client.query("SELECT to_regclass('analytics.hk_ipo_market_snapshots') AS name");
+    if (!table.rows[0] || !table.rows[0].name) {
+      throw new Error('analytics.hk_ipo_market_snapshots 不存在，拒绝执行 161 号迁移');
+    }
+
+    await client.query(`
+      ALTER TABLE analytics.hk_ipo_market_snapshots
+        ADD COLUMN IF NOT EXISTS source_observed_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        ADD COLUMN IF NOT EXISTS margin_amount_hkd NUMERIC(20,6),
+        ADD COLUMN IF NOT EXISTS margin_multiple NUMERIC(20,6),
+        ADD COLUMN IF NOT EXISTS signal_kind TEXT,
+        ADD COLUMN IF NOT EXISTS source_record_hash TEXT,
+        ADD COLUMN IF NOT EXISTS quality_status TEXT NOT NULL DEFAULT 'valid';
+
+      UPDATE analytics.hk_ipo_market_snapshots
+         SET last_seen_at=COALESCE(last_seen_at,observed_at,created_at,now()),
+             quality_status=COALESCE(NULLIF(quality_status,''),'valid')
+       WHERE last_seen_at IS NULL OR quality_status IS NULL OR quality_status='';
+    `);
+
+    for (const [name, definition] of [
+      ['chk_hk_ipo_market_snapshots_signal_kind', `CHECK (signal_kind IS NULL OR signal_kind IN ('subscription_estimate','margin_estimate','grey_market_quote'))`],
+      ['chk_hk_ipo_market_snapshots_quality_status', `CHECK (quality_status IN ('valid','empty','rejected'))`],
+    ]) {
+      const exists = await client.query(
+        'SELECT 1 FROM pg_constraint WHERE conname=$1 AND conrelid=\'analytics.hk_ipo_market_snapshots\'::regclass',
+        [name]
+      );
+      if (!exists.rowCount) await client.query(`ALTER TABLE analytics.hk_ipo_market_snapshots ADD CONSTRAINT ${quoteIdent(name)} ${definition}`);
+    }
+
+    const keyColumns = `ARRAY['security_code','source_code','signal_type','data_date']::text[]`;
+    const constraints = await client.query(`
+      SELECT c.conname
+        FROM pg_constraint c
+       WHERE c.conrelid='analytics.hk_ipo_market_snapshots'::regclass
+         AND c.contype='u'
+         AND (SELECT array_agg(a.attname::text ORDER BY k.ord)
+                FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ord)
+                JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum)=${keyColumns}
+    `);
+    if (constraints.rowCount > 1) {
+      throw new Error(`161 号迁移识别到多个旧唯一约束：${constraints.rows.map(row => row.conname).join(',')}`);
+    }
+    if (constraints.rowCount === 1) {
+      await client.query(`ALTER TABLE analytics.hk_ipo_market_snapshots DROP CONSTRAINT ${quoteIdent(constraints.rows[0].conname)}`);
+    } else {
+      const indexes = await client.query(`
+        SELECT i.indexrelid::regclass::text AS index_name
+          FROM pg_index i
+         WHERE i.indrelid='analytics.hk_ipo_market_snapshots'::regclass
+           AND i.indisunique
+           AND NOT i.indisprimary
+           AND (SELECT array_agg(a.attname::text ORDER BY k.ord)
+                  FROM unnest(i.indkey) WITH ORDINALITY k(attnum,ord)
+                  JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum)=${keyColumns}
+           AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid=i.indexrelid)
+      `);
+      if (indexes.rowCount > 1) {
+        throw new Error(`161 号迁移识别到多个独立旧唯一索引：${indexes.rows.map(row => row.index_name).join(',')}`);
+      }
+      if (indexes.rowCount === 1) await client.query(`DROP INDEX ${indexes.rows[0].index_name}`);
+      if (indexes.rowCount === 0) {
+        throw new Error('161 号迁移未找到旧唯一约束或独立唯一索引，拒绝继续变更表结构');
+      }
+    }
+
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_hk_ipo_market_snapshots_record_hash
+        ON analytics.hk_ipo_market_snapshots(
+          security_code,source_code,signal_type,data_date,source_record_hash
+        ) WHERE source_record_hash IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_hk_ipo_market_snapshots_source_time
+        ON analytics.hk_ipo_market_snapshots(
+          security_code,signal_type,source_observed_at DESC NULLS LAST,observed_at DESC
+        );
+    `);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -6914,6 +7008,7 @@ const MIGRATIONS = [
   { version: '158_realtime_exchange_rate_policy', up: migration158RealtimeExchangeRatePolicy },
   { version: '159_verified_limits_and_recoverable_circuits', up: migration159VerifiedLimitsAndRecoverableCircuits },
   { version: '160_rate_limit_recovery_backoff', up: migration160RateLimitRecoveryBackoff },
+  { version: '161_hk_ipo_market_snapshot_timeline', up: migration161HkIpoMarketSnapshotTimeline },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========
@@ -7529,6 +7624,7 @@ module.exports = {
   migration158RealtimeExchangeRatePolicy,
   migration159VerifiedLimitsAndRecoverableCircuits,
   migration160RateLimitRecoveryBackoff,
+  migration161HkIpoMarketSnapshotTimeline,
   migration137ConvertibleBondExchangeAnnouncementUnlimited,
   migration138SiteAnalytics,
   migration140IpoInstrumentIdentity,

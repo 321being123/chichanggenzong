@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { JOB_DEFINITIONS, externalCallLimitForMode } = require('../server/services/jobDefinitions');
+const { DATASET_PARTITION_REGISTRY } = require('../server/services/datasetPartitionRegistry');
 
 const outputPath = path.join(__dirname, '..', 'docs', '任务接口数据集矩阵.generated.md');
 const traceabilityPath = path.join(__dirname, '..', 'governance', 'rule-traceability.json');
@@ -73,6 +74,7 @@ function render() {
     '',
     '> 此文件由 `scripts/generate-job-matrix.js` 从 `server/services/jobDefinitions.js` 生成，禁止手工修改。',
     `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）。联网任务不设置内部调用数额度；真实限制只来自已核验官方策略。`,
+    `> 数据集分区注册表已纳入任务契约审计，当前登记 ${Object.keys(DATASET_PARTITION_REGISTRY).length} 个数据集。`,
     '',
     '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 任务调用数约束 |',
     '|---|---|---|---|---|---:|',

@@ -11,6 +11,29 @@ db.pool.query = async sql => {
   if (text.includes('FROM users WHERE username=$1')) {
     return { rows: [{ username: 'test', status: 'active', auth_version: undefined, permissions: {} }] };
   }
+  if (mode === 'hk-calendar' && text.includes("WHERE h.market_code='HK'")) {
+    lastStockSql = text;
+    return { rows: [
+      { date: '2026-09-20', event_type: 'apply', code: '09995.HK', name: '测试港股',
+        offer_open_at: '2026-09-19T01:00:00.000Z', offer_close_at: '2026-09-21T04:00:00.000Z',
+        listing_at: null, listing_date: null, offer_phase: 'open' },
+      { date: '2026-09-21', event_type: 'listing', code: '09995.HK', name: '测试港股',
+        offer_open_at: '2026-09-19T01:00:00.000Z', offer_close_at: '2026-09-21T04:00:00.000Z',
+        listing_at: '2026-09-21T01:00:00.000Z', listing_date: '2026-09-21', offer_phase: 'open' },
+    ] };
+  }
+  if (mode === 'hk-report' && text.includes('h.security_code=$1')) {
+    lastStockSql = text;
+    return { rows: [{ security_code: '09995.HK', security_name: 'Test HK IPO', security_name_cn: '测试港股',
+      ipo_status: 'active', market_type: '主板', offer_phase: 'open', offer_open_date: '2026-09-19',
+      offer_close_date: '2026-09-21', pricing_date: null, allotment_date: null, listing_date: null,
+      issue_price_low: 10, issue_price_high: 12, issue_price_final: null, lot_size_shares: 100,
+      lot_amount_hkd: 1200, application_fee_hkd: 30, brokerage_fee_hkd: 12,
+      oversubscribe_multiple: null, greenshoe_details: {}, facts_published_at: null,
+      current_subscription_signal: null, current_margin_signal: null,
+      subscription_live_multiple: null, subscription_live_source: null,
+      livermore_grey_market_change_pct: null, futu_grey_market_change_pct: null }] };
+  }
   if (text.includes('FROM ipo_history h')) {
     lastStockSql = text;
     if (mode === 'history') {
@@ -64,6 +87,22 @@ const server = app.listen(0, async () => {
     payload = await response.json();
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-08-15').apply_stocks[0].code, '688826');
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-08-16').list_stocks[0].code, '688826');
+
+    mode = 'hk-calendar';
+    response = await fetch(`${base}/api/ipo/calendar?market=HK&days=3`);
+    assert.strictEqual(response.status, 200);
+    payload = await response.json();
+    assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-20').apply_stocks[0].code, '09995.HK');
+    assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-21').list_stocks[0].offer_phase, 'open');
+    assert.match(lastStockSql, /timezone\('Asia\/Shanghai', now\(\)\)/, 'HK 日历未使用上海时区边界');
+    assert.match(lastStockSql, /offer_close_at >= now\(\)/, 'HK 日历未排除已截止招股窗口');
+    assert.match(lastStockSql, /offer_phase IN \('upcoming','open'\)/, 'HK 日历未限制招股状态');
+
+    mode = 'hk-report';
+    response = await fetch(`${base}/api/ipo/report/code?code=09995.HK`);
+    assert.strictEqual(response.status, 200);
+    await response.json();
+    assert.match(lastStockSql, /timezone\('Asia\/Shanghai',offer_open_at\)/, 'HK 详情接口未使用上海时区格式化日期');
     console.log('OK ipo-history-contract: 历史阶段、字段状态和事实日历行为通过');
   } catch (error) {
     console.error(error);

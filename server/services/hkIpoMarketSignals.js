@@ -113,6 +113,31 @@ function requestExternal(url, { format = 'json', timeoutMs = 15000 } = {}) {
   });
 }
 
+function validateFutuIpoHtmlResponse(html) {
+  const text = String(html || '').trim();
+  if (!text) {
+    const error = new Error('富途 IPO 页面返回空响应');
+    error.code = 'UPSTREAM_EMPTY';
+    error.errorType = 'empty_data';
+    throw error;
+  }
+  const hasListItem = /class=["'][^"']*\blist-item\b/i.test(text);
+  if (!hasListItem && /(login|sign\s*in|登入|登录)/i.test(text)) {
+    const error = new Error('富途 IPO 页面疑似登录失效');
+    error.code = 'AUTH_ERROR';
+    error.errorType = 'permission';
+    throw error;
+  }
+  // 页面可以合法返回无 IPO 项，但必须仍然是 IPO 页面；不识别的 HTML 不能当作空数据。
+  if (!hasListItem && !/(\bipo\b|新股)/i.test(text)) {
+    const error = new Error('富途 IPO 页面结构无法识别');
+    error.code = 'UPSTREAM_FORMAT';
+    error.errorType = 'upstream';
+    throw error;
+  }
+  return text;
+}
+
 function extractLivermoreRecords(payload) {
   const data = payload && payload.data;
   if (Array.isArray(data)) return data.filter(item => item && typeof item === 'object');
@@ -258,6 +283,49 @@ function isQuotaOrCircuitError(error) {
     || /(daily|quota|rate.?limit|额度|限流|熔断|每日上限)/i.test(message);
 }
 
+function normalizeSnapshotNumber(value, scale) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(String(value).replace(/[,，%+]/g, ''));
+  if (!Number.isFinite(number)) return null;
+  return number.toFixed(scale);
+}
+
+function normalizeSnapshotTimestamp(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function buildSourceRecordHash({
+  code,
+  sourceCode,
+  signalType,
+  signalKind = null,
+  dataDate,
+  sourceObservedAt = null,
+  subscriptionMultiple = null,
+  marginAmountHkd = null,
+  marginMultiple = null,
+  greyMarketPrice = null,
+  greyMarketChangePct = null,
+} = {}) {
+  const normalized = [
+    normalizeCode(code) || String(code || '').trim().toUpperCase(),
+    String(sourceCode || '').trim().toLowerCase(),
+    String(signalType || '').trim().toLowerCase(),
+    String(signalKind || '').trim().toLowerCase(),
+    String(dataDate || '').trim().slice(0, 10),
+    normalizeSnapshotNumber(marginAmountHkd, 0) || '',
+    normalizeSnapshotNumber(subscriptionMultiple, 4) || '',
+    normalizeSnapshotNumber(marginMultiple, 4) || '',
+    normalizeSnapshotNumber(greyMarketPrice, 4) || '',
+    normalizeSnapshotNumber(greyMarketChangePct, 4) || '',
+    normalizeSnapshotTimestamp(sourceObservedAt),
+  ].join('|');
+  return crypto.createHash('sha256').update(normalized).digest('hex');
+}
+
 async function persistRaw(sourceCode, datasetCode, sourceKey, payload, executor = pool) {
   const source = await executor.query('SELECT source_id FROM ops.data_sources WHERE source_code=$1 LIMIT 1', [sourceCode]);
   if (!source.rows[0]) return;
@@ -280,23 +348,58 @@ async function persistName(code, name, executor = pool) {
   return result.rowCount > 0;
 }
 
-async function persistSnapshot({ code, instrumentId, sourceCode, signalType, dataDate, observedAt, subscriptionMultiple = null, greyMarketPrice = null, greyMarketChangePct = null, rawPayload = {} }, executor = pool) {
+async function persistSnapshot({
+  code,
+  instrumentId,
+  sourceCode,
+  signalType,
+  signalKind = null,
+  dataDate,
+  observedAt,
+  sourceObservedAt = null,
+  subscriptionMultiple = null,
+  marginAmountHkd = null,
+  marginMultiple = null,
+  greyMarketPrice = null,
+  greyMarketChangePct = null,
+  qualityStatus = 'valid',
+  rawPayload = {},
+}, executor = pool) {
   if (!code || !signalType || !dataDate) return false;
-  if (subscriptionMultiple === null && greyMarketPrice === null && greyMarketChangePct === null) return false;
+  if (subscriptionMultiple === null && marginAmountHkd === null && marginMultiple === null
+    && greyMarketPrice === null && greyMarketChangePct === null) return false;
+  if (!['valid', 'empty', 'rejected'].includes(qualityStatus)) throw new Error(`港股 IPO 快照质量状态非法：${qualityStatus}`);
+  const normalizedSignalKind = signalKind || rawPayload.signal_kind || null;
+  const normalizedMarginMultiple = marginMultiple === null && normalizedSignalKind === 'margin_estimate'
+    ? subscriptionMultiple : marginMultiple;
+  const sourceRecordHash = buildSourceRecordHash({
+    code, sourceCode, signalType, signalKind: normalizedSignalKind, dataDate, sourceObservedAt,
+    subscriptionMultiple, marginAmountHkd, marginMultiple: normalizedMarginMultiple,
+    greyMarketPrice, greyMarketChangePct,
+  });
   await executor.query(`
     INSERT INTO analytics.hk_ipo_market_snapshots(
       security_code,instrument_id,source_code,signal_type,data_date,observed_at,
-      subscription_multiple,grey_market_price_hkd,grey_market_change_pct,raw_payload
-    ) VALUES($1,$2,$3,$4,$5::date,COALESCE($6::timestamptz,now()),$7,$8,$9,$10::jsonb)
-    ON CONFLICT(security_code,source_code,signal_type,data_date) DO UPDATE SET
+      source_observed_at,last_seen_at,subscription_multiple,margin_amount_hkd,margin_multiple,
+      grey_market_price_hkd,grey_market_change_pct,signal_kind,source_record_hash,quality_status,raw_payload
+    ) VALUES($1,$2,$3,$4,$5::date,COALESCE($6::timestamptz,now()),$7::timestamptz,now(),$8,$9,$10,
+      $11,$12,$13,$14,$15,$16::jsonb)
+    ON CONFLICT(security_code,source_code,signal_type,data_date,source_record_hash)
+      WHERE source_record_hash IS NOT NULL DO UPDATE SET
       instrument_id=COALESCE(EXCLUDED.instrument_id,analytics.hk_ipo_market_snapshots.instrument_id),
-      observed_at=EXCLUDED.observed_at,
+      last_seen_at=now(),
       subscription_multiple=COALESCE(EXCLUDED.subscription_multiple,analytics.hk_ipo_market_snapshots.subscription_multiple),
+      margin_amount_hkd=COALESCE(EXCLUDED.margin_amount_hkd,analytics.hk_ipo_market_snapshots.margin_amount_hkd),
+      margin_multiple=COALESCE(EXCLUDED.margin_multiple,analytics.hk_ipo_market_snapshots.margin_multiple),
       grey_market_price_hkd=COALESCE(EXCLUDED.grey_market_price_hkd,analytics.hk_ipo_market_snapshots.grey_market_price_hkd),
       grey_market_change_pct=COALESCE(EXCLUDED.grey_market_change_pct,analytics.hk_ipo_market_snapshots.grey_market_change_pct),
-      raw_payload=EXCLUDED.raw_payload
-  `, [code, instrumentId || null, sourceCode, signalType, dataDate, observedAt || null,
-    subscriptionMultiple, greyMarketPrice, greyMarketChangePct, JSON.stringify(rawPayload || {})]);
+      source_observed_at=COALESCE(EXCLUDED.source_observed_at,analytics.hk_ipo_market_snapshots.source_observed_at),
+      quality_status=EXCLUDED.quality_status,
+      raw_payload=EXCLUDED.raw_payload,
+      updated_at=now()
+  `, [code, instrumentId || null, sourceCode, signalType, dataDate, observedAt || null, sourceObservedAt || null,
+    subscriptionMultiple, marginAmountHkd, normalizedMarginMultiple, greyMarketPrice, greyMarketChangePct,
+    normalizedSignalKind, sourceRecordHash, qualityStatus, JSON.stringify(rawPayload || {})]);
   return true;
 }
 
@@ -311,7 +414,7 @@ async function syncHkIpoMarketSignals({
   guardImpl = withExternalCallGuard,
 } = {}) {
   const map = await loadIpoMap();
-  const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0 }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
+  const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
   const blockedSources = new Set();
   const markSourceBlocked = (source, error) => {
     if (isQuotaOrCircuitError(error)) blockedSources.add(source);
@@ -327,6 +430,9 @@ async function syncHkIpoMarketSignals({
       const rows = parseVbkrCurrent(payload);
       result.vbkrSubscription.fetched = true;
       result.vbkrSubscription.rows = rows.length;
+      result.subscription.fetched = true;
+      result.subscription.rows = Math.max(Number(result.subscription.rows || 0), rows.length);
+      result.subscription.ok = rows.length > 0;
       result.fallbackUsed = true;
       for (const item of rows) {
         const ipo = map.get(item.securityCode);
@@ -337,8 +443,10 @@ async function syncHkIpoMarketSignals({
           instrumentId: ipo.instrument_id,
           sourceCode: 'vbkr-public',
           signalType: 'subscription',
+          signalKind: 'margin_estimate',
           dataDate: businessDate,
-          observedAt: sourceObservedAt(item, businessDate) || new Date().toISOString(),
+          observedAt: sourceObservedAt(item, businessDate) || null,
+          sourceObservedAt: sourceObservedAt(item, businessDate) || null,
           subscriptionMultiple: item.subscriptionMultiple,
           rawPayload: { ...item.raw, signal_kind: 'margin_estimate', signal_origin: 'vbkr_public_fallback', source_name: '华盛公开新股页' },
         })) {
@@ -348,18 +456,19 @@ async function syncHkIpoMarketSignals({
       }
       if (result.vbkrSubscription.saved > 0) {
         // 主源不可用但备源已形成有效快照：任务视为成功，同时保留 fallbackUsed 供审计。
+        result.subscription.ok = true;
         result.ok = true;
         result.status = 'succeeded';
       } else if (!rows.length) {
         result.ok = false;
         result.status = 'degraded';
-        result.errors.push({ source: 'vbkr-public', dataset: 'subscription', error: '公开新股接口返回空数据，未生成预计孖展' });
+        result.errors.push({ source: 'vbkr-public', apiName: 'hk_ipo_current', dataset: 'subscription', error: '公开新股接口返回空数据，未生成预计孖展' });
       }
     } catch (error) {
       markSourceBlocked('vbkr-public', error);
       result.ok = false;
       result.status = 'degraded';
-      result.errors.push({ source: 'vbkr-public', dataset: 'subscription', error: error.message || String(error) });
+      result.errors.push({ source: 'vbkr-public', apiName: 'hk_ipo_current', dataset: 'subscription', error: error.message || String(error) });
     }
   };
 
@@ -374,10 +483,11 @@ async function syncHkIpoMarketSignals({
       const rows = parseLivermoreCurrent(payload);
       result.subscription.fetched = true;
       result.subscription.rows = rows.length;
+      result.subscription.ok = rows.length > 0;
       if (!rows.length) {
         result.ok = false;
         result.status = 'degraded';
-        result.errors.push({ source: 'livermore', dataset: 'subscription', error: '申购接口返回空数据，未生成实时倍数' });
+        result.errors.push({ source: 'livermore', apiName: 'hk_ipo_current', dataset: 'subscription', error: '申购接口返回空数据，未生成实时倍数' });
         fallbackRequired = true;
       }
       for (const item of rows) {
@@ -389,17 +499,22 @@ async function syncHkIpoMarketSignals({
           instrumentId: ipo.instrument_id,
           sourceCode: 'livermore',
           signalType: 'subscription',
+          signalKind: 'margin_estimate',
           dataDate: businessDate,
           observedAt: sourceObservedAt(item, businessDate) || null,
+          sourceObservedAt: sourceObservedAt(item, businessDate) || null,
           subscriptionMultiple: item.subscriptionMultiple,
           rawPayload: { ...item.raw, signal_kind: 'margin_estimate', signal_origin: 'current_endpoint' },
-        })) result.subscription.saved += 1;
+        })) {
+          result.subscription.saved += 1;
+          result.subscription.ok = true;
+        }
       }
     } catch (error) {
       markSourceBlocked('livermore', error);
       result.ok = false;
       result.status = 'degraded';
-      result.errors.push({ source: 'livermore', dataset: 'subscription', error: error.message || String(error) });
+      result.errors.push({ source: 'livermore', apiName: 'hk_ipo_current', dataset: 'subscription', error: error.message || String(error) });
       fallbackRequired = true;
     }
     if (fallbackRequired) await syncVbkrCurrent();
@@ -409,7 +524,7 @@ async function syncHkIpoMarketSignals({
 
   if (blockedSources.has('livermore')) {
     // 当前接口已确认额度/熔断时，同一轮不重复请求历史接口，避免继续消耗额度。
-    result.errors.push({ source: 'livermore', dataset: 'grey_market', error: '本轮已因来源额度或熔断跳过重复请求' });
+    result.errors.push({ source: 'livermore', apiName: 'hk_ipo_history', dataset: 'grey_market', error: '本轮已因来源额度或熔断跳过重复请求' });
   } else try {
     const year = Number(String(businessDate).slice(0, 4)) || new Date().getFullYear();
     // 盘中接口经常返回“请升级”，申购期任务也要查历史接口兜底；
@@ -427,7 +542,7 @@ async function syncHkIpoMarketSignals({
         if (!ipo) continue;
         await persistName(item.securityCode, item.securityName);
         if (mode === 'enrichment' && (item.greyMarketPrice !== null || item.greyMarketChangePct !== null)) {
-          if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'livermore', signalType: 'grey_market', dataDate: item.issueDate || businessDate, observedAt: sourceObservedAt(item) || null, greyMarketPrice: item.greyMarketPrice, greyMarketChangePct: item.greyMarketChangePct, rawPayload: item.raw })) result.livermoreGrey.saved += 1;
+          if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'livermore', signalType: 'grey_market', signalKind: 'grey_market_quote', dataDate: item.issueDate || businessDate, observedAt: sourceObservedAt(item) || null, sourceObservedAt: sourceObservedAt(item) || null, greyMarketPrice: item.greyMarketPrice, greyMarketChangePct: item.greyMarketChangePct, rawPayload: item.raw })) result.livermoreGrey.saved += 1;
         }
         if (isCurrentSubscriptionRecord(item, ipo, businessDate)) {
           if (await persistSnapshot({
@@ -435,11 +550,16 @@ async function syncHkIpoMarketSignals({
             instrumentId: ipo.instrument_id,
             sourceCode: 'livermore',
             signalType: 'subscription',
+            signalKind: 'margin_estimate',
             dataDate: businessDate,
             observedAt: sourceObservedAt(item, businessDate) || null,
+            sourceObservedAt: sourceObservedAt(item, businessDate) || null,
             subscriptionMultiple: item.subscriptionMultiple,
             rawPayload: { ...item.raw, signal_kind: 'margin_estimate', signal_origin: 'history_window_fallback' },
-          })) result.subscription.saved += 1;
+          })) {
+            result.subscription.saved += 1;
+            result.subscription.ok = true;
+          }
         }
       }
     }
@@ -447,7 +567,7 @@ async function syncHkIpoMarketSignals({
     markSourceBlocked('livermore', error);
     result.ok = false;
     result.status = 'degraded';
-    result.errors.push({ source: 'livermore', dataset: 'grey_market', error: error.message || String(error) });
+    result.errors.push({ source: 'livermore', apiName: 'hk_ipo_history', dataset: 'grey_market', error: error.message || String(error) });
   }
 
   if (mode !== 'enrichment') return result;
@@ -455,19 +575,19 @@ async function syncHkIpoMarketSignals({
   try {
     const payload = await guardedFetch('futu-public', 'hk_ipo_public_page', 'hk_ipo_grey_market:futu', FUTU_IPO_URL, 'text', fetchImpl, guardImpl, businessDate);
     await persistRaw('futu-public', 'hk_ipo_grey_market', businessDate, { fetchedAt: new Date().toISOString(), html: String(payload || '').slice(0, 500000) });
-    const rows = parseFutuIpoHtml(payload);
+    const rows = parseFutuIpoHtml(validateFutuIpoHtmlResponse(payload));
     result.futuGrey.fetched = true;
     result.futuGrey.rows = rows.length;
     for (const item of rows) {
       const ipo = map.get(item.securityCode);
       if (!ipo || item.greyMarketChangePct === null) continue;
       await persistName(item.securityCode, item.securityName);
-      if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'futu-public', signalType: 'grey_market', dataDate: item.listingDate || businessDate, greyMarketChangePct: item.greyMarketChangePct, rawPayload: item.raw })) result.futuGrey.saved += 1;
+      if (await persistSnapshot({ code: item.securityCode, instrumentId: ipo.instrument_id, sourceCode: 'futu-public', signalType: 'grey_market', signalKind: 'grey_market_quote', dataDate: item.listingDate || businessDate, greyMarketChangePct: item.greyMarketChangePct, rawPayload: item.raw })) result.futuGrey.saved += 1;
     }
   } catch (error) {
     result.ok = false;
     result.status = 'degraded';
-    result.errors.push({ source: 'futu-public', dataset: 'grey_market', error: error.message || String(error) });
+    result.errors.push({ source: 'futu-public', apiName: 'hk_ipo_public_page', dataset: 'grey_market', error: error.message || String(error) });
   }
   return result;
 }
@@ -477,6 +597,8 @@ module.exports = {
   LIVERMORE_HISTORY_URL,
   VBKR_IPO_CURRENT_URL,
   FUTU_IPO_URL,
+  requestExternal,
+  validateFutuIpoHtmlResponse,
   normalizeCode,
   parseLivermoreHistory,
   parseLivermoreCurrent,
@@ -484,5 +606,8 @@ module.exports = {
   parseFutuIpoHtml,
   isOfferOpen,
   isCurrentSubscriptionRecord,
+  buildSourceRecordHash,
+  normalizeSnapshotNumber,
+  persistSnapshot,
   syncHkIpoMarketSignals,
 };

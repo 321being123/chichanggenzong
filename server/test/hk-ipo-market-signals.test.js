@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { parseLivermoreHistory, parseLivermoreCurrent, parseVbkrCurrent, parseFutuIpoHtml, normalizeCode, isOfferOpen, isCurrentSubscriptionRecord } = require('../services/hkIpoMarketSignals');
+const { parseLivermoreHistory, parseLivermoreCurrent, parseVbkrCurrent, parseFutuIpoHtml, normalizeCode, isOfferOpen, isCurrentSubscriptionRecord, buildSourceRecordHash, normalizeSnapshotNumber } = require('../services/hkIpoMarketSignals');
 const { assessHkGreenshoe } = require('../routes/ipo');
 const { isVerifiedAllotmentDocument, isUsableProspectusDocument, cancellationTitleLooksLikeIpo } = require('../services/hkexIpo');
 
@@ -24,6 +24,22 @@ assert.strictEqual(vbkr[0].securityCode, '03231.HK');
 assert.strictEqual(vbkr[0].subscriptionMultiple, 12.5);
 assert.strictEqual(vbkr[0].offerCloseDate, '2026-09-12');
 assert.strictEqual(parseVbkrCurrent({ success: true, code: '00000', data: { applying: [] } }).length, 0);
+assert.strictEqual(normalizeSnapshotNumber('1,000.00004', 0), '1000');
+assert.strictEqual(normalizeSnapshotNumber('12.50004', 4), '12.5000');
+assert.strictEqual(buildSourceRecordHash({
+  code: '03231', sourceCode: 'VBKR-PUBLIC', signalType: 'subscription', signalKind: 'margin_estimate',
+  dataDate: '2026-09-20', subscriptionMultiple: '12.50004', sourceObservedAt: '2026-09-20T02:00:00.999Z',
+}), buildSourceRecordHash({
+  code: '03231.HK', sourceCode: 'vbkr-public', signalType: 'subscription', signalKind: 'margin_estimate',
+  dataDate: '2026-09-20', subscriptionMultiple: 12.5, sourceObservedAt: '2026-09-20T02:00:00Z',
+}), '规范化哈希应忽略代码大小写、金额小数噪声和毫秒噪声');
+assert.notStrictEqual(buildSourceRecordHash({
+  code: '03231.HK', sourceCode: 'vbkr-public', signalType: 'subscription', signalKind: 'margin_estimate',
+  dataDate: '2026-09-20', subscriptionMultiple: 12.5, sourceObservedAt: '2026-09-20T02:00:01Z',
+}), buildSourceRecordHash({
+  code: '03231.HK', sourceCode: 'vbkr-public', signalType: 'subscription', signalKind: 'margin_estimate',
+  dataDate: '2026-09-20', subscriptionMultiple: 12.5, sourceObservedAt: '2026-09-20T02:00:00Z',
+}), '上游时刻变化必须形成新哈希');
 
 const activeIpo = { offer_open_at: '2026-09-01T01:00:00.000Z', offer_close_at: null, listing_at: null, ipo_status: 'active' };
 assert.strictEqual(isOfferOpen(activeIpo, new Date('2026-09-03T08:00:00.000Z'), '2026-09-03'), true);

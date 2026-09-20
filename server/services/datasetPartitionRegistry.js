@@ -32,6 +32,12 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   hk_trade_rules: { scopeKey: 'HK', table: 'market.instrument_trade_rules', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(valid_from)::text AS data_as_of' },
   hk_trade_calendar: { scopeKey: 'HK', table: 'market.trade_calendar', whereSql: "WHERE exchange='HKEX'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   hk_ipo_facts: { scopeKey: 'HK', table: 'public.ipo_history', whereSql: "WHERE market_code='HK'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT MAX(CASE WHEN updated_at::text ~ '^\\d{4}-\\d{2}-\\d{2}' THEN updated_at::date END) AS data_as_of` },
+  hk_ipo_subscription_signals: {
+    scopeKey: 'HK',
+    table: 'analytics.hk_ipo_market_snapshots',
+    partitionedCountSql: "SELECT COUNT(*)::int AS row_count FROM analytics.hk_ipo_market_snapshots WHERE signal_type='subscription' AND data_date=$1::date",
+    partitionedDataAsOfSql: "SELECT MAX(data_date)::text AS data_as_of FROM analytics.hk_ipo_market_snapshots WHERE signal_type='subscription' AND data_date=$1::date",
+  },
   arbitrage_cases: { scopeKey: 'GLOBAL', table: 'event.arbitrage_cases', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
   trade_calendar: { scopeKey: 'GLOBAL', table: 'market.trade_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
 });
@@ -46,9 +52,24 @@ function dateValue(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
-async function readSnapshot(datasetCode, executor = pool.query.bind(pool)) {
+async function readSnapshot(datasetCode, optionsOrExecutor = {}, maybeExecutor = null) {
+  const options = typeof optionsOrExecutor === 'function' ? {} : optionsOrExecutor || {};
+  const executor = typeof optionsOrExecutor === 'function' ? optionsOrExecutor : maybeExecutor || pool.query.bind(pool);
   const definition = DATASET_PARTITION_REGISTRY[datasetCode];
   if (!definition) return { published: false, reason: 'not_registered', datasetCode };
+  const partitionKey = dateValue(options.partitionKey);
+  if (definition.partitionedCountSql) {
+    if (!partitionKey) return { published: false, datasetCode, scopeKey: definition.scopeKey, reason: 'partition_key_required', rowCount: 0, dataAsOf: null };
+    const countResult = await executor(definition.partitionedCountSql, [partitionKey]);
+    const dateResult = await executor(definition.partitionedDataAsOfSql, [partitionKey]);
+    return {
+      published: false,
+      datasetCode,
+      scopeKey: definition.scopeKey,
+      rowCount: Number(countResult.rows[0]?.row_count || 0),
+      dataAsOf: dateValue(dateResult.rows[0]?.data_as_of),
+    };
+  }
   if (definition.snapshotSql) {
     const result = await executor(definition.snapshotSql);
     const row = result.rows[0] || {};
@@ -65,11 +86,18 @@ async function readSnapshot(datasetCode, executor = pool.query.bind(pool)) {
 }
 
 async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool.query.bind(pool)) {
-  const snapshot = await readSnapshot(datasetCode, executor);
+  const requestedPartitionKey = dateValue(options.partitionKey);
+  const snapshot = await readSnapshot(datasetCode, { partitionKey: requestedPartitionKey }, executor);
   const dataAsOf = dateValue(options.dataAsOf) || snapshot.dataAsOf;
   const rowCount = Number.isFinite(Number(options.rowCount)) ? Number(options.rowCount) : snapshot.rowCount;
   const diagnostics = options.diagnostics || {};
-  const allowEmpty = options.allowEmpty === true || diagnostics.coverage_status === 'verified_no_suspension';
+  // 动态行情信号失败时只能保留上一份已落库事实，不能把旧快照再次发布成“本次成功”。
+  // 这样页面仍可读取历史数据，但任务诊断不会被错误覆盖为完整。
+  if (datasetCode === 'hk_ipo_subscription_signals' && diagnostics.query_status !== 'success') {
+    return { ...snapshot, reason: 'dynamic_signal_degraded', diagnostics };
+  }
+  const allowEmpty = options.allowEmpty === true
+    || ['verified_no_suspension', 'verified_no_change'].includes(diagnostics.coverage_status);
   if (!dataAsOf || (rowCount <= 0 && !allowEmpty)) return { ...snapshot, reason: 'empty_or_no_date' };
   const partitionKey = dateValue(options.partitionKey) || snapshot.dataAsOf;
   const published = await publishDatasetPartition(datasetCode, snapshot.scopeKey, {

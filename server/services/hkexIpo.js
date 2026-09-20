@@ -1451,6 +1451,55 @@ function completenessForRow(row) {
   return result;
 }
 
+function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
+  const current = row && row.data_completeness && typeof row.data_completeness === 'object'
+    ? row.data_completeness : {};
+  const fields = {
+    offerOpenAt: row.offer_open_at,
+    offerCloseAt: row.offer_close_at,
+    pricingAt: row.pricing_at,
+    allotmentAt: row.allotment_at,
+    listingAt: row.listing_at,
+    issuePriceFinal: row.issue_price_final,
+    lotSizeShares: row.lot_size_shares,
+  };
+  const result = { ...current };
+  for (const [field, value] of Object.entries(fields)) result[field] = value == null || value === '' ? 'missing' : 'value';
+  const closeDate = row.offer_close_at ? new Date(row.offer_close_at) : null;
+  const pendingNotDue = closeDate && Number.isFinite(closeDate.getTime())
+    && new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(closeDate) > asOfDate;
+  const terminalStatus = ['introduction', 'gem_transfer', 'de_spac', 'cancelled', 'canceled'].includes(String(row.ipo_status || '').toLowerCase());
+  const hasMissing = Object.values(result).some(value => value === 'missing');
+  result.status = terminalStatus ? 'complete' : pendingNotDue ? 'pending_not_due' : hasMissing ? 'retryable' : 'complete';
+  result.checked_at = new Date().toISOString();
+  result.next_retry_at = pendingNotDue ? `${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(closeDate)}T00:00:00+08:00` : null;
+  result.reason = terminalStatus ? '终态项目不适用普通公众招股字段' : pendingNotDue ? '认购截止日前，配发/上市事实尚未到期' : hasMissing ? '字段缺失，等待官方事实补全' : '已按数据库最终事实行复核';
+  result.evidence_urls = (Array.isArray(row.source_documents) ? row.source_documents : [])
+    .map(item => item && item.url).filter(Boolean).slice(0, 10);
+  return result;
+}
+
+async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool)) {
+  const { rows } = await executor(`
+    SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,
+           issue_price_final,lot_size_shares,source_documents,data_completeness
+      FROM public.ipo_history
+     WHERE market_code='HK'
+  `);
+  let updated = 0;
+  for (const row of rows) {
+    const completeness = recomputeCompletenessForStoredRow(row);
+    await executor(`
+      UPDATE public.ipo_history
+         SET data_completeness=$2::jsonb,
+             updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+       WHERE market_code='HK' AND security_code=$1
+    `, [row.security_code, JSON.stringify(completeness)]);
+    updated += 1;
+  }
+  return { ok: true, status: 'succeeded', rows: updated };
+}
+
 async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}) {
   const input = Array.isArray(rows) ? rows.filter(row => canonicalHkCode(row.securityCode)) : [];
   if (!input.length) return { ok: true, rows: 0, events: 0 };
@@ -1577,6 +1626,8 @@ module.exports = {
   syncHkexHistoricalReports,
   parsePredefinedDocumentHtml,
   upsertHkIpoFacts,
+  recomputeCompletenessForStoredRow,
+  recomputeHkIpoCompleteness,
   canonicalHkCode,
   normalizeDate,
   stageForRow,

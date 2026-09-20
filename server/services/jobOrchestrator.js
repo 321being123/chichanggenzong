@@ -203,6 +203,59 @@ async function notifyIncompleteDataset(slot, result) {
   }).catch(error => console.warn('[job-alert] 数据缺口告警失败:', error.message));
 }
 
+function buildDatasetDiagnosticAlerts(slot, result = {}) {
+  const diagnostics = result && result.datasetDiagnostics && typeof result.datasetDiagnostics === 'object'
+    ? result.datasetDiagnostics : {};
+  const partitionKey = datasetPartitionKeyForSlot(slot, result);
+  if (!partitionKey) return [];
+  const alerts = [];
+  for (const [datasetCode, diagnostic] of Object.entries(diagnostics)) {
+    if (!diagnostic || typeof diagnostic !== 'object') continue;
+    const scopeKey = `${datasetCode}:${datasetScopeKey(datasetCode)}:${partitionKey}`;
+    if (diagnostic.query_status !== 'success') {
+      alerts.push({
+        alertKey: `dataset:${scopeKey}:degraded`, alertType: 'data_quality', severity: 'warning',
+        scopeType: 'dataset', scopeKey,
+        subject: `数据集分区降级：${datasetCode}`,
+        summary: `数据集 ${scopeKey} 查询状态为 ${diagnostic.query_status || 'unknown'}，本轮未发布为成功分区；核心事实与动态信号状态分开处理。`,
+      });
+    }
+    const reasons = Array.isArray(diagnostic.degraded_reason) ? diagnostic.degraded_reason : [];
+    const seenSources = new Set();
+    for (const reason of reasons) {
+      const source = String(reason && reason.source || '').trim();
+      const apiName = String(reason && (reason.apiName || reason.api_name) || '').trim();
+      if (!source || !apiName) continue;
+      const sourceScope = `${source}:${apiName}`;
+      if (seenSources.has(sourceScope)) continue;
+      seenSources.add(sourceScope);
+      alerts.push({
+        alertKey: `source:${sourceScope}:hk-ipo-subscription`, alertType: 'failure_warning', severity: 'warning',
+        scopeType: 'source_endpoint', scopeKey: sourceScope,
+        subject: `港股 IPO 动态来源异常：${sourceScope}`,
+        summary: `港股 IPO 动态信号来源 ${sourceScope} 本轮出现异常：${String(reason.error || '未提供错误说明').slice(0, 800)}`,
+      });
+    }
+  }
+  return alerts;
+}
+
+async function notifyDatasetDiagnostics(slot, result = {}) {
+  const alerts = buildDatasetDiagnosticAlerts(slot, result);
+  if (!alerts.length) return 0;
+  const { notifyJobFailure } = require('./jobAlertMailer');
+  let sent = 0;
+  for (const alert of alerts) {
+    try {
+      await notifyJobFailure({ ...alert, jobCode: slot.job_code, slotId: slot.slot_id });
+      sent += 1;
+    } catch (error) {
+      console.warn('[job-alert] 数据集/来源诊断告警失败:', error.message);
+    }
+  }
+  return sent;
+}
+
 async function startManagedRun(slot, reason) {
   const runId = await startJobRun(slot.job_code);
   if (!runId) return null;
@@ -385,6 +438,7 @@ async function failOrRetry(slot, error, runId, result = {}) {
   normalized.slotExternalCallsLimit = Number(definition.slotExternalCallsLimit || 0) || null;
   // Runner 明确返回未完成数据集，说明已经发生真实采集尝试；限流/额度错误也必须累计。
   // freshnessGate 自身不会进入 failOrRetry，因此只读检查未命中不会被误计为失败。
+  await notifyDatasetDiagnostics(slot, normalized);
   await notifyIncompleteDataset(slot, normalized);
   const blocked = await applyDatasetFailureBreaker(slot, runId, normalized, failure);
   if (blocked) return blocked;
@@ -672,6 +726,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       return { ok: false, skipped: true, reason: 'no_run_record' };
     }
     await finishManagedRun(runId, claimed.job_code, true, result);
+    await notifyDatasetDiagnostics(claimed, result);
     await completeSlot(claimed.slot_id, 'succeeded', result || { ok: true }, null, runId);
     return { ok: true, result };
   } catch (error) {
@@ -767,4 +822,4 @@ async function stopDurableExecutor(timeoutMs = 5000) {
   }
 }
 
-module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot };
+module.exports = { startDurableExecutor, stopDurableExecutor, runDueSlots, runSlot, JOB_DEFINITIONS, touchSlot, runJobInIsolatedProcess, childErrorFromMessage, classifyFailure, recoverySchedule, resolveMaxAttempts, hasSkippedSignal, datasetPartitionKeyForSlot, buildDatasetDiagnosticAlerts };

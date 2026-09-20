@@ -109,22 +109,56 @@ function ipoHkOversubscriptionCell(it) {
   return qualifier + n.toFixed(2) + '倍';
 }
 
-function ipoHkLiveOversubscriptionCell(it) {
+function ipoHkSignalCell(it, field, label) {
   var stage = String(it.ipo_status || '').toLowerCase();
-  if (stage !== 'active' && stage !== 'offer_open') return '<span>—</span>';
-  if (it.subscription_live_multiple === null || it.subscription_live_multiple === undefined || it.subscription_live_multiple === '') {
-    return '<span>暂无盘中数据</span>';
+  var signal = it && it[field];
+  if (!signal || typeof signal !== 'object') signal = {};
+  var multiple = signal.multiple;
+  var amount = signal.amount_hkd;
+  var hasMultiple = multiple !== null && multiple !== undefined && multiple !== '' && isFinite(Number(multiple)) && Number(multiple) > 0;
+  var hasAmount = amount !== null && amount !== undefined && amount !== '' && isFinite(Number(amount)) && Number(amount) > 0;
+  if (!hasMultiple && !hasAmount) {
+    return stage === 'active' || stage === 'offer_open' ? '<span>暂无可验证数据</span>' : '<span>—</span>';
   }
-  var n = Number(it.subscription_live_multiple);
-  if (!isFinite(n) || n <= 0) return '<span>暂无盘中数据</span>';
-  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛（捷利数据）' };
-  var source = sourceMap[String(it.subscription_live_source || '')] || String(it.subscription_live_source || '外部来源');
-  var kind = String(it.subscription_live_kind || '').toLowerCase();
-  var origin = String(it.subscription_live_origin || '').toLowerCase();
-  var label = kind === 'margin_estimate' || origin === 'history_window_fallback' ? '预计孖展' : '申购';
-  var time = it.subscription_live_observed_at ? String(it.subscription_live_observed_at).slice(0, 16).replace('T', ' ') : '';
-  var stale = it.subscription_live_stale ? '（可能过期）' : '';
-  return escapeHtml(source + label + ' ' + n.toFixed(2) + '倍' + stale) + (time ? '<br><small style="color:#999;">' + escapeHtml(time) + '</small>' : '');
+  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛（捷利数据）', 'futu-public': '富途公开页' };
+  var source = sourceMap[String(signal.source || '')] || String(signal.source || '外部来源');
+  var status = String(signal.status || '').toLowerCase();
+  var stale = status === 'stale' ? '（可能过期）' : '';
+  var values = [];
+  if (hasMultiple) values.push(Number(multiple).toFixed(2) + '倍');
+  if (hasAmount) values.push('金额 ' + Number(amount).toLocaleString('zh-CN') + '港元');
+  var sourceTime = signal.source_observed_at ? String(signal.source_observed_at).slice(0, 16).replace('T', ' ') : '';
+  var collectedTime = signal.collected_at ? String(signal.collected_at).slice(0, 16).replace('T', ' ') : '';
+  var timeLines = [];
+  if (sourceTime) timeLines.push('来源时间 ' + escapeHtml(sourceTime));
+  if (collectedTime) timeLines.push('本地采集 ' + escapeHtml(collectedTime));
+  return escapeHtml(source + label + ' ' + values.join(' / ') + stale) +
+    (timeLines.length ? '<br><small style="color:#999;">' + timeLines.join('<br>') + '</small>' : '');
+}
+
+function ipoHkSubscriptionCell(it) {
+  return ipoHkSignalCell(it, 'current_subscription_signal', '申购');
+}
+
+function ipoHkLiveOversubscriptionCell(it) {
+  // 兼容旧调用点：旧列实际展示的是预计孖展，统一转到明确的孖展字段。
+  return ipoHkSignalCell(it, 'current_margin_signal', '预计孖展');
+}
+
+function ipoHkSignalHistoryCell(it) {
+  var history = Array.isArray(it && it.intraday_signal_history) ? it.intraday_signal_history : [];
+  if (!history.length) return '<span>暂无已落库变化</span>';
+  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛', 'futu-public': '富途' };
+  return history.slice(0, 6).map(function (item) {
+    var observed = item.source_observed_at || item.collected_at || '';
+    var time = observed ? String(observed).slice(5, 16).replace('T', ' ') : '时间待补';
+    var kind = String(item.signal_kind || '').toLowerCase() === 'margin_estimate' ? '孖展' : '申购';
+    var multiple = Number(item.multiple);
+    var value = isFinite(multiple) && multiple > 0 ? multiple.toFixed(2) + '倍' : '数值待补';
+    var source = sourceMap[String(item.source || '')] || String(item.source || '来源待补');
+    var stale = String(item.status || '').toLowerCase() === 'stale' ? '（旧）' : '';
+    return '<span title="' + escapeHtml(source + ' ' + time) + '">' + escapeHtml(time + ' ' + kind + value + stale) + '</span>';
+  }).join('<br>');
 }
 
 function ipoHkGreenshoeCell(it) {
@@ -588,12 +622,12 @@ function ipoRenderHistory(type, rows) {
   }
 
   if (type === 'hk_stock') {
-    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期预计孖展倍数（每日）', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
+    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期认购倍数（已验证）', '申购期预计孖展倍数（每日）', '盘中变化（已落库）', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
     var hkRows = rows.map(function (it) {
       return [
         escapeHtml(it.security_code || ''), ipoHkNameCell(it.security_name_cn || it.security_name, it.security_code),
         ipoHkStageLabel(it.ipo_status), ipoPending(it.offer_open_date), ipoHkAllotmentCell(it),
-        ipoHkLiveOversubscriptionCell(it), ipoHkOversubscriptionCell(it), ipoHkGreenshoeCell(it),
+        ipoHkSubscriptionCell(it), ipoHkLiveOversubscriptionCell(it), ipoHkSignalHistoryCell(it), ipoHkOversubscriptionCell(it), ipoHkGreenshoeCell(it),
         ipoPctCell(it.livermore_grey_market_change_pct), ipoPctCell(it.futu_grey_market_change_pct),
         ipoPending(it.listing_date), ipoPending(it.issue_price_final, function (v) { return ipoNumFixed(v, 3); }),
         ipoPending(it.lot_size_shares, ipoIntegerCell), ipoPending(it.lot_amount_hkd, function (v) { return ipoNumFixed(v, 2); }),

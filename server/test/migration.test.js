@@ -14,6 +14,11 @@ function check(name, fn) {
   catch (e) { results.push(['FAIL', name + ' :: ' + (e && e.message ? e.message : e)]); console.log('  [FAIL] ' + name + ' :: ' + (e && e.message ? e.message : e)); }
 }
 
+async function checkAsync(name, fn) {
+  try { await fn(); results.push(['PASS', name]); console.log('  [PASS] ' + name); }
+  catch (e) { results.push(['FAIL', name + ' :: ' + (e && e.message ? e.message : e)]); console.log('  [FAIL] ' + name + ' :: ' + (e && e.message ? e.message : e)); }
+}
+
 function pgConfig(dbName) {
   return {
     host: process.env.PGHOST || 'localhost',
@@ -209,6 +214,91 @@ function pgConfig(dbName) {
     const m2 = await db.pool.query('SELECT count(*)::int AS c FROM schema_migrations');
     check(`二次迁移不重复登记（仍为${expectedMigrationCount}）`, () => {
       assert.strictEqual(m2.rows[0].c, expectedMigrationCount);
+    });
+
+    const migrations = require('../../server/db/migrations');
+    const createLegacyHkSnapshotTable = async ({ uniqueConstraint = false, independentIndex = false } = {}) => {
+      await db.pool.query('DROP TABLE IF EXISTS analytics.hk_ipo_market_snapshots');
+      await db.pool.query(`
+        CREATE TABLE analytics.hk_ipo_market_snapshots (
+          snapshot_id BIGSERIAL PRIMARY KEY,
+          security_code TEXT NOT NULL,
+          source_code TEXT NOT NULL,
+          signal_type TEXT NOT NULL,
+          data_date DATE NOT NULL,
+          observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          subscription_multiple NUMERIC(20,6),
+          grey_market_price_hkd NUMERIC(20,6),
+          grey_market_change_pct NUMERIC(20,6),
+          raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          ${uniqueConstraint ? ', UNIQUE(security_code,source_code,signal_type,data_date)' : ''}
+        )
+      `);
+      if (independentIndex) {
+        await db.pool.query(`
+          CREATE UNIQUE INDEX uq_hk_ipo_migration_legacy
+            ON analytics.hk_ipo_market_snapshots(security_code,source_code,signal_type,data_date)
+        `);
+      }
+    };
+    const hasRelation = async (kind, name) => {
+      const result = await db.pool.query(
+        `SELECT 1
+           FROM pg_class c
+           JOIN pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname='analytics' AND c.relname=$1 AND c.relkind=$2`,
+        [name, kind]
+      );
+      return result.rowCount === 1;
+    };
+
+    await checkAsync('迁移161识别旧唯一约束并建立哈希时间线结构', async () => {
+      await createLegacyHkSnapshotTable({ uniqueConstraint: true });
+      await db.pool.query(`
+        INSERT INTO analytics.hk_ipo_market_snapshots
+          (security_code,source_code,signal_type,data_date,subscription_multiple)
+        VALUES ('09996.HK','migration-test','subscription','2026-09-20',12.5)
+      `);
+      await migrations.migration161HkIpoMarketSnapshotTimeline();
+      const columns = await db.pool.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema='analytics' AND table_name='hk_ipo_market_snapshots'
+            AND column_name = ANY($1::text[])`,
+        [['source_observed_at','last_seen_at','margin_amount_hkd','margin_multiple','signal_kind','source_record_hash','quality_status']]
+      );
+      assert.strictEqual(columns.rowCount, 7);
+      assert.strictEqual(await hasRelation('i', 'uq_hk_ipo_market_snapshots_record_hash'), true);
+      const legacyConstraint = await db.pool.query(
+        `SELECT 1 FROM pg_constraint WHERE conrelid='analytics.hk_ipo_market_snapshots'::regclass
+          AND contype='u' AND conname <> 'uq_hk_ipo_market_snapshots_record_hash'`
+      );
+      assert.strictEqual(legacyConstraint.rowCount, 0);
+      const row = await db.pool.query('SELECT count(*)::int AS c FROM analytics.hk_ipo_market_snapshots');
+      assert.strictEqual(row.rows[0].c, 1);
+    });
+
+    await checkAsync('迁移161识别独立旧唯一索引并完成替换', async () => {
+      await createLegacyHkSnapshotTable({ independentIndex: true });
+      await migrations.migration161HkIpoMarketSnapshotTimeline();
+      assert.strictEqual(await hasRelation('i', 'uq_hk_ipo_migration_legacy'), false);
+      assert.strictEqual(await hasRelation('i', 'uq_hk_ipo_market_snapshots_record_hash'), true);
+    });
+
+    await checkAsync('迁移161缺少旧唯一结构时失败并回滚', async () => {
+      await createLegacyHkSnapshotTable();
+      await assert.rejects(
+        () => migrations.migration161HkIpoMarketSnapshotTimeline(),
+        /未找到旧唯一约束或独立唯一索引/
+      );
+      const sourceObservedAt = await db.pool.query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema='analytics' AND table_name='hk_ipo_market_snapshots'
+            AND column_name='source_observed_at'`
+      );
+      assert.strictEqual(sourceObservedAt.rowCount, 0);
+      assert.strictEqual(await hasRelation('i', 'uq_hk_ipo_market_snapshots_record_hash'), false);
     });
   } catch (e) {
     if (!tmpDb) {

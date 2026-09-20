@@ -258,6 +258,102 @@ function calendarDay(date) {
     apply_stocks: [], apply_bonds: [], list_stocks: [], list_bonds: [] };
 }
 
+function hkOfferPhaseSql(alias = 'h') {
+  return `CASE
+    WHEN LOWER(COALESCE(${alias}.ipo_status,'')) IN ('cancelled','canceled') THEN 'cancelled'
+    WHEN LOWER(COALESCE(${alias}.ipo_status,''))='postponed'
+      AND (${alias}.offer_open_at IS NULL OR ${alias}.offer_close_at IS NULL) THEN 'postponed'
+    WHEN LOWER(COALESCE(${alias}.ipo_status,'')) IN ('introduction','gem_transfer','de_spac') THEN 'not_applicable'
+    WHEN LOWER(COALESCE(${alias}.ipo_status,''))='listed'
+      OR ${alias}.listing_at <= now()
+      OR (${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND ${alias}.listing_date::date <= (timezone('Asia/Shanghai', now()))::date) THEN 'listed'
+    WHEN LOWER(COALESCE(${alias}.ipo_status,''))='allotted'
+      OR ${alias}.allotment_at <= now() THEN 'allotted'
+    WHEN LOWER(COALESCE(${alias}.ipo_status,''))='priced'
+      OR ${alias}.pricing_at <= now() THEN 'priced'
+    WHEN ${alias}.offer_open_at IS NULL OR ${alias}.offer_close_at IS NULL THEN 'pending_window'
+    WHEN now() < ${alias}.offer_open_at THEN 'upcoming'
+    WHEN now() <= ${alias}.offer_close_at THEN 'open'
+    ELSE 'closed'
+  END`;
+}
+
+function hkSignalKindSql(alias = 's') {
+  return `COALESCE(NULLIF(${alias}.signal_kind,''),NULLIF(${alias}.raw_payload->>'signal_kind',''))`;
+}
+
+function hkSignalFreshnessSql(alias = 's') {
+  return `COALESCE(${alias}.source_observed_at,${alias}.observed_at) >= now() - CASE ${alias}.source_code
+    WHEN 'livermore' THEN INTERVAL '2 hours'
+    WHEN 'vbkr-public' THEN INTERVAL '2 hours'
+    WHEN 'futu-public' THEN INTERVAL '6 hours'
+    ELSE INTERVAL '1 day'
+  END`;
+}
+
+function hkSignalJoinSql(kind, alias) {
+  const valueSql = kind === 'margin_estimate'
+    ? 'COALESCE(s.margin_multiple,s.subscription_multiple)'
+    : 's.subscription_multiple';
+  const kindSql = hkSignalKindSql('s');
+  const freshnessSql = hkSignalFreshnessSql('s');
+  return `LEFT JOIN LATERAL (
+    SELECT jsonb_build_object(
+      'amount_hkd',s.margin_amount_hkd,
+      'multiple',${valueSql},
+      'source',s.source_code,
+      'source_observed_at',s.source_observed_at,
+      'collected_at',s.observed_at,
+      'signal_kind',${kindSql},
+      'status',CASE WHEN ${freshnessSql} THEN 'valid' ELSE 'stale' END
+    ) AS signal,
+    ${valueSql} AS multiple,s.source_code,s.source_observed_at,s.observed_at,${kindSql} AS signal_kind,
+    CASE WHEN ${freshnessSql} THEN 'valid' ELSE 'stale' END AS signal_status
+      FROM analytics.hk_ipo_market_snapshots s
+     WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
+       AND s.signal_type='subscription'
+       AND COALESCE(s.quality_status,'valid')='valid'
+       AND ${kindSql}='${kind}'
+     ORDER BY CASE WHEN ${freshnessSql} THEN 0 ELSE 1 END,
+              COALESCE(s.source_observed_at,s.observed_at) DESC,
+              s.data_date DESC,s.observed_at DESC
+     LIMIT 1
+  ) ${alias} ON true`;
+}
+
+function hkSignalHistoryJoinSql(alias = 'signal_history') {
+  const kindSql = hkSignalKindSql('s');
+  const valueSql = `CASE WHEN ${kindSql}='margin_estimate'
+    THEN COALESCE(s.margin_multiple,s.subscription_multiple)
+    ELSE s.subscription_multiple END`;
+  const freshnessSql = hkSignalFreshnessSql('s');
+  return `LEFT JOIN LATERAL (
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'amount_hkd',snapshot_history.margin_amount_hkd,
+      'multiple',snapshot_history.multiple,
+      'source',snapshot_history.source,
+      'source_observed_at',snapshot_history.source_observed_at,
+      'collected_at',snapshot_history.collected_at,
+      'signal_kind',snapshot_history.signal_kind,
+      'status',snapshot_history.status
+    ) ORDER BY snapshot_history.event_at DESC),'[]'::jsonb) AS history
+      FROM (
+        SELECT s.margin_amount_hkd,${valueSql} AS multiple,s.source_code AS source,
+               s.source_observed_at,s.observed_at AS collected_at,${kindSql} AS signal_kind,
+               CASE WHEN ${freshnessSql} THEN 'valid' ELSE 'stale' END AS status,
+               COALESCE(s.source_observed_at,s.observed_at) AS event_at
+          FROM analytics.hk_ipo_market_snapshots s
+         WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
+           AND s.signal_type='subscription'
+           AND COALESCE(s.quality_status,'valid')='valid'
+           AND (h.offer_open_at IS NULL OR s.data_date >= h.offer_open_at::date)
+           AND (h.offer_close_at IS NULL OR s.data_date <= h.offer_close_at::date)
+         ORDER BY COALESCE(s.source_observed_at,s.observed_at) DESC,s.data_date DESC
+         LIMIT 12
+      ) snapshot_history
+  ) ${alias} ON true`;
+}
+
 function mergeCalendarDays(...calendars) {
   const byDate = new Map();
   for (const calendar of calendars.flat()) {
@@ -334,12 +430,79 @@ function stockFieldStatusSql(alias = 'h') {
 }
 
 async function loadStockCalendar(days, market = 'CN') {
+  if (market === 'HK') {
+    const { rows } = await pool.query(
+      `WITH bounds AS (
+         SELECT (timezone('Asia/Shanghai', now()))::date AS start_date,
+                (timezone('Asia/Shanghai', now()))::date + ($1::int * INTERVAL '1 day') AS end_date
+       ), hk_base AS (
+         SELECT h.security_code AS code,
+                COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name,
+                h.offer_open_at,h.offer_close_at,h.listing_at,h.listing_date,
+                timezone('Asia/Shanghai', h.offer_open_at)::date AS offer_open_date,
+                timezone('Asia/Shanghai', h.offer_close_at)::date AS offer_close_date,
+                ${hkOfferPhaseSql('h')} AS offer_phase
+           FROM ipo_history h
+           LEFT JOIN LATERAL (
+             SELECT q.name FROM market_quote_cache q
+              WHERE q.source='tencent' AND q.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
+              ORDER BY q.fetched_at DESC LIMIT 1
+           ) q ON true
+          WHERE h.market_code='HK'
+       ), stock_events AS (
+         SELECT GREATEST(h.offer_open_date,b.start_date)::text AS date,
+                'apply' AS event_type,h.code,h.name,h.offer_open_at,h.offer_close_at,
+                h.listing_at,h.listing_date,h.offer_phase
+           FROM hk_base h CROSS JOIN bounds b
+          WHERE h.offer_open_date < b.end_date::date
+            AND h.offer_close_date >= b.start_date
+            AND h.offer_close_at >= now()
+            AND h.offer_phase IN ('upcoming','open')
+         UNION ALL
+         SELECT CASE WHEN h.listing_at IS NOT NULL
+                     THEN timezone('Asia/Shanghai',h.listing_at)::date::text
+                     ELSE h.listing_date END AS date,
+                'listing' AS event_type,h.code,h.name,h.offer_open_at,h.offer_close_at,
+                h.listing_at,h.listing_date,h.offer_phase
+           FROM hk_base h CROSS JOIN bounds b
+          WHERE COALESCE(
+                  timezone('Asia/Shanghai',h.listing_at)::date,
+                  CASE WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date END
+                ) >= b.start_date
+            AND COALESCE(
+                  timezone('Asia/Shanghai',h.listing_at)::date,
+                  CASE WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date END
+                ) < b.end_date::date
+       )
+       SELECT date,event_type,code,name,offer_open_at,offer_close_at,listing_at,listing_date,offer_phase
+         FROM stock_events
+        WHERE date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+        ORDER BY date,code,event_type`, [days]
+    );
+    const groups = new Map();
+    for (const row of rows) {
+      if (!groups.has(row.date)) groups.set(row.date, calendarDay(row.date));
+      const key = row.event_type === 'apply' ? 'apply_stocks' : 'list_stocks';
+      groups.get(row.date)[key].push({
+        code: row.code,
+        name: row.name,
+        secu_code: row.code,
+        offer_open_at: row.offer_open_at,
+        offer_close_at: row.offer_close_at,
+        listing_at: row.listing_at,
+        listing_date: row.listing_date,
+        offer_phase: row.offer_phase,
+      });
+    }
+    return [...groups.values()];
+  }
+
   const { rows } = await pool.query(
     `WITH bounds AS (
        SELECT (timezone('Asia/Shanghai', now()))::date AS start_date,
               (timezone('Asia/Shanghai', now()))::date + ($1::int * INTERVAL '1 day') AS end_date
      ), stock_events AS (
-       SELECT CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END AS event_date, 'apply' AS event_type,
+       SELECT h.ipo_date AS event_date, 'apply' AS event_type,
               h.security_code AS code, COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name
          FROM ipo_history h
          LEFT JOIN LATERAL (
@@ -348,12 +511,12 @@ async function loadStockCalendar(days, market = 'CN') {
             ORDER BY q.fetched_at DESC LIMIT 1
          ) q ON true, bounds b
          WHERE h.market_code=$2
-           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) ~ '^\\d{4}-\\d{2}-\\d{2}$'
-           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) >= to_char(b.start_date, 'YYYY-MM-DD')
-          AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) ELSE h.ipo_date END) < to_char(b.end_date, 'YYYY-MM-DD')
+           AND h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+           AND h.ipo_date >= to_char(b.start_date, 'YYYY-MM-DD')
+          AND h.ipo_date < to_char(b.end_date, 'YYYY-MM-DD')
           AND ($2='HK' OR (COALESCE(h.market_type, '') <> '北交所' AND h.security_code !~ '^(920|82|83|87|43)'))
        UNION ALL
-       SELECT CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END AS event_date, 'listing' AS event_type,
+       SELECT h.listing_date AS event_date, 'listing' AS event_type,
               h.security_code AS code, COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name
          FROM ipo_history h
          LEFT JOIN LATERAL (
@@ -362,9 +525,9 @@ async function loadStockCalendar(days, market = 'CN') {
             ORDER BY q.fetched_at DESC LIMIT 1
          ) q ON true, bounds b
          WHERE h.market_code=$2
-           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) ~ '^\\d{4}-\\d{2}-\\d{2}$'
-           AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) >= to_char(b.start_date, 'YYYY-MM-DD')
-          AND (CASE WHEN $2='HK' THEN COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) ELSE h.listing_date END) < to_char(b.end_date, 'YYYY-MM-DD')
+           AND h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+           AND h.listing_date >= to_char(b.start_date, 'YYYY-MM-DD')
+          AND h.listing_date < to_char(b.end_date, 'YYYY-MM-DD')
           AND ($2='HK' OR (COALESCE(h.market_type, '') <> '北交所' AND h.security_code !~ '^(920|82|83|87|43)'))
      )
      SELECT event_date AS date,event_type,code,name
@@ -564,19 +727,23 @@ router.get('/history', async (req, res) => {
         `SELECT h.security_code,h.security_name,
                 COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
                 h.market_type,h.ipo_status,
-                COALESCE(to_char(h.offer_open_at,'YYYY-MM-DD'),h.ipo_date) AS offer_open_date,
-                to_char(h.offer_close_at,'YYYY-MM-DD') AS offer_close_date,
-                to_char(h.pricing_at,'YYYY-MM-DD') AS pricing_date,
-                to_char(h.allotment_at,'YYYY-MM-DD') AS allotment_date,
-                COALESCE(to_char(h.listing_at,'YYYY-MM-DD'),h.listing_date) AS listing_date,
+                ${hkOfferPhaseSql('h')} AS offer_phase,
+                COALESCE(to_char(timezone('Asia/Shanghai',h.offer_open_at),'YYYY-MM-DD'),h.ipo_date) AS offer_open_date,
+                to_char(timezone('Asia/Shanghai',h.offer_close_at),'YYYY-MM-DD') AS offer_close_date,
+                to_char(timezone('Asia/Shanghai',h.pricing_at),'YYYY-MM-DD') AS pricing_date,
+                to_char(timezone('Asia/Shanghai',h.allotment_at),'YYYY-MM-DD') AS allotment_date,
+                COALESCE(to_char(timezone('Asia/Shanghai',h.listing_at),'YYYY-MM-DD'),h.listing_date) AS listing_date,
                 h.issue_price_low,h.issue_price_high,h.issue_price_final,h.lot_size_shares,h.lot_amount_hkd,
                 h.application_fee_hkd,h.brokerage_fee_hkd,h.online_lottery_rate,h.oversubscribe_multiple AS public_oversubscription,
-                live.subscription_multiple AS subscription_live_multiple,
-                live.source_code AS subscription_live_source,
-                live.observed_at AS subscription_live_observed_at,
-                (live.raw_payload->>'signal_kind') AS subscription_live_kind,
-                (live.raw_payload->>'signal_origin') AS subscription_live_origin,
-                (live.observed_at IS NULL OR live.observed_at < now() - interval '1 day') AS subscription_live_stale,
+                h.oversubscribe_multiple AS final_public_oversubscription,
+                subscription_signal.signal AS current_subscription_signal,
+                margin_signal.signal AS current_margin_signal,
+                signal_history.history AS intraday_signal_history,
+                margin_signal.multiple AS subscription_live_multiple,
+                margin_signal.source_code AS subscription_live_source,
+                margin_signal.observed_at AS subscription_live_observed_at,
+                margin_signal.signal_kind AS subscription_live_kind,
+                margin_signal.signal_status <> 'valid' AS subscription_live_stale,
                 livermore_grey.grey_market_price_hkd AS livermore_grey_market_price_hkd,
                 livermore_grey.grey_market_change_pct AS livermore_grey_market_change_pct,
                 livermore_grey.observed_at AS livermore_grey_market_observed_at,
@@ -615,13 +782,9 @@ router.get('/history', async (req, res) => {
               ORDER BY q.fetched_at DESC
               LIMIT 1
            ) q ON true
-           LEFT JOIN LATERAL (
-             SELECT s.subscription_multiple,s.source_code,s.observed_at,s.raw_payload
-               FROM analytics.hk_ipo_market_snapshots s
-              WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g') AND s.signal_type='subscription'
-              ORDER BY s.observed_at DESC
-              LIMIT 1
-           ) live ON true
+           ${hkSignalJoinSql('subscription_estimate', 'subscription_signal')}
+           ${hkSignalJoinSql('margin_estimate', 'margin_signal')}
+           ${hkSignalHistoryJoinSql('signal_history')}
            LEFT JOIN LATERAL (
              SELECT s.grey_market_price_hkd,s.grey_market_change_pct,s.observed_at
                FROM analytics.hk_ipo_market_snapshots s
@@ -653,6 +816,13 @@ router.get('/history', async (req, res) => {
       );
       rows = r.rows.map(row => ({
         ...row,
+        current_subscription_signal: row.current_subscription_signal || {
+          multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable',
+        },
+        current_margin_signal: row.current_margin_signal || {
+          amount_hkd: null, multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable',
+        },
+        intraday_signal_history: Array.isArray(row.intraday_signal_history) ? row.intraday_signal_history : [],
         greenshoe_assessment: assessHkGreenshoe(row.greenshoe_details, row.greenshoe_protection_ratio),
       }));
     } else {
@@ -744,17 +914,19 @@ router.get('/report/code', async (req, res) => {
       const fact = await pool.query(
         `SELECT security_code,security_name,
                 COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
-                market_type,ipo_status,
-                COALESCE(to_char(offer_open_at,'YYYY-MM-DD'),ipo_date) AS offer_open_date,
-                to_char(offer_close_at,'YYYY-MM-DD') AS offer_close_date,
-                to_char(pricing_at,'YYYY-MM-DD') AS pricing_date,
-                to_char(allotment_at,'YYYY-MM-DD') AS allotment_date,
-                COALESCE(to_char(listing_at,'YYYY-MM-DD'),listing_date) AS listing_date,
+                market_type,ipo_status,${hkOfferPhaseSql('h')} AS offer_phase,
+                COALESCE(to_char(timezone('Asia/Shanghai',offer_open_at),'YYYY-MM-DD'),ipo_date) AS offer_open_date,
+                to_char(timezone('Asia/Shanghai',offer_close_at),'YYYY-MM-DD') AS offer_close_date,
+                to_char(timezone('Asia/Shanghai',pricing_at),'YYYY-MM-DD') AS pricing_date,
+                to_char(timezone('Asia/Shanghai',allotment_at),'YYYY-MM-DD') AS allotment_date,
+                COALESCE(to_char(timezone('Asia/Shanghai',listing_at),'YYYY-MM-DD'),listing_date) AS listing_date,
                 issue_price_low,issue_price_high,issue_price_final,lot_size_shares,lot_amount_hkd,
                 application_fee_hkd,brokerage_fee_hkd,oversubscribe_multiple,greenshoe_details,facts_published_at,
-                (SELECT s.subscription_multiple FROM analytics.hk_ipo_market_snapshots s
-                  WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
-                    AND s.signal_type='subscription' ORDER BY s.observed_at DESC LIMIT 1) AS subscription_live_multiple,
+                subscription_signal.signal AS current_subscription_signal,
+                margin_signal.signal AS current_margin_signal,
+                signal_history.history AS intraday_signal_history,
+                margin_signal.multiple AS subscription_live_multiple,
+                margin_signal.source_code AS subscription_live_source,
                 (SELECT s.grey_market_change_pct FROM analytics.hk_ipo_market_snapshots s
                   WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
                     AND s.signal_type='grey_market' AND s.source_code='livermore' ORDER BY s.observed_at DESC LIMIT 1) AS livermore_grey_market_change_pct,
@@ -769,6 +941,9 @@ router.get('/report/code', async (req, res) => {
               ORDER BY fetched_at DESC
               LIMIT 1
            ) q ON true
+           ${hkSignalJoinSql('subscription_estimate', 'subscription_signal')}
+           ${hkSignalJoinSql('margin_estimate', 'margin_signal')}
+           ${hkSignalHistoryJoinSql('signal_history')}
           WHERE h.market_code='HK' AND h.security_code=$1 LIMIT 1`, [hkCode]
       );
       if (fact.rows[0]) {
@@ -782,7 +957,8 @@ router.get('/report/code', async (req, res) => {
           `- **最终发行价**：${row.issue_price_final == null ? '待公告' : row.issue_price_final + ' 港元'}`,
           `- **每手股数**：${row.lot_size_shares == null ? '待公告' : row.lot_size_shares}`, `- **每手资金**：${row.lot_amount_hkd == null ? '待公告' : row.lot_amount_hkd + ' 港元'}`,
           `- **申请费用（含佣金及征费）**：${row.application_fee_hkd == null ? '待公告' : row.application_fee_hkd + ' 港元'}`, `- **经纪佣金**：${row.brokerage_fee_hkd == null ? '待公告' : row.brokerage_fee_hkd + ' 港元'}`,
-          `- **申购期认购倍数**：${row.subscription_live_multiple == null ? '暂无盘中数据' : row.subscription_live_multiple + ' 倍（来源：' + (row.subscription_live_source === 'vbkr-public' ? '华盛公开新股页' : '利弗莫尔') + '）'}`,
+          `- **申购期认购倍数**：${row.current_subscription_signal?.multiple == null ? '暂无可验证数据' : row.current_subscription_signal.multiple + ' 倍（来源：' + (row.current_subscription_signal.source || '外部来源') + '）'}`,
+          `- **申购期预计孖展倍数**：${row.current_margin_signal?.multiple == null ? '暂无可验证数据' : row.current_margin_signal.multiple + ' 倍（来源：' + (row.current_margin_signal.source || '外部来源') + '）'}`,
           `- **最终超额认购倍数**：${row.oversubscribe_multiple == null ? '待配售结果' : row.oversubscribe_multiple + ' 倍'}`,
           `- **绿鞋判断**：${assessHkGreenshoe(row.greenshoe_details, null)}`,
           `- **利弗莫尔暗盘涨幅**：${row.livermore_grey_market_change_pct == null ? '暂无' : row.livermore_grey_market_change_pct + '%'}`,
@@ -790,7 +966,12 @@ router.get('/report/code', async (req, res) => {
           '', '## 研究状态', '- 当前仅展示官方事实；研究评分与正式建议待历史样本、质量门禁和回测完成后开放。',
           `- **事实更新时间**：${row.facts_published_at || '暂无'}`,
         ];
-        return res.json({ code: hkCode, market: 'HK', stage: 'facts', score: null, advice: null, md: lines.join('\n') });
+        return res.json({ code: hkCode, market: 'HK', stage: 'facts', offer_phase: row.offer_phase,
+          current_subscription_signal: row.current_subscription_signal || { multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable' },
+          current_margin_signal: row.current_margin_signal || { amount_hkd: null, multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable' },
+          intraday_signal_history: Array.isArray(row.intraday_signal_history) ? row.intraday_signal_history : [],
+          final_public_oversubscription: row.oversubscribe_multiple,
+          score: null, advice: null, md: lines.join('\n') });
       }
     }
     const liveCn = await buildCnStockLiveReport(code);
@@ -823,3 +1004,4 @@ router.get('/report/code', async (req, res) => {
 module.exports = router;
 module.exports.mergeCalendarDays = mergeCalendarDays;
 module.exports.assessHkGreenshoe = assessHkGreenshoe;
+module.exports.hkOfferPhaseSql = hkOfferPhaseSql;

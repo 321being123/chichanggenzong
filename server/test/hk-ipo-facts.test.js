@@ -8,7 +8,12 @@ const {
 } = require('../services/hkexIpo');
 const { normalizeCalendarRows } = require('../jobs/hkTradeCalendarSync');
 const { rowsFromProbe, runHkIpoSync, persistTencentNames } = require('../jobs/hkIpoSync');
-const { syncHkexAllotmentFacts, syncHkexProspectusFacts, shouldPersistAllotmentFacts } = require('../services/hkexIpo');
+const {
+  syncHkexAllotmentFacts,
+  syncHkexProspectusFacts,
+  shouldPersistAllotmentFacts,
+  recomputeCompletenessForStoredRow,
+} = require('../services/hkexIpo');
 
 const listingHtml = `
   <table><tr><th>Stock Code</th><th>Name</th><th>Listing Date</th></tr>
@@ -81,6 +86,30 @@ assert.strictEqual(
   false,
   '澄清配发公告不得覆盖正式配发结果'
 );
+
+const completenessAsOf = '2026-09-20';
+const completeFacts = recomputeCompletenessForStoredRow({
+  ipo_status: 'active',
+  offer_open_at: '2026-09-01T01:00:00Z', offer_close_at: '2026-09-05T04:00:00Z',
+  pricing_at: '2026-09-06T01:00:00Z', allotment_at: '2026-09-08T01:00:00Z',
+  listing_at: '2026-09-10T01:00:00Z', issue_price_final: 10, lot_size_shares: 100,
+  data_completeness: {}, source_documents: [],
+}, completenessAsOf);
+assert.strictEqual(completeFacts.status, 'complete', '最终事实齐全时必须标记 complete');
+const pendingFacts = recomputeCompletenessForStoredRow({
+  ipo_status: 'active', offer_open_at: '2026-09-19T01:00:00Z', offer_close_at: '2026-09-30T04:00:00Z',
+  data_completeness: {}, source_documents: [],
+}, completenessAsOf);
+assert.strictEqual(pendingFacts.status, 'pending_not_due', '认购截止日前缺字段必须标记 pending_not_due');
+const retryableFacts = recomputeCompletenessForStoredRow({
+  ipo_status: 'active', offer_open_at: '2026-09-01T01:00:00Z', offer_close_at: '2026-09-05T04:00:00Z',
+  data_completeness: {}, source_documents: [],
+}, completenessAsOf);
+assert.strictEqual(retryableFacts.status, 'retryable', '截止后缺字段必须标记 retryable');
+const terminalFacts = recomputeCompletenessForStoredRow({
+  ipo_status: 'introduction', data_completeness: {}, source_documents: [],
+}, completenessAsOf);
+assert.strictEqual(terminalFacts.status, 'complete', '介绍上市等终态项目不得因普通招股字段缺失而重试');
 
 (async () => {
   const statements = [];

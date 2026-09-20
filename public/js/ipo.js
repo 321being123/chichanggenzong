@@ -62,7 +62,21 @@ function ipoNameCell(name, code) {
   return ipoExBadge(code) + escapeHtml(name || '-');
 }
 
-function ipoHkStageLabel(status) {
+function ipoHkStageLabel(status, offerPhase) {
+  var phaseLabels = {
+    upcoming: '待申购',
+    open: '申购中',
+    closed: '申购结束',
+    priced: '已定价',
+    allotted: '已配售',
+    listed: '已上市',
+    pending_window: '待招股窗口',
+    not_applicable: '非公开发售',
+    postponed: '已延期',
+    cancelled: '已取消'
+  };
+  var phaseLabel = phaseLabels[String(offerPhase || '').toLowerCase()];
+  if (phaseLabel) return phaseLabel;
   var labels = {
     active: '申购中',
     offer_open: '申购中',
@@ -81,8 +95,10 @@ function ipoHkStageLabel(status) {
 }
 
 function ipoHkNameCell(name, code) {
-  var display = /[\u3400-\u9fff]/.test(String(name || '')) ? String(name) : '中文名待补';
-  return ipoExBadge(code) + escapeHtml(display);
+  var raw = String(name || '').trim();
+  var display = raw || '名称待补';
+  var suffix = raw && !/[\u3400-\u9fff]/.test(raw) ? '（中文名待补）' : '';
+  return ipoExBadge(code) + escapeHtml(display + suffix);
 }
 
 function ipoIntegerCell(v) {
@@ -97,20 +113,30 @@ function ipoHkAllotmentCell(it) {
   var rate = it.online_lottery_rate !== null && it.online_lottery_rate !== undefined && it.online_lottery_rate !== ''
     ? '一手中签率 ' + ipoNumFixed(it.online_lottery_rate, 2) + '%'
     : '';
-  if (!date && !rate) return '<span>待补全</span>';
+  if (!date && !rate) {
+    var phase = String(it.offer_phase || '').toLowerCase();
+    return phase === 'closed' || phase === 'priced'
+      ? '<span>待官方配发公告</span>'
+      : '<span>尚未到配发阶段</span>';
+  }
   return [date, rate].filter(Boolean).join('<br>');
 }
 
 function ipoHkOversubscriptionCell(it) {
-  if (it.public_oversubscription === null || it.public_oversubscription === undefined || it.public_oversubscription === '') return '<span>待补全</span>';
+  if (it.public_oversubscription === null || it.public_oversubscription === undefined || it.public_oversubscription === '') {
+    var phase = String(it.offer_phase || '').toLowerCase();
+    return phase === 'closed' || phase === 'priced' || phase === 'allotted'
+      ? '<span>待官方配发公告</span>'
+      : '<span>尚未到最终结果</span>';
+  }
   var n = Number(it.public_oversubscription);
-  if (!isFinite(n) || n <= 0) return '<span>待补全</span>';
+  if (!isFinite(n) || n <= 0) return '<span>待官方配发公告</span>';
   var qualifier = String(it.public_oversubscription_qualifier || '').toLowerCase() === 'or_more' ? '≥' : '';
   return qualifier + n.toFixed(2) + '倍';
 }
 
 function ipoHkSignalCell(it, field, label) {
-  var stage = String(it.ipo_status || '').toLowerCase();
+  var stage = String(it.offer_phase || it.ipo_status || '').toLowerCase();
   var signal = it && it[field];
   if (!signal || typeof signal !== 'object') signal = {};
   var multiple = signal.multiple;
@@ -138,6 +164,13 @@ function ipoHkSignalCell(it, field, label) {
 
 function ipoHkSubscriptionCell(it) {
   return ipoHkSignalCell(it, 'current_subscription_signal', '申购');
+}
+
+function ipoHkOfferWindowCell(it) {
+  var open = it && it.offer_open_date ? String(it.offer_open_date).slice(0, 10) : '';
+  var close = it && it.offer_close_date ? String(it.offer_close_date).slice(0, 10) : '';
+  if (open && close) return escapeHtml(open + ' 至 ' + close);
+  return ipoPending(open || close);
 }
 
 function ipoHkLiveOversubscriptionCell(it) {
@@ -626,7 +659,7 @@ function ipoRenderHistory(type, rows) {
     var hkRows = rows.map(function (it) {
       return [
         escapeHtml(it.security_code || ''), ipoHkNameCell(it.security_name_cn || it.security_name, it.security_code),
-        ipoHkStageLabel(it.ipo_status), ipoPending(it.offer_open_date), ipoHkAllotmentCell(it),
+        ipoHkStageLabel(it.ipo_status, it.offer_phase), ipoHkOfferWindowCell(it), ipoHkAllotmentCell(it),
         ipoHkSubscriptionCell(it), ipoHkLiveOversubscriptionCell(it), ipoHkSignalHistoryCell(it), ipoHkOversubscriptionCell(it), ipoHkGreenshoeCell(it),
         ipoPctCell(it.livermore_grey_market_change_pct), ipoPctCell(it.futu_grey_market_change_pct),
         ipoPending(it.listing_date), ipoPending(it.issue_price_final, function (v) { return ipoNumFixed(v, 3); }),

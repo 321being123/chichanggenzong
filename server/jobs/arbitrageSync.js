@@ -32,7 +32,11 @@ async function runArbitrageSync(reason = 'scheduled', context = {}) {
     const parsePendingNotDue = Number(result.recovery && result.recovery.pendingNotDue || 0);
     const parseExhausted = Number(result.recovery && result.recovery.exhausted || 0);
     const sourceDetail = Object.keys(sync.SCOPES).map(scope => `${scope}:${(result[scope] && result[scope].total) || 0}`).join(' ');
-    const detail = `${sourceDetail} errors:${errors.length} parse_pending:${parsePending} parse_not_due:${parsePendingNotDue} parse_exhausted:${parseExhausted}`;
+    const cninfoProbe = result.recovery && result.recovery.cninfoProbe;
+    const probeDetail = cninfoProbe
+      ? ` cninfo_probe:${cninfoProbe.status}/${Number(cninfoProbe.attempted || 0)}/${Number(cninfoProbe.recovered || 0)}`
+      : '';
+    const detail = `${sourceDetail} errors:${errors.length} parse_pending:${parsePending} parse_not_due:${parsePendingNotDue} parse_exhausted:${parseExhausted}${probeDetail}`;
     if (errors.length) {
       const sourceError = errors.length ? `；数据源错误：${errors.slice(0, 5).join(' | ')}` : '';
       const error = `套利公告同步未完整成功：PDF待重试 ${parsePending}，已达上限 ${parseExhausted}${sourceError}`;

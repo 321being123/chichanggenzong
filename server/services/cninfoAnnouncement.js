@@ -94,6 +94,62 @@ function rawHttpRequest(urlStr, { method = 'GET', body } = {}) {
   });
 }
 
+// 权限探针只验证接口是否能建立一次正常响应，不读取公告内容。
+// 探针使用独立 api_name，避免绕过 Guard；成功后由调用方更新真实接口策略。
+function rawProbeRequest(urlStr, { method = 'HEAD', body } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    if (!/^(?:www|static)\.cninfo\.com\.cn$/i.test(u.hostname)) {
+      return reject(new Error('Domain not in whitelist: ' + u.hostname));
+    }
+    const options = {
+      hostname: u.hostname,
+      port: 443,
+      path: u.pathname + u.search,
+      method,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'Referer': 'https://www.cninfo.com.cn/',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      timeout: 10000,
+    };
+    if (body) {
+      options.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+      options.headers['Content-Length'] = Buffer.byteLength(body);
+    }
+    const req = https.request(options, res => {
+      const status = Number(res.statusCode || 0);
+      res.resume();
+      if (status < 200 || status >= 300) {
+        const error = new Error(`CNINFO probe HTTP ${status || 'unknown'}`);
+        error.code = status === 403 ? 'HTTP_403' : status === 429 ? 'RATE_LIMIT' : 'UPSTREAM_ERROR';
+        error.errorType = status === 429 ? 'rate_limit' : status >= 500 ? 'network' : 'upstream';
+        error.source = 'cninfo';
+        reject(error);
+        return;
+      }
+      resolve({ statusCode: status });
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('CNINFO probe timeout')); });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function probeEndpoint(urlStr, options = {}) {
+  const apiName = String(options.apiName || 'permission_probe').slice(0, 64);
+  const { method = 'HEAD', body } = options;
+  return withExternalCallGuard(
+    'cninfo', `permission-probe:${apiName}`, process.env.JOB_BUSINESS_DATE,
+    () => rawProbeRequest(urlStr, { method, body }),
+    { apiName: 'permission_probe', credentialProfile: 'anonymous', tokenFingerprint: 'none' }
+  );
+}
+
 async function httpRequest(urlStr, options = {}) {
   const apiName = cninfoApiName(urlStr);
   try {
@@ -104,7 +160,7 @@ async function httpRequest(urlStr, options = {}) {
       const state = await recordExternalForbidden('cninfo', apiName, 'none', error.message);
       throw new ExternalCallGuardError(
         state.code,
-        state.blocked ? `cninfo 接口 ${apiName} 连续 5 次退避后仍返回 HTTP 403，需要人工处理` : `cninfo 接口 ${apiName} HTTP 403，等待退避后探测`,
+        state.blocked ? `cninfo 接口 ${apiName} 连续 5 次后进入每日恢复探针` : `cninfo 接口 ${apiName} HTTP 403，等待退避后探测`,
         'cninfo', `announcement:${urlStr}`,
         { apiName, tokenFingerprint: 'none', credentialProfile: 'anonymous', recoverAt: state.recoverAt }
       );
@@ -290,6 +346,7 @@ module.exports = {
   DISCOVERY_KEYWORDS,
   UPDATE_KEYWORDS,
   httpRequest,
+  probeEndpoint,
   ALLOWED_DOMAIN,
   CNINFO_PAGE_SIZE,
   CNINFO_MAX_PAGES,

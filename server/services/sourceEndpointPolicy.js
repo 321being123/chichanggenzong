@@ -6,6 +6,7 @@ const PERMISSION_STATUSES = new Set([
   'unknown', 'available', 'permission_denied', 'rate_limited',
   'not_configured', 'empty_but_accepted', 'error',
 ]);
+const PERMISSION_PROBE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function numberOrNull(value, { min = 0, integer = true } = {}) {
   if (value === null || value === undefined || value === '') return null;
@@ -70,6 +71,11 @@ async function listSourceEndpointPolicies(sourceCode = null) {
             p.internal_per_minute_limit,p.internal_daily_limit,p.max_concurrency,p.min_interval_ms,
             p.row_limit,p.timeout_ms,p.empty_policy,p.retry_policy,p.official_doc_url,p.enabled,
             p.last_verified_at,p.verification_message,p.notes,p.created_at,p.updated_at,
+            (SELECT r.next_allowed_at
+               FROM ops.source_endpoint_runtime r
+              WHERE r.source_id=p.source_id
+                AND r.api_name='permission_probe:' || p.api_name
+                AND r.credential_fingerprint=p.credential_fingerprint) AS next_permission_probe_at,
             COALESCE((SELECT SUM(b.call_count)::int FROM ops.external_call_budgets b
               WHERE b.source=ds.source_code
                 AND (b.api_name=p.api_name OR (p.api_name='*' AND b.api_name<>'*'))
@@ -86,6 +92,47 @@ async function listSourceEndpointPolicies(sourceCode = null) {
       ORDER BY ds.source_code,p.credential_profile,CASE WHEN p.api_name='*' THEN 0 ELSE 1 END,p.api_name`, params
   );
   return rows;
+}
+
+// 权限拒绝不是永久事实。每日最多为每个被停用接口领取一次探针，
+// 复用已有运行态表，不把探针时间混进真实业务调用预算。
+async function claimPermissionProbes(sourceCode, credentialProfile = 'anonymous', intervalMs = PERMISSION_PROBE_INTERVAL_MS) {
+  if (!sourceCode || !PROFILES.has(credentialProfile)) return [];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: policies } = await client.query(`
+      SELECT p.source_id,p.api_name,p.credential_profile,p.credential_fingerprint
+        FROM ops.source_endpoint_policies p
+        JOIN ops.data_sources ds ON ds.source_id=p.source_id
+       WHERE ds.source_code=$1
+         AND p.credential_profile=$2
+         AND p.permission_status='permission_denied'
+         AND p.enabled=false
+       ORDER BY p.api_name
+    `, [sourceCode, credentialProfile]);
+    const claimed = [];
+    for (const policy of policies) {
+      const probeApi = `permission_probe:${policy.api_name}`.slice(0, 64);
+      const { rows } = await client.query(`
+        INSERT INTO ops.source_endpoint_runtime(source_id,api_name,credential_fingerprint,next_allowed_at)
+        VALUES($1,$2,$3,now()+($4::integer * interval '1 millisecond'))
+        ON CONFLICT(source_id,api_name,credential_fingerprint) DO UPDATE
+          SET next_allowed_at=now()+($4::integer * interval '1 millisecond'),updated_at=now()
+        WHERE ops.source_endpoint_runtime.next_allowed_at IS NULL
+           OR ops.source_endpoint_runtime.next_allowed_at <= now()
+        RETURNING next_allowed_at
+      `, [policy.source_id, probeApi, policy.credential_fingerprint, Math.max(Number(intervalMs) || PERMISSION_PROBE_INTERVAL_MS, 60000)]);
+      if (rows.length) claimed.push({ ...policy, nextProbeAt: rows[0].next_allowed_at });
+    }
+    await client.query('COMMIT');
+    return claimed;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function upsertSourceEndpointPolicy(input = {}) {
@@ -164,5 +211,7 @@ module.exports = {
   upsertSourceEndpointPolicy,
   syncCredentialFingerprint,
   recordEndpointPermission,
+  claimPermissionProbes,
+  PERMISSION_PROBE_INTERVAL_MS,
   normalizePolicyInput,
 };

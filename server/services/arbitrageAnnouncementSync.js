@@ -9,6 +9,7 @@ const { fetchTencentQuotes } = require('./tencentQuote');
 const { ensureInstrumentIdentity } = require('./securityIdentity');
 const { fetchSseEventsBatch, fetchSzseEventsBatch } = require('./stockAnalysis');
 const { sendAlert, resolveSourceEndpointAlerts } = require('./jobAlertMailer');
+const { probeCninfoPermission } = require('./sourceEndpointProbe');
 const {
   cleanSecurityText,
   firstSecurityCode,
@@ -23,6 +24,8 @@ const {
 const SYNC_JOB = 'arbitrage_sync';
 const MAX_PARSE_ATTEMPTS = 3;
 const EXCHANGE_SCAN_DAYS = 7;
+const ACTIVE_DOCUMENT_ROLES = ['amendment', 'terms', 'summary', 'proposal'];
+const PRIMARY_A_SHARE_SOURCES = ['sse', 'szse'];
 
 function normalizeAnnouncementDate(value) {
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
@@ -246,6 +249,30 @@ async function findOpenCase(client, instrumentId, strategyType) {
   return rows[0] || null;
 }
 
+// 历史数据中的巨潮文档可能没有 announcement_merge_key，不能只靠 raw_payload 去重。
+// 按证券、公告日和规范化标题再比一次，确保后续交易所公告能接回原事件链。
+async function findCaseByAnnouncementMergeKey(client, instrumentId, mergeKey, announcedAt) {
+  if (!instrumentId || !mergeKey || !announcedAt) return null;
+  const { rows } = await client.query(`
+    SELECT ac.case_id,ac.review_status,d.title,d.announced_at,i.canonical_code
+    FROM event.arbitrage_case_documents acd
+    JOIN event.arbitrage_cases ac ON ac.case_id=acd.case_id
+    JOIN event.documents d ON d.document_id=acd.document_id
+    JOIN ops.data_sources ds ON ds.source_id=d.source_id
+    JOIN core.instruments i ON i.instrument_id=ac.target_instrument_id
+    WHERE ac.target_instrument_id=$1
+      AND d.announced_at::date=$2::date
+      AND ds.source_code IN ('cninfo_announcements','sse','szse')
+    ORDER BY ac.created_at ASC,ac.case_id ASC,d.document_id ASC
+  `, [instrumentId, announcedAt]);
+  return rows.find(row => announcementMergeKey({
+    securityCode: row.canonical_code,
+    announcedAt: row.announced_at,
+    title: row.title,
+    market: 'CN',
+  }) === mergeKey) || null;
+}
+
 // 标准化公告 -> event.documents + event.arbitrage_cases（按标的+策略合并成事件链）
 async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
   ann = {
@@ -412,6 +439,9 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       // 合并优先级：先按「标的+策略」匹配进行中事件；无则按 source_key 幂等匹配（同一公告重复同步）
       let existing = instrumentId ? await findOpenCase(client, instrumentId, strategyType) : null;
       // 如果同标的同策略已有时间更晚的终态公告，当前历史方案只能归档，不能重新打开事件。
+      if (!existing && mergeKey) {
+        existing = await findCaseByAnnouncementMergeKey(client, instrumentId, mergeKey, ann.announcedAt);
+      }
       if (!existing && mergeKey) {
         const { rows: merged } = await client.query(
           `SELECT ac.case_id,ac.review_status
@@ -613,6 +643,11 @@ async function runIncrementalSync() {
 // 每次同步顺带补跑所有未解析/旧版本核心公告；不再用固定条数让旧案件长期排队。
 // 单次任务的 maxExternalCallsPerRun 和来源级 Guard 仍负责外部请求止损，触发保护线时停止本轮补跑。
 async function retryPendingDocuments() {
+  const superseded = await supersedeLegacyDocumentsWithOfficial();
+  const cninfoProbe = await probeCninfoPermission().catch(error => ({
+    status: 'probe_error', attempted: 0, recovered: 0,
+    error: sanitizeJobError(error.message || error, 240),
+  }));
   const { rows } = await pool.query(`
     SELECT acd.case_id,acd.document_id,acd.document_role,d.url,i.canonical_code
     FROM event.arbitrage_case_documents acd
@@ -632,7 +667,7 @@ async function retryPendingDocuments() {
     ORDER BY d.announced_at DESC,acd.document_id DESC
   `, [PARSER_VERSION, MAX_PARSE_ATTEMPTS]);
   const touched = new Set();
-  const result = { attempted: 0, parsed: 0, failed: 0 };
+  const result = { attempted: 0, parsed: 0, failed: 0, superseded, cninfoProbe };
   const stopCodes = new Set([
     'BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN',
     'JOB_BUDGET_EXCEEDED', 'POLICY_NOT_CONFIGURED', 'POLICY_DISABLED', 'PERMISSION_DENIED',
@@ -682,6 +717,56 @@ async function retryPendingDocuments() {
   result.pendingNotDue = Number(retryState[0] && retryState[0].pending_not_due || 0);
   result.exhausted = Number(retryState[0] && retryState[0].exhausted || 0);
   return result;
+}
+
+// 交易所原文已经入库后，旧的 CNINFO 同公告只保留审计证据，不再参与解析重试和案件完整性判断。
+// 只按同一事件链内的证券、公告日、规范化标题精确匹配，避免把后续公告误当成替代件。
+async function supersedeLegacyDocumentsWithOfficial() {
+  const { rows } = await pool.query(`
+    SELECT acd.case_id,acd.document_id,
+           legacy.title AS legacy_title,legacy.announced_at AS legacy_announced_at,
+           official.title AS official_title,official.announced_at AS official_announced_at,
+           i.canonical_code
+    FROM event.arbitrage_case_documents acd
+    JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
+    JOIN event.documents legacy ON legacy.document_id=acd.document_id
+    JOIN ops.data_sources legacy_source ON legacy_source.source_id=legacy.source_id
+    JOIN core.instruments i ON i.instrument_id=c.target_instrument_id
+    JOIN event.arbitrage_case_documents official_link ON official_link.case_id=acd.case_id
+    JOIN event.documents official ON official.document_id=official_link.document_id
+    JOIN ops.data_sources official_source ON official_source.source_id=official.source_id
+    WHERE c.event_status NOT IN ('completed','terminated','expired')
+      AND acd.document_role = ANY($1::text[])
+      AND legacy_source.source_code='cninfo_announcements'
+      AND official_source.source_code = ANY($2::text[])
+      AND legacy.announced_at::date=official.announced_at::date
+      AND legacy.url ~* '\\.pdf($|\\?)'
+      AND official.url ~* '\\.pdf($|\\?)'
+  `, [ACTIVE_DOCUMENT_ROLES, PRIMARY_A_SHARE_SOURCES]);
+
+  let superseded = 0;
+  for (const row of rows) {
+    const legacyKey = announcementMergeKey({
+      securityCode: row.canonical_code,
+      announcedAt: row.legacy_announced_at,
+      title: row.legacy_title,
+      market: 'CN',
+    });
+    const officialKey = announcementMergeKey({
+      securityCode: row.canonical_code,
+      announcedAt: row.official_announced_at,
+      title: row.official_title,
+      market: 'CN',
+    });
+    if (!legacyKey || legacyKey !== officialKey) continue;
+    const updated = await pool.query(`
+      UPDATE event.arbitrage_case_documents
+         SET document_role='superseded'
+       WHERE case_id=$1 AND document_id=$2 AND document_role = ANY($3::text[])
+    `, [row.case_id, row.document_id, ACTIVE_DOCUMENT_ROLES]);
+    superseded += Number(updated.rowCount || 0);
+  }
+  return superseded;
 }
 
 // 执行同步
@@ -772,6 +857,7 @@ module.exports = {
   generateMonthWindows,
   standardizeAnnouncement,
   retryPendingDocuments,
+  supersedeLegacyDocumentsWithOfficial,
   classifyTitle,
   detectUpdate,
   isGenericControlChangeTermination,

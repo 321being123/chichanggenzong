@@ -38,9 +38,22 @@ function normalizeSecurityName(value) {
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'extractArbitrageDocument.py');
 const MAX_PARSE_ATTEMPTS = 3;
 const PARSE_RETRY_MINUTES = [5, 15];
+const EXTERNAL_PARSE_CODES = new Set([
+  'BUDGET_WAIT', 'RATE_LIMIT', 'QUOTA_EXHAUSTED', 'CIRCUIT_OPEN',
+  'POLICY_NOT_CONFIGURED', 'POLICY_DISABLED', 'PERMISSION_DENIED',
+]);
 
 function isPermanentParseError(message) {
   return /PDF exceeds size limit/i.test(String(message || ''));
+}
+
+function externalParseRetryAt(error) {
+  const code = String(error && error.code || '').toUpperCase();
+  if (!EXTERNAL_PARSE_CODES.has(code)) return null;
+  const recoverAt = error && error.recoverAt && new Date(error.recoverAt);
+  if (recoverAt && !Number.isNaN(recoverAt.getTime())) return recoverAt;
+  const waitMinutes = ['POLICY_NOT_CONFIGURED', 'POLICY_DISABLED', 'PERMISSION_DENIED'].includes(code) ? 24 * 60 : 30;
+  return new Date(Date.now() + waitMinutes * 60 * 1000);
 }
 
 function getParseRetryDecision(existing, force = false, now = new Date()) {
@@ -117,7 +130,7 @@ function runPythonExtraction(url, targetCode) {
         const json = JSON.parse(out);
         if (json.error) {
           const message = String(json.error);
-          const typed = message.match(/\[(BUDGET_WAIT|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN)\]\[([^\]]+)\](?:\[([^\]]+)\])?/i);
+          const typed = message.match(/\[(BUDGET_WAIT|RATE_LIMIT|QUOTA_EXHAUSTED|CIRCUIT_OPEN|POLICY_NOT_CONFIGURED|POLICY_DISABLED|PERMISSION_DENIED)\]\[([^\]]+)\](?:\[([^\]]+)\])?/i);
           const error = new Error(message);
           if (typed) {
             error.code = typed[1].toUpperCase();
@@ -357,26 +370,30 @@ async function parseAndStoreDocument(caseId, documentId, url, targetCode, role, 
       const previous = existing[0];
       const previousAttempts = previous && previous.parser_version === PARSER_VERSION
         ? Number(previous.parse_attempts || 0) : 0;
-      const attempt = isPermanentParseError(err.message)
+      const externalRetryAt = externalParseRetryAt(err);
+      const attempt = externalRetryAt ? previousAttempts : isPermanentParseError(err.message)
         ? MAX_PARSE_ATTEMPTS
         : previousAttempts + 1;
-      const retryMinutes = PARSE_RETRY_MINUTES[Math.min(attempt - 1, PARSE_RETRY_MINUTES.length - 1)];
+      const retryMinutes = externalRetryAt
+        ? 30
+        : PARSE_RETRY_MINUTES[Math.min(attempt - 1, PARSE_RETRY_MINUTES.length - 1)];
       await pool.query(`
         WITH failed_document AS (
           UPDATE event.arbitrage_case_documents
              SET document_role=$1,parser_version=$2,parse_status='failed',parsed_at=now(),
                  parse_attempts=$3::integer,
-                 next_parse_attempt_at=CASE WHEN $3::integer < $4::integer THEN now()+($5 || ' minutes')::interval ELSE NULL END,
-                 last_parse_error=$6
-           WHERE case_id=$7 AND document_id=$8
+                 next_parse_attempt_at=CASE WHEN $3::integer < $4::integer
+                    THEN COALESCE($5::timestamptz, now()+($6 || ' minutes')::interval) ELSE NULL END,
+                 last_parse_error=$7
+           WHERE case_id=$8 AND document_id=$9
            RETURNING case_id
         )
         UPDATE event.arbitrage_cases
            SET parse_status='incomplete',parser_version=$2,updated_at=now()
-         WHERE case_id=$7 AND parse_status NOT IN ('conflict','incomplete')
+         WHERE case_id=$8 AND parse_status NOT IN ('conflict','incomplete')
            AND EXISTS (SELECT 1 FROM failed_document)
-      `, [documentRole, PARSER_VERSION, attempt, MAX_PARSE_ATTEMPTS, String(retryMinutes),
-        sanitizeJobError(err.message || err, 1000), caseId, documentId]);
+      `, [documentRole, PARSER_VERSION, attempt, MAX_PARSE_ATTEMPTS, externalRetryAt,
+        String(retryMinutes), sanitizeJobError(err.message || err, 1000), caseId, documentId]);
       await recordParseFailure(caseId, err.message);
       throw err;
     }
@@ -538,6 +555,7 @@ async function resolveParseFailure(caseId) {
         FROM event.arbitrage_case_documents acd
         JOIN event.arbitrage_cases c ON c.case_id=acd.case_id
        WHERE acd.parse_status='failed'
+         AND acd.document_role <> 'superseded'
          AND (($2::bigint IS NOT NULL AND c.target_instrument_id=$2) OR ($2::bigint IS NULL AND c.case_id=$1))
        LIMIT 1
     `, [caseId, instrumentId]);

@@ -2,6 +2,7 @@
 // 测试月窗口生成、标题分类、调度注册
 const assert = require('assert');
 const sync = require('../services/arbitrageAnnouncementSync');
+const { probeTarget } = require('../services/sourceEndpointProbe');
 const { SCHEDULER_REGISTRY } = require('../scheduler');
 
 let pass = 0, fail = 0;
@@ -11,6 +12,12 @@ function test(name, fn) {
 }
 
 console.log('--- 套利同步逻辑测试 ---');
+
+test('巨潮权限探针只验证接口响应，不走公告采集参数', () => {
+  assert.strictEqual(probeTarget('document', 'https://static.cninfo.com.cn/test.pdf').method, 'HEAD');
+  assert.strictEqual(probeTarget('topSearch', null).method, 'POST');
+  assert.match(probeTarget('topSearch', null).body, /keyWord=601995/);
+});
 
 // ===== 月窗口生成 =====
 test('1 年区间生成 12 个月窗口', () => {

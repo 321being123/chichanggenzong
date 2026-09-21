@@ -26,6 +26,9 @@ const arbitrageReparse = read('server/jobs/arbitrageReparse.js');
 const arbitrageSync = read('server/services/arbitrageAnnouncementSync.js');
 const arbitrageParser = read('server/services/arbitrageParser.js');
 const arbitrageService = read('server/services/arbitrageService.js');
+const sourceEndpointPolicy = read('server/services/sourceEndpointPolicy.js');
+const cninfoAnnouncement = read('server/services/cninfoAnnouncement.js');
+const pythonExternalGuard = read('ipo-report/external_call_guard.py');
 const ipoHistoryJob = read('server/jobs/ipoHistorySync.js');
 
 assert(!/runSlot\(slot,\s*'manual-retry'\)/.test(adminRoute), 'Web 路由不应直接执行人工补跑');
@@ -159,6 +162,9 @@ assert(/acd\.parse_status='failed' AND acd\.parse_attempts < \$2/.test(arbitrage
   && /COALESCE\(acd\.next_parse_attempt_at, now\(\)\) <= now\(\)/.test(arbitrageSync), '解析失败 PDF 必须在到期后有限重试，不能永久排除');
 assert(/MAX_PARSE_ATTEMPTS = 3/.test(arbitrageParser) && /parse_attempts=\$3/.test(arbitrageParser)
   && /parseExhausted/.test(arbitrageJob), 'PDF 解析达到上限后必须停止外部调用并进入统一任务告警');
+assert(/EXTERNAL_PARSE_CODES/.test(arbitrageParser)
+  && /externalParseRetryAt/.test(arbitrageParser)
+  && /const attempt = externalRetryAt \? previousAttempts/.test(arbitrageParser), '外部权限或限流失败不得消耗 PDF 解析次数，恢复后必须能自动重试');
 assert(/getParseRetryDecision/.test(arbitrageParser) && /reason: 'exhausted'/.test(arbitrageParser)
   && /reason: 'not_due'/.test(arbitrageParser), 'PDF 解析入口本身必须阻止未到期和超过上限的外部调用');
 assert(/resolveParseFailure\(caseId\)/.test(arbitrageParser) && /SET status='resolved',resolved_at=now\(\)/.test(arbitrageParser), 'PDF 解析恢复后必须关闭对应数据质量异常');
@@ -171,7 +177,20 @@ assert(/async function retryPendingDocuments\(\)/.test(arbitrageSync)
   && /results\.recovery = await retryPendingDocuments\(\)/.test(arbitrageSync)
   && !/retryPendingDocuments\(20\)/.test(arbitrageSync)
   && !/LIMIT \$3/.test(arbitrageSync), '套利旧版本公告不得再受固定20份补解析上限影响');
-assert(/const typed = message\.match\(\/\\\[\(BUDGET_WAIT\|RATE_LIMIT\|QUOTA_EXHAUSTED\|CIRCUIT_OPEN\)/.test(arbitrageParser)
+assert(/findCaseByAnnouncementMergeKey/.test(arbitrageSync)
+  && /legacy_source\.source_code='cninfo_announcements'/.test(arbitrageSync)
+  && /official_source\.source_code = ANY/.test(arbitrageSync)
+  && /SET document_role='superseded'/.test(arbitrageSync), '交易所同公告必须接管历史巨潮文档，旧文档仅保留审计证据');
+assert(/acd\.document_role <> 'superseded'/.test(arbitrageParser), '已被交易所同公告替代的巨潮解析失败不能继续阻断案件质量');
+assert(/probeCninfoPermission/.test(arbitrageSync)
+  && /claimPermissionProbes/.test(sourceEndpointPolicy)
+  && /permission_probe:/.test(sourceEndpointPolicy)
+  && /apiName: 'permission_probe'/.test(cninfoAnnouncement), '巨潮权限拒绝后必须按间隔执行独立探针，成功后才能恢复接口策略');
+assert(/VALUES\(%s,%s,%s,'open',now\(\)\+interval '30 minutes'/.test(pythonExternalGuard)
+  && /SET state=%s,recover_at=%s,error_code=%s/.test(pythonExternalGuard)
+  && /source_endpoint_policies/.test(pythonExternalGuard)
+  && /"closed" if blocked else "open"/.test(pythonExternalGuard), 'Python 巨潮 403 达到阈值后不得写无恢复时间的 open 熔断，且必须进入接口权限探针链路');
+assert(/const typed = message\.match\(\/\\\[\(BUDGET_WAIT\|RATE_LIMIT\|QUOTA_EXHAUSTED\|CIRCUIT_OPEN\|POLICY_NOT_CONFIGURED\|POLICY_DISABLED\|PERMISSION_DENIED\)/.test(arbitrageParser)
   && /error\.code = typed\[1\]\.toUpperCase\(\)/.test(arbitrageParser)
   && /json\.recover_at/.test(arbitrageParser), 'Python 解析器的来源限速错误和恢复时间必须透传给统一任务编排');
 assert(/pg_try_advisory_lock\(\$1,\$2\)/.test(arbitrageParser) && /pg_advisory_unlock\(\$1,\$2\)/.test(arbitrageParser), 'PDF 解析资格判断和外部调用必须受文档级跨进程锁保护');
@@ -195,4 +214,4 @@ assert(/DELETE FROM ops\.data_quality_issues q[\s\S]*q\.status='resolved'/.test(
 assert(/sanitizeJobError\(err\.message \|\| err, 500\)/.test(arbitrageService)
   && /sanitizeJobError\(error\.message \|\| error, 1000\)/.test(arbitrageJob), '套利解析和同步错误写入日志前必须脱敏');
 
-console.log('OK job-orchestration-regression: 95 项关键验收约束通过');
+console.log('OK job-orchestration-regression: 96 项关键验收约束通过');

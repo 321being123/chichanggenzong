@@ -321,7 +321,7 @@ def _record_forbidden(source, api_name, token_fingerprint_value="none", detail="
                 """INSERT INTO ops.external_circuits
                    (source,api_name,token_fingerprint,state,recover_at,error_code,error_type,detail,
                     consecutive_forbidden_count,last_forbidden_at)
-                   VALUES(%s,%s,%s,'open',NULL,'RATE_LIMIT','rate_limit',%s,1,now())
+                   VALUES(%s,%s,%s,'open',now()+interval '30 minutes','RATE_LIMIT','rate_limit',%s,1,now())
                    ON CONFLICT(source,api_name,token_fingerprint) DO UPDATE SET
                      state='open',probe_in_flight=false,probe_owner=NULL,probe_token=NULL,probe_lease_until=NULL,
                      consecutive_forbidden_count=CASE
@@ -337,11 +337,23 @@ def _record_forbidden(source, api_name, token_fingerprint_value="none", detail="
             recover_at = None if blocked else datetime.now(ZoneInfo("UTC")) + timedelta(minutes=delay_minutes)
             code = "PERMISSION_DENIED" if blocked else "RATE_LIMIT"
             cur.execute(
-                """UPDATE ops.external_circuits SET recover_at=%s,error_code=%s,error_type=%s,updated_at=now()
+                """UPDATE ops.external_circuits SET state=%s,recover_at=%s,error_code=%s,error_type=%s,updated_at=now()
                      WHERE source=%s AND api_name=%s AND token_fingerprint=%s""",
-                (recover_at, code, "permission" if blocked else "rate_limit", _source_key(source),
+                ("closed" if blocked else "open", recover_at, code, "permission" if blocked else "rate_limit", _source_key(source),
                  str(api_name or "*")[:64], str(token_fingerprint_value or "none")),
             )
+            if blocked:
+                cur.execute(
+                    """INSERT INTO ops.source_endpoint_policies
+                       (source_id,api_name,credential_profile,credential_fingerprint,permission_status,last_verified_at,verification_message,enabled)
+                       SELECT ds.source_id,%s,'anonymous',%s,'permission_denied',now(),%s,false
+                         FROM ops.data_sources ds WHERE ds.source_code=%s
+                       ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE SET
+                         credential_fingerprint=EXCLUDED.credential_fingerprint,
+                         permission_status='permission_denied',last_verified_at=EXCLUDED.last_verified_at,
+                         verification_message=EXCLUDED.verification_message,enabled=false,updated_at=now()""",
+                    (str(api_name or "*")[:64], str(token_fingerprint_value or "none"), str(detail or "")[:240], _source_key(source)),
+                )
         conn.commit()
         return {"count": count, "blocked": blocked, "recover_at": recover_at, "code": code}
     finally:
@@ -505,7 +517,7 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=Non
                 if error.code == 403 and _source_key(source).lower() == "cninfo":
                     state = _record_forbidden(source, endpoint, token_fingerprint_value, str(error))
                     raise ExternalCallGuardError(state["code"],
-                        f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次退避失败，需要人工处理" if state["blocked"] else "，等待退避后探测"),
+                        f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次后进入每日恢复探针" if state["blocked"] else "，等待退避后探测"),
                         source, dataset, endpoint, token_fingerprint_value, state["recover_at"]) from error
                 code = "AUTH_ERROR" if error.code == 401 else "PERMISSION_DENIED"
                 _open_circuit(source, str(error), "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)
@@ -522,7 +534,7 @@ def guarded_urlopen(request, timeout=30, source=None, dataset=None, api_name=Non
             if status == 403 and _source_key(source).lower() == "cninfo":
                 state = _record_forbidden(source, endpoint, token_fingerprint_value, f"HTTP {status}")
                 raise ExternalCallGuardError(state["code"],
-                    f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次退避失败，需要人工处理" if state["blocked"] else "，等待退避后探测"),
+                    f"{source} 接口 {endpoint} HTTP 403" + ("，连续 5 次后进入每日恢复探针" if state["blocked"] else "，等待退避后探测"),
                     source, dataset, endpoint, token_fingerprint_value, state["recover_at"])
             code = "AUTH_ERROR" if status == 401 else "PERMISSION_DENIED"
             _open_circuit(source, f"HTTP {status}", "*" if code == "AUTH_ERROR" else endpoint, token_fingerprint_value, code)

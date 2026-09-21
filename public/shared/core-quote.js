@@ -87,7 +87,10 @@ var unifiedHkRatePromise = null;
 async function fetchUnifiedHKRate() {
   if (unifiedHkRate != null && unifiedHkRate > 0) return unifiedHkRate;
   if (!unifiedHkRatePromise) {
-    unifiedHkRatePromise = fetchHKRate().then(function (rate) {
+    var hasHK = typeof data !== 'undefined' && data && Array.isArray(data.positions)
+      && data.positions.some(function (p) { return p.subtype === '港股'; });
+    var realtime = hasHK && typeof isMarketOpen === 'function' && isMarketOpen();
+    unifiedHkRatePromise = fetchHKRate(realtime).then(function (rate) {
       if (rate != null && rate > 0) unifiedHkRate = rate;
       return unifiedHkRate;
     }).catch(function () { return unifiedHkRate; });

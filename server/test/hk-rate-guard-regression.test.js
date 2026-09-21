@@ -8,6 +8,9 @@ const hkRate = read('server/jobs/hkRate.js');
 const marketRoute = read('server/routes/market.js');
 const positionRoute = read('server/routes/positionComparison.js');
 const migrations = read('server/db/migrations.js');
+const coreAccount = read('public/shared/core-account.js');
+const coreQuote = read('public/shared/core-quote.js');
+const utils = read('public/js/utils.js');
 
 assert.ok(
   /e\.errorType === 'rate_limit'\s*&&\s*e\.code !== 'BUDGET_WAIT'/.test(hkRate),
@@ -27,6 +30,12 @@ assert.ok(/REALTIME_RATE_MAX_AGE_MS/.test(hkRate)
   && /exchange_rate_realtime/.test(hkRate)
   && /ensureRealtimeHkRate\(\{ force: true \}\)/.test(hkRate),
   '汇率必须支持盘中 5 分钟缓存和收盘强制刷新');
+assert.ok(/finance\.yahoo\.co\.jp\/quote\/HKDCNY%3DX/.test(hkRate)
+  && /parseRealtimeHkRateHtml/.test(hkRate),
+  '盘中汇率必须使用生产可访问的实时行情页并解析有效报价');
+assert.ok(/300000/.test(coreAccount) && /fetchHKRate\(realtime\)/.test(coreQuote)
+  && /timeZone: 'Asia\/Shanghai'/.test(utils),
+  '港股持仓必须每5分钟请求盘中汇率，并按北京时间判断交易时段');
 assert.ok(/apiName: e\.apiName/.test(hkRate) && /credentialProfile: e\.credentialProfile/.test(hkRate)
   && /budgetWindow: e\.budgetWindow/.test(hkRate), '汇率任务必须完整传递结构化 Guard 字段');
 assert.ok(/migration135ExchangeRateBudgetRecovery/.test(migrations)

@@ -1,5 +1,5 @@
 // ========== 港币→人民币汇率：盘中实时、收盘最终值 ==========
-// 盘中使用 Yahoo Finance 的 HKDCNY=X 快照，数据库按 5 分钟去重；收盘任务强制再抓一次。
+// 盘中使用 Yahoo Finance Japan 的 HKDCNY=X 行情页，数据库按 5 分钟去重；收盘任务强制再抓一次。
 // open.er-api.com 仍作为收盘实时源失败时的每日汇率兜底。
 const https = require('https');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
@@ -72,13 +72,26 @@ async function fetchHkRate() {
   }
 }
 
-// 抓取盘中港币→人民币汇率。该接口返回最近的 1 分钟报价，数据库和 Guard 共同限制为 5 分钟一次。
+function parseRealtimeHkRateHtml(text) {
+  const html = String(text || '');
+  const boardStart = html.indexOf('CurrencyDetailContents__priceBoard');
+  const board = boardStart >= 0 ? html.slice(boardStart, boardStart + 8000) : html;
+  const match = board.match(/_CommonPriceBoard__priceBlock[\s\S]{0,1600}?_StyledPrice__value[^>]*>\s*([0-9]+(?:\.[0-9]+)?)\s*</)
+    || board.match(/_CommonPriceBoard__priceBlock[\s\S]{0,1600}?_StyledNumber__value[^>]*>\s*([0-9]+(?:\.[0-9]+)?)\s*</);
+  return match ? validRate(Number(match[1])) : null;
+}
+
+// 抓取盘中港币→人民币汇率。Yahoo Finance 主 API 在生产出口容易触发 429，
+// 改读同一报价的 Yahoo Finance Japan 行情页；数据库和 Guard 共同限制为 5 分钟一次。
 async function fetchRealtimeHkRate() {
   try {
     const text = await withExternalCallGuard('exchange-rate', 'HKD:CNY', process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
-      https.get('https://query1.finance.yahoo.com/v8/finance/chart/HKDCNY=X?interval=1m&range=1d', {
+      https.get('https://finance.yahoo.co.jp/quote/HKDCNY%3DX', {
         timeout: 8000,
-        headers: { 'User-Agent': 'Mozilla/5.0' },
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
       }, (resp) => {
         let data = ''; resp.on('data', c => data += c);
         resp.on('end', () => {
@@ -97,15 +110,7 @@ async function fetchRealtimeHkRate() {
         });
       }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('realtime timeout')); });
     }), { apiName: REALTIME_API_NAME, credentialProfile: 'anonymous', tokenFingerprint: 'none' });
-    let json;
-    try { json = JSON.parse(text); }
-    catch (error) { throw structuredRateError(error, 'INVALID_RESPONSE', 'parse', REALTIME_API_NAME); }
-    const result = json && json.chart && Array.isArray(json.chart.result) ? json.chart.result[0] : null;
-    const metaRate = result && result.meta ? Number(result.meta.regularMarketPrice) : NaN;
-    const closes = result && result.indicators && result.indicators.quote && result.indicators.quote[0]
-      ? result.indicators.quote[0].close : [];
-    const lastClose = Array.isArray(closes) ? Number(closes.filter(v => v != null).slice(-1)[0]) : NaN;
-    const rate = validRate(metaRate) || validRate(lastClose);
+    const rate = parseRealtimeHkRateHtml(text);
     if (rate) return rate;
     throw structuredRateError(new Error('实时汇率接口响应缺少有效 HKD/CNY 汇率'), 'INVALID_RESPONSE', 'parse', REALTIME_API_NAME);
   } catch (e) {
@@ -215,6 +220,7 @@ async function runHkRateJob({ final = false } = {}) {
 module.exports = {
   fetchHkRate,
   fetchRealtimeHkRate,
+  parseRealtimeHkRateHtml,
   ensureHkRate,
   ensureRealtimeHkRate,
   isHkTradingTime,

@@ -268,12 +268,12 @@ var _autoRefreshTimer = null;
 
 function initAutoRefresh() {
   if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
-  // 交易时段每 15 分钟刷新；最终收盘后当天只刷新一次，周末/节假日不刷新。
+  // 交易时段每 5 分钟刷新；最终收盘后当天只刷新一次，周末/节假日不刷新。
   _autoRefreshTimer = setInterval(function () {
     if (data && data.positions && data.positions.length > 0) {
       doAutoRefresh();
     }
-  }, 900000);
+  }, 300000);
 }
 
 // ===================== 账户管理 =====================

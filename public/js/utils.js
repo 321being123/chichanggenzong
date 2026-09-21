@@ -182,11 +182,15 @@ function isCnHoliday(dateStr) {
 
 function isMarketOpen() {
   var now = new Date();
-  var day = now.getDay();
+  var day = new Date(todayCN() + 'T00:00:00Z').getUTCDay();
   if (day === 0 || day === 6) return false; // 周末休市
   if (isCnHoliday(todayCN())) return false; // 法定节假日休市
-  var h = now.getHours(), m = now.getMinutes();
-  var t = h * 100 + m;
+  var parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(now);
+  var clock = {};
+  parts.forEach(function (item) { clock[item.type] = item.value; });
+  var t = Number(clock.hour) * 100 + Number(clock.minute);
   var aShareOpen = (t >= 930 && t < 1130) || (t >= 1300 && t < 1500);
   var hkOpen = (t >= 930 && t < 1200) || (t >= 1300 && t < 1600);
   // 根据持仓判断需要何种市场

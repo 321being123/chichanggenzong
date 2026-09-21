@@ -272,15 +272,15 @@
         <div class="form-group"><label>方向</label><select id="trade-dir" onchange="autoCalcTrade()"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="autoCalcTrade()" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-price-label">价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="autoCalcTrade()" inputmode="decimal"></div>
         <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="autoCalcTrade()" placeholder="股/张/份" inputmode="decimal"><span id="trade-qty-hint" style="display:none;font-size:11px;color:#e65100;margin-left:4px;">⚠ 华泰/招商证券上交所债券：1手=10张，自动转换</span></div>
-        <div class="form-group"><label>成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-amount-label">成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;" inputmode="decimal"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>手续费 (¥) <span class="auto-hint">自动</span></label><input id="trade-commission" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
-        <div class="form-group"><label>印花税 (¥)</label><input id="trade-stamp" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
-        <div class="form-group"><label>过户费 (¥)</label><input id="trade-transfer" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
-        <div class="form-group"><label>其他费 (¥)</label><input id="trade-other" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-commission-label">手续费 (¥) <span class="auto-hint">自动</span></label><input id="trade-commission" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-stamp-label">印花税 (¥)</label><input id="trade-stamp" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-transfer-label">过户费 (¥)</label><input id="trade-transfer" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-other-label">其他费 (¥)</label><input id="trade-other" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option><option value="现金">现金</option></select></div>
@@ -1195,14 +1195,14 @@
 </footer>
 
 <script src="shared/chart-interaction.js?v=1" defer></script>
-<script src="js/code-classify.js?v=5" defer></script>
+<script src="js/code-classify.js?v=20260921a" defer></script>
 <script src="js/utils.js?v=6" defer></script>
 <script src="shared/dialog.js?v=0.8.0.8" defer></script>
 <script src="shared/business-table.js?v=0.8.0.11" defer></script>
-<script src="shared/core-quote.js?v=0.8.1.11" defer></script>
-<script src="shared/core-tables.js?v=0.8.0.10" defer></script>
+<script src="shared/core-quote.js?v=20260921a" defer></script>
+<script src="shared/core-tables.js?v=20260921a" defer></script>
 <script src="shared/core-fees.js?v=1" defer></script>
-<script src="shared/core-trade.js?v=20260815a" defer></script>
+<script src="shared/core-trade.js?v=20260921a" defer></script>
 <script src="shared/nav-math.js?v=1" defer></script>
 <script src="shared/core-returns.js?v=0.8.1.11" defer></script>
 <script src="shared/core-earnings.js?v=0.8.0.8" defer></script>

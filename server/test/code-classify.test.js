@@ -29,6 +29,8 @@ assert.strictEqual(classifyCode.normalizeCode('BJ920002'), '920002');
 assert.strictEqual(classifyCode('000152', '深圳国际').subtype, '港股');
 assert.strictEqual(classifyCode.normalizeCode('000152', '深圳国际'), '00152');
 assert.strictEqual(classifyCode.normalizeCode('000152', '山航B'), '000152');
+assert.strictEqual(classifyCode('AAPL').subtype, '美股');
+assert.strictEqual(classifyCode('AAPL').market, 'us');
 
 const accountsDb = fs.readFileSync(path.resolve(__dirname, '..', 'db', 'accounts.js'), 'utf8');
 assert(/positions: dedupeByKey\(data\.positions \|\| \[\], 'id'\)\.map\(normalizeSecurityRow\)/.test(accountsDb));

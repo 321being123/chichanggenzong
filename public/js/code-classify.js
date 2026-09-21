@@ -71,13 +71,14 @@
     var first1 = code.substring(0, 1);
     var first2 = code.substring(0, 2);
     var first3 = code.substring(0, 3);
-    var isHK = len <= 5;
+    var isHK = /^\d{1,5}$/.test(code);
+    var isUS = /^[A-Z]{1,4}$/.test(code);
 
     var type = '股权', subtype = '深市', market = 'sz';
 
     if (isHK) {
       type = '股权'; subtype = '港股'; market = 'hk';
-    } else if (/^[A-Z]{1,4}$/.test(code)) {
+    } else if (isUS) {
       type = '股权'; subtype = '美股'; market = 'us';
     } else if (first3 === '123' || first3 === '127' || first2 === '11' || first2 === '12') {
       // 可转债（沪市 11x/113x，深市 12x）

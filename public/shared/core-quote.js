@@ -350,6 +350,7 @@ function onTradeCodeInput(code) {
       if (rec) {
         document.getElementById('trade-type').value = rec.type;
         document.getElementById('trade-subtype').value = rec.subtype;
+        if (typeof updateTradeCurrencyLabels === 'function') updateTradeCurrencyLabels(rec.subtype);
         setHint('trade-type-hint', rec.type);
         setHint('trade-subtype-hint', rec.subtype);
         // 华泰上交所债券：显示数量单位提示

@@ -52,6 +52,37 @@ function initTradeDateTime() {
   if (!timeEl.value) timeEl.value = p(cn.getUTCHours()) + ':' + p(cn.getUTCMinutes());
 }
 
+function getTradeCurrencyMeta(subtype) {
+  switch (String(subtype || '').trim()) {
+    case '港股': return { code: 'HKD', symbol: 'HK$', name: '港币' };
+    case '美股': return { code: 'USD', symbol: 'US$', name: '美元' };
+    default: return { code: 'CNY', symbol: '¥', name: '人民币' };
+  }
+}
+
+function updateTradeCurrencyLabels(subtype) {
+  const subEl = document.getElementById('trade-subtype');
+  const meta = getTradeCurrencyMeta(subtype || (subEl && subEl.value));
+  const labels = [
+    ['trade-price-label', '价格'],
+    ['trade-amount-label', '成交额'],
+    ['trade-commission-label', '手续费'],
+    ['trade-stamp-label', '印花税'],
+    ['trade-transfer-label', '过户费'],
+    ['trade-other-label', '其他费']
+  ];
+  labels.forEach(function (item) {
+    const label = document.getElementById(item[0]);
+    if (!label) return;
+    const hint = label.querySelector('.auto-hint');
+    label.textContent = item[1] + ' (' + meta.name + ' ' + meta.symbol + ')';
+    if (hint) {
+      label.appendChild(document.createTextNode(' '));
+      label.appendChild(hint);
+    }
+  });
+}
+
 // 价格/数量/方向/细类变化时：自动算成交额 + 四费用并填充（手续费/印花税/过户费/其他费可手动改）
 function autoCalcTrade() {
   const priceEl = document.getElementById('trade-price');
@@ -60,6 +91,7 @@ function autoCalcTrade() {
   const subEl = document.getElementById('trade-subtype');
   const amtEl = document.getElementById('trade-amount');
   if (!priceEl || !qtyEl || !dirEl || !subEl || !amtEl) return;
+  updateTradeCurrencyLabels(subEl.value);
   const price = parseFloat(priceEl.value) || 0;
   const qty = parseInt(qtyEl.value) || 0;
   const amount = Math.round(price * qty * 100) / 100;

@@ -638,6 +638,17 @@ function renderPositionsTable(targetId, limit) {
 
 // ===================== 交易表格渲染 =====================
 
+function getTradeRowCurrency(trade) {
+  const code = String(trade && (trade.quote_currency || trade.quoteCurrency) || '').toUpperCase();
+  if (code === 'HKD' || (trade && trade.subtype === '港股')) return { symbol: 'HK$' };
+  if (code === 'USD' || (trade && trade.subtype === '美股')) return { symbol: 'US$' };
+  return { symbol: '¥' };
+}
+
+function formatTradeMoney(value, currency) {
+  return fmt(value).replace('¥', currency.symbol);
+}
+
 function renderTrades() {
   const el = document.getElementById('trades-table');
   // 合并股票交易与现金流转出，按日期倒序展示
@@ -658,6 +669,7 @@ function renderTrades() {
   items.forEach(item => {
     if (item.kind === 'trade') {
       const t = item.raw;
+      const currency = getTradeRowCurrency(t);
       const dirLabel = t.direction === 'buy'
         ? '<span class="tag tag-equity">买入</span>'
         : '<span class="tag tag-cash">卖出</span>';
@@ -671,11 +683,11 @@ function renderTrades() {
         '<td>' + escapeHtml(t.code || '-') + '</td>' +
         '<td>' + escapeHtml(displayName || '-') + '</td>' +
         '<td>' + dirLabel + '</td>' +
-        '<td class="text-right">' + (t.price != null ? Number(t.price).toFixed(3) : '-') + '</td>' +
+        '<td class="text-right">' + (t.price != null ? currency.symbol + Number(t.price).toFixed(3) : '-') + '</td>' +
         '<td class="text-right ' + (t.direction === 'buy' ? 'positive' : 'negative') + '">' +
           (t.direction === 'buy' ? '+' : '-') + fmtQty(t.quantity) + '</td>' +
-        '<td class="text-right">' + (t.amount != null ? fmt(t.amount) : '-') + '</td>' +
-        '<td class="text-right">' + (tradeFeeTotal(t) ? fmt(tradeFeeTotal(t)) : '-') + '</td>' +
+        '<td class="text-right">' + (t.amount != null ? formatTradeMoney(t.amount, currency) : '-') + '</td>' +
+        '<td class="text-right">' + (tradeFeeTotal(t) ? formatTradeMoney(tradeFeeTotal(t), currency) : '-') + '</td>' +
         '<td>' + escapeHtml(t.type || '-') + '</td>' +
         '<td>' + escapeHtml(t.note || '') + '</td>' +
         '<td class="text-center"><button class="btn btn-danger btn-sm" data-act="deleteTrade" data-id="' + escapeHtml(t.id) + '">删除</button></td>' +

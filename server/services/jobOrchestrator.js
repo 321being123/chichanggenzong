@@ -631,7 +631,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
   try {
     runId = await startManagedRun(claimed, reason);
-    if (freshnessGateEnabled && !runContext.force && runContext.mode !== 'enrichment') {
+    if (freshnessGateEnabled && !runContext.force && !['prediction_ready', 'enrichment'].includes(runContext.mode)) {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
       const partitionDate = expectedDataDate(claimed.job_code, claimed.business_date);
       const datasetsPublished = !definition.strictDatasetPublication

@@ -80,7 +80,7 @@ try:
     calls = []
     original_fetch = ipo_lib_fetch.fetch_stock_historical_detail
 
-    def fake_fetch(code, existing_industry=None):
+    def fake_fetch(code, existing_industry=None, existing_main_business=None, missing_fields=None):
         calls.append(code)
         return {
             "industry": "半导体",

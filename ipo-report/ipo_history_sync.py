@@ -329,12 +329,111 @@ def normalize_stored_details(cur, today, target_date=None):
     return {"updated": updated}
 
 
-def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None, only_codes=None, raise_on_guard=False):
+def target_enrichment_codes(cur, target_date):
+    """找出下一交易日申购或上市、且仍缺发行资料的新股。"""
+    target_text = str(target_date)[:10]
+    cur.execute(
+        """
+        SELECT security_code
+          FROM ipo_history
+         WHERE market_code='CN'
+           AND (ipo_date=%s OR listing_date=%s)
+           AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+                OR business_exposure IS NULL OR business_exposure='{}'::jsonb
+                OR NOT (business_exposure ? 'exposures')
+                OR industry_pe IS NULL)
+         ORDER BY CASE WHEN listing_date=%s THEN 0 ELSE 1 END, security_code
+        """,
+        (target_text, target_text, target_text),
+    )
+    return [str(row[0]).split('.')[0] for row in cur.fetchall() if row[0]]
+
+
+def fill_target_details_from_local(cur, target_date, as_of):
+    """先从已入库的股票主档和估值层补齐预测所需的行业、行业PE。"""
+    target_text = str(target_date)[:10]
+    cur.execute(
+        """
+        UPDATE ipo_history h
+           SET industry=COALESCE(NULLIF(h.industry,''),NULLIF(i.raw_data->>'industry','')),
+               source_payload=COALESCE(h.source_payload,'{}'::jsonb)
+                 || jsonb_build_object('local_profile',jsonb_build_object(
+                      'industry',NULLIF(i.raw_data->>'industry',''),
+                      'source','core.instruments.raw_data',
+                      'as_of',%s))
+          FROM core.instruments i
+         WHERE h.market_code='CN'
+           AND (h.ipo_date=%s OR h.listing_date=%s)
+           AND i.asset_class='stock'
+           AND regexp_replace(i.canonical_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
+           AND NULLIF(i.raw_data->>'industry','') IS NOT NULL
+           AND NULLIF(h.industry,'') IS NULL
+        """,
+        (str(as_of)[:10], target_text, target_text),
+    )
+    industry_rows = cur.rowcount
+
+    cur.execute(
+        """
+        WITH latest AS (
+          SELECT max(trade_date) AS trade_date
+            FROM market.daily_valuations
+           WHERE trade_date<=%s::date
+        ), industry_pe AS (
+          SELECT NULLIF(i.raw_data->>'industry','') AS industry,
+                 percentile_cont(0.5) WITHIN GROUP (ORDER BY v.pe_ttm) AS pe
+            FROM market.daily_valuations v
+            JOIN core.instruments i ON i.instrument_id=v.instrument_id
+            JOIN latest l ON l.trade_date=v.trade_date
+           WHERE i.asset_class='stock'
+             AND NULLIF(i.raw_data->>'industry','') IS NOT NULL
+             AND v.pe_ttm>0 AND v.pe_ttm<10000
+           GROUP BY NULLIF(i.raw_data->>'industry','')
+        )
+        UPDATE ipo_history h
+           SET industry_pe=p.pe,
+               source_payload=COALESCE(h.source_payload,'{}'::jsonb)
+                 || jsonb_build_object('local_profile',jsonb_build_object(
+                      'industry_pe',p.pe,
+                      'source','market.daily_valuations',
+                      'as_of',%s))
+          FROM industry_pe p
+         WHERE h.market_code='CN'
+           AND (h.ipo_date=%s OR h.listing_date=%s)
+           AND h.industry=p.industry
+           AND h.industry_pe IS NULL
+        """,
+        (str(as_of)[:10], str(as_of)[:10], target_text, target_text),
+    )
+    pe_rows = cur.rowcount
+    return {"industry_updated": industry_rows, "industry_pe_updated": pe_rows}
+
+
+def same_day_target_attempted_codes(cur, today, target_date):
+    target_text = str(target_date)[:10]
+    cur.execute(
+        """
+        SELECT security_code
+          FROM ipo_history
+         WHERE market_code='CN'
+           AND (ipo_date=%s OR listing_date=%s)
+           AND data_quality_status->'enrichment'->>'attempted_on'=%s
+           AND COALESCE(data_quality_status->'enrichment'->>'error','')=''
+        """,
+        (target_text, target_text, today.isoformat()),
+    )
+    return [str(row[0]).split('.')[0] for row in cur.fetchall() if row[0]]
+
+
+def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None,
+                                 only_codes=None, skip_codes=None, include_result_fields=True,
+                                 raise_on_guard=False):
     """不限业务条数补全资料；当前发行优先，历史缺口按 Guard 边界续跑。"""
     today_text = today.isoformat()
     target_text = str(target_date)[:10] if target_date else ""
     priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
     only_codes = sorted({str(code or '').split('.')[0] for code in (only_codes or []) if code})
+    skip_codes = sorted({str(code or '').split('.')[0] for code in (skip_codes or []) if code})
     mandatory_gap = """(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
               OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
               OR NOT (business_exposure ? 'exposures'))"""
@@ -343,8 +442,9 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
              main_business,industry_pe,business_exposure,
              online_lottery_rate,oversubscribe_multiple
         FROM ipo_history
-       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+         WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
          AND (%s::boolean OR security_code=ANY(%s::text[]))
+         AND (%s::boolean OR security_code <> ALL(%s::text[]))
          AND ((%s::boolean AND security_code=ANY(%s::text[])) OR """ + mandatory_gap + """ OR (
               industry_pe IS NULL
               AND COALESCE(data_quality_status->'field_states'->'industry_pe'->>'retry_after','') <= %s
@@ -359,7 +459,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 CASE WHEN ipo_date >= %s THEN ipo_date END ASC NULLS LAST,
                 CASE WHEN listing_date >= %s THEN listing_date END ASC NULLS LAST,
                 ipo_date DESC,security_code
-    """, (not bool(only_codes), only_codes, bool(only_codes), only_codes, today_text, today_text, retry_same_day, priority_codes,
+    """, (not bool(only_codes), only_codes, not bool(skip_codes), skip_codes,
+          bool(only_codes), only_codes, today_text, today_text, retry_same_day, priority_codes,
           priority_codes,
           target_text, target_text, target_text, target_text,
           target_text, target_text))
@@ -376,7 +477,22 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
         attempted += 1
         meta = {"attempted_on": today_text, "source": "stock_basic/exchange/cninfo/tushare/valuation"}
         try:
-            detail = fetch_stock_historical_detail(code, existing_industry) or {}
+            missing_fields = []
+            if not str(existing_industry or '').strip():
+                missing_fields.append('industry')
+            if existing_industry_pe is None:
+                missing_fields.append('industry_pe')
+            if not str(existing_business or '').strip():
+                missing_fields.append('main_business')
+            if not (isinstance(existing_exposure, dict) and existing_exposure.get('exposures')):
+                missing_fields.append('business_exposure')
+            if include_result_fields and existing_lottery_rate in (None, ''):
+                missing_fields.append('online_lottery_rate')
+            if include_result_fields and existing_oversubscribe in (None, ''):
+                missing_fields.append('oversubscribe_multiple')
+            detail = fetch_stock_historical_detail(
+                code, existing_industry, existing_business, missing_fields=missing_fields
+            ) or {}
             business_exposure = detail.get("business_exposure")
             resolved_industry = str(existing_industry or detail.get("industry") or '').strip()
             resolved_business = max(
@@ -765,19 +881,42 @@ def run(today=None, mode="core"):
     connection = pg_connect()
     run_id = None
     try:
-        if mode == "enrichment":
+        if mode in ("prediction_ready", "enrichment"):
             with connection.cursor() as cur:
-                # 19:35 enrichment 不再重复调用 new_share；保留空快照契约兼容既有结果读取方。
-                refreshed_snapshot = {"current_security_codes": []}
+                target_date = next_trade_date(cur, today)
+                local_profile = fill_target_details_from_local(cur, target_date, today)
                 normalized = normalize_stored_details(cur, today)
+                target_codes = target_enrichment_codes(cur, target_date)
+                refreshed_snapshot = {
+                    "current_security_codes": target_codes,
+                    "target_date": target_date,
+                }
                 # 当前发行资料先于首日表现和历史欠账，避免共享请求保护被低优先级任务占用。
                 try:
-                    enrichment = enrich_stock_missing_details(
-                        cur, today, target_date=next_trade_date(cur, today), retry_same_day=True,
-                        priority_codes=refreshed_snapshot.get("current_security_codes", []),
-                        raise_on_guard=True,
-                    )
-                    first_day = backfill_first_day(cur, datetime.now(), raise_on_guard=True)
+                    if mode == "prediction_ready" and not target_codes:
+                        enrichment = {
+                            "attempted": 0, "updated": 0, "failed": 0, "remaining": 0,
+                            "remaining_by_field": {}, "stopped": None,
+                        }
+                        first_day = {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
+                    else:
+                        skip_codes = (
+                            same_day_target_attempted_codes(cur, today, target_date)
+                            if mode == "enrichment" else []
+                        )
+                        enrichment = enrich_stock_missing_details(
+                            cur, today, target_date=target_date, retry_same_day=True,
+                            priority_codes=target_codes,
+                            only_codes=target_codes if mode == "prediction_ready" else None,
+                            skip_codes=skip_codes,
+                            include_result_fields=mode == "enrichment",
+                            raise_on_guard=True,
+                        )
+                        first_day = (
+                            {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
+                            if mode == "prediction_ready"
+                            else backfill_first_day(cur, datetime.now(), raise_on_guard=True)
+                        )
                 except ExternalCallGuardError:
                     # 已完成的资料补全先提交；随后把原始 Guard 错误交给 Node/Worker 进入 waiting_external。
                     connection.commit()
@@ -785,8 +924,10 @@ def run(today=None, mode="core"):
                 quality = update_quality(cur, today)
             connection.commit()
             return {
-                "ok": True, "mode": "enrichment", "dataAsOf": today.isoformat(),
+                "ok": True, "mode": mode, "dataAsOf": today.isoformat(),
+                "targetDate": target_date,
                 "refreshed_snapshot": refreshed_snapshot,
+                "local_profile": local_profile,
                 "normalization": normalized,
                 "first_day": first_day, "enrichment": enrichment, "quality": quality,
                 "publishDatasets": False,
@@ -842,7 +983,7 @@ def run(today=None, mode="core"):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
-    parser.add_argument("--mode", choices=("core", "enrichment"), default="core")
+    parser.add_argument("--mode", choices=("core", "prediction_ready", "enrichment"), default="core")
     parser.add_argument("--target-codes", default="", help="仅预览指定代码的资料缺口，逗号分隔")
     parser.add_argument("--apply-targeted", action="store_true", help="对 --target-codes 执行定向补齐；生产使用前必须备份并取得授权")
     parser.add_argument("--confirm-production", action="store_true", help="生产定向补齐确认；必须同时取得用户授权")

@@ -2032,17 +2032,31 @@ def _get_industry_pe_map():
         print(f"行业PE映射构建失败: {e}")
     return _INDUSTRY_PE_MAP
 
-def fetch_stock_historical_detail(secu_code, existing_industry=None):
+def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_main_business=None, missing_fields=None):
     """补全已进入历史的新股详情，不依赖 new_share 的待发行列表。"""
     code = str(secu_code or '').split('.')[0]
     if not code:
         return None
+    requested = set(missing_fields or (
+        'industry', 'industry_pe', 'main_business', 'business_exposure',
+        'online_lottery_rate', 'oversubscribe_multiple',
+    ))
+    need_industry = 'industry' in requested
+    need_industry_pe = 'industry_pe' in requested
+    need_main_business = 'main_business' in requested
+    need_result = bool({'online_lottery_rate', 'oversubscribe_multiple'} & requested)
     security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
-    announcement_detail = _fetch_exchange_ipo_issuance_detail(code, security_name=security_name)
-    result_detail = _fetch_exchange_ipo_issuance_result_detail(code, security_name=security_name)
+    announcement_detail = (
+        _fetch_exchange_ipo_issuance_detail(code, security_name=security_name)
+        if need_industry else {}
+    )
+    result_detail = (
+        _fetch_exchange_ipo_issuance_result_detail(code, security_name=security_name)
+        if need_result else {}
+    )
     industry = (
         str(announcement_detail.get('industry') or '').strip()
-        or _fetch_stock_industry(code)
+        or (_fetch_stock_industry(code) if need_industry else '')
         or str(existing_industry or '').strip()
     )
     detail = dict(announcement_detail)
@@ -2050,12 +2064,15 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None):
     detail['industry'] = industry or ''
     if announcement_detail.get('industry'):
         detail['industry_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
-    detail['main_business'] = _fetch_stock_main_business(code, security_name=security_name) or ''
+    detail['main_business'] = (
+        _fetch_stock_main_business(code, security_name=security_name)
+        if need_main_business else str(existing_main_business or '').strip()
+    ) or ''
     detail['main_business_source'] = _MAIN_BUSINESS_SOURCE.get(code, '')
     if _MAIN_BUSINESS_DOCUMENT.get(code):
         detail['main_business_document'] = dict(_MAIN_BUSINESS_DOCUMENT[code])
     _normalize_stock_detail(detail)
-    if detail.get('industry') and detail.get('industry_pe') is None:
+    if need_industry_pe and detail.get('industry') and detail.get('industry_pe') is None:
         industry_pe_map = _get_industry_pe_map()
         detail['industry_pe'] = industry_pe_map.get(detail['industry'])
         if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:

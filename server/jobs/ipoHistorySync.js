@@ -7,6 +7,12 @@ const { getProviderRuntime, notifyTushareFailover } = require('../services/exter
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(PROJECT_ROOT, 'ipo-report', 'ipo_history_sync.py');
 const JOB = 'ipo_history_sync';
+const IPO_HISTORY_SCHEDULES = [
+  { hour: 16, minute: 30, mode: 'prediction_ready' },
+  { hour: 18, minute: 0, mode: 'core' },
+  { hour: 19, minute: 30, mode: 'core' },
+  { hour: 19, minute: 35, mode: 'enrichment' },
+];
 
 function shanghaiParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -23,11 +29,7 @@ function nextIpoHistorySyncDelay(now = new Date()) {
   for (let offset = 0; offset < 8; offset++) {
     const day = new Date(Date.UTC(+p.year, +p.month - 1, +p.day + offset));
     if (day.getUTCDay() === 0 || day.getUTCDay() === 6) continue;
-    for (const schedule of [
-      { hour: 18, minute: 0, mode: 'core' },
-      { hour: 19, minute: 30, mode: 'core' },
-      { hour: 19, minute: 35, mode: 'enrichment' },
-    ]) {
+    for (const schedule of IPO_HISTORY_SCHEDULES) {
       const target = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), schedule.hour, schedule.minute, 0);
       if (target > current && (!next || target < next.target)) next = { target, ...schedule };
     }
@@ -43,11 +45,7 @@ function nextIpoHistorySchedule(now = new Date()) {
   for (let offset = 0; offset < 8; offset++) {
     const day = new Date(Date.UTC(+p.year, +p.month - 1, +p.day + offset));
     if (day.getUTCDay() === 0 || day.getUTCDay() === 6) continue;
-    for (const schedule of [
-      { hour: 18, minute: 0, mode: 'core' },
-      { hour: 19, minute: 30, mode: 'core' },
-      { hour: 19, minute: 35, mode: 'enrichment' },
-    ]) {
+    for (const schedule of IPO_HISTORY_SCHEDULES) {
       const target = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), schedule.hour, schedule.minute, 0);
       if (target > current && (!next || target < next.target)) next = { target, ...schedule };
     }
@@ -167,18 +165,18 @@ function runWith(executable, runtime, businessDate, mode, externalCallCount = 0)
 }
 
 async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {}) {
-  const mode = context.mode === 'enrichment' ? 'enrichment' : 'core';
+  const mode = ['prediction_ready', 'enrichment'].includes(context.mode) ? context.mode : 'core';
   const claimed = await tryClaimJob(JOB);
   if (!claimed) return { skipped: true, reason: 'locked' };
   let runId = null;
   let retryOf = null;
-  let scheduleMarker = mode === 'enrichment' ? '19:35' : '18:00';
+  let scheduleMarker = mode === 'enrichment' ? '19:35' : mode === 'prediction_ready' ? '16:30' : '18:00';
   const errors = [];
   try {
     const runtime = await getProviderRuntime('tushare');
     scheduleMarker = scheduleMarkerFromReason(reason)
       || await scheduleMarkerFromSlot(context.slotId)
-      || (mode === 'enrichment' ? '19:35' : '18:00');
+      || (mode === 'enrichment' ? '19:35' : mode === 'prediction_ready' ? '16:30' : '18:00');
     const priorRuns = await pool.query(
       `SELECT id,status,detail FROM job_runs WHERE job=$1
         AND (started_at AT TIME ZONE 'Asia/Shanghai')::date =
@@ -275,7 +273,7 @@ function scheduleIpoHistorySync() {
     if (timer.unref) timer.unref();
   }
   scheduleNext();
-  console.log('[ipo-history] 已调度：工作日 18:00/19:30 核心事实；19:35 资料补全（上海时间）');
+  console.log('[ipo-history] 已调度：工作日 16:30 上市前预测缺口检查；18:00 核心事实；19:30 核心复核；19:35 全量资料补全（上海时间）');
 }
 
 module.exports = {

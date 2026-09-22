@@ -217,7 +217,7 @@ function scheduleIpoCalendarRefresh() {
     if (timer.unref) timer.unref();
   }
   scheduleNext();
-  console.log('[ipo-calendar] 已调度：工作日 18:05（上海时间）');
+  console.log('[ipo-calendar] 已调度：工作日 18:05（上海时间，读取16:30上市前预测缺口检查结果）');
 }
 
 module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, runIpoCalendarStartupCatchup, scheduleIpoCalendarRefresh, pythonCandidates, summarizeIpoPythonError };

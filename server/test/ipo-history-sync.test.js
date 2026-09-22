@@ -11,9 +11,14 @@ assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:00:00Z')).mode,
 assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:00:00Z')).hour, 19);
 assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T11:32:00Z')).mode, 'enrichment');
 assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-11T11:32:00Z')), 3 * 60 * 1000);
-// 周五 20:00 上海时间 -> 下周一 18:00 核心事实同步。
-assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-14T12:00:00Z')), 70 * 60 * 60 * 1000);
-assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-14T12:00:00Z')).mode, 'core');
+// 2026-08-11 16:31 上海时间 -> 16:30 任务已错过，下一轮为 18:00 核心事实。
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T08:31:00Z')).mode, 'core');
+// 2026-08-11 16:01 上海时间 -> 16:30 先检查下一交易日预测资料缺口。
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-11T08:01:00Z')).mode, 'prediction_ready');
+assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-11T08:01:00Z')), 29 * 60 * 1000);
+// 周五 20:00 上海时间 -> 下周一 16:30 上市前预测缺口检查。
+assert.strictEqual(nextIpoHistorySyncDelay(instant('2026-08-14T12:00:00Z')), (68 * 60 + 30) * 60 * 1000);
+assert.strictEqual(nextIpoHistorySchedule(instant('2026-08-14T12:00:00Z')).mode, 'prediction_ready');
 assert.ok(fs.existsSync(SCRIPT), '独立新股历史同步脚本不存在');
 assert.ok(pythonCandidates().length > 0, '没有 Python 候选解释器');
 
@@ -26,16 +31,22 @@ assert.doesNotMatch(source, /cutoff = today - timedelta\(days=14\)/, '首日涨�
 assert.match(source, /def enrich_stock_missing_details\(/, '缺失详情没有定点补全函数');
 assert.doesNotMatch(source, /limit=8/, '新股资料补全不应限制为固定 8 条');
 assert.doesNotMatch(source, /ipo_date >= \(%s::date - INTERVAL '730 days'\)/, '新股资料补全不应只统计近 730 天缺口');
-assert.match(source, /priority_codes=refreshed_snapshot\.get\("current_security_codes"/, '晚间补全没有优先处理本轮发行记录');
+assert.match(source, /priority_codes=target_codes/, '晚间补全没有优先处理目标日发行记录');
 assert.match(source, /remaining_by_field/, '补全结果没有按字段统计全部缺口');
 assert.match(source, /source_unavailable/, '行业PE缺失没有与可重试资料缺口分离');
-assert.match(source, /enrichment = enrich_stock_missing_details[\s\S]*first_day = backfill_first_day/, '首日表现仍会抢占当前发行资料的请求名额');
+assert.match(source, /backfill_first_day\(cur, datetime\.now\(\)/, '全量资料补全仍需保留首日表现回填');
+assert.match(source, /mode == "prediction_ready"/, '上市前预测缺口阶段没有与首日表现回填隔离');
 assert.match(source, /target_text = str\(target_date\)\[:10\] if target_date else ""/, '发行阶段目标日字符串未标准化');
 assert.match(source, /ipo_date=%s OR listing_date=%s/, '晚间补全未优先处理目标日上市新股');
 assert.match(source, /if values\.get\("listing_date"\) in \(None, ""\)/, '已有上市日期仍被误标为待公告');
 assert.match(source, /historical_enrichment/, '详情补全未保留来源记录');
 assert.match(source, /def _refresh_new_share_snapshot\(/, '晚间阶段没有重新刷新发行公告');
 assert.match(source, /retry_same_day=True/, '晚间阶段没有允许同日重试发行资料');
+assert.match(source, /choices=\("core", "prediction_ready", "enrichment"\)/, '缺少上市前预测缺口模式');
+assert.match(source, /target_enrichment_codes\(cur, target_date\)/, '上市前预补全没有按下一交易日锁定目标新股');
+assert.match(source, /fill_target_details_from_local\(cur, target_date, today\)/, '上市前阶段没有优先复用本地标准层');
+assert.match(source, /market\.daily_valuations/, '行业PE没有优先读取本地估值层');
+assert.match(source, /same_day_target_attempted_codes/, '晚间资料补全没有排除同日已尝试的目标新股');
 assert.match(source, /pending_not_due/, '数据质量未区分尚未到期字段');
 assert.match(source, /AND \(\(%s::boolean AND security_code=ANY\(%s::text\[\]\)\)/, '定向补全未强制刷新指定代码的最新公告');
 assert.match(source, /quality = update_quality\(cur, date\.fromisoformat\(args\.today\)/, '定向补全后没有重新计算资料质量状态');
@@ -119,6 +130,7 @@ const historyJobSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'ipo
 assert.match(historyJobSource, /parseTushareFailovers/, 'Python 成功切备用后的接口标记未进入 Node 解析链');
 assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入');
 assert.match(historyJobSource, /let scheduleMarker = mode === 'enrichment'/, 'IPO 失败路径必须保留可用的计划标记，不能因块级作用域异常丢失失败状态');
+assert.match(historyJobSource, /mode === 'prediction_ready' \? '16:30'/, '上市前预测缺口没有独立计划标记');
 const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');

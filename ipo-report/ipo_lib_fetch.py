@@ -1752,8 +1752,8 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
     _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
     if code not in _IPO_ISSUANCE_DETAIL_DIAGNOSTIC:
         _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-            'status': 'document_unavailable' if downloaded else 'document_parse_failed',
-            'reason': 'document_download_failed' if downloaded == 0 else 'document_found_but_parser_found_no_industry_pe',
+            'status': 'document_parse_failed' if downloaded else 'document_unavailable',
+            'reason': 'document_found_but_parser_found_no_industry_pe' if downloaded else 'document_download_failed',
         }
     return {}
 

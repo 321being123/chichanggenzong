@@ -242,7 +242,13 @@ async function buildCnStockLiveReport(code) {
   if (pending.length) {
     lines.push('', '## 尚未公布数据', ...pending.map(field => `- **${pendingLabels[field] || field}**：发行结果公告后更新`));
   }
-  const unresolvedDetail = missing.filter(field => missingLabels[field]);
+  const unresolvedDetail = Object.keys(missingLabels).filter(field => {
+    const valueMissing = field === 'business_exposure'
+      ? !Array.isArray(row.business_exposure?.exposures) || !row.business_exposure.exposures.length
+      : row[field] === null || row[field] === undefined || row[field] === '';
+    const state = fieldStates[field] && typeof fieldStates[field] === 'object' ? fieldStates[field] : {};
+    return valueMissing && (missing.includes(field) || state.status && state.status !== 'value');
+  });
   if (unresolvedDetail.length) {
     lines.push('', '## 资料补全状态', ...unresolvedDetail.map(field => `- **${missingLabels[field]}**：${missingReason(field)}`));
   }

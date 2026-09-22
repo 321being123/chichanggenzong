@@ -71,6 +71,7 @@ assert.match(routeSource, /网上中签率/, '个股详情没有展示公告中�
 assert.match(routeSource, /超额认购倍数/, '个股详情没有展示公告申购倍数');
 assert.match(routeSource, /document_parse_failed/, '新股资料报告没有区分文档解析失败');
 assert.match(routeSource, /document_field_absent/, '新股资料报告没有区分原文未披露字段');
+assert.match(routeSource, /Object\.keys\(missingLabels\)/, '来源暂不可用的资料字段没有进入报告诊断区');
 assert.match(routeSource, /security_name_cn/, '港股历史没有中文名称字段');
 assert.match(routeSource, /COUNT\(\*\)::int AS total FROM ipo_history h/, 'A股历史没有返回总数');
 assert.match(routeSource, /LIMIT \$1 OFFSET \$2/, 'A股历史没有按 offset 分页');

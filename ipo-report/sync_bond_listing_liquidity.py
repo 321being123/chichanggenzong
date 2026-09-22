@@ -57,7 +57,16 @@ def listing_candidates(days=60, codes=None, limit=None):
 def sync_liquidity(days=60, codes=None, limit=None):
     rows = listing_candidates(days=days, codes=codes, limit=limit)
     forced_codes = {str(code).split('.')[0] for code in (codes or []) if str(code).strip()}
-    result = {"ok": True, "candidates": len(rows), "saved": 0, "skipped": 0, "failed": 0, "failures": []}
+    result = {
+        "ok": True,
+        "candidates": len(rows),
+        "candidate_codes": [row[0] for row in rows],
+        "saved": 0,
+        "skipped": 0,
+        "failed": 0,
+        "failed_codes": [],
+        "failures": [],
+    }
     for code, bond_name, listing_date, stock_code, stock_name, issue_scale in rows:
         cached = get_listing_liquidity(code)
         if code not in forced_codes and cached and cached.get("source_code") in ("sse", "szse"):
@@ -65,6 +74,7 @@ def sync_liquidity(days=60, codes=None, limit=None):
             continue
         if not stock_code or not issue_scale:
             result["failed"] += 1
+            result["failed_codes"].append(code)
             result["failures"].append({"code": code, "error": "缺少正股代码或发行规模"})
             continue
         try:
@@ -79,9 +89,11 @@ def sync_liquidity(days=60, codes=None, limit=None):
                 result["saved"] += 1
             else:
                 result["failed"] += 1
+                result["failed_codes"].append(code)
                 result["failures"].append({"code": code, "error": (payload or {}).get("error", "公告解析失败")})
         except Exception as error:
             result["failed"] += 1
+            result["failed_codes"].append(code)
             result["failures"].append({"code": code, "error": str(error)[:500]})
     if result["failed"]:
         result["ok"] = False

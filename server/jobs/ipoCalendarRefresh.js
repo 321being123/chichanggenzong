@@ -121,11 +121,19 @@ function runWith(executable, runtime, targetDate) {
   });
 }
 
-async function runIpoCalendarRefreshRaw(reason = 'scheduled', targetDate) {
+async function runIpoCalendarRefreshRaw(reason = 'scheduled', targetDate, businessDate) {
   if (running) return { skipped: true };
   running = true;
   const errors = [];
   try {
+    const { areJobDatasetsPublished } = require('../services/datasetPartitionRegistry');
+    const publicationDate = String(businessDate || shanghaiParts().year + '-' + shanghaiParts().month + '-' + shanghaiParts().day).slice(0, 10);
+    if (!(await areJobDatasetsPublished('convertible_bond_announcement_history_sync', publicationDate))) {
+      const error = new Error(`打新日报前置事实未完成：${publicationDate} 的可转债流通规模尚未发布`);
+      error.code = 'DATASET_INCOMPLETE';
+      error.errorType = 'data_quality';
+      throw error;
+    }
     const runtime = await getProviderRuntime('tushare');
     for (const executable of pythonCandidates()) {
       try {
@@ -154,7 +162,7 @@ async function runIpoCalendarRefresh(reason = 'scheduled', context = {}) {
   const managedSlotId = Number(context.slotId) || null;
   try {
     runId = await startJobRun(JOB);
-    const result = await runIpoCalendarRefreshRaw(reason, context.targetDate);
+    const result = await runIpoCalendarRefreshRaw(reason, context.targetDate, context.businessDate);
     await finishJobRun(runId, true, JSON.stringify({ reason, executable: result.executable, externalCalls: result.externalCalls, externalSources: result.externalSources, output: String(result.output || '').slice(-2000) }));
     return result;
   } catch (error) {

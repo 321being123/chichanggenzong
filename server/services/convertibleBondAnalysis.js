@@ -1786,6 +1786,33 @@ async function backfillBondListingLiquidity(reason = 'scheduled') {
   throw new Error(errors.join(' | ') || '未找到可用的 Python 解释器');
 }
 
+async function findBondListingLiquidityGaps(listingDate) {
+  const targetDate = isoDate(listingDate);
+  if (!targetDate) throw new Error('缺少下一交易日，无法核验新债流通规模覆盖');
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (i.instrument_id)
+            split_part(i.canonical_code,'.',1) AS code,
+            i.name,
+            e.event_date::text AS listing_date,
+            (l.instrument_id IS NULL) AS missing
+       FROM event.instrument_events e
+       JOIN core.instruments i ON i.instrument_id=e.instrument_id
+       JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+       LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
+       LEFT JOIN analytics.convertible_bond_listing_liquidity l ON l.instrument_id=i.instrument_id
+      WHERE e.event_type='listing'
+        AND e.event_date=$1::date
+        AND i.asset_class='convertible_bond'
+        AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+      ORDER BY i.instrument_id,e.event_date DESC`, [targetDate]
+  );
+  return {
+    targetDate,
+    candidateCodes: rows.map(row => row.code),
+    missingCodes: rows.filter(row => row.missing).map(row => row.code),
+  };
+}
+
 // 转股价发生变动时只登记数据问题，后续由历史公告解析链路补齐详情。
 async function handleConvPriceChanges(changes) {
   for (const change of changes) {
@@ -2761,12 +2788,39 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     // 17:30 日历槽已经负责上市生命周期；在同一槽内增量抓取上市公告书，
     // 避免日报生成阶段再访问巨潮，也不新增并行定时任务。
     if (mode === 'calendar') {
+      const targetListingDate = await nextOpenTradeDate(end);
+      let backfillError = null;
       try {
         listingLiquidity = await backfillBondListingLiquidity('calendar_sync');
         console.log(`[上市流通规模] 候选${listingLiquidity.candidates || 0}，保存${listingLiquidity.saved || 0}，失败${listingLiquidity.failed || 0}`);
       } catch (liquidityError) {
-        listingLiquidity = { ok: false, error: liquidityError.message };
-        console.warn('[上市流通规模] 自动补全失败（不影响公告生命周期同步）：', liquidityError.message);
+        backfillError = liquidityError.message;
+        listingLiquidity = { ok: false, error: liquidityError.message, status: 'failed' };
+        console.warn('[上市流通规模] 自动补全失败：', liquidityError.message);
+      }
+      let coverage = null;
+      let coverageError = null;
+      try {
+        coverage = await findBondListingLiquidityGaps(targetListingDate);
+      } catch (liquidityError) {
+        coverageError = liquidityError.message;
+      }
+      const missingCodes = coverage ? coverage.missingCodes : ['检查失败'];
+      const targetCoverageReady = Boolean(coverage && coverage.missingCodes.length === 0);
+      const executionReady = !backfillError && !coverageError && !listingLiquidity.skipped && listingLiquidity.limit == null;
+      listingLiquidity = {
+        ...listingLiquidity,
+        targetListingDate: coverage && coverage.targetDate || targetListingDate || null,
+        targetCandidateCodes: coverage && coverage.candidateCodes || [],
+        missingCodes,
+        historicalFailed: Number(listingLiquidity.failed || 0),
+        coverageError,
+        errorCode: coverageError ? 'LIQUIDITY_COVERAGE_CHECK_FAILED' : missingCodes.length ? 'DATASET_INCOMPLETE' : null,
+        ok: executionReady && targetCoverageReady,
+        status: !executionReady ? 'failed' : !targetCoverageReady ? 'partial' : Number(listingLiquidity.failed || 0) ? 'degraded' : 'succeeded',
+      };
+      if (!listingLiquidity.ok) {
+        console.warn(`[上市流通规模] 目标日 ${listingLiquidity.targetListingDate || '未知'} 仍缺少：${missingCodes.join('、') || '未知'}`);
       }
     }
     redemption = await require('./convertibleBondRedemptionSync').syncConvertibleBondCallAnnouncements({
@@ -2792,8 +2846,23 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     );
   }
   const limited = configuredLimit !== null;
+  const liquidityIncomplete = mode === 'calendar' && listingLiquidity && listingLiquidity.ok === false;
+  const publishDatasetCodes = mode === 'calendar' ? null : [
+    'bond_announcement_facts', 'bond_issuance_events', 'bond_redemption_events',
+  ];
   return {
-    ok: !limited, status: limited ? 'partial' : 'succeeded', limit: configuredLimit, continuationRequired: limited,
+    ok: !limited && !liquidityIncomplete,
+    status: limited ? 'partial' : liquidityIncomplete ? 'partial' : 'succeeded',
+    limit: configuredLimit, continuationRequired: limited,
+    publishDatasetCodes,
+    failedDatasets: liquidityIncomplete ? ['bond_listing_liquidity'] : [],
+    error: liquidityIncomplete
+      ? `目标上市日 ${listingLiquidity.targetListingDate || '未知'} 的流通规模事实尚未入库：${(listingLiquidity.missingCodes || []).join('、') || '检查失败'}`
+      : null,
+    errorCode: liquidityIncomplete ? (listingLiquidity.errorCode || 'DATASET_INCOMPLETE') : null,
+    errorType: liquidityIncomplete ? 'data_quality' : null,
+    missingCodes: listingLiquidity && listingLiquidity.missingCodes || [],
+    missingDates: listingLiquidity && listingLiquidity.targetListingDate ? [listingLiquidity.targetListingDate] : [],
     mode, dataAsOf: end, fromDate: scanStart || null, toDate: end, count: results.length, changed_count: changedCount,
     cursorDate: cursorDate || null, lifecycle, listingLiquidity, redemption,
     datasetDiagnostics: {
@@ -2802,12 +2871,17 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         issue_count: Number(lifecycle && lifecycle.issueCount || 0),
         official_count: Number(lifecycle && lifecycle.officialCount || 0),
       },
-      bond_listing_liquidity: {
-        quality_status: listingLiquidity && listingLiquidity.ok !== false && Number(listingLiquidity.failed || 0) === 0 ? 'passed' : 'stale',
+      ...(mode === 'calendar' ? { bond_listing_liquidity: {
+        quality_status: listingLiquidity && listingLiquidity.ok !== false ? 'passed' : 'stale',
+        query_status: listingLiquidity && listingLiquidity.coverageError ? 'failed' : (listingLiquidity ? 'success' : 'not_run'),
+        coverage_status: listingLiquidity && listingLiquidity.missingCodes && listingLiquidity.missingCodes.length ? 'incomplete' : 'verified_no_change',
         status: listingLiquidity && listingLiquidity.status || (listingLiquidity && listingLiquidity.ok !== false ? 'succeeded' : 'stale'),
         saved: Number(listingLiquidity && listingLiquidity.saved || 0),
         failed: Number(listingLiquidity && listingLiquidity.failed || 0),
-      },
+        target_listing_date: listingLiquidity && listingLiquidity.targetListingDate || null,
+        target_candidate_count: Number(listingLiquidity && listingLiquidity.targetCandidateCodes && listingLiquidity.targetCandidateCodes.length || 0),
+        missing_codes: listingLiquidity && listingLiquidity.missingCodes || [],
+      } } : {}),
       bond_announcement_facts: { quality_status: 'passed', changed_count: changedCount },
       bond_redemption_events: {
         quality_status: redemption && redemption.diagnostics && redemption.diagnostics.quality_status || 'failed',

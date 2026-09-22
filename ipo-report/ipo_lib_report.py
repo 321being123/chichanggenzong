@@ -41,6 +41,13 @@ IPO_MODEL_FEATURE_META = {
     "issue_pe_squared": ("发行PE平方", "无单位：发行PE²÷1000"),
 }
 
+CIRCULATION_SCALE_PENDING_TEXT = "流通规模待同步，本次预测未计入规模调整"
+
+
+def _circulation_scale_error_text(_error):
+    """把数据库内部状态转换成日报用户能直接理解的提示。"""
+    return CIRCULATION_SCALE_PENDING_TEXT
+
 
 def _format_model_feature_value(value):
     if value is None or value == "":
@@ -512,7 +519,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                             warn = ""
                         lines.append(f"- **{label}**：约{d['circulation_scale']}亿元")
                     elif d.get("_circulation_error"):
-                        lines.append(f"- **流通规模**：❌ 获取失败 — {d['_circulation_error']}")
+                        lines.append(f"- **流通规模**：⚠️ {_circulation_scale_error_text(d['_circulation_error'])}")
                     if d.get("market_cap_ratio") is not None:
                         lines.append(f"- **转债总市值占比**：{d['market_cap_ratio']}%")
                     if d.get("ytm_pre_tax") is not None:
@@ -623,7 +630,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                         if d.get("circulation_scale") is not None:
                             lines.append(f"- **流通规模**：约{d['circulation_scale']}亿元")
                         elif d.get("_circulation_error"):
-                            lines.append(f"- **流通规模**：❌ {d['_circulation_error']}")
+                            lines.append(f"- **流通规模**：⚠️ {_circulation_scale_error_text(d['_circulation_error'])}")
                         lines.append("")
 
     # ── 预测跟踪统计 ──
@@ -741,7 +748,7 @@ def generate_html(md_content, data):
                         if d.get("circulation_scale") is not None:
                             html += f' | <strong>流通：</strong>约{d["circulation_scale"]}亿'
                         elif d.get("_circulation_error"):
-                            html += f' | <strong>流通：</strong>❌ {d["_circulation_error"]}'
+                            html += f' | <strong>流通：</strong>⚠️ {_circulation_scale_error_text(d["_circulation_error"])}'
                         if d.get("lock_scale") is not None:
                             html += f' | <strong>限售：</strong>约{d["lock_scale"]}亿'
                         html += '</p>'
@@ -827,7 +834,7 @@ def generate_html(md_content, data):
                     if d.get("circulation_scale") is not None:
                         html += f'<p><strong>流通规模：</strong>约{d["circulation_scale"]}亿元</p>'
                     elif d.get("_circulation_error"):
-                        html += f'<p><strong>流通规模：</strong>❌ {d["_circulation_error"]}</p>'
+                        html += f'<p><strong>流通规模：</strong>⚠️ {_circulation_scale_error_text(d["_circulation_error"])}</p>'
                     html += '</div>\n'
 
     html += '</div>\n'

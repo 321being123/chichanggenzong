@@ -144,6 +144,9 @@ assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没�
 assert.match(bondJobSource, /BOND_ISSUE_RESULT_SCRIPT/, '新债发行结果补全脚本未接入');
 assert.match(bondJobSource, /backfillBondListingLiquidity/, '新债流通规模没有进入现有生命周期同步链路');
 assert.match(bondJobSource, /BOND_LIQUIDITY_SCRIPT/, '新债流通规模补全脚本未接入');
+assert.match(bondJobSource, /findBondListingLiquidityGaps/, '新债流通规模没有按目标上市日做覆盖核验');
+assert.match(bondJobSource, /DATASET_INCOMPLETE/, '流通规模目标缺口没有进入数据质量失败路径');
+assert.match(bondJobSource, /publishDatasetCodes/, '早间公告槽位没有与17:30流通规模发布边界隔离');
 const liquiditySource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'sync_bond_listing_liquidity.py'), 'utf8');
 assert.match(liquiditySource, /event_type='listing'/, '流通规模补全没有按上市事件增量筛选');
 assert.match(liquiditySource, /l\.instrument_id IS NULL/, '流通规模补全没有跳过已入库事实');
@@ -163,10 +166,15 @@ assert.match(bondRefreshSource, /ipo-report.*venv.*bin.*python/, '估值任务�
 
 const reportSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_report.py'), 'utf8');
 assert.match(reportSource, /所属行业/, '新股日报详情未展示所属行业');
+assert.match(reportSource, /CIRCULATION_SCALE_PENDING_TEXT/, '流通规模缺失仍会把内部错误码直接展示给用户');
 assert.match(reportSource, /prediction_stage="issuance"/, '申购阶段没有生成可能涨幅预测');
 assert.match(reportSource, /result_fields_pending/, '申购阶段没有标记尚未公布的结果字段');
 assert.match(reportSource, /ipo_date=COALESCE\(\?, ipo_date\)/, '日报详情保存仍遗漏 ipo_date');
 assert.match(reportSource, /def reconcile_report_calendar_sets\(/, '日报发布前缺少日历证券集合对账');
 assert.match(reportSource, /拒绝发布并保留上一份有效结果/, '集合不一致时没有拒绝覆盖旧日报');
+const datasetRegistrySource = fs.readFileSync(path.join(__dirname, '..', 'services', 'datasetPartitionRegistry.js'), 'utf8');
+assert.match(datasetRegistrySource, /bond_listing_liquidity/, '流通规模没有登记为正式数据集');
+const jobDefinitionsSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'jobDefinitions.js'), 'utf8');
+assert.match(jobDefinitionsSource, /bond_listing_liquidity/, '日报和公告任务契约没有声明流通规模数据集');
 
 console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事实和19:30补全调度均已覆盖');

@@ -165,6 +165,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/ipoCalendarRefresh').runIpoCalendarRefresh(reason, {
         ...context,
         targetDate,
+        businessDate,
       });
     }
     default:

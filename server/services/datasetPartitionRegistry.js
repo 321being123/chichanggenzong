@@ -21,6 +21,7 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   stock_suspend_calendar: { scopeKey: 'CN', table: 'market.stock_suspend_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   bond_redemption_events: { scopeKey: 'CN', table: 'event.convertible_bond_call_events', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
   bond_issuance_events: { scopeKey: 'CN', table: 'event.instrument_events', whereSql: "WHERE event_type IN ('issue_announcement','shareholder_record','online_subscription','result_announcement','listing')", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(source_updated_at)::date::text AS data_as_of' },
+  bond_listing_liquidity: { scopeKey: 'CN', table: 'analytics.convertible_bond_listing_liquidity', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(updated_at)::date::text AS data_as_of' },
   bond_motive_inputs: { scopeKey: 'CN', table: 'fundamental.convertible_bond_holder_positions', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(report_date)::text AS data_as_of' },
   bond_motive_scores: { scopeKey: 'CN', table: 'analytics.convertible_bond_revision_motive_daily', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   bond_announcement_facts: { scopeKey: 'CN', table: 'event.convertible_bond_revision_events', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
@@ -118,12 +119,14 @@ async function publishDatasetSnapshot(datasetCode, options = {}, executor = pool
 async function publishJobDatasets(jobCode, businessDate, result) {
   const definition = getJobDefinition(jobCode);
   const declaredDatasets = definition.producesDatasets || [];
-  const datasets = declaredDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
+  const requestedDatasets = result && Array.isArray(result.publishDatasetCodes)
+    ? result.publishDatasetCodes : declaredDatasets;
+  const datasets = requestedDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
   if (result && result.ok === false) return [];
   // partial 仅表示本批有后续阶段，不能被严格发布门禁当成最终成功；续批完成后再由末批发布/校验。
   if (result && result.continuationRequired === true) return [];
   if (result && result.publishDatasets === false) {
-    if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate))) {
+    if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate, datasets))) {
       const noChange = datasets.length > 0 && datasets.every(code => {
         const diagnostics = result.datasetDiagnostics && result.datasetDiagnostics[code] || {};
         return diagnostics.coverage_status === 'verified_no_change' && diagnostics.query_status === 'success';
@@ -140,13 +143,17 @@ async function publishJobDatasets(jobCode, businessDate, result) {
           });
         }));
       }
-      if (!(await areJobDatasetsPublished(jobCode, businessDate))) {
+      if (!(await areJobDatasetsPublished(jobCode, businessDate, datasets))) {
         throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
       }
     }
     return [];
   }
-  if (definition.strictDatasetPublication && (!datasets.length || datasets.length !== declaredDatasets.length)) {
+  const allDeclaredDatasetsRequested = requestedDatasets.length === declaredDatasets.length;
+  if (definition.strictDatasetPublication && (!datasets.length
+    || (allDeclaredDatasetsRequested && datasets.length !== declaredDatasets.length)
+    || datasets.length !== requestedDatasets.length
+    || requestedDatasets.some(code => !declaredDatasets.includes(code)))) {
     throw new Error(`${jobCode} 的 producesDatasets 存在未登记白名单，已拒绝发布`);
   }
   const results = await Promise.all(datasets.map(async datasetCode => {
@@ -170,18 +177,19 @@ async function publishJobDatasets(jobCode, businessDate, result) {
       return { published: false, datasetCode, reason: 'publish_error', error: error.message };
     }
   }));
-  if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate))) {
+  if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate, datasets))) {
     throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
   }
   return results;
 }
 
-async function areJobDatasetsPublished(jobCode, businessDate) {
+async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets = null) {
   const definition = getJobDefinition(jobCode);
   const declaredDatasets = definition.producesDatasets || [];
-  const datasets = declaredDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
+  const datasetCodes = Array.isArray(requestedDatasets) ? requestedDatasets : declaredDatasets;
+  const datasets = datasetCodes.filter(code => DATASET_PARTITION_REGISTRY[code]);
   // 严格任务的声明必须全部落在注册表中；过滤为空时必须失败关闭，不能把“没有检查对象”当成已完成。
-  if (definition.strictDatasetPublication && (!datasets.length || datasets.length !== declaredDatasets.length)) return false;
+  if (definition.strictDatasetPublication && (!datasets.length || datasets.length !== datasetCodes.length)) return false;
   if (!datasets.length) return true;
   const partitionKey = dateValue(businessDate);
   if (!partitionKey) return false;
@@ -195,7 +203,9 @@ async function areJobDatasetsPublished(jobCode, businessDate) {
   return datasets.every(code => {
     const row = byCode.get(code);
     if (!row || row.status !== 'published' || row.is_stale) return false;
-    if (code === 'ipo_history' || code === 'bond_redemption_events') return row.diagnostics && row.diagnostics.quality_status === 'passed';
+    if (code === 'ipo_history' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity') {
+      return row.diagnostics && row.diagnostics.quality_status === 'passed';
+    }
     if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';
     return true;
   });

@@ -69,6 +69,8 @@ assert.match(routeSource, /尚未公布数据/, '个股详情没有区分发行�
 assert.match(routeSource, /'oversubscribe_multiple'/, '新股历史没有超额认购倍数状态字段');
 assert.match(routeSource, /网上中签率/, '个股详情没有展示公告中签率');
 assert.match(routeSource, /超额认购倍数/, '个股详情没有展示公告申购倍数');
+assert.match(routeSource, /document_parse_failed/, '新股资料报告没有区分文档解析失败');
+assert.match(routeSource, /document_field_absent/, '新股资料报告没有区分原文未披露字段');
 assert.match(routeSource, /security_name_cn/, '港股历史没有中文名称字段');
 assert.match(routeSource, /COUNT\(\*\)::int AS total FROM ipo_history h/, 'A股历史没有返回总数');
 assert.match(routeSource, /LIMIT \$1 OFFSET \$2/, 'A股历史没有按 offset 分页');
@@ -105,6 +107,10 @@ const fetchSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report
 assert.match(fetchSource, /existing_industry=None/, '详情补全没有复用已有行业值');
 assert.match(fetchSource, /_split_embedded_industry/, '旧主营文本未拆分行业字段');
 assert.match(fetchSource, /仪器仪表/, '行业PE缺少仪器仪表行业别名');
+assert.match(fetchSource, /招股意向书/, 'IPO文档识别未覆盖招股意向书');
+assert.match(fetchSource, /if \(need_industry or need_industry_pe\)/, '仅缺行业PE时没有先读取发行公告');
+assert.match(fetchSource, /main_business_diagnostic/, '主营业务缺口没有保存来源诊断');
+assert.match(fetchSource, /industry_pe_diagnostic/, '行业PE缺口没有保存来源诊断');
 assert.doesNotMatch(fetchSource, /range\(1, 7\)/, '招股书检索仍固定只翻 6 页');
 assert.doesNotMatch(fetchSource, /main_business.*\[:200\]/, '主营业务仍被固定截断为 200 字');
 const sectorSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_sector.py'), 'utf8');

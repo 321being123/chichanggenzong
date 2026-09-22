@@ -66,6 +66,21 @@ def _recover_at_text(value):
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _detail_field_state(value, diagnostic=None, fallback_status="retryable", retry_after=None):
+    if value not in (None, "") and not (isinstance(value, dict) and not value.get("exposures")):
+        return {"status": "value"}
+    source_diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+    state = {
+        key: source_diagnostic.get(key)
+        for key in ("status", "reason", "source")
+        if source_diagnostic.get(key)
+    }
+    if state.get("status") in (None, "value"):
+        state["status"] = fallback_status
+    state.setdefault("retry_after", ((retry_after or date.today()) + timedelta(days=7)).isoformat())
+    return state
+
+
 def _market_fields(ts_code):
     code = str(ts_code or "").split(".")[0]
     if code.startswith("688"):
@@ -539,7 +554,9 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 )
                 if isinstance(business_exposure, dict) and business_exposure.get("exposures"):
                     meta["updated_fields"].append("business_exposure")
-            elif detail.get("main_business_source"):
+            elif (detail.get("main_business_source")
+                  or detail.get("main_business_diagnostic")
+                  or detail.get("industry_pe_diagnostic")):
                 # 字段值已存在时仍保留本次实际命中的来源，便于审计主备顺序和后续重试。
                 cur.execute("""
                   UPDATE ipo_history SET
@@ -553,15 +570,18 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 meta["result"] = "no_new_value"
             field_states = {
                 "industry": {"status": "value" if resolved_industry else "retryable"},
-                "main_business": {"status": "value" if resolved_business else "retryable"},
+                "main_business": _detail_field_state(
+                    resolved_business, detail.get("main_business_diagnostic"), "retryable", today
+                ),
                 "business_exposure": {"status": "value" if isinstance(resolved_exposure, dict) and resolved_exposure.get("exposures") else "retryable"},
-                "industry_pe": {"status": "value" if resolved_industry_pe is not None else "source_unavailable"},
+                "industry_pe": _detail_field_state(
+                    resolved_industry_pe, detail.get("industry_pe_diagnostic"), "source_unavailable", today
+                ),
             }
             if resolved_industry_pe is None:
-                field_states["industry_pe"].update({
-                    "reason": "insufficient_or_unmatched_industry_sample",
-                    "retry_after": (today + timedelta(days=7)).isoformat(),
-                })
+                field_states["industry_pe"].setdefault(
+                    "reason", "insufficient_or_unmatched_industry_sample"
+                )
         except ExternalCallGuardError as exc:
             if raise_on_guard:
                 raise

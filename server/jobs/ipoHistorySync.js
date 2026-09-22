@@ -106,10 +106,13 @@ async function notifyTushareFailovers(failovers = []) {
   }
 }
 
-function runWith(executable, runtime, businessDate, mode, externalCallCount = 0) {
+function runWith(executable, runtime, businessDate, mode, externalCallCount = 0, targetCodes = []) {
   return new Promise((resolve, reject) => {
     const scriptArgs = [SCRIPT, '--mode', mode || 'core'];
     if (businessDate) scriptArgs.push('--today', String(businessDate).slice(0, 10));
+    if (Array.isArray(targetCodes) && targetCodes.length) {
+      scriptArgs.push('--target-codes', targetCodes.join(','), '--apply-targeted', '--confirm-production');
+    }
     const args = path.basename(executable).toLowerCase() === 'py' ? ['-3', ...scriptArgs] : scriptArgs;
     const child = spawn(executable, args, {
       cwd: PROJECT_ROOT,
@@ -166,6 +169,10 @@ function runWith(executable, runtime, businessDate, mode, externalCallCount = 0)
 
 async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {}) {
   const mode = ['prediction_ready', 'enrichment'].includes(context.mode) ? context.mode : 'core';
+  const targetCodes = Array.isArray(context.targetCodes)
+    ? [...new Set(context.targetCodes.map(code => String(code || '').split('.')[0]).filter(Boolean))]
+    : [];
+  const targeted = targetCodes.length > 0;
   const claimed = await tryClaimJob(JOB);
   if (!claimed) return { skipped: true, reason: 'locked' };
   let runId = null;
@@ -184,7 +191,7 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
         ORDER BY id DESC LIMIT 20`,
       [JOB]
     );
-    const prior = priorRuns.rows.find(row => {
+    const prior = targeted ? null : priorRuns.rows.find(row => {
       if (!['done', 'failed'].includes(row.status)) return false;
       try {
         const detail = JSON.parse(row.detail || '{}');
@@ -209,9 +216,9 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
     }
     for (const executable of pythonCandidates()) {
       try {
-        const result = await runWith(executable, runtime, businessDate, mode, context.externalCallCount);
+        const result = await runWith(executable, runtime, businessDate, mode, context.externalCallCount, targetCodes);
         await notifyTushareFailovers(result.failovers);
-        const detail = JSON.stringify({ reason, mode, scheduleMarker, slotId: context.slotId || null, executable, retryOf, ...result });
+        const detail = JSON.stringify({ reason, mode, scheduleMarker, slotId: context.slotId || null, targetCodes, executable, retryOf, ...result });
         await finishJobRun(runId, true, detail);
         console.log(`[ipo-history] ${reason}/${mode} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
         return result;

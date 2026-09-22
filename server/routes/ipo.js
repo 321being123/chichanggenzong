@@ -138,6 +138,22 @@ async function buildCnStockLiveReport(code) {
     main_business: '主营业务',
     business_exposure: '业务赛道',
   };
+  function missingReason(field) {
+    const state = fieldStates[field] && typeof fieldStates[field] === 'object' ? fieldStates[field] : {};
+    if (state.status === 'document_not_found') {
+      return field === 'industry_pe'
+        ? '发行公告候选尚未找到，行业样本也暂未匹配'
+        : '招股说明书/招股意向书候选尚未找到';
+    }
+    if (state.status === 'document_unavailable') return '已找到候选文档，但当前下载失败，系统会继续重试';
+    if (state.status === 'document_parse_failed') return '文档已找到，但解析器尚未识别出该字段';
+    if (state.status === 'document_field_absent') return '发行公告已解析，但原文没有披露该字段';
+    if (state.status === 'source_unavailable' && state.reason === 'insufficient_or_unmatched_industry_sample') {
+      return '当前同行样本不足或行业名称无法匹配，系统低频复查';
+    }
+    if (state.status === 'source_unavailable') return '上游来源暂不可用，系统会继续重试';
+    return '资料尚未补全，系统会继续重试';
+  }
   const prediction = row.pred_return == null
     ? '待计算'
     : `${row.pred_return}%${context.prediction_range_low != null && context.prediction_range_high != null
@@ -228,9 +244,10 @@ async function buildCnStockLiveReport(code) {
   }
   const unresolvedDetail = missing.filter(field => missingLabels[field]);
   if (unresolvedDetail.length) {
-    lines.push('', '## 资料补全状态', ...unresolvedDetail.map(field => `- **${missingLabels[field]}**：发行资料已到，但当前尚未解析成功，系统会继续重试`));
+    lines.push('', '## 资料补全状态', ...unresolvedDetail.map(field => `- **${missingLabels[field]}**：${missingReason(field)}`));
   }
-  if (fieldStates.industry_pe && fieldStates.industry_pe.status === 'source_unavailable') {
+  if (fieldStates.industry_pe && fieldStates.industry_pe.status === 'source_unavailable'
+      && !unresolvedDetail.includes('industry_pe')) {
     lines.push('', '## 暂无可用来源', '- **行业市盈率**：当前同行样本不足或行业名称无法匹配，系统低频复查，不影响行业、赛道和主营业务完整状态');
   }
   if (row.ld_close_change != null) {

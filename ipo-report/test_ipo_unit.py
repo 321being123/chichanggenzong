@@ -120,6 +120,39 @@ try:
           "精密流体控制领域中关键控制部件及相关设备的研发、生产与销售" in parsed_business
           and "财务数据" not in parsed_business,
           "结果=%r" % parsed_business)
+
+    focus_business = fetch._extract_main_business(
+        "公司业务聚焦于高性能要求的改性工程塑料领域，主营产品的研发、生产和销售。"
+    ) or ""
+    check("主营业务识别业务聚焦于句式",
+          "高性能要求的改性工程塑料领域" in focus_business,
+          "结果=%r" % focus_business)
+    check("交易所识别招股意向书",
+          fetch._ipo_document_role("中塑股份招股意向书") == "prospectus")
+    issuance = fetch._parse_ipo_issuance_detail(
+        "发行人所属行业为塑料制品业（C292），发行人所属行业最近一个月平均静态市盈率为38.2倍"
+    )
+    check("发行公告识别行业PE句式",
+          issuance.get("industry") == "塑料制品业" and issuance.get("industry_pe") == 38.2,
+          "结果=%r" % issuance)
+    original_issuance_fetch = fetch._fetch_exchange_ipo_issuance_detail
+    issuance_calls = []
+    fetch._fetch_exchange_ipo_issuance_detail = lambda code, security_name='': (
+        issuance_calls.append(code) or {
+            "industry": "塑料制品业", "industry_pe": 38.2,
+            "ipo_announcement_source": "szse",
+        }
+    )
+    try:
+        detail = fetch.fetch_stock_historical_detail(
+            "301686", existing_industry="塑料制品业", missing_fields=["industry_pe"]
+        ) or {}
+    finally:
+        fetch._fetch_exchange_ipo_issuance_detail = original_issuance_fetch
+    check("仅缺行业PE时先读取发行公告",
+          issuance_calls == ["301686"] and detail.get("industry_pe") == 38.2
+          and detail.get("industry_pe_diagnostic", {}).get("status") == "value",
+          "调用=%r 结果=%r" % (issuance_calls, detail))
     check("主营赛道读取高端装备",
           "所属行业：高端装备" in parsed_business,
           "结果=%r" % parsed_business)

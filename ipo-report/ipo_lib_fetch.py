@@ -204,10 +204,36 @@ _org_id_cache = {}
 _STOCK_NAME_CACHE = {}
 _MAIN_BUSINESS_SOURCE = {}
 _MAIN_BUSINESS_DOCUMENT = {}
+_MAIN_BUSINESS_DIAGNOSTIC = {}
 _EXCHANGE_PROSPECTUS_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
+_IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
 _IPO_ISSUANCE_RESULT_DETAIL_CACHE = {}
+
+
+def _record_main_business_attempt(code, source, status, **extra):
+    diagnostic = _MAIN_BUSINESS_DIAGNOSTIC.setdefault(code, {"attempts": []})
+    attempt = {"source": source, "status": status}
+    attempt.update({key: value for key, value in extra.items() if value is not None})
+    diagnostic.setdefault("attempts", []).append(attempt)
+
+
+def _finalize_main_business_diagnostic(code):
+    diagnostic = _MAIN_BUSINESS_DIAGNOSTIC.setdefault(code, {"attempts": []})
+    attempts = diagnostic.get("attempts") or []
+    statuses = {item.get("status") for item in attempts}
+    if diagnostic.get("status") == "value":
+        return diagnostic
+    if "document_parse_failed" in statuses:
+        diagnostic.update({"status": "document_parse_failed", "reason": "document_found_but_parser_found_no_main_business"})
+    elif "source_error" in statuses:
+        diagnostic.update({"status": "source_unavailable", "reason": "upstream_source_error"})
+    elif attempts and statuses.issubset({"document_not_found"}):
+        diagnostic.update({"status": "document_not_found", "reason": "no_prospectus_candidate_found"})
+    else:
+        diagnostic.update({"status": "source_unavailable", "reason": "no_main_business_value_returned"})
+    return diagnostic
 
 
 def _get_org_id(stock_code):
@@ -1323,6 +1349,8 @@ def _extract_main_business(text):
         r'(?:公司|发行人)专业从事\s*([^。；;]{8,1000})',
         r'(?:公司|发行人)主要从事\s*([^。；;]{8,1000})',
         r'(?:公司|发行人)专门从事\s*([^。；;]{8,1000})',
+        r'(?:公司|发行人)?业务(?:聚焦于|集中于|专注于)\s*([^。；;]{8,1000})',
+        r'(?:公司|发行人)(?:的)?核心业务[为是：:]\s*([^。；;]{8,1000})',
         r'(?:公司|发行人)主营业务[为是：:]\s*([^。；;]{8,1000})',
         r'主营业务[为：:]\s*([^。；;]{8,1000})',
     ]:
@@ -1471,7 +1499,7 @@ def _ipo_document_role(title):
     normalized = re.sub(r'\s+', '', str(title or ''))
     if not normalized or '提示性' in normalized:
         return ''
-    if '招股说明书' in normalized:
+    if '招股说明书' in normalized or '招股意向书' in normalized:
         return 'prospectus'
     if ('发行结果' in normalized or '中签率公告' in normalized
             or '配售结果及网上中签结果' in normalized):
@@ -1653,7 +1681,7 @@ def _parse_ipo_issuance_detail(text):
     industry_pe = None
     for pattern in (
         r'所属行业T-?\d+日静态行业市盈率[：:]?(\d+(?:\.\d+)?)',
-        r'(?:该行业|所处行业)最近一个月平均静态市盈率为[：:]?(\d+(?:\.\d+)?)倍',
+        r'(?:该行业|所处行业|发行人所属行业|公司所属行业)最近一个月平均静态市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
     ):
         match = re.search(pattern, compact)
         if match:
@@ -1680,13 +1708,20 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
             code, security_name or _stock_name_from_database(code)
         )
         if not candidates:
+            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+                'status': 'document_not_found',
+                'reason': 'no_issuance_announcement_candidate_found',
+            }
             _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
             return {}
+        downloaded = 0
         session = requests.Session()
         session.headers.update({'User-Agent': HEADERS['User-Agent']})
         try:
             for source, url, title, announced_at in candidates:
                 text = _download_exchange_pdf_text(session, url, source)
+                if text:
+                    downloaded += 1
                 detail = _parse_ipo_issuance_detail(text)
                 if not detail:
                     continue
@@ -1700,13 +1735,26 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
                     ).hexdigest(),
                     'ipo_announcement_parser_version': 'ipo-issuance-facts-v1',
                 })
+                _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+                    'status': 'value' if detail.get('industry_pe') is not None else 'document_field_absent',
+                    'reason': None if detail.get('industry_pe') is not None else 'issuance_announcement_has_no_industry_pe',
+                    'source': source,
+                }
                 _IPO_ISSUANCE_DETAIL_CACHE[code] = dict(detail)
                 return detail
         finally:
             session.close()
     except Exception:
-        pass
+        _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+            'status': 'source_unavailable',
+            'reason': 'issuance_announcement_source_error',
+        }
     _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
+    if code not in _IPO_ISSUANCE_DETAIL_DIAGNOSTIC:
+        _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+            'status': 'document_unavailable' if downloaded else 'document_parse_failed',
+            'reason': 'document_download_failed' if downloaded == 0 else 'document_found_but_parser_found_no_industry_pe',
+        }
     return {}
 
 
@@ -1795,11 +1843,17 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
     if cache_key in _EXCHANGE_PROSPECTUS_CACHE:
         source, value = _EXCHANGE_PROSPECTUS_CACHE[cache_key]
         _MAIN_BUSINESS_SOURCE[code] = source
+        _MAIN_BUSINESS_DIAGNOSTIC[code] = {
+            'status': 'value', 'source': source,
+            'attempts': [{'source': source, 'status': 'value'}],
+        }
         return value
     try:
         candidates = _exchange_prospectus_candidates(code, security_name or _stock_name_from_database(code))
         if not candidates:
+            _record_main_business_attempt(code, 'exchange_prospectus', 'document_not_found', candidate_count=0)
             return ''
+        downloaded = 0
         session = requests.Session()
         session.headers.update({'User-Agent': HEADERS['User-Agent']})
         try:
@@ -1807,6 +1861,7 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
                 text = _download_exchange_pdf_text(session, url, source)
                 if not text:
                     continue
+                downloaded += 1
                 main_business = _extract_main_business(text)
                 if main_business:
                     _EXCHANGE_PROSPECTUS_CACHE[cache_key] = (source, main_business)
@@ -1818,10 +1873,23 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
                         'content_hash': hashlib.sha256(text.encode('utf-8')).hexdigest(),
                         'parser_version': 'ipo-prospectus-main-business-v2',
                     }
+                    _record_main_business_attempt(
+                        code, 'exchange_prospectus', 'value', source=source,
+                        candidate_count=len(candidates), downloaded_count=downloaded,
+                    )
+                    _MAIN_BUSINESS_DIAGNOSTIC[code].update({
+                        'status': 'value', 'source': source,
+                        'document': dict(_MAIN_BUSINESS_DOCUMENT[code]),
+                    })
                     return main_business
         finally:
             session.close()
+        _record_main_business_attempt(
+            code, 'exchange_prospectus', 'document_parse_failed',
+            candidate_count=len(candidates), downloaded_count=downloaded,
+        )
     except Exception:
+        _record_main_business_attempt(code, 'exchange_prospectus', 'source_error')
         return ''
     return ''
 
@@ -1859,6 +1927,7 @@ def _fetch_cninfo_prospectus_main_business(stock_code):
         code = str(stock_code).split('.')[0]
         org = blr.get_org_id(code)
         if not org:
+            _record_main_business_attempt(code, 'cninfo_prospectus', 'document_not_found', reason='org_id_not_found')
             return ""
         s = requests.Session()
         s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -1869,6 +1938,8 @@ def _fetch_cninfo_prospectus_main_business(stock_code):
         d = datetime.now()
         start = (d - timedelta(days=365 * 5)).strftime("%Y-%m-%d")
         end = d.strftime("%Y-%m-%d")
+        announcement_count = 0
+        downloaded_count = 0
 
         def _scan(skip_notice):
             page = 1
@@ -1894,15 +1965,22 @@ def _fetch_cninfo_prospectus_main_business(stock_code):
                 seen_pages.add(page_signature)
                 for a in anns:
                     t = a.get("announcementTitle", "")
-                    if "招股说明书" not in t:
+                    if "招股说明书" not in t and "招股意向书" not in t:
                         continue
+                    announcement_count += 1
                     # 跳过“提示性公告”等简短通知，只取完整招股说明书
                     if skip_notice and ("提示性" in t or "提示" in t):
                         continue
                     text = _download_cninfo_prospectus_pdf_text(s, a)
                     if text:
+                        downloaded_count += 1
                         mb = _extract_main_business(text)
                         if mb:
+                            _record_main_business_attempt(
+                                code, 'cninfo_prospectus', 'value',
+                                candidate_count=announcement_count,
+                                downloaded_count=downloaded_count,
+                            )
                             return mb
                 if total and page * 30 >= total:
                     break
@@ -1913,10 +1991,18 @@ def _fetch_cninfo_prospectus_main_business(stock_code):
         mb = _scan(skip_notice=True)
         if mb:
             return mb
-        return _scan(skip_notice=False)
+        mb = _scan(skip_notice=False)
+        if not mb:
+            _record_main_business_attempt(
+                code, 'cninfo_prospectus',
+                'document_parse_failed' if downloaded_count else 'document_not_found',
+                candidate_count=announcement_count, downloaded_count=downloaded_count,
+            )
+        return mb
     except ExternalCallGuardError:
         raise
     except Exception:
+        _record_main_business_attempt(code, 'cninfo_prospectus', 'source_error')
         return ""
 
 
@@ -1924,6 +2010,8 @@ def fetch_prospectus_main_business(stock_code, security_name=None):
     """主营业务取数：交易所官方招股书优先，巨潮招股书兜底。"""
     code = str(stock_code or '').split('.')[0]
     _MAIN_BUSINESS_SOURCE.pop(code, None)
+    _MAIN_BUSINESS_DOCUMENT.pop(code, None)
+    _MAIN_BUSINESS_DIAGNOSTIC.pop(code, None)
     official = _fetch_exchange_prospectus_main_business(code, security_name or '')
     if official:
         return official
@@ -1946,6 +2034,7 @@ def _fetch_stock_main_business(stock_code, security_name=None):
     except ExternalCallGuardError as exc:
         # 巨潮是备源；其权限/熔断不能阻断最后的 Tushare stock_company 回退。
         cninfo_error = exc
+        _record_main_business_attempt(str(stock_code or '').split('.')[0], 'cninfo_prospectus', 'source_error', reason='external_guard')
     except Exception:
         pass
     try:
@@ -1956,14 +2045,18 @@ def _fetch_stock_main_business(stock_code, security_name=None):
             if df is not None and not df.empty:
                 biz = df.iloc[0].get("main_business")
                 if biz:
-                    _MAIN_BUSINESS_SOURCE[str(stock_code or '').split('.')[0]] = 'tushare'
+                    code = str(stock_code or '').split('.')[0]
+                    _MAIN_BUSINESS_SOURCE[code] = 'tushare'
+                    _record_main_business_attempt(code, 'tushare_stock_company', 'value')
+                    _MAIN_BUSINESS_DIAGNOSTIC[code].update({'status': 'value', 'source': 'tushare'})
                     return str(biz).strip()
     except ExternalCallGuardError:
         raise
     except Exception:
         pass
-    # 巨潮权限/熔断属于已知不可用备源；末级 Tushare 无值时保留字段为 retryable，
-    # 由后续官方资料补偿，不让一个失效备源把整批 enrichment 变成等待。
+    code = str(stock_code or '').split('.')[0]
+    _record_main_business_attempt(code, 'tushare_stock_company', 'source_unavailable')
+    _finalize_main_business_diagnostic(code)
     return ""
 
 _INDUSTRY_PE_MAP = None
@@ -2048,7 +2141,7 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
     security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
     announcement_detail = (
         _fetch_exchange_ipo_issuance_detail(code, security_name=security_name)
-        if need_industry else {}
+        if (need_industry or need_industry_pe) else {}
     )
     result_detail = (
         _fetch_exchange_ipo_issuance_result_detail(code, security_name=security_name)
@@ -2071,14 +2164,43 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
     detail['main_business_source'] = _MAIN_BUSINESS_SOURCE.get(code, '')
     if _MAIN_BUSINESS_DOCUMENT.get(code):
         detail['main_business_document'] = dict(_MAIN_BUSINESS_DOCUMENT[code])
+    if need_main_business and _MAIN_BUSINESS_DIAGNOSTIC.get(code):
+        diagnostic = dict(_MAIN_BUSINESS_DIAGNOSTIC[code])
+        diagnostic['attempts'] = list(diagnostic.get('attempts') or [])[-6:]
+        detail['main_business_diagnostic'] = diagnostic
     _normalize_stock_detail(detail)
-    if need_industry_pe and detail.get('industry') and detail.get('industry_pe') is None:
-        industry_pe_map = _get_industry_pe_map()
-        detail['industry_pe'] = industry_pe_map.get(detail['industry'])
-        if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:
-            detail['industry_pe'] = industry_pe_map.get('电器仪表')
+    issuance_pe_diagnostic = dict(_IPO_ISSUANCE_DETAIL_DIAGNOSTIC.get(code) or {})
+    if need_industry_pe:
         if detail.get('industry_pe') is not None:
-            detail['industry_pe_source'] = 'tushare_derived_industry_median'
+            detail['industry_pe_source'] = (
+                f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
+                if announcement_detail.get('ipo_announcement_source')
+                else 'stored_or_existing'
+            )
+            detail['industry_pe_diagnostic'] = {
+                'status': 'value', 'source': detail['industry_pe_source'],
+            }
+        elif detail.get('industry'):
+            industry_pe_map = _get_industry_pe_map()
+            detail['industry_pe'] = industry_pe_map.get(detail['industry'])
+            if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:
+                detail['industry_pe'] = industry_pe_map.get('电器仪表')
+            if detail.get('industry_pe') is not None:
+                detail['industry_pe_source'] = 'tushare_derived_industry_median'
+                detail['industry_pe_diagnostic'] = {
+                    'status': 'value', 'source': 'tushare_derived_industry_median',
+                }
+            else:
+                detail['industry_pe_diagnostic'] = issuance_pe_diagnostic or {
+                    'status': 'source_unavailable',
+                    'reason': 'insufficient_or_unmatched_industry_sample',
+                }
+                if detail['industry_pe_diagnostic'].get('status') == 'document_not_found':
+                    detail['industry_pe_diagnostic']['reason'] = 'issuance_announcement_not_found_and_industry_sample_unmatched'
+        else:
+            detail['industry_pe_diagnostic'] = {
+                'status': 'source_unavailable', 'reason': 'industry_unavailable',
+            }
     elif detail.get('industry_pe') is not None:
         detail['industry_pe_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
     try:

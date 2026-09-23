@@ -121,6 +121,29 @@ async function publishJobDatasets(jobCode, businessDate, result) {
   const declaredDatasets = definition.producesDatasets || [];
   const requestedDatasets = result && Array.isArray(result.publishDatasetCodes)
     ? result.publishDatasetCodes : declaredDatasets;
+  const phaseMode = String(result && result.mode || 'core');
+  const phaseContract = definition.datasetPublicationByMode
+    ? definition.datasetPublicationByMode[phaseMode] : null;
+  if (definition.strictDatasetPublication && definition.datasetPublicationByMode && !phaseContract) {
+    throw new Error(`${jobCode} 未声明 ${phaseMode} 阶段的数据集发布契约`);
+  }
+  if (phaseContract) {
+    const expected = phaseContract.publish || [];
+    if (requestedDatasets.length !== expected.length || expected.some(code => !requestedDatasets.includes(code))) {
+      throw new Error(`${jobCode}/${phaseMode} 实际发布数据集与阶段契约不一致`);
+    }
+    if (result && result.ok === false) return [];
+    if (result && result.continuationRequired === true) return [];
+    if (phaseContract.requireStageComplete === true && result.stageComplete !== true) {
+      throw new Error(`${jobCode}/${phaseMode} 阶段仍有未完成对象或子阶段`);
+    }
+    if (expected.length === 0) {
+      if (!(await areDatasetPartitionsPublished(phaseContract.requirePublished || [], businessDate))) {
+        throw new Error(`${jobCode}/${phaseMode} 所依赖的数据集分区未发布或质量未通过`);
+      }
+      return [];
+    }
+  }
   const datasets = requestedDatasets.filter(code => DATASET_PARTITION_REGISTRY[code]);
   if (result && result.ok === false) return [];
   // partial 仅表示本批有后续阶段，不能被严格发布门禁当成最终成功；续批完成后再由末批发布/校验。
@@ -180,7 +203,36 @@ async function publishJobDatasets(jobCode, businessDate, result) {
   if (definition.strictDatasetPublication && !(await areJobDatasetsPublished(jobCode, businessDate, datasets))) {
     throw new Error(`${jobCode} 数据集分区未全部发布，不能标记任务完成`);
   }
+  if (phaseContract && !(await areDatasetPartitionsPublished(phaseContract.requirePublished || [], businessDate))) {
+    throw new Error(`${jobCode}/${phaseMode} 所依赖的数据集分区未发布或质量未通过`);
+  }
   return results;
+}
+
+async function areDatasetPartitionsPublished(datasetCodes, businessDate) {
+  const datasets = datasetCodes.filter(code => DATASET_PARTITION_REGISTRY[code]);
+  if (datasets.length !== datasetCodes.length) return false;
+  if (!datasets.length) return true;
+  const partitionKey = dateValue(businessDate);
+  if (!partitionKey) return false;
+  const scopes = datasets.map(code => DATASET_PARTITION_REGISTRY[code].scopeKey);
+  const { rows } = await pool.query(
+    `SELECT dataset_code,scope_key,status,is_stale,diagnostics
+       FROM ops.dataset_partitions
+      WHERE dataset_code=ANY($1::text[]) AND scope_key=ANY($2::text[]) AND partition_key=$3::date`,
+    [datasets, scopes, partitionKey]
+  );
+  const byCodeAndScope = new Map(rows.map(row => [`${row.dataset_code}:${row.scope_key}`, row]));
+  return datasets.every(code => {
+    const scopeKey = DATASET_PARTITION_REGISTRY[code].scopeKey;
+    const row = byCodeAndScope.get(`${code}:${scopeKey}`);
+    if (!row || row.status !== 'published' || row.is_stale) return false;
+    if (code === 'ipo_history' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity') {
+      return row.diagnostics && row.diagnostics.quality_status === 'passed';
+    }
+    if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';
+    return true;
+  });
 }
 
 async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets = null) {
@@ -190,25 +242,7 @@ async function areJobDatasetsPublished(jobCode, businessDate, requestedDatasets 
   const datasets = datasetCodes.filter(code => DATASET_PARTITION_REGISTRY[code]);
   // 严格任务的声明必须全部落在注册表中；过滤为空时必须失败关闭，不能把“没有检查对象”当成已完成。
   if (definition.strictDatasetPublication && (!datasets.length || datasets.length !== datasetCodes.length)) return false;
-  if (!datasets.length) return true;
-  const partitionKey = dateValue(businessDate);
-  if (!partitionKey) return false;
-  const { rows } = await pool.query(
-    `SELECT dataset_code,status,is_stale,diagnostics
-       FROM ops.dataset_partitions
-      WHERE dataset_code=ANY($1::text[]) AND partition_key=$2::date`,
-    [datasets, partitionKey]
-  );
-  const byCode = new Map(rows.map(row => [row.dataset_code, row]));
-  return datasets.every(code => {
-    const row = byCode.get(code);
-    if (!row || row.status !== 'published' || row.is_stale) return false;
-    if (code === 'ipo_history' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity') {
-      return row.diagnostics && row.diagnostics.quality_status === 'passed';
-    }
-    if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';
-    return true;
-  });
+  return areDatasetPartitionsPublished(datasets, businessDate);
 }
 
 module.exports = { DATASET_PARTITION_REGISTRY, readSnapshot, publishDatasetSnapshot, publishJobDatasets, areJobDatasetsPublished };

@@ -54,9 +54,9 @@ const JOB_DEFINITION_SOURCE = [
   { jobCode: 'stock_analysis_refresh', label: '个股分析刷新', hour: 20, minute: 30, weekdays: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, deadlineMinutes: 360, sourceDescription: '已发布的共享标准行情与财务标准层；本地计算', mayConsumeQuota: false, externalSources: [], retryPolicy: 'local', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'hk_trade_rules_sync', label: '港股每手股数同步', hour: 20, minute: 30, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, sourceDescription: '港交所证券资料接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'hk_trade_calendar_sync', label: '港交所交易日历同步', hour: 7, minute: 50, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, sourceDescription: '港交所交易日历探针确认后的官方/配置接口', mayConsumeQuota: true, externalSources: ['hkex', 'tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'hk_ipo_preopen', label: '港股 IPO 盘前事实同步', hour: 8, minute: 30, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所主板/GEM 新上市页面、官方披露易、腾讯行情名称与利弗莫尔/华盛公开申购期信号', mayConsumeQuota: true, externalSources: ['hkex', 'livermore', 'vbkr-public', 'tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'hk_ipo_preopen', label: '港股 IPO 盘前事实同步', hour: 8, minute: 30, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所主板/GEM 新上市页面、官方披露易与腾讯行情名称；第三方动态源未获准入时不采集并标记为不可验证', mayConsumeQuota: true, externalSources: ['hkex', 'tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'hk_ipo_postclose', label: '港股 IPO 盘后事实同步', hour: 18, minute: 10, weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所配售结果、标题检索、年度新上市报表、腾讯行情名称与事实层', mayConsumeQuota: true, externalSources: ['hkex', 'tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
-  { jobCode: 'hk_ipo_enrichment', label: '港股 IPO 官方文件、日线与市场信号补全', hour: 19, minute: 40, mode: 'enrichment', weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所年度新上市报表、官方招股书/配售结果 PDF、hk_daily 上市后首日/五日覆盖、腾讯行情名称与利弗莫尔/华盛/富途市场信号', mayConsumeQuota: true, externalSources: ['hkex', 'tushare', 'livermore', 'vbkr-public', 'futu-public', 'tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
+  { jobCode: 'hk_ipo_enrichment', label: '港股 IPO 官方文件、日线与市场信号补全', hour: 19, minute: 40, mode: 'enrichment', weekdays: true, catchupMode: 'latest_only', requiresDataWatermark: false, datasetDependencies: [{ datasetCode: 'hk_trade_calendar', scopeKey: 'HK', partitionDatePolicy: 'business_date' }], sourceDescription: '港交所年度新上市报表、官方招股书/配售结果 PDF、hk_daily 上市后首日/五日覆盖与腾讯行情名称；第三方动态源未获准入时不采集', mayConsumeQuota: true, externalSources: ['hkex', 'tushare', 'tencent'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'arbitrage_sync', label: '套利公告同步', hour: 8, minute: 30, weekdays: true, catchupMode: 'latest_only', dataDatePolicy: 'latest_available', freshnessGate: true, requiresDataWatermark: true, reconcileByWatermark: true, sourceDescription: '港交所、上交所、深交所官方公告接口；每日附带一次巨潮资讯权限恢复探针，不参与公告采集', mayConsumeQuota: true, externalSources: ['港交所', '上交所', '深交所', '巨潮资讯权限探针'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
   { jobCode: 'arbitrage_reparse', label: '套利公告重新解析', manualOnly: true, requiresDataWatermark: false, deadlineMinutes: 240, timeoutMinutes: 120, importance: 'high', sourceDescription: '已入库官方公告 PDF 链接与本地解析器', mayConsumeQuota: true, externalSources: ['巨潮资讯', '港交所'], externalApis: ['cninfo', 'hkex'], maxExternalCallsPerRun: null },
   { jobCode: 'holiday_sync', label: '休市日历月度同步', hour: 7, minute: 0, weekdays: false, monthly: true, deadlineMinutes: 1440, catchupWindowMinutes: 43200, catchupMode: 'latest_only', requiresDataWatermark: false, category: 'system', importance: 'high', sourceDescription: 'Tushare 交易日历接口', mayConsumeQuota: true, externalSources: ['tushare'], retryPolicy: 'external', retryDelaysMinutes: [15, 60], maxAttempts: 3 },
@@ -85,14 +85,22 @@ const JOB_CONTRACTS = {
   // 市场波动指标不设内部单批外部调用数上限；仍受来源级额度/熔断、并发和任务超时保护。
   'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },
-  'ipo_history_sync': { externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'sse', 'szse', 'bse', 'cninfo', 'stock_company'], producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: null },
+  'ipo_history_sync': {
+    externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'sse', 'szse', 'bse', 'cninfo', 'stock_company'],
+    producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: null,
+    datasetPublicationByMode: {
+      prediction_ready: { publish: [], requirePublished: [], requireStageComplete: true },
+      core: { publish: ['ipo_history'], requirePublished: ['ipo_history'] },
+      enrichment: { publish: [], requirePublished: ['ipo_history'], requireStageComplete: true },
+    },
+  },
   // 个股分析定时任务为数据库只读计算；财务/行情采集由共享批次和独立增量任务完成。
   'stock_analysis_refresh': { externalApis: [], producesDatasets: ['stock_analysis_snapshot'], consumesDatasets: ['stock_master', 'stock_daily', 'stock_valuation', 'stock_financial_reports'], maxExternalCallsPerRun: 0 },
   'hk_trade_rules_sync': { externalApis: ['hk_basic'], producesDatasets: ['hk_trade_rules'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'hk_trade_calendar_sync': { externalApis: ['hk_trade_calendar'], producesDatasets: ['hk_trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: null },
-  'hk_ipo_preopen': { externalApis: ['hkex_new_listings', 'hkex_prospectus', 'livermore_hk_ipo_current', 'livermore_hk_ipo_history', 'vbkr_hk_ipo_current', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_subscription_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
+  'hk_ipo_preopen': { externalApis: ['hkex_new_listings', 'hkex_prospectus', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_subscription_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
   'hk_ipo_postclose': { externalApis: ['hkex_allotment', 'hkex_title_search', 'hkex_history_report', 'hkex_market', 'tencent_quote'], producesDatasets: ['hk_ipo_facts'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
-  'hk_ipo_enrichment': { externalApis: ['hkex_official_documents', 'hkex_cancellation_announcements', 'hkex_history_report', 'hk_daily', 'livermore_hk_ipo_history', 'vbkr_hk_ipo_current', 'futu_hk_ipo_page', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_cancellation_notice', 'hk_ipo_grey_market_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
+  'hk_ipo_enrichment': { externalApis: ['hkex_official_documents', 'hkex_cancellation_announcements', 'hkex_history_report', 'hk_daily', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_cancellation_notice', 'hk_ipo_grey_market_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
   'arbitrage_sync': { externalApis: ['hkex', 'sse', 'szse', 'cninfo', 'cninfo_permission_probe'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'arbitrage_reparse': { externalApis: ['cninfo', 'hkex'], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: null },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: null },
@@ -103,6 +111,7 @@ const DATA_DATE_POLICIES = Object.freeze(['none', 'same_day', 'previous_trading_
 const PARTITION_DATE_POLICIES = Object.freeze(['business_date', 'previous_trading_day', 'expected_data_date']);
 const CONTRACT_FIELDS = Object.freeze([
   'externalApis', 'producesDatasets', 'consumesDatasets', 'datasetDependencies', 'maxExternalCallsPerRun',
+  'datasetPublicationByMode',
 ]);
 
 const JOB_DEFINITIONS = JOB_DEFINITION_SOURCE.map(item => ({
@@ -189,6 +198,27 @@ function validateJobDefinitionSources({
       }
       if (datasetRegistry && requirement && requirement.datasetCode && !datasetRegistry[requirement.datasetCode]) {
         errors.push(`${item.jobCode}.${requirement.datasetCode} 未登记 DATASET_PARTITION_REGISTRY`);
+      }
+    }
+    const declaredDatasets = new Set(effective.producesDatasets || []);
+    for (const [mode, phase] of Object.entries(effective.datasetPublicationByMode || {})) {
+      if (!mode || !phase || typeof phase !== 'object') {
+        errors.push(`${item.jobCode} 存在无效的 datasetPublicationByMode 契约`);
+        continue;
+      }
+      for (const field of ['publish', 'requirePublished']) {
+        const codes = phase[field] || [];
+        if (!Array.isArray(codes) || new Set(codes).size !== codes.length) {
+          errors.push(`${item.jobCode}.${mode}.${field} 必须是无重复数据集代码的数组`);
+          continue;
+        }
+        for (const code of codes) {
+          if (!declaredDatasets.has(code)) errors.push(`${item.jobCode}.${mode}.${field} 的 ${code} 未在 producesDatasets 中声明`);
+          if (datasetRegistry && !datasetRegistry[code]) errors.push(`${item.jobCode}.${mode}.${field} 的 ${code} 未登记数据集注册表`);
+        }
+      }
+      if ((phase.publish || []).length === 0 && phase.requireStageComplete !== true) {
+        errors.push(`${item.jobCode}.${mode} 无发布数据集时必须要求阶段结果完成`);
       }
     }
   }

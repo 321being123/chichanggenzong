@@ -191,8 +191,23 @@ async function verifyReconciliationEvidence() {
   assert.strictEqual(resolveDatasetPartitionDate({ partitionDatePolicy: 'business_date' }, { business_date: '2026-09-21' }, { jobCode: 'hk_ipo_preopen' }), '2026-09-21');
   assert.strictEqual(resolveDatasetPartitionDate({ partitionDatePolicy: 'previous_trading_day' }, { business_date: '2026-09-21' }, { jobCode: 'hk_ipo_preopen' }), '2026-09-18');
   assert.throws(() => resolveDatasetPartitionDate({ partitionDatePolicy: 'silently_same_day' }, { business_date: '2026-09-21' }, { jobCode: 'hk_ipo_preopen' }), /不支持的 partitionDatePolicy/);
-  assert.strictEqual(getRegisteredJobDefinition('unknown-job'), null);
-  const unknownRecovery = await verifySlotRecoveryEvidence({ slot_id: 99, job_code: 'unknown-job', status: 'succeeded' }, async () => {
+assert.strictEqual(getRegisteredJobDefinition('unknown-job'), null);
+const ipoDefinition = getJobDefinition('ipo_history_sync');
+assert.deepStrictEqual(ipoDefinition.datasetPublicationByMode.prediction_ready, {
+  publish: [], requirePublished: [], requireStageComplete: true,
+}, '16:30 阶段按自身完成条件判定，不提前依赖核心分区');
+assert.deepStrictEqual(ipoDefinition.datasetPublicationByMode.enrichment.requirePublished, ['ipo_history'],
+  '19:35 补全只依赖已通过质量门禁的核心分区');
+assert.deepStrictEqual(ipoDefinition.datasetPublicationByMode.enrichment.publish, [],
+  '19:35 补全不得重发或覆盖核心分区');
+assert(!getJobDefinition('hk_ipo_preopen').externalApis.some(api => /livermore|vbkr|futu/i.test(api)),
+  '未获准入的港股动态源不得列为自动采集接口');
+assert.strictEqual(validateJobDefinitionSources({
+  source: [{ jobCode: 'sample', dataDatePolicy: 'same_day', producesDatasets: ['known'] }],
+  contracts: { sample: { datasetPublicationByMode: { core: { publish: ['unknown'], requirePublished: [] } } } },
+  datasetRegistry: { known: {} }, strict: true,
+}).ok, false, '阶段发布契约不得引用任务未声明的数据集');
+const unknownRecovery = await verifySlotRecoveryEvidence({ slot_id: 99, job_code: 'unknown-job', status: 'succeeded' }, async () => {
     throw new Error('未知任务不应查询运行记录');
   });
   assert.strictEqual(unknownRecovery.recovered, false);

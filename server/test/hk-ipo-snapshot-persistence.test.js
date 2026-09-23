@@ -70,10 +70,10 @@ const syncDate = '2099-12-30';
     };
     const guardImpl = async (_source, _dataset, _businessDate, request) => request();
 
-    const first = await syncHkIpoMarketSignals({ mode: 'preopen', businessDate: syncDate, fetchImpl, guardImpl });
+    const first = await syncHkIpoMarketSignals({ mode: 'preopen', businessDate: syncDate, fetchImpl, guardImpl, sourcesAdmitted: true });
     assert.strictEqual(first.subscription.saved, 1, '真实同步路径首次应写入一条申购快照');
     multiple = 13.5;
-    const second = await syncHkIpoMarketSignals({ mode: 'preopen', businessDate: syncDate, fetchImpl, guardImpl });
+    const second = await syncHkIpoMarketSignals({ mode: 'preopen', businessDate: syncDate, fetchImpl, guardImpl, sourcesAdmitted: true });
     assert.strictEqual(second.subscription.saved, 1, '真实同步路径第二次应写入变化后的快照');
     const before = await pool.query(`
       SELECT last_seen_at FROM analytics.hk_ipo_market_snapshots
@@ -82,7 +82,7 @@ const syncDate = '2099-12-30';
     `, [syncCode, syncDate]);
     assert.strictEqual(before.rowCount, 1, '第二个时点快照应存在');
     await pool.query('SELECT pg_sleep(0.01)');
-    const third = await syncHkIpoMarketSignals({ mode: 'preopen', businessDate: syncDate, fetchImpl, guardImpl });
+    const third = await syncHkIpoMarketSignals({ mode: 'preopen', businessDate: syncDate, fetchImpl, guardImpl, sourcesAdmitted: true });
     assert.strictEqual(third.subscription.saved, 1, '相同内容重采集应命中幂等更新');
     const after = await pool.query(`
       SELECT COUNT(*)::int AS row_count,

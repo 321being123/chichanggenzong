@@ -65,6 +65,38 @@
       "tests": [{ "file": "server/test/knowledge-governance.test.js", "pattern": "runCheck" }],
       "owner": "研发规范",
       "status": "verified"
+    },
+    {
+      "id": "TASK-DATASET-003",
+      "title": "分阶段任务必须按阶段契约发布并核对分区",
+      "implementation": { "file": "server/services/datasetPartitionRegistry.js", "symbol": "publishJobDatasets" },
+      "tests": [{ "file": "server/test/dataset-publication-contract.test.js", "pattern": "IPO 阶段和分区作用域契约通过" }],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "ALERT-EVIDENCE-004",
+      "title": "告警只针对本槽位声明且实际尝试的数据集",
+      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "buildDatasetDiagnosticAlerts" },
+      "tests": [{ "file": "server/test/hk-ipo-diagnostics-alert.test.js", "pattern": "未获准入且本轮未请求的动态源不能产生故障告警" }],
+      "owner": "运维治理",
+      "status": "verified"
+    },
+    {
+      "id": "TASK-SLOT-003",
+      "title": "计划内不同槽位成功不互相触发重复告警",
+      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "finishManagedRun" },
+      "tests": [{ "file": "server/test/job-execution-protection.test.js", "pattern": "同一计划槽位重复成功必须告警" }],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "HK-IPO-SOURCE-001",
+      "title": "未准入港股动态源不得联网采集",
+      "implementation": { "file": "server/services/hkIpoMarketSignals.js", "symbol": "syncHkIpoMarketSignals" },
+      "tests": [{ "file": "server/test/hk-ipo-dynamic-source-admission.test.js", "pattern": "默认未准入状态必须在联网和读取动态信号数据库前安全返回" }],
+      "owner": "港股 IPO",
+      "status": "verified"
     }
   ]
 }

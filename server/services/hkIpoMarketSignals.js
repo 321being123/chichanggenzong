@@ -412,7 +412,15 @@ async function syncHkIpoMarketSignals({
   businessDate = process.env.JOB_BUSINESS_DATE || todayShanghai(),
   fetchImpl = requestExternal,
   guardImpl = withExternalCallGuard,
+  sourcesAdmitted = false,
 } = {}) {
+  if (sourcesAdmitted !== true) {
+    return {
+      ok: true, status: 'not_admitted', mode,
+      subscription: { fetched: false, rows: 0, saved: 0, ok: false },
+      errors: [], sourceAdmissionRequired: true,
+    };
+  }
   const map = await loadIpoMap();
   const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
   const blockedSources = new Set();

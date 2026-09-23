@@ -599,6 +599,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
            WHERE security_code=%s
         """, (Json(meta), Json(field_states), code))
 
+    remaining_scope = " AND security_code=ANY(%s::text[])" if only_codes else ""
     cur.execute("""
       SELECT
         count(*) FILTER (WHERE NULLIF(industry,'') IS NULL),
@@ -608,7 +609,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                           OR NOT (business_exposure ? 'exposures'))
       FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-    """)
+    """ + remaining_scope, (only_codes,) if only_codes else ())
     counts = cur.fetchone()
     remaining_by_field = dict(zip(("industry", "industry_pe", "main_business", "business_exposure"),
                                   (int(value or 0) for value in counts)))
@@ -943,8 +944,24 @@ def run(today=None, mode="core"):
                     raise
                 quality = update_quality(cur, today)
             connection.commit()
+            stage_complete = (
+                int(enrichment.get("failed", 0)) == 0
+                and int(enrichment.get("remaining", 0)) == 0
+                and enrichment.get("stopped") is None
+                and int(first_day.get("pending", 0)) == 0
+                and first_day.get("stopped") is None
+            )
+            stage_error = None if stage_complete else (
+                f"{mode} 阶段未完成：资料剩余 {int(enrichment.get('remaining', 0))} 项，"
+                f"资料失败 {int(enrichment.get('failed', 0))} 项，首日表现待补 {int(first_day.get('pending', 0))} 项"
+            )
             return {
-                "ok": True, "mode": mode, "dataAsOf": today.isoformat(),
+                "ok": stage_complete, "mode": mode, "dataAsOf": today.isoformat(),
+                "stageComplete": stage_complete,
+                "status": "succeeded" if stage_complete else "partial",
+                "error": stage_error,
+                "errorCode": None if stage_complete else "DATASET_INCOMPLETE",
+                "publishDatasetCodes": [],
                 "targetDate": target_date,
                 "refreshed_snapshot": refreshed_snapshot,
                 "local_profile": local_profile,
@@ -978,6 +995,7 @@ def run(today=None, mode="core"):
         connection.commit()
         return {
             "ok": True, "mode": "core", "source": "tushare.new_share", "bootstrap": bootstrap,
+            "publishDatasetCodes": ["ipo_history"],
             "window_start": start.isoformat(), "window_end": end.isoformat(),
             "fetched": len(records), "inserted": inserted, "refreshed": refreshed,
             "completed_fields": max(0, refreshed + inserted - quality["missing_records"]),

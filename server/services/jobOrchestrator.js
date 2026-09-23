@@ -208,16 +208,29 @@ function buildDatasetDiagnosticAlerts(slot, result = {}) {
     ? result.datasetDiagnostics : {};
   const partitionKey = datasetPartitionKeyForSlot(slot, result);
   if (!partitionKey) return [];
+  const declaredDatasets = new Set(getJobDefinition(slot.job_code).producesDatasets || []);
+  const attemptedDatasets = new Set(Array.isArray(result.publishDatasetCodes)
+    ? result.publishDatasetCodes : declaredDatasets);
   const alerts = [];
   for (const [datasetCode, diagnostic] of Object.entries(diagnostics)) {
-    if (!diagnostic || typeof diagnostic !== 'object') continue;
+    if (!diagnostic || typeof diagnostic !== 'object'
+      || !declaredDatasets.has(datasetCode) || !attemptedDatasets.has(datasetCode)
+      || diagnostic.query_status === 'not_run') continue;
     const scopeKey = `${datasetCode}:${datasetScopeKey(datasetCode)}:${partitionKey}`;
-    if (diagnostic.query_status !== 'success') {
+    const failedQuery = diagnostic.query_status !== 'success';
+    const failedQuality = ['failed', 'stale', 'blocked'].includes(diagnostic.quality_status);
+    const incompleteCoverage = ['incomplete', 'failed'].includes(diagnostic.coverage_status);
+    if (failedQuery || failedQuality || incompleteCoverage) {
+      const reasons = [
+        failedQuery ? `查询状态 ${diagnostic.query_status || 'unknown'}` : null,
+        failedQuality ? `质量状态 ${diagnostic.quality_status}` : null,
+        incompleteCoverage ? `覆盖状态 ${diagnostic.coverage_status}` : null,
+      ].filter(Boolean).join('，');
       alerts.push({
         alertKey: `dataset:${scopeKey}:degraded`, alertType: 'data_quality', severity: 'warning',
         scopeType: 'dataset', scopeKey,
         subject: `数据集分区降级：${datasetCode}`,
-        summary: `数据集 ${scopeKey} 查询状态为 ${diagnostic.query_status || 'unknown'}，本轮未发布为成功分区；核心事实与动态信号状态分开处理。`,
+        summary: `数据集 ${scopeKey} 本轮未达到发布质量要求：${reasons}。`,
       });
     }
     const reasons = Array.isArray(diagnostic.degraded_reason) ? diagnostic.degraded_reason : [];
@@ -283,26 +296,26 @@ async function finishManagedRun(runId, jobCode, ok, result = {}, failure = null)
   );
   if (ok && runId) {
     const { rows: duplicateRows } = await pool.query(
-      `SELECT COUNT(*)::int AS count, MAX(s.business_date)::text AS business_date
+      `SELECT COUNT(*)::int AS count, MAX(current_slot.business_date)::text AS business_date,
+              current_slot.slot_id::text AS slot_id
         FROM job_runs r
-         JOIN ops.job_schedule_slots s ON s.slot_id=r.slot_id
          JOIN ops.job_schedule_slots current_slot ON current_slot.slot_id=(SELECT slot_id FROM job_runs WHERE id=$1)
         WHERE r.id<>$1 AND r.job=$2 AND r.status='done' AND r.trigger_type='scheduled'
           AND (SELECT trigger_type FROM job_runs WHERE id=$1)='scheduled'
-          AND s.business_date=current_slot.business_date
-          AND COALESCE(s.request_payload->>'mode','core')=COALESCE(current_slot.request_payload->>'mode','core')`,
+          AND r.slot_id=current_slot.slot_id
+        GROUP BY current_slot.slot_id`,
       [runId, jobCode]
     );
-    if (Number(duplicateRows[0]?.count || 0) > 0 && duplicateRows[0]?.business_date) {
+    if (Number(duplicateRows[0]?.count || 0) > 0 && duplicateRows[0]?.business_date && duplicateRows[0]?.slot_id) {
       const { notifyJobFailure } = require('./jobAlertMailer');
       await notifyJobFailure({
-        alertKey: `duplicate-success:${jobCode}:${duplicateRows[0].business_date}`,
+        alertKey: `duplicate-success:${jobCode}:${duplicateRows[0].slot_id}`,
         alertType: 'duplicate_success',
         severity: 'critical',
         jobCode,
-        slotId: null,
+        slotId: duplicateRows[0].slot_id,
         subject: `后台任务出现重复成功记录：${jobCode}`,
-        summary: `任务 ${jobCode} 在业务日期 ${duplicateRows[0].business_date} 已出现第 2 条定时成功运行记录，请检查定时计划是否重复。`,
+        summary: `任务 ${jobCode} 的计划槽位 ${duplicateRows[0].slot_id}（业务日期 ${duplicateRows[0].business_date}）已出现第 2 条定时成功运行记录，请检查该槽位是否被重复执行。`,
       }).catch(error => console.warn('[job-alert] 重复成功告警失败:', error.message));
     }
   }

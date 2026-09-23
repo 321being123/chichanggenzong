@@ -119,6 +119,23 @@ function rowsFromProbe(probe) {
   return [...seen.values()];
 }
 
+function marketSignalDiagnostics(marketSignals) {
+  if (!marketSignals) return { query_status: 'not_run', coverage_status: 'unknown', source_status: 'unavailable' };
+  const notAdmitted = marketSignals.status === 'not_admitted';
+  return {
+    query_status: notAdmitted ? 'not_run'
+      : !marketSignals.subscription ? 'failed'
+        : marketSignals.subscription.ok === false ? 'failed'
+          : marketSignals.subscription.fetched ? 'success' : 'failed',
+    coverage_status: notAdmitted ? 'unknown'
+      : marketSignals.subscription?.saved > 0 ? 'complete'
+        : marketSignals.subscription?.ok && marketSignals.subscription?.fetched ? 'verified_no_change' : 'unknown',
+    source_status: notAdmitted ? 'not_admitted' : marketSignals.status || 'unavailable',
+    valid_signal_rows: Number(marketSignals.subscription?.saved || 0),
+    degraded_reason: notAdmitted ? [] : marketSignals.errors || [],
+  };
+}
+
 async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}) {
   const probe = context.probe || await runHkexIpoProbe({
     targets: context.targets,
@@ -246,13 +263,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   const coreSubtasks = [historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, completenessAudit].filter(Boolean);
   const failedSubtasks = coreSubtasks.filter(item => item.ok === false);
   const degraded = subtasks.some(item => item.ok === false || item.status === 'degraded');
-  const signalDiagnostics = marketSignals ? {
-    query_status: !marketSignals.subscription ? 'failed' : marketSignals.subscription.ok === false ? 'failed' : marketSignals.subscription.fetched ? 'success' : 'failed',
-    coverage_status: marketSignals.subscription?.saved > 0 ? 'complete' : marketSignals.subscription?.ok && marketSignals.subscription?.fetched ? 'verified_no_change' : 'unknown',
-    source_status: marketSignals.status || 'unavailable',
-    valid_signal_rows: Number(marketSignals.subscription?.saved || 0),
-    degraded_reason: marketSignals.errors || [],
-  } : { query_status: 'not_run', coverage_status: 'unknown', source_status: 'unavailable' };
+  const signalDiagnostics = marketSignalDiagnostics(marketSignals);
   return {
     ...result, ok: failedSubtasks.length === 0, status: degraded ? 'degraded' : 'succeeded', degraded,
     failedDatasets: failedSubtasks.length ? ['hk_ipo_facts'] : [],
@@ -264,4 +275,4 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   };
 }
 
-module.exports = { runHkIpoSync, rowsFromProbe, persistTencentNames, syncHkIpoTencentNames };
+module.exports = { runHkIpoSync, rowsFromProbe, persistTencentNames, syncHkIpoTencentNames, marketSignalDiagnostics };

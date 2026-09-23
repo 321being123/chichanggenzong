@@ -219,8 +219,8 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
         const result = await runWith(executable, runtime, businessDate, mode, context.externalCallCount, targetCodes);
         await notifyTushareFailovers(result.failovers);
         const detail = JSON.stringify({ reason, mode, scheduleMarker, slotId: context.slotId || null, targetCodes, executable, retryOf, ...result });
-        await finishJobRun(runId, true, detail);
-        console.log(`[ipo-history] ${reason}/${mode} 完成：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
+        await finishJobRun(runId, result.ok !== false, detail);
+        console.log(`[ipo-history] ${reason}/${mode} ${result.ok === false ? '未完成' : '完成'}：拉取${result.fetched || 0}，新增${result.inserted || 0}，刷新${result.refreshed || 0}`);
         return result;
       } catch (error) {
         errors.push(`${executable}: ${error.message}`);

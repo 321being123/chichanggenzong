@@ -77,6 +77,15 @@ try:
             for code in historical_codes
         ],
     )
+    scoped_code = "969999"
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status)
+             VALUES(%s,%s,'CN','2026-09-11','active')
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry=NULL,industry_pe=NULL,main_business=NULL,
+               business_exposure='{}'::jsonb,data_quality_status='{}'::jsonb""",
+        (scoped_code, "阶段范围测试"),
+    )
     calls = []
     original_fetch = ipo_lib_fetch.fetch_stock_historical_detail
 
@@ -94,6 +103,23 @@ try:
 
     ipo_lib_fetch.fetch_stock_historical_detail = fake_fetch
     try:
+        scoped = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), target_date=date(2026, 9, 11),
+            priority_codes=[scoped_code], only_codes=[scoped_code], retry_same_day=True,
+        )
+        cur.execute("""
+          SELECT count(*) FILTER (WHERE NULLIF(industry,'') IS NULL)
+               + count(*) FILTER (WHERE industry_pe IS NULL)
+               + count(*) FILTER (WHERE NULLIF(main_business,'') IS NULL)
+               + count(*) FILTER (WHERE business_exposure IS NULL OR business_exposure='{}'::jsonb
+                                   OR NOT (business_exposure ? 'exposures'))
+            FROM ipo_history WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+        """)
+        unrelated_remaining = int(cur.fetchone()[0] or 0)
+        check("阶段剩余只统计目标代码", scoped["remaining"] == 0 and unrelated_remaining > 0,
+              "目标已补齐时不被其他历史新股缺口误阻塞")
+        calls.clear()
+
         result = sync.enrich_stock_missing_details(
             cur, date(2026, 9, 10), target_date=date(2026, 9, 11), priority_codes=current_codes
         )

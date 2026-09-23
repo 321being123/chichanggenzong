@@ -109,11 +109,19 @@ assert.match(fetchSource, /existing_industry=None/, '详情补全没有复用已
 assert.match(fetchSource, /_split_embedded_industry/, '旧主营文本未拆分行业字段');
 assert.match(fetchSource, /仪器仪表/, '行业PE缺少仪器仪表行业别名');
 assert.match(fetchSource, /招股意向书/, 'IPO文档识别未覆盖招股意向书');
+assert.match(fetchSource, /issuance_risk_announcement/, 'IPO风险特别公告未纳入资料识别');
+assert.match(fetchSource, /_cninfo_ipo_issuance_candidates/, '交易所未命中时没有使用已准入的巨潮发行公告备源');
+assert.match(fetchSource, /industry_pe_as_of/, '行业PE公告基准日没有保留');
 assert.match(fetchSource, /if \(need_industry or need_industry_pe\)/, '仅缺行业PE时没有先读取发行公告');
 assert.match(fetchSource, /main_business_diagnostic/, '主营业务缺口没有保存来源诊断');
 assert.match(fetchSource, /industry_pe_diagnostic/, '行业PE缺口没有保存来源诊断');
 assert.doesNotMatch(fetchSource, /range\(1, 7\)/, '招股书检索仍固定只翻 6 页');
 assert.doesNotMatch(fetchSource, /main_business.*\[:200\]/, '主营业务仍被固定截断为 200 字');
+const ipoSyncSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_history_sync.py'), 'utf8');
+assert.match(ipoSyncSource, /issue_pe_status.*pending/, '空发行PE仍可能被上市日期直接推断为亏损');
+const liquiditySyncSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'sync_bond_listing_liquidity.py'), 'utf8');
+assert.match(liquiditySyncSource, /source_code LIKE %s/, '可转债流通规模查询中的百分号未改为参数传值');
+assert.match(liquiditySyncSource, /params\.append\("cninfo%"\)/, '可转债来源筛选参数未绑定到SQL');
 const sectorSource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-report', 'ipo_lib_sector.py'), 'utf8');
 assert.match(sectorSource, /电子测量仪器/, '电子测量仪器未纳入赛道识别');
 assert.match(sectorSource, /classification_status/, '赛道分类未区分行业兜底与资料缺失');
@@ -151,7 +159,7 @@ const liquiditySource = fs.readFileSync(path.join(__dirname, '..', '..', 'ipo-re
 assert.match(liquiditySource, /event_type='listing'/, '流通规模补全没有按上市事件增量筛选');
 assert.match(liquiditySource, /l\.instrument_id IS NULL/, '流通规模补全没有跳过已入库事实');
 assert.match(liquiditySource, /if code not in forced_codes and cached and cached\.get\("source_code"\) in \("sse", "szse"\)/, '普通增量跳过交易所已核实事实的规则缺失');
-assert.match(liquiditySource, /source_code LIKE 'cninfo%'/, '普通增量没有识别旧 CNINFO 流通规模事实');
+assert.match(liquiditySource, /source_code LIKE %s/, '普通增量没有识别旧 CNINFO 流通规模事实');
 assert.match(fetchSource, /_parse_listed_bond_quantity/, '上市公告书明确上市数量没有解析兜底');
 assert.match(fetchSource, /listed_quantity_fallback/, '上市数量兜底没有保留质量标记');
 assert.match(fetchSource, /_fetch_exchange_placing_result/, '流通规模补全没有先调用交易所主源');

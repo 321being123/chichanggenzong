@@ -67,12 +67,19 @@ def _recover_at_text(value):
 
 
 def _detail_field_state(value, diagnostic=None, fallback_status="retryable", retry_after=None):
-    if value not in (None, "") and not (isinstance(value, dict) and not value.get("exposures")):
-        return {"status": "value"}
     source_diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+    if value not in (None, "") and not (isinstance(value, dict) and not value.get("exposures")):
+        return {
+            "status": "value",
+            **{
+                key: source_diagnostic[key]
+                for key in ("source", "as_of", "document_role", "document_url")
+                if source_diagnostic.get(key)
+            },
+        }
     state = {
         key: source_diagnostic.get(key)
-        for key in ("status", "reason", "source")
+        for key in ("status", "reason", "source", "as_of", "document_role", "document_url")
         if source_diagnostic.get(key)
     }
     if state.get("status") in (None, "value"):
@@ -121,7 +128,8 @@ def normalize_share(row):
         "listing_date": listing_date,
         "issue_price": issue_price,
         "issue_pe": issue_pe,
-        "issue_pe_status": "value" if issue_pe is not None else ("loss" if listing_date and issue_price else "pending"),
+        # 空值不能仅凭已上市/有发行价推断为亏损；亏损状态由发行公告原文确认。
+        "issue_pe_status": "value" if issue_pe is not None else "pending",
         "fund_raised": fund_raised,
         "total_shares": total_shares,
         "online_shares": online_shares,
@@ -533,6 +541,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                   UPDATE ipo_history SET
                     industry=COALESCE(NULLIF(industry,''),NULLIF(%s,'')),
                     industry_pe=COALESCE(industry_pe,%s),
+                    issue_pe_status=CASE WHEN %s='loss' AND issue_pe IS NULL THEN 'loss' ELSE issue_pe_status END,
                     online_lottery_rate=COALESCE(%s,online_lottery_rate),
                     oversubscribe_multiple=COALESCE(%s,oversubscribe_multiple),
                     main_business=CASE
@@ -542,7 +551,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object('historical_enrichment',%s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
-                """, (detail.get("industry"), detail.get("industry_pe"), resolved_lottery_rate if detail.get("online_lottery_rate") not in (None, "") else None,
+                """, (detail.get("industry"), detail.get("industry_pe"), detail.get("issue_pe_status"),
+                      resolved_lottery_rate if detail.get("online_lottery_rate") not in (None, "") else None,
                       resolved_oversubscribe if detail.get("oversubscribe_multiple") not in (None, "") else None,
                       detail.get("main_business"), detail.get("main_business"),
                       Json(business_exposure) if business_exposure else None, Json(detail), code))
@@ -560,11 +570,12 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 # 字段值已存在时仍保留本次实际命中的来源，便于审计主备顺序和后续重试。
                 cur.execute("""
                   UPDATE ipo_history SET
+                    issue_pe_status=CASE WHEN %s='loss' AND issue_pe IS NULL THEN 'loss' ELSE issue_pe_status END,
                     source_payload=COALESCE(source_payload,'{}'::jsonb)
                       || jsonb_build_object('historical_enrichment',%s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
-                """, (Json(detail), code))
+                """, (detail.get("issue_pe_status"), Json(detail), code))
                 updated += 1
             else:
                 meta["result"] = "no_new_value"

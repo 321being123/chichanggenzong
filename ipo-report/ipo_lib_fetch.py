@@ -209,6 +209,7 @@ _EXCHANGE_PROSPECTUS_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
+_CNINFO_IPO_ISSUANCE_CACHE = {}
 _IPO_ISSUANCE_RESULT_DETAIL_CACHE = {}
 
 
@@ -1461,9 +1462,12 @@ def _download_exchange_pdf_text(session, pdf_url, source):
             timeout=30,
             headers={
                 'User-Agent': HEADERS['User-Agent'],
-                'Referer': 'https://www.sse.com.cn/ipo/' if source == 'sse'
-                    else 'https://www.szse.cn/listing/disclosure/ipo/index.html'
-                    if source == 'szse' else 'https://www.bse.cn/issue/issue_disclosure.html',
+                'Referer': {
+                    'sse': 'https://www.sse.com.cn/ipo/',
+                    'szse': 'https://www.szse.cn/listing/disclosure/ipo/index.html',
+                    'bse': 'https://www.bse.cn/issue/issue_disclosure.html',
+                    'cninfo': 'https://www.cninfo.com.cn/',
+                }.get(source, 'https://www.cninfo.com.cn/'),
                 'Accept': 'application/pdf,*/*',
             },
         )
@@ -1477,7 +1481,9 @@ def _download_exchange_pdf_text(session, pdf_url, source):
         return text or None
     except ExternalCallGuardError:
         # 交易所主源失败时必须继续走巨潮备源；主源熔断仍由 Guard 留痕。
-        return None
+        if source in {'sse', 'szse', 'bse'}:
+            return None
+        raise
     except Exception:
         return None
 
@@ -1504,6 +1510,8 @@ def _ipo_document_role(title):
     if ('发行结果' in normalized or '中签率公告' in normalized
             or '配售结果及网上中签结果' in normalized):
         return 'issuance_result'
+    if '投资风险特别公告' in normalized:
+        return 'issuance_risk_announcement'
     if ('发行公告' in normalized and '发行安排' not in normalized
             and '投资风险' not in normalized):
         return 'issuance_announcement'
@@ -1642,13 +1650,99 @@ def _exchange_prospectus_candidates(stock_code, security_name=''):
 
 
 def _exchange_issuance_announcement_candidates(stock_code, security_name=''):
-    """返回交易所官方发行公告候选：(source, url, title, date)。"""
+    """返回交易所官方发行/风险公告候选：(source, url, title, date)。"""
     return [
         (source, url, title, announced_at)
         for source, url, title, role, announced_at
         in _exchange_ipo_document_candidates(stock_code, security_name)
-        if role == 'issuance_announcement'
+        if role in {'issuance_announcement', 'issuance_risk_announcement'}
     ]
+
+
+def _cninfo_ipo_issuance_candidates(stock_code):
+    """交易所列表未命中时，从已准入的巨潮公告入口查 IPO 发行/风险公告。"""
+    code = str(stock_code or '').split('.')[0]
+    if not code:
+        return []
+    if code in _CNINFO_IPO_ISSUANCE_CACHE:
+        return list(_CNINFO_IPO_ISSUANCE_CACHE[code])
+
+    org_id = _get_org_id(code)
+    if not org_id:
+        _CNINFO_IPO_ISSUANCE_CACHE[code] = []
+        return []
+
+    today = datetime.now()
+    start = (today - timedelta(days=365 * 5)).strftime('%Y-%m-%d')
+    end = today.strftime('%Y-%m-%d')
+    market = _exchange_market_for_code(code)
+    # CNINFO 查询接口已在深/沪市场发行资料链路验证；北交所继续使用交易所主源。
+    column, plate = {'szse': ('szse', 'sz'), 'sse': ('shse', 'sh')}.get(market, ('', ''))
+    if not column:
+        _CNINFO_IPO_ISSUANCE_CACHE[code] = []
+        return []
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': 'https://www.cninfo.com.cn/',
+    })
+    candidates = []
+    page = 1
+    page_size = 30
+    seen_pages = set()
+    try:
+        while True:
+            response = session.post(
+                'https://www.cninfo.com.cn/new/hisAnnouncement/query',
+                data={
+                    'pageNum': page, 'pageSize': page_size,
+                    'stock': f'{code},{org_id}', 'tabName': 'fulltext',
+                    'column': column, 'plate': plate,
+                    'seDate': f'{start}~{end}',
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            announcements = payload.get('announcements') or []
+            total = int(payload.get('totalAnnouncement') or 0)
+            if not announcements:
+                if total >= page * page_size:
+                    raise RuntimeError('CNINFO IPO 公告分页不完整')
+                break
+            signature = tuple(
+                str(item.get('announcementId') or item.get('adjunctUrl') or '')
+                for item in announcements
+            )
+            if signature in seen_pages:
+                raise RuntimeError('CNINFO IPO 公告分页重复')
+            seen_pages.add(signature)
+            for item in announcements:
+                title = str(item.get('announcementTitle') or '')
+                role = _ipo_document_role(title)
+                if role not in {'issuance_announcement', 'issuance_risk_announcement'}:
+                    continue
+                adjunct = str(item.get('adjunctUrl') or '').strip()
+                if not adjunct:
+                    continue
+                url = adjunct if adjunct.startswith(('http://', 'https://')) else (
+                    f'https://static.cninfo.com.cn/{adjunct.lstrip("/")}'
+                )
+                date_match = re.search(r'/finalpage/(\d{4}-\d{2}-\d{2})/', url)
+                announced_at = date_match.group(1) if date_match else str(
+                    item.get('announcementTime') or ''
+                )[:10]
+                candidates.append(('cninfo', url, title, announced_at))
+            if total and page * page_size >= total:
+                break
+            page += 1
+    finally:
+        session.close()
+
+    _CNINFO_IPO_ISSUANCE_CACHE[code] = list(candidates)
+    return candidates
 
 
 def _exchange_issuance_result_candidates(stock_code, security_name=''):
@@ -1679,13 +1773,15 @@ def _parse_ipo_issuance_detail(text):
             break
 
     industry_pe = None
+    pe_match = None
     for pattern in (
         r'所属行业T-?\d+日静态行业市盈率[：:]?(\d+(?:\.\d+)?)',
         r'(?:该行业|所处行业|发行人所属行业|公司所属行业)最近一个月平均静态市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
+        r'(?:中证指数有限公司发布的)?[^。；;]{0,160}?最近一个月平均静态市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
     ):
-        match = re.search(pattern, compact)
-        if match:
-            value = float(match.group(1))
+        pe_match = re.search(pattern, compact)
+        if pe_match:
+            value = float(pe_match.group(1))
             if 0 < value < 10000:
                 industry_pe = value
                 break
@@ -1695,11 +1791,22 @@ def _parse_ipo_issuance_detail(text):
         result['industry'] = industry[:80]
     if industry_pe is not None:
         result['industry_pe'] = industry_pe
+        if pe_match:
+            context_start = max(0, pe_match.start() - 180)
+            context = compact[context_start:pe_match.end(1)]
+            dates = list(re.finditer(r'截至(20\d{2})年(\d{1,2})月(\d{1,2})日', context))
+            if dates:
+                date = dates[-1]
+                result['industry_pe_as_of'] = (
+                    f'{date.group(1)}-{int(date.group(2)):02d}-{int(date.group(3)):02d}'
+                )
+    if '尚未盈利' in compact:
+        result['issuer_unprofitable'] = True
     return result
 
 
 def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
-    """交易所发行公告主源：只返回公告明确披露的行业与行业市盈率。"""
+    """交易所主源、巨潮备源：提取 IPO 行业 PE 和发行人盈利状态。"""
     code = str(stock_code or '').split('.')[0]
     if code in _IPO_ISSUANCE_DETAIL_CACHE:
         return dict(_IPO_ISSUANCE_DETAIL_CACHE[code])
@@ -1707,43 +1814,68 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
         candidates = _exchange_issuance_announcement_candidates(
             code, security_name or _stock_name_from_database(code)
         )
-        if not candidates:
-            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-                'status': 'document_not_found',
-                'reason': 'no_issuance_announcement_candidate_found',
-            }
-            _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
-            return {}
+        discovered_count = len(candidates)
         downloaded = 0
+        parsed_detail = {}
         session = requests.Session()
         session.headers.update({'User-Agent': HEADERS['User-Agent']})
         try:
-            for source, url, title, announced_at in candidates:
-                text = _download_exchange_pdf_text(session, url, source)
-                if text:
-                    downloaded += 1
-                detail = _parse_ipo_issuance_detail(text)
-                if not detail:
-                    continue
-                detail.update({
-                    'ipo_announcement_source': source,
-                    'ipo_announcement_url': url,
-                    'ipo_announcement_title': title,
-                    'ipo_announcement_date': announced_at or None,
-                    'ipo_announcement_content_hash': hashlib.sha256(
-                        str(text or '').encode('utf-8')
-                    ).hexdigest(),
-                    'ipo_announcement_parser_version': 'ipo-issuance-facts-v1',
-                })
-                _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-                    'status': 'value' if detail.get('industry_pe') is not None else 'document_field_absent',
-                    'reason': None if detail.get('industry_pe') is not None else 'issuance_announcement_has_no_industry_pe',
-                    'source': source,
-                }
-                _IPO_ISSUANCE_DETAIL_CACHE[code] = dict(detail)
-                return detail
+            # 先查官方交易所。只有未提取到目标字段时，才走已登记的巨潮备源。
+            candidate_groups = [('exchange', candidates)]
+            for source, candidate_list in candidate_groups:
+                if source == 'cninfo':
+                    discovered_count += len(candidate_list)
+                for candidate_source, url, title, announced_at in candidate_list:
+                    text = _download_exchange_pdf_text(session, url, candidate_source)
+                    if text:
+                        downloaded += 1
+                    extracted = _parse_ipo_issuance_detail(text)
+                    if not extracted:
+                        continue
+                    role = _ipo_document_role(title)
+                    parsed_detail.update(extracted)
+                    parsed_detail.update({
+                        'ipo_announcement_source': candidate_source,
+                        'ipo_announcement_role': role,
+                        'ipo_announcement_url': url,
+                        'ipo_announcement_title': title,
+                        'ipo_announcement_date': announced_at or None,
+                        'ipo_announcement_content_hash': hashlib.sha256(
+                            str(text or '').encode('utf-8')
+                        ).hexdigest(),
+                        'ipo_announcement_parser_version': 'ipo-issuance-facts-v2',
+                    })
+                    if parsed_detail.get('industry_pe') is not None:
+                        break
+                if parsed_detail.get('industry_pe') is not None:
+                    break
+                if source == 'exchange':
+                    candidate_groups.append(('cninfo', _cninfo_ipo_issuance_candidates(code)))
         finally:
             session.close()
+        if not discovered_count:
+            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+                'status': 'document_not_found',
+                'reason': 'no_issuance_or_risk_announcement_candidate_found',
+            }
+            _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
+            return {}
+        if parsed_detail:
+            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+                'status': 'value' if parsed_detail.get('industry_pe') is not None else 'document_field_absent',
+                'reason': None if parsed_detail.get('industry_pe') is not None else 'issuance_announcement_has_no_industry_pe',
+                'source': parsed_detail.get('ipo_announcement_source'),
+                'as_of': parsed_detail.get('industry_pe_as_of'),
+                'document_role': parsed_detail.get('ipo_announcement_role'),
+            }
+            _IPO_ISSUANCE_DETAIL_CACHE[code] = dict(parsed_detail)
+            return parsed_detail
+    except ExternalCallGuardError:
+        _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
+            'status': 'source_unavailable',
+            'reason': 'issuance_announcement_source_guarded',
+        }
+        raise
     except Exception:
         _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
             'status': 'source_unavailable',
@@ -2172,13 +2304,19 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
     issuance_pe_diagnostic = dict(_IPO_ISSUANCE_DETAIL_DIAGNOSTIC.get(code) or {})
     if need_industry_pe:
         if detail.get('industry_pe') is not None:
+            announcement_role = (
+                announcement_detail.get('ipo_announcement_role') or 'issuance_announcement'
+            )
             detail['industry_pe_source'] = (
-                f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
+                f"{announcement_detail.get('ipo_announcement_source')}_{announcement_role}"
                 if announcement_detail.get('ipo_announcement_source')
                 else 'stored_or_existing'
             )
             detail['industry_pe_diagnostic'] = {
                 'status': 'value', 'source': detail['industry_pe_source'],
+                'as_of': announcement_detail.get('industry_pe_as_of'),
+                'document_role': announcement_detail.get('ipo_announcement_role'),
+                'document_url': announcement_detail.get('ipo_announcement_url'),
             }
         elif detail.get('industry'):
             industry_pe_map = _get_industry_pe_map()
@@ -2202,7 +2340,14 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
                 'status': 'source_unavailable', 'reason': 'industry_unavailable',
             }
     elif detail.get('industry_pe') is not None:
-        detail['industry_pe_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
+        announcement_role = (
+            announcement_detail.get('ipo_announcement_role') or 'issuance_announcement'
+        )
+        detail['industry_pe_source'] = (
+            f"{announcement_detail.get('ipo_announcement_source')}_{announcement_role}"
+        )
+    if announcement_detail.get('issuer_unprofitable'):
+        detail['issue_pe_status'] = 'loss'
     try:
         from ipo_lib_sector import analyze_business_exposure
         detail['business_exposure'] = analyze_business_exposure(

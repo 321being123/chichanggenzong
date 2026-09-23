@@ -28,7 +28,7 @@ try:
     check("募资额派生", loss["fund_raised"] == 2.0)
     check("Guard恢复时间可序列化", sync._recover_at_text(datetime(2026, 9, 10, 22, 0)) == "2026-09-10T22:00:00")
     check("公开发行市值派生", loss["circulation_mv"] == 1.0)
-    check("亏损企业状态", loss["issue_pe"] is None and loss["issue_pe_status"] == "loss")
+    check("无公告证据时发行PE状态待确认", loss["issue_pe"] is None and loss["issue_pe_status"] == "pending")
 
     long_business = "公司主要从事" + "高性能云端人工智能芯片研发设计销售及配套软件服务" * 10 + "。"
     extracted = _extract_main_business(long_business)

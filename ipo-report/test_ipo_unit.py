@@ -47,6 +47,7 @@ import ipo_lib_report as report_lib
 import ipo_lib_fetch as fetch
 import _common as common
 import calendar_core
+from ipo_history_sync import normalize_share
 from ipo_lib_liquidity import calculate_adjustment_from_samples, liquidity_bucket, robust_mean
 from ipo_lib_historical_prediction import (
     historical_base_price,
@@ -129,12 +130,130 @@ try:
           "结果=%r" % focus_business)
     check("交易所识别招股意向书",
           fetch._ipo_document_role("中塑股份招股意向书") == "prospectus")
+    check("交易所识别投资风险特别公告",
+          fetch._ipo_document_role("粤芯半导体首次公开发行股票并在创业板上市投资风险特别公告")
+          == "issuance_risk_announcement")
     issuance = fetch._parse_ipo_issuance_detail(
         "发行人所属行业为塑料制品业（C292），发行人所属行业最近一个月平均静态市盈率为38.2倍"
     )
     check("发行公告识别行业PE句式",
           issuance.get("industry") == "塑料制品业" and issuance.get("industry_pe") == 38.2,
           "结果=%r" % issuance)
+    risk_notice = fetch._parse_ipo_issuance_detail(
+        "粤芯半导体尚未盈利。截至2026年9月18日（T-4日），中证指数有限公司发布的"
+        "计算机、通信和其他电子设备制造业（C39）最近一个月平均静态市盈率为73.18倍。"
+    )
+    check("投资风险公告识别行业PE基准日和亏损状态",
+          risk_notice.get("industry_pe") == 73.18
+          and risk_notice.get("industry_pe_as_of") == "2026-09-18"
+          and risk_notice.get("issuer_unprofitable") is True,
+          "结果=%r" % risk_notice)
+    check("new_share空PE不再仅凭上市日期推断亏损",
+          normalize_share({"ts_code": "301660.SZ", "name": "粤芯半导体", "price": 12.01,
+                           "issue_date": "20260930", "pe": 0}).get("issue_pe_status") == "pending")
+
+    class _FakeCninfoResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "totalAnnouncement": 2,
+                "announcements": [
+                    {"announcementId": "risk", "announcementTitle": "首次公开发行股票并在创业板上市投资风险特别公告",
+                     "adjunctUrl": "finalpage/2026-09-23/risk.PDF"},
+                    {"announcementId": "issue", "announcementTitle": "首次公开发行股票并在创业板上市发行公告",
+                     "adjunctUrl": "finalpage/2026-09-23/issue.PDF"},
+                ],
+            }
+
+    class _FakeCninfoSession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = 0
+
+        def post(self, *args, **kwargs):
+            self.calls += 1
+            return _FakeCninfoResponse()
+
+        def close(self):
+            return None
+
+    old_session = fetch.requests.Session
+    old_org_lookup = fetch._get_org_id
+    fetch._CNINFO_IPO_ISSUANCE_CACHE.pop("301660", None)
+    fake_session = _FakeCninfoSession()
+    fetch.requests.Session = lambda: fake_session
+    fetch._get_org_id = lambda code: "9900063681"
+    try:
+        candidates = fetch._cninfo_ipo_issuance_candidates("301660")
+    finally:
+        fetch.requests.Session = old_session
+        fetch._get_org_id = old_org_lookup
+        fetch._CNINFO_IPO_ISSUANCE_CACHE.pop("301660", None)
+    check("巨潮备源发现发行与风险公告并保留公告日",
+          len(candidates) == 2 and candidates[0][0] == "cninfo"
+          and candidates[0][3] == "2026-09-23"
+          and all("static.cninfo.com.cn/finalpage/2026-09-23/" in item[1] for item in candidates),
+          "候选=%r" % candidates)
+    old_exchange_candidates = fetch._exchange_issuance_announcement_candidates
+    old_cninfo_candidates = fetch._cninfo_ipo_issuance_candidates
+    old_pdf_download = fetch._download_exchange_pdf_text
+    fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301660", None)
+    fetch._IPO_ISSUANCE_DETAIL_DIAGNOSTIC.pop("301660", None)
+    fetch._exchange_issuance_announcement_candidates = lambda code, security_name='': []
+    fetch._cninfo_ipo_issuance_candidates = lambda code: [
+        ("cninfo", "https://static.cninfo.com.cn/finalpage/2026-09-23/risk.PDF",
+         "粤芯半导体投资风险特别公告", "2026-09-23")
+    ]
+    fetch._download_exchange_pdf_text = lambda session, url, source: (
+        "粤芯半导体尚未盈利。截至2026年9月18日（T-4日），中证指数有限公司发布的"
+        "计算机、通信和其他电子设备制造业（C39）最近一个月平均静态市盈率为73.18倍。"
+    )
+    try:
+        resolved_issuance = fetch._fetch_exchange_ipo_issuance_detail("301660", "粤芯半导体")
+    finally:
+        fetch._exchange_issuance_announcement_candidates = old_exchange_candidates
+        fetch._cninfo_ipo_issuance_candidates = old_cninfo_candidates
+        fetch._download_exchange_pdf_text = old_pdf_download
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301660", None)
+        fetch._IPO_ISSUANCE_DETAIL_DIAGNOSTIC.pop("301660", None)
+    check("深交所列表未命中时用巨潮风险公告补出301660官方行业PE",
+          resolved_issuance.get("industry_pe") == 73.18
+          and resolved_issuance.get("industry_pe_as_of") == "2026-09-18"
+          and resolved_issuance.get("ipo_announcement_source") == "cninfo"
+          and resolved_issuance.get("issuer_unprofitable") is True,
+          "结果=%r" % resolved_issuance)
+
+    import sync_bond_listing_liquidity as bond_liquidity_sync
+
+    class _FakeSqlCursor:
+        def fetchall(self):
+            return []
+
+    class _FakeSqlConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = ()
+
+        def execute(self, sql, params):
+            self.sql, self.params = sql, tuple(params)
+            return _FakeSqlCursor()
+
+        def close(self):
+            return None
+
+    old_db_connect = bond_liquidity_sync.db_pg.connect
+    fake_sql_connection = _FakeSqlConnection()
+    bond_liquidity_sync.db_pg.connect = lambda: fake_sql_connection
+    try:
+        bond_liquidity_sync.listing_candidates()
+    finally:
+        bond_liquidity_sync.db_pg.connect = old_db_connect
+    check("可转债流通规模筛选使用绑定参数传递LIKE百分号",
+          "l.source_code LIKE %s" in fake_sql_connection.sql
+          and "cninfo%" in fake_sql_connection.params,
+          "sql=%r 参数=%r" % (fake_sql_connection.sql, fake_sql_connection.params))
     original_issuance_fetch = fetch._fetch_exchange_ipo_issuance_detail
     issuance_calls = []
     fetch._fetch_exchange_ipo_issuance_detail = lambda code, security_name='': (

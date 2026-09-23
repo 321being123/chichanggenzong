@@ -28,7 +28,8 @@ def listing_candidates(days=60, codes=None, limit=None):
             clauses.append("split_part(i.canonical_code,'.',1)=ANY(%s)")
         else:
             # 旧版本写入的巨潮事实也需要迁移为交易所事实；新版本只跳过已用交易所来源核实的记录。
-            clauses.append("(l.instrument_id IS NULL OR l.source_code IS NULL OR l.source_code LIKE 'cninfo%')")
+            clauses.append("(l.instrument_id IS NULL OR l.source_code IS NULL OR l.source_code LIKE %s)")
+            params.append("cninfo%")
         limit_value = max(int(limit or 0), 0)
         limit_clause = " LIMIT %s" if limit_value else ""
         if limit_value:

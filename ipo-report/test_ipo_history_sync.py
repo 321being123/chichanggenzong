@@ -120,6 +120,31 @@ try:
               "目标已补齐时不被其他历史新股缺口误阻塞")
         calls.clear()
 
+        no_candidate_code = "969998"
+        cur.execute(
+            """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                        data_quality_status)
+                 VALUES(%s,%s,'CN','2026-09-11','active',
+                        '{"enrichment":{"attempted_on":"2026-09-10"}}'::jsonb)
+                 ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+                   ipo_status='active',industry=NULL,industry_pe=NULL,main_business=NULL,
+                   business_exposure='{}'::jsonb,
+                   data_quality_status='{"enrichment":{"attempted_on":"2026-09-10"}}'::jsonb""",
+            (no_candidate_code, "已尝试但仍缺资料"),
+        )
+        no_candidate = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), target_date=date(2026, 9, 11), only_codes=[no_candidate_code]
+        )
+        check(
+            "空候选仍保留已知资料缺口",
+            no_candidate["attempted"] == 0
+            and no_candidate["remaining"] == 4
+            and no_candidate["remaining_by_field"] == {
+                "industry": 1, "industry_pe": 1, "main_business": 1, "business_exposure": 1,
+            },
+            str(no_candidate),
+        )
+
         result = sync.enrich_stock_missing_details(
             cur, date(2026, 9, 10), target_date=date(2026, 9, 11), priority_codes=current_codes
         )

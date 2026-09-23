@@ -488,9 +488,6 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
           target_text, target_text, target_text, target_text,
           target_text, target_text))
     candidates = cur.fetchall()
-    if not candidates:
-        return {"attempted": 0, "updated": 0, "failed": 0, "remaining": 0,
-                "remaining_by_field": {}, "stopped": None}
 
     from ipo_lib_fetch import fetch_stock_historical_detail
 

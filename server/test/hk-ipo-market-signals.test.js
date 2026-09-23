@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { parseLivermoreHistory, parseLivermoreCurrent, parseVbkrCurrent, parseFutuIpoHtml, normalizeCode, isOfferOpen, isCurrentSubscriptionRecord, buildSourceRecordHash, normalizeSnapshotNumber } = require('../services/hkIpoMarketSignals');
+const { parseLivermoreHistory, parseLivermoreCurrent, parseVbkrCurrent, parseFutuIpoHtml, parseHkIpoXHtml, normalizeCode, isOfferOpen, isCurrentSubscriptionRecord, buildSourceRecordHash, normalizeSnapshotNumber } = require('../services/hkIpoMarketSignals');
 const { assessHkGreenshoe } = require('../routes/ipo');
 const { isVerifiedAllotmentDocument, isUsableProspectusDocument, cancellationTitleLooksLikeIpo } = require('../services/hkexIpo');
 
@@ -57,6 +57,15 @@ const futuFixture = '<a class="list-item"><span title="03231" class="ellipsis co
 const futu = parseFutuIpoHtml(futuFixture);
 assert.strictEqual(futu[0].securityCode, '03231.HK');
 assert.strictEqual(futu[0].greyMarketChangePct, 105.54);
+const hkipoxFixture = '<section><h2>今日申购</h2><table><tr><th>代码</th><th>名称</th><th>认购倍数</th><th>招股结束日</th></tr>'
+  + '<tr><td data-label="代码">06731</td><td data-label="名称">星创新材</td><td data-label="认购倍数">6.59x</td><td data-label="招股结束日">2026-09-24</td></tr>'
+  + '<tr><td data-label="代码">09607</td><td data-label="名称">样本新股</td><td data-label="认购倍数">0x</td><td data-label="招股结束日">2026-09-24</td></tr></table></section>';
+const hkipox = parseHkIpoXHtml(hkipoxFixture);
+assert.strictEqual(hkipox.length, 1, '只保留有正申购倍数的今日申购项目');
+assert.strictEqual(hkipox[0].securityCode, '06731.HK');
+assert.strictEqual(hkipox[0].subscriptionMultiple, 6.59);
+assert.strictEqual(hkipox[0].offerCloseDate, '2026-09-24');
+assert.throws(() => parseHkIpoXHtml('<html><h2>今日申购</h2><p>页面结构变化</p></html>'), /缺少预期数据列/);
 assert.strictEqual(assessHkGreenshoe({ status: 'exercised' }, null), '偏利好：有稳价安排');
 assert.strictEqual(assessHkGreenshoe({ status: 'not_available' }, null), '偏不利：缺少绿鞋保护');
 assert.strictEqual(assessHkGreenshoe({ status: 'not_disclosed' }, null), '待确认');

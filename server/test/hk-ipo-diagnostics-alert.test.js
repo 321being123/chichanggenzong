@@ -45,10 +45,24 @@ const notAdmitted = buildDatasetDiagnosticAlerts(slot, {
 });
 assert.deepStrictEqual(notAdmitted, [], '未获准入且本轮未请求的动态源不能产生故障告警');
 
-const notDeclared = buildDatasetDiagnosticAlerts({ ...slot, job_code: 'hk_ipo_enrichment' }, {
+const enrichmentAttempted = buildDatasetDiagnosticAlerts({ ...slot, job_code: 'hk_ipo_enrichment' }, {
+  publishDatasetCodes: ['hk_ipo_subscription_signals'],
   datasetDiagnostics: {
     hk_ipo_subscription_signals: {
-      query_status: 'failed', degraded_reason: [{ source: 'livermore', apiName: 'hk_ipo_current' }],
+      query_status: 'failed', degraded_reason: [{ source: 'hkipox-public', apiName: 'hk_ipo_public_page' }],
+    },
+  },
+});
+assert.strictEqual(enrichmentAttempted.length, 2, '补全阶段已采集 HKIPOx，失败时应告警数据集和对应来源');
+assert.ok(enrichmentAttempted.some(item => item.scopeType === 'dataset'
+  && item.scopeKey === 'hk_ipo_subscription_signals:HK:2026-09-20'));
+assert.ok(enrichmentAttempted.some(item => item.scopeType === 'source_endpoint'
+  && item.scopeKey === 'hkipox-public:hk_ipo_public_page'));
+
+const notDeclared = buildDatasetDiagnosticAlerts({ ...slot, job_code: 'hk_ipo_postclose' }, {
+  datasetDiagnostics: {
+    hk_ipo_subscription_signals: {
+      query_status: 'failed', degraded_reason: [{ source: 'hkipox-public', apiName: 'hk_ipo_public_page' }],
     },
   },
 });

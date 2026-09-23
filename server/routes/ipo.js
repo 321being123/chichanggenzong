@@ -306,9 +306,13 @@ function hkSignalKindSql(alias = 's') {
 }
 
 function hkSignalFreshnessSql(alias = 's') {
-  return `COALESCE(${alias}.source_observed_at,${alias}.observed_at) >= now() - CASE ${alias}.source_code
+  const observedAtSql = `CASE WHEN ${alias}.source_code='hkipox-public'
+    THEN COALESCE(${alias}.last_seen_at,${alias}.observed_at)
+    ELSE COALESCE(${alias}.source_observed_at,${alias}.observed_at) END`;
+  return `${observedAtSql} >= now() - CASE ${alias}.source_code
     WHEN 'livermore' THEN INTERVAL '2 hours'
     WHEN 'vbkr-public' THEN INTERVAL '2 hours'
+    WHEN 'hkipox-public' THEN INTERVAL '2 hours'
     WHEN 'futu-public' THEN INTERVAL '6 hours'
     ELSE INTERVAL '1 day'
   END`;

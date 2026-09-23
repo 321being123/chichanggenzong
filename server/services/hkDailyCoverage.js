@@ -1,5 +1,5 @@
 // 港股 IPO 上市首日/上市后五个交易日日线覆盖与标准层同步。
-// 首选 Tushare hk_daily；历史补漏允许使用已存在的腾讯港股 K 线源。两者都先落库审计，失败不推进游标。
+// 官方 Tushare 路径保留兼容；IPO enrichment 使用腾讯港股 K 线免 Token 补漏路径。
 const crypto = require('crypto');
 const https = require('https');
 const { pool } = require('../db');

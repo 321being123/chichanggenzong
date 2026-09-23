@@ -146,7 +146,7 @@ function ipoHkSignalCell(it, field, label) {
   if (!hasMultiple && !hasAmount) {
     return stage === 'active' || stage === 'offer_open' ? '<span>暂无可验证数据</span>' : '<span>—</span>';
   }
-  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛（捷利数据）', 'futu-public': '富途公开页' };
+  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛（捷利数据）', 'futu-public': '富途公开页', 'hkipox-public': 'HKIPOx参考' };
   var source = sourceMap[String(signal.source || '')] || String(signal.source || '外部来源');
   var status = String(signal.status || '').toLowerCase();
   var stale = status === 'stale' ? '（可能过期）' : '';
@@ -181,7 +181,7 @@ function ipoHkLiveOversubscriptionCell(it) {
 function ipoHkSignalHistoryCell(it) {
   var history = Array.isArray(it && it.intraday_signal_history) ? it.intraday_signal_history : [];
   if (!history.length) return '<span>暂无已落库变化</span>';
-  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛', 'futu-public': '富途' };
+  var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛', 'futu-public': '富途', 'hkipox-public': 'HKIPOx' };
   return history.slice(0, 6).map(function (item) {
     var observed = item.source_observed_at || item.collected_at || '';
     var time = observed ? String(observed).slice(5, 16).replace('T', ' ') : '时间待补';

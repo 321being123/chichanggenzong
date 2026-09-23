@@ -9,11 +9,13 @@ const LIVERMORE_CURRENT_URL = 'https://trade-info-api.jesselivermore.com/api/inf
 const LIVERMORE_HISTORY_URL = 'https://h5stockserver.huanshoulv.com/aimapp/hkstock/hotNewStock';
 const VBKR_IPO_CURRENT_URL = 'https://web-api.vbkr.com/ipo/hk-stock/query-applying?needPending=true&needApplyInfo=true';
 const FUTU_IPO_URL = 'https://www.futunn.com/quote/hk/ipo';
+const HKIPOX_URL = 'https://hkipox.com/';
 const ALLOWED_HOSTS = new Set([
   'trade-info-api.jesselivermore.com',
   'h5stockserver.huanshoulv.com',
   'web-api.vbkr.com',
   'www.futunn.com',
+  'hkipox.com',
 ]);
 
 function todayShanghai() {
@@ -74,7 +76,8 @@ function requestExternal(url, { format = 'json', timeoutMs = 15000 } = {}) {
     const req = https.get(parsed, {
       headers: {
         'User-Agent': 'portfolio-server/1.0',
-        Referer: parsed.hostname === 'www.futunn.com' ? 'https://www.futunn.com/quote/hk/ipo'
+        Referer: parsed.hostname === 'hkipox.com' ? 'https://hkipox.com/'
+          : parsed.hostname === 'www.futunn.com' ? 'https://www.futunn.com/quote/hk/ipo'
           : parsed.hostname === 'web-api.vbkr.com' ? 'https://www.vbkr.com/ipo/hk/v2/ipo-hk-index'
             : 'https://1877.jesselivermore.com/',
         Accept: format === 'json' ? 'application/json,text/plain,*/*' : 'text/html,application/xhtml+xml,*/*',
@@ -230,6 +233,43 @@ function parseFutuIpoHtml(html) {
     });
   }
   return rows;
+}
+
+function parseHkIpoXHtml(html) {
+  const text = String(html || '');
+  const heading = text.match(/<h2\b[^>]*>\s*今日申购[\s\S]*?<\/h2>/i);
+  if (!heading) {
+    const error = new Error('HKIPOx 页面未找到“今日申购”区块');
+    error.code = 'UPSTREAM_FORMAT';
+    error.errorType = 'upstream';
+    throw error;
+  }
+  const sectionStart = text.indexOf(heading[0]);
+  const sectionEnd = text.indexOf('</section>', sectionStart);
+  const section = text.slice(sectionStart, sectionEnd < 0 ? undefined : sectionEnd);
+  if (!/<table\b/i.test(section) || !/data-label=["']代码["']/i.test(section) || !/data-label=["']认购倍数["']/i.test(section)) {
+    const error = new Error('HKIPOx 今日申购区块缺少预期数据列');
+    error.code = 'UPSTREAM_FORMAT';
+    error.errorType = 'upstream';
+    throw error;
+  }
+  const rows = section.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  const labelValue = (row, label) => {
+    const cell = row.match(new RegExp(`<td\\b[^>]*data-label=["']${label}["'][^>]*>([\\s\\S]*?)<\\/td>`, 'i'));
+    return cell ? decodeHtml(cell[1]) : '';
+  };
+  return rows.map(row => {
+    const securityCode = normalizeCode(labelValue(row, '代码'));
+    const multipleText = labelValue(row, '认购倍数');
+    const subscriptionMultiple = parseMultiple(multipleText);
+    return {
+      securityCode,
+      securityName: labelValue(row, '名称'),
+      offerCloseDate: normalizeDate(labelValue(row, '招股结束日')),
+      subscriptionMultiple,
+      raw: { securityCode, securityName: labelValue(row, '名称'), multipleText },
+    };
+  }).filter(item => item.securityCode && item.subscriptionMultiple !== null && item.subscriptionMultiple > 0);
 }
 
 async function loadIpoMap(executor = pool) {
@@ -407,14 +447,55 @@ async function guardedFetch(sourceCode, apiName, dataset, url, format, fetchImpl
   return guardImpl(sourceCode, dataset, businessDate, () => fetchImpl(url, { format }), { apiName });
 }
 
+async function syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result }) {
+  try {
+    const payload = await guardedFetch('hkipox-public', 'hk_ipo_public_page', 'hk_ipo_subscription_signals', HKIPOX_URL, 'text', fetchImpl, guardImpl, businessDate);
+    const fetchedAt = new Date().toISOString();
+    await persistRaw('hkipox-public', 'hk_ipo_subscription_signals', businessDate, {
+      fetchedAt, pageUrl: HKIPOX_URL, parserVersion: 'hkipox-ipo-home-v1', html: String(payload || '').slice(0, 500000),
+    });
+    const rows = parseHkIpoXHtml(payload);
+    result.hkipoxSubscription.fetched = true;
+    result.hkipoxSubscription.rows = rows.length;
+    result.hkipoxSubscription.ok = true;
+    result.subscription.fetched = true;
+    result.subscription.rows = Math.max(Number(result.subscription.rows || 0), rows.length);
+    result.subscription.ok = true;
+    for (const item of rows) {
+      const ipo = map.get(item.securityCode);
+      if (!ipo || !isOfferOpen(ipo, new Date(fetchedAt), item.offerCloseDate)) continue;
+      if (await persistSnapshot({
+        code: item.securityCode,
+        instrumentId: ipo.instrument_id,
+        sourceCode: 'hkipox-public',
+        signalType: 'subscription',
+        signalKind: 'subscription_estimate',
+        dataDate: businessDate,
+        observedAt: fetchedAt,
+        sourceObservedAt: null,
+        subscriptionMultiple: item.subscriptionMultiple,
+        rawPayload: { ...item.raw, source_name: 'HKIPOx', source_url: HKIPOX_URL, parser_version: 'hkipox-ipo-home-v1' },
+      })) {
+        result.hkipoxSubscription.saved += 1;
+        result.subscription.saved += 1;
+      }
+    }
+  } catch (error) {
+    result.ok = false;
+    result.status = 'degraded';
+    result.errors.push({ source: 'hkipox-public', apiName: 'hk_ipo_public_page', dataset: 'subscription', error: error.message || String(error) });
+  }
+}
+
 async function syncHkIpoMarketSignals({
   mode = 'enrichment',
   businessDate = process.env.JOB_BUSINESS_DATE || todayShanghai(),
   fetchImpl = requestExternal,
   guardImpl = withExternalCallGuard,
   sourcesAdmitted = false,
+  hkipoxAdmitted = false,
 } = {}) {
-  if (sourcesAdmitted !== true) {
+  if (sourcesAdmitted !== true && hkipoxAdmitted !== true) {
     return {
       ok: true, status: 'not_admitted', mode,
       subscription: { fetched: false, rows: 0, saved: 0, ok: false },
@@ -422,7 +503,11 @@ async function syncHkIpoMarketSignals({
     };
   }
   const map = await loadIpoMap();
-  const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
+  const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false }, hkipoxSubscription: { fetched: false, rows: 0, saved: 0, ok: false }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
+  if (sourcesAdmitted !== true) {
+    await syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result });
+    return result;
+  }
   const blockedSources = new Set();
   const markSourceBlocked = (source, error) => {
     if (isQuotaOrCircuitError(error)) blockedSources.add(source);
@@ -578,6 +663,10 @@ async function syncHkIpoMarketSignals({
     result.errors.push({ source: 'livermore', apiName: 'hk_ipo_history', dataset: 'grey_market', error: error.message || String(error) });
   }
 
+  if (hkipoxAdmitted === true) {
+    await syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result });
+  }
+
   if (mode !== 'enrichment') return result;
 
   try {
@@ -605,6 +694,7 @@ module.exports = {
   LIVERMORE_HISTORY_URL,
   VBKR_IPO_CURRENT_URL,
   FUTU_IPO_URL,
+  HKIPOX_URL,
   requestExternal,
   validateFutuIpoHtmlResponse,
   normalizeCode,
@@ -612,6 +702,7 @@ module.exports = {
   parseLivermoreCurrent,
   parseVbkrCurrent,
   parseFutuIpoHtml,
+  parseHkIpoXHtml,
   isOfferOpen,
   isCurrentSubscriptionRecord,
   buildSourceRecordHash,

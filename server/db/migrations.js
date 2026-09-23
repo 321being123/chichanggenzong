@@ -6847,6 +6847,33 @@ async function migration161HkIpoMarketSnapshotTimeline() {
   }
 }
 
+// ========== 162：HKIPOx 港股 IPO 公开申购倍数来源 =============
+// 仅登记匿名公开网页接口；倍数作为申购期参考信号，不代表孖展或港交所最终超购。
+async function migration162HkIpoXPublicSource() {
+  await pool.query(`
+    INSERT INTO ops.data_sources(source_code,source_name,source_type,priority)
+    VALUES ('hkipox-public','HKIPOx 公开新股页面','reference',35)
+    ON CONFLICT(source_code) DO UPDATE
+      SET source_name=EXCLUDED.source_name,source_type=EXCLUDED.source_type,priority=EXCLUDED.priority;
+
+    INSERT INTO ops.source_endpoint_policies
+      (source_id,api_name,credential_profile,max_concurrency,min_interval_ms,row_limit,timeout_ms,empty_policy,official_doc_url,notes)
+    SELECT ds.source_id,'hk_ipo_public_page','anonymous',1,60000,200,20000,'preserve_last_success',
+           'https://hkipox.com/','公开页面仅采集今日申购区明确展示的认购倍数；不作为孖展金额或最终超购事实'
+      FROM ops.data_sources ds
+     WHERE ds.source_code='hkipox-public'
+    ON CONFLICT(source_id,api_name,credential_profile) DO UPDATE
+      SET max_concurrency=EXCLUDED.max_concurrency,
+          min_interval_ms=EXCLUDED.min_interval_ms,
+          row_limit=EXCLUDED.row_limit,
+          timeout_ms=EXCLUDED.timeout_ms,
+          empty_policy=EXCLUDED.empty_policy,
+          official_doc_url=EXCLUDED.official_doc_url,
+          notes=EXCLUDED.notes,
+          updated_at=now();
+  `);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -7009,6 +7036,7 @@ const MIGRATIONS = [
   { version: '159_verified_limits_and_recoverable_circuits', up: migration159VerifiedLimitsAndRecoverableCircuits },
   { version: '160_rate_limit_recovery_backoff', up: migration160RateLimitRecoveryBackoff },
   { version: '161_hk_ipo_market_snapshot_timeline', up: migration161HkIpoMarketSnapshotTimeline },
+  { version: '162_hk_ipo_x_public_source', up: migration162HkIpoXPublicSource },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

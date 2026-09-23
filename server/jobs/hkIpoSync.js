@@ -1,5 +1,5 @@
 const { runHkexIpoProbe, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexCancelledListings, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
-const { syncHkDailyCoverage } = require('../services/hkDailyCoverage');
+const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
@@ -228,7 +228,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
           const envLimit = Number(process.env.HK_DAILY_SYNC_LIMIT);
           if (Number.isInteger(envLimit) && envLimit > 0) dailyOptions.limit = envLimit;
         }
-        dailyCoverage = await syncHkDailyCoverage({
+        dailyCoverage = await syncTencentHkDailyCoverage({
           ...dailyOptions,
         });
       } catch (error) {
@@ -240,6 +240,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     try {
       marketSignals = await syncHkIpoMarketSignals({
         mode,
+        hkipoxAdmitted: true,
         ...(context.marketSignalOptions || {}),
       });
     } catch (error) {

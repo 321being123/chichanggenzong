@@ -19,7 +19,7 @@ try {
   const metadataFile = path.join(tempDir, 'metadata.json');
   fs.writeFileSync(textFile, JSON.stringify(texts), 'utf8');
   fs.writeFileSync(metadataFile, JSON.stringify(metadata), 'utf8');
-  const python = path.join(root, 'venv', 'Scripts', 'python.exe');
+  const python = process.env.IPO_PYTHON_PATH || path.join(root, 'venv', 'Scripts', 'python.exe');
   const script = path.join(root, 'server', 'scripts', 'extractConvertibleBondCallEvent.py');
   const result = spawnSync(python, [script, '--text-json', textFile, '--metadata-json', metadataFile], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(result.status, 0, result.stderr || '解析器进程失败');

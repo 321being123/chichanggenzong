@@ -427,6 +427,19 @@ function ipoAdviceMarketBoard(code) {
   return '';
 }
 
+function ipoIsBondCode(code) {
+  var c = String(code || '').trim().split('.')[0];
+  return /^(110|111|113|118|123|127|128)\d{3}$/.test(c);
+}
+
+function ipoBondDisplayName(name, code) {
+  var c = String(code || '').trim().split('.')[0];
+  if (c === '123285') return '润禾转02';
+  var text = String(name || '').trim();
+  if (!/^为[“‘"']/.test(text)) return text || '-';
+  return text.replace(/^为[“‘"']\s*/, '').replace(/[”’"']$/, '').trim() || '-';
+}
+
 function ipoAdviceItemLabel(item, groupHead, summary) {
   var text = String(item || '').replace(
     /，可能区间-?\d+(?:\.\d+)?%～-?\d+(?:\.\d+)?%（(?:发行公告版|发行结果版|上市前版|研究估算)）/g,
@@ -445,9 +458,15 @@ function ipoAdviceItemLabel(item, groupHead, summary) {
     if (summary && Array.isArray(summary[key])) rows = rows.concat(summary[key]);
   });
   var row = rows.find(function (candidate) {
-    return String(candidate && (candidate.name || candidate.security_name) || '') === name;
+    var candidateName = String(candidate && (candidate.name || candidate.security_name) || '');
+    if (candidateName === name) return true;
+    var candidateCode = candidate && (candidate.code || candidate.security_code || candidate.secu_code);
+    return ipoIsBondCode(candidateCode) && ipoBondDisplayName(candidateName, candidateCode) === ipoBondDisplayName(name, candidateCode);
   });
-  var label = ipoAdviceMarketBoard(row && (row.code || row.security_code || row.secu_code));
+  var code = row && (row.code || row.security_code || row.secu_code);
+  var isBond = ipoIsBondCode(code);
+  var displayName = isBond ? ipoBondDisplayName(name, code) : name;
+  var label = ipoAdviceMarketBoard(code);
   if (!label) {
     label = {
       '科创板': '沪市科创板', '创业板': '深市创业板', '北交所': '京市主板',
@@ -455,7 +474,7 @@ function ipoAdviceItemLabel(item, groupHead, summary) {
     }[oldLabel] || oldLabel;
   }
   if (!label) return text;
-  return name + '-' + label + detail;
+  return displayName + '-' + label + detail;
 }
 
 function ipoRenderAdvice(md, context) {
@@ -571,7 +590,10 @@ function ipoCalendarRow(label, items, color) {
   html += '<span style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:' + color + ';border-radius:4px;padding:1px 4px;">' + escapeHtml(label) + '</span>';
   html += '<span style="color:#666;font-size:12px;">' + items.length + ' 只</span></div>';
   items.forEach(function (it) {
-    var calendarName = String(it.code || '').toUpperCase().indexOf('.HK') >= 0 && !/[\u3400-\u9fff]/.test(String(it.name || '')) ? '中文名待补' : (it.name || '-');
+    var rawName = String(it.name || '');
+    var calendarName = it.type === '新债'
+      ? ipoBondDisplayName(rawName, it.code)
+      : (String(it.code || '').toUpperCase().indexOf('.HK') >= 0 && !/[\u3400-\u9fff]/.test(rawName) ? '中文名待补' : (it.name || '-'));
     html += '<div class="ipo-calendar-security" style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(calendarName) + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
     html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
     html += ipoBoardBadge(it.code, it.type);

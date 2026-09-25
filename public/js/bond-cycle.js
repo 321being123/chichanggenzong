@@ -8,9 +8,13 @@ var bondCycleState = { range: 'all', metric: 'percentile', data: null, loading: 
 var bondCycleTablePage = 1;
 var BC_TABLE_PAGE_SIZE = 50; // 表格每页显示条数（默认展示最近 50 条，可翻页）
 
+function normalizeBondSub(sub) {
+  if (sub === 'analysis' || sub === 'safety') return 'safety';
+  return ['cycle', 'valuation', 'list', 'redemption', 'revision'].indexOf(sub) >= 0 ? sub : 'list';
+}
+
 function switchBondSub(sub) {
-  if (sub === 'analysis') sub = 'safety';
-  sub = sub || 'safety';
+  sub = normalizeBondSub(sub);
   var safety = document.getElementById('sub-bond-safety');
   var cycle = document.getElementById('sub-bond-cycle');
   var valuation = document.getElementById('sub-bond-valuation');
@@ -46,8 +50,7 @@ function switchBondSub(sub) {
 function initBondCycleSub() {
   if (window.__bondCycleControlsReady) {
     var p = new URLSearchParams(window.location.search);
-    var sub = p.get('sub');
-    switchBondSub(sub === 'cycle' ? 'cycle' : (sub === 'valuation' ? 'valuation' : (sub === 'list' ? 'list' : (sub === 'redemption' ? 'redemption' : (sub === 'revision' ? 'revision' : 'safety')))));
+    switchBondSub(p.get('sub'));
     return;
   }
   window.__bondCycleControlsReady = true;
@@ -81,8 +84,7 @@ function initBondCycleSub() {
     })(metricBtns[k]);
   }
   var p2 = new URLSearchParams(window.location.search);
-  var sub2 = p2.get('sub');
-  switchBondSub(sub2 === 'cycle' ? 'cycle' : (sub2 === 'valuation' ? 'valuation' : (sub2 === 'list' ? 'list' : (sub2 === 'redemption' ? 'redemption' : (sub2 === 'revision' ? 'revision' : 'safety')))));
+  switchBondSub(p2.get('sub'));
 }
 
 async function loadBondCycle() {

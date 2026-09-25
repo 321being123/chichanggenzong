@@ -461,22 +461,24 @@ async function buildDailyMetrics({ tradeDate = null, reason = 'scheduled' } = {}
 }
 
 async function getBondList({ tradeDate = null, query = '', limit = 500, refreshQuotes = false } = {}) {
-  const readablePartition = tradeDate ? null : await getLatestReadablePartition('bond_daily', 'CN');
+  const [readablePartition, publishedDate] = await Promise.all([
+    tradeDate ? null : getLatestReadablePartition('bond_daily', 'CN'),
+    tradeDate ? null : latestPublishedTradeDate(),
+  ]);
   const requestedDate = tradeDate || (readablePartition && safeDate(readablePartition.partition_key)) || await latestTradeDate();
-  const publishedDate = tradeDate ? null : await latestPublishedTradeDate();
   const stale = !tradeDate && (!publishedDate || (requestedDate && publishedDate < requestedDate));
   // 页面允许读取 partial_published；完整计算快照是否滞后单独由 stale 标记表达。
   const date = requestedDate;
   if (!date) return { trade_date: null, updated_at: null, count: 0, data: [] };
-  const universe = await attachCallStates(await fetchUniverseRows(date));
-  if (!universe.length) return { trade_date: date, partition_status: readablePartition && readablePartition.status || null, updated_at: null, count: 0, data: [] };
-  const [{ rows: metricRows }, safetyRatings] = await Promise.all([
+  const [{ rows: metricRows }, safetyRatings, universe] = await Promise.all([
     pool.query(`
       SELECT * FROM analytics.convertible_bond_list_metrics_daily
        WHERE trade_date=$1::date AND formula_version=$2
     `, [date, FORMULA_VERSION]),
     latestSafetyRatings(),
+    fetchUniverseRows(date).then(attachCallStates),
   ]);
+  if (!universe.length) return { trade_date: date, partition_status: readablePartition && readablePartition.status || null, updated_at: null, count: 0, data: [] };
   const metrics = new Map(metricRows.map(row => [String(row.instrument_id), row]));
   const shouldRefreshQuotes = refreshQuotes && !tradeDate;
   const intraday = shouldRefreshQuotes

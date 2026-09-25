@@ -72,7 +72,7 @@
         <article class="home-cycle-card">
           <div class="home-detail-title">
             <div><h3>可转债周期</h3><p id="home-bond-cycle-summary">正在读取数据...</p></div>
-            <button type="button" onclick="switchMain('bond-safety'); switchBondSub('cycle')">查看详情 →</button>
+            <button type="button" onclick="switchMain('bond-safety', false, 'cycle')">查看详情 →</button>
           </div>
           <div class="home-cycle-legend">
             <span><i class="home-cycle-dot home-cycle-dot-blue"></i>综合估值</span>
@@ -202,7 +202,7 @@
       <h3>持仓明细</h3>
       <div id="position-comp-controls" class="pc-controls"></div>
     </div>
-    <div style="padding:18px;">
+    <div style="padding:0 18px 18px;">
       <div id="positions-table"></div>
     </div>
   </div>
@@ -687,10 +687,10 @@
 <div class="main-page" id="main-bond-safety">
   <div class="bond-header">
     <div class="bond-sub-nav">
-      <button class="bond-sub-tab" data-sub="list" onclick="switchBondSub('list')">上市可转债</button>
+      <button class="bond-sub-tab active" data-sub="list" onclick="switchBondSub('list')">上市可转债</button>
       <button class="bond-sub-tab" data-sub="redemption" onclick="switchBondSub('redemption')">强赎监控</button>
       <button class="bond-sub-tab" data-sub="revision" onclick="switchBondSub('revision')">下修监控</button>
-      <button class="bond-sub-tab active" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
+      <button class="bond-sub-tab" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
       <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
       <button class="bond-sub-tab" data-sub="valuation" onclick="switchBondSub('valuation')">可转债估值</button>
     </div>
@@ -698,7 +698,7 @@
   <div class="bond-safety-shell feature-page-shell">
 
     <!-- 子页：可转债安全性（评级由服务端计算，页面只负责筛选、排序和展示） -->
-    <div id="sub-bond-safety" class="bond-sub-page">
+    <div id="sub-bond-safety" class="bond-sub-page" hidden>
       <div class="bond-safety-hero bond-feature-hero">
         <div>
           <h2>可转债安全性</h2>
@@ -901,7 +901,7 @@
     </div>
 
     <!-- 子页：上市可转债列表（每日快照） -->
-    <div id="sub-bond-list" class="bond-sub-page" hidden>
+    <div id="sub-bond-list" class="bond-sub-page">
       <div class="bond-list-hero">
         <div>
           <h2>上市可转债</h2>
@@ -1210,9 +1210,9 @@
 <script src="shared/date-range-control.js?v=0.8.0.8" defer></script>
 <script src="vendor/marked.min.js?v=20260904" defer></script>
 <script src="vendor/dompurify.min.js?v=20260904" defer></script>
-<script src="js/ipo.js?v=0.8.1.51" defer></script>
+<script src="js/ipo.js?v=0.8.1.90" defer></script>
 <script src="js/bond-safety.js?v=12" defer></script>
-<script src="js/bond-cycle.js?v=0.8.1.22" defer></script>
+<script src="js/bond-cycle.js?v=0.8.1.90" defer></script>
 <script src="js/bond-valuation.js?v=0.8.0.8" defer></script>
 <script src="js/bond-list.js?v=0.8.1.11" defer></script>
 <script src="js/bond-redemption.js?v=7" defer></script>
@@ -1232,7 +1232,7 @@
 <script src="js/access-policy.js?v=1" defer></script>
 <script src="js/session.js?v=1" defer></script>
 <script src="js/arbitrage.js?v=11" defer></script>
-<script src="js/navigation.js?v=0.8.1.11" defer></script>
+<script src="js/navigation.js?v=0.8.1.90" defer></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;

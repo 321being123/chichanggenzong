@@ -5,7 +5,7 @@
 // 此处只做分发，保持 DOM ID / API / 业务结果兼容。
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
-function switchMain(main, noPushState) {
+function switchMain(main, noPushState, bondSub) {
   if (!username && ACCESS_POLICY.requiresLogin(main)) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return;
@@ -14,7 +14,11 @@ function switchMain(main, noPushState) {
   if (!noPushState) {
     var params = new URLSearchParams(window.location.search);
     if (main === 'home') { while (params.toString()) { params.delete(params.keys().next().value); } }
-    else { params.set('main', main); if (main !== 'bond-safety') params.delete('sub'); }
+    else {
+      params.set('main', main);
+      if (main !== 'bond-safety') params.delete('sub');
+      else if (bondSub) params.set('sub', bondSub);
+    }
     if (main !== 'arbitrage') { params.delete('case'); params.delete('arb_type'); }
     var newUrl = params.toString() ? '/?' + params.toString() : '/';
     if (window.location.pathname + window.location.search !== newUrl) {

@@ -10,6 +10,7 @@ const {
 } = require('../services/market');
 const { resolveInstrument, resolveProviderCode } = require('../services/securityIdentity');
 const { withExternalCallGuard } = require('../services/externalCallGuard');
+const { getCurrentMarketStates, getMarketState } = require('../services/marketState');
 
 function guardedTextGet(source, dataset, url, options = {}) {
   return withExternalCallGuard(source, dataset, process.env.JOB_BUSINESS_DATE, () => new Promise((resolve, reject) => {
@@ -45,11 +46,24 @@ router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   res.json(await fetchQuotesByCodes(codes));
 }));
 
+router.get('/market-state', requireLogin, asyncHandler(async (req, res) => {
+  const date = String(req.query.date || '').trim();
+  const time = String(req.query.time || '').trim();
+  const market = String(req.query.market || '').trim().toUpperCase();
+  if (date || time || market) {
+    if (!date || !time || !['CN', 'HK'].includes(market)) {
+      return res.status(400).json({ error: '指定查询需要同时提供 date、time 和 market（CN/HK）' });
+    }
+    return res.json(await getMarketState({ market, businessDate: date, time }));
+  }
+  res.json(await getCurrentMarketStates());
+}));
+
 // 普通读取走最近有效缓存；港股交易时段的持仓刷新才显式请求实时汇率。
 const { getCurrentFxRate, ensureRealtimeHkRate, isHkTradingTime } = require('../jobs/hkRate');
 router.get('/hkrate', requireLogin, asyncHandler(async (req, res) => {
   const realtimeRequested = String(req.query.realtime || '') === '1';
-  if (realtimeRequested && isHkTradingTime()) {
+  if (realtimeRequested && await isHkTradingTime(new Date(), { allowUnknown: true })) {
     try {
       const snapshot = await ensureRealtimeHkRate();
       return res.json({

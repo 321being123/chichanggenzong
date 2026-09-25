@@ -2,7 +2,7 @@
 const https = require('https');
 const { pool } = require('../db/connection');
 const { tushareQuery } = require('./tushare');
-const { isCnHoliday } = require('../config/holidays');
+const { isCnTradingDate, getMarketState } = require('./marketState');
 const {
   fetchTencentQuotes,
   isConvertibleBondCode,
@@ -47,25 +47,27 @@ function quoteDateCN(value) {
   return new Date(date.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-function isCnTradingDate(dateStr) {
-  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const dayOfMonth = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, dayOfMonth));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== dayOfMonth) return false;
-  const weekday = date.getUTCDay();
-  return weekday >= 1 && weekday <= 5 && !isCnHoliday(dateStr);
-}
-
-function validateDailyPriceBatch(dateStr, prices) {
+async function validateDailyPriceBatch(dateStr, prices) {
   const date = String(dateStr || '').slice(0, 10);
-  if (!isCnTradingDate(date)) return { ok: false, error: '收盘价日期不是交易日' };
-  const invalidCodes = (prices || []).filter(item => quoteDateCN(item && item.quote_time) !== date)
-    .map(item => String(item && item.code || '')).filter(Boolean);
-  if (invalidCodes.length) {
-    return { ok: false, error: '行情日期与收盘价日期不一致', invalidCodes };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '收盘价日期格式错误' };
+  const candidates = (prices || []).filter(item => item && item.code);
+  const marketByCode = new Map(candidates.map(item => {
+    const code = String(item.code).trim().toUpperCase();
+    const info = classifyCode(code, item.name) || {};
+    return [code, info.subtype === '港股' || String(item.quote_currency || '').toUpperCase() === 'HKD' ? 'HK' : 'CN'];
+  }));
+  const invalidCodes = candidates.filter(item => quoteDateCN(item && item.quote_time) !== date)
+    .map(item => String(item.code || '')).filter(Boolean);
+  const hkCodes = [...marketByCode.entries()].filter(([, market]) => market === 'HK').map(([code]) => code);
+  if (hkCodes.length) {
+    const hkState = await getMarketState({ market: 'HK', businessDate: date, time: '12:00' });
+    if (hkState.status !== 'open') invalidCodes.push(...hkCodes);
+  }
+  const cnCodes = [...marketByCode.entries()].filter(([, market]) => market === 'CN').map(([code]) => code);
+  if (cnCodes.length && !isCnTradingDate(date)) invalidCodes.push(...cnCodes);
+  const uniqueInvalidCodes = [...new Set(invalidCodes)];
+  if (uniqueInvalidCodes.length) {
+    return { ok: false, error: '收盘价日期与证券所属市场的交易日或行情时间不一致', invalidCodes: uniqueInvalidCodes };
   }
   return { ok: true, date };
 }

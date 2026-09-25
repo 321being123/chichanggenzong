@@ -1,18 +1,26 @@
 const assert = require('assert');
 const { pool } = require('../db/connection');
 const { computeNavAttribution } = require('../services/navAttribution');
-const { todayCN } = require('../services/market');
+const today = '2026-09-24';
+const realDate = global.Date;
+const fixedNow = realDate.parse(today + 'T08:00:00.000Z');
+global.Date = class FixedDate extends realDate {
+  constructor(...args) { super(...(args.length ? args : [fixedNow])); }
+  static now() { return fixedNow; }
+};
 
-const today = todayCN();
 const previousDay = (() => {
   const [y, m, d] = today.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
 })();
 
 const originalQuery = pool.query;
-pool.query = async (sql) => {
+pool.query = async (sql, params = []) => {
   if (sql.includes('FROM daily_prices')) {
     return { rows: [{ date: previousDay, code: '600000', price: 11 }, { date: previousDay, code: '160719', price: 11 }, { date: previousDay, code: '600001', price: 10 }, { date: previousDay, code: '600002', price: 10 }] };
+  }
+  if (sql.includes("FROM market.trade_calendar") && sql.includes("exchange='HKEX'")) {
+    return { rows: [{ trade_date: today, is_open: true, source_code: 'hkex_official_schedule', raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'hkex_official_schedule' } } }] };
   }
   if (sql.includes('FROM market.fx_rates')) return { rows: [] };
   throw new Error('unexpected query in baseline attribution test');
@@ -124,6 +132,7 @@ pool.query = async (sql) => {
 
     console.log('nav attribution baseline tests passed');
   } finally {
+    global.Date = realDate;
     pool.query = originalQuery;
     await pool.end();
   }

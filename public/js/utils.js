@@ -180,7 +180,48 @@ function isCnHoliday(dateStr) {
   return CN_HOLIDAYS.has(dateStr);
 }
 
+var marketStateSnapshot = null;
+
+async function refreshMarketStateSnapshot() {
+  try {
+    var response = await fetch(api('/api/market-state'));
+    if (!response.ok) return marketStateSnapshot;
+    var snapshot = await response.json();
+    if (snapshot && snapshot.businessDate && snapshot.markets) marketStateSnapshot = snapshot;
+  } catch (e) {}
+  return marketStateSnapshot;
+}
+
+function marketForPosition(position) {
+  return position && (position.subtype === '港股' || String(position.quoteCurrency || '').toUpperCase() === 'HKD') ? 'HK' : 'CN';
+}
+
+function holdingMarketStates() {
+  var markets = {};
+  var positions = typeof data !== 'undefined' && data && Array.isArray(data.positions) ? data.positions : [];
+  positions.filter(function (position) { return Number(position.quantity) !== 0; }).forEach(function (position) {
+    markets[marketForPosition(position)] = marketStateSnapshot && marketStateSnapshot.markets
+      ? marketStateSnapshot.markets[marketForPosition(position)] : null;
+  });
+  return markets;
+}
+
+function isHkMarketTradingNow() {
+  var hk = marketStateSnapshot && marketStateSnapshot.businessDate === todayCN() && marketStateSnapshot.markets && marketStateSnapshot.markets.HK;
+  return hk ? hk.isTradingNow === true : false;
+}
+
+function isHkRealtimeRefreshAllowed() {
+  var hk = marketStateSnapshot && marketStateSnapshot.businessDate === todayCN() && marketStateSnapshot.markets && marketStateSnapshot.markets.HK;
+  return Boolean(hk && (hk.status === 'unknown' || (hk.status === 'open' && hk.isTradingNow === true)));
+}
+
 function isMarketOpen() {
+  var states = holdingMarketStates();
+  var known = Object.keys(states);
+  if (known.length && known.every(function (market) { return states[market] && states[market].businessDate === todayCN(); })) {
+    return known.some(function (market) { return states[market].isTradingNow === true; });
+  }
   var now = new Date();
   var day = new Date(todayCN() + 'T00:00:00Z').getUTCDay();
   if (day === 0 || day === 6) return false; // 周末休市

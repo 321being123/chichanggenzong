@@ -1,7 +1,7 @@
 const os = require('os');
 const { pool } = require('../db/connection');
 const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES } = require('./jobDefinitions');
-const { isCnHoliday } = require('../config/holidays');
+const { getMarketState, isCnTradingDate, prefetchMarketFacts, parseClock } = require('./marketState');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
 const classifyCode = require('../../public/js/code-classify');
@@ -43,8 +43,7 @@ function scheduledDate(dateTextValue, hour, minute) {
 }
 
 function isWeekday(dateTextValue) {
-  const day = new Date(`${dateTextValue}T00:00:00Z`).getUTCDay();
-  return day >= 1 && day <= 5 && !isCnHoliday(dateTextValue);
+  return isCnTradingDate(dateTextValue);
 }
 
 function previousDate(dateTextValue) {
@@ -61,8 +60,48 @@ function previousDate(dateTextValue) {
 // 两者都复用 isWeekday，已内置节假日判断。
 function isSlotDayAllowed(dateTextValue, definition) {
   if (definition.afterTradingDay) return isWeekday(previousDate(dateTextValue));
+  if (definition.calendarWeekdays) {
+    const day = new Date(`${dateTextValue}T00:00:00Z`).getUTCDay();
+    return day >= 1 && day <= 5;
+  }
   if (definition.weekdays) return isWeekday(dateTextValue);
   return true;
+}
+
+function formatClock(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes >= 24 * 60) return null;
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+async function resolveScheduleForDate(definition, schedule, businessDate) {
+  const policy = schedule.marketCalendarPolicy || definition.marketCalendarPolicy;
+  if (!policy) return schedule;
+  const hk = await getMarketState({ market: 'HK', businessDate, time: '00:00' });
+  const cn = await getMarketState({ market: 'CN', businessDate, time: '00:00' });
+  if (policy === 'hk-close') {
+    if (hk.status !== 'open' || !hk.closeQuoteTime) return null;
+    const minute = parseClock(hk.closeQuoteTime);
+    return { ...schedule, hour: Math.floor(minute / 60), minute: minute % 60 };
+  }
+  if (policy === 'hk-rate') {
+    if (hk.status === 'open' && hk.closeQuoteTime) {
+      const minute = parseClock(hk.closeQuoteTime) + 5;
+      return { ...schedule, hour: Math.floor(minute / 60), minute: minute % 60 };
+    }
+    if (hk.status === 'closed' && cn.status === 'open') return { ...schedule, hour: 16, minute: 15 };
+    return null;
+  }
+  if (policy === 'nav-snapshot') {
+    if (hk.status === 'open' && hk.closeQuoteTime) {
+      const hkReadyMinute = parseClock(hk.closeQuoteTime) + 10;
+      const cnReadyMinute = cn.status === 'open' ? 15 * 60 + 20 : 0;
+      const minute = Math.max(hkReadyMinute, cnReadyMinute);
+      return { ...schedule, hour: Math.floor(minute / 60), minute: minute % 60 };
+    }
+    if (cn.status === 'open') return { ...schedule, hour: 16, minute: 20 };
+    return null;
+  }
+  throw new Error(`未知市场日历调度策略：${policy}`);
 }
 
 function expectedDataDate(jobCode, businessDate) {
@@ -394,6 +433,7 @@ async function syncScheduleSlots(now = new Date()) {
     cursor = previousDate(cursor);
     allDates.push(cursor);
   }
+  await prefetchMarketFacts('HK', allDates);
   const created = [];
   for (const definition of JOB_DEFINITIONS) {
     if (definition.manualOnly) continue;
@@ -409,11 +449,13 @@ async function syncScheduleSlots(now = new Date()) {
       for (const businessDate of dates) {
         if (scheduleDefinition.monthly && businessDate.slice(8, 10) !== '01') continue;
         if (!isSlotDayAllowed(businessDate, scheduleDefinition)) continue;
-        const scheduledFor = scheduledDate(businessDate, schedule.hour, schedule.minute);
+        const resolvedSchedule = await resolveScheduleForDate(definition, scheduleDefinition, businessDate);
+        if (!resolvedSchedule) continue;
+        const scheduledFor = scheduledDate(businessDate, resolvedSchedule.hour, resolvedSchedule.minute);
         const windowMinutes = definition.catchupWindowMinutes || definition.deadlineMinutes || 180;
         if (businessDate !== today && scheduledFor.getTime() + windowMinutes * 60000 < now.getTime()) continue;
-        const requestPayload = { mode: schedule.mode || 'core' };
-        if (Object.prototype.hasOwnProperty.call(schedule, 'freshnessGate')) requestPayload.freshnessGate = Boolean(schedule.freshnessGate);
+        const requestPayload = { mode: resolvedSchedule.mode || 'core' };
+        if (Object.prototype.hasOwnProperty.call(resolvedSchedule, 'freshnessGate')) requestPayload.freshnessGate = Boolean(resolvedSchedule.freshnessGate);
         const slot = await ensureSlot(definition.jobCode, scheduledFor, businessDate, 'scheduled', requestPayload);
         const current = await reconcileSlot(slot);
         if (current.status === 'pending' && now.getTime() > scheduledFor.getTime() + definition.deadlineMinutes * 60000) {
@@ -669,8 +711,8 @@ async function queryDataAsOf(jobCode, businessDate) {
     )::text AS data_as_of`,
   };
   const marketClosePredicates = {
-    'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)' AND COALESCE(p.name,'') !~ '(债|转债)'`,
-    'market_close:港股': `char_length(p.code)=5`,
+    'market_close:A股': `p.code ~ '^(00|30|60|68|4|8)' AND char_length(p.code)>=6 AND COALESCE(p.subtype,'') <> '港股' AND COALESCE(p.name,'') !~ '(债|转债)'`,
+    'market_close:港股': `(p.subtype='港股' OR char_length(p.code)=5)`,
     'market_close:可转债': `p.code ~ '^(11|12)'`,
     'market_close:LOF/ETF': `p.code ~ '${classifyCode.FUND_ETF_SQL_PREFIX}' AND char_length(p.code)=6`,
   };
@@ -1064,6 +1106,6 @@ module.exports = {
   WORKER_ID, workerIdForRole, JOB_DEFINITIONS, dateText, normalizeBusinessDate, shanghaiParts, ensureSlot, enqueueManualJob, syncScheduleSlots,
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
-  isSlotDayAllowed, isWeekday, previousDate,
+  isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
   resolveDatasetPartitionDate, datasetDependencyState,
 };

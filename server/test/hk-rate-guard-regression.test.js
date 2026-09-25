@@ -11,6 +11,7 @@ const migrations = read('server/db/migrations.js');
 const coreAccount = read('public/shared/core-account.js');
 const coreQuote = read('public/shared/core-quote.js');
 const utils = read('public/js/utils.js');
+const { getJobDefinition } = require('../services/jobDefinitions');
 
 assert.ok(
   /e\.errorType === 'rate_limit'\s*&&\s*e\.code !== 'BUDGET_WAIT'/.test(hkRate),
@@ -26,6 +27,8 @@ assert.ok(/getCurrentFxRate\(\)/.test(positionRoute) && !/ensureHkRate\(\)/.test
 assert.ok(/getCurrentFxRateSnapshot\(\)/.test(hkRate) && /FRESH_RATE_MS/.test(hkRate)
   && /status: 'fresh'/.test(hkRate) && /externalCalls: 0/.test(hkRate),
   '汇率任务必须先做24小时新鲜度门禁');
+assert.strictEqual(getJobDefinition('hk_rate').freshnessGate, false,
+  '调度器不得用24小时新鲜度门禁跳过收盘后的最终汇率刷新');
 assert.ok(/REALTIME_RATE_MAX_AGE_MS/.test(hkRate)
   && /exchange_rate_realtime/.test(hkRate)
   && /ensureRealtimeHkRate\(\{ force: true \}\)/.test(hkRate),

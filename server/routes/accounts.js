@@ -527,7 +527,7 @@ router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), 
     const { prices, date } = req.body;
     if (!prices || !prices.length) return res.json({ ok: true });
     const targetDate = date || todayCN();
-    const validation = validateDailyPriceBatch(targetDate, prices);
+    const validation = await validateDailyPriceBatch(targetDate, prices);
     if (!validation.ok) return res.status(400).json(validation);
     await saveDailyPrices(req.session.user, name, validation.date, prices);
     res.json({ ok: true });

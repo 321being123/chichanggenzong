@@ -64,9 +64,9 @@ async function main() {
   await check('收盘价批次拒绝休市日、缺日期和跨日行情', async () => {
     assert.strictEqual(isCnTradingDate('2026-08-22'), false, '周末不得写收盘价');
     assert.strictEqual(isCnTradingDate('2026-10-01'), false, '法定节假日不得写收盘价');
-    assert.strictEqual(validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: null }]).ok, false);
-    assert.strictEqual(validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: '2026-08-21T15:00:00+08:00' }]).ok, false);
-    assert.strictEqual(validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: '2026-08-24T15:00:00+08:00' }]).ok, true);
+    assert.strictEqual((await validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: null }])).ok, false);
+    assert.strictEqual((await validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: '2026-08-21T15:00:00+08:00' }])).ok, false);
+    assert.strictEqual((await validateDailyPriceBatch('2026-08-24', [{ code: '600000', quote_time: '2026-08-24T15:00:00+08:00' }])).ok, true);
   });
 
   await check('行情与收盘价路由接入日期校验', async () => {

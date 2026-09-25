@@ -4,6 +4,7 @@ const express = require('express');
 const { pool, loadAccountData, saveAccountData, upsertNav } = require('../db');
 const accountsRouter = require('../routes/accounts');
 const { todayCN } = require('../services/market');
+const { invalidateMarketStateCache, prefetchMarketFacts } = require('../services/marketState');
 
 const U = 'nav_anchor_regression';
 const A = '历史锚点回归账户';
@@ -107,8 +108,15 @@ const previousCloseDate = (() => {
     assert.strictEqual(batchCount.rows[0].c, 1, '同文件不得新增第二个导入批次');
 
     await upsertNav(U, A, { date: todayCN(), nav: 1.025, totalAsset: 1435, invested: 1000, hkRate: 0.85 });
+    // 该归因断言要求当日港股行情使用实时持仓价；测试库日历可能尚未同步当年安排，
+    // 因此在进程内提供确定的开市事实，避免依赖业务库的日历数据。
+    invalidateMarketStateCache({ market: 'HK', businessDate: todayCN() });
+    await prefetchMarketFacts('HK', [todayCN()], async () => ({ rows: [{
+      trade_date: todayCN(), is_open: true, source_code: 'test_fixture',
+      raw_payload: { official_schedule: { is_open: true, session_type: 'full_day', close_time: '16:10', source: 'test_fixture' } },
+    }] }));
     const closed = await loadAccountData(U, A);
-    assert.ok(closed.navAttribution && closed.navAttribution.complete, '导入日到今天应能完整归因');
+    assert.ok(closed.navAttribution && closed.navAttribution.complete, '导入日到今天应能完整归因：' + JSON.stringify(closed.navAttribution));
     assert.strictEqual(Math.round(closed.navAttribution.priceImpact), 90, '价格影响应为90');
     assert.strictEqual(Math.round(closed.navAttribution.fxImpact), -55, '汇率影响应为-55');
     assert.strictEqual(Math.round(closed.navAttribution.totalChange), 30, '导入日到系统计算日的总资产变化应包含一次性口径切换');

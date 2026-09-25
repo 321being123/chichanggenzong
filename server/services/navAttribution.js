@@ -240,23 +240,86 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const last = navs[navs.length - 1];
   const historicalPrevious = navs[navs.length - 2];
   const storedLastDate = dateKey(last.date);
+  const { isCnTradingDate, getMarketState, prefetchMarketFacts } = require('./marketState');
   const todayDate = dateKey(new Date());
-  // 延迟加载，避免 market → externalApiConfig → db → accounts → navAttribution 的循环依赖。
-  const { isCnTradingDate } = require('./market');
-  const isTradingToday = isCnTradingDate(todayDate);
+  const currentByCode = aggregateCurrentPositions(data.positions);
+  const lastPositionDate = dateKey(last.date);
+  const lastQty = quantityAsOf(data, lastPositionDate, last.snapshot_at);
+  const historicalPrevDate = dateKey(historicalPrevious.date);
+  const historicalPrevQty = quantityAsOf(data, historicalPrevDate, historicalPrevious.snapshot_at);
+  const holdingsForState = new Set([...lastQty.keys(), ...historicalPrevQty.keys(), ...currentByCode.keys()]);
+  const marketForCode = (code) => {
+    const position = currentByCode.get(code) || {};
+    const prior = lastQty.get(code) || historicalPrevQty.get(code) || {};
+    return position.subtype === '港股' || prior.subtype === '港股' ? 'HK' : 'CN';
+  };
+  const markets = new Set([...holdingsForState].map(marketForCode));
+  const todayMarketStates = {};
+  for (const market of markets) {
+    todayMarketStates[market] = market === 'HK'
+      ? await getMarketState({ market, businessDate: todayDate, time: '23:59' })
+      : { status: isCnTradingDate(todayDate) ? 'open' : 'closed' };
+  }
+  const hasOpenHoldingMarketToday = Object.values(todayMarketStates).some(state => state.status === 'open');
   // 页面有当前系统总资产时，最后一条已保存快照就是当前计算的基准。
   // 这样周二会按“周一快照 → 周二当前行情”计算，不会重复把周日/更早区间算进来。
   const liveEnd = currentTotal != null && storedLastDate <= todayDate &&
-    (isTradingToday || storedLastDate === todayDate);
+    (hasOpenHoldingMarketToday || storedLastDate === todayDate);
   const previous = liveEnd && storedLastDate < todayDate ? last : historicalPrevious;
   const prevDate = dateKey(previous.date);
   const currentDate = liveEnd ? todayDate : storedLastDate;
-  const { rows: prices } = await pool.query(
-    `SELECT date, code, price::float8 AS price FROM daily_prices
-      WHERE username=$1 AND account_name=$2 AND date IN ($3,$4)`,
-    [username, accountName, prevDate, currentDate]
-  );
-  const priceMap = new Map(prices.map(r => [dateKey(r.date) + '|' + String(r.code), Number(r.price)]));
+  if (liveEnd && currentDate === todayDate && prevDate < currentDate) {
+    const betweenDates = [];
+    for (let cursor = new Date(`${prevDate}T00:00:00Z`); ; ) {
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+      const date = cursor.toISOString().slice(0, 10);
+      if (date >= currentDate) break;
+      betweenDates.push(date);
+    }
+    if (markets.has('HK') && betweenDates.length) await prefetchMarketFacts('HK', betweenDates);
+    const snapshotDates = new Set(navs.map(nav => dateKey(nav.date)));
+    for (const date of betweenDates) {
+      if (snapshotDates.has(date)) continue;
+      for (const market of markets) {
+        const state = market === 'HK'
+          ? await getMarketState({ market, businessDate: date, time: '23:59' })
+          : { status: isCnTradingDate(date) ? 'open' : 'closed' };
+        if (state.status === 'unknown') {
+          return {
+            complete: false, reason: 'intermediate_market_calendar_unknown', missingCodes: [],
+            missingMarketDate: date, missingMarket: market, previousDate: prevDate, currentDate,
+          };
+        }
+        if (state.status === 'open') {
+          return {
+            complete: false, reason: 'missing_intermediate_snapshot', missingCodes: [],
+            missingMarketDate: date, missingMarket: market, previousDate: prevDate, currentDate,
+          };
+        }
+      }
+    }
+  }
+  const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
+  const relevantCodes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
+  const [previousPricesResult, currentPricesResult] = await Promise.all([
+    pool.query(
+      `SELECT DISTINCT ON (code) date, code, price::float8 AS price FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND code=ANY($3::text[]) AND date::date <= $4::date
+        ORDER BY code, date DESC`,
+      [username, accountName, [...relevantCodes], prevDate]
+    ),
+    pool.query(
+      `SELECT DISTINCT ON (code) date, code, price::float8 AS price FROM daily_prices
+        WHERE username=$1 AND account_name=$2 AND code=ANY($3::text[]) AND date::date <= $4::date
+        ORDER BY code, date DESC`,
+      [username, accountName, [...relevantCodes], currentDate]
+    ),
+  ]);
+  const priceRowsByCode = (rows) => new Map(rows.map(row => [String(row.code), {
+    date: dateKey(row.date), price: Number(row.price)
+  }]));
+  const previousPriceByCode = priceRowsByCode(previousPricesResult.rows);
+  const currentPriceByCode = priceRowsByCode(currentPricesResult.rows);
   const { rows: fxRows } = await pool.query(
     `SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
@@ -268,27 +331,38 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     (Number(fxByDate.get(date)) > 0 ? Number(fxByDate.get(date)) : null);
   const prevRate = rateAt(prevDate, previous);
   const lastRate = liveEnd && Number(data.hkRate) > 0 ? Number(data.hkRate) : rateAt(currentDate, last);
-  const currentByCode = aggregateCurrentPositions(data.positions);
   const prevAt = timestamp(previous.snapshot_at);
   const lastAt = liveEnd ? Date.now() : timestamp(last.snapshot_at);
-  const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
   const priceImpact = { value: 0 };
   const fxImpact = { value: 0 };
   const quantityImpact = { value: 0 };
   const previousMarketValue = { value: 0, complete: true };
   const missing = [];
   const manualPriceCodes = [];
-  const codes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
+  const codes = relevantCodes;
+  function marketPrice(priceMap, code, isHk) {
+    const variants = [code];
+    if (isHk && /^\d{5}$/.test(code)) variants.push(code.padStart(6, '0'));
+    for (const variant of variants) {
+      if (priceMap.has(variant)) return priceMap.get(variant);
+    }
+    return null;
+  }
   for (const code of codes) {
     const q = prevQty.get(code) || { quantity: 0, subtype: (currentByCode.get(code) || {}).subtype || '' };
     const qty = Number(q.quantity) || 0;
     const p = currentByCode.get(code);
     const isHk = q.subtype === '港股' || (p && p.subtype === '港股');
-    const storedPrevPrice = priceAt(priceMap, prevDate, code, isHk);
+    const storedPrevRow = marketPrice(previousPriceByCode, code, isHk);
+    const storedCurrentRow = marketPrice(currentPriceByCode, code, isHk);
+    const storedPrevPrice = storedPrevRow && storedPrevRow.price;
     const fixedDelistedPrice = manualDelistedPrice(data, code, p);
     const prevPrice = storedPrevPrice > 0 ? storedPrevPrice : fixedDelistedPrice;
     const tradePrice = tradePriceAtEnd(data, code, prevDate, currentDate, prevAt, lastAt);
-    const lastPrice = liveEnd && p ? Number(p.price) : priceAt(priceMap, currentDate, code, isHk);
+    const currentMarketState = currentDate === todayDate ? todayMarketStates[isHk ? 'HK' : 'CN'] : null;
+    const marketOpenOnCurrentDate = currentMarketState ? currentMarketState.status === 'open' : true;
+    const lastPrice = liveEnd && marketOpenOnCurrentDate && p
+      ? Number(p.price) : (storedCurrentRow && storedCurrentRow.price);
     const endPrice = lastPrice > 0 ? lastPrice : (tradePrice > 0 ? tradePrice : fixedDelistedPrice);
     const currentQty = p ? Number(p.quantity) || 0 : 0;
     if (fixedDelistedPrice != null && (storedPrevPrice == null || !(storedPrevPrice > 0) || !(lastPrice > 0))) {

@@ -65,9 +65,10 @@ assert.strictEqual(context.countTradingDaysBetween('2026-08-15', '2026-08-17'), 
 assert.strictEqual(context.countTradingDaysBetween('2026-08-13', '2026-08-17'), 1, '周四到周一应识别中间的周五交易日');
 assert.strictEqual(context.quoteDateCN('2026-08-24T15:00:00+08:00'), '2026-08-24', '行情日期必须按北京时间解析');
 assert.strictEqual(context.isTradingDateCN('2026-08-22'), false, '页面不得在周末写入收盘价');
-assert.ok(tables.includes('isTradingDateCN(todayCN())'), '休市日不得展示今日总资产涨跌');
-assert.ok(quote.includes('todayIsTradingDate ? result.change : null'), '休市日不得把最近交易日涨跌写入持仓行情');
-assert.ok(quote.includes('quoteDateCN(result.quote_time) === todayCN()'), '页面必须验证行情时间属于当天后才能写收盘价');
+assert.ok(tables.includes('liveAttribution.complete === true') && tables.includes('liveAttribution.currentDate === todayCN()'),
+  '今日涨跌应按服务端跨市场归因状态判断');
+assert.ok(quote.includes('marketOpenToday && quoteIsToday'), '只有该证券所属市场今天开市且报价属于当日时才显示涨跌');
+assert.ok(quote.includes('var quoteDate = quoteDateCN(result.quote_time)') && quote.includes('var quoteIsToday = quoteDate === today'), '页面必须验证行情时间属于当天后才能写收盘价');
 assert.ok(quote.includes('fetchQuoteBatch') && quote.includes('retryCodes'), '持仓刷新必须使用有界批量重试');
 assert.ok(!quote.includes('return await fetchQuote(c, true)'), '持仓批量失败后不得退化成逐只行情请求');
 assert.ok(!quote.includes('syncIndexPoints().catch(function(){});'), '持仓刷新不得在浏览器侧同步外部指数行情');
@@ -81,5 +82,38 @@ const partialTip = context.buildChangeTipHtml(100, 1, null, null, null, null, nu
 assert.ok(partialTip.includes('404002') && partialTip.includes('—'), '归因不完整时必须显示缺失标的并以破折号表示未计算项');
 const driftTip = context.buildChangeTipHtml(100, 1, 70, 20, 0, null, 10, null, false);
 assert.ok(driftTip.includes('未归因差额') && driftTip.includes('合计 = 股价影响 + 汇率影响 + 其他变动 + 未归因差额'), '存在明显残差时必须在浮框中展示并纳入合计');
+
+const summaryElements = new Map();
+const statsContainer = { innerHTML: '', querySelector: () => null };
+context.document.getElementById = id => {
+  if (id === 'stats-container') return statsContainer;
+  if (!summaryElements.has(id)) summaryElements.set(id, {
+    textContent: '', innerHTML: '', style: {}, removeAttribute() {},
+  });
+  return summaryElements.get(id);
+};
+context.todayCN = () => '2026-09-28';
+context.bindChangeTip = () => {};
+context.data = {
+  cash: 4002,
+  positions: [],
+  navHistory: [
+    { date: '2026-09-23', totalAsset: 400 },
+    { date: '2026-09-24', totalAsset: 400 },
+  ],
+  navAttribution: {
+    complete: false, reason: 'missing_intermediate_snapshot',
+    currentDate: '2026-09-28', missingMarketDate: '2026-09-25', missingMarket: 'HK',
+  },
+};
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').textContent, '-',
+  '港股开市中间日缺少快照时页面不得按 A 股日历显示多日变化');
+context.data.navAttribution = {
+  complete: true, currentDate: '2026-09-28', totalChange: 20, previousTotalAsset: 3982,
+};
+context.renderStats();
+assert.ok(summaryElements.get('stat-change').innerHTML.includes('20.00'),
+  '页面应直接展示完整的服务端跨市场归因变化');
 
 console.log('holdings summary refresh tests passed');

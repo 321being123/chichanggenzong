@@ -97,6 +97,30 @@
       "tests": [{ "file": "server/test/hk-ipo-dynamic-source-admission.test.js", "pattern": "默认未准入状态必须在联网和读取动态信号数据库前安全返回" }],
       "owner": "港股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "HOLDINGS-CROSS-MARKET-001",
+      "title": "港股交易状态及收盘时刻必须来自明确 HKEX 日历事实",
+      "implementation": { "file": "server/services/marketState.js", "symbol": "deriveMarketState" },
+      "tests": [{ "file": "server/test/cross-market-calendar-nav.test.js", "pattern": "半日盘 12:05 收市竞价期间仍属交易时段" }],
+      "owner": "持仓管理",
+      "status": "verified"
+    },
+    {
+      "id": "HOLDINGS-NAV-002",
+      "title": "跨市场账户价格和汇率变动须在同日净值归因闭合",
+      "implementation": { "file": "server/services/navAttribution.js", "symbol": "computeNavAttribution" },
+      "tests": [{ "file": "server/test/cross-market-calendar-nav.test.js", "pattern": "港股单独开市时归因必须完整" }],
+      "owner": "持仓管理",
+      "status": "verified"
+    },
+    {
+      "id": "HOLDINGS-REFRESH-003",
+      "title": "港股开市时刷新须即时更新持仓页与首页总资产",
+      "implementation": { "file": "public/shared/core-quote.js", "symbol": "refreshAllPrices" },
+      "tests": [{ "file": "server/test/holdings-cross-market-refresh.test.js", "pattern": "持仓页总资产应在 PATCH 完成前显示 4002 元" }],
+      "owner": "持仓管理",
+      "status": "verified"
     }
   ]
 }

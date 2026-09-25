@@ -4,7 +4,7 @@
 const https = require('https');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { cnDate, validRate, upsertFxRate, syncLegacyAccountRates, getCurrentFxRate, getCurrentFxRateSnapshot } = require('../services/fxRate');
-const { isCnHoliday } = require('../config/holidays');
+const { getMarketState, shanghaiDateTime, isPotentialHkTradingTime } = require('../services/marketState');
 const { withExternalCallGuard, openExternalCircuit, ExternalCallGuardError } = require('../services/externalCallGuard');
 
 const FRESH_RATE_MS = 24 * 60 * 60 * 1000;
@@ -128,20 +128,11 @@ async function fetchRealtimeHkRate() {
   }
 }
 
-function shanghaiClockNumber(value = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
-  }).formatToParts(value);
-  const p = Object.fromEntries(parts.map(item => [item.type, item.value]));
-  return Number(p.hour) * 100 + Number(p.minute);
-}
-
-function isHkTradingTime(value = new Date()) {
-  const date = cnDate(value);
-  const day = new Date(`${date}T00:00:00Z`).getUTCDay();
-  if (day === 0 || day === 6 || isCnHoliday(date)) return false;
-  const clock = shanghaiClockNumber(value);
-  return (clock >= 930 && clock < 1200) || (clock >= 1300 && clock < 1600);
+async function isHkTradingTime(value = new Date(), { allowUnknown = false } = {}) {
+  const { businessDate, time } = shanghaiDateTime(value);
+  const state = await getMarketState({ market: 'HK', businessDate, time });
+  if (state.status === 'open') return state.isTradingNow;
+  return Boolean(allowUnknown && state.status === 'unknown' && isPotentialHkTradingTime(businessDate, time));
 }
 
 async function persistHkRate(rate) {
@@ -181,21 +172,32 @@ async function ensureRealtimeHkRate({ force = false } = {}) {
 }
 
 // 带幂等锁与执行记录的汇率任务；只有收盘调用才强制取当天最终值。
-async function runHkRateJob({ final = false } = {}) {
+async function runHkRateJob({ final = false, targetDate } = {}) {
   if (!(await tryClaimJob('hk_rate'))) return { ok: false, skipped: true };
   const runId = await startJobRun('hk_rate');
   let result = { ok: false, rate: null };
   try {
     let r;
     if (final) {
-      try {
-        // 收盘任务不走 24 小时新鲜度短路，必须再取一次当天最终汇率。
-        r = await ensureRealtimeHkRate({ force: true });
-      } catch (realtimeError) {
-        // 实时源临时不可用时保留原有每日源兜底，不能因为新源故障清空当天汇率。
+      const today = cnDate(new Date());
+      const stateDate = targetDate || today;
+      const stateTime = stateDate === today ? shanghaiDateTime(new Date()).time : '23:59';
+      const marketState = await getMarketState({ market: 'HK', businessDate: stateDate, time: stateTime });
+      if (marketState.status === 'unknown') {
+        r = { ok: true, skipped: true, reason: 'hk_calendar_unknown', externalCalls: 0 };
+      } else if (marketState.status === 'closed') {
         r = await ensureHkRate({ force: true });
-        r.fallback = 'daily_exchange_rate';
-        r.realtimeError = realtimeError && realtimeError.message;
+        r.fallback = 'hk_market_closed_daily_rate';
+      } else {
+        try {
+          // 港股收市后不走 24 小时新鲜度短路，必须再取一次最终汇率。
+          r = await ensureRealtimeHkRate({ force: true });
+        } catch (realtimeError) {
+          // 实时源临时不可用时保留原有每日源兜底，不能因为新源故障清空当天汇率。
+          r = await ensureHkRate({ force: true });
+          r.fallback = 'daily_exchange_rate';
+          r.realtimeError = realtimeError && realtimeError.message;
+        }
       }
     } else {
       // Web/Worker 启动补漏只沿用 24 小时门禁，不在交易时段额外触发收盘抓取。

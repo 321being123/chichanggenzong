@@ -10,6 +10,9 @@ const traceabilityPath = path.join(__dirname, '..', 'governance', 'rule-traceabi
 
 function scheduleOf(job) {
   if (job.manualOnly) return '人工';
+  if (job.marketCalendarPolicy === 'hk-close') return 'HKEX 收市 + 20 分钟（全日 16:30，半日 12:30）';
+  if (job.marketCalendarPolicy === 'hk-rate') return 'HKEX 收市 + 25 分钟；仅 A 股开市日 16:15';
+  if (job.marketCalendarPolicy === 'nav-snapshot') return '按持仓市场就绪时间（港股全日 16:40、半日与 A 股同开市 15:20、A 股单开市 16:20）';
   if (job.monthly) return `每月 ${String(job.hour).padStart(2, '0')}:${String(job.minute).padStart(2, '0')}`;
   return [
     `${String(job.hour).padStart(2, '0')}:${String(job.minute).padStart(2, '0')}`,

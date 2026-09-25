@@ -1,7 +1,7 @@
 // ========== 自动记录每日收盘价（按市场收盘时刻精准触发 + 休市识别 + 缺失补漏） ==========
 const { pool, loadAccountData, saveDailyPrices, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { fetchQuoteByCode } = require('../services/market');
-const { isCnHoliday } = require('../config/holidays');
+const { getMarketState, isCnTradingDate, prefetchMarketFacts, shanghaiDateTime, parseClock } = require('../services/marketState');
 const { runNavSnapshotJob } = require('./navSnapshot');
 const { runIndexRecentJob } = require('./indexBaseline');
 const { runHkRateJob } = require('./hkRate');
@@ -9,14 +9,15 @@ const { backfillDailyPrices } = require('./replayNav');
 const { getExternalCallStats } = require('../services/externalCallGuard');
 const classifyCode = require('../../public/js/code-classify');
 const sharedQuotePromises = new Map();
+const legacyFinalTasks = new Map();
 
 // 各市场收盘时间：{ hour, minute, 适用的代码前缀匹配规则 }
 const MARKET_CLOSE_TIMES = [
-  { h: 15, m: 10, label: 'A股',     match: (code, position) => /^(00|30|60|68|[48])/.test(code) && !/(债|转债)/.test(String(position && position.name || '')) },
-  { h: 16, m: 10, label: '港股',    match: code => code.length === 5 },
-  { h: 15, m: 10, label: '可转债',   match: code => /^(11|12)/.test(code) },
-  { h: 15, m: 10, label: 'LOF/ETF', match: code => classifyCode.isFundEtfCode(code) },
-  { h: 15, m: 10, label: '非标准证券', match: (code, position) => isUncoveredPosition(code, position) },
+  { h: 15, m: 10, label: 'A股', market: 'CN', match: (code, position) => position && position.subtype !== '港股' && String(code).length >= 6 && /^(00|30|60|68|[48])/.test(code) && !/(债|转债)/.test(String(position.name || '')) },
+  { h: 16, m: 30, label: '港股', market: 'HK', match: (code, position) => position && (position.subtype === '港股' || String(position.quoteCurrency || '').toUpperCase() === 'HKD') || code.length === 5 },
+  { h: 15, m: 10, label: '可转债', market: 'CN', match: code => /^(11|12)/.test(code) },
+  { h: 15, m: 10, label: 'LOF/ETF', market: 'CN', match: code => classifyCode.isFundEtfCode(code) },
+  { h: 15, m: 10, label: '非标准证券', market: 'CN', match: (code, position) => isUncoveredPosition(code, position) },
 ];
 
 // 固定东八区偏移（毫秒）：显式使用 Asia/Shanghai，不依赖容器本地时区，避免 UTC 容器下任务错时
@@ -41,9 +42,14 @@ function cnWeekday(d) {
 
 // 是否为交易日：周一至周五 且 非法定节假日（按北京时间判断）
 function isTradingDay(d) {
-  const day = cnWeekday(d || new Date());
-  if (day < 1 || day > 5) return false;
-  return !isCnHoliday(fmtCN(d || new Date()));
+  return isCnTradingDate(fmtCN(d || new Date()));
+}
+
+async function isMarketTradingDate(market, date) {
+  if (market === 'HK') {
+    return (await getMarketState({ market: 'HK', businessDate: date, time: '00:00' })).status === 'open';
+  }
+  return isCnTradingDate(date);
 }
 
 // 距离「北京时间 h:m」还有多少毫秒（显式东八区，不依赖容器时区）
@@ -195,6 +201,10 @@ async function getSharedQuoteMap(cnDate) {
 // 为所有账户记录某市场某交易日收盘价；任一证券失败都进入统一有限重试，避免部分账户缺数却显示成功。
 async function recordMarketClose(label, matchFn, dateStr, context = {}) {
   const cnDate = dateStr || cnDateStr();
+  const market = MARKET_CLOSE_TIMES.find(item => item.label === label);
+  if (!market || !(await isMarketTradingDate(market.market, cnDate))) {
+    return { recorded: 0, failed: 0, skipped: 0, verifiedNoChange: true, reason: 'market_closed_or_unknown' };
+  }
   const totalLimit = Math.max(Number(process.env.MARKET_CLOSE_REQUEST_BUDGET) || 2000, 1);
   const previousCalls = Math.max(Number(context.externalCallCount) || 0, 0);
   const requestBudget = { used: 0, limit: Math.max(totalLimit - previousCalls, 0) };
@@ -230,15 +240,23 @@ async function recordMarketClose(label, matchFn, dateStr, context = {}) {
     error.externalCalls = getExternalCallStats().total;
     throw error;
   }
-  return { recorded, failed, skipped, externalCalls: getExternalCallStats().total };
+  return { recorded, failed, skipped, verifiedNoChange: recorded === 0 && skipped === 0, externalCalls: getExternalCallStats().total };
 }
 
-function recentTradingDays(count) {
+async function recentMarketDays(count) {
   const days = [];
   const now = new Date();
-  for (let i = 1; i <= 14 && days.length < count; i++) {
+  const dates = [];
+  for (let i = 1; i <= 21; i++) dates.push(fmtCN(new Date(now.getTime() - i * 86400000)));
+  await prefetchMarketFacts('HK', dates);
+  for (let i = 1; i <= 21 && days.length < count; i++) {
     const dd = new Date(now.getTime() - i * 86400000);
-    if (isTradingDay(dd)) days.push(fmtCN(dd));
+    const date = fmtCN(dd);
+    const [cnOpen, hkOpen] = await Promise.all([
+      Promise.resolve(isCnTradingDate(date)),
+      isMarketTradingDate('HK', date),
+    ]);
+    if (cnOpen || hkOpen) days.push(date);
   }
   return days;
 }
@@ -256,7 +274,7 @@ async function findMissingCloseDates(username, accountName) {
     [username, accountName]
   );
   const firstDate = range.rows[0] && range.rows[0].first_date;
-  const lastDate = recentTradingDays(1)[0];
+  const lastDate = (await recentMarketDays(1))[0];
   if (!firstDate || !lastDate || firstDate > lastDate) return [];
 
   const existing = await pool.query(
@@ -267,11 +285,13 @@ async function findMissingCloseDates(username, accountName) {
   const missingDates = [];
   const cursor = new Date(firstDate + 'T12:00:00Z');
   const end = new Date(lastDate + 'T12:00:00Z');
+  const rangeDates = [];
+  for (let date = firstDate; date <= lastDate; date = new Date(new Date(`${date}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10)) rangeDates.push(date);
+  await prefetchMarketFacts('HK', rangeDates);
   while (cursor <= end) {
-    if (isTradingDay(cursor)) {
-      const date = fmtCN(cursor);
-      if (!existingDates.has(date)) missingDates.push(date);
-    }
+    const date = fmtCN(cursor);
+    const hkOpen = await isMarketTradingDate('HK', date);
+    if ((isCnTradingDate(date) || hkOpen) && !existingDates.has(date)) missingDates.push(date);
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   return missingDates;
@@ -280,7 +300,7 @@ async function findMissingCloseDates(username, accountName) {
 // 缺失补漏：自动任务只回看近期；手动任务查询每个账户已落库区间的全部缺失交易日。
 async function backfillMissingCloses(options) {
   const scanAllMissingDates = !!(options && options.scanAllMissingDates);
-  const recentDays = scanAllMissingDates ? null : recentTradingDays(6);
+  const recentDays = scanAllMissingDates ? null : await recentMarketDays(6);
   const { rows: accounts } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
   let accountCount = 0, missingDates = 0, recorded = 0, failed = 0, skipped = 0;
   for (const account of accounts) {
@@ -295,6 +315,7 @@ async function backfillMissingCloses(options) {
       // 不再用「当天任意一条记录」判断是否跳过：recordCloseOne 内部按代码幂等，
       // 只补齐缺失代码，已完整的市场不会重复抓取，缺失的市场会被补上。
       for (const mkt of MARKET_CLOSE_TIMES) {
+        if (!(await isMarketTradingDate(mkt.market, day))) continue;
         const result = await recordCloseOne(account.username, accountName, mkt.label, mkt.match, day)
           .catch(e => { console.warn('[backfill] ' + day + ' ' + accountName + ' 失败:', e.message); return null; });
         if (result) {
@@ -338,39 +359,107 @@ async function runMarketCloseByLabel(label, dateStr, context = {}) {
   return runMarketCloseJob(market.label, market.match, dateStr, context);
 }
 
-// 为所有市场分别调度收盘任务（含休市识别 + 每日缺失补漏）
-function scheduleAllMarketCloses() {
-  let lastBackfill = '';
-  for (let i = 0; i < MARKET_CLOSE_TIMES.length; i++) {
-    (function (mkt) {
-      function runAndReschedule() {
-        if (isTradingDay()) {
-          // 每日仅补一次「前一交易日」的漏（不论哪个市场先触发）
-          const today = cnDateStr();
-          if (today !== lastBackfill) {
-            lastBackfill = today;
-            backfillMissingCloses().catch(e => console.error('[worker] 补漏失败:', e.message));
-          }
-          // 港股 16:10 是最晚收盘：待其收盘价落库后，依次生成当日净值/总资产快照、指数点位、港币汇率
-          runMarketCloseJob(mkt.label, mkt.match)
-            .then(() => {
-              if (mkt.label !== '港股') return;
-              return runHkRateJob({ final: true })
-                .then((fx) => {
-                  if (!fx || !fx.ok) return null;
-                  return runNavSnapshotJob();
-                })
-                .then(() => runIndexRecentJob());
-            })
-            .catch(() => {});
-        }
-        var nextDelay = nextRunDelay(mkt.h, mkt.m);
-        setTimeout(runAndReschedule, nextDelay);
-      }
-      var initialDelay = msUntil(mkt.h, mkt.m);
-      setTimeout(runAndReschedule, initialDelay);
-    })(MARKET_CLOSE_TIMES[i]);
+function marketTimeEpoch(date, time) {
+  const [year, month, day] = date.split('-').map(Number);
+  const minute = parseClock(time);
+  return Date.UTC(year, month - 1, day, Math.floor(minute / 60) - 8, minute % 60, 0, 0);
+}
+
+async function waitUntilBusinessTime(date, time) {
+  const delay = marketTimeEpoch(date, time) - Date.now();
+  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+}
+
+async function runLegacyFinalTaskOnce(date, taskName, task) {
+  const key = `${date}|${taskName}`;
+  if (legacyFinalTasks.has(key)) return legacyFinalTasks.get(key);
+  const promise = Promise.resolve().then(task).then(result => {
+    if (!result || result.ok !== false) return result;
+    legacyFinalTasks.delete(key);
+    return result;
+  }).catch(error => {
+    legacyFinalTasks.delete(key);
+    throw error;
+  });
+  legacyFinalTasks.set(key, promise);
+  for (const existingKey of legacyFinalTasks.keys()) {
+    if (existingKey.slice(0, 10) < fmtCN(new Date(Date.now() - 7 * 86400000))) legacyFinalTasks.delete(existingKey);
+  }
+  return promise;
+}
+
+function shouldRunLegacyNavAfterHkClose(cnStatus, hkCloseQuoteTime) {
+  const closeMinute = parseClock(hkCloseQuoteTime);
+  const halfDay = closeMinute != null && closeMinute <= 15 * 60 + 10;
+  return cnStatus === 'closed' || (cnStatus === 'open' && !halfDay);
+}
+
+async function runLegacyPostCloseCycle(marketRule, date, result) {
+  if (!result || result.ok !== true) return;
+  const [cn, hk] = await Promise.all([
+    getMarketState({ market: 'CN', businessDate: date, time: '00:00' }),
+    getMarketState({ market: 'HK', businessDate: date, time: '00:00' }),
+  ]);
+  if (marketRule.market === 'HK') {
+    const fx = await runLegacyFinalTaskOnce(date, 'hk-rate', () => runHkRateJob({ final: true, targetDate: date }));
+    if (fx && fx.ok && shouldRunLegacyNavAfterHkClose(cn.status, hk.closeQuoteTime)) {
+      await runLegacyFinalTaskOnce(date, 'nav-snapshot', () => runNavSnapshotJob({ targetDate: date }));
+      await runLegacyFinalTaskOnce(date, 'index-recent', () => runIndexRecentJob());
+    }
+    return;
+  }
+  const hkHalfDayAlreadyClosed = hk.status === 'open' && hk.closeQuoteTime && parseClock(hk.closeQuoteTime) <= 15 * 60 + 10;
+  if (hk.status === 'closed' || hkHalfDayAlreadyClosed) {
+    await waitUntilBusinessTime(date, hk.status === 'closed' ? '16:15' : '15:20');
+    const fx = await runLegacyFinalTaskOnce(date, 'hk-rate', () => runHkRateJob({ final: true, targetDate: date }));
+    if (!fx || !fx.ok) return;
+    if (hk.status === 'closed') await waitUntilBusinessTime(date, '16:20');
+    await runLegacyFinalTaskOnce(date, 'nav-snapshot', () => runNavSnapshotJob({ targetDate: date }));
+    await runLegacyFinalTaskOnce(date, 'index-recent', () => runIndexRecentJob());
   }
 }
 
-module.exports = { scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps };
+async function nextMarketCloseDelay(marketRule, nowInput = new Date()) {
+  const now = new Date(nowInput);
+  const dates = [];
+  for (let offset = 0; offset <= 31; offset++) dates.push(fmtCN(new Date(now.getTime() + offset * 86400000)));
+  if (marketRule.market === 'HK') await prefetchMarketFacts('HK', dates);
+  for (const date of dates) {
+    const state = await getMarketState({ market: marketRule.market, businessDate: date, time: '00:00' });
+    if (state.status !== 'open') continue;
+    const closeQuoteTime = marketRule.market === 'HK' ? state.closeQuoteTime : null;
+    const time = closeQuoteTime || `${String(marketRule.h).padStart(2, '0')}:${String(marketRule.m).padStart(2, '0')}`;
+    const target = marketTimeEpoch(date, time);
+    if (target > now.getTime()) return Math.max(target - now.getTime(), 5000);
+  }
+  return 12 * 60 * 60 * 1000;
+}
+
+// 旧调度兼容入口仍使用同一市场状态服务，港股收盘采集在实际收市后20分钟运行。
+function scheduleAllMarketCloses() {
+  let lastBackfill = '';
+  for (const marketRule of MARKET_CLOSE_TIMES) {
+    const scheduleNext = async () => {
+      const delay = await nextMarketCloseDelay(marketRule).catch(() => 12 * 60 * 60 * 1000);
+      setTimeout(async () => {
+        try {
+          const today = cnDateStr();
+          if (await isMarketTradingDate(marketRule.market, today)) {
+            if (today !== lastBackfill) {
+              lastBackfill = today;
+              backfillMissingCloses().catch(error => console.error('[worker] 补漏失败:', error.message));
+            }
+            const result = await runMarketCloseJob(marketRule.label, marketRule.match, today);
+            await runLegacyPostCloseCycle(marketRule, today, result);
+          }
+        } catch (error) {
+          console.error(`[worker] ${marketRule.label} 收盘任务失败:`, error.message || error);
+        }
+        scheduleNext();
+      }, delay);
+    };
+    scheduleNext();
+  }
+}
+
+module.exports = { scheduleAllMarketCloses, runMarketCloseByLabel, backfillMissingCloses, findMissingCloseDates, isTradingDay, isMarketTradingDate, nextMarketCloseDelay, fmtCN, pickMissingCodes, isUncoveredPosition, cnWeekday, msUntil, nextRunDelay, quoteForCode, isUsableQuote, mergeQuoteMaps, shouldRunLegacyNavAfterHkClose, runLegacyPostCloseCycle };

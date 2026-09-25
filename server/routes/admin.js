@@ -16,7 +16,8 @@ const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
 const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
 const arbitrageSvc = require('../services/arbitrageService');
-const { getJobOverview, listJobSlots, getJobSlot, retryJobSlot, acknowledgeSlot, validateJobSlot } = require('../services/jobScheduleSlots');
+const { getJobOverview, listJobSlots, getJobSlot, retryJobSlot, acknowledgeSlot, validateJobSlot, enqueueManualJob } = require('../services/jobScheduleSlots');
+const { validateManualCorrection } = require('../jobs/hkTradeCalendarSync');
 const { listAlerts, resendAlert, acknowledgeAlert, sendTestEmail } = require('../services/jobAlertMailer');
 const { sanitizeJobError } = require('../services/jobErrorSanitizer');
 const {
@@ -229,6 +230,32 @@ router.post('/jobs/slots/:slotId/retry', asyncHandler(async (req, res) => {
   }
   await audit(req, 'job_retry', slot.job_code, { detail: '后台手动补跑已入队', metadata: { slotId, queued: true } });
   res.status(202).json({ ok: true, queued: true, slotId, slot });
+}));
+router.post('/jobs/hkex-calendar-correction', requireCapability('ops_manage'), asyncHandler(async (req, res) => {
+  try {
+    const correction = validateManualCorrection(req.body || {});
+    const manualCorrection = {
+      date: correction.date,
+      status: correction.isOpen ? 'open' : 'closed',
+      sessionType: correction.sessionType,
+      closeTime: correction.closeTime,
+      evidenceUrl: correction.evidenceUrl,
+      reason: correction.reason,
+      correctedBy: req.session.user,
+    };
+    const slot = await enqueueManualJob('hk_trade_calendar_sync', { manualCorrection });
+    if (!slot) return res.status(400).json({ error: '港交所交易日历任务不可用' });
+    await audit(req, 'hkex_calendar_correction_queue', correction.date, {
+      detail: correction.reason,
+      metadata: { date: correction.date, status: manualCorrection.status, sourceHost: new URL(correction.evidenceUrl).hostname, slotId: slot.slot_id },
+    });
+    return res.status(202).json({ ok: true, queued: true, slotId: slot.slot_id, date: correction.date });
+  } catch (error) {
+    await audit(req, 'hkex_calendar_correction_queue', String(req.body && req.body.date || ''), {
+      result: 'failure', detail: error.message || String(error),
+    });
+    return res.status(400).json({ error: error.message || '港交所人工修正参数无效' });
+  }
 }));
 router.post('/jobs/slots/:slotId/validate', asyncHandler(async (req, res) => {
   const slotId = parseInt(req.params.slotId, 10);

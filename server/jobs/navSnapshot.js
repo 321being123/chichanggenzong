@@ -7,9 +7,8 @@
 //   - 不在用户首条净值记录之前凭空捏造历史（无净值时才从首个可估值日以 1.0 起链）。
 //   - 某交易日有持仓却缺收盘价 → 跳过那天，不近似。
 const { pool, loadAccountData, upsertNav, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { isCnHoliday } = require('../config/holidays');
+const { getMarketState, isCnTradingDate, prefetchMarketFacts } = require('../services/marketState');
 const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
-const { getCurrentFxRate } = require('../services/fxRate');
 const classifyCode = require('../../public/js/code-classify');
 
 // 东八区日期 YYYY-MM-DD
@@ -25,7 +24,7 @@ function dateText(value) {
 }
 
 // 为单个账户填补缺失交易日的净值快照（幂等：已有记录跳过、只新增缺失日）
-async function recordNavSnapshots(username, accountName, hkRateOverride = null) {
+async function recordNavSnapshots(username, accountName, hkRateOverride = null, targetDateInput = cnDate(new Date())) {
   const data = await loadAccountData(username, accountName);
   const positionNames = new Map((data.positions || []).map(position => [position.code, position.name || '']));
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return dateText(a.date).localeCompare(dateText(b.date)); });
@@ -42,12 +41,24 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
   );
   const dpMap = new Map();
   const priceDates = new Set();
+  const pricesByCode = new Map();
   dpRows.forEach(function (r) {
     const d = dateText(r.date);
-    dpMap.set(r.code + '|' + d, r.price);
+    const code = classifyCode.normalizeCode(r.code, positionNames.get(r.code)) || r.code;
+    dpMap.set(code + '|' + d, Number(r.price));
     priceDates.add(d);
+    if (!pricesByCode.has(code)) pricesByCode.set(code, []);
+    pricesByCode.get(code).push({ date: d, price: Number(r.price) });
   });
-  if (priceDates.size === 0) return { ok: true, days: 0 };
+  for (const rows of pricesByCode.values()) rows.sort((a, b) => a.date.localeCompare(b.date));
+  const targetDate = dateText(targetDateInput);
+  const targetCnState = isCnTradingDate(targetDate) ? 'open' : 'closed';
+  const targetHkState = (await getMarketState({ market: 'HK', businessDate: targetDate, time: '00:00' })).status;
+  const dateSet = new Set(priceDates);
+  if (targetCnState === 'open' || targetHkState === 'open') dateSet.add(targetDate);
+  if (dateSet.size === 0) return { ok: true, days: 0, verifiedNoChange: true, usedPriceDates: {} };
+  const allDates = Array.from(dateSet).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= targetDate).sort();
+  await prefetchMarketFacts('HK', [...priceDates, ...allDates]);
   const navByDate = new Map();
   navs.forEach(function (n) { navByDate.set(dateText(n.date), n); });
 
@@ -174,29 +185,73 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
     return { value: c, incomplete };
   }
 
-  const today = cnDate(new Date());
+  const today = targetDate;
   const { rows: fxRows } = await pool.query(
     `SELECT rate_date, rate::float8 AS rate FROM market.fx_rates
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
     [today]
   );
   const fxByDate = new Map(fxRows.map(r => [r.rate_date instanceof Date ? cnDate(r.rate_date) : String(r.rate_date).slice(0, 10), Number(r.rate)]));
-  const currentFxRate = Number(hkRateOverride) > 0 ? Number(hkRateOverride) : (fxByDate.get(today) || await getCurrentFxRate());
-  let allDates = Array.from(priceDates).filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today; });
+  const sortedFx = [...fxByDate.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const fxRateForDate = (date, hkOpen) => {
+    if (hkOpen) return fxByDate.get(date) || null;
+    for (let index = sortedFx.length - 1; index >= 0; index--) {
+      if (sortedFx[index][0] <= date) return sortedFx[index][1];
+    }
+    return null;
+  };
+  let datesToProcess = allDates.filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today; });
   // 不在首条净值记录之前捏造历史：有净值时只填 >= 首条净值日的空档
-  if (navs.length > 0) allDates = allDates.filter(function (d) { return d >= dateText(navs[0].date); });
-  allDates.sort();
-  if (allDates.length === 0) return { ok: true, days: 0 };
+  if (navs.length > 0) datesToProcess = datesToProcess.filter(function (d) { return d >= dateText(navs[0].date); });
+  if (datesToProcess.length === 0) return { ok: true, days: 0, verifiedNoChange: true, usedPriceDates: {} };
 
   // 锚点：allDates[0] 之前最近的一条 nav（续链基准）
   let prev = null;
   for (const n of navs) {
-    if (dateText(n.date) < allDates[0]) prev = { date: dateText(n.date), nav: n.nav, totalAsset: (n.totalAsset != null ? n.totalAsset : 0) };
+    if (dateText(n.date) < datesToProcess[0]) prev = { date: dateText(n.date), nav: n.nav, totalAsset: (n.totalAsset != null ? n.totalAsset : 0) };
   }
 
   let affected = 0;
   const incompleteDates = [];
-  for (const d of allDates) {
+  const usedPriceDates = {};
+  const stateCache = new Map();
+  async function stateFor(market, date) {
+    const key = market + '|' + date;
+    if (!stateCache.has(key)) {
+      stateCache.set(key, await getMarketState({ market, businessDate: date, time: '00:00' }));
+    }
+    return stateCache.get(key);
+  }
+  async function effectivePrice(code, market, date, marketStatus) {
+    const exact = dpMap.get(code + '|' + date);
+    if (marketStatus === 'open') return exact > 0 ? { price: exact, date } : null;
+    if (marketStatus !== 'closed') return null;
+    const candidates = pricesByCode.get(code) || [];
+    for (let index = candidates.length - 1; index >= 0; index--) {
+      const candidate = candidates[index];
+      if (candidate.date >= date || !(candidate.price > 0)) continue;
+      const candidateState = await stateFor(market, candidate.date);
+      if (candidateState.status === 'open') return candidate;
+    }
+    return null;
+  }
+  for (const d of datesToProcess) {
+    const anchor = latestPositionAnchor(d);
+    const hasActivity = (data.positions || []).length > 0 || trades.some(t => tradeDay(t) <= d);
+    const held = heldQty(d, anchor);
+    const relevantMarkets = new Set([...held.entries()]
+      .filter(([, info]) => info.qty > 0)
+      .map(([, info]) => info.subtype === '港股' ? 'HK' : 'CN'));
+    if (relevantMarkets.size === 0 && hasActivity) {
+      (data.positions || []).filter(position => Number(position.quantity) > 0).forEach(position => {
+        relevantMarkets.add(position.subtype === '港股' || String(position.quoteCurrency || '').toUpperCase() === 'HKD' ? 'HK' : 'CN');
+      });
+    }
+    if (relevantMarkets.size === 0) continue;
+    const marketStates = {};
+    for (const market of relevantMarkets) marketStates[market] = await stateFor(market, d);
+    if (![...relevantMarkets].some(market => marketStates[market].status === 'open')) continue;
+
     const existing = navByDate.get(d);
     if (existing) {
       // 已有记录：保留不动，仅作续链锚点
@@ -204,24 +259,26 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
       continue;
     }
     // 缺失日 → 用当日收盘价估值
-    const anchor = latestPositionAnchor(d);
     // 有持仓/交易数据时，必须先找到券商导入或人工校准快照；禁止退回到“从第一笔交易重算”的旧逻辑。
-    const hasActivity = (data.positions || []).length > 0 || trades.some(t => tradeDay(t) <= d);
     if (!anchor && hasActivity) {
       incompleteDates.push({ date: d, missingCodes: ['持仓基准快照'] });
       continue;
     }
-    const held = heldQty(d, anchor);
-    const hkRate = fxByDate.get(d) || (d === today ? currentFxRate : null);
+    const hkOpen = marketStates.HK && marketStates.HK.status === 'open';
+    const hkRate = fxRateForDate(d, hkOpen);
     let incomplete = false;
     const missingCodes = [];
     const mvs = [];
+    const usedDateByCode = {};
     for (const [code, info] of held) {
       if (info.qty === 0) continue;
-      const price = code ? dpMap.get(code + '|' + d) : null;
-      if (price == null) { incomplete = true; missingCodes.push(code); continue; }
-      if (info.subtype === '港股' && !(hkRate > 0)) { incomplete = true; missingCodes.push(code + ':HKD汇率'); continue; }
-      mvs.push(price * info.qty * (info.subtype === '港股' ? hkRate : 1));
+      const market = info.subtype === '港股' ? 'HK' : 'CN';
+      const state = marketStates[market] || await stateFor(market, d);
+      const price = await effectivePrice(code, market, d, state.status);
+      if (!price) { incomplete = true; missingCodes.push(state.status === 'unknown' ? `${code}:交易日历未知` : code); continue; }
+      usedDateByCode[code] = price.date;
+      if (market === 'HK' && !(hkRate > 0)) { incomplete = true; missingCodes.push(code + ':HKD汇率'); continue; }
+      mvs.push(price.price * info.qty * (market === 'HK' ? hkRate : 1));
     }
     if (incomplete) {
       incompleteDates.push({ date: d, missingCodes: missingCodes.slice(0, 50) });
@@ -235,6 +292,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
     }
     const totalAsset = cash.value + mvs.reduce(function (s, v) { return s + v; }, 0);
     const invested = investedAt(navs, cfs, cashBase, d);
+    usedPriceDates[d] = usedDateByCode;
 
     if (!prev) {
       await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
@@ -255,6 +313,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
     missingDates: incompleteDates.map(item => item.date),
     missingCodes: [...new Set(incompleteDates.flatMap(item => item.missingCodes))],
     diagnostics: incompleteDates,
+    usedPriceDates,
     ...(incompleteDates.length ? {
       error: '账户净值快照存在缺失行情或汇率：' + incompleteDates.map(item => item.date + '（' + item.missingCodes.join('、') + '）').join('；'),
       errorType: 'data_quality',
@@ -264,18 +323,17 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null) 
 }
 
 // 为所有账户填补缺失快照（带幂等锁与执行留痕，供告警/多实例单跑）
-async function runNavSnapshotJob() {
+async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
   if (!(await tryClaimJob('nav_snapshot'))) return { ok: false, skipped: true, reason: 'already_running' }; // 其他实例已在跑
   const runId = await startJobRun('nav_snapshot');
   let total = 0, accountCount = 0;
   const failedAccounts = [];
   try {
-    const hkRate = await getCurrentFxRate();
     const { rows: accountRows } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
     for (const account of accountRows) {
       const accountName = account.account_name;
       try {
-        const r = await recordNavSnapshots(account.username, accountName, hkRate);
+        const r = await recordNavSnapshots(account.username, accountName, null, targetDate);
         if (r && r.days > 0) { total += r.days; accountCount++; }
         if (r && r.ok === false) {
           failedAccounts.push({ accountName, missingDates: r.missingDates || [], missingCodes: r.missingCodes || [], diagnostics: r.diagnostics || [] });

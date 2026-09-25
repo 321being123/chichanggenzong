@@ -637,6 +637,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     continuationMaxAgeHours: Number(definition.continuationMaxAgeHours || 24),
     ...(process.env.NODE_ENV === 'test' && claimed.request_payload && claimed.request_payload.testScenario
       ? { testScenario: String(claimed.request_payload.testScenario) } : {}),
+    ...(claimed.request_payload && claimed.request_payload.manualCorrection
+      ? { manualCorrection: claimed.request_payload.manualCorrection } : {}),
   };
   const freshnessGateEnabled = claimed.request_payload
     && Object.prototype.hasOwnProperty.call(claimed.request_payload, 'freshnessGate')

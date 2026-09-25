@@ -6,32 +6,14 @@ function renderStats() {
   var container = document.getElementById('stats-container');
   if (!container) return;
   
-  // 计算今日涨跌：今日已有快照时对比前一条；今日尚未落快照时对比最近一条。
-  // 导入日之后跨过一个完整交易日仍没有系统快照时，不把多日变化冒充成今日涨跌。
-  var changeAmt = 0, changePct = 0, hasChange = false;
-  var todayIsTradingDate = typeof isTradingDateCN === 'function' ? isTradingDateCN(todayCN()) : true;
-  if (todayIsTradingDate && data.navHistory && data.navHistory.length >= 2) {
-    var latest = data.navHistory[data.navHistory.length - 1];
-    var base = latest;
-    if (latest.date === todayCN()) base = data.navHistory[data.navHistory.length - 2];
-    var gapDays = daysBetweenDates(base.date, todayCN());
-    var tradingGapDays = countTradingDaysBetween(base.date, todayCN());
-    var importedGap = latest.snapshotSource === 'imported' && latest.date !== todayCN() && tradingGapDays > 0;
-    // “今日涨跌”只能使用上一交易日快照；缺少中间交易日时不能把多日变化冒充今日变化。
-    var hasPreviousTradingSnapshot = tradingGapDays === 0;
-    if (gapDays != null && gapDays <= 4 && !importedGap && hasPreviousTradingSnapshot) {
-      changeAmt = s.total - base.totalAsset;
-      changePct = base.totalAsset > 0 ? (changeAmt / base.totalAsset * 100) : 0;
-      hasChange = true;
-    }
-  }
-  // 后端按同一基准日行情重建的归因是今日涨跌权威值，避免旧快照与收盘价更新造成虚假残差。
+  // 今日涨跌只展示服务端按持仓市场日历核验完整的归因，避免用 A 股日历误判港股交易间隔。
   var liveAttribution = data.navAttribution;
-  if (hasChange && liveAttribution && liveAttribution.complete && liveAttribution.currentDate === todayCN() && Number.isFinite(Number(liveAttribution.totalChange))) {
+  var changeAmt = 0, changePct = 0, hasChange = false;
+  if (liveAttribution && liveAttribution.complete === true && liveAttribution.currentDate === todayCN() && Number.isFinite(Number(liveAttribution.totalChange))) {
     changeAmt = Number(liveAttribution.totalChange);
     var attributionBase = Number(liveAttribution.previousTotalAsset);
-    if (!(attributionBase > 0)) attributionBase = s.total - changeAmt;
     changePct = attributionBase > 0 ? (changeAmt / attributionBase * 100) : 0;
+    hasChange = true;
   }
   
   // 首次渲染生成卡片结构

@@ -1701,6 +1701,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   .mobile-nav-panel .admin-link { display: inline-flex; align-items: center; min-height: 44px; }
 }
 @media (max-width: 760px) {
+  .filter-bar .position-refresh-btn { min-height: 44px; }
   body { font-size: 15px; }
   .main-page, .page, .feature-page-shell, .home-dashboard-shell, .table-wrap,
   .stock-analysis-section, .stock-analysis-chart, .admin-view, .ks-shell, .ks-read-layout { min-width: 0; max-width: 100%; }

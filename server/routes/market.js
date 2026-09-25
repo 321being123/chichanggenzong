@@ -40,10 +40,10 @@ router.get('/quote/:code', requireLogin, asyncHandler(async (req, res) => {
   res.json(await fetchQuoteByCode(code) || { price: null, code });
 }));
 
-// 批量行情（刷新用）：A股/可转债/港股统一走腾讯实时，Tushare 日线仅作回退
+// 手动刷新行情：绕过腾讯行情缓存，A股/可转债/港股统一取最新报价，Tushare 日线仅作回退
 router.get('/quotes', requireLogin, asyncHandler(async (req, res) => {
   const codes = (req.query.codes || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  res.json(await fetchQuotesByCodes(codes));
+  res.json(await fetchQuotesByCodes(codes, { force: true }));
 }));
 
 router.get('/market-state', requireLogin, asyncHandler(async (req, res) => {

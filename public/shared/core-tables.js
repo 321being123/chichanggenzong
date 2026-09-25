@@ -493,7 +493,8 @@ function renderPositionsTable(targetId, limit) {
       ((filterState.type || filterState.subtype)
         ? '<button class="btn btn-outline btn-sm" onclick="filterState={type:&quot;&quot;,subtype:&quot;&quot;};renderPositionsTable(&quot;positions-table&quot;);renderPositionsTable(&quot;topn-table&quot;)">清除筛选</button>'
         : '') +
-      '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="exportToExcel()">导出EXCEL</button>' +
+      '<button class="btn btn-outline btn-sm position-refresh-btn" style="margin-left:auto;" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>' +
+      '<button class="btn btn-success btn-sm" onclick="exportToExcel()">导出EXCEL</button>' +
       '<span style="color:#bbb;">' + list.length + ' / ' + activePositions.length + ' 只</span>' +
       '</div>';
   }

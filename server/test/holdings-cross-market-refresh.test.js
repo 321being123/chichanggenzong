@@ -42,8 +42,8 @@ vm.runInContext(fs.readFileSync(path.join(root, 'public/shared/core-quote.js'), 
 
 assert.ok(indexHtml.includes('<button class="btn-refresh" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>'),
   '现有账户工具栏应显示复用 doRefresh 的“刷新行情”按钮');
-assert.ok(indexHtml.includes('shared/core-quote.js?v=0.8.1.87') && indexHtml.includes('shared/core-tables.js?v=0.8.1.87'),
-  '修改后的共享行情与统计脚本必须使用当前版本缓存键');
+assert.ok(indexHtml.includes('shared/core-quote.js?v=0.8.1.87') && indexHtml.includes('shared/core-tables.js?v=0.8.1.89'),
+  '修改后的共享统计脚本必须使用当前版本缓存键，未修改的共享行情脚本保留原缓存键');
 assert.ok(sharedStyle.includes('.sub-nav .btn-refresh { background: #fff; color: #1a237e; border: 1px solid #c7cedb; }'),
   '桌面白色工具栏上的刷新按钮应使用可辨认的文字和边框');
 assert.ok(sharedStyle.includes('.mobile-account-tools .btn-refresh { min-height: 44px; }'),

@@ -308,7 +308,7 @@ async function fetchQuoteByCode(code) {
 }
 
 // 页面统一批量行情入口：一批证券最多触发一次腾讯请求，Tushare 日线仅作普通 A 股回退。
-async function fetchQuotesByCodes(codes) {
+async function fetchQuotesByCodes(codes, options = {}) {
   const requested = [...new Set((codes || []).map(c => String(c || '').trim().toUpperCase()).filter(Boolean))];
   const result = {};
   if (!requested.length) return result;
@@ -322,7 +322,7 @@ async function fetchQuotesByCodes(codes) {
   const [names, daily, tencent] = await Promise.all([
     stockCodes.length ? ensureTsNames().catch(() => new Map()) : Promise.resolve(new Map()),
     stockCodes.length ? ensureTsDaily().catch(() => new Map()) : Promise.resolve(new Map()),
-    fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes)).catch(() => new Map()),
+    fetchTencentQuotes(stockCodes.concat(fundCodes, bondCodes, hkCodes), options).catch(() => new Map()),
   ]);
   stockCodes.forEach(c => {
     const ts = toTsCode(c);

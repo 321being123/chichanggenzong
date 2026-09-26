@@ -99,6 +99,30 @@
       "status": "verified"
     },
     {
+      "id": "HK-IPO-SCHEDULE-001",
+      "title": "港股 IPO 任务只按 HKEX 开市日排程，未知日历不猜测",
+      "implementation": { "file": "server/services/jobScheduleSlots.js", "symbol": "resolveScheduleForDate" },
+      "tests": [{ "file": "server/test/cross-market-calendar-nav.test.js", "pattern": "A 股休市但港股开市时仍须生成港股候选槽位" }],
+      "owner": "港股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HK-IPO-FACT-QUALITY-001",
+      "title": "港股 IPO 事实分区只有质量通过才可作为已发布依赖",
+      "implementation": { "file": "server/services/datasetPartitionRegistry.js", "symbol": "areDatasetPartitionsPublished" },
+      "tests": [{ "file": "server/test/dataset-publication-contract.test.js", "pattern": "港股事实分区只有质量通过才可作为已发布依赖" }],
+      "owner": "港股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HK-IPO-SIGNAL-COVERAGE-001",
+      "title": "动态信号必须覆盖本轮活跃 IPO 代码，部分采集不得判完整",
+      "implementation": { "file": "server/jobs/hkIpoSync.js", "symbol": "marketSignalDiagnostics" },
+      "tests": [{ "file": "server/test/hk-ipo-dynamic-source-admission.test.js", "pattern": "少覆盖一只申购中的新股时不得按有数据判定完整" }],
+      "owner": "港股 IPO",
+      "status": "verified"
+    },
+    {
       "id": "HOLDINGS-CROSS-MARKET-001",
       "title": "港股交易状态及收盘时刻必须来自明确 HKEX 日历事实",
       "implementation": { "file": "server/services/marketState.js", "symbol": "deriveMarketState" },

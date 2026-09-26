@@ -6,13 +6,20 @@ const db = require('../db');
 const originalQuery = db.pool.query.bind(db.pool);
 let mode = 'history';
 let lastStockSql = '';
+let lastPendingSql = '';
 db.pool.query = async sql => {
   const text = String(sql);
   if (text.includes('FROM users WHERE username=$1')) {
     return { rows: [{ username: 'test', status: 'active', auth_version: undefined, permissions: {} }] };
   }
   if (mode === 'hk-calendar' && text.includes("data_completeness->>'status'='retryable'")) {
-    return { rows: [{ code: '06727.HK', name: '待补资料公司', offer_close_date: '2026-09-22', missing_fields: ['listingAt'] }] };
+    lastPendingSql = text;
+    const pendingRow = { code: '09994.HK', security_name: 'Pending Company', instrument_name: '待补资料公司',
+      offer_close_date: '2026-09-22', missing_fields: ['listingAt'] };
+    const listedRow = { code: '06727.HK', security_name: 'Listed Company', ipo_status: 'listed', instrument_status: 'listed',
+      offer_close_date: '2026-09-22', missing_fields: ['listingAt'] };
+    const excludesListed = text.includes("'listed'") && text.includes("COALESCE(i.status,'') <> 'listed'");
+    return { rows: excludesListed ? [pendingRow] : [listedRow, pendingRow] };
   }
   if (mode === 'hk-calendar' && text.includes("WHERE h.market_code='HK'")) {
     lastStockSql = text;
@@ -64,6 +71,11 @@ db.pool.query = async sql => {
 };
 
 const router = require('../routes/ipo');
+const { resolveHkIpoDisplayName } = router;
+assert.strictEqual(resolveHkIpoDisplayName({ security_name_cn: 'NIO Inc.', quote_name: '', instrument_name: '蔚来', security_name: 'NIO Inc.' }), '蔚来',
+  '主档中的中文名应优先于英文名称');
+assert.strictEqual(resolveHkIpoDisplayName({ security_name_cn: '优地机器人', quote_name: '优地机器人腾讯名', instrument_name: '优地机器人主档名' }), '优地机器人',
+  '已有中文展示名应保持优先');
 const app = express();
 app.use((req, res, next) => { req.session = { user: 'test' }; next(); });
 app.use('/api/ipo', router);
@@ -102,8 +114,15 @@ const server = app.listen(0, async () => {
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-21').list_stocks[0].offer_phase, 'open');
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-22').list_stocks[0].is_estimated, true,
       '预计上市日必须在日历 API 标成预计');
-    assert.strictEqual(payload.pending_hk_stocks[0].code, '06727.HK', '无日期的已截止缺口应进入待补列表');
+    assert.strictEqual(payload.pending_hk_stocks.length, 1, '已上市股票不得继续显示在当前港股待补日历');
+    assert.strictEqual(payload.pending_hk_stocks[0].code, '09994.HK', '仍未上市且资料待补的项目应保留');
+    assert.match(lastPendingSql, /COALESCE\(h\.ipo_status,'active'\) NOT IN \([^)]*'listed'/, '待补列表未排除 IPO 已上市状态');
+    assert.match(lastPendingSql, /COALESCE\(i\.status,''\) <> 'listed'/, '待补列表未排除统一证券主档已上市状态');
+    assert.match(lastPendingSql, /h\.listing_at IS NULL/, '待补列表未排除已有实际上市时间的记录');
+    assert.match(lastPendingSql, /COALESCE\(h\.listing_date ~/, '没有上市日期的记录也必须继续进入待补判断');
+    assert.match(lastPendingSql, /LEFT JOIN core\.instruments i ON i\.canonical_code=h\.security_code/, '待补列表未读取统一证券主档');
     assert.match(lastStockSql, /timezone\('Asia\/Shanghai', now\(\)\)/, 'HK 日历未使用上海时区边界');
+    assert.match(lastStockSql, /LEFT JOIN core\.instruments i ON i\.canonical_code=h\.security_code/, '港股日历未读取统一证券主档中文名');
     assert.match(lastStockSql, /offer_close_at >= now\(\)/, 'HK 日历未排除已截止招股窗口');
     assert.match(lastStockSql, /offer_phase IN \('upcoming','open'\)/, 'HK 日历未限制招股状态');
 
@@ -112,6 +131,7 @@ const server = app.listen(0, async () => {
     assert.strictEqual(response.status, 200);
     await response.json();
     assert.match(lastStockSql, /timezone\('Asia\/Shanghai',offer_open_at\)/, 'HK 详情接口未使用上海时区格式化日期');
+    assert.match(lastStockSql, /LEFT JOIN core\.instruments i ON i\.canonical_code=h\.security_code/, '港股详情接口未读取统一证券主档中文名');
     console.log('OK ipo-history-contract: 历史阶段、字段状态和事实日历行为通过');
   } catch (error) {
     console.error(error);

@@ -1,8 +1,10 @@
-const { runHkexIpoProbe, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexCancelledListings, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
+const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexCancelledListings, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
 const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
+
+const CHINESE_NAME_PATTERN = '[\u3400-\u9fff]';
 
 function canonicalHkCode(rawCode) {
   const text = String(rawCode || '').trim().toUpperCase();
@@ -28,21 +30,34 @@ async function persistTencentNames(quoteMap, { executor = pool.query.bind(pool) 
          SET security_name_cn=$2,updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
        WHERE market_code='HK'
          AND security_code=$1
-         AND COALESCE(NULLIF(security_name_cn,''),'')=''`, [code, name]);
+         AND COALESCE(NULLIF(security_name_cn,''),'') !~ $3`, [code, name, CHINESE_NAME_PATTERN]);
     persisted += Number(result?.rowCount || 0);
   }
   return { requested: quoteMap instanceof Map ? quoteMap.size : 0, named: updates.size, persisted, source: 'tencent' };
 }
 
+async function persistInstrumentChineseNames({ executor = pool.query.bind(pool) } = {}) {
+  const result = await executor(`
+    UPDATE public.ipo_history h
+       SET security_name_cn=i.name,updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+      FROM core.instruments i
+     WHERE h.market_code='HK'
+       AND i.canonical_code=h.security_code
+       AND i.name ~ $1
+       AND COALESCE(NULLIF(h.security_name_cn,''),'') !~ $1`, [CHINESE_NAME_PATTERN]);
+  return Number(result?.rowCount || 0);
+}
+
 async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, businessDate, ttlMs, executor = pool.query.bind(pool) } = {}) {
   const configuredLimit = Number.isInteger(Number(batchSize)) && Number(batchSize) > 0 ? Number(batchSize) : null;
-  const candidateLimitClause = configuredLimit ? ' LIMIT $1' : '';
-  const candidateParams = configuredLimit ? [configuredLimit] : [];
+  const candidateLimitClause = configuredLimit ? ' LIMIT $2' : '';
+  const candidateParams = [CHINESE_NAME_PATTERN];
+  if (configuredLimit) candidateParams.push(configuredLimit);
   const candidates = await executor(`
     SELECT security_code
       FROM public.ipo_history
      WHERE market_code='HK'
-       AND COALESCE(NULLIF(security_name_cn,''),'')=''
+       AND COALESCE(NULLIF(security_name_cn,''),'') !~ $1
      ORDER BY CASE WHEN listing_at IS NOT NULL OR ipo_status='listed' THEN 0 ELSE 1 END,
               COALESCE(listing_at,NULLIF(updated_at,'')::timestamptz) DESC NULLS LAST,security_code
      ${candidateLimitClause}`, candidateParams);
@@ -65,9 +80,11 @@ async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, busines
   const named = new Set();
   for (const quote of quotes.values()) if (quote && hasChineseName(quote.name)) named.add(canonicalHkCode(quote.code || quote.symbol));
   const persisted = await persistTencentNames(quotes, { executor });
+  const instrumentFallbackPersisted = await persistInstrumentChineseNames({ executor });
   return {
     ...persisted, ok: !limited, status: limited ? 'partial' : 'succeeded', limit: configuredLimit,
     continuationRequired: limited, requested: codes.length, quoted: quotes.size, candidateCount: candidates.rowCount || 0,
+    instrumentFallbackPersisted,
   };
 }
 
@@ -82,6 +99,7 @@ function rowsFromProbe(probe) {
       };
       for (const [key, value] of Object.entries({
         securityName: item.securityName,
+        securityNameCn: item.securityNameCn,
         board: item.board || target.board,
         listingDate: item.listingDate,
         offerOpenDate: item.offerOpenDate,
@@ -148,7 +166,7 @@ function marketSignalDiagnostics(marketSignals) {
 
 async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}) {
   const probe = context.probe || await runHkexIpoProbe({
-    targets: context.targets,
+    targets: context.targets || buildProbePlan({ includeLocalizedNames: mode === 'enrichment' }),
     fetchImpl: context.fetchImpl,
   });
   let probePersistence = null;
@@ -294,4 +312,4 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   };
 }
 
-module.exports = { runHkIpoSync, rowsFromProbe, persistTencentNames, syncHkIpoTencentNames, marketSignalDiagnostics };
+module.exports = { runHkIpoSync, rowsFromProbe, persistTencentNames, persistInstrumentChineseNames, syncHkIpoTencentNames, marketSignalDiagnostics };

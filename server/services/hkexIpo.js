@@ -18,9 +18,21 @@ const HKEX_NEW_LISTING_TARGETS = Object.freeze([
     url: process.env.HKEX_MAIN_BOARD_NEW_LISTINGS_URL || 'https://www2.hkexnews.hk/new-listings/new-listing-information/main-board?sc_lang=en',
   },
   {
+    key: 'main_board_new_listings_zh',
+    board: '主板',
+    nameLanguage: 'zh',
+    url: process.env.HKEX_MAIN_BOARD_NEW_LISTINGS_ZH_URL || 'https://www2.hkexnews.hk/New-Listings/New-Listing-Information/Main-Board?sc_lang=zh-cn',
+  },
+  {
     key: 'gem_new_listings',
     board: 'GEM',
     url: process.env.HKEX_GEM_NEW_LISTINGS_URL || 'https://www2.hkexnews.hk/New-Listings/New-Listing-Information/GEM?sc_lang=en',
+  },
+  {
+    key: 'gem_new_listings_zh',
+    board: 'GEM',
+    nameLanguage: 'zh',
+    url: process.env.HKEX_GEM_NEW_LISTINGS_ZH_URL || 'https://www2.hkexnews.hk/New-Listings/New-Listing-Information/GEM?sc_lang=zh-cn',
   },
 ]);
 
@@ -1347,7 +1359,7 @@ async function syncHkexHistoricalReports({
 }
 
 // 解析主板/GEM 新上市页面的表格。页面字段顺序会调整，因此按代码、日期和链接推断。
-function parseNewListingsHtml(html, { board = '', sourceUrl = '' } = {}) {
+function parseNewListingsHtml(html, { board = '', sourceUrl = '', nameLanguage = 'en' } = {}) {
   const rows = [];
   const rowMatches = String(html || '').match(/<tr\b[\s\S]*?<\/tr>/gi) || [];
   for (const rowHtml of rowMatches) {
@@ -1359,16 +1371,21 @@ function parseNewListingsHtml(html, { board = '', sourceUrl = '' } = {}) {
     const links = extractLinks(rowHtml, sourceUrl || 'https://www.hkex.com.hk');
     const nameCell = cells.find(cell => cell && !/^\d{1,5}(?:\.HK)?$/.test(cell) && !normalizeDate(cell) && cell.length >= 2) || '';
     const sourceKey = `${code}|${date || ''}|${links[0] ? links[0].href : ''}`;
-    rows.push({
+    const row = {
       securityCode: code,
-      securityName: nameCell,
       board: board || null,
       listingDate: date,
       sourceKey,
       sourceUrl: sourceUrl || null,
       documentUrl: links[0] ? links[0].href : null,
       rawPayload: { cells, links },
-    });
+    };
+    if (nameLanguage === 'zh') {
+      if (/[\u3400-\u9fff]/.test(nameCell)) row.securityNameCn = nameCell;
+    } else {
+      row.securityName = nameCell;
+    }
+    rows.push(row);
   }
   const seen = new Set();
   return rows.filter(row => !seen.has(row.sourceKey) && seen.add(row.sourceKey));
@@ -1441,9 +1458,11 @@ async function persistHkexProbe(result, { environment = 'local', executor = pool
   return { runId: run.rows[0].run_id, environment, status, targets: targets.length };
 }
 
-function buildProbePlan() {
+function buildProbePlan({ includeLocalizedNames = false } = {}) {
   return [
-    ...HKEX_NEW_LISTING_TARGETS.map(item => ({ ...item, source: 'www2.hkexnews.hk', probeType: 'new_listing_table' })),
+    ...HKEX_NEW_LISTING_TARGETS
+      .filter(item => includeLocalizedNames || item.nameLanguage !== 'zh')
+      .map(item => ({ ...item, source: 'www2.hkexnews.hk', probeType: 'new_listing_table' })),
     ...HKEX_PREDEFINED_DOCUMENT_TARGETS.map(item => ({ ...item, source: 'www1.hkexnews.hk', probeType: 'predefined_document' })),
     { key: 'title_search', source: 'www1.hkexnews.hk', probeType: 'title_search', url: 'https://www1.hkexnews.hk/search/titleSearchServlet.do' },
   ].map(item => ({ ...item, url: assertOfficialUrl(item.url) }));
@@ -1457,7 +1476,7 @@ async function runHkexIpoProbe({ fetchImpl = httpRequest, targets = buildProbePl
       const body = await fetchImpl(target.url);
       const text = String(body || '');
       const items = target.probeType === 'new_listing_table'
-        ? parseNewListingsHtml(text, { board: target.board, sourceUrl: target.url })
+        ? parseNewListingsHtml(text, { board: target.board, sourceUrl: target.url, nameLanguage: target.nameLanguage })
         : target.probeType === 'predefined_document'
           ? parsePredefinedDocumentHtml(text, { documentType: target.documentType, sourceUrl: target.url })
           : [];
@@ -1662,12 +1681,13 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}
           offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,issue_price_low,issue_price_high,
           issue_price_final,lot_size_shares,lot_amount_hkd,application_fee_hkd,brokerage_fee_hkd,
           public_offer_ratio,international_offer_ratio,cornerstone_details,greenshoe_details,source_documents,
-          data_completeness,facts_published_at,updated_at
+          data_completeness,facts_published_at,updated_at,security_name_cn
         ) VALUES($1,$2,$3,$4,$5,'HK',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25::jsonb,
           CASE WHEN $4::text IS NOT NULL OR $8::timestamptz IS NOT NULL OR $9::timestamptz IS NOT NULL OR $10::timestamptz IS NOT NULL OR $11::timestamptz IS NOT NULL OR $12::timestamptz IS NOT NULL OR $15::numeric IS NOT NULL OR $16::numeric IS NOT NULL THEN now() END,
-          to_char(now(),'YYYY-MM-DD HH24:MI:SS'))
+          to_char(now(),'YYYY-MM-DD HH24:MI:SS'),$26)
         ON CONFLICT(security_code) DO UPDATE SET
           security_name=COALESCE(NULLIF(EXCLUDED.security_name,''),ipo_history.security_name),
+          security_name_cn=COALESCE(NULLIF(EXCLUDED.security_name_cn,''),ipo_history.security_name_cn),
           market_type=COALESCE(EXCLUDED.market_type,ipo_history.market_type),listing_date=COALESCE(EXCLUDED.listing_date,ipo_history.listing_date),
           ipo_date=COALESCE(EXCLUDED.ipo_date,ipo_history.ipo_date),market_code='HK',instrument_id=EXCLUDED.instrument_id,
           ipo_status=CASE
@@ -1703,7 +1723,8 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}
           row.issuePriceFinal || null, row.lotSizeShares || null, row.lotAmountHkd || null, row.applicationFeeHkd || null,
           row.brokerageFeeHkd || null, row.publicOfferRatio || null, row.internationalOfferRatio || null,
           JSON.stringify(row.cornerstoneDetails || {}), JSON.stringify(row.greenshoeDetails || {}), JSON.stringify(sourceDocuments),
-          JSON.stringify(row.dataCompleteness || completenessForRow(row))]
+          JSON.stringify(row.dataCompleteness || completenessForRow(row)),
+          /[\u3400-\u9fff]/.test(String(row.securityNameCn || '')) ? String(row.securityNameCn).trim() : null]
       );
       const eventRows = [
         ['offer_open', row.offerOpenDate], ['offer_close', row.offerCloseDate], ['pricing', row.pricingDate],

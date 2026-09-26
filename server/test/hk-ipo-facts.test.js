@@ -7,7 +7,7 @@ const {
   allotmentTitleLooksLikeIpo,
 } = require('../services/hkexIpo');
 const { normalizeCalendarRows } = require('../jobs/hkTradeCalendarSync');
-const { rowsFromProbe, runHkIpoSync, persistTencentNames } = require('../jobs/hkIpoSync');
+const { rowsFromProbe, runHkIpoSync, persistTencentNames, persistInstrumentChineseNames } = require('../jobs/hkIpoSync');
 const {
   syncHkexAllotmentFacts,
   syncHkexProspectusFacts,
@@ -28,6 +28,14 @@ assert.strictEqual(listings[0].board, '主板');
 const dateFirst = parseNewListingsHtml('<table><tr><td>2026-09-10</td><td>00700</td><td>日期先出现的公司</td></tr></table>');
 assert.strictEqual(dateFirst[0].securityCode, '00700.HK');
 
+const localizedListings = parseNewListingsHtml(
+  '<table><tr><td>3228</td><td>深圳市景旺電子股份有限公司</td><td><a href="/docs/3228.pdf">下載</a></td></tr></table>',
+  { board: '主板', nameLanguage: 'zh', sourceUrl: 'https://www2.hkexnews.hk/New-Listings/Main-Board?sc_lang=zh-cn' }
+);
+assert.strictEqual(localizedListings[0].securityCode, '03228.HK');
+assert.strictEqual(localizedListings[0].securityNameCn, '深圳市景旺電子股份有限公司');
+assert.strictEqual(localizedListings[0].securityName, undefined, '中文版名称不得覆盖官方英文名称字段');
+
 const docs = parsePredefinedDocumentHtml('<a href="/docs/00700-prospectus.pdf">Prospectus 00700 2026-09-01</a>', {
   documentType: 'prospectus', sourceUrl: 'https://www1.hkexnews.hk/listedco/listconews/sehk/'
 });
@@ -42,7 +50,10 @@ for (const target of buildProbePlan()) {
   assert.strictEqual(new URL(target.url).protocol, 'https:');
   assert.ok(['www.hkex.com.hk', 'www2.hkex.com.hk', 'www1.hkexnews.hk', 'www2.hkexnews.hk'].includes(new URL(target.url).hostname));
 }
-const probePlan = buildProbePlan();
+const probePlan = buildProbePlan({ includeLocalizedNames: true });
+assert.ok(probePlan.some(target => target.nameLanguage === 'zh' && target.board === '主板' && /sc_lang=zh-cn/.test(target.url)));
+assert.ok(probePlan.some(target => target.nameLanguage === 'zh' && target.board === 'GEM' && /sc_lang=zh-cn/.test(target.url)));
+assert.ok(buildProbePlan().every(target => target.nameLanguage !== 'zh'), '中文页面只在名称补全阶段纳入探针');
 assert.ok(probePlan.some(target => target.documentType === 'prospectus' && /predefineddocuments=6/.test(target.url)), '招股书探针必须使用港交所官方预定义文档入口');
 assert.ok(probePlan.some(target => target.documentType === 'allotment_result' && /predefineddocuments=4/.test(target.url)), '配发结果探针必须使用港交所官方预定义文档入口');
 
@@ -56,9 +67,11 @@ assert.strictEqual(probeRows[0].securityCode, '00358.HK');
 
 const merged = rowsFromProbe({ targets: [
   { ok: true, items: [{ securityCode: '00700.HK', securityName: '示例公司', listingDate: '2026-09-10', documentUrl: 'https://www2.hkex.com.hk/listing/700' }] },
+  { ok: true, items: [{ securityCode: '00700.HK', securityNameCn: '示例公司中文名' }] },
   { ok: true, items: [{ securityCode: '00700.HK', documentType: 'prospectus', title: '招股章程', url: 'https://www1.hkexnews.hk/docs/700.pdf' }] },
 ] });
 assert.strictEqual(merged[0].securityName, '示例公司');
+assert.strictEqual(merged[0].securityNameCn, '示例公司中文名');
 assert.strictEqual(merged[0].listingDate, '2026-09-10');
 assert.strictEqual(merged[0].sourceDocuments.length, 2);
 
@@ -138,6 +151,18 @@ assert.strictEqual(terminalFacts.status, 'complete', '介绍上市等终态项�
   assert.strictEqual(persistedNames.named, 2, '只应写入含中文的腾讯行情名称');
   assert.strictEqual(persistedNames.persisted, 2, '腾讯中文名应回填港股 IPO 事实表');
   assert.strictEqual(statements[0].params[0], '03231.HK');
+  assert.match(statements[0].sql, /!~ \$3/, '已有英文名称应允许被中文行情名替换');
+  let instrumentNameSql = '';
+  const masterNamesPersisted = await persistInstrumentChineseNames({
+    executor: async (sql, params) => {
+      instrumentNameSql = sql;
+      assert.match(params[0], /\u3400-\u9fff/);
+      return { rowCount: 3 };
+    },
+  });
+  assert.strictEqual(masterNamesPersisted, 3, '腾讯行情没有中文名时应复用证券主档中文名');
+  assert.match(instrumentNameSql, /FROM core\.instruments i/);
+  assert.match(instrumentNameSql, /security_name_cn=i\.name/);
 
   const failed = await runHkIpoSync('preopen', 'test', { probe: { targets: [{ ok: false, error: 'network' }] } });
   assert.strictEqual(failed.ok, false);

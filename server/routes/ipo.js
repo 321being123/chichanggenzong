@@ -20,6 +20,12 @@ function filterBeijingStocks(calendar) {
   }));
 }
 
+function resolveHkIpoDisplayName(row = {}) {
+  const names = [row.security_name_cn, row.quote_name, row.instrument_name, row.security_name, row.name]
+    .map(value => String(value || '').trim()).filter(Boolean);
+  return names.find(name => /[\u3400-\u9fff]/.test(name)) || names[0] || '';
+}
+
 function extractCodeReport(md, code) {
   const lines = String(md || '').split(/\r?\n/);
   const heading = new RegExp(`^####\\s+.+?[（(]${code}[）)]`);
@@ -459,25 +465,35 @@ function stockFieldStatusSql(alias = 'h') {
 async function loadPendingHkIpoFacts(days) {
   const { rows } = await pool.query(
     `SELECT h.security_code AS code,
-            COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name,
+            h.security_name_cn,h.security_name,q.name AS quote_name,i.name AS instrument_name,
             COALESCE(timezone('Asia/Shanghai',h.offer_close_at)::date::text,h.ipo_date) AS offer_close_date,
             COALESCE(h.data_completeness->'missing_fields','[]'::jsonb) AS missing_fields
        FROM public.ipo_history h
+       LEFT JOIN core.instruments i ON i.canonical_code=h.security_code
        LEFT JOIN LATERAL (
          SELECT q.name FROM market_quote_cache q
           WHERE q.source='tencent' AND q.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
           ORDER BY q.fetched_at DESC LIMIT 1
        ) q ON true
       WHERE h.market_code='HK'
-        AND COALESCE(h.ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
+        AND COALESCE(h.ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled','listed')
+        AND COALESCE(i.status,'') <> 'listed'
+        AND h.listing_at IS NULL
+        AND NOT (COALESCE(h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$',false)
+          AND h.listing_date::date <= (timezone('Asia/Shanghai',now()))::date)
         AND h.data_completeness->>'status'='retryable'
         AND COALESCE(timezone('Asia/Shanghai',h.offer_close_at)::date,
           CASE WHEN h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.ipo_date::date END)
           >= (timezone('Asia/Shanghai',now()))::date - (($1::int + 30) * INTERVAL '1 day')
-      ORDER BY h.offer_close_at DESC NULLS LAST,h.security_code
+       ORDER BY h.offer_close_at DESC NULLS LAST,h.security_code
       LIMIT 30`, [days]
   );
-  return rows;
+  return rows.map(row => ({
+    code: row.code,
+    name: resolveHkIpoDisplayName(row),
+    offer_close_date: row.offer_close_date,
+    missing_fields: row.missing_fields,
+  }));
 }
 
 async function loadStockCalendar(days, market = 'CN') {
@@ -488,7 +504,7 @@ async function loadStockCalendar(days, market = 'CN') {
                 (timezone('Asia/Shanghai', now()))::date + ($1::int * INTERVAL '1 day') AS end_date
        ), hk_base AS (
          SELECT h.security_code AS code,
-                COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name,
+                h.security_name_cn,h.security_name,q.name AS quote_name,i.name AS instrument_name,
                 h.offer_open_at,h.offer_close_at,h.listing_at,h.listing_date,
                 CASE WHEN h.listing_at IS NOT NULL THEN timezone('Asia/Shanghai',h.listing_at)::date::text
                      WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date END AS actual_listing_date,
@@ -498,6 +514,7 @@ async function loadStockCalendar(days, market = 'CN') {
                 timezone('Asia/Shanghai', h.offer_close_at)::date AS offer_close_date,
                 ${hkOfferPhaseSql('h')} AS offer_phase
            FROM ipo_history h
+           LEFT JOIN core.instruments i ON i.canonical_code=h.security_code
            LEFT JOIN LATERAL (
              SELECT q.name FROM market_quote_cache q
               WHERE q.source='tencent' AND q.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
@@ -506,7 +523,7 @@ async function loadStockCalendar(days, market = 'CN') {
           WHERE h.market_code='HK'
        ), stock_events AS (
          SELECT GREATEST(h.offer_open_date,b.start_date)::text AS date,
-                'apply' AS event_type,h.code,h.name,h.offer_open_at,h.offer_close_at,
+                'apply' AS event_type,h.code,h.security_name_cn,h.security_name,h.quote_name,h.instrument_name,h.offer_open_at,h.offer_close_at,
                 h.listing_at,h.listing_date,h.offer_phase,false AS is_estimated
            FROM hk_base h CROSS JOIN bounds b
           WHERE h.offer_open_date < b.end_date::date
@@ -515,14 +532,15 @@ async function loadStockCalendar(days, market = 'CN') {
             AND h.offer_phase IN ('upcoming','open')
          UNION ALL
          SELECT COALESCE(h.actual_listing_date,h.expected_listing_date) AS date,
-                'listing' AS event_type,h.code,h.name,h.offer_open_at,h.offer_close_at,
+                'listing' AS event_type,h.code,h.security_name_cn,h.security_name,h.quote_name,h.instrument_name,h.offer_open_at,h.offer_close_at,
                 h.listing_at,COALESCE(h.actual_listing_date,h.expected_listing_date) AS listing_date,h.offer_phase,
                 h.actual_listing_date IS NULL AS is_estimated
            FROM hk_base h CROSS JOIN bounds b
           WHERE COALESCE(h.actual_listing_date,h.expected_listing_date)::date >= b.start_date
             AND COALESCE(h.actual_listing_date,h.expected_listing_date)::date < b.end_date::date
        )
-       SELECT date,event_type,code,name,offer_open_at,offer_close_at,listing_at,listing_date,offer_phase,is_estimated
+       SELECT date,event_type,code,security_name_cn,security_name,quote_name,instrument_name,
+              offer_open_at,offer_close_at,listing_at,listing_date,offer_phase,is_estimated
          FROM stock_events
         WHERE date ~ '^\\d{4}-\\d{2}-\\d{2}$'
         ORDER BY date,code,event_type`, [days]
@@ -533,7 +551,7 @@ async function loadStockCalendar(days, market = 'CN') {
       const key = row.event_type === 'apply' ? 'apply_stocks' : 'list_stocks';
       groups.get(row.date)[key].push({
         code: row.code,
-        name: row.name,
+        name: resolveHkIpoDisplayName(row),
         secu_code: row.code,
         offer_open_at: row.offer_open_at,
         offer_close_at: row.offer_close_at,
@@ -774,7 +792,7 @@ router.get('/history', async (req, res) => {
       total = countResult.rows[0] ? countResult.rows[0].total : 0;
       const r = await pool.query(
         `SELECT h.security_code,h.security_name,
-                COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
+                h.security_name_cn,q.name AS quote_name,i.name AS instrument_name,
                 h.market_type,h.ipo_status,
                 ${hkOfferPhaseSql('h')} AS offer_phase,
                 COALESCE(to_char(timezone('Asia/Shanghai',h.offer_open_at),'YYYY-MM-DD'),h.ipo_date) AS offer_open_date,
@@ -830,6 +848,7 @@ router.get('/history', async (req, res) => {
                      WHEN h.facts_published_at < now() - interval '2 days' THEN '事实超过 2 天未更新'
                      ELSE '' END AS stale_reason
            FROM ipo_history h
+           LEFT JOIN core.instruments i ON i.canonical_code=h.security_code
            LEFT JOIN LATERAL (
              SELECT q.name
                FROM market_quote_cache q
@@ -872,6 +891,7 @@ router.get('/history', async (req, res) => {
       );
       rows = r.rows.map(row => ({
         ...row,
+        security_name_cn: resolveHkIpoDisplayName(row),
         current_subscription_signal: row.current_subscription_signal || {
           multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable',
         },
@@ -969,8 +989,8 @@ router.get('/report/code', async (req, res) => {
       ? `${String(code).replace(/\.HK$/i, '').padStart(5, '0')}.HK` : null;
     if (hkCode) {
       const fact = await pool.query(
-        `SELECT security_code,security_name,
-                COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS security_name_cn,
+        `SELECT h.security_code,h.security_name,h.security_name_cn,
+                q.name AS quote_name,i.name AS instrument_name,
                 market_type,ipo_status,${hkOfferPhaseSql('h')} AS offer_phase,
                 COALESCE(to_char(timezone('Asia/Shanghai',offer_open_at),'YYYY-MM-DD'),ipo_date) AS offer_open_date,
                 to_char(timezone('Asia/Shanghai',offer_close_at),'YYYY-MM-DD') AS offer_close_date,
@@ -998,6 +1018,7 @@ router.get('/report/code', async (req, res) => {
                   WHERE regexp_replace(s.security_code,'\\D','','g')=regexp_replace(h.security_code,'\\D','','g')
                     AND s.signal_type='grey_market' AND s.source_code='futu-public' ORDER BY s.observed_at DESC LIMIT 1) AS futu_grey_market_change_pct
            FROM ipo_history h
+           LEFT JOIN core.instruments i ON i.canonical_code=h.security_code
            LEFT JOIN LATERAL (
              SELECT name
                FROM market_quote_cache
@@ -1012,6 +1033,7 @@ router.get('/report/code', async (req, res) => {
       );
       if (fact.rows[0]) {
         const row = fact.rows[0];
+        row.security_name_cn = resolveHkIpoDisplayName(row);
         const lines = [
           `# 📄 港股 IPO 事实 — ${row.security_name_cn || row.security_name || '中文名待补'}（${hkCode}）`, '',
           '## 当前状态', `- **阶段**：${row.ipo_status || 'active'}`, `- **板块**：${row.market_type || '待补全'}`,
@@ -1075,3 +1097,4 @@ module.exports = router;
 module.exports.mergeCalendarDays = mergeCalendarDays;
 module.exports.assessHkGreenshoe = assessHkGreenshoe;
 module.exports.hkOfferPhaseSql = hkOfferPhaseSql;
+module.exports.resolveHkIpoDisplayName = resolveHkIpoDisplayName;

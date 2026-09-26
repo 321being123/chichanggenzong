@@ -32,10 +32,13 @@ assert.ok(frontend.includes('arbDetailLink') && frontend.includes('arb-security-
 assert.ok(!frontend.includes('onclick="openArbDetail(' + "' + r.case_id"), '套利整行不得绑定详情点击');
 assert.ok(frontend.includes("params.set('case', caseId)") && frontend.includes("params.delete('case')"), '套利详情必须具有独立URL页面状态');
 assert.ok(frontend.includes("params.set('arb_type', arbState.type)") && frontend.includes("get('arb_type')"), '套利详情必须保留来源页签');
+const tabSwitch = frontend.slice(frontend.indexOf('function switchArbTab(type)'), frontend.indexOf('\n}\n\n// 加载数据'));
+assert.ok(tabSwitch.includes("params.set('arb_type', type)") && tabSwitch.includes("params.delete('case')"), '详情中切换套利策略必须更新策略参数并清除详情编号');
+assert.ok(tabSwitch.includes('listView.hidden = false'), '详情中切换套利策略必须恢复列表视图');
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
 const styleLink = document.querySelector('link[href^="shared/style.css?v="]');
 assert.ok(styleLink && new URL(styleLink.href, 'http://localhost').searchParams.get('v') && styleLink.getAttribute('href') !== 'shared/style.css?v=31', '全局样式必须使用更新后的缓存版本');
-assert.ok(document.querySelector('script[src="js/arbitrage.js?v=11"]'), '套利前端缓存版本未更新');
+assert.ok(document.querySelector('script[src="js/arbitrage.js?v=12"]'), '套利前端缓存版本未更新');
 const navigationScript = document.querySelector('script[src^="js/navigation.js?v="]');
 assert.ok(navigationScript && new URL(navigationScript.src, 'http://localhost').searchParams.get('v') && navigationScript.getAttribute('src') !== 'js/navigation.js?v=6', '导航必须使用更新后的缓存版本');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');

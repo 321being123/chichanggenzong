@@ -80,6 +80,11 @@ function formatArbitrageStatus(status) {
 
 // 页签切换
 function switchArbTab(type) {
+  var params = new URLSearchParams(window.location.search);
+  params.set('main', 'arbitrage');
+  params.set('arb_type', type);
+  params.delete('case');
+  history.pushState(null, '', '/?' + params.toString());
   arbState.type = type;
   arbState.detailCaseId = null;
   document.querySelectorAll('[data-arb-tab]').forEach(function (btn) {
@@ -87,6 +92,8 @@ function switchArbTab(type) {
   });
   var title = document.getElementById('arb-table-title');
   if (title) title.textContent = ARB_TITLES[type] || type;
+  var listView = document.getElementById('arb-list-view');
+  if (listView) listView.hidden = false;
   var detail = document.getElementById('arb-detail');
   if (detail) detail.hidden = true;
   if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.list', 'arbitrage', 'tab');

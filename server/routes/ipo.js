@@ -456,6 +456,30 @@ function stockFieldStatusSql(alias = 'h') {
   )`;
 }
 
+async function loadPendingHkIpoFacts(days) {
+  const { rows } = await pool.query(
+    `SELECT h.security_code AS code,
+            COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name,
+            COALESCE(timezone('Asia/Shanghai',h.offer_close_at)::date::text,h.ipo_date) AS offer_close_date,
+            COALESCE(h.data_completeness->'missing_fields','[]'::jsonb) AS missing_fields
+       FROM public.ipo_history h
+       LEFT JOIN LATERAL (
+         SELECT q.name FROM market_quote_cache q
+          WHERE q.source='tencent' AND q.symbol='hk' || regexp_replace(h.security_code,'\\D','','g')
+          ORDER BY q.fetched_at DESC LIMIT 1
+       ) q ON true
+      WHERE h.market_code='HK'
+        AND COALESCE(h.ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
+        AND h.data_completeness->>'status'='retryable'
+        AND COALESCE(timezone('Asia/Shanghai',h.offer_close_at)::date,
+          CASE WHEN h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.ipo_date::date END)
+          >= (timezone('Asia/Shanghai',now()))::date - (($1::int + 30) * INTERVAL '1 day')
+      ORDER BY h.offer_close_at DESC NULLS LAST,h.security_code
+      LIMIT 30`, [days]
+  );
+  return rows;
+}
+
 async function loadStockCalendar(days, market = 'CN') {
   if (market === 'HK') {
     const { rows } = await pool.query(
@@ -466,6 +490,10 @@ async function loadStockCalendar(days, market = 'CN') {
          SELECT h.security_code AS code,
                 COALESCE(NULLIF(h.security_name_cn,''),NULLIF(q.name,''),h.security_name) AS name,
                 h.offer_open_at,h.offer_close_at,h.listing_at,h.listing_date,
+                CASE WHEN h.listing_at IS NOT NULL THEN timezone('Asia/Shanghai',h.listing_at)::date::text
+                     WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date END AS actual_listing_date,
+                CASE WHEN h.data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                     THEN h.data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' END AS expected_listing_date,
                 timezone('Asia/Shanghai', h.offer_open_at)::date AS offer_open_date,
                 timezone('Asia/Shanghai', h.offer_close_at)::date AS offer_close_date,
                 ${hkOfferPhaseSql('h')} AS offer_phase
@@ -479,29 +507,22 @@ async function loadStockCalendar(days, market = 'CN') {
        ), stock_events AS (
          SELECT GREATEST(h.offer_open_date,b.start_date)::text AS date,
                 'apply' AS event_type,h.code,h.name,h.offer_open_at,h.offer_close_at,
-                h.listing_at,h.listing_date,h.offer_phase
+                h.listing_at,h.listing_date,h.offer_phase,false AS is_estimated
            FROM hk_base h CROSS JOIN bounds b
           WHERE h.offer_open_date < b.end_date::date
             AND h.offer_close_date >= b.start_date
             AND h.offer_close_at >= now()
             AND h.offer_phase IN ('upcoming','open')
          UNION ALL
-         SELECT CASE WHEN h.listing_at IS NOT NULL
-                     THEN timezone('Asia/Shanghai',h.listing_at)::date::text
-                     ELSE h.listing_date END AS date,
+         SELECT COALESCE(h.actual_listing_date,h.expected_listing_date) AS date,
                 'listing' AS event_type,h.code,h.name,h.offer_open_at,h.offer_close_at,
-                h.listing_at,h.listing_date,h.offer_phase
+                h.listing_at,COALESCE(h.actual_listing_date,h.expected_listing_date) AS listing_date,h.offer_phase,
+                h.actual_listing_date IS NULL AS is_estimated
            FROM hk_base h CROSS JOIN bounds b
-          WHERE COALESCE(
-                  timezone('Asia/Shanghai',h.listing_at)::date,
-                  CASE WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date END
-                ) >= b.start_date
-            AND COALESCE(
-                  timezone('Asia/Shanghai',h.listing_at)::date,
-                  CASE WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date END
-                ) < b.end_date::date
+          WHERE COALESCE(h.actual_listing_date,h.expected_listing_date)::date >= b.start_date
+            AND COALESCE(h.actual_listing_date,h.expected_listing_date)::date < b.end_date::date
        )
-       SELECT date,event_type,code,name,offer_open_at,offer_close_at,listing_at,listing_date,offer_phase
+       SELECT date,event_type,code,name,offer_open_at,offer_close_at,listing_at,listing_date,offer_phase,is_estimated
          FROM stock_events
         WHERE date ~ '^\\d{4}-\\d{2}-\\d{2}$'
         ORDER BY date,code,event_type`, [days]
@@ -519,6 +540,7 @@ async function loadStockCalendar(days, market = 'CN') {
         listing_at: row.listing_at,
         listing_date: row.listing_date,
         offer_phase: row.offer_phase,
+        is_estimated: Boolean(row.is_estimated),
       });
     }
     return [...groups.values()];
@@ -758,8 +780,15 @@ router.get('/history', async (req, res) => {
                 COALESCE(to_char(timezone('Asia/Shanghai',h.offer_open_at),'YYYY-MM-DD'),h.ipo_date) AS offer_open_date,
                 to_char(timezone('Asia/Shanghai',h.offer_close_at),'YYYY-MM-DD') AS offer_close_date,
                 to_char(timezone('Asia/Shanghai',h.pricing_at),'YYYY-MM-DD') AS pricing_date,
+                h.data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' AS expected_pricing_date,
                 to_char(timezone('Asia/Shanghai',h.allotment_at),'YYYY-MM-DD') AS allotment_date,
                 COALESCE(to_char(timezone('Asia/Shanghai',h.listing_at),'YYYY-MM-DD'),h.listing_date) AS listing_date,
+                CASE WHEN h.listing_at IS NULL AND (h.listing_date IS NULL OR h.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
+                     THEN h.data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' END AS expected_listing_date,
+                (h.listing_at IS NULL AND (h.listing_date IS NULL OR h.listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
+                  AND h.data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' ~ '^\\d{4}-\\d{2}-\\d{2}$') AS listing_date_is_estimated,
+                h.data_completeness#>>'{prospectus,expectedEvents,allotmentDate,date}' AS expected_allotment_date,
+                h.data_completeness#>>'{prospectus,fields,issuePriceType}' AS prospectus_price_type,
                 h.issue_price_low,h.issue_price_high,h.issue_price_final,h.lot_size_shares,h.lot_amount_hkd,
                 h.application_fee_hkd,h.brokerage_fee_hkd,h.online_lottery_rate,h.oversubscribe_multiple AS public_oversubscription,
                 h.oversubscribe_multiple AS final_public_oversubscription,
@@ -917,12 +946,13 @@ router.get('/calendar', async (req, res) => {
     const market = String(req.query.market || 'CN').toUpperCase();
     const selectedMarket = ['CN', 'HK', 'ALL'].includes(market) ? market : 'CN';
     const cnCalendar = selectedMarket === 'HK' ? [] : await loadStockCalendar(days);
-    const [hkCalendar, bondCalendar] = await Promise.all([
+    const [hkCalendar, bondCalendar, pendingHkStocks] = await Promise.all([
       selectedMarket === 'CN' ? [] : loadStockCalendar(days, 'HK'),
       selectedMarket === 'HK' ? [] : loadBondCalendar(days),
+      selectedMarket === 'CN' ? [] : loadPendingHkIpoFacts(days),
     ]);
     const calendar = mergeCalendarDays(cnCalendar, hkCalendar, bondCalendar);
-    res.json({ days, market: selectedMarket, calendar });
+    res.json({ days, market: selectedMarket, calendar, pending_hk_stocks: pendingHkStocks });
   } catch (e) {
     res.status(500).json({ error: '读取打新日历失败' });
   }
@@ -945,8 +975,15 @@ router.get('/report/code', async (req, res) => {
                 COALESCE(to_char(timezone('Asia/Shanghai',offer_open_at),'YYYY-MM-DD'),ipo_date) AS offer_open_date,
                 to_char(timezone('Asia/Shanghai',offer_close_at),'YYYY-MM-DD') AS offer_close_date,
                 to_char(timezone('Asia/Shanghai',pricing_at),'YYYY-MM-DD') AS pricing_date,
+                data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' AS expected_pricing_date,
                 to_char(timezone('Asia/Shanghai',allotment_at),'YYYY-MM-DD') AS allotment_date,
                 COALESCE(to_char(timezone('Asia/Shanghai',listing_at),'YYYY-MM-DD'),listing_date) AS listing_date,
+                CASE WHEN listing_at IS NULL AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
+                     THEN data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' END AS expected_listing_date,
+                (listing_at IS NULL AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
+                  AND data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' ~ '^\\d{4}-\\d{2}-\\d{2}$') AS listing_date_is_estimated,
+                data_completeness#>>'{prospectus,expectedEvents,allotmentDate,date}' AS expected_allotment_date,
+                data_completeness#>>'{prospectus,fields,issuePriceType}' AS prospectus_price_type,
                 issue_price_low,issue_price_high,issue_price_final,lot_size_shares,lot_amount_hkd,
                 application_fee_hkd,brokerage_fee_hkd,oversubscribe_multiple,greenshoe_details,facts_published_at,
                 subscription_signal.signal AS current_subscription_signal,
@@ -979,8 +1016,13 @@ router.get('/report/code', async (req, res) => {
           `# 📄 港股 IPO 事实 — ${row.security_name_cn || row.security_name || '中文名待补'}（${hkCode}）`, '',
           '## 当前状态', `- **阶段**：${row.ipo_status || 'active'}`, `- **板块**：${row.market_type || '待补全'}`,
           '', '## 关键日期', `- **公开发售开始**：${row.offer_open_date || '待公告'}`, `- **公开发售结束**：${row.offer_close_date || '待公告'}`,
-          `- **定价日**：${row.pricing_date || '待公告'}`, `- **配售结果**：${row.allotment_date || '待公告'}`, `- **上市日**：${row.listing_date || '待公告'}`,
-          '', '## 申购事实', `- **发行价区间**：${row.issue_price_low == null ? '待公告' : row.issue_price_low + '–' + (row.issue_price_high == null ? row.issue_price_low : row.issue_price_high) + ' 港元'}`,
+          `- **定价日**：${row.pricing_date || (row.expected_pricing_date ? `预计 ${row.expected_pricing_date}` : '待公告')}`,
+          `- **配售结果**：${row.allotment_date || (row.expected_allotment_date ? `预计 ${row.expected_allotment_date}` : '待公告')}`,
+          `- **上市日**：${row.listing_date || (row.expected_listing_date ? `预计 ${row.expected_listing_date}` : '待公告')}`,
+          '', '## 申购事实', `- **招股价格口径**：${row.prospectus_price_type === 'maximum_only' && row.issue_price_high != null
+            ? `最高发售价 ${row.issue_price_high} 港元（非最终发行价）`
+            : row.issue_price_low == null ? '待公告'
+              : `${row.issue_price_low}–${row.issue_price_high == null ? row.issue_price_low : row.issue_price_high} 港元（招股资料）`}`,
           `- **最终发行价**：${row.issue_price_final == null ? '待公告' : row.issue_price_final + ' 港元'}`,
           `- **每手股数**：${row.lot_size_shares == null ? '待公告' : row.lot_size_shares}`, `- **每手资金**：${row.lot_amount_hkd == null ? '待公告' : row.lot_amount_hkd + ' 港元'}`,
           `- **申请费用（含佣金及征费）**：${row.application_fee_hkd == null ? '待公告' : row.application_fee_hkd + ' 港元'}`, `- **经纪佣金**：${row.brokerage_fee_hkd == null ? '待公告' : row.brokerage_fee_hkd + ' 港元'}`,
@@ -990,10 +1032,11 @@ router.get('/report/code', async (req, res) => {
           `- **绿鞋判断**：${assessHkGreenshoe(row.greenshoe_details, null)}`,
           `- **利弗莫尔暗盘涨幅**：${row.livermore_grey_market_change_pct == null ? '暂无' : row.livermore_grey_market_change_pct + '%'}`,
           `- **富途暗盘涨幅**：${row.futu_grey_market_change_pct == null ? '暂无' : row.futu_grey_market_change_pct + '%'}`,
-          '', '## 研究状态', '- 当前仅展示官方事实；研究评分与正式建议待历史样本、质量门禁和回测完成后开放。',
+          '', '## 研究状态', '- 官方事实与市场参考信号分开显示；研究评分与正式建议待历史样本、质量门禁和回测完成后开放。',
           `- **事实更新时间**：${row.facts_published_at || '暂无'}`,
         ];
         return res.json({ code: hkCode, market: 'HK', stage: 'facts', offer_phase: row.offer_phase,
+          expected_events: { pricing_date: row.expected_pricing_date, allotment_date: row.expected_allotment_date, listing_date: row.expected_listing_date },
           current_subscription_signal: row.current_subscription_signal || { multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable' },
           current_margin_signal: row.current_margin_signal || { amount_hkd: null, multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable' },
           intraday_signal_history: Array.isArray(row.intraday_signal_history) ? row.intraday_signal_history : [],

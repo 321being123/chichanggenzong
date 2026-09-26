@@ -1,6 +1,6 @@
 const assert = require('assert');
 const { pool } = require('../db/connection');
-const { publishJobDatasets } = require('../services/datasetPartitionRegistry');
+const { publishJobDatasets, areJobDatasetsPublished } = require('../services/datasetPartitionRegistry');
 
 (async () => {
   const originalQuery = pool.query;
@@ -36,6 +36,19 @@ const { publishJobDatasets } = require('../services/datasetPartitionRegistry');
     assert.deepStrictEqual(queryArgs.params, [['ipo_history'], ['GLOBAL'], '2026-09-22']);
     assert.match(queryArgs.sql, /scope_key=ANY/);
     assert.match(queryArgs.sql, /SELECT dataset_code,scope_key/);
+
+    pool.query = async (_sql, params) => ({ rows: [{
+      dataset_code: 'hk_ipo_facts', scope_key: 'HK', status: 'published', is_stale: false,
+      diagnostics: { quality_status: params[0][0] === 'hk_ipo_facts' ? 'passed' : 'stale' },
+    }] });
+    assert.strictEqual(await areJobDatasetsPublished('hk_ipo_postclose', '2026-09-25', ['hk_ipo_facts']), true,
+      '港股事实分区只有质量通过才可作为已发布依赖');
+    pool.query = async () => ({ rows: [{
+      dataset_code: 'hk_ipo_facts', scope_key: 'HK', status: 'published', is_stale: false,
+      diagnostics: { quality_status: 'stale' },
+    }] });
+    assert.strictEqual(await areJobDatasetsPublished('hk_ipo_postclose', '2026-09-25', ['hk_ipo_facts']), false,
+      '行数足够但事实质量过期时不得放行依赖');
 
     pool.query = async () => ({ rows: [{
       dataset_code: 'ipo_history', scope_key: 'CN', status: 'published', is_stale: false,

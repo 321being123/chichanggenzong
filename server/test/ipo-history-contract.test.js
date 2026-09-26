@@ -11,6 +11,9 @@ db.pool.query = async sql => {
   if (text.includes('FROM users WHERE username=$1')) {
     return { rows: [{ username: 'test', status: 'active', auth_version: undefined, permissions: {} }] };
   }
+  if (mode === 'hk-calendar' && text.includes("data_completeness->>'status'='retryable'")) {
+    return { rows: [{ code: '06727.HK', name: '待补资料公司', offer_close_date: '2026-09-22', missing_fields: ['listingAt'] }] };
+  }
   if (mode === 'hk-calendar' && text.includes("WHERE h.market_code='HK'")) {
     lastStockSql = text;
     return { rows: [
@@ -20,6 +23,9 @@ db.pool.query = async sql => {
       { date: '2026-09-21', event_type: 'listing', code: '09995.HK', name: '测试港股',
         offer_open_at: '2026-09-19T01:00:00.000Z', offer_close_at: '2026-09-21T04:00:00.000Z',
         listing_at: '2026-09-21T01:00:00.000Z', listing_date: '2026-09-21', offer_phase: 'open' },
+      { date: '2026-09-22', event_type: 'listing', code: '06727.HK', name: '预计上市公司',
+        offer_open_at: '2026-09-10T01:00:00.000Z', offer_close_at: '2026-09-12T04:00:00.000Z',
+        listing_at: null, listing_date: '2026-09-22', offer_phase: 'closed', is_estimated: true },
     ] };
   }
   if (mode === 'hk-report' && text.includes('h.security_code=$1')) {
@@ -94,6 +100,9 @@ const server = app.listen(0, async () => {
     payload = await response.json();
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-20').apply_stocks[0].code, '09995.HK');
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-21').list_stocks[0].offer_phase, 'open');
+    assert.strictEqual(payload.calendar.find(day => day.date === '2026-09-22').list_stocks[0].is_estimated, true,
+      '预计上市日必须在日历 API 标成预计');
+    assert.strictEqual(payload.pending_hk_stocks[0].code, '06727.HK', '无日期的已截止缺口应进入待补列表');
     assert.match(lastStockSql, /timezone\('Asia\/Shanghai', now\(\)\)/, 'HK 日历未使用上海时区边界');
     assert.match(lastStockSql, /offer_close_at >= now\(\)/, 'HK 日历未排除已截止招股窗口');
     assert.match(lastStockSql, /offer_phase IN \('upcoming','open'\)/, 'HK 日历未限制招股状态');

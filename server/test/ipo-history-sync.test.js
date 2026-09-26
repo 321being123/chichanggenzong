@@ -79,6 +79,9 @@ assert.match(routeSource, /actual_return/, '港股历史没有实际涨幅字段
 assert.match(routeSource, /lot_profit/, '港股历史没有单签收益字段');
 assert.match(routeSource, /online_lottery_rate/, '港股历史没有一手中签率字段');
 assert.match(routeSource, /allotment_at/, '港股历史没有配售结果日期字段');
+assert.match(routeSource, /expectedEvents,listingDate,date/, '港股日历和历史没有读取招股书预计上市日');
+assert.match(routeSource, /is_estimated/, '预计上市日没有和实际上市日区分');
+assert.match(routeSource, /expected_allotment_date/, '港股历史没有读取预计配发结果日');
 assert.match(routeSource, /application_fee_hkd/, '港股历史没有申请费用字段');
 assert.match(routeSource, /brokerage_fee_hkd/, '港股历史没有佣金字段');
 assert.match(routeSource, /public_oversubscription/, '港股历史没有超额认购倍数字段');
@@ -89,7 +92,8 @@ assert.match(hkexSource, /overAllocatedShares[\s\S]*publicOfferShares/, '绿鞋�
 assert.match(hkexSource, /finalPublicOfferShares/, '港股配发没有保存回拨后最终公开发售股数');
 assert.match(hkexSource, /final_public_offer_after_reallocation/, '绿鞋比例没有锁定回拨后最终公开发售口径');
 const ipoPageSource = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'js', 'ipo.js'), 'utf8');
-assert.match(ipoPageSource, /发行价（港元）/, '港股发行价标题没有标注港元');
+assert.match(ipoPageSource, /招股价\/最终发行价（港元）/, '港股招股上限和最终发行价没有分开标注');
+assert.match(ipoPageSource, /function ipoHkIssuePriceCell/, '港股发行价没有区分招股价口径');
 assert.match(ipoPageSource, /ipoHkStageLabel/, '港股阶段没有中文映射');
 assert.match(ipoPageSource, /ipoIntegerCell/, '港股每手股数没有整数格式化');
 assert.match(ipoPageSource, /ipoHkAllotmentCell/, '港股配售结果没有展示日期和一手中签率');

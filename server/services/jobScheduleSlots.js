@@ -77,6 +77,7 @@ async function resolveScheduleForDate(definition, schedule, businessDate) {
   const policy = schedule.marketCalendarPolicy || definition.marketCalendarPolicy;
   if (!policy) return schedule;
   const hk = await getMarketState({ market: 'HK', businessDate, time: '00:00' });
+  if (policy === 'hk-open') return hk.status === 'open' ? schedule : null;
   const cn = await getMarketState({ market: 'CN', businessDate, time: '00:00' });
   if (policy === 'hk-close') {
     if (hk.status !== 'open' || !hk.closeQuoteTime) return null;

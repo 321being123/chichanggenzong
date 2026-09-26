@@ -92,20 +92,34 @@ const completeFacts = recomputeCompletenessForStoredRow({
   ipo_status: 'active',
   offer_open_at: '2026-09-01T01:00:00Z', offer_close_at: '2026-09-05T04:00:00Z',
   pricing_at: '2026-09-06T01:00:00Z', allotment_at: '2026-09-08T01:00:00Z',
-  listing_at: '2026-09-10T01:00:00Z', issue_price_final: 10, lot_size_shares: 100,
-  data_completeness: {}, source_documents: [],
+  listing_at: null, listing_date: '2026-09-10', issue_price_low: 9, issue_price_high: 10,
+  issue_price_final: 10, lot_size_shares: 100,
+  data_completeness: { offerOpenDate: 'missing', legacy: { oldField: 'missing' } }, source_documents: [],
 }, completenessAsOf);
 assert.strictEqual(completeFacts.status, 'complete', '最终事实齐全时必须标记 complete');
+assert.strictEqual(completeFacts.listingAt, 'value', '已入库上市日期可作为实际日期');
+assert.ok(!Object.prototype.hasOwnProperty.call(completeFacts, 'offerOpenDate'), '旧 JSON 日期键应清理，不能继续污染质量判定');
 const pendingFacts = recomputeCompletenessForStoredRow({
   ipo_status: 'active', offer_open_at: '2026-09-19T01:00:00Z', offer_close_at: '2026-09-30T04:00:00Z',
+  issue_price_low: 9, issue_price_high: 10, lot_size_shares: 100,
   data_completeness: {}, source_documents: [],
 }, completenessAsOf);
 assert.strictEqual(pendingFacts.status, 'pending_not_due', '认购截止日前缺字段必须标记 pending_not_due');
 const retryableFacts = recomputeCompletenessForStoredRow({
   ipo_status: 'active', offer_open_at: '2026-09-01T01:00:00Z', offer_close_at: '2026-09-05T04:00:00Z',
+  issue_price_low: 9, issue_price_high: 10, lot_size_shares: 100,
   data_completeness: {}, source_documents: [],
 }, completenessAsOf);
 assert.strictEqual(retryableFacts.status, 'retryable', '截止后缺字段必须标记 retryable');
+const maximumOnlyFacts = recomputeCompletenessForStoredRow({
+  ipo_status: 'active', offer_open_at: '2026-09-01T01:00:00Z', offer_close_at: '2026-09-05T04:00:00Z',
+  pricing_at: '2026-09-06T01:00:00Z', allotment_at: '2026-09-08T01:00:00Z',
+  listing_date: '2026-09-10', issue_price_low: null, issue_price_high: 88,
+  issue_price_final: 80, lot_size_shares: 100,
+  data_completeness: { prospectus: { fields: { issuePriceLow: 'maximum_only' } } }, source_documents: [],
+}, completenessAsOf);
+assert.strictEqual(maximumOnlyFacts.status, 'complete', '招股书只披露最高价时不应误判缺少价格下限');
+assert.strictEqual(maximumOnlyFacts.issuePriceLow, 'maximum_only');
 const terminalFacts = recomputeCompletenessForStoredRow({
   ipo_status: 'introduction', data_completeness: {}, source_documents: [],
 }, completenessAsOf);
@@ -186,5 +200,8 @@ assert.strictEqual(terminalFacts.status, 'complete', '介绍上市等终态项�
   });
   assert.strictEqual(prospectusResult.status, 'succeeded');
   assert.match(prospectusSql, /rights\[ _-\]\?issue|供股|placing/, '招股书补全不得为供股等非 IPO 记录检索官方招股书');
+  assert.match(prospectusSql, /expectedEvents,listingDate,date/, '预期上市日到期后必须重新核对官方结果');
+  assert.match(prospectusSql, /IS DISTINCT FROM 'not_applicable'/, '明确不适用招股书的项目不得进入重试队列');
+  assert.doesNotMatch(prospectusSql, /terminal_missing|pending_not_due.*NOT IN/, '资料缺失和待到期项目不得被永久排除');
   console.log('hk-ipo-facts.test.js passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

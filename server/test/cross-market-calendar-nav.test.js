@@ -2,7 +2,7 @@ const assert = require('assert');
 const { pool } = require('../db/connection');
 const { scheduleForDate } = require('../config/hkexAnnualSchedules');
 const marketState = require('../services/marketState');
-const { resolveScheduleForDate } = require('../services/jobScheduleSlots');
+const { resolveScheduleForDate, isSlotDayAllowed } = require('../services/jobScheduleSlots');
 const { normalizeCalendarRows, validateManualCorrection } = require('../jobs/hkTradeCalendarSync');
 const { upsertCalendarFacts } = require('../jobs/hkTradeCalendarSync');
 const { checkAnnualScheduleReminder } = require('../jobs/hkTradeCalendarSyncJob');
@@ -77,6 +77,20 @@ async function main() {
       marketState.invalidateMarketStateCache({ market: 'HK', businessDate: date });
       assert.strictEqual((await marketState.getMarketState({ market: 'HK', businessDate: date, time: '10:00' })).status, expectedHK, `${date} 港股状态错误`);
       assert.strictEqual((await marketState.getMarketState({ market: 'CN', businessDate: date, time: '10:00' })).status, expectedCN, `${date} A 股状态错误`);
+    }
+
+    for (const jobCode of ['hk_ipo_preopen', 'hk_ipo_postclose', 'hk_ipo_enrichment']) {
+      const definition = getJobDefinition(jobCode);
+      assert.strictEqual(definition.marketCalendarPolicy, 'hk-open', `${jobCode} 必须按港交所开市状态排程`);
+      assert.strictEqual(definition.weekdays, false, `${jobCode} 不得依赖 A 股交易日历`);
+      assert.strictEqual(definition.calendarWeekdays, true, `${jobCode} 先按周一至周五生成候选日`);
+      assert.strictEqual(isSlotDayAllowed('2026-09-25', definition), true, 'A 股休市但港股开市时仍须生成港股候选槽位');
+      marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2026-09-25' });
+      assert.ok(await resolveScheduleForDate(definition, definition, '2026-09-25'), `${jobCode} 应在港股独立开市日生成任务`);
+      marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2026-10-01' });
+      assert.strictEqual(await resolveScheduleForDate(definition, definition, '2026-10-01'), null, `${jobCode} 港股休市日不得生成任务`);
+      marketState.invalidateMarketStateCache({ market: 'HK', businessDate: '2027-01-04' });
+      assert.strictEqual(await resolveScheduleForDate(definition, definition, '2027-01-04'), null, `${jobCode} 港股日历未知时不得猜测开市`);
     }
 
     const scheduleCases = [

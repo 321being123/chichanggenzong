@@ -66,9 +66,9 @@ function ipoHkStageLabel(status, offerPhase) {
   var phaseLabels = {
     upcoming: '待申购',
     open: '申购中',
-    closed: '申购结束',
-    priced: '已定价',
-    allotted: '已配售',
+    closed: '已截止待配发',
+    priced: '已定价待配发',
+    allotted: '已配发待上市',
     listed: '已上市',
     pending_window: '待招股窗口',
     not_applicable: '非公开发售',
@@ -115,6 +115,10 @@ function ipoHkAllotmentCell(it) {
     : '';
   if (!date && !rate) {
     var phase = String(it.offer_phase || '').toLowerCase();
+    if (it.expected_allotment_date && /^\d{4}-\d{2}-\d{2}$/.test(String(it.expected_allotment_date))) {
+      return '<span>预计 ' + escapeHtml(String(it.expected_allotment_date)) + ' 公布配发结果</span>';
+    }
+    if (phase === 'listed') return '<span>已上市，配发资料待补</span>';
     return phase === 'closed' || phase === 'priced'
       ? '<span>待官方配发公告</span>'
       : '<span>尚未到配发阶段</span>';
@@ -144,7 +148,8 @@ function ipoHkSignalCell(it, field, label) {
   var hasMultiple = multiple !== null && multiple !== undefined && multiple !== '' && isFinite(Number(multiple)) && Number(multiple) > 0;
   var hasAmount = amount !== null && amount !== undefined && amount !== '' && isFinite(Number(amount)) && Number(amount) > 0;
   if (!hasMultiple && !hasAmount) {
-    return stage === 'active' || stage === 'offer_open' ? '<span>暂无可验证数据</span>' : '<span>—</span>';
+    return stage === 'active' || stage === 'offer_open' || stage === 'open' || stage === 'upcoming'
+      ? '<span>暂无可验证数据</span>' : '<span>—</span>';
   }
   var sourceMap = { livermore: '利弗莫尔', 'vbkr-public': '华盛（捷利数据）', 'futu-public': '富途公开页', 'hkipox-public': 'HKIPOx参考' };
   var source = sourceMap[String(signal.source || '')] || String(signal.source || '外部来源');
@@ -160,6 +165,43 @@ function ipoHkSignalCell(it, field, label) {
   if (collectedTime) timeLines.push('本地采集 ' + escapeHtml(collectedTime));
   return escapeHtml(source + label + ' ' + values.join(' / ') + stale) +
     (timeLines.length ? '<br><small style="color:#999;">' + timeLines.join('<br>') + '</small>' : '');
+}
+
+function ipoHkListingCell(it) {
+  var expected = String(it && it.expected_listing_date || '').slice(0, 10);
+  if ((it && it.listing_date_is_estimated) && /^\d{4}-\d{2}-\d{2}$/.test(expected)) {
+    return '<span>预计 ' + escapeHtml(expected) + '</span>';
+  }
+  var actual = String(it && it.listing_date || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(actual)) return escapeHtml(actual);
+  return /^\d{4}-\d{2}-\d{2}$/.test(expected)
+    ? '<span>预计 ' + escapeHtml(expected) + '</span>' : '<span>待补</span>';
+}
+
+function ipoHkIssuePriceCell(it) {
+  var finalPrice = Number(it && it.issue_price_final);
+  if (isFinite(finalPrice) && finalPrice > 0) return ipoNumFixed(finalPrice, 3) + '（最终）';
+  var high = Number(it && it.issue_price_high);
+  var low = Number(it && it.issue_price_low);
+  var priceType = String(it && it.prospectus_price_type || '').toLowerCase();
+  if (priceType === 'maximum_only' && isFinite(high) && high > 0) {
+    return '最高 ' + ipoNumFixed(high, 3) + '（非最终价）';
+  }
+  if (isFinite(low) && low > 0 && isFinite(high) && high > 0) {
+    return ipoNumFixed(low, 3) + '–' + ipoNumFixed(high, 3) + '（招股价）';
+  }
+  return '<span>待补</span>';
+}
+
+function ipoHkFactStatusCell(it) {
+  var ipoStatus = String(it && it.ipo_status || '').toLowerCase();
+  if (ipoStatus === 'introduction' || ipoStatus === 'gem_transfer' || ipoStatus === 'de_spac') {
+    return '<span style="color:#666;">不适用普通 IPO 资料</span>';
+  }
+  var status = String(it && it.data_completeness && it.data_completeness.status || '').toLowerCase();
+  if (status === 'complete') return '<span style="color:#137333;">关键事实已核实</span>';
+  if (status === 'pending_not_due') return '<span style="color:#666;">等待下一阶段官方结果</span>';
+  return '<span style="color:#a15c00;">官方资料待补</span>';
 }
 
 function ipoHkSubscriptionCell(it) {
@@ -379,7 +421,7 @@ async function loadIpo() {
       summary: rep && rep.summary,
       calendar: cal && cal.calendar
     });
-    if (calendar) calendar.innerHTML = ipoRenderCalendar(cal.calendar || []);
+    if (calendar) calendar.innerHTML = ipoRenderCalendar(cal.calendar || [], cal.pending_hk_stocks || []);
     ipoLoadHistory('stock');
   } catch (e) {
     var advError = document.getElementById('ipo-advice');
@@ -398,7 +440,7 @@ async function ipoSwitchMarket(market) {
     var r = await fetch(api('/api/ipo/calendar?days=90&market=' + encodeURIComponent(market)));
     if (!r.ok) throw new Error('日历接口返回 ' + r.status);
     var d = await r.json();
-    if (calendar) calendar.innerHTML = ipoRenderCalendar(d.calendar || []);
+    if (calendar) calendar.innerHTML = ipoRenderCalendar(d.calendar || [], d.pending_hk_stocks || []);
   } catch (e) {
     if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
@@ -536,9 +578,11 @@ function ipoRenderAdvice(md, context) {
 }
 
 // ========== 打新日历（中间区域，按日期分组） ==========
-function ipoRenderCalendar(calendar) {
-  if (!calendar || !calendar.length) {
-    return '<div class="empty-state"><div class="icon">📅</div>未来暂无已排期的申购 / 上市（数据每日收盘后更新）</div>';
+function ipoRenderCalendar(calendar, pendingHkStocks) {
+  calendar = Array.isArray(calendar) ? calendar : [];
+  pendingHkStocks = Array.isArray(pendingHkStocks) ? pendingHkStocks : [];
+  if (!calendar.length && !pendingHkStocks.length) {
+    return '<div class="empty-state"><div class="icon">📅</div>目前没有日期已确认的申购或上市安排</div>';
   }
   var todayStr = _ipoTodayStr();
   var html = '';
@@ -567,11 +611,19 @@ function ipoRenderCalendar(calendar) {
     }
     if (listN > 0) {
       var listItems = [];
-      (day.list_stocks || []).forEach(function (it) { listItems.push({ type: '新股', name: it.name, code: it.code }); });
+      (day.list_stocks || []).forEach(function (it) { listItems.push({ type: '新股', name: it.name, code: it.code, is_estimated: it.is_estimated }); });
       (day.list_bonds || []).forEach(function (it) { listItems.push({ type: '新债', name: it.name, code: it.code }); });
       html += ipoCalendarRow('上市', listItems, '#137333');
     }
   });
+  if (pendingHkStocks.length) {
+    html += '<div style="margin:14px 0 6px;display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #f0f0f0;padding-bottom:6px;">';
+    html += '<span style="font-size:15px;font-weight:700;color:#a15c00;">官方资料待补</span>';
+    html += '<span style="font-size:12px;color:#888;">' + pendingHkStocks.length + ' 只，暂无可确认日期</span></div>';
+    html += ipoCalendarRow('待补', pendingHkStocks.map(function (it) {
+      return { type: '新股', name: it.name, code: it.code };
+    }), '#a15c00');
+  }
   return html;
 }
 
@@ -596,6 +648,7 @@ function ipoCalendarRow(label, items, color) {
       : (String(it.code || '').toUpperCase().indexOf('.HK') >= 0 && !/[\u3400-\u9fff]/.test(rawName) ? '中文名待补' : (it.name || '-'));
     html += '<div class="ipo-calendar-security" style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(calendarName) + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
     html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
+    if (it.is_estimated) html += ' <span style="color:#a15c00;font-size:11px;">预计</span>';
     html += ipoBoardBadge(it.code, it.type);
     html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';
   });
@@ -677,18 +730,18 @@ function ipoRenderHistory(type, rows) {
   }
 
   if (type === 'hk_stock') {
-    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期认购倍数（已验证）', '申购期预计孖展倍数（每日）', '盘中变化（已落库）', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '事实状态'];
+    var hkHeaders = ['代码', '名称', '阶段', '公开发售', '配售结果', '申购期认购倍数（参考）', '申购期预计孖展倍数（每日）', '采集记录', '最终超额认购倍数', '绿鞋判断', '利弗莫尔暗盘涨幅', '富途暗盘涨幅', '上市日', '招股价/最终发行价（港元）', '每手股数', '每手资金（港元）', '申请费用（含佣金及征费，港元）', '预测涨幅', '实际涨幅', '单签收益（港元）', '资料状态'];
     var hkRows = rows.map(function (it) {
       return [
         escapeHtml(it.security_code || ''), ipoHkNameCell(it.security_name_cn || it.security_name, it.security_code),
         ipoHkStageLabel(it.ipo_status, it.offer_phase), ipoHkOfferWindowCell(it), ipoHkAllotmentCell(it),
         ipoHkSubscriptionCell(it), ipoHkLiveOversubscriptionCell(it), ipoHkSignalHistoryCell(it), ipoHkOversubscriptionCell(it), ipoHkGreenshoeCell(it),
         ipoPctCell(it.livermore_grey_market_change_pct), ipoPctCell(it.futu_grey_market_change_pct),
-        ipoPending(it.listing_date), ipoPending(it.issue_price_final, function (v) { return ipoNumFixed(v, 3); }),
+        ipoHkListingCell(it), ipoHkIssuePriceCell(it),
         ipoPending(it.lot_size_shares, ipoIntegerCell), ipoPending(it.lot_amount_hkd, function (v) { return ipoNumFixed(v, 2); }),
         ipoPending(it.application_fee_hkd, function (v) { return ipoNumFixed(v, 2); }),
         ipoPctCell(it.pred_return), ipoPctCell(it.actual_return), ipoPending(it.lot_profit, function (v) { return ipoNumFixed(v, 2); }),
-        '<span style="color:#8a6d3b;">仅官方事实</span>'
+        ipoHkFactStatusCell(it)
       ];
     });
     return ipoTable(hkHeaders, hkRows, { scroll: true });

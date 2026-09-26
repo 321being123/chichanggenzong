@@ -455,6 +455,11 @@ async function syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl,
       fetchedAt, pageUrl: HKIPOX_URL, parserVersion: 'hkipox-ipo-home-v1', html: String(payload || '').slice(0, 500000),
     });
     const rows = parseHkIpoXHtml(payload);
+    const activeCodes = [...map.entries()]
+      .filter(([, ipo]) => isOfferOpen(ipo, new Date(fetchedAt)))
+      .map(([code]) => code);
+    result.subscription.activeCodes = activeCodes;
+    result.hkipoxSubscription.activeCodes = activeCodes;
     result.hkipoxSubscription.fetched = true;
     result.hkipoxSubscription.rows = rows.length;
     result.hkipoxSubscription.ok = true;
@@ -478,6 +483,8 @@ async function syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl,
       })) {
         result.hkipoxSubscription.saved += 1;
         result.subscription.saved += 1;
+        result.subscription.coveredCodes.push(item.securityCode);
+        result.hkipoxSubscription.coveredCodes.push(item.securityCode);
       }
     }
   } catch (error) {
@@ -503,7 +510,7 @@ async function syncHkIpoMarketSignals({
     };
   }
   const map = await loadIpoMap();
-  const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false }, hkipoxSubscription: { fetched: false, rows: 0, saved: 0, ok: false }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
+  const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false, activeCodes: [], coveredCodes: [] }, hkipoxSubscription: { fetched: false, rows: 0, saved: 0, ok: false, activeCodes: [], coveredCodes: [] }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
   if (sourcesAdmitted !== true) {
     await syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result });
     return result;

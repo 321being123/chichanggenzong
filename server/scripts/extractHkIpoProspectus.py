@@ -243,7 +243,7 @@ def _parse_chinese_time(value):
     return hour, minute
 
 
-def _parse_date_time(text, start, end):
+def _parse_date_time(text, start, end, require_clock=True):
     window = text[start:end]
     chinese = re.search(r"([零〇一二三四五六七八九十百兩\d]{4,})\s*年\s*"
                        r"([零〇一二三四五六七八九十百兩\d]{1,3})\s*月\s*"
@@ -312,7 +312,7 @@ def _parse_date_time(text, start, end):
                 hour = 0
             clock = (hour, minute)
     if clock is None:
-        return None
+        return None if require_clock else date_text
     hour, minute = clock
     return f"{date_text}T{hour:02d}:{minute:02d}:00+08:00"
 
@@ -321,13 +321,17 @@ def parse_prospectus_text(text):
     normalized = _normalize(text)
     result = {
         "parserStatus": "incomplete",
-        "parserVersion": "hk-ipo-prospectus-v2",
+        "parserVersion": "hk-ipo-prospectus-v3",
         "securityCode": None,
         "issuePriceLow": None,
         "issuePriceHigh": None,
+        "issuePriceType": None,
         "lotSizeShares": None,
         "offerOpenAt": None,
         "offerCloseAt": None,
+        "expectedPricingDate": None,
+        "expectedAllotmentDate": None,
+        "expectedListingDate": None,
         "sponsorGroup": None,
         "evidence": {},
         "warnings": [],
@@ -343,11 +347,10 @@ def parse_prospectus_text(text):
         result["securityCode"] = f"{int(code.group(1)):05d}.HK"
 
     price_match = re.search(
-        r"(?:發售價|Offer\s+Price)[^0-9]{0,100}"
+        r"(?:(?<!最高)發售價|(?<!Maximum )Offer\s+Price)[^0-9]{0,100}"
         r"([0-9]+(?:\.[0-9]+)?)\s*(?:港元|HK\$|HKD)?"
-        r"(?:\s*(?:至|到|[-–—]|to)\s*([0-9]+(?:\.[0-9]+)?))?",
-        normalized,
-        flags=re.IGNORECASE,
+        r"(?:\s*(?:至|到|[-–—]|to)\s*(?:港元|HK\$|HKD)?\s*([0-9]+(?:\.[0-9]+)?))?",
+        normalized, flags=re.IGNORECASE,
     )
     if price_match:
         low = _number(price_match.group(1))
@@ -355,7 +358,17 @@ def parse_prospectus_text(text):
         if low is not None and high is not None and high >= low:
             result["issuePriceLow"] = low
             result["issuePriceHigh"] = high
+            result["issuePriceType"] = "range" if price_match.group(2) else "fixed_offer_price"
             result["evidence"]["issuePrice"] = _snippet(normalized, price_match.start(), price_match.end())
+    else:
+        maximum_match = re.search(
+            r"(?:最高發售價|Maximum\s+Offer\s+Price)[^0-9]{0,100}([0-9]+(?:\.[0-9]+)?)\s*(?:港元|HK\$|HKD)?",
+            normalized, flags=re.IGNORECASE,
+        )
+        if maximum_match:
+            result["issuePriceHigh"] = _number(maximum_match.group(1))
+            result["issuePriceType"] = "maximum_only"
+            result["evidence"]["issuePrice"] = _snippet(normalized, maximum_match.start(), maximum_match.end())
 
     lot_patterns = [
         r"(?:每手(?:買賣單位|股份|股數)?|每手為|board\s+lot(?:\s+size)?(?:\s+of)?)\s*[:：]?\s*([\d,]+)\s*(?:股|shares?)",
@@ -416,8 +429,34 @@ def parse_prospectus_text(text):
                 result["evidence"]["offerCloseAt"] = _snippet(normalized, pos, pos + 420)
                 break
 
+    expected_markers = {
+        "expectedPricingDate": [
+            "expected to be fixed on", "pricing date", "預期定價日", "定價日預計於",
+        ],
+        "expectedAllotmentDate": [
+            "announcement of allotment results is expected to be published on",
+            "allotment results will be announced on", "配發結果公告預計於", "公佈配發結果",
+        ],
+        "expectedListingDate": [
+            "listing on the main board of the stock exchange is expected to take place on",
+            "listing on the main board is expected to take place on", "expected to commence dealings on",
+            "預期於聯交所主板上市", "預計於聯交所主板上市",
+        ],
+    }
+    for field, markers in expected_markers.items():
+        for marker in markers:
+            pos = normalized.lower().find(marker.lower())
+            if pos < 0:
+                continue
+            parsed = _parse_date_time(normalized, pos, min(len(normalized), pos + 320), require_clock=False)
+            if parsed:
+                result[field] = parsed[:10]
+                result["evidence"][field] = _snippet(normalized, pos, pos + 320)
+                break
+
     required = (
-        result["issuePriceLow"], result["issuePriceHigh"], result["lotSizeShares"],
+        (result["issuePriceLow"] is not None or result["issuePriceType"] == "maximum_only"),
+        result["issuePriceHigh"], result["lotSizeShares"],
         result["offerOpenAt"], result["offerCloseAt"],
     )
     result["parserStatus"] = "parsed" if all(value is not None for value in required) else "partial"

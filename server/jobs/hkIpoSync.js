@@ -122,17 +122,27 @@ function rowsFromProbe(probe) {
 function marketSignalDiagnostics(marketSignals) {
   if (!marketSignals) return { query_status: 'not_run', coverage_status: 'unknown', source_status: 'unavailable' };
   const notAdmitted = marketSignals.status === 'not_admitted';
+  if (notAdmitted) {
+    return { query_status: 'not_run', coverage_status: 'unknown', source_status: 'not_admitted',
+      valid_signal_rows: 0, degraded_reason: [] };
+  }
+  const activeCodes = [...new Set(marketSignals.subscription?.activeCodes || [])];
+  const coveredCodes = new Set(marketSignals.subscription?.coveredCodes || []);
+  const missingActiveCodes = activeCodes.filter(code => !coveredCodes.has(code));
+  const queryOk = Boolean(marketSignals.subscription?.ok && marketSignals.subscription?.fetched);
+  const coverageStatus = !queryOk ? 'unknown'
+    : !activeCodes.length ? 'verified_no_change'
+      : missingActiveCodes.length ? 'incomplete' : 'complete';
   return {
-    query_status: notAdmitted ? 'not_run'
-      : !marketSignals.subscription ? 'failed'
-        : marketSignals.subscription.ok === false ? 'failed'
-          : marketSignals.subscription.fetched ? 'success' : 'failed',
-    coverage_status: notAdmitted ? 'unknown'
-      : marketSignals.subscription?.saved > 0 ? 'complete'
-        : marketSignals.subscription?.ok && marketSignals.subscription?.fetched ? 'verified_no_change' : 'unknown',
-    source_status: notAdmitted ? 'not_admitted' : marketSignals.status || 'unavailable',
+    query_status: queryOk ? 'success' : 'failed',
+    quality_status: coverageStatus === 'complete' || coverageStatus === 'verified_no_change' ? 'passed' : 'stale',
+    coverage_status: coverageStatus,
+    source_status: marketSignals.status || 'unavailable',
     valid_signal_rows: Number(marketSignals.subscription?.saved || 0),
-    degraded_reason: notAdmitted ? [] : marketSignals.errors || [],
+    active_rows: activeCodes.length,
+    covered_active_rows: activeCodes.length - missingActiveCodes.length,
+    missing_active_codes: missingActiveCodes,
+    degraded_reason: marketSignals.errors || [],
   };
 }
 
@@ -265,12 +275,20 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   const failedSubtasks = coreSubtasks.filter(item => item.ok === false);
   const degraded = subtasks.some(item => item.ok === false || item.status === 'degraded');
   const signalDiagnostics = marketSignalDiagnostics(marketSignals);
+  const factDiagnostics = {
+    query_status: !completenessAudit || completenessAudit.ok === false ? 'failed' : 'success',
+    quality_status: completenessAudit?.qualityStatus || 'stale',
+    coverage_status: completenessAudit?.missing ? 'incomplete' : 'complete',
+    partition_row_count: completenessAudit?.rows || 0,
+    valid_report_rows: Number(completenessAudit?.complete || 0) + Number(completenessAudit?.pending || 0),
+    incomplete_rows: Number(completenessAudit?.missing || 0),
+  };
   return {
     ...result, ok: failedSubtasks.length === 0, status: degraded ? 'degraded' : 'succeeded', degraded,
     failedDatasets: failedSubtasks.length ? ['hk_ipo_facts'] : [],
     mode, probePersistence, historicalReports, nonPublicListings, cancelledListings, prospectusFacts, allotmentFacts,
     dailyCoverage, marketSignals, tencentNames, completenessAudit,
-    datasetDiagnostics: { hk_ipo_subscription_signals: signalDiagnostics },
+    datasetDiagnostics: { hk_ipo_facts: factDiagnostics, hk_ipo_subscription_signals: signalDiagnostics },
     probeTargets: (probe.targets || []).length,
     dataAsOf: new Date().toISOString().slice(0, 10),
   };

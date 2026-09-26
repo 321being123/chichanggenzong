@@ -954,11 +954,12 @@ async function syncHkexProspectusFacts({
   const candidateParams = [fromDate, toDate, Boolean(refreshSponsor)];
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
-    SELECT security_code,listing_at::date::text AS listing_date,source_documents,data_completeness,
-           issue_price_low,issue_price_high,issue_price_final,lot_size_shares,offer_open_at,offer_close_at
+    SELECT security_code,timezone('Asia/Shanghai',listing_at)::date::text AS actual_listing_date,listing_date,ipo_date,source_documents,data_completeness,
+           issue_price_low,issue_price_high,issue_price_final,lot_size_shares,offer_open_at,offer_close_at,pricing_at,allotment_at
      FROM public.ipo_history
      WHERE market_code='HK'
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
+       AND data_completeness#>>'{prospectus,status}' IS DISTINCT FROM 'not_applicable'
        AND NOT EXISTS (
          SELECT 1
            FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
@@ -966,19 +967,36 @@ async function syncHkexProspectusFacts({
                 ~ '(rights[ _-]?issue|供股|配售|placing|share option|special purpose)'
        )
        AND (
-         listing_at::date BETWEEN $1::date AND $2::date
+         timezone('Asia/Shanghai',listing_at)::date BETWEEN $1::date AND $2::date
+       OR (listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND listing_date::date BETWEEN $1::date AND $2::date)
        OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
+       OR (listing_at IS NULL AND ipo_status='listed'
+           AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
+           AND COALESCE(offer_close_at::date,offer_open_at::date,
+             CASE WHEN ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN ipo_date::date END) BETWEEN $1::date AND $2::date)
        )
-       AND COALESCE(data_completeness#>>'{prospectus,status}',
-                    CASE WHEN data_completeness->>'status'='pending_not_due' THEN 'pending_not_due' ELSE 'retryable' END)
-             NOT IN ('not_applicable','terminal_missing','pending_not_due')
+       AND (data_completeness#>>'{prospectus,next_retry_at}' IS NULL
+         OR (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now())
        AND (
-         data_completeness#>>'{prospectus,status}' IS NULL
-         OR data_completeness#>>'{prospectus,status}' <> 'retryable'
-         OR (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now()
-       )
-       AND (
-         issue_price_low IS NULL OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
+         (issue_price_low IS NULL AND data_completeness#>>'{prospectus,fields,issuePriceLow}' IS DISTINCT FROM 'maximum_only')
+         OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
+         OR data_completeness#>>'{prospectus,expectedEvents,pricingDate,status}' IS NULL
+         OR data_completeness#>>'{prospectus,expectedEvents,allotmentDate,status}' IS NULL
+         OR data_completeness#>>'{prospectus,expectedEvents,listingDate,status}' IS NULL
+         OR (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date
+         OR (data_completeness#>>'{prospectus,expectedEvents,allotmentDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date
+         OR (data_completeness#>>'{prospectus,expectedEvents,listingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date
+         OR (offer_close_at IS NOT NULL AND offer_close_at::date < (timezone('Asia/Shanghai',now()))::date AND (
+           (pricing_at IS NULL AND (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' IS NULL
+             OR (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date))
+           OR (issue_price_final IS NULL AND (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' IS NULL
+             OR (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date))
+           OR (allotment_at IS NULL AND (data_completeness#>>'{prospectus,expectedEvents,allotmentDate,date}' IS NULL
+             OR (data_completeness#>>'{prospectus,expectedEvents,allotmentDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date))
+         ))
+         OR (data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' IS NULL
+             AND timezone('Asia/Shanghai',offer_close_at)::date < (timezone('Asia/Shanghai',now()))::date
+             AND listing_at IS NULL AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$'))
          OR ($3::boolean AND NOT EXISTS (
            SELECT 1
              FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
@@ -1010,7 +1028,8 @@ async function syncHkexProspectusFacts({
 
   // 候选查询会优先重试已有招股书证据，顺序不再保证按上市日排列；
   // 检索窗口必须使用全部候选的日期边界，不能取数组首尾。
-  const listingDates = candidates.map(candidate => candidate.listing_date)
+  const listingDates = candidates.map(candidate => candidate.actual_listing_date || candidate.listing_date
+    || candidate.offer_close_at || candidate.offer_open_at || candidate.ipo_date)
     .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))).sort();
   const firstListing = listingDates[0] || fromDate;
   const lastListing = listingDates[listingDates.length - 1] || toDate;
@@ -1022,6 +1041,7 @@ async function syncHkexProspectusFacts({
   let searched = 0;
   let attempted = 0;
   let enriched = 0;
+  let missingEvidence = 0;
   try {
     const documentsByCode = new Map();
     const candidatesNeedingSearch = candidates.filter(candidate => {
@@ -1079,25 +1099,35 @@ async function syncHkexProspectusFacts({
       }
       const documents = (documentsByCode.get(code) || []).sort((a, b) => String(a.announcedAt || '').localeCompare(String(b.announcedAt || '')));
       if (!documents.length) {
-        failures.push({ code, stage: 'search_match', error: '未找到官方发售以供认购 PDF' });
+        missingEvidence += 1;
         await executor(
           `UPDATE public.ipo_history
               SET data_completeness=jsonb_set(COALESCE(data_completeness,'{}'::jsonb),'{prospectus}',$2::jsonb,true),
                   updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
             WHERE market_code='HK' AND security_code=$1`,
-          [code, JSON.stringify({ status: 'terminal_missing', checked_at: new Date().toISOString(),
-            next_retry_at: null, reason: '官方招股书窗口内未发现可核验文件', evidence_url: null })]
+          [code, JSON.stringify({ status: 'retryable', checked_at: new Date().toISOString(),
+            next_retry_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), reason: '官方招股书窗口内暂未发现可核验文件', evidence_url: null,
+            expectedEvents: {
+              pricingDate: { date: null, status: 'not_located' },
+              allotmentDate: { date: null, status: 'not_located' },
+              listingDate: { date: null, status: 'not_located' },
+            } })]
         );
         continue;
       }
       const aggregate = {};
+      const existingProspectus = candidate.data_completeness?.prospectus || {};
       for (const [key, value] of Object.entries({
         issuePriceLow: candidate.issue_price_low,
         issuePriceHigh: candidate.issue_price_high,
         issuePriceFinal: candidate.issue_price_final,
+        issuePriceType: existingProspectus.fields?.issuePriceLow === 'maximum_only' ? 'maximum_only' : null,
         lotSizeShares: candidate.lot_size_shares,
         offerOpenAt: candidate.offer_open_at,
         offerCloseAt: candidate.offer_close_at,
+        expectedPricingDate: existingProspectus.expectedEvents?.pricingDate?.date,
+        expectedAllotmentDate: existingProspectus.expectedEvents?.allotmentDate?.date,
+        expectedListingDate: existingProspectus.expectedEvents?.listingDate?.date,
       })) if (value != null) aggregate[key] = value;
       const evidenceDocuments = [];
       const parseDocuments = [];
@@ -1147,15 +1177,20 @@ async function syncHkexProspectusFacts({
           for (const [key, value] of Object.entries({
             issuePriceLow: parsed.issuePriceLow,
             issuePriceHigh: parsed.issuePriceHigh,
+            issuePriceType: parsed.issuePriceType,
             lotSizeShares: parsed.lotSizeShares,
             offerOpenAt: parsed.offerOpenAt,
             offerCloseAt: parsed.offerCloseAt,
+            expectedPricingDate: parsed.expectedPricingDate,
+            expectedAllotmentDate: parsed.expectedAllotmentDate,
+            expectedListingDate: parsed.expectedListingDate,
             sponsorGroup: parsed.sponsorGroup,
           })) {
             if (aggregate[key] == null && value != null) aggregate[key] = value;
           }
-          const coreComplete = aggregate.issuePriceLow != null && aggregate.issuePriceHigh != null
-            && aggregate.lotSizeShares != null && aggregate.offerCloseAt != null;
+          const coreComplete = (aggregate.issuePriceLow != null || aggregate.issuePriceType === 'maximum_only')
+            && aggregate.issuePriceHigh != null
+            && aggregate.lotSizeShares != null && aggregate.offerOpenAt != null && aggregate.offerCloseAt != null;
           if (coreComplete && (!refreshSponsor || aggregate.sponsorGroup != null)) break;
         } catch (error) {
           failures.push({ code, stage: 'fetch_or_parse', url: document.fileLink, error: error.message || String(error) });
@@ -1170,25 +1205,58 @@ async function syncHkexProspectusFacts({
         if (index >= 0) sourceDocuments[index] = { ...sourceDocuments[index], ...document };
         else sourceDocuments.push(document);
       }
-      const prospectusComplete = aggregate.issuePriceLow != null && aggregate.issuePriceHigh != null
+      const prospectusComplete = (aggregate.issuePriceLow != null || aggregate.issuePriceType === 'maximum_only')
+        && aggregate.issuePriceHigh != null
         && aggregate.lotSizeShares != null && aggregate.offerOpenAt != null && aggregate.offerCloseAt != null;
+      const today = todayShanghai();
+      const expectedEvents = {
+        pricingDate: aggregate.expectedPricingDate
+          ? { date: aggregate.expectedPricingDate, status: 'parsed' }
+          : { date: null, status: 'not_located' },
+        allotmentDate: aggregate.expectedAllotmentDate
+          ? { date: aggregate.expectedAllotmentDate, status: 'parsed' }
+          : { date: null, status: 'not_located' },
+        listingDate: aggregate.expectedListingDate
+          ? { date: aggregate.expectedListingDate, status: 'parsed' }
+          : { date: null, status: 'not_located' },
+      };
+      const futureExpectedDates = Object.values(expectedEvents).map(item => item.date)
+        .filter(value => /^\\d{4}-\\d{2}-\\d{2}$/.test(String(value || '')) && value > today).sort();
+      const closeDate = String(aggregate.offerCloseAt || '').slice(0, 10);
+      const hasMissingExpectedOutcome = closeDate && closeDate < today && (
+        !candidate.actual_listing_date && !candidate.listing_date
+        || !candidate.pricing_at && (!expectedEvents.pricingDate.date || expectedEvents.pricingDate.date <= today)
+        || !candidate.issue_price_final && (!expectedEvents.pricingDate.date || expectedEvents.pricingDate.date <= today)
+        || !candidate.allotment_at && (!expectedEvents.allotmentDate.date || expectedEvents.allotmentDate.date <= today)
+        || expectedEvents.pricingDate.date && expectedEvents.pricingDate.date <= today
+        || expectedEvents.allotmentDate.date && expectedEvents.allotmentDate.date <= today
+        || expectedEvents.listingDate.date && expectedEvents.listingDate.date <= today
+      );
+      const nextRetryAt = !prospectusComplete
+        ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+        : hasMissingExpectedOutcome
+          ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+          : futureExpectedDates.length
+          ? `${futureExpectedDates[0]}T00:00:00+08:00`
+          : null;
       const prospectusCompleteness = {
-        status: prospectusComplete ? 'complete' : 'retryable', checked_at: new Date().toISOString(),
-        next_retry_at: prospectusComplete ? null : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        status: prospectusComplete ? (hasMissingExpectedOutcome ? 'retryable' : nextRetryAt ? 'pending_not_due' : 'complete') : 'retryable', checked_at: new Date().toISOString(),
+        next_retry_at: nextRetryAt,
         reason: prospectusComplete ? '官方招股书已解析并保存证据' : '官方招股书已发现但核心字段仍缺失',
         evidence_url: evidenceDocuments[0]?.url || documents[0]?.fileLink || null,
-        fields: {},
+        fields: {}, expectedEvents,
       };
       for (const [key, value] of Object.entries({
         issuePriceLow: aggregate.issuePriceLow, issuePriceHigh: aggregate.issuePriceHigh,
-        lotSizeShares: aggregate.lotSizeShares, offerOpenDate: aggregate.offerOpenAt, offerCloseDate: aggregate.offerCloseAt,
+        issuePriceType: aggregate.issuePriceType, lotSizeShares: aggregate.lotSizeShares,
+        offerOpenAt: aggregate.offerOpenAt, offerCloseAt: aggregate.offerCloseAt,
         sponsorGroup: aggregate.sponsorGroup,
-      })) if (value != null) prospectusCompleteness.fields[key] = 'value';
+      })) if (value != null) prospectusCompleteness.fields[key] = key === 'issuePriceType' ? value : 'value';
+      if (aggregate.issuePriceType === 'maximum_only') prospectusCompleteness.fields.issuePriceLow = 'maximum_only';
       await executor(`
         UPDATE public.ipo_history
            SET issue_price_low=COALESCE(issue_price_low,$2),
                issue_price_high=COALESCE(issue_price_high,$3),
-               issue_price_final=COALESCE(issue_price_final,CASE WHEN $2 IS NOT NULL AND $3 IS NOT NULL AND $2=$3 THEN $2 END),
                lot_size_shares=COALESCE(lot_size_shares,$4),
                offer_open_at=COALESCE(offer_open_at,$5::timestamptz),
                offer_close_at=COALESCE(offer_close_at,$6::timestamptz),
@@ -1196,18 +1264,19 @@ async function syncHkexProspectusFacts({
                data_completeness=jsonb_set(COALESCE(data_completeness,'{}'::jsonb),'{prospectus}',$8::jsonb,true),
                facts_published_at=now(),updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
          WHERE market_code='HK' AND security_code=$1`, [
-        code, aggregate.issuePriceLow || null, aggregate.issuePriceHigh || null, aggregate.lotSizeShares || null,
+        code, aggregate.issuePriceLow ?? null, aggregate.issuePriceHigh ?? null, aggregate.lotSizeShares ?? null,
         aggregate.offerOpenAt || null, aggregate.offerCloseAt || null, JSON.stringify(sourceDocuments), JSON.stringify(prospectusCompleteness),
       ]);
       enriched += 1;
     }
     const limited = candidateLimit !== null;
-    const status = failures.length ? (enriched ? 'degraded' : 'failed') : (limited ? 'degraded' : 'succeeded');
+    const status = failures.length ? (enriched || missingEvidence ? 'degraded' : 'failed')
+      : (limited || missingEvidence ? 'degraded' : 'succeeded');
     const statusMessage = failures.map(item => `${item.code || item.stage}:${item.error}`).join('; ')
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
       [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']);
-    return { ok: status !== 'failed', status, runId, candidates: candidates.length, searched, attempted, enriched, failures, limited, fromDate, toDate };
+    return { ok: status !== 'failed', status, runId, candidates: candidates.length, searched, attempted, enriched, missingEvidence, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -1454,39 +1523,96 @@ function completenessForRow(row) {
 function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
   const current = row && row.data_completeness && typeof row.data_completeness === 'object'
     ? row.data_completeness : {};
+  const prospectus = current.prospectus && typeof current.prospectus === 'object' ? current.prospectus : {};
+  const expectedEvents = prospectus.expectedEvents && typeof prospectus.expectedEvents === 'object'
+    ? prospectus.expectedEvents : {};
+  const dateInShanghai = value => {
+    if (!value) return null;
+    const parsed = value instanceof Date ? value : new Date(value);
+    return Number.isFinite(parsed.getTime())
+      ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(parsed) : null;
+  };
+  const storedDate = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').slice(0, 10))
+    ? String(value).slice(0, 10) : null;
+  const expectedDate = key => storedDate(expectedEvents[key] && expectedEvents[key].date);
+  const closeDate = dateInShanghai(row.offer_close_at);
+  const offerClosed = Boolean(closeDate && closeDate < asOfDate);
+  const due = key => {
+    const expected = expectedDate(key);
+    return offerClosed && (!expected || expected <= asOfDate);
+  };
+  const hasActualListing = Boolean(row.listing_at || storedDate(row.listing_date));
+  const maximumOnly = prospectus.fields && prospectus.fields.issuePriceLow === 'maximum_only';
   const fields = {
     offerOpenAt: row.offer_open_at,
     offerCloseAt: row.offer_close_at,
     pricingAt: row.pricing_at,
     allotmentAt: row.allotment_at,
-    listingAt: row.listing_at,
     issuePriceFinal: row.issue_price_final,
+    issuePriceLow: row.issue_price_low,
+    issuePriceHigh: row.issue_price_high,
     lotSizeShares: row.lot_size_shares,
   };
   const result = { ...current };
-  for (const [field, value] of Object.entries(fields)) result[field] = value == null || value === '' ? 'missing' : 'value';
-  const closeDate = row.offer_close_at ? new Date(row.offer_close_at) : null;
-  const pendingNotDue = closeDate && Number.isFinite(closeDate.getTime())
-    && new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(closeDate) > asOfDate;
+  for (const field of ['offerOpenDate', 'offerCloseDate', 'pricingDate', 'allotmentDate', 'listingDate']) delete result[field];
+  for (const [field, value] of Object.entries(fields)) {
+    result[field] = value == null || value === '' ? 'missing' : 'value';
+  }
+  if (maximumOnly && row.issue_price_low == null) result.issuePriceLow = 'maximum_only';
+  result.listingAt = hasActualListing ? 'value' : 'missing';
+  result.expectedPricingDate = expectedDate('pricingDate') || 'missing';
+  result.expectedAllotmentDate = expectedDate('allotmentDate') || 'missing';
+  result.expectedListingDate = expectedDate('listingDate') || 'missing';
+  if (!due('pricingDate')) {
+    if (!row.pricing_at) result.pricingAt = 'pending';
+    if (row.issue_price_final == null) result.issuePriceFinal = 'pending';
+  }
+  if (!due('allotmentDate') && !row.allotment_at) result.allotmentAt = 'pending';
+  if (!due('listingDate') && !hasActualListing) result.listingAt = 'pending';
   const terminalStatus = ['introduction', 'gem_transfer', 'de_spac', 'cancelled', 'canceled'].includes(String(row.ipo_status || '').toLowerCase());
-  const hasMissing = Object.values(result).some(value => value === 'missing');
-  result.status = terminalStatus ? 'complete' : pendingNotDue ? 'pending_not_due' : hasMissing ? 'retryable' : 'complete';
+  const requiredFields = ['offerOpenAt', 'offerCloseAt', 'issuePriceHigh', 'lotSizeShares'];
+  if (!maximumOnly) requiredFields.push('issuePriceLow');
+  if (due('pricingDate')) requiredFields.push('pricingAt', 'issuePriceFinal');
+  if (due('allotmentDate')) requiredFields.push('allotmentAt');
+  if (due('listingDate')) requiredFields.push('listingAt');
+  const missingFields = requiredFields.filter(field => result[field] === 'missing');
+  const futureDates = [closeDate, ...Object.values(expectedEvents).map(event => expectedDateByValue(event))]
+    .filter(date => date && date > asOfDate).sort();
+  const milestoneFields = new Set(['pricingAt', 'issuePriceFinal', 'allotmentAt', 'listingAt']);
+  const pendingNotDue = futureDates.length > 0 && missingFields.every(field => milestoneFields.has(field));
+  result.required_fields = requiredFields;
+  result.missing_fields = terminalStatus ? [] : missingFields;
+  result.status = terminalStatus ? 'complete'
+    : missingFields.length ? (pendingNotDue ? 'pending_not_due' : 'retryable')
+      : pendingNotDue ? 'pending_not_due' : 'complete';
   result.checked_at = new Date().toISOString();
-  result.next_retry_at = pendingNotDue ? `${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(closeDate)}T00:00:00+08:00` : null;
-  result.reason = terminalStatus ? '终态项目不适用普通公众招股字段' : pendingNotDue ? '认购截止日前，配发/上市事实尚未到期' : hasMissing ? '字段缺失，等待官方事实补全' : '已按数据库最终事实行复核';
+  result.next_retry_at = terminalStatus || (!missingFields.length && !pendingNotDue) ? null
+    : futureDates.length ? `${futureDates[0]}T00:00:00+08:00`
+      : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  result.reason = terminalStatus ? '终态项目不适用普通公众招股字段'
+    : result.status === 'pending_not_due' ? '下一阶段官方时间尚未到期'
+      : missingFields.length ? `官方事实待补：${missingFields.join(', ')}` : '关键官方事实已按最终事实行复核';
   result.evidence_urls = (Array.isArray(row.source_documents) ? row.source_documents : [])
     .map(item => item && item.url).filter(Boolean).slice(0, 10);
   return result;
 }
 
+function expectedDateByValue(event) {
+  const value = event && event.date;
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : null;
+}
+
 async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool)) {
   const { rows } = await executor(`
-    SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,
-           issue_price_final,lot_size_shares,source_documents,data_completeness
+    SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,listing_date,
+           issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
       FROM public.ipo_history
      WHERE market_code='HK'
   `);
   let updated = 0;
+  let complete = 0;
+  let pending = 0;
+  let missing = 0;
   for (const row of rows) {
     const completeness = recomputeCompletenessForStoredRow(row);
     await executor(`
@@ -1496,8 +1622,12 @@ async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool)) {
        WHERE market_code='HK' AND security_code=$1
     `, [row.security_code, JSON.stringify(completeness)]);
     updated += 1;
+    if (completeness.status === 'complete') complete += 1;
+    else if (completeness.status === 'pending_not_due') pending += 1;
+    else missing += 1;
   }
-  return { ok: true, status: 'succeeded', rows: updated };
+  return { ok: true, status: missing ? 'degraded' : 'succeeded', rows: updated, complete, pending, missing,
+    qualityStatus: missing ? 'stale' : 'passed' };
 }
 
 async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}) {

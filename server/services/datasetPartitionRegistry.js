@@ -227,7 +227,7 @@ async function areDatasetPartitionsPublished(datasetCodes, businessDate) {
     const scopeKey = DATASET_PARTITION_REGISTRY[code].scopeKey;
     const row = byCodeAndScope.get(`${code}:${scopeKey}`);
     if (!row || row.status !== 'published' || row.is_stale) return false;
-    if (code === 'ipo_history' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity') {
+    if (code === 'ipo_history' || code === 'hk_ipo_facts' || code === 'bond_redemption_events' || code === 'bond_listing_liquidity') {
       return row.diagnostics && row.diagnostics.quality_status === 'passed';
     }
     if (code === 'stock_suspend_calendar') return row.diagnostics && row.diagnostics.query_status === 'success';

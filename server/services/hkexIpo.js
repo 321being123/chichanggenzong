@@ -897,7 +897,9 @@ async function syncHkexListingStatusNotices({
   if (scopedCodes.length) candidateParams.push(scopedCodes);
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidateResult = await executor(`
-    SELECT security_code,security_name,instrument_id,offer_open_at,source_documents,data_completeness
+    SELECT security_code,security_name,instrument_id,offer_open_at,
+           to_char(timezone('Asia/Shanghai',offer_open_at),'YYYY-MM-DD') AS offer_open_date,
+           source_documents,data_completeness
       FROM public.ipo_history
      WHERE market_code='HK'
        AND ipo_status IN ('active','priced','allotted','postponed')
@@ -940,7 +942,9 @@ async function syncHkexListingStatusNotices({
       const current = candidates.get(code);
       const ipoStatus = classifyHkexIpoStatusNotice(item.title, item.rawPayload);
       const announcedAt = String(item.announcedAt || '').slice(0, 10);
-      const currentOfferOpenDate = String(current.offer_open_at || '').slice(0, 10);
+      // PostgreSQL timestamptz is parsed as a JavaScript Date by node-postgres;
+      // compare the SQL-normalized business date, not Date.toString().
+      const currentOfferOpenDate = String(current.offer_open_date || '').slice(0, 10);
       // 新招股窗口晚于旧延期公告时，不能用历史延期记录覆盖重新启动的项目。
       if (ipoStatus === 'postponed' && announcedAt && currentOfferOpenDate > announcedAt) continue;
       try {

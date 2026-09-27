@@ -60,7 +60,8 @@ async function main() {
   try {
     const executor = makeExecutor({
       security_code: '06700.HK', security_name: '深圳四方精創資訊股份有限公司', instrument_id: 'instrument-6700',
-      offer_open_at: '2026-09-14T00:00:00+08:00', source_documents: [], data_completeness: {},
+      offer_open_at: new Date('2026-09-13T16:00:00.000Z'), offer_open_date: '2026-09-14',
+      source_documents: [], data_completeness: {},
     });
     const searchedCodes = [];
     const result = await syncHkexListingStatusNotices({
@@ -76,6 +77,7 @@ async function main() {
     assert.strictEqual(result.searched, 1);
     assert.strictEqual(searchedCodes[0].stockCode, '06700.HK');
     assert.deepStrictEqual(searchedCodes[0].categories, ['-2']);
+    assert.match(executor.writes[0].sql, /to_char\(timezone\('Asia\/Shanghai',offer_open_at\),'YYYY-MM-DD'\) AS offer_open_date/);
     assert.strictEqual(result.postponed, 1);
     assert.strictEqual(result.cancelled, 0);
     assert.deepStrictEqual(executor.writes[0].params[2], ['06700.HK']);
@@ -89,7 +91,8 @@ async function main() {
 
     const resumedExecutor = makeExecutor({
       security_code: '06700.HK', security_name: '深圳四方精創資訊股份有限公司', instrument_id: 'instrument-6700',
-      offer_open_at: '2026-10-01T00:00:00+08:00', source_documents: [], data_completeness: {},
+      offer_open_at: new Date('2026-09-30T16:00:00.000Z'), offer_open_date: '2026-10-01',
+      source_documents: [], data_completeness: {},
     });
     const resumedResult = await syncHkexListingStatusNotices({
       fromDate: '2026-09-14', toDate: '2026-10-02', targetCodes: ['06700.HK'],

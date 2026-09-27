@@ -66,10 +66,12 @@ function assertContinuousParameters(sql, params) {
   const orchestratorSource = fs.readFileSync(path.join(__dirname, '../services/jobOrchestrator.js'), 'utf8');
   assert.match(runnerSource, /mode === 'enrichment' && targetCodes\.length > 0/);
   assert.match(runnerSource, /!targeted && context\.syncNonPublic/);
-  assert.match(runnerSource, /!targeted && context\.syncCancelled/);
+  assert.match(runnerSource, /context\.syncListingStatus !== false/);
+  assert.match(runnerSource, /targeted \? \{ targetCodes \} : \{\}/);
+  assert.doesNotMatch(runnerSource, /!targeted && context\.syncListingStatus/);
   assert.match(orchestratorSource, /claimed\.job_code === 'hk_ipo_enrichment'[\s\S]*?targetCodes: claimed\.request_payload\.targetCodes/);
 
-  console.log('hk-ipo-targeted-enrichment: 7 个目标代码仅进入对应官方资料、日线和完整度查询');
+console.log('hk-ipo-targeted-enrichment: 7 个目标代码仅进入官方发行状态公告、资料、日线和完整度查询');
 })().catch(error => {
   console.error(error);
   process.exit(1);

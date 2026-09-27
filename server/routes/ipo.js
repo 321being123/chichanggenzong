@@ -308,8 +308,7 @@ function calendarDay(date) {
 function hkOfferPhaseSql(alias = 'h') {
   return `CASE
     WHEN LOWER(COALESCE(${alias}.ipo_status,'')) IN ('cancelled','canceled') THEN 'cancelled'
-    WHEN LOWER(COALESCE(${alias}.ipo_status,''))='postponed'
-      AND (${alias}.offer_open_at IS NULL OR ${alias}.offer_close_at IS NULL) THEN 'postponed'
+    WHEN LOWER(COALESCE(${alias}.ipo_status,''))='postponed' THEN 'postponed'
     WHEN LOWER(COALESCE(${alias}.ipo_status,'')) IN ('introduction','gem_transfer','de_spac') THEN 'not_applicable'
     WHEN LOWER(COALESCE(${alias}.ipo_status,''))='listed'
       OR ${alias}.listing_at <= now()

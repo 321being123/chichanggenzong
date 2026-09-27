@@ -56,7 +56,7 @@ const HKEX_PROSPECTUS_DATASET = 'hkex_ipo_prospectus';
 const HKEX_PROSPECTUS_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoProspectus.py');
 const HKEX_PROSPECTUS_NOT_APPLICABLE = new Set(['01355.HK', '01792.HK', '01822.HK']);
 const HKEX_NON_PUBLIC_DATASET = 'hkex_ipo_non_public_classification';
-const HKEX_CANCELLATION_DATASET = 'hkex_ipo_cancellation_notice';
+const HKEX_LISTING_STATUS_DATASET = 'hkex_ipo_listing_status_notice';
 const HKEX_NON_PUBLIC_LISTINGS = Object.freeze([
   {
     securityCode: '06887.HK', ipoStatus: 'introduction', listingMethod: 'introduction',
@@ -859,90 +859,117 @@ async function syncHkexNonPublicListings({
   }
 }
 
-function cancellationTitleLooksLikeIpo(title, rawPayload) {
+function classifyHkexIpoStatusNotice(title, rawPayload) {
   const text = `${title || ''} ${JSON.stringify(rawPayload || {})}`;
-  if (!/(cancel|withdraw|not\s+(?:to\s+)?proceed|terminate|撤回|取消上市|终止上市|不再进行|撤销上市)/i.test(text)) return false;
-  // “延期/推迟”不等于取消，不能把仍可能恢复的项目标成终止。
-  return !/(postpon|延期|推迟|延迟)/i.test(text);
+  if (/(cancel|withdraw|not\s+(?:to\s+)?proceed|terminate|撤回|取消上市|终止上市|不再进行|撤销上市)/i.test(text)) {
+    return 'cancelled';
+  }
+  const postponement = /(postpon|delay|延期|推迟|延迟|押后|押後|延後)/i.test(text)
+    && /(global offering|listing|上市|发售|發售|招股)/i.test(text);
+  if (postponement) return 'postponed';
+  return null;
 }
 
-async function syncHkexCancelledListings({
+function cancellationTitleLooksLikeIpo(title, rawPayload) {
+  return classifyHkexIpoStatusNotice(title, rawPayload) === 'cancelled';
+}
+
+async function syncHkexListingStatusNotices({
   fromDate = shiftIsoDate(todayShanghai(), -180),
   toDate = todayShanghai(),
   limit = null,
+  targetCodes = [],
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
   searchImpl = searchAnnouncements,
 } = {}) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fromDate)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(toDate)) || fromDate > toDate) {
-    throw new Error('港股取消上市公告日期范围无效');
+    throw new Error('港股发行状态公告日期范围无效');
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
+  const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
+  const targetFilter = scopedCodes.length ? ' AND security_code=ANY($3::text[])' : '';
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const candidateLimitClause = candidateLimit ? ' LIMIT $3' : '';
+  const candidateLimitClause = candidateLimit ? ` LIMIT $${scopedCodes.length ? 4 : 3}` : '';
   const candidateParams = [fromDate, toDate];
+  if (scopedCodes.length) candidateParams.push(scopedCodes);
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidateResult = await executor(`
-    SELECT security_code,security_name,instrument_id,source_documents,data_completeness
+    SELECT security_code,security_name,instrument_id,offer_open_at,source_documents,data_completeness
       FROM public.ipo_history
      WHERE market_code='HK'
        AND ipo_status IN ('active','priced','allotted','postponed')
        AND allotment_at IS NULL
        AND offer_open_at::date BETWEEN $1::date AND $2::date
+       ${targetFilter}
      ORDER BY offer_open_at DESC,security_code
      ${candidateLimitClause}`, candidateParams);
   const candidates = new Map(candidateResult.rows.map(row => [String(row.security_code), row]));
-  if (!candidates.size) return { ok: true, status: 'succeeded', candidates: 0, searched: 0, matched: 0, enriched: 0, failures: [], fromDate, toDate };
+  if (!candidates.size) return { ok: true, status: 'succeeded', candidates: 0, searched: 0, matched: 0, cancelled: 0, postponed: 0, enriched: 0, failures: [], fromDate, toDate };
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
      VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, HKEX_CANCELLATION_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, candidateCount: candidates.size })]
+    [source.rows[0].source_id, HKEX_LISTING_STATUS_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, targetCodes: scopedCodes, candidateCount: candidates.size })]
   );
   const runId = run.rows[0].run_id;
   const failures = [];
+  let cancelled = 0;
+  let postponed = 0;
   let enriched = 0;
   try {
     const announcements = await searchImpl({ fromDate, toDate, categories: ['17600'], _httpRequest: fetchImpl });
     const selected = new Map();
-    for (const item of announcements.filter(row => row && row.fileLink && cancellationTitleLooksLikeIpo(row.title, row.rawPayload))) {
+    for (const item of announcements.filter(row => row && row.fileLink && classifyHkexIpoStatusNotice(row.title, row.rawPayload))) {
       const code = canonicalHkCode(item.stockCode);
-      if (candidates.has(code) && !selected.has(code)) selected.set(code, item);
+      if (!candidates.has(code)) continue;
+      const current = selected.get(code);
+      const announcedAt = String(item.announcedAt || '').slice(0, 10);
+      const currentAnnouncedAt = String(current?.announcedAt || '').slice(0, 10);
+      if (!current || announcedAt > currentAnnouncedAt) selected.set(code, item);
     }
     for (const [code, item] of selected) {
       const current = candidates.get(code);
+      const ipoStatus = classifyHkexIpoStatusNotice(item.title, item.rawPayload);
+      const announcedAt = String(item.announcedAt || '').slice(0, 10);
+      const currentOfferOpenDate = String(current.offer_open_at || '').slice(0, 10);
+      // 新招股窗口晚于旧延期公告时，不能用历史延期记录覆盖重新启动的项目。
+      if (ipoStatus === 'postponed' && announcedAt && currentOfferOpenDate > announcedAt) continue;
       try {
         const { buffer, url } = await fetchOfficialPdfWithCache(
           item.fileLink, fetchImpl, { responseType: 'buffer', maxResponseBytes: 20 * 1024 * 1024 }
         );
         const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
         const sourceDocuments = mergeSourceDocuments(current.source_documents, {
-          type: 'listing_cancellation', url, title: item.title || 'HKEX cancellation notice',
+          type: ipoStatus === 'postponed' ? 'listing_postponement' : 'listing_cancellation',
+          url, title: item.title || `HKEX ${ipoStatus} notice`,
           announcedAt: item.announcedAt || null, language: 'en', contentSha256: responseSha256,
           parserStatus: 'official_title_match_v1',
         });
         const completeness = {
           ...(current.data_completeness && typeof current.data_completeness === 'object' ? current.data_completeness : {}),
-          publicOfferEligibility: 'excluded', exclusionReason: 'cancelled',
+          ...(ipoStatus === 'cancelled' ? { publicOfferEligibility: 'excluded', exclusionReason: 'cancelled' } : {}),
         };
         await executor(
           `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
            VALUES($1,$2,$3,$4,now(),$5::jsonb,$6)
            ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now()`,
-          [runId, source.rows[0].source_id, HKEX_CANCELLATION_DATASET, `${code}|${url}`, JSON.stringify({
-            securityCode: code, sourceUrl: url, title: item.title || null, announcedAt: item.announcedAt || null,
+          [runId, source.rows[0].source_id, HKEX_LISTING_STATUS_DATASET, `${code}|${url}`, JSON.stringify({
+            securityCode: code, ipoStatus, sourceUrl: url, title: item.title || null, announcedAt: item.announcedAt || null,
             responseBytes: buffer.length, responseSha256, parserStatus: 'official_title_match_v1',
           }), responseSha256]
         );
         await executor(`
           UPDATE public.ipo_history
-             SET ipo_status='cancelled',ipo_status_at=COALESCE(ipo_status_at,now()),source_documents=$2::jsonb,
-                 data_completeness=$3::jsonb,facts_published_at=now(),updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
-           WHERE market_code='HK' AND security_code=$1`, [code, JSON.stringify(sourceDocuments), JSON.stringify(completeness)]);
-        if (current.instrument_id) {
+             SET ipo_status=$2,ipo_status_at=COALESCE($3::date::timestamptz,now()),source_documents=$4::jsonb,
+                 data_completeness=$5::jsonb,facts_published_at=now(),updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+           WHERE market_code='HK' AND security_code=$1`, [code, ipoStatus, announcedAt || null, JSON.stringify(sourceDocuments), JSON.stringify(completeness)]);
+        if (ipoStatus === 'cancelled' && current.instrument_id) {
           await executor(`UPDATE core.instruments SET status='cancelled',raw_data=raw_data || $2::jsonb,updated_at=now() WHERE instrument_id=$1`,
             [current.instrument_id, JSON.stringify({ source: 'hkex_announcements', evidenceUrl: url })]);
         }
+        if (ipoStatus === 'cancelled') cancelled += 1;
+        if (ipoStatus === 'postponed') postponed += 1;
         enriched += 1;
       } catch (error) {
         failures.push({ code, stage: 'fetch_or_persist', error: error.message || String(error) });
@@ -954,7 +981,7 @@ async function syncHkexCancelledListings({
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
       [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']);
-    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, enriched, failures, limited, fromDate, toDate };
+    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, cancelled, postponed, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -1792,7 +1819,8 @@ module.exports = {
   fetchHkexNewListingReports,
   HKEX_NON_PUBLIC_LISTINGS,
   syncHkexNonPublicListings,
-  syncHkexCancelledListings,
+  syncHkexListingStatusNotices,
+  classifyHkexIpoStatusNotice,
   cancellationTitleLooksLikeIpo,
   resolveHkexEnglishPdfUrl,
   parseHkexAllotmentPdf,

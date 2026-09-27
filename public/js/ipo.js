@@ -115,6 +115,7 @@ function ipoHkAllotmentCell(it) {
     : '';
   if (!date && !rate) {
     var phase = String(it.offer_phase || '').toLowerCase();
+    if (phase === 'postponed') return '<span>全球发售及上市已延期</span>';
     if (it.expected_allotment_date && /^\d{4}-\d{2}-\d{2}$/.test(String(it.expected_allotment_date))) {
       return '<span>预计 ' + escapeHtml(String(it.expected_allotment_date)) + ' 公布配发结果</span>';
     }
@@ -129,6 +130,7 @@ function ipoHkAllotmentCell(it) {
 function ipoHkOversubscriptionCell(it) {
   if (it.public_oversubscription === null || it.public_oversubscription === undefined || it.public_oversubscription === '') {
     var phase = String(it.offer_phase || '').toLowerCase();
+    if (phase === 'postponed') return '<span>发售延期，无官方最终倍数</span>';
     return phase === 'closed' || phase === 'priced' || phase === 'allotted'
       ? '<span>待官方配发公告</span>'
       : '<span>尚未到最终结果</span>';
@@ -196,6 +198,7 @@ function ipoHkFactStatusCell(it) {
   if (ipoStatus === 'introduction' || ipoStatus === 'gem_transfer' || ipoStatus === 'de_spac') {
     return '<span style="color:#666;">不适用普通 IPO 资料</span>';
   }
+  if (ipoStatus === 'postponed') return '<span style="color:#666;">发售已延期，等待新安排</span>';
   var status = String(it && it.data_completeness && it.data_completeness.status || '').toLowerCase();
   if (status === 'complete') return '<span style="color:#137333;">关键事实已核实</span>';
   if (status === 'pending_not_due') return '<span style="color:#666;">等待下一阶段官方结果</span>';

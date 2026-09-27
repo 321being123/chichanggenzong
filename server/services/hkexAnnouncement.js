@@ -181,7 +181,7 @@ const HKEX_MAX_PAGES = null; // 兼容旧调用方，已废弃；默认不设公
 // 构造官方披露易 titleSearchServlet.do 检索 URL（严格对齐官方请求契约）
 //   lang=zh；searchType=1；sortDir=0；t2Gcode 为空；category=0；t1code=10000（公告及通函顶层类目）；
 //   实际二级分类放入 t2code；fromDate/toDate 使用 YYYYMMDD；documentType=-1。
-function buildSearchUrl(category, fromDate, toDate, rowRange, { t1code = '10000', t2Gcode = '' } = {}) {
+function buildSearchUrl(category, fromDate, toDate, rowRange, { t1code = '10000', t2Gcode = '', stockId = '' } = {}) {
   const params = new URLSearchParams({
     lang: 'zh',
     searchType: '1',
@@ -199,20 +199,43 @@ function buildSearchUrl(category, fromDate, toDate, rowRange, { t1code = '10000'
     title: '',
     rowRange: String(rowRange),
   });
+  if (/^\d+$/.test(String(stockId))) params.set('stockId', String(stockId));
   return BASE_URL + SEARCH_PATH + '?' + params.toString();
 }
 
+function normalizeHKEXStockCode(value) {
+  const match = /^(\d{1,5})(?:\.HK)?$/i.exec(String(value || '').trim());
+  return match ? match[1].padStart(5, '0') : '';
+}
+
+async function lookupHKEXStockId(stockCode, fetch = httpRequest) {
+  const code = normalizeHKEXStockCode(stockCode);
+  if (!code) throw new Error(`无效的港交所证券代码: ${stockCode}`);
+  const params = new URLSearchParams({ lang: 'EN', type: 'A', name: code, market: 'SEHK', callback: 'callback' });
+  const response = await fetch(`${BASE_URL}/search/partial.do?${params.toString()}`);
+  const match = /^\s*(?:callback)?\s*\(([\s\S]*)\)\s*;?\s*$/.exec(String(response).replace(/^\uFEFF/, ''));
+  if (!match) throw new Error('港交所证券代码映射响应格式异常');
+  let payload;
+  try { payload = JSON.parse(match[1]); } catch { throw new Error('港交所证券代码映射 JSON 无效'); }
+  const item = (Array.isArray(payload.stockInfo) ? payload.stockInfo : []).find(row => normalizeHKEXStockCode(row.code) === code);
+  const stockId = Number(item && item.stockId);
+  if (!Number.isSafeInteger(stockId) || stockId <= 0) throw new Error(`港交所未返回证券代码映射: ${code}`);
+  return stockId;
+}
+
 // 搜索港交所公告（自动翻页：按 hasNextRow + rowRange 遍历全部结果）
-async function searchAnnouncements({ fromDate, toDate, categories, t1code = '10000', t2Gcode = '', _httpRequest } = {}) {
+async function searchAnnouncements({ fromDate, toDate, categories, t1code = '10000', t2Gcode = '', stockCode = '', stockId = '', _httpRequest } = {}) {
   const fetch = _httpRequest || httpRequest;
-  const cats = categories && categories.length ? categories : HKEX_CATEGORIES;
+  const resolvedStockId = stockId || (stockCode ? await lookupHKEXStockId(stockCode, fetch) : '');
+  if (stockCode && !stockId) await sleep(500);
+  const cats = categories && categories.length ? categories : (resolvedStockId ? ['-2'] : HKEX_CATEGORIES);
   const results = [];
   for (const cat of cats) {
     // 首批请求从 HKEX_PAGE_SIZE(100) 开始：港交所 rowRange=0 返回 0 条，rowRange=100 才返回数据
     let rowRange = HKEX_PAGE_SIZE;
     const seenPages = new Set();
     while (true) {
-      const url = buildSearchUrl(cat, fromDate, toDate, rowRange, { t1code, t2Gcode });
+      const url = buildSearchUrl(cat, fromDate, toDate, rowRange, { t1code, t2Gcode, stockId: resolvedStockId });
       const text = await fetch(url);
       const { items, hasNextRow } = parseSearchResponse(text);
       const pageSignature = items.map(item => item.sourceKey).join('|');
@@ -232,6 +255,7 @@ module.exports = {
   searchAnnouncements,
   parseSearchResponse,
   buildSearchUrl,
+  lookupHKEXStockId,
   HKEX_CATEGORIES,
   httpRequest,
   ALLOWED_DOMAIN,

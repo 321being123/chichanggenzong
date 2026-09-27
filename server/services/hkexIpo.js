@@ -861,10 +861,11 @@ async function syncHkexNonPublicListings({
 
 function classifyHkexIpoStatusNotice(title, rawPayload) {
   const text = `${title || ''} ${JSON.stringify(rawPayload || {})}`;
-  if (/(cancel|withdraw|not\s+(?:to\s+)?proceed|terminate|撤回|取消上市|终止上市|不再进行|撤销上市)/i.test(text)) {
+  const ipoContext = /(global\s+offering|public\s+offer|share\s+offer|\bipo\b|listing|上市|全球发售|全球發售|新股|招股)/i.test(text);
+  if (ipoContext && /(cancel|withdraw|not\s+(?:to\s+)?proceed|terminate|撤回|取消|終止|终止|不再进行|不再進行|撤銷|撤销)/i.test(text)) {
     return 'cancelled';
   }
-  const postponement = /(postpon|delay|延期|推迟|延迟|押后|押後|延後)/i.test(text)
+  const postponement = /(postpon|delay|延期|推迟|推遲|延迟|延遲|延后|延後|押后|押後)/i.test(text)
     && /(global offering|listing|上市|发售|發售|招股)/i.test(text);
   if (postponement) return 'postponed';
   return null;
@@ -917,16 +918,23 @@ async function syncHkexListingStatusNotices({
   let cancelled = 0;
   let postponed = 0;
   let enriched = 0;
+  let searched = 0;
   try {
-    const announcements = await searchImpl({ fromDate, toDate, categories: ['17600'], _httpRequest: fetchImpl });
     const selected = new Map();
-    for (const item of announcements.filter(row => row && row.fileLink && classifyHkexIpoStatusNotice(row.title, row.rawPayload))) {
-      const code = canonicalHkCode(item.stockCode);
-      if (!candidates.has(code)) continue;
-      const current = selected.get(code);
-      const announcedAt = String(item.announcedAt || '').slice(0, 10);
-      const currentAnnouncedAt = String(current?.announcedAt || '').slice(0, 10);
-      if (!current || announcedAt > currentAnnouncedAt) selected.set(code, item);
+    for (const code of candidates.keys()) {
+      searched += 1;
+      try {
+        const announcements = await searchImpl({ fromDate, toDate, categories: ['-2'], stockCode: code, _httpRequest: fetchImpl });
+        for (const item of announcements.filter(row => row && row.fileLink && classifyHkexIpoStatusNotice(row.title, row.rawPayload))) {
+          if (canonicalHkCode(item.stockCode) !== code) continue;
+          const current = selected.get(code);
+          const announcedAt = String(item.announcedAt || '').slice(0, 10);
+          const currentAnnouncedAt = String(current?.announcedAt || '').slice(0, 10);
+          if (!current || announcedAt > currentAnnouncedAt) selected.set(code, item);
+        }
+      } catch (error) {
+        failures.push({ code, stage: 'search', error: error.message || String(error) });
+      }
     }
     for (const [code, item] of selected) {
       const current = candidates.get(code);
@@ -981,7 +989,7 @@ async function syncHkexListingStatusNotices({
       || (limited ? '显式批次上限已启用，需后续复核剩余候选' : null);
     await executor(`UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
       [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']);
-    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched: 1, matched: selected.size, cancelled, postponed, enriched, failures, limited, fromDate, toDate };
+    return { ok: status !== 'failed', status, runId, candidates: candidates.size, searched, matched: selected.size, cancelled, postponed, enriched, failures, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;

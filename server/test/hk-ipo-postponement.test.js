@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { classifyHkexIpoStatusNotice, syncHkexListingStatusNotices } = require('../services/hkexIpo');
+const { searchAnnouncements } = require('../services/hkexAnnouncement');
 const { hkOfferPhaseSql } = require('../routes/ipo');
 
 const noticeUrl = 'https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0917/2026091701580_c.pdf';
@@ -27,9 +28,31 @@ function makeExecutor(candidate) {
 async function main() {
   assert.strictEqual(classifyHkexIpoStatusNotice('Delay of the Global Offering and the Listing'), 'postponed');
   assert.strictEqual(classifyHkexIpoStatusNotice('延迟全球发售及上市'), 'postponed');
+  assert.strictEqual(classifyHkexIpoStatusNotice('延遲全球發售及上市'), 'postponed');
   assert.strictEqual(classifyHkexIpoStatusNotice('Cancellation of the Global Offering'), 'cancelled');
+  assert.strictEqual(classifyHkexIpoStatusNotice('Cancellation of the AGM'), null);
   assert.strictEqual(classifyHkexIpoStatusNotice('Postponement of an unrelated meeting'), null);
   assert.match(hkOfferPhaseSql(), /ipo_status,''\)\)='postponed' THEN 'postponed'/);
+
+  const officialRequests = [];
+  const officialMatches = await searchAnnouncements({
+    fromDate: '2026-09-17', toDate: '2026-09-17', stockCode: '06700.HK', categories: ['-2'],
+    _httpRequest: async url => {
+      officialRequests.push(url);
+      if (url.includes('/search/partial.do?')) {
+        return 'callback({"stockInfo":[{"stockId":1000316618,"code":"06700","name":"FORMS SYNTRON"}]});';
+      }
+      return JSON.stringify({ result: JSON.stringify([{
+        NEWS_ID: '12336470', TITLE: '全球發售之最新資料 (1) 延遲全球發售及上市', STOCK_CODE: '06700',
+        STOCK_NAME: '四方精創', DATE_TIME: '17/09/2026 20:23',
+        FILE_LINK: '/listedco/listconews/sehk/2026/0917/2026091701580_c.pdf',
+      }]), hasNextRow: false, recordCnt: 1 });
+    },
+  });
+  assert.ok(officialRequests[0].includes('/search/partial.do?') && officialRequests[0].includes('name=06700'), '先用港交所官方代码建议接口解析内部证券编号');
+  assert.ok(officialRequests[1].includes('stockId=1000316618') && officialRequests[1].includes('t2code=-2'), '公告搜索按证券编号查全部公告类别');
+  assert.strictEqual(officialMatches[0].stockCode, '06700');
+  assert.strictEqual(officialMatches[0].title, '全球發售之最新資料 (1) 延遲全球發售及上市');
 
   const tempCache = fs.mkdtempSync(path.join(os.tmpdir(), 'hk-ipo-postponement-'));
   const priorCache = process.env.DOCUMENT_PDF_CACHE_DIR;
@@ -39,15 +62,20 @@ async function main() {
       security_code: '06700.HK', security_name: '深圳四方精創資訊股份有限公司', instrument_id: 'instrument-6700',
       offer_open_at: '2026-09-14T00:00:00+08:00', source_documents: [], data_completeness: {},
     });
+    const searchedCodes = [];
     const result = await syncHkexListingStatusNotices({
       fromDate: '2026-09-14', toDate: '2026-09-27', targetCodes: ['06700.HK'],
       executor: executor.query,
       fetchImpl: async () => Buffer.from('%PDF-1.4\nfixture'),
-      searchImpl: async () => [{
-        stockCode: '06700', title: 'Delay of the Global Offering and the Listing',
-        announcedAt: '2026-09-17', fileLink: noticeUrl,
-      }],
+      searchImpl: async options => {
+        searchedCodes.push(options);
+        return [{ stockCode: '06700', title: '全球發售之最新資料 (1) 延遲全球發售及上市',
+          announcedAt: '2026-09-17', fileLink: noticeUrl }];
+      },
     });
+    assert.strictEqual(result.searched, 1);
+    assert.strictEqual(searchedCodes[0].stockCode, '06700.HK');
+    assert.deepStrictEqual(searchedCodes[0].categories, ['-2']);
     assert.strictEqual(result.postponed, 1);
     assert.strictEqual(result.cancelled, 0);
     assert.deepStrictEqual(executor.writes[0].params[2], ['06700.HK']);
@@ -68,7 +96,7 @@ async function main() {
       executor: resumedExecutor.query,
       fetchImpl: async () => { throw new Error('新招股窗口不应重新套用旧延期公告'); },
       searchImpl: async () => [{
-        stockCode: '06700', title: 'Delay of the Global Offering and the Listing',
+        stockCode: '06700', title: '全球發售之最新資料 (1) 延遲全球發售及上市',
         announcedAt: '2026-09-17', fileLink: noticeUrl,
       }],
     });

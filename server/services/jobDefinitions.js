@@ -108,7 +108,7 @@ const JOB_CONTRACTS = {
     },
   },
   'hk_ipo_postclose': { externalApis: ['hkex_allotment', 'hkex_title_search', 'hkex_history_report', 'hkex_market', 'tencent_quote'], producesDatasets: ['hk_ipo_facts'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
-  'hk_ipo_enrichment': { externalApis: ['hkex_official_documents', 'hkex_cancellation_announcements', 'hkex_history_report', 'tencent_hk_daily', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_listing_status_notice', 'hk_ipo_grey_market_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
+  'hk_ipo_enrichment': { externalApis: ['hkex_official_documents', 'hkex_issuance_status_notices', 'hkex_history_report', 'tencent_hk_daily', 'tencent_quote'], producesDatasets: ['hk_ipo_facts', 'hk_ipo_listing_status_notice', 'hk_ipo_grey_market_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null },
   'arbitrage_sync': { externalApis: ['hkex', 'sse', 'szse', 'cninfo', 'cninfo_permission_probe'], producesDatasets: ['arbitrage_cases'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'arbitrage_reparse': { externalApis: ['cninfo', 'hkex'], producesDatasets: ['arbitrage_cases'], consumesDatasets: ['arbitrage_documents'], maxExternalCallsPerRun: null },
   'holiday_sync': { externalApis: ['trade_cal'], producesDatasets: ['trade_calendar'], consumesDatasets: [], maxExternalCallsPerRun: null },

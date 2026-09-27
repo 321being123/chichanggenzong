@@ -13,6 +13,19 @@ const { enqueueManualJob } = require('./jobScheduleSlots');
 
 const FORMULA_VERSION = 'v2.0';
 
+function deduplicateArbitrageDocuments(documents) {
+  const seen = new Set();
+  return documents.filter((doc) => {
+    const url = String(doc.url || '').split(/[?#]/)[0].replace(/\/+$/, '').toLowerCase();
+    const title = cleanSecurityText(doc.title).normalize('NFKC').toLowerCase().replace(/[\s\u3000]/g, '');
+    const date = doc.announced_at ? String(doc.announced_at).slice(0, 10) : '';
+    const key = url ? `url:${url}` : `title:${date}:${title}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // 公开页只展示具备核心计算条款的案件；同时兜底排除历史上被误建为“进行中”的终态公告。
 // 后台审核页仍保留全部案件，便于检查和修正原始数据。
 const PUBLIC_CASE_FILTER = `
@@ -139,14 +152,15 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
   });
 
   const quoteTimes = enrichedRows.map(r => r.quoteTime).filter(Boolean).sort();
-  const quoteAsOf = quoteTimes.length ? quoteTimes[quoteTimes.length - 1] : new Date().toISOString();
+  const quoteAsOf = quoteTimes.length ? quoteTimes[quoteTimes.length - 1] : null;
+  const termsTimes = enrichedRows.map(r => r.terms_updated_at).filter(Boolean).map(String).sort();
 
   return {
     rows: enrichedRows,
     total: parseInt(countRows[0].total),
     page,
     pageSize,
-    dataAsOf: new Date().toISOString(),
+    dataAsOf: termsTimes.length ? termsTimes[termsTimes.length - 1] : null,
     quoteAsOf,
     stale: enrichedRows.some(r => r.stale),
     formulaVersion: FORMULA_VERSION,
@@ -220,13 +234,16 @@ async function getArbitrageDetail(caseId) {
   `, [caseId, riskCodes]);
 
   // 历史上已经被误归为 risk_event 的“问询函回复”不应继续出现在风险区。
-  const normalizedDocs = docs.map((doc) => {
+  const normalizedDocs = deduplicateArbitrageDocuments(docs.map((doc) => {
     const progress = classifyProgressAnnouncement(doc.title);
     if (progress && doc.relation_type === 'risk_event') {
       return { ...doc, relation_type: 'progress_event', document_role: 'progress' };
     }
     return doc;
-  });
+  }));
+  const latestProgress = normalizedDocs.map((doc) => ({ doc, progress: classifyProgressAnnouncement(doc.title) }))
+    .filter(item => item.progress)
+    .sort((a, b) => String(b.doc.announced_at || '').localeCompare(String(a.doc.announced_at || '')))[0];
   const successEstimate = c.strategy_type === 'a_share_swap'
     ? estimateSwapSuccess(c, normalizedDocs)
     : null;
@@ -243,6 +260,7 @@ async function getArbitrageDetail(caseId) {
     quoteTime: targetQuote ? targetQuote.quote_time : null,
     swapEligible,
     documents: normalizedDocs,
+    display_status: latestProgress ? latestProgress.progress.label : null,
     ...(successEstimate || {}),
     ...calc,
     cashExpectedReturn: calcCashArbitrage(c.cash_choice_price || c.offer_price, currentPrice).arbitrageSpace,
@@ -250,8 +268,8 @@ async function getArbitrageDetail(caseId) {
     fixedSwapPremium: calcPricePremium(c.target_swap_price, currentPrice),
     liveSwapReturn: swapEligible ? calc.arbitrageSpace : null,
     formulaVersion: FORMULA_VERSION,
-    dataAsOf: new Date().toISOString(),
-    quoteAsOf: targetQuote ? targetQuote.quote_time : new Date().toISOString(),
+    dataAsOf: c.terms_updated_at || null,
+    quoteAsOf: targetQuote ? targetQuote.quote_time : null,
   };
 }
 

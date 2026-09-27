@@ -27,8 +27,8 @@ function bondListLifecycleMarker(status) {
   if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
   return '';
 }
-function bondListNumber(value, digits) { var n = Number(value); return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '—'; }
-function bondListPercent(value) { var n = Number(value); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '—'; }
+function bondListNumber(value, digits) { if (value === null || value === undefined || value === '') return '—'; var n = Number(value); return Number.isFinite(n) ? n.toFixed(digits == null ? 2 : digits) : '—'; }
+function bondListPercent(value) { if (value === null || value === undefined || value === '') return '—'; var n = Number(value); return Number.isFinite(n) ? (n * 100).toFixed(2) + '%' : '—'; }
 function bondListDate(value) { return value ? String(value).slice(0, 10) : '—'; }
 function bondListSafety(value) {
   var rating = String(value || '未评级');

@@ -52,7 +52,12 @@ function bondRedemptionCell(row, key) {
   if (key === 'bond_close' || key === 'stock_close' || key === 'current_conv_price' || key === 'trigger_price') return escapeHtml(bondRedemptionNum(row[key], 2));
   if (key === 'remain_size') return escapeHtml(bondRedemptionNum(row[key], 3));
   if (key.indexOf('date') >= 0 || key === 'trade_date') return escapeHtml(bondRedemptionDate(row[key]));
-  if (key === 'matched_days') return row.business_status === 'waived' || row.calculated_status === 'not_active' ? '不适用' : escapeHtml(row.required_days ? (bondRedemptionText(row.matched_days) + ' / ' + bondRedemptionText(row.required_days) + ' | ' + bondRedemptionText(row.observation_days)) : '—');
+  if (key === 'matched_days') {
+    if (row.business_status === 'waived' || row.calculated_status === 'not_active') return '不适用';
+    if (!row.required_days) return '—';
+    var progress = '已满足 ' + bondRedemptionText(row.matched_days) + ' 天 / 需 ' + bondRedemptionText(row.required_days) + ' 天';
+    return escapeHtml(progress + (row.observation_days ? '（' + row.observation_days + ' 个交易日观察窗口）' : ''));
+  }
   return escapeHtml(bondRedemptionText(row[key]));
 }
 var BOND_REDEMPTION_COLUMNS = [

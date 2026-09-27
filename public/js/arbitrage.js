@@ -46,9 +46,16 @@ function arbAnnouncementLink(url) {
   return '<a class="arb-announcement-link" href="' + esc(safeUrl) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">查看</a>';
 }
 
-function arbDetailLink(caseId, text, cellClass) {
+function arbDetailLink(caseId, text, cellClass, summary) {
   var href = '/?main=arbitrage&arb_type=' + encodeURIComponent(arbState.type) + '&case=' + encodeURIComponent(caseId);
-  return '<td class="' + cellClass + '"><a class="arb-security-link" href="' + href + '" onclick="openArbDetail(' + Number(caseId) + ');return false;">' + esc(text || '\u2014') + '</a></td>';
+  return '<td class="' + cellClass + '"><a class="arb-security-link" href="' + href + '" onclick="openArbDetail(' + Number(caseId) + ');return false;">' + esc(text || '\u2014') + '</a>' + (summary ? '<small class="arb-mobile-summary">' + esc(summary) + '</small>' : '') + '</td>';
+}
+
+function arbCompactSummary(row) {
+  var metric = row.strategy_type === 'hk_rights' ? '套利空间 ' + pctv(row.arbitrageSpace)
+    : row.strategy_type === 'a_share_swap' && row.swapEligible ? '实时换股收益 ' + pctv(row.liveSwapReturn)
+      : '预期现金收益 ' + pctv(row.cashExpectedReturn);
+  return metric + ' · ' + formatArbitrageStatus(row.event_status);
 }
 
 function stripArbHtml(value) {
@@ -140,7 +147,8 @@ function renderArbTable(json) {
   var meta = document.getElementById('arb-meta');
   if (meta) {
     var parts = [];
-    if (json.dataAsOf) parts.push('\u6570\u636e\u66f4\u65b0 ' + json.dataAsOf.slice(0, 16));
+    if (json.dataAsOf) parts.push('\u8d44\u6599\u66f4\u65b0 ' + json.dataAsOf.slice(0, 16));
+    if (json.quoteAsOf) parts.push('\u884c\u60c5\u622a\u81f3 ' + json.quoteAsOf.slice(0, 16));
     if (json.stale) parts.push('\u26a0 \u90e8\u5206\u884c\u60c5\u7f3a\u5931');
     parts.push('\u5171 ' + (json.total || 0) + ' \u6761');
     meta.textContent = parts.join(' \u00b7 ');
@@ -180,7 +188,7 @@ function renderArbTable(json) {
 
     if (type === 'a_stock') {
       html += arbDetailLink(r.case_id, r.canonical_code, 'arb-code-cell');
-      html += arbDetailLink(r.case_id, r.name, 'arb-name-cell');
+      html += arbDetailLink(r.case_id, r.name, 'arb-name-cell', arbCompactSummary(r));
       html += '<td>' + num(r.currentPrice) + '</td>';
       html += '<td class="' + arbTrendClass(r.changePct) + '">' + pctv(r.changePct) + '</td>';
       html += '<td>' + num(r.offer_price || r.cash_choice_price) + '</td>';
@@ -196,7 +204,7 @@ function renderArbTable(json) {
       html += '<td>' + (r.terms_updated_at ? esc(String(r.terms_updated_at).slice(0, 10)) : '\u2014') + '</td>';
     } else if (type === 'hk_privatisation') {
       html += arbDetailLink(r.case_id, r.canonical_code, 'arb-code-cell');
-      html += arbDetailLink(r.case_id, r.name, 'arb-name-cell');
+      html += arbDetailLink(r.case_id, r.name, 'arb-name-cell', arbCompactSummary(r));
       html += '<td>' + num(r.currentPrice) + '</td>';
       html += '<td class="' + arbTrendClass(r.changePct) + '">' + pctv(r.changePct) + '</td>';
       html += '<td>' + num(r.offer_price) + '</td>';
@@ -210,7 +218,7 @@ function renderArbTable(json) {
     } else if (type === 'hk_rights') {
       html += arbDetailLink(r.case_id, r.canonical_code, 'arb-code-cell');
       html += '<td>' + esc(r.rights_code || '\u2014') + '</td>';
-      html += arbDetailLink(r.case_id, r.name, 'arb-name-cell');
+      html += arbDetailLink(r.case_id, r.name, 'arb-name-cell', arbCompactSummary(r));
       html += '<td>' + num(r.currentPrice) + '</td>';
       html += '<td>' + num(r.rightsPrice) + '</td>';
       html += '<td class="' + arbTrendClass(r.changePct) + '">' + pctv(r.changePct) + '</td>';
@@ -297,14 +305,14 @@ function renderArbDetail(d) {
     html += arbDetailItem('\u6362\u80a1\u6bd4\u4f8b', d.swapEligible && d.swap_ratio ? esc(d.swap_ratio) : '\u4e0d\u9002\u7528');
     html += arbDetailItem('\u5b9e\u65f6\u6362\u80a1\u6536\u76ca', d.swapEligible ? pctv(d.liveSwapReturn) : '\u4e0d\u9002\u7528');
     html += arbDetailItem('\u7c7b\u578b', esc(formatArbitrageType(d)));
-    html += arbDetailItem('\u5f53\u524d\u8fdb\u7a0b', esc(formatArbitrageStatus(d.event_status)));
+    html += arbDetailItem('\u5f53\u524d\u8fdb\u7a0b', esc(d.display_status || formatArbitrageStatus(d.event_status)));
     html += arbDetailItem('\u66f4\u65b0\u65f6\u95f4', arbDate(d.terms_updated_at));
   } else if (d.strategy_type === 'hk_privatisation') {
     html += arbDetailItem('\u79c1\u6709\u5316\u5bf9\u4ef7', num(d.offer_price));
     html += arbDetailItem('\u6ea2\u6298\u4ef7', pctv(d.cashChoicePremium));
     html += arbDetailItem('\u9884\u671f\u73b0\u91d1\u6536\u76ca', pctv(d.cashExpectedReturn));
     html += arbDetailItem('\u9996\u6b21\u516c\u544a', arbDate(d.announced_at));
-    html += arbDetailItem('\u5f53\u524d\u8fdb\u7a0b', esc(formatArbitrageStatus(d.event_status)));
+    html += arbDetailItem('\u5f53\u524d\u8fdb\u7a0b', esc(d.display_status || formatArbitrageStatus(d.event_status)));
     html += arbDetailItem('\u8981\u7ea6\u4eba', esc(d.offeror || '\u2014'));
     html += arbDetailItem('\u6301\u80a1%', num(d.offeror_holding_pct, 2));
     html += arbDetailItem('\u66f4\u65b0\u65f6\u95f4', arbDate(d.terms_updated_at));

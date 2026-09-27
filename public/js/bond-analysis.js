@@ -100,7 +100,11 @@ function securityAnalysisInitSearch(ctx) {
     else if(event.key==='Enter'){
       event.preventDefault();
       if(visible&&securityAnalysisState.suggestions.length){
-        securityAnalysisChooseSuggestion(securityAnalysisState.suggestionIndex<0?0:securityAnalysisState.suggestionIndex, ctx);
+        if (securityAnalysisState.suggestionIndex >= 0 || securityAnalysisState.suggestions.length === 1) {
+          securityAnalysisChooseSuggestion(securityAnalysisState.suggestionIndex >= 0 ? securityAnalysisState.suggestionIndex : 0, ctx);
+        } else {
+          stockAnalysisSetMessage('找到多个结果，请从联想列表中选择。', false, ctx);
+        }
       } else securityAnalysisSubmit(null, ctx);
     }
   });
@@ -230,11 +234,40 @@ function bondAnalysisListTable(headers, rows) {
 function bondAnalysisSet(id, html) { var el=document.getElementById(id); if(el) { el.innerHTML=html; if(window.BusinessTable) window.BusinessTable.attach(el,{page:'#main-stock-analysis',top:'.nav',sticky:!el.querySelector('.biz-table--detail')}); } }
 function securityAnalysisKind(code) { return /^(110|111|113|118|123|127|128)\d{3}$/.test(code) ? 'bond' : 'stock'; }
 
+async function securityAnalysisResolveName(keyword, ctx) {
+  var query=String(keyword||'').trim(), seq=++securityAnalysisState.searchSeq;
+  clearTimeout(securityAnalysisState.searchTimer);
+  securityAnalysisHideSuggestions(ctx);
+  stockAnalysisSetMessage('正在搜索证券...', false, ctx);
+  try {
+    var response=await fetch(api('/api/bond-analysis/search/securities?q='+encodeURIComponent(query)));
+    var payload=await response.json();
+    if(seq!==securityAnalysisState.searchSeq) return;
+    if(!response.ok) throw new Error(payload.error||'证券搜索失败');
+    var rows=Array.isArray(payload.data)?payload.data:[];
+    var normalized=query.normalize('NFKC').toLocaleLowerCase();
+    var exact=rows.filter(function(row){return String(row.name||'').normalize('NFKC').toLocaleLowerCase()===normalized;});
+    if(exact.length===1 || (!exact.length && rows.length===1)) {
+      var row=exact[0]||rows[0], input=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'code');
+      if(input) input.value=row.ts_code||row.code;
+      return securityAnalysisSubmit(row.ts_code||row.code,ctx);
+    }
+    if(rows.length) {
+      securityAnalysisRenderSuggestions(rows,ctx);
+      stockAnalysisSetMessage('找到多个结果，请从联想列表中选择。', false, ctx);
+      return;
+    }
+    stockAnalysisSetMessage('没有找到符合条件的股票或可转债，请检查名称或代码。', true, ctx);
+  } catch(error) {
+    if(seq===securityAnalysisState.searchSeq) stockAnalysisSetMessage(error.message||'证券搜索失败，请稍后重试。',true,ctx);
+  }
+}
+
 async function securityAnalysisSubmit(selectedCode, ctx) {
   var p = ctx === 'bond' ? 'bond-analysis-' : 'stock-analysis-';
   var input=document.getElementById(p+'code'), raw=String(selectedCode||(input&&input.value)||'').trim().toUpperCase();
-  var code=raw.replace(/\.(SH|SZ)$/,'').replace(/\D/g,'');
-  if (!/^\d{6}$/.test(code)) return stockAnalysisSetMessage('请输入代码，或从联想下拉中选择股票或可转债', true, ctx);
+  var match=raw.match(/^(\d{6})(?:\.(?:SH|SZ|BJ))?$/), code=match&&match[1];
+  if (!code) return securityAnalysisResolveName(raw,ctx);
   securityAnalysisState.type=securityAnalysisKind(code); securityAnalysisState.code=code;
   if (securityAnalysisState.type==='stock') {
     stockAnalysisState.selected=code;
@@ -265,10 +298,9 @@ async function bondAnalysisLoad(refresh, ctx) {
     var path='/api/bond-analysis/'+encodeURIComponent(securityAnalysisState.code)+(refresh?'/refresh':'');
     var response=await fetch(api(path), refresh?{method:'POST'}:undefined);
     if(response.status===404&&!refresh){
-      securityAnalysisState.loading=false;
-      if(!username) return stockAnalysisSetMessage('该转债暂未建档，登录后可刷新并建立分析数据。', false, ctx);
-      // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
-      return stockAnalysisSetMessage('该转债暂无分析快照，请点击“刷新数据”建立。', false, ctx);
+      var shown=await bondAnalysisRenderListFallback(ctx);
+      if(shown) return;
+      return stockAnalysisSetMessage(username?'该转债暂无分析快照或上市列表资料，可登录后点击“刷新数据”尝试建立分析。':'该转债暂无详细分析快照，当前也没有可展示的上市行情资料。', false, ctx);
     }
     var payload=await response.json(), analysis=payload.analysis||payload;
     if(!response.ok&&!payload.analysis) throw new Error(payload.error||'可转债分析失败');
@@ -282,6 +314,32 @@ async function bondAnalysisLoad(refresh, ctx) {
     if(!response.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true, ctx); }
   finally { securityAnalysisState.loading=false;if(button){button.disabled=false;button.textContent='刷新数据';} }
+}
+
+async function bondAnalysisRenderListFallback(ctx) {
+  var response=await fetch(api('/api/bond-analysis/bonds?q='+encodeURIComponent(securityAnalysisState.code)));
+  if(!response.ok) return false;
+  var payload=await response.json(), rows=Array.isArray(payload.data)?payload.data:[];
+  var row=rows.find(function(item){return String(item.bond_code||item.ts_code||'').replace(/\D/g,'')===securityAnalysisState.code;});
+  if(!row) return false;
+  stockAnalysisSetMessage('',false,ctx);
+  var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
+  if(stock) stock.style.display='none'; if(root) root.style.display='block';
+  var summary='详细分析尚未生成，以下展示上市列表中已有资料';
+  bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(row.bond_name||row.ts_code)+'</strong><span>'+escapeHtml(row.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(row.price,3,' 元')+'</span><span>正股：'+escapeHtml(row.stock_name||'暂无数据')+'</span>');
+  var updated=document.getElementById('bond-analysis-updated');
+  if(updated) updated.textContent=summary+' · 行情日期：'+escapeHtml(payload.trade_date||'未知');
+  bondAnalysisSet('bond-analysis-basic',bondAnalysisTable([
+    ['正股价',bondAnalysisNumber(row.stock_price,3,' 元')],['转股价',bondAnalysisNumber(row.convert_price,3,' 元')],
+    ['转股价值',bondAnalysisNumber(row.conversion_value,3,' 元')],['转股溢价率',bondAnalysisPercent(row.conversion_premium)],
+    ['纯债价值',bondAnalysisNumber(row.bond_value,3,' 元')],['安全性',bondAnalysisText(row.safety)],
+    ['到期时间',bondAnalysisDate(row.maturity_date)],['到期税前收益率',bondAnalysisPercent(row.maturity_yield_pre_tax)]
+  ]));
+  ['triggers','terms','price-history','no-revision','safety','credit','options','coupons'].forEach(function(id){
+    var el=document.getElementById('bond-analysis-'+id);
+    if(el) el.innerHTML='<div class="bond-analysis-empty">详细分析快照尚未生成</div>';
+  });
+  return true;
 }
 
 securityAnalysisInitSearch();

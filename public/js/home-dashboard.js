@@ -136,7 +136,8 @@ function renderHomeBondCycle(payload) {
   if (window.ChartInteraction) ChartInteraction.watch(root, function () { renderHomeBondCycle(payload); });
   var latest = payload.latest || rows[rows.length - 1];
   homeSetText('home-bond-cycle-summary', String(payload.source_trade_date || rows[rows.length - 1].date).slice(0, 10) +
-    ' · 周期分位 ' + homeCycleNumber(latest.rolling_percentile, 1) + '% · 综合估值 ' + homeCycleNumber(latest.composite_value, 2));
+    ' · 周期分位 ' + homeCycleNumber(latest.rolling_percentile, 1) + '% · 综合估值 ' + homeCycleNumber(latest.composite_value, 2) +
+    (payload.stale ? ' · 数据待更新' : ''));
 
   var W=window.ChartInteraction ? ChartInteraction.width(root,1100) : 1100,H=window.innerWidth<=760?260:300,L=58,R=58,T=18,B=36,plotH=H-T-B;
   var compositeRange = homeCycleRange(rows.map(function(row) { return row.composite_value; }));
@@ -195,9 +196,9 @@ function renderHomeMarketCycle(payload) {
   var currentDate = metric === 'graham' ? current.trade_date : current.date;
   var currentValue = Number(current[meta.currentField]);
   var recommended = overview.recommendedPosition;
-  var summary = String(currentDate || '').slice(0,10) + ' · 当前 ' + homeCycleNumber(currentValue,2) + meta.suffix;
+  var summary = '截至 ' + String(currentDate || '').slice(0,10) + ' · ' + homeCycleNumber(currentValue,2) + meta.suffix;
   if (metric !== 'graham') summary += ' · 历史分位 ' + homeCycleNumber(overview.stats&&overview.stats.percentile,1) + '%';
-  summary += ' · 建议仓位 ' + homeCycleNumber(recommended,0) + '%';
+  summary += ' · 参考仓位 ' + homeCycleNumber(recommended,0) + '%';
   homeSetText('home-market-summary', summary);
 
   var ladder = setting.ladder || [];
@@ -257,10 +258,9 @@ async function loadHomeMarketCycles() {
   }
 }
 
-// HOME-01：首页按登录态调整内容顺序（只重排已有区块/卡片，不新增接口或统计口径）
-// 游客：公开文章 + 研究优先；登录用户：最新文章置顶，再展示资产/周期/打新等。
-var HOME_ORDER_GUEST = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
-var HOME_ORDER_LOGGED = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
+// HOME-01：首页常用模块优先，其后展示周期、文章和次要内容（仅重排已有区块）。
+var HOME_ORDER_GUEST = ['home-section-modules', 'home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
+var HOME_ORDER_LOGGED = ['home-section-modules', 'home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
 
 function applyHomeOrder(root, isLoggedIn) {
   var shell = root && root.querySelector ? root.querySelector('.home-dashboard-shell') : null;
@@ -270,7 +270,7 @@ function applyHomeOrder(root, isLoggedIn) {
     var el = root.getElementById(id);
     if (el && el.parentNode === shell) shell.appendChild(el);
   });
-  // 登录用户：把“持仓管理”资产卡置于模块网格首位
+  // 登录用户：把“持仓管理”卡置于模块网格首位
   if (isLoggedIn) {
     var grid = root.querySelector('#home-section-modules .home-module-grid');
     var holdings = root.getElementById('home-module-holdings');
@@ -314,10 +314,11 @@ async function renderHomeArticles() {
     }
     heroBox.innerHTML = list.slice(0, 5).map(function (a) {
       var date = (a.published_at || '').toString().slice(0, 10);
+      var summary = String(a.summary || '').replace(/```[\s\S]*?```/g, ' ').replace(/^\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*$/gm, ' ').replace(/\|/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[#*_`~]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
       return '<button type="button" class="home-hero-article" onclick="switchMain(\'knowledge\'); ksOpenArticle(' + (a.id || 0) + ');">' +
         '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
         '<strong>' + escapeHtml(a.title || '无标题') + '</strong>' +
-        '<small>' + escapeHtml(a.summary || '点击阅读文章详情') + '</small>' +
+        '<small>' + escapeHtml(summary || '点击阅读文章详情') + '</small>' +
         '<em>' + date + ' · ' + (a.view_count || 0) + ' 次阅读</em>' +
       '</button>';
     }).join('');

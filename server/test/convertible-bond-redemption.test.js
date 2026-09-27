@@ -48,7 +48,7 @@ const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convert
 const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-redemption"'));
-assert.ok(html.includes('js/bond-redemption.js?v=7'));
+assert.ok(html.includes('js/bond-redemption.js?v=8'));
 assert.ok(html.includes('value="not_active">暂不适用</option>'), '强赎页必须可筛选转股期前的暂不适用状态');
 assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-search"') && html.includes('data-autofill-ignore'), '强赎搜索框必须明确为非认证输入');
 assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));

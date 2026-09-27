@@ -1,11 +1,12 @@
 {
   "name": "portfolio-server",
-  "version": "0.8.1.100",
-  "appVersion": "0.8.1.100",
+  "version": "0.8.2.1",
+  "appVersion": "0.8.2.1",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start:watch": "node --watch scripts/startLocalWatch.js",
     "test": "node test-security.js",
     "test:security": "node test-security.js",
     "test:unit": "node test.js",

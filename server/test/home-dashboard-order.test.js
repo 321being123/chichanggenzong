@@ -16,8 +16,8 @@ const { window } = dom;
 window.eval(js);
 const doc = window.document;
 
-const EXPECT_GUEST = ['home-section-articles', 'home-section-cycle', 'home-section-modules', 'home-section-secondary', 'home-section-capabilities'];
-const EXPECT_LOGGED_FIRST = 'home-section-articles';
+const EXPECT_GUEST = ['home-section-modules', 'home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
+const EXPECT_LOGGED_FIRST = 'home-section-modules';
 
 function sectionOrder() {
   const shell = doc.querySelector('.home-dashboard-shell');
@@ -31,22 +31,22 @@ function moduleFirstCard() {
   return first ? first.id : null;
 }
 
-// 1) 游客：公开文章 + 研究优先（文章 → 周期 → 模块 → 次要 → 能力）
+// 1) 游客：常用模块优先，其次是周期与文章。
 window.applyHomeOrder(doc, false);
 assert.deepStrictEqual(sectionOrder(), EXPECT_GUEST,
-  '游客首页顺序应为 文章→周期→模块→次要→能力，实际为 ' + sectionOrder().join(','));
+  '游客首页顺序应为 常用模块→周期→文章→次要→能力，实际为 ' + sectionOrder().join(','));
 
 // 2) 登录用户：持仓总资产卡与资产入口置前（常用工具区块第一位 + 持仓管理卡为模块网格首位）
 window.applyHomeOrder(doc, true);
 const logged = sectionOrder();
 assert.strictEqual(logged[0], EXPECT_LOGGED_FIRST,
-  '登录用户首页第一个区块应为 常用工具（含持仓总资产卡），实际为 ' + logged[0]);
+  '登录用户首页第一个区块应为 常用工具，实际为 ' + logged[0]);
 assert.strictEqual(moduleFirstCard(), 'home-module-holdings',
   '登录用户“持仓管理”资产卡应为模块网格首位，实际为 ' + moduleFirstCard());
 
-// 3) 顺序可逆：切回游客后文章重新置前
+// 3) 顺序可逆：切回游客仍保持常用模块优先
 window.applyHomeOrder(doc, false);
-assert.strictEqual(sectionOrder()[0], 'home-section-articles',
-  '切回游客后文章应重新置前，实际为 ' + sectionOrder()[0]);
+assert.strictEqual(sectionOrder()[0], 'home-section-modules',
+  '切回游客后常用模块应继续置前，实际为 ' + sectionOrder()[0]);
 
-console.log('home-dashboard-order: 通过（游客文章优先 / 登录用户资产卡置前 / 可逆向切换）');
+console.log('home-dashboard-order: 通过（常用模块优先 / 登录用户资产卡置前 / 可逆向切换）');

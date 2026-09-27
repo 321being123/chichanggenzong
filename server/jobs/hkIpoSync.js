@@ -168,6 +168,36 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   const requestedTargetCodes = Array.isArray(context.targetCodes) ? context.targetCodes : [];
   const targetCodes = [...new Set(requestedTargetCodes.map(canonicalHkCode).filter(Boolean))];
   const invalidTargetCodes = requestedTargetCodes.filter(code => !canonicalHkCode(code));
+  if (mode === 'subscription_midday' || mode === 'subscription_close') {
+    let marketSignals;
+    try {
+      marketSignals = await syncHkIpoMarketSignals({
+        mode: 'subscription_capture',
+        businessDate: context.targetDate || process.env.JOB_BUSINESS_DATE,
+        collectionPoint: mode === 'subscription_midday' ? 'midday' : 'close',
+        hkipoxAdmitted: true,
+        ...(context.marketSignalOptions || {}),
+      });
+    } catch (error) {
+      marketSignals = { ok: false, status: 'failed', errors: [{ source: 'hkipox-public', error: error.message || String(error) }] };
+    }
+    const signalDiagnostics = marketSignalDiagnostics(marketSignals);
+    const succeeded = marketSignals.ok === true && signalDiagnostics.query_status === 'success'
+      && signalDiagnostics.quality_status === 'passed';
+    return {
+      ok: succeeded,
+      status: succeeded ? 'succeeded' : 'failed',
+      degraded: !succeeded,
+      mode,
+      stageComplete: true,
+      rows: Number(marketSignals.subscription?.saved || 0),
+      publishDatasetCodes: ['hk_ipo_subscription_signals'],
+      failedDatasets: succeeded ? [] : ['hk_ipo_subscription_signals'],
+      dataAsOf: context.targetDate || process.env.JOB_BUSINESS_DATE || null,
+      marketSignals,
+      datasetDiagnostics: { hk_ipo_subscription_signals: signalDiagnostics },
+    };
+  }
   if (mode === 'enrichment' && invalidTargetCodes.length) {
     return { ok: false, status: 'failed', mode, reason: 'invalid_target_codes', invalidTargetCodes,
       probePersistence: null, rows: 0, publishDatasets: false, degraded: true };
@@ -293,10 +323,11 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
       }
     }
   }
-  if (mode === 'preopen' || (mode === 'enrichment' && !targeted)) {
+  if (mode === 'preopen') {
     try {
       marketSignals = await syncHkIpoMarketSignals({
         mode,
+        collectionPoint: 'preopen',
         hkipoxAdmitted: true,
         ...(context.marketSignalOptions || {}),
       });

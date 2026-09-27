@@ -67,6 +67,10 @@ function decodeHtml(value) {
     .trim();
 }
 
+function normalizeHkIpoShortName(value) {
+  return decodeHtml(value).replace(/(?:AH|回拨|无鞋)+$/i, '').trim();
+}
+
 function requestExternal(url, { format = 'json', timeoutMs = 15000 } = {}) {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:' || !ALLOWED_HOSTS.has(parsed.hostname)) {
@@ -262,12 +266,13 @@ function parseHkIpoXHtml(html) {
     const securityCode = normalizeCode(labelValue(row, '代码'));
     const multipleText = labelValue(row, '认购倍数');
     const subscriptionMultiple = parseMultiple(multipleText);
+    const securityName = normalizeHkIpoShortName(labelValue(row, '名称'));
     return {
       securityCode,
-      securityName: labelValue(row, '名称'),
+      securityName,
       offerCloseDate: normalizeDate(labelValue(row, '招股结束日')),
       subscriptionMultiple,
-      raw: { securityCode, securityName: labelValue(row, '名称'), multipleText },
+      raw: { securityCode, securityName, multipleText },
     };
   }).filter(item => item.securityCode && item.subscriptionMultiple !== null && item.subscriptionMultiple > 0);
 }
@@ -349,6 +354,7 @@ function buildSourceRecordHash({
   marginMultiple = null,
   greyMarketPrice = null,
   greyMarketChangePct = null,
+  collectionPoint = null,
 } = {}) {
   const normalized = [
     normalizeCode(code) || String(code || '').trim().toUpperCase(),
@@ -362,8 +368,10 @@ function buildSourceRecordHash({
     normalizeSnapshotNumber(greyMarketPrice, 4) || '',
     normalizeSnapshotNumber(greyMarketChangePct, 4) || '',
     normalizeSnapshotTimestamp(sourceObservedAt),
-  ].join('|');
-  return crypto.createHash('sha256').update(normalized).digest('hex');
+  ];
+  if (collectionPoint) normalized.push(String(collectionPoint).trim().toLowerCase());
+  const record = normalized.join('|');
+  return crypto.createHash('sha256').update(record).digest('hex');
 }
 
 async function persistRaw(sourceCode, datasetCode, sourceKey, payload, executor = pool) {
@@ -395,6 +403,7 @@ async function persistSnapshot({
   signalType,
   signalKind = null,
   dataDate,
+  collectionPoint = null,
   observedAt,
   sourceObservedAt = null,
   subscriptionMultiple = null,
@@ -416,6 +425,7 @@ async function persistSnapshot({
     code, sourceCode, signalType, signalKind: normalizedSignalKind, dataDate, sourceObservedAt,
     subscriptionMultiple, marginAmountHkd, marginMultiple: normalizedMarginMultiple,
     greyMarketPrice, greyMarketChangePct,
+    collectionPoint,
   });
   await executor.query(`
     INSERT INTO analytics.hk_ipo_market_snapshots(
@@ -447,7 +457,7 @@ async function guardedFetch(sourceCode, apiName, dataset, url, format, fetchImpl
   return guardImpl(sourceCode, dataset, businessDate, () => fetchImpl(url, { format }), { apiName });
 }
 
-async function syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result }) {
+async function syncHkIpoXSubscription({ map, businessDate, collectionPoint = null, fetchImpl, guardImpl, result }) {
   try {
     const payload = await guardedFetch('hkipox-public', 'hk_ipo_public_page', 'hk_ipo_subscription_signals', HKIPOX_URL, 'text', fetchImpl, guardImpl, businessDate);
     const fetchedAt = new Date().toISOString();
@@ -476,10 +486,18 @@ async function syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl,
         signalType: 'subscription',
         signalKind: 'subscription_estimate',
         dataDate: businessDate,
+        collectionPoint,
         observedAt: fetchedAt,
         sourceObservedAt: null,
         subscriptionMultiple: item.subscriptionMultiple,
-        rawPayload: { ...item.raw, source_name: 'HKIPOx', source_url: HKIPOX_URL, parser_version: 'hkipox-ipo-home-v1' },
+        rawPayload: {
+          ...item.raw,
+          short_name: item.securityName,
+          collection_point: collectionPoint,
+          source_name: 'HKIPOx',
+          source_url: HKIPOX_URL,
+          parser_version: 'hkipox-ipo-home-v1',
+        },
       })) {
         result.hkipoxSubscription.saved += 1;
         result.subscription.saved += 1;
@@ -497,6 +515,7 @@ async function syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl,
 async function syncHkIpoMarketSignals({
   mode = 'enrichment',
   businessDate = process.env.JOB_BUSINESS_DATE || todayShanghai(),
+  collectionPoint = null,
   fetchImpl = requestExternal,
   guardImpl = withExternalCallGuard,
   sourcesAdmitted = false,
@@ -512,7 +531,7 @@ async function syncHkIpoMarketSignals({
   const map = await loadIpoMap();
   const result = { ok: true, status: 'succeeded', mode, subscription: { fetched: false, rows: 0, saved: 0, ok: false, activeCodes: [], coveredCodes: [] }, hkipoxSubscription: { fetched: false, rows: 0, saved: 0, ok: false, activeCodes: [], coveredCodes: [] }, vbkrSubscription: { fetched: false, rows: 0, saved: 0 }, livermoreGrey: { fetched: false, rows: 0, saved: 0 }, futuGrey: { fetched: false, rows: 0, saved: 0 }, errors: [], fallbackUsed: false };
   if (sourcesAdmitted !== true) {
-    await syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result });
+    await syncHkIpoXSubscription({ map, businessDate, collectionPoint, fetchImpl, guardImpl, result });
     return result;
   }
   const blockedSources = new Set();
@@ -671,7 +690,7 @@ async function syncHkIpoMarketSignals({
   }
 
   if (hkipoxAdmitted === true) {
-    await syncHkIpoXSubscription({ map, businessDate, fetchImpl, guardImpl, result });
+    await syncHkIpoXSubscription({ map, businessDate, collectionPoint, fetchImpl, guardImpl, result });
   }
 
   if (mode !== 'enrichment') return result;
@@ -709,6 +728,7 @@ module.exports = {
   parseLivermoreCurrent,
   parseVbkrCurrent,
   parseFutuIpoHtml,
+  normalizeHkIpoShortName,
   parseHkIpoXHtml,
   isOfferOpen,
   isCurrentSubscriptionRecord,

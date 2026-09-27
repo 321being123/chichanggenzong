@@ -4,6 +4,7 @@
 
 - 本项目的统一记忆入口是 `docs/知识索引.md`，机器路由是 `governance/knowledge-map.json`。每次任务先读索引，再按任务描述和实际改动文件匹配路由；禁止默认全量读取历史文档。
 - 命中路由后必须阅读其 `read` 列出的权威文档；实际改动触发的 `update` 文档必须同步更新。根因不明、跨模块、数据、权限、安全、调度或部署问题必须扩大阅读范围。
+- 修改项目规则、治理流程或权威文档路由时，必须同步核对 `governance/knowledge-map.json` 中相关路由的 `read`/`update` 文件清单，确保后续任务仍会命中这些规则。
 - Bug 必须从数据源、数据库、服务、接口、页面和运行环境检查根因，并核查同类对象/功能；重大或重复问题按 `docs/incidents/README.md` 留下根因、同类范围和回归证据。
 - 交付前运行 `npm.cmd run check:knowledge`；涉及代码、依赖、数据库、配置或部署行为变化时运行 `npm.cmd run test:all`。若最终只改版本号、`CHANGELOG.md` 或 `public/changelog.json`，可只重跑版本一致性、知识门禁和本地运行验收；本项目事实只写入 Git 仓库，平台私有 Memory 不作为事实来源或裁决依据。Codex 项目级原生 Memory 已在 `.codex/config.toml` 关闭。
 - 多 Agent 协作时，项目事实仍然只写 Git 仓库。WorkBuddy 的记忆路径（`工作区 .workbuddy/memory/`、用户级 `~/.workbuddy/MEMORY.md`、云端画像与历史会话检索）只做接续指针，冲突一律以本仓库为准；完整路径清单与写什么、禁写什么见工作区根目录 `AGENTS.md` 的"多 Agent 协作：记忆路径统一规则"。

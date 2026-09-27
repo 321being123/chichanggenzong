@@ -39,6 +39,30 @@ const syncDate = '2099-12-30';
     assert.strictEqual(row.first_value_count, 1, '同内容重复采集不得重复插入');
     assert.strictEqual(row.margin_only_count, 1, '仅有孖展金额/倍数也不得被静默丢弃');
     assert.strictEqual(row.valid_count, 3, '新快照质量状态必须为 valid');
+    const sameMultiple = {
+      code: '09998.HK', sourceCode: 'test-p0', signalType: 'subscription', signalKind: 'subscription_estimate',
+      dataDate: '2026-09-20', subscriptionMultiple: 12.5,
+    };
+    for (const collectionPoint of ['preopen', 'midday', 'close']) {
+      await persistSnapshot({
+        ...sameMultiple,
+        collectionPoint,
+        rawPayload: { short_name: '测试简称', collection_point: collectionPoint },
+      }, client);
+    }
+    await persistSnapshot({
+      ...sameMultiple,
+      collectionPoint: 'preopen',
+      rawPayload: { short_name: '测试简称', collection_point: 'preopen' },
+    }, client);
+    const captureRows = await client.query(`
+      SELECT COUNT(*)::int AS row_count,
+             COUNT(DISTINCT raw_payload->>'collection_point')::int AS point_count
+        FROM analytics.hk_ipo_market_snapshots
+       WHERE source_code='test-p0' AND security_code='09998.HK'
+    `);
+    assert.strictEqual(captureRows.rows[0].row_count, 3, '三时段同值采集必须保留三条独立记录');
+    assert.strictEqual(captureRows.rows[0].point_count, 3, '每条快照必须记录采集时段');
     await client.query('ROLLBACK');
     console.log('hk-ipo-snapshot-persistence.test.js direct persistence passed');
   } catch (error) {

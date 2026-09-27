@@ -95,6 +95,14 @@ assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === '
 assert.strictEqual(definitions.getJobDefinition('hk_ipo_enrichment').mode, 'enrichment', '港股 IPO 补全任务必须声明自身执行模式');
 assert.ok(/mode: definition\.mode \|\| 'core'/.test(slotService), '默认计划槽位必须继承任务声明的执行模式');
 assert.ok(/definition\.mode \|\| slot\.request_payload/.test(read('server/services/jobRecoveryEvidence.js')), '恢复证据必须优先使用任务声明模式');
+const hkIpoPreopen = definitions.getJobDefinition('hk_ipo_preopen');
+assert.deepStrictEqual(hkIpoPreopen.additionalSchedules.map(item => [item.hour, item.minute, item.mode]), [
+  [12, 5, 'subscription_midday'], [16, 10, 'subscription_close'],
+], '港股认购倍数应在午间和收盘后复用盘前任务创建时段槽');
+assert.deepStrictEqual(hkIpoPreopen.datasetPublicationByMode.subscription_midday.publish, ['hk_ipo_subscription_signals']);
+assert.deepStrictEqual(hkIpoPreopen.datasetPublicationByMode.subscription_close.publish, ['hk_ipo_subscription_signals']);
+assert.ok(!definitions.getJobDefinition('hk_ipo_enrichment').externalApis.includes('hk_ipo_public_page'),
+  '晚间官方资料补全不得额外采集 HKIPOx 申购倍数，确保每天只有三个采集时点');
 const ipoReport = definitions.getJobDefinition('ipo_calendar_refresh');
 const ipoFacts = definitions.getJobDefinition('ipo_history_sync');
 assert.deepStrictEqual(ipoReport.externalApis, [], '打新日报不得调用外部接口');

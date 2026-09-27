@@ -107,6 +107,22 @@
       "status": "verified"
     },
     {
+      "id": "HK-IPO-SUBSCRIPTION-CADENCE-001",
+      "title": "港股开市日申购倍数按盘前、午间和收盘后留档",
+      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "hk_ipo_preopen" },
+      "tests": [{ "file": "server/test/job-execution-protection.test.js", "pattern": "subscription_close" }],
+      "owner": "港股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HK-IPO-SHORT-NAME-001",
+      "title": "港股 IPO 显示简称优先读取认购倍数同次来源快照",
+      "implementation": { "file": "server/routes/ipo.js", "symbol": "resolveHkIpoDisplayName" },
+      "tests": [{ "file": "server/test/hk-ipo-market-signals.test.js", "pattern": "同步申购倍数时同时清理并保存来源简称" }],
+      "owner": "港股 IPO",
+      "status": "verified"
+    },
+    {
       "id": "HK-IPO-FACT-QUALITY-001",
       "title": "港股 IPO 事实分区只有质量通过才可作为已发布依赖",
       "implementation": { "file": "server/services/datasetPartitionRegistry.js", "symbol": "areDatasetPartitionsPublished" },

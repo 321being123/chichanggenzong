@@ -101,7 +101,7 @@
     {
       "id": "hk-ipo-development",
       "risk": "high",
-      "paths": ["ipo-report/**", "server/routes/ipo.js", "server/jobs/ipoHistorySync.js", "server/jobs/ipoCalendarRefresh.js", "public/js/ipo.js", "docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md"],
+      "paths": ["ipo-report/**", "server/routes/ipo.js", "server/jobs/ipoHistorySync.js", "server/jobs/ipoCalendarRefresh.js", "server/jobs/hkIpoSync.js", "server/services/hkIpoMarketSignals.js", "server/services/jobDefinitions.js", "server/services/jobRunners.js", "server/services/jobScheduleSlots.js", "public/js/ipo.js", "docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md"],
       "keywords": ["港股打新", "港股IPO", "港股新股", "港股申购建议", "认购倍数", "孖展", "暗盘", "基石投资者", "LiveReport", "AiPO"],
       "read": ["docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md", "docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md"],
       "update": ["docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md", "docs/技术架构.md"],

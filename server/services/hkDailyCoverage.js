@@ -130,10 +130,14 @@ async function sourceId(executor = pool) {
   return sourceIdFor(executor, 'tushare');
 }
 
-async function loadCandidates(client, fromDate, toDate, limit = null) {
+async function loadCandidates(client, fromDate, toDate, limit = null, targetCodes = []) {
+  const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(code => String(code || '').trim().toUpperCase()).filter(code => /^\d{5}\.HK$/.test(code)))];
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const limitClause = candidateLimit ? ' LIMIT $3' : '';
+  const targetFilter = scopedCodes.length ? ' AND i.canonical_code=ANY($3::text[])' : '';
+  const dateFilter = scopedCodes.length ? '' : ' AND i.list_date::date BETWEEN $1::date AND $2::date';
   const params = [fromDate, toDate];
+  if (scopedCodes.length) params.push(scopedCodes);
+  const limitClause = candidateLimit ? ` LIMIT $${params.length + 1}` : '';
   if (candidateLimit) params.push(candidateLimit);
   const { rows } = await client.query(
     `SELECT i.instrument_id,i.canonical_code,i.list_date::text AS list_date,i.status
@@ -147,8 +151,9 @@ async function loadCandidates(client, fromDate, toDate, limit = null) {
        ) coverage ON true
       WHERE i.asset_class='stock' AND i.market='HK'
         AND i.canonical_code ~ '^\\d{5}\\.HK$'
-        AND i.list_date::date BETWEEN $1::date AND $2::date
+        ${dateFilter}
         AND COALESCE(coverage.observed_days,0) < 5
+        ${targetFilter}
       ORDER BY i.list_date,i.canonical_code
       ${limitClause}`, params
   );
@@ -307,17 +312,17 @@ async function syncHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate = toda
   }
 }
 
-async function syncTencentHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate = todayShanghai(), limit = null, fetchImpl } = {}) {
+async function syncTencentHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate = todayShanghai(), limit = null, targetCodes = [], fetchImpl } = {}) {
   const client = await pool.connect();
   let runId = null;
   try {
     const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-    const candidates = await loadCandidates(client, fromDate, toDate, candidateLimit);
+    const candidates = await loadCandidates(client, fromDate, toDate, candidateLimit, targetCodes);
     const tencentSourceId = await sourceIdFor(client, 'tencent');
     const run = await client.query(
       `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
        VALUES($1,'hk_daily',$2::jsonb,'running') RETURNING run_id`,
-      [tencentSourceId, JSON.stringify({ fromDate, toDate, limit: candidateLimit, candidateCount: candidates.length, source: 'tencent_hk_kline' })]
+      [tencentSourceId, JSON.stringify({ fromDate, toDate, limit: candidateLimit, targetCodes, candidateCount: candidates.length, source: 'tencent_hk_kline' })]
     );
     runId = run.rows[0].run_id;
     const results = [];
@@ -390,4 +395,4 @@ async function syncTencentHkDailyCoverage({ fromDate = DEFAULT_FROM_DATE, toDate
 }
 
 module.exports = { HK_DAILY_FIELDS, isoDate, rowsFromPayload, normalizeRows, coverageForCandidate, groupCandidates, fetchBatch,
-  rowsFromTencentHkKline, fetchTencentHkDaily, syncHkDailyCoverage, syncTencentHkDailyCoverage };
+  rowsFromTencentHkKline, fetchTencentHkDaily, loadCandidates, syncHkDailyCoverage, syncTencentHkDailyCoverage };

@@ -436,6 +436,7 @@ async function syncHkexAllotmentFacts({
   toDate = todayShanghai(),
   limit = null,
   refreshLottery = false,
+  targetCodes = [],
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
   searchImpl = searchAnnouncements,
@@ -445,9 +446,16 @@ async function syncHkexAllotmentFacts({
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
+  const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const candidateLimitClause = candidateLimit ? ' LIMIT $6' : '';
+  const targetFilter = scopedCodes.length ? ' AND security_code=ANY($6::text[])' : '';
+  const candidateDateFilter = scopedCodes.length ? '' : `AND (
+         (ipo_status='listed' AND listing_at::date BETWEEN $1::date AND $2::date)
+         OR (ipo_status IN ('active','priced','allotted') AND allotment_at IS NULL)
+       )`;
+  const candidateLimitClause = candidateLimit ? ` LIMIT $${scopedCodes.length ? 7 : 6}` : '';
   const candidateParams = [fromDate, toDate, Boolean(refreshLottery), HKEX_ALLOTMENT_PARSER_VERSION, HKEX_ALLOTMENT_FACTS_PARSER_VERSION];
+  if (scopedCodes.length) candidateParams.push(scopedCodes);
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
     SELECT security_code,listing_at::date::text AS listing_date,to_char(allotment_at,'YYYY-MM-DD') AS allotment_date,
@@ -456,10 +464,7 @@ async function syncHkexAllotmentFacts({
       FROM public.ipo_history
      WHERE market_code='HK'
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
-       AND (
-         (ipo_status='listed' AND listing_at::date BETWEEN $1::date AND $2::date)
-         OR (ipo_status IN ('active','priced','allotted') AND allotment_at IS NULL)
-       )
+       ${candidateDateFilter}
        AND (
          $3::boolean
          OR (
@@ -522,6 +527,7 @@ async function syncHkexAllotmentFacts({
            AND COALESCE(greenshoe_details->>'publicOfferSharesBasis','initial_public_offer') = 'initial_public_offer'
          )
        )
+       ${targetFilter}
      ORDER BY CASE WHEN listing_at IS NULL THEN 0 ELSE 1 END,
               COALESCE(listing_at,NULLIF(updated_at,'')::timestamptz) DESC,security_code
      ${candidateLimitClause}`, candidateParams);
@@ -529,7 +535,7 @@ async function syncHkexAllotmentFacts({
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
      VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, HKEX_ALLOTMENT_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, refreshLottery: Boolean(refreshLottery), candidateCount: candidates.length })]
+    [source.rows[0].source_id, HKEX_ALLOTMENT_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, targetCodes: scopedCodes, refreshLottery: Boolean(refreshLottery), candidateCount: candidates.length })]
   );
   const runId = run.rows[0].run_id;
   const byCode = new Map(candidates.map(row => [String(row.security_code).split('.')[0].padStart(5, '0'), row]));
@@ -539,7 +545,9 @@ async function syncHkexAllotmentFacts({
     .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))).sort();
   const firstCandidateDate = candidateDates[0] || fromDate;
   const lastCandidateDate = candidateDates[candidateDates.length - 1] || toDate;
-  const searchStart = shiftIsoDate(firstCandidateDate, -31) < fromDate ? fromDate : shiftIsoDate(firstCandidateDate, -31);
+  const allotmentSearchStart = shiftIsoDate(firstCandidateDate, -31);
+  const searchStart = scopedCodes.length ? allotmentSearchStart
+    : allotmentSearchStart < fromDate ? fromDate : allotmentSearchStart;
   const searchEnd = shiftIsoDate(lastCandidateDate, 5) > toDate ? toDate : shiftIsoDate(lastCandidateDate, 5);
   const announcements = [];
   const failures = [];
@@ -952,6 +960,7 @@ async function syncHkexProspectusFacts({
   toDate = todayShanghai(),
   limit = null,
   refreshSponsor = false,
+  targetCodes = [],
   executor = pool.query.bind(pool),
   fetchImpl = httpRequest,
   searchImpl = searchAnnouncements,
@@ -961,9 +970,23 @@ async function syncHkexProspectusFacts({
   }
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
+  const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const candidateLimitClause = candidateLimit ? ' LIMIT $4' : '';
+  const targetFilter = scopedCodes.length ? ' AND security_code=ANY($4::text[])' : '';
+  const candidateDateFilter = scopedCodes.length ? '' : `AND (
+         timezone('Asia/Shanghai',listing_at)::date BETWEEN $1::date AND $2::date
+       OR (listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND listing_date::date BETWEEN $1::date AND $2::date)
+       OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
+       OR (listing_at IS NULL AND ipo_status='listed'
+           AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
+           AND COALESCE(offer_close_at::date,offer_open_at::date,
+             CASE WHEN ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN ipo_date::date END) BETWEEN $1::date AND $2::date)
+       )`;
+  const retryFilter = scopedCodes.length ? '' : `AND (data_completeness#>>'{prospectus,next_retry_at}' IS NULL
+         OR (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now())`;
+  const candidateLimitClause = candidateLimit ? ` LIMIT $${scopedCodes.length ? 5 : 4}` : '';
   const candidateParams = [fromDate, toDate, Boolean(refreshSponsor)];
+  if (scopedCodes.length) candidateParams.push(scopedCodes);
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
     SELECT security_code,timezone('Asia/Shanghai',listing_at)::date::text AS actual_listing_date,listing_date,ipo_date,source_documents,data_completeness,
@@ -978,17 +1001,8 @@ async function syncHkexProspectusFacts({
           WHERE lower(COALESCE(document->>'title','') || ' ' || COALESCE(document->>'shortText',''))
                 ~ '(rights[ _-]?issue|供股|配售|placing|share option|special purpose)'
        )
-       AND (
-         timezone('Asia/Shanghai',listing_at)::date BETWEEN $1::date AND $2::date
-       OR (listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND listing_date::date BETWEEN $1::date AND $2::date)
-       OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
-       OR (listing_at IS NULL AND ipo_status='listed'
-           AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$')
-           AND COALESCE(offer_close_at::date,offer_open_at::date,
-             CASE WHEN ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN ipo_date::date END) BETWEEN $1::date AND $2::date)
-       )
-       AND (data_completeness#>>'{prospectus,next_retry_at}' IS NULL
-         OR (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now())
+       ${candidateDateFilter}
+       ${retryFilter}
        AND (
          (issue_price_low IS NULL AND data_completeness#>>'{prospectus,fields,issuePriceLow}' IS DISTINCT FROM 'maximum_only')
          OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
@@ -1016,6 +1030,7 @@ async function syncHkexProspectusFacts({
               AND document->'parserEvidence'->>'sponsorGroup' IS NOT NULL
          ))
        )
+       ${targetFilter}
      -- 先重试已有招股书证据但字段不完整的记录，避免每轮都被无公开招股书的项目占满额度。
      ORDER BY CASE WHEN EXISTS (
                 SELECT 1 FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
@@ -1030,7 +1045,7 @@ async function syncHkexProspectusFacts({
   const run = await executor(
     `INSERT INTO ops.ingestion_runs(source_id,dataset_code,request_range,status)
      VALUES($1,$2,$3::jsonb,'running') RETURNING run_id`,
-    [source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, refreshSponsor: Boolean(refreshSponsor), candidateCount: candidates.length })]
+    [source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, JSON.stringify({ fromDate, toDate, limit: candidateLimit, targetCodes: scopedCodes, refreshSponsor: Boolean(refreshSponsor), candidateCount: candidates.length })]
   );
   const runId = run.rows[0].run_id;
   if (!candidates.length) {
@@ -1045,7 +1060,9 @@ async function syncHkexProspectusFacts({
     .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))).sort();
   const firstListing = listingDates[0] || fromDate;
   const lastListing = listingDates[listingDates.length - 1] || toDate;
-  const searchStart = shiftIsoDate(firstListing, -45) < fromDate ? shiftIsoDate(firstListing, -45) : fromDate;
+  const prospectusSearchStart = shiftIsoDate(firstListing, -45);
+  const searchStart = scopedCodes.length ? prospectusSearchStart
+    : prospectusSearchStart < fromDate ? fromDate : prospectusSearchStart;
   const searchEnd = lastListing > toDate ? toDate : lastListing;
   const byCode = new Map(candidates.map(row => [String(row.security_code), row]));
   const announcements = [];
@@ -1621,13 +1638,16 @@ function expectedDateByValue(event) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : null;
 }
 
-async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool)) {
+async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targetCodes = []) {
+  const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
+  const targetFilter = scopedCodes.length ? ' AND security_code=ANY($1::text[])' : '';
   const { rows } = await executor(`
     SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,listing_at,listing_date,
            issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
       FROM public.ipo_history
      WHERE market_code='HK'
-  `);
+       ${targetFilter}
+  `, scopedCodes.length ? [scopedCodes] : []);
   let updated = 0;
   let complete = 0;
   let pending = 0;

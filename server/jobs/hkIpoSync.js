@@ -165,12 +165,20 @@ function marketSignalDiagnostics(marketSignals) {
 }
 
 async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}) {
-  const probe = context.probe || await runHkexIpoProbe({
+  const requestedTargetCodes = Array.isArray(context.targetCodes) ? context.targetCodes : [];
+  const targetCodes = [...new Set(requestedTargetCodes.map(canonicalHkCode).filter(Boolean))];
+  const invalidTargetCodes = requestedTargetCodes.filter(code => !canonicalHkCode(code));
+  if (mode === 'enrichment' && invalidTargetCodes.length) {
+    return { ok: false, status: 'failed', mode, reason: 'invalid_target_codes', invalidTargetCodes,
+      probePersistence: null, rows: 0, publishDatasets: false, degraded: true };
+  }
+  const targeted = mode === 'enrichment' && targetCodes.length > 0;
+  const probe = targeted ? { targets: [] } : (context.probe || await runHkexIpoProbe({
     targets: context.targets || buildProbePlan({ includeLocalizedNames: mode === 'enrichment' }),
     fetchImpl: context.fetchImpl,
-  });
+  }));
   let probePersistence = null;
-  if (context.persistProbe !== false) {
+  if (!targeted && context.persistProbe !== false) {
     try {
       probePersistence = await persistHkexProbe(probe, {
         environment: context.probeEnvironment || process.env.HKEX_PROBE_ENVIRONMENT || (process.env.NODE_ENV === 'production' ? 'server' : 'local'),
@@ -179,17 +187,29 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
       probePersistence = { ok: false, error: error.message || String(error) };
     }
   }
-  const rows = rowsFromProbe(probe);
-  if (!rows.length) {
+  const rows = targeted ? [] : rowsFromProbe(probe);
+  if (targeted) {
+    const { rows: foundRows } = await pool.query(`
+      SELECT security_code FROM public.ipo_history
+       WHERE market_code='HK' AND security_code=ANY($1::text[])
+    `, [targetCodes]);
+    const found = new Set(foundRows.map(row => canonicalHkCode(row.security_code)));
+    const missingTargetCodes = targetCodes.filter(code => !found.has(code));
+    if (missingTargetCodes.length) {
+      return { ok: false, status: 'failed', mode, reason: 'target_records_not_found', targetCodes, missingTargetCodes,
+        probePersistence: null, rows: 0, publishDatasets: false, degraded: true };
+    }
+  }
+  if (!rows.length && !targeted) {
     // 空结果不能被解释为“没有新股”：保留探针证据，并让调度器按失败/降级处理。
     return { ok: false, mode, reason: 'no_verified_rows', probe, probePersistence, rows: 0, publishDatasets: false, degraded: true };
   }
 
   // 先落主事实，再执行历史报表、官方 PDF 和市场信号补全，避免补全任务看不到本轮新发现的代码。
-  const result = await upsertHkIpoFacts(rows);
+  const result = targeted ? { ok: true, rows: 0, events: 0 } : await upsertHkIpoFacts(rows);
   let historicalReports = null;
-  const shouldSyncHistorical = context.syncHistoricalReports === true
-    || ((mode === 'postclose' || mode === 'enrichment') && context.syncHistoricalReports !== false);
+  const shouldSyncHistorical = !targeted && (context.syncHistoricalReports === true
+    || ((mode === 'postclose' || mode === 'enrichment') && context.syncHistoricalReports !== false));
   if (shouldSyncHistorical) {
     try {
       historicalReports = await syncHkexHistoricalReports(context.historicalOptions || {});
@@ -205,14 +225,14 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   let marketSignals = null;
   let completenessAudit = null;
   if (mode === 'enrichment') {
-    if (context.syncNonPublic !== false) {
+    if (!targeted && context.syncNonPublic !== false) {
       try {
         nonPublicListings = await syncHkexNonPublicListings(context.nonPublicOptions || {});
       } catch (error) {
         nonPublicListings = { ok: false, status: 'failed', error: error.message || String(error) };
       }
     }
-    if (context.syncCancelled !== false) {
+    if (!targeted && context.syncCancelled !== false) {
       try {
         cancelledListings = await syncHkexCancelledListings(context.cancelledOptions || {});
       } catch (error) {
@@ -222,12 +242,15 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     if (context.syncProspectus !== false) {
       try {
         const prospectusOptions = { ...(context.prospectusOptions || {}) };
-        if (prospectusOptions.limit == null) {
+        if (targeted) {
+          prospectusOptions.limit = null;
+        } else if (prospectusOptions.limit == null) {
           const envLimit = Number(process.env.HK_IPO_PROSPECTUS_LIMIT);
           if (Number.isInteger(envLimit) && envLimit > 0) prospectusOptions.limit = envLimit;
         }
         prospectusFacts = await syncHkexProspectusFacts({
           ...prospectusOptions,
+          ...(targeted ? { targetCodes } : {}),
           refreshSponsor: context.refreshSponsor === true || context.prospectusOptions?.refreshSponsor === true
             || String(process.env.HK_IPO_REFRESH_SPONSOR || '').toLowerCase() === 'true',
         });
@@ -238,12 +261,15 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     if (context.syncAllotment !== false) {
       try {
         const allotmentOptions = { ...(context.allotmentOptions || {}) };
-        if (allotmentOptions.limit == null) {
+        if (targeted) {
+          allotmentOptions.limit = null;
+        } else if (allotmentOptions.limit == null) {
           const envLimit = Number(process.env.HK_IPO_ALLOTMENT_LIMIT);
           if (Number.isInteger(envLimit) && envLimit > 0) allotmentOptions.limit = envLimit;
         }
         allotmentFacts = await syncHkexAllotmentFacts({
           ...allotmentOptions,
+          ...(targeted ? { targetCodes } : {}),
         });
       } catch (error) {
         allotmentFacts = { ok: false, status: 'failed', error: error.message || String(error) };
@@ -252,19 +278,22 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     if (context.syncDaily !== false) {
       try {
         const dailyOptions = { ...(context.dailyOptions || {}) };
-        if (dailyOptions.limit == null) {
+        if (targeted) {
+          dailyOptions.limit = null;
+        } else if (dailyOptions.limit == null) {
           const envLimit = Number(process.env.HK_DAILY_SYNC_LIMIT);
           if (Number.isInteger(envLimit) && envLimit > 0) dailyOptions.limit = envLimit;
         }
         dailyCoverage = await syncTencentHkDailyCoverage({
           ...dailyOptions,
+          ...(targeted ? { targetCodes } : {}),
         });
       } catch (error) {
         dailyCoverage = { ok: false, status: 'failed', error: error.message || String(error) };
       }
     }
   }
-  if (mode === 'preopen' || mode === 'enrichment') {
+  if (mode === 'preopen' || (mode === 'enrichment' && !targeted)) {
     try {
       marketSignals = await syncHkIpoMarketSignals({
         mode,
@@ -277,12 +306,14 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   }
   let tencentNames = null;
   try {
-    tencentNames = await syncHkIpoTencentNames(rows.map(row => row.securityCode), context.tencentNameOptions || {});
+    const nameOptions = { ...(context.tencentNameOptions || {}) };
+    if (targeted && nameOptions.batchSize == null) nameOptions.batchSize = targetCodes.length;
+    tencentNames = await syncHkIpoTencentNames(targeted ? targetCodes : rows.map(row => row.securityCode), nameOptions);
   } catch (error) {
     tencentNames = { ok: false, status: 'failed', error: error.message || String(error) };
   }
   try {
-    completenessAudit = await recomputeHkIpoCompleteness();
+    completenessAudit = await recomputeHkIpoCompleteness(pool.query.bind(pool), targeted ? targetCodes : []);
   } catch (error) {
     completenessAudit = { ok: false, status: 'failed', error: error.message || String(error) };
   }
@@ -304,6 +335,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   return {
     ...result, ok: failedSubtasks.length === 0, status: degraded ? 'degraded' : 'succeeded', degraded,
     failedDatasets: failedSubtasks.length ? ['hk_ipo_facts'] : [],
+    ...(targeted ? { targeted: true, targetCodes } : {}),
     mode, probePersistence, historicalReports, nonPublicListings, cancelledListings, prospectusFacts, allotmentFacts,
     dailyCoverage, marketSignals, tencentNames, completenessAudit,
     datasetDiagnostics: { hk_ipo_facts: factDiagnostics, hk_ipo_subscription_signals: signalDiagnostics },

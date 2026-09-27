@@ -482,6 +482,7 @@ async function loadPendingHkIpoFacts(days) {
         AND NOT (COALESCE(h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$',false)
           AND h.listing_date::date <= (timezone('Asia/Shanghai',now()))::date)
         AND h.data_completeness->>'status'='retryable'
+        AND ${hkOfferPhaseSql('h')} IN ('pending_window','upcoming','open')
         AND COALESCE(timezone('Asia/Shanghai',h.offer_close_at)::date,
           CASE WHEN h.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.ipo_date::date END)
           >= (timezone('Asia/Shanghai',now()))::date - (($1::int + 30) * INTERVAL '1 day')

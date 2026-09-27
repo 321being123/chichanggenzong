@@ -80,11 +80,11 @@ function render() {
     `> 生成任务数：${JOB_DEFINITIONS.length}（定时 ${scheduled}，人工 ${manual}）。联网任务不设置内部调用数额度；真实限制只来自已核验官方策略。`,
     `> 数据集分区注册表已纳入任务契约审计，当前登记 ${Object.keys(DATASET_PARTITION_REGISTRY).length} 个数据集。`,
     '',
-    '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 任务调用数约束 |',
-    '|---|---|---|---|---|---:|',
+    '| 任务 | 调度 | 外部接口 | 产出数据集 | 依赖数据集 | 人工定向范围 | 任务调用数约束 |',
+    '|---|---|---|---|---|---|---:|',
   ];
   for (const job of JOB_DEFINITIONS) {
-    lines.push(`| ${job.jobCode} | ${scheduleOf(job)} | ${cell(job.externalApis)} | ${cell(job.producesDatasets)} | ${cell(job.consumesDatasets)} | ${budgetCell(job)} |`);
+    lines.push(`| ${job.jobCode} | ${scheduleOf(job)} | ${cell(job.externalApis)} | ${cell(job.producesDatasets)} | ${cell(job.consumesDatasets)} | ${job.manualTargetScope || '—'} | ${budgetCell(job)} |`);
   }
   lines.push('', '## 规则—实现—测试追踪矩阵', '',
     '> 规则来源：`governance/rule-traceability.json`。生成器会校验实现文件、实现符号和测试文件标记，防止规则只停留在文档。', '',

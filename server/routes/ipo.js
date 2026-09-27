@@ -7,6 +7,7 @@ const { pool } = require('../db');
 const { requireLogin } = require('../middleware/auth');
 const { getBondBySecurityCode, getBondHistoryList } = require('../services/bondDataService');
 const { getHkFormalGateStatus } = require('../services/hkIpoBacktest');
+const { normalizeHkIpoShortName } = require('../services/hkIpoMarketSignals');
 
 function isBeijingStock(code) {
   return /^(920|82|83|87|43)/.test(String(code || ''));
@@ -21,7 +22,7 @@ function filterBeijingStocks(calendar) {
 }
 
 function resolveHkIpoDisplayName(row = {}) {
-  const hkipoxShortName = String(row.hkipox_short_name || '').trim();
+  const hkipoxShortName = normalizeHkIpoShortName(row.hkipox_short_name);
   if (hkipoxShortName) return hkipoxShortName;
   const names = [row.security_name_cn, row.quote_name, row.instrument_name, row.security_name, row.name]
     .map(value => String(value || '').trim()).filter(Boolean);
@@ -915,6 +916,7 @@ router.get('/history', async (req, res) => {
       );
       rows = r.rows.map(row => ({
         ...row,
+        hkipox_short_name: normalizeHkIpoShortName(row.hkipox_short_name),
         security_name_cn: resolveHkIpoDisplayName(row),
         current_subscription_signal: row.current_subscription_signal || {
           multiple: null, source: null, source_observed_at: null, collected_at: null, status: 'unavailable',

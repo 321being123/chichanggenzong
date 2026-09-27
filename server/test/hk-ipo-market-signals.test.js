@@ -74,13 +74,15 @@ assert.strictEqual(futu[0].greyMarketChangePct, 105.54);
 const hkipoxFixture = '<section><h2>今日申购</h2><table><tr><th>代码</th><th>名称</th><th>认购倍数</th><th>招股结束日</th></tr>'
   + '<tr><td data-label="代码">06731</td><td data-label="名称">星创新材</td><td data-label="认购倍数">6.59x</td><td data-label="招股结束日">2026-09-24</td></tr>'
   + '<tr><td data-label="代码">06802</td><td data-label="名称">欢创科技AH回拨无鞋</td><td data-label="认购倍数">10.5x</td><td data-label="招股结束日">2026-09-25</td></tr>'
+  + '<tr><td data-label="代码">03228</td><td data-label="名称">景旺电子 AH 无鞋</td><td data-label="认购倍数">42x</td><td data-label="招股结束日">2026-09-25</td></tr>'
   + '<tr><td data-label="代码">09607</td><td data-label="名称">样本新股</td><td data-label="认购倍数">0x</td><td data-label="招股结束日">2026-09-24</td></tr></table></section>';
 const hkipox = parseHkIpoXHtml(hkipoxFixture);
-assert.strictEqual(hkipox.length, 2, '只保留有正申购倍数的今日申购项目');
+assert.strictEqual(hkipox.length, 3, '只保留有正申购倍数的今日申购项目');
 assert.strictEqual(hkipox[0].securityCode, '06731.HK');
 assert.strictEqual(hkipox[0].subscriptionMultiple, 6.59);
 assert.strictEqual(hkipox[0].offerCloseDate, '2026-09-24');
 assert.strictEqual(hkipox[1].securityName, '欢创科技', '同步申购倍数时同时清理并保存来源简称');
+assert.strictEqual(hkipox[2].securityName, '景旺电子', '清理简称中的分隔后缀，不显示 AH/无鞋标记');
 assert.strictEqual(resolveHkIpoDisplayName({
   hkipox_short_name: '欢创科技', quote_name: '欢创科技行情简称',
   security_name_cn: '深圳市欢创科技股份有限公司',
@@ -88,6 +90,9 @@ assert.strictEqual(resolveHkIpoDisplayName({
 assert.strictEqual(resolveHkIpoDisplayName({
   hkipox_short_name: 'ACME', security_name_cn: '示例股份有限公司',
 }), 'ACME', 'HKIPOx 同步返回简称时直接展示，不被其他中文全称覆盖');
+assert.strictEqual(resolveHkIpoDisplayName({
+  hkipox_short_name: '景旺电子 AH 无鞋', security_name_cn: '深圳市景旺电子股份有限公司',
+}), '景旺电子', '旧快照中的来源简称也应去除发行标记后再展示');
 assert.throws(() => parseHkIpoXHtml('<html><h2>今日申购</h2><p>页面结构变化</p></html>'), /缺少预期数据列/);
 assert.strictEqual(assessHkGreenshoe({ status: 'exercised' }, null), '偏利好：有稳价安排');
 assert.strictEqual(assessHkGreenshoe({ status: 'not_available' }, null), '偏不利：缺少绿鞋保护');

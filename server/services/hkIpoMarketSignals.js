@@ -68,7 +68,7 @@ function decodeHtml(value) {
 }
 
 function normalizeHkIpoShortName(value) {
-  return decodeHtml(value).replace(/(?:AH|回拨|无鞋)+$/i, '').trim();
+  return decodeHtml(value).replace(/(?:\s*(?:AH|回拨|无鞋))+\s*$/i, '').trim();
 }
 
 function requestExternal(url, { format = 'json', timeoutMs = 15000 } = {}) {

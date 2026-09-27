@@ -19,19 +19,26 @@ function executorForCandidateQuery(captured) {
   };
 }
 
+function assertContinuousParameters(sql, params) {
+  const indexes = [...new Set([...sql.matchAll(/\$(\d+)/g)].map(match => Number(match[1])))].sort((a, b) => a - b);
+  assert.deepStrictEqual(indexes, Array.from({ length: params.length }, (_, index) => index + 1));
+}
+
 (async () => {
   const allotment = {};
   await syncHkexAllotmentFacts({ targetCodes, executor: executorForCandidateQuery(allotment) });
-  assert.match(allotment.sql, /security_code=ANY\(\$6::text\[\]\)/);
+  assertContinuousParameters(allotment.sql, allotment.params);
+  assert.match(allotment.sql, /security_code=ANY\(\$4::text\[\]\)/);
   assert.doesNotMatch(allotment.sql, /listing_at::date BETWEEN/);
-  assert.deepStrictEqual(allotment.params[5], targetCodes);
+  assert.deepStrictEqual(allotment.params[3], targetCodes);
 
   const prospectus = {};
   await syncHkexProspectusFacts({ targetCodes, executor: executorForCandidateQuery(prospectus) });
-  assert.match(prospectus.sql, /security_code=ANY\(\$4::text\[\]\)/);
+  assertContinuousParameters(prospectus.sql, prospectus.params);
+  assert.match(prospectus.sql, /security_code=ANY\(\$2::text\[\]\)/);
   assert.doesNotMatch(prospectus.sql, /timezone\('Asia\/Shanghai',listing_at\)::date BETWEEN/);
   assert.doesNotMatch(prospectus.sql, /AND \(data_completeness#>>'\{prospectus,next_retry_at\}' IS NULL/);
-  assert.deepStrictEqual(prospectus.params[3], targetCodes);
+  assert.deepStrictEqual(prospectus.params[1], targetCodes);
 
   const completenessCalls = [];
   const completeness = await recomputeHkIpoCompleteness(async (sql, params = []) => {
@@ -47,11 +54,13 @@ function executorForCandidateQuery(captured) {
   await loadCandidates({
     query: async (sql, params) => { dailyQuery = { sql, params }; return { rows: [] }; },
   }, '2025-08-04', '2026-09-27', 20, targetCodes);
-  assert.match(dailyQuery.sql, /i\.canonical_code=ANY\(\$3::text\[\]\)/);
+  assertContinuousParameters(dailyQuery.sql, dailyQuery.params);
+  assert.match(dailyQuery.sql, /i\.canonical_code=ANY\(\$2::text\[\]\)/);
+  assert.match(dailyQuery.sql, /b\.trade_date <= \$1::date/);
   assert.doesNotMatch(dailyQuery.sql, /i\.list_date::date BETWEEN/);
-  assert.match(dailyQuery.sql, /LIMIT \$4/);
-  assert.deepStrictEqual(dailyQuery.params[2], targetCodes);
-  assert.strictEqual(dailyQuery.params[3], 20);
+  assert.match(dailyQuery.sql, /LIMIT \$3/);
+  assert.deepStrictEqual(dailyQuery.params[1], targetCodes);
+  assert.strictEqual(dailyQuery.params[2], 20);
 
   const runnerSource = fs.readFileSync(path.join(__dirname, '../jobs/hkIpoSync.js'), 'utf8');
   const orchestratorSource = fs.readFileSync(path.join(__dirname, '../services/jobOrchestrator.js'), 'utf8');

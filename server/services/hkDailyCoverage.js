@@ -132,11 +132,12 @@ async function sourceId(executor = pool) {
 
 async function loadCandidates(client, fromDate, toDate, limit = null, targetCodes = []) {
   const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(code => String(code || '').trim().toUpperCase()).filter(code => /^\d{5}\.HK$/.test(code)))];
+  const targeted = scopedCodes.length > 0;
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const targetFilter = scopedCodes.length ? ' AND i.canonical_code=ANY($3::text[])' : '';
-  const dateFilter = scopedCodes.length ? '' : ' AND i.list_date::date BETWEEN $1::date AND $2::date';
-  const params = [fromDate, toDate];
-  if (scopedCodes.length) params.push(scopedCodes);
+  const coverageDateParam = targeted ? 1 : 2;
+  const targetFilter = targeted ? ' AND i.canonical_code=ANY($2::text[])' : '';
+  const dateFilter = targeted ? '' : ' AND i.list_date::date BETWEEN $1::date AND $2::date';
+  const params = targeted ? [toDate, scopedCodes] : [fromDate, toDate];
   const limitClause = candidateLimit ? ` LIMIT $${params.length + 1}` : '';
   if (candidateLimit) params.push(candidateLimit);
   const { rows } = await client.query(
@@ -147,7 +148,7 @@ async function loadCandidates(client, fromDate, toDate, limit = null, targetCode
            FROM market.daily_bars b
           WHERE b.instrument_id=i.instrument_id
             AND b.trade_date >= i.list_date
-            AND b.trade_date <= $2::date
+            AND b.trade_date <= $${coverageDateParam}::date
        ) coverage ON true
       WHERE i.asset_class='stock' AND i.market='HK'
         AND i.canonical_code ~ '^\\d{5}\\.HK$'

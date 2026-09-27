@@ -447,15 +447,21 @@ async function syncHkexAllotmentFacts({
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
   const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
+  const targeted = scopedCodes.length > 0;
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const targetFilter = scopedCodes.length ? ' AND security_code=ANY($6::text[])' : '';
-  const candidateDateFilter = scopedCodes.length ? '' : `AND (
+  const refreshLotteryParam = targeted ? 1 : 3;
+  const feeParserParam = targeted ? 2 : 4;
+  const factsParserParam = targeted ? 3 : 5;
+  const targetCodesParam = targeted ? 4 : 6;
+  const targetFilter = targeted ? ` AND security_code=ANY($${targetCodesParam}::text[])` : '';
+  const candidateDateFilter = targeted ? '' : `AND (
          (ipo_status='listed' AND listing_at::date BETWEEN $1::date AND $2::date)
          OR (ipo_status IN ('active','priced','allotted') AND allotment_at IS NULL)
        )`;
-  const candidateLimitClause = candidateLimit ? ` LIMIT $${scopedCodes.length ? 7 : 6}` : '';
-  const candidateParams = [fromDate, toDate, Boolean(refreshLottery), HKEX_ALLOTMENT_PARSER_VERSION, HKEX_ALLOTMENT_FACTS_PARSER_VERSION];
-  if (scopedCodes.length) candidateParams.push(scopedCodes);
+  const candidateLimitClause = candidateLimit ? ` LIMIT $${targeted ? 5 : 6}` : '';
+  const candidateParams = targeted
+    ? [Boolean(refreshLottery), HKEX_ALLOTMENT_PARSER_VERSION, HKEX_ALLOTMENT_FACTS_PARSER_VERSION, scopedCodes]
+    : [fromDate, toDate, Boolean(refreshLottery), HKEX_ALLOTMENT_PARSER_VERSION, HKEX_ALLOTMENT_FACTS_PARSER_VERSION];
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
     SELECT security_code,listing_at::date::text AS listing_date,to_char(allotment_at,'YYYY-MM-DD') AS allotment_date,
@@ -466,7 +472,7 @@ async function syncHkexAllotmentFacts({
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
        ${candidateDateFilter}
        AND (
-         $3::boolean
+         $${refreshLotteryParam}::boolean
          OR (
            (public_offer_ratio IS NULL OR international_offer_ratio IS NULL)
            AND NOT EXISTS (
@@ -498,7 +504,7 @@ async function syncHkexAllotmentFacts({
              SELECT 1
                FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
               WHERE document->>'type'='allotment_result'
-                AND document->'parserEvidence'->>'feeParserVersion'=$4
+                AND document->'parserEvidence'->>'feeParserVersion'=$${feeParserParam}
                 AND document->'parserEvidence'->>'feeParserStatus' IN ('parsed','missing')
            )
          )
@@ -508,7 +514,7 @@ async function syncHkexAllotmentFacts({
              SELECT 1
                FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
               WHERE document->>'type'='allotment_result'
-                AND document->'parserEvidence'->>'factsParserVersion'=$5
+                AND document->'parserEvidence'->>'factsParserVersion'=$${factsParserParam}
                 AND document->'parserEvidence'->>'oversubscriptionParserStatus' IN ('parsed','missing')
            )
          )
@@ -518,7 +524,7 @@ async function syncHkexAllotmentFacts({
              SELECT 1
                FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
               WHERE document->>'type'='allotment_result'
-                AND document->'parserEvidence'->>'factsParserVersion'=$5
+                AND document->'parserEvidence'->>'factsParserVersion'=$${factsParserParam}
                 AND document->'parserEvidence'->>'greenshoeParserStatus' IN ('parsed','missing')
            )
          )
@@ -971,9 +977,12 @@ async function syncHkexProspectusFacts({
   const source = await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1");
   if (!source.rows[0]) throw new Error('港交所数据源未登记');
   const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
+  const targeted = scopedCodes.length > 0;
   const candidateLimit = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Number(limit) : null;
-  const targetFilter = scopedCodes.length ? ' AND security_code=ANY($4::text[])' : '';
-  const candidateDateFilter = scopedCodes.length ? '' : `AND (
+  const refreshSponsorParam = targeted ? 1 : 3;
+  const targetCodesParam = targeted ? 2 : 4;
+  const targetFilter = targeted ? ` AND security_code=ANY($${targetCodesParam}::text[])` : '';
+  const candidateDateFilter = targeted ? '' : `AND (
          timezone('Asia/Shanghai',listing_at)::date BETWEEN $1::date AND $2::date
        OR (listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' AND listing_date::date BETWEEN $1::date AND $2::date)
        OR (listing_at IS NULL AND ipo_status IN ('active','priced','allotted'))
@@ -982,11 +991,12 @@ async function syncHkexProspectusFacts({
            AND COALESCE(offer_close_at::date,offer_open_at::date,
              CASE WHEN ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN ipo_date::date END) BETWEEN $1::date AND $2::date)
        )`;
-  const retryFilter = scopedCodes.length ? '' : `AND (data_completeness#>>'{prospectus,next_retry_at}' IS NULL
+  const retryFilter = targeted ? '' : `AND (data_completeness#>>'{prospectus,next_retry_at}' IS NULL
          OR (data_completeness#>>'{prospectus,next_retry_at}')::timestamptz <= now())`;
-  const candidateLimitClause = candidateLimit ? ` LIMIT $${scopedCodes.length ? 5 : 4}` : '';
-  const candidateParams = [fromDate, toDate, Boolean(refreshSponsor)];
-  if (scopedCodes.length) candidateParams.push(scopedCodes);
+  const candidateLimitClause = candidateLimit ? ` LIMIT $${targeted ? 3 : 4}` : '';
+  const candidateParams = targeted
+    ? [Boolean(refreshSponsor), scopedCodes]
+    : [fromDate, toDate, Boolean(refreshSponsor)];
   if (candidateLimit) candidateParams.push(candidateLimit);
   const candidatesResult = await executor(`
     SELECT security_code,timezone('Asia/Shanghai',listing_at)::date::text AS actual_listing_date,listing_date,ipo_date,source_documents,data_completeness,
@@ -1023,7 +1033,7 @@ async function syncHkexProspectusFacts({
          OR (data_completeness#>>'{prospectus,expectedEvents,listingDate,date}' IS NULL
              AND timezone('Asia/Shanghai',offer_close_at)::date < (timezone('Asia/Shanghai',now()))::date
              AND listing_at IS NULL AND (listing_date IS NULL OR listing_date !~ '^\\d{4}-\\d{2}-\\d{2}$'))
-         OR ($3::boolean AND NOT EXISTS (
+         OR ($${refreshSponsorParam}::boolean AND NOT EXISTS (
            SELECT 1
              FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
             WHERE document->>'type'='prospectus'

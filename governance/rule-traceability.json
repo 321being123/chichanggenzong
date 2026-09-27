@@ -116,7 +116,7 @@
     },
     {
       "id": "HK-IPO-SHORT-NAME-001",
-      "title": "港股 IPO 显示简称优先读取认购倍数同次来源快照",
+      "title": "港股 IPO 简称优先读取同次来源快照并清理发行附注",
       "implementation": { "file": "server/routes/ipo.js", "symbol": "resolveHkIpoDisplayName" },
       "tests": [{ "file": "server/test/hk-ipo-market-signals.test.js", "pattern": "旧快照中的来源简称也应去除发行标记后再展示" }],
       "owner": "港股 IPO",

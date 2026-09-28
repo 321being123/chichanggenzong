@@ -6,7 +6,7 @@ const { pickArray, authHeaders, isConfigured } = require('../services/bondSafety
 const { nextShanghaiDelay } = require('../jobs/bondSafetyRefresh');
 const { assertStableIdentity } = require('../services/bondSafetyService');
 const {
-  finite, derivePb, isActiveBond, preferredSecurityName,
+  finite, derivePb, derivePbFromMarketCap, normalizeDatabaseValuation, isActiveBond, preferredSecurityName,
   FINANCIAL_REFRESH_BATCH_SIZE, nextFinancialBatchDelay,
 } = require('../services/bondSafetyTushare');
 
@@ -147,7 +147,24 @@ check('Tushare YYYYMMDD 生命周期日期按目标日正确过滤', () => {
 check('PB缺失时可按总市值和归母净资产补算正负市净率', () => {
   assert.strictEqual(derivePb(10000, 50000000), 2);
   assert.strictEqual(derivePb(10000, -50000000), -2);
+  assert.strictEqual(derivePbFromMarketCap(100000000, 50000000), 2);
+  assert.strictEqual(derivePbFromMarketCap(100000000, -50000000), -2);
+  assert.strictEqual(derivePbFromMarketCap(100000000, 0), null);
   assert.strictEqual(derivePb(null, -50000000), null);
+});
+check('数据库估值空值按同日估值和可复算字段正确处理', () => {
+  assert.deepStrictEqual(normalizeDatabaseValuation({
+    valuation_trade_date: '2026-08-18', total_market_cap: '100000000', pb: null,
+    pe_ttm: null, pe_static: null, dividend_yield_ttm: null,
+    balance_payload: { total_hldr_eqy_exc_min_int: '50000000' },
+  }), { pe_ttm: '亏损', pb: 2, dividend_yield: 0 });
+  assert.deepStrictEqual(normalizeDatabaseValuation({
+    total_market_cap: null, pe_ttm: null, pe_static: null, dividend_yield_ttm: null,
+  }), { pe_ttm: null, pb: null, dividend_yield: null });
+  assert.deepStrictEqual(normalizeDatabaseValuation({
+    valuation_trade_date: '2026-08-18', total_market_cap: 100, pb: 1.2,
+    pe_ttm: null, pe_static: 8, dividend_yield_ttm: 0.025,
+  }), { pe_ttm: 8, pb: 1.2, dividend_yield: 2.5 });
 });
 
 check('证券名称优先使用腾讯行情正确解码结果', () => {
@@ -168,10 +185,12 @@ check('人工安全评分与任务契约一致，只读已入库标准层', () =
   const refreshJob = fs.readFileSync(path.resolve(__dirname, '..', 'jobs', 'bondSafetyRefresh.js'), 'utf8');
   const runner = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'jobRunners.js'), 'utf8');
   const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');
+  const tushareSource = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
   const route = fs.readFileSync(path.resolve(__dirname, '..', 'routes', 'bondSafety.js'), 'utf8');
   assert.ok(refreshJob.includes('const readOnly = options.readOnly !== false'));
   assert.ok(runner.includes('targetTradeDate, readOnly: true'));
   assert.ok(service.includes('options.readOnly !== false'));
+  assert.ok(tushareSource.includes("interest_coverage: pick(indicator, 'ebit_to_interest', null)"));
   assert.ok(/\{ isConfigured \} = require\('\.\.\/services\/bondSafetyFetcher'\)/.test(route));
 });
 check('安全性完整列表缓存版本覆盖强赎状态，静态响应只保留单一缓存头', () => {

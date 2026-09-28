@@ -53,7 +53,7 @@ function scheduleBondSafetyRefresh() {
   if (initial.unref) initial.unref();
 
   // 首次部署且尚无快照时立即补一次；已有数据时不在每次重启时打上游 API。
-  getLatestSnapshot()
+  getLatestSnapshot({ includeChangePct: false })
     .then(snapshot => { if (!snapshot) return runBondSafetyRefresh('bootstrap'); })
     .catch(error => console.warn('[bond-safety] 启动检查失败:', error.message));
 }

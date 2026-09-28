@@ -144,6 +144,26 @@ function derivePb(totalMvWan, shareholderEquity) {
   return marketCap != null && equity != null && equity !== 0 ? marketCap * 10000 / equity : null;
 }
 
+function derivePbFromMarketCap(totalMarketCap, shareholderEquity) {
+  const marketCap = finite(totalMarketCap);
+  const equity = finite(shareholderEquity);
+  return marketCap != null && equity != null && equity !== 0 ? marketCap / equity : null;
+}
+
+function normalizeDatabaseValuation(row = {}) {
+  const hasSameDayValuation = Boolean(row.valuation_trade_date);
+  const peTtm = finite(row.pe_ttm), peStatic = finite(row.pe_static);
+  const dividendYield = finite(row.dividend_yield_ttm);
+  const equity = finite((row.balance_payload || {}).total_hldr_eqy_exc_min_int);
+  return {
+    pe_ttm: peTtm != null ? peTtm : (peStatic != null ? peStatic : (hasSameDayValuation ? '亏损' : null)),
+    pb: finite(row.pb) != null ? finite(row.pb) : derivePbFromMarketCap(row.total_market_cap, equity),
+    dividend_yield: dividendYield == null
+      ? (hasSameDayValuation ? 0 : null)
+      : dividendYield * 100,
+  };
+}
+
 async function backfillMissingEquity(stocks, valuations, cache, today) {
   const pending = stocks.filter(stock => {
     const valuation = valuations.get(stock.stk_code) || {};
@@ -412,8 +432,9 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
     ), bonds AS (
       SELECT i.instrument_id,i.canonical_code AS bond_code,i.name AS bond_name,
              s.canonical_code AS stock_code,s.name AS stock_name,p.stock_instrument_id,
-             dm.trade_date::text AS trade_date,dm.close,dm.conversion_value,dm.conversion_premium_pct,
-             p.current_conv_price AS convert_price,
+             dm.trade_date::text AS trade_date,dm.close,dm.raw_payload->>'pct_chg' AS change_pct,
+             dm.conversion_value,dm.conversion_premium_pct,
+             p.current_conv_price AS convert_price,v.trade_date::text AS valuation_trade_date,
              COALESCE(v.pe_ttm,v.pe_static) AS pe_ttm,v.pe_static,v.pb,v.dividend_yield_ttm,
              v.total_market_cap,s.raw_data AS stock_raw
         FROM market_day md
@@ -461,6 +482,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
       companySeen.add(String(identityKey));
       companyRows.push({ identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, company_id: row.company_id, company, industry: row.industry || '', has_cb: 1, financial_available: Boolean(row.financial_report_end_date && row.income_payload && row.balance_payload && row.indicator_payload), financial_report_end_date: row.financial_report_end_date || null,
         market_cap: row.total_market_cap == null ? null : Number(row.total_market_cap),
+        interest_coverage: pick(indicator, 'ebit_to_interest', null),
         interest_expense: pick(income, 'fin_exp_int_exp', pick(income, 'int_exp', null)),
         ebit: pick(income, 'ebit', pick(income, 'operate_profit', null)),
         cash: pick(balance, 'money_cap', null), trading_fin_assets: pick(balance, 'trad_asset', null),
@@ -468,10 +490,10 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
         current_liability: pick(balance, 'total_cur_liab', null),
       });
     }
-    const dividendYield = row.dividend_yield_ttm == null ? null : Number(row.dividend_yield_ttm) * 100;
+    const valuation = normalizeDatabaseValuation(row);
     return { identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, company_id: row.company_id, stock_code: row.stock_code, bond_code: row.bond_code, bond_name: row.bond_name, stock_name: row.stock_name || '',
-      pe_ttm: row.pe_ttm, pb: row.pb, dividend_yield: dividendYield, bond_price: row.close,
-      change_pct: null, double_low: row.close != null && row.conversion_premium_pct != null ? Number(row.close) + Number(row.conversion_premium_pct) : null,
+      pe_ttm: valuation.pe_ttm, pb: valuation.pb, dividend_yield: valuation.dividend_yield, bond_price: row.close,
+      change_pct: finite(row.change_pct), double_low: row.close != null && row.conversion_premium_pct != null ? Number(row.close) + Number(row.conversion_premium_pct) : null,
       convert_premium: row.conversion_premium_pct, convert_price: row.convert_price, convert_value: row.conversion_value };
   });
   // PostgreSQL DATE 可能由 pg 按本地时区解析为 Date；不能直接 toISOString，
@@ -491,7 +513,7 @@ module.exports = {
   latestMarketRows,
   latestMarketPartition,
   selectFinancialReport,
-  FINANCIAL_REFRESH_BATCH_SIZE,
+  derivePbFromMarketCap, normalizeDatabaseValuation, FINANCIAL_REFRESH_BATCH_SIZE,
   nextFinancialBatchDelay,
   fetchTushareBondSafetySource,
   fetchBondSafetySourceFromDatabase,

@@ -18,7 +18,7 @@ router.get('/bonds', asyncHandler(async (req, res) => {
   if (requestedRating && !RATINGS.includes(requestedRating)) {
     return res.status(400).json({ error: '未知的安全性评级' });
   }
-  const snapshot = await getLatestSnapshot();
+  const snapshot = await getLatestSnapshot({ includeChangePct: !summaryView });
   const partition = await getDatasetMetadata('bond_safety_snapshot', 'CN');
   // 完整列表还会附加强赎状态；把其最新计算/公告更新时间和行情水位纳入版本，
   // 避免安全性快照未变但 call_status 已变化时错误返回 304。
@@ -47,7 +47,7 @@ router.get('/bonds', asyncHandler(async (req, res) => {
   const currentDateCN = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
   const cacheVersion = [snapshot && snapshot.refreshed_at, snapshot && snapshot.source_updated_at,
     partition.data_as_of, partition.published_at, requestedRating || 'all', summaryView ? 'summary' : 'full',
-    currentDateCN, callStateVersion].join('|');
+    currentDateCN, callStateVersion, 'safety-change-pct-v1'].join('|');
   if (applyPublicCache(req, res, cacheVersion)) return;
   if (!snapshot) {
     return res.json({
@@ -107,7 +107,7 @@ router.get('/bonds', asyncHandler(async (req, res) => {
 }));
 
 router.get('/export', asyncHandler(async (req, res) => {
-  const snapshot = await getLatestSnapshot();
+  const snapshot = await getLatestSnapshot({ includeChangePct: true });
   if (!snapshot) return res.status(404).json({ error: '尚无可导出的安全性快照' });
   const rows = filterAndSortRows(Array.isArray(snapshot.data) ? snapshot.data : [], req.query);
   const workbook = await buildBondSafetyWorkbook(rows);

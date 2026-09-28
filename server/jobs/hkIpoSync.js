@@ -172,9 +172,24 @@ function resolveTargetDate(context = {}, now = new Date()) {
     : CoreDate.todayInZone('Asia/Shanghai', now);
 }
 
+function liveSignalTargetDateStatus(mode, targetDate, now = new Date()) {
+  if (!['preopen', 'subscription_midday', 'subscription_close'].includes(mode)) return { ok: true };
+  const today = CoreDate.todayInZone('Asia/Shanghai', now);
+  if (targetDate < today) return { ok: false, reason: 'historical_target_unsupported' };
+  if (targetDate > today) return { ok: false, reason: 'future_target_unsupported' };
+  return { ok: true };
+}
+
 async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}) {
   const targetDate = resolveTargetDate(context);
   if (!targetDate) return { ok: false, status: 'blocked', reason: 'invalid_target_date', dataAsOf: null, publishDatasets: false };
+  const targetStatus = liveSignalTargetDateStatus(mode, targetDate);
+  if (!targetStatus.ok) {
+    return {
+      ok: false, status: 'blocked', mode, reason: targetStatus.reason, dataAsOf: null,
+      publishDatasetCodes: [], failedDatasets: [], publishDatasets: false,
+    };
+  }
   context = { ...context, targetDate };
   const requestedTargetCodes = Array.isArray(context.targetCodes) ? context.targetCodes : [];
   const targetCodes = [...new Set(requestedTargetCodes.map(canonicalHkCode).filter(Boolean))];
@@ -392,4 +407,4 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   };
 }
 
-module.exports = { runHkIpoSync, resolveTargetDate, rowsFromProbe, persistTencentNames, persistInstrumentChineseNames, syncHkIpoTencentNames, marketSignalDiagnostics };
+module.exports = { runHkIpoSync, resolveTargetDate, liveSignalTargetDateStatus, rowsFromProbe, persistTencentNames, persistInstrumentChineseNames, syncHkIpoTencentNames, marketSignalDiagnostics };

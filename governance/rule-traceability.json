@@ -175,6 +175,14 @@
       ],
       "owner": "日期边界治理",
       "status": "verified"
+    },
+    {
+      "id": "DATE-BOUNDARY-002",
+      "title": "港股 IPO 实时申购快照只写入上海当天，历史与未来目标阻断",
+      "implementation": { "file": "server/jobs/hkIpoSync.js", "symbol": "liveSignalTargetDateStatus" },
+      "tests": [{ "file": "server/test/date-time-r3.test.js", "pattern": "R3 日期边界测试通过" }],
+      "owner": "日期边界治理",
+      "status": "verified"
     }
   ]
 }

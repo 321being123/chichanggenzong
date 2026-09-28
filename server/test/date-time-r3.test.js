@@ -28,9 +28,41 @@ assert.deepStrictEqual(stockRefresh.targetDateStatus('2026-09-29', fixedInstant)
 assert.strictEqual(hkIpo.resolveTargetDate({ targetDate: '2026-09-25' }, fixedInstant), '2026-09-25');
 assert.strictEqual(hkIpo.resolveTargetDate({ targetDate: '2026-02-30' }, fixedInstant), null);
 assert.strictEqual(hkIpo.resolveTargetDate({}, fixedInstant), '2026-09-28');
+assert.deepStrictEqual(hkIpo.liveSignalTargetDateStatus('subscription_midday', '2026-09-25', fixedInstant), {
+  ok: false, reason: 'historical_target_unsupported',
+});
+assert.deepStrictEqual(hkIpo.liveSignalTargetDateStatus('preopen', '2026-09-28', fixedInstant), { ok: true });
+assert.deepStrictEqual(hkIpo.liveSignalTargetDateStatus('subscription_close', '2026-09-29', fixedInstant), {
+  ok: false, reason: 'future_target_unsupported',
+});
 
 const requestedDates = [];
 (async () => {
+  const actualToday = CoreDate.todayInZone('Asia/Shanghai');
+  const historicalTarget = new Date(`${actualToday}T00:00:00.000Z`);
+  historicalTarget.setUTCDate(historicalTarget.getUTCDate() - 1);
+  const historicalDate = historicalTarget.toISOString().slice(0, 10);
+  const originalQueryForHistorical = pool.query;
+  let historicalQueryCount = 0;
+  let historicalFetchCount = 0;
+  try {
+    pool.query = async () => { historicalQueryCount += 1; throw new Error('历史目标日不应读取当前快照'); };
+    for (const mode of ['preopen', 'subscription_midday', 'subscription_close']) {
+      const blocked = await hkIpo.runHkIpoSync(mode, 'acceptance', {
+        targetDate: historicalDate,
+        marketSignalOptions: { fetchImpl: async () => { historicalFetchCount += 1; return ''; } },
+      });
+      assert.strictEqual(blocked.status, 'blocked', `${mode} 历史实时信号必须阻断`);
+      assert.strictEqual(blocked.reason, 'historical_target_unsupported');
+      assert.strictEqual(blocked.dataAsOf, null, '阻断结果不得报告虚假的历史数据日');
+      assert.deepStrictEqual(blocked.publishDatasetCodes, [], '阻断的历史槽位不得发布数据分区');
+    }
+    assert.strictEqual(historicalQueryCount, 0, '历史实时信号应在访问数据库前阻断');
+    assert.strictEqual(historicalFetchCount, 0, '历史实时信号应在发出外部请求前阻断');
+  } finally {
+    pool.query = originalQueryForHistorical;
+  }
+
   const historical = await hkRate.historicalRateResult('2026-09-25', async date => {
     requestedDates.push(date);
     return 0.91;

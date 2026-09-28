@@ -40,17 +40,13 @@
     "deployed": false,
     "historicalRecalculation": false
   },
-  "runtimeNotRun": {
-    "reason": "低性能模式下未启动 Web/Worker/浏览器或本地开发服务。",
-    "checks": [
-      "/health",
-      "相关页面与接口真实响应",
-      "静态资源 HTTP 响应",
-      "热缓存/重启/旧 ETag 与冷热性能"
-    ]
-  },
   "limitations": [
     "未收到 US/10 手工文件发布者和真实旧文件样本。",
     "未核对生产边界日数据或账户历史缺口。"
-  ]
+  ],
+  "runtimeAcceptance": {
+    "evidence": "../R4/runtime-verification.json",
+    "status": "passed",
+    "visualAndColdHot": "not checked"
+  }
 }

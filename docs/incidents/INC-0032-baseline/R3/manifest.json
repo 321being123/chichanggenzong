@@ -86,11 +86,12 @@
     },
     {
       "path": "release.md",
-      "sha256": "db70e8124748657fab6e2c623794428f1caed156d0f7eb82fbe3b0553041c02b"
+      "sha256": "0dfd1b1e545d90f34517b56ee4f684b44fb2c22fe5c840be8d35a7df072becca"
     },
     {
       "path": "verification.json",
-      "sha256": "8262e38fdade3cd41baf5df6743c3719d3ef81023c6c0300b7cb97bb66102ab9"
+      "sha256": "71cf6e293264993bf8a201f9c070383c8c3e753c38ccb140da305c673706efdd"
     }
-  ]
+  ],
+  "runtimeVerification": "../R4/runtime-verification.json"
 }

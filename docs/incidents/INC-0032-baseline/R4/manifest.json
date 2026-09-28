@@ -78,11 +78,16 @@
     },
     {
       "path": "release.md",
-      "sha256": "61ae66a9e7c9d377af18620cf1e36c3309f098bb955ccecd9113622c7e889e78"
+      "sha256": "f38e114a0da7ccac8f7948749cec8118be78c8d170b63d431bc7470d4150595b"
+    },
+    {
+      "path": "runtime-verification.json",
+      "sha256": "324c078a21d9b2cbb9549810a437714fe6b2e9f6592a6fe5ded32f9811f1f689"
     },
     {
       "path": "verification.json",
-      "sha256": "2443a6ef56703877bf1f63cdc63769f1db7bb6214ce0975931785d2255f9896b"
+      "sha256": "49adea714a35255cabd96cb9be07324e4185779bf0de82930833b96a49c7ceb4"
     }
-  ]
+  ],
+  "runtimeVerification": "../R4/runtime-verification.json"
 }

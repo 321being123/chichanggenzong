@@ -1,0 +1,129 @@
+{
+  "date": "2026-09-28",
+  "baseUrl": "http://127.0.0.1:3000",
+  "startup": {
+    "command": "npm.cmd run start:watch",
+    "state": "running",
+    "schedulerDisabled": true,
+    "runtimeMigrationsDisabled": true,
+    "appInitialization": [
+      "initSchema",
+      "ensureAdmin",
+      "ensureAiModelsInit"
+    ],
+    "scheduledTasksRun": false
+  },
+  "postgres": {
+    "version": "17.2",
+    "address": "localhost:5432",
+    "state": "accepting connections"
+  },
+  "health": {
+    "path": "/health",
+    "statusCode": 200,
+    "status": "ok",
+    "appVersion": "0.8.2.5"
+  },
+  "readiness": {
+    "path": "/ready",
+    "statusCode": 200,
+    "status": "ready",
+    "database": true,
+    "redis": "not_configured (optional)"
+  },
+  "pages": [
+    {
+      "path": "/",
+      "statusCode": 200,
+      "coreDateResourceVersion": "0.8.2.5"
+    },
+    {
+      "path": "/login.html",
+      "statusCode": 200,
+      "coreDateResourceVersion": "0.8.2.5"
+    },
+    {
+      "path": "/admin.html",
+      "statusCode": 200,
+      "coreDateResourceVersion": "0.8.2.5"
+    }
+  ],
+  "staticAssets": [
+    {
+      "path": "/shared/core-date.js?v=0.8.2.5",
+      "statusCode": 200
+    },
+    {
+      "path": "/js/utils.js?v=0.8.2.5",
+      "statusCode": 200
+    },
+    {
+      "path": "/shared/core-trade.js?v=0.8.2.5",
+      "statusCode": 200
+    },
+    {
+      "path": "/shared/date-range-control.js?v=0.8.2.5",
+      "statusCode": 200
+    },
+    {
+      "path": "/js/stock-analysis-chart.js?v=0.8.2.5",
+      "statusCode": 200
+    },
+    {
+      "path": "/js/stock-analysis-valuation-chart.js?v=0.8.2.5",
+      "statusCode": 200
+    },
+    {
+      "path": "/js/market-volatility.js?v=0.8.0.8",
+      "statusCode": 200
+    },
+    {
+      "path": "/js/market-cycle-metrics.js?v=0.8.0.8",
+      "statusCode": 200
+    }
+  ],
+  "readOnlyApis": [
+    {
+      "path": "/api/market-volatility/history?metric=m2_market_cap&market=CN&benchmark=ASHARE&range=1y",
+      "statusCode": 200,
+      "rows": 15,
+      "dateRange": [
+        "2025-09-30",
+        "2026-08-19"
+      ],
+      "etagPresent": true
+    },
+    {
+      "path": "/api/market-volatility/history?metric=graham&market=HK&benchmark=HSI&range=1y",
+      "statusCode": 200,
+      "rows": 203,
+      "dateRange": [
+        "2025-09-29",
+        "2026-07-30"
+      ],
+      "etagPresent": true
+    },
+    {
+      "path": "/api/market-volatility/home-cycle?range=1y",
+      "statusCode": 200,
+      "rows": 214,
+      "dateRange": [
+        "2025-09-29",
+        "2026-08-19"
+      ],
+      "etagPresent": true
+    }
+  ],
+  "assertion": "三组一年历史的最早日期均不早于上海业务日 2025-09-28；请求只读取响应状态、字段名、历史行数和日期边界，不记录账户指标数值。",
+  "notChecked": [
+    "浏览器交互和视觉布局",
+    "缓存冷热与重启后 ETag 行为"
+  ],
+  "production": {
+    "accessed": false,
+    "written": false,
+    "deployed": false,
+    "historicalRecalculation": false
+  },
+  "httpRequests": "页面、资源及 API 验收均为 GET；未调用写入/导入接口"
+}

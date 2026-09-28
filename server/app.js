@@ -8,6 +8,7 @@ const { initSchema, migrateFromJson, ensureAdmin, DATA_DIR, pool } = require('./
 const { ensureAiModelsInit } = require('./services/aiModels');
 const { redirectUnauthenticated, csrfMiddleware, securityHeaders } = require('./middleware/security');
 const { requestId, accessLog, errorHandler } = require('./middleware/errorHandler');
+const { versionedStaticPages } = require('./middleware/versionedStaticPages');
 const { getDependencyHealth } = require('./services/siteAnalytics');
 const authRouter = require('./routes/auth');
 const accountsRouter = require('./routes/accounts');
@@ -107,6 +108,7 @@ async function start() {
     }
     next();
   });
+  app.use(versionedStaticPages(path.join(__dirname, '..', 'public'), appVersion));
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
   // CSRF 防护：仅允许指定来源

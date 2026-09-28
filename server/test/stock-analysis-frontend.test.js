@@ -17,6 +17,8 @@ const analysisCss = fs.readFileSync(path.join(root, 'public', 'css', 'stock-anal
 const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const utilsScript = fs.readFileSync(path.join(root, 'public', 'js', 'utils.js'), 'utf8');
 const appVersion = require(path.join(root, 'package.json')).appVersion;
+const { renderAppVersion } = require('../middleware/versionedStaticPages');
+const renderedHtml = renderAppVersion(html, appVersion);
 const holdingsCharts = [
   fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.js'), 'utf8'),
   fs.readFileSync(path.join(root, 'public', 'shared', 'core-account.js'), 'utf8'),
@@ -65,12 +67,16 @@ assert.ok(html.indexOf('shared/core-date.js') < html.indexOf('js/utils.js') &&
   html.indexOf('shared/core-date.js') < html.indexOf('shared/core-trade.js') &&
   html.indexOf('shared/core-date.js') < html.indexOf('shared/date-range-control.js'), '共享日期工具必须先于前端消费者加载');
 for (const asset of ['shared/core-date.js', 'js/utils.js', 'shared/core-trade.js', 'shared/date-range-control.js', 'js/stock-analysis-chart.js', 'js/stock-analysis-valuation-chart.js']) {
-  assert.ok(html.includes(`${asset}?v=${appVersion}`), `${asset} 资源版本必须与应用版本一致`);
+  assert.ok(html.includes(`${asset}?v=__APP_VERSION__`), `${asset} 必须使用服务端自动填充的应用版本`);
+  assert.ok(renderedHtml.includes(`${asset}?v=${appVersion}`), `${asset} 响应版本必须与应用版本一致`);
 }
 for (const [name, page] of [['登录页', loginHtml], ['管理页', adminHtml]]) {
+  const renderedPage = renderAppVersion(page, appVersion);
   assert.ok(page.indexOf('shared/core-date.js') < page.indexOf('js/utils.js'), `${name}必须先加载共享日期工具`);
-  assert.ok(page.includes(`shared/core-date.js?v=${appVersion}`), `${name}共享日期工具资源版本必须与应用版本一致`);
-  assert.ok(page.includes(`js/utils.js?v=${appVersion}`), `${name}日期消费者资源版本必须与应用版本一致`);
+  assert.ok(page.includes('shared/core-date.js?v=__APP_VERSION__'), `${name}共享日期工具必须使用自动版本`);
+  assert.ok(page.includes('js/utils.js?v=__APP_VERSION__'), `${name}通用工具必须使用自动版本`);
+  assert.ok(renderedPage.includes(`shared/core-date.js?v=${appVersion}`), `${name}共享日期工具响应版本必须与应用版本一致`);
+  assert.ok(renderedPage.includes(`js/utils.js?v=${appVersion}`), `${name}通用工具响应版本必须与应用版本一致`);
 }
 assert.ok(chartScript.includes('未分红'), '历史分红列表未补齐未分红年度');
 assert.ok(chartScript.includes('historyMap') && chartScript.includes('股东大会通过'), '历史分红缺少同方案生命周期去重');

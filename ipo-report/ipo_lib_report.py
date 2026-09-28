@@ -9,6 +9,7 @@ import time
 import subprocess
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries, next_trading_date
@@ -20,6 +21,8 @@ from ipo_lib_valuation import *
 from ipo_lib_sector import *
 from ipo_lib_prediction import *
 from model_runtime import get_model_dir
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 IPO_MODEL_FEATURE_META = {
     "issue_price": ("发行价", "元/股"),
@@ -313,7 +316,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
     lines = []
     lines.append(f"# 🏦 打新日报 — {date_display} {weekday}")
     lines.append("")
-    lines.append(f"> 📅 报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append(f"> 📅 报告生成时间：{datetime.now(_SHANGHAI).strftime('%Y-%m-%d %H:%M')}")
     temp = _MARKET_TEMP
     temp_icon = {"热市": "🔥", "常温": "🌤️", "冷市": "❄️"}.get(temp["level"], "🌡️")
     bond_temp = _BOND_MARKET_TEMP
@@ -694,7 +697,7 @@ def generate_html(md_content, data):
 <body>
 <div class="card">
     <h1>🏦 打新日报 — {data['date_display']} {data['weekday']}</h1>
-    <p class="subtitle">📅 报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+    <p class="subtitle">📅 报告生成时间：{datetime.now(_SHANGHAI).strftime('%Y-%m-%d %H:%M')}</p>
     <p class="subtitle">🌡️ 新股温度：<strong>{temp_icon} {temp['level']}</strong>（破发率{temp['break_rate']}%，近6月均涨幅{temp['avg_gain_3m']}%）</p>
     <p class="subtitle">🏷️ 新债温度：<strong>{btemp_icon} {bond_temp['level']}</strong>（破发率{bond_temp['break_rate']}%，近6月均涨幅{bond_temp['avg_gain_6m']}%）</p>
     <p class="disclaimer">⚠️ 声明：以下内容仅供参考，不构成投资建议。打新有风险，投资需谨慎。</p>
@@ -1039,7 +1042,7 @@ def main():
         else:
             target_date = datetime.strptime(date_arg, "%Y%m%d")
     else:
-        target_date = next_trading_date(datetime.now())
+        target_date = next_trading_date(datetime.now(_SHANGHAI))
 
     md_content, data = build_report(target_date)
     reconcile_report_calendar_sets(target_date, data)

@@ -29,8 +29,10 @@ assert.strictEqual(stats.min, 1);
 assert.strictEqual(stats.p50, 3);
 assert.strictEqual(stats.max, 5);
 assert.strictEqual(stats.percentile, 90);
-assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(service.rangeCutoff('5y', Date.UTC(2026, 6, 30))));
+assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(service.rangeCutoff('5y', new Date(Date.UTC(2026, 6, 30)))));
 assert.strictEqual(service.rangeCutoff('all'), null);
+assert.strictEqual(service.rangeCutoff('1y', '2026-09-27T16:30:00.000Z'), '2025-09-28',
+  '一年图表窗口应按上海业务日计算日期起点');
 
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'index.html'), 'utf8');
 for (const metric of ['graham', 'pe', 'pb', 'm2_market_cap']) {
@@ -40,6 +42,10 @@ const route = fs.readFileSync(path.join(__dirname, '..', 'routes', 'marketVolati
 assert.ok(route.includes("req.query.metric || 'graham'"), '旧接口未保留 graham 默认值');
 assert.ok(route.includes('cycleMetrics.getOverview'), '新指标 overview 未接入');
 assert.ok(route.includes('cycleMetrics.getHistory'), '新指标 history 未接入');
+assert.ok(route.includes('rangeCutoff || \'all\''), '首页周期缓存版本必须包含日期范围截止日');
+const grahamService = fs.readFileSync(path.join(__dirname, '..', 'services', 'marketVolatility.js'), 'utf8');
+assert.ok(grahamService.includes('trade_date >= $3::date') && !/CURRENT_DATE\s*-/.test(grahamService),
+  '格雷厄姆历史范围必须由应用层按上海业务日计算');
 
 const job = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'marketVolatilitySync.js'), 'utf8');
 assert.ok(job.includes("tushareQuery('index_dailybasic'"), '未接入指数 PE/PB');

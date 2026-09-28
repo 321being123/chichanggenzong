@@ -3,9 +3,10 @@
 // open.er-api.com 仍作为收盘实时源失败时的每日汇率兜底。
 const https = require('https');
 const { tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
-const { cnDate, validRate, upsertFxRate, syncLegacyAccountRates, getCurrentFxRate, getCurrentFxRateSnapshot } = require('../services/fxRate');
+const { cnDate, validRate, upsertFxRate, syncLegacyAccountRates, getFxRate, getCurrentFxRate, getCurrentFxRateSnapshot } = require('../services/fxRate');
 const { getMarketState, shanghaiDateTime, isPotentialHkTradingTime } = require('../services/marketState');
 const { withExternalCallGuard, openExternalCircuit, ExternalCallGuardError } = require('../services/externalCallGuard');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const FRESH_RATE_MS = 24 * 60 * 60 * 1000;
 const REALTIME_RATE_MAX_AGE_MS = 5 * 60 * 1000;
@@ -172,15 +173,28 @@ async function ensureRealtimeHkRate({ force = false } = {}) {
 }
 
 // 带幂等锁与执行记录的汇率任务；只有收盘调用才强制取当天最终值。
+async function historicalRateResult(targetDate, findRate = getFxRate) {
+  const rate = await findRate(targetDate);
+  return rate == null
+    ? { ok: false, status: 'blocked', reason: 'historical_rate_missing', dataAsOf: null, externalCalls: 0 }
+    : { ok: true, status: 'historical', rate, rateDate: targetDate, dataAsOf: targetDate, externalCalls: 0 };
+}
+
 async function runHkRateJob({ final = false, targetDate } = {}) {
   if (!(await tryClaimJob('hk_rate'))) return { ok: false, skipped: true };
   const runId = await startJobRun('hk_rate');
   let result = { ok: false, rate: null };
   try {
     let r;
-    if (final) {
-      const today = cnDate(new Date());
-      const stateDate = targetDate || today;
+    const today = CoreDate.todayInZone('Asia/Shanghai', new Date());
+    const stateDate = targetDate == null ? today : CoreDate.normalizeBusinessDate(targetDate);
+    if (!stateDate) {
+      r = { ok: false, status: 'blocked', reason: 'invalid_target_date', dataAsOf: null, externalCalls: 0 };
+    } else if (stateDate > today) {
+      r = { ok: false, status: 'blocked', reason: 'future_target_unsupported', dataAsOf: null, externalCalls: 0 };
+    } else if (stateDate < today) {
+      r = await historicalRateResult(stateDate);
+    } else if (final) {
       const stateTime = stateDate === today ? shanghaiDateTime(new Date()).time : '23:59';
       const marketState = await getMarketState({ market: 'HK', businessDate: stateDate, time: stateTime });
       if (marketState.status === 'unknown') {
@@ -204,7 +218,7 @@ async function runHkRateJob({ final = false, targetDate } = {}) {
       r = await ensureHkRate();
     }
     result = r;
-    await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || '抓取失败'));
+    await finishJobRun(runId, !!r.ok, r.ok ? ('汇率 ' + r.rate) : (r.error || r.reason || '抓取失败'));
   } catch (e) {
     await finishJobRun(runId, false, e.message || String(e));
     result = {
@@ -226,6 +240,7 @@ module.exports = {
   ensureHkRate,
   ensureRealtimeHkRate,
   isHkTradingTime,
+  historicalRateResult,
   runHkRateJob,
   getCurrentFxRate,
 };

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { pool } = require('../db');
 const { calculateGraham } = require('../jobs/marketVolatilitySync');
+const CoreDate = require('../../public/shared/core-date.js');
 
 async function main() {
   const file = process.argv[2];
@@ -12,7 +13,7 @@ async function main() {
     source.push({ day, rate: Number((value <= 1 ? value * 100 : value).toFixed(6)) });
   }
   if (!source.length) throw new Error('未识别到有效的日期和利率数据');
-  source.sort((a, b) => a.day.localeCompare(b.day)); const records = [], today = new Date().toISOString().slice(0, 10);
+  source.sort((a, b) => a.day.localeCompare(b.day)); const records = [], today = CoreDate.todayInZone('Asia/Shanghai');
   for (let i = 0; i < source.length; i++) {
     const start = new Date(source[i].day + 'T00:00:00Z'), next = source[i + 1] && new Date(source[i + 1].day + 'T00:00:00Z'), end = new Date(start);
     end.setUTCDate(end.getUTCDate() + 6); if (next) { const beforeNext = new Date(next); beforeNext.setUTCDate(beforeNext.getUTCDate() - 1); if (beforeNext < end) end.setTime(beforeNext.getTime()); }

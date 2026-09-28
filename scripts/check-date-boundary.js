@@ -9,12 +9,21 @@ const SCAN_DIRS = ['server', 'public/js', 'public/shared', 'ipo-report', 'script
 const SOURCE_EXTENSIONS = new Set(['.js', '.py']);
 const EXCLUDED = /(^|\/)(vendor|node_modules|venv|\.venv|dist|build|__pycache__)(\/|$)/i;
 
-function ruleRegex(ruleId) {
+function ruleRegex(ruleId, filePath = '') {
   if (ruleId === 'timezone-offset-480') return /getTimezoneOffset\s*\(\s*\)\s*\+\s*480/g;
   if (ruleId === 'local-midnight-year-range') {
     return /new Date\([^)]*T00:00:00[^)]*\)[\s\S]{0,220}?setFullYear\([\s\S]{0,100}?getFullYear\(\)[\s\S]{0,100}?-[\s\S]{0,100}?\)[\s\S]{0,220}?toISOString\(\)\.slice\(0,\s*10\)/g;
   }
   if (ruleId === 'utc-business-today-range') return /var\s+today\s*=\s*new Date\(\)\s*,\s*endDefault\s*=\s*today\.toISOString\(\)\.slice\(0,\s*10\)/g;
+  if (ruleId === 'utc-job-date-watermark' && /server\/jobs\/(stockAnalysisRefresh|hkIpoSync)\.js$/.test(filePath)) {
+    return /(?:lastSuccessDate|dataAsOf)\s*:\s*new Date\(\)\.toISOString\(\)\.slice\(0,\s*10\)/g;
+  }
+  if (ruleId === 'utc-range-year-cutoff' && filePath === 'server/services/marketCycleMetrics.js') {
+    return /date\.setUTCFullYear\(date\.getUTCFullYear\(\)\s*-\s*years\)[\s\S]{0,100}?toISOString\(\)\.slice\(0,\s*10\)/g;
+  }
+  if (ruleId === 'naive-ipo-current-date' && /^ipo-report\/(ipo_history_sync|calendar_core|ipo_lib_report)\.py$/.test(filePath)) {
+    return /(?:datetime|date)\.(?:now|today)\(\)/g;
+  }
   return null;
 }
 
@@ -63,7 +72,7 @@ function collectMatches(sources, baseline) {
   const matches = [];
   for (const item of sources) {
     for (const ruleId of new Set(baseline.rules.map(rule => rule.ruleId))) {
-      const regex = ruleRegex(ruleId);
+      const regex = ruleRegex(ruleId, item.path.replace(/\\/g, '/'));
       if (!regex) continue;
       regex.lastIndex = 0;
       let match;

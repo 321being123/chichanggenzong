@@ -1,4 +1,5 @@
 const { pool, loadAccountSummary } = require('../db');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const METRICS = {
   pe: { direction: 'lower_is_cheaper', label: '市盈率（PE-TTM）' },
@@ -14,9 +15,8 @@ function validMetric(metric) {
 function rangeCutoff(range, now) {
   const years = { '1y': 1, '3y': 3, '5y': 5, '10y': 10, '20y': 20, all: null }[range];
   if (years == null) return null;
-  const date = new Date(now || Date.now());
-  date.setUTCFullYear(date.getUTCFullYear() - years);
-  return date.toISOString().slice(0, 10);
+  const businessDate = CoreDate.todayInZone('Asia/Shanghai', now == null ? new Date() : now);
+  return businessDate ? CoreDate.subtractYears(businessDate, years) : null;
 }
 
 function percentile(sorted, p) {

@@ -1,0 +1,22 @@
+{
+  "task": "T07",
+  "phase": "R3-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "businessDate": "2026-09-28",
+  "input": {
+    "targetDate": "2026-09-25",
+    "fixedInstant": "2026-09-27T16:30:00.000Z",
+    "expectedSourceDate": "2026-09-25"
+  },
+  "output": {
+    "targetDateConsumed": false,
+    "successWatermark": "2026-09-27",
+    "sourceDateFallbackWhenValuationMissing": "2026-09-27",
+    "historyTargetSupported": false
+  },
+  "dataAccess": "仅核对固定输入下的源代码逻辑，未读取生产数据库或触发外部请求。",
+  "contract": "stock_analysis_refresh 使用 latest_available 标准层，只支持刷新当前已发布事实，不具备重建历史快照的查询能力。"
+}

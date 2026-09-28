@@ -27,7 +27,10 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'market_volatility_sync':
       return require('../jobs/marketVolatilitySync').runMarketVolatilitySync(context);
     case 'stock_analysis_refresh':
-      return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason, context);
+      return require('../jobs/stockAnalysisRefresh').runStockAnalysisRefresh(reason, {
+        ...context,
+        targetDate: context.targetDate || businessDate,
+      });
     case 'ipo_history_sync':
       return require('../jobs/ipoHistorySync').runIpoHistorySync(reason, businessDate, context);
     case 'hk_trade_rules_sync':
@@ -38,12 +41,12 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/hkIpoSync').runHkIpoSync(
         ['subscription_midday', 'subscription_close'].includes(context.mode) ? context.mode : 'preopen',
         reason,
-        context
+        { ...context, targetDate: context.targetDate || businessDate }
       );
     case 'hk_ipo_postclose':
-      return require('../jobs/hkIpoSync').runHkIpoSync('postclose', reason, context);
+      return require('../jobs/hkIpoSync').runHkIpoSync('postclose', reason, { ...context, targetDate: context.targetDate || businessDate });
     case 'hk_ipo_enrichment':
-      return require('../jobs/hkIpoSync').runHkIpoSync('enrichment', reason, context);
+      return require('../jobs/hkIpoSync').runHkIpoSync('enrichment', reason, { ...context, targetDate: context.targetDate || businessDate });
     case 'arbitrage_sync':
       return require('../jobs/arbitrageSync').runArbitrageSync(reason, context);
     case 'arbitrage_reparse': {

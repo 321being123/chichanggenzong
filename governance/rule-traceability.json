@@ -169,7 +169,9 @@
       "tests": [
         { "file": "server/test/core-date.test.js", "pattern": "America/New_York" },
         { "file": "server/test/date-boundary-static.test.js", "pattern": "FIXED_RULE_REAPPEARED" },
-        { "file": "server/test/date-time-r2.test.js", "pattern": "R2 日期回归通过" }
+        { "file": "server/test/date-time-r2.test.js", "pattern": "R2 日期回归通过" },
+        { "file": "server/test/date-time-r3.test.js", "pattern": "R3 日期边界测试通过" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "日历业务日期固定按上海时区" }
       ],
       "owner": "日期边界治理",
       "status": "verified"

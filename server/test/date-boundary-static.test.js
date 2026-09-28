@@ -5,7 +5,7 @@ const checker = require('../../scripts/check-date-boundary');
 
 const repositoryResult = checker.checkRepository();
 assert.deepStrictEqual(repositoryResult.problems, []);
-assert.strictEqual(repositoryResult.fixedRules, 10);
+assert.strictEqual(repositoryResult.fixedRules, 16);
 assert.strictEqual(repositoryResult.openMatches, 0);
 
 const ruleId = 'timezone-offset-480';
@@ -56,5 +56,17 @@ assert.strictEqual(checker.functionNameAt(rangeSources[0].source, rangeSources[0
 assert.strictEqual(checker.functionNameAt(rangeSources[1].source, rangeSources[1].source.indexOf('var today=')), 'renderStabilityChart');
 const fixedRange = { rules: rangeBaseline.rules.map(rule => ({ ...rule, status: 'fixed', expectedMatches: 0 })) };
 assert(checker.analyzeSources(rangeSources, fixedRange).problems.some(item => item.type === 'FIXED_RULE_REAPPEARED'));
+
+const watermarkRule = { rules: [{ ruleId: 'utc-job-date-watermark', file: 'server/jobs/stockAnalysisRefresh.js',
+  function: 'runStockAnalysisRefresh', expression: 'watermark', status: 'open', expectedMatches: 1 }] };
+const watermarkSource = 'function runStockAnalysisRefresh(){return {lastSuccessDate: new Date().toISOString().slice(0,10)}}';
+assert.deepStrictEqual(checker.analyzeSources([{ path: 'server/jobs/stockAnalysisRefresh.js', source: watermarkSource }], watermarkRule).problems, []);
+assert(checker.analyzeSources([{ path: 'server/jobs/stockAnalysisRefresh.js', source: watermarkSource }], {
+  rules: [{ ...watermarkRule.rules[0], status: 'fixed', expectedMatches: 0 }],
+}).problems.some(item => item.type === 'FIXED_RULE_REAPPEARED'));
+
+const pythonDateRule = { rules: [{ ruleId: 'naive-ipo-current-date', file: 'ipo-report/ipo_history_sync.py',
+  function: '<module>', expression: 'naive date', status: 'open', expectedMatches: 1 }] };
+assert.deepStrictEqual(checker.analyzeSources([{ path: 'ipo-report/ipo_history_sync.py', source: 'today = date.today()' }], pythonDateRule).problems, []);
 
 console.log('日期边界静态检查测试通过：新增命中、数量变化、已修规则复发及年份区间 UTC 截日均被拦截。');

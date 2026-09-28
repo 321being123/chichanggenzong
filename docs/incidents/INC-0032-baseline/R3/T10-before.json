@@ -1,0 +1,21 @@
+{
+  "task": "T10",
+  "phase": "R3-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "pythonVersion": "3.12.13",
+  "businessDate": "2026-09-28",
+  "input": {
+    "explicitTodayArgument": "2026-09-25",
+    "dependentStage": "backfill_first_day",
+    "hostTimeZone": "China Standard Time"
+  },
+  "output": {
+    "runTargetDate": "2026-09-25",
+    "subStageCurrentTimeZoneExplicit": false,
+    "calendarCurrentDateZoneExplicit": false,
+    "dateTodayFallbacksRemain": true
+  },
+  "dataAccess": "仅读取 Python 源码和本机运行时版本；未连接数据库、未联网、未改写任何 IPO 数据。",
+  "contract": "--today 决定业务目标日；需依赖真实当前时刻的阶段使用 Asia/Shanghai；业务日期和采集时间分别记录。"
+}

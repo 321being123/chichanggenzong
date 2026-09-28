@@ -232,7 +232,7 @@ async function syncAnalytics(client, instrumentId, analysis, sources) {
     as_of: asDate(analysis.as_of),
     latest_report_end: report.end_date || null,
     instrument: { name: analysis.name || '', list_date: asDate(analysis.list_date) },
-    market: { trade_date: asDate(analysis.latest_market_trade_date) || asOf, quote_time: quote.quote_time || null, quote_source: quote.source || null },
+    market: { trade_date: asDate(analysis.latest_market_trade_date), quote_time: quote.quote_time || null, quote_source: quote.source || null },
     financial: { report_end_date: report.end_date || null, report_ann_date: report.ann_date || null },
     dividend: { latest_ann_date: latestDividend.ann_date || null, latest_ex_date: latestDividend.ex_date || null },
     guidance: { ann_date: guidance.ann_date || null, end_date: guidance.end_date || null },

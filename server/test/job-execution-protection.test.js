@@ -217,8 +217,9 @@ assert.ok(/const result = await fn\(lock\.client, guardResult\)/.test(externalGu
 assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) && /EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoHistorySync.js')), 'Python 自动任务子进程必须开启外部请求保护');
 assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=now\(\)\+/.test(orchestrator), '过期运行记录必须自动回收且活动任务必须续租');
 assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');
-assert.ok(/SELECT max\(as_of_date\)::text AS data_as_of FROM analytics\.stock_overview_latest/.test(stockJob)
-  && /const dataAsOf = stocks\.length && failed === 0 \? await latestStockAnalysisDate\(\) : null/.test(stockJob)
+assert.ok(/latest_market_trade_date/.test(stockJob)
+  && /lastSuccessDate: dataAsOf/.test(stockJob)
+  && /const dataAsOf = stocks\.length && failed === 0/.test(stockJob)
   && /watermarkNotRequired: stocks\.length === 0/.test(stockJob), '个股分析成功水位必须来自实际入库，无目标时不得误报');
 assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
   && /!Array\.isArray\(value\.skipped\) \|\| value\.skipped\.length > 0/.test(orchestrator)

@@ -9,6 +9,7 @@ const { statementApiFields } = require('./stockStatements');
 const { evaluateStockFreshness, isoDateSafe } = require('./analysisFreshness');
 const { datasetScope, getDatasetCursors, isDatasetFresh, markDatasetSuccess } = require('./datasetCursors');
 const { resolveProviderCode } = require('./securityIdentity');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const FORMULA_VERSION = '1';
 const DAY = 86400000;
@@ -797,7 +798,7 @@ async function loadData(tsCode) {
 async function buildAnalysis(tsCode, options = {}) {
   const data = await loadData(tsCode);
   if (!data.meta || !data.income.length) throw new Error('股票尚未完成财务建档');
-  const today = tsDateStr(new Date());
+  const today = CoreDate.todayInZone('Asia/Shanghai').replace(/-/g, '');
   const incomeMap = selectLatestByPeriod(data.income, today);
   const balanceMap = selectLatestByPeriod(data.balance, today);
   const indicatorMap = selectLatestByPeriod(data.indicators, today);
@@ -917,7 +918,7 @@ async function buildAnalysis(tsCode, options = {}) {
     actual_controller: data.meta.data?.actual_controller || { name: '', type: '', source: '' },
     latest_report: { end_date: latestIncome?.end_date || '', ann_date: dateText(latestIncome?.f_ann_date || latestIncome?.ann_date), type: latestIncome?.end_date?.endsWith('1231') ? '年报' : (latestIncome?.end_date?.endsWith('0630') ? '半年报' : '季报') },
     performance_forecast: forecast ? { ann_date: dateText(forecast.ann_date), end_date: dateText(forecast.end_date), type: forecast.type || '', profit_min: finite(forecast.net_profit_min) == null ? null : finite(forecast.net_profit_min) * 10000, profit_max: finite(forecast.net_profit_max) == null ? null : finite(forecast.net_profit_max) * 10000, change_min: finite(forecast.p_change_min), change_max: finite(forecast.p_change_max), summary: forecast.summary || '' } : null,
-    as_of: isoDate(today), latest_market_trade_date: isoDate(latestValuation && latestValuation.trade_date) || isoDate(today), quote: { price: currentPrice, currency: 'CNY', currency_name: '人民币', unit: '元', quote_time: quote && quote.quote_time, source: quote ? 'tencent' : 'tushare_close' },
+    as_of: isoDate(today), latest_market_trade_date: isoDate(latestValuation && latestValuation.trade_date) || null, quote: { price: currentPrice, currency: 'CNY', currency_name: '人民币', unit: '元', quote_time: quote && quote.quote_time, source: quote ? 'tencent' : 'tushare_close' },
     valuation: {
       market_cap: marketCap, a_share_market_cap: marketCap, circulating_market_cap: circulatingMarketCap, free_float_market_cap: freeFloatMarketCap,
       annualized_return_since_listing: annualizedSinceListing, return_start_date: earliestValuation?.trade_date || '',

@@ -111,6 +111,72 @@
       "lineHint": 9,
       "resolvedBatch": "R2",
       "resolution": "Stability chart current date and ten-year range use explicit Shanghai business dates."
+    },
+    {
+      "ruleId": "utc-job-date-watermark",
+      "file": "server/jobs/stockAnalysisRefresh.js",
+      "function": "runStockAnalysisRefresh",
+      "expression": "job success dates must come from the processed market data",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 75,
+      "resolvedBatch": "R3",
+      "resolution": "Historical targets are rejected and per-stock watermarks use the snapshot's latest market trade date."
+    },
+    {
+      "ruleId": "utc-job-date-watermark",
+      "file": "server/jobs/hkIpoSync.js",
+      "function": "runHkIpoSync",
+      "expression": "job dataAsOf must use the normalized slot business date",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 175,
+      "resolvedBatch": "R3",
+      "resolution": "All successful IPO branches use the normalized target or Shanghai business date."
+    },
+    {
+      "ruleId": "utc-range-year-cutoff",
+      "file": "server/services/marketCycleMetrics.js",
+      "function": "rangeCutoff",
+      "expression": "UTC year subtraction followed by ISO date truncation",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 17,
+      "resolvedBatch": "R3",
+      "resolution": "Date-only chart windows subtract calendar years from the Shanghai business date."
+    },
+    {
+      "ruleId": "naive-ipo-current-date",
+      "file": "ipo-report/ipo_history_sync.py",
+      "function": "<module>",
+      "expression": "naive host-local current date/time",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 32,
+      "resolvedBatch": "R3",
+      "resolution": "IPO history sync uses explicit Asia/Shanghai dates and timestamps while retaining its --today target."
+    },
+    {
+      "ruleId": "naive-ipo-current-date",
+      "file": "ipo-report/calendar_core.py",
+      "function": "<module>",
+      "expression": "naive host-local current date/time",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 23,
+      "resolvedBatch": "R3",
+      "resolution": "Calendar window defaults use explicit Asia/Shanghai business dates."
+    },
+    {
+      "ruleId": "naive-ipo-current-date",
+      "file": "ipo-report/ipo_lib_report.py",
+      "function": "<module>",
+      "expression": "naive host-local current date/time",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 20,
+      "resolvedBatch": "R3",
+      "resolution": "Report timestamps and the default target trading date use explicit Asia/Shanghai time."
     }
   ]
 }

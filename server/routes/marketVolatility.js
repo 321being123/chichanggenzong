@@ -10,6 +10,7 @@ const ExcelJS = require('exceljs');
 const { calculateGraham } = require('../jobs/marketVolatilitySync');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const { applyPublicCache } = require('../middleware/publicCache');
+const CoreDate = require('../../public/shared/core-date.js');
 
 function rateDate(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
@@ -34,7 +35,7 @@ async function parseFederalFundsFile(file) {
   return Array.from(deduped, ([tradeDate, yieldPct]) => ({ tradeDate, yieldPct }));
 }
 function expandFederalFundsDaily(records) {
-  const source = records.slice().sort((a, b) => a.tradeDate.localeCompare(b.tradeDate)), out = [], today = new Date().toISOString().slice(0, 10);
+  const source = records.slice().sort((a, b) => a.tradeDate.localeCompare(b.tradeDate)), out = [], today = CoreDate.todayInZone('Asia/Shanghai');
   for (let i = 0; i < source.length; i++) {
     const start = new Date(source[i].tradeDate + 'T00:00:00Z'), next = source[i + 1] && new Date(source[i + 1].tradeDate + 'T00:00:00Z');
     const end = new Date(start); end.setUTCDate(end.getUTCDate() + 6);
@@ -92,7 +93,8 @@ router.get('/home-cycle', asyncHandler(async (req, res) => {
   const config = await homeCycleConfig();
   const isGraham = config.metric === 'graham';
   // 配置版本 + 参考账户最新数据版本用于条件请求；未变化时不再传输历史图表。
-  let cacheVersion = [config.metric, config.market, config.benchmark, config.reference_username, config.reference_account, range].join('|');
+  const rangeCutoff = cycleMetrics.rangeCutoff(range);
+  let cacheVersion = [config.metric, config.market, config.benchmark, config.reference_username, config.reference_account, range, rangeCutoff || 'all'].join('|');
   try {
     const metricTable = config.metric === 'graham'
       ? `analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2`

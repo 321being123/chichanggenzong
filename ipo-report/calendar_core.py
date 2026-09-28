@@ -13,10 +13,25 @@ import os
 import re
 import json
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from _common import _load_env
 
 _load_env()
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _now_shanghai(value=None):
+    if value is None:
+        return datetime.now(_SHANGHAI)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=_SHANGHAI)
+    return value.astimezone(_SHANGHAI)
+
+
+def _today_shanghai(value=None):
+    return _now_shanghai(value).date()
 
 CB_ISSUE_FIELDS = "ts_code,ann_date,res_ann_date,issue_size,issue_price,issue_type,shd_ration_record_date,shd_ration_ratio,onl_date,onl_size,onl_pch_num,offl_size,shd_ration_size,onl_name"
 CB_BASIC_FIELDS = "ts_code,bond_full_name,bond_short_name,cb_type,stk_code,stk_short_name,maturity,par,issue_price,issue_size,remain_size,value_date,maturity_date,rate_type,coupon_rate,add_rate,pay_per_year,list_date,delist_date,exchange,conv_start_date,conv_end_date,conv_stop_date,first_conv_price,conv_price,issue_rating,newest_rating,rating_comp"
@@ -44,7 +59,7 @@ def _str_date(val):
 
 def next_trading_date(start_date=None):
     """从已入库交易日历返回 start_date 之后的下一个交易日。"""
-    start = start_date or datetime.now()
+    start = start_date or _now_shanghai()
     if not isinstance(start, datetime):
         start = datetime.combine(start, datetime.min.time())
     import db_pg
@@ -78,7 +93,7 @@ def fetch_calendar_entries(start_date=None, end_date=None, full=False):
     TRADE_DATE, DATE_TYPE(申购/上市), SECURITY_TYPE(0=股票,1=债券),
     SECURITY_NAME_ABBR, SECURITY_CODE(6位), SECUCODE(ts_code)
     """
-    today = datetime.now().date()
+    today = _today_shanghai()
     if not full:
         if not start_date:
             start_date = (today - timedelta(days=60)).strftime("%Y-%m-%d")
@@ -132,10 +147,7 @@ def build_upcoming_calendar(calendar, days=90, apply_stocks=None, apply_bonds=No
     用于前端『打新日历』：列出还没过申购的申购日、还没上市的上市日。
     只展示已有明确日期的标的；没有明确日期的已公告标的（如尚未公布申购日的新股）不在日历中显示。
     """
-    try:
-        today = datetime.now().date()
-    except Exception:
-        today = datetime.today().date()
+    today = _today_shanghai()
     end = today + timedelta(days=days)
     end_str = end.strftime("%Y-%m-%d")
     today_str = today.strftime("%Y-%m-%d")

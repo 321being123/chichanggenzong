@@ -1,4 +1,5 @@
 const { pool, loadAccountSummary } = require('../db');
+const cycleMetrics = require('./marketCycleMetrics');
 
 const BENCHMARKS = { CN: ['CSI300', 'CSIALL'], HK: ['HSI'] };
 const INDEX_NAMES = { CSI300: '沪深300', CSIALL: '中证全指', HSI: '恒生指数' };
@@ -78,18 +79,17 @@ async function getOverview(username, account, market, benchmark, rowsOverride = 
     actualPosition: position.actualPosition, deviation: deviation(position.actualPosition, recommended), hasUsPosition: position.hasUs };
 }
 async function getHistory(market, benchmark, range, rowsOverride = null) {
-  const years = { '1y': 1, '3y': 3, '5y': 5, '10y': 10, '20y': 20, all: null }[range];
   const params = [market, benchmark];
   let cutoff = '';
-  if (years) { params.push(years); cutoff = "AND trade_date >= CURRENT_DATE - ($3::text || ' years')::interval"; }
+  const cutoffDate = cycleMetrics.rangeCutoff(range);
+  if (cutoffDate) { params.push(cutoffDate); cutoff = 'AND trade_date >= $3::date'; }
   const { rows } = rowsOverride ? { rows: rowsOverride.map(row => ({ date: row.trade_date, value: row.graham_index_pct, pe: row.pe,
     sovereign_yield_pct: row.sovereign_yield_pct, data_status: row.data_status })) } : await pool.query(`SELECT trade_date::text AS date, graham_index_pct::float8 AS value, pe::float8 AS pe,
     sovereign_yield_pct::float8 AS sovereign_yield_pct, data_status
     FROM analytics.graham_index_daily WHERE market_code=$1 AND benchmark_code=$2 ${cutoff} ORDER BY trade_date`, params);
-  if (!cutoff || !rowsOverride) return rows;
-  const cutoffDate = new Date(); cutoffDate.setUTCFullYear(cutoffDate.getUTCFullYear() - years);
-  const cutoffText = cutoffDate.toISOString().slice(0, 10);
-  return rows.filter(row => String(row.date || '').slice(0, 10) >= cutoffText);
+  if (!cutoffDate) return rows;
+  if (rowsOverride) return rows.filter(row => String(row.date || '').slice(0, 10) >= cutoffDate);
+  return rows;
 }
 async function saveSetting(username, account, market, benchmark, lowerBoundary, upperBoundary, version) {
   const previous = await getSetting(username, account, market, benchmark);

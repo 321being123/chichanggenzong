@@ -34,7 +34,7 @@ assert.doesNotMatch(source, /ipo_date >= \(%s::date - INTERVAL '730 days'\)/, '�
 assert.match(source, /priority_codes=target_codes/, '晚间补全没有优先处理目标日发行记录');
 assert.match(source, /remaining_by_field/, '补全结果没有按字段统计全部缺口');
 assert.match(source, /source_unavailable/, '行业PE缺失没有与可重试资料缺口分离');
-assert.match(source, /backfill_first_day\(cur, datetime\.now\(\)/, '全量资料补全仍需保留首日表现回填');
+assert.match(source, /backfill_first_day\(cur, _now_shanghai\(\)/, '全量资料补全仍需保留首日表现回填');
 assert.match(source, /mode == "prediction_ready"/, '上市前预测缺口阶段没有与首日表现回填隔离');
 assert.match(source, /target_text = str\(target_date\)\[:10\] if target_date else ""/, '发行阶段目标日字符串未标准化');
 assert.match(source, /ipo_date=%s OR listing_date=%s/, '晚间补全未优先处理目标日上市新股');

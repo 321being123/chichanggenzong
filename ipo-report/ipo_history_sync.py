@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
@@ -24,6 +25,20 @@ from external_call_guard import ExternalCallGuardError, guarded_urlopen, get_ext
 from instrument_identity import ensure_instrument, resolve_canonical_code, resolve_provider_code
 
 _load_env()
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _now_shanghai(value=None):
+    if value is None:
+        return datetime.now(_SHANGHAI)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=_SHANGHAI)
+    return value.astimezone(_SHANGHAI)
+
+
+def _today_shanghai(value=None):
+    return _now_shanghai(value).date()
 
 SCOPE_KEY = "global:ipo_history"
 DATASET_CODE = "new_share"
@@ -84,7 +99,7 @@ def _detail_field_state(value, diagnostic=None, fallback_status="retryable", ret
     }
     if state.get("status") in (None, "value"):
         state["status"] = fallback_status
-    state.setdefault("retry_after", ((retry_after or date.today()) + timedelta(days=7)).isoformat())
+    state.setdefault("retry_after", ((retry_after or _today_shanghai()) + timedelta(days=7)).isoformat())
     return state
 
 
@@ -172,7 +187,7 @@ def upsert_shares(cur, records, as_of=None):
     cur.execute("SELECT security_code FROM ipo_history WHERE security_code = ANY(%s)", (codes,))
     existing = {row[0] for row in cur.fetchall()}
     for record in records:
-        as_of_text = as_of.isoformat() if hasattr(as_of, "isoformat") else date.today().isoformat()
+        as_of_text = as_of.isoformat() if hasattr(as_of, "isoformat") else _today_shanghai().isoformat()
         listing_text = str(record.get("listing_date") or "")[:10]
         record["ipo_status"] = "listed" if listing_text and listing_text <= as_of_text else "active"
         canonical = resolve_canonical_code(record["security_code"], "stock", cur.connection)
@@ -273,7 +288,7 @@ def backfill_first_day(cur, now, raise_on_guard=False):
             continue
         if listing == today and now.time() < dt_time(15, 30):
             continue
-        if last_attempt and last_attempt.date() == today:
+        if last_attempt and _now_shanghai(last_attempt).date() == today:
             continue
         attempted += 1
         try:
@@ -692,7 +707,7 @@ def update_quality(cur, today, include_enrichment=True):
             "missing_fields": missing,
             "pending_not_due": pending,
             "stage": "listed" if listed else "subscribed",
-            "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "checked_at": _now_shanghai().isoformat(timespec="seconds"),
             "field_states": field_states,
         }
         if prior.get("enrichment"):
@@ -906,7 +921,7 @@ def _refresh_new_share_snapshot(cur, today):
 
 
 def run(today=None, mode="core"):
-    today = today or date.today()
+    today = today or _today_shanghai()
     connection = pg_connect()
     run_id = None
     try:
@@ -944,7 +959,7 @@ def run(today=None, mode="core"):
                         first_day = (
                             {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
                             if mode == "prediction_ready"
-                            else backfill_first_day(cur, datetime.now(), raise_on_guard=True)
+                            else backfill_first_day(cur, _now_shanghai(), raise_on_guard=True)
                         )
                 except ExternalCallGuardError:
                     # 已完成的资料补全先提交；随后把原始 Guard 错误交给 Node/Worker 进入 waiting_external。
@@ -1055,10 +1070,10 @@ def main():
                     print(json.dumps({"ok": True, "mode": "preview", "targets": preview}, ensure_ascii=False, default=str))
                     return
                 result = enrich_stock_missing_details(
-                    cur, date.fromisoformat(args.today) if args.today else date.today(),
+                    cur, date.fromisoformat(args.today) if args.today else _today_shanghai(),
                     retry_same_day=True, priority_codes=target_codes, only_codes=target_codes,
                 )
-                quality = update_quality(cur, date.fromisoformat(args.today) if args.today else date.today())
+                quality = update_quality(cur, date.fromisoformat(args.today) if args.today else _today_shanghai())
             connection.commit()
             print(json.dumps({"ok": True, "mode": "targeted", "codes": target_codes, "result": result, "quality": quality}, ensure_ascii=False, default=str))
             return

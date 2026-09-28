@@ -1,0 +1,30 @@
+{
+  "task": "T13",
+  "phase": "R3-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "databaseTimeZone": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "not queried",
+  "input": {
+    "range": "1y",
+    "fixedInstant": "2026-09-27T16:30:00.000Z",
+    "shanghaiBusinessDate": "2026-09-28",
+    "expectedCalendarCutoff": "2025-09-28",
+    "processTimeZones": ["UTC", "Asia/Shanghai", "America/New_York"]
+  },
+  "output": {
+    "marketCycleMetrics.rangeCutoff": "2025-09-27",
+    "grahamHistoryDatabaseCutoff": "CURRENT_DATE - 1 year",
+    "homeCycleCacheVersionIncludesCutoff": false
+  },
+  "dataAccess": "固定时刻代码复现；未查询生产数据，未断言生产是否存在 cutoff 当天记录。",
+  "contract": {
+    "route": "GET /api/market-volatility/history and GET /api/market-volatility/home-cycle",
+    "historyDates": "DATE-only observation dates remain source dates; only one-year application window cutoff uses Shanghai business date.",
+    "retainedUnverified": "The US/10 manual_fed_funds expansion cap and ExcelJS Date import still need source/file-date evidence; their date interpretation is not changed in R3."
+  }
+}

@@ -47,6 +47,7 @@ import ipo_lib_report as report_lib
 import ipo_lib_fetch as fetch
 import _common as common
 import calendar_core
+import ipo_history_sync as history_sync
 from ipo_history_sync import normalize_share
 from ipo_lib_liquidity import calculate_adjustment_from_samples, liquidity_bucket, robust_mean
 from ipo_lib_historical_prediction import (
@@ -54,7 +55,7 @@ from ipo_lib_historical_prediction import (
     prior_liquidity_samples,
     rollback_prediction,
 )
-from datetime import datetime
+from datetime import date, datetime, timezone
 
 PASS, FAIL, ERR = [], [], []
 
@@ -67,6 +68,13 @@ def check(name, cond, detail=""):
         FAIL.append(name)
         print("  [FAIL] %s %s" % (name, detail))
 
+
+fixed_instant = datetime(2026, 9, 27, 16, 30, tzinfo=timezone.utc)
+check("日历业务日期固定按上海时区", calendar_core._today_shanghai(fixed_instant) == date(2026, 9, 28))
+check("IPO同步子阶段时刻固定按上海时区",
+      history_sync._now_shanghai(fixed_instant).isoformat() == "2026-09-28T00:30:00+08:00")
+check("历史业务日驱动字段重试日期",
+      history_sync._detail_field_state(None, retry_after=date(2026, 9, 25))["retry_after"] == "2026-10-02")
 
 check("新股预测价格入库换算", m._price_from_return(84.46, 100) == 168.92)
 check("新债实际价格入库换算", m._price_from_return(100, 23.5) == 123.5)

@@ -33,7 +33,8 @@
         "server/services/analysisFreshness.js",
         "server/services/arbitrageRules.js",
         "server/services/hkDailyCoverage.js",
-        "server/routes/marketVolatility.js"
+        "server/routes/marketVolatility.js",
+        "server/scripts/importFederalFundsCsv.js"
       ],
       "keywords": ["日期时间治理", "业务日期", "时区错位", "PG DATE", "汇率日期", "历史目标日", "UTC 截日", "日期边界"],
       "read": [

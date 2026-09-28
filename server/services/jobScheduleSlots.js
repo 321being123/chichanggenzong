@@ -679,14 +679,20 @@ async function queryDataAsOf(jobCode, businessDate) {
   const queries = {
     // 手动回查可能晚于正式快照写入、但数据日期更旧；水位必须取所有快照中的最新数据日期。
     bond_safety_refresh: `SELECT MAX(COALESCE(source_updated_at, refreshed_at)) AS data_as_of FROM bond_safety_snapshots`,
-    hk_rate: `SELECT max(fetched_at) AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
+    hk_rate: `SELECT max(rate_date)::text AS data_as_of FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY'`,
     nav_snapshot: `SELECT max(date)::text AS data_as_of FROM nav_history`,
     index_baseline: `SELECT max(date)::text AS data_as_of FROM index_history`,
     index_recent: `SELECT max(date)::text AS data_as_of FROM index_history`,
     ipo_calendar_refresh: `SELECT max(to_date(report_date, 'YYYYMMDD'))::text AS data_as_of
       FROM ipo_reports WHERE report_date ~ '^\\d{8}$'`,
     ipo_history_sync: `SELECT max(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='global:ipo_history'`,
-    stock_analysis_refresh: `SELECT max(as_of_date)::text AS data_as_of FROM analytics.stock_overview_latest`,
+    stock_analysis_refresh: `SELECT max(NULLIF(snapshot.payload->>'latest_market_trade_date','')::date)::text AS data_as_of
+      FROM analytics.stock_overview_latest latest
+      JOIN LATERAL (
+        SELECT payload FROM analytics.analysis_snapshots
+         WHERE instrument_id=latest.instrument_id AND as_of_date=latest.as_of_date AND snapshot_type='stock_analysis'
+         ORDER BY created_at DESC LIMIT 1
+      ) snapshot ON true`,
     hk_trade_rules_sync: `SELECT max(source_updated_at)::text AS data_as_of FROM market.instrument_trade_rules`,
     // 套利任务必须同时确认港交所、上交所和深交所；取 max 会被单一来源的成功掩盖另一来源的落后。
     arbitrage_sync: `SELECT LEAST(

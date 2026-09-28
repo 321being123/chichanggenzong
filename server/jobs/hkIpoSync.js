@@ -3,6 +3,7 @@ const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
 const { fetchTencentQuotes } = require('../services/tencentQuote');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const CHINESE_NAME_PATTERN = '[\u3400-\u9fff]';
 
@@ -164,7 +165,17 @@ function marketSignalDiagnostics(marketSignals) {
   };
 }
 
+function resolveTargetDate(context = {}, now = new Date()) {
+  const suppliedDate = context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE;
+  return suppliedDate
+    ? CoreDate.normalizeBusinessDate(suppliedDate)
+    : CoreDate.todayInZone('Asia/Shanghai', now);
+}
+
 async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}) {
+  const targetDate = resolveTargetDate(context);
+  if (!targetDate) return { ok: false, status: 'blocked', reason: 'invalid_target_date', dataAsOf: null, publishDatasets: false };
+  context = { ...context, targetDate };
   const requestedTargetCodes = Array.isArray(context.targetCodes) ? context.targetCodes : [];
   const targetCodes = [...new Set(requestedTargetCodes.map(canonicalHkCode).filter(Boolean))];
   const invalidTargetCodes = requestedTargetCodes.filter(code => !canonicalHkCode(code));
@@ -173,10 +184,10 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     try {
       marketSignals = await syncHkIpoMarketSignals({
         mode: 'subscription_capture',
-        businessDate: context.targetDate || process.env.JOB_BUSINESS_DATE,
         collectionPoint: mode === 'subscription_midday' ? 'midday' : 'close',
         hkipoxAdmitted: true,
         ...(context.marketSignalOptions || {}),
+        businessDate: targetDate,
       });
     } catch (error) {
       marketSignals = { ok: false, status: 'failed', errors: [{ source: 'hkipox-public', error: error.message || String(error) }] };
@@ -193,7 +204,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
       rows: Number(marketSignals.subscription?.saved || 0),
       publishDatasetCodes: ['hk_ipo_subscription_signals'],
       failedDatasets: succeeded ? [] : ['hk_ipo_subscription_signals'],
-      dataAsOf: context.targetDate || process.env.JOB_BUSINESS_DATE || null,
+      dataAsOf: targetDate,
       marketSignals,
       datasetDiagnostics: { hk_ipo_subscription_signals: signalDiagnostics },
     };
@@ -333,6 +344,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
         collectionPoint: 'preopen',
         hkipoxAdmitted: true,
         ...(context.marketSignalOptions || {}),
+        businessDate: targetDate,
       });
     } catch (error) {
       marketSignals = { ok: false, status: 'failed', error: error.message || String(error) };
@@ -342,7 +354,9 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   try {
     const nameOptions = { ...(context.tencentNameOptions || {}) };
     if (targeted && nameOptions.batchSize == null) nameOptions.batchSize = targetCodes.length;
-    tencentNames = await syncHkIpoTencentNames(targeted ? targetCodes : rows.map(row => row.securityCode), nameOptions);
+    tencentNames = await syncHkIpoTencentNames(targeted ? targetCodes : rows.map(row => row.securityCode), {
+      ...nameOptions, businessDate: targetDate,
+    });
   } catch (error) {
     tencentNames = { ok: false, status: 'failed', error: error.message || String(error) };
   }
@@ -374,8 +388,8 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     dailyCoverage, marketSignals, tencentNames, completenessAudit,
     datasetDiagnostics: { hk_ipo_facts: factDiagnostics, hk_ipo_subscription_signals: signalDiagnostics },
     probeTargets: (probe.targets || []).length,
-    dataAsOf: new Date().toISOString().slice(0, 10),
+    dataAsOf: targetDate,
   };
 }
 
-module.exports = { runHkIpoSync, rowsFromProbe, persistTencentNames, persistInstrumentChineseNames, syncHkIpoTencentNames, marketSignalDiagnostics };
+module.exports = { runHkIpoSync, resolveTargetDate, rowsFromProbe, persistTencentNames, persistInstrumentChineseNames, syncHkIpoTencentNames, marketSignalDiagnostics };

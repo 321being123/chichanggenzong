@@ -3,6 +3,7 @@ const { listUserStocks, refreshStockAnalysis } = require('../services/stockAnaly
 const { pool } = require('../db/connection');
 const { datasetScope, markDatasetFailure, markDatasetSuccess } = require('../services/datasetCursors');
 const { dailyConsistencyStats } = require('./consistencyStats');
+const CoreDate = require('../../public/shared/core-date.js');
 
 const ANALYSIS_DATASET = 'stock_analysis';
 
@@ -22,9 +23,24 @@ function nextShanghaiDelay(hour = 20, minute = 30, now = new Date()) {
 
 async function latestStockAnalysisDate() {
   const { rows } = await pool.query(
-    'SELECT max(as_of_date)::text AS data_as_of FROM analytics.stock_overview_latest'
+    `SELECT max(NULLIF(snapshot.payload->>'latest_market_trade_date','')::date)::text AS data_as_of
+       FROM analytics.stock_overview_latest latest
+       JOIN LATERAL (
+         SELECT payload FROM analytics.analysis_snapshots
+          WHERE instrument_id=latest.instrument_id AND as_of_date=latest.as_of_date AND snapshot_type='stock_analysis'
+          ORDER BY created_at DESC LIMIT 1
+       ) snapshot ON true`
   );
   return rows[0] && rows[0].data_as_of ? String(rows[0].data_as_of).slice(0, 10) : null;
+}
+
+function targetDateStatus(targetDate, now = new Date()) {
+  const requested = CoreDate.normalizeBusinessDate(targetDate);
+  const today = CoreDate.todayInZone('Asia/Shanghai', now);
+  if (!requested || !today) return { ok: false, reason: 'invalid_target_date' };
+  if (requested < today) return { ok: false, reason: 'historical_target_unsupported' };
+  if (requested > today) return { ok: false, reason: 'future_target_unsupported' };
+  return { ok: true, targetDate: requested };
 }
 
 async function trackedStocks() {
@@ -38,6 +54,13 @@ async function trackedStocks() {
 }
 
 async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
+  const requestedDate = context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE
+    || CoreDate.todayInZone('Asia/Shanghai');
+  const target = targetDateStatus(requestedDate);
+  if (!target.ok) return {
+    ok: false, status: 'blocked', reason: target.reason, dataAsOf: null,
+    publishDatasets: false, failedDatasets: ['stock_analysis_snapshot'],
+  };
   if (!(await tryClaimJob(JOB))) return { skipped: true, reason: 'locked' };
   const runId = await startJobRun(JOB);
   let ok = 0, failed = 0;
@@ -50,12 +73,19 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const stocks = (await trackedStocks()).filter(stock => !requestedCodes.size || requestedCodes.has(stock.ts_code));
     const failures = [];
     const failureDetails = [];
+    const dataDates = new Map();
+    async function refreshAndMark(tsCode, refreshReason, options) {
+      const analysis = await refreshStockAnalysis(tsCode, refreshReason, options);
+      const dataAsOf = CoreDate.normalizeBusinessDate(analysis && analysis.latest_market_trade_date);
+      if (!dataAsOf) throw new Error('分析快照缺少可核实的最新行情日期');
+      await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET, { lastSuccessDate: dataAsOf });
+      dataDates.set(tsCode, dataAsOf);
+      return dataAsOf;
+    }
     for (const stock of stocks) {
       try {
-        await refreshStockAnalysis(stock.ts_code, reason, { readOnly: true });
+        await refreshAndMark(stock.ts_code, reason, { readOnly: true });
         ok++;
-        await markDatasetSuccess(datasetScope('stock', stock.ts_code), ANALYSIS_DATASET,
-          { lastSuccessDate: new Date().toISOString().slice(0, 10) });
       } catch (error) {
         if (isUnavailableStock(error)) {
           skipped.push({ code: stock.ts_code, reason: 'stock_basic 无基础信息，可能已退市或不再属于可分析普通股' });
@@ -76,10 +106,8 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const recovered = [];
     for (const tsCode of failures) {
       try {
-        await refreshStockAnalysis(tsCode, `${reason}-retry`, { force: true, readOnly: true });
+        await refreshAndMark(tsCode, `${reason}-retry`, { force: true, readOnly: true });
         ok++; failed--; recovered.push(tsCode);
-        await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET,
-          { lastSuccessDate: new Date().toISOString().slice(0, 10) });
       } catch (error) {
         failureDetails.push({ code: error.code || 'JOB_FAILED', errorType: error.errorType || error.type || 'unknown', source: error.source || null, error: error.message });
         console.warn(`[stock-analysis] ${tsCode} 补跑仍失败:`, error.message);
@@ -96,7 +124,9 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const failedDatasets = failures.filter(code => !recovered.includes(code));
     const skippedCodes = new Set(skipped.map(item => item.code));
     const firstFailure = failureDetails[0] || null;
-    const dataAsOf = stocks.length && failed === 0 ? await latestStockAnalysisDate() : null;
+    const completedDates = stocks.map(stock => dataDates.get(stock.ts_code)).filter(Boolean);
+    const dataAsOf = stocks.length && failed === 0 && skipped.length === 0 && completedDates.length === stocks.length
+      ? completedDates.sort()[0] : null;
     return {
       ok: failed === 0,
       status: failed === 0 ? 'succeeded' : 'partial',
@@ -108,7 +138,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       recovered,
       skipped,
       failedDatasets,
-      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf })),
+      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null })),
       ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
     };
   } catch (error) {
@@ -132,4 +162,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 20:30（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, trackedStocks, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };

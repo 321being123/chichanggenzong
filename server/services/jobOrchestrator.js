@@ -125,13 +125,35 @@ function datasetScopeKey(datasetCode) {
   return registry[datasetCode] && registry[datasetCode].scopeKey || '';
 }
 
-function datasetPartitionKeyForSlot(slot, result = {}) {
+function datasetPartitionKeyForSlot(slot, result = {}, datasetCode = null) {
+  const diagnostic = datasetCode && result.datasetDiagnostics && typeof result.datasetDiagnostics === 'object'
+    ? result.datasetDiagnostics[datasetCode] || {} : {};
+  const datasetPartition = datasetCode && Array.isArray(result.datasets)
+    ? result.datasets.find(item => item && item.datasetCode === datasetCode) || {} : {};
+  const failedDatasets = Array.isArray(result.failedDatasets) ? result.failedDatasets.map(String) : [];
+  const diagnosticsCount = result.datasetDiagnostics && typeof result.datasetDiagnostics === 'object'
+    ? Object.keys(result.datasetDiagnostics).length : 0;
+  const includeResultMissingDates = !datasetCode || failedDatasets.includes(datasetCode) || diagnosticsCount <= 1;
+  const diagnosticMissingDates = Array.isArray(diagnostic.missingDates) ? diagnostic.missingDates
+    : Array.isArray(diagnostic.missing_dates) ? diagnostic.missing_dates : [];
   const candidates = [
+    diagnostic.targetTradeDate,
+    diagnostic.target_trade_date,
+    diagnostic.partitionKey,
+    diagnostic.partition_key,
+    diagnostic.targetDate,
+    diagnostic.target_date,
+    diagnostic.targetListingDate,
+    diagnostic.target_listing_date,
+    ...diagnosticMissingDates,
+    datasetPartition.partitionKey,
+    datasetPartition.partition_key,
     result.targetTradeDate,
     result.target_trade_date,
     result.partitionKey,
     result.partition_key,
-    ...(Array.isArray(result.missingDates) ? result.missingDates : []),
+    ...(includeResultMissingDates && Array.isArray(result.missingDates) ? result.missingDates : []),
+    ...(includeResultMissingDates && Array.isArray(result.missing_dates) ? result.missing_dates : []),
     result.dataAsOf,
     result.data_as_of,
     expectedDataDate(slot.job_code, slot.business_date),
@@ -168,7 +190,7 @@ async function applyDatasetFailureBreaker(slot, runId, normalized, failure) {
   const blocked = rows[0] || null;
   if (blocked) {
     const { notifyJobFailure } = require('./jobAlertMailer');
-    const partitionKey = datasetPartitionKeyForSlot(slot, normalized);
+    const partitionKey = datasetPartitionKeyForSlot(slot, normalized, blockedDatasets[0]);
     await notifyJobFailure({
       jobCode: slot.job_code,
       slotId: slot.slot_id,
@@ -190,7 +212,7 @@ async function notifyIncompleteDataset(slot, result) {
   const definition = getJobDefinition(slot.job_code);
   const datasets = incompleteDatasets(definition, result);
   const { notifyJobFailure } = require('./jobAlertMailer');
-  const partitionKey = datasetPartitionKeyForSlot(slot, result);
+  const partitionKey = datasetPartitionKeyForSlot(slot, result, datasets[0] || null);
   await notifyJobFailure({
     jobCode: slot.job_code,
     slotId: slot.slot_id,
@@ -206,8 +228,6 @@ async function notifyIncompleteDataset(slot, result) {
 function buildDatasetDiagnosticAlerts(slot, result = {}) {
   const diagnostics = result && result.datasetDiagnostics && typeof result.datasetDiagnostics === 'object'
     ? result.datasetDiagnostics : {};
-  const partitionKey = datasetPartitionKeyForSlot(slot, result);
-  if (!partitionKey) return [];
   const declaredDatasets = new Set(getJobDefinition(slot.job_code).producesDatasets || []);
   const attemptedDatasets = new Set(Array.isArray(result.publishDatasetCodes)
     ? result.publishDatasetCodes : declaredDatasets);
@@ -216,6 +236,8 @@ function buildDatasetDiagnosticAlerts(slot, result = {}) {
     if (!diagnostic || typeof diagnostic !== 'object'
       || !declaredDatasets.has(datasetCode) || !attemptedDatasets.has(datasetCode)
       || diagnostic.query_status === 'not_run') continue;
+    const partitionKey = datasetPartitionKeyForSlot(slot, result, datasetCode);
+    if (!partitionKey) continue;
     const scopeKey = `${datasetCode}:${datasetScopeKey(datasetCode)}:${partitionKey}`;
     const failedQuery = diagnostic.query_status !== 'success';
     const failedQuality = ['failed', 'stale', 'blocked'].includes(diagnostic.quality_status);

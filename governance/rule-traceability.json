@@ -83,6 +83,14 @@
       "status": "verified"
     },
     {
+      "id": "ALERT-EVIDENCE-005",
+      "title": "数据集告警日期必须匹配对应数据集的目标分区",
+      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "datasetPartitionKeyForSlot" },
+      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "每条数据集告警必须使用本数据集的目标分区日" }],
+      "owner": "运维治理",
+      "status": "verified"
+    },
+    {
       "id": "TASK-SLOT-003",
       "title": "计划内不同槽位成功不互相触发重复告警",
       "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "finishManagedRun" },

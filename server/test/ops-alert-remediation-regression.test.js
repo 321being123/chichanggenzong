@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const { recoverySchedule } = require('../services/jobOrchestrator');
+const { recoverySchedule, buildDatasetDiagnosticAlerts } = require('../services/jobOrchestrator');
 const { cninfoApiName } = require('../services/cninfoAnnouncement');
 const { closedCircuitApiNames } = require('../services/externalCallGuard');
 const { verifyAlertScope } = require('../services/jobAlertMailer');
@@ -19,6 +19,26 @@ function read(relative) {
 function around(value, min, max) {
   return value >= min && value <= max;
 }
+
+const datasetScopedAlerts = buildDatasetDiagnosticAlerts({
+  slot_id: 567, job_code: 'convertible_bond_announcement_history_sync', business_date: '2026-09-28',
+}, {
+  dataAsOf: '2026-09-28',
+  missingDates: ['2026-09-29'],
+  failedDatasets: ['bond_listing_liquidity'],
+  datasets: [{ datasetCode: 'bond_issuance_events', partitionKey: '2026-09-28' }],
+  datasetDiagnostics: {
+    bond_issuance_events: { query_status: 'success', quality_status: 'stale' },
+    bond_listing_liquidity: {
+      query_status: 'success', quality_status: 'stale', coverage_status: 'incomplete',
+      target_listing_date: '2026-09-29',
+    },
+  },
+});
+assert.deepStrictEqual(datasetScopedAlerts.map(alert => alert.scopeKey).sort(), [
+  'bond_issuance_events:CN:2026-09-28',
+  'bond_listing_liquidity:CN:2026-09-29',
+], '每条数据集告警必须使用本数据集的目标分区日，不能借用其他数据集的缺失日期');
 
 // 恢复时间与缺失恢复时间的退避必须可预测，并且不能把已经到期的时间再推迟 60 秒。
 const future = new Date(Date.now() + 65 * 1000);

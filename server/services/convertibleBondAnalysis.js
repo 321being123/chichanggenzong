@@ -2867,6 +2867,7 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
     cursorDate: cursorDate || null, lifecycle, listingLiquidity, redemption,
     datasetDiagnostics: {
       bond_issuance_events: {
+        query_status: 'success',
         quality_status: 'passed',
         issue_count: Number(lifecycle && lifecycle.issueCount || 0),
         official_count: Number(lifecycle && lifecycle.officialCount || 0),
@@ -2882,8 +2883,9 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
         target_candidate_count: Number(listingLiquidity && listingLiquidity.targetCandidateCodes && listingLiquidity.targetCandidateCodes.length || 0),
         missing_codes: listingLiquidity && listingLiquidity.missingCodes || [],
       } } : {}),
-      bond_announcement_facts: { quality_status: 'passed', changed_count: changedCount },
+      bond_announcement_facts: { query_status: 'success', quality_status: 'passed', changed_count: changedCount },
       bond_redemption_events: {
+        query_status: redemption ? 'success' : 'not_run',
         quality_status: redemption && redemption.diagnostics && redemption.diagnostics.quality_status || 'failed',
         discovered: Number(redemption && redemption.discovered || 0),
         call_candidates: Number(redemption && redemption.call_candidates || 0),

@@ -30,7 +30,7 @@ assert.match(orchestrator, /continuationRequired/);
 assert.match(orchestrator, /pendingStages/);
 assert.match(orchestrator, /continuationMaxAgeHours/);
 assert.match(orchestrator, /slotLimit/);
-assert.match(orchestrator, /function datasetPartitionKeyForSlot\(slot, result = \{\}\)/);
+assert.match(orchestrator, /function datasetPartitionKeyForSlot\(slot, result = \{\}, datasetCode = null\)/);
 assert.match(orchestrator, /result\.targetTradeDate/);
 assert.match(orchestrator, /scopeKey: `\$\{blockedDatasets\[0\]\}:\$\{datasetScopeKey\(blockedDatasets\[0\]\)\}:\$\{partitionKey\}`/);
 assert.match(runner, /setSlotExternalCallBudget/);

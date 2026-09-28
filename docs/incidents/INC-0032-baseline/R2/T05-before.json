@@ -1,0 +1,22 @@
+{
+  "task": "T05",
+  "phase": "B00-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "TZ": ["UTC", "Asia/Shanghai", "America/New_York"],
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": { "endDate": "2026-09-28", "dateRangeYears": 1, "valuationChartDefaultYears": 10, "stabilityChartDefaultYears": 10, "leapDate": "2024-02-29", "leapYears": 1 },
+  "output": [
+    { "TZ": "UTC", "dateRangeStart": "2025-09-28", "valuationChartStart": "2016-09-28", "stabilityChartEnd": "2026-09-27", "stabilityChartStart": "2016-09-27" },
+    { "TZ": "Asia/Shanghai", "dateRangeStart": "2025-09-27", "valuationChartStart": "2016-09-27", "stabilityChartEnd": "2026-09-27", "stabilityChartStart": "2016-09-27" },
+    { "TZ": "America/New_York", "dateRangeStart": "2025-09-28", "valuationChartStart": "2016-09-28", "stabilityChartEnd": "2026-09-27", "stabilityChartStart": "2016-09-27" }
+  ],
+  "leapDay": { "sourceFormulaResult": "2023-03-01", "assertionStatus": "JavaScript 将 2024-02-29 本地日期 setFullYear(-1) 归一到 2023-03-01；目标规则为 2023-02-28，改后将在 R2 页面组件测试中固定。" },
+  "reproduceCommand": "固定结束日 2026-09-28，执行 date-range-control.js 的 new Date(end+'T00:00:00')、setFullYear(-1)、toISOString().slice(0,10)；R1/T01-before.json 已记录同一上海一年区间在三个时区下的原实现结果。",
+  "notes": [
+    "股价估值图表与日期区间按钮均使用本地午夜年份运算后 UTC 截日，上海结果少一天。稳定性/分红图表还用 UTC 当前日作为结束日，上海凌晨少一天；同属股票分析日期范围，纳入本批 T05。",
+    "无数据库查询和外部调用。"
+  ]
+}

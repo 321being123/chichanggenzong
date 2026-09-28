@@ -168,7 +168,8 @@
       "implementation": { "file": "public/shared/core-date.js", "symbol": "normalizeBusinessDate" },
       "tests": [
         { "file": "server/test/core-date.test.js", "pattern": "America/New_York" },
-        { "file": "server/test/date-boundary-static.test.js", "pattern": "FIXED_RULE_REAPPEARED" }
+        { "file": "server/test/date-boundary-static.test.js", "pattern": "FIXED_RULE_REAPPEARED" },
+        { "file": "server/test/date-time-r2.test.js", "pattern": "R2 日期回归通过" }
       ],
       "owner": "日期边界治理",
       "status": "verified"

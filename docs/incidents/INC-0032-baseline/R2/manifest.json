@@ -1,0 +1,15 @@
+{
+  "batch": "R2",
+  "phase": "B00-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "externalCalls": 0,
+  "files": [],
+  "baselineMethod": "复用 B00 固定时刻和 R1 已执行的三时区对照；改前公式仍在 R2 源码中，生产文件均未修改。T04 对未导出的前端函数明确标注按相同原公式推导，并在改后加入行为测试。"
+}

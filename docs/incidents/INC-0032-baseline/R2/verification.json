@@ -1,0 +1,27 @@
+{
+  "batch": "R2",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "appVersion": "0.8.2.4",
+  "productionVersion": "0.8.2.2",
+  "nodeVersion": "v22.22.3",
+  "pgVersion": "17.2",
+  "testDatabase": "portfolio_test",
+  "dateBoundaryCheck": { "command": "npm.cmd run check:date", "status": "passed", "sourceFilesScanned": 439, "fixedRules": 10, "unresolvedMatches": 0 },
+  "results": [
+    { "case": "V02 上海凌晨", "tasks": ["T03", "T04"], "status": "passed", "command": "node server/test/date-time-r2.test.js", "evidence": "固定时刻 2026-09-27T17:00:00Z 在 UTC、上海、纽约进程下均得到上海业务日 2026-09-28、账本时刻 01:00:00。" },
+    { "case": "V03 日期边界", "tasks": ["T03", "T04"], "status": "passed", "command": "node server/test/date-time-r2.test.js", "evidence": "上海日期时间 23:59:59→次日 00:00:00 及 07:59:59→08:00:00 边界结果正确。" },
+    { "case": "V04 跨时区", "tasks": ["T03", "T04", "T05"], "status": "passed", "command": "node server/test/date-time-r2.test.js；npm.cmd run test:all（core-date.test.js）", "evidence": "UTC、Asia/Shanghai、America/New_York 子进程得到相同业务日期、账本时间和图表区间；共享工具纽约夏令时回归也通过。" },
+    { "case": "V05 日期区间与闰日", "tasks": ["T05"], "status": "passed", "command": "node server/test/date-time-r2.test.js", "evidence": "一年起点为 2025-09-28、十年起点为 2016-09-28，闰日减一年为 2023-02-28；三时区结果一致。" },
+    { "case": "V08 归因保护", "tasks": ["T04"], "status": "passed", "command": "npm.cmd run test:all（server/test/cross-market-calendar-nav.test.js）", "evidence": "缺少中间开市日快照仍保持归因不完整，补齐相应依据后的既有回归通过；R2 未改归因逻辑。" },
+    { "case": "V10 账本兼容", "tasks": ["T04"], "status": "passed", "command": "node server/test/date-time-r2.test.js；npm.cmd run test:all（server/test/trade-ledger.test.js）", "evidence": "空表单采用上海日期和时间，已填写的 10:15 保持不变，账本字符串格式未变。" },
+    { "case": "V11 静态门禁", "tasks": ["T06a", "T06b"], "status": "passed", "command": "npm.cmd run check:date；node server/test/date-boundary-static.test.js", "evidence": "10 条已修规则均为零命中；新增命中、数量变化和已修规则复发测试通过。" },
+    { "case": "V12 查询、调用与运行态", "tasks": ["T03", "T04", "T05"], "status": "partial", "command": "代码差异核对；npm.cmd run test:all", "evidence": "未改查询或外部调用路径；行为回归没有查询和调用。未启动服务/浏览器，页面资源 HTTP 响应、运行版本及冷/热缓存性能未测，保留为未验收。" }
+  ],
+  "fullSuite": { "command": "npm.cmd run test:all", "status": "passed", "passed": 150, "failed": 0, "skipped": 0, "nodeTestFiles": 142, "databaseStoppedAfterRun": true },
+  "knowledgeCheck": { "command": "npm.cmd run check:knowledge", "status": "passed" },
+  "frontendStaticCheck": { "command": "node server/test/stock-analysis-frontend.test.js", "status": "passed", "evidence": "首页、登录页、管理页均由测试检查 CoreDate 加载顺序及实际变更脚本资源版本 0.8.2.4。" },
+  "externalCalls": 0,
+  "productionWrites": 0,
+  "limitations": ["未启动开发服务或浏览器；未核对本地 /health、页面资源响应及冷热缓存。", "未部署、未推送；未修改生产数据或执行历史补算。"]
+}

@@ -1,0 +1,27 @@
+{
+  "task": "T04",
+  "phase": "B00-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "TZ": ["UTC", "Asia/Shanghai", "America/New_York"],
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": { "fixedInstant": "2026-09-27T17:00:00.000Z", "defaultFormTime": "empty", "userEnteredTime": "10:15" },
+  "output": [
+    { "TZ": "UTC", "tradeLedgerNowStr": "2026-09-28 01:00:00", "coreTradeNowSec": "2026-09-28 01:00:00", "tradeFormDate": "2026-09-28", "tradeFormDefaultTime": "01:00", "prefilledTimePreserved": "10:15" },
+    { "TZ": "Asia/Shanghai", "tradeLedgerNowStr": "2026-09-27 17:00:00", "coreTradeNowSec": "2026-09-27 17:00:00", "tradeFormDate": "2026-09-27", "tradeFormDefaultTime": "17:00", "prefilledTimePreserved": "10:15" },
+    { "TZ": "America/New_York", "tradeLedgerNowStr": "2026-09-28 05:00:00", "coreTradeNowSec": "2026-09-28 05:00:00", "tradeFormDate": "2026-09-28", "tradeFormDefaultTime": "05:00", "prefilledTimePreserved": "10:15" }
+  ],
+  "userTimeContract": {
+    "input": "10:15",
+    "beforeSourceGuard": "initTradeDateTime only fills trade-time when it is empty",
+    "observedBehavior": "尚未在独立 VM 行为夹具执行；由 R2 自动回归实测，改前源码条件已核对。"
+  },
+  "reproduceCommand": "tradeLedger.nowStr 的固定时刻对照记录见 R1/T01-before.json；core-trade.nowSec/initTradeDateTime 与 utils.todayCN 使用相同 offset 公式，按原始源码映射并在 R2 的固定时钟浏览器 VM 测试中实测改后行为。",
+  "notes": [
+    "tradeLedger.nowStr 的结果已由 B00 固定时刻实测；core-trade/utils 的相同公式输出是按源码计算的基线推导。",
+    "core-returns 使用 nowSec 形成快照时间边界；本批保持其调用与快照逻辑不变，只修共享时间入口。",
+    "未覆盖用户真实账本，也未执行数据库写入。"
+  ]
+}

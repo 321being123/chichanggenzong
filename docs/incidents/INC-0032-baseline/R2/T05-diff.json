@@ -1,0 +1,12 @@
+{
+  "task": "T05",
+  "expected": "纯日期年份区间以业务日计算；闰日减年落到 2 月末；默认图表截止日为上海今天。",
+  "changes": [
+    { "field": "dateRangeStart", "beforeByTZ": ["2025-09-28", "2025-09-27", "2025-09-28"], "afterByTZ": ["2025-09-28", "2025-09-28", "2025-09-28"], "assessment": "符合预期。" },
+    { "field": "valuationChartStart", "beforeByTZ": ["2016-09-28", "2016-09-27", "2016-09-28"], "afterByTZ": ["2016-09-28", "2016-09-28", "2016-09-28"], "assessment": "符合预期；公共纯日期减年逻辑。" },
+    { "field": "stabilityChartEnd", "beforeByTZ": ["2026-09-27", "2026-09-27", "2026-09-27"], "afterByTZ": ["2026-09-28", "2026-09-28", "2026-09-28"], "assessment": "符合预期；稳定性/分红图表也在本批修复。" },
+    { "field": "leapDay", "before": "2023-03-01", "after": "2023-02-28", "assessment": "符合方案的闰日收敛规则。" }
+  ],
+  "dataWrites": 0,
+  "externalCalls": 0
+}

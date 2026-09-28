@@ -1,6 +1,7 @@
 // ========== 休市日配置（Git 种子 + 运行时副本） ==========
 const fs = require('fs');
 const path = require('path');
+const CoreDate = require('../../public/shared/core-date.js');
 const SEED_CONFIG = path.join(__dirname, 'holidays.json');
 const CONFIG = process.env.HOLIDAY_CONFIG_PATH || path.resolve(__dirname, '..', '..', 'data', 'holidays.json');
 
@@ -28,10 +29,9 @@ function atomicReplace(temp, target) {
 }
 
 function todayCN() {
-  const now = new Date();
-  const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
-  const p = n => String(n).padStart(2, '0');
-  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  const date = CoreDate.todayInZone('Asia/Shanghai');
+  if (!date) throw new TypeError('无法计算节假日缓存业务日期');
+  return date;
 }
 
 // 读取（当日缓存，避免同进程内频繁读盘）

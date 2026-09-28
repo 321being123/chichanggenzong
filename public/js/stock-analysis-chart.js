@@ -6,7 +6,7 @@
     function displayDate(v){v=normalizeDate(v);return /^\d{8}$/.test(v)?v.slice(0,4)+'-'+v.slice(4,6)+'-'+v.slice(6,8):(v||'--');}
     function inputDate(v){return displayDate(v)==='--'?'':displayDate(v);}
     function amountLabel(v){return Number.isFinite(v)?stockAnalysisNumber(v/1e8,2)+'亿元':'--';}
-    var today=new Date(),endDefault=today.toISOString().slice(0,10),startDefault=(today.getFullYear()-10)+'-'+endDefault.slice(5);
+    var endDefault=CoreDate.todayInZone('Asia/Shanghai'),startDefault=CoreDate.subtractYears(endDefault,10);
     var range=selectedRange||{start:startDefault,end:endDefault,activeYears:10},startKey=normalizeDate(range.start),endKey=normalizeDate(range.end);
     var rows=allRows.filter(function(r){var d=r.year+'1231';return d>=startKey&&d<=endKey;});
     var history=allHistory.filter(function(r){var d=normalizeDate(r.ann_date||r.ex_date||r.end_date);return d>=startKey&&d<=endKey;});

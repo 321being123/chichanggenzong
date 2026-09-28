@@ -20,10 +20,7 @@ function restorePriceChangeMap() {
 
 // 本地秒级时间字符串 YYYY-MM-DD HH:MM:SS（用于交易/现金流精确排序，东八区）
 function nowSec() {
-  const now = new Date();
-  const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
-  const p = n => String(n).padStart(2, '0');
-  return `${cn.getUTCFullYear()}-${p(cn.getUTCMonth() + 1)}-${p(cn.getUTCDate())} ${p(cn.getUTCHours())}:${p(cn.getUTCMinutes())}:${p(cn.getUTCSeconds())}`;
+  return CoreDate.dateTimeInZone(new Date(), 'Asia/Shanghai');
 }
 
 // 现金自动重算：现金 = 期初本金(cashBase) + 现金流净额 + 交易净额(买入减/卖出加)
@@ -44,12 +41,12 @@ function initTradeDateTime() {
   const dateEl = document.getElementById('trade-date');
   const timeEl = document.getElementById('trade-time');
   if (!dateEl || !timeEl) return;
-  const now = new Date();
-  const cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
-  const p = n => String(n).padStart(2, '0');
-  dateEl.value = cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  const now = CoreDate.dateTimeInZone(new Date(), 'Asia/Shanghai');
+  if (!now) return;
+  const [date, time] = now.split(' ');
+  dateEl.value = date;
   // 时间默认填当前时分，但仅在值为空时（避免用户已手动改过被覆盖）
-  if (!timeEl.value) timeEl.value = p(cn.getUTCHours()) + ':' + p(cn.getUTCMinutes());
+  if (!timeEl.value) timeEl.value = time.slice(0, 5);
 }
 
 function getTradeCurrencyMeta(subtype) {

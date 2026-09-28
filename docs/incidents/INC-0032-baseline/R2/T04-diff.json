@@ -1,0 +1,11 @@
+{
+  "task": "T04",
+  "expected": "账本和交易表单的默认时间采用同一上海时刻，用户已填时间不被覆盖。",
+  "changes": [
+    { "field": "tradeLedgerNowStr", "beforeByTZ": ["2026-09-28 01:00:00", "2026-09-27 17:00:00", "2026-09-28 05:00:00"], "afterByTZ": ["2026-09-28 01:00:00", "2026-09-28 01:00:00", "2026-09-28 01:00:00"], "assessment": "符合预期；保留原字符串格式。" },
+    { "field": "tradeFormDate", "beforeByTZ": ["2026-09-28", "2026-09-27", "2026-09-28"], "afterByTZ": ["2026-09-28", "2026-09-28", "2026-09-28"], "assessment": "符合预期；默认日期统一为上海业务日。" },
+    { "field": "prefilledTimePreserved", "before": "10:15 (源码条件推导)", "after": "10:15 (VM 实测)", "assessment": "保护用户填写时间的原有行为。" }
+  ],
+  "dataWrites": 0,
+  "externalCalls": 0
+}

@@ -1,42 +1,50 @@
 {
   "schemaVersion": 1,
-  "baselineCommit": "a76709d",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
   "rules": [
     {
       "ruleId": "timezone-offset-480",
       "file": "public/shared/core-trade.js",
       "function": "nowSec",
       "expression": "getTimezoneOffset() + 480",
-      "status": "open",
-      "expectedMatches": 1,
-      "lineHint": 24
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 24,
+      "resolvedBatch": "R2",
+      "resolution": "nowSec delegates to the explicit Asia/Shanghai time formatter."
     },
     {
       "ruleId": "timezone-offset-480",
       "file": "public/shared/core-trade.js",
       "function": "initTradeDateTime",
       "expression": "getTimezoneOffset() + 480",
-      "status": "open",
-      "expectedMatches": 1,
-      "lineHint": 48
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 48,
+      "resolvedBatch": "R2",
+      "resolution": "Trade form date and default time use the shared explicit Shanghai time formatter; a nonempty user time remains unchanged."
     },
     {
       "ruleId": "timezone-offset-480",
       "file": "public/js/utils.js",
       "function": "todayCN",
       "expression": "getTimezoneOffset() + 480",
-      "status": "open",
-      "expectedMatches": 1,
-      "lineHint": 263
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 263,
+      "resolvedBatch": "R2",
+      "resolution": "todayCN delegates to the shared Asia/Shanghai date helper."
     },
     {
       "ruleId": "timezone-offset-480",
       "file": "server/config/holidays.js",
       "function": "todayCN",
       "expression": "getTimezoneOffset() + 480",
-      "status": "open",
-      "expectedMatches": 1,
-      "lineHint": 32
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 32,
+      "resolvedBatch": "R2",
+      "resolution": "Holiday cache day and updatedAt date use the shared Asia/Shanghai date helper."
     },
     {
       "ruleId": "timezone-offset-480",
@@ -54,18 +62,55 @@
       "file": "server/services/fxRate.js",
       "function": "cnDate",
       "expression": "getTimezoneOffset() + 480",
-      "status": "open",
-      "expectedMatches": 1,
-      "lineHint": 7
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 7,
+      "resolvedBatch": "R2",
+      "resolution": "FX business-date text is retained; explicit instants are converted by the shared Asia/Shanghai helper."
     },
     {
       "ruleId": "timezone-offset-480",
       "file": "server/services/tradeLedger.js",
       "function": "nowStr",
       "expression": "getTimezoneOffset() + 480",
-      "status": "open",
-      "expectedMatches": 1,
-      "lineHint": 575
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 575,
+      "resolvedBatch": "R2",
+      "resolution": "Ledger timestamps use the shared Asia/Shanghai formatter and preserve the YYYY-MM-DD HH:mm:ss text contract."
+    },
+    {
+      "ruleId": "local-midnight-year-range",
+      "file": "public/shared/date-range-control.js",
+      "function": "bind",
+      "expression": "local midnight + setFullYear + toISOString date truncation",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 14,
+      "resolvedBatch": "R2",
+      "resolution": "Year presets use pure business-date subtraction and clamp leap day to February 28."
+    },
+    {
+      "ruleId": "local-midnight-year-range",
+      "file": "public/js/stock-analysis-valuation-chart.js",
+      "function": "render",
+      "expression": "local midnight + setFullYear + toISOString date truncation",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 13,
+      "resolvedBatch": "R2",
+      "resolution": "Valuation chart ranges use pure business-date subtraction."
+    },
+    {
+      "ruleId": "utc-business-today-range",
+      "file": "public/js/stock-analysis-chart.js",
+      "function": "renderStabilityChart",
+      "expression": "new Date() + toISOString business-date cutoff",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 9,
+      "resolvedBatch": "R2",
+      "resolution": "Stability chart current date and ten-year range use explicit Shanghai business dates."
     }
   ]
 }

@@ -1,0 +1,23 @@
+{
+  "task": "T04",
+  "phase": "R2-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "TZ": ["UTC", "Asia/Shanghai", "America/New_York"],
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": { "fixedInstant": "2026-09-27T17:00:00.000Z", "defaultFormTime": "empty", "userEnteredTime": "10:15" },
+  "output": [
+    { "TZ": "UTC", "tradeLedgerNowStr": "2026-09-28 01:00:00", "coreTradeNowSec": "2026-09-28 01:00:00", "tradeFormDate": "2026-09-28", "tradeFormDefaultTime": "01:00", "todayCN": "2026-09-28", "prefilledTimePreserved": "10:15" },
+    { "TZ": "Asia/Shanghai", "tradeLedgerNowStr": "2026-09-28 01:00:00", "coreTradeNowSec": "2026-09-28 01:00:00", "tradeFormDate": "2026-09-28", "tradeFormDefaultTime": "01:00", "todayCN": "2026-09-28", "prefilledTimePreserved": "10:15" },
+    { "TZ": "America/New_York", "tradeLedgerNowStr": "2026-09-28 01:00:00", "coreTradeNowSec": "2026-09-28 01:00:00", "tradeFormDate": "2026-09-28", "tradeFormDefaultTime": "01:00", "todayCN": "2026-09-28", "prefilledTimePreserved": "10:15" }
+  ],
+  "userTimeContract": { "input": "10:15", "observedBehavior": "VM 行为测试确认初始化不会覆盖非空的用户时间。" },
+  "reproduceCommand": "node server/test/date-time-r2.test.js",
+  "notes": [
+    "账本字符串格式 YYYY-MM-DD HH:mm:ss 保持不变，时间明确格式化为上海本地时间。",
+    "core-returns 的调用与快照边界未改；本批只修共享时间入口。",
+    "测试没有连接数据库、读取真实账本或执行写入。"
+  ]
+}

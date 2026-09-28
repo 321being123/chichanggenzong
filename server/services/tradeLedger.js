@@ -16,6 +16,7 @@
 const { pool } = require('../db/connection');
 const { round } = require('../db/util');
 const { todayCN, fetchQuotesByCodes } = require('../services/market');
+const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 const { resolveAmbiguousSecurity } = require('./securityIdentity');
 
@@ -571,11 +572,9 @@ async function deleteCashFlow(username, accountName, flowId, expectedVersion = n
 
 // 当前时间字符串 YYYY-MM-DD HH:MM:SS
 function nowStr() {
-  const d = new Date();
-  const cn = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
-  const p = n => String(n).padStart(2, '0');
-  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate()) + ' ' +
-    p(cn.getUTCHours()) + ':' + p(cn.getUTCMinutes()) + ':' + p(cn.getUTCSeconds());
+  const value = CoreDate.dateTimeInZone(new Date(), 'Asia/Shanghai');
+  if (!value) throw new TypeError('无法计算上海账本时间');
+  return value;
 }
 
 // 新增现金流（方案阶段二-2：局部接口替代 saveData 全量保存）
@@ -655,4 +654,5 @@ module.exports = {
   splitTradeDateTime,
   bizError,
   tradeNetDelta,
+  nowStr,
 };

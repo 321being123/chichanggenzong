@@ -4,6 +4,9 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
+const loginHtml = fs.readFileSync(path.join(root, 'public', 'login.html'), 'utf8');
+const adminHtml = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+const coreTradeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'core-trade.js'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis.js'), 'utf8');
 const chartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-chart.js'), 'utf8');
 const valuationChartScript = fs.readFileSync(path.join(root, 'public', 'js', 'stock-analysis-valuation-chart.js'), 'utf8');
@@ -13,6 +16,7 @@ const dateRangeScript = fs.readFileSync(path.join(root, 'public', 'shared', 'dat
 const analysisCss = fs.readFileSync(path.join(root, 'public', 'css', 'stock-analysis.css'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css'), 'utf8');
 const utilsScript = fs.readFileSync(path.join(root, 'public', 'js', 'utils.js'), 'utf8');
+const appVersion = require(path.join(root, 'package.json')).appVersion;
 const holdingsCharts = [
   fs.readFileSync(path.join(root, 'public', 'shared', 'core-tables.js'), 'utf8'),
   fs.readFileSync(path.join(root, 'public', 'shared', 'core-account.js'), 'utf8'),
@@ -52,6 +56,22 @@ assert.ok(html.includes('js/stock-analysis-chart.js'), '缺少盈利分红图表
 assert.ok(chartScript.includes('dividend_history'), '缺少历史分红记录渲染');
 assert.ok(html.includes('shared/date-range-control.js'), '缺少公共时间范围组件引用');
 assert.ok(dateRangeScript.includes('is-active'), '公共时间范围组件缺少选中状态');
+assert.ok(dateRangeScript.includes('CoreDate.subtractYears') && !dateRangeScript.includes('setFullYear'), '日期区间必须按业务日期计算年份范围');
+assert.ok(valuationChartScript.includes('CoreDate.subtractYears(end,state.activeYears||10)'), '估值图表必须按纯业务日期计算开始日');
+assert.ok(chartScript.includes("CoreDate.todayInZone('Asia/Shanghai')") && chartScript.includes('CoreDate.subtractYears(endDefault,10)'), '稳定性图表必须以上海业务日作为默认区间结束日');
+assert.ok(utilsScript.includes("CoreDate.todayInZone('Asia/Shanghai')"), '页面 todayCN 必须委托共享日期工具');
+assert.ok(coreTradeScript.includes("CoreDate.dateTimeInZone(new Date(), 'Asia/Shanghai')"), '交易时间必须由共享工具明确转换到上海时区');
+assert.ok(html.indexOf('shared/core-date.js') < html.indexOf('js/utils.js') &&
+  html.indexOf('shared/core-date.js') < html.indexOf('shared/core-trade.js') &&
+  html.indexOf('shared/core-date.js') < html.indexOf('shared/date-range-control.js'), '共享日期工具必须先于前端消费者加载');
+for (const asset of ['shared/core-date.js', 'js/utils.js', 'shared/core-trade.js', 'shared/date-range-control.js', 'js/stock-analysis-chart.js', 'js/stock-analysis-valuation-chart.js']) {
+  assert.ok(html.includes(`${asset}?v=${appVersion}`), `${asset} 资源版本必须与应用版本一致`);
+}
+for (const [name, page] of [['登录页', loginHtml], ['管理页', adminHtml]]) {
+  assert.ok(page.indexOf('shared/core-date.js') < page.indexOf('js/utils.js'), `${name}必须先加载共享日期工具`);
+  assert.ok(page.includes(`shared/core-date.js?v=${appVersion}`), `${name}共享日期工具资源版本必须与应用版本一致`);
+  assert.ok(page.includes(`js/utils.js?v=${appVersion}`), `${name}日期消费者资源版本必须与应用版本一致`);
+}
 assert.ok(chartScript.includes('未分红'), '历史分红列表未补齐未分红年度');
 assert.ok(chartScript.includes('historyMap') && chartScript.includes('股东大会通过'), '历史分红缺少同方案生命周期去重');
 assert.ok(html.includes('js/stock-analysis-valuation-chart.js'), '缺少股价估值分位图表脚本引用');

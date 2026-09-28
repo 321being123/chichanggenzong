@@ -1,0 +1,24 @@
+{
+  "task": "T03",
+  "phase": "R2-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0 (本用例未访问数据库)",
+  "pgVersion": "17.2 (本用例未访问数据库)",
+  "TZ": ["UTC", "Asia/Shanghai", "America/New_York"],
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": { "fixedInstant": "2026-09-27T17:00:00.000Z", "plainBusinessDate": "2026-09-25" },
+  "output": [
+    { "TZ": "UTC", "fxRateBusinessDate": "2026-09-28", "plainBusinessDate": "2026-09-25", "holidayCacheDay": "2026-09-28" },
+    { "TZ": "Asia/Shanghai", "fxRateBusinessDate": "2026-09-28", "plainBusinessDate": "2026-09-25", "holidayCacheDay": "2026-09-28" },
+    { "TZ": "America/New_York", "fxRateBusinessDate": "2026-09-28", "plainBusinessDate": "2026-09-25", "holidayCacheDay": "2026-09-28" }
+  ],
+  "reproduceCommand": "node server/test/date-time-r2.test.js",
+  "notes": [
+    "固定时刻 2026-09-27T17:00:00Z 在三个进程时区均映射到上海业务日 2026-09-28；纯日期文本保持原日。",
+    "节假日缓存日委托共享上海日期工具；缓存读取与过期策略未改。",
+    "本项没有查询、外部调用或业务数据读写。"
+  ]
+}

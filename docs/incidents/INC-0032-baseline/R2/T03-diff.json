@@ -1,0 +1,11 @@
+{
+  "task": "T03",
+  "expected": "三个进程时区下汇率时刻映射为同一上海业务日；纯日期保持原值；节假日缓存日期一致。",
+  "changes": [
+    { "field": "fxRateBusinessDate", "beforeByTZ": ["2026-09-28", "2026-09-27", "2026-09-28"], "afterByTZ": ["2026-09-28", "2026-09-28", "2026-09-28"], "assessment": "符合预期，消除上海进程偏前一天。" },
+    { "field": "holidayCacheDay", "beforeByTZ": ["2026-09-28", "2026-09-27", "2026-09-28"], "afterByTZ": ["2026-09-28", "2026-09-28", "2026-09-28"], "assessment": "符合预期；缓存策略未变。" },
+    { "field": "plainBusinessDate", "before": "2026-09-25", "after": "2026-09-25", "assessment": "业务日期原值保留。" }
+  ],
+  "dataWrites": 0,
+  "externalCalls": 0
+}

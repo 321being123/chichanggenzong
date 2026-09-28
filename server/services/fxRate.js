@@ -1,12 +1,15 @@
 // 全站港币→人民币汇率单一来源。
 // accounts.hk_rate 和 nav_history.hk_rate 只作为旧版本兼容缓存，不能作为新估值依据。
 const { pool } = require('../db/connection');
+const CoreDate = require('../../public/shared/core-date.js');
 
 function cnDate(value) {
-  const d = value instanceof Date ? value : new Date(value || Date.now());
-  const cn = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
-  const pad = n => String(n).padStart(2, '0');
-  return cn.getUTCFullYear() + '-' + pad(cn.getUTCMonth() + 1) + '-' + pad(cn.getUTCDate());
+  const businessDate = CoreDate.normalizeBusinessDate(value);
+  if (businessDate) return businessDate;
+  const instant = value instanceof Date ? value : new Date(value || Date.now());
+  const date = CoreDate.dateInZone(instant, 'Asia/Shanghai');
+  if (!date) throw new TypeError('汇率日期必须是 YYYY-MM-DD 业务日期或带时区的有效时刻');
+  return date;
 }
 
 function validRate(value) {

@@ -259,10 +259,7 @@ function api(path) { return BASE_URL + path; }
 // 东八区（北京时间）日期 YYYY-MM-DD
 // 避免服务器时区非东八区时，净值日期 / 交易日期差一天（尤其凌晨）
 function todayCN() {
-  var now = new Date();
-  var cn = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
-  var p = function (n) { return String(n).padStart(2, '0'); };
-  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  return CoreDate.todayInZone('Asia/Shanghai');
 }
 
 // 行情时间统一换算为北京时间日期，收盘价只能写入它实际所属的交易日。

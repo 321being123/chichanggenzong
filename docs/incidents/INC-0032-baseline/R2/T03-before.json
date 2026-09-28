@@ -1,0 +1,23 @@
+{
+  "task": "T03",
+  "phase": "B00-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": ["UTC", "Asia/Shanghai", "America/New_York"],
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": { "fixedInstant": "2026-09-27T17:00:00.000Z" },
+  "output": [
+    { "TZ": "UTC", "fxRateBusinessDate": "2026-09-28", "holidayCacheDay": "2026-09-28" },
+    { "TZ": "Asia/Shanghai", "fxRateBusinessDate": "2026-09-27", "holidayCacheDay": "2026-09-27" },
+    { "TZ": "America/New_York", "fxRateBusinessDate": "2026-09-28", "holidayCacheDay": "2026-09-28" }
+  ],
+  "reproduceCommand": "固定 instant 为 2026-09-27T17:00:00Z；fxRate.cnDate 的原函数输出见 R1/T01-before.json 中三个 TZ 的 fxRateCnDate。holidays.todayCN 与其采用相同 offset 公式，读取源代码核对其结果。",
+  "notes": [
+    "基线直接运行 fxRate.cnDate；节假日缓存日的输出按 holidays.js 中逐字相同的原始公式推导，R2 改后加入独立跨 TZ 行为回归。",
+    "本项只测日期边界，不调用外部行情，不读取或写入业务数据。"
+  ]
+}

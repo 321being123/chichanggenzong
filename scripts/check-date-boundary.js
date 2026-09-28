@@ -11,17 +11,49 @@ const EXCLUDED = /(^|\/)(vendor|node_modules|venv|\.venv|dist|build|__pycache__)
 
 function ruleRegex(ruleId) {
   if (ruleId === 'timezone-offset-480') return /getTimezoneOffset\s*\(\s*\)\s*\+\s*480/g;
+  if (ruleId === 'local-midnight-year-range') {
+    return /new Date\([^)]*T00:00:00[^)]*\)[\s\S]{0,220}?setFullYear\([\s\S]{0,100}?getFullYear\(\)[\s\S]{0,100}?-[\s\S]{0,100}?\)[\s\S]{0,220}?toISOString\(\)\.slice\(0,\s*10\)/g;
+  }
+  if (ruleId === 'utc-business-today-range') return /var\s+today\s*=\s*new Date\(\)\s*,\s*endDefault\s*=\s*today\.toISOString\(\)\.slice\(0,\s*10\)/g;
   return null;
 }
 
+function functionEndAt(source, openBrace) {
+  let depth = 0;
+  let quote = '';
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = openBrace; index < source.length; index++) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (lineComment) { if (char === '\n') lineComment = false; continue; }
+    if (blockComment) { if (char === '*' && next === '/') { blockComment = false; index++; } continue; }
+    if (quote) {
+      if (char === '\\') { index++; continue; }
+      if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '/' && next === '/') { lineComment = true; index++; continue; }
+    if (char === '/' && next === '*') { blockComment = true; index++; continue; }
+    if (char === '\'' || char === '"' || char === '`') { quote = char; continue; }
+    if (char === '{') depth++;
+    else if (char === '}' && --depth === 0) return index;
+  }
+  return source.length;
+}
+
 function functionNameAt(source, index) {
-  const prefix = source.slice(0, index);
   const candidates = [];
   const declarations = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g;
   const assigned = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b[^({]*|\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{/g;
   for (const regex of [declarations, assigned]) {
     let match;
-    while ((match = regex.exec(prefix))) candidates.push({ index: match.index, name: match[1] });
+    while ((match = regex.exec(source))) {
+      if (match.index > index) break;
+      const openBrace = regex.lastIndex - 1;
+      const end = functionEndAt(source, openBrace);
+      if (index >= openBrace && index <= end) candidates.push({ index: match.index, name: match[1] });
+    }
   }
   candidates.sort((a, b) => a.index - b.index);
   return candidates.length ? candidates[candidates.length - 1].name : '<module>';

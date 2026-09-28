@@ -1,0 +1,22 @@
+{
+  "task": "T05",
+  "phase": "R2-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
+  "nodeVersion": "v22.22.3",
+  "TZ": ["UTC", "Asia/Shanghai", "America/New_York"],
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": { "endDate": "2026-09-28", "dateRangeYears": 1, "valuationChartDefaultYears": 10, "stabilityChartDefaultYears": 10, "leapDate": "2024-02-29", "leapYears": 1 },
+  "output": [
+    { "TZ": "UTC", "dateRangeStart": "2025-09-28", "valuationChartStart": "2016-09-28", "stabilityChartEnd": "2026-09-28", "stabilityChartStart": "2016-09-28" },
+    { "TZ": "Asia/Shanghai", "dateRangeStart": "2025-09-28", "valuationChartStart": "2016-09-28", "stabilityChartEnd": "2026-09-28", "stabilityChartStart": "2016-09-28" },
+    { "TZ": "America/New_York", "dateRangeStart": "2025-09-28", "valuationChartStart": "2016-09-28", "stabilityChartEnd": "2026-09-28", "stabilityChartStart": "2016-09-28" }
+  ],
+  "leapDay": { "sourceFormulaResult": "2023-03-01", "expectedResult": "2023-02-28", "observedResult": "2023-02-28" },
+  "reproduceCommand": "node server/test/date-time-r2.test.js",
+  "notes": [
+    "日期区间按钮及稳定性/分红图表通过真实 VM 行为夹具验证；估值图表使用相同 CoreDate.subtractYears 纯业务日期计算，另由前端结构测试确认调用该方法。",
+    "无数据库查询或外部调用。"
+  ]
+}

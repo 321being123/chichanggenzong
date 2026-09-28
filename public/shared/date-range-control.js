@@ -11,7 +11,7 @@
     var start=root.querySelector('[data-role="start"]'),end=root.querySelector('[data-role="end"]');
     function emit(activeYears){if(start.value&&end.value)options.onChange({start:start.value,end:end.value,activeYears:activeYears||0});}
     start.addEventListener('change',function(){emit(0);});end.addEventListener('change',function(){emit(0);});
-    Array.prototype.forEach.call(root.querySelectorAll('[data-years]'),function(button){button.addEventListener('click',function(){var years=Number(button.getAttribute('data-years')),endDate=end.value?new Date(end.value+'T00:00:00'):new Date(),startDate=new Date(endDate);startDate.setFullYear(startDate.getFullYear()-years);start.value=startDate.toISOString().slice(0,10);emit(years);});});
+    Array.prototype.forEach.call(root.querySelectorAll('[data-years]'),function(button){button.addEventListener('click',function(){var years=Number(button.getAttribute('data-years')),endDate=end.value||CoreDate.todayInZone('Asia/Shanghai'),startDate=CoreDate.subtractYears(endDate,years);if(!startDate)return;start.value=startDate;emit(years);});});
   }
   window.DateRangeControl={render:render,bind:bind};
 })();

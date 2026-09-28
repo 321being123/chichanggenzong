@@ -1,0 +1,23 @@
+{
+  "task": "T13-US10",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "utcCap": "2026-09-27",
+    "shanghaiBusinessDate": "2026-09-28"
+  },
+  "actual": {
+    "resultByProcessTZ": {
+      "UTC": "2026-09-28",
+      "AsiaShanghai": "2026-09-28",
+      "AmericaNewYork": "2026-09-28"
+    },
+    "bothImportPathsUseShanghai": true,
+    "sourceDatePreserved": true,
+    "maxForwardCalendarDays": 6
+  },
+  "change": "上传入口与 CSV 脚本均使用上海日期做末端截断；不改变来源日或填充规则。",
+  "verificationCommand": "node server/test/date-time-r4.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

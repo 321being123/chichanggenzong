@@ -1,0 +1,25 @@
+{
+  "task": "T11",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "excelJsReadType": "Date",
+    "workerCellText": "Fri Sep 25 2026 08:00:00 GMT+0800",
+    "serverNormalize": "2026-09-25",
+    "browserNormalize": "2026-09-25"
+  },
+  "actual": {
+    "processTimeZones": [
+      "UTC",
+      "Asia/Shanghai",
+      "America/New_York"
+    ],
+    "serverNormalize": "2026-09-25",
+    "browserNormalize": "2026-09-25",
+    "excelDateUTCArithmeticRetained": true
+  },
+  "change": "真实 ExcelJS 库生成/读取的合成 XLSX 单元格通过安全解析 Worker；不将 Date 一律加 8 小时。没有使用券商私人文件。",
+  "verificationCommand": "node server/test/date-time-r4.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

@@ -1,0 +1,23 @@
+{
+  "task": "T07",
+  "baselineCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "targetDateConsumed": false,
+    "successWatermark": "2026-09-27",
+    "historyTargetSupported": false
+  },
+  "actual": {
+    "targetDateStatus": {
+      "historical": "historical_target_unsupported",
+      "future": "future_target_unsupported",
+      "today": "accepted"
+    },
+    "watermarkSource": "latest_market_trade_date",
+    "missingActualDateCountsAsSuccess": false
+  },
+  "change": "历史及未来目标显式阻断，成功水位改用真实行情日期；不声称重建了历史快照。",
+  "verificationCommand": "node server/test/date-time-r3.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

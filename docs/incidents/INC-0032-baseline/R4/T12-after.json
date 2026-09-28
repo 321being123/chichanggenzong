@@ -1,0 +1,30 @@
+{
+  "task": "T12",
+  "phase": "R4-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "nodeVersion": "v22.22.3",
+  "pythonVersion": "3.12.13",
+  "pgVersion": "17.2",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "not queried",
+  "input": {
+    "tencentQuoteTime": "20260925001500",
+    "announcementDate": "2026-09-25",
+    "hkDailyDates": [
+      "2026-09-25",
+      "20260925"
+    ]
+  },
+  "output": {
+    "quoteInstant": "2026-09-25T00:15:00+08:00",
+    "quoteBusinessDate": "2026-09-25",
+    "announcementDatePreserved": true,
+    "hkDailyDatesNormalized": [
+      "2026-09-25",
+      "2026-09-25"
+    ]
+  },
+  "dataAccess": "固定输入的自动回归/源码合同检查；未查询生产数据，未触发生产写入。",
+  "reproduceCommand": "node server/test/date-time-r4.test.js"
+}

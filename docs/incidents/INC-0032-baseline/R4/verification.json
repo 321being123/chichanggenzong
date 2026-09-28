@@ -1,0 +1,56 @@
+{
+  "batch": "R4",
+  "phase": "local-after",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "appVersion": "0.8.2.5",
+  "productionVersion": "0.8.2.2",
+  "environment": {
+    "node": "v22.22.3",
+    "python": "3.12.13",
+    "postgres": "17.2",
+    "testDatabase": "portfolio_test",
+    "postgresStoppedAfterTests": true
+  },
+  "checks": {
+    "focused": {
+      "node server/test/date-time-r3.test.js": "passed",
+      "node server/test/date-time-r4.test.js": "passed"
+    },
+    "npm.cmd run test:all": {
+      "status": "passed",
+      "passed": 152,
+      "failed": 0,
+      "skipped": 0
+    },
+    "npm.cmd run check:date": {
+      "status": "passed",
+      "sourceFiles": 441,
+      "fixedRules": 16,
+      "unresolvedMatches": 0
+    },
+    "npm.cmd run check:knowledge": {
+      "status": "passed",
+      "matchedRoutes": 10
+    },
+    "git diff --check": "passed"
+  },
+  "production": {
+    "queries": 0,
+    "writes": 0,
+    "deployed": false,
+    "historicalRecalculation": false
+  },
+  "runtimeNotRun": {
+    "reason": "低性能模式下未启动 Web/Worker/浏览器或本地开发服务。",
+    "checks": [
+      "/health",
+      "相关页面与接口真实响应",
+      "静态资源 HTTP 响应",
+      "热缓存/重启/旧 ETag 与冷热性能"
+    ]
+  },
+  "limitations": [
+    "未收到 US/10 手工文件发布者和真实旧文件样本。",
+    "未核对生产边界日数据或账户历史缺口。"
+  ]
+}

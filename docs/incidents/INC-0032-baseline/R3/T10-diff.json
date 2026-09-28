@@ -1,0 +1,19 @@
+{
+  "task": "T10",
+  "baselineCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "runTargetDate": "2026-09-25",
+    "subStageCurrentTimeZoneExplicit": false,
+    "calendarCurrentDateZoneExplicit": false
+  },
+  "actual": {
+    "explicitZone": "Asia/Shanghai",
+    "targetArgument": "--today preserved",
+    "fixedInstantResult": "2026-09-28"
+  },
+  "change": "IPO 日历与同步子阶段把当前时区显式设为 Asia/Shanghai，同时保留 --today。",
+  "verificationCommand": "python -m unittest ipo-report.test_ipo_unit && npm.cmd run test:all",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

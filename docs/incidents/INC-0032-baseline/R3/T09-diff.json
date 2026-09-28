@@ -1,0 +1,25 @@
+{
+  "task": "T09",
+  "baselineCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "exactHistoricalRateLookup": false,
+    "historicalTargetMayCallCurrentRateSource": true
+  },
+  "actual": {
+    "mockExactLookup": {
+      "requestedDate": "2026-09-25",
+      "rate": 0.91,
+      "externalCalls": 0
+    },
+    "mockMissingLookup": {
+      "reason": "historical_rate_missing",
+      "externalCalls": 0
+    },
+    "watermark": "max(rate_date)"
+  },
+  "change": "历史汇率按目标日精确读取；测试使用 mock 值，未连接生产汇率记录。",
+  "verificationCommand": "node server/test/date-time-r3.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

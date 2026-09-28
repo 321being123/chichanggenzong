@@ -1,0 +1,19 @@
+{
+  "task": "T08",
+  "baselineCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "subscriptionBranchDataAsOf": "targetDate",
+    "fullRefreshBranchDataAsOf": "2026-09-27",
+    "contractConsistent": false
+  },
+  "actual": {
+    "successfulBranchesDataAsOf": "normalizedTargetDate",
+    "sourceAnnouncementAndListingDates": "preserved",
+    "runnerPassesBusinessDate": true
+  },
+  "change": "IPO 各成功分支统一采用业务目标日作为分区水位，来源事实日期仍保留。",
+  "verificationCommand": "node server/test/date-time-r3.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

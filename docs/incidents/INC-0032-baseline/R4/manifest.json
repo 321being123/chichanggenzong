@@ -1,28 +1,88 @@
 {
   "batch": "R4",
-  "phase": "B00-before",
-  "baselineCommit": "a76709d",
-  "sourceCommit": "a76709d",
+  "phase": "local-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "batchCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
   "nodeVersion": "v22.22.3",
-  "pgDriverVersion": "8.22.0",
+  "pythonVersion": "3.12.13",
   "pgVersion": "17.2",
-  "TZ": "Asia/Shanghai",
+  "database": "portfolio_test",
   "businessDate": "2026-09-28",
-  "actualDataDate": "2026-09-25",
-  "externalCalls": 0,
+  "productionCalls": 0,
+  "productionWrites": 0,
   "files": [
+    {
+      "path": "T11-after.json",
+      "sha256": "904042e8b6377e8c870b64765cb135af720cd9ecf3f7a103759375cec0873b19"
+    },
     {
       "path": "T11-before.json",
       "sha256": "e1582123e60d0edc1792b2ab43591affd223038c095baffa72dbd71ee727b7f8"
+    },
+    {
+      "path": "T11-decision.md",
+      "sha256": "a3b13c493bec8cc11cb248bed64fdac604d5b4f59b63377b1cef1e44e45f753a"
+    },
+    {
+      "path": "T11-diff.json",
+      "sha256": "75ab8c940aa94c3642884850a74b47228fe30d3dbb395d09ee7a307383b216a6"
+    },
+    {
+      "path": "T12-after.json",
+      "sha256": "60bc9525fe39de3b90b03f66fbabd0e97b33b47e04e293f62b13fd9e56171a71"
     },
     {
       "path": "T12-before.json",
       "sha256": "983fdb076e39485565d096e8c8c5160df79fa68abfa451a73e61764b409920d1"
     },
     {
+      "path": "T12-decision.md",
+      "sha256": "097f8a8c2ff8dea907aff25bec37618a057545e74af9d00efb796055d1f1d446"
+    },
+    {
+      "path": "T12-diff.json",
+      "sha256": "75bf348714dd2138733d51a0049058c79ae17795e684bc0d132743fbb6eb73ed"
+    },
+    {
+      "path": "T13-US10-after.json",
+      "sha256": "b1686a0afd8033ef269e1962e00f4a161ee6a3f2604bf49188989d3ed2738396"
+    },
+    {
+      "path": "T13-US10-before.json",
+      "sha256": "e4c116d0c4ab3b70412d41ee7d5d3e2cbc38e23bdf6047b163756e0a40eb937c"
+    },
+    {
+      "path": "T13-US10-decision.md",
+      "sha256": "f7341d85ca2568b2c16416a11a92a7a97d5d5dfed166fe749392c541484e01da"
+    },
+    {
+      "path": "T13-US10-diff.json",
+      "sha256": "f00adcdc17221e5906f37b5cfb45bd18c323d016a7b2e9e47f34499db55c836f"
+    },
+    {
+      "path": "T14-after.json",
+      "sha256": "b62d2c95f35a21b9347765d14047f55bd3e506658797c197c55bf32dc55ab937"
+    },
+    {
       "path": "T14-before.json",
       "sha256": "a76223365ad8e0d5b45e8e3793219f78e3fea9b291fcfef4390da87bf57ea232"
+    },
+    {
+      "path": "T14-decision.md",
+      "sha256": "9c7986ef95f2b4a5eeec5456904bf73904ca9dbfd7fec89191ce244ad501624e"
+    },
+    {
+      "path": "T14-diff.json",
+      "sha256": "fed92e8d2f47fd78d3fd66012224fb6a3e3c395c5abb6e2b1bc63b772d5f5106"
+    },
+    {
+      "path": "release.md",
+      "sha256": "61ae66a9e7c9d377af18620cf1e36c3309f098bb955ccecd9113622c7e889e78"
+    },
+    {
+      "path": "verification.json",
+      "sha256": "2443a6ef56703877bf1f63cdc63769f1db7bb6214ce0975931785d2255f9896b"
     }
-  ],
-  "baselineMethod": "In-memory ExcelJS XLSX round-trip, synthetic PostgreSQL DATE decoder value, source-contract review, and source-only scan; no user file or private account data."
+  ]
 }

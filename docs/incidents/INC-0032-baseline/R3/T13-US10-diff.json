@@ -1,0 +1,23 @@
+{
+  "task": "T13-US10",
+  "baselineCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "oldCapSource": "new Date().toISOString().slice(0, 10)",
+    "oldCap": "2026-09-27"
+  },
+  "actual": {
+    "newCapSource": "CoreDate.todayInZone('Asia/Shanghai')",
+    "resultByProcessTZ": {
+      "UTC": "2026-09-28",
+      "AsiaShanghai": "2026-09-28",
+      "AmericaNewYork": "2026-09-28"
+    },
+    "sourceDatePreserved": true,
+    "maxForwardCalendarDays": 6
+  },
+  "change": "按用户确认的北京时间限制当前日期上限；观察日及现有 6 日向前规则保留，真实原始文件样本未取得。",
+  "verificationCommand": "node server/test/date-time-r4.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

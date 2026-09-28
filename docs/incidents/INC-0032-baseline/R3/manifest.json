@@ -1,20 +1,96 @@
 {
   "batch": "R3",
-  "phase": "B00-before",
-  "baselineCommit": "a76709d",
-  "sourceCommit": "a76709d",
+  "phase": "local-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "batchCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
   "nodeVersion": "v22.22.3",
-  "pgDriverVersion": "8.22.0",
+  "pythonVersion": "3.12.13",
   "pgVersion": "17.2",
-  "databaseTimeZone": "Asia/Shanghai",
+  "database": "portfolio_test",
   "businessDate": "2026-09-28",
-  "actualDataDate": "2026-09-25",
-  "externalCalls": 0,
+  "productionCalls": 0,
+  "productionWrites": 0,
   "files": [
+    {
+      "path": "T07-after.json",
+      "sha256": "0e257bc43b65e483a985d852ff79bbaf8c2b1492ad3b58c9f2614d5473233168"
+    },
+    {
+      "path": "T07-before.json",
+      "sha256": "65626115aa1df09aa59a9633ededfa73e1c1d6ce3a81192f981e7144094203cf"
+    },
+    {
+      "path": "T07-diff.json",
+      "sha256": "f7cd485d95214b82cc1dc24f657fae871cf5c399f225f6b42d598debe26ec335"
+    },
+    {
+      "path": "T08-after.json",
+      "sha256": "2934a683a9d2d7f31e84ebf810d6c8f3e683b9e9bf68260e102f55e216f7c6a3"
+    },
+    {
+      "path": "T08-before.json",
+      "sha256": "fea3df051ecd13381f9901581f2b26ec812642a6e69b954357a39b5db29a786a"
+    },
+    {
+      "path": "T08-diff.json",
+      "sha256": "9feea73cbaf37b10b63d368d4caa0cfe9d2e78777156a0e5fd8c9ad4bd746b96"
+    },
+    {
+      "path": "T09-after.json",
+      "sha256": "bfc34bc8a2a569785934c4a57c6da47cff4d2f594a233b3ea5cd910064ae402b"
+    },
+    {
+      "path": "T09-before.json",
+      "sha256": "a617e7e10c96641e5ea91eecfea8315fe829e704d7d5b96f86444c47b0c74179"
+    },
+    {
+      "path": "T09-diff.json",
+      "sha256": "1d394ab111badc7a214e6be425f258be7efb195fd38a0f33b94297202ffa092e"
+    },
+    {
+      "path": "T10-after.json",
+      "sha256": "9aa4b15f3d544350e4c173056c59e71217f18dba7b4c2ebf014494402613f589"
+    },
+    {
+      "path": "T10-before.json",
+      "sha256": "d2b100f0eb8870c281439281a4f096dbee2aeef0f6eccb1fd756352fb479a7a9"
+    },
+    {
+      "path": "T10-diff.json",
+      "sha256": "a97b000dc960f8ebc7c5e2be7fbe661ffdbf8f42432dd61bd9b38132d71a2d2d"
+    },
+    {
+      "path": "T13-US10-after.json",
+      "sha256": "95de2667c0034868d208d57e0ea6b23d146f1e8fcb2146f0fd8cbbda64cf9ab9"
+    },
+    {
+      "path": "T13-US10-diff.json",
+      "sha256": "87ea860b43a67103d61d93969a662d2589facd93580135b1563b06afb461e96a"
+    },
+    {
+      "path": "T13-before-R3.json",
+      "sha256": "36aadcd4d67fadf6b2a8fb622cfaf2943e262d6727f1a7a8c9238ab887005850"
+    },
     {
       "path": "T13-before.json",
       "sha256": "3f8f8da85b25ac37e4314d4d7e35a93a5c9a50055d9e1016e1c3c4bbcd60725e"
+    },
+    {
+      "path": "T13-chart-after.json",
+      "sha256": "73d4b8d44852395efc332aff7af291b83b16199dd99c54455089f0b8eeef8df0"
+    },
+    {
+      "path": "T13-chart-diff.json",
+      "sha256": "3a9d8f29bd4fcc1975f6711f8a1b9029faf383efeed48c4fd07292f7e441d20f"
+    },
+    {
+      "path": "release.md",
+      "sha256": "db70e8124748657fab6e2c623794428f1caed156d0f7eb82fbe3b0553041c02b"
+    },
+    {
+      "path": "verification.json",
+      "sha256": "8262e38fdade3cd41baf5df6743c3719d3ef81023c6c0300b7cb97bb66102ab9"
     }
-  ],
-  "baselineMethod": "Fixed instant and date-only input against original market-cycle filtering code; no browser, screenshots, or upstream requests."
+  ]
 }

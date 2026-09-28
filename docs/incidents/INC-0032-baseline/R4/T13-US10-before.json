@@ -1,0 +1,19 @@
+{
+  "task": "T13-US10",
+  "phase": "R4-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "nodeVersion": "v22.22.3",
+  "businessDate": "2026-09-28",
+  "input": {
+    "fixedInstant": "2026-09-27T16:30:00.000Z",
+    "zoneConfirmedByUser": "北京时间",
+    "capExpression": "new Date().toISOString().slice(0, 10)"
+  },
+  "output": {
+    "utcCap": "2026-09-27",
+    "shanghaiBusinessDate": "2026-09-28",
+    "sourceDatePreserved": true
+  },
+  "dataAccess": "复核 R3 提交中的原导入逻辑；未收到私人文件，未查询或写入生产数据。"
+}

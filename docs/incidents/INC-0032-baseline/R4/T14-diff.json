@@ -1,0 +1,20 @@
+{
+  "task": "T14",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "fixedRules": 10,
+    "unresolvedMatches": 6
+  },
+  "actual": {
+    "scanSourceFiles": 441,
+    "fixedRules": 16,
+    "unresolvedMatches": 0,
+    "oid1082": "保持 SQL ::text 边界、不改全局解析器",
+    "legalUtcCalendarArithmetic": "保留并文档说明"
+  },
+  "change": "剩余静态命中已分类；OID 1082 仅维修脚本设定，继续隔离使用。",
+  "verificationCommand": "npm.cmd run check:date && node server/test/date-time-r4.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

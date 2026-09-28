@@ -1,0 +1,28 @@
+{
+  "task": "T13-chart",
+  "phase": "R3-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "nodeVersion": "v22.22.3",
+  "pythonVersion": "3.12.13",
+  "pgVersion": "17.2",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "not queried",
+  "input": {
+    "range": "1y",
+    "fixedInstant": "2026-09-27T16:30:00.000Z",
+    "expectedCalendarCutoff": "2025-09-28"
+  },
+  "output": {
+    "processTimeZones": {
+      "UTC": "2025-09-28",
+      "AsiaShanghai": "2025-09-28",
+      "AmericaNewYork": "2025-09-28"
+    },
+    "sqlUsesDateParameter": true,
+    "sqlUsesCurrentDateArithmetic": false,
+    "cacheVersionIncludesCutoff": true
+  },
+  "dataAccess": "固定输入的自动回归/源码合同检查；未查询生产数据，未触发生产写入。",
+  "reproduceCommand": "node server/test/date-time-r3.test.js"
+}

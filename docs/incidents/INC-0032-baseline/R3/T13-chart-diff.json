@@ -1,0 +1,24 @@
+{
+  "task": "T13-chart",
+  "baselineCommit": "abde175e9417f43865a6a5334571ddc8ab49a624",
+  "sourceCommit": "d306b7bccf67071ce9017135c3563afc8913b37c",
+  "expected": {
+    "rangeCutoff": "2025-09-27",
+    "databaseCutoff": "CURRENT_DATE - 1 year",
+    "cacheIncludesCutoff": false
+  },
+  "actual": {
+    "processTimeZones": {
+      "UTC": "2025-09-28",
+      "AsiaShanghai": "2025-09-28",
+      "AmericaNewYork": "2025-09-28"
+    },
+    "sqlUsesDateParameter": true,
+    "sqlUsesCurrentDateArithmetic": false,
+    "cacheVersionIncludesCutoff": true
+  },
+  "change": "图表按上海业务日减日历年；查询绑定 DATE 截止值，首页缓存版本包含截止日。未验证生产是否存在边界行。",
+  "verificationCommand": "node server/test/date-time-r3.test.js",
+  "productionDataQueried": false,
+  "productionDataWritten": false
+}

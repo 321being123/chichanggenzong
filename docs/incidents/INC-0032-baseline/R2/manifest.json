@@ -1,6 +1,6 @@
 {
   "batch": "R2",
-  "phase": "B00-before",
+  "phase": "R2-verified",
   "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
   "sourceCommit": "2884884c122332e88a4fb27d7cf63fd8fcd7dbb7",
   "nodeVersion": "v22.22.3",
@@ -10,6 +10,52 @@
   "businessDate": "2026-09-28",
   "actualDataDate": "2026-09-25",
   "externalCalls": 0,
-  "files": [],
-  "baselineMethod": "复用 B00 固定时刻和 R1 已执行的三时区对照；改前公式仍在 R2 源码中，生产文件均未修改。T04 对未导出的前端函数明确标注按相同原公式推导，并在改后加入行为测试。"
+  "files": [
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T03-after.json",
+      "sha256": "54d8fb0ab59ab54a3b658570ed5baa10839a44e8021e5356fff3e3b5e2705093"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T03-before.json",
+      "sha256": "7929e7c957ef3bd457238ce1352bb11564889cfe36b93649a67c3d03850af1c4"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T03-diff.json",
+      "sha256": "d002c64e2cdfbbe47a6e05a8dc417eac33d1a57473ffd53368cafae2bf48dad5"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T04-after.json",
+      "sha256": "c9a1cbde32f6ac6bda770bec43ed457e863adbb920bd26fba8b6a5d199eaf491"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T04-before.json",
+      "sha256": "7210eb94fb4d391a0e89a9f012582b03a388559aec2cfd09b4e275adea9866a3"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T04-diff.json",
+      "sha256": "00dbdc268517e4bdbd530708300d89606c8d60c4d0d465f9d45fccbe9f6cbc38"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T05-after.json",
+      "sha256": "08838d70fc3a0c8e4e75f6fd5e540522678ae8e9a79c3c67f3975031d313d8e6"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T05-before.json",
+      "sha256": "e38736ba5d22141f41cbd98519365651591ef94ab2198169449a826b70662110"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/T05-diff.json",
+      "sha256": "4bd3cdd8e529e687662b67e1c007405254c5a954abae8e11d784fe086d539474"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/release.md",
+      "sha256": "de3a2ad6e90e8866c54c871ef01befecbf0594bcbee4b2874e07f8ff876b4520"
+    },
+    {
+      "path": "docs/incidents/INC-0032-baseline/R2/verification.json",
+      "sha256": "adc487b32f0f9e50eec398a73d671057518819740363b84d7884a101aba506c7"
+    }
+  ],
+  "baselineMethod": "复用 B00 固定时刻和 R1 已执行的三时区对照；改前公式仍在 R2 源码中，生产文件均未修改。T04 对未导出的前端函数明确标注按相同原公式推导，并在改后加入行为测试。",
+  "batchCommit": "f3eb3a2ca533004c6fb27b403f0f702af4e0a717"
 }

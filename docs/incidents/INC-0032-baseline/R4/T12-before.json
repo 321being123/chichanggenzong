@@ -1,0 +1,32 @@
+{
+  "task": "T12",
+  "phase": "B00-before",
+  "baselineCommit": "a76709d",
+  "sourceCommit": "a76709d",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "source": "node-postgres OID 1082 decoder applied to synthetic DATE literal",
+    "businessDate": "2026-09-25",
+    "valueType": "Date",
+    "iso": "2026-09-24T16:00:00.000Z"
+  },
+  "output": {
+    "analysisFreshness.isoDateSafe": "2026-09-24",
+    "arbitrageRules.buildEventKey": "HK:subscription:00001.HK:2026-09-24",
+    "hkDailyCoverage.isoDate": "2026-09-24"
+  },
+  "sourceContracts": {
+    "arbitrage": "The standard announcement mapper normalizes source event_date to YYYY-MM-DD; persistence appends T00:00:00Z. A Date object is a supported defensive input to buildEventKey, but not the standard mapper output.",
+    "hkDaily": "Candidate list_date is selected as ::text; Tushare trade_date is YYYYMMDD and Tencent trade_date is YYYY-MM-DD. These standard call paths do not pass a PostgreSQL Date object."
+  },
+  "reproduceCommand": "At a76709d in TZ=Asia/Shanghai, create d with pg.types.getTypeParser(1082,'text')('2026-09-25'), then call isoDateSafe(d), buildEventKey({market:'HK',strategyType:'subscription',canonicalCode:'00001.HK',announcedAt:d,sourceKey:'sample'}), and hkDailyCoverage.isoDate(d).",
+  "notes": [
+    "This proves the ambiguous Date fallback loses a business day when it receives a PostgreSQL DATE object.",
+    "No business table or account row was read."
+  ]
+}

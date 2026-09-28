@@ -1,0 +1,46 @@
+{
+  "task": "T01",
+  "phase": "R1-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "databaseTimeZone": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "fixedInstant": "2026-09-27T17:00:00.000Z",
+    "expectedShanghaiDate": "2026-09-28",
+    "expectedShanghaiDateTime": "2026-09-28 01:00:00",
+    "pgDateLiteral": "2026-09-25",
+    "processTimeZones": ["UTC", "Asia/Shanghai", "America/New_York"]
+  },
+  "output": [
+    { "TZ": "UTC", "businessDate": "2026-09-28", "displayTime": "2026-09-28 01:00:00", "pgDateBusinessDate": "2026-09-25", "fxMapKey": "2026-09-25" },
+    { "TZ": "Asia/Shanghai", "businessDate": "2026-09-28", "displayTime": "2026-09-28 01:00:00", "pgDateBusinessDate": "2026-09-25", "fxMapKey": "2026-09-25" },
+    { "TZ": "America/New_York", "businessDate": "2026-09-28", "displayTime": "2026-09-28 01:00:00", "pgDateBusinessDate": "2026-09-25", "fxMapKey": "2026-09-25" }
+  ],
+  "dstFallback": {
+    "newYorkBefore": "2026-11-01 01:59:59",
+    "newYorkAfter": "2026-11-01 01:00:00",
+    "shanghaiBefore": "2026-11-01 13:59:59",
+    "shanghaiAfter": "2026-11-01 14:00:00",
+    "utcInstantsDifferSeconds": 1
+  },
+  "performance": {
+    "fixedLoopIterations": 20000,
+    "previousDateConversionMs": 12.45,
+    "sharedIntlDateConversionMs": 47.81,
+    "productionMapPath": "SQL 将 rate_date 转为文本后严格校验；同条件循环约 8.50 ms/20000 次",
+    "databaseQueries": 1,
+    "externalCalls": 0,
+    "interpretation": "Intl 时区转换仅用于低频明确时刻入口；净值批量汇率索引改用 SQL 文本日期，避免在逐条持仓处理期间执行格式转换。数据库查询数与外部调用数未增加。"
+  },
+  "reproduceCommand": "npm.cmd run test:all（测试文件 server/test/core-date.test.js，使用 portfolio_test）；独立子进程分别设置 TZ=UTC、Asia/Shanghai、America/New_York，并使用固定时刻；DST 断言使用 2026-11-01T05:59:59Z 与 2026-11-01T06:00:00Z。",
+  "notes": [
+    "三个进程时区下，上海业务日期、显示时刻和 PostgreSQL DATE 业务日一致。",
+    "PG DATE 原始驱动值仍为 Date；业务路径使用 ::text 保留原始年月日。",
+    "性能循环为本地合成基准，不代表生产环境端到端耗时。"
+  ]
+}

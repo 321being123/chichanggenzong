@@ -1,0 +1,36 @@
+{
+  "task": "T13",
+  "phase": "B00-before",
+  "baselineCommit": "a76709d",
+  "sourceCommit": "a76709d",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "databaseTimeZone": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "range": "1y",
+    "fixedInstant": "2026-09-27T16:30:00.000Z",
+    "shanghaiBusinessDate": "2026-09-28",
+    "expectedCalendarCutoff": "2025-09-28",
+    "processTimeZones": ["UTC", "Asia/Shanghai", "America/New_York"]
+  },
+  "output": {
+    "marketCycleMetrics.rangeCutoff": "2025-09-27",
+    "UTC": "2025-09-27",
+    "Asia/Shanghai": "2025-09-27",
+    "America/New_York": "2025-09-27"
+  },
+  "contract": {
+    "route": "GET /api/market-volatility/history",
+    "historyDates": "DATE-only trade dates returned as text; CN/HK date ranges use the shared Shanghai/Hong Kong UTC+8 calendar day.",
+    "PGDateColumns": "market index/valuation and sovereign-yield trade_date/source_date are DATE; relevant SQL selects dates as text.",
+    "userVisibleEffect": "At Shanghai 00:30 the one-year date-only window starts one day early in the application filter."
+  },
+  "reproduceCommand": "At a76709d, call require('./server/services/marketCycleMetrics').rangeCutoff('1y', '2026-09-27T16:30:00.000Z') under each listed TZ.",
+  "notes": [
+    "The output is a chart-window cutoff, not an upstream market observation or source timestamp.",
+    "This synthetic boundary probe does not assert that production has a row on the exact cutoff date."
+  ]
+}

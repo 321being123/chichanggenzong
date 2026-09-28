@@ -1,0 +1,31 @@
+{
+  "task": "T11",
+  "phase": "B00-before",
+  "baselineCommit": "a76709d",
+  "sourceCommit": "a76709d",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "workbook": "in-memory ExcelJS XLSX workbook",
+    "sheet": "样本",
+    "cell": "A2",
+    "value": "2026-09-25 as Excel date serial",
+    "numFmt": "yyyy-mm-dd",
+    "privateUserFile": false
+  },
+  "output": {
+    "excelJsReadType": "Date",
+    "excelJsReadIso": "2026-09-25T00:00:00.000Z",
+    "isolatedParserWorkerCellText": "Fri Sep 25 2026 08:00:00 GMT+0800 (中国标准时间)",
+    "serverImportNormalizeDateCell": "2026-09-25",
+    "browserEarningsNormalizeDateObject": "2026-09-25",
+    "browserEarningsNormalizeWorkerText": "2026-09-25",
+    "sameDate": true
+  },
+  "reproduceCommand": "At a76709d, create an in-memory ExcelJS workbook with Date.UTC(2026,8,25), format A2 as yyyy-mm-dd, round-trip through excelParser.worker/safeParseExcel, then pass the returned cell text to importRoute.normalizeDateCell and core-earnings.normalizeDate.",
+  "decisionHint": "The actual project parser uses ExcelJS and serializes date cells as local text before the normalizers; this sample stays on 2026-09-25. Confirm CSV and legacy input contracts separately; do not change Excel serial UTC arithmetic based on this Date sample."
+}

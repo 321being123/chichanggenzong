@@ -1,0 +1,40 @@
+{
+  "task": "T14",
+  "phase": "B00-before",
+  "baselineCommit": "a76709d",
+  "sourceCommit": "a76709d",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "sourceScope": ["server", "public/js", "public/shared", "ipo-report", "scripts", "deploy"],
+    "datePatterns": ["getTimezoneOffset() + 480", "String(Date).slice(0, 10)", "business date from new Date().toISOString().slice(0, 10)"],
+    "parserSideEffectSearch": "setTypeParser(1082"
+  },
+  "output": {
+    "offsetFormulaFiles": 6,
+    "offsetFormulaOccurrences": 7,
+    "businessTodayWatermarks": [
+      "server/jobs/stockAnalysisRefresh.js:58 lastSuccessDate",
+      "server/jobs/stockAnalysisRefresh.js:82 lastSuccessDate",
+      "server/jobs/hkIpoSync.js:377 dataAsOf"
+    ],
+    "pgDateStringSlicing": [
+      "server/jobs/navSnapshot.js:71 tradeDay",
+      "server/services/navAttribution.js:126 trade_date",
+      "server/services/navAttribution.js:145 trade_date",
+      "server/services/navAttribution.js:156 trade_date",
+      "server/services/navAttribution.js:170 trade_date"
+    ],
+    "oid1082ParserSetters": ["server/scripts/repairFxRateHistory.js:4"],
+    "otherInitialClassification": "UTC calendar-day arithmetic with explicit T00:00:00Z and Excel serial conversion are intentional; all additional hits require contract-based review before a status is assigned."
+  },
+  "reproduceCommand": "At a76709d, search tracked JS/Python sources in the listed folders for the three date patterns and setTypeParser(1082; inspect current SQL schemas and call sites before classifying each hit.",
+  "notes": [
+    "The trade_date/date columns used by NAV replay must be checked against the TEXT schema and loaders; a String(...).slice expression is unsafe only if a PostgreSQL Date object can reach it.",
+    "No production data or account details are included."
+  ]
+}

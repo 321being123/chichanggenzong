@@ -9,14 +9,24 @@
 const { pool, loadAccountData, upsertNav, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts } = require('../services/marketState');
 const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
+const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 
 // 东八区日期 YYYY-MM-DD
 function cnDate(d) {
-  const x = new Date(d);
-  const cn = new Date(x.getTime() + (x.getTimezoneOffset() + 480) * 60000);
-  const p = n => String(n).padStart(2, '0');
-  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  const businessDate = CoreDate.normalizeBusinessDate(d);
+  if (businessDate) return businessDate;
+  const date = CoreDate.dateInZone(d, 'Asia/Shanghai');
+  if (!date) throw new TypeError('净值日期必须是有效业务日期或明确时区的时刻');
+  return date;
+}
+
+function buildFxByDate(rows) {
+  return new Map((rows || []).map(row => {
+    const date = CoreDate.normalizeBusinessDate(row.rate_date);
+    if (!date) throw new TypeError('汇率 rate_date 必须是 YYYY-MM-DD 文本');
+    return [date, Number(row.rate)];
+  }));
 }
 
 function dateText(value) {
@@ -187,11 +197,11 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
 
   const today = targetDate;
   const { rows: fxRows } = await pool.query(
-    `SELECT rate_date, rate::float8 AS rate FROM market.fx_rates
+    `SELECT rate_date::text AS rate_date, rate::float8 AS rate FROM market.fx_rates
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1`,
     [today]
   );
-  const fxByDate = new Map(fxRows.map(r => [r.rate_date instanceof Date ? cnDate(r.rate_date) : String(r.rate_date).slice(0, 10), Number(r.rate)]));
+  const fxByDate = buildFxByDate(fxRows);
   const sortedFx = [...fxByDate.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const fxRateForDate = (date, hkOpen) => {
     if (hkOpen) return fxByDate.get(date) || null;
@@ -364,4 +374,4 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
   }
 }
 
-module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate };
+module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate };

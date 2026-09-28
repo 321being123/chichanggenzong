@@ -1,0 +1,23 @@
+{
+  "batch": "R1",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "appVersion": "0.8.2.3",
+  "nodeVersion": "v22.22.3",
+  "pgVersion": "17.2",
+  "testDatabase": "portfolio_test",
+  "results": [
+    { "case": "V01 PG DATE", "tasks": ["T01", "T02"], "status": "passed", "command": "npm.cmd run test:all（server/test/core-date.test.js）", "evidence": "core-date.test.js 对测试库 DATE 常量和 ::text 进行真实查询；验证原始 Date、业务日期 2026-09-25、汇率 Map 精确命中。" },
+    { "case": "V02 上海凌晨", "tasks": ["T01"], "status": "passed", "command": "npm.cmd run test:all（server/test/core-date.test.js）", "evidence": "固定时刻 2026-09-27T17:00:00Z 在 UTC、上海、纽约进程下均得到上海日期 2026-09-28 和显示时刻 01:00:00。" },
+    { "case": "V04 跨时区与纽约回拨", "tasks": ["T01", "T02"], "status": "passed", "command": "npm.cmd run test:all（server/test/core-date.test.js）", "evidence": "子进程核对三个 TZ；2026-11-01T05:59:59Z / 06:00:00Z 在纽约显示 01:59:59 / 01:00:00，在上海显示 13:59:59 / 14:00:00。" },
+    { "case": "V07 跨市场", "tasks": ["T02"], "status": "passed", "command": "npm.cmd run test:all（server/test/cross-market-calendar-nav.test.js）", "evidence": "既有回归覆盖 A 股休市港股开市、港股半日市及对应净值日历行为。" },
+    { "case": "V08 归因保护", "tasks": ["T02"], "status": "passed", "command": "npm.cmd run test:all（server/test/cross-market-calendar-nav.test.js）", "evidence": "缺跨港股开市日快照时归因保持 complete=false，原因标为 missing_intermediate_snapshot。" },
+    { "case": "V11 静态门禁", "tasks": ["T06a"], "status": "passed", "command": "npm.cmd run check:date；server/test/date-boundary-static.test.js", "evidence": "扫描 438 个 JS/Python 源文件；存量 6 处保持登记、1 条已修规则为零命中；测试确认新增命中、数量变化和已修复规则复发均阻断。" },
+    { "case": "V12 调用量与性能", "tasks": ["T01", "T02", "T06a"], "status": "partial", "command": "npm.cmd run test:all（server/test/core-date.test.js）", "evidence": "净值汇率映射仍使用 1 次查询、外部调用 0 次；合成 20000 次循环旧 Date 转换 12.21 ms、共享 Intl Date 转换 47.81 ms、SQL 文本日期校验约 8.50 ms。页面资源响应、运行态缓存冷热和本地服务验收未进行。" }
+  ],
+  "fullSuite": { "command": "npm.cmd run test:all", "status": "passed", "passed": 149, "failed": 0, "skipped": 0, "databaseStoppedAfterRun": true },
+  "knowledgeCheck": { "command": "npm.cmd run check:knowledge", "status": "passed" },
+  "externalCalls": 0,
+  "productionWrites": 0,
+  "limitations": ["未启动浏览器或开发服务；未核对本地运行版本、页面资源响应和冷热缓存。", "未部署生产；未修改生产数据或执行历史补算。"]
+}

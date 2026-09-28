@@ -1,0 +1,49 @@
+{
+  "batch": "R1",
+  "phase": "R1-local-verified",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "externalCalls": 0,
+  "productionWrites": 0,
+  "files": [
+    {
+      "path": "T01-before.json",
+      "sha256": "fa5bbb1042b8138a7b46da0e977807e2ed50e4dd6978b85b1368dca93d7bc353"
+    },
+    {
+      "path": "T01-after.json",
+      "sha256": "ef139b1727d2e75f985a95a37ef1a90533d95ea910c02fe771ba6b311b6f5b8f"
+    },
+    {
+      "path": "T01-diff.json",
+      "sha256": "b1895a2dbb491f3be68f9c68ab43ce791d5240480a0117b22af9ca0a0b265374"
+    },
+    {
+      "path": "T02-before.json",
+      "sha256": "ab70045d2fe61e43faf2ea6b8a46f16e312420bd82256a40d0ecf0bf8015bb6a"
+    },
+    {
+      "path": "T02-after.json",
+      "sha256": "29c76bda34e1f95fb160709f8b4dd91899c62d91a4afb5b5bc6bf5ddbe2b7ffb"
+    },
+    {
+      "path": "T02-diff.json",
+      "sha256": "5b17bcb390c26a3a92b727a923821f5fd6435d4d2962699fa23b6b499871c627"
+    },
+    {
+      "path": "verification.json",
+      "sha256": "f1f2aff3f495f5e057912e99b28a6efae13e352873b5e268a54c04a7d84ff725"
+    },
+    {
+      "path": "release.md",
+      "sha256": "72488b0e2eec8c6a30abb6425cbfa65d29adcd9d4457530f3aaeb0733338b81d"
+    }
+  ],
+  "baselineMethod": "固定 UTC 时刻，使用合成 PG DATE 常量和基线提交原实现采样；改后在隔离 portfolio_test 实测；未开浏览器、未读业务行、未写生产数据。"
+}

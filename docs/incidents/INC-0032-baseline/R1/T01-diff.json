@@ -1,0 +1,13 @@
+{
+  "task": "T01",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "businessDate": "2026-09-28",
+  "differences": [
+    { "field": "各进程时区的上海业务日期", "before": { "UTC": "2026-09-28", "Asia/Shanghai": "2026-09-27", "America/New_York": "2026-09-28" }, "after": "三者均为 2026-09-28", "expected": true },
+    { "field": "固定时刻显示", "before": { "UTC": "2026-09-28 01:00:00", "Asia/Shanghai": "2026-09-27 17:00:00", "America/New_York": "2026-09-28 05:00:00" }, "after": "三者均按 Asia/Shanghai 显示为 2026-09-28 01:00:00", "expected": true },
+    { "field": "PG DATE 汇率键", "before": "Asia/Shanghai 下误为 2026-09-24", "after": "三个 TZ 均保留为 2026-09-25", "expected": true },
+    { "field": "查询和外部调用", "before": { "databaseQueries": 1, "externalCalls": 0 }, "after": { "databaseQueries": 1, "externalCalls": 0 }, "expected": true }
+  ],
+  "performanceNote": "共享 Intl 转换的合成循环耗时高于旧固定偏移换算；批量汇率路径已改用 SQL 文本日期，实测严格文本映射比旧 Date 换算更快。Intl 入口为低频日期/时刻计算。"
+}

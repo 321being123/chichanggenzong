@@ -1,0 +1,33 @@
+{
+  "task": "T02",
+  "phase": "B00-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "rate_date": "2026-09-25",
+    "rate": "合成有效值",
+    "sql": "SELECT rate_date, rate::float8 AS rate FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1",
+    "targetDate": "2026-09-25"
+  },
+  "output": {
+    "nodePgDateType": "Date",
+    "nodePgDateIso": "2026-09-24T16:00:00.000Z",
+    "mapKey": "2026-09-24",
+    "exactLookupFor": "2026-09-25",
+    "exactLookupFound": false,
+    "resultingKnownApiSymptom": "complete=false / missing_intermediate_snapshot"
+  },
+  "queryCount": 1,
+  "externalCalls": 0,
+  "reproduceCommand": "在提交 a76709d 下，将 pg.types.getTypeParser(1082,'text')('2026-09-25') 传入 navSnapshot.cnDate，并将结果用作 fxByDate 键；再查询键 '2026-09-25'。事故 API 现象来自 INC-0032 只读证据。",
+  "notes": [
+    "使用合成汇率值，避免复制生产金融数据。",
+    "基线为一次数据库查询、零次外部调用；修复须保持两者不变。"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "task": "T02",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "businessDate": "2026-09-28",
+  "differences": [
+    { "field": "SQL 返回类型", "before": "OID 1082 解码为 JavaScript Date", "after": "rate_date::text 返回 YYYY-MM-DD 字符串", "expected": true },
+    { "field": "2026-09-25 汇率键", "before": "Asia/Shanghai 下变成 2026-09-24", "after": "2026-09-25", "expected": true },
+    { "field": "精确查找", "before": "2026-09-25 查找失败", "after": "2026-09-25 查找成功", "expected": true },
+    { "field": "调用量", "before": { "databaseQueries": 1, "externalCalls": 0 }, "after": { "databaseQueries": 1, "externalCalls": 0 }, "expected": true }
+  ]
+}

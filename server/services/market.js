@@ -1,6 +1,7 @@
 // ===================== 行情服务层（原 server.js 中的行情代理逻辑集中于此） =====================
 const https = require('https');
 const { pool } = require('../db/connection');
+const CoreDate = require('../../public/shared/core-date.js');
 const { tushareQuery } = require('./tushare');
 const { isCnTradingDate, getMarketState } = require('./marketState');
 const {
@@ -368,10 +369,7 @@ function normDate(s) {
 // 避免服务器时区非东八区时，净值日期 / 交易日期差一天（尤其凌晨）
 // 与原前端 public/js/utils.js 的 todayCN 保持一致（修复原 server.js 调用未定义 todayCN 的缺陷）
 function todayCN() {
-  const now = new Date();
-  const cn = new Date(now.getTime() + 8 * 3600 * 1000);
-  const p = n => String(n).padStart(2, '0');
-  return cn.getUTCFullYear() + '-' + p(cn.getUTCMonth() + 1) + '-' + p(cn.getUTCDate());
+  return CoreDate.todayInZone('Asia/Shanghai');
 }
 
 module.exports = {

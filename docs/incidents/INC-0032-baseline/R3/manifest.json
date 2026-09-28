@@ -1,0 +1,20 @@
+{
+  "batch": "R3",
+  "phase": "B00-before",
+  "baselineCommit": "a76709d",
+  "sourceCommit": "a76709d",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "databaseTimeZone": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "externalCalls": 0,
+  "files": [
+    {
+      "path": "T13-before.json",
+      "sha256": "3f8f8da85b25ac37e4314d4d7e35a93a5c9a50055d9e1016e1c3c4bbcd60725e"
+    }
+  ],
+  "baselineMethod": "Fixed instant and date-only input against original market-cycle filtering code; no browser, screenshots, or upstream requests."
+}

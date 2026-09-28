@@ -1,0 +1,69 @@
+{
+  "task": "T01",
+  "phase": "B00-before",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "databaseTimeZone": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "fixedInstant": "2026-09-27T17:00:00.000Z",
+    "expectedShanghaiDate": "2026-09-28",
+    "expectedShanghaiDateTime": "2026-09-28 01:00:00",
+    "pgDateLiteral": "2026-09-25",
+    "expectedPgDateKey": "2026-09-25",
+    "processTimeZones": ["UTC", "Asia/Shanghai", "America/New_York"]
+  },
+  "output": [
+    {
+      "TZ": "UTC",
+      "pgDateIso": "2026-09-25T00:00:00.000Z",
+      "navSnapshotFxMapKey": "2026-09-25",
+      "fxRateCnDate": "2026-09-28",
+      "tradeLedgerNowStr": "2026-09-28 01:00:00",
+      "oneYearChartStart": "2025-09-28"
+    },
+    {
+      "TZ": "Asia/Shanghai",
+      "pgDateIso": "2026-09-24T16:00:00.000Z",
+      "navSnapshotFxMapKey": "2026-09-24",
+      "fxRateCnDate": "2026-09-27",
+      "tradeLedgerNowStr": "2026-09-27 17:00:00",
+      "oneYearChartStart": "2025-09-27"
+    },
+    {
+      "TZ": "America/New_York",
+      "pgDateIso": "2026-09-25T04:00:00.000Z",
+      "navSnapshotFxMapKey": "2026-09-25",
+      "fxRateCnDate": "2026-09-28",
+      "tradeLedgerNowStr": "2026-09-28 05:00:00",
+      "oneYearChartStart": "2025-09-28"
+    }
+  ],
+  "realPostgresQuery": {
+    "sql": "SELECT current_setting('server_version'), current_setting('TimeZone'), DATE '2026-09-25', DATE '2026-09-25'::text",
+    "serverVersion": "17.2",
+    "timeZone": "Asia/Shanghai",
+    "dateValueType": "Date",
+    "dateString": "Fri Sep 25 2026 00:00:00 GMT+0800 (中国标准时间)",
+    "dateIso": "2026-09-24T16:00:00.000Z",
+    "dateTextType": "string",
+    "dateText": "2026-09-25"
+  },
+  "apiSymptomFromIncident": {
+    "complete": false,
+    "reason": "missing_intermediate_snapshot",
+    "previousDate": "2026-09-24",
+    "currentDate": "2026-09-28",
+    "missingBusinessDate": "2026-09-25"
+  },
+  "reproduceCommand": "在提交 a76709d 下，以 fixedInstant 和 pg.types.getTypeParser(1082,'text')('2026-09-25') 为输入，分别在所列 TZ 下调用原 fxRate.cnDate 与 navSnapshot.cnDate。PostgreSQL 常量查询记录在 realPostgresQuery；不读取业务行、不写入数据。",
+  "notes": [
+    "Map key 是内部转换结果，不是 API 原始响应。",
+    "API 现象是 INC-0032 已有生产只读证据的脱敏摘要。",
+    "仅查询 PostgreSQL DATE 常量，没有读取账户数据。"
+  ]
+}

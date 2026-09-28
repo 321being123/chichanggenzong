@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.8.2.2",
-  "appVersion": "0.8.2.2",
+  "version": "0.8.2.3",
+  "appVersion": "0.8.2.3",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
@@ -12,6 +12,7 @@
     "test:unit": "node test.js",
     "test:integration": "node test-integration.js",
     "test:all": "node server/test/run-all.js",
+    "check:date": "node scripts/check-date-boundary.js",
     "check:knowledge": "node scripts/check-knowledge.js",
     "setup:hooks": "node scripts/install-git-hooks.js",
     "audit:bonds": "node server/scripts/auditHeldConvertibleBondNoRevision.js",

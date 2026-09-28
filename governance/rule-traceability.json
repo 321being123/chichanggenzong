@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-19",
+  "lastReviewed": "2026-09-28",
   "rules": [
     {
       "id": "TASK-CONTRACT-001",
@@ -160,6 +160,17 @@
       "implementation": { "file": "public/shared/core-quote.js", "symbol": "refreshAllPrices" },
       "tests": [{ "file": "server/test/holdings-cross-market-refresh.test.js", "pattern": "持仓页总资产应在 PATCH 完成前显示 4002 元" }],
       "owner": "持仓管理",
+      "status": "verified"
+    },
+    {
+      "id": "DATE-BOUNDARY-001",
+      "title": "业务日期、明确时刻和年份区间必须经共享工具并阻止已修错误复发",
+      "implementation": { "file": "public/shared/core-date.js", "symbol": "normalizeBusinessDate" },
+      "tests": [
+        { "file": "server/test/core-date.test.js", "pattern": "America/New_York" },
+        { "file": "server/test/date-boundary-static.test.js", "pattern": "FIXED_RULE_REAPPEARED" }
+      ],
+      "owner": "日期边界治理",
       "status": "verified"
     }
   ]

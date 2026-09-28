@@ -1,0 +1,40 @@
+{
+  "task": "T02",
+  "phase": "R1-after",
+  "baselineCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "sourceCommit": "a767d091ae19be80e1af30f8f2f1fbdf7235374e",
+  "nodeVersion": "v22.22.3",
+  "pgDriverVersion": "8.22.0",
+  "pgVersion": "17.2",
+  "TZ": "Asia/Shanghai",
+  "businessDate": "2026-09-28",
+  "actualDataDate": "2026-09-25",
+  "input": {
+    "rate_date": "2026-09-25",
+    "rate": "合成有效值",
+    "sql": "SELECT rate_date::text AS rate_date, rate::float8 AS rate FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1",
+    "targetDate": "2026-09-25"
+  },
+  "output": {
+    "nodePgRawDateType": "Date",
+    "sqlDateText": "2026-09-25",
+    "mapKey": "2026-09-25",
+    "exactLookupFor": "2026-09-25",
+    "exactLookupFound": true,
+    "lookupForPreviousDateFound": false,
+    "databaseQueries": 1,
+    "externalCalls": 0
+  },
+  "performance": {
+    "fixedLoopIterations": 20000,
+    "previousDateConversionMs": 12.21,
+    "sqlTextNormalizationMs": 8.5,
+    "interpretation": "净值批量汇率映射使用一次查询返回的 ISO 日期文本，无新增逐行查询或外部调用。"
+  },
+  "reproduceCommand": "npm.cmd run test:all（server/test/core-date.test.js），对 portfolio_test 执行 DATE 常量及 ::text 查询，并使用 navSnapshot.buildFxByDate 验证精确匹配。",
+  "notes": [
+    "使用合成汇率值，不读取或复制生产金融数据。",
+    "原始 OID 1082 驱动解析仍为 Date；该路径未更改全局解析器。",
+    "将原始 Date 直接传给汇率 Map 构建器会被拒绝，避免静默错键。"
+  ]
+}

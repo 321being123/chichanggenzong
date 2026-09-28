@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "a76709d",
+  "rules": [
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "public/shared/core-trade.js",
+      "function": "nowSec",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "open",
+      "expectedMatches": 1,
+      "lineHint": 24
+    },
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "public/shared/core-trade.js",
+      "function": "initTradeDateTime",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "open",
+      "expectedMatches": 1,
+      "lineHint": 48
+    },
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "public/js/utils.js",
+      "function": "todayCN",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "open",
+      "expectedMatches": 1,
+      "lineHint": 263
+    },
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "server/config/holidays.js",
+      "function": "todayCN",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "open",
+      "expectedMatches": 1,
+      "lineHint": 32
+    },
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "server/jobs/navSnapshot.js",
+      "function": "cnDate",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "fixed",
+      "expectedMatches": 0,
+      "lineHint": 17,
+      "resolvedBatch": "R1",
+      "resolution": "PostgreSQL DATE now arrives as YYYY-MM-DD text for the FX map; instant conversion uses public/shared/core-date.js."
+    },
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "server/services/fxRate.js",
+      "function": "cnDate",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "open",
+      "expectedMatches": 1,
+      "lineHint": 7
+    },
+    {
+      "ruleId": "timezone-offset-480",
+      "file": "server/services/tradeLedger.js",
+      "function": "nowStr",
+      "expression": "getTimezoneOffset() + 480",
+      "status": "open",
+      "expectedMatches": 1,
+      "lineHint": 575
+    }
+  ]
+}

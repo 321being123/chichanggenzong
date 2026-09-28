@@ -42,8 +42,9 @@
     },
     {
       "path": "release.md",
-      "sha256": "72488b0e2eec8c6a30abb6425cbfa65d29adcd9d4457530f3aaeb0733338b81d"
+      "sha256": "d8540ad01231ca8c2e997302b0ca571d8a4f7a2d440877743181c630fcfa0d6e"
     }
   ],
-  "baselineMethod": "固定 UTC 时刻，使用合成 PG DATE 常量和基线提交原实现采样；改后在隔离 portfolio_test 实测；未开浏览器、未读业务行、未写生产数据。"
+  "baselineMethod": "固定 UTC 时刻，使用合成 PG DATE 常量和基线提交原实现采样；改后在隔离 portfolio_test 实测；未开浏览器、未读业务行、未写生产数据。",
+  "batchCommit": "0e33a53c3744ee3e792910a9dc758000deeb7910"
 }

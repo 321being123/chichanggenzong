@@ -37,6 +37,24 @@
       }
     },
     {
+      "sample_id": "301716-szse-prospectus-gbt-classification",
+      "stock_code": "301716",
+      "security_name": "鸿富诚",
+      "source_url": "https://reportdocs.static.szse.cn/UpFiles/rasinfodisc1/202606/RAS_202606_10160084C6F1473DFF46BBBF57C2E94E47BE93.pdf",
+      "source_type": "szse_official_prospectus",
+      "published_at": "2026-06-10",
+      "excerpt_sha256": "d978d6e1d75e229614dc6fe8492c9fa43be6caa5066da2c7915e74eda47cc3bc",
+      "text": "鸿富诚主要从事热管理、电磁屏蔽及吸波材料等电子功能材料及器件的研发、生产和销售。根据《国民经济行业分类标准》（GB/T4754-2017），公司属于“C39 计算机、通信和其他电子设备制造业”中的“C398 电子元件及电子专用材料制造”之“C3985 电子专用材料制造”。",
+      "expected": {
+        "industry": "计算机、通信和其他电子设备制造业",
+        "classification_code": "C39",
+        "classification_system": "national_economic_industry",
+        "classification_version": "GB/T 4754-2017",
+        "industry_pe": null,
+        "industry_pe_as_of": null
+      }
+    },
+    {
       "sample_id": "301718-cninfo-inquiry-announcement-industry",
       "stock_code": "301718",
       "security_name": "通则康威",

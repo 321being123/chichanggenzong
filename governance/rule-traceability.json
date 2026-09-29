@@ -222,6 +222,7 @@
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "官方行业分类代码优先于较新但未分类的招股书表述" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮识别初步询价及推介公告" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "初步询价公告解析协会分类C39且不伪造行业PE" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "鸿富诚GB/T行业标准解析C39" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "行业解析跳过同行公司行业分类" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "PE先命中仍继续查找行业且字段证据各自绑定文档" }
       ],
@@ -239,6 +240,7 @@
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "定向补全质量刷新只查询目标证券" },
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "定向任务对未披露字段可完成但保留缺口状态" },
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "官方分类代码可替换并留痕未分类行业值" },
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "行业解析器升级后定向重解析并保留官方行业PE" },
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "空候选仍保留已知资料缺口" }
       ],
       "owner": "A股 IPO",

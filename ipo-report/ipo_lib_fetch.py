@@ -212,7 +212,7 @@ _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
-_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v6"
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v7"
 _IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
 _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
@@ -1984,7 +1984,7 @@ def _industry_from_label(value):
             '', before,
         ).strip('：:，,。；;“”"‘’\' ')
         before_name = re.sub(r'^.*?中的', '', before_name).strip('：:，,。；;“”"‘’\'（）() ')
-        after = re.split(r'(?:行业代码|行业名称|分类标准)', after, maxsplit=1)[0]
+        after = re.split(r'(?:中的|之|行业代码|行业名称|分类标准)', after, maxsplit=1)[0]
         name = before_name if len(before_name) >= 2 else after
     else:
         name = value
@@ -2015,7 +2015,9 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
         r'(?:发行人|公司)(?:所处|所属)行业(?:名称)?(?:为|是|[：:])(?P<value>[^。；;]{2,80})',
         r'所属行业名称及行业代码[：:]?(?P<value>[^。；;]{2,80})',
         r'(?:发行人|公司)行业分类[：:]?(?P<value>[^。；;]{2,80})',
-        r'行业分类[：:]?(?P<value>[^。；;]{2,80})',
+        r'(?:《国民经济行业分类(?:标准)?》|GB/T\s*4754[-—]?\s*2017)[^。；;]{0,80}?(?:发行人|公司)属于[““]?'
+        r'(?P<value>[A-Z]\d{1,4}\s*[^。；;]{2,140})',
+        r'行业分类(?!标准)[：:]?(?P<value>[^。；;]{2,80})',
     ]
     if issuer_name:
         industry_patterns.insert(

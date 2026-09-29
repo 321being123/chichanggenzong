@@ -208,6 +208,15 @@ try:
             and parsed.get("industry_pe_as_of") == expected["industry_pe_as_of"],
             "结果=%r" % parsed,
         )
+    hongfucheng_gbt_fixture = next(item for item in historical_fixtures if item["stock_code"] == "301716")
+    hongfucheng_gbt_parsed = fetch._parse_ipo_issuance_detail(
+        hongfucheng_gbt_fixture["text"], "鸿富诚", "301716"
+    )
+    check("鸿富诚GB/T行业标准解析C39",
+          hongfucheng_gbt_parsed.get("industry") == "计算机、通信和其他电子设备制造业"
+          and hongfucheng_gbt_parsed.get("industry_classification", {}).get("classification_code") == "C39"
+          and hongfucheng_gbt_parsed.get("industry_classification", {}).get("classification_system") == "national_economic_industry",
+          "结果=%r" % hongfucheng_gbt_parsed)
     targeted_fixture = next(item for item in historical_fixtures if item["stock_code"] == "301718")
     inquiry_parsed = fetch._parse_ipo_issuance_detail(
         targeted_fixture["text"], targeted_fixture["security_name"], targeted_fixture["stock_code"]

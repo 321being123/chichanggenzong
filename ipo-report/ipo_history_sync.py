@@ -555,8 +555,20 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             existing_source_payload = existing_source_payload if isinstance(existing_source_payload, dict) else {}
             existing_enrichment = existing_source_payload.get("historical_enrichment")
             existing_enrichment = existing_enrichment if isinstance(existing_enrichment, dict) else {}
+            existing_status_enrichment = (prior_status or {}).get("enrichment", {})
+            existing_status_enrichment = existing_status_enrichment if isinstance(existing_status_enrichment, dict) else {}
             existing_industry_diagnostic = existing_enrichment.get("industry_diagnostic")
             existing_industry_diagnostic = existing_industry_diagnostic if isinstance(existing_industry_diagnostic, dict) else {}
+            stored_parser_version = (
+                existing_status_enrichment.get("industry_parser_version")
+                or existing_industry_diagnostic.get("parser_version")
+                or (existing_enrichment.get("industry_evidence") or {}).get("parser_version")
+                or existing_enrichment.get("ipo_announcement_parser_version")
+            )
+            industry_parser_reparse = bool(
+                str(existing_industry or "").strip()
+                and stored_parser_version != _IPO_ISSUANCE_PARSER_VERSION
+            )
             existing_industry_source = (
                 existing_enrichment.get("industry_source") or existing_industry_diagnostic.get("source")
             )
@@ -579,7 +591,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 or unclassified_existing_industry
             )
             missing_fields = []
-            if not str(existing_industry or '').strip() or upgrade_candidate:
+            if not str(existing_industry or '').strip() or upgrade_candidate or industry_parser_reparse:
                 missing_fields.append('industry')
             if existing_industry_pe is None or upgrade_candidate:
                 missing_fields.append('industry_pe')
@@ -597,7 +609,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             official_industry_source = detail.get("industry_source")
             industry_evidence = detail.get("industry_evidence")
             official_industry = (
-                upgrade_candidate
+                (upgrade_candidate or industry_parser_reparse)
                 and _is_official_ipo_source(official_industry_source)
                 and isinstance(industry_evidence, dict)
                 and bool(industry_evidence.get("snippet") and industry_evidence.get("url")
@@ -615,6 +627,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 and (
                     existing_industry_source == "tushare_stock_basic"
                     or (unclassified_existing_industry and replacement_has_classification)
+                    or (industry_parser_reparse and replacement_has_classification)
                 )
             )
             official_pe_source = detail.get("industry_pe_source") or (
@@ -648,6 +661,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                         "verified_official_industry_replaced_tushare_stock_basic_fallback"
                         if existing_industry_source == "tushare_stock_basic"
                         else "verified_official_classification_replaced_unclassified_industry"
+                        if unclassified_existing_industry
+                        else "verified_official_industry_reparsed_after_parser_version_change"
                     ),
                     "recorded_on": today_text,
                 })
@@ -689,6 +704,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             changed = (
                 resolved_industry != str(existing_industry or '').strip()
                 or industry_upgrade
+                or industry_parser_reparse
                 or resolved_business != str(existing_business or '').strip()
                 or resolved_industry_pe != existing_industry_pe
                 or resolved_lottery_rate != existing_lottery_rate

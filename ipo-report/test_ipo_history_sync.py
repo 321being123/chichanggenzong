@@ -433,6 +433,81 @@ try:
           and reclassified_row[1][-1].get("reason") == "verified_official_classification_replaced_unclassified_industry",
           "calls=%r row=%r" % (unclassified_calls, reclassified_row))
 
+    stale_parser_code = "969990"
+    stale_parser_payload = {"historical_enrichment": {
+        "industry_source": "szse",
+        "industry_pe_source": "cninfo_issuance_risk_announcement",
+        "industry_diagnostic": {
+            "status": "value", "source": "szse", "parser_version": "ipo-issuance-facts-v6",
+            "classification_system": "national_economic_industry",
+            "classification_version": "GB/T 4754-2017", "classification_code": "T4754",
+            "evidence": {"url": "https://example.test/old.pdf", "snippet": "GB/T4754-2017", "classification_code": "T4754"},
+        },
+        "industry_pe_diagnostic": {"status": "value", "source": "cninfo_issuance_risk_announcement"},
+    }}
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                    industry,industry_pe,main_business,business_exposure,source_payload,data_quality_status)
+             VALUES(%s,'解析版本升级测试','CN','2026-09-11','active','标准》(GB/',73.89,
+                    '热管理、电磁屏蔽及吸波材料等电子功能材料的研发、生产和销售',
+                    '{\"exposures\":[{\"label\":\"电子功能材料\",\"sector_key\":\"电子功能材料\"}]}'::jsonb,
+                    %s::jsonb,%s::jsonb)
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry='标准》(GB/',industry_pe=73.89,
+               main_business='热管理、电磁屏蔽及吸波材料等电子功能材料的研发、生产和销售',
+               business_exposure='{"exposures":[{"label":"电子功能材料","sector_key":"电子功能材料"}]}'::jsonb,
+               source_payload=EXCLUDED.source_payload,data_quality_status=EXCLUDED.data_quality_status""",
+        (stale_parser_code, json.dumps(stale_parser_payload),
+         json.dumps({"enrichment": {"industry_parser_version": "ipo-issuance-facts-v6", "attempted_on": "2026-09-10"}})),
+    )
+    stale_parser_calls = []
+
+    def fake_parser_version_reparse(code, existing_industry=None, existing_main_business=None, missing_fields=None):
+        stale_parser_calls.append(list(missing_fields or []))
+        snippet = "根据《国民经济行业分类标准》（GB/T4754-2017），公司属于\"C39 计算机、通信和其他电子设备制造业\""
+        return {
+            "industry": "计算机、通信和其他电子设备制造业",
+            "industry_source": "szse",
+            "industry_diagnostic": {
+                "status": "value", "source": "szse", "parser_version": "ipo-issuance-facts-v7",
+                "document_url": "https://example.test/new.pdf", "content_hash": "new-hash",
+                "classification_system": "national_economic_industry",
+                "classification_version": "GB/T 4754-2017", "classification_code": "C39",
+                "evidence": {"url": "https://example.test/new.pdf", "snippet": snippet, "content_hash": "new-hash", "classification_code": "C39"},
+            },
+            "industry_evidence": {
+                "snippet": snippet, "url": "https://example.test/new.pdf", "content_hash": "new-hash",
+                "parser_version": "ipo-issuance-facts-v7",
+            },
+        }
+
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_parser_version_reparse
+    try:
+        sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=[stale_parser_code],
+            priority_codes=[stale_parser_code], retry_same_day=True,
+        )
+        cur.execute(
+            """SELECT industry,industry_pe,
+                      source_payload->'historical_enrichment'->'industry_upgrade_history',
+                      data_quality_status->'enrichment'->>'industry_parser_version'
+                 FROM ipo_history WHERE security_code=%s""",
+            (stale_parser_code,),
+        )
+        reparsed_row = cur.fetchone()
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("行业解析器升级后定向重解析并保留官方行业PE",
+          len(stale_parser_calls) == 1
+          and "industry" in stale_parser_calls[0]
+          and "industry_pe" not in stale_parser_calls[0]
+          and reparsed_row[0] == "计算机、通信和其他电子设备制造业"
+          and reparsed_row[1] == 73.89
+          and reparsed_row[2][-1].get("previous_value") == '标准》(GB/'
+          and reparsed_row[2][-1].get("reason") == "verified_official_industry_reparsed_after_parser_version_change"
+          and reparsed_row[3] == "ipo-issuance-facts-v7",
+          "calls=%r row=%r" % (stale_parser_calls, reparsed_row))
+
     cur.execute(
         """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
                                     industry_pe,main_business,business_exposure,

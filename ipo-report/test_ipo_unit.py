@@ -934,6 +934,17 @@ try:
     check("沈鼓集团主营业务识别高端装备赛道",
           any(item.get("sector_key") == "高端装备" for item in shengu_exposure.get("exposures", [])),
           "exposure=%r" % (shengu_exposure,))
+    hongfucheng_exposure = _val.analyze_business_exposure(
+        "鸿富诚",
+        "热管理、电磁屏蔽及吸波材料等电子功能材料及器件的研发、生产和销售",
+        "C39 计算机、通信和其他电子设备制造业",
+    )
+    check("鸿富诚主营业务识别电子功能材料赛道",
+          len(hongfucheng_exposure.get("exposures", [])) == 1
+          and hongfucheng_exposure["exposures"][0].get("label") == "电子功能材料"
+          and hongfucheng_exposure["exposures"][0].get("sector_key") == "电子功能材料"
+          and hongfucheng_exposure.get("status") == "complete",
+          "exposure=%r" % (hongfucheng_exposure,))
     missing_context = _val.get_stock_sector_context("测试", "", "")
     check("行业和主营缺失时标记待补全", missing_context.get("classification_status") == "missing",
           "context=%r" % (missing_context,))

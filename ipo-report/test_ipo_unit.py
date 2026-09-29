@@ -209,6 +209,14 @@ try:
             "结果=%r" % parsed,
         )
     targeted_fixture = next(item for item in historical_fixtures if item["stock_code"] == "301718")
+    inquiry_parsed = fetch._parse_ipo_issuance_detail(
+        targeted_fixture["text"], targeted_fixture["security_name"], targeted_fixture["stock_code"]
+    )
+    check("初步询价公告解析协会分类C39且不伪造行业PE",
+          inquiry_parsed.get("industry") == targeted_fixture["expected"]["industry"]
+          and (inquiry_parsed.get("industry_classification") or {}).get("classification_code") == "C39"
+          and inquiry_parsed.get("industry_pe") is None,
+          "结果=%r" % inquiry_parsed)
     ambiguous_prospectus_url = "https://example.test/301718-prospectus.pdf"
     original_ranked_docs = fetch._exchange_ipo_document_candidates
     original_ranked_cninfo = fetch._cninfo_ipo_issuance_candidates

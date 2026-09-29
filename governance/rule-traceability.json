@@ -445,7 +445,8 @@
       "implementation": { "file": "ipo-report/backtest_ipo_prediction.py", "symbol": "train_on_window" },
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练与回测共用同一套特征工程与目标变换" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间半宽由滚动样本外误差分位数定标" }
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间半宽由滚动样本外误差分位数定标" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "滚动定标区间排除同日样本且历史不足的点不计入" }
       ],
       "owner": "A股 IPO",
       "status": "verified"

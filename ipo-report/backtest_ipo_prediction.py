@@ -31,7 +31,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 
@@ -172,6 +172,42 @@ def score_advice_candidates(weights, stock_detail, issue_pe, industry_pe, temper
     return scores
 
 
+def rolling_interval_coverage(results, window=50, quantile=0.8, min_points=30):
+    """滚动定标区间的独立验收：半宽跟随近期误差水平，定标数据严格早于验收点。
+
+    为什么需要它：固定半宽（前半定标、后半验收）实测只有 64.7% 覆盖——
+    样本外误差随市场行情漂移（后半段更热、误差更大），固定宽度框不住。
+    滚动定标让每个测试点的半宽取「它之前最近 window 个**更早上市**样本
+    的最终链路误差分位」：行情转热时半宽自动放大，转冷时收窄。
+
+    时点约束与训练窗口相同：同日上市的样本结果在预测时点还不知道，
+    计入历史会把同日答案泄漏进来，因此按上市日严格早于验收点过滤。
+    历史不足 min_points 的点不计入（半宽不可信）。
+    返回 (覆盖率, 平均半宽, 计入点数)；无可用点返回 (None, None, 0)。
+    """
+    parsed = []
+    for item in results:
+        try:
+            parsed.append(date.fromisoformat(str(item["date"])[:10]))
+        except ValueError:
+            parsed.append(None)
+    covered, widths = [], []
+    for i in range(len(results)):
+        anchor = parsed[i]
+        if anchor is None:
+            continue
+        history = [abs(results[j]["error"]) for j in range(max(0, i - window), i)
+                   if parsed[j] is not None and parsed[j] < anchor]
+        if len(history) < min_points:
+            continue
+        half = float(np.quantile(history, quantile))
+        covered.append(abs(results[i]["error"]) <= half)
+        widths.append(half)
+    if not covered:
+        return None, None, 0
+    return float(np.mean(covered)), float(np.mean(widths)), len(covered)
+
+
 def main():
     parser = argparse.ArgumentParser(description="A 股打新预测时间滚动样本外回测（含完整链路逐层对比）")
     parser.add_argument("--min-train", type=int, default=80, help="开始滚动前至少有多少条历史样本")
@@ -192,6 +228,10 @@ def main():
     parser.add_argument("--issuance-stage", action="store_true",
                         help="按「发行阶段（申购前）」口径评估：中签率与超额认购倍数此时尚未公布，"
                              "按缺失处理走补位，用于量化申购阶段预测相对上市阶段的可信度差异")
+    parser.add_argument("--rolling-window", type=int, default=50,
+                        help="滚动定标区间的误差窗口（多少个更早上市的测试点）；0 关闭该评估")
+    parser.add_argument("--rolling-quantile", type=float, default=0.8,
+                        help="滚动定标区间的误差分位数（0.8 对应名义 80%% 区间）")
     args = parser.parse_args()
 
     import xgboost as xgb
@@ -410,6 +450,22 @@ def main():
             "coverage": float(np.mean([e <= calib_half for e in holdout_errors])),
         }
 
+    # 滚动定标区间（方案第四批「分位数/滚动校准区间」）：半宽跟随近期误差水平。
+    # 与上面的固定半宽独立验收互为对照：固定半宽 64.7% 的根因是误差随行情漂移，
+    # 滚动定标若能把覆盖率拉回名义水平，即证明漂移假设成立且方案可行。
+    rolling_interval = None
+    if args.rolling_window > 0:
+        coverage_r, width_r, count_r = rolling_interval_coverage(
+            results, window=args.rolling_window, quantile=args.rolling_quantile)
+        if count_r:
+            rolling_interval = {
+                "window": args.rolling_window,
+                "quantile": args.rolling_quantile,
+                "coverage": coverage_r,
+                "mean_half_width": width_r,
+                "points": count_r,
+            }
+
     def grouped_mae(group_key):
         """按分组键统计各层 MAE：用于判断某项修正在哪些板块/年份/温度档真正起作用。"""
         groups = {}
@@ -466,6 +522,7 @@ def main():
         "by_board": by_board,
         "advice_scan": advice_scan,
         "independent_interval": independent_interval,
+        "rolling_interval": rolling_interval,
     }
 
     # 当前产物区间半宽（interval_half_width）对应的覆盖率。
@@ -521,6 +578,11 @@ def main():
               f"后 {independent_interval['evaluation_points']} 点覆盖 "
               f"{independent_interval['coverage']*100:.1f}%"
               f"（前 {independent_interval['calibration_points']} 点定标；最终链路误差 80 分位）")
+    if rolling_interval:
+        print(f"滚动定标区间    : 窗口{rolling_interval['window']}只/"
+              f"{rolling_interval['quantile']:.0%}分位 -> 覆盖 "
+              f"{rolling_interval['coverage']*100:.1f}%（平均半宽 "
+              f"{rolling_interval['mean_half_width']:.0f}pp，{rolling_interval['points']} 点）")
     if production_coverage is not None:
         print(f"产物区间覆盖    : {production_coverage*100:.1f}%（半宽 {production_half:.0f}pp；同源定标，偏乐观）")
     if broke.any():

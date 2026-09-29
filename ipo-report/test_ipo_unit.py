@@ -1386,6 +1386,21 @@ try:
           "predicted_return=%r summary=%r range_low=%r" % (
               _neg_e2e.get("predicted_return"), _neg_e2e.get("summary"),
               _neg_e2e.get("prediction_range_low")))
+    _roll_pts = [
+        {"date": "2026-01-01", "error": 10},
+        {"date": "2026-02-01", "error": -20},
+        {"date": "2026-03-01", "error": 15},
+        {"date": "2026-03-01", "error": 500},   # 与上一条同日：不得进入彼此的定标历史
+        {"date": "2026-05-01", "error": 25},
+    ]
+    # min_points=3 时：同日样本（03-01 的第 4 条）被排除后，03-01 点只剩 2 条历史、
+    # 不足 3 被正确跳过；若同日不被排除它会计入（n 会变成 2），因此 n==1 同时验证了排除逻辑
+    _roll_cov, _roll_w, _roll_n = _bt.rolling_interval_coverage(
+        _roll_pts, window=3, quantile=0.5, min_points=3)
+    check("滚动定标区间排除同日样本且历史不足的点不计入",
+          _roll_n == 1 and _roll_cov == 0.0,
+          "coverage=%r width=%r n=%r（n=1 说明同日的样本被排除、03-01 点因历史不足被跳过）"
+          % (_roll_cov, _roll_w, _roll_n))
     check("秩相关对并列评分取平均秩且常数评分不可评估",
           _bt.spearman([10, 10, 10], [1, 2, 3]) is None
           and abs(_bt.spearman([1, 2, 2, 4], [1, 2, 3, 4]) - 0.9486833) < 1e-6,

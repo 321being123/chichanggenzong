@@ -446,7 +446,11 @@
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练与回测共用同一套特征工程与目标变换" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间半宽由滚动样本外误差分位数定标" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "滚动定标区间排除同日样本且历史不足的点不计入" }
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "滚动定标区间排除同日样本且历史不足的点不计入" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "加速模式截点倒退必须立即重建模型" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "加速回测实际复用路径无未来信息" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "滚动区间只把截点前已上市样本的误差计入" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "申购截点缺失或格式异常明确标记跳过而不回退上市日" }
       ],
       "owner": "A股 IPO",
       "status": "verified"

@@ -99,6 +99,41 @@ def history_indices(dates, index, days, anchor=None):
     return [i for i in range(index) if cutoff <= dates[i] < anchor]
 
 
+def needs_retrain(trained_anchor, anchor_date, index, min_train, step, has_model):
+    """判断当前测试点能否复用上一轮训练的模型与赛道状态。
+
+    样本按上市日排序，申购截点（发行公告日）不保证随序号递增；截点倒退时，
+    上一次训练可能已包含当前截点之后才公布的首日结果（验收第三次复核：
+    603376 截点 2025-10-24 沿用按 2025-10-27 训练的模型，其中含 603175 的
+    首日结果），必须立即重建，与重训节奏无关。复用（返回 False）的前提是
+    训练截点不晚于当前截点——训练数据全部在当前截点之前已公布。同截点的
+    节奏点也不重训：训练窗口完全相同，重训只会得到同一个模型。
+    """
+    if not has_model:
+        return True
+    if trained_anchor is not None and anchor_date < trained_anchor:
+        return True
+    return (index - min_train) % step == 0 and anchor_date != trained_anchor
+
+
+def build_issue_anchors(rows, listing_dates=None):
+    """构造每个样本的申购截点（近似取发行公告日 ipo_date）。
+
+    返回 (anchors, invalid)：截点缺失或格式异常的样本进入 invalid 集合，
+    申购模式回测必须跳过这些点并在汇总中报告——回退上市日会把「上市后
+    回测」伪装成「申购前回测」，重新引入未来信息（验收第三次复核）。
+    """
+    anchors = []
+    invalid = set()
+    for i, r in enumerate(rows):
+        try:
+            anchors.append(datetime.strptime(str(r[19])[:10], "%Y-%m-%d").date())
+        except ValueError:
+            anchors.append(None)
+            invalid.add(i)
+    return anchors, invalid
+
+
 def layer_metrics(predicted, actual):
     """单层预测的误差指标。"""
     error = predicted - actual
@@ -183,26 +218,31 @@ def rolling_interval_coverage(results, window=50, quantile=0.8, min_points=30):
     滚动定标让每个测试点的半宽取「它之前最近 window 个**更早上市**样本
     的最终链路误差分位」：行情转热时半宽自动放大，转冷时收窄。
 
-    时点约束与训练窗口相同：同日上市的样本结果在预测时点还不知道，
-    计入历史会把同日答案泄漏进来，因此按上市日严格早于验收点过滤。
-    历史不足 min_points 的点不计入（半宽不可信）。
+    可见性规则（验收第三次复核）：历史样本的误差要等**它自己上市收盘**后才
+    产生，所以历史点能否计入，用「历史点上市日 < 当前点的预测截点」判断。
+    此前两侧都用申购截点，申购更早但尚未上市的股票误差被当成已知——实测
+    72 个有效评价点中 65 个引入了未上市股票的误差。同日上市的样本结果同样
+    不可见，严格排除。历史不足 min_points 的点不计入（半宽不可信）。
     返回 (覆盖率, 平均半宽, 计入点数)；无可用点返回 (None, None, 0)。
     """
-    parsed = []
+    availability = []   # 每个历史点的误差可用时刻 = 该股票的上市日
+    query_anchor = []   # 当前点的预测截点（申购模式为发行公告日，上市模式为上市日）
     for item in results:
         try:
-            # 用预测截点（anchor_date）而非上市日：申购阶段回测下，误差历史的
-            # 可见性同样以申购截点为界。
-            parsed.append(date.fromisoformat(str(item.get("anchor_date") or item["date"])[:10]))
+            availability.append(date.fromisoformat(str(item["date"])[:10]))
+        except (KeyError, ValueError):
+            availability.append(None)
+        try:
+            query_anchor.append(date.fromisoformat(str(item.get("anchor_date") or item["date"])[:10]))
         except ValueError:
-            parsed.append(None)
+            query_anchor.append(None)
     covered, widths = [], []
     for i in range(len(results)):
-        anchor = parsed[i]
+        anchor = query_anchor[i]
         if anchor is None:
             continue
         history = [abs(results[j]["error"]) for j in range(max(0, i - window), i)
-                   if parsed[j] is not None and parsed[j] < anchor]
+                   if availability[j] is not None and availability[j] < anchor]
         if len(history) < min_points:
             continue
         half = float(np.quantile(history, quantile))
@@ -267,14 +307,10 @@ def main():
     industries = [r[17] for r in rows]
     payloads = [r[18] for r in rows]
     dates = [datetime.strptime(str(d)[:10], "%Y-%m-%d").date() for d in listing]
-    # 申购截点：发行公告日（ipo_date）。申购阶段预测发生在此之前，训练/校准窗口
-    # 都以它为界；格式异常或缺失时回退上市日（当前训练样本 ipo_date 全有）。
-    issue_anchors = []
-    for i, r in enumerate(rows):
-        try:
-            issue_anchors.append(datetime.strptime(str(r[19])[:10], "%Y-%m-%d").date())
-        except ValueError:
-            issue_anchors.append(dates[i])
+    # 申购截点：近似取发行公告日（ipo_date），申购阶段预测发生在此之前，训练/校准
+    # 窗口都以它为界。缺失或格式异常时**明确跳过**并在汇总中报告——回退上市日会
+    # 重新引入未来信息，等于把上市后回测伪装成申购前回测（验收第三次复核）。
+    issue_anchors, invalid_issue = build_issue_anchors(rows, dates)
 
     print(f"样本 {total} 条，起始训练窗口 {args.min_train} 条，重训间隔 {args.step}")
     print(f"温度统计量 {sector_lib.TEMP_GAIN_STAT}，阈值 热市>{sector_lib.TEMP_HOT_GAIN_MIN}"
@@ -288,6 +324,7 @@ def main():
     original_advice_weight = valuation_lib.SECTOR_SCORE_WEIGHT
 
     results = []
+    skipped_no_issue = []
     model = medians = low_q = high_q = None
     trained_anchor = None
     sector_boosts = {}
@@ -300,6 +337,12 @@ def main():
         # 本股上市日之前上市的其他新股，其首日结果在申购时同样不可见，此前仍按
         # 上市日取历史，实测 102 个测试点中 92 个用到了申购时尚未公布的结果。
         anchor_date = issue_anchors[index] if args.issuance_stage else dates[index]
+        if args.issuance_stage and anchor_date is None:
+            # 申购截点缺失：明确跳过并报告，不回退上市日（验收第三次复核）。
+            skipped_no_issue.append(index)
+            if not args.quiet:
+                print(f"{index:>5} {codes[index]:>8} {names[index]:<8}  -- 跳过：申购截点（ipo_date）缺失")
+            continue
         # 训练窗口按预测截点限制：历史样本的首日结果必须在本截点之前已产生
         # （同日或更晚上市的都不可见）。
         train_indices = [i for i in range(index) if dates[i] < anchor_date]
@@ -309,9 +352,12 @@ def main():
             [(boards[i], gain[i]) for i in history_indices(dates, index, BOARD_WINDOW_DAYS, anchor_date)]
         )
 
-        if model is None or (
-            (index - args.min_train) % args.step == 0 and anchor_date != trained_anchor
-        ):
+        if needs_retrain(trained_anchor, anchor_date, index, args.min_train, args.step,
+                         model is not None):
+            # 复用前提（验收第三次复核）：已训练模型所用结果必须在当前截点仍可见。
+            # 截点倒退时即使不在重训节奏上也要立即重建——否则模型训练数据里含有
+            # 当前截点之后才公布的首日结果（603376 案例）。赛道状态与模型同窗口
+            # 构建，必须一起刷新。
             # 训练与生产完全一致：始终使用完整字段（含事后公布的中签率/超购）训练，
             # 不做按阶段掩蔽——生产训练从不区分阶段；阶段差异只出现在推理端
             # （_ISSUANCE_PENDING_FIELDS）。此前回测把训练行也掩蔽，口径与生产
@@ -415,6 +461,7 @@ def main():
             "board_name": board_key,
             "date": str(listing[index]),
             "anchor_date": str(anchor_date),
+            "trained_anchor": str(trained_anchor),
             "year": str(listing[index])[:4],
             "actual": actual,
             "raw": raw_value,
@@ -478,6 +525,7 @@ def main():
                 "coverage": coverage_r,
                 "mean_half_width": width_r,
                 "points": count_r,
+                "availability_rule": "历史误差在其上市日之后才计入定标历史（可见性口径）",
             }
 
     def grouped_mae(group_key):
@@ -537,6 +585,7 @@ def main():
         "advice_scan": advice_scan,
         "independent_interval": independent_interval,
         "rolling_interval": rolling_interval,
+        "skipped_missing_issue_date": len(skipped_no_issue),
     }
 
     # 当前产物区间半宽（interval_half_width）对应的覆盖率。
@@ -596,7 +645,12 @@ def main():
         print(f"滚动定标区间    : 窗口{rolling_interval['window']}只/"
               f"{rolling_interval['quantile']:.0%}分位 -> 覆盖 "
               f"{rolling_interval['coverage']*100:.1f}%（平均半宽 "
-              f"{rolling_interval['mean_half_width']:.0f}pp，{rolling_interval['points']} 点）")
+              f"{rolling_interval['mean_half_width']:.0f}pp，{rolling_interval['points']} 点；"
+              f"历史误差按其上市日计入）")
+    if args.issuance_stage and skipped_no_issue:
+        shown = ", ".join(codes[i] for i in skipped_no_issue[:5])
+        more = f" 等 {len(skipped_no_issue)} 个" if len(skipped_no_issue) > 5 else ""
+        print(f"跳过的测试点    : 申购截点（ipo_date）缺失 {len(skipped_no_issue)} 个{more}：{shown}")
     if production_coverage is not None:
         print(f"产物区间覆盖    : {production_coverage*100:.1f}%（半宽 {production_half:.0f}pp；同源定标，偏乐观）")
     if broke.any():

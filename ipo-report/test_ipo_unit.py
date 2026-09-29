@@ -1425,6 +1425,78 @@ try:
     check("回测含独立区间验收与板块中位数基线",
           "np.quantile(calib_errors, 0.8)" in _bt_src and '"board_median"' in _bt_src,
           "区间定标段与验收段必须分离，且要有不含模型的对比基线")
+    # ── 第三次验收修复回归：加速模式复用、滚动区间可见性、截点缺失跳过 ──
+    check("加速模式截点倒退必须立即重建模型，前进且非节奏点才复用",
+          _bt.needs_retrain(_date(2025, 10, 27), _date(2025, 10, 24), 83, 80, 5, True) is True
+          and _bt.needs_retrain(_date(2025, 10, 24), _date(2025, 10, 27), 85, 80, 5, True) is True
+          and _bt.needs_retrain(_date(2025, 10, 24), _date(2025, 10, 27), 83, 80, 5, True) is False
+          and _bt.needs_retrain(_date(2025, 10, 24), _date(2025, 10, 24), 83, 80, 5, True) is False
+          and _bt.needs_retrain(_date(2025, 10, 24), _date(2025, 10, 24), 85, 80, 5, True) is False
+          and _bt.needs_retrain(None, _date(2025, 10, 24), 80, 80, 5, False) is True,
+          "603376 案例（截点10-24 沿用10-27 训练的模型）必须重建——倒退用例须用非节奏点，"
+          "否则节奏条件会掩盖倒退检查（破坏性验证实测）")
+    _vis_pts = [
+        {"date": "2026-02-01", "anchor_date": "2026-01-10", "error": 10},
+        {"date": "2026-01-15", "anchor_date": "2025-12-01", "error": 20},
+        {"date": "2026-01-16", "anchor_date": "2025-12-02", "error": 30},
+        {"date": "2026-01-17", "anchor_date": "2025-12-03", "error": 40},
+    ]
+    check("滚动区间只把截点前已上市样本的误差计入（3只更早申购但未上市=0个有效点）",
+          _bt.rolling_interval_coverage(_vis_pts, window=50, quantile=0.5, min_points=1)
+          == (None, None, 0),
+          "实得=%s" % (_bt.rolling_interval_coverage(_vis_pts, window=50, quantile=0.5, min_points=1),))
+    _vis_pts2 = [
+        {"date": "2025-11-20", "anchor_date": "2025-11-01", "error": 50},
+        {"date": "2026-02-01", "anchor_date": "2026-01-10", "error": 10},
+        {"date": "2026-01-15", "anchor_date": "2025-12-01", "error": 20},
+        {"date": "2026-01-16", "anchor_date": "2025-12-02", "error": 30},
+        {"date": "2026-01-17", "anchor_date": "2025-12-03", "error": 40},
+    ]
+    _vis_cov, _vis_w, _vis_n = _bt.rolling_interval_coverage(
+        _vis_pts2, window=50, quantile=0.5, min_points=1)
+    check("滚动区间可用历史=截点前已上市样本（已上市的误差正常计入）",
+          _vis_n == 4 and _vis_cov == 1.0 and _vis_w == 50.0,
+          "coverage=%r width=%r n=%r" % (_vis_cov, _vis_w, _vis_n))
+    _ia_rows = [tuple(["x"] * 19 + [v]) for v in ("2025-10-20", None, "2025/10/21", "2025-10-22")]
+    _ia_anchors, _ia_bad = _bt.build_issue_anchors(_ia_rows)
+    check("申购截点缺失或格式异常明确标记跳过而不回退上市日",
+          _ia_anchors[0] == _date(2025, 10, 20)
+          and _ia_anchors[1] is None and 1 in _ia_bad
+          and _ia_anchors[2] is None and 2 in _ia_bad
+          and _ia_anchors[3] == _date(2025, 10, 22) and _ia_bad == {1, 2},
+          "anchors=%r bad=%r" % (_ia_anchors, _ia_bad))
+    # 实际执行加速模式的模型复用路径（验收要求：不能只查源码字符串）：
+    # step=5 下必然出现「非重训点复用上一轮模型」，逐点审计训练截点不晚于预测截点。
+    import io as _io
+    import contextlib as _ctxlib
+    import json as _json
+    import sys as _sys
+    import tempfile as _tempfile
+    _fd, _bt_json = _tempfile.mkstemp(suffix=".json")
+    os.close(_fd)
+    _saved_argv = _sys.argv
+    _sys.argv = ["backtest_ipo_prediction.py", "--issuance-stage", "--step", "5",
+                 "--min-train", "172", "--quiet", "--rolling-window", "0",
+                 "--json", _bt_json]
+    try:
+        with _ctxlib.redirect_stdout(_io.StringIO()):
+            _bt.main()
+    finally:
+        _sys.argv = _saved_argv
+    with open(_bt_json, encoding="utf-8") as _h:
+        _bt_run = _json.load(_h)
+    os.remove(_bt_json)
+    _bt_points = _bt_run["points"]
+    _bad_reuse = [p["code"] for p in _bt_points
+                  if _date.fromisoformat(p["trained_anchor"][:10])
+                  > _date.fromisoformat(p["anchor_date"][:10])]
+    _reused = [p for p in _bt_points if p["trained_anchor"][:10] != p["anchor_date"][:10]]
+    check("加速回测实际复用路径无未来信息（逐点训练截点不晚于预测截点）",
+          len(_bt_points) > 0 and not _bad_reuse and len(_reused) > 0
+          and _bt_run["summary"].get("skipped_missing_issue_date", 0) == 0,
+          "点数=%d 违规=%s 复用点=%d skipped=%s"
+          % (len(_bt_points), _bad_reuse, len(_reused),
+             _bt_run["summary"].get("skipped_missing_issue_date")))
     _val.detect_stock_hot_sector = _old_detect_for_cap
     _val.get_stock_sector_context = _old_context_for_cap
     _val._xgb_predict_listing = _old_xgb_for_cap

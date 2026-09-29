@@ -1293,6 +1293,62 @@ try:
     check("未知板块不使用猜测的板块基准",
           ((unknown_board_prediction.get("prediction_context") or {}).get("calculation_detail") or {}).get("board_base") is None,
           "实得=%s" % (unknown_board_prediction,))
+    # ── 时点一致：回测与生产共用同一套统计/校准口径 ──
+    import ipo_lib_sector as _sec
+    import ipo_lib_prediction as _pred
+    import backtest_ipo_prediction as _bt
+    from datetime import date as _date
+    check("温度无样本返回未知且破发率不写零值",
+          _sec.summarize_temperature([])["level"] == "未知"
+          and _sec.summarize_temperature([])["break_rate"] is None,
+          "实得=%s" % (_sec.summarize_temperature([]),))
+    check("温度三态判据集中且出现破发即不是热市",
+          _sec.summarize_temperature([300, 200, 100])["level"] == "热市"
+          and _sec.summarize_temperature([50, 40, 30])["level"] == "常温"
+          and _sec.summarize_temperature([-10, 20, 30])["level"] == "冷市",
+          "热=%s 温=%s 冷=%s" % (
+              _sec.summarize_temperature([300, 200, 100])["level"],
+              _sec.summarize_temperature([50, 40, 30])["level"],
+              _sec.summarize_temperature([-10, 20, 30])["level"]))
+    check("板块基准样本不足不给结论且用中位数抗极端值",
+          _pred.median_gain([100, 200]) is None and _pred.median_gain([100, 200, 9000]) == 200,
+          "实得=%s / %s" % (_pred.median_gain([100, 200]), _pred.median_gain([100, 200, 9000])))
+    check("板块基准可按时点样本重算并跳过样本不足的板块",
+          _pred.board_base_from_rows([("创业板", 100), ("创业板", 200), ("创业板", 900),
+                                      ("科创板", 50)]) == {"创业板": 200},
+          "实得=%s" % (_pred.board_base_from_rows(
+              [("创业板", 100), ("创业板", 200), ("创业板", 900), ("科创板", 50)]),))
+    check("板块校准接受时点基准与温度而不是只读当前全局状态",
+          _val._calc_xgb_boost({"stock_code": "300750"}, 50, board_base=100, temp_level="热市") > 1.0
+          and _val._calc_xgb_boost({"stock_code": "300750"}, 50, board_base=100, temp_level="冷市") == 1.0,
+          "热市=%s 冷市=%s" % (
+              _val._calc_xgb_boost({"stock_code": "300750"}, 50, board_base=100, temp_level="热市"),
+              _val._calc_xgb_boost({"stock_code": "300750"}, 50, board_base=100, temp_level="冷市")))
+    # 用例含「同一上市日」的前一只股票：时点当天及之后必须排除，否则会把同日结果当已知信息
+    _bt_dates = [_date(2026, 1, 1), _date(2026, 5, 1), _date(2026, 8, 1), _date(2026, 8, 1)]
+    check("回测窗口严格排除时点当天及之后上市的样本",
+          _bt.history_indices(_bt_dates, 3, 180) == [1],
+          "实得=%s" % (_bt.history_indices(_bt_dates, 3, 180),))
+    _issuance_detail = {
+        "stock_code": "301697", "stock_name": "贝特利",
+        "issue_price": 20.0, "issue_pe": 30.0, "industry_pe": 45.0,
+        "online_lottery_rate": 0.0165, "oversubscribe_multiple": 6000.0,
+        "circulation_mv": 4.0, "pe_ratio": 1.5,
+    }
+    # 注意：此处必须用 _old_xgb_for_cap（真实函数）——1248 行起 _val._xgb_predict_listing
+    # 已被替换为三元组桩，桩不返回补位字段，测不到发行阶段的取值口径。
+    _issuance_xgb = _old_xgb_for_cap(dict(_issuance_detail), "", 0, "issuance")
+    _listing_xgb = _old_xgb_for_cap(dict(_issuance_detail), "", 0, "listing")
+    _issuance_imputed = list(_issuance_xgb[3]) if _issuance_xgb and len(_issuance_xgb) > 3 else None
+    _listing_imputed = list(_listing_xgb[3]) if _listing_xgb and len(_listing_xgb) > 3 else None
+    check("发行阶段把申购后才公布的中签率与超额认购倍数按缺失处理",
+          _issuance_imputed is not None
+          and "online_lottery_rate" in _issuance_imputed
+          and "oversubscribe_multiple" in _issuance_imputed,
+          "发行阶段补位字段=%s" % (_issuance_imputed,))
+    check("上市阶段仍使用已公布的中签率与超额认购倍数",
+          _listing_imputed is not None and "online_lottery_rate" not in _listing_imputed,
+          "上市阶段补位字段=%s" % (_listing_imputed,))
     _val.detect_stock_hot_sector = _old_detect_for_cap
     _val.get_stock_sector_context = _old_context_for_cap
     _val._xgb_predict_listing = _old_xgb_for_cap

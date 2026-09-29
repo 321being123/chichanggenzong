@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 import time
 from datetime import datetime, timedelta
+from statistics import median
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from bond_data_layer import get_bond_row
@@ -316,6 +317,53 @@ def _build_accuracy_lines(days=90):
     lines.append("> ⚡ 系统会根据实际结果持续校准预测模型，提升准确率")
     return lines
 
+# 硬编码默认基准的独立快照：`calibrate_board_base` 就地覆盖 BOARD_BASE（原地修改，
+# 各模块共享同一 dict），而回测需要从「未经当前校准的默认值」出发按时点重建板块基准，
+# 故保留一份不会被改动的副本。
+BOARDS_DEFAULT = dict(BOARD_BASE)
+
+BOARD_MIN_SAMPLES = 3
+
+
+def median_gain(gains, min_samples=BOARD_MIN_SAMPLES):
+    """返回一组首日涨幅的稳健中位数（整数）；样本不足返回 None。
+
+    少量千倍涨幅会把算术平均严重拉高，故板块基准一律用中位数；
+    低于 min_samples 个样本时不给结论，由调用方保留原基准。
+    """
+    values = []
+    for value in gains or []:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number == number:  # 排除 NaN
+            values.append(number)
+    if len(values) < min_samples:
+        return None
+    return int(round(median(values)))
+
+
+def board_base_from_rows(history_rows, min_samples=BOARD_MIN_SAMPLES):
+    """按给定历史样本重算板块基准，供回测按历史时点还原。
+
+    历史回测不能直接用当前的 BOARD_BASE：它是按「今天之前 12 个月」算的，
+    含测试点之后才上市的新股。history_rows 为 [(board_key, ld_close_change)]，
+    返回 {board_key: 中位数}；样本不足的板块不出现在结果里。
+    """
+    grouped = {}
+    for board_key, gain in history_rows:
+        if gain is None:
+            continue
+        grouped.setdefault(board_key, []).append(gain)
+    result = {}
+    for board_key, gains in grouped.items():
+        robust_gain = median_gain(gains, min_samples)
+        if robust_gain is not None:
+            result[board_key] = robust_gain
+    return result
+
+
 def calibrate_board_base():
     """
     自动校准板块基准首日涨幅
@@ -411,20 +459,13 @@ def calibrate_board_base():
     updated = []
     for board_key in BOARD_BASE:
         gains = db_gains.get(board_key, [])
-        if len(gains) >= 3:
-            # 少量千倍涨幅会把算术平均严重拉高，使用中位数作为稳健板块基准。
-            sorted_gains = sorted(gains)
-            mid = len(sorted_gains) // 2
-            if len(sorted_gains) % 2:
-                robust_gain = sorted_gains[mid]
-            else:
-                robust_gain = (sorted_gains[mid - 1] + sorted_gains[mid]) / 2
-            robust_gain = int(round(robust_gain))
-            old = BOARD_BASE[board_key]
-            BOARD_BASE[board_key] = robust_gain
-            updated.append(f"{board_key}: {old}→{robust_gain}% ({len(gains)}只，中位数)")
-        else:
+        robust_gain = median_gain(gains)
+        if robust_gain is None:
             updated.append(f"{board_key}: 样本不足({len(gains)}只), 保留{BOARD_BASE[board_key]}%")
+            continue
+        old = BOARD_BASE[board_key]
+        BOARD_BASE[board_key] = robust_gain
+        updated.append(f"{board_key}: {old}→{robust_gain}% ({len(gains)}只，中位数)")
 
     total = sum(len(v) for v in db_gains.values())
     print(f"[校准] 板块基准已更新（基于 {total} 只新股）")
@@ -441,4 +482,4 @@ def estimate_board_base(stock_code):
     board_key = board_key_from_code(stock_code)
     return BOARD_BASE.get(board_key, 0)
 
-__all__ = ['_bond_predicted_return', '_bond_first_non_limit_return', '_price_from_return', '_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base']
+__all__ = ['_bond_predicted_return', '_bond_first_non_limit_return', '_price_from_return', '_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base', 'median_gain', 'board_base_from_rows', 'BOARD_MIN_SAMPLES']

@@ -5,6 +5,7 @@ import math
 import os
 import re
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from statistics import median
 import fitz  # PyMuPDF - PDF解析
@@ -262,6 +263,78 @@ def _init_sector_db():
     conn.commit()
     return conn
 
+def sector_tables_from_history(history_rows):
+    """按给定历史样本重算赛道系数表，供生产校准与回测（历史时点）共用。
+
+    history_rows: [(security_code, security_name, market_type, listing_date,
+                    main_business, industry, ld_close_change, source_payload)]
+
+    返回 ({sector_key: {"boost": float, "sample_count": int, "robust_gain": float}}, benchmark)。
+    只算结果、不写全局也不写库，回测才能按要求「只用测试点之前的历史」重算系数，
+    而不污染进程内的生产状态（生产落库仍由 calibrate_sector_boost 负责）。
+    """
+    sector_gains = defaultdict(list)
+    benchmark_gains = []
+    for _code, name, market_type, _listing, mb, ind, ld, source_payload in history_rows:
+        if ld is None or str(market_type or "") == "北交所":
+            continue
+        try:
+            ld = float(ld)
+        except (TypeError, ValueError):
+            continue
+        benchmark_gains.append(ld)
+        exposure = analyze_business_exposure(name, mb, ind)
+        for item in exposure.get("exposures", []):
+            sector_gains[item["sector_key"]].append(ld)
+        level2 = _sw_industry_level2(_stored_sw_industry_taxonomy(source_payload))
+        if level2:
+            sector_gains[f"行业二级:{level2['code']}"].append(ld)
+        # 所有新股同时沉淀所属行业热度，供未命中热门关键词的新股统一兜底。
+        industry_name = str(ind or "").strip()
+        if industry_name and industry_name.lower() not in ("nan", "none", "-"):
+            sector_gains[f"行业:{industry_name}"].append(ld)
+
+    benchmark = _robust_median(benchmark_gains)
+    if benchmark is None or benchmark <= 0:
+        benchmark = 150.0
+
+    table = {}
+    for sector_key, gains in sector_gains.items():
+        if not gains:
+            continue
+        robust_gain = _robust_median(gains)
+        if robust_gain is None:
+            continue
+        # 这是“相对同期市场”的历史效果，不再做上下限或小样本收缩。
+        table[sector_key] = {
+            "boost": _compute_sector_multiplier(robust_gain, benchmark),
+            "sample_count": len(gains),
+            "robust_gain": robust_gain,
+        }
+    return table, benchmark
+
+
+@contextmanager
+def swap_sector_boosts(effective_boosts, sample_counts):
+    """在上下文内临时替换赛道系数表，退出后完整恢复。
+
+    回测要按每个测试点之前的历史重算系数，又不能污染进程内的生产状态。
+    """
+    saved_boosts = dict(SECTOR_EFFECTIVE_BOOSTS)
+    saved_counts = dict(SECTOR_SAMPLE_COUNTS)
+    SECTOR_EFFECTIVE_BOOSTS.clear()
+    SECTOR_EFFECTIVE_BOOSTS.update(effective_boosts or {})
+    SECTOR_SAMPLE_COUNTS.clear()
+    SECTOR_SAMPLE_COUNTS.update(sample_counts or {})
+    try:
+        yield
+    finally:
+        SECTOR_EFFECTIVE_BOOSTS.clear()
+        SECTOR_EFFECTIVE_BOOSTS.update(saved_boosts)
+        SECTOR_SAMPLE_COUNTS.clear()
+        SECTOR_SAMPLE_COUNTS.update(saved_counts)
+
+
 def calibrate_sector_boost():
     """
     用已上市新股的首日涨幅重算赛道热度系数（数据驱动，保留历史风口效果）。
@@ -270,10 +343,8 @@ def calibrate_sector_boost():
     标签在3只样本时也可能变成2.68倍。新算法改用同窗口全市场稳健中位数
     作基准，直接使用“赛道稳健中位数÷全市场稳健中位数”；不做样本收缩，
     也不设置最终系数上下限。系数仍写回原 sector_heat 表，避免新增平行事实表。
+    统计口径集中在 sector_tables_from_history，回测复用同一实现。
     """
-    from collections import defaultdict
-    from datetime import datetime
-
     conn = _init_sector_db()
     SECTOR_EFFECTIVE_BOOSTS.clear()
     SECTOR_SAMPLE_COUNTS.clear()
@@ -295,41 +366,15 @@ def calibrate_sector_boost():
         (cutoff,),
     ).fetchall()
 
-    sector_gains = defaultdict(list)
-    benchmark_gains = []
-    for code, name, market_type, listing_date, mb, ind, ld, source_payload in rows:
-        if ld is None or str(market_type or "") == "北交所":
-            continue
-        benchmark_gains.append(ld)
-        exposure = analyze_business_exposure(name, mb, ind)
-        for item in exposure.get("exposures", []):
-            sector_gains[item["sector_key"]].append(ld)
-        level2 = _sw_industry_level2(_stored_sw_industry_taxonomy(source_payload))
-        if level2:
-            sector_gains[f"行业二级:{level2['code']}"].append(ld)
-        # 所有新股同时沉淀所属行业热度，供未命中热门关键词的新股统一兜底。
-        industry_name = str(ind or "").strip()
-        if industry_name and industry_name.lower() not in ("nan", "none", "-"):
-            sector_gains[f"行业:{industry_name}"].append(ld)
-
-    benchmark = _robust_median(benchmark_gains)
-    if benchmark is None or benchmark <= 0:
-        benchmark = 150.0
+    table, _benchmark = sector_tables_from_history(rows)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for sector_key, gains in sector_gains.items():
-        if not gains:
-            continue
-        robust_gain = _robust_median(gains)
-        if robust_gain is None:
-            continue
-        # 这是“相对同期市场”的历史效果，不再做上下限或小样本收缩。
-        boost = _compute_sector_multiplier(robust_gain, benchmark)
-        SECTOR_SAMPLE_COUNTS[sector_key] = len(gains)
-        SECTOR_EFFECTIVE_BOOSTS[sector_key] = boost
+    for sector_key, item in table.items():
+        SECTOR_SAMPLE_COUNTS[sector_key] = item["sample_count"]
+        SECTOR_EFFECTIVE_BOOSTS[sector_key] = item["boost"]
         conn.execute(
             "INSERT OR REPLACE INTO sector_heat (sector_key, avg_gain_60d, stock_count, boost, updated_at) VALUES (?,?,?,?,?)",
-            (sector_key, round(robust_gain, 2), len(gains), boost, now_str),
+            (sector_key, round(item["robust_gain"], 2), item["sample_count"], item["boost"], now_str),
         )
     conn.commit()
 
@@ -356,77 +401,127 @@ def calibrate_sector_boost():
 # 新股市场温度的统计窗口；窗口与阈值只在训练/验证段选定，不在预测时临时调整。
 TEMP_WINDOW_DAYS = 180
 
-# level 只在拿到足够样本时才给出热市/常温/冷市；没有样本必须是“未知”，
-# 不能默认热市和零破发，否则缺数据会被当成乐观证据。
+# 温度统计量：mean=算术平均（现行），median=稳健中位数。
+# 算术平均易被极端高涨幅拉高；中位数抗极值，但识别转冷更慢。
+# 2026-09-29 用完整链路逐层回测比较过两者：现有 182 条样本上 102 个测试点的温度判定
+# **完全一致**（全部热市，窗口破发率恒为 0），换统计量对预测零影响，也拿不到样本外
+# 增益证据；而现行阈值是按均值量纲标定的，只换统计量、不重标定阈值会变成"更严格的
+# 门槛"，属于无依据改动。故维持 mean，待出现破发/冷市样本后再连同阈值重验。
+# 复核命令：python backtest_ipo_prediction.py --temp-stat median
+TEMP_GAIN_STAT = "mean"
+
+# 判据阈值：热市要求窗口内零破发且涨幅统计量高于 TEMP_HOT_GAIN_MIN；
+# 常温要求破发率低于 TEMP_WARM_BREAK_MAX 且涨幅统计量高于 TEMP_WARM_GAIN_MIN。
+TEMP_HOT_GAIN_MIN = 150.0
+TEMP_WARM_BREAK_MAX = 0.05
+TEMP_WARM_GAIN_MIN = 30.0
+
+
+def summarize_temperature(gains):
+    """把窗口内首日涨幅归纳为温度三态，供检测与回测共用同一实现。
+
+    没有样本必须返回“未知”，破发率保持 None，不能默认热市和零破发，
+    否则缺数据会被当成乐观证据。涨幅统计量由 TEMP_GAIN_STAT 决定，
+    阈值集中在模块常量，便于用回测重验而不能临时调整。
+    """
+    values = []
+    for value in gains:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number == number:  # 排除 NaN
+            values.append(number)
+
+    total = len(values)
+    if total == 0:
+        return {
+            "level": "未知", "break_rate": None, "avg_gain_3m": None, "gain_stat": None,
+            "sample_count": 0, "window_days": TEMP_WINDOW_DAYS, "status": "unknown",
+            "gain_stat_kind": TEMP_GAIN_STAT,
+        }
+
+    break_rate = sum(1 for v in values if v < 0) / total
+    gain_stat = median(values) if TEMP_GAIN_STAT == "median" else sum(values) / total
+
+    if break_rate == 0 and gain_stat > TEMP_HOT_GAIN_MIN:
+        level = "热市"
+    elif break_rate < TEMP_WARM_BREAK_MAX and gain_stat > TEMP_WARM_GAIN_MIN:
+        level = "常温"
+    else:
+        level = "冷市"
+
+    # avg_gain_3m 保留为兼容键（日报既有文案读取它），真实统计量见 gain_stat。
+    return {
+        "level": level,
+        "break_rate": round(break_rate * 100, 1),
+        "avg_gain_3m": round(gain_stat, 1),
+        "gain_stat": round(gain_stat, 1),
+        "sample_count": total,
+        "window_days": TEMP_WINDOW_DAYS,
+        "status": "known",
+        "gain_stat_kind": TEMP_GAIN_STAT,
+    }
+
+
+# level 只在拿到足够样本时才给出热市/常温/冷市；没有样本必须是“未知”。
 _MARKET_TEMP = {
     "level": "未知",
     "break_rate": None,
     "avg_gain_3m": None,
+    "gain_stat": None,
     "sample_count": 0,
     "window_days": TEMP_WINDOW_DAYS,
     "status": "unknown",
+    "gain_stat_kind": TEMP_GAIN_STAT,
 }
 
 _TEMP_CALIBRATED = False
 
-def detect_market_temperature():
+def detect_market_temperature(ref_date=None):
     """
-    检测当前新股市场温度：统计近 TEMP_WINDOW_DAYS 天已上市 A 股新股首日涨幅。
+    检测新股市场温度：统计截至 ref_date（默认今天）近 TEMP_WINDOW_DAYS 天
+    已上市 A 股新股首日涨幅。
+
+    ref_date 供回测按历史时点还原温度：只能使用该时点前已公布的首日结果，
+    不能拿当前日期重算历史。判据与统计量见 summarize_temperature。
 
     返回 {'level': '热市'|'常温'|'冷市'|'未知', 'break_rate': float|None,
-          'avg_gain_3m': float|None, 'sample_count': int, 'window_days': int,
+          'gain_stat': float|None, 'sample_count': int, 'window_days': int,
           'status': 'known'|'unknown'}
     没有可用样本时返回“未知”，破发率保持 None，不写成 0。
     """
     global _MARKET_TEMP, _TEMP_CALIBRATED
     from datetime import datetime, timedelta
 
-    cutoff = (datetime.now() - timedelta(days=TEMP_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    anchor = ref_date or datetime.now()
+    if isinstance(anchor, str):
+        anchor = datetime.strptime(anchor[:10], "%Y-%m-%d")
+    cutoff = (anchor - timedelta(days=TEMP_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    upper = anchor.strftime("%Y-%m-%d")
     try:
         conn = _init_ipo_db()
         rows = conn.execute(
-            "SELECT ld_close_change FROM ipo_history WHERE listing_date >= ? AND ld_close_change IS NOT NULL AND market_type != '北交所'",
-            (cutoff,),
+            "SELECT ld_close_change FROM ipo_history WHERE listing_date >= ? AND listing_date <= ?"
+            " AND ld_close_change IS NOT NULL AND market_type != '北交所'",
+            (cutoff, upper),
         ).fetchall()
         conn.close()
     except Exception:
         rows = []
 
-    gains = [r[0] for r in rows if r[0] is not None]
-    total = len(gains)
+    summary = summarize_temperature([r[0] for r in rows])
 
     _MARKET_TEMP.clear()
-    if total == 0:
-        print(f"[市场温度] 近{TEMP_WINDOW_DAYS}天无有效样本，标记为未知（不默认热市、不默认零破发）")
-        _MARKET_TEMP.update({
-            "level": "未知", "break_rate": None, "avg_gain_3m": None,
-            "sample_count": 0, "window_days": TEMP_WINDOW_DAYS, "status": "unknown",
-        })
-        _TEMP_CALIBRATED = True
-        return _MARKET_TEMP
-
-    break_count = sum(1 for g in gains if g < 0)
-    break_rate = break_count / total
-    avg_gain = sum(gains) / total
-
-    if break_rate == 0 and avg_gain > 150:
-        level = "热市"
-    elif break_rate < 0.05 and avg_gain > 30:
-        level = "常温"
-    else:
-        level = "冷市"
-
-    _MARKET_TEMP.update({
-        "level": level,
-        "break_rate": round(break_rate * 100, 1),
-        "avg_gain_3m": round(avg_gain, 1),
-        "sample_count": total,
-        "window_days": TEMP_WINDOW_DAYS,
-        "status": "known",
-    })
+    _MARKET_TEMP.update(summary)
     _TEMP_CALIBRATED = True
 
-    print(f"[市场温度] {level}（破发率{_MARKET_TEMP['break_rate']}%，6月均涨幅{_MARKET_TEMP['avg_gain_3m']}%，样本{total}只）")
+    if summary["status"] == "unknown":
+        print(f"[市场温度] 近{TEMP_WINDOW_DAYS}天无有效样本，标记为未知（不默认热市、不默认零破发）")
+    else:
+        stat_label = "中位涨幅" if summary["gain_stat_kind"] == "median" else "均涨幅"
+        print(f"[市场温度] {summary['level']}（破发率{summary['break_rate']}%，"
+              f"{stat_label}{summary['gain_stat']}%，样本{summary['sample_count']}只）")
     return _MARKET_TEMP
 
 _BOND_MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_6m": 0}
@@ -608,4 +703,4 @@ def _sync_sector_boost_from_db():
     except Exception:
         pass  # DB缺失或无数据时保留源码默认系数
 
-__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', 'SECTOR_EFFECTIVE_BOOSTS', 'SECTOR_SAMPLE_COUNTS', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', 'analyze_business_exposure', 'get_stock_sector_context', '_compute_sector_multiplier', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db']
+__all__ = ['HOT_SECTOR_KEYWORDS', 'NEW_STOCK_HOT_SECTORS', 'SECTOR_EFFECTIVE_BOOSTS', 'SECTOR_SAMPLE_COUNTS', '_SECTOR_DB_PATH', '_init_sector_db', 'calibrate_sector_boost', 'analyze_business_exposure', 'get_stock_sector_context', '_compute_sector_multiplier', '_MARKET_TEMP', '_TEMP_CALIBRATED', 'detect_market_temperature', '_BOND_MARKET_TEMP', 'detect_bond_market_temperature', '_MARKET_SNAPSHOT', 'fetch_market_heat', 'detect_hot_sector', 'detect_stock_hot_sector', '_get_board_key_from_code', '_sync_sector_boost_from_db', 'summarize_temperature', 'sector_tables_from_history', 'swap_sector_boosts', 'TEMP_GAIN_STAT', 'TEMP_WINDOW_DAYS']

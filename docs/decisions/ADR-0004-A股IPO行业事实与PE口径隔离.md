@@ -81,3 +81,5 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 
 2026-09-29 模型训练与回测批次复核（本地未部署）：`ipo_lib_valuation.py` 与 `train_xgb_model.py` 本轮改动集中在 A 股首日涨幅预测的训练与回测口径——目标变换改奇对称对数（保留破发符号）、上线模型改用全量样本训练、评估补值只用训练段中位数、区间半宽改由滚动样本外误差分位数定标，并新增训练/回测共用模块 `ipo_lib_train.py` 与滚动回测 `backtest_ipo_prediction.py`。这些改动不触及官方行业事实来源、行业 PE 溯源与"不可计算即不使用常数代替"的既有隔离规则。
 
+2026-09-29 逐层回测与外生校准时点修正复核（本地未部署）：本轮改动集中在回测的时点一致性与预测输入的可见性。`ipo_lib_sector.py` / `ipo_lib_prediction.py` 新增的纯函数（`summarize_temperature`、`sector_tables_from_history`、`swap_sector_boosts`、`median_gain`、`board_base_from_rows`）只改变"统计与校准在哪算、用哪段样本算"，不新建行业事实、不改写官方行业分类或行业 PE。新增的 `_ISSUANCE_PENDING_FIELDS` 明确发行阶段（申购前）中签率与超额认购倍数尚未公布、一律按缺失处理，属"该时点拿不到的数据不得进入输入"的同一隔离原则，与 ADR-0004 的"不可计算即不使用常数代替"一致。
+

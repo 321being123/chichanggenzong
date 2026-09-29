@@ -68,21 +68,28 @@ def get_temp_temp_score_penalty(score):
     else:  # 冷市
         return int(score * 0.5)  # 打5折
 
+# 温度三态 → 首日涨幅衰减系数。回测要按历史时点复算，故抽成纯函数共用一个口径。
+TEMP_LISTING_MULTIPLIERS = {"热市": 1.0, "常温": 0.75, "冷市": 0.4}
+
+# 申购建议分里赛道分量的权重：分数乘数 = 1 + SECTOR_SCORE_WEIGHT × (赛道系数 − 1)。
+# 系数 ×1.00 表示中性，故中性不加分、冷赛道扣分。取值由
+# backtest_ipo_prediction.py --advice-weights 的建议分评估选定，不凭直觉调整。
+SECTOR_SCORE_WEIGHT = 0.3
+
+
+def temp_listing_multiplier(level):
+    """温度三态对应的涨幅衰减系数；未知（样本不足）返回 1.0，既不放大也不衰减。"""
+    return TEMP_LISTING_MULTIPLIERS.get(level, 1.0)
+
+
 def get_temp_listing_multiplier():
     """
-    根据市场温度返回上市预测的涨幅衰减系数
+    根据当前市场温度返回上市预测的涨幅衰减系数
 
     温度未知（样本不足）时返回 1.0：既不放大也不衰减，
     并在预测上下文中标记为“未做温度修正”，不能当作已确认热市。
     """
-    temp = _MARKET_TEMP["level"]
-    if temp == "热市":
-        return 1.0
-    elif temp == "常温":
-        return 0.75
-    elif temp == "冷市":
-        return 0.4
-    return 1.0
+    return temp_listing_multiplier(_MARKET_TEMP["level"])
 
 def _zero_break_environment_text():
     """零破发环境的口径化表述：带统计窗口与样本数，不做“中签即赚”的承诺。"""
@@ -147,8 +154,13 @@ def _estimate_initial_premium_by_iteration(transfer_value, bonds_data):
 
     return 0.40  # 默认40%
 
-def _calc_xgb_boost(stock_detail, xgb_raw):
-    """根据板块基准和市场温度，计算XGBoost动态调整系数"""
+def _calc_xgb_boost(stock_detail, xgb_raw, board_base=None, temp_level=None):
+    """根据板块基准和市场温度，计算XGBoost动态调整系数。
+
+    board_base / temp_level 供回测传入「该预测时点」的板块基准与市场温度：
+    回测不能直接读当前进程的 BOARD_BASE 与 _MARKET_TEMP，因为它们含测试点
+    之后才上市的新股。不传时按当前生产状态取值。
+    """
     if xgb_raw is None or xgb_raw <= 0:
         return 1.0
 
@@ -157,14 +169,15 @@ def _calc_xgb_boost(stock_detail, xgb_raw):
     if board_key not in BOARD_BASE:
         # 板块无法识别：不做板块基准校准，避免用猜测的板块基准放大预测
         return 1.0
-    board_base = BOARD_BASE[board_key]
+    if board_base is None:
+        board_base = BOARD_BASE[board_key]
 
     # 目标：让XGBoost预测值向板块基准收敛
     # 如果XGBoost明显低于板块基准（在牛市常见），则向上修正
     ratio = board_base / max(xgb_raw, 10)
 
     # 热市下，如果板基准远高于XGBoost，加大修正力度
-    temp = _MARKET_TEMP["level"]
+    temp = _MARKET_TEMP["level"] if temp_level is None else temp_level
     if temp == "热市":
         # 热市时板基准置信度高，主动拉高XGBoost
         boost = 1.0 + (ratio - 1.0) * 0.6
@@ -436,8 +449,8 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
 
     if sector_label:
         # 赛道评分按“相对中性 ×1.00 的变化”给分：中性不得分、冷赛道扣分。
-        # 权重 0.3 沿用现行值，仍须样本外回测确认，不在本次引入新参数。
-        sector_score_multiplier = max(0.0, 1 + 0.3 * (float(sector_boost) - 1.0))
+        # 权重取值见 SECTOR_SCORE_WEIGHT，由样本外建议分评估选定。
+        sector_score_multiplier = max(0.0, 1 + SECTOR_SCORE_WEIGHT * (float(sector_boost) - 1.0))
         apply_score("赛道评分修正", sector_score_multiplier,
                     f"{sector_label}，历史热度系数×{sector_boost:.3f}（相对中性×1.00）")
 
@@ -647,6 +660,13 @@ _MODEL_NATIVE_MISSING_FEATURES = (
     "issue_price", "fund_raised", "online_shares", "total_shares", "sub_limit",
 )
 
+# 发行阶段（申购前）尚不可见的输入字段：网上中签率与超额认购倍数按发行安排要在
+# 申购后 T+2 才公布，而发行阶段预测发生在申购前（日报的「可申购」清单）。
+# 因此这两个字段在发行阶段一律按缺失处理，即使库里已存有事后采集到的真值也不能使用，
+# 否则等于把未来信息带进申购前预测。实测影响见 backtest_ipo_prediction.py --issuance-stage：
+# 这样处理后的最终层样本外误差与上市阶段口径几乎无差异，不降低发行阶段预测的可信度。
+_ISSUANCE_PENDING_FIELDS = ("online_lottery_rate", "oversubscribe_multiple")
+
 _XGB_MODEL = None
 
 _XGB_FEATURES = None
@@ -747,6 +767,10 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
             try:
                 v = float(v) if v is not None and v != "" else None
             except (ValueError, TypeError):
+                v = None
+            # 发行阶段预测发生在申购前，此时中签率与超额认购倍数尚未公布，
+            # 即便库里已有事后值也必须按缺失处理（见 _ISSUANCE_PENDING_FIELDS）。
+            if prediction_stage == "issuance" and source_key in _ISSUANCE_PENDING_FIELDS:
                 v = None
             # 中签率、超额认购倍数这类"真实值不可能为 0"的字段，0 只是数据源
             # 尚未公布的占位，必须与真正的缺失同路处理（补位、状态标注、衍生特征一致），

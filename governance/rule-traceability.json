@@ -449,6 +449,40 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "IPO-PIT-CALIBRATION-001",
+      "title": "回测的板块基准、赛道系数与市场温度只能用测试点之前已上市的首日结果重算，不得使用含未来样本的当前校准",
+      "implementation": { "file": "ipo-report/backtest_ipo_prediction.py", "symbol": "history_indices" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测窗口严格排除时点当天及之后上市的样本" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块基准可按时点样本重算并跳过样本不足的板块" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块校准接受时点基准与温度而不是只读当前全局状态" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-TEMP-STAT-001",
+      "title": "市场温度的统计量与阈值必须经完整链路回测重验后选定，无可区分样本时不得只换统计量而沿用原阈值",
+      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "summarize_temperature" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "温度无样本返回未知且破发率不写零值" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "温度三态判据集中且出现破发即不是热市" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-ISSUANCE-VISIBILITY-001",
+      "title": "发行阶段（申购前）尚不可见的字段必须按缺失处理：网上中签率与超额认购倍数在申购后 T+2 才公布",
+      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "_xgb_predict_listing" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "发行阶段把申购后才公布的中签率与超额认购倍数按缺失处理" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "上市阶段仍使用已公布的中签率与超额认购倍数" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

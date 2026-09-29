@@ -152,6 +152,10 @@ assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用
 assert.match(historyJobSource, /let scheduleMarker = mode === 'enrichment'/, 'IPO 失败路径必须保留可用的计划标记，不能因块级作用域异常丢失失败状态');
 assert.match(historyJobSource, /mode === 'prediction_ready' \? '16:30'/, '上市前预测缺口没有独立计划标记');
 assert.match(orchestratorSource, /claimed\.job_code === 'ipo_history_sync' && Array\.isArray\(claimed\.request_payload && claimed\.request_payload\.targetCodes\)[\s\S]*?targetCodes: claimed\.request_payload\.targetCodes/, 'IPO 事实 Runner 未接收任务槽位中的定向代码');
+assert.match(orchestratorSource, /claimed\.job_code === 'ipo_history_sync' && Array\.isArray\(claimed\.request_payload && claimed\.request_payload\.targetFields\)[\s\S]*?targetFields: claimed\.request_payload\.targetFields/, 'IPO 事实 Runner 未接收定向重解析字段');
+assert.match(historyJobSource, /--target-fields/);
+assert.match(ipoSyncSource, /force_fields=target_fields/);
+assert.match(ipoSyncSource, /include_result_fields=not bool\(target_fields\)/);
 const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');

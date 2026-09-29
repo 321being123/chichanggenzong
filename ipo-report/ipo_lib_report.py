@@ -94,12 +94,58 @@ def _business_exposure_for_detail(detail):
     """保存主营业务时同步保存结构化下游暴露，失败不阻断原有IPO事实。"""
     try:
         from ipo_lib_sector import analyze_business_exposure
+        document = detail.get("main_business_document") or {}
         return analyze_business_exposure(
             detail.get("stock_name", ""), detail.get("main_business", ""), detail.get("industry", ""),
-            stored=detail.get("business_exposure")
+            stored=detail.get("business_exposure"),
+            industry_chain=document.get("industry_chain"),
+            evidence_document=document,
         )
     except Exception:
         return None
+
+
+def _industry_chain_display(detail):
+    """只展示招股书明确披露的上下游关系及其关联赛道。"""
+    exposure = detail.get("business_exposure") if isinstance(detail, dict) else {}
+    exposure = exposure if isinstance(exposure, dict) else {}
+    chain = exposure.get("industry_chain") if isinstance(exposure.get("industry_chain"), dict) else {}
+    upstream_groups = {}
+    for item in chain.get("upstream", []):
+        if not isinstance(item, dict):
+            continue
+        industry = str(item.get("industry") or "").strip()
+        product = str(item.get("product") or "").strip()
+        if industry and product:
+            upstream_groups.setdefault(product, []).append(industry)
+    upstream = [
+        f"{'、'.join(dict.fromkeys(industries))}→{product}"
+        for product, industries in upstream_groups.items()
+    ]
+    product_names = list(dict.fromkeys(
+        str(product).strip() for product in chain.get("products", []) if str(product or "").strip()
+    ))
+    product_label = "、".join(product_names)
+    downstream = list(dict.fromkeys(
+        f"{'、'.join(item.get('products') or product_names) or '公司产品'}→{item.get('industry')}"
+        for item in chain.get("downstream", [])
+        if isinstance(item, dict) and item.get("industry")
+    ))
+    tracks = list(dict.fromkeys(
+        str(track).strip()
+        for item in chain.get("downstream", []) if isinstance(item, dict)
+        for track in item.get("related_tracks", []) if str(track or "").strip()
+    ))
+    if not upstream and not downstream:
+        return ""
+    direct = next((item.get("label") for item in exposure.get("exposures", [])
+                   if isinstance(item, dict) and item.get("relationship") == "direct_business"), "主营产品")
+    summary = (
+        f"上游关系：{'；'.join(upstream) or '未披露'}；"
+        f"本环节：{product_label or direct}；"
+        f"下游关系：{'；'.join(downstream) or '未披露'}"
+    )
+    return summary + (f"；关联赛道：{'、'.join(tracks)}" if tracks else "")
 
 def _save_stock_detail_to_db(code, detail):
     """将新股详细发行数据存入ipo_history数据库"""
@@ -454,6 +500,9 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     sector_label = _stock_sector_display(d)
                     lines.append(f"- **所属行业**：{d.get('industry') or '待补全'}")
                     lines.append(f"- **业务赛道**：{sector_label}")
+                    chain_display = _industry_chain_display(d)
+                    if chain_display:
+                        lines.append(f"- **上下游产业链**：{chain_display}")
                     if d.get("main_business"):
                         lines.append(f"- **主营业务**：{d['main_business']}")
                     if d.get("issue_price"):
@@ -583,6 +632,9 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     sector_label = _stock_sector_display(d)
                     lines.append(f"- **所属行业**：{d.get('industry') or '待补全'}")
                     lines.append(f"- **业务赛道**：{sector_label}")
+                    chain_display = _industry_chain_display(d)
+                    if chain_display:
+                        lines.append(f"- **上下游产业链**：{chain_display}")
                     if d.get("main_business"):
                         lines.append(f"- **主营业务**：{d['main_business']}")
                     if d.get("issue_price"):
@@ -733,6 +785,9 @@ def generate_html(md_content, data):
                         html += f'<p><strong>待公布数据：</strong>{"、".join(pending)}（已用发行阶段模型估算）</p>'
                     if d.get("main_business"):
                         html += f'<p><strong>主营业务：</strong>{d["main_business"]}</p>'
+                    chain_display = _industry_chain_display(d)
+                    if chain_display:
+                        html += f'<p><strong>上下游产业链：</strong>{chain_display}</p>'
                     html += '</div>\n'
 
         if data["apply_bonds"]:

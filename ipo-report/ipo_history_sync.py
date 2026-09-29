@@ -61,6 +61,8 @@ BUSINESS_EXPOSURE_MISSING_SQL = """(
     OR CASE WHEN jsonb_typeof(business_exposure->'exposures')='array'
             THEN jsonb_array_length(business_exposure->'exposures')=0
             ELSE TRUE END
+    OR (business_exposure->>'version'='2'
+        AND COALESCE(business_exposure#>>'{industry_chain,status}','') <> 'complete')
 )"""
 KNOWN_INDUSTRY_FALLBACK_SQL = """(
     COALESCE(source_payload->'historical_enrichment'->>'industry_source',
@@ -70,7 +72,12 @@ KNOWN_INDUSTRY_FALLBACK_SQL = """(
 
 
 def _has_business_exposures(value):
-    return isinstance(value, dict) and isinstance(value.get("exposures"), list) and bool(value["exposures"])
+    if not isinstance(value, dict) or not isinstance(value.get("exposures"), list) or not value["exposures"]:
+        return False
+    if str(value.get("version") or "") == "2":
+        chain = value.get("industry_chain") if isinstance(value.get("industry_chain"), dict) else {}
+        return chain.get("status") == "complete"
+    return True
 
 
 def _is_official_ipo_source(value):
@@ -574,13 +581,14 @@ def same_day_target_attempted_codes(cur, today, target_date):
 
 def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None,
                                  only_codes=None, skip_codes=None, include_result_fields=True,
-                                 raise_on_guard=False):
+                                 raise_on_guard=False, force_fields=None):
     """不限业务条数补全资料；当前发行优先，历史缺口按 Guard 边界续跑。"""
     today_text = today.isoformat()
     target_text = str(target_date)[:10] if target_date else ""
     priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
     only_codes = sorted({str(code or '').split('.')[0] for code in (only_codes or []) if code})
     skip_codes = sorted({str(code or '').split('.')[0] for code in (skip_codes or []) if code})
+    force_fields = set(force_fields or []) & {"business_exposure"}
     mandatory_gap = f"""(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
               OR {BUSINESS_EXPOSURE_MISSING_SQL})"""
     cur.execute("""
@@ -674,10 +682,13 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 missing_fields.append('main_business')
             if not _has_business_exposures(existing_exposure):
                 missing_fields.append('business_exposure')
+            missing_fields.extend(field for field in force_fields if field not in missing_fields)
             if include_result_fields and existing_lottery_rate in (None, ''):
                 missing_fields.append('online_lottery_rate')
             if include_result_fields and existing_oversubscribe in (None, ''):
                 missing_fields.append('oversubscribe_multiple')
+            if force_fields:
+                missing_fields = [field for field in missing_fields if field in force_fields]
             detail = fetch_stock_historical_detail(
                 code, existing_industry, existing_business, missing_fields=missing_fields
             ) or {}
@@ -1013,7 +1024,7 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
                 prior_state = prior_field_states.get(field) if isinstance(prior_field_states.get(field), dict) else {}
                 if values.get(field) in (None, "") and prior_state.get("status") != "source_unavailable":
                     missing.append(field)
-            if not isinstance(exposure, dict) or not exposure.get("exposures"):
+            if not _has_business_exposures(exposure):
                 missing.append("business_exposure")
         listed = bool(listing_text) and valid_listing and listing_text <= today.isoformat()
         pending = []
@@ -1034,7 +1045,7 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
                 elif field not in field_states:
                     field_states[field] = {"status": "retryable"}
             field_states["business_exposure"] = {
-                "status": "value" if isinstance(exposure, dict) and exposure.get("exposures") else "retryable"
+                "status": "value" if _has_business_exposures(exposure) else "retryable"
             }
         status = {
             "status": "missing" if missing else "complete",
@@ -1400,10 +1411,20 @@ def main():
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
     parser.add_argument("--mode", choices=("core", "prediction_ready", "enrichment"), default="core")
     parser.add_argument("--target-codes", default="", help="仅预览指定代码的资料缺口，逗号分隔")
+    parser.add_argument("--target-fields", default="", help="定向重解析的字段，目前支持 business_exposure")
     parser.add_argument("--apply-targeted", action="store_true", help="对 --target-codes 执行定向补齐；生产使用前必须备份并取得授权")
     parser.add_argument("--confirm-production", action="store_true", help="生产定向补齐确认；必须同时取得用户授权")
     args = parser.parse_args()
     target_codes = [item.strip().split('.')[0] for item in args.target_codes.split(',') if item.strip()]
+    target_fields = [item.strip() for item in args.target_fields.split(',') if item.strip()]
+    if set(target_fields) - {"business_exposure"}:
+        parser.error("--target-fields 仅支持 business_exposure")
+    if target_fields and not target_codes:
+        parser.error("--target-fields 必须同时传入 --target-codes")
+    if target_fields and not args.apply_targeted:
+        parser.error("--target-fields 仅用于确认后的定向补齐")
+    if target_fields and args.mode != "enrichment":
+        parser.error("--target-fields 仅支持 enrichment 模式")
     if args.apply_targeted and not target_codes:
         parser.error("--apply-targeted 必须同时传入 --target-codes")
     if args.apply_targeted and os.getenv("NODE_ENV") == "production" and not args.confirm_production:
@@ -1426,6 +1447,7 @@ def main():
                 result = enrich_stock_missing_details(
                     cur, date.fromisoformat(args.today) if args.today else _today_shanghai(),
                     retry_same_day=True, priority_codes=target_codes, only_codes=target_codes,
+                    include_result_fields=not bool(target_fields), force_fields=target_fields,
                 )
                 quality = update_quality(cur, date.fromisoformat(args.today) if args.today else _today_shanghai(), only_codes=target_codes)
             connection.commit()
@@ -1434,7 +1456,7 @@ def main():
                 "ok": stage_complete, "mode": "targeted", "stageComplete": stage_complete,
                 "status": "succeeded" if stage_complete else "partial",
                 "error": None if stage_complete else "定向资料未完整处理全部目标",
-                "codes": target_codes, "result": result, "quality": quality,
+                "codes": target_codes, "targetFields": target_fields, "result": result, "quality": quality,
                 "externalCalls": get_external_call_stats()["total"],
                 "externalSources": get_external_call_stats()["sources"],
                 "publishDatasets": False, "publishDatasetCodes": [],

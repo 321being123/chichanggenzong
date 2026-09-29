@@ -107,6 +107,38 @@ function cnStockSector(row) {
   return row && row.industry ? `${row.industry}（行业兜底）` : '待补全';
 }
 
+function cnStockIndustryChain(exposure) {
+  const chain = exposure && typeof exposure.industry_chain === 'object' ? exposure.industry_chain : {};
+  const upstreamGroups = new Map();
+  for (const item of Array.isArray(chain.upstream) ? chain.upstream : []) {
+    const industry = String(item && item.industry || '').trim();
+    const product = String(item && item.product || '').trim();
+    if (!industry || !product) continue;
+    if (!upstreamGroups.has(product)) upstreamGroups.set(product, []);
+    upstreamGroups.get(product).push(industry);
+  }
+  const upstream = [...upstreamGroups.entries()].map(([product, industries]) =>
+    `${[...new Set(industries)].join('、')}→${product}`
+  );
+  const products = [...new Set((Array.isArray(chain.products) ? chain.products : [])
+    .map(value => String(value || '').trim()).filter(Boolean))];
+  const downstreamItems = Array.isArray(chain.downstream) ? chain.downstream : [];
+  const downstream = [...new Set(downstreamItems
+    .filter(item => item && item.industry)
+    .map(item => `${(Array.isArray(item.products) && item.products.length ? item.products : products).join('、') || '公司产品'}→${item.industry}`))];
+  const relatedTracks = [...new Set(downstreamItems.flatMap(item =>
+    Array.isArray(item && item.related_tracks) ? item.related_tracks : []
+  ).map(value => String(value || '').trim()).filter(Boolean))];
+  if (!upstream.length && !downstream.length) return null;
+  const direct = (Array.isArray(exposure.exposures) ? exposure.exposures : [])
+    .find(item => item && item.relationship === 'direct_business');
+  return {
+    summary: `上游关系：${upstream.join('；') || '未披露'}；本环节：${products.join('、') || direct && direct.label || '主营产品'}；下游关系：${downstream.join('；') || '未披露'}`,
+    relatedTracks,
+    evidence: chain.evidence && typeof chain.evidence === 'object' ? chain.evidence : {},
+  };
+}
+
 async function buildCnStockLiveReport(code) {
   const result = await pool.query(
     `SELECT h.security_code,h.security_name,h.market_type,h.ipo_date,h.listing_date,
@@ -209,6 +241,18 @@ async function buildCnStockLiveReport(code) {
     `- **预测版本**：${stage}`,
     `- **预测日期**：${valueOrDash(row.pred_date)}`,
   ];
+  const industryChain = cnStockIndustryChain(row.business_exposure);
+  if (industryChain) {
+    const index = lines.findIndex(line => line.startsWith('- **主营业务**：'));
+    lines.splice(index >= 0 ? index + 1 : 5, 0,
+      `- **上下游产业链（招股书披露）**：${industryChain.summary}`,
+      `- **关联赛道**：${industryChain.relatedTracks.join('、') || '暂无明确赛道映射'}`,
+    );
+    if (typeof industryChain.evidence.url === 'string' && /^https:\/\//i.test(industryChain.evidence.url)) {
+      lines.splice(index >= 0 ? index + 3 : 7, 0,
+        `- **产业链证据**：[招股书原文](${industryChain.evidence.url})`);
+    }
+  }
   if (row.pred_return != null) {
     lines.splice(lines.length - 3, 0,
       '- **预测模型**：XGBoost（发行阶段模型）',

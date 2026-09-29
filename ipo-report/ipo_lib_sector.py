@@ -67,6 +67,7 @@ _BUSINESS_EXPOSURE_RULES = (
 SECTOR_EFFECTIVE_BOOSTS = {}
 SECTOR_SAMPLE_COUNTS = {}
 SECTOR_CALIBRATION_DAYS = 365
+BUSINESS_EXPOSURE_VERSION = 2
 
 def _default_sector_boost(sector_key):
     """源码中写死的默认赛道热度系数（动态计算异常/归零时回退用）"""
@@ -123,13 +124,14 @@ def _sw_industry_level2(industry_taxonomy):
     return {"code": code, "name": name}
 
 
-def analyze_business_exposure(stock_name, main_business, industry, stored=None):
+def analyze_business_exposure(stock_name, main_business, industry, stored=None,
+                              industry_chain=None, evidence_document=None):
     """从主营业务提取“产品→下游”暴露度，返回可持久化的解释结果。
 
     招股书没有收入占比时，不把暴露度粗暴置零：对明确出现的下游按证据
     均分，并降低 confidence；只有宽泛的“新材料”时才使用低置信度兜底。
     """
-    if isinstance(stored, dict) and stored.get("exposures"):
+    if isinstance(stored, dict) and stored.get("exposures") and industry_chain is None:
         return stored
 
     text = f"{stock_name or ''} {main_business or ''} {industry or ''}"
@@ -139,13 +141,32 @@ def analyze_business_exposure(stock_name, main_business, industry, stored=None):
         found = [kw for kw in keywords if kw.upper() in normalized]
         if found:
             # 有“收入/客户/产品/应用”证据时可信度更高；仅行业名命中时保守。
-            evidence = any(marker in text for marker in ("收入", "客户", "产品", "应用", "销售"))
+            explicit_evidence = any(marker in text for marker in ("收入", "客户", "产品", "应用", "销售"))
             matches.append({
                 "label": label,
                 "sector_key": sector_key,
                 "keywords": found,
                 "weight": 0.0,
-                "evidence_level": "explicit" if evidence else "keyword",
+                "evidence_level": "explicit" if explicit_evidence else "keyword",
+                "relationship": "direct_business",
+            })
+
+    chain = industry_chain if isinstance(industry_chain, dict) else {}
+    downstream = chain.get("downstream") if isinstance(chain.get("downstream"), list) else []
+    for relation in downstream:
+        if not isinstance(relation, dict):
+            continue
+        for sector_key in relation.get("related_tracks") or []:
+            sector_key = str(sector_key or "").strip()
+            if not sector_key or any(item.get("sector_key") == sector_key for item in matches):
+                continue
+            matches.append({
+                "label": sector_key,
+                "sector_key": sector_key,
+                "keywords": [str(relation.get("industry") or sector_key)],
+                "weight": 0.0,
+                "evidence_level": "official_downstream",
+                "relationship": "downstream",
             })
 
     generic = any(term in normalized for term in ("新材料", "先进材料", "化工材料"))
@@ -153,7 +174,10 @@ def analyze_business_exposure(stock_name, main_business, industry, stored=None):
         total = sum(1.0 for _ in matches)
         for item in matches:
             item["weight"] = round(1.0 / total, 4)
-        confidence = 0.78 if any(item["evidence_level"] == "explicit" for item in matches) else 0.55
+        confidence = 0.90 if chain.get("status") == "complete" and downstream else (
+            0.78 if any(item["evidence_level"] in ("explicit", "official_downstream") for item in matches)
+            else 0.55
+        )
     elif generic:
         matches = [{
             "label": "新材料",
@@ -164,13 +188,30 @@ def analyze_business_exposure(stock_name, main_business, industry, stored=None):
         }]
         confidence = 0.30
     else:
-        return {"exposures": [], "confidence": 0.0, "status": "missing", "source": "text"}
+        confidence = 0.0
 
+    document = evidence_document if isinstance(evidence_document, dict) else {}
+    supply_chain = {
+        "version": str(chain.get("version") or "ipo-industry-chain-v1"),
+        "status": str(chain.get("status") or "unavailable"),
+        "products": list(chain.get("products") or []),
+        "upstream": list(chain.get("upstream") or []),
+        "downstream": downstream,
+        "evidence": {
+            "source": document.get("source"),
+            "url": document.get("url"),
+            "title": document.get("title"),
+            "content_hash": document.get("content_hash"),
+            "parser_version": chain.get("version"),
+        } if document else {},
+    }
     return {
+        "version": BUSINESS_EXPOSURE_VERSION,
         "exposures": matches,
         "confidence": confidence,
-        "status": "complete" if confidence >= 0.7 else "partial",
+        "status": "complete" if confidence >= 0.7 else "partial" if matches else "missing",
         "source": "stored" if stored else "prospectus_text",
+        "industry_chain": supply_chain,
     }
 
 

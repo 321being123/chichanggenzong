@@ -149,7 +149,11 @@ try:
           empty_exposure_code in empty_exposure_candidates
           and not sync._has_business_exposures({"exposures": []})
           and sync._detail_field_state({"exposures": []})["status"] == "retryable"
-          and sync._has_business_exposures({"exposures": [{"label": "测试"}]}))
+          and sync._has_business_exposures({"exposures": [{"label": "测试"}]})
+          and not sync._has_business_exposures({"version": 2, "exposures": [{"label": "测试"}],
+                                                 "industry_chain": {"status": "partial"}})
+          and sync._has_business_exposures({"version": 2, "exposures": [{"label": "测试"}],
+                                            "industry_chain": {"status": "complete"}}))
     cur.executemany(
         """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,listing_date,ipo_status)
              VALUES(%s,%s,'CN',%s,%s,%s)

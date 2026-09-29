@@ -6,7 +6,7 @@
 - 命中路由后必须阅读其 `read` 列出的权威文档；实际改动触发的 `update` 文档必须同步更新。根因不明、跨模块、数据、权限、安全、调度或部署问题必须扩大阅读范围。
 - 修改项目规则、治理流程或权威文档路由时，必须同步核对 `governance/knowledge-map.json` 中相关路由的 `read`/`update` 文件清单，确保后续任务仍会命中这些规则。
 - `task-quality-governance` 路由用于任务运行时代码、任务定义和规则追踪变更，需同步生成任务矩阵；ADR-0003 的决策或生产状态补记由独立的 `task-quality-governance-record` 路由检查，不要求矩阵在无任务/规则变化时产生无意义差异。
-- A 股 IPO 行业与行业 PE 补全按 `ipo-industry-enrichment` 路由执行；生产定向补全只通过 `ipo_history_sync` 现有 Runner 的 `request_payload.targetCodes`，范围按用户指令，不自行扩大为历史全量回放。申万行业路径单独缓存；细分赛道无样本时回退申万二级行业，不写入官方 `industry` 或行业 PE。字段证据和口径见 INC-0033、ADR-0004。
+- A 股 IPO 行业、行业 PE 和上下游产业链补全按 `ipo-industry-enrichment` 路由执行；生产定向补全只通过 `ipo_history_sync` 现有 Runner 的 `request_payload.targetCodes`，范围按用户指令，不自行扩大为历史全量回放。产业链只按招股书原文记录“上游行业→公司产品→下游应用”关系及来源证据；下游应用映射关联赛道，缺少赛道样本时回退申万二级行业，不写入官方 `industry` 或行业 PE。字段证据和口径见 INC-0033、ADR-0004。
 - Bug 必须从数据源、数据库、服务、接口、页面和运行环境检查根因，并核查同类对象/功能；重大或重复问题按 `docs/incidents/README.md` 留下根因、同类范围和回归证据。
 - 交付前运行 `npm.cmd run check:knowledge`；涉及代码、依赖、数据库、配置或部署行为变化时运行 `npm.cmd run test:all`。若最终只改版本号、`CHANGELOG.md` 或 `public/changelog.json`，可只重跑版本一致性、知识门禁和本地运行验收；本项目事实只写入 Git 仓库，平台私有 Memory 不作为事实来源或裁决依据。Codex 项目级原生 Memory 已在 `.codex/config.toml` 关闭。
 - 多 Agent 协作时，项目事实仍然只写 Git 仓库。WorkBuddy 的记忆路径（`工作区 .workbuddy/memory/`、用户级 `~/.workbuddy/MEMORY.md`、云端画像与历史会话检索）只做接续指针，冲突一律以本仓库为准；完整路径清单与写什么、禁写什么见工作区根目录 `AGENTS.md` 的"多 Agent 协作：记忆路径统一规则"。

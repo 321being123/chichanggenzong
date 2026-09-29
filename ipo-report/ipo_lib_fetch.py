@@ -1467,6 +1467,75 @@ def _extract_main_business(text):
     return biz or ind or None
 
 
+_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v2"
+_DOWNSTREAM_CHAIN_RULES = (
+    ("数据中心", re.compile(r"数据中心", re.I), ("算力",)),
+    ("AI高功率芯片", re.compile(r"AI\s*高功率芯片|高功率芯片", re.I), ("人工智能", "半导体")),
+    ("光模块", re.compile(r"光模块", re.I), ("光通信",)),
+    ("5G通信", re.compile(r"5G\s*通信", re.I), ("5G通信",)),
+    ("智能汽车", re.compile(r"智能汽车", re.I), ("汽车电子",)),
+    ("计算机", re.compile(r"计算机", re.I), ("计算机",)),
+    ("消费电子", re.compile(r"消费电子", re.I), ("消费电子",)),
+)
+
+
+def _extract_industry_chain_relations(text):
+    """从招股书明确的上下游段落提取关系，不用公司名称或行业代码猜关系。"""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    products = [
+        label for label, pattern in (
+            ("热管理材料", re.compile(r"热管理材料|导热界面材料")),
+            ("电磁屏蔽材料", re.compile(r"电磁屏蔽材料|屏蔽材料")),
+            ("吸波材料", re.compile(r"吸波材料")),
+        ) if pattern.search(normalized)
+    ]
+    upstream = []
+    upstream_pattern = re.compile(
+        r"(?P<product>[^。；;]{2,60}?)上游行业主要为(?P<inputs>[^。；;]+)"
+    )
+    for match in upstream_pattern.finditer(normalized):
+        product_text = match.group("product")
+        product_match = re.search(r"(导热界面材料|热管理材料|电磁屏蔽材料|吸波材料)", product_text)
+        product_text = product_match.group(1) if product_match else product_text[-24:].strip(" ，、")
+        product = "热管理材料" if product_text == "导热界面材料" else product_text
+        material_text = re.split(r"等", match.group("inputs"), maxsplit=1)[0]
+        for item in re.split(r"[、，,及与和]", material_text):
+            industry = item.strip(" ：:，,、")
+            if industry and not any(row["industry"] == industry and row["product"] == product for row in upstream):
+                upstream.append({
+                    "industry": industry,
+                    "product": product,
+                    "relationship": "supplies",
+                    "evidence": match.group(0),
+                })
+
+    downstream = []
+    downstream_matches = re.finditer(
+        r"(?:终端应用领域|产品下游应用领域)[^。；;]{0,120}?(?:包括|包含|涵盖|主要为)(?P<apps>[^。；;]+)",
+        normalized,
+    )
+    for match in downstream_matches:
+        apps = match.group("apps")
+        for label, pattern, related_tracks in _DOWNSTREAM_CHAIN_RULES:
+            if pattern.search(apps) and not any(row["industry"] == label for row in downstream):
+                downstream.append({
+                    "industry": label,
+                    "product": "公司产品",
+                    "products": list(products),
+                    "relationship": "applied_in",
+                    "related_tracks": list(related_tracks),
+                    "evidence": match.group(0),
+                })
+    status = "complete" if products and upstream and downstream else "partial" if products or upstream or downstream else "unavailable"
+    return {
+        "version": _INDUSTRY_CHAIN_PARSER_VERSION,
+        "status": status,
+        "products": products,
+        "upstream": upstream,
+        "downstream": downstream,
+    }
+
+
 def _parse_jsonp_payload(text):
     """解析交易所公开接口的 JSON/JSONP 响应。"""
     raw = str(text or '').strip()
@@ -2587,6 +2656,7 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
                         'title': _title,
                         'content_hash': hashlib.sha256(text.encode('utf-8')).hexdigest(),
                         'parser_version': 'ipo-prospectus-main-business-v2',
+                        'industry_chain': _extract_industry_chain_relations(text),
                     }
                     _record_main_business_attempt(
                         code, 'exchange_prospectus', 'value', source=source,
@@ -2692,6 +2762,15 @@ def _fetch_cninfo_prospectus_main_business(stock_code, security_name=""):
                         downloaded_count += 1
                         mb = _extract_main_business(text)
                         if mb:
+                            adjunct = str(a.get("adjunctUrl") or "").strip()
+                            document_url = adjunct if adjunct.startswith("http") else f"https://static.cninfo.com.cn/{adjunct.lstrip('/')}"
+                            _MAIN_BUSINESS_DOCUMENT[code] = {
+                                "source": "cninfo", "url": document_url,
+                                "title": str(a.get("announcementTitle") or "招股说明书"),
+                                "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                                "parser_version": "ipo-prospectus-main-business-v2",
+                                "industry_chain": _extract_industry_chain_relations(text),
+                            }
                             _record_main_business_attempt(
                                 code, 'cninfo_prospectus', 'value',
                                 candidate_count=announcement_count,
@@ -2853,7 +2932,7 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
     }
     need_industry = 'industry' in requested
     need_industry_pe = 'industry_pe' in requested
-    need_main_business = 'main_business' in requested
+    need_main_business = bool({'main_business', 'business_exposure'} & requested)
     need_result = bool({'online_lottery_rate', 'oversubscribe_multiple'} & requested)
     security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
     announcement_detail = (
@@ -3019,8 +3098,11 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
         }
     try:
         from ipo_lib_sector import analyze_business_exposure
+        main_business_document = detail.get('main_business_document') or {}
         detail['business_exposure'] = analyze_business_exposure(
-            '', detail['main_business'], detail.get('industry', '')
+            '', detail['main_business'], detail.get('industry', ''),
+            industry_chain=main_business_document.get('industry_chain'),
+            evidence_document=main_business_document,
         )
     except Exception:
         detail['business_exposure'] = None
@@ -3468,4 +3550,4 @@ def _fetch_stock_listing_actuals():
     if updated > 0:
         print(f"[回填] 从K线回填 {updated} 只股票的首日涨幅")
 
-__all__ = ['fetch_stock_detail', 'fetch_stock_historical_detail', '_split_embedded_industry', '_normalize_stock_detail', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']
+__all__ = ['fetch_stock_detail', 'fetch_stock_historical_detail', '_split_embedded_industry', '_normalize_stock_detail', '_extract_industry_chain_relations', 'fetch_bond_detail', '_org_id_cache', '_get_org_id', '_parse_bond_top10_holders', '_extract_controller_names', '_match_controller_holders', '_derive_total_zhang', 'fetch_placing_result', 'calc_circulation_scale', 'calculate_conversion_metrics', '_parse_tencent_bond_price', '_fetch_bond_price', 'fetch_stock_quote', '_fetch_stock_industry', '_INDUSTRY_PE_MAP', '_get_industry_pe_map', '_fetch_quote_tencent', '_fetch_quote_eastmoney', 'fetch_stock_price_from_detail', '_fetch_all_a_stock_list', '_fetch_bond_listing_data_from_api', '_BONDS_MARKET_CACHE', '_fetch_all_bonds_market', '_fetch_cb_index_change', '_fetch_stock_listing_actuals']

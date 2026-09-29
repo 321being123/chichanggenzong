@@ -954,6 +954,41 @@ try:
           and hongfucheng_exposure["exposures"][0].get("sector_key") == "电子功能材料"
           and hongfucheng_exposure.get("status") == "complete",
           "exposure=%r" % (hongfucheng_exposure,))
+    chain_source_text = (
+        "导热界面材料上游行业主要为高分子材料、金属材料、陶瓷材料、碳基材料等基体材料和填料行业；"
+        "电磁屏蔽材料上游行业主要为金属材料、塑料粒、硅胶块、导电布、泡棉等基础材料行业；"
+        "吸波材料的上游行业主要为化工与高分子材料及有色金属等行业。"
+        "导热界面材料、屏蔽材料、吸波材料的终端应用领域包括数据中心（AI 高功率芯片、光模块）、"
+        "5G 通信、智能汽车、计算机及消费电子等。"
+    )
+    chain = fetch._extract_industry_chain_relations(chain_source_text)
+    check("招股书上下游关系提取覆盖上游材料与下游应用",
+          chain.get("status") == "complete"
+          and set(chain.get("products", [])) == {"热管理材料", "电磁屏蔽材料", "吸波材料"}
+          and len(chain.get("upstream", [])) >= 10
+          and all(item.get("relationship") == "supplies" and item.get("evidence")
+                  for item in chain.get("upstream", []))
+          and {"数据中心", "AI高功率芯片", "光模块", "5G通信", "智能汽车", "消费电子"}.issubset(
+              {item.get("industry") for item in chain.get("downstream", [])})
+          and all(item.get("relationship") == "applied_in"
+                  and set(item.get("products", [])) == set(chain.get("products", []))
+                  and item.get("evidence") for item in chain.get("downstream", [])),
+          "chain=%r" % (chain,))
+    chain_exposure = _val.analyze_business_exposure(
+        "鸿富诚", "热管理、电磁屏蔽及吸波材料等电子功能材料及器件的研发、生产和销售",
+        "C39 计算机、通信和其他电子设备制造业", industry_chain=chain,
+        evidence_document={"source": "szse", "url": "https://example.test/prospectus.pdf", "content_hash": "abc"},
+    )
+    related_tracks = {item.get("sector_key") for item in chain_exposure.get("exposures", [])}
+    check("下游明确应用转为关联赛道并保留关系方向",
+          {"算力", "人工智能", "半导体", "光通信", "5G通信", "汽车电子", "消费电子"}.issubset(related_tracks)
+          and any(item.get("relationship") == "downstream" for item in chain_exposure.get("exposures", []))
+          and abs(sum(item.get("weight", 0) for item in chain_exposure.get("exposures", [])) - 1.0) < 0.001,
+          "exposure=%r" % (chain_exposure,))
+    chain_display = report_lib._industry_chain_display({"business_exposure": chain_exposure})
+    check("IPO详情呈现上下游关系和关联赛道",
+          "高分子材料" in chain_display and "数据中心" in chain_display and "光通信" in chain_display,
+          "display=%r" % (chain_display,))
     _old_sector_boosts_for_l2 = dict(_val.SECTOR_EFFECTIVE_BOOSTS)
     _old_sector_counts_for_l2 = dict(_val.SECTOR_SAMPLE_COUNTS)
     _val.SECTOR_EFFECTIVE_BOOSTS.clear()

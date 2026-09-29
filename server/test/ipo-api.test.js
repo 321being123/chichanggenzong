@@ -110,6 +110,8 @@ async function main() {
     assert.match(routeSource, /预测模型.*XGBoost/);
     assert.match(routeSource, /热度赛道/);
     assert.match(routeSource, /申万二级行业/);
+    assert.match(routeSource, /上下游产业链（招股书披露）/);
+    assert.match(routeSource, /产业链证据/);
     assert.match(routeSource, /赛道热度系数/);
     assert.match(routeSource, /预测计算明细/);
     assert.match(routeSource, /打新建议评分明细/);

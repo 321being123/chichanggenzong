@@ -96,6 +96,8 @@
         "ipo-report/ipo_lib_sector.py",
         "ipo-report/ipo_lib_valuation.py",
         "ipo-report/ipo_lib_report.py",
+        "server/jobs/ipoHistorySync.js",
+        "server/services/jobOrchestrator.js",
         "ipo-report/test_ipo_history_sync.py",
         "ipo-report/test_ipo_unit.py",
         "server/services/externalApiConfig.js",

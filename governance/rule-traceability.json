@@ -213,6 +213,17 @@
       "owner": "A股 IPO",
       "status": "verified"
     },
+      {
+        "id": "IPO-INDUSTRY-CHAIN-001",
+        "title": "IPO 上下游产业链关系必须来自招股书明示证据并与主营赛道分开",
+        "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_extract_industry_chain_relations" },
+        "tests": [
+          { "file": "ipo-report/test_ipo_unit.py", "pattern": "招股书上下游关系提取覆盖上游材料与下游应用" },
+          { "file": "ipo-report/test_ipo_unit.py", "pattern": "下游明确应用转为关联赛道并保留关系方向" }
+        ],
+        "owner": "A股 IPO",
+        "status": "verified"
+      },
     {
       "id": "IPO-INDUSTRY-PARSER-001",
       "title": "IPO 行业解析必须绑定发行人并保留公告分类证据",

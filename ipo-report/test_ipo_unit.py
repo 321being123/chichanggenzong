@@ -213,7 +213,7 @@ try:
     fetch._exchange_ipo_document_candidates = lambda code, security_name='': [
         ("szse", ambiguous_prospectus_url, "通则康威招股说明书", "prospectus", "2026-09-24")
     ]
-    fetch._cninfo_ipo_issuance_candidates = lambda code: [
+    fetch._cninfo_ipo_issuance_candidates = lambda code, security_name='': [
         ("cninfo", targeted_fixture["source_url"], "通则康威首次公开发行股票投资风险特别公告", "2026-09-23")
     ]
     fetch._download_exchange_pdf_text = lambda session, url, source: (
@@ -355,14 +355,70 @@ try:
         def close(self):
             return None
 
+    class _FakeTopSearchResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class _FakeTopSearchSession:
+        def __init__(self, name_result):
+            self.headers = {}
+            self.calls = []
+            self.name_result = name_result
+
+        def post(self, _url, data=None, **_kwargs):
+            keyword = data.get("keyWord")
+            self.calls.append(keyword)
+            if keyword == "301718":
+                return _FakeTopSearchResponse([])
+            return _FakeTopSearchResponse(self.name_result)
+
+        def close(self):
+            return None
+
+    original_session = fetch.requests.Session
+    fetch._org_id_cache.pop("301718", None)
+    top_search = _FakeTopSearchSession([
+        {"orgId": "9900063681", "zwjc": "通则康威股份有限公司", "code": "301718"}
+    ])
+    fetch.requests.Session = lambda: top_search
+    try:
+        matched_org_id = fetch._get_org_id("301718", "通则康威")
+    finally:
+        fetch.requests.Session = original_session
+        fetch._org_id_cache.pop("301718", None)
+    check("巨潮代码未命中时按精确发行人名称补查orgId",
+          matched_org_id == "9900063681"
+          and top_search.calls == ["301718", "通则康威"],
+          "queries=%r orgId=%r" % (top_search.calls, matched_org_id))
+
+    fetch._org_id_cache.pop("301718", None)
+    mismatched_top_search = _FakeTopSearchSession([
+        {"orgId": "9900063681", "zwjc": "其他公司股份有限公司", "code": "301718"}
+    ])
+    fetch.requests.Session = lambda: mismatched_top_search
+    try:
+        mismatched_org_id = fetch._get_org_id("301718", "通则康威")
+    finally:
+        fetch.requests.Session = original_session
+        fetch._org_id_cache.pop("301718", None)
+    check("巨潮名称回查拒绝不匹配发行人",
+          mismatched_org_id is None and mismatched_top_search.calls == ["301718", "通则康威"],
+          "queries=%r orgId=%r" % (mismatched_top_search.calls, mismatched_org_id))
+
     old_session = fetch.requests.Session
     old_org_lookup = fetch._get_org_id
     fetch._CNINFO_IPO_ISSUANCE_CACHE.pop("301660", None)
     fake_session = _FakeCninfoSession()
+    org_lookup_calls = []
     fetch.requests.Session = lambda: fake_session
-    fetch._get_org_id = lambda code: "9900063681"
+    fetch._get_org_id = lambda code, security_name='': (
+        org_lookup_calls.append((code, security_name)) or "9900063681"
+    )
     try:
-        candidates = fetch._cninfo_ipo_issuance_candidates("301660")
+        candidates = fetch._cninfo_ipo_issuance_candidates("301660", "粤芯半导体")
     finally:
         fetch.requests.Session = old_session
         fetch._get_org_id = old_org_lookup
@@ -370,15 +426,16 @@ try:
     check("巨潮备源发现发行与风险公告并保留公告日",
           len(candidates) == 2 and candidates[0][0] == "cninfo"
           and candidates[0][3] == "2026-09-23"
-          and all("static.cninfo.com.cn/finalpage/2026-09-23/" in item[1] for item in candidates),
-          "候选=%r" % candidates)
+          and all("static.cninfo.com.cn/finalpage/2026-09-23/" in item[1] for item in candidates)
+          and org_lookup_calls == [("301660", "粤芯半导体")],
+          "候选=%r org查询=%r" % (candidates, org_lookup_calls))
     old_exchange_candidates = fetch._exchange_ipo_document_candidates
     old_cninfo_candidates = fetch._cninfo_ipo_issuance_candidates
     old_pdf_download = fetch._download_exchange_pdf_text
     fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301660", None)
     fetch._IPO_ISSUANCE_DETAIL_DIAGNOSTIC.pop("301660", None)
     fetch._exchange_ipo_document_candidates = lambda code, security_name='': []
-    fetch._cninfo_ipo_issuance_candidates = lambda code: [
+    fetch._cninfo_ipo_issuance_candidates = lambda code, security_name='': [
         ("cninfo", "https://static.cninfo.com.cn/finalpage/2026-09-23/risk.PDF",
          "粤芯半导体投资风险特别公告", "2026-09-23")
     ]
@@ -421,7 +478,7 @@ try:
         ),
     }
     fetch._exchange_ipo_document_candidates = lambda code, security_name='': list(office_ipo_docs)
-    fetch._cninfo_ipo_issuance_candidates = lambda code: []
+    fetch._cninfo_ipo_issuance_candidates = lambda code, security_name='': []
     fetch._download_exchange_pdf_text = lambda session, url, source: issuance_texts[url]
     fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301611", None)
     try:
@@ -467,7 +524,7 @@ try:
         ("szse", "https://example.test/exchange-risk.pdf", "测试科技投资风险特别公告",
          "issuance_risk_announcement", "2026-09-23")
     ]
-    fetch._cninfo_ipo_issuance_candidates = lambda code: [
+    fetch._cninfo_ipo_issuance_candidates = lambda code, security_name='': [
         ("cninfo", "https://example.test/cninfo-risk.pdf", "测试科技投资风险特别公告", "2026-09-23")
     ]
     fetch._download_exchange_pdf_text = lambda session, url, source: backup_texts[url]
@@ -496,7 +553,7 @@ try:
             )
         return issuance_texts[url]
 
-    fetch._cninfo_ipo_issuance_candidates = lambda code: []
+    fetch._cninfo_ipo_issuance_candidates = lambda code, security_name='': []
     fetch._download_exchange_pdf_text = guarded_prospectus_download
     fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301609", None)
     try:

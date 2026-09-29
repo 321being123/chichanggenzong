@@ -181,7 +181,7 @@ try:
 
     fetch_mod._MAIN_BUSINESS_SOURCE.clear()
     fetch_mod._fetch_exchange_prospectus_main_business = _fake_exchange_success
-    fetch_mod._fetch_cninfo_prospectus_main_business = lambda code: '巨潮主营业务'
+    fetch_mod._fetch_cninfo_prospectus_main_business = lambda code, security_name='': '巨潮主营业务'
     value = fetch_mod.fetch_prospectus_main_business('301716', security_name='鸿富诚')
     check("IPO主营业务交易所优先",
           value.startswith('交易所主营业务') and fetch_mod._MAIN_BUSINESS_SOURCE.get('301716') == 'szse')

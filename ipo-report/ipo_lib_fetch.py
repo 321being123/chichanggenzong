@@ -243,40 +243,83 @@ def _finalize_main_business_diagnostic(code):
     return diagnostic
 
 
-def _get_org_id(stock_code):
-    """从巨潮获取股票 orgId，供交易所主源失败时的备源查询使用。"""
-    if stock_code in _org_id_cache:
-        return _org_id_cache[stock_code]
-    last_error = None
-    for attempt in range(3):
-        try:
-            url = "https://www.cninfo.com.cn/new/information/topSearch/query"
-            cn_session = requests.Session()
-            cn_session.headers.update({
-                "User-Agent": HEADERS["User-Agent"],
-                "Accept": "application/json",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": "https://www.cninfo.com.cn/",
-            })
-            resp = cn_session.post(url, data={"keyWord": stock_code, "maxNum": 10}, timeout=20)
-            cn_session.close()
-            for item in resp.json():
-                if item.get("code") == stock_code:
-                    _org_id_cache[stock_code] = item["orgId"]
-                    return item["orgId"]
+def _normalize_cninfo_issuer_name(value):
+    name = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
+    for suffix in ("股份有限公司", "有限责任公司", "有限公司"):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
             break
-        except ExternalCallGuardError:
-            raise
-        except Exception as error:
-            last_error = error
-            if attempt < 2:
-                time.sleep(3)
-    if last_error is not None:
-        raise ExternalCallGuardError(
-            "UPSTREAM_5XX", f"获取orgId失败({stock_code}): {last_error}",
-            "cninfo", f"topSearch:{stock_code}", api_name="topSearch",
-        ) from last_error
-    _org_id_cache[stock_code] = None
+    return name
+
+
+def _get_org_id(stock_code, security_name=""):
+    """按代码查巨潮 orgId；代码未命中时只接受名称精确匹配的发行人。"""
+    code = str(stock_code or "").split(".")[0]
+    if code in _org_id_cache:
+        return _org_id_cache[code]
+    searches = [(code, "code")]
+    normalized_name = _normalize_cninfo_issuer_name(security_name)
+    if normalized_name and normalized_name != _normalize_cninfo_issuer_name(code):
+        searches.append((str(security_name).strip(), "name"))
+
+    url = "https://www.cninfo.com.cn/new/information/topSearch/query"
+    last_error = None
+    for keyword, match_type in searches:
+        for attempt in range(3):
+            try:
+                cn_session = requests.Session()
+                cn_session.headers.update({
+                    "User-Agent": HEADERS["User-Agent"],
+                    "Accept": "application/json",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": "https://www.cninfo.com.cn/",
+                })
+                try:
+                    response = cn_session.post(
+                        url, data={"keyWord": keyword, "maxNum": 10}, timeout=20
+                    )
+                    items = response.json()
+                finally:
+                    cn_session.close()
+
+                matched_org_ids = set()
+                for item in items if isinstance(items, list) else []:
+                    org_id = str(item.get("orgId") or "").strip()
+                    if not org_id:
+                        continue
+                    item_code = str(item.get("code") or item.get("gsdm") or "").split(".")[0]
+                    if match_type == "code":
+                        matches = item_code == code
+                    else:
+                        item_name = next((
+                            item.get(key) for key in ("zwjc", "name", "shortName", "companyName")
+                            if item.get(key)
+                        ), "")
+                        matches = (
+                            _normalize_cninfo_issuer_name(item_name) == normalized_name
+                            and (not item_code or item_code == code)
+                        )
+                    if matches:
+                        matched_org_ids.add(org_id)
+                if len(matched_org_ids) == 1:
+                    org_id = matched_org_ids.pop()
+                    _org_id_cache[code] = org_id
+                    return org_id
+                last_error = None
+                break
+            except ExternalCallGuardError:
+                raise
+            except Exception as error:
+                last_error = error
+                if attempt < 2:
+                    time.sleep(3)
+        if last_error is not None:
+            raise ExternalCallGuardError(
+                "UPSTREAM_5XX", f"获取orgId失败({code}): {last_error}",
+                "cninfo", f"topSearch:{keyword}", api_name="topSearch",
+            ) from last_error
+
+    _org_id_cache[code] = None
     return None
 
 def _parse_bond_top10_holders(text):
@@ -1765,7 +1808,7 @@ def _exchange_issuance_announcement_candidates(stock_code, security_name=''):
     ]
 
 
-def _cninfo_ipo_issuance_candidates(stock_code):
+def _cninfo_ipo_issuance_candidates(stock_code, security_name=""):
     """交易所列表未命中时，从已准入的巨潮公告入口查 IPO 发行/风险公告。"""
     code = str(stock_code or '').split('.')[0]
     if not code:
@@ -1773,7 +1816,9 @@ def _cninfo_ipo_issuance_candidates(stock_code):
     if code in _CNINFO_IPO_ISSUANCE_CACHE:
         return list(_CNINFO_IPO_ISSUANCE_CACHE[code])
 
-    org_id = _get_org_id(code)
+    org_id = _get_org_id(
+        code, security_name or _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
+    )
     if not org_id:
         _CNINFO_IPO_ISSUANCE_CACHE[code] = []
         return []
@@ -2157,7 +2202,7 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
         try:
             prefetched_cninfo_candidates = [
                 (source, url, title, role, announced_at)
-                for source, url, title, announced_at in _cninfo_ipo_issuance_candidates(code)
+                for source, url, title, announced_at in _cninfo_ipo_issuance_candidates(code, security_name)
                 for role in (_ipo_document_role(title),)
                 if role in {'issuance_announcement', 'issuance_risk_announcement'}
             ]
@@ -2241,7 +2286,7 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
             try:
                 cninfo_candidates = prefetched_cninfo_candidates or [
                     (source, url, title, role, announced_at)
-                    for source, url, title, announced_at in _cninfo_ipo_issuance_candidates(code)
+                    for source, url, title, announced_at in _cninfo_ipo_issuance_candidates(code, security_name)
                     for role in (_ipo_document_role(title),)
                     if role in {'issuance_announcement', 'issuance_risk_announcement'}
                 ]
@@ -2576,12 +2621,13 @@ def _download_cninfo_prospectus_pdf_text(session, announcement):
         return None
 
 
-def _fetch_cninfo_prospectus_main_business(stock_code):
+def _fetch_cninfo_prospectus_main_business(stock_code, security_name=""):
     """从巨潮招股说明书PDF提取主营业务（交易所主源失败后的备源）。"""
     try:
-        import backfill_lottery_rate as blr
         code = str(stock_code).split('.')[0]
-        org = blr.get_org_id(code)
+        org = _get_org_id(
+            code, security_name or _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
+        )
         if not org:
             _record_main_business_attempt(code, 'cninfo_prospectus', 'document_not_found', reason='org_id_not_found')
             return ""
@@ -2665,14 +2711,15 @@ def _fetch_cninfo_prospectus_main_business(stock_code):
 def fetch_prospectus_main_business(stock_code, security_name=None):
     """主营业务取数：交易所官方招股书优先，巨潮招股书兜底。"""
     code = str(stock_code or '').split('.')[0]
+    security_name = security_name or _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
     _MAIN_BUSINESS_SOURCE.pop(code, None)
     _MAIN_BUSINESS_DOCUMENT.pop(code, None)
     _MAIN_BUSINESS_DIAGNOSTIC.pop(code, None)
-    official = _fetch_exchange_prospectus_main_business(code, security_name or '')
+    official = _fetch_exchange_prospectus_main_business(code, security_name)
     if official:
         return official
     try:
-        mb = _fetch_cninfo_prospectus_main_business(code)
+        mb = _fetch_cninfo_prospectus_main_business(code, security_name)
         if mb:
             _MAIN_BUSINESS_SOURCE[code] = 'cninfo'
         return mb

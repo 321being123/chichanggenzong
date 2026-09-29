@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-28",
+  "lastReviewed": "2026-09-29",
   "rules": [
     {
       "id": "TASK-CONTRACT-001",
@@ -190,6 +190,17 @@
       "implementation": { "file": "server/jobs/hkIpoSync.js", "symbol": "liveSignalTargetDateStatus" },
       "tests": [{ "file": "server/test/date-time-r3.test.js", "pattern": "R3 日期边界测试通过" }],
       "owner": "日期边界治理",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-SOURCE-IDENTITY-001",
+      "title": "CNINFO代码查询未命中时仅接受发行人名称精确匹配",
+      "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_get_org_id" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮代码未命中时按精确发行人名称补查orgId" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮名称回查拒绝不匹配发行人" }
+      ],
+      "owner": "A股 IPO",
       "status": "verified"
     },
     {

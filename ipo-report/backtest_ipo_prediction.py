@@ -86,12 +86,15 @@ def train_on_window(raw_window, gain_window, xgb):
     return model, medians, float(low_q), float(high_q)
 
 
-def history_indices(dates, index, days):
-    """返回 [0, index) 中上市日落在 (时点 − days, 时点) 的样本下标。
+def history_indices(dates, index, days, anchor=None):
+    """返回 [0, index) 中上市日落在 (截点 − days, 截点) 的样本下标。
 
-    严格排除时点当天及之后上市的样本，保证校准量只用当时已公布的结果。
+    严格排除截点当天及之后上市的样本，保证校准量只用当时已公布的结果。
+    anchor 缺省取测试点的上市日；申购阶段回测必须传入更早的申购截点
+    （发行公告日）——申购时点之后、本股上市日之前上市的新股，其首日
+    结果在申购时同样不可见。
     """
-    anchor = dates[index]
+    anchor = anchor or dates[index]
     cutoff = anchor - timedelta(days=days)
     return [i for i in range(index) if cutoff <= dates[i] < anchor]
 
@@ -188,7 +191,9 @@ def rolling_interval_coverage(results, window=50, quantile=0.8, min_points=30):
     parsed = []
     for item in results:
         try:
-            parsed.append(date.fromisoformat(str(item["date"])[:10]))
+            # 用预测截点（anchor_date）而非上市日：申购阶段回测下，误差历史的
+            # 可见性同样以申购截点为界。
+            parsed.append(date.fromisoformat(str(item.get("anchor_date") or item["date"])[:10]))
         except ValueError:
             parsed.append(None)
     covered, widths = [], []
@@ -262,6 +267,14 @@ def main():
     industries = [r[17] for r in rows]
     payloads = [r[18] for r in rows]
     dates = [datetime.strptime(str(d)[:10], "%Y-%m-%d").date() for d in listing]
+    # 申购截点：发行公告日（ipo_date）。申购阶段预测发生在此之前，训练/校准窗口
+    # 都以它为界；格式异常或缺失时回退上市日（当前训练样本 ipo_date 全有）。
+    issue_anchors = []
+    for i, r in enumerate(rows):
+        try:
+            issue_anchors.append(datetime.strptime(str(r[19])[:10], "%Y-%m-%d").date())
+        except ValueError:
+            issue_anchors.append(dates[i])
 
     print(f"样本 {total} 条，起始训练窗口 {args.min_train} 条，重训间隔 {args.step}")
     print(f"温度统计量 {sector_lib.TEMP_GAIN_STAT}，阈值 热市>{sector_lib.TEMP_HOT_GAIN_MIN}"
@@ -282,48 +295,48 @@ def main():
     temp_level = "未知"
 
     for index in range(args.min_train, total):
-        anchor_date = dates[index]
-        # 训练窗口按真实预测截点限制（验收 P1-1）：同一天上市的其它新股，其首日收盘
-        # 结果在本股上市前不可能知道，不能进入训练标签。此前按行切片 raw[:index]，
-        # 实测 102 个测试点中 23 个的训练段包含同日其它 IPO 的首日结果。
+        # 预测信息截点（验收第二次复核-阻断1）：上市阶段预测的截点是本股上市日；
+        # 申购阶段预测发生在申购前，截点是发行公告日（ipo_date）——申购时点之后、
+        # 本股上市日之前上市的其他新股，其首日结果在申购时同样不可见，此前仍按
+        # 上市日取历史，实测 102 个测试点中 92 个用到了申购时尚未公布的结果。
+        anchor_date = issue_anchors[index] if args.issuance_stage else dates[index]
+        # 训练窗口按预测截点限制：历史样本的首日结果必须在本截点之前已产生
+        # （同日或更晚上市的都不可见）。
         train_indices = [i for i in range(index) if dates[i] < anchor_date]
-        # 板块基准：从生产同款默认值出发，只用时点前 BOARD_WINDOW_DAYS 内已上市样本重算。
-        # 每个测试点都按各自动时点重算（窗口滑动），成本低。
+        # 板块基准：从生产同款默认值出发，只用截点前 BOARD_WINDOW_DAYS 内已上市样本重算。
+        # 每个测试点都按各自截点重算（窗口滑动），成本低。
         board_bases = board_base_from_rows(
-            [(boards[i], gain[i]) for i in history_indices(dates, index, BOARD_WINDOW_DAYS)]
+            [(boards[i], gain[i]) for i in history_indices(dates, index, BOARD_WINDOW_DAYS, anchor_date)]
         )
 
         if model is None or (
             (index - args.min_train) % args.step == 0 and anchor_date != trained_anchor
         ):
-            train_raw = take_indices(raw, train_indices)
-            gain_train = gain[train_indices]
-            if args.issuance_stage:
-                # 申购阶段口径（验收 P1-2）：训练与测试必须用同一可见字段集合——
-                # 中签率与超额认购倍数在申购前都不可见，训练行同样掩蔽，
-                # 否则模型学到的特征分布在申购阶段推理时根本拿不到。
-                train_raw = dict(train_raw)
-                train_raw["lottery_rate"] = np.full(len(gain_train), np.nan)
-                train_raw["oversub_multiple"] = np.full(len(gain_train), np.nan)
-            model, medians, low_q, high_q = train_on_window(train_raw, gain_train, xgb)
+            # 训练与生产完全一致：始终使用完整字段（含事后公布的中签率/超购）训练，
+            # 不做按阶段掩蔽——生产训练从不区分阶段；阶段差异只出现在推理端
+            # （_ISSUANCE_PENDING_FIELDS）。此前回测把训练行也掩蔽，口径与生产
+            # 不一致，回测成绩不能代表实际使用效果（验收第二次复核-阻断2）。
+            model, medians, low_q, high_q = train_on_window(
+                take_indices(raw, train_indices), gain[train_indices], xgb
+            )
             trained_anchor = anchor_date
 
-            # 赛道系数：只用时点前 SECTOR_WINDOW_DAYS 内已上市样本重算。
+            # 赛道系数：只用截点前 SECTOR_WINDOW_DAYS 内已上市样本重算。
             # 需要逐只做业务暴露识别，成本较高，故与模型同节奏（重训点）更新。
             # 元组顺序须与 sector_tables_from_history 的期望一致：
             # (代码, 名称, 市场/板块, 上市日, 主营业务, 行业, 首日涨幅, source_payload)
             sector_history = [
                 (rows[i][0], rows[i][1], rows[i][2], rows[i][15],
                  rows[i][16], rows[i][17], rows[i][3], rows[i][18])
-                for i in history_indices(dates, index, SECTOR_WINDOW_DAYS)
+                for i in history_indices(dates, index, SECTOR_WINDOW_DAYS, anchor_date)
             ]
             table, _benchmark = sector_lib.sector_tables_from_history(sector_history)
             sector_boosts = {key: item["boost"] for key, item in table.items()}
             sector_counts = {key: item["sample_count"] for key, item in table.items()}
 
-        # 市场温度：每个测试点都按各自动时点重算（窗口滑动，不能复用上一个点）
+        # 市场温度：每个测试点都按各自截点重算（窗口滑动，不能复用上一个点）
         temperature = sector_lib.summarize_temperature(
-            [gain[i] for i in history_indices(dates, index, TEMP_WINDOW_DAYS)]
+            [gain[i] for i in history_indices(dates, index, TEMP_WINDOW_DAYS, anchor_date)]
         )
         temp_level = temperature["level"]
 
@@ -401,6 +414,7 @@ def main():
             "name": names[index],
             "board_name": board_key,
             "date": str(listing[index]),
+            "anchor_date": str(anchor_date),
             "year": str(listing[index])[:4],
             "actual": actual,
             "raw": raw_value,

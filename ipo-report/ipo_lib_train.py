@@ -25,7 +25,8 @@ TRAINING_SQL = """
         online_shares, total_shares, online_lottery_rate,
         oversubscribe_multiple, circulation_mv, subscribe_upper_limit,
         pe_ratio,
-        listing_date, main_business, industry, source_payload
+        listing_date, main_business, industry, source_payload,
+        ipo_date
     FROM ipo_history
     WHERE board_key != '北交所'
       AND ld_close_change IS NOT NULL
@@ -33,12 +34,14 @@ TRAINING_SQL = """
 """
 
 # 注意：前 15 项是模型特征列，必须与 TRAINING_SQL 的选择顺序严格一致；
-# 末尾 4 项只供回测按历史时点重算板块基准/赛道系数（不进入特征矩阵）。
+# listing_date 起的 5 项只供回测按预测截点重算校准量（不进入特征矩阵）：
+# listing_date=上市日截点、ipo_date=发行公告日（申购阶段回测的信息截点）。
 ROW_FIELDS = ('code', 'name', 'board', 'gain',
               'issue_price', 'issue_pe', 'industry_pe', 'fund_raised',
               'online_shares', 'total_shares', 'lottery_rate',
               'oversub_multiple', 'circ_mv', 'sub_limit', 'pe_ratio',
-              'listing_date', 'main_business', 'industry', 'source_payload')
+              'listing_date', 'main_business', 'industry', 'source_payload',
+              'ipo_date')
 
 # 缺值口径必须分两类，产物里也要分开标注，不能都写成“中位数”：
 #   1) FITTED_MEDIAN_FIELDS：有有效样本，用中位数填充，推理端可直接复用该补位值；

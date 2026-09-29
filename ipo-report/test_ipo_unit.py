@@ -1411,11 +1411,17 @@ try:
           "train_indices = [i for i in range(index) if dates[i] < anchor_date]" in _bt_src
           and "slice_fields(raw, 0, index), gain[:index]" not in _bt_src,
           "同日上市的样本不得互相当首日答案（验收实测 23/102 测试点泄漏）")
-    check("申购阶段口径同时掩蔽训练行与建议分输入并使用时点板块基准",
-          'train_raw["lottery_rate"] = np.full' in _bt_src
+    check("申购阶段口径掩蔽测试行与建议分输入并使用时点板块基准",
+          'test_raw["lottery_rate"] = np.array([np.nan])' in _bt_src
           and 'advice_detail["online_lottery_rate"] = None' in _bt_src
-          and "BOARD_BASE.update(merged_board_base)" in _bt_src,
-          "训练与建议分必须用同一可见字段集合与时点板块基准")
+          and "BOARD_BASE.update(merged_board_base)" in _bt_src
+          and 'train_raw["lottery_rate"]' not in _bt_src,
+          "回测必须复刻生产行为：训练永远完整字段（生产训练不区分阶段），阶段差异只在推理端")
+    _train_src = open(os.path.join(_ipo_dir, "ipo_lib_train.py"), encoding="utf-8").read()
+    check("申购阶段回测以发行公告日为信息截点而不是上市日",
+          "anchor_date = issue_anchors[index] if args.issuance_stage else dates[index]" in _bt_src
+          and "ipo_date" in _train_src,
+          "申购时点之后、上市日之前上市的新股结果在申购时不可见（验收实测 92/102 测试点泄漏）")
     check("回测含独立区间验收与板块中位数基线",
           "np.quantile(calib_errors, 0.8)" in _bt_src and '"board_median"' in _bt_src,
           "区间定标段与验收段必须分离，且要有不含模型的对比基线")

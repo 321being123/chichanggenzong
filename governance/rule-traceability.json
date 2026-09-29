@@ -458,6 +458,7 @@
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测窗口严格排除时点当天及之后上市的样本" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测训练窗口按上市日截点取且不按行切片" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "申购阶段回测以发行公告日为信息截点而不是上市日" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块基准可按时点样本重算并跳过样本不足的板块" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块校准接受时点基准与温度而不是只读当前全局状态" }
       ],

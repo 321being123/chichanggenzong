@@ -83,3 +83,5 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 
 2026-09-29 逐层回测与外生校准时点修正复核（本地未部署）：本轮改动集中在回测的时点一致性与预测输入的可见性。`ipo_lib_sector.py` / `ipo_lib_prediction.py` 新增的纯函数（`summarize_temperature`、`sector_tables_from_history`、`swap_sector_boosts`、`median_gain`、`board_base_from_rows`）只改变"统计与校准在哪算、用哪段样本算"，不新建行业事实、不改写官方行业分类或行业 PE。新增的 `_ISSUANCE_PENDING_FIELDS` 明确发行阶段（申购前）中签率与超额认购倍数尚未公布、一律按缺失处理，属"该时点拿不到的数据不得进入输入"的同一隔离原则，与 ADR-0004 的"不可计算即不使用常数代替"一致。
 
+2026-09-29 补充（验收问题修复，本地未部署）：负收益展示闭环——`_floor_listing_band` 对负数同样向下取整、`_prediction_range` 下限不再截 0、摘要显示「预计首日单签亏损约 X 元」——落实"模型可表达的输出不得在展示层说小"的同一隔离原则。申购阶段口径扩展到训练行（特征掩蔽）与建议分输入，板块基准改用该测试点的时点重算值注入；以上均不新建行业事实、不改写官方行业分类或行业 PE。
+

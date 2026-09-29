@@ -456,6 +456,7 @@
       "implementation": { "file": "ipo-report/backtest_ipo_prediction.py", "symbol": "history_indices" },
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测窗口严格排除时点当天及之后上市的样本" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测训练窗口按上市日截点取且不按行切片" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块基准可按时点样本重算并跳过样本不足的板块" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块校准接受时点基准与温度而不是只读当前全局状态" }
       ],
@@ -480,6 +481,18 @@
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "发行阶段把申购后才公布的中签率与超额认购倍数按缺失处理" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "上市阶段仍使用已公布的中签率与超额认购倍数" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-NEGATIVE-OUTPUT-001",
+      "title": "负收益（破发）预测必须贯通摘要、单签盈亏与预测区间，展示层不得把负值说小成 0",
+      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "_floor_listing_band" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "负预测按50%档位向下取整且正数行为不变" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "摘要如实显示破发与单签亏损而不是约0%" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间下限可以为负且发行阶段按规则放宽" }
       ],
       "owner": "A股 IPO",
       "status": "verified"

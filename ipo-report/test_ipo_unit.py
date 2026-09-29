@@ -1349,6 +1349,45 @@ try:
     check("上市阶段仍使用已公布的中签率与超额认购倍数",
           _listing_imputed is not None and "online_lottery_rate" not in _listing_imputed,
           "上市阶段补位字段=%s" % (_listing_imputed,))
+    # ── 验收问题修复回归：负收益展示、秩相关并列、同日泄漏、申购阶段口径 ──
+    check("负预测按50%档位向下取整且正数行为不变",
+          _val._floor_listing_band(-20) == -50 and _val._floor_listing_band(126) == 100
+          and _val._floor_listing_band(0) == 0,
+          "实得=%s/%s/%s" % (_val._floor_listing_band(-20), _val._floor_listing_band(126),
+                             _val._floor_listing_band(0)))
+    _neg_summary = _val._format_listing_summary(
+        -20, {"stock_code": "300001", "stock_name": "负例", "issue_price": 10}, "热市")
+    check("摘要如实显示破发与单签亏损而不是约0%",
+          "-50%" in _neg_summary and "亏损约2500元" in _neg_summary,
+          "实得=%s" % (_neg_summary,))
+    _saved_interval_info = _val._XGB_FEATURE_INFO
+    _val._XGB_FEATURE_INFO = {"interval_half_width": 100}
+    try:
+        _neg_low, _neg_high = _val._prediction_range(-20, "listing")
+        _neg_low_iss, _neg_high_iss = _val._prediction_range(-20, "issuance", ["online_lottery_rate"])
+    finally:
+        _val._XGB_FEATURE_INFO = _saved_interval_info
+    check("预测区间下限可以为负且发行阶段按规则放宽",
+          _neg_low == -120 and _neg_high == 80 and _neg_low_iss == -135 and _neg_high_iss == 95,
+          "listing=(%s,%s) issuance=(%s,%s)" % (_neg_low, _neg_high, _neg_low_iss, _neg_high_iss))
+    check("秩相关对并列评分取平均秩且常数评分不可评估",
+          _bt.spearman([10, 10, 10], [1, 2, 3]) is None
+          and abs(_bt.spearman([1, 2, 2, 4], [1, 2, 3, 4]) - 0.9486833) < 1e-6,
+          "常数=%r 并列=%r" % (_bt.spearman([10, 10, 10], [1, 2, 3]),
+                              _bt.spearman([1, 2, 2, 4], [1, 2, 3, 4])))
+    _bt_src = open(os.path.join(_ipo_dir, "backtest_ipo_prediction.py"), encoding="utf-8").read()
+    check("回测训练窗口按上市日截点取且不按行切片",
+          "train_indices = [i for i in range(index) if dates[i] < anchor_date]" in _bt_src
+          and "slice_fields(raw, 0, index), gain[:index]" not in _bt_src,
+          "同日上市的样本不得互相当首日答案（验收实测 23/102 测试点泄漏）")
+    check("申购阶段口径同时掩蔽训练行与建议分输入并使用时点板块基准",
+          'train_raw["lottery_rate"] = np.full' in _bt_src
+          and 'advice_detail["online_lottery_rate"] = None' in _bt_src
+          and "BOARD_BASE.update(merged_board_base)" in _bt_src,
+          "训练与建议分必须用同一可见字段集合与时点板块基准")
+    check("回测含独立区间验收与板块中位数基线",
+          "np.quantile(calib_errors, 0.8)" in _bt_src and '"board_median"' in _bt_src,
+          "区间定标段与验收段必须分离，且要有不含模型的对比基线")
     _val.detect_stock_hot_sector = _old_detect_for_cap
     _val.get_stock_sector_context = _old_context_for_cap
     _val._xgb_predict_listing = _old_xgb_for_cap

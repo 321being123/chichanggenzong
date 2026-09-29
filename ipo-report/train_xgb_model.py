@@ -46,14 +46,23 @@ print(f"加载 {len(rows)} 只新股")
 # ── 2. 特征工程 ──
 raw_fields, codes, names_list, gain = rows_to_arrays(rows)
 
+# 上市日序列：所有「只用当时可见样本」的切分（评估段、滚动区间定标）都按它对齐，
+# 同一天上市的样本不能互相当首日收盘答案（与时间滚动回测同一口径）。
+from datetime import date as _date
+listing_dates = [_date.fromisoformat(str(r[15])[:10]) for r in rows]
+
 # 全量中位数：上线模型用全部样本训练，补位值即取自全部样本。
 medians = {field: float(np.nanmedian(raw_fields[field])) for field in FITTED_MEDIAN_FIELDS}
 fill_sources = {field: "median_of_existing_samples" for field in FITTED_MEDIAN_FIELDS}
 fill_sources.update({field: "native_missing" for field in NATIVE_MISSING_FIELDS})
 
-# 时间顺序切分：前 80% 作训练段，后 20% 作样本外测试段
+# 时间顺序切分：前 80% 作训练段，后 20% 作样本外测试段。
+# 边界按上市日对齐：测试段的上市日必须严格晚于训练段最后一天——同一天上市的样本
+# 不能一部分进训练、一部分进测试，否则测试段样本的首日结果会泄给同日的训练样本。
 n = len(rows)
-train_size = int(n * 0.8)
+train_size = max(1, int(n * 0.8))
+while train_size < n and listing_dates[train_size] <= listing_dates[train_size - 1]:
+    train_size += 1
 y_train = gain[:train_size]
 y_test = gain[train_size:]
 
@@ -112,13 +121,16 @@ rolling_errors = []
 rolling_model = None
 rolling_medians = None
 for index in range(rolling_start, n):
+    anchor_date = listing_dates[index]
+    # 训练窗口按预测截点取：同日上市的样本不能进入训练标签（与回测同一口径，验收 P1-1）。
+    train_idx = np.array([i for i in range(index) if listing_dates[i] < anchor_date], dtype=int)
     if rolling_model is None or (index - rolling_start) % ROLLING_STEP == 0:
-        window_raw = {key: value[:index] for key, value in raw_fields.items()}
+        window_raw = {key: value[train_idx] for key, value in raw_fields.items()}
         rolling_medians = {field: float(np.nanmedian(window_raw[field])) for field in FITTED_MEDIAN_FIELDS}
         window_features = build_feature_matrix(window_raw, rolling_medians)
         rolling_model = xgb.train(
             XGB_PARAMS,
-            xgb.DMatrix(window_features, label=symlog_return(gain[:index]), feature_names=feature_names),
+            xgb.DMatrix(window_features, label=symlog_return(gain[train_idx]), feature_names=feature_names),
             num_boost_round=NUM_BOOST_ROUND,
         )
     one_raw = {key: value[index:index + 1] for key, value in raw_fields.items()}

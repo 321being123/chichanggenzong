@@ -917,8 +917,12 @@ def _get_lot_size(stock_code):
     return 500
 
 def _floor_listing_band(estimated):
-    """将最终预计涨幅按50%档位向下取整。"""
-    return (math.floor(max(estimated, 0)) // 50) * 50
+    """将最终预计涨幅按50%档位向下取整。
+
+    负数同样向下取整（如 −20% → −50%），保持"展示不比结构化预测更乐观"的方向；
+    此前 `max(estimated, 0)` 会把负预测显示成约 0%，把破发说成了不亏不赚。
+    """
+    return int(math.floor(float(estimated) / 50.0) * 50)
 
 def _format_listing_summary(estimated, stock_detail, temp):
     """生成上市结论文字，包含预计单签收益
@@ -943,14 +947,18 @@ def _format_listing_summary(estimated, stock_detail, temp):
         part = f"{est_step}%+"
     else:
         part = f"约{est_step}%"
-    if single_lot_profit_yuan and single_lot_profit_yuan >= 10000:
-        profit_text = f"{math.floor(single_lot_profit_yuan / 10000)}万元"
-    elif single_lot_profit_yuan and single_lot_profit_yuan >= 1000:
-        profit_text = f"{math.floor(single_lot_profit_yuan / 1000)}千元"
-    else:
-        profit_text = None
+    profit_text = None
+    if single_lot_profit_yuan is not None:
+        if single_lot_profit_yuan >= 10000:
+            profit_text = f"预计首日单签收益{math.floor(single_lot_profit_yuan / 10000)}万元"
+        elif single_lot_profit_yuan >= 1000:
+            profit_text = f"预计首日单签收益{math.floor(single_lot_profit_yuan / 1000)}千元"
+        elif single_lot_profit_yuan < 0:
+            # 亏损与盈利同口径展示：破发是申购决策需要看到的真实结果，
+            # 不能因金额为负就隐去单签盈亏。
+            profit_text = f"预计首日单签亏损约{int(round(-single_lot_profit_yuan))}元"
     if profit_text:
-        return f"预计首日涨幅{part}，预计首日单签收益{profit_text}"
+        return f"预计首日涨幅{part}，{profit_text}"
     return f"预计首日涨幅{part}"
 
 
@@ -974,7 +982,9 @@ def _prediction_range(estimated, prediction_stage, imputed_fields=None):
     width = max(60.0, min(250.0, width))
     if prediction_stage == "issuance" and imputed_fields:
         width *= 1.15
-    low = max(0, int(round(float(estimated) - width)))
+    # 下限不再截到 0：结构化预测可以为负（破发是需要预警的真实输出），
+    # 区间也必须能表达负值，否则把破发风险说小了。
+    low = int(round(float(estimated) - width))
     high = int(round(float(estimated) + width))
     return low, high
 

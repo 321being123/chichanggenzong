@@ -49,7 +49,7 @@ from ipo_lib_train import (
 
 import ipo_lib_sector as sector_lib
 import ipo_lib_valuation as valuation_lib
-from ipo_lib_prediction import BOARDS_DEFAULT, board_base_from_rows
+from ipo_lib_prediction import BOARDS_DEFAULT, BOARD_BASE, board_base_from_rows
 from ipo_lib_valuation import _calc_xgb_boost, temp_listing_multiplier
 
 # 各层修正所用的历史窗口，与生产校准函数的窗口保持一致。
@@ -57,11 +57,21 @@ TEMP_WINDOW_DAYS = sector_lib.TEMP_WINDOW_DAYS
 SECTOR_WINDOW_DAYS = sector_lib.SECTOR_CALIBRATION_DAYS
 BOARD_WINDOW_DAYS = 360  # 对应 ipo_lib_prediction._CALIBRATE_MONTHS * 30
 
-LAYER_NAMES = ("raw", "board", "sector", "temp")
+LAYER_NAMES = ("raw", "board_median", "board", "sector", "temp")
 
 
 def slice_fields(fields, start, stop):
     return {key: value[start:stop] for key, value in fields.items()}
+
+
+def take_indices(fields, indices):
+    """按索引列表取样本子集。
+
+    训练窗口按预测截点过滤（同日上市的样本不得互相当答案）后不再是一段连续区间，
+    行切片 `fields[:index]` 表达不了这个语义，必须按索引取。
+    """
+    idx = np.asarray(indices, dtype=int)
+    return {key: np.asarray(value)[idx] for key, value in fields.items()}
 
 
 def train_on_window(raw_window, gain_window, xgb):
@@ -97,15 +107,41 @@ def layer_metrics(predicted, actual):
     }
 
 
-def spearman(a, b):
+def average_ranks(values):
+    """并列值取平均秩（Spearman 的标准并列处理）。
+
+    此前用两次 argsort：并列值会按出现顺序拿到递增虚秩，全部相同的评分
+    被排成 1,2,3…，与任意实际序列都能算出高相关——验收实测 [10,10,10] 对
+    [1,2,3] 给出 1.0。并列必须用平均秩。
+    """
+    arr = np.asarray(values, dtype=float)
+    order = np.argsort(arr, kind="mergesort")
+    ranks = np.empty(len(arr), dtype=float)
+    sorted_values = arr[order]
+    start = 0
+    while start < len(arr):
+        end = start
+        while end + 1 < len(arr) and sorted_values[end + 1] == sorted_values[start]:
+            end += 1
+        ranks[order[start:end + 1]] = (start + end) / 2.0 + 1.0
+        start = end + 1
+    return ranks
+
+
+def spearman(a, b, min_distinct=3):
     """秩相关（不依赖 scipy）：建议分越高，实际首日涨幅是否也越高。
 
-    用秩而不是原值，避免少数极端涨幅主导结论；0 表示没有区分力。
+    并列分数取平均秩；评分区分度不足（唯一取值少于 min_distinct 个，或全相同）
+    时返回 None——用没有区分力的评分排出的“相关”没有意义，不能当作权重选择证据。
     """
-    if len(a) < 3:
+    arr_a = np.asarray(a, dtype=float)
+    arr_b = np.asarray(b, dtype=float)
+    if len(arr_a) < 3:
         return None
-    rank_a = np.argsort(np.argsort(np.asarray(a, dtype=float))).astype(float)
-    rank_b = np.argsort(np.argsort(np.asarray(b, dtype=float))).astype(float)
+    if len(np.unique(arr_a)) < min_distinct or len(np.unique(arr_b)) < min_distinct:
+        return None
+    rank_a = average_ranks(arr_a)
+    rank_b = average_ranks(arr_b)
     if rank_a.std() == 0 or rank_b.std() == 0:
         return None
     return float(np.corrcoef(rank_a, rank_b)[0, 1])
@@ -191,7 +227,7 @@ def main():
     print(f"温度统计量 {sector_lib.TEMP_GAIN_STAT}，阈值 热市>{sector_lib.TEMP_HOT_GAIN_MIN}"
           f" / 常温>{sector_lib.TEMP_WARM_GAIN_MIN} 且破发率<{sector_lib.TEMP_WARM_BREAK_MAX}")
     if not args.quiet:
-        print(f"{'序号':>5} {'代码':>8} {'名称':<8} {'原始':>7} {'板块后':>7} {'赛道后':>7} {'温度后':>7} {'实际':>7}")
+        print(f"{'序号':>5} {'代码':>8} {'名称':<8} {'原始':>7} {'板块基线':>8} {'板块后':>7} {'赛道后':>7} {'温度后':>7} {'实际':>7}")
 
     advice_weights = []
     if args.advice_weights:
@@ -200,21 +236,38 @@ def main():
 
     results = []
     model = medians = low_q = high_q = None
+    trained_anchor = None
     sector_boosts = {}
     sector_counts = {}
     temp_level = "未知"
 
     for index in range(args.min_train, total):
+        anchor_date = dates[index]
+        # 训练窗口按真实预测截点限制（验收 P1-1）：同一天上市的其它新股，其首日收盘
+        # 结果在本股上市前不可能知道，不能进入训练标签。此前按行切片 raw[:index]，
+        # 实测 102 个测试点中 23 个的训练段包含同日其它 IPO 的首日结果。
+        train_indices = [i for i in range(index) if dates[i] < anchor_date]
         # 板块基准：从生产同款默认值出发，只用时点前 BOARD_WINDOW_DAYS 内已上市样本重算。
         # 每个测试点都按各自动时点重算（窗口滑动），成本低。
         board_bases = board_base_from_rows(
             [(boards[i], gain[i]) for i in history_indices(dates, index, BOARD_WINDOW_DAYS)]
         )
 
-        if (index - args.min_train) % args.step == 0:
-            model, medians, low_q, high_q = train_on_window(
-                slice_fields(raw, 0, index), gain[:index], xgb
-            )
+        if model is None or (
+            (index - args.min_train) % args.step == 0 and anchor_date != trained_anchor
+        ):
+            train_raw = take_indices(raw, train_indices)
+            gain_train = gain[train_indices]
+            if args.issuance_stage:
+                # 申购阶段口径（验收 P1-2）：训练与测试必须用同一可见字段集合——
+                # 中签率与超额认购倍数在申购前都不可见，训练行同样掩蔽，
+                # 否则模型学到的特征分布在申购阶段推理时根本拿不到。
+                train_raw = dict(train_raw)
+                train_raw["lottery_rate"] = np.full(len(gain_train), np.nan)
+                train_raw["oversub_multiple"] = np.full(len(gain_train), np.nan)
+            model, medians, low_q, high_q = train_on_window(train_raw, gain_train, xgb)
+            trained_anchor = anchor_date
+
             # 赛道系数：只用时点前 SECTOR_WINDOW_DAYS 内已上市样本重算。
             # 需要逐只做业务暴露识别，成本较高，故与模型同节奏（重训点）更新。
             # 元组顺序须与 sector_tables_from_history 的期望一致：
@@ -246,6 +299,10 @@ def main():
 
         board_key = boards[index]
         board_base_value = board_bases.get(board_key, BOARDS_DEFAULT.get(board_key))
+        # 独立板块中位数基线（验收 P1-6）：预测=该板块近 BOARD_WINDOW_DAYS 首日中位数。
+        # 它是「不 用 XGBoost 也能给出预测」的最低对比标准——任何模型或修正层
+        # 只有稳定优于这条基线才谈得上有增益。
+        board_median_pred = float(board_base_value) if board_base_value is not None else 0.0
         if args.skip_board:
             # 消融：跳过板块校准，用于判断这一层是否有稳定增益
             board_boost = 1.0
@@ -263,19 +320,36 @@ def main():
                 industry_taxonomy=sector_lib._stored_sw_industry_taxonomy(payloads[index]),
             )
             if advice_weights:
-                advice_scores = score_advice_candidates(
-                    advice_weights,
-                    {
-                        "stock_code": codes[index], "stock_name": names[index],
-                        "main_business": main_business[index], "industry": industries[index],
-                        "issue_price": rows[index][4], "issue_pe": rows[index][5],
-                        "industry_pe": rows[index][6], "fund_raised": rows[index][7],
-                        "online_lottery_rate": rows[index][10],
-                        "oversubscribe_multiple": rows[index][11],
-                        "circulation_mv": rows[index][12],
-                    },
-                    rows[index][5], rows[index][6], temperature, original_advice_weight,
-                )
+                advice_detail = {
+                    "stock_code": codes[index], "stock_name": names[index],
+                    "main_business": main_business[index], "industry": industries[index],
+                    "issue_price": rows[index][4], "issue_pe": rows[index][5],
+                    "industry_pe": rows[index][6], "fund_raised": rows[index][7],
+                    "online_lottery_rate": rows[index][10],
+                    "oversubscribe_multiple": rows[index][11],
+                    "circulation_mv": rows[index][12],
+                }
+                if args.issuance_stage:
+                    # 建议分与预测必须用同一组掩蔽后的输入（验收 P1-2）：
+                    # 申购阶段不能把事后公布的中签率/超购喂给评分。
+                    advice_detail["online_lottery_rate"] = None
+                    advice_detail["oversubscribe_multiple"] = None
+                # 建议评分内部经 estimate_board_base 读全局 BOARD_BASE，不替换就会用
+                # 「今天之前」的当前校准值——验收实测只改全局某板块基准，同一只股票的
+                # 建议分能从 288 变到 432。必须换成该测试点的时点基准。
+                merged_board_base = dict(BOARDS_DEFAULT)
+                merged_board_base.update(board_bases)
+                saved_board_base = dict(BOARD_BASE)
+                BOARD_BASE.clear()
+                BOARD_BASE.update(merged_board_base)
+                try:
+                    advice_scores = score_advice_candidates(
+                        advice_weights, advice_detail,
+                        rows[index][5], rows[index][6], temperature, original_advice_weight,
+                    )
+                finally:
+                    BOARD_BASE.clear()
+                    BOARD_BASE.update(saved_board_base)
         sector_mult = 1.0 if args.skip_sector else float(context.get("multiplier") or 1.0)
         sector_est = board_est * sector_mult
         temp_mult = 1.0 if args.skip_temp else temp_listing_multiplier(temp_level)
@@ -290,6 +364,7 @@ def main():
             "year": str(listing[index])[:4],
             "actual": actual,
             "raw": raw_value,
+            "board_median": board_median_pred,
             "board": board_est,
             "sector": sector_est,
             "temp": final_est,
@@ -305,7 +380,8 @@ def main():
         })
         if not args.quiet:
             print(f"{index:>5} {codes[index]:>8} {names[index]:<8} {raw_value:>6.0f}% "
-                  f"{board_est:>6.0f}% {sector_est:>6.0f}% {final_est:>6.0f}% {actual:>6.0f}%")
+                  f"{board_median_pred:>7.0f} {board_est:>6.0f}% {sector_est:>6.0f}% "
+                  f"{final_est:>6.0f}% {actual:>6.0f}%")
 
     actual = np.array([r["actual"] for r in results])
     covered = (actual >= np.array([r["low"] for r in results])) & (actual <= np.array([r["high"] for r in results]))
@@ -314,6 +390,25 @@ def main():
     layers = {}
     for name in LAYER_NAMES:
         layers[name] = layer_metrics(np.array([r[name] for r in results]), actual)
+
+    # 区间独立验收（验收 P1-4）：区间构造固定为「完整最终链路样本外误差的 80 分位」，
+    # 定标只用时间上较早的一半测试点，覆盖率只在未参与定标的后续一半上评估。
+    # 此前两种数字都不能算独立验证：模型自估区间来自训练段拟合残差（覆盖 46.1%）；
+    # 产物半宽覆盖 81.4% 但用同一段历史定标并验收。
+    independent_interval = None
+    n_points = len(results)
+    if n_points >= 20:
+        split = n_points // 2
+        calib_errors = [abs(r["error"]) for r in results[:split]]
+        holdout_errors = [abs(r["error"]) for r in results[split:]]
+        calib_half = float(np.quantile(calib_errors, 0.8))
+        independent_interval = {
+            "method": "最终链路样本外误差80分位；前半段定标、后半段验收",
+            "half_width": calib_half,
+            "calibration_points": len(calib_errors),
+            "evaluation_points": len(holdout_errors),
+            "coverage": float(np.mean([e <= calib_half for e in holdout_errors])),
+        }
 
     def grouped_mae(group_key):
         """按分组键统计各层 MAE：用于判断某项修正在哪些板块/年份/温度档真正起作用。"""
@@ -370,6 +465,7 @@ def main():
         "by_year": by_year,
         "by_board": by_board,
         "advice_scan": advice_scan,
+        "independent_interval": independent_interval,
     }
 
     # 当前产物区间半宽（interval_half_width）对应的覆盖率。
@@ -390,6 +486,7 @@ def main():
     print(f"{'层级':<14}{'MAE':>9}{'MAPE':>9}{'中位绝对误差':>14}{'平均偏差':>11}")
     layer_labels = {
         "raw": "XGBoost 原始",
+        "board_median": "板块中位数基线",
         "board": "+板块校准",
         "sector": "+赛道修正",
         "temp": "+温度系数（最终）",
@@ -399,19 +496,18 @@ def main():
         print(f"{layer_labels[name]:<14}{m['mae']:>8.1f}pp{m['mape']:>8.1f}%"
               f"{m['median_absolute_error']:>13.1f}pp{m['mean_error']:>+10.1f}pp")
     print("-" * 66)
-    layer_head = f"{'分组':<12}{'点数':>4}{'原始':>9}{'板块':>9}{'赛道':>9}{'温度':>9}"
     for title, table, order in (
         ("按市场温度分组（温度系数是否真的生效）", by_temperature, ("热市", "常温", "冷市", "未知")),
         ("按年份分组", by_year, None),
         ("按板块分组", by_board, None),
     ):
         print(f"\n{title}")
-        print(layer_head)
+        print(f"{'分组':<12}{'点数':>4}" + "".join(f"{layer_labels[l]:>14}" for l in LAYER_NAMES))
         keys = [k for k in order if k in table] if order else sorted(table)
         for key in keys:
             row = table[key]
-            print(f"{key:<12}{row['count']:>4}{row['raw']:>8.0f} {row['board']:>8.0f} "
-                  f"{row['sector']:>8.0f} {row['temp']:>8.0f}")
+            print(f"{key:<12}{row['count']:>4}"
+                  + "".join(f"{row[l]:>13.0f} " for l in LAYER_NAMES))
     print("-" * 66)
     if advice_scan:
         print("\n建议分与实际首日涨幅的秩相关（+1 完全同序，0 无区分力；建议分是规则评分，不能看 MAE）")
@@ -419,7 +515,12 @@ def main():
             value = row["spearman"]
             text = "不可评估" if value is None else format(value, "+.3f")
             print(f"  赛道分权重 {key}: {row['count']} 个点 | 秩相关 {text}")
-    print(f"模型自估区间覆盖: {summary['interval_coverage']*100:.1f}%（名义 {summary['interval_nominal']*100:.0f}%）")
+    print(f"模型自估区间覆盖: {summary['interval_coverage']*100:.1f}%（名义 {summary['interval_nominal']*100:.0f}%，来自训练段拟合残差，仅参考）")
+    if independent_interval:
+        print(f"区间独立验收    : 半宽 {independent_interval['half_width']:.0f}pp -> 未参与定标的"
+              f"后 {independent_interval['evaluation_points']} 点覆盖 "
+              f"{independent_interval['coverage']*100:.1f}%"
+              f"（前 {independent_interval['calibration_points']} 点定标；最终链路误差 80 分位）")
     if production_coverage is not None:
         print(f"产物区间覆盖    : {production_coverage*100:.1f}%（半宽 {production_half:.0f}pp；同源定标，偏乐观）")
     if broke.any():

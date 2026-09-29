@@ -1,0 +1,19 @@
+{
+  "sample_id": "301716-cninfo-risk-notice-industry",
+  "stock_code": "301716",
+  "security_name": "鸿富诚",
+  "source_url": "https://static.cninfo.com.cn/finalpage/2026-09-15/1225563540.PDF",
+  "published_at": "2026-09-15",
+  "document_text_sha256": "bd4bbf20601a47d4d3dfc59c0c3da9a735ba95ccc20f9bb04161384bd21df5c5",
+  "text_extraction_version": "pymupdf-page-text-join-v1",
+  "excerpt_sha256": "c90c4dec7643407c6d511a26a57dcb4518165549d8805df852841bec6627f6d1",
+  "text": "根据《国民经济行业分类》（GB/T 4754-2017）及中国上市公司协会行业统计分类指引（2023年），发行人所属行业为“（C39）计算机、通信和其他电子设备制造业”。截至2026年9月10日（T-4日），中证指数有限公司发布的发行人所属行业最近一个月平均静态市盈率为73.89倍。",
+  "expected": {
+    "industry": "计算机、通信和其他电子设备制造业",
+    "classification_code": "C39",
+    "classification_system": null,
+    "classification_version": null,
+    "industry_pe": 73.89,
+    "industry_pe_as_of": "2026-09-10"
+  }
+}

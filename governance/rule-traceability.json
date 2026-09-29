@@ -191,6 +191,53 @@
       "tests": [{ "file": "server/test/date-time-r3.test.js", "pattern": "R3 日期边界测试通过" }],
       "owner": "日期边界治理",
       "status": "verified"
+    },
+    {
+      "id": "IPO-INDUSTRY-PARSER-001",
+      "title": "IPO 行业解析必须绑定发行人并保留公告分类证据",
+      "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_parse_ipo_issuance_detail" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "鸿富诚代码在前格式解析行业和独立证据" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "行业解析跳过同行公司行业分类" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "PE先命中仍继续查找行业且字段证据各自绑定文档" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-ENRICHMENT-FIELDS-001",
+      "title": "IPO 增强资料按缺失字段独立补全并保留诊断与续跑状态",
+      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "enrich_stock_missing_details" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "只缺行业时独立请求且分类证据落库" },
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "值未变化时仍幂等保留本轮行业证据" },
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "Guard中断前的行业值和证据先写入并保留恢复点" },
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "空候选仍保留已知资料缺口" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-INDUSTRY-PE-001",
+      "title": "官方行业升级不得沿用分类不匹配的 Tushare 派生 PE",
+      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "enrich_stock_missing_details" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "官方行业升级替换已知Tushare兜底并归档旧值及不匹配PE" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "升级后不兼容PE退出预测输入并按模型缺省值补位" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-API-QUALITY-001",
+      "title": "空 IPO 业务赛道数组必须在接口字段状态中保持待补全",
+      "implementation": { "file": "server/routes/ipo.js", "symbol": "stockFieldStatusSql" },
+      "tests": [
+        { "file": "server/test/ipo-api.test.js", "pattern": "空业务赛道数组仍为待补全" },
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "空赛道数组在候选和字段状态中都算缺口" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

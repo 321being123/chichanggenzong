@@ -64,6 +64,7 @@ assert.match(routeSource, /field_status/, '新股历史没有字段质量状态'
 assert.match(routeSource, /loadStockCalendar\(days\)/, '打新日历没有读取历史事实表');
 assert.match(routeSource, /h\.ipo_date <= to_char\(\(timezone\('Asia\/Shanghai', now\(\)\)\)::date/, '新股历史仍只按上市日过滤');
 assert.match(routeSource, /'industry', CASE WHEN[\s\S]*ipo_date[\s\S]*'missing'/, '发行阶段行业缺失没有标记为待补全资料');
+assert.match(routeSource, /jsonb_typeof\(\$\{alias\}\.business_exposure->'exposures'\)[\s\S]*jsonb_array_length\(\$\{alias\}\.business_exposure->'exposures'\) > 0/, '空业务赛道数组仍被标记为完整');
 assert.match(routeSource, /buildCnStockLiveReport/, '个股详情没有实时读取已入库发行资料');
 assert.match(routeSource, /尚未公布数据/, '个股详情没有区分发行结果待公布字段');
 assert.match(routeSource, /'oversubscribe_multiple'/, '新股历史没有超额认购倍数状态字段');
@@ -150,6 +151,7 @@ assert.match(historyJobSource, /parseTushareFailovers/, 'Python 成功切备用�
 assert.match(historyJobSource, /notifyTushareFailovers/, 'Python 成功切备用后的接口告警未接入');
 assert.match(historyJobSource, /let scheduleMarker = mode === 'enrichment'/, 'IPO 失败路径必须保留可用的计划标记，不能因块级作用域异常丢失失败状态');
 assert.match(historyJobSource, /mode === 'prediction_ready' \? '16:30'/, '上市前预测缺口没有独立计划标记');
+assert.match(orchestratorSource, /claimed\.job_code === 'ipo_history_sync' && Array\.isArray\(claimed\.request_payload && claimed\.request_payload\.targetCodes\)[\s\S]*?targetCodes: claimed\.request_payload\.targetCodes/, 'IPO 事实 Runner 未接收任务槽位中的定向代码');
 const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');

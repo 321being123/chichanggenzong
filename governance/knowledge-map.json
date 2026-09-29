@@ -88,6 +88,42 @@
       "expandOn": ["跨业务重复调用", "覆盖水位", "PDF缓存", "解析版本", "失败重试"]
     },
     {
+      "id": "ipo-industry-enrichment",
+      "risk": "high",
+      "paths": [
+        "ipo-report/ipo_history_sync.py",
+        "ipo-report/ipo_lib_fetch.py",
+        "ipo-report/test_ipo_history_sync.py",
+        "ipo-report/test_ipo_unit.py",
+        "server/routes/ipo.js",
+        "server/test/ipo-api.test.js",
+        "server/test/ipo-history-sync.test.js",
+        "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
+        "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md"
+      ],
+      "keywords": ["A股IPO行业", "IPO行业解析", "行业分类", "行业PE口径", "行业补全"],
+      "read": [
+        "docs/技术架构.md",
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
+        "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
+        "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
+        "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
+        "governance/rule-traceability.json",
+        "docs/任务接口数据集矩阵.generated.md"
+      ],
+      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
+      "expandOn": ["原文证据", "分类体系", "PE来源", "存量回放", "续跑"]
+    },
+    {
       "id": "task-quality-governance",
       "risk": "high",
       "paths": [

@@ -103,6 +103,9 @@ async function main() {
 
   // 数据库报告必须优先于仓库内可能过期的 individual Markdown。
   const routeSource = require('fs').readFileSync(require.resolve('../routes/ipo'), 'utf8');
+  check('空业务赛道数组仍为待补全', () => {
+    assert.match(routeSource, /jsonb_typeof\(\$\{alias\}\.business_exposure->'exposures'\) = 'array'[\s\S]*jsonb_array_length\(\$\{alias\}\.business_exposure->'exposures'\) > 0/);
+  });
   check('A股详情使用XGBoost并展示热度赛道', () => {
     assert.match(routeSource, /预测模型.*XGBoost/);
     assert.match(routeSource, /热度赛道/);

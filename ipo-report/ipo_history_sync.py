@@ -14,6 +14,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import defaultdict
 from datetime import date, datetime, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -54,6 +55,29 @@ QUALITY_BASE_FIELDS = (
 # 中签率在发行结果公告后才具备；基础事实分区不能因尚未到披露时点而阻断。
 QUALITY_PUBLICATION_FIELDS = tuple(field for field in QUALITY_BASE_FIELDS if field != "online_lottery_rate")
 QUALITY_DETAIL_FIELDS = ("industry", "industry_pe", "main_business")
+BUSINESS_EXPOSURE_MISSING_SQL = """(
+    business_exposure IS NULL OR business_exposure='{}'::jsonb
+    OR NOT (business_exposure ? 'exposures')
+    OR CASE WHEN jsonb_typeof(business_exposure->'exposures')='array'
+            THEN jsonb_array_length(business_exposure->'exposures')=0
+            ELSE TRUE END
+)"""
+KNOWN_INDUSTRY_FALLBACK_SQL = """(
+    COALESCE(source_payload->'historical_enrichment'->>'industry_source',
+             source_payload->'historical_enrichment'->'industry_diagnostic'->>'source')
+      = 'tushare_stock_basic'
+)"""
+
+
+def _has_business_exposures(value):
+    return isinstance(value, dict) and isinstance(value.get("exposures"), list) and bool(value["exposures"])
+
+
+def _is_official_ipo_source(value):
+    source = str(value or "").strip().lower()
+    return source in {"sse", "szse", "bse", "cninfo"} or source.startswith(
+        ("sse_", "szse_", "bse_", "cninfo_")
+    )
 
 
 def _date_text(value):
@@ -83,18 +107,26 @@ def _recover_at_text(value):
 
 def _detail_field_state(value, diagnostic=None, fallback_status="retryable", retry_after=None):
     source_diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
-    if value not in (None, "") and not (isinstance(value, dict) and not value.get("exposures")):
+    if value not in (None, "") and (not isinstance(value, dict) or _has_business_exposures(value)):
         return {
             "status": "value",
             **{
                 key: source_diagnostic[key]
-                for key in ("source", "as_of", "document_role", "document_url")
+                for key in (
+                    "source", "as_of", "document_role", "document_url", "content_hash",
+                    "parser_version", "candidate_scan_status", "classification_system",
+                    "classification_version", "classification_code",
+                )
                 if source_diagnostic.get(key)
             },
         }
     state = {
         key: source_diagnostic.get(key)
-        for key in ("status", "reason", "source", "as_of", "document_role", "document_url")
+        for key in (
+            "status", "reason", "source", "as_of", "document_role", "document_url",
+            "content_hash", "parser_version", "candidate_scan_status",
+            "classification_system", "classification_version", "classification_code",
+        )
         if source_diagnostic.get(key)
     }
     if state.get("status") in (None, "value"):
@@ -325,7 +357,7 @@ def normalize_stored_details(cur, today, target_date=None):
     clauses = [
         "market_code='CN'",
         "(NULLIF(main_business,'') IS NOT NULL OR NULLIF(industry,'') IS NOT NULL)",
-        "(main_business LIKE '%%所属行业%%' OR NULLIF(industry,'') IS NULL OR business_exposure IS NULL OR business_exposure='{}'::jsonb)",
+        f"(main_business LIKE '%%所属行业%%' OR NULLIF(industry,'') IS NULL OR {BUSINESS_EXPOSURE_MISSING_SQL})",
     ]
     params = []
     if target_date:
@@ -371,14 +403,13 @@ def target_enrichment_codes(cur, target_date):
     """找出下一交易日申购或上市、且仍缺发行资料的新股。"""
     target_text = str(target_date)[:10]
     cur.execute(
-        """
+        f"""
         SELECT security_code
           FROM ipo_history
          WHERE market_code='CN'
            AND (ipo_date=%s OR listing_date=%s)
            AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
-                OR business_exposure IS NULL OR business_exposure='{}'::jsonb
-                OR NOT (business_exposure ? 'exposures')
+                OR {BUSINESS_EXPOSURE_MISSING_SQL}
                 OR industry_pe IS NULL)
          ORDER BY CASE WHEN listing_date=%s THEN 0 ELSE 1 END, security_code
         """,
@@ -449,6 +480,8 @@ def fill_target_details_from_local(cur, target_date, as_of):
 
 def same_day_target_attempted_codes(cur, today, target_date):
     target_text = str(target_date)[:10]
+    from ipo_lib_fetch import _IPO_ISSUANCE_PARSER_VERSION
+
     cur.execute(
         """
         SELECT security_code
@@ -456,9 +489,10 @@ def same_day_target_attempted_codes(cur, today, target_date):
          WHERE market_code='CN'
            AND (ipo_date=%s OR listing_date=%s)
            AND data_quality_status->'enrichment'->>'attempted_on'=%s
+           AND data_quality_status->'enrichment'->>'industry_parser_version'=%s
            AND COALESCE(data_quality_status->'enrichment'->>'error','')=''
         """,
-        (target_text, target_text, today.isoformat()),
+        (target_text, target_text, today.isoformat(), _IPO_ISSUANCE_PARSER_VERSION),
     )
     return [str(row[0]).split('.')[0] for row in cur.fetchall() if row[0]]
 
@@ -472,18 +506,18 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
     priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
     only_codes = sorted({str(code or '').split('.')[0] for code in (only_codes or []) if code})
     skip_codes = sorted({str(code or '').split('.')[0] for code in (skip_codes or []) if code})
-    mandatory_gap = """(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
-              OR business_exposure IS NULL OR business_exposure = '{}'::jsonb
-              OR NOT (business_exposure ? 'exposures'))"""
+    mandatory_gap = f"""(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+              OR {BUSINESS_EXPOSURE_MISSING_SQL})"""
     cur.execute("""
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry,
              main_business,industry_pe,business_exposure,
-             online_lottery_rate,oversubscribe_multiple
+             online_lottery_rate,oversubscribe_multiple,COALESCE(source_payload,'{}'::jsonb)
         FROM ipo_history
          WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
          AND (%s::boolean OR security_code=ANY(%s::text[]))
          AND (%s::boolean OR security_code <> ALL(%s::text[]))
-         AND ((%s::boolean AND security_code=ANY(%s::text[])) OR """ + mandatory_gap + """ OR (
+         AND ((%s::boolean AND security_code=ANY(%s::text[])) OR """ + mandatory_gap + """ OR """
+              + KNOWN_INDUSTRY_FALLBACK_SQL + """ OR (
               industry_pe IS NULL
               AND COALESCE(data_quality_status->'field_states'->'industry_pe'->>'retry_after','') <= %s
          ))
@@ -504,22 +538,42 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
           target_text, target_text))
     candidates = cur.fetchall()
 
-    from ipo_lib_fetch import fetch_stock_historical_detail
+    from ipo_lib_fetch import fetch_stock_historical_detail, _IPO_ISSUANCE_PARSER_VERSION
 
     attempted = updated = failed = 0
     stopped = None
-    for code, prior_status, existing_industry, existing_business, existing_industry_pe, existing_exposure, existing_lottery_rate, existing_oversubscribe in candidates:
+    for (code, prior_status, existing_industry, existing_business, existing_industry_pe,
+         existing_exposure, existing_lottery_rate, existing_oversubscribe, existing_source_payload) in candidates:
         attempted += 1
-        meta = {"attempted_on": today_text, "source": "stock_basic/exchange/cninfo/tushare/valuation"}
+        meta = {
+            "attempted_on": today_text,
+            "source": "stock_basic/exchange/cninfo/tushare/valuation",
+            "industry_parser_version": _IPO_ISSUANCE_PARSER_VERSION,
+        }
+        detail = {}
         try:
+            existing_source_payload = existing_source_payload if isinstance(existing_source_payload, dict) else {}
+            existing_enrichment = existing_source_payload.get("historical_enrichment")
+            existing_enrichment = existing_enrichment if isinstance(existing_enrichment, dict) else {}
+            existing_industry_diagnostic = existing_enrichment.get("industry_diagnostic")
+            existing_industry_diagnostic = existing_industry_diagnostic if isinstance(existing_industry_diagnostic, dict) else {}
+            existing_industry_source = (
+                existing_enrichment.get("industry_source") or existing_industry_diagnostic.get("source")
+            )
+            existing_pe_diagnostic = existing_enrichment.get("industry_pe_diagnostic")
+            existing_pe_diagnostic = existing_pe_diagnostic if isinstance(existing_pe_diagnostic, dict) else {}
+            existing_pe_source = (
+                existing_enrichment.get("industry_pe_source") or existing_pe_diagnostic.get("source")
+            )
+            upgrade_candidate = existing_industry_source == "tushare_stock_basic"
             missing_fields = []
-            if not str(existing_industry or '').strip():
+            if not str(existing_industry or '').strip() or upgrade_candidate:
                 missing_fields.append('industry')
-            if existing_industry_pe is None:
+            if existing_industry_pe is None or upgrade_candidate:
                 missing_fields.append('industry_pe')
             if not str(existing_business or '').strip():
                 missing_fields.append('main_business')
-            if not (isinstance(existing_exposure, dict) and existing_exposure.get('exposures')):
+            if not _has_business_exposures(existing_exposure):
                 missing_fields.append('business_exposure')
             if include_result_fields and existing_lottery_rate in (None, ''):
                 missing_fields.append('online_lottery_rate')
@@ -528,20 +582,84 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             detail = fetch_stock_historical_detail(
                 code, existing_industry, existing_business, missing_fields=missing_fields
             ) or {}
+            official_industry_source = detail.get("industry_source")
+            industry_evidence = detail.get("industry_evidence")
+            official_industry = (
+                upgrade_candidate
+                and _is_official_ipo_source(official_industry_source)
+                and isinstance(industry_evidence, dict)
+                and bool(industry_evidence.get("snippet") and industry_evidence.get("url")
+                         and industry_evidence.get("content_hash"))
+            )
+            industry_upgrade = bool(official_industry and str(detail.get("industry") or "").strip())
+            official_pe_source = detail.get("industry_pe_source") or (
+                detail.get("industry_pe_diagnostic") or {}
+            ).get("source")
+            official_pe = detail.get("industry_pe") is not None and _is_official_ipo_source(official_pe_source)
+            keep_existing_official_pe = existing_industry_pe is not None and _is_official_ipo_source(existing_pe_source)
+            clear_pe_after_upgrade = (
+                industry_upgrade and existing_industry_pe is not None
+                and not official_pe and not keep_existing_official_pe
+            )
+            replace_pe = bool(official_pe or clear_pe_after_upgrade)
+            stored_detail = {
+                key: value for key, value in detail.items()
+                if value not in (None, "")
+                and not (key.endswith("_diagnostic") and isinstance(value, dict)
+                         and value.get("status") == "not_requested")
+            }
+            if industry_upgrade:
+                industry_history = existing_enrichment.get("industry_upgrade_history")
+                industry_history = list(industry_history) if isinstance(industry_history, list) else []
+                industry_history.append({
+                    "previous_value": str(existing_industry or "").strip(),
+                    "previous_source": existing_industry_source,
+                    "replacement_value": str(detail.get("industry") or "").strip(),
+                    "replacement_source": official_industry_source,
+                    "replacement_document_url": industry_evidence.get("url"),
+                    "replacement_content_hash": industry_evidence.get("content_hash"),
+                    "replacement_parser_version": industry_evidence.get("parser_version"),
+                    "reason": "verified_official_industry_replaced_tushare_stock_basic_fallback",
+                    "recorded_on": today_text,
+                })
+                stored_detail["industry_upgrade_history"] = industry_history
+            if industry_upgrade and existing_industry_pe is not None and (clear_pe_after_upgrade or official_pe):
+                pe_history = existing_enrichment.get("industry_pe_legacy_history")
+                pe_history = list(pe_history) if isinstance(pe_history, list) else []
+                pe_history.append({
+                    "value": existing_industry_pe,
+                    "source": existing_pe_source or "unknown",
+                    "classification_system": existing_pe_diagnostic.get("classification_system"),
+                    "classification_version": existing_pe_diagnostic.get("classification_version"),
+                    "classification_code": existing_pe_diagnostic.get("classification_code"),
+                    "reason": (
+                        "official_pe_replaced_legacy_value"
+                        if official_pe else
+                        "legacy_pe_not_used_after_official_industry_upgrade_without_matching_classification"
+                    ),
+                    "recorded_on": today_text,
+                })
+                stored_detail["industry_pe_legacy_history"] = pe_history
             business_exposure = detail.get("business_exposure")
-            resolved_industry = str(existing_industry or detail.get("industry") or '').strip()
+            resolved_industry = str(
+                detail.get("industry") if industry_upgrade else existing_industry or detail.get("industry") or ''
+            ).strip()
             resolved_business = max(
                 (str(existing_business or '').strip(), str(detail.get("main_business") or '').strip()),
                 key=len,
             )
-            resolved_industry_pe = existing_industry_pe if existing_industry_pe is not None else detail.get("industry_pe")
+            if official_pe:
+                resolved_industry_pe = detail.get("industry_pe")
+            elif industry_upgrade and not keep_existing_official_pe:
+                resolved_industry_pe = None
+            else:
+                resolved_industry_pe = existing_industry_pe if existing_industry_pe is not None else detail.get("industry_pe")
             resolved_lottery_rate = detail.get("online_lottery_rate") if detail.get("online_lottery_rate") not in (None, "") else existing_lottery_rate
             resolved_oversubscribe = detail.get("oversubscribe_multiple") if detail.get("oversubscribe_multiple") not in (None, "") else existing_oversubscribe
-            resolved_exposure = business_exposure if (
-                isinstance(business_exposure, dict) and business_exposure.get("exposures")
-            ) else existing_exposure
+            resolved_exposure = business_exposure if _has_business_exposures(business_exposure) else existing_exposure
             changed = (
                 resolved_industry != str(existing_industry or '').strip()
+                or industry_upgrade
                 or resolved_business != str(existing_business or '').strip()
                 or resolved_industry_pe != existing_industry_pe
                 or resolved_lottery_rate != existing_lottery_rate
@@ -551,8 +669,10 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             if changed:
                 cur.execute("""
                   UPDATE ipo_history SET
-                    industry=COALESCE(NULLIF(industry,''),NULLIF(%s,'')),
-                    industry_pe=COALESCE(industry_pe,%s),
+                    industry=CASE WHEN %s::boolean THEN NULLIF(%s,'')
+                                  ELSE COALESCE(NULLIF(industry,''),NULLIF(%s,'')) END,
+                    industry_pe=CASE WHEN %s::boolean THEN %s
+                                     ELSE COALESCE(industry_pe,%s) END,
                     issue_pe_status=CASE WHEN %s='loss' AND issue_pe IS NULL THEN 'loss' ELSE issue_pe_status END,
                     online_lottery_rate=COALESCE(%s,online_lottery_rate),
                     oversubscribe_multiple=COALESCE(%s,oversubscribe_multiple),
@@ -560,16 +680,24 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                       WHEN length(COALESCE(%s,'')) > length(COALESCE(main_business,'')) THEN %s
                       ELSE main_business END,
                     business_exposure=COALESCE(NULLIF(%s::jsonb,'{}'::jsonb),business_exposure),
-                    source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object('historical_enrichment',%s::jsonb),
+                    source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object(
+                      'historical_enrichment',
+                      COALESCE(source_payload->'historical_enrichment','{}'::jsonb) || %s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
-                """, (detail.get("industry"), detail.get("industry_pe"), detail.get("issue_pe_status"),
+                """, (industry_upgrade, detail.get("industry"), detail.get("industry"),
+                      replace_pe, resolved_industry_pe, detail.get("industry_pe"), detail.get("issue_pe_status"),
                       resolved_lottery_rate if detail.get("online_lottery_rate") not in (None, "") else None,
                       resolved_oversubscribe if detail.get("oversubscribe_multiple") not in (None, "") else None,
                       detail.get("main_business"), detail.get("main_business"),
-                      Json(business_exposure) if business_exposure else None, Json(detail), code))
+                      Json(business_exposure) if _has_business_exposures(business_exposure) else None,
+                      Json(stored_detail), code))
                 updated += 1
                 meta["updated_fields"] = [field for field in QUALITY_DETAIL_FIELDS if detail.get(field) not in (None, "")]
+                if industry_upgrade and "industry" not in meta["updated_fields"]:
+                    meta["updated_fields"].append("industry")
+                if replace_pe and "industry_pe" not in meta["updated_fields"]:
+                    meta["updated_fields"].append("industry_pe")
                 meta["updated_fields"].extend(
                     field for field in ("online_lottery_rate", "oversubscribe_multiple")
                     if detail.get(field) not in (None, "")
@@ -578,25 +706,32 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     meta["updated_fields"].append("business_exposure")
             elif (detail.get("main_business_source")
                   or detail.get("main_business_diagnostic")
-                  or detail.get("industry_pe_diagnostic")):
-                # 字段值已存在时仍保留本次实际命中的来源，便于审计主备顺序和后续重试。
+                  or detail.get("industry_pe_diagnostic")
+                  or detail.get("industry_diagnostic")
+                  or detail.get("industry_evidence")
+                  or detail.get("industry_pe_evidence")
+                  or detail.get("ipo_issuance_diagnostics")):
+                # 值未变化时仍合并字段来源与原文证据，且不清掉历史证据。
                 cur.execute("""
                   UPDATE ipo_history SET
                     issue_pe_status=CASE WHEN %s='loss' AND issue_pe IS NULL THEN 'loss' ELSE issue_pe_status END,
-                    source_payload=COALESCE(source_payload,'{}'::jsonb)
-                      || jsonb_build_object('historical_enrichment',%s::jsonb),
+                    source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object(
+                      'historical_enrichment',
+                      COALESCE(source_payload->'historical_enrichment','{}'::jsonb) || %s::jsonb),
                     updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
                    WHERE security_code=%s
-                """, (detail.get("issue_pe_status"), Json(detail), code))
+                """, (detail.get("issue_pe_status"), Json(stored_detail), code))
                 updated += 1
             else:
                 meta["result"] = "no_new_value"
             field_states = {
-                "industry": {"status": "value" if resolved_industry else "retryable"},
+                "industry": _detail_field_state(
+                    resolved_industry, detail.get("industry_diagnostic"), "retryable", today
+                ),
                 "main_business": _detail_field_state(
                     resolved_business, detail.get("main_business_diagnostic"), "retryable", today
                 ),
-                "business_exposure": {"status": "value" if isinstance(resolved_exposure, dict) and resolved_exposure.get("exposures") else "retryable"},
+                "business_exposure": {"status": "value" if _has_business_exposures(resolved_exposure) else "retryable"},
                 "industry_pe": _detail_field_state(
                     resolved_industry_pe, detail.get("industry_pe_diagnostic"), "source_unavailable", today
                 ),
@@ -615,30 +750,99 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             failed += 1
             meta["error"] = str(exc)[:300]
             field_states = (prior_status or {}).get("field_states", {})
+        previous_field_states = (prior_status or {}).get("field_states", {})
+        for field, state in field_states.items():
+            if not isinstance(state, dict) or state.get("status") == "value":
+                continue
+            previous = previous_field_states.get(field) if isinstance(previous_field_states, dict) else {}
+            previous = previous if isinstance(previous, dict) else {}
+            state.setdefault("first_unresolved_since", previous.get("first_unresolved_since") or today_text)
         cur.execute("""
           UPDATE ipo_history
              SET data_quality_status=COALESCE(data_quality_status,'{}'::jsonb)
                || jsonb_build_object('enrichment',%s::jsonb,'field_states',%s::jsonb)
            WHERE security_code=%s
         """, (Json(meta), Json(field_states), code))
+        if detail.get("issuance_stopped"):
+            stopped = detail["issuance_stopped"]
+            break
 
     remaining_scope = " AND security_code=ANY(%s::text[])" if only_codes else ""
-    cur.execute("""
+    cur.execute(f"""
       SELECT
         count(*) FILTER (WHERE NULLIF(industry,'') IS NULL),
         count(*) FILTER (WHERE industry_pe IS NULL),
         count(*) FILTER (WHERE NULLIF(main_business,'') IS NULL),
-        count(*) FILTER (WHERE business_exposure IS NULL OR business_exposure='{}'::jsonb
-                          OR NOT (business_exposure ? 'exposures'))
+        count(*) FILTER (WHERE {BUSINESS_EXPOSURE_MISSING_SQL})
       FROM ipo_history
-       WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
     """ + remaining_scope, (only_codes,) if only_codes else ())
     counts = cur.fetchone()
     remaining_by_field = dict(zip(("industry", "industry_pe", "main_business", "business_exposure"),
                                   (int(value or 0) for value in counts)))
     remaining = sum(remaining_by_field.values())
+    diagnostic_scope = " AND security_code=ANY(%s::text[])" if only_codes else ""
+    cur.execute(f"""
+      SELECT security_code,industry,industry_pe,main_business,business_exposure,
+             COALESCE(data_quality_status,'{{}}'::jsonb)
+        FROM ipo_history
+       WHERE market_code='CN' AND ipo_date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
+         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL
+              OR NULLIF(main_business,'') IS NULL OR {BUSINESS_EXPOSURE_MISSING_SQL})
+         {diagnostic_scope}
+    """, (only_codes,) if only_codes else ())
+    remaining_rows = cur.fetchall()
+    reason_details = {
+        field: defaultdict(lambda: {
+            "count": 0, "security_codes": [], "earliest_unresolved_since": None,
+            "earliest_retry_after": None,
+        })
+        for field in remaining_by_field
+    }
+    for code, industry, industry_pe, main_business, exposure, status_payload in remaining_rows:
+        payload = status_payload if isinstance(status_payload, dict) else {}
+        states = payload.get("field_states") if isinstance(payload.get("field_states"), dict) else {}
+        missing_values = {
+            "industry": not str(industry or '').strip(),
+            "industry_pe": industry_pe is None,
+            "main_business": not str(main_business or '').strip(),
+            "business_exposure": not _has_business_exposures(exposure),
+        }
+        for field, missing in missing_values.items():
+            if not missing:
+                continue
+            field_state = states.get(field) if isinstance(states.get(field), dict) else {}
+            reason = field_state.get("reason") or field_state.get("status") or "not_attempted"
+            if reason == "retryable" or reason == "value":
+                reason = "not_attempted"
+            aggregate = reason_details[field][reason]
+            aggregate["count"] += 1
+            aggregate["security_codes"].append(str(code))
+            for output_key, input_key in (
+                ("earliest_unresolved_since", "first_unresolved_since"),
+                ("earliest_retry_after", "retry_after"),
+            ):
+                value = field_state.get(input_key)
+                if value and (aggregate[output_key] is None or value < aggregate[output_key]):
+                    aggregate[output_key] = value
+    diagnostic_summary = {
+        "query_status": "succeeded",
+        "remaining": remaining,
+        "remaining_by_field": remaining_by_field,
+        "by_field_and_reason": {
+            field: {
+                reason: {
+                    **values,
+                    "security_codes": sorted(set(values["security_codes"])),
+                }
+                for reason, values in reasons.items()
+            }
+            for field, reasons in reason_details.items()
+        },
+    }
     return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining,
-            "remaining_by_field": remaining_by_field, "stopped": stopped}
+            "remaining_by_field": remaining_by_field, "diagnostic_summary": diagnostic_summary,
+            "stopped": stopped}
 
 
 def update_quality(cur, today, include_enrichment=True):
@@ -864,11 +1068,10 @@ def publication_quality(cur, records, today, run_id):
     if errors:
         raise RuntimeError("IPO事实质量门禁失败：" + "；".join(errors))
     cur.execute(
-        """SELECT count(*) FROM ipo_history
+        f"""SELECT count(*) FROM ipo_history
             WHERE market_code='CN' AND (ipo_date=%s OR listing_date=%s)
               AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
-                OR business_exposure IS NULL OR business_exposure='{}'::jsonb
-                OR NOT (business_exposure ? 'exposures'))""",
+                OR {BUSINESS_EXPOSURE_MISSING_SQL})""",
         (target_date, target_date),
     )
     enrichment_missing_count = int(cur.fetchone()[0] or 0)

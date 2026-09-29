@@ -663,6 +663,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       ? { manualCorrection: claimed.request_payload.manualCorrection } : {}),
     ...(claimed.job_code === 'hk_ipo_enrichment' && Array.isArray(claimed.request_payload && claimed.request_payload.targetCodes)
       ? { targetCodes: claimed.request_payload.targetCodes } : {}),
+    ...(claimed.job_code === 'ipo_history_sync' && Array.isArray(claimed.request_payload && claimed.request_payload.targetCodes)
+      ? { targetCodes: claimed.request_payload.targetCodes } : {}),
   };
   const freshnessGateEnabled = claimed.request_payload
     && Object.prototype.hasOwnProperty.call(claimed.request_payload, 'freshnessGate')

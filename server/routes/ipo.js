@@ -465,7 +465,10 @@ function stockFieldStatusSql(alias = 'h') {
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,
     'business_exposure', CASE
-      WHEN ${alias}.business_exposure ? 'exposures' THEN 'value'
+      WHEN jsonb_typeof(${alias}.business_exposure->'exposures') = 'array' THEN
+        CASE WHEN jsonb_array_length(${alias}.business_exposure->'exposures') > 0 THEN 'value'
+          WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
+          ELSE 'pending' END
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,
     'ld_close_change', CASE WHEN ${alias}.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN

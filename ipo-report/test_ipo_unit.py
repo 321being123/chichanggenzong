@@ -6,6 +6,7 @@
 import os
 import sys
 import json
+import hashlib
 import tempfile
 import traceback
 import types
@@ -156,6 +157,107 @@ try:
           and risk_notice.get("industry_pe_as_of") == "2026-09-18"
           and risk_notice.get("issuer_unprofitable") is True,
           "结果=%r" % risk_notice)
+    fixture_path = os.path.join(
+        os.path.dirname(__file__), "tests", "fixtures", "ipo_industry",
+        "301716-risk-notice.json",
+    )
+    with open(fixture_path, encoding="utf-8") as fixture_file:
+        real_ipo_fixture = json.load(fixture_file)
+    fixture_hash = hashlib.sha256(real_ipo_fixture["text"].encode("utf-8")).hexdigest()
+    parsed_real_ipo = fetch._parse_ipo_issuance_detail(
+        real_ipo_fixture["text"], real_ipo_fixture["security_name"], real_ipo_fixture["stock_code"]
+    )
+    industry_evidence = parsed_real_ipo.get("industry_evidence") or {}
+    check("鸿富诚真实公告夹具哈希未变化",
+          fixture_hash == real_ipo_fixture["excerpt_sha256"]
+          and real_ipo_fixture["document_text_sha256"] ==
+          "bd4bbf20601a47d4d3dfc59c0c3da9a735ba95ccc20f9bb04161384bd21df5c5")
+    check("鸿富诚代码在前格式解析行业和独立证据",
+          parsed_real_ipo.get("industry") == real_ipo_fixture["expected"]["industry"]
+          and parsed_real_ipo.get("industry_classification", {}).get("classification_code") == "C39"
+          and real_ipo_fixture["text"][industry_evidence.get("start", -1):industry_evidence.get("end", -1)]
+          == industry_evidence.get("snippet"),
+          "证据=%r" % industry_evidence)
+    check("鸿富诚公告PE及基准日保留",
+          parsed_real_ipo.get("industry_pe") == real_ipo_fixture["expected"]["industry_pe"]
+          and parsed_real_ipo.get("industry_pe_as_of") == real_ipo_fixture["expected"]["industry_pe_as_of"])
+    historical_fixture_path = os.path.join(
+        os.path.dirname(__file__), "tests", "fixtures", "ipo_industry",
+        "historical-three-issuers.json",
+    )
+    with open(historical_fixture_path, encoding="utf-8") as fixture_file:
+        historical_fixtures = json.load(fixture_file)["fixtures"]
+    for fixture in historical_fixtures:
+        parsed = fetch._parse_ipo_issuance_detail(
+            fixture["text"], fixture["security_name"], fixture["stock_code"]
+        )
+        classification = parsed.get("industry_classification") or {}
+        expected = fixture["expected"]
+        check(
+            "%s真实公告行业格式、分类口径及PE" % fixture["stock_code"],
+            hashlib.sha256(fixture["text"].encode("utf-8")).hexdigest()
+            == fixture["excerpt_sha256"]
+            and parsed.get("industry") == expected["industry"]
+            and classification.get("classification_code") == expected["classification_code"]
+            and classification.get("classification_system") == expected["classification_system"]
+            and classification.get("classification_version") == expected["classification_version"]
+            and parsed.get("industry_pe") == expected["industry_pe"]
+            and parsed.get("industry_pe_as_of") == expected["industry_pe_as_of"],
+            "结果=%r" % parsed,
+        )
+    competitor_only = fetch._parse_ipo_issuance_detail(
+        "鸿富诚招股说明书。可比公司甲公司行业分类：塑料制品业（C292）。",
+        "鸿富诚", "301716",
+    )
+    check("行业解析跳过同行公司行业分类", competitor_only.get("industry") is None,
+          "结果=%r" % competitor_only)
+
+    class _FakeExchangeResponse:
+        def __init__(self, payload):
+            self.text = json.dumps(payload, ensure_ascii=False)
+
+    class _FakeExchangeSession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = []
+
+        def get(self, _url, params=None, **_kwargs):
+            page = int(params["pageHelp.pageNo"])
+            self.calls.append(page)
+            rows = exchange_pages[page - 1]
+            return _FakeExchangeResponse({"pageHelp": {"total": 101, "data": rows}})
+
+        def close(self):
+            pass
+
+    exchange_pages = [
+        [{"SECURITY_CODE": "600001", "TITLE": "测试公司首次公开发行股票招股说明书",
+          "URL": "/ipo/prospectus.pdf", "SSEDATE": "2026-09-01"}]
+        + [{"SECURITY_CODE": "600001", "TITLE": "普通公告", "URL": f"/ipo/other-{i}.pdf"}
+           for i in range(99)],
+        [{"SECURITY_CODE": "600001", "TITLE": "测试公司首次公开发行股票投资风险特别公告",
+          "URL": "/ipo/risk.pdf", "SSEDATE": "2026-09-02"}],
+    ]
+    fake_exchange_session = _FakeExchangeSession()
+    original_request_session = fetch.requests.Session
+    exchange_cache_key = ("sse", "600001", "测试公司")
+    fetch._EXCHANGE_IPO_DOCUMENT_CACHE.pop(exchange_cache_key, None)
+    fetch._EXCHANGE_IPO_DOCUMENT_SCAN_STATUS.pop(exchange_cache_key, None)
+    fetch.requests.Session = lambda: fake_exchange_session
+    try:
+        paged_candidates = fetch._exchange_ipo_document_candidates("600001", "测试公司")
+        paged_status = fetch._EXCHANGE_IPO_DOCUMENT_SCAN_STATUS.get(exchange_cache_key, {})
+    finally:
+        fetch.requests.Session = original_request_session
+        fetch._EXCHANGE_IPO_DOCUMENT_CACHE.pop(exchange_cache_key, None)
+        fetch._EXCHANGE_IPO_DOCUMENT_SCAN_STATUS.pop(exchange_cache_key, None)
+    check("上交所IPO候选遍历分页并记录完整状态",
+          fake_exchange_session.calls == [1, 2]
+          and {candidate[3] for candidate in paged_candidates}
+          == {"prospectus", "issuance_risk_announcement"}
+          and paged_status.get("status") == "complete",
+          "pages=%r status=%r candidates=%r" % (
+              fake_exchange_session.calls, paged_status, paged_candidates))
     check("new_share空PE不再仅凭上市日期推断亏损",
           normalize_share({"ts_code": "301660.SZ", "name": "粤芯半导体", "price": 12.01,
                            "issue_date": "20260930", "pe": 0}).get("issue_pe_status") == "pending")
@@ -204,12 +306,12 @@ try:
           and candidates[0][3] == "2026-09-23"
           and all("static.cninfo.com.cn/finalpage/2026-09-23/" in item[1] for item in candidates),
           "候选=%r" % candidates)
-    old_exchange_candidates = fetch._exchange_issuance_announcement_candidates
+    old_exchange_candidates = fetch._exchange_ipo_document_candidates
     old_cninfo_candidates = fetch._cninfo_ipo_issuance_candidates
     old_pdf_download = fetch._download_exchange_pdf_text
     fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301660", None)
     fetch._IPO_ISSUANCE_DETAIL_DIAGNOSTIC.pop("301660", None)
-    fetch._exchange_issuance_announcement_candidates = lambda code, security_name='': []
+    fetch._exchange_ipo_document_candidates = lambda code, security_name='': []
     fetch._cninfo_ipo_issuance_candidates = lambda code: [
         ("cninfo", "https://static.cninfo.com.cn/finalpage/2026-09-23/risk.PDF",
          "粤芯半导体投资风险特别公告", "2026-09-23")
@@ -221,7 +323,7 @@ try:
     try:
         resolved_issuance = fetch._fetch_exchange_ipo_issuance_detail("301660", "粤芯半导体")
     finally:
-        fetch._exchange_issuance_announcement_candidates = old_exchange_candidates
+        fetch._exchange_ipo_document_candidates = old_exchange_candidates
         fetch._cninfo_ipo_issuance_candidates = old_cninfo_candidates
         fetch._download_exchange_pdf_text = old_pdf_download
         fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301660", None)
@@ -232,6 +334,120 @@ try:
           and resolved_issuance.get("ipo_announcement_source") == "cninfo"
           and resolved_issuance.get("issuer_unprofitable") is True,
           "结果=%r" % resolved_issuance)
+
+    original_official_ipo_docs = fetch._exchange_ipo_document_candidates
+    original_cninfo_ipo_docs = fetch._cninfo_ipo_issuance_candidates
+    original_issuance_download = fetch._download_exchange_pdf_text
+    office_ipo_docs = [
+        ("szse", "https://example.test/risk.pdf", "测试科技投资风险特别公告",
+         "issuance_risk_announcement", "2026-09-25"),
+        ("szse", "https://example.test/prospectus.pdf", "测试科技招股说明书",
+         "prospectus", "2026-08-01"),
+    ]
+    issuance_texts = {
+        "https://example.test/risk.pdf": (
+            "测试科技尚未盈利。截至2026年9月18日（T-4日），中证指数有限公司发布的"
+            "计算机、通信和其他电子设备制造业（C39）最近一个月平均静态市盈率为73.18倍。"
+        ),
+        "https://example.test/prospectus.pdf": (
+            "测试科技首次公开发行招股说明书。发行人所属行业为（C39）"
+            "计算机、通信和其他电子设备制造业。"
+        ),
+    }
+    fetch._exchange_ipo_document_candidates = lambda code, security_name='': list(office_ipo_docs)
+    fetch._cninfo_ipo_issuance_candidates = lambda code: []
+    fetch._download_exchange_pdf_text = lambda session, url, source: issuance_texts[url]
+    fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301611", None)
+    try:
+        split_source_issuance = fetch._fetch_exchange_ipo_issuance_detail(
+            "301611", "测试科技", required_fields={"industry", "industry_pe"}
+        )
+        office_ipo_docs.reverse()
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301611", None)
+        reverse_split_source_issuance = fetch._fetch_exchange_ipo_issuance_detail(
+            "301611", "测试科技", required_fields={"industry", "industry_pe"}
+        )
+    finally:
+        fetch._exchange_ipo_document_candidates = original_official_ipo_docs
+        fetch._cninfo_ipo_issuance_candidates = original_cninfo_ipo_docs
+        fetch._download_exchange_pdf_text = original_issuance_download
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301611", None)
+    check("PE先命中仍继续查找行业且字段证据各自绑定文档",
+          split_source_issuance.get("industry") == "计算机、通信和其他电子设备制造业"
+          and split_source_issuance.get("industry_pe") == 73.18
+          and split_source_issuance.get("industry_evidence", {}).get("url")
+          == "https://example.test/prospectus.pdf"
+          and split_source_issuance.get("industry_pe_evidence", {}).get("url")
+          == "https://example.test/risk.pdf",
+          "结果=%r" % split_source_issuance)
+    check("交换候选顺序不改变字段值和来源",
+          reverse_split_source_issuance.get("industry") == split_source_issuance.get("industry")
+          and reverse_split_source_issuance.get("industry_pe") == split_source_issuance.get("industry_pe")
+          and reverse_split_source_issuance.get("industry_evidence", {}).get("url")
+          == split_source_issuance.get("industry_evidence", {}).get("url")
+          and reverse_split_source_issuance.get("industry_pe_evidence", {}).get("url")
+          == split_source_issuance.get("industry_pe_evidence", {}).get("url"))
+
+    backup_texts = {
+        "https://example.test/exchange-risk.pdf": (
+            "测试科技尚未盈利。截至2026年9月18日（T-4日），最近一个月平均静态市盈率为73.18倍。"
+        ),
+        "https://example.test/cninfo-risk.pdf": (
+            "测试科技发行人所属行业为（C39）计算机、通信和其他电子设备制造业。"
+            "截至2026年9月18日（T-4日），最近一个月平均静态市盈率为73.18倍。"
+        ),
+    }
+    fetch._exchange_ipo_document_candidates = lambda code, security_name='': [
+        ("szse", "https://example.test/exchange-risk.pdf", "测试科技投资风险特别公告",
+         "issuance_risk_announcement", "2026-09-23")
+    ]
+    fetch._cninfo_ipo_issuance_candidates = lambda code: [
+        ("cninfo", "https://example.test/cninfo-risk.pdf", "测试科技投资风险特别公告", "2026-09-23")
+    ]
+    fetch._download_exchange_pdf_text = lambda session, url, source: backup_texts[url]
+    fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301610", None)
+    try:
+        backup_completion = fetch._fetch_exchange_ipo_issuance_detail(
+            "301610", "测试科技", required_fields={"industry", "industry_pe"}
+        )
+    finally:
+        fetch._exchange_ipo_document_candidates = original_official_ipo_docs
+        fetch._cninfo_ipo_issuance_candidates = original_cninfo_ipo_docs
+        fetch._download_exchange_pdf_text = original_issuance_download
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301610", None)
+    check("主源已有PE仍由巨潮只补缺失行业并保留分字段来源",
+          backup_completion.get("industry") == "计算机、通信和其他电子设备制造业"
+          and backup_completion.get("industry_pe") == 73.18
+          and backup_completion.get("industry_evidence", {}).get("source") == "cninfo"
+          and backup_completion.get("industry_pe_evidence", {}).get("source") == "szse")
+
+    fetch._exchange_ipo_document_candidates = lambda code, security_name='': list(office_ipo_docs)
+
+    def guarded_prospectus_download(session, url, source):
+        if url.endswith("prospectus.pdf"):
+            raise fetch.ExternalCallGuardError(
+                "CIRCUIT_OPEN", "测试熔断", source, "ipo_issuance", api_name="pdf"
+            )
+        return issuance_texts[url]
+
+    fetch._cninfo_ipo_issuance_candidates = lambda code: []
+    fetch._download_exchange_pdf_text = guarded_prospectus_download
+    fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301609", None)
+    try:
+        interrupted_issuance = fetch._fetch_exchange_ipo_issuance_detail(
+            "301609", "测试科技", required_fields={"industry", "industry_pe"}
+        )
+    finally:
+        fetch._exchange_ipo_document_candidates = original_official_ipo_docs
+        fetch._cninfo_ipo_issuance_candidates = original_cninfo_ipo_docs
+        fetch._download_exchange_pdf_text = original_issuance_download
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301609", None)
+    check("Guard中断时保留已解析PE并标记行业待续",
+          interrupted_issuance.get("industry_pe") == 73.18
+          and interrupted_issuance.get("industry") is None
+          and interrupted_issuance.get("ipo_issuance_candidate_scan", {}).get("status") == "interrupted"
+          and interrupted_issuance.get("ipo_issuance_diagnostics", {}).get("industry", {}).get("status")
+          == "source_unavailable")
 
     import sync_bond_listing_liquidity as bond_liquidity_sync
 
@@ -264,7 +480,7 @@ try:
           "sql=%r 参数=%r" % (fake_sql_connection.sql, fake_sql_connection.params))
     original_issuance_fetch = fetch._fetch_exchange_ipo_issuance_detail
     issuance_calls = []
-    fetch._fetch_exchange_ipo_issuance_detail = lambda code, security_name='': (
+    fetch._fetch_exchange_ipo_issuance_detail = lambda code, security_name='', required_fields=None: (
         issuance_calls.append(code) or {
             "industry": "塑料制品业", "industry_pe": 38.2,
             "ipo_announcement_source": "szse",
@@ -470,6 +686,22 @@ try:
            model_prediction is not None and len(model_prediction) >= 5
            and model_prediction[4].get("model_features"),
            "模型输入明细已生成")
+    legacy_pe_prediction = _val._xgb_predict_listing({
+        "stock_code": "688001", "issue_price": 20, "issue_pe": 30,
+        "industry_pe": 36.5, "fund_raised": 10, "online_lottery_rate": 0.03,
+        "circulation_mv": 5,
+    })
+    unclassified_pe_prediction = _val._xgb_predict_listing({
+        "stock_code": "688001", "issue_price": 20, "issue_pe": 30,
+        "industry_pe": None, "fund_raised": 10, "online_lottery_rate": 0.03,
+        "circulation_mv": 5,
+    })
+    check("升级后不兼容PE退出预测输入并按模型缺省值补位",
+          legacy_pe_prediction is not None and unclassified_pe_prediction is not None
+          and legacy_pe_prediction[4]["model_features"]["industry_pe"] == 36.5
+          and unclassified_pe_prediction[4]["model_features"]["industry_pe"]
+          == _val._XGB_MEDIAN_VALS.get("industry_pe", 30)
+          and unclassified_pe_prediction[4]["model_feature_status"]["industry_pe"] == "补位")
     model_feature_text = report_lib._format_model_features({
         "model_features": {"issue_price": 20, "pe_ratio": 0.8, "online_shares": 1},
         "model_feature_status": {"online_shares": "补位"},

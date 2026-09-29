@@ -2,6 +2,7 @@
 """新股历史同步确定性测试：不访问外部接口，事务结束后回滚。"""
 import os
 import sys
+import json
 import traceback
 from datetime import date, datetime
 
@@ -63,6 +64,23 @@ try:
 
     current_codes = [str(970000 + index) for index in range(25)]
     historical_codes = [str(970025 + index) for index in range(40)]
+    empty_exposure_code = "969995"
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                    industry,industry_pe,main_business,business_exposure)
+             VALUES(%s,'空赛道数组测试','CN','2026-09-11','active','测试行业',30,'主营业务',
+                    '{"exposures":[]}'::jsonb)
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry='测试行业',industry_pe=30,main_business='主营业务',
+               business_exposure='{"exposures":[]}'::jsonb""",
+        (empty_exposure_code,),
+    )
+    empty_exposure_candidates = sync.target_enrichment_codes(cur, date(2026, 9, 11))
+    check("空赛道数组在候选和字段状态中都算缺口",
+          empty_exposure_code in empty_exposure_candidates
+          and not sync._has_business_exposures({"exposures": []})
+          and sync._detail_field_state({"exposures": []})["status"] == "retryable"
+          and sync._has_business_exposures({"exposures": [{"label": "测试"}]}))
     cur.executemany(
         """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,listing_date,ipo_status)
              VALUES(%s,%s,'CN',%s,%s,%s)
@@ -132,6 +150,28 @@ try:
                    data_quality_status='{"enrichment":{"attempted_on":"2026-09-10"}}'::jsonb""",
             (no_candidate_code, "已尝试但仍缺资料"),
         )
+        cur.execute(
+            """UPDATE ipo_history SET data_quality_status=jsonb_set(
+                    data_quality_status,'{enrichment,industry_parser_version}',%s::jsonb,true)
+                 WHERE security_code=%s""",
+            ('"ipo-issuance-facts-v2"', no_candidate_code),
+        )
+        old_parser_attempted = sync.same_day_target_attempted_codes(
+            cur, date(2026, 9, 10), date(2026, 9, 11)
+        )
+        check("解析器版本升级后同日旧尝试不再短路",
+              no_candidate_code not in old_parser_attempted)
+        cur.execute(
+            """UPDATE ipo_history SET data_quality_status=jsonb_set(
+                    data_quality_status,'{enrichment,industry_parser_version}',%s::jsonb,true)
+                 WHERE security_code=%s""",
+            (json.dumps(ipo_lib_fetch._IPO_ISSUANCE_PARSER_VERSION), no_candidate_code),
+        )
+        current_parser_attempted = sync.same_day_target_attempted_codes(
+            cur, date(2026, 9, 10), date(2026, 9, 11)
+        )
+        check("同版本成功尝试仍按日去重",
+              no_candidate_code in current_parser_attempted)
         no_candidate = sync.enrich_stock_missing_details(
             cur, date(2026, 9, 10), target_date=date(2026, 9, 11), only_codes=[no_candidate_code]
         )
@@ -141,7 +181,10 @@ try:
             and no_candidate["remaining"] == 4
             and no_candidate["remaining_by_field"] == {
                 "industry": 1, "industry_pe": 1, "main_business": 1, "business_exposure": 1,
-            },
+            }
+            and no_candidate["diagnostic_summary"].get("query_status") == "succeeded"
+            and no_candidate["diagnostic_summary"]["by_field_and_reason"]["industry"]["not_attempted"]["security_codes"]
+            == [no_candidate_code],
             str(no_candidate),
         )
 
@@ -154,6 +197,177 @@ try:
     check("当前发行25条全部优先", set(calls[:25]) == set(current_codes), str(calls[:25]))
     cur.execute("SELECT min(length(main_business)) FROM ipo_history WHERE security_code=ANY(%s)", (current_codes,))
     check("长主营业务完整入库", int(cur.fetchone()[0] or 0) > 200)
+
+    evidence_code = "969997"
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                    industry_pe,main_business,business_exposure,
+                                    online_lottery_rate,oversubscribe_multiple,data_quality_status)
+             VALUES(%s,'证据落库测试','CN','2026-09-11','active',38.2,'主营业务测试',
+                    '{"exposures":[{"label":"测试"}]}'::jsonb,0.02,100,'{}'::jsonb)
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry=NULL,industry_pe=38.2,main_business='主营业务测试',
+               business_exposure='{"exposures":[{"label":"测试"}]}'::jsonb,
+               online_lottery_rate=0.02,oversubscribe_multiple=100,data_quality_status='{}'::jsonb""",
+        (evidence_code,),
+    )
+    evidence_calls = []
+
+    def fake_industry_evidence(code, existing_industry=None, existing_main_business=None, missing_fields=None):
+        evidence_calls.append(list(missing_fields or []))
+        result = {
+            "industry": "计算机、通信和其他电子设备制造业",
+            "industry_diagnostic": {
+                "status": "value", "source": "cninfo", "document_url": "https://example.test/ipo.pdf",
+                "content_hash": "fixture-hash", "parser_version": "ipo-issuance-facts-v3",
+            },
+            "industry_evidence": {"snippet": "发行人所属行业为（C39）计算机、通信和其他电子设备制造业"},
+            "industry_classification": {
+                "classification_system": "national_economic_industry",
+                "classification_version": "GB/T 4754-2017", "classification_code": "C39",
+            },
+        }
+        if code == "969994":
+            result["issuance_stopped"] = {
+                "code": "CIRCUIT_OPEN", "source": "szse",
+                "recover_at": "2026-09-10T10:00:00+08:00",
+            }
+        return result
+
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_industry_evidence
+    try:
+        first_evidence_run = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=[evidence_code], retry_same_day=True
+        )
+        same_value_evidence_run = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=[evidence_code],
+            priority_codes=[evidence_code], retry_same_day=True,
+        )
+        cur.execute(
+            """SELECT industry,data_quality_status->'field_states'->'industry',
+                      source_payload->'historical_enrichment'->'industry_evidence'
+                 FROM ipo_history WHERE security_code=%s""",
+            (evidence_code,),
+        )
+        evidence_row = cur.fetchone()
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("只缺行业时独立请求且分类证据落库",
+          evidence_calls == [["industry"], []]
+          and evidence_row[0] == "计算机、通信和其他电子设备制造业"
+          and evidence_row[1].get("source") == "cninfo"
+          and evidence_row[1].get("document_url") == "https://example.test/ipo.pdf"
+          and evidence_row[2].get("snippet", "").startswith("发行人所属行业"),
+          "missing_fields=%r state=%r evidence=%r" % (evidence_calls, evidence_row[1], evidence_row[2]))
+    check("值未变化时仍幂等保留本轮行业证据",
+          first_evidence_run["updated"] == 1 and same_value_evidence_run["updated"] == 1
+          and evidence_row[2].get("snippet", "").startswith("发行人所属行业"))
+
+    upgrade_code = "969993"
+    legacy_payload = {
+        "historical_enrichment": {
+            "industry_source": "tushare_stock_basic",
+            "industry_pe_source": "tushare_derived_industry_median",
+        }
+    }
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                    industry,industry_pe,main_business,business_exposure,
+                                    online_lottery_rate,oversubscribe_multiple,source_payload,data_quality_status)
+             VALUES(%s,'行业升级测试','CN','2026-09-11','active','全国地产',36.5,'主营业务测试',
+                    '{\"exposures\":[{\"label\":\"地产\"}]}'::jsonb,0.02,100,%s::jsonb,'{}'::jsonb)
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry='全国地产',industry_pe=36.5,main_business='主营业务测试',
+               business_exposure='{"exposures":[{"label":"地产"}]}'::jsonb,
+               online_lottery_rate=0.02,oversubscribe_multiple=100,source_payload=EXCLUDED.source_payload,
+               data_quality_status='{}'::jsonb""",
+        (upgrade_code, json.dumps(legacy_payload)),
+    )
+    upgrade_calls = []
+
+    def fake_authoritative_upgrade(code, existing_industry=None, existing_main_business=None, missing_fields=None):
+        upgrade_calls.append(list(missing_fields or []))
+        return {
+            "industry": "计算机、通信和其他电子设备制造业",
+            "industry_source": "sse",
+            "industry_diagnostic": {
+                "status": "value", "source": "sse", "document_url": "https://example.test/industry.pdf",
+                "content_hash": "official-hash", "parser_version": "ipo-issuance-facts-v3",
+                "classification_system": "listed_company_industry_classification",
+                "classification_version": "2022", "classification_code": "C39",
+            },
+            "industry_evidence": {
+                "snippet": "发行人所属行业为计算机、通信和其他电子设备制造业（C39）",
+                "url": "https://example.test/industry.pdf", "content_hash": "official-hash",
+                "parser_version": "ipo-issuance-facts-v3",
+            },
+            "industry_classification": {
+                "classification_system": "listed_company_industry_classification",
+                "classification_version": "2022", "classification_code": "C39",
+            },
+            "industry_pe_diagnostic": {
+                "status": "source_unavailable",
+                "reason": "official_industry_classification_not_matched_to_tushare_pe_sample",
+            },
+        }
+
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_authoritative_upgrade
+    try:
+        upgrade_result = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=[upgrade_code], priority_codes=[upgrade_code], retry_same_day=True,
+        )
+        cur.execute(
+            """SELECT industry,industry_pe,
+                      source_payload->'historical_enrichment'->'industry_upgrade_history',
+                      source_payload->'historical_enrichment'->'industry_pe_legacy_history',
+                      data_quality_status->'field_states'->'industry_pe'
+                 FROM ipo_history WHERE security_code=%s""",
+            (upgrade_code,),
+        )
+        upgraded_row = cur.fetchone()
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("官方行业升级替换已知Tushare兜底并归档旧值及不匹配PE",
+          upgrade_calls == [["industry", "industry_pe"]]
+          and upgraded_row[0] == "计算机、通信和其他电子设备制造业"
+          and upgraded_row[1] is None
+          and upgraded_row[2][-1].get("previous_value") == "全国地产"
+          and upgraded_row[2][-1].get("previous_source") == "tushare_stock_basic"
+          and upgraded_row[3][-1].get("value") == 36.5
+          and upgraded_row[3][-1].get("source") == "tushare_derived_industry_median"
+          and upgraded_row[4].get("reason") == "official_industry_classification_not_matched_to_tushare_pe_sample",
+          "result=%r row=%r" % (upgrade_result, upgraded_row))
+
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                    industry_pe,main_business,business_exposure,
+                                    online_lottery_rate,oversubscribe_multiple,data_quality_status)
+             VALUES('969994','Guard续跑测试','CN','2026-09-11','active',38.2,'主营业务测试',
+                    '{"exposures":[{"label":"测试"}]}'::jsonb,0.02,100,'{}'::jsonb)
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry=NULL,industry_pe=38.2,main_business='主营业务测试',
+               business_exposure='{"exposures":[{"label":"测试"}]}'::jsonb,
+               online_lottery_rate=0.02,oversubscribe_multiple=100,data_quality_status='{}'::jsonb"""
+    )
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_industry_evidence
+    try:
+        stopped_evidence = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=["969994"], priority_codes=["969994"],
+            retry_same_day=True,
+        )
+        cur.execute(
+            "SELECT industry,source_payload->'historical_enrichment'->'industry_evidence'->>'snippet' "
+            "FROM ipo_history WHERE security_code='969994'"
+        )
+        stopped_row = cur.fetchone()
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("Guard中断前的行业值和证据先写入并保留恢复点",
+          stopped_evidence.get("stopped", {}).get("code") == "CIRCUIT_OPEN"
+          and stopped_row[0] == "计算机、通信和其他电子设备制造业"
+          and stopped_row[1].startswith("发行人所属行业"),
+          "stopped=%r row=%r" % (stopped_evidence.get("stopped"), stopped_row))
+
     conn.rollback()
     cur.close()
     conn.close()

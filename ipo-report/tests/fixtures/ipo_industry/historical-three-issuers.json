@@ -1,0 +1,58 @@
+{
+  "fixtures": [
+    {
+      "sample_id": "920196-bse-issuance-announcement-industry-pe",
+      "stock_code": "920196",
+      "security_name": "南方乳业",
+      "source_url": "https://www.cfi.net.cn/p20260923002193.html",
+      "source_type": "bse_issuer_announcement_reproduction",
+      "published_at": "2026-09-24",
+      "excerpt_sha256": "827106f4f9213ab819e3346026bc4e1296b6c148b37e92a4cd65da8fdb4ed710",
+      "text": "根据中国证监会发布的《上市公司行业分类指引》（2012年修订），公司所处行业为“C制造业”中的“C14食品制造业”（行业代码为“C14”）。截至2026年9月22日（T-3日），中证指数有限公司发布的食品制造业（C14）最近一个月平均静态市盈率为21.45倍。",
+      "expected": {
+        "industry": "食品制造业",
+        "classification_code": "C14",
+        "classification_system": "csrc_industry_classification_guide",
+        "classification_version": "2012年修订",
+        "industry_pe": 21.45,
+        "industry_pe_as_of": "2026-09-22"
+      }
+    },
+    {
+      "sample_id": "920162-bse-risk-notice-industry-pe",
+      "stock_code": "920162",
+      "security_name": "莫森泰克",
+      "source_url": "https://vip.stock.finance.sina.com.cn/corp/view/vCB_AllBulletinDetail.php?CompanyCode=80567402&gather=1&id=12614216",
+      "source_type": "bse_issuer_announcement_reproduction",
+      "published_at": "2026-09-22",
+      "excerpt_sha256": "f1b529af595f983b4d03339bf9276f1eabf078772d74831cba385bcfc96f2528",
+      "text": "根据《国民经济行业分类（GB/T4754-2017）》，公司所属行业为“C36汽车制造业”。截至2026年9月18日（T-3日），中证指数有限公司发布的“C36汽车制造业”最近一个月平均静态市盈率为22.47倍。",
+      "expected": {
+        "industry": "汽车制造业",
+        "classification_code": "C36",
+        "classification_system": "national_economic_industry",
+        "classification_version": "GB/T 4754-2017",
+        "industry_pe": 22.47,
+        "industry_pe_as_of": "2026-09-18"
+      }
+    },
+    {
+      "sample_id": "301718-cninfo-inquiry-announcement-industry",
+      "stock_code": "301718",
+      "security_name": "通则康威",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-09-23/1225577468.PDF",
+      "source_type": "cninfo_official_announcement",
+      "published_at": "2026-09-23",
+      "excerpt_sha256": "b1e1e07b6c5ff3a7cb83208469040422c76af9c369bb6b5e0790fded25c6ca6b",
+      "text": "根据中国上市公司协会发布的《中国上市公司协会上市公司行业统计分类指引》（2023年），通则康威所属行业为计算机、通信和其他电子设备制造业（C39）。中证指数有限公司已经发布了行业平均市盈率，请投资者决策时参考。",
+      "expected": {
+        "industry": "计算机、通信和其他电子设备制造业",
+        "classification_code": "C39",
+        "classification_system": "listed_company_association_industry_guide",
+        "classification_version": "2023",
+        "industry_pe": null,
+        "industry_pe_as_of": null
+      }
+    }
+  ]
+}

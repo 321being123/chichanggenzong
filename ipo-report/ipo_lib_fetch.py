@@ -4,6 +4,8 @@ import json
 import hashlib
 import os
 import re
+import unicodedata
+import copy
 from collections import defaultdict
 import time
 from datetime import datetime, timedelta
@@ -207,8 +209,12 @@ _MAIN_BUSINESS_DOCUMENT = {}
 _MAIN_BUSINESS_DIAGNOSTIC = {}
 _EXCHANGE_PROSPECTUS_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_CACHE = {}
+_EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v4"
+_IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
+_IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
 _IPO_ISSUANCE_RESULT_DETAIL_CACHE = {}
 
@@ -1480,9 +1486,6 @@ def _download_exchange_pdf_text(session, pdf_url, source):
         doc.close()
         return text or None
     except ExternalCallGuardError:
-        # 交易所主源失败时必须继续走巨潮备源；主源熔断仍由 Guard 留痕。
-        if source in {'sse', 'szse', 'bse'}:
-            return None
         raise
     except Exception:
         return None
@@ -1534,97 +1537,199 @@ def _exchange_ipo_document_candidates(stock_code, security_name=''):
     start = (today - timedelta(days=365 * 5)).strftime('%Y-%m-%d')
     end = today.strftime('%Y-%m-%d')
     candidates = []
+    scan_status = {'status': 'complete', 'pages': 0}
     session = requests.Session()
     session.headers.update({'User-Agent': HEADERS['User-Agent']})
     try:
         if market == 'sse':
-            response = session.get(
-                'https://query.sse.com.cn/security/stock/queryCompanyBulletinNew.do',
-                params={
-                    'jsonCallBack': 'ipoExchangeCallback', 'isPagination': 'true',
-                    'SECURITY_CODE': digits, 'BULLETIN_TYPE': '08',
-                    'pageHelp.pageSize': 30, 'pageHelp.cacheSize': 1,
-                    'pageHelp.pageNo': 1,
-                },
-                timeout=20,
-                headers={'Referer': 'https://www.sse.com.cn/ipo/', 'Accept': 'application/json'},
-            )
-            payload = _parse_jsonp_payload(response.text)
-            groups = (payload or {}).get('result') or (payload or {}).get('pageHelp', {}).get('data') or []
-            rows = []
-            for group in groups:
-                rows.extend(group if isinstance(group, list) else [group])
-            for row in rows:
-                if str(row.get('SECURITY_CODE') or '') != digits:
-                    continue
-                title = str(row.get('TITLE') or '')
-                role = _ipo_document_role(title)
-                if not role:
-                    continue
-                path = str(row.get('URL') or '')
-                if not path:
-                    continue
-                url = _exchange_document_url(path, 'sse')
-                candidates.append(('sse', url, title, role, str(row.get('SSEDATE') or '')[:10]))
-        elif market == 'szse':
-            keyword = str(security_name or '').strip() or code
-            response = session.get(
-                'https://www.szse.cn/api/ras/infodisc/query',
-                params={
-                    'pageIndex': 0, 'pageSize': 100, 'keywords': keyword,
-                    'disclosedStartDate': start, 'disclosedEndDate': end,
-                    'catalog': '', 'bizType': 1, 'boardCode': '', 'biztypsb': '',
-                    'random': str(time.time()),
-                },
-                timeout=20,
-                headers={'Referer': 'https://www.szse.cn/listing/disclosure/ipo/index.html', 'Accept': 'application/json'},
-            )
-            payload = _parse_jsonp_payload(response.text) or {}
-            for item in payload.get('data') or []:
-                for sub in item.get('subInfoDisclosureList') or []:
-                    title = str(sub.get('dfnm') or sub.get('configFileName') or '')
+            page_no = 1
+            page_size = 100
+            effective_page_size = None
+            seen_pages = set()
+            while True:
+                response = session.get(
+                    'https://query.sse.com.cn/security/stock/queryCompanyBulletinNew.do',
+                    params={
+                        'jsonCallBack': 'ipoExchangeCallback', 'isPagination': 'true',
+                        'SECURITY_CODE': digits, 'BULLETIN_TYPE': '08',
+                        'pageHelp.pageSize': page_size, 'pageHelp.cacheSize': 1,
+                        'pageHelp.pageNo': page_no,
+                        'pageHelp.beginPage': page_no, 'pageHelp.endPage': page_no,
+                    },
+                    timeout=20,
+                    headers={'Referer': 'https://www.sse.com.cn/ipo/', 'Accept': 'application/json'},
+                )
+                payload = _parse_jsonp_payload(response.text)
+                if not isinstance(payload, dict):
+                    scan_status.update(status='partial', reason='invalid_exchange_response')
+                    break
+                page_help = payload.get('pageHelp') or {}
+                groups = payload.get('result') or page_help.get('data') or []
+                rows = []
+                for group in groups:
+                    rows.extend(group if isinstance(group, list) else [group])
+                signature = tuple(
+                    str(row.get('URL') or row.get('TITLE') or row.get('SSEDATE') or '')
+                    for row in rows if isinstance(row, dict)
+                )
+                if signature and signature in seen_pages:
+                    scan_status.update(status='partial', reason='repeated_exchange_page')
+                    break
+                if signature:
+                    seen_pages.add(signature)
+                scan_status['pages'] += 1
+                for row in rows:
+                    if not isinstance(row, dict) or str(row.get('SECURITY_CODE') or '') != digits:
+                        continue
+                    title = str(row.get('TITLE') or '')
                     role = _ipo_document_role(title)
                     if not role:
                         continue
-                    path = str(sub.get('dfpth') or sub.get('url') or '')
+                    path = str(row.get('URL') or '')
                     if not path:
                         continue
-                    if path.startswith('http'):
-                        url = path
-                    elif path.startswith('/UpFiles/'):
-                        url = 'https://reportdocs.static.szse.cn' + path
-                    else:
-                        url = 'https://www.szse.cn' + path
-                    announced_at = str(sub.get('ddtime') or sub.get('publishTime') or '')[:10]
-                    candidates.append(('szse', url, title, role, announced_at))
+                    url = _exchange_document_url(path, 'sse')
+                    candidates.append(('sse', url, title, role, str(row.get('SSEDATE') or '')[:10]))
+                try:
+                    total = int(page_help.get('total') or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                effective_page_size = effective_page_size or int(page_help.get('pageSize') or len(rows) or page_size)
+                if not rows:
+                    if total and (page_no - 1) * effective_page_size < total:
+                        scan_status.update(status='partial', reason='unexpected_empty_exchange_page')
+                    break
+                if total and page_no * effective_page_size >= total:
+                    break
+                page_no += 1
+        elif market == 'szse':
+            keyword = str(security_name or '').strip() or code
+            page_index = 0
+            page_size = 100
+            effective_page_size = None
+            seen_pages = set()
+            while True:
+                response = session.get(
+                    'https://www.szse.cn/api/ras/infodisc/query',
+                    params={
+                        'pageIndex': page_index, 'pageSize': page_size, 'keywords': keyword,
+                        'disclosedStartDate': start, 'disclosedEndDate': end,
+                        'catalog': '', 'bizType': 1, 'boardCode': '', 'biztypsb': '',
+                        'random': str(time.time()),
+                    },
+                    timeout=20,
+                    headers={'Referer': 'https://www.szse.cn/listing/disclosure/ipo/index.html', 'Accept': 'application/json'},
+                )
+                payload = _parse_jsonp_payload(response.text)
+                if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
+                    scan_status.update(status='partial', reason='invalid_exchange_response')
+                    break
+                items = payload.get('data') or []
+                signature = tuple(
+                    str(sub.get('dfpth') or sub.get('url') or sub.get('dfnm') or '')
+                    for item in items if isinstance(item, dict)
+                    for sub in (item.get('subInfoDisclosureList') or []) if isinstance(sub, dict)
+                ) or tuple(str(item.get('id') or item.get('companyName') or '')
+                           for item in items if isinstance(item, dict))
+                if signature and signature in seen_pages:
+                    scan_status.update(status='partial', reason='repeated_exchange_page')
+                    break
+                if signature:
+                    seen_pages.add(signature)
+                scan_status['pages'] += 1
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    for sub in item.get('subInfoDisclosureList') or []:
+                        if not isinstance(sub, dict):
+                            continue
+                        title = str(sub.get('dfnm') or sub.get('configFileName') or '')
+                        role = _ipo_document_role(title)
+                        if not role:
+                            continue
+                        path = str(sub.get('dfpth') or sub.get('url') or '')
+                        if not path:
+                            continue
+                        if path.startswith('http'):
+                            url = path
+                        elif path.startswith('/UpFiles/'):
+                            url = 'https://reportdocs.static.szse.cn' + path
+                        else:
+                            url = 'https://www.szse.cn' + path
+                        announced_at = str(sub.get('ddtime') or sub.get('publishTime') or '')[:10]
+                        candidates.append(('szse', url, title, role, announced_at))
+                try:
+                    total = int(payload.get('total') or payload.get('totalCount') or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                effective_page_size = effective_page_size or int(payload.get('pageSize') or len(items) or page_size)
+                if not items:
+                    if total and page_index * effective_page_size < total:
+                        scan_status.update(status='partial', reason='unexpected_empty_exchange_page')
+                    break
+                if total and (page_index + 1) * effective_page_size >= total:
+                    break
+                page_index += 1
         else:
             fields = ('companyCd', 'companyName', 'disclosureTitle', 'disclosurePostTitle',
                       'destFilePath', 'publishDate', 'xxfcbj', 'fileExt')
-            form = [
+            page = 0
+            page_size = 100
+            effective_page_size = None
+            seen_pages = set()
+            while True:
+                form = [
                 ('disclosureType', '9533'), ('disclosureTypes', '9533'),
-                ('page', '0'), ('companyCd', digits), ('fileName', ''),
+                ('page', str(page)), ('pageSize', str(page_size)), ('companyCd', digits), ('fileName', ''),
                 ('inquiryList', ''), ('startTime', start), ('endTime', end),
                 ('keyword', ''), ('isLink', '1'), ('callback', 'ipoExchangeCallback'),
-            ]
-            form.extend(('needFields', field) for field in fields)
-            response = session.post(
-                'https://www.bse.cn/disclosureInfoController/zoneInfoResult.do',
-                data=form,
-                timeout=20,
-                headers={'Referer': 'https://www.bse.cn/issue/issue_disclosure.html', 'Accept': 'application/javascript'},
-            )
-            payload = _parse_jsonp_payload(response.text)
-            groups = (payload[0] if isinstance(payload, list) and payload else payload) or {}
-            for row in (groups.get('listInfo') or {}).get('content') or []:
-                title = str(row.get('disclosureTitle') or '') + str(row.get('disclosurePostTitle') or '')
-                role = _ipo_document_role(title)
-                if not role:
-                    continue
-                path = str(row.get('destFilePath') or '')
-                if not path:
-                    continue
-                url = path if path.startswith('http') else 'https://www.bse.cn' + path
-                candidates.append(('bse', url, title, role, str(row.get('publishDate') or '')[:10]))
+                ]
+                form.extend(('needFields', field) for field in fields)
+                response = session.post(
+                    'https://www.bse.cn/disclosureInfoController/zoneInfoResult.do',
+                    data=form,
+                    timeout=20,
+                    headers={'Referer': 'https://www.bse.cn/issue/issue_disclosure.html', 'Accept': 'application/javascript'},
+                )
+                payload = _parse_jsonp_payload(response.text)
+                groups = (payload[0] if isinstance(payload, list) and payload else payload) or {}
+                if not isinstance(groups, dict) or not isinstance(groups.get('listInfo'), dict):
+                    scan_status.update(status='partial', reason='invalid_exchange_response')
+                    break
+                list_info = groups.get('listInfo') or {}
+                rows = list_info.get('content') or []
+                signature = tuple(str(row.get('destFilePath') or row.get('disclosureTitle') or '')
+                                  for row in rows if isinstance(row, dict))
+                if signature and signature in seen_pages:
+                    scan_status.update(status='partial', reason='repeated_exchange_page')
+                    break
+                if signature:
+                    seen_pages.add(signature)
+                scan_status['pages'] += 1
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    title = str(row.get('disclosureTitle') or '') + str(row.get('disclosurePostTitle') or '')
+                    role = _ipo_document_role(title)
+                    if not role:
+                        continue
+                    path = str(row.get('destFilePath') or '')
+                    if not path:
+                        continue
+                    url = path if path.startswith('http') else 'https://www.bse.cn' + path
+                    candidates.append(('bse', url, title, role, str(row.get('publishDate') or '')[:10]))
+                try:
+                    total = int(list_info.get('total') or list_info.get('totalCount') or list_info.get('totalElements') or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                effective_page_size = effective_page_size or int(list_info.get('pageSize') or len(rows) or page_size)
+                if not rows:
+                    if total and page * effective_page_size < total:
+                        scan_status.update(status='partial', reason='unexpected_empty_exchange_page')
+                    break
+                if total and (page + 1) * effective_page_size >= total:
+                    break
+                page += 1
     finally:
         session.close()
     # 同一版本可能在接口中重复出现；按日期/返回顺序去重，最新版本优先。
@@ -1636,6 +1741,7 @@ def _exchange_ipo_document_candidates(stock_code, security_name=''):
         seen.add(url)
         result.append((source, url, title, role, announced_at))
     _EXCHANGE_IPO_DOCUMENT_CACHE[cache_key] = list(result)
+    _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS[cache_key] = dict(scan_status, candidate_count=len(result))
     return result
 
 
@@ -1755,22 +1861,160 @@ def _exchange_issuance_result_candidates(stock_code, security_name=''):
     ]
 
 
-def _parse_ipo_issuance_detail(text):
-    """从 IPO 发行公告提取公告直接披露的行业和行业市盈率。"""
-    compact = re.sub(r'\s+', '', str(text or ''))
+def _issuance_text_view(text):
+    """归一化全半角并保留归一化字符到抽取原文的字符位置映射。"""
+    raw = str(text or '')
+    chars = []
+    offsets = []
+    for index, char in enumerate(raw):
+        for normalized in unicodedata.normalize('NFKC', char):
+            if normalized.isspace() or normalized == '\u200b':
+                continue
+            chars.append(normalized)
+            offsets.append((index, index + 1))
+    return raw, ''.join(chars), offsets
+
+
+def _issuance_evidence_span(raw, offsets, start, end):
+    if start < 0 or end <= start or end > len(offsets):
+        return None
+    raw_start = offsets[start][0]
+    raw_end = offsets[end - 1][1]
+    return {
+        'snippet': raw[raw_start:raw_end],
+        'start': raw_start,
+        'end': raw_end,
+    }
+
+
+def _industry_classification_metadata(context, code=None, name=None):
+    context = str(context or '')
+    systems = []
+    if re.search(r'国民经济行业分类|GB/T\s*4754[-—]?2017', context, re.I):
+        systems.append({
+            'classification_system': 'national_economic_industry',
+            'classification_version': 'GB/T 4754-2017',
+        })
+    if re.search(r'中国证监会.{0,30}上市公司行业分类指引|上市公司行业分类指引.{0,24}2012年修订', context):
+        version = re.search(r'上市公司行业分类指引.{0,24}?(20\d{2}年修订)', context)
+        systems.append({
+            'classification_system': 'csrc_industry_classification_guide',
+            'classification_version': version.group(1) if version else None,
+        })
+    if re.search(r'上市公司行业统计分类与代码|JR/T\s*0020[-—]?2024', context, re.I):
+        systems.append({
+            'classification_system': 'listed_company_industry_classification',
+            'classification_version': 'JR/T 0020-2024',
+        })
+    if re.search(r'中国上市公司协会.{0,30}(?:上市公司)?行业统计分类指引', context):
+        year = re.search(r'行业统计分类指引.{0,12}?(20\d{2})年?', context)
+        systems.append({
+            'classification_system': 'listed_company_association_industry_guide',
+            'classification_version': year.group(1) if year else None,
+        })
+    unique = {(item['classification_system'], item.get('classification_version')) for item in systems}
+    classification = systems[0] if len(unique) == 1 else {
+        'classification_system': None,
+        'classification_version': None,
+    }
+    classification.update({
+        'classification_code': code,
+        'industry': name,
+        'classification_basis': context[-240:] or None,
+    })
+    return classification
+
+
+def _industry_from_label(value):
+    value = str(value or '').strip('：:，,。；;“”"‘’\' ')
+    code_match = re.search(r'[（(]?([A-Z]\d{1,4})[）)]?', value, re.I)
+    code = code_match.group(1).upper() if code_match else None
+    if code_match:
+        before = value[:code_match.start()].strip('：:，,。；;“”"‘’\' ')
+        after = value[code_match.end():].strip('：:，,。；;“”"‘’\' ')
+        before_name = re.sub(
+            r'^.*?(?:所属行业(?:名称)?(?:为|是|[：:])|行业(?:分类|名称|代码)(?:为|是|[：:])?)',
+            '', before,
+        ).strip('：:，,。；;“”"‘’\' ')
+        before_name = re.sub(r'^.*?中的', '', before_name).strip('：:，,。；;“”"‘’\'（）() ')
+        after = re.split(r'(?:行业代码|行业名称|分类标准)', after, maxsplit=1)[0]
+        name = before_name if len(before_name) >= 2 else after
+    else:
+        name = value
+    name = re.split(r'(?:所属行业|行业代码|行业名称|分类标准|公司名称|证券代码|行业分类)', name, maxsplit=1)[0]
+    name = name.strip('：:，,。；;“”"‘’\'（）() ')
+    if not 2 <= len(name) <= 40:
+        return None, None
+    return name, code
+
+
+def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
+    """从发行公告、风险公告或招股书片段提取字段及各自原文证据。"""
+    raw, compact, offsets = _issuance_text_view(text)
     if not compact:
         return {}
 
-    industry = ''
-    for pattern in (
-        r'所属行业名称及行业代码[：:]?([^（）()，。；;]{2,40})[（(][A-Z]\d{2,4}[）)]',
-        r'(?:发行人|公司)所属行业为[：:“"]?([^（）()，。；;]{2,40})[（(][A-Z]\d{2,4}[）)]',
-        r'(?:发行人|公司)从事的主营业务所属行业为[：:“"]?(?:[A-Z]\d{2,4})?([^”"，。；;]{2,40})',
-    ):
-        match = re.search(pattern, compact)
-        if match:
-            industry = match.group(1).strip('：:，,。；;“”"')
+    issuer_name = re.sub(r'\s+', '', unicodedata.normalize('NFKC', str(security_name or '')))
+    compact_name = re.sub(r'\s+', '', unicodedata.normalize('NFKC', raw))
+    digits = re.sub(r'\D', '', str(stock_code or ''))
+    identity_positions = [
+        match.start() for token in (issuer_name, digits) if token
+        for match in re.finditer(re.escape(token), compact_name)
+    ]
+    identity_matches = bool(identity_positions)
+
+    industry_patterns = [
+        r'(?:发行人|公司)从事的主营业务所属行业(?:名称)?(?:为|是|[：:])(?P<value>[^。；;]{2,80})',
+        r'(?:发行人|公司)(?:所处|所属)行业(?:名称)?(?:为|是|[：:])(?P<value>[^。；;]{2,80})',
+        r'所属行业名称及行业代码[：:]?(?P<value>[^。；;]{2,80})',
+        r'(?:发行人|公司)行业分类[：:]?(?P<value>[^。；;]{2,80})',
+        r'行业分类[：:]?(?P<value>[^。；;]{2,80})',
+    ]
+    if issuer_name:
+        industry_patterns.insert(
+            0,
+            re.escape(issuer_name)
+            + r'(?:所处|所属)行业(?:名称)?(?:为|是|[：:])(?P<value>[^。；;]{2,100})',
+        )
+    industry_match = None
+    industry = None
+    industry_code = None
+    for pattern_index, pattern in enumerate(industry_patterns):
+        for match in re.finditer(pattern, compact):
+            # 可比公司行不能当作发行人分类；通用表格标签还必须邻近本次发行人身份。
+            prefix = compact[max(0, match.start() - 48):match.start()]
+            if re.search(r'可比|同行|参照公司|同业公司', prefix):
+                continue
+            if pattern_index == len(industry_patterns) - 1 and not any(
+                abs(match.start() - position) <= 600
+                for position in identity_positions
+            ):
+                continue
+            candidate, code = _industry_from_label(match.group('value'))
+            if candidate:
+                industry_match = match
+                industry = candidate
+                industry_code = code
+                break
+        if industry_match:
             break
+
+    result = {}
+    if industry and industry_match:
+        result['industry'] = industry
+        evidence = _issuance_evidence_span(raw, offsets, industry_match.start(), industry_match.end())
+        context_start = max(0, industry_match.start() - 320)
+        context = compact[context_start:industry_match.end()]
+        classification = _industry_classification_metadata(context, industry_code, industry)
+        basis_span = _issuance_evidence_span(raw, offsets, context_start, industry_match.end())
+        classification.update({
+            'classification_basis': basis_span['snippet'] if basis_span else None,
+            'classification_basis_start': basis_span['start'] if basis_span else None,
+            'classification_basis_end': basis_span['end'] if basis_span else None,
+        })
+        evidence.update(classification)
+        result['industry_classification'] = classification
+        result['industry_evidence'] = evidence
 
     industry_pe = None
     pe_match = None
@@ -1786,108 +2030,376 @@ def _parse_ipo_issuance_detail(text):
                 industry_pe = value
                 break
 
-    result = {}
-    if industry:
-        result['industry'] = industry[:80]
     if industry_pe is not None:
         result['industry_pe'] = industry_pe
-        if pe_match:
-            context_start = max(0, pe_match.start() - 180)
-            context = compact[context_start:pe_match.end(1)]
-            dates = list(re.finditer(r'截至(20\d{2})年(\d{1,2})月(\d{1,2})日', context))
-            if dates:
-                date = dates[-1]
-                result['industry_pe_as_of'] = (
-                    f'{date.group(1)}-{int(date.group(2)):02d}-{int(date.group(3)):02d}'
-                )
+        context_start = max(0, pe_match.start() - 240)
+        context = compact[context_start:pe_match.end(1)]
+        dates = list(re.finditer(r'截至(20\d{2})年(\d{1,2})月(\d{1,2})日', context))
+        if dates:
+            date = dates[-1]
+            result['industry_pe_as_of'] = (
+                f'{date.group(1)}-{int(date.group(2)):02d}-{int(date.group(3)):02d}'
+            )
+        code_matches = list(re.finditer(r'[（(]([A-Z]\d{1,4})[）)]', context, re.I))
+        pe_code = code_matches[-1].group(1).upper() if code_matches else None
+        evidence = _issuance_evidence_span(raw, offsets, pe_match.start(), pe_match.end())
+        classification = _industry_classification_metadata(context, pe_code, None)
+        basis_span = _issuance_evidence_span(raw, offsets, context_start, pe_match.end(1))
+        classification.update({
+            'classification_basis': basis_span['snippet'] if basis_span else None,
+            'classification_basis_start': basis_span['start'] if basis_span else None,
+            'classification_basis_end': basis_span['end'] if basis_span else None,
+        })
+        evidence.update(classification)
+        evidence.update({
+            'as_of': result.get('industry_pe_as_of'),
+            'value': industry_pe,
+        })
+        result['industry_pe_evidence'] = evidence
     if '尚未盈利' in compact:
         result['issuer_unprofitable'] = True
+    result['ipo_announcement_parser_version'] = _IPO_ISSUANCE_PARSER_VERSION
+    result['text_extraction_version'] = _IPO_TEXT_EXTRACTION_VERSION
     return result
 
 
-def _fetch_exchange_ipo_issuance_detail(stock_code, security_name=''):
-    """交易所主源、巨潮备源：提取 IPO 行业 PE 和发行人盈利状态。"""
+def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_fields=None):
+    """按字段读取 IPO 官方公告，并保留每个事实自己的来源证据。"""
     code = str(stock_code or '').split('.')[0]
-    if code in _IPO_ISSUANCE_DETAIL_CACHE:
-        return dict(_IPO_ISSUANCE_DETAIL_CACHE[code])
+    security_name = security_name or _stock_name_from_database(code)
+    market = _exchange_market_for_code(re.sub(r'\D', '', code))
+    required_fields = tuple(sorted(set(required_fields or ('industry', 'industry_pe'))))
+    required_fields = tuple(field for field in required_fields if field in {'industry', 'industry_pe'})
+    if not required_fields:
+        required_fields = ('industry', 'industry_pe')
+
+    # 交易所招股书和发行公告来自同一份已登记的官方候选列表；招股书只用于行业。
+    candidates = []
+    discovery_complete = True
+    discovery_error = None
     try:
-        candidates = _exchange_issuance_announcement_candidates(
-            code, security_name or _stock_name_from_database(code)
-        )
-        discovered_count = len(candidates)
-        downloaded = 0
-        parsed_detail = {}
-        session = requests.Session()
-        session.headers.update({'User-Agent': HEADERS['User-Agent']})
-        try:
-            # 先查官方交易所。只有未提取到目标字段时，才走已登记的巨潮备源。
-            candidate_groups = [('exchange', candidates)]
-            for source, candidate_list in candidate_groups:
-                if source == 'cninfo':
-                    discovered_count += len(candidate_list)
-                for candidate_source, url, title, announced_at in candidate_list:
-                    text = _download_exchange_pdf_text(session, url, candidate_source)
-                    if text:
-                        downloaded += 1
-                    extracted = _parse_ipo_issuance_detail(text)
-                    if not extracted:
-                        continue
-                    role = _ipo_document_role(title)
-                    parsed_detail.update(extracted)
-                    parsed_detail.update({
-                        'ipo_announcement_source': candidate_source,
-                        'ipo_announcement_role': role,
-                        'ipo_announcement_url': url,
-                        'ipo_announcement_title': title,
-                        'ipo_announcement_date': announced_at or None,
-                        'ipo_announcement_content_hash': hashlib.sha256(
-                            str(text or '').encode('utf-8')
-                        ).hexdigest(),
-                        'ipo_announcement_parser_version': 'ipo-issuance-facts-v2',
-                    })
-                    if parsed_detail.get('industry_pe') is not None:
-                        break
-                if parsed_detail.get('industry_pe') is not None:
-                    break
-                if source == 'exchange':
-                    candidate_groups.append(('cninfo', _cninfo_ipo_issuance_candidates(code)))
-        finally:
-            session.close()
-        if not discovered_count:
-            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-                'status': 'document_not_found',
-                'reason': 'no_issuance_or_risk_announcement_candidate_found',
-            }
-            _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
-            return {}
-        if parsed_detail:
-            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-                'status': 'value' if parsed_detail.get('industry_pe') is not None else 'document_field_absent',
-                'reason': None if parsed_detail.get('industry_pe') is not None else 'issuance_announcement_has_no_industry_pe',
-                'source': parsed_detail.get('ipo_announcement_source'),
-                'as_of': parsed_detail.get('industry_pe_as_of'),
-                'document_role': parsed_detail.get('ipo_announcement_role'),
-            }
-            _IPO_ISSUANCE_DETAIL_CACHE[code] = dict(parsed_detail)
-            return parsed_detail
-    except ExternalCallGuardError:
-        _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-            'status': 'source_unavailable',
-            'reason': 'issuance_announcement_source_guarded',
-        }
-        raise
+        candidates = [
+            (source, url, title, role, announced_at)
+            for source, url, title, role, announced_at
+            in _exchange_ipo_document_candidates(code, security_name)
+            if role in {'prospectus', 'issuance_announcement', 'issuance_risk_announcement'}
+        ]
+        scan_key = (market, re.sub(r'\D', '', code), str(security_name or '').strip())
+        candidate_scan_status = _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS.get(scan_key) or {}
+        if candidate_scan_status and candidate_scan_status.get('status') != 'complete':
+            discovery_complete = False
+            discovery_error = RuntimeError(candidate_scan_status.get('reason') or 'exchange_candidate_scan_incomplete')
+        if 'industry' in required_fields:
+            cached_prospectus = _MAIN_BUSINESS_DOCUMENT.get(code) or {}
+            cached_url = cached_prospectus.get('url')
+            if cached_url and not any(item[1] == cached_url for item in candidates):
+                candidates.append((
+                    cached_prospectus.get('source') or 'exchange', cached_url,
+                    cached_prospectus.get('title') or '招股说明书', 'prospectus',
+                    cached_prospectus.get('date') or '',
+                ))
+    except ExternalCallGuardError as exc:
+        discovery_complete = False
+        discovery_error = exc
     except Exception:
-        _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-            'status': 'source_unavailable',
-            'reason': 'issuance_announcement_source_error',
-        }
-    _IPO_ISSUANCE_DETAIL_CACHE[code] = {}
-    if code not in _IPO_ISSUANCE_DETAIL_DIAGNOSTIC:
-        _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = {
-            'status': 'document_parse_failed' if downloaded else 'document_unavailable',
-            'reason': 'document_found_but_parser_found_no_industry_pe' if downloaded else 'document_download_failed',
-        }
-    return {}
+        discovery_complete = False
+        discovery_error = RuntimeError('exchange_candidate_discovery_failed')
+
+    # URL 去重后按明确更正、披露日期、字段专门文件顺序扫描，结果不依赖 API 返回顺序。
+    unique_candidates = {}
+    for source, url, title, role, announced_at in candidates:
+        unique_candidates.setdefault(url, (source, url, title, role, announced_at))
+    candidates = list(unique_candidates.values())
+
+    def candidate_rank(candidate, field):
+        source, url, title, role, announced_at = candidate
+        correction = 0 if re.search(r'更正|修订', title) else 1
+        date_key = int(re.sub(r'\D', '', str(announced_at or '')) or 0)
+        if field == 'industry':
+            role_key = {'prospectus': 0, 'issuance_announcement': 1,
+                        'issuance_risk_announcement': 1}.get(role, 2)
+        else:
+            role_key = {'issuance_announcement': 0,
+                        'issuance_risk_announcement': 0, 'prospectus': 2}.get(role, 3)
+        source_key = 0 if source != 'cninfo' else 1
+        return (correction, -date_key, role_key, source_key, url)
+
+    candidates.sort(key=lambda item: min(
+        candidate_rank(item, field) for field in (required_fields or ('industry', 'industry_pe'))
+    ))
+    exchange_candidates = list(candidates)
+
+    def candidate_fingerprint(items):
+        return hashlib.sha256('\n'.join(
+            '|'.join(str(part or '') for part in candidate) for candidate in items
+        ).encode('utf-8')).hexdigest()
+
+    exchange_fingerprint = candidate_fingerprint(exchange_candidates)
+    cached = _IPO_ISSUANCE_DETAIL_CACHE.get(code)
+    prefetched_cninfo_candidates = None
+    if (isinstance(cached, dict)
+            and cached.get('_base_cache_key') == (
+                code, _IPO_ISSUANCE_PARSER_VERSION, required_fields, exchange_fingerprint
+            )):
+        if not cached.get('_used_cninfo'):
+            _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = copy.deepcopy(cached.get('_diagnostic') or {})
+            return copy.deepcopy(cached.get('_result') or {})
+        try:
+            prefetched_cninfo_candidates = [
+                (source, url, title, role, announced_at)
+                for source, url, title, announced_at in _cninfo_ipo_issuance_candidates(code)
+                for role in (_ipo_document_role(title),)
+                if role in {'issuance_announcement', 'issuance_risk_announcement'}
+            ]
+            known_urls = {item[1] for item in exchange_candidates}
+            fallback_fingerprint = candidate_fingerprint([
+                item for item in prefetched_cninfo_candidates if item[1] not in known_urls
+            ])
+            if cached.get('_cninfo_fingerprint') == fallback_fingerprint:
+                _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = copy.deepcopy(cached.get('_diagnostic') or {})
+                return copy.deepcopy(cached.get('_result') or {})
+        except Exception:
+            prefetched_cninfo_candidates = None
+
+    discovered_count = len(candidates)
+    downloaded = 0
+    parsed_documents = []
+    seen_content_hashes = set()
+    session = requests.Session()
+    session.headers.update({'User-Agent': HEADERS['User-Agent']})
+    interrupted = isinstance(discovery_error, ExternalCallGuardError)
+    def scan_candidates(candidate_batch):
+        nonlocal downloaded, discovery_error, interrupted
+        for candidate in candidate_batch:
+            source, url, title, role, announced_at = candidate
+            if role == 'prospectus' and 'industry' not in required_fields:
+                continue
+            try:
+                text = _download_exchange_pdf_text(session, url, source)
+            except ExternalCallGuardError as exc:
+                discovery_error = discovery_error or exc
+                interrupted = True
+                break
+            if not text:
+                continue
+            downloaded += 1
+            content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            if content_hash in seen_content_hashes:
+                continue
+            seen_content_hashes.add(content_hash)
+            parse_cache_key = (
+                code, content_hash, _IPO_TEXT_EXTRACTION_VERSION,
+                _IPO_ISSUANCE_PARSER_VERSION,
+            )
+            extracted = _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE.get(parse_cache_key)
+            if extracted is None:
+                extracted = _parse_ipo_issuance_detail(text, security_name, code)
+                _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE[parse_cache_key] = copy.deepcopy(extracted)
+            extracted = copy.deepcopy(extracted)
+            document = {
+                'source': source,
+                'url': url,
+                'title': title,
+                'role': role,
+                'date': announced_at or None,
+                'content_hash': content_hash,
+                'text_extraction_version': _IPO_TEXT_EXTRACTION_VERSION,
+                'parser_version': _IPO_ISSUANCE_PARSER_VERSION,
+            }
+            for field in ('industry', 'industry_pe'):
+                evidence_key = f'{field}_evidence'
+                if evidence_key in extracted:
+                    extracted[evidence_key].update(document)
+            if 'industry' in extracted:
+                extracted['industry_classification'].update(document)
+            parsed_documents.append({
+                'candidate': candidate,
+                'document': document,
+                'detail': extracted,
+            })
+
+    try:
+        if interrupted:
+            interrupted = True
+        scan_candidates(candidates)
+        # 仅当交易所原文仍缺本次所需字段时，才进入既有巨潮备源。
+        missing_required = any(
+            not any(item['detail'].get(field) is not None for item in parsed_documents)
+            for field in required_fields
+        )
+        if missing_required and not interrupted:
+            try:
+                cninfo_candidates = prefetched_cninfo_candidates or [
+                    (source, url, title, role, announced_at)
+                    for source, url, title, announced_at in _cninfo_ipo_issuance_candidates(code)
+                    for role in (_ipo_document_role(title),)
+                    if role in {'issuance_announcement', 'issuance_risk_announcement'}
+                ]
+                known_urls = {item[1] for item in candidates}
+                fallback_candidates = [item for item in cninfo_candidates if item[1] not in known_urls]
+                fallback_candidates.sort(key=lambda item: min(
+                    candidate_rank(item, field) for field in required_fields
+                ))
+                candidates.extend(fallback_candidates)
+                scan_candidates(fallback_candidates)
+            except ExternalCallGuardError as exc:
+                discovery_error = exc
+                interrupted = True
+            except Exception:
+                discovery_error = RuntimeError('cninfo_candidate_discovery_failed')
+                interrupted = True
+    finally:
+        session.close()
+
+    discovered_count = len(candidates)
+
+    result = {}
+    field_diagnostics = {}
+    for field in ('industry', 'industry_pe'):
+        matches = [item for item in parsed_documents if item['detail'].get(field) is not None]
+        matches.sort(key=lambda item: candidate_rank(item['candidate'], field))
+        if matches:
+            top_rank = candidate_rank(matches[0]['candidate'], field)[:-1]
+            same_rank = [item for item in matches if candidate_rank(item['candidate'], field)[:-1] == top_rank]
+            distinct_values = {str(item['detail'].get(field)) for item in same_rank}
+            if len(distinct_values) > 1:
+                field_diagnostics[field] = {
+                    'status': 'conflict',
+                    'reason': 'equivalent_official_documents_disagree',
+                    'candidates': [
+                        {
+                            'value': item['detail'].get(field),
+                            'source': item['document']['source'],
+                            'document_url': item['document']['url'],
+                            'content_hash': item['document']['content_hash'],
+                        }
+                        for item in same_rank
+                    ],
+                }
+                continue
+            selected = matches[0]['detail']
+            result[field] = selected[field]
+            if field == 'industry':
+                for key in ('industry_classification', 'industry_evidence'):
+                    if selected.get(key):
+                        result[key] = selected[key]
+            else:
+                for key in ('industry_pe_as_of', 'industry_pe_evidence'):
+                    if selected.get(key) is not None:
+                        result[key] = selected[key]
+            document = matches[0]['document']
+            field_diagnostics[field] = {
+                'status': 'value', 'source': document['source'],
+                'document_role': document['role'], 'document_url': document['url'],
+                'as_of': selected.get('industry_pe_as_of') if field == 'industry_pe' else None,
+                'content_hash': document['content_hash'],
+                'parser_version': _IPO_ISSUANCE_PARSER_VERSION,
+                'candidate_scan_status': (
+                    'interrupted' if interrupted else 'partial' if not discovery_complete else 'complete'
+                ),
+            }
+        elif interrupted:
+            field_diagnostics[field] = {
+                'status': 'source_unavailable',
+                'reason': getattr(discovery_error, 'code', None) or 'candidate_scan_interrupted',
+                'candidate_scan_status': 'interrupted',
+            }
+        elif not discovery_complete:
+            field_diagnostics[field] = {
+                'status': 'source_unavailable',
+                'reason': getattr(discovery_error, 'code', None) or 'candidate_discovery_incomplete',
+                'candidate_scan_status': 'partial',
+            }
+        elif not discovered_count:
+            field_diagnostics[field] = {
+                'status': 'document_not_found',
+                'reason': 'no_issuance_or_prospectus_candidate_found',
+                'candidate_scan_status': 'complete',
+            }
+        elif downloaded:
+            field_diagnostics[field] = {
+                'status': 'parse_miss',
+                'reason': f'no_{field}_value_parsed_from_downloaded_documents',
+                'candidate_scan_status': 'complete',
+            }
+        else:
+            field_diagnostics[field] = {
+                'status': 'document_unavailable',
+                'reason': 'candidate_documents_download_failed',
+                'candidate_scan_status': 'complete',
+            }
+
+    result['ipo_issuance_diagnostics'] = field_diagnostics
+    result['ipo_issuance_candidate_scan'] = {
+        'status': 'interrupted' if interrupted else 'partial' if not discovery_complete else 'complete',
+        'candidate_count': discovered_count,
+        'downloaded_count': downloaded,
+        'parsed_document_count': len(parsed_documents),
+    }
+    if discovery_error:
+        result['ipo_issuance_candidate_scan'].update({
+            'guard_code': getattr(discovery_error, 'code', None),
+            'guard_source': getattr(discovery_error, 'source', None),
+            'recover_at': (
+                discovery_error.recover_at.isoformat()
+                if hasattr(getattr(discovery_error, 'recover_at', None), 'isoformat')
+                else getattr(discovery_error, 'recover_at', None)
+            ),
+        })
+    if 'issuer_unprofitable' in {
+        key for item in parsed_documents for key in item['detail']
+    }:
+        result['issuer_unprofitable'] = any(
+            item['detail'].get('issuer_unprofitable') for item in parsed_documents
+        )
+
+    compatibility_document = next((
+        item['document'] for field in ('industry_pe', 'industry')
+        for item in parsed_documents
+        if result.get(field) is not None and item['detail'].get(field) == result.get(field)
+    ), None)
+    if compatibility_document:
+        result.update({
+            'ipo_announcement_source': compatibility_document['source'],
+            'ipo_announcement_role': compatibility_document['role'],
+            'ipo_announcement_url': compatibility_document['url'],
+            'ipo_announcement_title': compatibility_document['title'],
+            'ipo_announcement_date': compatibility_document['date'],
+            'ipo_announcement_content_hash': compatibility_document['content_hash'],
+            'ipo_announcement_parser_version': _IPO_ISSUANCE_PARSER_VERSION,
+        })
+    if result.get('industry') is not None:
+        result['industry_source'] = field_diagnostics['industry'].get('source')
+    if result.get('industry_pe') is not None:
+        result['industry_pe_source'] = (
+            f"{field_diagnostics['industry_pe'].get('source')}_"
+            f"{field_diagnostics['industry_pe'].get('document_role')}"
+        )
+
+    overall = {
+        'status': 'value' if result.get('industry') is not None or result.get('industry_pe') is not None
+        else next(iter(field_diagnostics.values()), {}).get('status', 'document_not_found'),
+        'reason': None,
+        'industry': field_diagnostics.get('industry'),
+        'industry_pe': field_diagnostics.get('industry_pe'),
+        'candidate_scan_status': 'interrupted' if interrupted else 'partial' if not discovery_complete else 'complete',
+    }
+    if interrupted:
+        overall['reason'] = getattr(discovery_error, 'code', None) or 'candidate_scan_interrupted'
+    _IPO_ISSUANCE_DETAIL_DIAGNOSTIC[code] = overall
+    full_candidate_fingerprint = candidate_fingerprint(candidates)
+    cache_key = (code, _IPO_ISSUANCE_PARSER_VERSION, required_fields, full_candidate_fingerprint)
+    _IPO_ISSUANCE_DETAIL_CACHE[code] = {
+        '_cache_key': cache_key,
+        '_base_cache_key': (code, _IPO_ISSUANCE_PARSER_VERSION, required_fields, exchange_fingerprint),
+        '_used_cninfo': any(candidate[0] == 'cninfo' for candidate in candidates),
+        '_cninfo_fingerprint': candidate_fingerprint([
+            candidate for candidate in candidates if candidate[0] == 'cninfo'
+        ]),
+        '_result': copy.deepcopy(result),
+        '_diagnostic': copy.deepcopy(overall),
+    }
+    return result
 
 
 def _parse_ipo_issuance_result_detail(text):
@@ -1962,6 +2474,8 @@ def _fetch_exchange_ipo_issuance_result_detail(stock_code, security_name=''):
                 return parsed
         finally:
             session.close()
+    except ExternalCallGuardError:
+        raise
     except Exception:
         pass
     _IPO_ISSUANCE_RESULT_DETAIL_CACHE[code] = {}
@@ -2262,37 +2776,77 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
     code = str(secu_code or '').split('.')[0]
     if not code:
         return None
-    requested = set(missing_fields or (
+    requested = set(missing_fields) if missing_fields is not None else {
         'industry', 'industry_pe', 'main_business', 'business_exposure',
         'online_lottery_rate', 'oversubscribe_multiple',
-    ))
+    }
     need_industry = 'industry' in requested
     need_industry_pe = 'industry_pe' in requested
     need_main_business = 'main_business' in requested
     need_result = bool({'online_lottery_rate', 'oversubscribe_multiple'} & requested)
     security_name = _STOCK_NAME_CACHE.get(code) or _stock_name_from_database(code)
     announcement_detail = (
-        _fetch_exchange_ipo_issuance_detail(code, security_name=security_name)
+        _fetch_exchange_ipo_issuance_detail(
+            code, security_name=security_name,
+            required_fields={field for field in requested if field in {'industry', 'industry_pe'}},
+        )
         if (need_industry or need_industry_pe) else {}
     )
-    result_detail = (
-        _fetch_exchange_ipo_issuance_result_detail(code, security_name=security_name)
-        if need_result else {}
-    )
+    result_guard = industry_guard = None
+    try:
+        result_detail = (
+            _fetch_exchange_ipo_issuance_result_detail(code, security_name=security_name)
+            if need_result else {}
+        )
+    except ExternalCallGuardError as exc:
+        result_detail = {}
+        result_guard = exc
+    try:
+        industry_fallback = _fetch_stock_industry(code) if (
+            need_industry and not announcement_detail.get('industry')
+        ) else ''
+    except ExternalCallGuardError as exc:
+        industry_fallback = ''
+        industry_guard = exc
     industry = (
         str(announcement_detail.get('industry') or '').strip()
-        or (_fetch_stock_industry(code) if need_industry else '')
+        or str(industry_fallback or '').strip()
         or str(existing_industry or '').strip()
     )
     detail = dict(announcement_detail)
     detail.update(result_detail)
     detail['industry'] = industry or ''
+    issuance_diagnostics = announcement_detail.get('ipo_issuance_diagnostics') or {}
+    detail['industry_diagnostic'] = (
+        dict(issuance_diagnostics.get('industry') or {})
+        if need_industry else {'status': 'not_requested'}
+    )
     if announcement_detail.get('industry'):
-        detail['industry_source'] = f"{announcement_detail.get('ipo_announcement_source')}_issuance_announcement"
+        announcement_role = announcement_detail.get('ipo_announcement_role') or 'issuance_announcement'
+        detail['industry_source'] = issuance_diagnostics.get('industry', {}).get('source') or (
+            f"{announcement_detail.get('ipo_announcement_source')}_{announcement_role}"
+            if announcement_detail.get('ipo_announcement_source') else 'official_issuance_announcement'
+        )
+        detail['industry_diagnostic']['evidence'] = announcement_detail.get('industry_evidence')
+        classification = announcement_detail.get('industry_classification') or {}
+        for key in ('classification_system', 'classification_version', 'classification_code'):
+            if classification.get(key):
+                detail['industry_diagnostic'][key] = classification[key]
+    elif need_industry and industry:
+        detail['industry_source'] = 'tushare_stock_basic' if industry_fallback else 'stored_or_existing'
+        detail['industry_diagnostic'] = {
+            'status': 'value', 'source': detail['industry_source'],
+            'reason': 'official_industry_not_parsed; fallback_value_retained',
+        }
     detail['main_business'] = (
-        _fetch_stock_main_business(code, security_name=security_name)
-        if need_main_business else str(existing_main_business or '').strip()
+        str(existing_main_business or '').strip()
     ) or ''
+    main_business_guard = None
+    if need_main_business:
+        try:
+            detail['main_business'] = _fetch_stock_main_business(code, security_name=security_name) or ''
+        except ExternalCallGuardError as exc:
+            main_business_guard = exc
     detail['main_business_source'] = _MAIN_BUSINESS_SOURCE.get(code, '')
     if _MAIN_BUSINESS_DOCUMENT.get(code):
         detail['main_business_document'] = dict(_MAIN_BUSINESS_DOCUMENT[code])
@@ -2301,53 +2855,93 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
         diagnostic['attempts'] = list(diagnostic.get('attempts') or [])[-6:]
         detail['main_business_diagnostic'] = diagnostic
     _normalize_stock_detail(detail)
-    issuance_pe_diagnostic = dict(_IPO_ISSUANCE_DETAIL_DIAGNOSTIC.get(code) or {})
+    issuance_pe_diagnostic = dict(issuance_diagnostics.get('industry_pe') or {})
     if need_industry_pe:
         if detail.get('industry_pe') is not None:
-            announcement_role = (
-                announcement_detail.get('ipo_announcement_role') or 'issuance_announcement'
-            )
-            detail['industry_pe_source'] = (
-                f"{announcement_detail.get('ipo_announcement_source')}_{announcement_role}"
-                if announcement_detail.get('ipo_announcement_source')
-                else 'stored_or_existing'
-            )
-            detail['industry_pe_diagnostic'] = {
-                'status': 'value', 'source': detail['industry_pe_source'],
-                'as_of': announcement_detail.get('industry_pe_as_of'),
-                'document_role': announcement_detail.get('ipo_announcement_role'),
-                'document_url': announcement_detail.get('ipo_announcement_url'),
-            }
-        elif detail.get('industry'):
-            industry_pe_map = _get_industry_pe_map()
-            detail['industry_pe'] = industry_pe_map.get(detail['industry'])
-            if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:
-                detail['industry_pe'] = industry_pe_map.get('电器仪表')
+            if announcement_detail.get('industry_pe') is not None:
+                announcement_role = announcement_detail.get('ipo_announcement_role') or 'issuance_announcement'
+                detail['industry_pe_source'] = announcement_detail.get('industry_pe_source') or (
+                    f"{announcement_detail.get('ipo_announcement_source')}_{announcement_role}"
+                    if announcement_detail.get('ipo_announcement_source') else 'official_issuance_announcement'
+                )
+                detail['industry_pe_diagnostic'] = dict(issuance_pe_diagnostic) or {
+                    'status': 'value', 'source': detail['industry_pe_source'],
+                    'as_of': announcement_detail.get('industry_pe_as_of'),
+                    'document_role': announcement_role,
+                    'document_url': announcement_detail.get('ipo_announcement_url'),
+                }
+                detail['industry_pe_diagnostic'].setdefault('status', 'value')
+                detail['industry_pe_diagnostic'].setdefault('source', detail['industry_pe_source'])
+                detail['industry_pe_diagnostic']['evidence'] = announcement_detail.get('industry_pe_evidence')
+            else:
+                detail['industry_pe_source'] = detail.get('industry_pe_source') or 'stored_or_existing'
+                detail['industry_pe_diagnostic'] = {
+                    'status': 'value', 'source': detail['industry_pe_source'],
+                }
+        elif detail.get('industry') and not announcement_detail.get('industry'):
+            try:
+                industry_pe_map = _get_industry_pe_map()
+                detail['industry_pe'] = industry_pe_map.get(detail['industry'])
+                if detail['industry_pe'] is None and '仪器仪表' in detail['industry']:
+                    detail['industry_pe'] = industry_pe_map.get('电器仪表')
+            except ExternalCallGuardError as exc:
+                detail['industry_pe'] = None
+                recover_at = (
+                    exc.recover_at.isoformat()
+                    if hasattr(exc.recover_at, 'isoformat') else exc.recover_at
+                )
+                detail['industry_pe_diagnostic'] = {
+                    'status': 'source_unavailable', 'reason': exc.code,
+                    'source': exc.source, 'recover_at': recover_at,
+                }
+                detail.setdefault('issuance_stopped', {
+                    'code': exc.code, 'source': exc.source,
+                    'recover_at': recover_at,
+                })
             if detail.get('industry_pe') is not None:
                 detail['industry_pe_source'] = 'tushare_derived_industry_median'
                 detail['industry_pe_diagnostic'] = {
                     'status': 'value', 'source': 'tushare_derived_industry_median',
                 }
-            else:
+            elif not detail.get('industry_pe_diagnostic'):
                 detail['industry_pe_diagnostic'] = issuance_pe_diagnostic or {
                     'status': 'source_unavailable',
                     'reason': 'insufficient_or_unmatched_industry_sample',
                 }
-                if detail['industry_pe_diagnostic'].get('status') == 'document_not_found':
-                    detail['industry_pe_diagnostic']['reason'] = 'issuance_announcement_not_found_and_industry_sample_unmatched'
+        elif announcement_detail.get('industry'):
+            detail['industry_pe_diagnostic'] = {
+                'status': 'unavailable',
+                'reason': 'official_industry_classification_not_matched_to_tushare_pe_sample',
+                'industry_classification': announcement_detail.get('industry_classification'),
+                'industry_evidence': announcement_detail.get('industry_evidence'),
+            }
         else:
             detail['industry_pe_diagnostic'] = {
                 'status': 'source_unavailable', 'reason': 'industry_unavailable',
             }
     elif detail.get('industry_pe') is not None:
-        announcement_role = (
-            announcement_detail.get('ipo_announcement_role') or 'issuance_announcement'
-        )
-        detail['industry_pe_source'] = (
-            f"{announcement_detail.get('ipo_announcement_source')}_{announcement_role}"
-        )
+        detail['industry_pe_source'] = announcement_detail.get('industry_pe_source')
     if announcement_detail.get('issuer_unprofitable'):
         detail['issue_pe_status'] = 'loss'
+    if announcement_detail.get('ipo_issuance_candidate_scan', {}).get('status') == 'interrupted':
+        candidate_scan = announcement_detail['ipo_issuance_candidate_scan']
+        detail['issuance_stopped'] = {
+            'code': candidate_scan.get('guard_code') or 'candidate_scan_interrupted',
+            'source': candidate_scan.get('guard_source'),
+            'recover_at': candidate_scan.get('recover_at'),
+        }
+    for exc in (result_guard, industry_guard, main_business_guard):
+        if exc and not detail.get('issuance_stopped'):
+            detail['issuance_stopped'] = {
+                'code': exc.code, 'source': exc.source,
+                'recover_at': exc.recover_at.isoformat() if hasattr(exc.recover_at, 'isoformat') else exc.recover_at,
+            }
+    if main_business_guard:
+        detail['main_business_diagnostic'] = {
+            'status': 'source_unavailable', 'reason': main_business_guard.code,
+            'source': main_business_guard.source,
+            'recover_at': detail['issuance_stopped']['recover_at'],
+        }
     try:
         from ipo_lib_sector import analyze_business_exposure
         detail['business_exposure'] = analyze_business_exposure(

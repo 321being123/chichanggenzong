@@ -410,7 +410,12 @@
         { "file": "ipo-report/test_ipo_frontend.js", "pattern": "零占位 -> 待补全" }
       ],
       "owner": "A股 IPO",
-      "status": "verified"
+      "status": "production_verified",
+      "productionEvidence": {
+        "codeCommit": "b3f0fdc",
+        "deployedAt": "2026-09-29",
+        "verification": "部署后生产核对：online_lottery_rate 与 oversubscribe_multiple 零值各 0 条；301697 贝特利由数据源两位粗值 0.02 回填为 0.0164632；生产详情接口显示网上中签率 0.0164632%"
+      }
     }
   ]
 }

@@ -277,7 +277,18 @@
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "申万二级行业样本为空时仍显示二级行业并使用中性系数" }
       ],
       "owner": "A股 IPO",
-      "status": "verified"
+      "status": "production_verified",
+      "productionEvidence": {
+        "codeCommit": "32e873e",
+        "job": "ipo_calendar_refresh",
+        "slotId": "1181439",
+        "runId": 3366,
+        "businessDate": "2026-09-28",
+        "reportDate": "2026-09-29",
+        "sector": "801086.SI",
+        "sampleCount": 0,
+        "multiplier": 1.0
+      }
     },
     {
       "id": "IPO-INDUSTRY-L2-002",
@@ -287,7 +298,15 @@
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "申万二级行业路径入库且不覆盖官方行业事实" }
       ],
       "owner": "A股 IPO",
-      "status": "verified"
+      "status": "production_verified",
+      "productionEvidence": {
+        "codeCommit": "32e873e",
+        "job": "ipo_history_sync",
+        "slotId": "1181406",
+        "runId": 3365,
+        "targetCodes": ["301716"],
+        "externalCalls": { "szse": 2, "tushare": 1 }
+      }
     }
   ]
 }

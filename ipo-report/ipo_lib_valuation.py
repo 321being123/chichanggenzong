@@ -1077,9 +1077,10 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     # 尝试 XGBoost 预测：模型缺失、加载失败或输出非有限数值时返回 None，才走线性兜底。
     # 重算同一模型与同一输入不会改变非正输出，因此不再重试，也不把非正结果当故障。
     xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost, prediction_stage)
-    # 注意：预测输出截断（负值截为 0）尚未整改，模型返回的 0 还无法与有效零收益区分；
-    # 在输出截断和训练标签一并整改前，暂时保留 0 触发兜底，避免把截断值直接当最终预测。
-    if xgb_result is not None and xgb_result[0] > 0:
+    # 负输出（破发预测）与 0 同样进入展示链路：输出截断已整改（symlog 保留符号），
+    # 非有限值已在上游按模型故障返回 None；此处若仍用 >0 把非正结果挡进线性兜底，
+    # 破发预测永远到不了摘要与区间，负收益展示闭环就是断的。
+    if xgb_result is not None:
         estimated, detail_parts, trained_at = (xgb_result[0], xgb_result[1], xgb_result[2] if len(xgb_result) > 2 else None)
         imputed_fields = xgb_result[3] if len(xgb_result) > 3 else []
         model_calculation = xgb_result[4] if len(xgb_result) > 4 and isinstance(xgb_result[4], dict) else {}

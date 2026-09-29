@@ -1370,6 +1370,22 @@ try:
     check("预测区间下限可以为负且发行阶段按规则放宽",
           _neg_low == -120 and _neg_high == 80 and _neg_low_iss == -135 and _neg_high_iss == 95,
           "listing=(%s,%s) issuance=(%s,%s)" % (_neg_low, _neg_high, _neg_low_iss, _neg_high_iss))
+    _neg_e2e_saved = _val._xgb_predict_listing
+    _val._xgb_predict_listing = lambda *a, **k: (-20, ["模型原始-20%"], "test", [], {})
+    try:
+        _neg_e2e = _val.get_listing_analysis(
+            "stock", 10, None, None,
+            stock_detail={"stock_code": "300001", "stock_name": "负例", "issue_price": 10})
+    finally:
+        _val._xgb_predict_listing = _neg_e2e_saved
+    check("模型输出负预测时端到端贯通而不是被挡进线性兜底",
+          isinstance(_neg_e2e.get("predicted_return"), int)
+          and _neg_e2e.get("predicted_return") < 0
+          and (_neg_e2e.get("prediction_range_low") or 0) < 0
+          and "亏损" in (_neg_e2e.get("summary") or ""),
+          "predicted_return=%r summary=%r range_low=%r" % (
+              _neg_e2e.get("predicted_return"), _neg_e2e.get("summary"),
+              _neg_e2e.get("prediction_range_low")))
     check("秩相关对并列评分取平均秩且常数评分不可评估",
           _bt.spearman([10, 10, 10], [1, 2, 3]) is None
           and abs(_bt.spearman([1, 2, 2, 4], [1, 2, 3, 4]) - 0.9486833) < 1e-6,

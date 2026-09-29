@@ -492,7 +492,8 @@
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "负预测按50%档位向下取整且正数行为不变" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "摘要如实显示破发与单签亏损而不是约0%" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间下限可以为负且发行阶段按规则放宽" }
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间下限可以为负且发行阶段按规则放宽" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "模型输出负预测时端到端贯通而不是被挡进线性兜底" }
       ],
       "owner": "A股 IPO",
       "status": "verified"

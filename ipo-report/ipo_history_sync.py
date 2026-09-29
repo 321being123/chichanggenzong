@@ -845,15 +845,21 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             "stopped": stopped}
 
 
-def update_quality(cur, today, include_enrichment=True):
-    cur.execute("""
+def update_quality(cur, today, include_enrichment=True, only_codes=None):
+    query = """
       SELECT security_code,security_name,ipo_date,listing_date,issue_price,total_shares,online_shares,
              online_lottery_rate,oversubscribe_multiple,subscribe_upper_limit,fund_raised,circulation_mv,
              issue_pe,issue_pe_status,industry,industry_pe,main_business,business_exposure,ld_close_change,
              COALESCE(data_quality_status,'{}'::jsonb)
         FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
-    """)
+    """
+    params = ()
+    if only_codes is not None:
+        target_codes = sorted({str(code or '').split('.')[0] for code in only_codes if code})
+        query += " AND security_code=ANY(%s::text[])"
+        params = (target_codes,)
+    cur.execute(query, params)
     missing_records = 0
     missing_fields = 0
     for row in cur.fetchall():
@@ -1276,7 +1282,7 @@ def main():
                     cur, date.fromisoformat(args.today) if args.today else _today_shanghai(),
                     retry_same_day=True, priority_codes=target_codes, only_codes=target_codes,
                 )
-                quality = update_quality(cur, date.fromisoformat(args.today) if args.today else _today_shanghai())
+                quality = update_quality(cur, date.fromisoformat(args.today) if args.today else _today_shanghai(), only_codes=target_codes)
             connection.commit()
             print(json.dumps({"ok": True, "mode": "targeted", "codes": target_codes, "result": result, "quality": quality}, ensure_ascii=False, default=str))
             return

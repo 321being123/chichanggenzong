@@ -14,12 +14,29 @@ from ipo_lib_fetch import _extract_main_business
 PASS, FAIL, ERR = [], [], []
 
 
+class QualityCursorSpy:
+    def execute(self, query, params=()):
+        self.query = query
+        self.params = params
+
+    def fetchall(self):
+        return []
+
+
 def check(name, condition, detail=""):
     (PASS if condition else FAIL).append(name)
     print("  [%s] %s %s" % ("PASS" if condition else "FAIL", name, detail))
 
 
 try:
+    targeted_quality_cursor = QualityCursorSpy()
+    targeted_codes = ["920196", "301718", "920162"]
+    sync.update_quality(targeted_quality_cursor, date(2026, 9, 29), only_codes=targeted_codes)
+    check("定向补全质量刷新只查询目标证券",
+          "security_code=ANY(%s::text[])" in targeted_quality_cursor.query
+          and targeted_quality_cursor.params == (sorted(targeted_codes),),
+          repr(targeted_quality_cursor.params))
+
     loss = sync.normalize_share({
         "ts_code": "999999.SH", "name": "测试新股", "ipo_date": "20260801",
         "issue_date": "20260811", "amount": 1000, "market_amount": 500,

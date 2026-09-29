@@ -212,6 +212,7 @@
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "只缺行业时独立请求且分类证据落库" },
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "值未变化时仍幂等保留本轮行业证据" },
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "Guard中断前的行业值和证据先写入并保留恢复点" },
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "定向补全质量刷新只查询目标证券" },
         { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "空候选仍保留已知资料缺口" }
       ],
       "owner": "A股 IPO",

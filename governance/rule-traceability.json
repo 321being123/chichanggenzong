@@ -416,6 +416,39 @@
         "deployedAt": "2026-09-29",
         "verification": "部署后生产核对：online_lottery_rate 与 oversubscribe_multiple 零值各 0 条；301697 贝特利由数据源两位粗值 0.02 回填为 0.0164632；生产详情接口显示网上中签率 0.0164632%"
       }
+    },
+    {
+      "id": "IPO-TARGET-TRANSFORM-001",
+      "title": "训练目标变换必须保留破发（负收益）的符号与量级，不得用 max(y,0) 截断",
+      "implementation": { "file": "ipo-report/ipo_lib_train.py", "symbol": "symlog_return" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练目标保留破发不再截断负收益" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "推理端支持奇对称对数反变换且不做输出截断" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-MODEL-TRAINING-SCOPE-001",
+      "title": "上线模型必须用全部样本训练；评估须由独立模型承担且补值只用训练段中位数",
+      "implementation": { "file": "ipo-report/train_xgb_model.py", "symbol": "eval_model" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "上线模型用全部样本训练而非只用训练段" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "评估补值只用训练段中位数" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-BACKTEST-001",
+      "title": "A 股打新预测须有时间滚动样本外回测，且预测区间半宽由滚动误差分位数定标而非经验系数",
+      "implementation": { "file": "ipo-report/backtest_ipo_prediction.py", "symbol": "train_on_window" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练与回测共用同一套特征工程与目标变换" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间半宽由滚动样本外误差分位数定标" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

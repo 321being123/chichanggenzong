@@ -29,6 +29,7 @@
 - **补值契约**：训练产物显式声明 `native_missing_features`（`issue_price`、`fund_raised`、`online_shares`、`total_shares`、`sub_limit`）与 `fill_sources`；推理端只按训练特征名映射真实中位数，缺失即保持缺失并标注“（缺失）”，不再用 `20/25/30/0.03/5/2000` 等常数代 NaN；零值须分字段判断：中签率的 0 是“尚未公布”占位、按缺失走补位，发行 PE 的 0 是亏损股合法值、原样保留；模型输入全部经有限值包装，可安全序列化为 JSON。
 - **市场级与个股级分量分开记录**：建议明细与预测上下文新增 `market_context`（scope=market）与 `sector_context`（scope=instrument），日报文案同步区分“市场温度修正（市场整体）”与“赛道修正后（个股赛道）”。
 - **中签率与超额认购倍数占位 0 全链路按缺失处理**：数据源（Tushare `new_share.ballot`、东财详情）在尚未公布时返回 `0` 而非空值；`enrich_stock_missing_details` 原先用 `not in (None, "")` 判缺失、漏掉数字 `0`，写入侧 `COALESCE(0, online_lottery_rate)` 会把占位 0 当成结果写回，而 `fetch_stock_detail` 自库读取又使该值长期自我维持。现改用同文件已有的 `_positive()` 判定，补全候选判定与 `oversubscribe_multiple`（超额认购倍数 0 同样不可能）同步收敛；推理端 `get_val(..., positive_only=True)`、`server/routes/ipo.js` 字段状态与 `public/js/ipo.js` 中签率单元格同步把 0 视为缺失/待补全。本地库 301697 贝特利已按巨潮《发行结果公告》回填真值（0.0164631996%，列类型 `real` 落库 0.0164632）；全库 454 条中该字段为 0 的仅此 1 条。
+- **模型训练与回测批次**：目标变换由 `log1p(max(y,0))` 改为奇对称对数 `sign(y)·log1p(|y|)` 并删除输出截断（对正收益样本数学等价，不改变当前预测值）；上线模型由"只用前 80% 训练"改为全量样本重训，评估由独立 `eval_model` 承担；评估补值改用训练段中位数，消除测试段信息回灌；区间半宽由经验系数改为滚动样本外 80 分位（140pp→197pp，回测覆盖率 69.6%→80.4%）。新增 `ipo_lib_train.py`（训练/回测共用特征工程）与 `backtest_ipo_prediction.py`（时间滚动样本外回测）。回测基线：MAE 133.4pp、平均偏差 −85.7pp（系统性低估）、破发不可评估。
 
 验证：`ipo-report/test_ipo_unit.py` 138 项通过、0 失败；其余 IPO Python 测试（集成 11、历史同步 27、单元修复、前端）通过；`node scripts/generate-job-matrix.js --check` 通过；规则追溯新增 5 条（`IPO-PREDICTION-MISSING-001/002`、`IPO-MARKET-TEMP-001`、`IPO-BOARD-IDENTITY-002`、`IPO-ADVICE-SCORE-001`）。
 

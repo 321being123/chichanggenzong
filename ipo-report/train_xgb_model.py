@@ -1,63 +1,42 @@
 """
 训练XGBoost新股首日涨幅预测模型（无pandas依赖）
-数据来源：ipo_history.db
+数据来源：PostgreSQL ipo_history（SQLite 仅作旧环境回退）
 模型输出：IPO_MODEL_DIR/ipo_xgb_model.json
+
+特征工程、目标变换与超参见 ipo_lib_train.py，与时间滚动回测（backtest_ipo_prediction.py）共用，
+避免两处各写一套口径导致回测结论与实际训练不符。
 """
-import sqlite3
 import os
 import json
 import tempfile
 import warnings
 import numpy as np
 from datetime import datetime
-from _common import _load_env
-import db_pg
-from model_runtime import get_model_dir
 
-_load_env()
+from model_runtime import get_model_dir
+from ipo_lib_train import (
+    FITTED_MEDIAN_FIELDS,
+    NATIVE_MISSING_FIELDS,
+    FEATURE_NAMES,
+    XGB_PARAMS,
+    NUM_BOOST_ROUND,
+    symlog_return,
+    inv_symlog_return,
+    build_feature_matrix,
+    load_training_rows,
+    rows_to_arrays,
+)
+
 warnings.filterwarnings("ignore")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, "ipo_history.db")
 MODEL_DIR = get_model_dir()
 MODEL_PATH = os.path.join(MODEL_DIR, "ipo_xgb_model.json")
 FEATURES_PATH = os.path.join(MODEL_DIR, "ipo_xgb_features.json")
 os.makedirs(MODEL_DIR, exist_ok=True)
 
+feature_names = FEATURE_NAMES
+
 # ── 1. 加载数据 ──
-# 生产历史数据已迁移至 PostgreSQL。SQLite 仅保留为旧环境兼容回退，
-# 不能因空库而让模型长期无法重训。
-TRAINING_SQL = """
-    SELECT
-        security_code, security_name, board_key, ld_close_change,
-        issue_price, issue_pe, industry_pe, fund_raised,
-        online_shares, total_shares, online_lottery_rate,
-        oversubscribe_multiple, circulation_mv, subscribe_upper_limit,
-        pe_ratio
-    FROM ipo_history
-    WHERE board_key != '北交所'
-      AND ld_close_change IS NOT NULL
-    ORDER BY listing_date
-"""
-
-def load_training_rows():
-    try:
-        conn = db_pg.connect()
-        rows = conn.execute(TRAINING_SQL).fetchall()
-        conn.close()
-        if rows:
-            print(f"数据源：PostgreSQL（{len(rows)} 条）")
-            return rows
-    except Exception as error:
-        print(f"PostgreSQL 历史数据读取失败，尝试旧 SQLite：{error}")
-
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        return conn.execute(TRAINING_SQL).fetchall()
-    finally:
-        conn.close()
-
 rows = load_training_rows()
 if not rows:
     raise RuntimeError("没有可用于训练的已上市新股历史数据")
@@ -65,93 +44,29 @@ if not rows:
 print(f"加载 {len(rows)} 只新股")
 
 # ── 2. 特征工程 ──
-names = ['code', 'name', 'board', 'gain',
-         'issue_price', 'issue_pe', 'industry_pe', 'fund_raised',
-         'online_shares', 'total_shares', 'lottery_rate',
-         'oversub_multiple', 'circ_mv', 'sub_limit', 'pe_ratio']
+raw_fields, codes, names_list, gain = rows_to_arrays(rows)
 
-data = {k: [] for k in names}
-for r in rows:
-    for i, k in enumerate(names):
-        data[k].append(r[i])
+# 全量中位数：上线模型用全部样本训练，补位值即取自全部样本。
+medians = {field: float(np.nanmedian(raw_fields[field])) for field in FITTED_MEDIAN_FIELDS}
+fill_sources = {field: "median_of_existing_samples" for field in FITTED_MEDIAN_FIELDS}
+fill_sources.update({field: "native_missing" for field in NATIVE_MISSING_FIELDS})
 
-def to_float(arr):
-    return [float(x) if x is not None else np.nan for x in arr]
-
-gain = np.array(to_float(data['gain']))
-issue_price = np.array(to_float(data['issue_price']))
-issue_pe = np.array(to_float(data['issue_pe']))
-industry_pe = np.array(to_float(data['industry_pe']))
-fund_raised = np.array(to_float(data['fund_raised']))
-online_shares = np.array(to_float(data['online_shares']))
-total_shares = np.array(to_float(data['total_shares']))
-lottery_rate = np.array(to_float(data['lottery_rate']))
-oversub = np.array(to_float(data['oversub_multiple']))
-circ_mv = np.array(to_float(data['circ_mv']))
-sub_limit = np.array(to_float(data['sub_limit']))
-pe_ratio = np.array(to_float(data['pe_ratio']))
-codes = data['code']
-names_list = data['name']
-
-# 缺失值：用中位数填充
-def fill_median(arr):
-    m = np.nanmedian(arr)
-    arr = np.nan_to_num(arr, nan=m)
-    return arr, m
-
-# 缺值口径必须分两类，产物里也要分开标注，不能都写成“中位数”：
-#   1) FITTED_MEDIAN_FIELDS：有有效样本，用中位数填充，推理端可直接复用该补位值；
-#   2) NATIVE_MISSING_FIELDS：历史数据长期缺失，保持 NaN 由 XGBoost 按原生缺失学习，
-#      推理端必须保持同样的缺失状态，产物里的 0 只是占位，不是补位值。
-NATIVE_MISSING_FIELDS = ("issue_price", "fund_raised", "online_shares", "total_shares", "sub_limit")
-FITTED_MEDIAN_FIELDS = ("issue_pe", "industry_pe", "lottery_rate", "oversub_multiple", "circ_mv", "pe_ratio")
-
-medians = {}
-fill_sources = {}
-issue_pe, medians['issue_pe'] = fill_median(issue_pe)
-industry_pe, medians['industry_pe'] = fill_median(industry_pe)
-lottery_rate, medians['lottery_rate'] = fill_median(lottery_rate)
-oversub, medians['oversub_multiple'] = fill_median(oversub)
-circ_mv, medians['circ_mv'] = fill_median(circ_mv)
-pe_ratio, medians['pe_ratio'] = fill_median(pe_ratio)
-for _field in FITTED_MEDIAN_FIELDS:
-    fill_sources[_field] = "median_of_existing_samples"
-for _field in NATIVE_MISSING_FIELDS:
-    fill_sources[_field] = "native_missing"
-
-# 衍生特征
-circ_mv_log = np.log1p(circ_mv)
-fund_log = np.log1p(fund_raised)
-price_times_pe = issue_price * issue_pe / 100
-lottery_inv = 1 / (lottery_rate + 0.001)
-circ_per_lot = circ_mv / (lottery_rate + 0.001)
-pe_squared = issue_pe ** 2 / 1000
-
-# 特征矩阵
-all_features = np.column_stack([
-    issue_price, issue_pe, industry_pe, fund_raised,
-    online_shares, total_shares, lottery_rate,
-    oversub, circ_mv, sub_limit, pe_ratio,
-    circ_mv_log, fund_log, price_times_pe,
-        lottery_inv, circ_per_lot, pe_squared
-])
-feature_names = [
-    'issue_price', 'issue_pe', 'industry_pe', 'fund_raised',
-    'online_shares', 'total_shares', 'lottery_rate',
-    'oversub_multiple', 'circ_mv', 'sub_limit', 'pe_ratio',
-    'circ_mv_log', 'fund_log', 'price_times_pe',
-    'lottery_inv', 'circ_per_lot', 'pe_squared'
-]
-
-# 训练/测试分割（时间顺序）
+# 时间顺序切分：前 80% 作训练段，后 20% 作样本外测试段
 n = len(rows)
 train_size = int(n * 0.8)
-X_train = all_features[:train_size]
-X_test = all_features[train_size:]
 y_train = gain[:train_size]
 y_test = gain[train_size:]
-y_train_target = np.log1p(np.maximum(y_train, 0))
-y_test_target = np.log1p(np.maximum(y_test, 0))
+
+# 评估专用特征：训练段与测试段都用**训练段**中位数补值，
+# 避免测试段样本进入补值统计（原先先补值再切分，测试集信息会回灌到训练特征）。
+eval_medians = {field: float(np.nanmedian(raw_fields[field][:train_size])) for field in FITTED_MEDIAN_FIELDS}
+eval_features = build_feature_matrix(raw_fields, eval_medians)
+X_train = eval_features[:train_size]
+X_test = eval_features[train_size:]
+
+# 目标变换：奇对称对数，保留破发（负收益）的符号与量级
+y_train_target = symlog_return(y_train)
+y_test_target = symlog_return(y_test)
 
 print(f"训练集: {train_size} 只, 测试集: {n - train_size} 只")
 print(f"特征数: {len(feature_names)}")
@@ -161,25 +76,59 @@ import xgboost as xgb
 
 dtrain = xgb.DMatrix(X_train, label=y_train_target, feature_names=feature_names)
 dtest = xgb.DMatrix(X_test, label=y_test_target, feature_names=feature_names)
-model = xgb.train({
-    "objective": "reg:squarederror", "max_depth": 3, "eta": 0.05,
-    "subsample": 0.7, "colsample_bytree": 0.7, "alpha": 2.0,
-    "lambda": 3.0, "min_child_weight": 5, "seed": 42, "verbosity": 0,
-}, dtrain, num_boost_round=300)
+
+# 评估模型：只用训练段训练，得到的指标才是样本外指标
+eval_model = xgb.train(XGB_PARAMS, dtrain, num_boost_round=NUM_BOOST_ROUND)
+
+# 上线模型：用**全部**样本重训。此前上线模型与评估模型是同一个（只用训练段 80% 训练），
+# 最新的 20% 样本从未参与训练；评估职责现在由 eval_model 承担，两者不再混用。
+all_features = build_feature_matrix(raw_fields, medians)
+dfull = xgb.DMatrix(all_features, label=symlog_return(gain), feature_names=feature_names)
+model = xgb.train(XGB_PARAMS, dfull, num_boost_round=NUM_BOOST_ROUND)
 
 # 获取最佳迭代次数
 best_iter = model.best_iteration if hasattr(model, 'best_iteration') and model.best_iteration is not None else None
 if best_iter:
     print(f"最佳迭代次数: {best_iter}")
 
-# ── 4. 评估 ──
-y_pred_train = np.expm1(model.predict(dtrain))
-y_pred_test = np.expm1(model.predict(dtest))
+# ── 4. 评估（均为 eval_model 的样本外表现）──
+y_pred_train = inv_symlog_return(eval_model.predict(dtrain))
+y_pred_test = inv_symlog_return(eval_model.predict(dtest))
 
 train_mae = np.mean(np.abs(y_train - y_pred_train))
 test_mae = np.mean(np.abs(y_test - y_pred_test))
 train_mape = np.mean(np.abs((y_train - y_pred_train) / (y_train + 1))) * 100
 test_mape = np.mean(np.abs((y_test - y_pred_test) / (y_test + 1))) * 100
+
+# 预测区间半宽：取滚动样本外绝对误差的 80 分位数，替代原先的经验系数 test_mae*0.6。
+# 实证：旧口径给出 140pp 半宽时，时间滚动回测的名义 80% 区间实际只覆盖 69.6%。
+# 单次 80/20 切分只有 37 个样本外点，分位数估计噪声大；
+# 滚动范围必须与真实使用场景一致（每个测试点只用它之前的样本训练），所以覆盖到全量样本，
+# 而不是只覆盖训练段——只覆盖训练段会因窗口偏小把半宽系统性压低（实测 149 vs 195）。
+# 覆盖率由 backtest_ipo_prediction.py 独立复核。
+ROLLING_STEP = 5
+rolling_start = max(80, int(n * 0.4))
+rolling_errors = []
+rolling_model = None
+rolling_medians = None
+for index in range(rolling_start, n):
+    if rolling_model is None or (index - rolling_start) % ROLLING_STEP == 0:
+        window_raw = {key: value[:index] for key, value in raw_fields.items()}
+        rolling_medians = {field: float(np.nanmedian(window_raw[field])) for field in FITTED_MEDIAN_FIELDS}
+        window_features = build_feature_matrix(window_raw, rolling_medians)
+        rolling_model = xgb.train(
+            XGB_PARAMS,
+            xgb.DMatrix(window_features, label=symlog_return(gain[:index]), feature_names=feature_names),
+            num_boost_round=NUM_BOOST_ROUND,
+        )
+    one_raw = {key: value[index:index + 1] for key, value in raw_fields.items()}
+    one_pred = float(inv_symlog_return(rolling_model.predict(
+        xgb.DMatrix(build_feature_matrix(one_raw, rolling_medians), feature_names=feature_names)
+    ))[0])
+    rolling_errors.append(abs(one_pred - float(gain[index])))
+
+interval_half_width = float(np.quantile(rolling_errors, 0.8)) if rolling_errors else 0.0
+print(f"区间半宽（滚动样本外 80 分位，{len(rolling_errors)} 个测试点）: {interval_half_width:.0f}pp")
 
 print(f"\n{'='*50}")
 print(f"训练集 MAE: {train_mae:.0f}pp")
@@ -226,7 +175,15 @@ info = {
     "test_mae": float(test_mae),
     "train_mape": float(train_mape),
     "test_mape": float(test_mape),
-    "target_transform": "log1p_nonnegative_return",
+    # 预测区间半宽（pp）：样本外绝对误差的 80 分位数，推理端优先使用该值
+    "interval_half_width": interval_half_width,
+    # 上线模型用全部样本训练；评估模型只用前 80% 训练，指标为样本外口径
+    "model_trained_on": "all_samples",
+    "eval_train_size": train_size,
+    "eval_holdout_size": n - train_size,
+    # 目标变换：symlog 保留破发（负收益）符号与量级；
+    # 旧的 log1p_nonnegative_return 会把破发截断成 0，产物不再产出该口径
+    "target_transform": "symlog_return",
     "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 }
 features_fd, features_tmp = tempfile.mkstemp(prefix="ipo_xgb_features_", suffix=".json", dir=MODEL_DIR)

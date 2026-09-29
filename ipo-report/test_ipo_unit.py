@@ -53,7 +53,7 @@ def _ensure_test_model():
                 "issue_price", "fund_raised", "online_shares", "total_shares", "sub_limit",
             ],
             "trained_at": "test",
-            "target_transform": "",
+            "target_transform": "symlog_return",
         }, handle)
 
 
@@ -1004,6 +1004,38 @@ try:
           "发行价（元/股）=20" in model_feature_text
           and "PE比值（无单位：发行PE÷行业PE）=0.8" in model_feature_text
           and "网上发行量（万股）=1（补位）" in model_feature_text)
+    # 训练脚本是顶层即执行的独立 CLI，无法 import 做数值测试，改用源码级断言锁定口径。
+    _ipo_dir = os.path.dirname(os.path.abspath(__file__))
+    _train_src = open(os.path.join(_ipo_dir, "train_xgb_model.py"), encoding="utf-8").read()
+    _val_src = open(os.path.join(_ipo_dir, "ipo_lib_valuation.py"), encoding="utf-8").read()
+    _lib_train_src = open(os.path.join(_ipo_dir, "ipo_lib_train.py"), encoding="utf-8").read()
+    check("训练目标保留破发不再截断负收益",
+          "np.maximum(y_train, 0)" not in _train_src
+          and "np.maximum(y_test, 0)" not in _train_src
+          and "symlog_return(y_train)" in _train_src,
+          "目标变换应改为奇对称对数，否则模型永远学不到破发")
+    check("训练与回测共用同一套特征工程与目标变换",
+          "def symlog_return" in _lib_train_src
+          and "def build_feature_matrix" in _lib_train_src
+          and "from ipo_lib_train import" in _train_src,
+          "两处各写一套会让回测结论不代表实际训练流程")
+    check("上线模型用全部样本训练而非只用训练段",
+          "dfull" in _train_src
+          and '"model_trained_on": "all_samples"' in _train_src
+          and "eval_model" in _train_src,
+          "评估模型与上线模型职责必须分离，避免最新样本不参与训练")
+    check("评估补值只用训练段中位数",
+          "eval_medians" in _train_src and "[:train_size]" in _train_src,
+          "测试段样本不得进入补值统计，否则样本外指标虚高")
+    check("推理端支持奇对称对数反变换且不做输出截断",
+          "symlog_return" in _val_src
+          and "estimated = int(round(model_output))" in _val_src,
+          "破发是需要预警的真实输出，截断会把它掩盖成 0")
+    check("预测区间半宽由滚动样本外误差分位数定标",
+          "interval_half_width" in _train_src
+          and "np.quantile(rolling_errors" in _train_src
+          and "interval_half_width" in _val_src,
+          "应用数据驱动半宽替代经验系数，否则名义 80% 区间实际只覆盖约 70%")
     issuance_prediction = _val.get_listing_analysis(
         "stock", 20, 30, 35,
         stock_detail={

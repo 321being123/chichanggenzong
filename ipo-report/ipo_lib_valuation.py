@@ -803,14 +803,20 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
         ]])
 
         model_output = float(_XGB_MODEL.predict(xgb.DMatrix(features, feature_names=_XGB_FEATURES))[0])
-        if (_XGB_FEATURE_INFO or {}).get("target_transform") == "log1p_nonnegative_return":
+        _target_transform = (_XGB_FEATURE_INFO or {}).get("target_transform")
+        if _target_transform == "symlog_return":
+            # 奇对称对数的逆变换：保留破发（负收益）的符号与量级
+            model_output = float(np.sign(model_output) * np.expm1(abs(model_output)))
+        elif _target_transform == "log1p_nonnegative_return":
+            # 旧产物口径；会把破发截断成 0，仅为兼容历史模型文件保留
             model_output = float(np.expm1(model_output))
         if not np.isfinite(model_output):
             # 只有非有限数值才按模型故障处理；有效的零收益、负收益是正常输出
             print("[XGBoost] 模型输出非有限数值，按模型故障处理")
             return None
         raw_model_return = int(round(model_output))
-        estimated = int(round(max(model_output, 0)))
+        # 不再做 max(model_output, 0) 截断：破发是需要预警的真实输出，截断会把它掩盖成 0
+        estimated = int(round(model_output))
 
         def _finite_or_none(value):
             """模型输入明细必须是可序列化数值；缺失用 None（JSON null）表示。"""
@@ -925,13 +931,23 @@ def _format_listing_summary(estimated, stock_detail, temp):
 
 
 def _prediction_range(estimated, prediction_stage, imputed_fields=None):
-    """根据模型样本外误差给出研究区间；结果未公布时自动扩大不确定性。"""
+    """根据模型样本外误差给出研究区间；结果未公布时自动扩大不确定性。
+
+    半宽优先取产物里的 interval_half_width（样本外绝对误差的 80 分位数）；
+    旧产物没有该字段时回退到原经验系数，避免历史模型文件失去区间。
+    """
     info = _XGB_FEATURE_INFO or {}
-    try:
-        test_mae = float(info.get("test_mae"))
-    except (TypeError, ValueError):
-        test_mae = 0.0
-    width = max(60.0, min(250.0, test_mae * 0.6 if test_mae > 0 else 90.0))
+    width = None
+    half = info.get("interval_half_width")
+    if isinstance(half, (int, float)) and not isinstance(half, bool) and half > 0:
+        width = float(half)
+    if width is None:
+        try:
+            test_mae = float(info.get("test_mae"))
+        except (TypeError, ValueError):
+            test_mae = 0.0
+        width = test_mae * 0.6 if test_mae > 0 else 90.0
+    width = max(60.0, min(250.0, width))
     if prediction_stage == "issuance" and imputed_fields:
         width *= 1.15
     low = max(0, int(round(float(estimated) - width)))

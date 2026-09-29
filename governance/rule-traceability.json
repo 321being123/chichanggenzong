@@ -337,6 +337,80 @@
         "targetCodes": ["301716"],
         "externalCalls": { "szse": 2, "tushare": 1 }
       }
+    },
+    {
+      "id": "IPO-PREDICTION-MISSING-001",
+      "title": "预测输入缺失必须按训练原生缺失与拟合补位分开处理，不得用硬编码常数代 NaN，也不得把零值一律判为缺失",
+      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "_build_xgb_fill_values" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "产物补位值按训练特征名建立映射" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "旧产物中的零占位不被当作补位值" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "中签率零占位按缺失处理并统一走补位" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "亏损股发行PE零值属合法取值不被判为缺失" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "模型输入明细可安全序列化为JSON" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-PREDICTION-MISSING-002",
+      "title": "训练原生缺失字段在推理端必须保持缺失且状态标注为缺失",
+      "implementation": { "file": "ipo-report/train_xgb_model.py", "symbol": "NATIVE_MISSING_FIELDS" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练未填充字段在推理端保持缺失且不写成 0" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "模型输入明细标注缺失字段" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-MARKET-TEMP-001",
+      "title": "市场温度样本不足时必须标记未知，不得默认热市或输出零破发申购结论",
+      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "detect_market_temperature" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "温度未知时不给零破发结论也不按热市加分" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "样本为空时热市零破发不触发顶格覆盖" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "零破发理由带统计窗口与样本数且不做中签即赚承诺" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-BOARD-IDENTITY-002",
+      "title": "板块识别使用唯一口径，无法识别时不得猜测板块或套用其他板块基准与模型",
+      "implementation": { "file": "ipo-report/_classify.py", "symbol": "board_key_from_code" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块识别覆盖各板块前缀且未知代码不猜板块" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "未知代码板块基准返回未知而非默认沪市主板" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "北交所不套用非北交所模型" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-ADVICE-SCORE-001",
+      "title": "申购建议的赛道分量以中性系数×1.00 为基准，冷赛道扣分、热赛道加分",
+      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "sector_score_multiplier" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "建议分赛道分量以中性×1.00为基准且冷赛道扣分热赛道加分" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "建议明细区分市场级温度与个股级赛道分量" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-LOTTERY-RATE-ZERO-001",
+      "title": "网上中签率与超额认购倍数的 0 只代表尚未公布的占位，必须按缺失处理，不得当作实测值写入、推理或展示",
+      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "_positive" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "中签率与超额认购倍数零占位不被写回库" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "中签率零占位按缺失处理并统一走补位" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "超额认购倍数零占位按缺失处理并统一走补位" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "亏损股发行PE零值属合法取值不被判为缺失" },
+        { "file": "ipo-report/test_ipo_frontend.js", "pattern": "零占位 -> 待补全" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

@@ -27,6 +27,9 @@ def get_temp_pe_penalty(issue_pe, industry_pe):
     temp = _MARKET_TEMP["level"]
     if not issue_pe or not industry_pe or industry_pe <= 0:
         return 1.0
+    if temp not in ("热市", "常温", "冷市"):
+        # 市场温度未知（样本不足）：不做 PE 奖惩，也不能套用热市规则
+        return 1.0
 
     pe_ratio = issue_pe / industry_pe
 
@@ -68,14 +71,26 @@ def get_temp_temp_score_penalty(score):
 def get_temp_listing_multiplier():
     """
     根据市场温度返回上市预测的涨幅衰减系数
+
+    温度未知（样本不足）时返回 1.0：既不放大也不衰减，
+    并在预测上下文中标记为“未做温度修正”，不能当作已确认热市。
     """
     temp = _MARKET_TEMP["level"]
     if temp == "热市":
         return 1.0
     elif temp == "常温":
         return 0.75
-    else:  # 冷市
+    elif temp == "冷市":
         return 0.4
+    return 1.0
+
+def _zero_break_environment_text():
+    """零破发环境的口径化表述：带统计窗口与样本数，不做“中签即赚”的承诺。"""
+    total = int(_MARKET_TEMP.get("sample_count") or 0)
+    window = _MARKET_TEMP.get("window_days")
+    if _MARKET_TEMP.get("break_rate") == 0 and total > 0:
+        return f"近{window}天{total}只新股未见破发（历史统计，不代表下一只不会破发）"
+    return "历史未见破发（样本或区间信息不足，不代表不会破发）"
 
 def _get_market_premium_curve(bonds_data):
     """
@@ -139,7 +154,10 @@ def _calc_xgb_boost(stock_detail, xgb_raw):
 
     code = stock_detail.get("stock_code", "")
     board_key = _get_board_key_from_code(code)
-    board_base = BOARD_BASE.get(board_key, 200)
+    if board_key not in BOARD_BASE:
+        # 板块无法识别：不做板块基准校准，避免用猜测的板块基准放大预测
+        return 1.0
+    board_base = BOARD_BASE[board_key]
 
     # 目标：让XGBoost预测值向板块基准收敛
     # 如果XGBoost明显低于板块基准（在牛市常见），则向上修正
@@ -153,7 +171,7 @@ def _calc_xgb_boost(stock_detail, xgb_raw):
     elif temp == "常温":
         boost = 1.0 + (ratio - 1.0) * 0.3
     else:
-        # 冷市：不向上修正，反而保守
+        # 冷市或温度未知：不向上修正，保持保守
         boost = 1.0
 
     # 限制范围 0.5x ~ 3.0x
@@ -388,7 +406,7 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     # 判断板块
     board_base = estimate_board_base(stock_code)
 
-    temp = _MARKET_TEMP.get("level", "热市")
+    temp = _MARKET_TEMP.get("level", "未知")
     score_trace = [{
         "step": "板块基准",
         "before": None,
@@ -414,20 +432,29 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
 
     # 综合评分（用于判断建议等级）
     score = board_base  # 板块基准
+    sector_score_multiplier = 1.0
 
     if sector_label:
-        # 赛道加成
-        sector_score_multiplier = 1 + sector_boost * 0.3
+        # 赛道评分按“相对中性 ×1.00 的变化”给分：中性不得分、冷赛道扣分。
+        # 权重 0.3 沿用现行值，仍须样本外回测确认，不在本次引入新参数。
+        sector_score_multiplier = max(0.0, 1 + 0.3 * (float(sector_boost) - 1.0))
         apply_score("赛道评分修正", sector_score_multiplier,
-                    f"{sector_label}，历史热度系数×{sector_boost:.3f}")
+                    f"{sector_label}，历史热度系数×{sector_boost:.3f}（相对中性×1.00）")
 
     # 市场温度 + PE修正
     temp_pe = get_temp_pe_penalty(issue_pe, industry_pe)
     apply_score("发行PE/行业PE修正", temp_pe,
                 f"发行PE={issue_pe if issue_pe is not None else '暂无'}，行业PE={industry_pe if industry_pe is not None else '暂无'}")
 
-    # 市场温度整体衰减
-    temp_score_multiplier = 1.0 if temp == "热市" else (0.85 if temp == "常温" else 0.5)
+    # 市场温度整体衰减：温度未知（样本不足）时不做温度增减，也不能套用热市规则
+    if temp == "热市":
+        temp_score_multiplier = 1.0
+    elif temp == "常温":
+        temp_score_multiplier = 0.85
+    elif temp == "冷市":
+        temp_score_multiplier = 0.5
+    else:
+        temp_score_multiplier = 1.0
     apply_score("市场温度评分修正", temp_score_multiplier, temp)
 
     # 发行价修正：低价股涨幅通常更大，高价股压制
@@ -511,7 +538,24 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     if extra_str:
         extra_str = f"（{extra_str}）"
 
-    if temp != "冷市":
+    # 零破发只作为可核验的历史统计陈述，不写成“中签即赚”的确定性结论
+    zero_break_text = _zero_break_environment_text()
+
+    if temp == "冷市":
+        # 冷市：保留谨慎/不建议等级
+        if score >= 400:
+            advice = "顶格申购"
+            reason = "冷市中相对优质，注意控制仓位"
+        elif score >= 200:
+            advice = "可以申购"
+            reason = "冷市环境下，建议谨慎参与"
+        elif score >= 100:
+            advice = "谨慎申购"
+            reason = "市场降温，破发风险上升"
+        else:
+            advice = "放弃申购"
+            reason = "冷市+高估值，破发风险较大"
+    elif temp in ("热市", "常温"):
         if score >= 500:
             advice = "顶格申购"
             if sector_label:
@@ -526,31 +570,34 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
         elif score >= 150:
             advice = "顶格申购"
             if sector_label:
-                reason = f"当前市场零破发，中签即赚，{sector_label}赛道加持{extra_str}"
+                reason = f"{zero_break_text}，{sector_label}赛道加持{extra_str}"
             else:
-                reason = f"当前市场零破发，中签即赚{extra_str}"
+                reason = f"{zero_break_text}{extra_str}"
         else:
             advice = "可以申购"
-            reason = f"当前市场零破发，中签即赚{extra_str}"
+            reason = f"{zero_break_text}{extra_str}"
     else:
-        # 冷市：新增谨慎/不建议等级
-        if score >= 400:
+        # 温度未知（样本不足）：不给零破发结论，也不按热市乐观处理
+        if score >= 500:
             advice = "顶格申购"
-            reason = "冷市中相对优质，注意控制仓位"
-        elif score >= 200:
+            reason = "板块与个股评分较高；市场温度样本不足，未按零破发加分"
+        elif score >= 150:
             advice = "可以申购"
-            reason = "冷市环境下，建议谨慎参与"
-        elif score >= 100:
-            advice = "谨慎申购"
-            reason = "市场降温，破发风险上升"
+            reason = "个股评分中性偏上；市场温度样本不足，建议控制仓位"
         else:
-            advice = "放弃申购"
-            reason = "冷市+高估值，破发风险较大"
+            advice = "谨慎申购"
+            reason = "市场温度样本不足，无法确认零破发环境"
 
-    hot_zero_break = item_type == "stock" and temp == "热市" and _MARKET_TEMP.get("break_rate") == 0
+    # 热市零破发覆盖必须同时满足“温度已确认、样本非空”，避免缺数据被当成乐观证据
+    hot_zero_break = (
+        item_type == "stock"
+        and temp == "热市"
+        and _MARKET_TEMP.get("break_rate") == 0
+        and (_MARKET_TEMP.get("sample_count") or 0) > 0
+    )
     if hot_zero_break:
         advice = "顶格申购"
-        reason = "当前新股市场为热市且零破发，中签即赚"
+        reason = f"{zero_break_text}，市场温度判定为热市"
     score_trace.append({
         "step": "建议结论",
         "before": score,
@@ -560,16 +607,45 @@ def get_valuation_advice(item_type, issue_pe, industry_pe, rating=None, stock_de
     })
     advice_detail = {
         "score": score,
+        # 市场级分量（市场温度）与个股级分量（业务赛道）分开记录，避免互相误读
         "market_temperature": temp,
+        "market_temperature_status": _MARKET_TEMP.get("status", "unknown"),
+        "market_window_days": _MARKET_TEMP.get("window_days"),
+        "market_sample_count": _MARKET_TEMP.get("sample_count"),
         "break_rate": _MARKET_TEMP.get("break_rate"),
+        "market_scope_note": "市场级分量：来自全市场新股首日统计，不代表个股赛道热度",
         "sector_label": sector_label or "",
         "sector_multiplier": sector_boost if sector_label else 1.0,
+        "sector_score_multiplier": sector_score_multiplier if sector_label else 1.0,
+        "sector_scope_note": "个股级分量：来自本公司业务赛道的历史相对表现",
         "steps": score_trace,
-        "decision_override": "热市且零破发直接顶格申购" if hot_zero_break else "",
+        "decision_override": f"{zero_break_text}，热市零破发直接顶格申购" if hot_zero_break else "",
     }
     if return_detail:
         return advice, reason, advice_detail
     return advice, reason
+
+# 模型产物的补位值按“训练特征名”保存，推理输入按 ipo_history 字段名读取；
+# 不显式映射就会出现“命名不同导致补位取值全部落空”的静默退化。
+_MODEL_FEATURE_SOURCES = {
+    "issue_price": "issue_price",
+    "issue_pe": "issue_pe",
+    "industry_pe": "industry_pe",
+    "fund_raised": "fund_raised",
+    "online_shares": "online_shares",
+    "total_shares": "total_shares",
+    "lottery_rate": "online_lottery_rate",
+    "oversub_multiple": "oversubscribe_multiple",
+    "circ_mv": "circulation_mv",
+    "sub_limit": "subscribe_upper_limit",
+    "pe_ratio": "pe_ratio",
+}
+
+# 训练脚本对这五个字段不做填充：训练数组保留缺失状态（NaN），交给 XGBoost 按原生
+# 缺失学习。推理端必须保持同样的缺失状态；产物里这些键的 0 只是占位，不是有效补位值。
+_MODEL_NATIVE_MISSING_FEATURES = (
+    "issue_price", "fund_raised", "online_shares", "total_shares", "sub_limit",
+)
 
 _XGB_MODEL = None
 
@@ -579,11 +655,44 @@ _XGB_FEATURE_INFO = None
 
 _XGB_MEDIAN_VALS = {}
 
+# 训练产物中真正可用的补位值（按训练特征名）；占位 0 与训练未填充的字段不进入本表。
+_XGB_FILL_VALUES = {}
+
 _XGB_TRAINED_AT = None
+
+def _model_input_text(value, unit=""):
+    """模型输入明细的数值展示：缺失时显示“待公布”，不把 nan 直接写进文案。"""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "待公布"
+    if not math.isfinite(numeric):
+        return "待公布"
+    text = f"{numeric:g}"
+    return f"{text}{unit}" if unit else text
+
+def _build_xgb_fill_values(medians):
+    """从模型产物挑出真正可用的补位值，剔除 0 占位与训练未填充的字段。
+
+    训练脚本对 _MODEL_NATIVE_MISSING_FEATURES 的字段不做填充，产物中的 0
+    只是占位；其余字段只有正值才代表训练样本拟合出的补位值。
+    """
+    values = {}
+    for feature_key, value in (medians or {}).items():
+        if feature_key in _MODEL_NATIVE_MISSING_FEATURES:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0:
+            values[feature_key] = numeric
+    return values
 
 def _load_xgb_model():
     """加载XGBoost模型（从训练好的模型文件）"""
     global _XGB_MODEL, _XGB_FEATURES, _XGB_FEATURE_INFO, _XGB_MEDIAN_VALS, _XGB_TRAINED_AT
+    global _XGB_FILL_VALUES
     if _XGB_MODEL is not None:
         return True
 
@@ -610,6 +719,7 @@ def _load_xgb_model():
         _XGB_FEATURES = info["features"]
         _XGB_FEATURE_INFO = info
         _XGB_MEDIAN_VALS = info.get("medians", {})
+        _XGB_FILL_VALUES = _build_xgb_fill_values(_XGB_MEDIAN_VALS)
         _XGB_TRAINED_AT = info.get("trained_at", None)
         return True
     except Exception as e:
@@ -629,41 +739,52 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
 
     try:
         imputed_fields = []
-        # 构建特征向量
-        def get_val(key, default=np.nan):
-            v = stock_detail.get(key)
-            if v is None:
-                imputed_fields.append(key)
-                v = _XGB_MEDIAN_VALS.get(key, default)
+        # 构建特征向量。产物补位值按训练特征名保存，读取时显式映射到输入字段名；
+        # 训练脚本未填充的字段（见 _MODEL_NATIVE_MISSING_FEATURES）保持缺失（NaN），
+        # 不用 0 代替，避免训练与推理的缺值口径不一致。
+        def get_val(source_key, feature_key, positive_only=False):
+            v = stock_detail.get(source_key)
             try:
-                return float(v) if v is not None else default
+                v = float(v) if v is not None and v != "" else None
             except (ValueError, TypeError):
-                return default
+                v = None
+            # 中签率、超额认购倍数这类"真实值不可能为 0"的字段，0 只是数据源
+            # 尚未公布的占位，必须与真正的缺失同路处理（补位、状态标注、衍生特征一致），
+            # 不能当作实测值。
+            if positive_only and v is not None and v <= 0:
+                v = None
+            if v is None:
+                imputed_fields.append(source_key)
+                v = _XGB_FILL_VALUES.get(feature_key)
+            return v if v is not None else np.nan
 
-        ip = get_val("issue_price")
-        ipe = get_val("issue_pe")
-        ind_pe = get_val("industry_pe")
-        fr = get_val("fund_raised")
-        os_ = get_val("online_shares")
-        ts = get_val("total_shares")
-        lr = get_val("online_lottery_rate")
-        ov = get_val("oversubscribe_multiple")
-        cmv = get_val("circulation_mv")
-        sl = get_val("subscribe_upper_limit")
-        pr = get_val("pe_ratio")
+        ip = get_val("issue_price", "issue_price")
+        ipe = get_val("issue_pe", "issue_pe")
+        ind_pe = get_val("industry_pe", "industry_pe")
+        fr = get_val("fund_raised", "fund_raised")
+        os_ = get_val("online_shares", "online_shares")
+        ts = get_val("total_shares", "total_shares")
+        lr = get_val("online_lottery_rate", "lottery_rate", positive_only=True)
+        ov = get_val("oversubscribe_multiple", "oversub_multiple", positive_only=True)
+        cmv = get_val("circulation_mv", "circ_mv")
+        sl = get_val("subscribe_upper_limit", "sub_limit")
+        pr = get_val("pe_ratio", "pe_ratio")
 
-        # 确保数值有效
-        ip = ip if not np.isnan(ip) and ip > 0 else _XGB_MEDIAN_VALS.get("issue_price", 20)
-        ipe = ipe if not np.isnan(ipe) and ipe > 0 else _XGB_MEDIAN_VALS.get("issue_pe", 25)
-        ind_pe = ind_pe if not np.isnan(ind_pe) and ind_pe > 0 else _XGB_MEDIAN_VALS.get("industry_pe", 30)
-        lr = lr if not np.isnan(lr) and lr > 0 else _XGB_MEDIAN_VALS.get("lottery_rate", 0.03)
-        cmv = cmv if not np.isnan(cmv) and cmv > 0 else _XGB_MEDIAN_VALS.get("circ_mv", 5)
-        ov = ov if not np.isnan(ov) and ov > 0 else _XGB_MEDIAN_VALS.get("oversub_multiple", 2000)
-        fr = fr if not np.isnan(fr) and fr > 0 else 0
-        ts = ts if not np.isnan(ts) and ts > 0 else 0
-        os_ = os_ if not np.isnan(os_) and os_ > 0 else 0
-        sl = sl if not np.isnan(sl) and sl > 0 else 0
-        pr = pr if not np.isnan(pr) and pr > 0 else 0
+        # 负数一律按缺失处理，不参与衍生特征计算。
+        # 零值须分字段判断，不能一刀切：中签率与超额认购倍数的 0 已在
+        # get_val(positive_only) 内按缺失处理并统一走补位；发行市盈率的 0 是
+        # 亏损股的合法取值（由 issue_pe_status='loss' 标记），必须原样保留。
+        ip = ip if not np.isnan(ip) and ip >= 0 else np.nan
+        ipe = ipe if not np.isnan(ipe) and ipe >= 0 else np.nan
+        ind_pe = ind_pe if not np.isnan(ind_pe) and ind_pe >= 0 else np.nan
+        lr = lr if not np.isnan(lr) and lr >= 0 else np.nan
+        cmv = cmv if not np.isnan(cmv) and cmv >= 0 else np.nan
+        ov = ov if not np.isnan(ov) and ov >= 0 else np.nan
+        fr = fr if not np.isnan(fr) and fr >= 0 else np.nan
+        ts = ts if not np.isnan(ts) and ts >= 0 else np.nan
+        os_ = os_ if not np.isnan(os_) and os_ >= 0 else np.nan
+        sl = sl if not np.isnan(sl) and sl >= 0 else np.nan
+        pr = pr if not np.isnan(pr) and pr >= 0 else np.nan
 
         # 衍生特征
         cmv_log = np.log1p(cmv)
@@ -684,27 +805,39 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
         model_output = float(_XGB_MODEL.predict(xgb.DMatrix(features, feature_names=_XGB_FEATURES))[0])
         if (_XGB_FEATURE_INFO or {}).get("target_transform") == "log1p_nonnegative_return":
             model_output = float(np.expm1(model_output))
+        if not np.isfinite(model_output):
+            # 只有非有限数值才按模型故障处理；有效的零收益、负收益是正常输出
+            print("[XGBoost] 模型输出非有限数值，按模型故障处理")
+            return None
         raw_model_return = int(round(model_output))
         estimated = int(round(max(model_output, 0)))
 
+        def _finite_or_none(value):
+            """模型输入明细必须是可序列化数值；缺失用 None（JSON null）表示。"""
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None
+            return numeric if np.isfinite(numeric) else None
+
         model_feature_values = {
-            "issue_price": ip,
-            "issue_pe": ipe,
-            "industry_pe": ind_pe,
-            "fund_raised": fr,
-            "online_shares": os_,
-            "total_shares": ts,
-            "online_lottery_rate": lr,
-            "oversubscribe_multiple": ov,
-            "circulation_mv": cmv,
-            "subscribe_upper_limit": sl,
-            "pe_ratio": pr,
-            "circulation_mv_log": cmv_log,
-            "fund_raised_log": fund_log,
-            "price_times_pe": price_times_pe,
-            "lottery_rate_inverse": lottery_inv,
-            "circulation_per_lot": circ_per_lot,
-            "issue_pe_squared": pe_squared,
+            "issue_price": _finite_or_none(ip),
+            "issue_pe": _finite_or_none(ipe),
+            "industry_pe": _finite_or_none(ind_pe),
+            "fund_raised": _finite_or_none(fr),
+            "online_shares": _finite_or_none(os_),
+            "total_shares": _finite_or_none(ts),
+            "online_lottery_rate": _finite_or_none(lr),
+            "oversubscribe_multiple": _finite_or_none(ov),
+            "circulation_mv": _finite_or_none(cmv),
+            "subscribe_upper_limit": _finite_or_none(sl),
+            "pe_ratio": _finite_or_none(pr),
+            "circulation_mv_log": _finite_or_none(cmv_log),
+            "fund_raised_log": _finite_or_none(fund_log),
+            "price_times_pe": _finite_or_none(price_times_pe),
+            "lottery_rate_inverse": _finite_or_none(lottery_inv),
+            "circulation_per_lot": _finite_or_none(circ_per_lot),
+            "issue_pe_squared": _finite_or_none(pe_squared),
         }
 
         # XGBoost动态校准：按板块基准 + 市场温度调整
@@ -715,13 +848,13 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
             lottery_text = f"{lr}%" if "online_lottery_rate" not in imputed_fields else "待结果公告"
             detail_parts = [
                 f"📊 预估首日涨幅: {estimated}%（🤖 XGBoost模型，校准系数×{xgb_boost}）",
-                f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lottery_text} 流通{cmv:.1f}亿",
+                f"📋 发行数据: 价{_model_input_text(ip)} PE{_model_input_text(ipe)} 中签{lottery_text} 流通{_model_input_text(cmv, '亿')}",
             ]
         else:
             lottery_text = f"{lr}%" if "online_lottery_rate" not in imputed_fields else "待结果公告"
             detail_parts = [
                 f"📊 预估首日涨幅: {estimated}%（🤖 XGBoost模型）",
-                f"📋 发行数据: 价{ip}元 PE{ipe} 中签{lottery_text} 流通{cmv:.1f}亿",
+                f"📋 发行数据: 价{_model_input_text(ip)} PE{_model_input_text(ipe)} 中签{lottery_text} 流通{_model_input_text(cmv, '亿')}",
             ]
 
         board_key = _get_board_key_from_code(stock_detail.get("stock_code", ""))
@@ -731,11 +864,12 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
             "model_calibration_multiplier": xgb_boost,
             "model_calibrated_return": estimated,
             "board_key": board_key,
-            "board_base": BOARD_BASE.get(board_key, 200),
+            "board_base": BOARD_BASE.get(board_key),
             "market_temperature": _MARKET_TEMP.get("level"),
             "model_features": model_feature_values,
             "model_feature_status": {
-                key: ("补位" if key in imputed_fields else "实际")
+                key: ("缺失" if key in imputed_fields and model_feature_values[key] is None
+                      else "补位" if key in imputed_fields else "实际")
                 for key in model_feature_values
             },
         }
@@ -744,17 +878,12 @@ def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, predicti
         return None
 
 def _get_lot_size(stock_code):
-    """根据股票代码判断一签多少股"""
+    """根据证券身份判断一签股数：北交所 100 股，其余新股 500 股。"""
     if not stock_code:
         return 500  # 默认
-    code_str = str(stock_code).strip()
-    # 北交所
-    if code_str.startswith(("8", "920", "43")):
+    # 北交所统一用 _classify 的代码判定，避免各处自建前缀判断后互相分叉
+    if _is_bj_stock(stock_code):
         return 100
-    # 沪市主板全面注册制后，新股申购单位为500股
-    if code_str.startswith(("60",)):
-        return 500
-    # 深市主板 / 创业板 / 科创板
     return 500
 
 def _floor_listing_band(estimated):
@@ -818,6 +947,25 @@ def _prediction_stage_label(prediction_stage):
     }.get(prediction_stage, "研究估算")
 
 
+def _unsupported_stock_prediction(stock_code, prediction_stage, reason, detail):
+    """不可预测时的显式结果：不用猜测的板块基准或不适用的模型给出数值。"""
+    return {
+        "summary": "暂不提供首日涨幅预估",
+        "detail": detail,
+        "price": None,
+        "predicted_return": None,
+        "prediction_stage": prediction_stage,
+        "prediction_stage_label": _prediction_stage_label(prediction_stage),
+        "prediction_context": {
+            "prediction_stage": prediction_stage,
+            "prediction_stage_label": _prediction_stage_label(prediction_stage),
+            "prediction_unavailable": True,
+            "prediction_unavailable_reason": reason,
+            "stock_code": stock_code,
+        },
+    }
+
+
 def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_detail=None, stock_detail=None,
                          prediction_stage="listing", advice_calculation=None):
     """上市首日表现预估（2025-2026年零破发环境适配版）"""
@@ -869,13 +1017,18 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
         sector_boost = 1.0
     temp = _MARKET_TEMP["level"]
 
-    # 尝试XGBoost预测
+    # 训练数据明确排除北交所，模型对其没有适用范围；不做预测并标记不可预测
+    if _is_bj_stock(stock_code):
+        return _unsupported_stock_prediction(
+            stock_code, prediction_stage, "board_not_covered",
+            "北交所发行机制与样本口径不同，当前模型未覆盖，暂不提供首日涨幅预估",
+        )
+
+    # 尝试 XGBoost 预测：模型缺失、加载失败或输出非有限数值时返回 None，才走线性兜底。
+    # 重算同一模型与同一输入不会改变非正输出，因此不再重试，也不把非正结果当故障。
     xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost, prediction_stage)
-    # 自动纠正：XGB对极端样本（如超大盘股）偶发输出<=0%，强制重加载模型重试一次；
-    # 若重试仍异常或不可用，则落入下方线性模型兜底（不会写出误导性的0%）
-    if xgb_result is not None and xgb_result[0] <= 0:
-        _XGB_MODEL = None
-        xgb_result = _xgb_predict_listing(stock_detail, sector_label, sector_boost, prediction_stage)
+    # 注意：预测输出截断（负值截为 0）尚未整改，模型返回的 0 还无法与有效零收益区分；
+    # 在输出截断和训练标签一并整改前，暂时保留 0 触发兜底，避免把截断值直接当最终预测。
     if xgb_result is not None and xgb_result[0] > 0:
         estimated, detail_parts, trained_at = (xgb_result[0], xgb_result[1], xgb_result[2] if len(xgb_result) > 2 else None)
         imputed_fields = xgb_result[3] if len(xgb_result) > 3 else []
@@ -957,6 +1110,24 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
                     "board_key": model_calculation.get("board_key"),
                     "board_base": model_calculation.get("board_base"),
                     "sector_return": sector_estimated,
+                    # 市场级分量与个股级分量分开记录：market_* 来自全市场新股统计，
+                    # sector_* 来自本公司业务赛道，单个分量不能代表最终合成修正。
+                    "market_context": {
+                        "scope": "market",
+                        "level": temp,
+                        "status": _MARKET_TEMP.get("status", "unknown"),
+                        "window_days": _MARKET_TEMP.get("window_days"),
+                        "sample_count": _MARKET_TEMP.get("sample_count"),
+                        "break_rate": _MARKET_TEMP.get("break_rate"),
+                        "multiplier": temp_mult,
+                    },
+                    "sector_context": {
+                        "scope": "instrument",
+                        "label": sector_label,
+                        "status": classification_status,
+                        "multiplier": sector_boost if sector_label else 1.0,
+                        "confidence": sector_context.get("confidence", 0.0),
+                    },
                     "market_temperature": temp,
                     "temperature_multiplier": temp_mult,
                     "final_return": estimated,
@@ -971,6 +1142,12 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
     # ── 回退：改进版线性模型 ──
     # 使用板块中位数，避免全市场少数千倍涨幅样本拉高预测。
     board_base = estimate_board_base(stock_code)
+    if board_base <= 0:
+        # 板块无法识别：不猜测板块基准，明确标记不可预测
+        return _unsupported_stock_prediction(
+            stock_code, prediction_stage, "unknown_board",
+            f"证券代码 {stock_code or '空'} 未匹配到已知板块，等待证券主档补全后再预估",
+        )
     estimated = board_base
 
     # 发行价修正
@@ -1106,6 +1283,23 @@ def get_listing_analysis(item_type, issue_price, issue_pe, industry_pe, bond_det
                 "model_stage": prediction_stage,
                 "board_base": board_base,
                 "sector_return": int(round(estimated / temp_mult)) if temp_mult else estimated,
+                # 市场级分量与个股级分量分开记录，避免单分量被误读为最终合成修正
+                "market_context": {
+                    "scope": "market",
+                    "level": temp,
+                    "status": _MARKET_TEMP.get("status", "unknown"),
+                    "window_days": _MARKET_TEMP.get("window_days"),
+                    "sample_count": _MARKET_TEMP.get("sample_count"),
+                    "break_rate": _MARKET_TEMP.get("break_rate"),
+                    "multiplier": temp_mult,
+                },
+                "sector_context": {
+                    "scope": "instrument",
+                    "label": sector_label,
+                    "status": classification_status,
+                    "multiplier": sector_boost if sector_label else 1.0,
+                    "confidence": sector_context.get("confidence", 0.0),
+                },
                 "market_temperature": temp,
                 "temperature_multiplier": temp_mult,
                 "final_return": estimated,

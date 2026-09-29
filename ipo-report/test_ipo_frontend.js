@@ -134,6 +134,17 @@ check("无预测时不生成详情链接", sandbox.ipoStockPredictionCell({
   has_prediction: false, security_code: "301697"
 }) === "无历史预测");
 
+console.log("== G. 中签率显示（零占位不显示为 0） ==");
+// 中签率不可能为 0，数据源的 0 只是"尚未公布"的占位，不能显示成"万分之 0"。
+check("零占位 -> 待补全", sandbox.ipoWanfenCell(0) === "<span>待补全</span>", sandbox.ipoWanfenCell(0));
+check("字符串零 -> 待补全", sandbox.ipoWanfenCell("0") === "<span>待补全</span>", sandbox.ipoWanfenCell("0"));
+check("缺失 -> -", sandbox.ipoWanfenCell(null) === "<span>-</span>", sandbox.ipoWanfenCell(null));
+check("真值转万分之", sandbox.ipoWanfenCell(0.0164632) === "<span>1.646</span>", sandbox.ipoWanfenCell(0.0164632));
+check("表格列零占位 -> 待补全", sandbox.ipoPending(0, sandbox.ipoWanfenCell) === "<span>待补全</span>",
+      sandbox.ipoPending(0, sandbox.ipoWanfenCell));
+check("表格列缺失 -> 待补全", sandbox.ipoPending(null, sandbox.ipoWanfenCell) === "<span>待补全</span>",
+      sandbox.ipoPending(null, sandbox.ipoWanfenCell));
+
 console.log("\n===== 前端结果汇总 =====");
 console.log("PASS=%d  FAIL=%d", PASS, FAIL);
 console.log(FAIL === 0 ? "OK" : "HAS_ISSUES");

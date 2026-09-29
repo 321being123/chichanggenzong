@@ -7,6 +7,28 @@ def _is_bj_stock(code):
     return str(code).startswith(("920", "82", "83", "87", "43"))
 
 
+def board_key_from_code(code):
+    """按证券代码前缀判定板块键；无法识别时返回“未知”，不猜测板块。
+
+    预测、板块基准、申购单位和模型适用范围统一使用本函数，避免各处自建一套
+    前缀判断后互相分叉。已知板块字段优先用 _market_type_to_board_key。
+    """
+    code_str = str(code or "").strip()
+    if not code_str:
+        return "未知"
+    if code_str.startswith(("688", "787")):
+        return "科创板"
+    if code_str.startswith(("920", "82", "83", "87", "43")):
+        return "北交所"
+    if code_str.startswith(("300", "301")):
+        return "创业板"
+    if code_str.startswith(("000", "001", "002", "003")):
+        return "深市主板"
+    if code_str.startswith(("600", "601", "603", "605")):
+        return "沪市主板"
+    return "未知"
+
+
 def _market_type_to_board_key(mt, code):
     """将 MARKET_TYPE（板块中文名或东财字段）+ 股票代码 映射到板块键。
 

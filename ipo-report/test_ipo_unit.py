@@ -36,10 +36,25 @@ def _ensure_test_model():
                        [30, 35, 40, 20, 2, 4, 0.04, 2500, 8, 2, 35, 2.2, 3.0, 10.5, 24, 195, 1.225]], dtype=float)
     train = xgb.DMatrix(matrix, label=np.array([0.0, 0.0]), feature_names=features)
     booster = xgb.train({"objective": "reg:squarederror", "max_depth": 1, "eta": 0.1, "verbosity": 0}, train, num_boost_round=1)
+    # medians 只放训练段真实拟合出的补位值；issue_price 等字段训练时保留缺失状态，
+    # 产物里不出现它们，推理端也必须保持缺失而不是用 0 或硬编码默认值冒充。
+    medians = {
+        "issue_pe": 21.03, "industry_pe": 44.7, "lottery_rate": 0.02412762,
+        "oversub_multiple": 4539.93, "circ_mv": 3.96, "pe_ratio": 1.44,
+    }
     os.makedirs(model_dir, exist_ok=True)
     booster.save_model(model_path)
     with open(features_path, "w", encoding="utf-8") as handle:
-        json.dump({"features": features, "medians": {}, "trained_at": "test", "target_transform": ""}, handle)
+        json.dump({
+            "features": features,
+            "medians": medians,
+            "fill_sources": {key: "median_of_existing_samples" for key in medians},
+            "native_missing_features": [
+                "issue_price", "fund_raised", "online_shares", "total_shares", "sub_limit",
+            ],
+            "trained_at": "test",
+            "target_transform": "",
+        }, handle)
 
 
 _ensure_test_model()
@@ -805,12 +820,18 @@ try:
     import ipo_lib_valuation as _val
     _old_market_temp = dict(_val._MARKET_TEMP)
     _val._MARKET_TEMP.clear()
-    _val._MARKET_TEMP.update({"level": "热市", "break_rate": 0, "avg_gain_3m": 0})
+    _val._MARKET_TEMP.update({
+        "level": "热市", "break_rate": 0, "avg_gain_3m": 0,
+        "sample_count": 24, "window_days": 180, "status": "known",
+    })
     hot_zero_advice = _val.get_valuation_advice(
         "stock", 38.19, None,
         stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
     )
     check("新股热市且零破发一律顶格申购", hot_zero_advice[0] == "顶格申购", "实得=%s" % (hot_zero_advice,))
+    check("零破发理由带统计窗口与样本数且不做中签即赚承诺",
+          "24只" in hot_zero_advice[1] and "中签即赚" not in hot_zero_advice[1],
+          "实得=%s" % (hot_zero_advice,))
     advice_with_detail = _val.get_valuation_advice(
         "stock", 38.19, None,
         stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
@@ -819,9 +840,73 @@ try:
     check("打新建议保留逐步评分明细",
           len(advice_with_detail) == 3 and len(advice_with_detail[2].get("steps", [])) >= 3,
           "实得=%s" % (advice_with_detail,))
+    check("建议明细区分市场级温度与个股级赛道分量",
+          advice_with_detail[2].get("market_sample_count") == 24
+          and advice_with_detail[2].get("market_window_days") == 180
+          and "market_scope_note" in advice_with_detail[2]
+          and "sector_scope_note" in advice_with_detail[2],
+          "实得=%s" % (advice_with_detail[2],))
+    # 建议分的赛道分量必须以中性 ×1.00 为基准：中性不加减、冷赛道扣分、热赛道加分。
+    _orig_hot_sector = _val.detect_stock_hot_sector
+    sector_score_by_boost = {}
+    try:
+        for _boost in (1.0, 0.5, 2.0):
+            _val.detect_stock_hot_sector = lambda *a, _b=_boost, **kw: ("测试赛道", _b)
+            sector_score_by_boost[_boost] = _val.get_valuation_advice(
+                "stock", 38.19, None,
+                stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
+                return_detail=True,
+            )[2].get("sector_score_multiplier")
+    finally:
+        _val.detect_stock_hot_sector = _orig_hot_sector
+    check("建议分赛道分量以中性×1.00为基准且冷赛道扣分热赛道加分",
+          sector_score_by_boost.get(1.0) == 1.0
+          and (sector_score_by_boost.get(0.5) or 1.0) < 1.0
+          and (sector_score_by_boost.get(2.0) or 0.0) > 1.0,
+          "实得=%s" % (sector_score_by_boost,))
+    _val._MARKET_TEMP.clear()
+    _val._MARKET_TEMP.update({
+        "level": "热市", "break_rate": 0, "avg_gain_3m": 0,
+        "sample_count": 0, "window_days": 180, "status": "unknown",
+    })
+    zero_sample_advice = _val.get_valuation_advice(
+        "stock", 38.19, None,
+        stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
+    )
+    check("样本为空时热市零破发不触发顶格覆盖",
+          zero_sample_advice[0] != "顶格申购", "实得=%s" % (zero_sample_advice,))
+    _val._MARKET_TEMP.clear()
+    _val._MARKET_TEMP.update({
+        "level": "未知", "break_rate": None, "avg_gain_3m": None,
+        "sample_count": 0, "window_days": 180, "status": "unknown",
+    })
+    unknown_temp_advice = _val.get_valuation_advice(
+        "stock", 38.19, None,
+        stock_detail={"stock_code": "001232", "stock_name": "嘉立创", "issue_price": 84.46, "fund_raised": 46.93},
+    )
+    check("温度未知时不给零破发结论也不按热市加分",
+          unknown_temp_advice[0] != "顶格申购" and "中签即赚" not in unknown_temp_advice[1]
+          and "样本不足" in unknown_temp_advice[1],
+          "实得=%s" % (unknown_temp_advice,))
+    check("温度未知时涨幅不衰减", _val.get_temp_listing_multiplier() == 1.0,
+          "实得=%s" % (_val.get_temp_listing_multiplier(),))
+    check("温度未知时发行PE修正保持中性", _val.get_temp_pe_penalty(10, 20) == 1.0,
+          "实得=%s" % (_val.get_temp_pe_penalty(10, 20),))
     _val._MARKET_TEMP.clear()
     _val._MARKET_TEMP.update(_old_market_temp)
     check("XGBoost模型文件可加载", _val._load_xgb_model())
+    check("产物补位值按训练特征名建立映射",
+          _val._XGB_FILL_VALUES.get("industry_pe") == _val._XGB_MEDIAN_VALS.get("industry_pe")
+          and "issue_price" not in _val._XGB_FILL_VALUES,
+          "fill=%r" % (_val._XGB_FILL_VALUES,))
+    check("旧产物中的零占位不被当作补位值",
+          _val._build_xgb_fill_values({"issue_price": 0.0, "sub_limit": 0.0, "industry_pe": 44.7})
+          == {"industry_pe": 44.7},
+          "实得=%r" % (_val._build_xgb_fill_values({"issue_price": 0.0, "sub_limit": 0.0, "industry_pe": 44.7}),))
+    check("训练未填充字段的缺位不写成硬编码常数",
+          _val._XGB_FILL_VALUES.get("lottery_rate") == _val._XGB_MEDIAN_VALS.get("lottery_rate")
+          and _val._XGB_FILL_VALUES.get("lottery_rate") != 0.03,
+          "fill=%r" % (_val._XGB_FILL_VALUES,))
     model_prediction = _val._xgb_predict_listing({
         "stock_code": "688001", "issue_price": 20, "issue_pe": 30,
         "industry_pe": 35, "fund_raised": 10, "online_lottery_rate": 0.03,
@@ -846,7 +931,71 @@ try:
           and legacy_pe_prediction[4]["model_features"]["industry_pe"] == 36.5
           and unclassified_pe_prediction[4]["model_features"]["industry_pe"]
           == _val._XGB_MEDIAN_VALS.get("industry_pe", 30)
-          and unclassified_pe_prediction[4]["model_feature_status"]["industry_pe"] == "补位")
+          and unclassified_pe_prediction[4]["model_feature_status"]["industry_pe"] == "补位",
+          "legacy=%r unclassified=%r expected=%r" % (
+              None if legacy_pe_prediction is None else legacy_pe_prediction[4]["model_features"].get("industry_pe"),
+              None if unclassified_pe_prediction is None else unclassified_pe_prediction[4]["model_features"].get("industry_pe"),
+              _val._XGB_MEDIAN_VALS.get("industry_pe", 30)))
+    check("训练未填充字段在推理端保持缺失且不写成 0",
+          unclassified_pe_prediction[4]["model_features"]["issue_price"] is not None
+          and unclassified_pe_prediction[4]["model_features"]["online_shares"] is None
+          and unclassified_pe_prediction[4]["model_feature_status"]["online_shares"] == "缺失",
+          "features=%r status=%r" % (
+              unclassified_pe_prediction[4]["model_features"],
+              unclassified_pe_prediction[4]["model_feature_status"]))
+    zero_rate_prediction = _val._xgb_predict_listing({
+        "stock_code": "688001", "issue_price": 20, "issue_pe": 30,
+        "industry_pe": None, "fund_raised": 10, "online_lottery_rate": 0,
+        "circulation_mv": 5,
+    })
+    check("中签率零占位按缺失处理并统一走补位",
+          zero_rate_prediction is not None
+          and zero_rate_prediction[4]["model_features"]["online_lottery_rate"]
+          == _val._XGB_FILL_VALUES.get("lottery_rate")
+          and zero_rate_prediction[4]["model_feature_status"]["online_lottery_rate"] == "补位"
+          and "online_lottery_rate" in zero_rate_prediction[3]
+          and zero_rate_prediction[4]["model_feature_status"]["industry_pe"] == "补位",
+          "features=%r status=%r imputed=%r" % (
+              None if zero_rate_prediction is None else zero_rate_prediction[4]["model_features"],
+              None if zero_rate_prediction is None else zero_rate_prediction[4]["model_feature_status"],
+              None if zero_rate_prediction is None else zero_rate_prediction[3]))
+    zero_oversub_prediction = _val._xgb_predict_listing({
+        "stock_code": "688001", "issue_price": 20, "issue_pe": 30,
+        "industry_pe": 35, "fund_raised": 10, "online_lottery_rate": 0.03,
+        "oversubscribe_multiple": 0, "circulation_mv": 5,
+    })
+    check("超额认购倍数零占位按缺失处理并统一走补位",
+          zero_oversub_prediction is not None
+          and zero_oversub_prediction[4]["model_features"]["oversubscribe_multiple"]
+          == _val._XGB_FILL_VALUES.get("oversub_multiple")
+          and zero_oversub_prediction[4]["model_feature_status"]["oversubscribe_multiple"] == "补位"
+          and "oversubscribe_multiple" in zero_oversub_prediction[3],
+          "features=%r status=%r imputed=%r" % (
+              None if zero_oversub_prediction is None else zero_oversub_prediction[4]["model_features"],
+              None if zero_oversub_prediction is None else zero_oversub_prediction[4]["model_feature_status"],
+              None if zero_oversub_prediction is None else zero_oversub_prediction[3]))
+    zero_pe_prediction = _val._xgb_predict_listing({
+        "stock_code": "688001", "issue_price": 20, "issue_pe": 0,
+        "industry_pe": 35, "fund_raised": 10, "online_lottery_rate": 0.03,
+        "circulation_mv": 5,
+    })
+    check("亏损股发行PE零值属合法取值不被判为缺失",
+          zero_pe_prediction is not None
+          and zero_pe_prediction[4]["model_features"]["issue_pe"] == 0
+          and zero_pe_prediction[4]["model_feature_status"]["issue_pe"] == "实际"
+          and "issue_pe" not in zero_pe_prediction[3],
+          "features=%r status=%r imputed=%r" % (
+              None if zero_pe_prediction is None else zero_pe_prediction[4]["model_features"],
+              None if zero_pe_prediction is None else zero_pe_prediction[4]["model_feature_status"],
+              None if zero_pe_prediction is None else zero_pe_prediction[3]))
+    check("模型输入明细可安全序列化为JSON",
+          "NaN" not in json.dumps(unclassified_pe_prediction[4]["model_features"]),
+          "features=%r" % (unclassified_pe_prediction[4]["model_features"],))
+    check("模型输入明细标注缺失字段",
+          "（缺失）" in report_lib._format_model_features({
+              "model_features": {"online_shares": None},
+              "model_feature_status": {"online_shares": "缺失"},
+          }))
     model_feature_text = report_lib._format_model_features({
         "model_features": {"issue_price": 20, "pe_ratio": 0.8, "online_shares": 1},
         "model_feature_status": {"online_shares": "补位"},
@@ -1077,6 +1226,41 @@ try:
                                          stock_detail={"stock_code": "301697", "stock_name": "贝特利"})
     check("风口倍数取消1.5上限", uncapped.get("predicted_return") == 825,
           "predicted_return=%r" % (uncapped.get("predicted_return"),))
+    board_cases = {
+        "688001": "科创板", "787001": "科创板",
+        "300750": "创业板", "301668": "创业板",
+        "000001": "深市主板", "001232": "深市主板", "002594": "深市主板", "003816": "深市主板",
+        "600000": "沪市主板", "601398": "沪市主板", "603448": "沪市主板", "605319": "沪市主板",
+        "920196": "北交所", "830799": "北交所", "870204": "北交所", "832000": "北交所", "430047": "北交所",
+        "999999": "未知",
+    }
+    board_mismatched = {code: _val._get_board_key_from_code(code)
+                        for code, expected in board_cases.items()
+                        if _val._get_board_key_from_code(code) != expected}
+    check("板块识别覆盖各板块前缀且未知代码不猜板块", not board_mismatched,
+          "实得=%s" % (board_mismatched,))
+    check("申购单位统一使用北交所判定",
+          _val._get_lot_size("920196") == 100 and _val._get_lot_size("430047") == 100
+          and _val._get_lot_size("830799") == 100 and _val._get_lot_size("688001") == 500,
+          "920196=%s 430047=%s 830799=%s 688001=%s" % (
+              _val._get_lot_size("920196"), _val._get_lot_size("430047"),
+              _val._get_lot_size("830799"), _val._get_lot_size("688001")))
+    check("未知代码板块基准返回未知而非默认沪市主板",
+          _val.estimate_board_base("999999") == 0 and _val.estimate_board_base("688001") > 0,
+          "未知=%s 科创板=%s" % (_val.estimate_board_base("999999"), _val.estimate_board_base("688001")))
+    check("北交所不套用非北交所模型",
+          _val.get_listing_analysis(
+              "stock", 10, None, None,
+              stock_detail={"stock_code": "920196", "stock_name": "北交测试"}
+          ).get("prediction_context", {}).get("prediction_unavailable_reason") == "board_not_covered",
+          "实得=%s" % (_val.get_listing_analysis(
+              "stock", 10, None, None,
+              stock_detail={"stock_code": "920196", "stock_name": "北交测试"}),))
+    unknown_board_prediction = _val.get_listing_analysis(
+        "stock", 10, None, None, stock_detail={"stock_code": "999999", "stock_name": "未知板块测试"})
+    check("未知板块不使用猜测的板块基准",
+          ((unknown_board_prediction.get("prediction_context") or {}).get("calculation_detail") or {}).get("board_base") is None,
+          "实得=%s" % (unknown_board_prediction,))
     _val.detect_stock_hot_sector = _old_detect_for_cap
     _val.get_stock_sector_context = _old_context_for_cap
     _val._xgb_predict_listing = _old_xgb_for_cap

@@ -99,18 +99,25 @@ def fill_median(arr):
     arr = np.nan_to_num(arr, nan=m)
     return arr, m
 
+# 缺值口径必须分两类，产物里也要分开标注，不能都写成“中位数”：
+#   1) FITTED_MEDIAN_FIELDS：有有效样本，用中位数填充，推理端可直接复用该补位值；
+#   2) NATIVE_MISSING_FIELDS：历史数据长期缺失，保持 NaN 由 XGBoost 按原生缺失学习，
+#      推理端必须保持同样的缺失状态，产物里的 0 只是占位，不是补位值。
+NATIVE_MISSING_FIELDS = ("issue_price", "fund_raised", "online_shares", "total_shares", "sub_limit")
+FITTED_MEDIAN_FIELDS = ("issue_pe", "industry_pe", "lottery_rate", "oversub_multiple", "circ_mv", "pe_ratio")
+
 medians = {}
-issue_price, medians['issue_price'] = issue_price, 0
+fill_sources = {}
 issue_pe, medians['issue_pe'] = fill_median(issue_pe)
 industry_pe, medians['industry_pe'] = fill_median(industry_pe)
-fund_raised, medians['fund_raised'] = fund_raised, 0
-online_shares, medians['online_shares'] = online_shares, 0
-total_shares, medians['total_shares'] = total_shares, 0
 lottery_rate, medians['lottery_rate'] = fill_median(lottery_rate)
 oversub, medians['oversub_multiple'] = fill_median(oversub)
 circ_mv, medians['circ_mv'] = fill_median(circ_mv)
-sub_limit, medians['sub_limit'] = sub_limit, 0
 pe_ratio, medians['pe_ratio'] = fill_median(pe_ratio)
+for _field in FITTED_MEDIAN_FIELDS:
+    fill_sources[_field] = "median_of_existing_samples"
+for _field in NATIVE_MISSING_FIELDS:
+    fill_sources[_field] = "native_missing"
 
 # 衍生特征
 circ_mv_log = np.log1p(circ_mv)
@@ -211,6 +218,9 @@ except Exception:
 info = {
     "features": feature_names,
     "medians": {k: float(v) for k, v in medians.items() if not np.isnan(v)},
+    # 每个字段的缺值来源；native_missing 表示训练时保留缺失、不用 0 补位
+    "fill_sources": fill_sources,
+    "native_missing_features": list(NATIVE_MISSING_FIELDS),
     "sample_count": n,
     "train_mae": float(train_mae),
     "test_mae": float(test_mae),

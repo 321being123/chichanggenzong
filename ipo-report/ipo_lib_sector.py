@@ -10,7 +10,7 @@ from statistics import median
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
-from _classify import _is_bj_stock, _market_type_to_board_key
+from _classify import _is_bj_stock, _market_type_to_board_key, board_key_from_code
 from _common import _load_env
 from ipo_lib_common import *
 from ipo_lib_fetch import *
@@ -353,20 +353,35 @@ def calibrate_sector_boost():
             print(f"  ... 还有{len(updated)-10}个赛道")
     return updated
 
-_MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_3m": 0}
+# 新股市场温度的统计窗口；窗口与阈值只在训练/验证段选定，不在预测时临时调整。
+TEMP_WINDOW_DAYS = 180
+
+# level 只在拿到足够样本时才给出热市/常温/冷市；没有样本必须是“未知”，
+# 不能默认热市和零破发，否则缺数据会被当成乐观证据。
+_MARKET_TEMP = {
+    "level": "未知",
+    "break_rate": None,
+    "avg_gain_3m": None,
+    "sample_count": 0,
+    "window_days": TEMP_WINDOW_DAYS,
+    "status": "unknown",
+}
 
 _TEMP_CALIBRATED = False
 
 def detect_market_temperature():
     """
-    检测当前新股市场温度
-    从 ipo_history.db 统计近6个月数据
-    返回 {'level': '热市'|'常温'|'冷市', 'break_rate': float, 'avg_gain_6m': float}
+    检测当前新股市场温度：统计近 TEMP_WINDOW_DAYS 天已上市 A 股新股首日涨幅。
+
+    返回 {'level': '热市'|'常温'|'冷市'|'未知', 'break_rate': float|None,
+          'avg_gain_3m': float|None, 'sample_count': int, 'window_days': int,
+          'status': 'known'|'unknown'}
+    没有可用样本时返回“未知”，破发率保持 None，不写成 0。
     """
     global _MARKET_TEMP, _TEMP_CALIBRATED
     from datetime import datetime, timedelta
 
-    cutoff = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=TEMP_WINDOW_DAYS)).strftime("%Y-%m-%d")
     try:
         conn = _init_ipo_db()
         rows = conn.execute(
@@ -377,18 +392,22 @@ def detect_market_temperature():
     except Exception:
         rows = []
 
-    if not rows:
-        print("[市场温度] 数据不足，默认热市")
-        _MARKET_TEMP.clear()
-        _MARKET_TEMP.update({"level": "热市", "break_rate": 0, "avg_gain_3m": 250})
+    gains = [r[0] for r in rows if r[0] is not None]
+    total = len(gains)
+
+    _MARKET_TEMP.clear()
+    if total == 0:
+        print(f"[市场温度] 近{TEMP_WINDOW_DAYS}天无有效样本，标记为未知（不默认热市、不默认零破发）")
+        _MARKET_TEMP.update({
+            "level": "未知", "break_rate": None, "avg_gain_3m": None,
+            "sample_count": 0, "window_days": TEMP_WINDOW_DAYS, "status": "unknown",
+        })
         _TEMP_CALIBRATED = True
         return _MARKET_TEMP
 
-    gains = [r[0] for r in rows]
-    total = len(gains)
     break_count = sum(1 for g in gains if g < 0)
-    break_rate = break_count / total if total > 0 else 0
-    avg_gain = sum(gains) / total if total > 0 else 0
+    break_rate = break_count / total
+    avg_gain = sum(gains) / total
 
     if break_rate == 0 and avg_gain > 150:
         level = "热市"
@@ -397,11 +416,17 @@ def detect_market_temperature():
     else:
         level = "冷市"
 
-    _MARKET_TEMP.clear()
-    _MARKET_TEMP.update({"level": level, "break_rate": round(break_rate * 100, 1), "avg_gain_3m": round(avg_gain, 1)})
+    _MARKET_TEMP.update({
+        "level": level,
+        "break_rate": round(break_rate * 100, 1),
+        "avg_gain_3m": round(avg_gain, 1),
+        "sample_count": total,
+        "window_days": TEMP_WINDOW_DAYS,
+        "status": "known",
+    })
     _TEMP_CALIBRATED = True
 
-    print(f"[市场温度] {level}（破发率{_MARKET_TEMP['break_rate']}%，6月均涨幅{_MARKET_TEMP['avg_gain_3m']}%）")
+    print(f"[市场温度] {level}（破发率{_MARKET_TEMP['break_rate']}%，6月均涨幅{_MARKET_TEMP['avg_gain_3m']}%，样本{total}只）")
     return _MARKET_TEMP
 
 _BOND_MARKET_TEMP = {"level": "热市", "break_rate": 0, "avg_gain_6m": 0}
@@ -565,17 +590,8 @@ def get_stock_sector_context(stock_name, main_business, industry, stored=None, i
             "exposure": exposure, "components": components}
 
 def _get_board_key_from_code(code):
-    """从股票代码获取板块键"""
-    code_str = str(code)
-    if code_str.startswith("688"):
-        return "科创板"
-    if code_str.startswith(("300", "301")):
-        return "创业板"
-    if code_str.startswith(("000", "001", "002", "003")):
-        return "深市主板"
-    if code_str.startswith(("60",)):
-        return "沪市主板"
-    return "科创板"
+    """从股票代码获取板块键；无法识别时返回“未知”，不默认科创板或沪市主板。"""
+    return board_key_from_code(code)
 
 def _sync_sector_boost_from_db():
     """模块加载时把DB中的动态赛道热度系数同步进全局静态字典，

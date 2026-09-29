@@ -683,9 +683,11 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             if not _has_business_exposures(existing_exposure):
                 missing_fields.append('business_exposure')
             missing_fields.extend(field for field in force_fields if field not in missing_fields)
-            if include_result_fields and existing_lottery_rate in (None, ''):
+            # 中签率与超额认购倍数为 0 只代表"尚未公布"（数据源占位），
+            # 不能当成已有值而跳过补全。
+            if include_result_fields and _positive(existing_lottery_rate) is None:
                 missing_fields.append('online_lottery_rate')
-            if include_result_fields and existing_oversubscribe in (None, ''):
+            if include_result_fields and _positive(existing_oversubscribe) is None:
                 missing_fields.append('oversubscribe_multiple')
             if force_fields:
                 missing_fields = [field for field in missing_fields if field in force_fields]
@@ -784,8 +786,13 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 resolved_industry_pe = None
             else:
                 resolved_industry_pe = existing_industry_pe if existing_industry_pe is not None else detail.get("industry_pe")
-            resolved_lottery_rate = detail.get("online_lottery_rate") if detail.get("online_lottery_rate") not in (None, "") else existing_lottery_rate
-            resolved_oversubscribe = detail.get("oversubscribe_multiple") if detail.get("oversubscribe_multiple") not in (None, "") else existing_oversubscribe
+            # 中签率与超额认购倍数不可能为 0：数据源在"尚未公布"时返回 0 而非空值。
+            # 若把 0 当作有效值，写入侧 COALESCE 会把它当结果写回并长期维持，
+            # 因此这里统一按缺失处理（与 build_row 的 _positive(ballot) 同口径）。
+            detail_lottery_rate = _positive(detail.get("online_lottery_rate"))
+            resolved_lottery_rate = detail_lottery_rate if detail_lottery_rate is not None else existing_lottery_rate
+            detail_oversubscribe = _positive(detail.get("oversubscribe_multiple"))
+            resolved_oversubscribe = detail_oversubscribe if detail_oversubscribe is not None else existing_oversubscribe
             resolved_exposure = business_exposure if _has_business_exposures(business_exposure) else existing_exposure
             changed = (
                 resolved_industry != str(existing_industry or '').strip()
@@ -818,8 +825,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                    WHERE security_code=%s
                 """, (industry_upgrade, detail.get("industry"), detail.get("industry"),
                       replace_pe, resolved_industry_pe, detail.get("industry_pe"), detail.get("issue_pe_status"),
-                      resolved_lottery_rate if detail.get("online_lottery_rate") not in (None, "") else None,
-                      resolved_oversubscribe if detail.get("oversubscribe_multiple") not in (None, "") else None,
+                      detail_lottery_rate,
+                      detail_oversubscribe,
                       detail.get("main_business"), detail.get("main_business"),
                       Json(business_exposure) if _has_business_exposures(business_exposure) else None,
                       Json(stored_detail), code))

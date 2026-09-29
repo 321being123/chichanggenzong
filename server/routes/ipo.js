@@ -272,18 +272,25 @@ async function buildCnStockLiveReport(code) {
         ? calculation.model_feature_status : {};
       const featureText = Object.entries(features).map(([key, value]) => {
         const meta = IPO_MODEL_FEATURE_META[key] || { label: key, unit: '无单位：模型字段' };
-        const status = featureStatus[key] === '补位' ? '（补位）' : '';
+        const state = featureStatus[key];
+        const status = state === '补位' ? '（补位）' : state === '缺失' ? '（缺失）' : '';
         const number = value == null || value === '' ? '暂无' : Number.isFinite(Number(value)) ? Number(value).toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1') : String(value);
         return `${meta.label}（${meta.unit}）=${number}${status}`;
       });
+      const marketContext = calculation.market_context && typeof calculation.market_context === 'object'
+        ? calculation.market_context : {};
+      const sectorContext = calculation.sector_context && typeof calculation.sector_context === 'object'
+        ? calculation.sector_context : {};
       lines.push('', '## 预测计算明细',
         `- **模型**：${calculation.model}（${calculation.model_stage || stage}）`,
         `- **模型输入**：${featureText.length ? featureText.join('；') : '暂无'}`,
         `- **XGBoost原始输出**：${valueOrDash(calculation.raw_model_return, '%')}`,
         `- **模型校准**：板块基准${valueOrDash(calculation.board_base, '%')}，校准系数${valueOrDash(calculation.model_calibration_multiplier, '')}，校准后${valueOrDash(calculation.model_calibrated_return, '%')}`,
         `- **赛道计算**：${calculation.sector_formula || '暂无'}`,
-        `- **赛道修正后**：${valueOrDash(calculation.sector_return, '%')}`,
-        `- **市场温度修正**：${valueOrDash(calculation.market_temperature)}，系数${valueOrDash(calculation.temperature_multiplier, '')}，最终${valueOrDash(calculation.final_return, '%')}`,
+        `- **赛道修正后（个股赛道，非市场信号）**：${valueOrDash(calculation.sector_return, '%')}`,
+        `- **市场温度修正（市场整体，非个股赛道热度）**：${valueOrDash(marketContext.level || calculation.market_temperature)}，系数${valueOrDash(marketContext.multiplier ?? calculation.temperature_multiplier, '')}，最终${valueOrDash(calculation.final_return, '%')}`,
+        `- **市场温度样本**：${marketContext.status === 'unknown' ? '样本不足，未做温度修正' : `近${marketContext.window_days ?? '—'}天${marketContext.sample_count ?? '—'}只新股${marketContext.break_rate != null ? `，破发率${marketContext.break_rate}%` : ''}`}`,
+        `- **个股赛道分量**：${sectorContext.label ? `${sectorContext.label}，历史系数×${sectorContext.multiplier ?? '—'}` : '无有效赛道分类'}`,
         `- **最终可能区间**：${calculation.range_low != null && calculation.range_high != null ? `${calculation.range_low}%～${calculation.range_high}%` : '暂无'}`,
       );
       const components = Array.isArray(context.sector_components) ? context.sector_components : [];
@@ -298,7 +305,7 @@ async function buildCnStockLiveReport(code) {
     if (Array.isArray(adviceCalculation.steps) && adviceCalculation.steps.length) {
       lines.push('', '## 打新建议评分明细',
         `- **综合评分**：${valueOrDash(adviceCalculation.score, '分')}`,
-        `- **市场状态**：${valueOrDash(adviceCalculation.market_temperature)}${adviceCalculation.break_rate != null ? `，破发率${adviceCalculation.break_rate}%` : ''}`,
+        `- **市场状态**：${valueOrDash(adviceCalculation.market_temperature)}${adviceCalculation.market_sample_count != null ? `，近${adviceCalculation.market_window_days ?? '—'}天${adviceCalculation.market_sample_count}只新股` : ''}${adviceCalculation.break_rate != null ? `，破发率${adviceCalculation.break_rate}%` : ''}`,
         ...adviceCalculation.steps.map(step => {
           const before = step.before == null ? '起始' : `${step.before}分`;
           const after = step.after == null ? '暂无' : `${step.after}分`;
@@ -497,8 +504,8 @@ function stockFieldStatusSql(alias = 'h') {
       ELSE 'pending'
     END,
     'issue_price', CASE WHEN ${alias}.issue_price IS NOT NULL THEN 'value' ELSE 'missing' END,
-    'online_lottery_rate', CASE WHEN ${alias}.online_lottery_rate IS NOT NULL THEN 'value' ELSE 'pending' END,
-    'oversubscribe_multiple', CASE WHEN ${alias}.oversubscribe_multiple IS NOT NULL THEN 'value' ELSE 'pending' END,
+    'online_lottery_rate', CASE WHEN ${alias}.online_lottery_rate > 0 THEN 'value' ELSE 'pending' END,
+    'oversubscribe_multiple', CASE WHEN ${alias}.oversubscribe_multiple > 0 THEN 'value' ELSE 'pending' END,
     'industry', CASE WHEN NULLIF(${alias}.industry, '') IS NOT NULL THEN 'value'
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,

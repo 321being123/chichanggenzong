@@ -190,6 +190,10 @@ try:
                 "status": "complete", "confidence": 0.9,
                 "exposures": [{"label": "半导体", "weight": 1.0}],
             },
+            # 数据源在"尚未公布"时会给出 0 而不是空值，这里固定返回 0
+            # 以验证写入侧不会把占位 0 当成实测值写回库。
+            "online_lottery_rate": 0,
+            "oversubscribe_multiple": 0,
         }
 
     ipo_lib_fetch.fetch_stock_historical_detail = fake_fetch
@@ -261,12 +265,25 @@ try:
             str(no_candidate),
         )
 
+        # 断言范围限定在本测试构造的证券代码：测试库可能带有回填前的历史残留，
+        # 全库扫描会让该断言依赖库快照新旧，无法稳定反映本次写入行为。
+        cur.execute(
+            "UPDATE ipo_history SET online_lottery_rate=NULL, oversubscribe_multiple=NULL "
+            "WHERE left(security_code,3) IN ('969','970')"
+        )
         result = sync.enrich_stock_missing_details(
             cur, date(2026, 9, 10), target_date=date(2026, 9, 11), priority_codes=current_codes
         )
     finally:
         ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
     check("资料补全无固定8条上限", result["attempted"] >= 65, str(result))
+    cur.execute(
+        "SELECT count(*) FROM ipo_history WHERE (online_lottery_rate = 0 "
+        "OR oversubscribe_multiple = 0) AND left(security_code,3) IN ('969','970')"
+    )
+    check("中签率与超额认购倍数零占位不被写回库",
+          int(cur.fetchone()[0] or 0) == 0,
+          "数据源返回 0 时必须按缺失处理，否则写入侧会把它当结果长期维持")
     check("当前发行25条全部优先", set(calls[:25]) == set(current_codes), str(calls[:25]))
     cur.execute("SELECT min(length(main_business)) FROM ipo_history WHERE security_code=ANY(%s)", (current_codes,))
     check("长主营业务完整入库", int(cur.fetchone()[0] or 0) > 200)

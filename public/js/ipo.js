@@ -278,7 +278,8 @@ function ipoWanfenCell(v) {
   var n = Number(v);
   if (isNaN(n)) return '<span>-</span>';
   var wan = n * 100; // 万分之
-  if (wan === 0) return '<span>0</span>';
+  // 中签率不可能为 0，库里的 0 只代表"尚未公布"的占位，不能显示成"万分之 0"。
+  if (wan === 0) return '<span>待补全</span>';
   var s = wan.toFixed(3);
   return '<span>' + s + '</span>';
 }

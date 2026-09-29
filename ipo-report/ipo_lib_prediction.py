@@ -10,7 +10,7 @@ import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
 from bond_data_layer import get_bond_row
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries
-from _classify import _is_bj_stock, _market_type_to_board_key
+from _classify import _is_bj_stock, _market_type_to_board_key, board_key_from_code
 from _common import _load_env
 from ipo_lib_common import *
 from ipo_lib_fetch import *
@@ -433,17 +433,12 @@ def calibrate_board_base():
     _BOARD_CALIBRATED = True
 
 def estimate_board_base(stock_code):
-    """根据股票代码判断板块，返回基准首日涨幅（%）"""
-    code_str = str(stock_code)
-    if code_str.startswith("688") or code_str.startswith("787"):
-        return BOARD_BASE["科创板"]
-    elif code_str.startswith("920") or code_str.startswith("82") or code_str.startswith("83") or code_str.startswith("87"):
-        return BOARD_BASE["北交所"]
-    elif code_str.startswith(("300", "301")):
-        return BOARD_BASE["创业板"]
-    elif code_str.startswith(("000", "001", "002", "003")):
-        return BOARD_BASE["深市主板"]
-    else:
-        return BOARD_BASE["沪市主板"]
+    """根据股票代码判断板块，返回基准首日涨幅（%）。
+
+    板块无法识别时返回 0（未知），不再默认套用科创板或沪市主板，
+    避免用猜测的板块基准抬高评分与预测。
+    """
+    board_key = board_key_from_code(stock_code)
+    return BOARD_BASE.get(board_key, 0)
 
 __all__ = ['_bond_predicted_return', '_bond_first_non_limit_return', '_price_from_return', '_log_prediction_errors', 'save_predictions', 'backfill_prediction_actuals', 'get_prediction_accuracy', '_build_accuracy_lines', 'calibrate_board_base', 'estimate_board_base']

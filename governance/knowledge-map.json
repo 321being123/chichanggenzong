@@ -132,6 +132,35 @@
       "expandOn": ["原文证据", "分类体系", "PE来源", "存量回放", "续跑"]
     },
     {
+      "id": "ipo-prediction-model",
+      "risk": "high",
+      "paths": [
+        "ipo-report/train_xgb_model.py",
+        "ipo-report/ipo_lib_valuation.py",
+        "ipo-report/ipo_lib_sector.py",
+        "ipo-report/ipo_lib_prediction.py",
+        "ipo-report/ipo_lib_report.py",
+        "ipo-report/ipo_history_sync.py",
+        "ipo-report/test_ipo_unit.py",
+        "server/routes/ipo.js"
+      ],
+      "keywords": ["A股打新预测", "IPO首日涨幅预测", "XGBoost新股预测", "赛道热度系数", "申购建议评分", "预测区间校准"],
+      "read": [
+        "docs/技术架构.md",
+        "docs/打新预测模型梳理与优化建议_20260929.md",
+        "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
+        "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/打新预测模型梳理与优化建议_20260929.md"
+      ],
+      "checks": ["npm.cmd run check:knowledge"],
+      "expandOn": ["历史样本", "预测阶段", "可用时点", "负收益", "赛道成分股", "回测", "预测区间"]
+    },
+    {
       "id": "task-quality-governance",
       "risk": "high",
       "paths": [

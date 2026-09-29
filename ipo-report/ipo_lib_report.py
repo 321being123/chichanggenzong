@@ -67,7 +67,7 @@ def _format_model_features(prediction_calculation):
     parts = []
     for key, value in features.items():
         label, unit = IPO_MODEL_FEATURE_META.get(key, (key, "无单位：模型字段"))
-        status = "（补位）" if statuses.get(key) == "补位" else ""
+        status = "（补位）" if statuses.get(key) == "补位" else "（缺失）" if statuses.get(key) == "缺失" else ""
         parts.append(f"{label}（{unit}）={_format_model_feature_value(value)}{status}")
     return "；".join(parts)
 

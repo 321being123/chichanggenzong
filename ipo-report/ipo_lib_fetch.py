@@ -1467,7 +1467,7 @@ def _extract_main_business(text):
     return biz or ind or None
 
 
-_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v2"
+_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v3"
 _DOWNSTREAM_CHAIN_RULES = (
     ("数据中心", re.compile(r"数据中心", re.I), ("算力",)),
     ("AI高功率芯片", re.compile(r"AI\s*高功率芯片|高功率芯片", re.I), ("人工智能", "半导体")),
@@ -1482,6 +1482,12 @@ _DOWNSTREAM_CHAIN_RULES = (
 def _extract_industry_chain_relations(text):
     """从招股书明确的上下游段落提取关系，不用公司名称或行业代码猜关系。"""
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    normalized = re.sub(
+        r"[\u3400-\u9fffA-Za-z0-9·]{2,50}公司\s*招股说明书"
+        r"\s*[（(][^）)]*[）)]?\s*\d+(?:-\d+)+",
+        " ", normalized,
+    )
+    normalized = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", normalized)
     products = [
         label for label, pattern in (
             ("热管理材料", re.compile(r"热管理材料|导热界面材料")),

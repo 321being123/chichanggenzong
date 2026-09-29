@@ -959,7 +959,7 @@ try:
         "电磁屏蔽材料上游行业主要为金属材料、塑料粒、硅胶块、导电布、泡棉等基础材料行业；"
         "吸波材料的上游行业主要为化工与高分子材料及有色金属等行业。"
         "导热界面材料、屏蔽材料、吸波材料的终端应用领域包括数据中心（AI 高功率芯片、光模块）、"
-        "5G 通信、智能汽车、计算机及消费电子等。"
+        "5G 通信、智能汽车、计算机及消费 深圳市鸿富诚新材料股份有限公司 招股说明书（注册稿） 1-1-128 电子等。"
     )
     chain = fetch._extract_industry_chain_relations(chain_source_text)
     check("招股书上下游关系提取覆盖上游材料与下游应用",
@@ -968,7 +968,7 @@ try:
           and len(chain.get("upstream", [])) >= 10
           and all(item.get("relationship") == "supplies" and item.get("evidence")
                   for item in chain.get("upstream", []))
-          and {"数据中心", "AI高功率芯片", "光模块", "5G通信", "智能汽车", "消费电子"}.issubset(
+          and {"数据中心", "AI高功率芯片", "光模块", "5G通信", "智能汽车", "计算机", "消费电子"}.issubset(
               {item.get("industry") for item in chain.get("downstream", [])})
           and all(item.get("relationship") == "applied_in"
                   and set(item.get("products", [])) == set(chain.get("products", []))
@@ -981,7 +981,7 @@ try:
     )
     related_tracks = {item.get("sector_key") for item in chain_exposure.get("exposures", [])}
     check("下游明确应用转为关联赛道并保留关系方向",
-          {"算力", "人工智能", "半导体", "光通信", "5G通信", "汽车电子", "消费电子"}.issubset(related_tracks)
+          {"算力", "人工智能", "半导体", "光通信", "5G通信", "汽车电子", "计算机", "消费电子"}.issubset(related_tracks)
           and any(item.get("relationship") == "downstream" for item in chain_exposure.get("exposures", []))
           and abs(sum(item.get("weight", 0) for item in chain_exposure.get("exposures", [])) - 1.0) < 0.001,
           "exposure=%r" % (chain_exposure,))

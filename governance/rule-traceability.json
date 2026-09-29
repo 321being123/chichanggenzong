@@ -219,6 +219,7 @@
         "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_extract_industry_chain_relations" },
         "tests": [
           { "file": "ipo-report/test_ipo_unit.py", "pattern": "招股书上下游关系提取覆盖上游材料与下游应用" },
+          { "file": "ipo-report/test_ipo_unit.py", "pattern": "消费 深圳市鸿富诚新材料股份有限公司 招股说明书（注册稿） 1-1-128 电子等。" },
           { "file": "ipo-report/test_ipo_unit.py", "pattern": "下游明确应用转为关联赛道并保留关系方向" }
         ],
         "owner": "A股 IPO",

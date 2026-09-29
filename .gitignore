@@ -72,3 +72,6 @@ huatai_backup_*.json
 # 临时调试脚本（本地产物，禁止入库）
 tmp_debug_*.js
 _tmp*
+
+# 验收/复核过程产生的证据文件只留本地，不入库
+/data/ipo_reacceptance_*

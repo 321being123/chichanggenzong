@@ -223,7 +223,25 @@
           { "file": "ipo-report/test_ipo_unit.py", "pattern": "下游明确应用转为关联赛道并保留关系方向" }
         ],
         "owner": "A股 IPO",
-        "status": "verified"
+        "status": "production_verified",
+        "productionEvidence": {
+          "codeCommit": "ae75e04",
+          "job": "ipo_history_sync",
+          "slotId": "1183681",
+          "runId": 3374,
+          "targetCodes": ["301716"],
+          "industryChainParser": "ipo-industry-chain-v3",
+          "upstreamCount": 12,
+          "downstreamCount": 7,
+          "relatedTrackCount": 8,
+          "reportSlotId": "1184035",
+          "reportRunId": 3379,
+          "reportDate": "2026-09-29",
+          "businessDate": "2026-09-28",
+          "forcedRefresh": true,
+          "forecastPercent": 224,
+          "forecastRange": [81, 367]
+        }
       },
     {
       "id": "IPO-INDUSTRY-PARSER-001",

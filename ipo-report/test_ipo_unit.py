@@ -142,6 +142,9 @@ try:
     check("交易所识别投资风险特别公告",
           fetch._ipo_document_role("粤芯半导体首次公开发行股票并在创业板上市投资风险特别公告")
           == "issuance_risk_announcement")
+    check("巨潮识别初步询价及推介公告",
+          fetch._ipo_document_role("广州通则康威科技股份有限公司首次公开发行股票并在创业板上市初步询价及推介公告")
+          == "issuance_announcement")
     issuance = fetch._parse_ipo_issuance_detail(
         "发行人所属行业为塑料制品业（C292），发行人所属行业最近一个月平均静态市盈率为38.2倍"
     )
@@ -334,12 +337,14 @@ try:
 
         def json(self):
             return {
-                "totalAnnouncement": 2,
+                "totalAnnouncement": 3,
                 "announcements": [
                     {"announcementId": "risk", "announcementTitle": "首次公开发行股票并在创业板上市投资风险特别公告",
                      "adjunctUrl": "finalpage/2026-09-23/risk.PDF"},
                     {"announcementId": "issue", "announcementTitle": "首次公开发行股票并在创业板上市发行公告",
                      "adjunctUrl": "finalpage/2026-09-23/issue.PDF"},
+                    {"announcementId": "inquiry", "announcementTitle": "首次公开发行股票并在创业板上市初步询价及推介公告",
+                     "adjunctUrl": "finalpage/2026-09-23/inquiry.PDF"},
                 ],
             }
 
@@ -423,8 +428,8 @@ try:
         fetch.requests.Session = old_session
         fetch._get_org_id = old_org_lookup
         fetch._CNINFO_IPO_ISSUANCE_CACHE.pop("301660", None)
-    check("巨潮备源发现发行与风险公告并保留公告日",
-          len(candidates) == 2 and candidates[0][0] == "cninfo"
+    check("巨潮备源发现发行、风险和询价公告并保留公告日",
+          len(candidates) == 3 and candidates[0][0] == "cninfo"
           and candidates[0][3] == "2026-09-23"
           and all("static.cninfo.com.cn/finalpage/2026-09-23/" in item[1] for item in candidates)
           and org_lookup_calls == [("301660", "粤芯半导体")],

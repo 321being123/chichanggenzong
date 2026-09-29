@@ -212,7 +212,7 @@ _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
-_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v5"
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v6"
 _IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
 _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
@@ -1553,6 +1553,8 @@ def _ipo_document_role(title):
         return ''
     if '招股说明书' in normalized or '招股意向书' in normalized:
         return 'prospectus'
+    if '初步询价及推介公告' in normalized:
+        return 'issuance_announcement'
     if ('发行结果' in normalized or '中签率公告' in normalized
             or '配售结果及网上中签结果' in normalized):
         return 'issuance_result'

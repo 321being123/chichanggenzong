@@ -1328,6 +1328,8 @@ def main():
                 "status": "succeeded" if stage_complete else "partial",
                 "error": None if stage_complete else "定向资料未完整处理全部目标",
                 "codes": target_codes, "result": result, "quality": quality,
+                "externalCalls": get_external_call_stats()["total"],
+                "externalSources": get_external_call_stats()["sources"],
                 "publishDatasets": False, "publishDatasetCodes": [],
             }, ensure_ascii=False, default=str))
             return

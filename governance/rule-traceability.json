@@ -210,6 +210,7 @@
       "tests": [
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "鸿富诚代码在前格式解析行业和独立证据" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "官方行业分类代码优先于较新但未分类的招股书表述" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮识别初步询价及推介公告" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "行业解析跳过同行公司行业分类" },
         { "file": "ipo-report/test_ipo_unit.py", "pattern": "PE先命中仍继续查找行业且字段证据各自绑定文档" }
       ],

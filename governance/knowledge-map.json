@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-28",
+  "lastReviewed": "2026-09-29",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -93,15 +93,21 @@
       "paths": [
         "ipo-report/ipo_history_sync.py",
         "ipo-report/ipo_lib_fetch.py",
+        "ipo-report/ipo_lib_sector.py",
+        "ipo-report/ipo_lib_valuation.py",
+        "ipo-report/ipo_lib_report.py",
         "ipo-report/test_ipo_history_sync.py",
         "ipo-report/test_ipo_unit.py",
+        "server/services/externalApiConfig.js",
+        "server/services/jobDefinitions.js",
+        "server/services/tushare.js",
         "server/routes/ipo.js",
         "server/test/ipo-api.test.js",
         "server/test/ipo-history-sync.test.js",
         "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
         "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md"
       ],
-      "keywords": ["A股IPO行业", "IPO行业解析", "行业分类", "行业PE口径", "行业补全"],
+      "keywords": ["A股IPO行业", "IPO行业解析", "行业分类", "行业PE口径", "行业补全", "申万二级行业", "二级行业热度回退"],
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",

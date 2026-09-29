@@ -189,6 +189,7 @@ async function buildCnStockLiveReport(code) {
     '## 基本资料',
     `- **市场板块**：${valueOrDash(row.market_type)}`,
     `- **所属行业**：${valueOrDash(row.industry)}`,
+    `- **申万二级行业**：${valueOrDash(context.sector_industry_taxonomy && context.sector_industry_taxonomy.l2_name)}`,
     `- **业务赛道**：${cnStockSector(row)}`,
     `- **主营业务**：${valueOrDash(row.main_business)}`,
     `- **发行价格**：${valueOrDash(row.issue_price, '元')}`,

@@ -954,6 +954,46 @@ try:
           and hongfucheng_exposure["exposures"][0].get("sector_key") == "电子功能材料"
           and hongfucheng_exposure.get("status") == "complete",
           "exposure=%r" % (hongfucheng_exposure,))
+    _old_sector_boosts_for_l2 = dict(_val.SECTOR_EFFECTIVE_BOOSTS)
+    _old_sector_counts_for_l2 = dict(_val.SECTOR_SAMPLE_COUNTS)
+    _val.SECTOR_EFFECTIVE_BOOSTS.clear()
+    _val.SECTOR_SAMPLE_COUNTS.clear()
+    l2_key = "行业二级:801086.SI"
+    taxonomy = {
+        "taxonomy_code": "SW2021", "l1_name": "电子",
+        "l2_code": "801086.SI", "l2_name": "电子化学品Ⅱ",
+        "l3_code": "850861.SI", "l3_name": "电子化学品Ⅲ",
+    }
+    _val.SECTOR_EFFECTIVE_BOOSTS[l2_key] = 1.42
+    _val.SECTOR_SAMPLE_COUNTS[l2_key] = 4
+    l2_fallback = _val.get_stock_sector_context(
+        "鸿富诚", "热管理、电磁屏蔽及吸波材料等电子功能材料及器件的研发、生产和销售",
+        "C39 计算机、通信和其他电子设备制造业", stored=hongfucheng_exposure,
+        industry_taxonomy=taxonomy,
+    )
+    check("细分赛道无样本时回退申万二级行业历史热度",
+          l2_fallback.get("label") == "电子化学品Ⅱ"
+          and l2_fallback.get("classification_status") == "industry_level2_fallback"
+          and l2_fallback.get("multiplier") == 1.42
+          and l2_fallback.get("components", [{}])[0].get("sample_count") == 4,
+          "context=%r" % (l2_fallback,))
+    _val.SECTOR_EFFECTIVE_BOOSTS.pop(l2_key, None)
+    _val.SECTOR_SAMPLE_COUNTS.pop(l2_key, None)
+    l2_neutral = _val.get_stock_sector_context(
+        "鸿富诚", "热管理、电磁屏蔽及吸波材料等电子功能材料及器件的研发、生产和销售",
+        "C39 计算机、通信和其他电子设备制造业", stored=hongfucheng_exposure,
+        industry_taxonomy=taxonomy,
+    )
+    check("申万二级行业样本为空时仍显示二级行业并使用中性系数",
+          l2_neutral.get("label") == "电子化学品Ⅱ"
+          and l2_neutral.get("classification_status") == "industry_level2_fallback"
+          and l2_neutral.get("multiplier") == 1.0
+          and l2_neutral.get("components", [{}])[0].get("sample_count") == 0,
+          "context=%r" % (l2_neutral,))
+    _val.SECTOR_EFFECTIVE_BOOSTS.clear()
+    _val.SECTOR_EFFECTIVE_BOOSTS.update(_old_sector_boosts_for_l2)
+    _val.SECTOR_SAMPLE_COUNTS.clear()
+    _val.SECTOR_SAMPLE_COUNTS.update(_old_sector_counts_for_l2)
     missing_context = _val.get_stock_sector_context("测试", "", "")
     check("行业和主营缺失时标记待补全", missing_context.get("classification_status") == "missing",
           "context=%r" % (missing_context,))

@@ -109,6 +109,7 @@ async function main() {
   check('A股详情使用XGBoost并展示热度赛道', () => {
     assert.match(routeSource, /预测模型.*XGBoost/);
     assert.match(routeSource, /热度赛道/);
+    assert.match(routeSource, /申万二级行业/);
     assert.match(routeSource, /赛道热度系数/);
     assert.match(routeSource, /预测计算明细/);
     assert.match(routeSource, /打新建议评分明细/);

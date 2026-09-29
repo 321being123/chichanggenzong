@@ -192,6 +192,81 @@ def tushare_query(api_name, params, fields, retries=2):
     return _tushare(api_name, params, fields)
 
 
+def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
+    """把目标 IPO 的申万行业路径作为独立分类元数据增量入库。"""
+    codes = sorted({str(code or "").split(".")[0] for code in (codes or []) if code})
+    result = {"attempted": 0, "updated": 0, "cached": 0, "missing": 0, "failed": 0, "stopped": None}
+    if not codes:
+        return result
+
+    fields = "ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new"
+    for code in codes:
+        cur.execute(
+            "SELECT source_payload->'industry_taxonomies'->'SW2021' FROM ipo_history WHERE security_code=%s",
+            (code,),
+        )
+        row = cur.fetchone()
+        stored = row[0] if row else None
+        stored = stored if isinstance(stored, dict) else {}
+        fetched_at = str(stored.get("fetched_at") or "")[:10]
+        fresh = False
+        try:
+            fresh = bool(stored.get("l2_code") and stored.get("l2_name")
+                         and fetched_at and date.fromisoformat(fetched_at) >= today - timedelta(days=90))
+        except ValueError:
+            fresh = False
+        if fresh:
+            result["cached"] += 1
+            continue
+
+        result["attempted"] += 1
+        try:
+            ts_code = resolve_provider_code(code, "tushare", "ts_code", conn=cur.connection, asset_class="stock")
+            if not ts_code:
+                result["missing"] += 1
+                continue
+            rows = tushare_query(
+                "index_member_all", {"ts_code": ts_code, "is_new": "Y"}, fields
+            )
+            item = next((item for item in rows if item.get("l2_code") and item.get("l2_name")), None)
+            if not item:
+                result["missing"] += 1
+                continue
+            taxonomy = {
+                "taxonomy_code": "SW2021",
+                "classification_date": today.isoformat(),
+                "fetched_at": _now_shanghai().isoformat(),
+                "source": "tushare.index_member_all",
+                "ts_code": ts_code,
+                "l1_code": item.get("l1_code"), "l1_name": item.get("l1_name"),
+                "l2_code": item.get("l2_code"), "l2_name": item.get("l2_name"),
+                "l3_code": item.get("l3_code"), "l3_name": item.get("l3_name"),
+                "is_new": item.get("is_new"),
+            }
+            cur.execute(
+                """UPDATE ipo_history
+                      SET source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object(
+                            'industry_taxonomies',
+                            COALESCE(source_payload->'industry_taxonomies','{}'::jsonb)
+                              || jsonb_build_object('SW2021',%s::jsonb)),
+                          updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+                    WHERE security_code=%s""",
+                (Json(taxonomy), code),
+            )
+            if cur.rowcount:
+                result["updated"] += 1
+            else:
+                result["missing"] += 1
+        except ExternalCallGuardError as exc:
+            if raise_on_guard:
+                raise
+            result["stopped"] = {"code": exc.code, "recover_at": _recover_at_text(exc.recover_at)}
+            break
+        except Exception:
+            result["failed"] += 1
+    return result
+
+
 def pg_connect():
     return psycopg2.connect(
         host=os.environ.get("PGHOST", "127.0.0.1"),
@@ -812,6 +887,10 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             stopped = detail["issuance_stopped"]
             break
 
+    industry_taxonomy = sync_sw_industry_taxonomies(
+        cur, priority_codes or only_codes, today, raise_on_guard=raise_on_guard
+    )
+
     remaining_scope = " AND security_code=ANY(%s::text[])" if only_codes else ""
     cur.execute(f"""
       SELECT
@@ -887,7 +966,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
     }
     return {"attempted": attempted, "updated": updated, "failed": failed, "remaining": remaining,
             "remaining_by_field": remaining_by_field, "diagnostic_summary": diagnostic_summary,
-            "stopped": stopped}
+            "stopped": stopped, "industry_taxonomy": industry_taxonomy}
 
 
 def update_quality(cur, today, include_enrichment=True, only_codes=None):
@@ -977,10 +1056,15 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
 
 def _targeted_stage_complete(result, target_codes):
     expected = len({str(code or '').split('.')[0] for code in target_codes if code})
+    taxonomy = result.get("industry_taxonomy") if isinstance(result.get("industry_taxonomy"), dict) else {}
     return (
         int(result.get("attempted", 0) or 0) == expected
         and int(result.get("failed", 0) or 0) == 0
         and result.get("stopped") is None
+        and int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0) == expected
+        and int(taxonomy.get("missing", 0) or 0) == 0
+        and int(taxonomy.get("failed", 0) or 0) == 0
+        and taxonomy.get("stopped") is None
     )
 
 
@@ -1204,6 +1288,8 @@ def run(today=None, mode="core"):
                         enrichment = {
                             "attempted": 0, "updated": 0, "failed": 0, "remaining": 0,
                             "remaining_by_field": {}, "stopped": None,
+                            "industry_taxonomy": {"attempted": 0, "updated": 0, "cached": 0,
+                                                  "missing": 0, "failed": 0, "stopped": None},
                         }
                         first_day = {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
                     else:
@@ -1234,12 +1320,17 @@ def run(today=None, mode="core"):
                 int(enrichment.get("failed", 0)) == 0
                 and int(enrichment.get("remaining", 0)) == 0
                 and enrichment.get("stopped") is None
+                and int((enrichment.get("industry_taxonomy") or {}).get("missing", 0)) == 0
+                and int((enrichment.get("industry_taxonomy") or {}).get("failed", 0)) == 0
+                and (enrichment.get("industry_taxonomy") or {}).get("stopped") is None
                 and int(first_day.get("pending", 0)) == 0
                 and first_day.get("stopped") is None
             )
             stage_error = None if stage_complete else (
                 f"{mode} 阶段未完成：资料剩余 {int(enrichment.get('remaining', 0))} 项，"
-                f"资料失败 {int(enrichment.get('failed', 0))} 项，首日表现待补 {int(first_day.get('pending', 0))} 项"
+                f"资料失败 {int(enrichment.get('failed', 0))} 项，二级行业待补 "
+                f"{int((enrichment.get('industry_taxonomy') or {}).get('missing', 0)) + int((enrichment.get('industry_taxonomy') or {}).get('failed', 0))} 项，"
+                f"首日表现待补 {int(first_day.get('pending', 0))} 项"
             )
             return {
                 "ok": stage_complete, "mode": mode, "dataAsOf": today.isoformat(),

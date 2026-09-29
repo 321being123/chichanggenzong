@@ -23,6 +23,22 @@ class QualityCursorSpy:
         return []
 
 
+class IndustryTaxonomyCursorSpy:
+    def __init__(self):
+        self.connection = object()
+        self.rowcount = 0
+        self.query = ""
+        self.params = ()
+
+    def execute(self, query, params=()):
+        self.query = query
+        self.params = params
+        self.rowcount = 1 if "UPDATE ipo_history" in query else 0
+
+    def fetchone(self):
+        return (None,)
+
+
 def check(name, condition, detail=""):
     (PASS if condition else FAIL).append(name)
     print("  [%s] %s %s" % ("PASS" if condition else "FAIL", name, detail))
@@ -38,12 +54,40 @@ try:
           repr(targeted_quality_cursor.params))
     check("定向任务对未披露字段可完成但保留缺口状态",
           sync._targeted_stage_complete(
-              {"attempted": 3, "failed": 0, "stopped": None, "remaining": 1}, targeted_codes
+              {"attempted": 3, "failed": 0, "stopped": None, "remaining": 1,
+               "industry_taxonomy": {"updated": 3, "cached": 0, "missing": 0, "failed": 0, "stopped": None}},
+              targeted_codes
           ))
     check("定向任务遇 Guard 停止不能标记阶段完成",
           not sync._targeted_stage_complete(
-              {"attempted": 2, "failed": 0, "stopped": {"code": "CIRCUIT_OPEN"}}, targeted_codes
+              {"attempted": 2, "failed": 0, "stopped": {"code": "CIRCUIT_OPEN"},
+               "industry_taxonomy": {"updated": 0, "cached": 0, "missing": 0, "failed": 0, "stopped": None}},
+              targeted_codes
           ))
+
+    taxonomy_cursor = IndustryTaxonomyCursorSpy()
+    old_taxonomy_query = sync.tushare_query
+    old_provider_resolver = sync.resolve_provider_code
+    sync.tushare_query = lambda api, params, fields: [{
+        "ts_code": "301716.SZ", "l1_code": "801080.SI", "l1_name": "电子",
+        "l2_code": "801086.SI", "l2_name": "电子化学品Ⅱ",
+        "l3_code": "850861.SI", "l3_name": "电子化学品Ⅲ", "is_new": "Y",
+    }]
+    sync.resolve_provider_code = lambda code, *args, **kwargs: "301716.SZ"
+    try:
+        taxonomy_result = sync.sync_sw_industry_taxonomies(
+            taxonomy_cursor, ["301716"], date(2026, 9, 29)
+        )
+    finally:
+        sync.tushare_query = old_taxonomy_query
+        sync.resolve_provider_code = old_provider_resolver
+    check("申万二级行业路径入库且不覆盖官方行业事实",
+          taxonomy_result.get("updated") == 1
+          and "industry_taxonomies" in taxonomy_cursor.query
+          and "SW2021" in taxonomy_cursor.query
+          and taxonomy_cursor.params[0].adapted.get("l2_code") == "801086.SI"
+          and taxonomy_cursor.params[0].adapted.get("l2_name") == "电子化学品Ⅱ",
+          repr(taxonomy_result))
 
     loss = sync.normalize_share({
         "ts_code": "999999.SH", "name": "测试新股", "ipo_date": "20260801",

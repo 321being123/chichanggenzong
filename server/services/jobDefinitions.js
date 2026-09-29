@@ -86,7 +86,7 @@ const JOB_CONTRACTS = {
   'market_volatility_sync': { externalApis: ['index_dailybasic', 'cn_bond_yield', 'hsi_valuation'], producesDatasets: ['market_volatility'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'convertible_bond_valuation_refresh': { externalApis: [], producesDatasets: ['bond_valuation'], consumesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_suspend_calendar'], maxExternalCallsPerRun: 0 },
   'ipo_history_sync': {
-    externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'sse', 'szse', 'bse', 'cninfo', 'stock_company'],
+    externalApis: ['new_share', 'tencent_quote', 'stock_basic', 'index_member_all', 'sse', 'szse', 'bse', 'cninfo', 'stock_company'],
     producesDatasets: ['ipo_history'], consumesDatasets: [], maxExternalCallsPerRun: null,
     datasetPublicationByMode: {
       prediction_ready: { publish: [], requirePublished: [], requireStageComplete: true },

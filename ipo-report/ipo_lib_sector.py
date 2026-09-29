@@ -96,6 +96,33 @@ def _compute_sector_multiplier(robust_gain, benchmark):
     return round(value, 3)
 
 
+def _stored_sw_industry_taxonomy(source_payload):
+    """读取与官方 IPO 行业事实分开的申万分类元数据。"""
+    if isinstance(source_payload, str):
+        try:
+            source_payload = json.loads(source_payload)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(source_payload, dict):
+        return {}
+    taxonomies = source_payload.get("industry_taxonomies")
+    taxonomy = taxonomies.get("SW2021") if isinstance(taxonomies, dict) else None
+    return taxonomy if isinstance(taxonomy, dict) else {}
+
+
+def _sw_industry_level2(industry_taxonomy):
+    """只接受有申万2021代码和二级名称的分类路径。"""
+    if not isinstance(industry_taxonomy, dict):
+        return None
+    if industry_taxonomy.get("taxonomy_code") != "SW2021":
+        return None
+    code = str(industry_taxonomy.get("l2_code") or "").strip()
+    name = str(industry_taxonomy.get("l2_name") or "").strip()
+    if not code or not name:
+        return None
+    return {"code": code, "name": name}
+
+
 def analyze_business_exposure(stock_name, main_business, industry, stored=None):
     """从主营业务提取“产品→下游”暴露度，返回可持久化的解释结果。
 
@@ -221,7 +248,7 @@ def calibrate_sector_boost():
     cutoff = (datetime.now() - timedelta(days=SECTOR_CALIBRATION_DAYS)).strftime("%Y-%m-%d")
     rows = conn.execute(
         """SELECT security_code, security_name, market_type, listing_date,
-                  main_business, industry, ld_close_change
+                  main_business, industry, ld_close_change, source_payload
              FROM ipo_history
             WHERE listing_date >= ? AND ld_close_change IS NOT NULL""",
         (cutoff,),
@@ -229,13 +256,16 @@ def calibrate_sector_boost():
 
     sector_gains = defaultdict(list)
     benchmark_gains = []
-    for code, name, market_type, listing_date, mb, ind, ld in rows:
+    for code, name, market_type, listing_date, mb, ind, ld, source_payload in rows:
         if ld is None or str(market_type or "") == "北交所":
             continue
         benchmark_gains.append(ld)
         exposure = analyze_business_exposure(name, mb, ind)
         for item in exposure.get("exposures", []):
             sector_gains[item["sector_key"]].append(ld)
+        level2 = _sw_industry_level2(_stored_sw_industry_taxonomy(source_payload))
+        if level2:
+            sector_gains[f"行业二级:{level2['code']}"].append(ld)
         # 所有新股同时沉淀所属行业热度，供未命中热门关键词的新股统一兜底。
         industry_name = str(ind or "").strip()
         if industry_name and industry_name.lower() not in ("nan", "none", "-"):
@@ -434,11 +464,22 @@ def detect_stock_hot_sector(stock_name, main_business, industry):
     return context["label"], context["multiplier"]
 
 
-def get_stock_sector_context(stock_name, main_business, industry, stored=None):
+def get_stock_sector_context(stock_name, main_business, industry, stored=None, industry_taxonomy=None):
     """返回可解释的赛道判断，保留兼容的二元 detect_stock_hot_sector 接口。"""
     exposure = analyze_business_exposure(stock_name, main_business, industry, stored=stored)
     items = exposure.get("exposures", [])
+    level2 = _sw_industry_level2(industry_taxonomy)
+    level2_key = f"行业二级:{level2['code']}" if level2 else ""
     if not items:
+        if level2:
+            multiplier = _effective_sector_multiplier(level2_key, 1.0)
+            return {"label": level2["name"], "multiplier": multiplier,
+                    "confidence": 1.0, "classification_status": "industry_level2_fallback",
+                    "industry_level": 2, "industry_taxonomy": industry_taxonomy,
+                    "exposure": exposure,
+                    "components": [{"label": level2["name"], "sector_key": level2_key,
+                                    "weight": 1.0, "multiplier": multiplier,
+                                    "sample_count": SECTOR_SAMPLE_COUNTS.get(level2_key, 0)}]}
         industry_name = str(industry or "").strip()
         key = f"行业:{industry_name}" if industry_name and industry_name.lower() not in ("nan", "none", "-") else ""
         multiplier = _effective_sector_multiplier(key, 1.0) if key else 1.0
@@ -446,6 +487,21 @@ def get_stock_sector_context(stock_name, main_business, industry, stored=None):
                 "confidence": 0.25 if key else 0.0,
                 "classification_status": "industry_fallback" if key else "missing",
                 "exposure": exposure}
+
+    exposure_sample_count = sum(
+        int(SECTOR_SAMPLE_COUNTS.get(item.get("sector_key") or item.get("label"), 0) or 0)
+        for item in items
+    )
+    if level2 and exposure_sample_count == 0:
+        multiplier = _effective_sector_multiplier(level2_key, 1.0)
+        return {"label": level2["name"], "multiplier": multiplier,
+                "confidence": float(exposure.get("confidence") or 0.0),
+                "classification_status": "industry_level2_fallback",
+                "industry_level": 2, "industry_taxonomy": industry_taxonomy,
+                "exposure": exposure,
+                "components": [{"label": level2["name"], "sector_key": level2_key,
+                                "weight": 1.0, "multiplier": multiplier,
+                                "sample_count": SECTOR_SAMPLE_COUNTS.get(level2_key, 0)}]}
 
     weighted_delta = 0.0
     labels = []

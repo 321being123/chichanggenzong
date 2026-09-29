@@ -91,7 +91,7 @@ def fetch_stock_detail(secu_code):
         row = conn.execute(
             """SELECT issue_price,issue_pe,ipo_date,listing_date,fund_raised,total_shares,
                       online_shares,online_lottery_rate,oversubscribe_multiple,subscribe_upper_limit,circulation_mv,
-                      main_business,industry,industry_pe,business_exposure
+                      main_business,industry,industry_pe,business_exposure,source_payload
                  FROM ipo_history WHERE security_code=? LIMIT 1""",
             (str(secu_code or "").split(".")[0],),
         ).fetchone()
@@ -100,9 +100,19 @@ def fetch_stock_detail(secu_code):
             return None
         fields = ("issue_price", "issue_pe", "online_date", "list_date", "fund_raised", "total_shares",
                   "online_shares", "online_lottery_rate", "oversubscribe_multiple", "subscribe_upper_limit", "circulation_mv",
-                  "main_business", "industry", "industry_pe", "business_exposure")
+                  "main_business", "industry", "industry_pe", "business_exposure", "source_payload")
         info = dict(zip(fields, row))
         _normalize_stock_detail(info)
+        source_payload = info.pop("source_payload", None)
+        if isinstance(source_payload, str):
+            try:
+                source_payload = json.loads(source_payload)
+            except (TypeError, ValueError):
+                source_payload = None
+        if isinstance(source_payload, dict):
+            taxonomies = source_payload.get("industry_taxonomies")
+            if isinstance(taxonomies, dict):
+                info["industry_taxonomy"] = taxonomies.get("SW2021")
         if isinstance(info.get("business_exposure"), str):
             try:
                 info["business_exposure"] = json.loads(info["business_exposure"])

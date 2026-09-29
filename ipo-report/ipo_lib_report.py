@@ -79,12 +79,15 @@ def _stock_sector_display(detail):
     context = get_stock_sector_context(
         detail.get("stock_name", ""), detail.get("main_business", ""), detail.get("industry", ""),
         stored=detail.get("business_exposure"),
+        industry_taxonomy=detail.get("industry_taxonomy"),
     )
     status = context.get("classification_status", "missing")
     if status == "missing":
         return "待补全"
     if status == "industry_fallback":
         return f"{context.get('label') or '行业'}（行业兜底）"
+    if status == "industry_level2_fallback":
+        return f"{context.get('label') or '二级行业'}（申万二级行业兜底）"
     return context.get("label") or "待补全"
 
 def _business_exposure_for_detail(detail):

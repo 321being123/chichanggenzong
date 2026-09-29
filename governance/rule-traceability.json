@@ -267,6 +267,27 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "IPO-INDUSTRY-L2-001",
+      "title": "IPO 热度缺少细分赛道样本时按申万二级行业分组，空样本保持中性",
+      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "get_stock_sector_context" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "细分赛道无样本时回退申万二级行业历史热度" },
+        { "file": "ipo-report/test_ipo_unit.py", "pattern": "申万二级行业样本为空时仍显示二级行业并使用中性系数" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-INDUSTRY-L2-002",
+      "title": "申万行业路径单独存储并只对 IPO 目标增量查询",
+      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "sync_sw_industry_taxonomies" },
+      "tests": [
+        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "申万二级行业路径入库且不覆盖官方行业事实" }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

@@ -565,7 +565,19 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             existing_pe_source = (
                 existing_enrichment.get("industry_pe_source") or existing_pe_diagnostic.get("source")
             )
-            upgrade_candidate = existing_industry_source == "tushare_stock_basic"
+            existing_classification = existing_industry_diagnostic.get("evidence")
+            existing_classification = existing_classification if isinstance(existing_classification, dict) else {}
+            has_existing_classification = any(
+                existing_industry_diagnostic.get(key) or existing_classification.get(key)
+                for key in ("classification_system", "classification_code")
+            )
+            unclassified_existing_industry = bool(
+                str(existing_industry or '').strip() and not has_existing_classification
+            )
+            upgrade_candidate = (
+                existing_industry_source == "tushare_stock_basic"
+                or unclassified_existing_industry
+            )
             missing_fields = []
             if not str(existing_industry or '').strip() or upgrade_candidate:
                 missing_fields.append('industry')
@@ -591,7 +603,20 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 and bool(industry_evidence.get("snippet") and industry_evidence.get("url")
                          and industry_evidence.get("content_hash"))
             )
-            industry_upgrade = bool(official_industry and str(detail.get("industry") or "").strip())
+            replacement_diagnostic = detail.get("industry_diagnostic") or {}
+            replacement_evidence = replacement_diagnostic.get("evidence") or {}
+            replacement_has_classification = any(
+                replacement_diagnostic.get(key) or replacement_evidence.get(key)
+                for key in ("classification_system", "classification_code")
+            )
+            industry_upgrade = bool(
+                official_industry
+                and str(detail.get("industry") or "").strip()
+                and (
+                    existing_industry_source == "tushare_stock_basic"
+                    or (unclassified_existing_industry and replacement_has_classification)
+                )
+            )
             official_pe_source = detail.get("industry_pe_source") or (
                 detail.get("industry_pe_diagnostic") or {}
             ).get("source")
@@ -619,7 +644,11 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     "replacement_document_url": industry_evidence.get("url"),
                     "replacement_content_hash": industry_evidence.get("content_hash"),
                     "replacement_parser_version": industry_evidence.get("parser_version"),
-                    "reason": "verified_official_industry_replaced_tushare_stock_basic_fallback",
+                    "reason": (
+                        "verified_official_industry_replaced_tushare_stock_basic_fallback"
+                        if existing_industry_source == "tushare_stock_basic"
+                        else "verified_official_classification_replaced_unclassified_industry"
+                    ),
                     "recorded_on": today_text,
                 })
                 stored_detail["industry_upgrade_history"] = industry_history
@@ -928,6 +957,15 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
             missing_records += 1
             missing_fields += len(missing)
     return {"missing_records": missing_records, "missing_fields": missing_fields}
+
+
+def _targeted_stage_complete(result, target_codes):
+    expected = len({str(code or '').split('.')[0] for code in target_codes if code})
+    return (
+        int(result.get("attempted", 0) or 0) == expected
+        and int(result.get("failed", 0) or 0) == 0
+        and result.get("stopped") is None
+    )
 
 
 def mark_cursor(cur, today, error=None):
@@ -1284,7 +1322,14 @@ def main():
                 )
                 quality = update_quality(cur, date.fromisoformat(args.today) if args.today else _today_shanghai(), only_codes=target_codes)
             connection.commit()
-            print(json.dumps({"ok": True, "mode": "targeted", "codes": target_codes, "result": result, "quality": quality}, ensure_ascii=False, default=str))
+            stage_complete = _targeted_stage_complete(result, target_codes)
+            print(json.dumps({
+                "ok": stage_complete, "mode": "targeted", "stageComplete": stage_complete,
+                "status": "succeeded" if stage_complete else "partial",
+                "error": None if stage_complete else "定向资料未完整处理全部目标",
+                "codes": target_codes, "result": result, "quality": quality,
+                "publishDatasets": False, "publishDatasetCodes": [],
+            }, ensure_ascii=False, default=str))
             return
         finally:
             connection.close()

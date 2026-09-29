@@ -37,6 +37,18 @@ const { publishJobDatasets, areJobDatasetsPublished } = require('../services/dat
     assert.match(queryArgs.sql, /scope_key=ANY/);
     assert.match(queryArgs.sql, /SELECT dataset_code,scope_key/);
 
+    queryCount = 0;
+    const targeted = await publishJobDatasets('ipo_history_sync', '2026-09-29', {
+      ok: true, mode: 'targeted', stageComplete: true,
+      publishDatasets: false, publishDatasetCodes: [],
+    });
+    assert.deepStrictEqual(targeted, [], '手动定向阶段完成后不发布全局 IPO 分区');
+    assert.strictEqual(queryCount, 0, '手动定向阶段不得刷新或校验其他历史 IPO 的全局分区');
+    await assert.rejects(() => publishJobDatasets('ipo_history_sync', '2026-09-29', {
+      ok: true, mode: 'targeted', stageComplete: false,
+      publishDatasets: false, publishDatasetCodes: [],
+    }), /阶段仍有未完成对象/);
+
     pool.query = async (_sql, params) => ({ rows: [{
       dataset_code: 'hk_ipo_facts', scope_key: 'HK', status: 'published', is_stale: false,
       diagnostics: { quality_status: params[0][0] === 'hk_ipo_facts' ? 'passed' : 'stale' },

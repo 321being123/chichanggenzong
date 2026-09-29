@@ -92,6 +92,7 @@ const JOB_CONTRACTS = {
       prediction_ready: { publish: [], requirePublished: [], requireStageComplete: true },
       core: { publish: ['ipo_history'], requirePublished: ['ipo_history'] },
       enrichment: { publish: [], requirePublished: ['ipo_history'], requireStageComplete: true },
+      targeted: { publish: [], requirePublished: [], requireStageComplete: true },
     },
   },
   // 个股分析定时任务为数据库只读计算；财务/行情采集由共享批次和独立增量任务完成。

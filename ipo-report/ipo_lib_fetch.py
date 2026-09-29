@@ -212,7 +212,7 @@ _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
-_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v4"
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v5"
 _IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
 _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
@@ -2124,6 +2124,16 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
         source_key = 0 if source != 'cninfo' else 1
         return (correction, -date_key, role_key, source_key, url)
 
+    def parsed_candidate_rank(item, field):
+        rank = candidate_rank(item['candidate'], field)
+        if field != 'industry':
+            return rank
+        classification = item['detail'].get('industry_classification') or {}
+        has_system = bool(classification.get('classification_system'))
+        has_code = bool(classification.get('classification_code'))
+        classification_rank = 0 if has_system and has_code else 1 if has_system or has_code else 2
+        return (rank[0], classification_rank, *rank[1:])
+
     candidates.sort(key=lambda item: min(
         candidate_rank(item, field) for field in (required_fields or ('industry', 'industry_pe'))
     ))
@@ -2257,10 +2267,10 @@ def _fetch_exchange_ipo_issuance_detail(stock_code, security_name='', required_f
     field_diagnostics = {}
     for field in ('industry', 'industry_pe'):
         matches = [item for item in parsed_documents if item['detail'].get(field) is not None]
-        matches.sort(key=lambda item: candidate_rank(item['candidate'], field))
+        matches.sort(key=lambda item: parsed_candidate_rank(item, field))
         if matches:
-            top_rank = candidate_rank(matches[0]['candidate'], field)[:-1]
-            same_rank = [item for item in matches if candidate_rank(item['candidate'], field)[:-1] == top_rank]
+            top_rank = parsed_candidate_rank(matches[0], field)[:-1]
+            same_rank = [item for item in matches if parsed_candidate_rank(item, field)[:-1] == top_rank]
             distinct_values = {str(item['detail'].get(field)) for item in same_rank}
             if len(distinct_values) > 1:
                 field_diagnostics[field] = {
@@ -2909,12 +2919,16 @@ def fetch_stock_historical_detail(secu_code, existing_industry=None, existing_ma
                     'reason': 'insufficient_or_unmatched_industry_sample',
                 }
         elif announcement_detail.get('industry'):
-            detail['industry_pe_diagnostic'] = {
-                'status': 'unavailable',
+            detail['industry_pe_diagnostic'] = dict(issuance_pe_diagnostic) or {
+                'status': 'source_unavailable',
                 'reason': 'official_industry_classification_not_matched_to_tushare_pe_sample',
-                'industry_classification': announcement_detail.get('industry_classification'),
-                'industry_evidence': announcement_detail.get('industry_evidence'),
             }
+            detail['industry_pe_diagnostic'].setdefault('status', 'source_unavailable')
+            detail['industry_pe_diagnostic'].setdefault(
+                'reason', 'official_industry_classification_not_matched_to_tushare_pe_sample'
+            )
+            detail['industry_pe_diagnostic']['industry_classification'] = announcement_detail.get('industry_classification')
+            detail['industry_pe_diagnostic']['industry_evidence'] = announcement_detail.get('industry_evidence')
         else:
             detail['industry_pe_diagnostic'] = {
                 'status': 'source_unavailable', 'reason': 'industry_unavailable',

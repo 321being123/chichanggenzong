@@ -36,6 +36,14 @@ try:
           "security_code=ANY(%s::text[])" in targeted_quality_cursor.query
           and targeted_quality_cursor.params == (sorted(targeted_codes),),
           repr(targeted_quality_cursor.params))
+    check("定向任务对未披露字段可完成但保留缺口状态",
+          sync._targeted_stage_complete(
+              {"attempted": 3, "failed": 0, "stopped": None, "remaining": 1}, targeted_codes
+          ))
+    check("定向任务遇 Guard 停止不能标记阶段完成",
+          not sync._targeted_stage_complete(
+              {"attempted": 2, "failed": 0, "stopped": {"code": "CIRCUIT_OPEN"}}, targeted_codes
+          ))
 
     loss = sync.normalize_share({
         "ts_code": "999999.SH", "name": "测试新股", "ipo_date": "20260801",
@@ -225,7 +233,8 @@ try:
              ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
                ipo_status='active',industry=NULL,industry_pe=38.2,main_business='主营业务测试',
                business_exposure='{"exposures":[{"label":"测试"}]}'::jsonb,
-               online_lottery_rate=0.02,oversubscribe_multiple=100,data_quality_status='{}'::jsonb""",
+               online_lottery_rate=0.02,oversubscribe_multiple=100,source_payload='{}'::jsonb,
+               data_quality_status='{}'::jsonb""",
         (evidence_code,),
     )
     evidence_calls = []
@@ -237,6 +246,8 @@ try:
             "industry_diagnostic": {
                 "status": "value", "source": "cninfo", "document_url": "https://example.test/ipo.pdf",
                 "content_hash": "fixture-hash", "parser_version": "ipo-issuance-facts-v3",
+                "classification_system": "listed_company_industry_classification",
+                "classification_version": "2023", "classification_code": "C39",
             },
             "industry_evidence": {"snippet": "发行人所属行业为（C39）计算机、通信和其他电子设备制造业"},
             "industry_classification": {
@@ -354,6 +365,73 @@ try:
           and upgraded_row[3][-1].get("source") == "tushare_derived_industry_median"
           and upgraded_row[4].get("reason") == "official_industry_classification_not_matched_to_tushare_pe_sample",
           "result=%r row=%r" % (upgrade_result, upgraded_row))
+
+    unclassified_code = "969992"
+    unclassified_payload = {
+        "historical_enrichment": {
+            "industry_source": "szse",
+            "industry_diagnostic": {
+                "status": "value", "source": "szse",
+                "evidence": {"url": "https://example.test/old-prospectus.pdf", "snippet": "所属行业为芯片产业"},
+            },
+        }
+    }
+    cur.execute(
+        """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
+                                    industry,main_business,business_exposure,source_payload,data_quality_status)
+             VALUES(%s,'未分类行业升级测试','CN','2026-09-11','active','芯片产业','主营业务测试',
+                    '{\"exposures\":[{\"label\":\"芯片\"}]}'::jsonb,%s::jsonb,'{}'::jsonb)
+             ON CONFLICT(security_code) DO UPDATE SET market_code='CN',ipo_date='2026-09-11',
+               ipo_status='active',industry='芯片产业',main_business='主营业务测试',
+               business_exposure='{"exposures":[{"label":"芯片"}]}'::jsonb,
+               source_payload=EXCLUDED.source_payload,data_quality_status='{}'::jsonb""",
+        (unclassified_code, json.dumps(unclassified_payload)),
+    )
+    unclassified_calls = []
+
+    def fake_classified_upgrade(code, existing_industry=None, existing_main_business=None, missing_fields=None):
+        unclassified_calls.append(list(missing_fields or []))
+        return {
+            "industry": "计算机、通信和其他电子设备制造业",
+            "industry_source": "cninfo",
+            "industry_diagnostic": {
+                "status": "value", "source": "cninfo", "document_url": "https://example.test/c39.pdf",
+                "content_hash": "c39-hash", "parser_version": "ipo-issuance-facts-v5",
+                "classification_system": "listed_company_association_industry_guide",
+                "classification_version": "2023", "classification_code": "C39",
+                "evidence": {"snippet": "通则康威所属行业为计算机、通信和其他电子设备制造业（C39）"},
+            },
+            "industry_evidence": {
+                "snippet": "通则康威所属行业为计算机、通信和其他电子设备制造业（C39）",
+                "url": "https://example.test/c39.pdf", "content_hash": "c39-hash",
+                "parser_version": "ipo-issuance-facts-v5",
+            },
+            "industry_pe_diagnostic": {
+                "status": "unavailable", "reason": "official_pe_value_not_disclosed",
+            },
+        }
+
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_classified_upgrade
+    try:
+        sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=[unclassified_code],
+            priority_codes=[unclassified_code], retry_same_day=True,
+        )
+        cur.execute(
+            """SELECT industry,source_payload->'historical_enrichment'->'industry_upgrade_history'
+                 FROM ipo_history WHERE security_code=%s""",
+            (unclassified_code,),
+        )
+        reclassified_row = cur.fetchone()
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("官方分类代码可替换并留痕未分类行业值",
+          "industry" in unclassified_calls[0]
+          and reclassified_row[0] == "计算机、通信和其他电子设备制造业"
+          and reclassified_row[1][-1].get("previous_value") == "芯片产业"
+          and reclassified_row[1][-1].get("previous_source") == "szse"
+          and reclassified_row[1][-1].get("reason") == "verified_official_classification_replaced_unclassified_industry",
+          "calls=%r row=%r" % (unclassified_calls, reclassified_row))
 
     cur.execute(
         """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,

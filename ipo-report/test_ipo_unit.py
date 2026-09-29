@@ -205,6 +205,72 @@ try:
             and parsed.get("industry_pe_as_of") == expected["industry_pe_as_of"],
             "结果=%r" % parsed,
         )
+    targeted_fixture = next(item for item in historical_fixtures if item["stock_code"] == "301718")
+    ambiguous_prospectus_url = "https://example.test/301718-prospectus.pdf"
+    original_ranked_docs = fetch._exchange_ipo_document_candidates
+    original_ranked_cninfo = fetch._cninfo_ipo_issuance_candidates
+    original_ranked_download = fetch._download_exchange_pdf_text
+    fetch._exchange_ipo_document_candidates = lambda code, security_name='': [
+        ("szse", ambiguous_prospectus_url, "通则康威招股说明书", "prospectus", "2026-09-24")
+    ]
+    fetch._cninfo_ipo_issuance_candidates = lambda code: [
+        ("cninfo", targeted_fixture["source_url"], "通则康威首次公开发行股票投资风险特别公告", "2026-09-23")
+    ]
+    fetch._download_exchange_pdf_text = lambda session, url, source: (
+        "通则康威所属行业为芯片产业，公司产品应用于多个电子领域。"
+        if url == ambiguous_prospectus_url else targeted_fixture["text"]
+    )
+    fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301718", None)
+    try:
+        ranked_issuance = fetch._fetch_exchange_ipo_issuance_detail(
+            "301718", targeted_fixture["security_name"], required_fields={"industry", "industry_pe"}
+        )
+    finally:
+        fetch._exchange_ipo_document_candidates = original_ranked_docs
+        fetch._cninfo_ipo_issuance_candidates = original_ranked_cninfo
+        fetch._download_exchange_pdf_text = original_ranked_download
+        fetch._IPO_ISSUANCE_DETAIL_CACHE.pop("301718", None)
+    check("官方行业分类代码优先于较新但未分类的招股书表述",
+          ranked_issuance.get("industry") == targeted_fixture["expected"]["industry"]
+          and ranked_issuance.get("industry_classification", {}).get("classification_code") == "C39"
+          and ranked_issuance.get("industry_evidence", {}).get("source") == "cninfo"
+          and ranked_issuance.get("industry_pe") is None,
+          "结果=%r" % ranked_issuance)
+    original_detail_fetch = fetch._fetch_exchange_ipo_issuance_detail
+    cached_stock_name = fetch._STOCK_NAME_CACHE.get("301718")
+    fetch._STOCK_NAME_CACHE["301718"] = targeted_fixture["security_name"]
+    fetch._fetch_exchange_ipo_issuance_detail = lambda *args, **kwargs: {
+        "industry": targeted_fixture["expected"]["industry"],
+        "industry_classification": {
+            "classification_system": targeted_fixture["expected"]["classification_system"],
+            "classification_version": targeted_fixture["expected"]["classification_version"],
+            "classification_code": "C39",
+        },
+        "industry_evidence": {"snippet": targeted_fixture["text"], "url": targeted_fixture["source_url"]},
+        "ipo_issuance_diagnostics": {
+            "industry": {"status": "value", "source": "cninfo"},
+            "industry_pe": {
+                "status": "parse_miss",
+                "reason": "no_industry_pe_value_parsed_from_downloaded_documents",
+                "candidate_scan_status": "complete",
+            },
+        },
+    }
+    try:
+        targeted_detail = fetch.fetch_stock_historical_detail(
+            "301718", missing_fields={"industry", "industry_pe"}
+        )
+    finally:
+        fetch._fetch_exchange_ipo_issuance_detail = original_detail_fetch
+        if cached_stock_name is None:
+            fetch._STOCK_NAME_CACHE.pop("301718", None)
+        else:
+            fetch._STOCK_NAME_CACHE["301718"] = cached_stock_name
+    check("PE未见数值时保留官方文档字段缺口原因",
+          targeted_detail.get("industry_pe_diagnostic", {}).get("status") == "parse_miss"
+          and targeted_detail.get("industry_pe_diagnostic", {}).get("reason")
+          == "no_industry_pe_value_parsed_from_downloaded_documents",
+          "诊断=%r" % targeted_detail.get("industry_pe_diagnostic"))
     competitor_only = fetch._parse_ipo_issuance_detail(
         "鸿富诚招股说明书。可比公司甲公司行业分类：塑料制品业（C292）。",
         "鸿富诚", "301716",

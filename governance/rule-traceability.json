@@ -1213,6 +1213,22 @@
       ],
       "owner": "港股IPO",
       "status": "verified"
+    },
+    {
+      "id": "TASK-TARGET-SCOPE-001",
+      "title": "证券目标清单保持完整且逐项脱敏",
+      "implementation": {
+        "file": "server/services/jobErrorSanitizer.js",
+        "symbol": "sanitizeJobResult"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-error-sanitizer.test.js",
+          "pattern": "业务目标证券清单不得被日志裁剪成100只"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "verified"
     }
   ]
 }

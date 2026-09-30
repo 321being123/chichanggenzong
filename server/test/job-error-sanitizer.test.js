@@ -59,3 +59,7 @@ assert.deepStrictEqual(normalResult, {
 });
 
 console.log('OK job-error-sanitizer: 敏感错误摘要脱敏通过');
+
+const fullScope = Array.from({length: 175}, (_, i) => String(i + 1).padStart(5, '0') + '.HK');
+assert.deepStrictEqual(sanitizeJobResult({targetCodes: fullScope}).targetCodes, fullScope, '业务目标证券清单不得被日志裁剪成100只');
+assert.strictEqual(sanitizeJobResult({targetCodes: ['token=secret-value']}).targetCodes[0], 'token=[已脱敏]', '保留完整目标清单仍需逐项脱敏');

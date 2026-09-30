@@ -427,6 +427,16 @@ function isVerifiedAllotmentDocument(document) {
     && ['parsed', 'missing'].includes(evidence.feeParserStatus);
 }
 
+// 已由上一事实解析器验证的官方 PDF 可以升级重解析，不重新发现同一公告。
+function isReparsableAllotmentDocument(document) {
+  if (isVerifiedAllotmentDocument(document)) return true;
+  if (!document || document.type !== 'allotment_result' || !document.contentSha256
+    || document.parserEvidence?.factsParserVersion !== 'hk-ipo-allotment-facts-v6') return false;
+  try { assertOfficialUrl(document.url); } catch (_) { return false; }
+  return isVerifiedAllotmentDocument({ ...document,
+    parserEvidence: { ...document.parserEvidence, factsParserVersion: HKEX_ALLOTMENT_FACTS_PARSER_VERSION } });
+}
+
 function isUsableProspectusDocument(document) {
   if (!document || document.type !== 'prospectus' || !document.url) return false;
   if (document.parserStatus === 'parsed') return true;
@@ -571,7 +581,7 @@ async function syncHkexAllotmentFacts({
   try {
     const candidatesNeedingSearch = candidates.filter(row => {
       const document = (Array.isArray(row.source_documents) ? row.source_documents : [])
-        .find(isVerifiedAllotmentDocument);
+        .find(isReparsableAllotmentDocument);
       return !document;
     });
     if (candidatesNeedingSearch.length) {
@@ -594,7 +604,7 @@ async function syncHkexAllotmentFacts({
     // 只有“待解析”标记的文件必须重新走 15100 标题检索。
     for (const row of candidates) {
       const document = (Array.isArray(row.source_documents) ? row.source_documents : [])
-        .filter(isVerifiedAllotmentDocument)
+        .filter(isReparsableAllotmentDocument)
         .sort((a, b) => String(b.announcedAt || '').localeCompare(String(a.announcedAt || '')))[0];
       if (!document) continue;
       const code = String(row.security_code || '').split('.')[0].padStart(5, '0');
@@ -1906,6 +1916,7 @@ module.exports = {
   allotmentTitleLooksLikeIpo,
   shouldPersistAllotmentFacts,
   isVerifiedAllotmentDocument,
+  isReparsableAllotmentDocument,
   isUsableProspectusDocument,
   parseHkexProspectusPdf,
   fetchOfficialPdfWithCache,

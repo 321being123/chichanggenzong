@@ -40,7 +40,9 @@ function sanitizeJobResult(value, depth = 0) {
   for (const [key, item] of Object.entries(value).slice(0, 100)) {
     result[key] = isSensitiveKey(key)
       ? '[已脱敏]'
-      : sanitizeJobResult(item, depth + 1);
+      : key === 'targetCodes' && Array.isArray(item)
+        ? item.map(code => sanitizeJobResult(code, depth + 1))
+        : sanitizeJobResult(item, depth + 1);
   }
   return result;
 }

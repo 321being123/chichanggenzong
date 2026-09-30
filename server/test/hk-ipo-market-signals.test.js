@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { parseLivermoreHistory, parseLivermoreCurrent, parseVbkrCurrent, parseFutuIpoHtml, parseHkIpoXHtml, normalizeCode, isOfferOpen, isCurrentSubscriptionRecord, buildSourceRecordHash, normalizeSnapshotNumber } = require('../services/hkIpoMarketSignals');
 const { assessHkGreenshoe, resolveHkIpoDisplayName } = require('../routes/ipo');
-const { isVerifiedAllotmentDocument, isUsableProspectusDocument, cancellationTitleLooksLikeIpo } = require('../services/hkexIpo');
+const { isReparsableAllotmentDocument, isVerifiedAllotmentDocument, isUsableProspectusDocument, cancellationTitleLooksLikeIpo } = require('../services/hkexIpo');
 
 const livermoreFixture = {
   data: {
@@ -102,3 +102,9 @@ assert.strictEqual(assessHkGreenshoe({ status: 'not_disclosed' }, null), '待确
 console.log('OK hk-ipo-market-signals: 申购倍数、暗盘解析和绿鞋判断通过');
 
 assert.strictEqual(isCurrentSubscriptionRecord({subscriptionMultiple: 10, offerCloseDate: '2026-10-02'}, {ipo_status: 'postponed', offer_open_at: '2026-09-28T09:00:00+08:00', offer_close_at: '2026-10-02T12:00:00+08:00'}, '2026-10-01', new Date('2026-10-01T09:00:00+08:00')), false, '延期公司不得继续参与实时申购信号');
+
+const previousEvidence = {type: 'allotment_result', url: 'https://www1.hkexnews.hk/test.pdf', title: 'ALLOTMENT RESULTS', contentSha256: 'verified-hash', parserEvidence: {factsParserVersion: 'hk-ipo-allotment-facts-v6', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing'}};
+assert.strictEqual(isReparsableAllotmentDocument(previousEvidence), true, '已核验旧版官方配发PDF升级应复用缓存');
+assert.strictEqual(isReparsableAllotmentDocument({...previousEvidence, title: 'CLARIFICATION ANNOUNCEMENT'}), false, '澄清文件不得冒充配发升级');
+assert.strictEqual(isReparsableAllotmentDocument({...previousEvidence, contentSha256: null}), false, '无原文哈希不得复用旧版证据');
+assert.strictEqual(isReparsableAllotmentDocument({...previousEvidence, url: 'https://example.test/test.pdf'}), false, '非官方文档不得复用');

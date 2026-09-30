@@ -473,6 +473,7 @@ async function syncHkexAllotmentFacts({
       FROM public.ipo_history
      WHERE market_code='HK'
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
+       AND COALESCE(data_completeness->>'exclusionReason','') <> 'rights_issue'
        ${candidateDateFilter}
        AND (
          $${refreshLotteryParam}::boolean
@@ -1078,6 +1079,7 @@ async function syncHkexProspectusFacts({
      FROM public.ipo_history
      WHERE market_code='HK'
        AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
+       AND COALESCE(data_completeness->>'exclusionReason','') <> 'rights_issue'
        AND data_completeness#>>'{prospectus,status}' IS DISTINCT FROM 'not_applicable'
        AND NOT EXISTS (
          SELECT 1
@@ -1689,7 +1691,19 @@ function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
   }
   if (!due('allotmentDate') && !row.allotment_at) result.allotmentAt = 'pending';
   if (!due('listingDate') && !hasActualListing) result.listingAt = 'pending';
-  const terminalStatus = ['introduction', 'gem_transfer', 'de_spac', 'cancelled', 'canceled'].includes(String(row.ipo_status || '').toLowerCase());
+  // 旧配发检索曾把上市公司供股结果写入 IPO：只认官方供股结果，且不能覆盖真实招股窗口。
+  const allotmentDocuments = (Array.isArray(row.source_documents) ? row.source_documents : [])
+    .filter(document => document.type === 'allotment_result');
+  const rightsIssueOnly = !row.offer_open_at && !row.offer_close_at && allotmentDocuments.length > 0
+    && allotmentDocuments.every(document => {
+      try { assertOfficialUrl(document.url); } catch (_) { return false; }
+      return /\bresults\s+of\s+(?:the\s+)?rights\s+issue\b|供股.*(?:結果|结果)/i.test(document.title || '');
+    });
+  if (rightsIssueOnly) {
+    result.publicOfferEligibility = 'excluded';
+    result.exclusionReason = 'rights_issue';
+  }
+  const terminalStatus = rightsIssueOnly || ['introduction', 'gem_transfer', 'de_spac', 'cancelled', 'canceled'].includes(String(row.ipo_status || '').toLowerCase());
   const requiredFields = ['offerOpenAt', 'offerCloseAt', 'issuePriceHigh', 'lotSizeShares'];
   if (!maximumOnly) requiredFields.push('issuePriceLow');
   if (due('pricingDate')) requiredFields.push('pricingAt', 'issuePriceFinal');

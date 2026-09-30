@@ -181,6 +181,9 @@ try:
                   "镍产品贸易红土镍矿596,047.8015.80%合计1,590,145.4142.15%")
     _orig_cand = fetch._exchange_prospectus_candidates
     _orig_dl = fetch._download_exchange_pdf_text
+    juren_business = fetch._extract_main_business('公司是国内专业从事己内酯系列产品研发、生产与销售的服务型制造企业。作为先进化工材料领域的创新驱动型厂商。')
+    check('聚仁新材公司是国内专业从事句式必须提取主营业务',
+          juren_business == '己内酯系列产品研发、生产与销售的服务型制造企业', repr(juren_business))
     _orig_ext = fetch._extract_main_business
     try:
         fetch._exchange_prospectus_candidates = lambda code, name="": [("szse", "http://x/1.pdf", "招股说明书")]

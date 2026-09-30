@@ -138,6 +138,19 @@ const terminalFacts = recomputeCompletenessForStoredRow({
 }, completenessAsOf);
 assert.strictEqual(terminalFacts.status, 'complete', '介绍上市等终态项目不得因普通招股字段缺失而重试');
 
+const rightsDocument = { type: 'allotment_result',
+  url: 'https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0915/2026091500749.pdf',
+  title: 'RESULTS OF THE RIGHTS ISSUE ON THE BASIS OF THREE RIGHTS SHARES FOR EVERY ONE EXISTING SHARE' };
+const rightsFacts = recomputeCompletenessForStoredRow({ ipo_status: 'active', source_documents: [rightsDocument] }, completenessAsOf);
+assert.deepStrictEqual(rightsFacts.missing_fields, [], '官方供股结果不得冒充 IPO 资料缺口');
+assert.strictEqual(rightsFacts.exclusionReason, 'rights_issue');
+const realOfferFacts = recomputeCompletenessForStoredRow({ ipo_status: 'active',
+  offer_open_at: '2026-09-01T00:00:00+08:00', source_documents: [rightsDocument] }, completenessAsOf);
+assert.notStrictEqual(realOfferFacts.exclusionReason, 'rights_issue', '真实招股窗口不能因后来供股公告被排除');
+const untrustedRights = recomputeCompletenessForStoredRow({ ipo_status: 'active',
+  source_documents: [{ ...rightsDocument, url: 'https://example.test/rights.pdf' }] }, completenessAsOf);
+assert.notStrictEqual(untrustedRights.exclusionReason, 'rights_issue', '非官方网址不得作为供股分类证据');
+
 (async () => {
   const statements = [];
   const persistedNames = await persistTencentNames(new Map([

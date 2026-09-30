@@ -433,6 +433,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "巨潮备源扫描不再因计数器未声明崩溃"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "聚仁新材公司是国内专业从事句式必须提取主营业务"
         }
       ],
       "owner": "A股 IPO",
@@ -1160,6 +1164,22 @@
         }
       ],
       "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "HK-RIGHTS-ISSUE-001",
+      "title": "官方供股结果排除IPO资料补全",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "recomputeCompletenessForStoredRow"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-facts.test.js",
+          "pattern": "官方供股结果不得冒充 IPO 资料缺口"
+        }
+      ],
+      "owner": "港股IPO",
       "status": "verified"
     }
   ]

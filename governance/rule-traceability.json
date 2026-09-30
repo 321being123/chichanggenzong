@@ -1273,6 +1273,10 @@
         {
           "file": "ipo-report/test_ipo_history_sync.py",
           "pattern": "补全阶段告警计数排除北交所和有证据的待披露PE"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "官方PE补齐后未披露状态退出"
         }
       ],
       "owner": "A股 IPO",

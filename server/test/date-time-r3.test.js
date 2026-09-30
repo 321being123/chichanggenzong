@@ -108,7 +108,8 @@ const requestedDates = [];
   assert.strictEqual(historyQuery.params[2], cycleMetrics.rangeCutoff('1y'));
 
   const stockJob = read('server/jobs/stockAnalysisRefresh.js');
-  assert.match(stockJob, /lastSuccessDate: dataAsOf/);
+  assert.match(stockJob, /lastSuccessDate: evidence\.dataAsOf/);
+  assert.match(stockJob, /lastTradeDate: tradeDate/, '停牌水位不得修改实际成交日');
   assert.match(stockJob, /historical_target_unsupported/);
   assert.match(stockJob, /latest_market_trade_date/);
   assert.match(read('server/services/jobRunners.js'), /targetDate: context\.targetDate \|\| businessDate/);

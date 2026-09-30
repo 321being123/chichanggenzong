@@ -92,7 +92,7 @@ const JOB_CONTRACTS = {
       prediction_ready: { publish: [], requirePublished: [], requireStageComplete: true },
       core: { publish: ['ipo_history'], requirePublished: ['ipo_history'] },
       enrichment: { publish: [], requirePublished: ['ipo_history'], requireStageComplete: true },
-      targeted: { publish: [], requirePublished: [], requireStageComplete: true },
+      targeted: { publish: [], requirePublished: [], requireStageComplete: true, requiresDataWatermark: false },
     },
   },
   // 个股分析定时任务为数据库只读计算；财务/行情采集由共享批次和独立增量任务完成。
@@ -260,6 +260,20 @@ function externalCallLimitForMode(definition, mode = 'core') {
   return Math.max(Number(value) || 0, 0);
 }
 
+function stageCompletionEvidence(definition, result = {}, request = {}) {
+  const requestedMode = request.mode || (request.targetCodes?.length ? 'targeted' : definition.mode || 'core');
+  if (result.mode !== requestedMode) return false;
+  const phase = definition.datasetPublicationByMode?.[result.mode];
+  if (!phase || phase.requiresDataWatermark !== false) return false;
+  if (result.ok !== true || result.stageComplete !== true || result.error || result.continuationRequired
+    || (result.failedDatasets || []).length || (result.pendingStages || []).length) return false;
+  const requested = [...new Set((request.targetCodes || []).map(String))].sort();
+  const completed = [...new Set((result.codes || []).map(String))].sort();
+  const fields = [...new Set(request.targetFields || [])].sort();
+  return requested.length > 0 && JSON.stringify(requested) === JSON.stringify(completed)
+    && JSON.stringify(fields) === JSON.stringify([...new Set(result.targetFields || [])].sort());
+}
+
 function declaredDailyExternalCallBudget(definition) {
   if (!definition || definition.manualOnly) return externalCallLimitForMode(definition) || 0;
   if (Number.isFinite(Number(definition.dailyBudget)) && Number(definition.dailyBudget) >= 0) {
@@ -272,5 +286,5 @@ function declaredDailyExternalCallBudget(definition) {
 module.exports = {
   DEFAULT_JOB_OPTIONS, JOB_DEFINITION_SOURCE, JOB_CONTRACTS, JOB_DEFINITIONS, JOB_DEFINITION_AUDIT,
   DATA_DATE_POLICIES, PARTITION_DATE_POLICIES, validateJobDefinitionSources,
-  isKnownJobCode, getRegisteredJobDefinition, getJobDefinition, externalCallLimitForMode, declaredDailyExternalCallBudget,
+  isKnownJobCode, getRegisteredJobDefinition, getJobDefinition, externalCallLimitForMode, declaredDailyExternalCallBudget, stageCompletionEvidence,
 };

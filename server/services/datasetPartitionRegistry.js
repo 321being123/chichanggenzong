@@ -9,7 +9,9 @@ const DATE_TEXT = (column) => `MAX(CASE WHEN ${column}::text ~ '^\\d{4}-\\d{2}-\
 const DATASET_PARTITION_REGISTRY = Object.freeze({
   account_daily_prices: { scopeKey: 'GLOBAL', table: 'public.daily_prices', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
   hk_fx_rate: { scopeKey: 'GLOBAL', table: 'market.fx_rates', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(rate_date)::text AS data_as_of' },
-  nav_snapshot: { scopeKey: 'GLOBAL', table: 'public.nav_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
+  nav_snapshot: { scopeKey: 'GLOBAL', table: 'public.nav_history',
+    partitionedCountSql: 'SELECT COUNT(*)::int AS row_count FROM public.nav_history WHERE date=$1::date',
+    partitionedDataAsOfSql: 'SELECT MAX(date)::text AS data_as_of FROM public.nav_history WHERE date=$1::date' },
   index_daily: { scopeKey: 'GLOBAL', table: 'public.index_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('date')} AS data_as_of` },
   ipo_calendar: { scopeKey: 'GLOBAL', table: 'public.ipo_reports', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT ${DATE_TEXT('report_date')} AS data_as_of` },
   bond_master: { scopeKey: 'CN', table: 'public.bond_unified', whereSql: "WHERE status='listed'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfStandaloneSql: "SELECT MAX(last_success_date)::text AS data_as_of FROM ops.sync_cursors WHERE scope_key='convertible_bond_universe' AND dataset_code='cb_basic_cb_daily'" },
@@ -40,7 +42,7 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
     partitionedDataAsOfSql: "SELECT MAX(data_date)::text AS data_as_of FROM analytics.hk_ipo_market_snapshots WHERE signal_type='subscription' AND data_date=$1::date",
   },
   arbitrage_cases: { scopeKey: 'GLOBAL', table: 'event.arbitrage_cases', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(announced_at)::text AS data_as_of' },
-  trade_calendar: { scopeKey: 'GLOBAL', table: 'market.trade_calendar', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
+  trade_calendar: { scopeKey: 'GLOBAL', table: 'market.trade_calendar', whereSql: "WHERE exchange='SSE'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
 });
 
 function dateValue(value) {

@@ -50,7 +50,7 @@ const HKEX_NEW_LISTING_REPORT_TARGETS = Object.freeze([
 
 const HKEX_ALLOTMENT_DATASET = 'hkex_ipo_allotment_result';
 const HKEX_ALLOTMENT_PARSER_VERSION = 'hk-ipo-allotment-v2';
-const HKEX_ALLOTMENT_FACTS_PARSER_VERSION = 'hk-ipo-allotment-facts-v5';
+const HKEX_ALLOTMENT_FACTS_PARSER_VERSION = 'hk-ipo-allotment-facts-v6';
 const HKEX_ALLOTMENT_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoAllotment.py');
 const HKEX_PROSPECTUS_DATASET = 'hkex_ipo_prospectus';
 const HKEX_PROSPECTUS_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoProspectus.py');
@@ -400,6 +400,9 @@ function mergeSourceDocuments(existing, document) {
 
 function shouldPersistAllotmentFacts(parsed, lotteryParserStatus, feeParserStatus, factsParserStatus) {
   return parsed && (
+    (parsed.actualPricingDate && parsed.evidence?.actualPricingDate)
+    || parsed.finalOfferPrice > 0
+    ||
     parsed.parserStatus === 'parsed'
     || lotteryParserStatus === 'parsed'
     || (
@@ -532,6 +535,11 @@ async function syncHkexAllotmentFacts({
            greenshoe_details->>'overAllocatedShares' IS NOT NULL
            AND COALESCE(greenshoe_details->>'publicOfferSharesBasis','initial_public_offer') = 'initial_public_offer'
          )
+         OR ((pricing_at IS NULL OR issue_price_final IS NULL) AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
+            WHERE document->>'type'='allotment_result'
+              AND document->'parserEvidence'->>'factsParserVersion'=$${factsParserParam}
+         ))
        )
        ${targetFilter}
      ORDER BY CASE WHEN listing_at IS NULL THEN 0 ELSE 1 END,
@@ -728,6 +736,8 @@ async function syncHkexAllotmentFacts({
                  greenshoe_details=CASE WHEN $10::jsonb <> '{}'::jsonb THEN COALESCE(greenshoe_details,'{}'::jsonb) || $10::jsonb ELSE greenshoe_details END,
                  source_documents=$11::jsonb,
                  data_completeness=$12::jsonb,
+                 pricing_at=COALESCE(pricing_at,$13::timestamptz),
+                 issue_price_final=COALESCE(issue_price_final,$14),
                  facts_published_at=now(),
                  updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
            WHERE market_code='HK' AND security_code=$1`, [
@@ -736,6 +746,8 @@ async function syncHkexAllotmentFacts({
           parsed.lotAmountHkd, parsed.applicationFeeHkd, parsed.brokerageFeeHkd,
           parsed.publicOversubscription, JSON.stringify(greenshoeDetailsForPersist),
           JSON.stringify(sourceDocuments), JSON.stringify(completeness),
+          parsed.actualPricingDate && parsed.evidence?.actualPricingDate ? `${parsed.actualPricingDate}T00:00:00+08:00` : null,
+          parsed.finalOfferPrice > 0 ? parsed.finalOfferPrice : null,
         ]);
         enriched += 1;
       } catch (error) {

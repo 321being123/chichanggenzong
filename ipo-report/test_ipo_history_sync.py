@@ -52,8 +52,8 @@ try:
           "security_code=ANY(%s::text[])" in targeted_quality_cursor.query
           and targeted_quality_cursor.params == (sorted(targeted_codes),),
           repr(targeted_quality_cursor.params))
-    check("定向任务对未披露字段可完成但保留缺口状态",
-          sync._targeted_stage_complete(
+    check("定向任务存在请求字段缺口不能完成",
+          not sync._targeted_stage_complete(
               {"attempted": 3, "failed": 0, "stopped": None, "remaining": 1,
                "industry_taxonomy": {"updated": 3, "cached": 0, "missing": 0, "failed": 0, "stopped": None}},
               targeted_codes
@@ -106,6 +106,7 @@ try:
 
     conn = sync.pg_connect()
     cur = conn.cursor()
+    cur.execute("DELETE FROM ipo_history WHERE security_code='999999'")
     inserted, refreshed = sync.upsert_shares(cur, [loss])
     check("首次写入", inserted == 1 and refreshed == 0)
     blank = dict(loss)

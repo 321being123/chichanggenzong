@@ -53,6 +53,24 @@ async function trackedStocks() {
   return [...map.values()];
 }
 
+async function verifiedStockDataDate(tsCode, tradeDate, expectedDate, query = pool.query.bind(pool)) {
+  if (!tradeDate || !expectedDate || tradeDate >= expectedDate) return { dataAsOf: tradeDate, lastTradeDate: tradeDate };
+  const { rows } = await query(`SELECT COUNT(*)::int AS expected_count,
+      (SELECT COUNT(*) FROM market.trade_calendar WHERE exchange='SSE'
+        AND trade_date>$2::date AND trade_date<=$3::date)::int AS calendar_count,
+      ($3::date-$2::date)::int AS calendar_days,
+      COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM market.stock_suspend_calendar s
+        WHERE s.instrument_id=i.instrument_id AND s.trade_date=c.trade_date AND s.suspend_type='S'))::int AS suspended_count
+    FROM market.trade_calendar c CROSS JOIN core.instruments i
+    WHERE i.canonical_code=$1 AND c.exchange='SSE' AND c.is_open
+      AND c.trade_date>$2::date AND c.trade_date<=$3::date`, [tsCode, tradeDate, expectedDate]);
+  const coverage = rows[0] || {};
+  const verified = Number(coverage.calendar_count) === Number(coverage.calendar_days)
+    && Number(coverage.expected_count) > 0 && Number(coverage.expected_count) === Number(coverage.suspended_count);
+  return { dataAsOf: verified ? expectedDate : tradeDate, lastTradeDate: tradeDate,
+    suspensionVerified: verified, checkedThrough: verified ? expectedDate : null };
+}
+
 async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
   const requestedDate = context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE
     || CoreDate.todayInZone('Asia/Shanghai');
@@ -74,13 +92,17 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const failures = [];
     const failureDetails = [];
     const dataDates = new Map();
+    const marketEvidence = new Map();
     async function refreshAndMark(tsCode, refreshReason, options) {
       const analysis = await refreshStockAnalysis(tsCode, refreshReason, options);
       const dataAsOf = CoreDate.normalizeBusinessDate(analysis && analysis.latest_market_trade_date);
       if (!dataAsOf) throw new Error('分析快照缺少可核实的最新行情日期');
-      await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET, { lastSuccessDate: dataAsOf });
-      dataDates.set(tsCode, dataAsOf);
-      return dataAsOf;
+      const expected = require('../services/jobScheduleSlots').expectedDataDate(JOB, requestedDate);
+      const evidence = await verifiedStockDataDate(tsCode, dataAsOf, expected);
+      await markDatasetSuccess(datasetScope('stock', tsCode), ANALYSIS_DATASET, { lastSuccessDate: evidence.dataAsOf });
+      dataDates.set(tsCode, evidence.dataAsOf);
+      marketEvidence.set(tsCode, evidence);
+      return evidence.dataAsOf;
     }
     for (const stock of stocks) {
       try {
@@ -138,7 +160,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       recovered,
       skipped,
       failedDatasets,
-      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null })),
+      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null, ...marketEvidence.get(stock.ts_code) })),
       ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
     };
   } catch (error) {
@@ -162,4 +184,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 20:30（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };

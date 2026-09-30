@@ -62,7 +62,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/arbitrageReparse').runArbitrageReparse(caseId, reason);
     }
     case 'holiday_sync':
-      return require('../jobs/holidaySync').ensureHolidaysCurrent().then(() => ({ ok: true }));
+      return require('../jobs/holidaySync').ensureHolidaysCurrent({ businessDate });
     case 'site_analytics_retention':
       return require('./siteAnalytics').purgeAnalyticsData();
     case 'convertible_bond_universe_refresh': {

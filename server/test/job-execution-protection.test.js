@@ -94,7 +94,7 @@ assert.ok(unifiedBondAnnouncements.additionalSchedules.some(item => item.mode ==
 assert.ok(definitions.getJobDefinition('ipo_calendar_refresh').catchupMode === 'latest_only');
 assert.strictEqual(definitions.getJobDefinition('hk_ipo_enrichment').mode, 'enrichment', '港股 IPO 补全任务必须声明自身执行模式');
 assert.ok(/mode: definition\.mode \|\| 'core'/.test(slotService), '默认计划槽位必须继承任务声明的执行模式');
-assert.ok(/definition\.mode \|\| slot\.request_payload/.test(read('server/services/jobRecoveryEvidence.js')), '恢复证据必须优先使用任务声明模式');
+assert.ok(/slot\.request_payload\?\.mode/.test(read('server/services/jobRecoveryEvidence.js')), '恢复证据必须核对槽位的实际声明模式');
 const hkIpoPreopen = definitions.getJobDefinition('hk_ipo_preopen');
 assert.deepStrictEqual(hkIpoPreopen.additionalSchedules.map(item => [item.hour, item.minute, item.mode]), [
   [12, 5, 'subscription_midday'], [16, 10, 'subscription_close'],
@@ -218,7 +218,7 @@ assert.ok(/EXTERNAL_CALL_GUARD/.test(read('server/jobs/ipoCalendarRefresh.js')) 
 assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=now\(\)\+/.test(orchestrator), '过期运行记录必须自动回收且活动任务必须续租');
 assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');
 assert.ok(/latest_market_trade_date/.test(stockJob)
-  && /lastSuccessDate: dataAsOf/.test(stockJob)
+  && /lastSuccessDate: evidence\.dataAsOf/.test(stockJob)
   && /const dataAsOf = stocks\.length && failed === 0/.test(stockJob)
   && /watermarkNotRequired: stocks\.length === 0/.test(stockJob), '个股分析成功水位必须来自实际入库，无目标时不得误报');
 assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)

@@ -1,6 +1,6 @@
 const os = require('os');
 const { pool } = require('../db/connection');
-const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES } = require('./jobDefinitions');
+const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION_DATE_POLICIES, stageCompletionEvidence } = require('./jobDefinitions');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, parseClock } = require('./marketState');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
@@ -382,7 +382,7 @@ async function reconcileSlot(slot) {
   const runResult = run.result_json && typeof run.result_json === 'object' ? run.result_json : {};
   // 正常续批的本批运行记录虽然是 done，但槽位已经回到 pending；不能被恢复扫描误收敛为 succeeded。
   if (run.status === 'done' && (runResult.continuationRequired === true || runResult.ok === false)) return slot;
-  const skipWatermark = runResult.watermarkNotRequired === true;
+  const skipWatermark = runResult.watermarkNotRequired === true || stageCompletionEvidence(definition, runResult, slot.request_payload || {});
   const dataAsOf = requestedStatus === 'succeeded' && requiresDataWatermark && !skipWatermark
     ? await queryDataAsOf(slot.job_code, slot.business_date).catch(() => null)
     : null;
@@ -757,16 +757,23 @@ async function resolveDataAsOf(jobCode, businessDate, resultSummary = {}) {
 async function completeSlot(slotId, status, resultSummary, errorMessage, runId) {
   const allowed = ['succeeded', 'degraded', 'failed', 'blocked', 'skipped'];
   const requestedStatus = allowed.includes(status) ? status : 'failed';
-  const current = await pool.query('SELECT job_code,business_date::text AS business_date FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const current = await pool.query('SELECT job_code,business_date::text AS business_date,request_payload FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!current.rows[0]) return null;
   const definition = getJobDefinition(current.rows[0].job_code);
   resultSummary = await mergeSlotExternalCallSummary(slotId, resultSummary || {});
+  const request = current.rows[0].request_payload || {};
+  const requestedMode = request.mode || (request.targetCodes?.length ? 'targeted' : definition.mode || 'core');
+  const phase = definition.datasetPublicationByMode?.[requestedMode];
   // 任何失败结果都不能被调用方传入的 succeeded 覆盖，避免后台显示假成功。
   const resultFailed = resultSummary && (
     resultSummary.ok === false || resultSummary.status === 'failed' || Boolean(resultSummary.error)
+    || (phase?.requireStageComplete && resultSummary.stageComplete !== true)
+    || (phase?.requiresDataWatermark === false
+      && !stageCompletionEvidence(definition, resultSummary, current.rows[0].request_payload || {}))
   );
   const effectiveStatus = requestedStatus === 'succeeded' && resultFailed ? 'failed' : requestedStatus;
-  const skipWatermark = resultSummary && resultSummary.watermarkNotRequired === true;
+  const skipWatermark = resultSummary && (resultSummary.watermarkNotRequired === true
+    || stageCompletionEvidence(definition, resultSummary, current.rows[0].request_payload || {}));
   const requiresDataWatermark = definition.requiresDataWatermark !== false && !skipWatermark;
   const dataAsOf = effectiveStatus === 'succeeded' && requiresDataWatermark
     ? await resolveDataAsOf(current.rows[0].job_code, current.rows[0].business_date, resultSummary)
@@ -774,7 +781,7 @@ async function completeSlot(slotId, status, resultSummary, errorMessage, runId) 
   const nextStatus = effectiveStatus === 'succeeded' && requiresDataWatermark
     && !isDataAsOfFresh(dataAsOf, current.rows[0].business_date, definition) ? 'degraded' : effectiveStatus;
   const finalError = nextStatus === 'degraded' && !errorMessage
-    ? '任务完成但没有形成可确认的数据日期，请检查上游返回和入库结果'
+    ? (dataAsOf ? `任务数据日期过旧：${normalizeBusinessDate(dataAsOf)}，未达到计划要求；请检查受影响证券明细和上游数据` : '任务完成但数据日期缺失，请检查上游返回和入库结果')
     : errorMessage;
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots

@@ -59,7 +59,8 @@ const activeIpo = { offer_open_at: '2026-09-01T01:00:00.000Z', offer_close_at: n
 assert.strictEqual(isOfferOpen(activeIpo, new Date('2026-09-03T08:00:00.000Z'), '2026-09-03'), true);
 assert.strictEqual(isCurrentSubscriptionRecord({ subscriptionMultiple: 12.5, offerCloseDate: '2026-09-03', raw: { update_at: '2026-09-03T08:00:00.000Z' } }, activeIpo, '2026-09-03', new Date('2026-09-03T08:00:00.000Z')), true);
 assert.strictEqual(isCurrentSubscriptionRecord({ subscriptionMultiple: 12.5, offerCloseDate: '2026-09-02', raw: {} }, activeIpo, '2026-09-03', new Date('2026-09-03T08:00:00.000Z')), false);
-assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), true);
+assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v6', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), true);
+assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), false, '旧版本需重解析实际定价日期');
 assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v4', oversubscriptionParserStatus: 'parsed', lotteryParserStatus: 'parsed', feeParserStatus: 'parsed' } }), false);
 assert.strictEqual(isVerifiedAllotmentDocument({ title: 'GLOBAL OFFERING - CLARIFICATION ANNOUNCEMENT', parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'missing', feeParserStatus: 'missing' } }), false);
 assert.strictEqual(isUsableProspectusDocument({ type: 'prospectus', url: 'https://www1.hkexnews.hk/a.pdf', parserStatus: 'parsed' }), true);

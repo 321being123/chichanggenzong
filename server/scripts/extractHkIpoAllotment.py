@@ -9,6 +9,20 @@
 import json
 import re
 import sys
+from datetime import datetime
+
+
+def _actual_pricing_date(text):
+    # 只认实际定价的过去式，不用招股书的预计日或公告发布日期替代。
+    match = re.search(
+        r"(?:final\s+)?offer\s+price\s+(?:was|has\s+been)\s+(?:finally\s+)?determined\s+on\s+"
+        r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text, re.IGNORECASE)
+    if not match:
+        return None, None
+    try:
+        return datetime.strptime(match.group(1), '%d %B %Y').date().isoformat(), match.group(0)
+    except ValueError:
+        return None, None
 
 
 def _number(value):
@@ -324,6 +338,7 @@ def parse_allotment_text(text, lot_size_shares=None):
     # 先统一为空格，避免把 “Hong\x08 Kong” 误判为缺字段。
     raw = re.sub(r"[\x00-\x1f\x7f]+", " ", str(text or ""))
     normalized = re.sub(r"\s+", " ", raw).strip()
+    actual_pricing_date, pricing_evidence = _actual_pricing_date(normalized)
     oversubscription = _parse_public_oversubscription(normalized)
     greenshoe = _parse_greenshoe(normalized)
     final_price_match = re.search(
@@ -408,6 +423,7 @@ def parse_allotment_text(text, lot_size_shares=None):
         "parserVersion": "hk-ipo-allotment-v2",
         "parserStatus": "parsed" if parsed else "incomplete",
         "finalOfferPrice": final_offer_price,
+        "actualPricingDate": actual_pricing_date,
         "brokerageRatePct": brokerage_rate,
         "sfcTransactionLevyRatePct": sfc_rate,
         "afrcTransactionLevyRatePct": afrc_rate,
@@ -436,6 +452,7 @@ def parse_allotment_text(text, lot_size_shares=None):
         "lotteryParserStatus": "parsed" if lottery else "missing",
         "warnings": warnings,
         "evidence": {
+            **({"actualPricingDate": pricing_evidence} if pricing_evidence else {}),
             "publicLabel": "No. of Offer Shares initially available under the Hong Kong Public Offer",
             **({"finalPublicOfferShares": public_final_evidence} if public_final_evidence else {}),
             "internationalLabel": "No. of Offer Shares initially available under the International Offer/Offering/Placing",

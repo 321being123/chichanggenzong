@@ -581,7 +581,7 @@ def same_day_target_attempted_codes(cur, today, target_date):
 
 def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=False, priority_codes=None,
                                  only_codes=None, skip_codes=None, include_result_fields=True,
-                                 raise_on_guard=False, force_fields=None):
+                                 raise_on_guard=False, force_fields=None, persist_progress=False):
     """不限业务条数补全资料；当前发行优先，历史缺口按 Guard 边界续跑。"""
     today_text = today.isoformat()
     target_text = str(target_date)[:10] if target_date else ""
@@ -901,6 +901,9 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                || jsonb_build_object('enrichment',%s::jsonb,'field_states',%s::jsonb)
            WHERE security_code=%s
         """, (Json(meta), Json(field_states), code))
+        # 每只目标的事实与诊断一起提交；子进程超时后保留已完成进度。
+        if persist_progress:
+            cur.connection.commit()
         if detail.get("issuance_stopped"):
             stopped = detail["issuance_stopped"]
             break
@@ -1072,10 +1075,14 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
     return {"missing_records": missing_records, "missing_fields": missing_fields}
 
 
-def _targeted_stage_complete(result, target_codes):
+def _targeted_stage_complete(result, target_codes, target_fields=None):
     expected = len({str(code or '').split('.')[0] for code in target_codes if code})
     taxonomy = result.get("industry_taxonomy") if isinstance(result.get("industry_taxonomy"), dict) else {}
+    remaining = (sum(int(result.get("remaining_by_field", {}).get(field, 0) or 0) for field in target_fields)
+                 if target_fields else int(result.get("remaining", 0) or 0))
     return (
+        remaining == 0
+        and
         int(result.get("attempted", 0) or 0) == expected
         and int(result.get("failed", 0) or 0) == 0
         and result.get("stopped") is None
@@ -1322,6 +1329,7 @@ def run(today=None, mode="core"):
                             skip_codes=skip_codes,
                             include_result_fields=mode == "enrichment",
                             raise_on_guard=True,
+                            persist_progress=True,
                         )
                         first_day = (
                             {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
@@ -1455,10 +1463,11 @@ def main():
                     cur, date.fromisoformat(args.today) if args.today else _today_shanghai(),
                     retry_same_day=True, priority_codes=target_codes, only_codes=target_codes,
                     include_result_fields=not bool(target_fields), force_fields=target_fields,
+                    persist_progress=True,
                 )
                 quality = update_quality(cur, date.fromisoformat(args.today) if args.today else _today_shanghai(), only_codes=target_codes)
             connection.commit()
-            stage_complete = _targeted_stage_complete(result, target_codes)
+            stage_complete = _targeted_stage_complete(result, target_codes, target_fields)
             print(json.dumps({
                 "ok": stage_complete, "mode": "targeted", "stageComplete": stage_complete,
                 "status": "succeeded" if stage_complete else "partial",

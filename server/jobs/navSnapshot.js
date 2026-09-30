@@ -338,6 +338,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
   const runId = await startJobRun('nav_snapshot');
   let total = 0, accountCount = 0;
   const failedAccounts = [];
+  const currentAccounts = [];
   try {
     const { rows: accountRows } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
     for (const account of accountRows) {
@@ -348,17 +349,32 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
         if (r && r.ok === false) {
           failedAccounts.push({ accountName, missingDates: r.missingDates || [], missingCodes: r.missingCodes || [], diagnostics: r.diagnostics || [] });
         }
+        const { rows: currentRows } = await pool.query('SELECT date::text AS date FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3::date',
+          [account.username, accountName, targetDate]);
+        currentAccounts.push({ accountName, status: currentRows.length && !(r?.missingDates || []).includes(targetDate)
+          ? 'complete' : r?.verifiedNoChange && r?.ok === true ? 'verified_no_change' : 'incomplete' });
       } catch (e) {
         console.warn('[nav_snapshot] ' + account.username + '/' + accountName + ' 失败:', e.message);
         failedAccounts.push({ accountName, error: e.message || String(e) });
+        currentAccounts.push({ accountName, status: 'incomplete' });
       }
     }
+    const currentComplete = currentAccounts.length > 0 && currentAccounts.every(account => ['complete', 'verified_no_change'].includes(account.status));
+    // 全部账户已完成当日事实时单独发布当日分区；历史缺口仍返回partial并保留原日期告警。
+    const currentPublication = currentComplete ? await require('../services/datasetPartitionRegistry').publishDatasetSnapshot('nav_snapshot', {
+      partitionKey: targetDate, dataAsOf: targetDate, reason: 'nav_snapshot:current_date',
+      diagnostics: { query_status: 'success', quality_status: 'passed',
+        coverage_status: currentAccounts.some(account => account.status === 'complete') ? 'complete' : 'verified_no_change',
+        checked_accounts: currentAccounts.length, historical_missing_dates: [...new Set(failedAccounts.flatMap(account => account.missingDates || []))] },
+    }) : null;
     const result = {
       ok: failedAccounts.length === 0,
       status: failedAccounts.length ? 'partial' : 'succeeded',
       days: total,
       accountCount,
       failedAccounts,
+      currentDate: { date: targetDate, complete: currentComplete, accounts: currentAccounts },
+      datasets: currentPublication?.published ? [currentPublication] : [],
       missingDates: [...new Set(failedAccounts.flatMap(item => item.missingDates || []))],
       failedDatasets: failedAccounts.length ? ['nav_snapshot'] : [],
       ...(failedAccounts.length ? { error: '部分账户净值快照未完成', errorType: 'data_quality' } : {}),

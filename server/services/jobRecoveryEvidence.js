@@ -1,6 +1,6 @@
 // 任务恢复的中立证据层：调度器和告警层共用，避免只凭单一 data_as_of 把槽位误判为已完成。
 const { pool } = require('../db/connection');
-const { getRegisteredJobDefinition } = require('./jobDefinitions');
+const { getRegisteredJobDefinition, stageCompletionEvidence } = require('./jobDefinitions');
 
 function businessDateText(value) {
   const text = String(value || '').trim();
@@ -44,7 +44,13 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   if (summary.continuationRequired === true || pendingStages.length || failedDatasets.length) {
     return { recovered: false, reason: 'run_stages_incomplete', evidence: { slot, run, failedDatasets, pendingStages, continuationRequired: summary.continuationRequired === true } };
   }
-  const datasets = definition.producesDatasets || [];
+  const requestedMode = String(slot.request_payload?.mode || (slot.request_payload?.targetCodes?.length ? 'targeted' : definition.mode || 'core'));
+  if (summary.mode && String(summary.mode) !== requestedMode) return { recovered: false, reason: 'run_mode_mismatch', evidence: { slot, run } };
+  const phase = definition.datasetPublicationByMode?.[requestedMode];
+  const stageVerified = stageCompletionEvidence(definition, summary, slot.request_payload || {});
+  if (phase?.requireStageComplete && summary.stageComplete !== true) return { recovered: false, reason: 'run_stages_incomplete', evidence: { slot, run } };
+  if (phase?.requiresDataWatermark === false && !stageVerified) return { recovered: false, reason: 'target_scope_evidence_missing', evidence: { slot, run } };
+  const datasets = phase ? [...new Set([...(phase.publish || []), ...(phase.requirePublished || [])])] : definition.producesDatasets || [];
   const { expectedDataDate } = require('./jobScheduleSlots');
   const { DATASET_PARTITION_REGISTRY } = require('./datasetPartitionRegistry');
   const businessDate = businessDateText(slot.business_date);
@@ -70,13 +76,13 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
     });
     if (!allPublished) return { recovered: false, reason: 'strict_dataset_evidence_missing', evidence: { slot, datasets: datasetEvidence } };
   }
-  if (definition.requiresDataWatermark !== false) {
+  if (definition.requiresDataWatermark !== false && !stageVerified) {
     const actual = String(slot.data_as_of || summary.dataAsOf || summary.data_as_of || summary.trade_date || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(actual) || !/^\d{4}-\d{2}-\d{2}$/.test(partitionKey) || actual < partitionKey) {
       return { recovered: false, reason: 'watermark_evidence_missing', evidence: { slot, run, expectedDataAsOf: partitionKey, actualDataAsOf: actual || null } };
     }
   }
-  const expectedMode = String(definition.mode || slot.request_payload && slot.request_payload.mode || 'core');
+  const expectedMode = requestedMode;
   if (summary.mode && String(summary.mode) !== expectedMode) {
     return { recovered: false, reason: 'run_mode_mismatch', evidence: { slot, run, expectedMode, actualMode: summary.mode } };
   }

@@ -58,7 +58,7 @@ async function openDaysInRange(startDate, endDate) {
 }
 
 /**
- * 增量同步强赎计算所需的正股停牌日。只保存可转债对应正股，避免每次计算重新访问接口。
+ * 增量保存转债正股及已跟踪股票的停牌证据，复用同一次全市场查询。
  */
 async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
   const from = compactDate(startDate) || compactDate(endDate);
@@ -74,7 +74,11 @@ async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
          JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
         WHERE p.stock_instrument_id IS NOT NULL
           AND u.status='listed'
-          AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))`),
+          AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+      UNION
+      SELECT i.instrument_id,i.canonical_code FROM core.instruments i
+        WHERE i.asset_class='stock' AND (EXISTS (SELECT 1 FROM stock_watchlist w WHERE w.ts_code=i.canonical_code)
+          OR EXISTS (SELECT 1 FROM positions p WHERE p.instrument_id=i.instrument_id))`),
     pool.query(`SELECT source_id FROM ops.data_sources WHERE source_code='tushare' LIMIT 1`),
     tushareQuery('suspend_d', { start_date: from, end_date: to },
       'ts_code,trade_date,suspend_type,suspend_reason', { allowEmpty: true }),

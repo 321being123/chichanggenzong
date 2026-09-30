@@ -12,8 +12,8 @@ const {
   auditEvent, listAudit, AUDIT_MODULES, pool
 } = require('../db');
 const { backfillMissingCloses } = require('../jobs/marketClose');
-const { ensureHolidaysCurrent } = require('../jobs/holidaySync');
-const { loadHolidays, saveHolidays } = require('../config/holidays');
+const { ensureHolidaysCurrent, saveManualHolidays } = require('../jobs/holidaySync');
+const { loadHolidays } = require('../config/holidays');
 const { getModels, saveModels, maskKey, recordStatus, getStatus } = require('../services/aiModels');
 const arbitrageSvc = require('../services/arbitrageService');
 const { getJobOverview, listJobSlots, getJobSlot, retryJobSlot, acknowledgeSlot, validateJobSlot, enqueueManualJob } = require('../services/jobScheduleSlots');
@@ -348,7 +348,8 @@ router.post('/jobs/backfill', asyncHandler(async (req, res) => {
 router.post('/jobs/holiday-sync', asyncHandler(async (req, res) => {
   const id = await startJobRun('manual_holiday_sync');
   try {
-    await ensureHolidaysCurrent();
+    const result = await ensureHolidaysCurrent();
+    if (!result.ok) throw new Error(result.reason || '日历同步未完成');
     await finishJobRun(id, true, '手动触发休市日历核对');
     await audit(req, 'job_holiday_sync', 'manual_holiday_sync', { detail: '手动核对休市日历' });
     res.json({ ok: true });
@@ -369,12 +370,8 @@ router.put('/holidays', asyncHandler(async (req, res) => {
   const y = String(year || '').trim();
   if (!/^\d{4}$/.test(y)) return res.status(400).json({ error: '年份格式错误' });
   if (!Array.isArray(dates)) return res.status(400).json({ error: '日期列表非法' });
-  const obj = loadHolidays();
-  if (!obj.years) obj.years = {};
-  obj.years[y] = dates.filter(function (d) { return typeof d === 'string'; });
-  obj.updatedAt = new Date().toISOString().slice(0, 10);
-  saveHolidays(obj);
-  await audit(req, 'holiday_edit', y, { detail: '维护' + y + '年休市日，共' + obj.years[y].length + '天' });
+  await saveManualHolidays(y, dates);
+  await audit(req, 'holiday_edit', y, { detail: '维护' + y + '年休市日，共' + dates.length + '天' });
   res.json({ ok: true });
 }));
 

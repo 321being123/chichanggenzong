@@ -68,6 +68,8 @@ function assertContinuousParameters(sql, params) {
   assert.match(runnerSource, /!targeted && context\.syncNonPublic/);
   assert.match(runnerSource, /context\.syncListingStatus !== false/);
   assert.match(runnerSource, /targeted \? \{ targetCodes \} : \{\}/);
+  assert.match(runnerSource, /if \(targeted\) \{ nameOptions\.batchSize = null; nameOptions\.targetCodes = targetCodes; \}/);
+  assert.match(runnerSource, /const candidates = targetCodes\.length \? \{ rows: \[\], rowCount: 0 \}/);
   assert.doesNotMatch(runnerSource, /!targeted && context\.syncListingStatus/);
   assert.match(orchestratorSource, /claimed\.job_code === 'hk_ipo_enrichment'[\s\S]*?targetCodes: claimed\.request_payload\.targetCodes/);
 

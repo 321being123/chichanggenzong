@@ -37,7 +37,7 @@ async function persistTencentNames(quoteMap, { executor = pool.query.bind(pool) 
   return { requested: quoteMap instanceof Map ? quoteMap.size : 0, named: updates.size, persisted, source: 'tencent' };
 }
 
-async function persistInstrumentChineseNames({ executor = pool.query.bind(pool) } = {}) {
+async function persistInstrumentChineseNames({ executor = pool.query.bind(pool), targetCodes = [] } = {}) {
   const result = await executor(`
     UPDATE public.ipo_history h
        SET security_name_cn=i.name,updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
@@ -45,16 +45,17 @@ async function persistInstrumentChineseNames({ executor = pool.query.bind(pool) 
      WHERE h.market_code='HK'
        AND i.canonical_code=h.security_code
        AND i.name ~ $1
-       AND COALESCE(NULLIF(h.security_name_cn,''),'') !~ $1`, [CHINESE_NAME_PATTERN]);
+       AND COALESCE(NULLIF(h.security_name_cn,''),'') !~ $1
+       ${targetCodes.length ? 'AND h.security_code=ANY($2::text[])' : ''}`, targetCodes.length ? [CHINESE_NAME_PATTERN, targetCodes] : [CHINESE_NAME_PATTERN]);
   return Number(result?.rowCount || 0);
 }
 
-async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, businessDate, ttlMs, executor = pool.query.bind(pool) } = {}) {
+async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, targetCodes = [], businessDate, ttlMs, executor = pool.query.bind(pool) } = {}) {
   const configuredLimit = Number.isInteger(Number(batchSize)) && Number(batchSize) > 0 ? Number(batchSize) : null;
   const candidateLimitClause = configuredLimit ? ' LIMIT $2' : '';
   const candidateParams = [CHINESE_NAME_PATTERN];
   if (configuredLimit) candidateParams.push(configuredLimit);
-  const candidates = await executor(`
+  const candidates = targetCodes.length ? { rows: [], rowCount: 0 } : await executor(`
     SELECT security_code
       FROM public.ipo_history
      WHERE market_code='HK'
@@ -81,7 +82,7 @@ async function syncHkIpoTencentNames(seedCodes = [], { batchSize = null, busines
   const named = new Set();
   for (const quote of quotes.values()) if (quote && hasChineseName(quote.name)) named.add(canonicalHkCode(quote.code || quote.symbol));
   const persisted = await persistTencentNames(quotes, { executor });
-  const instrumentFallbackPersisted = await persistInstrumentChineseNames({ executor });
+  const instrumentFallbackPersisted = await persistInstrumentChineseNames({ executor, targetCodes });
   return {
     ...persisted, ok: !limited, status: limited ? 'partial' : 'succeeded', limit: configuredLimit,
     continuationRequired: limited, requested: codes.length, quoted: quotes.size, candidateCount: candidates.rowCount || 0,
@@ -368,7 +369,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   let tencentNames = null;
   try {
     const nameOptions = { ...(context.tencentNameOptions || {}) };
-    if (targeted && nameOptions.batchSize == null) nameOptions.batchSize = targetCodes.length;
+    if (targeted) { nameOptions.batchSize = null; nameOptions.targetCodes = targetCodes; }
     tencentNames = await syncHkIpoTencentNames(targeted ? targetCodes : rows.map(row => row.securityCode), {
       ...nameOptions, businessDate: targetDate,
     });

@@ -176,6 +176,11 @@ assert.notStrictEqual(untrustedRights.exclusionReason, 'rights_issue', '非官�
   assert.strictEqual(masterNamesPersisted, 3, '腾讯行情没有中文名时应复用证券主档中文名');
   assert.match(instrumentNameSql, /FROM core\.instruments i/);
   assert.match(instrumentNameSql, /security_name_cn=i\.name/);
+  await persistInstrumentChineseNames({ targetCodes: ['01377.HK', '02476.HK', '06228.HK'], executor: async (sql, params) => {
+    assert.match(sql, /h\.security_code=ANY\(\$2::text\[\]\)/);
+    assert.deepStrictEqual(params[1], ['01377.HK', '02476.HK', '06228.HK']);
+    return { rowCount: 0 };
+  } });
 
   const failed = await runHkIpoSync('preopen', 'test', { probe: { targets: [{ ok: false, error: 'network' }] } });
   assert.strictEqual(failed.ok, false);

@@ -1229,6 +1229,26 @@
       ],
       "owner": "任务治理",
       "status": "verified"
+    },
+    {
+      "id": "HK-TARGET-NAMES-001",
+      "title": "定向中文名只处理原证券且完成后不误判批次未完",
+      "implementation": {
+        "file": "server/jobs/hkIpoSync.js",
+        "symbol": "syncHkIpoTencentNames"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-targeted-enrichment.test.js",
+          "pattern": "nameOptions\\.batchSize = null"
+        },
+        {
+          "file": "server/test/hk-ipo-facts.test.js",
+          "pattern": "h\\.security_code=ANY"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
     }
   ]
 }

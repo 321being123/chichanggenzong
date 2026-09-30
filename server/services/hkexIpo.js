@@ -546,6 +546,11 @@ async function syncHkexAllotmentFacts({
            greenshoe_details->>'overAllocatedShares' IS NOT NULL
            AND COALESCE(greenshoe_details->>'publicOfferSharesBasis','initial_public_offer') = 'initial_public_offer'
          )
+         OR (pricing_at IS NULL AND EXISTS (
+           SELECT 1 FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
+            WHERE document->>'type'='allotment_result'
+              AND document->'parserEvidence'->>'actualPricingDateStatus'='unresolved'
+         ))
          OR ((pricing_at IS NULL OR issue_price_final IS NULL) AND NOT EXISTS (
            SELECT 1 FROM jsonb_array_elements(COALESCE(source_documents,'[]'::jsonb)) document
             WHERE document->>'type'='allotment_result'

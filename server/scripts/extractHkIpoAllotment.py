@@ -401,13 +401,13 @@ def parse_allotment_text(text, lot_size_shares=None):
     parenthetical = r"(?:\s+\([^)]*\))?"
     public_initial = _find_number(
         normalized,
-        r"(?:No\.|Number) of Offer Shares initially available under "
+        r"(?:No\.|Number) of Offer (?:Shares|HDRs) initially available under "
         r"(?:the )?(?:Hong Kong )?Public Offer(?:ing)?" + parenthetical,
     )
     public_final, public_final_evidence = _find_final_public_offer_number(normalized)
     international_initial = _find_number(
         normalized,
-        r"(?:No\.|Number) of Offer Shares initially available under "
+        r"(?:No\.|Number) of Offer (?:Shares|HDRs) initially available under "
         r"(?:the )?International (?:Offer|Offering|Placing)" + parenthetical,
     )
 
@@ -447,7 +447,14 @@ def parse_allotment_text(text, lot_size_shares=None):
     )
     # 完整配发结构和最终价已取得，全文没有实际定价过去式时，记录该公告未披露。
     pricing_mention = re.search(r"offer\s+price\s+(?:was|has\s+been)\s+(?:finally\s+)?(?:determined|fixed|agreed)|(?:發售價|发售价)(?:已)?(?:於|于)", normalized, re.I)
-    pricing_status = 'value' if actual_pricing_date else ('not_disclosed' if parsed and final_offer_price and not pricing_mention else 'unresolved')
+    # 员工优先发售公告把公众股数单列为“扣除海外员工预留股”；该数字
+    # 不能代替整体公开发售比例，但足以核验配发结构及日期披露情况。
+    public_excluding_employees = _find_number(
+        normalized,
+        r"(?:No\.|Number) of Offer Shares (?:excluding|excluded) Overseas Employee Reserved Shares initially available under (?:the )?Hong Kong Public Offer(?:ing)?",
+    )
+    disclosure_structure_verified = parsed or bool(public_excluding_employees and international_initial)
+    pricing_status = 'value' if actual_pricing_date else ('not_disclosed' if disclosure_structure_verified and final_offer_price and not pricing_mention else 'unresolved')
     lottery = _first_pool_a_lottery(text, lot_size_shares) or _first_allocation_table_lottery(text, lot_size_shares)
     return {
         "parserVersion": "hk-ipo-allotment-v2",

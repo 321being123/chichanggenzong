@@ -292,7 +292,7 @@ async function loadIpoMap(executor = pool) {
 }
 
 function isOfferOpen(row, now = new Date(), sourceCloseDate = null) {
-  if (!row || !row.offer_open_at) return false;
+  if (!row || !row.offer_open_at || ['postponed', 'cancelled', 'canceled'].includes(String(row.ipo_status || '').toLowerCase())) return false;
   const open = new Date(row.offer_open_at);
   const closeValue = row.offer_close_at || sourceCloseDate || '';
   const closeText = String(closeValue).trim();

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-30",
+  "lastReviewed": "2026-10-01",
   "rules": [
     {
       "id": "TASK-CONTRACT-001",
@@ -437,6 +437,18 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "聚仁新材公司是国内专业从事句式必须提取主营业务"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "官方招股书多行业产业链解析"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "上下游风险词不能冒充供应应用事实"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "静态平均行业市盈率不得因词序遗漏"
         }
       ],
       "owner": "A股 IPO",
@@ -1177,6 +1189,26 @@
         {
           "file": "server/test/hk-ipo-facts.test.js",
           "pattern": "官方供股结果不得冒充 IPO 资料缺口"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HK-DISCLOSURE-QUALITY-001",
+      "title": "延期与官方配发未披露日期不冒充解析失败",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "recomputeCompletenessForStoredRow"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-facts.test.js",
+          "pattern": "延期上市不得继续计为IPO资料故障"
+        },
+        {
+          "file": "server/test/hk-ipo-facts.test.js",
+          "pattern": "无官方核验证据不得消除日期缺项"
         }
       ],
       "owner": "港股IPO",

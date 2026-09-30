@@ -222,7 +222,7 @@ _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
-_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v8"
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v9"
 _IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
 _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
@@ -1482,7 +1482,7 @@ def _extract_main_business(text):
     return biz or ind or None
 
 
-_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v3"
+_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v4"
 _DOWNSTREAM_CHAIN_RULES = (
     ("数据中心", re.compile(r"数据中心", re.I), ("算力",)),
     ("AI高功率芯片", re.compile(r"AI\s*高功率芯片|高功率芯片", re.I), ("人工智能", "半导体")),
@@ -1490,7 +1490,13 @@ _DOWNSTREAM_CHAIN_RULES = (
     ("5G通信", re.compile(r"5G\s*通信", re.I), ("5G通信",)),
     ("智能汽车", re.compile(r"智能汽车", re.I), ("汽车电子",)),
     ("计算机", re.compile(r"计算机", re.I), ("计算机",)),
-    ("消费电子", re.compile(r"消费电子", re.I), ("消费电子",)),
+    ("消费电子", re.compile(r"消费电子|3C产品", re.I), ("消费电子",)),
+    ("储能", re.compile(r"储能", re.I), ("储能",)),
+    ("新能源电池", re.compile(r"新能源电池|锂电", re.I), ("锂电池",)),
+    ("新能源汽车", re.compile(r"新能源汽车", re.I), ("汽车电子",)),
+    ("集成电路", re.compile(r"集成电路|半导体|晶圆制造", re.I), ("半导体",)),
+    ("光伏", re.compile(r"光伏|太阳能", re.I), ("光伏",)),
+    ("电信运营商", re.compile(r"电信运营商", re.I), ("电信运营商",)),
 )
 
 
@@ -1547,6 +1553,46 @@ def _extract_industry_chain_relations(text):
                     "related_tracks": list(related_tracks),
                     "evidence": match.group(0),
                 })
+    # 通用公司产品/采购/应用句式：只保存公告明确关系，不由行业或公司名称猜测。
+    if not products:
+        product_match = re.search(r"(?:公司|发行人)(?:的)?主要产品(?:包括|为|有)([^。；;]{4,300})", normalized)
+        if product_match:
+            product_text = re.split(r"，(?:主要|报告期|属于|根据|即|公司)|等(?:产品|功能性)?", product_match.group(1), maxsplit=1)[0]
+            products = [item.strip(" ，、") for item in re.split(r"[、，]|以及", product_text)
+                        if 2 <= len(item.strip(" ，、")) <= 70]
+    material_patterns = (
+        r"(?:公司(?:采购的)?(?:主要)?|公司生产所需的)?原材料(?:主要)?(?:包括|为)([^。；;]{4,260})",
+        r"(?:[\u3400-\u9fff]{2,30}产业链的)?上游(?:行业)?(?:主要)?为([^。；;]{4,260})",
+        r"上游原材料包括([^。；;]{4,260})",
+    )
+    if products and not upstream:
+        for pattern in material_patterns:
+            match = re.search(pattern, normalized)
+            if not match:
+                continue
+            materials = re.split(r"等|，(?:与|由|采购|上述|公司)|及其", match.group(1), maxsplit=1)[0]
+            for item in re.split(r"[、，,]|以及", materials):
+                item = item.strip(" ：:，、")
+                if 2 <= len(item) <= 60:
+                    upstream.append({"industry": item, "product": "公司产品", "products": list(products),
+                                     "relationship": "supplies", "evidence": match.group(0)})
+            if upstream:
+                break
+    application_patterns = (
+        r"(?:公司(?:的)?(?:主要)?产品[^。；;]{0,80}?(?:主要)?应用于|广泛应用于|下游(?:产业|行业)(?:主要)?为|下游为)([^。；;]{4,260})",
+    )
+    if products:
+        for pattern in application_patterns:
+            for match in re.finditer(pattern, normalized):
+                # 词条定义及可比公司段落不能作为发行人的应用证据。
+                context = normalized[max(0, match.start()-70):match.start()]
+                if re.search(r"(?:指|可比公司)[^。；;]{0,70}$", context):
+                    continue
+                for label, rule, tracks in _DOWNSTREAM_CHAIN_RULES:
+                    if rule.search(match.group(1)) and not any(r["industry"] == label for r in downstream):
+                        downstream.append({"industry": label, "product": "公司产品", "products": list(products),
+                                           "relationship": "applied_in", "related_tracks": list(tracks),
+                                           "evidence": match.group(0)})
     status = "complete" if products and upstream and downstream else "partial" if products or upstream or downstream else "unavailable"
     return {
         "version": _INDUSTRY_CHAIN_PARSER_VERSION,
@@ -2171,8 +2217,8 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
     pe_match = None
     for pattern in (
         r'所属行业T-?\d+日静态行业市盈率[：:]?(\d+(?:\.\d+)?)',
-        r'(?:该行业|所处行业|发行人所属行业|公司所属行业)最近一个月平均静态市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
-        r'(?:中证指数有限公司发布的)?[^。；;]{0,160}?最近一个月平均静态市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
+        r'(?:该行业|所处行业|发行人所属行业|公司所属行业)最近一个月(?:平均静态|静态平均)市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
+        r'(?:中证指数有限公司发布的)?[^。；;]{0,160}?最近一个月(?:平均静态|静态平均)市盈率(?:为|[：:])?(\d+(?:\.\d+)?)倍?',
     ):
         pe_match = re.search(pattern, compact)
         if pe_match:

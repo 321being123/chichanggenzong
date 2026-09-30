@@ -208,7 +208,7 @@ assert.notStrictEqual(untrustedRights.exclusionReason, 'rights_issue', '非官�
   assert.match(candidateSql, /parserStatus.*incomplete/, '默认补全必须跳过已确认结构不完整的官方文件');
   assert.match(candidateSql, /lotteryParserStatus.*parsed/, '比例结构不完整但一手中签率已解析的文件默认不应重复抓取');
   assert.match(candidateSql, /oneLotSuccessRate.*IS NOT NULL/, '默认补全必须兼容历史证据中缺少 parserStatus 的已解析文件');
-  assert.match(candidateSql, /NOT IN \('introduction','gem_transfer','de_spac','cancelled','canceled'\)/, '配发补全不得为非公众项目或已取消发行重复检索官方文件');
+  assert.match(candidateSql, /NOT IN \('introduction','gem_transfer','de_spac','cancelled','canceled','postponed'\)/, '配发补全不得为非公众项目或已取消发行重复检索官方文件');
   assert.strictEqual(
     shouldPersistAllotmentFacts({ parserStatus: 'incomplete' }, 'parsed'),
     true,
@@ -241,5 +241,22 @@ assert.notStrictEqual(untrustedRights.exclusionReason, 'rights_issue', '非官�
   assert.match(prospectusSql, /expectedEvents,listingDate,date/, '预期上市日到期后必须重新核对官方结果');
   assert.match(prospectusSql, /IS DISTINCT FROM 'not_applicable'/, '明确不适用招股书的项目不得进入重试队列');
   assert.doesNotMatch(prospectusSql, /terminal_missing|pending_not_due.*NOT IN/, '资料缺失和待到期项目不得被永久排除');
+  const verifiedNoPricing = { ipo_status: 'listed', offer_open_at: '2026-01-01T09:00:00+08:00', offer_close_at: '2026-01-05T12:00:00+08:00',
+    issue_price_low: 8, issue_price_high: 10, issue_price_final: 9, lot_size_shares: 100, allotment_at: '2026-01-07T09:00:00+08:00', listing_date: '2026-01-08',
+    source_documents: [{type: 'allotment_result', url: 'https://www1.hkexnews.hk/a.pdf', contentSha256: 'verified-hash',
+      parserEvidence: {factsParserVersion: 'hk-ipo-allotment-facts-v7', actualPricingDateStatus: 'not_disclosed'}}] };
+  const noPricing = recomputeCompletenessForStoredRow(verifiedNoPricing);
+  assert.strictEqual(noPricing.pricingAt, 'not_disclosed', '核验配发公告未披露定价日应明示原因');
+  assert.deepStrictEqual(noPricing.missing_fields, []);
+  assert.strictEqual(recomputeCompletenessForStoredRow({...verifiedNoPricing, source_documents: []}).pricingAt, 'missing', '无官方核验证据不得消除日期缺项');
+  assert.strictEqual(recomputeCompletenessForStoredRow({...verifiedNoPricing, issue_price_final: null}).pricingAt, 'missing', '最终价未取得不得用未披露定价日冒充完整');
+  const postponed = recomputeCompletenessForStoredRow({ security_code: '06700.HK', ipo_status: 'postponed',
+    offer_open_at: '2026-07-01T09:00:00+08:00', offer_close_at: '2026-07-06T12:00:00+08:00' });
+  assert.deepStrictEqual(postponed.missing_fields, [], '延期上市不得继续计为IPO资料故障');
+  assert.strictEqual(postponed.publicOfferEligibility, 'excluded');
+  assert.strictEqual(postponed.exclusionReason, 'postponed');
+  assert.strictEqual(recomputeCompletenessForStoredRow({ipo_status: 'active', data_completeness: postponed}).exclusionReason, undefined, '恢复发行状态后应解除延期排除');
+  assert.match(candidateSql, /'postponed'/, '延期项目不得进入配发补全');
+  assert.match(prospectusSql, /'postponed'/, '延期项目不得进入招股书补全');
   console.log('hk-ipo-facts.test.js passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

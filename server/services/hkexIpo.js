@@ -50,7 +50,7 @@ const HKEX_NEW_LISTING_REPORT_TARGETS = Object.freeze([
 
 const HKEX_ALLOTMENT_DATASET = 'hkex_ipo_allotment_result';
 const HKEX_ALLOTMENT_PARSER_VERSION = 'hk-ipo-allotment-v2';
-const HKEX_ALLOTMENT_FACTS_PARSER_VERSION = 'hk-ipo-allotment-facts-v6';
+const HKEX_ALLOTMENT_FACTS_PARSER_VERSION = 'hk-ipo-allotment-facts-v7';
 const HKEX_ALLOTMENT_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoAllotment.py');
 const HKEX_PROSPECTUS_DATASET = 'hkex_ipo_prospectus';
 const HKEX_PROSPECTUS_PARSER = path.join(__dirname, '..', 'scripts', 'extractHkIpoProspectus.py');
@@ -472,7 +472,7 @@ async function syncHkexAllotmentFacts({
            oversubscribe_multiple,greenshoe_details,source_documents,data_completeness
       FROM public.ipo_history
      WHERE market_code='HK'
-       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
+       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled','postponed')
        AND COALESCE(data_completeness->>'exclusionReason','') <> 'rights_issue'
        ${candidateDateFilter}
        AND (
@@ -708,6 +708,7 @@ async function syncHkexAllotmentFacts({
             greenshoeDetails: greenshoeDetailsForPersist,
             greenshoeParserStatus,
             factsParserVersion: HKEX_ALLOTMENT_FACTS_PARSER_VERSION,
+            actualPricingDateStatus: parsed.actualPricingDateStatus,
           },
         });
         const completeness = {
@@ -1078,7 +1079,7 @@ async function syncHkexProspectusFacts({
            issue_price_low,issue_price_high,issue_price_final,lot_size_shares,offer_open_at,offer_close_at,pricing_at,allotment_at
      FROM public.ipo_history
      WHERE market_code='HK'
-       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
+       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled','postponed')
        AND COALESCE(data_completeness->>'exclusionReason','') <> 'rights_issue'
        AND data_completeness#>>'{prospectus,status}' IS DISTINCT FROM 'not_applicable'
        AND NOT EXISTS (
@@ -1703,7 +1704,24 @@ function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
     result.publicOfferEligibility = 'excluded';
     result.exclusionReason = 'rights_issue';
   }
-  const terminalStatus = rightsIssueOnly || ['introduction', 'gem_transfer', 'de_spac', 'cancelled', 'canceled'].includes(String(row.ipo_status || '').toLowerCase());
+  if (result.exclusionReason === 'postponed' && String(row.ipo_status || '').toLowerCase() !== 'postponed') {
+    delete result.exclusionReason;
+    delete result.publicOfferEligibility;
+  }
+  if (String(row.ipo_status || '').toLowerCase() === 'postponed') {
+    result.publicOfferEligibility = 'excluded';
+    result.exclusionReason = 'postponed';
+  }
+  if (!row.pricing_at && row.issue_price_final > 0 && (Array.isArray(row.source_documents) ? row.source_documents : []).some(document => {
+    try { assertOfficialUrl(document.url); } catch (_) { return false; }
+    return document.type === 'allotment_result' && document.contentSha256
+      && document.parserEvidence?.factsParserVersion === HKEX_ALLOTMENT_FACTS_PARSER_VERSION
+      && document.parserEvidence?.actualPricingDateStatus === 'not_disclosed';
+  })) {
+    result.pricingAt = 'not_disclosed';
+    result.pricingDateReason = '已核验官方配发公告未披露实际定价日期';
+  }
+  const terminalStatus = rightsIssueOnly || ['introduction', 'gem_transfer', 'de_spac', 'cancelled', 'canceled', 'postponed'].includes(String(row.ipo_status || '').toLowerCase());
   const requiredFields = ['offerOpenAt', 'offerCloseAt', 'issuePriceHigh', 'lotSizeShares'];
   if (!maximumOnly) requiredFields.push('issuePriceLow');
   if (due('pricingDate')) requiredFields.push('pricingAt', 'issuePriceFinal');

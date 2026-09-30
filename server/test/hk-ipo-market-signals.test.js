@@ -59,7 +59,7 @@ const activeIpo = { offer_open_at: '2026-09-01T01:00:00.000Z', offer_close_at: n
 assert.strictEqual(isOfferOpen(activeIpo, new Date('2026-09-03T08:00:00.000Z'), '2026-09-03'), true);
 assert.strictEqual(isCurrentSubscriptionRecord({ subscriptionMultiple: 12.5, offerCloseDate: '2026-09-03', raw: { update_at: '2026-09-03T08:00:00.000Z' } }, activeIpo, '2026-09-03', new Date('2026-09-03T08:00:00.000Z')), true);
 assert.strictEqual(isCurrentSubscriptionRecord({ subscriptionMultiple: 12.5, offerCloseDate: '2026-09-02', raw: {} }, activeIpo, '2026-09-03', new Date('2026-09-03T08:00:00.000Z')), false);
-assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v6', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), true);
+assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v7', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), true);
 assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'parsed', feeParserStatus: 'missing' } }), false, '旧版本需重解析实际定价日期');
 assert.strictEqual(isVerifiedAllotmentDocument({ parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v4', oversubscriptionParserStatus: 'parsed', lotteryParserStatus: 'parsed', feeParserStatus: 'parsed' } }), false);
 assert.strictEqual(isVerifiedAllotmentDocument({ title: 'GLOBAL OFFERING - CLARIFICATION ANNOUNCEMENT', parserEvidence: { factsParserVersion: 'hk-ipo-allotment-facts-v5', oversubscriptionParserStatus: 'missing', lotteryParserStatus: 'missing', feeParserStatus: 'missing' } }), false);
@@ -100,3 +100,5 @@ assert.strictEqual(assessHkGreenshoe({ status: 'not_available' }, null), '偏不
 assert.strictEqual(assessHkGreenshoe({ status: 'not_disclosed' }, null), '待确认');
 
 console.log('OK hk-ipo-market-signals: 申购倍数、暗盘解析和绿鞋判断通过');
+
+assert.strictEqual(isCurrentSubscriptionRecord({subscriptionMultiple: 10, offerCloseDate: '2026-10-02'}, {ipo_status: 'postponed', offer_open_at: '2026-09-28T09:00:00+08:00', offer_close_at: '2026-10-02T12:00:00+08:00'}, '2026-10-01', new Date('2026-10-01T09:00:00+08:00')), false, '延期公司不得继续参与实时申购信号');

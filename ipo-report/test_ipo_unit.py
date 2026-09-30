@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """
 确定性单元测试（不依赖 PostgreSQL / 外部行情，固定 fixture 或桩隔离，CI 必过）。
@@ -1221,6 +1222,15 @@ try:
         "导热界面材料、屏蔽材料、吸波材料的终端应用领域包括数据中心（AI 高功率芯片、光模块）、"
         "5G 通信、智能汽车、计算机及消费 深圳市鸿富诚新材料股份有限公司 招股说明书（注册稿） 1-1-128 电子等。"
     )
+    static_average = fetch._parse_ipo_issuance_detail('根据《国民经济行业分类》（GB/T4754-2017），公司所属行业为橡胶和塑料制品业（C29）。截至2026年3月6日，中证指数有限公司发布的C29橡胶和塑料制品业最近一个月静态平均市盈率为28.56倍。')
+    check("静态平均行业市盈率不得因词序遗漏", static_average.get("industry_pe") == 28.56 and static_average.get("industry_pe_as_of") == "2026-03-06")
+    official_chains = json.loads((Path(__file__).parent / "test_fixtures" / "industry-chain-official-20260930.json").read_text(encoding="utf-8"))
+    for fixture in official_chains:
+        actual = fetch._extract_industry_chain_relations(fixture["text"])
+        check("官方招股书多行业产业链解析" + fixture["code"],
+              actual["status"] == "complete" and actual["products"] and actual["upstream"] and actual["downstream"], str(actual))
+    unknown = fetch._extract_industry_chain_relations("公司主要产品为材料设备。公司面临上游涨价及下游需求下滑风险。")
+    check("上下游风险词不能冒充供应应用事实", not unknown["upstream"] and not unknown["downstream"])
     chain = fetch._extract_industry_chain_relations(chain_source_text)
     check("招股书上下游关系提取覆盖上游材料与下游应用",
           chain.get("status") == "complete"

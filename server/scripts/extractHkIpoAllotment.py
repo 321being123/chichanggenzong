@@ -14,15 +14,25 @@ from datetime import datetime
 
 def _actual_pricing_date(text):
     # 只认实际定价的过去式，不用招股书的预计日或公告发布日期替代。
-    match = re.search(
-        r"(?:final\s+)?offer\s+price\s+(?:was|has\s+been)\s+(?:finally\s+)?determined\s+on\s+"
-        r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text, re.IGNORECASE)
-    if not match:
-        return None, None
-    try:
-        return datetime.strptime(match.group(1), '%d %B %Y').date().isoformat(), match.group(0)
-    except ValueError:
-        return None, None
+    patterns = (
+        r"(?:final\s+)?offer\s+price\s+(?:was|has\s+been)\s+(?:finally\s+)?(?:determined|fixed|agreed)(?:\s+at\s+HK\$[\d.]+)?\s+on\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
+        r"(?:final\s+)?offer\s+price\s+(?:was|has\s+been)\s+(?:determined|agreed)\s+on\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
+        r"(?:最終發售價|最终发售价|發售價|发售价)(?:已)?(?:於|于)(20\d{2}年\d{1,2}月\d{1,2}日)(?:釐定|厘定|確定|确定)",
+    )
+    values = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            context = text[max(0, match.start()-45):match.start()]
+            if re.search(r"(?:預期|预计|預計|预期|將|将|expected|will)[^。.;]{0,45}$", context, re.I):
+                continue
+            raw_date = match.group(1)
+            for fmt in ('%d %B %Y', '%B %d, %Y', '%B %d %Y', '%Y年%m月%d日'):
+                try:
+                    values.append((datetime.strptime(raw_date, fmt).date().isoformat(), match.group(0)))
+                    break
+                except ValueError:
+                    pass
+    return values[0] if values and len({v[0] for v in values}) == 1 else (None, None)
 
 
 def _number(value):
@@ -435,12 +445,16 @@ def parse_allotment_text(text, lot_size_shares=None):
         and 0 < international_ratio < 1
         and abs(public_ratio + international_ratio - 1) < 1e-9
     )
+    # 完整配发结构和最终价已取得，全文没有实际定价过去式时，记录该公告未披露。
+    pricing_mention = re.search(r"offer\s+price\s+(?:was|has\s+been)\s+(?:finally\s+)?(?:determined|fixed|agreed)|(?:發售價|发售价)(?:已)?(?:於|于)", normalized, re.I)
+    pricing_status = 'value' if actual_pricing_date else ('not_disclosed' if parsed and final_offer_price and not pricing_mention else 'unresolved')
     lottery = _first_pool_a_lottery(text, lot_size_shares) or _first_allocation_table_lottery(text, lot_size_shares)
     return {
         "parserVersion": "hk-ipo-allotment-v2",
         "parserStatus": "parsed" if parsed else "incomplete",
         "finalOfferPrice": final_offer_price,
         "actualPricingDate": actual_pricing_date,
+        "actualPricingDateStatus": pricing_status,
         "listingStatusNotice": parse_listing_status_notice(text),
         "brokerageRatePct": brokerage_rate,
         "sfcTransactionLevyRatePct": sfc_rate,

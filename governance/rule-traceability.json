@@ -1132,7 +1132,7 @@
     },
     {
       "id": "HK-IPO-CANCEL-CACHE-001",
-      "title": "取消发行须匹配官方公告正文、代码和招股窗口，缓存优先",
+      "title": "官方取消发行须匹配公告正文、证券代码和招股窗口，缓存优先",
       "implementation": {
         "file": "server/services/hkexIpo.js",
         "symbol": "syncHkexListingStatusNotices"

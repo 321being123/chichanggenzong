@@ -746,6 +746,26 @@ def _load_xgb_model():
         print(f"[XGBoost] 模型加载失败: {e}")
         return False
 
+def get_stock_model_version():
+    """当前上线 XGBoost 模型的版本标识，用于预测留存的版本追溯。
+
+    模型每日重训，`trained_at` 即版本号；半宽与训练范围一并入串，
+    使每条预测留档都能对应到"哪一天的模型、什么口径"。
+    模型不可用时返回 None——宁可缺版本也不能编一个假版本。
+    """
+    info = _XGB_FEATURE_INFO
+    if not info:
+        try:
+            if _load_xgb_model():
+                info = _XGB_FEATURE_INFO
+        except Exception:
+            info = None
+    if not info:
+        return None
+    return "xgb|transform=%s|trained_on=%s|samples=%s|interval_hw=%s|trained_at=%s" % (
+        info.get("target_transform"), info.get("model_trained_on"),
+        info.get("sample_count"), info.get("interval_half_width"), info.get("trained_at"))
+
 def _xgb_predict_listing(stock_detail, sector_label="", sector_boost=0, prediction_stage="listing"):
     """
     用XGBoost模型预测首日涨幅

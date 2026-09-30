@@ -997,6 +997,26 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "IPO-PREDICTION-RETENTION-001",
+      "title": "A 股预测落库必须同时保存预测上下文与当次上线模型版本，缺版本的预测无法追溯",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_prediction.py",
+        "symbol": "save_predictions"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "股票预测落库同时保存模型版本与预测上下文"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "模型版本串含训练时间与口径要素"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

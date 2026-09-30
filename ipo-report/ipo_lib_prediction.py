@@ -93,6 +93,15 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
         detail = s.get("detail") if isinstance(s.get("detail"), dict) else {}
         listing_date = detail.get("list_date") or detail.get("listing_date") or pred_date
         context = analysis.get("prediction_context") if isinstance(analysis, dict) else None
+        # 版本追溯（原方案第二批验收缺口）：每条股票预测必须连同当次上线的
+        # 模型版本一起落库——模型每日重训，缺版本的预测无法回答"当时用的是
+        # 哪个模型、什么口径"。函数级导入避开 valuation→prediction 的循环导入。
+        try:
+            from ipo_lib_valuation import get_stock_model_version
+            model_version = get_stock_model_version()
+        except Exception as _ver_err:
+            print(f"[预测跟踪] 模型版本读取失败（留存将缺版本）: {_ver_err}")
+            model_version = None
 
         rows.append(("stock", s["code"], s["name"], listing_date,
                       pred_date, pred_return, pred_price, advice,
@@ -101,6 +110,7 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
                       analysis.get("sector_adjustment_pp") if isinstance(analysis, dict) else None,
                       analysis.get("sector_multiplier") if isinstance(analysis, dict) else None,
                       analysis.get("sector_confidence") if isinstance(analysis, dict) else None,
+                      model_version,
                       json.dumps(context or {}, ensure_ascii=False, default=str)))
 
     for b in apply_bonds + list_bonds:
@@ -136,6 +146,16 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
 
     for row in rows:
         try:
+            if len(row) == 15:
+                # 股票预测：含当次上线模型版本（验收第二批缺口——版本追溯）
+                conn.execute("""
+                INSERT OR REPLACE INTO predictions
+                    (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at,
+                     base_pred_return, sector_adjustment_pp, sector_multiplier, sector_confidence,
+                     valuation_model_version, prediction_context)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
+                """, row)
+                continue
             if len(row) == 14:
                 conn.execute("""
                 INSERT OR REPLACE INTO predictions
@@ -158,8 +178,9 @@ def save_predictions(apply_stocks, apply_bonds, list_stocks, list_bonds, pred_da
                     (type, code, name, listing_date, pred_date, pred_return, pred_price, pred_advice, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?)
             """, row)
-        except Exception:
-            pass
+        except Exception as e:
+            # 静默吞错会掩盖列数不匹配这类问题——预测留档失败必须可见（验收第二批缺口）
+            print(f"[预测跟踪] 预测记录保存失败 {row[1]}: {e}")
     conn.commit()
     conn.close()
     if rows:

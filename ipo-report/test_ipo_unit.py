@@ -1406,6 +1406,41 @@ try:
           and abs(_bt.spearman([1, 2, 2, 4], [1, 2, 3, 4]) - 0.9486833) < 1e-6,
           "常数=%r 并列=%r" % (_bt.spearman([10, 10, 10], [1, 2, 3]),
                               _bt.spearman([1, 2, 2, 4], [1, 2, 3, 4])))
+    # ── 预测留存与版本追溯（原方案第二批验收缺口）──
+    _retention_entry = {
+        "code": "TESTSV0001", "name": "留存测试", "advice": "可以申购",
+        "detail": {"issue_price": 10.0, "list_date": "2026-10-10"},
+        "listing_analysis": {
+            "predicted_return": 123, "price": 22.3,
+            "base_predicted_return": 100, "sector_adjustment_pp": 5.0,
+            "sector_multiplier": 1.1, "sector_confidence": 0.8,
+            "prediction_context": {"prediction_stage": "issuance",
+                                   "stock_code": "TESTSV0001",
+                                   "calculation_detail": {"model_features": {"issue_pe": 30}}},
+        },
+    }
+    _pred.save_predictions([_retention_entry], [], [], [], "2026-10-09")
+    _sv_conn = _pred.db_pg.connect()
+    try:
+        _sv_row = _sv_conn.execute(
+            "SELECT pred_return, valuation_model_version, prediction_context::text "
+            "FROM predictions WHERE type='stock' AND code='TESTSV0001'").fetchone()
+        check("股票预测落库同时保存模型版本与预测上下文",
+              _sv_row is not None and _sv_row[0] == 123
+              and isinstance(_sv_row[1], str) and _sv_row[1].startswith("xgb|")
+              and "trained_at=" in _sv_row[1]
+              and "prediction_stage" in (_sv_row[2] or "")
+              and "calculation_detail" in (_sv_row[2] or ""),
+              "row=%r" % (_sv_row,))
+        _mv = _val.get_stock_model_version()
+        check("模型版本串含训练时间与口径要素",
+              isinstance(_mv, str) and _mv.startswith("xgb|")
+              and "trained_on=" in _mv and "interval_hw=" in _mv and "trained_at=" in _mv,
+              "version=%r" % (_mv,))
+    finally:
+        _sv_conn.execute("DELETE FROM predictions WHERE type='stock' AND code='TESTSV0001'")
+        _sv_conn.commit()
+        _sv_conn.close()
     _bt_src = open(os.path.join(_ipo_dir, "backtest_ipo_prediction.py"), encoding="utf-8").read()
     check("回测训练窗口按上市日截点取且不按行切片",
           "train_indices = [i for i in range(index) if dates[i] < anchor_date]" in _bt_src

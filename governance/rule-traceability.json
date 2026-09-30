@@ -421,6 +421,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "鸿富诚主营业务识别电子功能材料赛道"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "主营业务在产品构成表格处截断"
         }
       ],
       "owner": "A股 IPO",

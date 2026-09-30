@@ -9,7 +9,7 @@ const ANALYSIS_DATASET = 'stock_analysis';
 
 const JOB = 'stock_analysis_refresh';
 
-function nextShanghaiDelay(hour = 20, minute = 30, now = new Date()) {
+function nextShanghaiDelay(hour = 8, minute = 20, now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
@@ -174,14 +174,14 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
 function scheduleStockAnalysisRefresh() {
   function scheduleNext() {
     const timer = setTimeout(async () => {
-      try { await runStockAnalysisRefresh('daily-20:30'); }
+      try { await runStockAnalysisRefresh('daily-08:20'); }
       catch (error) { console.error('[stock-analysis] 每日更新失败:', error.message); }
       scheduleNext();
     }, nextShanghaiDelay());
     if (timer.unref) timer.unref();
   }
   scheduleNext();
-  console.log('[stock-analysis] 已调度：每日 20:30（上海时间）');
+  console.log('[stock-analysis] 已调度：每日 08:20（上海时间）');
 }
 
 module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };

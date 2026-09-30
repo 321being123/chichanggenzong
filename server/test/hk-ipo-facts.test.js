@@ -195,7 +195,7 @@ assert.strictEqual(terminalFacts.status, 'complete', '介绍上市等终态项�
   assert.match(candidateSql, /parserStatus.*incomplete/, '默认补全必须跳过已确认结构不完整的官方文件');
   assert.match(candidateSql, /lotteryParserStatus.*parsed/, '比例结构不完整但一手中签率已解析的文件默认不应重复抓取');
   assert.match(candidateSql, /oneLotSuccessRate.*IS NOT NULL/, '默认补全必须兼容历史证据中缺少 parserStatus 的已解析文件');
-  assert.match(candidateSql, /NOT IN \('introduction','gem_transfer','de_spac'\)/, '配发补全不得为非公众项目重复检索官方文件');
+  assert.match(candidateSql, /NOT IN \('introduction','gem_transfer','de_spac','cancelled','canceled'\)/, '配发补全不得为非公众项目或已取消发行重复检索官方文件');
   assert.strictEqual(
     shouldPersistAllotmentFacts({ parserStatus: 'incomplete' }, 'parsed'),
     true,

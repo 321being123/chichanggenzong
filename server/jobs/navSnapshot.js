@@ -44,6 +44,18 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   });
   const cfs = (data.cashFlows || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
 
+  // 空账户必须由结构化事实和账户现金共同证明，不以零处理天数冒充恢复。
+  if (['positions', 'navHistory', 'trades', 'cashFlows', 'positionSnapshots']
+    .every(key => Array.isArray(data[key]) && data[key].length === 0) && data.cashBase === 0) {
+    const { rows: cashRows } = await pool.query(
+      'SELECT cash_base::float8 AS cash_base FROM accounts WHERE username=$1 AND account_name=$2',
+      [username, accountName]
+    );
+    if (cashRows.length === 1 && cashRows[0].cash_base === 0) {
+      return { ok: true, days: 0, verifiedNoChange: true, usedPriceDates: {}, reason: 'verified_empty_account' };
+    }
+  }
+
   // daily_prices → map "code|date" → price；同时收集「有收盘价的交易日」
   const { rows: dpRows } = await pool.query(
     'SELECT date, code, price::float8 AS price FROM daily_prices WHERE username=$1 AND account_name=$2',

@@ -472,7 +472,7 @@ async function syncHkexAllotmentFacts({
            oversubscribe_multiple,greenshoe_details,source_documents,data_completeness
       FROM public.ipo_history
      WHERE market_code='HK'
-       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
+       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
        ${candidateDateFilter}
        AND (
          $${refreshLotteryParam}::boolean
@@ -936,6 +936,26 @@ async function syncHkexListingStatusNotices({
   try {
     const selected = new Map();
     for (const code of candidates.keys()) {
+      const candidate = candidates.get(code);
+      // 已取消的新申请人可能不再出现在股票代码检索中；优先核验已保存的官方公告。
+      const cachedNotices = (Array.isArray(candidate.source_documents) ? candidate.source_documents : [])
+        .filter(document => document.type === 'new_listing' && document.url && !/_c\.pdf$/i.test(document.url));
+      for (const document of cachedNotices) {
+        try {
+          const cached = await readCachedPdf(document.url);
+          if (!cached) continue;
+          const parsed = await parseHkexAllotmentPdf(cached);
+          const notice = parsed.listingStatusNotice;
+          if (!notice || canonicalHkCode(notice.stockCode) !== code
+            || notice.announcedAt < candidate.offer_open_date || notice.announcedAt > toDate) continue;
+          selected.set(code, { fileLink: document.url, title: notice.evidence,
+            announcedAt: notice.announcedAt, rawPayload: { listingStatusNotice: notice } });
+          break;
+        } catch (error) {
+          failures.push({ code, stage: 'cached_notice', error: error.message || String(error) });
+        }
+      }
+      if (selected.has(code)) continue;
       searched += 1;
       try {
         const announcements = await searchImpl({ fromDate, toDate, categories: ['-2'], stockCode: code, _httpRequest: fetchImpl });
@@ -968,7 +988,8 @@ async function syncHkexListingStatusNotices({
           type: ipoStatus === 'postponed' ? 'listing_postponement' : 'listing_cancellation',
           url, title: item.title || `HKEX ${ipoStatus} notice`,
           announcedAt: item.announcedAt || null, language: 'en', contentSha256: responseSha256,
-          parserStatus: 'official_title_match_v1',
+          parserStatus: item.rawPayload?.listingStatusNotice ? 'official_body_match_v1' : 'official_title_match_v1',
+          parserEvidence: item.rawPayload?.listingStatusNotice || null,
         });
         const completeness = {
           ...(current.data_completeness && typeof current.data_completeness === 'object' ? current.data_completeness : {}),
@@ -980,7 +1001,9 @@ async function syncHkexListingStatusNotices({
            ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET run_id=EXCLUDED.run_id,ingested_at=now()`,
           [runId, source.rows[0].source_id, HKEX_LISTING_STATUS_DATASET, `${code}|${url}`, JSON.stringify({
             securityCode: code, ipoStatus, sourceUrl: url, title: item.title || null, announcedAt: item.announcedAt || null,
-            responseBytes: buffer.length, responseSha256, parserStatus: 'official_title_match_v1',
+            responseBytes: buffer.length, responseSha256,
+            parserStatus: item.rawPayload?.listingStatusNotice ? 'official_body_match_v1' : 'official_title_match_v1',
+            parserEvidence: item.rawPayload?.listingStatusNotice || null,
           }), responseSha256]
         );
         await executor(`
@@ -1054,7 +1077,7 @@ async function syncHkexProspectusFacts({
            issue_price_low,issue_price_high,issue_price_final,lot_size_shares,offer_open_at,offer_close_at,pricing_at,allotment_at
      FROM public.ipo_history
      WHERE market_code='HK'
-       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac')
+       AND COALESCE(ipo_status,'active') NOT IN ('introduction','gem_transfer','de_spac','cancelled','canceled')
        AND data_completeness#>>'{prospectus,status}' IS DISTINCT FROM 'not_applicable'
        AND NOT EXISTS (
          SELECT 1

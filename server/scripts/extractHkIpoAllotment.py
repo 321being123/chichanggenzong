@@ -333,6 +333,23 @@ def _first_allocation_table_lottery(text, lot_size_shares=None):
     return None
 
 
+def parse_listing_status_notice(text):
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    code = re.search(r"Stock\s+Code\s*:\s*(\d{1,5})\b", normalized, re.I)
+    decision = re.search(
+        r"(?:the\s+)?Company\s+(?:has\s+)?decided\s+(?:that\s+)?(?:the\s+)?"
+        r"Global\s+Offering\s+and\s+(?:the\s+)?Listing\s+will\s+not\s+proceed\s+at\s+this\s+time", normalized, re.I)
+    date = re.search(r"(?:Hong\s+Kong|Singapore),\s*(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s*)?(\d{1,2}\s+[A-Za-z]+\s+\d{4})", normalized, re.I)
+    if not (code and decision and date):
+        return None
+    try:
+        notice_date = datetime.strptime(date.group(1), '%d %B %Y').date().isoformat()
+    except ValueError:
+        return None
+    return {"status": "cancelled", "stockCode": code.group(1).zfill(5),
+            "announcedAt": notice_date, "evidence": decision.group(0)}
+
+
 def parse_allotment_text(text, lot_size_shares=None):
     # 部分官方 PDF 的文本层会把换行/分页控制符导出为退格等不可见字符，
     # 先统一为空格，避免把 “Hong\x08 Kong” 误判为缺字段。
@@ -424,6 +441,7 @@ def parse_allotment_text(text, lot_size_shares=None):
         "parserStatus": "parsed" if parsed else "incomplete",
         "finalOfferPrice": final_offer_price,
         "actualPricingDate": actual_pricing_date,
+        "listingStatusNotice": parse_listing_status_notice(text),
         "brokerageRatePct": brokerage_rate,
         "sfcTransactionLevyRatePct": sfc_rate,
         "afrcTransactionLevyRatePct": afrc_rate,

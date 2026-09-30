@@ -2,6 +2,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
+const { writeCachedPdf } = require('../services/documentPdfCache');
 const { classifyHkexIpoStatusNotice, syncHkexListingStatusNotices } = require('../services/hkexIpo');
 const { searchAnnouncements } = require('../services/hkexAnnouncement');
 const { hkOfferPhaseSql } = require('../routes/ipo');
@@ -58,6 +60,33 @@ async function main() {
   const priorCache = process.env.DOCUMENT_PDF_CACHE_DIR;
   process.env.DOCUMENT_PDF_CACHE_DIR = tempCache;
   try {
+    const root = path.join(__dirname, '..', '..');
+    const python = process.platform === 'win32' ? path.join(root, 'venv', 'Scripts', 'python.exe')
+      : fs.existsSync(path.join(root, 'venv', 'bin', 'python')) ? path.join(root, 'venv', 'bin', 'python') : 'python3';
+    const fixture = spawnSync(python, ['-c', "import fitz,sys; d=fitz.open(); p=d.new_page(); p.insert_textbox(fitz.Rect(30,30,550,600), 'Stock Code: 2523. The Company has decided that the Global Offering and the Listing will not proceed at this time. Hong Kong, Wednesday, 8 July 2026'); sys.stdout.buffer.write(d.tobytes())"]);
+    assert.strictEqual(fixture.status, 0, String(fixture.stderr));
+    const cancelledUrl = 'https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0708/2026070801370.pdf';
+    writeCachedPdf(cancelledUrl, fixture.stdout);
+    const cancelledCandidate = { security_code: '02523.HK', instrument_id: 1, offer_open_date: '2026-06-30',
+      source_documents: [{ type: 'new_listing', url: cancelledUrl, title: 'EKH LIMITED' }], data_completeness: {} };
+    const cancelledExecutor = makeExecutor(cancelledCandidate);
+    const cancelled = await syncHkexListingStatusNotices({ targetCodes: ['02523.HK'],
+      fromDate: '2026-06-30', toDate: '2026-09-30', executor: cancelledExecutor.query,
+      fetchImpl: async () => { throw new Error('已缓存取消公告不得重复下载'); },
+      searchImpl: async () => { throw new Error('已核验取消公告不得重复检索'); },
+    });
+    assert.strictEqual(cancelled.cancelled, 1);
+    assert.strictEqual(cancelled.searched, 0);
+    assert.deepStrictEqual(cancelled.failures, []);
+    const cancellationWrite = cancelledExecutor.writes.find(call => call.sql.includes('UPDATE public.ipo_history'));
+    assert.strictEqual(cancellationWrite.params[2], '2026-07-08');
+    assert.strictEqual(JSON.parse(cancellationWrite.params[3]).find(d => d.type === 'listing_cancellation').parserStatus, 'official_body_match_v1');
+    const wrongIssuer = makeExecutor({ ...cancelledCandidate, security_code: '02524.HK' });
+    const rejected = await syncHkexListingStatusNotices({ targetCodes: ['02524.HK'],
+      fromDate: '2026-06-30', toDate: '2026-09-30', executor: wrongIssuer.query,
+      searchImpl: async () => [], fetchImpl: async () => { throw new Error('禁止跨证券公告写入'); },
+    });
+    assert.strictEqual(rejected.cancelled, 0);
     const executor = makeExecutor({
       security_code: '06700.HK', security_name: '深圳四方精創資訊股份有限公司', instrument_id: 'instrument-6700',
       offer_open_at: new Date('2026-09-13T16:00:00.000Z'), offer_open_date: '2026-09-14',

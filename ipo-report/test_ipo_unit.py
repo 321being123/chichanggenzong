@@ -302,6 +302,13 @@ try:
           and hongfucheng_gbt_parsed.get("industry_classification", {}).get("classification_system") == "national_economic_industry",
           "结果=%r" % hongfucheng_gbt_parsed)
     targeted_fixture = next(item for item in historical_fixtures if item["stock_code"] == "301718")
+    huangguan = fetch._parse_ipo_issuance_detail(
+        '皇冠新材001381根据国家统计局发布的《国民经济行业分类（GB/T 4754-2017）》，公司属于橡胶和塑料制品业（C29）。',
+        '皇冠新材', '001381')
+    check('行业标准编号不得冒充行业代码',
+          huangguan.get('industry') == '橡胶和塑料制品业'
+          and huangguan.get('industry_classification', {}).get('classification_code') == 'C29'
+          and fetch._industry_from_label('GB/T4754-2017') == (None, None), repr(huangguan))
     inquiry_parsed = fetch._parse_ipo_issuance_detail(
         targeted_fixture["text"], targeted_fixture["security_name"], targeted_fixture["stock_code"]
     )

@@ -17,8 +17,14 @@ market.tushareQuery = async (api, params) => {
     date === '2026-10-01' || [0, 6].includes(new Date(`${date}T00:00:00Z`).getUTCDay()) ? '0' : '1']) };
 };
 const calendar = require('../jobs/holidaySync');
-const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { getJobDefinition, stageCompletionEvidence } = require('../services/jobDefinitions');
+const analysisSchedule = getJobDefinition('stock_analysis_refresh');
+assert.strictEqual(analysisSchedule.hour, 8);
+assert.strictEqual(analysisSchedule.minute, 20);
+assert.strictEqual(analysisSchedule.afterTradingDay, true);
+assert.strictEqual(analysisSchedule.dataDatePolicy, 'previous_trading_day');
+assert(analysisSchedule.dependencyCodes.includes('convertible_bond_universe_refresh'), '股票分析必须等待共享采集的同一收盘日');
+const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
 const { readSnapshot } = require('../services/datasetPartitionRegistry');
 const { verifiedStockDataDate } = require('../jobs/stockAnalysisRefresh');

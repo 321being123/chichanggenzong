@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from extractHkIpoAllotment import parse_allotment_text
+from extractHkIpoAllotment import parse_allotment_text, parse_listing_status_notice
 
 
 def test_actual_price_date_requires_explicit_past_event():
@@ -18,4 +18,10 @@ def test_actual_price_date_requires_explicit_past_event():
 
 if __name__ == '__main__':
     test_actual_price_date_requires_explicit_past_event()
-    print('PASS=1 FAIL=0 ERROR=0')
+    text = 'Stock Code: 2523. The Company has decided that the Global Offering and the Listing will not proceed at this time. Hong Kong, Wednesday, 8 July 2026'
+    assert parse_listing_status_notice(text)['stockCode'] == '02523'
+    assert parse_allotment_text(text)['listingStatusNotice']['announcedAt'] == '2026-07-08'
+    assert parse_listing_status_notice(text.replace('has decided', 'may decide')) is None
+    assert parse_listing_status_notice(text.replace('8 July', '32 July')) is None
+    assert parse_listing_status_notice(text.replace('Stock Code: 2523.', '')) is None
+    print('PASS=2 FAIL=0 ERROR=0')

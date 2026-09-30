@@ -535,7 +535,7 @@ try:
             "industry": "计算机、通信和其他电子设备制造业",
             "industry_source": "szse",
             "industry_diagnostic": {
-                "status": "value", "source": "szse", "parser_version": "ipo-issuance-facts-v7",
+                "status": "value", "source": "szse", "parser_version": "ipo-issuance-facts-v8",
                 "document_url": "https://example.test/new.pdf", "content_hash": "new-hash",
                 "classification_system": "national_economic_industry",
                 "classification_version": "GB/T 4754-2017", "classification_code": "C39",
@@ -543,7 +543,7 @@ try:
             },
             "industry_evidence": {
                 "snippet": snippet, "url": "https://example.test/new.pdf", "content_hash": "new-hash",
-                "parser_version": "ipo-issuance-facts-v7",
+                "parser_version": "ipo-issuance-facts-v8",
             },
         }
 
@@ -571,7 +571,7 @@ try:
           and reparsed_row[1] == 73.89
           and reparsed_row[2][-1].get("previous_value") == '标准》(GB/'
           and reparsed_row[2][-1].get("reason") == "verified_official_industry_reparsed_after_parser_version_change"
-          and reparsed_row[3] == "ipo-issuance-facts-v7",
+          and reparsed_row[3] == "ipo-issuance-facts-v8",
           "calls=%r row=%r" % (stale_parser_calls, reparsed_row))
 
     cur.execute(

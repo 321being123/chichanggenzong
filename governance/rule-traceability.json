@@ -520,6 +520,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "PE先命中仍继续查找行业且字段证据各自绑定文档"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "行业标准编号不得冒充行业代码"
         }
       ],
       "owner": "A股 IPO",
@@ -1105,6 +1109,54 @@
         {
           "file": "server/test/suspension-target-scope.test.js",
           "pattern": "不得写入范围外证券"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "NAV-EMPTY-ACCOUNT-001",
+      "title": "空账户无变化必须核验结构化事实为空且真实现金为零",
+      "implementation": {
+        "file": "server/jobs/navSnapshot.js",
+        "symbol": "recordNavSnapshots"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-current-history-evidence.test.js",
+          "pattern": "有现金的账户不能冒充无资产"
+        }
+      ],
+      "owner": "持仓净值",
+      "status": "verified"
+    },
+    {
+      "id": "HK-IPO-CANCEL-CACHE-001",
+      "title": "取消发行须匹配官方公告正文、代码和招股窗口，缓存优先",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "syncHkexListingStatusNotices"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-postponement.test.js",
+          "pattern": "已缓存取消公告不得重复下载"
+        }
+      ],
+      "owner": "港股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "STOCK-ANALYSIS-SCHEDULE-001",
+      "title": "股票分析在次日共享收盘采集后核验同一交易日",
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "stock_analysis_refresh"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-calendar-stage-recovery.test.js",
+          "pattern": "股票分析必须等待共享采集的同一收盘日"
         }
       ],
       "owner": "任务治理",

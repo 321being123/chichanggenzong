@@ -349,7 +349,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
         if (r && r.ok === false) {
           failedAccounts.push({ accountName, missingDates: r.missingDates || [], missingCodes: r.missingCodes || [], diagnostics: r.diagnostics || [] });
         }
-        const { rows: currentRows } = await pool.query('SELECT date::text AS date FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3::date',
+        const { rows: currentRows } = await pool.query('SELECT date::text AS date FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3::text',
           [account.username, accountName, targetDate]);
         currentAccounts.push({ accountName, status: currentRows.length && !(r?.missingDates || []).includes(targetDate)
           ? 'complete' : r?.verifiedNoChange && r?.ok === true ? 'verified_no_change' : 'incomplete' });

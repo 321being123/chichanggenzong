@@ -1077,6 +1077,38 @@
       ],
       "owner": "任务治理",
       "status": "verified"
+    },
+    {
+      "id": "NAV-TEXT-DATE-001",
+      "title": "净值文本日期必须在真实PG按目标日查询",
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "nav_snapshot"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-calendar-stage-recovery.test.js",
+          "pattern": "真实PG文本日期按精确分区查询"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "SUSPENSION-TARGET-001",
+      "title": "定点停牌恢复只能写入指定证券",
+      "implementation": {
+        "file": "server/services/convertibleBondSuspensionSync.js",
+        "symbol": "syncConvertibleBondSuspensions"
+      },
+      "tests": [
+        {
+          "file": "server/test/suspension-target-scope.test.js",
+          "pattern": "不得写入范围外证券"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "verified"
     }
   ]
 }

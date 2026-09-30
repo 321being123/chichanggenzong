@@ -95,6 +95,10 @@ async function main() {
       assert(sql.includes("exchange='SSE'"), 'HKEX覆盖不得替代SSE');
       return { rows: [{ row_count: 365, data_as_of: '2026-12-31' }] };
     });
+    const navPartition = await readSnapshot('nav_snapshot', { partitionKey: '1900-01-01' }, client.query.bind(client));
+    assert.strictEqual(navPartition.rowCount, 0, '真实PG文本日期按精确分区查询，空日期不能借用全局净值');
+    await client.query('SELECT date::text AS date FROM nav_history WHERE username=$1 AND account_name=$2 AND date=$3::text',
+      ['test_nav_date_type', 'fixture', '1900-01-01']);
     console.log('calendar coverage, manual edits and targeted recovery tests passed');
   } finally {
     await client.query('ROLLBACK');

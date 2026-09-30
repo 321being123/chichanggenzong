@@ -60,7 +60,7 @@ async function openDaysInRange(startDate, endDate) {
 /**
  * 增量保存转债正股及已跟踪股票的停牌证据，复用同一次全市场查询。
  */
-async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
+async function syncConvertibleBondSuspensions({ startDate, endDate, targetCodes = [] } = {}) {
   const from = compactDate(startDate) || compactDate(endDate);
   const to = compactDate(endDate) || from;
   if (!from || !to || from > to) return { ok: false, status: 'invalid_range', count: 0 };
@@ -85,7 +85,11 @@ async function syncConvertibleBondSuspensions({ startDate, endDate } = {}) {
   ]);
   const sourceId = sourceResult.rows[0] && sourceResult.rows[0].source_id;
   if (!sourceId) return { ok: false, status: 'source_missing', count: 0, queryStatus: 'not_run' };
-  const instrumentMap = new Map(stocks.map(row => [row.canonical_code, row.instrument_id]));
+  const targets = new Set(targetCodes.map(code => String(code).trim().toUpperCase()).filter(Boolean));
+  const missingTargets = [...targets].filter(code => !stocks.some(row => row.canonical_code === code));
+  if (missingTargets.length) return { ok: false, status: 'target_identity_missing', missingTargets, count: 0 };
+  const instrumentMap = new Map(stocks.filter(row => !targets.size || targets.has(row.canonical_code))
+    .map(row => [row.canonical_code, row.instrument_id]));
   // suspend_d 可能同日返回“复牌(R)”和“停牌(S)”两条记录；表的唯一键按证券+日期，
   // 先去重并优先保留停牌事实，避免 PostgreSQL ON CONFLICT 同一批次重复更新报错。
   const rowMap = new Map();

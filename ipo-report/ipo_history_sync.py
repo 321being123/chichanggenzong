@@ -155,6 +155,27 @@ def _market_fields(ts_code):
     return "深市主板", "深市主板"
 
 
+def _industry_pe_state(code, value, diagnostic, prior_state, today):
+    """行业PE告警例外只接受市场政策或有原文证据的未披露状态。"""
+    if value not in (None, ""):
+        return _detail_field_state(value, diagnostic)
+    if _market_fields(code)[0] == "北交所":
+        return {"status": "not_required", "reason": "bse_industry_pe_record_only"}
+    prior = prior_state if isinstance(prior_state, dict) else {}
+    if (prior.get("status") == "not_disclosed" and prior.get("verified") is True
+            and prior.get("document_url") and prior.get("content_hash")
+            and str(prior.get("disclosure_due") or "") > today.isoformat()):
+        return dict(prior)
+    if prior.get("status") in ("not_disclosed", "not_required"):
+        prior = {**prior, "status": "retryable", "reason": "disclosure_due_recheck"}
+    return _detail_field_state(None, diagnostic or prior, "retryable", today)
+
+
+def _industry_pe_non_alerting(code, state, today):
+    normalized = _industry_pe_state(code, None, {}, state, today)
+    return normalized.get("status") in ("not_required", "not_disclosed")
+
+
 def normalize_share(row):
     ts_code = str(row.get("ts_code") or "").strip()
     code = ts_code.split(".")[0]
@@ -602,6 +623,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
          AND ((%s::boolean AND security_code=ANY(%s::text[])) OR """ + mandatory_gap + """ OR """
               + KNOWN_INDUSTRY_FALLBACK_SQL + """ OR (
               industry_pe IS NULL
+              AND COALESCE(market_type,'') <> '北交所'
               AND COALESCE(data_quality_status->'field_states'->'industry_pe'->>'retry_after','') <= %s
          ))
          AND (COALESCE(data_quality_status->'enrichment'->>'attempted_on','') <> %s
@@ -676,7 +698,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             missing_fields = []
             if not str(existing_industry or '').strip() or upgrade_candidate or industry_parser_reparse:
                 missing_fields.append('industry')
-            if existing_industry_pe is None or upgrade_candidate:
+            if (existing_industry_pe is None or upgrade_candidate) and not _industry_pe_non_alerting(
+                    code, (prior_status or {}).get("field_states", {}).get("industry_pe"), today):
                 missing_fields.append('industry_pe')
             if not str(existing_business or '').strip():
                 missing_fields.append('main_business')
@@ -870,8 +893,9 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     resolved_business, detail.get("main_business_diagnostic"), "retryable", today
                 ),
                 "business_exposure": {"status": "value" if _has_business_exposures(resolved_exposure) else "retryable"},
-                "industry_pe": _detail_field_state(
-                    resolved_industry_pe, detail.get("industry_pe_diagnostic"), "source_unavailable", today
+                "industry_pe": _industry_pe_state(
+                    code, resolved_industry_pe, detail.get("industry_pe_diagnostic"),
+                    (prior_status or {}).get("field_states", {}).get("industry_pe"), today
                 ),
             }
             if resolved_industry_pe is None:
@@ -944,6 +968,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
         })
         for field in remaining_by_field
     }
+    non_alerting_industry_pe = []
     for code, industry, industry_pe, main_business, exposure, status_payload in remaining_rows:
         payload = status_payload if isinstance(status_payload, dict) else {}
         states = payload.get("field_states") if isinstance(payload.get("field_states"), dict) else {}
@@ -957,6 +982,10 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             if not missing:
                 continue
             field_state = states.get(field) if isinstance(states.get(field), dict) else {}
+            if field == "industry_pe" and _industry_pe_non_alerting(code, field_state, today):
+                remaining_by_field[field] -= 1
+                non_alerting_industry_pe.append(str(code))
+                continue
             reason = field_state.get("reason") or field_state.get("status") or "not_attempted"
             if reason == "retryable" or reason == "value":
                 reason = "not_attempted"
@@ -970,10 +999,12 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 value = field_state.get(input_key)
                 if value and (aggregate[output_key] is None or value < aggregate[output_key]):
                     aggregate[output_key] = value
+    remaining = sum(remaining_by_field.values())
     diagnostic_summary = {
         "query_status": "succeeded",
         "remaining": remaining,
         "remaining_by_field": remaining_by_field,
+        "non_alerting_industry_pe": sorted(non_alerting_industry_pe),
         "by_field_and_reason": {
             field: {
                 reason: {
@@ -1028,16 +1059,25 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
             missing.append("issue_pe")
         prior = values.get("prior_status") if isinstance(values.get("prior_status"), dict) else {}
         prior_field_states = prior.get("field_states") if isinstance(prior.get("field_states"), dict) else {}
+        prior_field_states = dict(prior_field_states)
+        prior_field_states["industry_pe"] = _industry_pe_state(
+            values["security_code"], values.get("industry_pe"), {},
+            prior_field_states.get("industry_pe"), today
+        )
         exposure = values.get("business_exposure")
         if include_enrichment:
             for field in QUALITY_DETAIL_FIELDS:
                 prior_state = prior_field_states.get(field) if isinstance(prior_field_states.get(field), dict) else {}
-                if values.get(field) in (None, "") and prior_state.get("status") != "source_unavailable":
+                if (values.get(field) in (None, "") and prior_state.get("status") != "source_unavailable"
+                        and not (field == "industry_pe" and _industry_pe_non_alerting(
+                            values["security_code"], prior_state, today))):
                     missing.append(field)
             if not _has_business_exposures(exposure):
                 missing.append("business_exposure")
         listed = bool(listing_text) and valid_listing and listing_text <= today.isoformat()
         pending = []
+        if prior_field_states["industry_pe"].get("status") == "not_disclosed":
+            pending.append("industry_pe")
         if not listed:
             if values.get("listing_date") in (None, ""):
                 pending.append("listing_date")

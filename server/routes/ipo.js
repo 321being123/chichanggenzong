@@ -173,6 +173,7 @@ async function buildCnStockLiveReport(code) {
   const missing = Array.isArray(quality.missing_fields) ? quality.missing_fields : [];
   const fieldStates = quality.field_states && typeof quality.field_states === 'object' ? quality.field_states : {};
   const pendingLabels = {
+    industry_pe: '行业市盈率',
     listing_date: '上市日期',
     online_lottery_rate: '网上中签率',
     oversubscribe_multiple: '最终超额认购倍数',
@@ -196,6 +197,8 @@ async function buildCnStockLiveReport(code) {
   };
   function missingReason(field) {
     const state = fieldStates[field] && typeof fieldStates[field] === 'object' ? fieldStates[field] : {};
+    if (field === 'industry_pe' && state.status === 'not_required') return '北交所行业市盈率仅记录，不作为告警来源';
+    if (field === 'industry_pe' && state.status === 'not_disclosed') return `官方尚未披露，${state.disclosure_due || '后续公告发布时'}复查，不作为当前告警来源`;
     if (state.status === 'document_not_found') {
       return field === 'industry_pe'
         ? '发行公告候选尚未找到，行业样本也暂未匹配'
@@ -510,6 +513,8 @@ function stockFieldStatusSql(alias = 'h') {
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,
     'industry_pe', CASE WHEN ${alias}.industry_pe IS NOT NULL THEN 'value'
+      WHEN ${alias}.data_quality_status->'field_states'->'industry_pe'->>'status' IN ('not_disclosed','not_required')
+        THEN ${alias}.data_quality_status->'field_states'->'industry_pe'->>'status'
       WHEN ${alias}.data_quality_status->'field_states'->'industry_pe'->>'status' = 'source_unavailable' THEN 'source_unavailable'
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,

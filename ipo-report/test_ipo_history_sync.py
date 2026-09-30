@@ -604,6 +604,52 @@ try:
           and stopped_row[1].startswith("发行人所属行业"),
           "stopped=%r row=%r" % (stopped_evidence.get("stopped"), stopped_row))
 
+    disclosure_state = {
+        "status": "not_disclosed", "verified": True,
+        "document_url": "https://static.cninfo.com.cn/official.pdf", "content_hash": "verified-test-hash",
+        "disclosure_due": "2026-10-08", "retry_after": "2026-10-08",
+    }
+    check("北交所行业PE仅记录不告警",
+          sync._industry_pe_non_alerting("920186", {"status": "parse_miss"}, date(2026, 10, 1)))
+    check("有官方证据的尚未披露行业PE不告警",
+          sync._industry_pe_non_alerting("301718", disclosure_state, date(2026, 10, 1)))
+    check("行业PE披露日到期重新检查而非永久豁免",
+          not sync._industry_pe_non_alerting("301718", disclosure_state, date(2026, 10, 8)))
+    check("解析失败和无证据未披露不能豁免行业PE告警",
+          not sync._industry_pe_non_alerting("301718", {"status": "parse_miss"}, date(2026, 10, 1))
+          and not sync._industry_pe_non_alerting("301718", {"status": "not_disclosed"}, date(2026, 10, 1)))
+    check("官方PE补齐后未披露状态退出",
+          sync._industry_pe_state("301718", 32.5, {}, disclosure_state, date(2026, 10, 1))["status"] == "value")
+    for test_code, state in (("920998", {}), ("999997", disclosure_state), ("999996", {"status": "parse_miss"})):
+        cur.execute("""INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,industry_pe,data_quality_status)
+                       VALUES(%s,'行业PE质量政策测试','CN','2026-10-09',NULL,%s::jsonb)
+                       ON CONFLICT(security_code) DO UPDATE SET industry_pe=NULL,data_quality_status=EXCLUDED.data_quality_status""",
+                    (test_code, json.dumps({"field_states": {"industry_pe": state}})))
+    sync.update_quality(cur, date(2026, 10, 1), only_codes=["920998", "999997", "999996"])
+    cur.execute("SELECT security_code,data_quality_status FROM ipo_history WHERE security_code=ANY(%s)",
+                (["920998", "999997", "999996"],))
+    quality_rows = dict(cur.fetchall())
+    check("北交所PE豁免不掩盖其他资料缺项",
+          "industry_pe" not in quality_rows["920998"]["missing_fields"]
+          and "industry" in quality_rows["920998"]["missing_fields"]
+          and quality_rows["920998"]["field_states"]["industry_pe"]["status"] == "not_required")
+    check("未披露PE记录待披露但解析失败仍为缺项",
+          "industry_pe" not in quality_rows["999997"]["missing_fields"]
+          and "industry_pe" in quality_rows["999997"]["pending_not_due"]
+          and "industry_pe" in quality_rows["999996"]["missing_fields"])
+    original_taxonomy = sync.sync_sw_industry_taxonomies
+    ipo_lib_fetch.fetch_stock_historical_detail = lambda *args, **kwargs: {}
+    sync.sync_sw_industry_taxonomies = lambda *args, **kwargs: {}
+    try:
+        policy_result = sync.enrich_stock_missing_details(
+            cur, date(2026, 10, 1), only_codes=["920998", "999997", "999996"],
+            retry_same_day=True, include_result_fields=False)
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+        sync.sync_sw_industry_taxonomies = original_taxonomy
+    check("补全阶段告警计数排除北交所和有证据的待披露PE",
+          policy_result["remaining_by_field"]["industry_pe"] == 1
+          and policy_result["diagnostic_summary"]["non_alerting_industry_pe"] == ["920998", "999997"])
     conn.rollback()
     cur.close()
     conn.close()

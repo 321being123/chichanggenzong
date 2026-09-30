@@ -1249,6 +1249,34 @@
       ],
       "owner": "港股IPO",
       "status": "verified"
+    },
+    {
+      "id": "IPO-INDUSTRY-PE-ALERT-001",
+      "title": "北交所行业PE仅记录，有证据且未到披露日的行业PE不告警，真实失败仍计缺项",
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "_industry_pe_non_alerting"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "北交所PE豁免不掩盖其他资料缺项"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "解析失败和无证据未披露不能豁免行业PE告警"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "行业PE披露日到期重新检查而非永久豁免"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "补全阶段告警计数排除北交所和有证据的待披露PE"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

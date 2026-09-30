@@ -70,7 +70,7 @@ const PUBLIC_CASE_FILTER = `
 // ========== 查询 ==========
 
 // 公开列表（仅 approved 且未结束）
-async function getArbitrageList(type, page = 1, pageSize = 50) {
+async function getArbitrageList(type, page = 1, pageSize = 50, username = null) {
   const offset = (page - 1) * pageSize;
   const typeMap = {
     a_stock: ['a_cash_offer', 'a_share_swap'],
@@ -83,7 +83,10 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
     SELECT c.*, i.canonical_code, regexp_replace(i.name,'<[^>]+>','','g') AS name, i.currency_code as inst_currency,
            ri.canonical_code as ref_code, regexp_replace(ri.name,'<[^>]+>','','g') AS ref_name,
            rwi.canonical_code as rights_code, rwi.name as rights_name,
-           pd.url AS announcement_url
+           pd.url AS announcement_url,
+           CASE WHEN $4::text IS NULL THEN NULL ELSE NOT (
+             (SELECT arbitrage_seen_cases FROM users WHERE username=$4) ? c.case_id::text
+           ) END AS is_new
     FROM event.arbitrage_cases c
     LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
     LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
@@ -91,9 +94,9 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
     LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
     WHERE c.strategy_type = ANY($1)
       AND ${PUBLIC_CASE_FILTER}
-    ORDER BY c.terms_updated_at DESC NULLS LAST
+    ORDER BY is_new DESC NULLS LAST, c.terms_updated_at DESC NULLS LAST
     LIMIT $2 OFFSET $3
-  `, [types, pageSize, offset]);
+  `, [types, pageSize, offset, username]);
 
   const { rows: countRows } = await pool.query(`
     SELECT count(*) as total FROM event.arbitrage_cases c
@@ -164,23 +167,28 @@ async function getArbitrageList(type, page = 1, pageSize = 50) {
     quoteAsOf,
     stale: enrichedRows.some(r => r.stale),
     formulaVersion: FORMULA_VERSION,
+    canMarkSeen: Boolean(username),
+    unreadCount: await getArbitrageUnreadCount(username),
   };
 }
 
 // 详情
-async function getArbitrageDetail(caseId) {
+async function getArbitrageDetail(caseId, username = null) {
   const { rows } = await pool.query(`
     SELECT c.*, i.canonical_code, regexp_replace(i.name,'<[^>]+>','','g') AS name, i.currency_code as inst_currency,
            ri.canonical_code as ref_code, regexp_replace(ri.name,'<[^>]+>','','g') AS ref_name,
            rwi.canonical_code as rights_code, rwi.name as rights_name,
-           pd.url AS announcement_url
+           pd.url AS announcement_url,
+           CASE WHEN $2::text IS NULL THEN NULL ELSE NOT (
+             (SELECT arbitrage_seen_cases FROM users WHERE username=$2) ? c.case_id::text
+           ) END AS is_new
     FROM event.arbitrage_cases c
     LEFT JOIN core.instruments i ON c.target_instrument_id = i.instrument_id
     LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
     LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
     LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
     WHERE c.case_id = $1 AND c.review_status = 'approved'
-  `, [caseId]);
+  `, [caseId, username]);
 
   if (!rows.length) return null;
   const c = rows[0];
@@ -651,7 +659,29 @@ function round(n) {
   return Math.round(n * 100) / 100;
 }
 
+async function getArbitrageUnreadCount(username) {
+  if (!username) return 0;
+  const { rows } = await pool.query(`
+    SELECT count(*)::int AS count FROM event.arbitrage_cases c
+    WHERE ${PUBLIC_CASE_FILTER} AND NOT (
+      (SELECT arbitrage_seen_cases FROM users WHERE username=$1) ? c.case_id::text
+    )`, [username]);
+  return rows[0].count;
+}
+
+async function markArbitrageSeen(username, caseId) {
+  const { rowCount } = await pool.query(`
+    UPDATE users SET arbitrage_seen_cases = arbitrage_seen_cases || jsonb_build_object($2::text, true)
+    WHERE username=$1 AND EXISTS (
+      SELECT 1 FROM event.arbitrage_cases c WHERE c.case_id=$2::bigint AND ${PUBLIC_CASE_FILTER}
+    )`, [username, String(caseId)]);
+  return rowCount > 0;
+}
+
 module.exports = {
+  PUBLIC_CASE_FILTER,
+  getArbitrageUnreadCount,
+  markArbitrageSeen,
   getArbitrageList,
   getArbitrageDetail,
   getCandidates,

@@ -6874,6 +6874,18 @@ async function migration162HkIpoXPublicSource() {
   `);
 }
 
+async function migration163ArbitrageSeenCases() {
+  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS arbitrage_seen_cases jsonb');
+  // 仅首次启用时把当前公开机会作为老机会；重复执行不覆盖已保存的个人记录。
+  const { PUBLIC_CASE_FILTER } = require('../services/arbitrageService');
+  await pool.query(`UPDATE users SET arbitrage_seen_cases = (
+    SELECT COALESCE(jsonb_object_agg(c.case_id::text, true), '{}'::jsonb)
+    FROM event.arbitrage_cases c WHERE ${PUBLIC_CASE_FILTER}
+  ) WHERE arbitrage_seen_cases IS NULL`);
+  await pool.query(`ALTER TABLE users ALTER COLUMN arbitrage_seen_cases SET DEFAULT '{}'::jsonb,
+    ALTER COLUMN arbitrage_seen_cases SET NOT NULL`);
+}
+
 const MIGRATIONS = [
   { version: '001_init', up: migration001Init },
   { version: '002_bond_safety_snapshots', up: migration002BondSafetySnapshots },
@@ -7037,6 +7049,7 @@ const MIGRATIONS = [
   { version: '160_rate_limit_recovery_backoff', up: migration160RateLimitRecoveryBackoff },
   { version: '161_hk_ipo_market_snapshot_timeline', up: migration161HkIpoMarketSnapshotTimeline },
   { version: '162_hk_ipo_x_public_source', up: migration162HkIpoXPublicSource },
+  { version: '163_arbitrage_seen_cases', up: migration163ArbitrageSeenCases },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

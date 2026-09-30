@@ -38,7 +38,7 @@ assert.ok(tabSwitch.includes('listView.hidden = false'), '详情中切换套利�
 assert.ok(html.includes('id="arb-list-view"') && html.includes('id="arb-detail"'), '套利列表和详情必须是独立视图');
 const styleLink = document.querySelector('link[href^="shared/style.css?v="]');
 assert.ok(styleLink && new URL(styleLink.href, 'http://localhost').searchParams.get('v') && styleLink.getAttribute('href') !== 'shared/style.css?v=31', '全局样式必须使用更新后的缓存版本');
-assert.ok(document.querySelector('script[src="js/arbitrage.js?v=13"]'), '套利前端缓存版本未更新');
+assert.ok(document.querySelector('script[src="js/arbitrage.js?v=15"]'), '套利前端缓存版本未更新');
 const navigationScript = document.querySelector('script[src^="js/navigation.js?v="]');
 assert.ok(navigationScript && new URL(navigationScript.src, 'http://localhost').searchParams.get('v') && navigationScript.getAttribute('src') !== 'js/navigation.js?v=6', '导航必须使用更新后的缓存版本');
 assert.ok(frontend.includes("arbDetailItem('\\u6da8\\u8dcc', pctv(d.changePct))"), '详情必须显示列表中的涨跌字段');

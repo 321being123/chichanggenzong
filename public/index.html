@@ -7,7 +7,7 @@
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js?v=20260904" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous" defer></script>
-<link rel="stylesheet" href="shared/style.css?v=0.8.2.1">
+<link rel="stylesheet" href="shared/style.css?v=0.8.2.3">
 <link rel="stylesheet" href="css/bond-safety.css?v=24">
 <link rel="stylesheet" href="css/bond-cycle.css?v=0.8.0.8">
 <link rel="stylesheet" href="css/bond-valuation.css?v=0.8.0.8">
@@ -35,7 +35,7 @@
         <button class="main-tab" data-main="bond-safety">可转债</button>
         <button class="main-tab" data-main="stock-analysis">证券分析</button>
         <button class="main-tab" data-main="market-volatility">市场周期</button>
-        <button class="main-tab" data-main="arbitrage">套利机会</button>
+        <button class="main-tab" data-main="arbitrage">套利机会<span id="arb-unread-count" class="arb-nav-badge" aria-live="polite" hidden></span></button>
         <button class="main-tab" data-main="changelog">版本记录</button>
       </nav>
     </div>
@@ -1217,7 +1217,7 @@
 <script src="js/bond-valuation.js?v=0.8.0.8" defer></script>
 <script src="js/bond-list.js?v=0.8.2.1" defer></script>
 <script src="js/bond-redemption.js?v=8" defer></script>
-<script src="js/bond-revision.js?v=46" defer></script>
+<script src="js/bond-revision.js?v=47" defer></script>
 <script src="js/stock-analysis.js?v=0.8.0.8" defer></script>
 <script src="js/bond-analysis.js?v=0.8.2.1" defer></script>
 <script src="js/stock-analysis-statements.js?v=3" defer></script>
@@ -1232,7 +1232,7 @@
 <script src="js/knowledge.js?v=0.8.0.8" defer></script>
 <script src="js/access-policy.js?v=1" defer></script>
 <script src="js/session.js?v=1" defer></script>
-<script src="js/arbitrage.js?v=13" defer></script>
+<script src="js/arbitrage.js?v=15" defer></script>
 <script src="js/navigation.js?v=0.8.1.90" defer></script>
 <script>
 // ============== 数据层（服务端API） ==============
@@ -1603,6 +1603,7 @@ var TOTAL_ASSET = 0; // 当前账户实时总资产，由账户数据和行情�
 
 document.addEventListener('DOMContentLoaded', function () { (async function init() {
   var loggedIn = await checkAuth();
+  initArbUnreadBadge();
   var accountDataReady = Promise.resolve();
   if (loggedIn) {
     // 首页先用空账户状态完成首屏和公开模块，账户大数据在后台加载完成后再补齐。

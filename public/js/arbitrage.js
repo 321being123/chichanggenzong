@@ -7,6 +7,11 @@ var arbState = {
   data: null,
   loading: false,
   detailCaseId: null,
+  detailData: null,
+  markingSeen: {},
+  unreadVersion: 0,
+  unreadLoading: false,
+  unreadTimer: null,
 };
 
 var ARB_TITLES = {
@@ -56,6 +61,72 @@ function arbCompactSummary(row) {
     : row.strategy_type === 'a_share_swap' && row.swapEligible ? '实时换股收益 ' + pctv(row.liveSwapReturn)
       : '预期现金收益 ' + pctv(row.cashExpectedReturn);
   return metric + ' · ' + formatArbitrageStatus(row.event_status);
+}
+
+function renderArbUnreadCount(count) {
+  var badge = document.getElementById('arb-unread-count');
+  if (!badge || !Number.isInteger(count) || count < 0) return;
+  arbState.unreadVersion++;
+  badge.hidden = count === 0;
+  badge.textContent = count ? String(count) : '';
+  badge.setAttribute('aria-label', count + '个新的套利机会');
+  var size = Math.max(18, String(count).length * 7 + 8) + 'px';
+  badge.style.width = size;
+  badge.style.height = size;
+}
+
+async function loadArbUnreadCount() {
+  if (typeof username === 'undefined' || !username) { renderArbUnreadCount(0); return; }
+  if (document.hidden || arbState.unreadLoading) return;
+  arbState.unreadLoading = true;
+  var version = arbState.unreadVersion;
+  try {
+    var response = await fetch(api('/api/arbitrage/unread-count'), { cache: 'no-store' });
+    if (!response.ok) return;
+    var result = await response.json();
+    if (version === arbState.unreadVersion) renderArbUnreadCount(result.unreadCount);
+  } catch (error) { /* 查询失败保留已确认的计数 */ }
+  finally { arbState.unreadLoading = false; }
+}
+
+function initArbUnreadBadge() {
+  if (arbState.unreadTimer) return;
+  loadArbUnreadCount();
+  arbState.unreadTimer = setInterval(loadArbUnreadCount, 60000);
+  document.addEventListener('visibilitychange', loadArbUnreadCount);
+}
+
+function arbSeenControl(row) {
+  if (row.is_new !== true) return '';
+  var id = Number(row.case_id);
+  return '<span class="arb-new-badge">新</span> <button type="button" class="btn btn-outline btn-sm arb-seen-button" data-arb-seen="' + id + '" onclick="markArbSeen(' + id + ')"' + (arbState.markingSeen[id] ? ' disabled' : '') + '>标记已看</button>';
+}
+
+async function markArbSeen(caseId) {
+  if (arbState.markingSeen[caseId]) return;
+  arbState.markingSeen[caseId] = true;
+  document.querySelectorAll('[data-arb-seen="' + caseId + '"]').forEach(function (el) { el.disabled = true; });
+  try {
+    var response = await fetch(api('/api/arbitrage/' + caseId + '/seen'), { method: 'POST' });
+    var result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || '标记失败，请重试');
+    renderArbUnreadCount(result.unreadCount);
+    if (arbState.data) {
+      arbState.data.rows.forEach(function (row) { if (Number(row.case_id) === caseId) row.is_new = false; });
+      renderArbTable(arbState.data);
+    }
+    if (arbState.detailData && Number(arbState.detailCaseId) === caseId) {
+      arbState.detailData.is_new = false;
+      renderArbDetail(arbState.detailData);
+    }
+  } catch (error) {
+    if (typeof showToast === 'function') showToast(error.message || '标记失败，请重试');
+    var status = document.getElementById('arb-status');
+    if (status) status.textContent = error.message || '标记失败，请重试';
+  } finally {
+    delete arbState.markingSeen[caseId];
+    document.querySelectorAll('[data-arb-seen="' + caseId + '"]').forEach(function (el) { el.disabled = false; });
+  }
 }
 
 function stripArbHtml(value) {
@@ -127,6 +198,7 @@ async function loadArbitrage() {
     if (!r.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + r.status);
     var json = await r.json();
     arbState.data = json;
+    renderArbUnreadCount(json.unreadCount);
     renderArbTable(json);
     var detailCaseId = new URLSearchParams(window.location.search).get('case');
     if (detailCaseId) openArbDetail(detailCaseId, true);
@@ -143,7 +215,7 @@ async function loadArbitrage() {
 function renderArbTable(json) {
   var el = document.getElementById('arb-table');
   if (!el) return;
-  var rows = json.rows || [];
+  var rows = (json.rows || []).slice().sort(function (a, b) { return Number(b.is_new === true) - Number(a.is_new === true); });
   var meta = document.getElementById('arb-meta');
   if (meta) {
     var parts = [];
@@ -161,6 +233,7 @@ function renderArbTable(json) {
 
   var type = arbState.type;
   var html = '<div class="biz-table-scroll"><table class="biz-table positions-data-table arb-data-table arb-data-table-' + esc(type) + '"><thead><tr>';
+  if (json.canMarkSeen) html += '<th>阅读</th>';
 
   if (type === 'a_stock') {
     html += '<th>\u4ee3\u7801</th><th>\u540d\u79f0</th><th>\u73b0\u4ef7</th><th>\u6da8\u8dcc</th>';
@@ -185,6 +258,7 @@ function renderArbTable(json) {
   rows.forEach(function (r) {
     var cls = r.stale ? ' style="opacity:0.6;"' : '';
     html += '<tr' + cls + '>';
+    if (json.canMarkSeen) html += '<td>' + (arbSeenControl(r) || '—') + '</td>';
 
     if (type === 'a_stock') {
       html += arbDetailLink(r.case_id, r.canonical_code, 'arb-code-cell');
@@ -261,6 +335,7 @@ async function openArbDetail(caseId, skipPush) {
     history.pushState(null, '', '/?' + params.toString());
   }
   arbState.detailCaseId = caseId;
+  arbState.detailData = null;
   var listView = document.getElementById('arb-list-view');
   if (listView) listView.hidden = true;
   var detail = document.getElementById('arb-detail');
@@ -273,6 +348,7 @@ async function openArbDetail(caseId, skipPush) {
     var r = await fetch(api('/api/arbitrage/' + caseId));
     if (!r.ok) throw new Error('\u63a5\u53e3\u8fd4\u56de ' + r.status);
     var d = await r.json();
+    arbState.detailData = d;
     renderArbDetail(d);
     if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'arbitrage.detail', module: 'arbitrage', entry: 'list', detail_key: String(caseId), properties: { detail_type: 'arbitrage' } });
   } catch (e) {
@@ -286,6 +362,7 @@ function renderArbDetail(d) {
   if (!detail) return;
 
   var html = '<div class="table-wrap"><div class="table-header"><h3>\u5957\u5229\u8be6\u60c5</h3>';
+  html += arbSeenControl(d);
   html += '<button class="btn btn-outline btn-sm" onclick="closeArbDetail()">\u2190 \u8fd4\u56de\u5957\u5229\u5217\u8868</button></div>';
   html += '<div style="padding:16px;">';
 
@@ -425,4 +502,5 @@ function closeArbDetail(skipPush) {
   if (listView) listView.hidden = false;
   if (window.SiteTelemetry) window.SiteTelemetry.trackPage('arbitrage.list', 'arbitrage', 'back');
   arbState.detailCaseId = null;
+  arbState.detailData = null;
 }

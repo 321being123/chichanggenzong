@@ -21,7 +21,7 @@ const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAn
 const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
-assert.ok(html.includes('css/bond-revision.css?v=3') && html.includes('js/bond-revision.js?v=46'), '下修资源未接入首页');
+assert.ok(html.includes('css/bond-revision.css?v=3') && html.includes('js/bond-revision.js?v=47'), '下修资源未接入首页');
 assert.ok(fs.existsSync(path.join(root, 'public', 'bond-revision-motive.html')) && fs.existsSync(path.join(root, 'public', 'js', 'bond-revision-motive.js')), '缺少下修动机详情页');
 assert.ok(page.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
 assert.ok(page.includes('target="_blank"') && page.includes('noopener noreferrer'), '下修动机列表应在新页面打开');

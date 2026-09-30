@@ -10,9 +10,9 @@ var BOND_REVISION_OBSERVED = { proposed: '已提议下修（事实）', meeting_
 var BOND_REVISION_COLUMNS = [
   ['business_status','状态'],['motive_level','动机等级'],['security_code','代码'],['bond_name','转债名称'],['bond_close','转债现价'],['remain_size','剩余规模(亿元)'],
   ['stock_name','正股名称'],['stock_close','正股价'],['current_conv_price','转股价'],['conversion_value','转股价值'],['conversion_premium_pct','转股溢价率'],
-  ['stock_pb','正股PB'],['net_asset_floor_applicable','净资产底线'],['net_asset_floor_value','每股净资产'],['trigger_ratio','下修比例'],['trigger_price','下修触发价'],['distance_to_trigger_pct','距触发'],['matched_days','下修进度'],['remaining_days','当前还差'],['rolling_remaining_days','滚动最快还需'],
+  ['stock_pb','正股PB'],['net_asset_floor_applicable','净资产底线'],['reached_floor','是否到底'],['net_asset_floor_value','每股净资产'],['trigger_ratio','下修比例'],['trigger_price','下修触发价'],['distance_to_trigger_pct','距触发'],['matched_days','下修进度'],['remaining_days','当前还差'],['rolling_remaining_days','滚动最快还需'],
   ['no_revision_valid_until','锁定至'],['next_eligible_date','重新起算日'],['official_announced_at','公告日'],['meeting_date','股东大会日'],
-  ['price_after','新转股价'],['effective_date','生效日'],['reached_floor','是否到底'],['official_source_url','公告']
+  ['price_after','新转股价'],['effective_date','生效日'],['official_source_url','公告']
 ];
 var BOND_REVISION_PERCENT = { conversion_premium_pct: true, distance_to_trigger_pct: true, trigger_ratio: true };
 var BOND_REVISION_NUMBER = { bond_close: true, remain_size: true, stock_close: true, current_conv_price: true, conversion_value: true, stock_pb: true, net_asset_floor_value: true, trigger_price: true, price_after: true, remaining_days: true, rolling_remaining_days: true };

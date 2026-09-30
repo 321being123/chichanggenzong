@@ -2679,7 +2679,7 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
                         'industry_chain': _extract_industry_chain_relations(text),
                     }
                     _record_main_business_attempt(
-                        code, 'exchange_prospectus', 'value', source=source,
+                        code, 'exchange_prospectus', 'value',
                         candidate_count=len(candidates), downloaded_count=downloaded,
                     )
                     _MAIN_BUSINESS_DIAGNOSTIC[code].update({
@@ -2748,6 +2748,9 @@ def _fetch_cninfo_prospectus_main_business(stock_code, security_name=""):
         downloaded_count = 0
 
         def _scan(skip_notice):
+            # 闭包内 += 是赋值，Python 会把这两个计数器当 _scan 的局部变量，
+            # 不声明 nonlocal 就在首次自增时 UnboundLocalError（巨潮备源实测必然崩溃）
+            nonlocal announcement_count, downloaded_count
             page = 1
             seen_pages = set()
             while True:

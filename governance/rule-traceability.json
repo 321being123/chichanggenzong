@@ -425,6 +425,14 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "主营业务在产品构成表格处截断"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "交易所招股书成功提取不再被诊断调用崩溃吞掉"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "巨潮备源扫描不再因计数器未声明崩溃"
         }
       ],
       "owner": "A股 IPO",

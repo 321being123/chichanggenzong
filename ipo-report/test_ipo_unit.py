@@ -175,6 +175,52 @@ try:
     check("主营业务截断含逗号连接的表格引导语（双英集团920059案例）",
           rdbiz == "汽车内饰件的研发生产与销售",
           "结果=%r" % rdbiz)
+    # ── 来源层崩溃修复回归（力勤资源重取时发现的两处既有 bug）──
+    _EXCH_TEXT = ("公司主营业务为镍产品贸易与镍产品生产，按产品构成情况如下："
+                  "单位：万元主营大类产品小类2025年2024年度2023年度金额比例金额比例金额比例"
+                  "镍产品贸易红土镍矿596,047.8015.80%合计1,590,145.4142.15%")
+    _orig_cand = fetch._exchange_prospectus_candidates
+    _orig_dl = fetch._download_exchange_pdf_text
+    _orig_ext = fetch._extract_main_business
+    try:
+        fetch._exchange_prospectus_candidates = lambda code, name="": [("szse", "http://x/1.pdf", "招股说明书")]
+        fetch._download_exchange_pdf_text = lambda session, url, source: _EXCH_TEXT
+        fetch._extract_main_business = lambda text: "镍产品贸易与镍产品生产"
+        _exch_val = fetch._fetch_exchange_prospectus_main_business("TESTMB001", "测试公司")
+        check("交易所招股书成功提取不再被诊断调用崩溃吞掉",
+              _exch_val == "镍产品贸易与镍产品生产",
+              "结果=%r（source 重复传参使成功路径 TypeError、提取值被丢弃）" % _exch_val)
+    finally:
+        fetch._exchange_prospectus_candidates = _orig_cand
+        fetch._download_exchange_pdf_text = _orig_dl
+        fetch._extract_main_business = _orig_ext
+    _orig_org = fetch._get_org_id
+    _orig_pdf = fetch._download_cninfo_prospectus_pdf_text
+    _real_session = fetch.requests.Session
+    _real_ext2 = fetch._extract_main_business
+    class _FakeResp:
+        def json(self):
+            return {"announcements": [{"announcementId": "a1", "announcementTitle": "招股说明书",
+                                        "adjunctUrl": "x.pdf"}],
+                    "totalAnnouncement": "1"}
+    class _FakeSession:
+        headers = {}
+        def post(self, *a, **k):
+            return _FakeResp()
+    try:
+        fetch._get_org_id = lambda code, name="": "org-test"
+        fetch._download_cninfo_prospectus_pdf_text = lambda s, a: _EXCH_TEXT
+        fetch._extract_main_business = lambda text: "测试主营业务"
+        fetch.requests.Session = _FakeSession
+        _cn_val = fetch._fetch_cninfo_prospectus_main_business("TESTMB002", "测试公司")
+        check("巨潮备源扫描不再因计数器未声明崩溃",
+              _cn_val == "测试主营业务",
+              "结果=%r（announcement_count 未 nonlocal 声明，UnboundLocalError）" % _cn_val)
+    finally:
+        fetch._get_org_id = _orig_org
+        fetch._download_cninfo_prospectus_pdf_text = _orig_pdf
+        fetch._extract_main_business = _real_ext2
+        fetch.requests.Session = _real_session
     check("交易所识别招股意向书",
           fetch._ipo_document_role("中塑股份招股意向书") == "prospectus")
     check("交易所识别投资风险特别公告",

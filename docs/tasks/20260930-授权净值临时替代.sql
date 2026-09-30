@@ -17,7 +17,7 @@ BEGIN
     IF EXISTS(SELECT 1 FROM nav_history n WHERE n.username=a.username AND n.account_name=a.account_name AND n.date=t.date) THEN CONTINUE; END IF;
     SELECT max(trade_date)::text INTO prior_trade FROM market.trade_calendar WHERE exchange='SSE' AND is_open=true AND trade_date<t.date::date;
     SELECT n.* INTO p FROM nav_history n WHERE n.username=a.username AND n.account_name=a.account_name AND n.date<t.date
-      ORDER BY EXISTS(SELECT 1 FROM market.trade_calendar c WHERE c.exchange='SSE' AND c.is_open=true AND c.trade_date::text=n.date) DESC,n.date DESC LIMIT 1;
+      ORDER BY (n.date=prior_trade) DESC,n.date DESC LIMIT 1;
     IF p.date IS NULL OR p.nav IS NULL OR p.nav<=0 THEN RAISE EXCEPTION '缺少可替代净值：% %',t.account_name,t.date; END IF;
     INSERT INTO nav_history(username,account_name,account_id,date,nav,total_asset,invested,snapshot_at,hk_rate,
       cash_cny,market_value_cny,system_market_value_at_snapshot,broker_fx_rate,snapshot_source,source_priority,
@@ -28,7 +28,9 @@ BEGIN
         'sourceDate',p.date,'requestedPriorTradeDate',prior_trade,'sourceNav',p.nav,
         'sourceSnapshotSource',p.snapshot_source,'originalSourceDate',COALESCE(p.diagnostics->>'originalSourceDate',p.date),
         'reason','缺少历史持仓基准；用户授权以前面已有净值临时替代，非当日真实估值'),true);
-    UPDATE accounts SET nav_version=COALESCE(nav_version,0)+1 WHERE id=a.id;
+    INSERT INTO account_data(username,account_name,data,version,nav_version)
+      VALUES(a.username,a.account_name,'{}',0,1)
+      ON CONFLICT(username,account_name) DO UPDATE SET nav_version=account_data.nav_version+1;
   END LOOP;
 END $$;
 COMMIT;

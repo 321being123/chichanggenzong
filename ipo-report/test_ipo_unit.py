@@ -1423,8 +1423,37 @@ try:
           and "ipo_date" in _train_src,
           "申购时点之后、上市日之前上市的新股结果在申购时不可见（验收实测 92/102 测试点泄漏）")
     check("回测含独立区间验收与板块中位数基线",
-          "np.quantile(calib_errors, 0.8)" in _bt_src and '"board_median"' in _bt_src,
-          "区间定标段与验收段必须分离，且要有不含模型的对比基线")
+          "fixed_interval_acceptance(results)" in _bt_src and '"board_median"' in _bt_src,
+          "区间验收须走带可见性隔离的统一函数，且要有不含模型的对比基线")
+    # ── 第四次验收修复回归：固定区间验收的定标/验收可见性隔离 ──
+    _fi_pts = [
+        # 定标段（split=7//2=3）：上市日 2026-01-05~07，误差全 100 -> 冻结半宽 100
+        {"date": "2026-01-05", "anchor_date": "2026-01-04", "error": 100},
+        {"date": "2026-01-06", "anchor_date": "2026-01-05", "error": 100},
+        {"date": "2026-01-07", "anchor_date": "2026-01-06", "error": 100},
+        # 验收段 4 点：前两点截点晚于全部定标上市日 01-07（合规）；后两点截点
+        # 等于/早于 01-07（688805 类边界样本，含同日），必须隔离
+        {"date": "2026-02-01", "anchor_date": "2026-01-20", "error": 50},
+        {"date": "2026-02-02", "anchor_date": "2026-01-21", "error": 200},
+        {"date": "2026-01-09", "anchor_date": "2026-01-07", "error": 300},
+        {"date": "2026-01-20", "anchor_date": "2026-01-06", "error": 400},
+    ]
+    _fi = _bt.fixed_interval_acceptance(_fi_pts)
+    check("固定区间验收隔离截点不晚于定标结果上市日的边界样本",
+          _fi["evaluation_points"] == 2 and _fi["excluded_boundary_points"] == 2
+          and _fi["coverage"] == 0.5 and _fi["half_width"] == 100.0,
+          "eval=%s excluded=%s coverage=%r half=%r" % (
+              _fi["evaluation_points"], _fi["excluded_boundary_points"],
+              _fi["coverage"], _fi["half_width"]))
+    # 对照：全部验收点截点都晚于定标结果上市日时，隔离数应为 0（上市阶段天然如此）
+    _fi_pts_clean = _fi_pts[:5] + [{"date": "2026-01-09", "anchor_date": "2026-01-08", "error": 400}]
+    _fi_clean = _bt.fixed_interval_acceptance(_fi_pts_clean)
+    check("上市阶段回测按上市日排序天然无边界隔离",
+          _fi_clean["excluded_boundary_points"] == 0 and _fi_clean["evaluation_points"] == 3
+          and abs(_fi_clean["coverage"] - 1.0 / 3.0) < 1e-9,
+          "excluded=%s eval=%s coverage=%r" % (_fi_clean["excluded_boundary_points"],
+                                               _fi_clean["evaluation_points"],
+                                               _fi_clean["coverage"]))
     # ── 第三次验收修复回归：加速模式复用、滚动区间可见性、截点缺失跳过 ──
     check("加速模式截点倒退必须立即重建模型，前进且非节奏点才复用",
           _bt.needs_retrain(_date(2025, 10, 27), _date(2025, 10, 24), 83, 80, 5, True) is True

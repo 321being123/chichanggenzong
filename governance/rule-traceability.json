@@ -5,181 +5,371 @@
     {
       "id": "TASK-CONTRACT-001",
       "title": "默认值合并前审计原始任务契约",
-      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "validateJobDefinitionSources" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "validateJobDefinitionSources" }],
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "validateJobDefinitionSources"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "validateJobDefinitionSources"
+        }
+      ],
       "owner": "任务治理",
       "status": "verified"
     },
     {
       "id": "TASK-CONTRACT-002",
       "title": "任务契约键冲突、孤儿键和硬依赖必须失败",
-      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "JOB_CONTRACTS" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "strict: true" }],
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "JOB_CONTRACTS"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "strict: true"
+        }
+      ],
       "owner": "任务治理",
       "status": "verified"
     },
     {
       "id": "TASK-DATE-001",
       "title": "数据集依赖统一消费 partitionDatePolicy",
-      "implementation": { "file": "server/services/jobScheduleSlots.js", "symbol": "resolveDatasetPartitionDate" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "previous_trading_day" }, { "file": "server/test/inc-0010-regression.test.js", "pattern": "datasetDependencyState" }],
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "resolveDatasetPartitionDate"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "previous_trading_day"
+        },
+        {
+          "file": "server/test/inc-0010-regression.test.js",
+          "pattern": "datasetDependencyState"
+        }
+      ],
       "owner": "任务治理",
       "status": "verified"
     },
     {
       "id": "TASK-DATE-002",
       "title": "未知任务不得进入执行和恢复链路",
-      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "getRegisteredJobDefinition" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "unknown_job_definition" }],
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "getRegisteredJobDefinition"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "unknown_job_definition"
+        }
+      ],
       "owner": "任务治理",
       "status": "verified"
     },
     {
       "id": "ALERT-EVIDENCE-001",
       "title": "告警类型必须有证据策略注册",
-      "implementation": { "file": "server/services/jobAlertMailer.js", "symbol": "ALERT_EVIDENCE_POLICIES" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "unknown_alert_type_requires_manual_review" }],
+      "implementation": {
+        "file": "server/services/jobAlertMailer.js",
+        "symbol": "ALERT_EVIDENCE_POLICIES"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "unknown_alert_type_requires_manual_review"
+        }
+      ],
       "owner": "运维治理",
       "status": "verified"
     },
     {
       "id": "ALERT-EVIDENCE-002",
       "title": "具体来源接口不得使用 source:* 作为恢复证据",
-      "implementation": { "file": "server/services/jobAlertMailer.js", "symbol": "verifyAlertScope" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "wildcardMustNotRecoverConcrete" }],
+      "implementation": {
+        "file": "server/services/jobAlertMailer.js",
+        "symbol": "verifyAlertScope"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "wildcardMustNotRecoverConcrete"
+        }
+      ],
       "owner": "运维治理",
       "status": "verified"
     },
     {
       "id": "ALERT-EVIDENCE-003",
       "title": "依赖阻塞恢复必须复用严格槽位证据",
-      "implementation": { "file": "server/services/jobRecoveryEvidence.js", "symbol": "verifySlotRecoveryEvidence" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "dependencyAlert" }],
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "verifySlotRecoveryEvidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "dependencyAlert"
+        }
+      ],
       "owner": "运维治理",
       "status": "verified"
     },
     {
       "id": "GOVERNANCE-001",
       "title": "任务治理规则必须进入知识门禁",
-      "implementation": { "file": "scripts/check-knowledge.js", "symbol": "collectJobContractErrors" },
-      "tests": [{ "file": "server/test/knowledge-governance.test.js", "pattern": "runCheck" }],
+      "implementation": {
+        "file": "scripts/check-knowledge.js",
+        "symbol": "collectJobContractErrors"
+      },
+      "tests": [
+        {
+          "file": "server/test/knowledge-governance.test.js",
+          "pattern": "runCheck"
+        }
+      ],
       "owner": "研发规范",
       "status": "verified"
     },
     {
       "id": "TASK-DATASET-003",
       "title": "分阶段任务必须按阶段契约发布并核对分区",
-      "implementation": { "file": "server/services/datasetPartitionRegistry.js", "symbol": "publishJobDatasets" },
-      "tests": [{ "file": "server/test/dataset-publication-contract.test.js", "pattern": "IPO 阶段和分区作用域契约通过" }],
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "publishJobDatasets"
+      },
+      "tests": [
+        {
+          "file": "server/test/dataset-publication-contract.test.js",
+          "pattern": "IPO 阶段和分区作用域契约通过"
+        }
+      ],
       "owner": "任务治理",
       "status": "verified"
     },
     {
       "id": "ALERT-EVIDENCE-004",
       "title": "告警只针对本槽位声明且实际尝试的数据集",
-      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "buildDatasetDiagnosticAlerts" },
-      "tests": [{ "file": "server/test/hk-ipo-diagnostics-alert.test.js", "pattern": "未获准入且本轮未请求的动态源不能产生故障告警" }],
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "buildDatasetDiagnosticAlerts"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-diagnostics-alert.test.js",
+          "pattern": "未获准入且本轮未请求的动态源不能产生故障告警"
+        }
+      ],
       "owner": "运维治理",
       "status": "verified"
     },
     {
       "id": "ALERT-EVIDENCE-005",
       "title": "数据集告警日期必须匹配对应数据集的目标分区",
-      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "datasetPartitionKeyForSlot" },
-      "tests": [{ "file": "server/test/ops-alert-remediation-regression.test.js", "pattern": "每条数据集告警必须使用本数据集的目标分区日" }],
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "datasetPartitionKeyForSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "每条数据集告警必须使用本数据集的目标分区日"
+        }
+      ],
       "owner": "运维治理",
       "status": "verified"
     },
     {
       "id": "TASK-SLOT-003",
       "title": "计划内不同槽位成功不互相触发重复告警",
-      "implementation": { "file": "server/services/jobOrchestrator.js", "symbol": "finishManagedRun" },
-      "tests": [{ "file": "server/test/job-execution-protection.test.js", "pattern": "同一计划槽位重复成功必须告警" }],
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "finishManagedRun"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-execution-protection.test.js",
+          "pattern": "同一计划槽位重复成功必须告警"
+        }
+      ],
       "owner": "任务治理",
       "status": "verified"
     },
     {
       "id": "HK-IPO-SOURCE-001",
       "title": "未准入港股动态源不得联网采集",
-      "implementation": { "file": "server/services/hkIpoMarketSignals.js", "symbol": "syncHkIpoMarketSignals" },
-      "tests": [{ "file": "server/test/hk-ipo-dynamic-source-admission.test.js", "pattern": "默认未准入状态必须在联网和读取动态信号数据库前安全返回" }],
+      "implementation": {
+        "file": "server/services/hkIpoMarketSignals.js",
+        "symbol": "syncHkIpoMarketSignals"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-dynamic-source-admission.test.js",
+          "pattern": "默认未准入状态必须在联网和读取动态信号数据库前安全返回"
+        }
+      ],
       "owner": "港股 IPO",
       "status": "verified"
     },
     {
       "id": "HK-IPO-SCHEDULE-001",
       "title": "港股 IPO 任务只按 HKEX 开市日排程，未知日历不猜测",
-      "implementation": { "file": "server/services/jobScheduleSlots.js", "symbol": "resolveScheduleForDate" },
-      "tests": [{ "file": "server/test/cross-market-calendar-nav.test.js", "pattern": "A 股休市但港股开市时仍须生成港股候选槽位" }],
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "resolveScheduleForDate"
+      },
+      "tests": [
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "A 股休市但港股开市时仍须生成港股候选槽位"
+        }
+      ],
       "owner": "港股 IPO",
       "status": "verified"
     },
     {
       "id": "HK-IPO-SUBSCRIPTION-CADENCE-001",
       "title": "港股开市日申购倍数按盘前、午间和收盘后留档",
-      "implementation": { "file": "server/services/jobDefinitions.js", "symbol": "hk_ipo_preopen" },
-      "tests": [{ "file": "server/test/job-execution-protection.test.js", "pattern": "subscription_close" }],
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "hk_ipo_preopen"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-execution-protection.test.js",
+          "pattern": "subscription_close"
+        }
+      ],
       "owner": "港股 IPO",
       "status": "verified"
     },
     {
       "id": "HK-IPO-SHORT-NAME-001",
       "title": "港股 IPO 简称优先读取同次来源快照并清理发行附注",
-      "implementation": { "file": "server/routes/ipo.js", "symbol": "resolveHkIpoDisplayName" },
-      "tests": [{ "file": "server/test/hk-ipo-market-signals.test.js", "pattern": "旧快照中的来源简称也应去除发行标记后再展示" }],
+      "implementation": {
+        "file": "server/routes/ipo.js",
+        "symbol": "resolveHkIpoDisplayName"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-market-signals.test.js",
+          "pattern": "旧快照中的来源简称也应去除发行标记后再展示"
+        }
+      ],
       "owner": "港股 IPO",
       "status": "verified"
     },
     {
       "id": "HK-IPO-FACT-QUALITY-001",
       "title": "港股 IPO 事实分区只有质量通过才可作为已发布依赖",
-      "implementation": { "file": "server/services/datasetPartitionRegistry.js", "symbol": "areDatasetPartitionsPublished" },
-      "tests": [{ "file": "server/test/dataset-publication-contract.test.js", "pattern": "港股事实分区只有质量通过才可作为已发布依赖" }],
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "areDatasetPartitionsPublished"
+      },
+      "tests": [
+        {
+          "file": "server/test/dataset-publication-contract.test.js",
+          "pattern": "港股事实分区只有质量通过才可作为已发布依赖"
+        }
+      ],
       "owner": "港股 IPO",
       "status": "verified"
     },
     {
       "id": "HK-IPO-SIGNAL-COVERAGE-001",
       "title": "动态信号必须覆盖本轮活跃 IPO 代码，部分采集不得判完整",
-      "implementation": { "file": "server/jobs/hkIpoSync.js", "symbol": "marketSignalDiagnostics" },
-      "tests": [{ "file": "server/test/hk-ipo-dynamic-source-admission.test.js", "pattern": "少覆盖一只申购中的新股时不得按有数据判定完整" }],
+      "implementation": {
+        "file": "server/jobs/hkIpoSync.js",
+        "symbol": "marketSignalDiagnostics"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-dynamic-source-admission.test.js",
+          "pattern": "少覆盖一只申购中的新股时不得按有数据判定完整"
+        }
+      ],
       "owner": "港股 IPO",
       "status": "verified"
     },
     {
       "id": "HOLDINGS-CROSS-MARKET-001",
       "title": "港股交易状态及收盘时刻必须来自明确 HKEX 日历事实",
-      "implementation": { "file": "server/services/marketState.js", "symbol": "deriveMarketState" },
-      "tests": [{ "file": "server/test/cross-market-calendar-nav.test.js", "pattern": "半日盘 12:05 收市竞价期间仍属交易时段" }],
+      "implementation": {
+        "file": "server/services/marketState.js",
+        "symbol": "deriveMarketState"
+      },
+      "tests": [
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "半日盘 12:05 收市竞价期间仍属交易时段"
+        }
+      ],
       "owner": "持仓管理",
       "status": "verified"
     },
     {
       "id": "HOLDINGS-NAV-002",
       "title": "跨市场账户价格和汇率变动须在同日净值归因闭合",
-      "implementation": { "file": "server/services/navAttribution.js", "symbol": "computeNavAttribution" },
-      "tests": [{ "file": "server/test/cross-market-calendar-nav.test.js", "pattern": "港股单独开市时归因必须完整" }],
+      "implementation": {
+        "file": "server/services/navAttribution.js",
+        "symbol": "computeNavAttribution"
+      },
+      "tests": [
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "港股单独开市时归因必须完整"
+        }
+      ],
       "owner": "持仓管理",
       "status": "verified"
     },
     {
       "id": "HOLDINGS-REFRESH-003",
       "title": "港股开市时刷新须即时更新持仓页与首页总资产",
-      "implementation": { "file": "public/shared/core-quote.js", "symbol": "refreshAllPrices" },
-      "tests": [{ "file": "server/test/holdings-cross-market-refresh.test.js", "pattern": "持仓页总资产应在 PATCH 完成前显示 4002 元" }],
+      "implementation": {
+        "file": "public/shared/core-quote.js",
+        "symbol": "refreshAllPrices"
+      },
+      "tests": [
+        {
+          "file": "server/test/holdings-cross-market-refresh.test.js",
+          "pattern": "持仓页总资产应在 PATCH 完成前显示 4002 元"
+        }
+      ],
       "owner": "持仓管理",
       "status": "verified"
     },
     {
       "id": "DATE-BOUNDARY-001",
       "title": "业务日期、明确时刻和年份区间必须经共享工具并阻止已修错误复发",
-      "implementation": { "file": "public/shared/core-date.js", "symbol": "normalizeBusinessDate" },
+      "implementation": {
+        "file": "public/shared/core-date.js",
+        "symbol": "normalizeBusinessDate"
+      },
       "tests": [
-        { "file": "server/test/core-date.test.js", "pattern": "America/New_York" },
-        { "file": "server/test/date-boundary-static.test.js", "pattern": "FIXED_RULE_REAPPEARED" },
-        { "file": "server/test/date-time-r2.test.js", "pattern": "R2 日期回归通过" },
-        { "file": "server/test/date-time-r3.test.js", "pattern": "R3 日期边界测试通过" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "日历业务日期固定按上海时区" }
+        {
+          "file": "server/test/core-date.test.js",
+          "pattern": "America/New_York"
+        },
+        {
+          "file": "server/test/date-boundary-static.test.js",
+          "pattern": "FIXED_RULE_REAPPEARED"
+        },
+        {
+          "file": "server/test/date-time-r2.test.js",
+          "pattern": "R2 日期回归通过"
+        },
+        {
+          "file": "server/test/date-time-r3.test.js",
+          "pattern": "R3 日期边界测试通过"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "日历业务日期固定按上海时区"
+        }
       ],
       "owner": "日期边界治理",
       "status": "verified"
@@ -187,18 +377,35 @@
     {
       "id": "DATE-BOUNDARY-002",
       "title": "港股 IPO 实时申购快照只写入上海当天，历史与未来目标阻断",
-      "implementation": { "file": "server/jobs/hkIpoSync.js", "symbol": "liveSignalTargetDateStatus" },
-      "tests": [{ "file": "server/test/date-time-r3.test.js", "pattern": "R3 日期边界测试通过" }],
+      "implementation": {
+        "file": "server/jobs/hkIpoSync.js",
+        "symbol": "liveSignalTargetDateStatus"
+      },
+      "tests": [
+        {
+          "file": "server/test/date-time-r3.test.js",
+          "pattern": "R3 日期边界测试通过"
+        }
+      ],
       "owner": "日期边界治理",
       "status": "verified"
     },
     {
       "id": "IPO-SOURCE-IDENTITY-001",
       "title": "CNINFO代码查询未命中时仅接受发行人名称精确匹配",
-      "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_get_org_id" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_get_org_id"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮代码未命中时按精确发行人名称补查orgId" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮名称回查拒绝不匹配发行人" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "巨潮代码未命中时按精确发行人名称补查orgId"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "巨潮名称回查拒绝不匹配发行人"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -206,55 +413,102 @@
     {
       "id": "IPO-BUSINESS-EXPOSURE-001",
       "title": "IPO 业务赛道由明确主营证据识别、用于预测展示并与行业分类分离",
-      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "analyze_business_exposure" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_sector.py",
+        "symbol": "analyze_business_exposure"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "鸿富诚主营业务识别电子功能材料赛道" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "鸿富诚主营业务识别电子功能材料赛道"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
     },
-      {
-        "id": "IPO-INDUSTRY-CHAIN-001",
-        "title": "IPO 上下游产业链关系必须来自招股书明示证据并与主营赛道分开",
-        "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_extract_industry_chain_relations" },
-        "tests": [
-          { "file": "ipo-report/test_ipo_unit.py", "pattern": "招股书上下游关系提取覆盖上游材料与下游应用" },
-          { "file": "ipo-report/test_ipo_unit.py", "pattern": "消费 深圳市鸿富诚新材料股份有限公司 招股说明书（注册稿） 1-1-128 电子等。" },
-          { "file": "ipo-report/test_ipo_unit.py", "pattern": "下游明确应用转为关联赛道并保留关系方向" }
-        ],
-        "owner": "A股 IPO",
-        "status": "production_verified",
-        "productionEvidence": {
-          "codeCommit": "ae75e04",
-          "job": "ipo_history_sync",
-          "slotId": "1183681",
-          "runId": 3374,
-          "targetCodes": ["301716"],
-          "industryChainParser": "ipo-industry-chain-v3",
-          "upstreamCount": 12,
-          "downstreamCount": 7,
-          "relatedTrackCount": 8,
-          "reportSlotId": "1184035",
-          "reportRunId": 3379,
-          "reportDate": "2026-09-29",
-          "businessDate": "2026-09-28",
-          "forcedRefresh": true,
-          "forecastPercent": 224,
-          "forecastRange": [81, 367]
-        }
+    {
+      "id": "IPO-INDUSTRY-CHAIN-001",
+      "title": "IPO 上下游产业链关系必须来自招股书明示证据并与主营赛道分开",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_extract_industry_chain_relations"
       },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "招股书上下游关系提取覆盖上游材料与下游应用"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "消费 深圳市鸿富诚新材料股份有限公司 招股说明书（注册稿） 1-1-128 电子等。"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "下游明确应用转为关联赛道并保留关系方向"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "production_verified",
+      "productionEvidence": {
+        "codeCommit": "ae75e04",
+        "job": "ipo_history_sync",
+        "slotId": "1183681",
+        "runId": 3374,
+        "targetCodes": [
+          "301716"
+        ],
+        "industryChainParser": "ipo-industry-chain-v3",
+        "upstreamCount": 12,
+        "downstreamCount": 7,
+        "relatedTrackCount": 8,
+        "reportSlotId": "1184035",
+        "reportRunId": 3379,
+        "reportDate": "2026-09-29",
+        "businessDate": "2026-09-28",
+        "forcedRefresh": true,
+        "forecastPercent": 224,
+        "forecastRange": [
+          81,
+          367
+        ]
+      }
+    },
     {
       "id": "IPO-INDUSTRY-PARSER-001",
       "title": "IPO 行业解析必须绑定发行人并保留公告分类证据",
-      "implementation": { "file": "ipo-report/ipo_lib_fetch.py", "symbol": "_parse_ipo_issuance_detail" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_parse_ipo_issuance_detail"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "鸿富诚代码在前格式解析行业和独立证据" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "官方行业分类代码优先于较新但未分类的招股书表述" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "巨潮识别初步询价及推介公告" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "初步询价公告解析协会分类C39且不伪造行业PE" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "鸿富诚GB/T行业标准解析C39" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "行业解析跳过同行公司行业分类" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "PE先命中仍继续查找行业且字段证据各自绑定文档" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "鸿富诚代码在前格式解析行业和独立证据"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "官方行业分类代码优先于较新但未分类的招股书表述"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "巨潮识别初步询价及推介公告"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "初步询价公告解析协会分类C39且不伪造行业PE"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "鸿富诚GB/T行业标准解析C39"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "行业解析跳过同行公司行业分类"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "PE先命中仍继续查找行业且字段证据各自绑定文档"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -262,16 +516,43 @@
     {
       "id": "IPO-ENRICHMENT-FIELDS-001",
       "title": "IPO 增强资料按缺失字段独立补全并保留诊断与续跑状态",
-      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "enrich_stock_missing_details" },
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "enrich_stock_missing_details"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "只缺行业时独立请求且分类证据落库" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "值未变化时仍幂等保留本轮行业证据" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "Guard中断前的行业值和证据先写入并保留恢复点" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "定向补全质量刷新只查询目标证券" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "定向任务对未披露字段可完成但保留缺口状态" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "官方分类代码可替换并留痕未分类行业值" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "行业解析器升级后定向重解析并保留官方行业PE" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "空候选仍保留已知资料缺口" }
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "只缺行业时独立请求且分类证据落库"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "值未变化时仍幂等保留本轮行业证据"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "Guard中断前的行业值和证据先写入并保留恢复点"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "定向补全质量刷新只查询目标证券"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "定向任务对未披露字段可完成但保留缺口状态"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "官方分类代码可替换并留痕未分类行业值"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "行业解析器升级后定向重解析并保留官方行业PE"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "空候选仍保留已知资料缺口"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -279,10 +560,19 @@
     {
       "id": "IPO-INDUSTRY-PE-001",
       "title": "官方行业升级不得沿用分类不匹配的 Tushare 派生 PE",
-      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "enrich_stock_missing_details" },
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "enrich_stock_missing_details"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "官方行业升级替换已知Tushare兜底并归档旧值及不匹配PE" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "升级后不兼容PE退出预测输入并按模型缺省值补位" }
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "官方行业升级替换已知Tushare兜底并归档旧值及不匹配PE"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "升级后不兼容PE退出预测输入并按模型缺省值补位"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -290,10 +580,19 @@
     {
       "id": "IPO-API-QUALITY-001",
       "title": "空 IPO 业务赛道数组必须在接口字段状态中保持待补全",
-      "implementation": { "file": "server/routes/ipo.js", "symbol": "stockFieldStatusSql" },
+      "implementation": {
+        "file": "server/routes/ipo.js",
+        "symbol": "stockFieldStatusSql"
+      },
       "tests": [
-        { "file": "server/test/ipo-api.test.js", "pattern": "空业务赛道数组仍为待补全" },
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "空赛道数组在候选和字段状态中都算缺口" }
+        {
+          "file": "server/test/ipo-api.test.js",
+          "pattern": "空业务赛道数组仍为待补全"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "空赛道数组在候选和字段状态中都算缺口"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -301,10 +600,19 @@
     {
       "id": "IPO-INDUSTRY-L2-001",
       "title": "IPO 热度缺少细分赛道样本时按申万二级行业分组，空样本保持中性",
-      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "get_stock_sector_context" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_sector.py",
+        "symbol": "get_stock_sector_context"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "细分赛道无样本时回退申万二级行业历史热度" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "申万二级行业样本为空时仍显示二级行业并使用中性系数" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "细分赛道无样本时回退申万二级行业历史热度"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "申万二级行业样本为空时仍显示二级行业并使用中性系数"
+        }
       ],
       "owner": "A股 IPO",
       "status": "production_verified",
@@ -317,15 +625,21 @@
         "reportDate": "2026-09-29",
         "sector": "801086.SI",
         "sampleCount": 0,
-        "multiplier": 1.0
+        "multiplier": 1
       }
     },
     {
       "id": "IPO-INDUSTRY-L2-002",
       "title": "申万行业路径单独存储并只对 IPO 目标增量查询",
-      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "sync_sw_industry_taxonomies" },
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "sync_sw_industry_taxonomies"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "申万二级行业路径入库且不覆盖官方行业事实" }
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "申万二级行业路径入库且不覆盖官方行业事实"
+        }
       ],
       "owner": "A股 IPO",
       "status": "production_verified",
@@ -334,20 +648,43 @@
         "job": "ipo_history_sync",
         "slotId": "1181406",
         "runId": 3365,
-        "targetCodes": ["301716"],
-        "externalCalls": { "szse": 2, "tushare": 1 }
+        "targetCodes": [
+          "301716"
+        ],
+        "externalCalls": {
+          "szse": 2,
+          "tushare": 1
+        }
       }
     },
     {
       "id": "IPO-PREDICTION-MISSING-001",
       "title": "预测输入缺失必须按训练原生缺失与拟合补位分开处理，不得用硬编码常数代 NaN，也不得把零值一律判为缺失",
-      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "_build_xgb_fill_values" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_valuation.py",
+        "symbol": "_build_xgb_fill_values"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "产物补位值按训练特征名建立映射" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "旧产物中的零占位不被当作补位值" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "中签率零占位按缺失处理并统一走补位" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "亏损股发行PE零值属合法取值不被判为缺失" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "模型输入明细可安全序列化为JSON" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "产物补位值按训练特征名建立映射"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "旧产物中的零占位不被当作补位值"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "中签率零占位按缺失处理并统一走补位"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "亏损股发行PE零值属合法取值不被判为缺失"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "模型输入明细可安全序列化为JSON"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -355,10 +692,19 @@
     {
       "id": "IPO-PREDICTION-MISSING-002",
       "title": "训练原生缺失字段在推理端必须保持缺失且状态标注为缺失",
-      "implementation": { "file": "ipo-report/train_xgb_model.py", "symbol": "NATIVE_MISSING_FIELDS" },
+      "implementation": {
+        "file": "ipo-report/train_xgb_model.py",
+        "symbol": "NATIVE_MISSING_FIELDS"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练未填充字段在推理端保持缺失且不写成 0" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "模型输入明细标注缺失字段" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "训练未填充字段在推理端保持缺失且不写成 0"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "模型输入明细标注缺失字段"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -366,11 +712,23 @@
     {
       "id": "IPO-MARKET-TEMP-001",
       "title": "市场温度样本不足时必须标记未知，不得默认热市或输出零破发申购结论",
-      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "detect_market_temperature" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_sector.py",
+        "symbol": "detect_market_temperature"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "温度未知时不给零破发结论也不按热市加分" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "样本为空时热市零破发不触发顶格覆盖" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "零破发理由带统计窗口与样本数且不做中签即赚承诺" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "温度未知时不给零破发结论也不按热市加分"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "样本为空时热市零破发不触发顶格覆盖"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "零破发理由带统计窗口与样本数且不做中签即赚承诺"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -378,11 +736,23 @@
     {
       "id": "IPO-BOARD-IDENTITY-002",
       "title": "板块识别使用唯一口径，无法识别时不得猜测板块或套用其他板块基准与模型",
-      "implementation": { "file": "ipo-report/_classify.py", "symbol": "board_key_from_code" },
+      "implementation": {
+        "file": "ipo-report/_classify.py",
+        "symbol": "board_key_from_code"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块识别覆盖各板块前缀且未知代码不猜板块" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "未知代码板块基准返回未知而非默认沪市主板" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "北交所不套用非北交所模型" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "板块识别覆盖各板块前缀且未知代码不猜板块"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "未知代码板块基准返回未知而非默认沪市主板"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "北交所不套用非北交所模型"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -390,10 +760,19 @@
     {
       "id": "IPO-ADVICE-SCORE-001",
       "title": "申购建议的赛道分量以中性系数×1.00 为基准，冷赛道扣分、热赛道加分",
-      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "sector_score_multiplier" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_valuation.py",
+        "symbol": "sector_score_multiplier"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "建议分赛道分量以中性×1.00为基准且冷赛道扣分热赛道加分" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "建议明细区分市场级温度与个股级赛道分量" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "建议分赛道分量以中性×1.00为基准且冷赛道扣分热赛道加分"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "建议明细区分市场级温度与个股级赛道分量"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -401,13 +780,31 @@
     {
       "id": "IPO-LOTTERY-RATE-ZERO-001",
       "title": "网上中签率与超额认购倍数的 0 只代表尚未公布的占位，必须按缺失处理，不得当作实测值写入、推理或展示",
-      "implementation": { "file": "ipo-report/ipo_history_sync.py", "symbol": "_positive" },
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "_positive"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_history_sync.py", "pattern": "中签率与超额认购倍数零占位不被写回库" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "中签率零占位按缺失处理并统一走补位" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "超额认购倍数零占位按缺失处理并统一走补位" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "亏损股发行PE零值属合法取值不被判为缺失" },
-        { "file": "ipo-report/test_ipo_frontend.js", "pattern": "零占位 -> 待补全" }
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "中签率与超额认购倍数零占位不被写回库"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "中签率零占位按缺失处理并统一走补位"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "超额认购倍数零占位按缺失处理并统一走补位"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "亏损股发行PE零值属合法取值不被判为缺失"
+        },
+        {
+          "file": "ipo-report/test_ipo_frontend.js",
+          "pattern": "零占位 -> 待补全"
+        }
       ],
       "owner": "A股 IPO",
       "status": "production_verified",
@@ -420,10 +817,19 @@
     {
       "id": "IPO-TARGET-TRANSFORM-001",
       "title": "训练目标变换必须保留破发（负收益）的符号与量级，不得用 max(y,0) 截断",
-      "implementation": { "file": "ipo-report/ipo_lib_train.py", "symbol": "symlog_return" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_train.py",
+        "symbol": "symlog_return"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练目标保留破发不再截断负收益" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "推理端支持奇对称对数反变换且不做输出截断" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "训练目标保留破发不再截断负收益"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "推理端支持奇对称对数反变换且不做输出截断"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -431,10 +837,19 @@
     {
       "id": "IPO-MODEL-TRAINING-SCOPE-001",
       "title": "上线模型必须用全部样本训练；评估须由独立模型承担且补值只用训练段中位数",
-      "implementation": { "file": "ipo-report/train_xgb_model.py", "symbol": "eval_model" },
+      "implementation": {
+        "file": "ipo-report/train_xgb_model.py",
+        "symbol": "eval_model"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "上线模型用全部样本训练而非只用训练段" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "评估补值只用训练段中位数" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "上线模型用全部样本训练而非只用训练段"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "评估补值只用训练段中位数"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -442,15 +857,43 @@
     {
       "id": "IPO-BACKTEST-001",
       "title": "A 股打新预测须有时间滚动样本外回测，且预测区间半宽由滚动误差分位数定标而非经验系数",
-      "implementation": { "file": "ipo-report/backtest_ipo_prediction.py", "symbol": "train_on_window" },
+      "implementation": {
+        "file": "ipo-report/backtest_ipo_prediction.py",
+        "symbol": "train_on_window"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "训练与回测共用同一套特征工程与目标变换" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间半宽由滚动样本外误差分位数定标" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "滚动定标区间排除同日样本且历史不足的点不计入" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "加速模式截点倒退必须立即重建模型" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "加速回测实际复用路径无未来信息" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "滚动区间只把截点前已上市样本的误差计入" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "申购截点缺失或格式异常明确标记跳过而不回退上市日" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "训练与回测共用同一套特征工程与目标变换"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "预测区间半宽由滚动样本外误差分位数定标"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "滚动定标区间排除同日样本且历史不足的点不计入"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "加速模式截点倒退必须立即重建模型"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "加速回测实际复用路径无未来信息"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "滚动区间只把截点前已上市样本的误差计入"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "申购截点缺失或格式异常明确标记跳过而不回退上市日"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "固定区间验收隔离截点不晚于定标结果上市日的边界样本"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -458,13 +901,31 @@
     {
       "id": "IPO-PIT-CALIBRATION-001",
       "title": "回测的板块基准、赛道系数与市场温度只能用测试点之前已上市的首日结果重算，不得使用含未来样本的当前校准",
-      "implementation": { "file": "ipo-report/backtest_ipo_prediction.py", "symbol": "history_indices" },
+      "implementation": {
+        "file": "ipo-report/backtest_ipo_prediction.py",
+        "symbol": "history_indices"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测窗口严格排除时点当天及之后上市的样本" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "回测训练窗口按上市日截点取且不按行切片" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "申购阶段回测以发行公告日为信息截点而不是上市日" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块基准可按时点样本重算并跳过样本不足的板块" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "板块校准接受时点基准与温度而不是只读当前全局状态" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "回测窗口严格排除时点当天及之后上市的样本"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "回测训练窗口按上市日截点取且不按行切片"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "申购阶段回测以发行公告日为信息截点而不是上市日"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "板块基准可按时点样本重算并跳过样本不足的板块"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "板块校准接受时点基准与温度而不是只读当前全局状态"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -472,10 +933,19 @@
     {
       "id": "IPO-TEMP-STAT-001",
       "title": "市场温度的统计量与阈值必须经完整链路回测重验后选定，无可区分样本时不得只换统计量而沿用原阈值",
-      "implementation": { "file": "ipo-report/ipo_lib_sector.py", "symbol": "summarize_temperature" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_sector.py",
+        "symbol": "summarize_temperature"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "温度无样本返回未知且破发率不写零值" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "温度三态判据集中且出现破发即不是热市" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "温度无样本返回未知且破发率不写零值"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "温度三态判据集中且出现破发即不是热市"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -483,10 +953,19 @@
     {
       "id": "IPO-ISSUANCE-VISIBILITY-001",
       "title": "发行阶段（申购前）尚不可见的字段必须按缺失处理：网上中签率与超额认购倍数在申购后 T+2 才公布",
-      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "_xgb_predict_listing" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_valuation.py",
+        "symbol": "_xgb_predict_listing"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "发行阶段把申购后才公布的中签率与超额认购倍数按缺失处理" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "上市阶段仍使用已公布的中签率与超额认购倍数" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "发行阶段把申购后才公布的中签率与超额认购倍数按缺失处理"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "上市阶段仍使用已公布的中签率与超额认购倍数"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"
@@ -494,12 +973,27 @@
     {
       "id": "IPO-NEGATIVE-OUTPUT-001",
       "title": "负收益（破发）预测必须贯通摘要、单签盈亏与预测区间，展示层不得把负值说小成 0",
-      "implementation": { "file": "ipo-report/ipo_lib_valuation.py", "symbol": "_floor_listing_band" },
+      "implementation": {
+        "file": "ipo-report/ipo_lib_valuation.py",
+        "symbol": "_floor_listing_band"
+      },
       "tests": [
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "负预测按50%档位向下取整且正数行为不变" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "摘要如实显示破发与单签亏损而不是约0%" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "预测区间下限可以为负且发行阶段按规则放宽" },
-        { "file": "ipo-report/test_ipo_unit.py", "pattern": "模型输出负预测时端到端贯通而不是被挡进线性兜底" }
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "负预测按50%档位向下取整且正数行为不变"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "摘要如实显示破发与单签亏损而不是约0%"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "预测区间下限可以为负且发行阶段按规则放宽"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "模型输出负预测时端到端贯通而不是被挡进线性兜底"
+        }
       ],
       "owner": "A股 IPO",
       "status": "verified"

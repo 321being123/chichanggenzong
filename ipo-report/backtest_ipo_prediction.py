@@ -253,6 +253,45 @@ def rolling_interval_coverage(results, window=50, quantile=0.8, min_points=30):
     return float(np.mean(covered)), float(np.mean(widths)), len(covered)
 
 
+def fixed_interval_acceptance(results, nominal=0.8):
+    """固定半宽独立验收：前半段误差定标并冻结半宽，后半段仅取可见性合规的点评估。
+
+    可见性规则（验收第四次复核）：定标结果要等各自上市收盘后才可知；评估点的
+    预测截点必须严格晚于**全部**定标结果的上市日，否则该点的“独立”验收实际
+    用了尚未公布的定标误差——实测 51 个验收点中 6 点受影响（如 688805 截点
+    2025-12-15 的定标集含 12-16 至 12-23 上市的 7 只股票）。此类边界样本隔离
+    不计入并报告数量；上市阶段回测按上市日排序天然满足该条件、隔离数应为 0。
+    评估点为空时 coverage 为 None。
+    """
+    def _day(value):
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except (TypeError, ValueError):
+            return None
+
+    split = len(results) // 2
+    calib = results[:split]
+    calib_errors = [abs(r["error"]) for r in calib]
+    half_width = float(np.quantile(calib_errors, nominal))
+    calib_last_listed = max(_day(r["date"]) for r in calib)
+    eval_pts, excluded = [], 0
+    for r in results[split:]:
+        anchor = _day(r.get("anchor_date") or r["date"])
+        if anchor is not None and anchor > calib_last_listed:
+            eval_pts.append(r)
+        else:
+            excluded += 1
+    return {
+        "method": "最终链路样本外误差80分位；前半段定标冻结半宽，后半段仅取预测截点晚于全部定标结果上市日的点",
+        "half_width": half_width,
+        "calibration_points": len(calib_errors),
+        "evaluation_points": len(eval_pts),
+        "excluded_boundary_points": excluded,
+        "coverage": float(np.mean([abs(r["error"]) <= half_width for r in eval_pts])) if eval_pts else None,
+        "boundary_rule": "验收点的预测截点须严格晚于全部定标结果的上市日，边界样本隔离不计入",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="A 股打新预测时间滚动样本外回测（含完整链路逐层对比）")
     parser.add_argument("--min-train", type=int, default=80, help="开始滚动前至少有多少条历史样本")
@@ -496,20 +535,12 @@ def main():
     # 定标只用时间上较早的一半测试点，覆盖率只在未参与定标的后续一半上评估。
     # 此前两种数字都不能算独立验证：模型自估区间来自训练段拟合残差（覆盖 46.1%）；
     # 产物半宽覆盖 81.4% 但用同一段历史定标并验收。
+    # 可见性隔离（验收第四次复核）：评估点的预测截点必须严格晚于全部定标结果的
+    # 上市日，否则该点用了尚未公布的定标误差（实测 51 个验收点中 6 点受影响）。
     independent_interval = None
     n_points = len(results)
     if n_points >= 20:
-        split = n_points // 2
-        calib_errors = [abs(r["error"]) for r in results[:split]]
-        holdout_errors = [abs(r["error"]) for r in results[split:]]
-        calib_half = float(np.quantile(calib_errors, 0.8))
-        independent_interval = {
-            "method": "最终链路样本外误差80分位；前半段定标、后半段验收",
-            "half_width": calib_half,
-            "calibration_points": len(calib_errors),
-            "evaluation_points": len(holdout_errors),
-            "coverage": float(np.mean([e <= calib_half for e in holdout_errors])),
-        }
+        independent_interval = fixed_interval_acceptance(results)
 
     # 滚动定标区间（方案第四批「分位数/滚动校准区间」）：半宽跟随近期误差水平。
     # 与上面的固定半宽独立验收互为对照：固定半宽 64.7% 的根因是误差随行情漂移，
@@ -637,10 +668,16 @@ def main():
             print(f"  赛道分权重 {key}: {row['count']} 个点 | 秩相关 {text}")
     print(f"模型自估区间覆盖: {summary['interval_coverage']*100:.1f}%（名义 {summary['interval_nominal']*100:.0f}%，来自训练段拟合残差，仅参考）")
     if independent_interval:
-        print(f"区间独立验收    : 半宽 {independent_interval['half_width']:.0f}pp -> 未参与定标的"
-              f"后 {independent_interval['evaluation_points']} 点覆盖 "
-              f"{independent_interval['coverage']*100:.1f}%"
-              f"（前 {independent_interval['calibration_points']} 点定标；最终链路误差 80 分位）")
+        if independent_interval.get("coverage") is None:
+            print(f"区间独立验收    : 无可见性合规的评估点（定标 {independent_interval['calibration_points']} 点，"
+                  f"隔离边界样本 {independent_interval['excluded_boundary_points']} 点）")
+        else:
+            print(f"区间独立验收    : 半宽 {independent_interval['half_width']:.0f}pp -> 覆盖 "
+                  f"{independent_interval['coverage']*100:.1f}%"
+                  f"（定标 {independent_interval['calibration_points']} 点，"
+                  f"验收 {independent_interval['evaluation_points']} 点，隔离边界样本 "
+                  f"{independent_interval['excluded_boundary_points']} 点；"
+                  f"验收点截点均晚于全部定标结果上市日）")
     if rolling_interval:
         print(f"滚动定标区间    : 窗口{rolling_interval['window']}只/"
               f"{rolling_interval['quantile']:.0%}分位 -> 覆盖 "

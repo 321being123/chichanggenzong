@@ -671,6 +671,22 @@
         {
           "file": "ipo-report/test_ipo_history_sync.py",
           "pattern": "申万二级行业路径入库且不覆盖官方行业事实"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "未上市申万成功空结果记正常待收录且不伪造分类"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "上市日申万空结果仍为真实缺口不能沿用未上市豁免"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "上游收录后真实分类替换待收录状态"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "申万待收录记录不依赖申购上市日期继续进入原任务"
         }
       ],
       "owner": "A股 IPO",

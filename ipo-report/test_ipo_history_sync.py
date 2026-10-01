@@ -24,8 +24,9 @@ class QualityCursorSpy:
 
 
 class IndustryTaxonomyCursorSpy:
-    def __init__(self):
+    def __init__(self, stored=None, listing_date=None, ipo_status="listed"):
         self.connection = object()
+        self.row = (stored, listing_date, ipo_status)
         self.rowcount = 0
         self.query = ""
         self.params = ()
@@ -36,7 +37,7 @@ class IndustryTaxonomyCursorSpy:
         self.rowcount = 1 if "UPDATE ipo_history" in query else 0
 
     def fetchone(self):
-        return (None,)
+        return self.row
 
 
 def check(name, condition, detail=""):
@@ -89,6 +90,48 @@ try:
           and taxonomy_cursor.params[0].adapted.get("l2_name") == "电子化学品Ⅱ",
           repr(taxonomy_result))
 
+    today = sync._today_shanghai()
+    sync.resolve_provider_code = lambda code, *args, **kwargs: "999999.SH"
+    sync.tushare_query = lambda *args: []
+    try:
+        pending_cursor = IndustryTaxonomyCursorSpy(ipo_status="active")
+        pending_result = sync.sync_sw_industry_taxonomies(pending_cursor, ["999999"], today)
+        pending = pending_cursor.params[0].adapted
+        check("未上市申万成功空结果记正常待收录且不伪造分类",
+              pending_result["pending_not_due"] == 1 and pending_result["missing"] == 0
+              and pending["reason"] == "prelisting_not_indexed" and "l2_code" not in pending)
+        same_day = sync.sync_sw_industry_taxonomies(
+            IndustryTaxonomyCursorSpy(pending, ipo_status="active"), ["999999"], today)
+        check("未上市待收录同日复用数据库不重复请求",
+              same_day["pending_not_due"] == 1 and same_day["attempted"] == 0)
+        listed = sync.sync_sw_industry_taxonomies(
+            IndustryTaxonomyCursorSpy(pending, today.isoformat(), "active"), ["999999"], today)
+        check("上市日申万空结果仍为真实缺口不能沿用未上市豁免",
+              listed["missing"] == 1 and listed["pending_not_due"] == 0 and listed["attempted"] == 1)
+        stale = dict(pending, fetched_at="2026-01-01T12:00:00+08:00")
+        next_day = sync.sync_sw_industry_taxonomies(
+            IndustryTaxonomyCursorSpy(stale, ipo_status="active"), ["999999"], today)
+        check("待收录次日通过原同步链重新核验", next_day["attempted"] == 1)
+        valid = {"l2_code": "801050.SI", "l2_name": "有证据的测试分类"}
+        sync.tushare_query = lambda *args: [valid]
+        acquired_cursor = IndustryTaxonomyCursorSpy(stale, ipo_status="active")
+        acquired = sync.sync_sw_industry_taxonomies(acquired_cursor, ["999999"], today)
+        check("上游收录后真实分类替换待收录状态",
+              acquired["updated"] == 1 and acquired_cursor.params[0].adapted["l2_code"] == valid["l2_code"]
+              and "status" not in acquired_cursor.params[0].adapted)
+        def failed_query(*args):
+            raise RuntimeError("接口请求失败")
+        sync.tushare_query = failed_query
+        failed = sync.sync_sw_industry_taxonomies(
+            IndustryTaxonomyCursorSpy(ipo_status="active"), ["999999"], today)
+        check("未上市接口失败不能伪装正常待收录", failed["failed"] == 1 and failed["pending_not_due"] == 0)
+        check("定向资料完整且仅未上市申万待收录允许完成",
+              sync._targeted_stage_complete({"attempted": 1, "remaining": 0,
+                                             "industry_taxonomy": pending_result}, ["999999"]))
+    finally:
+        sync.tushare_query = old_taxonomy_query
+        sync.resolve_provider_code = old_provider_resolver
+
     loss = sync.normalize_share({
         "ts_code": "999999.SH", "name": "测试新股", "ipo_date": "20260801",
         "issue_date": "20260811", "amount": 1000, "market_amount": 500,
@@ -109,6 +152,10 @@ try:
     cur.execute("DELETE FROM ipo_history WHERE security_code='999999'")
     inserted, refreshed = sync.upsert_shares(cur, [loss])
     check("首次写入", inserted == 1 and refreshed == 0)
+    cur.execute("UPDATE ipo_history SET source_payload=source_payload || %s::jsonb WHERE security_code='999999'",
+                (json.dumps({"industry_taxonomies": {"SW2021": pending}}),))
+    check("申万待收录记录不依赖申购上市日期继续进入原任务",
+          "999999" in sync.target_enrichment_codes(cur, date(2026, 12, 31)))
     blank = dict(loss)
     blank.update({"issue_price": None, "online_shares": None, "circulation_mv": None,
                   "source_payload": {"ts_code": "999999.SH", "price": None}})

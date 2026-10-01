@@ -223,14 +223,16 @@ def tushare_query(api_name, params, fields, retries=2):
 def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
     """把目标 IPO 的申万行业路径作为独立分类元数据增量入库。"""
     codes = sorted({str(code or "").split(".")[0] for code in (codes or []) if code})
-    result = {"attempted": 0, "updated": 0, "cached": 0, "missing": 0, "failed": 0, "stopped": None}
+    result = {"attempted": 0, "updated": 0, "cached": 0, "pending_not_due": 0,
+              "missing": 0, "failed": 0, "stopped": None}
     if not codes:
         return result
 
     fields = "ts_code,l1_code,l1_name,l2_code,l2_name,l3_code,l3_name,is_new"
     for code in codes:
         cur.execute(
-            "SELECT source_payload->'industry_taxonomies'->'SW2021' FROM ipo_history WHERE security_code=%s",
+            "SELECT source_payload->'industry_taxonomies'->'SW2021',listing_date,ipo_status "
+            "FROM ipo_history WHERE security_code=%s",
             (code,),
         )
         row = cur.fetchone()
@@ -247,6 +249,14 @@ def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
             result["cached"] += 1
             continue
 
+        listing_date = str(row[1] or "")[:10] if row else ""
+        prelisting = bool(row and row[2] == "active"
+                          and (not listing_date or listing_date > today.isoformat()))
+        if (prelisting and stored.get("status") == "pending_not_due"
+                and fetched_at == today.isoformat()):
+            result["pending_not_due"] += 1
+            continue
+
         result["attempted"] += 1
         try:
             ts_code = resolve_provider_code(code, "tushare", "ts_code", conn=cur.connection, asset_class="stock")
@@ -258,19 +268,27 @@ def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
             )
             item = next((item for item in rows if item.get("l2_code") and item.get("l2_name")), None)
             if not item:
-                result["missing"] += 1
-                continue
-            taxonomy = {
-                "taxonomy_code": "SW2021",
-                "classification_date": today.isoformat(),
-                "fetched_at": _now_shanghai().isoformat(),
-                "source": "tushare.index_member_all",
-                "ts_code": ts_code,
-                "l1_code": item.get("l1_code"), "l1_name": item.get("l1_name"),
-                "l2_code": item.get("l2_code"), "l2_name": item.get("l2_name"),
-                "l3_code": item.get("l3_code"), "l3_name": item.get("l3_name"),
-                "is_new": item.get("is_new"),
-            }
+                if not (prelisting and not rows and not stored.get("l2_code")):
+                    result["missing"] += 1
+                    continue
+                taxonomy = {
+                    "taxonomy_code": "SW2021", "status": "pending_not_due",
+                    "reason": "prelisting_not_indexed", "ts_code": ts_code,
+                    "fetched_at": _now_shanghai().isoformat(),
+                    "source": "tushare.index_member_all",
+                }
+            else:
+                taxonomy = {
+                    "taxonomy_code": "SW2021",
+                    "classification_date": today.isoformat(),
+                    "fetched_at": _now_shanghai().isoformat(),
+                    "source": "tushare.index_member_all",
+                    "ts_code": ts_code,
+                    "l1_code": item.get("l1_code"), "l1_name": item.get("l1_name"),
+                    "l2_code": item.get("l2_code"), "l2_name": item.get("l2_name"),
+                    "l3_code": item.get("l3_code"), "l3_name": item.get("l3_name"),
+                    "is_new": item.get("is_new"),
+                }
             cur.execute(
                 """UPDATE ipo_history
                       SET source_payload=COALESCE(source_payload,'{}'::jsonb) || jsonb_build_object(
@@ -282,7 +300,7 @@ def sync_sw_industry_taxonomies(cur, codes, today, raise_on_guard=False):
                 (Json(taxonomy), code),
             )
             if cur.rowcount:
-                result["updated"] += 1
+                result["pending_not_due" if not item else "updated"] += 1
             else:
                 result["missing"] += 1
         except ExternalCallGuardError as exc:
@@ -503,17 +521,19 @@ def normalize_stored_details(cur, today, target_date=None):
 
 
 def target_enrichment_codes(cur, target_date):
-    """找出下一交易日申购或上市、且仍缺发行资料的新股。"""
+    """找出下一交易日缺资料的新股，并复查已有申万待收录记录。"""
     target_text = str(target_date)[:10]
     cur.execute(
         f"""
         SELECT security_code
           FROM ipo_history
          WHERE market_code='CN'
-           AND (ipo_date=%s OR listing_date=%s)
+           AND (((ipo_date=%s OR listing_date=%s)
            AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
                 OR {BUSINESS_EXPOSURE_MISSING_SQL}
-                OR industry_pe IS NULL)
+                OR industry_pe IS NULL))
+                OR (source_payload->'industry_taxonomies'->'SW2021'->>'status'='pending_not_due'
+                    AND COALESCE(ipo_status,'') IN ('active','listed')))
          ORDER BY CASE WHEN listing_date=%s THEN 0 ELSE 1 END, security_code
         """,
         (target_text, target_text, target_text),
@@ -1126,7 +1146,8 @@ def _targeted_stage_complete(result, target_codes, target_fields=None):
         int(result.get("attempted", 0) or 0) == expected
         and int(result.get("failed", 0) or 0) == 0
         and result.get("stopped") is None
-        and int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0) == expected
+        and (int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0)
+             + int(taxonomy.get("pending_not_due", 0) or 0)) == expected
         and int(taxonomy.get("missing", 0) or 0) == 0
         and int(taxonomy.get("failed", 0) or 0) == 0
         and taxonomy.get("stopped") is None

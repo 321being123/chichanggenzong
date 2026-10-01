@@ -152,10 +152,14 @@ function retryDue(cursor, now = Date.now()) {
 async function buildSyncQueue(targets, options = {}, client = pool) {
   const states = await readCompanyStates(targets, client);
   const cursors = await readFinancialCursors(targets, client);
-  const disclosureCodes = new Set((options.disclosureRows || []).map(row => String(row.ts_code || '').trim().toUpperCase()));
+  const asOfDate = apiDate(options.asOfDate || tsDateStr(new Date()));
+  const disclosedPeriods = new Set((options.disclosureRows || []).filter(row => {
+    const dueDate = apiDate(row.actual_date || row.pre_date);
+    return dueDate && dueDate <= asOfDate;
+  }).map(row => `${String(row.ts_code || '').trim().toUpperCase()}:${apiDate(row.end_date)}`));
   return (targets || []).map(target => {
     const state = stateForTarget(target, states.get(String(target.companyId)) || [], options);
-    const disclosed = disclosureCodes.has(String(target.tsCode).toUpperCase());
+    const disclosed = state.missingPeriods.some(period => disclosedPeriods.has(`${String(target.tsCode).toUpperCase()}:${period}`));
     const candidateKinds = new Set();
     if (state.missingKinds.length) state.missingKinds.forEach(kind => candidateKinds.add(kind));
     if (state.missingPeriods.length && (disclosed || options.includeHistoricalGaps === true)) {

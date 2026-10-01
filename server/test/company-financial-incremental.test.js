@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   currentReportPeriods, isDisclosureSeason, stateForTarget, fetchCompanyReports,
-  selectCompanyBatch, shouldAbortFinancialBatch,
+  selectCompanyBatch, shouldAbortFinancialBatch, buildSyncQueue,
 } = require('../services/companyFinancialIncrementalSync');
 const { rowVersion } = require('../services/financialDataArchitecture');
 const { publicationQualityGate } = require('../services/bondSafetyService');
@@ -74,6 +74,20 @@ if (previousLimit == null) delete process.env.JOB_EXTERNAL_CALL_LIMIT;
 else process.env.JOB_EXTERNAL_CALL_LIMIT = previousLimit;
 
 (async () => {
+  const target = { companyId: 1, tsCode: '600000.SH' };
+  const client = { query: async sql => ({ rows: sql.includes('fundamental.financial_reports') ? rows.map(row => ({ ...row, company_id: 1 })) : [] }) };
+  const queueOptions = { asOfDate: '2026-10-01', reportPeriods: ['20260930', '20260630'] };
+  const disclosure = { ts_code: '600000.SH', end_date: '20260630', actual_date: '20260831' };
+  const queue = disclosureRows => buildSyncQueue([target], { ...queueOptions, disclosureRows }, client);
+  assert.strictEqual((await queue([disclosure])).length, 0, '已入库半年报不能触发未披露三季报');
+  assert.strictEqual((await queue([{ ...disclosure, end_date: '20260930', actual_date: '', pre_date: '20261020', ann_date: '20260925' }])).length, 0, '计划公告不等于财报已到披露日');
+  assert.strictEqual((await queue([{ ...disclosure, end_date: '20260930', actual_date: '20261020', pre_date: '20260930' }])).length, 0, '实际日期优先于旧计划');
+  assert.strictEqual((await queue([{ ...disclosure, end_date: '20260930', actual_date: '20261001' }])).length, 1, '实际披露当日进入队列');
+  assert.strictEqual((await queue([{ ...disclosure, end_date: '20260930', actual_date: '', pre_date: '20261001' }])).length, 1, '计划到期仍需核查缺报');
+  assert.strictEqual((await queue([{ ...disclosure, end_date: '20260930', actual_date: '', pre_date: '', ann_date: '20260925' }])).length, 0, '只有计划公告日期不触发财报采集');
+  assert.strictEqual((await buildSyncQueue([target], { ...queueOptions, includeHistoricalGaps: true }, client)).length, 1, '显式历史补漏保留');
+  const emptyClient = { query: async () => ({ rows: [] }) };
+  assert.strictEqual((await buildSyncQueue([target], queueOptions, emptyClient)).length, 1, '真实报表种类缺口仍处理');
   const result = await fetchCompanyReports(
     { tsCode: '600000.SH', needs: ['indicator'] },
     {

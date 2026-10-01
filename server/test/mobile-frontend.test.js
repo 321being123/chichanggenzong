@@ -91,7 +91,7 @@ async function standaloneAndDialogs() {
     load(dom.window, 'shared/mobile-ui.js');
     if (file === 'admin.html') {
       const button = d.querySelector('.mobile-nav-toggle'); button.click();
-      ok(d.querySelectorAll('.mobile-nav-panel .admin-menu-item').length === 11, '后台 11 个菜单保留完整名字');
+      ok(d.querySelectorAll('.mobile-nav-panel .admin-menu-item').length === 9, '后台 9 个菜单保留完整名字，券商与休市日历已归入全局参数');
       d.querySelector('.admin-menu-item').click();
       ok(d.querySelector('.mobile-nav-panel').hidden, '后台选择菜单后收起');
     }

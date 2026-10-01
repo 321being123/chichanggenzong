@@ -13,10 +13,8 @@ const VIEW_TITLES = {
   overview: '概览仪表盘',
   analytics: '网站数据看板',
   users: '用户管理',
-  brokers: '券商管理',
   jobs: '定时任务',
   settings: '全局参数',
-  holidays: '休市日历',
   audit: '操作审计',
   ops: '数据运维',
   knowledge: '投资笔记管理',
@@ -27,10 +25,8 @@ const VIEW_TITLES = {
 const VIEW_CAPABILITY = {
   analytics: 'ops_manage',
   users: 'user_manage',
-  brokers: 'ops_manage',
   jobs: 'ops_manage',
   settings: 'ops_manage',
-  holidays: 'ops_manage',
   ops: 'ops_manage',
   knowledge: 'content_manage',
   arbitrage: 'ops_manage'
@@ -120,10 +116,8 @@ function switchView(view) {
   if (view === 'overview') renderOverview();
   else if (view === 'analytics') renderAnalytics();
   else if (view === 'users') renderUsers();
-  else if (view === 'brokers') renderBrokers();
   else if (view === 'jobs') renderJobs();
   else if (view === 'settings') renderSettings();
-  else if (view === 'holidays') renderHolidays();
   else if (view === 'audit') renderAudit();
   else if (view === 'ops') renderOps();
   else if (view === 'knowledge') renderKnowledge();
@@ -1045,7 +1039,9 @@ function renderSettingsTabs(el, s) {
     '<button class="btn btn-primary btn-sm settings-tab active" data-tab="site" onclick="switchSettingsTab(\'site\')">站点参数</button>' +
     '<button class="btn btn-outline btn-sm settings-tab" data-tab="market" onclick="switchSettingsTab(\'market\')">市场数据</button>' +
     '<button class="btn btn-outline btn-sm settings-tab" data-tab="models" onclick="switchSettingsTab(\'models\')">大模型配置</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="external-api" onclick="switchSettingsTab(\'external-api\')">外部 API 主备</button></div>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="external-api" onclick="switchSettingsTab(\'external-api\')">外部 API 主备</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="brokers" onclick="switchSettingsTab(\'brokers\')">券商管理</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="holidays" onclick="switchSettingsTab(\'holidays\')">休市日历</button></div>' +
     '<div class="settings-panel" data-panel="site"><div style="font-size:13px;color:#666;margin-bottom:12px;">控制用户注册与邮箱验证；保存后即时生效。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
     '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><input type="checkbox" id="set-register-open" ' + o + '><label for="set-register-open">开放注册</label></div>' +
     '<div style="margin-bottom:16px;"><div style="font-size:13px;color:#555;margin-bottom:6px;">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需邀请码" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
@@ -1065,6 +1061,7 @@ function renderSettingsTabs(el, s) {
      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><label for="set-tushare-test-api" style="font-size:12px;color:#555;">测试接口</label><select id="set-tushare-test-api" style="padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;"><option value="trade_cal">trade_cal（基础）</option><option value="rt_min">rt_min（实时分钟）</option><option value="new_share">new_share（新股）</option><option value="cb_daily">cb_daily（转债日线）</option></select></div>' +
      '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + renderEndpointPolicyPanel(apiSettings.endpoint_policies) + '</div></div></div>';
+  el.insertAdjacentHTML('beforeend', '<div class="settings-panel" data-panel="brokers" id="view-brokers" hidden></div><div class="settings-panel" data-panel="holidays" id="view-holidays" hidden></div>');
   switchSettingsTab(settingsTab);
 }
 function renderExternalApiTestResult(result, label) {
@@ -1144,6 +1141,13 @@ function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(function (button) { const active = button.dataset.tab === tab; button.classList.toggle('btn-primary', active); button.classList.toggle('btn-outline', !active); });
   document.querySelectorAll('.settings-panel').forEach(function (panel) { panel.hidden = panel.dataset.panel !== tab; });
   if (tab === 'models') { const target = document.getElementById('settings-models'); if (target && !target.dataset.loaded) { target.dataset.loaded = '1'; renderAimodels(target); } }
+  if (tab === 'brokers' || tab === 'holidays') {
+    const target = document.getElementById('view-' + tab);
+    if (target && !target.innerHTML) {
+      if (tab === 'brokers') renderBrokers();
+      else renderHolidays();
+    }
+  }
 }
 async function saveExternalApiSettings() {
   const body = { external_api: { provider: 'tushare', primary_token: document.getElementById('set-tushare-primary').value || '', backup_token: document.getElementById('set-tushare-backup').value || '', mode: document.getElementById('set-tushare-mode').value, notify_on_switch: document.getElementById('set-tushare-notify').checked } };

@@ -662,7 +662,7 @@
     },
     {
       "id": "IPO-INDUSTRY-L2-002",
-      "title": "申万行业路径单独存储并只对 IPO 目标增量查询",
+      "title": "申万行业路径独立增量缓存，未上市成功空结果正常待收录，收录后原任务更新",
       "implementation": {
         "file": "ipo-report/ipo_history_sync.py",
         "symbol": "sync_sw_industry_taxonomies"
@@ -692,16 +692,30 @@
       "owner": "A股 IPO",
       "status": "production_verified",
       "productionEvidence": {
-        "codeCommit": "32e873e",
+        "codeCommit": "df58692",
         "job": "ipo_history_sync",
-        "slotId": "1181406",
-        "runId": 3365,
+        "slotId": "1239348",
+        "runId": 3504,
         "targetCodes": [
-          "301716"
+          "001381",
+          "301686",
+          "920258",
+          "603407",
+          "920186",
+          "920028",
+          "301718"
         ],
+        "industryTaxonomy": {
+          "cached": 6,
+          "pending_not_due": 1,
+          "missing": 0,
+          "failed": 0,
+          "attempted": 0
+        },
         "externalCalls": {
-          "szse": 2,
-          "tushare": 1
+          "szse": 5,
+          "bse": 2,
+          "tushare": 0
         }
       }
     },

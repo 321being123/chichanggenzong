@@ -42,6 +42,19 @@ check('银行与非银金融强制安全', () => {
   assert.strictEqual(rateCompany(company({ industry: '银行', ebit: null })).rating, '安全');
   assert.strictEqual(rateCompany(company({ industry: '非银金融', ebit: null })).rating, '安全');
 });
+check('证券细分行业沿用非银金融豁免，未知行业和缺财报不得误豁免', () => {
+  const result = evaluateBondSafety(
+    [company({ industry: '证券', current_liability: null, interest_bearing_debt: null })],
+    [{ bond_code: '113043.SH', stock_name: '示例公司' }], null
+  ).data[0];
+  assert.strictEqual(result.safety, '安全');
+  for (const key of ['indicator_interest', 'indicator_liquidity', 'indicator_leverage']) {
+    assert.strictEqual(result[key], '行业豁免');
+  }
+  assert.strictEqual(result.cash_coverage, null, '豁免不伪造不存在的财务比率');
+  assert.strictEqual(rateCompany(company({ industry: '证券', financial_available: false })).rating, '未评级');
+  assert.strictEqual(rateCompany(company({ industry: '金融科技', ebit: 0, cash: 0, trading_fin_assets: 0, total_liability: 2000 })).forced, false);
+});
 check('缺失字段被诊断，缺少两类负债时现金覆盖率不得分', () => {
   const result = rateCompany(company({ cash: null, trading_fin_assets: null, current_liability: null, interest_bearing_debt: null }));
   assert(result.missing_fields.includes('cash'));

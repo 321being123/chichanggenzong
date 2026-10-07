@@ -37,7 +37,9 @@ function rateCompany(row) {
     return { rating: '未评级', score: 0, forced: false, missing_fields: ['financial_data'], checks: null, metrics: null };
   }
   const industry = String(row.industry == null ? '' : row.industry).trim();
-  if (industry === '银行' || industry === '非银金融') {
+  // 标准层可能保留 Tushare 的细分行业“证券”，同属既有非银金融豁免口径。
+  // 精确匹配行业事实，不能根据公司名称或“金融”关键词猜测豁免。
+  if (['银行', '非银金融', '证券'].includes(industry)) {
     return { rating: '安全', score: 3, forced: true, missing_fields: [], checks: { interest: null, liquidity: null, leverage: null }, metrics: null };
   }
 

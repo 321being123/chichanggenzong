@@ -575,7 +575,7 @@
     },
     {
       "id": "IPO-ENRICHMENT-FIELDS-001",
-      "title": "IPO 增强资料按缺失字段独立补全并保留诊断与续跑状态",
+      "title": "IPO 增强资料按请求字段判阶段完成，保留其他字段缺口、诊断与续跑状态",
       "implementation": {
         "file": "ipo-report/ipo_history_sync.py",
         "symbol": "enrich_stock_missing_details"

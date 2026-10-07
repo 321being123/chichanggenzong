@@ -132,7 +132,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   }
   el.style.cursor = 'help';
   el.onmouseenter = function () {
-    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete, attribution.missingCodes, attribution.reason);
+    tip.innerHTML = buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, !attribution.complete, attribution.missingCodes, attribution.reason, attribution.valuationAdjustment, attribution.closedPriceCorrections);
     tip.style.display = 'block';
     var r = el.getBoundingClientRect();
     var left = r.left;
@@ -148,7 +148,7 @@ function bindChangeTip(el, changeAmt, changePct) {
 
 }
 
-function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete, missingCodes, incompleteReason) {
+function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherChange, importBasisAdjustment, snapshotDrift, authorityMode, attributionIncomplete, missingCodes, incompleteReason, valuationAdjustment, closedPriceCorrections) {
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
@@ -156,6 +156,7 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
   // 低于分币级别的残差属于浮点/四舍五入误差，不在浮框中制造噪音。
   var visibleDrift = snapshotDrift != null && Math.abs(snapshotDrift) >= 0.005 ? snapshotDrift : null;
+  var visibleAdjustment = Number.isFinite(Number(valuationAdjustment)) && Math.abs(Number(valuationAdjustment)) >= 0.005 ? Number(valuationAdjustment) : null;
   var html = '' +
     '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
     '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
@@ -170,6 +171,11 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   if (importBasisAdjustment != null && Number.isFinite(importBasisAdjustment)) {
     html += '<div>导入口径切换差异：<span style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">导入当天使用券商持仓总值；从本日开始改用系统价格、数量和汇率计算。该差异通常来自汇率或收盘价更新时间不同，仅在首次切换时说明，后续不再保留。</div>';
+  }
+  if (visibleAdjustment != null) {
+    html += '<div>休市行情校准：' + impact(visibleAdjustment) + '</div>' +
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">休市证券当前持仓价与最近落库收盘价的估值差异，不属于当日市场涨跌。涉及 ' +
+      (Array.isArray(closedPriceCorrections) ? closedPriceCorrections.length : 0) + ' 只持仓。</div>';
   }
   if (authorityMode) {
     html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">' + (authorityMode === 'broker_exact'
@@ -186,7 +192,7 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   if (attributionIncomplete) {
     html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计：<span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span>（归因不完整，未进行明细加总）</div>';
   } else {
-    html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
+    html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (visibleAdjustment != null ? ' + 休市行情校准' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
   }
   if (visibleDrift != null) {
     html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">未归因差额：' + sign(visibleDrift) + '（请检查行情、汇率或账本数据）</div>';

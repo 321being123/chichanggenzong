@@ -1,0 +1,13 @@
+{
+  "stock_code": "301569",
+  "security_name": "联亚药业",
+  "source_url": "https://static.cninfo.com.cn/finalpage/2026-09-24/1225578998.PDF",
+  "document_text_sha256": "5af929c2671b84d9721bc11ae722c78a91594a31a7f4c50030b2173e2aa4be8f",
+  "text": "（1）根据《国民经济行业分类》（GB/T4754-2017）及中国上市公司协会发\n布的《中国上市公司协会上市公司行业统计分类指引》（2023 年），发行人所属\n行业为“（C27）医药制造业”。截至2026 年9 月22 日（T-3 日），中证指数有\n限公司发布的（C27）医药制造业最近一个月平均静态市盈率为27.09 倍，请投\n资者决策时参考。 \n截至2026 年9 月22 日（T-3 日），《南通联亚药业股份有限公司首次公开发\n行股票并在创业板上市招股意向书》（以下简称“《招",
+  "excerpt_sha256": "a6760532dc737be81aa55ed492c58d9720fc752460ae30a6714bfd7ee75c6f10",
+  "expected": {
+    "industry": "医药制造业",
+    "classification_code": "C27",
+    "industry_pe": 27.09
+  }
+}

@@ -196,3 +196,52 @@ const jobDefinitionsSource = fs.readFileSync(path.join(__dirname, '..', 'service
 assert.match(jobDefinitionsSource, /bond_listing_liquidity/, '日报和公告任务契约没有声明流通规模数据集');
 
 console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事实和19:30补全调度均已覆盖');
+
+
+// Execute the real Runner with an isolated process stub: targeted mode must retain field scope.
+(async () => {
+  const vm = require('vm');
+  const { EventEmitter } = require('events');
+  const runnerPath = path.join(__dirname, '..', 'jobs', 'ipoHistorySync.js');
+  let capturedArgs;
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.dirname(runnerPath), process,
+    console: { log() {} }, setTimeout, clearTimeout,
+    require(name) {
+      if (name === '../db') return {
+        pool: { query: async () => ({ rows: [] }) }, tryClaimJob: async () => true,
+        releaseJob: async () => {}, startJobRun: async () => 123, finishJobRun: async () => {},
+      };
+      if (name === '../services/externalApiConfig') return {
+        getProviderRuntime: async () => ({}), notifyTushareFailover: async () => {},
+      };
+      if (name === 'child_process') return { spawn(executable, args) {
+        capturedArgs = args;
+        const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+        queueMicrotask(() => {
+          child.stdout.emit('data', Buffer.from(JSON.stringify({
+            ok: true, mode: 'targeted', stageComplete: true, codes: ['301569'], targetFields: ['industry'],
+          })));
+          child.emit('close', 0);
+        });
+        return child;
+      } };
+      return require(name);
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(runnerPath, 'utf8'), sandbox, { filename: runnerPath });
+  const result = await sandbox.module.exports.runIpoHistorySync('manual-release', '2026-10-07', {
+    mode: 'targeted', targetCodes: ['301569'], targetFields: ['industry'],
+  });
+  const valueOf = flag => capturedArgs[capturedArgs.indexOf(flag) + 1];
+  assert.strictEqual(valueOf('--mode'), 'enrichment', '定向请求必须进入资料阶段');
+  assert.strictEqual(valueOf('--target-codes'), '301569');
+  assert.strictEqual(valueOf('--target-fields'), 'industry', '定向行业范围不能丢失');
+  assert.strictEqual(valueOf('--today'), '2026-10-07');
+  assert.ok(capturedArgs.includes('--apply-targeted') && capturedArgs.includes('--confirm-production'));
+  const { getJobDefinition, stageCompletionEvidence } = require('../services/jobDefinitions');
+  assert.strictEqual(stageCompletionEvidence(getJobDefinition('ipo_history_sync'), result, {
+    mode: 'targeted', targetCodes: ['301569'], targetFields: ['industry'],
+  }), true, '实际Runner返回值必须满足原targeted完成契约');
+  console.log('IPO targeted Runner retains industry field scope and completion evidence');
+})().catch(error => { console.error(error); process.exitCode = 1; });

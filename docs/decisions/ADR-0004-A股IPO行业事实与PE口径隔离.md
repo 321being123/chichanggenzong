@@ -142,3 +142,7 @@ Tushare 官方文档只把 `stock_basic.industry` 定义为“所属行业”，
 原IPO槽1239348运行3503成功补全7只资料，申万6缓存/1正常待收录，但旧request_payload.mode=enrichment与实际Runner.mode=targeted不一致，误用09-30全局基础水位导致degraded。先核对既有定向阶段完成证据与7只目标，审计后只纠正该原槽请求模式为targeted，保留目标集合及历史运行，再通过原retryJobSlot/Worker复核。最终运行3504、槽位succeeded，stageComplete=true，资料remaining=0/failed=0，申万cached=6/pending_not_due=1/missing=0/failed=0；本轮外部7次（SZSE5/BSE2），申万0次。001381的SW2021记录为pending_not_due/prelisting_not_indexed、ts_code=001381.SZ，官方行业仍“橡胶和塑料制品业”，上市日为空、ipo_status=active。未伪造申万分类或更新历史预测，其他发行字段9项待公布保留。
 
 同槽告警21665、21654由原恢复证据链resolved，21656维持此前acknowledged。最后后台今日11项全部succeeded，活动告警为空；该查询时点结果不代表其他历史业务日全部无异常。待收录由后续原任务复查并在真实收录后更新。
+
+### 2026-10-07 行业脏值重解析（0.8.3.19，本地）
+
+联亚药业旧 v7 把 GB/T4754 标准号和文档残片写成行业，现行 v9 拦截标准号但补全候选只识别空值，旧脏值未再选中。发行公告明确披露 C27 医药制造业、行业PE27.09。v10 将名称与同一代码绑定，剔除代码标签、大类/子类说明并优先有代码分类；非空格式异常纳入原补全候选、剩余量和质量检查。原定向 Runner 支持 targetFields=[industry]，该字段阶段不运行 SW2021、只检查行业完成；完整资料阶段仍检查其原依赖。官方PE独立保留，旧行业证据留在升级历史；不重算历史预测。生产未部署、未同步。实际同类范围和回归证据见 INC-0033。

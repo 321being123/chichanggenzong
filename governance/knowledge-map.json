@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-09-29",
+  "lastReviewed": "2026-10-07",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -59,7 +59,7 @@
       "risk": "high",
       "paths": ["AGENTS.md", "governance/knowledge-map.json"],
       "keywords": ["方案", "根本解决方案", "架构设计", "整体架构", "统一任务", "数据链路", "调度", "重构建议"],
-      "read": ["docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md"],
+      "read": ["docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md", "deploy/本地验证交接文档.md"],
       "update": ["AGENTS.md", "governance/knowledge-map.json"],
       "checks": ["npm.cmd run check:knowledge"],
       "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用", "恢复退避"]
@@ -288,7 +288,7 @@
       "risk": "high",
       "paths": ["deploy/**", ".github/workflows/**", "server.js", "package.json", "package-lock.json", ".env.example"],
       "keywords": ["部署", "环境变量", "服务", "依赖", "CI"],
-      "read": ["docs/技术架构.md", "docs/生产部署流程.md"],
+      "read": ["docs/技术架构.md", "docs/生产部署流程.md", "deploy/本地验证交接文档.md"],
       "update": ["docs/技术架构.md", "docs/生产部署流程.md"],
       "checks": ["npm.cmd run check:knowledge"],
       "expandOn": ["回滚", "密钥", "生产", "版本"]

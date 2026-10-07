@@ -54,9 +54,9 @@
 
 ## 本机 PostgreSQL 固定信息（每次本地验收前必读）
 
-- 本机唯一现役 PostgreSQL 实例为 17.2（Windows x64 免安装版），程序目录为 `E:\pgsql\bin`，数据目录为 `E:\pgdata`，监听 `localhost:5432`，本地业务库为 `portfolio`。
+- 本项目在两台电脑开发，数据库路径必须按当前电脑核实，不能把旧电脑路径视为所有电脑的固定路径。旧电脑 PostgreSQL 17.2：`E:\pgsql\bin` / `E:\pgdata`；2026-10-07 新电脑 PostgreSQL 17.11：`D:\pgsql\bin` / `D:\pgdata`，日志目录为 `D:\pglogs`。两台电脑均使用本机 `localhost:5432` 和独立的 `portfolio` 开发库，业务数据不会通过 Git 同步。
 - 该实例未注册为 Windows 服务，且未加入系统 `PATH`。`Get-Service *postgres*` 无结果或 `Get-Command psql` 找不到命令，均不能作为“本机未安装 PostgreSQL”的依据。
-- 在得出“本机没有数据库”的结论前，必须先检查 `E:\pgsql\bin\pg_ctl.exe`、`E:\pgsql\bin\psql.exe` 和 `E:\pgdata\PG_VERSION`；文件存在但实例未运行时，应按需启动，不能重新安装。
+- 在得出“本机没有数据库”的结论前，必须按交接文档的电脑对应路径检查 `pg_ctl.exe`、`psql.exe` 和 `PG_VERSION`，并核查安装记录、服务及端口；文件存在但实例未运行时，应按需启动，不能重新安装。Windows 日志文件必须放在数据目录外，避免崩溃恢复时出现 sharing violation。
 - 数据库连接账号、密码等敏感配置只从项目根目录 `.env` 读取，禁止把密码复制进规则、文档或代码。
 - 启动、状态检查、连接和停止命令见 `deploy/本地验证交接文档.md` 的“本机 PostgreSQL 固定信息”章节。
 
@@ -91,6 +91,7 @@
 - 项目采用四位应用版本号。统一以 `package.json` 的 `appVersion` 为线上代码版本和程序版本；npm 必需的 `version` 使用兼容写法。以后每次部署都必须更新 `appVersion`，用户未指定新版本时默认递增最后一位，并在部署后核对 `/health` 返回的版本号。规则文档不再写死当前版本，避免与 `package.json` 漂移。
 
 - 腾讯云生产服务器：`ubuntu@82.156.125.47`。`root` 账号不允许直接登录，不要再次尝试。**已关闭密码登录（2026-07-31 安全加固），只允许 SSH 密钥登录**：使用本机 `~/.ssh/server_login`（环境变量 `SSH_KEY_PATH` 可覆盖），通过 Paramiko 的 Ed25519Key 认证；服务器 sudo 已配置 NOPASSWD，执行部署命令时直接用 `sudo` 提权，全程不需要密码。不要使用密码、不要尝试本机 `id_ed25519` 或 `temp_cvm_key`。
+- 两台电脑分别使用独立的 `server_login` 密钥；新电脑公钥须经用户确认后追加到 `ubuntu` 的 `authorized_keys`，保留旧电脑公钥，不通过替换整份授权文件或开启密码登录接续开发。首次 SSH 连接须将控制台读取的主机指纹与远端实际主机密钥核对，再保存本机 `known_hosts`；私钥和业务数据备份不得进入 Git。授权记录及两机环境以 `deploy/本地验证交接文档.md` 为准。
 - GitHub：仓库 `git@github.com:321being123/chichanggenzong.git`，使用本机 `~/.ssh/id_ed25519` 和 `~/.ssh/known_hosts`。若直接 `git push` 出现主机密钥校验失败，使用：
   `GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=accept-new -o BatchMode=yes' git push origin master`
 - 部署时先推送 GitHub，再使用 `deploy/deploy_password.py` 按标准流程登录腾讯云并部署；生产由 systemd 管理 `portfolio-server.service`、`portfolio-worker.service` 和 `portfolio-worker-health.timer`，PM2 已停用。重启后检查提交版本、三个 systemd 单元、`http://127.0.0.1:3000/health` 和本次相关接口。服务器已关闭密码登录，统一使用 `~/.ssh/server_login` 密钥连接，不要再尝试密码登录。

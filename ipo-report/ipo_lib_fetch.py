@@ -222,7 +222,7 @@ _EXCHANGE_IPO_DOCUMENT_CACHE = {}
 _EXCHANGE_IPO_DOCUMENT_SCAN_STATUS = {}
 _IPO_ISSUANCE_DETAIL_CACHE = {}
 _IPO_ISSUANCE_DETAIL_DIAGNOSTIC = {}
-_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v9"
+_IPO_ISSUANCE_PARSER_VERSION = "ipo-issuance-facts-v10"
 _IPO_TEXT_EXTRACTION_VERSION = "pymupdf-page-text-join-v1"
 _IPO_ISSUANCE_DOCUMENT_PARSE_CACHE = {}
 _CNINFO_IPO_ISSUANCE_CACHE = {}
@@ -2119,8 +2119,10 @@ def _industry_classification_metadata(context, code=None, name=None):
 
 
 def _industry_from_label(value):
+    # 名称与代码必须来自同一分类项，不能将标准号或分类说明当作名称。
+    value = unicodedata.normalize('NFKC', str(value or ''))
     value = str(value or '').strip('：:，,。；;“”"‘’\' ')
-    code_match = re.search(r'[（(]?([A-Z]\d{1,4})[）)]?', value, re.I)
+    code_match = re.search(r'[（(]?([A-Z]{1,2}\d{1,4})[）)]?', value, re.I)
     code = code_match.group(1).upper() if code_match else None
     if code in ('T4754', 'T0020'):
         return None, None
@@ -2128,19 +2130,31 @@ def _industry_from_label(value):
         before = value[:code_match.start()].strip('：:，,。；;“”"‘’\' ')
         after = value[code_match.end():].strip('：:，,。；;“”"‘’\' ')
         before_name = re.sub(
-            r'^.*?(?:所属行业(?:名称)?(?:为|是|[：:])|行业(?:分类|名称|代码)(?:为|是|[：:])?)',
+            r'^(?:所属行业(?:名称)?(?:为|是|[：:])|行业(?:分类|名称)(?:为|是|[：:]))',
             '', before,
         ).strip('：:，,。；;“”"‘’\' ')
-        before_name = re.sub(r'^.*?中的', '', before_name).strip('：:，,。；;“”"‘’\'（）() ')
-        after = re.split(r'(?:中的|之|行业代码|行业名称|分类标准)', after, maxsplit=1)[0]
-        name = before_name if len(before_name) >= 2 else after
+        before_name = re.sub(r'[“”"\s()]*?(?:行业)?(?:分类)?代码(?:为|是|[：:])?$', '', before_name)
+        before_name = re.split(r'中的|门类中的?|下属的|大类下|属于|[“”"]', before_name)[-1]
+        before_name = before_name.strip('：:，,。；;“”"‘’\'（）() ')
+        # 代码在前时只取紧邻代码的名称；大类和子类不可拼成一个名称。
+        after_match = re.match(r'[\u4e00-\u9fff、Ⅱ]+', after)
+        after_name = re.split(r'管理型|经济型|大类|行业|中的|下属|属于', after_match.group(0))[0] if after_match else ''
+        name = before_name if len(before_name) >= 2 and valid_ipo_industry_name(before_name) else after_name
     else:
         name = value
     name = re.split(r'(?:所属行业|行业代码|行业名称|分类标准|公司名称|证券代码|行业分类)', name, maxsplit=1)[0]
     name = name.strip('：:，,。；;“”"‘’\'（）() ')
-    if not 2 <= len(name) <= 40:
+    if len(name) < 2 or not valid_ipo_industry_name(name):
         return None, None
     return name, code
+
+
+def valid_ipo_industry_name(value):
+    """分类名称的通用形状门禁；不猜测名称所属的官方分类体系。"""
+    value = str(value or '').strip()
+    return (1 <= len(value) <= 40
+            and re.fullmatch(r'[\u4e00-\u9fff、Ⅱ]+', value) is not None
+            and re.search(r'代码|属于|指引|下属|标准|中的|分类|公司|上属于', value) is None)
 
 
 def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
@@ -2160,11 +2174,16 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
 
     industry_patterns = [
         r'(?:发行人|公司)从事的主营业务所属行业(?:名称)?(?:为|是|[：:])(?P<value>[^。；;]{2,80})',
-        r'(?:发行人|公司)(?:所处|所属)行业(?:名称)?(?:为|是|[：:])(?P<value>[^。；;]{2,80})',
+        r'(?:发行人|公司)(?:所处|所属)行业(?:分类|名称)?(?:为|是|属于|[：:])(?P<value>[^。；;]{2,140}?)'
+        r'(?=[，,。；;]|$)',
+        r'公司在行业分类上属于(?P<value>[^。；;]{2,100})',
         r'所属行业名称及行业代码[：:]?(?P<value>[^。；;]{2,80})',
+        r'(?:上市公司|管理型)?行业分类(?:制造业[（(]C[）)])?'
+        r'(?P<value>[\u4e00-\u9fff、]{2,40}[（(](?:行业代码[：:]?)?[A-Z]{1,2}\d{1,4}[）)])',
         r'(?:发行人|公司)行业分类[：:]?(?P<value>[^。；;]{2,80})',
+        r'(?:《国民经济行业分类[^。；;]{0,100}?|《上市公司行业分类指引[^。；;]{0,100}?)(?:发行人|公司)属于(?P<value>[^。；;]{2,100})',
         r'(?:《国民经济行业分类(?:标准)?》|GB/T\s*4754[-—]?\s*2017)[^。；;]{0,80}?(?:发行人|公司)属于[““]?'
-        r'(?P<value>[^。；;]{2,140}?[（(][A-Z]\d{1,4}[）)]|[A-Z]\d{1,4}\s*[^。；;]{2,140})',
+        r'(?P<value>[^。；;]{2,140}?[（(][A-Z]{1,2}\d{1,4}[）)]|[A-Z]{1,2}\d{1,4}\s*[^。；;]{2,140})',
         r'行业分类(?!标准)[：:]?(?P<value>[^。；;]{2,80})',
     ]
     if issuer_name:
@@ -2176,6 +2195,7 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
     industry_match = None
     industry = None
     industry_code = None
+    unclassified_match = None
     for pattern_index, pattern in enumerate(industry_patterns):
         for match in re.finditer(pattern, compact):
             # 可比公司行不能当作发行人分类；通用表格标签还必须邻近本次发行人身份。
@@ -2189,12 +2209,19 @@ def _parse_ipo_issuance_detail(text, security_name='', stock_code=''):
                 continue
             candidate, code = _industry_from_label(match.group('value'))
             if candidate:
+                if not code:
+                    if unclassified_match is None:
+                        unclassified_match = (match, candidate)
+                    continue
                 industry_match = match
                 industry = candidate
                 industry_code = code
                 break
         if industry_match:
             break
+
+    if industry_match is None and unclassified_match is not None:
+        industry_match, industry = unclassified_match
 
     result = {}
     if industry and industry_match:

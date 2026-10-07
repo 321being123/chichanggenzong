@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-01",
+  "lastReviewed": "2026-10-07",
   "rules": [
     {
       "id": "TASK-CONTRACT-001",
@@ -327,6 +327,26 @@
       "status": "verified"
     },
     {
+      "id": "HOLDINGS-NAV-CLOSED-003",
+      "title": "休市估值校准须逐证券取证且不得吞掉未知残差",
+      "implementation": {
+        "file": "server/services/navAttribution.js",
+        "symbol": "computeNavAttribution"
+      },
+      "tests": [
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "CLOSED-VALUATION-001"
+        },
+        {
+          "file": "server/test/holdings-summary-refresh.test.js",
+          "pattern": "休市行情校准"
+        }
+      ],
+      "owner": "持仓管理",
+      "status": "verified"
+    },
+    {
       "id": "HOLDINGS-REFRESH-003",
       "title": "港股开市时刷新须即时更新持仓页与首页总资产",
       "implementation": {
@@ -540,6 +560,14 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "行业标准编号不得冒充行业代码"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "联亚药业真实公告恢复C27医药制造业且不改行业PE"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "行业分类通用不变量名称代码同项且不含分类说明"
         }
       ],
       "owner": "A股 IPO",
@@ -584,6 +612,22 @@
         {
           "file": "ipo-report/test_ipo_history_sync.py",
           "pattern": "空候选仍保留已知资料缺口"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "非空脏行业进入原补全候选且质量不能误报完整"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "行业单字段失败保留旧值和剩余缺口不采集申万"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "行业单字段完成只检查本阶段且不采集申万"
+        },
+        {
+          "file": "server/test/ipo-history-sync.test.js",
+          "pattern": "IPO targeted Runner retains industry field scope and completion evidence"
         }
       ],
       "owner": "A股 IPO",

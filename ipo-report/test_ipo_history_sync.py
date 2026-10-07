@@ -621,6 +621,38 @@ try:
           and reparsed_row[3] == ipo_lib_fetch._IPO_ISSUANCE_PARSER_VERSION,
           "calls=%r row=%r" % (stale_parser_calls, reparsed_row))
 
+    cur.execute("UPDATE ipo_history SET industry='》(GB/', data_quality_status='{}'::jsonb WHERE security_code=%s",
+                (stale_parser_code,))
+    sync.update_quality(cur, date(2026, 9, 10), only_codes=[stale_parser_code])
+    cur.execute("SELECT data_quality_status FROM ipo_history WHERE security_code=%s", (stale_parser_code,))
+    invalid_quality = cur.fetchone()[0]
+    check("非空脏行业进入原补全候选且质量不能误报完整",
+          stale_parser_code in sync.target_enrichment_codes(cur, date(2026, 9, 11))
+          and 'industry' in invalid_quality['missing_fields']
+          and invalid_quality['field_states']['industry']['reason'] == 'invalid_industry_name')
+    ipo_lib_fetch.fetch_stock_historical_detail = lambda *args, **kwargs: {}
+    try:
+        invalid_result = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 10), only_codes=[stale_parser_code],
+            force_fields=['industry'], include_result_fields=False)
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("行业单字段失败保留旧值和剩余缺口不采集申万",
+          invalid_result['attempted'] == 1 and invalid_result['remaining_by_field']['industry'] == 1
+          and invalid_result['industry_taxonomy'] == {'status': 'not_run'}
+          and not sync._targeted_stage_complete(invalid_result, [stale_parser_code], ['industry']))
+    ipo_lib_fetch.fetch_stock_historical_detail = fake_parser_version_reparse
+    try:
+        field_result = sync.enrich_stock_missing_details(
+            cur, date(2026, 9, 11), only_codes=[stale_parser_code],
+            force_fields=['industry'], include_result_fields=False)
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = original_fetch
+    check("行业单字段完成只检查本阶段且不采集申万",
+          sync._targeted_stage_complete(field_result, [stale_parser_code], ['industry'])
+          and field_result['industry_taxonomy'] == {'status': 'not_run'}
+          and stale_parser_calls[-1] == ['industry'])
+
     cur.execute(
         """INSERT INTO ipo_history(security_code,security_name,market_code,ipo_date,ipo_status,
                                     industry_pe,main_business,business_exposure,

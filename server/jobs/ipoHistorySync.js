@@ -171,7 +171,8 @@ function runWith(executable, runtime, businessDate, mode, externalCallCount = 0,
 }
 
 async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {}) {
-  const mode = ['prediction_ready', 'enrichment'].includes(context.mode) ? context.mode : 'core';
+  const mode = context.mode === 'targeted' ? 'enrichment'
+    : ['prediction_ready', 'enrichment'].includes(context.mode) ? context.mode : 'core';
   const targetCodes = Array.isArray(context.targetCodes)
     ? [...new Set(context.targetCodes.map(code => String(code || '').split('.')[0]).filter(Boolean))]
     : [];

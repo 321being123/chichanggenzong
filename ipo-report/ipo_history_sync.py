@@ -55,6 +55,17 @@ QUALITY_BASE_FIELDS = (
 # 中签率在发行结果公告后才具备；基础事实分区不能因尚未到披露时点而阻断。
 QUALITY_PUBLICATION_FIELDS = tuple(field for field in QUALITY_BASE_FIELDS if field != "online_lottery_rate")
 QUALITY_DETAIL_FIELDS = ("industry", "industry_pe", "main_business")
+INDUSTRY_MISSING_SQL = """(
+    industry IS NULL OR btrim(industry) !~ '^[一-鿿、Ⅱ]{1,40}$'
+    OR industry ~ '代码|属于|指引|下属|标准|中的|分类|公司|上属于'
+)"""
+
+
+def _valid_industry(value):
+    from ipo_lib_fetch import valid_ipo_industry_name
+    return valid_ipo_industry_name(value)
+
+
 BUSINESS_EXPOSURE_MISSING_SQL = """(
     business_exposure IS NULL OR business_exposure='{}'::jsonb
     OR NOT (business_exposure ? 'exposures')
@@ -529,7 +540,7 @@ def target_enrichment_codes(cur, target_date):
           FROM ipo_history
          WHERE market_code='CN'
            AND (((ipo_date=%s OR listing_date=%s)
-           AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+           AND ({INDUSTRY_MISSING_SQL} OR NULLIF(main_business,'') IS NULL
                 OR {BUSINESS_EXPOSURE_MISSING_SQL}
                 OR industry_pe IS NULL))
                 OR (source_payload->'industry_taxonomies'->'SW2021'->>'status'='pending_not_due'
@@ -629,8 +640,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
     priority_codes = sorted({str(code or '').split('.')[0] for code in (priority_codes or []) if code})
     only_codes = sorted({str(code or '').split('.')[0] for code in (only_codes or []) if code})
     skip_codes = sorted({str(code or '').split('.')[0] for code in (skip_codes or []) if code})
-    force_fields = set(force_fields or []) & {"business_exposure"}
-    mandatory_gap = f"""(NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+    force_fields = set(force_fields or []) & {"business_exposure", "industry"}
+    mandatory_gap = f"""({INDUSTRY_MISSING_SQL} OR NULLIF(main_business,'') IS NULL
               OR {BUSINESS_EXPOSURE_MISSING_SQL})"""
     cur.execute("""
       SELECT security_code,COALESCE(data_quality_status,'{}'::jsonb),industry,
@@ -692,7 +703,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             )
             industry_parser_reparse = bool(
                 str(existing_industry or "").strip()
-                and stored_parser_version != _IPO_ISSUANCE_PARSER_VERSION
+                and (stored_parser_version != _IPO_ISSUANCE_PARSER_VERSION
+                     or not _valid_industry(existing_industry))
             )
             existing_industry_source = (
                 existing_enrichment.get("industry_source") or existing_industry_diagnostic.get("source")
@@ -754,7 +766,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             )
             industry_upgrade = bool(
                 official_industry
-                and str(detail.get("industry") or "").strip()
+                and _valid_industry(detail.get("industry"))
                 and (
                     existing_industry_source == "tushare_stock_basic"
                     or (unclassified_existing_industry and replacement_has_classification)
@@ -907,7 +919,8 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 meta["result"] = "no_new_value"
             field_states = {
                 "industry": _detail_field_state(
-                    resolved_industry, detail.get("industry_diagnostic"), "retryable", today
+                    resolved_industry if _valid_industry(resolved_industry) else None,
+                    detail.get("industry_diagnostic"), "retryable", today
                 ),
                 "main_business": _detail_field_state(
                     resolved_business, detail.get("main_business_diagnostic"), "retryable", today
@@ -952,14 +965,14 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             stopped = detail["issuance_stopped"]
             break
 
-    industry_taxonomy = sync_sw_industry_taxonomies(
-        cur, priority_codes or only_codes, today, raise_on_guard=raise_on_guard
-    )
+    industry_taxonomy = ({"status": "not_run"} if force_fields == {"industry"} else
+                         sync_sw_industry_taxonomies(
+                             cur, priority_codes or only_codes, today, raise_on_guard=raise_on_guard))
 
     remaining_scope = " AND security_code=ANY(%s::text[])" if only_codes else ""
     cur.execute(f"""
       SELECT
-        count(*) FILTER (WHERE NULLIF(industry,'') IS NULL),
+        count(*) FILTER (WHERE {INDUSTRY_MISSING_SQL}),
         count(*) FILTER (WHERE industry_pe IS NULL),
         count(*) FILTER (WHERE NULLIF(main_business,'') IS NULL),
         count(*) FILTER (WHERE {BUSINESS_EXPOSURE_MISSING_SQL})
@@ -976,7 +989,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
              COALESCE(data_quality_status,'{{}}'::jsonb)
         FROM ipo_history
        WHERE market_code='CN' AND ipo_date ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$'
-         AND (NULLIF(industry,'') IS NULL OR industry_pe IS NULL
+         AND ({INDUSTRY_MISSING_SQL} OR industry_pe IS NULL
               OR NULLIF(main_business,'') IS NULL OR {BUSINESS_EXPOSURE_MISSING_SQL})
          {diagnostic_scope}
     """, (only_codes,) if only_codes else ())
@@ -993,7 +1006,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
         payload = status_payload if isinstance(status_payload, dict) else {}
         states = payload.get("field_states") if isinstance(payload.get("field_states"), dict) else {}
         missing_values = {
-            "industry": not str(industry or '').strip(),
+            "industry": not _valid_industry(industry),
             "industry_pe": industry_pe is None,
             "main_business": not str(main_business or '').strip(),
             "business_exposure": not _has_business_exposures(exposure),
@@ -1085,6 +1098,10 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
             prior_field_states.get("industry_pe"), today
         )
         exposure = values.get("business_exposure")
+        if include_enrichment and not _valid_industry(values.get("industry")):
+            prior_field_states["industry"] = {"status": "retryable", "reason": "invalid_industry_name"}
+            if values.get("industry") not in (None, ""):
+                missing.append("industry")
         if include_enrichment:
             for field in QUALITY_DETAIL_FIELDS:
                 prior_state = prior_field_states.get(field) if isinstance(prior_field_states.get(field), dict) else {}
@@ -1110,7 +1127,7 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
         field_states = dict(prior_field_states)
         if include_enrichment:
             for field in QUALITY_DETAIL_FIELDS:
-                if values.get(field) not in (None, ""):
+                if values.get(field) not in (None, "") and (field != "industry" or _valid_industry(values.get(field))):
                     field_states[field] = {"status": "value"}
                 elif field not in field_states:
                     field_states[field] = {"status": "retryable"}
@@ -1146,11 +1163,11 @@ def _targeted_stage_complete(result, target_codes, target_fields=None):
         int(result.get("attempted", 0) or 0) == expected
         and int(result.get("failed", 0) or 0) == 0
         and result.get("stopped") is None
-        and (int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0)
+        and (target_fields == ["industry"] or ((int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0)
              + int(taxonomy.get("pending_not_due", 0) or 0)) == expected
         and int(taxonomy.get("missing", 0) or 0) == 0
         and int(taxonomy.get("failed", 0) or 0) == 0
-        and taxonomy.get("stopped") is None
+        and taxonomy.get("stopped") is None))
     )
 
 
@@ -1300,7 +1317,7 @@ def publication_quality(cur, records, today, run_id):
     cur.execute(
         f"""SELECT count(*) FROM ipo_history
             WHERE market_code='CN' AND (ipo_date=%s OR listing_date=%s)
-              AND (NULLIF(industry,'') IS NULL OR NULLIF(main_business,'') IS NULL
+              AND ({INDUSTRY_MISSING_SQL} OR NULLIF(main_business,'') IS NULL
                 OR {BUSINESS_EXPOSURE_MISSING_SQL})""",
         (target_date, target_date),
     )
@@ -1487,14 +1504,14 @@ def main():
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
     parser.add_argument("--mode", choices=("core", "prediction_ready", "enrichment"), default="core")
     parser.add_argument("--target-codes", default="", help="仅预览指定代码的资料缺口，逗号分隔")
-    parser.add_argument("--target-fields", default="", help="定向重解析的字段，目前支持 business_exposure")
+    parser.add_argument("--target-fields", default="", help="定向重解析的字段，支持 business_exposure、industry")
     parser.add_argument("--apply-targeted", action="store_true", help="对 --target-codes 执行定向补齐；生产使用前必须备份并取得授权")
     parser.add_argument("--confirm-production", action="store_true", help="生产定向补齐确认；必须同时取得用户授权")
     args = parser.parse_args()
     target_codes = [item.strip().split('.')[0] for item in args.target_codes.split(',') if item.strip()]
     target_fields = [item.strip() for item in args.target_fields.split(',') if item.strip()]
-    if set(target_fields) - {"business_exposure"}:
-        parser.error("--target-fields 仅支持 business_exposure")
+    if set(target_fields) - {"business_exposure", "industry"}:
+        parser.error("--target-fields 仅支持 business_exposure、industry")
     if target_fields and not target_codes:
         parser.error("--target-fields 必须同时传入 --target-codes")
     if target_fields and not args.apply_targeted:

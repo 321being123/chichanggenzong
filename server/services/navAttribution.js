@@ -336,6 +336,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const priceImpact = { value: 0 };
   const fxImpact = { value: 0 };
   const quantityImpact = { value: 0 };
+  const valuationAdjustment = { value: 0 };
+  const closedPriceCorrections = [];
   const previousMarketValue = { value: 0, complete: true };
   const missing = [];
   const manualPriceCodes = [];
@@ -383,6 +385,18 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     }
     // 数量变化归入交易/数量影响：新买入不要求基准日价格，清仓也不要求当前行情。
     quantityImpact.value += (currentQty - qty) * endPrice * endFx;
+    // 休市时总资产仍按当前持仓价估值，而价格涨跌按落库收盘价计算。
+    // 两份价格不同是可核查的估值校准，不能冒充休市日涨跌或留作未知残差。
+    if (liveEnd && data.totalAssetSource !== 'broker_exact' && currentMarketState?.status === 'closed' && currentQty > 0 &&
+        Number(p?.price) > 0 && storedCurrentRow?.price > 0) {
+      const adjustment = (Number(p.price) - endPrice) * currentQty * endFx;
+      valuationAdjustment.value += adjustment;
+      if (Math.abs(adjustment) >= 0.005) closedPriceCorrections.push({
+        code, market: isHk ? 'HK' : 'CN', priceDate: storedCurrentRow.date,
+        closePrice: endPrice, valuationPrice: Number(p.price), quantity: currentQty,
+        amount: adjustment,
+      });
+    }
   }
   const ledgerChange = { value: 0 };
   let currencyIncomplete = false;
@@ -421,7 +435,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     ? Number(previous.systemMarketValueAtSnapshot) - Number(previous.marketValueCny)
     : null;
   const tradeImpact = ledgerChange.value + quantityImpact.value;
-  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact - (importBasisAdjustment || 0) : null;
+  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact -
+    valuationAdjustment.value - (importBasisAdjustment || 0) : null;
   return {
     complete,
     reason: complete ? null : (currencyIncomplete ? 'missing_trade_currency_settlement' : 'missing_exact_price_or_fx'),
@@ -436,6 +451,8 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     ledgerChange: ledgerChange.value,
     quantityImpact: quantityImpact.value,
     tradeImpact,
+    valuationAdjustment: valuationAdjustment.value,
+    closedPriceCorrections,
     importBasisAdjustment,
     snapshotDrift: drift,
     authorityMode: data.authoritativeTotalAsset != null,

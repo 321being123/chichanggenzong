@@ -225,6 +225,31 @@ async function main() {
     assert.strictEqual(Math.round(attribution.fxImpact), 22, '港币汇率影响应为 22 元');
     assert.ok(Math.abs(attribution.snapshotDrift) < 0.01, '价格与汇率归因应闭合');
 
+    // CLOSED-VALUATION-001：总资产使用当前持仓价，休市价格差须有逐证券证据。
+    const correctedData = { ...data, positions: [
+      { code: '600000', subtype: '沪市', price: 9, quantity: 60 },
+      { code: '600000', subtype: '沪市', price: 9, quantity: 40 },
+      data.positions[1],
+    ] };
+    const corrected = await computeNavAttribution('fixture-user', 'fixture-account', correctedData, 3902);
+    assert.strictEqual(corrected.complete, true);
+    assert.strictEqual(Math.round(corrected.priceImpact), 180, 'A股休市价格校准不得冒充今日涨跌');
+    assert.strictEqual(Math.round(corrected.fxImpact), 22, '港股交易时仍须计算真实汇率影响');
+    assert.strictEqual(corrected.valuationAdjustment, -100, '分批持仓须合并计算休市估值校准');
+    assert.strictEqual(corrected.closedPriceCorrections.length, 1);
+    assert.strictEqual(corrected.closedPriceCorrections[0].quantity, 100);
+    assert.strictEqual(corrected.closedPriceCorrections[0].priceDate, '2026-09-24');
+    assert.ok(Math.abs(corrected.snapshotDrift) < 0.01, '休市估值差异必须与总资产闭合');
+    const unexplained = await computeNavAttribution('fixture-user', 'fixture-account', correctedData, 3950);
+    assert.strictEqual(Math.round(unexplained.snapshotDrift), 48, '真实未知差额不得被校准项吞掉');
+    const unchangedFx = await computeNavAttribution('fixture-user', 'fixture-account', { ...correctedData, hkRate: 0.90 }, 3880);
+    assert.strictEqual(unchangedFx.fxImpact, 0, '相同汇率的零影响是合法结果');
+    assert.ok(Math.abs(unchangedFx.snapshotDrift) < 0.01);
+    const brokerExact = await computeNavAttribution('fixture-user', 'fixture-account', {
+      ...correctedData, totalAssetSource: 'broker_exact',
+    }, 3902);
+    assert.strictEqual(brokerExact.valuationAdjustment, 0, '券商精确总资产不消费当前持仓价，不得加入系统估值校准');
+
     const nextDayNow = realDate.parse('2026-09-28T04:00:00.000Z');
     global.Date = class NextTradingDate extends realDate {
       constructor(...args) { super(...(args.length ? args : [nextDayNow])); }
@@ -253,6 +278,36 @@ async function main() {
     assert.strictEqual(gapAttribution.reason, 'missing_intermediate_snapshot', '缺口原因必须明确标记为中间净值快照缺失');
     assert.strictEqual(gapAttribution.missingMarketDate, '2026-09-25', '必须报告具体缺失的港股交易日');
     assert.strictEqual(gapAttribution.missingMarket, 'HK', '必须报告缺口所属市场');
+
+    const cnOnlyNow = realDate.parse('2026-07-01T04:00:00.000Z');
+    global.Date = class CnOnlyDate extends realDate {
+      constructor(...args) { super(...(args.length ? args : [cnOnlyNow])); }
+      static now() { return cnOnlyNow; }
+    };
+    marketState.invalidateMarketStateCache();
+    pool.query = async (sql, params = []) => {
+      if (sql.includes('FROM market.trade_calendar')) return { rows: [calendarRow('2026-07-01')] };
+      if (sql.includes('FROM daily_prices')) return { rows: [
+        { code: '600000', date: params[3] === '2026-07-01' ? '2026-07-01' : '2026-06-30', price: params[3] === '2026-07-01' ? 11 : 10 },
+        { code: '00700', date: '2026-06-30', price: 20 },
+      ] };
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error(`unexpected CN-only query: ${sql}`);
+    };
+    const hkClosed = await computeNavAttribution('fixture-user', 'fixture-account', {
+      ...data, positions: [
+        { code: '600000', subtype: '沪市', price: 11, quantity: 100 },
+        { code: '00700', subtype: '港股', price: 19, quantity: 100 },
+      ], navHistory: [
+        { date: '2026-06-29', totalAsset: 3800, hkRate: 0.90 },
+        { date: '2026-06-30', totalAsset: 3800, hkRate: 0.90 },
+      ],
+    }, 3829);
+    assert.strictEqual(Math.round(hkClosed.priceImpact), 100, '港股休市时只计A股价格变动');
+    assert.strictEqual(Math.round(hkClosed.fxImpact), 20, '休市港股的人民币估值仍受汇率影响');
+    assert.strictEqual(Math.round(hkClosed.valuationAdjustment), -91);
+    assert.strictEqual(hkClosed.closedPriceCorrections[0].market, 'HK');
+    assert.ok(Math.abs(hkClosed.snapshotDrift) < 0.01, '两种单市场开市方向均须闭合');
 
     console.log('cross-market calendar and NAV regression tests passed');
     global.Date = realDate;

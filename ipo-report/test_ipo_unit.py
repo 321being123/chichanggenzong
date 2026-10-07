@@ -306,6 +306,30 @@ try:
           and hongfucheng_gbt_parsed.get("industry_classification", {}).get("classification_system") == "national_economic_industry",
           "结果=%r" % hongfucheng_gbt_parsed)
     targeted_fixture = next(item for item in historical_fixtures if item["stock_code"] == "301718")
+    with open(os.path.join(os.path.dirname(__file__), "tests", "fixtures", "ipo_industry",
+                           "301569-issuance.json"), encoding="utf-8") as fixture_file:
+        lianya = json.load(fixture_file)
+    lianya_detail = fetch._parse_ipo_issuance_detail(lianya["text"], "联亚药业", "301569")
+    check("联亚药业真实公告恢复C27医药制造业且不改行业PE",
+          hashlib.sha256(lianya["text"].encode()).hexdigest() == lianya["excerpt_sha256"]
+          and lianya_detail.get("industry") == "医药制造业"
+          and lianya_detail.get("industry_classification", {}).get("classification_code") == "C27"
+          and lianya_detail.get("industry_pe") == 27.09, repr(lianya_detail))
+    industry_cases = [
+        ('皮革、毛皮、羽毛及其制品和制鞋业（代码C19）', '皮革、毛皮、羽毛及其制品和制鞋业', 'C19'),
+        ('“航空运输业”（行业分类代码为G56）', '航空运输业', 'G56'),
+        ('“制造业”（分类代码为C）下属的“C36汽车制造业”', '汽车制造业', 'C36'),
+        ('“F51批发业”大类下“5193互联网批发”，不属于负面清单行业', '批发业', 'F51'),
+        ('制造业门类中的专用设备制造业（行业代码为C35）', '专用设备制造业', 'C35'),
+        ('“C36汽车制造业”下属的“C3670汽车零部件及配件制造”', '汽车制造业', 'C36'),
+        ('“C制造业”之“CF金属、非金属”之“CF32有色金属冶炼和压延加工业”之“CF321常用有色金属冶炼”', '有色金属冶炼和压延加工业', 'CF32'),
+    ]
+    check("行业分类通用不变量名称代码同项且不含分类说明",
+          all(fetch._industry_from_label(value) == (name, code)
+              for value, name, code in industry_cases)
+          and all(not fetch.valid_ipo_industry_name(value)
+                  for value in ['》(GB/', '上属于', '专用设备制造业(代码', '代码为', 'C制造业'])
+          and fetch._industry_from_label('GB/T4754-2017') == (None, None))
     huangguan = fetch._parse_ipo_issuance_detail(
         '皇冠新材001381根据国家统计局发布的《国民经济行业分类（GB/T 4754-2017）》，公司属于橡胶和塑料制品业（C29）。',
         '皇冠新材', '001381')

@@ -82,6 +82,9 @@ const partialTip = context.buildChangeTipHtml(100, 1, null, null, null, null, nu
 assert.ok(partialTip.includes('404002') && partialTip.includes('—'), '归因不完整时必须显示缺失标的并以破折号表示未计算项');
 const driftTip = context.buildChangeTipHtml(100, 1, 70, 20, 0, null, 10, null, false);
 assert.ok(driftTip.includes('未归因差额') && driftTip.includes('合计 = 股价影响 + 汇率影响 + 其他变动 + 未归因差额'), '存在明显残差时必须在浮框中展示并纳入合计');
+const correctedTip = context.buildChangeTipHtml(102, 1, 180, 22, 0, null, 0, null, false, [], null, -100, [{ code: '600000' }]);
+assert.ok(correctedTip.includes('休市行情校准') && correctedTip.includes('涉及 1 只持仓'), '须说明休市估值校准及可核对范围');
+assert.ok(correctedTip.includes(' + 休市行情校准 = ') && !correctedTip.includes('未归因差额'), '已核实校准应参与合计且不再冒充未知残差');
 
 const summaryElements = new Map();
 const statsContainer = { innerHTML: '', querySelector: () => null };

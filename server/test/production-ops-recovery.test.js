@@ -6,7 +6,7 @@ const ExcelJS = require('exceljs');
 const { pool } = require('../db/connection');
 const { parseHsiWorkbook, calculateM2MarketCap } = require('../jobs/marketVolatilitySync');
 const { parseHkIpoXHtml } = require('../services/hkIpoMarketSignals');
-const { upsertHkIpoFacts, parsePredefinedDocumentHtml, recomputeCompletenessForStoredRow, isUsableProspectusDocument } = require('../services/hkexIpo');
+const { upsertHkIpoFacts, parsePredefinedDocumentHtml, recomputeCompletenessForStoredRow, isUsableProspectusDocument, readHkIpoCompleteness } = require('../services/hkexIpo');
 const { normalizeIpoDiagnostics } = require('../jobs/ipoHistorySync');
 const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('../services/jobOrchestrator');
 
@@ -21,6 +21,15 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
   assert.strictEqual(recomputeCompletenessForStoredRow({ source_documents: [rightsDoc] }, '2026-10-08').exclusionReason, 'rights_issue', '旧供股记录应保留证据并排除普通招股完整度');
   assert.strictEqual(isUsableProspectusDocument({ type: 'prospectus', title: 'GLOBAL OFFERING', url: rightsDoc.url }), true, '已登记官方招股书无需再次发现');
   assert.strictEqual(isUsableProspectusDocument({ type: 'prospectus', title: 'GLOBAL OFFERING', url: 'https://example.com/a.pdf' }), false);
+  const fullAudit = await readHkIpoCompleteness(async sql => {
+    assert.match(sql, /^SELECT/);
+    assert.doesNotMatch(sql, /UPDATE|security_code=ANY/);
+    return { rows: [{ ipo_status: 'cancelled' }, { ipo_status: 'active' }] };
+  }, '2026-10-08');
+  assert.strictEqual(fullAudit.rows, 2);
+  assert.strictEqual(fullAudit.complete, 1);
+  assert.strictEqual(fullAudit.missing, 1, '目标外缺项必须阻止全市场质量通过');
+  assert.strictEqual(fullAudit.qualityStatus, 'stale');
   const book = new ExcelJS.Workbook();
   const sheet = book.addWorksheet('HSI');
   sheet.addRows([['MONTH-END WEIGHTED AVERAGE P/E RATIO'], ['last update'], ['', 'Hang Seng Index'], [new Date('2026-09-30T00:00:00Z'), 13.5]]);

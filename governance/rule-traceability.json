@@ -3,6 +3,26 @@
   "lastReviewed": "2026-10-08",
   "rules": [
     {
+      "id": "OPS-RECOVERY-004",
+      "title": "定向补全不得用局部统计冒充全市场质量且英文预计事件不写实际日期",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "readHkIpoCompleteness"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "目标外缺项必须阻止全市场质量通过"
+        },
+        {
+          "file": "server/test/test_hk_ipo_prospectus_parser.py",
+          "pattern": "test_english_month_first_timetable_and_prose_bounds"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
       "id": "OPS-RECOVERY-001",
       "title": "官方取消延期状态不得被普通公告重置且供股不创建IPO候选",
       "implementation": { "file": "server/services/hkexIpo.js", "symbol": "upsertHkIpoFacts" },

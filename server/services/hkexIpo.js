@@ -1322,10 +1322,16 @@ async function syncHkexProspectusFacts({
           })) {
             if (aggregate[key] == null && value != null) aggregate[key] = value;
           }
+          if (parsed.issuePriceType === 'range' && parsed.issuePriceLow != null && parsed.issuePriceHigh != null) {
+            aggregate.issuePriceLow = parsed.issuePriceLow;
+            aggregate.issuePriceHigh = parsed.issuePriceHigh;
+            aggregate.issuePriceType = 'range';
+          }
           const coreComplete = (aggregate.issuePriceLow != null || aggregate.issuePriceType === 'maximum_only')
             && aggregate.issuePriceHigh != null
             && aggregate.lotSizeShares != null && aggregate.offerOpenAt != null && aggregate.offerCloseAt != null;
-          if (coreComplete && (!refreshSponsor || aggregate.sponsorGroup != null)) break;
+          const timetableComplete = aggregate.expectedPricingDate && aggregate.expectedAllotmentDate && aggregate.expectedListingDate;
+          if (coreComplete && timetableComplete && (!refreshSponsor || aggregate.sponsorGroup != null)) break;
         } catch (error) {
           failures.push({ code, stage: 'fetch_or_parse', url: document.fileLink, error: error.message || String(error) });
         }
@@ -1773,6 +1779,20 @@ function expectedDateByValue(event) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : null;
 }
 
+async function readHkIpoCompleteness(executor = pool.query.bind(pool), asOfDate = todayShanghai()) {
+  const { rows } = await executor(`SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,
+    listing_at,listing_date,issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
+    FROM public.ipo_history WHERE market_code='HK'`);
+  let complete = 0, pending = 0, missing = 0;
+  for (const row of rows) {
+    const status = recomputeCompletenessForStoredRow(row, asOfDate).status;
+    if (status === 'complete') complete += 1;
+    else if (status === 'pending_not_due') pending += 1;
+    else missing += 1;
+  }
+  return { ok: true, rows: rows.length, complete, pending, missing, qualityStatus: missing ? 'stale' : 'passed' };
+}
+
 async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targetCodes = []) {
   const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
   const targetFilter = scopedCodes.length ? ' AND security_code=ANY($1::text[])' : '';
@@ -1936,6 +1956,7 @@ module.exports = {
   upsertHkIpoFacts,
   recomputeCompletenessForStoredRow,
   recomputeHkIpoCompleteness,
+  readHkIpoCompleteness,
   canonicalHkCode,
   normalizeDate,
   stageForRow,

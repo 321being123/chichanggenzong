@@ -54,9 +54,40 @@ def test_chinese_expected_timetable():
     assert result.get("listingAt") is None
 
 
+def test_english_month_first_timetable_and_prose_bounds():
+    result = parse_prospectus_text(
+        "The Offer Price will not be more than HK$38.80 per Offer Share and is currently expected to be not less than HK$35.30 per Offer Share. "
+        "Minimum of 100 Hong Kong Offer Shares. "
+        "Hong Kong Public Offering commences . . .9:00 a.m. on Wednesday, October 7, 2026 "
+        "Application lists close(3) . . .12:00 noon on Monday, October 12, 2026 "
+        "Expected Price Determination Date . . .by 12:00 noon on Tuesday, October 13, 2026 "
+        "Announcement of the Offer Price, the level of indications of interest in the International Offering, "
+        "the level of applications in the Hong Kong Public Offering and the basis of allocations of the Hong Kong Offer Shares "
+        "to be published on the website of the Stock Exchange . . .Wednesday, October 14, 2026 "
+        "Dealings in the H Shares on the Stock Exchange expected to commence at . . .9:00 a.m. on Thursday, October 15, 2026"
+    )
+    assert result["issuePriceLow"] == 35.30
+    assert result["issuePriceHigh"] == 38.80
+    assert result["issuePriceType"] == "range"
+    assert result["offerOpenAt"] == "2026-10-07T09:00:00+08:00"
+    assert result["offerCloseAt"] == "2026-10-12T12:00:00+08:00"
+    assert result["expectedPricingDate"] == "2026-10-13"
+    assert result["expectedAllotmentDate"] == "2026-10-14"
+    assert result["expectedListingDate"] == "2026-10-15"
+    assert result.get("issuePriceFinal") is None
+    assert result.get("listingAt") is None
+
+
+def test_invalid_month_first_date_does_not_publish():
+    result = parse_prospectus_text("Hong Kong Public Offering commences 9:00 a.m. on October 32, 2026")
+    assert result["offerOpenAt"] is None
+
+
 if __name__ == "__main__":
     test_maximum_price_is_not_final_price()
     test_price_range_and_chinese_maximum()
     test_missing_expected_dates_stay_empty()
     test_chinese_expected_timetable()
-    print("PASS=4  FAIL=0  ERROR=0")
+    test_english_month_first_timetable_and_prose_bounds()
+    test_invalid_month_first_date_does_not_publish()
+    print("PASS=6  FAIL=0  ERROR=0")

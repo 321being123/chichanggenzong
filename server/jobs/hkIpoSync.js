@@ -1,4 +1,4 @@
-const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexListingStatusNotices, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
+const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, readHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexListingStatusNotices, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
 const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
@@ -388,20 +388,23 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   const failedSubtasks = coreSubtasks.filter(item => item.ok === false);
   const degraded = subtasks.some(item => item.ok === false || item.status === 'degraded');
   const signalDiagnostics = marketSignalDiagnostics(marketSignals);
+  // 定向写入仍只修改目标行；全市场分区必须使用只读全范围核验，不能发布五行统计冒充全库。
+  const publicationAudit = targeted && completenessAudit?.ok === true
+    ? await readHkIpoCompleteness(pool.query.bind(pool), targetDate) : completenessAudit;
   const factDiagnostics = {
-    query_status: !completenessAudit || completenessAudit.ok === false ? 'failed' : 'success',
-    quality_status: completenessAudit?.qualityStatus || 'stale',
-    coverage_status: completenessAudit?.missing ? 'incomplete' : 'complete',
-    partition_row_count: completenessAudit?.rows || 0,
-    valid_report_rows: Number(completenessAudit?.complete || 0) + Number(completenessAudit?.pending || 0),
-    incomplete_rows: Number(completenessAudit?.missing || 0),
+    query_status: !publicationAudit || publicationAudit.ok === false ? 'failed' : 'success',
+    quality_status: publicationAudit?.qualityStatus || 'stale',
+    coverage_status: publicationAudit?.missing ? 'incomplete' : 'complete',
+    partition_row_count: publicationAudit?.rows || 0,
+    valid_report_rows: Number(publicationAudit?.complete || 0) + Number(publicationAudit?.pending || 0),
+    incomplete_rows: Number(publicationAudit?.missing || 0),
   };
   return {
     ...result, ok: failedSubtasks.length === 0, status: degraded ? 'degraded' : 'succeeded', degraded,
     failedDatasets: failedSubtasks.length ? ['hk_ipo_facts'] : [],
     ...(targeted ? { targeted: true, targetCodes } : {}),
     mode, probePersistence, historicalReports, nonPublicListings, listingStatusNotices, prospectusFacts, allotmentFacts,
-    dailyCoverage, marketSignals, tencentNames, completenessAudit,
+    dailyCoverage, marketSignals, tencentNames, completenessAudit, publicationAudit,
     datasetDiagnostics: { hk_ipo_facts: factDiagnostics, hk_ipo_subscription_signals: signalDiagnostics },
     probeTargets: (probe.targets || []).length,
     dataAsOf: targetDate,

@@ -287,10 +287,18 @@ def _parse_date_time(text, start, end, require_clock=True):
                 flags=re.IGNORECASE,
             )
             if not english:
-                english = re.search(r"(\d{4})[-/]([01]?\d)[-/]([0-3]?\d)", window)
-                if not english:
-                    return None
-                year, month, day = map(int, english.groups())
+                month_first = re.search(
+                    r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+                    r"\s+(\d{1,2})(?:st|nd|rd|th)?\s*,\s*(\d{4})", window, flags=re.IGNORECASE,
+                )
+                if month_first:
+                    month = datetime.strptime(month_first.group(1)[:3], "%b").month
+                    day, year = int(month_first.group(2)), int(month_first.group(3))
+                else:
+                    english = re.search(r"(\d{4})[-/]([01]?\d)[-/]([0-3]?\d)", window)
+                    if not english:
+                        return None
+                    year, month, day = map(int, english.groups())
             else:
                 day = int(english.group(1))
                 month = datetime.strptime(english.group(2)[:3], "%b").month
@@ -321,7 +329,7 @@ def parse_prospectus_text(text):
     normalized = _normalize(text)
     result = {
         "parserStatus": "incomplete",
-        "parserVersion": "hk-ipo-prospectus-v4",
+        "parserVersion": "hk-ipo-prospectus-v5",
         "securityCode": None,
         "issuePriceLow": None,
         "issuePriceHigh": None,
@@ -370,6 +378,19 @@ def parse_prospectus_text(text):
             result["issuePriceType"] = "maximum_only"
             result["evidence"]["issuePrice"] = _snippet(normalized, maximum_match.start(), maximum_match.end())
 
+    # 同一句明确的上下界优先于单个 Offer Price 数字；不能把最高价写成固定发行价。
+    bounds = re.search(
+        r"Offer\s+Price\s+will\s+not\s+be\s+more\s+than\s+HK\$([\d.]+)"
+        r"[^.]{0,160}?expected\s+to\s+be\s+not\s+less\s+than\s+HK\$([\d.]+)",
+        normalized, flags=re.IGNORECASE,
+    )
+    if bounds:
+        high, low = _number(bounds.group(1)), _number(bounds.group(2))
+        if low is not None and high is not None and low <= high:
+            result["issuePriceLow"], result["issuePriceHigh"] = low, high
+            result["issuePriceType"] = "range"
+            result["evidence"]["issuePrice"] = _snippet(normalized, bounds.start(), bounds.end())
+
     lot_patterns = [
         r"(?:每手(?:買賣單位|股份|股數)?|每手為|board\s+lot(?:\s+size)?(?:\s+of)?)\s*[:：]?\s*([\d,]+)\s*(?:股|shares?)",
         r"(?:申請認購|申請最少|minimum(?:\s+application)?(?:\s+of)?)\s*(?:最少|至少|minimum)?\s*([\d,]+)\s*(?:股|shares?)",
@@ -411,6 +432,7 @@ def parse_prospectus_text(text):
         "Hong Kong Public Offering closes",
         "Latest time for lodging applications",
         "Latest time for applications",
+        "Application lists close",
     ]
     for marker in open_markers:
         pos = normalized.lower().find(marker.lower())
@@ -431,17 +453,20 @@ def parse_prospectus_text(text):
 
     expected_markers = {
         "expectedPricingDate": [
-            "expected to be fixed on", "pricing date", "預期定價日", "定價日預計於",
+            "expected to be fixed on", "Expected Price Determination Date", "pricing date", "預期定價日", "定價日預計於",
         ],
         "expectedAllotmentDate": [
             "announcement of allotment results is expected to be published on",
             "allotment results will be announced on", "配發結果公告預計於", "公佈配發結果",
             "公佈香港公開發售分配結果",
+            "Announcement of the final Offer Price, the level of indications of interest",
+            "Announcement of the Offer Price, the level of indications of interest",
         ],
         "expectedListingDate": [
             "listing on the main board of the stock exchange is expected to take place on",
             "listing on the main board is expected to take place on", "expected to commence dealings on",
             "預期於聯交所主板上市", "預計於聯交所主板上市", "開始在聯交所買賣",
+            "Dealings in the H Shares on the Stock Exchange expected to commence at",
         ],
     }
     for field, markers in expected_markers.items():
@@ -449,7 +474,7 @@ def parse_prospectus_text(text):
             pos = normalized.lower().find(marker.lower())
             if pos < 0:
                 continue
-            parsed = _parse_date_time(normalized, pos, min(len(normalized), pos + 320), require_clock=False)
+            parsed = _parse_date_time(normalized, pos, min(len(normalized), pos + 650), require_clock=False)
             if parsed:
                 result[field] = parsed[:10]
                 result["evidence"][field] = _snippet(normalized, pos, pos + 320)

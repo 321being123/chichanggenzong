@@ -93,6 +93,8 @@ def main():
             look_for_keys=False,
             allow_agent=False,
         )
+        # Worker 排空可能长时间没有 SSH 输出；连接保活不改变任务运行/停机时限。
+        client.get_transport().set_keepalive(30)
         result = run_sudo(
             client,
             "set -Eeuo pipefail; cd /opt/portfolio; "

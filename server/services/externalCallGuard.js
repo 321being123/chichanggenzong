@@ -352,7 +352,18 @@ async function withExternalCallGuard(source, dataset, businessDate, fn, circuitS
     const lock = await acquireExternalDatasetLock(guardOptions.budgetSource, dataset, businessDate);
     let guardResult = null;
     try {
-      guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
+      // 内部最小间隔/并发占用只等待数据库给出的恢复时间；不执行请求、开熔断或猜测额度。
+      // 真实接口分钟/日额度仍交给任务持久化等待，任务超时由现有 Runner 兜底。
+      while (!guardResult) {
+        try {
+          guardResult = await consumeExternalCall(source, dataset, lock.client, guardOptions.circuitSource, guardOptions);
+        } catch (error) {
+          const recoverAt = new Date(error.recoverAt || '').getTime();
+          if (error.code !== 'BUDGET_WAIT' || !['interval', 'concurrency'].includes(error.budgetWindow)
+            || !Number.isFinite(recoverAt)) throw error;
+          await new Promise(resolve => setTimeout(resolve, Math.max(recoverAt - Date.now(), 1)));
+        }
+      }
       const result = await fn(lock.client, guardResult);
       // 恢复探测成功后立即关闭对应熔断；否则下一次同来源请求会继续被旧熔断拦截。
       if (guardResult && guardResult.probeToken) {

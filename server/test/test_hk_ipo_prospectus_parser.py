@@ -83,6 +83,26 @@ def test_invalid_month_first_date_does_not_publish():
     assert result["offerOpenAt"] is None
 
 
+def test_prices_require_currency_and_chinese_bounds_override_dates():
+    for text in (
+        "預期發售價將於定價日協定。定價日預期為2026年10月7日。",
+        "The Offer Price will be determined on October 7, 2026.",
+        "最高發售價將於2026年協定。",
+        "Offer Price is discussed on page 38 and in section 5.",
+    ):
+        result = parse_prospectus_text(text)
+        assert result["issuePriceLow"] is None
+        assert result["issuePriceHigh"] is None
+    result = parse_prospectus_text(
+        "預期發售價將由保薦人於定價日協定。定價日預期為2026年10月7日。"
+        "發售價將不高於每股發售股份1.59港元，且目前預計不會低於每股發售股份1.48港元。"
+    )
+    assert (result["issuePriceLow"], result["issuePriceHigh"], result["issuePriceType"]) == (1.48, 1.59, "range")
+    for text in ("發售價：2.68港元", "Offer Price: HK$2.68"):
+        result = parse_prospectus_text(text)
+        assert result["issuePriceLow"] == result["issuePriceHigh"] == 2.68
+
+
 if __name__ == "__main__":
     test_maximum_price_is_not_final_price()
     test_price_range_and_chinese_maximum()
@@ -90,4 +110,5 @@ if __name__ == "__main__":
     test_chinese_expected_timetable()
     test_english_month_first_timetable_and_prose_bounds()
     test_invalid_month_first_date_does_not_publish()
-    print("PASS=6  FAIL=0  ERROR=0")
+    test_prices_require_currency_and_chinese_bounds_override_dates()
+    print("PASS=7  FAIL=0  ERROR=0")

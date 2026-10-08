@@ -329,7 +329,7 @@ def parse_prospectus_text(text):
     normalized = _normalize(text)
     result = {
         "parserStatus": "incomplete",
-        "parserVersion": "hk-ipo-prospectus-v5",
+        "parserVersion": "hk-ipo-prospectus-v6",
         "securityCode": None,
         "issuePriceLow": None,
         "issuePriceHigh": None,
@@ -356,25 +356,25 @@ def parse_prospectus_text(text):
 
     price_match = re.search(
         r"(?:(?<!最高)發售價|(?<!Maximum )Offer\s+Price)[^0-9]{0,100}"
-        r"([0-9]+(?:\.[0-9]+)?)\s*(?:港元|HK\$|HKD)?"
+        r"(?:(?:HK\$|HKD|港元)\s*([0-9]+(?:\.[0-9]+)?)|([0-9]+(?:\.[0-9]+)?)\s*港元)"
         r"(?:\s*(?:至|到|[-–—]|to)\s*(?:港元|HK\$|HKD)?\s*([0-9]+(?:\.[0-9]+)?))?",
         normalized, flags=re.IGNORECASE,
     )
     if price_match:
-        low = _number(price_match.group(1))
-        high = _number(price_match.group(2)) or low
+        low = _number(price_match.group(1) or price_match.group(2))
+        high = _number(price_match.group(3)) or low
         if low is not None and high is not None and high >= low:
             result["issuePriceLow"] = low
             result["issuePriceHigh"] = high
-            result["issuePriceType"] = "range" if price_match.group(2) else "fixed_offer_price"
+            result["issuePriceType"] = "range" if price_match.group(3) else "fixed_offer_price"
             result["evidence"]["issuePrice"] = _snippet(normalized, price_match.start(), price_match.end())
     else:
         maximum_match = re.search(
-            r"(?:最高發售價|Maximum\s+Offer\s+Price)[^0-9]{0,100}([0-9]+(?:\.[0-9]+)?)\s*(?:港元|HK\$|HKD)?",
+            r"(?:最高發售價|Maximum\s+Offer\s+Price)[^0-9]{0,100}(?:(?:HK\$|HKD|港元)\s*([0-9]+(?:\.[0-9]+)?)|([0-9]+(?:\.[0-9]+)?)\s*港元)",
             normalized, flags=re.IGNORECASE,
         )
         if maximum_match:
-            result["issuePriceHigh"] = _number(maximum_match.group(1))
+            result["issuePriceHigh"] = _number(maximum_match.group(1) or maximum_match.group(2))
             result["issuePriceType"] = "maximum_only"
             result["evidence"]["issuePrice"] = _snippet(normalized, maximum_match.start(), maximum_match.end())
 
@@ -390,6 +390,17 @@ def parse_prospectus_text(text):
             result["issuePriceLow"], result["issuePriceHigh"] = low, high
             result["issuePriceType"] = "range"
             result["evidence"]["issuePrice"] = _snippet(normalized, bounds.start(), bounds.end())
+
+    chinese_bounds = re.search(
+        r"發售價將不高於每股發售股份\s*([\d.]+)\s*港元[^。]{0,100}?不會低於每股發售股份\s*([\d.]+)\s*港元",
+        normalized,
+    )
+    if chinese_bounds:
+        high, low = _number(chinese_bounds.group(1)), _number(chinese_bounds.group(2))
+        if low is not None and high is not None and low <= high:
+            result["issuePriceLow"], result["issuePriceHigh"] = low, high
+            result["issuePriceType"] = "range"
+            result["evidence"]["issuePrice"] = _snippet(normalized, chinese_bounds.start(), chinese_bounds.end())
 
     lot_patterns = [
         r"(?:每手(?:買賣單位|股份|股數)?|每手為|board\s+lot(?:\s+size)?(?:\s+of)?)\s*[:：]?\s*([\d,]+)\s*(?:股|shares?)",

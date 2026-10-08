@@ -215,4 +215,6 @@ assert(/DELETE FROM ops\.data_quality_issues q[\s\S]*q\.status='resolved'/.test(
 assert(/sanitizeJobError\(err\.message \|\| err, 500\)/.test(arbitrageService)
   && /sanitizeJobError\(error\.message \|\| error, 1000\)/.test(arbitrageJob), '套利解析和同步错误写入日志前必须脱敏');
 
-console.log('OK job-orchestration-regression: 96 项关键验收约束通过');
+assert(/set_keepalive\(30\)/.test(deployScript), '部署SSH必须在Worker长时间排空期间保活');
+
+console.log('OK job-orchestration-regression: 97 项关键验收约束通过');

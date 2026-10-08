@@ -11,6 +11,23 @@ const { normalizeIpoDiagnostics } = require('../jobs/ipoHistorySync');
 const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('../services/jobOrchestrator');
 
 (async () => {
+  const guardPath = require.resolve('../services/externalCallGuard');
+  const guardContext = vm.createContext({ require, module: { exports: {} }, exports: {}, process, console, setTimeout, Buffer });
+  vm.runInContext(fs.readFileSync(guardPath, 'utf8'), guardContext);
+  vm.runInContext("acquireExternalDatasetLock=async()=>({client:{}});releaseExternalDatasetLock=releaseExternalCallSlot=async()=>{};globalThis.requests=0;globalThis.circuits=0;openExternalCircuit=async()=>{globalThis.circuits++}", guardContext);
+  for (const window of ['interval', 'concurrency']) {
+    guardContext.waitWindow = window;
+    vm.runInContext("globalThis.permits=0;consumeExternalCall=async()=>{if(++globalThis.permits===1)throw new ExternalCallGuardError('BUDGET_WAIT','wait','test','test',{budgetWindow:waitWindow,recoverAt:new Date(Date.now()+5)});return {concurrencySlot:0}}", guardContext);
+    assert.strictEqual(await guardContext.module.exports.withExternalCallGuard('test', window, '2026-10-08', async () => { guardContext.requests++; return 'success'; }), 'success');
+    assert.strictEqual(guardContext.permits, 2, '内部等待后必须重新通过共享 Guard，而非绕过许可');
+  }
+  for (const window of ['minute', 'day']) {
+    guardContext.waitWindow = window;
+    vm.runInContext("consumeExternalCall=async()=>{throw new ExternalCallGuardError('BUDGET_WAIT','wait','test','test',{budgetWindow:waitWindow,recoverAt:new Date(Date.now()+5)})}", guardContext);
+    await assert.rejects(guardContext.module.exports.withExternalCallGuard('test', window, '2026-10-08', async () => { guardContext.requests++; }), error => error.code === 'BUDGET_WAIT');
+  }
+  assert.strictEqual(guardContext.requests, 2, '无许可时不得发出外部请求');
+  assert.strictEqual(guardContext.circuits, 0, '内部等待不得开启来源熔断');
   const empty = '<section><h2>今日申购 <span class="count">(0)</span></h2><table><thead><tr><th>代码</th><th>认购倍数 <span>实时</span></th></tr></thead><tbody><tr><td colspan="20" class="empty">暂无</td></tr></tbody></table></section>';
   assert.deepStrictEqual(parseHkIpoXHtml(empty), [], '明确零项目及空表体是可核验空结果');
   assert.throws(() => parseHkIpoXHtml(empty.replace('(0)', '(1)')), /预期数据列/, '非零声明不能伪装成无新增');
@@ -65,7 +82,7 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
     await client.query(`UPDATE public.ipo_history SET ipo_status='active',issue_price_low=3,issue_price_high=3,issue_price_final=2.5,
       source_documents=$2::jsonb WHERE security_code=$1`, [code, JSON.stringify([{ type: 'prospectus', title: 'GLOBAL OFFERING', url }])]);
     serviceContext.officialUrl = url;
-    vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('official fixture'),url:officialUrl}); parseHkexProspectusPdf=async()=>({parserStatus:'parsed',parserVersion:'hk-ipo-prospectus-v5',issuePriceLow:2,issuePriceHigh:3,issuePriceType:'range',lotSizeShares:100,offerOpenAt:'2099-01-01T09:00:00+08:00',offerCloseAt:'2099-01-02T12:00:00+08:00',expectedPricingDate:'2099-01-03',expectedAllotmentDate:'2099-01-04',expectedListingDate:'2099-01-05',evidence:{issuePrice:'official range 2 to 3'}})", serviceContext);
+    vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('official fixture'),url:officialUrl}); parseHkexProspectusPdf=async()=>({parserStatus:'parsed',parserVersion:'hk-ipo-prospectus-v6',issuePriceLow:2,issuePriceHigh:3,issuePriceType:'range',lotSizeShares:100,offerOpenAt:'2099-01-01T09:00:00+08:00',offerCloseAt:'2099-01-02T12:00:00+08:00',expectedPricingDate:'2099-01-03',expectedAllotmentDate:'2099-01-04',expectedListingDate:'2099-01-05',evidence:{issuePrice:'official range 2 to 3'}})", serviceContext);
     const options = { targetCodes: [code], executor: client.query.bind(client), fromDate: '2098-01-01', toDate: '2099-12-31' };
     await serviceContext.module.exports.syncHkexProspectusFacts(options);
     const prices = async () => (await client.query('SELECT issue_price_low::float8,issue_price_high::float8,issue_price_final::float8 FROM public.ipo_history WHERE security_code=$1', [code])).rows[0];
@@ -73,10 +90,12 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
     await upsertHkIpoFacts([{ securityCode: code, issuePriceLow: 2.5, issuePriceHigh: 2.5, issuePriceFinal: 2.5 }], { dbPool: transactionalPool });
     assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '普通上市报表最终价不得回写已核验招股范围');
     await client.query('UPDATE public.ipo_history SET issue_price_low=3 WHERE security_code=$1', [code]);
+    vm.runInContext("fetchOfficialPdfWithCache=async()=>{throw new Error('must reuse persisted current official facts')}", serviceContext);
     await serviceContext.module.exports.syncHkexProspectusFacts(options);
     assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '未来招股项目的区间与存量固定价不一致必须重新核验');
     await client.query('UPDATE public.ipo_history SET offer_close_at=NULL WHERE security_code=$1', [code]);
-    vm.runInContext("parseHkexProspectusPdf=async()=>{throw new Error('invalid official PDF')}", serviceContext);
+    await client.query('DELETE FROM ops.raw_records WHERE source_key=$1', [`${code}|${url}`]);
+    vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('invalid PDF'),url:officialUrl});parseHkexProspectusPdf=async()=>{throw new Error('invalid official PDF')}", serviceContext);
     await serviceContext.module.exports.syncHkexProspectusFacts(options);
     assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '解析失败不得覆盖有效价格范围');
     await client.query("INSERT INTO market.money_supply_monthly(market_code,month,m2_100m_yuan,source_code) VALUES('CN','2099-08-01',1000,'ops-test')");

@@ -3,6 +3,54 @@
   "lastReviewed": "2026-10-08",
   "rules": [
     {
+      "id": "OPS-RECOVERY-009",
+      "title": "当前完整官方招股事实优先于PDF重拉且身份隔离",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "syncHkexProspectusFacts"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "must reuse persisted current official facts"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
+      "id": "OPS-RECOVERY-008",
+      "title": "内部间隔并发等待重新通过Guard且不发请求不开熔断",
+      "implementation": {
+        "file": "server/services/externalCallGuard.js",
+        "symbol": "withExternalCallGuard"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "内部等待后必须重新通过共享 Guard"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "OPS-RECOVERY-007",
+      "title": "价格必须有币种证据，年份页码不得发布为价格",
+      "implementation": {
+        "file": "server/scripts/extractHkIpoProspectus.py",
+        "symbol": "parse_prospectus_text"
+      },
+      "tests": [
+        {
+          "file": "server/test/test_hk_ipo_prospectus_parser.py",
+          "pattern": "test_prices_require_currency_and_chinese_bounds_override_dates"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
       "id": "OPS-RECOVERY-006",
       "title": "systemd排空期间不得提前终止任务子进程",
       "implementation": {
@@ -32,7 +80,11 @@
         },
         {
           "file": "server/test/production-ops-recovery.test.js",
-          "pattern": "解析失败不得覆盖有效价格范围" }, { "file": "server/test/production-ops-recovery.test.js", "pattern": "普通上市报表最终价不得回写已核验招股范围"
+          "pattern": "解析失败不得覆盖有效价格范围"
+        },
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "普通上市报表最终价不得回写已核验招股范围"
         }
       ],
       "owner": "港股IPO",
@@ -61,23 +113,50 @@
     {
       "id": "OPS-RECOVERY-001",
       "title": "官方取消延期状态不得被普通公告重置且供股不创建IPO候选",
-      "implementation": { "file": "server/services/hkexIpo.js", "symbol": "upsertHkIpoFacts" },
-      "tests": [{ "file": "server/test/production-ops-recovery.test.js", "pattern": "普通公告不得撤销官方特殊状态" }],
-      "owner": "港股IPO", "status": "verified"
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "upsertHkIpoFacts"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "普通公告不得撤销官方特殊状态"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
     },
     {
       "id": "OPS-RECOVERY-002",
       "title": "月频M2宽限覆盖整个第二个月并保留第三个月陈旧状态",
-      "implementation": { "file": "server/jobs/marketVolatilitySync.js", "symbol": "calculateM2MarketCap" },
-      "tests": [{ "file": "server/test/production-ops-recovery.test.js", "pattern": "月频宽限须覆盖整个第二个月" }],
-      "owner": "市场周期", "status": "verified"
+      "implementation": {
+        "file": "server/jobs/marketVolatilitySync.js",
+        "symbol": "calculateM2MarketCap"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "月频宽限须覆盖整个第二个月"
+        }
+      ],
+      "owner": "市场周期",
+      "status": "verified"
     },
     {
       "id": "OPS-RECOVERY-003",
       "title": "HKIPOx空表必须有零项目声明与明确空表体证据",
-      "implementation": { "file": "server/services/hkIpoMarketSignals.js", "symbol": "parseHkIpoXHtml" },
-      "tests": [{ "file": "server/test/production-ops-recovery.test.js", "pattern": "加载失败不算空结果" }],
-      "owner": "港股IPO", "status": "verified"
+      "implementation": {
+        "file": "server/services/hkIpoMarketSignals.js",
+        "symbol": "parseHkIpoXHtml"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "加载失败不算空结果"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
     },
     {
       "id": "TASK-CONTRACT-001",

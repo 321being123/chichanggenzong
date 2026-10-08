@@ -1109,6 +1109,8 @@ async function syncHkexProspectusFacts({
        ${candidateDateFilter}
        ${retryFilter}
        AND (
+         ${targeted ? 'true' : 'false'}
+         OR
          (issue_price_low IS NULL AND data_completeness#>>'{prospectus,fields,issuePriceLow}' IS DISTINCT FROM 'maximum_only')
          OR issue_price_high IS NULL OR lot_size_shares IS NULL OR offer_open_at IS NULL OR offer_close_at IS NULL
          OR data_completeness#>>'{prospectus,expectedEvents,pricingDate,status}' IS NULL
@@ -1284,11 +1286,26 @@ async function syncHkexProspectusFacts({
       for (const document of uniqueParseDocuments) {
         attempted += 1;
         try {
-          const { buffer, url: cachedUrl } = await fetchOfficialPdfWithCache(
-            document.fileLink, fetchImpl, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 }
-          );
-          const responseSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-          const parsed = await parseHkexProspectusPdf(buffer);
+          const cachedUrl = assertOfficialUrl(document.fileLink);
+          const persisted = await executor(`SELECT payload FROM ops.raw_records
+             WHERE source_id=$1 AND dataset_code=$2 AND source_key=$3
+               AND payload#>>'{parser,parserVersion}'='hk-ipo-prospectus-v6'
+               AND payload#>>'{parser,parserStatus}'='parsed'
+             ORDER BY ingested_at DESC LIMIT 1`, [source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, `${code}|${cachedUrl}`]);
+          let payload = persisted.rows[0]?.payload;
+          if (!payload || payload.sourceUrl !== cachedUrl || !/^[a-f0-9]{64}$/.test(payload.responseSha256 || '')
+            || (payload.parser.securityCode && canonicalHkCode(payload.parser.securityCode) !== code)) {
+            const { buffer } = await fetchOfficialPdfWithCache(
+              cachedUrl, fetchImpl, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 }
+            );
+            payload = { responseSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+              responseBytes: buffer.length, parser: await parseHkexProspectusPdf(buffer) };
+          }
+          const responseSha256 = payload.responseSha256;
+          const parsed = payload.parser;
+          if (parsed.securityCode && canonicalHkCode(parsed.securityCode) !== code) {
+            throw new Error('官方招股书证券身份与目标不一致');
+          }
           await executor(
             `INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,source_updated_at,payload,payload_hash)
              VALUES($1,$2,$3,$4,now(),$5::jsonb,$6)
@@ -1296,7 +1313,7 @@ async function syncHkexProspectusFacts({
             [runId, source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, `${code}|${cachedUrl}`, JSON.stringify({
               securityCode: code, sourceUrl: cachedUrl, originalSourceUrl: document.originalFileLink || cachedUrl,
               language: document.language || null, announcedAt: document.announcedAt || null,
-              responseBytes: buffer.length, responseSha256, parser: parsed,
+              responseBytes: payload.responseBytes, responseSha256, parser: parsed,
             }), responseSha256]
           );
           evidenceDocuments.push({

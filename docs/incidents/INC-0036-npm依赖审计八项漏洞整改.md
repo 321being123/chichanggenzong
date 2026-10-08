@@ -1,6 +1,6 @@
 # INC-0036：npm依赖审计八项漏洞整改
 
-状态：本地整改完成，发布验证中
+状态：已生产发布并关闭本次8项审计缺口
 日期：2026-10-08
 
 ## 现象与根因
@@ -29,3 +29,9 @@
 按低性能模式未打开浏览器或做真机视觉验收；前端仅替换净化资源及引用缓存版本，无布局或交互改动。生产标准发布、三单元、health/ready、相关资源哈希与接口、生产npm审计将在执行后补记。
 
 本地最终验收：全量159通过、0失败、0跳过，知识门禁与差异检查通过；health=0.8.3.22，三个页面新版DOMPurify引用均200、资源哈希与仓库一致。npm audit全量与生产依赖均0（生产依赖audit-level=low亦返回0）。邮件只做离线回归，未发送真实邮件。
+
+## 2026-10-08 生产验收回执
+
+业务提交0f66475已推送master并经标准脚本发布0.8.3.22。备份portfolio_20261008_185937.sql.gz.gpg，Result=success/ExecMainStatus=0；Web/Worker/健康定时器active/enabled，health版本一致、ready数据库/Redis正常。
+
+生产npm ci及随后npm audit --omit=dev均0漏洞、审计退出0；安装实测DOMPurify3.4.16、Nodemailer10.0.16、Undici8.11.2、proxy-addr2.0.8、argparse2.0.1。以portfolio-app运行dependency-security.test.js通过，代理拒绝伪造、实际DOCX CLI、离线MIME及资源一致性再次验证；未发真实邮件。首页/分享/IPO报告页均200且引用新版净化器，线上资源哈希与仓库一致、changelog0.8.3.22。可转债安全性API现役309条、三指标空值0，原修复维持。未进行数据库业务同步或任务补跑，未做浏览器/真机验收。

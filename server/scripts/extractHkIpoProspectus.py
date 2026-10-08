@@ -321,7 +321,7 @@ def parse_prospectus_text(text):
     normalized = _normalize(text)
     result = {
         "parserStatus": "incomplete",
-        "parserVersion": "hk-ipo-prospectus-v3",
+        "parserVersion": "hk-ipo-prospectus-v4",
         "securityCode": None,
         "issuePriceLow": None,
         "issuePriceHigh": None,
@@ -436,11 +436,12 @@ def parse_prospectus_text(text):
         "expectedAllotmentDate": [
             "announcement of allotment results is expected to be published on",
             "allotment results will be announced on", "配發結果公告預計於", "公佈配發結果",
+            "公佈香港公開發售分配結果",
         ],
         "expectedListingDate": [
             "listing on the main board of the stock exchange is expected to take place on",
             "listing on the main board is expected to take place on", "expected to commence dealings on",
-            "預期於聯交所主板上市", "預計於聯交所主板上市",
+            "預期於聯交所主板上市", "預計於聯交所主板上市", "開始在聯交所買賣",
         ],
     }
     for field, markers in expected_markers.items():

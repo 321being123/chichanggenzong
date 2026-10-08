@@ -223,7 +223,7 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
     }
     for (const executable of pythonCandidates()) {
       try {
-        const result = await runWith(executable, runtime, businessDate, mode, context.externalCallCount, targetCodes, targetFields);
+        const result = normalizeIpoDiagnostics(await runWith(executable, runtime, businessDate, mode, context.externalCallCount, targetCodes, targetFields), businessDate);
         await notifyTushareFailovers(result.failovers);
         const detail = JSON.stringify({ reason, mode, scheduleMarker, slotId: context.slotId || null, targetCodes, targetFields, executable, retryOf, ...result });
         await finishJobRun(runId, result.ok !== false, detail);
@@ -254,6 +254,16 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
   } finally {
     await releaseJob(JOB);
   }
+}
+
+function normalizeIpoDiagnostics(result, businessDate) {
+  const diagnostic = result?.datasetDiagnostics?.ipo_history;
+  // Python 核心快照核验返回 ingestion_run_id；其 target_date 是次日证券集合，非发布日。
+  if (diagnostic && diagnostic.ingestion_run_id && diagnostic.quality_status === 'passed') {
+    diagnostic.query_status = 'success';
+    diagnostic.partition_key = businessDate;
+  }
+  return result;
 }
 
 function previousWeekday(ymd) {
@@ -291,6 +301,6 @@ function scheduleIpoHistorySync() {
 }
 
 module.exports = {
-  SCRIPT, nextIpoHistorySyncDelay, runIpoHistorySync,
+  SCRIPT, nextIpoHistorySyncDelay, runIpoHistorySync, normalizeIpoDiagnostics,
   runIpoHistoryStartupCatchup, scheduleIpoHistorySync, pythonCandidates, nextIpoHistorySchedule,
 };

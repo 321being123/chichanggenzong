@@ -42,8 +42,21 @@ def test_missing_expected_dates_stay_empty():
     assert result["expectedListingDate"] is None
 
 
+def test_chinese_expected_timetable():
+    result = parse_prospectus_text(
+        "公佈香港公開發售分配結果（包括獲接納申請人的身份證明文件號碼），包括："
+        "分別於本公司網站及聯交所網站發佈公告 . . . 不遲於2026年10月8日（星期四） 下午十一時正 "
+        "H股開始在聯交所買賣 . . . 2026年10月9日（星期五） 上午九時正"
+    )
+    assert result["expectedAllotmentDate"] == "2026-10-08"
+    assert result["expectedListingDate"] == "2026-10-09"
+    assert result.get("allotmentAt") is None
+    assert result.get("listingAt") is None
+
+
 if __name__ == "__main__":
     test_maximum_price_is_not_final_price()
     test_price_range_and_chinese_maximum()
     test_missing_expected_dates_stay_empty()
-    print("PASS=3  FAIL=0  ERROR=0")
+    test_chinese_expected_timetable()
+    print("PASS=4  FAIL=0  ERROR=0")

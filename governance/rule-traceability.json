@@ -1,7 +1,28 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-07",
+  "lastReviewed": "2026-10-08",
   "rules": [
+    {
+      "id": "OPS-RECOVERY-001",
+      "title": "官方取消延期状态不得被普通公告重置且供股不创建IPO候选",
+      "implementation": { "file": "server/services/hkexIpo.js", "symbol": "upsertHkIpoFacts" },
+      "tests": [{ "file": "server/test/production-ops-recovery.test.js", "pattern": "普通公告不得撤销官方特殊状态" }],
+      "owner": "港股IPO", "status": "verified"
+    },
+    {
+      "id": "OPS-RECOVERY-002",
+      "title": "月频M2宽限覆盖整个第二个月并保留第三个月陈旧状态",
+      "implementation": { "file": "server/jobs/marketVolatilitySync.js", "symbol": "calculateM2MarketCap" },
+      "tests": [{ "file": "server/test/production-ops-recovery.test.js", "pattern": "月频宽限须覆盖整个第二个月" }],
+      "owner": "市场周期", "status": "verified"
+    },
+    {
+      "id": "OPS-RECOVERY-003",
+      "title": "HKIPOx空表必须有零项目声明与明确空表体证据",
+      "implementation": { "file": "server/services/hkIpoMarketSignals.js", "symbol": "parseHkIpoXHtml" },
+      "tests": [{ "file": "server/test/production-ops-recovery.test.js", "pattern": "加载失败不算空结果" }],
+      "owner": "港股IPO", "status": "verified"
+    },
     {
       "id": "TASK-CONTRACT-001",
       "title": "默认值合并前审计原始任务契约",
@@ -177,6 +198,10 @@
         {
           "file": "server/test/ops-alert-remediation-regression.test.js",
           "pattern": "每条数据集告警必须使用本数据集的目标分区日"
+        },
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "已核验核心快照不能产生次日 unknown 告警"
         }
       ],
       "owner": "运维治理",

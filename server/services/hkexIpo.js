@@ -439,6 +439,9 @@ function isReparsableAllotmentDocument(document) {
 
 function isUsableProspectusDocument(document) {
   if (!document || document.type !== 'prospectus' || !document.url) return false;
+  try { assertOfficialUrl(document.url); } catch (_) { return false; }
+  // 已发现的官方招股书先下载/重解析，不因尚无解析状态重复检索公告窗口。
+  if (/^(?:global offering|全球發售|全球发售)$/i.test(String(document.title || '').trim())) return true;
   if (document.parserStatus === 'parsed') return true;
   const evidence = document.parserEvidence || {};
   return Boolean(evidence.offerCloseAt && evidence.lotSizeShares);
@@ -1514,6 +1517,7 @@ function parsePredefinedDocumentHtml(html, { documentType = '', sourceUrl = '' }
   const docs = [];
   const add = (title, href, securityCode = null) => {
     if (!title && !href) return;
+    if (documentType === 'allotment_result' && /rights issue|rights shares|供股|配售|placing|share option/i.test(title || '')) return;
     docs.push({
       documentType: documentType || 'official_document',
       title,
@@ -1713,7 +1717,7 @@ function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
   const rightsIssueOnly = !row.offer_open_at && !row.offer_close_at && allotmentDocuments.length > 0
     && allotmentDocuments.every(document => {
       try { assertOfficialUrl(document.url); } catch (_) { return false; }
-      return /\bresults\s+of\s+(?:the\s+)?rights\s+issue\b|供股.*(?:結果|结果)/i.test(document.title || '');
+      return /\bright[s]?\s+issue\b|供股.*(?:結果|结果)/i.test(document.title || '');
     });
   if (rightsIssueOnly) {
     result.publicOfferEligibility = 'excluded';
@@ -1800,10 +1804,10 @@ async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targ
     qualityStatus: missing ? 'stale' : 'passed' };
 }
 
-async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}) {
+async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPool = pool } = {}) {
   const input = Array.isArray(rows) ? rows.filter(row => canonicalHkCode(row.securityCode)) : [];
   if (!input.length) return { ok: true, rows: 0, events: 0 };
-  const client = await pool.connect();
+  const client = await dbPool.connect();
   let events = 0;
   try {
     await client.query('BEGIN');
@@ -1842,7 +1846,7 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements' } = {}
           market_type=COALESCE(EXCLUDED.market_type,ipo_history.market_type),listing_date=COALESCE(EXCLUDED.listing_date,ipo_history.listing_date),
           ipo_date=COALESCE(EXCLUDED.ipo_date,ipo_history.ipo_date),market_code='HK',instrument_id=EXCLUDED.instrument_id,
           ipo_status=CASE
-            WHEN ipo_history.ipo_status IN ('introduction','gem_transfer','de_spac') THEN ipo_history.ipo_status
+            WHEN ipo_history.ipo_status IN ('introduction','gem_transfer','de_spac','cancelled','canceled','postponed') THEN ipo_history.ipo_status
             WHEN EXCLUDED.ipo_status='active' AND ipo_history.ipo_status IN ('priced','allotted','listed') THEN ipo_history.ipo_status
             ELSE EXCLUDED.ipo_status
           END,

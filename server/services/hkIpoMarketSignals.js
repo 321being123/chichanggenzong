@@ -251,6 +251,12 @@ function parseHkIpoXHtml(html) {
   const sectionStart = text.indexOf(heading[0]);
   const sectionEnd = text.indexOf('</section>', sectionStart);
   const section = text.slice(sectionStart, sectionEnd < 0 ? undefined : sectionEnd);
+  // 来源明确声明零项目且表体确认为空，才接受无新增；结构缺失仍失败。
+  if (/class=["'][^"']*\bcount\b[^"']*["'][^>]*>\s*\(0\)\s*</i.test(heading[0])
+    && /<table\b/i.test(section) && /<th\b[^>]*>\s*代码\s*<\/th>/i.test(section)
+    && /<th\b[^>]*>\s*认购倍数[\s\S]*?<\/th>/i.test(section)
+    && /<td\b[^>]*class=["']empty["'][^>]*>\s*暂无\s*<\/td>/i.test(section)
+    && !/data-label=["']代码["']/i.test(section)) return [];
   if (!/<table\b/i.test(section) || !/data-label=["']代码["']/i.test(section) || !/data-label=["']认购倍数["']/i.test(section)) {
     const error = new Error('HKIPOx 今日申购区块缺少预期数据列');
     error.code = 'UPSTREAM_FORMAT';

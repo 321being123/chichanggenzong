@@ -305,7 +305,7 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
        asset_class=EXCLUDED.asset_class,market=EXCLUDED.market,exchange_code=EXCLUDED.exchange_code,
        currency_code=EXCLUDED.currency_code,list_date=COALESCE(core.instruments.list_date,EXCLUDED.list_date),
        status=CASE
-                WHEN core.instruments.status IN ('introduction','gem_transfer','de_spac') THEN core.instruments.status
+                WHEN core.instruments.status IN ('introduction','gem_transfer','de_spac','cancelled','canceled','postponed') THEN core.instruments.status
                 WHEN core.instruments.status='listed' AND EXCLUDED.status<>'listed' THEN core.instruments.status
                 ELSE EXCLUDED.status
               END,

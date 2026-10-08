@@ -26,7 +26,14 @@ function request(url, binary, source = 'market-volatility', dataset = url) {
   }));
 }
 function dateStr(d) { return d.toISOString().slice(0, 10); }
-function parseHsiWorkbook(buffer) { return new Promise((resolve, reject) => {
+async function parseHsiWorkbook(buffer) {
+  if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+    const workbook = new (require('exceljs').Workbook)();
+    await workbook.xlsx.load(buffer);
+    if (!workbook.worksheets[0]) throw new Error('恒指 PE 文件没有工作表');
+    return workbook.worksheets[0].getSheetValues().slice(1).map(row => row.slice(1));
+  }
+  return new Promise((resolve, reject) => {
   // 官方文件为旧版 xls；通过 requirements.txt 中受控的 pandas/xlrd 解析，避免引入有高危漏洞的 Node xlsx 包。
   const code = "import sys,io,json,pandas as p; print(json.dumps(p.read_excel(io.BytesIO(sys.stdin.buffer.read()),header=None).fillna('').values.tolist(),default=str))";
   const localPython = path.join(__dirname, '..', '..', 'venv', 'Scripts', 'python.exe');
@@ -84,7 +91,7 @@ async function syncCsiIndexPe(benchmark, indexCode) {
   return written;
 }
 async function syncHsiPe() {
-  const b = await request('https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/monthly/pe/hsi.xls', true, 'hsi-official', 'monthly-pe');
+  const b = await request('https://www.hsi.com.hk/content/dam/wpb/hsil/index_operation/historical_pe/en_hk/hsi/hsi.xlsx', true, 'hsi-official', 'monthly-pe');
   const data = await parseHsiWorkbook(b); let count=0;
   for (const r of data.slice(3)) { const d = new Date(String(r[0])); const pe = Number(r[1]); if (Number.isNaN(d.getTime()) || !(pe > 0)) continue; const day = dateStr(d);
     await pool.query(`INSERT INTO market.market_valuation_daily(market_code,benchmark_code,trade_date,pe,source_code,source_date,raw_payload)
@@ -380,11 +387,11 @@ async function calculateM2MarketCap(options = {}) {
     const freshness = await m2MarketCapInputFreshness();
     if (!freshness.fresh) return { status: 'stale', rowCount: 0, freshness };
   }
-  const result = await pool.query(`INSERT INTO analytics.m2_market_cap_daily
+  const result = await (options.executor || pool.query.bind(pool))(`INSERT INTO analytics.m2_market_cap_daily
     (trade_date,m2_month,m2_100m_yuan,total_market_cap_100m_yuan,ratio_pct,data_status)
     SELECT c.trade_date,m.month,m.m2_100m_yuan,c.total_market_cap_100m_yuan,
       m.m2_100m_yuan/c.total_market_cap_100m_yuan*100,
-      CASE WHEN c.trade_date <= (m.month + INTERVAL '2 months') THEN 'normal' ELSE 'carried_forward' END
+      CASE WHEN date_trunc('month',c.trade_date) <= (m.month + INTERVAL '2 months') THEN 'normal' ELSE 'carried_forward' END
     FROM market.a_share_market_cap_daily c
     JOIN LATERAL (
       SELECT month,m2_100m_yuan FROM market.money_supply_monthly
@@ -483,7 +490,8 @@ async function runMarketVolatilitySync(context = {}) {
     if (!requested.size || requested.has('cycle_metrics') || requested.has('m2') || requested.has('a_share_market_cap') || requested.has('m2_market_cap')) {
       await runDataset('m2_market_cap', () => syncMarketCycleMetrics(false, { stages: ['m2_market_cap'] }));
     }
-    if (!failedDatasets.length) await calculateGraham();
+    // 各市场只使用已落库有效输入；恒指请求失败不能阻断 A 股派生计算。
+    await calculateGraham();
     const subdatasets = await readMarketSubdatasetFreshness(end).catch(error => ({ freshness_check: { status: 'failed', error: error.message } }));
     const staleSubdatasets = Object.entries(subdatasets).filter(([, item]) => item && item.status === 'stale').map(([code]) => code);
     staleSubdatasets.forEach(code => { if (!failedDatasets.includes(code)) failedDatasets.push(code); result[code] = { status: 'stale', ...subdatasets[code] }; });

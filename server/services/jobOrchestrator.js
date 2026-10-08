@@ -137,6 +137,9 @@ function datasetPartitionKeyForSlot(slot, result = {}, datasetCode = null) {
   const diagnosticMissingDates = Array.isArray(diagnostic.missingDates) ? diagnostic.missingDates
     : Array.isArray(diagnostic.missing_dates) ? diagnostic.missing_dates : [];
   const candidates = [
+    // 已发布分区是实际数据集作用域，业务对象的下一交易日不能覆盖它。
+    datasetPartition.published === true ? datasetPartition.partitionKey : null,
+    datasetPartition.published === true ? datasetPartition.partition_key : null,
     diagnostic.targetTradeDate,
     diagnostic.target_trade_date,
     diagnostic.partitionKey,

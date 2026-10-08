@@ -1117,6 +1117,7 @@ async function syncHkexProspectusFacts({
          OR (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date
          OR (data_completeness#>>'{prospectus,expectedEvents,allotmentDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date
          OR (data_completeness#>>'{prospectus,expectedEvents,listingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date
+         OR (data_completeness#>>'{prospectus,fields,issuePriceType}'='range' AND issue_price_low=issue_price_high)
          OR (offer_close_at IS NOT NULL AND offer_close_at::date < (timezone('Asia/Shanghai',now()))::date AND (
            (pricing_at IS NULL AND (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' IS NULL
              OR (data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}')::date <= (timezone('Asia/Shanghai',now()))::date))
@@ -1395,8 +1396,8 @@ async function syncHkexProspectusFacts({
       if (aggregate.issuePriceType === 'maximum_only') prospectusCompleteness.fields.issuePriceLow = 'maximum_only';
       await executor(`
         UPDATE public.ipo_history
-           SET issue_price_low=COALESCE(issue_price_low,$2),
-               issue_price_high=COALESCE(issue_price_high,$3),
+           SET issue_price_low=COALESCE($2,issue_price_low),
+               issue_price_high=COALESCE($3,issue_price_high),
                lot_size_shares=COALESCE(lot_size_shares,$4),
                offer_open_at=COALESCE(offer_open_at,$5::timestamptz),
                offer_close_at=COALESCE(offer_close_at,$6::timestamptz),
@@ -1873,7 +1874,12 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPoo
           offer_open_at=COALESCE(EXCLUDED.offer_open_at,ipo_history.offer_open_at),
           offer_close_at=COALESCE(EXCLUDED.offer_close_at,ipo_history.offer_close_at),pricing_at=COALESCE(EXCLUDED.pricing_at,ipo_history.pricing_at),
           allotment_at=COALESCE(EXCLUDED.allotment_at,ipo_history.allotment_at),listing_at=COALESCE(EXCLUDED.listing_at,ipo_history.listing_at),
-          issue_price_low=COALESCE(EXCLUDED.issue_price_low,ipo_history.issue_price_low),issue_price_high=COALESCE(EXCLUDED.issue_price_high,ipo_history.issue_price_high),
+          issue_price_low=CASE WHEN ipo_history.data_completeness#>>'{prospectus,fields,issuePriceType}'='range'
+            AND ipo_history.issue_price_low<ipo_history.issue_price_high THEN ipo_history.issue_price_low
+            ELSE COALESCE(EXCLUDED.issue_price_low,ipo_history.issue_price_low) END,
+          issue_price_high=CASE WHEN ipo_history.data_completeness#>>'{prospectus,fields,issuePriceType}'='range'
+            AND ipo_history.issue_price_low<ipo_history.issue_price_high THEN ipo_history.issue_price_high
+            ELSE COALESCE(EXCLUDED.issue_price_high,ipo_history.issue_price_high) END,
           issue_price_final=COALESCE(EXCLUDED.issue_price_final,ipo_history.issue_price_final),lot_size_shares=COALESCE(EXCLUDED.lot_size_shares,ipo_history.lot_size_shares),
           lot_amount_hkd=COALESCE(EXCLUDED.lot_amount_hkd,ipo_history.lot_amount_hkd),application_fee_hkd=COALESCE(EXCLUDED.application_fee_hkd,ipo_history.application_fee_hkd),
           brokerage_fee_hkd=COALESCE(EXCLUDED.brokerage_fee_hkd,ipo_history.brokerage_fee_hkd),public_offer_ratio=COALESCE(EXCLUDED.public_offer_ratio,ipo_history.public_offer_ratio),

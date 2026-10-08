@@ -58,6 +58,27 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
       const stored = (await client.query('SELECT h.ipo_status,i.status FROM public.ipo_history h JOIN core.instruments i USING(instrument_id) WHERE h.security_code=$1', [code])).rows[0];
       assert.deepStrictEqual(stored, { ipo_status: status, status }, '普通公告不得撤销官方特殊状态：' + status);
     }
+    const serviceSource = fs.readFileSync(require.resolve('../services/hkexIpo'), 'utf8');
+    const serviceContext = vm.createContext({ require: name => require(require.resolve(name, { paths: [require('path').dirname(require.resolve('../services/hkexIpo'))] })), module: { exports: {} }, exports: {}, process, console, Buffer, URL, __dirname: require('path').dirname(require.resolve('../services/hkexIpo')) });
+    vm.runInContext(serviceSource, serviceContext);
+    const url = 'https://www1.hkexnews.hk/listedco/listconews/sehk/2099/0101/2099010100001.pdf';
+    await client.query(`UPDATE public.ipo_history SET ipo_status='active',issue_price_low=3,issue_price_high=3,issue_price_final=2.5,
+      source_documents=$2::jsonb WHERE security_code=$1`, [code, JSON.stringify([{ type: 'prospectus', title: 'GLOBAL OFFERING', url }])]);
+    serviceContext.officialUrl = url;
+    vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('official fixture'),url:officialUrl}); parseHkexProspectusPdf=async()=>({parserStatus:'parsed',parserVersion:'hk-ipo-prospectus-v5',issuePriceLow:2,issuePriceHigh:3,issuePriceType:'range',lotSizeShares:100,offerOpenAt:'2099-01-01T09:00:00+08:00',offerCloseAt:'2099-01-02T12:00:00+08:00',expectedPricingDate:'2099-01-03',expectedAllotmentDate:'2099-01-04',expectedListingDate:'2099-01-05',evidence:{issuePrice:'official range 2 to 3'}})", serviceContext);
+    const options = { targetCodes: [code], executor: client.query.bind(client), fromDate: '2098-01-01', toDate: '2099-12-31' };
+    await serviceContext.module.exports.syncHkexProspectusFacts(options);
+    const prices = async () => (await client.query('SELECT issue_price_low::float8,issue_price_high::float8,issue_price_final::float8 FROM public.ipo_history WHERE security_code=$1', [code])).rows[0];
+    assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '官方范围纠正旧固定价且不覆盖实际最终价');
+    await upsertHkIpoFacts([{ securityCode: code, issuePriceLow: 2.5, issuePriceHigh: 2.5, issuePriceFinal: 2.5 }], { dbPool: transactionalPool });
+    assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '普通上市报表最终价不得回写已核验招股范围');
+    await client.query('UPDATE public.ipo_history SET issue_price_low=3 WHERE security_code=$1', [code]);
+    await serviceContext.module.exports.syncHkexProspectusFacts(options);
+    assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '未来招股项目的区间与存量固定价不一致必须重新核验');
+    await client.query('UPDATE public.ipo_history SET offer_close_at=NULL WHERE security_code=$1', [code]);
+    vm.runInContext("parseHkexProspectusPdf=async()=>{throw new Error('invalid official PDF')}", serviceContext);
+    await serviceContext.module.exports.syncHkexProspectusFacts(options);
+    assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '解析失败不得覆盖有效价格范围');
     await client.query("INSERT INTO market.money_supply_monthly(market_code,month,m2_100m_yuan,source_code) VALUES('CN','2099-08-01',1000,'ops-test')");
     await client.query("INSERT INTO market.a_share_market_cap_daily(trade_date,total_market_cap_100m_yuan,security_count,source_code) VALUES('2099-10-31',500,1000,'tushare_daily_basic'),('2099-11-01',500,1000,'tushare_daily_basic')");
     await calculateM2MarketCap({ executor: client.query.bind(client) });

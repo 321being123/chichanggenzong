@@ -3,6 +3,42 @@
   "lastReviewed": "2026-10-08",
   "rules": [
     {
+      "id": "OPS-RECOVERY-006",
+      "title": "systemd排空期间不得提前终止任务子进程",
+      "implementation": {
+        "file": "deploy/portfolio-worker.service",
+        "symbol": "KillMode=mixed"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-orchestration-regression.test.js",
+          "pattern": "systemd 停机先只通知主Worker"
+        }
+      ],
+      "owner": "任务治理",
+      "status": "verified"
+    },
+    {
+      "id": "OPS-RECOVERY-005",
+      "title": "已核验招股价区间纠正旧固定价且解析失败保留实际价格",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "syncHkexProspectusFacts"
+      },
+      "tests": [
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "官方范围纠正旧固定价且不覆盖实际最终价"
+        },
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "解析失败不得覆盖有效价格范围" }, { "file": "server/test/production-ops-recovery.test.js", "pattern": "普通上市报表最终价不得回写已核验招股范围"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
       "id": "OPS-RECOVERY-004",
       "title": "定向补全不得用局部统计冒充全市场质量且英文预计事件不写实际日期",
       "implementation": {

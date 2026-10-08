@@ -13,6 +13,8 @@ Environment=WORKER_DRAIN_TIMEOUT_MS=60000
 Environment=DISABLE_RUNTIME_MIGRATIONS=1
 # worker 进程承担全部后台调度（server/scheduler.js 单一注册表）；切勿设 DISABLE_SCHEDULER
 ExecStart=/usr/bin/node /opt/portfolio/server/worker.js
+# 先通知主 Worker 排空；默认 control-group 会同时终止仍在执行的任务子进程。
+KillMode=mixed
 TimeoutStopSec=50min
 Restart=always
 RestartSec=5

@@ -87,6 +87,7 @@ assert(/claimAlertDelivery/.test(alertMailer) && /status='sending'/.test(alertMa
 assert(/connectionTimeout: 10 \* 1000/.test(config) && /greetingTimeout: 10 \* 1000/.test(config) && /socketTimeout: 10 \* 1000/.test(config), 'SMTP 必须配置 10 秒超时');
 assert(/activeControllers\.forEach\(controller => controller\.abort\(\)/.test(orchestrator) && /stopWaiters/.test(orchestrator), 'Worker 停机必须先等待再中止超时任务');
 assert(/WORKER_DRAIN_TIMEOUT_MS/.test(read('server/worker.js')) && /TimeoutStopSec=50min/.test(read('deploy/portfolio-worker.service')), 'Worker 停机必须使用可配置排空窗口并由服务保留足够退出时间');
+assert(/^KillMode=mixed$/m.test(read('deploy/portfolio-worker.service')), 'systemd 停机先只通知主Worker，排空期间不得同时杀死任务子进程');
 assert(/WORKER_DRAIN_TIMEOUT_MS: '60000'/.test(read('deploy/ecosystem.config.js')) && /kill_timeout: 3000000/.test(read('deploy/ecosystem.config.js')), 'PM2 Worker 也必须使用同样的排空窗口');
 assert(/kill_timeout: 3000000/.test(read('deploy/ecosystem.config.js')) && /TimeoutStopSec=50min/.test(read('deploy/portfolio-worker.service')), '部署管理器必须覆盖最长任务的排空时间');
 assert(/systemctl stop portfolio-worker\.service/.test(deployScript) && /systemctl stop portfolio-server\.service/.test(deployScript) && /systemctl start portfolio-server\.service portfolio-worker\.service/.test(deployScript), '部署必须先停止服务再更新代码，完成后再启动');

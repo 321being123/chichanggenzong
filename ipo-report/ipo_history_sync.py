@@ -415,70 +415,157 @@ def upsert_shares(cur, records, as_of=None):
     return len([code for code in codes if code not in existing]), len([code for code in codes if code in existing])
 
 
-def _tencent_first_close(code, listing_date):
-    qt_code = resolve_provider_code(code, "tencent", "quote_symbol", asset_class="stock")
+def _tencent_first_close(code, listing_date, cur=None, instrument_id=None):
+    qt_code = resolve_provider_code(code, "tencent", "quote_symbol", asset_class="stock",
+                                    conn=cur.connection if cur is not None else None)
     if not qt_code:
         return None
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,30,qfq"
+    # 精确查询上市日未复权价格；较早上市的缺口不能落在最近30根日线之外。
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,{listing_date},{listing_date},1,"
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with guarded_urlopen(request, timeout=12, source="tencent", dataset=f"history-kline:{qt_code}:{listing_date}") as response:
         payload = json.loads(response.read().decode("utf-8"))
     data = payload.get("data", {})
-    days = (data.get(qt_code, {}).get("day") or
-            data.get(qt_code.replace("sh", "sz"), {}).get("day") or
-            data.get(qt_code.replace("sz", "sh"), {}).get("day") or [])
+    days = data.get(qt_code, {}).get("day") or []
     for item in days:
         if len(item) >= 3 and item[0] == listing_date:
-            return _positive(item[2])
+            close = _positive(item[2])
+            if close and cur is not None and instrument_id:
+                cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='tencent'")
+                source = cur.fetchone()
+                if not source:
+                    raise RuntimeError("缺少 tencent 数据源登记")
+                raw = json.dumps({"url": url, "price_basis": "unadjusted", "response": payload},
+                                 ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                cur.execute("""INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
+                               VALUES(%s,'daily',%s,%s::jsonb,%s)
+                               ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING""",
+                            (source[0], f"{qt_code}:{listing_date}", raw,
+                             hashlib.sha256(raw.encode("utf-8")).hexdigest()))
+                cur.execute("""INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,close)
+                               VALUES(%s,%s::date,%s,%s)
+                               ON CONFLICT(instrument_id,trade_date,source_id) DO NOTHING""",
+                            (instrument_id, listing_date, source[0], close))
+            return close
     return None
 
 
-def backfill_first_day(cur, now, raise_on_guard=False):
-    today = now.date()
+def backfill_first_day(cur, now, raise_on_guard=False, business_date=None, only_codes=None,
+                       retry_same_day=False, persist_progress=False):
+    now = _now_shanghai(now)
+    today = min(business_date or now.date(), now.date())
+    scope_sql = " AND h.security_code=ANY(%s::text[])" if only_codes is not None else ""
+    params = [today.isoformat()]
+    if only_codes is not None:
+        params.append(sorted(set(only_codes)))
     cur.execute("""
-      SELECT security_code,listing_date,issue_price,first_day_retry_count,first_day_last_attempt_at
-        FROM ipo_history
-       WHERE market_code='CN' AND listing_date <= %s AND ld_close_change IS NULL
-         AND issue_price IS NOT NULL
-       ORDER BY listing_date DESC,security_code
-    """, (today.isoformat(),))
-    updated = attempted = failed = 0
+      SELECT h.security_code,h.listing_date,h.issue_price,h.first_day_last_attempt_at,
+             h.instrument_id,b.close,b.source_id,b.ingested_at
+        FROM ipo_history h
+        LEFT JOIN LATERAL (
+          SELECT d.close,d.source_id,d.ingested_at FROM market.daily_bars d
+          JOIN ops.data_sources s ON s.source_id=d.source_id
+          WHERE d.instrument_id=h.instrument_id
+            AND d.trade_date=CASE WHEN h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN h.listing_date::date END
+            AND d.close>0 AND s.source_code IN ('tushare','tencent')
+          ORDER BY CASE s.source_code WHEN 'tushare' THEN 0 ELSE 1 END,d.ingested_at DESC LIMIT 1
+        ) b ON true
+       WHERE h.market_code='CN' AND h.listing_date ~ '^\\d{4}-\\d{2}-\\d{2}$'
+         AND h.listing_date <= %s AND h.ld_close_change IS NULL
+    """ + scope_sql + " ORDER BY h.listing_date DESC,h.security_code", tuple(params))
+    updated = attempted = local_updated = 0
     stopped = None
-    for row in cur.fetchall():
-        code, listing_text, issue_price, _, last_attempt = row
+    candidates = [row for row in cur.fetchall()
+                  if not (row[1] == now.date().isoformat() and now.time() < dt_time(15, 30))]
+    remaining = []
+
+    def save(row, close, origin):
+        code, listing_text, issue_price, _, instrument_id, _, source_id, ingested_at = row
+        if origin != "market.daily_bars":
+            cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code=%s", (origin,))
+            source_id = cur.fetchone()[0]
+        evidence = {"version": "ipo-first-day-v2", "trade_date": listing_text,
+                    "issue_price": float(issue_price), "close": float(close), "price_basis": "unadjusted",
+                    "origin": origin, "instrument_id": instrument_id,
+                    "source_id": source_id,
+                    "bar_ingested_at": str(ingested_at) if ingested_at else None}
+        change = round((float(close) - float(issue_price)) / float(issue_price) * 100, 2)
+        cur.execute("""UPDATE ipo_history SET ld_close_change=%s,first_day_last_attempt_at=now(),
+                         source_payload=COALESCE(source_payload,'{}'::jsonb) || %s::jsonb,
+                         updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS')
+                       WHERE security_code=%s AND market_code='CN' AND ld_close_change IS NULL""",
+                    (change, Json({"first_day_performance": evidence}), code))
+
+    # 全部本地恢复先完成，缺行情对象的Guard不能阻塞其余已入库事实。
+    for row in candidates:
+        if _positive(row[2]) and _positive(row[5]):
+            save(row, row[5], "market.daily_bars")
+            attempted += 1
+            updated += 1
+            local_updated += 1
+        else:
+            remaining.append(row)
+    if persist_progress:
+        cur.connection.commit()
+    for row in remaining:
+        code, listing_text, issue_price, last_attempt, instrument_id, _, _, _ = row
+        if not _positive(issue_price) or not instrument_id:
+            continue
+        if not retry_same_day and last_attempt and _now_shanghai(last_attempt).date() == now.date():
+            continue
         try:
-            listing = datetime.strptime(str(listing_text)[:10], "%Y-%m-%d").date()
-        except (TypeError, ValueError):
-            continue
-        if listing == today and now.time() < dt_time(15, 30):
-            continue
-        if last_attempt and _now_shanghai(last_attempt).date() == today:
-            continue
-        attempted += 1
-        try:
-            close = _tencent_first_close(code, listing.isoformat())
+            close = (_tushare_first_close(code, listing_text, cur, instrument_id)
+                     if _market_fields(code)[0] == "北交所"
+                     else _tencent_first_close(code, listing_text, cur, instrument_id))
         except ExternalCallGuardError as exc:
             if raise_on_guard:
                 raise
             stopped = {"code": exc.code, "recover_at": _recover_at_text(exc.recover_at)}
-            attempted -= 1
             break
-        except Exception:
+        except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
             close = None
-        if close and float(issue_price) > 0:
-            change = round((close - float(issue_price)) / float(issue_price) * 100, 2)
-            cur.execute("""
-              UPDATE ipo_history SET ld_close_change=%s,first_day_last_attempt_at=now(),
-                updated_at=to_char(now(),'YYYY-MM-DD HH24:MI:SS') WHERE security_code=%s
-            """, (change, code))
+        attempted += 1
+        if close:
+            save(row, close, "tushare" if _market_fields(code)[0] == "北交所" else "tencent")
             updated += 1
         else:
-            cur.execute("""
-              UPDATE ipo_history SET first_day_retry_count=COALESCE(first_day_retry_count,0)+1,
-                first_day_last_attempt_at=now() WHERE security_code=%s
-            """, (code,))
-            failed += 1
-    return {"attempted": attempted, "updated": updated, "pending": failed, "stopped": stopped}
+            cur.execute("""UPDATE ipo_history SET first_day_retry_count=COALESCE(first_day_retry_count,0)+1,
+                             first_day_last_attempt_at=now() WHERE security_code=%s""", (code,))
+        if persist_progress:
+            cur.connection.commit()
+    return {"attempted": attempted, "updated": updated, "local_updated": local_updated,
+            "pending": len(candidates) - updated, "stopped": stopped}
+
+
+def _tushare_first_close(code, listing_date, cur, instrument_id):
+    """北交所腾讯历史日线实测为空；复用Tushare daily和统一身份/Guard精确补缺。"""
+    ts_code = resolve_provider_code(code, "tushare", "ts_code", asset_class="stock", conn=cur.connection)
+    if not ts_code:
+        return None
+    target = listing_date.replace("-", "")
+    rows = tushare_query("daily", {"ts_code": ts_code, "start_date": target, "end_date": target},
+                         "ts_code,trade_date,open,high,low,close,vol,amount")
+    for item in rows or []:
+        if item.get("ts_code") != ts_code or _date_text(item.get("trade_date")) != listing_date:
+            continue
+        close = _positive(item.get("close"))
+        if not close:
+            continue
+        cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")
+        source = cur.fetchone()
+        if not source:
+            raise RuntimeError("缺少 tushare 数据源登记")
+        raw = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        cur.execute("""INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
+                       VALUES(%s,'daily',%s,%s::jsonb,%s)
+                       ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO NOTHING""",
+                    (source[0], f"{ts_code}:{target}", raw, hashlib.sha256(raw.encode("utf-8")).hexdigest()))
+        cur.execute("""INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,close)
+                       VALUES(%s,%s::date,%s,%s)
+                       ON CONFLICT(instrument_id,trade_date,source_id) DO NOTHING""",
+                    (instrument_id, listing_date, source[0], close))
+        return close
+    return None
 
 
 def normalize_stored_details(cur, today, target_date=None):
@@ -1377,6 +1464,16 @@ def run(today=None, mode="core"):
     try:
         if mode in ("prediction_ready", "enrichment"):
             with connection.cursor() as cur:
+                first_day = {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
+                if mode == "enrichment":
+                    try:
+                        first_day = backfill_first_day(cur, _now_shanghai(), raise_on_guard=True, business_date=today,
+                                                       persist_progress=True)
+                    except ExternalCallGuardError:
+                        connection.commit()
+                        raise
+                    # 首日表现独立提交，后续资料超时或交易日历缺口不回滚它。
+                    connection.commit()
                 target_date = next_trade_date(cur, today)
                 local_profile = fill_target_details_from_local(cur, target_date, today)
                 normalized = normalize_stored_details(cur, today)
@@ -1385,7 +1482,7 @@ def run(today=None, mode="core"):
                     "current_security_codes": target_codes,
                     "target_date": target_date,
                 }
-                # 当前发行资料先于首日表现和历史欠账，避免共享请求保护被低优先级任务占用。
+                # 首日表现已独立提交；资料阶段仍优先处理当前发行对象，再补历史欠账。
                 try:
                     if mode == "prediction_ready" and not target_codes:
                         enrichment = {
@@ -1408,11 +1505,6 @@ def run(today=None, mode="core"):
                             include_result_fields=mode == "enrichment",
                             raise_on_guard=True,
                             persist_progress=True,
-                        )
-                        first_day = (
-                            {"attempted": 0, "updated": 0, "pending": 0, "stopped": None}
-                            if mode == "prediction_ready"
-                            else backfill_first_day(cur, _now_shanghai(), raise_on_guard=True)
                         )
                 except ExternalCallGuardError:
                     # 已完成的资料补全先提交；随后把原始 Guard 错误交给 Node/Worker 进入 waiting_external。
@@ -1504,14 +1596,16 @@ def main():
     parser.add_argument("--today", help="测试用业务日期 YYYY-MM-DD")
     parser.add_argument("--mode", choices=("core", "prediction_ready", "enrichment"), default="core")
     parser.add_argument("--target-codes", default="", help="仅预览指定代码的资料缺口，逗号分隔")
-    parser.add_argument("--target-fields", default="", help="定向重解析的字段，支持 business_exposure、industry")
+    parser.add_argument("--target-fields", default="", help="定向字段，支持 business_exposure、industry、ld_close_change（首日涨幅独立阶段）")
     parser.add_argument("--apply-targeted", action="store_true", help="对 --target-codes 执行定向补齐；生产使用前必须备份并取得授权")
     parser.add_argument("--confirm-production", action="store_true", help="生产定向补齐确认；必须同时取得用户授权")
     args = parser.parse_args()
     target_codes = [item.strip().split('.')[0] for item in args.target_codes.split(',') if item.strip()]
     target_fields = [item.strip() for item in args.target_fields.split(',') if item.strip()]
-    if set(target_fields) - {"business_exposure", "industry"}:
-        parser.error("--target-fields 仅支持 business_exposure、industry")
+    if set(target_fields) - {"business_exposure", "industry", "ld_close_change"}:
+        parser.error("--target-fields 仅支持 business_exposure、industry、ld_close_change")
+    if "ld_close_change" in target_fields and target_fields != ["ld_close_change"]:
+        parser.error("ld_close_change 是独立首日表现阶段，不可混合资料字段")
     if target_fields and not target_codes:
         parser.error("--target-fields 必须同时传入 --target-codes")
     if target_fields and not args.apply_targeted:
@@ -1536,6 +1630,27 @@ def main():
                 } for row in rows]
                 if not args.apply_targeted:
                     print(json.dumps({"ok": True, "mode": "preview", "targets": preview}, ensure_ascii=False, default=str))
+                    return
+                if target_fields == ["ld_close_change"]:
+                    today = date.fromisoformat(args.today) if args.today else _today_shanghai()
+                    result = backfill_first_day(cur, _now_shanghai(), business_date=today, only_codes=target_codes,
+                                               retry_same_day=True, persist_progress=True)
+                    cur.execute("""SELECT security_code FROM ipo_history WHERE market_code='CN'
+                                   AND security_code=ANY(%s::text[]) AND ld_close_change IS NOT NULL""",
+                                (target_codes,))
+                    completed = {row[0] for row in cur.fetchall()}
+                    result["remaining_codes"] = sorted(set(target_codes) - completed)
+                    stage_complete = not result["remaining_codes"] and result["stopped"] is None
+                    connection.commit()
+                    print(json.dumps({
+                        "ok": stage_complete, "mode": "targeted", "stageComplete": stage_complete,
+                        "status": "succeeded" if stage_complete else "partial",
+                        "error": None if stage_complete else "定向首日涨幅未完整处理全部目标",
+                        "codes": target_codes, "targetFields": target_fields, "result": result,
+                        "first_day": result, "publishDatasets": False, "publishDatasetCodes": [],
+                        "externalCalls": get_external_call_stats()["total"],
+                        "externalSources": get_external_call_stats()["sources"],
+                    }, ensure_ascii=False, default=str))
                     return
                 result = enrich_stock_missing_details(
                     cur, date.fromisoformat(args.today) if args.today else _today_shanghai(),

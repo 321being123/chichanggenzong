@@ -220,7 +220,9 @@ console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事�
         const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
         queueMicrotask(() => {
           child.stdout.emit('data', Buffer.from(JSON.stringify({
-            ok: true, mode: 'targeted', stageComplete: true, codes: ['301569'], targetFields: ['industry'],
+            ok: true, mode: 'targeted', stageComplete: true,
+            codes: args[args.indexOf('--target-codes') + 1].split(','),
+            targetFields: args[args.indexOf('--target-fields') + 1].split(','),
           })));
           child.emit('close', 0);
         });
@@ -244,4 +246,15 @@ console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事�
     mode: 'targeted', targetCodes: ['301569'], targetFields: ['industry'],
   }), true, '实际Runner返回值必须满足原targeted完成契约');
   console.log('IPO targeted Runner retains industry field scope and completion evidence');
+  const firstDayResult = await sandbox.module.exports.runIpoHistorySync('manual-first-day', '2026-09-30', {
+    mode: 'targeted', targetCodes: ['001246', '301716'], targetFields: ['ld_close_change'],
+  });
+  assert.strictEqual(valueOf('--target-fields'), 'ld_close_change', '首日涨幅独立阶段不能扩大为资料补全');
+  assert.strictEqual(valueOf('--target-codes'), '001246,301716');
+  assert.strictEqual(valueOf('--today'), '2026-09-30');
+  assert.strictEqual(firstDayResult.mode, 'targeted');
+  assert.strictEqual(stageCompletionEvidence(getJobDefinition('ipo_history_sync'), firstDayResult, {
+    mode: 'targeted', targetCodes: ['001246', '301716'], targetFields: ['ld_close_change'],
+  }), true, '首日涨幅须满足原定向范围和阶段完成契约');
+  console.log('IPO first-day Runner retains exact target codes, date and field scope');
 })().catch(error => { console.error(error); process.exitCode = 1; });

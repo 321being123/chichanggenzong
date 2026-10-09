@@ -729,6 +729,151 @@ try:
     check("补全阶段告警计数排除北交所和有证据的待披露PE",
           policy_result["remaining_by_field"]["industry_pe"] == 1
           and policy_result["diagnostic_summary"]["non_alerting_industry_pe"] == ["920998", "999997"])
+    # IPO-FIRST-DAY-001：真实PG覆盖精确日期、本地优先、失败保留和未完成计数。
+    cur.execute("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")
+    first_source = cur.fetchone()[0]
+    first_codes = ['969981', '969982', '969983', '969984']
+    first_ids = {}
+    for code in first_codes:
+        first_ids[code] = sync.ensure_instrument(code + '.SZ', name='首日回归' + code, conn=conn)['instrument_id']
+        cur.execute("""INSERT INTO ipo_history(security_code,security_name,market_code,listing_date,issue_price,instrument_id,source_payload)
+                       VALUES(%s,'首日回归','CN','2026-09-30',20,%s,'{"keep":"original"}')
+                       ON CONFLICT(security_code) DO UPDATE SET market_code='CN',listing_date='2026-09-30',
+                         issue_price=20,instrument_id=EXCLUDED.instrument_id,ld_close_change=NULL,
+                         first_day_last_attempt_at=NULL,source_payload=EXCLUDED.source_payload""", (code, first_ids[code]))
+    for code, close in [('969981', 10), ('969982', 20)]:
+        cur.execute("""INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,close)
+                       VALUES(%s,'2026-09-30',%s,%s) ON CONFLICT(instrument_id,trade_date,source_id)
+                       DO UPDATE SET close=EXCLUDED.close""", (first_ids[code], first_source, close))
+    cur.execute("INSERT INTO market.daily_bars(instrument_id,trade_date,source_id,close) VALUES(%s,'2026-09-29',%s,999)",
+                (first_ids['969981'], first_source))
+    saved_close_fetch = sync._tencent_first_close
+    saved_clock = sync._now_shanghai
+    sync._now_shanghai = lambda value=None: saved_clock(value or datetime(2026, 10, 9, 20))
+    def no_external(*args):
+        raise AssertionError('库内首日完整时不应联网')
+    sync._tencent_first_close = no_external
+    try:
+        local_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 20), only_codes=first_codes[:2])
+        cur.execute("SELECT security_code,ld_close_change,source_payload FROM ipo_history WHERE security_code=ANY(%s) ORDER BY security_code", (first_codes[:2],))
+        local_rows = cur.fetchall()
+        check('首日涨幅精确复用标准行情且保留零负收益及来源证据',
+              local_first['local_updated'] == 2 and local_first['pending'] == 0
+              and [row[1] for row in local_rows] == [-50.0, 0.0]
+              and all(row[2]['keep'] == 'original' and row[2]['first_day_performance']['trade_date'] == '2026-09-30' for row in local_rows))
+        repeat_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 20), only_codes=first_codes[:2])
+        check('首日涨幅重复补跑不联网不覆盖有效值', repeat_first['attempted'] == 0 and repeat_first['updated'] == 0)
+        cur.execute("UPDATE ipo_history SET first_day_last_attempt_at='2026-10-09 10:00:00+08' WHERE security_code='969983'")
+        deferred_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 20), only_codes=['969983'])
+        check('首日同日等待对象仍计未完成不能空跑假成功', deferred_first['attempted'] == 0 and deferred_first['pending'] == 1)
+        cur.execute("UPDATE ipo_history SET ld_close_change=NULL WHERE security_code='969981'")
+        def first_guard(*args):
+            raise sync.ExternalCallGuardError('CIRCUIT_OPEN', '首日保护测试', 'tencent', 'history-kline')
+        sync._tencent_first_close = first_guard
+        guard_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 20), only_codes=['969981', '969984'])
+        cur.execute("SELECT ld_close_change FROM ipo_history WHERE security_code='969981'")
+        check('首日Guard停止仍先恢复其他库内对象并保留剩余量',
+              guard_first['updated'] == 1 and guard_first['pending'] == 1 and guard_first['stopped']['code'] == 'CIRCUIT_OPEN'
+              and cur.fetchone()[0] == -50)
+        historical_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 20), business_date=date(2026, 9, 29), only_codes=first_codes)
+        check('首日回填遵守Runner目标日不借当前日期扩范围', historical_first['pending'] == 0 and historical_first['attempted'] == 0)
+        cur.execute("UPDATE ipo_history SET listing_date='2026-10-09' WHERE security_code='969984'")
+        intraday_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 14), only_codes=['969984'])
+        check('上市当日收盘前不把盘中价格当首日收盘', intraday_first['attempted'] == 0 and intraday_first['pending'] == 0)
+    finally:
+        sync._tencent_first_close = saved_close_fetch
+        sync._now_shanghai = saved_clock
+
+    # 同一腾讯适配器只接受正确证券、正确日和未复权字段，并保存完整响应。
+    class FirstCloseResponse:
+        def __init__(self, payload):
+            self.payload = payload
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self):
+            return json.dumps(self.payload).encode('utf-8')
+    saved_urlopen, saved_provider = sync.guarded_urlopen, sync.resolve_provider_code
+    first_urls = []
+    payload_first = {'data': {'sz969984': {'day': [['2026-10-09', '20', '25', '26', '19', '100']]}}}
+    def first_urlopen(request, **kwargs):
+        first_urls.append(request.full_url)
+        return FirstCloseResponse(payload_first)
+    sync.resolve_provider_code = lambda *args, **kwargs: 'sz969984'
+    sync.guarded_urlopen = first_urlopen
+    try:
+        exact_close = sync._tencent_first_close('969984', '2026-10-09', cur, first_ids['969984'])
+        cur.execute("SELECT payload FROM ops.raw_records WHERE dataset_code='daily' AND source_key='sz969984:2026-10-09'")
+        first_raw = cur.fetchone()[0]
+        check('腾讯首日精确查询未复权价格并将原响应及标准行情落库',
+              exact_close == 25 and ',day,2026-10-09,2026-10-09,1' in first_urls[-1]
+              and 'qfq' not in first_urls[-1] and first_raw['response'] == payload_first)
+        payload_first = {'data': {'sh969984': {'day': [['2026-10-09', '20', '999']]},
+                                  'sz969984': {'qfqday': [['2026-10-09', '20', '999']]}}}
+        check('腾讯首日拒绝跨市场身份与复权价格冒充原始收盘', sync._tencent_first_close('969984', '2026-10-09') is None)
+    finally:
+        sync.guarded_urlopen, sync.resolve_provider_code = saved_urlopen, saved_provider
+
+    bse_id = sync.ensure_instrument('920996.BJ', name='北交所首日测试', conn=conn)['instrument_id']
+    cur.execute("""INSERT INTO ipo_history(security_code,security_name,market_code,listing_date,issue_price,instrument_id)
+                   VALUES('920996','北交所首日测试','CN','2026-09-30',20,%s)
+                   ON CONFLICT(security_code) DO UPDATE SET listing_date='2026-09-30',market_code='CN',
+                     issue_price=20,instrument_id=EXCLUDED.instrument_id,ld_close_change=NULL,first_day_last_attempt_at=NULL""", (bse_id,))
+    saved_provider, saved_query = sync.resolve_provider_code, sync.tushare_query
+    sync.resolve_provider_code = lambda *args, **kwargs: '920996.BJ'
+    first_daily_calls = []
+    def bse_daily(api, params, fields):
+        first_daily_calls.append((api, params))
+        return [{'ts_code': '920995.BJ', 'trade_date': '20260930', 'close': 999},
+                {'ts_code': '920996.BJ', 'trade_date': '20260929', 'close': 999},
+                {'ts_code': '920996.BJ', 'trade_date': '20260930', 'close': 25}]
+    sync.tushare_query, sync._tencent_first_close = bse_daily, no_external
+    try:
+        bse_first = sync.backfill_first_day(cur, datetime(2026, 10, 9, 20), only_codes=['920996'])
+        cur.execute("SELECT ld_close_change FROM ipo_history WHERE security_code='920996'")
+        check('北交所首日缺口使用统一Tushare日行情并严格隔离证券和日期',
+              bse_first['updated'] == 1 and bse_first['pending'] == 0 and cur.fetchone()[0] == 25
+              and first_daily_calls == [('daily', {'ts_code': '920996.BJ', 'start_date': '20260930', 'end_date': '20260930'})])
+        cur.execute("SELECT count(*) FROM ops.raw_records WHERE dataset_code='daily' AND source_key='920996.BJ:20260930'")
+        check('北交所首日采集留原始响应和标准行情便于复用', cur.fetchone()[0] == 1)
+    finally:
+        sync.resolve_provider_code, sync.tushare_query, sync._tencent_first_close = saved_provider, saved_query, saved_close_fetch
+
+    class FirstStageConnection:
+        def __init__(self):
+            self.events = []
+        def cursor(self):
+            return self
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def commit(self):
+            self.events.append('commit')
+        def rollback(self):
+            self.events.append('rollback')
+        def close(self):
+            pass
+    first_connection = FirstStageConnection()
+    saved_connect, saved_backfill, saved_trade = sync.pg_connect, sync.backfill_first_day, sync.next_trade_date
+    sync.pg_connect = lambda: first_connection
+    def stage_first(*args, **kwargs):
+        first_connection.events.append(('first_day', kwargs['business_date']))
+        return {'attempted': 1, 'updated': 1, 'pending': 0, 'stopped': None}
+    def stage_calendar(*args):
+        first_connection.events.append('calendar')
+        raise RuntimeError('后续阶段失败')
+    sync.backfill_first_day, sync.next_trade_date = stage_first, stage_calendar
+    try:
+        try:
+            sync.run(date(2026, 9, 30), 'enrichment')
+        except RuntimeError:
+            pass
+        check('首日表现先于历史资料独立提交且后续失败不回滚',
+              first_connection.events[:3] == [('first_day', date(2026, 9, 30)), 'commit', 'calendar'])
+    finally:
+        sync.pg_connect, sync.backfill_first_day, sync.next_trade_date = saved_connect, saved_backfill, saved_trade
     conn.rollback()
     cur.close()
     conn.close()

@@ -1,6 +1,12 @@
 // ========== 打新日历前端（读取 /api/ipo/*） ==========
 // 依赖：utils.js 的 api()/escapeHtml()，core-quote.js 的 showToast()
 
+// 标签、请求和内容共用同一状态；请求序号防止旧响应（含同市场分页）覆盖新选择。
+var ipoHistoryType = 'stock';
+var ipoHistoryRequestId = 0;
+var ipoCalendarMarket = 'CN';
+var ipoCalendarRequestId = 0;
+
 function ipoFmt(v, unit) {
   if (v === null || v === undefined || v === '') return '-';
   if (typeof v === 'string' && (/^nan$/i.test(v.trim()) || /^NaN$/i.test(v.trim()))) return '-';
@@ -392,31 +398,37 @@ function ipoHistoryHeaderCell(label) {
 
 // 主入口
 async function loadIpo() {
-  var calendar = document.getElementById('ipo-calendar');
-  if (calendar) calendar.innerHTML = '<div class="empty-state">加载中...</div>';
+  var initialMarket = ipoCalendarMarket;
+  var initialCalendar = ipoSwitchMarket(initialMarket);
+  ipoLoadHistory(ipoHistoryType);
   try {
     var rr = await fetch(api('/api/ipo/report'));
     if (!rr.ok) throw new Error('日报接口返回 ' + rr.status);
     var rep = await rr.json();
     var adv = document.getElementById('ipo-advice');
-    var rc = await fetch(api('/api/ipo/calendar?days=90&market=CN'));
-    if (!rc.ok) throw new Error('日历接口返回 ' + rc.status);
-    var cal = await rc.json();
+    var cal;
+    if (initialMarket === 'CN') {
+      cal = await initialCalendar;
+      if (!cal) throw new Error('日历读取失败');
+    } else {
+      var rc = await fetch(api('/api/ipo/calendar?days=90&market=CN'));
+      if (!rc.ok) throw new Error('日历接口返回 ' + rc.status);
+      cal = await rc.json();
+    }
     if (adv) adv.innerHTML = ipoRenderAdvice(rep && rep.md, {
       reportDate: rep && rep.report_date,
       summary: rep && rep.summary,
       calendar: cal && cal.calendar
     });
-    if (calendar) calendar.innerHTML = ipoRenderCalendar(cal.calendar || [], cal.pending_hk_stocks || []);
-    ipoLoadHistory('stock');
   } catch (e) {
     var advError = document.getElementById('ipo-advice');
     if (advError) advError.innerHTML = ipoRenderAdviceStatus('打新建议暂不可用', '日报读取失败，请稍后重试或在后台补跑打新日报。');
-    if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
 }
 
 async function ipoSwitchMarket(market) {
+  ipoCalendarMarket = market;
+  var requestId = ++ipoCalendarRequestId;
   document.querySelectorAll('[data-ipo-market]').forEach(function (b) {
     b.classList.toggle('active', b.getAttribute('data-ipo-market') === market);
   });
@@ -426,8 +438,11 @@ async function ipoSwitchMarket(market) {
     var r = await fetch(api('/api/ipo/calendar?days=90&market=' + encodeURIComponent(market)));
     if (!r.ok) throw new Error('日历接口返回 ' + r.status);
     var d = await r.json();
+    if (requestId !== ipoCalendarRequestId) return d;
     if (calendar) calendar.innerHTML = ipoRenderCalendar(d.calendar || [], d.pending_hk_stocks || []);
+    return d;
   } catch (e) {
+    if (requestId !== ipoCalendarRequestId) return;
     if (calendar) calendar.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
 }
@@ -648,13 +663,21 @@ async function ipoLoadHistory(type) {
 }
 
 async function ipoLoadHistoryPage(type, offset) {
+  ipoHistoryType = type;
+  var requestId = ++ipoHistoryRequestId;
+  document.querySelectorAll('[data-ipo-hist]').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-ipo-hist') === type);
+  });
   var el = document.getElementById('ipo-history');
   if (el) el.innerHTML = '<div class="empty-state">加载中...</div>';
   try {
     var pageSize = 200;
     var pageOffset = Math.max(Number(offset) || 0, 0);
     var r = await fetch(api('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset));
+    if (!r.ok) throw new Error('历史接口返回 ' + r.status);
     var d = await r.json();
+    if (requestId !== ipoHistoryRequestId) return;
+    if (d.type !== type) throw new Error('历史接口返回的市场与所选市场不一致');
     if (el) {
       var html = ipoRenderHistory(type, d.rows || []);
       if ((type === 'hk_stock' || type === 'stock') && Number(d.total) > 0) {
@@ -670,6 +693,7 @@ async function ipoLoadHistoryPage(type, offset) {
       if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-ipo', top: '.nav' });
     }
   } catch (e) {
+    if (requestId !== ipoHistoryRequestId) return;
     if (el) el.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
   }
 }
@@ -779,9 +803,6 @@ function ipoRenderHistory(type, rows) {
 }
 
 function ipoSwitchHist(type) {
-  document.querySelectorAll('[data-ipo-hist]').forEach(function (b) {
-    b.classList.toggle('active', b.getAttribute('data-ipo-hist') === type);
-  });
   if (window.SiteTelemetry) window.SiteTelemetry.trackEvent('filter_apply', { page_key: 'ipo.calendar', module: 'ipo', entry: 'history', properties: { filter_name: 'history_' + type } });
-  ipoLoadHistory(type);
+  return ipoLoadHistory(type);
 }

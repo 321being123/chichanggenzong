@@ -103,6 +103,24 @@ def test_prices_require_currency_and_chinese_bounds_override_dates():
         assert result["issuePriceLow"] == result["issuePriceHigh"] == 2.68
 
 
+def test_spaced_cover_security_code_and_sentence_price():
+    for label, raw, expected in (
+        ("Stock Code", "2 5 7 9", "02579.HK"),
+        ("Stock Code", "2 6 2 7", "02627.HK"),
+        ("Stock Code", "9 9 71", "09971.HK"),
+        ("股份代號", "2 6 5 0", "02650.HK"),
+        ("Stock code", "2546", "02546.HK"),
+        ("Stock Code", "2 6 2 8", "02628.HK"),
+    ):
+        result = parse_prospectus_text(f"{label}: {raw} GLOBAL OFFERING")
+        assert result["securityCode"] == expected
+        assert raw in result["evidence"]["securityCode"]
+    for text in ("Stock Code: 123456 GLOBAL OFFERING", "Company number 2 5 7 9 GLOBAL OFFERING"):
+        assert parse_prospectus_text(text)["securityCode"] is None
+    result = parse_prospectus_text("Stock code: 2546. The Offer Price will not be more than HK$4.51 and is currently expected to be not less than HK$4.10. Investors applying for the Hong Kong Offer Shares")
+    assert (result["issuePriceLow"], result["issuePriceHigh"]) == (4.10, 4.51)
+
+
 if __name__ == "__main__":
     test_maximum_price_is_not_final_price()
     test_price_range_and_chinese_maximum()
@@ -111,4 +129,5 @@ if __name__ == "__main__":
     test_english_month_first_timetable_and_prose_bounds()
     test_invalid_month_first_date_does_not_publish()
     test_prices_require_currency_and_chinese_bounds_override_dates()
-    print("PASS=7  FAIL=0  ERROR=0")
+    test_spaced_cover_security_code_and_sentence_price()
+    print("PASS=8  FAIL=0  ERROR=0")

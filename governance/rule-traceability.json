@@ -1,7 +1,27 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-08",
+  "lastReviewed": "2026-10-09",
   "rules": [
+    {
+      "id": "OPS-RECOVERY-010",
+      "title": "港股招股封面分隔数字合并且真实证券身份冲突仍拒绝写入",
+      "implementation": {
+        "file": "server/scripts/extractHkIpoProspectus.py",
+        "symbol": "parse_prospectus_text"
+      },
+      "tests": [
+        {
+          "file": "server/test/test_hk_ipo_prospectus_parser.py",
+          "pattern": "test_spaced_cover_security_code_and_sentence_price"
+        },
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "真实身份不符仍必须阻止跨证券写入"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
     {
       "id": "OPS-RECOVERY-009",
       "title": "当前完整官方招股事实优先于PDF重拉且身份隔离",

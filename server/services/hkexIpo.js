@@ -1289,7 +1289,7 @@ async function syncHkexProspectusFacts({
           const cachedUrl = assertOfficialUrl(document.fileLink);
           const persisted = await executor(`SELECT payload FROM ops.raw_records
              WHERE source_id=$1 AND dataset_code=$2 AND source_key=$3
-               AND payload#>>'{parser,parserVersion}'='hk-ipo-prospectus-v6'
+               AND payload#>>'{parser,parserVersion}'='hk-ipo-prospectus-v7'
                AND payload#>>'{parser,parserStatus}'='parsed'
              ORDER BY ingested_at DESC LIMIT 1`, [source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, `${code}|${cachedUrl}`]);
           let payload = persisted.rows[0]?.payload;

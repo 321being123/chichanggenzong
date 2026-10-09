@@ -329,7 +329,7 @@ def parse_prospectus_text(text):
     normalized = _normalize(text)
     result = {
         "parserStatus": "incomplete",
-        "parserVersion": "hk-ipo-prospectus-v6",
+        "parserVersion": "hk-ipo-prospectus-v7",
         "securityCode": None,
         "issuePriceLow": None,
         "issuePriceHigh": None,
@@ -350,9 +350,12 @@ def parse_prospectus_text(text):
         result["sponsorGroup"] = sponsor_group
         result["evidence"]["sponsorGroup"] = sponsor_evidence
 
-    code = re.search(r"(?:股份代號|Stock\s*Code)\s*[:：]?\s*(\d{1,5})", normalized, flags=re.IGNORECASE)
+    # 封面排版会把同一证券代码拆成“2 5 7 9”或“9 9 71”。
+    # 只合并明确代码标签后的数字，且拒绝超过五位的代码，不能截取首位。
+    code = re.search(r"(?:股份代號|Stock\s*Code)\s*[:：]?\s*(\d(?:\s*\d){0,4})(?!\s*\d)", normalized, flags=re.IGNORECASE)
     if code:
-        result["securityCode"] = f"{int(code.group(1)):05d}.HK"
+        result["securityCode"] = f"{int(re.sub(r'\s+', '', code.group(1))):05d}.HK"
+        result["evidence"]["securityCode"] = _snippet(normalized, code.start(), code.end())
 
     price_match = re.search(
         r"(?:(?<!最高)發售價|(?<!Maximum )Offer\s+Price)[^0-9]{0,100}"
@@ -380,8 +383,8 @@ def parse_prospectus_text(text):
 
     # 同一句明确的上下界优先于单个 Offer Price 数字；不能把最高价写成固定发行价。
     bounds = re.search(
-        r"Offer\s+Price\s+will\s+not\s+be\s+more\s+than\s+HK\$([\d.]+)"
-        r"[^.]{0,160}?expected\s+to\s+be\s+not\s+less\s+than\s+HK\$([\d.]+)",
+        r"Offer\s+Price\s+will\s+not\s+be\s+more\s+than\s+HK\$(\d+(?:\.\d+)?)"
+        r"[^.]{0,160}?expected\s+to\s+be\s+not\s+less\s+than\s+HK\$(\d+(?:\.\d+)?)",
         normalized, flags=re.IGNORECASE,
     )
     if bounds:
@@ -392,7 +395,7 @@ def parse_prospectus_text(text):
             result["evidence"]["issuePrice"] = _snippet(normalized, bounds.start(), bounds.end())
 
     chinese_bounds = re.search(
-        r"發售價將不高於每股發售股份\s*([\d.]+)\s*港元[^。]{0,100}?不會低於每股發售股份\s*([\d.]+)\s*港元",
+        r"發售價將不高於每股發售股份\s*(\d+(?:\.\d+)?)\s*港元[^。]{0,100}?不會低於每股發售股份\s*(\d+(?:\.\d+)?)\s*港元",
         normalized,
     )
     if chinese_bounds:

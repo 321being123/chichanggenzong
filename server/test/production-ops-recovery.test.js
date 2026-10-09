@@ -82,7 +82,7 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
     await client.query(`UPDATE public.ipo_history SET ipo_status='active',issue_price_low=3,issue_price_high=3,issue_price_final=2.5,
       source_documents=$2::jsonb WHERE security_code=$1`, [code, JSON.stringify([{ type: 'prospectus', title: 'GLOBAL OFFERING', url }])]);
     serviceContext.officialUrl = url;
-    vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('official fixture'),url:officialUrl}); parseHkexProspectusPdf=async()=>({parserStatus:'parsed',parserVersion:'hk-ipo-prospectus-v6',issuePriceLow:2,issuePriceHigh:3,issuePriceType:'range',lotSizeShares:100,offerOpenAt:'2099-01-01T09:00:00+08:00',offerCloseAt:'2099-01-02T12:00:00+08:00',expectedPricingDate:'2099-01-03',expectedAllotmentDate:'2099-01-04',expectedListingDate:'2099-01-05',evidence:{issuePrice:'official range 2 to 3'}})", serviceContext);
+    vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('official fixture'),url:officialUrl}); parseHkexProspectusPdf=async()=>({parserStatus:'parsed',parserVersion:'hk-ipo-prospectus-v7',issuePriceLow:2,issuePriceHigh:3,issuePriceType:'range',lotSizeShares:100,offerOpenAt:'2099-01-01T09:00:00+08:00',offerCloseAt:'2099-01-02T12:00:00+08:00',expectedPricingDate:'2099-01-03',expectedAllotmentDate:'2099-01-04',expectedListingDate:'2099-01-05',evidence:{issuePrice:'official range 2 to 3'}})", serviceContext);
     const options = { targetCodes: [code], executor: client.query.bind(client), fromDate: '2098-01-01', toDate: '2099-12-31' };
     await serviceContext.module.exports.syncHkexProspectusFacts(options);
     const prices = async () => (await client.query('SELECT issue_price_low::float8,issue_price_high::float8,issue_price_final::float8 FROM public.ipo_history WHERE security_code=$1', [code])).rows[0];
@@ -98,6 +98,10 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
     vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('invalid PDF'),url:officialUrl});parseHkexProspectusPdf=async()=>{throw new Error('invalid official PDF')}", serviceContext);
     await serviceContext.module.exports.syncHkexProspectusFacts(options);
     assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '解析失败不得覆盖有效价格范围');
+    vm.runInContext("parseHkexProspectusPdf=async()=>({parserStatus:'parsed',parserVersion:'hk-ipo-prospectus-v7',securityCode:'02628.HK',issuePriceLow:8,issuePriceHigh:9,issuePriceType:'range'})", serviceContext);
+    const identityMismatch = await serviceContext.module.exports.syncHkexProspectusFacts(options);
+    assert.ok(identityMismatch.failures.some(item => /证券身份/.test(item.error)), '真实身份不符仍必须阻止跨证券写入');
+    assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '身份解析改进不能放宽公司隔离或覆盖最终价');
     await client.query("INSERT INTO market.money_supply_monthly(market_code,month,m2_100m_yuan,source_code) VALUES('CN','2099-08-01',1000,'ops-test')");
     await client.query("INSERT INTO market.a_share_market_cap_daily(trade_date,total_market_cap_100m_yuan,security_count,source_code) VALUES('2099-10-31',500,1000,'tushare_daily_basic'),('2099-11-01',500,1000,'tushare_daily_basic')");
     await calculateM2MarketCap({ executor: client.query.bind(client) });

@@ -329,6 +329,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
         }
         allotmentFacts = await syncHkexAllotmentFacts({
           ...allotmentOptions,
+          asOfDate: targetDate,
           ...(targeted ? { targetCodes } : {}),
         });
       } catch (error) {
@@ -377,7 +378,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     tencentNames = { ok: false, status: 'failed', error: error.message || String(error) };
   }
   try {
-    completenessAudit = await recomputeHkIpoCompleteness(pool.query.bind(pool), targeted ? targetCodes : []);
+    completenessAudit = await recomputeHkIpoCompleteness(pool.query.bind(pool), targeted ? targetCodes : [], targetDate, { mode });
   } catch (error) {
     completenessAudit = { ok: false, status: 'failed', error: error.message || String(error) };
   }
@@ -385,12 +386,12 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   // 腾讯名称、暗盘和日线属于补充信号；这些可选来源失败时保留官方事实发布，
   // 只把历史报表/非公众分类/招股书/配发结果等核心事实失败标成不可发布。
   const coreSubtasks = [historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, completenessAudit].filter(Boolean);
-  const failedSubtasks = coreSubtasks.filter(item => item.ok === false);
+  const failedSubtasks = coreSubtasks.filter(item => item.ok === false || item.status === 'degraded' || item.failures?.length > 0);
   const degraded = subtasks.some(item => item.ok === false || item.status === 'degraded');
   const signalDiagnostics = marketSignalDiagnostics(marketSignals);
   // 定向写入仍只修改目标行；全市场分区必须使用只读全范围核验，不能发布五行统计冒充全库。
   const publicationAudit = targeted && completenessAudit?.ok === true
-    ? await readHkIpoCompleteness(pool.query.bind(pool), targetDate) : completenessAudit;
+    ? await readHkIpoCompleteness(pool.query.bind(pool), targetDate, { mode }) : completenessAudit;
   const factDiagnostics = {
     query_status: !publicationAudit || publicationAudit.ok === false ? 'failed' : 'success',
     quality_status: publicationAudit?.qualityStatus || 'stale',
@@ -398,10 +399,13 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     partition_row_count: publicationAudit?.rows || 0,
     valid_report_rows: Number(publicationAudit?.complete || 0) + Number(publicationAudit?.pending || 0),
     incomplete_rows: Number(publicationAudit?.missing || 0),
+    evaluation_mode: mode,
+    evaluation_target_date: targetDate,
   };
+  const factsFailed = failedSubtasks.length > 0 || factDiagnostics.quality_status !== 'passed';
   return {
-    ...result, ok: failedSubtasks.length === 0, status: degraded ? 'degraded' : 'succeeded', degraded,
-    failedDatasets: failedSubtasks.length ? ['hk_ipo_facts'] : [],
+    ...result, ok: !factsFailed, status: factsFailed || degraded ? 'degraded' : 'succeeded', degraded: factsFailed || degraded,
+    failedDatasets: factsFailed ? ['hk_ipo_facts'] : [],
     ...(targeted ? { targeted: true, targetCodes } : {}),
     mode, probePersistence, historicalReports, nonPublicListings, listingStatusNotices, prospectusFacts, allotmentFacts,
     dailyCoverage, marketSignals, tencentNames, completenessAudit, publicationAudit,

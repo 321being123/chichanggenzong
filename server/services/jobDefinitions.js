@@ -103,7 +103,7 @@ const JOB_CONTRACTS = {
     externalApis: ['hkex_new_listings', 'hkex_prospectus', 'tencent_quote', 'hk_ipo_public_page'],
     producesDatasets: ['hk_ipo_facts', 'hk_ipo_subscription_signals'], consumesDatasets: ['hk_trade_calendar'], maxExternalCallsPerRun: null,
     datasetPublicationByMode: {
-      preopen: { publish: ['hk_ipo_facts', 'hk_ipo_subscription_signals'] },
+      preopen: { publish: ['hk_ipo_facts', 'hk_ipo_subscription_signals'], completionConditions: ['官方事实按目标日核验；预计当日上市在盘前标记待阶段，过去上市日及已到期定价/配发不得豁免；盘后/补全必须核验实际上市证据'] },
       subscription_midday: { publish: ['hk_ipo_subscription_signals'] },
       subscription_close: { publish: ['hk_ipo_subscription_signals'] },
     },

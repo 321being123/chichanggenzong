@@ -450,6 +450,7 @@ function isUsableProspectusDocument(document) {
 async function syncHkexAllotmentFacts({
   fromDate = '2025-08-04',
   toDate = todayShanghai(),
+  asOfDate = toDate,
   limit = null,
   refreshLottery = false,
   targetCodes = [],
@@ -585,6 +586,7 @@ async function syncHkexAllotmentFacts({
   const announcements = [];
   const failures = [];
   let matched = 0;
+  const pendingNotDue = [];
   let enriched = 0;
   try {
     const candidatesNeedingSearch = candidates.filter(row => {
@@ -629,6 +631,13 @@ async function syncHkexAllotmentFacts({
       selected.set(code, item);
     }
     matched = selected.size;
+    for (const code of byCode.keys()) {
+      if (selected.has(code)) continue;
+      const expected = byCode.get(code).data_completeness?.prospectus?.expectedEvents?.allotmentDate?.date;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(expected || '')) && expected > asOfDate) {
+        pendingNotDue.push({ code, expectedDate: expected });
+      } else failures.push({ code, stage: 'discovery', error: '候选配发资料未找到可核验的官方公告，不能视为零行成功' });
+    }
     for (const [code, item] of selected) {
       const sourceUrl = item.fileLink || item.sourceUrl || null;
       const englishUrl = item.englishUrl || resolveHkexEnglishPdfUrl(sourceUrl);
@@ -782,7 +791,7 @@ async function syncHkexAllotmentFacts({
       `UPDATE ops.ingestion_runs SET status=$2,row_count=$3,error_message=$4,finished_at=now() WHERE run_id=$1`,
       [runId, status, enriched, statusMessage ? statusMessage.slice(0, 2000) : '']
     );
-    return { ok: status !== 'failed', status, runId, candidates: candidates.length, matched, enriched, failures, limited, fromDate, toDate };
+    return { ok: status !== 'failed', status, runId, candidates: candidates.length, matched, enriched, failures, pendingNotDue, limited, fromDate, toDate };
   } catch (error) {
     await executor(`UPDATE ops.ingestion_runs SET status='failed',error_message=$2,finished_at=now() WHERE run_id=$1`, [runId, String(error.message || error).slice(0, 2000)]).catch(() => {});
     throw error;
@@ -1686,7 +1695,7 @@ function completenessForRow(row) {
   return result;
 }
 
-function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
+function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai(), { mode = 'enrichment' } = {}) {
   const current = row && row.data_completeness && typeof row.data_completeness === 'object'
     ? row.data_completeness : {};
   const prospectus = current.prospectus && typeof current.prospectus === 'object' ? current.prospectus : {};
@@ -1703,9 +1712,13 @@ function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
   const expectedDate = key => storedDate(expectedEvents[key] && expectedEvents[key].date);
   const closeDate = dateInShanghai(row.offer_close_at);
   const offerClosed = Boolean(closeDate && closeDate < asOfDate);
+  // 盘前发布的是本阶段事实：预计今日上市并非实际上市已发生。
+  // 盘后/补全及过去上市日仍要求真实上市证据，不以预计日期填造事实。
+  const listingPendingPreopen = mode === 'preopen' && expectedDate('listingDate') === asOfDate;
   const due = key => {
     const expected = expectedDate(key);
-    return offerClosed && (!expected || expected <= asOfDate);
+    return offerClosed && (!expected || expected <= asOfDate)
+      && !(key === 'listingDate' && listingPendingPreopen);
   };
   const hasActualListing = Boolean(row.listing_at || storedDate(row.listing_date));
   const maximumOnly = prospectus.fields && prospectus.fields.issuePriceLow === 'maximum_only';
@@ -1773,19 +1786,22 @@ function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai()) {
   const missingFields = requiredFields.filter(field => result[field] === 'missing');
   const futureDates = [closeDate, ...Object.values(expectedEvents).map(event => expectedDateByValue(event))]
     .filter(date => date && date > asOfDate).sort();
-  const milestoneFields = new Set(['pricingAt', 'issuePriceFinal', 'allotmentAt', 'listingAt']);
-  const pendingNotDue = futureDates.length > 0 && missingFields.every(field => milestoneFields.has(field));
+  const pendingNotDue = missingFields.length === 0
+    && (futureDates.length > 0 || (listingPendingPreopen && !hasActualListing));
+  result.target_date = asOfDate;
+  result.evaluation_mode = mode;
   result.required_fields = requiredFields;
   result.missing_fields = terminalStatus ? [] : missingFields;
   result.status = terminalStatus ? 'complete'
-    : missingFields.length ? (pendingNotDue ? 'pending_not_due' : 'retryable')
+    : missingFields.length ? 'retryable'
       : pendingNotDue ? 'pending_not_due' : 'complete';
   result.checked_at = new Date().toISOString();
   result.next_retry_at = terminalStatus || (!missingFields.length && !pendingNotDue) ? null
-    : futureDates.length ? `${futureDates[0]}T00:00:00+08:00`
+    : listingPendingPreopen && !hasActualListing && !missingFields.length ? `${asOfDate}T18:10:00+08:00`
+      : futureDates.length && !missingFields.length ? `${futureDates[0]}T00:00:00+08:00`
       : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   result.reason = terminalStatus ? '终态项目不适用普通公众招股字段'
-    : result.status === 'pending_not_due' ? '下一阶段官方时间尚未到期'
+    : result.status === 'pending_not_due' ? (listingPendingPreopen ? '盘前阶段不要求当日实际上市，盘后核验实际证据' : '下一阶段官方时间尚未到期')
       : missingFields.length ? `官方事实待补：${missingFields.join(', ')}` : '关键官方事实已按最终事实行复核';
   result.evidence_urls = (Array.isArray(row.source_documents) ? row.source_documents : [])
     .map(item => item && item.url).filter(Boolean).slice(0, 10);
@@ -1797,21 +1813,22 @@ function expectedDateByValue(event) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? String(value) : null;
 }
 
-async function readHkIpoCompleteness(executor = pool.query.bind(pool), asOfDate = todayShanghai()) {
+async function readHkIpoCompleteness(executor = pool.query.bind(pool), asOfDate = todayShanghai(), options = {}) {
   const { rows } = await executor(`SELECT security_code,ipo_status,offer_open_at,offer_close_at,pricing_at,allotment_at,
     listing_at,listing_date,issue_price_low,issue_price_high,issue_price_final,lot_size_shares,source_documents,data_completeness
     FROM public.ipo_history WHERE market_code='HK'`);
   let complete = 0, pending = 0, missing = 0;
   for (const row of rows) {
-    const status = recomputeCompletenessForStoredRow(row, asOfDate).status;
+    const status = recomputeCompletenessForStoredRow(row, asOfDate, options).status;
     if (status === 'complete') complete += 1;
     else if (status === 'pending_not_due') pending += 1;
     else missing += 1;
   }
-  return { ok: true, rows: rows.length, complete, pending, missing, qualityStatus: missing ? 'stale' : 'passed' };
+  return { ok: true, rows: rows.length, complete, pending, missing, targetDate: asOfDate,
+    evaluationMode: options.mode || 'enrichment', qualityStatus: missing || !rows.length ? 'stale' : 'passed' };
 }
 
-async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targetCodes = []) {
+async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targetCodes = [], asOfDate = todayShanghai(), options = {}) {
   const scopedCodes = [...new Set((Array.isArray(targetCodes) ? targetCodes : []).map(canonicalHkCode).filter(Boolean))];
   const targetFilter = scopedCodes.length ? ' AND security_code=ANY($1::text[])' : '';
   const { rows } = await executor(`
@@ -1826,7 +1843,7 @@ async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targ
   let pending = 0;
   let missing = 0;
   for (const row of rows) {
-    const completeness = recomputeCompletenessForStoredRow(row);
+    const completeness = recomputeCompletenessForStoredRow(row, asOfDate, options);
     await executor(`
       UPDATE public.ipo_history
          SET data_completeness=$2::jsonb,
@@ -1839,7 +1856,7 @@ async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targ
     else missing += 1;
   }
   return { ok: true, status: missing ? 'degraded' : 'succeeded', rows: updated, complete, pending, missing,
-    qualityStatus: missing ? 'stale' : 'passed' };
+    targetDate: asOfDate, evaluationMode: options.mode || 'enrichment', qualityStatus: missing || !updated ? 'stale' : 'passed' };
 }
 
 async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPool = pool } = {}) {

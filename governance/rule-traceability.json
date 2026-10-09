@@ -1535,6 +1535,62 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "HK-PHASE-QUALITY-001",
+      "title": "港股上市门禁按目标日及阶段核验，未来事件不掩盖到期缺口",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "recomputeCompletenessForStoredRow"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-facts.test.js",
+          "pattern": "盘前当日预计上市只标记待阶段"
+        },
+        {
+          "file": "server/test/hk-ipo-targeted-enrichment.test.js",
+          "pattern": "历史目标日不得改用运行当天"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HK-ALLOTMENT-DISCOVERY-001",
+      "title": "配发候选零匹配须保留失败或明确未来日期待到期证据",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "syncHkexAllotmentFacts"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-targeted-enrichment.test.js",
+          "pattern": "候选未匹配官方配发公告不能宣告成功"
+        },
+        {
+          "file": "server/test/hk-ipo-targeted-enrichment.test.js",
+          "pattern": "有明确未来官方配发日期的未匹配候选不误报故障"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HK-EMPTY-QUALITY-001",
+      "title": "空港股查询不能作为质量恢复证据",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "readHkIpoCompleteness"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-targeted-enrichment.test.js",
+          "pattern": "空查询不能作为质量恢复证据"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
     }
   ]
 }

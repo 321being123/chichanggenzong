@@ -124,6 +124,32 @@ const retryableFacts = recomputeCompletenessForStoredRow({
   data_completeness: {}, source_documents: [],
 }, completenessAsOf);
 assert.strictEqual(retryableFacts.status, 'retryable', '截止后缺字段必须标记 retryable');
+const listingDayRow = {
+  ipo_status: 'active', offer_open_at: '2026-10-01T09:00:00+08:00', offer_close_at: '2026-10-06T12:00:00+08:00',
+  pricing_at: '2026-10-07T12:00:00+08:00', allotment_at: '2026-10-08T00:00:00+08:00',
+  issue_price_low: 1.48, issue_price_high: 1.59, issue_price_final: 1.55, lot_size_shares: 2000,
+  data_completeness: { prospectus: { expectedEvents: {
+    pricingDate: { date: '2026-10-07' }, allotmentDate: { date: '2026-10-08' }, listingDate: { date: '2026-10-09' },
+  } } }, source_documents: [],
+};
+const listingPreopen = recomputeCompletenessForStoredRow(listingDayRow, '2026-10-09', { mode: 'preopen' });
+assert.strictEqual(listingPreopen.status, 'pending_not_due', '盘前当日预计上市只标记待阶段，不伪造实际上市');
+assert.strictEqual(listingPreopen.listingAt, 'pending');
+assert.deepStrictEqual(listingPreopen.missing_fields, []);
+assert.strictEqual(listingPreopen.next_retry_at, '2026-10-09T18:10:00+08:00');
+assert.strictEqual(listingDayRow.listing_at, undefined);
+for (const mode of ['postclose', 'enrichment']) {
+  const result = recomputeCompletenessForStoredRow(listingDayRow, '2026-10-09', { mode });
+  assert.deepStrictEqual(result.missing_fields, ['listingAt'], '盘后及补全必须要求实际上市证据');
+  assert.strictEqual(result.status, 'retryable');
+}
+assert.strictEqual(recomputeCompletenessForStoredRow(listingDayRow, '2026-10-10', { mode: 'preopen' }).status,
+  'retryable', '盘前不得豁免过去上市日');
+assert.strictEqual(recomputeCompletenessForStoredRow({ ...listingDayRow, issue_price_final: null }, '2026-10-08', { mode: 'preopen' }).status,
+  'retryable', '未来上市不得掩盖已到期最终价缺口');
+assert.deepStrictEqual(recomputeCompletenessForStoredRow({ ...listingDayRow, allotment_at: null }, '2026-10-09', { mode: 'preopen' }).missing_fields,
+  ['allotmentAt'], '盘前豁免上市不能消除配发缺口');
+assert.strictEqual(recomputeCompletenessForStoredRow({ ...listingDayRow, listing_date: '2026-10-09' }, '2026-10-09', { mode: 'preopen' }).status, 'complete');
 const maximumOnlyFacts = recomputeCompletenessForStoredRow({
   ipo_status: 'active', offer_open_at: '2026-09-01T01:00:00Z', offer_close_at: '2026-09-05T04:00:00Z',
   pricing_at: '2026-09-06T01:00:00Z', allotment_at: '2026-09-08T01:00:00Z',

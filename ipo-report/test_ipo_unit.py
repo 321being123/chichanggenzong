@@ -1763,6 +1763,14 @@ try:
           and not unknown_exposure['exposures'] and history_sync._has_business_exposures(unknown_exposure))
     check('缺少原文证据的空赛道不能通过资料门禁',
           not history_sync._has_business_exposures({**unknown_exposure, 'industry_chain': {**unknown_exposure['industry_chain'], 'evidence': {}}}))
+    check('普通归一化和重复计算保留完整空赛道原文关系',
+          _val.analyze_business_exposure('', '', '', stored=unknown_exposure) == unknown_exposure)
+    invalid_stored = {**unknown_exposure, 'industry_chain': {**unknown_exposure['industry_chain'], 'evidence': {}}}
+    check('没有原文证据的空赛道不沿用完整声明',
+          _val.analyze_business_exposure('', '', '', stored=invalid_stored)['industry_chain']['status'] != 'complete')
+    replacement = _val.analyze_business_exposure('', '', '', stored=unknown_exposure,
+        industry_chain={'status':'partial','products':['新产品']})
+    check('显式新解析仍可进入证据更新不被旧完整记录挡住', replacement['industry_chain']['products'] == ['新产品'])
     distribution = fetch._extract_industry_chain_relations(
         '公司主要产品为家具。公司采购的原材料主要为木板。公司产品主要用于出口销售，容易受到汇率波动影响。')
     check('出口销售与汇率风险不能当作下游应用', distribution['status'] != 'complete' and not distribution['downstream'])

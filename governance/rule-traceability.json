@@ -1711,6 +1711,30 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "IPO-CHAIN-PRESERVE-001",
+      "title": "普通归一化保留完整无赛道原文关系，显式新解析仍可更新",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_sector.py",
+        "symbol": "analyze_business_exposure"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "普通归一化和重复计算保留完整空赛道原文关系"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "没有原文证据的空赛道不沿用完整声明"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "显式新解析仍可进入证据更新不被旧完整记录挡住"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

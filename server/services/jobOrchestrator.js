@@ -645,6 +645,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     slotId: claimed.slot_id,
     force: Boolean(claimed.request_payload && claimed.request_payload.force === true),
     mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
+    ...(claimed.job_code==='nav_snapshot'&&claimed.request_payload?.mode==='cash_income'
+      ? {username:claimed.request_payload.username,accountName:claimed.request_payload.accountName,enabled:claimed.request_payload.enabled===true}:{}),
     failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)
       ? claimed.result_summary.failedDatasets : [],
     externalCallCount: 0,

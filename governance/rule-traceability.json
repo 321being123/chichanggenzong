@@ -2043,6 +2043,22 @@
       ],
       "owner": "持仓现金收益",
       "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-015",
+      "title": "现金收益编排器到隔离子进程保留账户作用域",
+      "implementation": {
+        "file": "server/services/jobOrchestrator.js",
+        "symbol": "runSlot"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-queue.test.js",
+          "pattern": "runSlot"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
     }
   ]
 }

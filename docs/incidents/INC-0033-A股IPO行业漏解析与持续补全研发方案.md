@@ -389,3 +389,7 @@ v4对一般公司产品、采购和用途句式漏解析，且将本站无赛道
 
 
 2026-10-10现金收益0.8.3.46发布核对：共享任务定义和Guard仅增加现金分红/回购模式及repo_daily接口，原IPO目标范围、官方来源、阶段质量与产业链事实口径保持；现金账户scope独立，不由普通任务成功关闭IPO或其他账户告警。原IPO代码沿用d579915生产发布基线。
+
+0.8.3.48共享编排器核对：仅nav_snapshot且mode=cash_income传递username/accountName/enabled；IPO的targetCodes、targetFields、阶段发布和原文事实口径保持，实际隔离子进程回归覆盖现金账户上下文，未扩大IPO生产补全范围。现金原槽1437393/1437394恢复证据登记在现金收益任务卡，不用于关闭IPO告警。
+
+0.8.3.48共享编排器核对：仅nav_snapshot且mode=cash_income传递username/accountName/enabled；IPO的targetCodes、targetFields、阶段发布和原文事实口径保持，实际隔离子进程回归覆盖现金账户上下文，未扩大IPO生产补全范围。现金原槽1437393/1437394恢复证据登记在现金收益任务卡，不用于关闭IPO告警。

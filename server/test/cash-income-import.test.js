@@ -7,3 +7,7 @@ for(const changed of [{username:'other'},{targetDate:'2026-10-11'},{accounts:[{n
 assert.throws(()=>validate({...fixture,documents:fixture.documents.map((r,i)=>i===0?{...r,contentHash:'wrong'}:r)}),/哈希/);
 assert.throws(()=>validate({...fixture,documents:fixture.documents.map((r,i)=>i===0?{...r,sourceCode:'unadmitted'}:r)}),/来源/);
 console.log('cash income evidence import: explicit user, date, account scope, complete fact counts and source text hash passed');
+const {Readable}=require('stream');
+const utf8=Buffer.from(JSON.stringify(fixture));
+// 中文账户名和公告原文可以在任意字节处被SSH管道分块，不能逐块转字符串。
+require('../scripts/importCashIncomeEvidence').readBundle(Readable.from(Array.from(utf8,b=>Buffer.from([b])))).then(result=>assert.deepStrictEqual(result,fixture)).catch(e=>{console.error(e);process.exitCode=1});

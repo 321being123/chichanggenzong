@@ -71,7 +71,8 @@ async function apply(bundle){
  }
  return {facts:{objects:facts.codes.length,documents:facts.documents.length,remaining:facts.remainingCount},sourceAdmission:proof.status,accounts};
 }
+async function readBundle(stream){const chunks=[];for await(const chunk of stream)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));return validate(JSON.parse(Buffer.concat(chunks).toString('utf8')));}
 if(require.main===module){
- (async()=>{let text='';for await(const chunk of process.stdin)text+=chunk;const bundle=validate(JSON.parse(text));if(!process.argv.includes('--apply'))throw new Error('必须显式--apply且获得限定同步授权');console.log(JSON.stringify(await apply(bundle),null,2));})().catch(e=>{console.error(e.message);process.exitCode=1}).finally(()=>pool.end());
+ (async()=>{const bundle=await readBundle(process.stdin);if(!process.argv.includes('--apply'))throw new Error('必须显式--apply且获得限定同步授权');console.log(JSON.stringify(await apply(bundle),null,2));})().catch(e=>{console.error(e.message);process.exitCode=1}).finally(()=>pool.end());
 }
-module.exports={validate,accountFingerprint};
+module.exports={validate,accountFingerprint,readBundle};

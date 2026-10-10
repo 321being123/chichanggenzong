@@ -106,7 +106,24 @@ async function notifyTushareFailovers(failovers = []) {
   }
 }
 
-function runWith(executable, runtime, businessDate, mode, externalCallCount = 0, targetCodes = [], targetFields = []) {
+function reviewedChainCorrection(correction, targetCodes, targetFields) {
+  if (!correction || correction.type !== 'ipo_chain_evidence') return '';
+  if (targetFields.length !== 1 || targetFields[0] !== 'business_exposure'
+      || !Array.isArray(correction.chainEvidenceRecords) || !correction.chainEvidenceRecords.length) {
+    throw new Error('产业链原文证据修正只能用于指定代码的business_exposure阶段');
+  }
+  const seen = new Set();
+  for (const record of correction.chainEvidenceRecords) {
+    if (!record || !/^\d{6}$/.test(record.code || '') || !targetCodes.includes(record.code) || seen.has(record.code)
+        || !/^[a-f0-9]{64}$/.test(record.content_hash || '') || !/^https:\/\//.test(record.url || '')) {
+      throw new Error('产业链证据必须绑定唯一目标代码和已登记原文');
+    }
+    seen.add(record.code);
+  }
+  return JSON.stringify(correction.chainEvidenceRecords);
+}
+
+function runWith(executable, runtime, businessDate, mode, externalCallCount = 0, targetCodes = [], targetFields = [], correction = null) {
   return new Promise((resolve, reject) => {
     const scriptArgs = [SCRIPT, '--mode', mode || 'core'];
     if (businessDate) scriptArgs.push('--today', String(businessDate).slice(0, 10));
@@ -124,6 +141,7 @@ function runWith(executable, runtime, businessDate, mode, externalCallCount = 0,
         TUSHARE_TOKEN: runtime.primary || '',
         TUSHARE_BACKUP_TOKEN: runtime.backup || '',
         TUSHARE_TOKEN_MODE: runtime.mode || 'auto',
+        IPO_CHAIN_EVIDENCE_CORRECTION: reviewedChainCorrection(correction, targetCodes, targetFields),
         EXTERNAL_CALL_GUARD: '1',
         JOB_EXTERNAL_CALL_USED: String(Math.max(Number(externalCallCount) || 0, 0)),
       },
@@ -223,7 +241,7 @@ async function runIpoHistorySync(reason = 'scheduled', businessDate, context = {
     }
     for (const executable of pythonCandidates()) {
       try {
-        const result = normalizeIpoDiagnostics(await runWith(executable, runtime, businessDate, mode, context.externalCallCount, targetCodes, targetFields), businessDate);
+        const result = normalizeIpoDiagnostics(await runWith(executable, runtime, businessDate, mode, context.externalCallCount, targetCodes, targetFields, context.manualCorrection), businessDate);
         await notifyTushareFailovers(result.failovers);
         const detail = JSON.stringify({ reason, mode, scheduleMarker, slotId: context.slotId || null, targetCodes, targetFields, executable, retryOf, ...result });
         await finishJobRun(runId, result.ok !== false, detail);
@@ -301,6 +319,6 @@ function scheduleIpoHistorySync() {
 }
 
 module.exports = {
-  SCRIPT, nextIpoHistorySyncDelay, runIpoHistorySync, normalizeIpoDiagnostics,
+  reviewedChainCorrection, SCRIPT, nextIpoHistorySyncDelay, runIpoHistorySync, normalizeIpoDiagnostics,
   runIpoHistoryStartupCatchup, scheduleIpoHistorySync, pythonCandidates, nextIpoHistorySchedule,
 };

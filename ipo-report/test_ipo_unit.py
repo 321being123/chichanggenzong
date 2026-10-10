@@ -1785,6 +1785,30 @@ try:
         '公司主要产品为面料。公司采购的原材料主要为纱线。公司的终端客户主要为国内外大型知名服装品牌商，包括多家服装企业。')
     check('公司终端客户用途保留原文不猜赛道', customer['status'] == 'complete'
           and customer['downstream'][0]['industry'] == '国内外大型知名服装品牌商')
+    correction_text = '公司主要产品为收纳盒。公司采购的原材料主要为木板。公司产品用于家庭收纳。'
+    correction = {'code':'CHAIN_EVIDENCE','url':'https://www.sse.com.cn/test.pdf',
+        'content_hash':hashlib.sha256(correction_text.encode()).hexdigest(),
+        'products':['收纳盒'],'product_evidence':'公司主要产品为收纳盒',
+        'upstream':[{'industry':'木板','evidence':'公司采购的原材料主要为木板'}],
+        'downstream':[{'industry':'家庭收纳','evidence':'公司产品用于家庭收纳'}]}
+    saved_correction = os.environ.get('IPO_CHAIN_EVIDENCE_CORRECTION')
+    try:
+        os.environ['IPO_CHAIN_EVIDENCE_CORRECTION']=json.dumps([correction])
+        checked=fetch._chain_from_document(correction['code'],correction_text,correction['url'],correction['content_hash'])
+        check('原文定向修正逐条核验产品采购应用而不猜赛道',checked['status']=='complete' and not checked['downstream'][0]['related_tracks'])
+        for field,bad in [('url','https://www.sse.com.cn/other.pdf'),('content_hash','0'*64),('upstream',[]),('product_evidence','公司主要产品为其他产品'),('downstream',[{'industry':'不存在用途','evidence':'不存在的下游关系句'}]),('upstream',[{'industry':'木板','evidence':'公司采购的原材料主要为木板','products':['其他公司产品']}])]:
+            os.environ['IPO_CHAIN_EVIDENCE_CORRECTION']=json.dumps([{**correction,field:bad}])
+            try:
+                fetch._chain_from_document(correction['code'],correction_text,correction['url'],correction['content_hash'])
+                rejected=False
+            except fetch.ChainEvidenceCorrectionError:
+                rejected=True
+            check('原文修正拒绝哈希或伪造证据'+field,rejected)
+        os.environ['IPO_CHAIN_EVIDENCE_CORRECTION']=json.dumps([correction])
+        check('非定向证券不消费其他公司的修正',fetch._chain_from_document('OTHER',correction_text,correction['url'],correction['content_hash']).get('extraction_method') is None)
+    finally:
+        if saved_correction is None:os.environ.pop('IPO_CHAIN_EVIDENCE_CORRECTION',None)
+        else:os.environ['IPO_CHAIN_EVIDENCE_CORRECTION']=saved_correction
     overview = '测试发行人股份有限公司。公司主营业务为制冰机研发、生产与销售。公司主要产品为制冰机。公司采购的原材料主要为压缩机。公司产品主要用于家庭制冰。'
     doc = {'source': 'sse', 'url': 'https://www.sse.com.cn/issuer.pdf', 'content_hash': hashlib.sha256(overview.encode()).hexdigest()}
     class RegisteredDocumentDB:

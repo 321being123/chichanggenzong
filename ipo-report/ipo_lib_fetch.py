@@ -1512,6 +1512,64 @@ _DOWNSTREAM_CHAIN_RULES = (
 )
 
 
+class ChainEvidenceCorrectionError(ValueError):
+    pass
+
+
+def _chain_from_document(code, text, url, content_hash):
+    """受控定向修正仍校验同一份原文及每条关系证据，不接受无原文的关系。"""
+    raw = os.environ.get('IPO_CHAIN_EVIDENCE_CORRECTION', '')
+    if not raw:
+        return _extract_industry_chain_relations(text)
+    records = json.loads(raw)
+    matches = [r for r in records if r.get('code') == code]
+    if not matches:
+        return _extract_industry_chain_relations(text)
+    if len(matches) != 1:
+        raise ChainEvidenceCorrectionError('产业链目标证据不唯一')
+    record = matches[0]
+    if record.get('url') != url or record.get('content_hash') != content_hash:
+        raise ChainEvidenceCorrectionError('产业链原文URL或全文哈希不匹配')
+    compact = re.sub(r'\s+', '', _issuer_business_section(text))
+    products = record.get('products')
+    if not isinstance(products, list) or not products or any(
+            not isinstance(p, str) or not 2 <= len(p) <= 160 or re.sub(r'\s+', '', p) not in compact for p in products):
+        raise ChainEvidenceCorrectionError('主营产品缺少目标原文证据')
+    product_evidence = record.get('product_evidence', '')
+    if (not isinstance(product_evidence,str) or not 8 <= len(product_evidence) <= 1500
+            or re.sub(r'\s+', '', product_evidence) not in compact
+            or any(re.sub(r'\s+', '', p) not in re.sub(r'\s+', '', product_evidence) for p in products)
+            or re.search(r'可比公司|竞争对手|如果|假设|若未来',product_evidence)):
+        raise ChainEvidenceCorrectionError('产品列表必须有同一发行人的完整原文证据')
+    result = {'version': 'ipo-industry-chain-v6-evidence-v1' , 'status':'complete',
+              'products':list(products), 'upstream':[], 'downstream':[],
+              'extraction_method':'source_evidence_correction', 'product_evidence':product_evidence}
+    for key, relationship in [('upstream','supplies'),('downstream','applied_in')]:
+        rows = record.get(key)
+        if not isinstance(rows,list) or not rows:
+            raise ChainEvidenceCorrectionError('产业链两端必须有明确关系证据')
+        for row in rows:
+            industry = row.get('industry')
+            evidence = row.get('evidence')
+            if (not isinstance(industry,str) or not 2 <= len(industry) <= 80
+                    or not isinstance(evidence,str) or not 8 <= len(evidence) <= 1500
+                    or re.sub(r'\s+', '', industry) not in re.sub(r'\s+', '', evidence)
+                    or re.sub(r'\s+', '', evidence) not in compact
+                    or re.search(r'可比公司|竞争对手|如果|假设|若未来',evidence)):
+                raise ChainEvidenceCorrectionError('关系必须逐项匹配发行人业务章节原文')
+            row_products = row.get('products', products)
+            if (not isinstance(row_products,list) or not row_products
+                    or any(p not in products for p in row_products)):
+                raise ChainEvidenceCorrectionError('关系产品必须属于已核验的主营产品')
+            output = {'industry':industry,'product':row_products[0] if len(row_products)==1 else '公司产品','products':list(row_products),
+                      'relationship':relationship,'evidence':evidence}
+            if key == 'downstream':
+                output['related_tracks'] = sorted({track for _,rule,keys in _DOWNSTREAM_CHAIN_RULES
+                                                  if rule.search(industry) for track in keys})
+            result[key].append(output)
+    return result
+
+
 def _extract_industry_chain_relations(text):
     """从招股书明确的上下游段落提取关系，不用公司名称或行业代码猜关系。"""
     normalized = re.sub(r"\s+", " ", _issuer_business_section(str(text or ""))).strip()
@@ -2858,7 +2916,7 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
                         'title': _title,
                         'content_hash': hashlib.sha256(text.encode('utf-8')).hexdigest(),
                         'parser_version': 'ipo-prospectus-main-business-v2',
-                        'industry_chain': _extract_industry_chain_relations(text),
+                        'industry_chain': _chain_from_document(code, text, url, hashlib.sha256(text.encode('utf-8')).hexdigest()),
                     }
                     _record_main_business_attempt(
                         code, 'exchange_prospectus', 'value',
@@ -2875,6 +2933,8 @@ def _fetch_exchange_prospectus_main_business(stock_code, security_name=''):
             code, 'exchange_prospectus', 'document_parse_failed',
             candidate_count=len(candidates), downloaded_count=downloaded,
         )
+    except ChainEvidenceCorrectionError:
+        raise
     except Exception:
         _record_main_business_attempt(code, 'exchange_prospectus', 'source_error')
         return ''
@@ -2974,7 +3034,7 @@ def _fetch_cninfo_prospectus_main_business(stock_code, security_name=""):
                                 "title": str(a.get("announcementTitle") or "招股说明书"),
                                 "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                                 "parser_version": "ipo-prospectus-main-business-v2",
-                                "industry_chain": _extract_industry_chain_relations(text),
+                                "industry_chain": _chain_from_document(code, text, document_url, hashlib.sha256(text.encode("utf-8")).hexdigest()),
                             }
                             _record_main_business_attempt(
                                 code, 'cninfo_prospectus', 'value',
@@ -3000,6 +3060,8 @@ def _fetch_cninfo_prospectus_main_business(stock_code, security_name=""):
             )
         return mb
     except ExternalCallGuardError:
+        raise
+    except ChainEvidenceCorrectionError:
         raise
     except Exception:
         _record_main_business_attempt(code, 'cninfo_prospectus', 'source_error')
@@ -3068,13 +3130,15 @@ def _registered_prospectus_main_business(code, security_name):
         if not main_business:
             return None
         document = dict(document)
-        document['industry_chain'] = _extract_industry_chain_relations(text)
+        document['industry_chain'] = _chain_from_document(code, text, document['url'], document['content_hash'])
         _MAIN_BUSINESS_DOCUMENT[code] = document
         _MAIN_BUSINESS_SOURCE[code] = source
         _MAIN_BUSINESS_DIAGNOSTIC[code] = {'status': 'value', 'source': source,
             'document': document, 'attempts': [{'source': 'registered_prospectus', 'status': 'value', 'cache_hit': cache_hit}]}
         return main_business
     except ExternalCallGuardError:
+        raise
+    except ChainEvidenceCorrectionError:
         raise
     except Exception:
         return None
@@ -3091,6 +3155,8 @@ def _fetch_stock_main_business(stock_code, security_name=None):
         # 巨潮是备源；其权限/熔断不能阻断最后的 Tushare stock_company 回退。
         cninfo_error = exc
         _record_main_business_attempt(str(stock_code or '').split('.')[0], 'cninfo_prospectus', 'source_error', reason='external_guard')
+    except ChainEvidenceCorrectionError:
+        raise
     except Exception:
         pass
     try:
@@ -3107,6 +3173,8 @@ def _fetch_stock_main_business(stock_code, security_name=None):
                     _MAIN_BUSINESS_DIAGNOSTIC[code].update({'status': 'value', 'source': 'tushare'})
                     return str(biz).strip()
     except ExternalCallGuardError:
+        raise
+    except ChainEvidenceCorrectionError:
         raise
     except Exception:
         pass

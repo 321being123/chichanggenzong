@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-09",
+  "lastReviewed": "2026-10-10",
   "rules": [
     {
       "id": "OPS-RECOVERY-010",
@@ -1671,6 +1671,42 @@
         {
           "file": "server/test/ipo-history-sync.test.js",
           "pattern": "IPO first-day Runner retains exact target codes, date and field scope"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-CHAIN-EVIDENCE-001",
+      "title": "定向产业链修正必须核对同一原文与实际关系产品",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_chain_from_document"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "原文定向修正逐条核验产品采购应用而不猜赛道"
+        },
+        {
+          "file": "server/test/ipo-history-sync.test.js",
+          "pattern": "IPO chain correction retains exact scope and original document evidence"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-CHAIN-API-001",
+      "title": "完整原文关系无赛道映射仍与Runner字段质量一致",
+      "implementation": {
+        "file": "server/routes/ipo.js",
+        "symbol": "stockFieldStatusSql"
+      },
+      "tests": [
+        {
+          "file": "server/test/ipo-chain-quality-api.test.js",
+          "pattern": "完整原文关系与空赛道必须采用同一API质量口径"
         }
       ],
       "owner": "A股 IPO",

@@ -522,6 +522,7 @@ function stockFieldStatusSql(alias = 'h') {
       WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
       ELSE 'pending' END,
     'business_exposure', CASE
+      WHEN ${alias}.business_exposure->'industry_chain'->>'status'='complete' AND NULLIF(${alias}.business_exposure->'industry_chain'->'evidence'->>'url','') IS NOT NULL AND NULLIF(${alias}.business_exposure->'industry_chain'->'evidence'->>'content_hash','') IS NOT NULL AND jsonb_array_length(CASE WHEN jsonb_typeof(${alias}.business_exposure->'industry_chain'->'products')='array' THEN ${alias}.business_exposure->'industry_chain'->'products' ELSE '[]'::jsonb END)>0 AND jsonb_array_length(CASE WHEN jsonb_typeof(${alias}.business_exposure->'industry_chain'->'upstream')='array' THEN ${alias}.business_exposure->'industry_chain'->'upstream' ELSE '[]'::jsonb END)>0 AND jsonb_array_length(CASE WHEN jsonb_typeof(${alias}.business_exposure->'industry_chain'->'downstream')='array' THEN ${alias}.business_exposure->'industry_chain'->'downstream' ELSE '[]'::jsonb END)>0 THEN 'value'
       WHEN jsonb_typeof(${alias}.business_exposure->'exposures') = 'array' THEN
         CASE WHEN jsonb_array_length(${alias}.business_exposure->'exposures') > 0 THEN 'value'
           WHEN ${alias}.ipo_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN 'missing'
@@ -1185,3 +1186,5 @@ module.exports.mergeCalendarDays = mergeCalendarDays;
 module.exports.assessHkGreenshoe = assessHkGreenshoe;
 module.exports.hkOfferPhaseSql = hkOfferPhaseSql;
 module.exports.resolveHkIpoDisplayName = resolveHkIpoDisplayName;
+
+module.exports.stockFieldStatusSql = stockFieldStatusSql;

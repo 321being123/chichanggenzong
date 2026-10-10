@@ -70,3 +70,8 @@ for (const key of ['codes', 'security_codes', 'remaining_codes']) {
   assert.strictEqual(sanitizeJobResult({[key]:['token=secret-value']})[key][0], 'token=[已脱敏]');
 }
 assert.strictEqual(sanitizeJobResult({rows:fullScope}).rows.length,100,'普通日志仍保留摘要保护');
+
+const evidenceRecords=fullScope.map(code=>({code,evidence:"token=secret-value"}));
+const evidenceResult=sanitizeJobResult({manualCorrection:{chainEvidenceRecords:evidenceRecords}});
+assert.strictEqual(evidenceResult.manualCorrection.chainEvidenceRecords.length,175,"原文修正证券清单不得按日志100项截断");
+assert.strictEqual(evidenceResult.manualCorrection.chainEvidenceRecords[174].evidence,"token=[已脱敏]");

@@ -203,7 +203,7 @@ console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事�
   const vm = require('vm');
   const { EventEmitter } = require('events');
   const runnerPath = path.join(__dirname, '..', 'jobs', 'ipoHistorySync.js');
-  let capturedArgs;
+  let capturedArgs, capturedEnv;
   const sandbox = {
     module: { exports: {} }, __dirname: path.dirname(runnerPath), process,
     console: { log() {} }, setTimeout, clearTimeout,
@@ -215,8 +215,8 @@ console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事�
       if (name === '../services/externalApiConfig') return {
         getProviderRuntime: async () => ({}), notifyTushareFailover: async () => {},
       };
-      if (name === 'child_process') return { spawn(executable, args) {
-        capturedArgs = args;
+      if (name === 'child_process') return { spawn(executable, args, options) {
+        capturedArgs = args; capturedEnv=options.env;
         const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
         queueMicrotask(() => {
           child.stdout.emit('data', Buffer.from(JSON.stringify({
@@ -257,4 +257,15 @@ console.log('OK ipo-history-sync: 增量窗口、失败保留、18:00核心事�
     mode: 'targeted', targetCodes: ['001246', '301716'], targetFields: ['ld_close_change'],
   }), true, '首日涨幅须满足原定向范围和阶段完成契约');
   console.log('IPO first-day Runner retains exact target codes, date and field scope');
+  const correction={type:'ipo_chain_evidence',chainEvidenceRecords:[{code:'301569',url:'https://www.szse.cn/issuer.pdf',content_hash:'a'.repeat(64)}]};
+  const encode=sandbox.module.exports.reviewedChainCorrection;
+  assert.throws(()=>encode(correction,['301569'],['industry']),/只能用于/);
+  assert.throws(()=>encode(correction,['301001'],['business_exposure']),/绑定唯一/);
+  assert.throws(()=>encode({...correction,chainEvidenceRecords:[...correction.chainEvidenceRecords,...correction.chainEvidenceRecords]},['301569'],['business_exposure']),/绑定唯一/);
+  await sandbox.module.exports.runIpoHistorySync('manual-evidence','2026-10-10',{
+    mode:'targeted',targetCodes:['301569'],targetFields:['business_exposure'],manualCorrection:correction,
+  });
+  assert.strictEqual(capturedEnv.IPO_CHAIN_EVIDENCE_CORRECTION,JSON.stringify(correction.chainEvidenceRecords),'实际Runner必须只传递已校验定向原文证据');
+  console.log('IPO chain correction retains exact scope and original document evidence');
+
 })().catch(error => { console.error(error); process.exitCode = 1; });

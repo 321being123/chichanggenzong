@@ -1775,6 +1775,10 @@ try:
     check('发行人自身核心技术工艺不能冒充产品下游',internal_chain['status']=='complete' and [r['industry'] for r in internal_chain['downstream']]==['制药'])
     headings = fetch._extract_industry_chain_relations('公司主要产品为测试设备。公司采购的原材料主要为芯片。公司产品用于汽车，具体情况如下。')
     check('表格标题和说明片段不能成为上下游行业',headings['status']=='complete' and all('如下' not in r['industry'] for r in headings['downstream']))
+    product_headings = fetch._extract_industry_chain_relations('公司主要产品为碳纤维复合材料，具体如下。公司采购的主要原材料包括碳纤维和树脂。公司产品应用于航空航天。')
+    check('产品列表及关系产品不能混入表格标题',product_headings['status']=='complete' and product_headings['products']==['碳纤维复合材料'] and all(r['products']==['碳纤维复合材料'] for r in product_headings['upstream']+product_headings['downstream']))
+    missing_products = fetch._extract_industry_chain_relations('公司主要产品为具体如下。公司采购的主要原材料包括碳纤维和树脂。公司产品应用于航空航天。')
+    check('只有标题而无实际产品不得宣告产业链完整',missing_products['status']!='complete' and not missing_products['products'])
     reviewed = {**unknown_exposure,'industry_chain':{**unknown_exposure['industry_chain'],'version':'ipo-industry-chain-v6-evidence-v1'}}
     same_document = reviewed['industry_chain']['evidence']
     check('同一原文自动重解析不得覆盖已核验关系',_val.analyze_business_exposure('', '', '',stored=reviewed,industry_chain=unknown_chain,evidence_document=same_document)==reviewed)

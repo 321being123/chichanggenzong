@@ -1581,6 +1581,7 @@ def _extract_industry_chain_relations(text):
     normalized = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", normalized)
     normalized = "；".join(sentence for sentence in re.split(r"[。；;]", normalized)
                            if not re.search(r"可比公司|竞争对手", sentence))
+    metadata_label = re.compile(r"如下|序号|产品性状|根据|主要分为|职责|采购价格|特点情况|正在从事|具体来看")
     products = [
         label for label, pattern in (
             ("热管理材料", re.compile(r"热管理材料|导热界面材料")),
@@ -1640,7 +1641,8 @@ def _extract_industry_chain_relations(text):
         value = re.split(r"，(?:主要|其中|公司|其|报告期|以|目前)|等|，(?:各个|并|能够)|相关产品|具体生产|[：:]", match.group(1))[0]
         for item in re.split(r"[、，,]|以及", value):
             item = item.strip(" ，、 ")
-            if 2 <= len(item) <= 60 and item not in issuer_products:
+            if (2 <= len(item) <= 60 and item not in issuer_products
+                    and not metadata_label.search(item)):
                 issuer_products.append(item)
         if issuer_products:
             break
@@ -1757,7 +1759,6 @@ def _extract_industry_chain_relations(text):
                         tracks=sorted({track for _,rule,keys in _DOWNSTREAM_CHAIN_RULES if rule.search(item) for track in keys})
                         downstream.append({'industry':item,'product':'公司产品','products':list(products),
                             'relationship':'applied_in','related_tracks':tracks,'evidence':application.group(0)})
-    metadata_label = re.compile(r"如下|序号|产品性状|根据|主要分为|职责|采购价格|特点情况|正在从事")
     upstream = [row for row in upstream if not metadata_label.search(row["industry"])]
     downstream = [row for row in downstream if not metadata_label.search(row["industry"])
                   and not re.search(r"核心技术|工艺流程", row.get("evidence", ""))]

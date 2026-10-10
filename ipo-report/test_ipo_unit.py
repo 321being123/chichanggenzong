@@ -1775,6 +1775,16 @@ try:
     product_list = fetch._extract_industry_chain_relations(
         '公司主要产品包括收纳五金、户外家具，相关产品具体生产工艺流程如下：其他描述。')
     check('产品列表不能吞入工艺或应用说明', product_list['products'] == ['收纳五金', '户外家具'])
+    services = fetch._extract_industry_chain_relations(
+        '公司主要产品为物流服务。发行人关务业务所发生的采购支出主要为报关员及港口操作人员的人力支出。发行人关务服务业务主要应用于供应链综合物流服务。')
+    check('服务业采购和服务用途必须保留直接关系证据', services['status'] == 'complete')
+    chronological = fetch._extract_industry_chain_relations(
+        '公司主要从事光电研制业务2019年公司开发出红外产品2020年公司新设子公司。公司采购的原材料主要为芯片。公司产品应用于汽车。')
+    check('业务发展年表不能作为产品列表', all('2019' not in item and '2020' not in item for item in chronological['products']))
+    customer = fetch._extract_industry_chain_relations(
+        '公司主要产品为面料。公司采购的原材料主要为纱线。公司的终端客户主要为国内外大型知名服装品牌商，包括多家服装企业。')
+    check('公司终端客户用途保留原文不猜赛道', customer['status'] == 'complete'
+          and customer['downstream'][0]['industry'] == '国内外大型知名服装品牌商')
     overview = '测试发行人股份有限公司。公司主营业务为制冰机研发、生产与销售。公司主要产品为制冰机。公司采购的原材料主要为压缩机。公司产品主要用于家庭制冰。'
     doc = {'source': 'sse', 'url': 'https://www.sse.com.cn/issuer.pdf', 'content_hash': hashlib.sha256(overview.encode()).hexdigest()}
     class RegisteredDocumentDB:
@@ -1792,7 +1802,7 @@ try:
         fetch._download_exchange_pdf_text = lambda *args: (_ for _ in ()).throw(AssertionError('缓存命中不得下载'))
         registered = fetch._registered_prospectus_main_business('CHAIN_TEST', '测试发行人')
         check('已登记招股书缓存重解析无需重复发现或下载', bool(registered)
-              and fetch._MAIN_BUSINESS_DOCUMENT['CHAIN_TEST']['industry_chain']['version'] == 'ipo-industry-chain-v5')
+              and fetch._MAIN_BUSINESS_DOCUMENT['CHAIN_TEST']['industry_chain']['version'] == 'ipo-industry-chain-v6')
         doc['content_hash'] = '0' * 64
         check('原文哈希变化不能沿用旧证券证据', fetch._registered_prospectus_main_business('CHAIN_TEST', '测试发行人') is None)
         doc['content_hash'] = hashlib.sha256(overview.encode()).hexdigest()

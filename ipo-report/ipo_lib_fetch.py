@@ -1482,7 +1482,7 @@ def _extract_main_business(text):
     return biz or ind or None
 
 
-_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v5"
+_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v6"
 
 
 def _issuer_business_section(text):
@@ -1584,6 +1584,8 @@ def _extract_industry_chain_relations(text):
             item = item.strip(" ，、 ")
             if 2 <= len(item) <= 60 and item not in issuer_products:
                 issuer_products.append(item)
+        if issuer_products:
+            break
     if not products:
         products = issuer_products
     if not products:
@@ -1595,9 +1597,21 @@ def _extract_industry_chain_relations(text):
                 products = [match.group(1).strip()]
                 break
     if not products:
+        for sentence in sentences:
+            if re.search(r"可比公司|竞争对手|若|如果|假设", sentence):
+                continue
+            match = re.search(r"(?:公司|发行人)[^。；;]{0,100}?(?:提供覆盖|推出各类)([^。；;]{4,140})",sentence)
+            if match:
+                value = re.split(r"等|，(?:年|由于|其|公司)",match.group(1))[0].strip()
+                if 4 <= len(value) <= 140:
+                    products = [value]
+                    break
+    if not products:
         main_business = _extract_main_business(_issuer_business_section(str(text or '')))
         if main_business:
-            products = [main_business]
+            value = re.split(r"[。；;]|所属行业|报告期|\d{4}年", main_business)[0].strip()
+            if 4 <= len(value) <= 160:
+                products = [value]
     if products:
         product_application = re.compile("(?P<product>" + "|".join(re.escape(product) for product in products) +
             r")(?:产品)?(?:，|其)?(?:主要|广泛|最终|可广泛|可)?(?:应用于|用于|运用于|适用于|面向)"
@@ -1657,6 +1671,34 @@ def _extract_industry_chain_relations(text):
                     if rule.search(application.group(1)) and not any(row["industry"] == label for row in downstream):
                         downstream.append({"industry": label, "product": "公司产品", "products": list(products),
                                            "relationship": "applied_in", "related_tracks": list(tracks), "evidence": application.group(0)})
+    if products:
+        for sentence in sentences:
+            if re.search(r"可比公司|竞争对手|若|如果|假设|理财|募投", sentence):
+                continue
+            material = re.search(
+                r"(?:公司|发行人)[^。；;]{0,55}?(?:上游供应商(?:多|主要)?(?:为|是)|"
+                r"(?:主要)?采购内容(?:主要)?(?:包括|为)|物资采购主要集中于|采购(?:支出)?主要为)"
+                r"(?P<inputs>[^：:]{2,160})", sentence)
+            if material:
+                value = re.split(r"等|，(?:其中|公司|报告期)|[：:]", material.group('inputs'))[0]
+                for item in re.split(r"[、，]|以及", value):
+                    item = item.strip(" ，、")
+                    if 2 <= len(item) <= 60 and not any(row['industry'] == item for row in upstream):
+                        upstream.append({'industry':item,'product':'公司产品','products':list(products),
+                                         'relationship':'supplies','evidence':material.group(0)})
+            application = re.search(
+                r"(?:公司|发行人)(?:的)?(?:终端)?(?:客户群|客户)(?:主要)?(?:以|为|是)"
+                r"(?P<apps>[^，：:]{2,100})", sentence)
+            if not application:
+                application = re.search(r"(?:公司|发行人)[^，。；;]{0,30}?(?:服务|业务)"
+                    r"(?:主要)?应用于(?P<apps>[^，：:]{2,100})",sentence)
+            if application:
+                item = re.split(r"等|，|包括",application.group('apps'))[0].strip()
+                if 2 <= len(item) <= 70 and not re.search(r"影响|风险|收入|增长|需求",item):
+                    if not any(row['industry']==item for row in downstream):
+                        tracks=sorted({track for _,rule,keys in _DOWNSTREAM_CHAIN_RULES if rule.search(item) for track in keys})
+                        downstream.append({'industry':item,'product':'公司产品','products':list(products),
+                            'relationship':'applied_in','related_tracks':tracks,'evidence':application.group(0)})
     status = "complete" if products and upstream and downstream else "partial" if products or upstream or downstream else "unavailable"
     return {
         "version": _INDUSTRY_CHAIN_PARSER_VERSION,

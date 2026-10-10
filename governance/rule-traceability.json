@@ -665,6 +665,18 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "完整产业链不因未匹配赛道而误报缺失"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "服务业采购和服务用途必须保留直接关系证据"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "业务发展年表不能作为产品列表"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "公司终端客户用途保留原文不猜赛道"
         }
       ],
       "owner": "A股 IPO",
@@ -1507,6 +1519,10 @@
         {
           "file": "server/test/job-error-sanitizer.test.js",
           "pattern": "业务目标证券清单不得被日志裁剪成100只"
+        },
+        {
+          "file": "server/test/job-error-sanitizer.test.js",
+          "pattern": "执行及剩余证券清单不得丢失131只之后的作用域"
         }
       ],
       "owner": "任务治理",

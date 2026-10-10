@@ -1771,6 +1771,15 @@ try:
     replacement = _val.analyze_business_exposure('', '', '', stored=unknown_exposure,
         industry_chain={'status':'partial','products':['新产品']})
     check('显式新解析仍可进入证据更新不被旧完整记录挡住', replacement['industry_chain']['products'] == ['新产品'])
+    internal_chain = fetch._extract_industry_chain_relations('公司主要产品为色谱装备。公司采购的原材料主要为泵阀。公司核心技术主要应用于公司产品的研发、设计、加工和测试环节。公司产品主要用于制药。')
+    check('发行人自身核心技术工艺不能冒充产品下游',internal_chain['status']=='complete' and [r['industry'] for r in internal_chain['downstream']]==['制药'])
+    headings = fetch._extract_industry_chain_relations('公司主要产品为测试设备。公司采购的原材料主要为芯片。公司产品用于汽车，具体情况如下。')
+    check('表格标题和说明片段不能成为上下游行业',headings['status']=='complete' and all('如下' not in r['industry'] for r in headings['downstream']))
+    reviewed = {**unknown_exposure,'industry_chain':{**unknown_exposure['industry_chain'],'version':'ipo-industry-chain-v6-evidence-v1'}}
+    same_document = reviewed['industry_chain']['evidence']
+    check('同一原文自动重解析不得覆盖已核验关系',_val.analyze_business_exposure('', '', '',stored=reviewed,industry_chain=unknown_chain,evidence_document=same_document)==reviewed)
+    check('原文变化仍允许新证据替换',_val.analyze_business_exposure('', '', '',stored=reviewed,industry_chain=unknown_chain,evidence_document={**same_document,'content_hash':'b'*64})!=reviewed)
+    check('明确原文证据修正仍可更新已核验关系',_val.analyze_business_exposure('', '', '',stored=reviewed,industry_chain={**unknown_chain,'extraction_method':'source_evidence_correction'},evidence_document=same_document)!=reviewed)
     distribution = fetch._extract_industry_chain_relations(
         '公司主要产品为家具。公司采购的原材料主要为木板。公司产品主要用于出口销售，容易受到汇率波动影响。')
     check('出口销售与汇率风险不能当作下游应用', distribution['status'] != 'complete' and not distribution['downstream'])

@@ -132,6 +132,21 @@ def analyze_business_exposure(stock_name, main_business, industry, stored=None,
     招股书没有收入占比时，不把暴露度粗暴置零：对明确出现的下游按证据
     均分，并降低 confidence；只有宽泛的“新材料”时才使用低置信度兜底。
     """
+    if isinstance(stored, dict) and isinstance(industry_chain, dict):
+        saved_chain = stored.get("industry_chain")
+        saved_chain = saved_chain if isinstance(saved_chain, dict) else {}
+        saved_evidence = saved_chain.get("evidence")
+        saved_evidence = saved_evidence if isinstance(saved_evidence, dict) else {}
+        document = evidence_document if isinstance(evidence_document, dict) else {}
+        if (saved_chain.get("status") == "complete"
+                and saved_chain.get("version") == "ipo-industry-chain-v6-evidence-v1"
+                and saved_evidence.get("url") and saved_evidence.get("content_hash")
+                and saved_evidence.get("url") == document.get("url")
+                and saved_evidence.get("content_hash") == document.get("content_hash")
+                and all(isinstance(saved_chain.get(key), list) and saved_chain[key]
+                        for key in ("products", "upstream", "downstream"))
+                and industry_chain.get("extraction_method") != "source_evidence_correction"):
+            return stored
     if isinstance(stored, dict) and industry_chain is None:
         chain = stored.get("industry_chain")
         chain = chain if isinstance(chain, dict) else {}

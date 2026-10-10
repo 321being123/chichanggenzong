@@ -1735,6 +1735,50 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "IPO-CHAIN-APPLICATION-001",
+      "title": "发行人自身工艺及表格标题不能当作产业链用途",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_extract_industry_chain_relations"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "发行人自身核心技术工艺不能冒充产品下游"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "表格标题和说明片段不能成为上下游行业"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
+    },
+    {
+      "id": "IPO-CHAIN-REPARSE-001",
+      "title": "同一原文已核验关系优先于自动重解析且允许新证据",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_sector.py",
+        "symbol": "analyze_business_exposure"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "同一原文自动重解析不得覆盖已核验关系"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "原文变化仍允许新证据替换"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "明确原文证据修正仍可更新已核验关系"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "verified"
     }
   ]
 }

@@ -1675,7 +1675,7 @@ def _extract_industry_chain_relations(text):
             r")(?:产品)?(?:，|其)?(?:主要|广泛|最终|可广泛|可)?(?:应用于|用于|运用于|适用于|面向)"
             r"(?P<apps>[^：:]{2,220})")
         for sentence in sentences:
-            if re.search(r"可比公司|竞争对手|若|如果|假设|不涉及|经营场所|理财|指[^，]{0,40}(?:用于|应用于)", sentence):
+            if re.search(r"可比公司|竞争对手|若|如果|假设|不涉及|经营场所|核心技术|工艺流程|理财|指[^，]{0,40}(?:用于|应用于)", sentence):
                 continue
             material = re.search(
                 r"(?:(?:公司|发行人)[^。；;]{0,45}?(?:采购的|采购|生产所需的|所需的)?|主要)"
@@ -1757,6 +1757,10 @@ def _extract_industry_chain_relations(text):
                         tracks=sorted({track for _,rule,keys in _DOWNSTREAM_CHAIN_RULES if rule.search(item) for track in keys})
                         downstream.append({'industry':item,'product':'公司产品','products':list(products),
                             'relationship':'applied_in','related_tracks':tracks,'evidence':application.group(0)})
+    metadata_label = re.compile(r"如下|序号|产品性状|根据|主要分为|职责|采购价格|特点情况|正在从事")
+    upstream = [row for row in upstream if not metadata_label.search(row["industry"])]
+    downstream = [row for row in downstream if not metadata_label.search(row["industry"])
+                  and not re.search(r"核心技术|工艺流程", row.get("evidence", ""))]
     status = "complete" if products and upstream and downstream else "partial" if products or upstream or downstream else "unavailable"
     return {
         "version": _INDUSTRY_CHAIN_PARSER_VERSION,

@@ -32,6 +32,7 @@ const ENDPOINT_MIN_POINTS = Object.freeze({
   fina_indicator_vip: 5000,
   forecast: 2000,
   dividend: 2000,
+  repo_daily: 2000,
   fina_mainbz: 2000,
   cb_basic: 2000,
   cb_issue: 2000,

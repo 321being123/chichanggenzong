@@ -8,7 +8,7 @@
 //   - 某交易日有持仓却缺收盘价 → 跳过那天，不近似。
 const { pool, loadAccountData, upsertNav, tryClaimJob, releaseJob, startJobRun, finishJobRun } = require('../db');
 const { getMarketState, isCnTradingDate, prefetchMarketFacts } = require('../services/marketState');
-const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
+const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../public/shared/nav-math.js');
 const CoreDate = require('../../public/shared/core-date.js');
 const classifyCode = require('../../public/js/code-classify');
 
@@ -35,6 +35,10 @@ function dateText(value) {
 
 // 为单个账户填补缺失交易日的净值快照（幂等：已有记录跳过、只新增缺失日）
 async function recordNavSnapshots(username, accountName, hkRateOverride = null, targetDateInput = cnDate(new Date())) {
+  const cashIncome = await require('../services/cashIncome').settleCashIncome(username, accountName, {targetDate:cnDate(targetDateInput)});
+  if(cashIncome.status==='partial'&&cashIncome.progress?.processedThrough<cnDate(targetDateInput)) return {
+    ok:false,status:'partial',days:0,missingDates:[cnDate(targetDateInput)],missingCodes:['204001.SH'],cashIncome,
+    diagnostics:[{date:cnDate(targetDateInput),reason:'cash_income_recalculation_incomplete',pending:cashIncome.pending}],failedDatasets:['nav_snapshot'],error:'现金收益区间尚未完成，保留原净值快照',errorType:'data_quality'};
   const data = await loadAccountData(username, accountName);
   const positionNames = new Map((data.positions || []).map(position => [position.code, position.name || '']));
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return dateText(a.date).localeCompare(dateText(b.date)); });
@@ -178,34 +182,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     return m;
   }
   // 现金-as-of 某日（open/adjust 不产生现金）
-  function cashAsOf(date) {
-    const cashAnchors = navs.filter(n => n.snapshotSource === 'imported' && n.isLocked !== false &&
-      dateText(n.date) <= date && Number.isFinite(Number(n.cashCny)) && Number(n.cashCny) >= 0)
-      .sort((a, b) => dateText(a.date).localeCompare(dateText(b.date)));
-    const cashAnchor = cashAnchors.length ? cashAnchors[cashAnchors.length - 1] : null;
-    const anchorDate = cashAnchor ? dateText(cashAnchor.date) : '';
-    let c = cashAnchor ? Number(cashAnchor.cashCny) : cashBase;
-    let incomplete = false;
-    cfs.forEach(function (f) {
-      const fd = dateText(f.date);
-      if ((!anchorDate || fd > anchorDate) && fd <= date) c += (f.amount || 0);
-    });
-    trades.forEach(function (t) {
-      if (tradeDay(t) > date || (anchorDate && tradeDay(t) <= anchorDate)) return;
-      if (t.direction === 'open' || t.direction === 'adjust') return;
-      const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
-      const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
-        (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
-      const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
-      if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') {
-        incomplete = true;
-        return;
-      }
-      const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
-      c += (t.direction === 'buy') ? -settled - fee : settled - fee;
-    });
-    return { value: c, incomplete };
-  }
+  function cashAsOf(date) { return cashAt(data, date); }
 
   const today = targetDate;
   const { rows: fxRows } = await pool.query(
@@ -321,7 +298,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
       prev = { date: d, nav: 1.0, totalAsset: totalAsset }; affected++; continue;
     }
     let pcf = 0;
-    cfs.forEach(function (f) { if (f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
+    cfs.forEach(function (f) { if (isExternalTransfer(f) && f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
     const baseAsset = prev.totalAsset + pcf;
     if (baseAsset <= 0) continue; // 无法续链，跳过
     const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
@@ -329,6 +306,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     prev = { date: d, nav: nav, totalAsset: totalAsset }; affected++;
   }
   return {
+    cashIncome,
     ok: incompleteDates.length === 0,
     status: incompleteDates.length ? 'partial' : 'succeeded',
     days: affected,

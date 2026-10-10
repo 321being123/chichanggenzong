@@ -19,7 +19,8 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'hk_rate':
       return require('../jobs/hkRate').runHkRateJob({ final: true, targetDate: businessDate });
     case 'nav_snapshot':
-      return require('../jobs/navSnapshot').runNavSnapshotJob({ targetDate: businessDate });
+      if(context.mode==='cash_income') return require('./cashIncomeQueue').run({...context,targetDate:context.targetDate||businessDate});
+      return {...await require('../jobs/navSnapshot').runNavSnapshotJob({ targetDate: businessDate }),mode:'core',publishDatasetCodes:['nav_snapshot']};
     case 'index_baseline':
       return require('../jobs/indexBaseline').runIndexBaselineJob(reason);
     case 'index_recent':
@@ -48,7 +49,8 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'hk_ipo_enrichment':
       return require('../jobs/hkIpoSync').runHkIpoSync('enrichment', reason, { ...context, targetDate: context.targetDate || businessDate });
     case 'arbitrage_sync':
-      return require('../jobs/arbitrageSync').runArbitrageSync(reason, context);
+      {const result=await require('../jobs/arbitrageSync').runArbitrageSync(reason, {...context,targetDate:context.targetDate||businessDate});
+      return {...result,mode:context.mode==='cash_dividends'?'cash_dividends':'core',publishDatasetCodes:context.mode==='cash_dividends'?['stock_cash_dividend_facts']:['arbitrage_cases']};}
     case 'arbitrage_reparse': {
       const { pool } = require('../db');
       const { rows } = await pool.query(
@@ -120,10 +122,12 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
           missingDates: [],
           publishDatasets: false,
           testRunnerMode: 'suspension-only',
+          stageComplete: true,
           receivedFailedDatasets: context.failedDatasets || [],
         };
       }
       return require('../services/convertibleBondAnalysis').syncConvertibleBondUniverseWithBackfill(reason, {
+        mode:context.mode,
         targetTradeDate,
         failedDatasets: context.failedDatasets || [],
         pendingStages: context.pendingStages || [],

@@ -1,3 +1,4 @@
+const { loadCashState } = require('./accountCash');
 // ===================== 仓位对比服务（统一估值 + 字段脱敏 + 分组差异） =====================
 // 对应 docs/仓位对比功能_开发文档.md 6 节：
 //   - 6.1 双方使用同一批最新有效行情估值（复用腾讯批量行情）
@@ -98,18 +99,9 @@ async function loadAccountCash(username, accountName) {
   const hkRate = (am[0] && am[0].hk_rate > 0) ? am[0].hk_rate : 0.868;
   // 真实汇率更新时间（迁移 039 专用列），不随持仓保存/公开状态修改而更新
   const hkRateUpdatedAt = am[0] && am[0].hk_rate_updated_at ? am[0].hk_rate_updated_at : null;
-  const { rows: cf } = await pool.query(
-    `SELECT COALESCE(SUM(amount::float8),0) AS net FROM cash_flows WHERE username=$1 AND account_name=$2`,
-    [username, accountName]
-  );
-  const { rows: tr } = await pool.query(
-    `SELECT COALESCE(SUM(
-        CASE WHEN direction='buy' THEN -(amount::float8) - (COALESCE(commission::float8,0)+COALESCE(stamp_tax::float8,0)+COALESCE(transfer_fee::float8,0)+COALESCE(other_fee::float8,0))
-             ELSE (amount::float8) - (COALESCE(commission::float8,0)+COALESCE(stamp_tax::float8,0)+COALESCE(transfer_fee::float8,0)+COALESCE(other_fee::float8,0))
-        END),0) AS net FROM trades WHERE username=$1 AND account_name=$2`,
-    [username, accountName]
-  );
-  return { cash: (cashBase || 0) + (cf[0] ? cf[0].net : 0) + (tr[0] ? tr[0].net : 0), hkRate, hkRateUpdatedAt };
+  const state = await loadCashState(username, accountName);
+  return { cash: state.value, cashConfirmed: state.cashConfirmed, cashEstimatedDelta: state.cashEstimatedDelta,
+    cashIncludesEstimates: state.cashIncludesEstimates, cashDataIncomplete: state.incomplete, hkRate, hkRateUpdatedAt };
 }
 
 // 统一估值：输出每证券 {code,name,type,subtype,quantity,price,change,quoteTime,marketValue,ratio,...}

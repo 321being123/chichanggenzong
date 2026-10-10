@@ -52,11 +52,11 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   if (phase?.requiresDataWatermark === false && !stageVerified) return { recovered: false, reason: 'target_scope_evidence_missing', evidence: { slot, run } };
   const datasets = phase ? [...new Set([...(phase.publish || []), ...(phase.requirePublished || [])])] : definition.producesDatasets || [];
   const { expectedDataDate } = require('./jobScheduleSlots');
-  const { DATASET_PARTITION_REGISTRY } = require('./datasetPartitionRegistry');
+  const { resolveDatasetScope } = require('./datasetPartitionRegistry');
   const businessDate = businessDateText(slot.business_date);
   const partitionKey = expectedDataDate(slot.job_code, businessDate) || businessDate;
   let datasetEvidence = [];
-  if (definition.strictDatasetPublication && datasets.length && partitionKey) {
+  if ((definition.strictDatasetPublication||phase?.requireStageComplete) && datasets.length && partitionKey) {
     const { rows } = await query(
       `SELECT dataset_code,scope_key,status,is_stale,diagnostics
          FROM ops.dataset_partitions
@@ -64,13 +64,14 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
     );
     const byCodeAndScope = new Map(rows.map(row => [`${row.dataset_code}:${row.scope_key}`, row]));
     datasetEvidence = datasets.map(code => {
-      const expectedScopeKey = DATASET_PARTITION_REGISTRY[code]?.scopeKey || null;
+      const expectedScopeKey = resolveDatasetScope(code,slot.request_payload||{});
       return byCodeAndScope.get(`${code}:${expectedScopeKey}`)
         || { dataset_code: code, scope_key: expectedScopeKey, status: 'missing' };
     });
     const allPublished = datasetEvidence.every(row => {
       const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
-      const qualityOk = !diagnostics.quality_status || diagnostics.quality_status === 'passed';
+      const qualityOk = ['account_cash_income','repo_daily_rates','stock_cash_dividend_facts'].includes(row.dataset_code)
+        ? diagnostics.quality_status==='passed':!diagnostics.quality_status || diagnostics.quality_status === 'passed';
       const queryOk = !diagnostics.query_status || ['success', 'passed', 'verified'].includes(diagnostics.query_status);
       return row.status === 'published' && !row.is_stale && qualityOk && queryOk;
     });

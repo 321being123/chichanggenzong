@@ -24,6 +24,11 @@ async function runArbitrageSync(reason = 'scheduled', context = {}) {
   try {
     const pdfCache = cleanupArbitragePdfCache();
     runId = await startJobRun(SYNC_JOB);
+    if(context.mode==='cash_dividends') {
+      const result=await require('../services/cashDividendFacts').syncCashDividends(context);
+      await finishJobRun(runId,result.ok,JSON.stringify({remainingCount:result.remainingCount,codes:result.codes}));
+      return result;
+    }
     const result = await sync.runIncrementalSync();
     const sourceResults = Object.keys(sync.SCOPES).map(scope => result[scope] || { total: 0, errors: [], failureDetails: [] });
     const errors = sourceResults.flatMap(source => source.errors || []);

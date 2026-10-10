@@ -42,7 +42,9 @@ function renderStats() {
       '</div>' +
       '<div class="stat-card">' +
         '<div class="stat-top">' +
-          '<div><div class="label">现金余额</div><div class="value" id="stat-cash"></div><div class="sub" id="stat-cash-pct"></div></div>' +
+          '<div><div class="label">现金余额</div><div class="value" id="stat-cash"></div><div class="sub" id="stat-cash-pct"></div>' +
+            '<button type="button" class="btn btn-outline" style="min-height:44px" onclick="recalculateCashIncomeForAccount(this)">补算现金收益</button>' +
+            '<button type="button" class="btn btn-outline" style="min-height:44px" onclick="openCashIncomePanel()">收益明细与待核验</button></div>' +
           '<div class="stat-icon icon-bg-green">💵</div>' +
         '</div>' +
         '<div class="bar-wrap"><div class="bar-fill" id="bar-cash" style="width:0%;background:#137333;"></div></div>' +
@@ -85,7 +87,9 @@ function renderStats() {
   if (el('stat-debt')) el('stat-debt').textContent = fmt(s.debtVal);
   if (el('stat-debt-pct')) el('stat-debt-pct').textContent = '占比 ' + fmtPct(s.debtPct);
   if (el('stat-cash')) el('stat-cash').textContent = fmt(s.cash);
-  if (el('stat-cash-pct')) el('stat-cash-pct').textContent = '占比 ' + fmtPct(s.cashPct);
+  if (el('stat-cash-pct')) el('stat-cash-pct').textContent = '占比 ' + fmtPct(s.cashPct) +
+    (data.cashIncludesEstimates ? ' · 含现金收益估算 ' + fmt(data.cashEstimatedDelta) + ' 元' : '') +
+    (data.cashIncomeState && data.cashIncomeState.pending && data.cashIncomeState.pending.length ? ' · ' + data.cashIncomeState.pending.length + '项待核验' : '');
   if (el('bar-equity')) el('bar-equity').style.width = (s.equityPct * 100) + '%';
   if (el('bar-debt')) el('bar-debt').style.width = (s.debtPct * 100) + '%';
   if (el('bar-cash')) el('bar-cash').style.width = (s.cashPct * 100) + '%';
@@ -119,6 +123,7 @@ function bindChangeTip(el, changeAmt, changePct) {
   var fxImpact = Number.isFinite(Number(attribution.fxImpact)) ? Number(attribution.fxImpact) : null;
   var otherChange = Number.isFinite(Number(attribution.tradeImpact)) ? Number(attribution.tradeImpact) :
     (Number.isFinite(Number(attribution.ledgerChange)) ? Number(attribution.ledgerChange) : null);
+  if(otherChange != null) otherChange += Number(attribution.cashIncomeImpact) || 0;
   var importBasisAdjustment = attribution.importBasisAdjustment == null ? null : Number(attribution.importBasisAdjustment);
   var snapshotDrift = attribution.complete && Number.isFinite(Number(attribution.snapshotDrift)) ? Number(attribution.snapshotDrift) : null;
   var authorityMode = attribution.authorityMode ? (data.totalAssetSource || 'system_calculated') : null;
@@ -166,7 +171,7 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
       '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港股今价 ×（今日汇率−昨日快照汇率），反映港币兑人民币波动</div>';
   if (otherChange != null) {
     html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、数量变化及现金流入流出等</div>';
+      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、数量变化、外部入出金及分红/逆回购收益（可能含估算）</div>';
   }
   if (importBasisAdjustment != null && Number.isFinite(importBasisAdjustment)) {
     html += '<div>导入口径切换差异：<span style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
@@ -643,7 +648,7 @@ function renderTrades() {
   // 合并股票交易与现金流转出，按日期倒序展示
   const items = [];
   (data.trades || []).forEach(t => items.push({ kind: 'trade', created_at: t.created_at || t.date || '', raw: t }));
-  (data.cashFlows || []).forEach(c => items.push({ kind: 'flow', created_at: c.created_at || c.date || '', raw: c }));
+  (data.cashFlows || []).forEach(c => items.push({ kind: 'flow', created_at: (c.origin === 'system' ? c.date : c.created_at || c.date) || '', raw: c }));
   items.sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   if (items.length === 0) {
@@ -684,11 +689,13 @@ function renderTrades() {
     } else {
       const c = item.raw;
       const isIn = c.amount >= 0;
-      const dirLabel = isIn
+      const labels = {dividend:'股票分红',dividend_tax:'分红扣税',repo_interest:'逆回购利息',repo_fee:'逆回购费用'};
+      const incomeLabel = labels[c.flow_type];
+      const dirLabel = incomeLabel ? escapeHtml(incomeLabel) : isIn
         ? '<span class="tag tag-cash">入金</span>'
         : '<span class="tag tag-equity">出金</span>';
       html += '<tr>' +
-        '<td>' + escapeHtml(c.created_at || c.date || '-') + '</td>' +
+        '<td>' + escapeHtml(c.date || '-') + '</td>' +
         '<td>现金</td>' +
         '<td>现金' + (c.note ? '·' + escapeHtml(c.note) : '') + '</td>' +
         '<td>' + dirLabel + '</td>' +
@@ -698,14 +705,31 @@ function renderTrades() {
           (isIn ? '+' : '-') + fmt(Math.abs(c.amount)) + '</td>' +
         '<td class="text-right">-</td>' +
         '<td>现金</td>' +
-        '<td>' + escapeHtml(c.note || '') + '</td>' +
-        '<td class="text-center"><button class="btn btn-danger btn-sm" data-act="deleteCashFlow" data-id="' + escapeHtml(c.id) + '">删除</button></td>' +
+        '<td>' + escapeHtml((c.status === 'estimated' ? '估算 · ' : c.status === 'revoked' ? '已撤销 · ' : '') +
+          (c.note || '') + (c.evidence && c.evidence.principal ? '；本金 ' + fmt(c.evidence.principal) + '，年化 ' +
+            (Number(c.evidence.annualRate)*100).toFixed(2) + '%，计息 ' + c.evidence.interestDays + ' 天' : '')) + '</td>' +
+        '<td class="text-center">' + (c.origin && c.origin !== 'manual' ? '受保护' : '<button class="btn btn-danger btn-sm" data-act="deleteCashFlow" data-id="' + escapeHtml(c.id) + '">删除</button>') + '</td>' +
         '</tr>';
     }
   });
   html += '</tbody></table></div>';
   el.innerHTML = html;
   if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#page-trades', top: '#main-holdings > .holdings-header' });
+}
+
+async function recalculateCashIncomeForAccount(button) {
+  if(button) button.disabled=true;
+  try {
+    const response=await fetch(api('/api/accounts/'+encodeURIComponent(currentAccount)+'/cash-income/recalculate?version='+dataVersion),
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true})});
+    const result=await response.json();
+    if(!response.ok) throw new Error(result.error || '现金收益计算失败');
+    if(result.status==='missing_cash_anchor') {showToast('请先导入有效持仓现金基准');return;}
+    data=await loadData(currentAccount);
+    renderAll();
+    showToast('现金收益已计入；'+(result.pending?.length || 0)+'项仍待补充事实或核对');
+  } catch(e) {showToast(e.message || '现金收益计算失败');}
+  finally {if(button) button.disabled=false;}
 }
 
 async function deleteCashFlow(id) {

@@ -1,3 +1,4 @@
+const NavMath = require('../../public/shared/nav-math');
 // 净值涨跌归因的唯一后端实现。
 // 前端只展示结果，不再自行拼接价格、汇率和账本公式。
 const { pool } = require('../db/connection');
@@ -17,10 +18,12 @@ function timestamp(value) {
 }
 
 function eventTimestamp(row) {
-  return timestamp(row.executed_at || row.created_at);
+  return NavMath.eventTime(row, dateKey(row.trade_date || row.date));
 }
 
 function eventInInterval(row, eventDate, startDate, endDate, startAt, endAt) {
+  if (eventDate < startDate || eventDate > endDate) return false;
+  if (eventDate > startDate && eventDate < endDate) return true;
   const eventAt = eventTimestamp(row);
   if (eventAt != null && startAt != null && endAt != null) {
     return eventAt > startAt && eventAt <= endAt;
@@ -37,33 +40,7 @@ function eventAtOrBefore(row, eventDate, snapshotDate, snapshotAt) {
 }
 
 function cashAtSnapshot(data, snapshotDate, snapshotAt) {
-  const imports = (data.navHistory || []).filter((n) => n.snapshotSource === 'imported' && n.isLocked !== false &&
-    dateKey(n.date) <= snapshotDate && Number.isFinite(Number(n.cashCny)) && Number(n.cashCny) >= 0)
-    .sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
-  const anchor = imports.length ? imports[imports.length - 1] : null;
-  const anchorDate = anchor ? dateKey(anchor.date) : null;
-  const result = { value: anchor ? Number(anchor.cashCny) : (Number(data.cashBase) || 0), incomplete: false };
-  for (const f of (data.cashFlows || [])) {
-    const d = dateKey(f.date);
-    if (anchorDate && d <= anchorDate) continue;
-    if (eventAtOrBefore(f, d, snapshotDate, snapshotAt)) result.value += Number(f.amount) || 0;
-  }
-  for (const t of (data.trades || [])) {
-    const d = dateKey(t.trade_date || t.date);
-    if (anchorDate && d <= anchorDate) continue;
-    if (!eventAtOrBefore(t, d, snapshotDate, snapshotAt) || t.direction === 'open' || t.direction === 'adjust') continue;
-    const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
-    const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
-      (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
-    const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
-    if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') {
-      result.incomplete = true;
-      continue;
-    }
-    const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
-    result.value += t.direction === 'buy' ? -settled - fee : settled - fee;
-  }
-  return result;
+  return NavMath.cashAt(data, snapshotDate, snapshotAt);
 }
 
 function latestImportedPositionAnchor(data, date) {
@@ -399,10 +376,15 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     }
   }
   const ledgerChange = { value: 0 };
+  let cashIncomeImpact = 0;
   let currencyIncomplete = false;
   for (const f of (data.cashFlows || [])) {
     const d = dateKey(f.date);
-    if (eventInInterval(f, d, prevDate, currentDate, prevAt, lastAt)) ledgerChange.value += Number(f.amount) || 0;
+    if (NavMath.isEffectiveFlow(f) && eventInInterval(f, d, prevDate, currentDate, prevAt, lastAt)) {
+      const amount = Number(f.amount) || 0;
+      if (NavMath.isExternalTransfer(f)) ledgerChange.value += amount;
+      else cashIncomeImpact += amount;
+    }
   }
   for (const t of (data.trades || [])) {
     const d = dateKey(t.trade_date || t.date);
@@ -435,7 +417,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     ? Number(previous.systemMarketValueAtSnapshot) - Number(previous.marketValueCny)
     : null;
   const tradeImpact = ledgerChange.value + quantityImpact.value;
-  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact -
+  const drift = complete ? totalChange - priceImpact.value - fxImpact.value - tradeImpact - cashIncomeImpact -
     valuationAdjustment.value - (importBasisAdjustment || 0) : null;
   return {
     complete,
@@ -451,6 +433,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
     ledgerChange: ledgerChange.value,
     quantityImpact: quantityImpact.value,
     tradeImpact,
+    cashIncomeImpact,
     valuationAdjustment: valuationAdjustment.value,
     closedPriceCorrections,
     importBasisAdjustment,

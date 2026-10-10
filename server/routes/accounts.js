@@ -296,6 +296,42 @@ router.put('/accounts/broker', requireLogin, asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
+router.get('/accounts/:name/cash-income/coverage', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const { auditCashIncomeCoverage } = require('../services/cashIncomeCoverage');
+  const report = await auditCashIncomeCoverage(req.session.user, decodeURIComponent(req.params.name));
+  res.json(report);
+}));
+
+router.post('/accounts/:name/cash-income/recalculate', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req,res) => {
+  if(req.body?.async===true) {
+    const queued=await require('../services/cashIncomeQueue').enqueue(req.session.user,decodeURIComponent(req.params.name),{targetDate:req.body?.targetDate||todayCN(),enabled:req.body?.enabled,version:Number(req.query.version)});
+    return res.status(202).json(queued);
+  }
+  const result = await require('../services/cashIncome').settleCashIncome(req.session.user,decodeURIComponent(req.params.name),
+    {targetDate:req.body?.targetDate,enable:req.body?.enabled === true,expectedVersion:Number(req.query.version)});
+  res.json(result);
+}));
+
+router.get('/accounts/:name/cash-income', requireLogin, asyncHandler(assertOwnership), asyncHandler(async(req,res)=>{
+  const name=decodeURIComponent(req.params.name);
+  const state=(await pool.query('SELECT cash_income_policy,cash_income_state FROM accounts WHERE username=$1 AND account_name=$2',[req.session.user,name])).rows[0];
+  const rows=(await pool.query(`SELECT id,date::text,amount::text,flow_type,status,origin,event_key,anchor_date::text,
+    quality_status,evidence,revision,note,currency,original_amount::text,amount_cny::text,settled_at,source_ref FROM cash_flows WHERE username=$1 AND account_name=$2 AND flow_type<>'external_transfer' ORDER BY date,id`,[req.session.user,name])).rows;
+  const pending=(await pool.query('SELECT p.* FROM account_cash_income_pending p JOIN accounts a ON a.id=p.account_id WHERE a.username=$1 AND a.account_name=$2 ORDER BY first_seen_at,pending_key',[req.session.user,name])).rows;
+  res.json({...state,rows,pending});
+}));
+
+router.post('/accounts/:name/cash-income/actual',requireLogin,asyncHandler(assertOwnership),requireVersion,asyncHandler(async(req,res)=>{
+  const name=decodeURIComponent(req.params.name);
+  const result=await require('../services/cashIncomeActual').importActual(req.session.user,name,req.body?.records,Number(req.query.version));
+  const state=await require('../services/cashIncome').settleCashIncome(req.session.user,name);
+  res.json({...result,state});
+}));
+router.post('/accounts/:name/cash-income/pending/:key',requireLogin,asyncHandler(assertOwnership),requireVersion,asyncHandler(async(req,res)=>{
+  const result=await require('../services/cashIncomePending').changePending(req.session.user,decodeURIComponent(req.params.name),req.params.key,{exclude:req.body?.exclude,reason:req.body?.reason,version:Number(req.query.version)});
+  res.json({ok:true,result});
+}));
+
 router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   const name = decodeURIComponent(req.params.name);
   if (String(req.query.scope || '').toLowerCase() === 'summary') {

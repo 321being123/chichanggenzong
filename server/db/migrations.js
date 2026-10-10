@@ -7050,6 +7050,10 @@ const MIGRATIONS = [
   { version: '161_hk_ipo_market_snapshot_timeline', up: migration161HkIpoMarketSnapshotTimeline },
   { version: '162_hk_ipo_x_public_source', up: migration162HkIpoXPublicSource },
   { version: '163_arbitrage_seen_cases', up: migration163ArbitrageSeenCases },
+  { version: '164_cash_flow_contract', up: () => require('./cashIncomeMigration').migrateCashFlowContract(pool) },
+  { version: '165_cash_flow_date_precision', up: () => require('./cashIncomeMigration').migrateCashFlowDatePrecision(pool) },
+    { version: '166_cash_income_policy', up: () => require('./cashIncomeMigration').migrateCashIncomePolicy(pool) },
+    { version: '167_cash_income_sources', up: () => require('./cashIncomeMigration').migrateCashIncomeSources(pool) },
 ];
 
 // ========== 053：指数基线"已确认最早可用日期"落库（避免每次重启重复联网全量拉指数） ==========

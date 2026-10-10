@@ -201,7 +201,7 @@ function buildRealReturnsSeries() {
   if (!data.navHistory || data.navHistory.length === 0) return [];
   const navs = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   const firstDate = navs[0].date;
-  const cf = (data.cashFlows || []);
+  const cf = (data.cashFlows || []).filter(NavMath.isExternalTransfer);
 
   let peak = -Infinity;
   let maxDD = 0;
@@ -332,7 +332,7 @@ function applyHistoryRecords(parsed, mode) {
 // 返回锚点日期（导入最后一条），供提交时把重算后的后续记录一并持久化（2026-08-04 修复）
 function recalcNavAfterImport(parsed) {
   if (!data.navHistory || data.navHistory.length === 0) return null;
-  const cf = (data.cashFlows || []);
+  const cf = (data.cashFlows || []).filter(NavMath.isExternalTransfer);
   let lastImportDate = null;
   (parsed || []).forEach(function (p) { if (!lastImportDate || p.date > lastImportDate) lastImportDate = p.date; });
   if (!lastImportDate) return null;

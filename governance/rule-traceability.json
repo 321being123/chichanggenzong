@@ -1787,6 +1787,262 @@
       ],
       "owner": "A股 IPO",
       "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-001",
+      "title": "导入现金日期边界及收益不增加本金",
+      "implementation": {
+        "file": "public/shared/nav-math.js",
+        "symbol": "cashAt"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-contract.test.js",
+          "pattern": "cashEstimatedDelta"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-002",
+      "title": "自动流水保护、估算重跑幂等、实际替换与基准吸收",
+      "implementation": {
+        "file": "server/services/cashIncome.js",
+        "symbol": "settleCashIncome"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "retryIncome.changed"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-003",
+      "title": "回购可用日与计息区间隔离、日终资金下一交易日投入",
+      "implementation": {
+        "file": "server/services/cashIncome.js",
+        "symbol": "calculateRepo"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-calculation.test.js",
+          "pattern": "interestEndExclusive"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-004",
+      "title": "公告身份、金额单位及不完整旧表单证据隔离",
+      "implementation": {
+        "file": "server/services/cashDividendFacts.js",
+        "symbol": "parseDividend"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-facts.test.js",
+          "pattern": "sameDividendPeriod"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-005",
+      "title": "实收所属事件、精度、原币与更正撤销幂等",
+      "implementation": {
+        "file": "server/services/cashIncomeActual.js",
+        "symbol": "importActual"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-actual.test.js",
+          "pattern": "nested idempotence"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-006",
+      "title": "待核验只凭匹配证据恢复且排除不清空来源缺口",
+      "implementation": {
+        "file": "server/services/cashIncomePending.js",
+        "symbol": "syncPending"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-actual.test.js",
+          "pattern": "空结果不恢复"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-007",
+      "title": "分批续跑保持目标日、剩余进度和账户质量scope",
+      "implementation": {
+        "file": "server/services/cashIncomeQueue.js",
+        "symbol": "run"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-queue.test.js",
+          "pattern": "第一批不能发布最终分区"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-008",
+      "title": "缺未来利率停止递推及缺净额保留旧有效估算",
+      "implementation": {
+        "file": "server/services/cashIncome.js",
+        "symbol": "settleCashIncome"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "缺净额保留旧有效金额"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-009",
+      "title": "港股逐层扣税、税后不重扣及实际人民币结算",
+      "implementation": {
+        "file": "server/services/cashDividendSettlement.js",
+        "symbol": "calculateHkNet"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-settlement.test.js",
+          "pattern": "calculateHkNet"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-010",
+      "title": "A股日终净股份FIFO与未知购入日阻止猜税",
+      "implementation": {
+        "file": "server/services/cashDividendSettlement.js",
+        "symbol": "assessDeferredTax"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-settlement.test.js",
+          "pattern": "unknown.complete"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-011",
+      "title": "来源连续日期、官方同口径交叉与缓存准入",
+      "implementation": {
+        "file": "server/services/repoSourceAdmission.js",
+        "symbol": "assess"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-source-admission.test.js",
+          "pattern": "official admission cache"
+        },
+        {
+          "file": "server/test/cash-income-calculation.test.js",
+          "pattern": "未准入即使字段存在也不能使用市场利率"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-012",
+      "title": "公告净额与FIFO补税授权入账、分派组成去重及实收可选替换",
+      "implementation": {
+        "file": "server/services/cashDividendSettlement.js",
+        "symbol": "estimateHkAnnouncement"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-announcement.test.js",
+          "pattern": "普通+特别合计"
+        },
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "不要求券商凭证"
+        },
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "不把其他用户港股默认当港股通"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-013",
+      "title": "港股T+3到账日、节假日顺延与未来现金隔离",
+      "implementation": {
+        "file": "server/services/cashDividendSettlement.js",
+        "symbol": "hkReceiptDate"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-announcement.test.js",
+          "pattern": "国庆及周末顺延"
+        },
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "T+3之前不得计入可用现金"
+        },
+        {
+          "file": "server/test/cash-income-panel.test.js",
+          "pattern": "待到账日期展示且不新增取数"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
+    },
+    {
+      "id": "CASH-INCOME-014",
+      "title": "港股补充公告原文关联、旧版本替代与来源覆盖恢复",
+      "implementation": {
+        "file": "server/services/cashDividendFacts.js",
+        "symbol": "resolveHkRelatedDocument"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-related-documents.test.js",
+          "pattern": "本地九个对象补充公告关联"
+        },
+        {
+          "file": "server/test/cash-income-related-documents.test.js",
+          "pattern": "多事件歧义不宣称完成"
+        },
+        {
+          "file": "server/test/cash-income-related-documents.test.js",
+          "pattern": "A股监管附件不冒充H股实施"
+        },
+        {
+          "file": "server/test/cash-income-db.test.js",
+          "pattern": "有实施行动的证券仍按本作用域覆盖证据恢复"
+        }
+      ],
+      "owner": "持仓现金收益",
+      "status": "verified"
     }
   ]
 }

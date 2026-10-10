@@ -61,7 +61,7 @@ async function seedMainPartitions(targetDate, suspensionStatus = 'stale') {
             query_status: published ? 'success' : 'failed',
             coverage_status: published ? 'verified_no_suspension' : 'unknown',
           }
-        : { test_fixture: 'inc-0010' },
+        : { test_fixture: 'inc-0010',quality_status:'passed' },
     });
   }
 }
@@ -143,7 +143,7 @@ async function verifyFailureThenSuspensionOnlyRecovery(businessDate) {
   await runSlot(initial, 'scheduled');
   let state = await loadSlot(initial.slot_id);
   assert.strictEqual(state.status, 'failed', '首次停牌失败后槽位必须进入待重试状态');
-  assert.deepStrictEqual(state.result_summary.failedDatasets, ['stock_suspend_calendar']);
+  assert.deepStrictEqual(state.result_summary.failedDatasets, ['stock_suspend_calendar'],JSON.stringify(state.result_summary));
   assert.strictEqual(state.result_summary.datasetFailureCounts.stock_suspend_calendar, 1);
 
   await pool.query(

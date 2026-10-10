@@ -26,14 +26,12 @@ function nowSec() {
 // 现金自动重算：现金 = 期初本金(cashBase) + 现金流净额 + 交易净额(买入减/卖出加)
 // 与后端 loadAccountData 逻辑一致，是现金唯一真相源，避免刷新/覆盖导致现金丢失
 function recalcCash() {
-  const cfNet = (data.cashFlows || []).reduce((s, c) => s + (c.amount || 0), 0);
-  // 交易净额：买入 -(成交额+费用)，卖出 +(成交额-费用)
-  const tradeNet = (data.trades || []).reduce((s, t) => {
-    const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
-    return s + (t.direction === 'buy' ? -(t.amount || 0) - fee : (t.amount || 0) - fee);
-  }, 0);
-  const base = (typeof data.cashBase === 'number') ? data.cashBase : 0;
-  data.cash = base + cfNet + tradeNet;
+  const state = NavMath.cashAt(data, CoreDate.todayInZone('Asia/Shanghai'));
+  data.cash = state.value;
+  data.cashConfirmed = state.cashConfirmed;
+  data.cashEstimatedDelta = state.cashEstimatedDelta;
+  data.cashIncludesEstimates = state.cashIncludesEstimates;
+  data.cashDataIncomplete = state.incomplete;
 }
 
 // 初始化交易录入日期/时间为当前北京时间（打开页面或保存后调用）

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-07",
+  "lastReviewed": "2026-10-10",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -36,7 +36,16 @@
         "server/routes/marketVolatility.js",
         "server/scripts/importFederalFundsCsv.js"
       ],
-      "keywords": ["日期时间治理", "业务日期", "时区错位", "PG DATE", "汇率日期", "历史目标日", "UTC 截日", "日期边界"],
+      "keywords": [
+        "日期时间治理",
+        "业务日期",
+        "时区错位",
+        "PG DATE",
+        "汇率日期",
+        "历史目标日",
+        "UTC 截日",
+        "日期边界"
+      ],
       "read": [
         "docs/技术架构.md",
         "docs/日期时间统一治理研发方案_20260928.md",
@@ -51,18 +60,57 @@
         "governance/rule-traceability.json",
         "docs/任务接口数据集矩阵.generated.md"
       ],
-      "checks": ["npm.cmd run check:date", "npm.cmd run test:all", "npm.cmd run check:knowledge"],
-      "expandOn": ["PG DATE", "实际数据日期", "任务目标日", "市场时区", "输入类型", "历史补算"]
+      "checks": [
+        "npm.cmd run check:date",
+        "npm.cmd run test:all",
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "PG DATE",
+        "实际数据日期",
+        "任务目标日",
+        "市场时区",
+        "输入类型",
+        "历史补算"
+      ]
     },
     {
       "id": "solution-design",
       "risk": "high",
-      "paths": ["AGENTS.md", "governance/knowledge-map.json"],
-      "keywords": ["方案", "根本解决方案", "架构设计", "整体架构", "统一任务", "数据链路", "调度", "重构建议"],
-      "read": ["docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md", "deploy/本地验证交接文档.md"],
-      "update": ["AGENTS.md", "governance/knowledge-map.json"],
-      "checks": ["npm.cmd run check:knowledge"],
-      "expandOn": ["根因", "跨模块", "数据源", "任务依赖", "重复调用", "恢复退避"]
+      "paths": [
+        "AGENTS.md",
+        "governance/knowledge-map.json"
+      ],
+      "keywords": [
+        "方案",
+        "根本解决方案",
+        "架构设计",
+        "整体架构",
+        "统一任务",
+        "数据链路",
+        "调度",
+        "重构建议"
+      ],
+      "read": [
+        "docs/技术架构.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md",
+        "deploy/本地验证交接文档.md"
+      ],
+      "update": [
+        "AGENTS.md",
+        "governance/knowledge-map.json"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "根因",
+        "跨模块",
+        "数据源",
+        "任务依赖",
+        "重复调用",
+        "恢复退避"
+      ]
     },
     {
       "id": "announcement-data-source",
@@ -77,15 +125,35 @@
         "ipo-report/sse_listing_parser.py",
         "ipo-report/sync_bond_listing_liquidity.py"
       ],
-      "keywords": ["公告数据源", "公告采集", "公告缓存", "公告游标", "交易所优先", "巨潮兜底", "公告原文"],
+      "keywords": [
+        "公告数据源",
+        "公告采集",
+        "公告缓存",
+        "公告游标",
+        "交易所优先",
+        "巨潮兜底",
+        "公告原文"
+      ],
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
       ],
-      "update": ["docs/技术架构.md", "docs/知识索引.md"],
-      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
-      "expandOn": ["跨业务重复调用", "覆盖水位", "PDF缓存", "解析版本", "失败重试"]
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all",
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "跨业务重复调用",
+        "覆盖水位",
+        "PDF缓存",
+        "解析版本",
+        "失败重试"
+      ]
     },
     {
       "id": "ipo-industry-enrichment",
@@ -109,7 +177,15 @@
         "docs/decisions/ADR-0004-A股IPO行业事实与PE口径隔离.md",
         "docs/incidents/INC-0033-A股IPO行业漏解析与持续补全研发方案.md"
       ],
-      "keywords": ["A股IPO行业", "IPO行业解析", "行业分类", "行业PE口径", "行业补全", "申万二级行业", "二级行业热度回退"],
+      "keywords": [
+        "A股IPO行业",
+        "IPO行业解析",
+        "行业分类",
+        "行业PE口径",
+        "行业补全",
+        "申万二级行业",
+        "二级行业热度回退"
+      ],
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
@@ -128,8 +204,17 @@
         "governance/rule-traceability.json",
         "docs/任务接口数据集矩阵.generated.md"
       ],
-      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
-      "expandOn": ["原文证据", "分类体系", "PE来源", "存量回放", "续跑"]
+      "checks": [
+        "npm.cmd run test:all",
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "原文证据",
+        "分类体系",
+        "PE来源",
+        "存量回放",
+        "续跑"
+      ]
     },
     {
       "id": "ipo-prediction-model",
@@ -144,7 +229,14 @@
         "ipo-report/test_ipo_unit.py",
         "server/routes/ipo.js"
       ],
-      "keywords": ["A股打新预测", "IPO首日涨幅预测", "XGBoost新股预测", "赛道热度系数", "申购建议评分", "预测区间校准"],
+      "keywords": [
+        "A股打新预测",
+        "IPO首日涨幅预测",
+        "XGBoost新股预测",
+        "赛道热度系数",
+        "申购建议评分",
+        "预测区间校准"
+      ],
       "read": [
         "docs/技术架构.md",
         "docs/打新预测模型梳理与优化建议_20260929.md",
@@ -157,8 +249,18 @@
         "docs/知识索引.md",
         "docs/打新预测模型梳理与优化建议_20260929.md"
       ],
-      "checks": ["npm.cmd run check:knowledge"],
-      "expandOn": ["历史样本", "预测阶段", "可用时点", "负收益", "赛道成分股", "回测", "预测区间"]
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "历史样本",
+        "预测阶段",
+        "可用时点",
+        "负收益",
+        "赛道成分股",
+        "回测",
+        "预测区间"
+      ]
     },
     {
       "id": "task-quality-governance",
@@ -176,26 +278,74 @@
         "scripts/generate-job-matrix.js",
         "governance/rule-traceability.json"
       ],
-      "keywords": ["熔断", "恢复时间", "内部限额", "任务完成", "任务阶段契约", "数据质量", "隐性上限", "目标日", "游标", "告警恢复", "自动门禁"],
+      "keywords": [
+        "熔断",
+        "恢复时间",
+        "内部限额",
+        "任务完成",
+        "任务阶段契约",
+        "数据质量",
+        "隐性上限",
+        "目标日",
+        "游标",
+        "告警恢复",
+        "自动门禁"
+      ],
       "read": [
         "docs/技术架构.md",
         "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
         "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
         "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
       ],
-      "update": ["docs/技术架构.md", "docs/知识索引.md", "docs/任务接口数据集矩阵.generated.md", "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"],
-      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
-      "expandOn": ["接口作用域", "分区质量", "续跑", "恢复证据", "通用不变量"]
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/任务接口数据集矩阵.generated.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all",
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "接口作用域",
+        "分区质量",
+        "续跑",
+        "恢复证据",
+        "通用不变量"
+      ]
     },
     {
       "id": "task-quality-governance-record",
       "risk": "high",
-      "paths": ["docs/decisions/ADR-0003-告警与任务治理门禁补强.md"],
-      "keywords": ["告警恢复", "恢复证据", "目标分区", "查询状态", "生产部署"],
-      "read": ["docs/技术架构.md", "docs/decisions/ADR-0002-后台任务与数据质量不变量.md", "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"],
-      "update": ["docs/技术架构.md", "docs/知识索引.md", "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"],
-      "checks": ["npm.cmd run check:knowledge"],
-      "expandOn": ["生产部署", "告警状态", "治理决策"]
+      "paths": [
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
+      ],
+      "keywords": [
+        "告警恢复",
+        "恢复证据",
+        "目标分区",
+        "查询状态",
+        "生产部署"
+      ],
+      "read": [
+        "docs/技术架构.md",
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "生产部署",
+        "告警状态",
+        "治理决策"
+      ]
     },
     {
       "id": "convertible-bond-redemption",
@@ -209,7 +359,15 @@
         "docs/可转债强赎监控页面_设计方案.md",
         "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md"
       ],
-      "keywords": ["强赎", "提前赎回", "不提前赎回", "强赎锁定期", "暂不强赎", "赎回实施", "赎回结果"],
+      "keywords": [
+        "强赎",
+        "提前赎回",
+        "不提前赎回",
+        "强赎锁定期",
+        "暂不强赎",
+        "赎回实施",
+        "赎回结果"
+      ],
       "read": [
         "docs/技术架构.md",
         "docs/可转债强赎监控页面_设计方案.md",
@@ -220,78 +378,330 @@
         "docs/技术架构.md",
         "docs/可转债强赎公告解析与锁定期状态治理_研发方案_20260915.md"
       ],
-      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
-      "expandOn": ["历史公告", "解析版本", "任务水位", "状态优先级", "数据质量", "历史回补"]
+      "checks": [
+        "npm.cmd run test:all",
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "历史公告",
+        "解析版本",
+        "任务水位",
+        "状态优先级",
+        "数据质量",
+        "历史回补"
+      ]
     },
     {
       "id": "hk-ipo-development",
       "risk": "high",
-      "paths": ["ipo-report/**", "server/routes/ipo.js", "server/jobs/ipoHistorySync.js", "server/jobs/ipoCalendarRefresh.js", "server/jobs/hkIpoSync.js", "server/services/hkIpoMarketSignals.js", "server/services/jobDefinitions.js", "server/services/jobRunners.js", "server/services/jobScheduleSlots.js", "public/js/ipo.js", "docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md"],
-      "keywords": ["港股打新", "港股IPO", "港股新股", "港股申购建议", "认购倍数", "孖展", "暗盘", "基石投资者", "LiveReport", "AiPO"],
-      "read": ["docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md", "docs/技术架构.md", "docs/自动任务重复执行与API调用保护整改方案_20260815.md"],
-      "update": ["docs/港股打新日历与严选建议研发方案_20260907.md", "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md", "docs/技术架构.md"],
-      "checks": ["npm.cmd run test:all", "npm.cmd run check:knowledge"],
-      "expandOn": ["数据源", "权限", "历史回测", "时间切片", "任务依赖", "数据库迁移"]
+      "paths": [
+        "ipo-report/**",
+        "server/routes/ipo.js",
+        "server/jobs/ipoHistorySync.js",
+        "server/jobs/ipoCalendarRefresh.js",
+        "server/jobs/hkIpoSync.js",
+        "server/services/hkIpoMarketSignals.js",
+        "server/services/jobDefinitions.js",
+        "server/services/jobRunners.js",
+        "server/services/jobScheduleSlots.js",
+        "public/js/ipo.js",
+        "docs/港股打新日历与严选建议研发方案_20260907.md",
+        "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md"
+      ],
+      "keywords": [
+        "港股打新",
+        "港股IPO",
+        "港股新股",
+        "港股申购建议",
+        "认购倍数",
+        "孖展",
+        "暗盘",
+        "基石投资者",
+        "LiveReport",
+        "AiPO"
+      ],
+      "read": [
+        "docs/港股打新日历与严选建议研发方案_20260907.md",
+        "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md",
+        "docs/技术架构.md",
+        "docs/自动任务重复执行与API调用保护整改方案_20260815.md"
+      ],
+      "update": [
+        "docs/港股打新日历与严选建议研发方案_20260907.md",
+        "docs/港股IPO数据源与实时申购信号整改研发方案_20260920.md",
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all",
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "数据源",
+        "权限",
+        "历史回测",
+        "时间切片",
+        "任务依赖",
+        "数据库迁移"
+      ]
     },
     {
       "id": "database",
       "risk": "high",
-      "paths": ["server/db/**", "server/migrations/**", "migrations/**", "**/*schema*.sql"],
-      "keywords": ["数据库", "迁移", "字段", "索引", "schema"],
-      "read": ["docs/技术架构.md"],
-      "update": ["docs/技术架构.md"],
-      "checks": ["npm.cmd run test:all"],
-      "expandOn": ["历史数据", "单位", "时间口径", "回滚"]
+      "paths": [
+        "server/db/**",
+        "server/migrations/**",
+        "migrations/**",
+        "**/*schema*.sql"
+      ],
+      "keywords": [
+        "数据库",
+        "迁移",
+        "字段",
+        "索引",
+        "schema"
+      ],
+      "read": [
+        "docs/技术架构.md"
+      ],
+      "update": [
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "历史数据",
+        "单位",
+        "时间口径",
+        "回滚"
+      ]
     },
     {
       "id": "background-job",
       "risk": "high",
-      "paths": ["server/jobs/**", "server/worker.js", "server/**/worker*.js"],
-      "keywords": ["任务", "调度", "worker", "定时"],
-      "read": ["docs/技术架构.md"],
-      "update": ["docs/技术架构.md"],
-      "checks": ["npm.cmd run test:all"],
-      "expandOn": ["幂等", "重试", "补偿", "告警"]
+      "paths": [
+        "server/jobs/**",
+        "server/worker.js",
+        "server/**/worker*.js"
+      ],
+      "keywords": [
+        "任务",
+        "调度",
+        "worker",
+        "定时"
+      ],
+      "read": [
+        "docs/技术架构.md"
+      ],
+      "update": [
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "幂等",
+        "重试",
+        "补偿",
+        "告警"
+      ]
     },
     {
       "id": "api",
       "risk": "high",
-      "paths": ["server/routes/**", "server/middleware/**"],
-      "keywords": ["接口", "路由", "鉴权", "权限", "API"],
-      "read": ["docs/技术架构.md"],
-      "update": ["docs/技术架构.md"],
-      "checks": ["npm.cmd run test:all"],
-      "expandOn": ["兼容", "权限", "错误格式"]
+      "paths": [
+        "server/routes/**",
+        "server/middleware/**"
+      ],
+      "keywords": [
+        "接口",
+        "路由",
+        "鉴权",
+        "权限",
+        "API"
+      ],
+      "read": [
+        "docs/技术架构.md"
+      ],
+      "update": [
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "兼容",
+        "权限",
+        "错误格式"
+      ]
     },
     {
       "id": "data-service",
       "risk": "high",
-      "paths": ["server/services/**", "server/providers/**"],
-      "keywords": ["数据源", "缓存", "计算", "行情", "服务"],
-      "read": ["docs/技术架构.md"],
-      "update": ["docs/技术架构.md"],
-      "checks": ["npm.cmd run test:all"],
-      "expandOn": ["外部 API", "缓存", "增量", "失败保留"]
+      "paths": [
+        "server/services/**",
+        "server/providers/**"
+      ],
+      "keywords": [
+        "数据源",
+        "缓存",
+        "计算",
+        "行情",
+        "服务"
+      ],
+      "read": [
+        "docs/技术架构.md"
+      ],
+      "update": [
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "外部 API",
+        "缓存",
+        "增量",
+        "失败保留"
+      ]
     },
     {
       "id": "frontend",
       "risk": "medium",
-      "paths": ["public/**"],
-      "keywords": ["页面", "前端", "交互", "样式", "移动端", "手机", "响应式"],
-      "read": ["docs/技术架构.md"],
-      "update": ["docs/技术架构.md"],
-      "checks": ["npm.cmd run test:all"],
-      "expandOn": ["权限", "共享组件", "用户流程", "移动端兼容", "触屏交互"]
+      "paths": [
+        "public/**"
+      ],
+      "keywords": [
+        "页面",
+        "前端",
+        "交互",
+        "样式",
+        "移动端",
+        "手机",
+        "响应式"
+      ],
+      "read": [
+        "docs/技术架构.md"
+      ],
+      "update": [
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "权限",
+        "共享组件",
+        "用户流程",
+        "移动端兼容",
+        "触屏交互"
+      ]
     },
     {
       "id": "deployment",
       "risk": "high",
-      "paths": ["deploy/**", ".github/workflows/**", "server.js", "package.json", "package-lock.json", ".env.example"],
-      "keywords": ["部署", "环境变量", "服务", "依赖", "CI"],
-      "read": ["docs/技术架构.md", "docs/生产部署流程.md", "deploy/本地验证交接文档.md"],
-      "update": ["docs/技术架构.md", "docs/生产部署流程.md"],
-      "checks": ["npm.cmd run check:knowledge"],
-      "expandOn": ["回滚", "密钥", "生产", "版本"]
+      "paths": [
+        "deploy/**",
+        ".github/workflows/**",
+        "server.js",
+        "package.json",
+        "package-lock.json",
+        ".env.example"
+      ],
+      "keywords": [
+        "部署",
+        "环境变量",
+        "服务",
+        "依赖",
+        "CI"
+      ],
+      "read": [
+        "docs/技术架构.md",
+        "docs/生产部署流程.md",
+        "deploy/本地验证交接文档.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "回滚",
+        "密钥",
+        "生产",
+        "版本"
+      ]
+    },
+    {
+      "id": "portfolio-cash-income",
+      "risk": "high",
+      "paths": [
+        "docs/持仓分红与逆回购现金收益开发方案_20261010.md",
+        "server/db/accounts.js",
+        "server/services/tradeLedger.js",
+        "server/services/navAttribution.js",
+        "server/jobs/navSnapshot.js",
+        "server/jobs/replayNav.js",
+        "public/shared/nav-math.js",
+        "public/shared/core-earnings.js",
+        "public/shared/core-returns.js",
+        "server/services/accountCash.js",
+        "server/services/cashIncome.js",
+        "server/services/cashIncomeCoverage.js",
+        "server/services/repoDailyRates.js",
+        "server/services/cashDividendFacts.js",
+        "server/services/cashIncomeActual.js",
+        "server/services/cashDividendSettlement.js",
+        "server/services/repoSourceAdmission.js",
+        "server/scripts/probeRepoOfficial.py",
+        "server/scripts/probeTusharePermissions.js",
+        "server/services/cashIncomePending.js",
+        "server/services/cashIncomeQueue.js",
+        "server/scripts/syncCashIncomeFacts.js",
+        "public/shared/cash-income-panel.js",
+        "server/db/cashIncomeMigration.js",
+        "server/scripts/*CashIncome*.js",
+        "server/test/cash-income-*.test.js",
+        "public/shared/core-tables.js",
+        "public/shared/core-trade.js"
+      ],
+      "keywords": [
+        "持仓分红",
+        "港股通扣税",
+        "股息税",
+        "逆回购",
+        "现金收益",
+        "补录分红"
+      ],
+      "read": [
+        "docs/技术架构.md",
+        "docs/持仓分红与逆回购现金收益开发方案_20261010.md",
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
+        "docs/日期时间统一治理研发方案_20260928.md",
+        "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/持仓分红与逆回购现金收益开发方案_20261010.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "历史持仓资格覆盖率",
+        "现金导入基准",
+        "自动流水来源保护",
+        "多层扣税证据",
+        "任务数据集",
+        "回购结算日历",
+        "估算入账与实际替换",
+        "投入本金分类"
+      ]
     }
   ]
 }

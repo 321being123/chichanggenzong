@@ -7,7 +7,7 @@ const { pool, loadAccountData, saveDailyPrices, upsertNav } = require('../db');
 const { tushareQuery, tsRows, toTsCode, normDate } = require('../services/market');
 const classifyCode = require('../../public/js/code-classify');
 const { isCnHoliday } = require('../config/holidays');
-const { investedAt, chainNav } = require('../../public/shared/nav-math.js');
+const { investedAt, chainNav, cashAt, isExternalTransfer } = require('../../public/shared/nav-math.js');
 const { getCurrentFxRate } = require('../services/fxRate');
 
 // 东八区日期 YYYY-MM-DD
@@ -65,6 +65,7 @@ async function recomputeNav(username, accountName, fromDate) {
   if (!fromDate || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
     return { ok: false, error: 'fromDate 格式应为 YYYY-MM-DD' };
   }
+  await require('../services/cashIncome').settleCashIncome(username,accountName);
   const data = await loadAccountData(username, accountName);
   const navs = (data.navHistory || []).slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   if (navs.length === 0) return { ok: true, days: 0, note: 'no_nav' };
@@ -122,20 +123,9 @@ async function recomputeNav(username, accountName, fromDate) {
   // 现金-as-of 某日：cashBase + 现金流(<=d) + 交易净额(tradeDay<=d)
   // open（期初建仓）/ adjust（持仓调整）不产生现金变动（P0-2）
   function cashAsOf(date) {
-    let c = cashBase;
-    cfs.forEach(function (f) { if (f.date <= date) c += (f.amount || 0); });
-    trades.forEach(function (t) {
-      if (tradeDay(t) > date) return;
-      if (t.direction === 'open' || t.direction === 'adjust') return;
-      const fee = (t.commission || 0) + (t.stamp_tax || 0) + (t.transfer_fee || 0) + (t.other_fee || 0);
-      const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
-        (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
-      const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
-      if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') return;
-      const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
-      c += (t.direction === 'buy') ? -settled - fee : settled - fee;
-    });
-    return c;
+    const result = cashAt(data, date);
+    if (result.incomplete) throw new Error('历史现金事实不完整：' + date);
+    return result.value;
   }
 
   // 锚点：fromDate 之前最近的一条 nav 记录（续链基准）
@@ -209,7 +199,7 @@ async function recomputeNav(username, accountName, fromDate) {
 
     // periodCashFlow：prev.date(不含) → d(含) 的累计净现金流
     let pcf = 0;
-    cfs.forEach(function (f) { if (f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
+    cfs.forEach(function (f) { if (isExternalTransfer(f) && f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
     const baseAsset = prev.totalAsset + pcf;
     if (baseAsset <= 0) {
       const orig = navs[i];

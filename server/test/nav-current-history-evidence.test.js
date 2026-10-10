@@ -2,6 +2,11 @@ const assert = require('assert');
 const db = require('../db');
 const state = require('../services/marketState');
 const partitions = require('../services/datasetPartitionRegistry');
+// 此测试隔离净值分区/历史缺口；收益事务在 cash-income-db 中独立验收。
+require('../services/cashIncome').settleCashIncome = async (username,accountName,options) => {
+  assert.strictEqual(options.targetDate,'2026-09-30');
+  return {status:'not_enabled'};
+};
 let currentExists = true;
 let emptyCash = 0;
 let published = [];

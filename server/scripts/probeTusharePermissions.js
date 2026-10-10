@@ -18,6 +18,25 @@ function option(name, fallback = '') {
 }
 
 async function main() {
+  if(option('probe')==='repo-daily') {
+    const {syncRepoDailyRates,tradingDates}=require('../services/repoDailyRates');
+    const {shiftDay}=require('../services/cashIncome');
+    const targetDate=option('target-date'),count=Number(option('trading-days','30'));
+    if(option('code','204001.SH')!=='204001.SH'||!Number.isInteger(count)||count<30) throw new Error('准入要求GC001至少30个已完成交易日');
+    let startDate=targetDate;
+    while(tradingDates(startDate,targetDate).length<count) startDate=shiftDay(startDate,-1);
+    const result=await syncRepoDailyRates({targetDate,startDate,probe:true});
+    const officialFile=option('official-evidence');
+    if(officialFile||process.argv.includes('--official-probe')){
+      const admission=require('../services/repoSourceAdmission'),{pool}=require('../db/connection');
+      const officialSamples=officialFile?JSON.parse(require('fs').readFileSync(officialFile,'utf8')):[await admission.probeOfficial(targetDate,pool.query.bind(pool))];
+      result.sourceAdmission=await admission.record(admission.assess({rows:result.samples,expectedDates:tradingDates(startDate,targetDate),targetDate,officialSamples,fetchedAt:new Date().toISOString(),permissionVerified:result.ok}),pool.query.bind(pool));
+      if(result.sourceAdmission.status!=='admitted')process.exitCode=1;
+    }
+    console.log(JSON.stringify(result,null,2));
+    if(!result.ok) process.exitCode=1;
+    return;
+  }
   const apis = (option('apis', STANDARD_PROBES.join(',')) || '')
     .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
   const roles = (option('roles', 'primary,backup') || '')
@@ -47,4 +66,4 @@ async function main() {
 main().catch(error => {
   console.error(`Tushare 权限探测失败：${error.message}`);
   process.exitCode = 1;
-});
+}).finally(()=>require('../db/connection').pool.end());

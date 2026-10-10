@@ -347,6 +347,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 /* ===== 弹窗 ===== */
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
 .modal-overlay.show { display: flex; }
+.cash-income-modal { width:min(1000px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); }
+.cash-income-body { min-height:0; overflow-y:auto; }
+.cash-income-modal .biz-table { width:max-content; min-width:100%; }
+.cash-income-modal td { white-space:nowrap; }
+.cash-income-modal button { min-height:44px; }
+.cash-income-modal textarea { width:100%; font-size:16px; box-sizing:border-box; }
+.cash-income-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.cash-income-form label { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.cash-income-form input,.cash-income-form select { width:100%; min-height:44px; font-size:16px; box-sizing:border-box; }
+@media (max-width:760px) { .cash-income-form { grid-template-columns:1fr; } }
 .modal { background: #fff; border-radius: 12px; padding: 24px; width: 520px; max-width: 92vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.15); position: relative; }
 .modal h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: #1a1a2e; padding-right: 28px; }
 .modal-close { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border: none; background: none; cursor: pointer; font-size: 22px; line-height: 1; color: #999; display:flex; align-items:center; justify-content:center; border-radius: 6px; transition: .15s; }

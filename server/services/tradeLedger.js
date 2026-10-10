@@ -1,3 +1,4 @@
+const { loadCashState } = require('./accountCash');
 // ===================== 账户账本服务（统一交易事务） =====================
 // 持仓管理架构与交易数据整改方案（2026-08-03）阶段二：
 // 交易、持仓、现金的关联修改必须在服务端同一事务完成；前端不再自行实现持仓/现金计算规则。
@@ -117,36 +118,16 @@ async function recomputeSecurity(client, username, accountName, code, strict = f
 // 交易净额（买入减/卖出加，含费用）—— 与 loadAccountData 现金公式一致
 // open（期初建仓）/ adjust（持仓调整）不产生现金变动，净额为 0
 function tradeNetDelta(t) {
-  if (t.direction === 'open' || t.direction === 'adjust') return 0;
-  const fee = (Number(t.commission) || 0) + (Number(t.stamp_tax) || 0) + (Number(t.transfer_fee) || 0) + (Number(t.other_fee) || 0);
-  const rawAmountCny = t.amountCny != null && t.amountCny !== '' ? t.amountCny :
-    (t.amount_cny != null && t.amount_cny !== '' ? t.amount_cny : null);
-  const amountCny = rawAmountCny != null && Number.isFinite(Number(rawAmountCny)) ? Number(rawAmountCny) : null;
-  if (amountCny == null && String(t.quote_currency || '').toUpperCase() === 'HKD') return 0;
-  const settled = amountCny == null ? (Number(t.amount) || 0) : amountCny;
-  return (t.direction === 'buy') ? -settled - fee : settled - fee;
+  const NavMath = require('../../public/shared/nav-math');
+  const state = NavMath.cashAt({ cashBase:0, trades:[{...t,date:'2000-01-01',trade_date:'2000-01-01'}] },'2000-01-01');
+  return state.value;
 }
 
 // 重算账户现金 = cash_base + 现金流净额 + 交易净额（与 loadAccountData 一致，写入 accounts.cash_base 之外的派生）
 async function recomputeCash(client, username, accountName) {
-  const { rows: am } = await client.query(
-    'SELECT COALESCE(cash_base,0) AS cb FROM accounts WHERE username=$1 AND account_name=$2',
-    [username, accountName]
-  );
-  const cashBase = Number(am[0] ? am[0].cb : 0);
-  const { rows: cf } = await client.query(
-    'SELECT COALESCE(SUM(amount),0) AS s FROM cash_flows WHERE username=$1 AND account_name=$2',
-    [username, accountName]
-  );
-  const cfNet = Number(cf[0] ? cf[0].s : 0);
-  const { rows: tr } = await client.query(
-    `SELECT direction, amount, amount_cny, commission, stamp_tax, transfer_fee, other_fee
-       FROM trades WHERE username=$1 AND account_name=$2`,
-    [username, accountName]
-  );
-  let tradeNet = 0;
-  for (const t of tr) tradeNet += tradeNetDelta(t);
-  return round(cashBase + cfNet + tradeNet, 2);
+  const result = await loadCashState(username, accountName, client);
+  // 账本与完整/摘要接口共用六位现金结果；两位小数仅用于展示及单笔清算。
+  return result.value;
 }
 
 // 标记受影响日期之后的净值需要重算 + 同步提升 account_data 版本（P0-1 验收修复）：
@@ -547,7 +528,7 @@ async function deleteCashFlow(username, accountName, flowId, expectedVersion = n
     await checkVersionInTxn(client, username, accountName, expectedVersion);
     // 读取被删现金流原日期（验收修复：历史净值须从该日期起重算，而非仅今天）
     const del = await client.query(
-      'DELETE FROM cash_flows WHERE username=$1 AND account_name=$2 AND id=$3 RETURNING id, date',
+      'DELETE FROM cash_flows WHERE username=$1 AND account_name=$2 AND id=$3 AND origin=\'manual\' RETURNING id, date::text',
       [username, accountName, flowId]
     );
     if (del.rowCount === 0) throw bizError('现金流记录不存在', 404);
@@ -581,9 +562,10 @@ function nowStr() {
 // cf.id 由前端生成（幂等键）：同一 id 重复提交 → ON CONFLICT DO NOTHING，不新增第二条（2026-08-04 修复）
 // expectedVersion：乐观锁版本（事务内校验 account_data.version，不一致 409）
 async function addCashFlow(username, accountName, cf, expectedVersion = null) {
-  if (!cf || typeof cf.amount !== 'number' || isNaN(cf.amount)) throw bizError('请填写有效的金额');
-  const date = (cf.date || '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw bizError('日期格式错误');
+  if (!cf || typeof cf.amount !== 'number' || !Number.isFinite(cf.amount)) throw bizError('请填写有效的金额');
+  if ((cf.origin && cf.origin !== 'manual') || (cf.flow_type && cf.flow_type !== 'external_transfer') || (cf.status && cf.status !== 'confirmed')) throw bizError('现金收益须通过受控入口');
+  const date = CoreDate.normalizeBusinessDate(cf.date);
+  if (!date) throw bizError('日期格式错误');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -591,10 +573,11 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
     // （双击/网络重试的第二个请求带同一 id 与同一旧版本号，若先校验版本会 409）
     if (cf.id) {
       const idDup = await client.query(
-        'SELECT id FROM cash_flows WHERE id=$1 AND username=$2 AND account_name=$3',
+        'SELECT id,origin FROM cash_flows WHERE id=$1 AND username=$2 AND account_name=$3',
         [cf.id, username, accountName]
       );
       if (idDup.rows[0]) {
+        if (idDup.rows[0].origin !== 'manual') throw bizError('不能覆盖自动或导入流水', 409);
         await client.query('COMMIT');
         const result = await loadLedgerResult(username, accountName);
         return { ok: true, id: cf.id, cash: null, data: result, skipped: 'duplicate' };
@@ -639,6 +622,7 @@ async function addCashFlow(username, accountName, cf, expectedVersion = null) {
 }
 
 module.exports = {
+  markNavDirty,
   applyTrade,
   applyTradesBatch,
   refreshPositionPrices,

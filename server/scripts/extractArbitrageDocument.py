@@ -1043,6 +1043,8 @@ def main():
         if arg == '--target-code' and i + 1 < len(sys.argv):
             target_code = sys.argv[i + 1]
             i += 2
+        elif arg == '--raw-text':
+            i += 1
         elif output_path is None:
             output_path = arg
             i += 1
@@ -1079,7 +1081,7 @@ def main():
 
     # 解析字段（即便单字段异常也尽可能返回已提取结果，绝不空输出导致同步崩溃）
     try:
-        result = parse_fields(text, target_code=target_code)
+        result = {'text': text} if '--raw-text' in sys.argv else parse_fields(text, target_code=target_code)
     except Exception as e:
         result = {'error': 'parse_fields failed: ' + str(e), 'source': source}
     result['text_length'] = len(text) if text else 0

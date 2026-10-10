@@ -2302,6 +2302,19 @@ async function markStockDailyBackfillStale(targetTradeDate, error) {
 }
 
 async function syncConvertibleBondUniverseWithBackfill(reason = 'scheduled', backfillOpts = {}) {
+  const targetDate=isoDate(backfillOpts.targetTradeDate)||defaultBondTargetTradeDate();
+  const repoOnly=backfillOpts.mode==='repo_daily' || (backfillOpts.failedDatasets?.length && backfillOpts.failedDatasets.every(d=>d==='repo_daily_rates'));
+  if(repoOnly) return require('./repoDailyRates').syncRepoDailyRates({targetDate});
+  const result=await syncConvertibleBondUniverseMarketWithBackfill(reason,backfillOpts);
+  // 子阶段续跑只执行已经失败的市场阶段，不为未尝试数据集制造失败。
+  if(backfillOpts.failedDatasets?.length || backfillOpts.pendingStages?.length) return {...result,mode:'market_repair',publishDatasetCodes:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],stageComplete:result.ok===true&&!result.continuationRequired};
+  const repo=await require('./repoDailyRates').syncRepoDailyRates({targetDate}).catch(e=>({ok:false,error:e.message,failedDatasets:['repo_daily_rates']}));
+  return {...result,mode:backfillOpts.mode==='shared_eod'?'shared_eod':'core',stageComplete:result.ok===true&&repo.ok&&!result.continuationRequired,repoDailyRates:repo,ok:result.ok!==false&&repo.ok,status:result.ok!==false&&repo.ok&&!result.continuationRequired?'succeeded':'partial',
+    failedDatasets:[...new Set([...(result.failedDatasets||[]),...(repo.failedDatasets||[])])],
+    datasetDiagnostics:{...result.datasetDiagnostics,repo_daily_rates:{publish:false,quality_status:repo.ok?'passed':'failed'}},
+    ...(repo.ok?{}:{error:repo.error||'回购每日利率未完整发布',errorCode:'DATASET_INCOMPLETE',errorType:'data_quality'})};
+}
+async function syncConvertibleBondUniverseMarketWithBackfill(reason = 'scheduled', backfillOpts = {}) {
   const targetTradeDate = isoDate(backfillOpts.targetTradeDate) || defaultBondTargetTradeDate();
   const failedDatasets = [...new Set((backfillOpts.failedDatasets || []).map(String).filter(Boolean))];
   const pendingStages = new Set((backfillOpts.pendingStages || []).map(String));

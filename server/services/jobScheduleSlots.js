@@ -220,13 +220,13 @@ async function datasetDependencyState(slot, definition) {
   };
 }
 
-async function enqueueManualJob(jobCode, requestPayload = {}) {
+async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient = null) {
   const definition = JOB_DEFINITIONS.find(item => item.jobCode === jobCode);
   if (!definition) return null;
   const safePayload = sanitizeJobResult(requestPayload || {});
-  const client = await pool.connect();
+  const client = transactionClient || await pool.connect();
   try {
-    await client.query('BEGIN');
+    if(!transactionClient) await client.query('BEGIN');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('manual_job:' || $1 || ':' || $2))", [jobCode, JSON.stringify(safePayload)]);
     const active = await client.query(`
       SELECT * FROM ops.job_schedule_slots
@@ -237,7 +237,7 @@ async function enqueueManualJob(jobCode, requestPayload = {}) {
        ORDER BY slot_id DESC LIMIT 1
     `, [jobCode, Number(definition.maxAttempts || 3), JSON.stringify(safePayload)]);
     if (active.rows[0]) {
-      await client.query('COMMIT');
+      if(!transactionClient) await client.query('COMMIT');
       return active.rows[0];
     }
     const scheduledFor = new Date();
@@ -245,13 +245,13 @@ async function enqueueManualJob(jobCode, requestPayload = {}) {
       INSERT INTO ops.job_schedule_slots(job_code,scheduled_for,business_date,trigger_type,next_attempt_at,request_payload)
       VALUES($1,$2,$3,'manual_retry',$2,$4::jsonb) RETURNING *
     `, [jobCode, scheduledFor, dateText(scheduledFor), JSON.stringify(safePayload)]);
-    await client.query('COMMIT');
+    if(!transactionClient) await client.query('COMMIT');
     return rows[0] || null;
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    if(!transactionClient) await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
-    client.release();
+    if(!transactionClient) client.release();
   }
 }
 

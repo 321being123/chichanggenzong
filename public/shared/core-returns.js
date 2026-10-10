@@ -134,7 +134,7 @@ async function recordNav() {
     var pcf = 0;
     if (!data.cashFlows) return pcf;
     var isSameDay = lastDate === today;
-    data.cashFlows.forEach(function (cf) {
+    data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) {
       if (cf.date > today) return; // 未来现金流不计
       if (isSameDay) {
         // 同日：只计「快照时间之后新录入」的现金流（按完整时间戳比较）
@@ -201,7 +201,7 @@ async function recordNav() {
     // 自上次净值记录日（不含）到今天（含）的累计净现金流（新一天，无同日边界问题）
     var periodCashFlow2 = 0;
     if (data.cashFlows) {
-      data.cashFlows.forEach(function (cf) {
+      data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) {
         if (cf.date > lastNav.date && cf.date <= today) periodCashFlow2 += cf.amount;
       });
     }
@@ -290,7 +290,7 @@ function renderReturnsStats() {
   // 累计收益 = 当前总资产 - 初始资产 - 累计净入金
   var totalCashFlow = 0;
   if (data.cashFlows) {
-    data.cashFlows.forEach(function (cf) { totalCashFlow += cf.amount; });
+    data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) { totalCashFlow += cf.amount; });
   }
   // 调整后的初始资产：初始资产 + 累计现金流
   var adjustedInit = initAsset + totalCashFlow;

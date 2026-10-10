@@ -1482,7 +1482,19 @@ def _extract_main_business(text):
     return biz or ind or None
 
 
-_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v4"
+_INDUSTRY_CHAIN_PARSER_VERSION = "ipo-industry-chain-v5"
+
+
+def _issuer_business_section(text):
+    """优先限制到发行人业务章节，跳过目录、释义和财务表格。"""
+    starts = list(re.finditer(r"(?:^|\n)\s*第[一二三四五六七八九十]+节\s*(?:公司)?业务[与和]技术", text))
+    for start in starts:
+        following = text[start.end():start.end() + 300]
+        if re.search(r"\.{4,}|…{3,}", following):
+            continue
+        end = re.search(r"(?:^|\n)\s*第[一二三四五六七八九十]+节\s*(?:财务|公司治理|募集资金)", text[start.end():])
+        return text[start.end():start.end() + end.start()] if end else text[start.end():]
+    return text
 _DOWNSTREAM_CHAIN_RULES = (
     ("数据中心", re.compile(r"数据中心", re.I), ("算力",)),
     ("AI高功率芯片", re.compile(r"AI\s*高功率芯片|高功率芯片", re.I), ("人工智能", "半导体")),
@@ -1502,13 +1514,15 @@ _DOWNSTREAM_CHAIN_RULES = (
 
 def _extract_industry_chain_relations(text):
     """从招股书明确的上下游段落提取关系，不用公司名称或行业代码猜关系。"""
-    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    normalized = re.sub(r"\s+", " ", _issuer_business_section(str(text or ""))).strip()
     normalized = re.sub(
         r"[\u3400-\u9fffA-Za-z0-9·]{2,50}公司\s*招股说明书"
         r"\s*[（(][^）)]*[）)]?\s*\d+(?:-\d+)+",
         " ", normalized,
     )
     normalized = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", normalized)
+    normalized = "；".join(sentence for sentence in re.split(r"[。；;]", normalized)
+                           if not re.search(r"可比公司|竞争对手", sentence))
     products = [
         label for label, pattern in (
             ("热管理材料", re.compile(r"热管理材料|导热界面材料")),
@@ -1520,7 +1534,7 @@ def _extract_industry_chain_relations(text):
     upstream_pattern = re.compile(
         r"(?P<product>[^。；;]{2,60}?)上游行业主要为(?P<inputs>[^。；;]+)"
     )
-    for match in upstream_pattern.finditer(normalized):
+    for match in (upstream_pattern.finditer(normalized) if "上游行业主要为" in normalized else []):
         product_text = match.group("product")
         product_match = re.search(r"(导热界面材料|热管理材料|电磁屏蔽材料|吸波材料)", product_text)
         product_text = product_match.group(1) if product_match else product_text[-24:].strip(" ，、")
@@ -1553,46 +1567,96 @@ def _extract_industry_chain_relations(text):
                     "related_tracks": list(related_tracks),
                     "evidence": match.group(0),
                 })
-    # 通用公司产品/采购/应用句式：只保存公告明确关系，不由行业或公司名称猜测。
+    # 发行人的产品/采购/用途关系不以本站已有赛道词表为准入条件。
+    # 不识别行业介绍、可比公司或假设风险中的关系；未知应用只留原文，不猜赛道。
+    sentences = re.split(r"[。；;]", normalized)
+    issuer_products = []
+    for sentence in sentences:
+        if re.search(r"可比公司|竞争对手|若|如果|假设", sentence):
+            continue
+        match = re.search(
+            r"(?:公司|发行人)(?:的|[\u3400-\u9fffA-Za-z]{1,12}的)?(?:主要)?(?:产品|服务)"
+            r"(?:主要)?(?:包括|为|有|是)([^：:]{2,180})", sentence)
+        if not match:
+            continue
+        value = re.split(r"，(?:主要|其中|公司|其|报告期|以|目前)|等|，(?:各个|并|能够)|相关产品|具体生产|[：:]", match.group(1))[0]
+        for item in re.split(r"[、，,]|以及", value):
+            item = item.strip(" ，、 ")
+            if 2 <= len(item) <= 60 and item not in issuer_products:
+                issuer_products.append(item)
     if not products:
-        product_match = re.search(r"(?:公司|发行人)(?:的)?主要产品(?:包括|为|有)([^。；;]{4,300})", normalized)
-        if product_match:
-            product_text = re.split(r"，(?:主要|报告期|属于|根据|即|公司)|等(?:产品|功能性)?", product_match.group(1), maxsplit=1)[0]
-            products = [item.strip(" ，、") for item in re.split(r"[、，]|以及", product_text)
-                        if 2 <= len(item.strip(" ，、")) <= 70]
-    material_patterns = (
-        r"(?:公司(?:采购的)?(?:主要)?|公司生产所需的)?原材料(?:主要)?(?:包括|为)([^。；;]{4,260})",
-        r"(?:[\u3400-\u9fff]{2,30}产业链的)?上游(?:行业)?(?:主要)?为([^。；;]{4,260})",
-        r"上游原材料包括([^。；;]{4,260})",
-    )
-    if products and not upstream:
-        for pattern in material_patterns:
-            match = re.search(pattern, normalized)
-            if not match:
+        products = issuer_products
+    if not products:
+        for sentence in sentences:
+            if re.search(r"可比公司|竞争对手|若|如果|假设", sentence):
                 continue
-            materials = re.split(r"等|，(?:与|由|采购|上述|公司)|及其", match.group(1), maxsplit=1)[0]
-            for item in re.split(r"[、，,]|以及", materials):
-                item = item.strip(" ：:，、")
-                if 2 <= len(item) <= 60:
-                    upstream.append({"industry": item, "product": "公司产品", "products": list(products),
-                                     "relationship": "supplies", "evidence": match.group(0)})
-            if upstream:
+            match = re.search(r"(?:公司|发行人)(?:的)?主营业务(?:是|为|包括)([^，：:]{4,100})", sentence)
+            if match:
+                products = [match.group(1).strip()]
                 break
-    application_patterns = (
-        r"(?:公司(?:的)?(?:主要)?产品[^。；;]{0,80}?(?:主要)?应用于|广泛应用于|下游(?:产业|行业)(?:主要)?为|下游为)([^。；;]{4,260})",
-    )
+    if not products:
+        main_business = _extract_main_business(_issuer_business_section(str(text or '')))
+        if main_business:
+            products = [main_business]
     if products:
-        for pattern in application_patterns:
-            for match in re.finditer(pattern, normalized):
-                # 词条定义及可比公司段落不能作为发行人的应用证据。
-                context = normalized[max(0, match.start()-70):match.start()]
-                if re.search(r"(?:指|可比公司)[^。；;]{0,70}$", context):
-                    continue
+        product_application = re.compile("(?P<product>" + "|".join(re.escape(product) for product in products) +
+            r")(?:产品)?(?:，|其)?(?:主要|广泛|最终|可广泛|可)?(?:应用于|用于|运用于|适用于|面向)"
+            r"(?P<apps>[^：:]{2,220})")
+        for sentence in sentences:
+            if re.search(r"可比公司|竞争对手|若|如果|假设|不涉及|经营场所|理财|指[^，]{0,40}(?:用于|应用于)", sentence):
+                continue
+            material = re.search(
+                r"(?:(?:公司|发行人)[^。；;]{0,45}?(?:采购的|采购|生产所需的|所需的)?|主要)"
+                r"(?:主要)?(?:原材料|原料|材料)(?:采购)?(?:主要)?(?:包括|为|有|是)([^：:]{2,220})", sentence)
+            if material:
+                value = re.split(r"等|，(?:其中|占|公司|采购|报告期)|[：:]", material.group(1))[0]
+                for item in re.split(r"[、，,]|以及", value):
+                    item = item.strip(" ，、 ")
+                    if 2 <= len(item) <= 60 and not any(row["industry"] == item for row in upstream):
+                        upstream.append({"industry": item, "product": "公司产品", "products": list(products),
+                                         "relationship": "supplies", "evidence": material.group(0)})
+            application = re.search(
+                r"(?P<subject>(?:公司|发行人)[^，。；;]{0,25}?产品[^。；;]{0,180}?)"
+                r"(?:主要|广泛|最终|可广泛|可)?(?:应用于|用于|运用于|适用于|面向)(?P<apps>[^：:]{2,220})", sentence)
+            if not application:
+                # 单个已核验产品作主语时，绑定该产品，不跨公司拼接。
+                application = product_application.search(sentence)
+            if not application:
+                application = re.search(
+                    r"(?:公司|发行人)[^。；;]{0,35}?(?:所处行业|产品)"
+                    r"[^。；;]{0,35}?下游(?:主要)?(?:产业|行业)?(?:主要)?(?:包括|为|是)(?P<apps>[^：:]{2,160})", sentence)
+            if not application:
+                application = re.search(r"^\s*(?:广泛应用于|下游(?:产业|行业)?(?:主要)?为)(?P<apps>[^：:]{2,180})", sentence)
+            if application:
+                apps = re.split(r"等|，(?:其中|公司|其|并|报告期|因|容易|随着|是|具有)|[：:]", application.group("apps"))[0]
+                for item in re.split(r"[、，,]|以及", apps):
+                    item = item.strip(" ，、 ")
+                    if (not 2 <= len(item) <= 80 or re.search(r"出口销售|影响|风险|需求|增长|竞争|收入|毛利|理财|募投|资金|技术|经营场所", item)
+                            or any(row["industry"] == item for row in downstream)):
+                        continue
+                    tracks = sorted({track for _, rule, keys in _DOWNSTREAM_CHAIN_RULES
+                                     if rule.search(item) for track in keys})
+                    downstream.append({"industry": item, "product": application.groupdict().get('product') or "公司产品", "products": list(products),
+                                       "relationship": "applied_in", "related_tracks": tracks,
+                                       "evidence": application.group(0)})
+    if products:
+        for sentence in sentences:
+            if re.search(r"可比公司|竞争对手|若|如果|假设", sentence):
+                continue
+            material = re.search(r"(?:上游(?:原材料|行业)(?:主要)?(?:包括|为)|原材料(?:主要)?(?:包括|为))([^，。；;]{2,180}(?:、[^，。；;]{2,60})*)", sentence)
+            if material and not upstream:
+                value = re.split(r"等|及其", material.group(1))[0]
+                for item in re.split(r"[、]|以及|与|及", value):
+                    item = item.strip(" ：")
+                    if 2 <= len(item) <= 45:
+                        upstream.append({"industry": item, "product": "公司产品", "products": list(products),
+                                         "relationship": "supplies", "evidence": material.group(0)})
+            application = re.search(r"(?:终端应用领域|产品下游应用领域)[^。；;]{0,60}?(?:包括|包含|涵盖|主要为)([^。；;]{2,180})", sentence)
+            if application:
                 for label, rule, tracks in _DOWNSTREAM_CHAIN_RULES:
-                    if rule.search(match.group(1)) and not any(r["industry"] == label for r in downstream):
+                    if rule.search(application.group(1)) and not any(row["industry"] == label for row in downstream):
                         downstream.append({"industry": label, "product": "公司产品", "products": list(products),
-                                           "relationship": "applied_in", "related_tracks": list(tracks),
-                                           "evidence": match.group(0)})
+                                           "relationship": "applied_in", "related_tracks": list(tracks), "evidence": application.group(0)})
     status = "complete" if products and upstream and downstream else "partial" if products or upstream or downstream else "unavailable"
     return {
         "version": _INDUSTRY_CHAIN_PARSER_VERSION,
@@ -2907,6 +2971,9 @@ def fetch_prospectus_main_business(stock_code, security_name=None):
     _MAIN_BUSINESS_SOURCE.pop(code, None)
     _MAIN_BUSINESS_DOCUMENT.pop(code, None)
     _MAIN_BUSINESS_DIAGNOSTIC.pop(code, None)
+    registered = _registered_prospectus_main_business(code, security_name)
+    if registered is not None:
+        return registered
     official = _fetch_exchange_prospectus_main_business(code, security_name)
     if official:
         return official
@@ -2917,6 +2984,58 @@ def fetch_prospectus_main_business(stock_code, security_name=None):
         return mb
     except ExternalCallGuardError:
         raise
+
+
+def _registered_prospectus_main_business(code, security_name):
+    """从目标行已核验的原文重解析，缓存命中不重复公告发现或下载。"""
+    from urllib.parse import urlparse
+    try:
+        conn = _init_ipo_db()
+        try:
+            row = conn.execute("SELECT source_payload FROM ipo_history WHERE market_code='CN' AND security_code=?", (code,)).fetchone()
+        finally:
+            conn.close()
+        payload = row[0] if row else None
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        document = (payload or {}).get('historical_enrichment', {}).get('main_business_document')
+        if not isinstance(document, dict) or not document.get('url') or not document.get('content_hash'):
+            return None
+        source = document.get('source')
+        host = (urlparse(document['url']).hostname or '').lower()
+        domains = {'sse': 'sse.com.cn', 'szse': 'szse.cn', 'bse': 'bse.cn', 'cninfo': 'cninfo.com.cn'}
+        domain = domains.get(source)
+        if not domain or not (host == domain or host.endswith('.' + domain)) or not security_name:
+            return None
+        text = _cached_pdf_text(document['url'])
+        cache_hit = bool(text)
+        if not text:
+            session = requests.Session()
+            try:
+                text = _download_exchange_pdf_text(session, document['url'], source)
+            finally:
+                session.close()
+        if not text:
+            return None
+        if hashlib.sha256(text.encode('utf-8')).hexdigest() != document['content_hash']:
+            return None
+        compact = re.sub(r'\s+', '', text)
+        if re.sub(r'\s+', '', security_name) not in compact[:20000]:
+            return None
+        main_business = _extract_main_business(text)
+        if not main_business:
+            return None
+        document = dict(document)
+        document['industry_chain'] = _extract_industry_chain_relations(text)
+        _MAIN_BUSINESS_DOCUMENT[code] = document
+        _MAIN_BUSINESS_SOURCE[code] = source
+        _MAIN_BUSINESS_DIAGNOSTIC[code] = {'status': 'value', 'source': source,
+            'document': document, 'attempts': [{'source': 'registered_prospectus', 'status': 'value', 'cache_hit': cache_hit}]}
+        return main_business
+    except ExternalCallGuardError:
+        raise
+    except Exception:
+        return None
 
 
 def _fetch_stock_main_business(stock_code, security_name=None):

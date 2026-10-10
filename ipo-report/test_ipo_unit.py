@@ -1749,6 +1749,60 @@ except Exception as e:
     traceback.print_exc()
 
 
+try:
+    chain_fixtures = json.loads((Path(__file__).parent / 'test_fixtures' / 'industry-chain-official-20261010.json').read_text(encoding='utf-8'))
+    for fixture in chain_fixtures:
+        chain = fetch._extract_industry_chain_relations(fixture['text'])
+        check('产业链生产漏解析原文回归' + fixture['code'], chain['status'] == 'complete'
+              and all(chain[key] for key in ('products', 'upstream', 'downstream')))
+    unknown_chain = fetch._extract_industry_chain_relations(
+        '公司主要产品为手工收纳盒。公司采购的原材料主要为木板、纸板。公司产品主要用于家庭收纳。')
+    unknown_exposure = _val.analyze_business_exposure('', '', '', industry_chain=unknown_chain,
+        evidence_document={'source': 'sse', 'url': 'https://www.sse.com.cn/issuer.pdf', 'content_hash': 'a' * 64})
+    check('完整产业链不因未匹配赛道而误报缺失', unknown_chain['status'] == 'complete'
+          and not unknown_exposure['exposures'] and history_sync._has_business_exposures(unknown_exposure))
+    check('缺少原文证据的空赛道不能通过资料门禁',
+          not history_sync._has_business_exposures({**unknown_exposure, 'industry_chain': {**unknown_exposure['industry_chain'], 'evidence': {}}}))
+    distribution = fetch._extract_industry_chain_relations(
+        '公司主要产品为家具。公司采购的原材料主要为木板。公司产品主要用于出口销售，容易受到汇率波动影响。')
+    check('出口销售与汇率风险不能当作下游应用', distribution['status'] != 'complete' and not distribution['downstream'])
+    peer = fetch._extract_industry_chain_relations(
+        '可比公司主要产品为热管理材料，上游行业主要为金属材料，终端应用领域包括新能源汽车。')
+    check('可比公司产业链不能拼接到发行人', peer['status'] != 'complete')
+    premises = fetch._extract_industry_chain_relations(
+        '公司主要产品为物流服务。发行人主要从事物流业务，自身不涉及实物产品的生产或加工，发行人的经营场所主要用于车辆及货物的发运与仓储。')
+    check('经营场所用途不能冒充产品下游', not premises['downstream'])
+    product_list = fetch._extract_industry_chain_relations(
+        '公司主要产品包括收纳五金、户外家具，相关产品具体生产工艺流程如下：其他描述。')
+    check('产品列表不能吞入工艺或应用说明', product_list['products'] == ['收纳五金', '户外家具'])
+    overview = '测试发行人股份有限公司。公司主营业务为制冰机研发、生产与销售。公司主要产品为制冰机。公司采购的原材料主要为压缩机。公司产品主要用于家庭制冰。'
+    doc = {'source': 'sse', 'url': 'https://www.sse.com.cn/issuer.pdf', 'content_hash': hashlib.sha256(overview.encode()).hexdigest()}
+    class RegisteredDocumentDB:
+        def execute(self, query, params):
+            self.params = params
+            return self
+        def fetchone(self):
+            return ({'historical_enrichment': {'main_business_document': doc}},)
+        def close(self):
+            pass
+    originals = (fetch._init_ipo_db, fetch._cached_pdf_text, fetch._download_exchange_pdf_text)
+    try:
+        fetch._init_ipo_db = lambda: RegisteredDocumentDB()
+        fetch._cached_pdf_text = lambda url: overview
+        fetch._download_exchange_pdf_text = lambda *args: (_ for _ in ()).throw(AssertionError('缓存命中不得下载'))
+        registered = fetch._registered_prospectus_main_business('CHAIN_TEST', '测试发行人')
+        check('已登记招股书缓存重解析无需重复发现或下载', bool(registered)
+              and fetch._MAIN_BUSINESS_DOCUMENT['CHAIN_TEST']['industry_chain']['version'] == 'ipo-industry-chain-v5')
+        doc['content_hash'] = '0' * 64
+        check('原文哈希变化不能沿用旧证券证据', fetch._registered_prospectus_main_business('CHAIN_TEST', '测试发行人') is None)
+        doc['content_hash'] = hashlib.sha256(overview.encode()).hexdigest()
+        check('其他发行人的缓存不能作为目标公司事实', fetch._registered_prospectus_main_business('CHAIN_TEST', '另一家公司') is None)
+    finally:
+        fetch._init_ipo_db, fetch._cached_pdf_text, fetch._download_exchange_pdf_text = originals
+except Exception as exc:
+    ERR.append('IPO产业链恢复: ' + str(exc))
+    traceback.print_exc()
+
 # ===== 汇总 =====
 print("\n===== 结果汇总（确定性单元测试）=====")
 print("PASS=%d  FAIL=%d  ERROR=%d" % (len(PASS), len(FAIL), len(ERR)))

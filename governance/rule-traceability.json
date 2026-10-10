@@ -649,6 +649,22 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "静态平均行业市盈率不得因词序遗漏"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "出口销售与汇率风险不能当作下游应用"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "可比公司产业链不能拼接到发行人"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "已登记招股书缓存重解析无需重复发现或下载"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "完整产业链不因未匹配赛道而误报缺失"
         }
       ],
       "owner": "A股 IPO",
@@ -808,6 +824,18 @@
         {
           "file": "server/test/ipo-history-sync.test.js",
           "pattern": "IPO targeted Runner retains industry field scope and completion evidence"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "产业链定向阶段真实PG保留非授权金融字段"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "产业链定向阶段不运行申万且请求字段完成即可验收"
+        },
+        {
+          "file": "ipo-report/test_ipo_history_sync.py",
+          "pattern": "完整无匹配赛道产业链真实PG与Python门禁一致"
         }
       ],
       "owner": "A股 IPO",

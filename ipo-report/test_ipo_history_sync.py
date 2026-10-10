@@ -874,6 +874,42 @@ try:
               first_connection.events[:3] == [('first_day', date(2026, 9, 30)), 'commit', 'calendar'])
     finally:
         sync.pg_connect, sync.backfill_first_day, sync.next_trade_date = saved_connect, saved_backfill, saved_trade
+    from ipo_lib_sector import analyze_business_exposure
+    chain = ipo_lib_fetch._extract_industry_chain_relations(
+        '公司主要产品为手工收纳盒。公司采购的原材料主要为木板、纸板。公司产品主要用于家庭收纳。')
+    chain_value = analyze_business_exposure('', '', '', industry_chain=chain,
+        evidence_document={'source': 'sse', 'url': 'https://www.sse.com.cn/issuer.pdf', 'content_hash': 'a' * 64})
+    cur.execute('SELECT NOT ' + sync.BUSINESS_EXPOSURE_MISSING_SQL + ' FROM (SELECT %s::jsonb AS business_exposure) t',
+                (json.dumps(chain_value),))
+    check('完整无匹配赛道产业链真实PG与Python门禁一致', cur.fetchone()[0] and sync._has_business_exposures(chain_value))
+    chain_code = 'CHAIN_TEST_01'
+    cur.execute("""INSERT INTO ipo_history(security_code,security_name,market_code,market_type,ipo_date,
+                     industry,industry_pe,main_business,business_exposure,online_lottery_rate,oversubscribe_multiple,
+                     data_quality_status) VALUES(%s,'产业链范围测试','CN','沪市主板','2026-09-10',
+                     '汽车制造业',10,'原有效主营业务','{}'::jsonb,0.1,123,'{"field_states":{"industry":{"status":"value"}}}'::jsonb)
+                   ON CONFLICT(security_code) DO NOTHING""", (chain_code,))
+    cur.execute('SELECT industry,industry_pe,main_business,online_lottery_rate,oversubscribe_multiple FROM ipo_history WHERE security_code=%s', (chain_code,))
+    chain_before = cur.fetchone()
+    prior_fetch = ipo_lib_fetch.fetch_stock_historical_detail
+    prior_taxonomy = sync.sync_sw_industry_taxonomies
+    try:
+        ipo_lib_fetch.fetch_stock_historical_detail = lambda *args, **kwargs: {
+            'industry': '计算机制造业', 'industry_pe': 99, 'main_business': '不应覆盖的更长主营业务描述',
+            'online_lottery_rate': 0.2, 'oversubscribe_multiple': 999,
+            'business_exposure': chain_value,
+            'main_business_document': {'source': 'sse', 'url': 'https://www.sse.com.cn/issuer.pdf', 'content_hash': 'a' * 64},
+        }
+        sync.sync_sw_industry_taxonomies = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('产业链字段阶段不得补申万'))
+        chain_result = sync.enrich_stock_missing_details(cur, date(2026, 9, 10), only_codes=[chain_code],
+            priority_codes=[chain_code], force_fields=['business_exposure'], include_result_fields=False)
+        cur.execute('SELECT industry,industry_pe,main_business,online_lottery_rate,oversubscribe_multiple FROM ipo_history WHERE security_code=%s', (chain_code,))
+        check('产业链定向阶段真实PG保留非授权金融字段', cur.fetchone() == chain_before)
+        check('产业链定向阶段不运行申万且请求字段完成即可验收',
+              chain_result['industry_taxonomy']['status'] == 'not_run'
+              and sync._targeted_stage_complete(chain_result, [chain_code], ['business_exposure']))
+    finally:
+        ipo_lib_fetch.fetch_stock_historical_detail = prior_fetch
+        sync.sync_sw_industry_taxonomies = prior_taxonomy
     conn.rollback()
     cur.close()
     conn.close()

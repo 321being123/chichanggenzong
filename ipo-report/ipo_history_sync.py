@@ -66,7 +66,18 @@ def _valid_industry(value):
     return valid_ipo_industry_name(value)
 
 
-BUSINESS_EXPOSURE_MISSING_SQL = """(
+COMPLETE_UNMAPPED_CHAIN_SQL = """(
+    business_exposure#>>'{industry_chain,status}'='complete'
+    AND COALESCE(business_exposure#>>'{industry_chain,evidence,url}','')<>''
+    AND COALESCE(business_exposure#>>'{industry_chain,evidence,content_hash}','')<>''
+    AND CASE WHEN jsonb_typeof(business_exposure#>'{industry_chain,products}')='array'
+             THEN jsonb_array_length(business_exposure#>'{industry_chain,products}')>0 ELSE FALSE END
+    AND CASE WHEN jsonb_typeof(business_exposure#>'{industry_chain,upstream}')='array'
+             THEN jsonb_array_length(business_exposure#>'{industry_chain,upstream}')>0 ELSE FALSE END
+    AND CASE WHEN jsonb_typeof(business_exposure#>'{industry_chain,downstream}')='array'
+             THEN jsonb_array_length(business_exposure#>'{industry_chain,downstream}')>0 ELSE FALSE END
+)"""
+BUSINESS_EXPOSURE_MISSING_SQL = """((
     business_exposure IS NULL OR business_exposure='{}'::jsonb
     OR NOT (business_exposure ? 'exposures')
     OR CASE WHEN jsonb_typeof(business_exposure->'exposures')='array'
@@ -74,7 +85,7 @@ BUSINESS_EXPOSURE_MISSING_SQL = """(
             ELSE TRUE END
     OR (business_exposure->>'version'='2'
         AND COALESCE(business_exposure#>>'{industry_chain,status}','') <> 'complete')
-)"""
+) AND NOT COALESCE(""" + COMPLETE_UNMAPPED_CHAIN_SQL + ",FALSE))"
 KNOWN_INDUSTRY_FALLBACK_SQL = """(
     COALESCE(source_payload->'historical_enrichment'->>'industry_source',
              source_payload->'historical_enrichment'->'industry_diagnostic'->>'source')
@@ -83,6 +94,13 @@ KNOWN_INDUSTRY_FALLBACK_SQL = """(
 
 
 def _has_business_exposures(value):
+    chain = value.get('industry_chain') if isinstance(value, dict) else None
+    if isinstance(chain, dict) and chain.get('status') == 'complete':
+        evidence = chain.get('evidence') or {}
+        if (evidence.get('url') and evidence.get('content_hash')
+                and all(isinstance(chain.get(key), list) and chain[key]
+                        for key in ('products', 'upstream', 'downstream'))):
+            return True
     if not isinstance(value, dict) or not isinstance(value.get("exposures"), list) or not value["exposures"]:
         return False
     if str(value.get("version") or "") == "2":
@@ -936,6 +954,28 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             detail_oversubscribe = _positive(detail.get("oversubscribe_multiple"))
             resolved_oversubscribe = detail_oversubscribe if detail_oversubscribe is not None else existing_oversubscribe
             resolved_exposure = business_exposure if _has_business_exposures(business_exposure) else existing_exposure
+            if force_fields:
+                if 'industry' not in force_fields:
+                    industry_upgrade = industry_parser_reparse = replace_pe = False
+                    resolved_industry = str(existing_industry or '').strip()
+                    resolved_industry_pe = existing_industry_pe
+                    detail['industry'] = existing_industry
+                    detail['industry_pe'] = existing_industry_pe
+                    detail.pop('issue_pe_status', None)
+                resolved_business = str(existing_business or '').strip()
+                resolved_lottery_rate = existing_lottery_rate
+                resolved_oversubscribe = existing_oversubscribe
+                detail['main_business'] = existing_business
+                detail_lottery_rate = existing_lottery_rate
+                detail_oversubscribe = existing_oversubscribe
+                if 'business_exposure' not in force_fields:
+                    resolved_exposure = existing_exposure
+                    business_exposure = None
+                else:
+                    # 字段定向只补产业链及其证据，不能顺带替换主营/行业/发行结果。
+                    stored_detail = {key: value for key, value in stored_detail.items()
+                                     if key in ('business_exposure', 'main_business_document',
+                                                'main_business_source', 'main_business_diagnostic')}
             changed = (
                 resolved_industry != str(existing_industry or '').strip()
                 or industry_upgrade
@@ -982,7 +1022,10 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                     field for field in ("online_lottery_rate", "oversubscribe_multiple")
                     if detail.get(field) not in (None, "")
                 )
-                if isinstance(business_exposure, dict) and business_exposure.get("exposures"):
+                if force_fields:
+                    meta['updated_fields'] = sorted(force_fields)
+                if (isinstance(business_exposure, dict) and business_exposure.get("exposures")
+                        and "business_exposure" not in meta["updated_fields"]):
                     meta["updated_fields"].append("business_exposure")
             elif (detail.get("main_business_source")
                   or detail.get("main_business_diagnostic")
@@ -1012,7 +1055,11 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 "main_business": _detail_field_state(
                     resolved_business, detail.get("main_business_diagnostic"), "retryable", today
                 ),
-                "business_exposure": {"status": "value" if _has_business_exposures(resolved_exposure) else "retryable"},
+                "business_exposure": {"status": "value" if _has_business_exposures(resolved_exposure) else "retryable",
+                    **({"reason": "prospectus_chain_not_parsed",
+                        "document_url": (detail.get('main_business_document') or {}).get('url'),
+                        "parser_version": ((detail.get('main_business_document') or {}).get('industry_chain') or {}).get('version')}
+                       if not _has_business_exposures(resolved_exposure) else {})},
                 "industry_pe": _industry_pe_state(
                     code, resolved_industry_pe, detail.get("industry_pe_diagnostic"),
                     (prior_status or {}).get("field_states", {}).get("industry_pe"), today
@@ -1022,6 +1069,9 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
                 field_states["industry_pe"].setdefault(
                     "reason", "insufficient_or_unmatched_industry_sample"
                 )
+            if force_fields:
+                field_states = {**((prior_status or {}).get('field_states') or {}),
+                                **{field: state for field, state in field_states.items() if field in force_fields}}
         except ExternalCallGuardError as exc:
             if raise_on_guard:
                 raise
@@ -1052,7 +1102,7 @@ def enrich_stock_missing_details(cur, today, target_date=None, retry_same_day=Fa
             stopped = detail["issuance_stopped"]
             break
 
-    industry_taxonomy = ({"status": "not_run"} if force_fields == {"industry"} else
+    industry_taxonomy = ({"status": "not_run"} if force_fields else
                          sync_sw_industry_taxonomies(
                              cur, priority_codes or only_codes, today, raise_on_guard=raise_on_guard))
 
@@ -1250,7 +1300,7 @@ def _targeted_stage_complete(result, target_codes, target_fields=None):
         int(result.get("attempted", 0) or 0) == expected
         and int(result.get("failed", 0) or 0) == 0
         and result.get("stopped") is None
-        and (target_fields == ["industry"] or ((int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0)
+        and (bool(target_fields) or ((int(taxonomy.get("updated", 0) or 0) + int(taxonomy.get("cached", 0) or 0)
              + int(taxonomy.get("pending_not_due", 0) or 0)) == expected
         and int(taxonomy.get("missing", 0) or 0) == 0
         and int(taxonomy.get("failed", 0) or 0) == 0

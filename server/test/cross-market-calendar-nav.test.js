@@ -250,6 +250,36 @@ async function main() {
     }, 3902);
     assert.strictEqual(brokerExact.valuationAdjustment, 0, '券商精确总资产不消费当前持仓价，不得加入系统估值校准');
 
+    // CLOSED-TODAY-004：两市休市仍用今日估值和最新快照计算，不回退旧区间。
+    const closedNow = realDate.parse('2026-09-27T04:00:00.000Z');
+    global.Date = class ClosedDate extends realDate {
+      constructor(...args) { super(...(args.length ? args : [closedNow])); }
+      static now() { return closedNow; }
+    };
+    marketState.invalidateMarketStateCache();
+    pool.query = async (sql, params = []) => {
+      if (sql.includes('FROM market.trade_calendar')) {
+        const dates = Array.isArray(params[0]) ? params[0] : [params[0]];
+        return { rows: dates.map(d => calendarRow(String(d).slice(0, 10))).filter(Boolean) };
+      }
+      if (sql.includes('FROM daily_prices')) return { rows: [
+        { code: '600000', date: '2026-09-25', price: 10 },
+        { code: '00700', date: '2026-09-25', price: 20 },
+      ] };
+      if (sql.includes('FROM market.fx_rates')) return { rows: [] };
+      throw new Error(`unexpected closed-day query: ${sql}`);
+    };
+    const closedData = { ...data, positions: [data.positions[0], { ...data.positions[1], price: 20 }] };
+    for (const [rate, total, change] of [[0.90, 3800, 0], [0.91, 3820, 20], [0.89, 3780, -20]]) {
+      const result = await computeNavAttribution('fixture-user', 'fixture-account', { ...closedData, hkRate: rate }, total);
+      assert.strictEqual(result.currentDate, '2026-09-27', '两市休市归因仍属于上海当日');
+      assert.strictEqual(result.previousDate, '2026-09-25', '休市使用最新快照作为基准');
+      assert.strictEqual(result.complete, true);
+      assert.strictEqual(result.totalChange, change, '休市真实涨跌不能强制清零');
+      assert.ok(Math.abs(result.fxImpact - change) < 0.01);
+      assert.ok(Math.abs(result.snapshotDrift) < 0.01);
+    }
+
     const nextDayNow = realDate.parse('2026-09-28T04:00:00.000Z');
     global.Date = class NextTradingDate extends realDate {
       constructor(...args) { super(...(args.length ? args : [nextDayNow])); }

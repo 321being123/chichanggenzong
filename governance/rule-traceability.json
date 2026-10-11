@@ -501,6 +501,10 @@
         {
           "file": "server/test/cross-market-calendar-nav.test.js",
           "pattern": "港股单独开市时归因必须完整"
+        },
+        {
+          "file": "server/test/cross-market-calendar-nav.test.js",
+          "pattern": "CLOSED-TODAY-004"
         }
       ],
       "owner": "持仓管理",

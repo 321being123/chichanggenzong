@@ -344,6 +344,7 @@ async function doAutoRefresh() {
   }) : [];
   if (!marketOpen && afterCloseMarkets.length === 0) {
     // 市场状态到齐后重绘已有数据，使休市零值立即显示；不采集行情。
+    if (typeof renderStats === 'function') renderStats();
     if (typeof renderPositionsTable === 'function') {
       renderPositionsTable('positions-table');
       renderPositionsTable('topn-table');

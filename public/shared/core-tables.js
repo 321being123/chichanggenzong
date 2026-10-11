@@ -6,10 +6,10 @@ function renderStats() {
   var container = document.getElementById('stats-container');
   if (!container) return;
   
-  // 今日涨跌只展示服务端按持仓市场日历核验完整的归因，避免用 A 股日历误判港股交易间隔。
+  // 按服务端核验完整的当日归因显示真实涨跌，休市也保留汇率和现金影响。
   var liveAttribution = data.navAttribution;
   var changeAmt = 0, changePct = 0, hasChange = false;
-  if (liveAttribution && liveAttribution.complete === true && liveAttribution.currentDate === todayCN() && Number.isFinite(Number(liveAttribution.totalChange))) {
+  if (liveAttribution && liveAttribution.complete === true && liveAttribution.currentDate === todayCN() && liveAttribution.totalChange != null && Number.isFinite(Number(liveAttribution.totalChange))) {
     changeAmt = Number(liveAttribution.totalChange);
     var attributionBase = Number(liveAttribution.previousTotalAsset);
     changePct = attributionBase > 0 ? (changeAmt / attributionBase * 100) : 0;
@@ -65,7 +65,7 @@ function renderStats() {
     if (hasChange) {
       var arrow = changeAmt >= 0 ? '▲' : '▼';
       var color = changeAmt >= 0 ? '#d93025' : '#137333';
-      scEl.innerHTML = '<span style="color:' + color + ';">' + arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)</span>';
+      scEl.innerHTML = '<span style="color:' + color + ';">' + (changeAmt === 0 ? '0' : arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)') + '</span>';
       // 悬浮浮框：分解今日涨跌（股价影响 + 汇率影响 + 计算过程）
       bindChangeTip(scEl, changeAmt, changePct);
     } else {

@@ -217,7 +217,7 @@ async function tradeHistory() {
 
 async function positionDailyZero() {
   for (const width of [320,360,390,430,760,768,900,1024,1440]) {
-    const dom = await fixture('<div id="positions-table"></div><div id="topn-table"></div>',width), w=dom.window,d=w.document;
+    const dom = await fixture('<div id="stats-container"></div><div id="positions-table"></div><div id="topn-table"></div>',width), w=dom.window,d=w.document;
     load(w,'js/utils.js');w.todayCN=()=> '2026-10-11';
     w.data={cash:0,hkRate:0.9,positions:[
       {code:'600000',name:'A股',subtype:'沪市',price:10.1,quantity:100},
@@ -227,6 +227,14 @@ async function positionDailyZero() {
     w.calcSummary=()=>({total:3010});w.getMarketValue=p=>p.price*p.quantity;w.fmt=n=>'¥'+Number(n).toFixed(2);w.fmtQty=n=>String(n);
     w.getTypeTag=w.getSubtypeTag=w.sortArrow=()=>'';w.BusinessTable={attach(){}};
     load(w,'shared/core-tables.js');
+    w.renderStats();
+    ok(d.getElementById('stat-change').textContent==='-','休市缺少完整归因不得猜0');
+    w.bindChangeTip=()=>{};
+    w.data.navAttribution={complete:true,currentDate:'2026-10-11',totalChange:0,previousTotalAsset:3010};w.renderStats();
+    ok(d.getElementById('stat-change').textContent==='0' && d.querySelector('#stat-change span').style.color==='rgb(217, 48, 37)','当日实际金额为0显示红色0');
+    w.data.navAttribution.totalChange=12;w.renderStats();
+    ok(d.getElementById('stat-change').textContent.includes('12.00'),'非交易日非零汇率收益按实际显示');
+    w.data.navAttribution=null;
     for(const id of ['positions-table','topn-table']) {
       w.renderPositionsTable(id);
       const rows=d.getElementById(id).querySelectorAll('tbody tr');

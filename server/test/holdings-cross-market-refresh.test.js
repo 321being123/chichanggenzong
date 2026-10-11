@@ -171,10 +171,12 @@ context.fetch = async (url, options = {}) => {
 
     context.marketStateSnapshot.markets.HK={businessDate:'2026-09-25',status:'closed',isTradingNow:false,isAfterMarketClose:false};
     const rendered=[];context.renderPositionsTable=id=>rendered.push(id);
+    let summaryRenders=0;context.renderStats=()=>summaryRenders++;
     const beforeClosedRequests=requests.length;
     const closedResult=await context.doAutoRefresh();
     assert.strictEqual(closedResult.reason,'market_closed');
     assert.deepStrictEqual(rendered,['positions-table','topn-table'],'休市状态到齐后必须重绘明细和首页持仓');
+    assert.strictEqual(summaryRenders,1,'休市状态到齐后必须重绘总资产卡片');
     assert.strictEqual(requests.length,beforeClosedRequests,'休市展示更新不得新增行情请求');
     console.log('holdings cross-market refresh regression tests passed');
   } catch (error) {

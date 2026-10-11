@@ -238,10 +238,11 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
       : { status: isCnTradingDate(todayDate) ? 'open' : 'closed' };
   }
   const hasOpenHoldingMarketToday = Object.values(todayMarketStates).some(state => state.status === 'open');
+  const hasClosedHoldingMarketsToday = markets.size > 0 && Object.values(todayMarketStates).every(state => state.status === 'closed');
   // 页面有当前系统总资产时，最后一条已保存快照就是当前计算的基准。
   // 这样周二会按“周一快照 → 周二当前行情”计算，不会重复把周日/更早区间算进来。
   const liveEnd = currentTotal != null && storedLastDate <= todayDate &&
-    (hasOpenHoldingMarketToday || storedLastDate === todayDate);
+    (hasOpenHoldingMarketToday || hasClosedHoldingMarketsToday || storedLastDate === todayDate);
   const previous = liveEnd && storedLastDate < todayDate ? last : historicalPrevious;
   const prevDate = dateKey(previous.date);
   const currentDate = liveEnd ? todayDate : storedLastDate;

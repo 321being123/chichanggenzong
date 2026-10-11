@@ -119,4 +119,49 @@ context.renderStats();
 assert.ok(summaryElements.get('stat-change').innerHTML.includes('20.00'),
   '页面应直接展示完整的服务端跨市场归因变化');
 
+context.todayCN = () => '2026-10-11';
+context.marketStateSnapshot = { businessDate: '2026-10-11', markets: {
+  CN: { businessDate: '2026-10-11', status: 'closed' },
+  HK: { businessDate: '2026-10-11', status: 'closed' },
+} };
+context.data.positions = [{ code: '600000', subtype: '沪市', quantity: 1 }, { code: '00700', subtype: '港股', quantity: 1 }];
+context.data.navAttribution = { complete: false, currentDate: '2026-10-11' };
+const beforeClosedRender = JSON.stringify(context.data);
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '休市缺少完整归因仍为缺失');
+assert.strictEqual(summaryElements.get('stat-change').onclick, null, '休市展示零不绑定缺失归因浮框');
+assert.strictEqual(JSON.stringify(context.data), beforeClosedRender, '休市展示不得改写资产或归因');
+for (const status of ['open', 'unknown']) {
+  context.marketStateSnapshot.markets.HK.status = status;
+  context.renderStats();
+  assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '部分开市或日历未知不得补零');
+}
+context.marketStateSnapshot.markets.HK.status = 'closed';
+context.marketStateSnapshot.businessDate = '2026-10-10';
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '旧日期状态不得补零');
+context.marketStateSnapshot.businessDate = '2026-10-11';
+context.data.positions.push({ subtype: '美股', quantity: 1 });
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '未支持的市场不能套用CN休市');
+context.data.positions = [];
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '纯现金账户缺少归因也不能猜0');
+context.data.navAttribution = { complete: true, currentDate: '2026-10-11', totalChange: 12, previousTotalAsset: 3990 };
+context.renderStats();
+assert.ok(summaryElements.get('stat-change').innerHTML.includes('12.00'), '非交易日汇率等真实收益不能清零');
+context.data.navAttribution.totalChange = 0;
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').innerHTML, '<span style="color:#d93025;">0</span>', '当日真实金额为0才显示红色0');
+context.data.navAttribution.totalChange = null;
+context.renderStats();
+assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '空金额不得转成0');
+context.data.navAttribution.totalChange = -12;
+context.renderStats();
+assert.ok(summaryElements.get('stat-change').innerHTML.includes('#137333') && summaryElements.get('stat-change').innerHTML.includes('12.00'), '休市负汇率差照常绿色');
+context.data.navAttribution.totalChange = 12;
+context.marketStateSnapshot.markets.CN.status = 'open';
+context.renderStats();
+assert.ok(summaryElements.get('stat-change').innerHTML.includes('12.00'), '交易日完整归因正常展示');
+
 console.log('holdings summary refresh tests passed');

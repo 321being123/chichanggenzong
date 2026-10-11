@@ -12,16 +12,33 @@ const accountsRoute = fs.readFileSync(path.join(root, 'server', 'routes', 'accou
 // “今日盈亏”必须按行情涨跌计算，不能误用上一条净值快照价格。
 // 例如当前价 4.83、行情涨跌 0%、旧快照价 4.81、数量 3000 时，结果应为 0 而不是 +60。
 const todayProfitSource = tables.slice(
-  tables.indexOf('function getTodayProfit'),
+  tables.indexOf('function getPositionTodayChange'),
   tables.indexOf('// 估值列颜色')
 );
 const todayProfitSandbox = {
   previousPriceMap: { '600219': 4.81 },
   priceChangeMap: { '600219': 0 },
-  data: { hkRate: 0.868 }
+  data: { hkRate: 0.868 },
+  todayCN: () => '2026-10-11'
 };
 vm.runInNewContext(`${todayProfitSource}; result = getTodayProfit({ code: '600219', price: 4.83, quantity: 3000 });`, todayProfitSandbox);
 assert.strictEqual(todayProfitSandbox.result, 0, '涨跌为0%时，今日盈亏不能沿用旧快照价格计算');
+
+todayProfitSandbox.marketForPosition = p => p.subtype === '港股' ? 'HK' : 'CN';
+todayProfitSandbox.marketStateSnapshot = {businessDate:'2026-10-11',markets:{
+  CN:{businessDate:'2026-10-11',status:'closed'},HK:{businessDate:'2026-10-11',status:'open',isTradingNow:false}
+}};
+todayProfitSandbox.priceChangeMap = {'600219':2,'00700':1};
+vm.runInNewContext(`${todayProfitSource}; cn=getTodayProfit({code:'600219',price:10,quantity:100}); hk=getTodayProfit({code:'00700',subtype:'港股',price:10,quantity:100});`,todayProfitSandbox);
+assert.strictEqual(todayProfitSandbox.cn,0,'明确休市不能沿用前一交易日涨跌');
+assert(todayProfitSandbox.hk>0,'另一市场开市日盘前、午休或收盘不应强制清零');
+assert.strictEqual(todayProfitSandbox.priceChangeMap['600219'],2,'不改原行情缓存');
+todayProfitSandbox.marketStateSnapshot.businessDate='2026-10-10';
+assert.strictEqual(todayProfitSandbox.getPositionTodayChange({code:'600219'}),2,'旧业务日状态不能清零当天涨跌');
+todayProfitSandbox.marketStateSnapshot.businessDate='2026-10-11';
+todayProfitSandbox.marketStateSnapshot.markets.CN.status='unknown';
+todayProfitSandbox.priceChangeMap['600219']=null;
+assert.strictEqual(todayProfitSandbox.getTodayProfit({code:'600219',price:10,quantity:100}),null,'日历未知且缺行情保持未知');
 
 assert.ok(
   tables.includes("filter(function(p) { return Number(p.quantity) > 0; })"),
@@ -42,7 +59,7 @@ assert.ok(
   '服务端账本事务缺少数量判断（0 时删除持仓）'
 );
 assert.ok(
-  todayProfitSource.includes('var change = priceChangeMap[position.code];') &&
+  todayProfitSource.includes('var change = getPositionTodayChange(position);') &&
     !todayProfitSource.includes('previousPriceMap[position.code]'),
   'getTodayProfit 必须使用实时行情涨跌，不能读取净值归因基准价'
 );

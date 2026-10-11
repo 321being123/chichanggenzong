@@ -42,8 +42,8 @@ vm.runInContext(fs.readFileSync(path.join(root, 'public/shared/core-quote.js'), 
 
 assert.ok(indexHtml.includes('<button class="btn-refresh" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>'),
   '现有账户工具栏应显示复用 doRefresh 的“刷新行情”按钮');
-assert.ok(indexHtml.includes('shared/core-quote.js?v=0.8.1.87') && indexHtml.includes('shared/core-tables.js?v=__APP_VERSION__'),
-  '修改后的共享统计脚本必须使用当前版本缓存键，未修改的共享行情脚本保留原缓存键');
+assert.ok(indexHtml.includes('shared/core-quote.js?v=__APP_VERSION__') && indexHtml.includes('shared/core-tables.js?v=__APP_VERSION__'),
+  '修改后的共享行情与统计脚本必须使用当前版本缓存键');
 assert.ok(sharedStyle.includes('.sub-nav .btn-refresh { background: #fff; color: #1a237e; border: 1px solid #c7cedb; }'),
   '桌面白色工具栏上的刷新按钮应使用可辨认的文字和边框');
 assert.ok(sharedStyle.includes('.mobile-account-tools .btn-refresh { min-height: 44px; }'),
@@ -169,6 +169,13 @@ context.fetch = async (url, options = {}) => {
     assert.ok(staleToast.includes('00700') && staleToast.includes('未取得当日行情'), '开市日的过期报价必须显示为失败代码');
     assert.ok(!staleToast.includes('全部成功'), '过期报价不得提示全部成功');
 
+    context.marketStateSnapshot.markets.HK={businessDate:'2026-09-25',status:'closed',isTradingNow:false,isAfterMarketClose:false};
+    const rendered=[];context.renderPositionsTable=id=>rendered.push(id);
+    const beforeClosedRequests=requests.length;
+    const closedResult=await context.doAutoRefresh();
+    assert.strictEqual(closedResult.reason,'market_closed');
+    assert.deepStrictEqual(rendered,['positions-table','topn-table'],'休市状态到齐后必须重绘明细和首页持仓');
+    assert.strictEqual(requests.length,beforeClosedRequests,'休市展示更新不得新增行情请求');
     console.log('holdings cross-market refresh regression tests passed');
   } catch (error) {
     console.error(error);

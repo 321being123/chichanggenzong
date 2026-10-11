@@ -439,7 +439,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .form-row-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
 
 /* ===== 交易列表 ===== */
-.trade-list { max-height: 300px; overflow-y: auto; }
 .trade-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 18px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
 .trade-item:last-child { border-bottom: none; }
 .trade-buy { color: #d93025; }

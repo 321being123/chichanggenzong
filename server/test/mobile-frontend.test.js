@@ -187,7 +187,64 @@ async function charts() {
   w.close();
 }
 
+async function tradeHistory() {
+  for (const width of [320, 360, 390, 430, 760, 768, 900, 1024, 1440]) {
+    const dom = await fixture(read('public/index.html'), width), w = dom.window, d = w.document;
+    const host = d.getElementById('trades-table');
+    ok(!host.classList.contains('trade-list'), '交易历史不再套旧内部纵向滚动容器');
+    w.data = { trades: [], positions: [], cashFlows: [
+      {id:'interest',date:'2026-10-09',amount:123.22,flow_type:'repo_interest',origin:'system',status:'estimated',note:'一天期逆回购市场日加权利率计算（含费用）'},
+      {id:'fee',date:'2026-10-09',amount:-1.17,flow_type:'repo_fee',origin:'system',status:'estimated',note:'一天期逆回购市场日加权利率计算（含费用）'},
+      {id:'imported',date:'2026-10-08',amount:2,origin:'imported',note:'导入凭证'},
+      {id:'manual',date:'2026-10-08',amount:3,origin:'manual',note:'用户说明（含费用）'}
+    ] };
+    load(w, 'js/utils.js'); w.fmt = n => '¥' + Number(n).toFixed(2);
+    let attached;
+    w.BusinessTable = { attach: (root, options) => { attached = {root, options}; } };
+    load(w, 'shared/core-tables.js');
+    const before = JSON.stringify(w.data);
+    w.renderTrades();
+    const rows = host.querySelectorAll('tbody tr');
+    ok(attached.root === host && attached.options.top === '#main-holdings > .holdings-header', '交易历史使用当前持仓导航下的共享吸顶入口');
+    ok(rows[0].cells[6].textContent === '+¥123.22' && rows[1].cells[6].textContent === '-¥1.17', '利息毛收入和费用支出分列，金额未重复扣费');
+    ok(rows[0].cells[9].textContent.includes('利息未扣费用，费用单列') && rows[1].cells[9].textContent.includes('手续费；单独扣除'), '存量系统回购说明区分利息与费用');
+    ok(rows[0].cells[10].textContent === '系统计算 · 不可直接删除' && rows[2].cells[10].textContent === '导入记录 · 不可直接删除', '受保护来源直接可见，不依赖悬停');
+    ok(host.querySelectorAll('[data-act="deleteCashFlow"]').length === 1 && rows[3].cells[9].textContent === '用户说明（含费用）', '手工流水仍可删除，用户原说明保留');
+    ok(JSON.stringify(w.data) === before && w.requests() === 0, '展示修正不写数据、不取数');
+    w.close();
+  }
+}
+
+async function positionDailyZero() {
+  for (const width of [320,360,390,430,760,768,900,1024,1440]) {
+    const dom = await fixture('<div id="positions-table"></div><div id="topn-table"></div>',width), w=dom.window,d=w.document;
+    load(w,'js/utils.js');w.todayCN=()=> '2026-10-11';
+    w.data={cash:0,hkRate:0.9,positions:[
+      {code:'600000',name:'A股',subtype:'沪市',price:10.1,quantity:100},
+      {code:'00700',name:'港股',subtype:'港股',price:20,quantity:100}
+    ]};w.priceChangeMap={'600000':1,'00700':-2};
+    w.marketStateSnapshot={businessDate:'2026-10-11',markets:{CN:{businessDate:'2026-10-11',status:'closed'},HK:{businessDate:'2026-10-11',status:'closed'}}};
+    w.calcSummary=()=>({total:3010});w.getMarketValue=p=>p.price*p.quantity;w.fmt=n=>'¥'+Number(n).toFixed(2);w.fmtQty=n=>String(n);
+    w.getTypeTag=w.getSubtypeTag=w.sortArrow=()=>'';w.BusinessTable={attach(){}};
+    load(w,'shared/core-tables.js');
+    for(const id of ['positions-table','topn-table']) {
+      w.renderPositionsTable(id);
+      const rows=d.getElementById(id).querySelectorAll('tbody tr');
+      ok(rows.length===2 && [...rows].every(r=>r.cells[4].textContent==='0.00%' && r.cells[5].textContent==='¥0.00'),'两个市场休市，明细及首页同类表均显示零');
+      ok([...rows].every(r=>r.cells[4].classList.contains('positive') && r.cells[5].classList.contains('positive')),'零涨跌和零盈亏复用共享红色');
+    }
+    w.marketStateSnapshot.markets.HK.status='open';w.renderPositionsTable('positions-table');
+    let rows=d.querySelectorAll('#positions-table tbody tr');
+    ok(rows[0].cells[4].textContent==='0.00%' && rows[1].cells[4].textContent==='-2.00%' && rows[1].cells[5].classList.contains('negative'),'按证券市场判断休市，开市负数仍绿色');
+    w.priceChangeMap['00700']=-0.00001;w.renderPositionsTable('positions-table');rows=d.querySelectorAll('#positions-table tbody tr');
+    ok(rows[1].cells[4].textContent==='0.00%' && rows[1].cells[5].textContent==='¥0.00' && rows[1].cells[5].classList.contains('positive'),'精度范围内零值去负零并用红色');
+    w.marketStateSnapshot.markets.HK.status='unknown';w.priceChangeMap['00700']=null;w.renderPositionsTable('positions-table');
+    ok(d.querySelectorAll('#positions-table tbody tr')[1].cells[5].textContent==='--' && w.requests()===0,'未知行情不伪装成零，渲染不取数');
+    w.close();
+  }
+}
+
 (async () => {
-  await navigation(); await standaloneAndDialogs(); await tables(); await charts();
+  await navigation(); await standaloneAndDialogs(); await tables(); await charts(); await tradeHistory(); await positionDailyZero();
   console.log('移动端 DOM 行为回归：' + checks + ' 项通过（不含真机视觉验收）');
 })().catch(error => { console.error(error); process.exit(1); });

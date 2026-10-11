@@ -341,10 +341,20 @@ let sortState = { col: null, dir: 'asc' };
 // 筛选状态（全局）
 let filterState = { type: '', subtype: '' };
 
+function getPositionTodayChange(position) {
+  // 休市显示零价格变动；不覆盖原报价，也不把盘前/午休/收盘当成休市日。
+  var today = todayCN();
+  var snapshot = typeof marketStateSnapshot !== 'undefined' ? marketStateSnapshot : null;
+  var market = typeof marketForPosition === 'function' ? marketForPosition(position) : null;
+  var state = snapshot && snapshot.businessDate === today && snapshot.markets && snapshot.markets[market];
+  if (position.subtype !== '美股' && state && state.businessDate === today && state.status === 'closed') return 0;
+  return priceChangeMap[position.code];
+}
+
 function getTodayProfit(position, overrideRate) {
   // 持仓表的“今日盈亏”必须对应行情的今日涨跌；previousPriceMap 是净值归因基准价，
   // 可能是上一条净值快照日，不能拿来代替今日昨收价。
-  var change = priceChangeMap[position.code];
+  var change = getPositionTodayChange(position);
   var price = Number(position.price);
   if (change == null || !(price > 0) || change <= -100) return null;
   var previousClose = price / (1 + change / 100);
@@ -359,8 +369,9 @@ function getTodayProfit(position, overrideRate) {
 // 估值列颜色（与可转债估值页一致，bond-valuation.css 已加载）
 var POS_EVAL_CLASS = { '低估': 'val-low', '偏低估': 'val-low2', '合理': 'val-mid', '偏高估': 'val-high1', '高估': 'val-high', '风险折价': 'val-risk', '数据不足': 'val-none' };
 var POS_SUBTYPE_CLASS = { '沪市': 'pos-subtype-sh', '深市': 'pos-subtype-sz', '京市': 'pos-subtype-bj', '港股': 'pos-subtype-hk', '美股': 'pos-subtype-us', '可转债': 'pos-subtype-cb', '信用债': 'pos-subtype-credit', '基金/ETF': 'pos-subtype-fund' };
-function getPositionTrendClass(value, hasData) {
+function getPositionTrendClass(value, hasData, zeroIsPositive) {
   if (!hasData) return 'muted-cell';
+  if (zeroIsPositive && Number(value) === 0) return 'positive';
   return Number(value) > 0 ? 'positive' : (Number(value) < 0 ? 'negative' : '');
 }
 
@@ -457,8 +468,8 @@ function renderPositionsTable(targetId, limit) {
       else if (col === 'type') { va = a.type || ''; vb = b.type || ''; }
       else if (col === 'subtype') { va = a.subtype || ''; vb = b.subtype || ''; }
       else if (col === 'chg') {
-        va = priceChangeMap[a.code] != null ? priceChangeMap[a.code] : -999;
-        vb = priceChangeMap[b.code] != null ? priceChangeMap[b.code] : -999;
+        va = getPositionTodayChange(a) != null ? getPositionTodayChange(a) : -999;
+        vb = getPositionTodayChange(b) != null ? getPositionTodayChange(b) : -999;
       }
       else if (col === 'todayProfit') {
         va = getTodayProfit(a);
@@ -535,17 +546,18 @@ function renderPositionsTable(targetId, limit) {
     //   priceChangeMap[p.code] === undefined → 完全没有获取过（显示 ⟳）
     //   priceChangeMap[p.code] === null     → 有缓存价格但无实时涨跌（灰色显示）
     //   priceChangeMap[p.code] !== null     → 有实时行情数据（红/绿着色）
-    var hasRealTime = priceChangeMap[p.code] !== undefined && priceChangeMap[p.code] !== null;
+    var todayChange = getPositionTodayChange(p);
+    var hasRealTime = todayChange !== undefined && todayChange !== null;
     var hasCachedPrice = p.price != null && p.price > 0;
 
     var priceClass = getPositionTrendClass(priceChangeMap[p.code], hasCachedPrice && hasRealTime);
     var chgClass = 'muted-cell';
     var chgText = '-';
     if (hasRealTime) {
-      chgClass = getPositionTrendClass(priceChangeMap[p.code], true);
-      var chgVal = priceChangeMap[p.code];
+      var chgVal = Number(todayChange.toFixed(2));
+      chgClass = getPositionTrendClass(chgVal, true, true);
       chgText = chgVal != null
-        ? (chgVal >= 0 ? '+' : '') + chgVal.toFixed(2) + '%'
+        ? (chgVal > 0 ? '+' : '') + chgVal.toFixed(2) + '%'
         : '--';
     }
 
@@ -558,10 +570,11 @@ function renderPositionsTable(targetId, limit) {
       ? chgText
       : (hasCachedPrice ? '<span class="muted-cell">--</span>' : '<span class="muted-cell data-pending" title="无涨跌数据">⟳</span>');
     var todayProfit = getTodayProfit(p);
+    var displayedProfit = todayProfit == null ? null : Number(todayProfit.toFixed(2));
     var todayProfitDisplay = todayProfit == null
       ? '<span class="muted-cell">--</span>'
-      : (todayProfit >= 0 ? '+' : '') + fmt(todayProfit);
-    var todayProfitClass = getPositionTrendClass(todayProfit, todayProfit != null);
+      : (displayedProfit > 0 ? '+' : '') + fmt(displayedProfit);
+    var todayProfitClass = getPositionTrendClass(displayedProfit, todayProfit != null, true);
 
     html += '<tr>' +
       '<td class="pos-index-cell muted-cell">' + (idx + 1) + '</td>' +
@@ -641,6 +654,20 @@ function formatTradeMoney(value, currency) {
   return fmt(value).replace('¥', currency.symbol);
 }
 
+// 兼容已入库的旧说明，仅修正系统回购展示，不改流水金额或原始证据。
+function getCashFlowDisplayNote(flow) {
+  const note = flow.note || '';
+  if (flow.origin !== 'system' || !['repo_interest', 'repo_fee'].includes(flow.flow_type)) return note;
+  const legacyNotes = {
+    '一天期逆回购市场日加权利率计算（含费用）': '一天期逆回购市场日加权利率计算',
+    '一天期逆回购估算（年化1.3%，含费用）': '一天期逆回购估算（年化1.3%）'
+  };
+  if (!Object.prototype.hasOwnProperty.call(legacyNotes, note)) return note;
+  return flow.flow_type === 'repo_interest'
+    ? legacyNotes[note] + '；利息未扣费用，费用单列'
+    : '一天期逆回购手续费；单独扣除';
+}
+
 function renderTrades() {
   const el = document.getElementById('trades-table');
   // 合并股票交易与现金流转出，按日期倒序展示
@@ -689,13 +716,14 @@ function renderTrades() {
       const isIn = c.amount >= 0;
       const labels = {dividend:'股票分红',dividend_tax:'分红扣税',repo_interest:'逆回购利息',repo_fee:'逆回购费用'};
       const incomeLabel = labels[c.flow_type];
+      const displayNote = getCashFlowDisplayNote(c);
       const dirLabel = incomeLabel ? escapeHtml(incomeLabel) : isIn
         ? '<span class="tag tag-cash">入金</span>'
         : '<span class="tag tag-equity">出金</span>';
       html += '<tr>' +
         '<td>' + escapeHtml(c.date || '-') + '</td>' +
         '<td>现金</td>' +
-        '<td>现金' + (c.note ? '·' + escapeHtml(c.note) : '') + '</td>' +
+        '<td>' + escapeHtml(incomeLabel || '现金' + (c.note ? '·' + c.note : '')) + '</td>' +
         '<td>' + dirLabel + '</td>' +
         '<td class="text-right">-</td>' +
         '<td class="text-right">-</td>' +
@@ -704,9 +732,9 @@ function renderTrades() {
         '<td class="text-right">-</td>' +
         '<td>现金</td>' +
         '<td>' + escapeHtml((c.status === 'estimated' ? '估算 · ' : c.status === 'revoked' ? '已撤销 · ' : '') +
-          (c.note || '') + (c.evidence && c.evidence.principal ? '；本金 ' + fmt(c.evidence.principal) + '，年化 ' +
+          displayNote + (c.evidence && c.evidence.principal ? '；本金 ' + fmt(c.evidence.principal) + '，年化 ' +
             (Number(c.evidence.annualRate)*100).toFixed(2) + '%，计息 ' + c.evidence.interestDays + ' 天' : '')) + '</td>' +
-        '<td class="text-center">' + (c.origin && c.origin !== 'manual' ? '受保护' : '<button class="btn btn-danger btn-sm" data-act="deleteCashFlow" data-id="' + escapeHtml(c.id) + '">删除</button>') + '</td>' +
+        '<td class="text-center">' + (c.origin && c.origin !== 'manual' ? (c.origin === 'system' ? '系统计算' : '导入记录') + ' · 不可直接删除' : '<button class="btn btn-danger btn-sm" data-act="deleteCashFlow" data-id="' + escapeHtml(c.id) + '">删除</button>') + '</td>' +
         '</tr>';
     }
   });

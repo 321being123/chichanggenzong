@@ -670,7 +670,8 @@
     <div class="table-wrap">
       <div class="table-header">
         <h3>打新历史</h3>
-        <div style="display:flex;gap:6px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="period-btn" id="ipo-refresh-history" onclick="ipoRefreshHistory()">刷新行情</button>
           <button class="period-btn active" data-ipo-hist="stock" onclick="ipoSwitchHist('stock')">A股</button>
           <button class="period-btn" data-ipo-hist="hk_stock" onclick="ipoSwitchHist('hk_stock')">港股</button>
           <button class="period-btn" data-ipo-hist="bond" onclick="ipoSwitchHist('bond')">可转债</button>
@@ -1208,11 +1209,11 @@
 <script src="shared/nav-math.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-returns.js?v=0.8.1.11" defer></script>
 <script src="shared/core-earnings.js?v=0.8.0.8" defer></script>
-<script src="shared/core-account.js?v=20260921b" defer></script>
+<script src="shared/core-account.js?v=__APP_VERSION__" defer></script>
 <script src="shared/date-range-control.js?v=__APP_VERSION__" defer></script>
 <script src="vendor/marked.min.js?v=20260904" defer></script>
 <script src="vendor/dompurify.min.js?v=3.4.16" defer></script>
-<script src="js/ipo.js?v=0.8.3.30" defer></script>
+<script src="js/ipo.js?v=__APP_VERSION__" defer></script>
 <script src="js/bond-safety.js?v=12" defer></script>
 <script src="js/bond-cycle.js?v=0.8.1.90" defer></script>
 <script src="js/bond-valuation.js?v=0.8.0.8" defer></script>

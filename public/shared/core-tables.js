@@ -42,9 +42,7 @@ function renderStats() {
       '</div>' +
       '<div class="stat-card">' +
         '<div class="stat-top">' +
-          '<div><div class="label">现金余额</div><div class="value" id="stat-cash"></div><div class="sub" id="stat-cash-pct"></div>' +
-            '<button type="button" class="btn btn-outline" style="min-height:44px" onclick="recalculateCashIncomeForAccount(this)">补算现金收益</button>' +
-            '<button type="button" class="btn btn-outline" style="min-height:44px" onclick="openCashIncomePanel()">收益明细与待核验</button></div>' +
+          '<div><div class="label">现金余额</div><div class="value" id="stat-cash"></div><div class="sub" id="stat-cash-pct"></div></div>' +
           '<div class="stat-icon icon-bg-green">💵</div>' +
         '</div>' +
         '<div class="bar-wrap"><div class="bar-fill" id="bar-cash" style="width:0%;background:#137333;"></div></div>' +

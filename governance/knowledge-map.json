@@ -12,6 +12,52 @@
   ],
   "routes": [
     {
+      "id": "knowledge-maintenance",
+      "risk": "medium",
+      "paths": [
+        "AGENTS.md",
+        "governance/knowledge-map.json",
+        "docs/知识索引.md",
+        "docs/技术架构.md",
+        "docs/decisions/README.md",
+        "docs/incidents/README.md",
+        "docs/tasks/README.md",
+        "docs/知识索引历史记录_*.md",
+        "docs/技术架构历史记录_*.md"
+      ],
+      "keywords": [
+        "知识整理",
+        "知识架构",
+        "知识新增",
+        "历史收敛",
+        "过时文档",
+        "知识归档",
+        "知识必要性"
+      ],
+      "read": [
+        "AGENTS.md",
+        "docs/知识索引.md",
+        "docs/技术架构.md",
+        "docs/decisions/README.md",
+        "docs/incidents/README.md",
+        "docs/tasks/README.md"
+      ],
+      "update": [
+        "docs/知识索引.md",
+        "docs/技术架构.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "权威结论冲突",
+        "未闭环事项",
+        "旧结论替代",
+        "路由引用",
+        "源代码和最终验收证据"
+      ]
+    },
+    {
       "id": "date-time-boundary",
       "risk": "high",
       "paths": [
@@ -110,6 +156,75 @@
         "任务依赖",
         "重复调用",
         "恢复退避"
+      ]
+    },
+    {
+      "id": "portfolio-cash-income",
+      "risk": "high",
+      "paths": [
+        "docs/持仓分红与逆回购现金收益开发方案_20261010.md",
+        "server/db/accounts.js",
+        "server/services/tradeLedger.js",
+        "server/services/navAttribution.js",
+        "server/jobs/navSnapshot.js",
+        "server/jobs/replayNav.js",
+        "public/shared/nav-math.js",
+        "public/shared/core-earnings.js",
+        "public/shared/core-returns.js",
+        "server/services/accountCash.js",
+        "server/services/cashIncome.js",
+        "server/services/cashIncomeCoverage.js",
+        "server/services/repoDailyRates.js",
+        "server/services/cashDividendFacts.js",
+        "server/services/cashIncomeActual.js",
+        "server/services/cashDividendSettlement.js",
+        "server/services/repoSourceAdmission.js",
+        "server/scripts/probeRepoOfficial.py",
+        "server/scripts/probeTusharePermissions.js",
+        "server/services/cashIncomePending.js",
+        "server/services/cashIncomeQueue.js",
+        "server/scripts/syncCashIncomeFacts.js",
+        "public/shared/cash-income-panel.js",
+        "server/db/cashIncomeMigration.js",
+        "server/scripts/*CashIncome*.js",
+        "server/test/cash-income-*.test.js",
+        "public/shared/core-tables.js",
+        "public/shared/core-trade.js"
+      ],
+      "keywords": [
+        "持仓分红",
+        "港股通扣税",
+        "股息税",
+        "逆回购",
+        "现金收益",
+        "补录分红"
+      ],
+      "read": [
+        "docs/技术架构.md",
+        "docs/持仓分红与逆回购现金收益开发方案_20261010.md",
+        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
+        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
+        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
+        "docs/日期时间统一治理研发方案_20260928.md",
+        "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/持仓分红与逆回购现金收益开发方案_20261010.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "历史持仓资格覆盖率",
+        "现金导入基准",
+        "自动流水来源保护",
+        "多层扣税证据",
+        "任务数据集",
+        "回购结算日历",
+        "估算入账与实际替换",
+        "投入本金分类"
       ]
     },
     {
@@ -632,75 +747,6 @@
         "密钥",
         "生产",
         "版本"
-      ]
-    },
-    {
-      "id": "portfolio-cash-income",
-      "risk": "high",
-      "paths": [
-        "docs/持仓分红与逆回购现金收益开发方案_20261010.md",
-        "server/db/accounts.js",
-        "server/services/tradeLedger.js",
-        "server/services/navAttribution.js",
-        "server/jobs/navSnapshot.js",
-        "server/jobs/replayNav.js",
-        "public/shared/nav-math.js",
-        "public/shared/core-earnings.js",
-        "public/shared/core-returns.js",
-        "server/services/accountCash.js",
-        "server/services/cashIncome.js",
-        "server/services/cashIncomeCoverage.js",
-        "server/services/repoDailyRates.js",
-        "server/services/cashDividendFacts.js",
-        "server/services/cashIncomeActual.js",
-        "server/services/cashDividendSettlement.js",
-        "server/services/repoSourceAdmission.js",
-        "server/scripts/probeRepoOfficial.py",
-        "server/scripts/probeTusharePermissions.js",
-        "server/services/cashIncomePending.js",
-        "server/services/cashIncomeQueue.js",
-        "server/scripts/syncCashIncomeFacts.js",
-        "public/shared/cash-income-panel.js",
-        "server/db/cashIncomeMigration.js",
-        "server/scripts/*CashIncome*.js",
-        "server/test/cash-income-*.test.js",
-        "public/shared/core-tables.js",
-        "public/shared/core-trade.js"
-      ],
-      "keywords": [
-        "持仓分红",
-        "港股通扣税",
-        "股息税",
-        "逆回购",
-        "现金收益",
-        "补录分红"
-      ],
-      "read": [
-        "docs/技术架构.md",
-        "docs/持仓分红与逆回购现金收益开发方案_20261010.md",
-        "docs/decisions/ADR-0001-公告数据源优先级与统一采集.md",
-        "docs/decisions/ADR-0002-后台任务与数据质量不变量.md",
-        "docs/decisions/ADR-0003-告警与任务治理门禁补强.md",
-        "docs/日期时间统一治理研发方案_20260928.md",
-        "docs/incidents/INC-0032-全项目日期时间边界审计与整改方案.md"
-      ],
-      "update": [
-        "docs/技术架构.md",
-        "docs/知识索引.md",
-        "docs/持仓分红与逆回购现金收益开发方案_20261010.md"
-      ],
-      "checks": [
-        "npm.cmd run check:knowledge"
-      ],
-      "expandOn": [
-        "历史持仓资格覆盖率",
-        "现金导入基准",
-        "自动流水来源保护",
-        "多层扣税证据",
-        "任务数据集",
-        "回购结算日历",
-        "估算入账与实际替换",
-        "投入本金分类"
       ]
     }
   ]

@@ -1677,6 +1677,30 @@
       "status": "verified"
     },
     {
+      "id": "IPO-INTRADAY-001",
+      "title": "IPO盘中表现仅用户打开或刷新采集，匹配同日已落库报价并保留正式收盘与失败缓存",
+      "implementation": {
+        "file": "server/services/ipoIntraday.js",
+        "symbol": "attachFirstDayPerformance"
+      },
+      "tests": [
+        {
+          "file": "server/test/ipo-intraday.test.js",
+          "pattern": "默认接口只读缓存"
+        },
+        {
+          "file": "server/test/ipo-intraday.test.js",
+          "pattern": "未落库报价不冒充已发布数据"
+        },
+        {
+          "file": "server/test/ipo-intraday.test.js",
+          "pattern": "分页不重新采集"
+        }
+      ],
+      "owner": "IPO历史",
+      "status": "verified"
+    },
+    {
       "id": "IPO-CHAIN-EVIDENCE-001",
       "title": "定向产业链修正必须核对同一原文与实际关系产品",
       "implementation": {

@@ -8,6 +8,7 @@ const { requireLogin } = require('../middleware/auth');
 const { getBondBySecurityCode, getBondHistoryList } = require('../services/bondDataService');
 const { getHkFormalGateStatus } = require('../services/hkIpoBacktest');
 const { normalizeHkIpoShortName } = require('../services/hkIpoMarketSignals');
+const { attachFirstDayPerformance } = require('../services/ipoIntraday');
 
 function isBeijingStock(code) {
   return /^(920|82|83|87|43)/.test(String(code || ''));
@@ -874,7 +875,7 @@ router.get('/history', async (req, res) => {
       const countResult = await pool.query("SELECT COUNT(*)::int AS total FROM ipo_history WHERE market_code='HK'");
       total = countResult.rows[0] ? countResult.rows[0].total : 0;
       const r = await pool.query(
-        `SELECT h.security_code,h.security_name,
+        `SELECT h.instrument_id,h.security_code,h.security_name,
                 h.security_name_cn,q.name AS quote_name,i.name AS instrument_name,
                 hkipox_name.name AS hkipox_short_name,
                 h.market_type,h.ipo_status,
@@ -1000,7 +1001,7 @@ router.get('/history', async (req, res) => {
       );
       total = countResult.rows[0] ? countResult.rows[0].total : 0;
       const r = await pool.query(
-        `              SELECT h.security_code, h.security_name, h.ipo_date,
+        `              SELECT h.instrument_id, h.security_code, h.security_name, h.ipo_date,
                 h.issue_price, h.issue_pe, h.industry_pe, h.fund_raised,
                 h.total_shares, h.online_shares, h.online_lottery_rate, h.oversubscribe_multiple,
                 COALESCE(
@@ -1038,6 +1039,9 @@ router.get('/history', async (req, res) => {
       );
       rows = r.rows;
     }
+    if (type !== 'bond') rows = await attachFirstDayPerformance(rows, type === 'hk_stock' ? 'HK' : 'CN', {
+      refresh: ['1', 'force'].includes(req.query.refresh_quotes), force: req.query.refresh_quotes === 'force',
+    });
     const formalGate = type === 'hk_stock' ? await getHkFormalGateStatus() : null;
     res.json({ type, rows, ...(total !== null ? { total, limit, offset } : {}), ...(formalGate ? { formal_gate: formalGate } : {}) });
   } catch (e) {

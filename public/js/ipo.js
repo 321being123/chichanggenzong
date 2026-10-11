@@ -4,6 +4,7 @@
 // 标签、请求和内容共用同一状态；请求序号防止旧响应（含同市场分页）覆盖新选择。
 var ipoHistoryType = 'stock';
 var ipoHistoryRequestId = 0;
+var ipoHistoryOffset = 0;
 var ipoCalendarMarket = 'CN';
 var ipoCalendarRequestId = 0;
 
@@ -306,13 +307,27 @@ function ipoBondField(it, field, value, formatter) {
 }
 
 function ipoFirstDayStatus(it) {
+  if (it.first_day_basis === 'intraday') return ipoPctCell(it.first_day_return) + ipoFirstDayQuoteLabel(it);
   if (it.ld_close_change !== null && it.ld_close_change !== undefined && it.ld_close_change !== '') {
     return ipoPctCell(it.ld_close_change);
   }
   if (it.history_stage === 'subscribed') return '<span>待上市</span>';
   var listing = String(it.listing_date || '').slice(0, 10);
+  if (it.first_day_refresh_failed) return '<span>报价暂不可用</span>';
   var today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
-  return listing === today ? '<span>收盘后更新</span>' : '<span>待补全</span>';
+  return listing === today ? '<span>等待首日报价</span>' : '<span>待补全</span>';
+}
+
+function ipoFirstDayQuoteLabel(it) {
+  if (it.first_day_basis !== 'intraday' || !it.first_day_quote_time) return '';
+  var time = new Date(it.first_day_quote_time).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+  return '<span style="display:block;color:#777;font-size:11px;">' + (it.first_day_refresh_failed ? '刷新失败 · ' : it.first_day_quote_stale ? '行情延迟 · ' : '盘中 · ')
+    + escapeHtml(time) + '</span>';
+}
+
+function ipoFirstDayProfitCell(it, fallback) {
+  var profit = it.first_day_profit != null ? it.first_day_profit : fallback;
+  return ipoFmt(profit == null ? null : ipoNumFixed(profit, 2)) + ipoFirstDayQuoteLabel(it);
 }
 
 function ipoHistoryListingCell(it) {
@@ -659,25 +674,36 @@ function ipoCalendarRow(label, items, color) {
 
 // ========== 打新历史（集思录式列表） ==========
 async function ipoLoadHistory(type) {
-  return ipoLoadHistoryPage(type, 0);
+  return ipoLoadHistoryPage(type, 0, '1');
 }
 
-async function ipoLoadHistoryPage(type, offset) {
+function ipoRefreshHistory() {
+  return ipoLoadHistoryPage(ipoHistoryType, ipoHistoryOffset, 'force');
+}
+
+async function ipoLoadHistoryPage(type, offset, refreshQuotes) {
+  var silent = refreshQuotes === 'force';
   ipoHistoryType = type;
   var requestId = ++ipoHistoryRequestId;
   document.querySelectorAll('[data-ipo-hist]').forEach(function (b) {
     b.classList.toggle('active', b.getAttribute('data-ipo-hist') === type);
   });
   var el = document.getElementById('ipo-history');
-  if (el) el.innerHTML = '<div class="empty-state">加载中...</div>';
+  var oldScroll = el && el.querySelector('.biz-table-scroll');
+  var scrollLeft = oldScroll ? oldScroll.scrollLeft : 0;
+  var refreshButton = document.getElementById('ipo-refresh-history');
+  if (refreshButton) { refreshButton.hidden = type === 'bond'; refreshButton.disabled = true; }
+  if (el && !silent) el.innerHTML = '<div class="empty-state">加载中...</div>';
   try {
     var pageSize = 200;
     var pageOffset = Math.max(Number(offset) || 0, 0);
-    var r = await fetch(api('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset));
+    var r = await fetch(api('/api/ipo/history?type=' + type + '&limit=' + pageSize + '&offset=' + pageOffset
+      + (type !== 'bond' && refreshQuotes ? '&refresh_quotes=' + refreshQuotes : '')));
     if (!r.ok) throw new Error('历史接口返回 ' + r.status);
     var d = await r.json();
     if (requestId !== ipoHistoryRequestId) return;
     if (d.type !== type) throw new Error('历史接口返回的市场与所选市场不一致');
+    ipoHistoryOffset = pageOffset;
     if (el) {
       var html = ipoRenderHistory(type, d.rows || []);
       if ((type === 'hk_stock' || type === 'stock') && Number(d.total) > 0) {
@@ -691,10 +717,15 @@ async function ipoLoadHistoryPage(type, offset) {
       }
       el.innerHTML = html;
       if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#main-ipo', top: '.nav' });
+      var newScroll = el.querySelector('.biz-table-scroll');
+      if (silent && newScroll) newScroll.scrollLeft = scrollLeft;
     }
   } catch (e) {
     if (requestId !== ipoHistoryRequestId) return;
-    if (el) el.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
+    if (el && !silent) el.innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(e.message || String(e)) + '</div>';
+    if (silent && typeof showToast === 'function') showToast('行情刷新失败，保留原数据');
+  } finally {
+    if (requestId === ipoHistoryRequestId && refreshButton) refreshButton.disabled = false;
   }
 }
 
@@ -750,7 +781,7 @@ function ipoRenderHistory(type, rows) {
         ipoHkListingCell(it), ipoHkIssuePriceCell(it),
         ipoPending(it.lot_size_shares, ipoIntegerCell), ipoPending(it.lot_amount_hkd, function (v) { return ipoNumFixed(v, 2); }),
         ipoPending(it.application_fee_hkd, function (v) { return ipoNumFixed(v, 2); }),
-        ipoPctCell(it.pred_return), ipoPctCell(it.actual_return), ipoPending(it.lot_profit, function (v) { return ipoNumFixed(v, 2); }),
+        ipoPctCell(it.pred_return), it.first_day_basis === 'intraday' ? ipoPctCell(it.first_day_return) + ipoFirstDayQuoteLabel(it) : ipoPctCell(it.actual_return), ipoFirstDayProfitCell(it, it.lot_profit),
         ipoHkFactStatusCell(it)
       ];
     });
@@ -796,7 +827,7 @@ function ipoRenderHistory(type, rows) {
       ipoPending(it.circulation_mv, function (v) { return ipoNumFixed(v, 2); }),
       ipoStockPredictionCell(it),
       ipoFirstDayStatus(it),
-      ipoFmt(profit)
+      ipoFirstDayProfitCell(it, profit)
     ];
   });
   return ipoTable(headers, r3, { scroll: true });

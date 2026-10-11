@@ -114,7 +114,8 @@ function setup() {
   assert.ok(!s.requests.slice(before).some(r => r.url.includes('history?type=stock')), '重新进入不能固定加载A股');
   assert.equal(s.document.getElementById('ipo-history').textContent, 'hk_stock:00001.HK');
   assert.equal(s.document.getElementById('ipo-calendar').textContent, '00001.HK');
-  assert.ok(s.requests.every(r => !/force|refresh/.test(r.url)), '切换只读本地接口');
+  assert.ok(s.requests.every(r => !/force/.test(r.url)), '打开历史只使用受控缓存采集，不强制刷新');
+  assert.ok(s.requests.filter(r => !r.url.includes('history?type=hk_stock')).every(r => !/refresh/.test(r.url)), '日历及日报不触发行情采集');
   s.close(); cases++;
   console.log(`OK ipo-market-selection: ${cases} 个切换/重新进入场景通过`);
 })().catch(error => { console.error(error); process.exitCode = 1; });

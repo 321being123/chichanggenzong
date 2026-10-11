@@ -256,7 +256,8 @@ function renderAll() {
   try { renderPositionsTable('topn-table'); } catch(e) {}
   try { renderPositionsTable('positions-table'); } catch(e) {}
   try { renderTrades(); } catch(e) {}
-  try { renderReturnsStats(); } catch(e) {}
+  // 总览收益数字与曲线一起更新，首次进入和账户数据到齐不依赖周期按钮补绘。
+  try { renderReturnsChart(); } catch(e) {}
   try { renderEarnings(); } catch(e) {}
   // 仓位对比控件（公开状态 + 对比按钮）：账户切换后同步刷新
   try { if (window.PositionComparison && typeof window.PositionComparison.initPositionControls === 'function') window.PositionComparison.initPositionControls(); } catch(e) {}

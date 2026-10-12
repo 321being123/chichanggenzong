@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 import fitz
+from convertibleBondDocument import read_document
 
 
 DATE_PATTERN = r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
@@ -18,17 +19,9 @@ def format_date(groups):
     return f"{int(groups[0]):04d}-{int(groups[1]):02d}-{int(groups[2]):02d}"
 
 
-def extract_history(url, initial_price=None, bond_name=None):
-    if not (url.startswith("https://static.cninfo.com.cn/") or url.startswith("https://www.sse.com.cn/")
-            or url.startswith("https://big5.sse.com.cn/") or url.startswith("https://disc.static.szse.cn/")):
-        raise ValueError("仅允许读取巨潮资讯或交易所官方 PDF")
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with guarded_urlopen(request, timeout=30, source=None, dataset=f"bond-price-history-pdf:{url}") as response:
-        data = response.read(25 * 1024 * 1024 + 1)
-    if len(data) > 25 * 1024 * 1024:
-        raise ValueError("定期报告 PDF 超过 25MB")
-    document = fitz.open(stream=data, filetype="pdf")
-    text = "\n".join(page.get_text() for page in document)
+def extract_history(url, initial_price=None, bond_name=None, security_code=None, issuer_name=None):
+    pages, evidence = read_document(url, security_code, bond_name, issuer_name)
+    text = "\n".join(pages)
     starts = [text.find("转股价格历次调整情况"), text.find("转股价格历次调整、修正情况")]
     start = max(starts)
     compact_text = re.sub(r"\s+", "", text)
@@ -89,7 +82,7 @@ def extract_history(url, initial_price=None, bond_name=None):
                 "source_url": url,
             })
             previous = after
-    return {"source_url": url, "price_changes": rows, "rating_outlook": rating_outlook}
+    return {**evidence, "price_changes": rows, "rating_outlook": rating_outlook}
 
 
 def main():
@@ -97,8 +90,10 @@ def main():
     parser.add_argument("url")
     parser.add_argument("--initial-price", type=float, default=None)
     parser.add_argument("--bond-name", default=None)
+    parser.add_argument("--security-code", default=None)
+    parser.add_argument("--issuer-name", default=None)
     args = parser.parse_args()
-    print(json.dumps(extract_history(args.url, args.initial_price, args.bond_name), ensure_ascii=False))
+    print(json.dumps(extract_history(args.url, args.initial_price, args.bond_name, args.security_code, args.issuer_name), ensure_ascii=False))
 
 
 if __name__ == "__main__":

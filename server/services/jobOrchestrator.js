@@ -672,6 +672,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
       ? { targetCodes: claimed.request_payload.targetCodes } : {}),
     ...(claimed.job_code === 'ipo_history_sync' && Array.isArray(claimed.request_payload && claimed.request_payload.targetFields)
       ? { targetFields: claimed.request_payload.targetFields } : {}),
+    ...(claimed.job_code==='convertible_bond_announcement_history_sync'&&['analysis_inputs','analysis_inputs_targeted'].includes(claimed.request_payload?.mode)&&Array.isArray(claimed.request_payload.targetCodes)
+      ? {targetCodes:claimed.request_payload.targetCodes}:{}),
   };
   const freshnessGateEnabled = claimed.request_payload
     && Object.prototype.hasOwnProperty.call(claimed.request_payload, 'freshnessGate')
@@ -679,7 +681,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
   try {
     runId = await startManagedRun(claimed, reason);
-    if (freshnessGateEnabled && !runContext.force && !['prediction_ready', 'enrichment', 'targeted'].includes(runContext.mode)) {
+    if (freshnessGateEnabled && !runContext.force && !['prediction_ready', 'enrichment', 'targeted','analysis_inputs','analysis_inputs_targeted'].includes(runContext.mode)) {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
       const partitionDate = expectedDataDate(claimed.job_code, claimed.business_date);
       const datasetsPublished = !definition.strictDatasetPublication

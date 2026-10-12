@@ -33,6 +33,11 @@ const DATASET_PARTITION_REGISTRY = Object.freeze({
   market_volatility: { scopeKey: 'GLOBAL', table: 'market.market_valuation_daily', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(trade_date)::text AS data_as_of' },
   ipo_history: { scopeKey: 'GLOBAL', table: 'public.ipo_history', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: `SELECT MAX(CASE WHEN updated_at::text ~ '^\\d{4}-\\d{2}-\\d{2}' THEN updated_at::date END) AS data_as_of` },
   stock_analysis_snapshot: { scopeKey: 'CN', table: 'analytics.analysis_snapshots', whereSql: "WHERE snapshot_type='stock_analysis'", countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(as_of_date)::text AS data_as_of' },
+  bond_analysis_snapshot: {scopeKey:'CN',table:'analytics.analysis_snapshots',whereSql:"WHERE snapshot_type='convertible_bond_analysis' AND formula_bundle_version='4'",countSql:'SELECT COUNT(*)::int AS row_count',dataAsOfSql:'SELECT MAX(as_of_date)::text AS data_as_of',
+    partitionedCountSql:"SELECT COUNT(DISTINCT instrument_id)::int AS row_count FROM analytics.analysis_snapshots WHERE snapshot_type='convertible_bond_analysis' AND formula_bundle_version='4' AND as_of_date=$1::date",
+    partitionedDataAsOfSql:"SELECT MAX(as_of_date)::text AS data_as_of FROM analytics.analysis_snapshots WHERE snapshot_type='convertible_bond_analysis' AND formula_bundle_version='4' AND as_of_date=$1::date"},
+  bond_analysis_inputs: {scopeKey:'CN',snapshotSql:`SELECT (cursor_payload->>'count')::int AS row_count,last_success_date::text AS data_as_of
+    FROM ops.sync_cursors WHERE scope_key='convertible_bond_analysis' AND dataset_code='inputs' AND last_error=''`},
   bond_safety_snapshot: { scopeKey: 'CN', snapshotSql: `SELECT row_count,COALESCE(source_updated_at,refreshed_at)::date::text AS data_as_of
     FROM bond_safety_snapshots WHERE publication_status='published' ORDER BY id DESC LIMIT 1`, table: 'bond_safety_snapshots' },
   hk_trade_rules: { scopeKey: 'HK', table: 'market.instrument_trade_rules', countSql: 'SELECT COUNT(*)::int AS row_count', dataAsOfSql: 'SELECT MAX(valid_from)::text AS data_as_of' },

@@ -141,6 +141,7 @@ async function runRefreshChain(reason, businessDate = null) {
   let redemptionResult = null;
   let revisionResult = null;
   let motiveResult = null;
+  let analysisResult = null;
   try {
     redemptionResult = await calculateConvertibleBondCallStatus(completeness.expected);
     console.log(`[bond-redemption] 强赎进度完成：${redemptionResult.count} 只，完整 ${redemptionResult.complete} 只`);
@@ -174,16 +175,22 @@ async function runRefreshChain(reason, businessDate = null) {
 
   try {
     const result = await runDailyValuation(reason, expectedDate);
+    analysisResult = await require('../services/convertibleBondAnalysisSnapshots').refreshAllConvertibleBondAnalysis(expectedDate);
     if (result.skipped) console.log('[bond-valuation] 已有刷新任务运行，本次跳过');
     else console.log('[bond-valuation] 每日估值完成:', result.detail);
-    return { ok: true, status: 'succeeded', dataAsOf: completeness.expected, externalCalls: 0,
+    return { ok: analysisResult.ok, status: analysisResult.ok ? 'succeeded' : 'partial', dataAsOf: completeness.expected, externalCalls: 0,
+      datasetDiagnostics:{bond_analysis_snapshot:{partition_row_count:analysisResult.count,expected_count:analysisResult.expected,
+        quality_status:analysisResult.ok?'passed':'failed',query_status:analysisResult.ok?'success':'failed',
+        input_quality:Object.keys(analysisResult.missingFields).length?'partial':'passed'}},
+      ...(analysisResult.ok ? {} : {failedDatasets:['bond_analysis_snapshot'],error:analysisResult.error,errorType:'data_quality'}),
       datasets: [
         { code: 'convertible_bond_revision', status: revisionResult ? 'succeeded' : 'stale', dataAsOf: revisionResult ? completeness.expected : null },
         { code: 'convertible_bond_revision_motive', status: motiveResult ? 'succeeded' : 'stale', dataAsOf: motiveResult ? completeness.expected : null },
         { code: 'convertible_bond_redemption', status: redemptionResult ? 'succeeded' : 'stale', dataAsOf: redemptionResult ? completeness.expected : null },
         { code: 'convertible_bond_list_metrics', status: listResult ? 'succeeded' : 'stale', dataAsOf: listResult ? completeness.expected : null },
         { code: 'convertible_bond_valuation', status: 'succeeded', dataAsOf: completeness.expected },
-      ], result, listResult };
+        { code: 'bond_analysis_snapshot', status: analysisResult.status, dataAsOf: expectedDate, rowCount:analysisResult.count },
+      ], result, listResult,analysisResult };
   } catch (error) {
     console.error('[bond-valuation] 每日估值失败:', String(error.detail || error.message));
     return { ok: false, error: String(error.detail || error.message) };

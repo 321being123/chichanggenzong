@@ -2127,6 +2127,70 @@
       ],
       "owner": "持仓现金收益",
       "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-001",
+      "title": "全部上市转债详细快照按目标日从标准层计算，失败与空集合不得冒充完成",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisSnapshots.js",
+        "symbol": "refreshAllConvertibleBondAnalysis"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-ANALYSIS-001"
+        }
+      ],
+      "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-002",
+      "title": "公告详细资料使用原Runner逐文档续跑、定向范围不发布全量分区",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "syncConvertibleBondAnalysisInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-ANALYSIS-002"
+        }
+      ],
+      "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-003",
+      "title": "公开可转债详细分析只读数据库并保持股息单位与目标日期",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysis.js",
+        "symbol": "buildConvertibleBondAnalysisFromDatabase"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-database.test.js",
+          "pattern": "BOND-ANALYSIS-003"
+        }
+      ],
+      "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-004",
+      "title": "官方PDF复用持久化缓存、证券隔离及完整解析，扫描件不冒充成功",
+      "implementation": {
+        "file": "server/scripts/convertibleBondDocument.py",
+        "symbol": "read_document"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-ANALYSIS-004"
+        }
+      ],
+      "owner": "可转债分析",
+      "status": "verified"
     }
   ]
 }

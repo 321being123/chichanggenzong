@@ -25,6 +25,8 @@ function requestPage(route) {
     assert.strictEqual(response.contentType, 'html', `${route} 应返回 HTML`);
     assert(!response.body.includes('__APP_VERSION__'), `${route} 不得把版本占位符发给浏览器`);
     assert(response.body.includes(`?v=${appVersion}`), `${route} 资源必须自动跟随 appVersion`);
+    if(route==='/'||route==='/index.html')assert(response.body.includes(`js/bond-analysis.js?v=${appVersion}`),
+      '可转债详情脚本必须随应用版本失效，不能沿用历史固定缓存键');
   }
   console.log('versioned static pages tests passed');
 })().catch(error => {

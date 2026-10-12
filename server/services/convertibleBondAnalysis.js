@@ -42,7 +42,7 @@ const DAILY_FIELDS = 'ts_code,trade_date,pre_close,open,high,low,close,change,pc
 // 主采集一次拉回完整股票主档，既用于筛选转债正股，也用于建立股票标准层。
 // 不增加接口次数，只扩展同一 stock_basic 请求的字段。
 const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,list_date,list_status';
-const FORMULA_VERSION = '3';
+const FORMULA_VERSION = '4';
 const CN_OFFSET_MS = 8 * 3600 * 1000;
 const ANNOUNCEMENT_OVERLAP_DAYS = 3;
 // 允许按 TTL 跳过上游的静态/低频数据组。行情与公告不在此列：
@@ -665,7 +665,7 @@ async function saveProfile(client, profile, sources, subscriptionDate = null) {
       add_rate=EXCLUDED.add_rate,pay_per_year=EXCLUDED.pay_per_year,rate_type=EXCLUDED.rate_type,rate_clause=EXCLUDED.rate_clause,
       maturity_call_price=EXCLUDED.maturity_call_price,guarantor=EXCLUDED.guarantor,guarantee_type=EXCLUDED.guarantee_type,
       issue_rating=EXCLUDED.issue_rating,newest_rating=EXCLUDED.newest_rating,rating_company=EXCLUDED.rating_company,
-      raw_payload=EXCLUDED.raw_payload || jsonb_build_object(
+      raw_payload=fundamental.convertible_bond_profiles.raw_payload || EXCLUDED.raw_payload || jsonb_build_object(
         'prospectus_source_url',COALESCE(fundamental.convertible_bond_profiles.raw_payload->>'prospectus_source_url',''),
         'prospectus_source_title',COALESCE(fundamental.convertible_bond_profiles.raw_payload->>'prospectus_source_title',''),
         'prospectus_parser_version',COALESCE(fundamental.convertible_bond_profiles.raw_payload->>'prospectus_parser_version','')
@@ -1023,7 +1023,7 @@ async function saveRatingOutlooks(client, instrumentId, rows) {
 }
 
 async function saveReportFundHolding(client, instrumentId, holding, sourceId) {
-  if (!holding || !holding.report_date || !holding.fund_count) return;
+  if (!holding || !holding.report_date || holding.fund_count == null) return;
   await client.query(
     `INSERT INTO fundamental.convertible_bond_fund_holdings
      (instrument_id,report_date,fund_count,holding_quantity,holding_market_value,remain_size_ratio,source_id,raw_payload)
@@ -1038,7 +1038,8 @@ async function saveReportFundHolding(client, instrumentId, holding, sourceId) {
 
 function latestProspectus(events) {
   return (events || [])
-    .filter(event => /可转换公司债券募集说明书$/.test(String(event.title || '')) && event.url && !/摘要/.test(event.title))
+    .filter(event => /(?:可转换公司债券|可转债).{0,20}募集说明书/.test(String(event.title || '')) && event.url
+      && !/摘要|申报稿|上会稿|反馈|补充法律意见|更正公告|提示性公告/.test(event.title))
     .sort((a, b) => String(b.event_date).localeCompare(String(a.event_date)))[0] || null;
 }
 
@@ -2487,12 +2488,20 @@ async function loadSafety(code) {
   return item ? Object.assign({ source_updated_at: snapshot.source_updated_at }, item) : null;
 }
 
-async function loadExtraData(instrumentId) {
-  const [ratings, history, coupons, holdings] = await Promise.all([
-    pool.query('SELECT rating_date,announced_at,rating_company,rating,rating_outlook FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date DESC', [instrumentId]),
-    pool.query("SELECT * FROM analytics.convertible_bond_announcement_history WHERE instrument_id=$1 AND fact_type IN ('price_change','no_revision') ORDER BY effective_date DESC NULLS LAST,announced_at DESC", [instrumentId]),
-    pool.query('SELECT interest_year,coupon_rate,pay_date,pre_tax_interest,after_tax_interest FROM fundamental.convertible_bond_coupon_schedule WHERE instrument_id=$1 ORDER BY interest_year', [instrumentId]),
-    pool.query('SELECT report_date,fund_count,holding_quantity,holding_market_value,remain_size_ratio FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1 ORDER BY report_date DESC LIMIT 1', [instrumentId]),
+async function loadExtraData(instrumentId, targetDate = isoDate(new Date())) {
+  const [ratings, history, coupons, holdings,standardChanges] = await Promise.all([
+    pool.query(`SELECT rating_date::text,announced_at::text,rating_company,rating,rating_outlook,
+      (NULLIF(raw_payload->>'outlook_source_url','') IS NULL AND NULLIF(raw_payload->>'outlook_inferred_from_date','') IS NOT NULL) AS outlook_estimated
+      FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_date<=$2::date ORDER BY rating_date DESC`, [instrumentId,targetDate]),
+    pool.query("SELECT * FROM analytics.convertible_bond_announcement_history WHERE instrument_id=$1 AND announced_at<=$2::date AND fact_type IN ('price_change','no_revision') ORDER BY effective_date DESC NULLS LAST,announced_at DESC", [instrumentId,targetDate]),
+    pool.query('SELECT interest_year,coupon_rate,pay_date::text,pre_tax_interest,after_tax_interest FROM fundamental.convertible_bond_coupon_schedule WHERE instrument_id=$1 ORDER BY interest_year', [instrumentId]),
+    pool.query(`SELECT report_date::text,fund_count,holding_quantity,holding_market_value,remain_size_ratio
+      FROM fundamental.convertible_bond_fund_holdings WHERE instrument_id=$1 AND report_date<=$2::date
+      AND report_date>=(SELECT value_date FROM fundamental.convertible_bond_profiles WHERE instrument_id=$1)
+      ORDER BY report_date DESC LIMIT 1`, [instrumentId,targetDate]),
+    pool.query(`SELECT publish_date,change_date,price_before,price_after,reason,raw_payload->>'source_url' AS source_url
+      FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1 AND change_date<=$2::date AND publish_date<=$2::date
+      ORDER BY change_date DESC`,[instrumentId,targetDate]),
   ]);
   const changes = history.rows.filter(row => row.fact_type === 'price_change').map(row => ({
     publish_date: row.announced_at, change_date: row.effective_date, price_before: row.price_before,
@@ -2500,10 +2509,10 @@ async function loadExtraData(instrumentId) {
     revision_floor_price: row.raw_payload && row.raw_payload.revision_floor_price,
   }));
   const noRevision = history.rows.filter(row => row.fact_type === 'no_revision').map(row => ({
-    announced_at: row.announced_at, valid_until: row.valid_until, next_eligible_date: row.next_eligible_date,
+    announced_at: isoDate(row.announced_at), valid_until: isoDate(row.valid_until), next_eligible_date: isoDate(row.next_eligible_date),
     summary: row.summary, source_url: row.source_url,
   }));
-  return { ratings: ratings.rows, price_changes: normalizePriceChanges(changes), no_revision_history: noRevision, coupons: coupons.rows, fund_holding: holdings.rows[0] || null };
+  return { ratings: ratings.rows, price_changes: normalizePriceChanges([...standardChanges.rows,...changes]), no_revision_history: noRevision, coupons: coupons.rows, fund_holding: holdings.rows[0] || null };
 }
 
 async function latestFinancial(stockTsCode) {
@@ -2860,11 +2869,11 @@ async function syncConvertibleBondAnnouncementHistories({ tsCodes = [], fromDate
   }
   const limited = configuredLimit !== null;
   const liquidityIncomplete = mode === 'calendar' && listingLiquidity && listingLiquidity.ok === false;
-  const publishDatasetCodes = mode === 'calendar' ? null : [
-    'bond_announcement_facts', 'bond_issuance_events', 'bond_redemption_events',
-  ];
+  const publishDatasetCodes = ['bond_announcement_facts','bond_issuance_events','bond_redemption_events',
+    ...(mode==='calendar'?['bond_listing_liquidity']:[])];
   return {
     ok: !limited && !liquidityIncomplete,
+    stageComplete:!limited&&!liquidityIncomplete&&(!redemption||redemption.ok!==false),
     status: limited ? 'partial' : liquidityIncomplete ? 'partial' : 'succeeded',
     limit: configuredLimit, continuationRequired: limited,
     publishDatasetCodes,
@@ -3264,7 +3273,7 @@ async function loadCachedStockValuations(stockCode, startDate) {
   if (!stockCode) return [];
   const { rows } = await pool.query(
     `SELECT DISTINCT ON (v.trade_date) v.trade_date,v.pe_static AS pe,v.pe_ttm,v.pb,
-            v.dividend_yield_ttm AS dv_ttm,v.total_market_cap / 10000 AS total_mv,
+            v.dividend_yield_ttm * 100 AS dv_ttm,v.total_market_cap / 10000 AS total_mv,
             v.circulating_market_cap / 10000 AS circ_mv
        FROM market.daily_valuations v
        JOIN core.instruments i ON i.instrument_id=v.instrument_id
@@ -3352,214 +3361,76 @@ async function latestRatingDate(tsCode) {
   return rows[0] && rows[0].rating_date || null;
 }
 
+// Detailed analysis uses the same calculation for manual refresh and the existing daily chain.
+// This path reads standard facts only; missing source facts belong to the announcement/input Runner.
+async function buildConvertibleBondAnalysisFromDatabase(tsCode, requestedDate, options = {}) {
+  const { rows } = await pool.query(
+    `SELECT p.*,i.canonical_code,s.canonical_code AS stock_code,s.name AS stock_name,
+            i.delist_date::text AS instrument_delist_date
+       FROM fundamental.convertible_bond_profiles p
+       JOIN core.instruments i USING(instrument_id)
+       LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+      WHERE i.canonical_code=$1`, [tsCode]);
+  const row = rows[0];
+  if (!row || !row.stock_code) throw new Error('缺少可转债或正股标准档案');
+  const { rows: dates } = await pool.query(
+    `SELECT MAX(trade_date)::text AS date FROM market.convertible_bond_daily_metrics WHERE instrument_id=$1`,
+    [row.instrument_id]);
+  const targetDate = isoDate(requestedDate) || dates[0]?.date;
+  if (!targetDate || dates[0]?.date !== targetDate) throw new Error('目标交易日缺少可转债行情，保留上一份分析');
+  const start = isoDate(addDays(new Date(`${targetDate}T00:00:00+08:00`), -500));
+  const cached = await loadCachedAnalysisHistory(tsCode, start);
+  const stockCode = row.stock_code;
+  const [valuations, financialRows, calendar, prospectusCache, priceChangeCache, noRevisionCache] = await Promise.all([
+    loadCachedStockValuations(stockCode, start),
+    pool.query(`SELECT r.report_kind,r.period_end::text,r.raw_payload FROM fundamental.financial_reports r
+      JOIN core.company_instruments ci ON ci.company_id=r.company_id
+      WHERE ci.instrument_id=$1 AND r.announced_at<=$2::date AND r.period_end<=$2::date
+      ORDER BY r.period_end DESC,r.announced_at DESC`, [row.stock_instrument_id,targetDate]),
+    pool.query(`SELECT trade_date::text AS cal_date,CASE WHEN is_open THEN '1' ELSE '0' END AS is_open FROM market.trade_calendar
+      WHERE exchange='SSE' AND trade_date>=$1::date ORDER BY trade_date`, [targetDate]),
+    loadProspectusCache(tsCode),loadPriceChangeCache(tsCode),loadNoRevisionCache(tsCode),
+  ]);
+  const profile = { ...(row.raw_payload || {}), ts_code:tsCode,stk_code:stockCode,
+    stk_short_name:row.stock_name,bond_short_name:row.bond_short_name,
+    conv_price:row.current_conv_price,remain_size:row.remain_size,issue_size:row.issue_size,rating_comp:row.rating_company,
+    fundraising_purpose:row.fundraising_purpose,prospectus_source_url:prospectusCache.source_url,
+    delist_date:row.instrument_delist_date,source_updated_at:row.source_updated_at,updated_at:row.updated_at };
+  for (const key of ['value_date','maturity_date','conv_start_date','conv_end_date','rate_clause','coupon_rate',
+    'maturity_call_price','issue_rating','newest_rating','guarantor','guarantee_type']) {
+    if (row[key] != null) profile[key] = key.endsWith('_date') ? isoDate(row[key]) : row[key];
+  }
+  const bondDaily = cached.bondDaily.filter(bar => isoDate(bar.trade_date)<=targetDate);
+  const stockDaily = cached.stockDaily.filter(bar => isoDate(bar.trade_date)<=targetDate);
+  if (!stockDaily.length) throw new Error('缺少正股标准行情，保留上一份分析');
+  const marketEvidence=await require('../jobs/stockAnalysisRefresh').verifiedStockDataDate(stockCode,isoDate(stockDaily[0].trade_date),targetDate);
+  if(marketEvidence.dataAsOf!==targetDate)throw new Error('目标日正股行情缺失且无完整停牌证据');
+  const reports = kind => financialRows.rows.filter(r=>r.report_kind===kind).map(r=>({...r.raw_payload,end_date:r.period_end}));
+  const balances = reports('balance');
+  const putPeriod = currentPutPeriod(profile.maturity_date,profile.put_clause,targetDate);
+  const { rows: putEvents } = await pool.query(`SELECT e.event_date::text,e.title,e.details FROM event.company_events e
+    JOIN core.company_instruments ci ON ci.company_id=e.company_id
+    WHERE ci.instrument_id=$1 AND e.event_date<=$2::date AND e.title LIKE '%回售%'`, [row.stock_instrument_id,targetDate]);
+  const putOpportunity = putOpportunityState(putEvents.map(e=>({...e.details,title:e.title,event_date:e.event_date})),putPeriod.period_start,putPeriod.period_end);
+  return assembleConvertibleBondAnalysis({ tsCode,stockCode,profile,ids:{bondId:row.instrument_id,stockId:row.stock_instrument_id},
+    bondDaily,stockDaily,valuations:valuations.filter(v=>isoDate(v.trade_date)<=targetDate),balances,
+    incomeRows:reports('income'),dividendRows:[],liveQuotes:new Map(),putPeriod,putOpportunity,
+    futureCalendarData:calendar.rows,prospectusCache,priceChangeDetails:priceChangeCache,
+    priceChangeCache,reportPriceHistory:null,targetDate,persist:options.persist!==false });
+}
+
 async function refreshConvertibleBondAnalysis(value, reason = 'manual', options = {}) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) throw new Error('请输入有效的可转债代码');
-  const end = tsDateStr(new Date());
-  const startDate = addDays(new Date(), -500);
-  const start = tsDateStr(startDate);
-  const cachedHistory = await loadCachedAnalysisHistory(tsCode, isoDate(startDate));
-  const bondStart = incrementalStart(cachedHistory.bondDaily, start);
-  // 按数据组门控：TTL 内且上次成功的低频数据组不再重复请求上游，options.force 可强制全拉
-  const bondScope = datasetScope('convertible_bond', tsCode);
-  const cursors = await getDatasetCursors(bondScope, GATED_BOND_DATASETS);
-  const forceAll = options.force === true;
-  const skippedDatasets = [];
-  const gate = (code, run, fallback) => {
-    if (isDatasetFresh(cursors.get(code), code, { force: forceAll })) {
-      skippedDatasets.push(code);
-      return Promise.resolve(fallback);
-    }
-    return run();
-  };
-  const enable5000 = process.env.TUSHARE_ENABLE_5000_ENDPOINTS === '1';
-  const couponPromise = enable5000
-    ? gate('cb_rate', () => tushareQuery('cb_rate', { ts_code: tsCode }, 'ts_code,rate_freq,rate_start_date,rate_end_date,coupon_rate'), null)
-    : Promise.resolve(null);
-  const holderPromise = enable5000
-    ? gate('top10_cb_holders', () => tushareQuery('top10_cb_holders', { ts_code: tsCode }, 'ts_code,end_date,holder_rank,holder_name,hold_amount,hold_ratio'), null)
-    : Promise.resolve(null);
-  // 主档只在数据库已有完整 raw_payload 时才允许跳过，避免主档缺失导致分析中断
-  const canReuseProfile = Boolean(cachedHistory.profile && cachedHistory.profile.stk_code);
-  const fetchProfile = () => tushareQuery('cb_basic', { ts_code: tsCode }, PROFILE_FIELDS);
-  const [profileData, bondDailyData, ratingData, couponData, holderData] = await Promise.all([
-    canReuseProfile ? gate('cb_basic', fetchProfile, null) : fetchProfile(),
-    tushareQuery('cb_daily', { ts_code: tsCode, start_date: bondStart, end_date: end }, DAILY_FIELDS),
-    // cb_rating 官方只支持 ts_code，不支持日期过滤：拉该只全量后在内存里只保留本地水位往前 30 天重叠窗口，
-    // 由 saveRatingHistory 按唯一键幂等 upsert，只写新增/修订行。
-    gate('cb_rating', async () => {
-      const rows = tsRows(await tushareQuery('cb_rating', { ts_code: tsCode }, 'ts_code,ann_date,rating_date,rating_com_name,rating_way,rating_type,rating,rating_outlook'));
-      if (forceAll) return rows;
-      const wm = await latestRatingDate(tsCode);
-      if (!wm) return rows;
-      const floor = tsDateStr(addDays(new Date(`${isoDate(wm)}T00:00:00+08:00`), -30));
-      return rows.filter(r => (r.rating_date || '').replace(/-/g, '') >= floor);
-    }, null),
-    couponPromise,
-    holderPromise,
-  ]);
-  const profile = tsRows(profileData)[0] || cachedHistory.profile;
-  if (!profile) throw new Error('未找到该可转债，或Tushare数据源暂不可用');
-  const freshBondDaily = tsRows(bondDailyData);
-  const bondDaily = mergeDailyRows(cachedHistory.bondDaily, freshBondDaily);
-  if (!bondDaily.length) throw new Error('该可转债暂无行情数据');
-  const stockCode = profile.stk_code;
-  const cachedStockDaily = cachedHistory.stockCode === stockCode
-    ? cachedHistory.stockDaily
-    : await loadCachedStockBars(stockCode, isoDate(startDate));
-  const cachedValuations = await loadCachedStockValuations(stockCode, isoDate(startDate));
-  const stockStart = incrementalStart(cachedStockDaily, start);
-  const valuationStart = incrementalStart(cachedValuations, start);
-  // cb_basic 的 list_date 对部分已上市转债为空；此时必须回退到发行生效日，
-  // 否则公告检索只覆盖最近窗口，历史转股价调整会永久缺失。
-  const announcementStart = String(profile.list_date || profile.value_date || '').replace(/-/g,'') || start;
-  // P1 整改：财务报表与公告增量——日常刷新只补本地最新水位往前的重叠窗口；force 全量补历史时回退上市日
-  const financialWaterMark = forceAll ? null : await latestStockFinancialEnd(stockCode);
-  const financialWindowStart = financialWaterMark
-    ? tsDateStr(addDays(new Date(`${isoDate(financialWaterMark)}T00:00:00+08:00`), -120))
-    : announcementStart;
-  const announcementWaterMark = forceAll ? null : await latestAnnouncementBaseline(tsCode);
-  const announcementWindowStart = announcementWaterMark
-    ? tsDateStr(addDays(new Date(`${isoDate(announcementWaterMark)}T00:00:00+08:00`), -30))
-    : announcementStart;
-  const prospectusStartDate = addYears(new Date(`${isoDate(profile.list_date) || isoDate(profile.value_date) || isoDate(start)}T00:00:00+08:00`), -1);
-  const prospectusStart = tsDateStr(prospectusStartDate);
-  const futureCalendarEnd = addDays(new Date(), 400);
-  const prospectusCache = await loadProspectusCache(tsCode);
-  const noRevisionCache = await loadNoRevisionCache(tsCode);
-  const priceChangeCache = await loadPriceChangeCache(tsCode);
-  const ratingSourceCache = await loadRatingSourceCache(tsCode);
-  const needsProspectus = !prospectusCache.fundraising_purpose || Number(prospectusCache.coupon_count) === 0 || prospectusCache.parser_version !== '4';
-  // 分红明细只在估值接口缺少股息率时才参与计算，已有股息率时可按 TTL 跳过全量拉取
-  const dividendFields = 'ts_code,end_date,ann_date,div_proc,cash_div_tax,ex_date,pay_date';
-  const fetchDividend = () => tushareQuery('dividend', { ts_code: stockCode }, dividendFields);
-  const hasCachedDividendYield = finite(cachedValuations[0] && cachedValuations[0].dv_ttm) != null;
-  const [stockDailyData, valuationData, incomeData, balanceData, dividendData, liveQuotes, announcements, futureCalendarData] = await Promise.all([
-    tushareQuery('daily', { ts_code: stockCode, start_date: stockStart, end_date: end }, 'ts_code,trade_date,open,high,low,close,vol,amount'),
-    tushareQuery('daily_basic', { ts_code: stockCode, start_date: valuationStart, end_date: end }, 'ts_code,trade_date,close,pe,pe_ttm,pb,dv_ttm,total_mv,circ_mv'),
-    tushareQuery('income', { ts_code: stockCode, start_date: financialWindowStart, end_date: end }, 'ts_code,ann_date,f_ann_date,end_date,report_type,n_income_attr_p'),
-    tushareQuery('balancesheet', { ts_code: stockCode, start_date: financialWindowStart, end_date: end },
-      'ts_code,ann_date,f_ann_date,end_date,report_type,total_assets,total_liab'),
-    hasCachedDividendYield ? gate('bond_dividend', fetchDividend, null) : fetchDividend(),
-    fetchTencentQuotes([tsCode, stockCode]),
-    Promise.all([
-      fetchCninfoEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
-      fetchSseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
-      fetchSzseEvents(stockCode, announcementWindowStart, end, '回售').catch(() => []),
-      fetchCninfoEvents(stockCode, announcementWindowStart, end, '年度报告').catch(() => []),
-      ratingSourceCache.missing ? fetchCninfoEventsByYear(stockCode, announcementWindowStart, end, '评级').catch(() => []) : Promise.resolve([]),
-      fetchSseEvents(stockCode, announcementWindowStart, end, '评级').catch(() => []),
-      fetchSseLatestReport(stockCode).then(report => report ? [report] : []).catch(() => []),
-      fetchSzseLatestReport(stockCode, start, end).then(report => report ? [report] : []).catch(() => []),
-      needsProspectus ? fetchCninfoEvents(stockCode, prospectusStart, end, '募集说明书').catch(() => []) : Promise.resolve([]),
-    ]).then(groups => groups.flat()),
-    tushareQuery('trade_cal', { exchange: 'SSE', start_date: end, end_date: tsDateStr(futureCalendarEnd) }, 'cal_date,is_open').catch(() => null),
-  ]);
-  const reportHolding = holderData ? null : await extractReportFundHolding(announcements);
-  const reportPriceHistory = await extractReportPriceHistory(announcements, profile.first_conv_price, profile.bond_short_name,
-    prospectusCache.price_history_report_url, prospectusCache.price_history_parser_version);
-  const ratingOutlooks = await extractRatingOutlooks(announcements, ratingSourceCache.urls);
-  const prospectusEvents = prospectusCache.source_url ? announcements.concat([{
-    title: prospectusCache.source_title || '可转换公司债券募集说明书', url: prospectusCache.source_url,
-    event_date: profile.list_date || profile.value_date,
-  }]) : announcements;
-  const prospectusDetails = needsProspectus ? await extractProspectusDetails(prospectusEvents) : null;
-  // 公告事实由独立同步链路写入数据库；分析只读取已落库历史，禁止在个券请求中重复抓取/解析。
-  const noRevisionPeriods = noRevisionCache;
-  const priceChangeDetails = priceChangeCache;
-  const currentResetWindow = resetWindowState(noRevisionPeriods);
-  const putPeriod = currentPutPeriod(profile.maturity_date, profile.put_clause, end);
-  const putOpportunity = putOpportunityState(announcements, putPeriod.period_start, putPeriod.period_end);
-  profile.fundraising_purpose = prospectusDetails && prospectusDetails.fundraising_purpose || prospectusCache.fundraising_purpose || '';
-  profile.prospectus_source_url = prospectusDetails && prospectusDetails.source_url || prospectusCache.source_url || '';
-  const freshStockDaily = tsRows(stockDailyData);
-  const stockDaily = mergeDailyRows(cachedStockDaily, freshStockDaily);
-  const freshValuations = tsRows(valuationData);
-  const valuations = mergeDailyRows(cachedValuations, freshValuations);
-  const balances = tsRows(balanceData).filter(row => !row.report_type || String(row.report_type) === '1')
-    .sort((a,b) => String(b.end_date).localeCompare(String(a.end_date)));
-  const dividendRows = tsRows(dividendData);
+  return buildConvertibleBondAnalysisFromDatabase(tsCode, options.targetDate);
+}
+
+async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids, bondDaily, stockDaily, valuations, balances, incomeRows, dividendRows, liveQuotes, putPeriod, putOpportunity, futureCalendarData, prospectusCache, priceChangeDetails, priceChangeCache, reportPriceHistory, targetDate,persist=true }) {
   const latestBond = bondDaily[0], latestStock = stockDaily[0], valuation = valuations[0] || {};
-  const client = await pool.connect();
-  let ids;
-  let sources;
-  try {
-    await client.query('BEGIN');
-    sources = await sourceIds(client);
-    ids = await saveProfile(client, profile, sources);
-    for (const row of freshBondDaily) await saveDailyBar(client, ids.bondId, row, sources.tushare);
-    for (const row of freshStockDaily) await saveDailyBar(client, ids.stockId, row, sources.tushare);
-    for (const row of freshValuations) await saveStockValuation(client, ids.stockId, row, sources.tushare);
-    await saveRatingHistory(client, ids.bondId, tsRows(ratingData), sources.tushare);
-    await saveRatingOutlooks(client, ids.bondId, ratingOutlooks);
-    const upstreamCouponRows = couponData ? tsRows(couponData) : [];
-    if (upstreamCouponRows.length) await saveCouponSchedule(client, ids.bondId, upstreamCouponRows, sources.tushare);
-    if (holderData) {
-      const holderRows = tsRows(holderData);
-      await saveFundHolding(client, ids.bondId, holderRows, sources.tushare);
-      await saveConvertibleBondHolderPositions(client, ids.bondId, holderRows, sources.tushare);
-    }
-    if (reportHolding) await saveReportFundHolding(client, ids.bondId, reportHolding, sources.cninfo || sources.calculated);
-    const clauseCouponRows = couponRowsFromClause(profile.rate_clause);
-    const detailsToSave = prospectusDetails
-      ? Object.assign({}, prospectusDetails, {
-        coupon_rates: prospectusDetails.coupon_rates && prospectusDetails.coupon_rates.length
-          ? prospectusDetails.coupon_rates
-          : (!upstreamCouponRows.length ? clauseCouponRows : []),
-      })
-      : (!upstreamCouponRows.length && clauseCouponRows.length ? { coupon_rates: clauseCouponRows } : null);
-    if (detailsToSave) await saveProspectusDetails(client, ids.bondId, profile, detailsToSave, sources.cninfo || sources.calculated);
-    if (reportPriceHistory) {
-      if (reportPriceHistory.price_changes.length) {
-        const reportDates = reportPriceHistory.price_changes.map(row => isoDate(row.change_date)).filter(Boolean).sort();
-        const firstReportChange = reportPriceHistory.price_changes.find(row => isoDate(row.change_date) === reportDates[0]);
-        await client.query(
-          `DELETE FROM fundamental.convertible_bond_price_changes
-            WHERE instrument_id=$1 AND raw_payload->>'source_url'=$2`,
-          [ids.bondId, reportPriceHistory.source_url]
-        );
-        await client.query(
-          `DELETE FROM fundamental.convertible_bond_price_changes WHERE instrument_id=$1 AND
-            ((change_date BETWEEN $2 AND $3) OR price_before IS NULL OR price_after IS NULL OR
-             (change_date<$2 AND price_before=$4 AND price_after=$5))
-            AND COALESCE(raw_payload->>'price_change_parser_version','')<>'3'`,
-          [ids.bondId, reportDates[0], reportDates[reportDates.length - 1],
-            finite(firstReportChange.convertprice_bef), finite(firstReportChange.convertprice_aft)]
-        );
-        await savePriceChanges(client, ids.bondId, reportPriceHistory.price_changes, sources.cninfo || sources.calculated);
-      }
-      await client.query(
-        `UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload || jsonb_build_object(
-          'price_history_report_url',$2::text,'price_history_parser_version','9') WHERE instrument_id=$1`,
-        [ids.bondId, reportPriceHistory.source_url]
-      );
-    }
-    const simplifiedTerms = { call: simplifyClause('call', profile.call_clause), reset: simplifyClause('reset', profile.reset_clause), put: simplifyClause('put', profile.put_clause) };
-    const putActive = putPeriod.active && !putOpportunity.used;
-    // 强赎进度由统一强赎计算链写入 trigger_daily；此处只保存下修/回售，避免股债分析再次计算一套口径。
-    const progresses = {
-      reset: triggerProgress(stockDaily, simplifiedTerms.reset, profile.conv_price, currentResetWindow.active, currentResetWindow.eligible_from),
-      put: triggerProgress(stockDaily, simplifiedTerms.put, profile.conv_price, putActive, putPeriod.period_start),
-    };
-    for (const progress of Object.values(progresses)) progress.close_price = finite(stockDaily[0] && stockDaily[0].close);
-    await saveTriggerProgress(client, ids.bondId, latestBond.trade_date, progresses);
-    await client.query('COMMIT');
-  } catch (error) { await client.query('ROLLBACK'); throw error; }
-  finally { client.release(); }
-
-  // 事务提交后推进本次真正拉取成功的数据组水位；被 TTL 跳过的组保持原水位
-  const fetchedDatasets = [];
-  if (profileData) fetchedDatasets.push('cb_basic');
-  if (ratingData) fetchedDatasets.push('cb_rating');
-  if (couponData) fetchedDatasets.push('cb_rate');
-  if (holderData) fetchedDatasets.push('top10_cb_holders');
-  if (dividendData) fetchedDatasets.push('bond_dividend');
-  for (const dataset of fetchedDatasets) {
-    await markDatasetSuccess(bondScope, dataset, { instrumentId: ids.bondId, lastSuccessDate: isoDate(new Date()) });
-  }
-
+  const end = tsDateStr(new Date(`${targetDate}T00:00:00+08:00`));
   const code = tsCode.slice(0,6), stockShortCode = stockCode.slice(0,6);
-  const unifiedCallState = await getLatestCallState(ids.bondId);
+  const latestCallState = await getLatestCallState(ids.bondId);
+  const unifiedCallState = latestCallState && isoDate(latestCallState.trade_date) === targetDate ? latestCallState : null;
   const liveBond = liveQuotes.get(code), liveStock = liveQuotes.get(stockShortCode);
   // 同口径校验：转债与正股实时行情必须同属一个交易日，否则整组退回同一交易日收盘数据
   const quoteDay = (quote) => (quote && quote.quote_time ? String(quote.quote_time).slice(0, 10) : null);
@@ -3586,33 +3457,50 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const convPremium = bondPrice != null && convValue > 0 ? (bondPrice / convValue - 1) : (finite(latestBond.cb_over_rate) == null ? null : finite(latestBond.cb_over_rate) / 100);
   const remainSizeYuan = finite(profile.remain_size), marketCap = finite(valuation.total_mv) == null ? null : finite(valuation.total_mv) * 10000;
   const safety = await loadSafety(code);
-  const financial = await latestFinancial(stockCode);
-  const extras = await loadExtraData(ids.bondId);
+  const cachedFinancial = await latestFinancial(stockCode);
+  const financial = isoDate(cachedFinancial.ann_date)&&isoDate(cachedFinancial.ann_date)<=targetDate ? cachedFinancial : {};
+  const extras = await loadExtraData(ids.bondId,targetDate);
+  if (!extras.coupons.length) extras.coupons = couponRowsFromClause(profile.rate_clause).map((r,index)=>({
+    interest_year:index+1,coupon_rate:r.coupon_rate,pay_date:profile.value_date ? isoDate(addYears(new Date(`${isoDate(profile.value_date)}T00:00:00+08:00`),index+1)) : null,
+    pre_tax_interest:r.coupon_rate,after_tax_interest:r.coupon_rate*0.8,source:'rate_clause',
+  }));
   const termDetails = { call: simplifyClause('call', profile.call_clause), reset: simplifyClause('reset', profile.reset_clause), put: simplifyClause('put', profile.put_clause) };
   const targetPutPeriod = putOpportunity.used ? (nextPutPeriod(putPeriod, profile.maturity_date) || putPeriod) : putPeriod;
   const putStartDate = targetPutPeriod.period_start || targetPutPeriod.eligible_from;
   const putActive = targetPutPeriod.active && !putOpportunity.used;
-  const resetWindow = resetWindowState(extras.no_revision_history);
+  const {rows:revisionRows}=await pool.query(`SELECT trigger_price,matched_days,trigger_required_days,required_days,calculated_status,
+    business_status,data_status,no_revision_valid_until::text,next_eligible_date::text
+    FROM analytics.convertible_bond_revision_latest WHERE instrument_id=$1 AND trade_date=$2::date AND formula_version='reset-v2'`,[ids.bondId,targetDate]);
+  const revisionState=revisionRows[0];
+  const resetWindow = revisionState ? {active:!revisionState.next_eligible_date||revisionState.next_eligible_date<=targetDate,
+    eligible_from:revisionState.next_eligible_date,valid_until:revisionState.no_revision_valid_until} : {active:null,eligible_from:null,valid_until:null};
   const triggerState = {
     call: unifiedCallState || {},
-    reset: triggerProgress(stockDaily, termDetails.reset, convPrice, resetWindow.active, resetWindow.eligible_from),
+    reset: revisionState ? {trigger_price:finite(revisionState.trigger_price),matched_days:revisionState.matched_days,
+      required_days:revisionState.trigger_required_days||revisionState.required_days,met:revisionState.calculated_status==='met'} : {
+        trigger_price:termDetails.reset.ratio==null?null:convPrice*termDetails.reset.ratio,matched_days:null,required_days:termDetails.reset.required_days,met:false},
     put: triggerProgress(stockDaily, termDetails.put, convPrice, putActive, putStartDate),
   };
-  const futureTradeDates = futureTradeCalendar(tsRows(futureCalendarData));
-  const putTimeline = estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate, futureTradeDates, stockPrice);
+  // Detailed analysis cannot fabricate future open dates beyond the local exchange calendar.
+  const futureTradeDates = [...new Set(futureCalendarData.filter(r=>String(r.is_open)==='1')
+    .map(r=>isoDate(r.cal_date)).filter(Boolean))].sort();
+  let putTimeline = estimatePutTimeline(stockDaily, termDetails.put, convPrice, putStartDate, futureTradeDates, stockPrice,targetDate);
+  if (putTimeline?.trigger_date && putTimeline.trigger_date>isoDate(profile.maturity_date)) putTimeline = {
+    ...putTimeline,status:'not_before_maturity',trigger_date:null,payment_date:null,remaining_days:null,
+  };
   const maturityFinal = parseMoney(profile.maturity_call_price, 100 + (finite(profile.coupon_rate) || 0));
   const discountRate = creditDiscountRate(profile.newest_rating || profile.issue_rating);
   const interestYear = currentInterestYear(profile.value_date, profile.maturity_date, end);
   const marketPureBond = finite(latestBond.bond_value);
   const pureBond = marketPureBond != null ? marketPureBond
-    : presentValue(cashflowsToDate(profile, extras.coupons, profile.maturity_date, false, maturityFinal), discountRate);
+    : presentValue(cashflowsToDate(profile, extras.coupons, profile.maturity_date, false, maturityFinal, targetDate), discountRate);
   const optionValue = bondPrice != null && pureBond != null ? bondPrice - pureBond : null;
-  const maturityPreTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, false, maturityFinal));
-  const maturityAfterTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, true, maturityFinal));
+  const maturityPreTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, false, maturityFinal, targetDate));
+  const maturityAfterTax = yieldToMaturity(bondPrice, cashflowsToDate(profile, extras.coupons, profile.maturity_date, true, maturityFinal, targetDate));
   const estimatedPutDate = putTimeline && putTimeline.trigger_date;
   const estimatedPutPaymentDate = putTimeline && putTimeline.payment_date;
-  const estimatedPutYears = remainingYears(estimatedPutDate);
-  const putYieldYears = remainingYears(estimatedPutPaymentDate);
+  const estimatedPutYears = remainingYears(estimatedPutDate, new Date(`${targetDate}T00:00:00+08:00`));
+  const putYieldYears = remainingYears(estimatedPutPaymentDate, new Date(`${targetDate}T00:00:00+08:00`));
   const putFinal = accruedPutPrice(profile, extras.coupons, estimatedPutDate);
   const putPreTax = annualizedRedemptionYield(bondPrice, putFinal, putYieldYears);
   const putAfterTax = annualizedRedemptionYield(bondPrice, putFinal, putYieldYears, 0.2);
@@ -3622,9 +3510,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const latestBalance = balances[0] || {};
   const financialAssets = finite(latestBalance.total_assets) || finite(financial.total_assets);
   const financialLiabilities = finite(latestBalance.total_liab) == null ? finite(financial.total_liability) : finite(latestBalance.total_liab);
-  const theoreticalOption = blackScholesConvertible(stockPrice, convPrice, remainingYears(profile.maturity_date), volatility, riskFreeRate, dividendYield);
+  const theoreticalOption = blackScholesConvertible(stockPrice, convPrice, remainingYears(profile.maturity_date, new Date(`${targetDate}T00:00:00+08:00`)), volatility, riskFreeRate, dividendYield);
   const theoreticalValue = pureBond != null && theoreticalOption != null ? pureBond + theoreticalOption : null;
-  const calculatedPe = fallbackPe(valuation, marketCap, tsRows(incomeData));
+  const calculatedPe = fallbackPe(valuation, marketCap, incomeRows);
   const fundHolding = extras.fund_holding ? Object.assign({}, extras.fund_holding, {
     holding_ratio: remainSizeYuan > 0 && finite(extras.fund_holding.holding_quantity) != null
       ? finite(extras.fund_holding.holding_quantity) * 1000000 / remainSizeYuan : null,
@@ -3648,6 +3536,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
       call_remaining_days: unifiedCallState && unifiedCallState.remaining_days,
       call_announcement: unifiedCallState && unifiedCallState.announcement_title,
       reset_trigger_price: triggerState.reset.trigger_price,
+      reset_status:revisionState?.business_status||null,reset_data_status:revisionState?.data_status||'pending',
       put_trigger_price: triggerState.put.trigger_price,
       call_day_count: unifiedCallState && unifiedCallState.matched_days, reset_day_count: triggerState.reset.matched_days,
       put_day_count: triggerState.put.matched_days,
@@ -3658,7 +3547,7 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
       put_opportunity_announcement: putOpportunity.event ? putOpportunity.event.title : null,
       put_period_end_date: putPeriod.period_end,
       reset_active: resetWindow.active, reset_restart_date: resetWindow.eligible_from, reset_valid_until: resetWindow.valid_until,
-      maturity_date: isoDate(profile.maturity_date), remaining_years: remainingYears(profile.maturity_date), issue_size: yuanToHundredMillion(profile.issue_size),
+      maturity_date: isoDate(profile.maturity_date), remaining_years: remainingYears(profile.maturity_date, new Date(`${targetDate}T00:00:00+08:00`)), issue_size: yuanToHundredMillion(profile.issue_size),
       remain_size: yuanToHundredMillion(remainSizeYuan), bond_to_market_cap: remainSizeYuan != null && marketCap > 0 ? remainSizeYuan / marketCap : null,
       conv_start_date: isoDate(profile.conv_start_date), conv_end_date: isoDate(profile.conv_end_date),
       estimated_put_trigger_date: estimatedPutDate,
@@ -3701,8 +3590,8 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     data_status: {
       cb_price_chg: priceChangeDetails.length || (reportPriceHistory && reportPriceHistory.price_changes.length) || priceChangeCache.some(row => row.parser_version === '3')
         ? 'announcement_parsed' : 'unavailable',
-      coupon_schedule: extras.coupons.length ? 'ok' : (parseCouponRates(profile.rate_clause).length ? 'parsed_from_clause' : 'requires_5000_points'),
-      fund_holding: extras.fund_holding ? 'ok' : 'requires_5000_points_or_report_parse',
+      coupon_schedule: extras.coupons.some(r=>r.source==='rate_clause')?'parsed_from_clause':extras.coupons.length?'ok':'pending_source_document',
+      fund_holding: extras.fund_holding ? 'ok' : profile.analysis_inputs?.not_due ? 'not_due' : 'pending_official_report',
       no_revision_history: extras.no_revision_history.length ? 'ok' : 'no_matching_announcement',
       theoretical_value: theoreticalValue == null ? 'calculation_inputs_incomplete' : 'calculated',
       put_yield: putStartDate ? (putPreTax == null ? 'not_yet_calculable' : 'calculated') : 'put_period_not_found'
@@ -3711,6 +3600,25 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
   const latestPriceChange = extras.price_changes && extras.price_changes[0];
   const latestNoRevision = extras.no_revision_history && extras.no_revision_history[0];
   const latestRating = extras.ratings && extras.ratings[0];
+  const missing = [];
+  if (!analysis.basic.fundraising_purpose) missing.push('fundraising_purpose');
+  if (!fundHolding&&!profile.analysis_inputs?.not_due) missing.push('fund_holding');
+  if (!extras.coupons.length) missing.push('coupon_schedule');
+  if (!extras.ratings.length) missing.push('rating_history');
+  if (!safety) missing.push('safety');
+  if (!unifiedCallState) missing.push('call_state');
+  if(!revisionState)missing.push('reset_state');
+  if(analysis.stock.asset_liability_ratio==null)missing.push('financial_reports');
+  if(analysis.stock.pb==null||marketCap==null)missing.push('stock_valuation');
+  for (const kind of ['call','reset','put']) if (termDetails[kind].parse_status !== 'complete') missing.push(`${kind}_clause`);
+  const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([,state])=>state.status!=='complete').map(([key,state])=>({
+    key,status:state.status,reason:state.error?String(state.error).trim().split(/\r?\n/).filter(Boolean).slice(-1)[0].slice(0,250):null,
+  }));
+  if(pendingDocuments.length)missing.push('historical_documents');
+  analysis.completeness = {status:missing.length?'partial':'complete',missing,
+    inputs:profile.analysis_inputs?{status:profile.analysis_inputs.status,parser_version:profile.analysis_inputs.parserVersion,
+      covered_through:profile.analysis_inputs.coveredThrough,target_date:profile.analysis_inputs.targetDate,missing:profile.analysis_inputs.missing,not_due:profile.analysis_inputs.not_due}:null,
+    pending_documents:pendingDocuments};
   const watermark = {
     analysis_type: 'convertible_bond',
     profile: { updated_at: isoDate(profile.source_updated_at || profile.updated_at), current_conv_price: finite(profile.conv_price) },
@@ -3729,7 +3637,9 @@ async function refreshConvertibleBondAnalysis(value, reason = 'manual', options 
     financial: { report_end_date: isoDate(latestBalance.end_date || financial.report_end_date) },
     terms_hash: await buildStandardTermsHash(pool, ids.bondId, analysis.as_of),
     formula_bundle_version: FORMULA_VERSION,
+    analysis_inputs_hash:termsHash(profile.analysis_inputs||null),
   };
+  if(!persist)return analysis;
   await pool.query(
     `INSERT INTO analytics.analysis_snapshots(instrument_id,as_of_date,snapshot_type,formula_bundle_version,payload,source_watermark)
      VALUES($1,$2,'convertible_bond_analysis',$3,$4::jsonb,$5::jsonb)
@@ -3777,7 +3687,7 @@ async function getConvertibleBondSnapshot(value) {
   const { rows } = await pool.query(
     `SELECT s.payload,s.created_at,s.formula_bundle_version,s.source_watermark,
             p.current_conv_price,p.source_updated_at,p.updated_at AS profile_updated_at,
-            p.stock_instrument_id,p.newest_rating AS profile_rating,
+            p.stock_instrument_id,p.newest_rating AS profile_rating,p.raw_payload->'analysis_inputs' AS analysis_inputs,
             i.instrument_id,i.status,i.delist_date
      FROM core.instruments i JOIN analytics.analysis_snapshots s ON s.instrument_id=i.instrument_id
      LEFT JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
@@ -3850,7 +3760,8 @@ async function getConvertibleBondSnapshot(value) {
     cached_at: r.created_at,
     delist_date: effectiveDelistDate,
     is_delisted: r.status === 'delisted' || callDelisted || Boolean(delistDate && delistDate <= today),
-    needs_refresh: r.formula_bundle_version !== FORMULA_VERSION || freshness.needs_refresh,
+    needs_refresh: r.formula_bundle_version !== FORMULA_VERSION || freshness.needs_refresh
+      || r.source_watermark?.analysis_inputs_hash!==termsHash(r.analysis_inputs||null),
     formula_version: r.formula_bundle_version,
     freshness,
   });
@@ -3862,11 +3773,15 @@ module.exports = {
   cashflowsToDate, creditDiscountRate, futureTradeCalendar, annualizedRedemptionYield, accruedPutPrice,
   blackScholesConvertible, fallbackPe, currentInterestYear, presentValue, derivedDividendYield, revisionDecision, revisionEventDecision,
   mergeDailyRows, incrementalStart, ANNOUNCEMENT_OVERLAP_DAYS, announcementSourceKey,
-  relevantConvertibleBondAnnouncements, collectConvertibleBondAnnouncementMarket,
+  relevantConvertibleBondAnnouncements, collectConvertibleBondAnnouncementMarket,announcementDateWindows,
   syncConvertibleBondUniverse, syncConvertibleBondAnnouncementHistories, resolveConvertibleBondSymbolicLocks, latestTradeDates, latestFullBondDaily, activeProfile, isUnderlyingStockListed, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot, buildStandardTermsHash,
   bondGapQueueHash, buildBondGapQueue, readBondGapQueue, writeBondGapQueue, isTencentBondWindow, fetchTargetedBondDaily,
   classifyBondObjectStatus, addTradingDays,
   loadSafety, latestFinancial,
+  buildConvertibleBondAnalysisFromDatabase,
+  analysisInputTools: { sourceIds,saveProspectusDetails,saveReportFundHolding,saveRatingHistory,saveRatingOutlooks,reportPeriod,
+    savePriceChanges,saveAnnouncementHistories,saveRevisionEvents,pythonCandidates,latestProspectus,latestFullReport,
+    extractNoRevisionPeriods,extractPriceChangeDetails,loadNoRevisionCache,loadPriceChangeCache },
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,
   backfillMissingRatings, backfillBondFirstDayPerformance, backfillBondIssueResults, backfillBondListingLiquidity,

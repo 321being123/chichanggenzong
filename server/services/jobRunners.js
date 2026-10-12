@@ -154,6 +154,9 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
         businessDate && /^\d{4}-\d{2}-\d{2}$/.test(String(businessDate)) ? String(businessDate) : undefined
       );
     case 'convertible_bond_announcement_history_sync':
+      if(['analysis_inputs','analysis_inputs_targeted'].includes(context.mode)) return require('./convertibleBondAnalysisInputs').syncConvertibleBondAnalysisInputs({
+        businessDate,targetCodes:context.targetCodes||[],
+      });
       return require('../services/convertibleBondAnalysis').syncConvertibleBondAnnouncementHistories({
         tsCodes: context.tsCodes || context.bondCodes || [],
         fromDate: context.fromDate,

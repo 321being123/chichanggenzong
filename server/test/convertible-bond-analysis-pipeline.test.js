@@ -1,0 +1,68 @@
+const assert=require('assert');
+const {refreshAllConvertibleBondAnalysis}=require('../services/convertibleBondAnalysisSnapshots');
+const {syncConvertibleBondAnalysisInputs,inputDocuments}=require('../services/convertibleBondAnalysisInputs');
+const {pool}=require('../db/connection');
+
+(async()=>{
+  // BOND-ANALYSIS-001: 全量详细快照无隐性上限、日期与失败对象分别核验。
+  const rows=Array.from({length:350},(_,i)=>({ts_code:String(i),raw_payload:{}}));
+  let persisted;
+  const complete=await refreshAllConvertibleBondAnalysis('2026-09-30',{
+    loadUniverse:async()=>rows,build:async()=>({as_of:'2026-09-30',completeness:{missing:[]}}),persist:async(d,date,s)=>{persisted=s;},
+  });
+  assert.equal(complete.count,350);assert.equal(complete.ok,true);assert.deepEqual(persisted.remaining,[]);
+  const failed=await refreshAllConvertibleBondAnalysis('2026-09-30',{
+    loadUniverse:async()=>rows,build:async(code)=>({as_of:code==='349'?'2026-09-29':'2026-09-30',completeness:{missing:[]}}),persist:async(d,date,s)=>{persisted=s;},
+  });
+  assert.equal(failed.ok,false);assert.deepEqual(failed.remaining,['349']);assert.ok(persisted.nextRunAt);assert.deepEqual(persisted.pendingStages,['analysis_snapshot']);
+  const empty=await refreshAllConvertibleBondAnalysis('2026-09-30',{loadUniverse:async()=>[],persist:async()=>{}});
+  assert.equal(empty.ok,false);
+
+  // BOND-ANALYSIS-002: 资料续跑复用已解析原文，失败/空结果不得发布全量分区。
+  const bond={ts_code:'127040.SZ',stock_code:'002091.SZ',bond_short_name:'国泰转债',value_date:'2021-07-07',raw_payload:{}};
+  const events=[
+    {url:'old',title:'公司公开发行可转换公司债券募集说明书',event_date:'2021-07-03'},
+    {url:'other-issue',title:'公司公开发行可转换公司债券募集说明书',event_date:'2025-01-01'},
+    {url:'report',title:'公司2026年半年度报告',event_date:'2026-08-22'},
+    {url:'rating',title:'公司2026年评级报告',event_date:'2026-06-25'},
+  ];
+  assert.equal(inputDocuments(events,bond).find(d=>d.kind==='prospectus').event.url,'old');
+  assert.equal(inputDocuments(events,{...bond,value_date:'2026-10-10'}).some(d=>d.kind==='holders'),false,
+    '发行前报告不能把其他转债持有人表投影到新债');
+  const {requiredReportPeriod}=require('../services/convertibleBondAnalysisInputs');
+  assert.equal(requiredReportPeriod('2026-08-31'),'2025-12-31');assert.equal(requiredReportPeriod('2026-09-01'),'2026-06-30');
+  assert.equal(requiredReportPeriod('2026-04-30'),'2025-06-30');assert.equal(requiredReportPeriod('2026-05-01'),'2025-12-31');
+  let discovered=0,projected=0;
+  const deps={latestDate:async()=> '2026-09-30',loadUniverse:async()=>[bond],discover:async()=>{discovered++;},
+    readDocuments:async()=>events,project:async(kind)=>{projected++;if(kind==='holders')throw new Error('报告解析失败');return {document_hash:'hash'};},
+    save:async()=>{},persistBond:async(b,state)=>{b.raw_payload.analysis_inputs=structuredClone(state);},persist:async(d,date,s)=>{persisted=s;}};
+  const first=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},deps);
+  assert.equal(first.ok,false);assert.deepEqual(first.remaining,['127040.SZ']);assert.deepEqual(first.publishDatasets,[]);
+  assert.equal(persisted.scopeKey.startsWith('convertible_bond_analysis:targeted:'),true);
+  assert.equal(discovered,1);assert.equal(projected,4);
+  deps.project=async()=>{projected++;return {document_hash:'hash'};};
+  const second=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},deps);
+  assert.equal(second.ok,true);assert.equal(discovered,1);assert.equal(projected,5,'只续补上轮失败文档');
+  const {getJobDefinition,stageCompletionEvidence}=require('../services/jobDefinitions');
+  assert.equal(stageCompletionEvidence(getJobDefinition('convertible_bond_announcement_history_sync'),second,
+    {mode:'analysis_inputs_targeted',targetCodes:['127040.SZ']}),true);
+  const {publishJobDatasets}=require('../services/datasetPartitionRegistry');
+  assert.deepEqual(await publishJobDatasets('convertible_bond_announcement_history_sync','2026-10-12',second),[]);
+  const stateBefore=structuredClone(bond.raw_payload.analysis_inputs);
+  deps.discover=async()=>{throw new Error('官方分页不完整');};
+  const third=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},deps);
+  assert.equal(third.ok,false);assert.equal(bond.raw_payload.analysis_inputs.coveredThrough,stateBefore.coveredThrough);
+  const stopped=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',maxRuntimeMs:0},deps);
+  assert.equal(stopped.continuationRequired,true);assert.equal(stopped.remainingCount,1);assert.ok(stopped.nextRunAt);
+  assert.deepEqual(stopped.pendingStages,['analysis_inputs']);assert.equal(stopped.publishDatasets,false);
+  const noSources=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12'}, {...deps,loadUniverse:async()=>[],persist:async()=>{}});
+  assert.equal(noSources.ok,false);
+  const order=[];
+  const secondBond={...bond,ts_code:'127041.SZ',raw_payload:{}};
+  await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'}, {...deps,
+    loadUniverse:async()=>[bond,secondBond],readProgress:async()=>({attemptedCodes:['127040.SZ']}),
+    discover:async(b)=>{order.push(b.ts_code);throw new Error('文档失败');},persist:async()=>{},
+  });
+  assert.deepEqual(order,['127041.SZ','127040.SZ'],'历史失败对象不能阻挡尚未采集证券，跨日期仍保存首次遍历顺序');
+  console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
+})().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

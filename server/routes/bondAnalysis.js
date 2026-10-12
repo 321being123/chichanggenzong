@@ -5,6 +5,7 @@ const rateLimit = require('../middleware/rateLimit');
 const { pool } = require('../db/connection');
 const {
   normalizeBondCode, refreshConvertibleBondAnalysis, getConvertibleBondSnapshot,
+  buildConvertibleBondAnalysisFromDatabase,
 } = require('../services/convertibleBondAnalysis');
 const { getBondList } = require('../services/convertibleBondListService');
 
@@ -81,7 +82,11 @@ router.get('/bonds', asyncHandler(async (req, res) => {
 }));
 
 router.get('/:code', validBond, asyncHandler(async (req, res) => {
-  const snapshot = await getConvertibleBondSnapshot(req.bondTsCode);
+  let snapshot = await getConvertibleBondSnapshot(req.bondTsCode);
+  if(!snapshot||snapshot.needs_refresh) {
+    try { snapshot=await buildConvertibleBondAnalysisFromDatabase(req.bondTsCode,null,{persist:false}); }
+    catch(error) { if(!snapshot)return res.status(404).json({error:error.message}); }
+  }
   if (!snapshot) return res.status(404).json({ error: '尚未建档，请刷新该可转债' });
   res.json(snapshot);
 }));
@@ -91,8 +96,12 @@ router.post('/:code/refresh', requireLogin, rateLimit({
   getKey: req => req.session.user, message: '刷新过于频繁，请稍后再试',
 }), validBond, asyncHandler(async (req, res) => {
   try {
-    const analysis = await refreshConvertibleBondAnalysis(req.bondTsCode, `manual:${req.session.user}`);
-    res.json({ ok: true, analysis });
+    // Manual refresh shares the announcement Runner; the Web process only calculates local facts.
+    const slot = await require('../services/jobScheduleSlots').enqueueManualJob('convertible_bond_announcement_history_sync', {
+      mode:'analysis_inputs_targeted',targetCodes:[req.bondTsCode],force:true,
+    });
+    const analysis = await refreshConvertibleBondAnalysis(req.bondTsCode, `manual:${req.session.user}`, {readOnly:true});
+    res.json({ ok: true, analysis, queued:true,slotId:slot?.slot_id });
   } catch (error) {
     const snapshot = await getConvertibleBondSnapshot(req.bondTsCode);
     if (snapshot) return res.status(502).json({ error: error.message, stale: true, analysis: snapshot });

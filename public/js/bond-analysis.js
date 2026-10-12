@@ -310,6 +310,7 @@ async function bondAnalysisLoad(refresh, ctx) {
       showToast('数据待更新，请点击“刷新数据”进行更新。');
     }
     bondAnalysisRender(analysis, ctx);
+    if(payload.queued)showToast('已显示数据库中的分析结果，缺失资料已交后台补采。');
     if (window.SiteTelemetry && window.SiteTelemetry.trackDetail) window.SiteTelemetry.trackDetail({ page_key: 'bond.analysis', module: 'bond', entry: ctx || 'analysis', detail_key: securityAnalysisState.code || 'bond', properties: { detail_type: 'bond' } });
     if(!response.ok&&payload.error) showToast('更新失败，已显示上一份有效数据：'+payload.error);
   } catch(error) { stockAnalysisSetMessage(error.message||String(error),true, ctx); }
@@ -356,6 +357,7 @@ function bondAnalysisRender(d, ctx) {
   bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
   var updated=document.getElementById((ctx==='bond'?'bond-analysis-':'stock-analysis-')+'updated'); if(updated){
     var utxt='数据日期：'+(d.as_of||'--')+' · '+(q.source==='tencent'?'实时行情':'收盘数据');
+    if(d.completeness&&d.completeness.status==='partial')utxt+=' · 尚有 '+d.completeness.missing.length+' 项资料待补全';
     if(d.needs_refresh && d.freshness && d.freshness.reasons && d.freshness.reasons.length){
       utxt+=' · 数据待更新：'+d.freshness.reasons.map(function(r){return r.message;}).join('；');
     }
@@ -369,7 +371,7 @@ function bondAnalysisRender(d, ctx) {
     ['正股价',bondAnalysisNumber(q.stock_price,3,' 元')],['正股PB',bondAnalysisNumber(stockData.pb,2,' 倍')],
     ['转股价',bondAnalysisNumber(b.convert_price,3,' 元')],['转股价值',bondAnalysisNumber(b.convert_value,3,' 元')],
     ['转股溢价率',bondAnalysisPercent(b.convert_premium)],['到期时间',bondAnalysisDate(b.maturity_date)],
-    ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':'暂无数据'],['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],
+    ['基金持仓',b.fund_holding?bondAnalysisNumber(b.fund_holding.fund_count,0,'只 / ')+bondAnalysisNumber(b.fund_holding.holding_quantity,2,'万张')+'（报告期 '+bondAnalysisDate(b.fund_holding.report_date)+'）<br><small>占剩余规模：'+bondAnalysisPercent(b.fund_holding.holding_ratio)+'</small>':(d.data_status&&d.data_status.fund_holding==='not_due'?'尚未到发行后定期报告披露期':'暂无数据')],['剩余年限',bondAnalysisNumber(b.remaining_years,2,' 年')],
     ['剩余规模',bondAnalysisNumber(b.remain_size,2,' 亿元')],    ['预估回售触发日',bondAnalysisDate(b.estimated_put_trigger_date)],
     ['预估回售剩余年限',bondAnalysisNumber(b.estimated_put_remaining_years,2,' 年')],['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date):(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],
     ['回售到账税前收益率',bondAnalysisPercent(b.put_yield_pre_tax)],['回售到账税后收益率',bondAnalysisPercent(b.put_yield_after_tax)],
@@ -378,7 +380,7 @@ function bondAnalysisRender(d, ctx) {
   ]));
   bondAnalysisSet('bond-analysis-triggers',bondAnalysisTable([
     ['强赎触发价',bondAnalysisNumber(b.call_trigger_price,3,' 元')],['强赎天计数',b.call_day_count==null?'暂无数据':bondAnalysisNumber(b.call_day_count,0,' / '+b.call_required_days+' 天')+(b.call_met?'（已满足）':'')],
-    ['下修触发价',bondAnalysisNumber(b.reset_trigger_price,3,' 元')],['下修天计数',b.reset_active===false?'不下修锁定期（至 '+bondAnalysisDate(b.reset_valid_until)+'；'+bondAnalysisDate(b.reset_restart_date)+' 重新起算）':(b.reset_day_count==null?'暂无数据':bondAnalysisNumber(b.reset_day_count,0,' / '+b.reset_required_days+' 天')+(b.reset_met?'（已满足）':'（累计）'))],
+    ['下修触发价',bondAnalysisNumber(b.reset_trigger_price,3,' 元')],['下修天计数',b.reset_status==='floor_blocked'?'净资产底线限制':b.reset_active===false?'不下修锁定期（至 '+bondAnalysisDate(b.reset_valid_until)+'；'+bondAnalysisDate(b.reset_restart_date)+' 重新起算）':(b.reset_day_count==null?'暂无数据':bondAnalysisNumber(b.reset_day_count,0,' / '+b.reset_required_days+' 天')+(b.reset_met?'（已满足）':'（累计）'))],
     ['回售触发价',bondAnalysisNumber(b.put_trigger_price,3,' 元')],['回售天计数',b.put_opportunity_used?'本计息年度回售机会已使用':(b.put_active?(b.put_day_count==null?'暂无数据':bondAnalysisNumber(b.put_day_count,0,' / '+b.put_required_days+' 天')+'（已观察 '+bondAnalysisNumber(b.put_observed_days,0,' 个交易日')+'）'+(b.put_met?'（已满足）':'')):'尚未进入回售期')]
   ]));
   bondAnalysisSet('bond-analysis-terms',bondAnalysisTable([
@@ -411,7 +413,7 @@ function bondAnalysisRender(d, ctx) {
     ['正股年化波动率',bondAnalysisPercent(stockData.annualized_volatility)],['资产负债率',bondAnalysisPercent(stockData.asset_liability_ratio)],
     ['正股总市值',stockAnalysisMoney(stockData.total_market_cap)],['股息率',bondAnalysisPercent(stockData.dividend_yield)]
   ]));
-  bondAnalysisSet('bond-analysis-ratings',bondAnalysisListTable(['评级日','公告日','评级','展望','评级机构'],(d.rating_history||[]).map(function(r){return [bondAnalysisDate(r.rating_date),bondAnalysisDate(r.announced_at),bondAnalysisText(r.rating),bondAnalysisText(r.rating_outlook),bondAnalysisText(r.rating_company)];})));
+  bondAnalysisSet('bond-analysis-ratings',bondAnalysisListTable(['评级日','公告日','评级','展望','评级机构'],(d.rating_history||[]).map(function(r){return [bondAnalysisDate(r.rating_date),bondAnalysisDate(r.announced_at),bondAnalysisText(r.rating),bondAnalysisText(r.rating_outlook)+(r.outlook_estimated?'（沿用值，待核验）':''),bondAnalysisText(r.rating_company)];})));
   var status=d.data_status||{}, labels={requires_5000_points:'需5000积分权限',requires_5000_points_or_report_parse:'需5000积分权限或报告解析',parsed_from_clause:'已从利率条款解析',announcement_parsed:'历史公告解析',no_matching_announcement:'未找到匹配公告',calculated:'已计算',not_yet_calculable:'当前尚不能计算',put_period_not_found:'未识别回售期',calculation_inputs_incomplete:'计算参数不完整',permission_or_unavailable:'权限不足或数据不可用',unavailable:'暂无数据',ok:'已更新'};
   bondAnalysisSet('bond-analysis-status','数据状态：'+Object.keys(status).map(function(key){return escapeHtml(key)+'：'+escapeHtml(labels[status[key]]||status[key]);}).join('；'));
 }

@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from external_call_guard import guarded_urlopen
 
 import fitz
+from convertibleBondDocument import read_document
 
 
 CHINESE_YEARS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
@@ -113,30 +114,26 @@ def fundraising_purpose(pages):
     return None
 
 
-def extract(url):
-    if not url.startswith("https://static.cninfo.com.cn/"):
-        raise ValueError("仅允许读取巨潮资讯官方 PDF")
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with guarded_urlopen(request, timeout=30, source=None, dataset=f"bond-prospectus-pdf:{url}") as response:
-        data = response.read(30 * 1024 * 1024 + 1)
-    if len(data) > 30 * 1024 * 1024:
-        raise ValueError("PDF 文件超过 30MB")
-    document = fitz.open(stream=data, filetype="pdf")
-    pages = [clean_page(page.get_text()) for page in document]
+def extract(url, security_code=None, bond_name=None, issuer_name=None):
+    pages, evidence = read_document(url, security_code, bond_name, issuer_name)
+    pages = [clean_page(page) for page in pages]
     rates = []
     for page in pages:
         if "债券利率" in page or "票面利率" in page:
             rates = coupon_rates(page)
             if rates:
                 break
-    return {"fundraising_purpose": fundraising_purpose(pages), "coupon_rates": rates}
+    return {**evidence, "fundraising_purpose": fundraising_purpose(pages), "coupon_rates": rates}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
+    parser.add_argument("--security-code", default=None)
+    parser.add_argument("--bond-name", default=None)
+    parser.add_argument("--issuer-name", default=None)
     args = parser.parse_args()
-    print(json.dumps(extract(args.url), ensure_ascii=False))
+    print(json.dumps(extract(args.url, args.security_code, args.bond_name, args.issuer_name), ensure_ascii=False))
 
 
 if __name__ == "__main__":

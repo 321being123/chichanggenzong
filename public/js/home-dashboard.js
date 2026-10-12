@@ -19,6 +19,7 @@ function homeEventRows(calendar) {
 }
 
 function renderHomeHoldings() {
+  if (!document.getElementById('home-total-asset')) return;
   if (!username) {
     homeSetText('home-total-asset', '登录后查看');
     homeSetText('home-position-count', '个人持仓数据');
@@ -34,8 +35,6 @@ function renderHomeHoldings() {
 
 function renderHomeIpo(calendar) {
   var rows = homeEventRows(calendar);
-  homeSetText('home-ipo-count', String(rows.length));
-  homeSetText('home-ipo-next', rows.length ? '下一安排：' + rows[0].date + ' ' + rows[0].name : '暂无已排期事件');
   var el = document.getElementById('home-ipo-list');
   if (!el) return;
   if (!rows.length) { el.innerHTML = '<div class="home-overview-empty">暂无已排期的申购或上市</div>'; return; }
@@ -49,9 +48,6 @@ function renderHomeBonds(payload) {
   var counts = payload && payload.safety_counts ? payload.safety_counts : { '安全':0, '低风险':0, '中风险':0, '高风险':0 };
   if (!payload || !payload.safety_counts) rows.forEach(function(row) { if (Object.prototype.hasOwnProperty.call(counts,row.safety)) counts[row.safety]++; });
   var totalCount = payload && Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
-  homeSetText('home-bond-count', String(totalCount));
-  homeSetText('home-bond-safe', '安全 ' + counts['安全']);
-  homeSetText('home-bond-risk', '高风险 ' + counts['高风险']);
   var colors = { '安全':'#19a463', '低风险':'#7bbf45', '中风险':'#f3b33d', '高风险':'#e05a47' };
   var total = totalCount || 1, el = document.getElementById('home-bond-distribution');
   if (!el) return;
@@ -258,9 +254,9 @@ async function loadHomeMarketCycles() {
   }
 }
 
-// HOME-01：首页常用模块优先，其后展示周期、文章和次要内容（仅重排已有区块）。
-var HOME_ORDER_GUEST = ['home-section-modules', 'home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
-var HOME_ORDER_LOGGED = ['home-section-modules', 'home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
+// HOME-01：首页展示周期、文章和次要内容，游客与登录用户共用顺序。
+var HOME_ORDER_GUEST = ['home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
+var HOME_ORDER_LOGGED = ['home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
 
 function applyHomeOrder(root, isLoggedIn) {
   var shell = root && root.querySelector ? root.querySelector('.home-dashboard-shell') : null;
@@ -270,14 +266,6 @@ function applyHomeOrder(root, isLoggedIn) {
     var el = root.getElementById(id);
     if (el && el.parentNode === shell) shell.appendChild(el);
   });
-  // 登录用户：把“持仓管理”卡置于模块网格首位
-  if (isLoggedIn) {
-    var grid = root.querySelector('#home-section-modules .home-module-grid');
-    var holdings = root.getElementById('home-module-holdings');
-    if (grid && holdings && grid.firstElementChild && grid.firstElementChild !== holdings) {
-      grid.insertBefore(holdings, grid.firstElementChild);
-    }
-  }
 }
 
 async function loadHomeDashboard() {

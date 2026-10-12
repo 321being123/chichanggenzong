@@ -18,8 +18,8 @@ console.log('A. 一级导航与首页卡片');
 check('研究工具下拉含“可转债”入口且保留内部标识 bond-safety', () => {
   assert.ok(html.includes('data-main="bond-safety"') && html.includes('可转债'), '研究工具下拉缺少可转债入口');
 });
-check('首页模块卡片标题为“可转债”', () => {
-  assert.ok(html.includes('home-module-name">可转债<'), '首页卡片标题未改为“可转债”');
+check('首页可转债周期详情入口保留', () => {
+  assert.ok(html.includes("switchMain('bond-safety', false, 'cycle')"), '首页缺少可转债周期详情入口');
 });
 
 console.log('B. 二级导航与周期页容器');

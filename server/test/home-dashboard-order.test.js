@@ -1,6 +1,6 @@
 // HOME-01：首页按登录态的 DOM 顺序测试（jsdom，不依赖浏览器/接口/数据库）
-// 验证：游客首页以公开文章+研究优先；登录用户把持仓总资产卡与资产入口置前。
-// 只重排已有区块/卡片，不新增接口或统计口径。
+// 验证：首页移除常用工具后，游客和登录用户共用剩余区块与导航。
+// 只重排已有区块，不新增接口或统计口径。
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -16,37 +16,17 @@ const { window } = dom;
 window.eval(js);
 const doc = window.document;
 
-const EXPECT_GUEST = ['home-section-modules', 'home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
-const EXPECT_LOGGED_FIRST = 'home-section-modules';
-
+const EXPECT_ORDER = ['home-section-cycle', 'home-section-articles', 'home-section-secondary', 'home-section-capabilities'];
 function sectionOrder() {
-  const shell = doc.querySelector('.home-dashboard-shell');
-  return Array.from(shell.children)
-    .filter(function (c) { return c.id && c.id.indexOf('home-section-') === 0; })
-    .map(function (c) { return c.id; });
+  return Array.from(doc.querySelector('.home-dashboard-shell').children).map(c => c.id);
 }
-function moduleFirstCard() {
-  const grid = doc.querySelector('#home-section-modules .home-module-grid');
-  const first = grid && grid.firstElementChild;
-  return first ? first.id : null;
+for (const width of [320, 360, 390, 430, 760, 768, 900, 1024, 1440]) {
+  window.innerWidth = width;
+  for (const loggedIn of [false, true, false]) {
+    window.applyHomeOrder(doc, loggedIn);
+    assert.deepStrictEqual(sectionOrder(), EXPECT_ORDER, '首页剩余区块顺序应一致');
+    assert.strictEqual(doc.getElementById('home-section-modules'), null, '首页不应保留常用工具区域');
+    assert.strictEqual(doc.querySelectorAll('.main-nav .main-tab').length, 9, '应保留原九个导航入口');
+  }
 }
-
-// 1) 游客：常用模块优先，其次是周期与文章。
-window.applyHomeOrder(doc, false);
-assert.deepStrictEqual(sectionOrder(), EXPECT_GUEST,
-  '游客首页顺序应为 常用模块→周期→文章→次要→能力，实际为 ' + sectionOrder().join(','));
-
-// 2) 登录用户：持仓总资产卡与资产入口置前（常用工具区块第一位 + 持仓管理卡为模块网格首位）
-window.applyHomeOrder(doc, true);
-const logged = sectionOrder();
-assert.strictEqual(logged[0], EXPECT_LOGGED_FIRST,
-  '登录用户首页第一个区块应为 常用工具，实际为 ' + logged[0]);
-assert.strictEqual(moduleFirstCard(), 'home-module-holdings',
-  '登录用户“持仓管理”资产卡应为模块网格首位，实际为 ' + moduleFirstCard());
-
-// 3) 顺序可逆：切回游客仍保持常用模块优先
-window.applyHomeOrder(doc, false);
-assert.strictEqual(sectionOrder()[0], 'home-section-modules',
-  '切回游客后常用模块应继续置前，实际为 ' + sectionOrder()[0]);
-
-console.log('home-dashboard-order: 通过（常用模块优先 / 登录用户资产卡置前 / 可逆向切换）');
+console.log('home-dashboard-order: 通过（9档宽度、游客/登录/切回游客、原导航保留）');

@@ -12,7 +12,7 @@ const document = new JSDOM(html).window.document;
 
 assert.ok(html.includes('id="home-bond-cycle-chart"'), '首页缺少可转债周期图');
 assert.ok(html.includes('id="home-market-chart"'), '首页缺少可配置的股市周期图');
-assert.ok(html.indexOf('<h2>市场周期</h2>') < html.indexOf('<h2>常用工具</h2>'), '首页市场周期应位于常用工具上方');
+assert.ok(document.querySelector('#home-section-cycle .home-market-cycle-grid'), '首页应保留市场周期区域');
 const dashboardScript = document.querySelector('script[src^="js/home-dashboard.js?v="]');
 assert.ok(dashboardScript && new URL(dashboardScript.src, 'http://localhost').searchParams.get('v') && dashboardScript.getAttribute('src') !== 'js/home-dashboard.js?v=16', '首页市场周期必须使用更新后的缓存版本');
 assert.ok(js.includes('/api/bond-cycle?range=all'), '首页未读取可转债周期历史数据');

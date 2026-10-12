@@ -34,6 +34,10 @@ rating=importlib.import_module('extractConvertibleBondRating')
 rating.read_document=lambda *a: (['维持“国泰转债”信用等级为AA+，评级展望为稳定。本次评级时间 国泰转债 AA+/稳定 2026/06/23'],{'document_hash':'hash'})
 result=rating.extract_rating('url','2026-06-25','002091.SZ','国泰转债')
 assert result['rating']=='AA+' and result['rating_outlook']=='稳定' and result['rating_date']=='2026-06-23'
+rating.read_document=lambda *a: (['本评级机构评定华海药业主体信用等级为AA，评级展望为稳定，华海转债信用等级均为AA。其他转债信用等级为AAA。'],{'document_hash':'hash'})
+result=rating.extract_rating('url','2026-06-27','600521.SH','华海转债')
+assert result['rating']=='AA' and result['rating_outlook']=='稳定' and result['rating_date_source']=='announcement_fallback'
+assert rating.extract_rating('url','2026-06-27','600521.SH','不存在转债')['rating'] is None
 holders=importlib.import_module('extractConvertibleBondFundHoldings')
 unranked='前十名转债持有人情况如下：\n期末持债数量（元）\n持有比例(%)\n'+''.join(f'某证券投资基金{i}\n100000\n1.00\n' for i in range(10))+'(三)报告期转债变动情况\n'
 parsed=holders.parse_holders(unranked)

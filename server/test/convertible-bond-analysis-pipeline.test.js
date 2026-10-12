@@ -5,6 +5,11 @@ const {pool}=require('../db/connection');
 
 (async()=>{
   // BOND-ANALYSIS-001: 全量详细快照无隐性上限、日期与失败对象分别核验。
+  // BOND-ANALYSIS-005: 上游同日任务缺失不阻挡已发布的上一交易日输入。
+  const valuation=require('../services/jobDefinitions').getJobDefinition('convertible_bond_valuation_refresh');
+  assert.deepEqual(valuation.dependencyCodes||[],[],'已经发布的输入不能被同日不存在的上游任务阻挡');
+  assert.deepEqual(valuation.datasetDependencies.map(d=>[d.datasetCode,d.scopeKey,d.partitionDatePolicy]),
+    ['bond_master','bond_daily','stock_daily','stock_suspend_calendar'].map(d=>[d,'CN','previous_trading_day']));
   const rows=Array.from({length:350},(_,i)=>({ts_code:String(i),raw_payload:{}}));
   let persisted;
   const complete=await refreshAllConvertibleBondAnalysis('2026-09-30',{

@@ -26,7 +26,7 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
     if not rating_match:
         rating_match = re.search(r"主体信用等级为[“\"]?([A-D]{1,3}[+-]?)", compact)
     if bond_name:
-        rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?信用等级(?:为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
+        rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?信用等级(?:均为|为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
     date_match = re.search(r"评级日期[：:]?(20\d{2})年(\d{1,2})月(\d{1,2})日", compact)
     rating_date = announcement_date
     rating_date_source = 'announcement_fallback'

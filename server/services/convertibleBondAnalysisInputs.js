@@ -9,7 +9,7 @@ const {childProcessEnv,mergeExternalCallStatsFromStderr}=require('./externalCall
 const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tools}=require('./convertibleBondAnalysis');
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
 
-const INPUT_VERSION='analysis-input-v2';
+const INPUT_VERSION='analysis-input-v3';
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
 
 async function projectDocument(kind,event,bond) {

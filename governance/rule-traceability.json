@@ -2191,6 +2191,22 @@
       ],
       "owner": "可转债分析",
       "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-005",
+      "title": "可转债估值与详细快照按上一交易日发布分区依赖，不等待不存在的同日上游任务",
+      "implementation": {
+        "file": "server/services/jobDefinitions.js",
+        "symbol": "getJobDefinition"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-ANALYSIS-005"
+        }
+      ],
+      "owner": "可转债分析",
+      "status": "verified"
     }
   ]
 }

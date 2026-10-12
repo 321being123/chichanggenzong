@@ -188,15 +188,18 @@ async function charts() {
 }
 
 async function tradeHistory() {
-  for (const width of [320, 360, 390, 430, 760, 768, 900, 1024, 1440]) {
+  for (const width of [320, 360, 390, 430, 759, 760, 761, 768, 899, 900, 901, 1024, 1440]) {
     const dom = await fixture(read('public/index.html'), width), w = dom.window, d = w.document;
     const host = d.getElementById('trades-table');
     ok(!host.classList.contains('trade-list'), '交易历史不再套旧内部纵向滚动容器');
     w.data = { trades: [], positions: [], cashFlows: [
-      {id:'interest',date:'2026-10-09',amount:123.22,flow_type:'repo_interest',origin:'system',status:'estimated',note:'一天期逆回购市场日加权利率计算（含费用）'},
-      {id:'fee',date:'2026-10-09',amount:-1.17,flow_type:'repo_fee',origin:'system',status:'estimated',note:'一天期逆回购市场日加权利率计算（含费用）'},
+      {id:'interest',date:'2026-10-09',amount:123.22,flow_type:'repo_interest',code:'204001',name:'GC001',origin:'system',status:'estimated',note:'一天期逆回购市场日加权利率计算（含费用）'},
+      {id:'fee',date:'2026-10-09',amount:-1.17,flow_type:'repo_fee',code:'204001',name:'GC001',origin:'system',status:'estimated',note:'一天期逆回购市场日加权利率计算（含费用）'},
       {id:'imported',date:'2026-10-08',amount:2,origin:'imported',note:'导入凭证'},
-      {id:'manual',date:'2026-10-08',amount:3,origin:'manual',note:'用户说明（含费用）'}
+      {id:'manual',date:'2026-10-08',amount:3,origin:'manual',note:'用户说明（含费用）'},
+      {id:'dividend',date:'2026-10-07',amount:10,flow_type:'dividend',code:'00941',name:'中国移动',origin:'system',status:'estimated'},
+      {id:'tax',date:'2026-10-07',amount:-1,flow_type:'dividend_tax',code:'000672',name:'上峰水泥',origin:'system',status:'estimated'},
+      {id:'unknown',date:'2026-10-06',amount:1,flow_type:'dividend',origin:'system',status:'estimated'}
     ] };
     load(w, 'js/utils.js'); w.fmt = n => '¥' + Number(n).toFixed(2);
     let attached;
@@ -207,6 +210,11 @@ async function tradeHistory() {
     const rows = host.querySelectorAll('tbody tr');
     ok(attached.root === host && attached.options.top === '#main-holdings > .holdings-header', '交易历史使用当前持仓导航下的共享吸顶入口');
     ok(rows[0].cells[6].textContent === '+¥123.22' && rows[1].cells[6].textContent === '-¥1.17', '利息毛收入和费用支出分列，金额未重复扣费');
+    ok(rows[0].cells[1].textContent === '204001' && rows[0].cells[2].textContent === 'GC001' && rows[1].cells[2].textContent === 'GC001', '回购利息和费用展示实际品种代码与名称');
+    ok(rows[4].cells[1].textContent === '00941' && rows[4].cells[2].textContent === '中国移动' && rows[4].cells[3].textContent === '股票分红', '分红证券身份与业务方向分列');
+    ok(rows[5].cells[1].textContent === '000672' && rows[5].cells[2].textContent === '上峰水泥' && rows[5].cells[3].textContent === '分红扣税', '扣税沿用对应股票身份');
+    ok(rows[6].cells[1].textContent === '-' && rows[6].cells[2].textContent === '-', '缺身份不猜名称或使用流水类型冒充');
+    ok(rows[2].cells[1].textContent === '现金' && rows[3].cells[1].textContent === '现金', '外部入出金仍展示现金');
     ok(rows[0].cells[9].textContent.includes('利息未扣费用，费用单列') && rows[1].cells[9].textContent.includes('手续费；单独扣除'), '存量系统回购说明区分利息与费用');
     ok(rows[0].cells[10].textContent === '系统计算 · 不可直接删除' && rows[2].cells[10].textContent === '导入记录 · 不可直接删除', '受保护来源直接可见，不依赖悬停');
     ok(host.querySelectorAll('[data-act="deleteCashFlow"]').length === 1 && rows[3].cells[9].textContent === '用户说明（含费用）', '手工流水仍可删除，用户原说明保留');

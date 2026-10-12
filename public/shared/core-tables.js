@@ -722,8 +722,8 @@ function renderTrades() {
         : '<span class="tag tag-equity">出金</span>';
       html += '<tr>' +
         '<td>' + escapeHtml(c.date || '-') + '</td>' +
-        '<td>现金</td>' +
-        '<td>' + escapeHtml(incomeLabel || '现金' + (c.note ? '·' + c.note : '')) + '</td>' +
+        '<td>' + escapeHtml(incomeLabel ? c.code || '-' : '现金') + '</td>' +
+        '<td>' + escapeHtml(incomeLabel ? c.name || '-' : '现金' + (c.note ? '·' + c.note : '')) + '</td>' +
         '<td>' + dirLabel + '</td>' +
         '<td class="text-right">-</td>' +
         '<td class="text-right">-</td>' +

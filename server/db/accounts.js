@@ -85,10 +85,11 @@ async function loadAccountDataInSession(username, accountName, client) {
   const { rows: cashFlows } = await client.query(
     `SELECT id, date::text, created_at, amount::float8 AS amount, note, flow_type, origin, status,
        amount_cny::float8 AS amount_cny, currency, settled_at, event_key, anchor_date::text,
-       source_ref, quality_status, calculation_version, evidence, revision
+       source_ref, quality_status, calculation_version, evidence, revision, instrument_id
        FROM cash_flows WHERE username=$1 AND account_name=$2`,
     [username, accountName]
   );
+  await require('../services/cashFlowIdentity').attachCashFlowIdentity(cashFlows, client.query.bind(client));
   // 2026-08-03 架构整改（报告 3.1/3.3）：结构化表是唯一权威来源。
   // - 不再从 account_data JSON 恢复 totalAsset/cashBase/cash/fundRecord/feeSettings（JSON 退出日常读取）；
   // - 指数历史只读结构化表，表空即空，不再读旧 JSON 且读取接口绝不写库；

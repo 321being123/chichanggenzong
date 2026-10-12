@@ -146,7 +146,7 @@ RE_CASH_OFFER = re.compile(
     r'註銷價|注销价|注銷價|'
     r'要約收購(?:的)?價格|要约收购(?:的)?价格|'
     r'要約(?:的)?價格|要约(?:的)?价格|要約(?:的)?價|要约(?:的)?价|'
-    r'收購(?:的)?價格|收购(?:的)?价格|收購(?:的)?價|收购(?:的)?价|收購(?:的)?價款|收购(?:的)?价款|'
+    r'收購(?:的)?價格|收购(?:的)?价格|收購(?:的)?價(?!款)|收购(?:的)?价(?!款)|'
     r'現金代價|现金代价)'
             r'[\s:：]*'                              # 冒号/空格
     r'(?:為|为|是)?'                         # 为/是（简繁兼容）
@@ -155,7 +155,7 @@ RE_CASH_OFFER = re.compile(
     r'(?:每?股)?'                            # 可选「每股」
     r'(?:港幣|港元|港币|HK\$?|HKD|人民幣|人民币|RMB)?'  # 货币
     r'\s*'
-    r'([\d.]+)', re.I)
+    r'(\d+(?:\.\d+)?)(?![\d.,，])', re.I)
 
 # 吸收合并双方的现金退出权可能分别写作“收购请求权”或“现金选择权”，且价格与关键词之间
 # 常夹有“定价基准日前120个交易日均价”等长说明，不能只依赖关键词后紧跟数字的短格式。
@@ -582,6 +582,16 @@ def parse_fields(text, target_code=None):
             result['rights_codes'].append(code)
             result['evidence'].append({'field': 'rights_code', 'value': code, 'pos': pos})
 
+    # 证券代码匹配只证明公告发布人身份，不证明其是要约收购标的。
+    # 只检查标题区（正文保证声明前），避免把被收购公司的历史引用误判为买方公告。
+    heading = re.split(r'本公司及|本公司和|本公司與', text[:600], maxsplit=1)[0]
+    if (target_code and re.fullmatch(r'\d{6}', str(target_code))
+            and re.search(r'(?:对外投资|對外投資|对外收购|對外收購).{0,40}'
+                          r'(?:要约收购|要約收購|要约方式收购|要約方式收購)', heading)):
+        result['target_code_match'] = False
+        result['evidence'].append({'field': 'target_role', 'value': 'buyer', 'text': heading})
+        return result
+
     # 现金对价：遍历所有命中，取首个能解析出正数价格的
     # （避免首个关键词命中落在无关语境、其后无数字导致整条提取落空）
     # 若已知 target_code，按目标公司简称选择距离最近的现金条款，避免多标的合并互相串价。
@@ -684,6 +694,7 @@ def parse_fields(text, target_code=None):
                     break
     if cash_val is not None:
         result['cash_offer_price'] = cash_val
+        cash_ev['text'] = text[cash_ev['pos']:cash_ev['pos'] + 180]
         result['evidence'].append(cash_ev)
 
     # 港股计划安排的「现金注销价」优先于正文后部的购股权行使价/透视价。

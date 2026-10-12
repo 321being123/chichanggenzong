@@ -1,4 +1,11 @@
-const PARSER_VERSION = '2.0.7';
+const PARSER_VERSION = '2.0.8';
+
+// 对外投资公告的发布人是买方，不能以发布人的证券代码建立要约退出机会。
+const BUYER_OFFER_TITLE_PATTERN = '(对外投资|對外投資|对外收购|對外收購).{0,40}(要约收购|要約收購|要约方式收购|要約方式收購)';
+
+function isBuyerOfferAnnouncement(title) {
+  return new RegExp(BUYER_OFFER_TITLE_PATTERN).test(cleanSecurityText(title));
+}
 
 function cleanSecurityText(value) {
   return String(value || '')
@@ -170,6 +177,8 @@ function validateParsedTerms(strategyType, parsed) {
 }
 
 module.exports = {
+  BUYER_OFFER_TITLE_PATTERN,
+  isBuyerOfferAnnouncement,
   PARSER_VERSION,
   cleanSecurityText,
   firstSecurityCode,

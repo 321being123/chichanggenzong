@@ -15,6 +15,7 @@ const {
   firstSecurityCode,
   firstSecurityName,
   classifyDocumentRole,
+  isBuyerOfferAnnouncement,
   classifyRiskAnnouncement,
   buildEventKey,
   announcementMergeKey,
@@ -538,6 +539,8 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
 function classifyTitle(title, scope) {
   if (!title) return null;
 
+  if (scope !== 'hkex' && isBuyerOfferAnnouncement(title)) return null;
+
   // 完成/终止类公告只用于关闭已有事件，不能在找不到旧事件时反向新建一条“进行中”案件。
   if (detectUpdate(title)) return null;
 
@@ -562,6 +565,8 @@ function classifyTitle(title, scope) {
 // 以便只更新「同标的 + 同策略」的进行中事件；泛泛的「完成/终止」但无套利语义时不处理。
 function detectUpdate(title) {
   if (!title) return null;
+  // 买方投资的完成/终止也不能关闭以发布人为目标的其他退出事件。
+  if (isBuyerOfferAnnouncement(title)) return null;
 
   // 无关「完成」场景直接排除（工商变更登记、股份回购、年报、权益分派、利润分配等）
   const unrelatedComplete = /工商登记|变更登记|股份回购|回购|年报|季报|权益分派|利润分配|现金分红|减资|股权激励|可转债/.test(title);

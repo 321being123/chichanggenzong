@@ -80,6 +80,15 @@ test('标题分类：A股要约收购', () => {
   assert.strictEqual(sync.classifyTitle('要约收购报告书摘要', 'cninfo'), 'a_cash_offer');
 });
 
+test('买方对外投资要约公告不按发布方新建套利案件', () => {
+  for (const scope of ['sse', 'szse', 'cninfo']) {
+    assert.equal(sync.classifyTitle('兴业银锡：关于对外投资要约收购威领股份的进展公告', scope), null);
+    assert.equal(sync.classifyTitle('关于对外投资以要约方式收购其他公司股份的公告', scope), null);
+  }
+  assert.equal(sync.classifyTitle('威领股份关于收到要约收购报告书的公告', 'szse'), 'a_cash_offer');
+  assert.equal(sync.detectUpdate('关于对外投资要约收购其他公司股份完成过户的公告'), null);
+});
+
 test('标题分类：免于发出要约不属于套利机会', () => {
   assert.strictEqual(sync.classifyTitle('收购报告书暨免于发出要约收购申请之财务顾问报告', 'cninfo'), null);
 });

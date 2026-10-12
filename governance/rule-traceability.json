@@ -1,7 +1,47 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-10",
+  "lastReviewed": "2026-10-12",
   "rules": [
+    {
+      "id": "ARBITRAGE-IDENTITY-001",
+      "title": "A股买方投资公告不能创建发布方退出机会且历史公开入口同样排除",
+      "implementation": {
+        "file": "server/services/arbitrageRules.js",
+        "symbol": "isBuyerOfferAnnouncement"
+      },
+      "tests": [
+        {
+          "file": "server/test/arbitrage-sync.test.js",
+          "pattern": "买方对外投资要约公告不按发布方新建套利案件"
+        },
+        {
+          "file": "server/test/arbitrage-parser.test.js",
+          "pattern": "买方对外投资公告不能成为发布方的套利机会"
+        },
+        {
+          "file": "server/test/arbitrage-seen.test.js",
+          "pattern": "旧版已批准的买方案件也必须从公开列表排除"
+        }
+      ],
+      "owner": "套利机会",
+      "status": "verified"
+    },
+    {
+      "id": "ARBITRAGE-PRICE-001",
+      "title": "现金退出单价禁止由收购总价款或千分位数字前段构造",
+      "implementation": {
+        "file": "server/scripts/extractArbitrageDocument.py",
+        "symbol": "RE_CASH_OFFER"
+      },
+      "tests": [
+        {
+          "file": "server/test/arbitrage-parser.test.js",
+          "pattern": "收购总价款及千分位数字不能截成每股现金退出价"
+        }
+      ],
+      "owner": "套利机会",
+      "status": "verified"
+    },
     {
       "id": "OPS-RECOVERY-010",
       "title": "港股招股封面分隔数字合并且真实证券身份冲突仍拒绝写入",

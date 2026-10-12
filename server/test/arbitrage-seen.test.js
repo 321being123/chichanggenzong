@@ -12,6 +12,7 @@ async function main() {
   const prefix = 'test_arb_seen_' + Date.now();
   const users = [prefix + '_a', prefix + '_b'];
   const ids = [];
+  let buyerDocumentId;
   try {
     await pool.query('INSERT INTO users(username,password) SELECT unnest($1::text[]), $2', [users, 'test-only']);
     const source = await pool.query('SELECT source_id FROM ops.data_sources ORDER BY source_id LIMIT 1');
@@ -25,6 +26,20 @@ async function main() {
     let list = await service.getArbitrageList('a_stock', 1, 2000, users[0]);
     const initialUnread = await service.getArbitrageUnreadCount(users[0]);
     assert(initialUnread >= 3);
+    const buyerDoc = await pool.query(`INSERT INTO event.documents(document_type,title,source_id,url)
+      VALUES('announcement',$1,$2,$3) RETURNING document_id`, [
+      '兴业银锡：关于对外投资要约收购威领股份的进展公告', source.rows[0].source_id, prefix,
+    ]);
+    buyerDocumentId = buyerDoc.rows[0].document_id;
+    const buyer = await pool.query(`INSERT INTO event.arbitrage_cases
+      (market,strategy_type,source_id,source_key,offer_price,event_status,review_status,primary_document_id)
+      VALUES('CN','a_cash_offer',$1,$2,286,'proposed','approved',$3) RETURNING case_id`,
+    [source.rows[0].source_id, prefix + '_buyer', buyerDocumentId]);
+    const buyerId = buyer.rows[0].case_id;
+    assert(!(await service.getArbitrageList('a_stock', 1, 2000, users[0])).rows.some(r => r.case_id === buyerId), '旧版已批准的买方案件也必须从公开列表排除');
+    assert.equal(await service.getArbitrageDetail(buyerId, users[0]), null, '公开详情与列表使用同一主体规则');
+    assert.equal(await service.getArbitrageUnreadCount(users[0]), initialUnread, '错误买方案件不能计入未看数');
+    assert.equal(await service.markArbitrageSeen(users[0], buyerId), false, '错误买方案件不能保存公开阅读标记');
     assert.strictEqual((await service.getArbitrageList('a_stock', 1, 1, users[0])).unreadCount, initialUnread, '总数覆盖其他策略和其他分页');
     assert.strictEqual(await service.getArbitrageUnreadCount(), 0, '游客不显示个人未看数');
     assert(list.rows.find(r => r.case_id === ids[0]).is_new);
@@ -54,6 +69,7 @@ async function main() {
     console.log('套利阅读状态：真实落库、账号隔离、并发幂等、新旧排序及失败保留通过');
   } finally {
     await pool.query('DELETE FROM event.arbitrage_cases WHERE source_key LIKE $1', [prefix + '%']);
+    if (buyerDocumentId) await pool.query('DELETE FROM event.documents WHERE document_id=$1', [buyerDocumentId]);
     await pool.query('DELETE FROM users WHERE username=ANY($1::text[])', [users]);
     await pool.end();
   }

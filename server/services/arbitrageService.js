@@ -7,6 +7,7 @@ const {
   cleanSecurityText,
   classifyRiskAnnouncement,
   classifyProgressAnnouncement,
+  BUYER_OFFER_TITLE_PATTERN,
 } = require('./arbitrageRules');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { enqueueManualJob } = require('./jobScheduleSlots');
@@ -28,10 +29,16 @@ function deduplicateArbitrageDocuments(documents) {
 
 // 公开页只展示具备核心计算条款的案件；同时兜底排除历史上被误建为“进行中”的终态公告。
 // 后台审核页仍保留全部案件，便于检查和修正原始数据。
+const PUBLIC_TARGET_ROLE_FILTER = `NOT (c.strategy_type = 'a_cash_offer' AND EXISTS (
+    SELECT 1 FROM event.documents buyer_doc
+    WHERE buyer_doc.document_id=c.primary_document_id
+      AND COALESCE(buyer_doc.title, '') ~ '${BUYER_OFFER_TITLE_PATTERN}'
+  ))`;
 const PUBLIC_CASE_FILTER = `
   c.review_status = 'approved'
   AND (c.parser_version IS NULL OR c.parse_status = 'validated')
   AND c.event_status NOT IN ('completed','terminated','expired')
+  AND ${PUBLIC_TARGET_ROLE_FILTER}
   AND (c.expected_completion_date IS NULL OR c.expected_completion_date >= CURRENT_DATE)
   AND (
     (c.strategy_type IN ('a_cash_offer','hk_privatisation') AND COALESCE(c.offer_price,c.cash_choice_price) > 0)
@@ -187,7 +194,7 @@ async function getArbitrageDetail(caseId, username = null) {
     LEFT JOIN core.instruments ri ON c.reference_instrument_id = ri.instrument_id
     LEFT JOIN core.instruments rwi ON c.rights_instrument_id = rwi.instrument_id
     LEFT JOIN event.documents pd ON c.primary_document_id = pd.document_id
-    WHERE c.case_id = $1 AND c.review_status = 'approved'
+    WHERE c.case_id = $1 AND c.review_status = 'approved' AND ${PUBLIC_TARGET_ROLE_FILTER}
   `, [caseId, username]);
 
   if (!rows.length) return null;

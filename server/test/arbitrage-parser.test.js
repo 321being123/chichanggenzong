@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const parser = require('../services/arbitrageParser');
-assert.strictEqual(parser.PARSER_VERSION, '2.0.7', '港股代码归一化修复必须提升解析器版本，确保历史文档重新解析');
+assert.strictEqual(parser.PARSER_VERSION, '2.0.8', '主体及单价修复必须提升解析器版本，确保历史文档重新解析');
 
 test('PDF 解析重试入口统一阻止未到期和超过上限的调用', () => {
   const future = new Date(Date.now() + 60_000).toISOString();
@@ -118,7 +118,7 @@ function parseSnippet(text, targetCode) {
     'spec=importlib.util.spec_from_file_location("arb", sys.argv[1])',
     'm=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
     `text=${JSON.stringify(text)}`,
-    `print(json.dumps(m.parse_fields(text, ${JSON.stringify(targetCode || null)}), ensure_ascii=False))`,
+    `print(json.dumps(m.parse_fields(text, ${targetCode ? JSON.stringify(targetCode) : 'None'}), ensure_ascii=False))`,
   ].join(';');
   const run = spawnSync(parser.resolvePython(), ['-c', code, parser.SCRIPT], {
     encoding: 'utf8', env: { ...process.env, PYTHONUTF8: '1' },
@@ -126,6 +126,32 @@ function parseSnippet(text, targetCode) {
   assert.equal(run.status, 0, run.stderr);
   return JSON.parse(run.stdout);
 }
+
+test('买方对外投资公告不能成为发布方的套利机会', () => {
+  const parsed = parseSnippet([
+    '证券代码：000426 证券简称：兴业银锡。',
+    '关于对外投资要约收购威领股份的进展公告。',
+    '本公司及董事会全体成员保证公告内容真实。',
+    '公司全资子公司向威领股份全体股东发出部分要约，拟以18.00元/股价格收购78,177,450股。',
+    '收购价款为286,855,020元（不含税费）。资金结算及股份过户登记手续已办理完毕。',
+  ].join(' '), '000426.SZ');
+  assert.equal(parsed.target_code_match, false);
+  assert.equal(parsed.cash_offer_price, null);
+  const checked = require('../services/arbitrageRules').validateParsedTerms('a_cash_offer', parsed);
+  assert.equal(checked.coreComplete, false);
+  assert.equal(checked.parseStatus, 'conflict');
+});
+
+test('收购总价款及千分位数字不能截成每股现金退出价', () => {
+  for (const text of [
+    '收购价款为286,855,020元（不含税费）。',
+    '收购价款为286855020元。',
+    '收购价格为286,855,020元。',
+    '收购价格为286，855，020元。',
+  ]) assert.equal(parseSnippet(text).cash_offer_price, null, text);
+  const parsed = parseSnippet('证券代码：002667。要约收购价格为每股人民币18.00元。收购价款为286,855,020元。', '002667.SZ');
+  assert.equal(parsed.cash_offer_price, 18);
+});
 
 test('中金、信达、东兴：现金选择权与固定换股价分字段、分主体提取', () => {
   const text = [

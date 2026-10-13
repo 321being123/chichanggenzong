@@ -2415,6 +2415,86 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-TABLE-007",
+      "title": "当前债项评级表与第四页明确日期拒绝借用主体或历史",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "row_rating"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-TABLE-007"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-INITIAL-008",
+      "title": "未命名首发评级仅按唯一发行身份和完全一致原文金额期限绑定",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "unique_issuer_issue_amount_tenor"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-INITIAL-008"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-HOLDERS-LABEL-009",
+      "title": "银行转债持有人标题和拆行元金额比例列不得消费股东持股表",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondFundHoldings.py",
+        "symbol": "HOLDER_TITLE"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-HOLDERS-LABEL-009"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-COUPON-HEADING-010",
+      "title": "明确利率章节不能因缺票面或债券前缀跳过",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondProspectus.py",
+        "symbol": "票面利率"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-COUPON-HEADING-010"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "NAV-QUALITY-DIAGNOSTICS-002",
+      "title": "编排器重复发布净值分区仍保留核验账户数及明确质量证据",
+      "implementation": {
+        "file": "server/jobs/navSnapshot.js",
+        "symbol": "current_accounts_complete:currentComplete"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-current-history-evidence.test.js",
+          "pattern": "NAV-QUALITY-DIAGNOSTICS-002"
+        }
+      ],
+      "owner": "后台净值",
+      "status": "verified"
     }
   ]
 }

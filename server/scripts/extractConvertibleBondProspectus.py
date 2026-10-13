@@ -120,7 +120,7 @@ def extract(url, security_code=None, bond_name=None, issuer_name=None):
     pages = [clean_page(page) for page in pages]
     rates = []
     for page in pages:
-        if "债券利率" in page or "票面利率" in page:
+        if "债券利率" in page or "票面利率" in page or re.search(r'[（(][一二三四五六七八九十]+[）)]\s*利率', page):
             rates = coupon_rates(page)
             if rates:
                 break

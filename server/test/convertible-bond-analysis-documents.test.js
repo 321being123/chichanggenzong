@@ -49,6 +49,18 @@ assert parsed['rating']=='AA' and parsed['rating_outlook']=='稳定' and parsed[
 parsed=rating.parse_rating_pages(['“闻泰转债”信用等级由AA调整至AA-，评级展望为稳定。中诚信国际信用评级有限责任公司\n2025年6月16日'],'闻泰转债','2025-06-18')
 assert parsed['rating']=='AA-' and parsed['rating_date']=='2025-06-16'
 assert rating.official_rating_date(['历史2025年6月16日，其他无关事项2025年6月17日'])[0] is None
+# BOND-RATING-TABLE-007: 当前债项表不借用主体等级，第四页明确日期可核验。
+parsed=rating.parse_rating_pages(['封面','声明','主体资料','评级结果\n本次评级\n上次评级\n主体信用等级\nAAA\nAAA\n评级展望\n稳定\n稳定\n蓝天转债\nAA\nAA\n评级日期2026年6月15日'],'蓝天转债','2026-06-17')
+assert parsed['rating']=='AA' and parsed['rating_date']=='2026-06-15'
+assert rating.official_rating_date(['评级时间2026.5.18','附录\n评级日期2025.5.18'])[0]=='2026-05-18'
+# BOND-RATING-INITIAL-008: 未命名首发评级只按统一身份中的唯一发行金额/期限绑定。
+initial=['无锡派克新材料科技股份有限公司2026年向不特定对象发行可转换公司债券信用评级报告','声明','评级结果\n主体信用等级\nAAA\n债券信用等级\nAA\n评级展望\n稳定\n评级日期2026-04-02\n发行规模：不超过15.8亿元\n发行期限：不超过6年']
+rating.read_document=lambda *a,**kwargs:(initial,{'document_hash':'a'*64})
+parsed=rating.extract_rating('url','2026-08-04','605123.SH','派克转债','无锡派克新材料科技股份有限公司','2026-08-06','1580000000',6)
+assert parsed['rating']=='AA' and parsed['rating_date']=='2026-04-02' and parsed['identity_binding']['method']=='unique_issuer_issue_amount_tenor'
+for size,tenor,issuer in [('1580000001',6,'无锡派克新材料科技股份有限公司'),('1580000000',5,'无锡派克新材料科技股份有限公司'),('1580000000',6,'其他股份有限公司')]:
+    assert rating.extract_rating('url','2026-08-04','605123.SH','派克转债',issuer,'2026-08-06',size,tenor)['rating'] is None
+assert rating.extract_rating('url','2026-08-04','605123.SH','派克转债','无锡派克新材料科技股份有限公司')['rating'] is None
 history=importlib.import_module('extractConvertibleBondPriceHistory')
 history.read_document=lambda *a: (['无转股价调整表'],{'document_hash':'a'*64,'source_url':'url'})
 assert history.extract_history('url')['document_hash']=='a'*64
@@ -76,6 +88,11 @@ assert sum(r['amount'] for r in parsed)==1000000 and sum(r['quantity'] for r in 
 wrapped=unranked.replace('期末持债数量','期末持债数\n量').replace('持有比例','持有比\n例').replace('100000','3,130,210,00\n0')
 parsed=holders.parse_holders(wrapped)
 assert len(parsed)==10 and parsed[0]['amount']==3130210000 and parsed[0]['ratio']==0.01
+# BOND-HOLDERS-LABEL-009: 可转换公司债/拆行比例表头消费元金额，不消费前十股东。
+bank=unranked.replace('前十名转债持有人情况如下：','前十名可转换公司债持有人情况').replace('期末持债数量','期末持有数量').replace('持有比例(%)','持有\n比例')
+assert len(holders.parse_holders(bank))==10
+assert len(holders.parse_holders(unranked.replace('持有比例(%)','比例(%)').replace('(三)报告期转债变动情况','7.3 可转债变动情况')))==10
+assert len(holders.parse_holders(bank.replace('前十名可转换公司债持有人情况','前十名股东持股情况')))==0
 single_bond=unranked.replace('100000','100')
 assert len(holders.parse_holders(single_bond))==10 and sum(r['quantity'] for r in holders.parse_holders(single_bond))==10
 holders.read_document=lambda *a: (['前十名转债持有人情况如下：\n只有一行'],{'document_hash':'hash'})
@@ -93,6 +110,9 @@ try: holders.extract('url',bond_name='丙转债'); assert False
 except ValueError: pass
 prospectus=importlib.import_module('extractConvertibleBondProspectus')
 assert len(prospectus.coupon_rates('第一年：0.2％，第二年利率为0.4%，第三年0.6%，第四年1.0%，第五年1.5%，第六年2.0%'))==6
+# BOND-COUPON-HEADING-010: 明确章节利率表不因缺少票面/债券前缀而跳过。
+prospectus.read_document=lambda *a: (['（三）利率\n第一年0.30%、第二年0.50%、第三年1.00%、第四年1.50%、第五年1.80%、第六年2.00%'],{'document_hash':'a'*64})
+assert len(prospectus.extract('url')['coupon_rates'])==6
 print('BOND-ANALYSIS-004: official identity, PDF cache, corruption, complete holder table and rating date passed')
 `;
 assert.ok(fs.existsSync(py));

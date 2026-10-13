@@ -353,12 +353,13 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
       }
     }
     const currentComplete = repoRates?.ok !== false && currentAccounts.length > 0 && currentAccounts.every(account => ['complete', 'verified_no_change'].includes(account.status));
+    const currentDiagnostics={query_status:'success',quality_status:currentComplete?'passed':'failed',current_accounts_complete:currentComplete,
+      coverage_status:currentComplete?(currentAccounts.some(account=>account.status==='complete')?'complete':'verified_no_change'):'incomplete',
+      checked_accounts:currentAccounts.length,historical_missing_dates:[...new Set(failedAccounts.flatMap(account=>account.missingDates||[]))]};
     // 全部账户已完成当日事实时单独发布当日分区；历史缺口仍返回partial并保留原日期告警。
     const currentPublication = currentComplete ? await require('../services/datasetPartitionRegistry').publishDatasetSnapshot('nav_snapshot', {
       partitionKey: targetDate, dataAsOf: targetDate, reason: 'nav_snapshot:current_date',
-      diagnostics: { query_status: 'success', quality_status: 'passed',
-        coverage_status: currentAccounts.some(account => account.status === 'complete') ? 'complete' : 'verified_no_change',
-        checked_accounts: currentAccounts.length, historical_missing_dates: [...new Set(failedAccounts.flatMap(account => account.missingDates || []))] },
+      diagnostics: currentDiagnostics,
     }) : null;
     const result = {
       ok: failedAccounts.length === 0 && repoRates?.ok !== false,
@@ -370,7 +371,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
       dataAsOf: currentComplete ? targetDate : null,
       repoRates,
       publishDatasetCodes:repoRates?.ok?['nav_snapshot','repo_daily_rates']:['nav_snapshot'],
-      ...(repoRates?.ok?{datasetDiagnostics:{repo_daily_rates:{...repoRates,query_status:'success',quality_status:'passed'}}}:{}),
+      datasetDiagnostics:{nav_snapshot:currentDiagnostics,...(repoRates?.ok?{repo_daily_rates:{...repoRates,query_status:'success',quality_status:'passed'}}:{})},
       datasets: currentPublication?.published ? [currentPublication] : [],
       missingDates: [...new Set(failedAccounts.flatMap(item => item.missingDates || []))],
       failedDatasets: [...(failedAccounts.length ? ['nav_snapshot'] : []),...(repoRates?.ok===false?['repo_daily_rates']:[])],

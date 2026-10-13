@@ -13,6 +13,7 @@ from convertibleBondDocument import read_document
 
 
 FUND_WORDS = re.compile(r"基金|养老金|年金|社保|资产管理计划|集合资产管理")
+HOLDER_TITLE = r"前十名(?:转债|可转债|可转换公司债(?:券)?)持有人"
 NATURE_WORDS = {
     "其他", "境内自然人", "境外自然人", "境内非国有法人", "境内国有法人",
     "国有法人", "境外法人", "境内法人", "未知",
@@ -29,12 +30,10 @@ def clean_page(text):
 
 
 def parse_holders(text):
-    start = text.find("前十名转债持有人情况如下")
-    if start < 0:
-        start = text.find("前十名可转债持有人")
-    if start < 0:
+    title = re.search(HOLDER_TITLE, text)
+    if not title:
         return []
-    table = text[start:]
+    table = text[title.start():]
     stops = [table.find(marker) for marker in ("3、报告期转债", "3.报告期转债", "转股价格历次")]
     stops = [position for position in stops if position > 0]
     if stops:
@@ -42,12 +41,12 @@ def parse_holders(text):
     rank_matches = list(re.finditer(r"(?m)^(10|[1-9])$", table))
     # SSE reports also use an unnumbered table: holder -> CNY face amount -> percent.
     # Its explicit header is mandatory; a lone amount must never be guessed as bond quantity.
-    if not rank_matches and re.search(r"期末持债数\s*量\s*[（(]元[）)]", table):
-        header = re.search(r"持有比\s*例\s*[（(]%[）)]", table)
+    if re.search(r"期末(?:持债数|持有数)\s*量\s*[（(]元[）)]", table) and not re.search(r"序号", table[:table.find('期末')]):
+        header = re.search(r"(?:持\s*有\s*)?比\s*例(?:\s*[（(]%[）)])?", table)
         if not header:
             return []
         section = table[header.end():]
-        stop = re.search(r"[（(]三[）)]报告期转债|报告期转债变动情况|转股价格历次", section)
+        stop = re.search(r"(?:报告期(?:可转换公司债券|转债)|可转债)变动情况|转股价格历次", section)
         if stop:
             section = section[:stop.start()]
         lines = [line.strip() for line in section.splitlines() if line.strip()]
@@ -119,7 +118,7 @@ def parse_holders(text):
 def extract(url, security_code=None, bond_name=None, issuer_name=None):
     pages, evidence = read_document(url, security_code, bond_name, issuer_name)
     combined = '\n'.join(clean_page(page) for page in pages)
-    candidates = list(re.finditer(r'前十名(?:转债|可转债)持有人', combined))
+    candidates = list(re.finditer(HOLDER_TITLE, combined))
     scope = None
     if len(candidates) > 1:
         bindings = list(re.finditer(r'可转换公司债券名称\s*([^\n]+)', combined))

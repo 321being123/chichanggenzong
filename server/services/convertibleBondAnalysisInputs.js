@@ -19,7 +19,16 @@ async function projectDocument(kind,event,bond) {
   if(kind!=='prospectus')args.push('--bond-name',bond.bond_short_name);
   const issuer=(bond.bond_full_name||'').match(/^(.+?(?:股份有限公司|有限责任公司))/)?.[1];
   if(issuer)args.push('--issuer-name',issuer);
-  if(kind==='rating')args.push('--announcement-date',isoDate(event.event_date));
+  if(kind==='rating') {
+    args.push('--announcement-date',isoDate(event.event_date));
+    if(bond.value_date)args.push('--issue-date',isoDate(bond.value_date));
+    const size=Number(bond.raw_payload?.issue_size),issued=isoDate(bond.value_date),maturity=isoDate(bond.maturity_date);
+    if(size>0&&issued&&maturity&&maturity.slice(5)===issued.slice(5)&&isoDate(event.event_date)<=issued) {
+      const {rows}=await pool.query(`SELECT COUNT(*)::int AS matches FROM fundamental.convertible_bond_profiles p
+        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1 AND p.issue_size=$2`,[bond.stock_code,size]);
+      if(rows[0]?.matches===1)args.push('--initial-issue-size-yuan',String(size),'--initial-tenor-years',String(Number(maturity.slice(0,4))-Number(issued.slice(0,4))));
+    }
+  }
   if(kind==='price_history'&&bond.first_conv_price!=null)args.push('--initial-price',String(bond.first_conv_price));
   const output=await new Promise((resolve,reject)=>execFile(tools.pythonCandidates()[0],args,
     {cwd:path.join(__dirname,'..','..'),env:childProcessEnv({PYTHONUTF8:'1'}),windowsHide:true,timeout:90000,maxBuffer:8*1024*1024},

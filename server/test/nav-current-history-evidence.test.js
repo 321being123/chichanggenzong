@@ -40,6 +40,7 @@ db.pool.query = async (sql, params) => {
 partitions.publishDatasetSnapshot = async (code, options) => {
   assert.strictEqual(code, 'nav_snapshot');
   assert.strictEqual(options.partitionKey, '2026-09-30');
+  assert.strictEqual(options.diagnostics.quality_status, 'passed');
   assert.deepStrictEqual(options.diagnostics.historical_missing_dates, historicalGap ? ['2026-07-03'] : []);
   assert.strictEqual(options.diagnostics.checked_accounts, 3);
   published.push(options);
@@ -71,6 +72,9 @@ const { runNavSnapshotJob } = require('../jobs/navSnapshot');
   assert.strictEqual(complete.ok, true);
   assert.strictEqual(complete.days, 0);
   assert.strictEqual(complete.dataAsOf, '2026-09-30');
+  // NAV-QUALITY-DIAGNOSTICS-002: 编排器重复发布仍须携带原账户核验质量证据。
+  assert.strictEqual(complete.datasetDiagnostics.nav_snapshot.quality_status,'passed');
+  assert.strictEqual(complete.datasetDiagnostics.nav_snapshot.checked_accounts,3);
   const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
   const slot = { slot_id: 1446206, job_code: 'nav_snapshot', business_date: '2026-09-30', status: 'succeeded', result_summary: complete };
   const query = async sql => sql.includes('FROM job_runs')

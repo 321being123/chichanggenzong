@@ -10,6 +10,7 @@ require('../services/cashIncome').settleCashIncome = async (username,accountName
 let currentExists = true;
 let emptyCash = 0;
 let published = [];
+let historicalGap = true;
 db.tryClaimJob = async () => true;
 db.releaseJob = async () => {};
 db.startJobRun = async () => 1;
@@ -28,7 +29,7 @@ state.prefetchMarketFacts = async () => {};
 db.pool.query = async (sql, params) => {
   if (sql.includes('SELECT cash_base')) return { rows: [{ cash_base: emptyCash }] };
   if (sql.includes('FROM accounts')) return { rows: [{ username: 'test', account_name: '账户甲' }, { username: 'test', account_name: '账户乙' }, { username: 'test', account_name: '空账户' }] };
-  if (sql.includes('FROM daily_prices')) return { rows: [{ date: '2026-07-03', code: '600000', price: 10 }] };
+  if (sql.includes('FROM daily_prices')) return { rows: historicalGap ? [{ date: '2026-07-03', code: '600000', price: 10 }] : [] };
   if (sql.includes('FROM market.fx_rates')) return { rows: [] };
   if (sql.includes('FROM nav_history')) {
     assert.strictEqual(params[2], '2026-09-30');
@@ -39,7 +40,7 @@ db.pool.query = async (sql, params) => {
 partitions.publishDatasetSnapshot = async (code, options) => {
   assert.strictEqual(code, 'nav_snapshot');
   assert.strictEqual(options.partitionKey, '2026-09-30');
-  assert.deepStrictEqual(options.diagnostics.historical_missing_dates, ['2026-07-03']);
+  assert.deepStrictEqual(options.diagnostics.historical_missing_dates, historicalGap ? ['2026-07-03'] : []);
   assert.strictEqual(options.diagnostics.checked_accounts, 3);
   published.push(options);
   return { published: true, datasetCode: code, partitionKey: options.partitionKey };
@@ -49,17 +50,34 @@ const { runNavSnapshotJob } = require('../jobs/navSnapshot');
   const result = await runNavSnapshotJob({ targetDate: '2026-09-30' });
   assert.strictEqual(result.ok, false, '历史缺口不能被当日净值成功掩盖');
   assert.strictEqual(result.currentDate.complete, true);
+  assert.strictEqual(result.dataAsOf, '2026-09-30');
   assert.strictEqual(result.failedAccounts.length, 2);
   assert.strictEqual(result.currentDate.accounts[2].status, 'verified_no_change');
   assert.strictEqual(published.length, 1, '当日完整分区应独立发布');
   currentExists = false;
   const missingCurrent = await runNavSnapshotJob({ targetDate: '2026-09-30' });
   assert.strictEqual(missingCurrent.currentDate.complete, false);
+  assert.strictEqual(missingCurrent.dataAsOf, null, '未完成目标日不得返回恢复水位');
   assert.strictEqual(published.length, 1, '当日缺真实基准不得发布');
   currentExists = true;
   emptyCash = 100;
   const cashOnly = await runNavSnapshotJob({ targetDate: '2026-09-30' });
   assert.strictEqual(cashOnly.currentDate.complete, false, '有现金的账户不能冒充无资产');
   assert.strictEqual(published.length, 1);
+  // NAV-RECOVERY-WATERMARK-001：零新增也必须传递经核验的目标日，不借用运行当天。
+  historicalGap = false;
+  emptyCash = 0;
+  const complete = await runNavSnapshotJob({ targetDate: '2026-09-30' });
+  assert.strictEqual(complete.ok, true);
+  assert.strictEqual(complete.days, 0);
+  assert.strictEqual(complete.dataAsOf, '2026-09-30');
+  const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
+  const slot = { slot_id: 1446206, job_code: 'nav_snapshot', business_date: '2026-09-30', status: 'succeeded', result_summary: complete };
+  const query = async sql => sql.includes('FROM job_runs')
+    ? { rows: [{ id: 1, slot_id: slot.slot_id, status: 'done', result_json: complete }] }
+    : { rows: [{ dataset_code: 'nav_snapshot', scope_key: 'GLOBAL', status: 'published', is_stale: false, diagnostics: { quality_status: 'passed' } }] };
+  assert.strictEqual((await verifySlotRecoveryEvidence(slot, query)).recovered, true);
+  assert.strictEqual((await verifySlotRecoveryEvidence({ ...slot, result_summary: { ...complete, dataAsOf: null } }, async sql => sql.includes('FROM job_runs')
+    ? {rows:[{id:1,slot_id:slot.slot_id,status:'done',result_json:{...complete,dataAsOf:null}}]} : query(sql))).recovered, false);
   console.log('nav current partition and historical gaps independently verified');
 })().catch(error => { console.error(error); process.exitCode = 1; });

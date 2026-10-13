@@ -364,6 +364,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
       accountCount,
       failedAccounts,
       currentDate: { date: targetDate, complete: currentComplete, accounts: currentAccounts },
+      dataAsOf: currentComplete ? targetDate : null,
       datasets: currentPublication?.published ? [currentPublication] : [],
       missingDates: [...new Set(failedAccounts.flatMap(item => item.missingDates || []))],
       failedDatasets: failedAccounts.length ? ['nav_snapshot'] : [],

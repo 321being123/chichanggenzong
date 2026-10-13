@@ -2193,6 +2193,22 @@
       "status": "verified"
     },
     {
+      "id": "IPO-CALENDAR-INPUTS-001",
+      "title": "日报只依赖对应业务日发行事件和流通规模分区，独立详细资料失败不能越界阻塞",
+      "implementation": {
+        "file": "server/jobs/ipoCalendarRefresh.js",
+        "symbol": "verifyIpoCalendarBondInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-calendar-stage-recovery.test.js",
+          "pattern": "IPO-CALENDAR-INPUTS-001"
+        }
+      ],
+      "owner": "后台任务治理",
+      "status": "verified"
+    },
+    {
       "id": "BOND-ANALYSIS-005",
       "title": "可转债估值与详细快照按上一交易日发布分区依赖，不等待不存在的同日上游任务",
       "implementation": {

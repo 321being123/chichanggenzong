@@ -121,19 +121,25 @@ function runWith(executable, runtime, targetDate) {
   });
 }
 
+async function verifyIpoCalendarBondInputs(publicationDate) {
+  const { areJobDatasetsPublished } = require('../services/datasetPartitionRegistry');
+  // 日报只消费发行和流通事实，详细分析资料属于独立阶段。
+  const required = ['bond_issuance_events', 'bond_listing_liquidity'];
+  if (!(await areJobDatasetsPublished('convertible_bond_announcement_history_sync', publicationDate, required))) {
+    const error = new Error(`打新日报前置事实未完成：${publicationDate} 的可转债发行事件或流通规模尚未发布或质量未通过`);
+    error.code = 'DATASET_INCOMPLETE';
+    error.errorType = 'data_quality';
+    throw error;
+  }
+}
+
 async function runIpoCalendarRefreshRaw(reason = 'scheduled', targetDate, businessDate) {
   if (running) return { skipped: true };
   running = true;
   const errors = [];
   try {
-    const { areJobDatasetsPublished } = require('../services/datasetPartitionRegistry');
     const publicationDate = String(businessDate || shanghaiParts().year + '-' + shanghaiParts().month + '-' + shanghaiParts().day).slice(0, 10);
-    if (!(await areJobDatasetsPublished('convertible_bond_announcement_history_sync', publicationDate))) {
-      const error = new Error(`打新日报前置事实未完成：${publicationDate} 的可转债流通规模尚未发布`);
-      error.code = 'DATASET_INCOMPLETE';
-      error.errorType = 'data_quality';
-      throw error;
-    }
+    await verifyIpoCalendarBondInputs(publicationDate);
     const runtime = await getProviderRuntime('tushare');
     for (const executable of pythonCandidates()) {
       try {
@@ -228,4 +234,4 @@ function scheduleIpoCalendarRefresh() {
   console.log('[ipo-calendar] 已调度：工作日 18:05（上海时间，读取16:30上市前预测缺口检查结果）');
 }
 
-module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, runIpoCalendarStartupCatchup, scheduleIpoCalendarRefresh, pythonCandidates, summarizeIpoPythonError };
+module.exports = { SCRIPT, nextIpoRefreshDelay, runIpoCalendarRefresh, runIpoCalendarStartupCatchup, scheduleIpoCalendarRefresh, pythonCandidates, summarizeIpoPythonError, verifyIpoCalendarBondInputs };

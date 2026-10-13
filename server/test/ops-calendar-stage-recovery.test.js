@@ -28,13 +28,33 @@ const { loadHolidays, saveHolidays } = require('../config/holidays');
 const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
 const { readSnapshot } = require('../services/datasetPartitionRegistry');
 const { verifiedStockDataDate } = require('../jobs/stockAnalysisRefresh');
+const { verifyIpoCalendarBondInputs } = require('../jobs/ipoCalendarRefresh');
 
 async function main() {
   const client = await pool.connect();
   const realConnect = pool.connect;
+  const realPoolQuery = pool.query;
   pool.connect = async () => ({ query: client.query.bind(client), release() {} });
   try {
     await client.query('BEGIN');
+    // IPO-CALENDAR-INPUTS-001：真实分区隔离，资料阶段失败不能阻塞日报。
+    pool.query = client.query.bind(client);
+    const partitionDate = '2099-10-13';
+    await client.query('DELETE FROM ops.dataset_partitions WHERE partition_key=$1::date', [partitionDate]);
+    await client.query(`INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,is_stale,diagnostics)
+      VALUES ('bond_issuance_events','CN',$1,'published',false,'{"quality_status":"passed"}'),
+             ('bond_listing_liquidity','CN',$1,'published',false,'{"quality_status":"passed","query_status":"success","coverage_status":"verified_no_change"}'),
+             ('bond_analysis_inputs','CN',$1,'rejected',true,'{"quality_status":"failed"}')`, [partitionDate]);
+    await verifyIpoCalendarBondInputs(partitionDate);
+    await assert.rejects(verifyIpoCalendarBondInputs('2099-10-12'), { code: 'DATASET_INCOMPLETE' });
+    await client.query("UPDATE ops.dataset_partitions SET diagnostics=$2::jsonb WHERE dataset_code='bond_listing_liquidity' AND partition_key=$1", [partitionDate, JSON.stringify({quality_status:'failed'})]);
+    await assert.rejects(verifyIpoCalendarBondInputs(partitionDate), { code: 'DATASET_INCOMPLETE' });
+    await client.query("UPDATE ops.dataset_partitions SET diagnostics=$2::jsonb,is_stale=true WHERE dataset_code='bond_listing_liquidity' AND partition_key=$1", [partitionDate, JSON.stringify({quality_status:'passed'})]);
+    await assert.rejects(verifyIpoCalendarBondInputs(partitionDate), { code: 'DATASET_INCOMPLETE' });
+    await client.query("UPDATE ops.dataset_partitions SET is_stale=false WHERE dataset_code='bond_listing_liquidity' AND partition_key=$1", [partitionDate]);
+    await client.query("DELETE FROM ops.dataset_partitions WHERE dataset_code='bond_issuance_events' AND partition_key=$1", [partitionDate]);
+    await assert.rejects(verifyIpoCalendarBondInputs(partitionDate), { code: 'DATASET_INCOMPLETE' });
+    pool.query = realPoolQuery;
     await client.query("DELETE FROM market.trade_calendar WHERE exchange='SSE' AND trade_date BETWEEN '2026-01-01' AND '2026-12-31'");
     saveHolidays({ updatedAt: '2026-09-15', years: { 2026: ['2026-10-01'] } });
     assert.strictEqual(calendar.datesForYear(2024).length, 366);
@@ -109,6 +129,7 @@ async function main() {
   } finally {
     await client.query('ROLLBACK');
     pool.connect = realConnect;
+    pool.query = realPoolQuery;
     client.release();
     market.tushareQuery = realQuery;
     await pool.end();

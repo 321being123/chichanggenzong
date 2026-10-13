@@ -20,7 +20,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
       return require('../jobs/hkRate').runHkRateJob({ final: true, targetDate: businessDate });
     case 'nav_snapshot':
       if(context.mode==='cash_income') return require('./cashIncomeQueue').run({...context,targetDate:context.targetDate||businessDate});
-      return {...await require('../jobs/navSnapshot').runNavSnapshotJob({ targetDate: businessDate }),mode:'core',publishDatasetCodes:['nav_snapshot']};
+      return {...await require('../jobs/navSnapshot').runNavSnapshotJob({ targetDate: businessDate }),mode:'core'};
     case 'index_baseline':
       return require('../jobs/indexBaseline').runIndexBaselineJob(reason);
     case 'index_recent':

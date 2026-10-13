@@ -43,6 +43,12 @@ parsed=rating.parse_rating_pages(['华海转债 主体/展望/债项/评级时�
 assert parsed['rating']=='AA' and parsed['rating_date']=='2023-06-27'
 parsed=rating.parse_rating_pages(['维持“洪城转债”信用等级为AA+，评级展望为稳定。二〇二六年六月八日'],'洪城转债','2026-06-13')
 assert parsed['rating_date']=='2026-06-08' and parsed['rating_date_source']=='official_document'
+# BOND-ANALYSIS-NATIVE-002: 有效原生维持结论与机构签署日期无需OCR。
+parsed=rating.parse_rating_pages(['“精工转债”的信用等级维持AA，评级展望维持稳定。二〇二六年五月十五日'],'精工转债','2026-05-19')
+assert parsed['rating']=='AA' and parsed['rating_outlook']=='稳定' and parsed['rating_date']=='2026-05-15'
+parsed=rating.parse_rating_pages(['“闻泰转债”信用等级由AA调整至AA-，评级展望为稳定。中诚信国际信用评级有限责任公司\n2025年6月16日'],'闻泰转债','2025-06-18')
+assert parsed['rating']=='AA-' and parsed['rating_date']=='2025-06-16'
+assert rating.official_rating_date(['历史2025年6月16日，其他无关事项2025年6月17日'])[0] is None
 history=importlib.import_module('extractConvertibleBondPriceHistory')
 history.read_document=lambda *a: (['无转股价调整表'],{'document_hash':'a'*64,'source_url':'url'})
 assert history.extract_history('url')['document_hash']=='a'*64
@@ -66,6 +72,10 @@ unranked='前十名转债持有人情况如下：\n期末持债数量（元）\n
 parsed=holders.parse_holders(unranked)
 assert len(parsed)==10 and holders.aggregate(parsed)['holding_quantity']==1
 assert sum(r['amount'] for r in parsed)==1000000 and sum(r['quantity'] for r in parsed)==10000
+# BOND-ANALYSIS-WRAPPED-003: 元金额跨行只按完整千分位组拼接，比例独立。
+wrapped=unranked.replace('期末持债数量','期末持债数\n量').replace('持有比例','持有比\n例').replace('100000','3,130,210,00\n0')
+parsed=holders.parse_holders(wrapped)
+assert len(parsed)==10 and parsed[0]['amount']==3130210000 and parsed[0]['ratio']==0.01
 single_bond=unranked.replace('100000','100')
 assert len(holders.parse_holders(single_bond))==10 and sum(r['quantity'] for r in holders.parse_holders(single_bond))==10
 holders.read_document=lambda *a: (['前十名转债持有人情况如下：\n只有一行'],{'document_hash':'hash'})

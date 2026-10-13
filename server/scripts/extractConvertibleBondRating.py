@@ -29,6 +29,7 @@ def official_rating_date(pages):
     compact = re.sub(r'\s+', '', '\n'.join(pages[:3]))
     patterns = [
         r'(?:评级日期|评级时间|本次评级时间|报告日期)[：:]?.{0,80}?(20\d{2})[年/.-](\d{1,2})[月/.-](\d{1,2})日?',
+        r'(?:中诚信国际信用评级有限责任公司|大公国际资信评估有限公司|联合资信评估股份有限公司|中证鹏元资信评估股份有限公司|东方金诚国际信用评估有限公司)[：:]?(20\d{2})年(\d{1,2})月(\d{1,2})日',
         r'([二〇○零一三四五六七八九]{4})年([一二三四五六七八九十\d]{1,3})月([一二三四五六七八九十\d]{1,3})日',
     ]
     for pattern in patterns:
@@ -50,7 +51,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     table = None
     if bond_name and bond_name in summary and re.search(r'(?:主体|评级)/展望/债项/评级时间', summary):
         table = re.search(r'本次(?:跟踪|评级)[：:]?([A-D]{1,3}[+-]?)/(稳定|正面|负面|发展中|观察)/([A-D]{1,3}[+-]?)/(20\d{2})年(\d{1,2})月(\d{1,2})日', summary)
-    outlook_match = re.search(r"评级展望\s*(?:调整)?为?\s*[：:]?\s*(稳定|正面|负面|发展中|观察)", text)
+    outlook_match = re.search(r"评级展望\s*(?:调整|维持)?为?\s*[：:]?\s*(稳定|正面|负面|发展中|观察)", text)
     rating_match = re.search(
         r"主体信用等级由[A-D]{1,3}[+-]?(?:调整至|调降至|上调至)[“\"]?([A-D]{1,3}[+-]?)",
         compact,
@@ -60,7 +61,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     if not rating_match:
         rating_match = re.search(r"主体信用等级为[“\"]?([A-D]{1,3}[+-]?)", compact)
     if bond_name:
-        rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:长期)?信用等级(?:由[A-D]{1,3}[+-]?(?:调整至|上调至|调降至)|均为|为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
+        rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:长期)?信用等级(?:由[A-D]{1,3}[+-]?(?:调整至|上调至|调降至)|均为|为|维持为|维持|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
         if not rating_match:
             rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:信用)?评级(?:结果)?(?:为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
         if not rating_match:
@@ -86,7 +87,9 @@ def parse_rating_pages(pages, bond_name, announcement_date):
 def extract_rating(url, announcement_date=None, security_code=None, bond_name=None, issuer_name=None):
     def complete(pages):
         text = re.sub(r'\s+', '', '\n'.join(pages))
-        identity = (not security_code or security_code.split('.')[0] in text or issuer_name and issuer_name in text) and (not bond_name or bond_name in text)
+        issuer = re.sub(r'\s+', '', unicodedata.normalize('NFKC', issuer_name or ''))
+        text = unicodedata.normalize('NFKC', text)
+        identity = (not security_code or security_code.split('.')[0] in text or issuer and issuer in text) and (not bond_name or bond_name in text)
         result = parse_rating_pages(pages, bond_name, announcement_date)
         return identity and result['rating'] and result['rating_outlook'] and result['rating_date_source'] == 'official_document'
     try:

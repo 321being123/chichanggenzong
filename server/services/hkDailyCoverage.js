@@ -151,6 +151,7 @@ async function loadCandidates(client, fromDate, toDate, limit = null, targetCode
             AND b.trade_date <= $${coverageDateParam}::date
        ) coverage ON true
       WHERE i.asset_class='stock' AND i.market='HK'
+        AND i.list_date IS NOT NULL AND i.list_date::date <= $${coverageDateParam}::date
         AND i.canonical_code ~ '^\\d{5}\\.HK$'
         ${dateFilter}
         AND COALESCE(coverage.observed_days,0) < 5

@@ -73,8 +73,8 @@ const JOB_CONTRACTS = {
   'market_close:LOF/ETF': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: null },
   'hk_rate': { externalApis: ['exchange_rate_realtime', 'exchange_rate'], producesDatasets: ['hk_fx_rate'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'market_close:港股': { externalApis: ['tencent_quote'], producesDatasets: ['account_daily_prices'], consumesDatasets: ['account_positions'], maxExternalCallsPerRun: null },
-  'nav_snapshot': { externalApis: [], producesDatasets: ['nav_snapshot','account_cash_income'], consumesDatasets: ['account_daily_prices'], maxExternalCallsPerRun: 0,
-    datasetPublicationByMode:{core:{publish:['nav_snapshot']},cash_income:{publish:['account_cash_income'],requireStageComplete:true}} },
+  'nav_snapshot': { externalApis: ['repo_daily'], producesDatasets: ['nav_snapshot','account_cash_income','repo_daily_rates'], consumesDatasets: ['account_daily_prices'], maxExternalCallsPerRun: null,modeExternalCallLimits:{cash_income:0},
+    datasetPublicationByMode:{core:{publish:['nav_snapshot'],optionalPublish:['repo_daily_rates']},cash_income:{publish:['account_cash_income'],requireStageComplete:true}} },
   'index_recent': { externalApis: ['index_daily'], producesDatasets: ['index_daily'], consumesDatasets: [], maxExternalCallsPerRun: null },
   'ipo_calendar_refresh': { externalApis: [], producesDatasets: ['ipo_calendar'], consumesDatasets: ['ipo_history', 'trade_calendar', 'bond_issuance_events', 'bond_listing_liquidity'], maxExternalCallsPerRun: 0 },
   'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d', 'tencent_quote','repo_daily'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar','repo_daily_rates'], consumesDatasets: [], maxExternalCallsPerRun: null,
@@ -126,7 +126,7 @@ const DATA_DATE_POLICIES = Object.freeze(['none', 'same_day', 'previous_trading_
 const PARTITION_DATE_POLICIES = Object.freeze(['business_date', 'previous_trading_day', 'expected_data_date']);
 const CONTRACT_FIELDS = Object.freeze([
   'externalApis', 'producesDatasets', 'consumesDatasets', 'datasetDependencies', 'maxExternalCallsPerRun',
-  'datasetPublicationByMode',
+  'datasetPublicationByMode', 'modeExternalCallLimits',
 ]);
 
 const JOB_DEFINITIONS = JOB_DEFINITION_SOURCE.map(item => ({
@@ -221,7 +221,7 @@ function validateJobDefinitionSources({
         errors.push(`${item.jobCode} 存在无效的 datasetPublicationByMode 契约`);
         continue;
       }
-      for (const field of ['publish', 'requirePublished']) {
+      for (const field of ['publish', 'optionalPublish', 'requirePublished']) {
         const codes = phase[field] || [];
         if (!Array.isArray(codes) || new Set(codes).size !== codes.length) {
           errors.push(`${item.jobCode}.${mode}.${field} 必须是无重复数据集代码的数组`);

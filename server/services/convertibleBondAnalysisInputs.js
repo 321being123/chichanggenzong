@@ -169,7 +169,8 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
   const attemptedCodes=new Set([...(previous?.attemptedCodes||[]),...rows.filter(b=>b.raw_payload.analysis_inputs?.coveredThrough)
     .map(b=>b.ts_code)]);
   // A failed historical PDF cannot keep every later security behind the same batch boundary.
-  rows.sort((a,b)=>Number(attemptedCodes.has(a.ts_code))-Number(attemptedCodes.has(b.ts_code)));
+  rows.sort((a,b)=>Number(attemptedCodes.has(a.ts_code))-Number(attemptedCodes.has(b.ts_code)) ||
+    (Date.parse(a.raw_payload.analysis_inputs?.lastAttemptAt||'1970-01-01')-Date.parse(b.raw_payload.analysis_inputs?.lastAttemptAt||'1970-01-01')));
   const persist=async(dataset,date,state)=>(deps.persist||persistAnalysisProgress)(dataset,date,{...state,scopeKey});
   let count=0,attempted=0;
   let stoppedForTime=false;
@@ -177,8 +178,9 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     if(Date.now()-started>=maxRuntimeMs){remaining.push(bond.ts_code);stoppedForTime=true;continue;}
     attempted++;
     attemptedCodes.add(bond.ts_code);
-    const state={...(bond.raw_payload.analysis_inputs||{}),documents:{...(bond.raw_payload.analysis_inputs?.documents||{})},parserVersion:INPUT_VERSION};
+    const state={...(bond.raw_payload.analysis_inputs||{}),documents:{...(bond.raw_payload.analysis_inputs?.documents||{})},parserVersion:INPUT_VERSION,lastAttemptAt:new Date().toISOString()};
     try {
+      await (deps.persistBond||persistBondInputs)(bond,state);
       const missing=[];
       if(!state.coveredThrough||state.coveredThrough<targetDate) {
         try {

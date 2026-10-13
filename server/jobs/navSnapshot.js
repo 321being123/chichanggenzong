@@ -329,7 +329,10 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
   let total = 0, accountCount = 0;
   const failedAccounts = [];
   const currentAccounts = [];
+  let repoRates=null;
   try {
+    // 08:00共享采集补历史；收盘净值只通过同一服务补目标日缺口，不另起采集器。
+    repoRates=await require('../services/repoDailyRates').ensureNavRepoRate(targetDate);
     const { rows: accountRows } = await pool.query('SELECT username, account_name FROM accounts ORDER BY username, created_at');
     for (const account of accountRows) {
       const accountName = account.account_name;
@@ -349,7 +352,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
         currentAccounts.push({ accountName, status: 'incomplete' });
       }
     }
-    const currentComplete = currentAccounts.length > 0 && currentAccounts.every(account => ['complete', 'verified_no_change'].includes(account.status));
+    const currentComplete = repoRates?.ok !== false && currentAccounts.length > 0 && currentAccounts.every(account => ['complete', 'verified_no_change'].includes(account.status));
     // 全部账户已完成当日事实时单独发布当日分区；历史缺口仍返回partial并保留原日期告警。
     const currentPublication = currentComplete ? await require('../services/datasetPartitionRegistry').publishDatasetSnapshot('nav_snapshot', {
       partitionKey: targetDate, dataAsOf: targetDate, reason: 'nav_snapshot:current_date',
@@ -358,16 +361,20 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
         checked_accounts: currentAccounts.length, historical_missing_dates: [...new Set(failedAccounts.flatMap(account => account.missingDates || []))] },
     }) : null;
     const result = {
-      ok: failedAccounts.length === 0,
-      status: failedAccounts.length ? 'partial' : 'succeeded',
+      ok: failedAccounts.length === 0 && repoRates?.ok !== false,
+      status: failedAccounts.length || repoRates?.ok === false ? 'partial' : 'succeeded',
       days: total,
       accountCount,
       failedAccounts,
       currentDate: { date: targetDate, complete: currentComplete, accounts: currentAccounts },
       dataAsOf: currentComplete ? targetDate : null,
+      repoRates,
+      publishDatasetCodes:repoRates?.ok?['nav_snapshot','repo_daily_rates']:['nav_snapshot'],
+      ...(repoRates?.ok?{datasetDiagnostics:{repo_daily_rates:{...repoRates,query_status:'success',quality_status:'passed'}}}:{}),
       datasets: currentPublication?.published ? [currentPublication] : [],
       missingDates: [...new Set(failedAccounts.flatMap(item => item.missingDates || []))],
-      failedDatasets: failedAccounts.length ? ['nav_snapshot'] : [],
+      failedDatasets: [...(failedAccounts.length ? ['nav_snapshot'] : []),...(repoRates?.ok===false?['repo_daily_rates']:[])],
+      ...(repoRates?.ok===false?{error:'目标日回购利率未通过质量核验',errorType:'data_quality',pendingStages:['repoDailyRates']}:{}),
       ...(failedAccounts.length ? { error: '部分账户净值快照未完成', errorType: 'data_quality' } : {}),
     };
     await finishJobRun(runId, result.ok, result.ok ? ('补' + total + '条 / ' + accountCount + '账户') : JSON.stringify(result));

@@ -77,5 +77,21 @@ const {pool}=require('../db/connection');
     discover:async(b)=>{order.push(b.ts_code);throw new Error('文档失败');},persist:async()=>{},
   });
   assert.deepEqual(order,['127041.SZ','127040.SZ'],'历史失败对象不能阻挡尚未采集证券，跨日期仍保存首次遍历顺序');
+  // BOND-ANALYSIS-FAIR-006: 首次遍历完成后的超时续批也不能反复卡在同一前缀。
+  const fairRows=['127050.SZ','127051.SZ','127052.SZ'].map(ts_code=>({...bond,ts_code,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{}}}}));
+  const fairOrder=[];
+  let elapsed=0;
+  const realNow=Date.now;
+  const fairDeps={...deps,loadUniverse:async()=>fairRows,readProgress:async()=>({attemptedCodes:fairRows.map(b=>b.ts_code)}),
+    readDocuments:async b=>{fairOrder.push(b.ts_code);elapsed=2;return [];},persist:async()=>{}};
+  try {
+    Date.now=()=>elapsed;
+    for(let batch=0;batch<3;batch++) {
+      elapsed=0;
+      const result=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',maxRuntimeMs:1},fairDeps);
+      assert.equal(result.ok,false);assert.equal(result.remainingCount,3);assert.equal(result.continuationRequired,true);
+    }
+  } finally {Date.now=realNow;}
+  assert.deepEqual(fairOrder,['127050.SZ','127051.SZ','127052.SZ']);
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

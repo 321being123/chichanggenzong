@@ -19,13 +19,18 @@ function tradingDates(start,end) {
   for(let d=start;d<=end;d=shiftDay(d)) if(trading(d)) dates.push(d);
   return dates;
 }
-async function syncRepoDailyRates({targetDate,startDate,probe=false}={}) {
+function completedRepoTarget(targetDate,{allowCompletedToday=false,now=new Date()}={}) {
+  const today=CoreDate.dateInZone(now,'Asia/Shanghai');
+  const clock=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(now);
+  return Boolean(CoreDate.normalizeBusinessDate(targetDate)&&targetDate<=today&&(targetDate<today||allowCompletedToday&&clock>='15:30'&&tradingDates(today,today).length));
+}
+async function syncRepoDailyRates({targetDate,startDate,probe=false,allowCompletedToday=false}={}) {
   if(!startDate) {
     const anchors=(await pool.query(`SELECT MIN(anchor_date)::text AS start_date FROM (SELECT MAX(n.date) AS anchor_date FROM nav_history n JOIN accounts a ON a.username=n.username AND a.account_name=n.account_name
       WHERE a.cash_income_policy->>'enabled'='true' AND (n.is_locked OR n.snapshot_source='imported') AND n.date <= $1 GROUP BY a.id) anchors`,[targetDate])).rows[0];
     startDate=anchors?.start_date||targetDate;
   }
-  if(!CoreDate.normalizeBusinessDate(targetDate)||!CoreDate.normalizeBusinessDate(startDate)||startDate>targetDate || targetDate>=CoreDate.todayInZone('Asia/Shanghai')) throw new Error('回购采集仅接受已完成交易日区间');
+  if(!completedRepoTarget(targetDate,{allowCompletedToday})||!CoreDate.normalizeBusinessDate(startDate)||startDate>targetDate) throw new Error('回购采集仅接受已完成交易日区间');
   let identity=await resolveInstrument({canonicalCode:CODE});
   if(!identity) {
     const master=await require('./securityIdentity').ensureInstrumentIdentity({canonicalCode:CODE,name:'GC001',assetClass:'repo',market:'CN',exchangeCode:'SSE',currencyCode:'CNY',status:'listed'});
@@ -79,4 +84,11 @@ async function loadRepoRates(executor=pool.query.bind(pool)) {
     WHERE i.canonical_code=$1 AND r.quality_status='passed' ORDER BY r.trade_date,r.ingested_at`,[CODE])).rows;
   return Object.fromEntries(rows.map(r=>[r.trade_date,{annualRate:Number(r.weighted_annual_rate),sourceId:r.source_id,rawRecordId:r.raw_record_id,sourceRevision:r.source_revision}]));
 }
-module.exports={normalize,tradingDates,syncRepoDailyRates,loadRepoRates};
+async function ensureNavRepoRate(targetDate,{query=pool.query.bind(pool),sync=syncRepoDailyRates}={}) {
+  const {rows:enabled}=await query("SELECT COUNT(*)::int AS enabled_count FROM accounts WHERE cash_income_policy->>'enabled'='true'");
+  if(!Number(enabled[0]?.enabled_count)||!tradingDates(targetDate,targetDate).length) return null;
+  const {rows:rates}=await query("SELECT 1 FROM market.repo_daily_rates r JOIN core.instruments i USING(instrument_id) WHERE i.canonical_code='204001.SH' AND r.trade_date=$1::date AND r.quality_status='passed' LIMIT 1",[targetDate]);
+  if(rates.length) return null;
+  return sync({targetDate,startDate:targetDate,allowCompletedToday:true}).catch(error=>({ok:false,error:error.message}));
+}
+module.exports={normalize,tradingDates,syncRepoDailyRates,loadRepoRates,completedRepoTarget,ensureNavRepoRate};

@@ -146,7 +146,8 @@ async function publishJobDatasets(jobCode, businessDate, result) {
   }
   if (phaseContract) {
     const expected = phaseContract.publish || [];
-    if (requestedDatasets.length !== expected.length || expected.some(code => !requestedDatasets.includes(code))) {
+    const optional = phaseContract.optionalPublish || [];
+    if (new Set(requestedDatasets).size !== requestedDatasets.length || expected.some(code => !requestedDatasets.includes(code)) || requestedDatasets.some(code => !expected.includes(code) && !optional.includes(code))) {
       throw new Error(`${jobCode}/${phaseMode} 实际发布数据集与阶段契约不一致`);
     }
     if (result && result.ok === false) return [];

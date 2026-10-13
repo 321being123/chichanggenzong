@@ -2195,32 +2195,64 @@
     {
       "id": "HK-IPO-PRICING-001",
       "title": "独立发售价公告沿原官方事实Runner补实际定价，证券币种及原文隔离，未来配发不挡已发布定价",
-      "implementation": { "file": "server/services/hkexIpo.js", "symbol": "syncHkexPricingFacts" },
-      "tests": [{ "file": "server/test/hk-ipo-pricing-document.test.js", "pattern": "HK-IPO-PRICING-001" }],
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "syncHkexPricingFacts"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-pricing-document.test.js",
+          "pattern": "HK-IPO-PRICING-001"
+        }
+      ],
       "owner": "港股IPO",
       "status": "verified"
     },
     {
       "id": "BOND-ANALYSIS-OCR-001",
       "title": "评级文字层失败时离线OCR保留原文SHA、来源页和阈值，债项等级与中文实际日期独立校验",
-      "implementation": { "file": "server/scripts/extractConvertibleBondRating.py", "symbol": "extract_rating" },
-      "tests": [{ "file": "server/test/convertible-bond-analysis-documents.test.js", "pattern": "BOND-ANALYSIS-OCR-001" }],
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "extract_rating"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-ANALYSIS-OCR-001"
+        }
+      ],
       "owner": "可转债分析",
       "status": "verified"
     },
     {
       "id": "BOND-ANALYSIS-SCOPE-001",
       "title": "同年报多债持有人表依明确债券名称表头隔离，未知归属不合并",
-      "implementation": { "file": "server/scripts/extractConvertibleBondFundHoldings.py", "symbol": "extract" },
-      "tests": [{ "file": "server/test/convertible-bond-analysis-documents.test.js", "pattern": "BOND-ANALYSIS-SCOPE-001" }],
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondFundHoldings.py",
+        "symbol": "extract"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-ANALYSIS-SCOPE-001"
+        }
+      ],
       "owner": "可转债分析",
       "status": "verified"
     },
     {
       "id": "HKIPOX-PERMISSION-001",
       "title": "匿名403只停用具体接口，权限探针复用统一持久化策略，结构或失败不冒充恢复",
-      "implementation": { "file": "server/services/hkIpoMarketSignals.js", "symbol": "probeHkIpoXPermission" },
-      "tests": [{ "file": "server/test/hk-ipo-source-fixtures.test.js", "pattern": "HKIPOX-PERMISSION-001" }],
+      "implementation": {
+        "file": "server/services/hkIpoMarketSignals.js",
+        "symbol": "probeHkIpoXPermission"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-source-fixtures.test.js",
+          "pattern": "HKIPOX-PERMISSION-001"
+        }
+      ],
       "owner": "港股IPO",
       "status": "verified"
     },
@@ -2286,6 +2318,102 @@
         }
       ],
       "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "NAV-REPO-EOD-001",
+      "title": "收盘净值仅通过原服务补目标日回购缺口且已存passed不外采",
+      "implementation": {
+        "file": "server/services/repoDailyRates.js",
+        "symbol": "ensureNavRepoRate"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "NAV-REPO-EOD-001"
+        }
+      ],
+      "owner": "后台告警治理",
+      "status": "verified"
+    },
+    {
+      "id": "NAV-OPTIONAL-DATASET-001",
+      "title": "阶段可选发布不能省略必需分区或越权发布其他模式",
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "optionalPublish"
+      },
+      "tests": [
+        {
+          "file": "server/test/dataset-publication-contract.test.js",
+          "pattern": "NAV-OPTIONAL-DATASET-001"
+        }
+      ],
+      "owner": "后台告警治理",
+      "status": "verified"
+    },
+    {
+      "id": "HK-DAILY-LIFECYCLE-001",
+      "title": "定向港股日线不得绕过实际上市日期和目标日",
+      "implementation": {
+        "file": "server/services/hkDailyCoverage.js",
+        "symbol": "i.list_date IS NOT NULL"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-repo-eod.test.js",
+          "pattern": "HK-DAILY-LIFECYCLE-001"
+        }
+      ],
+      "owner": "后台告警治理",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-NATIVE-002",
+      "title": "评级维持结论和机构签署日期优先原生文本并拒绝无关日期",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "official_rating_date"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-ANALYSIS-NATIVE-002"
+        }
+      ],
+      "owner": "后台告警治理",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-WRAPPED-003",
+      "title": "无序号持有人表跨行元金额仅按完整千分位组拼接并保留独立比例",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondFundHoldings.py",
+        "symbol": "merged = []"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-ANALYSIS-WRAPPED-003"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-FAIR-006",
+      "title": "所有对象首次尝试后续批仍按持久化最后尝试时间公平续跑避免前缀饥饿",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "lastAttemptAt"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-ANALYSIS-FAIR-006"
+        }
+      ],
+      "owner": "可转债资料",
       "status": "verified"
     }
   ]

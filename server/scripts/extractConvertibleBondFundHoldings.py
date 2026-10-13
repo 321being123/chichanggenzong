@@ -42,8 +42,8 @@ def parse_holders(text):
     rank_matches = list(re.finditer(r"(?m)^(10|[1-9])$", table))
     # SSE reports also use an unnumbered table: holder -> CNY face amount -> percent.
     # Its explicit header is mandatory; a lone amount must never be guessed as bond quantity.
-    if not rank_matches and re.search(r"期末持债数量\s*[（(]元[）)]", table):
-        header = re.search(r"持有比例\s*[（(]%[）)]", table)
+    if not rank_matches and re.search(r"期末持债数\s*量\s*[（(]元[）)]", table):
+        header = re.search(r"持有比\s*例\s*[（(]%[）)]", table)
         if not header:
             return []
         section = table[header.end():]
@@ -51,6 +51,16 @@ def parse_holders(text):
         if stop:
             section = section[:stop.start()]
         lines = [line.strip() for line in section.splitlines() if line.strip()]
+        # Narrow PDF cells wrap a comma-group amount; only join when the final
+        # group becomes exactly three digits and a separate decimal ratio follows.
+        merged = []
+        i = 0
+        while i < len(lines):
+            if i + 2 < len(lines) and re.fullmatch(r"\d{1,3}(?:,\d{3})*,\d{1,2}", lines[i]) and re.fullmatch(r"\d{1,2}", lines[i+1]) and re.fullmatch(r"\d+\.\d+%?", lines[i+2]) and len(lines[i].rsplit(',',1)[1])+len(lines[i+1]) == 3:
+                merged.append(lines[i]+lines[i+1]); i += 2
+            else:
+                merged.append(lines[i]); i += 1
+        lines = merged
         holders, name_lines = [], []
         index = 0
         while index < len(lines):

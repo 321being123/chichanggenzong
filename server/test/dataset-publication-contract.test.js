@@ -22,6 +22,13 @@ const { publishJobDatasets, areJobDatasetsPublished } = require('../services/dat
     });
     assert.deepStrictEqual(predictionReady, [], '16:30 阶段不要求核心分区提前发布');
     assert.strictEqual(queryCount, 0, '预测准备阶段不得查询尚未发布的核心分区');
+    // NAV-OPTIONAL-DATASET-001: 只允许本模式声明的可选资料，主数据集不可省略。
+    for(const publishDatasetCodes of [['nav_snapshot'],['nav_snapshot','repo_daily_rates']]) {
+      assert.deepStrictEqual(await publishJobDatasets('nav_snapshot','2026-10-13',{ok:false,mode:'core',publishDatasetCodes}),[]);
+    }
+    for(const publishDatasetCodes of [[],['repo_daily_rates'],['nav_snapshot','account_cash_income'],['nav_snapshot','nav_snapshot']]) {
+      await assert.rejects(()=>publishJobDatasets('nav_snapshot','2026-10-13',{ok:true,mode:'core',publishDatasetCodes}),/阶段契约不一致/);
+    }
 
     await assert.rejects(() => publishJobDatasets('ipo_history_sync', '2026-09-22', {
       ok: true, mode: 'prediction_ready', stageComplete: false,

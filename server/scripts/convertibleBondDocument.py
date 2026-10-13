@@ -2,6 +2,7 @@
 import hashlib
 import os
 import sys
+import unicodedata
 import urllib.request
 from urllib.parse import urlparse
 
@@ -56,10 +57,11 @@ def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr
                 if stop_when and stop_when(recognized):
                     break
             pages = recognized
-    compact = ''.join(''.join(pages).split())
+    compact = ''.join(unicodedata.normalize('NFKC', ''.join(pages)).split())
     if not compact:
         raise ValueError('PDF 无文本层，需要OCR，不能作为解析完成')
-    if security_code and security_code.split('.')[0] not in compact and not (issuer_name and issuer_name in compact):
+    issuer = ''.join(unicodedata.normalize('NFKC', issuer_name or '').split())
+    if security_code and security_code.split('.')[0] not in compact and not (issuer and issuer in compact):
         raise ValueError('PDF 未匹配目标发行人证券代码')
     if bond_name and ''.join(bond_name.split()) not in compact:
         raise ValueError('PDF 未匹配目标可转债简称')

@@ -1,4 +1,4 @@
-const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, readHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexListingStatusNotices, syncHkexProspectusFacts, syncHkexAllotmentFacts } = require('../services/hkexIpo');
+const { runHkexIpoProbe, buildProbePlan, persistHkexProbe, upsertHkIpoFacts, recomputeHkIpoCompleteness, readHkIpoCompleteness, syncHkexHistoricalReports, syncHkexNonPublicListings, syncHkexListingStatusNotices, syncHkexProspectusFacts, syncHkexAllotmentFacts, syncHkexPricingFacts } = require('../services/hkexIpo');
 const { syncTencentHkDailyCoverage } = require('../services/hkDailyCoverage');
 const { syncHkIpoMarketSignals } = require('../services/hkIpoMarketSignals');
 const { pool } = require('../db/connection');
@@ -279,6 +279,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   let listingStatusNotices = null;
   let prospectusFacts = null;
   let allotmentFacts = null;
+  let pricingFacts = null;
   let marketSignals = null;
   let completenessAudit = null;
   if (mode === 'enrichment') {
@@ -319,6 +320,10 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
       }
     }
     if (context.syncAllotment !== false) {
+      if(context.syncPricing!==false) {
+        try {pricingFacts=await syncHkexPricingFacts({asOfDate:targetDate,...(targeted?{targetCodes}:{})});}
+        catch(error){pricingFacts={ok:false,status:'failed',error:error.message};}
+      }
       try {
         const allotmentOptions = { ...(context.allotmentOptions || {}) };
         if (targeted) {
@@ -382,10 +387,10 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   } catch (error) {
     completenessAudit = { ok: false, status: 'failed', error: error.message || String(error) };
   }
-  const subtasks = [historicalReports, nonPublicListings, listingStatusNotices, prospectusFacts, allotmentFacts, dailyCoverage, marketSignals, tencentNames, completenessAudit].filter(Boolean);
+  const subtasks = [historicalReports, nonPublicListings, listingStatusNotices, prospectusFacts, allotmentFacts, pricingFacts, dailyCoverage, marketSignals, tencentNames, completenessAudit].filter(Boolean);
   // 腾讯名称、暗盘和日线属于补充信号；这些可选来源失败时保留官方事实发布，
   // 只把历史报表/非公众分类/招股书/配发结果等核心事实失败标成不可发布。
-  const coreSubtasks = [historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, completenessAudit].filter(Boolean);
+  const coreSubtasks = [historicalReports, nonPublicListings, prospectusFacts, allotmentFacts, pricingFacts, completenessAudit].filter(Boolean);
   const failedSubtasks = coreSubtasks.filter(item => item.ok === false || item.status === 'degraded' || item.failures?.length > 0);
   const degraded = subtasks.some(item => item.ok === false || item.status === 'degraded');
   const signalDiagnostics = marketSignalDiagnostics(marketSignals);
@@ -408,7 +413,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     failedDatasets: factsFailed ? ['hk_ipo_facts'] : [],
     ...(targeted ? { targeted: true, targetCodes } : {}),
     mode, probePersistence, historicalReports, nonPublicListings, listingStatusNotices, prospectusFacts, allotmentFacts,
-    dailyCoverage, marketSignals, tencentNames, completenessAudit, publicationAudit,
+    dailyCoverage, marketSignals, pricingFacts, tencentNames, completenessAudit, publicationAudit,
     datasetDiagnostics: { hk_ipo_facts: factDiagnostics, hk_ipo_subscription_signals: signalDiagnostics },
     probeTargets: (probe.targets || []).length,
     dataAsOf: targetDate,

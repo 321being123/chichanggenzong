@@ -97,8 +97,9 @@ function requestExternal(url, { format = 'json', timeoutMs = 15000 } = {}) {
         const body = Buffer.concat(chunks).toString('utf8');
         if (response.statusCode >= 400) {
           const error = new Error(`港股 IPO 市场信号 HTTP ${response.statusCode}`);
-          error.code = response.statusCode === 429 ? 'RATE_LIMIT' : response.statusCode >= 500 ? 'UPSTREAM_5XX' : response.statusCode === 401 || response.statusCode === 403 ? 'AUTH_ERROR' : 'UPSTREAM_HTTP';
-          error.errorType = response.statusCode === 429 ? 'rate_limit' : response.statusCode >= 500 ? 'network' : 'upstream';
+          error.httpStatus = response.statusCode;
+          error.code = response.statusCode === 429 ? 'RATE_LIMIT' : response.statusCode >= 500 ? 'UPSTREAM_5XX' : response.statusCode === 401 || response.statusCode === 403 ? 'PERMISSION_DENIED' : 'UPSTREAM_HTTP';
+          error.errorType = response.statusCode === 429 ? 'rate_limit' : response.statusCode >= 500 ? 'network' : response.statusCode === 401 || response.statusCode === 403 ? 'permission' : 'upstream';
           reject(error);
           return;
         }
@@ -460,12 +461,39 @@ async function persistSnapshot({
 }
 
 async function guardedFetch(sourceCode, apiName, dataset, url, format, fetchImpl, guardImpl, businessDate) {
-  return guardImpl(sourceCode, dataset, businessDate, () => fetchImpl(url, { format }), { apiName });
+  try {
+    return await guardImpl(sourceCode, dataset, businessDate, () => fetchImpl(url, { format }), { apiName });
+  } catch (error) {
+    if (error.code === 'PERMISSION_DENIED' && [401,403].includes(error.httpStatus)) {
+      await require('./sourceEndpointPolicy').recordEndpointPermission(sourceCode, 'anonymous', apiName, 'none', {status:'permission_denied',message:error.message});
+    }
+    throw error;
+  }
+}
+
+async function probeHkIpoXPermission({businessDate,fetchImpl=requestExternal,guardImpl=withExternalCallGuard,claimImpl,recordImpl}={}) {
+  const policy = require('./sourceEndpointPolicy');
+  const claims = await (claimImpl||policy.claimPermissionProbes)('hkipox-public','anonymous');
+  const claim = claims.find(item=>item.api_name==='hk_ipo_public_page');
+  if(!claim) return {status:'not_due'};
+  try {
+    const payload = await guardImpl('hkipox-public','hk_ipo_subscription_signals',businessDate,
+      ()=>fetchImpl(HKIPOX_URL,{format:'text'}),{apiName:'permission_probe',credentialProfile:'anonymous',tokenFingerprint:'none'});
+    parseHkIpoXHtml(payload);
+    await (recordImpl||policy.recordEndpointPermission)('hkipox-public','anonymous',claim.api_name,claim.credential_fingerprint,{status:'available',message:'Daily permission probe and page structure passed'});
+    return {status:'available',payload,nextProbeAt:claim.nextProbeAt};
+  } catch(error) {
+    if(error.code==='PERMISSION_DENIED') await (recordImpl||policy.recordEndpointPermission)('hkipox-public','anonymous',claim.api_name,claim.credential_fingerprint,{status:'permission_denied',message:error.message});
+    return {status:'unavailable',code:error.code,error:error.message,nextProbeAt:claim.nextProbeAt};
+  }
 }
 
 async function syncHkIpoXSubscription({ map, businessDate, collectionPoint = null, fetchImpl, guardImpl, result }) {
   try {
-    const payload = await guardedFetch('hkipox-public', 'hk_ipo_public_page', 'hk_ipo_subscription_signals', HKIPOX_URL, 'text', fetchImpl, guardImpl, businessDate);
+    const probe = await probeHkIpoXPermission({businessDate,fetchImpl,guardImpl});
+    result.permissionProbe = {status:probe.status,code:probe.code,nextProbeAt:probe.nextProbeAt};
+    if(probe.status==='unavailable') {const error=new Error(probe.error);error.code=probe.code;throw error;}
+    const payload = probe.status==='available'?probe.payload:await guardedFetch('hkipox-public', 'hk_ipo_public_page', 'hk_ipo_subscription_signals', HKIPOX_URL, 'text', fetchImpl, guardImpl, businessDate);
     const fetchedAt = new Date().toISOString();
     await persistRaw('hkipox-public', 'hk_ipo_subscription_signals', businessDate, {
       fetchedAt, pageUrl: HKIPOX_URL, parserVersion: 'hkipox-ipo-home-v1', html: String(payload || '').slice(0, 500000),
@@ -514,7 +542,7 @@ async function syncHkIpoXSubscription({ map, businessDate, collectionPoint = nul
   } catch (error) {
     result.ok = false;
     result.status = 'degraded';
-    result.errors.push({ source: 'hkipox-public', apiName: 'hk_ipo_public_page', dataset: 'subscription', error: error.message || String(error) });
+    result.errors.push({ source: 'hkipox-public', apiName: 'hk_ipo_public_page', dataset: 'subscription', code:error.code, errorType:error.errorType, error: error.message || String(error) });
   }
 }
 
@@ -728,6 +756,7 @@ module.exports = {
   FUTU_IPO_URL,
   HKIPOX_URL,
   requestExternal,
+  probeHkIpoXPermission,
   validateFutuIpoHtmlResponse,
   normalizeCode,
   parseLivermoreHistory,

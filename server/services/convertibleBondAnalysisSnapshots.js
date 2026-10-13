@@ -64,8 +64,9 @@ async function refreshAllConvertibleBondAnalysis(targetDate, deps = {}) {
     ...(empty||remaining.length?{failedDatasets:['bond_analysis_snapshot'],errorType:'data_quality',error:'详细分析快照覆盖未完成'}:{})};
 }
 
-async function latestAnalysisDate() {
-  const {rows}=await pool.query('SELECT MAX(trade_date)::text AS date FROM market.convertible_bond_daily_metrics');
+async function latestAnalysisDate(asOfDate = null) {
+  if(asOfDate&&!CoreDate.normalizeBusinessDate(asOfDate))throw new Error('无效分析目标日');
+  const {rows}=await pool.query('SELECT MAX(trade_date)::text AS date FROM market.convertible_bond_daily_metrics WHERE ($1::date IS NULL OR trade_date<=$1::date)',[asOfDate]);
   return CoreDate.normalizeBusinessDate(rows[0]?.date);
 }
 

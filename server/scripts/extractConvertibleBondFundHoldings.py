@@ -21,9 +21,9 @@ NATURE_WORDS = {
 
 def clean_page(text):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if lines and "报告全文" in lines[0]:
+    if lines and ("报告全文" in lines[0] or re.search(r'20\d{2}\s*年(?:半年度|年度)报告$', lines[0])):
         lines.pop(0)
-    if lines and re.fullmatch(r"\d{1,4}", lines[0]):
+    if lines and re.fullmatch(r"\d{1,4}(?:\s*/\s*\d{1,4})?", lines[0]):
         lines.pop(0)
     return "\n".join(lines)
 
@@ -108,24 +108,30 @@ def parse_holders(text):
 
 def extract(url, security_code=None, bond_name=None, issuer_name=None):
     pages, evidence = read_document(url, security_code, bond_name, issuer_name)
-    target_pages = []
-    candidates = []
-    for index in range(len(pages)):
-        text = pages[index]
-        if "前十名转债持有人" in text or "前十名可转债持有人" in text:
-            candidates.append(index)
+    combined = '\n'.join(clean_page(page) for page in pages)
+    candidates = list(re.finditer(r'前十名(?:转债|可转债)持有人', combined))
+    scope = None
     if len(candidates) > 1:
-        candidates = [index for index in candidates if bond_name and bond_name in
-                      ''.join(pages[max(0, index - 1):index + 1])]
+        bindings = list(re.finditer(r'可转换公司债券名称\s*([^\n]+)', combined))
+        matched = []
+        for candidate in candidates:
+            prior = [binding for binding in bindings if binding.end() <= candidate.start()]
+            if prior and bond_name and re.sub(r'\s+', '', prior[-1].group(1)) == re.sub(r'\s+', '', bond_name):
+                matched.append(candidate)
+        candidates = matched
         if len(candidates) != 1:
             raise ValueError('多只转债持有人表无法唯一归属目标债券')
     if candidates:
-        target_pages.extend(range(candidates[0], min(candidates[0] + 3, len(pages))))
-    combined = "\n".join(clean_page(pages[index]) for index in target_pages)
+        scope = candidates[0].start()
+        end = re.search(r'可转换公司债券名称', combined[candidates[0].end():])
+        stop = candidates[0].end() + end.start() if end else len(combined)
+        combined = combined[scope:stop]
+    else:
+        combined = ''
     holders = parse_holders(combined)
     if candidates and len(holders) != 10:
         raise ValueError('前十名持有人表解析不完整，不能当作零基金持仓')
-    return {**evidence, **aggregate(holders), 'all_holders': holders,
+    return {**evidence, **aggregate(holders), 'all_holders': holders, 'holder_table_bond': bond_name, 'holder_table_offset': scope,
             'parse_status': 'complete' if holders else 'not_disclosed'}
 
 

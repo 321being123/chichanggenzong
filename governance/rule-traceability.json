@@ -2193,6 +2193,38 @@
       "status": "verified"
     },
     {
+      "id": "HK-IPO-PRICING-001",
+      "title": "独立发售价公告沿原官方事实Runner补实际定价，证券币种及原文隔离，未来配发不挡已发布定价",
+      "implementation": { "file": "server/services/hkexIpo.js", "symbol": "syncHkexPricingFacts" },
+      "tests": [{ "file": "server/test/hk-ipo-pricing-document.test.js", "pattern": "HK-IPO-PRICING-001" }],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-OCR-001",
+      "title": "评级文字层失败时离线OCR保留原文SHA、来源页和阈值，债项等级与中文实际日期独立校验",
+      "implementation": { "file": "server/scripts/extractConvertibleBondRating.py", "symbol": "extract_rating" },
+      "tests": [{ "file": "server/test/convertible-bond-analysis-documents.test.js", "pattern": "BOND-ANALYSIS-OCR-001" }],
+      "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-SCOPE-001",
+      "title": "同年报多债持有人表依明确债券名称表头隔离，未知归属不合并",
+      "implementation": { "file": "server/scripts/extractConvertibleBondFundHoldings.py", "symbol": "extract" },
+      "tests": [{ "file": "server/test/convertible-bond-analysis-documents.test.js", "pattern": "BOND-ANALYSIS-SCOPE-001" }],
+      "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "HKIPOX-PERMISSION-001",
+      "title": "匿名403只停用具体接口，权限探针复用统一持久化策略，结构或失败不冒充恢复",
+      "implementation": { "file": "server/services/hkIpoMarketSignals.js", "symbol": "probeHkIpoXPermission" },
+      "tests": [{ "file": "server/test/hk-ipo-source-fixtures.test.js", "pattern": "HKIPOX-PERMISSION-001" }],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
       "id": "NAV-RECOVERY-LEGACY-001",
       "title": "旧净值成功记录缺水位时仅接受同业务日模式及账户范围的后续完整复验，历史三次门槛不变",
       "implementation": {

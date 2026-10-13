@@ -8,6 +8,7 @@ const {
   parseFutuIpoHtml,
   parseLivermoreCurrent,
   parseVbkrCurrent,
+  probeHkIpoXPermission,
 } = require('../services/hkIpoMarketSignals');
 
 const originalGet = https.get;
@@ -33,6 +34,20 @@ async function rejected(promise, code) {
 
 (async () => {
   try {
+    // HKIPOX-PERMISSION-001：匿名网页403只阻塞具体接口，探针领取复用统一持久化策略。
+    fakeResponse(403,'Forbidden');
+    await assert.rejects(requestExternal('https://hkipox.com/',{format:'text'}),error=>error.code==='PERMISSION_DENIED'&&error.httpStatus===403&&error.errorType==='permission');
+    const records=[];let calls=0;
+    const probeDeps={businessDate:'2026-10-13',claimImpl:async()=>[{api_name:'hk_ipo_public_page',credential_fingerprint:'none',nextProbeAt:'2026-10-14T08:30:00+08:00'}],
+      recordImpl:async(...args)=>records.push(args),guardImpl:async(source,dataset,date,fn,options)=>{assert.equal(source,'hkipox-public');assert.equal(options.apiName,'permission_probe');return fn();},
+      fetchImpl:async()=>{calls++;return '<section><h2>今日申购<span class="count">(0)</span></h2><table><th>代码</th><th>认购倍数</th><td class="empty">暂无</td></table></section>';}};
+    assert.equal((await probeHkIpoXPermission(probeDeps)).status,'available');assert.equal(calls,1);
+    assert.equal(records[0][2],'hk_ipo_public_page');assert.equal(records[0][4].status,'available');
+    await probeHkIpoXPermission({...probeDeps,claimImpl:async()=>[]});assert.equal(calls,1,'未领取探针不得请求外部');
+    const denied=await probeHkIpoXPermission({...probeDeps,fetchImpl:async()=>{const error=new Error('403');error.code='PERMISSION_DENIED';throw error;}});
+    assert.equal(denied.status,'unavailable');assert.equal(records.at(-1)[4].status,'permission_denied');
+    await probeHkIpoXPermission({...probeDeps,fetchImpl:async()=>'<html>login</html>'});
+    assert.equal(records.length,2,'页面结构不合法不能恢复权限或捏造空市场');
     fakeResponse(429, '{"code":429}');
     await rejected(requestExternal('https://trade-info-api.jesselivermore.com/api/info/get-h5-ipo-setting'), 'RATE_LIMIT');
     fakeResponse(503, 'upstream unavailable');

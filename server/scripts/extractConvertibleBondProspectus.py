@@ -4,6 +4,7 @@ import re
 import urllib.request
 import os
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'ipo-report'))
 from external_call_guard import guarded_urlopen
@@ -25,9 +26,9 @@ def clean_page(text):
 
 
 def coupon_rates(text):
-    compact = re.sub(r"\s+", "", text)
+    compact = re.sub(r"\s+", "", unicodedata.normalize('NFKC', text))
     found = {}
-    for year, rate in re.findall(r"第([一二三四五六七八九十\d]+)年(?:票面利率)?为?(\d+(?:\.\d+)?)%", compact):
+    for year, rate in re.findall(r"第([一二三四五六七八九十\d]+)年(?:的)?(?:票面利率|利率)?(?:为|：|:)?(\d+(?:\.\d+)?)%", compact):
         number = int(year) if year.isdigit() else CHINESE_YEARS.get(year)
         if number:
             found[number] = float(rate)
@@ -43,7 +44,7 @@ def concise_projects(section):
             name = re.sub(r"\s+\d+(?:\.\d+)?$", "", match.group(1)).strip()
             if name and not name.startswith("募集资金"):
                 headings.append(name)
-    if len(headings) >= 2:
+    if len(headings) >= 2 and '项目名称' not in section:
         names = headings
     else:
         names = []
@@ -89,7 +90,7 @@ def concise_projects(section):
 def fundraising_purpose(pages):
     candidates = []
     for index, page in enumerate(pages):
-        keys = [key for key in ("本次募集资金用途", "本次募集资金投资项目概况", "本次募集资金运用") if key in page]
+        keys = [key for key in ("本次募集资金用途", "本次募集资金投资项目概况", "本次募集资金运用", "募集资金投资项目的计划") if key in page]
         if not keys:
             continue
         combined = "\n".join(pages[index:index + 3])
@@ -102,7 +103,7 @@ def fundraising_purpose(pages):
         key = next((value for value in ("本次募集资金投资项目概况", "本次募集资金用途", "本次募集资金运用") if value in keys), keys[0])
         start = combined.find(key)
         section = combined[start + len(key):]
-        project_stop = re.search(r"(?m)^\s*[二三四五六七八九十]+[、.．]\s*本次募集资金投资项目基本情况", section)
+        project_stop = re.search(r"(?m)^\s*[二三四五六七八九十]+[、.．]\s*本次募集资金投资项目(?:基本|具体)情况", section)
         if project_stop:
             section = section[:project_stop.start()]
         stop = re.search(r"(?m)^\s*\d{1,2}[、.．]\s*募集资金(?:存放|专项存储)", section)
@@ -123,7 +124,10 @@ def extract(url, security_code=None, bond_name=None, issuer_name=None):
             rates = coupon_rates(page)
             if rates:
                 break
-    return {**evidence, "fundraising_purpose": fundraising_purpose(pages), "coupon_rates": rates}
+    compact = re.sub(r'\s+', '', '\n'.join(pages))
+    not_disclosed = not rates and bool(re.search(r'(?:票面利率|债券利率).{0,200}(?:将.{0,80}确定|发行前.{0,160}协商确定|授权.{0,160}协商确定)', compact))
+    return {**evidence, "fundraising_purpose": fundraising_purpose(pages), "coupon_rates": rates,
+            'coupon_status': 'parsed' if rates else 'not_disclosed' if not_disclosed else 'missing'}
 
 
 def main():

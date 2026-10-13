@@ -38,6 +38,29 @@ rating.read_document=lambda *a: (['本评级机构评定华海药业主体信用
 result=rating.extract_rating('url','2026-06-27','600521.SH','华海转债')
 assert result['rating']=='AA' and result['rating_outlook']=='稳定' and result['rating_date_source']=='announcement_fallback'
 assert rating.extract_rating('url','2026-06-27','600521.SH','不存在转债')['rating'] is None
+# BOND-ANALYSIS-OCR-001: 债项等级不能借用主体等级，中文日期与OCR字段证据独立保存。
+parsed=rating.parse_rating_pages(['华海转债 主体/展望/债项/评级时间 本次跟踪：AAA/稳定/AA/2023年6月27日 前次跟踪：AAA/稳定/AA/2022年6月24日'],'华海转债','2023-06-29')
+assert parsed['rating']=='AA' and parsed['rating_date']=='2023-06-27'
+parsed=rating.parse_rating_pages(['维持“洪城转债”信用等级为AA+，评级展望为稳定。二〇二六年六月八日'],'洪城转债','2026-06-13')
+assert parsed['rating_date']=='2026-06-08' and parsed['rating_date_source']=='official_document'
+history=importlib.import_module('extractConvertibleBondPriceHistory')
+history.read_document=lambda *a: (['无转股价调整表'],{'document_hash':'a'*64,'source_url':'url'})
+assert history.extract_history('url')['document_hash']=='a'*64
+import types
+ocr_calls=[]
+class FakeOCR:
+    def __init__(self,**kwargs): assert kwargs=={'intra_op_num_threads':1,'inter_op_num_threads':1}
+    def __call__(self,image):
+        ocr_calls.append(1)
+        return [[None,'002091 TestBond',0.99],[None,'错误低置信度',0.5]],None
+sys.modules['rapidocr_onnxruntime']=types.SimpleNamespace(RapidOCR=FakeOCR)
+with tempfile.TemporaryDirectory() as directory:
+    os.environ['DOCUMENT_PDF_CACHE_DIR']=directory
+    document=fitz.open();document.new_page();document.new_page();put_cached_pdf(url,document.tobytes())
+    reader.guarded_urlopen=forbidden
+    pages,evidence=reader.read_document(url,'002091.SZ','TestBond',ocr=True,stop_when=lambda pages: True)
+    assert evidence['ocr_pages']==[1] and evidence['text_method']=='rapidocr-onnx-v1'
+    assert '错误低置信度' not in ''.join(pages) and len(ocr_calls)==1
 holders=importlib.import_module('extractConvertibleBondFundHoldings')
 unranked='前十名转债持有人情况如下：\n期末持债数量（元）\n持有比例(%)\n'+''.join(f'某证券投资基金{i}\n100000\n1.00\n' for i in range(10))+'(三)报告期转债变动情况\n'
 parsed=holders.parse_holders(unranked)
@@ -50,6 +73,16 @@ try: holders.extract('url'); assert False
 except ValueError: pass
 holders.read_document=lambda *a: (['未披露持有人表'],{'document_hash':'hash'})
 assert holders.extract('url')['parse_status']=='not_disclosed'
+# BOND-ANALYSIS-SCOPE-001: 同一页/跨页两债只按明确债券名称表头归属，不拼接持有人。
+one=unranked.replace('前十名转债持有人情况如下：','可转换公司债券名称\n甲转债\n前十名转债持有人情况如下：')
+two=unranked.replace('前十名转债持有人情况如下：','可转换公司债券名称\n乙转债\n前十名转债持有人情况如下：').replace('100000','200000')
+holders.read_document=lambda *a: ([one,two],{'document_hash':'hash'})
+assert holders.extract('url',bond_name='甲转债')['holding_quantity']==1
+assert holders.extract('url',bond_name='乙转债')['holding_quantity']==2
+try: holders.extract('url',bond_name='丙转债'); assert False
+except ValueError: pass
+prospectus=importlib.import_module('extractConvertibleBondProspectus')
+assert len(prospectus.coupon_rates('第一年：0.2％，第二年利率为0.4%，第三年0.6%，第四年1.0%，第五年1.5%，第六年2.0%'))==6
 print('BOND-ANALYSIS-004: official identity, PDF cache, corruption, complete holder table and rating date passed')
 `;
 assert.ok(fs.existsSync(py));

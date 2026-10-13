@@ -9,11 +9,11 @@ const {childProcessEnv,mergeExternalCallStatsFromStderr}=require('./externalCall
 const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tools}=require('./convertibleBondAnalysis');
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
 
-const INPUT_VERSION='analysis-input-v3';
+const INPUT_VERSION='analysis-input-v4';
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
 
 async function projectDocument(kind,event,bond) {
-  const scripts={prospectus:'Prospectus',holders:'FundHoldings',rating:'Rating',price_history:'PriceHistory'};
+  const scripts={prospectus:'Prospectus',issuance_terms:'Prospectus',holders:'FundHoldings',rating:'Rating',price_history:'PriceHistory'};
   const script=path.join(__dirname,'..','scripts',`extractConvertibleBond${scripts[kind]}.py`);
   const args=[script,event.url,'--security-code',bond.stock_code];
   if(kind!=='prospectus')args.push('--bond-name',bond.bond_short_name);
@@ -29,7 +29,7 @@ async function projectDocument(kind,event,bond) {
 }
 
 async function readDocuments(bond,targetDate) {
-  const {rows}=await pool.query(`SELECT DISTINCT d.document_id,d.url,d.title,d.announced_at::text AS event_date,
+  const {rows}=await pool.query(`SELECT DISTINCT d.document_id,d.url,d.title,d.content_hash,d.announced_at::text AS event_date,
     ds.source_code AS source,d.raw_payload FROM event.documents d
     JOIN ops.data_sources ds USING(source_id) JOIN core.company_instruments ci USING(company_id)
     JOIN core.instruments i ON i.instrument_id=ci.instrument_id
@@ -77,6 +77,7 @@ async function discoverDocuments(bond,targetDate,state) {
 }
 
 async function saveProjection(kind,event,result,bond) {
+  if(!/^[a-f0-9]{64}$/i.test(result.document_hash||'')) throw new Error('原文SHA-256缺失或无效，保留原投影');
   const client=await pool.connect();
   try {
     await client.query('BEGIN');
@@ -91,8 +92,11 @@ async function saveProjection(kind,event,result,bond) {
       WHERE other.source_id=d.source_id AND other.url=d.url AND other.content_hash=$2 AND other.document_id<>d.document_id) THEN $2 ELSE d.content_hash END,raw_record_id=$3,
       raw_payload=raw_payload || jsonb_build_object('analysis_projections',COALESCE(raw_payload->'analysis_projections','{}'::jsonb)||$4::jsonb)
     WHERE document_id=$1`,[event.document_id,result.document_hash,record.raw_record_id,JSON.stringify({[kind]:{...result,parser_version:INPUT_VERSION}})]);
-    if(kind==='prospectus') {
-      if(!result.fundraising_purpose||!result.coupon_rates?.length)throw new Error('募集用途或完整票息解析缺失');
+    if(kind==='prospectus'||kind==='issuance_terms') {
+      if(kind==='prospectus'&&!result.fundraising_purpose)throw new Error('募集用途解析缺失');
+      if(!result.coupon_rates?.length && !(kind==='prospectus'&&result.coupon_status==='not_disclosed'))throw new Error('完整票息解析缺失');
+      const years=Number(isoDate(bond.maturity_date)?.slice(0,4))-Number(isoDate(bond.value_date)?.slice(0,4));
+      if(result.coupon_rates?.length&&years>0&&(result.coupon_rates.length!==years||result.coupon_rates.some((rate,index)=>rate.interest_year!==index+1)))throw new Error('票息年限未完整覆盖目标债券，保留原事实');
       await tools.saveProspectusDetails(client,bond.instrument_id,bond,result,sourceId);
     }
     if(kind==='holders') {
@@ -130,6 +134,11 @@ function inputDocuments(events,bond={}) {
   const prospectus=tools.latestProspectus(events.filter(e=>!issueDate||isoDate(e.event_date)<=issueDate&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`)),
     report=tools.latestFullReport(events.filter(e=>!issueDate||tools.reportPeriod(e.title)>=issueDate));
   if(prospectus)selected.push({kind:'prospectus',event:prospectus});
+  if(issueDate) {
+    const issuance=events.filter(e=>/发行公告|上市公告书/.test(e.title)&&isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`)
+      .sort((a,b)=>Math.abs(new Date(isoDate(a.event_date))-new Date(issueDate))-Math.abs(new Date(isoDate(b.event_date))-new Date(issueDate)))[0];
+    if(issuance)selected.push({kind:'issuance_terms',event:issuance});
+  }
   if(report)selected.push({kind:'holders',event:report},{kind:'price_history',event:report});
   for(const event of events.filter(e=>/评级报告|评级调整/.test(e.title)&&(!issueDate||
     isoDate(e.event_date)>=issueDate||isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`&&/可转债|可转换公司债券/.test(e.title))))selected.push({kind:'rating',event});
@@ -145,7 +154,7 @@ function requiredReportPeriod(targetDate) {
 async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],maxRuntimeMs=10*60000}={},deps={}) {
   const targetDate=isoDate(businessDate);
   if(!targetDate)throw new Error('资料补全必须传入任务目标日');
-  const marketDate=await (deps.latestDate||latestAnalysisDate)();
+  const marketDate=await (deps.latestDate||latestAnalysisDate)(targetDate);
   if(!marketDate||marketDate>targetDate)throw new Error('缺少目标日可核验的证券集合');
   const all=await (deps.loadUniverse||loadAnalysisUniverse)(marketDate);
   const codes=targetCodes.map(normalizeBondCode);
@@ -171,7 +180,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     const state={...(bond.raw_payload.analysis_inputs||{}),documents:{...(bond.raw_payload.analysis_inputs?.documents||{})},parserVersion:INPUT_VERSION};
     try {
       const missing=[];
-      if(state.coveredThrough!==targetDate) {
+      if(!state.coveredThrough||state.coveredThrough<targetDate) {
         try {
           await (deps.discover||discoverDocuments)(bond,targetDate,state);
           state.coveredThrough=targetDate;delete state.discoveryError;
@@ -191,17 +200,19 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod))missing.push('latest_report_stale');
       if(!selected.some(d=>d.kind==='rating'))missing.push('rating_report');
       for(const {kind,event} of selected) {
+        if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];
-        if(prior?.status==='complete'&&prior.parserVersion===INPUT_VERSION)continue;
+        if(prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
         if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){missing.push(kind);continue;}
         if(Date.now()-started>=maxRuntimeMs){missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
           await (deps.save||saveProjection)(kind,event,result,bond);
-          state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,announcedAt:isoDate(event.event_date)};
-        } catch(error) {missing.push(kind);const message=String(error.message).slice(-600);state.documents[key]={status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
+          state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
+        } catch(error) {missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
+      if(Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed')&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('issuance_terms:')&&value.status==='complete'))missing.push('coupon_terms');
       state.missing=[...new Set(missing)];state.status=missing.length?'partial':'complete';state.targetDate=targetDate;
       await (deps.persistBond||persistBondInputs)(bond,state);
       if(missing.length){remaining.push(bond.ts_code);missingFields[bond.ts_code]=state.missing;}else count++;

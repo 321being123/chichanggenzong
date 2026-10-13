@@ -48,6 +48,14 @@ const {pool}=require('../db/connection');
   deps.project=async()=>{projected++;return {document_hash:'hash'};};
   const second=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},deps);
   assert.equal(second.ok,true);assert.equal(discovered,1);assert.equal(projected,5,'只续补上轮失败文档');
+  for(const document of Object.values(bond.raw_payload.analysis_inputs.documents)) {document.parserVersion='analysis-input-v3';document.documentHash='a'.repeat(64);}
+  for(const event of events)event.content_hash='a'.repeat(64);
+  const legacy=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},deps);
+  assert.equal(legacy.ok,true);assert.equal(projected,5,'版本升级仍复用已完成且同原文SHA的有效投影');
+  bond.raw_payload.analysis_inputs.coveredThrough='2026-10-13';
+  const oldDay=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},{...deps,latestDate:async date=>{assert.equal(date,'2026-10-12');return '2026-09-30';}});
+  assert.equal(oldDay.ok,true);assert.equal(bond.raw_payload.analysis_inputs.coveredThrough,'2026-10-13','旧日复验不得回退覆盖水位');
+  bond.raw_payload.analysis_inputs.coveredThrough='2026-10-12';
   const {getJobDefinition,stageCompletionEvidence}=require('../services/jobDefinitions');
   assert.equal(stageCompletionEvidence(getJobDefinition('convertible_bond_announcement_history_sync'),second,
     {mode:'analysis_inputs_targeted',targetCodes:['127040.SZ']}),true);

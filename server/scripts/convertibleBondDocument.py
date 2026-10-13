@@ -11,7 +11,7 @@ from external_call_guard import guarded_urlopen
 import fitz
 
 
-def read_document(url, security_code=None, bond_name=None, issuer_name=None):
+def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr=False, stop_when=None):
     parsed = urlparse(url)
     if parsed.scheme != 'https' or parsed.hostname not in {
         'static.cninfo.com.cn', 'www.sse.com.cn', 'big5.sse.com.cn',
@@ -29,16 +29,33 @@ def read_document(url, security_code=None, bond_name=None, issuer_name=None):
             data = None
     if data is None:
         request = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        limit = int(os.environ.get('DOCUMENT_PDF_MAX_BYTES', str(128 * 1024 * 1024)))
         with guarded_urlopen(request, timeout=30, source=None, dataset=f'bond-document:{url}') as response:
-            data = response.read(30 * 1024 * 1024 + 1)
-        if len(data) > 30 * 1024 * 1024:
-            raise ValueError('PDF 文件超过 30MB')
+            data = response.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('PDF 文件超过已配置原文大小保护线，资料保持未完成')
         with fitz.open(stream=data, filetype='pdf') as document:
             if not len(document):
                 raise ValueError('PDF 无有效页面')
         put_cached_pdf(url, data)
     with fitz.open(stream=data, filetype='pdf') as document:
         pages = [page.get_text() for page in document]
+        ocr_pages = []
+        if ocr:
+            from rapidocr_onnxruntime import RapidOCR
+            engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
+            import numpy as np
+            recognized = []
+            for index, page in enumerate(document):
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+                rows, _ = engine(array)
+                lines = [row[1] for row in (rows or []) if float(row[2]) >= 0.85]
+                recognized.append('\n'.join(lines))
+                ocr_pages.append(index + 1)
+                if stop_when and stop_when(recognized):
+                    break
+            pages = recognized
     compact = ''.join(''.join(pages).split())
     if not compact:
         raise ValueError('PDF 无文本层，需要OCR，不能作为解析完成')
@@ -47,4 +64,6 @@ def read_document(url, security_code=None, bond_name=None, issuer_name=None):
     if bond_name and ''.join(bond_name.split()) not in compact:
         raise ValueError('PDF 未匹配目标可转债简称')
     return pages, {'source_url': url, 'document_hash': hashlib.sha256(data).hexdigest(),
-                   'security_code': security_code, 'bond_name': bond_name, 'issuer_name': issuer_name}
+                   'security_code': security_code, 'bond_name': bond_name, 'issuer_name': issuer_name,
+                   'text_method': 'rapidocr-onnx-v1' if ocr else 'pdf_text', 'ocr_pages': ocr_pages,
+                   'ocr_min_confidence': 0.85 if ocr else None}

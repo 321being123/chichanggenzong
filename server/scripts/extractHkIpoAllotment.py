@@ -15,6 +15,7 @@ from datetime import datetime
 def _actual_pricing_date(text):
     # 只认实际定价的过去式，不用招股书的预计日或公告发布日期替代。
     patterns = (
+        r"(?:於|于)(20\d{2}年\d{1,2}月\d{1,2}日)[，,]\s*(?:發售價|发售价)\s*(?:已)?(?:釐定|厘定|確定|确定)",
         r"(?:final\s+)?offer\s+price\s+(?:was|has\s+been)\s+(?:finally\s+)?(?:determined|fixed|agreed)(?:\s+at\s+HK\$[\d.]+)?\s+on\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
         r"(?:final\s+)?offer\s+price\s+(?:was|has\s+been)\s+(?:determined|agreed)\s+on\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})",
         r"(?:最終發售價|最终发售价|發售價|发售价)(?:已)?(?:於|于)(20\d{2}年\d{1,2}月\d{1,2}日)(?:釐定|厘定|確定|确定)",
@@ -524,6 +525,24 @@ def extract_pdf(data, lot_size_shares=None):
         return {"parserStatus": "failed", "error": str(exc)}
 
 
+def parse_pricing_text(text, stock_code):
+    compact = re.sub(r'\s+', '', str(text))
+    if not re.search(r'全球發售|全球发售|GLOBALOFFERING', compact, re.I):
+        raise ValueError('发售价公告未核验为全球发售')
+    code = re.search(r'(?:股份代號|股份代号|Stockcode)[:：]?(\d{1,5})', compact, re.I)
+    if not code or code.group(1).zfill(5) != str(stock_code).zfill(5):
+        raise ValueError('发售价公告未唯一匹配目标证券')
+    price = re.search(r'(?:發售價|发售价)(?:已)?(?:釐定|厘定|確定|确定)(?:為|为)(?:每股H股|每股發售股份|每股发售股份)?([0-9]+(?:\.[0-9]+)?)港元', compact)
+    if not price or float(price.group(1)) <= 0:
+        raise ValueError('未取得已确定的每股港元发售价证据')
+    if re.search(r'(?:預期|預計|预计|预期|將|将)[^。.;]{0,80}$', compact[max(0,price.start()-100):price.start()]):
+        raise ValueError('预计发售价不能作为实际定价')
+    actual, evidence = _actual_pricing_date(compact)
+    return {'securityCode': code.group(1).zfill(5)+'.HK','finalOfferPrice':float(price.group(1)),
+            'actualPricingDate':actual,'actualPricingDateStatus':'value' if actual else 'not_disclosed',
+            'currency':'HKD','parserVersion':'hk-ipo-pricing-v1','evidence':{'price':price.group(0),'pricingDate':evidence}}
+
+
 def main():
     data = sys.stdin.buffer.read()
     lot_size_shares = None
@@ -532,7 +551,16 @@ def main():
             lot_size_shares = float(sys.argv[sys.argv.index("--lot-size") + 1])
         except (IndexError, TypeError, ValueError):
             lot_size_shares = None
-    if "--text" in sys.argv:
+    if '--pricing-only' in sys.argv:
+        stock_code = sys.argv[sys.argv.index('--stock-code')+1]
+        if '--text' in sys.argv:
+            text=data.decode('utf-8')
+        else:
+            import fitz
+            with fitz.open(stream=data,filetype='pdf') as document:
+                text='\n'.join(page.get_text() for page in document)
+        result=parse_pricing_text(text,stock_code)
+    elif "--text" in sys.argv:
         result = parse_allotment_text(data.decode("utf-8", errors="replace"), lot_size_shares)
     else:
         result = extract_pdf(data, lot_size_shares)

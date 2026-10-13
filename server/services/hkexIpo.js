@@ -290,10 +290,11 @@ function resolveHkexEnglishPdfUrl(url) {
   return `${prefix}${(BigInt(digits) - 1n).toString().padStart(digits.length, '0')}.pdf`;
 }
 
-function parseHkexAllotmentPdf(buffer, { lotSizeShares = null } = {}) {
+function parseHkexAllotmentPdf(buffer, { lotSizeShares = null, pricingOnly = false, stockCode = null } = {}) {
   return new Promise((resolve, reject) => {
     if (!Buffer.isBuffer(buffer) || !buffer.length) return reject(new Error('港交所配发结果 PDF 为空'));
     const args = [HKEX_ALLOTMENT_PARSER];
+    if(pricingOnly)args.push('--pricing-only','--stock-code',String(stockCode));
     if (lotSizeShares !== null && lotSizeShares !== undefined && Number.isFinite(Number(lotSizeShares))) {
       args.push('--lot-size', String(lotSizeShares));
     }
@@ -445,6 +446,45 @@ function isUsableProspectusDocument(document) {
   if (document.parserStatus === 'parsed') return true;
   const evidence = document.parserEvidence || {};
   return Boolean(evidence.offerCloseAt && evidence.lotSizeShares);
+}
+
+async function syncHkexPricingFacts({asOfDate,targetCodes=[],executor=pool.query.bind(pool),fetchImpl=httpRequest,searchImpl=searchAnnouncements}={}) {
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate||''))throw new Error('定价补全必须传入目标日');
+  const codes=targetCodes.map(canonicalHkCode);
+  if(codes.some(code=>!code))throw new Error('定价目标代码无效');
+  const {rows}=await executor(`SELECT security_code,issue_price_low,issue_price_high,issue_price_final,source_documents,
+    data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' AS expected_pricing
+    FROM public.ipo_history WHERE market_code='HK' AND issue_price_final IS NULL
+      AND ipo_status NOT IN ('cancelled','canceled','postponed','introduction','gem_transfer','de_spac')
+      AND COALESCE(data_completeness->>'exclusionReason','') <> 'rights_issue'
+      AND data_completeness#>>'{prospectus,expectedEvents,pricingDate,date}' <= $1
+      AND (cardinality($2::text[])=0 OR security_code=ANY($2::text[]))`,[asOfDate,codes]);
+  const failures=[];let enriched=0;
+  for(const row of rows) {
+    try {
+      const known=(row.source_documents||[]).find(document=>document.type==='pricing_result'&&document.url);
+      const announcements=known?[{title:known.title,fileLink:known.url,announcedAt:known.announcedAt}]:await searchImpl({fromDate:row.expected_pricing,toDate:asOfDate,stockCode:row.security_code.split('.')[0],categories:['-2'],_httpRequest:fetchImpl});
+      const announcement=announcements.filter(item=>/發售價公告|发售价公告|發售價的釐定|offer price announcement/i.test(item.title||''))
+        .sort((a,b)=>String(b.announcedAt).localeCompare(String(a.announcedAt)))[0];
+      if(!announcement)throw new Error('到期定价候选未取得官方发售价公告');
+      const {buffer,url}=await fetchOfficialPdfWithCache(announcement.fileLink,fetchImpl,{responseType:'buffer'});
+      const parsed=await parseHkexAllotmentPdf(buffer,{pricingOnly:true,stockCode:row.security_code.split('.')[0]});
+      if(parsed.securityCode!==row.security_code||parsed.currency!=='HKD'||!(parsed.finalOfferPrice>0))throw new Error('定价证券/币种/价格证据不匹配');
+      if(parsed.actualPricingDate&&(parsed.actualPricingDate>asOfDate||parsed.actualPricingDate>String(announcement.announcedAt).slice(0,10)))throw new Error('实际定价日超出已发布目标窗口');
+      const source=(await executor("SELECT source_id FROM ops.data_sources WHERE source_code='hkex_announcements' LIMIT 1")).rows[0];
+      if(!source)throw new Error('官方定价来源未登记');
+      const hash=crypto.createHash('sha256').update(buffer).digest('hex');
+      const document={type:'pricing_result',url,title:announcement.title,announcedAt:announcement.announcedAt,contentSha256:hash,parserEvidence:parsed};
+      // 单条SQL将来源审计与目标事实同时写入，失败不会留下半条定价事实。
+      await executor(`WITH saved AS (INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
+        VALUES($1,$2,$3,$4::jsonb,$5) ON CONFLICT(source_id,dataset_code,source_key,payload_hash) DO UPDATE SET payload=EXCLUDED.payload RETURNING raw_record_id)
+        UPDATE public.ipo_history SET issue_price_final=$7,pricing_at=COALESCE($8::timestamptz,pricing_at),
+          source_documents=$9::jsonb,ipo_status=CASE WHEN ipo_status='active' THEN 'priced' ELSE ipo_status END,updated_at=now()
+        WHERE security_code=$6 AND EXISTS(SELECT 1 FROM saved)`,[source.source_id,HKEX_ALLOTMENT_DATASET,`${row.security_code}|pricing|${url}`,JSON.stringify(document),hash,row.security_code,parsed.finalOfferPrice,parsed.actualPricingDate?`${parsed.actualPricingDate}T00:00:00+08:00`:null,JSON.stringify(mergeSourceDocuments(row.source_documents,document))]);
+      enriched++;
+    } catch(error){failures.push({code:row.security_code,error:error.message});}
+  }
+  return {ok:!failures.length,status:failures.length?'degraded':'succeeded',candidates:rows.length,enriched,failures,targetDate:asOfDate};
 }
 
 async function syncHkexAllotmentFacts({
@@ -1770,8 +1810,10 @@ function recomputeCompletenessForStoredRow(row, asOfDate = todayShanghai(), { mo
   }
   if (!row.pricing_at && row.issue_price_final > 0 && (Array.isArray(row.source_documents) ? row.source_documents : []).some(document => {
     try { assertOfficialUrl(document.url); } catch (_) { return false; }
-    return document.type === 'allotment_result' && document.contentSha256
+    return document.contentSha256 && (document.type === 'allotment_result'
       && document.parserEvidence?.factsParserVersion === HKEX_ALLOTMENT_FACTS_PARSER_VERSION
+      || document.type==='pricing_result'&&document.parserEvidence?.parserVersion==='hk-ipo-pricing-v1'
+        && document.parserEvidence.securityCode===row.security_code&&Number(document.parserEvidence.finalOfferPrice)===Number(row.issue_price_final))
       && document.parserEvidence?.actualPricingDateStatus === 'not_disclosed';
   })) {
     result.pricingAt = 'not_disclosed';
@@ -1990,6 +2032,7 @@ module.exports = {
   parseHkexProspectusPdf,
   fetchOfficialPdfWithCache,
   syncHkexAllotmentFacts,
+  syncHkexPricingFacts,
   syncHkexProspectusFacts,
   syncHkexHistoricalReports,
   parsePredefinedDocumentHtml,

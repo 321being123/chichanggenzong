@@ -28,7 +28,7 @@ def extract_history(url, initial_price=None, bond_name=None, security_code=None,
     outlooks = re.findall(r"评级展望(?:调整)?为[：:]?([\u4e00-\u9fa5]{1,4})", compact_text)
     rating_outlook = outlooks[-1] if outlooks else None
     if start < 0:
-        return {"source_url": url, "price_changes": [], "rating_outlook": rating_outlook}
+        return {**evidence, "price_changes": [], "rating_outlook": rating_outlook}
     section = text[start:start + 12000]
     stop = re.search(r"(?:报告期末公司的负债情况|公司的负债情况、资信变化情况|五、\s*报告期内合并报表范围亏损|（五）)", section)
     if stop:

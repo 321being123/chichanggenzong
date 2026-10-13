@@ -118,7 +118,28 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
       return { recovered: false, evidence: row || null, reason: 'data_bound_alert_requires_dataset_evidence' };
     }
     if (row && row.status === 'succeeded') {
-      return verifySlotRecoveryEvidence(row, query, { alertType });
+      const original = await verifySlotRecoveryEvidence(row, query, { alertType });
+      if (original.recovered || row.job_code !== 'nav_snapshot' || original.reason !== 'watermark_evidence_missing') return original;
+      // 旧成功记录缺日期时保留原审计，只接受同日同账户范围的后续完整复验。
+      const required = laterSlotLimit(historical);
+      const { rows: later } = await query(
+        `SELECT slot_id,job_code,status,business_date,scheduled_for,request_payload,result_summary
+           FROM ops.job_schedule_slots
+          WHERE job_code=$1 AND business_date=$2::date AND scheduled_for>$3::timestamptz
+            AND COALESCE(request_payload->>'mode','core')=$4
+            AND COALESCE(request_payload->>'username','')=$5
+            AND COALESCE(request_payload->>'accountName','')=$6
+          ORDER BY scheduled_for DESC,slot_id DESC LIMIT $7`,
+        [row.job_code, row.business_date, row.scheduled_for, slotMode(row), row.request_payload?.username || '', row.request_payload?.accountName || '', required]
+      );
+      if (later.length !== required) return original;
+      const verifications = [];
+      for (const candidate of later) {
+        const verified = await verifySlotRecoveryEvidence(candidate, query, { alertType });
+        if (!verified.recovered) return verified;
+        verifications.push(verified.evidence);
+      }
+      return { recovered: true, evidence: { mode: 'later_verified_same_date_scope', original: row, verifications } };
     }
     if (!row || !row.job_code || !row.scheduled_for) {
       return { recovered: false, evidence: row || null, reason: row ? 'original_slot_not_recovered' : 'slot_not_found' };

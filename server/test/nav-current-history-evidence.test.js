@@ -79,5 +79,27 @@ const { runNavSnapshotJob } = require('../jobs/navSnapshot');
   assert.strictEqual((await verifySlotRecoveryEvidence(slot, query)).recovered, true);
   assert.strictEqual((await verifySlotRecoveryEvidence({ ...slot, result_summary: { ...complete, dataAsOf: null } }, async sql => sql.includes('FROM job_runs')
     ? {rows:[{id:1,slot_id:slot.slot_id,status:'done',result_json:{...complete,dataAsOf:null}}]} : query(sql))).recovered, false);
+  // NAV-RECOVERY-LEGACY-001：旧成功记录不改写，后续复验仍须同日/模式/账户与运行水位。
+  const { verifyAlertScope } = require('../services/jobAlertMailer');
+  const original = { ...slot, scheduled_for:'2026-09-30T08:20:00Z', request_payload:{}, result_summary:{...complete,dataAsOf:null} };
+  const later = { ...slot,slot_id:1446207,scheduled_for:'2026-10-13T08:00:00Z',request_payload:{} };
+  let laterResult = complete;
+  const recoveryQuery = async (sql,params) => {
+    if(sql.includes('FROM job_runs')) return {rows:[{id:params[0],slot_id:params[0],status:'done',result_json:params[0]===original.slot_id?original.result_summary:laterResult}]};
+    if(sql.includes('scheduled_for>')) {
+      assert.deepStrictEqual(params,[original.job_code,original.business_date,original.scheduled_for,'core','','',params[6]]);
+      assert.strictEqual(params[6]===1||params[6]===3,true);
+      return {rows:[later]};
+    }
+    if(sql.includes('FROM ops.job_schedule_slots')) return {rows:[original]};
+    return query(sql);
+  };
+  const alert={alert_type:'failure_warning',scope_type:'slot',scope_key:String(original.slot_id)};
+  assert.strictEqual((await verifyAlertScope(alert,recoveryQuery)).recovered,true);
+  assert.strictEqual((await verifyAlertScope(alert,recoveryQuery,{historical:true})).recovered,false,'历史调和仍要求三次连续同日成功');
+  laterResult={...complete,dataAsOf:null};
+  assert.strictEqual((await verifyAlertScope(alert,recoveryQuery)).recovered,false);
+  laterResult={...complete,ok:false,failedDatasets:['nav_snapshot']};
+  assert.strictEqual((await verifyAlertScope(alert,recoveryQuery)).recovered,false);
   console.log('nav current partition and historical gaps independently verified');
 })().catch(error => { console.error(error); process.exitCode = 1; });

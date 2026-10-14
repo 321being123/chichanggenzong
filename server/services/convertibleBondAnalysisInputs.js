@@ -11,6 +11,17 @@ const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require(
 
 const INPUT_VERSION='analysis-input-v4';
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
+async function initialRatingBindingArguments(bond,event,query=pool.query.bind(pool),creditDate=null) {
+  const size=Number(bond.raw_payload?.issue_size),issued=isoDate(bond.value_date),maturity=isoDate(bond.maturity_date),announced=isoDate(event.event_date);
+  if(!(size>0&&issued&&maturity&&announced&&maturity.slice(5)===issued.slice(5)&&announced<=issued))return [];
+  const args=['--initial-issue-size-yuan',String(size),'--initial-tenor-years',String(Number(maturity.slice(0,4))-Number(issued.slice(0,4)))];
+  if(!creditDate)return args;
+  const {rows}=await query(`SELECT COUNT(*)::int AS matches,BOOL_OR(p.instrument_id=$3) AS is_target FROM fundamental.convertible_bond_profiles p
+    JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1 AND p.issue_size=$2
+    AND p.value_date BETWEEN $4::date AND $5::date`,[bond.stock_code,size,bond.instrument_id,creditDate,issued]);
+  return rows[0]?.matches===1&&rows[0]?.is_target===true?
+    args:[];
+}
 
 async function projectDocument(kind,event,bond) {
   const scripts={prospectus:'Prospectus',issuance_terms:'Prospectus',holders:'FundHoldings',rating:'Rating',price_history:'PriceHistory'};
@@ -22,17 +33,17 @@ async function projectDocument(kind,event,bond) {
   if(kind==='rating') {
     args.push('--announcement-date',isoDate(event.event_date));
     if(bond.value_date)args.push('--issue-date',isoDate(bond.value_date));
-    const size=Number(bond.raw_payload?.issue_size),issued=isoDate(bond.value_date),maturity=isoDate(bond.maturity_date);
-    if(size>0&&issued&&maturity&&maturity.slice(5)===issued.slice(5)&&isoDate(event.event_date)<=issued) {
-      const {rows}=await pool.query(`SELECT COUNT(*)::int AS matches FROM fundamental.convertible_bond_profiles p
-        JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id WHERE s.canonical_code=$1 AND p.issue_size=$2`,[bond.stock_code,size]);
-      if(rows[0]?.matches===1)args.push('--initial-issue-size-yuan',String(size),'--initial-tenor-years',String(Number(maturity.slice(0,4))-Number(issued.slice(0,4))));
-    }
+    args.push(...await initialRatingBindingArguments(bond,event));
   }
   if(kind==='price_history'&&bond.first_conv_price!=null)args.push('--initial-price',String(bond.first_conv_price));
   const output=await new Promise((resolve,reject)=>execFile(tools.pythonCandidates()[0],args,
     {cwd:path.join(__dirname,'..','..'),env:childProcessEnv({PYTHONUTF8:'1'}),windowsHide:true,timeout:90000,maxBuffer:8*1024*1024},
     (error,stdout,stderr)=>{mergeExternalCallStatsFromStderr(stderr);if(error)return reject(error);try{resolve(JSON.parse(stdout));}catch(e){reject(e);}}));
+  if(output.identity_binding) {
+    if(output.rating_date_source!=='official_document'||!output.rating_date ||
+      !(await initialRatingBindingArguments(bond,event,pool.query.bind(pool),output.rating_date)).length)throw new Error('初发评级未按原文实际日期唯一绑定目标证券，保留原事实');
+    output.identity_binding={...output.identity_binding,method:'unique_issuer_credit_date_issue_amount_tenor',validated:true,instrument_id:bond.instrument_id};
+  }
   return {...output,source_title:event.title,report_date:kind==='holders'?
     (event.title.match(/(20\d{2})年?\s*(半年度|年度)报告/)||[]).slice(1).map((v,index)=>index?v==='半年度'?'06-30':'12-31':v).join('-'):undefined};
 }
@@ -113,6 +124,7 @@ async function saveProjection(kind,event,result,bond) {
       await tools.saveReportFundHolding(client,bond.instrument_id,result,sourceId);
     }
     if(kind==='rating') {
+      if(result.identity_binding&&result.identity_binding.validated!==true)throw new Error('初发评级身份未核验，禁止写入事实');
       if(!result.rating||!result.rating_outlook)throw new Error('评级或展望解析缺失');
       if(result.rating_date_source==='announcement_fallback') {
         const {rows:dates}=await client.query(`SELECT DISTINCT rating_date::text AS date FROM fundamental.convertible_bond_ratings
@@ -244,4 +256,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,INPUT_VERSION};

@@ -53,11 +53,42 @@ assert rating.official_rating_date(['历史2025年6月16日，其他无关事项
 parsed=rating.parse_rating_pages(['封面','声明','主体资料','评级结果\n本次评级\n上次评级\n主体信用等级\nAAA\nAAA\n评级展望\n稳定\n稳定\n蓝天转债\nAA\nAA\n评级日期2026年6月15日'],'蓝天转债','2026-06-17')
 assert parsed['rating']=='AA' and parsed['rating_date']=='2026-06-15'
 assert rating.official_rating_date(['评级时间2026.5.18','附录\n评级日期2025.5.18'])[0]=='2026-05-18'
+# BOND-RATING-LEGACY-012: 公开发行旧格式、债券期限及真实日期优先，不能借主体等级。
+legacy=['神马实业股份有限公司公开发行可转换公司债券信用等级通知书\n主体信用等级为AA+，评级展望为稳定。\n本期公开发行可转换公司债券的信用等级为AAA。二〇二二年八月六日',
+        '神马实业股份有限公司公开发行可转换公司债券信用评级报告',
+        '发行规模：不超过30.00亿元\n债券期限：6年\n评级时间2022年08月05日']
+rating.read_document=lambda *a,**kwargs:(legacy,{'document_hash':'a'*64})
+parsed=rating.extract_rating('url','2023-03-14','600810.SH','神马转债','神马实业股份有限公司','2023-03-16','3000000000',6)
+assert parsed['rating']=='AAA' and parsed['rating_outlook']=='稳定' and parsed['rating_date']=='2022-08-05'
+assert parsed['identity_binding']['document_title']=='公开发行可转换公司债券信用等级通知书'
+assert parsed['identity_binding']['validated'] is False
+blue=['河南蓝天燃气股份有限公司2022年公开发行可转换公司债券信用评级报告','声明',
+      '本期债券的信用等级为AA。中证鹏元给予公司稳定的信用评级展望。\n发行规模8.7亿元\n发行期限6年\n评级自期证券评级评审专用章2022-09-30']
+rating.read_document=lambda *a,**kwargs:(blue,{'document_hash':'a'*64})
+parsed=rating.extract_rating('url','2023-08-11','605368.SH','蓝天转债','河南蓝天燃气股份有限公司','2023-08-15','870000000',6)
+assert parsed['rating']=='AA' and parsed['rating_outlook']=='稳定' and parsed['rating_date']=='2022-09-30'
+# BOND-RATING-COLUMN-013: 明确本次列优先于历史正文，反转表头仍取本次而非首个数值。
+for headers,values in [('本次评级\n上次评级','AA\nAAA'),('上次评级\n本次评级','AAA\nAA')]:
+    parsed=rating.parse_rating_pages(['评级结果\n'+headers+'\n蓝天转债\n'+values+'\n评级日期2026年6月15日','历史蓝天转债信用等级为AAA。'],'蓝天转债','2026-06-17')
+    assert parsed['rating']=='AA'
 # BOND-RATING-INITIAL-008: 未命名首发评级只按统一身份中的唯一发行金额/期限绑定。
+for issuer,size,day in [('上海银行股份有限公司','20000000000','2020-08-28'),('兴业银行股份有限公司','50000000000','2021-09-01')]:
+    bank=[issuer+'公开发行A股可转换公司债券信用评级报告','声明',
+          '主体信用等级AAA\n债项信用等级AAA\n评级展望稳定\n评级时间'+day+'\n发行规模：不超过人民币'+str(int(size)//100000000)+'亿元\n存续期限自发行之日起6年']
+    rating.read_document=lambda *a,**kwargs:(bank,{'document_hash':'a'*64})
+    parsed=rating.extract_rating('url','2021-12-23','601166.SH','测试转债',issuer,'2021-12-27',size,6)
+    assert parsed['rating']=='AAA' and parsed['rating_date']==day and parsed['identity_binding']['validated'] is False
+# BOND-RATING-SHORTNAME-014: 同页唯一简称绑定本次/首次表，列顺序同时约束等级、日期和展望。
+for headers,grades,dates,outlooks in [('本次\n首次','AA\nAAA','2021-6-15 2020-5-22','稳定\n负面'),('首次\n本次','AAA\nAA','2020-5-22 2021-6-15','负面\n稳定')]:
+    page='评级结果\n'+headers+'\n主体信用等级AAA AAA\n评级展望\n'+outlooks+'\n债券信用等级\n'+grades+'\n评级日期 '+dates+'\n债券概况\n债券简称：大参转债'
+    parsed=rating.parse_rating_pages([page],'大参转债','2021-06-17')
+    assert parsed['rating']=='AA' and parsed['rating_date']=='2021-06-15' and parsed['rating_outlook']=='稳定'
+    for other in [page.replace('债券简称：大参转债','债券简称：其他转债'),page+'\n债券简称：其他转债']:
+        assert rating.parse_rating_pages([other],'大参转债','2021-06-17')['rating'] is None
 initial=['无锡派克新材料科技股份有限公司2026年向不特定对象发行可转换公司债券信用评级报告','声明','评级结果\n主体信用等级\nAAA\n债券信用等级\nAA\n评级展望\n稳定\n评级日期2026-04-02\n发行规模：不超过15.8亿元\n发行期限：不超过6年']
 rating.read_document=lambda *a,**kwargs:(initial,{'document_hash':'a'*64})
 parsed=rating.extract_rating('url','2026-08-04','605123.SH','派克转债','无锡派克新材料科技股份有限公司','2026-08-06','1580000000',6)
-assert parsed['rating']=='AA' and parsed['rating_date']=='2026-04-02' and parsed['identity_binding']['method']=='unique_issuer_issue_amount_tenor'
+assert parsed['rating']=='AA' and parsed['rating_date']=='2026-04-02' and parsed['identity_binding']['method']=='issuer_issue_amount_tenor_pending_identity'
 for size,tenor,issuer in [('1580000001',6,'无锡派克新材料科技股份有限公司'),('1580000000',5,'无锡派克新材料科技股份有限公司'),('1580000000',6,'其他股份有限公司')]:
     assert rating.extract_rating('url','2026-08-04','605123.SH','派克转债',issuer,'2026-08-06',size,tenor)['rating'] is None
 assert rating.extract_rating('url','2026-08-04','605123.SH','派克转债','无锡派克新材料科技股份有限公司')['rating'] is None

@@ -93,5 +93,20 @@ const {pool}=require('../db/connection');
     }
   } finally {Date.now=realNow;}
   assert.deepEqual(fairOrder,['127050.SZ','127051.SZ','127052.SZ']);
+  // BOND-RATING-IDENTITY-011: 初发唯一匹配限定公告到实际发行窗口，并且必须是目标证券。
+  const {initialRatingBindingArguments}=require('../services/convertibleBondAnalysisInputs');
+  const initialBond={instrument_id:123,stock_code:'605123.SH',value_date:'2026-08-06',maturity_date:'2032-08-06',raw_payload:{issue_size:1580000000}};
+  const initialEvent={event_date:'2026-08-04'};
+  let matched={matches:1,is_target:true};
+  const identityQuery=async(sql,params)=>{
+    assert.match(sql,/p.value_date BETWEEN \$4::date AND \$5::date/);
+    assert.deepEqual(params,['605123.SH',1580000000,123,'2026-04-02','2026-08-06']);
+    return {rows:[matched]};
+  };
+  assert.deepEqual(await initialRatingBindingArguments(initialBond,initialEvent,identityQuery,'2026-04-02'),['--initial-issue-size-yuan','1580000000','--initial-tenor-years','6']);
+  for(const invalid of [{matches:2,is_target:true},{matches:1,is_target:false},{matches:0,is_target:false}]) {
+    matched=invalid;assert.deepEqual(await initialRatingBindingArguments(initialBond,initialEvent,identityQuery,'2026-04-02'),[]);
+  }
+  assert.deepEqual(await initialRatingBindingArguments(initialBond,{event_date:'2026-08-07'},()=>{throw Error('跟踪文件不进入初发匹配');}),[]);
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

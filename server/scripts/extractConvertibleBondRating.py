@@ -25,22 +25,39 @@ def chinese_number(value):
     return int(''.join(str(digits[ch]) for ch in value))
 
 
+def previous_rating_context(text, start):
+    prefix = re.sub(r'\s+', '', text[:start]).split('。')[-1][-250:]
+    if '评级结果' in prefix and re.search(r'本次(?:跟踪)?评级上次评级|上次评级本次(?:跟踪)?评级|本次首次|首次本次', prefix):
+        return bool(re.search(r'(?:上次|前次|首次)$', prefix))
+    previous = [match.start() for match in re.finditer(r'前次|上次|首次|历史', prefix)]
+    current = [match.start() for match in re.finditer(r'本次|此次', prefix)]
+    return bool(previous) and max(previous) > max(current, default=-1)
+
+
+def find_current(pattern, text):
+    return next((match for match in re.finditer(pattern, text) if not previous_rating_context(text, match.start())), None)
+
+
 def official_rating_date(pages):
     # 日期只消费评级正文/通知书的明确日期，不扫描历史评级附录。
     # A scanned notification/cover/declaration can put the current summary on
     # page four or later. Explicit date labels remain scoped away from history.
     current_pages = [re.split(r'评级历史|历史评级|附录', page, maxsplit=1)[0] for page in pages]
     patterns = [
+        r'于(20\d{2})[年/.-](\d{1,2})[月/.-](\d{1,2})日(?:出具|发布)(?:了)?[《“"]?[^。]{0,180}?评级报告',
         r'(?:评级日期|评级自期|评级时间|本次评级时间|报告日期)[：:]?.{0,80}?(20\d{2})[年/.-](\d{1,2})[月/.-](\d{1,2})日?',
         r'(?:中诚信国际信用评级有限责任公司|大公国际资信评估有限公司|联合资信评估股份有限公司|中证鹏元资信评估股份有限公司|东方金诚国际信用评估有限公司)[：:]?(20\d{2})年(\d{1,2})月(\d{1,2})日',
         r'([二〇○零一三四五六七八九]{4})年([一二三四五六七八九十\d]{1,3})月([一二三四五六七八九十\d]{1,3})日',
     ]
     for pattern in patterns:
-        for page in current_pages:
+        # A narrative sentence can continue onto the next PDF page; keep its
+        # current/previous context rather than dropping the leading "于".
+        candidates = ['\n'.join(current_pages)] if pattern == patterns[0] else current_pages
+        for page in candidates:
             found = {}
             compact = re.sub(r'\s+', '', page)
             for match in re.finditer(pattern, compact):
-                if re.search(r'(?:上次|前次|历史)$', compact[max(0,match.start()-4):match.start()]):
+                if previous_rating_context(compact, match.start()):
                     continue
                 try:
                     found[date(*(chinese_number(part) for part in match.groups())).isoformat()] = match.group(0)
@@ -58,23 +75,23 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     table = None
     if bond_name and bond_name in summary and re.search(r'(?:主体|评级)/展望/债项/评级时间', summary):
         table = re.search(r'本次(?:跟踪|评级)[：:]?([A-D]{1,3}[+-]?)/(稳定|正面|负面|发展中|观察)/([A-D]{1,3}[+-]?)/(20\d{2})年(\d{1,2})月(\d{1,2})日', summary)
-    outlook_match = re.search(r"评级展望\s*(?:调整|维持)?为?\s*[：:]?\s*(稳定|正面|负面|发展中|观察)", text)
+    outlook_match = find_current(r'评级展望\s*(?:调整|维持)?为?\s*[：:]?\s*[“"]?(稳定|正面|负面|发展中|观察)', text)
     if not outlook_match:
-        outlook_match = re.search(r"给予公司(稳定|正面|负面|发展中|观察)的(?:信用)?评级展望", compact)
-    rating_match = re.search(
+        outlook_match = find_current(r"给予公司(稳定|正面|负面|发展中|观察)的(?:信用)?评级展望", compact)
+    rating_match = find_current(
         r"主体信用等级由[A-D]{1,3}[+-]?(?:调整至|调降至|上调至)[“\"]?([A-D]{1,3}[+-]?)",
         compact,
     )
     if not rating_match:
-        rating_match = re.search(r"主体(?:长期)?信用等级\s*(?:为)?\s*[：:]?\s*([A-D]{1,3}[+-]?)", text)
+        rating_match = find_current(r"主体(?:长期)?信用等级\s*(?:为)?\s*[：:]?\s*([A-D]{1,3}[+-]?)", text)
     if not rating_match:
-        rating_match = re.search(r"主体信用等级为[“\"]?([A-D]{1,3}[+-]?)", compact)
+        rating_match = find_current(r"主体信用等级为[“\"]?([A-D]{1,3}[+-]?)", compact)
     if bond_name:
-        rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:长期)?信用等级(?:由[A-D]{1,3}[+-]?(?:调整至|上调至|调降至)|均为|为|维持为|维持|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
+        rating_match = find_current(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:长期)?信用等级(?:由[A-D]{1,3}[+-]?(?:调整至|上调至|调降至)|均为|为|维持为|维持|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
         if not rating_match:
-            rating_match = re.search(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:信用)?评级(?:结果)?(?:为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
+            rating_match = find_current(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:信用)?评级(?:结果)?(?:为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
         if not rating_match:
-            rating_match = re.search(re.escape(bond_name) + r"[”\"]?[：:|]?([A-D]{1,3}[+-]?)[/／](?:稳定|正面|负面|发展中|观察)", compact)
+            rating_match = find_current(re.escape(bond_name) + r"[”\"]?[：:|]?([A-D]{1,3}[+-]?)[/／](?:稳定|正面|负面|发展中|观察)", compact)
     rating_date, date_evidence = official_rating_date(pages)
     # Explicit current/previous columns identify the bond row; the issuer row
     # and historical-rating appendices must never provide its grade.
@@ -107,7 +124,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
                     date_evidence = date_row.group(0)
                 outlook_row = re.search(r'评级展望\s+(稳定|正面|负面|发展中|观察)\s+(稳定|正面|负面|发展中|观察)', page)
                 if outlook_row:
-                    outlook_match = re.search(r'(稳定|正面|负面|发展中|观察)', outlook_row.group(column))
+                    outlook_match = find_current(r'(稳定|正面|负面|发展中|观察)', outlook_row.group(column))
                     row_outlook_evidence = outlook_row.group(0)
                 break
     if table:
@@ -124,6 +141,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
         "rating_evidence": table.group(0) if table else row_rating.group(0) if row_rating else rating_match.group(0) if rating_match else None,
         "outlook_evidence": table.group(0) if table else row_outlook_evidence or (outlook_match.group(0) if outlook_match else None),
         "date_evidence": date_evidence,
+        "rating_context_version": "current-narrative-v1",
     }
 
 

@@ -123,5 +123,22 @@ const {pool}=require('../db/connection');
   assert.equal(projectedDelay,false);assert.equal(delayOnly.ok,false);assert.ok(delayOnly.missingFields['127040.SZ'].includes('rating_report'));
   assert.equal(classifiedDelay.status,'not_applicable');assert.equal(classifiedDelay.previousFailure,'旧解析失败');
   assert.equal(classifiedDelay.classificationEvidence.url,'delay');
+  // BOND-RATING-REVALIDATE-019: 已完成但疑似取前次日期只重验该原文，不借旧标准事实再次完成。
+  const {suspectRatingUrls}=require('../services/convertibleBondAnalysisInputs');
+  const suspect=await suspectRatingUrls({instrument_id:123},async(sql,args)=>{
+    assert.match(sql,/NOT raw_payload \? 'identity_binding'/);assert.deepEqual(args,[123]);return {rows:[{url:'rating'}]};
+  });
+  assert.deepEqual([...suspect],['rating']);
+  let revalidated=[];
+  const savedBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:Object.fromEntries(inputDocuments(events,bond).map(d=>[`${d.kind}:${d.event.url}`,{status:'complete',parserVersion:'analysis-input-v4'}]))}}};
+  const revalidationDeps={...deps,loadUniverse:async()=>[savedBond],suspectRatingUrls:async()=>suspect,
+    project:async(kind,event)=>{revalidated.push(event.url);return {document_hash:'hash',rating_date_source:'official_document'};},save:async()=>{},persistBond:async()=>{}};
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},revalidationDeps)).ok,true);
+  assert.deepEqual(revalidated,['rating']);
+  let dubiousSaved=false;
+  const dubious=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},{...revalidationDeps,
+    project:async()=>({document_hash:'hash',rating_date_source:'announcement_fallback'}),save:async()=>{dubiousSaved=true;},
+  });
+  assert.equal(dubious.ok,false);assert.equal(dubiousSaved,false);assert.ok(dubious.missingFields['127040.SZ'].includes('rating'));
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

@@ -11,6 +11,14 @@ const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require(
 
 const INPUT_VERSION='analysis-input-v4';
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
+async function suspectRatingUrls(bond,query=pool.query.bind(pool)) {
+  if(!bond.instrument_id)return new Set();
+  const {rows}=await query(`SELECT DISTINCT raw_payload->>'source_url' AS url FROM fundamental.convertible_bond_ratings
+    WHERE instrument_id=$1 AND raw_payload->>'rating_date_source'='official_document'
+    AND raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v1'
+    AND NOT raw_payload ? 'identity_binding' AND rating_date<date_trunc('year',announced_at)`,[bond.instrument_id]);
+  return new Set(rows.map(row=>row.url).filter(Boolean));
+}
 async function initialRatingBindingArguments(bond,event,query=pool.query.bind(pool),creditDate=null) {
   const size=Number(bond.raw_payload?.issue_size),issued=isoDate(bond.value_date),maturity=isoDate(bond.maturity_date),announced=isoDate(event.event_date);
   if(!(size>0&&issued&&maturity&&announced&&maturity.slice(5)===issued.slice(5)&&announced<=issued))return [];
@@ -227,6 +235,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
           classificationEvidence:notice,previousFailure:prior?.previousFailure||prior?.error||null};
       }
       const selected=inputDocuments(events,bond);
+      const suspectUrls=await (deps.suspectRatingUrls||suspectRatingUrls)(bond);
       const expectedPeriod=requiredReportPeriod(targetDate);
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
       state.not_due=reportNotDue?{report_period:expectedPeriod,value_date:isoDate(bond.value_date),fields:['holders','price_history'],basis:'annual_4_months_halfyear_2_months'}:null;
@@ -237,11 +246,13 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       for(const {kind,event} of selected) {
         if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];
-        if(prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
+        const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
+        if(!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
         if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){missing.push(kind);continue;}
         if(Date.now()-started>=maxRuntimeMs){missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
+          if(revalidateRating&&result.rating_date_source!=='official_document')throw new Error('原评级日期疑似前次，缺本次原文实际日期，不能沿用可疑标准日期');
           await (deps.save||saveProjection)(kind,event,result,bond);
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
         } catch(error) {missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
@@ -268,4 +279,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,suspectRatingUrls,INPUT_VERSION};

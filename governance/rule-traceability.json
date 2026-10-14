@@ -2623,6 +2623,38 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-NARRATIVE-018",
+      "title": "本次前次叙述隔离及带引号展望跨页实际出具日期",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "previous_rating_context"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-NARRATIVE-018"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-REVALIDATE-019",
+      "title": "疑似前次日期的已完成原文定点复验拒绝借可疑标准日期",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "suspectRatingUrls"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-REVALIDATE-019"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

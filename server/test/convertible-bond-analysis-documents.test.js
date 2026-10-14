@@ -72,6 +72,16 @@ for headers,values in [('本次评级\n上次评级','AA\nAAA'),('上次评级\n
     parsed=rating.parse_rating_pages(['评级结果\n'+headers+'\n蓝天转债\n'+values+'\n评级日期2026年6月15日','历史蓝天转债信用等级为AAA。'],'蓝天转债','2026-06-17')
     assert parsed['rating']=='AA'
 # BOND-RATING-INITIAL-008: 未命名首发评级只按统一身份中的唯一发行金额/期限绑定。
+# BOND-RATING-NARRATIVE-018: 前次/本次叙述隔离，带引号展望与出具报告实际日期不借旧日期。
+narrative='前次债券评级：公司主体信用等级为“A+”，评级展望为“负面”，“国力转债”的信用等级为“A+”。\n本次债券评级：主体信用等级为“AAA”，评级展望为“稳定”，“国力转债”的信用等级为“AA”。\n公司前次评级结果为A+，评级时间为2025年6月24日。\n中证鹏元于2026年6月23日出具了《公司相关债券2026年跟踪评级报告》，本次评级展望维持“稳定”。'
+parsed=rating.parse_rating_pages([narrative],'国力转债','2026-06-25')
+assert parsed['rating']=='AA' and parsed['rating_outlook']=='稳定' and parsed['rating_date']=='2026-06-23'
+assert '2026年6月23日' in parsed['date_evidence']
+parts=narrative.split('于2026',1)
+parsed=rating.parse_rating_pages([parts[0]+'于','2026'+parts[1]],'国力转债','2026-06-25')
+assert parsed['rating_date']=='2026-06-23','跨页出具日期不能丢句首或借前次日期'
+parsed=rating.parse_rating_pages(['公司前次评级时间为2025年6月24日。本次“国力转债”信用等级为“AA”，评级展望为“稳定”。'],'国力转债','2026-06-25')
+assert parsed['rating_date_source']=='announcement_fallback'
 for issuer,size,day in [('上海银行股份有限公司','20000000000','2020-08-28'),('兴业银行股份有限公司','50000000000','2021-09-01')]:
     bank=[issuer+'公开发行A股可转换公司债券信用评级报告','声明',
           '主体信用等级AAA\n债项信用等级AAA\n评级展望稳定\n评级时间'+day+'\n发行规模：不超过人民币'+str(int(size)//100000000)+'亿元\n存续期限自发行之日起6年']

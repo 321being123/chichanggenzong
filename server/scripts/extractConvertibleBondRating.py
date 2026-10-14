@@ -218,24 +218,66 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     }
 
 
-def extract_rating(url, announcement_date=None, security_code=None, bond_name=None, issuer_name=None, issue_date=None, initial_issue_size_yuan=None, initial_tenor_years=None):
-    initial_window = bool(initial_issue_size_yuan and initial_tenor_years and issue_date and announcement_date and announcement_date <= issue_date)
+def initial_issue_amount(text):
+    match = re.search(r'(?:发行规模|发行金额|债券规模|发行额)[：:]?(?:为)?(?:拟发行总额)?(?:人民币)?(?:不超过)?(?:人民币)?([\d,.]+)(亿元|万元|元)', text)
+    if not match:
+        return None, None
+    token = match.group(1)
+    # In a thousand-grouped number OCR can read an interior comma as a dot.
+    # Every interior group must have three digits and the fraction two digits.
+    if ',' in token or token.count('.') > 1:
+        if not re.fullmatch(r'\d{1,3}(?:[,.]\d{3})+(?:\.\d{2})?', token):
+            return None, None
+        parts = re.split(r'[,.]', token)
+        fraction = parts.pop() if len(parts[-1]) == 2 and '.' in token else None
+        token = ''.join(parts) + ('.' + fraction if fraction is not None else '')
+    value = Decimal(token) * {'亿元': Decimal(100000000), '万元': Decimal(10000), '元': Decimal(1)}[match.group(2)]
+    return value, match.group(0)
+
+
+def initial_report_cover_date(pages, issuer_name):
+    issuer = re.sub(r'\s+', '', normalize_rating_text(issuer_name or ''))
+    found = {}
+    for page in pages[:2]:
+        compact = re.sub(r'\s+', '', normalize_rating_text(page))
+        if not issuer or issuer not in compact or '跟踪' in compact or not re.search(r'公开发行(?:A股)?可转换公司债券信用评级报告', compact):
+            continue
+        for line in page.splitlines():
+            match = re.fullmatch(r'(20\d{2})年(\d{1,2})月(\d{1,2})日', re.sub(r'\s+', '', normalize_rating_text(line)))
+            if not match:
+                continue
+            try:
+                found[date(*(int(v) for v in match.groups())).isoformat()] = match.group(0).strip()
+            except ValueError:
+                continue
+    return next(iter(found.items())) if len(found) == 1 else (None, None)
+
+
+def extract_rating(url, announcement_date=None, security_code=None, bond_name=None, issuer_name=None, issue_date=None, initial_issue_size_yuan=None, initial_tenor_years=None, list_date=None):
+    publication_end = list_date if list_date and issue_date and list_date >= issue_date else issue_date
+    initial_window = bool(initial_issue_size_yuan and initial_tenor_years and issue_date and announcement_date and announcement_date <= publication_end)
     def initial_binding(pages):
         covers = [re.sub(r'\s+', '', unicodedata.normalize('NFKC', page)) for page in pages[:2]]
         issuer = re.sub(r'\s+', '', unicodedata.normalize('NFKC', issuer_name or ''))
         text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', '\n'.join(pages)))
-        amount = re.search(r'(?:发行规模|发行金额|债券规模|发行额)[：:]?(?:人民币)?(?:不超过)?(?:人民币)?([\d.]+)亿元', text)
-        tenor = re.search(r'(?:发行期限|债券期限|存续期限)[：:]?(?:自发行之日起)?(?:不超过)?(\d+)年', text)
+        amount, amount_evidence = initial_issue_amount(text)
+        tenor = re.search(r'(?:发行期限|债券期限|存续期限)[：:]?(?:为)?(?:自?发行之日起)?(?:不超过)?(\d+)年', text)
+        if not tenor:
+            # A debt clause binds the bare "期限" to this issue, not a loan or
+            # the issuer's other financial instruments elsewhere in the PDF.
+            clause = re.search(r'本次发行的可转换公司债券[^。；]*', text)
+            if clause:
+                tenor = re.search(r'[，,](?:债券)?期限(?:为|[：:])(?:自?发行之日起)?(\d+)年', clause.group(0))
         title = next((match.group(0) for cover in covers for match in re.finditer(r'(?:向不特定对象发行|公开发行)(?:A股)?可转换公司债券(?:信用评级报告|信用等级通知书)', cover) if issuer and issuer in cover and '跟踪评级' not in cover),None)
-        return title if initial_window and title and amount and tenor and Decimal(amount.group(1))*Decimal(100000000)==Decimal(str(initial_issue_size_yuan)) and int(tenor.group(1))==int(initial_tenor_years) else None
+        return title if initial_window and title and amount is not None and tenor and amount==Decimal(str(initial_issue_size_yuan)) and int(tenor.group(1))==int(initial_tenor_years) else None
     def parse(pages):
         result = parse_rating_pages(pages, bond_name, announcement_date)
         if not result['rating'] and not result['rating_conflicts'] and initial_binding(pages):
-            normalized = unicodedata.normalize('NFKC', '\n'.join(pages))
-            matches = list(re.finditer(r'(?:(?:债券|债项)信用等级\s*[：:]?|(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期债券)(?:的)?信用等级(?:为|[：:])?)\s*([A-D]{1,3}[+-]?)(?=\s|[。；;,，]|$)', normalized))
+            normalized = re.sub(r'\s+', '', normalize_rating_text('\n'.join(pages)))
+            matches = list(re.finditer(r'(?:(?:债券|债项)信用等级[：:]?|(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期(?:公司)?债券)(?:的)?信用等级(?:为|[：:])?)([A-D]{1,3}[+-]?)(?=[^A-D+-]|$)', normalized))
             # Explicit formal debt conclusions take precedence over a summary
             # table's OCR glyph. Keep all secondary evidence for audit.
-            conclusions = list(re.finditer(r'(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期债券)(?:的)?信用等级为\s*([A-D]{1,3}[+-]?)(?=\s|[。；;,，]|$)', normalized))
+            conclusions = list(re.finditer(r'(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期(?:公司)?债券)(?:的)?信用等级为([A-D]{1,3}[+-]?)(?=[^A-D+-]|$)', normalized))
             if conclusions:
                 result['secondary_rating_evidence'] = [match.group(0) for match in matches]
                 matches = conclusions
@@ -243,6 +285,12 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
                 result['rating'] = matches[0].group(1)
                 result['rating_evidence'] = matches[0].group(0)
                 result['identity_binding'] = {'method':'issuer_issue_amount_tenor_pending_identity','validated':False,'issuer':issuer_name,'security_code':security_code,'bond_name':bond_name,'issue_date':issue_date,'announcement_date':announcement_date,'issue_size_yuan':str(initial_issue_size_yuan),'tenor_years':initial_tenor_years,'document_title':initial_binding(pages)}
+                result['identity_binding']['list_date'] = list_date
+                result['identity_binding']['issue_amount_evidence'] = initial_issue_amount(normalized)[1]
+        if initial_binding(pages) and result['rating_date_source'] == 'announcement_fallback':
+            cover_date, cover_evidence = initial_report_cover_date(pages, issuer_name)
+            if cover_date and cover_date <= issue_date and cover_date <= announcement_date:
+                result.update(rating_date=cover_date, rating_date_source='official_document', date_evidence=cover_evidence, rating_date_context='initial_report_cover')
         return result
     def complete(pages):
         text = re.sub(r'\s+', '', '\n'.join(pages))
@@ -274,10 +322,11 @@ def main():
     parser.add_argument("--bond-name", default=None)
     parser.add_argument("--issuer-name", default=None)
     parser.add_argument("--issue-date", default=None)
+    parser.add_argument("--list-date", default=None)
     parser.add_argument("--initial-issue-size-yuan", default=None)
     parser.add_argument("--initial-tenor-years", type=int, default=None)
     args = parser.parse_args()
-    print(json.dumps(extract_rating(args.url, args.announcement_date, args.security_code, args.bond_name, args.issuer_name, args.issue_date, args.initial_issue_size_yuan, args.initial_tenor_years), ensure_ascii=False))
+    print(json.dumps(extract_rating(args.url, args.announcement_date, args.security_code, args.bond_name, args.issuer_name, args.issue_date, args.initial_issue_size_yuan, args.initial_tenor_years, args.list_date), ensure_ascii=False))
 
 
 if __name__ == "__main__":

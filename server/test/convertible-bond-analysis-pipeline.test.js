@@ -108,6 +108,14 @@ const {pool}=require('../db/connection');
     matched=invalid;assert.deepEqual(await initialRatingBindingArguments(initialBond,initialEvent,identityQuery,'2026-04-02'),[]);
   }
   assert.deepEqual(await initialRatingBindingArguments(initialBond,{event_date:'2026-08-07'},()=>{throw Error('跟踪文件不进入初发匹配');}),[]);
+  // BOND-RATING-ISSUE-PUBLICATION-024: 首发报告可在实际发行后/上市前公布，身份仍按实际评级日至发行日唯一匹配。
+  const listedBond={...initialBond,list_date:'2026-08-20'};
+  matched={matches:1,is_target:true};
+  for(const event_date of ['2026-08-07','2026-08-20']) {
+    assert.equal((await initialRatingBindingArguments(listedBond,{event_date},identityQuery,'2026-04-02')).length,4);
+  }
+  assert.deepEqual(await initialRatingBindingArguments(listedBond,{event_date:'2026-08-21'},()=>{throw Error('上市后不允许首发兜底');}),[]);
+  assert.deepEqual(await initialRatingBindingArguments(listedBond,initialEvent,()=>{throw Error('评级日不可晚于实际发行');},'2026-08-07'),[]);
   // BOND-RATING-ROLE-017: 延期通知不是评级结果，仍缺实际评级报告时禁止成功。
   const delay={url:'delay',title:'中证鹏元关于延迟披露公司及相关债券2026年定期跟踪评级报告的公告',event_date:'2026-06-24'};
   assert.equal(inputDocuments([delay],bond).some(d=>d.kind==='rating'),false);

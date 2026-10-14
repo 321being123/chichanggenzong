@@ -83,6 +83,35 @@ assert parsed['rating_date']=='2026-06-23','跨页出具日期不能丢句首或
 parsed=rating.parse_rating_pages(['公司前次评级时间为2025年6月24日。本次“国力转债”信用等级为“AA”，评级展望为“稳定”。'],'国力转债','2026-06-25')
 assert parsed['rating_date_source']=='announcement_fallback'
 # BOND-RATING-CURRENT-ROW-022: 评级时间表头下只取明确本次行，混排不按两个日期大小猜列。
+# BOND-RATING-ISSUE-PUBLICATION-024: 万元千分位/换行本期公司债券、明确首发封面日及实际上市前发布。
+from decimal import Decimal
+for amount in ['1,200,000.00万元','1,200.000.00万元','120亿元','12000000000元']:
+    assert rating.initial_issue_amount('发行规模拟发行总额不超过人民币'+amount)[0]==Decimal('12000000000')
+for bad in ['1,20,000.00万元','1,200.00.00万元','120.0.0亿元']:
+    assert rating.initial_issue_amount('发行规模'+bad)==(None,None)
+cover='通威股份有限公司\n公开发行A股可转换公司债券信用评级报告\n2021年6月4日'
+assert rating.initial_report_cover_date([cover],'通威股份有限公司')[0]=='2021-06-04'
+assert rating.initial_report_cover_date([cover.replace('2021年6月4日','2021 年6 月4 日')],'通威股份有限公司')[0]=='2021-06-04'
+for invalid in [cover+'\n2021年6月5日',cover.replace('信用评级报告','跟踪信用评级报告'),cover.replace('通威股份有限公司','其他公司')]:
+    assert rating.initial_report_cover_date([invalid],'通威股份有限公司')==(None,None)
+tong=[cover,'主体信用等级为AAA，评级展望为稳定，本期公司债券的信用\n等级为AA+。',
+    '发行规模\n拟发行总额不超过人民币1,200.000.00万元\n债券期限\n自发行之日起6年']
+rating.read_document=lambda *a,**kwargs:(tong,{'document_hash':'a'*64})
+for announced in ['2022-02-22','2022-03-11','2022-03-18']:
+    result=rating.extract_rating('url',announced,'600438.SH','通22转债','通威股份有限公司','2022-02-24','12000000000',6,'2022-03-18')
+    assert result['rating']=='AA+' and result['rating_date']=='2021-06-04' and result['rating_date_context']=='initial_report_cover'
+    assert result['identity_binding']['validated'] is False and '万元' in result['identity_binding']['issue_amount_evidence']
+for announced,listed,size in [('2022-03-19','2022-03-18','12000000000'),('2022-03-11',None,'12000000000'),('2022-02-22','2022-03-18','145868000')]:
+    result=rating.extract_rating('url',announced,'600438.SH','通22转债','通威股份有限公司','2022-02-24',size,6,listed)
+    assert result['rating'] is None and 'identity_binding' not in result
+bo=['江苏苏博特新材料股份有限公司2021年公开发行可转换公司债券信用评级报告\n2021 年11 月10 日',
+    '主体信用等级AAA，评级展望为稳定，本期公司债券的信用等级为AA-。',
+    '本次发行的可转换公司债券规模为不超过8亿元（含8亿元），期限为6年，采用每年付息一次。']
+rating.read_document=lambda *a,**kwargs:(bo,{'document_hash':'a'*64})
+result=rating.extract_rating('url','2022-07-07','603916.SH','博22转债','江苏苏博特新材料股份有限公司','2022-07-01','800000000',6,'2022-07-28')
+assert result['rating']=='AA-' and result['rating_date']=='2021-11-10' and result['identity_binding']['validated'] is False
+bo[2]='本次发行的可转换公司债券规模为不超过8亿元，其他银行贷款期限为6年。'
+assert rating.extract_rating('url','2022-07-07','603916.SH','博22转债','江苏苏博特新材料股份有限公司','2022-07-01','800000000',6,'2022-07-28')['rating'] is None
 # BOND-RATING-GRADE-CONFLICT-023: 等级符号不得截断，当前正式结论/债项表冲突不可发布。
 for minus in ['−','–','‐','‑','－']:
     parsed=rating.parse_rating_pages(['本次“测试转债”的信用等级为AA'+minus+'，评级展望稳定。评级日期2026年6月15日'],'测试转债','2026-06-17')

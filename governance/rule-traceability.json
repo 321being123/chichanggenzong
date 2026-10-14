@@ -2723,6 +2723,26 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-ISSUE-PUBLICATION-024",
+      "title": "首发评级万元金额与封面日、实际上市前发布须实际日唯一身份且拒绝歧义与未来日期",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "initial_report_cover_date"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-ISSUE-PUBLICATION-024"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-ISSUE-PUBLICATION-024"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

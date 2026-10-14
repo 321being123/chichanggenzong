@@ -5,7 +5,7 @@ const { refreshConvertibleBondAnalysis, isoDate } = require('./convertibleBondAn
 
 async function loadAnalysisUniverse(targetDate) {
   const { rows } = await pool.query(`SELECT i.instrument_id,i.canonical_code AS ts_code,p.bond_short_name,p.bond_full_name,
-    s.canonical_code AS stock_code,p.value_date::text,p.maturity_date::text,p.raw_payload,
+    s.canonical_code AS stock_code,i.list_date::text,p.value_date::text,p.maturity_date::text,p.raw_payload,
     p.fundraising_purpose,p.rate_clause,p.first_conv_price,p.updated_at::text AS profile_version
     FROM core.instruments i JOIN fundamental.convertible_bond_profiles p USING(instrument_id)
     JOIN public.bond_unified u USING(instrument_id)

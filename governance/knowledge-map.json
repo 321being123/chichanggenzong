@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-10",
+  "lastReviewed": "2026-10-14",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -80,7 +80,10 @@
         "server/services/arbitrageRules.js",
         "server/services/hkDailyCoverage.js",
         "server/routes/marketVolatility.js",
-        "server/scripts/importFederalFundsCsv.js"
+        "server/scripts/importFederalFundsCsv.js",
+        "server/scripts/extractConvertibleBondRating.py",
+        "server/services/convertibleBondAnalysisInputs.js",
+        "server/services/convertibleBondAnalysisSnapshots.js"
       ],
       "keywords": [
         "日期时间治理",

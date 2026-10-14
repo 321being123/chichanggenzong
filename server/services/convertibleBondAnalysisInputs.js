@@ -34,7 +34,9 @@ function validateTrackingRatingYear(event,output) {
 }
 async function initialRatingBindingArguments(bond,event,query=pool.query.bind(pool),creditDate=null) {
   const size=Number(bond.raw_payload?.issue_size),issued=isoDate(bond.value_date),maturity=isoDate(bond.maturity_date),announced=isoDate(event.event_date);
-  if(!(size>0&&issued&&maturity&&announced&&maturity.slice(5)===issued.slice(5)&&announced<=issued))return [];
+  const listed=isoDate(bond.list_date),publicationEnd=listed&&listed>=issued?listed:issued;
+  if(!(size>0&&issued&&maturity&&announced&&maturity.slice(5)===issued.slice(5)&&announced<=publicationEnd))return [];
+  if(creditDate&&creditDate>issued)return [];
   const args=['--initial-issue-size-yuan',String(size),'--initial-tenor-years',String(Number(maturity.slice(0,4))-Number(issued.slice(0,4)))];
   if(!creditDate)return args;
   const {rows}=await query(`SELECT COUNT(*)::int AS matches,BOOL_OR(p.instrument_id=$3) AS is_target FROM fundamental.convertible_bond_profiles p
@@ -54,6 +56,7 @@ async function projectDocument(kind,event,bond) {
   if(kind==='rating') {
     args.push('--announcement-date',isoDate(event.event_date));
     if(bond.value_date)args.push('--issue-date',isoDate(bond.value_date));
+    if(bond.list_date)args.push('--list-date',isoDate(bond.list_date));
     args.push(...await initialRatingBindingArguments(bond,event));
   }
   if(kind==='price_history'&&bond.first_conv_price!=null)args.push('--initial-price',String(bond.first_conv_price));

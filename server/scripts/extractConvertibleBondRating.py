@@ -53,6 +53,23 @@ def rating_date_context(pages, evidence):
     return 'official_unscoped'
 
 
+def current_summary_date(pages):
+    # Only a dated current row in an explicitly labelled results table counts.
+    # Do not infer a column from the order or magnitude of two dates.
+    found = {}
+    for page in pages:
+        text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', page))
+        text = re.split(r'主要财务数据|评级模型|历史评级|评级历史|附录', text, maxsplit=1)[0]
+        if not all(label in text for label in ['评级结果', '评级时间', '上次评级', '本次评级']):
+            continue
+        for match in re.finditer(r'本次(?:跟踪)?评级(?:(?!上次评级|本次评级|债券简称|债项简称).){0,80}?(20\d{2})[年/.-](\d{1,2})[月/.-](\d{1,2})日?', text):
+            try:
+                found[date(*(int(part) for part in match.groups())).isoformat()] = match.group(0)
+            except ValueError:
+                continue
+    return next(iter(found.items())) if len(found) == 1 else (None, None)
+
+
 def official_rating_date(pages):
     # 日期只消费评级正文/通知书的明确日期，不扫描历史评级附录。
     # A scanned notification/cover/declaration can put the current summary on
@@ -107,8 +124,12 @@ def parse_rating_pages(pages, bond_name, announcement_date):
             rating_match = find_current(re.escape(bond_name) + r"[”\"]?(?:的)?(?:债项)?(?:信用)?评级(?:结果)?(?:为|维持为|：|:)?[“\"]?([A-D]{1,3}[+-]?)", compact)
         if not rating_match:
             rating_match = find_current(re.escape(bond_name) + r"[”\"]?[：:|]?([A-D]{1,3}[+-]?)[/／](?:稳定|正面|负面|发展中|观察)", compact)
-    rating_date, date_evidence = official_rating_date(pages)
-    date_context = rating_date_context(pages, date_evidence)
+    rating_date, date_evidence = current_summary_date(pages)
+    if rating_date:
+        date_context = 'current_summary_table'
+    else:
+        rating_date, date_evidence = official_rating_date(pages)
+        date_context = rating_date_context(pages, date_evidence)
     # Explicit current/previous columns identify the bond row; the issuer row
     # and historical-rating appendices must never provide its grade.
     row_rating = None

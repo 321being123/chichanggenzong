@@ -2687,6 +2687,22 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-CURRENT-ROW-022",
+      "title": "评级时间结果表仅取明确本次行拒绝猜列历史或冲突日期",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "current_summary_date"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-CURRENT-ROW-022"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

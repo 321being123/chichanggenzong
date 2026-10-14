@@ -82,6 +82,16 @@ parsed=rating.parse_rating_pages([parts[0]+'于','2026'+parts[1]],'国力转债'
 assert parsed['rating_date']=='2026-06-23','跨页出具日期不能丢句首或借前次日期'
 parsed=rating.parse_rating_pages(['公司前次评级时间为2025年6月24日。本次“国力转债”信用等级为“AA”，评级展望为“稳定”。'],'国力转债','2026-06-25')
 assert parsed['rating_date_source']=='announcement_fallback'
+# BOND-RATING-CURRENT-ROW-022: 评级时间表头下只取明确本次行，混排不按两个日期大小猜列。
+for old,current in [('2021.03.15','2022.06.28'),('2022.06.28','2023.05.29')]:
+    rows='评级结果\n主体信用等级\n评级展望\n评级时间\n上次评级\n'+old+'\n本次评级\n资\n'+current+'\n债项简称\n永吉转债\n维持“永吉转债”的信用等级为AA，评级展望稳定。'
+    parsed=rating.parse_rating_pages([rows],'永吉转债','2024-06-30')
+    assert parsed['rating_date']==current.replace('.','-') and parsed['rating_date_context']=='current_summary_table'
+    assert '本次评级' in parsed['date_evidence']
+assert rating.current_summary_date(['评级结果 评级时间 上次评级 2023.05.29 2024.05.27 本次 债券简称'])==(None,None)
+assert rating.current_summary_date(['评级结果 评级时间 上次评级2023.05.29 本次评级2024.05.27 主要财务数据 本次评级2025.05.27'])[0]=='2024-05-27'
+assert rating.current_summary_date(['评级结果 评级时间 上次评级2023.05.29 本次评级2024.05.27 本次评级2024.05.28'])==(None,None)
+assert rating.current_summary_date(['历史评级 评级结果 评级时间 上次评级2023.05.29 本次评级2024.05.27'])==(None,None)
 # BOND-RATING-SINGLE-COLUMN-020: 本次单列债券表按明确目标行取级别，不借主体/模型或另一债。
 single='本次评级结果\n评级时间：2026.6.18\n债券简称\n债券信用等级\n发行人主体信用等级\nAAA\n永吉转债\nAA-\n评级观点\n评级展望为稳定。评级模型级别AA。'
 parsed=rating.parse_rating_pages([single],'永吉转债','2026-06-23')

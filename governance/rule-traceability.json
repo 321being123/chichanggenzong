@@ -2607,6 +2607,22 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-ROLE-017",
+      "title": "评级延期披露公告不当成评级结果且实际报告缺失仍不能成功",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "isRatingPublicationDelay"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-ROLE-017"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

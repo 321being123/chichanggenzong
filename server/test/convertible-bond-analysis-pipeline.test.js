@@ -108,5 +108,20 @@ const {pool}=require('../db/connection');
     matched=invalid;assert.deepEqual(await initialRatingBindingArguments(initialBond,initialEvent,identityQuery,'2026-04-02'),[]);
   }
   assert.deepEqual(await initialRatingBindingArguments(initialBond,{event_date:'2026-08-07'},()=>{throw Error('跟踪文件不进入初发匹配');}),[]);
+  // BOND-RATING-ROLE-017: 延期通知不是评级结果，仍缺实际评级报告时禁止成功。
+  const delay={url:'delay',title:'中证鹏元关于延迟披露公司及相关债券2026年定期跟踪评级报告的公告',event_date:'2026-06-24'};
+  assert.equal(inputDocuments([delay],bond).some(d=>d.kind==='rating'),false);
+  assert.deepEqual(inputDocuments([...events,delay],bond).filter(d=>d.kind==='rating').map(d=>d.event.url),['rating']);
+  assert.equal(inputDocuments([{...delay,title:'关于可转换公司债券2026年跟踪评级调整的公告'}],bond).filter(d=>d.kind==='rating').length,1);
+  let projectedDelay=false;
+  let classifiedDelay;
+  const delayOnly=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},{...deps,
+    loadUniverse:async()=>[{...bond,raw_payload:{analysis_inputs:{documents:{'rating:delay':{status:'failed',error:'旧解析失败'}}}}}],readDocuments:async()=>events.filter(e=>e.url!=='rating').concat(delay),
+    project:async(kind,event)=>{if(event.url==='delay')projectedDelay=true;return {document_hash:'hash'};},
+    persistBond:async(b,state)=>{classifiedDelay=state.documents['rating:delay'];},
+  });
+  assert.equal(projectedDelay,false);assert.equal(delayOnly.ok,false);assert.ok(delayOnly.missingFields['127040.SZ'].includes('rating_report'));
+  assert.equal(classifiedDelay.status,'not_applicable');assert.equal(classifiedDelay.previousFailure,'旧解析失败');
+  assert.equal(classifiedDelay.classificationEvidence.url,'delay');
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

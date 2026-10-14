@@ -149,6 +149,11 @@ async function persistBondInputs(bond,state) {
     WHERE instrument_id=$1`,[bond.instrument_id,JSON.stringify(state)]);
 }
 
+function isRatingPublicationDelay(event) {
+  const title=String(event.title||'').trim();
+  return /(?:延迟|延期)披露.*评级报告(?:的)?公告$/.test(title)&&!/评级调整|信用等级.*调整|调整.*信用等级/.test(title);
+}
+
 function inputDocuments(events,bond={}) {
   const selected=[];
   const issueDate=isoDate(bond.value_date);
@@ -161,7 +166,7 @@ function inputDocuments(events,bond={}) {
     if(issuance)selected.push({kind:'issuance_terms',event:issuance});
   }
   if(report)selected.push({kind:'holders',event:report},{kind:'price_history',event:report});
-  for(const event of events.filter(e=>/评级报告|评级调整/.test(e.title)&&(!issueDate||
+  for(const event of events.filter(e=>!isRatingPublicationDelay(e)&&/评级报告|评级调整/.test(e.title)&&(!issueDate||
     isoDate(e.event_date)>=issueDate||isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`&&/可转债|可转换公司债券/.test(e.title))))selected.push({kind:'rating',event});
   return selected;
 }
@@ -214,6 +219,13 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       const events=await (deps.readDocuments||readDocuments)(bond,targetDate);
+      state.rating_publication_delays=events.filter(isRatingPublicationDelay).map(event=>({url:event.url,title:event.title,
+        announcedAt:isoDate(event.event_date),status:'not_applicable',reason:'publication_delay_is_not_rating_result'}));
+      for(const notice of state.rating_publication_delays) {
+        const key=`rating:${notice.url}`,prior=state.documents[key];
+        state.documents[key]={...prior,status:'not_applicable',parserVersion:INPUT_VERSION,
+          classificationEvidence:notice,previousFailure:prior?.previousFailure||prior?.error||null};
+      }
       const selected=inputDocuments(events,bond);
       const expectedPeriod=requiredReportPeriod(targetDate);
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
@@ -256,4 +268,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,INPUT_VERSION};

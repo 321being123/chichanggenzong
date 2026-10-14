@@ -38,6 +38,21 @@ def find_current(pattern, text):
     return next((match for match in re.finditer(pattern, text) if not previous_rating_context(text, match.start())), None)
 
 
+def rating_date_context(pages, evidence):
+    if not evidence:
+        return 'unknown'
+    if evidence.startswith('于'):
+        return 'current_report_issuance'
+    for page in pages:
+        compact = re.sub(r'\s+', '', unicodedata.normalize('NFKC', page))
+        start = compact.find(re.sub(r'\s+', '', evidence))
+        if start >= 0:
+            prefix = compact[:start].split('。')[-1][-250:]
+            if re.search(r'本次|此次', prefix) and not previous_rating_context(compact, start):
+                return 'current_explicit_label'
+    return 'official_unscoped'
+
+
 def official_rating_date(pages):
     # 日期只消费评级正文/通知书的明确日期，不扫描历史评级附录。
     # A scanned notification/cover/declaration can put the current summary on
@@ -93,6 +108,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
         if not rating_match:
             rating_match = find_current(re.escape(bond_name) + r"[”\"]?[：:|]?([A-D]{1,3}[+-]?)[/／](?:稳定|正面|负面|发展中|观察)", compact)
     rating_date, date_evidence = official_rating_date(pages)
+    date_context = rating_date_context(pages, date_evidence)
     # Explicit current/previous columns identify the bond row; the issuer row
     # and historical-rating appendices must never provide its grade.
     row_rating = None
@@ -105,9 +121,16 @@ def parse_rating_pages(pages, bond_name, announcement_date):
                 continue
             current_header = re.search(r'本次(?:跟踪)?评级|(?m:^\s*本次\s*$)', page)
             previous_header = re.search(r'上次评级|(?m:^\s*首次\s*$)', page)
+            name_pattern = r'\s*'.join(re.escape(ch) for ch in bond_name)
+            if re.search(r'本次评级结果', page) and '债券简称' in page and '债券信用等级' in page and not previous_header:
+                summary_page = re.split(r'评级观点|评级模型|历史评级信息', page, maxsplit=1)[0]
+                named_rows = list(re.finditer(name_pattern + r'[”"]?\s+([A-D]{1,3}[+-]?)(?=\s|$)', summary_page))
+                if len({match.group(1) for match in named_rows}) == 1:
+                    row_rating = named_rows[0]
+                    row_rating_value = row_rating.group(1)
+                    break
             if not current_header or not previous_header:
                 continue
-            name_pattern = r'\s*'.join(re.escape(ch) for ch in bond_name)
             match = re.search(name_pattern + r'[”"]?\s+([A-D]{1,3}[+-]?)\s+([A-D]{1,3}[+-]?)(?=\s|$)', page)
             # A generic bond row is usable only with a single explicit bond
             # short name on the same page. Never borrow the issuer grade.
@@ -122,6 +145,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
                 if date_row:
                     rating_date = date(*(int(part) for part in re.findall(r'\d+', date_row.group(column)))).isoformat()
                     date_evidence = date_row.group(0)
+                    date_context = 'current_summary_table'
                 outlook_row = re.search(r'评级展望\s+(稳定|正面|负面|发展中|观察)\s+(稳定|正面|负面|发展中|观察)', page)
                 if outlook_row:
                     outlook_match = find_current(r'(稳定|正面|负面|发展中|观察)', outlook_row.group(column))
@@ -130,6 +154,7 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     if table:
         rating_date = date(*(int(table.group(i)) for i in [4, 5, 6])).isoformat()
         date_evidence = table.group(0)
+        date_context = 'current_summary_table'
     rating_date_source = 'official_document' if rating_date else 'announcement_fallback'
     if rating_date and announcement_date and rating_date > announcement_date:
         raise ValueError('评级原文日期晚于公告日期，保留原事实')
@@ -141,7 +166,8 @@ def parse_rating_pages(pages, bond_name, announcement_date):
         "rating_evidence": table.group(0) if table else row_rating.group(0) if row_rating else rating_match.group(0) if rating_match else None,
         "outlook_evidence": table.group(0) if table else row_outlook_evidence or (outlook_match.group(0) if outlook_match else None),
         "date_evidence": date_evidence,
-        "rating_context_version": "current-narrative-v1",
+        "rating_context_version": "current-narrative-v2",
+        "rating_date_context": date_context,
     }
 
 

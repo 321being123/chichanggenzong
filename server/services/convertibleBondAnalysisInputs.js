@@ -15,9 +15,16 @@ async function suspectRatingUrls(bond,query=pool.query.bind(pool)) {
   if(!bond.instrument_id)return new Set();
   const {rows}=await query(`SELECT DISTINCT raw_payload->>'source_url' AS url FROM fundamental.convertible_bond_ratings
     WHERE instrument_id=$1 AND raw_payload->>'rating_date_source'='official_document'
-    AND raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v1'
+    AND raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v2'
     AND NOT raw_payload ? 'identity_binding' AND rating_date<date_trunc('year',announced_at)`,[bond.instrument_id]);
   return new Set(rows.map(row=>row.url).filter(Boolean));
+}
+function validateTrackingRatingYear(event,output) {
+  const years=[...new Set([...String(event.title||'').normalize('NFKC').replace(/\s+/g,'').matchAll(/(20\d{2})年(?:度)?(?:定期)?跟踪(?:信用)?评级(?:报告|结果)/g)].map(match=>match[1]))];
+  if(years.length===1&&output.rating_date_source==='official_document'&&output.rating_date?.slice(0,4)!==years[0]&&
+    !['current_explicit_label','current_summary_table','current_report_issuance'].includes(output.rating_date_context)) {
+    throw new Error('跟踪报告年度与未限定本次的评级日期不一致，疑似历史日期，保留待核验');
+  }
 }
 async function initialRatingBindingArguments(bond,event,query=pool.query.bind(pool),creditDate=null) {
   const size=Number(bond.raw_payload?.issue_size),issued=isoDate(bond.value_date),maturity=isoDate(bond.maturity_date),announced=isoDate(event.event_date);
@@ -252,6 +259,7 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         if(Date.now()-started>=maxRuntimeMs){missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
+          if(kind==='rating')validateTrackingRatingYear(event,result);
           if(revalidateRating&&result.rating_date_source!=='official_document')throw new Error('原评级日期疑似前次，缺本次原文实际日期，不能沿用可疑标准日期');
           await (deps.save||saveProjection)(kind,event,result,bond);
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
@@ -279,4 +287,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,suspectRatingUrls,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,suspectRatingUrls,validateTrackingRatingYear,INPUT_VERSION};

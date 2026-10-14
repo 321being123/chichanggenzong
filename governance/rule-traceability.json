@@ -2655,6 +2655,38 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-SINGLE-COLUMN-020",
+      "title": "本次单列债项表按目标简称行取等级拒绝借主体模型及其他债",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "named_rows"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-SINGLE-COLUMN-020"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-DATE-SCOPE-021",
+      "title": "报告年度与未限定本次日期不一致禁止入库明确当前证据允许合法跨年",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "validateTrackingRatingYear"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-DATE-SCOPE-021"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

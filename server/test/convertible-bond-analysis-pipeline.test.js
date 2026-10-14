@@ -140,5 +140,15 @@ const {pool}=require('../db/connection');
     project:async()=>({document_hash:'hash',rating_date_source:'announcement_fallback'}),save:async()=>{dubiousSaved=true;},
   });
   assert.equal(dubious.ok,false);assert.equal(dubiousSaved,false);assert.ok(dubious.missingFields['127040.SZ'].includes('rating'));
+  // BOND-RATING-DATE-SCOPE-021: 当前日期缺失而OCR历史标签残缺时，年度不一致的无本次作用域不能入库。
+  const {validateTrackingRatingYear}=require('../services/convertibleBondAnalysisInputs');
+  const tracking={title:'公司公开发行可转换公司债券2024年跟踪评级报告'};
+  const priorDate={rating_date:'2023-05-29',rating_date_source:'official_document',rating_date_context:'official_unscoped'};
+  assert.throws(()=>validateTrackingRatingYear(tracking,priorDate),/疑似历史日期/);
+  for(const scope of ['current_explicit_label','current_summary_table','current_report_issuance']) {
+    assert.doesNotThrow(()=>validateTrackingRatingYear(tracking,{...priorDate,rating_date_context:scope}),'明确本次原文日期允许真实跨年');
+  }
+  assert.doesNotThrow(()=>validateTrackingRatingYear(tracking,{...priorDate,rating_date:'2024-05-27'}));
+  assert.doesNotThrow(()=>validateTrackingRatingYear({title:'公司首次公开发行可转换公司债券信用评级报告'},priorDate),'初发不凭公告年份猜评级日');
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

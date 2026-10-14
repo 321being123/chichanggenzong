@@ -82,6 +82,12 @@ parsed=rating.parse_rating_pages([parts[0]+'于','2026'+parts[1]],'国力转债'
 assert parsed['rating_date']=='2026-06-23','跨页出具日期不能丢句首或借前次日期'
 parsed=rating.parse_rating_pages(['公司前次评级时间为2025年6月24日。本次“国力转债”信用等级为“AA”，评级展望为“稳定”。'],'国力转债','2026-06-25')
 assert parsed['rating_date_source']=='announcement_fallback'
+# BOND-RATING-SINGLE-COLUMN-020: 本次单列债券表按明确目标行取级别，不借主体/模型或另一债。
+single='本次评级结果\n评级时间：2026.6.18\n债券简称\n债券信用等级\n发行人主体信用等级\nAAA\n永吉转债\nAA-\n评级观点\n评级展望为稳定。评级模型级别AA。'
+parsed=rating.parse_rating_pages([single],'永吉转债','2026-06-23')
+assert parsed['rating']=='AA-' and parsed['rating_date']=='2026-06-18' and parsed['rating_outlook']=='稳定'
+for invalid in [single.replace('永吉转债','其他转债'),single.replace('本次评级结果','历史评级信息'),single.replace('永吉转债\nAA-','永吉转债')]:
+    assert rating.parse_rating_pages([invalid],'永吉转债','2026-06-23')['rating'] is None
 for issuer,size,day in [('上海银行股份有限公司','20000000000','2020-08-28'),('兴业银行股份有限公司','50000000000','2021-09-01')]:
     bank=[issuer+'公开发行A股可转换公司债券信用评级报告','声明',
           '主体信用等级AAA\n债项信用等级AAA\n评级展望稳定\n评级时间'+day+'\n发行规模：不超过人民币'+str(int(size)//100000000)+'亿元\n存续期限自发行之日起6年']

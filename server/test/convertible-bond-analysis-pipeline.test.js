@@ -126,7 +126,8 @@ const {pool}=require('../db/connection');
   // BOND-RATING-REVALIDATE-019: 已完成但疑似取前次日期只重验该原文，不借旧标准事实再次完成。
   const {suspectRatingUrls}=require('../services/convertibleBondAnalysisInputs');
   const suspect=await suspectRatingUrls({instrument_id:123},async(sql,args)=>{
-    assert.match(sql,/NOT raw_payload \? 'identity_binding'/);assert.deepEqual(args,[123]);return {rows:[{url:'rating'}]};
+    assert.match(sql,/NOT raw_payload \? 'identity_binding'/);assert.match(sql,/text_method.*rapidocr-onnx-v1/);
+    assert.match(sql,/rating_grade_context_version/);assert.deepEqual(args,[123]);return {rows:[{url:'rating'}]};
   });
   assert.deepEqual([...suspect],['rating']);
   let revalidated=[];
@@ -140,6 +141,15 @@ const {pool}=require('../db/connection');
     project:async()=>({document_hash:'hash',rating_date_source:'announcement_fallback'}),save:async()=>{dubiousSaved=true;},
   });
   assert.equal(dubious.ok,false);assert.equal(dubiousSaved,false);assert.ok(dubious.missingFields['127040.SZ'].includes('rating'));
+  // BOND-RATING-GRADE-CONFLICT-023: 旧OCR无符号结论定点重验，冲突不写入、不发布且保留剩余证据。
+  let conflictSaved=false,conflictState;
+  const conflicting=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},{...revalidationDeps,
+    project:async()=>({rating:'AA',document_hash:'a'.repeat(64),rating_date_source:'official_document',rating_conflicts:[{rating:'AA',evidence:'通知书AA'},{rating:'AA-',evidence:'本次债项表AA-'}]}),
+    save:async()=>{conflictSaved=true;},persistBond:async(b,state)=>{conflictState=state;},
+  });
+  assert.equal(conflicting.ok,false);assert.equal(conflictSaved,false);assert.equal(conflicting.remainingCount,1);
+  assert.deepEqual(conflicting.publishDatasets,[]);assert.ok(conflicting.nextRunAt);
+  assert.match(conflictState.documents['rating:rating'].error,/本次评级结论冲突/);
   // BOND-RATING-DATE-SCOPE-021: 当前日期缺失而OCR历史标签残缺时，年度不一致的无本次作用域不能入库。
   const {validateTrackingRatingYear}=require('../services/convertibleBondAnalysisInputs');
   const tracking={title:'公司公开发行可转换公司债券2024年跟踪评级报告'};

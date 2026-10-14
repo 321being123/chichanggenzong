@@ -83,6 +83,22 @@ assert parsed['rating_date']=='2026-06-23','跨页出具日期不能丢句首或
 parsed=rating.parse_rating_pages(['公司前次评级时间为2025年6月24日。本次“国力转债”信用等级为“AA”，评级展望为“稳定”。'],'国力转债','2026-06-25')
 assert parsed['rating_date_source']=='announcement_fallback'
 # BOND-RATING-CURRENT-ROW-022: 评级时间表头下只取明确本次行，混排不按两个日期大小猜列。
+# BOND-RATING-GRADE-CONFLICT-023: 等级符号不得截断，当前正式结论/债项表冲突不可发布。
+for minus in ['−','–','‐','‑','－']:
+    parsed=rating.parse_rating_pages(['本次“测试转债”的信用等级为AA'+minus+'，评级展望稳定。评级日期2026年6月15日'],'测试转债','2026-06-17')
+    assert parsed['rating']=='AA-' and not parsed['rating_conflicts']
+conflict_pages=['本次维持“永吉转债”的信用等级为AA，评级展望稳定。',
+    '评级结果\n上次评级\n本次评级\n永吉转债\n1.46\n6\nAA-\nAA-\n评级日期2023年5月29日']
+parsed=rating.parse_rating_pages(conflict_pages,'永吉转债','2023-05-31')
+assert parsed['rating'] is None and {v['rating'] for v in parsed['rating_conflicts']}=={'AA','AA-'}
+parsed=rating.parse_rating_pages(['本次“测试转债”信用等级为AA。此次“测试转债”信用等级为AAA。评级展望稳定。'],'测试转债','2026-06-17')
+assert parsed['rating'] is None and len(parsed['rating_conflicts'])==3
+parsed=rating.parse_rating_pages(['前次“测试转债”信用等级为AAA。本次“测试转债”信用等级为AA-。评级展望稳定。历史评级“测试转债”信用等级为AAA。'],'测试转债','2026-06-17')
+assert parsed['rating']=='AA-' and not parsed['rating_conflicts']
+parsed=rating.parse_rating_pages(['本次“测试转债”信用等级为AA。主体信用等级AAA。其他转债信用等级AAA。评级模型级别AA-。'],'测试转债','2026-06-17')
+assert parsed['rating']=='AA' and not parsed['rating_conflicts']
+rating.read_document=lambda *a,**kwargs:(conflict_pages,{'document_hash':'a'*64})
+assert rating.extract_rating('url','2023-05-31','603058.SH','永吉转债')['rating'] is None
 for old,current in [('2021.03.15','2022.06.28'),('2022.06.28','2023.05.29')]:
     rows='评级结果\n主体信用等级\n评级展望\n评级时间\n上次评级\n'+old+'\n本次评级\n资\n'+current+'\n债项简称\n永吉转债\n维持“永吉转债”的信用等级为AA，评级展望稳定。'
     parsed=rating.parse_rating_pages([rows],'永吉转债','2024-06-30')

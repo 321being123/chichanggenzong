@@ -11,12 +11,18 @@ const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require(
 
 const INPUT_VERSION='analysis-input-v4';
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
+function validateRatingGrade(result) {
+  if(result.rating_conflicts?.length)throw new Error(`目标债项本次评级结论冲突，保留原事实：${JSON.stringify(result.rating_conflicts)}`);
+}
 async function suspectRatingUrls(bond,query=pool.query.bind(pool)) {
   if(!bond.instrument_id)return new Set();
   const {rows}=await query(`SELECT DISTINCT raw_payload->>'source_url' AS url FROM fundamental.convertible_bond_ratings
     WHERE instrument_id=$1 AND raw_payload->>'rating_date_source'='official_document'
-    AND raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v2'
-    AND NOT raw_payload ? 'identity_binding' AND rating_date<date_trunc('year',announced_at)`,[bond.instrument_id]);
+    AND ((raw_payload->>'rating_context_version' IS DISTINCT FROM 'current-narrative-v2'
+      AND NOT raw_payload ? 'identity_binding' AND rating_date<date_trunc('year',announced_at))
+      OR (raw_payload->>'text_method'='rapidocr-onnx-v1' AND rating='AA'
+        AND raw_payload->>'rating_evidence' LIKE '%信用等级%'
+        AND raw_payload->>'rating_grade_context_version' IS DISTINCT FROM 'current-grade-v1'))`,[bond.instrument_id]);
   return new Set(rows.map(row=>row.url).filter(Boolean));
 }
 function validateTrackingRatingYear(event,output) {
@@ -139,6 +145,7 @@ async function saveProjection(kind,event,result,bond) {
       await tools.saveReportFundHolding(client,bond.instrument_id,result,sourceId);
     }
     if(kind==='rating') {
+      validateRatingGrade(result);
       if(result.identity_binding&&result.identity_binding.validated!==true)throw new Error('初发评级身份未核验，禁止写入事实');
       if(!result.rating||!result.rating_outlook)throw new Error('评级或展望解析缺失');
       if(result.rating_date_source==='announcement_fallback') {
@@ -259,11 +266,11 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         if(Date.now()-started>=maxRuntimeMs){missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
-          if(kind==='rating')validateTrackingRatingYear(event,result);
+          if(kind==='rating'){validateRatingGrade(result);validateTrackingRatingYear(event,result);}
           if(revalidateRating&&result.rating_date_source!=='official_document')throw new Error('原评级日期疑似前次，缺本次原文实际日期，不能沿用可疑标准日期');
           await (deps.save||saveProjection)(kind,event,result,bond);
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
-        } catch(error) {missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
+        } catch(error) {missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       if(Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed')&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('issuance_terms:')&&value.status==='complete'))missing.push('coupon_terms');
@@ -287,4 +294,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,suspectRatingUrls,validateTrackingRatingYear,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,INPUT_VERSION};

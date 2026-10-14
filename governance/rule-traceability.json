@@ -2703,6 +2703,26 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-GRADE-CONFLICT-023",
+      "title": "评级符号保留与同债本次正式结论冲突拒绝发布，旧OCR无符号结论定点复验",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "current_bond_conclusions"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-GRADE-CONFLICT-023"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-GRADE-CONFLICT-023"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

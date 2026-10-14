@@ -453,6 +453,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
     SELECT b.*,ci.company_id,
            ind.raw_payload AS indicator_payload, bal.raw_payload AS balance_payload,
            inc.raw_payload AS income_payload, fp.period_end::text AS financial_report_end_date,
+           inc.period_end::text AS income_period,bal.period_end::text AS balance_period,ind.period_end::text AS indicator_period,
            COALESCE(n.industry_name,b.stock_raw->>'industry','') AS industry
       FROM bonds b
       LEFT JOIN core.company_instruments ci ON ci.instrument_id=b.stock_instrument_id
@@ -465,9 +466,9 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
         HAVING COUNT(DISTINCT r.report_kind)=3
          ORDER BY r.period_end DESC LIMIT 1
       ) fp ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
-      LEFT JOIN LATERAL (SELECT r.raw_payload FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='indicator' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) ind ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
+      LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
       LEFT JOIN LATERAL (SELECT n.industry_name FROM core.company_industry_memberships m JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE m.company_id=ci.company_id AND m.is_current ORDER BY m.announced_at DESC NULLS LAST LIMIT 1) n ON true
   `, [date || null]);
   if (!rows.length) throw new Error('标准层暂无可转债行情，安全评分暂不覆盖');
@@ -481,6 +482,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
     if (company && !companySeen.has(String(identityKey))) {
       companySeen.add(String(identityKey));
       companyRows.push({ identity_key: identityKey, stock_instrument_id: row.stock_instrument_id, company_id: row.company_id, company, industry: row.industry || '', has_cb: 1, financial_available: Boolean(row.financial_report_end_date && row.income_payload && row.balance_payload && row.indicator_payload), financial_report_end_date: row.financial_report_end_date || null,
+        financial_report_periods: {income:row.income_period,balance:row.balance_period,indicator:row.indicator_period},
         market_cap: row.total_market_cap == null ? null : Number(row.total_market_cap),
         interest_coverage: pick(indicator, 'ebit_to_interest', null),
         interest_expense: pick(income, 'fin_exp_int_exp', pick(income, 'int_exp', null)),

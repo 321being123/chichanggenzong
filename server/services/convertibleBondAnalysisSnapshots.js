@@ -10,7 +10,12 @@ async function loadAnalysisUniverse(targetDate) {
     FROM core.instruments i JOIN fundamental.convertible_bond_profiles p USING(instrument_id)
     JOIN public.bond_unified u USING(instrument_id)
     LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
-    WHERE u.status='listed' AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
+    WHERE (i.status='listed' OR (i.status='delisted' AND i.list_date IS NOT NULL
+      AND i.list_date<=$1::date AND i.delist_date>$1::date))
+    AND (u.issue_type IS NULL OR u.issue_type NOT IN ('定向','私募'))
+    AND NOT EXISTS(SELECT 1 FROM event.convertible_bond_call_events ce WHERE ce.instrument_id=i.instrument_id
+      AND ce.event_type IN ('exercise','implementation','completion')
+      AND COALESCE(ce.last_trade_date,ce.last_conversion_date)<=$1::date)
     AND (i.list_date IS NULL OR i.list_date<=$1::date) AND (i.delist_date IS NULL OR i.delist_date>$1::date)
     AND (p.maturity_date IS NULL OR p.maturity_date>=$1::date)
     AND (p.conv_end_date IS NULL OR p.conv_end_date>=$1::date)

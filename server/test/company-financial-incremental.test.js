@@ -6,7 +6,7 @@ const {
   selectCompanyBatch, shouldAbortFinancialBatch, buildSyncQueue,
 } = require('../services/companyFinancialIncrementalSync');
 const { rowVersion } = require('../services/financialDataArchitecture');
-const { publicationQualityGate } = require('../services/bondSafetyService');
+const { publicationQualityGate, financialPeriodMismatches } = require('../services/bondSafetyService');
 
 assert.deepStrictEqual(currentReportPeriods('2026-09-04'), ['20260630', '20260331']);
 assert.deepStrictEqual(currentReportPeriods('2026-10-01'), ['20260930', '20260630']);
@@ -37,6 +37,20 @@ const current = {
   },
 };
 assert.strictEqual(publicationQualityGate(current, previous).ok, true);
+// BOND-SAFETY-PERIOD-001: 季报陆续披露允许公司间不同期，同一公司三表仍须完整同一期。
+const companies=['2026-06-30','2026-09-30'].map((period,index)=>({identity_key:index+1,company:`公司${index+1}`,financial_available:true,
+  financial_report_end_date:period,financial_report_periods:{income:period,balance:period,indicator:period}}));
+assert.deepStrictEqual(financialPeriodMismatches(companies),[]);
+const rolling={...current,diagnostics:{...current.diagnostics,financial_report_periods:companies.map(c=>c.financial_report_end_date),
+  financial_period_mismatches:financialPeriodMismatches(companies)}};
+assert.strictEqual(publicationQualityGate(rolling,previous).ok,true,'跨公司披露进度不同不能误判三表错期');
+for(const evidence of [{income:'2026-09-30',balance:'2026-06-30',indicator:'2026-09-30'},
+  {income:'2026-09-30',balance:null,indicator:'2026-09-30'},
+  {income:'2026-06-30',balance:'2026-06-30',indicator:'2026-06-30'}]) {
+  const mismatch=financialPeriodMismatches([companies[0],{...companies[1],financial_report_periods:evidence}]);
+  assert.strictEqual(mismatch.length,1);assert.strictEqual(mismatch[0].identity_key,'2');
+  assert.strictEqual(publicationQualityGate({...rolling,diagnostics:{...rolling.diagnostics,financial_period_mismatches:mismatch}},previous).ok,false);
+}
 const rejected = { ...current, data: current.data.map((row, index) => index === 0 ? { ...row, safety: '未评级' } : row) };
 assert.strictEqual(publicationQualityGate(rejected, previous).ok, false);
 

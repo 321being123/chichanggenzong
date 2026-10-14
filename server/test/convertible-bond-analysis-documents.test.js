@@ -92,6 +92,15 @@ assert parsed['rating']=='AA' and parsed['rating_date']=='2026-04-02' and parsed
 for size,tenor,issuer in [('1580000001',6,'无锡派克新材料科技股份有限公司'),('1580000000',5,'无锡派克新材料科技股份有限公司'),('1580000000',6,'其他股份有限公司')]:
     assert rating.extract_rating('url','2026-08-04','605123.SH','派克转债',issuer,'2026-08-06',size,tenor)['rating'] is None
 assert rating.extract_rating('url','2026-08-04','605123.SH','派克转债','无锡派克新材料科技股份有限公司')['rating'] is None
+# BOND-RATING-CONCLUSION-016: 正式通知书债项结论优先摘要OCR孤立字形，冲突正式结论仍拒绝。
+initial=['大参林医药集团股份有限公司\n信用等级通知书\n本期债券的信用等级为AA。评级展望为稳定。',
+  '大参林医药集团股份有限公司2020年公开发行可转换公司债券信用评级报告','声明',
+  '本期债券信用等级：A\n发行规模不超过14.05亿元\n债券期限6年\n评级日期2020年05月22日']
+rating.read_document=lambda *a,**kwargs:(initial,{'document_hash':'a'*64})
+parsed=rating.extract_rating('url','2020-10-20','603233.SH','大参转债','大参林医药集团股份有限公司','2020-10-22','1405000000',6)
+assert parsed['rating']=='AA' and parsed['rating_date']=='2020-05-22' and any(':A' in e for e in parsed['secondary_rating_evidence'])
+initial[0]+='本期债券的信用等级为AAA。'
+assert rating.extract_rating('url','2020-10-20','603233.SH','大参转债','大参林医药集团股份有限公司','2020-10-22','1405000000',6)['rating'] is None
 history=importlib.import_module('extractConvertibleBondPriceHistory')
 history.read_document=lambda *a: (['无转股价调整表'],{'document_hash':'a'*64,'source_url':'url'})
 assert history.extract_history('url')['document_hash']=='a'*64

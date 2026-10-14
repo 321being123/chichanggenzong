@@ -2559,6 +2559,54 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-SAFETY-PERIOD-001",
+      "title": "季报披露允许公司间报告期不同但同一公司三表必须完整一致",
+      "implementation": {
+        "file": "server/services/bondSafetyService.js",
+        "symbol": "financialPeriodMismatches"
+      },
+      "tests": [
+        {
+          "file": "server/test/company-financial-incremental.test.js",
+          "pattern": "BOND-SAFETY-PERIOD-001"
+        }
+      ],
+      "owner": "可转债安全性",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-ANALYSIS-LIFECYCLE-015",
+      "title": "旧目标证券集合按实际交易退市日期不借当前主档状态",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisSnapshots.js",
+        "symbol": "i.status='delisted'"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-database.test.js",
+          "pattern": "BOND-ANALYSIS-LIFECYCLE-015"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-CONCLUSION-016",
+      "title": "首发正式债项结论优先摘要OCR且保留次级证据与拒绝正式冲突",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "secondary_rating_evidence"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-CONCLUSION-016"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

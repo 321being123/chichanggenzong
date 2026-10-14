@@ -140,7 +140,14 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
     def parse(pages):
         result = parse_rating_pages(pages, bond_name, announcement_date)
         if not result['rating'] and initial_binding(pages):
-            matches = list(re.finditer(r'(?:(?:债券|债项)信用等级\s*[：:]?|(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期债券)(?:的)?信用等级(?:为|[：:])?)\s*([A-D]{1,3}[+-]?)(?=\s|[。；;,，]|$)', unicodedata.normalize('NFKC', '\n'.join(pages))))
+            normalized = unicodedata.normalize('NFKC', '\n'.join(pages))
+            matches = list(re.finditer(r'(?:(?:债券|债项)信用等级\s*[：:]?|(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期债券)(?:的)?信用等级(?:为|[：:])?)\s*([A-D]{1,3}[+-]?)(?=\s|[。；;,，]|$)', normalized))
+            # Explicit formal debt conclusions take precedence over a summary
+            # table's OCR glyph. Keep all secondary evidence for audit.
+            conclusions = list(re.finditer(r'(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期债券)(?:的)?信用等级为\s*([A-D]{1,3}[+-]?)(?=\s|[。；;,，]|$)', normalized))
+            if conclusions:
+                result['secondary_rating_evidence'] = [match.group(0) for match in matches]
+                matches = conclusions
             if len({match.group(1) for match in matches}) == 1:
                 result['rating'] = matches[0].group(1)
                 result['rating_evidence'] = matches[0].group(0)

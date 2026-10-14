@@ -126,6 +126,19 @@ function ratedCount(rows) {
   return (rows || []).filter(row => String(row && row.safety || '未评级') !== '未评级').length;
 }
 
+function financialPeriodMismatches(companyRows) {
+  return (companyRows || []).filter(row => {
+    if (row.financial_available !== true) return false;
+    const evidence = row.financial_report_periods;
+    // A single selected period is the legacy source contract. Explicit
+    // per-statement evidence must be complete and agree within this issuer.
+    if (!evidence) return false;
+    const periods = ['income','balance','indicator'].map(kind => evidence[kind]);
+    return periods.some(period => !period) || new Set(periods).size !== 1 || periods[0] !== row.financial_report_end_date;
+  }).map(row => ({identity_key:stableIdentity(row,true),company:row.company,
+    selected_period:row.financial_report_end_date,statement_periods:row.financial_report_periods}));
+}
+
 function publicationQualityGate(result, previous = null) {
   const data = Array.isArray(result && result.data) ? result.data : [];
   const diagnostics = result && result.diagnostics || {};
@@ -155,7 +168,8 @@ function publicationQualityGate(result, previous = null) {
   if (previousData.length && currentUnrated > previousUnrated + Math.max(5, Math.ceil(previousData.length * 0.05))) failures.push('未评级数量异常增加');
   if (commonPreviousRated && commonCoverageDrop > 0.02) failures.push('共有转债有评级覆盖率下降超过2%');
   const periods = [...new Set((diagnostics.financial_report_periods || []).filter(Boolean).map(value => String(value).slice(0, 10)))];
-  if (periods.length > 1) failures.push('三类财务报表报告期不一致');
+  const periodMismatches = diagnostics.financial_period_mismatches || [];
+  if (periodMismatches.length) failures.push('同一公司三类财务报表报告期不一致');
   return {
     ok: failures.length === 0,
     failures,
@@ -174,6 +188,7 @@ function publicationQualityGate(result, previous = null) {
     previous_unrated_count: previousUnrated,
     current_unrated_count: currentUnrated,
     financial_report_periods: periods,
+    financial_period_mismatches: periodMismatches,
   };
 }
 
@@ -228,6 +243,7 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
       expected_bond_count: source.expectedBondCount || source.bondRows.length,
       financial_complete_companies: (source.companyRows || []).filter(row => row.financial_available === true).length,
       financial_report_periods: companyPeriods,
+      financial_period_mismatches: financialPeriodMismatches(source.companyRows),
     });
     const qualityGate = publicationQualityGate(result, previous);
     result.diagnostics.publication_quality_gate = qualityGate;
@@ -252,4 +268,4 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
   }
 }
 
-module.exports = { getLatestSnapshot, refreshBondSafety, isConfigured, stableIdentity, assertStableIdentity, publicationQualityGate };
+module.exports = { getLatestSnapshot, refreshBondSafety, isConfigured, stableIdentity, assertStableIdentity, publicationQualityGate, financialPeriodMismatches };

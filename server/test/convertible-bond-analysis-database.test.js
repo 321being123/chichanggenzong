@@ -44,6 +44,14 @@ let ids=[],server;
   const partition=await readSnapshot('bond_analysis_snapshot',{partitionKey:'2026-09-30'});
   assert.equal(partition.rowCount,baseline.rowCount+1,'历史快照不能充当当前分区覆盖行数');
   assert.equal(partition.dataAsOf,'2026-09-30');
+  // BOND-ANALYSIS-LIFECYCLE-015: 当前退市标签不能抹去原目标日真实存续集合。
+  const {loadAnalysisUniverse}=require('../services/convertibleBondAnalysisSnapshots');
+  await pool.query("UPDATE core.instruments SET status='delisted',list_date='2024-01-01',delist_date='2026-10-20' WHERE instrument_id=$1",[bond]);
+  assert.ok((await loadAnalysisUniverse('2026-09-30')).some(row=>String(row.instrument_id)===String(bond)));
+  await pool.query("UPDATE core.instruments SET delist_date='2026-09-30' WHERE instrument_id=$1",[bond]);
+  assert.ok(!(await loadAnalysisUniverse('2026-09-30')).some(row=>String(row.instrument_id)===String(bond)));
+  await pool.query("UPDATE core.instruments SET status='pre_listing',delist_date='2026-10-20' WHERE instrument_id=$1",[bond]);
+  assert.ok(!(await loadAnalysisUniverse('2026-09-30')).some(row=>String(row.instrument_id)===String(bond)));
   console.log('BOND-ANALYSIS-003 passed: 真实PG、公开API、零写入、日期及金融单位');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{
   if(server)await new Promise(resolve=>server.close(resolve));

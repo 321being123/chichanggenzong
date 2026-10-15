@@ -31,6 +31,29 @@ with tempfile.TemporaryDirectory() as directory:
     reader.read_document(url,'002091.SZ','TestBond')
     assert len(calls)==1
 rating=importlib.import_module('extractConvertibleBondRating')
+# BOND-RATING-RESULT-NOTICE-025: 直接代码身份、本次/前次日期和债项分离，不用主体或前次值补本次。
+notice='''证券代码：603058 转债代码：113646 转债简称：永吉转债
+贵州永吉印务股份有限公司关于“永吉转债”2024年跟踪评级结果的公告
+前次债项评级：“AA-” 主体评级：“AA+” 评级展望：稳定
+本次债项评级：“AA-” 主体评级：“AA+” 评级展望：稳定
+根据规定，公司委托信用评级机构远东资信评估有限公司（以下简称“远东资信”）进行跟踪评级。公司前次主体信用评级结果为AA+；永吉转债前次评级结果为AA-；评级机构为远东资信，评级时间为2023年5月29日。
+评级机构于2024年5月27日出具了《贵州永吉印务股份有限公司2024年跟踪评级报告》（远东跟踪（2024）0006号），本次公司主体信用评级结果为：AA+，评级展望：稳定；永吉转债评级结果为：AA-。'''
+parse_notice=lambda text, code='113646.SH': rating.parse_rating_result_notice([text],'永吉转债',code,'贵州永吉印务股份有限公司','2024-05-29')
+actual=parse_notice(notice)
+assert (actual['rating'],actual['rating_date'],actual['rating_outlook'])==('AA-','2024-05-27','稳定')
+assert actual['rating_com_name']=='远东资信评估有限公司'
+assert actual['rating_result_notice']['report_reference']['number']=='远东跟踪(2024)0006号'
+prior=actual['rating_result_notice']['previous_ratings'][0]
+assert (prior['rating'],prior['rating_date'],prior['rating_outlook'])==('AA-','2023-05-29','稳定')
+for code in ['113647.SH',None]:
+    try: parse_notice(notice,code); assert False
+    except ValueError: pass
+assert parse_notice(notice.replace('永吉转债评级结果为：AA-','永吉转债评级结果为：A+'))['rating'] is None
+assert parse_notice(notice.replace('本次债项评级：“AA-”','本次主体评级：“AA+”').replace('永吉转债评级结果为：AA-','其他转债评级结果为：AA-'))['rating'] is None
+assert parse_notice(notice.replace('于2024年5月27日出具了','于2023年5月29日曾出具了'))['rating_date'] is None
+assert parse_notice(notice.replace('前次评级结果为AA-','前次评级结果为AA'))['rating_result_notice']['previous_ratings']==[]
+assert parse_notice(notice.replace('前次债项评级：“AA-”','前次债项评级：“AA+”'))['rating_result_notice']['previous_ratings']==[]
+assert parse_notice(notice.replace('评级机构为远东资信','评级机构为另一机构'))['rating_result_notice']['previous_ratings']==[]
 rating.read_document=lambda *a: (['维持“国泰转债”信用等级为AA+，评级展望为稳定。本次评级时间 国泰转债 AA+/稳定 2026/06/23'],{'document_hash':'hash'})
 result=rating.extract_rating('url','2026-06-25','002091.SZ','国泰转债')
 assert result['rating']=='AA+' and result['rating_outlook']=='稳定' and result['rating_date']=='2026-06-23'

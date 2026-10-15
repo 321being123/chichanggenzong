@@ -34,6 +34,9 @@ async function main() {
   const client = await pool.connect();
   const realConnect = pool.connect;
   const realPoolQuery = pool.query;
+  const realNow = Date.now;
+  // The fixture's freshness is part of this scenario, independent of the host's date.
+  Date.now = () => Date.parse('2026-09-30T08:00:00+08:00');
   pool.connect = async () => ({ query: client.query.bind(client), release() {} });
   try {
     await client.query('BEGIN');
@@ -127,6 +130,7 @@ async function main() {
       ['test_nav_date_type', 'fixture', '1900-01-01']);
     console.log('calendar coverage, manual edits and targeted recovery tests passed');
   } finally {
+    Date.now = realNow;
     await client.query('ROLLBACK');
     pool.connect = realConnect;
     pool.query = realPoolQuery;

@@ -168,5 +168,55 @@ const {pool}=require('../db/connection');
   }
   assert.doesNotThrow(()=>validateTrackingRatingYear(tracking,{...priorDate,rating_date:'2024-05-27'}));
   assert.doesNotThrow(()=>validateTrackingRatingYear({title:'公司首次公开发行可转换公司债券信用评级报告'},priorDate),'初发不凭公告年份猜评级日');
+  // BOND-RATING-RESULT-NOTICE-025: 以同日同标题公告覆盖报告义务，原失败仍可查；前次明确债项只能补发行前历史。
+  const issuer='贵州永吉印务股份有限公司';
+  const noticeEvent={url:'notice-2024',source:'sse',title:'关于“永吉转债”2024年跟踪评级结果的公告',event_date:'2024-05-29'};
+  const initialReport={url:'initial-2022',source:'sse',title:issuer+'公开发行可转换公司债券信用评级报告',event_date:'2022-04-12'};
+  const trackingReport={url:'tracking-2024',source:'sse',title:issuer+'2024年跟踪评级报告',event_date:'2024-05-29'};
+  const noticeResult={document_hash:'b'.repeat(64),source_url:noticeEvent.url,rating_com_name:'远东资信评估有限公司',rating:'AA-',rating_outlook:'稳定',rating_date:'2024-05-27',
+    rating_date_source:'official_document',rating_date_context:'current_report_issuance',rating_conflicts:[],
+    rating_result_notice:{version:'named-result-v1',bond_code:'113646.SH',bond_name:'永吉转债',issuer_name:issuer,rating_company:'远东资信评估有限公司',
+      report_reference:{title:trackingReport.title,issued_at:'2024-05-27'},previous_ratings:[{rating_com_name:'远东资信评估有限公司',rating:'AA-',rating_outlook:'稳定',rating_date:'2021-03-15',
+        rating_date_source:'official_document',rating_date_context:'explicit_previous_named_bond',rating_evidence:'永吉转债前次评级结果为AA-；评级时间为2021年3月15日。',date_evidence:'评级时间为2021年3月15日。'}]}};
+  const noticeBond={ts_code:'113646.SH',stock_code:'603058.SH',bond_short_name:'永吉转债',bond_full_name:issuer+'公开发行可转换公司债券',
+    value_date:'2022-04-14',list_date:'2022-05-17',raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{
+      'rating:initial-2022':{status:'failed',parserVersion:'analysis-input-v4',error:'金额不符'},
+      'rating:tracking-2024':{status:'failed',parserVersion:'analysis-input-v4',error:'OCR日期残缺'},
+    }}}};
+  const noticeEvents=[trackingReport,initialReport,noticeEvent,{url:'prospectus',title:'公开发行可转换公司债券募集说明书',event_date:'2022-04-12'},events[2]];
+  let noticeSaves=0;
+  const noticeDeps={...deps,loadUniverse:async()=>[noticeBond],discover:async()=>{},readDocuments:async()=>noticeEvents,
+    suspectRatingUrls:async()=>new Set([trackingReport.url]),project:async(kind,event)=>{
+      if(kind==='rating'){assert.equal(event.url,noticeEvent.url,'已核验替代证据避免重复扫描原失败报告');return structuredClone(noticeResult);}
+      return {document_hash:'c'.repeat(64)};
+    },save:async(kind)=>{if(kind==='rating')noticeSaves++;}};
+  const covered=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['113646']},noticeDeps);
+  assert.equal(covered.ok,true);assert.equal(covered.remainingCount,0);assert.deepEqual(covered.publishDatasets,[]);assert.equal(noticeSaves,1);
+  const coverageState=noticeBond.raw_payload.analysis_inputs;
+  assert.equal(coverageState.documents['rating:initial-2022'].status,'failed');
+  assert.equal(coverageState.documents['rating:tracking-2024'].error,'OCR日期残缺');
+  assert.equal(coverageState.rating_coverage['tracking-2024'].method,'exact_report_reference');
+  assert.equal(coverageState.rating_coverage['initial-2022'].method,'explicit_named_bond_previous_rating');
+  const resumed=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['113646']},noticeDeps);
+  assert.equal(resumed.ok,true);assert.equal(noticeSaves,1,'同SHA公告复用已落库证据，不能重复采集或保存');
+  const {ratingCoverageForReport,validateRatingResultNotice}=require('../services/convertibleBondAnalysisInputs');
+  assert.equal(ratingCoverageForReport({...trackingReport,event_date:'2024-05-30'},[noticeEvent],coverageState.documents,noticeBond),null);
+  assert.equal(ratingCoverageForReport({...trackingReport,title:issuer+'2025年跟踪评级报告'},[noticeEvent],coverageState.documents,noticeBond),null);
+  assert.equal(ratingCoverageForReport({...trackingReport,source:'szse'},[noticeEvent],coverageState.documents,noticeBond),null);
+  assert.equal(ratingCoverageForReport(trackingReport,[noticeEvent],coverageState.documents,noticeBond,
+    [{event:trackingReport},{event:{...trackingReport,url:'another-same-title-report'}}]),null,'同日同标题多个不同原报告URL不能猜关联');
+  const wrongBond={...noticeBond,ts_code:'113647.SH'};
+  assert.throws(()=>validateRatingResultNotice(noticeEvent,noticeResult,wrongBond),/目标代码/);
+  assert.equal(ratingCoverageForReport(initialReport,[noticeEvent],coverageState.documents,wrongBond),null);
+  const futurePrior=structuredClone(coverageState.documents);futurePrior['rating:notice-2024'].ratingResult.rating_result_notice.previous_ratings[0].rating_date='2023-03-15';
+  assert.equal(ratingCoverageForReport(initialReport,[noticeEvent],futurePrior,noticeBond),null,'发行后的前次记录不能补初发');
+  const failedNotice=structuredClone(coverageState.documents);failedNotice['rating:notice-2024'].status='failed';
+  assert.equal(ratingCoverageForReport(trackingReport,[noticeEvent],failedNotice,noticeBond),null,'失败公告/旧残留元数据不能提供恢复证据');
+  noticeBond.raw_payload.analysis_inputs.documents=failedNotice;
+  const failedSource=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['113646']},{...noticeDeps,
+    project:async(kind)=>{if(kind==='rating')throw Error('公告解析不完整');return {document_hash:'c'.repeat(64)};}});
+  assert.equal(failedSource.ok,false);assert.equal(failedSource.remainingCount,1);assert.ok(failedSource.nextRunAt);
+  assert.deepEqual(noticeBond.raw_payload.analysis_inputs.rating_coverage,{});
+  assert.equal(noticeBond.raw_payload.analysis_inputs.documents['rating:initial-2022'].status,'failed');
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

@@ -55,6 +55,7 @@ async function projectDocument(kind,event,bond) {
   if(issuer)args.push('--issuer-name',issuer);
   if(kind==='rating') {
     args.push('--announcement-date',isoDate(event.event_date));
+    args.push('--bond-code',bond.ts_code);
     if(bond.value_date)args.push('--issue-date',isoDate(bond.value_date));
     if(bond.list_date)args.push('--list-date',isoDate(bond.list_date));
     args.push(...await initialRatingBindingArguments(bond,event));
@@ -128,6 +129,20 @@ async function saveProjection(kind,event,result,bond) {
     const sources=await tools.sourceIds(client);
     const sourceId=sources[event.source];
     if(!sourceId)throw new Error('公告来源未登记');
+    if(kind==='rating'&&result.rating_result_notice) {
+      const {rows:existingFacts}=await client.query(`SELECT rating,raw_payload FROM fundamental.convertible_bond_ratings
+        WHERE instrument_id=$1 AND rating_date=$2::date AND rating_company=$3 AND raw_payload->>'rating_date_source'='official_document'`,
+        [bond.instrument_id,result.rating_date,result.rating_com_name]);
+      const priorFacts=existingFacts.filter(row=>row.rating!==result.rating);
+      if(priorFacts.some(row=>row.raw_payload.text_method==='pdf_text')||priorFacts.length&&result.text_method!=='pdf_text') {
+        throw new Error('官方结果公告与已有原生本次评级结论冲突，保留原事实');
+      }
+      const replacements=[...existingFacts.filter(row=>row.rating===result.rating&&row.raw_payload.source_url===event.url)
+        .flatMap(row=>row.raw_payload.replaced_rating_evidence||[]),...priorFacts.map(row=>({rating:row.rating,
+        source_url:row.raw_payload.source_url,document_hash:row.raw_payload.document_hash,text_method:row.raw_payload.text_method,
+        reason:'explicit_named_native_notice_replaces_previous_ocr'}))];
+      if(replacements.length)result.replaced_rating_evidence=[...new Map(replacements.map(row=>[JSON.stringify(row),row])).values()];
+    }
     const record=(await client.query(`INSERT INTO ops.raw_records(source_id,dataset_code,source_key,payload,payload_hash)
       VALUES($1,'bond_analysis_inputs',$2,$3::jsonb,$4) ON CONFLICT(source_id,dataset_code,source_key,payload_hash)
       DO UPDATE SET payload=EXCLUDED.payload RETURNING raw_record_id`,
@@ -159,9 +174,25 @@ async function saveProjection(kind,event,result,bond) {
         if(dates.length!==1)throw new Error('评级实际日期未唯一核验，不能把公告日写成评级日');
         result.rating_date=dates[0].date;result.rating_date_source='existing_standard_fact';
       }
+      const previous=result.rating_result_notice?.previous_ratings||[];
       await client.query(`DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1
-        AND raw_payload->>'source_url'=$2 AND raw_payload ? 'document_hash' AND rating_date<>$3::date`,[bond.instrument_id,event.url,result.rating_date]);
-      await tools.saveRatingHistory(client,bond.instrument_id,[{...result,ann_date:event.event_date,rating_com_name:bond.raw_payload.rating_comp}],sourceId);
+        AND raw_payload->>'source_url'=$2 AND raw_payload ? 'document_hash' AND NOT(rating_date=ANY($3::date[]))`,
+        [bond.instrument_id,event.url,[result.rating_date,...previous.map(row=>row.rating_date)]]);
+      for(const row of previous) {
+        // Explicit prior results may fill history, but cannot replace a validated current original.
+        const {rows:current}=await client.query(`SELECT rating FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1
+          AND rating_date=$2::date AND rating_company=$3 AND raw_payload->>'rating_date_source'='official_document'
+          AND raw_payload->>'rating_grade_context_version'='current-grade-v1'
+          AND (raw_payload->>'rating_date_context' IN ('current_explicit_label','current_summary_table','current_report_issuance')
+            OR raw_payload->'identity_binding'->>'validated'='true')`,[bond.instrument_id,row.rating_date,row.rating_com_name||result.rating_com_name||bond.raw_payload.rating_comp||'']);
+        if(current.some(item=>item.rating!==row.rating))throw new Error('结果公告前次评级与已核验本次原文冲突，保留原事实');
+        if(!current.length)await tools.saveRatingHistory(client,bond.instrument_id,[{...result,...row,
+          outlook_source_url:result.source_url,ann_date:event.event_date,rating_com_name:row.rating_com_name||result.rating_com_name||bond.raw_payload.rating_comp}],sourceId);
+      }
+      await tools.saveRatingHistory(client,bond.instrument_id,[{...result,ann_date:event.event_date,rating_com_name:result.rating_com_name||bond.raw_payload.rating_comp}],sourceId);
+      if(result.rating_result_notice)await client.query(`UPDATE fundamental.convertible_bond_ratings SET source_id=$3
+        WHERE instrument_id=$1 AND raw_payload->>'source_url'=$2 AND rating_date=ANY($4::date[])`,
+        [bond.instrument_id,event.url,sourceId,[result.rating_date,...previous.map(row=>row.rating_date)]]);
       await tools.saveRatingOutlooks(client,bond.instrument_id,[result]);
     }
     if(kind==='price_history'&&result.price_changes?.length) await tools.savePriceChanges(client,bond.instrument_id,result.price_changes,sourceId);
@@ -179,6 +210,66 @@ function isRatingPublicationDelay(event) {
   return /(?:延迟|延期)披露.*评级报告(?:的)?公告$/.test(title)&&!/评级调整|信用等级.*调整|调整.*信用等级/.test(title);
 }
 
+function isRatingResultNotice(event) {
+  return /评级结果(?:的)?公告$/.test(String(event.title||''))&&!isRatingPublicationDelay(event);
+}
+
+function validateRatingResultNotice(event,result,bond) {
+  if(!isRatingResultNotice(event))return;
+  const notice=result.rating_result_notice;
+  if(!['sse','szse'].includes(event.source)||notice?.version!=='named-result-v1'||notice.bond_code!==bond.ts_code||
+    notice.bond_name!==bond.bond_short_name||!notice.issuer_name||!String(bond.bond_full_name||'').startsWith(notice.issuer_name)||
+    !result.rating_com_name||notice.rating_company!==result.rating_com_name||
+    result.source_url!==event.url||!/^[a-f0-9]{64}$/i.test(result.document_hash||'')||!result.rating||!result.rating_outlook||result.rating_conflicts?.length||
+    result.rating_date_source!=='official_document'||!result.rating_date||result.rating_date>isoDate(event.event_date)||
+    notice.report_reference?.issued_at!==result.rating_date||!notice.report_reference.title.startsWith(notice.issuer_name)) {
+    throw new Error('评级结果公告缺目标代码、发行人或本次原文证据，禁止替代报告');
+  }
+  for(const prior of notice.previous_ratings||[])if(!prior.rating||!prior.rating_outlook||!prior.date_evidence||!prior.rating_evidence||
+    prior.rating_com_name!==result.rating_com_name||
+    prior.rating_date_source!=='official_document'||prior.rating_date_context!=='explicit_previous_named_bond'||!prior.rating_date||prior.rating_date>=result.rating_date) {
+    throw new Error('结果公告前次评级缺独立债项、实际日与展望证据');
+  }
+}
+
+function readValidatedRatingNotice(event,documents,bond) {
+  const saved=documents[`rating:${event.url}`];
+  if(saved?.status!=='complete'||saved.parserVersion!==INPUT_VERSION||!saved.ratingResult||saved.documentHash!==saved.ratingResult.document_hash)return null;
+  try{validateRatingResultNotice(event,saved.ratingResult,bond);return saved.ratingResult;}catch{return null;}
+}
+
+function ratingCoverageForReport(event,notices,documents,bond,reports=[]) {
+  const normalize=value=>String(value||'').normalize('NFKC').replace(/\s+/g,'');
+  const title=normalize(event.title),issued=isoDate(bond.value_date),listed=isoDate(bond.list_date)||issued;
+  const candidates=[];
+  for(const noticeEvent of notices) {
+    const result=readValidatedRatingNotice(noticeEvent,documents,bond);
+    if(!result)continue;
+    if(noticeEvent.source!==event.source)continue;
+    const notice=result.rating_result_notice,reference=notice.report_reference;
+    let date=null,method=null;
+    if(normalize(reference.title)===title&&isoDate(noticeEvent.event_date)===isoDate(event.event_date)) {
+      const urls=new Set(reports.filter(item=>item.event.source===event.source&&normalize(item.event.title)===title&&
+        isoDate(item.event.event_date)===isoDate(event.event_date)).map(item=>item.event.url));
+      if(urls.size>1)continue;
+      date=reference.issued_at;method='exact_report_reference';
+    } else if(issued&&listed&&isoDate(event.event_date)<=listed&&isoDate(event.event_date)<=isoDate(noticeEvent.event_date)) {
+      const prefix=normalize(notice.issuer_name);
+      const suffix=title.startsWith(prefix)?title.slice(prefix.length):'';
+      if(/^(?:公开发行(?:A股)?|向不特定对象发行)可转换公司债券(?:信用)?评级报告(?:[（(]修订稿[）)])?$/.test(suffix)) {
+        for(const prior of notice.previous_ratings||[])if(prior.rating_date<=issued) {
+          candidates.push({notice_url:noticeEvent.url,document_hash:result.document_hash,rating_date:prior.rating_date,
+            rating:prior.rating,method:'explicit_named_bond_previous_rating',evidence:prior.rating_evidence});
+        }
+      }
+    }
+    if(method)candidates.push({notice_url:noticeEvent.url,document_hash:result.document_hash,rating_date:date,
+      rating:result.rating,method,evidence:reference});
+  }
+  if(new Set(candidates.map(row=>`${row.rating_date}:${row.rating}`)).size!==1)return null;
+  return candidates.length?{status:'covered_by_official_result_notice',...candidates[0]}:null;
+}
+
 function inputDocuments(events,bond={}) {
   const selected=[];
   const issueDate=isoDate(bond.value_date);
@@ -191,9 +282,11 @@ function inputDocuments(events,bond={}) {
     if(issuance)selected.push({kind:'issuance_terms',event:issuance});
   }
   if(report)selected.push({kind:'holders',event:report},{kind:'price_history',event:report});
-  for(const event of events.filter(e=>!isRatingPublicationDelay(e)&&/评级报告|评级调整/.test(e.title)&&(!issueDate||
+  for(const event of events.filter(e=>!isRatingPublicationDelay(e)&&(/评级报告|评级调整/.test(e.title)||
+    isRatingResultNotice(e)&&bond.bond_short_name&&e.title.includes(bond.bond_short_name))&&(!issueDate||
     isoDate(e.event_date)>=issueDate||isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`&&/可转债|可转换公司债券/.test(e.title))))selected.push({kind:'rating',event});
-  return selected;
+  return [...selected.filter(d=>d.kind==='rating'&&isRatingResultNotice(d.event)).sort((a,b)=>String(a.event.event_date).localeCompare(String(b.event.event_date))),
+    ...selected.filter(d=>d.kind!=='rating'||!isRatingResultNotice(d.event))];
 }
 
 // Securities Law reporting periods: annual reports within four months; half-year within two.
@@ -253,6 +346,10 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       }
       const selected=inputDocuments(events,bond);
       const suspectUrls=await (deps.suspectRatingUrls||suspectRatingUrls)(bond);
+      const notices=selected.filter(d=>d.kind==='rating'&&isRatingResultNotice(d.event)).map(d=>d.event);
+      const ratingReports=selected.filter(d=>d.kind==='rating'&&!isRatingResultNotice(d.event));
+      const needNotices=!ratingReports.length||ratingReports.some(d=>state.documents[`rating:${d.event.url}`]?.status!=='complete'||suspectUrls.has(d.event.url));
+      state.rating_coverage={};
       const expectedPeriod=requiredReportPeriod(targetDate);
       const reportNotDue=isoDate(bond.value_date)>expectedPeriod&&!selected.some(d=>d.kind==='holders');
       state.not_due=reportNotDue?{report_period:expectedPeriod,value_date:isoDate(bond.value_date),fields:['holders','price_history'],basis:'annual_4_months_halfyear_2_months'}:null;
@@ -263,19 +360,27 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       for(const {kind,event} of selected) {
         if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];
+        const optionalNotice=kind==='rating'&&isRatingResultNotice(event);
+        if(optionalNotice&&!needNotices)continue;
+        if(kind==='rating'&&!optionalNotice) {
+          const coverage=ratingCoverageForReport(event,notices,state.documents,bond,ratingReports);
+          if(coverage){state.rating_coverage[event.url]=coverage;continue;}
+        }
         const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
         if(!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
-        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){missing.push(kind);continue;}
-        if(Date.now()-started>=maxRuntimeMs){missing.push(kind);stoppedForTime=true;continue;}
+        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(!optionalNotice)missing.push(kind);continue;}
+        if(Date.now()-started>=maxRuntimeMs){if(!optionalNotice)missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
-          if(kind==='rating'){validateRatingGrade(result);validateTrackingRatingYear(event,result);}
+          if(kind==='rating'){validateRatingGrade(result);validateTrackingRatingYear(event,result);validateRatingResultNotice(event,result,bond);}
           if(revalidateRating&&result.rating_date_source!=='official_document')throw new Error('原评级日期疑似前次，缺本次原文实际日期，不能沿用可疑标准日期');
           await (deps.save||saveProjection)(kind,event,result,bond);
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
-        } catch(error) {missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
+          if(optionalNotice)state.documents[key].ratingResult=result;
+        } catch(error) {if(!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
+      if(!ratingReports.length&&!notices.some(event=>readValidatedRatingNotice(event,state.documents,bond)))missing.push('rating_report');
       if(Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed')&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('issuance_terms:')&&value.status==='complete'))missing.push('coupon_terms');
       state.missing=[...new Set(missing)];state.status=missing.length?'partial':'complete';state.targetDate=targetDate;
       await (deps.persistBond||persistBondInputs)(bond,state);
@@ -297,4 +402,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,INPUT_VERSION};

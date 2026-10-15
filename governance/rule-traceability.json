@@ -2743,6 +2743,30 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-RESULT-NOTICE-025",
+      "title": "官方结果公告按明确转债代码、原文机构及唯一报告引用提供独立证据，前次日期隔离、原失败保留且原生冲突回滚",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "ratingCoverageForReport"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-RESULT-NOTICE-025"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-RESULT-NOTICE-025"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-database.test.js",
+          "pattern": "BOND-RATING-RESULT-NOTICE-025"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

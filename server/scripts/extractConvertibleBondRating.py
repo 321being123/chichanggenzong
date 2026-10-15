@@ -235,6 +235,64 @@ def initial_issue_amount(text):
     return value, match.group(0)
 
 
+def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date):
+    """A named issuer notice is its own fact source, never a successful report OCR."""
+    text = re.sub(r'\s+', '', normalize_rating_text('\n'.join(pages)))
+    head = text[:800]
+    if not re.search(r'关于[^。]{0,100}评级结果(?:的)?公告', head):
+        return None
+    codes = re.findall(r'转债代码[:：]?(\d{6})(?!\d)', head)
+    if not bond_code or codes != [bond_code.split('.')[0]] or not issuer_name or issuer_name not in head or not bond_name:
+        raise ValueError('评级结果公告未唯一匹配目标发行人及转债代码')
+    if not re.search(r'转债简称[:：]?' + re.escape(bond_name) + r'(?![\u4e00-\u9fff]*转债)', head):
+        raise ValueError('评级结果公告未匹配目标转债简称')
+    agencies = list(re.finditer(r'委托(?:信用)?评级机构([^，。；;()]{2,60}?(?:股份有限公司|有限责任公司|有限公司))(?:\(以下简称[“"]?([^”"()]+)[”"]?\))?', text))
+    agency = agencies[0].group(1) if len({m.group(1) for m in agencies}) == 1 else None
+    agency_names = {agency} | {m.group(2) for m in agencies if m.group(2)}
+    grade_pattern = r'[“"]?([A-D]{1,3}[+-]?)(?![A-D+-])'
+    current = list(re.finditer(r'本次债项评级[:：]' + grade_pattern, text))
+    named = list(re.finditer(re.escape(bond_name) + r'[”"]?(?:的)?评级结果为[:：]?' + grade_pattern, text))
+    named = [m for m in named if not previous_rating_context(text, m.start())]
+    conclusions = [(m.group(1), m.group(0)) for m in current + named]
+    conflicts = [{'rating': value, 'evidence': quote} for value, quote in conclusions] if len({v for v, _ in conclusions}) > 1 else []
+    references = []
+    for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日出具了《([^》]+评级报告)》(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?', text):
+        if previous_rating_context(text, m.start()) or issuer_name not in m.group(4):
+            continue
+        actual = date(*(int(m.group(i)) for i in (1, 2, 3))).isoformat()
+        references.append({'title': m.group(4), 'number': m.group(5), 'issued_at': actual, 'evidence': m.group(0)})
+    unique = {(r['title'], r['issued_at']): r for r in references}
+    reference = next(iter(unique.values())) if len(unique) == 1 else None
+    current_block = text.split('本次债项评级', 1)[-1].split('根据', 1)[0] if current else ''
+    outlooks = list(re.finditer(r'评级展望[:：][“"]?(稳定|正面|负面|发展中|观察)', current_block))
+    outlook = outlooks[0] if len({m.group(1) for m in outlooks}) == 1 else None
+    if reference and announcement_date and reference['issued_at'] > announcement_date:
+        raise ValueError('评级原文日期晚于公告日期，保留原事实')
+    previous = []
+    prior_block = text.split('本次债项评级', 1)[0]
+    prior_outlook = re.search(r'前次债项评级[:：]' + grade_pattern + r'.*?评级展望[:：][“"]?(稳定|正面|负面|发展中|观察)', prior_block)
+    prior = re.search(r'((?:本公司|公司)前次[^。]+。)', text)
+    if prior and prior_outlook and reference:
+        quote = prior.group(1)
+        grades = list(re.finditer(re.escape(bond_name) + r'前次评级结果为[:：]?' + grade_pattern, quote))
+        dates = list(re.finditer(r'评级时间为(20\d{2})年(\d{1,2})月(\d{1,2})日', quote))
+        prior_agency = re.search(r'评级机构为([^，,。；;]+)', quote)
+        if agency and prior_agency and prior_agency.group(1).strip('“”"') in agency_names and len(grades) == len(dates) == 1 and grades[0].group(1) == prior_outlook.group(1):
+            actual = date(*(int(v) for v in dates[0].groups())).isoformat()
+            if actual < reference['issued_at']:
+                previous.append({'rating': grades[0].group(1), 'rating_outlook': prior_outlook.group(2), 'rating_date': actual,
+                                 'rating_com_name': agency,
+                                 'rating_date_source': 'official_document', 'rating_date_context': 'explicit_previous_named_bond',
+                                 'rating_evidence': quote, 'date_evidence': quote, 'outlook_evidence': prior_outlook.group(0)})
+    return {'rating': None if conflicts or not conclusions else conclusions[0][0], 'rating_outlook': outlook.group(1) if outlook else None, 'rating_com_name': agency,
+            'rating_date': reference['issued_at'] if reference else None, 'rating_date_source': 'official_document' if reference else 'missing',
+            'rating_evidence': conclusions[0][1] if conclusions else None, 'rating_conflicts': conflicts,
+            'outlook_evidence': outlook.group(0) if outlook else None, 'date_evidence': reference['evidence'] if reference else None,
+            'rating_date_context': 'current_report_issuance', 'rating_context_version': 'current-narrative-v2',
+            'rating_grade_context_version': 'current-grade-v1', 'rating_result_notice': {'version': 'named-result-v1', 'bond_code': bond_code,
+                'bond_name': bond_name, 'issuer_name': issuer_name, 'rating_company': agency, 'report_reference': reference, 'previous_ratings': previous}}
+
+
 def initial_report_cover_date(pages, issuer_name):
     issuer = re.sub(r'\s+', '', normalize_rating_text(issuer_name or ''))
     found = {}
@@ -253,7 +311,7 @@ def initial_report_cover_date(pages, issuer_name):
     return next(iter(found.items())) if len(found) == 1 else (None, None)
 
 
-def extract_rating(url, announcement_date=None, security_code=None, bond_name=None, issuer_name=None, issue_date=None, initial_issue_size_yuan=None, initial_tenor_years=None, list_date=None):
+def extract_rating(url, announcement_date=None, security_code=None, bond_name=None, issuer_name=None, issue_date=None, initial_issue_size_yuan=None, initial_tenor_years=None, list_date=None, bond_code=None):
     publication_end = list_date if list_date and issue_date and list_date >= issue_date else issue_date
     initial_window = bool(initial_issue_size_yuan and initial_tenor_years and issue_date and announcement_date and announcement_date <= publication_end)
     def initial_binding(pages):
@@ -271,6 +329,9 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
         title = next((match.group(0) for cover in covers for match in re.finditer(r'(?:向不特定对象发行|公开发行)(?:A股)?可转换公司债券(?:信用评级报告|信用等级通知书)', cover) if issuer and issuer in cover and '跟踪评级' not in cover),None)
         return title if initial_window and title and amount is not None and tenor and amount==Decimal(str(initial_issue_size_yuan)) and int(tenor.group(1))==int(initial_tenor_years) else None
     def parse(pages):
+        notice = parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date)
+        if notice is not None:
+            return notice
         result = parse_rating_pages(pages, bond_name, announcement_date)
         if not result['rating'] and not result['rating_conflicts'] and initial_binding(pages):
             normalized = re.sub(r'\s+', '', normalize_rating_text('\n'.join(pages)))
@@ -320,13 +381,14 @@ def main():
     parser.add_argument("--announcement-date", default=None)
     parser.add_argument("--security-code", default=None)
     parser.add_argument("--bond-name", default=None)
+    parser.add_argument("--bond-code", default=None)
     parser.add_argument("--issuer-name", default=None)
     parser.add_argument("--issue-date", default=None)
     parser.add_argument("--list-date", default=None)
     parser.add_argument("--initial-issue-size-yuan", default=None)
     parser.add_argument("--initial-tenor-years", type=int, default=None)
     args = parser.parse_args()
-    print(json.dumps(extract_rating(args.url, args.announcement_date, args.security_code, args.bond_name, args.issuer_name, args.issue_date, args.initial_issue_size_yuan, args.initial_tenor_years, args.list_date), ensure_ascii=False))
+    print(json.dumps(extract_rating(args.url, args.announcement_date, args.security_code, args.bond_name, args.issuer_name, args.issue_date, args.initial_issue_size_yuan, args.initial_tenor_years, args.list_date, args.bond_code), ensure_ascii=False))
 
 
 if __name__ == "__main__":

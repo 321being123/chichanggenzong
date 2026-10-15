@@ -5,7 +5,8 @@ const {pool}=require('../db/connection');
 const {buildConvertibleBondAnalysisFromDatabase}=require('../services/convertibleBondAnalysis');
 const express=require('express');
 const bondRouter=require('../routes/bondAnalysis');
-let ids=[],server;
+let ids=[],server,noticeDocument;
+const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
 (async()=>{
   const source=(await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0].source_id;
   const stock=(await pool.query("INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code) VALUES('009991.SZ','测试正股','stock','CN','SZSE') RETURNING instrument_id")).rows[0].instrument_id;
@@ -52,9 +53,55 @@ let ids=[],server;
   assert.ok(!(await loadAnalysisUniverse('2026-09-30')).some(row=>String(row.instrument_id)===String(bond)));
   await pool.query("UPDATE core.instruments SET status='pre_listing',delist_date='2026-10-20' WHERE instrument_id=$1",[bond]);
   assert.ok(!(await loadAnalysisUniverse('2026-09-30')).some(row=>String(row.instrument_id)===String(bond)));
+  // BOND-RATING-RESULT-NOTICE-025: 真实事务保存本次与明确前次；重跑不能互删，已核验本次冲突时整体回滚。
+  const official=(await pool.query("SELECT source_id FROM ops.data_sources WHERE source_code='szse'")).rows[0].source_id;
+  noticeDocument=(await pool.query(`INSERT INTO event.documents(document_type,title,announced_at,url,source_id)
+    VALUES('announcement','关于测试转债2026年跟踪评级结果的公告','2026-06-25',$1,$2) RETURNING document_id`,[noticeUrl,official])).rows[0].document_id;
+  const noticeEvent={document_id:noticeDocument,url:noticeUrl,source:'szse',title:'关于测试转债2026年跟踪评级结果的公告',event_date:'2026-06-25'};
+  const noticeResult={source_url:noticeUrl,document_hash:'d'.repeat(64),text_method:'pdf_text',rating_com_name:'测试机构',rating:'AA-',rating_outlook:'稳定',rating_date:'2026-06-23',
+    rating_date_source:'official_document',rating_date_context:'current_report_issuance',rating_grade_context_version:'current-grade-v1',
+    rating_context_version:'current-narrative-v2',rating_result_notice:{version:'named-result-v1',bond_code:'127991.SZ',bond_name:'测试转债',
+      issuer_name:'测试股份有限公司',rating_company:'测试机构',report_reference:{title:'测试股份有限公司2026年跟踪评级报告',issued_at:'2026-06-23'},
+      previous_ratings:[{rating_com_name:'测试机构',rating:'AA-',rating_outlook:'稳定',rating_date:'2023-11-01',rating_date_source:'official_document',
+        rating_date_context:'explicit_previous_named_bond',date_evidence:'评级时间为2023年11月1日',rating_evidence:'测试转债前次评级结果为AA-'}]}};
+  const inputBond={instrument_id:bond,ts_code:'127991.SZ',stock_code:'009991.SZ',bond_short_name:'测试转债',bond_full_name:'测试股份有限公司公开发行可转换公司债券',
+    value_date:'2024-01-01',raw_payload:{rating_comp:'测试机构',analysis_inputs:{coveredThrough:'2026-09-30',documents:{}}}};
+  const {syncConvertibleBondAnalysisInputs}=require('../services/convertibleBondAnalysisInputs');
+  const deps={latestDate:async()=> '2026-09-30',loadUniverse:async()=>[inputBond],readDocuments:async()=>[noticeEvent],
+    suspectRatingUrls:async()=>new Set(),project:async()=>structuredClone(noticeResult),persist:async()=>{}};
+  const run=()=>syncConvertibleBondAnalysisInputs({businessDate:'2026-09-30',targetCodes:['127991']},deps);
+  await pool.query(`UPDATE fundamental.convertible_bond_ratings SET raw_payload=raw_payload||$2::jsonb
+    WHERE instrument_id=$1 AND rating_date='2026-06-23'`,[bond,JSON.stringify({rating_date_source:'official_document',
+      text_method:'rapidocr-onnx-v1',document_hash:'a'.repeat(64),source_url:'old-ocr-report',rating_grade_context_version:'current-grade-v1'})]);
+  await run();await run();
+  const saved=(await pool.query(`SELECT rating_date::text,rating,source_id,raw_payload FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date`,[bond])).rows;
+  assert.deepEqual(saved.map(r=>[r.rating_date,r.rating]),[['2023-11-01','AA-'],['2026-06-23','AA-']]);
+  assert.equal(saved[0].raw_payload.rating_date_context,'explicit_previous_named_bond');
+  assert.equal(saved[0].raw_payload.outlook_source_url,noticeUrl);
+  assert.ok(saved.every(row=>row.source_id===official),'官方公告事实的正式来源列必须与原文一致');
+  assert.equal(saved[1].raw_payload.replaced_rating_evidence[0].rating,'AA+');
+  assert.equal(saved[1].raw_payload.replaced_rating_evidence[0].document_hash,'a'.repeat(64));
+  await pool.query(`UPDATE fundamental.convertible_bond_ratings SET rating='AA+',raw_payload=raw_payload||
+    '{"rating_date_context":"current_summary_table","rating_grade_context_version":"current-grade-v1"}'::jsonb
+    WHERE instrument_id=$1 AND rating_date='2023-11-01'`,[bond]);
+  noticeResult.document_hash='e'.repeat(64);
+  await run();
+  const retained=(await pool.query(`SELECT rating_date::text,rating FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date`,[bond])).rows;
+  assert.deepEqual(retained.map(r=>r.rating),['AA+','AA-'],'前次冲突必须回滚本次修改');
+  const doc=(await pool.query("SELECT raw_payload->'analysis_projections'->'rating' as rating FROM event.documents WHERE document_id=$1",[noticeDocument])).rows[0];
+  assert.equal(doc.rating.rating,'AA-','事务失败不能覆盖原有效投影');
+  assert.equal(doc.rating.document_hash,'d'.repeat(64));
+  let failedState=(await pool.query("SELECT raw_payload->'analysis_inputs'->'documents'->$2->>'error' as error FROM fundamental.convertible_bond_profiles WHERE instrument_id=$1",[bond,'rating:'+noticeUrl])).rows[0];
+  assert.match(failedState.error,/前次评级与已核验本次原文冲突/);
+  noticeResult.rating='A';
+  await run();
+  failedState=(await pool.query("SELECT raw_payload->'analysis_inputs'->'documents'->$2->>'error' as error FROM fundamental.convertible_bond_profiles WHERE instrument_id=$1",[bond,'rating:'+noticeUrl])).rows[0];
+  assert.match(failedState.error,/已有原生本次评级结论冲突/);
   console.log('BOND-ANALYSIS-003 passed: 真实PG、公开API、零写入、日期及金融单位');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{
   if(server)await new Promise(resolve=>server.close(resolve));
+  if(noticeDocument)await pool.query('DELETE FROM event.documents WHERE document_id=$1',[noticeDocument]);
+  await pool.query("DELETE FROM ops.raw_records WHERE dataset_code='bond_analysis_inputs' AND source_key LIKE $1",[noticeUrl+':%']);
   if(ids.length){await pool.query('DELETE FROM market.daily_valuations WHERE instrument_id=ANY($1::bigint[])',[ids]);
     await pool.query('DELETE FROM analytics.analysis_snapshots WHERE instrument_id=ANY($1::bigint[])',[ids]);
     await pool.query('DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=ANY($1::bigint[])',[ids]);

@@ -2767,6 +2767,22 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "HK-TARGET-WINDOW-026",
+      "title": "港股历史补跑全部日期窗口子阶段以原任务目标日截止，发行状态默认重叠起点也绑定原日",
+      "implementation": {
+        "file": "server/jobs/hkIpoSync.js",
+        "symbol": "runHkIpoSync"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-targeted-enrichment.test.js",
+          "pattern": "HK-TARGET-WINDOW-026"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
     }
   ]
 }

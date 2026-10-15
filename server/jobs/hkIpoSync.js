@@ -269,7 +269,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     || ((mode === 'postclose' || mode === 'enrichment') && context.syncHistoricalReports !== false));
   if (shouldSyncHistorical) {
     try {
-      historicalReports = await syncHkexHistoricalReports(context.historicalOptions || {});
+      historicalReports = await syncHkexHistoricalReports({ ...(context.historicalOptions || {}), toDate: targetDate });
     } catch (error) {
       historicalReports = { ok: false, status: 'failed', error: error.message || String(error) };
     }
@@ -285,7 +285,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
   if (mode === 'enrichment') {
     if (!targeted && context.syncNonPublic !== false) {
       try {
-        nonPublicListings = await syncHkexNonPublicListings(context.nonPublicOptions || {});
+        nonPublicListings = await syncHkexNonPublicListings({ ...(context.nonPublicOptions || {}), toDate: targetDate });
       } catch (error) {
         nonPublicListings = { ok: false, status: 'failed', error: error.message || String(error) };
       }
@@ -293,7 +293,9 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
     if (context.syncListingStatus !== false) {
       try {
         listingStatusNotices = await syncHkexListingStatusNotices({
+          fromDate: CoreDate.dateInZone(new Date(Date.parse(`${targetDate}T00:00:00Z`) - 180 * 86400000), 'UTC'),
           ...(context.listingStatusOptions || {}),
+          toDate: targetDate,
           ...(targeted ? { targetCodes } : {}),
         });
       } catch (error) {
@@ -311,6 +313,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
         }
         prospectusFacts = await syncHkexProspectusFacts({
           ...prospectusOptions,
+          toDate: targetDate,
           ...(targeted ? { targetCodes } : {}),
           refreshSponsor: context.refreshSponsor === true || context.prospectusOptions?.refreshSponsor === true
             || String(process.env.HK_IPO_REFRESH_SPONSOR || '').toLowerCase() === 'true',
@@ -334,6 +337,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
         }
         allotmentFacts = await syncHkexAllotmentFacts({
           ...allotmentOptions,
+          toDate: targetDate,
           asOfDate: targetDate,
           ...(targeted ? { targetCodes } : {}),
         });
@@ -352,6 +356,7 @@ async function runHkIpoSync(mode = 'preopen', reason = 'scheduled', context = {}
         }
         dailyCoverage = await syncTencentHkDailyCoverage({
           ...dailyOptions,
+          toDate: targetDate,
           ...(targeted ? { targetCodes } : {}),
         });
       } catch (error) {

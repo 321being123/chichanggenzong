@@ -112,13 +112,23 @@ function assertContinuousParameters(sql, params) {
   assert.doesNotMatch(runnerSource, /!targeted && context\.syncListingStatus/);
   assert.match(orchestratorSource, /claimed\.job_code === 'hk_ipo_enrichment'[\s\S]*?targetCodes: claimed\.request_payload\.targetCodes/);
   const runnerCalls = [];
+  const windowCalls = [];
+  const captureWindow = name => async options => { windowCalls.push([name, options]); return { ok: true, status: 'succeeded' }; };
   const context = vm.createContext({ module: { exports: {} }, process, console, Date,
     require: name => {
       if (name === '../db/connection') return { pool: { query: async sql => ({ rows: sql.includes('SELECT security_code FROM') ? [{ security_code: '01256.HK' }] : [] }) } };
       if (name === '../services/hkexIpo') return {
+        upsertHkIpoFacts: async () => ({ ok: true, rows: 1, events: 0 }),
+        syncHkexHistoricalReports: captureWindow('historical'),
+        syncHkexNonPublicListings: captureWindow('nonpublic'),
+        syncHkexListingStatusNotices: captureWindow('status'),
+        syncHkexProspectusFacts: captureWindow('prospectus'),
+        syncHkexAllotmentFacts: captureWindow('allotment'),
+        syncHkexPricingFacts: captureWindow('pricing'),
         recomputeHkIpoCompleteness: async (...args) => { runnerCalls.push(args.slice(1)); return { ok: true, rows: 1, complete: 1, pending: 0, missing: 0, qualityStatus: 'passed' }; },
         readHkIpoCompleteness: async (...args) => { runnerCalls.push(args.slice(1)); return { ok: true, rows: 191, complete: 189, pending: 1, missing: 1, qualityStatus: 'stale' }; },
       };
+      if (name === '../services/hkDailyCoverage') return { syncTencentHkDailyCoverage: captureWindow('daily') };
       if (name === '../../public/shared/core-date.js') return require(name);
       return {};
     },
@@ -134,6 +144,26 @@ function assertContinuousParameters(sql, params) {
   assert.strictEqual(runnerCalls[0][2].mode, 'enrichment');
   assert.strictEqual(runnerCalls[1][0], '2020-01-06');
   assert.strictEqual(runnerCalls[1][1].mode, 'enrichment');
+  // HK-TARGET-WINDOW-026: 历史补跑每一子阶段都绑定原目标日，不能默认运行当天或被子选项未来日覆盖。
+  const futureOptions = { toDate: '2099-12-31' };
+  await context.module.exports.runHkIpoSync('enrichment', 'test', {
+    targetDate: '2020-01-06', probe: { targets: [{ ok: true, items: [{ securityCode: '01256.HK' }] }] }, persistProbe: false,
+    historicalOptions: futureOptions, nonPublicOptions: futureOptions, listingStatusOptions: futureOptions,
+    prospectusOptions: futureOptions, allotmentOptions: futureOptions, dailyOptions: futureOptions,
+  });
+  assert.deepStrictEqual(windowCalls.map(([name]) => name).sort(), ['allotment','daily','historical','nonpublic','pricing','prospectus','status']);
+  for (const [name, options] of windowCalls) {
+    assert.strictEqual(name === 'pricing' ? options.asOfDate : options.toDate, '2020-01-06', name);
+  }
+  assert.strictEqual(windowCalls.find(([name]) => name === 'status')[1].fromDate, '2019-07-10');
+  windowCalls.length = 0;
+  await context.module.exports.runHkIpoSync('enrichment', 'test', {
+    targetDate: '2020-01-06', targetCodes: ['01256.HK'],
+    listingStatusOptions: { fromDate: '2019-12-01', toDate: '2099-12-31' },
+  });
+  assert.deepStrictEqual(windowCalls.map(([name]) => name).sort(), ['allotment','daily','pricing','prospectus','status']);
+  assert.strictEqual(windowCalls.find(([name]) => name === 'status')[1].fromDate, '2019-12-01');
+  for (const [name, options] of windowCalls) assert.strictEqual(name === 'pricing' ? options.asOfDate : options.toDate, '2020-01-06');
 
 console.log('hk-ipo-targeted-enrichment: 7 个目标代码仅进入官方发行状态公告、资料、日线和完整度查询');
 })().catch(error => {

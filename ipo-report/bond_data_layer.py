@@ -22,6 +22,17 @@ def _num(value):
     return number if math.isfinite(number) else None
 
 
+def _json_safe(value):
+    """把 NaN/Inf 转成 None，保证 json.dumps 产物是合法 JSON（Tushare 未公布字段为 NaN）。"""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _issue_size_100m(value):
     number = _num(value)
     if number is None:
@@ -91,7 +102,7 @@ def save_cb_issue_rows(issue_rows, basic_rows=None, rating_map=None, dry=False):
             payload = dict(raw)
             payload["cb_basic"] = basic
             payload["rating"] = rating_map.get(ts_code)
-            payload_text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+            payload_text = json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True, default=str)
             cur.execute(
                 """INSERT INTO ops.raw_records(run_id,source_id,dataset_code,source_key,payload,payload_hash)
                    VALUES(%s,%s,'cb_issue_cb_basic',%s,%s::jsonb,%s)

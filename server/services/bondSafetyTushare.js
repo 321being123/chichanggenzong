@@ -45,6 +45,23 @@ function isActiveBond(row, today, listedStocks) {
     (!listedStocks || listedStocks.has(row.stk_code)));
 }
 
+// 已公告但尚未上市的转债：日报在上市前一交易日就要用转股价/评级生成首日建议，
+// 不能因为 isActiveBond 要求 list_date<=今天而永远补不上主档。
+function isPendingListingBond(row, today) {
+  const targetDate = normalizeTradeDate(today) || String(today || '').trim();
+  const listDate = normalizeTradeDate(row && row.list_date);
+  if (!targetDate || !listDate || listDate <= targetDate) return false;
+  if (!CONVERTIBLE_PREFIX.test(String(row && row.ts_code || ''))) return false;
+  const delistDate = normalizeTradeDate(row.delist_date);
+  const maturityDate = normalizeTradeDate(row.maturity_date);
+  const convEndDate = normalizeTradeDate(row.conv_end_date);
+  const convStopDate = normalizeTradeDate(row.conv_stop_date);
+  return (!delistDate || delistDate > targetDate) &&
+    (!maturityDate || maturityDate >= targetDate) &&
+    (!convEndDate || convEndDate >= targetDate) &&
+    (!convStopDate || convStopDate > targetDate);
+}
+
 async function filterPublicBonds(rows, client = pool) {
   const candidates = Array.from(new Set((rows || [])
     .map(row => String(row && row.ts_code || '').trim().toUpperCase())
@@ -508,6 +525,8 @@ module.exports = {
   finite,
   derivePb,
   isActiveBond,
+  isPendingListingBond,
+  CONVERTIBLE_PREFIX,
   filterPublicBonds,
   preferredSecurityName,
   normalizeTradeDate,

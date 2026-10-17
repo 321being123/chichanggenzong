@@ -524,5 +524,16 @@ check("日报正股行情只读数据库且不回退外部接口",
       "market.daily_bars" in quote_reader and "market.daily_valuations" in quote_reader
       and "_fetch_quote_tencent(" not in quote_reader and "_get_tushare_pro(" not in quote_reader)
 
+# 标准数据层 JSON 清洗：Tushare 未公布字段为 NaN，直接 json.dumps 会生成非法 JSON 导致
+# 新债发行事实整批写入失败（2026-10-17 生产 backfill_bond_history 崩溃的根因）。
+try:
+    from bond_data_layer import _json_safe
+    dirty = {"offl_size": float("nan"), "onl_size": 1.0, "nested": {"x": float("inf")}, "lst": [float("nan"), 2]}
+    cleaned = json.dumps(_json_safe(dirty), allow_nan=False)
+    check("NaN/Inf 必须清洗为 null 才能写入 jsonb", '"offl_size": null' in cleaned and '"x": null' in cleaned, cleaned)
+    check("有限数值清洗后保持原值", '"onl_size": 1.0' in cleaned and '[null, 2]' in cleaned, cleaned)
+except Exception as exc:
+    check("NaN/Inf 清洗函数可用", False, repr(exc))
+
 print("\n结果:", "ALL PASS" if all(PASS) else f"{PASS.count(False)} FAILED")
 sys.exit(0 if all(PASS) else 1)

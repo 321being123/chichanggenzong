@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { filterPublicBonds, latestMarketPartition, normalizeTradeDate } = require('../services/bondSafetyTushare');
+const { filterPublicBonds, latestMarketPartition, normalizeTradeDate, isPendingListingBond } = require('../services/bondSafetyTushare');
 
 function response(rows) {
   const fields = ['ts_code', 'trade_date', 'close'];
@@ -62,6 +62,14 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
   assert.ok(source.includes('dm.trade_date::text AS trade_date'), '安全评分读取 PostgreSQL DATE 必须先转为日历日期文本');
   assert.ok(source.includes('const tradeDate = normalizeTradeDate(rows[0] && rows[0].trade_date)'), '安全评分不得把 PostgreSQL DATE 直接转成 ISO 日期');
+
+  // 待上市新债：日报在上市前一交易日就要用转股价生成首日建议，判定必须覆盖到。
+  assert.strictEqual(isPendingListingBond({ ts_code: '123286.SZ', list_date: '20261019' }, '2026-10-18'), true, '下一交易日上市的新债必须进入主档补全');
+  assert.strictEqual(isPendingListingBond({ ts_code: '123286.SZ', list_date: '20261018' }, '2026-10-18'), false, '当日上市已由 isActiveBond 覆盖');
+  assert.strictEqual(isPendingListingBond({ ts_code: '123286.SZ', list_date: '20261019', delist_date: '20261020' }, '2026-10-18'), true, '仅有退市日不影响待上市判定');
+  assert.strictEqual(isPendingListingBond({ ts_code: '123286.SZ', list_date: '20261019', maturity_date: '20261001' }, '2026-10-18'), false, '已到期债券不得进入主档补全');
+  assert.strictEqual(isPendingListingBond({ ts_code: '600000.SH', list_date: '20261019' }, '2026-10-18'), false, '非可转债代码不得进入主档补全');
+  assert.strictEqual(isPendingListingBond({ ts_code: '123286.SZ', list_date: null }, '2026-10-18'), false, '缺少上市日不得猜测');
   console.log('bond safety date fallback tests passed');
 })().catch(error => {
   console.error(error);

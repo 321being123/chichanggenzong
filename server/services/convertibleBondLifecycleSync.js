@@ -110,7 +110,11 @@ async function ensureMinimalProfile(client, row, sources) {
      VALUES($1,$2,$2,'CB',$3,$4,$5,$6::jsonb,now())
      ON CONFLICT(instrument_id) DO UPDATE SET
        bond_full_name=CASE WHEN EXCLUDED.bond_full_name<>'' THEN EXCLUDED.bond_full_name ELSE fundamental.convertible_bond_profiles.bond_full_name END,
-       bond_short_name=CASE WHEN EXCLUDED.bond_short_name<>'' THEN EXCLUDED.bond_short_name ELSE fundamental.convertible_bond_profiles.bond_short_name END,
+       -- 公告解析出的简称常带「可转换公司」等体裁残留（如「国科转债2、可转换公司」），
+       -- 只在现有简名为空时写入，已由 cb_basic 官方简称填充的主档不被降级覆盖。
+       bond_short_name=CASE WHEN COALESCE(BTRIM(fundamental.convertible_bond_profiles.bond_short_name),'')=''
+                            THEN EXCLUDED.bond_short_name
+                            ELSE fundamental.convertible_bond_profiles.bond_short_name END,
        issue_price=COALESCE(fundamental.convertible_bond_profiles.issue_price,EXCLUDED.issue_price),
        issue_size=COALESCE(fundamental.convertible_bond_profiles.issue_size,EXCLUDED.issue_size),
        raw_payload=fundamental.convertible_bond_profiles.raw_payload || EXCLUDED.raw_payload,updated_at=now()`,

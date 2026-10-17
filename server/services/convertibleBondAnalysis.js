@@ -25,7 +25,7 @@ const {
 const { resolveCanonicalCode, ensureInstrumentIdentity } = require('./securityIdentity');
 const { childProcessEnv, mergeExternalCallStatsFromStderr } = require('./externalCallGuard');
 const { sendAlert } = require('./jobAlertMailer');
-const { isActiveBond, filterPublicBonds } = require('./bondSafetyTushare');
+const { isActiveBond, isPendingListingBond, filterPublicBonds } = require('./bondSafetyTushare');
 
 const BOND_PREFIX = /^(110|111|113|118|123|127|128)\d{3}$/;
 const BOND_FIRSTDAY_SCRIPT = path.resolve(__dirname, '..', '..', 'ipo-report', 'backfill_bond_firstday.py');
@@ -2011,6 +2011,20 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
         saved += 1;
       }
       await saveFullStockMarketPartition(client, stockInstrumentMap, stockDailyRows, stockValuationRows, sources.tushare, stockAdjustmentRows);
+      // 待上市新债主档补全：isActiveBond 只收已上市债，导致新债在上市前一直是
+      // 「有占位档、无正股/无转股价」的状态，日报（上市前一交易日生成）只能降级为
+      // 「数据不足无法精确预估」。这里只补主档字段，不写行情、不进行情缺口队列。
+      const pendingListingProfiles = await filterPublicBonds(allBasicRows.filter(row =>
+        isPendingListingBond(row, targetTradeDate) && isUnderlyingStockListed(row, listedStockCodes)));
+      const pendingListingSaved = [];
+      for (const profile of pendingListingProfiles) {
+        const ids = await saveProfile(client, profile, sources);
+        if (profile.stk_code && ids.stockId) stockInstrumentMap.set(profile.stk_code, ids.stockId);
+        pendingListingSaved.push(profile.ts_code);
+      }
+      if (pendingListingSaved.length) {
+        console.log(`[主同步] 待上市新债主档已补全 ${pendingListingSaved.length} 只：${pendingListingSaved.join(',')}`);
+      }
       await client.query(
         `INSERT INTO ops.sync_cursors(scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error,retry_count)
          VALUES('convertible_bond_universe','cb_basic_cb_daily',$1,now(),now(),'',0)

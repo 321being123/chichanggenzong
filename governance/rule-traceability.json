@@ -2811,6 +2811,22 @@
       ],
       "owner": "持仓管理",
       "status": "verified"
+    },
+    {
+      "id": "JOB-DUE-FAIRNESS-001",
+      "title": "到期候选先按任务重试资格过滤再分页，耗尽重试的旧槽不得阻断后续任务",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "listDueSlots"
+      },
+      "tests": [
+        {
+          "file": "server/test/job-due-slot-fairness.test.js",
+          "pattern": "超过一页耗尽重试的旧槽不得饿死新任务"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

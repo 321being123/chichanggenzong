@@ -568,12 +568,18 @@ async function recoverExpiredSlots() {
 
 async function listDueSlots(limit = 20) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const retryPolicies = JOB_DEFINITIONS.map(definition => ({
+    job_code: definition.jobCode, max_attempts: definition.maxAttempts || 3,
+  }));
   const { rows } = await pool.query(
     `SELECT s.*, s.business_date::text AS business_date FROM ops.job_schedule_slots s
+      JOIN jsonb_to_recordset($2::jsonb) AS policy(job_code text,max_attempts integer)
+        ON policy.job_code=s.job_code
       WHERE (status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
         OR (status IN ('failed','waiting_external') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()))
         AND scheduled_for <= now()
-      ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, [safeLimit]
+        AND s.attempt_count < policy.max_attempts
+      ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, [safeLimit, JSON.stringify(retryPolicies)]
   );
   const due = [];
   for (const slot of rows) {

@@ -22,13 +22,15 @@ for (const width of [320, 360, 390, 430, 760, 768, 900, 1024, 1440]) {
     this.destroy = () => { this.destroyed = true; };
   };
   // 读取脚本实际的词法图表缓存，不使用同名 window 属性替代真实状态。
+  w.eval(source('shared/core-earnings.js'));
   w.eval(source('shared/core-returns.js') + '\nwindow.chartMap = chartMap; returnMode = "all";');
   w.eval(source('shared/core-account.js') + '\nearnReturnMode = "all";');
   for (const name of ['renderHomeHoldings', 'renderStats', 'renderCharts', 'renderPositionsTable', 'renderTrades']) w[name] = () => {};
   // 保留收益页实际共用的绘图入口，省略本用例无关的表格与资产图。
   w.renderEarnings = () => w.renderEarningsReturnsChart();
   const account = multiplier => ({
-    navHistory: [{ date: '2026-10-08', nav: 1, totalAsset: 100 }, { date: '2026-10-09', nav: multiplier, totalAsset: 100 * multiplier }],
+    navHistory: [{ date: '2026-10-08', nav: 1, totalAsset: 100 }, { date: '2026-10-09', nav: multiplier + 0.5, totalAsset: 100 * multiplier }],
+    performanceHistory: [{ date: '2026-10-08', nav: 1, totalAsset: 100 }, { date: '2026-10-09', nav: multiplier, totalAsset: 100 * multiplier }],
     indexHistory: [{ date: '2026-10-08', '沪深300': 4000 }, { date: '2026-10-09', '沪深300': 4040 }],
     cashFlows: []
   });

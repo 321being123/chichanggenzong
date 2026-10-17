@@ -797,8 +797,11 @@ router.put('/nav/:date', requireLogin, asyncHandler(assertOwnership), requireVer
   const accountName = req.body.account;
   if (!accountName) return res.status(400).json({ error: '缺少 account' });
   const username = req.session.user;
-  if (!req.body.nav || isNaN(parseFloat(req.body.nav))) return res.status(400).json({ error: '缺少有效净值' });
+  const systemCalculated = req.body.calculationMode === 'system';
+  if (systemCalculated && date !== todayCN()) return res.status(400).json({ error: '自动记录只能使用上海当日，历史日期由原后台Runner处理' });
+  if (!systemCalculated && (!req.body.nav || isNaN(parseFloat(req.body.nav)))) return res.status(400).json({ error: '缺少有效净值' });
   const rec = {
+    calculationMode: systemCalculated ? 'system' : 'manual',
     date: date,
     nav: parseFloat(req.body.nav),
     totalAsset: req.body.totalAsset != null ? parseFloat(req.body.totalAsset) : null,

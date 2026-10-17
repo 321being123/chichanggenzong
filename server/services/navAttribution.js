@@ -2,11 +2,12 @@ const NavMath = require('../../public/shared/nav-math');
 // 净值涨跌归因的唯一后端实现。
 // 前端只展示结果，不再自行拼接价格、汇率和账本公式。
 const { pool } = require('../db/connection');
+const businessDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' });
 
 function dateKey(value) {
   if (!value) return '';
   if (value instanceof Date) {
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(value);
+    return businessDateFormatter.format(value);
   }
   return String(value).slice(0, 10);
 }
@@ -42,6 +43,9 @@ function eventAtOrBefore(row, eventDate, snapshotDate, snapshotAt) {
 function cashAtSnapshot(data, snapshotDate, snapshotAt) {
   return NavMath.cashAt(data, snapshotDate, snapshotAt);
 }
+function isAuthoritativeSnapshot(nav) {
+  return nav.snapshotSource === 'imported' || nav.diagnostics?.manualNavOverride === true;
+}
 
 function latestImportedPositionAnchor(data, date) {
   const imports = (data.navHistory || []).filter((n) => n.snapshotSource === 'imported' && n.isLocked !== false &&
@@ -49,19 +53,25 @@ function latestImportedPositionAnchor(data, date) {
     .sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)) ||
       (timestamp(a.snapshot_at) || 0) - (timestamp(b.snapshot_at) || 0));
   const imported = imports.length ? imports[imports.length - 1] : null;
-  const snapshots = (data.positionSnapshots || []).filter((s) => dateKey(s.snapshotDate || s.date) <= date);
+  const systemNav = (data.navHistory || []).filter(n => dateKey(n.date) <= date &&
+    n.diagnostics?.homepageBasis?.version === 'homepage-v1' && Array.isArray(n.diagnostics.homepageBasis.positions))
+    .sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date))).at(-1);
+  const systemSnapshots = systemNav ? systemNav.diagnostics.homepageBasis.positions.map(p => ({ ...p,
+    snapshotDate: dateKey(systemNav.date), snapshotId: 'nav:' + dateKey(systemNav.date), source: 'system_nav',
+    quoteCurrency: p.subtype === '港股' ? 'HKD' : 'CNY' })) : [];
+  const snapshots = (data.positionSnapshots || []).concat(systemSnapshots).filter((s) => dateKey(s.snapshotDate || s.date) <= date);
   if (!snapshots.length) return null;
 
   // 人工校准快照是对旧导入锚点的明确修订；同一账户存在更晚的校准快照时，
   // 必须优先使用它，否则旧批次会遮蔽修复后的基准数量。
   const importedDate = imported ? dateKey(imported.date) : '';
   const manualDates = snapshots
-    .filter((s) => String(s.source || '') === 'manual_reconciliation')
+    .filter((s) => ['manual_reconciliation', 'system_nav'].includes(String(s.source || '')))
     .map((s) => dateKey(s.snapshotDate || s.date))
     .filter((d) => d > importedDate);
   const latestManualDate = manualDates.length ? manualDates.reduce((max, d) => d > max ? d : max, '') : '';
   let rows = latestManualDate
-    ? snapshots.filter((s) => String(s.source || '') === 'manual_reconciliation' &&
+    ? snapshots.filter((s) => ['manual_reconciliation', 'system_nav'].includes(String(s.source || '')) &&
         dateKey(s.snapshotDate || s.date) === latestManualDate)
     : (imported && imported.importBatchId
       ? snapshots.filter((s) => String(s.snapshotId) === String(imported.importBatchId))
@@ -211,7 +221,145 @@ function manualDelistedPrice(data, code, currentPosition) {
   return price == null ? null : Number(price);
 }
 
-async function computeNavAttribution(username, accountName, data, currentTotal) {
+// 与首页期初资产共用：导入值保持券商事实，系统快照按本地收盘价、历史数量及现金重建。
+function snapshotTotal(data, nav, quantities, priceFor, rate) {
+  if (isAuthoritativeSnapshot(nav)) {
+    return nav.totalAsset != null && Number.isFinite(Number(nav.totalAsset)) ? Number(nav.totalAsset) : null;
+  }
+  const cash = cashAtSnapshot(data, dateKey(nav.date), nav.snapshot_at);
+  if (cash.incomplete) return null;
+  const currentPositions = aggregateCurrentPositions(data.positions);
+  let total = cash.value;
+  for (const [code, row] of quantities) {
+    const quantity = Number(row.quantity) || 0;
+    if (quantity < 0) return null;
+    if (!quantity) continue;
+    const isHk = row.subtype === '港股' || currentPositions.get(code)?.subtype === '港股';
+    const price = priceFor(code, isHk);
+    if (!(price > 0) || (isHk && !(rate > 0))) return null;
+    total += quantity * price * (isHk ? rate : 1);
+  }
+  return Number.isFinite(total) ? total : null;
+}
+
+async function computeNavHistoryTotals(username, accountName, data, query = pool.query.bind(pool)) {
+  const navs = (data.navHistory || []).slice().sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
+  if (!navs.length) return {};
+  // 一次读取账户已落库价格，不逐日期查询或触发外部采集。
+  const { rows } = await query(`SELECT date, code, price::float8 AS price FROM daily_prices
+    WHERE username=$1 AND account_name=$2 AND date::date <= $3::date ORDER BY date, code`,
+  [username, accountName, dateKey(navs[navs.length - 1].date)]);
+  const { rows: fxRows } = await query(`SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate
+    FROM market.fx_rates WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
+    ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [dateKey(navs[navs.length - 1].date)]);
+  const fx = new Map(fxRows.map(r => [dateKey(r.rate_date), Number(r.rate)]));
+  const prices = new Map();
+  const currentPositions = aggregateCurrentPositions(data.positions);
+  let cursor = 0;
+  const totals = {};
+  for (const nav of navs) {
+    const date = dateKey(nav.date);
+    while (cursor < rows.length && dateKey(rows[cursor].date) <= date) {
+      prices.set(String(rows[cursor].code), Number(rows[cursor].price));
+      cursor++;
+    }
+    if (nav.snapshotSource === 'manual_carry_forward' && !isAuthoritativeSnapshot(nav)) {
+      totals[date] = null;
+      continue;
+    }
+    // 历史重建必须具有当时的持仓锚点；当前持仓回退只用于首页实时估值，不能证明旧持仓。
+    if (!isAuthoritativeSnapshot(nav) && !latestImportedPositionAnchor(data, date)) {
+      totals[date] = null;
+      continue;
+    }
+    const rate = Number(nav.hkRate) > 0 ? Number(nav.hkRate) : fx.get(date);
+    totals[date] = snapshotTotal(data, nav, quantityAsOf(data, date, nav.snapshot_at), (code, isHk) => {
+      const price = prices.get(code) || (isHk && /^\d{5}$/.test(code) ? prices.get(code.padStart(6, '0')) : null);
+      return price > 0 ? price : manualDelistedPrice(data, code, currentPositions.get(code));
+    }, rate);
+  }
+  return totals;
+}
+
+async function intervalHasGap(data, previous, current) {
+  const { getMarketState, isCnTradingDate } = require('./marketState');
+  const span = new Date(dateKey(current.date) + 'T00:00:00Z') - new Date(dateKey(previous.date) + 'T00:00:00Z');
+  if (span <= 86400000) return false;
+  // 无当时持仓依据就无法判定间隔日属于哪个市场，不能用今天的市场组合回查多年日历。
+  if (!latestImportedPositionAnchor(data, dateKey(previous.date)) ||
+      !latestImportedPositionAnchor(data, dateKey(current.date))) return true;
+  const markets = new Set();
+  for (const nav of [previous, current]) {
+    for (const row of quantityAsOf(data, dateKey(nav.date), nav.snapshot_at).values()) {
+      if (Number(row.quantity) > 0) markets.add(row.subtype === '港股' ? 'HK' : 'CN');
+    }
+  }
+  const cursor = new Date(dateKey(previous.date) + 'T00:00:00Z');
+  while (true) {
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    const date = dateKey(cursor);
+    if (date >= dateKey(current.date)) break;
+    if (markets.has('CN') && isCnTradingDate(date)) return true;
+    if (markets.has('HK')) {
+      const state = await getMarketState({ market: 'HK', businessDate: date, time: '23:59' });
+      if (state.status !== 'closed') return true;
+    }
+  }
+  return false;
+}
+
+// 首页资产基准→同一净值续链。只读投影与自动写入均调用此入口；原导入事实不改写。
+async function buildNavPerformance(data, totals, options = {}) {
+  const today = dateKey(new Date());
+  const navs = (data.navHistory || []).filter(n => dateKey(n.date) <= today).sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)));
+  const live = data.navAttribution;
+  if (navs.length && dateKey(navs.at(-1).date) < today && Number.isFinite(Number(data.totalAsset))) {
+    navs.push({ date: today, nav: null, totalAsset: data.totalAsset, snapshotSource: 'live',
+      snapshot_at: new Date().toISOString(), isLive: true });
+  }
+  const bases = { ...totals };
+  if (live?.complete && live.currentDate === today && live.previousTotalAsset > 0) {
+    bases[live.previousDate] = Number(live.previousTotalAsset);
+  }
+  const rows = [];
+  for (const n of navs) {
+    const date = dateKey(n.date);
+    const imported = isAuthoritativeSnapshot(n);
+    const previous = rows.at(-1);
+    const currentTotal = date === today && n.snapshotSource !== 'imported' ? Number(data.totalAsset) : bases[date];
+    let nav = null, reason = null, dayChange = null, basis = null;
+    const gap = previous ? await intervalHasGap(data, previous, n) : false;
+    const base = previous ? bases[previous.date] : null;
+    if (imported) nav = n.nav > 0 ? Number(n.nav) : null;
+    else if (!previous && n.diagnostics?.homepageBasis?.initial === true && currentTotal > 0) {
+      nav = 1;
+      basis = { version: 'homepage-v1', initial: true, totalAsset: currentTotal };
+    } else if (previous?.nav > 0 && base > 0 && currentTotal != null && Number.isFinite(currentTotal) && !gap) {
+      const transfers = (data.cashFlows || []).filter(f => NavMath.isExternalTransfer(f) &&
+        eventInInterval(f, dateKey(f.date), previous.date, date, timestamp(previous.snapshot_at),
+          date === today ? Date.now() : timestamp(n.snapshot_at)))
+        .reduce((sum, f) => sum + Number(f.amount || 0), 0);
+      if (base + transfers > 0) {
+        nav = NavMath.chainNav(previous.nav, base, currentTotal, transfers);
+        basis = { version: 'homepage-v1', previousDate: previous.date, previousTotalAsset: base,
+          previousNav: previous.nav, externalTransfer: transfers, totalAsset: currentTotal };
+      }
+    }
+    if (previous && base > 0 && currentTotal != null && !gap) dayChange = (currentTotal - base) / base;
+    if (date === today && options.requireLive !== false) {
+      dayChange = live?.complete && live.currentDate === today && live.previousTotalAsset > 0 && live.totalChange != null
+        ? Number(live.totalChange) / Number(live.previousTotalAsset) : null;
+      if (nav == null || dayChange == null) reason = live?.reason || 'missing_nav_basis';
+    }
+    if (nav == null) reason = reason || (gap ? 'missing_intermediate_snapshot' : 'missing_nav_basis');
+    bases[date] = currentTotal == null || !Number.isFinite(currentTotal) ? null : currentTotal;
+    rows.push({ ...n, date, totalAsset: bases[date], nav, dayChange, basis, basisStatus: reason || 'complete',
+      recordedNav: n.nav, recordedTotalAsset: n.totalAsset });
+  }
+  return rows;
+}
+
+async function computeNavAttribution(username, accountName, data, currentTotal, query = pool.query.bind(pool)) {
   const navs = (data.navHistory || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
   if (navs.length < 2) return { complete: false, reason: 'not_enough_snapshots' };
   const last = navs[navs.length - 1];
@@ -280,13 +428,13 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   const prevQty = quantityAsOf(data, prevDate, previous.snapshot_at);
   const relevantCodes = new Set([...prevQty.keys(), ...currentByCode.keys()]);
   const [previousPricesResult, currentPricesResult] = await Promise.all([
-    pool.query(
+    query(
       `SELECT DISTINCT ON (code) date, code, price::float8 AS price FROM daily_prices
         WHERE username=$1 AND account_name=$2 AND code=ANY($3::text[]) AND date::date <= $4::date
         ORDER BY code, date DESC`,
       [username, accountName, [...relevantCodes], prevDate]
     ),
-    pool.query(
+    query(
       `SELECT DISTINCT ON (code) date, code, price::float8 AS price FROM daily_prices
         WHERE username=$1 AND account_name=$2 AND code=ANY($3::text[]) AND date::date <= $4::date
         ORDER BY code, date DESC`,
@@ -298,7 +446,7 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   }]));
   const previousPriceByCode = priceRowsByCode(previousPricesResult.rows);
   const currentPriceByCode = priceRowsByCode(currentPricesResult.rows);
-  const { rows: fxRows } = await pool.query(
+  const { rows: fxRows } = await query(
     `SELECT DISTINCT ON (rate_date) rate_date, rate::float8 AS rate FROM market.fx_rates
       WHERE base_currency='HKD' AND quote_currency='CNY' AND rate_date <= $1
       ORDER BY rate_date ASC, fetched_at DESC, source_id DESC`, [currentDate]
@@ -405,9 +553,12 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   // legacy/system 快照的 totalAsset 可能记录于实时价，之后 daily_prices 又被正式收盘价覆盖。
   // 用同一基准日的持仓收盘价、数量和现金重建期初总资产，避免把行情源切换误算成涨跌。
   let previousTotal = Number(previous.totalAsset) || 0;
-  if (previous.snapshotSource !== 'imported' && previousMarketValue.complete) {
-    const previousCash = cashAtSnapshot(data, prevDate, previous.snapshot_at);
-    if (!previousCash.incomplete) previousTotal = previousCash.value + previousMarketValue.value;
+  if (!isAuthoritativeSnapshot(previous) && previousMarketValue.complete) {
+    const rebuilt = snapshotTotal(data, previous, prevQty, (code, isHk) => {
+      const row = marketPrice(previousPriceByCode, code, isHk);
+      return row?.price > 0 ? row.price : manualDelistedPrice(data, code, currentByCode.get(code));
+    }, prevRate);
+    if (rebuilt != null) previousTotal = rebuilt;
   }
   const totalChange = lastTotal - previousTotal;
   const complete = missing.length === 0 && !currencyIncomplete;
@@ -443,4 +594,4 @@ async function computeNavAttribution(username, accountName, data, currentTotal) 
   };
 }
 
-module.exports = { computeNavAttribution, dateKey };
+module.exports = { computeNavAttribution, computeNavHistoryTotals, buildNavPerformance, dateKey };

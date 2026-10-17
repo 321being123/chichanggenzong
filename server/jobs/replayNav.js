@@ -145,6 +145,15 @@ async function recomputeNav(username, accountName, fromDate) {
   );
   const fxByDate = new Map(fxRows.map(r => [cnDate(r.rate_date), Number(r.rate)]));
   const currentFxRate = fxByDate.get(today) || await getCurrentFxRate();
+  const missingDates = [];
+  async function saveCanonical(rec) {
+    try { await upsertNav(username, accountName, { ...rec, calculationMode: 'system' }); return true; }
+    catch (error) {
+      if (error.code !== 'NAV_BASIS_INCOMPLETE') throw error;
+      missingDates.push(rec.date);
+      return false;
+    }
+  }
   let affected = 0;
 
   for (let i = idx0; i < navs.length; i++) {
@@ -179,6 +188,7 @@ async function recomputeNav(username, accountName, fromDate) {
       mvList.push(mv);
     }
     if (missing) {
+      missingDates.push(d);
       // 该日无法精确计算 → 保留原快照，prev 用原值续链
       const orig = navs[i];
       prev = { date: d, nav: orig.nav, totalAsset: (orig.totalAsset != null ? orig.totalAsset : (prev ? prev.totalAsset : 0)) };
@@ -190,7 +200,7 @@ async function recomputeNav(username, accountName, fromDate) {
 
     if (i === 0 && idx0 === 0 && !prev) {
       // 整体首条：nav 固定 1.0（与 recordNav 一致）
-      await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
+      if (!await saveCanonical({ date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate })) continue;
       prev = { date: d, nav: 1.0, totalAsset: totalAsset };
       affected++;
       continue;
@@ -202,20 +212,21 @@ async function recomputeNav(username, accountName, fromDate) {
     cfs.forEach(function (f) { if (isExternalTransfer(f) && f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
     const baseAsset = prev.totalAsset + pcf;
     if (baseAsset <= 0) {
+      missingDates.push(d);
       const orig = navs[i];
       prev = { date: d, nav: orig.nav, totalAsset: (orig.totalAsset != null ? orig.totalAsset : prev.totalAsset) };
       continue;
     }
     const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
-    await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
+    if (!await saveCanonical({ date: d, nav: nav, totalAsset: totalAsset, invested: invested, hkRate: hkRate })) continue;
     prev = { date: d, nav: nav, totalAsset: totalAsset };
     affected++;
   }
 
-  if (affected > 0) {
+  if (affected > 0 && missingDates.length === 0) {
     await pool.query('UPDATE account_data SET nav_dirty_from=NULL WHERE username=$1 AND account_name=$2', [username, accountName]);
   }
-  return { ok: true, days: affected };
+  return { ok: missingDates.length === 0, status: missingDates.length ? 'partial' : 'succeeded', days: affected, missingDates: [...new Set(missingDates)] };
 }
 
 module.exports = { recomputeNav, backfillDailyPrices, historicalApiFor, isTradingDay, cnDate };

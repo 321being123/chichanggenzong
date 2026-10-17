@@ -118,119 +118,31 @@ let indexVisibility = {
  * - 现金流的金额同时累加到 data.cash 上，确保总资产正确
  */
 async function recordNav() {
-  if (!data.navHistory) data.navHistory = [];
   const today = todayCN();
-  // 投入本金：优先用导入数据，导入数据最后一列日期之后按出入金延续（见 investedAt）
-  const invested = investedAt(data.navHistory, data.cashFlows, data.cashBase, today);
-
-  const s = calcSummary();
-  if (s.total <= 0) return;
-
-  // 已结算现金流边界（P0-3 验收修复）：本次快照时间 snapshot_at 已持久化到 nav_history。
-  // 同日再次快照时，只把「上次快照之后新录入」的同日现金流计入 periodCashFlow；
-  // 跨日时按日期区间计入（与旧逻辑一致）。旧数据无 snapshot_at → 同日现金流全部计入（保守）。
-  const lastSnapAt = (data.navHistory.length > 0 && data.navHistory[data.navHistory.length - 1].snapshot_at) || '';
-  function periodCashFlowSince(lastDate, cutoffAt) {
-    var pcf = 0;
-    if (!data.cashFlows) return pcf;
-    var isSameDay = lastDate === today;
-    data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) {
-      if (cf.date > today) return; // 未来现金流不计
-      if (isSameDay) {
-        // 同日：只计「快照时间之后新录入」的现金流（按完整时间戳比较）
-        if (cf.date !== today) return;
-        if (cutoffAt && cf.created_at && cf.created_at <= cutoffAt) return; // 已结算，跳过
-        pcf += (cf.amount || 0);
-      } else {
-        // 跨日：计上次快照日（不含）至今天（含）的全部现金流
-        if (cf.date <= lastDate || cf.date > today) return;
-        pcf += (cf.amount || 0);
-      }
-    });
-    return pcf;
-  }
-
-  // 当天已记录 → 覆盖当天（一天内多次刷新/收盘后市值变动也能反映）
-  if (data.navHistory.length > 0 &&
-      data.navHistory[data.navHistory.length - 1].date === today) {
-    const lastNav = data.navHistory[data.navHistory.length - 1];
-    // 上次快照边界 = 该记录的 snapshot_at（若无则为空 → 全部同日现金流计入，与原逻辑一致）
-    var cutoff = lastNav.snapshot_at || '';
-    var periodCashFlow = periodCashFlowSince(lastNav.date, cutoff);
-    var baseAsset = lastNav.totalAsset + periodCashFlow;
-    if (baseAsset > 0) {
-      lastNav.nav = chainNav(lastNav.nav, lastNav.totalAsset, s.total, periodCashFlow);
-      lastNav.totalAsset = s.total;
-      lastNav.invested = invested;
-      lastNav.hk_rate = data.hkRate; // 记录当日所用汇率，供总资产今日涨跌正确拆分汇率影响
-      lastNav.snapshot_at = nowSec(); // 更新快照边界
-    }
-    // 阶段三：净值记录走 PUT /nav/:date 局部接口
-    // ⚠️ 只同步版本号，不整体覆盖 data——避免服务器旧持仓冲掉刚获取的新行情价格（2026-08-04 阻断修复）
-    try {
-      var _r = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: currentAccount, nav: lastNav.nav, totalAsset: s.total, invested: invested, hkRate: data.hkRate })
-      });
-      var _j = await _r.json().catch(function(){ return {}; });
-      if (_r.ok && _j.data) {
-        syncDataVersions(_j.data);
-        if (_j.data.navAttribution) data.navAttribution = _j.data.navAttribution;
-        if (_j.data.totalAssetSource) data.totalAssetSource = _j.data.totalAssetSource;
-      }
-    } catch(_e) { console.warn('recordNav PUT failed:', _e); }
-    return;
-  }
-
-  if (data.navHistory.length === 0) {
-    // 第一条 NAV 记录，净值设为 1.0
-    data.navHistory.push({
-      date: today,
-      nav: 1.0,
-      totalAsset: s.total,
-      invested: invested,
-      hk_rate: data.hkRate,
-      snapshot_at: nowSec()
-    });
-  } else {
-    // 修正后的净值计算：
-    // adjustedNav = lastNav * (currentTotal / (lastTotalAsset + periodCashFlow))
-    // 即：剔除「上次净值以来累计现金流」影响后的真实净值增长
-    const lastNav = data.navHistory[data.navHistory.length - 1];
-    // 自上次净值记录日（不含）到今天（含）的累计净现金流（新一天，无同日边界问题）
-    var periodCashFlow2 = 0;
-    if (data.cashFlows) {
-      data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) {
-        if (cf.date > lastNav.date && cf.date <= today) periodCashFlow2 += cf.amount;
-      });
-    }
-    var baseAsset2 = lastNav.totalAsset + periodCashFlow2;
-    if (baseAsset2 <= 0) return;
-    var nav = chainNav(lastNav.nav, lastNav.totalAsset, s.total, periodCashFlow2);
-    data.navHistory.push({
-      date: today,
-      nav: nav,
-      totalAsset: s.total,
-      invested: invested,
-      hk_rate: data.hkRate,
-      snapshot_at: nowSec()
-    });
-  }
-  // 阶段三：净值记录走 PUT /nav/:date 局部接口（只同步版本号，不整体覆盖 data，防冲掉新价格）
+  // 自动净值只提交意图，由服务端在账户锁内按首页资产基准计算；浏览器不写自算NAV。
   try {
-    var _r2 = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: currentAccount, nav: nav, totalAsset: s.total, invested: invested, hkRate: data.hkRate })
+    const response = await fetch(api('/api/nav/' + today + '?version=' + (dataVersion != null ? dataVersion : '')), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: currentAccount, calculationMode: 'system' })
+    });
+    const _j2 = await response.json().catch(function () { return {}; });
+    if (!response.ok) { showToast(_j2.error || '净值基准不完整，未保存'); return; }
+    if (_j2.data) {
+      syncDataVersions(_j2.data);
+      data.navHistory = _j2.data.navHistory;
+      data.performanceHistory = _j2.data.performanceHistory;
+      data.navReturnTotals = _j2.data.navReturnTotals;
+      // 只同步服务端确认的资产/现金标量，保留刚刷新的逐笔持仓报价。
+      ['cash', 'hkRate', 'totalAsset', 'authoritativeTotalAsset', 'authoritativePositionValue', 'authoritativeCash',
+        'authoritativeInvested', 'cashConfirmed', 'cashEstimatedDelta', 'cashIncludesEstimates', 'cashDataIncomplete',
+        'cashIncomeState', 'cashIncomePolicy'].forEach(function (key) {
+        if (Object.prototype.hasOwnProperty.call(_j2.data, key)) data[key] = _j2.data[key];
       });
-      var _j2 = await _r2.json().catch(function(){ return {}; });
-      if (_r2.ok && _j2.data) {
-        syncDataVersions(_j2.data);
-        if (_j2.data.navAttribution) data.navAttribution = _j2.data.navAttribution;
-        if (_j2.data.totalAssetSource) data.totalAssetSource = _j2.data.totalAssetSource;
-      }
-  } catch(_e2) { console.warn('recordNav PUT failed:', _e2); }
+      if (typeof TOTAL_ASSET !== 'undefined') TOTAL_ASSET = _j2.data.totalAsset;
+      if (_j2.data.navAttribution) data.navAttribution = _j2.data.navAttribution;
+      if (_j2.data.totalAssetSource) data.totalAssetSource = _j2.data.totalAssetSource;
+    }
+  } catch (error) { console.warn('recordNav PUT failed:', error); }
 }
 
 function renderReturnsStats() {
@@ -272,7 +184,8 @@ function renderReturnsStats() {
   var el = function(id) { return document.getElementById(id); };
   if (!el('ret-total-return')) return;
   
-  if (!data.navHistory || data.navHistory.length === 0) {
+  const displayNavs = getPerformanceNavHistory();
+  if (displayNavs.length === 0) {
     document.getElementById('ret-total-return').textContent = '¥0';
     document.getElementById('ret-total-return').style.color = '#999';
     document.getElementById('ret-total-return-pct').textContent = '无数据';
@@ -281,8 +194,8 @@ function renderReturnsStats() {
     document.getElementById('ret-days').textContent = '0';
     return;
   }
-  const first = data.navHistory[0];
-  const last = data.navHistory[data.navHistory.length - 1];
+  const first = displayNavs[0];
+  const last = displayNavs[displayNavs.length - 1];
   const initAsset = first.totalAsset;
   const curAsset = last.totalAsset;
 
@@ -290,7 +203,7 @@ function renderReturnsStats() {
   // 累计收益 = 当前总资产 - 初始资产 - 累计净入金
   var totalCashFlow = 0;
   if (data.cashFlows) {
-    data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) { totalCashFlow += cf.amount; });
+    data.cashFlows.filter(NavMath.isExternalTransfer).forEach(function (cf) { if (cf.date > first.date && cf.date <= last.date) totalCashFlow += cf.amount; });
   }
   // 调整后的初始资产：初始资产 + 累计现金流
   var adjustedInit = initAsset + totalCashFlow;
@@ -298,16 +211,16 @@ function renderReturnsStats() {
     ? curAsset - adjustedInit
     : curAsset - initAsset;
   // 调整后的收益率 = 最新净值 - 1（NAV 已通过 corrected formula 计算）
-  var totalReturnPct = (last.nav - 1) * 100;
+  var totalReturnPct = last.nav == null ? null : (last.nav - 1) * 100;
 
   var sign = totalReturn >= 0 ? '+' : '';
-  document.getElementById('ret-total-return').textContent = (totalReturn < 0 ? '-' : '') + fmt(Math.abs(totalReturn));
+  document.getElementById('ret-total-return').textContent = curAsset == null || initAsset == null ? '—' : (totalReturn < 0 ? '-' : '') + fmt(Math.abs(totalReturn));
   document.getElementById('ret-total-return').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
-  document.getElementById('ret-total-return-pct').textContent = sign + totalReturnPct.toFixed(2) + '%';
+  document.getElementById('ret-total-return-pct').textContent = totalReturnPct == null ? '—' : (totalReturnPct >= 0 ? '+' : '') + totalReturnPct.toFixed(2) + '%';
   document.getElementById('ret-total-return-pct').style.color = totalReturn >= 0 ? '#137333' : '#d93025';
 
   var navEl = document.getElementById('ret-nav');
-  navEl.textContent = Number(last.nav || 1).toFixed(4);
+  navEl.textContent = last.nav == null ? '—' : Number(last.nav).toFixed(4);
   navEl.style.color = last.nav >= 1 ? '#137333' : '#d93025';
   document.getElementById('ret-nav-date').textContent = last.date;
   document.getElementById('ret-days').textContent = data.navHistory.length;
@@ -402,12 +315,12 @@ async function renderNavVsIndexChart(canvasId, opts) {
   opts = opts || {};
   const period = opts.period || 0;
   const mode = opts.mode || '';
-  if (!data.navHistory || data.navHistory.length < 2) {
+  if (getPerformanceNavHistory().length < 2) {
     if (chartMap[canvasId]) { chartMap[canvasId].destroy(); chartMap[canvasId] = null; }
     return;
   }
 
-  let navData = data.navHistory;
+  let navData = getPerformanceNavHistory();
   if (mode) {
     const start = periodStart(mode);
     if (start) navData = navData.filter(function (d) { return d.date >= start; });
@@ -421,9 +334,9 @@ async function renderNavVsIndexChart(canvasId, opts) {
   // 每日全量显示（曲线细密真实），X 轴靠 maxTicksLimit:12 控制标签密度
   const labels = navData.map(function (d) { return d.date; });
   // 归一：首日净值 = 1.0
-  var navBaseVal = +(Number(navData[0].nav || 1).toFixed(4));
+  var navBaseVal = navData[0].nav == null ? null : +(Number(navData[0].nav).toFixed(4));
   var navVals = navData.map(function (d) {
-    return navBaseVal !== 0 ? +(Number(d.nav || 1) / navBaseVal).toFixed(4) : null;
+    return navBaseVal > 0 && d.nav != null ? +(Number(d.nav) / navBaseVal).toFixed(4) : null;
   });
 
   // 指数序列只使用本地快照；缺失时等待后台 index_recent 任务补齐，不在页面请求时访问外部源。

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-12",
+  "lastReviewed": "2026-10-17",
   "rules": [
     {
       "id": "ARBITRAGE-IDENTITY-001",
@@ -2782,6 +2782,34 @@
         }
       ],
       "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
+      "id": "HOLDINGS-NAV-BASIS-004",
+      "title": "首页资产基准必须贯穿净值写入续链与展示，缺历史资格或跨市场快照不得冒充收益",
+      "implementation": {
+        "file": "server/services/navAttribution.js",
+        "symbol": "buildNavPerformance"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-performance-basis.test.js",
+          "pattern": "无出入金时，净值日比率必须与首页同源"
+        },
+        {
+          "file": "server/test/nav-basis-write.test.js",
+          "pattern": "服务端须忽略客户端NAV及旧2.04基准"
+        },
+        {
+          "file": "server/test/earnings-asset-change.test.js",
+          "pattern": "缺价格不能用当前报价或旧快照补值"
+        },
+        {
+          "file": "server/test/nav-basis-write.test.js",
+          "pattern": "现金收益结算也必须复用首页净值投影"
+        }
+      ],
+      "owner": "持仓管理",
       "status": "verified"
     }
   ]

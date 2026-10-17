@@ -298,29 +298,42 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     const ledger=(await client.query('SELECT *,date::text FROM cash_flows WHERE account_id=$1',[input.account.id])).rows;
     const navs=(await client.query(`SELECT *,date::text FROM nav_history WHERE username=$1 AND account_name=$2
       AND date >= $3 ORDER BY date FOR UPDATE`,[username,accountName,anchor.date])).rows;
+    // 流水已在本事务更新，直接复用账户同源投影；不再独立按旧资产续算NAV。
+    const performance=await require('../db/accounts').loadAccountDataInSession(username,accountName,client);
+    const canonicalByDate=new Map(performance.performanceHistory.map(n=>[n.date,n]));
+    const navBasisPendingDates=[];
     let previous=null,navUpdated=0;
     for(const nav of navs) {
       if(nav.date>targetDate) break;
-      if(nav.is_locked || nav.snapshot_source==='imported') {previous=nav;continue;}
+      if(nav.is_locked || nav.snapshot_source==='imported' || nav.diagnostics?.manualNavOverride) {previous=nav;continue;}
       const amount=round(ledger.filter(f=>f.origin==='system' && f.date>anchor.date && f.date<=nav.date && NavMath.isEffectiveFlow(f))
         .reduce((sum,f)=>sum+Number(f.amount),0));
       const base=nav.diagnostics?.cashIncomeBaseAsset ?? Number(nav.total_asset);
       if(!Number.isFinite(base) || !previous) continue;
-      const total=round(base+amount);
-      const external=ledger.filter(f=>NavMath.isExternalTransfer(f)&&f.date>previous.date&&f.date<=nav.date).reduce((s,f)=>s+Number(f.amount),0);
-      const value=Math.round(NavMath.chainNav(Number(previous.nav),Number(previous.total_asset),total,external)*1000000)/1000000;
+      const canonical=canonicalByDate.get(nav.date);
+      const qualified=canonical?.basis && canonical.nav>0 && canonical.totalAsset!=null;
+      const total=round(qualified?canonical.totalAsset:base+amount);
+      const value=qualified?Math.round(canonical.nav*1000000)/1000000:Number(nav.nav);
+      if(!qualified) navBasisPendingDates.push(nav.date);
       if(!Number.isFinite(value) || value<=0) continue;
-      const diagnostics={...nav.diagnostics,cashIncomeBaseAsset:base,cashIncomeApplied:amount,cashIncomeVersion:VERSION,
-        cashIncomeIncludesEstimates:true,historicalValuation:'preserved_existing_asset_basis',brokerReconciled:false};
+      const diagnostics={...nav.diagnostics,cashIncomeBaseAsset:qualified?round(total-amount):base,cashIncomeApplied:amount,cashIncomeVersion:VERSION,
+        cashIncomeIncludesEstimates:true,historicalValuation:qualified?'homepage_asset_basis':'preserved_existing_asset_basis',
+        navBasisStatus:qualified?'complete':'missing_nav_basis',...(qualified?{homepageBasis:{...nav.diagnostics?.homepageBasis,...canonical.basis,
+          ...(nav.date===CoreDate.todayInZone('Asia/Shanghai')?{
+            positions:performance.positions.map(p=>({code:p.code,quantity:p.quantity,price:p.price,subtype:p.subtype})),
+            cash:performance.cash,hkRate:performance.hkRate}: {})}}:{}),brokerReconciled:false};
       if(Number(nav.total_asset)!==total || Math.abs(Number(nav.nav)-value)>0.00000001 || hash(nav.diagnostics)!==hash(diagnostics)) {
-        await client.query(`UPDATE nav_history SET total_asset=$4,nav=$5,calc_status='estimated',diagnostics=$6
-          WHERE username=$1 AND account_name=$2 AND date=$3`,[username,accountName,nav.date,total,value,diagnostics]);
+        await client.query(`UPDATE nav_history SET total_asset=$4,nav=$5,calc_status='estimated',diagnostics=$6,
+          snapshot_at=CASE WHEN $7::boolean THEN $8 ELSE snapshot_at END
+          WHERE username=$1 AND account_name=$2 AND date=$3`,[username,accountName,nav.date,total,value,diagnostics,
+          Boolean(qualified&&nav.date===CoreDate.todayInZone('Asia/Shanghai')),new Date().toISOString()]);
         navUpdated++;
       }
       previous={...nav,total_asset:total,nav:value};
     }
     state.navUpdated=navUpdated;
-    state.historicalNavBasis='existing_asset_values_plus_cash_income';
+    state.historicalNavBasis='homepage_projection_when_qualified';
+    state.navBasisPendingDates=navBasisPendingDates;
     // 旧脏日期不清除：本阶段只应用现金收益，历史行情/持仓待办仍由既有重放处理。
     await client.query('UPDATE accounts SET cash_income_state=$2 WHERE id=$1',[input.account.id,state]);
     if(navUpdated) await client.query(`UPDATE account_data SET nav_version=COALESCE(nav_version,0)+1,

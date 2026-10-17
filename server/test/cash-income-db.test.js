@@ -72,6 +72,7 @@ async function cleanup() {
     assert.strictEqual(saved.diagnostics.cashIncomeVersion,'cash-income-v1');
     await settleCashIncome(U,A,{targetDate:'2026-09-04'});
     assert.strictEqual(Number((await pool.query("SELECT total_asset FROM nav_history WHERE username=$1 AND date='2026-09-03'",[U])).rows[0].total_asset),1011);
+    assert.strictEqual(Number((await pool.query("SELECT nav FROM nav_history WHERE username=$1 AND date='2026-09-03'",[U])).rows[0].nav),1.0001,'缺首页历史基准时现金收益不得用旧资产伪造新NAV');
     const after=await loadAccountData(U,A);
     assert.strictEqual(after.authoritativeInvested,1010);
     const retryIncome=await settleCashIncome(U,A,{targetDate:'2026-09-04'});

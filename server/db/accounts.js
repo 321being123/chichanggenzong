@@ -2,7 +2,7 @@
 const { pool, crypto, fs, path, DATA_DIR, DEFAULT_FEE_SETTINGS } = require('./connection');
 const { uid, round, bulkInsert, hashPwd, safeEqual, verifyPwd, hashString } = require('./util');
 const { loadUsers } = require('./users');
-const { computeNavAttribution } = require('../services/navAttribution');
+const { computeNavAttribution, computeNavHistoryTotals, buildNavPerformance } = require('../services/navAttribution');
 const classifyCode = require('../../public/js/code-classify');
 const NavMath = require('../../public/shared/nav-math');
 const CoreDate = require('../../public/shared/core-date');
@@ -174,9 +174,17 @@ async function loadAccountDataInSession(username, accountName, client) {
     const attributionTotal = result.authoritativeTotalAsset != null
       ? result.authoritativeTotalAsset
       : systemTotalAsset;
-    result.navAttribution = await computeNavAttribution(username, accountName, result, attributionTotal);
+    result.navAttribution = await computeNavAttribution(username, accountName, result, attributionTotal, client.query.bind(client));
   } catch (e) {
     result.navAttribution = { complete: false, reason: 'attribution_unavailable' };
+  }
+  try {
+    result.navReturnTotals = await computeNavHistoryTotals(username, accountName, result, client.query.bind(client));
+    result.performanceHistory = await buildNavPerformance(result, result.navReturnTotals);
+  } catch (e) {
+    result.navReturnTotals = {};
+    result.performanceHistory = result.navHistory.map(n => ({ ...n, nav: null, totalAsset: null,
+      dayChange: null, basisStatus: 'nav_basis_unavailable' }));
   }
   return result;
 }
@@ -539,7 +547,14 @@ async function loadDailyPrices(username, accountName, date) {
 async function upsertNav(username, accountName, rec, fromDate = null, expectedVersion = null, bumpVersion = false) {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    await client.query(rec.calculationMode === 'system' ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN');
+    if (rec.calculationMode === 'system') {
+      if (rec.date > CoreDate.todayInZone('Asia/Shanghai')) {
+        const error = new Error('自动净值目标日不能晚于上海当日'); error.status = 400; throw error;
+      }
+      // 与交易账本相同的账户锁顺序，校验版本后在同一事务重新读取输入。
+      await client.query('SELECT id FROM accounts WHERE username=$1 AND account_name=$2 FOR UPDATE', [username, accountName]);
+    }
     // 快照边界由服务端统一生成，客户端时间只作兼容输入，避免同日现金流边界漂移。
     const serverSnapshotAt = rec && rec.snapshotSource === 'imported' && rec.snapshot_at
       ? rec.snapshot_at
@@ -589,6 +604,32 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
       'SELECT id,cash_income_policy FROM accounts WHERE username=$1 AND account_name=$2', [username, accountName]
     );
     const accountId = aRows[0] ? aRows[0].id : null;
+    let homepageBasis = null;
+    let canonicalPerformance = null;
+    if (rec.calculationMode === 'system') {
+      const input = await loadAccountDataInSession(username, accountName, client);
+      const candidate = { ...rec, snapshot_at: serverSnapshotAt,
+        diagnostics: { homepageBasis: { initial: input.navHistory.length === 0 } } };
+      input.navHistory = input.navHistory.filter(n => n.date !== rec.date).concat(candidate);
+      const totals = await computeNavHistoryTotals(username, accountName, input, client.query.bind(client));
+      const performance = await buildNavPerformance(input, totals, { requireLive: false });
+      canonicalPerformance = performance;
+      const calculated = performance.find(n => n.date === rec.date);
+      if (!(calculated?.nav > 0) || calculated.totalAsset == null) {
+        const error = new Error('首页资产基准不完整，未写入净值：' + (calculated?.basisStatus || 'missing_nav_basis'));
+        error.code = 'NAV_BASIS_INCOMPLETE'; error.status = 409;
+        throw error;
+      }
+      rec = { ...rec, nav: calculated.nav, totalAsset: calculated.totalAsset,
+        invested: NavMath.investedAt(input.navHistory, input.cashFlows, input.cashBase, rec.date),
+        hkRate: rec.date === CoreDate.todayInZone('Asia/Shanghai') ? input.hkRate : rec.hkRate };
+      homepageBasis = calculated.basis;
+      if (homepageBasis && rec.date === CoreDate.todayInZone('Asia/Shanghai')) {
+        homepageBasis.positions = input.positions.map(p => ({ code: p.code, quantity: p.quantity, price: p.price, subtype: p.subtype }));
+        homepageBasis.cash = input.cash;
+        homepageBasis.hkRate = input.hkRate;
+      }
+    }
     // 修改记录日期（2026-08-04 阻断修复）：先删除旧日期，防止"改日期后新旧两条并存"
     if (fromDate && fromDate !== rec.date) {
       await client.query(
@@ -601,6 +642,12 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
       'ON CONFLICT (username, account_name, date) DO UPDATE SET nav = EXCLUDED.nav, total_asset = EXCLUDED.total_asset, invested = EXCLUDED.invested, snapshot_at = COALESCE(EXCLUDED.snapshot_at, nav_history.snapshot_at), hk_rate = EXCLUDED.hk_rate',
       [username, accountName, accountId, rec.date, round(rec.nav, 6), round(rec.totalAsset, 2), (rec.invested == null ? null : round(rec.invested, 2)), serverSnapshotAt, (rec.hkRate != null && rec.hkRate > 0) ? round(rec.hkRate, 6) : null]
     );
+    if (homepageBasis) await client.query(`UPDATE nav_history SET diagnostics=(COALESCE(diagnostics,'{}'::jsonb)-'manualNavOverride')||$4::jsonb
+      WHERE username=$1 AND account_name=$2 AND date=$3`,
+    [username, accountName, rec.date, JSON.stringify({ homepageBasis })]);
+    if (rec.calculationMode === 'manual') await client.query(`UPDATE nav_history SET
+      diagnostics=(COALESCE(diagnostics,'{}'::jsonb)-'homepageBasis')||'{"manualNavOverride":true}'::jsonb
+      WHERE username=$1 AND account_name=$2 AND date=$3`, [username, accountName, rec.date]);
     if(aRows[0]?.cash_income_policy?.enabled && !isImportWrite) {
       const input=await require('../services/accountCash').loadCashInputs(username,accountName,client);
       const anchor=NavMath.selectCashAnchor(input.navHistory,rec.date);
@@ -628,8 +675,13 @@ async function upsertNav(username, accountName, rec, fromDate = null, expectedVe
       [username, accountName]
     );
     await client.query('COMMIT');
+    if (canonicalPerformance) return { performanceHistory: canonicalPerformance };
   } catch (e) {
     await client.query('ROLLBACK');
+    if (rec.calculationMode === 'system' && ['40001', '40P01'].includes(e.code)) {
+      e.status = 409;
+      e.message = '净值输入已并发变化，请刷新后重试';
+    }
     throw e;
   } finally {
     client.release();
@@ -922,6 +974,7 @@ async function renameAccountData(username, oldName, newName) {
 
 module.exports = {
   loadAccountData,
+  loadAccountDataInSession,
   loadAccountSummary,
   saveAccountData,
   buildInstrumentIdMap,

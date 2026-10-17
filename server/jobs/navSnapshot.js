@@ -212,6 +212,19 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
 
   let affected = 0;
   const incompleteDates = [];
+  let currentPerformance = data.performanceHistory;
+  async function saveCanonical(rec) {
+    try {
+      const saved = await upsertNav(username, accountName, { ...rec, calculationMode: 'system' });
+      if (saved?.performanceHistory) currentPerformance = saved.performanceHistory;
+      return true;
+    }
+    catch (error) {
+      if (error.code !== 'NAV_BASIS_INCOMPLETE') throw error;
+      incompleteDates.push({ date: rec.date, missingCodes: ['首页净值基准'], reason: error.message });
+      return false;
+    }
+  }
   const usedPriceDates = {};
   const stateCache = new Map();
   async function stateFor(market, date) {
@@ -253,6 +266,10 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
 
     const existing = navByDate.get(d);
     if (existing) {
+      const projected = currentPerformance?.find(n => n.date === d);
+      if (projected && projected.nav == null) {
+        incompleteDates.push({ date: d, missingCodes: ['首页净值基准'], reason: projected.basisStatus });
+      }
       // 已有记录：保留不动，仅作续链锚点
       prev = { date: d, nav: existing.nav, totalAsset: (existing.totalAsset != null ? existing.totalAsset : (prev ? prev.totalAsset : 0)) };
       continue;
@@ -294,15 +311,18 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
     usedPriceDates[d] = usedDateByCode;
 
     if (!prev) {
-      await upsertNav(username, accountName, { date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
+      if (!await saveCanonical({ date: d, nav: 1.0, totalAsset: totalAsset, invested: invested, hkRate: hkRate })) continue;
       prev = { date: d, nav: 1.0, totalAsset: totalAsset }; affected++; continue;
     }
     let pcf = 0;
     cfs.forEach(function (f) { if (isExternalTransfer(f) && f.date > prev.date && f.date <= d) pcf += (f.amount || 0); });
     const baseAsset = prev.totalAsset + pcf;
-    if (baseAsset <= 0) continue; // 无法续链，跳过
+    if (baseAsset <= 0) {
+      incompleteDates.push({ date: d, missingCodes: ['有效续链资产基准'] });
+      continue;
+    }
     const nav = chainNav(prev.nav, prev.totalAsset, totalAsset, pcf);
-    await upsertNav(username, accountName, { date: d, nav: nav, totalAsset: totalAsset, invested: invested, hkRate: hkRate });
+    if (!await saveCanonical({ date: d, nav: nav, totalAsset: totalAsset, invested: invested, hkRate: hkRate })) continue;
     prev = { date: d, nav: nav, totalAsset: totalAsset }; affected++;
   }
   return {

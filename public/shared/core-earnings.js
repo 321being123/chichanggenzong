@@ -197,39 +197,46 @@ function parseNumericCellF(v) {
 // 投入本金 investedAt() 已收口到 shared/nav-math.js（前后端共用），此处不再重复定义
 
 // 把真实数据(navHistory + cashFlows + cashBase)转换为收益 tab 渲染器吃的标准行结构
+function getPerformanceNavHistory() {
+  return Array.isArray(data.performanceHistory) ? data.performanceHistory : (data.navHistory || []);
+}
 function buildRealReturnsSeries() {
-  if (!data.navHistory || data.navHistory.length === 0) return [];
-  const navs = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+  const displayNavs = getPerformanceNavHistory();
+  if (!displayNavs.length) return [];
+  const navs = displayNavs.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
   const firstDate = navs[0].date;
   const cf = (data.cashFlows || []).filter(NavMath.isExternalTransfer);
 
   let peak = -Infinity;
   let maxDD = 0;
+  let drawdownComplete = true;
   const rows = navs.map(function (n) {
     // invested 优先取 navHistory 存储值（导入数据或 recordNav 写入的累计值），
     // 仅当存储值为 null 时才走 fallback（cashBase + 现金流累加）
     const invested = investedAt(data.navHistory, data.cashFlows, data.cashBase, n.date);
     const nav = n.nav;
-    const totalAsset = (n.totalAsset != null) ? n.totalAsset : 0;
-    const totalReturn = nav - 1;
+    const totalAsset = n.totalAsset;
+    const totalReturn = nav == null ? null : nav - 1;
     const days = daysBetweenDates(firstDate, n.date);
-    const annualized = days > 0 ? Math.pow(nav, 365 / days) - 1 : 0;
-    if (nav > peak) peak = nav;
-    const curDD = (nav - peak) / peak;
-    if (curDD < maxDD) maxDD = curDD;
+    const annualized = nav == null ? null : (days > 0 ? Math.pow(nav, 365 / days) - 1 : 0);
+    if (nav == null) drawdownComplete = false;
+    if (nav != null && nav > peak) peak = nav;
+    const curDD = drawdownComplete && peak > 0 ? (nav - peak) / peak : null;
+    if (curDD != null && curDD < maxDD) maxDD = curDD;
     let nc = 0;
     cf.forEach(function (c) { if (c.date === n.date) nc += (c.amount || 0); });
     return {
       date: n.date,
+      isLive: n.isLive === true,
       totalMarketValue: totalAsset,
       totalInvested: invested,
       nav: nav,
       totalReturn: totalReturn,
-      capitalGain: invested > 0 ? (totalAsset - invested) / invested : 0,
+      capitalGain: totalAsset == null ? null : invested > 0 ? (totalAsset - invested) / invested : 0,
       yearReturn: 0,
       annualizedReturn: annualized,
       currentDrawdown: curDD,
-      maxDrawdown: maxDD,
+      maxDrawdown: drawdownComplete ? maxDD : null,
       newCapital: nc,
       weekChange: 0
     };
@@ -253,37 +260,49 @@ function buildRealReturnsSeries() {
     r.yearReturn = (base != null && base > 0 && cur != null) ? cur / base - 1 : null;
   });
 
-  // 本周涨跌：基准 = 相对该记录日期的「上周五收盘净值」
-  // 周五收盘刷新后，最新一条即「上周五→本周五」完整周涨跌；
-  // 周内(如周二)最新一条即「上周五→今日」本周至今涨跌（盘中刷新即按交易时间算）
-  function navAtOrBefore(targetDate) {
+  // 日/周资产涨跌复用首页的总资产口径；净值及年度收益仍保留剔除出入金的净值口径。
+  const totals = Object.assign({}, data.navReturnTotals || {});
+  if (Array.isArray(data.performanceHistory)) navs.forEach(function (n) { totals[n.date] = n.totalAsset; });
+  navs.forEach(function (n) {
+    if (n.snapshotSource === 'imported' && n.totalAsset != null) totals[n.date] = Number(n.totalAsset);
+  });
+  const live = data.navAttribution;
+  const liveValid = live && live.complete === true && live.currentDate === todayCN() &&
+    live.totalChange != null && Number.isFinite(Number(live.totalChange)) && Number(live.previousTotalAsset) > 0;
+  totals[todayCN()] = null;
+  if (liveValid) {
+    totals[live.previousDate] = Number(live.previousTotalAsset);
+    totals[live.currentDate] = Number(live.previousTotalAsset) + Number(live.totalChange);
+  }
+  function totalAtOrBefore(targetDate) {
     let best = null;
     for (let i = 0; i < navs.length; i++) {
-      if (navs[i].date <= targetDate) best = navs[i].nav;
+      if (navs[i].date <= targetDate) best = totals[navs[i].date];
       else break;
     }
     return best;
   }
   rows.forEach(function (r) {
     const lf = lastFridayOf(r.date);
-    const base = navAtOrBefore(lf);
-    r.weekChange = (base != null && base !== 0) ? (r.nav - base) / base : 0;
+    const base = totalAtOrBefore(lf);
+    const total = totals[r.date];
+    r.weekChange = base > 0 && total != null ? (total - base) / base : null;
   });
 
-  // 今日涨跌判定规则：
-  // ① 首行无前一日 → null（"-"）
-  // ② 与上一记录间隔>4天（导入的历史快照往往不连续）→ null（"-"）
-  // ③ 连续的周末（市场休市）→ 0%
-  // ④ 其余（连续交易日）→ 按「当日总资产 vs 前一交易日总资产」计算真实涨跌
+  // 当日严格复用首页已核验归因；休市的汇率/现金变化不强制清零。
   rows.forEach(function (r, i) {
+    if (r.date === todayCN()) {
+      r.dayChange = liveValid ? Number(live.totalChange) / Number(live.previousTotalAsset) : null;
+      return;
+    }
+    if (Array.isArray(data.performanceHistory)) { r.dayChange = navs[i].dayChange; return; }
     if (i === 0) { r.dayChange = null; return; }
-    const dt = new Date(r.date + 'T00:00:00');
-    const isWeekend = (dt.getDay() === 0 || dt.getDay() === 6);
     const prev = rows[i - 1];
     const gap = daysBetweenDates(prev.date, r.date);
     if (gap == null || gap > 4) { r.dayChange = null; return; }
-    if (isWeekend) { r.dayChange = 0; return; }
-    r.dayChange = (prev.totalMarketValue > 0) ? (r.totalMarketValue - prev.totalMarketValue) / prev.totalMarketValue : 0;
+    const base = totals[prev.date];
+    const total = totals[r.date];
+    r.dayChange = base > 0 && total != null ? (total - base) / base : null;
   });
 
   return rows;
@@ -325,36 +344,6 @@ function applyHistoryRecords(parsed, mode) {
     });
   }
   data.navHistory.sort(function (a, b) { return a.date.localeCompare(b.date); });
-}
-
-// 导入后自动重算：以「导入的最后一条」为锚点，其后的净值按链式公式接续计算
-// nav_t = nav_{t-1} * 当日总市值 / (前一日总市值 + 当日现金流)  —— 剔除入金影响，与 recordNav 同源
-// 返回锚点日期（导入最后一条），供提交时把重算后的后续记录一并持久化（2026-08-04 修复）
-function recalcNavAfterImport(parsed) {
-  if (!data.navHistory || data.navHistory.length === 0) return null;
-  const cf = (data.cashFlows || []).filter(NavMath.isExternalTransfer);
-  let lastImportDate = null;
-  (parsed || []).forEach(function (p) { if (!lastImportDate || p.date > lastImportDate) lastImportDate = p.date; });
-  if (!lastImportDate) return null;
-  const sorted = data.navHistory.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
-  let anchor = null;
-  for (let i = 0; i < sorted.length; i++) {
-    if (sorted[i].date <= lastImportDate && sorted[i].nav != null) anchor = sorted[i];
-  }
-  if (!anchor) return null;
-  let prevNav = anchor.nav;
-  let prevTotal = (anchor.totalAsset != null) ? anchor.totalAsset : 0;
-  for (let i = 0; i < sorted.length; i++) {
-    const n = sorted[i];
-    if (n.date <= anchor.date) continue; // 锚点及之前保持导入值不动
-    const cfToday = cf.filter(function (c) { return c.date === n.date; }).reduce(function (s, c) { return s + (c.amount || 0); }, 0);
-    const base = prevTotal + cfToday;
-    if (base > 0 && n.totalAsset != null) n.nav = chainNav(prevNav, prevTotal, n.totalAsset, cfToday);
-    prevNav = (n.nav != null) ? n.nav : prevNav;
-    prevTotal = (n.totalAsset != null) ? n.totalAsset : prevTotal;
-  }
-  data.navHistory = sorted;
-  return lastImportDate;
 }
 
 // 冲突确认弹框（返回 Promise：'import' 导入覆盖 / 'online' 线上覆盖）

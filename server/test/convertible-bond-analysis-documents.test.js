@@ -54,6 +54,23 @@ assert parse_notice(notice.replace('于2024年5月27日出具了','于2023年5�
 assert parse_notice(notice.replace('前次评级结果为AA-','前次评级结果为AA'))['rating_result_notice']['previous_ratings']==[]
 assert parse_notice(notice.replace('前次债项评级：“AA-”','前次债项评级：“AA+”'))['rating_result_notice']['previous_ratings']==[]
 assert parse_notice(notice.replace('评级机构为远东资信','评级机构为另一机构'))['rating_result_notice']['previous_ratings']==[]
+# BOND-RATING-NOTICE-LABEL-027: 贵燃2023官方原文，债券标签、本次提示段与主体/前次隔离。
+gui_notice='''证券代码：600903 证券简称：贵州燃气 公告编号：2023-038
+债券代码：110084 债券简称：贵燃转债
+贵州燃气集团股份有限公司 关于“贵燃转债”跟踪信用评级结果的公告
+重要内容提示：前次评级结果：主体评级“AAA”，评级展望“负面”；“贵燃转债”评级“AAA”。
+本次评级结果：主体评级“AA+”，评级展望“稳定”；“贵燃转债”评级“AA”。
+根据规定，公司委托信用评级机构中诚信国际信用评级有限责任公司（以下简称“中诚信国际”）进行跟踪评级。
+中诚信国际于2023年6月14日出具了《贵州燃气集团股份有限公司2023年度跟踪评级报告》，本次评级结果较前次没有变化。'''
+parse_gui=lambda text,code='110084.SH',issuer='贵州燃气集团股份有限公司': rating.parse_rating_result_notice([text],'贵燃转债',code,issuer,'2023-06-16')
+gui=parse_gui(gui_notice)
+assert (gui['rating'],gui['rating_outlook'],gui['rating_date'])==('AA','稳定','2023-06-14')
+assert gui['rating_com_name']=='中诚信国际信用评级有限责任公司'
+for text,code,issuer in [(gui_notice,'110085.SH','贵州燃气集团股份有限公司'),(gui_notice,'110084.SH','其他股份有限公司'),(gui_notice.replace('债券简称：贵燃转债','债券简称：其他转债'),'110084.SH','贵州燃气集团股份有限公司'),(gui_notice.replace('债券代码：110084','债券代码：110084 转债代码：110085'),'110084.SH','贵州燃气集团股份有限公司')]:
+    try: parse_gui(text,code,issuer); assert False
+    except ValueError: pass
+assert parse_gui(gui_notice.replace('“贵燃转债”评级“AA”','“其他转债”评级“AA”'))['rating'] is None
+assert parse_gui(gui_notice.replace('本次评级结果：','本次债项评级：“A+”。本次评级结果：'))['rating'] is None
 rating.read_document=lambda *a: (['维持“国泰转债”信用等级为AA+，评级展望为稳定。本次评级时间 国泰转债 AA+/稳定 2026/06/23'],{'document_hash':'hash'})
 result=rating.extract_rating('url','2026-06-25','002091.SZ','国泰转债')
 assert result['rating']=='AA+' and result['rating_outlook']=='稳定' and result['rating_date']=='2026-06-23'

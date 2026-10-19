@@ -241,19 +241,24 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
     head = text[:800]
     if not re.search(r'关于[^。]{0,100}评级结果(?:的)?公告', head):
         return None
-    codes = re.findall(r'转债代码[:：]?(\d{6})(?!\d)', head)
+    codes = re.findall(r'(?:转债|债券)代码[:：]?(\d{6})(?!\d)', head)
     if not bond_code or codes != [bond_code.split('.')[0]] or not issuer_name or issuer_name not in head or not bond_name:
         raise ValueError('评级结果公告未唯一匹配目标发行人及转债代码')
-    if not re.search(r'转债简称[:：]?' + re.escape(bond_name) + r'(?![\u4e00-\u9fff]*转债)', head):
+    if not re.search(r'(?:转债|债券)简称[:：]?' + re.escape(bond_name) + r'(?![\u4e00-\u9fff]*转债)', head):
         raise ValueError('评级结果公告未匹配目标转债简称')
     agencies = list(re.finditer(r'委托(?:信用)?评级机构([^，。；;()]{2,60}?(?:股份有限公司|有限责任公司|有限公司))(?:\(以下简称[“"]?([^”"()]+)[”"]?\))?', text))
     agency = agencies[0].group(1) if len({m.group(1) for m in agencies}) == 1 else None
     agency_names = {agency} | {m.group(2) for m in agencies if m.group(2)}
     grade_pattern = r'[“"]?([A-D]{1,3}[+-]?)(?![A-D+-])'
     current = list(re.finditer(r'本次债项评级[:：]' + grade_pattern, text))
-    named = list(re.finditer(re.escape(bond_name) + r'[”"]?(?:的)?评级结果为[:：]?' + grade_pattern, text))
+    named = list(re.finditer(re.escape(bond_name) + r'[”"]?(?:的)?(?:信用)?评级结果为[:：]?' + grade_pattern, text))
     named = [m for m in named if not previous_rating_context(text, m.start())]
     conclusions = [(m.group(1), m.group(0)) for m in current + named]
+    # 官方“本次评级结果”提示段同时包含主体与债项，只取明确目标债名的等级。
+    summary = re.search(r'本次评级结果[:：]([^。]+。)', text)
+    summary_block = summary.group(1) if summary else ''
+    summary_grades = list(re.finditer(re.escape(bond_name) + r'[”"]?(?:的)?(?:信用)?评级(?:结果为)?[:：]?' + grade_pattern, summary_block))
+    conclusions.extend((m.group(1), m.group(0)) for m in summary_grades)
     conflicts = [{'rating': value, 'evidence': quote} for value, quote in conclusions] if len({v for v, _ in conclusions}) > 1 else []
     references = []
     for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日出具了《([^》]+评级报告)》(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?', text):
@@ -263,8 +268,8 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
         references.append({'title': m.group(4), 'number': m.group(5), 'issued_at': actual, 'evidence': m.group(0)})
     unique = {(r['title'], r['issued_at']): r for r in references}
     reference = next(iter(unique.values())) if len(unique) == 1 else None
-    current_block = text.split('本次债项评级', 1)[-1].split('根据', 1)[0] if current else ''
-    outlooks = list(re.finditer(r'评级展望[:：][“"]?(稳定|正面|负面|发展中|观察)', current_block))
+    current_block = text.split('本次债项评级', 1)[-1].split('根据', 1)[0] if current else summary_block if summary_grades else ''
+    outlooks = list(re.finditer(r'评级展望[:：]?[“"]?(稳定|正面|负面|发展中|观察)', current_block))
     outlook = outlooks[0] if len({m.group(1) for m in outlooks}) == 1 else None
     if reference and announcement_date and reference['issued_at'] > announcement_date:
         raise ValueError('评级原文日期晚于公告日期，保留原事实')

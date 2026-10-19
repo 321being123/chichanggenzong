@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-17",
+  "lastReviewed": "2026-10-19",
   "rules": [
     {
       "id": "ARBITRAGE-IDENTITY-001",
@@ -2811,6 +2811,22 @@
       ],
       "owner": "持仓管理",
       "status": "verified"
+    },
+    {
+      "id": "BOND-RATING-NOTICE-LABEL-027",
+      "title": "评级公告兼容债券代码简称标签，本次提示段仅取目标债项并拒绝冲突",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "parse_rating_result_notice"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-NOTICE-LABEL-027"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     },
     {
       "id": "JOB-DUE-FAIRNESS-001",

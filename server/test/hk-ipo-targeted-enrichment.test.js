@@ -119,6 +119,7 @@ function assertContinuousParameters(sql, params) {
       if (name === '../db/connection') return { pool: { query: async sql => ({ rows: sql.includes('SELECT security_code FROM') ? [{ security_code: '01256.HK' }] : [] }) } };
       if (name === '../services/hkexIpo') return {
         upsertHkIpoFacts: async () => ({ ok: true, rows: 1, events: 0 }),
+        syncStoredHkListings: async options => {assert.strictEqual(options.asOfDate,'2020-01-06');assert.deepStrictEqual(Array.from(options.targetCodes),['01256.HK']);return {ok:true,rows:0};},
         syncHkexHistoricalReports: captureWindow('historical'),
         syncHkexNonPublicListings: captureWindow('nonpublic'),
         syncHkexListingStatusNotices: captureWindow('status'),

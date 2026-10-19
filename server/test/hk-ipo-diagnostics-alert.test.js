@@ -86,3 +86,18 @@ assert.strictEqual(bondEvening.length, 1, '17:30 已尝试但覆盖不完整时�
 assert.strictEqual(bondEvening[0].scopeKey, 'bond_listing_liquidity:CN:2026-09-22');
 
 console.log('OK hk-ipo-diagnostics-alert: 动态数据集与精确来源告警隔离契约通过');
+
+(async()=>{
+  // HK-POSTCLOSE-RECOVERY-001：旧core槽实际执行postclose，只在原日事实分区确实通过时恢复。
+  const {verifySlotRecoveryEvidence}=require('../services/jobRecoveryEvidence');
+  const original={slot_id:55,job_code:'hk_ipo_postclose',business_date:'2026-10-13',status:'succeeded',request_payload:{mode:'core'}};
+  let result={ok:true,mode:'postclose',failedDatasets:[]},quality='passed',present=true;
+  const query=async(sql,params)=>sql.includes('FROM job_runs')?{rows:[{id:56,slot_id:55,status:'done',result_json:result}]}:
+    {rows:present?[{dataset_code:'hk_ipo_facts',scope_key:'HK',status:'published',is_stale:false,diagnostics:{quality_status:quality,query_status:'success'}}]:[]};
+  assert.strictEqual((await verifySlotRecoveryEvidence(original,query)).recovered,true);
+  quality='failed';assert.strictEqual((await verifySlotRecoveryEvidence(original,query)).recovered,false);
+  quality=undefined;assert.strictEqual((await verifySlotRecoveryEvidence(original,query)).recovered,false);
+  quality='passed';present=false;assert.strictEqual((await verifySlotRecoveryEvidence(original,query)).recovered,false);
+  present=true;result={...result,mode:'enrichment'};assert.strictEqual((await verifySlotRecoveryEvidence(original,query)).recovered,false);
+  console.log('HK-POSTCLOSE-RECOVERY-001 passed');
+})().catch(error=>{console.error(error);process.exitCode=1;});

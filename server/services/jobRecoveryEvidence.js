@@ -44,7 +44,10 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   if (summary.continuationRequired === true || pendingStages.length || failedDatasets.length) {
     return { recovered: false, reason: 'run_stages_incomplete', evidence: { slot, run, failedDatasets, pendingStages, continuationRequired: summary.continuationRequired === true } };
   }
-  const requestedMode = String(slot.request_payload?.mode || (slot.request_payload?.targetCodes?.length ? 'targeted' : definition.mode || 'core'));
+  const rawRequestedMode = String(slot.request_payload?.mode || (slot.request_payload?.targetCodes?.length ? 'targeted' : definition.mode || 'core'));
+  // 旧HK盘后槽保存core，现役Runner一直执行postclose；兼容时额外核验原日事实分区。
+  const legacyHkPostclose=rawRequestedMode==='core'&&slot.job_code==='hk_ipo_postclose';
+  const requestedMode=legacyHkPostclose?'postclose':rawRequestedMode;
   if (summary.mode && String(summary.mode) !== requestedMode) return { recovered: false, reason: 'run_mode_mismatch', evidence: { slot, run } };
   const phase = definition.datasetPublicationByMode?.[requestedMode];
   const stageVerified = stageCompletionEvidence(definition, summary, slot.request_payload || {});
@@ -54,9 +57,16 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   const { expectedDataDate } = require('./jobScheduleSlots');
   const { resolveDatasetScope } = require('./datasetPartitionRegistry');
   const businessDate = businessDateText(slot.business_date);
+  if(slot.job_code==='nav_snapshot'&&requestedMode==='core'&&summary.requestedRange) {
+    const expectedFrom=slot.request_payload?.fromDate||businessDate;
+    const expectedThrough=slot.request_payload?.throughDate||businessDate;
+    if(expectedThrough!==businessDate||summary.requestedRange.fromDate!==expectedFrom||summary.requestedRange.throughDate!==expectedThrough) {
+      return {recovered:false,reason:'nav_requested_range_mismatch',evidence:{slot,run}};
+    }
+  }
   const partitionKey = expectedDataDate(slot.job_code, businessDate) || businessDate;
   let datasetEvidence = [];
-  if ((definition.strictDatasetPublication||phase?.requireStageComplete) && datasets.length && partitionKey) {
+  if ((definition.strictDatasetPublication||phase?.requireStageComplete||legacyHkPostclose) && datasets.length && partitionKey) {
     const { rows } = await query(
       `SELECT dataset_code,scope_key,status,is_stale,diagnostics
          FROM ops.dataset_partitions
@@ -70,7 +80,7 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
     });
     const allPublished = datasetEvidence.every(row => {
       const diagnostics = row.diagnostics && typeof row.diagnostics === 'object' ? row.diagnostics : {};
-      const qualityOk = ['account_cash_income','repo_daily_rates','stock_cash_dividend_facts'].includes(row.dataset_code)
+      const qualityOk = legacyHkPostclose||['account_cash_income','repo_daily_rates','stock_cash_dividend_facts'].includes(row.dataset_code)
         ? diagnostics.quality_status==='passed':!diagnostics.quality_status || diagnostics.quality_status === 'passed';
       const queryOk = !diagnostics.query_status || ['success', 'passed', 'verified'].includes(diagnostics.query_status);
       return row.status === 'published' && !row.is_stale && qualityOk && queryOk;

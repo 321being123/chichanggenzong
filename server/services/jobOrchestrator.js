@@ -647,6 +647,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
     ...(claimed.job_code==='nav_snapshot'&&claimed.request_payload?.mode==='cash_income'
       ? {username:claimed.request_payload.username,accountName:claimed.request_payload.accountName,enabled:claimed.request_payload.enabled===true}:{}),
+    ...(claimed.job_code==='nav_snapshot'&&(!claimed.request_payload?.mode||claimed.request_payload.mode==='core')
+      ? {fromDate:claimed.request_payload?.fromDate,throughDate:claimed.request_payload?.throughDate}:{}),
     failedDatasets: claimed.result_summary && Array.isArray(claimed.result_summary.failedDatasets)
       ? claimed.result_summary.failedDatasets : [],
     externalCallCount: 0,

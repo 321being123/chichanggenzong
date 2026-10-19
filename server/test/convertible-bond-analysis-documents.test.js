@@ -66,6 +66,11 @@ parse_gui=lambda text,code='110084.SH',issuer='贵州燃气集团股份有限公
 gui=parse_gui(gui_notice)
 assert (gui['rating'],gui['rating_outlook'],gui['rating_date'])==('AA','稳定','2023-06-14')
 assert gui['rating_com_name']=='中诚信国际信用评级有限责任公司'
+# BOND-RATING-NOTICE-CANDIDATES-028：简称在前、代码在后是独立表头字段，不能误当成更长债名。
+reversed_header=gui_notice.replace('债券代码：110084 债券简称：贵燃转债','转债简称：贵燃转债 转债代码：110084')
+assert parse_gui(reversed_header)['rating']=='AA'
+try: parse_gui(reversed_header.replace('转债简称：贵燃转债','转债简称：贵燃转债2')); assert False
+except ValueError: pass
 for text,code,issuer in [(gui_notice,'110085.SH','贵州燃气集团股份有限公司'),(gui_notice,'110084.SH','其他股份有限公司'),(gui_notice.replace('债券简称：贵燃转债','债券简称：其他转债'),'110084.SH','贵州燃气集团股份有限公司'),(gui_notice.replace('债券代码：110084','债券代码：110084 转债代码：110085'),'110084.SH','贵州燃气集团股份有限公司')]:
     try: parse_gui(text,code,issuer); assert False
     except ValueError: pass

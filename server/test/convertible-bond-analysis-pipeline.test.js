@@ -32,6 +32,10 @@ const {pool}=require('../db/connection');
     {url:'rating',title:'公司2026年评级报告',event_date:'2026-06-25'},
   ];
   assert.equal(inputDocuments(events,bond).find(d=>d.kind==='prospectus').event.url,'old');
+  // BOND-RATING-NOTICE-CANDIDATES-028：标题未写简称仍须读取发行人结果公告，由原文代码身份决定覆盖资格。
+  const untitledBondNotice={url:'issuer-rating-notice',title:'公司关于公开发行可转换公司债券2023年跟踪评级结果的公告',event_date:'2023-06-10'};
+  assert.equal(inputDocuments([...events,untitledBondNotice],bond).some(d=>d.kind==='rating'&&d.event.url===untitledBondNotice.url),true);
+  assert.equal(inputDocuments([{...untitledBondNotice,title:'关于信用评级机构业务变更的提示性公告'}],bond).some(d=>d.kind==='rating'),false);
   assert.equal(inputDocuments(events,{...bond,value_date:'2026-10-10'}).some(d=>d.kind==='holders'),false,
     '发行前报告不能把其他转债持有人表投影到新债');
   const {requiredReportPeriod}=require('../services/convertibleBondAnalysisInputs');

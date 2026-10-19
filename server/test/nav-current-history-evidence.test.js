@@ -11,6 +11,7 @@ let currentExists = true;
 let emptyCash = 0;
 let published = [];
 let historicalGap = true;
+let expectedHistoricalGap = true;
 db.tryClaimJob = async () => true;
 db.releaseJob = async () => {};
 db.startJobRun = async () => 1;
@@ -41,7 +42,7 @@ partitions.publishDatasetSnapshot = async (code, options) => {
   assert.strictEqual(code, 'nav_snapshot');
   assert.strictEqual(options.partitionKey, '2026-09-30');
   assert.strictEqual(options.diagnostics.quality_status, 'passed');
-  assert.deepStrictEqual(options.diagnostics.historical_missing_dates, historicalGap ? ['2026-07-03'] : []);
+  assert.deepStrictEqual(options.diagnostics.historical_missing_dates, expectedHistoricalGap && historicalGap ? ['2026-07-03'] : []);
   assert.strictEqual(options.diagnostics.checked_accounts, 3);
   published.push(options);
   return { published: true, datasetCode: code, partitionKey: options.partitionKey };
@@ -75,12 +76,39 @@ const { runNavSnapshotJob } = require('../jobs/navSnapshot');
   // NAV-QUALITY-DIAGNOSTICS-002: 编排器重复发布仍须携带原账户核验质量证据。
   assert.strictEqual(complete.datasetDiagnostics.nav_snapshot.quality_status,'passed');
   assert.strictEqual(complete.datasetDiagnostics.nav_snapshot.checked_accounts,3);
+  // NAV-REQUESTED-RANGE-001：旧缺口保留，但日任务/指定区间不得被范围外七月缺口阻断。
+  historicalGap = true;
+  expectedHistoricalGap = false;
+  const scoped = await runNavSnapshotJob({targetDate:'2026-09-30',fromDate:'2026-09-30'});
+  assert.strictEqual(scoped.ok,true);
+  assert.deepStrictEqual(scoped.requestedRange,{fromDate:'2026-09-30',throughDate:'2026-09-30'});
+  assert.deepStrictEqual(scoped.missingDates,[]);
+  expectedHistoricalGap = true;
+  const inRange = await runNavSnapshotJob({targetDate:'2026-09-30',fromDate:'2026-07-02'});
+  assert.strictEqual(inRange.ok,false,'区间内缺口仍须阻断，不以当日成功替代历史恢复');
+  assert.deepStrictEqual(inRange.missingDates,['2026-07-03']);
+  await assert.rejects(()=>runNavSnapshotJob({targetDate:'2026-09-30',fromDate:'2026-10-01'}),/起始日无效/);
+  const navModule=require('../jobs/navSnapshot');
+  const originalRunner=navModule.runNavSnapshotJob;
+  const runnerCalls=[];
+  try {
+    navModule.runNavSnapshotJob=async options=>{runnerCalls.push(options);return {ok:true};};
+    const {runJobByCode}=require('../services/jobRunners');
+    await runJobByCode('nav_snapshot','manual-retry','2026-09-30',{mode:'core',fromDate:'2026-08-17',throughDate:'2026-09-30'});
+    await runJobByCode('nav_snapshot','scheduled','2026-09-30',{mode:'core'});
+    assert.deepStrictEqual(runnerCalls,[{targetDate:'2026-09-30',fromDate:'2026-08-17'},{targetDate:'2026-09-30',fromDate:'2026-09-30'}]);
+    await assert.rejects(()=>runJobByCode('nav_snapshot','manual-retry','2026-09-30',{throughDate:'2026-09-29'}),/截止日必须匹配/);
+  } finally {navModule.runNavSnapshotJob=originalRunner;}
+  historicalGap = false;
   const { verifySlotRecoveryEvidence } = require('../services/jobRecoveryEvidence');
   const slot = { slot_id: 1446206, job_code: 'nav_snapshot', business_date: '2026-09-30', status: 'succeeded', result_summary: complete };
   const query = async sql => sql.includes('FROM job_runs')
     ? { rows: [{ id: 1, slot_id: slot.slot_id, status: 'done', result_json: complete }] }
     : { rows: [{ dataset_code: 'nav_snapshot', scope_key: 'GLOBAL', status: 'published', is_stale: false, diagnostics: { quality_status: 'passed' } }] };
   assert.strictEqual((await verifySlotRecoveryEvidence(slot, query)).recovered, true);
+  const scopedSlot={...slot,request_payload:{fromDate:'2026-08-17',throughDate:'2026-09-30'}};
+  const scopedQuery=async sql=>sql.includes('FROM job_runs')?{rows:[{id:1,slot_id:slot.slot_id,status:'done',result_json:scoped}]}:query(sql);
+  assert.strictEqual((await verifySlotRecoveryEvidence(scopedSlot,scopedQuery)).reason,'nav_requested_range_mismatch','不能借缩小补算范围关闭原区间告警');
   assert.strictEqual((await verifySlotRecoveryEvidence({ ...slot, result_summary: { ...complete, dataAsOf: null } }, async sql => sql.includes('FROM job_runs')
     ? {rows:[{id:1,slot_id:slot.slot_id,status:'done',result_json:{...complete,dataAsOf:null}}]} : query(sql))).recovered, false);
   // NAV-RECOVERY-LEGACY-001：旧成功记录不改写，后续复验仍须同日/模式/账户与运行水位。
@@ -105,5 +133,18 @@ const { runNavSnapshotJob } = require('../jobs/navSnapshot');
   assert.strictEqual((await verifyAlertScope(alert,recoveryQuery)).recovered,false);
   laterResult={...complete,ok:false,failedDatasets:['nav_snapshot']};
   assert.strictEqual((await verifyAlertScope(alert,recoveryQuery)).recovered,false);
+  const historyOriginal={...original,status:'blocked',request_payload:{mode:'core',fromDate:'2026-08-17',throughDate:'2026-09-30'}};
+  let candidatePayload={mode:'core'};
+  const rangeRecoveryQuery=async(sql,params)=>{
+    if(sql.includes('scheduled_for>')) return {rows:[{...later,request_payload:candidatePayload}]};
+    if(sql.includes('FROM ops.job_schedule_slots')) return {rows:[historyOriginal]};
+    return recoveryQuery(sql,params);
+  };
+  laterResult={...complete,requestedRange:{fromDate:'2026-09-30',throughDate:'2026-09-30'}};
+  assert.strictEqual((await verifyAlertScope(alert,rangeRecoveryQuery)).recovered,false,'日任务成功不能关闭历史区间任务的告警');
+  candidatePayload=historyOriginal.request_payload;
+  assert.strictEqual((await verifyAlertScope(alert,rangeRecoveryQuery)).recovered,false,'仅状态成功但实际执行范围缩小仍不能恢复');
+  laterResult={...complete,requestedRange:{fromDate:'2026-08-17',throughDate:'2026-09-30'}};
+  assert.strictEqual((await verifyAlertScope(alert,rangeRecoveryQuery)).recovered,true,'相同范围、真实运行及分区通过才能恢复');
   console.log('nav current partition and historical gaps independently verified');
 })().catch(error => { console.error(error); process.exitCode = 1; });

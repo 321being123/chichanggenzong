@@ -13,6 +13,7 @@ const {
   syncHkexProspectusFacts,
   shouldPersistAllotmentFacts,
   recomputeCompletenessForStoredRow,
+  syncStoredHkListings,
 } = require('../services/hkexIpo');
 
 const listingHtml = `
@@ -178,6 +179,32 @@ const untrustedRights = recomputeCompletenessForStoredRow({ ipo_status: 'active'
 assert.notStrictEqual(untrustedRights.exclusionReason, 'rights_issue', '非官方网址不得作为供股分类证据');
 
 (async () => {
+  // HK-STORED-LISTING-001：已入库在市原始记录可补实际上市投影，预计日期/错身份/未来日不可用。
+  const listedMaster={security_code:'02636.HK',security_name:'传音控股',market_type:'主板',list_date:'2026-10-15',status:'listed',
+    raw_record_id:'1',payload_hash:'stored-hash',source_updated_at:new Date('2026-10-15T12:41:10Z'),request_range:{list_status:'L'},ingestion_status:'success',
+    payload:{ts_code:'02636.HK',list_date:'20261015',curr_type:'HKD'}};
+  let savedListings=[];
+  const listingDeps={asOfDate:'2026-10-16',targetCodes:['02636.HK'],executor:async(sql,params)=>{
+    assert.deepStrictEqual(params,['2026-10-16',['02636.HK']]);
+    assert.match(sql,/h\.listing_at IS NULL/);assert.match(sql,/ir\.status='success'/);return {rows:[listedMaster]};},
+    persist:async(rows,options)=>{assert.strictEqual(options.sourceCode,'tushare');savedListings.push(...rows);}};
+  assert.strictEqual((await syncStoredHkListings(listingDeps)).rows,1);
+  assert.strictEqual(savedListings[0].listingDate,'2026-10-15');
+  assert.strictEqual(savedListings[0].listingEvidence.rawRecordId,'1');
+  assert.strictEqual(savedListings[0].issuePriceFinal,undefined,'补上市事实不改变发行价格');
+  for(const bad of [
+    {...listedMaster,request_range:{list_status:'P'}},{...listedMaster,status:'pre_listing'},
+    {...listedMaster,list_date:'2026-10-14'},{...listedMaster,source_updated_at:new Date('2026-10-14T12:00:00Z')},
+    {...listedMaster,payload:{...listedMaster.payload,ts_code:'02635.HK'}},
+    {...listedMaster,payload:{...listedMaster.payload,list_date:'20261020'}},
+    {...listedMaster,payload:{...listedMaster.payload,curr_type:'CNY'}},
+    {...listedMaster,ingestion_status:'failed'},
+  ]) {
+    savedListings=[];
+    const badResult=await syncStoredHkListings({...listingDeps,executor:async()=>({rows:[bad]})});
+    assert.strictEqual(badResult.ok,false);assert.deepStrictEqual(savedListings,[]);
+  }
+  await assert.rejects(()=>syncStoredHkListings({...listingDeps,targetCodes:['invalid']}),/目标代码无效/);
   const statements = [];
   const persistedNames = await persistTencentNames(new Map([
     ['03231', { code: '03231', market: 'hk', name: '优地机器人' }],

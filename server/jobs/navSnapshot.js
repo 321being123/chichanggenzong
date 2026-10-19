@@ -34,7 +34,8 @@ function dateText(value) {
 }
 
 // 为单个账户填补缺失交易日的净值快照（幂等：已有记录跳过、只新增缺失日）
-async function recordNavSnapshots(username, accountName, hkRateOverride = null, targetDateInput = cnDate(new Date())) {
+async function recordNavSnapshots(username, accountName, hkRateOverride = null, targetDateInput = cnDate(new Date()), fromDate = null) {
+  if (fromDate && (CoreDate.normalizeBusinessDate(fromDate) !== fromDate || fromDate > cnDate(targetDateInput))) throw new TypeError('净值补算起始日无效');
   const cashIncome = await require('../services/cashIncome').settleCashIncome(username, accountName, {targetDate:cnDate(targetDateInput)});
   if(cashIncome.status==='partial'&&cashIncome.progress?.processedThrough<cnDate(targetDateInput)) return {
     ok:false,status:'partial',days:0,missingDates:[cnDate(targetDateInput)],missingCodes:['204001.SH'],cashIncome,
@@ -202,6 +203,7 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
   let datesToProcess = allDates.filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today; });
   // 不在首条净值记录之前捏造历史：有净值时只填 >= 首条净值日的空档
   if (navs.length > 0) datesToProcess = datesToProcess.filter(function (d) { return d >= dateText(navs[0].date); });
+  if (fromDate) datesToProcess = datesToProcess.filter(d => d >= fromDate);
   if (datesToProcess.length === 0) return { ok: true, days: 0, verifiedNoChange: true, usedPriceDates: {} };
 
   // 锚点：allDates[0] 之前最近的一条 nav（续链基准）
@@ -343,7 +345,8 @@ async function recordNavSnapshots(username, accountName, hkRateOverride = null, 
 }
 
 // 为所有账户填补缺失快照（带幂等锁与执行留痕，供告警/多实例单跑）
-async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
+async function runNavSnapshotJob({ targetDate = cnDate(new Date()), fromDate = null } = {}) {
+  if (fromDate && (CoreDate.normalizeBusinessDate(fromDate) !== fromDate || fromDate > targetDate)) throw new TypeError('净值补算起始日无效');
   if (!(await tryClaimJob('nav_snapshot'))) return { ok: false, skipped: true, reason: 'already_running' }; // 其他实例已在跑
   const runId = await startJobRun('nav_snapshot');
   let total = 0, accountCount = 0;
@@ -357,7 +360,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
     for (const account of accountRows) {
       const accountName = account.account_name;
       try {
-        const r = await recordNavSnapshots(account.username, accountName, null, targetDate);
+        const r = await recordNavSnapshots(account.username, accountName, null, targetDate, fromDate);
         if (r && r.days > 0) { total += r.days; accountCount++; }
         if (r && r.ok === false) {
           failedAccounts.push({ accountName, missingDates: r.missingDates || [], missingCodes: r.missingCodes || [], diagnostics: r.diagnostics || [] });
@@ -386,6 +389,7 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()) } = {}) {
       status: failedAccounts.length || repoRates?.ok === false ? 'partial' : 'succeeded',
       days: total,
       accountCount,
+      ...(fromDate ? { requestedRange: { fromDate, throughDate: targetDate } } : {}),
       failedAccounts,
       currentDate: { date: targetDate, complete: currentComplete, accounts: currentAccounts },
       dataAsOf: currentComplete ? targetDate : null,

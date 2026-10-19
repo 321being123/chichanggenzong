@@ -283,7 +283,7 @@ function inputDocuments(events,bond={}) {
   }
   if(report)selected.push({kind:'holders',event:report},{kind:'price_history',event:report});
   for(const event of events.filter(e=>!isRatingPublicationDelay(e)&&(/评级报告|评级调整/.test(e.title)||
-    isRatingResultNotice(e)&&bond.bond_short_name&&e.title.includes(bond.bond_short_name))&&(!issueDate||
+    isRatingResultNotice(e)&&bond.bond_short_name)&&(!issueDate||
     isoDate(e.event_date)>=issueDate||isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`&&/可转债|可转换公司债券/.test(e.title))))selected.push({kind:'rating',event});
   return [...selected.filter(d=>d.kind==='rating'&&isRatingResultNotice(d.event)).sort((a,b)=>String(a.event.event_date).localeCompare(String(b.event.event_date))),
     ...selected.filter(d=>d.kind!=='rating'||!isRatingResultNotice(d.event))];

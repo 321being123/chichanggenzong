@@ -2,7 +2,7 @@ const { pool } = require('../db/connection');
 const { auditEvent } = require('../db');
 const { mailer } = require('../config');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { verifySlotRecoveryEvidence } = require('./jobRecoveryEvidence');
+const { verifySlotRecoveryEvidence, businessDateText } = require('./jobRecoveryEvidence');
 
 const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
@@ -90,6 +90,11 @@ function slotMode(row) {
   return String(row && row.request_payload && row.request_payload.mode || 'core');
 }
 
+function sameNavRange(left, right) {
+  const range=row=>[row.request_payload?.fromDate||businessDateText(row.business_date),row.request_payload?.throughDate||businessDateText(row.business_date)];
+  return JSON.stringify(range(left))===JSON.stringify(range(right));
+}
+
 function laterSlotLimit(historical) {
   return historical ? 3 : 1;
 }
@@ -135,6 +140,7 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
       if (later.length !== required) return original;
       const verifications = [];
       for (const candidate of later) {
+        if(!sameNavRange(row,candidate)) return {recovered:false,reason:'nav_requested_range_mismatch',evidence:{original:row,candidate}};
         const verified = await verifySlotRecoveryEvidence(candidate, query, { alertType });
         if (!verified.recovered) return verified;
         verifications.push(verified.evidence);
@@ -153,7 +159,12 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
         ORDER BY scheduled_for ASC,slot_id ASC LIMIT $5`,
       [row.job_code, row.business_date, row.scheduled_for, slotMode(row), limit]
     );
-    const recovered = later.length === limit && later.every(item => item.status === 'succeeded');
+    let recovered = later.length === limit && later.every(item => item.status === 'succeeded');
+    if(recovered&&row.job_code==='nav_snapshot') {
+      for(const candidate of later) {
+        if(!sameNavRange(row,candidate)||!(await verifySlotRecoveryEvidence({...candidate,job_code:row.job_code},query,{alertType})).recovered) {recovered=false;break;}
+      }
+    }
     return {
       recovered,
       evidence: { mode: historical ? 'three_later_job_successes' : 'later_comparable_slot_success', original: row, later },

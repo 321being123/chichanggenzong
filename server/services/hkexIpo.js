@@ -1901,6 +1901,44 @@ async function recomputeHkIpoCompleteness(executor = pool.query.bind(pool), targ
     targetDate: asOfDate, evaluationMode: options.mode || 'enrichment', qualityStatus: missing || !updated ? 'stale' : 'passed' };
 }
 
+// 复用已成功入库的在市主档事实；预计上市安排不能进入本分支。
+async function syncStoredHkListings({asOfDate=todayShanghai(),targetCodes=[],executor=pool.query.bind(pool),persist=upsertHkIpoFacts}={}) {
+  const CoreDate=require('../../public/shared/core-date');
+  if(CoreDate.normalizeBusinessDate(asOfDate)!==asOfDate) throw new Error('实际上市事实目标日无效');
+  if(!Array.isArray(targetCodes)||targetCodes.some(code=>!canonicalHkCode(code))) throw new Error('实际上市事实目标代码无效');
+  const codes=[...new Set(targetCodes.map(canonicalHkCode).filter(Boolean))];
+  const {rows}=await executor(`SELECT h.security_code,h.security_name,h.security_name_cn,h.market_type,i.list_date::text,
+      i.status,r.raw_record_id,r.payload,r.payload_hash,r.source_updated_at,r.request_range,r.ingestion_status
+    FROM public.ipo_history h JOIN core.instruments i ON i.instrument_id=h.instrument_id
+    JOIN LATERAL (SELECT rr.raw_record_id,rr.payload,rr.payload_hash,rr.source_updated_at,ir.request_range,ir.status AS ingestion_status
+      FROM ops.raw_records rr JOIN ops.data_sources ds USING(source_id) JOIN ops.ingestion_runs ir ON ir.run_id=rr.run_id AND ir.source_id=rr.source_id
+      WHERE ds.source_code='tushare' AND rr.dataset_code='hk_basic' AND rr.source_key=h.security_code
+        AND rr.payload->>'ts_code'=h.security_code AND ir.dataset_code='hk_basic'
+        AND ir.request_range->>'list_status'='L' AND ir.status='success'
+      ORDER BY rr.ingested_at DESC,rr.raw_record_id DESC LIMIT 1) r ON true
+    WHERE h.market_code='HK' AND h.listing_at IS NULL AND COALESCE(h.listing_date,'')=''
+      AND i.market='HK' AND i.status='listed' AND i.list_date<=$1::date
+      AND h.ipo_status NOT IN ('cancelled','canceled','postponed','introduction','gem_transfer','de_spac')
+      AND (cardinality($2::text[])=0 OR h.security_code=ANY($2::text[]))`,[asOfDate,codes]);
+  const verified=[],failures=[];
+  for(const row of rows) {
+    const raw=row.payload||{}, compact=String(raw.list_date||'');
+    const date=/^\d{8}$/.test(compact)?CoreDate.normalizeBusinessDate(`${compact.slice(0,4)}-${compact.slice(4,6)}-${compact.slice(6,8)}`):null;
+    const observed=CoreDate.dateInZone(row.source_updated_at,'Asia/Shanghai');
+    if(!date||date>asOfDate||date!==row.list_date||raw.ts_code!==row.security_code||raw.curr_type!=='HKD'||codes.length&&!codes.includes(row.security_code)
+      ||row.status!=='listed'||row.ingestion_status!=='success'||row.request_range?.list_status!=='L'||!observed||observed<date) {
+      failures.push({code:row.security_code,reason:'listed_master_evidence_mismatch'});continue;
+    }
+    const evidence={source:'tushare',dataset:'hk_basic',rawRecordId:row.raw_record_id,payloadHash:row.payload_hash,
+      observedAt:row.source_updated_at,listStatus:'L',listingDate:date};
+    verified.push({securityCode:row.security_code,securityName:row.security_name,securityNameCn:row.security_name_cn,
+      board:row.market_type,listingDate:date,listingEvidence:evidence,dataCompleteness:{},
+      sourceDocuments:[{type:'listed_security_master',...evidence}]});
+  }
+  if(verified.length) await persist(verified,{sourceCode:'tushare'});
+  return {ok:!failures.length,rows:verified.length,failures,source:'stored_hk_basic',externalCalls:0};
+}
+
 async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPool = pool } = {}) {
   const input = Array.isArray(rows) ? rows.filter(row => canonicalHkCode(row.securityCode)) : [];
   if (!input.length) return { ok: true, rows: 0, events: 0 };
@@ -1993,7 +2031,8 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPoo
           VALUES($1,$2,$3::date,$3::date,$4,$5,$6::jsonb,now())
           ON CONFLICT(source_id,source_key) DO UPDATE SET event_date=EXCLUDED.event_date,event_at=EXCLUDED.event_at,details=EXCLUDED.details,updated_at=now()`,
           [identity.instrumentId, eventType, String(eventDate).slice(0, 10), sourceId, `${canonicalCode}|${eventType}|${String(eventDate).slice(0, 10)}`,
-            JSON.stringify({ market: 'HK', board: row.board || null, sourceUrl: row.sourceUrl || null })]);
+            JSON.stringify({ market: 'HK', board: row.board || null, sourceUrl: row.sourceUrl || null,
+              ...(eventType==='hk_listing'&&row.listingEvidence?{listingEvidence:row.listingEvidence}:{}) })]);
         events += 1;
       }
     }
@@ -2008,6 +2047,7 @@ async function upsertHkIpoFacts(rows, { sourceCode = 'hkex_announcements', dbPoo
 }
 
 module.exports = {
+  syncStoredHkListings,
   HKEX_NEW_LISTING_TARGETS,
   HKEX_NEW_LISTING_REPORT_TARGETS,
   HKEX_PREDEFINED_DOCUMENT_TARGETS,

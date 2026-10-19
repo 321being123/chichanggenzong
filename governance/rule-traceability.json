@@ -2843,6 +2843,74 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "NAV-REQUESTED-RANGE-001",
+      "title": "净值日任务和历史补算按原指定区间执行并拒绝跨区间恢复",
+      "implementation": {
+        "file": "server/jobs/navSnapshot.js",
+        "symbol": "runNavSnapshotJob"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-current-history-evidence.test.js",
+          "pattern": "NAV-REQUESTED-RANGE-001"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "HK-STORED-LISTING-001",
+      "title": "已成功入库在市原始主档补实际上市投影，预计/冲突/未来记录拒绝",
+      "implementation": {
+        "file": "server/services/hkexIpo.js",
+        "symbol": "syncStoredHkListings"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-facts.test.js",
+          "pattern": "HK-STORED-LISTING-001"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "HK-POSTCLOSE-RECOVERY-001",
+      "title": "旧盘后core模式兼容必须同业务日事实分区质量通过",
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "legacyHkPostclose"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-diagnostics-alert.test.js",
+          "pattern": "HK-POSTCLOSE-RECOVERY-001"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-NOTICE-CANDIDATES-028",
+      "title": "发行人评级结果公告不依赖标题简称筛选，原文简称在代码前后均严格核验",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "inputDocuments"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-NOTICE-CANDIDATES-028"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-NOTICE-CANDIDATES-028"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

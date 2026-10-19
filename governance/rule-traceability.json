@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-19",
+  "lastReviewed": "2026-10-20",
   "rules": [
     {
       "id": "ARBITRAGE-IDENTITY-001",
@@ -2979,6 +2979,22 @@
         {
           "file": "server/test/document-pdf-cache.test.js",
           "pattern": "BOND-OCR-CHECKPOINT-032"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "JOB-RECOVERY-TARGET-SCOPE-001",
+      "title": "定向后续成功收敛必须目标代码和字段集合完全一致，空或非法目标不作恢复证据",
+      "implementation": {
+        "file": "server/services/jobRecoveryEvidence.js",
+        "symbol": "sameTargetScope"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-alert-remediation-regression.test.js",
+          "pattern": "JOB-RECOVERY-TARGET-SCOPE-001"
         }
       ],
       "owner": "Codex",

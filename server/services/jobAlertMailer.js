@@ -2,7 +2,7 @@ const { pool } = require('../db/connection');
 const { auditEvent } = require('../db');
 const { mailer } = require('../config');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
-const { verifySlotRecoveryEvidence, businessDateText } = require('./jobRecoveryEvidence');
+const { verifySlotRecoveryEvidence, businessDateText, sameTargetScope } = require('./jobRecoveryEvidence');
 
 const DELIVERY_RETRY_MINUTES = [1, 5, 15];
 const MAX_DELIVERY_ATTEMPTS = DELIVERY_RETRY_MINUTES.length + 1;
@@ -159,7 +159,7 @@ async function verifyAlertScope(alert, query = (sql, params) => pool.query(sql, 
         ORDER BY scheduled_for ASC,slot_id ASC LIMIT $5`,
       [row.job_code, row.business_date, row.scheduled_for, slotMode(row), limit]
     );
-    let recovered = later.length === limit && later.every(item => item.status === 'succeeded');
+    let recovered = later.length === limit && later.every(item => item.status === 'succeeded' && sameTargetScope(row, item));
     if(recovered&&row.job_code==='nav_snapshot') {
       for(const candidate of later) {
         if(!sameNavRange(row,candidate)||!(await verifySlotRecoveryEvidence({...candidate,job_code:row.job_code},query,{alertType})).recovered) {recovered=false;break;}

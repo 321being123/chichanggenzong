@@ -4,6 +4,7 @@ const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, parseClock } = require('./marketState');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
+const { sameTargetScope } = require('./jobRecoveryEvidence');
 const classifyCode = require('../../public/js/code-classify');
 
 const HOSTNAME = os.hostname();
@@ -271,7 +272,7 @@ async function reconcileSlot(slot) {
   if (['failed', 'waiting_external', 'blocked', 'degraded'].includes(slot.status)) {
     const mode = String(slot.request_payload && slot.request_payload.mode || 'core');
     const { rows: laterSuccess } = await pool.query(
-      `SELECT slot_id
+      `SELECT slot_id,request_payload
          FROM ops.job_schedule_slots
         WHERE job_code=$1 AND business_date=$2::date AND status='succeeded'
           AND slot_id<>$3 AND scheduled_for>$4::timestamptz
@@ -279,7 +280,7 @@ async function reconcileSlot(slot) {
         ORDER BY scheduled_for DESC, slot_id DESC LIMIT 1`,
       [slot.job_code, slot.business_date, slot.slot_id, slot.scheduled_for, mode]
     );
-    if (laterSuccess[0]) {
+    if (laterSuccess[0] && sameTargetScope(slot, laterSuccess[0])) {
       const { rows: superseded } = await pool.query(
         `UPDATE ops.job_schedule_slots
             SET status='skipped', next_attempt_at=NULL,

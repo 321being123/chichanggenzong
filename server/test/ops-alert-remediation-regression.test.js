@@ -184,6 +184,32 @@ async function verifyReconciliationEvidence() {
   assert.strictEqual(recoveredSlot.recovered, true, '历史运行失败应能用连续三次后续成功作为人工对账证据');
   assert.strictEqual(recoveredSlot.evidence.mode, 'three_later_job_successes');
 
+  // JOB-RECOVERY-TARGET-SCOPE-001：另一证券或另一字段成功，不能收敛原定向失败。
+  const { sameTargetScope } = require('../services/jobRecoveryEvidence');
+  const targeted = { ...original, job_code:'convertible_bond_announcement_history_sync', business_date:'2026-10-12',
+    request_payload:{mode:'analysis_inputs_targeted',targetCodes:['127040.SZ']},result_summary:{timed_out:true} };
+  const other = {slot_id:14,status:'succeeded',request_payload:{mode:'analysis_inputs_targeted',targetCodes:['110076.SH']}};
+  const scopeAlert={alert_type:'failure',scope_type:'slot',scope_key:'10'};
+  for(const historical of [false,true]) {
+    const checked=await verifyAlertScope(scopeAlert,async sql=>({rows:sql.includes('WHERE slot_id=$1')?[targeted]:Array(historical?3:1).fill(other)}),{historical});
+    assert.strictEqual(checked.recovered,false,'不能用另一转债的后续成功关闭原告警');
+  }
+  const matching={...other,request_payload:targeted.request_payload};
+  assert.strictEqual((await verifyAlertScope(scopeAlert,async sql=>({rows:sql.includes('WHERE slot_id=$1')?[targeted]:[matching]}))).recovered,true);
+  assert.strictEqual(sameTargetScope(targeted,other),false);
+  assert.strictEqual(sameTargetScope({request_payload:{targetCodes:['A','B','A']}},{request_payload:{targetCodes:['B','A']}}),true);
+  assert.strictEqual(sameTargetScope({request_payload:{targetCodes:['A'],targetFields:['industry']}},{request_payload:{targetCodes:['A'],targetFields:['business_exposure']}}),false);
+  assert.strictEqual(sameTargetScope(targeted,{request_payload:{}}),false,'全局与定向不混用');
+  assert.strictEqual(sameTargetScope({request_payload:{mode:'targeted'}},{request_payload:{mode:'targeted'}}),false,'空目标不能作为恢复证据');
+  const vm=require('vm'),file=path.join(ROOT,'server/services/jobScheduleSlots.js');
+  const scopedRequire=require('module').createRequire(file);
+  const schedulerContext=vm.createContext({require:name=>name==='../db/connection'?{pool:{query:async sql=>{
+    assert(sql.includes('SELECT slot_id,request_payload'),'不匹配作用域时禁止写skipped或关闭告警');return {rows:[other]};
+  }}}:scopedRequire(name),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout});
+  vm.runInContext(fs.readFileSync(file,'utf8'),schedulerContext);
+  const unchanged=await vm.runInContext('reconcileSlot',schedulerContext)(targeted);
+  assert.strictEqual(unchanged.status,'failed','调度器同样不能借其他目标成功跳过原失败');
+
   const dataAlert = await verifyScope(
     { alert_type: 'data_quality', scope_type: 'slot', scope_key: '10' }, query
   );

@@ -14,6 +14,19 @@ function businessDateText(value) {
   return `${fields.year}-${fields.month}-${fields.day}`;
 }
 
+function sameTargetScope(left, right) {
+  const payload = row => row?.request_payload || {};
+  const list = (row, key) => {
+    const value = payload(row)[key];
+    return value == null ? [] : Array.isArray(value) ? [...new Set(value.map(String))].sort() : null;
+  };
+  for (const key of ['targetCodes', 'targetFields']) {
+    const a = list(left, key), b = list(right, key);
+    if (!a || !b || JSON.stringify(a) !== JSON.stringify(b)) return false;
+  }
+  return ![left, right].some(row => String(payload(row).mode || '').includes('targeted') && !list(row, 'targetCodes')?.length);
+}
+
 async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.query(sql, params), options = {}) {
   if (!slot || !slot.job_code || !['succeeded', 'degraded'].includes(options.candidateStatus || slot.status)) {
     return { recovered: false, reason: 'slot_not_successful', evidence: slot || null };
@@ -100,4 +113,4 @@ async function verifySlotRecoveryEvidence(slot, query = (sql, params) => pool.qu
   return { recovered: true, evidence: { mode: 'slot_success_and_dataset_evidence', slot, run, datasets: datasetEvidence, partitionKey } };
 }
 
-module.exports = { businessDateText, verifySlotRecoveryEvidence };
+module.exports = { businessDateText, sameTargetScope, verifySlotRecoveryEvidence };

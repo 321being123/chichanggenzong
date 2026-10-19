@@ -218,8 +218,18 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     }
 
 
+def initial_issue_summary(text):
+    summary = re.search(r'发行要素(.{0,1800}?)评级观点[:：]', text)
+    return summary.group(1) if summary and '发行主体本期规模发行期限' in summary.group(1) else ''
+
+
 def initial_issue_amount(text):
     match = re.search(r'(?:发行规模|发行金额|债券规模|发行额)[：:]?(?:为)?(?:拟发行总额)?(?:人民币)?(?:不超过)?(?:人民币)?([\d,.]+)(亿元|万元|元)', text)
+    if not match:
+        summary = initial_issue_summary(text)
+        matches = list(re.finditer(r'不超过(?:人民币)?([\d,.]+)(亿元|万元|元)', summary))
+        if len(matches) == 1:
+            match = matches[0]
     if not match:
         return None, None
     token = match.group(1)
@@ -327,15 +337,17 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
         issuer = re.sub(r'\s+', '', unicodedata.normalize('NFKC', issuer_name or ''))
         text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', '\n'.join(pages)))
         amount, amount_evidence = initial_issue_amount(text)
-        tenor = re.search(r'(?:发行期限|债券期限|存续期限)[：:]?(?:为)?(?:自?发行之日起)?(?:不超过)?(\d+)年', text)
+        tenor = re.search(r'(?:发行期限|债券期限|存续期限)[：:]?(?:为)?(?:自?发行之日起)?(?:不超过)?([一二三四五六七八九十\d]+)年', text)
+        if not tenor:
+            tenor = re.search(r'自发行之日起(?:不超过)?([一二三四五六七八九十\d]+)年', initial_issue_summary(text))
         if not tenor:
             # A debt clause binds the bare "期限" to this issue, not a loan or
             # the issuer's other financial instruments elsewhere in the PDF.
             clause = re.search(r'本次发行的可转换公司债券[^。；]*', text)
             if clause:
-                tenor = re.search(r'[，,](?:债券)?期限(?:为|[：:])(?:自?发行之日起)?(\d+)年', clause.group(0))
+                tenor = re.search(r'[，,](?:债券)?期限(?:为|[：:])(?:自?发行之日起)?([一二三四五六七八九十\d]+)年', clause.group(0))
         title = next((match.group(0) for cover in covers for match in re.finditer(r'(?:向不特定对象发行|公开发行)(?:A股)?可转换公司债券(?:信用评级报告|信用等级通知书)', cover) if issuer and issuer in cover and '跟踪评级' not in cover),None)
-        return title if initial_window and title and amount is not None and tenor and amount==Decimal(str(initial_issue_size_yuan)) and int(tenor.group(1))==int(initial_tenor_years) else None
+        return title if initial_window and title and amount is not None and tenor and amount==Decimal(str(initial_issue_size_yuan)) and chinese_number(tenor.group(1))==int(initial_tenor_years) else None
     def parse(pages):
         notice = parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date)
         if notice is not None:

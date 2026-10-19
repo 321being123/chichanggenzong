@@ -158,6 +158,16 @@ assert result['rating']=='AA-' and result['rating_date']=='2021-11-10' and resul
 bo[2]='本次发行的可转换公司债券规模为不超过8亿元，其他银行贷款期限为6年。'
 assert rating.extract_rating('url','2022-07-07','603916.SH','博22转债','江苏苏博特新材料股份有限公司','2022-07-01','800000000',6,'2022-07-28')['rating'] is None
 # BOND-RATING-GRADE-CONFLICT-023: 等级符号不得截断，当前正式结论/债项表冲突不可发布。
+# BOND-RATING-ISSUE-TABLE-031：明确发行要素列及中文期限，不借其他贷款金额或期限。
+summary='发行要素\n发行主体\n本期规模\n发行期限\n偿还方式\n贵州燃气集团股份有限公司\n不超过10亿元（含10亿元）\n自发行之日起六年\n按年付息\n评级观点：公司业务稳定。'
+guiran=['贵州燃气集团股份有限公司公开发行可转换公司债券信用评级报告\n2021年6月23日',
+    '本期债券的信用等级为AA，评级展望为稳定。', summary]
+rating.read_document=lambda *a,**kwargs:(guiran,{'document_hash':'a'*64})
+parsed=rating.extract_rating('url','2021-12-23','600903.SH','贵燃转债','贵州燃气集团股份有限公司','2021-12-27','1000000000',6,'2022-01-18')
+assert parsed['rating']=='AA' and parsed['rating_date']=='2021-06-23' and parsed['identity_binding']['validated'] is False
+for bad in [summary.replace('本期规模','银行贷款'),summary.replace('六年','五年'),summary.replace('10亿元','11亿元')]:
+    guiran[2]=bad
+    assert rating.extract_rating('url','2021-12-23','600903.SH','贵燃转债','贵州燃气集团股份有限公司','2021-12-27','1000000000',6,'2022-01-18')['rating'] is None
 for minus in ['−','–','‐','‑','－']:
     parsed=rating.parse_rating_pages(['本次“测试转债”的信用等级为AA'+minus+'，评级展望稳定。评级日期2026年6月15日'],'测试转债','2026-06-17')
     assert parsed['rating']=='AA-' and not parsed['rating_conflicts']
@@ -235,6 +245,27 @@ with tempfile.TemporaryDirectory() as directory:
     pages,evidence=reader.read_document(url,'002091.SZ','TestBond',ocr=True,stop_when=lambda pages: True)
     assert evidence['ocr_pages']==[1] and evidence['text_method']=='rapidocr-onnx-v1'
     assert '错误低置信度' not in ''.join(pages) and len(ocr_calls)==1
+    # BOND-OCR-CHECKPOINT-032：中断后复用已完成页，仍按原顺序核验；PDF变化必须失效。
+    class InterruptedOCR(FakeOCR):
+        def __call__(self,image): raise RuntimeError('simulated interruption')
+    sys.modules['rapidocr_onnxruntime'].RapidOCR=InterruptedOCR
+    try: reader.read_document(url,'002091.SZ','TestBond',ocr=True); assert False
+    except RuntimeError: pass
+    assert len(ocr_calls)==1
+    sys.modules['rapidocr_onnxruntime'].RapidOCR=FakeOCR
+    pages,evidence=reader.read_document(url,'002091.SZ','TestBond',ocr=True)
+    assert evidence['ocr_pages']==[1,2] and len(ocr_calls)==2
+    sys.modules['rapidocr_onnxruntime'].RapidOCR=InterruptedOCR
+    assert reader.read_document(url,'002091.SZ','TestBond',ocr=True)[0]==pages
+    original_version=reader.version
+    reader.version=lambda name: 'changed-test-version'
+    try: reader.read_document(url,'002091.SZ','TestBond',ocr=True); assert False
+    except RuntimeError: pass
+    finally: reader.version=original_version
+    document.new_page(); put_cached_pdf(url,document.tobytes())
+    try: reader.read_document(url,'002091.SZ','TestBond',ocr=True); assert False
+    except RuntimeError: pass
+    sys.modules['rapidocr_onnxruntime'].RapidOCR=FakeOCR
 holders=importlib.import_module('extractConvertibleBondFundHoldings')
 unranked='前十名转债持有人情况如下：\n期末持债数量（元）\n持有比例(%)\n'+''.join(f'某证券投资基金{i}\n100000\n1.00\n' for i in range(10))+'(三)报告期转债变动情况\n'
 parsed=holders.parse_holders(unranked)
@@ -256,6 +287,21 @@ try: holders.extract('url'); assert False
 except ValueError: pass
 holders.read_document=lambda *a: (['未披露持有人表'],{'document_hash':'hash'})
 assert holders.extract('url')['parse_status']=='not_disclosed'
+# BOND-HOLDERS-NOT-LISTED-029：报告期内未上市须原文明示及目标债名绑定，不当成零基金。
+unlisted='''公司发行的可转换公司债券于2026年7月16日在上海证券交易所上市交易，债券简称为“宝钛转债”，债券代码为“110101”。
+（二）报告期转债持有人及担保人情况
+不适用
+注：报告期内公司可转换公司债券未上市。
+（三）报告期转债变动情况
+不适用'''
+holders.read_document=lambda *a: ([unlisted],{'document_hash':'a'*64})
+not_listed=holders.extract('url',bond_name='宝钛转债')
+assert not_listed['parse_status']=='not_applicable'
+assert not_listed['holder_exemption']['listing_date']=='2026-07-16'
+assert 'fund_count' not in not_listed and 'holding_quantity' not in not_listed
+assert holders.unlisted_holder_exemption(unlisted,'其他转债') is None
+assert holders.unlisted_holder_exemption(unlisted.replace('报告期内公司可转换公司债券未上市。','暂无数据。'),'宝钛转债') is None
+assert holders.unlisted_holder_exemption(unlisted.replace('不适用','适用'),'宝钛转债') is None
 # BOND-ANALYSIS-SCOPE-001: 同一页/跨页两债只按明确债券名称表头归属，不拼接持有人。
 one=unranked.replace('前十名转债持有人情况如下：','可转换公司债券名称\n甲转债\n前十名转债持有人情况如下：')
 two=unranked.replace('前十名转债持有人情况如下：','可转换公司债券名称\n乙转债\n前十名转债持有人情况如下：').replace('100000','200000')
@@ -265,6 +311,10 @@ assert holders.extract('url',bond_name='乙转债')['holding_quantity']==2
 try: holders.extract('url',bond_name='丙转债'); assert False
 except ValueError: pass
 prospectus=importlib.import_module('extractConvertibleBondProspectus')
+# BOND-PROSPECTUS-CAPITAL-030：银行资本用途按完整原句，不要求虚构项目表。
+capital='本行本次发行可转债募集的资金，扣除发行费用后将全部用于支持本行未来各项业务健康发展，在可转债转股后按照相关监管要求用于补充本行核心一级资本。'
+assert prospectus.fundraising_purpose(['16、本次募集资金用途\n'+capital+'\n17、担保事项\n未提供担保。'])==capital
+assert prospectus.fundraising_purpose(['16、本次募集资金用途\n具体用途尚未确定。\n17、担保事项\n未提供担保。']) is None
 assert len(prospectus.coupon_rates('第一年：0.2％，第二年利率为0.4%，第三年0.6%，第四年1.0%，第五年1.5%，第六年2.0%'))==6
 # BOND-COUPON-HEADING-010: 明确章节利率表不因缺少票面/债券前缀而跳过。
 prospectus.read_document=lambda *a: (['（三）利率\n第一年0.30%、第二年0.50%、第三年1.00%、第四年1.50%、第五年1.80%、第六年2.00%'],{'document_hash':'a'*64})

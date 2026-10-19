@@ -39,21 +39,38 @@ function cleanupDocumentPdfCache(now = Date.now(), directoryOverride = null) {
   let deletedOverflow = 0;
   for (const name of fs.readdirSync(directory)) {
     const file = path.join(directory, name);
+    if (name.endsWith('.ocr-v1.json')) {
+      if (!fs.existsSync(file.replace(/\.ocr-v1\.json$/, '.pdf'))) {
+        try { fs.unlinkSync(file); } catch (_) {}
+      }
+      continue;
+    }
     let stat;
     try { stat = fs.statSync(file); } catch (_) { continue; }
     const ext = path.extname(name).toLowerCase();
     if (!stat.isFile() || !['.pdf', '.part'].includes(ext)) continue;
     if (stat.mtimeMs < cutoff) {
-      try { fs.unlinkSync(file); deletedExpired++; } catch (_) {}
+      try {
+        fs.unlinkSync(file); deletedExpired++;
+        if (ext === '.pdf') fs.rmSync(file.replace(/\.pdf$/, '.ocr-v1.json'), { force: true });
+      } catch (_) {}
       continue;
     }
-    if (ext === '.pdf') files.push({ file, mtimeMs: stat.mtimeMs, size: stat.size });
+    if (ext === '.pdf') {
+      let sidecarSize = 0;
+      try { sidecarSize = fs.statSync(file.replace(/\.pdf$/, '.ocr-v1.json')).size; } catch (_) {}
+      files.push({ file, mtimeMs: stat.mtimeMs, size: stat.size + sidecarSize });
+    }
   }
   let totalBytes = files.reduce((sum, item) => sum + item.size, 0);
   files.sort((a, b) => a.mtimeMs - b.mtimeMs || a.file.localeCompare(b.file));
   for (const item of files) {
     if (totalBytes <= maxBytes) break;
-    try { fs.unlinkSync(item.file); totalBytes -= item.size; deletedOverflow++; } catch (_) {}
+    try {
+      fs.unlinkSync(item.file);
+      fs.rmSync(item.file.replace(/\.pdf$/, '.ocr-v1.json'), { force: true });
+      totalBytes -= item.size; deletedOverflow++;
+    } catch (_) {}
   }
   return {
     directory, ttlDays, maxBytes, totalBytes,

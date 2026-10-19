@@ -121,8 +121,16 @@ async function discoverDocuments(bond,targetDate,state) {
   return events;
 }
 
+function validateHolderExemption(result,bond) {
+  const exemption=result.holder_exemption,period=isoDate(result.report_date),listed=isoDate(bond.list_date);
+  if(result.parse_status!=='not_applicable'||!period||!listed||listed<=period||exemption?.reason!=='not_listed_by_report_period'
+    ||exemption.listing_date!==listed||exemption.bond_name!==bond.bond_short_name||result.holder_table_bond!==bond.bond_short_name
+    ||!exemption.evidence?.includes('未上市'))throw new Error('持有人不适用缺少目标债券、报告期和实际上市日一致证据');
+}
+
 async function saveProjection(kind,event,result,bond) {
   if(!/^[a-f0-9]{64}$/i.test(result.document_hash||'')) throw new Error('原文SHA-256缺失或无效，保留原投影');
+  if(kind==='holders'&&result.parse_status==='not_applicable')validateHolderExemption(result,bond);
   const client=await pool.connect();
   try {
     await client.query('BEGIN');
@@ -159,8 +167,10 @@ async function saveProjection(kind,event,result,bond) {
       await tools.saveProspectusDetails(client,bond.instrument_id,bond,result,sourceId);
     }
     if(kind==='holders') {
-      if(result.parse_status!=='complete')throw new Error('定期报告未披露可唯一核验的持有人表');
-      await tools.saveReportFundHolding(client,bond.instrument_id,result,sourceId);
+      if(result.parse_status!=='not_applicable') {
+        if(result.parse_status!=='complete')throw new Error('定期报告未披露可唯一核验的持有人表');
+        await tools.saveReportFundHolding(client,bond.instrument_id,result,sourceId);
+      }
     }
     if(kind==='rating') {
       validateRatingGrade(result);
@@ -376,11 +386,17 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
           if(revalidateRating&&result.rating_date_source!=='official_document')throw new Error('原评级日期疑似前次，缺本次原文实际日期，不能沿用可疑标准日期');
           await (deps.save||saveProjection)(kind,event,result,bond);
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
+          if(kind==='holders'&&result.parse_status==='not_applicable')state.documents[key].holderExemption={...result.holder_exemption,report_date:result.report_date};
           if(optionalNotice)state.documents[key].ratingResult=result;
         } catch(error) {if(!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       if(!ratingReports.length&&!notices.some(event=>readValidatedRatingNotice(event,state.documents,bond)))missing.push('rating_report');
+      const exemptHolder=selected.filter(d=>d.kind==='holders').map(d=>state.documents[`holders:${d.event.url}`]?.holderExemption).find(e=>e?.report_date===expectedPeriod);
+      if(exemptHolder) {
+        validateHolderExemption({parse_status:'not_applicable',holder_exemption:exemptHolder,holder_table_bond:bond.bond_short_name,report_date:exemptHolder.report_date},bond);
+        state.not_due={report_period:expectedPeriod,fields:['holders'],basis:'official_not_listed_by_report_period',evidence:exemptHolder};
+      }
       if(Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed')&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('issuance_terms:')&&value.status==='complete'))missing.push('coupon_terms');
       state.missing=[...new Set(missing)];state.status=missing.length?'partial':'complete';state.targetDate=targetDate;
       await (deps.persistBond||persistBondInputs)(bond,state);
@@ -402,4 +418,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,INPUT_VERSION};

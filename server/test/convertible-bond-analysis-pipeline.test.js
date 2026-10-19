@@ -222,5 +222,21 @@ const {pool}=require('../db/connection');
   assert.equal(failedSource.ok,false);assert.equal(failedSource.remainingCount,1);assert.ok(failedSource.nextRunAt);
   assert.deepEqual(noticeBond.raw_payload.analysis_inputs.rating_coverage,{});
   assert.equal(noticeBond.raw_payload.analysis_inputs.documents['rating:initial-2022'].status,'failed');
+  // BOND-HOLDERS-NOT-LISTED-029：在原始报告明示且实际上日晚于报告期时豁免，不写入零基金事实。
+  const {validateHolderExemption}=require('../services/convertibleBondAnalysisInputs');
+  const exemptBond={...bond,ts_code:'110101.SH',bond_short_name:'宝钛转债',value_date:'2026-06-25',list_date:'2026-07-16',raw_payload:{}};
+  const holderExemption={reason:'not_listed_by_report_period',bond_name:'宝钛转债',listing_date:'2026-07-16',evidence:'报告期内公司可转换公司债券未上市'};
+  const exemptionResult={document_hash:'e'.repeat(64),parse_status:'not_applicable',holder_table_bond:'宝钛转债',holder_exemption:holderExemption,report_date:'2026-06-30'};
+  validateHolderExemption(exemptionResult,exemptBond);
+  for(const bad of [{...exemptBond,list_date:null},{...exemptBond,list_date:'2026-06-01'},{...exemptBond,bond_short_name:'其他转债'}])assert.throws(()=>validateHolderExemption(exemptionResult,bad),/不适用缺少/);
+  const exemptionDeps={latestDate:async()=> '2026-09-30',loadUniverse:async()=>[exemptBond],discover:async()=>{},
+    readDocuments:async()=>[{url:'prospectus-exempt',title:'公司公开发行可转换公司债券募集说明书',event_date:'2026-06-20'},
+      {url:'report-exempt',title:'公司2026年半年度报告',event_date:'2026-08-26'},{url:'rating-exempt',title:'公司公开发行可转换公司债券信用评级报告',event_date:'2026-06-20'}],
+    project:async kind=>kind==='holders'?exemptionResult:{document_hash:'e'.repeat(64)},
+    save:async(kind,event,result,b)=>{if(kind==='holders'){validateHolderExemption(result,b);assert.equal(result.fund_count,undefined);}},
+    persistBond:async(b,state)=>{b.raw_payload.analysis_inputs=structuredClone(state);},persist:async()=>{}};
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},exemptionDeps)).ok,true);
+  assert.equal(exemptBond.raw_payload.analysis_inputs.not_due.basis,'official_not_listed_by_report_period');
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},{...exemptionDeps,project:async()=>{throw Error('重复解析已完成原文');}})).ok,true);
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

@@ -2911,6 +2911,78 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-HOLDERS-NOT-LISTED-029",
+      "title": "报告期内未上市持有人不适用须官方原文、唯一目标和实际上日晚于报告期，不写零基金",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "validateHolderExemption"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-HOLDERS-NOT-LISTED-029"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-HOLDERS-NOT-LISTED-029"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-PROSPECTUS-CAPITAL-030",
+      "title": "银行募集用途只消费明确补充本行资本完整原句，不猜项目用途",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondProspectus.py",
+        "symbol": "fundraising_purpose"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-PROSPECTUS-CAPITAL-030"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-ISSUE-TABLE-031",
+      "title": "初发发行要素表与中文期限仍须精确金额期限和原唯一发行身份绑定",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "initial_issue_summary"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-ISSUE-TABLE-031"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-OCR-CHECKPOINT-032",
+      "title": "扫描报告逐页持久化续接绑定PDF哈希及识别参数，变化失效、原顺序核验、随PDF清理",
+      "implementation": {
+        "file": "server/scripts/convertibleBondDocument.py",
+        "symbol": "read_document"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-OCR-CHECKPOINT-032"
+        },
+        {
+          "file": "server/test/document-pdf-cache.test.js",
+          "pattern": "BOND-OCR-CHECKPOINT-032"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

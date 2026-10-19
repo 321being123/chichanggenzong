@@ -4,6 +4,8 @@ import re
 import sys
 import urllib.request
 import os
+import unicodedata
+from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'ipo-report'))
 from external_call_guard import guarded_urlopen
@@ -115,6 +117,33 @@ def parse_holders(text):
     return holders
 
 
+def unlisted_holder_exemption(text, bond_name):
+    if not bond_name or re.search(HOLDER_TITLE, text):
+        return None
+    compact = re.sub(r'\s+', '', unicodedata.normalize('NFKC', text))
+    for heading in re.finditer('报告期转债持有人及担保人情况', compact):
+        prefix = compact[max(0, heading.start()-400):heading.start()]
+        section = compact[heading.end():heading.end()+500]
+        stop = re.search(r'\([三四五六七八九十]\)', section)
+        if stop:
+            section = section[:stop.start()]
+        names = re.findall(r'债券简称(?:为)?[:：]?[“"]([^”"]+)[”"]', prefix)
+        if set(names) != {bond_name} or not re.match(r'[□√☑]*不适用', section):
+            continue
+        if not re.search(r'报告期内(?:公司|本公司|本行)?可转换公司债券未上市', section):
+            continue
+        dates = set()
+        for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日.{0,60}?上市交易', prefix):
+            try:
+                dates.add(date(*(int(v) for v in m.groups())).isoformat())
+            except ValueError:
+                pass
+        if len(dates) == 1:
+            return {'reason': 'not_listed_by_report_period', 'bond_name': bond_name,
+                    'listing_date': next(iter(dates)), 'evidence': prefix+section}
+    return None
+
+
 def extract(url, security_code=None, bond_name=None, issuer_name=None):
     pages, evidence = read_document(url, security_code, bond_name, issuer_name)
     combined = '\n'.join(clean_page(page) for page in pages)
@@ -136,6 +165,10 @@ def extract(url, security_code=None, bond_name=None, issuer_name=None):
         stop = candidates[0].end() + end.start() if end else len(combined)
         combined = combined[scope:stop]
     else:
+        exemption = unlisted_holder_exemption(combined, bond_name)
+        if exemption:
+            return {**evidence, 'parse_status': 'not_applicable', 'all_holders': [],
+                    'holder_table_bond': bond_name, 'holder_exemption': exemption}
         combined = ''
     holders = parse_holders(combined)
     if candidates and len(holders) != 10:

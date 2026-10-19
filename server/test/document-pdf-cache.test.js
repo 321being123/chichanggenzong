@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { readCachedPdf, writeCachedPdf } = require('../services/documentPdfCache');
+const { readCachedPdf, writeCachedPdf, cleanupDocumentPdfCache } = require('../services/documentPdfCache');
 const { fetchOfficialPdfWithCache } = require('../services/hkexIpo');
 const parser = require('../services/arbitrageParser');
 
@@ -28,6 +28,10 @@ async function main() {
       'url2="https://static.cninfo.com.cn/finalpage/2026-09-08/1225552499.PDF"',
       'm.put_cached_pdf(url2, b"%PDF-1.4\\npython-cache")',
       'assert m.get_cached_pdf(url2) and m.get_cached_pdf(url2).read_bytes()==b"%PDF-1.4\\npython-cache"',
+      'p=m.pdf_cache_path("expired-python")',
+      'p.write_bytes(b"pdf"); sidecar=p.with_suffix(".ocr-v1.json"); sidecar.write_text("{}")',
+      'os.utime(p,(1,1)); m.cleanup_pdf_cache()',
+      'assert not p.exists() and not sidecar.exists()',
     ].join(';');
     const pyRun = spawnSync(parser.resolvePython(), ['-c', pythonCode, path.join(__dirname, '..', '..', 'ipo-report', 'document_pdf_cache.py')], {
       encoding: 'utf8',
@@ -43,6 +47,26 @@ async function main() {
     assert.strictEqual(requests, 1, '第二次读取同一官方 PDF 不应重复联网');
     assert.strictEqual(second.cacheHit, true);
     assert.deepStrictEqual(second.buffer, first.buffer);
+    // BOND-OCR-CHECKPOINT-032：OCR进度与原PDF共用容量/过期清理，不能留下孤儿文件。
+    const expiredPdf = writeCachedPdf('https://www.sse.com.cn/expired.pdf', content);
+    const expiredOcr = expiredPdf.replace(/\.pdf$/, '.ocr-v1.json');
+    fs.writeFileSync(expiredOcr, '{}');
+    const old = new Date(Date.now() - 31 * 86400000);
+    fs.utimesSync(expiredPdf, old, old);
+    const orphan = path.join(directory, 'orphan.ocr-v1.json');
+    fs.writeFileSync(orphan, '{}');
+    cleanupDocumentPdfCache();
+    assert.ok(!fs.existsSync(expiredPdf) && !fs.existsSync(expiredOcr) && !fs.existsSync(orphan));
+    const overflowPdf = writeCachedPdf('https://www.sse.com.cn/overflow.pdf', content);
+    const overflowOcr = overflowPdf.replace(/\.pdf$/, '.ocr-v1.json');
+    fs.writeFileSync(overflowOcr, Buffer.alloc(1024 * 1024));
+    const oldMax = process.env.DOCUMENT_PDF_CACHE_MAX_BYTES;
+    process.env.DOCUMENT_PDF_CACHE_MAX_BYTES = '1048576';
+    try { cleanupDocumentPdfCache(); } finally {
+      if (oldMax === undefined) delete process.env.DOCUMENT_PDF_CACHE_MAX_BYTES;
+      else process.env.DOCUMENT_PDF_CACHE_MAX_BYTES = oldMax;
+    }
+    assert.ok(!fs.existsSync(overflowPdf) && !fs.existsSync(overflowOcr));
     console.log('document-pdf-cache: Node/Python 共用、原子落盘和命中复用通过');
   } finally {
     if (oldDirectory === undefined) delete process.env.DOCUMENT_PDF_CACHE_DIR;

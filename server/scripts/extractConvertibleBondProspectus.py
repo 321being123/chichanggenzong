@@ -112,6 +112,10 @@ def fundraising_purpose(pages):
         result = concise_projects(section)
         if result and not re.search(r"担保事项|评级事项|受托管理", result):
             return result
+        # 银行的用途是完整资本补充句，不是项目明细表；只记录原文明确声明。
+        narrative = re.search(r"((?:本行|本银行)[^。]{0,100}募集(?:的)?资金[^。]{0,240}用于补充(?:本行|本银行)(?:核心)?(?:一|二)级资本[^。]{0,80}。)", re.sub(r"\s+", "", section))
+        if narrative:
+            return narrative.group(1)
     return None
 
 

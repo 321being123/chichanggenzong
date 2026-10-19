@@ -46,6 +46,13 @@ def cleanup_pdf_cache(directory=None, now=None):
     deleted_expired = 0
     deleted_overflow = 0
     for path in directory.glob("*"):
+        if path.name.endswith('.ocr-v1.json'):
+            if not path.with_name(path.name.replace('.ocr-v1.json', '.pdf')).is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            continue
         if not path.is_file() or path.suffix.lower() not in {".pdf", ".part"}:
             continue
         try:
@@ -55,18 +62,23 @@ def cleanup_pdf_cache(directory=None, now=None):
         if stat.st_mtime < cutoff:
             try:
                 path.unlink()
+                if path.suffix.lower() == '.pdf':
+                    path.with_suffix('.ocr-v1.json').unlink(missing_ok=True)
                 deleted_expired += 1
             except OSError:
                 pass
             continue
         if path.suffix.lower() == ".pdf":
-            files.append((stat.st_mtime, stat.st_size, path))
+            sidecar = path.with_suffix('.ocr-v1.json')
+            sidecar_size = sidecar.stat().st_size if sidecar.is_file() else 0
+            files.append((stat.st_mtime, stat.st_size + sidecar_size, path))
     total_bytes = sum(size for _, size, _ in files)
     for _, size, path in sorted(files, key=lambda item: (item[0], str(item[2]))):
         if total_bytes <= max_bytes:
             break
         try:
             path.unlink()
+            path.with_suffix('.ocr-v1.json').unlink(missing_ok=True)
             total_bytes -= size
             deleted_overflow += 1
         except OSError:

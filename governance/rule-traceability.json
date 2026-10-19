@@ -2999,6 +2999,22 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-EXACT-ISSUE-033",
+      "title": "本次债券精确发行条款优先摘要舍入值，精确金额及唯一身份门槛不放宽，正式条款冲突拒绝",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "initial_issue_amount"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-EXACT-ISSUE-033"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

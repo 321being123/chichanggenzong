@@ -158,6 +158,22 @@ assert result['rating']=='AA-' and result['rating_date']=='2021-11-10' and resul
 bo[2]='本次发行的可转换公司债券规模为不超过8亿元，其他银行贷款期限为6年。'
 assert rating.extract_rating('url','2022-07-07','603916.SH','博22转债','江苏苏博特新材料股份有限公司','2022-07-01','800000000',6,'2022-07-28')['rating'] is None
 # BOND-RATING-GRADE-CONFLICT-023: 等级符号不得截断，当前正式结论/债项表冲突不可发布。
+# BOND-RATING-EXACT-ISSUE-033：本次债券精确条款优先摘要舍入值，不对金额近似匹配。
+guotai=['江苏国泰国际集团股份有限公司公开发行可转换公司债券信用评级报告',
+    '发行规模：不超过45.57亿元（含）\n债券期限：6年\n评级时间：2020年11月13日\n本期债券的信用等级为AA+，评级展望为稳定。',
+    '二、本次可转换公司债券概况及募集资金用途\n本次可转换公司债券发行规模为不超过人民币455.741.86万元（含），按面值发行。']
+rating.read_document=lambda *a,**kwargs:(guotai,{'document_hash':'a'*64})
+guotai_args=('url','2021-07-03','002091.SZ','国泰转债','江苏国泰国际集团股份有限公司','2021-07-07','4557418600',6,'2021-08-10')
+parsed=rating.extract_rating(*guotai_args)
+assert parsed['rating']=='AA+' and parsed['rating_date']=='2020-11-13'
+assert '455.741.86万元' in parsed['identity_binding']['issue_amount_evidence']
+precise_clause=guotai[2]
+guotai[2]=''
+assert rating.extract_rating(*guotai_args)['rating'] is None,'仅摘要舍入值不能近似匹配'
+guotai[2]=precise_clause.replace('455.741.86','455.741.85')
+assert rating.extract_rating(*guotai_args)['rating'] is None,'精确金额相差100元也拒绝'
+guotai[2]=precise_clause+'本次可转换公司债券发行规模不超过40亿元。'
+assert rating.initial_issue_amount(guotai[2])==(None,None),'两份本次正式条款冲突拒绝'
 # BOND-RATING-ISSUE-TABLE-031：明确发行要素列及中文期限，不借其他贷款金额或期限。
 summary='发行要素\n发行主体\n本期规模\n发行期限\n偿还方式\n贵州燃气集团股份有限公司\n不超过10亿元（含10亿元）\n自发行之日起六年\n按年付息\n评级观点：公司业务稳定。'
 guiran=['贵州燃气集团股份有限公司公开发行可转换公司债券信用评级报告\n2021年6月23日',

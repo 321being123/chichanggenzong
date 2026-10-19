@@ -168,6 +168,16 @@ assert parsed['rating']=='AA' and parsed['rating_date']=='2021-06-23' and parsed
 for bad in [summary.replace('本期规模','银行贷款'),summary.replace('六年','五年'),summary.replace('10亿元','11亿元')]:
     guiran[2]=bad
     assert rating.extract_rating('url','2021-12-23','600903.SH','贵燃转债','贵州燃气集团股份有限公司','2021-12-27','1000000000',6,'2022-01-18')['rating'] is None
+# BOND-RATING-ISSUE-TABLE-031：发债规模是明确债项字段，保留原始引文及精确发行匹配。
+jinggong=['长江精工钢结构（集团）股份有限公司公开发行可转换公司债券信用评级报告',
+    '长江精工钢结构（集团）股份有限公司公开发行可转换公司债券的信用等级为AA，评级展望为稳定。二〇二一年八月二十六日',
+    '债项概况\n发债规模不超过20亿元（含20亿元）\n债券期限：6年']
+rating.read_document=lambda *a,**kwargs:(jinggong,{'document_hash':'a'*64})
+parsed=rating.extract_rating('url','2022-04-20','600496.SH','精工转债','长江精工钢结构(集团)股份有限公司','2022-04-22','2000000000',6,'2022-05-23')
+assert parsed['rating']=='AA' and parsed['rating_date']=='2021-08-26'
+assert parsed['identity_binding']['issue_amount_evidence']=='发债规模不超过20亿元'
+jinggong[2]=jinggong[2].replace('20亿元','21亿元')
+assert rating.extract_rating('url','2022-04-20','600496.SH','精工转债','长江精工钢结构(集团)股份有限公司','2022-04-22','2000000000',6,'2022-05-23')['rating'] is None
 for minus in ['−','–','‐','‑','－']:
     parsed=rating.parse_rating_pages(['本次“测试转债”的信用等级为AA'+minus+'，评级展望稳定。评级日期2026年6月15日'],'测试转债','2026-06-17')
     assert parsed['rating']=='AA-' and not parsed['rating_conflicts']

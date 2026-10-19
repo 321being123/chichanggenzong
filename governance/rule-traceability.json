@@ -2950,7 +2950,7 @@
     },
     {
       "id": "BOND-RATING-ISSUE-TABLE-031",
-      "title": "初发发行要素表与中文期限仍须精确金额期限和原唯一发行身份绑定",
+      "title": "初发发行要素表、明确发债规模及中文期限仍须精确金额期限和原唯一发行身份绑定",
       "implementation": {
         "file": "server/scripts/extractConvertibleBondRating.py",
         "symbol": "initial_issue_summary"

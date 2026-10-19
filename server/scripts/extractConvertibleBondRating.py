@@ -224,7 +224,7 @@ def initial_issue_summary(text):
 
 
 def initial_issue_amount(text):
-    match = re.search(r'(?:发行规模|发行金额|债券规模|发行额)[：:]?(?:为)?(?:拟发行总额)?(?:人民币)?(?:不超过)?(?:人民币)?([\d,.]+)(亿元|万元|元)', text)
+    match = re.search(r'(?:发行规模|发债规模|发行金额|债券规模|发行额)[：:]?(?:为)?(?:拟发行总额)?(?:人民币)?(?:不超过)?(?:人民币)?([\d,.]+)(亿元|万元|元)', text)
     if not match:
         summary = initial_issue_summary(text)
         matches = list(re.finditer(r'不超过(?:人民币)?([\d,.]+)(亿元|万元|元)', summary))

@@ -32,6 +32,20 @@ const {pool}=require('../db/connection');
     {url:'rating',title:'公司2026年评级报告',event_date:'2026-06-25'},
   ];
   assert.equal(inputDocuments(events,bond).find(d=>d.kind==='prospectus').event.url,'old');
+  // BOND-REPORT-FULL-TEXT-035：提示/审议/更正公告不代正文；同报告期优先正式更新全文。
+  const {latestFullReport}=require('../services/convertibleBondAnalysis').analysisInputTools;
+  const fullReport={url:'full-report',title:'长海股份：2026年半年度报告',event_date:'2026-08-22'};
+  const announcement={url:'notice-only',title:'长海股份：2026年半年度报告披露提示性公告',event_date:'2026-08-22'};
+  assert.equal(latestFullReport([announcement,fullReport]).url,'full-report');
+  for(const title of ['2026年半年度报告披露的提示性公告','关于2026年半年度报告的更正公告','2026年半年度报告摘要','2026年半年度报告的审议公告','2026年半年度报告专项审核意见']) {
+    assert.equal(latestFullReport([{...announcement,title}]),null,'非完整正文不能进入持有人/转股价解析');
+  }
+  const revised={...fullReport,url:'revised-report',title:'长海股份：2026年半年度报告（更正后）',event_date:'2026-08-30'};
+  assert.equal(latestFullReport([fullReport,revised]).url,'revised-report');
+  assert.equal(latestFullReport([{...fullReport,title:'长海股份：2026 年半年度报告全文'}]).url,'full-report');
+  const selectedReport=inputDocuments([...events.filter(e=>e.url!=='report'),announcement,fullReport],bond);
+  assert.equal(selectedReport.find(d=>d.kind==='holders').event.url,'full-report');
+  assert.equal(selectedReport.find(d=>d.kind==='price_history').event.url,'full-report');
   // BOND-RATING-NOTICE-CANDIDATES-028：标题未写简称仍须读取发行人结果公告，由原文代码身份决定覆盖资格。
   const untitledBondNotice={url:'issuer-rating-notice',title:'公司关于公开发行可转换公司债券2023年跟踪评级结果的公告',event_date:'2023-06-10'};
   assert.equal(inputDocuments([...events,untitledBondNotice],bond).some(d=>d.kind==='rating'&&d.event.url===untitledBondNotice.url),true);

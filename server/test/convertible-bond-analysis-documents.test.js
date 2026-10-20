@@ -40,6 +40,13 @@ notice='''证券代码：603058 转债代码：113646 转债简称：永吉转�
 评级机构于2024年5月27日出具了《贵州永吉印务股份有限公司2024年跟踪评级报告》（远东跟踪（2024）0006号），本次公司主体信用评级结果为：AA+，评级展望：稳定；永吉转债评级结果为：AA-。'''
 parse_notice=lambda text, code='113646.SH': rating.parse_rating_result_notice([text],'永吉转债',code,'贵州永吉印务股份有限公司','2024-05-29')
 actual=parse_notice(notice)
+# BOND-RATING-NOTICE-AGENCY-034：明确委托评级公司全称无需重复“评级机构”字样，审计/咨询公司不冒充评级机构。
+direct_agency=parse_notice(notice.replace('委托信用评级机构远东资信评估有限公司','委托远东资信评估有限公司'))
+assert direct_agency['rating_com_name']=='远东资信评估有限公司'
+assert direct_agency['rating_result_notice']['rating_company']=='远东资信评估有限公司'
+unrelated=parse_notice(notice.replace('委托信用评级机构远东资信评估有限公司','委托其他审计服务有限公司'))
+assert unrelated['rating_com_name'] is None and not unrelated['rating_result_notice']['previous_ratings']
+assert parse_notice(notice+'公司另委托大公国际资信评估有限公司。')['rating_com_name'] is None
 assert (actual['rating'],actual['rating_date'],actual['rating_outlook'])==('AA-','2024-05-27','稳定')
 assert actual['rating_com_name']=='远东资信评估有限公司'
 assert actual['rating_result_notice']['report_reference']['number']=='远东跟踪(2024)0006号'

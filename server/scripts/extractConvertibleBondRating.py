@@ -266,7 +266,8 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
     next_code_field = bool(re.match(r'(?:转债|债券)代码[:：]?\d{6}(?!\d)', following))
     if not name_header or (not next_code_field and re.match(r'[A-Za-z0-9]|[\u4e00-\u9fff]*转债', following)):
         raise ValueError('评级结果公告未匹配目标转债简称')
-    agencies = list(re.finditer(r'委托(?:信用)?评级机构([^，。；;()]{2,60}?(?:股份有限公司|有限责任公司|有限公司))(?:\(以下简称[“"]?([^”"()]+)[”"]?\))?', text))
+    agencies = list(re.finditer(r'委托(?:(?:信用)?评级机构)?([^，。；;()]{2,60}?(?:股份有限公司|有限责任公司|有限公司))(?:\(以下简称[“"]?([^”"()]+)[”"]?\))?', text))
+    agencies = [match for match in agencies if re.search(r'信用(?:评级|评估)|资信(?:评级|评估)', match.group(1))]
     agency = agencies[0].group(1) if len({m.group(1) for m in agencies}) == 1 else None
     agency_names = {agency} | {m.group(2) for m in agencies if m.group(2)}
     grade_pattern = r'[“"]?([A-D]{1,3}[+-]?)(?![A-D+-])'

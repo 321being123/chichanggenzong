@@ -866,8 +866,10 @@ function reportPeriod(title) {
 
 function latestFullReport(events) {
   return (events || [])
-    .filter(event => reportPeriod(event.title) && event.url && !/摘要|英文|更正|取消/.test(String(event.title || '')))
-    .sort((a, b) => reportPeriod(b.title).localeCompare(reportPeriod(a.title)))[0] || null;
+    .filter(event => reportPeriod(event.title) && event.url && !/摘要|英文|取消/.test(String(event.title || '')) &&
+      /20\d{2}年(?:半年度|年度)报告(?:全文)?(?:[（(](?:修订|更新|更正)(?:版|稿|后)?[）)])?$/.test(String(event.title || '').replace(/\s+/g, '')))
+    .sort((a, b) => reportPeriod(b.title).localeCompare(reportPeriod(a.title)) ||
+      String(isoDate(b.event_date || b.announced_at) || '').localeCompare(String(isoDate(a.event_date || a.announced_at) || '')))[0] || null;
 }
 
 function pythonCandidates() {

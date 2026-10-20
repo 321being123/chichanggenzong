@@ -3015,6 +3015,54 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-NOTICE-AGENCY-034",
+      "title": "评级结果公告明确委托评级公司全称无需附加机构字样，审计咨询及多机构歧义拒绝",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "parse_rating_result_notice"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-NOTICE-AGENCY-034"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-REPORT-FULL-TEXT-035",
+      "title": "定期报告必须完整正文，披露提示等公告不代正文，同报告期选择最新正式修订全文",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysis.js",
+        "symbol": "latestFullReport"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-REPORT-FULL-TEXT-035"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "STOCK-SUSPENSION-TRACKED-COVERAGE-036",
+      "title": "停牌缺口检查覆盖非转债正股的持仓自选A股，真实行情或停牌补证后才计入覆盖，HK隔离",
+      "implementation": {
+        "file": "server/services/convertibleBondSuspensionSync.js",
+        "symbol": "findSuspensionCoverageGaps"
+      },
+      "tests": [
+        {
+          "file": "server/test/ops-calendar-stage-recovery.test.js",
+          "pattern": "STOCK-SUSPENSION-TRACKED-COVERAGE-036"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

@@ -157,6 +157,11 @@ async function findSuspensionCoverageGaps({ startDate, endDate, stockSourceId, s
         WHERE p.stock_instrument_id IS NOT NULL
           AND u.status='listed'
           AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+       UNION
+       SELECT i.instrument_id FROM core.instruments i
+        WHERE i.asset_class='stock' AND i.canonical_code LIKE ANY(ARRAY['%.SH','%.SZ','%.BJ'])
+          AND (EXISTS (SELECT 1 FROM stock_watchlist w WHERE w.ts_code=i.canonical_code)
+            OR EXISTS (SELECT 1 FROM positions p WHERE p.instrument_id=i.instrument_id))
      ), open_days AS (
        SELECT trade_date
          FROM market.trade_calendar

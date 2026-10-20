@@ -42,6 +42,34 @@ async function main() {
     await client.query('BEGIN');
     // IPO-CALENDAR-INPUTS-001：真实分区隔离，资料阶段失败不能阻塞日报。
     pool.query = client.query.bind(client);
+    // STOCK-SUSPENSION-TRACKED-COVERAGE-036：跟踪A股也参与缺口检查，不能只检查转债正股；HK不混入SSE日历。
+    await client.query('SAVEPOINT tracked_suspension_scope');
+    const {findSuspensionCoverageGaps}=require('../services/convertibleBondSuspensionSync');
+    const sourceId=(await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0].source_id;
+    const username=(await client.query('SELECT username FROM users LIMIT 1')).rows[0].username;
+    const candidate=(await client.query(`SELECT i.instrument_id,i.canonical_code FROM core.instruments i
+      WHERE i.asset_class='stock' AND i.canonical_code LIKE '%.SH'
+      AND NOT EXISTS(SELECT 1 FROM fundamental.convertible_bond_profiles p WHERE p.stock_instrument_id=i.instrument_id)
+      AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.instrument_id=i.instrument_id)
+      AND NOT EXISTS(SELECT 1 FROM stock_watchlist w WHERE w.ts_code=i.canonical_code) LIMIT 1`)).rows[0];
+    assert(candidate,'回归需要一只尚未被跟踪的非转债正股');
+    const scopeDate='2099-10-13';
+    await client.query("DELETE FROM market.trade_calendar WHERE exchange='SSE' AND trade_date=$1",[scopeDate]);
+    await client.query("INSERT INTO market.trade_calendar(exchange,trade_date,is_open,source_code,raw_payload) VALUES('SSE',$1,true,'test','{}')",[scopeDate]);
+    const gaps=()=>findSuspensionCoverageGaps({startDate:scopeDate,endDate:scopeDate,stockSourceId:sourceId,suspensionSourceId:sourceId});
+    const before=(await gaps())[0]||{expectedCount:0,coveredCount:0};
+    await client.query('INSERT INTO stock_watchlist(username,ts_code,name) VALUES($1,$2,\'\')',[username,candidate.canonical_code]);
+    const missing=(await gaps())[0];
+    assert.equal(missing.expectedCount,before.expectedCount+1);
+    assert.equal(missing.coveredCount,before.coveredCount,'缺行情且缺停牌事实不能被已发布全局分区掩盖');
+    await client.query("INSERT INTO market.stock_suspend_calendar(instrument_id,trade_date,suspend_type,source_id,raw_payload) VALUES($1,$2,'S',$3,'{}')",[candidate.instrument_id,scopeDate,sourceId]);
+    const covered=(await gaps())[0];
+    assert.equal(covered.coveredCount,before.coveredCount+1,'真实停牌证据补入后才计入覆盖');
+    const hk=(await client.query("SELECT canonical_code FROM core.instruments WHERE asset_class='stock' AND canonical_code LIKE '%.HK' AND canonical_code NOT IN(SELECT ts_code FROM stock_watchlist) LIMIT 1")).rows[0];
+    assert(hk);
+    await client.query('INSERT INTO stock_watchlist(username,ts_code,name) VALUES($1,$2,\'\')',[username,hk.canonical_code]);
+    assert.equal((await gaps())[0].expectedCount,covered.expectedCount,'港股不得成为A股停牌缺口');
+    await client.query('ROLLBACK TO SAVEPOINT tracked_suspension_scope');
     const partitionDate = '2099-10-13';
     await client.query('DELETE FROM ops.dataset_partitions WHERE partition_key=$1::date', [partitionDate]);
     await client.query(`INSERT INTO ops.dataset_partitions(dataset_code,scope_key,partition_key,status,is_stale,diagnostics)

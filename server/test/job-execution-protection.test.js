@@ -219,8 +219,9 @@ assert.ok(/UPDATE job_runs[\s\S]*status='failed'/.test(slots) && /locked_until=n
 assert.ok(/jobCode: 'holiday_sync'[\s\S]*mayConsumeQuota: true[\s\S]*externalSources: \['tushare'\]/.test(read('server/services/jobDefinitions.js')), '休市日自动同步必须纳入 Tushare 预算保护');
 assert.ok(/latest_market_trade_date/.test(stockJob)
   && /lastSuccessDate: evidence\.dataAsOf/.test(stockJob)
-  && /const dataAsOf = stocks\.length && failed === 0/.test(stockJob)
-  && /watermarkNotRequired: stocks\.length === 0/.test(stockJob), '个股分析成功水位必须来自实际入库，无目标时不得误报');
+  && /const dataAsOf = activeStocks\.length && failed === 0/.test(stockJob)
+  && /watermarkNotRequired: activeStocks\.length === 0/.test(stockJob)
+  && /activeStockScope\(stocks, target\.targetDate\)/.test(stockJob), '个股分析成功水位必须来自实际入库，按已核验退市日确定有效目标，无目标时不得误报');
 assert.ok(/function hasSkippedSignal\(value\)/.test(orchestrator)
   && /!Array\.isArray\(value\.skipped\) \|\| value\.skipped\.length > 0/.test(orchestrator)
   && /const hasSkipped = hasSkippedSignal\(result\)/.test(orchestrator)

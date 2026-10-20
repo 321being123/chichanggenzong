@@ -71,6 +71,7 @@ async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, cont
     case 'site_analytics_retention':
       return require('./siteAnalytics').purgeAnalyticsData();
     case 'convertible_bond_universe_refresh': {
+      if (context.mode === 'stock_lifecycle') return require('./convertibleBondAnalysis').syncTrackedStockLifecycle(context.targetCodes);
       const { expectedDataDate } = require('./jobScheduleSlots');
       const targetTradeDate = expectedDataDate('convertible_bond_universe_refresh', businessDate);
       if (process.env.NODE_ENV === 'test' && context.testScenario === 'suspension-failure') {

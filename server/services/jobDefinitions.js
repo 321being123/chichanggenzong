@@ -86,7 +86,8 @@ const JOB_CONTRACTS = {
   'convertible_bond_universe_refresh': { externalApis: ['cb_basic', 'stock_basic', 'cb_daily', 'daily', 'daily_basic', 'adj_factor', 'suspend_d', 'tencent_quote','repo_daily'], producesDatasets: ['bond_master', 'bond_daily', 'stock_daily', 'stock_valuation', 'stock_adj_factor', 'stock_suspend_calendar','repo_daily_rates'], consumesDatasets: [], maxExternalCallsPerRun: null,
     datasetPublicationByMode:{core:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar','repo_daily_rates'],requireStageComplete:true},repo_daily:{publish:['repo_daily_rates'],requirePublished:['repo_daily_rates'],requireStageComplete:true},
       shared_eod:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar','repo_daily_rates'],requireStageComplete:true},
-      market_repair:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],requireStageComplete:true}} },
+      market_repair:{publish:['bond_master','bond_daily','stock_daily','stock_valuation','stock_adj_factor','stock_suspend_calendar'],requireStageComplete:true},
+      stock_lifecycle:{publish:[],requirePublished:[],requireStageComplete:true,requiresDataWatermark:false}} },
   // 候选规模随上市转债变化，不能编造固定调用数；完整遍历由接口官方频率、任务超时和失败分类保护。
   'convertible_bond_revision_motive_inputs_sync': { externalApis: ['top10_cb_holders', 'pledge_stat'], producesDatasets: ['bond_motive_inputs'], consumesDatasets: ['bond_master'], maxExternalCallsPerRun: null },
   'convertible_bond_revision_motive_calculate': { externalApis: [], producesDatasets: ['bond_motive_scores'], consumesDatasets: ['bond_motive_inputs', 'bond_daily'], maxExternalCallsPerRun: 0 },

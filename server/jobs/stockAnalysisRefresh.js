@@ -71,6 +71,15 @@ async function verifiedStockDataDate(tsCode, tradeDate, expectedDate, query = po
     suspensionVerified: verified, checkedThrough: verified ? expectedDate : null };
 }
 
+async function activeStockScope(stocks, targetDate, query = pool.query.bind(pool)) {
+  const { rows } = await query(`SELECT canonical_code,delist_date::text FROM core.instruments
+    WHERE canonical_code=ANY($1::text[]) AND status='delisted' AND delist_date<=$2::date`,
+  [stocks.map(stock => stock.ts_code), targetDate]);
+  const excluded = rows.map(row => ({ code: row.canonical_code, reason: 'confirmed_delisted', delistDate: row.delist_date }));
+  const delistedCodes = new Set(excluded.map(row => row.code));
+  return { activeStocks: stocks.filter(stock => !delistedCodes.has(stock.ts_code)), excluded };
+}
+
 async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
   const requestedDate = context.targetDate || context.businessDate || process.env.JOB_BUSINESS_DATE
     || CoreDate.todayInZone('Asia/Shanghai');
@@ -89,6 +98,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const requestedCodes = new Set((context.failedDatasets || []).map(item =>
       typeof item === 'string' ? item : item && (item.code || item.tsCode)).filter(Boolean));
     const stocks = (await trackedStocks()).filter(stock => !requestedCodes.size || requestedCodes.has(stock.ts_code));
+    const { activeStocks, excluded } = await activeStockScope(stocks, target.targetDate);
     const failures = [];
     const failureDetails = [];
     const dataDates = new Map();
@@ -104,7 +114,7 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
       marketEvidence.set(tsCode, evidence);
       return evidence.dataAsOf;
     }
-    for (const stock of stocks) {
+    for (const stock of activeStocks) {
       try {
         await refreshAndMark(stock.ts_code, reason, { readOnly: true });
         ok++;
@@ -146,21 +156,22 @@ async function runStockAnalysisRefresh(reason = 'scheduled', context = {}) {
     const failedDatasets = failures.filter(code => !recovered.includes(code));
     const skippedCodes = new Set(skipped.map(item => item.code));
     const firstFailure = failureDetails[0] || null;
-    const completedDates = stocks.map(stock => dataDates.get(stock.ts_code)).filter(Boolean);
-    const dataAsOf = stocks.length && failed === 0 && skipped.length === 0 && completedDates.length === stocks.length
+    const completedDates = activeStocks.map(stock => dataDates.get(stock.ts_code)).filter(Boolean);
+    const dataAsOf = activeStocks.length && failed === 0 && skipped.length === 0 && completedDates.length === activeStocks.length
       ? completedDates.sort()[0] : null;
     return {
       ok: failed === 0,
       status: failed === 0 ? 'succeeded' : 'partial',
       dataAsOf,
-      watermarkNotRequired: stocks.length === 0,
-      reason: stocks.length === 0 ? 'no-tracked-stocks' : undefined,
+      watermarkNotRequired: activeStocks.length === 0,
+      reason: activeStocks.length === 0 ? 'no-tracked-stocks' : undefined,
+      excluded,
       completed: ok,
       failed,
       recovered,
       skipped,
       failedDatasets,
-      datasets: stocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null, ...marketEvidence.get(stock.ts_code) })),
+      datasets: activeStocks.map(stock => ({ code: stock.ts_code, status: failedDatasets.includes(stock.ts_code) ? 'failed' : skippedCodes.has(stock.ts_code) ? 'skipped' : 'succeeded', dataAsOf: dataDates.get(stock.ts_code) || null, ...marketEvidence.get(stock.ts_code) })),
       ...(failedDatasets.length && firstFailure ? { error: firstFailure.error, errorCode: firstFailure.code, errorType: firstFailure.errorType, source: firstFailure.source } : {}),
     };
   } catch (error) {
@@ -184,4 +195,4 @@ function scheduleStockAnalysisRefresh() {
   console.log('[stock-analysis] 已调度：每日 08:20（上海时间）');
 }
 
-module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };
+module.exports = { nextShanghaiDelay, latestStockAnalysisDate, targetDateStatus, trackedStocks, activeStockScope, verifiedStockDataDate, runStockAnalysisRefresh, scheduleStockAnalysisRefresh };

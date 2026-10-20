@@ -275,6 +275,10 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
     named = list(re.finditer(re.escape(bond_name) + r'[”"]?(?:的)?(?:信用)?评级结果为[:：]?' + grade_pattern, text))
     named = [m for m in named if not previous_rating_context(text, m.start())]
     conclusions = [(m.group(1), m.group(0)) for m in current + named]
+    # 明确点名本债的正式债项结论；主体等级和前次结论不参与本次评级。
+    named_debt = list(re.finditer(re.escape(bond_name) + r'[”"]?(?:的)?(?:债项)?信用等级(?:为|至)' + grade_pattern, text))
+    named_debt = [m for m in named_debt if not previous_rating_context(text, m.start())]
+    conclusions.extend((m.group(1), m.group(0)) for m in named_debt)
     # 官方“本次评级结果”提示段同时包含主体与债项，只取明确目标债名的等级。
     summary = re.search(r'本次评级结果[:：]([^。]+。)', text)
     summary_block = summary.group(1) if summary else ''
@@ -282,7 +286,7 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
     conclusions.extend((m.group(1), m.group(0)) for m in summary_grades)
     conflicts = [{'rating': value, 'evidence': quote} for value, quote in conclusions] if len({v for v, _ in conclusions}) > 1 else []
     references = []
-    for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日出具了《([^》]+评级报告)》(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?', text):
+    for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日出具(?:了)?《([^》]+评级报告(?:\(20\d{2}\))?)》(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?', text):
         if previous_rating_context(text, m.start()) or issuer_name not in m.group(4):
             continue
         actual = date(*(int(m.group(i)) for i in (1, 2, 3))).isoformat()
@@ -290,7 +294,12 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
     unique = {(r['title'], r['issued_at']): r for r in references}
     reference = next(iter(unique.values())) if len(unique) == 1 else None
     current_block = text.split('本次债项评级', 1)[-1].split('根据', 1)[0] if current else summary_block if summary_grades else ''
-    outlooks = list(re.finditer(r'评级展望[:：]?[“"]?(稳定|正面|负面|发展中|观察)', current_block))
+    if not current_block and (named or named_debt) and reference:
+        # 仅取明确出具本次报告、且同句包含目标债项结论的正式结果段。
+        current_block = next((sentence for sentence in text.split('。')
+                              if reference['evidence'] in sentence
+                              and any(m.group(0) in sentence for m in named + named_debt)), '')
+    outlooks = list(re.finditer(r'评级展望(?:为|维持|[:：])?[“"]?(稳定|正面|负面|发展中|观察)', current_block))
     outlook = outlooks[0] if len({m.group(1) for m in outlooks}) == 1 else None
     if reference and announcement_date and reference['issued_at'] > announcement_date:
         raise ValueError('评级原文日期晚于公告日期，保留原事实')

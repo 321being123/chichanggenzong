@@ -83,6 +83,26 @@ for text,code,issuer in [(gui_notice,'110085.SH','贵州燃气集团股份有限
     except ValueError: pass
 assert parse_gui(gui_notice.replace('“贵燃转债”评级“AA”','“其他转债”评级“AA”'))['rating'] is None
 assert parse_gui(gui_notice.replace('本次评级结果：','本次债项评级：“A+”。本次评级结果：'))['rating'] is None
+# BOND-RATING-NOTICE-NARRATIVE-043：闻泰2023原文的标题末尾年份、点名债项及同段展望。
+wentai='''证券代码：600745 转债代码：110081 转债简称：闻泰转债
+闻泰科技股份有限公司关于“闻泰转债”2023年跟踪评级结果的公告
+前次债券评级：主体信用等级为“AAA”，评级展望为“负面”；债项信用等级为“AAA”。
+本次债券评级：主体信用等级为“AA+”，评级展望为“稳定”；债项信用等级为“AA+”。
+公司委托信用评级机构中诚信国际信用评级有限责任公司（以下简称“中诚信”）进行跟踪评级。
+公司前次主体信用评级结果为“AAA”，评级展望为“负面”；“闻泰转债”前次债项信用评级结果为“AAA”，评级机构为中诚信，评级时间为2022年6月16日。
+评级机构中诚信在对公司经营状况及相关行业进行综合分析与评估的基础上，于2023年6月19日出具了《闻泰科技股份有限公司公开发行可转换公司债券跟踪评级报告（2023）》（信评委函字[2023]跟踪0555号），评级结果如下：维持公司主体信用等级为“AA+”，评级展望为“稳定”，同时维持“闻泰转债”的债项信用等级为“AA+”。'''
+parse_wentai=lambda text: rating.parse_rating_result_notice([text],'闻泰转债','110081.SH','闻泰科技股份有限公司','2023-06-20')
+wentai_result=parse_wentai(wentai)
+assert (wentai_result['rating'],wentai_result['rating_date'],wentai_result['rating_outlook'])==('AA+','2023-06-19','稳定')
+assert wentai_result['rating_result_notice']['report_reference']['title'].endswith('评级报告(2023)')
+assert parse_wentai(wentai.replace('“闻泰转债”的债项信用等级为','“其他转债”的债项信用等级为'))['rating'] is None
+assert parse_wentai(wentai.replace('闻泰转债”的债项信用等级为','闻泰转债”前次债项信用等级为'))['rating'] is None
+assert parse_wentai(wentai.replace('《闻泰科技股份有限公司','《其他股份有限公司'))['rating_date'] is None
+assert parse_wentai(wentai.replace('评级展望为“稳定”，同时','评级展望为“负面”，同时'))['rating_outlook']=='负面'
+assert parse_wentai(wentai.replace('出具了《','出具《'))['rating_date']=='2023-06-19'
+assert parse_wentai(wentai.replace('的债项信用等级为','的信用等级为'))['rating']=='AA+'
+assert parse_wentai(wentai.replace('评级展望为“稳定”，同时','评级展望为“稳定”，评级展望为“负面”，同时'))['rating_outlook'] is None
+assert parse_wentai(wentai+'本次评级结果：闻泰转债评级AA。')['rating'] is None
 rating.read_document=lambda *a: (['维持“国泰转债”信用等级为AA+，评级展望为稳定。本次评级时间 国泰转债 AA+/稳定 2026/06/23'],{'document_hash':'hash'})
 result=rating.extract_rating('url','2026-06-25','002091.SZ','国泰转债')
 assert result['rating']=='AA+' and result['rating_outlook']=='稳定' and result['rating_date']=='2026-06-23'

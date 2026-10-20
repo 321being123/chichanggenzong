@@ -645,6 +645,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     slotId: claimed.slot_id,
     force: Boolean(claimed.request_payload && claimed.request_payload.force === true),
     mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
+    ...(claimed.job_code === 'convertible_bond_universe_refresh' && claimed.request_payload?.mode === 'stock_lifecycle'
+      ? { targetCodes: claimed.request_payload.targetCodes } : {}),
     ...(claimed.job_code === 'company_financial_incremental_sync' && claimed.request_payload?.mode === 'stock_analysis'
       ? { targetCodes: claimed.request_payload.targetCodes } : {}),
     ...(claimed.job_code==='nav_snapshot'&&claimed.request_payload?.mode==='cash_income'
@@ -685,7 +687,7 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
 
   try {
     runId = await startManagedRun(claimed, reason);
-    if (freshnessGateEnabled && !runContext.force && !['prediction_ready', 'enrichment', 'targeted','analysis_inputs','analysis_inputs_targeted'].includes(runContext.mode)) {
+    if (freshnessGateEnabled && !runContext.force && !['prediction_ready', 'enrichment', 'targeted','analysis_inputs','analysis_inputs_targeted','stock_lifecycle'].includes(runContext.mode)) {
       const dataAsOf = await queryDataAsOf(claimed.job_code, claimed.business_date).catch(() => null);
       const partitionDate = expectedDataDate(claimed.job_code, claimed.business_date);
       const datasetsPublished = !definition.strictDatasetPublication

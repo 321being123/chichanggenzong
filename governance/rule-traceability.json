@@ -3193,6 +3193,38 @@
       "status": "implemented"
     },
     {
+      "id": "STOCK-LIFECYCLE-044",
+      "title": "共享采集只对已跟踪且缺席上市名单的旧上市主档核验D状态与实际退市日，落库复用；分析按生效日排除并留证据",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysis.js",
+        "symbol": "loadTrackedDelistedStocks"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-lifecycle-refresh.test.js",
+          "pattern": "STOCK-LIFECYCLE-044"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-NOTICE-NARRATIVE-043",
+      "title": "结果公告按点名本债的本次信用等级、同句展望和明确出具日解析，支持报告标题末尾年份，保留前次与主体隔离",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "parse_rating_result_notice"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-NOTICE-NARRATIVE-043"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
       "id": "QUALITY-ISSUE-CLOSE-IDEMPOTENCY-042",
       "title": "公共质量关闭器按原四维范围幂等合并，保留旧open快照且不关闭其他字段",
       "implementation": {

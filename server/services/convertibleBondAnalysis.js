@@ -41,7 +41,7 @@ const PROFILE_FIELDS = [
 const DAILY_FIELDS = 'ts_code,trade_date,pre_close,open,high,low,close,change,pct_chg,vol,amount,bond_value,bond_over_rate,cb_value,cb_over_rate';
 // 主采集一次拉回完整股票主档，既用于筛选转债正股，也用于建立股票标准层。
 // 不增加接口次数，只扩展同一 stock_basic 请求的字段。
-const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,list_date,list_status';
+const STOCK_STATUS_FIELDS = 'ts_code,symbol,name,area,industry,market,exchange,list_date,list_status,delist_date';
 const FORMULA_VERSION = '4';
 const CN_OFFSET_MS = 8 * 3600 * 1000;
 const ANNOUNCEMENT_OVERLAP_DAYS = 3;
@@ -534,6 +534,50 @@ async function ensureInstrument(client, tsCode, name, assetClass, listDate, deli
 
 // 一次性把 stock_basic 主档写入统一证券层。行情按交易日全市场落库时，
 // 不能只为可转债正股建 instrument，否则 daily/daily_basic 会再次退化为散落旧表。
+async function loadTrackedDelistedStocks(listedRows, targetCodes = [], deps = {}) {
+  if (!listedRows.length && !targetCodes.length) return [];
+  const query = deps.query || pool.query.bind(pool);
+  const fetch = deps.fetch || tushareQuery;
+  const { rows } = await query(`SELECT i.canonical_code FROM core.instruments i
+    WHERE i.asset_class='stock' AND i.status='listed'
+      AND NOT (i.canonical_code=ANY($1::text[]))
+      AND (cardinality($2::text[])=0 OR i.canonical_code=ANY($2::text[]))
+      AND (EXISTS(SELECT 1 FROM stock_watchlist w WHERE w.ts_code=i.canonical_code)
+        OR EXISTS(SELECT 1 FROM positions p WHERE p.instrument_id=i.instrument_id))`,
+  [listedRows.map(row => row.ts_code), targetCodes]);
+  const confirmed = [];
+  for (const { canonical_code: code } of rows) {
+    const data = await fetch('stock_basic', { ts_code: code, list_status: 'D' }, STOCK_STATUS_FIELDS, { allowEmpty: true });
+    const matches = tsRows(data).filter(row => row.ts_code === code && row.list_status === 'D' && isoDate(row.delist_date));
+    if (matches.length === 1) confirmed.push(matches[0]);
+  }
+  return confirmed;
+}
+
+async function syncTrackedStockLifecycle(targetCodes) {
+  if (!Array.isArray(targetCodes) || !targetCodes.length || targetCodes.some(code => !/^\d{6}\.(SH|SZ|BJ)$/.test(code))) {
+    throw new Error('退市核验必须显式指定股票代码');
+  }
+  const rows = await loadTrackedDelistedStocks([], targetCodes);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureStockUniverse(client, rows);
+    const { rows: checked } = await client.query(`SELECT canonical_code,delist_date::text FROM core.instruments
+      WHERE canonical_code=ANY($1::text[]) AND asset_class='stock' AND status='delisted' AND delist_date IS NOT NULL`, [targetCodes]);
+    await client.query('COMMIT');
+    const codes = checked.map(row => row.canonical_code).sort();
+    const ok = codes.length === new Set(targetCodes).size;
+    return { ok, status: ok ? 'succeeded' : 'partial', mode: 'stock_lifecycle', codes,
+      stageComplete: ok, publishDatasetCodes: [], publishDatasets: false,
+      remaining: targetCodes.filter(code => !codes.includes(code)), remainingCount: new Set(targetCodes).size - codes.length,
+      lifecycleEvidence: checked, ...(ok ? {} : { error: '缺少明确退市状态和实际退市日，保留原主档', errorType: 'data_quality' }) };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally { client.release(); }
+}
+
 async function ensureStockUniverse(client, stockRows, sourceId = null) {
   const rows = [...new Map((stockRows || [])
     .map(row => [String(row.ts_code || '').trim().toUpperCase(), row])
@@ -543,19 +587,22 @@ async function ensureStockUniverse(client, stockRows, sourceId = null) {
     ts_code: String(row.ts_code).trim().toUpperCase(),
     name: String(row.name || row.ts_code || '').trim(),
     list_date: isoDate(row.list_date),
-    status: String(row.list_status || 'L').trim().toUpperCase() === 'L' ? 'listed' : 'inactive',
+    delist_date: row.list_status === 'D' ? isoDate(row.delist_date) : null,
+    status: row.list_status === 'D' && isoDate(row.delist_date) ? 'delisted'
+      : String(row.list_status || 'L').trim().toUpperCase() === 'L' ? 'listed' : 'inactive',
     raw_data: row,
   }));
   await client.query(
-    `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data)
+    `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,delist_date,status,raw_data)
      SELECT x.ts_code,x.name,'stock','CN',
             CASE WHEN x.ts_code LIKE '%.SH' THEN 'SSE' WHEN x.ts_code LIKE '%.BJ' THEN 'BSE' ELSE 'SZSE' END,
-            'CNY',x.list_date,x.status,x.raw_data
-       FROM jsonb_to_recordset($1::jsonb) AS x(ts_code text,name text,list_date date,status text,raw_data jsonb)
+            'CNY',x.list_date,x.delist_date,x.status,x.raw_data
+       FROM jsonb_to_recordset($1::jsonb) AS x(ts_code text,name text,list_date date,delist_date date,status text,raw_data jsonb)
      ON CONFLICT(canonical_code) DO UPDATE SET
        name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE core.instruments.name END,
        asset_class='stock',market='CN',exchange_code=EXCLUDED.exchange_code,currency_code='CNY',
        list_date=COALESCE(EXCLUDED.list_date,core.instruments.list_date),status=EXCLUDED.status,
+       delist_date=COALESCE(EXCLUDED.delist_date,core.instruments.delist_date),
        raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()`,
     [JSON.stringify(payload)]
   );
@@ -1848,6 +1895,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
     ]);
     const allBasicRows = tsRows(basicData);
     const stockStatusRows = tsRows(stockStatusData);
+    const trackedDelistedRows = await loadTrackedDelistedStocks(stockStatusRows);
     const listedStockCodes = new Set(stockStatusRows
       .map(row => String(row.ts_code || '').trim().toUpperCase())
       .filter(Boolean));
@@ -2003,6 +2051,7 @@ async function syncConvertibleBondUniverse(reason = 'scheduled', options = {}) {
       for (const row of prevRows.rows) prevConvPrice.set(row.ts_code, finite(row.current_conv_price));
 
       const stockInstrumentMap = await ensureStockUniverse(client, stockStatusRows, sources.tushare);
+      await ensureStockUniverse(client, trackedDelistedRows, sources.tushare);
       for (const profile of profiles) {
         const ids = await saveProfile(client, profile, sources);
         const stockCode = profileStockCodes.get(profile.ts_code) || profile.stk_code;
@@ -3802,7 +3851,7 @@ module.exports = {
   analysisInputTools: { sourceIds,saveProspectusDetails,saveReportFundHolding,saveRatingHistory,saveRatingOutlooks,reportPeriod,
     savePriceChanges,saveAnnouncementHistories,saveRevisionEvents,pythonCandidates,latestProspectus,latestFullReport,isFullReport,
     extractNoRevisionPeriods,extractPriceChangeDetails,loadNoRevisionCache,loadPriceChangeCache },
-  DAILY_FIELDS,
+  DAILY_FIELDS, loadTrackedDelistedStocks, syncTrackedStockLifecycle, ensureStockUniverse,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,
   backfillMissingRatings, backfillBondFirstDayPerformance, backfillBondIssueResults, backfillBondListingLiquidity,
 };

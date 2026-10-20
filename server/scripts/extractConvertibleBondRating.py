@@ -349,6 +349,12 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
         if not tenor:
             tenor = re.search(r'自发行之日起(?:不超过)?([一二三四五六七八九十\d]+)年', initial_issue_summary(text))
         if not tenor:
+            issue_summary = initial_issue_summary(text)
+            summary_tenors = [match for match in re.finditer(r'(?<![\d.])([一二三四五六七八九十]{1,3}|\d{1,2})年', issue_summary)
+                              if issue_summary[max(0,match.start()-2):match.start()] != '最后']
+            if len({chinese_number(match.group(1)) for match in summary_tenors}) == 1:
+                tenor = summary_tenors[0]
+        if not tenor:
             # A debt clause binds the bare "期限" to this issue, not a loan or
             # the issuer's other financial instruments elsewhere in the PDF.
             clause = re.search(r'本次发行的可转换公司债券[^。；]*', text)

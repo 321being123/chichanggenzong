@@ -1739,6 +1739,7 @@ async function backfillBondIssueResults(reason = 'scheduled') {
       return { ...result, reason };
     } catch (error) {
       errors.push(`${executable}: ${error.message}`);
+      if (!['ENOENT','EACCES'].includes(error.code)) throw error;
     }
   }
   throw new Error(errors.join(' | ') || '未找到可用的 Python 解释器');

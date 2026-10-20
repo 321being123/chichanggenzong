@@ -196,6 +196,27 @@ def parse_bond(stk_code, center_date):
     return rate, pch, qty
 
 
+def resolve_issuance_quality(cur, instrument_id, field_code):
+    """幂等关闭已补证字段；旧open快照并入恢复记录，保留原失败证据。"""
+    cur.execute("""WITH pending AS (
+      DELETE FROM ops.data_quality_issues
+       WHERE instrument_id=%s AND dataset_code='cb_issue' AND field_code=%s AND status='open'
+       RETURNING *
+    ) INSERT INTO ops.data_quality_issues
+      (issue_id,instrument_id,dataset_code,field_code,issue_type,severity,status,detected_at,resolved_at,details)
+      SELECT p.issue_id,p.instrument_id,p.dataset_code,p.field_code,p.issue_type,p.severity,
+             'resolved',p.detected_at,now(),COALESCE(p.details,'{}'::jsonb)||
+             jsonb_build_object('resolved_by','backfill_bond_shd','resolution_history',jsonb_build_array(to_jsonb(p)))
+        FROM pending p
+      ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status) DO UPDATE SET
+        resolved_at=EXCLUDED.resolved_at,
+        details=COALESCE(ops.data_quality_issues.details,'{}'::jsonb)||jsonb_build_object(
+          'resolved_by','backfill_bond_shd','resolution_history',
+          COALESCE(ops.data_quality_issues.details->'resolution_history','[]'::jsonb)||
+          (EXCLUDED.details->'resolution_history'))""",(instrument_id,field_code))
+    return cur.rowcount
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("code", nargs="?", default=None)
@@ -277,11 +298,7 @@ def main():
                 ('online_purchase_accounts_10k', upd_pch),
             ):
                 if updated:
-                    cur.execute("""UPDATE ops.data_quality_issues
-                                      SET status='resolved',resolved_at=now(),details=details || %s::jsonb
-                                    WHERE instrument_id=%s AND dataset_code='cb_issue'
-                                      AND field_code=%s AND status='open'""",
-                                (json.dumps({"resolved_by": "backfill_bond_shd"}), instrument_id, field_code))
+                    resolve_issuance_quality(cur,instrument_id,field_code)
             due = bool(res_ann_d)
             issue_type = 'source_field_unavailable' if due else 'pending_not_due'
             for field_code, missing in (

@@ -182,6 +182,17 @@ assert rating.extract_rating(*guotai_args)['rating'] is None,'精确金额相差
 guotai[2]=precise_clause+'本次可转换公司债券发行规模不超过40亿元。'
 assert rating.initial_issue_amount(guotai[2])==(None,None),'两份本次正式条款冲突拒绝'
 # BOND-RATING-ISSUE-TABLE-031：明确发行要素列及中文期限，不借其他贷款金额或期限。
+# BOND-RATING-ISSUE-TENOR-039：明确发行要素表的唯一裸年限仍与本债期限精确匹配，矛盾年限拒绝。
+horizontal=['新疆天业股份有限公司公开发行可转换公司债券信用评级报告\n2021年7月27日',
+    '本期可转换公司债券的信用等级为AA+，评级展望为稳定。',
+    '发行要素\n发行主体\n本期规模\n发行期限\n转股期限\n偿还方式\n新疆天业股份有限公司\n不超过30亿元\n6年\n发行结束之日起满六个月\n支付最后一年利息\n评级观点：业务稳定。']
+rating.read_document=lambda *a,**kwargs:(horizontal,{'document_hash':'a'*64})
+horizontal_args=('url','2022-06-21','600075.SH','天业转债','新疆天业股份有限公司','2022-06-23','3000000000',6,'2022-07-19')
+assert rating.extract_rating(*horizontal_args)['rating']=='AA+'
+for bad in [horizontal[2].replace('6年','5年'),horizontal[2].replace('评级观点','其他贷款3年。评级观点'),horizontal[2].replace('发行期限','项目年限')]:
+    original=horizontal[2];horizontal[2]=bad
+    assert rating.extract_rating(*horizontal_args)['rating'] is None
+    horizontal[2]=original
 summary='发行要素\n发行主体\n本期规模\n发行期限\n偿还方式\n贵州燃气集团股份有限公司\n不超过10亿元（含10亿元）\n自发行之日起六年\n按年付息\n评级观点：公司业务稳定。'
 guiran=['贵州燃气集团股份有限公司公开发行可转换公司债券信用评级报告\n2021年6月23日',
     '本期债券的信用等级为AA，评级展望为稳定。', summary]

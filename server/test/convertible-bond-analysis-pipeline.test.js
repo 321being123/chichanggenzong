@@ -219,6 +219,13 @@ const {pool}=require('../db/connection');
   assert.equal(resumed.ok,true);assert.equal(noticeSaves,1,'同SHA公告复用已落库证据，不能重复采集或保存');
   const {ratingCoverageForReport,validateRatingResultNotice}=require('../services/convertibleBondAnalysisInputs');
   assert.equal(ratingCoverageForReport({...trackingReport,event_date:'2024-05-30'},[noticeEvent],coverageState.documents,noticeBond),null);
+  // BOND-RATING-REPORT-PUBLICATION-040：明确本年报告引用及全范围唯一URL可覆盖跨日发布，歧义/早于实际日拒绝。
+  const nextDayReport={...trackingReport,event_date:'2024-05-30'};
+  const crossDay=ratingCoverageForReport(nextDayReport,[noticeEvent],coverageState.documents,noticeBond,[{event:nextDayReport}]);
+  assert.equal(crossDay.method,'exact_report_reference');assert.equal(crossDay.match_scope,'unique_annual_report_reference');
+  assert.equal(crossDay.report_announced_at,'2024-05-30');assert.equal(crossDay.notice_announced_at,'2024-05-29');
+  assert.equal(ratingCoverageForReport(nextDayReport,[noticeEvent],coverageState.documents,noticeBond,[{event:nextDayReport},{event:{...trackingReport,url:'different-day-version'}}]),null);
+  assert.equal(ratingCoverageForReport({...trackingReport,event_date:'2024-05-26'},[noticeEvent],coverageState.documents,noticeBond,[{event:nextDayReport}]),null);
   assert.equal(ratingCoverageForReport({...trackingReport,title:issuer+'2025年跟踪评级报告'},[noticeEvent],coverageState.documents,noticeBond),null);
   assert.equal(ratingCoverageForReport({...trackingReport,source:'szse'},[noticeEvent],coverageState.documents,noticeBond),null);
   assert.equal(ratingCoverageForReport(trackingReport,[noticeEvent],coverageState.documents,noticeBond,

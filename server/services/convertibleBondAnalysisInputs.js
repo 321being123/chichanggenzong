@@ -258,10 +258,12 @@ function ratingCoverageForReport(event,notices,documents,bond,reports=[]) {
     if(noticeEvent.source!==event.source)continue;
     const notice=result.rating_result_notice,reference=notice.report_reference;
     let date=null,method=null;
-    if(normalize(reference.title)===title&&isoDate(noticeEvent.event_date)===isoDate(event.event_date)) {
-      const urls=new Set(reports.filter(item=>item.event.source===event.source&&normalize(item.event.title)===title&&
-        isoDate(item.event.event_date)===isoDate(event.event_date)).map(item=>item.event.url));
-      if(urls.size>1)continue;
+    const samePublication=isoDate(noticeEvent.event_date)===isoDate(event.event_date);
+    const datedTracking=new RegExp(`${reference.issued_at.slice(0,4)}年(?:度)?(?:定期)?(?:信用)?跟踪`).test(title)&&
+      isoDate(event.event_date)>=reference.issued_at;
+    if(normalize(reference.title)===title&&(samePublication||datedTracking)) {
+      const urls=new Set(reports.filter(item=>item.event.source===event.source&&normalize(item.event.title)===title).map(item=>item.event.url));
+      if(urls.size>1||(!samePublication&&urls.size!==1))continue;
       date=reference.issued_at;method='exact_report_reference';
     } else if(issued&&listed&&isoDate(event.event_date)<=listed&&isoDate(event.event_date)<=isoDate(noticeEvent.event_date)) {
       const prefix=normalize(notice.issuer_name);
@@ -274,6 +276,8 @@ function ratingCoverageForReport(event,notices,documents,bond,reports=[]) {
       }
     }
     if(method)candidates.push({notice_url:noticeEvent.url,document_hash:result.document_hash,rating_date:date,
+      report_announced_at:isoDate(event.event_date),notice_announced_at:isoDate(noticeEvent.event_date),
+      match_scope:samePublication?'same_publication_date':'unique_annual_report_reference',
       rating:result.rating,method,evidence:reference});
   }
   if(new Set(candidates.map(row=>`${row.rating_date}:${row.rating}`)).size!==1)return null;

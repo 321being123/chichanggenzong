@@ -3103,6 +3103,54 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-ISSUE-TENOR-039",
+      "title": "明确初发要素表唯一裸年限按期限精确核验，最后一年利息非发行年限，歧义拒绝",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "extract_rating"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-ISSUE-TENOR-039"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-REPORT-PUBLICATION-040",
+      "title": "明确本年度报告引用与同源全范围唯一URL可关联跨日发布，实际出具日前及多版本拒绝",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "ratingCoverageForReport"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-RATING-REPORT-PUBLICATION-040"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-ISSUE-QUALITY-RETRY-041",
+      "title": "已补证发行字段质量关闭幂等合并并保存旧open快照，业务错误不得更换解释器重复外部采集",
+      "implementation": {
+        "file": "ipo-report/backfill_bond_shd.py",
+        "symbol": "resolve_issuance_quality"
+      },
+      "tests": [
+        {
+          "file": "server/test/bond-issue-result-idempotency.test.js",
+          "pattern": "BOND-ISSUE-QUALITY-RETRY-041"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

@@ -9,6 +9,7 @@ const outputPath = path.join(__dirname, '..', 'docs', '任务接口数据集矩�
 const traceabilityPath = path.join(__dirname, '..', 'governance', 'rule-traceability.json');
 
 function scheduleOf(job) {
+  if (job.disabled) return `已暂停：${job.disabledReason}`;
   if (job.manualOnly) return '人工';
   if (job.marketCalendarPolicy === 'hk-close') return 'HKEX 收市 + 20 分钟（全日 16:30，半日 12:30）';
   if (job.marketCalendarPolicy === 'hk-rate') return 'HKEX 收市 + 25 分钟；仅 A 股开市日 16:15';

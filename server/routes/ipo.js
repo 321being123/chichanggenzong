@@ -9,6 +9,17 @@ const { getBondBySecurityCode, getBondHistoryList } = require('../services/bondD
 const { getHkFormalGateStatus } = require('../services/hkIpoBacktest');
 const { normalizeHkIpoShortName } = require('../services/hkIpoMarketSignals');
 const { attachFirstDayPerformance } = require('../services/ipoIntraday');
+const { getJobDefinition } = require('../services/jobDefinitions');
+
+router.use((req, res, next) => {
+  if (!getJobDefinition('hk_ipo_preopen').disabled) return next();
+  const hkRequest = (req.path === '/calendar' && String(req.query.market).toUpperCase() === 'HK')
+    || (req.path === '/history' && req.query.type === 'hk_stock')
+    || (req.path === '/report/code' && /^\d{1,5}(?:\.HK)?$/i.test(String(req.query.code || '')));
+  if (hkRequest) return res.status(503).json({ code: 'HK_IPO_SUSPENDED', error: '港股 IPO 功能暂时下线，等待可用数据源后恢复。' });
+  if (req.path === '/calendar' && String(req.query.market).toUpperCase() === 'ALL') req.query.market = 'CN';
+  next();
+});
 
 function isBeijingStock(code) {
   return /^(920|82|83|87|43)/.test(String(code || ''));

@@ -1,5 +1,7 @@
 // 后台人工补跑入口。使用现有任务实现，避免在管理路由里复制业务逻辑。
 async function runJobByCode(jobCode, reason = 'manual-retry', businessDate, context = {}) {
+  const definition = require('./jobDefinitions').getJobDefinition(jobCode);
+  if (definition.disabled) return { ok: false, skipped: true, reason: 'job_disabled', error: definition.disabledReason };
   switch (jobCode) {
     case 'company_financial_incremental_sync':
       {

@@ -107,6 +107,10 @@ const server = app.listen(0, async () => {
     assert.strictEqual(payload.calendar.find(day => day.date === '2026-08-16').list_stocks[0].code, '688826');
 
     mode = 'hk-calendar';
+    // 先验证线上暂停边界，再验证保留的底层港股能力，便于后续恢复。
+    response = await fetch(`${base}/api/ipo/calendar?market=HK&days=3`);
+    assert.strictEqual(response.status, 503);
+    require('../services/jobDefinitions').getJobDefinition('hk_ipo_preopen').disabled = false;
     response = await fetch(`${base}/api/ipo/calendar?market=HK&days=3`);
     assert.strictEqual(response.status, 200);
     payload = await response.json();

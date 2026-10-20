@@ -224,6 +224,7 @@ async function datasetDependencyState(slot, definition) {
 async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient = null) {
   const definition = JOB_DEFINITIONS.find(item => item.jobCode === jobCode);
   if (!definition) return null;
+  if (definition.disabled) throw new Error(definition.disabledReason);
   const safePayload = sanitizeJobResult(requestPayload || {});
   const client = transactionClient || await pool.connect();
   try {
@@ -259,6 +260,7 @@ async function enqueueManualJob(jobCode, requestPayload = {}, transactionClient 
 async function reconcileSlot(slot) {
   if (!slot || new Date(slot.scheduled_for) > new Date()) return slot;
   const definition = getJobDefinition(slot.job_code);
+  if (definition.disabled) return slot;
   // succeeded 是执行终态。后续只允许展示/告警，不得再次根据水位重放业务任务。
   if (slot.status === 'succeeded') return slot;
   // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
@@ -438,7 +440,7 @@ async function syncScheduleSlots(now = new Date()) {
   await prefetchMarketFacts('HK', allDates);
   const created = [];
   for (const definition of JOB_DEFINITIONS) {
-    if (definition.manualOnly) continue;
+    if (definition.manualOnly || definition.disabled) continue;
     const schedules = [
       { hour: definition.hour, minute: definition.minute, mode: definition.mode || 'core' },
       ...(definition.additionalSchedules || []),
@@ -482,6 +484,7 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
   const lookup = await pool.query('SELECT job_code,business_date::text AS business_date,scheduled_for FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
   if (!lookup.rows[0]) return null;
   const definition = getJobDefinition(lookup.rows[0].job_code);
+  if (definition.disabled) return null;
   const dependencies = definition.dependencyCodes || [];
   if (dependencies.length) {
     const states = await taskDependencyStates(lookup.rows[0], dependencies);
@@ -569,7 +572,7 @@ async function recoverExpiredSlots() {
 
 async function listDueSlots(limit = 20) {
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
-  const retryPolicies = JOB_DEFINITIONS.map(definition => ({
+  const retryPolicies = JOB_DEFINITIONS.filter(definition => !definition.disabled).map(definition => ({
     job_code: definition.jobCode, max_attempts: definition.maxAttempts || 3,
   }));
   const { rows } = await pool.query(
@@ -904,6 +907,9 @@ async function touchSlot(slotId, workerId = WORKER_ID) {
 }
 
 async function retryJobSlot(slotId) {
+  const lookup = await pool.query('SELECT job_code FROM ops.job_schedule_slots WHERE slot_id=$1', [slotId]);
+  const definition = getJobDefinition(lookup.rows[0]?.job_code);
+  if (definition.disabled) throw new Error(definition.disabledReason);
   const { rows } = await pool.query(
     `UPDATE ops.job_schedule_slots
         SET status='pending', attempt_count=0, next_attempt_at=now(), trigger_type='manual_retry',

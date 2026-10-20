@@ -3,6 +3,22 @@
   "lastReviewed": "2026-10-20",
   "rules": [
     {
+      "id": "HK-IPO-SUSPENDED-001",
+      "title": "港股IPO暂停时排程旧槽重试人工执行和公开入口均阻断",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "definition.disabled"
+      },
+      "tests": [
+        {
+          "file": "server/test/hk-ipo-suspension.test.js",
+          "pattern": "港股 IPO 暂停边界通过"
+        }
+      ],
+      "owner": "港股IPO",
+      "status": "verified"
+    },
+    {
       "id": "ARBITRAGE-IDENTITY-001",
       "title": "A股买方投资公告不能创建发布方退出机会且历史公开入口同样排除",
       "implementation": {

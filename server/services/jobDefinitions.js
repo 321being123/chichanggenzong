@@ -133,6 +133,8 @@ const JOB_DEFINITIONS = JOB_DEFINITION_SOURCE.map(item => ({
   ...DEFAULT_JOB_OPTIONS,
   ...item,
   ...(JOB_CONTRACTS[item.jobCode] || {}),
+  ...(['hk_ipo_preopen', 'hk_ipo_postclose', 'hk_ipo_enrichment'].includes(item.jobCode)
+    ? { disabled: true, disabledReason: '港股 IPO 暂时下线，等待可用数据源后恢复' } : {}),
 }));
 
 const JOB_DEFINITION_MAP = new Map(JOB_DEFINITIONS.map(item => [item.jobCode, item]));

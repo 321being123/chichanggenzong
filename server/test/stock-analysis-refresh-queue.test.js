@@ -6,11 +6,12 @@ const root = path.resolve(__dirname, '../..');
 const servicePath = path.join(root, 'server/services/companyFinancialIncrementalSync.js');
 const nativeRequire = require('module').createRequire(servicePath);
 let targets = [{ instrument_id: 158867, company_id: 5388, list_date: '1996-11-01' }];
-let cursors = new Map(), requests = [], snapshots = [], failKind = null, slotCalls = [];
+let cursors = new Map(), requests = [], snapshots = [], failKind = null, slotCalls = [], eventCalls = [], eventsFail = false;
 const stock = {
   normalizeStockCode: code => code === '600763' ? '600763.SH' : code,
   isOrdinaryAStock: code => /^60\d{4}\.SH$/.test(code),
   refreshStockAnalysis: async (...args) => snapshots.push(args),
+  refreshEvents: async (...args) => { eventCalls.push(args); if (eventsFail) throw new Error('公告采集失败'); },
 };
 const context = { module: { exports: {} }, Date, console, process,
   require: name => name === '../db' ? { pool: { query: async () => ({ rows: targets }) } }
@@ -40,6 +41,11 @@ const service = context.module.exports;
   assert.strictEqual(requests[0].options.startDate, '19961101', '首次采集从上市日开始');
   assert(requests[3].options.reportPeriods.includes('20001231'), '指标截断补漏需覆盖历史报告期');
   assert.strictEqual(snapshots[0][2].readOnly, true);
+  assert.strictEqual(eventCalls[0][0], '600763.SH', '单股正常刷新必须采集公告');
+  snapshots = []; eventsFail = true;
+  await assert.rejects(service.syncRequestedStockAnalysis(options), /公告采集失败/);
+  assert.strictEqual(snapshots.length, 0, '公告失败不发布新的完整分析快照');
+  eventsFail = false;
   requests = []; snapshots = [];
   for (const kind of ['income', 'balance', 'cashflow', 'indicator']) cursors.set(`company:5388:${kind}`,
     { last_attempt_at: new Date('2026-10-20T02:00:00Z'), last_source_update: new Date('2026-08-20T00:00:00Z'), last_error: '' });

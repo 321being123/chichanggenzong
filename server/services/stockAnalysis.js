@@ -422,6 +422,7 @@ async function fetchSseEvents(tsCode, startDate, endDate, keyword = '', options 
     const payload = await requestJson(`https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?${params.toString()}`,
       { headers: { Referer: 'https://www.sse.com.cn/' } });
     pageCount += 1;
+    if (!payload || !payload.pageHelp || !Array.isArray(payload.pageHelp.data)) throw new Error('上交所公告响应格式异常');
     const pageRows = payload && payload.pageHelp && Array.isArray(payload.pageHelp.data) ? payload.pageHelp.data : [];
     rows.push(...pageRows);
     const signature = pageRows.map(row => String(row.INFO_CODE || row.URL || row.TITLE || '')).join('|');
@@ -654,16 +655,23 @@ function mergeOfficialEventSources(results) {
 }
 
 async function refreshEvents(tsCode, today) {
-  const state = await pool.query(`SELECT c.last_success_date FROM ops.sync_cursors c JOIN core.instruments i ON i.instrument_id=c.instrument_id WHERE i.canonical_code=$1 AND c.dataset_code='events'`, [tsCode]);
+  const state = await pool.query(`SELECT to_char(c.last_success_date,'YYYYMMDD') last_success_date,c.last_error FROM ops.sync_cursors c JOIN core.instruments i ON i.instrument_id=c.instrument_id WHERE i.canonical_code=$1 AND c.dataset_code='events' ORDER BY c.last_success_date DESC NULLS LAST LIMIT 1`, [tsCode]);
   const last = state.rows[0] && dateText(state.rows[0].last_success_date);
+  if (last === today && !state.rows[0].last_error) return;
   const start = eventRefreshStart(last, today);
   try {
-    const sources = await Promise.allSettled([
-      fetchCninfoEvents(tsCode, start, today),
-      tsCode.endsWith('.SH') ? fetchSseEvents(tsCode, start, today)
-        : tsCode.endsWith('.SZ') ? fetchSzseEvents(tsCode, start, today) : Promise.resolve([])
-    ]);
-    const unique = mergeOfficialEventSources(sources);
+    const completeEvents = async fetcher => {
+      const result = await fetcher(tsCode, start, today, '', { structured: true });
+      if (!result || !result.complete || !Array.isArray(result.events)
+        || result.diagnostics?.reason === 'org_id_not_found') throw new Error('公告采集未完成，保留已有公告和成功水位');
+      return result.events.filter(event => event.is_official);
+    };
+    const exchange = tsCode.endsWith('.SH') ? fetchSseEvents : tsCode.endsWith('.SZ') ? fetchSzseEvents : null;
+    let unique;
+    if (exchange) {
+      try { unique = await completeEvents(exchange); }
+      catch (_) { unique = await completeEvents(fetchCninfoEvents); }
+    } else unique = await completeEvents(fetchCninfoEvents);
     await saveEvents(tsCode, unique);
     await pool.query(`INSERT INTO ops.sync_cursors(instrument_id,company_id,scope_key,dataset_code,last_success_date,last_attempt_at,last_error)
       SELECT i.instrument_id,ci.company_id,i.instrument_id||':'||ci.company_id,'events',$2,now(),'' FROM core.instruments i JOIN core.company_instruments ci ON ci.instrument_id=i.instrument_id WHERE i.canonical_code=$1
@@ -1164,7 +1172,7 @@ async function listUserStocks(username) {
   return rows.filter(row => isOrdinaryAStock(row.ts_code));
 }
 
-module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources,
+module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources, refreshEvents,
   refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
   fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport, fetchSseEventsBatch, fetchSzseEventsBatch,
   fetchCninfoEventsBatch, fetchTushareAnnouncementBatch, sourceForUrl };

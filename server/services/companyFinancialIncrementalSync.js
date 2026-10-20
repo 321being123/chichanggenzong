@@ -432,7 +432,7 @@ async function enqueueStockAnalysisSync(rawCode) {
 }
 
 async function syncRequestedStockAnalysis(options) {
-  const { normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis } = require('./stockAnalysis');
+  const { normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis, refreshEvents } = require('./stockAnalysis');
   const codes = options.targetCodes;
   if (!Array.isArray(codes) || codes.length !== 1) throw new Error('单股刷新必须指定一只股票');
   const tsCode = normalizeStockCode(codes[0]);
@@ -465,6 +465,7 @@ async function syncRequestedStockAnalysis(options) {
     const persisted = await persistCompanyReports(current, reportResult, options);
     if (!persisted.ok) throw new Error(persisted.failed.map(item => `${item.kind}: ${item.error}`).join('；'));
   }
+  await refreshEvents(tsCode, today);
   await refreshStockAnalysis(tsCode, 'manual-financial-sync', { readOnly: true });
   return { ok: true, status: 'succeeded', stageComplete: true, mode: 'stock_analysis', tsCode,
     codes: [tsCode], targetFields: [], publishDatasets: false, publishDatasetCodes: [] };

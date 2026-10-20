@@ -4,7 +4,7 @@
   "rules": [
     {
       "id": "STOCK-ANALYSIS-REFRESH-001",
-      "title": "普通A股显式刷新必须真实入队并按原单股范围落库重算且失败保留旧快照",
+      "title": "普通A股显式刷新必须真实入队且财报与公告完成后才更新快照，失败保留旧快照",
       "implementation": {
         "file": "server/services/companyFinancialIncrementalSync.js",
         "symbol": "syncRequestedStockAnalysis"
@@ -13,6 +13,10 @@
         {
           "file": "server/test/stock-analysis-refresh-queue.test.js",
           "pattern": "stock analysis refresh queue tests passed"
+        },
+        {
+          "file": "server/test/stock-announcement-refresh.test.js",
+          "pattern": "stock announcement refresh: source order"
         }
       ],
       "owner": "证券分析",

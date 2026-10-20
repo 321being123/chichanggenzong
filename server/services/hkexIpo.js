@@ -1342,8 +1342,11 @@ async function syncHkexProspectusFacts({
                AND payload#>>'{parser,parserStatus}'='parsed'
              ORDER BY ingested_at DESC LIMIT 1`, [source.rows[0].source_id, HKEX_PROSPECTUS_DATASET, `${code}|${cachedUrl}`]);
           let payload = persisted.rows[0]?.payload;
+          const needsTimetableReparse=payload?.parser?.expectedTimetableVersion!=='hk-ipo-timetable-v2'&&
+            ((!candidate.allotment_at&&!payload?.parser?.expectedAllotmentDate)||
+              (!candidate.listing_at&&!payload?.parser?.expectedListingDate));
           if (!payload || payload.sourceUrl !== cachedUrl || !/^[a-f0-9]{64}$/.test(payload.responseSha256 || '')
-            || (payload.parser.securityCode && canonicalHkCode(payload.parser.securityCode) !== code)) {
+            || needsTimetableReparse || (payload.parser.securityCode && canonicalHkCode(payload.parser.securityCode) !== code)) {
             const { buffer } = await fetchOfficialPdfWithCache(
               cachedUrl, fetchImpl, { responseType: 'buffer', maxResponseBytes: 40 * 1024 * 1024 }
             );

@@ -347,6 +347,14 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
       const events=await (deps.readDocuments||readDocuments)(bond,targetDate);
+      for(const event of events.filter(e=>tools.reportPeriod(e.title)&&!tools.isFullReport(e))) {
+        for(const kind of ['holders','price_history']) {
+          const key=`${kind}:${event.url}`,prior=state.documents[key];
+          if(prior&&prior.status!=='complete')state.documents[key]={...prior,status:'not_applicable',parserVersion:INPUT_VERSION,
+            previousFailure:prior.previousFailure||prior.error||null,
+            classificationEvidence:{reason:'not_full_periodic_report',title:event.title,url:event.url,announcedAt:isoDate(event.event_date)}};
+        }
+      }
       state.rating_publication_delays=events.filter(isRatingPublicationDelay).map(event=>({url:event.url,title:event.title,
         announcedAt:isoDate(event.event_date),status:'not_applicable',reason:'publication_delay_is_not_rating_result'}));
       for(const notice of state.rating_publication_delays) {

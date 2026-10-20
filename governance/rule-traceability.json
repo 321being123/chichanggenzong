@@ -3063,6 +3063,46 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-REPORT-ROLE-037",
+      "title": "旧误选非全文报告改非适用且保留失败证据，真实解析失败仍列待补",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "syncConvertibleBondAnalysisInputs"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-pipeline.test.js",
+          "pattern": "BOND-REPORT-ROLE-037"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-database.test.js",
+          "pattern": "BOND-REPORT-ROLE-037"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
+      "id": "HK-IPO-TIMETABLE-038",
+      "title": "H股时间表按明确行解析分隔时分和预计日期，拒绝天气脚注，缺事件旧缓存按独立版本重解析",
+      "implementation": {
+        "file": "server/scripts/extractHkIpoProspectus.py",
+        "symbol": "parse_prospectus_text"
+      },
+      "tests": [
+        {
+          "file": "server/test/test_hk_ipo_prospectus_parser.py",
+          "pattern": "HK-IPO-TIMETABLE-038"
+        },
+        {
+          "file": "server/test/production-ops-recovery.test.js",
+          "pattern": "HK-IPO-TIMETABLE-038"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

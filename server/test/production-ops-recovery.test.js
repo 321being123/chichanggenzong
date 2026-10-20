@@ -93,6 +93,16 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
     vm.runInContext("fetchOfficialPdfWithCache=async()=>{throw new Error('must reuse persisted current official facts')}", serviceContext);
     await serviceContext.module.exports.syncHkexProspectusFacts(options);
     assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 }, '未来招股项目的区间与存量固定价不一致必须重新核验');
+    // HK-IPO-TIMETABLE-038：只升级缺预计事件的旧缓存，复用PDF后不重复下载或覆盖实际最终价。
+    await client.query(`UPDATE ops.raw_records SET payload=jsonb_set(payload,'{parser}',
+      (payload->'parser')-'expectedAllotmentDate'-'expectedListingDate'-'expectedTimetableVersion') WHERE source_key=$1`,[`${code}|${url}`]);
+    vm.runInContext("globalThis.timingsReparsed=0;globalThis.previousParser=parseHkexProspectusPdf;fetchOfficialPdfWithCache=async()=>{globalThis.timingsReparsed++;return {buffer:Buffer.from('official fixture'),url:officialUrl}};parseHkexProspectusPdf=async()=>({...await previousParser(),expectedTimetableVersion:'hk-ipo-timetable-v2'})",serviceContext);
+    await serviceContext.module.exports.syncHkexProspectusFacts(options);
+    assert.equal(serviceContext.timingsReparsed,1);
+    vm.runInContext("fetchOfficialPdfWithCache=async()=>{throw Error('重复下载已升级的时间表')}",serviceContext);
+    await serviceContext.module.exports.syncHkexProspectusFacts(options);
+    assert.equal(serviceContext.timingsReparsed,1);
+    assert.deepStrictEqual(await prices(), { issue_price_low: 2, issue_price_high: 3, issue_price_final: 2.5 });
     await client.query('UPDATE public.ipo_history SET offer_close_at=NULL WHERE security_code=$1', [code]);
     await client.query('DELETE FROM ops.raw_records WHERE source_key=$1', [`${code}|${url}`]);
     vm.runInContext("fetchOfficialPdfWithCache=async()=>({buffer:Buffer.from('invalid PDF'),url:officialUrl});parseHkexProspectusPdf=async()=>{throw new Error('invalid official PDF')}", serviceContext);

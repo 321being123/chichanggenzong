@@ -121,6 +121,29 @@ def test_spaced_cover_security_code_and_sentence_price():
     assert (result["issuePriceLow"], result["issuePriceHigh"]) == (4.10, 4.51)
 
 
+def test_spaced_english_clock_and_h_share_timetable():
+    # HK-IPO-TIMETABLE-038：分开的时分及H股措辞仍须明确原文日期，预计事件不写实际事件。
+    result = parse_prospectus_text(
+        'Hong Kong Public Offering commences 9: 00 a.m. on Tuesday, October 20, 2026. '
+        'Application lists of the Hong Kong Public Offering close 12: 00 noon on Friday, October 23, 2026. '
+        'Expected Price Determination Date by 12: 00 noon on Monday, October 26, 2026. '
+        'the basis of allocation of the Hong Kong Offer Shares to be published at or before 11: 00 p.m. on Tuesday, October 27, 2026. '
+        'Dealings in H Shares on the Main Board of the Stock Exchange to commence at 9: 00 a.m. on Wednesday, October 28, 2026.'
+    )
+    assert result['offerOpenAt'] == '2026-10-20T09:00:00+08:00'
+    assert result['offerCloseAt'] == '2026-10-23T12:00:00+08:00'
+    assert result['expectedAllotmentDate'] == '2026-10-27'
+    assert result['expectedListingDate'] == '2026-10-28'
+    assert result['expectedTimetableVersion'] == 'hk-ipo-timetable-v2'
+    variant = parse_prospectus_text('Dealings in our H Shares on the Hong Kong Stock Exchange expected to commence at 9:00 a.m. on October 28, 2026.')
+    assert variant['expectedListingDate'] == '2026-10-28'
+    evening = parse_prospectus_text('Hong Kong Public Offering commences at 9: 00 p.m. on October 20, 2026.')
+    assert evening['offerOpenAt'] == '2026-10-20T21:00:00+08:00'
+    assert parse_prospectus_text('Hong Kong Public Offering commences at 25: 00 on October 20, 2026.')['offerOpenAt'] is None
+    notes='when the application lists close. (3) If there is a warning at any time between 9: 00 a.m. and 12: 00 noon on Friday, October 23, 2026, the application lists will not open or close.'
+    assert parse_prospectus_text(notes)['offerCloseAt'] is None, '天气脚注不能代正式截止行'
+
+
 if __name__ == "__main__":
     test_maximum_price_is_not_final_price()
     test_price_range_and_chinese_maximum()
@@ -130,4 +153,5 @@ if __name__ == "__main__":
     test_invalid_month_first_date_does_not_publish()
     test_prices_require_currency_and_chinese_bounds_override_dates()
     test_spaced_cover_security_code_and_sentence_price()
-    print("PASS=8  FAIL=0  ERROR=0")
+    test_spaced_english_clock_and_h_share_timetable()
+    print("PASS=9  FAIL=0  ERROR=0")

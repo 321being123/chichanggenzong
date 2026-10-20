@@ -864,10 +864,13 @@ function reportPeriod(title) {
   return `${match[1]}-${match[2] === '半年度' ? '06-30' : '12-31'}`;
 }
 
+function isFullReport(event) {
+  return Boolean(reportPeriod(event.title) && event.url && !/摘要|英文|取消/.test(String(event.title || '')) &&
+    /20\d{2}年(?:半年度|年度)报告(?:全文)?(?:[（(](?:修订|更新|更正)(?:版|稿|后)?[）)])?$/.test(String(event.title || '').replace(/\s+/g, '')));
+}
+
 function latestFullReport(events) {
-  return (events || [])
-    .filter(event => reportPeriod(event.title) && event.url && !/摘要|英文|取消/.test(String(event.title || '')) &&
-      /20\d{2}年(?:半年度|年度)报告(?:全文)?(?:[（(](?:修订|更新|更正)(?:版|稿|后)?[）)])?$/.test(String(event.title || '').replace(/\s+/g, '')))
+  return (events || []).filter(isFullReport)
     .sort((a, b) => reportPeriod(b.title).localeCompare(reportPeriod(a.title)) ||
       String(isoDate(b.event_date || b.announced_at) || '').localeCompare(String(isoDate(a.event_date || a.announced_at) || '')))[0] || null;
 }
@@ -3627,7 +3630,7 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
   if(analysis.stock.asset_liability_ratio==null)missing.push('financial_reports');
   if(analysis.stock.pb==null||marketCap==null)missing.push('stock_valuation');
   for (const kind of ['call','reset','put']) if (termDetails[kind].parse_status !== 'complete') missing.push(`${kind}_clause`);
-  const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([,state])=>state.status!=='complete').map(([key,state])=>({
+  const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([,state])=>!['complete','not_applicable'].includes(state.status)).map(([key,state])=>({
     key,status:state.status,reason:state.error?String(state.error).trim().split(/\r?\n/).filter(Boolean).slice(-1)[0].slice(0,250):null,
   }));
   if(pendingDocuments.length)missing.push('historical_documents');
@@ -3796,7 +3799,7 @@ module.exports = {
   loadSafety, latestFinancial,
   buildConvertibleBondAnalysisFromDatabase,
   analysisInputTools: { sourceIds,saveProspectusDetails,saveReportFundHolding,saveRatingHistory,saveRatingOutlooks,reportPeriod,
-    savePriceChanges,saveAnnouncementHistories,saveRevisionEvents,pythonCandidates,latestProspectus,latestFullReport,
+    savePriceChanges,saveAnnouncementHistories,saveRevisionEvents,pythonCandidates,latestProspectus,latestFullReport,isFullReport,
     extractNoRevisionPeriods,extractPriceChangeDetails,loadNoRevisionCache,loadPriceChangeCache },
   DAILY_FIELDS,
   syncConvertibleBondUniverseWithBackfill, backfillCycleGaps, backfillUnderlyingStockMarket, getRecentOpenDays,

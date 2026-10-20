@@ -252,5 +252,18 @@ const {pool}=require('../db/connection');
   assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},exemptionDeps)).ok,true);
   assert.equal(exemptBond.raw_payload.analysis_inputs.not_due.basis,'official_not_listed_by_report_period');
   assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},{...exemptionDeps,project:async()=>{throw Error('重复解析已完成原文');}})).ok,true);
+  // BOND-REPORT-ROLE-037：旧误选提示公告保留失败证据并改非适用角色，正式全文仍需真正解析。
+  const roleBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:{
+    'holders:notice-only':{status:'failed',error:'定期报告未披露持有人表'},
+    'price_history:notice-only':{status:'failed',error:'旧误选公告'},
+  }}}};
+  const roleEvents=[...events.filter(e=>e.url!=='report'),announcement,fullReport];
+  const roleDeps={...exemptionDeps,loadUniverse:async()=>[roleBond],readDocuments:async()=>roleEvents,
+    project:async(kind,event)=>{assert.notEqual(event.url,'notice-only');return {document_hash:'f'.repeat(64)};},save:async()=>{}};
+  assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13'},roleDeps)).ok,true);
+  const role=roleBond.raw_payload.analysis_inputs.documents['holders:notice-only'];
+  assert.equal(role.status,'not_applicable');assert.equal(role.previousFailure,'定期报告未披露持有人表');
+  assert.equal(role.classificationEvidence.reason,'not_full_periodic_report');
+  assert.equal(roleBond.raw_payload.analysis_inputs.documents['holders:full-report'].status,'complete');
   console.log('BOND-ANALYSIS-001/002 passed: 全量覆盖、目标日期、失败保留、定向作用域与资料续跑');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>pool.end());

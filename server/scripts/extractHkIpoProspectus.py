@@ -228,8 +228,8 @@ def _parse_chinese_time(value):
     elif "中午" in text:
         meridiem = "noon"
     match = re.search(r"([零〇一二三四五六七八九十百兩\d]+)時(?:(零〇一二三四五六七八九十\d+)分)?", text)
-    if not match:
-        match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if not match and meridiem:
+        match = re.search(r"(\d{1,2})\s*:\s*(\d{2})", text)
     if not match:
         return None
     hour = _chinese_integer(match.group(1))
@@ -244,7 +244,7 @@ def _parse_chinese_time(value):
 
 
 def _parse_date_time(text, start, end, require_clock=True):
-    window = text[start:end]
+    window = re.split(r"\(\d+\)\s*(?:If\b|All times\b|You will\b)", text[start:end], maxsplit=1, flags=re.IGNORECASE)[0]
     chinese = re.search(r"([零〇一二三四五六七八九十百兩\d]{4,})\s*年\s*"
                        r"([零〇一二三四五六七八九十百兩\d]{1,3})\s*月\s*"
                        r"([零〇一二三四五六七八九十百兩\d]{1,3})\s*日", window)
@@ -310,7 +310,7 @@ def _parse_date_time(text, start, end, require_clock=True):
         return None
     clock = _parse_chinese_time(window)
     if clock is None:
-        time_match = re.search(r"(\d{1,2}):(\d{2})\s*(a\.m\.|p\.m\.|am|pm)?", window, flags=re.IGNORECASE)
+        time_match = re.search(r"(\d{1,2})\s*:\s*(\d{2})\s*(a\.m\.|p\.m\.|am|pm)?", window, flags=re.IGNORECASE)
         if time_match:
             hour, minute = int(time_match.group(1)), int(time_match.group(2))
             suffix = (time_match.group(3) or "").lower()
@@ -322,6 +322,8 @@ def _parse_date_time(text, start, end, require_clock=True):
     if clock is None:
         return None if require_clock else date_text
     hour, minute = clock
+    if hour > 23 or minute > 59:
+        return None
     return f"{date_text}T{hour:02d}:{minute:02d}:00+08:00"
 
 
@@ -330,6 +332,7 @@ def parse_prospectus_text(text):
     result = {
         "parserStatus": "incomplete",
         "parserVersion": "hk-ipo-prospectus-v7",
+        "expectedTimetableVersion": "hk-ipo-timetable-v2",
         "securityCode": None,
         "issuePriceLow": None,
         "issuePriceHigh": None,
@@ -446,6 +449,7 @@ def parse_prospectus_text(text):
         "Hong Kong Public Offering closes",
         "Latest time for lodging applications",
         "Latest time for applications",
+        "Application lists of the Hong Kong Public Offering close",
         "Application lists close",
     ]
     for marker in open_markers:
@@ -475,12 +479,15 @@ def parse_prospectus_text(text):
             "公佈香港公開發售分配結果",
             "Announcement of the final Offer Price, the level of indications of interest",
             "Announcement of the Offer Price, the level of indications of interest",
+            "the basis of allocation of the Hong Kong Offer Shares to be published",
         ],
         "expectedListingDate": [
             "listing on the main board of the stock exchange is expected to take place on",
             "listing on the main board is expected to take place on", "expected to commence dealings on",
             "預期於聯交所主板上市", "預計於聯交所主板上市", "開始在聯交所買賣",
             "Dealings in the H Shares on the Stock Exchange expected to commence at",
+            "Dealings in H Shares on the Main Board of the Stock Exchange to commence at",
+            "Dealings in our H Shares on the Hong Kong Stock Exchange expected to commence at",
         ],
     }
     for field, markers in expected_markers.items():

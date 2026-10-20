@@ -38,6 +38,17 @@ const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
   const response=await fetch(`http://127.0.0.1:${server.address().port}/api/bond-analysis/127991`);
   assert.equal(response.status,200);const payload=await response.json();assert.equal(payload.terms.call.ratio,1.3);assert.equal(writes,0);
   pool.query=originalQuery;
+  // BOND-REPORT-ROLE-037：非适用旧记录不再制造历史缺口，真正失败仍需展示。
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||$2::jsonb WHERE instrument_id=$1`,
+    [bond,JSON.stringify({analysis_inputs:{documents:{'holders:notice-only':{status:'not_applicable',previousFailure:'旧误选'},'rating:real-report':{status:'failed',error:'缺本次证据'}}}})]);
+  const withFailure=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
+  assert.deepEqual(withFailure.completeness.pending_documents.map(d=>d.key),['rating:real-report']);
+  assert(withFailure.completeness.missing.includes('historical_documents'));
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=jsonb_set(raw_payload,'{analysis_inputs,documents,rating:real-report,status}','"complete"') WHERE instrument_id=$1`,[bond]);
+  const withoutFailure=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
+  assert.equal(withoutFailure.completeness.pending_documents.length,0);
+  assert(!withoutFailure.completeness.missing.includes('historical_documents'));
+  await pool.query("UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload-'analysis_inputs' WHERE instrument_id=$1",[bond]);
   const {readSnapshot}=require('../services/datasetPartitionRegistry');
   const baseline=await readSnapshot('bond_analysis_snapshot',{partitionKey:'2026-09-30'});
   await pool.query(`INSERT INTO analytics.analysis_snapshots(instrument_id,as_of_date,snapshot_type,formula_bundle_version,payload)

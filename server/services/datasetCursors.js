@@ -131,8 +131,22 @@ async function resolveQualityIssue(issue = {}, options = {}) {
   if (!issue.instrumentId || !issue.datasetCode || !issue.issueType) return;
   try {
     await client.query(
-      `UPDATE ops.data_quality_issues SET status='resolved',resolved_at=now()
-        WHERE instrument_id=$1 AND dataset_code=$2 AND field_code=$3 AND issue_type=$4 AND status='open'`,
+      `WITH pending AS (
+         DELETE FROM ops.data_quality_issues
+          WHERE instrument_id=$1 AND dataset_code=$2 AND field_code=$3 AND issue_type=$4 AND status='open'
+          RETURNING *
+       ) INSERT INTO ops.data_quality_issues
+         (issue_id,instrument_id,dataset_code,field_code,issue_type,severity,status,detected_at,resolved_at,details)
+         SELECT p.issue_id,p.instrument_id,p.dataset_code,p.field_code,p.issue_type,p.severity,
+           'resolved',p.detected_at,now(),COALESCE(p.details,'{}'::jsonb)||jsonb_build_object(
+             'resolved_by','datasetCursors.resolveQualityIssue','resolution_history',jsonb_build_array(to_jsonb(p)))
+         FROM pending p
+       ON CONFLICT(instrument_id,dataset_code,field_code,issue_type,status) DO UPDATE SET
+         resolved_at=EXCLUDED.resolved_at,
+         details=COALESCE(ops.data_quality_issues.details,'{}'::jsonb)||jsonb_build_object(
+           'resolved_by','datasetCursors.resolveQualityIssue','resolution_history',
+           COALESCE(ops.data_quality_issues.details->'resolution_history','[]'::jsonb)||
+           (EXCLUDED.details->'resolution_history'))`,
       [issue.instrumentId, issue.datasetCode, issue.fieldCode || '', issue.issueType]
     );
   } catch (_) {

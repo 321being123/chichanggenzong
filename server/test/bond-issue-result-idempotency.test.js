@@ -46,5 +46,26 @@ print('quality closure atomicity and evidence preserved')
   vm.runInContext("globalThis.attempts=0;runBondIssueResultBackfill=async()=>{globalThis.attempts++;if(globalThis.attempts===1){const e=Error('missing executable');e.code='ENOENT';throw e;}return {updated:1,failed:0}}",context);
   assert.equal((await vm.runInContext('backfillBondIssueResults',context)()).updated,1);
   assert.equal(context.attempts,2);
+  // QUALITY-ISSUE-CLOSE-IDEMPOTENCY-042：公共Node关闭器同样保留原记录/快照，跨字段不受影响。
+  const {pool}=require('../db/connection');
+  const {resolveQualityIssue}=require('../services/datasetCursors');
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const instrument=(await client.query('SELECT instrument_id FROM core.instruments LIMIT 1')).rows[0].instrument_id;
+    const field='test_node_idempotency_042';
+    await client.query("DELETE FROM ops.data_quality_issues WHERE instrument_id=$1 AND dataset_code='test_quality_042'",[instrument]);
+    await client.query(`INSERT INTO ops.data_quality_issues(instrument_id,dataset_code,field_code,issue_type,severity,status,details)
+      VALUES($1,'test_quality_042',$2,'missing','warning','resolved','{"earlier":"preserved"}'),
+      ($1,'test_quality_042',$2,'missing','warning','open','{"error":"new missing"}'),
+      ($1,'test_quality_042','other-field','missing','warning','open','{}')`,[instrument,field]);
+    const issue={instrumentId:instrument,datasetCode:'test_quality_042',fieldCode:field,issueType:'missing'};
+    await resolveQualityIssue(issue,{client});await resolveQualityIssue(issue,{client});
+    const rows=(await client.query("SELECT field_code,status,details FROM ops.data_quality_issues WHERE instrument_id=$1 AND dataset_code='test_quality_042'",[instrument])).rows;
+    const closed=rows.filter(r=>r.field_code===field);assert.equal(closed.length,1);assert.equal(closed[0].status,'resolved');
+    assert.equal(closed[0].details.earlier,'preserved');assert.equal(closed[0].details.resolution_history.length,1);
+    assert.equal(closed[0].details.resolution_history[0].details.error,'new missing');
+    assert.equal(rows.find(r=>r.field_code==='other-field').status,'open');
+  }finally{await client.query('ROLLBACK');client.release();await pool.end();}
   console.log('BOND-ISSUE-QUALITY-RETRY-041 passed: 幂等恢复保留证据，业务错误不重放采集');
 })().catch(e=>{console.error(e);process.exitCode=1});

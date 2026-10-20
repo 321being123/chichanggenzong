@@ -3151,6 +3151,22 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "QUALITY-ISSUE-CLOSE-IDEMPOTENCY-042",
+      "title": "公共质量关闭器按原四维范围幂等合并，保留旧open快照且不关闭其他字段",
+      "implementation": {
+        "file": "server/services/datasetCursors.js",
+        "symbol": "resolveQualityIssue"
+      },
+      "tests": [
+        {
+          "file": "server/test/bond-issue-result-idempotency.test.js",
+          "pattern": "QUALITY-ISSUE-CLOSE-IDEMPOTENCY-042"
+        }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
     }
   ]
 }

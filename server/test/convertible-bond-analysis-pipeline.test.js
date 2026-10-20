@@ -56,9 +56,15 @@ const {pool}=require('../db/connection');
   assert.equal(requiredReportPeriod('2026-08-31'),'2025-12-31');assert.equal(requiredReportPeriod('2026-09-01'),'2026-06-30');
   assert.equal(requiredReportPeriod('2026-04-30'),'2025-06-30');assert.equal(requiredReportPeriod('2026-05-01'),'2025-12-31');
   let discovered=0,projected=0;
+  let ratingFacts=[];
+  const ratingResult={document_hash:'a'.repeat(64),rating:'AA',rating_outlook:'稳定',rating_date:'2026-06-23',
+    rating_com_name:'测试评级机构',rating_date_source:'official_document',source_url:'rating',bond_name:bond.bond_short_name,security_code:bond.stock_code};
+  const saveRating=async(kind,event,result)=>{if(kind==='rating')ratingFacts=[{rating_date:result.rating_date,announced_at:event.event_date,
+    rating_company:result.rating_com_name,rating:result.rating,rating_outlook:result.rating_outlook,raw_payload:structuredClone(result)}];};
   const deps={latestDate:async()=> '2026-09-30',loadUniverse:async()=>[bond],discover:async()=>{discovered++;},
-    readDocuments:async()=>events,project:async(kind)=>{projected++;if(kind==='holders')throw new Error('报告解析失败');return {document_hash:'hash'};},
-    save:async()=>{},persistBond:async(b,state)=>{b.raw_payload.analysis_inputs=structuredClone(state);},persist:async(d,date,s)=>{persisted=s;}};
+    readDocuments:async()=>events,readRatings:async()=>structuredClone(ratingFacts),
+    project:async(kind)=>{projected++;if(kind==='holders')throw new Error('报告解析失败');return kind==='rating'?structuredClone(ratingResult):{document_hash:'hash'};},
+    save:saveRating,persistBond:async(b,state)=>{b.raw_payload.analysis_inputs=structuredClone(state);},persist:async(d,date,s)=>{persisted=s;}};
   const first=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-12',targetCodes:['127040']},deps);
   assert.equal(first.ok,false);assert.deepEqual(first.remaining,['127040.SZ']);assert.deepEqual(first.publishDatasets,[]);
   assert.equal(persisted.scopeKey.startsWith('convertible_bond_analysis:targeted:'),true);
@@ -142,11 +148,12 @@ const {pool}=require('../db/connection');
   let projectedDelay=false;
   let classifiedDelay;
   const delayOnly=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},{...deps,
+    readRatings:async()=>[],
     loadUniverse:async()=>[{...bond,raw_payload:{analysis_inputs:{documents:{'rating:delay':{status:'failed',error:'旧解析失败'}}}}}],readDocuments:async()=>events.filter(e=>e.url!=='rating').concat(delay),
     project:async(kind,event)=>{if(event.url==='delay')projectedDelay=true;return {document_hash:'hash'};},
     persistBond:async(b,state)=>{classifiedDelay=state.documents['rating:delay'];},
   });
-  assert.equal(projectedDelay,false);assert.equal(delayOnly.ok,false);assert.ok(delayOnly.missingFields['127040.SZ'].includes('rating_report'));
+  assert.equal(projectedDelay,false);assert.equal(delayOnly.ok,false);assert.ok(delayOnly.missingFields['127040.SZ'].includes('rating'));
   assert.equal(classifiedDelay.status,'not_applicable');assert.equal(classifiedDelay.previousFailure,'旧解析失败');
   assert.equal(classifiedDelay.classificationEvidence.url,'delay');
   // BOND-RATING-REVALIDATE-019: 已完成但疑似取前次日期只重验该原文，不借旧标准事实再次完成。
@@ -158,8 +165,8 @@ const {pool}=require('../db/connection');
   assert.deepEqual([...suspect],['rating']);
   let revalidated=[];
   const savedBond={...bond,raw_payload:{analysis_inputs:{coveredThrough:'2026-10-13',documents:Object.fromEntries(inputDocuments(events,bond).map(d=>[`${d.kind}:${d.event.url}`,{status:'complete',parserVersion:'analysis-input-v4'}]))}}};
-  const revalidationDeps={...deps,loadUniverse:async()=>[savedBond],suspectRatingUrls:async()=>suspect,
-    project:async(kind,event)=>{revalidated.push(event.url);return {document_hash:'hash',rating_date_source:'official_document'};},save:async()=>{},persistBond:async()=>{}};
+  const revalidationDeps={...deps,loadUniverse:async()=>[savedBond],suspectRatingUrls:async()=>new Set(suspect),
+    project:async(kind,event)=>{revalidated.push(event.url);return structuredClone(ratingResult);},save:async()=>{},persistBond:async()=>{}};
   assert.equal((await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['127040']},revalidationDeps)).ok,true);
   assert.deepEqual(revalidated,['rating']);
   let dubiousSaved=false;
@@ -202,12 +209,14 @@ const {pool}=require('../db/connection');
       'rating:tracking-2024':{status:'failed',parserVersion:'analysis-input-v4',error:'OCR日期残缺'},
     }}}};
   const noticeEvents=[trackingReport,initialReport,noticeEvent,{url:'prospectus',title:'公开发行可转换公司债券募集说明书',event_date:'2022-04-12'},events[2]];
-  let noticeSaves=0;
+  let noticeSaves=0,noticeFacts=[];
   const noticeDeps={...deps,loadUniverse:async()=>[noticeBond],discover:async()=>{},readDocuments:async()=>noticeEvents,
+    readRatings:async()=>structuredClone(noticeFacts),
     suspectRatingUrls:async()=>new Set([trackingReport.url]),project:async(kind,event)=>{
       if(kind==='rating'){assert.equal(event.url,noticeEvent.url,'已核验替代证据避免重复扫描原失败报告');return structuredClone(noticeResult);}
       return {document_hash:'c'.repeat(64)};
-    },save:async(kind)=>{if(kind==='rating')noticeSaves++;}};
+    },save:async(kind,event,result)=>{if(kind==='rating'){noticeSaves++;noticeFacts=[{rating_date:result.rating_date,announced_at:event.event_date,
+      rating:result.rating,rating_outlook:result.rating_outlook,rating_company:result.rating_com_name,raw_payload:structuredClone(result)}];}}};
   const covered=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['113646']},noticeDeps);
   assert.equal(covered.ok,true);assert.equal(covered.remainingCount,0);assert.deepEqual(covered.publishDatasets,[]);assert.equal(noticeSaves,1);
   const coverageState=noticeBond.raw_payload.analysis_inputs;
@@ -239,6 +248,7 @@ const {pool}=require('../db/connection');
   assert.equal(ratingCoverageForReport(trackingReport,[noticeEvent],failedNotice,noticeBond),null,'失败公告/旧残留元数据不能提供恢复证据');
   noticeBond.raw_payload.analysis_inputs.documents=failedNotice;
   const failedSource=await syncConvertibleBondAnalysisInputs({businessDate:'2026-10-13',targetCodes:['113646']},{...noticeDeps,
+    readRatings:async()=>[],
     project:async(kind)=>{if(kind==='rating')throw Error('公告解析不完整');return {document_hash:'c'.repeat(64)};}});
   assert.equal(failedSource.ok,false);assert.equal(failedSource.remainingCount,1);assert.ok(failedSource.nextRunAt);
   assert.deepEqual(noticeBond.raw_payload.analysis_inputs.rating_coverage,{});
@@ -251,6 +261,8 @@ const {pool}=require('../db/connection');
   validateHolderExemption(exemptionResult,exemptBond);
   for(const bad of [{...exemptBond,list_date:null},{...exemptBond,list_date:'2026-06-01'},{...exemptBond,bond_short_name:'其他转债'}])assert.throws(()=>validateHolderExemption(exemptionResult,bad),/不适用缺少/);
   const exemptionDeps={latestDate:async()=> '2026-09-30',loadUniverse:async()=>[exemptBond],discover:async()=>{},
+    readRatings:async b=>[{rating_date:'2026-06-23',announced_at:'2026-06-25',rating_company:'测试评级机构',rating:'AA',rating_outlook:'稳定',
+      raw_payload:{ts_code:b.ts_code,rating_date:'20260623',rating_com_name:'测试评级机构',rating:'AA',rating_outlook:'稳定'}}],
     readDocuments:async()=>[{url:'prospectus-exempt',title:'公司公开发行可转换公司债券募集说明书',event_date:'2026-06-20'},
       {url:'report-exempt',title:'公司2026年半年度报告',event_date:'2026-08-26'},{url:'rating-exempt',title:'公司公开发行可转换公司债券信用评级报告',event_date:'2026-06-20'}],
     project:async kind=>kind==='holders'?exemptionResult:{document_hash:'e'.repeat(64)},

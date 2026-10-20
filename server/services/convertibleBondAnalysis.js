@@ -3680,7 +3680,11 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
   if(analysis.stock.asset_liability_ratio==null)missing.push('financial_reports');
   if(analysis.stock.pb==null||marketCap==null)missing.push('stock_valuation');
   for (const kind of ['call','reset','put']) if (termDetails[kind].parse_status !== 'complete') missing.push(`${kind}_clause`);
-  const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([,state])=>!['complete','not_applicable'].includes(state.status)).map(([key,state])=>({
+  const ratingRequirement=profile.analysis_inputs?.rating_requirement;
+  if(ratingRequirement?.version==='latest-complete-history-present-v1'&&!ratingRequirement.latest_complete)missing.push('rating');
+  const pendingDocuments=Object.entries(profile.analysis_inputs?.documents||{}).filter(([key,state])=>
+    !['complete','not_applicable'].includes(state.status)&&(!key.startsWith('rating:')||
+      ratingRequirement?.version!=='latest-complete-history-present-v1'||(ratingRequirement.required_document_urls||[]).includes(key.slice(7)))).map(([key,state])=>({
     key,status:state.status,reason:state.error?String(state.error).trim().split(/\r?\n/).filter(Boolean).slice(-1)[0].slice(0,250):null,
   }));
   if(pendingDocuments.length)missing.push('historical_documents');

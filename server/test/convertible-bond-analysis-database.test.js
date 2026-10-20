@@ -48,6 +48,16 @@ const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
   const withoutFailure=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
   assert.equal(withoutFailure.completeness.pending_documents.length,0);
   assert(!withoutFailure.completeness.missing.includes('historical_documents'));
+  // BOND-RATING-LATEST-045：历史失败只留证据，当前要求仍须展示真实缺口。
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload||$2::jsonb WHERE instrument_id=$1`,
+    [bond,JSON.stringify({analysis_inputs:{rating_requirement:{version:'latest-complete-history-present-v1',latest_complete:true,required_document_urls:[]},
+      documents:{'rating:old-report':{status:'failed',error:'历史缺展望'}}}})]);
+  const historicalOnly=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
+  assert.deepEqual(historicalOnly.completeness.pending_documents,[]);
+  assert(!historicalOnly.completeness.missing.includes('historical_documents'));
+  await pool.query(`UPDATE fundamental.convertible_bond_profiles SET raw_payload=jsonb_set(raw_payload,'{analysis_inputs,rating_requirement,latest_complete}','false') WHERE instrument_id=$1`,[bond]);
+  const latestMissing=await buildConvertibleBondAnalysisFromDatabase('127991.SZ','2026-09-30',{persist:false});
+  assert(latestMissing.completeness.missing.includes('rating'));
   await pool.query("UPDATE fundamental.convertible_bond_profiles SET raw_payload=raw_payload-'analysis_inputs' WHERE instrument_id=$1",[bond]);
   const {readSnapshot}=require('../services/datasetPartitionRegistry');
   const baseline=await readSnapshot('bond_analysis_snapshot',{partitionKey:'2026-09-30'});
@@ -84,27 +94,34 @@ const noticeUrl='https://disc.static.szse.cn/test-rating-result-025.pdf';
   await pool.query(`UPDATE fundamental.convertible_bond_ratings SET raw_payload=raw_payload||$2::jsonb
     WHERE instrument_id=$1 AND rating_date='2026-06-23'`,[bond,JSON.stringify({rating_date_source:'official_document',
       text_method:'rapidocr-onnx-v1',document_hash:'a'.repeat(64),source_url:'old-ocr-report',rating_grade_context_version:'current-grade-v1'})]);
+  await pool.query(`INSERT INTO fundamental.convertible_bond_ratings(instrument_id,rating_date,announced_at,rating_company,rating,source_id,raw_payload)
+    VALUES($1,'2023-11-01','2023-11-03','测试机构','AA-',$2,'{}')`,[bond,source]);
   await run();await run();
-  const saved=(await pool.query(`SELECT rating_date::text,rating,source_id,raw_payload FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date`,[bond])).rows;
+  const saved=(await pool.query(`SELECT rating_date::text,rating,rating_outlook,source_id,raw_payload FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date`,[bond])).rows;
   assert.deepEqual(saved.map(r=>[r.rating_date,r.rating]),[['2023-11-01','AA-'],['2026-06-23','AA-']]);
-  assert.equal(saved[0].raw_payload.rating_date_context,'explicit_previous_named_bond');
-  assert.equal(saved[0].raw_payload.outlook_source_url,noticeUrl);
-  assert.ok(saved.every(row=>row.source_id===official),'官方公告事实的正式来源列必须与原文一致');
+  assert.deepEqual(saved[0].raw_payload,{},'不为旧评级补造日期/展望证据');
+  assert(!saved[0].rating_outlook,'相同等级的旧评级也不沿用最新展望补写');
+  assert.equal(saved[0].source_id,source,'历史记录的来源保留');
+  assert.equal(saved[1].source_id,official,'最新官方公告事实来源与原文一致');
   assert.equal(saved[1].raw_payload.replaced_rating_evidence[0].rating,'AA+');
   assert.equal(saved[1].raw_payload.replaced_rating_evidence[0].document_hash,'a'.repeat(64));
   await pool.query(`UPDATE fundamental.convertible_bond_ratings SET rating='AA+',raw_payload=raw_payload||
     '{"rating_date_context":"current_summary_table","rating_grade_context_version":"current-grade-v1"}'::jsonb
     WHERE instrument_id=$1 AND rating_date='2023-11-01'`,[bond]);
   noticeResult.document_hash='e'.repeat(64);
+  noticeResult.rating_outlook='负面';
+  await pool.query(`UPDATE fundamental.convertible_bond_ratings SET raw_payload=raw_payload||' {"rating_outlook":null}'::jsonb WHERE instrument_id=$1 AND rating_date='2026-06-23'`,[bond]);
   await run();
   const retained=(await pool.query(`SELECT rating_date::text,rating FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 ORDER BY rating_date`,[bond])).rows;
-  assert.deepEqual(retained.map(r=>r.rating),['AA+','AA-'],'前次冲突必须回滚本次修改');
+  assert.deepEqual(retained.map(r=>r.rating),['AA+','AA-'],'历史前次差异保留，不阻塞本次最新事实');
   const doc=(await pool.query("SELECT raw_payload->'analysis_projections'->'rating' as rating FROM event.documents WHERE document_id=$1",[noticeDocument])).rows[0];
-  assert.equal(doc.rating.rating,'AA-','事务失败不能覆盖原有效投影');
-  assert.equal(doc.rating.document_hash,'d'.repeat(64));
+  assert.equal(doc.rating.rating,'AA-');
+  assert.equal(doc.rating.rating_outlook,'负面','最新展望仍实际补齐');
+  assert.equal(doc.rating.document_hash,'e'.repeat(64));
   let failedState=(await pool.query("SELECT raw_payload->'analysis_inputs'->'documents'->$2->>'error' as error FROM fundamental.convertible_bond_profiles WHERE instrument_id=$1",[bond,'rating:'+noticeUrl])).rows[0];
-  assert.match(failedState.error,/前次评级与已核验本次原文冲突/);
+  assert.equal(failedState.error,null,'不因历史前次三项产生失败');
   noticeResult.rating='A';
+  await pool.query(`UPDATE fundamental.convertible_bond_ratings SET raw_payload=raw_payload||' {"rating_outlook":null}'::jsonb WHERE instrument_id=$1 AND rating_date='2026-06-23'`,[bond]);
   await run();
   failedState=(await pool.query("SELECT raw_payload->'analysis_inputs'->'documents'->$2->>'error' as error FROM fundamental.convertible_bond_profiles WHERE instrument_id=$1",[bond,'rating:'+noticeUrl])).rows[0];
   assert.match(failedState.error,/已有原生本次评级结论冲突/);

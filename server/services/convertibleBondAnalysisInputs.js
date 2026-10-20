@@ -10,6 +10,7 @@ const {isoDate,normalizeBondCode,announcementDateWindows,analysisInputTools:tool
 const {loadAnalysisUniverse,persistAnalysisProgress,latestAnalysisDate}=require('./convertibleBondAnalysisSnapshots');
 
 const INPUT_VERSION='analysis-input-v4';
+const RATING_REQUIREMENT_VERSION='latest-complete-history-present-v1';
 function sha(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
 function validateRatingGrade(result) {
   if(result.rating_conflicts?.length)throw new Error(`目标债项本次评级结论冲突，保留原事实：${JSON.stringify(result.rating_conflicts)}`);
@@ -184,8 +185,8 @@ async function saveProjection(kind,event,result,bond) {
         if(dates.length!==1)throw new Error('评级实际日期未唯一核验，不能把公告日写成评级日');
         result.rating_date=dates[0].date;result.rating_date_source='existing_standard_fact';
       }
-      const previous=result.rating_result_notice?.previous_ratings||[];
-      await client.query(`DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1
+      const previous=result.rating_requirement_version===RATING_REQUIREMENT_VERSION?[]:result.rating_result_notice?.previous_ratings||[];
+      if(result.rating_requirement_version!==RATING_REQUIREMENT_VERSION)await client.query(`DELETE FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1
         AND raw_payload->>'source_url'=$2 AND raw_payload ? 'document_hash' AND NOT(rating_date=ANY($3::date[]))`,
         [bond.instrument_id,event.url,[result.rating_date,...previous.map(row=>row.rating_date)]]);
       for(const row of previous) {
@@ -203,7 +204,7 @@ async function saveProjection(kind,event,result,bond) {
       if(result.rating_result_notice)await client.query(`UPDATE fundamental.convertible_bond_ratings SET source_id=$3
         WHERE instrument_id=$1 AND raw_payload->>'source_url'=$2 AND rating_date=ANY($4::date[])`,
         [bond.instrument_id,event.url,sourceId,[result.rating_date,...previous.map(row=>row.rating_date)]]);
-      await tools.saveRatingOutlooks(client,bond.instrument_id,[result]);
+      if(result.rating_requirement_version!==RATING_REQUIREMENT_VERSION)await tools.saveRatingOutlooks(client,bond.instrument_id,[result]);
     }
     if(kind==='price_history'&&result.price_changes?.length) await tools.savePriceChanges(client,bond.instrument_id,result.price_changes,sourceId);
     await client.query('COMMIT');
@@ -235,7 +236,7 @@ function validateRatingResultNotice(event,result,bond) {
     notice.report_reference?.issued_at!==result.rating_date||!notice.report_reference.title.startsWith(notice.issuer_name)) {
     throw new Error('评级结果公告缺目标代码、发行人或本次原文证据，禁止替代报告');
   }
-  for(const prior of notice.previous_ratings||[])if(!prior.rating||!prior.rating_outlook||!prior.date_evidence||!prior.rating_evidence||
+  for(const prior of result.rating_requirement_version===RATING_REQUIREMENT_VERSION?[]:notice.previous_ratings||[])if(!prior.rating||!prior.rating_outlook||!prior.date_evidence||!prior.rating_evidence||
     prior.rating_com_name!==result.rating_com_name||
     prior.rating_date_source!=='official_document'||prior.rating_date_context!=='explicit_previous_named_bond'||!prior.rating_date||prior.rating_date>=result.rating_date) {
     throw new Error('结果公告前次评级缺独立债项、实际日与展望证据');
@@ -309,6 +310,42 @@ function requiredReportPeriod(targetDate) {
   return month>=9?`${year}-06-30`:month>=5?`${year-1}-12-31`:`${year-1}-06-30`;
 }
 
+async function readRatingHistory(bond,targetDate) {
+  if(!bond.instrument_id)return [];
+  const {rows}=await pool.query(`SELECT rating_date::text,announced_at::text,rating_company,rating,rating_outlook,raw_payload
+    FROM fundamental.convertible_bond_ratings WHERE instrument_id=$1 AND rating_date<=$2::date
+      AND (announced_at IS NULL OR announced_at<=$2::date) ORDER BY rating_date DESC,announced_at DESC`,[bond.instrument_id,targetDate]);
+  return rows;
+}
+
+function ratingRequirement(bond,records,documents,targetDate,suspectUrls=new Set()) {
+  const available=records.filter(row=>row.rating&&isoDate(row.rating_date)&&isoDate(row.rating_date)<=targetDate&&
+    (!row.announced_at||isoDate(row.announced_at)<=targetDate));
+  available.sort((a,b)=>String(isoDate(b.rating_date)).localeCompare(String(isoDate(a.rating_date)))||
+    String(isoDate(b.announced_at)||'').localeCompare(String(isoDate(a.announced_at)||'')));
+  const latest=available[0],raw=latest?.raw_payload||{},date=isoDate(latest?.rating_date),announced=isoDate(latest?.announced_at);
+  const newestDocumentDate=documents.map(item=>isoDate(item.event.event_date)).filter(Boolean).sort().at(-1);
+  const documentIdentity=/^[a-f0-9]{64}$/i.test(raw.document_hash||'')&&
+    (raw.rating_result_notice?raw.rating_result_notice.bond_code===bond.ts_code&&
+      raw.rating_result_notice.bond_name===bond.bond_short_name&&raw.rating_result_notice.rating_company===latest.rating_company:
+      raw.identity_binding?raw.identity_binding.validated===true&&String(raw.identity_binding.instrument_id)===String(bond.instrument_id):
+      raw.bond_name===bond.bond_short_name&&raw.security_code===bond.stock_code);
+  const identity=raw.document_hash?documentIdentity:raw.ts_code===bond.ts_code;
+  const actualDate=['official_document','existing_standard_fact'].includes(raw.rating_date_source)||
+    !raw.rating_date_source&&raw.ts_code===bond.ts_code;
+  const sameLatest=available.filter(row=>isoDate(row.rating_date)===date&&isoDate(row.announced_at)===announced);
+  const conflict=new Set(sameLatest.map(row=>row.rating)).size>1||raw.rating_conflicts?.length>0;
+  const complete=Boolean(latest&&identity&&actualDate&&!conflict&&!suspectUrls.has(raw.source_url)&&latest.rating_company&&latest.rating_outlook&&
+    raw.rating===latest.rating&&raw.rating_com_name===latest.rating_company&&raw.rating_outlook===latest.rating_outlook&&
+    isoDate(raw.rating_date)===date&&announced&&date<=announced&&
+    !/主体|发行人/.test(String(raw.rating_type||''))&&(!newestDocumentDate||announced>=newestDocumentDate));
+  return {version:RATING_REQUIREMENT_VERSION,target_date:targetDate,history_available:available.length>0,history_count:available.length,
+    latest_complete:complete,latest_rating_date:date||null,latest_announced_at:announced||null,
+    latest_rating:latest?.rating||null,latest_agency:latest?.rating_company||null,
+    latest_outlook:complete?latest.rating_outlook:null,
+    required_document_urls:complete?[]:documents.filter(item=>isoDate(item.event.event_date)===newestDocumentDate).map(item=>item.event.url)};
+}
+
 async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],maxRuntimeMs=10*60000}={},deps={}) {
   const targetDate=isoDate(businessDate);
   if(!targetDate)throw new Error('资料补全必须传入任务目标日');
@@ -367,7 +404,12 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
           classificationEvidence:notice,previousFailure:prior?.previousFailure||prior?.error||null};
       }
       const selected=inputDocuments(events,bond);
+      const ratingRecords=await (deps.readRatings||readRatingHistory)(bond,targetDate);
+      const ratingDocuments=selected.filter(item=>item.kind==='rating');
       const suspectUrls=await (deps.suspectRatingUrls||suspectRatingUrls)(bond);
+      let ratingState=ratingRequirement(bond,ratingRecords,ratingDocuments,targetDate,suspectUrls);
+      const keepRatingEvidence=()=>{if(!isoDate(state.rating_requirement?.target_date)||state.rating_requirement.target_date<=targetDate)state.rating_requirement=ratingState;};
+      keepRatingEvidence();
       const notices=selected.filter(d=>d.kind==='rating'&&isRatingResultNotice(d.event)).map(d=>d.event);
       const ratingReports=selected.filter(d=>d.kind==='rating'&&!isRatingResultNotice(d.event));
       const needNotices=!ratingReports.length||ratingReports.some(d=>state.documents[`rating:${d.event.url}`]?.status!=='complete'||suspectUrls.has(d.event.url));
@@ -378,8 +420,8 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
       if(!selected.some(d=>d.kind==='prospectus'))missing.push('prospectus');
       if(!selected.some(d=>d.kind==='holders')&&!reportNotDue)missing.push('latest_report');
       if(selected.some(d=>d.kind==='holders'&&tools.reportPeriod(d.event.title)<expectedPeriod))missing.push('latest_report_stale');
-      if(!selected.some(d=>d.kind==='rating'))missing.push('rating_report');
       for(const {kind,event} of selected) {
+        if(kind==='rating'&&(ratingState.latest_complete||!ratingState.required_document_urls.includes(event.url)))continue;
         if(kind==='issuance_terms'&&!Object.entries(state.documents).some(([key,value])=>key.startsWith('prospectus:')&&value.couponStatus==='not_disclosed'))continue;
         const key=`${kind}:${event.url}`,prior=state.documents[key];
         const optionalNotice=kind==='rating'&&isRatingResultNotice(event);
@@ -389,21 +431,35 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
           if(coverage){state.rating_coverage[event.url]=coverage;continue;}
         }
         const revalidateRating=kind==='rating'&&suspectUrls.has(event.url);
-        if(!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
-        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(!optionalNotice)missing.push(kind);continue;}
-        if(Date.now()-started>=maxRuntimeMs){if(!optionalNotice)missing.push(kind);stoppedForTime=true;continue;}
+        if(kind!=='rating'&&!revalidateRating&&prior?.status==='complete'&&(prior.parserVersion===INPUT_VERSION||prior.parserVersion==='analysis-input-v3'&&/^[a-f0-9]{64}$/i.test(prior.documentHash||'')&&prior.documentHash===event.content_hash))continue;
+        if(prior?.status==='blocked'&&prior.parserVersion===INPUT_VERSION){if(kind!=='rating'&&!optionalNotice)missing.push(kind);continue;}
+        if(Date.now()-started>=maxRuntimeMs){if(kind!=='rating'&&!optionalNotice)missing.push(kind);stoppedForTime=true;continue;}
         try {
           const result=await (deps.project||projectDocument)(kind,event,bond);
-          if(kind==='rating'){validateRatingGrade(result);validateTrackingRatingYear(event,result);validateRatingResultNotice(event,result,bond);}
+          if(kind==='rating'){result.rating_requirement_version=RATING_REQUIREMENT_VERSION;validateRatingGrade(result);validateTrackingRatingYear(event,result);validateRatingResultNotice(event,result,bond);}
           if(revalidateRating&&result.rating_date_source!=='official_document')throw new Error('原评级日期疑似前次，缺本次原文实际日期，不能沿用可疑标准日期');
           await (deps.save||saveProjection)(kind,event,result,bond);
+          if(kind==='rating') {
+            if(revalidateRating&&result.rating_date_source==='official_document')suspectUrls.delete(event.url);
+            const record={rating_date:result.rating_date,announced_at:isoDate(event.event_date),
+              rating:result.rating,rating_outlook:result.rating_outlook,rating_company:result.rating_com_name,raw_payload:result};
+            const priorIndex=ratingRecords.findIndex(row=>isoDate(row.rating_date)===isoDate(record.rating_date)&&row.rating_company===record.rating_company);
+            if(priorIndex<0)ratingRecords.push(record);else ratingRecords[priorIndex]=record;
+            ratingState=ratingRequirement(bond,ratingRecords,ratingDocuments,targetDate,suspectUrls);
+            keepRatingEvidence();
+          }
           state.documents[key]={status:'complete',parserVersion:INPUT_VERSION,documentHash:result.document_hash,couponStatus:result.coupon_status,announcedAt:isoDate(event.event_date)};
           if(kind==='holders'&&result.parse_status==='not_applicable')state.documents[key].holderExemption={...result.holder_exemption,report_date:result.report_date};
           if(optionalNotice)state.documents[key].ratingResult=result;
-        } catch(error) {if(!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
+        } catch(error) {if(kind!=='rating'&&!optionalNotice)missing.push(kind);const message=String(error.stderr||error.message).trim().split(/\r?\n/).filter(Boolean).at(-1).slice(-600);state.documents[key]={...prior,previousStatus:prior?.previousStatus||prior?.status,status:message.includes('需要OCR')?'blocked':'failed',parserVersion:INPUT_VERSION,error:message,attemptedAt:new Date().toISOString()};}
         await (deps.persistBond||persistBondInputs)(bond,state);
       }
-      if(!ratingReports.length&&!notices.some(event=>readValidatedRatingNotice(event,state.documents,bond)))missing.push('rating_report');
+      for(const {event} of ratingReports) {
+        const coverage=ratingCoverageForReport(event,notices,state.documents,bond,ratingReports);
+        if(coverage)state.rating_coverage[event.url]=coverage;
+      }
+      if(!ratingState.history_available)missing.push('rating_history');
+      if(!ratingState.latest_complete)missing.push('rating');
       const exemptHolder=selected.filter(d=>d.kind==='holders').map(d=>state.documents[`holders:${d.event.url}`]?.holderExemption).find(e=>e?.report_date===expectedPeriod);
       if(exemptHolder) {
         validateHolderExemption({parse_status:'not_applicable',holder_exemption:exemptHolder,holder_table_bond:bond.bond_short_name,report_date:exemptHolder.report_date},bond);
@@ -430,4 +486,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,INPUT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,ratingRequirement,INPUT_VERSION,RATING_REQUIREMENT_VERSION};

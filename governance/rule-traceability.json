@@ -3193,6 +3193,17 @@
       "status": "implemented"
     },
     {
+      "id": "BOND-RATING-LATEST-045",
+      "title": "历史评级有记录即可，最新评级须明确本债身份、机构、实际日和非沿用展望；历史PDF失败不阻塞，未来记录及更新公告不得被旧记录代替",
+      "implementation": { "file": "server/services/convertibleBondAnalysisInputs.js", "symbol": "ratingRequirement" },
+      "tests": [
+        { "file": "server/test/bond-latest-rating-requirement.test.js", "pattern": "BOND-RATING-LATEST-045" },
+        { "file": "server/test/convertible-bond-analysis-database.test.js", "pattern": "BOND-RATING-LATEST-045" }
+      ],
+      "owner": "Codex",
+      "status": "implemented"
+    },
+    {
       "id": "STOCK-LIFECYCLE-044",
       "title": "共享采集只对已跟踪且缺席上市名单的旧上市主档核验D状态与实际退市日，落库复用；分析按生效日排除并留证据",
       "implementation": {

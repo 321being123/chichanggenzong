@@ -132,12 +132,12 @@ function stateForTarget(target, rows, options = {}) {
   return { missingKinds, missingPeriods, completePeriods: [...completePeriods], latestByKind };
 }
 
-async function readFinancialCursors(targets, client = pool) {
+async function readFinancialCursors(targets, client = pool, datasetCode = 'financial') {
   const scopes = (targets || []).flatMap(target => REPORT_KINDS.map(kind => `company:${target.companyId}:${kind}`));
   if (!scopes.length) return new Map();
   const { rows } = await client.query(
     `SELECT scope_key,last_success_date,last_source_update,last_attempt_at,last_error,retry_count
-       FROM ops.sync_cursors WHERE dataset_code='financial' AND scope_key=ANY($1::text[])`, [scopes]
+       FROM ops.sync_cursors WHERE dataset_code=$2 AND scope_key=ANY($1::text[])`, [scopes, datasetCode]
   );
   return new Map(rows.map(row => [row.scope_key, row]));
 }
@@ -229,10 +229,25 @@ async function fetchCompanyReports(target, options = {}) {
     if (!spec) continue;
     const apiName = preferVip ? spec.vipApi : spec.api;
     try {
-      const rows = await queryRows(apiName, requestParams(spec, target, options), spec.fields, query);
+      const params = requestParams(spec, target, options);
+      let rows;
+      if (options.historyFull) {
+        rows = [];
+        for (const [start, end] of require('./stockAnalysis').ranges(params.start_date, params.end_date, 5)) {
+          const batch = await queryRows(apiName, { ...params, start_date: start, end_date: end }, spec.fields, query);
+          if (batch.length >= 100) {
+            // 较大响应再缩小窗口，不能把供应商截断的数据当成完整历史。
+            for (const [yearStart, yearEnd] of require('./stockAnalysis').ranges(start, end, 1)) {
+              const yearRows = await queryRows(apiName, { ...params, start_date: yearStart, end_date: yearEnd }, spec.fields, query);
+              if (yearRows.length >= 100) throw new Error(`${apiName} 单年度响应仍可能被截断，保留历史待补状态`);
+              rows.push(...yearRows);
+            }
+          } else rows.push(...batch);
+        }
+      } else rows = await queryRows(apiName, params, spec.fields, query);
       results[kind] = rows;
       // fina_indicator 官方单次上限为100；按报告期切片后再取，避免把截断结果当成完整数据。
-      if (kind === 'indicator' && rows.length >= 100 && !options.disableTruncationProbe) {
+      if (!options.historyFull && kind === 'indicator' && rows.length >= 100 && !options.disableTruncationProbe) {
         const periods = (options.reportPeriods || currentReportPeriods(options.asOfDate)).map(apiDate).filter(Boolean);
         const split = [];
         for (const period of periods) {
@@ -274,6 +289,11 @@ async function persistCompanyReports(target, reportResult, options = {}) {
         await markDatasetSuccess(scope, 'financial', { client, companyId: target.companyId, instrumentId: target.instrumentId,
           lastSuccessDate: normalizeDate(latestPeriod), lastSourceUpdate: normalizeDate(latestAnnouncement) });
         successful.push(kind);
+        if (options.historyStart) await client.query(
+          `INSERT INTO ops.sync_cursors(company_id,instrument_id,scope_key,dataset_code,last_success_date,last_source_update,last_attempt_at,last_error)
+           VALUES($1,$2,$3,'financial_history',$4,now(),now(),'') ON CONFLICT(scope_key,dataset_code)
+           DO UPDATE SET last_success_date=LEAST(sync_cursors.last_success_date,EXCLUDED.last_success_date),last_source_update=now(),last_attempt_at=now(),last_error='',updated_at=now()`,
+          [target.companyId, target.instrumentId, scope, normalizeDate(options.historyStart)]);
       } else {
         const message = error ? `${error.code || 'FINANCIAL_SYNC_FAILED'}: ${error.message}` : '接口返回空数组，保留上一份有效数据';
         await markDatasetFailure(scope, 'financial', message, { client, companyId: target.companyId, instrumentId: target.instrumentId });
@@ -432,7 +452,7 @@ async function enqueueStockAnalysisSync(rawCode) {
 }
 
 async function syncRequestedStockAnalysis(options) {
-  const { normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis, refreshEvents } = require('./stockAnalysis');
+  const { normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis, refreshEvents, refreshDividends } = require('./stockAnalysis');
   const codes = options.targetCodes;
   if (!Array.isArray(codes) || codes.length !== 1) throw new Error('单股刷新必须指定一只股票');
   const tsCode = normalizeStockCode(codes[0]);
@@ -444,12 +464,16 @@ async function syncRequestedStockAnalysis(options) {
   const row = rows[0];
   const target = { tsCode, instrumentId: row.instrument_id, companyId: row.company_id, needs: REPORT_KINDS };
   const cursors = await readFinancialCursors([target]);
+  const historyCursors = await readFinancialCursors([target], pool, 'financial_history');
   const today = apiDate(options.asOfDate || tsDateStr(new Date()));
   for (const kind of REPORT_KINDS) {
-    const cursor = cursors.get(`company:${target.companyId}:${kind}`);
+    const scope = `company:${target.companyId}:${kind}`;
+    const cursor = cursors.get(scope);
+    const historyStart = apiDate(historyCursors.get(scope)?.last_success_date);
+    const historyFull = !historyStart || historyStart > apiDate(row.list_date);
     // 当日成功采集复用数据库；失败及缺口只补本种报表，不重拉成功项。
-    if (cursor && !cursor.last_error && apiDate(cursor.last_attempt_at) === today) continue;
-    const startDate = kind === 'indicator' && cursor && cursor.last_success_date
+    if (!historyFull && cursor && !cursor.last_error && apiDate(cursor.last_attempt_at) === today) continue;
+    const startDate = historyFull ? apiDate(row.list_date) : kind === 'indicator' && cursor && cursor.last_success_date
       ? previousDate(cursor.last_success_date, 365)
       : cursor && cursor.last_source_update ? previousDate(cursor.last_source_update, 30) : apiDate(row.list_date);
     if (!startDate) throw new Error('股票缺少上市日期，无法确定首次财报范围');
@@ -461,10 +485,11 @@ async function syncRequestedStockAnalysis(options) {
       }
     }
     const current = { ...target, needs: [kind] };
-    const reportResult = await fetchCompanyReports(current, { ...options, startDate, reportPeriods });
-    const persisted = await persistCompanyReports(current, reportResult, options);
+    const reportResult = await fetchCompanyReports(current, { ...options, startDate, reportPeriods, historyFull });
+    const persisted = await persistCompanyReports(current, reportResult, { ...options, historyStart: historyFull ? startDate : null });
     if (!persisted.ok) throw new Error(persisted.failed.map(item => `${item.kind}: ${item.error}`).join('；'));
   }
+  await refreshDividends(tsCode, today);
   await refreshEvents(tsCode, today);
   await refreshStockAnalysis(tsCode, 'manual-financial-sync', { readOnly: true });
   return { ok: true, status: 'succeeded', stageComplete: true, mode: 'stock_analysis', tsCode,

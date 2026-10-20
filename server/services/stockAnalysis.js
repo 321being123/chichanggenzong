@@ -635,6 +635,20 @@ async function saveEvents(tsCode, events) {
   await saveCollectedEvents(tsCode, events.filter(row => /^\d{8}$/.test(row.event_date || '')));
 }
 
+async function refreshDividends(tsCode, today) {
+  const scope = datasetScope('stock', tsCode);
+  const cursors = await getDatasetCursors(scope, ['stock_dividend']);
+  if (isDatasetFresh(cursors.get('stock_dividend'), 'stock_dividend')) return;
+  const rows = tsRows(await tushareQuery('dividend', { ts_code: tsCode },
+    'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_date,base_share', { allowEmpty: true }));
+  if (rows.length >= 2000 || rows.some(row => row.ts_code !== tsCode)) throw new Error('分红历史响应不完整或证券身份不一致，保留旧数据');
+  const meta = (await pool.query(`SELECT canonical_code ts_code,name,market,to_char(list_date,'YYYYMMDD') list_date,raw_data
+    FROM core.instruments WHERE canonical_code=$1`, [tsCode])).rows[0];
+  if (!meta) throw new Error('缺少分红采集对应的证券档案');
+  await persistCollectedData({ ...meta.raw_data, ts_code: tsCode, name: meta.name, market: meta.market, list_date: meta.list_date }, { dividends: rows });
+  await markDatasetSuccess(scope, 'stock_dividend', { lastSuccessDate: isoDate(today) });
+}
+
 function eventRefreshStart(lastSuccessDate, today) {
   const end = new Date(`${isoDate(today)}T00:00:00+08:00`);
   const oneYearAgo = tsDateStr(new Date(end.getTime() - 365 * DAY));
@@ -1172,7 +1186,7 @@ async function listUserStocks(username) {
   return rows.filter(row => isOrdinaryAStock(row.ts_code));
 }
 
-module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources, refreshEvents,
+module.exports = { finite, normalizeStockCode, isOrdinaryAStock, stockExchange, growthMetric, threeYearAverageGrowth, percentile, quantile, selectDividendPlans, selectLatestByPeriod, eventRefreshStart, mergeOfficialEventSources, refreshEvents, refreshDividends, ranges,
   refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks, fetchCninfoEvents, fetchSseLatestReport, fetchSseEvents,
   fetchCninfoEventsByYear, fetchSzseEvents, fetchSzseLatestReport, fetchSseEventsBatch, fetchSzseEventsBatch,
   fetchCninfoEventsBatch, fetchTushareAnnouncementBatch, sourceForUrl };

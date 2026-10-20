@@ -6,23 +6,28 @@ const root = path.resolve(__dirname, '../..');
 const servicePath = path.join(root, 'server/services/companyFinancialIncrementalSync.js');
 const nativeRequire = require('module').createRequire(servicePath);
 let targets = [{ instrument_id: 158867, company_id: 5388, list_date: '1996-11-01' }];
-let cursors = new Map(), requests = [], snapshots = [], failKind = null, slotCalls = [], eventCalls = [], eventsFail = false;
+let cursors = new Map(), historyCursors = new Map(), requests = [], snapshots = [], failKind = null, slotCalls = [], eventCalls = [], eventsFail = false;
 const stock = {
   normalizeStockCode: code => code === '600763' ? '600763.SH' : code,
   isOrdinaryAStock: code => /^60\d{4}\.SH$/.test(code),
   refreshStockAnalysis: async (...args) => snapshots.push(args),
   refreshEvents: async (...args) => { eventCalls.push(args); if (eventsFail) throw new Error('公告采集失败'); },
+  refreshDividends: async () => {},
+  ranges: nativeRequire('./stockAnalysis').ranges,
 };
 const context = { module: { exports: {} }, Date, console, process,
   require: name => name === '../db' ? { pool: { query: async () => ({ rows: targets }) } }
     : name === './stockAnalysis' ? stock
     : name === './jobScheduleSlots' ? { enqueueManualJob: async (...args) => { slotCalls.push(args); return { slot_id: 42 }; } }
     : nativeRequire(name),
-  getCursors: () => cursors,
+  getCursors: dataset => dataset === 'financial_history' ? historyCursors : cursors,
   fetchReports: async (target, options) => { requests.push({ target, options }); return {}; },
-  persistReports: async target => ({ ok: target.needs[0] !== failKind, failed: [{ kind: failKind, error: '采集失败' }] }),
+  persistReports: async (target, result, options) => {
+    if (target.needs[0] !== failKind && options.historyStart) historyCursors.set(`company:${target.companyId}:${target.needs[0]}`, { last_success_date: options.historyStart });
+    return { ok: target.needs[0] !== failKind, failed: [{ kind: failKind, error: '采集失败' }] };
+  },
 };
-vm.runInNewContext(fs.readFileSync(servicePath, 'utf8') + '\nreadFinancialCursors = async () => getCursors(); fetchCompanyReports = fetchReports; persistCompanyReports = persistReports;', context);
+vm.runInNewContext(fs.readFileSync(servicePath, 'utf8') + '\nreadFinancialCursors = async (targets, client, dataset) => getCursors(dataset); fetchCompanyReports = fetchReports; persistCompanyReports = persistReports;', context);
 const service = context.module.exports;
 (async () => {
   const queued = await service.enqueueStockAnalysisSync('600763');
@@ -51,6 +56,12 @@ const service = context.module.exports;
     { last_attempt_at: new Date('2026-10-20T02:00:00Z'), last_source_update: new Date('2026-08-20T00:00:00Z'), last_error: '' });
   await service.syncRequestedStockAnalysis(options);
   assert.strictEqual(requests.length, 0, '同日成功财报不重复调用上游');
+  historyCursors.clear();
+  await service.syncRequestedStockAnalysis(options);
+  assert.strictEqual(requests.length, 4, '仅有近期成功游标不能跳过完整历史采集');
+  assert.strictEqual(requests[0].options.historyFull, true);
+  assert.strictEqual(requests[0].options.startDate, '19961101');
+  requests = [];
   cursors.get('company:5388:income').last_error = '失败';
   await service.syncRequestedStockAnalysis(options);
   assert.strictEqual(requests.length, 1, '只重试失败的报表');

@@ -3195,10 +3195,19 @@
     {
       "id": "BOND-RATING-LATEST-045",
       "title": "历史评级有记录即可，最新评级须明确本债身份、机构、实际日和非沿用展望；历史PDF失败不阻塞，未来记录及更新公告不得被旧记录代替",
-      "implementation": { "file": "server/services/convertibleBondAnalysisInputs.js", "symbol": "ratingRequirement" },
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "ratingRequirement"
+      },
       "tests": [
-        { "file": "server/test/bond-latest-rating-requirement.test.js", "pattern": "BOND-RATING-LATEST-045" },
-        { "file": "server/test/convertible-bond-analysis-database.test.js", "pattern": "BOND-RATING-LATEST-045" }
+        {
+          "file": "server/test/bond-latest-rating-requirement.test.js",
+          "pattern": "BOND-RATING-LATEST-045"
+        },
+        {
+          "file": "server/test/convertible-bond-analysis-database.test.js",
+          "pattern": "BOND-RATING-LATEST-045"
+        }
       ],
       "owner": "Codex",
       "status": "implemented"
@@ -3250,6 +3259,38 @@
       ],
       "owner": "Codex",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-LIQUIDITY-HOLDERS-001",
+      "title": "上市公告书前十名持有人表标题兼容「可转债前10 名持有人」写法，表格在合计行截止，名单式控制人表述按实际姓名锁定且做市商不得误锁",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_fetch.py",
+        "symbol": "_parse_bond_top10_holders"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_unit_fixes.py",
+          "pattern": "满坤「可转债前10 名持有人」标题可解析"
+        },
+        {
+          "file": "ipo-report/test_unit_fixes.py",
+          "pattern": "满坤持有量按张解析且不越合计行"
+        },
+        {
+          "file": "ipo-report/test_unit_fixes.py",
+          "pattern": "满坤限售=洪氏家族7人合计5,158,216张"
+        },
+        {
+          "file": "ipo-report/test_unit_fixes.py",
+          "pattern": "满坤流通规模约2.44亿(不是发行规模7.6亿)"
+        },
+        {
+          "file": "ipo-report/test_unit_fixes.py",
+          "pattern": "满坤锁定名单恰为洪氏7人且不含做市商"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
     }
   ]
 }

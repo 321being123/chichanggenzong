@@ -332,6 +332,21 @@ def _get_org_id(stock_code, security_name=""):
     _org_id_cache[code] = None
     return None
 
+_BOND_HOLDERS_HEADING_RE = re.compile(
+    r'前\s*(?:十|10)\s*[名大]\s*(?:[\s\S]{0,10}?(?:可转债|可转换|债券))?\s*持有人'
+)
+
+
+def _find_bond_holders_heading(text):
+    """定位「前十名可转换公司债券持有人」表格标题；兼容「可转债前10 名持有人情况」等写法。"""
+    for kw in ('前十名可转换公司债券持有人', '前十名可转换', '前10 名债券持有人'):
+        idx = text.find(kw)
+        if idx >= 0:
+            return idx
+    match = _BOND_HOLDERS_HEADING_RE.search(text)
+    return match.start() if match else -1
+
+
 def _parse_bond_top10_holders(text):
     """
     解析上市公告书中的"前十名可转换公司债券持有人"表格。
@@ -339,11 +354,7 @@ def _parse_bond_top10_holders(text):
     返回 [(持有人名称, 持有量(张), 持有比例(%)), ...] 或 None
     """
     # 找表格起始
-    idx = -1
-    for kw in ['前十名可转换公司债券持有人', '前十名可转换', '前10 名债券持有人']:
-        idx = text.find(kw)
-        if idx >= 0:
-            break
+    idx = _find_bond_holders_heading(text)
     if idx < 0:
         return None
 
@@ -356,7 +367,7 @@ def _parse_bond_top10_holders(text):
         if pos > 0:
             end_pos = pos
             break
-    for stop in ['发行费用', '二、本次承销', '二、发行费用', '三、本次发行']:
+    for stop in ['发行费用', '二、本次承销', '二、发行费用', '三、本次发行', '合计']:
         pos = section.find(stop)
         if pos > 0:
             end_pos = min(end_pos, pos)
@@ -520,7 +531,14 @@ def _controller_section(text):
         return text
     section = text[start:start + 20000]
     next_heading = re.search(r'\n[六七八九十]+、', section[20:])
-    return section[:next_heading.start() + 20] if next_heading else section
+    if next_heading:
+        section = section[:next_heading.start() + 20]
+    # 控制人章节不得吞进「前十名债券持有人」表格本身，否则表内任何持有人都会被
+    # 反向补全当成控制企业（例如做市商 UBS/高盛被误锁为限售主体）。
+    holders_heading = _BOND_HOLDERS_HEADING_RE.search(section)
+    if holders_heading:
+        section = section[:holders_heading.start()]
+    return section
 
 
 def _clean_controller_candidate(value):
@@ -567,6 +585,18 @@ def _extract_controller_names(text, holders=None):
     for m in re.finditer(r'([^。；;\n]{2,60}?)(?:为|系)发行人的(?:共同)?(?:控股股东|实际控制人)', section):
         for part in re.split(r'[、和与]', m.group(1)):
             name = _clean_controller_candidate(re.sub(r'^.*[，,]', '', part))
+            if name:
+                controllers.add(name)
+
+    # “洪俊城、洪娜珊……等洪氏家族成员……为公司的控股股东和实际控制人”等名单式表述。
+    # 注意「为公司的」与「为发行人的」都要认，名单可能被 PDF 断行切开，故跨行匹配。
+    for m in re.finditer(
+        r'((?:[\u4e00-\u9fa5]{2,4}、){2,}[\u4e00-\u9fa5]{2,4})等'
+        r'[\s\S]{0,300}?(?:为|系)(?:发行人|公司)(?:的)?(?:共同)?(?:控股股东|实际控制人)',
+        section,
+    ):
+        for part in m.group(1).split('、'):
+            name = _clean_controller_candidate(part)
             if name:
                 controllers.add(name)
 
@@ -799,7 +829,11 @@ def _exchange_bond_document_candidates(stock_code, listing_date=None):
         title = str(row.get("TITLE") or row.get("title") or "").strip()
         normalized = re.sub(r"\s+", "", title)
         is_listing_book = "上市公告书" in normalized and ("可转换" in normalized or "可转债" in normalized)
-        is_issue_result = "发行结果" in normalized and ("可转换" in normalized or "可转债" in normalized)
+        # 深市常见标题「网上发行中签率及优先配售结果公告」不含"发行结果"字样，
+        # 与巨潮路径同样的"中签+配售"识别口径，否则发行结果公告进不了兜底解析。
+        is_issue_result = (
+            "发行结果" in normalized or ("中签" in normalized and "配售" in normalized)
+        ) and ("可转换" in normalized or "可转债" in normalized)
         if not (is_listing_book or is_issue_result):
             continue
         raw_path = row.get("URL") or row.get("attachPath") or row.get("url")

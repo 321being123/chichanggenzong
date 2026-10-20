@@ -399,6 +399,93 @@ fetch_source = open(os.path.join(os.path.dirname(__file__), "ipo_lib_fetch.py"),
 check("巨潮公告分页不再按返回数小于请求数提前停止",
       "len(page_items or []) < 50" not in fetch_source and "total_announcement" in fetch_source)
 
+# 满坤转债真实公告书三处写法都和旧样本不同：
+# ①标题是「本次发行后公司可转债前10 名持有人情况」（旧关键词认不出）；
+# ②控制人表述是「……等洪氏家族成员……为公司的控股股东和实际控制人」（旧只认「为发行人的」）；
+# ③表格解析不能越过合计行吃进后文，且表内做市商（UBS/高盛）不得被误锁为限售主体。
+mankun_text = """四、发行人控股股东和实际控制人情况
+截至2026 年6 月30 日，洪俊城、洪娜珊、洪耿奇、洪耿宇、洪丽旋、洪丽冰、洪记英等洪氏家
+族成员直接持有公司股份分别为2,000 万股、2,000 万股、2,500 万股、2,000 万股、607 万股、
+504.8696 万股、400 万股，占公司总股本比例分别为13.51%、13.51%、16.88%、13.51%、4.10%、
+3.41%、2.70%，合计持有公司10,011.8696 万股，占公司总股本的比例为67.62%，洪氏家族未间接持有
+公司股份，为公司的控股股东和实际控制人。
+四、本次发行后公司可转债前10 名持有人情况
+序号
+持有人名称
+持有数量（张）
+占总发行量比例（%）
+1
+洪耿奇
+1,288,025.00
+16.95
+2
+洪娜珊
+1,030,420.00
+13.56
+3
+洪耿宇
+1,030,420.00
+13.56
+4
+洪俊城
+1,030,420.00
+13.56
+5
+洪丽旋
+312,733.00
+4.11
+6
+洪丽冰
+260,114.00
+3.42
+7
+洪记英
+206,084.00
+2.71
+8
+UBS AG
+54,377.00
+0.72
+9
+MORGAN STANLEY&CO.INTERNATIONALPLC.
+53,265.00
+0.70
+10
+高盛公司有限责任公司
+39,964.00
+0.53
+合计
+5,305,822.00
+69.82
+第五节上市公司资信和担保情况
+临时公告
+23
+1
+流动比率（倍）
+1.59
+""".strip()
+mankun_holders = mod._parse_bond_top10_holders(mankun_text)
+check("满坤「可转债前10 名持有人」标题可解析",
+      mankun_holders is not None and len(mankun_holders) == 10,
+      f"count={len(mankun_holders) if mankun_holders else None}")
+check("满坤持有量按张解析且不越合计行",
+      mankun_holders and mankun_holders[0] == ("洪耿奇", 1_288_025, 16.95),
+      f"first={mankun_holders[0] if mankun_holders else None}")
+mankun_result = fetch_mod._parse_exchange_listing_book(mankun_text, 7.6, "szse")
+check("满坤限售=洪氏家族7人合计5,158,216张",
+      mankun_result.get("ctrl_zhang") == 5_158_216, f"result={mankun_result.get('ctrl_zhang')}")
+check("满坤流通规模约2.44亿(不是发行规模7.6亿)",
+      2.44 <= float(mankun_result.get("circulation_scale") or 0) <= 2.45,
+      f"circulation={mankun_result.get('circulation_scale')}")
+# 正向断言：锁定名单恰好是洪氏 7 人，做市商/垃圾行一个都不能进（source 里也不得出现）。
+mankun_source = str(mankun_result.get("source"))
+check("满坤锁定名单恰为洪氏7人且不含做市商",
+      all(name in mankun_source for name in
+          ("洪耿奇", "洪娜珊", "洪耿宇", "洪俊城", "洪丽旋", "洪丽冰", "洪记英"))
+      and "UBS" not in mankun_source and "高盛" not in mankun_source
+      and "MORGAN" not in mankun_source and "流动比率" not in mankun_source,
+      f"source={mankun_source}")
+
 # 科创板公告常用“控股股东、实际控制人基本信息如下”介绍自然人。
 aiwei_text = """
 四、发行人控股股东、实际控制人情况

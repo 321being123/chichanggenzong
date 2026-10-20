@@ -645,6 +645,8 @@ async function runSlot(slot, reason = reasonForSlot(slot)) {
     slotId: claimed.slot_id,
     force: Boolean(claimed.request_payload && claimed.request_payload.force === true),
     mode: String(claimed.request_payload && claimed.request_payload.mode || 'core'),
+    ...(claimed.job_code === 'company_financial_incremental_sync' && claimed.request_payload?.mode === 'stock_analysis'
+      ? { targetCodes: claimed.request_payload.targetCodes } : {}),
     ...(claimed.job_code==='nav_snapshot'&&claimed.request_payload?.mode==='cash_income'
       ? {username:claimed.request_payload.username,accountName:claimed.request_payload.accountName,enabled:claimed.request_payload.enabled===true}:{}),
     ...(claimed.job_code==='nav_snapshot'&&(!claimed.request_payload?.mode||claimed.request_payload.mode==='core')

@@ -140,7 +140,7 @@ async function stockAnalysisRefresh() {
   stockAnalysisState.loading = true;
   var button = document.getElementById('stock-analysis-refresh');
   if (button) { button.disabled = true; button.textContent = '刷新中...'; }
-  stockAnalysisSetMessage('首次建档会抓取上市以来财报及历史估值，请稍候...');
+  stockAnalysisSetMessage('正在提交股票刷新任务...');
   try {
     if (typeof stockAnalysisInvalidateStatements === 'function') stockAnalysisInvalidateStatements(tsCode);
     var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(tsCode) + '/refresh'), { method:'POST' });
@@ -148,6 +148,10 @@ async function stockAnalysisRefresh() {
     var analysis = payload.analysis;
     if (!response.ok && !analysis) throw new Error(payload.error || '刷新失败');
     if (analysis) stockAnalysisRender(analysis);
+    if (response.status === 202) {
+      if (!payload.queued || !payload.queued.queued) throw new Error(payload.warning || '未能登记刷新任务，请稍后重试');
+      stockAnalysisSetMessage('已加入后台刷新队列，完成后重新查询该股票即可查看。首次建档需要采集历史财报，请稍候。');
+    }
     if (!response.ok && payload.error) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
   } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
   finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新数据'; } }

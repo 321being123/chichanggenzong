@@ -3,6 +3,22 @@
   "lastReviewed": "2026-10-20",
   "rules": [
     {
+      "id": "STOCK-ANALYSIS-REFRESH-001",
+      "title": "普通A股显式刷新必须真实入队并按原单股范围落库重算且失败保留旧快照",
+      "implementation": {
+        "file": "server/services/companyFinancialIncrementalSync.js",
+        "symbol": "syncRequestedStockAnalysis"
+      },
+      "tests": [
+        {
+          "file": "server/test/stock-analysis-refresh-queue.test.js",
+          "pattern": "stock analysis refresh queue tests passed"
+        }
+      ],
+      "owner": "证券分析",
+      "status": "verified"
+    },
+    {
       "id": "HK-IPO-SUSPENDED-001",
       "title": "港股IPO暂停时排程旧槽重试人工执行和公开入口均阻断",
       "implementation": {

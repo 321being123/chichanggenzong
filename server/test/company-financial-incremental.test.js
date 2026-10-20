@@ -61,7 +61,7 @@ const backfillSource = fs.readFileSync(path.resolve(__dirname, '..', 'scripts', 
 assert.ok(serviceSource.includes("'disclosure_date'"));
 assert.ok(serviceSource.includes("report_type: '1'"));
 assert.ok(routeSource.includes('refreshStockAnalysis(tsCode, `watchlist:${req.session.user}`, { readOnly: true })'));
-assert.ok(routeSource.includes('enqueueCompanyFinancialSyncByCode'));
+assert.ok(routeSource.includes('enqueueStockAnalysisSync'), '普通股刷新须进入显式单股模式，不能被日常转债正股范围排除');
 assert.ok(jobSource.includes("jobCode: 'company_financial_incremental_sync'"));
 assert.ok(jobSource.includes("strictDatasetPublication: true"));
 assert.ok(backfillSource.includes("valueOf('--offset'"));

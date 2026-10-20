@@ -17,6 +17,7 @@ const REPORT_SPECS = Object.freeze({
 });
 
 function normalizeDate(value) {
+  if (value instanceof Date) return tsDateStr(value).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3');
   const text = String(value || '').replace(/-/g, '').slice(0, 8);
   return /^\d{8}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}` : null;
 }
@@ -208,6 +209,8 @@ async function fetchDisclosureCandidates(targets, options = {}) {
 
 function requestParams(spec, target, options = {}) {
   const today = apiDate(options.asOfDate || tsDateStr(new Date()));
+  if (options.startDate) return { ts_code: target.tsCode, start_date: apiDate(options.startDate), end_date: today,
+    ...(spec.dateMode === 'announcement' ? { report_type: '1' } : {}) };
   if (spec.dateMode === 'period') {
     const periods = (options.reportPeriods || currentReportPeriods(options.asOfDate)).map(apiDate).filter(Boolean).sort();
     return { ts_code: target.tsCode, start_date: periods[0] || previousDate(today, 365), end_date: periods[periods.length - 1] || today };
@@ -322,6 +325,11 @@ async function runCompanyFinancialIncrementalSync(reason = 'scheduled', options 
   if (!(await tryClaimJob(JOB_NAME))) return { ok: false, skipped: true, reason: 'already_running' };
   const runId = await startJobRun(JOB_NAME);
   try {
+    if (options.mode === 'stock_analysis') {
+      const result = await syncRequestedStockAnalysis(options);
+      await finishJobRun(runId, true, `指定股票分析完成：${result.tsCode}`);
+      return result;
+    }
     const targets = await listTargetCompanies(pool, options.targetTradeDate || options.asOfDate || null);
     const reportPeriods = options.reportPeriods || currentReportPeriods(options.asOfDate);
     const localQueue = await buildSyncQueue(targets, { ...options, reportPeriods, disclosureRows: [] });
@@ -412,6 +420,56 @@ async function enqueueCompanyFinancialSyncByCode(rawCode, reason = 'request') {
   return { queued: true, companyId: target.companyId, tsCode };
 }
 
+// 用户明确刷新单股时复用财务 Runner；日常可转债正股目标集合保持原范围。
+async function enqueueStockAnalysisSync(rawCode) {
+  const { normalizeStockCode, isOrdinaryAStock } = require('./stockAnalysis');
+  const tsCode = normalizeStockCode(rawCode);
+  if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
+  const slot = await require('./jobScheduleSlots').enqueueManualJob(JOB_NAME,
+    { mode: 'stock_analysis', targetCodes: [tsCode], freshnessGate: false });
+  if (!slot) throw new Error('未能登记股票刷新任务，请稍后重试');
+  return { queued: true, tsCode, slotId: slot.slot_id };
+}
+
+async function syncRequestedStockAnalysis(options) {
+  const { normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis } = require('./stockAnalysis');
+  const codes = options.targetCodes;
+  if (!Array.isArray(codes) || codes.length !== 1) throw new Error('单股刷新必须指定一只股票');
+  const tsCode = normalizeStockCode(codes[0]);
+  if (!tsCode || !isOrdinaryAStock(tsCode)) throw new Error('仅支持A股普通股票');
+  const { rows } = await pool.query(`SELECT i.instrument_id,ci.company_id,i.list_date::text AS list_date
+    FROM core.instruments i JOIN core.company_instruments ci USING(instrument_id)
+    WHERE i.canonical_code=$1 AND i.asset_class='stock'`, [tsCode]);
+  if (rows.length !== 1) throw new Error('股票基础档案缺失或公司关系不唯一，暂不能刷新');
+  const row = rows[0];
+  const target = { tsCode, instrumentId: row.instrument_id, companyId: row.company_id, needs: REPORT_KINDS };
+  const cursors = await readFinancialCursors([target]);
+  const today = apiDate(options.asOfDate || tsDateStr(new Date()));
+  for (const kind of REPORT_KINDS) {
+    const cursor = cursors.get(`company:${target.companyId}:${kind}`);
+    // 当日成功采集复用数据库；失败及缺口只补本种报表，不重拉成功项。
+    if (cursor && !cursor.last_error && apiDate(cursor.last_attempt_at) === today) continue;
+    const startDate = kind === 'indicator' && cursor && cursor.last_success_date
+      ? previousDate(cursor.last_success_date, 365)
+      : cursor && cursor.last_source_update ? previousDate(cursor.last_source_update, 30) : apiDate(row.list_date);
+    if (!startDate) throw new Error('股票缺少上市日期，无法确定首次财报范围');
+    const reportPeriods = [];
+    for (let year = Number(startDate.slice(0, 4)); year <= Number(today.slice(0, 4)); year++) {
+      for (const suffix of ['0331', '0630', '0930', '1231']) {
+        const period = `${year}${suffix}`;
+        if (period >= startDate && period <= today) reportPeriods.push(period);
+      }
+    }
+    const current = { ...target, needs: [kind] };
+    const reportResult = await fetchCompanyReports(current, { ...options, startDate, reportPeriods });
+    const persisted = await persistCompanyReports(current, reportResult, options);
+    if (!persisted.ok) throw new Error(persisted.failed.map(item => `${item.kind}: ${item.error}`).join('；'));
+  }
+  await refreshStockAnalysis(tsCode, 'manual-financial-sync', { readOnly: true });
+  return { ok: true, status: 'succeeded', stageComplete: true, mode: 'stock_analysis', tsCode,
+    codes: [tsCode], targetFields: [], publishDatasets: false, publishDatasetCodes: [] };
+}
+
 async function runCompanyFinancialBackfill(options = {}) {
   const allTargets = await listTargetCompanies();
   const targets = options.targetScope === 'bond_underlyings'
@@ -435,5 +493,5 @@ module.exports = {
   JOB_NAME, REPORT_KINDS, REPORT_SPECS, normalizeDate, currentReportPeriods, isDisclosureSeason, uniqueTarget,
   listTargetCompanies, listCurrentBondUnderlyingTargets, readCompanyStates, stateForTarget, buildSyncQueue, fetchDisclosureCandidates,
   fetchCompanyReports, persistCompanyReports, latestFinancialDataAsOf, selectCompanyBatch, shouldAbortFinancialBatch, runCompanyFinancialIncrementalSync,
-  enqueueCompanyFinancialSyncByCode, runCompanyFinancialBackfill,
+  enqueueCompanyFinancialSyncByCode, enqueueStockAnalysisSync, syncRequestedStockAnalysis, runCompanyFinancialBackfill,
 };

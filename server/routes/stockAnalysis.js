@@ -7,7 +7,7 @@ const { pool } = require('../db/connection');
 const {
   normalizeStockCode, isOrdinaryAStock, refreshStockAnalysis, buildAnalysis, getSnapshot, listUserStocks,
 } = require('../services/stockAnalysis');
-const { enqueueCompanyFinancialSyncByCode } = require('../services/companyFinancialIncrementalSync');
+const { enqueueStockAnalysisSync } = require('../services/companyFinancialIncrementalSync');
 const { getStockStatements } = require('../services/stockStatements');
 const { getDatasetMetadata } = require('../services/datasetPartitions');
 const { recordServerEvent } = require('../services/siteAnalytics');
@@ -49,7 +49,7 @@ router.post('/watchlist', requireLogin, rateLimit({ prefix: 'stock-watchlist', w
     if (watchlistInsert.rowCount > 0) recordWatchlistEvent();
     res.json({ ok: true, stock: { ts_code: tsCode, name: analysis.name }, analysis });
   } catch (error) {
-    const queued = await enqueueCompanyFinancialSyncByCode(tsCode, `watchlist:${req.session.user}`);
+    const queued = await enqueueStockAnalysisSync(tsCode);
     if (watchlistInsert.rowCount > 0) recordWatchlistEvent();
     res.status(202).json({ ok: true, stock: { ts_code: tsCode, name: '' }, queued, warning: error.message });
   }
@@ -84,13 +84,11 @@ router.get('/:ts_code', asyncHandler(validStock), asyncHandler(async (req, res) 
 router.post('/:ts_code/refresh', requireLogin, rateLimit({ prefix: 'stock-analysis-refresh', windowMs: 60 * 60 * 1000, max: 10,
   getKey: req => req.session.user, message: '刷新过于频繁，请稍后再试' }), asyncHandler(validStock), asyncHandler(async (req, res) => {
   try {
-    const analysis = await refreshStockAnalysis(req.stockTsCode, `manual:${req.session.user}`, { readOnly: true });
-    res.json({ ok: true, analysis });
-  } catch (error) {
-    const queued = await enqueueCompanyFinancialSyncByCode(req.stockTsCode, `manual:${req.session.user}`);
+    const queued = await enqueueStockAnalysisSync(req.stockTsCode);
     const snapshot = await getSnapshot(req.stockTsCode);
-    if (snapshot) return res.status(202).json({ ok: true, queued, warning: error.message, stale: true, analysis: snapshot });
-    res.status(202).json({ ok: true, queued, warning: error.message });
+    res.status(202).json({ ok: true, queued, ...(snapshot ? { stale: true, analysis: snapshot } : {}) });
+  } catch (error) {
+    res.status(503).json({ error: error.message });
   }
 }));
 

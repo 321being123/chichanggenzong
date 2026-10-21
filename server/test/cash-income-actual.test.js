@@ -33,7 +33,9 @@ async function cleanup(){await pool.query('DELETE FROM accounts WHERE username=$
   assert.strictEqual((await pool.query('SELECT state FROM account_cash_income_pending WHERE account_id=$1',[ID])).rows[0].state,'resolved');
   d=await loadAccountData(U,A);await changePending(U,A,keyOf(pending),{exclude:true,reason:'用户测试排除',version:d.version});
   await syncPending(pool,ID,[pending],3,U);assert.strictEqual((await pool.query('SELECT state FROM account_cash_income_pending WHERE account_id=$1',[ID])).rows[0].state,'excluded_by_user');
-  const hk=(await pool.query("SELECT instrument_id,canonical_code FROM core.instruments WHERE market='HK' AND asset_class='stock' LIMIT 1")).rows[0];assert(hk);
+  // 测试库可能来自空快照（如 CI），港股身份在测试内补齐，不依赖业务库存量。
+  await pool.query(`INSERT INTO core.instruments(canonical_code,name,market,exchange_code,currency_code,asset_class) VALUES ('00941.HK','中国移动','HK','HKEX','HKD','stock') ON CONFLICT(canonical_code) DO NOTHING`);
+  const hk=(await pool.query("SELECT instrument_id,canonical_code FROM core.instruments WHERE canonical_code='00941.HK'")).rows[0];assert(hk);
   const hkEvent='dividend:'+hk.instrument_id+':2026-09-01:2026-09-02';
   await syncPending(pool,ID,[{code:hk.canonical_code,eventKey:hkEvent,reason:'missing_stock_connect_net_cny_settlement'}],4,U);
   const hkActual={eventKey:hkEvent,date:'2026-09-08',flow_type:'dividend',currency:'HKD',originalAmount:'72.00',amountCny:'64.80',sourceRef:'fixture-HK-net-voucher',settlement:{amountBasis:'net'}};

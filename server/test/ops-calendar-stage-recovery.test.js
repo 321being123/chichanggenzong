@@ -45,6 +45,12 @@ async function main() {
     // STOCK-SUSPENSION-TRACKED-COVERAGE-036：跟踪A股也参与缺口检查，不能只检查转债正股；HK不混入SSE日历。
     await client.query('SAVEPOINT tracked_suspension_scope');
     const {findSuspensionCoverageGaps}=require('../services/convertibleBondSuspensionSync');
+    // 测试库可能来自空快照（如 CI），所需用户与证券身份在隔离事务内补齐，结束即回滚。
+    await client.query(`INSERT INTO users(username,password,accounts,status,auth_version) VALUES('ops_calendar_fixture_user','x','[]','active',1) ON CONFLICT(username) DO NOTHING`);
+    await client.query(`INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code)
+      VALUES ('600998.SH','测试跟踪正股','stock','CN','SSE','CNY'),
+             ('00941.HK','中国移动','stock','HK','HKEX','HKD')
+      ON CONFLICT(canonical_code) DO NOTHING`);
     const sourceId=(await client.query("SELECT source_id FROM ops.data_sources WHERE source_code='tushare'")).rows[0].source_id;
     const username=(await client.query('SELECT username FROM users LIMIT 1')).rows[0].username;
     const candidate=(await client.query(`SELECT i.instrument_id,i.canonical_code FROM core.instruments i

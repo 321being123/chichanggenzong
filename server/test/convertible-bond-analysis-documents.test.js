@@ -3,7 +3,7 @@ const {spawnSync}=require('child_process');
 const path=require('path');
 const fs=require('fs');
 const root=path.join(__dirname,'..','..');
-const py=process.platform==='win32'?path.join(root,'venv','Scripts','python.exe'):path.join(root,'venv','bin','python');
+const py=require('../services/arbitrageParser').resolvePython();
 const code=String.raw`
 import sys, os, tempfile, io, importlib
 sys.path.insert(0, 'server/scripts')
@@ -385,6 +385,6 @@ prospectus.read_document=lambda *a: (['（三）利率\n第一年0.30%、第二�
 assert len(prospectus.extract('url')['coupon_rates'])==6
 print('BOND-ANALYSIS-004: official identity, PDF cache, corruption, complete holder table and rating date passed')
 `;
-assert.ok(fs.existsSync(py));
+if(path.isAbsolute(py))assert.ok(fs.existsSync(py),'venv python 不存在: '+py);
 const result=spawnSync(py,['-c',code],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONUTF8:'1'},timeout:30000});
 assert.equal(result.status,0,result.stderr);console.log(result.stdout.trim());

@@ -90,18 +90,21 @@ async function acquireDocumentParseLock(caseId, documentId) {
 }
 
 // 复用项目已有的 Python 定位逻辑（与 marketVolatilitySync / convertibleBondAnalysis 一致）：
-// 优先 PYTHON 环境变量，其次项目 venv/Scripts/python.exe（Windows）/venv/bin/python（类 Unix），最后退回 PATH。
+// 优先 PYTHON 环境变量，其次项目内 venv（root/venv 或 ipo-report/venv，Windows/类 Unix），最后退回 PATH。
 function resolvePython() {
   const root = path.resolve(__dirname, '..', '..');
-  const localPython = path.join(root, 'venv', 'Scripts', 'python.exe');
   if (process.env.PYTHON) return process.env.PYTHON;
-  if (process.platform === 'win32') {
-    if (fs.existsSync(localPython)) return localPython;
-    return 'python.exe'; // 退回 PATH 上的 python.exe
-  }
-  const venvUnix = path.join(root, 'venv', 'bin', 'python');
-  if (fs.existsSync(venvUnix)) return venvUnix;
-  return 'python3';
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(root, 'venv', 'Scripts', 'python.exe'),
+        path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe'),
+      ]
+    : [
+        path.join(root, 'venv', 'bin', 'python'),
+        path.join(root, 'ipo-report', 'venv', 'bin', 'python'),
+      ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  return process.platform === 'win32' ? 'python.exe' : 'python3'; // 退回 PATH
 }
 
 // 调用 Python 解析器提取单条公告 URL 的条款

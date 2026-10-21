@@ -133,6 +133,9 @@ def load_training_rows():
     conn = sqlite3.connect(DB_PATH)
     try:
         return conn.execute(TRAINING_SQL).fetchall()
+    except sqlite3.OperationalError:
+        # 旧 SQLite 兼容库可能没有 ipo_history 表（如全新 CI 环境），视为无历史样本。
+        return []
     finally:
         conn.close()
 

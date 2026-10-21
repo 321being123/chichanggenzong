@@ -23,7 +23,11 @@ const failed = [];
 const isCI = process.env.CI === '1';
 // 所有测试子进程统一隔离真实邮件；空字符串可阻止 dotenv 从开发机 .env 回填真实收件人。
 // Python Guard 生产默认开启；测试进程显式关闭，避免纯函数回归因本机数据库状态产生外部副作用。
+// 注入 PYTHON：测试子进程内部再 spawn Python 时（如 PDF 夹具生成）统一使用同一解释器，
+// 避免 CI 上 venv 位于 ipo-report/venv 而各处硬编码 root/venv 导致回退到缺包的系统 python3。
+const resolvedPython = findPython();
 const testEnv = { ...process.env, NODE_ENV: 'test', EXTERNAL_CALL_GUARD: '0', ALERT_EMAIL_TO: '', ALERT_EMAIL_FROM: '' };
+if (!testEnv.PYTHON && resolvedPython) testEnv.PYTHON = resolvedPython;
 const TEST_DATABASE = String(process.env.PGTESTDATABASE || 'portfolio_test').replace(/[^a-zA-Z0-9_]/g, '_');
 
 function testDatabaseConfig() {

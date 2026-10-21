@@ -7,7 +7,7 @@ process.env.DOCUMENT_PDF_CACHE_DIR=cache;
 const {pool}=require('../db/connection');
 const {syncHkexPricingFacts}=require('../services/hkexIpo');
 const root=path.resolve(__dirname,'../..');
-const python=process.platform==='win32'?path.join(root,'venv/Scripts/python.exe'):path.join(root,'venv/bin/python');
+const python=require('../services/arbitrageParser').resolvePython();
 
 (async()=>{
   // HK-IPO-PRICING-001：真实PG，定价公告不能被配发未来日期掩盖；不改招股区间/配发/上市。

@@ -268,13 +268,17 @@ async function fetchHkexNewListingReports({ years = [2025, 2026], fetchImpl = ht
 
 function resolvePython() {
   const root = path.join(__dirname, '..', '..');
-  const localPython = path.join(root, 'venv', 'Scripts', 'python.exe');
   if (process.env.PYTHON) return process.env.PYTHON;
-  if (process.platform === 'win32' && fs.existsSync(localPython)) return localPython;
-  if (process.platform !== 'win32') {
-    const unixPython = path.join(root, 'venv', 'bin', 'python');
-    if (fs.existsSync(unixPython)) return unixPython;
-  }
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(root, 'venv', 'Scripts', 'python.exe'),
+        path.join(root, 'ipo-report', 'venv', 'Scripts', 'python.exe'),
+      ]
+    : [
+        path.join(root, 'venv', 'bin', 'python'),
+        path.join(root, 'ipo-report', 'venv', 'bin', 'python'),
+      ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
   return process.platform === 'win32' ? 'python.exe' : 'python3';
 }
 

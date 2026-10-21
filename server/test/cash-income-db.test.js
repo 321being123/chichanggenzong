@@ -90,7 +90,10 @@ async function cleanup() {
     await settleCashIncome(U,A,{targetDate:'2026-09-04'});
     assert.strictEqual((await loadAccountData(U,A)).cash,2000);
     // 新官方版本缺净额不能抹掉同一事件的上一份有效估算；补齐后替换而非叠加。
-    const instrument=(await pool.query("SELECT instrument_id,canonical_code FROM core.instruments WHERE market='CN' AND asset_class='stock' ORDER BY instrument_id LIMIT 1")).rows[0];
+    // 测试库可能来自空快照（如 CI），所需证券身份在测试内补齐，不依赖业务库存量。
+    await pool.query(`INSERT INTO core.instruments(canonical_code,name,market,exchange_code,currency_code,asset_class)
+      VALUES ('000001.SZ','平安银行','CN','SZSE','CNY','stock') ON CONFLICT(canonical_code) DO NOTHING`);
+    const instrument=(await pool.query("SELECT instrument_id,canonical_code FROM core.instruments WHERE canonical_code='000001.SZ'")).rows[0];
     assert(instrument,'隔离库须有标准证券身份');
     const code=instrument.canonical_code;
     await pool.query(`INSERT INTO positions(id,username,account_name,code,instrument_id,quantity,type,subtype) VALUES('cash_preserve_position',$1,$2,$3,$4,100,'股权','A股')`,[U,A,code,instrument.instrument_id]);
@@ -120,7 +123,9 @@ async function cleanup() {
     await require('../services/cashIncomeActual').importActual(U,A,[{eventKey:taxFlow.event_key,date:'2026-09-10',flow_type:'dividend_tax',amountCny:'-7.50',sourceRef:'optional-actual-fixture'}],version);
     await settleCashIncome(U,A,{targetDate:'2026-09-10'});
     const replaced=(await pool.query("SELECT amount::text,status FROM cash_flows WHERE username=$1 AND event_key=$2 AND flow_type='dividend_tax'",[U,taxFlow.event_key])).rows;assert.strictEqual(replaced.length,1);assert.strictEqual(Number(replaced[0].amount),-7.5);assert.strictEqual(replaced[0].status,'confirmed');
-    const hk=(await pool.query("SELECT instrument_id,canonical_code FROM core.instruments WHERE market='HK' AND asset_class='stock' ORDER BY instrument_id LIMIT 1")).rows[0];assert(hk);
+    await pool.query(`INSERT INTO core.instruments(canonical_code,name,market,exchange_code,currency_code,asset_class)
+      VALUES ('00941.HK','中国移动','HK','HKEX','HKD','stock') ON CONFLICT(canonical_code) DO NOTHING`);
+    const hk=(await pool.query("SELECT instrument_id,canonical_code FROM core.instruments WHERE canonical_code='00941.HK'")).rows[0];assert(hk);
     await pool.query("INSERT INTO positions(id,username,account_name,code,instrument_id,quantity,type,subtype) VALUES('cash_hk_position',$1,$2,$3,$4,100,'股权','港股')",[U,A,hk.canonical_code,hk.instrument_id]);
     await pool.query("INSERT INTO trades(id,username,account_name,date,trade_date,direction,code,quantity,amount) VALUES('cash_hk_buy',$1,$2,'2026-09-01','2026-09-01','buy',$3,100,0)",[U,A,hk.canonical_code]);
     for(const [suffix,perShare,nature] of [['normal','1','普通股息'],['special','0.1','特別股息']]){

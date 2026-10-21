@@ -61,8 +61,7 @@ async function main() {
   process.env.DOCUMENT_PDF_CACHE_DIR = tempCache;
   try {
     const root = path.join(__dirname, '..', '..');
-    const python = process.platform === 'win32' ? path.join(root, 'venv', 'Scripts', 'python.exe')
-      : fs.existsSync(path.join(root, 'venv', 'bin', 'python')) ? path.join(root, 'venv', 'bin', 'python') : 'python3';
+    const python = require('../services/arbitrageParser').resolvePython();
     const fixture = spawnSync(python, ['-c', "import fitz,sys; d=fitz.open(); p=d.new_page(); p.insert_textbox(fitz.Rect(30,30,550,600), 'Stock Code: 2523. The Company has decided that the Global Offering and the Listing will not proceed at this time. Hong Kong, Wednesday, 8 July 2026'); sys.stdout.buffer.write(d.tobytes())"]);
     assert.strictEqual(fixture.status, 0, String(fixture.stderr));
     const cancelledUrl = 'https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0708/2026070801370.pdf';

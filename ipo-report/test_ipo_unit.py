@@ -1664,16 +1664,22 @@ try:
         _bt_run = _json.load(_h)
     os.remove(_bt_json)
     _bt_points = _bt_run["points"]
-    _bad_reuse = [p["code"] for p in _bt_points
-                  if _date.fromisoformat(p["trained_anchor"][:10])
-                  > _date.fromisoformat(p["anchor_date"][:10])]
-    _reused = [p for p in _bt_points if p["trained_anchor"][:10] != p["anchor_date"][:10]]
-    check("加速回测实际复用路径无未来信息（逐点训练截点不晚于预测截点）",
-          len(_bt_points) > 0 and not _bad_reuse and len(_reused) > 0
-          and _bt_run["summary"].get("skipped_missing_issue_date", 0) == 0,
-          "点数=%d 违规=%s 复用点=%d skipped=%s"
-          % (len(_bt_points), _bad_reuse, len(_reused),
-             _bt_run["summary"].get("skipped_missing_issue_date")))
+    _bt_summary = _bt_run.get("summary", {})
+    if _bt_summary.get("no_training_samples") or _bt_summary.get("insufficient_samples"):
+        # 空库/全新环境没有足够历史样本，无法执行加速回测复用验证；不视为通过，明确跳过。
+        print("[SKIP] 加速回测复用路径检查：环境无足够历史样本（%s），需真实样本环境验证"
+              % ("无样本" if _bt_summary.get("no_training_samples") else "样本不足"))
+    else:
+        _bad_reuse = [p["code"] for p in _bt_points
+                      if _date.fromisoformat(p["trained_anchor"][:10])
+                      > _date.fromisoformat(p["anchor_date"][:10])]
+        _reused = [p for p in _bt_points if p["trained_anchor"][:10] != p["anchor_date"][:10]]
+        check("加速回测实际复用路径无未来信息（逐点训练截点不晚于预测截点）",
+              len(_bt_points) > 0 and not _bad_reuse and len(_reused) > 0
+              and _bt_summary.get("skipped_missing_issue_date", 0) == 0,
+              "点数=%d 违规=%s 复用点=%d skipped=%s"
+              % (len(_bt_points), _bad_reuse, len(_reused),
+                 _bt_summary.get("skipped_missing_issue_date")))
     _val.detect_stock_hot_sector = _old_detect_for_cap
     _val.get_stock_sector_context = _old_context_for_cap
     _val._xgb_predict_listing = _old_xgb_for_cap

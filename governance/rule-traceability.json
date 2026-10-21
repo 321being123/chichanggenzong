@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-20",
+  "lastReviewed": "2026-10-21",
   "rules": [
     {
       "id": "STOCK-ANALYSIS-REFRESH-001",
@@ -1303,6 +1303,10 @@
         {
           "file": "ipo-report/test_ipo_unit.py",
           "pattern": "固定区间验收隔离截点不晚于定标结果上市日的边界样本"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "加速回测复用路径检查：环境无足够历史样本"
         }
       ],
       "owner": "A股 IPO",

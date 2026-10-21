@@ -36,7 +36,7 @@ sys.stdout.buffer.write(document.tobytes())
       searchImpl:async options=>{assert.equal(options.stockCode,'09001');assert.deepEqual(options.categories,['-2']);return [{title:'發售價公告',announcedAt:'2099-10-13',fileLink:'https://www1.hkexnews.hk/pricing-regression-20991013.pdf'}];},
       fetchImpl:async()=>{requests++;return generated.stdout;}});
     assert.equal(result.ok,true);assert.equal(result.enriched,1);
-    const row=(await client.query("SELECT issue_price_low::float8,issue_price_high::float8,issue_price_final::float8,pricing_at::date::text,allotment_at,listing_at,source_documents FROM public.ipo_history WHERE security_code='09001.HK'")).rows[0];
+    const row=(await client.query("SELECT issue_price_low::float8,issue_price_high::float8,issue_price_final::float8,timezone('Asia/Shanghai',pricing_at)::date::text AS pricing_at,allotment_at,listing_at,source_documents FROM public.ipo_history WHERE security_code='09001.HK'")).rows[0];
     assert.equal(row.issue_price_final,35.30);assert.equal(row.pricing_at,'2099-10-13');
     assert.equal(row.issue_price_low,35.30);assert.equal(row.issue_price_high,38.80);assert.equal(row.allotment_at,null);assert.equal(row.listing_at,null);
     assert.equal(row.source_documents[0].type,'pricing_result');assert.equal(row.source_documents[0].contentSha256.length,64);

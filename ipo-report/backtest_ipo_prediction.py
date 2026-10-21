@@ -333,11 +333,19 @@ def main():
     rows = load_training_rows()
     if not rows:
         print("没有可用于回测的历史样本")
+        if args.json:
+            with open(args.json, "w", encoding="utf-8") as handle:
+                json.dump({"summary": {"no_training_samples": True, "skipped_missing_issue_date": 0}, "points": []},
+                          handle, ensure_ascii=False, indent=2)
         return 1
     raw, codes, names, gain = rows_to_arrays(rows)
     total = len(rows)
     if args.min_train >= total:
         print(f"历史样本仅 {total} 条，不足以在 min-train={args.min_train} 下滚动")
+        if args.json:
+            with open(args.json, "w", encoding="utf-8") as handle:
+                json.dump({"summary": {"insufficient_samples": True, "sample_count": total, "skipped_missing_issue_date": 0}, "points": []},
+                          handle, ensure_ascii=False, indent=2)
         return 1
 
     boards = [r[2] for r in rows]

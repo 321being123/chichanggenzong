@@ -67,6 +67,11 @@ jobs:
           node-version: '22'
       - name: 安装依赖（npm ci）
         run: npm ci
+      # 固定 Python 3.12：与 requirements.txt 钉版本（pandas/numpy 等）匹配，
+      # 避免 GitHub 更换测试机系统后自带 Python 变化导致装不上依赖
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
       - name: 准备 Python venv 并安装依赖（用于 Python 功能测试）
         run: |
           python3 -m venv ipo-report/venv

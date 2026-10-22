@@ -306,8 +306,8 @@ async function buildCnStockLiveReport(code) {
         `- **赛道修正后（个股赛道，非市场信号）**：${valueOrDash(calculation.sector_return, '%')}`,
         `- **市场温度修正（市场整体，非个股赛道热度）**：${valueOrDash(marketContext.level || calculation.market_temperature)}，系数${valueOrDash(marketContext.multiplier ?? calculation.temperature_multiplier, '')}，最终${valueOrDash(calculation.final_return, '%')}`,
         `- **市场温度样本**：${marketContext.status === 'unknown' ? '样本不足，未做温度修正' : `近${marketContext.window_days ?? '—'}天${marketContext.sample_count ?? '—'}只新股${marketContext.break_rate != null ? `，破发率${marketContext.break_rate}%` : ''}`}`,
-        `- **个股赛道分量**：${sectorContext.label ? `${sectorContext.label}，历史系数×${sectorContext.multiplier ?? '—'}` : '无有效赛道分类'}`,
         `- **最终可能区间**：${calculation.range_low != null && calculation.range_high != null ? `${calculation.range_low}%～${calculation.range_high}%` : '暂无'}`,
+        `- **个股赛道分量**：${sectorContext.label ? `${sectorContext.label}，历史系数×${sectorContext.multiplier ?? '—'}` : '无有效赛道分类'}`,
       );
       const components = Array.isArray(context.sector_components) ? context.sector_components : [];
       if (components.length) {

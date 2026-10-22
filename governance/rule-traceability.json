@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-21",
+  "lastReviewed": "2026-10-22",
   "rules": [
     {
       "id": "STOCK-ANALYSIS-REFRESH-001",
@@ -3371,6 +3371,22 @@
       ],
       "owner": "运维治理",
       "status": "verified"
+    },
+    {
+      "id": "IPO-PREDICTION-DETAIL-001",
+      "title": "打新详情预测计算明细中赛道系数分量与赛道成分展示在最终可能区间之后，便于人工核对",
+      "implementation": {
+        "file": "server/routes/ipo.js",
+        "symbol": "buildCnStockLiveReport"
+      },
+      "tests": [
+        {
+          "file": "server/test/ipo-api.test.js",
+          "pattern": "赛道系数分量沉底在最终可能区间之后"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "implemented"
     }
   ]
 }

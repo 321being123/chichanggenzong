@@ -124,6 +124,11 @@ async function main() {
     assert.match(routeSource, /PE比值.*无单位.*发行PE÷行业PE/);
     assert.match(routeSource, /模型字段/);
   });
+  check('赛道系数分量沉底在最终可能区间之后', () => {
+    const rangeIdx = routeSource.indexOf('`- **最终可能区间**：');
+    const portionIdx = routeSource.indexOf('`- **个股赛道分量**：');
+    assert.ok(rangeIdx > 0 && portionIdx > rangeIdx, '个股赛道分量行应在最终可能区间之后，便于核对赛道系数');
+  });
   check('单债详情优先读取数据库报告', () => {
     const dbRead = routeSource.indexOf("SELECT md FROM ipo_reports WHERE md LIKE $1");
     const fileRead = routeSource.indexOf('fs.existsSync(file)', dbRead);

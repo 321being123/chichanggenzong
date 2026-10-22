@@ -161,11 +161,19 @@ function publicationQualityGate(result, previous = null) {
   const commonPreviousRated = commonCurrent.filter(row => String(commonPrevious.get(bondSnapshotKey(row)).safety || '未评级') !== '未评级').length;
   const commonCurrentRated = ratedCount(commonCurrent);
   const commonCoverageDrop = commonPreviousRated ? 1 - (commonCurrentRated / commonPreviousRated) : 0;
+  // 覆盖范围主动扩大（如纳入待上市新债）时新增对象的未评级不构成劣化；
+  // 评级覆盖率与未评级数量只按共有对象考核（存量口径），首期无上期时按全量考核。
+  const previousUnratedCommon = commonCurrent.filter(row =>
+    String(commonPrevious.get(bondSnapshotKey(row)).safety || '未评级') === '未评级').length;
+  const scopedTotal = previousData.length ? commonCurrent.length : data.length;
+  const scopedRated = previousData.length ? commonCurrentRated : currentRated;
+  const scopedUnrated = scopedTotal - scopedRated;
+  const scopedRatingCoverage = scopedTotal ? scopedRated / scopedTotal : 0;
   const failures = [];
   if (expectedBonds > 0 && data.length < Math.ceil(expectedBonds * 0.95)) failures.push('可转债记录数低于预期完整度95%');
   if (!eligibleCompanies || financialCoverage < 0.95) failures.push('财务完整公司覆盖率低于95%');
-  if (!data.length || ratingCoverage < 0.95) failures.push('有评级可转债覆盖率低于95%');
-  if (previousData.length && currentUnrated > previousUnrated + Math.max(5, Math.ceil(previousData.length * 0.05))) failures.push('未评级数量异常增加');
+  if (!data.length || (scopedTotal && scopedRatingCoverage < 0.95)) failures.push('有评级可转债覆盖率低于95%');
+  if (previousData.length && scopedUnrated > previousUnratedCommon + Math.max(5, Math.ceil(previousData.length * 0.05))) failures.push('未评级数量异常增加');
   if (commonPreviousRated && commonCoverageDrop > 0.02) failures.push('共有转债有评级覆盖率下降超过2%');
   const periods = [...new Set((diagnostics.financial_report_periods || []).filter(Boolean).map(value => String(value).slice(0, 10)))];
   const periodMismatches = diagnostics.financial_period_mismatches || [];

@@ -242,6 +242,24 @@ check('安全性页面读取仍按在市口径过滤，待上市债不进列表'
   const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');
   assert.ok(service.includes("status = 'listed'"), '页面过滤必须保持在市转债口径');
 });
+check('财务增量同步目标范围含待上市新债正股', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'companyFinancialIncrementalSync.js'), 'utf8');
+  assert.ok(source.includes('UNION'), '财务同步目标集合缺少待上市新债正股分支');
+  assert.ok(/i\.list_date IS NULL OR i\.list_date>=CURRENT_DATE/.test(source),
+    '待上市正股分支必须以上市日界定范围');
+});
+check('安全性门禁按存量口径考核，覆盖范围扩大不误拦', () => {
+  const { publicationQualityGate } = require('../services/bondSafetyService');
+  const diag = { expected_bond_count: 15, eligible_companies: 10, financial_complete_companies: 10 };
+  const prevRows = Array.from({ length: 10 }, (_, i) => ({ bond_code: `1${i}`, safety: '低风险' }));
+  const keepRows = Array.from({ length: 10 }, (_, i) => ({ bond_code: `1${i}`, safety: '低风险' }));
+  const addedRows = Array.from({ length: 5 }, (_, i) => ({ bond_code: `9${i}`, safety: '未评级' }));
+  const expand = publicationQualityGate({ data: [...keepRows, ...addedRows], diagnostics: diag }, { data: prevRows });
+  assert.strictEqual(expand.ok, true, '范围扩大导致的新增未评级不应拦截：' + expand.failures.join('；'));
+  const dropped = keepRows.map((row, i) => (i < 4 ? { bond_code: row.bond_code, safety: '未评级' } : row));
+  const degrade = publicationQualityGate({ data: dropped, diagnostics: diag }, { data: prevRows });
+  assert.strictEqual(degrade.ok, false, '存量评级丢失必须仍然拦截');
+});
 
 const pass = results.filter(r => r[0] === 'PASS').length;
 const fail = results.filter(r => r[0] === 'FAIL').length;

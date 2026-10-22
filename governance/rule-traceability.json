@@ -3411,6 +3411,30 @@
       ],
       "owner": "A股 IPO",
       "status": "implemented"
+    },
+    {
+      "id": "BOND-SAFETY-SCOPE-GATE-001",
+      "title": "安全性快照覆盖含已关联正股的待上市新债，页面仍按在市口径；门禁评级覆盖率与未评级数量只按共有对象考核（存量口径），覆盖范围主动扩大不误拦、存量评级丢失仍拦",
+      "implementation": {
+        "file": "server/services/bondSafetyService.js",
+        "symbol": "publicationQualityGate"
+      },
+      "tests": [
+        {
+          "file": "server/test/bond-safety.test.js",
+          "pattern": "安全性门禁按存量口径考核，覆盖范围扩大不误拦"
+        },
+        {
+          "file": "server/test/bond-safety.test.js",
+          "pattern": "安全性快照源覆盖待上市新债，上市前即可按正股财务评级"
+        },
+        {
+          "file": "server/test/bond-safety.test.js",
+          "pattern": "财务增量同步目标范围含待上市新债正股"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

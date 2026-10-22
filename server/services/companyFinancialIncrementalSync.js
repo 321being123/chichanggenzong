@@ -85,7 +85,17 @@ async function listCurrentBondUnderlyingTargets(client = pool, targetTradeDate =
        AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
        AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
        AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
-     ORDER BY s.canonical_code
+    UNION
+    SELECT DISTINCT s.instrument_id,s.canonical_code AS ts_code,p.stock_instrument_id,ci.company_id
+      FROM core.instruments i
+      JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+      LEFT JOIN fundamental.convertible_bond_issuance iss ON iss.instrument_id=i.instrument_id
+      JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id AND s.asset_class='stock'
+      JOIN core.company_instruments ci ON ci.instrument_id=s.instrument_id
+     WHERE (i.list_date IS NULL OR i.list_date>=CURRENT_DATE)
+       AND COALESCE(i.status,'') NOT IN ('cancelled','canceled')
+       AND (iss.issue_type IS NULL OR iss.issue_type NOT IN ('定向','私募'))
+    ORDER BY 2
   `, [targetTradeDate || null]);
   return uniqueTarget(rows.map(row => ({
     companyId: row.company_id,

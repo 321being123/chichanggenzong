@@ -1147,7 +1147,7 @@ def _insufficient_row(target, code, r, reason, is_historical, safety_map, base_c
             "missing": reason,
             "missing_fields": [] if is_new_listing else ([x.strip() for x in reason.split(":", 1)[-1].split(",")] if ":" in reason else []),
             "observation_days": observation_days,
-            "required_observation_days": 40 if is_new_listing else None,
+            "required_observation_days": 41 if is_new_listing else None,
         }, ensure_ascii=False),
         "calculated_at": "now()",
     }
@@ -1585,8 +1585,10 @@ def _collect_valid(prepared, model, target, index, profile_map=None):
         if missing:
             if missing == ["60日波动率"]:
                 observations = bisect.bisect_right(by_code_dates.get(code, []), target)
-                if observations < 40:
-                    insufficient.append((code, base_code, r, f"新上市观察期:{observations}/40个交易日"))
+                # 60日波动率需要 40 个日收益率，即 41 个交易日的价格；
+                # 第 40 个交易日只有 39 个收益率，仍属新上市观察期，不得误标“核心字段缺失”
+                if observations < 41:
+                    insufficient.append((code, base_code, r, f"新上市观察期:{observations}/41个交易日"))
                     continue
             insufficient.append((code, base_code, r, "核心字段缺失:" + ",".join(missing)))
             continue

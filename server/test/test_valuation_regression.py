@@ -68,6 +68,39 @@ check('新上市债记录样本进度', json.loads(row_new['diagnostics'])['obse
 
 
 # =====================================================================
+# 单元：新上市观察期边界（40/41 个交易日，回归误标“核心字段缺失”）
+# =====================================================================
+print('== 单元：新上市观察期边界 ==')
+def make_new_bond_facts(n_days):
+    dates = pd.bdate_range('2026-08-19', periods=n_days)
+    return pd.DataFrame({
+        'instrument_id': [777001] * n_days,
+        'ts_code': ['118999.SH'] * n_days,
+        'trade_date': dates,
+        'close': np.linspace(150.0, 152.0, n_days),
+        'conversion_value': np.linspace(90.0, 92.0, n_days),
+        'conversion_premium_pct': [60.0] * n_days,
+        'bond_value': np.linspace(101.0, 102.0, n_days),
+        'maturity_date': [pd.Timestamp('2032-08-19')] * n_days,
+        'maturity_call_price': ['到期赎回价 110 元'] * n_days,
+    })
+
+for n_days in (40, 41):
+    facts = make_new_bond_facts(n_days)
+    prepared = m.prepare_data(facts)
+    tgt2 = pd.Timestamp(facts['trade_date'].iloc[-1])
+    valid2, insufficient2 = m._collect_valid(prepared, None, tgt2, None)
+    if n_days == 40:
+        reason = insufficient2[0][3] if insufficient2 else ''
+        check('40个交易日 → 归入新上市观察期（不误标数据不足）',
+              len(valid2) == 0 and len(insufficient2) == 1 and reason.startswith('新上市观察期:40/41'),
+              detail=f'valid={len(valid2)} insufficient={insufficient2}')
+    else:
+        check('41个交易日 → 进入正式估值', len(valid2) == 1 and not insufficient2,
+              detail=f'valid={len(valid2)} insufficient={insufficient2}')
+
+
+# =====================================================================
 # 单元：训练时固化残差分布（阻断① 消除年内未来泄漏/当日横排）
 # =====================================================================
 print('== 单元：固定残差分布 (阻断1) ==')

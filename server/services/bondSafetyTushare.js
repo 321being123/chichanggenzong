@@ -466,6 +466,26 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
         ) v ON true
        WHERE i.status='listed' AND (i.delist_date IS NULL OR i.delist_date>md.trade_date)
          AND (p.maturity_date IS NULL OR p.maturity_date>=md.trade_date)
+      UNION ALL
+      -- 待上市新债：安全性评级依据正股财务，上市前即可评定；页面读取端仍按在市口径过滤（2026-10-22）
+      SELECT i.instrument_id,i.canonical_code AS bond_code,i.name AS bond_name,
+             s.canonical_code AS stock_code,s.name AS stock_name,p.stock_instrument_id,
+             NULL::text AS trade_date,NULL::numeric AS close,NULL::text AS change_pct,
+             NULL::numeric AS conversion_value,NULL::numeric AS conversion_premium_pct,
+             p.current_conv_price AS convert_price,NULL::text AS valuation_trade_date,
+             COALESCE(v.pe_ttm,v.pe_static) AS pe_ttm,v.pe_static,v.pb,v.dividend_yield_ttm,
+             v.total_market_cap,s.raw_data AS stock_raw
+        FROM core.instruments i
+        JOIN fundamental.convertible_bond_profiles p ON p.instrument_id=i.instrument_id
+        LEFT JOIN core.instruments s ON s.instrument_id=p.stock_instrument_id
+        LEFT JOIN LATERAL (
+          SELECT * FROM market.daily_valuations x
+           WHERE x.instrument_id=p.stock_instrument_id
+           ORDER BY x.trade_date DESC, x.source_id DESC LIMIT 1
+        ) v ON true
+       WHERE i.asset_class='convertible_bond'
+         AND (i.list_date IS NULL OR i.list_date>=CURRENT_DATE)
+         AND COALESCE(i.status,'') NOT IN ('cancelled','canceled')
     )
     SELECT b.*,ci.company_id,
            ind.raw_payload AS indicator_payload, bal.raw_payload AS balance_payload,

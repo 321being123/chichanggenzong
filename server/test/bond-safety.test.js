@@ -229,6 +229,18 @@ check('安全性完整列表缓存版本覆盖强赎状态，静态响应只保�
   });
 });
 
+check('安全性快照源覆盖待上市新债，上市前即可按正股财务评级', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
+  assert.ok(source.includes('UNION ALL'), '快照源查询缺少待上市新债分支');
+  assert.ok(/i\.list_date IS NULL OR i\.list_date>=CURRENT_DATE/.test(source),
+    '待上市分支必须以上市日界定目标范围');
+  assert.ok(source.includes("NOT IN ('cancelled','canceled')"), '待上市分支必须排除终止发行');
+});
+check('安全性页面读取仍按在市口径过滤，待上市债不进列表', () => {
+  const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');
+  assert.ok(service.includes("status = 'listed'"), '页面过滤必须保持在市转债口径');
+});
+
 const pass = results.filter(r => r[0] === 'PASS').length;
 const fail = results.filter(r => r[0] === 'FAIL').length;
 console.log(`\n===== bond-safety 回归汇总 =====\nPASS=${pass}  FAIL=${fail}`);

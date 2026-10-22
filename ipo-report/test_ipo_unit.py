@@ -133,6 +133,61 @@ finally:
     if 'original_accuracy_lines' in locals():
         m._build_accuracy_lines = original_accuracy_lines
 
+print("== 打新详情发行规模与安全性评级 ==")
+try:
+    original_accuracy_lines = m._build_accuracy_lines
+    m._build_accuracy_lines = lambda days=90: []
+    bond_detail = {
+        "rating": "AA-",
+        "issue_scale": 7.6,
+        "safety": "低风险",
+        "circulation_scale": 2.44,
+        "stock_name": "测试科技",
+        "stock_code": "300001",
+        "convert_price": 10.5,
+        "transfer_value": 88.8,
+        "premium_ratio": 12.3,
+        "stock_price": 9.32,
+    }
+    list_bond = {
+        "name": "测试转债", "code": "123456", "has_detail": True,
+        "detail": dict(bond_detail),
+        "listing_analysis": {"summary": "预计首日涨幅 15%-30%", "detail": "📊 预测最终价格: 120元", "price": 120.0},
+    }
+    md = m.generate_markdown("2026年08月28日", "周五", [], [], [], [list_bond], sector_boost_info=[])
+    check("上市详情显示发行规模", "- **发行规模**：7.6亿元" in md)
+    check("上市详情显示安全性评级", "- **安全性评级**：低风险" in md)
+    check("上市详情保留流通规模", "- **流通规模**：约2.44亿元" in md)
+    ok_order = ("- **发行规模**" in md and "- **流通规模**" in md
+                and md.index("- **发行规模**") < md.index("- **流通规模**"))
+    check("发行规模行位于流通规模行之前", ok_order)
+    no_safety_detail = dict(bond_detail)
+    no_safety_detail["safety"] = None
+    list_bond_missing = dict(list_bond)
+    list_bond_missing["detail"] = no_safety_detail
+    md_missing = m.generate_markdown("2026年08月28日", "周五", [], [], [], [list_bond_missing], sector_boost_info=[])
+    check("安全性缺失时如实显示暂无", "- **安全性评级**：暂无" in md_missing)
+    apply_bond = {
+        "name": "申购转债", "code": "654321", "has_detail": True,
+        "detail": dict(bond_detail),
+        "advice": "可以申购", "reason": "测试",
+    }
+    md_apply = m.generate_markdown("2026年08月28日", "周五", [], [apply_bond], [], [], sector_boost_info=[])
+    check("申购详情显示安全性评级", "- **安全性评级**：低风险" in md_apply)
+    check("申购详情保留发行规模", "- **发行规模**：7.6亿元" in md_apply)
+    html = m.generate_html("", {
+        "date_display": "2026年08月28日", "weekday": "周五",
+        "apply_stocks": [], "apply_bonds": [apply_bond],
+        "list_stocks": [], "list_bonds": [list_bond],
+        "sector_boost_info": [],
+    })
+    check("HTML上市详情显示发行规模", "<strong>发行规模：</strong>7.6亿元" in html)
+    check("HTML上市详情显示安全性评级", "<strong>安全性评级：</strong>低风险" in html)
+    check("HTML申购详情显示安全性评级", html.count("<strong>安全性评级：</strong>") >= 2)
+finally:
+    if 'original_accuracy_lines' in locals():
+        m._build_accuracy_lines = original_accuracy_lines
+
 print("== 招股书主营业务/赛道提取 ==")
 try:
     highkai_fixture = (

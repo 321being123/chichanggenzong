@@ -823,6 +823,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 }
 
 .home-latest-feature {
+  margin-top: 30px;
   padding: 28px;
   border: 1px solid var(--home-border);
   border-radius: 16px;
@@ -988,7 +989,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 }
 
 .home-content-grid {
-  margin-top: 26px;
+  margin-top: 30px;
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(360px, .9fr);
   gap: 14px;
@@ -1014,7 +1015,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 
 .home-market-cycle-grid {
   display: grid;
-  gap: 14px;
+  gap: 30px;
 }
 
 .home-cycle-card {

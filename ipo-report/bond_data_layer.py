@@ -252,6 +252,40 @@ def get_listing_liquidity(code):
     return dict(zip(fields, row))
 
 
+def load_bond_safety_map():
+    """读取可转债安全性最新已发布快照（与「可转债-可转债安全性」页面同源）。
+
+    返回 {债券代码: 安全性评级}；完整代码与不带市场后缀的代码都建键，
+    与 server/scripts/convertibleBondValuation.py 的 load_safety_map 同口径。
+    无快照或读取失败返回空字典，调用方按「暂无」展示。
+    """
+    out = {}
+    try:
+        conn = db_pg.connect()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT data FROM bond_safety_snapshots WHERE publication_status='published' "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception:
+        return out
+    if not row or not row[0]:
+        return out
+    data = row[0] if isinstance(row[0], list) else json.loads(row[0])
+    for rec in data or []:
+        code = str(rec.get("bond_code") or "").strip()
+        safety = rec.get("safety") or ""
+        if code and safety:
+            out[code] = safety
+            base = code.split(".")[0]
+            if base and base not in out:
+                out[base] = safety
+    return out
+
+
 def save_listing_liquidity(code, payload, listing_date=None):
     """幂等保存公告解析出的流通规模；失败或空值不覆盖有效事实。"""
     if not payload or payload.get("status") != "ok" or payload.get("circulation_scale") is None:

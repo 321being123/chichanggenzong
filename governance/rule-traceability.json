@@ -3387,6 +3387,30 @@
       ],
       "owner": "A股 IPO",
       "status": "implemented"
+    },
+    {
+      "id": "IPO-REPORT-SCALE-SAFETY-001",
+      "title": "打新详情展示发行规模与可转债安全性评级；安全性评级只读安全性最新已发布快照同口径展示，快照未覆盖时如实显示暂无，不估算不代填",
+      "implementation": {
+        "file": "ipo-report/ipo_lib_report.py",
+        "symbol": "generate_markdown"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "上市详情显示发行规模"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "上市详情显示安全性评级"
+        },
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "安全性缺失时如实显示暂无"
+        }
+      ],
+      "owner": "A股 IPO",
+      "status": "implemented"
     }
   ]
 }

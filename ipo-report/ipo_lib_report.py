@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import fitz  # PyMuPDF - PDF解析
 import db_pg  # PostgreSQL 数据层
+from bond_data_layer import load_bond_safety_map
 from calendar_core import _str_date, build_upcoming_calendar, fetch_calendar_entries, next_trading_date
 from _classify import _is_bj_stock, _market_type_to_board_key
 from _common import _load_env
@@ -272,10 +273,12 @@ def build_report(target_date):
             stock["has_detail"] = False
 
     # 获取新债详情（如果没有新债则跳过）
+    safety_map = load_bond_safety_map()
     for bond in target_apply_bonds + target_list_bonds:
         code = bond["secu_code"].split(".")[0]
         detail = fetch_bond_detail(code)
         if detail:
+            detail["safety"] = safety_map.get(code) or safety_map.get(bond["secu_code"]) or None
             bond["detail"] = detail
             bond["has_detail"] = True
         else:
@@ -544,6 +547,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                     lines.append(f"- **分析理由**：{b.get('reason', '待分析')}")
                     if d.get("rating"):
                         lines.append(f"- **债券评级**：{d['rating']}")
+                    lines.append(f"- **安全性评级**：{d.get('safety') or '暂无'}")
                     if d.get("stock_name") and d.get("stock_code"):
                         lines.append(f"- **正股**：{d['stock_name']}（{d['stock_code']}）")
                     if d.get("stock_price"):
@@ -675,6 +679,7 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                                 lines.append(f"  - {line}")
                         if d.get("rating"):
                             lines.append(f"- **债券评级**：{d['rating']}")
+                        lines.append(f"- **安全性评级**：{d.get('safety') or '暂无'}")
                         if d.get("stock_name"):
                             lines.append(f"- **正股**：{d['stock_name']}（{d.get('stock_code','')}）")
                         if d.get("convert_price"):
@@ -685,6 +690,8 @@ def generate_markdown(date_display, weekday, apply_stocks, apply_bonds, list_sto
                             lines.append(f"- **转股溢价率**：{d['premium_ratio']}%")
                         if d.get("stock_price"):
                             lines.append(f"- **正股价**：{d['stock_price']}元")
+                        if d.get("issue_scale"):
+                            lines.append(f"- **发行规模**：{d['issue_scale']}亿元")
                         if d.get("circulation_scale") is not None:
                             lines.append(f"- **流通规模**：约{d['circulation_scale']}亿元")
                         elif d.get("_circulation_error"):
@@ -813,6 +820,7 @@ def generate_html(md_content, data):
                         if d.get("lock_scale") is not None:
                             html += f' | <strong>限售：</strong>约{d["lock_scale"]}亿'
                         html += '</p>'
+                    html += f'<p><strong>安全性评级：</strong>{d.get("safety") or "暂无"}</p>'
                     if d.get("stock_name"):
                         html += f'<p><strong>正股：</strong>{d["stock_name"]}（{d.get("stock_code","")}）'
                         if d.get("stock_price"):
@@ -880,6 +888,7 @@ def generate_html(md_content, data):
                             html += f'<p style="color:#666;font-size:13px">{"<br>".join(detail.split(chr(10)))}</p>'
                     else:
                         html += f'<p><strong>预测最终价格：</strong>{la}</p>'
+                    html += f'<p><strong>安全性评级：</strong>{d.get("safety") or "暂无"}</p>'
                     if d.get("stock_name"):
                         html += f'<p><strong>正股：</strong>{d["stock_name"]}（{d.get("stock_code","")}）'
                         if d.get("stock_price"):
@@ -892,6 +901,8 @@ def generate_html(md_content, data):
                         if d.get("premium_ratio") is not None:
                             html += f' | 溢价率：{d["premium_ratio"]}%'
                         html += '</p>'
+                    if d.get("issue_scale"):
+                        html += f'<p><strong>发行规模：</strong>{d["issue_scale"]}亿元</p>'
                     if d.get("circulation_scale") is not None:
                         html += f'<p><strong>流通规模：</strong>约{d["circulation_scale"]}亿元</p>'
                     elif d.get("_circulation_error"):

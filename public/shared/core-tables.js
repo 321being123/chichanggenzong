@@ -730,7 +730,7 @@ function renderTrades() {
       const c = item.raw;
       const isIn = c.amount >= 0;
       const labels = {dividend:'股票分红',dividend_tax:'分红扣税',repo_interest:'逆回购利息',repo_fee:'逆回购费用'};
-      const incomeLabel = labels[c.flow_type];
+      const incomeLabel = c.flow_type==='dividend'&&c.evidence?.incomeKind==='bond_interest'?'可转债利息':labels[c.flow_type];
       const displayNote = getCashFlowDisplayNote(c);
       const dirLabel = incomeLabel ? escapeHtml(incomeLabel) : isIn
         ? '<span class="tag tag-cash">入金</span>'

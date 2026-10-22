@@ -52,6 +52,7 @@ function labeledDate(text,labels) {
   return match?dateValue(match[1]):null;
 }
 function parseDividend(text,identity) {
+  if(identity.asset_class==='convertible_bond') return parseBondInterest(text,identity);
   const flat=String(text||'').replace(/\r/g,'').replace(/\n\s*\n\d{1,3}\n/g,'\n');
   // 港股监管附件中的A股子公司代码不能作为港股主体身份。
   const stock=flat.match(identity.market==='HK'?/(?:股份代號|股份代号|Stock\s*code)\s*[：:]?\s*(\d{1,6})/i:/(?:證券代碼|证券代码)\s*[：:]?\s*(\d{1,6})/i);
@@ -86,11 +87,27 @@ function parseDividend(text,identity) {
   if(payDate<recordDate) return {reason:'invalid_dividend_timeline',...terms};
   return {...terms,parserVersion:PARSER};
 }
+function parseBondInterest(text,identity) {
+  const compact=normalizeChineseDates(text);
+  const bare=String(identity.canonical_code||identity.code).split('.')[0];
+  const codes=[...compact.matchAll(/(?:债券代码|转债代码)[：:]?(\d{6})/g)].map(m=>m[1]);
+  if(!codes.includes(bare)||new Set(codes).size!==1) return {reason:'document_security_not_verified'};
+  const recordDate=labeledDate(compact,'(?:付息)?债权登记日(?:期)?');
+  const payDate=labeledDate(compact,'(?:本次)?付息日(?:期)?');
+  // 只取明确含税的每张/每10张利息，不把本金、票面利率列表或税后金额当作毛息。
+  const amounts=[...compact.matchAll(/每(?:(\d+))?张[^。；;]{0,90}?(?:派发利息(?:为)?|利息为|利息)[：:]?(?:人民币)?([\d.]+)元[（(]含税[）)]/g)]
+    .map(m=>Number(m[2])/Number(m[1]||1));
+  const unique=[...new Set(amounts)];
+  const terms={incomeKind:'bond_interest',recordDate,payDate,exDate:payDate,currency:'CNY',amount:unique[0],taxRate:0.2,quantityUnit:'bond',parserVersion:PARSER};
+  if(!recordDate||!payDate||unique.length!==1||!Number.isFinite(terms.amount)||terms.amount<0) return {reason:'incomplete_bond_interest_terms',...terms};
+  if(payDate<=recordDate) return {reason:'invalid_dividend_timeline',...terms};
+  return terms;
+}
 async function cohort() {
   const rows=(await pool.query(`SELECT DISTINCT code FROM positions p JOIN accounts a ON a.username=p.username AND a.account_name=p.account_name WHERE a.cash_income_policy->>'enabled'='true'
     UNION SELECT DISTINCT code FROM trades t JOIN accounts a ON a.username=t.username AND a.account_name=t.account_name WHERE a.cash_income_policy->>'enabled'='true'`)).rows;
   const list=[];
-  for(const r of rows) {const canonical=await require('./securityIdentity').resolveCanonicalCode(r.code);const i=await resolveInstrument({canonicalCode:canonical});if(i?.asset_class==='stock') list.push({...i,code:r.code});}
+  for(const r of rows) {const canonical=await require('./securityIdentity').resolveCanonicalCode(r.code);const i=await resolveInstrument({canonicalCode:canonical});if(['stock','convertible_bond'].includes(i?.asset_class)) list.push({...i,code:r.code});}
   if(!list.length) throw new Error('已启用账户证券集合为空，不能证明分红覆盖恢复');
   return [...new Map(list.map(i=>[i.instrument_id,i])).values()];
 }
@@ -151,10 +168,15 @@ async function syncCashDividends({targetDate=CoreDate.todayInZone('Asia/Shanghai
       if(!localOnly&&from<=targetDate&&sourceCode==='hkex') announcements=announcements.concat(await require('./hkexAnnouncement').searchAnnouncements({fromDate:from,toDate:targetDate,stockCode:String(identity.canonical_code).split('.')[0]}));
       else if(!localOnly&&from<=targetDate) {
         const module=require('./stockAnalysis');
-        const batch=await (sourceCode==='sse'?module.fetchSseEvents:module.fetchSzseEvents)(identity.canonical_code,from,targetDate,'',{structured:true});
+        let announcementCode=identity.canonical_code;
+        if(identity.asset_class==='convertible_bond'){
+          announcementCode=(await pool.query('SELECT i.canonical_code FROM fundamental.convertible_bond_profiles p JOIN core.instruments i ON i.instrument_id=p.stock_instrument_id WHERE p.instrument_id=$1',[identity.instrument_id])).rows[0]?.canonical_code;
+          if(!announcementCode)throw new Error('可转债发行人身份缺失，不能核验付息公告覆盖');
+        }
+        const batch=await (sourceCode==='sse'?module.fetchSseEvents:module.fetchSzseEvents)(announcementCode,from,targetDate,'',{structured:true});
         if(!batch.complete) throw new Error('官方公告分页不完整');announcements=announcements.concat(batch.events);
       }
-      const candidates=[...new Map(announcements.filter(a=>sourceCode==='hkex'?/股息|Dividend/i.test(a.title)&&!/計劃|计划|代息股份|董事|股[东東]大[会會]|取消|cancel/i.test(a.title):/(?:权益分派|利润分配).*实施公告/.test(a.title)).map(a=>[a.fileLink||a.url,a])).values()];
+      const candidates=[...new Map(announcements.filter(a=>identity.asset_class==='convertible_bond'?/付息公告/.test(a.title):sourceCode==='hkex'?/股息|Dividend/i.test(a.title)&&!/計劃|计划|代息股份|董事|股[东東]大[会會]|取消|cancel/i.test(a.title):/(?:权益分派|利润分配).*实施公告/.test(a.title)).map(a=>[a.fileLink||a.url,a])).values()];
       const discoveryThrough=localOnly?discovered:[discovered,targetDate].filter(Boolean).sort().at(-1);
       // 发现列表先持久化；下载超时或进程退出后仍能续解析，不把丢失URL当成无公告。
       await pool.query(`INSERT INTO ops.sync_cursors(instrument_id,scope_key,dataset_code,last_attempt_at,cursor_payload,last_error)
@@ -185,4 +207,4 @@ async function syncCashDividends({targetDate=CoreDate.todayInZone('Asia/Shanghai
   await require('./datasetPartitions').publishDatasetPartition('stock_cash_dividend_facts','GLOBAL',{partitionKey:targetDate,dataAsOf:targetDate,status:result.ok?'published':'rejected',rowCount:result.documents.filter(d=>d.ok).length,diagnostics:{...result,quality_status:result.ok?'passed':'failed',verified_no_change:result.ok&&!result.documents.length}});
   return result;
 }
-module.exports={parseDividend,dateValue,syncCashDividends,cohort,PARSER,sameDividendPeriod,normalizeChineseDates,resolveHkRelatedDocument};
+module.exports={parseDividend,parseBondInterest,dateValue,syncCashDividends,cohort,PARSER,sameDividendPeriod,normalizeChineseDates,resolveHkRelatedDocument};

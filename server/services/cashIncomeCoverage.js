@@ -26,8 +26,9 @@ async function auditCashIncomeCoverage(username, accountName, targetDate = CoreD
     const coverage = [];
     for (const row of byCode.values()) {
       const info = classifyCode(row.code,row.name);
-      const explicitNonStock = row.type === '债权' || row.type === '现金' || /基金|可转债|现金/.test(row.subtype || '');
+      let explicitNonStock = row.type === '债权' || row.type === '现金' || /基金|可转债|现金/.test(row.subtype || '');
       const identity = await resolveInstrument({ instrumentId: row.instrument_id, canonicalCode: row.code }, client.query.bind(client));
+      if(identity?.asset_class==='convertible_bond')explicitNonStock=false;
       const reasons = [];
       if (!anchor) reasons.push('missing_cash_anchor');
       if (!identity) reasons.push('missing_or_ambiguous_identity');

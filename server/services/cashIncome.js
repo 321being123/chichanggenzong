@@ -15,6 +15,15 @@ function stable(value) {
 }
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
 const round = value => Math.round((value + Number.EPSILON) * 100) / 100;
+function calculateBondInterest(action,holding){
+  const raw=action.raw_payload;
+  const grossPerBond=Number(action.cash_per_share_pre_tax);
+  if(holding.reason)return {reason:holding.reason};
+  if(!Number.isInteger(holding.quantity)||holding.quantity<0)return {reason:'unverified_quantity_unit'};
+  if(raw?.incomeKind!=='bond_interest'||!raw.documentId||raw.quantityUnit!=='bond'||action.currency_code!=='CNY'||!action.record_date||!action.pay_date||action.pay_date<=action.record_date||action.cash_per_share_pre_tax==null||!Number.isFinite(grossPerBond)||grossPerBond<0)return {reason:'incomplete_bond_interest_terms'};
+  const gross=round(holding.quantity*grossPerBond),tax=round(gross*0.2);
+  return {grossPerBond,gross,taxRate:0.2,tax,net:round(gross-tax)};
+}
 function userTaxExemption(policy,username,identity,action,key,holding) {
   const proof=policy?.cnDividendExemptions?.find(p=>p.eventKey===key&&p.code===identity?.code);
   return identity?.market==='CN'&&action.currency_code==='CNY'&&action.raw_payload?.documentId&&
@@ -158,8 +167,9 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     for(const action of orderedActions) {
       const identity=input.identities.find(i=>String(i.instrument_id)===String(action.instrument_id));
       const key='dividend:'+action.instrument_id+':'+action.record_date+':'+action.pay_date;
-      if(userScopeExclusion(input.account.cash_income_policy,username,identity?.code))continue;
-      if(identity?.market==='CN'&&action.status==='实施'&&action.record_date&&!taxSeen.has(key)){
+      const bondInterest=identity?.asset_class==='convertible_bond';
+      if(!bondInterest&&userScopeExclusion(input.account.cash_income_policy,username,identity?.code))continue;
+      if(!bondInterest&&identity?.market==='CN'&&action.status==='实施'&&action.record_date&&!taxSeen.has(key)){
         taxSeen.add(key);
         const currentHolding=holdingAt(input.data.trades,identity.code,targetDate,input.positions);
         const assessment=require('./cashDividendSettlement').assessDeferredTax({trades:input.data.trades,code:identity.code,recordDate:action.record_date,payDate:action.pay_date,targetDate,grossPerShare:action.cash_per_share_pre_tax,eventKey:key,expectedQuantity:currentHolding.quantity,positionHistoryReason:currentHolding.reason});
@@ -184,6 +194,13 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
       const actual=input.data.cashFlows.find(f=>f.event_key===key&&f.flow_type==='dividend'&&f.status==='confirmed');
       if(actual) {excluded.push({code:identity.code,actionId:action.action_id,reason:'broker_actual_replaces_calculation'});resolutions.push({code:identity.code,eventKey:key,flowId:actual.id,revision:actual.revision,reason:'broker_actual_evidence'});continue;}
       const holding=holdingAt(input.data.trades,identity.code,action.record_date,input.positions);
+      if(bondInterest){
+        const estimate=calculateBondInterest(action,holding);
+        if(estimate.reason){pending.push({code:identity.code,eventKey:key,reason:estimate.reason});continue;}
+        resolutions.push({code:identity.code,eventKey:key,reason:holding.quantity?'validated_bond_interest_inputs':'reconciled_zero_entitlement',holding});
+        if(holding.quantity)dividends.push({date:action.pay_date,amount:estimate.net,flow_type:'dividend',origin:'system',status:'estimated',event_key:key,instrument_id:action.instrument_id,quality_status:'authorized_dividend_calculation',note:'可转债利息（已扣20%税，待券商核对）',evidence:{...estimate,incomeKind:'bond_interest',authorizedPolicy:VERSION,recordDate:action.record_date,payDate:action.pay_date,quantity:holding.quantity,quantityUnit:'bond',sourceKey:action.source_key,documentId:action.raw_payload.documentId,brokerVerified:false}});
+        continue;
+      }
       if(identity.market==='HK'){
         if(input.account.cash_income_policy?.stockConnectChannel!=='stock_connect'){pending.push({code:identity.code,eventKey:key,reason:'missing_stock_connect_channel'});continue;}
         if(holding.reason){pending.push({code:identity.code,eventKey:key,reason:holding.reason});continue;}
@@ -217,10 +234,11 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
           netPerShare:net,userTaxExemption:userExemption,taxTreatment:deferredInitial?action.raw_payload.taxTreatment:null,sourceKey:action.source_key,sourceId:action.source_id,...holding,brokerVerified:false,authorizedPolicy:VERSION}});
     }
     for(const identity of input.identities) {
-      if(userScopeExclusion(input.account.cash_income_policy,username,identity.code))continue;
+      const bondInterest=identity.asset_class==='convertible_bond';
+      if(!bondInterest&&userScopeExclusion(input.account.cash_income_policy,username,identity.code))continue;
       const sample=input.positions.find(p=>p.code===identity.code) || input.data.trades.find(t=>t.code===identity.code) || {};
-      if(identity.asset_class && identity.asset_class!=='stock' || sample.type==='债权' || sample.type==='现金' || /基金|可转债|现金/.test(sample.subtype || '')) continue;
-      const reason=identity.market==='HK'?'missing_hk_dividend_facts':'dividend_window_not_verified';
+      if(!bondInterest&&(identity.asset_class && identity.asset_class!=='stock' || sample.type==='债权' || sample.type==='现金' || /基金|可转债|现金/.test(sample.subtype || ''))) continue;
+      const reason=bondInterest?'bond_interest_window_not_verified':identity.market==='HK'?'missing_hk_dividend_facts':'dividend_window_not_verified';
       const coverage=input.coverages.find(r=>r.scope_key==='cash_dividend:'+identity.instrument_id);
       const covered=coverage?.last_success_date>=targetDate&&coverage.cursor_payload?.complete===true&&coverage.cursor_payload?.fromDate<=anchor.date&&coverage.cursor_payload?.parserVersion===require('./cashDividendFacts').PARSER;
       if(covered)resolutions.push({code:identity.code,reason,scope:'cash_dividend:'+identity.instrument_id,coverage:coverage.cursor_payload});
@@ -234,7 +252,7 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
       else pending.push({code,reason:'missing_or_ambiguous_identity'});
     }
     // 新公告缺少净额不能撤销上一份有效估算；保持原证据并留待核验，补齐后同事件替换。
-    for(const gap of pending.filter(p=>['missing_net_amount','missing_event_tax_terms','missing_historical_dividend_fx','incomplete_dividend_settlement_terms'].includes(p.reason)&&p.eventKey)) {
+    for(const gap of pending.filter(p=>['missing_net_amount','missing_event_tax_terms','missing_historical_dividend_fx','incomplete_dividend_settlement_terms','incomplete_bond_interest_terms'].includes(p.reason)&&p.eventKey)) {
       const previous=input.data.cashFlows.find(f=>f.event_key===gap.eventKey&&f.flow_type==='dividend'&&f.origin==='system'&&f.status==='estimated'&&NavMath.isEffectiveFlow(f));
       if(previous&&(!gap.receiptDate||previous.date===gap.receiptDate)&&!dividends.some(f=>f.event_key===previous.event_key))dividends.push({...previous,amount:Number(previous.amount)});
     }
@@ -342,4 +360,4 @@ async function settleCashIncome(username,accountName,{targetDate=CoreDate.todayI
     return state;
   } catch(e) {await client.query('ROLLBACK');throw e;} finally {client.release();}
 }
-module.exports={settleCashIncome,calculateRepo,holdingAt,calendarFor,hkDividendCalendar,shiftDay,VERSION,userTaxExemption,userScopeExclusion};
+module.exports={settleCashIncome,calculateBondInterest,calculateRepo,holdingAt,calendarFor,hkDividendCalendar,shiftDay,VERSION,userTaxExemption,userScopeExclusion};

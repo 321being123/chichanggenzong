@@ -54,13 +54,15 @@ async function importActual(username,accountName,records,version) {
         if(notBefore&&r.date<notBefore)throw bad('递延税实际扣款日不能早于对应卖出及分红发放日');
       }
       const identityId=r.eventKey.match(/^dividend:(\d+):/)?.[1];
+      let incomeKind=old?.evidence?.incomeKind;
       if(identityId&&r.flow_type==='dividend'){
         const identity=await require('./securityIdentity').resolveInstrument({instrumentId:identityId},client.query.bind(client));
+        if(identity?.asset_class==='convertible_bond')incomeKind='bond_interest';
         if(identity?.market==='HK'&&!['net','gross'].includes(r.settlement?.amountBasis))throw bad('港股实收必须明确原币为净额或附完整分层扣税证据');
       }
       if(r.status==='revoked'&&!old) throw bad('没有可撤销的实际流水');
       if(old?.origin==='manual') throw Object.assign(new Error('不能替换手工外部资金流水'),{status:409});
-      const evidence={brokerVerified:true,sourceRef:r.sourceRef,originalCurrency:r.currency,originalAmount:r.originalAmount,settledAt:r.settledAt||null,settlement:r.settlement||{},importedBy:username};
+      const evidence={...(incomeKind==='bond_interest'?{incomeKind}:{}),brokerVerified:true,sourceRef:r.sourceRef,originalCurrency:r.currency,originalAmount:r.originalAmount,settledAt:r.settledAt||null,settlement:r.settlement||{},importedBy:username};
       const ordered=value=>Array.isArray(value)?value.map(ordered):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,ordered(value[k])])):value;
       const canonical=value=>JSON.stringify(ordered(value));
       if(old?.status===r.status&&old.date===r.date&&Number(old.amount)===Number(r.amountCny)&&canonical(old.evidence)===canonical(evidence)) continue;

@@ -7,11 +7,13 @@ var esc = function (s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 };
-function num(v, d) { var n = Number(v); return Number.isFinite(n) ? n.toFixed(d == null ? 2 : d) : '—'; }
-function pctv(v, d) { return (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—' : num(Number(v), d == null ? 2 : d) + '%'; }
+// num/pctv 统一用 utils.js 全局定义，此处不再重复声明（R-17）
 function api(p) { return (typeof BASE_URL !== 'undefined' && BASE_URL) ? BASE_URL + p : p; }
 function bondValLifecycleMarker(status) {
-  if (status === 'announced' || status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'announced') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'maturity_redeem') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="已公告到期兑付" title="已公告到期兑付">!</span>';
+  if (status === 'redemption_unconfirmed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="赎回方式待确认" title="赎回方式待确认">!</span>';
+  if (status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="赎回已完成" title="赎回已完成">!</span>';
   if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
   return '';
 }
@@ -54,10 +56,10 @@ function renderBondValOverview(json) {
   var up = document.getElementById('bond-val-updated');
   var stale = document.getElementById('bond-val-stale');
   if (!ov) return;
-  ov.style.display = '';
+  ov.classList.remove('js-hidden'); ov.style.display = '';
   if (up) up.textContent = '行情日期 ' + (json.as_of_date || '—') + '　模型 ' + (json.model_version || '—') +
     '　计算时间 ' + (json.updated_at ? new Date(json.updated_at).toLocaleString() : '—');
-  if (stale) stale.style.display = json.stale ? '' : 'none';
+  if (stale) { stale.classList.remove('js-hidden'); stale.style.display = json.stale ? '' : 'none'; }
 
   var cards = [
     { k: '可交易转债', v: json.total != null ? json.total : '—' },
@@ -90,6 +92,9 @@ function bondValFilters() {
     data_status: (document.getElementById('bond-val-data') || {}).value || ''
   };
 }
+// U-15c：原内联多语句事件抽为具名函数
+function bondValGotoStockAnalysis(code) { switchMain('stock-analysis'); setTimeout(function () { securityAnalysisSelect(code); }, 150); }
+
 function bondValApplyFilters() { renderBondValTable(); }
 function bondValClearFilters() {
   ['bond-val-search', 'bond-val-eval', 'bond-val-safety', 'bond-val-alert', 'bond-val-data'].forEach(function (id) {
@@ -156,7 +161,7 @@ function renderBondValTable() {
     var direction = selected ? (bondValState.sortDir === 'asc' ? 'ascending' : 'descending') : 'none';
     var sortMark = selected ? '<span class="biz-sort-indicator" aria-hidden="true">' + (bondValState.sortDir === 'asc' ? '▲' : '▼') + '</span>' : '';
     if (c.noSort) head += '<th class="' + cls + '">' + esc(c.t) + '</th>';
-    else head += '<th class="' + cls + ' sortable' + (selected ? ' is-sorted sort-' + (bondValState.sortDir === 'asc' ? 'asc' : 'desc') : '') + '" aria-sort="' + direction + '" onclick="bondValSort(\'' + c.k + '\')">' + esc(c.t) + sortMark + '</th>';
+    else head += '<th class="' + cls + ' sortable' + (selected ? ' is-sorted sort-' + (bondValState.sortDir === 'asc' ? 'asc' : 'desc') : '') + '" tabindex="0" aria-sort="' + direction + '" data-act="bondValSort" data-arg1="' + c.k + '">' + esc(c.t) + sortMark + '</th>';
   }
   head += '</tr></thead><tbody>';
 
@@ -166,7 +171,7 @@ function renderBondValTable() {
   }
   for (var j = 0; j < rows.length; j++) {
     var r = rows[j];
-    head += '<tr class="' + (EVAL_CLASS[r.eval_class] || '') + '" onclick="openBondValDetail(\'' + esc(r.bond_code) + '\')">';
+    head += '<tr class="' + (EVAL_CLASS[r.eval_class] || '') + '" data-act="openBondValDetail" data-arg1="' + esc(r.bond_code) + '">';
     for (var m = 0; m < BOND_VAL_COLS.length; m++) {
       var col = BOND_VAL_COLS[m];
       var v = r[col.k];
@@ -243,7 +248,7 @@ function openBondValDetail(code, skipPush) {
     })
     .catch(function (e) {
       detail.innerHTML = '<div class="bond-val-detail-loading">详情加载失败：' + esc(e.message || e) + '</div>' +
-        '<button class="btn btn-outline btn-sm" onclick="closeBondValDetail()">返回列表</button>';
+        '<button class="btn btn-outline btn-sm" data-act="closeBondValDetail">返回列表</button>';
     });
 }
 
@@ -256,8 +261,8 @@ function closeBondValDetail(skipPush) {
   bondValState.detailCode = null;
   var detail = document.getElementById('bond-val-detail');
   if (detail) detail.hidden = true;
-  var ov = document.getElementById('bond-val-overview'); if (ov && bondValState.data) ov.style.display = '';
-  var tw = document.querySelector('#sub-bond-valuation .table-wrap'); if (tw) tw.style.display = '';
+  var ov = document.getElementById('bond-val-overview'); if (ov && bondValState.data) { ov.classList.remove('js-hidden'); ov.style.display = ''; }
+  var tw = document.querySelector('#sub-bond-valuation .table-wrap'); if (tw) { tw.classList.remove('js-hidden'); tw.style.display = ''; }
   renderBondValTable();
 }
 
@@ -267,15 +272,15 @@ function renderBondValDetail(d, hist, alerts) {
   var detail = document.getElementById('bond-val-detail');
   if (!detail || !d || d.error) {
     detail.innerHTML = '<div class="bond-val-detail-loading">' + esc((d && d.error) || '未找到该转债') + '</div>' +
-      '<button class="btn btn-outline btn-sm" onclick="closeBondValDetail()">返回列表</button>';
+      '<button class="btn btn-outline btn-sm" data-act="closeBondValDetail">返回列表</button>';
     return;
   }
   var cur = d.current;
   var b = d.breakdown;
   var html = '';
-  html += '<div class="bond-val-detail-bar"><button class="btn btn-outline btn-sm" onclick="closeBondValDetail()">← 返回列表</button>' +
+  html += '<div class="bond-val-detail-bar"><button class="btn btn-outline btn-sm" data-act="closeBondValDetail">← 返回列表</button>' +
     '<span class="bond-val-detail-title">' + esc(d.bond_name) + bondValLifecycleMarker(cur.call_status) + '（' + esc(d.bond_code) + '）</span>' +
-    '<button class="btn btn-outline btn-sm" onclick="switchMain(\'stock-analysis\');setTimeout(function(){securityAnalysisSelect(\'' + esc(d.bond_code) + '\')},150)" title="查看完整债券分析（条款、评级、正股财务等）">📊 完整分析</button>' +
+    '<button class="btn btn-outline btn-sm" data-act="switchMain" data-arg1="\'stock-analysis\');setTimeout(function(){securityAnalysisSelect(\'' + esc(d.bond_code) + '\')}" data-arg2="150" title="查看完整债券分析（条款、评级、正股财务等）">📊 完整分析</button>' +
     '<span class="val-alert-tag ' + (EVAL_CLASS[cur.eval_class] || '') + '">' + esc(cur.final_evaluation) + '</span></div>';
 
   // 顶部摘要
@@ -305,8 +310,8 @@ function renderBondValDetail(d, hist, alerts) {
     ['60日波动率', pctv(b.conversion_value_volatility_60d), '模型输入（转股价值年化波动）'],
     ['历史中性额外价值', num(b.neutral_market_extra, 4), '模型市场中性基准（跨牛熊）'],
     ['单券结构性额外价值', num(b.predicted_relative_extra, 4), '模型根据条件估计的额外价值'],
-    ['中性公允价', num(b.fair_price, 2), '中心估计'],
-    ['公允区间', (b.fair_price_low != null ? num(b.fair_price_low, 1) + '～' + num(b.fair_price_high, 1) : '—'), '合理范围（历史误差 40%~60%）'],
+    ['中性公允价', num(b.fair_price, 2), '模型中心估计'],
+    ['公允区间', (b.fair_price_low != null ? num(b.fair_price_low, 1) + '～' + num(b.fair_price_high, 1) : '—'), '历史定价误差的分位波动带（第40%~60%分位），不是收益或置信保证'],
     ['绝对估值偏离', pctv(b.absolute_deviation_pct), '当前价格相对公允价'],
     ['相对市场偏离', pctv(b.relative_market_deviation_pct), '相对当前全市场']
   ];
@@ -344,10 +349,10 @@ function renderBondValDetail(d, hist, alerts) {
   var hdata = (hist && hist.data) || [];
   html += '<div class="bond-val-section"><h3>历史估值曲线</h3>';
   html += '<div class="bond-val-range-tabs">' +
-    '<button data-r="1y" onclick="bondValReloadHistory(\'' + esc(d.bond_code) + '\',\'1y\',this)">1年</button>' +
-    '<button data-r="3y" onclick="bondValReloadHistory(\'' + esc(d.bond_code) + '\',\'3y\',this)">3年</button>' +
-    '<button data-r="5y" onclick="bondValReloadHistory(\'' + esc(d.bond_code) + '\',\'5y\',this)">5年</button>' +
-    '<button data-r="all" class="active" onclick="bondValReloadHistory(\'' + esc(d.bond_code) + '\',\'all\',this)">全部</button>' +
+    '<button data-r="1y" data-act="bondValReloadHistory" data-arg1="' + esc(d.bond_code) + '" data-arg2="1y" data-arg3="__THIS__">1年</button>' +
+    '<button data-r="3y" data-act="bondValReloadHistory" data-arg1="' + esc(d.bond_code) + '" data-arg2="3y" data-arg3="__THIS__">3年</button>' +
+    '<button data-r="5y" data-act="bondValReloadHistory" data-arg1="' + esc(d.bond_code) + '" data-arg2="5y" data-arg3="__THIS__">5年</button>' +
+    '<button data-r="all" class="active" data-act="bondValReloadHistory" data-arg1="' + esc(d.bond_code) + '" data-arg2="all" data-arg3="__THIS__">全部</button>' +
     '</div>';
   html += '<div id="bond-val-charts"></div></div>';
 
@@ -370,17 +375,19 @@ function renderBondValDetail(d, hist, alerts) {
   var missFields = (d.missing_fields && d.missing_fields.length) ? d.missing_fields.join('、') : '';
   html += '<div class="bond-val-section bond-val-disclaimer"><h3>数据与模型说明</h3>';
   html += '<table class="biz-table biz-table--detail bond-val-detail-table"><tbody>';
-  html += '<tr><td>数据状态</td><td>' + esc(dstatus) + (dstatus === '数据不足' && missFields ? '（缺失：' + esc(missFields) + '）' : '') + '</td></tr>';
+  html += '<tr><td>价格数据状态</td><td>' + esc(dstatus) + (dstatus === '数据不足' && missFields ? '（缺失：' + esc(missFields) + '）' : '') + '</td></tr>';
+  var riskText = (cur && cur.safety_level) ? ('安全性：' + cur.safety_level) : '安全性资料缺失';
+  html += '<tr><td>风险资料状态</td><td>' + esc(riskText) + (cur && cur.confidence_level ? '（' + esc(cur.confidence_level) + '）' : '') + '</td></tr>';
   if (dstatus === '新上市观察期') html += '<tr><td>处理说明</td><td>上市行情已积累 ' + esc(d.observation_days == null ? '—' : d.observation_days) + ' / ' + esc(d.required_observation_days || 40) + ' 个交易日，暂不输出高低估结论；样本达到要求后自动进入正式估值。</td></tr>';
   if (d.model_version) html += '<tr><td>模型版本</td><td>' + esc(d.model_version) + '</td></tr>';
   if (d.model_year) html += '<tr><td>模型年份</td><td>' + esc(String(d.model_year)) + '</td></tr>';
   if (d.model_training_end_date) html += '<tr><td>模型训练截止日（防未来泄漏）</td><td>' + esc(d.model_training_end_date) + '</td></tr>';
   if (d.model_year) html += '<tr><td>年度训练规则</td><td>' + esc(String(d.model_year)) + ' 年估值只使用 ' + esc(String(Number(d.model_year) - 1)) + ' 年末及以前的数据</td></tr>';
   if (d.historical_safety) html += '<tr><td>历史安全性</td><td>' + esc(d.historical_safety) + '</td></tr>';
-  html += '<tr><td>行情日期</td><td>' + esc(cur.quote_date || '—') + '</td></tr>';
+  html += '<tr><td>行情时效</td><td>' + esc(cur.quote_date || '—') + (d.quote_lag_days ? '（滞后 ' + esc(String(d.quote_lag_days)) + ' 个交易日）' : '') + '</td></tr>';
   html += '<tr><td>估值计算时间</td><td>' + esc(d.trade_date || '—') + '</td></tr>';
   html += '</tbody></table>';
-  html += '<p>行情来源：本地 PostgreSQL（market.convertible_bond_daily_metrics）。中性公允价仅使用跨牛熊历史数据，不使用当前市场热度或当天横向排名；高评级不提高公允价。本页仅供研究参考，不构成任何投资建议。</p></div>';
+  html += '<p>行情来源：本地 PostgreSQL（market.convertible_bond_daily_metrics）。中性公允价仅使用跨牛熊历史数据，不使用当前市场热度或当天横向排名；高评级不提高公允价。公允区间是历史定价误差的分位波动带（校准样本内误差第40%~60%分位），用来表示历史上模型误差的常见幅度，不是说未来价格一定落在区间内，也不构成任何收益承诺。本页仅供研究参考，不构成任何投资建议。</p></div>';
 
   detail.innerHTML = html;
   // 默认画全部区间（边界用模型版本固化值，不随查看范围变化）
@@ -533,11 +540,11 @@ function svgChart(series, data, opts) {
   svg += '</svg>';
   // 图例
   var leg = '<div class="bond-val-legend">';
-  series.forEach(function (s) { leg += '<span><i style="background:' + s.color + '"></i>' + esc(s.label) + '</span>'; });
-  if (opts.band) leg += '<span><i style="background:rgba(41,128,185,0.3)"></i>公允区间</span>';
-  if (opts.bands5) leg += '<span><i style="background:rgba(39,174,96,0.4)"></i>低估</span><span><i style="background:rgba(241,196,15,0.4)"></i>合理</span><span><i style="background:rgba(192,57,43,0.4)"></i>高估</span>';
-  if (opts.pctlKey) leg += '<span><i style="background:#9b59b6"></i>历史分位边界</span>';
-  if (opts.versionKey) leg += '<span><i style="background:#2c3e50"></i>模型版本切换</span>';
+  series.forEach(function (s) { leg += '<span><i data-style="background:' + s.color + '"></i>' + esc(s.label) + '</span>'; });
+  if (opts.band) leg += '<span><i data-style="background:rgba(41,128,185,0.3)"></i>公允区间</span>';
+  if (opts.bands5) leg += '<span><i data-style="background:rgba(39,174,96,0.4)"></i>低估</span><span><i data-style="background:rgba(241,196,15,0.4)"></i>合理</span><span><i data-style="background:rgba(192,57,43,0.4)"></i>高估</span>';
+  if (opts.pctlKey) leg += '<span><i data-style="background:#9b59b6"></i>历史分位边界</span>';
+  if (opts.versionKey) leg += '<span><i data-style="background:#2c3e50"></i>模型版本切换</span>';
   leg += '</div>';
   return svg + leg;
 }
@@ -562,7 +569,7 @@ function bindBondValChartTips(box) {
       var html = '<strong>' + esc(row.date || row.trade_date || '—') + '</strong>';
       for (var j = 0; j < entry.series.length; j++) {
         var s = entry.series[j], value = Number(row[s.key]);
-        html += '<span><i style="background:' + s.color + '"></i>' + esc(s.label) + '：' +
+        html += '<span><i data-style="background:' + s.color + '"></i>' + esc(s.label) + '：' +
           (Number.isFinite(value) ? esc(num(value, 2) + (entry.opts.pct ? '%' : '')) : '—') + '</span>';
       }
       if (entry.opts.band) {

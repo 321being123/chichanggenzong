@@ -29,6 +29,16 @@ eventLoopSampleTimer.unref();
 function requestId(req, res, next) {
   req.id = req.headers['x-request-id'] || crypto.randomUUID();
   res.setHeader('X-Request-Id', req.id);
+  // 审查 R-4：错误响应统一附带 requestId（与中央 errorHandler 同口径），
+  // 路由内自行返回的 { error } 不再缺请求号，排障不用再猜对应哪条访问日志。
+  const rawJson = res.json.bind(res);
+  res.json = function (body) {
+    if (body && typeof body === 'object' && !Array.isArray(body)
+        && typeof body.error === 'string' && body.requestId === undefined) {
+      return rawJson({ ...body, requestId: req.id });
+    }
+    return rawJson(body);
+  };
   next();
 }
 

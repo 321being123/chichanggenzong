@@ -45,15 +45,18 @@ function renderHomeIpo(calendar) {
 
 function renderHomeBonds(payload) {
   var rows = payload && (payload.data || payload.rows) || [];
-  var counts = payload && payload.safety_counts ? payload.safety_counts : { '安全':0, '低风险':0, '中风险':0, '高风险':0 };
-  if (!payload || !payload.safety_counts) rows.forEach(function(row) { if (Object.prototype.hasOwnProperty.call(counts,row.safety)) counts[row.safety]++; });
+  var counts = payload && payload.safety_counts ? payload.safety_counts : { '安全':0, '低风险':0, '中风险':0, '高风险':0, '未评级':0 };
+  if (!payload || !payload.safety_counts) rows.forEach(function(row) {
+    var key = Object.prototype.hasOwnProperty.call(counts, row.safety) ? row.safety : '未评级';
+    counts[key]++;
+  });
   var totalCount = payload && Number.isFinite(Number(payload.total)) ? Number(payload.total) : rows.length;
-  var colors = { '安全':'#19a463', '低风险':'#7bbf45', '中风险':'#f3b33d', '高风险':'#e05a47' };
+  var colors = { '安全':'#19a463', '低风险':'#7bbf45', '中风险':'#f3b33d', '高风险':'#e05a47', '未评级':'#9aa0a6' };
   var total = totalCount || 1, el = document.getElementById('home-bond-distribution');
   if (!el) return;
   el.innerHTML = Object.keys(counts).map(function(key) {
-    var pct = counts[key] / total * 100;
-    return '<div class="home-risk-row"><span>' + key + '</span><div class="home-risk-track"><div class="home-risk-fill" style="width:' + pct.toFixed(1) + '%;background:' + colors[key] + '"></div></div><b>' + counts[key] + '</b></div>';
+    var pct = Number(counts[key] || 0) / total * 100;
+    return '<div class="home-risk-row"><span>' + key + '</span><div class="home-risk-track"><div class="home-risk-fill" data-style="width:' + pct.toFixed(1) + '%;background:' + (colors[key] || '#9aa0a6') + '"></div></div><b>' + (counts[key] || 0) + '</b></div>';
   }).join('');
 }
 
@@ -146,9 +149,9 @@ function renderHomeBondCycle(payload) {
   for (var i=0;i<=4;i++) {
     var y=T+i*plotH/4;
     svg.push('<line class="home-cycle-grid-line" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'"/>');
-    svg.push('<text class="home-cycle-axis" x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end" style="fill:#2563eb">'+
+    svg.push('<text class="home-cycle-axis" x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end" data-style="fill:#2563eb">'+
       homeCycleNumber(compositeRange.max-i*(compositeRange.max-compositeRange.min)/4,0)+'</text>');
-    svg.push('<text class="home-cycle-axis" x="'+(W-R+8)+'" y="'+(y+4)+'" style="fill:#ef4444">'+(100-i*25)+'%</text>');
+    svg.push('<text class="home-cycle-axis" x="'+(W-R+8)+'" y="'+(y+4)+'" data-style="fill:#ef4444">'+(100-i*25)+'%</text>');
   }
   svg.push('<path class="home-cycle-path" stroke="#2563eb" d="'+homeCyclePath(rows,'composite_value',xAt,yComposite)+'"/>');
   svg.push('<path class="home-cycle-path" stroke="#ef4444" d="'+homeCyclePath(rows,'rolling_percentile',xAt,yPercentile)+'"/>');
@@ -157,14 +160,16 @@ function renderHomeBondCycle(payload) {
   root.innerHTML = '<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="可转债周期历史图">'+svg.join('')+'</svg><div class="home-cycle-tooltip" hidden></div>';
   homeBindCycleTooltip(root, rows, L, R, W, function(row) {
     return '<strong>'+escapeHtml(String(row.date).slice(0,10))+'</strong><br>' +
-      '<span style="color:#60a5fa">综合估值：'+homeCycleNumber(row.composite_value,2)+'</span><br>' +
-      '<span style="color:#f87171">周期分位：'+homeCycleNumber(row.rolling_percentile,1)+'%</span>';
+      '<span data-style="color:#60a5fa">综合估值：'+homeCycleNumber(row.composite_value,2)+'</span><br>' +
+      '<span data-style="color:#f87171">周期分位：'+homeCycleNumber(row.rolling_percentile,1)+'%</span>';
   });
 }
 
 function openHomeMarketCycleDetail() {
-  switchMain('market-volatility');
-  switchMarketCycleMetric(homeMarketCycleMetric);
+  // U-5：市场周期脚本按栏目懒加载，等 switchMain（含脚本就绪）完成后再切指标
+  switchMain('market-volatility').then(function () {
+    switchMarketCycleMetric(homeMarketCycleMetric);
+  });
 }
 
 function renderHomeMarketCycle(payload) {
@@ -214,7 +219,7 @@ function renderHomeMarketCycle(payload) {
   ladder.forEach(function(row,index) {
     var y=yAt(Number(row.value));
     var edge=index===0 || index===ladder.length-1;
-    svg.push('<line class="home-cycle-boundary" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" style="stroke:'+(edge?'#dc2626':'#94a3b8')+'"/>');
+    svg.push('<line class="home-cycle-boundary" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" data-style="stroke:'+(edge?'#dc2626':'#94a3b8')+'"/>');
     svg.push('<text class="home-cycle-axis" x="'+(W-R-4)+'" y="'+(y-5)+'" text-anchor="end">'+row.position+'%</text>');
   });
   svg.push('<path class="home-cycle-path" stroke="#2563eb" d="'+homeCyclePath(rows,'value',xAt,yAt)+'"/>');
@@ -234,20 +239,20 @@ async function loadHomeMarketCycles() {
   if (homeMarketCyclesLoading || homeMarketCyclesLoaded) return;
   homeMarketCyclesLoading = true;
   try {
+    // 两张周期卡各自成败，互不拖累（2026-10-21 审查 U-19）
     var responses = await Promise.all([
-      fetch(api('/api/bond-cycle?range=all&view=home&maxPoints=800')),
-      fetch(api('/api/market-volatility/home-cycle?range=20y'))
+      fetchHomeJson(api('/api/bond-cycle?range=all&view=home&maxPoints=800')),
+      fetchHomeJson(api('/api/market-volatility/home-cycle?range=20y'))
     ]);
-    if (!responses[0].ok || !responses[1].ok) throw new Error('市场周期数据读取失败');
-    var payloads = await Promise.all(responses.map(function(response) { return response.json(); }));
-    renderHomeBondCycle(payloads[0]);
-    renderHomeMarketCycle(payloads[1]);
-    homeMarketCyclesLoaded = true;
+    if (responses[0].ok) renderHomeBondCycle(responses[0].data);
+    else homeCardError(document.getElementById('home-bond-cycle-chart'), '可转债周期加载失败：' + (responses[0].error.message || ''), loadHomeMarketCycles);
+    if (responses[1].ok) renderHomeMarketCycle(responses[1].data);
+    else homeCardError(document.getElementById('home-market-chart'), '市场周期加载失败：' + (responses[1].error.message || ''), loadHomeMarketCycles);
+    homeMarketCyclesLoaded = responses[0].ok && responses[1].ok;
   } catch (error) {
     console.error('首页市场周期加载失败', error);
     ['home-bond-cycle-chart','home-market-chart'].forEach(function(id) {
-      var el=document.getElementById(id);
-      if (el) el.innerHTML='<div class="home-overview-empty">数据加载失败</div>';
+      homeCardError(document.getElementById(id), '数据加载失败：' + (error.message || String(error)), loadHomeMarketCycles);
     });
   } finally {
     homeMarketCyclesLoading = false;
@@ -268,6 +273,25 @@ function applyHomeOrder(root, isLoggedIn) {
   });
 }
 
+// 单卡失败态：只让失败的卡片显示原因与重试，不拖累其他卡片（2026-10-21 审查 U-1/U-19）
+function homeCardError(el, message, retry) {
+  if (!el) return;
+  el.innerHTML = '<div class="home-overview-empty">' + escapeHtml(message) + ' <button type="button" class="btn btn-outline btn-xs" data-home-retry>重试</button></div>';
+  var btn = el.querySelector('[data-home-retry]');
+  if (btn && retry) btn.addEventListener('click', retry);
+}
+
+async function fetchHomeJson(url) {
+  try {
+    var r = await fetch(url);
+    if (!r.ok) throw new Error('接口返回 ' + r.status);
+    return { ok: true, data: await r.json() };
+  } catch (e) { return { ok: false, error: e }; }
+}
+
+// U-15c：原内联多语句事件抽为具名函数
+function homeOpenArticleById(id) { switchMain('knowledge'); ksOpenArticle(id); }
+
 async function loadHomeDashboard() {
   renderHomeHoldings();
   // HOME-01：按登录态重排首页区块顺序
@@ -278,11 +302,11 @@ async function loadHomeDashboard() {
   if (homeDashboardLoading) return;
   homeDashboardLoading = true;
   try {
-    var results = await Promise.all([fetch(api('/api/ipo/calendar?days=90')), fetch(api('/api/bond-safety/bonds?view=summary'))]);
-    if (!results[0].ok || !results[1].ok) throw new Error('首页数据读取失败');
-    var calendar = await results[0].json(), bonds = await results[1].json();
-    renderHomeIpo(calendar.calendar || []);
-    renderHomeBonds(bonds);
+    var results = await Promise.all([fetchHomeJson(api('/api/ipo/calendar?days=90')), fetchHomeJson(api('/api/bond-safety/bonds?view=summary'))]);
+    if (results[0].ok) renderHomeIpo(results[0].data.calendar || []);
+    else homeCardError(document.getElementById('home-ipo-list'), '近期打新安排加载失败：' + (results[0].error.message || ''), loadHomeDashboard);
+    if (results[1].ok) renderHomeBonds(results[1].data);
+    else homeCardError(document.getElementById('home-bond-distribution'), '可转债风险分布加载失败：' + (results[1].error.message || ''), loadHomeDashboard);
   } catch (error) {
     console.error('首页数据加载失败', error);
   } finally { homeDashboardLoading = false; }
@@ -303,7 +327,7 @@ async function renderHomeArticles() {
     heroBox.innerHTML = list.slice(0, 5).map(function (a) {
       var date = (a.published_at || '').toString().slice(0, 10);
       var summary = String(a.summary || '').replace(/```[\s\S]*?```/g, ' ').replace(/^\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*$/gm, ' ').replace(/\|/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[#*_`~]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
-      return '<button type="button" class="home-hero-article" onclick="switchMain(\'knowledge\'); ksOpenArticle(' + (a.id || 0) + ');">' +
+      return '<button type="button" class="home-hero-article" data-act="homeOpenArticleById" data-arg="' + (a.id || 0) + '">' +
         '<span>' + escapeHtml(a.category_name || '未分类') + '</span>' +
         '<strong>' + escapeHtml(a.title || '无标题') + '</strong>' +
         '<small>' + escapeHtml(summary || '点击阅读文章详情') + '</small>' +
@@ -311,6 +335,6 @@ async function renderHomeArticles() {
       '</button>';
     }).join('');
   } catch (e) {
-    heroBox.innerHTML = '<span class="home-hero-article-loading">加载失败</span>';
+    homeCardError(heroBox, '最新文章加载失败：' + (e.message || String(e)), renderHomeArticles);
   }
 }

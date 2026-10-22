@@ -41,7 +41,8 @@ assert.ok(!definitions.JOB_DEFINITIONS.some(item => item.jobCode === 'convertibl
 assert.ok(!definitions.getJobDefinition('convertible_bond_universe_refresh').externalApis.includes('cb_issue'));
 
 const root = path.join(__dirname, '..', '..');
-const analysis = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+const { readServiceSource } = require('./helpers/service-source');
+const analysis = readServiceSource('convertibleBondAnalysis');
 const schedule = fs.readFileSync(path.join(root, 'server', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
 assert.ok(analysis.includes("includeTushare: mode === 'calendar'"), 'cb_issue 每天只能由晚间生命周期槽采集一次');
 assert.ok(!schedule.includes('scheduleDaily(7, 45'), '旧07:45强赎公告任务必须移除');

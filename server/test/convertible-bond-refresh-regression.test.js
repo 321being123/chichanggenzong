@@ -61,7 +61,7 @@ function completeRows(count) {
   assert.strictEqual(resolveMaxAttempts({ maxAttempts: 4, retryPolicy: 'external' }, {}), 4, '外部任务必须执行配置的四次尝试');
   assert.strictEqual(classifyFailure({ code: 'RATE_LIMIT', errorType: 'rate_limit', recoverAt: new Date(Date.now() + 120000) }).retryable, true, '临时限流应按恢复时间重试');
   assert.strictEqual(sanitizeJobResult({ tokenFingerprint: 'sensitive' }).tokenFingerprint, '[已脱敏]');
-  const analysisSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+  const analysisSource = require('./helpers/service-source').readServiceSource('convertibleBondAnalysis');
   assert.ok(analysisSource.includes('const bondStatusCounts = [...bondStatusByCode.values()].reduce'),
     '可转债行情状态统计必须直接接收 reduce 返回对象');
   assert.ok(!analysisSource.includes('Object.fromEntries([...bondStatusByCode.values()].reduce'),

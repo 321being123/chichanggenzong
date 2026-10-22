@@ -133,7 +133,7 @@ function analyticsBars(rows, labelKey, valueKey) {
   var max = Math.max.apply(null, rows.map(function (r) { return Number(r[valueKey]) || 0; }).concat([1]));
   return '<div class="analytics-bars">' + rows.map(function (r) {
     var value = Number(r[valueKey]) || 0;
-    return '<div class="analytics-bar-row"><span>' + analyticsEsc(r[labelKey]) + '</span><div class="analytics-bar-track"><i style="width:' + Math.max(2, value / max * 100) + '%"></i></div><b>' + analyticsNum(value) + '</b></div>';
+    return '<div class="analytics-bar-row"><span>' + analyticsEsc(r[labelKey]) + '</span><div class="analytics-bar-track"><i data-style="width:' + Math.max(2, value / max * 100) + '%"></i></div><b>' + analyticsNum(value) + '</b></div>';
   }).join('') + '</div>';
 }
 function analyticsSection(title, body) { return '<section class="analytics-card"><h3>' + title + '</h3>' + body + '</section>'; }
@@ -173,7 +173,7 @@ function analyticsLoad() {
   var panel = document.getElementById('analytics-panel');
   if (!panel) return;
   var requestId = ++analyticsRequest;
-  panel.innerHTML = '<div class="admin-placeholder"><div class="spinner" style="margin:0 auto 12px;"></div>加载中...</div>';
+  panel.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
   var query = '?range=' + encodeURIComponent(analyticsState.range) + (analyticsState.internal ? '&include_internal=1' : '');
   fetch(api('/api/admin/analytics/' + analyticsState.tab + query)).then(function (response) {
     return response.json().then(function (data) { return { ok: response.ok, data: data }; });

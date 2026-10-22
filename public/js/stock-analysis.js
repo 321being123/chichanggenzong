@@ -112,17 +112,20 @@ async function stockAnalysisSelect(tsCode) {
   if (typeof stockAnalysisSwitchView === 'function') stockAnalysisSwitchView('analysis');
   var remove = document.getElementById('stock-analysis-remove');
   var row = stockAnalysisState.stocks.find(function(item) { return item.ts_code === tsCode; });
-  if (remove) remove.style.display = row && row.watchlisted ? '' : 'none';
+  if (remove) { remove.classList.remove('js-hidden'); remove.style.display = row && row.watchlisted ? '' : 'none'; }
   if (!tsCode) { stockAnalysisSetMessage('从持仓或自选股中选择一只股票开始分析。'); document.getElementById('stock-analysis-content').style.display='none'; return; }
   stockAnalysisSetMessage('正在读取分析结果...');
   try {
     var response = await fetch(api('/api/stock-analysis/' + encodeURIComponent(tsCode)));
+    // 迟到的响应不得覆盖当前选择（快速切换时先发的请求可能后返回）
+    if (stockAnalysisState.selected !== tsCode) return;
     if (response.status === 404) {
       if (!username) return stockAnalysisSetMessage('该股票暂未建档，登录后可刷新并建立分析数据。');
       // 页面打开只读本地快照；建立分析数据必须由用户明确点击“刷新数据”。
       return stockAnalysisSetMessage('该股票暂无分析快照，请点击“刷新数据”建立。');
     }
     var payload = await response.json();
+    if (stockAnalysisState.selected !== tsCode) return;
     if (!response.ok) throw new Error(payload.error || '分析读取失败');
     if (payload.needs_refresh) {
       var reasons = payload.freshness && payload.freshness.reasons ? payload.freshness.reasons.map(function(r){return r.message;}).join('；') : '数据待更新';
@@ -130,7 +133,10 @@ async function stockAnalysisSelect(tsCode) {
       showToast('数据待更新：' + reasons);
     }
     stockAnalysisRender(payload);
-  } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
+  } catch (error) {
+    if (stockAnalysisState.selected !== tsCode) return;
+    stockAnalysisSetMessage(error.message || String(error), true);
+  }
 }
 
 async function stockAnalysisRefresh() {
@@ -147,14 +153,17 @@ async function stockAnalysisRefresh() {
     var payload = await response.json();
     var analysis = payload.analysis;
     if (!response.ok && !analysis) throw new Error(payload.error || '刷新失败');
-    if (analysis) stockAnalysisRender(analysis);
+    // 刷新期间切换了股票则丢弃过期结果，避免旧股渲染覆盖当前选择
+    var stillCurrent = stockAnalysisState.selected === tsCode;
+    if (analysis && stillCurrent) stockAnalysisRender(analysis);
     if (response.status === 202) {
       if (!payload.queued || !payload.queued.queued) throw new Error(payload.warning || '未能登记刷新任务，请稍后重试');
-      stockAnalysisSetMessage('已加入后台刷新队列，完成后重新查询该股票即可查看。首次建档需要采集历史财报，请稍候。');
+      if (stillCurrent) stockAnalysisSetMessage('已加入后台刷新队列，完成后重新查询该股票即可查看。首次建档需要采集历史财报，请稍候。');
     }
-    if (!response.ok && payload.error) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
-  } catch (error) { stockAnalysisSetMessage(error.message || String(error), true); }
-  finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新数据'; } }
+    if (!response.ok && payload.error && stillCurrent) showToast('刷新失败，已显示上一份有效数据：' + payload.error);
+  } catch (error) {
+    if (stockAnalysisState.selected === tsCode) stockAnalysisSetMessage(error.message || String(error), true);
+  } finally { stockAnalysisState.loading = false; if (button) { button.disabled=false; button.textContent='刷新数据'; } }
 }
 
 async function stockAnalysisAddWatchlist() {
@@ -172,7 +181,7 @@ async function stockAnalysisAddWatchlist() {
     // 下拉 option 的 value 是六位纯数字，ts_code 带后缀（600000.SH）需截取
     var select = document.getElementById('security-analysis-select');
     if (select) select.value = String(payload.stock.ts_code).slice(0, 6);
-    var remove = document.getElementById('stock-analysis-remove'); if (remove) remove.style.display = '';
+    var remove = document.getElementById('stock-analysis-remove'); if (remove) { remove.classList.remove('js-hidden'); remove.style.display = ''; }
     if (input) input.value = '';
     if (payload.analysis) stockAnalysisRender(payload.analysis); else await stockAnalysisSelect(payload.stock.ts_code);
     if (payload.warning) showToast('已加入自选，建档稍后重试：' + payload.warning);
@@ -195,7 +204,7 @@ function stockAnalysisRender(d) {
   var bondContent = document.getElementById('bond-analysis-content'); if (bondContent) bondContent.style.display = 'none';
   var content = document.getElementById('stock-analysis-content'); if (content) content.style.display = 'block';
   var buEl=document.getElementById('bond-analysis-updated'); if(buEl) buEl.style.display='none';
-  var suEl=document.getElementById('stock-analysis-updated'); if(suEl) suEl.style.display='';
+  var suEl=document.getElementById('stock-analysis-updated'); if(suEl){suEl.classList.remove('js-hidden');suEl.style.display='';}
   var updated = document.getElementById('stock-analysis-updated');
   if (updated) updated.textContent = '数据日期：' + (d.as_of || '--') + (d.quote && d.quote.quote_time ? ' · 行情：' + String(d.quote.quote_time).replace('T',' ').slice(0,19) : '');
   var summary = document.getElementById('stock-analysis-summary');
@@ -252,4 +261,4 @@ function stockAnalysisRenderPercentiles(p){var note=document.getElementById('sto
 function stockAnalysisRenderGrowth(g){var el=document.getElementById('stock-analysis-growth');if(!el)return;var rows=[];var t=g.ten_year_average||{},early=Number(t.early_average),late=Number(t.late_average),hasAverages=Number.isFinite(early)&&Number.isFinite(late)&&early!==0,averageGrowth=hasAverages?(late-early)/early:t.value;rows.push(['十年三年均值增长',stockAnalysisPercent(averageGrowth),hasAverages?'（近期三年均值－十年前三年均值）÷十年前三年均值':(t.method||'')]);[3,5,10].forEach(function(n){var p=(g.periods||{})[n]||{};rows.push(['归母净利润近'+n+'年',stockAnalysisPercent(p.parent&&p.parent.value),p.parent&&p.parent.method||'']);rows.push(['扣非净利润近'+n+'年',stockAnalysisPercent(p.deducted&&p.deducted.value),p.deducted&&p.deducted.method||''])});var i=g.latest_interim_yoy;if(i){rows.push(['最新报告期归母同比',stockAnalysisPercent(i.parent),i.end_date||'']);rows.push(['最新报告期扣非同比',stockAnalysisPercent(i.deducted),i.end_date||''])}el.innerHTML='<table class="biz-table biz-table--compact stock-analysis-table"><thead><tr><th>项目</th><th>结果</th><th>口径</th></tr></thead><tbody>'+rows.map(function(r){return '<tr><td>'+analysisHelp(r[0],stockAnalysisLabelHelp(r[0]))+'</td><td>'+escapeHtml(r[1])+'</td><td>'+escapeHtml(r[2])+'</td></tr>'}).join('')+'</tbody></table>';if(window.BusinessTable)window.BusinessTable.attach(el,{page:'#main-stock-analysis',sticky:false})}
 function stockAnalysisRenderSafety(s){var el=document.getElementById('stock-analysis-safety');if(el)el.innerHTML=stockAnalysisMetric('净现金安全额',stockAnalysisMoney(s.net_cash),s.report_end_date||'')+stockAnalysisMetric('利息保障倍数',stockAnalysisNumber(s.interest_coverage,2),'EBIT ÷ 利息费用',s.interest_coverage<0)+stockAnalysisMetric('市值 / 总负债',stockAnalysisNumber(s.market_cap_to_liability,2),s.industry_note||'',s.market_cap_to_liability<0)}
 function stockAnalysisRenderCashflow(c){var el=document.getElementById('stock-analysis-cashflow');if(!el)return;var y=c.latest_year||{},a3=c.average_3y||{},a5=c.average_5y||{};el.innerHTML=stockAnalysisMetric('最近一年经营现金流',stockAnalysisMoney(y.operating),y.end_date||'')+stockAnalysisMetric('最近一年自由现金流',stockAnalysisMoney(y.free),'经营现金流－资本开支')+stockAnalysisMetric('近三年平均经营现金流',stockAnalysisMoney(a3.operating),'')+stockAnalysisMetric('近三年平均自由现金流',stockAnalysisMoney(a3.free),'')+stockAnalysisMetric('近五年平均经营现金流',stockAnalysisMoney(a5.operating),'')+stockAnalysisMetric('近五年平均自由现金流',stockAnalysisMoney(a5.free),'')}
-function stockAnalysisRenderEvents(events){var el=document.getElementById('stock-analysis-events');if(!el)return;if(!events.length){el.innerHTML='<div style="color:#888;">尚未采集到公司公告，请点击“刷新数据”更新；不代表公司没有发布公告。</div>';return}el.innerHTML=events.map(function(e){var title=escapeHtml(e.title||'');var link=e.url?'<a href="'+escapeHtml(e.url)+'" target="_blank" rel="noopener noreferrer">'+title+'</a>':title;return '<div class="stock-analysis-event"><small>'+escapeHtml(e.event_date||'')+'</small><span class="stock-analysis-tag">'+escapeHtml(e.category||e.source||'')+'</span>'+link+'</div>'}).join('')}
+function stockAnalysisRenderEvents(events){var el=document.getElementById('stock-analysis-events');if(!el)return;if(!events.length){el.innerHTML='<div class="u-c-muted">尚未采集到公司公告，请点击“刷新数据”更新；不代表公司没有发布公告。</div>';return}el.innerHTML=events.map(function(e){var title=escapeHtml(e.title||'');var link=e.url?'<a href="'+escapeHtml(e.url)+'" target="_blank" rel="noopener noreferrer">'+title+'</a>':title;return '<div class="stock-analysis-event"><small>'+escapeHtml(e.event_date||'')+'</small><span class="stock-analysis-tag">'+escapeHtml(e.category||e.source||'')+'</span>'+link+'</div>'}).join('')}

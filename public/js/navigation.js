@@ -5,10 +5,11 @@
 // 此处只做分发，保持 DOM ID / API / 业务结果兼容。
 
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
+// U-5：栏目脚本按栏目懒加载——分发页面入口前先确保该栏目脚本就绪；返回 Promise 供启动段深链后置动作使用。
 function switchMain(main, noPushState, bondSub) {
   if (!username && ACCESS_POLICY.requiresLogin(main)) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
-    return;
+    return Promise.resolve();
   }
   // 同步地址栏：首页清掉参数，其他页面带上 ?main=，可转债保留 sub
   if (!noPushState) {
@@ -41,30 +42,44 @@ function switchMain(main, noPushState, bondSub) {
       : telemetryPageMap[main];
     if (telemetryPage) window.SiteTelemetry.trackPage(telemetryPage, main, 'nav');
   }
-  if (main === 'profile') loadProfile();
-  if (main === 'changelog') loadChangelogPage();
-  if (main === 'ipo') loadIpo();
-  if (main === 'bond-safety') {
-    // initBondCycleSub 会按 URL 子页只加载当前内容，避免进入上市列表时额外加载整张安全性表。
-    if (typeof initBondCycleSub === 'function') initBondCycleSub();
-    else loadBondSafety();
-  }
-  if (main === 'stock-analysis') loadStockAnalysis();
-  if (main === 'market-volatility') loadMarketVolatility();
-  if (main === 'arbitrage') loadArbitrage();
-  if (main === 'knowledge') loadKnowledge();
-  if (main === 'home') loadHomeDashboard();
-  if (main === 'holdings' && username && typeof doAutoRefresh === 'function') {
-    var ready = window.accountDataReady || Promise.resolve();
-    ready.then(function () {
-      if (typeof renderAll === 'function') renderAll();
-      return doAutoRefresh();
-    }).catch(function (e) { showToast('行情刷新失败: ' + (e.message || e)); });
-  }
-  // 仓位对比页：进入时若已有对比数据则重渲染，否则停留在空态（由标杆选择进入）
-  if (main === 'position-compare' && window.PositionComparison && typeof window.PositionComparison.onPageEnter === 'function') {
-    window.PositionComparison.onPageEnter();
-  }
+  var lazySection = { 'bond-safety': 'bond-safety', 'stock-analysis': 'stock-analysis',
+    'market-volatility': 'market-volatility', knowledge: 'knowledge', ipo: 'ipo',
+    'position-compare': 'position-compare' }[main];
+  var ready = (lazySection && window.LazySections) ? LazySections.ensureSection(lazySection) : Promise.resolve();
+  return ready.then(function () {
+    if (main === 'profile') loadProfile();
+    if (main === 'changelog') loadChangelogPage();
+    if (main === 'ipo') loadIpo();
+    if (main === 'bond-safety') {
+      // initBondCycleSub 会按 URL 子页只加载当前内容，避免进入上市列表时额外加载整张安全性表。
+      if (typeof initBondCycleSub === 'function') initBondCycleSub();
+      else loadBondSafety();
+    }
+    if (main === 'stock-analysis') loadStockAnalysis();
+    if (main === 'market-volatility') loadMarketVolatility();
+    if (main === 'arbitrage') loadArbitrage();
+    if (main === 'knowledge') {
+      if (typeof initKnowledgeEvents === 'function' && !window.__knowledgeEventsReady) {
+        window.__knowledgeEventsReady = true;
+        initKnowledgeEvents();
+      }
+      loadKnowledge();
+    }
+    if (main === 'home') loadHomeDashboard();
+    if (main === 'holdings' && username && typeof doAutoRefresh === 'function') {
+      var ready2 = window.accountDataReady || Promise.resolve();
+      ready2.then(function () {
+        if (typeof renderAll === 'function') renderAll();
+        return doAutoRefresh();
+      }).catch(function (e) { showToast('行情刷新失败: ' + (e.message || e)); });
+    }
+    // 仓位对比页：进入时若已有对比数据则重渲染，否则停留在空态（由标杆选择进入）
+    if (main === 'position-compare' && window.PositionComparison && typeof window.PositionComparison.onPageEnter === 'function') {
+      window.PositionComparison.onPageEnter();
+    }
+  }).catch(function (e) {
+    showToast('页面模块加载失败，请刷新重试: ' + (e.message || e));
+  });
 }
 
 function setupMainNav() {

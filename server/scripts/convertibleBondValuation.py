@@ -462,7 +462,13 @@ def load_safety_map():
     for rec in data:
         code = (rec.get("bond_code") or "").strip()
         if code:
-            out[code] = rec.get("safety") or ""
+            safety = rec.get("safety") or ""
+            # 快照存完整代码（如 110092.SH），compute_daily 以不带市场的 base_code 查询；
+            # 两种键都建索引，保证映射一定能命中（2026-10-21 审查 R-13）。
+            out[code] = safety
+            base = code.split(".")[0]
+            if base and base not in out:
+                out[base] = safety
     return out
 
 
@@ -511,7 +517,12 @@ def load_historical_safety_map(as_of):
     for rec in data:
         code = (rec.get("bond_code") or "").strip()
         if code:
-            out[code] = rec.get("safety") or ""
+            safety = rec.get("safety") or ""
+            # 与 load_safety_map 同口径：完整代码与 base_code 双键，历史回填同样能命中。
+            out[code] = safety
+            base = code.split(".")[0]
+            if base and base not in out:
+                out[base] = safety
     return out
 
 

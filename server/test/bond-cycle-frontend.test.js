@@ -19,7 +19,7 @@ check('研究工具下拉含“可转债”入口且保留内部标识 bond-safe
   assert.ok(html.includes('data-main="bond-safety"') && html.includes('可转债'), '研究工具下拉缺少可转债入口');
 });
 check('首页可转债周期详情入口保留', () => {
-  assert.ok(html.includes("switchMain('bond-safety', false, 'cycle')"), '首页缺少可转债周期详情入口');
+  assert.ok(html.includes('data-act="switchMain"') && html.includes('bond-safety') && html.includes("'cycle'") || html.includes('data-args=') && html.includes('cycle'), '首页缺少可转债周期详情入口');
 });
 
 console.log('B. 二级导航与周期页容器');

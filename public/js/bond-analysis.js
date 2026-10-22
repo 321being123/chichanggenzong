@@ -188,7 +188,12 @@ var bondAnalysisHelpTexts = {
 };
 function bondAnalysisLabelHelp(label) { return bondAnalysisHelpTexts[label] || ''; }
 function bondAnalysisSourceLink(url,label) {
-  return /^https:\/\/static\.cninfo\.com\.cn\//.test(String(url||'')) ? '<a href="'+escapeHtml(url)+'" target="_blank" rel="noopener">'+escapeHtml(label||'查看公告')+'</a>' : '';
+  // 只放行已核验的官方 HTTPS 来源：上交所、深交所、巨潮；其余（含非 https）不生成链接（2026-10-21 审查 U-18）
+  var match = /^https:\/\/([a-z0-9.-]+)\//i.exec(String(url || ''));
+  var host = match ? match[1].toLowerCase() : '';
+  var allowed = host === 'static.cninfo.com.cn' || host === 'www.cninfo.com.cn'
+    || /(^|\.)sse\.com\.cn$/.test(host) || /(^|\.)szse\.cn$/.test(host);
+  return allowed ? '<a href="'+escapeHtml(url)+'" target="_blank" rel="noopener">'+escapeHtml(label||'查看公告')+'</a>' : '';
 }
 function bondAnalysisRevisionType(row) {
   var reason=String(row&&row.reason||'');
@@ -350,7 +355,7 @@ function bondAnalysisRender(d, ctx) {
   var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
   if(stock) stock.style.display='none'; if(root) root.style.display='block';
   var suEl=document.getElementById('stock-analysis-updated'); if(suEl) suEl.style.display='none';
-  var buEl=document.getElementById('bond-analysis-updated'); if(buEl) buEl.style.display='';
+  var buEl=document.getElementById('bond-analysis-updated'); if(buEl){buEl.classList.remove('js-hidden');buEl.style.display='';}
   var q=d.quote||{}, b=d.basic||{}, terms=d.terms||{}, safety=d.safety||{}, bond=d.bond||{}, option=d.option||{}, stockData=d.stock||{}, credit=d.credit||{};
   var change=q.bond_change_pct, changeClass=Number(change)>0?'bond-analysis-up':Number(change)<0?'bond-analysis-down':'';
   var delistedTag=d.is_delisted?'<span class="bond-analysis-delisted">已退市</span>':'';

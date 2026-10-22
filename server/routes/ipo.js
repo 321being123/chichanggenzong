@@ -1,5 +1,6 @@
 // ========== 打新日历路由（读取 Python 定时任务写入 PostgreSQL 的打新数据） ==========
 const express = require('express');
+const asyncHandler = require('../middleware/async');
 const router = express.Router();
 const fs = require('fs');
 const path = require('path');
@@ -822,7 +823,7 @@ async function buildCalendarReport(code) {
 }
 
 // 最新报告（或指定日期 YYYYMMDD）：返回摘要 + Markdown + HTML
-router.get('/report', async (req, res) => {
+router.get('/report', asyncHandler(async (req, res) => {
   try {
     const date = req.query.date;
     let row;
@@ -855,10 +856,10 @@ router.get('/report', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取打新报告失败' });
   }
-});
+}));
 
 // 历史报告日期列表（前端历史下拉）
-router.get('/reports', async (req, res) => {
+router.get('/reports', asyncHandler(async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT report_date,
@@ -870,10 +871,10 @@ router.get('/reports', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取报告列表失败' });
   }
-});
+}));
 
 // 打新历史（集思录式列表）
-router.get('/history', async (req, res) => {
+router.get('/history', asyncHandler(async (req, res) => {
   try {
     const type = req.query.type === 'bond' ? 'bond' : (req.query.type === 'hk_stock' ? 'hk_stock' : 'stock');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 200);
@@ -1058,10 +1059,10 @@ router.get('/history', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取打新历史失败' });
   }
-});
+}));
 
 // 打新日历：未来 N 天申购/上市日（股票来自 ipo_history，新债来自标准事件表）
-router.get('/calendar', async (req, res) => {
+router.get('/calendar', asyncHandler(async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days || '30', 10) || 30, 90);
     const market = String(req.query.market || 'CN').toUpperCase();
@@ -1077,10 +1078,10 @@ router.get('/calendar', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取打新日历失败' });
   }
-});
+}));
 
 // 个股单独分析日报：从 ipo-report/individual/<code>.md 读取
-router.get('/report/code', async (req, res) => {
+router.get('/report/code', asyncHandler(async (req, res) => {
   try {
     const code = String(req.query.code || '');
     if (!/^[0-9A-Za-z.]+$/.test(code)) {
@@ -1194,7 +1195,7 @@ router.get('/report/code', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取个股报告失败' });
   }
-});
+}));
 
 module.exports = router;
 module.exports.mergeCalendarDays = mergeCalendarDays;

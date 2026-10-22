@@ -2,6 +2,9 @@
 // ===================== 历史净值记录 新增/编辑/删除（与持仓一致） =====================
 let navEditIndex = -1;   // -1 表示新增；否则为 data.navHistory 中的索引
 
+// U-15c：原内联多语句事件抽为具名函数
+function adminAddAccountAndRender() { addAccount(); renderAccountForm(); }
+
 function openNavEdit(date) {
   const t = document.getElementById('nav-edit-title');
   const d = document.getElementById('nav-edit-date');
@@ -85,7 +88,7 @@ function renderEarnings() {
   if (!el) return;
   const records = buildRealReturnsSeries();
   if (records.length === 0) {
-    el.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="icon">📊</div><p>暂无收益记录，请先在「总览」刷新一次行情以生成净值</p></div>';
+    el.innerHTML = '<div class="empty-state" data-style="grid-column:1/-1;"><div class="icon">📊</div><p>暂无收益记录，请先在「总览」刷新一次行情以生成净值</p></div>';
     const tbl = document.getElementById('earnings-table');
     if (tbl) tbl.innerHTML = '';
     if (chartEarnings) { chartEarnings.destroy(); chartEarnings = null; }
@@ -110,7 +113,7 @@ function renderEarnings() {
   ];
   el.innerHTML = cards.map(function (c) {
     return '<div class="stat-card"><div class="stat-top"><div><div class="label">' + c.label + '</div>' +
-      '<div class="value" style="color:' + (c.color || '#1a1a2e') + '">' + c.value + '</div></div></div>' +
+      '<div class="value" data-style="color:' + (c.color || '#1a1a2e') + '">' + c.value + '</div></div></div>' +
       '<div class="sub">' + (c.sub || '') + '</div></div>';
   }).join('');
 
@@ -219,13 +222,13 @@ function renderEarningsTable(sorted) {
   });
   html += '</tbody></table></div>';
   html += '<div class="earnings-pager">' +
-    '<button class="btn btn-sm btn-outline" onclick="earningsToPage(1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>首页</button>' +
-    '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(-1)"' + (earningsPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="earningsToPage" data-arg1="1"' + (earningsPage <= 1 ? ' disabled' : '') + '>首页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="earningsGoPage" data-arg1="-1"' + (earningsPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
     '<span class="pager-info">第 ' + earningsPage + ' / ' + totalPages + ' 页　共 ' + total + ' 条</span>' +
-    '<button class="btn btn-sm btn-outline" onclick="earningsGoPage(1)"' + (earningsPage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
-    '<button class="btn btn-sm btn-outline" onclick="earningsToPage(' + totalPages + ')"' + (earningsPage >= totalPages ? ' disabled' : '') + '>尾页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="earningsGoPage" data-arg1="1"' + (earningsPage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="earningsToPage" data-arg1="' + totalPages + '"' + (earningsPage >= totalPages ? ' disabled' : '') + '>尾页</button>' +
     '<span class="pager-jump">跳至 <input type="number" id="earnings-jump-input" min="1" max="' + totalPages + '" value="' + earningsPage + '" onkeydown="if(event.key===\'Enter\')earningsJump()"> 页 ' +
-    '<button class="btn btn-sm btn-outline" onclick="earningsJump()">跳转</button></span>' +
+    '<button class="btn btn-sm btn-outline" data-act="earningsJump">跳转</button></span>' +
     '</div>';
   el.innerHTML = html;
   if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#page-earnings', top: '#main-holdings > .holdings-header' });
@@ -352,7 +355,7 @@ function renderAccountForm() {
   // 空闲态：点 ⚙ 打开、尚未操作 → 显示虚线引导框
   if (!accountIsNew && !accountActionTarget) {
     el.innerHTML =
-      '<div class="acct-idle" onclick="addAccount();renderAccountForm();">' +
+      '<div class="acct-idle" data-act="adminAddAccountAndRender">' +
         '<div class="acct-idle-icon">+</div>' +
         '<div class="acct-idle-text">点击新建账户</div>' +
       '</div>';
@@ -370,8 +373,8 @@ function renderAccountForm() {
       '<div class="acct-section-title">' + titleHtml + '</div>' +
       '<div class="acct-add">' +
         '<input id="account-name-input" placeholder="' + placeHolder + '" value="' + escapeHtml(val) + '">' +
-        '<button class="btn ' + btnClass + '" onclick="saveAccountName()">' + btnLabel + '</button>' +
-        '<button class="btn btn-outline" onclick="showAccountMenu()">取消</button>' +
+        '<button class="btn ' + btnClass + '" data-act="saveAccountName">' + btnLabel + '</button>' +
+        '<button class="btn btn-outline" data-act="showAccountMenu">取消</button>' +
       '</div>';
     setTimeout(function () {
       var inp = document.getElementById('account-name-input');
@@ -387,8 +390,8 @@ function renderAccountForm() {
       '<div class="acct-section-title">重命名「' + escapeHtml(oldName) + '」</div>' +
       '<div class="acct-add">' +
         '<input id="account-name-input" placeholder="请输入新名称" value="' + escapeHtml(oldName) + '">' +
-        '<button class="btn btn-primary" onclick="saveAccountName()">确认重命名</button>' +
-        '<button class="btn btn-outline" onclick="showAccountMenu()">取消</button>' +
+        '<button class="btn btn-primary" data-act="saveAccountName">确认重命名</button>' +
+        '<button class="btn btn-outline" data-act="showAccountMenu">取消</button>' +
       '</div>';
     setTimeout(function () {
       var inp = document.getElementById('account-name-input');

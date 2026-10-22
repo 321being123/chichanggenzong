@@ -141,7 +141,7 @@ async function loadAnchorPrices(username, accountName, anchorDate, anchorPositio
 
 // 新增/修改交易：POST body={ trade: {...}, fromDate? }
 router.post('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const trade = req.body && req.body.trade;
   if (!trade) return res.status(400).json({ error: '缺少 trade' });
   try {
@@ -166,7 +166,7 @@ router.post('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOw
 
 // 删除交易：DELETE body={ tradeId, fromDate? }
 router.delete('/accounts/:name/ledger/trades/:tradeId', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const tradeId = req.params.tradeId;
   if (!tradeId) return res.status(400).json({ error: '缺少 tradeId' });
   try {
@@ -182,7 +182,7 @@ router.delete('/accounts/:name/ledger/trades/:tradeId', requireLogin, asyncHandl
 
 // 清空交易：DELETE /ledger/trades
 router.delete('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   try {
     const r = await tradeLedger.clearTrades(req.session.user, name);
     const fresh = await tradeLedger.loadLedgerResult(req.session.user, name);
@@ -194,7 +194,7 @@ router.delete('/accounts/:name/ledger/trades', requireLogin, asyncHandler(assert
 
 // 删除现金流：DELETE /ledger/cash-flows/:flowId（删除后服务端重算现金并返回最新结果）
 router.delete('/accounts/:name/ledger/cash-flows/:flowId', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const flowId = req.params.flowId;
   if (!flowId) return res.status(400).json({ error: '缺少 flowId' });
   try {
@@ -212,7 +212,7 @@ router.delete('/accounts/:name/ledger/cash-flows/:flowId', requireLogin, asyncHa
 // body={ event: { code, name, direction: 'open'|'adjust', price?, quantity(+/-), date } }
 // open=期初建仓（等效买入，记成本，不计现金）；adjust=持仓调整（数量可正可负，仅校正数量/成本）
 router.post('/accounts/:name/ledger/position-events', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const event = req.body && req.body.event;
   if (!event) return res.status(400).json({ error: '缺少 event' });
   if (event.direction !== 'open' && event.direction !== 'adjust') {
@@ -232,7 +232,7 @@ router.post('/accounts/:name/ledger/position-events', requireLogin, asyncHandler
 // body={ events: [{ code, name, direction:'open', price, quantity, type, subtype, date, note }, ...] }
 // 2026-08-04 阻断修复：整体走单事务，任一条失败 → 全部回滚（不再出现"提示失败但导入了一部分"）
 router.post('/accounts/:name/ledger/position-events/batch', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const events = req.body && req.body.events;
   if (!Array.isArray(events) || events.length === 0) return res.status(400).json({ error: '缺少 events 数组' });
   for (const event of events) {
@@ -298,22 +298,22 @@ router.put('/accounts/broker', requireLogin, asyncHandler(async (req, res) => {
 
 router.get('/accounts/:name/cash-income/coverage', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   const { auditCashIncomeCoverage } = require('../services/cashIncomeCoverage');
-  const report = await auditCashIncomeCoverage(req.session.user, decodeURIComponent(req.params.name));
+  const report = await auditCashIncomeCoverage(req.session.user, req.params.name);
   res.json(report);
 }));
 
 router.post('/accounts/:name/cash-income/recalculate', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req,res) => {
   if(req.body?.async===true) {
-    const queued=await require('../services/cashIncomeQueue').enqueue(req.session.user,decodeURIComponent(req.params.name),{targetDate:req.body?.targetDate||todayCN(),enabled:req.body?.enabled,version:Number(req.query.version)});
+    const queued=await require('../services/cashIncomeQueue').enqueue(req.session.user,req.params.name,{targetDate:req.body?.targetDate||todayCN(),enabled:req.body?.enabled,version:Number(req.query.version)});
     return res.status(202).json(queued);
   }
-  const result = await require('../services/cashIncome').settleCashIncome(req.session.user,decodeURIComponent(req.params.name),
+  const result = await require('../services/cashIncome').settleCashIncome(req.session.user,req.params.name,
     {targetDate:req.body?.targetDate,enable:req.body?.enabled === true,expectedVersion:Number(req.query.version)});
   res.json(result);
 }));
 
 router.get('/accounts/:name/cash-income', requireLogin, asyncHandler(assertOwnership), asyncHandler(async(req,res)=>{
-  const name=decodeURIComponent(req.params.name);
+  const name=req.params.name;
   const state=(await pool.query('SELECT cash_income_policy,cash_income_state FROM accounts WHERE username=$1 AND account_name=$2',[req.session.user,name])).rows[0];
   const rows=(await pool.query(`SELECT id,date::text,amount::text,flow_type,status,origin,event_key,anchor_date::text,
     quality_status,evidence,revision,note,currency,original_amount::text,amount_cny::text,settled_at,source_ref FROM cash_flows WHERE username=$1 AND account_name=$2 AND flow_type<>'external_transfer' ORDER BY date,id`,[req.session.user,name])).rows;
@@ -322,18 +322,18 @@ router.get('/accounts/:name/cash-income', requireLogin, asyncHandler(assertOwner
 }));
 
 router.post('/accounts/:name/cash-income/actual',requireLogin,asyncHandler(assertOwnership),requireVersion,asyncHandler(async(req,res)=>{
-  const name=decodeURIComponent(req.params.name);
+  const name=req.params.name;
   const result=await require('../services/cashIncomeActual').importActual(req.session.user,name,req.body?.records,Number(req.query.version));
   const state=await require('../services/cashIncome').settleCashIncome(req.session.user,name);
   res.json({...result,state});
 }));
 router.post('/accounts/:name/cash-income/pending/:key',requireLogin,asyncHandler(assertOwnership),requireVersion,asyncHandler(async(req,res)=>{
-  const result=await require('../services/cashIncomePending').changePending(req.session.user,decodeURIComponent(req.params.name),req.params.key,{exclude:req.body?.exclude,reason:req.body?.reason,version:Number(req.query.version)});
+  const result=await require('../services/cashIncomePending').changePending(req.session.user,req.params.name,req.params.key,{exclude:req.body?.exclude,reason:req.body?.reason,version:Number(req.query.version)});
   res.json({ok:true,result});
 }));
 
 router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   if (String(req.query.scope || '').toLowerCase() === 'summary') {
     const summary = await loadAccountSummary(req.session.user, name);
     if (applyPrivateCache(req, res, [req.session.user, name, summary.version, summary.posVersion,
@@ -399,7 +399,7 @@ router.get('/data/:name', requireLogin, asyncHandler(assertOwnership), asyncHand
 
 // 只读归因接口：页面或审计工具可单独读取后端统一归因结果。
 router.get('/nav/attribution/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const result = await loadAccountData(req.session.user, name);
   res.json({ ok: true, attribution: result.navAttribution || { complete: false, reason: 'not_available' } });
 }));
@@ -442,7 +442,7 @@ router.put('/data/:name', requireLogin, asyncHandler(assertOwnership), rateLimit
 // 快照导入：全量覆盖账户全部数据集（持仓/交易/现金流/净值/设置），跳过版本校验，按当前库版本强制覆盖。
 // 鉴权：本人账户归属校验 + 限频；数据校验失败 400；导入后返回最新版本号供前端同步。
 router.post('/accounts/:name/import-snapshot', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '导入过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
-  const accountName = decodeURIComponent(req.params.name);
+  const accountName = req.params.name;
   const r = await doImportSnapshot(req.session.user, accountName, req.body);
   if (r.status !== 200) return res.status(r.status).json({ error: r.error });
   res.json(r.body);
@@ -451,7 +451,7 @@ router.post('/accounts/:name/import-snapshot', requireLogin, asyncHandler(assert
 // 晚录入交易 → 历史净值精确回填：从 fromDate 起重算该账户 nav_history（幂等 upsert）。
 // 鉴权：本人账户归属校验；限频：每分钟最多 10 次，防误刷。
 router.post('/data/:name/recompute-nav', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'recompute', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '回填过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const fromDate = req.body && req.body.fromDate;
   if (!fromDate || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
     return res.status(400).json({ error: 'fromDate 格式应为 YYYY-MM-DD' });
@@ -479,7 +479,7 @@ router.post('/migrate-json', requireLogin, requireAdmin, asyncHandler(async (req
 
 // 删除账户：单事务删除该账户全部业务数据 + 账户元数据 + 兼容 JSON + users.accounts 列表项
 router.delete('/accounts/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   try {
     await deleteAccountData(req.session.user, name);
     res.json({ ok: true });
@@ -490,7 +490,7 @@ router.delete('/accounts/:name', requireLogin, asyncHandler(assertOwnership), as
 
 // 重命名账户：单事务内把所有业务表 + 账户元数据 + 兼容 JSON + users.accounts 列表改为新名
 router.post('/accounts/:name/rename', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
-  const oldName = decodeURIComponent(req.params.name);
+  const oldName = req.params.name;
   const newName = (req.body && req.body.newName) || '';
   if (!isValidAccountName(newName)) return res.status(400).json({ error: '新账户名含非法字符或长度不合法' });
   if (newName === oldName) return res.json({ ok: true });
@@ -506,7 +506,7 @@ router.post('/accounts/:name/rename', requireLogin, asyncHandler(assertOwnership
 // 导出持仓为 Excel
 router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
+    const name = req.params.name;
     const result = await loadAccountData(req.session.user, name);
     const positions = (result.positions || []).filter((p) => Number(p.quantity) > 0);
     const hkRate = result.hkRate || 0.868;
@@ -559,7 +559,7 @@ router.get('/export/:name', requireLogin, asyncHandler(assertOwnership), asyncHa
 // ========== 每日收盘价记录 ==========
 router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
+    const name = req.params.name;
     const { prices, date } = req.body;
     if (!prices || !prices.length) return res.json({ ok: true });
     const targetDate = date || todayCN();
@@ -579,7 +579,7 @@ router.post('/daily-prices/:name', requireLogin, asyncHandler(assertOwnership), 
 // 备份当前 nav_history 到 nav_history_backup（导入前调用）
 router.post('/accounts/:name/backup-nav-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '备份过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
+    const name = req.params.name;
     const r = await backupNavHistory(req.session.user, name);
     res.json(r);
   } catch (e) {
@@ -590,7 +590,7 @@ router.post('/accounts/:name/backup-nav-history', requireLogin, asyncHandler(ass
 // 清理历史数据（按模式）：invested-only 清空投入本金字段让公式回算；before-date 删除某日期前（含）
 router.post('/accounts/:name/clear-nav-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '清理过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
+    const name = req.params.name;
     const { mode, beforeDate } = req.body || {};
     const r = await clearNavHistory(req.session.user, name, mode, beforeDate);
     res.json(r);
@@ -602,7 +602,7 @@ router.post('/accounts/:name/clear-nav-history', requireLogin, asyncHandler(asse
 // 一键还原：校验备份存在，将 nav_history_backup 写回 nav_history 表，并提升 version
 router.post('/accounts/:name/restore-nav-history', requireLogin, asyncHandler(assertOwnership), rateLimit({ prefix: 'save', windowMs: 60000, max: 10, getKey: (r) => r.session.user || r.ip, message: '还原请求过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
+    const name = req.params.name;
     const r = await restoreNavHistory(req.session.user, name);
     res.json(r);
   } catch (e) {
@@ -613,7 +613,7 @@ router.post('/accounts/:name/restore-nav-history', requireLogin, asyncHandler(as
 // 查看备份信息（前端按钮显示"备份时间"；无备份时 hasBackup=false）
 router.get('/accounts/:name/nav-history-backup-info', requireLogin, asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
+    const name = req.params.name;
     const { rows } = await pool.query(
       `SELECT nav_history_backup_at AS at,
               jsonb_array_length(COALESCE(nav_history_backup, '[]'::jsonb)) AS rows
@@ -707,7 +707,7 @@ router.patch('/positions/:id/meta', requireLogin, asyncHandler(assertOwnership),
 // 2-1 账户设置/税费/汇率：PATCH /api/accounts/:name/settings
 // body={ cashBase?, hkRate?, feeSettings?, cashType?, cashSubtype? }
 router.patch('/accounts/:name/settings', requireLogin, asyncHandler(assertOwnership), requireVersion, rateLimit({ prefix: 'save', windowMs: 60000, max: 30, getKey: (r) => r.session.user || r.ip, message: '保存过于频繁，请稍后再试' }), asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const username = req.session.user;
   const sets = [];
   const vals = [username, name];
@@ -778,7 +778,7 @@ router.patch('/accounts/:name/settings', requireLogin, asyncHandler(assertOwners
 // 2-2 现金流新增：POST /api/accounts/:name/ledger/cash-flows
 // cashFlow.id 由前端生成（幂等键）：重复提交同一 id 不新增第二条
 router.post('/accounts/:name/ledger/cash-flows', requireLogin, asyncHandler(assertOwnership), requireVersion, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name;
   const cf = req.body && req.body.cashFlow;
   if (!cf) return res.status(400).json({ error: '缺少 cashFlow' });
   try {

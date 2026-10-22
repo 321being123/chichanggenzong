@@ -73,7 +73,7 @@
   margin-bottom: 14px;
 }
 
-.bond-cycle-status { color: #888; font-size: 14px; padding: 20px 0; }
+.bond-cycle-status { color: #6e6e6e; font-size: 14px; padding: 20px 0; }
 
 /* 概览卡片 */
 .bond-cycle-overview { margin-bottom: 18px; }
@@ -120,7 +120,7 @@
   flex-direction: column;
   gap: 4px;
 }
-.bond-cycle-metric span { color: #999; font-size: 12px; }
+.bond-cycle-metric span { color: #6e6e6e; font-size: 12px; }
 .bond-cycle-metric strong { font-size: 18px; color: #33334d; font-weight: 600; }
 
 /* 图表 */
@@ -174,7 +174,7 @@
 }
 .bond-cycle-chart { width: 100%; overflow-x: auto; }
 .bond-cycle-chart svg { width: 100%; height: auto; min-width: 720px; }
-.bond-cycle-chart-empty { color: #999; padding: 40px 0; text-align: center; }
+.bond-cycle-chart-empty { color: #6e6e6e; padding: 40px 0; text-align: center; }
 
 .bc-grid { stroke: #eee; stroke-width: 1; }
 .bc-axis { fill: #999; font-size: 11px; }
@@ -239,7 +239,7 @@
 .bond-cycle-title-wrap:hover .bond-cycle-help-tip { display: block; }
 .bond-cycle-help-tip p { margin: 0 0 8px; }
 .bond-cycle-help-tip p:last-child { margin-bottom: 0; }
-.bond-cycle-help-tip .bond-cycle-disclaimer { color: #999; font-style: italic; }
+.bond-cycle-help-tip .bond-cycle-disclaimer { color: #6e6e6e; font-style: italic; }
 
 @media (max-width: 720px) {
   .bond-cycle-hero { display: block; padding: 18px; }

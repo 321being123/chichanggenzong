@@ -27,14 +27,14 @@
     var current = getAccount();
     var visibilityHtml = canPublishBenchmark()
       ? '<span class="pc-label">官方标杆发布：</span>' +
-        '<select id="position-visibility-select" class="pc-select" onchange="PositionComparison.changeVisibility(this.value)">' +
+        '<select id="position-visibility-select" class="pc-select" data-act="PositionComparison.changeVisibility" data-use-value>' +
           '<option value="private">不发布</option>' +
           '<option value="semi_public">脱敏标杆</option>' +
           '<option value="public">完整标杆</option>' +
         '</select>'
       : '';
     wrap.innerHTML = visibilityHtml +
-      '<button type="button" class="btn btn-outline btn-sm pc-compare-btn" id="pc-open-btn" onclick="PositionComparison.openBenchmarkPicker()">仓位对比</button>';
+      '<button type="button" class="btn btn-outline btn-sm pc-compare-btn" id="pc-open-btn" data-act="PositionComparison.openBenchmarkPicker">仓位对比</button>';
     if (canPublishBenchmark()) loadVisibility(current);
     refreshBenchmarkButton();
   }
@@ -80,7 +80,7 @@
     try {
       var r = await fetch(api('/api/position-comparisons/benchmarks'));
       state.benchmarks = r.ok ? (await r.json()) : [];
-      btn.style.display = state.benchmarks.length ? '' : 'none';
+      btn.classList.remove('js-hidden'); btn.style.display = state.benchmarks.length ? '' : 'none';
     } catch (e) { btn.style.display = 'none'; }
   }
 
@@ -94,7 +94,7 @@
     }
     if (!state.benchmarks.length) { showToast('暂无可对比的官方标杆'); return; }
     var rows = state.benchmarks.map(function (b) {
-      return '<tr class="pc-bench-row" onclick="PositionComparison.startCompare(\'' + b.accountId + '\')">' +
+      return '<tr class="pc-bench-row" data-act="PositionComparison.startCompare" data-arg1="' + b.accountId + '">' +
         '<td>' + escapeHtml(b.displayName) + '</td>' +
         '<td>' + (b.visibility === 'public' ? '完整标杆' : '脱敏标杆') + '</td>' +
         '<td>' + escapeHtml(b.positionUpdatedAt || '--') + '</td>' +
@@ -103,12 +103,12 @@
       '</tr>';
     }).join('');
     var html =
-      '<h2>选择对比标杆</h2><button type="button" class="modal-close" aria-label="关闭" onclick="PositionComparison.closeSelf()">&times;</button>' +
-      '<p style="font-size:12px;color:#888;margin:-6px 0 12px;">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
-      '<div class="table-wrap" style="margin-bottom:0;"><div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-bench-table">' +
+      '<h2>选择对比标杆</h2><button type="button" class="modal-close" aria-label="关闭" data-act="PositionComparison.closeSelf">&times;</button>' +
+      '<p class="u-fs-12 u-c-muted u-mb-12">选择其他用户的完整标杆或脱敏标杆账户，进行仓位对比与复制测算。</p>' +
+      '<div class="table-wrap u-mb-0" ><div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-bench-table">' +
         '<thead><tr><th>账户</th><th>公开类型</th><th>持仓更新时间</th><th>证券只数</th><th>操作</th></tr></thead>' +
         '<tbody>' + rows + '</tbody></table></div></div>' +
-        '<div class="modal-actions"><button type="button" class="btn btn-outline" onclick="PositionComparison.closeSelf()">关闭</button></div>';
+        '<div class="modal-actions"><button type="button" class="btn btn-outline" data-act="PositionComparison.closeSelf">关闭</button></div>';
     openBox('position-comp-modal', html);
     if (window.BusinessTable) window.BusinessTable.attach(document.getElementById('position-comp-modal-box') || document.getElementById('position-comp-modal'), { sticky: false });
   }
@@ -159,12 +159,12 @@
       var priceText = s.price != null ? fmt(s.price) : '--';
       var changeText = s.change != null ? (s.change >= 0 ? '+' : '') + s.change.toFixed(2) + '%' : '--';
       return '<tr>' +
-        '<td>' + escapeHtml(s.code) + '<br><span style="font-size:11px;color:#888;">' + escapeHtml(s.name) + '</span></td>' +
+        '<td>' + escapeHtml(s.code) + '<br><span class="u-fs-11 u-c-muted">' + escapeHtml(s.name) + '</span></td>' +
         '<td>' + statusText + '</td>' +
         '<td>' + fmtPct(s.myRatio) + '</td>' +
         '<td>' + fmtPct(s.benchmarkRatio) + '</td>' +
         '<td class="' + diffCls + '">' + (s.diff >= 0 ? '+' : '') + fmtPct(s.diff) + '</td>' +
-        '<td>' + priceText + '<br><span style="font-size:11px;color:#888;">' + changeText + '</span></td>' +
+        '<td>' + priceText + '<br><span class="u-fs-11 u-c-muted">' + changeText + '</span></td>' +
         '<td>' + fmtQty(s.myQuantity) + '</td><td>' + fmt(s.myMarketValue) + '</td>' +
         // 标杆数量/市值仅公开仓位展示；半公开时服务端已删除这些字段
         (s.benchmarkQuantity === undefined ? '' : '<td>' + fmtQty(s.benchmarkQuantity) + '</td><td>' + fmt(s.benchmarkMarketValue) + '</td>') +
@@ -180,7 +180,7 @@
 
     var html =
       '<div class="pc-meta">标杆：<b>' + escapeHtml(benchName) + '</b>（' + (semi ? '脱敏标杆' : '完整标杆') + '）<br>' +
-      '<span style="font-size:11px;color:#888;">我的持仓更新：' + escapeHtml(d.overview.myUpdatedAt || '--') + '　标杆持仓更新：' + escapeHtml(d.overview.benchmarkUpdatedAt || '--') + '<br>' +
+      '<span class="u-fs-11 u-c-muted">我的持仓更新：' + escapeHtml(d.overview.myUpdatedAt || '--') + '　标杆持仓更新：' + escapeHtml(d.overview.benchmarkUpdatedAt || '--') + '<br>' +
       '本次估值时间：' + escapeHtml(d.overview.valuationTime || '--') + '　港币汇率：' + (d.overview.hkRate || '--') + '</span></div>' +
       '<div class="pc-overview">' +
         '<div class="pc-ov-item"><span>仓位相似度</span><b>' + sim + '</b></div>' +
@@ -203,8 +203,8 @@
         '<div class="biz-table-scroll"><table class="biz-table biz-table--compact pc-table"><thead><tr><th>持仓细类</th><th>我的占比</th><th>标杆占比</th><th>占比差异</th></tr></thead>' +
         '<tbody>' + subtypeRows + '</tbody></table></div></div>' +
       '<div class="pc-page-actions">' +
-        '<button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.openBenchmarkPicker()">切换标杆</button>' +
-        '<button type="button" class="btn btn-primary btn-sm" onclick="PositionComparison.openReplicatePanel()">模拟复制仓位</button>' +
+        '<button type="button" class="btn btn-outline btn-sm" data-act="PositionComparison.openBenchmarkPicker">切换标杆</button>' +
+        '<button type="button" class="btn btn-primary btn-sm" data-act="PositionComparison.openReplicatePanel">模拟复制仓位</button>' +
       '</div>';
     var body = document.getElementById('position-compare-page-body');
     if (body) {
@@ -226,17 +226,17 @@
     var old = document.getElementById('pc-replicate-section');
     if (old) old.remove();
     var html =
-      '<div id="pc-replicate-section" class="table-wrap" style="margin-top:18px;">' +
+      '<div id="pc-replicate-section" class="table-wrap u-mt-18" >' +
         '<div class="table-header"><h3>模拟复制仓位</h3>' +
-          '<button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.closeReplicate()">收起</button></div>' +
-        '<div style="padding:18px;">' +
-          '<p style="font-size:12px;color:#888;margin:0 0 12px;">按标杆仓位比例，在不卖出现有持仓的前提下，用指定新增资金买入。仅模拟测算，不会发起真实交易。</p>' +
+          '<button type="button" class="btn btn-outline btn-sm" data-act="PositionComparison.closeReplicate">收起</button></div>' +
+        '<div class="u-pad-18">' +
+          '<p class="u-fs-12 u-c-muted u-mb-12">按标杆仓位比例，在不卖出现有持仓的前提下，用指定新增资金买入。仅模拟测算，不会发起真实交易。</p>' +
           '<div class="form-group"><label>计划新增资金（元）</label>' +
-            '<input id="pc-available-cash" type="number" step="100" min="100" placeholder="如 100000" style="width:260px;padding:8px 10px;border:1px solid #ddd;border-radius:8px;"></div>' +
-          '<div style="margin-top:12px;">' +
-            '<button type="button" class="btn btn-primary" onclick="PositionComparison.doReplicate()">开始测算</button>' +
+            '<input id="pc-available-cash" type="number" step="100" min="100" placeholder="如 100000" data-style="width:260px;padding:8px 10px;border:1px solid #ddd;border-radius:8px;"></div>' +
+          '<div class="u-mt-10">' +
+            '<button type="button" class="btn btn-primary" data-act="PositionComparison.doReplicate">开始测算</button>' +
           '</div>' +
-          '<div id="pc-replicate-result" style="margin-top:14px;"></div>' +
+          '<div id="pc-replicate-result" class="u-mt-14"></div>' +
         '</div>' +
       '</div>';
     body.insertAdjacentHTML('beforeend', html);
@@ -284,7 +284,7 @@
       var amountText;
       if (it.market === 'HK') {
         var hkAmount = it.suggestedAmount / hkRate; // 人民币 ÷ 真实汇率 = 港币
-        amountText = 'HK$' + fmt(hkAmount) + '<br><span style="font-size:11px;color:#888;">¥' + fmt(it.suggestedAmount) + '</span>';
+        amountText = 'HK$' + fmt(hkAmount) + '<br><span class="u-fs-11 u-c-muted">¥' + fmt(it.suggestedAmount) + '</span>';
       } else {
         amountText = '¥' + fmt(it.suggestedAmount);
       }
@@ -295,12 +295,12 @@
       var lotTime = rule.sourceUpdatedAt ? String(rule.sourceUpdatedAt).replace('T', ' ').slice(0, 19) : '--';
       var quoteTime = it.quoteTime ? String(it.quoteTime).replace('T', ' ').slice(0, 19) : '--';
       return '<tr>' +
-        '<td>' + escapeHtml(it.code) + '<br><span style="font-size:11px;color:#888;">' + escapeHtml(it.name) + '</span></td>' +
+        '<td>' + escapeHtml(it.code) + '<br><span class="u-fs-11 u-c-muted">' + escapeHtml(it.name) + '</span></td>' +
         '<td>' + (it.market === 'HK' ? '港股' : 'A股') + '</td>' +
         '<td>' + fmtPct(it.benchmarkRatio) + '</td>' +
         '<td>' + fmtQty(it.myQuantity) + '</td>' +
         '<td>' + fmtQty(it.theoreticalShares) + '</td>' +
-        '<td>' + (it.lotSize || '--') + '<br><span style="font-size:11px;color:#888;">' + escapeHtml(lotSourceText) + '</span></td>' +
+        '<td>' + (it.lotSize || '--') + '<br><span class="u-fs-11 u-c-muted">' + escapeHtml(lotSourceText) + '</span></td>' +
         '<td><b>' + fmtQty(it.suggestedShares) + '</b></td>' +
         '<td>' + amountText + '</td>' +
         '<td>' + fmtPct(it.afterRatio) + '</td>' +
@@ -324,7 +324,7 @@
         '<div class="biz-table-scroll"><table class="biz-table pc-table"><thead><tr>' +
           '<th>证券</th><th>市场</th><th>标杆占比</th><th>我的当前股数</th><th>理论股数</th><th>每手（来源）</th><th>建议买入</th><th>预计金额</th><th>复制后占比</th><th>占比误差</th><th>状态</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
-      '<p style="font-size:11px;color:#999;margin-top:10px;">本结果仅根据当前持仓比例、参考价格和交易单位进行模拟，不构成投资建议，也不会自动发起交易。实际成交价格和数量以交易结果为准。</p>';
+      '<p data-style="font-size:11px;color:#6e6e6e;margin-top:10px;">本结果仅根据当前持仓比例、参考价格和交易单位进行模拟，不构成投资建议，也不会自动发起交易。实际成交价格和数量以交易结果为准。</p>';
     var resultEl = document.getElementById('pc-replicate-result');
     if (resultEl) {
       resultEl.innerHTML = html;
@@ -334,7 +334,7 @@
     } else {
       var body = document.getElementById('position-compare-page-body');
       if (body) {
-        body.insertAdjacentHTML('beforeend', '<div class="table-wrap" style="margin-top:18px;">' + html + '</div>');
+        body.insertAdjacentHTML('beforeend', '<div class="table-wrap u-mt-18" >' + html + '</div>');
         if (window.BusinessTable) window.BusinessTable.attachAll(body, { page: '#position-compare-page', top: '.nav' });
       }
     }
@@ -350,7 +350,7 @@
       document.body.appendChild(existing);
     }
     existing.className = 'modal-overlay show';
-    existing.innerHTML = '<div class="modal" style="width:' + (wide ? '860px' : '620px') + ';max-width:95vw;">' + innerHTML + '</div>';
+    existing.innerHTML = '<div class="modal" data-style="width:' + (wide ? '860px' : '620px') + ';max-width:95vw;">' + innerHTML + '</div>';
   }
 
   function closeSelf() {

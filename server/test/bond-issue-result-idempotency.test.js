@@ -39,7 +39,7 @@ print('quality closure atomicity and evidence preserved')
   assert.equal(py.status,0,py.stderr||py.stdout);
   const file=require.resolve('../services/convertibleBondAnalysis');
   const context=vm.createContext({require:require('module').createRequire(file),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout,__dirname:path.dirname(file)});
-  vm.runInContext(fs.readFileSync(file,'utf8'),context);
+  vm.runInContext(require('./helpers/service-source').readServiceFlatten('convertibleBondAnalysis'),context);
   vm.runInContext("pythonCandidates=()=>['first','second'];globalThis.attempts=0;runBondIssueResultBackfill=async()=>{globalThis.attempts++;throw Error('UniqueViolation business failure')}",context);
   await assert.rejects(vm.runInContext('backfillBondIssueResults',context)(),/UniqueViolation/);
   assert.equal(context.attempts,1);

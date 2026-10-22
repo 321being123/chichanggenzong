@@ -10,8 +10,10 @@ const sharedCss = fs.readFileSync(path.join(root, 'public', 'shared', 'style.css
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'server', 'routes', 'bondRevision.js'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRevisionService.js'), 'utf8');
-const analysis = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysis.js'), 'utf8');
-const migration = fs.readFileSync(path.join(root, 'server', 'db', 'migrations.js'), 'utf8');
+const { readServiceSource } = require('./helpers/service-source');
+const analysis = readServiceSource('convertibleBondAnalysis');
+const { readMigrationSource } = require('./helpers/migration-source');
+const migration = readMigrationSource();
 const refresh = fs.readFileSync(path.join(root, 'server', 'jobs', 'convertibleBondRefresh.js'), 'utf8');
 const jobs = fs.readFileSync(path.join(root, 'server', 'services', 'jobDefinitions.js'), 'utf8');
 const redemptionSync = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondRedemptionSync.js'), 'utf8');
@@ -21,7 +23,7 @@ const bondAnalysis = fs.readFileSync(path.join(root, 'server', 'routes', 'bondAn
 const stockAnalysisService = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="revision"') && html.includes('id="sub-bond-revision"'), '缺少下修二级页');
-assert.ok(html.includes('css/bond-revision.css?v=3') && html.includes('js/bond-revision.js?v=47'), '下修资源未接入首页');
+assert.ok(html.includes('css/bond-revision.css?v=__APP_VERSION__') && html.includes('js/bond-revision.js?v=__APP_VERSION__'), '下修资源未接入首页');
 assert.ok(fs.existsSync(path.join(root, 'public', 'bond-revision-motive.html')) && fs.existsSync(path.join(root, 'public', 'js', 'bond-revision-motive.js')), '缺少下修动机详情页');
 assert.ok(page.includes('/api/bond-revision?limit=2000') && page.includes('biz-table'), '下修页必须只读统一接口并使用统一表格');
 assert.ok(page.includes('target="_blank"') && page.includes('noopener noreferrer'), '下修动机列表应在新页面打开');

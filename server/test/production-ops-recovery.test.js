@@ -75,7 +75,7 @@ const { buildDatasetDiagnosticAlerts, datasetPartitionKeyForSlot } = require('..
       const stored = (await client.query('SELECT h.ipo_status,i.status FROM public.ipo_history h JOIN core.instruments i USING(instrument_id) WHERE h.security_code=$1', [code])).rows[0];
       assert.deepStrictEqual(stored, { ipo_status: status, status }, '普通公告不得撤销官方特殊状态：' + status);
     }
-    const serviceSource = fs.readFileSync(require.resolve('../services/hkexIpo'), 'utf8');
+    const serviceSource = require('./helpers/service-source').readServiceFlatten('hkexIpo');
     const serviceContext = vm.createContext({ require: name => require(require.resolve(name, { paths: [require('path').dirname(require.resolve('../services/hkexIpo'))] })), module: { exports: {} }, exports: {}, process, console, Buffer, URL, __dirname: require('path').dirname(require.resolve('../services/hkexIpo')) });
     vm.runInContext(serviceSource, serviceContext);
     const url = 'https://www1.hkexnews.hk/listedco/listconews/sehk/2099/0101/2099010100001.pdf';

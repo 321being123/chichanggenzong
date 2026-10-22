@@ -23,7 +23,10 @@ var BOND_LIST_PERCENT = { change_pct:1, stock_change_pct:1, conversion_premium:1
 
 function bondListText(value) { return value === null || value === undefined || value === '' ? '—' : String(value); }
 function bondListLifecycleMarker(status) {
-  if (status === 'announced' || status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'announced') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'maturity_redeem') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="已公告到期兑付" title="已公告到期兑付">!</span>';
+  if (status === 'redemption_unconfirmed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="赎回方式待确认" title="赎回方式待确认">!</span>';
+  if (status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="赎回已完成" title="赎回已完成">!</span>';
   if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
   return '';
 }
@@ -36,7 +39,7 @@ function bondListSafety(value) {
   return '<span class="bond-rating bond-rating-' + cls + '">' + escapeHtml(rating) + '</span>';
 }
 function bondListCell(row, key) {
-  if (key === 'bond_code' || key === 'bond_name') return '<span class="bond-list-link" onclick="bondListJump(\'' + escapeHtml(row.ts_code || row.bond_code) + '\')">' + escapeHtml(bondListText(row[key])) + '</span>' + (key === 'bond_name' ? bondListLifecycleMarker(row.call_status) : '');
+  if (key === 'bond_code' || key === 'bond_name') return '<span class="bond-list-link" data-act="bondListJump" data-arg1="' + escapeHtml(row.ts_code || row.bond_code) + '">' + escapeHtml(bondListText(row[key])) + '</span>' + (key === 'bond_name' ? bondListLifecycleMarker(row.call_status) : '');
   if (key === 'rating') return escapeHtml(bondListText(row[key]));
   if (key === 'safety') return bondListSafety(row[key]);
   if (key.indexOf('date') >= 0) return escapeHtml(bondListDate(row[key]));
@@ -86,7 +89,10 @@ function bondListRender() {
   }).join('');
   var body = bondListState.filtered.map(function(row) { return '<tr>' + BOND_LIST_COLUMNS.map(function(col) { return '<td>' + bondListCell(row, col[0]) + '</td>'; }).join('') + '</tr>'; }).join('');
   el.innerHTML = '<div class="biz-table-scroll"><table class="biz-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
-  el.querySelectorAll('th[data-key]').forEach(function(th) { th.onclick = function() { var key = th.dataset.key; if (bondListState.sortKey === key) bondListState.sortDir *= -1; else { bondListState.sortKey = key; bondListState.sortDir = 1; } bondListApplyFilters(); }; });
+  el.querySelectorAll('th[data-key]').forEach(function(th) {
+    th.tabIndex = 0;
+    th.onclick = function() { var key = th.dataset.key; if (bondListState.sortKey === key) bondListState.sortDir *= -1; else { bondListState.sortKey = key; bondListState.sortDir = 1; } bondListApplyFilters(); };
+  });
   if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#sub-bond-list', top: '#main-bond-safety > .bond-header' });
 }
 function bondListJump(code) { if (typeof switchMain === 'function') { switchMain('stock-analysis'); setTimeout(function() { if (typeof securityAnalysisSelect === 'function') securityAnalysisSelect(code); }, 150); } }
@@ -124,7 +130,7 @@ async function loadBondList(forceRefresh) {
     bondListState.loaded = true;
     bondListState.lastRefreshAt = Date.now();
     var stale = document.getElementById('bond-list-stale');
-    if (stale) stale.style.display = data.stale ? '' : 'none';
+    if (stale) { stale.classList.remove('js-hidden'); stale.style.display = data.stale ? '' : 'none'; }
     var quoteTime = data.quote_time ? String(data.quote_time).slice(0, 16).replace('T', ' ') : null;
     var quoteText = forceRefresh && data.quote_status === 'partial' ? '行情部分更新' : quoteTime ? '行情：' + quoteTime : '收盘数据';
     if (status) status.textContent = data.trade_date ? '数据日期：' + data.trade_date + ' · ' + quoteText + '（' + bondListState.rows.length + ' 条）' : '暂无数据';

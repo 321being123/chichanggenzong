@@ -152,7 +152,7 @@ context.renderStats();
 assert.ok(summaryElements.get('stat-change').innerHTML.includes('12.00'), '非交易日汇率等真实收益不能清零');
 context.data.navAttribution.totalChange = 0;
 context.renderStats();
-assert.strictEqual(summaryElements.get('stat-change').innerHTML, '<span style="color:#d93025;">0</span>', '当日真实金额为0才显示红色0');
+assert.strictEqual(summaryElements.get('stat-change').innerHTML, '<span data-style="color:#d93025;">0</span>', '当日真实金额为0才显示红色0');
 context.data.navAttribution.totalChange = null;
 context.renderStats();
 assert.strictEqual(summaryElements.get('stat-change').textContent, '-', '空金额不得转成0');

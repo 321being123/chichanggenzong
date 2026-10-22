@@ -40,15 +40,17 @@ const page = fs.readFileSync(path.join(root, 'public', 'js', 'bond-redemption.js
 const redemptionCss = fs.readFileSync(path.join(root, 'public', 'css', 'bond-redemption.css'), 'utf8');
 const safetyCss = fs.readFileSync(path.join(root, 'public', 'css', 'bond-safety.css'), 'utf8');
 const cycle = fs.readFileSync(path.join(root, 'public', 'js', 'bond-cycle.js'), 'utf8');
-const migration = fs.readFileSync(path.join(root, 'server', 'db', 'migrations.js'), 'utf8');
+const { readMigrationSource } = require('./helpers/migration-source');
+const migration = readMigrationSource();
 const stockAnalysis = fs.readFileSync(path.join(root, 'server', 'services', 'stockAnalysis.js'), 'utf8');
 const list = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondListService.js'), 'utf8');
-const analysis = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+const { readServiceSource } = require('./helpers/service-source');
+const analysis = readServiceSource('convertibleBondAnalysis');
 const valuation = fs.readFileSync(path.join(root, 'server', 'services', 'convertibleBondValuationService.js'), 'utf8');
 const runner = fs.readFileSync(path.join(root, 'server', 'services', 'jobRunners.js'), 'utf8');
 
 assert.ok(html.includes('data-sub="redemption"') && html.includes('id="sub-bond-redemption"'));
-assert.ok(html.includes('js/bond-redemption.js?v=8'));
+assert.ok(html.includes('js/bond-redemption.js?v=__APP_VERSION__'), '强赎页面脚本必须随发版自动换缓存版本');
 assert.ok(html.includes('value="not_active">暂不适用</option>'), '强赎页必须可筛选转股期前的暂不适用状态');
 assert.ok(html.includes('id="bond-redemption-search" name="bond-redemption-search"') && html.includes('data-autofill-ignore'), '强赎搜索框必须明确为非认证输入');
 assert.ok(page.includes('/api/bond-redemption') && page.includes('biz-table'));
@@ -86,7 +88,9 @@ assert.ok(redemptionService.includes('PARTITION BY instrument_id,trade_date'), '
 assert.ok(redemptionService.includes('expectedMarketDate') && redemptionService.includes('latestMarketDate < expectedMarketDate'), '强赎新鲜度必须纳入交易日历最新交易日');
 assert.ok(redemptionService.includes('stock_suspend_calendar') && redemptionService.includes('suspended_dates') && redemptionService.includes('c.diagnostics'), '强赎计算必须区分停牌日与真正缺失日并返回诊断');
 assert.ok(suspensionSync.includes('const rowMap = new Map') && suspensionSync.includes("mapped.suspend_type === 'S'"), '同日复牌/停牌重复返回必须先去重并优先保留停牌事实');
-assert.ok(redemptionService.includes("WHEN 'announced' THEN 1 WHEN 'maturity_near' THEN 2 WHEN 'met_pending' THEN 3"), '强赎列表排序必须先公告、再临近到期、再已满足待确认');
+assert.ok(redemptionService.includes("WHEN 'announced' THEN 1 WHEN 'maturity_redeem' THEN 2 WHEN 'maturity_near' THEN 3")
+  && redemptionService.includes("WHEN 'redemption_unconfirmed' THEN 4 WHEN 'met_pending' THEN 5"),
+  '强赎列表排序必须先已公告强赎、再到期兑付、再临近到期、待确认、再已满足待确认（P-6 三类语义不打乱原相对顺序）');
 assert.ok(analysis.includes("'即将到期'") && analysis.includes("'停止交易'") && analysis.includes("'到期兑付'"), '强赎公告检索必须覆盖到期赎回提示公告');
 assert.ok(stockAnalysis.includes('rows.length >= announceCount') && stockAnalysis.includes('!Number.isFinite(announceCount)')
   && stockAnalysis.includes('seenPageSignatures') && !/maxPages\s*=\s*20/.test(stockAnalysis),

@@ -39,8 +39,9 @@ function csrfMiddleware(req, res, next) {
 }
 
 // ========== 安全响应头（类 helmet 核心头，无额外依赖） ==========
-// 静态 HTML 的内联脚本/样式使用构建时哈希；动态事件属性暂时单独保留在
-// script-src-attr/style-src-attr，避免把整个 script/style 元素重新放开。
+// 静态 HTML 的内联脚本/样式使用构建时哈希；内联事件/内联样式已全部
+// 转为 data-act 事件委托（shared/ui-actions.js）与 data-style→CSSOM，
+// style-src-attr/script-src-attr 不再需要 unsafe-inline（审查 U-15d）。
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -80,9 +81,9 @@ function securityHeaders(req, res, next) {
     "default-src 'self'",
     "base-uri 'self'",
     `script-src ${scriptSources}`,
-    "script-src-attr 'unsafe-inline'",
+    "script-src-attr 'none'",
     `style-src ${styleSources}`,
-    "style-src-attr 'unsafe-inline'",
+    "style-src-attr 'none'",
     "img-src 'self' data: https:",
     "connect-src 'self'",
     "form-action 'self'",

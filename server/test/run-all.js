@@ -156,6 +156,7 @@ function runPython() {
     path.join(testDir, 'test_hk_ipo_prospectus_parser.py'),
     path.join(testDir, 'test_hk_ipo_actual_pricing.py'),
     path.join(testDir, 'test_valuation_regression.py'),
+    path.join(testDir, 'test_audit_20261021.py'),
   ].filter(f => fs.existsSync(f));
   if (pyFiles.length === 0) { skip++; console.log('  ⊘ 未找到 Python 测试文件，跳过'); return; }
   for (const file of pyFiles) {

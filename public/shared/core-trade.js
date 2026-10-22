@@ -474,8 +474,8 @@ function switchTradeMode(mode) {
   tradeMode = mode;
   document.getElementById('mode-manual').classList.toggle('active', mode === 'manual');
   document.getElementById('mode-smart').classList.toggle('active', mode === 'smart');
-  document.getElementById('trade-manual-section').style.display = mode === 'manual' ? '' : 'none';
-  document.getElementById('trade-smart-section').style.display = mode === 'smart' ? '' : 'none';
+  var tms = document.getElementById('trade-manual-section'); if (tms) { tms.classList.remove('js-hidden'); tms.style.display = mode === 'manual' ? '' : 'none'; }
+  var tss = document.getElementById('trade-smart-section'); if (tss) { tss.classList.remove('js-hidden'); tss.style.display = mode === 'smart' ? '' : 'none'; }
   if (mode === 'smart') { initVisionQr(); } else { stopVisionQr(); }
 }
 
@@ -553,12 +553,12 @@ async function doSmartParse(file, source) {
     if (loading) loading.style.display = 'none';
 
     if (d.error) {
-      if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">识别失败: ' + escapeHtml(d.error) + '</div>';
+      if (result) result.innerHTML = '<div class="u-c-danger u-pad-8-10">识别失败: ' + escapeHtml(d.error) + '</div>';
       return;
     }
 
     if (!d.items || d.items.length === 0) {
-      if (result) result.innerHTML = '<div style="color:#888;padding:12px;">未能识别出交易或持仓信息，请检查内容后重试</div>';
+      if (result) result.innerHTML = '<div data-style="color:#6e6e6e;padding:12px;">未能识别出交易或持仓信息，请检查内容后重试</div>';
       return;
     }
 
@@ -569,7 +569,7 @@ async function doSmartParse(file, source) {
     renderSmartItems();
   } catch(e) {
     if (loading) loading.style.display = 'none';
-    if (result) result.innerHTML = '<div style="color:#d93025;padding:12px;">识别失败: ' + escapeHtml(e.message) + '</div>';
+    if (result) result.innerHTML = '<div class="u-c-danger u-pad-8-10">识别失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
@@ -581,7 +581,7 @@ function renderSmartItems() {
 
   window._smartFeeRates = buildSmartFeeRates(items);
   var html = renderSmartFeeRates(window._smartFeeRates) +
-    '<div style="margin-bottom:8px;"><button class="btn btn-success btn-sm" onclick="confirmAllSmartItems()">✅ 全部录入</button></div>' +
+    '<div class="u-mb-8"><button class="btn btn-success btn-sm" data-act="confirmAllSmartItems">✅ 全部录入</button></div>' +
     '<div class="biz-table-scroll"><table class="biz-table biz-table--preview"><thead><tr>' +
     '<th>类型</th><th>日期</th><th>代码</th><th>名称</th><th class="text-right">价格</th><th class="text-right">数量</th>' +
     '<th>方向</th><th>品种</th><th>确认</th>' +
@@ -592,17 +592,17 @@ function renderSmartItems() {
     var isTrade = item.kind === 'trade';
     html += '<tr>' +
       '<td>' + (isTrade ? '<span class="tag tag-equity">交易</span>' : '<span class="tag tag-cash">持仓</span>') + '</td>' +
-      '<td>' + (isTrade ? '<input type="date" id="s-date-' + i + '" value="' + escapeHtml(item.date || '') + '" style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' : '-') + '</td>' +
-      '<td><input type="text" id="s-code-' + i + '" value="' + escapeHtml(code) + '" style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;" oninput="onSmartCodeChange(' + i + ')"></td>' +
-      '<td><input type="text" id="s-name-' + i + '" value="' + escapeHtml(item.name || '') + '" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-      '<td><input type="number" id="s-price-' + i + '" value="' + escapeHtml(item.price || '') + '" step="0.001" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-      '<td><input type="number" id="s-qty-' + i + '" value="' + escapeHtml(item.quantity || '') + '" step="1" style="width:80px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;"></td>' +
-      '<td>' + (isTrade ? '<select id="s-dir-' + i + '" style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
+      '<td>' + (isTrade ? '<input type="date" id="s-date-' + i + '" value="' + escapeHtml(item.date || '') + '" data-style="width:110px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' : '-') + '</td>' +
+      '<td><input type="text" id="s-code-' + i + '" value="' + escapeHtml(code) + '" data-style="width:70px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;" data-act="onSmartCodeChange" data-arg1="' + i + '"></td>' +
+      '<td><input type="text" id="s-name-' + i + '" value="' + escapeHtml(item.name || '') + '" class="u-input-xs"></td>' +
+      '<td><input type="number" id="s-price-' + i + '" value="' + escapeHtml(item.price || '') + '" step="0.001" class="u-input-xs"></td>' +
+      '<td><input type="number" id="s-qty-' + i + '" value="' + escapeHtml(item.quantity || '') + '" step="1" class="u-input-xs"></td>' +
+      '<td>' + (isTrade ? '<select id="s-dir-' + i + '" data-style="padding:6px 8px;border:1px solid #e0e0e0;border-radius:6px;font-size:12px;">' +
         '<option value="buy"' + (item.direction === 'buy' ? ' selected' : '') + '>买入</option>' +
         '<option value="sell"' + (item.direction === 'sell' ? ' selected' : '') + '>卖出</option>' +
         '</select>' : '-') + '</td>' +
       '<td>' + getTypeTag(rec.type) + ' ' + escapeHtml(rec.subtype || '') + '</td>' +
-      '<td><button class="btn btn-success btn-sm" onclick="confirmSmartItem(' + i + ')">确认' + (isTrade ? '录入' : '导入') + '</button></td>' +
+      '<td><button class="btn btn-success btn-sm" data-act="confirmSmartItem" data-arg1="' + i + '">确认' + (isTrade ? '录入' : '导入') + '</button></td>' +
       '</tr>';
   });
   html += '</tbody></table></div>';
@@ -661,15 +661,15 @@ function buildSmartFeeRates(items) {
 
 function renderSmartFeeRates(summaries) {
   var groups = Object.keys(summaries || {});
-  var html = '<div style="margin-bottom:10px;padding:10px;border:1px solid #d9e2ff;border-radius:8px;background:#f7f9ff;">' +
-    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><strong>交易税费明细</strong>' +
-    '<button class="btn btn-primary btn-sm" onclick="saveSmartFeeRates()">保存税费明细</button></div>';
-  if (groups.length === 0) return html + '<span style="font-size:12px;color:#888;">未识别到可计算费率的交易明细</span></div>';
+  var html = '<div data-style="margin-bottom:10px;padding:10px;border:1px solid #d9e2ff;border-radius:8px;background:#f7f9ff;">' +
+    '<div data-style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><strong>交易税费明细</strong>' +
+    '<button class="btn btn-primary btn-sm" data-act="saveSmartFeeRates">保存税费明细</button></div>';
+  if (groups.length === 0) return html + '<span class="u-fs-12 u-c-muted">未识别到可计算费率的交易明细</span></div>';
   groups.forEach(function(group) {
     var cfg = summaries[group].config;
     var meta = FEE_GROUPS.find(function(g) { return g.key === group; });
     var fields = (meta && meta.fields) || ['commission'];
-    html += '<div style="display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-top:6px;"><b style="font-size:12px;min-width:72px;">' + escapeHtml(meta ? meta.label : group) + '</b>';
+    html += '<div data-style="display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-top:6px;"><b data-style="font-size:12px;min-width:72px;">' + escapeHtml(meta ? meta.label : group) + '</b>';
     html += feeRateInput('佣金费率(%)', 'smart-' + group + '-commission', pctShow(cfg.commissionRate));
     html += feeRateInput('最低佣金(元)', 'smart-' + group + '-min', cfg.commissionMin || 0);
     if (fields.indexOf('stamp') >= 0) html += feeRateInput('印花税率(%)', 'smart-' + group + '-stamp', pctShow(cfg.stampTaxRate));
@@ -681,7 +681,7 @@ function renderSmartFeeRates(summaries) {
 }
 
 function feeRateInput(label, id, value) {
-  return '<label style="font-size:11px;color:#666;">' + label + '<input id="' + id + '" type="number" step="any" value="' + value + '" style="display:block;width:100px;padding:5px 7px;margin-top:2px;border:1px solid #d8dce8;border-radius:5px;"></label>';
+  return '<label data-style="font-size:11px;color:#666;">' + label + '<input id="' + id + '" type="number" step="any" value="' + value + '" data-style="display:block;width:100px;padding:5px 7px;margin-top:2px;border:1px solid #d8dce8;border-radius:5px;"></label>';
 }
 
 async function saveSmartFeeRates() {
@@ -905,7 +905,7 @@ function updateQtyHint(code) {
   var el = document.getElementById('trade-qty-hint');
   if (!el || !code || !data || data._brokerImportUnit !== 'lot') { if (el) el.style.display = 'none'; return; }
   var info = classifyCode(code);
-  el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
+  el.classList.remove('js-hidden'); el.style.display = (info && info.market === 'sh' && info.type === '债权') ? '' : 'none';
 }
 
 async function addTradeInternal(code, name, direction, price, quantity, date, importedFees, importBatchId) {
@@ -999,11 +999,11 @@ function switchFeeTab(key) {
 function renderFeeSettings() {
   const s = getFeeSettings();
   const curAcc = (typeof currentAccount !== 'undefined' && currentAccount) ? currentAccount : '';
-  let html = '<div style="margin-bottom:12px;padding:8px;background:#eef3ff;border-radius:6px;font-size:14px;color:#333;">⚙ 当前账户：<b>' + escapeHtml(curAcc) + '</b>（各账户费率独立保存）</div>';
+  let html = '<div data-style="margin-bottom:12px;padding:8px;background:#eef3ff;border-radius:6px;font-size:14px;color:#333;">⚙ 当前账户：<b>' + escapeHtml(curAcc) + '</b>（各账户费率独立保存）</div>';
   // Tab 按钮行
   html += '<div class="fee-tabs">';
   FEE_GROUPS.forEach(function(g) {
-    html += '<span class="fee-tab' + (g.key === currentFeeTab ? ' active' : '') + '" data-key="' + g.key + '" onclick="switchFeeTab(\'' + g.key + '\')">' + g.label + '</span>';
+    html += '<span class="fee-tab' + (g.key === currentFeeTab ? ' active' : '') + '" data-key="' + g.key + '" data-act="switchFeeTab" data-arg1="' + g.key + '">' + g.label + '</span>';
   });
   html += '</div>';
     // 各组面板（可见性交给 CSS：.fee-panel 默认隐藏，.active 才显示）

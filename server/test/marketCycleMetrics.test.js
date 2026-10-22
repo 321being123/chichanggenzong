@@ -93,7 +93,7 @@ assert.ok(grahamFrontend.includes("getElementById('mv-home').onclick") && graham
 const sharedStyle = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'shared', 'style.css'), 'utf8');
 assert.ok(html.includes('<div class="mv-header">') && html.indexOf('class="mv-header"') < html.indexOf('class="market-volatility-shell'), '股市周期二级导航未移到统一标题栏');
 assert.ok(sharedStyle.includes('#main-market-volatility .mv-sub-tab.active::after') && sharedStyle.includes('height: 46px'), '股市周期二级导航未使用统一标签栏样式');
-const migrations = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
+const migrations = require('./helpers/migration-source').readMigrationSource();
 assert.ok(migrations.includes("030_market_cycle_home_setting") && migrations.includes('market_cycle_home_setting'), '首页股市周期唯一设置表迁移缺失');
 
 console.log('marketCycleMetrics tests passed');

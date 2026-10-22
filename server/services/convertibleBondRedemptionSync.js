@@ -70,6 +70,18 @@ function classifyCallEvent(title) {
   return null;
 }
 
+// 到期兑付 / 提前强赎 / 仅凭标题无法区分（未确认）三类语义，写入 details.call_kind，
+// 供状态视图与页面提示区分“正常到期”和“已公告强赎”（2026-10-21 审查 P-6）。
+function classifyCallKind(title, eventType) {
+  if (!eventType || eventType === 'waive' || eventType === 'warning') return null;
+  const text = String(title || '');
+  const early = /(强赎|提前赎回|赎回实施|赎回暨摘牌|实施.{0,8}赎回|赎回结果|完成赎回|赎回完成)/.test(text);
+  const maturity = /(到期兑付|到期偿付|兑付暨摘牌|到期赎回|即将到期|到期暨|到期及)/.test(text);
+  if (maturity && !early) return 'maturity';
+  if (early) return 'early';
+  return 'unconfirmed';
+}
+
 function eventDates(title, eventType) {
   const lastConversionDate = dateFromTitle(title, [
     /最后转股日(?:为|：|是)?\s*([0-9]{4}[年.-][0-9]{1,2}[月.-][0-9]{1,2}日?)/,
@@ -476,6 +488,7 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
       else stats.parse_partial++;
       const details = {
         exchange: item.exchange || null, parser: 'official-pdf', parser_version: PARSER_VERSION,
+        call_kind: classifyCallKind(item.title, eventType),
         validity_basis: dates.validityBasis, decision_date: dates.decisionDate,
         lock_start_date: dates.lockStartDate || (eventType === 'waive' ? dates.decisionDate : null),
         next_count_start_date: dates.nextCountStartDate || null,
@@ -617,5 +630,5 @@ async function syncConvertibleBondCallAnnouncements({ fromDate, toDate, exchange
   } finally { client.release(); }
 }
 
-module.exports = { PARSER_VERSION, PROJECTION_SCOPE, classifyCallEvent, eventDates, eventParseComplete, pickInstrument,
+module.exports = { PARSER_VERSION, PROJECTION_SCOPE, classifyCallEvent, classifyCallKind, eventDates, eventParseComplete, pickInstrument,
   callItemsFromOfficialEvents, parseOfficialDocuments, syncConvertibleBondCallAnnouncements };

@@ -121,6 +121,26 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
     const filePath = path.join(rootDir, relativePath);
     return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
   };
+  // R-6 迁移拆分后：migrations.js 只剩注册表，断言需覆盖 ./migrations/ 子模块全文
+  const readService = base => {
+    const dir = path.join(rootDir, 'server', 'services');
+    let out = read('server/services/' + base + '.js');
+    for (const suffix of ['Core', 'Store', 'Sync', 'Facts']) {
+      const p = path.join(dir, base + suffix + '.js');
+      if (fs.existsSync(p)) out += '\n' + fs.readFileSync(p, 'utf8');
+    }
+    return out;
+  };
+  const readMigrations = () => {
+    const dir = path.join(rootDir, 'server', 'db', 'migrations');
+    let out = read('server/db/migrations.js');
+    if (fs.existsSync(dir)) {
+      for (const f of fs.readdirSync(dir).sort()) {
+        if (f.endsWith('.js')) out += '\n' + fs.readFileSync(path.join(dir, f), 'utf8');
+      }
+    }
+    return out;
+  };
   const errors = [];
   const slots = read('server/services/jobScheduleSlots.js');
   const orchestrator = read('server/services/jobOrchestrator.js');
@@ -131,11 +151,11 @@ function collectTaskGovernanceImplementationErrors(rootDir) {
   const hkexAnnouncement = read('server/services/hkexAnnouncement.js');
   const cninfoAnnouncement = read('server/services/cninfoAnnouncement.js');
   const stockAnalysis = read('server/services/stockAnalysis.js');
-  const hkexIpo = read('server/services/hkexIpo.js');
-  const convertibleBondAnalysis = read('server/services/convertibleBondAnalysis.js');
+  const hkexIpo = readService('hkexIpo');
+  const convertibleBondAnalysis = readService('convertibleBondAnalysis');
   const motiveService = read('server/services/convertibleBondRevisionMotiveService.js');
   const jobDefinitions = read('server/services/jobDefinitions.js');
-  const migrations = read('server/db/migrations.js');
+  const migrations = readMigrations();
   const redemptionSync = read('server/services/convertibleBondRedemptionSync.js');
   const marketService = read('server/services/market.js');
   const stockFrontend = read('public/js/stock-analysis.js');

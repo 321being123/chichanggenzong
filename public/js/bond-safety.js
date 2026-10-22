@@ -18,7 +18,10 @@ function bondSafetyText(value) {
 }
 
 function bondSafetyLifecycleMarker(status) {
-  if (status === 'announced' || status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'announced') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="已公告强赎" title="已公告强赎">!</span>';
+  if (status === 'maturity_redeem') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="已公告到期兑付" title="已公告到期兑付">!</span>';
+  if (status === 'redemption_unconfirmed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="赎回方式待确认" title="赎回方式待确认">!</span>';
+  if (status === 'completed') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-call" role="img" aria-label="赎回已完成" title="赎回已完成">!</span>';
   if (status === 'maturity_near') return '<span class="bond-lifecycle-mark bond-lifecycle-mark-maturity" role="img" aria-label="临近到期" title="临近到期">!</span>';
   return '';
 }
@@ -60,7 +63,7 @@ function bondSafetyIndicator(value) {
 
 function bondSafetyCell(row, key) {
   if (key === 'bond_code' || key === 'bond_name') {
-    return '<span class="bond-safety-link" onclick="bondSafetyJump(\'' + row.bond_code + '\')" title="点击查看证券分析">' + escapeHtml(bondSafetyText(row[key])) + '</span>' + (key === 'bond_name' ? bondSafetyLifecycleMarker(row.call_status) : '');
+    return '<span class="bond-safety-link" data-act="bondSafetyJump" data-arg1="' + row.bond_code + '" title="点击查看证券分析">' + escapeHtml(bondSafetyText(row[key])) + '</span>' + (key === 'bond_name' ? bondSafetyLifecycleMarker(row.call_status) : '');
   }
   if (key === 'safety') return bondSafetyRating(row[key]);
   if (key.indexOf('indicator_') === 0) return bondSafetyIndicator(row[key]);
@@ -122,7 +125,7 @@ function bondSafetyRenderTable() {
     var direction = selected ? (bondSafetyState.sortDir > 0 ? 'ascending' : 'descending') : 'none';
     var arrow = selected ? '<span class="biz-sort-indicator" aria-hidden="true">' + (bondSafetyState.sortDir > 0 ? '▲' : '▼') + '</span>' : '';
     var cls = 'sortable' + (selected ? ' is-sorted sort-' + (bondSafetyState.sortDir > 0 ? 'asc' : 'desc') : '');
-    html += '<th class="' + cls + '" aria-sort="' + direction + '" onclick="bondSafetySort(\'' + col[0] + '\')">' + escapeHtml(col[1]) + arrow + '</th>';
+    html += '<th class="' + cls + '" tabindex="0" aria-sort="' + direction + '" data-act="bondSafetySort" data-arg1="' + col[0] + '">' + escapeHtml(col[1]) + arrow + '</th>';
   });
   html += '</tr></thead><tbody>';
   rows.forEach(function(row) {

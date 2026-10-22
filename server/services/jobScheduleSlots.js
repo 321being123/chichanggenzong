@@ -6,6 +6,7 @@ const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
 const { sameTargetScope } = require('./jobRecoveryEvidence');
 const classifyCode = require('../../public/js/code-classify');
+const { appVersion } = require('../../package.json');
 
 const HOSTNAME = os.hostname();
 
@@ -1035,7 +1036,7 @@ async function heartbeat(role = 'worker', status = 'running') {
                             OR ops.worker_heartbeats.status='stopped'
                        THEN EXCLUDED.started_at ELSE ops.worker_heartbeats.started_at END,
        status=EXCLUDED.status,last_seen_at=now(),updated_at=now()`,
-    [workerId, role, String(process.pid), process.env.APP_VERSION || '', status]
+    [workerId, role, String(process.pid), process.env.APP_VERSION || appVersion || '', status]
   );
 }
 

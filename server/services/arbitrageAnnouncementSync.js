@@ -6,7 +6,7 @@ const cninfo = require('./cninfoAnnouncement');
 const parser = require('./arbitrageParser');
 const { sanitizeJobError } = require('./jobErrorSanitizer');
 const { fetchTencentQuotes } = require('./tencentQuote');
-const { ensureInstrumentIdentity } = require('./securityIdentity');
+const { ensureInstrumentIdentity, isCleanSecurityName } = require('./securityIdentity');
 const { fetchSseEventsBatch, fetchSzseEventsBatch } = require('./stockAnalysis');
 const { sendAlert, resolveSourceEndpointAlerts } = require('./jobAlertMailer');
 const { probeCninfoPermission } = require('./sourceEndpointProbe');
@@ -312,7 +312,7 @@ async function standardizeAnnouncement(sourceId, rawRecordId, ann, scope) {
       const { rows: ins } = await client.query('SELECT instrument_id FROM core.instruments WHERE canonical_code=$1', [code]);
       if (ins.length) {
         instrumentId = ins[0].instrument_id;
-        if (ann.stockName) {
+        if (ann.stockName && isCleanSecurityName(ann.stockName)) {
           await client.query('UPDATE core.instruments SET name=$1 WHERE instrument_id=$2 AND name IS DISTINCT FROM $1', [ann.stockName, instrumentId]);
         }
       } else {

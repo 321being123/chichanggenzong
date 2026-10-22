@@ -19,7 +19,7 @@ const definitions = read('server/services/jobDefinitions.js');
 const deployScript = read('deploy/deploy_password.py');
 const config = read('server/config.js');
 const jobsDb = read('server/db/jobs.js');
-const migrations = read('server/db/migrations.js');
+const migrations = require('./helpers/migration-source').readMigrationSource();
 const marketClose = read('server/jobs/marketClose.js');
 const arbitrageJob = read('server/jobs/arbitrageSync.js');
 const arbitrageReparse = read('server/jobs/arbitrageReparse.js');
@@ -48,7 +48,7 @@ assert(/sendDueAlerts/.test(health), 'Worker 离线时健康检查仍必须负�
 assert(/job-date-filter/.test(adminUi) && /job-category-filter/.test(adminUi) && /job-trigger-filter/.test(adminUi) && /job-keyword-filter/.test(adminUi), '后台必须提供四类筛选');
 assert(/d\.dependencies/.test(adminUi) && /d\.alerts/.test(adminUi) && /d\.audits/.test(adminUi), '任务详情必须展示依赖、邮件和审计');
 assert(/validateJobSlotFromUi/.test(adminUi) && /重新校验/.test(adminUi), '后台必须提供重新校验操作');
-assert(/window\.confirm/.test(adminUi) && /访问数据源/.test(adminUi) && /成本提示/.test(adminUi) && /sourceDescription/.test(definitions), '人工补跑前必须确认外部源、目标日期和接口成本');
+assert(/(window\.confirm|projectConfirm)/.test(adminUi) && /访问数据源/.test(adminUi) && /成本提示/.test(adminUi) && /sourceDescription/.test(definitions), '人工补跑前必须确认外部源、目标日期和接口成本');
 assert(/item\.label\.includes\(keyword\)/.test(slots), '关键词必须支持中文任务名称');
 assert(!/渚濊禆|鍚庡彴|璁″垝/.test(slots), '任务告警内容不得包含乱码');
 

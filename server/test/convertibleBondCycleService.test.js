@@ -176,7 +176,7 @@ section('J. 事务隔离（主同步先提交，周期用独立事务）');
 check('主同步 COMMIT 在周期计算之前，周期计算使用独立连接', async () => {
   const fs = require('fs');
   const path = require('path');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+  const src = require('./helpers/service-source').readServiceSource('convertibleBondAnalysis');
   const commitIdx = src.indexOf("await client.query('COMMIT')");
   const cycleIdx = src.indexOf('processCycleDay');
   assert.ok(commitIdx > -1, '未找到主同步 COMMIT');

@@ -1485,7 +1485,7 @@
 .ks-ad-count {
   margin-left: 12px;
   align-self: center;
-  color: #888;
+  color: #6e6e6e;
   font-size: 13px;
 }
 
@@ -1677,3 +1677,16 @@
   .ks-table-picker-grid button { width:44px; height:44px; }
   .ks-table-picker-grid button::before { content:attr(data-row) '×' attr(data-column); font-size:11px; }
 }
+
+/* ===== 分享文章页（share-knowledge.html）U-8：原页内 style 块并入本文件 ===== */
+/* 作用域限定 .share-page 下——本文件同时被主页引用，body 级规则不得外溢（审查 U-8 合并约束） */
+.share-page { margin: 0; background: #f0f2f5; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #333; }
+.share-wrap { max-width: 820px; margin: 0 auto; padding: 32px 18px 60px; }
+.share-top { text-align: center; margin-bottom: 18px; }
+.share-top a { color: #1a237e; text-decoration: none; font-size: 14px; }
+.share-top h2 { margin: 8px 0 0; color: #1a1a2e; font-weight: 700; }
+.share-status { text-align: center; color: #b3a294; padding: 40px 0; }
+.ks-meta { justify-content: center; }
+.ks-comment-form textarea { background: #fff; }
+
+@media (max-width:760px) { .share-wrap { padding:16px 12px 40px; } .share-top a { display:inline-flex; align-items:center; min-height:44px; } }

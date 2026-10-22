@@ -43,7 +43,8 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
       '/federal-funds/import 未绑定 ops_manage');
   });
   await check('官方仓位标杆发布需要 benchmark_publish 能力且保留所有权校验', () => {
-    assert.ok(positionComparisonSrc.includes("requireLogin, requireCapability('benchmark_publish'), assertOwnership"),
+    // R-1 修复后所有权校验以 asyncHandler 包装（防未捕获异步异常），能力与归属绑定都不允许缺失
+    assert.ok(/requireLogin, requireCapability\('benchmark_publish'\), (asyncHandler\()?assertOwnership/.test(positionComparisonSrc),
       'position-visibility 未绑定 benchmark_publish 或丢失所有权校验');
   });
   await check('已改造路由不再依赖 requireAdmin', () => {
@@ -59,6 +60,19 @@ function readSrc(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
     assert.ok(adminRouteSrc.includes("return 'user_manage'"), '缺少 user_manage 映射');
     assert.ok(adminRouteSrc.includes("return 'content_manage'"), '缺少 content_manage 映射');
     assert.ok(adminRouteSrc.includes("return 'ops_manage'"), '缺少 ops_manage 映射');
+  });
+  await check('R-2 未登记后台路径默认拒绝，/overview、/audit 白名单仅员工身份', () => {
+    assert.ok(adminRouteSrc.includes('const STAFF_ONLY_PATHS'), '缺少员工路径白名单');
+    assert.ok(adminRouteSrc.includes('return null; // 未登记路径：默认拒绝'), '缺少默认拒绝分支');
+    assert.ok(adminRouteSrc.includes("'该后台接口未登记所需能力'"), '未登记路径必须显式 403，不能默默放行');
+    const { adminCapabilityForPath } = require('../routes/admin');
+    assert.strictEqual(adminCapabilityForPath('/overview'), '', '/overview 应为员工可见');
+    assert.strictEqual(adminCapabilityForPath('/audit'), '', '/audit 应为员工可见');
+    assert.strictEqual(adminCapabilityForPath('/users/someone'), 'user_manage');
+    assert.strictEqual(adminCapabilityForPath('/jobs/slots'), 'ops_manage');
+    assert.strictEqual(adminCapabilityForPath('/not-registered'), null, '未登记路径必须拒绝');
+    assert.strictEqual(adminCapabilityForPath('/overview-extra'), null, '白名单必须精确匹配');
+    assert.strictEqual(adminCapabilityForPath('/audit/nested'), null, '白名单不放行子路径');
   });
   await check('后台前端按能力隐藏菜单（前端隐藏不作为安全边界）', () => {
     assert.ok(/const VIEW_CAPABILITY = \{/.test(adminJsSrc), '缺少 VIEW_CAPABILITY 映射');

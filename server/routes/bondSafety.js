@@ -67,8 +67,12 @@ router.get('/bonds', asyncHandler(async (req, res) => {
   const allData = Array.isArray(snapshot.data) ? snapshot.data : [];
   if (summaryView) {
     const filtered = requestedRating ? allData.filter(row => row.safety === requestedRating) : allData;
-    const safetyCounts = { '安全': 0, '低风险': 0, '中风险': 0, '高风险': 0 };
-    filtered.forEach(row => { if (Object.prototype.hasOwnProperty.call(safetyCounts, row.safety)) safetyCounts[row.safety]++; });
+    // 分类加总必须等于当前范围总数；未评级/未知归入“未评级”，不静默丢弃（2026-10-21 审查 P-8）
+    const safetyCounts = { '安全': 0, '低风险': 0, '中风险': 0, '高风险': 0, '未评级': 0 };
+    filtered.forEach(row => {
+      const key = Object.prototype.hasOwnProperty.call(safetyCounts, row.safety) ? row.safety : '未评级';
+      safetyCounts[key]++;
+    });
     return res.json({
       configured: isConfigured(),
       updated_at: snapshot.refreshed_at,

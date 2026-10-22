@@ -36,7 +36,7 @@ function ipoExchange(code) {
 function ipoExBadge(code) {
   var ex = ipoExchange(code);
   var color = ex === '京' ? '#e8830c' : (ex === '沪' ? '#d93025' : '#1a8a3a');
-  return '<span style="display:inline-block;min-width:18px;text-align:center;font-size:11px;color:#fff;background:' +
+  return '<span data-style="display:inline-block;min-width:18px;text-align:center;font-size:11px;color:#fff;background:' +
     color + ';border-radius:3px;padding:0 4px;margin-right:5px;font-weight:600;">' + ex + '</span>';
 }
 
@@ -60,7 +60,7 @@ function ipoBoard(code, type) {
 function ipoBoardBadge(code, type) {
   var board = ipoBoard(code, type);
   if (!board) return '';
-  return ' <span style="display:inline-block;font-size:10px;color:#666;background:#f1f3f4;border-radius:3px;padding:1px 5px;margin-left:4px;vertical-align:1px;">' +
+  return ' <span data-style="display:inline-block;font-size:10px;color:#666;background:#f1f3f4;border-radius:3px;padding:1px 5px;margin-left:4px;vertical-align:1px;">' +
     escapeHtml(board) + '</span>';
 }
 
@@ -171,7 +171,7 @@ function ipoHkSignalCell(it, field, label) {
   if (sourceTime) timeLines.push('来源时间 ' + escapeHtml(sourceTime));
   if (collectedTime) timeLines.push('本地采集 ' + escapeHtml(collectedTime));
   return escapeHtml(source + label + ' ' + values.join(' / ')) +
-    (timeLines.length ? '<br><small style="color:#999;">' + timeLines.join('<br>') + '</small>' : '');
+    (timeLines.length ? '<br><small class="u-c-muted">' + timeLines.join('<br>') + '</small>' : '');
 }
 
 function ipoHkListingCell(it) {
@@ -203,13 +203,13 @@ function ipoHkIssuePriceCell(it) {
 function ipoHkFactStatusCell(it) {
   var ipoStatus = String(it && it.ipo_status || '').toLowerCase();
   if (ipoStatus === 'introduction' || ipoStatus === 'gem_transfer' || ipoStatus === 'de_spac') {
-    return '<span style="color:#666;">不适用普通 IPO 资料</span>';
+    return '<span class="u-c-dim">不适用普通 IPO 资料</span>';
   }
-  if (ipoStatus === 'postponed') return '<span style="color:#666;">发售已延期，等待新安排</span>';
+  if (ipoStatus === 'postponed') return '<span class="u-c-dim">发售已延期，等待新安排</span>';
   var status = String(it && it.data_completeness && it.data_completeness.status || '').toLowerCase();
-  if (status === 'complete') return '<span style="color:#137333;">关键事实已核实</span>';
-  if (status === 'pending_not_due') return '<span style="color:#666;">等待下一阶段官方结果</span>';
-  return '<span style="color:#a15c00;">官方资料待补</span>';
+  if (status === 'complete') return '<span class="u-c-good">关键事实已核实</span>';
+  if (status === 'pending_not_due') return '<span class="u-c-dim">等待下一阶段官方结果</span>';
+  return '<span data-style="color:#a15c00;">官方资料待补</span>';
 }
 
 function ipoHkSubscriptionCell(it) {
@@ -270,12 +270,12 @@ function ipoStockPredictionCell(it) {
   var context = it && it.prediction_context && typeof it.prediction_context === 'object' ? it.prediction_context : {};
   var cell = it.has_prediction ? ipoPctCell(it.pred_return) : '无历史预测';
   if (it.has_prediction && context.prediction_range_low != null && context.prediction_range_high != null) {
-    cell += '<br><small style="color:#777;white-space:nowrap;">区间 ' +
+    cell += '<br><small data-style="color:#6e6e6e;white-space:nowrap;">区间 ' +
       escapeHtml(String(context.prediction_range_low) + '%～' + String(context.prediction_range_high) + '%') + '</small>';
   }
   if (!it.has_prediction || !it.security_code) return cell;
   return '<a href="ipo-report.html?code=' + encodeURIComponent(it.security_code) +
-    '" target="_blank" rel="noopener" style="color:#1a73e8;text-decoration:none;white-space:nowrap;" title="查看打新详情">' +
+    '" target="_blank" rel="noopener" data-style="color:#1a73e8;text-decoration:none;white-space:nowrap;" title="查看打新详情">' +
     cell + '</a>';
 }
 
@@ -321,7 +321,7 @@ function ipoFirstDayStatus(it) {
 function ipoFirstDayQuoteLabel(it) {
   if (it.first_day_basis !== 'intraday' || !it.first_day_quote_time) return '';
   var time = new Date(it.first_day_quote_time).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-  return '<span style="display:block;color:#777;font-size:11px;">' + (it.first_day_refresh_failed ? '刷新失败 · ' : it.first_day_quote_stale ? '行情延迟 · ' : '盘中 · ')
+  return '<span data-style="display:block;color:#6e6e6e;font-size:11px;">' + (it.first_day_refresh_failed ? '刷新失败 · ' : it.first_day_quote_stale ? '行情延迟 · ' : '盘中 · ')
     + escapeHtml(time) + '</span>';
 }
 
@@ -362,7 +362,7 @@ function _ipoProgress(it) {
 
 function ipoCurrentStage(it) {
   var p = _ipoProgress(it);
-  return '<span style="font-size:11px;color:' + p.color + ';font-weight:600;white-space:nowrap;">' + p.stage + '</span>';
+  return '<span data-style="font-size:11px;color:' + p.color + ';font-weight:600;white-space:nowrap;">' + p.stage + '</span>';
 }
 
 // 进展公告日：展示「当前所处阶段」对应的日期（绝不用未来的发行结果公告日）
@@ -469,9 +469,9 @@ function ipoNormalizeDate(value) {
 }
 
 function ipoRenderAdviceStatus(title, message) {
-  return '<div class="table-wrap ipo-advice-status" style="margin-top:18px;">' +
+  return '<div class="table-wrap ipo-advice-status u-mt-18" >' +
     '<div class="table-header"><h3>' + escapeHtml(title) + '</h3></div>' +
-    '<div class="ipo-content" style="padding:14px 18px;color:#8a6d3b;background:#fffaf0;">' + escapeHtml(message) + '</div></div>';
+    '<div class="ipo-content" data-style="padding:14px 18px;color:#8a6d3b;background:#fffaf0;">' + escapeHtml(message) + '</div></div>';
 }
 
 // 打新建议统一显示“名称-市场板块”；兼容历史日报中的旧板块文案。
@@ -577,14 +577,14 @@ function ipoRenderAdvice(md, context) {
     }
     return ipoRenderAdviceStatus('打新建议', reportDate ? reportDate + ' 暂无申购或上市建议。' : '当前暂无申购或上市建议。');
   }
-  var html = '<div class="table-wrap" style="margin-top:18px;">';
-  html += '<div class="table-header"><h3>打新建议</h3>' + (reportDate ? '<span style="font-size:12px;color:#999;">建议日期：' + escapeHtml(reportDate) + '</span>' : '') + '</div>';
-  html += '<div class="ipo-content" style="padding:14px 18px;">';
+  var html = '<div class="table-wrap u-mt-18" >';
+  html += '<div class="table-header"><h3>打新建议</h3>' + (reportDate ? '<span class="u-fs-12 u-c-muted">建议日期：' + escapeHtml(reportDate) + '</span>' : '') + '</div>';
+  html += '<div class="ipo-content" data-style="padding:14px 18px;">';
   groups.forEach(function (g) {
-    html += '<div style="margin-bottom:8px;"><span style="font-size:13px;color:#333;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';
-    html += '<ul style="margin:0 0 10px;padding-left:22px;">';
+    html += '<div class="u-mb-8"><span data-style="font-size:13px;color:#333;font-weight:400;">' + escapeHtml(g.head) + '</span></div>';
+    html += '<ul data-style="margin:0 0 10px;padding-left:22px;">';
     g.items.forEach(function (it) {
-      html += '<li style="margin-bottom:4px;color:#333;font-size:13px;">' + escapeHtml(ipoAdviceItemLabel(it, g.head, summary));
+      html += '<li data-style="margin-bottom:4px;color:#333;font-size:13px;">' + escapeHtml(ipoAdviceItemLabel(it, g.head, summary));
       html += '</li>';
     });
     html += '</ul>';
@@ -612,11 +612,11 @@ function ipoRenderCalendar(calendar, pendingHkStocks) {
     var dateStyle = isToday
       ? 'font-size:15px;font-weight:700;color:#fff;background:#d93025;border-radius:6px;padding:2px 8px;'
       : 'font-size:15px;font-weight:700;color:#1a1a2e;';
-    html += '<div style="margin:14px 0 6px;display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #f0f0f0;padding-bottom:6px;">';
-    html += '<span style="' + dateStyle + '">' + escapeHtml(day.date) + '</span>';
-    if (isToday) html += '<span style="font-size:12px;color:#d93025;font-weight:600;">今天</span>';
-    html += '<span style="font-size:12px;color:#888;">' + escapeHtml(day.weekday || '') + '</span>';
-    html += '<span style="font-size:12px;color:#bbb;">申购 ' + applyN + ' · 上市 ' + listN + '</span>';
+    html += '<div class="u-group-head">';
+    html += '<span data-style="' + dateStyle + '">' + escapeHtml(day.date) + '</span>';
+    if (isToday) html += '<span data-style="font-size:12px;color:#d93025;font-weight:600;">今天</span>';
+    html += '<span class="u-fs-12 u-c-muted">' + escapeHtml(day.weekday || '') + '</span>';
+    html += '<span data-style="font-size:12px;color:#bbb;">申购 ' + applyN + ' · 上市 ' + listN + '</span>';
     html += '</div>';
 
     if (applyN > 0) {
@@ -633,9 +633,9 @@ function ipoRenderCalendar(calendar, pendingHkStocks) {
     }
   });
   if (pendingHkStocks.length) {
-    html += '<div style="margin:14px 0 6px;display:flex;align-items:baseline;gap:8px;border-bottom:1px solid #f0f0f0;padding-bottom:6px;">';
-    html += '<span style="font-size:15px;font-weight:700;color:#a15c00;">官方资料待补</span>';
-    html += '<span style="font-size:12px;color:#888;">' + pendingHkStocks.length + ' 只，暂无可确认日期</span></div>';
+    html += '<div class="u-group-head">';
+    html += '<span data-style="font-size:15px;font-weight:700;color:#a15c00;">官方资料待补</span>';
+    html += '<span class="u-fs-12 u-c-muted">' + pendingHkStocks.length + ' 只，暂无可确认日期</span></div>';
     html += ipoCalendarRow('待补', pendingHkStocks.map(function (it) {
       return { type: '新股', name: it.name, code: it.code };
     }), '#a15c00');
@@ -653,20 +653,20 @@ function _ipoTodayStr() {
 
 function ipoCalendarRow(label, items, color) {
   // 每只股票或转债单独一行，避免同一天多只横向挤在一起
-  var html = '<div class="ipo-calendar-group" style="padding:5px 0 5px 18px;border-left:3px solid #eef1f6;margin-left:4px;font-size:13px;">';
-  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
-  html += '<span style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:' + color + ';border-radius:4px;padding:1px 4px;">' + escapeHtml(label) + '</span>';
-  html += '<span style="color:#666;font-size:12px;">' + items.length + ' 只</span></div>';
+  var html = '<div class="ipo-calendar-group" data-style="padding:5px 0 5px 18px;border-left:3px solid #eef1f6;margin-left:4px;font-size:13px;">';
+  html += '<div data-style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
+  html += '<span data-style="display:inline-block;min-width:34px;text-align:center;font-size:11px;color:#fff;background:' + color + ';border-radius:4px;padding:1px 4px;">' + escapeHtml(label) + '</span>';
+  html += '<span data-style="color:#666;font-size:12px;">' + items.length + ' 只</span></div>';
   items.forEach(function (it) {
     var rawName = String(it.name || '');
     var calendarName = it.type === '新债'
       ? ipoBondDisplayName(rawName, it.code)
       : (String(it.code || '').toUpperCase().indexOf('.HK') >= 0 && !/[\u3400-\u9fff]/.test(rawName) ? '中文名待补' : (it.name || '-'));
-    html += '<div class="ipo-calendar-security" style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(calendarName) + '</b> <span style="color:#999;">' + escapeHtml(it.code || '') + '</span>';
-    html += ' <span style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
-    if (it.is_estimated) html += ' <span style="color:#a15c00;font-size:11px;">预计</span>';
+    html += '<div class="ipo-calendar-security" data-style="padding:3px 0 3px 42px;">' + ipoExBadge(it.code) + '<b>' + escapeHtml(calendarName) + '</b> <span class="u-c-muted">' + escapeHtml(it.code || '') + '</span>';
+    html += ' <span data-style="color:#bbb;font-size:11px;">' + escapeHtml(it.type) + '</span>';
+    if (it.is_estimated) html += ' <span data-style="color:#a15c00;font-size:11px;">预计</span>';
     html += ipoBoardBadge(it.code, it.type);
-    html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';
+    html += ' <a href="ipo-report.html?code=' + encodeURIComponent(it.code || '') + '" target="_blank" data-style="color:#1a73e8;text-decoration:none;white-space:nowrap;margin-left:6px;">查看详情</a></div>';
   });
   html += '</div>';
   return html;
@@ -709,10 +709,10 @@ async function ipoLoadHistoryPage(type, offset, refreshQuotes) {
       if ((type === 'hk_stock' || type === 'stock') && Number(d.total) > 0) {
         var total = Number(d.total);
         var shownEnd = pageOffset + (d.rows || []).length;
-        html += '<div class="ipo-history-pagination" style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;color:#777;font-size:12px;">';
+        html += '<div class="ipo-history-pagination" data-style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;color:#6e6e6e;font-size:12px;">';
         html += '<span>共 ' + total + ' 条</span>';
-        if (pageOffset > 0) html += '<button type="button" onclick="ipoLoadHistoryPage(\'' + escapeHtml(type) + '\',' + Math.max(0, pageOffset - pageSize) + ')">上一页</button>';
-        if (shownEnd < total) html += '<button type="button" onclick="ipoLoadHistoryPage(\'' + escapeHtml(type) + '\',' + shownEnd + ')">加载下一页</button>';
+        if (pageOffset > 0) html += '<button type="button" data-act="ipoLoadHistoryPage" data-arg1="' + escapeHtml(type) + '" data-arg2="' + Math.max(0, pageOffset - pageSize) + '">上一页</button>';
+        if (shownEnd < total) html += '<button type="button" data-act="ipoLoadHistoryPage" data-arg1="' + escapeHtml(type) + '" data-arg2="' + shownEnd + '">加载下一页</button>';
         html += '</div>';
       }
       el.innerHTML = html;

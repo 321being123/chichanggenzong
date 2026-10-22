@@ -27,8 +27,8 @@ const { replicatePositions } = require('../services/positionReplication');
 const VALID_VISIBILITY = ['public', 'semi_public', 'private'];
 
 // ========== 更新当前账户公开状态（8.4 / 4.3；需 benchmark_publish 能力，且只能改自己的账户） ==========
-router.put('/accounts/:name/position-visibility', requireLogin, requireCapability('benchmark_publish'), assertOwnership, asyncHandler(async (req, res) => {
-  const name = decodeURIComponent(req.params.name);
+router.put('/accounts/:name/position-visibility', requireLogin, requireCapability('benchmark_publish'), asyncHandler(assertOwnership), asyncHandler(async (req, res) => {
+  const name = req.params.name;
   const { visibility } = req.body || {};
   if (!VALID_VISIBILITY.includes(visibility)) {
     await auditEvent({ actor: req.session.user, action: 'benchmark_publish', target: name, result: 'failure', requestId: req.id, detail: '公开状态不合法' });

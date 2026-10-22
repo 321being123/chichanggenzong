@@ -47,8 +47,16 @@ app.use(function telemetryBodyLimit(req, res, next) {
   next();
 });
 // 启动前的基础中间件（不依赖 Redis）：请求体解析 + 请求追踪/访问日志
-// 上限 15mb：10MB 图片经 Base64 后约 13.3MB，超过原 10mb 会被 body-parser 直接拒绝（P1-7）
-app.use(express.json({ limit: '15mb', verify: function (req, res, buffer) {
+// 审查 R-12：全局 JSON 上限收敛到 1MB（常规业务数据足够）；
+// 仅上传/识别/整包恢复等明确吃大体积的路由放开到 15MB（10MB 图片经 Base64 后约 13.3MB）。
+const largeJsonParser = express.json({ limit: '15mb' });
+app.use('/api/vision-parse', largeJsonParser);
+app.use('/api/vision-upload', largeJsonParser);
+app.use('/api/excel-parse', largeJsonParser);
+app.use('/api/excel-history-parse', largeJsonParser);
+app.use('/api/knowledge/articles', largeJsonParser); // 文章可内嵌 base64 图片（单张≤5MB）
+app.use(/^\/api\/accounts\/[^/]+\/import-snapshot$/, largeJsonParser); // 整包恢复
+app.use(express.json({ limit: '1mb', verify: function (req, res, buffer) {
   if (req.method === 'POST' && req.path === '/api/telemetry/events' && buffer.length > 32 * 1024) {
     const error = new Error('统计请求过大'); error.status = 413; throw error;
   }
@@ -61,6 +69,7 @@ app.use(accessLog);
 // 因此会话中间件及之后的所有中间件/路由注册都必须放在 initRedis 成功后，
 // 不能在模块顶层同步注册，否则会用到尚未就绪的 store 造成静默降级。
 let server = null;
+let server6 = null;
 
 async function start() {
   try {
@@ -165,7 +174,7 @@ async function start() {
   // 同时监听 IPv6 回环地址 ::1：现代浏览器打开 localhost 常先解析到 ::1，
   // 若仅监听 IPv4 会导致"本地打不开"(连接被拒)。双栈监听，::1 失败不影响 IPv4。
   try {
-    app.listen(PORT, '::1', () => {
+    server6 = app.listen(PORT, '::1', () => {
       console.log(`存在小站已启动(IPv6): http://[::1]:${PORT}`);
     });
   } catch (e) {
@@ -177,6 +186,7 @@ async function start() {
 function shutdown(signal) {
   console.log(`[shutdown] 收到 ${signal}，停止接收新请求并释放连接...`);
   if (server) server.close();
+  if (server6) server6.close();
   const finish = () => process.exit(0); // 优雅停机一律以 0 退出，便于编排器识别
   // 兜底：3 秒后强制退出，避免连接池久久不释放导致进程悬挂
   const hardStop = setTimeout(finish, 3000);

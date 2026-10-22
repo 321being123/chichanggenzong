@@ -1,0 +1,47 @@
+/* 登录/注册/找回密码页面样式（U-8：原 login.html 内联 style 块，2026-10-21 并入统一 css/ 体系） */
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #3949ab 100%);
+  min-height: 100vh;
+}
+.login-page { min-height: calc(100vh - 52px); display:flex; align-items:center; justify-content:center; padding:24px 0; }
+.login-brand, .login-nav-link { color:inherit; text-decoration:none; }
+.login-box {
+  background: #fff; border-radius: 16px; padding: 40px; width: 400px; max-width: 92vw;
+  box-shadow: 0 20px 60px rgba(0,0,0,.3);
+}
+.login-box h1 { font-size: 22px; color: #1a237e; text-align:center; margin-bottom:4px; }
+.login-box .sub { font-size: 13px; color: #6e6e6e; text-align:center; margin-bottom:20px; }
+.form-group { margin-bottom:14px; position:relative; }
+.form-group label { display:block; font-size:13px; color:#666; margin-bottom:4px; font-weight:500; }
+.form-group input {
+  width:100%; padding:12px 14px; border:1px solid #e0e0e0; border-radius:10px;
+  font-size:15px; outline:none; transition:border-color .2s;
+}
+.form-group input:focus { border-color:#1a237e; box-shadow:0 0 0 3px rgba(26,35,126,.08); }
+.pwd-wrap { position:relative; }
+.pwd-wrap input { padding-right:40px; }
+.pwd-toggle {
+  position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  background:none; border:none; cursor:pointer; font-size:18px; color:#6e6e6e; padding:4px;
+  line-height:1;
+}
+.btn {
+  width:100%; padding:12px; border:none; border-radius:10px; font-size:15px; font-weight:600;
+  cursor:pointer; transition:.2s; margin-bottom:10px; justify-content:center; text-align:center;
+}
+.btn-primary { background:#1a237e; color:#fff; }
+.btn-primary:hover { background:#283593; }
+.btn:disabled { background:#aaa; cursor:not-allowed; }
+.error {
+  color:#d93025; font-size:13px; text-align:center; padding:8px 12px; margin-bottom:10px;
+  background:#fef2f2; border-radius:8px; display:none;
+}
+.switch { text-align:center; font-size:13px; color:#6e6e6e; margin-top:4px; }
+.switch a, .switch .switch-btn { color:#1a73e8; cursor:pointer; text-decoration:none; }
+.switch .switch-btn { background:none; border:none; padding:0; font:inherit; }
+.switch a:hover, .switch .switch-btn:hover { text-decoration:underline; }
+/* toast 复用 shared/style.css 全站样式，不再自带一份（审查 U-8） */
+
+@media (max-width:760px) { .login-page { min-height:calc(100dvh - var(--site-nav-height)); padding:16px 12px; align-items:flex-start; } .login-box { width:100%; max-width:400px; padding:24px 18px; } .login-box .pwd-toggle { right:2px; } .login-box .form-group input { padding-right:48px; } }

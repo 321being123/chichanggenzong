@@ -1,5 +1,6 @@
 // ========== 知识分享模块路由（文章 / 分类目录树 / 评论 / 公开分享） ==========
 const express = require('express');
+const asyncHandler = require('../middleware/async');
 const router = express.Router();
 const crypto = require('crypto');
 const net = require('net');
@@ -130,14 +131,14 @@ async function requireCategoryOwner(req, res, next) {
 }
 
 // 当前登录用户角色/写权限（供前端隐藏写按钮与分类管理）
-router.get('/can-write', requireLogin, async (req, res) => {
+router.get('/can-write', requireLogin, asyncHandler(async (req, res) => {
   try {
     const info = await getUserKsInfo(req.session.user);
     res.json({ canWrite: info.canWrite, isAdmin: info.isAdmin });
   } catch (e) {
     res.status(500).json({ error: '查询写权限失败' });
   }
-});
+}));
 
 // 把扁平分类列表整理成树
 function buildTree(rows) {
@@ -154,7 +155,7 @@ function buildTree(rows) {
 
 // ---------- 分类目录树 ----------
 // P2-6：读取接口不再写库（默认分类由迁移 018 幂等种子）
-router.get('/categories', optionalLogin, async (req, res) => {
+router.get('/categories', optionalLogin, asyncHandler(async (req, res) => {
   try {
     const username = req.authUser && req.authUser.username;
     const r = await pool.query(
@@ -168,10 +169,10 @@ router.get('/categories', optionalLogin, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取分类失败' });
   }
-});
+}));
 
 // 有知识写作权限的用户可新增分类，并拥有自己创建的分类
-router.post('/categories', requireLogin, requireKsWrite, async (req, res) => {
+router.post('/categories', requireLogin, requireKsWrite, asyncHandler(async (req, res) => {
   try {
     const name = String(req.body.name || '').trim().slice(0, LIMITS.categoryName);
     if (!name) return res.status(400).json({ error: '分类名称不能为空' });
@@ -188,9 +189,9 @@ router.post('/categories', requireLogin, requireKsWrite, async (req, res) => {
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '同级已存在同名分类' });
     res.status(500).json({ error: '新建分类失败' });
   }
-});
+}));
 
-router.put('/categories/:id', requireLogin, requireCategoryOwner, async (req, res) => {
+router.put('/categories/:id', requireLogin, requireCategoryOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const name = String(req.body.name || '').trim().slice(0, LIMITS.categoryName);
@@ -205,9 +206,9 @@ router.put('/categories/:id', requireLogin, requireCategoryOwner, async (req, re
     if (/uq_cat_parent_name/.test(e.message || '')) return res.status(400).json({ error: '同级已存在同名分类' });
     res.status(500).json({ error: '更新分类失败' });
   }
-});
+}));
 
-router.post('/categories/:id/move', requireLogin, requireCategoryOwner, async (req, res) => {
+router.post('/categories/:id/move', requireLogin, requireCategoryOwner, asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const parentId = req.body.parent_id ? parseInt(req.body.parent_id, 10) : null;
   const beforeId = req.body.before_id ? parseInt(req.body.before_id, 10) : null;
@@ -288,9 +289,9 @@ router.post('/categories/:id/move', requireLogin, requireCategoryOwner, async (r
   } finally {
     client.release();
   }
-});
+}));
 
-router.delete('/categories/:id', requireLogin, requireCategoryOwner, async (req, res) => {
+router.delete('/categories/:id', requireLogin, requireCategoryOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     await pool.query('DELETE FROM article_categories WHERE id=$1', [id]);
@@ -299,10 +300,10 @@ router.delete('/categories/:id', requireLogin, requireCategoryOwner, async (req,
   } catch (e) {
     res.status(500).json({ error: '删除分类失败' });
   }
-});
+}));
 
 // ---------- 文章列表 ----------
-router.get('/articles', optionalLogin, async (req, res) => {
+router.get('/articles', optionalLogin, asyncHandler(async (req, res) => {
   try {
     // 只信任 optionalLogin 校验后的 req.authUser，禁止用已吊销会话直接读取草稿。
     const username = req.authUser && req.authUser.username;
@@ -355,10 +356,10 @@ router.get('/articles', optionalLogin, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取文章列表失败' });
   }
-});
+}));
 
 // 首页最新文章（公开）
-router.get('/latest', async (req, res) => {
+router.get('/latest', asyncHandler(async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 5, 20);
     const r = await pool.query(
@@ -373,7 +374,7 @@ router.get('/latest', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取最新文章失败' });
   }
-});
+}));
 
 // ---------- 单篇文章详情 ----------
 async function getRawArticle(id) {
@@ -387,7 +388,7 @@ async function getRawArticle(id) {
   return r.rows[0] || null;
 }
 
-router.get('/articles/:id', optionalLogin, async (req, res) => {
+router.get('/articles/:id', optionalLogin, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const article = await getRawArticle(id);
@@ -410,10 +411,10 @@ router.get('/articles/:id', optionalLogin, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取文章失败' });
   }
-});
+}));
 
 // ---------- 公开分享（免登录） ----------
-router.get('/share/:token', async (req, res) => {
+router.get('/share/:token', asyncHandler(async (req, res) => {
   try {
     const token = String(req.params.token || '');
     const r = await pool.query(
@@ -429,10 +430,10 @@ router.get('/share/:token', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取分享文章失败' });
   }
-});
+}));
 
 // ---------- 新建 ----------
-router.post('/articles', requireLogin, requireKsWrite, async (req, res) => {
+router.post('/articles', requireLogin, requireKsWrite, asyncHandler(async (req, res) => {
   try {
     const title = String(req.body.title || '').trim().slice(0, LIMITS.title);
     if (!title) return res.status(400).json({ error: '标题不能为空' });
@@ -461,10 +462,10 @@ router.post('/articles', requireLogin, requireKsWrite, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '新建文章失败' });
   }
-});
+}));
 
 // ---------- 分类内文章排序 ----------
-router.put('/articles/reorder', requireLogin, requireKsWrite, async (req, res) => {
+router.put('/articles/reorder', requireLogin, requireKsWrite, asyncHandler(async (req, res) => {
   const rawCategoryId = req.body.category_id;
   const categoryId = rawCategoryId === null || rawCategoryId === undefined || rawCategoryId === ''
     ? null
@@ -510,10 +511,10 @@ router.put('/articles/reorder', requireLogin, requireKsWrite, async (req, res) =
   } finally {
     client.release();
   }
-});
+}));
 
 // ---------- 更新（归属校验 + 保留发布时间） ----------
-router.put('/articles/:id', requireLogin, requireArticleOwner, async (req, res) => {
+router.put('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const title = req.body.title != null ? String(req.body.title).trim().slice(0, LIMITS.title) : null;
@@ -556,10 +557,10 @@ router.put('/articles/:id', requireLogin, requireArticleOwner, async (req, res) 
   } catch (e) {
     res.status(500).json({ error: '更新文章失败' });
   }
-});
+}));
 
 // ---------- 删除（归属校验） ----------
-router.delete('/articles/:id', requireLogin, requireArticleOwner, async (req, res) => {
+router.delete('/articles/:id', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     await pool.query('DELETE FROM articles WHERE id=$1', [id]);
@@ -568,10 +569,10 @@ router.delete('/articles/:id', requireLogin, requireArticleOwner, async (req, re
   } catch (e) {
     res.status(500).json({ error: '删除文章失败' });
   }
-});
+}));
 
 // 发布 / 撤回（归属校验）
-router.post('/articles/:id/publish', requireLogin, requireArticleOwner, async (req, res) => {
+router.post('/articles/:id/publish', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const cur = await pool.query('SELECT share_token, published_at FROM articles WHERE id=$1', [id]);
@@ -587,9 +588,9 @@ router.post('/articles/:id/publish', requireLogin, requireArticleOwner, async (r
   } catch (e) {
     res.status(500).json({ error: '发布失败' });
   }
-});
+}));
 
-router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, async (req, res) => {
+router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     await pool.query(
@@ -601,10 +602,10 @@ router.post('/articles/:id/unpublish', requireLogin, requireArticleOwner, async 
   } catch (e) {
     res.status(500).json({ error: '撤回失败' });
   }
-});
+}));
 
 // 阅读量 +1（P2-7：仅已发布文章，不存在返回 404）
-router.post('/articles/:id/view', async (req, res) => {
+router.post('/articles/:id/view', asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const { rows } = await pool.query('SELECT status FROM articles WHERE id=$1', [id]);
@@ -615,11 +616,11 @@ router.post('/articles/:id/view', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '更新阅读量失败' });
   }
-});
+}));
 
 // ---------- 评论（楼中楼嵌套） ----------
 // 返回嵌套结构：一级评论（parent_id IS NULL）+ 其下 replies 数组
-router.get('/articles/:id/comments', optionalLogin, async (req, res) => {
+router.get('/articles/:id/comments', optionalLogin, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const article = await getRawArticle(id);
@@ -661,7 +662,7 @@ router.get('/articles/:id/comments', optionalLogin, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '读取评论失败' });
   }
-});
+}));
 
 // P1-6：评论限流——以登录用户名+文章为权威维度（不可伪造），Redis 优先、内存兜底
 router.post('/articles/:id/comments', requireLogin,
@@ -670,7 +671,7 @@ router.post('/articles/:id/comments', requireLogin,
     getKey: req => (req.session.user || 'anon') + ':' + req.params.id,
     message: '评论太频繁，请稍后再试',
   }),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
       const article = await pool.query('SELECT status FROM articles WHERE id=$1', [id]);
@@ -706,10 +707,10 @@ router.post('/articles/:id/comments', requireLogin,
       res.status(500).json({ error: '发表评论失败' });
     }
   }
-);
+));
 
 // P0-3：删除评论——仅作者或管理员
-router.delete('/comments/:id', requireLogin, async (req, res) => {
+router.delete('/comments/:id', requireLogin, asyncHandler(async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const { rows } = await pool.query('SELECT author_username FROM article_comments WHERE id=$1', [id]);
@@ -723,12 +724,12 @@ router.delete('/comments/:id', requireLogin, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '删除评论失败' });
   }
-});
+}));
 
 // ---------- 链接导入（抓取网页正文转 Markdown） ----------
 // 优先使用 Jina AI Reader（GitHub: jina-ai/reader），可绕过语雀等反爬站点；
 // 失败时回退到本地 fetch + Readability + Turndown。
-router.post('/import-url', requireLogin, requireKsWrite, async (req, res) => {
+router.post('/import-url', requireLogin, requireKsWrite, asyncHandler(async (req, res) => {
   try {
     const url = String(req.body.url || '').trim();
     if (!url) return res.status(400).json({ error: '请提供文章链接' });
@@ -755,7 +756,7 @@ router.post('/import-url', requireLogin, requireKsWrite, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: '链接抓取失败' });
   }
-});
+}));
 
 // P1-4：SSRF 防护
 // 仅允许 http/https；默认仅 80/443；拒绝内网/回环/链路本地/保留地址（含 IPv6 与 DNS 解析后的真实地址）
@@ -828,7 +829,7 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB
 });
 
-router.post('/import-file', requireLogin, requireKsWrite, upload.single('file'), async (req, res) => {
+router.post('/import-file', requireLogin, requireKsWrite, upload.single('file'), asyncHandler(async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '未收到文件' });
     const fname = req.file.originalname || '';
@@ -858,7 +859,7 @@ router.post('/import-file', requireLogin, requireKsWrite, upload.single('file'),
   } catch (e) {
     res.status(500).json({ error: '文件解析失败' });
   }
-});
+}));
 
 // ---------- 辅助函数 ----------
 

@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { resolveCanonicalCode } = require('../services/securityIdentity');
-const migrationsSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
+const migrationsSource = require('./helpers/migration-source').readMigrationSource();
 
 (async () => {
   assert.strictEqual(await resolveCanonicalCode('601919', 'stock'), '601919.SH');

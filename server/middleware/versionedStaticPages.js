@@ -6,6 +6,10 @@ const PAGE_FILES = Object.freeze({
   '/index.html': 'index.html',
   '/login.html': 'login.html',
   '/admin.html': 'admin.html',
+  // 全部页面统一走 __APP_VERSION__ 替换，静态 ?v= 才不会与发版脱节（2026-10-21 审查 U-2/U-12）
+  '/share-knowledge.html': 'share-knowledge.html',
+  '/ipo-report.html': 'ipo-report.html',
+  '/bond-revision-motive.html': 'bond-revision-motive.html',
 });
 
 function renderAppVersion(html, appVersion) {

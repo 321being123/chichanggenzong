@@ -5,7 +5,7 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const read = rel => fs.readFileSync(path.join(root, rel), 'utf8');
 const app = read('server/app.js');
-const migrations = read('server/db/migrations.js');
+const migrations = require('./helpers/migration-source').readMigrationSource();
 const connection = read('server/db/connection.js');
 const runner = read('server/scripts/runMigrations.js');
 const webUnit = read('deploy/portfolio-server.service');

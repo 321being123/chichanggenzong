@@ -37,10 +37,10 @@ async function loadMarketVolatility() {
 function mvRender() {
   var o = mvState.overview, current = o && o.current, status = document.getElementById('mv-status');
   document.querySelectorAll('[data-mv-market]').forEach(function (b) { b.classList.toggle('active', b.dataset.mvMarket === mvState.market); });
-  var benchmarkBox = document.getElementById('mv-benchmark-controls'); benchmarkBox.style.display = mvState.market === 'CN' ? '' : 'none';
+  var benchmarkBox = document.getElementById('mv-benchmark-controls'); if (benchmarkBox) { benchmarkBox.classList.remove('js-hidden'); benchmarkBox.style.display = mvState.market === 'CN' ? '' : 'none'; }
   document.querySelectorAll('[data-mv-benchmark]').forEach(function (b) { b.classList.toggle('active', b.dataset.mvBenchmark === mvState.benchmark); });
   if (!current) { status.textContent = '数据源尚未接入或未完成首次回填，当前不生成仓位信号。'; document.getElementById('mv-content').style.display = 'none'; document.getElementById('mv-updated').textContent = '暂无可用数据'; return; }
-  document.getElementById('mv-content').style.display = ''; document.getElementById('mv-updated').textContent = '数据日期：' + current.trade_date + ' · ' + ({normal:'正常',carried_forward:'沿用',stale:'过期',missing:'缺失'}[current.data_status] || current.data_status);
+  var mvC = document.getElementById('mv-content'); if (mvC) { mvC.classList.remove('js-hidden'); mvC.style.display = ''; } document.getElementById('mv-updated').textContent = '数据日期：' + current.trade_date + ' · ' + ({normal:'正常',carried_forward:'沿用',stale:'过期',missing:'缺失'}[current.data_status] || current.data_status);
   status.textContent = o.setting ? (o.hasUsPosition ? '账户含美股持仓，实际仓位未完成汇率核算，仅供参考。' : '') : (username ? '已按当前指数生成默认边界；可拖动红色虚线调整并保存。' : '已按当前指数生成默认边界；登录后可保存设置并关联账户持仓。');
   document.getElementById('mv-graham').textContent = mvPct(current.graham_index_pct); document.getElementById('mv-pe').textContent = mvNum(current.pe);
   document.getElementById('mv-earnings').textContent = mvPct(current.earnings_yield_pct); document.getElementById('mv-yield').textContent = mvPct(current.sovereign_yield_pct); document.getElementById('mv-yield-label').textContent = mvRateLabel();

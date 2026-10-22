@@ -7,26 +7,26 @@
  */
 function showCashFlowModal() {
   var html =
-    '<div class="modal-overlay show" id="modal-cashflow" style="z-index:1001;">' +
-    '<div class="modal" style="width:400px;">' +
+    '<div class="modal-overlay show" id="modal-cashflow" data-style="z-index:1001;">' +
+    '<div class="modal" data-style="width:400px;">' +
     '<h2>资金转入 / 转出</h2>' +
-    '<div style="display:flex;gap:10px;margin-bottom:14px;">' +
-    '<button type="button" id="cf-btn-in" class="btn btn-primary" style="flex:1;" onclick="setCfDir(\'in\')">💰 资金转入（入金）</button>' +
-    '<button type="button" id="cf-btn-out" class="btn btn-outline" style="flex:1;" onclick="setCfDir(\'out\')">📤 资金转出（出金）</button>' +
+    '<div data-style="display:flex;gap:10px;margin-bottom:14px;">' +
+    '<button type="button" id="cf-btn-in" class="btn btn-primary u-flex-1"  data-act="setCfDir" data-arg1="in">💰 资金转入（入金）</button>' +
+    '<button type="button" id="cf-btn-out" class="btn btn-outline u-flex-1"  data-act="setCfDir" data-arg1="out">📤 资金转出（出金）</button>' +
     '</div>' +
-    '<div class="form-group" style="margin-bottom:14px;">' +
-    '<label style="display:block;font-size:12px;color:#888;margin-bottom:4px;">金额 (¥，填正数即可)</label>' +
+    '<div class="form-group u-mb-14" >' +
+    '<label class="u-field-label">金额 (¥，填正数即可)</label>' +
     '<input type="number" id="cf-amount" step="0.01" placeholder="请输入金额" ' +
-    'style="width:100%;padding:9px 12px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px;">' +
+    ' class="u-input-lg">' +
     '</div>' +
-    '<div class="form-group" style="margin-bottom:14px;">' +
-    '<label style="display:block;font-size:12px;color:#888;margin-bottom:4px;">备注 (可选)</label>' +
+    '<div class="form-group u-mb-14" >' +
+    '<label class="u-field-label">备注 (可选)</label>' +
     '<input type="text" id="cf-note" placeholder="如: 工资入金、消费支出" ' +
-    'style="width:100%;padding:9px 12px;border:1px solid #e0e0e0;border-radius:8px;font-size:13px;">' +
+    ' class="u-input-lg">' +
     '</div>' +
     '<div class="modal-actions">' +
-    '<button class="btn btn-outline" onclick="closeCashFlowModal()">取消</button>' +
-    '<button class="btn btn-primary" onclick="addCashFlow()">确认</button>' +
+    '<button class="btn btn-outline" data-act="closeCashFlowModal">取消</button>' +
+    '<button class="btn btn-primary" data-act="addCashFlow">确认</button>' +
     '</div>' +
     '</div>' +
     '</div>';
@@ -151,32 +151,32 @@ function renderReturnsStats() {
   // 首次渲染生成结构
   if (document.getElementById('returns-section') && !document.querySelector('#returns-section .chart-box')) {
     document.getElementById('returns-section').innerHTML =
-      '<div class="chart-box" style="margin-bottom:20px;">' +
+      '<div class="chart-box u-mb-20" >' +
         '<div class="chart-title">' +
           '<h3>收益走势对比</h3>' +
-          '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
-            '<button class="period-btn" data-mode="mtd" onclick="switchReturnMode(\'mtd\')">本月</button>' +
-            '<button class="period-btn" data-mode="q3" onclick="switchReturnMode(\'q3\')">近三个月</button>' +
-            '<button class="period-btn" data-mode="ytd" onclick="switchReturnMode(\'ytd\')">今年</button>' +
-            '<button class="period-btn active" data-mode="1y" onclick="switchReturnMode(\'1y\')">近一年</button>' +
-            '<button class="period-btn" data-mode="2y" onclick="switchReturnMode(\'2y\')">近两年</button>' +
-            '<button class="period-btn" data-mode="all" onclick="switchReturnMode(\'all\')">全部</button>' +
+          '<div data-style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
+            '<button class="period-btn" data-mode="mtd" data-act="switchReturnMode" data-arg1="mtd">本月</button>' +
+            '<button class="period-btn" data-mode="q3" data-act="switchReturnMode" data-arg1="q3">近三个月</button>' +
+            '<button class="period-btn" data-mode="ytd" data-act="switchReturnMode" data-arg1="ytd">今年</button>' +
+            '<button class="period-btn active" data-mode="1y" data-act="switchReturnMode" data-arg1="1y">近一年</button>' +
+            '<button class="period-btn" data-mode="2y" data-act="switchReturnMode" data-arg1="2y">近两年</button>' +
+            '<button class="period-btn" data-mode="all" data-act="switchReturnMode" data-arg1="all">全部</button>' +
           '</div>' +
         '</div>' +
-        '<div style="margin-bottom:10px;font-size:13px;">' +
-          '<span id="ret-total-return" style="font-weight:700;font-size:16px;">¥0.00</span>' +
-          '<span id="ret-total-return-pct" style="font-weight:600;margin-left:6px;"></span>' +
-          '<span style="margin-left:14px;color:#888;">📊 净值 <span id="ret-nav">1.0000</span></span>' +
-          '<span style="margin-left:10px;color:#888;">📅 <span id="ret-nav-date">无记录</span></span>' +
-          '<span style="margin-left:10px;color:#888;">记录 <span id="ret-days">0</span> 天</span>' +
+        '<div data-style="margin-bottom:10px;font-size:13px;">' +
+          '<span id="ret-total-return" data-style="font-weight:700;font-size:16px;">¥0.00</span>' +
+          '<span id="ret-total-return-pct" data-style="font-weight:600;margin-left:6px;"></span>' +
+          '<span data-style="margin-left:14px;color:#6e6e6e;">📊 净值 <span id="ret-nav">1.0000</span></span>' +
+          '<span class="u-ml-10 u-c-muted">📅 <span id="ret-nav-date">无记录</span></span>' +
+          '<span class="u-ml-10 u-c-muted">记录 <span id="ret-days">0</span> 天</span>' +
         '</div>' +
-        '<div style="margin-bottom:10px;font-size:12px;color:#888;">对比指数:' +
-          '<button class="period-btn index-toggle active" data-idx="沪深300" onclick="toggleIndex(\'沪深300\')" style="font-size:11px;padding:2px 10px;margin-left:4px;">沪深300</button>' +
-          '<button class="period-btn index-toggle active" data-idx="上证指数" onclick="toggleIndex(\'上证指数\')" style="font-size:11px;padding:2px 10px;">上证指数</button>' +
-          '<button class="period-btn index-toggle active" data-idx="中证全指" onclick="toggleIndex(\'中证全指\')" style="font-size:11px;padding:2px 10px;">中证全指</button>' +
-          '<button class="period-btn index-toggle active" data-idx="恒生指数" onclick="toggleIndex(\'恒生指数\')" style="font-size:11px;padding:2px 10px;">恒生指数</button>' +
+        '<div data-style="margin-bottom:10px;font-size:12px;color:#6e6e6e;">对比指数:' +
+          '<button class="period-btn index-toggle active" data-idx="沪深300" data-act="toggleIndex" data-arg1="沪深300" data-style="font-size:11px;padding:2px 10px;margin-left:4px;">沪深300</button>' +
+          '<button class="period-btn index-toggle active u-badge-pill" data-idx="上证指数" data-act="toggleIndex" data-arg1="上证指数" >上证指数</button>' +
+          '<button class="period-btn index-toggle active u-badge-pill" data-idx="中证全指" data-act="toggleIndex" data-arg1="中证全指" >中证全指</button>' +
+          '<button class="period-btn index-toggle active u-badge-pill" data-idx="恒生指数" data-act="toggleIndex" data-arg1="恒生指数" >恒生指数</button>' +
         '</div>' +
-        '<div class="chart-canvas-wrap" style="height:300px;"><canvas id="chart-returns"></canvas></div>' +
+        '<div class="chart-canvas-wrap" data-style="height:300px;"><canvas id="chart-returns"></canvas></div>' +
       '</div>';
   }
   

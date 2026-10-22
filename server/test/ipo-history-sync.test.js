@@ -58,7 +58,8 @@ assert.match(source, /"ingestion_run_id": run_id/, 'IPO事实分区缺少采集�
 assert.match(source, /"missing_listing_date_count": missing_listing_date_count/, 'IPO事实分区缺少上市日缺失诊断');
 
 const routeSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'ipo.js'), 'utf8');
-const hkexSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'hkexIpo.js'), 'utf8');
+const { readServiceSource } = require('./helpers/service-source');
+const hkexSource = readServiceSource('hkexIpo');
 assert.match(routeSource, /history_stage/, '新股历史没有阶段字段');
 assert.match(routeSource, /field_status/, '新股历史没有字段质量状态');
 assert.match(routeSource, /loadStockCalendar\(days\)/, '打新日历没有读取历史事实表');
@@ -156,7 +157,7 @@ assert.match(orchestratorSource, /claimed\.job_code === 'ipo_history_sync' && Ar
 assert.match(historyJobSource, /--target-fields/);
 assert.match(ipoSyncSource, /force_fields=target_fields/);
 assert.match(ipoSyncSource, /include_result_fields=not bool\(target_fields\)/);
-const bondJobSource = fs.readFileSync(path.join(__dirname, '..', 'services', 'convertibleBondAnalysis.js'), 'utf8');
+const bondJobSource = readServiceSource('convertibleBondAnalysis');
 assert.match(bondJobSource, /const result = await syncConvertibleBondUniverse\(reason, \{ targetTradeDate \}\)/, '可转债任务没有向调度器返回结果水位');
 assert.match(bondJobSource, /backfillBondIssueResults/, '新债发行结果没有进入自动补全链路');
 assert.match(bondJobSource, /BOND_ISSUE_RESULT_SCRIPT/, '新债发行结果补全脚本未接入');
@@ -176,7 +177,8 @@ assert.match(fetchSource, /_fetch_exchange_placing_result/, '流通规模补全�
 assert.match(fetchSource, /_fetch_cninfo_placing_result/, '流通规模补全没有保留 CNINFO 兜底');
 assert.match(fetchSource, /exchange_result = _fetch_exchange_placing_result[\s\S]*?if exchange_result[\s\S]*?status\"\) == \"ok\"[\s\S]*?return exchange_result[\s\S]*?cninfo_result = _fetch_cninfo_placing_result/, 'CNINFO 没有严格排在交易所主源之后');
 
-const migrationSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'migrations.js'), 'utf8');
+const { readMigrationSource } = require('./helpers/migration-source');
+const migrationSource = readMigrationSource();
 assert.match(migrationSource, /071_deduplicate_instrument_events/, '重复发行事件没有独立迁移');
 assert.match(migrationSource, /uq_instrument_events_business/, '发行事件缺少业务唯一约束');
 const bondRefreshSource = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'convertibleBondRefresh.js'), 'utf8');

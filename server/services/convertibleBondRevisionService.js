@@ -3,6 +3,7 @@
 const { pool } = require('../db');
 const { MOTIVE_MODEL_VERSION } = require('./convertibleBondRevisionMotiveService');
 const { getDatasetMetadata } = require('./datasetPartitions');
+const { getMarketState, shanghaiDateTime } = require('./marketState');
 
 const FORMULA_VERSION = 'reset-v2';
 const CALCULATION_LOGIC_VERSION = 'reset-logic-20260903-1';
@@ -507,6 +508,9 @@ function buildRevisionWhere({ status = '', query = '', near = false } = {}) {
 
 async function getBondRevisionOverview({ status = '', query = '', near = false, limit = 2000 } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 2000, 1), 2000);
+  const now = shanghaiDateTime();
+  const todayState = await getMarketState({ market: 'CN', businessDate: now.businessDate, time: now.time });
+  const expectTodayData = todayState.status === 'open' && todayState.isAfterMarketClose;
   const filter = buildRevisionWhere({ status: String(status || '').trim(), query: String(query || '').trim().slice(0, 50), near: Boolean(near) });
   const base = `FROM analytics.convertible_bond_revision_latest r
     LEFT JOIN LATERAL (
@@ -530,10 +534,11 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
     pool.query(`SELECT r.business_status,count(*)::int AS count ${base} GROUP BY r.business_status`, filter.values),
     pool.query(`SELECT MAX(trade_date)::text AS trade_date FROM market.convertible_bond_daily_metrics`),
     pool.query(`SELECT MAX(trade_date)::text AS trade_date FROM analytics.convertible_bond_trigger_daily WHERE trigger_type='reset' AND formula_version=$1`, [FORMULA_VERSION]),
+    // 收盘后才要求当日数据；盘中/休市沿用最近已完成交易日属正常（2026-10-21 审查 P-10）
     pool.query(`SELECT MAX(trade_date)::text AS trade_date
                   FROM market.trade_calendar
                  WHERE exchange='SSE' AND is_open
-                   AND trade_date <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
+                   AND trade_date ${expectTodayData ? '<=' : '<'} (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
     pool.query(`WITH latest_no_revision AS (
                   SELECT DISTINCT ON (h.instrument_id)
                          h.instrument_id,h.announced_at,h.parser_version,h.next_eligible_date,h.raw_payload
@@ -597,13 +602,18 @@ async function getBondRevisionOverview({ status = '', query = '', near = false, 
   };
   const stockMetrics = await loadLatestStockMetrics(rowsResult.rows.map(row => row.stock_instrument_id), marketDate);
   const partition = await getDatasetMetadata('bond_daily', 'CN');
+  // 三种口径分开：正常盘中沿用昨日（不提示）、收盘后当日未同步（任务逾期）、质量缺口（数据质量问题）
+  const overdue = Boolean(expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate));
+  const staleReason = partition.stale_reason
+    || (quality.status === 'degraded' ? '质量检查未通过'
+      : (overdue ? (expectTodayData ? '收盘后当日数据尚未同步（任务逾期）' : '数据日期落后于最近已完成交易日') : ''));
   return {
     trade_date: stateDate || marketDate, market_trade_date: marketDate, expected_trade_date: expectedDate,
     data_as_of: partition.data_as_of || stateDate || marketDate,
     published_at: partition.published_at,
-    is_stale: Boolean(partition.is_stale || quality.status === 'degraded' || (expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate))),
-    stale_reason: partition.stale_reason || (quality.status === 'degraded' ? '质量检查未通过' : ''),
-    stale: Boolean(partition.is_stale || quality.status === 'degraded' || (expectedDate && (!marketDate || marketDate < expectedDate || !stateDate || stateDate < marketDate))),
+    is_stale: Boolean(partition.is_stale || quality.status === 'degraded' || overdue),
+    stale_reason: staleReason,
+    stale: Boolean(partition.is_stale || quality.status === 'degraded' || overdue),
     quality, summary,
     data: rowsResult.rows.map(row => Object.assign({}, row, stockMetrics.get(String(row.stock_instrument_id)) || {}, {
       trade_date: dateText(row.trade_date), stock_trade_date: dateText(row.stock_trade_date),

@@ -38,18 +38,23 @@ const siteAnalytics = require('../services/siteAnalytics');
 router.use(requireStaff);
 
 // 后台接口 → 所需能力 映射（按路径前缀派发，避免逐个 handler 脆弱改动）
+// 2026-10-21 审查 R-2：未登记路径默认拒绝，只有明确公开给员工的路径才仅凭员工身份放行，
+// 防止未来新增接口漏登记能力时被普通员工直接访问。
+const STAFF_ONLY_PATHS = ['/overview', '/audit'];
 function adminCapabilityForPath(p) {
-  const normalized = String(p || '').toLowerCase();
+  const normalized = String(p || '').toLowerCase().replace(/\/+$/, '') || '/';
   if (normalized.indexOf('/users') === 0) return 'user_manage';
   if (normalized.indexOf('/knowledge') === 0) return 'content_manage';
   if (normalized.indexOf('/brokers') === 0 || normalized.indexOf('/jobs') === 0 || normalized.indexOf('/holidays') === 0 ||
       normalized.indexOf('/models') === 0 || normalized.indexOf('/settings') === 0 || normalized.indexOf('/arbitrage') === 0 ||
       normalized.indexOf('/analytics') === 0) return 'ops_manage';
-  return null; // /overview、/audit 等仅要求员工身份
+  if (STAFF_ONLY_PATHS.indexOf(normalized) >= 0) return ''; // 明确公开给员工的路径：仅要求员工身份
+  return null; // 未登记路径：默认拒绝
 }
 router.use(function (req, res, next) {
   const cap = adminCapabilityForPath(req.path);
-  if (!cap) return next();
+  if (cap === '') return next();
+  if (!cap) return res.status(403).json({ error: '该后台接口未登记所需能力', requestId: req.id });
   requireCapability(cap)(req, res, next);
 });
 
@@ -800,3 +805,5 @@ router.post('/arbitrage/sync', asyncHandler(async (req, res) => {
 }));
 
 module.exports = router;
+// 供测试核验能力派发矩阵（2026-10-21 审查 R-2：未登记路径默认拒绝）
+module.exports.adminCapabilityForPath = adminCapabilityForPath;

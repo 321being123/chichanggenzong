@@ -5,7 +5,8 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
-const migration = fs.readFileSync(path.join(root, 'server', 'db', 'migrations.js'), 'utf8');
+const { readMigrationSource } = require('./helpers/migration-source');
+const migration = readMigrationSource();
 const sync = fs.readFileSync(path.join(root, 'ipo-report', 'ipo_history_sync.py'), 'utf8');
 const identity = fs.readFileSync(path.join(root, 'server', 'services', 'securityIdentity.js'), 'utf8');
 const route = fs.readFileSync(path.join(root, 'server', 'routes', 'ipo.js'), 'utf8');

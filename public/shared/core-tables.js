@@ -1,4 +1,15 @@
 // shared/core-tables.js – 统计卡片/饼图/持仓表/交易表（原 core.js 拆分，全局作用域不变）
+// 表头排序键盘可达：回车/空格触发与点击一致（2026-10-21 审查 U-10，覆盖全部 th.sortable）
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('keydown', function (e) {
+    var th = e.target;
+    if (!th || !th.classList || !th.classList.contains('sortable')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      th.click();
+    }
+  });
+}
 // ===================== 统计卡片渲染 =====================
 
 function renderStats() {
@@ -21,31 +32,31 @@ function renderStats() {
     container.innerHTML = 
       '<div class="stat-card">' +
         '<div class="stat-top">' +
-          '<div><div class="label">总资产</div><div class="value" id="stat-total"></div><div class="sub" id="stat-total-sub"></div><div class="sub" id="stat-change" style="font-size:13px;"></div></div>' +
+          '<div><div class="label">总资产</div><div class="value" id="stat-total"></div><div class="sub" id="stat-total-sub"></div><div class="sub u-fs-13" id="stat-change" ></div></div>' +
           '<div class="stat-icon icon-bg-blue">💰</div>' +
         '</div>' +
-        '<div class="bar-wrap"><div class="bar-fill" id="bar-total" style="width:100%;background:#1a73e8;"></div></div>' +
+        '<div class="bar-wrap"><div class="bar-fill" id="bar-total" data-style="width:100%;background:#1a73e8;"></div></div>' +
       '</div>' +
       '<div class="stat-card">' +
         '<div class="stat-top">' +
           '<div><div class="label">股权资产</div><div class="value" id="stat-equity"></div><div class="sub" id="stat-equity-pct"></div></div>' +
           '<div class="stat-icon icon-bg-red">📈</div>' +
         '</div>' +
-        '<div class="bar-wrap"><div class="bar-fill" id="bar-equity" style="width:0%;background:#d93025;"></div></div>' +
+        '<div class="bar-wrap"><div class="bar-fill" id="bar-equity" data-style="width:0%;background:#d93025;"></div></div>' +
       '</div>' +
       '<div class="stat-card">' +
         '<div class="stat-top">' +
           '<div><div class="label">债权资产</div><div class="value" id="stat-debt"></div><div class="sub" id="stat-debt-pct"></div></div>' +
           '<div class="stat-icon icon-bg-orange">📊</div>' +
         '</div>' +
-        '<div class="bar-wrap"><div class="bar-fill" id="bar-debt" style="width:0%;background:#e37400;"></div></div>' +
+        '<div class="bar-wrap"><div class="bar-fill" id="bar-debt" data-style="width:0%;background:#e37400;"></div></div>' +
       '</div>' +
       '<div class="stat-card">' +
         '<div class="stat-top">' +
           '<div><div class="label">现金余额</div><div class="value" id="stat-cash"></div><div class="sub" id="stat-cash-pct"></div></div>' +
           '<div class="stat-icon icon-bg-green">💵</div>' +
         '</div>' +
-        '<div class="bar-wrap"><div class="bar-fill" id="bar-cash" style="width:0%;background:#137333;"></div></div>' +
+        '<div class="bar-wrap"><div class="bar-fill" id="bar-cash" data-style="width:0%;background:#137333;"></div></div>' +
       '</div>';
   }
   
@@ -65,7 +76,7 @@ function renderStats() {
     if (hasChange) {
       var arrow = changeAmt >= 0 ? '▲' : '▼';
       var color = changeAmt >= 0 ? '#d93025' : '#137333';
-      scEl.innerHTML = '<span style="color:' + color + ';">' + (changeAmt === 0 ? '0' : arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)') + '</span>';
+      scEl.innerHTML = '<span data-style="color:' + color + ';">' + (changeAmt === 0 ? '0' : arrow + ' ' + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)') + '</span>';
       // 悬浮浮框：分解今日涨跌（股价影响 + 汇率影响 + 计算过程）
       bindChangeTip(scEl, changeAmt, changePct);
     } else {
@@ -155,53 +166,53 @@ function buildChangeTipHtml(changeAmt, changePct, priceImpact, fxImpact, otherCh
   var sign = function (v) { return (v >= 0 ? '+' : '-') + fmt(Math.abs(v)); };
   var arrow = function (v) { return v >= 0 ? '▲' : '▼'; };
   var col = function (v) { return v >= 0 ? '#f28b82' : '#81c995'; }; // 红涨绿跌
-  var impact = function (v) { return v == null ? '<span style="color:#9aa0a6;">—</span>' : '<span style="color:' + col(v) + ';">' + arrow(v) + ' ' + sign(v) + '</span>'; };
+  var impact = function (v) { return v == null ? '<span class="u-c-silver">—</span>' : '<span data-style="color:' + col(v) + ';">' + arrow(v) + ' ' + sign(v) + '</span>'; };
   var total = (changeAmt >= 0 ? '+' : '-') + fmt(Math.abs(changeAmt)) + ' (' + (changeAmt >= 0 ? '+' : '') + changePct.toFixed(2) + '%)';
   // 低于分币级别的残差属于浮点/四舍五入误差，不在浮框中制造噪音。
   var visibleDrift = snapshotDrift != null && Math.abs(snapshotDrift) >= 0.005 ? snapshotDrift : null;
   var visibleAdjustment = Number.isFinite(Number(valuationAdjustment)) && Math.abs(Number(valuationAdjustment)) >= 0.005 ? Number(valuationAdjustment) : null;
   var html = '' +
-    '<div style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
-    '<div style="border-top:1px solid #3c4043;padding-top:6px;">' +
+    '<div data-style="font-weight:600;margin-bottom:6px;">总资产今日涨跌：<span data-style="color:' + col(changeAmt) + ';">' + arrow(changeAmt) + ' ' + total + '</span></div>' +
+    '<div class="u-divider-dark">' +
       '<div>股价/债价涨跌影响：' + impact(priceImpact) + '</div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">各持仓（今价−昨价）×数量×昨日快照汇率，仅反映价格变动</div>' +
+      '<div class="u-badge-hint">各持仓（今价−昨价）×数量×昨日快照汇率，仅反映价格变动</div>' +
       '<div>汇率影响：' + impact(fxImpact) + '</div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">港股今价 ×（今日汇率−昨日快照汇率），反映港币兑人民币波动</div>';
+      '<div class="u-badge-hint">港股今价 ×（今日汇率−昨日快照汇率），反映港币兑人民币波动</div>';
   if (otherChange != null) {
-    html += '<div>其他变动：<span style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">当日买卖、数量变化、外部入出金及分红/逆回购收益（可能含估算）</div>';
+    html += '<div>其他变动：<span data-style="color:' + col(otherChange) + ';">' + arrow(otherChange) + ' ' + sign(otherChange) + '</span></div>' +
+      '<div class="u-badge-hint">当日买卖、数量变化、外部入出金及分红/逆回购收益（可能含估算）</div>';
   }
   if (importBasisAdjustment != null && Number.isFinite(importBasisAdjustment)) {
-    html += '<div>导入口径切换差异：<span style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">导入当天使用券商持仓总值；从本日开始改用系统价格、数量和汇率计算。该差异通常来自汇率或收盘价更新时间不同，仅在首次切换时说明，后续不再保留。</div>';
+    html += '<div>导入口径切换差异：<span data-style="color:#fbbc04;">' + sign(importBasisAdjustment) + '</span></div>' +
+      '<div class="u-badge-hint">导入当天使用券商持仓总值；从本日开始改用系统价格、数量和汇率计算。该差异通常来自汇率或收盘价更新时间不同，仅在首次切换时说明，后续不再保留。</div>';
   }
   if (visibleAdjustment != null) {
     html += '<div>休市行情校准：' + impact(visibleAdjustment) + '</div>' +
-      '<div style="color:#9aa0a6;font-size:11px;margin:2px 0 6px;">休市证券当前持仓价与最近落库收盘价的估值差异，不属于当日市场涨跌。涉及 ' +
+      '<div class="u-badge-hint">休市证券当前持仓价与最近落库收盘价的估值差异，不属于当日市场涨跌。涉及 ' +
       (Array.isArray(closedPriceCorrections) ? closedPriceCorrections.length : 0) + ' 只持仓。</div>';
   }
   if (authorityMode) {
-    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">' + (authorityMode === 'broker_exact'
+    html += '<div class="u-badge-warn">' + (authorityMode === 'broker_exact'
       ? '当前为导入日，账户总资产和现金采用券商导入值。'
       : '现金从最近券商导入余额续算；持仓市值已完全按系统价格、数量和汇率计算，不保留导入差额。') + '</div>';
   }
   if (attributionIncomplete) {
     var reasonText = incompleteReason === 'missing_trade_currency_settlement' ? '存在港股交易缺少人民币结算金额' : '缺少上一基准日的完整收盘价或汇率';
-    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">' + reasonText + '；以下仅显示已有完整数据的标的，合计暂不闭合。</div>';
+    html += '<div class="u-badge-warn">' + reasonText + '；以下仅显示已有完整数据的标的，合计暂不闭合。</div>';
     if (Array.isArray(missingCodes) && missingCodes.length) {
-      html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">缺失标的：' + missingCodes.slice(0, 12).join('、') + (missingCodes.length > 12 ? ' 等' : '') + '</div>';
+      html += '<div class="u-badge-warn">缺失标的：' + missingCodes.slice(0, 12).join('、') + (missingCodes.length > 12 ? ' 等' : '') + '</div>';
     }
   }
   if (attributionIncomplete) {
-    html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计：<span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span>（归因不完整，未进行明细加总）</div>';
+    html += '<div class="u-divider-dark">合计：<span data-style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span>（归因不完整，未进行明细加总）</div>';
   } else {
-    html += '<div style="border-top:1px solid #3c4043;padding-top:6px;">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (visibleAdjustment != null ? ' + 休市行情校准' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
+    html += '<div class="u-divider-dark">合计 = 股价影响 + 汇率影响' + (otherChange != null ? ' + 其他变动' : '') + (visibleAdjustment != null ? ' + 休市行情校准' : '') + (importBasisAdjustment != null ? ' + 导入口径切换差异' : '') + (visibleDrift != null ? ' + 未归因差额' : '') + ' = <span data-style="color:' + col(changeAmt) + ';">' + sign(changeAmt) + '</span></div>';
   }
   if (visibleDrift != null) {
-    html += '<div style="color:#fbbc04;font-size:11px;margin:2px 0 6px;">未归因差额：' + sign(visibleDrift) + '（请检查行情、汇率或账本数据）</div>';
+    html += '<div class="u-badge-warn">未归因差额：' + sign(visibleDrift) + '（请检查行情、汇率或账本数据）</div>';
   }
   html += '</div>' +
-    '<div style="color:#9aa0a6;font-size:11px;margin-top:6px;">' + (attributionIncomplete
+    '<div data-style="color:#9aa0a6;font-size:11px;margin-top:6px;">' + (attributionIncomplete
       ? '注：当前缺少上一基准日的完整行情或汇率，暂不拆分价格/汇率影响。'
       : '注：股价影响按昨日快照汇率算、汇率影响按今价×汇率差算，两者相加正好等于港股市值变动，不再有交叉项残差。「昨日快照汇率」指上一条净值记录里存的港币汇率（即上次记账时的实时汇率，通常为昨天打开网页那一刻）。') + '</div>';
   return html;
@@ -376,6 +387,9 @@ function getPositionTrendClass(value, hasData, zeroIsPositive) {
 }
 
 // 点击持仓代码/名称 → 进入对应股票或可转债的证券分析
+// U-15c：原内联多语句事件抽为具名函数
+function resetPositionFilters() { filterState = { type: "", subtype: "" }; renderPositionsTable("positions-table"); renderPositionsTable("topn-table"); }
+
 function openPositionAnalysis(code) {
   if (!code) return;
   switchMain('stock-analysis');
@@ -411,7 +425,7 @@ function getValuationCell(position) {
   if (!v || !v.eval_class) return '<td class="text-center muted-cell">—</td>';
   var cls = POS_EVAL_CLASS[v.eval_class] || '';
   var pct = (v.percentile != null && Number.isFinite(Number(v.percentile))) ? ' ' + Number(v.percentile).toFixed(0) + '%' : '';
-  return '<td class="text-center"><a href="javascript:void(0)" class="pos-link" title="查看估值详情" onclick="openPositionValuation(\'' + escapeHtml(positionCodeFull(position.code)) + '\')"><span class="' + cls + '">' + escapeHtml(v.eval_class) + pct + '</span></a></td>';
+  return '<td class="text-center"><a href="javascript:void(0)" class="pos-link" title="查看估值详情" data-act="openPositionValuation" data-arg1="' + escapeHtml(positionCodeFull(position.code)) + '"><span class="' + cls + '">' + escapeHtml(v.eval_class) + pct + '</span></a></td>';
 }
 
 function setSort(col) {
@@ -502,35 +516,35 @@ function renderPositionsTable(targetId, limit) {
     const subtypes = [...new Set(activePositions.map(p => p.subtype).filter(Boolean))];
     filterBar = '<div class="filter-bar">' +
       '<span class="filter-label">筛选:</span>' +
-      '<select onchange="setFilter(&quot;type&quot;,this.value)">' +
+      '<select data-act="setFilter" data-arg1="type">' +
       '<option value="">全部类型</option>' +
       types.map(t => '<option value="' + escapeHtml(t) + '"' + (filterState.type === t ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('') +
       '</select>' +
-      '<select onchange="setFilter(&quot;subtype&quot;,this.value)">' +
+      '<select data-act="setFilter" data-arg1="subtype">' +
       '<option value="">全部细类</option>' +
       subtypes.map(s => '<option value="' + escapeHtml(s) + '"' + (filterState.subtype === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('') +
       '</select>' +
       ((filterState.type || filterState.subtype)
-        ? '<button class="btn btn-outline btn-sm" onclick="filterState={type:&quot;&quot;,subtype:&quot;&quot;};renderPositionsTable(&quot;positions-table&quot;);renderPositionsTable(&quot;topn-table&quot;)">清除筛选</button>'
+        ? '<button class="btn btn-outline btn-sm" data-act="resetPositionFilters">清除筛选</button>'
         : '') +
-      '<button class="btn btn-outline btn-sm position-refresh-btn" style="margin-left:auto;" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>' +
-      '<button class="btn btn-success btn-sm" onclick="exportToExcel()">导出EXCEL</button>' +
-      '<span style="color:#bbb;">' + list.length + ' / ' + activePositions.length + ' 只</span>' +
+      '<button class="btn btn-outline btn-sm position-refresh-btn u-ml-auto"  data-act="doRefresh" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>' +
+      '<button class="btn btn-success btn-sm" data-act="exportToExcel">导出EXCEL</button>' +
+      '<span data-style="color:#bbb;">' + list.length + ' / ' + activePositions.length + ' 只</span>' +
       '</div>';
   }
 
   var html = filterBar + '<div class="biz-table-scroll position-list-scroll"><table class="biz-table positions-data-table position-list-table"><thead><tr>' +
-    '<th class="sortable pos-index-col" onclick="setSort(&quot;xh&quot;)">序号' + sortArrow('xh') + '</th>' +
-    '<th class="sortable" onclick="setSort(&quot;code&quot;)">代码' + sortArrow('code') + '</th>' +
-    '<th class="sortable" onclick="setSort(&quot;name&quot;)">名称' + sortArrow('name') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(&quot;price&quot;)">现价' + sortArrow('price') + '</th>' +
-    '<th class="text-right sortable pos-chg-col" onclick="setSort(&quot;chg&quot;)">涨跌' + sortArrow('chg') + '</th>' +
-    '<th class="sortable" onclick="setSort(&quot;todayProfit&quot;)">今日盈亏（元）' + sortArrow('todayProfit') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(&quot;qty&quot;)">数量' + sortArrow('qty') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(&quot;mv&quot;)">市值' + sortArrow('mv') + '</th>' +
-    '<th class="text-right sortable" onclick="setSort(&quot;pct&quot;)">比例' + sortArrow('pct') + '</th>' +
-    '<th class="sortable" onclick="setSort(&quot;type&quot;)">类型' + sortArrow('type') + '</th>' +
-    '<th class="sortable" onclick="setSort(&quot;subtype&quot;)">细类' + sortArrow('subtype') + '</th>' +
+    '<th class="sortable pos-index-col" data-act="setSort" data-arg1="xh">序号' + sortArrow('xh') + '</th>' +
+    '<th class="sortable" data-act="setSort" data-arg1="code">代码' + sortArrow('code') + '</th>' +
+    '<th class="sortable" data-act="setSort" data-arg1="name">名称' + sortArrow('name') + '</th>' +
+    '<th class="text-right sortable" data-act="setSort" data-arg1="price">现价' + sortArrow('price') + '</th>' +
+    '<th class="text-right sortable pos-chg-col" data-act="setSort" data-arg1="chg">涨跌' + sortArrow('chg') + '</th>' +
+    '<th class="sortable" data-act="setSort" data-arg1="todayProfit">今日盈亏（元）' + sortArrow('todayProfit') + '</th>' +
+    '<th class="text-right sortable" data-act="setSort" data-arg1="qty">数量' + sortArrow('qty') + '</th>' +
+    '<th class="text-right sortable" data-act="setSort" data-arg1="mv">市值' + sortArrow('mv') + '</th>' +
+    '<th class="text-right sortable" data-act="setSort" data-arg1="pct">比例' + sortArrow('pct') + '</th>' +
+    '<th class="sortable" data-act="setSort" data-arg1="type">类型' + sortArrow('type') + '</th>' +
+    '<th class="sortable" data-act="setSort" data-arg1="subtype">细类' + sortArrow('subtype') + '</th>' +
     '<th class="text-center pos-valuation-col">估值</th>' +
     (limit ? '' : '<th class="text-center">操作</th>') +
     '</tr></thead><tbody>';
@@ -561,14 +575,14 @@ function renderPositionsTable(targetId, limit) {
         : '--';
     }
 
-    // 价格显示：有缓存价就显示，无任何数据才显示 ⟳
+    // 价格显示：有缓存价就显示，无任何数据才显示 ⟳（审查 U-6：状态不依赖悬停，补可见短文案）
     var priceCurrency = p.subtype === '港股' ? 'HK$' : '¥';
     var priceDisplay = hasCachedPrice
       ? priceCurrency + Number(p.price).toFixed(3)
-      : '<span class="muted-cell" title="无价格数据">⟳</span>';
+      : '<span class="muted-cell" title="无价格数据" aria-label="无价格数据">⟳ 无价</span>';
     var chgDisplay = hasRealTime
       ? chgText
-      : (hasCachedPrice ? '<span class="muted-cell">--</span>' : '<span class="muted-cell data-pending" title="无涨跌数据">⟳</span>');
+      : (hasCachedPrice ? '<span class="muted-cell">--</span>' : '<span class="muted-cell data-pending" title="无涨跌数据" aria-label="无涨跌数据">⟳ 无跌</span>');
     var todayProfit = getTodayProfit(p);
     var displayedProfit = todayProfit == null ? null : Number(todayProfit.toFixed(2));
     var todayProfitDisplay = todayProfit == null
@@ -578,8 +592,8 @@ function renderPositionsTable(targetId, limit) {
 
     html += '<tr>' +
       '<td class="pos-index-cell muted-cell">' + (idx + 1) + '</td>' +
-      '<td class="pos-code-cell ' + (POS_SUBTYPE_CLASS[p.subtype] || '') + '"><a href="javascript:void(0)" class="pos-link" title="查看证券分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.code || '-') + '</a></td>' +
-      '<td class="pos-name-cell"><strong><a href="javascript:void(0)" class="pos-link" title="查看证券分析" onclick="openPositionAnalysis(\'' + escapeHtml(p.code || '') + '\')">' + escapeHtml(p.name || '未知') + '</a></strong></td>' +
+      '<td class="pos-code-cell ' + (POS_SUBTYPE_CLASS[p.subtype] || '') + '"><a href="javascript:void(0)" class="pos-link" title="查看证券分析" data-act="openPositionAnalysis" data-arg1="' + escapeHtml(p.code || '') + '">' + escapeHtml(p.code || '-') + '</a></td>' +
+      '<td class="pos-name-cell"><strong><a href="javascript:void(0)" class="pos-link" title="查看证券分析" data-act="openPositionAnalysis" data-arg1="' + escapeHtml(p.code || '') + '">' + escapeHtml(p.name || '未知') + '</a></strong></td>' +
       '<td class="text-right ' + priceClass + '">' + priceDisplay + '</td>' +
       '<td class="text-right ' + chgClass + '">' + chgDisplay + '</td>' +
       '<td class="' + todayProfitClass + '">' + todayProfitDisplay + '</td>' +
@@ -613,13 +627,14 @@ function renderPositionsTable(targetId, limit) {
       '<td><span class="tag tag-cash">' + escapeHtml(data.cashSubtype || '现金') + '</span></td>' +
       '<td class="text-center muted-cell">—</td>' +
       (limit ? '' : '<td class="text-center">' +
-        '<button class="btn btn-outline btn-sm" onclick="editCash()">编辑</button>' +
+        '<button class="btn btn-outline btn-sm" data-act="editCash">编辑</button>' +
         '</td>') +
       '</tr>';
   }
   html += '</tbody></table></div>';
   el.innerHTML = html;
   el.querySelectorAll('th.sortable').forEach(function(th) {
+    th.setAttribute('tabindex', '0');
     var indicator = th.querySelector('.biz-sort-indicator');
     if (indicator) {
       th.classList.add('is-sorted');

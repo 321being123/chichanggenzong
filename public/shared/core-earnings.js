@@ -39,7 +39,7 @@ async function loadChangelog() {
     var data = await resp.json();
     el.innerHTML = renderChangelogHtml(data);
   } catch (err) {
-    el.innerHTML = '<p style="color:#c00;text-align:center;">版本记录加载失败：' + (err.message || err) + '</p>';
+    el.innerHTML = '<p data-style="color:#c00;text-align:center;">版本记录加载失败：' + (err.message || err) + '</p>';
   }
 }
 
@@ -62,7 +62,7 @@ function renderChangelogHtml(data) {
   var h = '';
   for (var g = 0; g < byDate.length; g++) {
     var day = byDate[g];
-    h += '<h3 style="' + dateCss + '">' + day.date + '</h3>';
+    h += '<h3 data-style="' + dateCss + '">' + day.date + '</h3>';
     var ordered = [];
     for (var o = 0; o < order.length; o++) {
       for (var k = 0; k < day.items.length; k++) {
@@ -73,7 +73,7 @@ function renderChangelogHtml(data) {
       var it = ordered[n];
       var cat = catOf(it);
       var content = stripCat(it); // 去掉前缀后由下方统一加回，杜绝「新增：新增：」这类重复
-      h += '<div style="' + itemCss + '">' + cat + '：' + content + '</div>';
+      h += '<div data-style="' + itemCss + '">' + cat + '：' + content + '</div>';
     }
   }
   return h;
@@ -593,9 +593,9 @@ function openMappingModal(headers, rows, auto) {
     headers.map(function (h, i) { return '<option value="' + i + '">' + escapeHtml(h || '(空表头' + (i + 1) + ')') + '</option>'; }).join('');
   const cont = document.getElementById('mapping-fields');
   cont.innerHTML = fields.map(function (f) {
-    return '<div style="display:flex;align-items:center;margin-bottom:10px;gap:10px;">' +
-      '<label style="width:150px;font-size:13px;color:#333;">' + f.label + '</label>' +
-      '<select id="map-' + f.key + '" style="flex:1;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;outline:none;" onchange="renderMappingPreview()">' + optsHtml + '</select>' +
+    return '<div data-style="display:flex;align-items:center;margin-bottom:10px;gap:10px;">' +
+      '<label data-style="width:150px;font-size:13px;color:#333;">' + f.label + '</label>' +
+      '<select id="map-' + f.key + '" data-style="flex:1;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;outline:none;" data-act="renderMappingPreview">' + optsHtml + '</select>' +
       '</div>';
   }).join('');
   fields.forEach(function (f) {
@@ -659,9 +659,9 @@ function closeMappingModal() {
 function openImportProgress() {
   const ov = document.getElementById('modal-import-progress');
   if (!ov) return;
-  document.getElementById('import-progress-body').style.display = '';
+  var ipb=document.getElementById('import-progress-body'); if(ipb){ipb.classList.remove('js-hidden');ipb.style.display='';}
   document.getElementById('import-error-body').style.display = 'none';
-  if (document.getElementById('import-spinner')) document.getElementById('import-spinner').style.display = '';
+  var isp=document.getElementById('import-spinner'); if(isp){isp.classList.remove('js-hidden');isp.style.display='';}
   document.getElementById('import-close-btn').style.display = 'none';
   document.getElementById('import-copy-btn').style.display = 'none';
   document.getElementById('import-progress-fill').style.width = '0%';
@@ -688,11 +688,11 @@ function showImportError(message) {
   const errBody = document.getElementById('import-error-body');
   const errTxt = document.getElementById('import-error-text');
   if (body) body.style.display = 'none';
-  if (errBody) errBody.style.display = '';
+  if (errBody) { errBody.classList.remove('js-hidden'); errBody.style.display = ''; }
   if (errTxt) errTxt.textContent = message;
   if (document.getElementById('import-spinner')) document.getElementById('import-spinner').style.display = 'none';
-  document.getElementById('import-close-btn').style.display = '';
-  document.getElementById('import-copy-btn').style.display = '';
+  var icb=document.getElementById('import-close-btn'); if(icb){icb.classList.remove('js-hidden');icb.style.display='';}
+  var icp=document.getElementById('import-copy-btn'); if(icp){icp.classList.remove('js-hidden');icp.style.display='';}
   ov.classList.add('show');
 }
 function copyImportError() {

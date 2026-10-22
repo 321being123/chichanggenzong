@@ -291,11 +291,20 @@ async function resolveProviderCode(input = {}, executor) {
   return result ? result.identifier_value : null;
 }
 
+// 证券短名不变量：只含汉字/字母/数字/*/&/-，且不含引号、顿号、括号等正文残留。
+// 公告解析残名（如「为"航亚转债」「常青转债二、可转换公司」）不得写入主档（2026-10-21 审查 P-7）。
+const DIRTY_NAME_CHARS = /["'“”‘’「」《》、，。；;：:（）()【】\s]/;
+function isCleanSecurityName(value) {
+  const name = String(value || '').trim();
+  return Boolean(name) && name.length <= 20 && !DIRTY_NAME_CHARS.test(name);
+}
+
 // 统一主档写入口：所有新增证券先写 core.instruments，再写供应商映射及公司-证券关系。
 // executor 可传事务 client.query，保证主档、公司和映射同一事务提交。
 async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass = 'stock', market = 'CN', exchangeCode = '', currencyCode = 'CNY', listDate = null, status = 'listed', rawData = {}, companyName = null, relationType = 'issued_by', identifiers = [] } = {}, executor) {
   const canonical = canonicalizeSecurityCode(canonicalCode, assetClass);
   if (!canonical) throw new Error('证券主档缺少 canonicalCode');
+  const safeName = isCleanSecurityName(name) ? String(name).trim() : '';
   const query = executor || pool.query.bind(pool);
   const instrumentResult = await query(
     `INSERT INTO core.instruments(canonical_code,name,asset_class,market,exchange_code,currency_code,list_date,status,raw_data)
@@ -311,12 +320,12 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
               END,
        raw_data=core.instruments.raw_data || EXCLUDED.raw_data,updated_at=now()
      RETURNING instrument_id,canonical_code,name`,
-    [canonical, String(name || ''), assetClass, market, exchangeCode, currencyCode, listDate || null, status, JSON.stringify(rawData || {})]
+    [canonical, safeName, assetClass, market, exchangeCode, currencyCode, listDate || null, status, JSON.stringify(rawData || {})]
   );
   const instrument = instrumentResult.rows[0];
   if (!instrument) throw new Error(`证券主档写入失败：${canonical}`);
   let companyId = null;
-  const company = String(companyName == null ? (assetClass === 'stock' ? name : '') : companyName).trim();
+  const company = String(companyName == null ? (assetClass === 'stock' ? safeName : '') : companyName).trim();
   if (company) {
     // 公司名称会随 ST/XD 等简称变化；证券已经有关联公司时必须复用，避免名称变化制造第二套公司主档。
     const existingCompany = await query(
@@ -334,7 +343,7 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
       await query(
         `UPDATE core.companies SET short_name=$2,raw_data=raw_data || $3::jsonb,updated_at=now()
           WHERE company_id=$1`,
-        [companyId, String(name || company), JSON.stringify(rawData || {})]
+        [companyId, safeName || company, JSON.stringify(rawData || {})]
       );
     } else {
       const companyResult = await query(
@@ -342,7 +351,7 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
          VALUES($1,$2,$3,$4::jsonb)
          ON CONFLICT(country_code,legal_name) DO UPDATE SET short_name=EXCLUDED.short_name,raw_data=core.companies.raw_data || EXCLUDED.raw_data,updated_at=now()
          RETURNING company_id`,
-        [company, String(name || company), market === 'HK' ? 'HK' : 'CN', JSON.stringify(rawData || {})]
+        [company, safeName || company, market === 'HK' ? 'HK' : 'CN', JSON.stringify(rawData || {})]
       );
       companyId = companyResult.rows[0]?.company_id || null;
       if (companyId) await query(
@@ -377,4 +386,4 @@ async function ensureInstrumentIdentity({ canonicalCode, name = '', assetClass =
 
 function clearIdentifierCache() { identifierCache.clear(); }
 
-module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, clearIdentifierCache };
+module.exports = { resolveAmbiguousSecurity, normalizeImportedItems, canonicalizeSecurityCode, resolveCanonicalCode, resolveInstrument, resolveProviderIdentifier, resolveProviderCode, ensureInstrumentIdentity, isCleanSecurityName, clearIdentifierCache };

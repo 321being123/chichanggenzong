@@ -2,6 +2,8 @@
 let ksState = {
   categories: [],
   articles: [],
+  loaded: false,   // 已完成一次进入页面的数据加载；返回本页不再全量重拉（2026-10-21 审查 U-3）
+  readingId: null, // 阅读意图：打开文章时立即置位，防止并行的 loadKnowledge 把用户踢回列表
   currentCategory: null,
   currentArticle: null,
   editingId: null,   // 正在编辑的文章 id（新建为 null）
@@ -77,7 +79,9 @@ function ksWriteErrMsg(status) {
 }
 
 // ---------- 初始化（每次进入知识分享时调用） ----------
-async function loadKnowledge() {
+async function loadKnowledge(force) {
+  // 已加载且非强制：保留阅读/编辑上下文，不全量重拉、不强制踢回列表（2026-10-21 审查 U-3）
+  if (ksState.loaded && !force) return;
   try {
     const [catRes, listRes, meRes] = await Promise.all([
       fetch(api('/api/knowledge/categories')).then(r => r.json()),
@@ -95,12 +99,12 @@ async function loadKnowledge() {
     const ksCatAdd = ksEl('ks-cat-add');
     const ksCatTools = ksEl('ks-cat-tools');
     const ksFilter = ksEl('ks-filter');
-    if (ksNew) ksNew.style.display = ksState.canWrite ? '' : 'none';
-    if (ksImportUrl) ksImportUrl.style.display = ksState.canWrite ? '' : 'none';
-    if (ksImportFile) ksImportFile.style.display = ksState.canWrite ? '' : 'none';
-    if (ksCatAdd) ksCatAdd.style.display = ksState.canWrite ? '' : 'none';
-    if (ksCatTools) ksCatTools.style.display = ksState.canWrite ? '' : 'none';
-    if (ksFilter) ksFilter.style.display = username ? '' : 'none';
+    if (ksNew) { ksNew.classList.remove('js-hidden'); ksNew.style.display = ksState.canWrite ? '' : 'none'; }
+    if (ksImportUrl) { ksImportUrl.classList.remove('js-hidden'); ksImportUrl.style.display = ksState.canWrite ? '' : 'none'; }
+    if (ksImportFile) { ksImportFile.classList.remove('js-hidden'); ksImportFile.style.display = ksState.canWrite ? '' : 'none'; }
+    if (ksCatAdd) { ksCatAdd.classList.remove('js-hidden'); ksCatAdd.style.display = ksState.canWrite ? '' : 'none'; }
+    if (ksCatTools) { ksCatTools.classList.remove('js-hidden'); ksCatTools.style.display = ksState.canWrite ? '' : 'none'; }
+    if (ksFilter) { ksFilter.classList.remove('js-hidden'); ksFilter.style.display = username ? '' : 'none'; }
     if (!ksState.canWrite && username) {
       const act = ksEl('ks-actions');
       if (act && !ksEl('ks-no-write-tip')) {
@@ -113,7 +117,8 @@ async function loadKnowledge() {
     }
     ksRenderTree();
     ksRenderList();
-    ksShowView('list');
+    ksState.loaded = true;
+    if (!ksState.readingId) ksShowView('list');
     if (window.SiteTelemetry) window.SiteTelemetry.trackPage('knowledge.list', 'knowledge', 'nav');
   } catch (e) {
     showToast('投资笔记加载失败: ' + (e.message || e));
@@ -161,7 +166,7 @@ function ksRenderNodes(nodes, depth) {
       : '';
     html += '<li class="ks-tree-item' + active + manageable + '" data-cat="' + n.id + '" data-parent="' +
       (n.parent_id || '') + '" draggable="' + (n.can_manage ? 'true' : 'false') +
-      '" style="padding-left:' + pad + 'px;">' +
+      '" data-style="padding-left:' + pad + 'px;">' +
       '<span data-overflow-title="' + escapeHtml(n.name) + '">' + escapeHtml(n.name) + '</span>' + menu + '</li>';
     if (n.children && n.children.length) html += ksRenderNodes(n.children, depth + 1);
   });
@@ -179,9 +184,16 @@ async function ksLoadArticles() {
   const q = ksEl('ks-search') && ksEl('ks-search').value.trim();
   if (q) params.push('q=' + encodeURIComponent(q));
   if (params.length) url += '?' + params.join('&');
-  const r = await fetch(url);
-  ksState.articles = await r.json();
-  ksRenderList();
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('接口返回 ' + r.status);
+    const data = await r.json();
+    ksState.articles = Array.isArray(data) ? data : [];
+    ksRenderList();
+  } catch (e) {
+    // 搜索/分类切换分支失败时保留原列表并提示，不再无声卡死（2026-10-21 审查 U-1）
+    showToast('文章列表加载失败: ' + (e.message || e));
+  }
 }
 
 // ---------- 文章列表 ----------
@@ -354,8 +366,9 @@ async function ksCardOp(act, id) {
 
 // ---------- 阅读视图 ----------
 async function ksOpenArticle(id) {
+  ksState.readingId = id;
   const r = await fetch(api('/api/knowledge/articles/' + id));
-  if (!r.ok) { showToast('文章不存在或未发布'); return; }
+  if (!r.ok) { ksState.readingId = null; showToast('文章不存在或未发布'); return; }
   const a = await r.json();
   ksState.currentArticle = a;
   if (window.SiteTelemetry) {
@@ -394,11 +407,11 @@ async function ksOpenArticle(id) {
   // 操作按钮（有写权限可编辑/分享/删除）
   const ops = ksEl('ks-read-ops');
   if (a.can_edit) {
-    let html = '<button class="ks-btn" onclick="ksOpenEditor(' + a.id + ')">编辑文章</button>';
+    let html = '<button class="ks-btn" data-act="ksOpenEditor" data-arg1="' + a.id + '">编辑文章</button>';
     if (a.status === 'published' && a.share_token) {
-      html += '<button class="ks-btn" onclick="ksCopyShare(\'' + a.share_token + '\')">复制分享链接</button>';
+      html += '<button class="ks-btn" data-act="ksCopyShare" data-arg1="' + a.share_token + '">复制分享链接</button>';
     }
-    html += '<button class="ks-btn ks-danger" onclick="ksDeleteArticle(' + a.id + ')">删除文章</button>';
+    html += '<button class="ks-btn ks-danger" data-act="ksDeleteArticle" data-arg1="' + a.id + '">删除文章</button>';
     ops.innerHTML = html;
   } else {
     ops.innerHTML = '';
@@ -906,7 +919,7 @@ async function ksAddCategory() {
     }
     ksToggleCategoryCreate(false);
     ksState.currentCategory = null;
-    await loadKnowledge();
+    await loadKnowledge(true);
     showToast('分类已创建');
   } catch (e) {
     showToast('网络异常，请稍后重试');
@@ -986,7 +999,7 @@ async function ksUpdateCategory() {
       return;
     }
     ksToggleCategoryEdit(false);
-    await loadKnowledge();
+    await loadKnowledge(true);
     await ksLoadArticles();
     showToast(isMove ? '分类已移动' : '分类已重命名');
   } catch (e) {
@@ -1015,7 +1028,7 @@ async function ksDeleteCategory(categoryId) {
     }
     if (ksState.currentCategory === category.id) ksState.currentCategory = null;
     ksToggleCategoryEdit(false);
-    await loadKnowledge();
+    await loadKnowledge(true);
     showToast('分类已删除');
   } catch (e) {
     showToast('网络异常，请稍后重试');
@@ -1085,7 +1098,7 @@ async function ksMoveCategory(categoryId, parentId, beforeId) {
       showToast(d.error || '移动分类失败');
       return;
     }
-    await loadKnowledge();
+    await loadKnowledge(true);
     await ksLoadArticles();
   } catch (e) {
     showToast('网络异常，请稍后重试');
@@ -1148,6 +1161,7 @@ function ksBindCategoryDrag(tree) {
 
 // ---------- 视图切换 ----------
 function ksShowView(view) {
+  if (view === 'list') ksState.readingId = null;
   const page = document.querySelector('#main-knowledge .ks-page');
   if (page) page.dataset.view = view;
   ['list', 'read', 'edit'].forEach(function (v) {

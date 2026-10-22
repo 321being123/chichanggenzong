@@ -1,7 +1,7 @@
 // 可转债周期：前端展示（只读，不复制后端公式）
 // 交互：二级导航切换、时间范围（1年/3年/5年/全部）、指标切换（周期分位/综合估值/价格中位数/溢价率中位数）、SVG 历史图。
 var esc = (typeof escapeHtml === 'function') ? escapeHtml : function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
-function num(v, d) { var n = Number(v); return Number.isFinite(n) ? n.toFixed(d == null ? 2 : d) : '--'; }
+// num 统一用 utils.js 全局定义，此处不再重复声明（R-17）
 function pct(v, d) { return (v === null || v === undefined || !Number.isFinite(Number(v))) ? '--' : num(Number(v) * 100, d == null ? 1 : d) + '%'; }
 
 var bondCycleState = { range: 'all', metric: 'percentile', data: null, loading: false, visible: { percentile: true, composite: true, median_price: false, median_conversion_premium_pct: false } };
@@ -261,7 +261,7 @@ function renderHistoryChart(history) {
       svg.push('<line x1="' + tx1 + '" y1="' + yy + '" x2="' + tx2 + '" y2="' + yy + '" stroke="' + col + '" stroke-width="1"/>');
       var lblX = isLeft ? (ax - 7) : (ax + 7);
       var anchor = isLeft ? 'end' : 'start';
-      svg.push('<text class="bc-axis" style="fill:' + col + '" x="' + lblX + '" y="' + (yy + 4) + '" text-anchor="' + anchor + '">' + val + '</text>');
+      svg.push('<text class="bc-axis" data-style="fill:' + col + '" x="' + lblX + '" y="' + (yy + 4) + '" text-anchor="' + anchor + '">' + val + '</text>');
     }
     var pts = [];
     for (var i = 0; i < history.length; i++) {
@@ -271,7 +271,7 @@ function renderHistoryChart(history) {
       pts.push({ x: xAt(i), y: yOf(Number(v), s) });
     }
     var d = bcSmoothPath(pts);
-    svg.push('<path class="bc-line" style="stroke:' + col + '" d="' + d + '"/>');
+    svg.push('<path class="bc-line" data-style="stroke:' + col + '" d="' + d + '"/>');
   }
 
   // 横轴时间标签
@@ -304,7 +304,7 @@ function renderHistoryChart(history) {
             : sc.cfg.key === 'median_price' ? num(val, 2) + ' 元'
             : sc.cfg.key === 'median_conversion_premium_pct' ? num(val, 2) + ' %'
             : num(val, 2));
-        lines.push('<span style="color:' + sc.cfg.color + '">● ' + sc.cfg.name + '：' + disp + '</span>');
+        lines.push('<span data-style="color:' + sc.cfg.color + '">● ' + sc.cfg.name + '：' + disp + '</span>');
       }
       tip.innerHTML = lines.join('');
       tip.style.display = 'block';
@@ -367,13 +367,13 @@ function renderBondCycleTable(data) {
   });
   html += '</tbody></table></div>';
   html += '<div class="earnings-pager">' +
-    '<button class="btn btn-sm btn-outline" onclick="bcTableToPage(1)"' + (bondCycleTablePage <= 1 ? ' disabled' : '') + '>首页</button>' +
-    '<button class="btn btn-sm btn-outline" onclick="bcTableGoPage(-1)"' + (bondCycleTablePage <= 1 ? ' disabled' : '') + '>上一页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="bcTableToPage" data-arg1="1"' + (bondCycleTablePage <= 1 ? ' disabled' : '') + '>首页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="bcTableGoPage" data-arg1="-1"' + (bondCycleTablePage <= 1 ? ' disabled' : '') + '>上一页</button>' +
     '<span class="pager-info">第 ' + bondCycleTablePage + ' / ' + totalPages + ' 页　共 ' + total + ' 条</span>' +
-    '<button class="btn btn-sm btn-outline" onclick="bcTableGoPage(1)"' + (bondCycleTablePage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
-    '<button class="btn btn-sm btn-outline" onclick="bcTableToPage(' + totalPages + ')"' + (bondCycleTablePage >= totalPages ? ' disabled' : '') + '>尾页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="bcTableGoPage" data-arg1="1"' + (bondCycleTablePage >= totalPages ? ' disabled' : '') + '>下一页</button>' +
+    '<button class="btn btn-sm btn-outline" data-act="bcTableToPage" data-arg1="' + totalPages + '"' + (bondCycleTablePage >= totalPages ? ' disabled' : '') + '>尾页</button>' +
     '<span class="pager-jump">跳至 <input type="number" id="bc-table-jump-input" min="1" max="' + totalPages + '" value="' + bondCycleTablePage + '" onkeydown="if(event.key===\'Enter\')bcTableJump()"> 页 ' +
-    '<button class="btn btn-sm btn-outline" onclick="bcTableJump()">跳转</button></span>' +
+    '<button class="btn btn-sm btn-outline" data-act="bcTableJump">跳转</button></span>' +
     '</div>';
   el.innerHTML = html;
   if (window.BusinessTable) window.BusinessTable.attach(el, { page: '#sub-bond-cycle', top: '#main-bond-safety > .bond-header' });

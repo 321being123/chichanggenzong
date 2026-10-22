@@ -5,7 +5,8 @@ const path = require('path');
 
 const root = path.join(__dirname, '..', '..');
 const script = fs.readFileSync(path.join(root, 'server', 'scripts', 'backtestConvertibleBondMotive.js'), 'utf8');
-const migration = fs.readFileSync(path.join(root, 'server', 'db', 'migrations.js'), 'utf8');
+const { readMigrationSource } = require('./helpers/migration-source');
+const migration = readMigrationSource();
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 assert.ok(script.includes('c.trigger_date >= $1::date'), '回测必须以触发日作为信号日');

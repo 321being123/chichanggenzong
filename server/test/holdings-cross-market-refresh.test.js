@@ -40,7 +40,7 @@ vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root, 'public/js/utils.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'public/shared/core-quote.js'), 'utf8'), context);
 
-assert.ok(indexHtml.includes('<button class="btn-refresh" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>'),
+assert.ok(indexHtml.includes('<button class="btn-refresh" data-act="doRefresh" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>'),
   '现有账户工具栏应显示复用 doRefresh 的“刷新行情”按钮');
 assert.ok(indexHtml.includes('shared/core-quote.js?v=__APP_VERSION__') && indexHtml.includes('shared/core-tables.js?v=__APP_VERSION__'),
   '修改后的共享行情与统计脚本必须使用当前版本缓存键');

@@ -2,7 +2,7 @@
 const assert = require('assert');
 const fs = require('fs');
 
-const source = fs.readFileSync(require.resolve('../services/convertibleBondAnalysis'), 'utf8');
+const source = require('./helpers/service-source').readServiceSource('convertibleBondAnalysis');
 const jobs = fs.readFileSync(require.resolve('../services/jobDefinitions'), 'utf8');
 const migrations = fs.readFileSync(require.resolve('../db/migrations'), 'utf8');
 const audit = fs.readFileSync(require.resolve('../scripts/auditInstrumentMerges'), 'utf8');

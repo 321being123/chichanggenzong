@@ -6,7 +6,8 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 
-const analysis = read('server/services/convertibleBondAnalysis.js');
+const { readServiceSource } = require('./helpers/service-source');
+const analysis = readServiceSource('convertibleBondAnalysis');
 const exporter = read('server/scripts/exportVerifiedBondCallFacts.js');
 const rebuild = read('server/scripts/rebuildBondCallProjection.js');
 const deploy = read('deploy/rebuild_bond_call_projection.py');

@@ -1,6 +1,15 @@
 // 独立 Worker 进程：只运行后台任务，不承载 Web 请求。
 require('dotenv').config();
 process.env.JOB_PROCESS_ROLE = 'worker';
+// 进程级兜底（审查 R-1/R-3）：记录失控异常后有序退出，由 systemd 拉起新进程。
+process.on('unhandledRejection', (reason) => {
+  console.error('[worker][fatal] 未处理的 Promise 异常，记录后退出:', (reason && reason.stack) || reason);
+  process.exit(1);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[worker][fatal] 未捕获异常，记录后退出:', (error && error.stack) || error);
+  process.exit(1);
+});
 const { initSchema, pool } = require('./db');
 const { startScheduler, waitForStartupTasks, stopJobOrchestrationObserver } = require('./scheduler');
 const { stopDurableExecutor, JOB_DEFINITIONS } = require('./services/jobOrchestrator');

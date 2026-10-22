@@ -315,8 +315,9 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
               c.announcement_parse_status,c.remain_size,c.maturity_date,c.conv_start_date,c.conv_end_date,
               c.calculated_at
          ${base}
-        ORDER BY CASE c.business_status WHEN 'announced' THEN 1 WHEN 'maturity_near' THEN 2 WHEN 'met_pending' THEN 3
-                                       WHEN 'near' THEN 4 WHEN 'tracking' THEN 5 WHEN 'waived' THEN 6 WHEN 'not_active' THEN 7 ELSE 8 END,
+        ORDER BY CASE c.business_status WHEN 'announced' THEN 1 WHEN 'maturity_redeem' THEN 2 WHEN 'maturity_near' THEN 3
+                                       WHEN 'redemption_unconfirmed' THEN 4 WHEN 'met_pending' THEN 5
+                                       WHEN 'near' THEN 6 WHEN 'tracking' THEN 7 WHEN 'waived' THEN 8 WHEN 'not_active' THEN 9 ELSE 10 END,
                  COALESCE(c.remaining_days,9999),c.security_code
         LIMIT $${filter.values.length + 1}`,
       [...filter.values, safeLimit]
@@ -335,7 +336,7 @@ async function getBondRedemptionOverview({ status = '', query = '', date = '', l
                  WHERE exchange='SSE' AND is_open
                    AND trade_date < (now() AT TIME ZONE 'Asia/Shanghai')::date`),
   ]);
-  const summary = { announced: 0, met_pending: 0, near: 0, maturity_near: 0, tracking: 0, waived: 0, completed: 0, not_active: 0, incomplete: 0 };
+  const summary = { announced: 0, maturity_redeem: 0, redemption_unconfirmed: 0, met_pending: 0, near: 0, maturity_near: 0, tracking: 0, waived: 0, completed: 0, not_active: 0, incomplete: 0 };
   for (const row of summaryResult.rows) {
     if (Object.prototype.hasOwnProperty.call(summary, row.business_status)) summary[row.business_status] = row.count;
     else summary.incomplete += row.count;

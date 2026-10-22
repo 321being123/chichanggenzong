@@ -8,25 +8,26 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script src="/vendor/chart.umd.min.js?v=20260904" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous" defer></script>
 <link rel="stylesheet" href="shared/style.css?v=__APP_VERSION__">
-<link rel="stylesheet" href="css/bond-safety.css?v=24">
-<link rel="stylesheet" href="css/bond-cycle.css?v=0.8.0.8">
-<link rel="stylesheet" href="css/bond-valuation.css?v=0.8.0.8">
-<link rel="stylesheet" href="css/bond-redemption.css?v=5">
-<link rel="stylesheet" href="css/bond-revision.css?v=3">
-<link rel="stylesheet" href="css/stock-analysis.css?v=0.8.0.8">
-<link rel="stylesheet" href="css/market-volatility.css?v=5">
+<link rel="stylesheet" href="css/bond-safety.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/bond-cycle.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/bond-valuation.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/bond-redemption.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/bond-revision.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/stock-analysis.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/market-volatility.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css?v=20260904">
-<link rel="stylesheet" href="css/knowledge.css?v=0.8.0.8">
-<script src="shared/autofill-guard.js?v=5"></script>
-<script src="shared/mobile-ui.js?v=1" defer></script>
-<script src="shared/telemetry.js?v=0.8.0.12" defer></script>
+<link rel="stylesheet" href="css/knowledge.css?v=__APP_VERSION__">
+<script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
+<script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
+<script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
+<script src="shared/telemetry.js?v=__APP_VERSION__" defer></script>
 </head>
 <body>
 
 <div class="nav">
   <div class="nav-inner">
     <div class="nav-left">
-      <h1 onclick="switchMain('home')" style="cursor:pointer;" title="返回首页">存在小站</h1>
+      <h1><button type="button" class="site-title-btn" data-act="switchMain" data-arg="home" title="返回首页">存在小站</button></h1>
       <nav class="main-nav">
         <button class="main-tab" data-main="home">首页</button>
         <button class="main-tab" data-main="knowledge">投资笔记</button>
@@ -45,7 +46,7 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <!-- 首页：核心模块统一工作台 -->
 <div class="main-page active" id="main-home">
@@ -57,7 +58,7 @@
           <h2>最新文章</h2>
           <p>近期发布的投资研究、市场观察与实践笔记</p>
         </div>
-        <button type="button" onclick="switchMain('knowledge')">查看全部文章 →</button>
+        <button type="button" data-act="switchMain" data-arg="knowledge">查看全部文章 →</button>
       </div>
       <div id="home-hero-articles" class="home-hero-article-grid">
         <span class="home-hero-article-loading">正在加载...</span>
@@ -72,7 +73,7 @@
         <article class="home-cycle-card">
           <div class="home-detail-title">
             <div><h3>可转债周期</h3><p id="home-bond-cycle-summary">正在读取数据...</p></div>
-            <button type="button" onclick="switchMain('bond-safety', false, 'cycle')">查看详情 →</button>
+            <button type="button" data-act="switchMain" data-args='["bond-safety", false, "cycle"]'>查看详情 →</button>
           </div>
           <div class="home-cycle-legend">
             <span><i class="home-cycle-dot home-cycle-dot-blue"></i>综合估值</span>
@@ -83,7 +84,7 @@
         <article class="home-cycle-card">
           <div class="home-detail-title">
             <div><h3 id="home-market-title">股市周期</h3><p id="home-market-summary">正在读取数据...</p></div>
-            <button type="button" onclick="openHomeMarketCycleDetail()">查看详情 →</button>
+            <button type="button" data-act="openHomeMarketCycleDetail">查看详情 →</button>
           </div>
           <div class="home-cycle-legend">
             <span><i class="home-cycle-dot home-cycle-dot-blue"></i><span id="home-market-legend">市场周期指标</span></span>
@@ -97,11 +98,11 @@
     <div class="home-content-grid home-content-grid-secondary" id="home-section-secondary">
       <div class="home-side-stack">
         <section class="home-detail-card">
-          <div class="home-detail-title"><div><h3>近期打新安排</h3><p>未来 90 天重要节点</p></div><button onclick="switchMain('ipo')">查看全部 →</button></div>
+          <div class="home-detail-title"><div><h3>近期打新安排</h3><p>未来 90 天重要节点</p></div><button data-act="switchMain" data-arg="ipo">查看全部 →</button></div>
           <div id="home-ipo-list" class="home-overview-list"><div class="home-loading">正在加载...</div></div>
         </section>
         <section class="home-detail-card">
-          <div class="home-detail-title"><div><h3>可转债风险分布</h3><p>当前在市转债概览</p></div><button onclick="switchMain('bond-safety')">查看全部 →</button></div>
+          <div class="home-detail-title"><div><h3>可转债风险分布</h3><p>当前在市转债概览</p></div><button data-act="switchMain" data-arg="bond-safety">查看全部 →</button></div>
           <div id="home-bond-distribution" class="home-risk-list"><div class="home-loading">正在加载...</div></div>
         </section>
       </div>
@@ -131,10 +132,10 @@
       </div>
       <div class="sub-nav-right">
         <div class="nav-account">
-          <button class="btn-refresh" onclick="doRefresh()" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>
-          <select id="account-select" onchange="switchAccount(this.value)"></select>
-          <button class="btn-account-add" onclick="addAccount()" title="新增账户">+</button>
-          <button class="btn-account-add" onclick="showAccountMenu()" title="账户设置" style="font-size:13px;">⚙</button>
+          <button class="btn-refresh" data-act="doRefresh" title="刷新持仓实时价格并重新计算总资产">刷新行情</button>
+          <select id="account-select" data-act="switchAccount" data-use-value></select>
+          <button class="btn-account-add" data-act="addAccount" title="新增账户">+</button>
+          <button class="btn-account-add u-fs-13" data-act="showAccountMenu" title="账户设置" >⚙</button>
         </div>
       </div>
     </div>
@@ -164,7 +165,7 @@
       <h3>持仓明细</h3>
       <div id="position-comp-controls" class="pc-controls"></div>
     </div>
-    <div style="padding:0 18px 18px;">
+    <div class="u-pad-b18">
       <div id="positions-table"></div>
     </div>
   </div>
@@ -176,33 +177,33 @@
     <div class="table-header">
       <h3>投资概览</h3>
       <div>
-        <input type="file" id="fund-excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" onchange="importFundExcel(event)">
-        <button class="btn btn-primary btn-sm" onclick="document.getElementById('fund-excel-input').click()">📥 导入历史数据</button>
-        <button class="btn btn-outline btn-sm" onclick="openNavHistoryManageModal()" style="margin-left:6px;">🛠 管理历史数据</button>
+        <input type="file" id="fund-excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" data-act="importFundExcel" data-use-event>
+        <button class="btn btn-primary btn-sm" data-act="__click" data-target="fund-excel-input">📥 导入历史数据</button>
+        <button class="btn btn-outline btn-sm u-ml-6" data-act="openNavHistoryManageModal" >🛠 管理历史数据</button>
       </div>
     </div>
-    <div style="padding:18px;">
+    <div class="u-pad-18">
       <div id="earnings-stats" class="stats"></div>
-      <div class="chart-box" style="margin-bottom:18px;">
+      <div class="chart-box u-mb-18" >
         <div class="chart-title"><h3>收益走势对比（净值 vs 指数）</h3></div>
-        <div id="earnings-returns-period" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-          <button class="period-btn" data-mode="mtd" onclick="switchEarnPeriod('mtd')">本月</button>
-          <button class="period-btn" data-mode="q3" onclick="switchEarnPeriod('q3')">近三个月</button>
-          <button class="period-btn" data-mode="ytd" onclick="switchEarnPeriod('ytd')">今年</button>
-          <button class="period-btn active" data-mode="1y" onclick="switchEarnPeriod('1y')">近一年</button>
-          <button class="period-btn" data-mode="2y" onclick="switchEarnPeriod('2y')">近两年</button>
-          <button class="period-btn" data-mode="all" onclick="switchEarnPeriod('all')">全部</button>
+        <div id="earnings-returns-period" class="u-flex-wrap u-gap-6 u-mb-10">
+          <button class="period-btn" data-mode="mtd" data-act="switchEarnPeriod" data-arg="mtd">本月</button>
+          <button class="period-btn" data-mode="q3" data-act="switchEarnPeriod" data-arg="q3">近三个月</button>
+          <button class="period-btn" data-mode="ytd" data-act="switchEarnPeriod" data-arg="ytd">今年</button>
+          <button class="period-btn active" data-mode="1y" data-act="switchEarnPeriod" data-arg="1y">近一年</button>
+          <button class="period-btn" data-mode="2y" data-act="switchEarnPeriod" data-arg="2y">近两年</button>
+          <button class="period-btn" data-mode="all" data-act="switchEarnPeriod" data-arg="all">全部</button>
         </div>
-        <div class="chart-canvas-wrap" style="height:320px;"><canvas id="chart-earnings-returns"></canvas></div>
+        <div class="chart-canvas-wrap u-chart-h320" ><canvas id="chart-earnings-returns"></canvas></div>
       </div>
-      <div class="chart-box" style="margin-bottom:18px;">
+      <div class="chart-box u-mb-18" >
         <div class="chart-title"><h3>资产与收益走势</h3></div>
-        <div class="chart-canvas-wrap" style="height:320px;"><canvas id="chart-earnings"></canvas></div>
+        <div class="chart-canvas-wrap u-chart-h320" ><canvas id="chart-earnings"></canvas></div>
       </div>
-      <div class="table-header" style="margin-bottom:12px;">
+      <div class="table-header u-mb-12" >
         <h3>投资收益记录</h3>
         <div>
-          <button class="btn btn-primary btn-sm" onclick="openNavEdit()">＋ 新增记录</button>
+          <button class="btn btn-primary btn-sm" data-act="openNavEdit">＋ 新增记录</button>
         </div>
       </div>
       <div id="earnings-table"></div>
@@ -214,11 +215,11 @@
 <div class="page" id="page-trades">
   <div class="table-wrap">
     <div class="table-header"><h3>录入交易</h3></div>
-    <div style="padding:20px;">
+    <div class="u-pad-20">
       <!-- 录入方式切换 -->
-      <div style="margin-bottom:16px;">
-        <button class="btn trade-mode-btn active" id="mode-manual" onclick="switchTradeMode('manual')" style="border-radius:8px 0 0 8px;">手动录入</button>
-        <button class="btn trade-mode-btn" id="mode-smart" onclick="switchTradeMode('smart')" style="border-radius:0 8px 8px 0;margin-left:-1px;">智能导入</button>
+      <div class="u-mb-16">
+        <button class="btn trade-mode-btn active u-trade-mode-first" id="mode-manual" data-act="switchTradeMode" data-arg="manual" >手动录入</button>
+        <button class="btn trade-mode-btn u-trade-mode-last" id="mode-smart" data-act="switchTradeMode" data-arg="smart" >智能导入</button>
       </div>
 
       <!-- 手动录入表单 -->
@@ -229,14 +230,14 @@
         <div class="form-group"><label></label></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>代码</label><input id="trade-code" placeholder="如 600519" oninput="onTradeCodeInput(this.value)" autocomplete="off"></div>
-        <div class="form-group"><label>名称 <span class="auto-hint">自动</span></label><input id="trade-name" readonly style="background:#f5f5f5;"></div>
-        <div class="form-group"><label>方向</label><select id="trade-dir" onchange="autoCalcTrade()"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
+        <div class="form-group"><label>代码</label><input id="trade-code" placeholder="如 600519" data-act="onTradeCodeInput" data-use-value autocomplete="off"></div>
+        <div class="form-group"><label>名称 <span class="auto-hint">自动</span></label><input id="trade-name" readonly class="u-input-plain"></div>
+        <div class="form-group"><label>方向</label><select id="trade-dir" data-act="autoCalcTrade"><option value="buy">买入</option><option value="sell">卖出</option></select></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label id="trade-price-label">价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" oninput="autoCalcTrade()" inputmode="decimal"></div>
-        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" oninput="autoCalcTrade()" placeholder="股/张/份" inputmode="decimal"><span id="trade-qty-hint" style="display:none;font-size:11px;color:#e65100;margin-left:4px;">⚠ 华泰/招商证券上交所债券：1手=10张，自动转换</span></div>
-        <div class="form-group"><label id="trade-amount-label">成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly style="background:#f5f5f5;" inputmode="decimal"></div>
+        <div class="form-group"><label id="trade-price-label">价格 (¥) <span class="auto-hint">自动或手动</span></label><input id="trade-price" type="number" step="any" data-act="autoCalcTrade" inputmode="decimal"></div>
+        <div class="form-group"><label>数量</label><input id="trade-qty" type="number" step="any" data-act="autoCalcTrade" placeholder="股/张/份" inputmode="decimal"><span id="trade-qty-hint" class="u-trade-qty-hint">⚠ 华泰/招商证券上交所债券：1手=10张，自动转换</span></div>
+        <div class="form-group"><label id="trade-amount-label">成交额 (¥) <span class="auto-hint">自动计算</span></label><input id="trade-amount" type="number" step="any" readonly inputmode="decimal" class="u-input-plain"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label id="trade-commission-label">手续费 (¥) <span class="auto-hint">自动</span></label><input id="trade-commission" type="number" step="any" placeholder="自动算" inputmode="decimal"></div>
@@ -246,49 +247,49 @@
       </div>
       <div class="form-row">
         <div class="form-group"><label>资产类型 <span class="auto-hint">自动识别</span></label><select id="trade-type"><option value="股权">股权</option><option value="债权">债权</option><option value="现金">现金</option></select></div>
-        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" onchange="autoCalcTrade()"><option>沪市</option><option>深市</option><option>京市</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>场外基金</option></select></div>
+        <div class="form-group"><label>细类 <span class="auto-hint">自动识别</span></label><select id="trade-subtype" data-act="autoCalcTrade"><option>沪市</option><option>深市</option><option>京市</option><option>港股</option><option>美股</option><option>可转债</option><option>信用债</option><option>基金/ETF</option><option>场外基金</option></select></div>
         <div class="form-group"><label>备注</label><input id="trade-note" placeholder="可选"></div>
       </div>
-      <button class="btn btn-primary" onclick="addTrade()">➕ 记录交易</button>
-      <button class="btn btn-outline" onclick="showCashFlowModal()" style="margin-left:8px;">💰 资金转入转出</button>
-      <button class="btn btn-outline" onclick="openFeeSettings()" style="margin-left:8px;">⚙ 税费设置</button>
+      <button class="btn btn-primary" data-act="addTrade">➕ 记录交易</button>
+      <button class="btn btn-outline u-ml-8" data-act="showCashFlowModal" >💰 资金转入转出</button>
+      <button class="btn btn-outline u-ml-8" data-act="openFeeSettings" >⚙ 税费设置</button>
       </div>
 
       <!-- 智能导入区域（图片 + Excel，自动识别交易/持仓） -->
-      <div id="trade-smart-section" style="display:none;">
+      <div class="js-hidden" id="trade-smart-section">
         <div class="vision-row">
-          <div class="vision-zone" id="vision-zone" onclick="document.getElementById('vision-input').click()">
+          <div class="vision-zone" id="vision-zone" data-act="__click" data-target="vision-input">
             <div class="icon">📷</div>
             <p>点击上传或拖拽图片</p>
-            <p style="font-size:12px;color:#bbb;margin-top:4px;">支持 PNG / JPG，AI 自动识别</p>
-            <input type="file" id="vision-input" class="hidden-input" accept="image/png,image/jpeg,image/jpg" onchange="handleVisionFile(event)">
+            <p class="u-hint">支持 PNG / JPG，AI 自动识别</p>
+            <input type="file" id="vision-input" class="hidden-input" accept="image/png,image/jpeg,image/jpg" data-act="handleVisionFile" data-use-event>
           </div>
-          <div class="vision-zone" id="excel-zone" onclick="document.getElementById('excel-input').click()">
+          <div class="vision-zone" id="excel-zone" data-act="__click" data-target="excel-input">
             <div class="icon">📊</div>
             <p>点击上传 Excel</p>
-            <p style="font-size:12px;color:#bbb;margin-top:4px;">支持 .xlsx / .xls / .csv，AI 自动识别</p>
-            <input type="file" id="excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" onchange="handleExcelFile(event)">
+            <p class="u-hint">支持 .xlsx / .xls / .csv，AI 自动识别</p>
+            <input type="file" id="excel-input" class="hidden-input" accept=".xlsx,.xls,.csv" data-act="handleExcelFile" data-use-event>
           </div>
           <div class="vision-qr">
             <img id="qr-image" src="" alt="二维码">
-            <p style="font-size:12px;color:#bbb;margin-top:8px;">手机扫码上传图片</p>
+            <p class="u-hint-8">手机扫码上传图片</p>
           </div>
         </div>
-        <div id="smart-loading" style="display:none;text-align:center;padding:20px;color:#666;"><span class="spinner"></span>AI识别中...</div>
-        <div id="smart-result" style="margin-top:16px;"></div>
+        <div id="smart-loading" class="u-smart-loading"><span class="spinner"></span>AI识别中...</div>
+        <div id="smart-result" class="u-mt-16"></div>
       </div>
     </div>
   </div>
   <div class="table-wrap">
     <div class="table-header"><h3>交易历史</h3></div>
-    <div id="trades-table" style="min-height:80px;"><div class="empty-state"><div class="icon">📄</div>暂无交易记录</div></div>
+    <div id="trades-table" class="u-minh-80"><div class="empty-state"><div class="icon">📄</div>暂无交易记录</div></div>
   </div>
 </div>
 
 <!-- 版本记录页 -->
 <div class="page" id="page-changelog">
-  <div class="chart-box" id="changelog-content" style="padding:20px;font-size:13px;line-height:1.8;">
-    <p style="color:#888;text-align:center;">加载中...</p>
+  <div class="chart-box u-changelog-body" id="changelog-content" >
+    <p class="u-muted-center">加载中...</p>
   </div>
 </div>
 </div><!-- /main-holdings -->
@@ -302,8 +303,8 @@
         <p>与公开/半公开标杆账户对比持仓，并测算复制仓位。</p>
       </div>
       <div>
-        <button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.openBenchmarkPicker()">切换标杆</button>
-        <button type="button" class="btn btn-outline btn-sm" onclick="PositionComparison.goBackHoldings()">← 返回持仓</button>
+        <button type="button" class="btn btn-outline btn-sm" data-act="PositionComparison.openBenchmarkPicker">切换标杆</button>
+        <button type="button" class="btn btn-outline btn-sm" data-act="PositionComparison.goBackHoldings">← 返回持仓</button>
       </div>
     </div>
     <div id="position-compare-page-body"><div class="pc-page-empty">请先选择一个标杆账户开始对比。</div></div>
@@ -312,8 +313,8 @@
 
 <!-- 版本记录（一级页） -->
 <div class="main-page" id="main-changelog">
-  <div class="chart-box" id="changelog-main-content" style="padding:20px;font-size:13px;line-height:1.8;">
-    <p style="color:#888;text-align:center;">加载中...</p>
+  <div class="chart-box u-changelog-body" id="changelog-main-content" >
+    <p class="u-muted-center">加载中...</p>
   </div>
 </div>
 
@@ -468,22 +469,22 @@
       <span id="bond-analysis-updated" class="hidden"></span>
     </div>
     <div class="stock-analysis-toolbar table-wrap">
-      <select id="security-analysis-select" aria-label="选择持仓或自选" onchange="securityAnalysisSelect(this.value)"><option value="">选择持仓或自选</option></select>
+      <select id="security-analysis-select" aria-label="选择持仓或自选" data-act="securityAnalysisSelect" data-use-value><option value="">选择持仓或自选</option></select>
       <div class="security-analysis-search">
         <textarea id="stock-analysis-code" name="security-analysis-query" rows="1" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="股票或可转债名称、代码" aria-autocomplete="list" aria-multiline="false" aria-controls="stock-analysis-suggestions" aria-expanded="false"></textarea>
-        <div id="stock-analysis-suggestions" class="security-analysis-suggestions" role="listbox" style="display:none;"></div>
+        <div id="stock-analysis-suggestions" class="js-hidden security-analysis-suggestions" role="listbox"></div>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="securityAnalysisSubmit()">开始分析</button>
-      <button class="btn btn-outline btn-sm" id="stock-analysis-refresh" onclick="securityAnalysisRefresh()">刷新数据</button>
+      <button class="btn btn-primary btn-sm" data-act="securityAnalysisSubmit">开始分析</button>
+      <button class="btn btn-outline btn-sm" id="stock-analysis-refresh" data-act="securityAnalysisRefresh">刷新数据</button>
     </div>
     <div id="stock-analysis-message" class="stock-analysis-message">请输入股票、可转债名称或代码开始分析。</div>
-    <div id="stock-analysis-content" style="display:none;">
+    <div class="js-hidden" id="stock-analysis-content">
       <div class="stock-analysis-summary" id="stock-analysis-summary"></div>
       <div class="stock-analysis-view-tabs" role="tablist" aria-label="个股数据视图">
-        <button class="selected" id="stock-analysis-view-analysis" role="tab" aria-selected="true" onclick="stockAnalysisSwitchView('analysis')">个股分析</button>
-        <button data-statement-view="balance" role="tab" aria-selected="false" onclick="stockAnalysisSwitchView('balance')">资产负债表</button>
-        <button data-statement-view="income" role="tab" aria-selected="false" onclick="stockAnalysisSwitchView('income')">利润表</button>
-        <button data-statement-view="cashflow" role="tab" aria-selected="false" onclick="stockAnalysisSwitchView('cashflow')">现金流量表</button>
+        <button class="selected" id="stock-analysis-view-analysis" role="tab" aria-selected="true" data-act="stockAnalysisSwitchView" data-arg="analysis">个股分析</button>
+        <button data-statement-view="balance" role="tab" aria-selected="false" data-act="stockAnalysisSwitchView" data-arg="balance">资产负债表</button>
+        <button data-statement-view="income" role="tab" aria-selected="false" data-act="stockAnalysisSwitchView" data-arg="income">利润表</button>
+        <button data-statement-view="cashflow" role="tab" aria-selected="false" data-act="stockAnalysisSwitchView" data-arg="cashflow">现金流量表</button>
       </div>
       <div id="stock-analysis-analysis-pane">
         <section class="stock-analysis-section"><h3>股票基本信息</h3><div id="stock-analysis-valuation"></div></section>
@@ -495,17 +496,17 @@
         <section class="stock-analysis-section"><h3>公司公告</h3><div id="stock-analysis-events"></div></section>
         <div class="stock-analysis-foot" id="stock-analysis-quality"></div>
       </div>
-      <div id="stock-analysis-statements-pane" style="display:none;">
+      <div class="js-hidden" id="stock-analysis-statements-pane">
         <section class="stock-analysis-section">
           <div class="stock-analysis-statements-head">
             <h3 id="stock-analysis-statements-title">资产负债表</h3>
           </div>
           <div id="stock-analysis-statements-message" class="stock-analysis-chart-empty">请选择三表查看。</div>
-          <div class="stock-analysis-statements-wrap" id="stock-analysis-statements-wrap" style="display:none;"></div>
+          <div class="js-hidden stock-analysis-statements-wrap" id="stock-analysis-statements-wrap"></div>
         </section>
       </div>
     </div>
-    <div id="bond-analysis-content" class="bond-analysis-content" style="display:none;">
+    <div id="bond-analysis-content" class="js-hidden bond-analysis-content">
       <div class="bond-analysis-summary" id="bond-analysis-summary"></div>
       <section class="bond-analysis-section"><h3>可转债基本信息</h3><div id="bond-analysis-basic"></div></section>
       <section class="bond-analysis-section"><h3><span class="analysis-help" tabindex="0" data-help="根据募集说明书中的强赎、下修和回售条款，计算触发价格及观察窗口内满足条件的交易日数量。">触发价格与计数</span></h3><div id="bond-analysis-triggers"></div></section>
@@ -527,10 +528,10 @@
 <div class="main-page" id="main-market-volatility">
   <div class="mv-header">
     <div class="mv-sub-nav">
-      <button class="mv-sub-tab active" data-mv-metric="graham" onclick="switchMarketCycleMetric('graham')">格雷厄姆指数</button>
-      <button class="mv-sub-tab" data-mv-metric="pe" onclick="switchMarketCycleMetric('pe')">市盈率（PE）</button>
-      <button class="mv-sub-tab" data-mv-metric="pb" onclick="switchMarketCycleMetric('pb')">市净率（PB）</button>
-      <button class="mv-sub-tab" data-mv-metric="m2_market_cap" onclick="switchMarketCycleMetric('m2_market_cap')">M2与股市市值比</button>
+      <button class="mv-sub-tab active" data-mv-metric="graham" data-act="switchMarketCycleMetric" data-arg="graham">格雷厄姆指数</button>
+      <button class="mv-sub-tab" data-mv-metric="pe" data-act="switchMarketCycleMetric" data-arg="pe">市盈率（PE）</button>
+      <button class="mv-sub-tab" data-mv-metric="pb" data-act="switchMarketCycleMetric" data-arg="pb">市净率（PB）</button>
+      <button class="mv-sub-tab" data-mv-metric="m2_market_cap" data-act="switchMarketCycleMetric" data-arg="m2_market_cap">M2与股市市值比</button>
     </div>
   </div>
   <div class="market-volatility-shell feature-page-shell">
@@ -542,7 +543,7 @@
       <div class="mv-control-group"><span>时间</span><select id="mv-range" aria-label="历史范围"><option value="1y">1年</option><option value="3y">3年</option><option value="5y">5年</option><option value="10y">10年</option><option value="20y" selected>20年</option><option value="all">全部</option></select></div>
     </div>
     <div id="mv-status" class="mv-status"></div>
-    <div id="mv-content" style="display:none;">
+    <div class="js-hidden" id="mv-content">
       <div class="mv-cards">
         <div><span>当前格雷厄姆指数</span><strong id="mv-graham">--</strong></div><div><span>指数市盈率</span><strong id="mv-pe">--</strong></div><div><span>股票收益率</span><strong id="mv-earnings">--</strong></div><div><span id="mv-yield-label">10年期国债收益率</span><strong id="mv-yield">--</strong></div>
         <div><span>建议股票仓位</span><strong id="mv-recommended">--</strong></div><div><span>实际股票仓位</span><strong id="mv-actual">--</strong></div><div><span>仓位偏差</span><strong id="mv-deviation">--</strong></div>
@@ -586,18 +587,18 @@
 <div class="main-page" id="main-arbitrage">
   <div class="bond-header">
     <div class="bond-sub-nav">
-      <button class="bond-sub-tab active" data-arb-tab="a_stock" onclick="switchArbTab('a_stock')">A 股套利</button>
-      <button class="bond-sub-tab" data-arb-tab="hk_privatisation" onclick="switchArbTab('hk_privatisation')">港股私有化</button>
-      <button class="bond-sub-tab" data-arb-tab="hk_rights" onclick="switchArbTab('hk_rights')">港股供股权</button>
+      <button class="bond-sub-tab active" data-arb-tab="a_stock" data-act="switchArbTab" data-arg="a_stock">A 股套利</button>
+      <button class="bond-sub-tab" data-arb-tab="hk_privatisation" data-act="switchArbTab" data-arg="hk_privatisation">港股私有化</button>
+      <button class="bond-sub-tab" data-arb-tab="hk_rights" data-act="switchArbTab" data-arg="hk_rights">港股供股权</button>
     </div>
   </div>
   <div class="feature-page-shell">
     <div id="arb-list-view">
-    <div id="arb-status" style="padding:0 4px 8px;color:#666;font-size:13px;"></div>
+    <div id="arb-status" class="u-arb-status"></div>
     <div class="table-wrap">
       <div class="table-header">
         <h3 id="arb-table-title">A 股套利</h3>
-        <div id="arb-meta" style="font-size:12px;color:#999;"></div>
+        <div id="arb-meta" class="u-fs-12 u-c-muted"></div>
       </div>
       <div class="arb-table-scroll"><div id="arb-table"></div></div>
     </div>
@@ -615,14 +616,14 @@
     <div id="ipo-advice"></div>
 
     <!-- 打新日历（中间，按日历形式列出未来申购/上市日） -->
-    <div class="table-wrap" style="margin-top:18px;">
+    <div class="table-wrap u-mt-18" >
       <div class="table-header">
         <h3>打新日历</h3>
-        <div style="display:flex;gap:6px;">
-          <button class="period-btn active" data-ipo-market="CN" onclick="ipoSwitchMarket('CN')">A股</button>
+        <div class="u-flex u-gap-6">
+          <button class="period-btn active" data-ipo-market="CN" data-act="ipoSwitchMarket" data-arg="CN">A股</button>
         </div>
       </div>
-      <div class="ipo-content" style="padding:18px;">
+      <div class="ipo-content u-pad-18" >
         <div id="ipo-calendar"></div>
       </div>
     </div>
@@ -630,13 +631,13 @@
     <div class="table-wrap">
       <div class="table-header">
         <h3>打新历史</h3>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button class="period-btn" id="ipo-refresh-history" onclick="ipoRefreshHistory()">刷新行情</button>
-          <button class="period-btn active" data-ipo-hist="stock" onclick="ipoSwitchHist('stock')">A股</button>
-          <button class="period-btn" data-ipo-hist="bond" onclick="ipoSwitchHist('bond')">可转债</button>
+        <div class="u-flex-wrap u-gap-6">
+          <button class="period-btn" id="ipo-refresh-history" data-act="ipoRefreshHistory">刷新行情</button>
+          <button class="period-btn active" data-ipo-hist="stock" data-act="ipoSwitchHist" data-arg="stock">A股</button>
+          <button class="period-btn" data-ipo-hist="bond" data-act="ipoSwitchHist" data-arg="bond">可转债</button>
         </div>
       </div>
-      <div style="padding:18px;">
+      <div class="u-pad-18">
         <div id="ipo-history"></div>
       </div>
     </div>
@@ -647,12 +648,12 @@
 <div class="main-page" id="main-bond-safety">
   <div class="bond-header">
     <div class="bond-sub-nav">
-      <button class="bond-sub-tab active" data-sub="list" onclick="switchBondSub('list')">上市可转债</button>
-      <button class="bond-sub-tab" data-sub="redemption" onclick="switchBondSub('redemption')">强赎监控</button>
-      <button class="bond-sub-tab" data-sub="revision" onclick="switchBondSub('revision')">下修监控</button>
-      <button class="bond-sub-tab" data-sub="safety" onclick="switchBondSub('safety')">可转债安全性</button>
-      <button class="bond-sub-tab" data-sub="cycle" onclick="switchBondSub('cycle')">可转债周期</button>
-      <button class="bond-sub-tab" data-sub="valuation" onclick="switchBondSub('valuation')">可转债估值</button>
+      <button class="bond-sub-tab active" data-sub="list" data-act="switchBondSub" data-arg="list">上市可转债</button>
+      <button class="bond-sub-tab" data-sub="redemption" data-act="switchBondSub" data-arg="redemption">强赎监控</button>
+      <button class="bond-sub-tab" data-sub="revision" data-act="switchBondSub" data-arg="revision">下修监控</button>
+      <button class="bond-sub-tab" data-sub="safety" data-act="switchBondSub" data-arg="safety">可转债安全性</button>
+      <button class="bond-sub-tab" data-sub="cycle" data-act="switchBondSub" data-arg="cycle">可转债周期</button>
+      <button class="bond-sub-tab" data-sub="valuation" data-act="switchBondSub" data-arg="valuation">可转债估值</button>
     </div>
   </div>
   <div class="bond-safety-shell feature-page-shell">
@@ -674,14 +675,14 @@
       </div>
       <div class="table-wrap">
         <div class="bond-safety-toolbar bond-feature-toolbar">
-          <input id="bond-safety-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondSafetyApplyFilters()">
-          <select id="bond-safety-rating" onchange="bondSafetyApplyFilters()" aria-label="按安全性筛选">
+          <input id="bond-safety-search" type="search" placeholder="搜索债券代码、名称或正股" data-act="bondSafetyApplyFilters">
+          <select id="bond-safety-rating" data-act="bondSafetyApplyFilters" aria-label="按安全性筛选">
             <option value="">全部评级</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option>
           </select>
           <span class="bond-safety-quality bond-feature-quality" id="bond-safety-visible"></span>
           <span class="bond-safety-spacer"></span>
           <span class="bond-safety-quality bond-feature-quality" id="bond-safety-quality"></span>
-          <button class="btn btn-outline btn-sm" id="bond-safety-export" onclick="exportBondSafety()">导出Excel</button>
+          <button class="btn btn-outline btn-sm" id="bond-safety-export" data-act="exportBondSafety">导出Excel</button>
         </div>
         <div id="bond-safety-table"><div class="bond-safety-empty">正在加载安全性数据...</div></div>
       </div>
@@ -706,17 +707,17 @@
         </div>
         <div class="bond-cycle-updated" id="bond-cycle-updated">正在读取数据...</div>
       </div>
-      <div class="bond-cycle-stale" id="bond-cycle-stale" style="display:none;">数据暂未更新，当前展示上一交易日</div>
+      <div class="js-hidden bond-cycle-stale" id="bond-cycle-stale">数据暂未更新，当前展示上一交易日</div>
       <div class="bond-cycle-status" id="bond-cycle-status"></div>
 
-      <div class="bond-cycle-overview" id="bond-cycle-overview" style="display:none;">
+      <div class="js-hidden bond-cycle-overview" id="bond-cycle-overview">
         <div class="bond-cycle-cards">
           <div class="bond-cycle-card"><span>当前周期位置</span><strong id="bc-cycle-level">--</strong></div>
           <div class="bond-cycle-card"><span>历史分位</span><strong id="bc-percentile">--</strong></div>
           <div class="bond-cycle-card"><span>综合估值</span><strong id="bc-composite">--</strong></div>
           <div class="bond-cycle-card"><span>有效转债数量</span><strong id="bc-bond-count">--</strong></div>
         </div>
-        <div class="bond-cycle-note" id="bc-history-note" style="display:none;">历史不足 252 个有效交易日，暂不计算周期分位</div>
+        <div class="js-hidden bond-cycle-note" id="bc-history-note">历史不足 252 个有效交易日，暂不计算周期分位</div>
         <div class="bond-cycle-metrics">
           <div class="bond-cycle-metric"><span>价格中位数</span><strong id="bc-median-price">--</strong></div>
           <div class="bond-cycle-metric"><span>转股溢价率中位数</span><strong id="bc-median-premium">--</strong></div>
@@ -726,7 +727,7 @@
         </div>
       </div>
 
-      <div class="bond-cycle-chart-wrap" id="bond-cycle-chart-wrap" style="display:none;">
+      <div class="js-hidden bond-cycle-chart-wrap" id="bond-cycle-chart-wrap">
         <div class="bond-cycle-chart-controls">
           <div class="bond-cycle-range-tabs">
             <button data-range="1y">1年</button>
@@ -740,13 +741,13 @@
             <button data-metric="median_price">价格中位数</button>
             <button data-metric="median_conversion_premium_pct">溢价率中位数</button>
           </div>
-          <button class="bond-cycle-export-btn" onclick="exportBondCycleChart()" title="导出图片含上方指标卡片">导出图片</button>
+          <button class="bond-cycle-export-btn" data-act="exportBondCycleChart" title="导出图片含上方指标卡片">导出图片</button>
         </div>
         <div class="bond-cycle-chart" id="bond-cycle-chart"></div>
         <div class="bond-cycle-tip app-tooltip" id="bond-cycle-tip"></div>
       </div>
 
-      <div class="table-wrap bond-cycle-table-wrap" id="bond-cycle-table-wrap" style="display:none;">
+      <div class="js-hidden table-wrap bond-cycle-table-wrap" id="bond-cycle-table-wrap">
         <div class="table-header">
           <h3>历史数据明细（每日回填）</h3>
         </div>
@@ -763,30 +764,30 @@
         </div>
         <div class="bond-val-updated" id="bond-val-updated">正在读取数据...</div>
       </div>
-      <div class="bond-val-overview" id="bond-val-overview" style="display:none;">
+      <div class="js-hidden bond-val-overview" id="bond-val-overview">
         <div class="bond-val-cards" id="bond-val-cards"></div>
         <div class="bond-val-counts" id="bond-val-counts"></div>
       </div>
-      <div class="bond-val-stale" id="bond-val-stale" style="display:none;">数据暂未更新，当前展示上一交易日</div>
+      <div class="js-hidden bond-val-stale" id="bond-val-stale">数据暂未更新，当前展示上一交易日</div>
       <div class="bond-val-status" id="bond-val-status"></div>
       <div class="table-wrap">
         <div class="bond-val-toolbar">
-          <input id="bond-val-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondValApplyFilters()">
-          <select id="bond-val-eval" onchange="bondValApplyFilters()" aria-label="按最终评价筛选">
+          <input id="bond-val-search" type="search" placeholder="搜索债券代码、名称或正股" data-act="bondValApplyFilters">
+          <select id="bond-val-eval" data-act="bondValApplyFilters" aria-label="按最终评价筛选">
             <option value="">全部评价</option>
             <option>低估</option><option>偏低估</option><option>合理</option>
             <option>偏高估</option><option>高估</option><option>风险折价</option><option>数据不足</option>
           </select>
-          <select id="bond-val-safety" onchange="bondValApplyFilters()" aria-label="按安全性筛选">
+          <select id="bond-val-safety" data-act="bondValApplyFilters" aria-label="按安全性筛选">
             <option value="">全部安全性</option><option>安全</option><option>低风险</option><option>中风险</option><option>高风险</option><option>未评级</option>
           </select>
-          <select id="bond-val-alert" onchange="bondValApplyFilters()" aria-label="按预警筛选">
+          <select id="bond-val-alert" data-act="bondValApplyFilters" aria-label="按预警筛选">
             <option value="">全部预警</option><option value="关注">关注</option><option value="重要">重要</option>
           </select>
-          <select id="bond-val-data" onchange="bondValApplyFilters()" aria-label="按数据状态筛选">
-            <option value="">全部数据</option><option value="完整">数据完整</option><option value="新上市观察期">新上市观察期</option><option value="数据不足">数据不足</option>
+          <select id="bond-val-data" data-act="bondValApplyFilters" aria-label="按价格数据状态筛选">
+            <option value="">全部价格数据</option><option value="完整">价格数据完整</option><option value="新上市观察期">新上市观察期</option><option value="数据不足">价格数据不足</option>
           </select>
-          <button class="btn btn-outline btn-sm" onclick="bondValClearFilters()">清除筛选</button>
+          <button class="btn btn-outline btn-sm" data-act="bondValClearFilters">清除筛选</button>
           <span class="bond-val-spacer"></span>
           <span class="bond-val-quality" id="bond-val-visible"></span>
         </div>
@@ -805,6 +806,8 @@
       </div>
       <div class="bond-redemption-stats bond-feature-stats" id="bond-redemption-stats">
         <div class="bond-redemption-stat bond-feature-stat"><span>已公告强赎</span><strong data-call-status="announced">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>已公告到期兑付</span><strong data-call-status="maturity_redeem">0</strong></div>
+        <div class="bond-redemption-stat bond-feature-stat"><span>赎回方式待确认</span><strong data-call-status="redemption_unconfirmed">0</strong></div>
         <div class="bond-redemption-stat bond-feature-stat"><span>临近到期</span><strong data-call-status="maturity_near">0</strong></div>
         <div class="bond-redemption-stat bond-feature-stat"><span>已满足待确认</span><strong data-call-status="met_pending">0</strong></div>
         <div class="bond-redemption-stat bond-feature-stat"><span>接近触发</span><strong data-call-status="near">0</strong></div>
@@ -814,12 +817,12 @@
       </div>
       <div class="table-wrap">
         <div class="bond-redemption-toolbar bond-feature-toolbar">
-          <input id="bond-redemption-search" name="bond-redemption-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" oninput="bondRedemptionApplyFilters()">
-          <select id="bond-redemption-status" onchange="bondRedemptionApplyFilters()" aria-label="按强赎状态筛选">
-            <option value="">全部状态</option><option value="announced">已公告强赎</option><option value="maturity_near">临近到期</option>
+          <input id="bond-redemption-search" name="bond-redemption-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" data-act="bondRedemptionApplyFilters">
+          <select id="bond-redemption-status" data-act="bondRedemptionApplyFilters" aria-label="按强赎状态筛选">
+            <option value="">全部状态</option><option value="announced">已公告强赎</option><option value="maturity_redeem">已公告到期兑付</option><option value="redemption_unconfirmed">赎回方式待确认</option><option value="maturity_near">临近到期</option>
             <option value="met_pending">已满足待确认</option><option value="near">接近触发</option><option value="tracking">跟踪中</option><option value="waived">不提前赎回</option><option value="completed">已完成</option><option value="not_active">暂不适用</option><option value="incomplete">数据不完整</option>
           </select>
-          <button class="btn btn-outline btn-sm" onclick="loadBondRedemption(true)">刷新</button>
+          <button class="btn btn-outline btn-sm" data-act="loadBondRedemption" data-args='[true]'>刷新</button>
           <span class="bond-redemption-quality bond-feature-quality" id="bond-redemption-visible"></span>
         </div>
         <div id="bond-redemption-table"><div class="bond-redemption-empty">正在加载强赎数据...</div></div>
@@ -845,15 +848,15 @@
       </div>
       <div class="table-wrap">
         <div class="bond-revision-toolbar bond-feature-toolbar">
-          <input id="bond-revision-search" name="bond-revision-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" oninput="bondRevisionApplyFilters()">
-          <select id="bond-revision-status" onchange="bondRevisionApplyFilters()" aria-label="按下修状态筛选">
+          <input id="bond-revision-search" name="bond-revision-search" type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-autofill-ignore aria-label="搜索债券代码、名称或正股" placeholder="搜索债券代码、名称或正股" data-act="bondRevisionApplyFilters">
+          <select id="bond-revision-status" data-act="bondRevisionApplyFilters" aria-label="按下修状态筛选">
             <option value="">全部状态</option><option value="proposed">已提议下修</option><option value="meeting_pending">股东大会待审</option>
             <option value="approved">股东大会通过</option><option value="implemented">已实施</option><option value="met_pending">已满足待公告</option>
             <option value="near">接近触发</option><option value="locked">不下修锁定期</option><option value="floor_blocked">净资产底线限制</option><option value="tracking">跟踪中</option>
             <option value="terminated">未通过/已终止</option><option value="incomplete">数据不完整</option>
           </select>
-          <label><input id="bond-revision-near" type="checkbox" onchange="bondRevisionApplyFilters()"> 仅看临近或已满足</label>
-          <button class="btn btn-outline btn-sm" onclick="loadBondRevision(true)">刷新</button>
+          <label><input id="bond-revision-near" type="checkbox" data-act="bondRevisionApplyFilters"> 仅看临近或已满足</label>
+          <button class="btn btn-outline btn-sm" data-act="loadBondRevision" data-args='[true]'>刷新</button>
           <span class="bond-revision-quality bond-feature-quality" id="bond-revision-visible"></span>
         </div>
         <div id="bond-revision-table"><div class="bond-revision-empty">正在加载下修数据...</div></div>
@@ -869,14 +872,14 @@
         </div>
         <div class="bond-list-updated" id="bond-list-updated">正在读取数据...</div>
       </div>
-      <div class="bond-list-stale" id="bond-list-stale" style="display:none;">数据暂未更新，当前展示最近一份有效快照</div>
+      <div class="js-hidden bond-list-stale" id="bond-list-stale">数据暂未更新，当前展示最近一份有效快照</div>
       <div class="table-wrap">
         <div class="bond-list-toolbar">
-          <input id="bond-list-search" type="search" placeholder="搜索债券代码、名称或正股" oninput="bondListApplyFilters()">
-          <select id="bond-list-status" onchange="bondListApplyFilters()" aria-label="按数据状态筛选">
+          <input id="bond-list-search" type="search" placeholder="搜索债券代码、名称或正股" data-act="bondListApplyFilters">
+          <select id="bond-list-status" data-act="bondListApplyFilters" aria-label="按数据状态筛选">
             <option value="">全部数据</option><option value="complete">数据完整</option><option value="partial">数据不完整</option>
           </select>
-          <button class="btn btn-outline btn-sm" id="bond-list-refresh" onclick="bondListRefresh()">刷新行情</button>
+          <button class="btn btn-outline btn-sm" id="bond-list-refresh" data-act="bondListRefresh">刷新行情</button>
           <span class="bond-list-quality" id="bond-list-visible"></span>
         </div>
         <div id="bond-list-table"><div class="bond-list-empty">正在加载上市转债数据...</div></div>
@@ -892,11 +895,11 @@
   <div class="profile-wrap">
     <div class="profile-card">
       <div class="profile-head">
-        <div class="avatar-wrap" onclick="document.getElementById('avatar-input').click()">
+        <div class="avatar-wrap" data-act="__click" data-target="avatar-input">
           <img id="profile-avatar" class="avatar-img" src="" alt="头像">
           <div class="avatar-mask">修改</div>
         </div>
-        <input type="file" id="avatar-input" accept="image/*" class="hidden-input" onchange="onAvatarChange(event)">
+        <input type="file" id="avatar-input" accept="image/*" class="hidden-input" data-act="onAvatarChange" data-use-event>
         <div class="profile-name">
           <input id="profile-nickname" class="profile-nick-input" placeholder="昵称" maxlength="30">
           <div class="profile-username" id="profile-username"></div>
@@ -904,25 +907,25 @@
       </div>
       <div class="form-group"><label>简介</label><textarea id="profile-bio" maxlength="200" placeholder="介绍一下自己..."></textarea></div>
       <div class="form-group"><label>邮箱</label><input id="profile-email" type="email" placeholder="用于接收通知" inputmode="email"></div>
-      <button class="btn btn-primary" onclick="saveProfile()">保存资料</button>
+      <button class="btn btn-primary" data-act="saveProfile">保存资料</button>
     </div>
 
     <div class="profile-card profile-card-pwd">
-      <div class="pwd-toggle" onclick="togglePwdCard()">
-        <h3 style="margin:0;cursor:pointer;">修改密码 <span id="pwd-arrow">▶</span></h3>
+      <div class="pwd-toggle" data-act="togglePwdCard">
+        <h3 class="u-m-0 u-clickable">修改密码 <span id="pwd-arrow">▶</span></h3>
       </div>
-      <div id="pwd-body" style="display:none;">
+      <div class="js-hidden" id="pwd-body">
         <div class="form-group"><label>旧密码</label><input id="pwd-old" type="password" autocomplete="current-password" data-autofill-credential></div>
         <div class="form-group"><label>新密码</label><input id="pwd-new" type="password" autocomplete="new-password" data-autofill-credential></div>
         <div class="form-group"><label>确认新密码</label><input id="pwd-new2" type="password" autocomplete="new-password" data-autofill-credential></div>
-        <button class="btn btn-primary" onclick="changePwd()">更新密码</button>
+        <button class="btn btn-primary" data-act="changePwd">更新密码</button>
       </div>
     </div>
 
     <div class="profile-card">
       <div class="profile-card-head">
         <h3>我的券商账户</h3>
-        <button class="btn btn-ghost" onclick="showAccountMenu()">管理账户</button>
+        <button class="btn btn-ghost" data-act="showAccountMenu">管理账户</button>
       </div>
       <div id="profile-accounts" class="profile-acct-list"></div>
     </div>
@@ -931,7 +934,7 @@
       <h3>账号信息</h3>
       <div class="info-row"><span>登录账号</span><span id="info-username"></span></div>
       <div class="info-row"><span>最后登录</span><span id="info-lastlogin"></span></div>
-      <button class="btn btn-primary btn-logout" onclick="logout()">退出登录</button>
+      <button class="btn btn-primary btn-logout" data-act="logout">退出登录</button>
     </div>
   </div>
 </div>
@@ -940,10 +943,10 @@
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal">
     <h2 id="modal-title">编辑持仓</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-overlay')">&times;</button>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-overlay">&times;</button>
     <div id="modal-body"></div>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal('modal-overlay')">取消</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-overlay">取消</button>
       <button class="btn btn-primary" id="modal-save-btn">更新</button>
     </div>
   </div>
@@ -951,24 +954,24 @@
 
 <!-- 删除确认弹窗 -->
 <div class="modal-overlay" id="modal-delete">
-  <div class="modal" style="width:380px;">
+  <div class="modal u-modal-w380" >
     <h2>确认删除</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-delete')">&times;</button>
-    <p style="font-size:14px;color:#666;margin-bottom:18px;" id="delete-msg">确定要删除该持仓吗？</p>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-delete">&times;</button>
+    <p id="delete-msg" class="u-note-14 u-mb-18">确定要删除该持仓吗？</p>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal('modal-delete')">取消</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-delete">取消</button>
       <button class="btn btn-danger" id="delete-confirm-btn">删除</button>
     </div>
   </div>
 </div>
 
 <!-- 历史净值导入冲突确认弹窗（z-index 高于账户等弹框） -->
-<div class="modal-overlay" id="modal-conflict" style="z-index:2000;">
-  <div class="modal" style="width:420px;">
+<div class="modal-overlay u-z-2000" id="modal-conflict" >
+  <div class="modal u-modal-w420" >
     <h2>导入数据冲突</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-conflict')">&times;</button>
-    <p style="font-size:14px;color:#666;margin-bottom:18px;line-height:1.6;">导入的 Excel 中有日期与线上净值记录重叠。请选择处理方式：</p>
-    <div class="modal-actions" style="flex-direction:column;gap:10px;">
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-conflict">&times;</button>
+    <p class="u-note-14 u-mb-18">导入的 Excel 中有日期与线上净值记录重叠。请选择处理方式：</p>
+    <div class="modal-actions u-flex-col u-gap-10" >
       <button class="btn btn-primary" id="conflict-import-btn">导入数据覆盖线上（用 Excel 净值替换冲突日）</button>
       <button class="btn btn-outline" id="conflict-online-btn">线上覆盖导入（保留线上真实记录，仅补早于首条的历史）</button>
     </div>
@@ -976,19 +979,19 @@
 </div>
 
 <!-- 管理历史数据弹窗（误导入/污染时还原 + 清空历史数据） -->
-<div class="modal-overlay" id="modal-nav-mgmt" style="z-index:2100;">
-  <div class="modal" style="width:520px;">
+<div class="modal-overlay u-z-2100" id="modal-nav-mgmt" >
+  <div class="modal u-modal-w520" >
     <h2>管理历史数据</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-mgmt')">&times;</button>
-    <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-nav-mgmt">&times;</button>
+    <p class="u-note u-mb-14">
       误导入到错误账户时用这里还原。每次导入历史数据前会自动拍一份快照。
     </p>
-    <div id="nav-mgmt-backup-info" style="font-size:12px;color:#888;margin-bottom:14px;padding:8px 10px;background:#f7f9ff;border-radius:6px;"></div>
-    <div class="modal-actions" style="flex-direction:column;gap:10px;">
-      <button class="btn btn-primary" onclick="confirmRestoreNavHistory()" id="nav-mgmt-restore-btn">⏪ 一键还原到上次导入前</button>
-      <button class="btn btn-outline" onclick="confirmClearNavHistory()" id="nav-mgmt-clear-btn">🗑 清空历史数据（只保留最近一天）</button>
+    <div id="nav-mgmt-backup-info" class="u-nav-backup-info"></div>
+    <div class="modal-actions u-flex-col u-gap-10" >
+      <button class="btn btn-primary" data-act="confirmRestoreNavHistory" id="nav-mgmt-restore-btn">⏪ 一键还原到上次导入前</button>
+      <button class="btn btn-outline" data-act="confirmClearNavHistory" id="nav-mgmt-clear-btn">🗑 清空历史数据（只保留最近一天）</button>
     </div>
-    <p style="font-size:11px;color:#aaa;margin-top:14px;line-height:1.5;">
+    <p class="u-fs-11 u-c-muted u-mt-14 u-lh-15">
       「一键还原」会把当前账户的历史净值恢复到上次导入前的快照（之前没有快照则无法还原）。<br>
       「清空历史数据」会删除除最近一天外的全部历史净值，适合历史数据已污染、想从头重建的场景。
     </p>
@@ -996,82 +999,82 @@
 </div>
 
 <!-- 清空历史数据确认弹窗（通用弹框，非浏览器 confirm） -->
-<div class="modal-overlay" id="modal-nav-clear-confirm" style="z-index:2200;">
-  <div class="modal" style="width:420px;">
+<div class="modal-overlay u-z-2200" id="modal-nav-clear-confirm" >
+  <div class="modal u-modal-w420" >
     <h2>清空历史数据</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-clear-confirm')">&times;</button>
-    <p id="nav-clear-confirm-text" style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px;">将删除除最近一天外的全部历史净值记录，此操作不可撤销（除非有备份可还原）。确定继续？</p>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-nav-clear-confirm">&times;</button>
+    <p id="nav-clear-confirm-text" class="u-note u-mb-16">将删除除最近一天外的全部历史净值记录，此操作不可撤销（除非有备份可还原）。确定继续？</p>
     <div class="modal-actions">
-      <button class="btn btn-danger" onclick="doClearNavHistory()">确认清空</button>
-      <button class="btn btn-outline" onclick="closeModal('modal-nav-clear-confirm')">取消</button>
+      <button class="btn btn-danger" data-act="doClearNavHistory">确认清空</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-nav-clear-confirm">取消</button>
     </div>
   </div>
 </div>
 
 <!-- 还原历史数据确认弹窗（通用弹框，非浏览器 confirm） -->
-<div class="modal-overlay" id="modal-nav-restore-confirm" style="z-index:2200;">
-  <div class="modal" style="width:420px;">
+<div class="modal-overlay u-z-2200" id="modal-nav-restore-confirm" >
+  <div class="modal u-modal-w420" >
     <h2>还原历史数据</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-restore-confirm')">&times;</button>
-    <p style="font-size:13px;color:#666;line-height:1.6;margin-bottom:16px;">确认把当前账户的历史净值恢复到上次导入前的快照？当前数据会被覆盖。</p>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-nav-restore-confirm">&times;</button>
+    <p class="u-note u-mb-16">确认把当前账户的历史净值恢复到上次导入前的快照？当前数据会被覆盖。</p>
     <div class="modal-actions">
-      <button class="btn btn-primary" onclick="doRestoreNavHistory()">确认还原</button>
-      <button class="btn btn-outline" onclick="closeModal('modal-nav-restore-confirm')">取消</button>
+      <button class="btn btn-primary" data-act="doRestoreNavHistory">确认还原</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-nav-restore-confirm">取消</button>
     </div>
   </div>
 </div>
 
 <!-- 历史净值 AI 解析进度弹窗（导入过程中显示批次进度，失败展示完整错误） -->
-<div class="modal-overlay" id="modal-import-progress" style="z-index:2000;">
-  <div class="modal" style="width:440px;">
+<div class="modal-overlay u-z-2000" id="modal-import-progress" >
+  <div class="modal u-modal-w440" >
     <h2 id="import-progress-title">正在导入历史净值</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-import-progress')">&times;</button>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-import-progress">&times;</button>
     <div id="import-progress-body">
-      <div style="display:flex;align-items:center;margin-bottom:14px;">
+      <div class="u-flex-center u-mb-14">
         <div class="spinner" id="import-spinner"></div>
-        <span id="import-progress-text" style="font-size:14px;color:#333;">正在解析 Excel...</span>
+        <span id="import-progress-text" class="u-fs-14 u-c-ink">正在解析 Excel...</span>
       </div>
       <div class="refresh-bar"><div class="refresh-bar-fill" id="import-progress-fill"></div></div>
-      <p id="import-progress-sub" style="font-size:12px;color:#888;margin-top:10px;"></p>
+      <p id="import-progress-sub" class="u-fs-12 u-c-muted u-mt-10"></p>
     </div>
-    <div id="import-error-body" style="display:none;">
-      <p id="import-error-text" style="font-size:13px;color:#d93025;line-height:1.6;white-space:pre-wrap;word-break:break-all;"></p>
+    <div class="js-hidden" id="import-error-body">
+      <p id="import-error-text" class="u-note-danger u-pre-wrap"></p>
     </div>
     <div class="modal-actions" id="import-progress-actions">
-      <button class="btn btn-outline" id="import-close-btn" style="display:none;" onclick="closeImportProgress()">关闭</button>
-      <button class="btn btn-primary" id="import-copy-btn" style="display:none;" onclick="copyImportError()">复制错误</button>
+      <button class="js-hidden btn btn-outline" id="import-close-btn" data-act="closeImportProgress">关闭</button>
+      <button class="js-hidden btn btn-primary" id="import-copy-btn" data-act="copyImportError">复制错误</button>
     </div>
   </div>
 </div>
 
 <!-- 列手动匹配弹窗（无法自动识别表头时，由用户手动指定每列对应字段） -->
-<div class="modal-overlay" id="modal-mapping" style="z-index:2100;">
-  <div class="modal" style="width:520px;">
+<div class="modal-overlay u-z-2100" id="modal-mapping" >
+  <div class="modal u-modal-w520" >
     <h2>请匹配 Excel 列</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeMappingModal()">&times;</button>
-    <p style="font-size:13px;color:#666;margin-bottom:14px;line-height:1.6;">未能自动识别「日期」或「净值」列，请手动选择每一列对应的字段（带 * 为必填）。</p>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeMappingModal">&times;</button>
+    <p class="u-note u-mb-14">未能自动识别「日期」或「净值」列，请手动选择每一列对应的字段（带 * 为必填）。</p>
     <div id="mapping-fields"></div>
-    <div style="margin:14px 0 6px;font-size:13px;color:#333;">预览（前 5 行）：</div>
-    <div id="mapping-preview" style="max-height:180px;overflow:auto;border:1px solid #eee;border-radius:8px;"></div>
-    <div class="modal-actions" style="margin-top:16px;">
-      <button class="btn btn-outline" id="mapping-cancel-btn" onclick="closeMappingModal()">取消</button>
-      <button class="btn btn-primary" id="mapping-ok-btn" onclick="confirmMapping()">确认导入</button>
+    <div class="u-mapping-label">预览（前 5 行）：</div>
+    <div id="mapping-preview" class="u-mapping-preview"></div>
+    <div class="modal-actions u-mt-16" >
+      <button class="btn btn-outline" id="mapping-cancel-btn" data-act="closeMappingModal">取消</button>
+      <button class="btn btn-primary" id="mapping-ok-btn" data-act="confirmMapping">确认导入</button>
     </div>
   </div>
 </div>
 
 <!-- 新增/编辑单条净值记录 -->
-<div class="modal-overlay" id="modal-nav-edit" style="z-index:2200;">
-  <div class="modal" style="width:420px;">
+<div class="modal-overlay u-z-2200" id="modal-nav-edit" >
+  <div class="modal u-modal-w420" >
     <h2 id="nav-edit-title">新增净值记录</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-nav-edit')">&times;</button>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-nav-edit">&times;</button>
     <div class="form-group"><label>日期 *（YYYY-MM-DD）</label><input id="nav-edit-date" placeholder="如 2024-01-01"></div>
     <div class="form-group"><label>净值 *（以 1.0000 为基准）</label><input id="nav-edit-nav" type="number" step="0.0001" placeholder="1.0000" inputmode="decimal"></div>
     <div class="form-group"><label>总市值（可选）</label><input id="nav-edit-total" type="number" step="0.01" placeholder="留空则不计" inputmode="decimal"></div>
     <div class="form-group"><label>本金/投入（可选）</label><input id="nav-edit-invested" type="number" step="0.01" placeholder="留空则用现金流累加" inputmode="decimal"></div>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal('modal-nav-edit')">取消</button>
-      <button class="btn btn-primary" onclick="saveNavEdit()">保存</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-nav-edit">取消</button>
+      <button class="btn btn-primary" data-act="saveNavEdit">保存</button>
     </div>
   </div>
 </div>
@@ -1080,7 +1083,7 @@
 <div class="modal-overlay" id="modal-add">
   <div class="modal">
     <h2 id="modal-title">新增持仓</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-add')">&times;</button>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-add">&times;</button>
     <div class="form-row-2col">
       <div class="form-group"><label>证券代码</label><input id="modal-code" placeholder="如 601919"></div>
       <div class="form-group"><label>证券名称</label><input id="modal-name" placeholder="自动获取"></div>
@@ -1111,22 +1114,22 @@
       <div class="form-group"><label>备注</label><input id="modal-note" placeholder="可选"></div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal('modal-add')">取消</button>
-      <button class="btn btn-primary" id="modal-save-btn" onclick="savePosition()">保存</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-add">取消</button>
+      <button class="btn btn-primary" id="modal-save-btn" data-act="savePosition">保存</button>
     </div>
   </div>
 </div>
 
 <!-- 税费设置弹窗 -->
 <div class="modal-overlay" id="modal-feesettings">
-  <div class="modal" style="width:640px;max-width:94vw;">
+  <div class="modal u-modal-w640" >
     <h2>⚙ 税费设置</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-feesettings')">&times;</button>
-    <p style="font-size:12px;color:#888;margin:-6px 0 12px;">佣金费率、最低佣金可自行设定；印花税、过户费等为交易所默认规则（一般无需改动，交易所调整时可自动更新）。</p>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-feesettings">&times;</button>
+    <p class="u-fs-12 u-c-muted">佣金费率、最低佣金可自行设定；印花税、过户费等为交易所默认规则（一般无需改动，交易所调整时可自动更新）。</p>
     <div id="fee-settings-body"></div>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="closeModal('modal-feesettings')">取消</button>
-      <button class="btn btn-primary" onclick="saveFeeSettings()">保存</button>
+      <button class="btn btn-outline" data-act="closeModal" data-arg="modal-feesettings">取消</button>
+      <button class="btn btn-primary" data-act="saveFeeSettings">保存</button>
     </div>
   </div>
 </div>
@@ -1135,7 +1138,7 @@
 <div class="modal-overlay" id="modal-account">
   <div class="modal">
     <h2>账户管理</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeModal('modal-account')">&times;</button>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeModal" data-arg="modal-account">&times;</button>
 
     <div class="acct-section">
       <div class="acct-section-title">我的账户</div>
@@ -1154,47 +1157,48 @@
   <a href="https://beian.mps.gov.cn/#/query/webSearch?code=11011402056694" target="_blank" rel="noreferrer">京公网安备11011402056694号</a>
 </footer>
 
-<script src="shared/chart-interaction.js?v=1" defer></script>
-<script src="js/code-classify.js?v=20260921a" defer></script>
+<script src="shared/chart-interaction.js?v=__APP_VERSION__" defer></script>
+<script src="js/code-classify.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-date.js?v=__APP_VERSION__" defer></script>
 <script src="js/utils.js?v=__APP_VERSION__" defer></script>
-<script src="shared/dialog.js?v=0.8.0.8" defer></script>
-<script src="shared/business-table.js?v=0.8.0.11" defer></script>
+<script src="shared/dialog.js?v=__APP_VERSION__" defer></script>
+<script src="shared/business-table.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-quote.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-tables.js?v=__APP_VERSION__" defer></script>
 <script src="shared/cash-income-panel.js?v=__APP_VERSION__" defer></script>
-<script src="shared/core-fees.js?v=1" defer></script>
+<script src="shared/core-fees.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-trade.js?v=__APP_VERSION__" defer></script>
 <script src="shared/nav-math.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-returns.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-earnings.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-account.js?v=__APP_VERSION__" defer></script>
 <script src="shared/date-range-control.js?v=__APP_VERSION__" defer></script>
-<script src="vendor/marked.min.js?v=20260904" defer></script>
-<script src="vendor/dompurify.min.js?v=3.4.16" defer></script>
-<script src="js/ipo.js?v=__APP_VERSION__" defer></script>
-<script src="js/bond-safety.js?v=12" defer></script>
-<script src="js/bond-cycle.js?v=0.8.1.90" defer></script>
-<script src="js/bond-valuation.js?v=0.8.0.8" defer></script>
-<script src="js/bond-list.js?v=0.8.2.1" defer></script>
-<script src="js/bond-redemption.js?v=8" defer></script>
-<script src="js/bond-revision.js?v=47" defer></script>
-<script src="js/stock-analysis.js?v=0.8.0.8" defer></script>
-<script src="js/bond-analysis.js?v=__APP_VERSION__" defer></script>
-<script src="js/stock-analysis-statements.js?v=3" defer></script>
-<script src="js/stock-analysis-chart.js?v=__APP_VERSION__" defer></script>
-<script src="js/stock-analysis-valuation-chart.js?v=__APP_VERSION__" defer></script>
-<script src="js/market-volatility.js?v=0.8.0.8" defer></script>
-<script src="js/market-cycle-metrics.js?v=0.8.0.8" defer></script>
-<script src="js/home-dashboard.js?v=0.8.3.56" defer></script>
-<script src="js/position-comparison.js?v=0.8.0.8" defer></script>
-<script src="vendor/vditor/dist/index.min.js?v=20260904" defer></script>
-<script src="shared/md-safe.js?v=2" defer></script>
-<script src="js/knowledge.js?v=0.8.0.8" defer></script>
-<script src="js/access-policy.js?v=1" defer></script>
-<script src="js/session.js?v=1" defer></script>
-<script src="js/arbitrage.js?v=15" defer></script>
-<script src="js/navigation.js?v=0.8.1.90" defer></script>
+<script type="text/lazy" data-lazy-section="knowledge" src="vendor/marked.min.js?v=20260904"></script>
+<script type="text/lazy" data-lazy-section="knowledge" src="vendor/dompurify.min.js?v=3.4.16"></script>
+<script type="text/lazy" data-lazy-section="ipo" src="js/ipo.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-safety.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-cycle.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-valuation.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-list.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-redemption.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="bond-safety" src="js/bond-revision.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-analysis" src="js/stock-analysis.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-analysis bond-safety" src="js/bond-analysis.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-analysis" src="js/stock-analysis-statements.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-analysis" src="js/stock-analysis-chart.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="stock-analysis" src="js/stock-analysis-valuation-chart.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="market-volatility" src="js/market-volatility.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="market-volatility" src="js/market-cycle-metrics.js?v=__APP_VERSION__"></script>
+<script src="js/home-dashboard.js?v=__APP_VERSION__" defer></script>
+<script type="text/lazy" data-lazy-section="position-compare" src="js/position-comparison.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="knowledge" src="vendor/vditor/dist/index.min.js?v=20260904"></script>
+<script type="text/lazy" data-lazy-section="knowledge" src="shared/md-safe.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="knowledge" src="js/knowledge.js?v=__APP_VERSION__"></script>
+<script src="js/access-policy.js?v=__APP_VERSION__" defer></script>
+<script src="js/session.js?v=__APP_VERSION__" defer></script>
+<script src="js/arbitrage.js?v=__APP_VERSION__" defer></script>
+<script src="shared/lazy-sections.js?v=__APP_VERSION__" defer></script>
+<script src="js/navigation.js?v=__APP_VERSION__" defer></script>
 <script>
 // ============== 数据层（服务端API） ==============
 let data = null;
@@ -1250,16 +1254,16 @@ async function loadChangelogPage() {
     let html = '';
     mergeChangelogByDate(data).forEach(function(item) {
       var title = (item.date || '') + (item.version ? '（' + item.version + '）' : '');
-      html += '<div style="margin-bottom:18px;"><div style="font-weight:700;color:#1a1a2e;margin-bottom:6px;">' + escapeHtml(title) + '</div><ul style="padding-left:18px;margin:0;">';
+      html += '<div class="u-mb-18"><div class="u-changelog-title">' + escapeHtml(title) + '</div><ul class="u-changelog-list">';
       (item.items || []).forEach(function(it) {
-        html += '<li style="margin-bottom:4px;color:#444;">' + escapeHtml(it) + '</li>';
+        html += '<li class="u-changelog-li">' + escapeHtml(it) + '</li>';
       });
       html += '</ul></div>';
     });
-    el.innerHTML = html || '<p style="color:#888;">暂无记录</p>';
+    el.innerHTML = html || '<p class="u-c-muted">暂无记录</p>';
   } catch(e) {
     console.error('changelog load failed', e);
-    el.innerHTML = '<p style="color:#888;">加载失败：' + escapeHtml(String(e.message || e)) + '</p>';
+    el.innerHTML = '<p class="u-c-muted">加载失败：' + escapeHtml(String(e.message || e)) + '</p>';
   }
 }
 
@@ -1313,7 +1317,7 @@ async function saveProfile() {
   const oldEmail = (myProfile && myProfile.email || '').trim();
   let currentPassword;
   if (nextEmail.toLowerCase() !== oldEmail.toLowerCase()) {
-    currentPassword = window.prompt('修改邮箱需要输入当前密码：');
+    currentPassword = await projectPrompt('修改邮箱需要输入当前密码：');
     if (currentPassword === null) return;
   }
   const payload = {
@@ -1598,7 +1602,7 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
   initNav();
   // 一级导航（首页/持仓管理/个人中心）绑定，默认显示首页
   setupMainNav();
-  initKnowledgeEvents();
+  if (typeof initKnowledgeEvents === 'function') initKnowledgeEvents(); // U-5：知识脚本按栏目懒加载，未到过知识页时未定义
   var startParams = new URLSearchParams(window.location.search);
   var requestedMain = startParams.get('main');
   var requestedMetric = startParams.get('metric');
@@ -1606,6 +1610,8 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
   // 旧转债分析深链（main=stock-analysis&code=转债）自动映射到可转债个券分析子页
   if (requestedMain === 'stock-analysis') {
     var maybeCode = startParams.get('code');
+    // U-5：securityAnalysisKind 在 bond-analysis.js（按栏目懒加载），深链带 code 时先确保脚本就绪
+    if (maybeCode && window.LazySections) await LazySections.ensureSection('stock-analysis');
     if (maybeCode && typeof securityAnalysisKind === 'function' && securityAnalysisKind(maybeCode) === 'bond') {
       requestedMain = 'bond-safety';
       requestedSub = 'analysis';
@@ -1624,17 +1630,19 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
   }
   // 直接打开持仓页仍需等待完整账户数据，避免空数据触发行情刷新。
   if (loggedIn && initialMain === 'holdings') await accountDataReady;
-  switchMain(initialMain, true);
-  if (initialMain === 'market-volatility' && ['graham','pe','pb','m2_market_cap'].includes(requestedMetric)) {
-    switchMarketCycleMetric(requestedMetric);
-  }
-  // initBondCycleSub 已按当前 URL 恢复可转债子页；这里只处理旧个券分析深链。
-  if (initialMain === 'bond-safety' && ['safety','cycle','valuation','list','redemption','revision','analysis'].includes(requestedSub)) {
-    if (requestedSub === 'analysis') {
-      var reqCode = startParams.get('code');
-      if (reqCode) setTimeout(function(){ securityAnalysisSubmit(reqCode, 'bond'); }, 200);
+  // U-5：switchMain 返回 Promise（懒加载栏目脚本就绪后才分发页面入口），后置动作在其后执行
+  switchMain(initialMain, true).then(function () {
+    if (initialMain === 'market-volatility' && ['graham','pe','pb','m2_market_cap'].includes(requestedMetric)) {
+      switchMarketCycleMetric(requestedMetric);
     }
-  }
+    // initBondCycleSub 已按当前 URL 恢复可转债子页；这里只处理旧个券分析深链。
+    if (initialMain === 'bond-safety' && ['safety','cycle','valuation','list','redemption','revision','analysis'].includes(requestedSub)) {
+      if (requestedSub === 'analysis') {
+        var reqCode = startParams.get('code');
+        if (reqCode) setTimeout(function(){ securityAnalysisSubmit(reqCode, 'bond'); }, 200);
+      }
+    }
+  });
   if (loggedIn) {
     // 首次直接进入持仓页时，switchMain() 已触发完整刷新，避免紧接着重复刷新和重绘圆环图。
     if (initialMain !== 'holdings') {

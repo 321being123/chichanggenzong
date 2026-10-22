@@ -92,7 +92,9 @@ if (typeof setInterval === 'function') {
 // 因为 syncUserAccounts 已保证 accounts 表与列表同步；结构化表空≠无权限——新账户/主动清空都合法）。
 async function assertOwnership(req, res, next) {
   const username = req.session.user;
-  const name = (req.params.name ? decodeURIComponent(req.params.name) : (req.body && req.body.account)) || '';
+  // Express 已对路由参数解码一次，禁止再 decodeURIComponent：合法账户名含 "%"（如 100%）时二次解码会抛 URIError，
+  // 而本中间件若以裸异步中间件注册，拒绝的 Promise 会让 Web 进程直接退出（2026-10-21 审查 R-1）。
+  const name = String(req.params.name || (req.body && req.body.account) || '');
   if (!name) return next();
   try {
     // 权威来源：accounts 表存在该账户即通过（列表/权限与业务数据同源）

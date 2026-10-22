@@ -5,8 +5,8 @@ function stockAnalysisSwitchView(view) {
   var analysisPane = document.getElementById('stock-analysis-analysis-pane');
   var statementsPane = document.getElementById('stock-analysis-statements-pane');
   var analysisTab = document.getElementById('stock-analysis-view-analysis');
-  if (analysisPane) analysisPane.style.display = statements ? 'none' : '';
-  if (statementsPane) statementsPane.style.display = statements ? '' : 'none';
+  if (analysisPane) { analysisPane.classList.remove('js-hidden'); analysisPane.style.display = statements ? 'none' : ''; }
+  if (statementsPane) { statementsPane.classList.remove('js-hidden'); statementsPane.style.display = statements ? '' : 'none'; }
   if (analysisTab) { analysisTab.classList.toggle('selected', !statements); analysisTab.setAttribute('aria-selected', String(!statements)); }
   document.querySelectorAll('[data-statement-view]').forEach(function(button) {
     var selected = statements && button.getAttribute('data-statement-view') === view;

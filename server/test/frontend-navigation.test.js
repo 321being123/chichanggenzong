@@ -139,7 +139,7 @@ ok(html.includes('id="main-stock-analysis"') && html.includes('id="bond-analysis
 ok(!html.includes('id="sub-bond-analysis"'), '不应再保留独立的可转债个券分析子页容器');
 // 统一证券分析入口：名称联想下拉框 + 提交/刷新回调
 ok(html.includes('id="stock-analysis-suggestions"') && html.includes('aria-autocomplete="list"'), '统一证券分析缺少名称联想下拉框');
-ok(html.includes('securityAnalysisSubmit(') && html.includes('securityAnalysisRefresh('), '统一证券分析入口缺少提交/刷新回调');
+ok(html.includes('data-act="securityAnalysisSubmit"') && html.includes('data-act="securityAnalysisRefresh"'), '统一证券分析入口缺少提交/刷新回调');
 // 旧转债分析深链（main=stock-analysis&code=转债）自动映射到可转债分析
 ok(html.includes("securityAnalysisKind(maybeCode) === 'bond'"), '旧转债深链未做自动映射');
 

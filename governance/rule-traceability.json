@@ -3295,6 +3295,82 @@
       ],
       "owner": "可转债资料",
       "status": "verified"
+    },
+    {
+      "id": "DATASET-PARTITION-DATE-FORMAT-044",
+      "title": "分区水位日期取值兼容 YYYY-MM-DD 与 YYYYMMDD 两种历史格式，dateValue 同步归一化",
+      "implementation": {
+        "file": "server/services/datasetPartitionRegistry.js",
+        "symbol": "DATE_TEXT"
+      },
+      "tests": [
+        {
+          "file": "server/test/audit-20261021-migration.test.js",
+          "pattern": "八位日期参与水位，取两种格式的真实最大值"
+        },
+        {
+          "file": "server/test/audit-20261021-migration.test.js",
+          "pattern": "仅横线格式时也能正确取值"
+        }
+      ],
+      "owner": "日期边界治理",
+      "status": "verified"
+    },
+    {
+      "id": "INSTRUMENT-NAME-CLEAN-045",
+      "title": "统一证券身份写入口拒绝公告正文残留脏名，存量脏名按官方简称纠正",
+      "implementation": {
+        "file": "server/services/securityIdentity.js",
+        "symbol": "isCleanSecurityName"
+      },
+      "tests": [
+        {
+          "file": "server/test/audit-20261021-units.test.js",
+          "pattern": "正文残留脏名拒绝"
+        },
+        {
+          "file": "server/test/test_audit_20261021.py",
+          "pattern": "顿号后的体裁残留不进名称"
+        }
+      ],
+      "owner": "可转债资料",
+      "status": "verified"
+    },
+    {
+      "id": "CALL-EVENT-KIND-SEMANTICS-046",
+      "title": "到期兑付/提前强赎/未确认三类语义写入 details.call_kind 并由状态视图独立输出",
+      "implementation": {
+        "file": "server/services/convertibleBondRedemptionSync.js",
+        "symbol": "classifyCallKind"
+      },
+      "tests": [
+        {
+          "file": "server/test/audit-20261021-migration.test.js",
+          "pattern": "状态视图区分到期兑付/已公告强赎/待确认"
+        },
+        {
+          "file": "server/test/audit-20261021-units.test.js",
+          "pattern": "提前赎回/赎回暨摘牌 → early（提前强赎）"
+        }
+      ],
+      "owner": "可转债分析",
+      "status": "verified"
+    },
+    {
+      "id": "ACCOUNT-NAME-DECODE-SAFE-047",
+      "title": "账户名路由参数不再二次解码，合法百分号账户不触发未捕获异常",
+      "implementation": {
+        "file": "server/middleware/auth.js",
+        "symbol": "assertOwnership"
+      },
+      "tests": [
+        {
+          "file": "server/test/audit-20261021-units.test.js",
+          "pattern": "assertOwnership 对 100% 账户名不再抛 URIError"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "verified"
     }
   ]
 }

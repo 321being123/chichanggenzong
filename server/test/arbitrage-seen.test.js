@@ -109,8 +109,11 @@ async function testApi(users, ids) {
 
 async function testFrontend() {
   const script = fs.readFileSync(path.join(__dirname, '../../public/js/arbitrage.js'), 'utf8');
+  // 与 index.html 真实加载顺序一致：utils.js 提供全局 num/pctv 共享格式器（R-17 后 arbitrage 不再自带）
+  const utilsScript = fs.readFileSync(path.join(__dirname, '../../public/js/utils.js'), 'utf8');
   const dom = new JSDOM('<button class="main-tab" data-main="arbitrage">套利机会<span id="arb-unread-count" hidden></span></button><div id="arb-table"></div><div id="arb-status"></div><div id="arb-detail"></div>', { runScripts: 'outside-only', url: 'http://localhost/', pretendToBeVisual: true });
   const w = dom.window;
+  w.eval(utilsScript);
   w.eval(script);
   const badge = w.document.getElementById('arb-unread-count');
   w.renderArbUnreadCount(12);

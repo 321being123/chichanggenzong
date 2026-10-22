@@ -4,7 +4,9 @@ const { pool } = require('../db/connection');
 const { publishDatasetPartition } = require('./datasetPartitions');
 const { getJobDefinition } = require('./jobDefinitions');
 
-const DATE_TEXT = (column) => `MAX(CASE WHEN ${column}::text ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN ${column}::date END)::text`;
+// 同时接受 'YYYY-MM-DD' 与 'YYYYMMDD' 两种历史格式（ipo_reports 等 TEXT 日期列），
+// 否则水位只统计到带横线的旧行（2026-10-21 审查 R-14：10-21 分区却记录 7-15 水位）。
+const DATE_TEXT = (column) => `MAX(CASE WHEN ${column}::text ~ '^(\\d{4}-\\d{2}-\\d{2}|\\d{8})$' THEN ${column}::date END)::text`;
 
 const DATASET_PARTITION_REGISTRY = Object.freeze({
   account_cash_income:{scopeKey:null,scopeType:'account',table:'public.cash_flows'},
@@ -59,8 +61,10 @@ function dateValue(value) {
     const pad = part => String(part).padStart(2, '0');
     return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
   }
-  const text = String(value).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+  const text = String(value).trim();
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  const short = text.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(short) ? short : null;
 }
 function resolveDatasetScope(datasetCode,context={}) {
   const definition=DATASET_PARTITION_REGISTRY[datasetCode];

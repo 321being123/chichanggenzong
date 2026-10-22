@@ -125,11 +125,24 @@ function switchView(view) {
   else renderPlaceholder(view);
 }
 
+
+// ===== U-15c：原内联多语句事件抽为具名函数（data-act 委托调用） =====
+function adminUsersSearch() { usersSearch = document.getElementById('users-search').value; usersOffset = 0; renderUsers(); }
+function adminUsersReset() { usersSearch = ''; usersOffset = 0; renderUsers(); }
+function adminUsersPrev() { usersOffset = Math.max(0, usersOffset - usersLimit); renderUsers(); }
+function adminUsersNext() { usersOffset += usersLimit; renderUsers(); }
+function adminBrokersMarketChange(v) { brokersMarket = v; renderBrokers(); }
+function adminBrokersSearch() { brokersSearch = document.getElementById('brokers-search').value; renderBrokers(); }
+function adminBrokersReset() { brokersSearch = ''; brokersMarket = ''; renderBrokers(); }
+function adminHolidayYearChange(v) { holidayYear = v; renderHolidays(); }
+function adminArbReviewApproved(id) { adminArbReview(id, 'approved'); }
+function adminArbReviewRejected(id) { adminArbReview(id, 'rejected'); }
+
 // ====== 概览仪表盘 ======
 async function renderOverview() {
   const el = document.getElementById('view-overview');
   if (!el) return;
-  el.innerHTML = '<div class="admin-placeholder"><div class="spinner" style="margin:0 auto 12px;"></div>加载中...</div>';
+  el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
   try {
     const r = await fetch(api('/api/admin/overview'));
     if (!r.ok) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>无权限或加载失败</div>'; return; }
@@ -161,10 +174,10 @@ function renderUsers() {
   el.innerHTML =
     '<div class="filter-bar">' +
       '<input id="users-search" placeholder="搜索账号" value="' + escapeHtml(usersSearch) + '" ' +
-        'style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;min-width:180px;" ' +
+        'data-style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;min-width:180px;" ' +
         'onkeydown="if(event.key===\'Enter\'){usersSearch=this.value;usersOffset=0;renderUsers();}">' +
-      '<button class="btn btn-primary btn-sm" onclick="usersSearch=document.getElementById(\'users-search\').value;usersOffset=0;renderUsers();">搜索</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="usersSearch=\'\';usersOffset=0;renderUsers();">重置</button>' +
+      '<button class="btn btn-primary btn-sm" data-act="adminUsersSearch">搜索</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="adminUsersReset">重置</button>' +
     '</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>账号</th><th>角色</th><th>状态</th><th>账户数</th><th>注册时间</th><th>操作</th></tr></thead>' +
@@ -226,8 +239,8 @@ async function loadUsersData() {
     const end = Math.min(usersOffset + usersLimit, d.total);
     pager.innerHTML =
       '<span class="pager-info">共 ' + d.total + ' 条，当前 ' + start + '-' + end + '</span>' +
-      '<button class="btn btn-sm btn-outline" ' + (usersOffset <= 0 ? 'disabled' : 'onclick="usersOffset=Math.max(0,usersOffset-usersLimit);renderUsers();"') + '>上一页</button>' +
-      '<button class="btn btn-sm btn-outline" ' + (end >= d.total ? 'disabled' : 'onclick="usersOffset+=usersLimit;renderUsers();"') + '>下一页</button>';
+      '<button class="btn btn-sm btn-outline" ' + (usersOffset <= 0 ? 'disabled' : 'data-act="adminUsersPrev"') + '>上一页</button>' +
+      '<button class="btn btn-sm btn-outline" ' + (end >= d.total ? 'disabled' : 'data-act="adminUsersNext"') + '>下一页</button>';
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="6" class="biz-table-state-cell biz-table-error">网络错误，请重试</td></tr>';
   }
@@ -263,9 +276,9 @@ async function adminToggleRole(username, cur) {
 
 function adminResetPwd(username) {
   openAdminModal('重置密码 - ' + username,
-    '<div class="form-group"><label>新密码（至少6位）</label><input id="admin-pwd-input" type="password" autocomplete="new-password" placeholder="输入新密码" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>',
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-primary" onclick="doAdminResetPwd(\'' + escapeHtml(username) + '\')">确定重置</button>'
+    '<div class="form-group"><label>新密码（至少6位）</label><input id="admin-pwd-input" type="password" autocomplete="new-password" placeholder="输入新密码" class="u-input"></div>',
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-primary" data-act="doAdminResetPwd" data-arg1="' + escapeHtml(username) + '">确定重置</button>'
   );
 }
 async function doAdminResetPwd(username) {
@@ -285,9 +298,9 @@ async function doAdminResetPwd(username) {
 
 function adminDeleteUser(username) {
   openAdminModal('删除用户 - ' + username,
-    '<p style="font-size:14px;color:#666;line-height:1.6;">确定删除该用户吗？将<b>同时删除其全部持仓、交易、账户与净值数据</b>，且不可恢复。</p>',
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-danger" onclick="doAdminDeleteUser(\'' + escapeHtml(username) + '\')">确认删除</button>'
+    '<p class="u-note-14">确定删除该用户吗？将<b>同时删除其全部持仓、交易、账户与净值数据</b>，且不可恢复。</p>',
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-danger" data-act="doAdminDeleteUser" data-arg1="' + escapeHtml(username) + '">确认删除</button>'
   );
 }
 async function doAdminDeleteUser(username) {
@@ -318,7 +331,7 @@ async function adminShowDetail(username) {
       '<div class="info-row"><span>邮箱</span><span>' + escapeHtml(d.email || '—') + '</span></div>' +
       '<div class="info-row"><span>注册时间</span><span>' + created + '</span></div>' +
       '<div class="info-row"><span>最后登录</span><span>' + last + '</span></div>' +
-      '<div class="acct-section-title" style="margin-top:16px;">券商账户</div>' + accts
+      '<div class="acct-section-title u-mt-16" >券商账户</div>' + accts
     );
   } catch (e) { showToast('网络错误'); }
 }
@@ -343,13 +356,13 @@ function renderBrokers() {
   el.innerHTML =
     '<div class="filter-bar">' +
       '<input id="brokers-search" placeholder="搜索券商名/代码" value="' + escapeHtml(brokersSearch) + '" ' +
-        'style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;min-width:160px;" ' +
+        'data-style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;min-width:160px;" ' +
         'onkeydown="if(event.key===\'Enter\'){brokersSearch=this.value;renderBrokers();}">' +
-      '<select id="brokers-market" onchange="brokersMarket=this.value;renderBrokers();" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' +
+      '<select id="brokers-market" data-act="adminBrokersMarketChange" data-use-value class="u-input-sm">' +
         '<option value="">全部市场</option>' + MARKET_OPTS + '</select>' +
-      '<button class="btn btn-primary btn-sm" onclick="brokersSearch=document.getElementById(\'brokers-search\').value;renderBrokers();">搜索</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="brokersSearch=\'\';brokersMarket=\'\';renderBrokers();">重置</button>' +
-      '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="openBrokerForm()">+ 新增券商</button>' +
+      '<button class="btn btn-primary btn-sm" data-act="adminBrokersSearch">搜索</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="adminBrokersReset">重置</button>' +
+      '<button class="btn btn-success btn-sm u-ml-auto"  data-act="openBrokerForm">+ 新增券商</button>' +
     '</div>' +
       '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>代码</th><th>名称</th><th>市场</th><th>导入单位</th><th>排序</th><th>操作</th></tr></thead>' +
@@ -399,14 +412,14 @@ async function loadBrokersData() {
 function openBrokerForm(code) {
   const isEdit = !!code;
   let body = '<input type="hidden" id="broker-code-old" value="' + (isEdit ? escapeHtml(code) : '') + '">' +
-    '<div class="form-group"><label>券商代码（唯一，如 huatai）</label><input id="broker-code" ' + (isEdit ? 'value="' + escapeHtml(code) + '" disabled' : '') + ' placeholder="英文代码" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>券商名称</label><input id="broker-name" placeholder="如 华泰证券" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>市场</label><select id="broker-market" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' + MARKET_OPTS + '</select></div>' +
-    '<div class="form-group"><label>导入数量单位（持仓导入时，「手」券商的上交所债券按 1手=10张 自动换算）</label><select id="broker-unit" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"><option value="sheet">张（默认，无需换算）</option><option value="lot">手（如华泰上交所债券）</option></select></div>' +
-    '<div class="form-group"><label>排序（数字越小越靠前）</label><input id="broker-sort" type="number" value="0" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>';
+    '<div class="form-group"><label>券商代码（唯一，如 huatai）</label><input id="broker-code" ' + (isEdit ? 'value="' + escapeHtml(code) + '" disabled' : '') + ' placeholder="英文代码" class="u-input"></div>' +
+    '<div class="form-group"><label>券商名称</label><input id="broker-name" placeholder="如 华泰证券" class="u-input"></div>' +
+    '<div class="form-group"><label>市场</label><select id="broker-market" class="u-input">' + MARKET_OPTS + '</select></div>' +
+    '<div class="form-group"><label>导入数量单位（持仓导入时，「手」券商的上交所债券按 1手=10张 自动换算）</label><select id="broker-unit" class="u-input"><option value="sheet">张（默认，无需换算）</option><option value="lot">手（如华泰上交所债券）</option></select></div>' +
+    '<div class="form-group"><label>排序（数字越小越靠前）</label><input id="broker-sort" type="number" value="0" class="u-input"></div>';
   openAdminModal(isEdit ? '编辑券商' : '新增券商', body,
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-primary" onclick="submitBroker()">保存</button>'
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-primary" data-act="submitBroker">保存</button>'
   );
   if (isEdit) {
     fetch(api('/api/admin/brokers/' + encodeURIComponent(code))).then(function (r) { return r.json(); }).then(function (b) {
@@ -442,9 +455,9 @@ async function submitBroker() {
 
 function deleteBrokerConfirm(code) {
   openAdminModal('删除券商 - ' + code,
-    '<p style="font-size:14px;color:#666;line-height:1.6;">确定删除该券商吗？删除后，历史账户中曾选择此券商的将不再能在下拉中找到该选项（账户数据不会丢失）。</p>',
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-danger" onclick="doDeleteBroker(\'' + escapeHtml(code) + '\')">确认删除</button>'
+    '<p class="u-note-14">确定删除该券商吗？删除后，历史账户中曾选择此券商的将不再能在下拉中找到该选项（账户数据不会丢失）。</p>',
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-danger" data-act="doDeleteBroker" data-arg1="' + escapeHtml(code) + '">确认删除</button>'
   );
 }
 async function doDeleteBroker(code) {
@@ -654,10 +667,10 @@ function renderJobsLegacy() {
       '</div>' +
     '</div>' +
     '<div class="filter-bar">' +
-      '<button class="btn btn-primary btn-sm" id="job-btn-backfill" onclick="runJobBackfill()">手动补漏收盘数据</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="loadJobsData()">刷新</button>' +
+      '<button class="btn btn-primary btn-sm" id="job-btn-backfill" data-act="runJobBackfill">手动补漏收盘数据</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="loadJobsData">刷新</button>' +
     '</div>' +
-     '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
+     '<div id="jobs-summary" class="u-mb-14"></div>' +
     '<div class="acct-section-title">最近执行记录</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>任务</th><th>说明</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>详情</th></tr></thead>' +
@@ -691,10 +704,10 @@ async function loadJobsDataLegacy() {
             const desc = escapeHtml(jobDescription(s.job));
             return '<div class="stat-card" title="' + desc + '"><div class="stat-top"><div>' +
               '<div class="label">' + escapeHtml(jobLabel(s.job)) + '</div>' +
-              '<div style="margin-top:6px;">' + jobStatusTag(s.status) + '</div></div></div>' +
+              '<div class="u-mt-6">' + jobStatusTag(s.status) + '</div></div></div>' +
               '<div class="sub">最近：' + fmtTime(s.finished_at || s.started_at) + '</div></div>';
           }).join('') + '</div>'
-        : '<div class="admin-placeholder" style="padding:16px;">暂无任务记录</div>';
+        : '<div class="admin-placeholder u-pad-16" >暂无任务记录</div>';
     }
     // 执行记录表
     if (!d.recent || !d.recent.length) {
@@ -733,12 +746,12 @@ function renderJobs() {
       '<div class="job-help-sub">这里同时展示计划时间、实际运行结果、超时任务和邮件告警。失败或漏跑时可直接补跑；补跑和确认操作都会留下审计记录。</div>' +
     '</div>' +
     '<div class="filter-bar">' +
-      '<button class="btn btn-primary btn-sm" id="job-btn-backfill" onclick="runJobBackfill()">手动补漏收盘数据</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="testJobAlertEmail()">测试告警邮件</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="loadJobsData()">刷新</button>' +
+      '<button class="btn btn-primary btn-sm" id="job-btn-backfill" data-act="runJobBackfill">手动补漏收盘数据</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="testJobAlertEmail">测试告警邮件</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="loadJobsData">刷新</button>' +
       '<span id="job-worker-status" class="job-worker-status">正在读取 Worker 状态…</span>' +
     '</div>' +
-    '<div id="jobs-summary" style="margin-bottom:14px;"></div>' +
+    '<div id="jobs-summary" class="u-mb-14"></div>' +
     '<div class="acct-section-title">今日计划与运行情况</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>任务</th><th>计划时间</th><th>状态</th><th>尝试次数</th><th>数据日期</th><th>最近结果</th><th>操作</th></tr></thead>' +
       '<tbody id="jobs-slots-tbody"><tr><td colspan="7" class="biz-table-state-cell">加载中…</td></tr></tbody></table></div>' +
@@ -773,7 +786,7 @@ async function retryJobSlotFromUi(slotId) {
     const targetDate = detail.business_date ? String(detail.business_date).slice(0, 10) : '-';
     const source = detail.definition && detail.definition.sourceDescription || '本地数据库与该任务已配置的数据源';
     const cost = detail.definition && detail.definition.mayConsumeQuota ? '可能消耗接口额度' : '通常不产生额外接口费用';
-    if (!window.confirm('确认补跑“' + label + '”？\n目标业务日期：' + targetDate + '\n访问数据源：' + source + '\n成本提示：' + cost + '。')) return;
+    if (!(await projectConfirm('确认补跑“' + label + '”？\n目标业务日期：' + targetDate + '\n访问数据源：' + source + '\n成本提示：' + cost + '。', { danger: true, title: '确认补跑' }))) return;
     const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId) + '/retry'), { method: 'POST' });
     const d = await r.json();
     showToast(r.ok ? (d.queued ? '已加入补跑队列' : '补跑完成') : (d.error || '补跑失败'));
@@ -834,10 +847,10 @@ async function loadJobsData() {
       const emailColor = !emailConfigured || alertCounts.send_failed ? '#d93025' : '#188038';
       summary.innerHTML = '<div class="stats">' +
         '<div class="stat-card"><div class="label">今日计划</div><div class="value">' + slots.length + '</div><div class="sub">已生成持久化计划</div></div>' +
-        '<div class="stat-card"><div class="label">已成功</div><div class="value" style="color:#188038">' + (counts.succeeded || 0) + '</div><div class="sub">可继续观察数据时间</div></div>' +
-        '<div class="stat-card"><div class="label">待处理异常</div><div class="value" style="color:#d93025">' + ((counts.failed || 0) + (counts.blocked || 0) + (counts.degraded || 0)) + '</div><div class="sub">失败、阻塞或降级</div></div>' +
+        '<div class="stat-card"><div class="label">已成功</div><div class="value u-c-good" >' + (counts.succeeded || 0) + '</div><div class="sub">可继续观察数据时间</div></div>' +
+        '<div class="stat-card"><div class="label">待处理异常</div><div class="value u-c-danger" >' + ((counts.failed || 0) + (counts.blocked || 0) + (counts.degraded || 0)) + '</div><div class="sub">失败、阻塞或降级</div></div>' +
         '<div class="stat-card"><div class="label">告警数量</div><div class="value">' + (overview.alerts || []).reduce((n, item) => n + Number(item.count || 0), 0) + '</div><div class="sub">邮件告警会去重抑制</div></div>' +
-        '<div class="stat-card"><div class="label">邮件告警</div><div class="value" style="color:' + emailColor + '">' + emailStatus + '</div><div class="sub">可在下方查看投递失败详情</div></div>' +
+        '<div class="stat-card"><div class="label">邮件告警</div><div class="value" data-style="color:' + emailColor + '">' + emailStatus + '</div><div class="sub">可在下方查看投递失败详情</div></div>' +
       '</div>';
     }
     const workers = overview.workers || [];
@@ -851,7 +864,7 @@ async function loadJobsData() {
       return '<tr><td>' + escapeHtml(jobLabel(j.job)) + '</td><td>' + jobStatusTag(j.status) + '</td><td>' + fmtTime(j.started_at) + '</td><td>' + fmtTime(j.finished_at) + '</td><td>' + escapeHtml(jobTriggerLabel(j.trigger_type || 'scheduled')) + '</td><td class="biz-table-note-cell biz-table-note-cell--300 biz-table-break-all">' + escapeHtml(jobDisplayText(j.detail || '', 500)) + '</td></tr>';
     }).join('') : '<tr><td colspan="6" class="biz-table-state-cell">暂无运行记录</td></tr>';
     if (alertBody) alertBody.innerHTML = alerts.length ? alerts.map(function (alert) {
-      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" onclick="resendJobAlert(' + Number(alert.alert_id) + ')">重发</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobAlert(' + Number(alert.alert_id) + ')">确认</button></td></tr>';
+      return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td><td><button class="btn btn-outline btn-xs" data-act="resendJobAlert" data-arg1="' + Number(alert.alert_id) + '">重发</button> <button class="btn btn-outline btn-xs" data-act="acknowledgeJobAlert" data-arg1="' + Number(alert.alert_id) + '">确认</button></td></tr>';
     }).join('') : '<tr><td colspan="5" class="biz-table-state-cell">暂无待处理告警</td></tr>';
     if (alertHistoryBody) alertHistoryBody.innerHTML = alertHistory.length ? alertHistory.map(function (alert) {
       return '<tr><td>' + fmtTime(alert.last_seen_at) + '</td><td>' + escapeHtml(jobLabel(alert.job_code)) + '</td><td class="biz-table-note-cell biz-table-note-cell--320 biz-table-break-word">' + escapeHtml(jobDisplayText(alert.summary || alert.subject || '', 300)) + '</td><td>' + escapeHtml(jobStatusLabel(alert.status)) + '</td></tr>';
@@ -868,11 +881,11 @@ function ensureJobMonitorControls() {
   const summary = document.getElementById('jobs-summary');
   if (!summary || document.getElementById('job-status-filter')) return;
   summary.insertAdjacentHTML('afterend',
-    '<div class="filter-bar"><label>任务状态 <select id="job-status-filter" onchange="loadJobsData()">' +
+    '<div class="filter-bar"><label>任务状态 <select id="job-status-filter" data-act="loadJobsData">' +
       '<option value="">全部</option><option value="pending">待执行</option><option value="running">运行中</option>' +
       '<option value="failed">失败</option><option value="blocked">阻塞</option><option value="degraded">降级</option>' +
       '<option value="succeeded">成功</option></select></label></div>' +
-    '<div id="jobs-freshness" style="margin-bottom:14px;"></div>'
+    '<div id="jobs-freshness" class="u-mb-14"></div>'
   );
 }
 
@@ -905,10 +918,10 @@ function ensureJobMonitorAdvancedControls() {
   const summary = document.getElementById('jobs-summary');
   if (!summary || document.getElementById('job-date-filter')) return;
   summary.insertAdjacentHTML('afterend',
-    '<div class="filter-bar" style="gap:8px;flex-wrap:wrap;">' +
-      '<label>日期 <input id="job-date-filter" type="date" onchange="loadJobsData()"></label>' +
-      '<label>分类 <select id="job-category-filter" onchange="loadJobsData()"><option value="">全部分类</option><option value="data_sync">数据同步</option><option value="system">系统任务</option></select></label>' +
-      '<label>触发方式 <select id="job-trigger-filter" onchange="loadJobsData()"><option value="">全部触发</option><option value="scheduled">定时</option><option value="manual_retry">人工补跑</option><option value="auto_retry">自动重试</option></select></label>' +
+    '<div class="filter-bar" data-style="gap:8px;flex-wrap:wrap;">' +
+      '<label>日期 <input id="job-date-filter" type="date" data-act="loadJobsData"></label>' +
+      '<label>分类 <select id="job-category-filter" data-act="loadJobsData"><option value="">全部分类</option><option value="data_sync">数据同步</option><option value="system">系统任务</option></select></label>' +
+      '<label>触发方式 <select id="job-trigger-filter" data-act="loadJobsData"><option value="">全部触发</option><option value="scheduled">定时</option><option value="manual_retry">人工补跑</option><option value="auto_retry">自动重试</option></select></label>' +
       '<label>关键词 <input id="job-keyword-filter" type="search" placeholder="任务或错误内容" onkeydown="if(event.key===\'Enter\') loadJobsData()"></label>' +
     '</div>'
   );
@@ -922,11 +935,11 @@ function ensureJobMonitorAdvancedControls() {
 }
 
 function renderJobSlotRow(slot) {
-  const detail = '<button class="btn btn-outline btn-xs" onclick="openJobSlotDetail(' + Number(slot.slot_id) + ')">详情</button>';
+  const detail = '<button class="btn btn-outline btn-xs" data-act="openJobSlotDetail" data-arg1="' + Number(slot.slot_id) + '">详情</button>';
   const validate = (slot.status === 'succeeded' || slot.status === 'degraded')
-    ? ' <button class="btn btn-outline btn-xs" onclick="validateJobSlotFromUi(' + Number(slot.slot_id) + ')">重新校验</button>' : '';
+    ? ' <button class="btn btn-outline btn-xs" data-act="validateJobSlotFromUi" data-arg1="' + Number(slot.slot_id) + '">重新校验</button>' : '';
   const retry = (slot.status === 'failed' || slot.status === 'degraded' || slot.status === 'blocked')
-    ? ' <button class="btn btn-outline btn-xs" onclick="retryJobSlotFromUi(' + Number(slot.slot_id) + ')">立即补跑</button> <button class="btn btn-outline btn-xs" onclick="acknowledgeJobSlot(' + Number(slot.slot_id) + ')">确认</button>' : '';
+    ? ' <button class="btn btn-outline btn-xs" data-act="retryJobSlotFromUi" data-arg1="' + Number(slot.slot_id) + '">立即补跑</button> <button class="btn btn-outline btn-xs" data-act="acknowledgeJobSlot" data-arg1="' + Number(slot.slot_id) + '">确认</button>' : '';
   const watermark = slot.data_as_of ? String(slot.data_as_of).slice(0, 10) : '-';
   return '<tr><td>' + escapeHtml(jobLabel(slot.job_code)) + '</td><td>' + fmtTime(slot.scheduled_for) + '</td><td>' + jobSlotStatusTag(slot.status, slot.is_late) + '</td><td>' + Number(slot.attempt_count || 0) + '/' + Number(slot.max_attempts || 4) + '</td><td>' + escapeHtml(watermark) + '</td><td class="biz-table-note-cell biz-table-note-cell--260 biz-table-break-word">' + escapeHtml(jobDisplayText(slot.last_error || (slot.result_summary && JSON.stringify(slot.result_summary)) || '', 300)) + '</td><td>' + detail + validate + retry + '</td></tr>';
 }
@@ -954,7 +967,7 @@ async function openJobSlotDetailLegacy(slotId) {
     const r = await fetch(api('/api/admin/jobs/slots/' + encodeURIComponent(slotId)));
     const d = await r.json();
     if (!r.ok) return showToast(d.error || '读取详情失败');
-    openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>结果：</b><br>' + escapeHtml(jobDisplayText(d.result_summary || {}, 4000)) + '</p></div>', '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
+    openAdminModal('任务详情', '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>结果：</b><br>' + escapeHtml(jobDisplayText(d.result_summary || {}, 4000)) + '</p></div>', '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
   } catch (e) { showToast('网络错误'); }
 }
 
@@ -981,7 +994,7 @@ async function openJobSlotDetail(slotId) {
       '；槽位调用 ' + Number(summary.slotExternalCallsTotal || 0) + '/' + Number(summary.slotExternalCallsLimit || 0) +
       '；待处理阶段 ' + ((summary.pendingStages || []).join('、') || '无');
     const html = '<div class="job-detail"><p><b>任务：</b>' + escapeHtml(jobLabel(d.job_code)) + '</p><p><b>计划时间：</b>' + fmtTime(d.scheduled_for) + '</p><p><b>业务执行结果：</b><br>' + escapeHtml(jobDisplayText(d.business_execution || d.result_summary || {}, 4000)) + '</p><p><b>续批与止损：</b>' + escapeHtml(continuation) + '</p><p><b>数据新鲜度校验：</b>' + escapeHtml(freshness.status === 'passed' ? '通过' : freshness.status === 'not_required' ? '不需要水位校验' : freshness.status === 'degraded' ? '未达到目标日期' : '待校验') + '；数据日期 ' + escapeHtml(freshness.dataAsOf ? String(freshness.dataAsOf).slice(0, 10) : '-') + '；业务日期 ' + escapeHtml(freshness.businessDate || '-') + '</p><p><b>计划状态：</b>' + jobSlotStatusTag(d.status) + '</p><p><b>最近错误：</b>' + escapeHtml(jobDisplayText(d.last_error || '无', 1000)) + '</p><p><b>执行尝试：</b></p><ul>' + runs + '</ul><p><b>依赖：</b></p><ul>' + deps + '</ul><p><b>邮件告警：</b></p><ul>' + alerts + '</ul><p><b>人工审计：</b></p><ul>' + audits + '</ul></div>';
-    openAdminModal('任务详情', html, '<button class="btn btn-outline" onclick="closeAdminModal()">关闭</button>');
+    openAdminModal('任务详情', html, '<button class="btn btn-outline" data-act="closeAdminModal">关闭</button>');
   } catch (e) { showToast('网络错误'); }
 }
 
@@ -1012,18 +1025,18 @@ async function runJobHolidaySync() {
 // ====== 全局参数 ======
 function renderSettings() {
   const el = document.getElementById('view-settings'); if (!el) return;
-  el.innerHTML = '<div class="admin-placeholder"><div class="spinner" style="margin:0 auto 12px;"></div>加载中...</div>';
+  el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
   fetch(api('/api/admin/settings')).then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
     if (!s) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
     renderSettingsTabs(el, s); return;
     const o = s.register_open === '1' ? 'checked' : '';
     const e = s.require_email === '1' ? 'checked' : '';
-    el.innerHTML = '<div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
-      '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><input type="checkbox" id="set-register-open" ' + o + ' style="flex-shrink:0;accent-color:#1a237e;width:18px;height:18px;"><label for="set-register-open" style="font-size:14px;color:#333;cursor:pointer;user-select:none;">开放注册（关闭后任何人无法注册）</label></div>' +
-      '<div style="margin-bottom:16px;"><div style="font-size:13px;color:#555;margin-bottom:6px;">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需；填写后注册必须匹配，如 abc123" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;font-size:13px;box-sizing:border-box;outline:none;"></div>' +
-      '<div style="display:flex;align-items:center;gap:9px;margin-bottom:20px;"><input type="checkbox" id="set-require-email" ' + e + ' style="flex-shrink:0;accent-color:#1a237e;width:18px;height:18px;"><label for="set-require-email" style="font-size:14px;color:#333;cursor:pointer;user-select:none;">注册强制邮箱验证（需服务端已配置邮件服务）</label></div>' +
-      '<button class="btn btn-primary" onclick="submitSettings()" style="padding:9px 22px;">保存设置</button>' +
-      '<div style="font-size:12px;color:#999;margin-top:12px;">设置即时生效，无需重启。</div></div>';
+    el.innerHTML = '<div data-style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
+      '<div class="u-flex-center u-mb-16"><input type="checkbox" id="set-register-open" ' + o + ' class="u-check-box"><label for="set-register-open" class="u-check-label">开放注册（关闭后任何人无法注册）</label></div>' +
+      '<div class="u-mb-16"><div class="u-note55 u-mb-6">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需；填写后注册必须匹配，如 abc123" class="u-input-lg"></div>' +
+      '<div class="u-flex-center u-mb-20"><input type="checkbox" id="set-require-email" ' + e + ' class="u-check-box"><label for="set-require-email" class="u-check-label">注册强制邮箱验证（需服务端已配置邮件服务）</label></div>' +
+      '<button class="btn btn-primary" data-act="submitSettings" data-style="padding:9px 22px;">保存设置</button>' +
+      '<div class="u-fs-12 u-c-muted u-mt-10">设置即时生效，无需重启。</div></div>';
   }).catch(function () { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; });
 }
 function renderSettingsTabs(el, s) {
@@ -1035,41 +1048,41 @@ function renderSettingsTabs(el, s) {
   const apiSwitch = apiSettings.last_switch || null;
   const modeLabel = apiMode === 'primary' ? '主 Token' : apiMode === 'backup' ? '备用 Token' : '自动故障转移';
   const option = function (value, label) { return '<option value="' + value + '"' + (apiMode === value ? ' selected' : '') + '>' + label + '</option>'; };
-  el.innerHTML = '<div class="filter-bar" style="margin-bottom:16px;border-bottom:1px solid #e8e8e8;padding-bottom:10px;">' +
-    '<button class="btn btn-primary btn-sm settings-tab active" data-tab="site" onclick="switchSettingsTab(\'site\')">站点参数</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="market" onclick="switchSettingsTab(\'market\')">市场数据</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="models" onclick="switchSettingsTab(\'models\')">大模型配置</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="external-api" onclick="switchSettingsTab(\'external-api\')">外部 API 主备</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="brokers" onclick="switchSettingsTab(\'brokers\')">券商管理</button>' +
-    '<button class="btn btn-outline btn-sm settings-tab" data-tab="holidays" onclick="switchSettingsTab(\'holidays\')">休市日历</button></div>' +
-    '<div class="settings-panel" data-panel="site"><div style="font-size:13px;color:#666;margin-bottom:12px;">控制用户注册与邮箱验证；保存后即时生效。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
-    '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><input type="checkbox" id="set-register-open" ' + o + '><label for="set-register-open">开放注册</label></div>' +
-    '<div style="margin-bottom:16px;"><div style="font-size:13px;color:#555;margin-bottom:6px;">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需邀请码" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
-    '<div style="display:flex;align-items:center;gap:9px;margin-bottom:20px;"><input type="checkbox" id="set-require-email" ' + e + '><label for="set-require-email">注册强制邮箱验证</label></div><button class="btn btn-primary" onclick="submitSettings()">保存站点参数</button></div></div>' +
-    '<div class="settings-panel" data-panel="market" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">港股格雷厄姆指数使用美国十年期国债收益率作为代理，数据由 Tushare us_tycr.y10 定时自动同步。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:680px;">无需手工上传，市场波动任务每日自动更新。</div></div>' +
-    '<div class="settings-panel" data-panel="models" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">配置图片和 Excel 识别使用的大模型。模型按顺序调用，排在最前的是默认模型；前一个不可用时会自动切换。</div><div id="settings-models"></div></div>' +
-    '<div class="settings-panel" data-panel="external-api" hidden><div style="font-size:13px;color:#666;margin-bottom:12px;">统一管理外部数据 API 的主备凭据。凭据加密保存在服务端，页面只显示掩码；留空表示保留原值。</div><div style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:700px;">' +
-    '<div style="font-size:17px;font-weight:600;color:#222;margin-bottom:16px;">' + escapeHtml(apiSettings.label || 'Tushare Pro') + '</div>' +
-    '<div style="display:grid;grid-template-columns:120px 1fr;gap:12px 14px;align-items:center;">' +
-    '<label for="set-tushare-primary">主 Token</label><div><input id="set-tushare-primary" type="password" autocomplete="new-password" placeholder="' + (apiPrimary.configured ? '当前已配置：' + escapeHtml(apiPrimary.masked || '已配置') : '尚未配置') + '" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
-    '<label for="set-tushare-backup">备用 Token</label><div><input id="set-tushare-backup" type="password" autocomplete="new-password" placeholder="' + (apiBackup.configured ? '当前已配置：' + escapeHtml(apiBackup.masked || '已配置') : '尚未配置') + '" style="width:100%;padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;"></div>' +
-    '<label for="set-tushare-mode">运行模式</label><select id="set-tushare-mode" style="padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;max-width:260px;">' + option('auto', '自动故障转移') + option('primary', '固定使用主 Token') + option('backup', '固定使用备用 Token') + '</select>' +
-    '<label>切换通知</label><label style="display:flex;align-items:center;gap:8px;"><input id="set-tushare-notify" type="checkbox" ' + (apiSettings.notify_on_switch !== false ? 'checked' : '') + '>主备切换时发送后台告警</label></div>' +
-    '<div style="font-size:12px;color:#777;margin-top:16px;">当前模式：' + modeLabel + (apiSwitch ? '；最近切换：' + escapeHtml(apiSwitch.switched_at || '') + '（' + escapeHtml(apiSwitch.reason || '') + '）' : '') + '</div>' +
-    '<div style="display:flex;gap:10px;margin-top:18px;"><button class="btn btn-primary" onclick="saveExternalApiSettings()">保存 API 参数</button><button class="btn btn-outline" onclick="switchExternalApiMode(\'tushare\')">手动应用当前模式</button></div>' +
-     '<div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">API 可用性测试</div><div style="font-size:12px;color:#777;margin-bottom:10px;">请选择接口后测试指定 Token；不会自动切换主备。rt_min 返回空行也表示接口已被接受，不能用 trade_cal 代替权限验证。</div>' +
-     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><label for="set-tushare-test-api" style="font-size:12px;color:#555;">测试接口</label><select id="set-tushare-test-api" style="padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;"><option value="trade_cal">trade_cal（基础）</option><option value="rt_min">rt_min（实时分钟）</option><option value="new_share">new_share（新股）</option><option value="cb_daily">cb_daily（转债日线）</option></select></div>' +
-     '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'primary\')">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'backup\')">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" onclick="testExternalApiAvailability(\'tushare\',\'current\')">测试当前 API</button></div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + renderEndpointPolicyPanel(apiSettings.endpoint_policies) + '</div></div></div>';
+  el.innerHTML = '<div class="filter-bar u-section-head" >' +
+    '<button class="btn btn-primary btn-sm settings-tab active" data-tab="site" data-act="switchSettingsTab" data-arg1="site">站点参数</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="market" data-act="switchSettingsTab" data-arg1="market">市场数据</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="models" data-act="switchSettingsTab" data-arg1="models">大模型配置</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="external-api" data-act="switchSettingsTab" data-arg1="external-api">外部 API 主备</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="brokers" data-act="switchSettingsTab" data-arg1="brokers">券商管理</button>' +
+    '<button class="btn btn-outline btn-sm settings-tab" data-tab="holidays" data-act="switchSettingsTab" data-arg1="holidays">休市日历</button></div>' +
+    '<div class="settings-panel" data-panel="site"><div class="u-note u-mb-12">控制用户注册与邮箱验证；保存后即时生效。</div><div data-style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:24px 28px;max-width:560px;">' +
+    '<div class="u-flex-center u-mb-16"><input type="checkbox" id="set-register-open" ' + o + '><label for="set-register-open">开放注册</label></div>' +
+    '<div class="u-mb-16"><div class="u-note55 u-mb-6">邀请码</div><input id="set-register-code" value="' + escapeHtml(s.register_code || '') + '" placeholder="留空则无需邀请码" class="u-input-lg"></div>' +
+    '<div class="u-flex-center u-mb-20"><input type="checkbox" id="set-require-email" ' + e + '><label for="set-require-email">注册强制邮箱验证</label></div><button class="btn btn-primary" data-act="submitSettings">保存站点参数</button></div></div>' +
+    '<div class="settings-panel" data-panel="market" hidden><div class="u-note u-mb-12">港股格雷厄姆指数使用美国十年期国债收益率作为代理，数据由 Tushare us_tycr.y10 定时自动同步。</div><div data-style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:680px;">无需手工上传，市场波动任务每日自动更新。</div></div>' +
+    '<div class="settings-panel" data-panel="models" hidden><div class="u-note u-mb-12">配置图片和 Excel 识别使用的大模型。模型按顺序调用，排在最前的是默认模型；前一个不可用时会自动切换。</div><div id="settings-models"></div></div>' +
+    '<div class="settings-panel" data-panel="external-api" hidden><div class="u-note u-mb-12">统一管理外部数据 API 的主备凭据。凭据加密保存在服务端，页面只显示掩码；留空表示保留原值。</div><div data-style="background:#fff;border:1px solid #e8e8e8;border-radius:10px;padding:20px;max-width:700px;">' +
+    '<div data-style="font-size:17px;font-weight:600;color:#222;margin-bottom:16px;">' + escapeHtml(apiSettings.label || 'Tushare Pro') + '</div>' +
+    '<div data-style="display:grid;grid-template-columns:120px 1fr;gap:12px 14px;align-items:center;">' +
+    '<label for="set-tushare-primary">主 Token</label><div><input id="set-tushare-primary" type="password" autocomplete="new-password" placeholder="' + (apiPrimary.configured ? '当前已配置：' + escapeHtml(apiPrimary.masked || '已配置') : '尚未配置') + '" class="u-input-lg"></div>' +
+    '<label for="set-tushare-backup">备用 Token</label><div><input id="set-tushare-backup" type="password" autocomplete="new-password" placeholder="' + (apiBackup.configured ? '当前已配置：' + escapeHtml(apiBackup.masked || '已配置') : '尚未配置') + '" class="u-input-lg"></div>' +
+    '<label for="set-tushare-mode">运行模式</label><select id="set-tushare-mode" data-style="padding:9px 12px;border:1px solid #d0d0d0;border-radius:6px;box-sizing:border-box;max-width:260px;">' + option('auto', '自动故障转移') + option('primary', '固定使用主 Token') + option('backup', '固定使用备用 Token') + '</select>' +
+    '<label>切换通知</label><label class="u-flex-center u-gap-6"><input id="set-tushare-notify" type="checkbox" ' + (apiSettings.notify_on_switch !== false ? 'checked' : '') + '>主备切换时发送后台告警</label></div>' +
+    '<div class="u-fs-12 u-c-muted u-mt-16">当前模式：' + modeLabel + (apiSwitch ? '；最近切换：' + escapeHtml(apiSwitch.switched_at || '') + '（' + escapeHtml(apiSwitch.reason || '') + '）' : '') + '</div>' +
+    '<div data-style="display:flex;gap:10px;margin-top:18px;"><button class="btn btn-primary" data-act="saveExternalApiSettings">保存 API 参数</button><button class="btn btn-outline" data-act="switchExternalApiMode" data-arg1="tushare">手动应用当前模式</button></div>' +
+     '<div class="u-section-foot"><div class="u-h-sm">API 可用性测试</div><div data-style="font-size:12px;color:#6e6e6e;margin-bottom:10px;">请选择接口后测试指定 Token；不会自动切换主备。rt_min 返回空行也表示接口已被接受，不能用 trade_cal 代替权限验证。</div>' +
+     '<div data-style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;"><label for="set-tushare-test-api" data-style="font-size:12px;color:#555;">测试接口</label><select id="set-tushare-test-api" data-style="padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;"><option value="trade_cal">trade_cal（基础）</option><option value="rt_min">rt_min（实时分钟）</option><option value="new_share">new_share（新股）</option><option value="cb_daily">cb_daily（转债日线）</option></select></div>' +
+     '<div data-style="display:flex;gap:8px;flex-wrap:wrap;"><button id="test-tushare-primary" class="btn btn-outline btn-sm" data-act="testExternalApiAvailability" data-arg1="tushare" data-arg2="primary">测试主 API</button><button id="test-tushare-backup" class="btn btn-outline btn-sm" data-act="testExternalApiAvailability" data-arg1="tushare" data-arg2="backup">测试备用 API</button><button id="test-tushare-current" class="btn btn-outline btn-sm" data-act="testExternalApiAvailability" data-arg1="tushare" data-arg2="current">测试当前 API</button></div>' +
+      '<div data-style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">' + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'primary'), '主 Token') + renderExternalApiTestResult(getLatestExternalApiTest(apiTests, 'backup'), '备用 Token') + '</div>' + renderExternalApiCircuits(apiSettings.circuits) + renderEndpointPolicyPanel(apiSettings.endpoint_policies) + '</div></div></div>';
   el.insertAdjacentHTML('beforeend', '<div class="settings-panel" data-panel="brokers" id="view-brokers" hidden></div><div class="settings-panel" data-panel="holidays" id="view-holidays" hidden></div>');
   switchSettingsTab(settingsTab);
 }
 function renderExternalApiTestResult(result, label) {
-  if (!result) return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;color:#888;font-size:12px;">' + label + '：未测试</div>';
+  if (!result) return '<div data-style="padding:9px 10px;background:#f7f7f7;border-radius:6px;color:#6e6e6e;font-size:12px;">' + label + '：未测试</div>';
   const status = result.status === 'available' ? '可用' : result.status === 'not_configured' ? '未配置' : '不可用';
   const color = result.ok ? '#16803c' : '#c62828';
   const latency = result.latency_ms == null ? '' : ' · ' + Number(result.latency_ms) + ' ms';
-   return '<div style="padding:9px 10px;background:#f7f7f7;border-radius:6px;font-size:12px;"><div style="color:#555;">' + label + ' · ' + escapeHtml(result.api_name || '未知接口') + '：<span style="font-weight:600;color:' + color + ';">' + status + '</span>' + latency + '</div><div style="color:#888;margin-top:4px;word-break:break-all;">' + escapeHtml(result.message || '') + (result.checked_at ? ' · ' + escapeHtml(result.checked_at) : '') + '</div>' + renderExternalApiReturnedData(result.returned_data) + '</div>';
+   return '<div data-style="padding:9px 10px;background:#f7f7f7;border-radius:6px;font-size:12px;"><div data-style="color:#555;">' + label + ' · ' + escapeHtml(result.api_name || '未知接口') + '：<span data-style="font-weight:600;color:' + color + ';">' + status + '</span>' + latency + '</div><div data-style="color:#6e6e6e;margin-top:4px;word-break:break-all;">' + escapeHtml(result.message || '') + (result.checked_at ? ' · ' + escapeHtml(result.checked_at) : '') + '</div>' + renderExternalApiReturnedData(result.returned_data) + '</div>';
  }
 function getLatestExternalApiTest(tests, role) {
   if (!tests) return null;
@@ -1079,21 +1092,21 @@ function getLatestExternalApiTest(tests, role) {
   return values[0] || null;
 }
 function renderExternalApiCircuits(circuits) {
-  if (!Array.isArray(circuits) || !circuits.length) return '<div style="margin-top:12px;color:#888;font-size:12px;">当前没有接口熔断。</div>';
-  let html = '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;"><div style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">当前接口熔断</div>';
+  if (!Array.isArray(circuits) || !circuits.length) return '<div data-style="margin-top:12px;color:#6e6e6e;font-size:12px;">当前没有接口熔断。</div>';
+  let html = '<div data-style="margin-top:14px;padding-top:12px;border-top:1px solid #eee;"><div data-style="font-size:13px;font-weight:600;color:#555;margin-bottom:6px;">当前接口熔断</div>';
   circuits.forEach(function (item) {
     const role = item.source_role === 'primary' ? '主Token' : item.source_role === 'backup' ? '备用Token' : item.source_role;
     const recovery = item.recover_at ? new Date(item.recover_at).toLocaleString('zh-CN', { hour12: false }) : 'Token 配置变化后再测';
-    html += '<div style="padding:8px 10px;background:#fff8e1;border-radius:6px;margin-top:6px;font-size:12px;color:#6d4c00;">' + escapeHtml(item.api_name || '*') + '：' + escapeHtml(role) + '熔断；原因：' + escapeHtml(item.detail || item.error_code || '上游错误') + '；预计恢复：' + escapeHtml(recovery) + '</div>';
+    html += '<div data-style="padding:8px 10px;background:#fff8e1;border-radius:6px;margin-top:6px;font-size:12px;color:#6d4c00;">' + escapeHtml(item.api_name || '*') + '：' + escapeHtml(role) + '熔断；原因：' + escapeHtml(item.detail || item.error_code || '上游错误') + '；预计恢复：' + escapeHtml(recovery) + '</div>';
   });
   return html + '</div>';
 }
 function renderExternalApiReturnedData(data) {
   if (!data || !Array.isArray(data.fields)) return '';
   const fields = data.fields.slice(0, 20), rows = Array.isArray(data.items) ? data.items.slice(0, 5) : [];
-  let html = '<div style="margin-top:8px;color:#555;">API 返回数据：</div>';
-  if (!fields.length) return html + '<div style="color:#888;margin-top:3px;">0 个字段，0 行</div>';
-  html += '<div class="biz-table-scroll" style="margin-top:4px;"><table class="biz-table biz-table--preview"><thead><tr>';
+  let html = '<div data-style="margin-top:8px;color:#555;">API 返回数据：</div>';
+  if (!fields.length) return html + '<div class="u-c-muted u-mt-4">0 个字段，0 行</div>';
+  html += '<div class="biz-table-scroll u-mt-4" ><table class="biz-table biz-table--preview"><thead><tr>';
   fields.forEach(function (field) { html += '<th>' + escapeHtml(field) + '</th>'; });
   html += '</tr></thead><tbody>';
   rows.forEach(function (row) {
@@ -1102,20 +1115,20 @@ function renderExternalApiReturnedData(data) {
     html += '</tr>';
   });
   html += '</tbody></table></div>';
-  if (!rows.length) html += '<div style="color:#888;margin-top:3px;">0 行</div>';
-  if (data.truncated) html += '<div style="color:#888;margin-top:3px;">仅展示前 5 行</div>';
+  if (!rows.length) html += '<div class="u-c-muted u-mt-4">0 行</div>';
+  if (data.truncated) html += '<div class="u-c-muted u-mt-4">仅展示前 5 行</div>';
   return html;
 }
 function renderEndpointPolicyPanel(policies) {
   const values = Array.isArray(policies) ? policies.filter(function (p) { return p.source_code === 'tushare'; }) : [];
   window.__externalEndpointPolicies = values;
-  if (!values.length) return '<div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;color:#888;font-size:12px;">接口策略尚未初始化，请先完成数据库迁移。</div>';
-  let html = '<div style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;"><div style="font-size:14px;font-weight:600;color:#222;margin-bottom:6px;">接口限流策略</div><div style="font-size:12px;color:#777;margin-bottom:8px;">限额按“来源＋接口＋凭据”执行；修改后即时生效，Token 只显示角色，不显示密钥。</div><div class="biz-table-scroll"><table class="biz-table biz-table--preview" style="font-size:12px;"><thead><tr><th>接口</th><th>凭据</th><th>权限</th><th>分钟</th><th>日</th><th>并发</th><th>间隔(ms)</th><th>启用</th></tr></thead><tbody>';
+  if (!values.length) return '<div data-style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;color:#6e6e6e;font-size:12px;">接口策略尚未初始化，请先完成数据库迁移。</div>';
+  let html = '<div data-style="margin-top:16px;padding-top:12px;border-top:1px solid #eee;"><div class="u-h-sm">接口限流策略</div><div data-style="font-size:12px;color:#6e6e6e;margin-bottom:8px;">限额按“来源＋接口＋凭据”执行；修改后即时生效，Token 只显示角色，不显示密钥。</div><div class="biz-table-scroll"><table class="biz-table biz-table--preview u-fs-12" ><thead><tr><th>接口</th><th>凭据</th><th>权限</th><th>分钟</th><th>日</th><th>并发</th><th>间隔(ms)</th><th>启用</th></tr></thead><tbody>';
   values.forEach(function (p, index) {
     html += '<tr data-policy-index="' + index + '"><td>' + escapeHtml(p.api_name || '*') + '</td><td>' + (p.credential_profile === 'primary' ? '主' : p.credential_profile === 'backup' ? '备' : '匿名') + '</td><td>' + escapeHtml(p.permission_status || 'unknown') + '</td>';
-    html += '<td><input data-policy-field="internal_per_minute_limit" value="' + (p.internal_per_minute_limit == null ? '' : p.internal_per_minute_limit) + '" style="width:62px;"></td><td><input data-policy-field="internal_daily_limit" value="' + (p.internal_daily_limit == null ? '' : p.internal_daily_limit) + '" style="width:62px;"></td><td><input data-policy-field="max_concurrency" value="' + (p.max_concurrency == null ? 1 : p.max_concurrency) + '" style="width:45px;"></td><td><input data-policy-field="min_interval_ms" value="' + (p.min_interval_ms == null ? 0 : p.min_interval_ms) + '" style="width:62px;"></td><td><input type="checkbox" data-policy-field="enabled" ' + (p.enabled !== false ? 'checked' : '') + '></td></tr>';
+    html += '<td><input data-policy-field="internal_per_minute_limit" value="' + (p.internal_per_minute_limit == null ? '' : p.internal_per_minute_limit) + '" class="u-w-62"></td><td><input data-policy-field="internal_daily_limit" value="' + (p.internal_daily_limit == null ? '' : p.internal_daily_limit) + '" class="u-w-62"></td><td><input data-policy-field="max_concurrency" value="' + (p.max_concurrency == null ? 1 : p.max_concurrency) + '" data-style="width:45px;"></td><td><input data-policy-field="min_interval_ms" value="' + (p.min_interval_ms == null ? 0 : p.min_interval_ms) + '" class="u-w-62"></td><td><input type="checkbox" data-policy-field="enabled" ' + (p.enabled !== false ? 'checked' : '') + '></td></tr>';
   });
-  return html + '</tbody></table></div><button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="saveEndpointPolicies()">保存接口策略</button></div>';
+  return html + '</tbody></table></div><button class="btn btn-primary btn-sm u-mt-10"  data-act="saveEndpointPolicies">保存接口策略</button></div>';
 }
 async function saveEndpointPolicies() {
   const values = Array.isArray(window.__externalEndpointPolicies) ? window.__externalEndpointPolicies : [];
@@ -1202,7 +1215,7 @@ function fmtDate(y, m, d) { return y + '-' + pad2(m) + '-' + pad2(d); }
 
 function renderHolidays() {
   const el = document.getElementById('view-holidays'); if (!el) return;
-  el.innerHTML = '<div class="admin-placeholder"><div class="spinner" style="margin:0 auto 12px;"></div>加载中...</div>';
+  el.innerHTML = '<div class="admin-placeholder"><div class="spinner u-mx-auto-12" ></div>加载中...</div>';
   fetch(api('/api/admin/holidays')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
     if (!d) { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; return; }
     const years = Object.keys(d.years || {}).sort();
@@ -1212,14 +1225,14 @@ function renderHolidays() {
     let opts = ''; years.forEach(function (y) { opts += '<option value="' + y + '"' + (y === holidayYear ? ' selected' : '') + '>' + y + '年</option>'; });
     el.innerHTML =
       '<div class="filter-bar">' +
-      '<select id="holiday-year" onchange="holidayYear=this.value;renderHolidays();" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' + opts + '</select>' +
-       '<input id="holiday-new" type="date" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' +
-       '<button class="btn btn-primary btn-sm" onclick="addHolidayByInput()">添加休市日</button>' +
-       '<button class="btn btn-outline btn-sm" onclick="saveHolidays()">保存' + holidayYear + '年</button>' +
-       '<button class="btn btn-info btn-sm" id="holiday-btn-sync" onclick="runJobHolidaySync()">从交易所核对本年休市日</button>' +
-       '<button class="btn btn-outline btn-sm" onclick="renderHolidays()">刷新</button>' +
+      '<select id="holiday-year" data-act="adminHolidayYearChange" data-use-value class="u-input-sm">' + opts + '</select>' +
+       '<input id="holiday-new" type="date" class="u-input-sm">' +
+       '<button class="btn btn-primary btn-sm" data-act="addHolidayByInput">添加休市日</button>' +
+       '<button class="btn btn-outline btn-sm" data-act="saveHolidays">保存' + holidayYear + '年</button>' +
+       '<button class="btn btn-info btn-sm" id="holiday-btn-sync" data-act="runJobHolidaySync">从交易所核对本年休市日</button>' +
+       '<button class="btn btn-outline btn-sm" data-act="renderHolidays">刷新</button>' +
        '</div>' +
-       '<div style="font-size:12px;color:#888;background:#f6f8fa;padding:8px 10px;border-radius:6px;margin-bottom:12px;">休市日（法定节假日，不含周末）影响收盘数据抓取与交易日判断；修改即时生效，无需部署。可点击「从交易所核对本年休市日」立即同步，也可<b>点击日历格手动增删</b>：橙色=休市日（点它移除），空白格（点它添加），灰色=周末。</div>' +
+       '<div class="u-tip-box">休市日（法定节假日，不含周末）影响收盘数据抓取与交易日判断；修改即时生效，无需部署。可点击「从交易所核对本年休市日」立即同步，也可<b>点击日历格手动增删</b>：橙色=休市日（点它移除），空白格（点它添加），灰色=周末。</div>' +
       '<div id="holiday-calendar" class="holiday-calendar"></div>';
     renderHolidayCalendar();
   }).catch(function () { el.innerHTML = '<div class="admin-placeholder"><div class="icon">⚠️</div>加载失败</div>'; });
@@ -1243,8 +1256,8 @@ function renderHolidayCalendar() {
       const wknd = (new Date(y, m - 1, d).getDay() === 0 || new Date(y, m - 1, d).getDay() === 6);
       const cls = 'holiday-cell' + (isH ? ' holiday-on' : '') + (wknd && !isH ? ' holiday-weekend' : '');
       const act = isH
-        ? ('onclick="removeHoliday(\'' + ds + '\')" title="点击移除 ' + ds + '"')
-        : ('onclick="addHoliday(\'' + ds + '\')" title="点击添加 ' + ds + '"');
+        ? ('data-act="removeHoliday" data-arg1="' + ds + '" title="点击移除 ' + ds + '"')
+        : ('data-act="addHoliday" data-arg1="' + ds + '" title="点击添加 ' + ds + '"');
       html += '<span class="' + cls + '" ' + act + '>' + d + (isH ? '<i class="holiday-x">×</i>' : '') + '</span>';
     }
     html += '</div></div>';
@@ -1295,11 +1308,11 @@ function renderAudit() {
   const el = document.getElementById('view-audit'); if (!el) return;
   el.innerHTML =
     '<div class="filter-bar">' +
-      '<select id="audit-filter-module" style="padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"><option value="">全部模块</option></select>' +
-      '<input id="audit-filter-actor" placeholder="操作人" style="width:140px;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;" />' +
-      '<select id="audit-filter-result" style="padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"><option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option></select>' +
-      '<button class="btn btn-outline btn-sm" onclick="loadAuditData()">查询</button>' +
-      '<button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="loadAuditData()">刷新</button>' +
+      '<select id="audit-filter-module" class="u-input-plainbox"><option value="">全部模块</option></select>' +
+      '<input id="audit-filter-actor" placeholder="操作人" data-style="width:140px;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;" />' +
+      '<select id="audit-filter-result" class="u-input-plainbox"><option value="">全部结果</option><option value="success">成功</option><option value="failure">失败</option></select>' +
+      '<button class="btn btn-outline btn-sm" data-act="loadAuditData">查询</button>' +
+      '<button class="btn btn-ghost btn-sm u-ml-auto"  data-act="loadAuditData">刷新</button>' +
     '</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>对象</th><th>结果</th><th>详情</th></tr></thead>' +
     '<tbody id="audit-tbody"><tr><td colspan="6" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div>';
@@ -1341,13 +1354,13 @@ function renderOps() {
   el.innerHTML =
     '<div class="ops-grid">' +
       opsCard('可转债安全性刷新', '手动触发全部可转债安全评分快照刷新（每日 08:30 自动跑，此处用于立即生效或补救）。',
-        '<button class="btn btn-primary" id="ops-bond-safety-refresh" onclick="opsRefreshBondSafety()">立即刷新</button>') +
+        '<button class="btn btn-primary" id="ops-bond-safety-refresh" data-act="opsRefreshBondSafety">立即刷新</button>') +
       opsCard('可转债估值刷新', '手动触发估值与预警模型重算（每日行情同步完成后自动跑）。',
-        '<button class="btn btn-primary" id="ops-bond-valuation-refresh" onclick="opsRefreshBondValuation()">立即刷新</button>') +
+        '<button class="btn btn-primary" id="ops-bond-valuation-refresh" data-act="opsRefreshBondValuation">立即刷新</button>') +
       opsCard('美国十年期国债收益率', '由 Tushare us_tycr.y10 自动同步，并用于港股格雷厄姆指数计算。',
-        '<span style="color:#55705d;">定时任务自动更新，无需手工导入</span>') +
+        '<span data-style="color:#55705d;">定时任务自动更新，无需手工导入</span>') +
     '</div>' +
-    '<div class="ops-jobs"><div class="ops-jobs-head"><span>最近任务状态</span><button class="btn btn-outline btn-sm" onclick="opsLoadJobs()">刷新</button></div>' +
+    '<div class="ops-jobs"><div class="ops-jobs-head"><span>最近任务状态</span><button class="btn btn-outline btn-sm" data-act="opsLoadJobs">刷新</button></div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>任务</th><th>状态</th><th>开始</th><th>结束</th><th>结果</th></tr></thead>' +
     '<tbody id="ops-jobs-tbody"><tr><td colspan="5" class="biz-table-state-cell">加载中...</td></tr></tbody></table></div></div>';
   opsLoadJobs();
@@ -1408,10 +1421,10 @@ async function opsLoadJobs() {
 function renderAimodels(target) {
   const el = target || document.getElementById('settings-models'); if (!el) return;
   el.innerHTML =
-    '<div style="font-size:12px;color:#888;background:#f6f8fa;padding:8px 10px;border-radius:6px;margin-bottom:12px;">图片/Excel 识别会按顺序依次调用已启用的模型：排在最前的是<b>默认模型</b>，上一个失效自动切换到下一个（用户无感知）。状态灯反映后台最近一次真实调用的结果。</div>' +
+    '<div class="u-tip-box">图片/Excel 识别会按顺序依次调用已启用的模型：排在最前的是<b>默认模型</b>，上一个失效自动切换到下一个（用户无感知）。状态灯反映后台最近一次真实调用的结果。</div>' +
     '<div class="filter-bar">' +
-      '<button class="btn btn-outline btn-sm" onclick="loadAimodelsData()">刷新</button>' +
-      '<button class="btn btn-success btn-sm" style="margin-left:auto;" onclick="openModelForm()">+ 新增模型</button>' +
+      '<button class="btn btn-outline btn-sm" data-act="loadAimodelsData">刷新</button>' +
+      '<button class="btn btn-success btn-sm u-ml-auto"  data-act="openModelForm">+ 新增模型</button>' +
     '</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table">' +
       '<thead><tr><th>名称</th><th>模型名</th><th>API 地址</th><th>API Key</th><th>状态</th><th>操作</th></tr></thead>' +
@@ -1434,10 +1447,10 @@ function renderAimodels(target) {
 
 function aimodelStatusHtml(st) {
   if (!st) return '<span class="tag">未调用</span>';
-  const dot = st.ok ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2e7d32;margin-right:6px;"></span>' : '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#d93025;margin-right:6px;"></span>';
+  const dot = st.ok ? '<span data-style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2e7d32;margin-right:6px;"></span>' : '<span data-style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#d93025;margin-right:6px;"></span>';
   const time = st.at ? new Date(st.at).toLocaleString('zh-CN', { hour12: false }) : '';
   const detail = st.ok ? ('耗时 ' + (st.ms || 0) + 'ms') : ('失败：' + escapeHtml((st.error || '').slice(0, 40)));
-  return '<div style="font-size:12px;line-height:1.5;">' + dot + (st.ok ? '正常' : '异常') + '<div style="color:#999;">' + time + ' · ' + detail + '</div></div>';
+  return '<div data-style="font-size:12px;line-height:1.5;">' + dot + (st.ok ? '正常' : '异常') + '<div class="u-c-muted">' + time + ' · ' + detail + '</div></div>';
 }
 
 async function loadAimodelsData() {
@@ -1458,7 +1471,7 @@ async function loadAimodelsData() {
         '<td>' + escapeHtml(m.model) + '</td>' +
         '<td class="biz-table-note-cell biz-table-note-cell--240 biz-table-break-all">' + escapeHtml(m.apiUrl) + '</td>' +
         '<td class="biz-table-mono-cell">' + escapeHtml(m.apiKey || '') + '</td>' +
-        '<td>' + enTag + '<div style="margin-top:4px;">' + aimodelStatusHtml(m.status) + '</div></td>' +
+        '<td>' + enTag + '<div class="u-mt-4">' + aimodelStatusHtml(m.status) + '</div></td>' +
         '<td class="biz-table-nowrap">' +
           '<button class="btn btn-sm btn-info" data-action="test" data-id="' + escapeHtml(m.id) + '">测试</button> ' +
           '<button class="btn btn-sm btn-outline" data-action="edit" data-id="' + escapeHtml(m.id) + '">编辑</button> ' +
@@ -1480,14 +1493,14 @@ function findModel(list, id) {
 function openModelForm(id) {
   const isEdit = !!id;
   let body = '<input type="hidden" id="model-id" value="' + (isEdit ? escapeHtml(id) : '') + '">' +
-    '<div class="form-group"><label>名称（便于区分，如「默认模型」）</label><input id="model-name" placeholder="如 默认模型" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>模型名（如 agnes-2.5-flash）</label><input id="model-model" placeholder="如 agnes-2.5-flash" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>API 地址（必须是 HTTPS，如 https://apihub.agnes-ai.com/v1/chat/completions）</label><input id="model-url" placeholder="https://..." style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<div class="form-group"><label>API Key' + (isEdit ? '（留空或显示打码串表示不修改）' : '') + '</label><input id="model-key" type="password" autocomplete="new-password" placeholder="粘贴 API Key" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;"></div>' +
-    '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;"><input type="checkbox" id="model-enabled" checked> 启用（参与识别兜底）</label>';
+    '<div class="form-group"><label>名称（便于区分，如「默认模型」）</label><input id="model-name" placeholder="如 默认模型" class="u-input"></div>' +
+    '<div class="form-group"><label>模型名（如 agnes-2.5-flash）</label><input id="model-model" placeholder="如 agnes-2.5-flash" class="u-input"></div>' +
+    '<div class="form-group"><label>API 地址（必须是 HTTPS，如 https://apihub.agnes-ai.com/v1/chat/completions）</label><input id="model-url" placeholder="https://..." class="u-input"></div>' +
+    '<div class="form-group"><label>API Key' + (isEdit ? '（留空或显示打码串表示不修改）' : '') + '</label><input id="model-key" type="password" autocomplete="new-password" placeholder="粘贴 API Key" class="u-input"></div>' +
+    '<label data-style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;"><input type="checkbox" id="model-enabled" checked> 启用（参与识别兜底）</label>';
   openAdminModal(isEdit ? '编辑模型' : '新增模型', body,
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-primary" onclick="submitModel()">保存</button>'
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-primary" data-act="submitModel">保存</button>'
   );
   if (isEdit) {
     fetch(api('/api/admin/models')).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
@@ -1523,9 +1536,9 @@ async function submitModel() {
 }
 
 function deleteModelConfirm(id) {
-  openAdminModal('删除模型', '<p style="font-size:14px;color:#666;line-height:1.6;">确定删除该模型吗？删除后它将不参与识别兜底。</p>',
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-danger" onclick="doDeleteModel(\'' + escapeHtml(id) + '\')">确认删除</button>'
+  openAdminModal('删除模型', '<p class="u-note-14">确定删除该模型吗？删除后它将不参与识别兜底。</p>',
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-danger" data-act="doDeleteModel" data-arg1="' + escapeHtml(id) + '">确认删除</button>'
   );
 }
 async function doDeleteModel(id) {
@@ -1594,7 +1607,7 @@ async function ksRenderKsArticles() {
   const body = document.getElementById('ks-admin-body');
   if (!body) return;
   let html = '<div class="filter-bar">' +
-    '<select id="ks-ad-status" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;">' +
+    '<select id="ks-ad-status" class="u-input-sm">' +
       '<option value="">全部状态</option><option value="published">已发布</option><option value="draft">草稿</option></select>' +
     '<button class="btn btn-primary btn-sm" id="ks-ad-search">筛选</button>' +
     '<span class="ks-ad-count" id="ks-ad-count"></span></div>' +
@@ -1652,7 +1665,7 @@ async function ksRenderKsComments() {
   const body = document.getElementById('ks-admin-body');
   if (!body) return;
   body.innerHTML = '<div class="filter-bar">' +
-    '<input id="ks-cm-article" placeholder="按文章ID筛选（可选）" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:160px;">' +
+    '<input id="ks-cm-article" placeholder="按文章ID筛选（可选）" data-style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:160px;">' +
     '<button class="btn btn-primary btn-sm" id="ks-cm-search">筛选</button>' +
     '<span class="ks-ad-count" id="ks-cm-count"></span></div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>ID</th><th>文章</th><th>评论人</th><th>内容</th><th>回复对象</th><th>时间</th><th>操作</th></tr></thead>' +
@@ -1697,7 +1710,7 @@ async function ksRenderKsPermissions() {
   const body = document.getElementById('ks-admin-body');
   if (!body) return;
   body.innerHTML = '<div class="filter-bar">' +
-    '<input id="ks-per-search" placeholder="搜索账号" style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:180px;">' +
+    '<input id="ks-per-search" placeholder="搜索账号" data-style="padding:5px 9px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;width:180px;">' +
     '<button class="btn btn-primary btn-sm" id="ks-per-go">搜索</button>' +
     '<span class="ks-ad-count">管理员默认拥有写权限</span></div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>投资笔记写权限</th><th>操作</th></tr></thead>' +
@@ -1748,9 +1761,9 @@ async function renderArbitrage() {
   const el = document.getElementById('view-arbitrage');
   if (!el) return;
   el.innerHTML =
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
-      '<div><button class="btn btn-sm btn-primary" onclick="adminArbSync()">手动同步</button></div>' +
-      '<div id="arb-admin-meta" style="font-size:12px;color:#999;"></div>' +
+    '<div data-style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+      '<div><button class="btn btn-sm btn-primary" data-act="adminArbSync">手动同步</button></div>' +
+      '<div id="arb-admin-meta" class="u-fs-12 u-c-muted"></div>' +
     '</div>' +
     '<div class="admin-table-wrap biz-table-scroll"><table class="biz-table"><thead><tr>' +
       '<th>ID</th><th>市场</th><th>类型</th><th>证券</th><th>状态</th><th>审核</th><th>公告日</th><th>操作</th>' +
@@ -1781,9 +1794,9 @@ async function loadArbCandidates() {
         '<td>' + esc(c.review_status || '') + '</td>' +
         '<td>' + (c.announced_at ? String(c.announced_at).slice(0, 10) : '') + '</td>' +
         '<td>' +
-          '<button class="btn btn-sm btn-success" onclick="adminArbReview(' + c.case_id + ',\'approved\')">通过</button> ' +
-          '<button class="btn btn-sm btn-danger" onclick="adminArbReview(' + c.case_id + ',\'rejected\')">驳回</button> ' +
-          '<button class="btn btn-sm btn-ghost" onclick="adminArbDetail(' + c.case_id + ')">详情</button>' +
+          '<button class="btn btn-sm btn-success" data-act="adminArbReview" data-arg1="' + c.case_id + '" data-arg2="approved">通过</button> ' +
+          '<button class="btn btn-sm btn-danger" data-act="adminArbReview" data-arg1="' + c.case_id + '" data-arg2="rejected">驳回</button> ' +
+          '<button class="btn btn-sm btn-ghost" data-act="adminArbDetail" data-arg1="' + c.case_id + '">详情</button>' +
         '</td>' +
       '</tr>';
     }).join('');
@@ -1813,20 +1826,20 @@ async function adminArbDetail(caseId) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     var docs = (d.documents || []).map(function (doc) {
-      return '<div style="padding:4px 0;border-bottom:1px solid #eee;font-size:13px;">' +
-        '<span style="color:#666;">' + (doc.announced_at ? String(doc.announced_at).slice(0, 10) : '') + '</span> ' +
+      return '<div data-style="padding:4px 0;border-bottom:1px solid #eee;font-size:13px;">' +
+        '<span class="u-c-dim">' + (doc.announced_at ? String(doc.announced_at).slice(0, 10) : '') + '</span> ' +
         esc(doc.title || '') + '</div>';
     }).join('');
     openAdminModal('套利事件 #' + caseId,
-      '<div style="max-height:400px;overflow-y:auto;">' +
+      '<div data-style="max-height:400px;overflow-y:auto;">' +
       '<p><b>证券:</b> ' + esc(d.canonical_code || '') + ' ' + esc(d.name || '') + '</p>' +
       '<p><b>类型:</b> ' + esc(d.strategy_type || '') + '</p>' +
       '<p><b>状态:</b> ' + esc(d.event_status || '') + ' / ' + esc(d.review_status || '') + '</p>' +
       '<p><b>描述:</b> ' + esc(d.description || '') + '</p>' +
-      '<h4 style="margin:12px 0 4px;">公告链</h4>' + (docs || '<p style="color:#999;">无</p>') +
+      '<h4 data-style="margin:12px 0 4px;">公告链</h4>' + (docs || '<p class="u-c-muted">无</p>') +
       '</div>',
-      '<button class="btn btn-sm btn-primary" onclick="openArbEditForm(' + caseId + ')">编辑条款</button>' +
-      '<button class="btn btn-sm btn-ghost" onclick="closeAdminModal()">关闭</button>'
+      '<button class="btn btn-sm btn-primary" data-act="openArbEditForm" data-arg1="' + caseId + '">编辑条款</button>' +
+      '<button class="btn btn-sm btn-ghost" data-act="closeAdminModal">关闭</button>'
     );
   } catch (e) {
     showToast('加载失败: ' + e.message);
@@ -1856,14 +1869,14 @@ async function openArbEditForm(caseId) {
   const g = function (label, id, type, step) {
     const t = type || 'text';
     const s = step ? (' step="' + step + '"') : '';
-    return '<div class="form-group"><label>' + label + '</label><input id="' + id + '" type="' + t + '"' + s + ' style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;box-sizing:border-box;"></div>';
+    return '<div class="form-group"><label>' + label + '</label><input id="' + id + '" type="' + t + '"' + s + ' class="u-input"></div>';
   };
   const sel = function (label, id, opts, cur) {
     let o = ''; opts.forEach(function (x) { o += '<option value="' + x + '"' + (x === cur ? ' selected' : '') + '>' + x + '</option>'; });
-    return '<div class="form-group"><label>' + label + '</label><select id="' + id + '" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;box-sizing:border-box;">' + o + '</select></div>';
+    return '<div class="form-group"><label>' + label + '</label><select id="' + id + '" class="u-input">' + o + '</select></div>';
   };
   const body =
-    '<div style="max-height:62vh;overflow:auto;padding-right:4px;">' +
+    '<div data-style="max-height:62vh;overflow:auto;padding-right:4px;">' +
       sel('类型', 'arb-edit-strategy_type', ['a_cash_offer', 'a_share_swap', 'hk_privatisation', 'hk_rights'], d.strategy_type) +
       sel('状态', 'arb-edit-event_status', ['proposed', 'in_progress', 'completed', 'terminated', 'expired'], d.event_status) +
       sel('审核', 'arb-edit-review_status', ['pending', 'approved', 'rejected'], d.review_status) +
@@ -1885,11 +1898,11 @@ async function openArbEditForm(caseId) {
       g('供股交易结束', 'arb-edit-rights_trade_end', 'date') +
       g('缴款截止', 'arb-edit-payment_deadline', 'date') +
       g('上市日', 'arb-edit-listing_date', 'date') +
-      '<div class="form-group"><label>描述</label><textarea id="arb-edit-description" rows="3" style="width:100%;padding:8px 10px;border:1px solid #e0e0e0;border-radius:6px;font-size:13px;box-sizing:border-box;">' + escapeHtml(v(d.description)) + '</textarea></div>' +
+      '<div class="form-group"><label>描述</label><textarea id="arb-edit-description" rows="3" class="u-input">' + escapeHtml(v(d.description)) + '</textarea></div>' +
     '</div>';
   openAdminModal('编辑条款 #' + caseId, body,
-    '<button class="btn btn-outline" onclick="closeAdminModal()">取消</button>' +
-    '<button class="btn btn-primary" onclick="submitArbEdit(' + caseId + ')">保存</button>');
+    '<button class="btn btn-outline" data-act="closeAdminModal">取消</button>' +
+    '<button class="btn btn-primary" data-act="submitArbEdit" data-arg1="' + caseId + '">保存</button>');
   const setVal = function (id, val) { const el = document.getElementById(id); if (el) el.value = v(val); };
   setVal('arb-edit-offer_price', d.offer_price);
   setVal('arb-edit-cash_choice_price', d.cash_choice_price);

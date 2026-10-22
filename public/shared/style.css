@@ -75,6 +75,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .nav-inner { max-width: 1240px; margin: 0 auto; padding: 0 20px; height: 52px; display: flex; align-items: center; gap: 12px; }
 .nav-left { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .nav h1 { font-size: 16px; font-weight: 700; letter-spacing: .5px; white-space: nowrap; }
+.site-title-btn { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; letter-spacing: inherit; }
 .nav-right { display: flex; align-items: center; gap: 2px; margin-left: auto; height: 100%; }
 
 /* 账户选择器 */
@@ -122,9 +123,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .stat-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); }
 .stat-card .stat-top { display: flex; justify-content: space-between; align-items: flex-start; }
 .stat-card .bar-wrap { height: 4px; background: #f0f0f0; border-radius: 2px; margin-top: auto; overflow: hidden; }
-.stat-card .label { font-size: 12px; color: #8c8c8c; margin-bottom: 2px; line-height: 1.4; }
+.stat-card .label { font-size: 12px; color: #6e6e6e; margin-bottom: 2px; line-height: 1.4; }
 .stat-card .value { font-size: 22px; font-weight: 700; color: #1a1a2e; line-height: 1.2; }
-.stat-card .sub { font-size: 12px; color: #999; margin-top: 4px; }
+.stat-card .sub { font-size: 12px; color: #6e6e6e; margin-top: 4px; }
 .stat-card .stat-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
 .stat-card .bar-fill { height: 100%; border-radius: 2px; transition: width .5s; }
 .stat-card .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-top: 4px; }
@@ -144,7 +145,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .chart-box { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .chart-box .chart-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
 .chart-box h3 { font-size: 14px; font-weight: 600; color: #1a1a2e; }
-.chart-box .chart-total { font-size: 12px; color: #8c8c8c; }
+.chart-box .chart-total { font-size: 12px; color: #6e6e6e; }
 .chart-canvas-wrap { position: relative; height: 260px; }
 
 /* ===== 表格 ===== */
@@ -270,8 +271,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .pos-link:hover { text-decoration: underline; color: #0d47a1; }
 .pos-link .val-low, .pos-link .val-low2, .pos-link .val-mid, .pos-link .val-high1, .pos-link .val-high, .pos-link .val-risk, .pos-link .val-none { font-weight: 600; }
 .earnings-pager { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 0 4px; flex-wrap: wrap; }
-.earnings-pager .pager-info { font-size: 12px; color: #888; white-space: nowrap; }
-.earnings-pager .pager-jump { font-size: 12px; color: #888; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.earnings-pager .pager-info { font-size: 12px; color: #6e6e6e; white-space: nowrap; }
+.earnings-pager .pager-jump { font-size: 12px; color: #6e6e6e; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .earnings-pager .pager-jump input { width: 52px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px; text-align: center; }
 
 /* ===== 标签 ===== */
@@ -308,7 +309,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 
 /* ===== 表单 ===== */
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 12px; }
-.form-group label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; font-weight: 500; }
+.form-group label { display: block; font-size: 12px; color: #6e6e6e; margin-bottom: 4px; font-weight: 500; }
 .form-group input, .form-group select { width: 100%; padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 6px; font-size: 13px; outline: none; transition: border-color .2s; }
 .form-group input:focus, .form-group select:focus { border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
 .form-group { margin-bottom: 14px; }
@@ -317,14 +318,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 /* 定时任务说明卡片 */
 .job-help { background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .job-help-title { font-size: 15px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
-.job-help-sub { font-size: 12px; color: #888; margin-bottom: 12px; }
+.job-help-sub { font-size: 12px; color: #6e6e6e; margin-bottom: 12px; }
 .job-help-group { margin-bottom: 10px; }
 .job-help-group > b { display: block; font-size: 13px; color: #4f6ef7; margin-bottom: 6px; }
 .job-help-item { display: flex; gap: 10px; font-size: 12.5px; color: #555; line-height: 1.6; padding: 4px 0; border-top: 1px dashed #f0f0f0; }
 .job-help-item:first-child { border-top: none; }
 .job-help-name { flex: 0 0 150px; font-weight: 600; color: #333; }
-.job-help-item i { color: #999; font-style: normal; }
-.job-worker-status { margin-left: auto; color: #777; font-size: 12px; }
+.job-help-item i { color: #6e6e6e; font-style: normal; }
+.job-worker-status { margin-left: auto; color: #6e6e6e; font-size: 12px; }
 .job-detail { color: #555; font-size: 13px; line-height: 1.8; }
 .job-detail p { margin: 6px 0; }
 .btn-xs { padding: 3px 7px; font-size: 11px; }
@@ -334,7 +335,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .holiday-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .holiday-month { background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 .holiday-month-title { font-size: 13px; font-weight: 700; color: #1a1a2e; text-align: center; margin-bottom: 8px; }
-.holiday-week { display: grid; grid-template-columns: repeat(7, 1fr); font-size: 11px; color: #999; text-align: center; margin-bottom: 4px; }
+.holiday-week { display: grid; grid-template-columns: repeat(7, 1fr); font-size: 11px; color: #6e6e6e; text-align: center; margin-bottom: 4px; }
 .holiday-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
 .holiday-cell { aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 6px; cursor: pointer; color: #444; user-select: none; position: relative; }
 .holiday-cell.empty { visibility: hidden; cursor: default; }
@@ -359,7 +360,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 @media (max-width:760px) { .cash-income-form { grid-template-columns:1fr; } }
 .modal { background: #fff; border-radius: 12px; padding: 24px; width: 520px; max-width: 92vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.15); position: relative; }
 .modal h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: #1a1a2e; padding-right: 28px; }
-.modal-close { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border: none; background: none; cursor: pointer; font-size: 22px; line-height: 1; color: #999; display:flex; align-items:center; justify-content:center; border-radius: 6px; transition: .15s; }
+.modal-close { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border: none; background: none; cursor: pointer; font-size: 22px; line-height: 1; color: #6e6e6e; display:flex; align-items:center; justify-content:center; border-radius: 6px; transition: .15s; }
 .modal-close:hover { color: #333; background: #f0f0f0; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
 .project-dialog-overlay { z-index: 3000; }
@@ -373,7 +374,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .acct-section { margin-top: 4px; margin-bottom: 20px; }
 .acct-section:last-child { margin-bottom: 0; }
 .acct-section-title {
-  font-size: 12px; font-weight: 600; color: #888;
+  font-size: 12px; font-weight: 600; color: #6e6e6e;
   margin-bottom: 10px; padding-bottom: 6px; letter-spacing: .5px;
   border-bottom: 1px solid #f0f0f0;
 }
@@ -404,7 +405,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   background: #e8f0fe; padding: 2px 9px; border-radius: 20px; flex-shrink: 0;
 }
 .acct-broker { display: flex; align-items: center; gap: 8px; }
-.acct-broker label { font-size: 12px; color: #888; white-space: nowrap; }
+.acct-broker label { font-size: 12px; color: #6e6e6e; white-space: nowrap; }
 .acct-broker select {
   flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px;
   border: 1px solid #e0e0e0; border-radius: 6px; background: #fff; color: #333;
@@ -412,7 +413,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 }
 .acct-broker select:focus { border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
 .acct-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
-.acct-empty { color: #999; font-size: 13px; text-align: center; padding: 16px 0; }
+.acct-empty { color: #6e6e6e; font-size: 13px; text-align: center; padding: 16px 0; }
 .acct-add { display: flex; gap: 8px; align-items: stretch; }
 .acct-add input {
   flex: 1; min-width: 0; padding: 8px 10px; font-size: 13px;
@@ -420,13 +421,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   transition: border-color .2s, box-shadow .2s;
 }
 .acct-add input:focus { border-color: #1a237e; box-shadow: 0 0 0 2px rgba(26,35,126,.08); }
-.acct-add-hint { font-size: 11px; color: #aaa; margin-top: 8px; line-height: 1.5; }
+.acct-add-hint { font-size: 11px; color: #6e6e6e; margin-top: 8px; line-height: 1.5; }
 .acct-idle {
   border: 1px dashed #ddd; border-radius: 10px;
   padding: 18px; text-align: center; color: #bbb;
   background: #fafbfc; cursor: pointer; transition: .15s;
 }
-.acct-idle:hover { border-color: #c0c0cc; color: #999; background: #f0f2f5; }
+.acct-idle:hover { border-color: #c0c0cc; color: #6e6e6e; background: #f0f2f5; }
 .acct-idle-icon { font-size: 20px; margin-bottom: 6px; }
 .acct-idle-text { font-size: 13px; font-weight: 500; }
 /* 税费设置 Tab 切换 */
@@ -447,7 +448,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 /* ===== OCR ===== */
 .ocr-zone { border: 2px dashed #d0d0d0; border-radius: 10px; padding: 32px; text-align: center; cursor: pointer; transition: .2s; margin-bottom: 14px; background: #fafbfc; }
 .ocr-zone:hover, .ocr-zone.dragover { border-color: #1a237e; background: #f0f1ff; }
-.ocr-zone p { color: #888; font-size: 14px; }
+.ocr-zone p { color: #6e6e6e; font-size: 14px; }
 .ocr-zone .icon { font-size: 36px; margin-bottom: 8px; }
 .ocr-result { background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.05); margin-bottom: 14px; }
 .ocr-result h3 { font-size: 14px; margin-bottom: 8px; color: #1a1a2e; }
@@ -456,6 +457,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .empty-state { text-align: center; padding: 40px 20px; color: #bbb; }
 .empty-state .icon { font-size: 40px; margin-bottom: 10px; }
 .hidden-input { display: none; }
+/* U-15：JS 初始隐藏元素统一用本类，不再写 style="display:none"（配合 el.style.display 的 CSSOM 切换仍生效） */
+.js-hidden { display: none; }
+/* U-15：验证码行（login 注册/找回共用），原内联 display:flex;gap:8px / flex:1;min-width:0 / 发送按钮尺寸 */
+.code-row { display: flex; gap: 8px; }
+.code-row input { flex: 1; min-width: 0; }
+.code-row .code-send { width: auto; padding: 12px 18px; margin: 0; white-space: nowrap; font-size: 13px; }
 
 /* ===== Toast ===== */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #323232; color: #fff; padding: 10px 22px; border-radius: 8px; font-size: 13px; z-index: 9999; opacity: 0; transition: opacity .35s; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
@@ -465,12 +472,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .refresh-bar { height: 3px; background: #f0f0f0; border-radius: 2px; overflow: hidden; margin: 6px 0; }
 .refresh-bar-fill { height: 100%; background: linear-gradient(90deg, #1a73e8, #137333); border-radius: 2px; width: 0; transition: width .3s; }
 
-.auto-hint { font-size: 11px; color: #999; padding: 2px 6px; background: #f0f2f5; border-radius: 3px; }
+.auto-hint { font-size: 11px; color: #6e6e6e; padding: 2px 6px; background: #f0f2f5; border-radius: 3px; }
 
 /* ===== 筛选栏 ===== */
 .filter-bar { display: flex; gap: 8px; padding: 10px 18px; border-bottom: 1px solid #f0f0f0; background: #fafbfc; font-size: 13px; align-items: center; flex-wrap: wrap; }
 .filter-bar select { padding: 4px 8px; border: 1px solid #e0e0e0; border-radius: 5px; font-size: 12px; outline: none; background: #fff; }
-.filter-bar .filter-label { color: #999; }
+.filter-bar .filter-label { color: #6e6e6e; }
 
 .confirm-box { background: #fff8e1; border: 1px solid #ffd54f; border-radius: 6px; padding: 12px; margin-bottom: 12px; font-size: 13px; color: #795548; }
 
@@ -1415,7 +1422,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   padding: 4px 0; width: 100%; outline: none; background: transparent;
 }
 .profile-nick-input:focus { border-color: #1a237e; }
-.profile-username { font-size: 12px; color: #999; margin-top: 4px; }
+.profile-username { font-size: 12px; color: #6e6e6e; margin-top: 4px; }
 .form-group textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #e0e0e0; border-radius: 6px;
   font-size: 13px; outline: none; transition: border-color .2s; resize: vertical;
@@ -1426,7 +1433,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .profile-acct { font-size: 13px; padding: 10px 12px; background: #f7f8fc; border-radius: 8px; color: #333; }
 .info-row { display: flex; justify-content: space-between; font-size: 13px; padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
 .info-row:last-child { border-bottom: none; }
-.info-row span:first-child { color: #888; }
+.info-row span:first-child { color: #6e6e6e; }
 
 /* 修改密码独立卡片 */
 .profile-card-pwd { border: 1px solid #e8e8ee; }
@@ -1467,7 +1474,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .admin-content { padding: 24px; max-width: 1100px; }
 .admin-view { display: none; }
 .admin-view.active { display: block; }
-.admin-placeholder { background: #fff; border: 1px dashed #dcdcdc; border-radius: 10px; padding: 60px 20px; text-align: center; color: #aaa; margin-top: 8px; }
+.admin-placeholder { background: #fff; border: 1px dashed #dcdcdc; border-radius: 10px; padding: 60px 20px; text-align: center; color: #6e6e6e; margin-top: 8px; }
 .admin-placeholder .icon { font-size: 40px; margin-bottom: 10px; }
 
 /* 后台页面通用小标题 */
@@ -1488,7 +1495,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .ops-card-action .btn { width: 100%; }
 .ops-jobs-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 15px; font-weight: 600; color: #1a1a2e; }
 
-@media (max-width: 720px) {
+@media (max-width: 760px) {
   .admin-sidebar { width: 64px; }
   .admin-brand { font-size: 0; padding: 18px 0; text-align: center; }
   .admin-brand::first-letter { font-size: 18px; }
@@ -1500,7 +1507,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   .admin-content { padding: 16px; }
 }
 .date-range-control{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding:12px;border:1px solid #e4e7ec;border-radius:9px;background:#fafbfc}.date-range-control>strong{margin-right:8px}.date-range-control label{display:flex;align-items:center;gap:6px;color:#667085;font-size:12px}.date-range-control input{height:32px;padding:0 8px;border:1px solid #d0d5dd;border-radius:6px;background:#fff}.date-range-presets{display:flex}.date-range-presets button{height:32px;padding:0 11px;border:1px solid #d0d5dd;border-right:0;background:#fff;color:#475467;cursor:pointer}.date-range-presets button:first-child{border-radius:6px 0 0 6px}.date-range-presets button:last-child{border-right:1px solid #d0d5dd;border-radius:0 6px 6px 0}.date-range-presets button:hover{background:#eef4fb}.date-range-presets button.is-active{background:#245f9e;color:#fff;border-color:#245f9e}.date-range-presets button.is-active+button{border-left-color:#245f9e}
-@media(max-width:720px){.date-range-control label{width:100%;justify-content:space-between}}
+@media(max-width:760px){.date-range-control label{width:100%;justify-content:space-between}}
 
 /* ===================== 仓位对比（position-comparison） ===================== */
 .pc-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1514,7 +1521,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .pc-bench-table tr:hover { background: #fafbfe; }
 .pc-bench-row { cursor: pointer; }
 .pc-replicate-meta-row td { background: #fafbfe; }
-.pc-replicate-meta-cell { padding: 3px 10px !important; color: #999 !important; font-size: 11px; }
+.pc-replicate-meta-cell { padding: 3px 10px !important; color: #6e6e6e !important; font-size: 11px; }
 .pc-meta { font-size: 13px; color: #344054; margin-bottom: 12px; line-height: 1.7; }
 .pc-overview { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .pc-ov-item { flex: 1; min-width: 110px; background: #f8f9fc; border: 1px solid #eef0f4; border-radius: 9px; padding: 10px 12px; text-align: center; }
@@ -1534,9 +1541,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 .pc-page-head .btn-sm { white-space: nowrap; }
 .pc-page-empty { text-align: center; color: #98a2b3; font-size: 13px; padding: 60px 0; }
 .pc-page-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
-@media (max-width: 720px) { .pc-page { padding: 14px 12px; } }
+@media (max-width: 760px) { .pc-page { padding: 14px 12px; } }
 
 /* ===== 全站移动端标准：正文 760px，导航 900px ===== */
+/* 触摸设备（含 761-900px 平板/横屏）同样保证 44px 操作区，不再只限 760px 内（审查 U-9） */
+@media (pointer: coarse) and (min-width: 761px) {
+  button, .btn, .modal-close, .nav-avatar, .top-login-link { min-height: 44px; min-width: 44px; }
+}
 :root { --site-nav-height: 52px; }
 .mobile-nav-toggle, .mobile-current-page, .mobile-disclosure, .mobile-account-tools { display: none; }
 .mobile-nav-panel[hidden], .mobile-nav-backdrop[hidden] { display: none; }
@@ -1697,3 +1708,89 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   .mobile-overlay-open .modal-overlay { top:var(--mobile-viewport-top,0px); bottom:auto; height:var(--mobile-viewport-height,100vh); height:var(--mobile-viewport-height,100dvh); }
   .modal-overlay .modal { max-height:calc(var(--mobile-viewport-height,100vh) - 32px); max-height:calc(var(--mobile-viewport-height,100dvh) - 32px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)); }
 }
+
+/* ===== U-15 内联样式工具类（2026-10-21 审查整改：index.html 与 JS 模板的 style="..." 改用类） ===== */
+/* 间距 */
+.u-mb-4 { margin-bottom:4px; } .u-mb-6 { margin-bottom:6px; } .u-mb-8 { margin-bottom:8px; }
+.u-mb-10 { margin-bottom:10px; } .u-mb-12 { margin-bottom:12px; } .u-mb-14 { margin-bottom:14px; }
+.u-mb-16 { margin-bottom:16px; } .u-mb-18 { margin-bottom:18px; } .u-mb-20 { margin-bottom:20px; }
+.u-mt-4 { margin-top:4px; } .u-mt-8 { margin-top:8px; } .u-mt-10 { margin-top:10px; }
+.u-mt-14 { margin-top:14px; } .u-mt-16 { margin-top:16px; } .u-mt-18 { margin-top:18px; }
+.u-ml-6 { margin-left:6px; } .u-ml-8 { margin-left:8px; } .u-ml-auto { margin-left:auto; }
+.u-m-0 { margin:0; }
+/* 内边距 */
+.u-pad-8-10 { padding:8px 10px; } .u-pad-14 { padding:14px; } .u-pad-16 { padding:16px; }
+.u-pad-18 { padding:18px; } .u-pad-20 { padding:20px; } .u-pad-24 { padding:24px; }
+.u-pad-t5 { padding-top:5px; }
+/* 字号/行高 */
+.u-fs-11 { font-size:11px; } .u-fs-12 { font-size:12px; } .u-fs-13 { font-size:13px; } .u-fs-14 { font-size:14px; }
+.u-lh-15 { line-height:1.5; } .u-lh-16 { line-height:1.6; } .u-lh-18 { line-height:1.8; }
+/* 文字色（沿 U-11 的 #6e6e6e 对比度口径） */
+.u-c-muted { color:#6e6e6e; } .u-c-dim { color:#666; } .u-c-faint { color:#bbb; }
+.u-c-ink { color:#333; } .u-c-body { color:#444; } .u-c-danger { color:#d93025; }
+.u-c-ink-strong { color:#1a1a2e; } .u-w-700 { font-weight:700; } .u-w-600 { font-weight:600; }
+.u-text-center { text-align:center; } .u-pre-wrap { white-space:pre-wrap; word-break:break-all; }
+/* 布局 */
+.u-flex { display:flex; } .u-flex-col { flex-direction:column; }
+.u-flex-wrap { display:flex; flex-wrap:wrap; } .u-flex-center { display:flex; align-items:center; }
+.u-gap-6 { gap:6px; } .u-gap-10 { gap:10px; } .u-w-100 { width:100%; }
+.u-minh-80 { min-height:80px; }
+/* 弹框尺寸/层级（替代逐个 modal 内联宽度与 z-index） */
+.u-modal-w380 { width:380px; } .u-modal-w420 { width:420px; } .u-modal-w440 { width:440px; }
+.u-modal-w520 { width:520px; } .u-modal-w640 { width:640px; max-width:94vw; }
+.u-z-2000 { z-index:2000; } .u-z-2100 { z-index:2100; } .u-z-2200 { z-index:2200; }
+/* 表单控件（原散落 10+ 处的 input 内联样式） */
+.u-input { width:100%; padding:8px 10px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; box-sizing:border-box; }
+.u-input-lg { width:100%; padding:9px 12px; border:1px solid #d0d0d0; border-radius:6px; box-sizing:border-box; }
+.u-input-sm { padding:5px 9px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; }
+.u-input-xs { width:80px; padding:6px 8px; border:1px solid #e0e0e0; border-radius:6px; font-size:12px; }
+.u-input-plain { background:#f5f5f5; }
+/* 图表容器 */
+.u-chart-h320 { height:320px; }
+/* 提示文本（原 font-size:11px;color:#bbb 等组合） */
+.u-hint { font-size:12px; color:#bbb; margin-top:4px; }
+.u-hint-8 { font-size:12px; color:#bbb; margin-top:8px; }
+.u-note { font-size:13px; color:#666; line-height:1.6; }
+.u-note-14 { font-size:14px; color:#666; line-height:1.6; }
+.u-note-danger { font-size:13px; color:#d93025; line-height:1.6; }
+.u-changelog-item { margin-bottom:18px; }
+.u-changelog-title { font-weight:700; color:#1a1a2e; margin-bottom:6px; }
+.u-changelog-list { padding-left:18px; margin:0; }
+.u-changelog-li { margin-bottom:4px; color:#444; }
+
+.u-pad-b18 { padding:0 18px 18px; }
+.u-arb-status { padding:0 4px 8px; color:#666; font-size:13px; }
+.u-changelog-body { padding:20px; font-size:13px; line-height:1.8; }
+.u-muted-center { color:#6e6e6e; text-align:center; }
+.u-clickable { cursor:pointer; }
+.u-trade-qty-hint { display:none; font-size:11px; color:#e65100; margin-left:4px; }
+.u-smart-loading { display:none; text-align:center; padding:20px; color:#666; }
+.u-nav-backup-info { font-size:12px; color:#6e6e6e; margin-bottom:14px; padding:8px 10px; background:#f7f9ff; border-radius:6px; }
+.u-mapping-label { margin:14px 0 6px; font-size:13px; color:#333; }
+.u-mapping-preview { max-height:180px; overflow:auto; border:1px solid #eee; border-radius:8px; }
+
+.u-trade-mode-first { border-radius:8px 0 0 8px; }
+.u-trade-mode-last { border-radius:0 8px 8px 0; margin-left:-1px; }
+
+.u-c-silver { color:#9aa0a6; } .u-c-warn { color:#fbbc04; }
+.u-mx-auto-12 { margin:0 auto 12px; }
+
+.u-input-plainbox { padding:8px 10px; border:1px solid #e0e0e0; border-radius:6px; font-size:13px; }
+.u-badge-hint { color:#9aa0a6; font-size:11px; margin:2px 0 6px; }
+.u-badge-warn { color:#fbbc04; font-size:11px; margin:2px 0 6px; }
+.u-badge-pill { font-size:11px; padding:2px 10px; }
+.u-divider-dark { border-top:1px solid #3c4043; padding-top:6px; }
+.u-flex-1 { flex:1; }
+.u-ml-10 { margin-left:10px; }
+.u-field-label { display:block; font-size:12px; color:#6e6e6e; margin-bottom:4px; }
+.u-bg-ok { background:#67b463; } .u-bg-bad { background:#ef6b67; }
+.u-c-good { color:#188038; }
+.u-w-62 { width:62px; } .u-mt-6 { margin-top:6px; } .u-mb-0 { margin-bottom:0; }
+.u-section-foot { margin-top:20px; padding-top:16px; border-top:1px solid #eee; }
+.u-section-head { margin-bottom:16px; border-bottom:1px solid #e8e8e8; padding-bottom:10px; }
+.u-group-head { margin:14px 0 6px; display:flex; align-items:baseline; gap:8px; border-bottom:1px solid #f0f0f0; padding-bottom:6px; }
+.u-tip-box { font-size:12px; color:#6e6e6e; background:#f6f8fa; padding:8px 10px; border-radius:6px; margin-bottom:12px; }
+.u-note55 { font-size:13px; color:#555; }
+.u-h-sm { font-size:14px; font-weight:600; color:#222; margin-bottom:6px; }
+.u-check-label { font-size:14px; color:#333; cursor:pointer; user-select:none; }
+.u-check-box { flex-shrink:0; accent-color:#1a237e; width:18px; height:18px; }

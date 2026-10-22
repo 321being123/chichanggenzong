@@ -26,7 +26,7 @@ function bondRedemptionDate(value) {
   return values.year + '年' + values.month + '月' + values.day + '日';
 }
 function bondRedemptionStatus(value, row) {
-  var labels = { announced: '已公告强赎', met_pending: '已满足待确认', near: '接近触发', maturity_near: '临近到期', tracking: '跟踪中', waived: '不提前赎回', completed: '已完成', inactive: '已失效', not_active: '暂不适用', incomplete: '数据不完整' };
+  var labels = { announced: '已公告强赎', maturity_redeem: '已公告到期兑付', redemption_unconfirmed: '赎回方式待确认', met_pending: '已满足待确认', near: '接近触发', maturity_near: '临近到期', tracking: '跟踪中', waived: '不提前赎回', completed: '已完成', inactive: '已失效', not_active: '暂不适用', incomplete: '数据不完整' };
   var cls = String(value || 'incomplete').replace(/[^a-z_]/g, '');
   var missing = row && row.diagnostics && Array.isArray(row.diagnostics.missing_dates) ? row.diagnostics.missing_dates : [];
   var warning = missing.length
@@ -45,7 +45,7 @@ function bondRedemptionApplyFilters() {
 }
 function bondRedemptionCell(row, key) {
   if (key === 'security_code' || key === 'bond_name') {
-    return '<span class="bond-redemption-link" onclick="bondRedemptionJump(\'' + escapeHtml(row.ts_code || row.security_code) + '\')">' + escapeHtml(bondRedemptionText(row[key])) + '</span>';
+    return '<span class="bond-redemption-link" data-act="bondRedemptionJump" data-arg1="' + escapeHtml(row.ts_code || row.security_code) + '">' + escapeHtml(bondRedemptionText(row[key])) + '</span>';
   }
   if (key === 'business_status') return bondRedemptionStatus(row[key], row);
   if (key === 'distance_to_trigger_pct') return escapeHtml(bondRedemptionPct(row[key]));

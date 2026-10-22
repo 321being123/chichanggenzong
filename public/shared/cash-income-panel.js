@@ -42,7 +42,7 @@ async function openCashIncomePanel(){
     document.querySelectorAll('[data-pending-index]').forEach(function(button){button.onclick=async function(){
       if(account!==currentAccount||!wrap.isConnected)return;
       var row=pending[Number(button.dataset.pendingIndex)];if(!row.event_key||row.state==='resolved')return;
-      var reason=prompt(row.state==='excluded_by_user'?'填写重新打开的原因':'填写本事件不参与的原因');if(!reason)return;
+      var reason=await projectPrompt(row.state==='excluded_by_user'?'填写重新打开的原因':'填写本事件不参与的原因');if(!reason)return;
       button.disabled=true;
       try {var r=await fetch(api('/api/accounts/'+encodeURIComponent(account)+'/cash-income/pending/'+row.pending_key+'?version='+dataVersion),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exclude:row.state!=='excluded_by_user',reason:reason})});var body=await r.json();if(!r.ok)throw new Error(body.error);if(account!==currentAccount||!wrap.isConnected)return;data=await loadData(account);renderAll();await openCashIncomePanel();}catch(e){if(wrap.isConnected){showToast(e.message);button.disabled=false;}}
     };});

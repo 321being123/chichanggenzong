@@ -226,7 +226,7 @@ async function tradeHistory() {
 async function positionDailyZero() {
   for (const width of [320,360,390,430,760,768,900,1024,1440]) {
     const dom = await fixture('<div id="stats-container"></div><div id="positions-table"></div><div id="topn-table"></div>',width), w=dom.window,d=w.document;
-    load(w,'js/utils.js');w.todayCN=()=> '2026-10-11';
+    load(w,'js/utils.js');load(w,'shared/ui-actions.js');w.todayCN=()=> '2026-10-11';
     w.data={cash:0,hkRate:0.9,positions:[
       {code:'600000',name:'A股',subtype:'沪市',price:10.1,quantity:100},
       {code:'00700',name:'港股',subtype:'港股',price:20,quantity:100}
@@ -238,7 +238,7 @@ async function positionDailyZero() {
     w.renderStats();
     ok(d.getElementById('stat-change').textContent==='-','休市缺少完整归因不得猜0');
     w.bindChangeTip=()=>{};
-    w.data.navAttribution={complete:true,currentDate:'2026-10-11',totalChange:0,previousTotalAsset:3010};w.renderStats();
+    w.data.navAttribution={complete:true,currentDate:'2026-10-11',totalChange:0,previousTotalAsset:3010};w.renderStats();w.UiActions.processNode(d.getElementById('stat-change'));
     ok(d.getElementById('stat-change').textContent==='0' && d.querySelector('#stat-change span').style.color==='rgb(217, 48, 37)','当日实际金额为0显示红色0');
     w.data.navAttribution.totalChange=12;w.renderStats();
     ok(d.getElementById('stat-change').textContent.includes('12.00'),'非交易日非零汇率收益按实际显示');

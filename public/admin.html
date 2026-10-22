@@ -6,10 +6,11 @@
 <meta name="base-url" content="">
 <title>管理后台 - 存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="stylesheet" href="shared/style.css?v=0.8.0.12">
-<script src="shared/autofill-guard.js?v=5"></script>
-<script src="shared/mobile-ui.js?v=1" defer></script>
-<script src="shared/telemetry.js?v=0.8.0.12" defer></script>
+<link rel="stylesheet" href="shared/style.css?v=__APP_VERSION__">
+<script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
+<script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
+<script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
+<script src="shared/telemetry.js?v=__APP_VERSION__" defer></script>
 </head>
 <body>
 
@@ -31,7 +32,7 @@
     <div class="admin-sidebar-foot">
       <span id="admin-user"></span>
       <a class="admin-link" href="/">返回前台</a>
-      <button class="admin-link" onclick="adminLogout()">退出</button>
+      <button class="admin-link" data-act="adminLogout">退出</button>
     </div>
   </aside>
 
@@ -58,7 +59,7 @@
 <div class="modal-overlay" id="admin-modal">
   <div class="modal" id="admin-modal-box">
     <h2 id="admin-modal-title">提示</h2>
-    <button type="button" class="modal-close" aria-label="关闭" onclick="closeAdminModal()">&times;</button>
+    <button type="button" class="modal-close" aria-label="关闭" data-act="closeAdminModal">&times;</button>
     <div id="admin-modal-body"></div>
     <div class="modal-actions" id="admin-modal-actions"></div>
   </div>
@@ -68,9 +69,9 @@
 
 <script src="shared/core-date.js?v=__APP_VERSION__"></script>
 <script src="js/utils.js?v=__APP_VERSION__"></script>
-<script src="shared/dialog.js?v=0.8.0.8"></script>
-<script src="shared/business-table.js?v=0.8.0.11"></script>
-<script src="js/admin-analytics.js?v=0.8.0.8"></script>
+<script src="shared/dialog.js?v=__APP_VERSION__"></script>
+<script src="shared/business-table.js?v=__APP_VERSION__"></script>
+<script src="js/admin-analytics.js?v=__APP_VERSION__"></script>
 <script src="js/admin.js?v=__APP_VERSION__"></script>
 </body>
 </html>

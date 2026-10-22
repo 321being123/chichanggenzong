@@ -7,7 +7,7 @@
 <title>存在小站</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="shared/style.css?v=0.8.2.1">
-<script src="shared/autofill-guard.js?v=5"></script>
+<script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
@@ -22,7 +22,7 @@ body {
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
 }
 .login-box h1 { font-size: 22px; color: #1a237e; text-align:center; margin-bottom:4px; }
-.login-box .sub { font-size: 13px; color: #999; text-align:center; margin-bottom:20px; }
+.login-box .sub { font-size: 13px; color: #6e6e6e; text-align:center; margin-bottom:20px; }
 .form-group { margin-bottom:14px; position:relative; }
 .form-group label { display:block; font-size:13px; color:#666; margin-bottom:4px; font-weight:500; }
 .form-group input {
@@ -34,7 +34,7 @@ body {
 .pwd-wrap input { padding-right:40px; }
 .pwd-toggle {
   position:absolute; right:12px; top:50%; transform:translateY(-50%);
-  background:none; border:none; cursor:pointer; font-size:18px; color:#999; padding:4px;
+  background:none; border:none; cursor:pointer; font-size:18px; color:#6e6e6e; padding:4px;
   line-height:1;
 }
 .btn {
@@ -48,9 +48,10 @@ body {
   color:#d93025; font-size:13px; text-align:center; padding:8px 12px; margin-bottom:10px;
   background:#fef2f2; border-radius:8px; display:none;
 }
-.switch { text-align:center; font-size:13px; color:#999; margin-top:4px; }
-.switch a { color:#1a73e8; cursor:pointer; text-decoration:none; }
-.switch a:hover { text-decoration:underline; }
+.switch { text-align:center; font-size:13px; color:#6e6e6e; margin-top:4px; }
+.switch a, .switch .switch-btn { color:#1a73e8; cursor:pointer; text-decoration:none; }
+.switch .switch-btn { background:none; border:none; padding:0; font:inherit; }
+.switch a:hover, .switch .switch-btn:hover { text-decoration:underline; }
 .toast {
   position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
   background:#323232; color:#fff; padding:12px 24px; border-radius:10px;
@@ -63,6 +64,7 @@ body {
 </style>
 <script src="shared/mobile-ui.js?v=1" defer></script>
 <script src="shared/telemetry.js?v=0.8.0.12" defer></script>
+  <script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
 </head>
 <body>
 <div class="nav">
@@ -90,94 +92,94 @@ body {
   <p class="sub" id="subtitle">账号登录</p>
 
   <div class="error" id="error"></div>
-  <div class="error" id="email-service-hint" style="display:none;"></div>
+  <div class="error" id="email-service-hint" class="js-hidden"></div>
 
   <div class="form-group">
-    <label>账号</label>
+    <label for="username">账号</label>
     <input type="text" id="username" placeholder="输入账号" autocomplete="username" data-autofill-credential>
   </div>
 
   <!-- 登录密码 -->
   <div class="form-group" id="login-pwd-group">
-    <label>密码</label>
+    <label for="password">密码</label>
     <div class="pwd-wrap">
       <input type="password" id="password" placeholder="密码" autocomplete="current-password" data-autofill-credential>
-      <button class="pwd-toggle" onclick="togglePwd('password')" type="button">👁</button>
+      <button class="pwd-toggle" data-act="togglePwd" data-arg="password" type="button" aria-label="显示或隐藏密码" title="显示或隐藏密码">👁</button>
     </div>
   </div>
 
-  <div id="forgot-fields" style="display:none;">
+  <div id="forgot-fields" class="js-hidden">
     <div class="form-group">
-      <label>邮箱</label>
+      <label for="reset-email">邮箱</label>
         <input type="email" id="reset-email" placeholder="输入账号绑定的邮箱" autocomplete="email" data-autofill-credential inputmode="email">
     </div>
     <div class="form-group">
-      <label>邮箱验证码</label>
-      <div style="display:flex;gap:8px;">
-        <input type="text" id="reset-email-code" placeholder="6位验证码" inputmode="numeric" maxlength="6" autocomplete="one-time-code" style="flex:1;min-width:0;">
-        <button class="btn btn-primary" id="reset-send-code-btn" onclick="sendResetCode()" type="button" style="width:auto;padding:12px 18px;margin:0;white-space:nowrap;font-size:13px;">发送验证码</button>
+      <label for="reset-email-code">邮箱验证码</label>
+      <div class="code-row">
+        <input type="text" id="reset-email-code" placeholder="6位验证码" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+        <button class="btn btn-primary code-send" id="reset-send-code-btn" data-act="sendResetCode" type="button">发送验证码</button>
       </div>
     </div>
     <div class="form-group">
-      <label>新密码</label>
+      <label for="reset-pwd">新密码</label>
       <div class="pwd-wrap">
       <input type="password" id="reset-pwd" placeholder="6~128位新密码" autocomplete="new-password" data-autofill-credential>
-        <button class="pwd-toggle" onclick="togglePwd('reset-pwd')" type="button">👁</button>
+        <button class="pwd-toggle" data-act="togglePwd" data-arg="reset-pwd" type="button" aria-label="显示或隐藏密码" title="显示或隐藏密码">👁</button>
       </div>
     </div>
     <div class="form-group">
-      <label>确认新密码</label>
+      <label for="reset-pwd2">确认新密码</label>
       <div class="pwd-wrap">
       <input type="password" id="reset-pwd2" placeholder="再次输入新密码" autocomplete="new-password" data-autofill-credential>
-        <button class="pwd-toggle" onclick="togglePwd('reset-pwd2')" type="button">👁</button>
+        <button class="pwd-toggle" data-act="togglePwd" data-arg="reset-pwd2" type="button" aria-label="显示或隐藏密码" title="显示或隐藏密码">👁</button>
       </div>
     </div>
   </div>
 
   <!-- 注册专用 - 确认密码 + 显示密码按钮 -->
-  <div id="register-fields" style="display:none;">
+  <div id="register-fields" class="js-hidden">
     <div class="form-group">
-      <label>设置密码</label>
+      <label for="reg-pwd">设置密码</label>
       <div class="pwd-wrap">
       <input type="password" id="reg-pwd" placeholder="至少6位密码" autocomplete="new-password" data-autofill-credential>
-        <button class="pwd-toggle" onclick="togglePwd('reg-pwd')" type="button">👁</button>
+        <button class="pwd-toggle" data-act="togglePwd" data-arg="reg-pwd" type="button" aria-label="显示或隐藏密码" title="显示或隐藏密码">👁</button>
       </div>
     </div>
     <div class="form-group">
-      <label>确认密码</label>
+      <label for="reg-pwd2">确认密码</label>
       <div class="pwd-wrap">
       <input type="password" id="reg-pwd2" placeholder="再次输入密码" autocomplete="new-password" data-autofill-credential>
-        <button class="pwd-toggle" onclick="togglePwd('reg-pwd2')" type="button">👁</button>
+        <button class="pwd-toggle" data-act="togglePwd" data-arg="reg-pwd2" type="button" aria-label="显示或隐藏密码" title="显示或隐藏密码">👁</button>
       </div>
     </div>
   </div>
 
-  <div class="form-group" id="code-group" style="display:none;">
-    <label>邀请码</label>
+  <div class="form-group js-hidden" id="code-group">
+    <label for="code">邀请码</label>
     <input type="text" id="code" placeholder="输入邀请码" autocomplete="off">
   </div>
 
   <div id="register-email-fields">
     <div class="form-group">
-      <label>邮箱</label>
+      <label for="email">邮箱</label>
       <input type="email" id="email" placeholder="用于接收验证码" autocomplete="email" data-autofill-credential inputmode="email">
     </div>
     <div class="form-group">
-      <label>验证码</label>
-      <div style="display:flex;gap:8px;">
-      <input type="text" id="email-code" placeholder="6位验证码" autocomplete="one-time-code" style="flex:1;min-width:0;">
-        <button class="btn btn-primary" id="send-code-btn" onclick="sendCode()" type="button" style="width:auto;padding:12px 18px;margin:0;white-space:nowrap;font-size:13px;">发送验证码</button>
+      <label for="email-code">验证码</label>
+      <div class="code-row">
+      <input type="text" id="email-code" placeholder="6位验证码" autocomplete="one-time-code">
+        <button class="btn btn-primary code-send" id="send-code-btn" data-act="sendCode" type="button">发送验证码</button>
       </div>
     </div>
   </div>
 
-  <button class="btn btn-primary" id="submit-btn" onclick="submit()">登 录</button>
+  <button class="btn btn-primary" id="submit-btn" data-act="submit">登 录</button>
   <div class="switch" id="switch-hint">
-    <a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>
+    <button type="button" class="switch-btn register-entry" data-act="toggleMode">注册新账号</button> · <button type="button" class="switch-btn" data-act="toggleForgotMode">忘记密码</button>
   </div>
 </div>
 </main>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="shared/core-date.js?v=__APP_VERSION__"></script>
 <script src="js/utils.js?v=__APP_VERSION__"></script>
@@ -263,8 +265,8 @@ function toggleMode() {
   document.getElementById('forgot-fields').style.display = 'none';
   document.getElementById('code-group').style.display = isRegister && needCode ? 'block' : 'none';
   document.getElementById('switch-hint').innerHTML = isRegister
-    ? '已有账号？<a onclick="toggleMode()">返回登录</a>'
-    : '<a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+    ? '已有账号？<a data-act="toggleMode">返回登录</a>'
+    : '<button type="button" class="switch-btn register-entry" data-act="toggleMode">注册新账号</button> · <button type="button" class="switch-btn" data-act="toggleForgotMode">忘记密码</button>';
   applyAuthConfig();
   if (isRegister && window.SiteTelemetry) window.SiteTelemetry.trackEvent('register_view', { page_key: 'register', module: 'auth', entry: 'switch', properties: { step: 'form' } });
 }
@@ -280,8 +282,8 @@ function toggleForgotMode() {
   document.getElementById('forgot-fields').style.display = isForgot ? 'block' : 'none';
   document.getElementById('code-group').style.display = 'none';
   document.getElementById('switch-hint').innerHTML = isForgot
-    ? '<a onclick="toggleForgotMode()">返回登录</a>'
-    : '<a class="register-entry" onclick="toggleMode()">注册新账号</a> · <a onclick="toggleForgotMode()">忘记密码</a>';
+    ? '<a data-act="toggleForgotMode">返回登录</a>'
+    : '<button type="button" class="switch-btn register-entry" data-act="toggleMode">注册新账号</button> · <button type="button" class="switch-btn" data-act="toggleForgotMode">忘记密码</button>';
   applyAuthConfig();
 }
 

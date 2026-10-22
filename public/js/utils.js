@@ -61,6 +61,18 @@ function fmtPct(n) {
   return (n * 100).toFixed(2) + '%';
 }
 
+// 全局数字/百分比格式器唯一定义（2026-10-21 审查 R-17：bond-cycle/bond-valuation/arbitrage
+// 曾各自覆盖全局 num/pctv，页面格式取决于脚本加载顺序，且 d=0 会被 d||2 误当成 2 位小数）
+function num(v, d) {
+  if (v == null || !isFinite(v)) return '—';
+  return Number(v).toFixed(d == null ? 2 : d);
+}
+
+function pctv(v, d) {
+  if (v == null || !isFinite(v)) return '—';
+  return num(Number(v), d == null ? 2 : d) + '%';
+}
+
 function recognizeCode(code, name) {
   // 委托单一分类函数（public/js/code-classify.js，前后端共用）
   var c = classifyCode(code, name);

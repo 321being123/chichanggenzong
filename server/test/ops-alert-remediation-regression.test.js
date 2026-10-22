@@ -58,7 +58,7 @@ assert.strictEqual(cninfoApiName('https://www.cninfo.com.cn/new/information/topS
 assert.strictEqual(cninfoApiName('https://www.cninfo.com.cn/new/hisAnnouncement/query'), 'hisAnnouncement');
 assert.strictEqual(cninfoApiName('https://static.cninfo.com.cn/finalpage/a.pdf'), 'document');
 
-const migration = read('server/db/migrations.js');
+const migration = require('./helpers/migration-source').readMigrationSource();
 assert(migration.includes('151_alert_scope_and_cninfo_backoff'));
 assert(migration.includes('scope_type TEXT'));
 assert(migration.includes('consecutive_forbidden_count INTEGER'));

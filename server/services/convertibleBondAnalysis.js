@@ -186,6 +186,7 @@ async function assembleConvertibleBondAnalysis({ tsCode, stockCode, profile, ids
       call_remaining_days: unifiedCallState && unifiedCallState.remaining_days,
       call_announcement: unifiedCallState && unifiedCallState.announcement_title,
       reset_trigger_price: triggerState.reset.trigger_price,
+      reset_net_asset_floor_applicable: await getResetNetAssetFloor(ids.bondId, targetDate),
       reset_status:revisionState?.business_status||null,reset_data_status:revisionState?.data_status||'pending',
       put_trigger_price: triggerState.put.trigger_price,
       call_day_count: unifiedCallState && unifiedCallState.matched_days, reset_day_count: triggerState.reset.matched_days,
@@ -335,6 +336,17 @@ async function buildStandardTermsHash(pool, instrumentId, asOf) {
   });
 }
 
+async function getResetNetAssetFloor(instrumentId, asOf) {
+  const { rows } = await pool.query(
+    `SELECT CASE WHEN net_asset_floor_applicable THEN true
+                 WHEN parse_status='complete' THEN false ELSE NULL END AS applicable
+       FROM fundamental.convertible_bond_terms
+      WHERE instrument_id=$1 AND term_type='reset' AND effective_from<=$2::date
+        AND (effective_to IS NULL OR effective_to>$2::date)
+      ORDER BY effective_from DESC LIMIT 1`, [instrumentId, asOf]);
+  return rows[0]?.applicable ?? null;
+}
+
 async function getConvertibleBondSnapshot(value) {
   const tsCode = normalizeBondCode(value);
   if (!tsCode) return null;
@@ -395,6 +407,7 @@ async function getConvertibleBondSnapshot(value) {
     watermark: r.source_watermark,
   });
   const basic = Object.assign({}, payload.basic || {});
+  basic.reset_net_asset_floor_applicable = await getResetNetAssetFloor(r.instrument_id, today);
   if (latestCallState) {
     Object.assign(basic, {
       call_trigger_price: latestCallState.trigger_price,

@@ -350,6 +350,12 @@ async function bondAnalysisRenderListFallback(ctx) {
 
 securityAnalysisInitSearch();
 
+function bondAnalysisResetNetAssetText(basic) {
+  if (basic.reset_net_asset_floor_applicable === true) return '不允许下修低于每股净资产';
+  if (basic.reset_net_asset_floor_applicable === false) return '允许下修低于每股净资产（条款未设净资产底线）';
+  return '是否允许下修低于每股净资产：待核实';
+}
+
 function bondAnalysisRender(d, ctx) {
   stockAnalysisSetMessage('', false, ctx);
   var stock=document.getElementById('stock-analysis-content'), root=document.getElementById('bond-analysis-content');
@@ -357,6 +363,7 @@ function bondAnalysisRender(d, ctx) {
   var suEl=document.getElementById('stock-analysis-updated'); if(suEl) suEl.style.display='none';
   var buEl=document.getElementById('bond-analysis-updated'); if(buEl){buEl.classList.remove('js-hidden');buEl.style.display='';}
   var q=d.quote||{}, b=d.basic||{}, terms=d.terms||{}, safety=d.safety||{}, bond=d.bond||{}, option=d.option||{}, stockData=d.stock||{}, credit=d.credit||{};
+  var resetNetAssetText=bondAnalysisResetNetAssetText(b);
   var change=q.bond_change_pct, changeClass=Number(change)>0?'bond-analysis-up':Number(change)<0?'bond-analysis-down':'';
   var delistedTag=d.is_delisted?'<span class="bond-analysis-delisted">已退市</span>':'';
   bondAnalysisSet('bond-analysis-summary','<strong>'+escapeHtml(d.name||d.ts_code||'可转债')+'</strong>'+delistedTag+'<span>'+escapeHtml(d.ts_code||'')+'</span><span>现价：'+bondAnalysisNumber(q.bond_price,3,' 元')+'</span><span class="'+changeClass+'">涨跌：'+(change==null?'暂无数据':bondAnalysisNumber(change,2,'%'))+'</span><span>正股：'+escapeHtml(d.stock_name||d.stock_code||'暂无数据')+'</span>');
@@ -381,7 +388,7 @@ function bondAnalysisRender(d, ctx) {
     ['预估回售剩余年限',bondAnalysisNumber(b.estimated_put_remaining_years,2,' 年')],['预期回售到账日',b.expected_put_payment_date?bondAnalysisDate(b.expected_put_payment_date):(b.expected_put_status==='opportunity_used'?'本计息年度回售机会已使用':(b.expected_put_status==='current_price_not_below_trigger'?'当前价未低于回售触发价，暂不估算':'暂无数据'))],
     ['回售到账税前收益率',bondAnalysisPercent(b.put_yield_pre_tax)],['回售到账税后收益率',bondAnalysisPercent(b.put_yield_after_tax)],
     ['转债/总市值',bondAnalysisPercent(b.bond_to_market_cap)],['转股起始日',bondAnalysisDate(b.conv_start_date)],
-    ['转股截止日',bondAnalysisDate(b.conv_end_date)],['1PB参考价',stockData.pb>0&&q.stock_price!=null?bondAnalysisNumber(Number(q.stock_price)/Number(stockData.pb),3,' 元'):'暂无数据']
+    ['转股截止日',bondAnalysisDate(b.conv_end_date)],['1PB参考价',(stockData.pb>0&&q.stock_price!=null?bondAnalysisNumber(Number(q.stock_price)/Number(stockData.pb),3,' 元'):'暂无数据')+'<br><small>'+resetNetAssetText+'</small>']
   ]));
   bondAnalysisSet('bond-analysis-triggers',bondAnalysisTable([
     ['强赎触发价',bondAnalysisNumber(b.call_trigger_price,3,' 元')],['强赎天计数',b.call_day_count==null?'暂无数据':bondAnalysisNumber(b.call_day_count,0,' / '+b.call_required_days+' 天')+(b.call_met?'（已满足）':'')],
@@ -389,7 +396,7 @@ function bondAnalysisRender(d, ctx) {
     ['回售触发价',bondAnalysisNumber(b.put_trigger_price,3,' 元')],['回售天计数',b.put_opportunity_used?'本计息年度回售机会已使用':(b.put_active?(b.put_day_count==null?'暂无数据':bondAnalysisNumber(b.put_day_count,0,' / '+b.put_required_days+' 天')+'（已观察 '+bondAnalysisNumber(b.put_observed_days,0,' 个交易日')+'）'+(b.put_met?'（已满足）':'')):'尚未进入回售期')]
   ]));
   bondAnalysisSet('bond-analysis-terms',bondAnalysisTable([
-    ['募资用途','<div class="bond-analysis-purpose">'+bondAnalysisText(b.fundraising_purpose)+'</div>'+(b.fundraising_source_url?'<small>'+bondAnalysisSourceLink(b.fundraising_source_url,'查看募集说明书')+'</small>':'')],['下修条款',bondAnalysisText(terms.reset&&terms.reset.text)+(terms.reset&&terms.reset.note?'<br><small>注：'+bondAnalysisText(terms.reset.note)+'</small>':'')],
+    ['募资用途','<div class="bond-analysis-purpose">'+bondAnalysisText(b.fundraising_purpose)+'</div>'+(b.fundraising_source_url?'<small>'+bondAnalysisSourceLink(b.fundraising_source_url,'查看募集说明书')+'</small>':'')],['下修条款',bondAnalysisText(terms.reset&&terms.reset.text)+'<br><small>'+resetNetAssetText+'</small>'+(terms.reset&&terms.reset.note?'<br><small>注：'+bondAnalysisText(terms.reset.note)+'</small>':'')],
     ['强赎条款',bondAnalysisText(terms.call&&terms.call.text)],['回售条款',bondAnalysisText(terms.put&&terms.put.text)],
     ['到期赎回价',bondAnalysisText(terms.maturity_call_price)],['回售价',bondAnalysisNumber(b.put_redemption_price,3,' 元')]
   ]));

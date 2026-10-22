@@ -117,6 +117,12 @@ async function cleanupFixture() {
 
   // 1) 直接调用快照函数：读取本轮测试夹具生成的可转债分析快照
   const snap = await getConvertibleBondSnapshot(BOND_CODE);
+  for (const [floor, status, expected] of [[true,'complete',true],[false,'complete',false],[false,'partial',null]]) {
+    await pool.query(`UPDATE fundamental.convertible_bond_terms SET net_asset_floor_applicable=$2,parse_status=$3
+      WHERE instrument_id=$1 AND term_type='reset'`, [bondId,floor,status]);
+    const detail = await getConvertibleBondSnapshot(BOND_CODE);
+    assert.strictEqual(detail.basic.reset_net_asset_floor_applicable, expected, '详情应区分净资产限制、无此限制和待核实');
+  }
   assert.ok(snap && typeof snap === 'object', 'getConvertibleBondSnapshot 应返回快照对象而非抛错');
   assert.ok(snap.freshness && typeof snap.freshness === 'object', '快照应带 freshness 新鲜度判定结果');
   assert.ok('needs_refresh' in snap, '快照应含 needs_refresh 字段');

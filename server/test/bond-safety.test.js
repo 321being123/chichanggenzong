@@ -235,6 +235,8 @@ check('安全性快照源覆盖待上市新债，上市前即可按正股财务�
   assert.ok(/i\.list_date IS NULL OR i\.list_date>=CURRENT_DATE/.test(source),
     '待上市分支必须以上市日界定目标范围');
   assert.ok(source.includes("NOT IN ('cancelled','canceled')"), '待上市分支必须排除终止发行');
+  assert.ok(/p\.stock_instrument_id IS NOT NULL/.test(source),
+    '待上市分支必须排除未关联正股的债（无身份ID会触发身份断言）');
 });
 check('安全性页面读取仍按在市口径过滤，待上市债不进列表', () => {
   const service = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyService.js'), 'utf8');

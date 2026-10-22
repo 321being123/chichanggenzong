@@ -486,6 +486,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
        WHERE i.asset_class='convertible_bond'
          AND (i.list_date IS NULL OR i.list_date>=CURRENT_DATE)
          AND COALESCE(i.status,'') NOT IN ('cancelled','canceled')
+         AND p.stock_instrument_id IS NOT NULL
     )
     SELECT b.*,ci.company_id,
            ind.raw_payload AS indicator_payload, bal.raw_payload AS balance_payload,

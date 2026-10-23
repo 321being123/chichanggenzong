@@ -250,10 +250,27 @@ function stockAnalysisRender(d) {
     stockAnalysisMetric('业绩预期',forecastValue,forecastNote)
     ])
   ].join('');
-  stockAnalysisRenderStability(d.stability||{}); stockAnalysisRenderPercentiles(d.percentiles||{});
-  stockAnalysisRenderGrowth(d.growth||{}); stockAnalysisRenderSafety(d.safety||{}); stockAnalysisRenderCashflow(d.cashflow||{}); stockAnalysisRenderEvents(d.events||[]);
-  var quality=document.getElementById('stock-analysis-quality'), q=d.data_quality||{};
-  if(quality) quality.textContent='利润表 '+(q.income_rows||0)+' 条 · 资产负债表 '+(q.balance_rows||0)+' 条 · 现金流量表 '+(q.cashflow_rows||0)+' 条 · 估值 '+(q.valuation_rows||0)+' 日。'+(q.research_notice||'');
+  // 区块隔离：任一区块渲染异常只影响自身，不得中断其余区块（规范要求"一个区块缺资料不清空其他区块"）。
+  // 此前用一串顺序调用，前面任一区块抛错会让后续全部空白，且异常冒泡到 loadStockAnalysis 的 catch 后
+  // 只显示一条消息、控制台无记录，现象就是"只剩标题、内容全空"。
+  function runSection(name, fn, containerId) {
+    try { fn(); }
+    catch (error) {
+      if (window.console && console.error) console.error('[stock-analysis] 区块渲染失败：' + name, error);
+      var el = document.getElementById(containerId);
+      if (el && !el.textContent.trim()) el.innerHTML = '<div class="stock-analysis-chart-empty">该区块数据暂时无法展示</div>';
+    }
+  }
+  runSection('盈利与分红稳定性', function(){ stockAnalysisRenderStability(d.stability||{}); }, 'stock-analysis-stability');
+  runSection('股价及估值分位', function(){ stockAnalysisRenderPercentiles(d.percentiles||{}); }, 'stock-analysis-percentiles');
+  runSection('盈利增长', function(){ stockAnalysisRenderGrowth(d.growth||{}); }, 'stock-analysis-growth');
+  runSection('财务安全性', function(){ stockAnalysisRenderSafety(d.safety||{}); }, 'stock-analysis-safety');
+  runSection('经营现金流与自由现金流', function(){ stockAnalysisRenderCashflow(d.cashflow||{}); }, 'stock-analysis-cashflow');
+  runSection('公司公告', function(){ stockAnalysisRenderEvents(d.events||[]); }, 'stock-analysis-events');
+  runSection('数据质量', function(){
+    var quality=document.getElementById('stock-analysis-quality'), q=d.data_quality||{};
+    if(quality) quality.textContent='利润表 '+(q.income_rows||0)+' 条 · 资产负债表 '+(q.balance_rows||0)+' 条 · 现金流量表 '+(q.cashflow_rows||0)+' 条 · 估值 '+(q.valuation_rows||0)+' 日。'+(q.research_notice||'');
+  }, 'stock-analysis-quality');
 }
 
 function stockAnalysisRenderStability(s){var el=document.getElementById('stock-analysis-stability');if(!el)return;var reason=escapeHtml(s.reason||'');if(s.reason_url)reason+=' <a href="'+escapeHtml(s.reason_url)+'" target="_blank" rel="noopener noreferrer">查看公告</a>';el.innerHTML='<table class="biz-table biz-table--compact stock-analysis-table"><thead><tr><th>项目</th><th>结论</th><th>异常年度</th><th>说明</th></tr></thead><tbody><tr><td>'+analysisHelp('最近十年持续盈利',stockAnalysisLabelHelp('最近十年持续盈利'))+'</td><td>'+(s.profitable_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_profit_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr><tr><td>'+analysisHelp('最近十年持续现金分红',stockAnalysisLabelHelp('最近十年持续现金分红'))+'</td><td>'+(s.dividend_each_year?'是':'否')+'</td><td>'+escapeHtml((s.no_dividend_years||[]).join('、')||'无')+'</td><td>'+reason+'</td></tr></tbody></table>';if(window.BusinessTable)window.BusinessTable.attach(el,{page:'#main-stock-analysis',sticky:false})}

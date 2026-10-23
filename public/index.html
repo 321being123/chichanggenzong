@@ -1647,6 +1647,14 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
         if (reqCode) setTimeout(function(){ securityAnalysisSubmit(reqCode, 'bond'); }, 200);
       }
     }
+    // 股票分析深链恢复：直接打开、刷新或从历史记录进入时，按 URL 的 code 重新加载分析。
+    // 缺这段时栏目会激活但从不触发取数，各区块只剩标题、内容全空且控制台无报错。
+    if (initialMain === 'stock-analysis') {
+      var stockReqCode = startParams.get('code');
+      if (stockReqCode && typeof securityAnalysisKind === 'function' && securityAnalysisKind(stockReqCode) !== 'bond') {
+        setTimeout(function(){ securityAnalysisSubmit(stockReqCode, 'stock'); }, 200);
+      }
+    }
   });
   if (loggedIn) {
     // 首次直接进入持仓页时，switchMain() 已触发完整刷新，避免紧接着重复刷新和重绘圆环图。

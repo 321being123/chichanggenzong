@@ -12,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 for stream in (sys.stdout, sys.stderr):
@@ -109,13 +110,15 @@ def verify_release_ready():
     return local_commit
 
 
-def apply_feedback_release(client, run_id, operator, deployment_id, current_sha, current_version):
+def apply_feedback_release(client, run_id, operator, deployment_id, current_sha, current_version, lock_token):
     """代码部署成功之后的第二段：专项验收后的反馈回写。
 
     单独捕获错误：失败不触发第一段的代码回滚，也不重跑迁移；
     返回结构化结果供最终输出区分 code_deployed / feedback_applied。
     运行身份必须是真实的内容管理员账号（--deploy-operator），伪造身份会被服务端拒绝；
     同时把本次部署批次与当前运行提交/版本传给受控命令，避免旧清单套到新代码上。
+    C-03：第一段的 hold-lock 进程仍持锁，这里必须携带 --held-lock-token / --held-lock-ready-file
+    走“部署已持锁”通道，不得再抢同一把 advisory lock（否则自我死锁）。
     """
     if not operator:
         return {
@@ -137,6 +140,9 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
         extra += f" --current-sha {shlex.quote(str(current_sha))}"
     if current_version:
         extra += f" --current-version {shlex.quote(str(current_version))}"
+    # C-03：部署持锁凭证（ready 文件由第一段 setsid 的 hold-lock 进程持有）
+    if lock_token:
+        extra += f" --held-lock-token {shlex.quote(str(lock_token))} --held-lock-ready-file /tmp/portfolio-release-lock.ready"
     command = (
         "cd /opt/portfolio && "
         "sudo -u portfolio-app env FEEDBACK_ENV_FILE=/opt/portfolio/.env "
@@ -173,8 +179,30 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
     }
 
 
+def release_deploy_lock(client, lock_token):
+    """部署收尾：释放第一段持有的发布锁（幂等）。必须在反馈第二段之后调用。"""
+    if not lock_token:
+        return
+    command = (
+        "cd /opt/portfolio && /usr/bin/node "
+        f"{FEEDBACK_SCRIPT} --mode release-lock --ready-file /tmp/portfolio-release-lock.ready "
+        f"--token {shlex.quote(str(lock_token))}"
+    )
+    try:
+        wrapped = "sudo bash -c " + shlex.quote(command)
+        stdin, stdout, stderr = client.exec_command(wrapped, timeout=60)
+        stdout.read()
+        stderr.read()
+        stdout.channel.recv_exit_status()
+        print("发布锁已释放。")
+    except Exception as exc:
+        print(f"警告：发布锁释放失败（{exc}），持锁进程将在持有期满后自动释放。", file=sys.stderr)
+
+
 def main():
     opts = parse_deploy_args(sys.argv[1:])
+    # C-02/C-03：一次部署一个随机令牌，写入 ready 文件；反馈第二段与 release-lock 凭此证明同一次部署
+    lock_token = uuid.uuid4().hex
     local_commit = verify_release_ready()
     local_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["appVersion"]
     client = paramiko.SSHClient()
@@ -212,7 +240,6 @@ def main():
             "systemctl is-active --quiet portfolio-worker-health.timer && health_timer_active=1 || true; fi; "
             "stop_unit_if_present() { systemctl cat \"$1\" >/dev/null 2>&1 || return 0; systemctl stop \"$1\"; }; "
             "rollback_deploy() { rc=$?; "
-            "if [ -n \"${release_lock_pid:-}\" ]; then kill $release_lock_pid 2>/dev/null || true; fi; "
             "rollback_failed=0; "
             "if [ $deploy_complete -ne 1 ]; then "
             "echo '部署失败，正在恢复部署前版本和服务' >&2; "
@@ -247,6 +274,8 @@ def main():
             "else systemctl is-active --quiet portfolio-worker-health.timer && rollback_failed=1 || true; fi; fi; fi; "
             "curl -fsS http://127.0.0.1:3000/health >/dev/null || rollback_failed=1; fi; "
             "case $backup_dir in /tmp/portfolio-deploy.*) rm -rf -- $backup_dir ;; esac; "
+            # C-03：发布锁【最后】释放——回滚期间必须持续持锁；成功路径留给 Python 在反馈第二段之后释放。
+            "if [ $deploy_complete -ne 1 ] && [ -n \"${release_lock_pid:-}\" ]; then kill $release_lock_pid 2>/dev/null || true; fi; "
             "if [ $rollback_failed -ne 0 ]; then echo '严重：部署回滚未能恢复服务，请立即人工介入' >&2; exit 90; fi; "
             "exit $rc; }; "
             "trap rollback_deploy EXIT; "
@@ -255,7 +284,11 @@ def main():
             "release_lock_pid=''; "
             "if [ -f /opt/portfolio/server/scripts/reconcileFeedbackRelease.js ]; then "
             "rm -f /tmp/portfolio-release-lock.ready; "
-            "/usr/bin/node /opt/portfolio/server/scripts/reconcileFeedbackRelease.js --mode hold-lock --hold-ms 5400 --ready-file /tmp/portfolio-release-lock.ready >> /tmp/portfolio-release-lock.log 2>&1 & "
+            # C-02：持有时间单位是秒（5400 秒 = 90 分钟，覆盖 3600 秒部署上限 + 600 秒反馈回写）；
+            # setsid 让持锁进程脱离 SSH 会话存活到 Python 第二段结束（C-03）。
+            "setsid /usr/bin/node /opt/portfolio/server/scripts/reconcileFeedbackRelease.js --mode hold-lock --hold-seconds 5400 "
+            f"--ready-file /tmp/portfolio-release-lock.ready --token {shlex.quote(lock_token)} "
+            ">> /tmp/portfolio-release-lock.log 2>&1 < /dev/null & "
             "release_lock_pid=$!; "
             "for i in $(seq 1 90); do test -f /tmp/portfolio-release-lock.ready && break; sleep 1; done; "
             "test -f /tmp/portfolio-release-lock.ready || { echo '无法获取发布锁，中止部署' >&2; exit 11; }; "
@@ -330,6 +363,7 @@ def main():
                 opts["deployment_id"],
                 local_commit,
                 local_version,
+                lock_token,
             )
         summary = {
             "code_deployed": True,
@@ -345,6 +379,9 @@ def main():
         if not summary["feedback_applied"]:
             print("注意：代码已部署成功，但反馈闭环未完成（不触发代码回滚），请按上述待续办编号继续处理。", file=sys.stderr)
     finally:
+        # C-03：发布锁【最后】释放——必须覆盖代码更新、失败回滚与反馈第二段全程。
+        # release-lock 幂等；拿不到就记录告警，不改变部署退出语义。
+        release_deploy_lock(client, lock_token)
         client.close()
 
 

@@ -17,6 +17,12 @@
 //     说明：--current-sha/--current-version 只做交叉核对；实际运行提交/版本由服务端锁内读取。
 //   node server/scripts/reconcileFeedbackRelease.js --mode rollback --run-id 3 --operator <内容管理员账号>
 //   node server/scripts/reconcileFeedbackRelease.js --mode status --run-id 3
+//   node server/scripts/reconcileFeedbackRelease.js --mode hold-lock --hold-seconds 5400 \
+//        --ready-file /tmp/portfolio-release-lock.ready --token <随机令牌>
+//   node server/scripts/reconcileFeedbackRelease.js --mode release-lock \
+//        --ready-file /tmp/portfolio-release-lock.ready --token <同一令牌>
+//     说明：hold-seconds 单位是【秒】（不是毫秒），默认 3600、上限 21600（6 小时）；
+//     ready 文件内容是 JSON {token, pid, acquiredAt, expiresAt}；release-lock 幂等。
 //
 // 连接规则：先固定加载 .env（优先 /opt/portfolio/.env），沿用应用角色连接；
 // 不使用 MIGRATION_DATABASE_URL，也不设置 MIGRATION_ROLE。日志不输出连接串与私密正文。
@@ -41,6 +47,9 @@ function loadEnvFile() {
 const envFile = loadEnvFile();
 
 const release = require('../services/feedbackRelease');
+// C-01（2026-10-23 三次复验）：pool 必须在模块作用域可读。
+// 此前只在末尾 then/catch 里局部解构，hold-lock 分支引用 pool 时是未定义，实际执行即崩。
+const { pool } = require('../db');
 
 function parseArgs(argv) {
   const out = {};
@@ -167,6 +176,8 @@ async function main() {
       deploymentId: args['deployment-id'],
       expectedSha: args['current-sha'] || null,
       expectedVersion: args['current-version'] || null,
+      heldLockToken: args['held-lock-token'] || null,
+      heldLockReadyFile: args['held-lock-ready-file'] || null,
     });
     output({ mode: 'apply', ...result, readBack: await release.readBack(args['run-id']) });
     return;
@@ -179,6 +190,8 @@ async function main() {
       ...(await release.rollbackRun(args['run-id'], {
         operator: operator,
         expectedSha: args['current-sha'] || null,
+        heldLockToken: args['held-lock-token'] || null,
+        heldLockReadyFile: args['held-lock-ready-file'] || null,
       })),
     });
     return;
@@ -189,34 +202,97 @@ async function main() {
     return;
   }
   if (mode === 'hold-lock') {
-    // B-03 / A-04：给代码部署用的目标级发布锁，与回写共用同一把 advisory lock。
-    // 获取成功后写 ready 文件并保持持有，直到超时或被终止。
-    const holdMs = Math.min(Math.max(parseInt(args['hold-ms'], 10) || 3600000, 1000), 6 * 3600 * 1000);
+    // A-04/B-03/C-01/C-02：给代码部署用的目标级发布锁，与回写共用同一把 advisory lock。
+    // C-02：持有时间单位是【秒】（--hold-seconds），不再接受 --hold-ms，杜绝 5400 被当 5.4 毫秒级的单位事故。
+    // 获取成功后写 ready 文件（JSON：token/pid/acquiredAt/expiresAt）并保持持有，直到超时、被终止或 release-lock 释放。
+    if (args['hold-ms'] !== undefined) {
+      throw new Error('不接受 --hold-ms（曾导致 5400 被当作毫秒只持有 5.4 秒）；请改用 --hold-seconds <秒>');
+    }
+    const holdSeconds = Math.min(Math.max(parseInt(args['hold-seconds'], 10) || 3600, 1), 21600);
     const readyFile = args['ready-file'] || null;
+    const token = String(args.token || '').trim();
+    if (!readyFile) throw new Error('hold-lock 必须提供 --ready-file（部署流程据此判断是否持锁中）');
+    if (!token) throw new Error('hold-lock 必须提供 --token（release 与第二段回写据此证明同一次部署）');
     const client = await pool.connect();
-    try {
-      await release.acquireReleaseLock(client);
-      if (readyFile) fs.writeFileSync(readyFile, String(Date.now()));
-      output({ mode: 'hold-lock', held: true, holdMs: holdMs });
-      await new Promise(function (resolve) { setTimeout(resolve, holdMs); });
-    } finally {
-      await release.releaseLock(client);
+    let released = false;
+    const releaseAll = async function () {
+      if (released) return;
+      released = true;
+      // 持锁进程自己持锁自己解锁（此时没有 external 凭证，走正常 unlock）
+      await release.releaseLock(client).catch(function () {});
       client.release();
       if (readyFile) { try { fs.unlinkSync(readyFile); } catch (e) { /* 已被外部清理 */ } }
+    };
+    // 被部署流程 kill 时优雅收尾：解锁并清 ready 文件
+    process.once('SIGTERM', function () { releaseAll().then(function () { process.exit(0); }); });
+    process.once('SIGINT', function () { releaseAll().then(function () { process.exit(0); }); });
+    // 同步兜底：任何退出路径都删 ready 文件，避免残留给下一次部署误判（C-01）
+    process.on('exit', function () {
+      if (readyFile) { try { fs.unlinkSync(readyFile); } catch (e) { /* 已清理 */ } }
+    });
+    try {
+      await release.acquireReleaseLock(client);
+      const acquiredAt = Date.now();
+      const expiresAt = acquiredAt + holdSeconds * 1000;
+      if (readyFile) {
+        fs.writeFileSync(readyFile, JSON.stringify({
+          token: token, pid: process.pid, acquiredAt: acquiredAt, expiresAt: expiresAt, holdSeconds: holdSeconds,
+        }));
+      }
+      output({ mode: 'hold-lock', held: true, holdSeconds: holdSeconds, pid: process.pid });
+      // 心跳等待：期间 ready 文件持续存在；到时自动释放（部署必须在此之前完成或自行中止）
+      await new Promise(function (resolve) {
+        const timer = setInterval(function () {
+          if (Date.now() >= expiresAt) { clearInterval(timer); resolve(); }
+        }, 1000);
+      });
+    } finally {
+      await releaseAll();
     }
     return;
   }
-  throw new Error('未知模式：' + (mode || '(空)') + '，支持 read/detail/prepare/conclusions/freeze/verify/apply/rollback/hold-lock/status');
+  if (mode === 'release-lock') {
+    // C-03：部署结束（含反馈第二段）后由编排方最后释放；幂等，可重复执行。
+    const readyFile = args['ready-file'] || null;
+    const token = String(args.token || '').trim();
+    if (!readyFile) throw new Error('release-lock 必须提供 --ready-file');
+    if (!token) throw new Error('release-lock 必须提供 --token');
+    if (!fs.existsSync(readyFile)) {
+      output({ mode: 'release-lock', released: true, already: true });
+      return;
+    }
+    let info = null;
+    try { info = JSON.parse(fs.readFileSync(readyFile, 'utf8')); } catch (e) { info = null; }
+    if (!info || String(info.token) !== token) {
+      throw new Error('release-lock 令牌不匹配，拒绝释放他人持有的发布锁');
+    }
+    // 通知持锁进程优雅退出（其收尾负责解锁与删 ready 文件）；进程已不在则直接清理
+    let holderAlive = true;
+    try { process.kill(info.pid, 0); } catch (e) { holderAlive = false; }
+    if (holderAlive && info.pid !== process.pid) {
+      try { process.kill(info.pid, 'SIGTERM'); } catch (e) { /* 已退出 */ }
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline && fs.existsSync(readyFile)) {
+        await new Promise(function (r) { setTimeout(r, 200); });
+      }
+    }
+    if (fs.existsSync(readyFile)) {
+      if (String((JSON.parse(fs.readFileSync(readyFile, 'utf8')) || {}).token) === token) {
+        fs.unlinkSync(readyFile);
+      }
+    }
+    output({ mode: 'release-lock', released: true, holderAlive: holderAlive });
+    return;
+  }
+  throw new Error('未知模式：' + (mode || '(空)') + '，支持 read/detail/prepare/conclusions/freeze/verify/apply/rollback/hold-lock/release-lock/status');
 }
 
 main()
   .then(function () {
-    const { pool } = require('../db');
     return pool.end().catch(function () {}).then(function () { process.exit(0); });
   })
   .catch(function (err) {
     const message = String((err && err.message) || err).slice(0, 500);
     process.stderr.write(JSON.stringify({ ok: false, error: message }) + '\n');
-    const { pool } = require('../db');
     Promise.resolve(pool.end()).catch(function () {}).then(function () { process.exit(1); });
   });

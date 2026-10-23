@@ -3,6 +3,7 @@
 // 职责：把“发布核对 → 准备清单 → 专项验收 → 应用回写”落成可重复执行的受控服务。
 // 命令入口（server/scripts/reconcileFeedbackRelease.js）与后台接口共用本文件，不各自实现状态规则。
 const crypto = require('crypto');
+const fs = require('fs');
 const { pool } = require('../db');
 const store = require('../db/feedback');
 const feedbackService = require('./feedbackService');
@@ -82,10 +83,51 @@ function readTrustedRuntime() {
 }
 
 // 目标级发布锁：同一时间只允许一个发布批次做版本核验与回写
-async function acquireReleaseLock(client) {
-  await client.query('SELECT pg_advisory_lock($1)', [RELEASE_LOCK_ID]);
+// C-03（2026-10-23 三次复验）：部署流程的 hold-lock 进程已持有发布锁，
+// 第二段反馈回写不得再 pg_advisory_lock 同一把锁（会自我死锁到超时）。
+// 命令层传入 held-lock-token / held-lock-ready-file 凭证：校验 ready 文件、令牌、持锁进程存活与未过期后，
+// 在“部署已持锁”的前提下跳过重复获取；凭证缺失或不合法则回退正常抢锁（或拒绝，见 verifyHeldLock）。
+function verifyHeldLock(heldLockToken, heldLockReadyFile) {
+  const token = String(heldLockToken || '').trim();
+  const readyFile = String(heldLockReadyFile || '').trim();
+  if (!token && !readyFile) return null;
+  if (!token || !readyFile) {
+    throw createError(400, 'held-lock-token 与 held-lock-ready-file 必须同时提供');
+  }
+  if (!fs.existsSync(readyFile)) {
+    throw createError(409, '部署发布锁已丢失（ready 文件不存在），拒绝在锁外执行');
+  }
+  let info = null;
+  try { info = JSON.parse(fs.readFileSync(readyFile, 'utf8')); } catch (e) { info = null; }
+  if (!info || String(info.token) !== token) {
+    throw createError(409, '部署发布锁令牌不匹配，拒绝执行');
+  }
+  if (info.expiresAt && Date.now() > Number(info.expiresAt)) {
+    throw createError(409, '部署发布锁已过期，拒绝执行');
+  }
+  try {
+    process.kill(info.pid, 0);
+  } catch (e) {
+    // EPERM = 进程存在但无权限探测（如 root 持锁、应用账号校验），视为存活
+    if (e && e.code === 'EPERM') { /* 存活 */ }
+    else throw createError(409, '持锁进程已不存在，发布锁失效，拒绝执行');
+  }
+  return { token: info.token, pid: info.pid };
 }
-async function releaseLock(client) {
+
+async function acquireReleaseLock(client, opts) {
+  const options = opts || {};
+  const held = verifyHeldLock(options.heldLockToken, options.heldLockReadyFile);
+  if (held) {
+    // 部署已持锁：本会话不再抢同一把 advisory lock，交由持锁进程统一解锁
+    return { external: true, held: held };
+  }
+  await client.query('SELECT pg_advisory_lock($1)', [RELEASE_LOCK_ID]);
+  return { external: false };
+}
+
+async function releaseLock(client, handle) {
+  if (handle && handle.external) return; // 外部持锁进程负责解锁，本会话不得替它解锁
   await client.query('SELECT pg_advisory_unlock($1)', [RELEASE_LOCK_ID]).catch(function () {});
 }
 
@@ -133,9 +175,10 @@ async function prepareRun(input) {
   const environment = 'production';
 
   const client = await pool.connect();
+  let lockHandle = null;
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
-    await acquireReleaseLock(client);
+    lockHandle = await acquireReleaseLock(client);
     const existing = await client.query(
       'SELECT id::text AS id, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE environment=$1 AND deployment_id=$2',
       [environment, deploymentId]
@@ -196,7 +239,7 @@ async function prepareRun(input) {
     await client.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
-    await releaseLock(client);
+    await releaseLock(client, lockHandle);
     client.release();
   }
 }
@@ -207,9 +250,10 @@ async function setItemConclusion(runId, feedbackId, patch) {
   const conclusions = ['pending', 'solved', 'partial', 'unrelated', 'needs_review'];
   if (conclusions.indexOf(patch.conclusion) < 0) throw createError(400, '核对结论不合法');
   const client = await pool.connect();
+  let lockHandle = null;
   try {
     await client.query('BEGIN');
-    await acquireReleaseLock(client);
+    lockHandle = await acquireReleaseLock(client);
     const run = await client.query(
       'SELECT id::text AS id, prepare_status AS "prepareStatus", verify_status AS "verifyStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
       [runId]
@@ -251,16 +295,17 @@ async function setItemConclusion(runId, feedbackId, patch) {
     await client.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
-    await releaseLock(client);
+    await releaseLock(client, lockHandle);
     client.release();
   }
 }
 
 async function freezeRun(runId) {
   const client = await pool.connect();
+  let lockHandle = null;
   try {
     await client.query('BEGIN');
-    await acquireReleaseLock(client);
+    lockHandle = await acquireReleaseLock(client);
     const items = await client.query(
       'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
       [runId]
@@ -282,7 +327,7 @@ async function freezeRun(runId) {
     await client.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
-    await releaseLock(client);
+    await releaseLock(client, lockHandle);
     client.release();
   }
 }
@@ -293,9 +338,10 @@ async function verifyRun(runId, input) {
   const passed = input && input.passed === true;
   const sha = String((input && input.verifiedSha) || '').trim();
   const client = await pool.connect();
+  let lockHandle = null;
   try {
     await client.query('BEGIN');
-    await acquireReleaseLock(client);
+    lockHandle = await acquireReleaseLock(client);
     const { rows } = await client.query(
       'SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion", owner, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
       [runId]
@@ -335,7 +381,7 @@ async function verifyRun(runId, input) {
     await client.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
-    await releaseLock(client);
+    await releaseLock(client, lockHandle);
     client.release();
   }
 }
@@ -351,11 +397,15 @@ async function applyRun(runId, options) {
     throw createError(400, '必须提供 deployment_id（发布批次要与本次部署一一对应）');
   }
   const lockClient = await pool.connect();
+  let lockHandle = null;
   try {
     // B-03：从读取验收/哈希/明细到写入，全部在发布锁内完成。
     // 排队期间清单被改、验收失效，拿到锁后会看到最新状态并拒绝，不再按旧结论更新。
     await lockClient.query('BEGIN');
-    await acquireReleaseLock(lockClient);
+    // C-03：部署第二段回写携带持锁凭证时跳过重复抢锁，否则正常获取
+    lockHandle = await acquireReleaseLock(lockClient, {
+      heldLockToken: opts.heldLockToken, heldLockReadyFile: opts.heldLockReadyFile,
+    });
     const runQuery = await lockClient.query(
       `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha", app_version AS "appVersion",
               verify_status AS "verifyStatus", apply_status AS "applyStatus",
@@ -423,7 +473,7 @@ async function applyRun(runId, options) {
     await lockClient.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
-    await releaseLock(lockClient);
+    await releaseLock(lockClient, lockHandle);
     lockClient.release();
   }
 }
@@ -510,9 +560,13 @@ async function rollbackRun(runId, options) {
   const opts = options || {};
   await assertContentManager(opts.operator, '执行回滚恢复');
   const lockClient = await pool.connect();
+  let lockHandle = null;
   try {
     await lockClient.query('BEGIN');
-    await acquireReleaseLock(lockClient);
+    // C-03：同 applyRun，部署回滚接续可携带持锁凭证跳过重复抢锁
+    lockHandle = await acquireReleaseLock(lockClient, {
+      heldLockToken: opts.heldLockToken, heldLockReadyFile: opts.heldLockReadyFile,
+    });
     const runQuery = await lockClient.query(
       `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha",
               app_version AS "appVersion", verify_status AS "verifyStatus", apply_status AS "applyStatus"
@@ -554,7 +608,7 @@ async function rollbackRun(runId, options) {
     await lockClient.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
-    await releaseLock(lockClient);
+    await releaseLock(lockClient, lockHandle);
     lockClient.release();
   }
 }

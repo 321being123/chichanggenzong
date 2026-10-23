@@ -205,6 +205,14 @@ function realRuntime() {
       assert.strictEqual(fb.status, 'new');
     });
 
+    // ---------- B-01 补充：运行版本读取必须自带仓库目录信任（2026-10-23 端到端实录） ----------
+    await test('B-01 读取运行版本的 git 调用必须显式声明 safe.directory（防 dubious ownership）', async function () {
+      const svc = fs.readFileSync(path.join(ROOT, 'server', 'services', 'feedbackRelease.js'), 'utf8');
+      const cli = fs.readFileSync(path.join(ROOT, 'server', 'scripts', 'reconcileFeedbackRelease.js'), 'utf8');
+      assert.ok(svc.indexOf("'safe.directory='") >= 0, 'feedbackRelease 读取 HEAD 必须声明 safe.directory');
+      assert.ok(cli.indexOf("'safe.directory='") >= 0, '受控命令读取 HEAD 必须声明 safe.directory');
+    });
+
     // ---------- 部署脚本参与同一串行边界 ----------
     await test('A-04 部署脚本在代码部署前获取同一发布锁', async function () {
       const py = fs.readFileSync(path.join(ROOT, 'deploy', 'deploy_password.py'), 'utf8');

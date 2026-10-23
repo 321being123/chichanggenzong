@@ -66,9 +66,13 @@ async function assertContentManager(username, action) {
 // 调用方传入的 currentSha/currentVersion 只能用于交叉核对，永远不能覆盖实际值。
 function readTrustedRuntime() {
   let sha = '';
+  const repoRoot = require('path').join(__dirname, '..', '..');
   try {
-    sha = String(require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: require('path').join(__dirname, '..', '..'), encoding: 'utf8',
+    // 2026-10-23 端到端实录：/opt/portfolio 属主是 root，应用账号跑 git 会触发
+    // dubious ownership 保护导致读不到 HEAD、回写被 fail-closed 拒绝。
+    // 显式声明本仓库目录可信（随代码生效，不依赖服务器 git 全局配置）。
+    sha = String(require('child_process').execFileSync('git', ['-c', 'safe.directory=' + repoRoot, 'rev-parse', 'HEAD'], {
+      cwd: repoRoot, encoding: 'utf8',
     })).trim();
   } catch (e) {
     sha = '';

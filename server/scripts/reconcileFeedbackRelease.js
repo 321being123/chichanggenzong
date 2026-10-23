@@ -82,9 +82,11 @@ function output(payload) {
 // 当前运行版本：以仓库 HEAD 与 package.json 为准，不接受外部传值伪造
 function currentRuntime() {
   let sha = '';
+  const repoRoot = path.join(__dirname, '..', '..');
   try {
-    sha = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: path.join(__dirname, '..', '..'), encoding: 'utf8',
+    // 同 feedbackRelease.readTrustedRuntime：显式声明仓库目录可信，避开 dubious ownership
+    sha = execFileSync('git', ['-c', 'safe.directory=' + repoRoot, 'rev-parse', 'HEAD'], {
+      cwd: repoRoot, encoding: 'utf8',
     }).trim();
   } catch (e) {
     sha = '';

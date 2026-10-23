@@ -95,26 +95,29 @@ function listFilterSql(filter, params) {
 }
 
 async function listFeedbacks(db, filter, limit, offset) {
-  const params = [];
-  const where = listFilterSql(filter, params);
+  // A-01（2026-10-23 验收）：列表与总数必须各用独立参数数组。
+  // 复用同一数组再调用 listFilterSql 会重复追加参数，产生“无法确定参数 $1 的数据类型”。
+  const listParams = [];
+  const where = listFilterSql(filter, listParams);
   const sort = filter.sort === 'updated' ? 'f.updated_at DESC, f.id DESC' : 'f.created_at DESC, f.id DESC';
-  params.push(limit, offset);
+  listParams.push(limit, offset);
   const { rows } = await db.query(
     `SELECT ${FEEDBACK_COLUMNS},
             (SELECT count(*)::int FROM public.feedback_comments c
               WHERE c.feedback_id = f.id AND c.deleted_at IS NULL AND c.hidden_at IS NULL) AS "commentCount",
-            (SELECT e.note FROM public.feedback_events e
-              WHERE e.feedback_id = f.id AND e.actor_source <> 'user' AND e.note <> ''
-              ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS "latestNote",
+            (SELECT e.summary FROM public.feedback_events e
+              WHERE e.feedback_id = f.id AND e.event_type = 'admin_update'
+                AND e.actor_source IN ('admin','system') AND e.summary <> ''
+              ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS "latestSummary",
             (SELECT max(e.created_at) FROM public.feedback_events e WHERE e.feedback_id = f.id) AS "lastEventAt"
        FROM public.feedbacks f
        LEFT JOIN public.users u ON u.username = f.author_username
        ${where}
       ORDER BY ${sort}
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params
+      LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
+    listParams
   );
-  const countParams = params.slice(0, params.length - 2);
+  const countParams = [];
   const countWhere = listFilterSql(filter, countParams);
   const total = await db.query(
     `SELECT count(*)::int AS total FROM public.feedbacks f ${countWhere}`, countParams

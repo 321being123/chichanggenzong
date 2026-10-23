@@ -75,7 +75,12 @@
 .fb-detail-title { font-size: 18px; font-weight: 700; color: #1a1a2e; margin-bottom: 8px; line-height: 1.4; }
 .fb-detail-body { font-size: 14px; color: #333; line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
 .fb-detail-shots { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
-.fb-detail-shots img { max-width: 220px; max-height: 160px; border-radius: 8px; border: 1px solid #eceef6; cursor: zoom-in; }
+.fb-shot { position: relative; display: inline-block; }
+.fb-shot img { max-width: 220px; max-height: 160px; border-radius: 8px; border: 1px solid #eceef6; cursor: zoom-in; display: block; }
+.fb-shot-remove {
+  position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border: none; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #fff; font-size: 15px; line-height: 1; cursor: pointer;
+}
 .fb-section-title { font-size: 13px; font-weight: 700; color: #1a1a2e; margin: 18px 0 10px; }
 
 .fb-reply { border-top: 1px solid #f0f1f6; padding-top: 12px; margin-top: 12px; }

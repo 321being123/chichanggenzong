@@ -135,7 +135,7 @@ async function migration170FeedbackModule() {
       owner TEXT NOT NULL DEFAULT '',
       prepare_status TEXT NOT NULL DEFAULT 'draft' CHECK (prepare_status IN ('draft','prepared','frozen')),
       verify_status TEXT NOT NULL DEFAULT 'pending' CHECK (verify_status IN ('pending','passed','failed')),
-      apply_status TEXT NOT NULL DEFAULT 'pending' CHECK (apply_status IN ('pending','partial','applied','failed')),
+      apply_status TEXT NOT NULL DEFAULT 'pending' CHECK (apply_status IN ('pending','partial','applied','failed','rolled_back')),
       verify_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -154,7 +154,7 @@ async function migration170FeedbackModule() {
       implementation_commit TEXT NOT NULL DEFAULT '',
       evidence_summary TEXT NOT NULL DEFAULT '',
       input_hash TEXT NOT NULL DEFAULT '',
-      apply_status TEXT NOT NULL DEFAULT 'pending' CHECK (apply_status IN ('pending','applied','skipped','conflict','failed')),
+      apply_status TEXT NOT NULL DEFAULT 'pending' CHECK (apply_status IN ('pending','applied','skipped','conflict','failed','rolled_back')),
       apply_error TEXT NOT NULL DEFAULT '',
       revision_before BIGINT,
       revision_after BIGINT,
@@ -169,4 +169,36 @@ async function migration170FeedbackModule() {
   `);
 }
 
-module.exports = { migration170FeedbackModule };
+// 171：反馈发布回滚状态（2026-10-23 验收 A-04）
+// 已执行过 170 的存量库补带 'rolled_back' 终态；新库由 170 建好，本步幂等跳过。
+async function migration171FeedbackReleaseRollback() {
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'feedback_release_runs_apply_status_check'
+           AND conrelid = 'ops.feedback_release_runs'::regclass
+      ) THEN
+        ALTER TABLE ops.feedback_release_runs DROP CONSTRAINT feedback_release_runs_apply_status_check;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'feedback_release_items_apply_status_check'
+           AND conrelid = 'ops.feedback_release_items'::regclass
+      ) THEN
+        ALTER TABLE ops.feedback_release_items DROP CONSTRAINT feedback_release_items_apply_status_check;
+      END IF;
+    END $$;
+
+    ALTER TABLE ops.feedback_release_runs
+      ADD CONSTRAINT feedback_release_runs_apply_status_check
+      CHECK (apply_status IN ('pending','partial','applied','failed','rolled_back'));
+
+    ALTER TABLE ops.feedback_release_items
+      ADD CONSTRAINT feedback_release_items_apply_status_check
+      CHECK (apply_status IN ('pending','applied','skipped','conflict','failed','rolled_back'));
+  `);
+}
+
+module.exports = { migration170FeedbackModule, migration171FeedbackReleaseRollback };

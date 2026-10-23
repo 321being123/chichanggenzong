@@ -109,17 +109,32 @@ def verify_release_ready():
     return local_commit
 
 
-def apply_feedback_release(client, run_id, operator):
+def apply_feedback_release(client, run_id, operator, deployment_id, current_sha, current_version):
     """代码部署成功之后的第二段：专项验收后的反馈回写。
 
     单独捕获错误：失败不触发第一段的代码回滚，也不重跑迁移；
     返回结构化结果供最终输出区分 code_deployed / feedback_applied。
+    运行身份必须是真实的内容管理员账号（--deploy-operator），伪造身份会被服务端拒绝；
+    同时把本次部署批次与当前运行提交/版本传给受控命令，避免旧清单套到新代码上。
     """
-    operator_arg = shlex.quote(operator or "release-owner")
+    if not operator:
+        return {
+            "feedback_applied": False,
+            "reason": "缺少 --deploy-operator（必须是网站上的内容管理员账号），反馈闭环未执行",
+            "items": [],
+        }
+    operator_arg = shlex.quote(str(operator))
+    extra = ""
+    if deployment_id:
+        extra += f" --deployment-id {shlex.quote(str(deployment_id))}"
+    if current_sha:
+        extra += f" --current-sha {shlex.quote(str(current_sha))}"
+    if current_version:
+        extra += f" --current-version {shlex.quote(str(current_version))}"
     command = (
         "cd /opt/portfolio && "
         "sudo -u portfolio-app env FEEDBACK_ENV_FILE=/opt/portfolio/.env "
-        f"/usr/bin/node {FEEDBACK_SCRIPT} --mode apply --run-id {int(run_id)} --operator {operator_arg}"
+        f"/usr/bin/node {FEEDBACK_SCRIPT} --mode apply --run-id {int(run_id)} --operator {operator_arg}{extra}"
     )
     try:
         wrapped = "sudo bash -c " + shlex.quote(command)
@@ -291,7 +306,14 @@ def main():
         feedback_result = {"feedback_applied": False, "reason": "未提供发布核对记录，反馈闭环未执行", "items": []}
         if opts["feedback_run_id"]:
             print(f"开始反馈回写：发布批次 {opts['feedback_run_id']}")
-            feedback_result = apply_feedback_release(client, opts["feedback_run_id"], opts["operator"])
+            feedback_result = apply_feedback_release(
+                client,
+                opts["feedback_run_id"],
+                opts["operator"],
+                opts["deployment_id"],
+                local_commit,
+                local_version,
+            )
         summary = {
             "code_deployed": True,
             "commit": local_commit[:8],

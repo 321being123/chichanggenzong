@@ -6,9 +6,13 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const store = require('../db/feedback');
 const feedbackService = require('./feedbackService');
+const { hasCapability, isAdminIdentity } = require('../middleware/auth');
 
 const REVIEW_POLICY_VERSION = '2026-10-23';
 const OPEN_STATUSES = ['new', 'needs_info', 'accepted', 'in_progress'];
+// A-04：目标级发布锁，覆盖准备/冻结/验收/应用/回滚整段版本核验
+const RELEASE_LOCK_ID = 904100;
+const ROLLBACK_STATUSES = ['applied'];
 
 function createError(status, message) {
   const err = new Error(message);
@@ -28,12 +32,41 @@ function assertUuid(value) {
   return v;
 }
 
-// 清单哈希：编号:修订 升序拼接，冻结后任何明细变化都会导致哈希不匹配
+// 清单哈希：编号 + 核对时修订 + 结论 + 实现提交 + 证据摘要，任一被改动都会导致哈希不匹配（A-02）
 function computeManifestHash(items) {
   const lines = items
-    .map(function (it) { return String(it.feedbackId) + ':' + String(it.expectedRevision) + ':' + String(it.conclusion || 'pending'); })
+    .map(function (it) {
+      return [
+        String(it.feedbackId), String(it.expectedRevision), String(it.conclusion || 'pending'),
+        String(it.implementationCommit || ''), String(it.evidenceSummary || ''),
+      ].join(':');
+    })
     .sort();
   return sha256(lines.join('\n'));
+}
+
+// 只有真实的内容管理员（或管理员）可以准备/验收/回写；运行身份伪造不可绕过
+async function assertContentManager(username, action) {
+  const who = String(username || '').trim();
+  if (!who) throw createError(400, '必须提供有效的运行身份');
+  const { rows } = await pool.query(
+    'SELECT username, role, status, permissions FROM public.users WHERE username=$1', [who]
+  );
+  const user = rows[0];
+  if (!user) throw createError(403, '运行身份不存在或已注销：' + who);
+  if (user.status && user.status !== 'active') throw createError(403, '运行身份已被禁用：' + who);
+  if (!(isAdminIdentity(user.username, user.role) || hasCapability(user, 'content_manage'))) {
+    throw createError(403, '运行身份缺少 content_manage 能力，不能执行' + (action || '发布闭环'));
+  }
+  return user;
+}
+
+// 目标级发布锁：同一时间只允许一个发布批次做版本核验与回写
+async function acquireReleaseLock(client) {
+  await client.query('SELECT pg_advisory_lock($1)', [RELEASE_LOCK_ID]);
+}
+async function releaseLock(client) {
+  await client.query('SELECT pg_advisory_unlock($1)', [RELEASE_LOCK_ID]).catch(function () {});
 }
 
 // ---------- 核对读取（read 模式） ----------
@@ -71,6 +104,7 @@ async function readDetail(feedbackId, options) {
 async function prepareRun(input) {
   const owner = String(input.owner || '').trim();
   if (!owner) throw createError(400, '必须指定发布负责人');
+  await assertContentManager(owner, '准备发布核对清单');
   const releaseSha = String(input.releaseSha || '').trim();
   const appVersion = String(input.appVersion || '').trim();
   if (!/^[0-9a-f]{7,40}$/.test(releaseSha)) throw createError(400, 'releaseSha 不合法');
@@ -81,6 +115,7 @@ async function prepareRun(input) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    await acquireReleaseLock(client);
     const existing = await client.query(
       'SELECT id::text AS id, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE environment=$1 AND deployment_id=$2',
       [environment, deploymentId]
@@ -122,7 +157,7 @@ async function prepareRun(input) {
       inserted++;
     }
     const items = await client.query(
-      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion FROM ops.feedback_release_items WHERE run_id=$1',
+      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
       [runId]
     );
     const manifestHash = computeManifestHash(items.rows);
@@ -141,42 +176,95 @@ async function prepareRun(input) {
     await client.query('ROLLBACK').catch(function () {});
     throw e;
   } finally {
+    await releaseLock(client);
     client.release();
   }
 }
 
 // 写入/更新单项核对结论（开发 Agent 的核对结果先落库，再由 apply 使用）
+// 明细变化后自动作废已冻结清单与已通过的验收（A-02：修订后必须重新验收）
 async function setItemConclusion(runId, feedbackId, patch) {
   const conclusions = ['pending', 'solved', 'partial', 'unrelated', 'needs_review'];
   if (conclusions.indexOf(patch.conclusion) < 0) throw createError(400, '核对结论不合法');
-  const { rows } = await pool.query(
-    `UPDATE ops.feedback_release_items
-        SET conclusion=$1, implementation_commit=$2, evidence_summary=$3, updated_at=now()
-      WHERE run_id=$4 AND feedback_id=$5
-        AND apply_status='pending'
-      RETURNING id::text AS id`,
-    [patch.conclusion, String(patch.implementationCommit || '').slice(0, 64),
-      String(patch.evidenceSummary || '').slice(0, 1000), runId, feedbackId]
-  );
-  if (!rows[0]) throw createError(404, '找不到该发布批次中的这条反馈，或该项已应用');
-  return { runId: String(runId), feedbackId: String(feedbackId), conclusion: patch.conclusion };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await acquireReleaseLock(client);
+    const run = await client.query(
+      'SELECT id::text AS id, prepare_status AS "prepareStatus", verify_status AS "verifyStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
+      [runId]
+    );
+    if (!run.rows[0]) throw createError(404, '发布批次不存在');
+    const { rows } = await client.query(
+      `UPDATE ops.feedback_release_items
+          SET conclusion=$1, implementation_commit=$2, evidence_summary=$3, updated_at=now()
+        WHERE run_id=$4 AND feedback_id=$5
+          AND apply_status='pending'
+        RETURNING id::text AS id, feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
+                  conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary"`,
+      [patch.conclusion, String(patch.implementationCommit || '').slice(0, 64),
+        String(patch.evidenceSummary || '').slice(0, 1000), runId, feedbackId]
+    );
+    if (!rows[0]) throw createError(404, '找不到该发布批次中的这条反馈，或该项已应用');
+    // 明细变化：冻结的清单要重新冻结，已通过的验收作废
+    const all = await client.query(
+      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
+      [runId]
+    );
+    const manifestHash = computeManifestHash(all.rows);
+    const invalidated = run.rows[0].verifyStatus === 'passed';
+    await client.query(
+      `UPDATE ops.feedback_release_runs
+          SET manifest_hash=$1,
+              prepare_status = CASE WHEN prepare_status='frozen' THEN 'prepared' ELSE prepare_status END,
+              verify_status = CASE WHEN verify_status='passed' THEN 'pending' ELSE verify_status END,
+              updated_at=now()
+        WHERE id=$2`,
+      [manifestHash, runId]
+    );
+    await client.query('COMMIT');
+    return {
+      runId: String(runId), feedbackId: String(feedbackId), conclusion: patch.conclusion,
+      manifestHash: manifestHash, verificationInvalidated: invalidated,
+    };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(function () {});
+    throw e;
+  } finally {
+    await releaseLock(client);
+    client.release();
+  }
 }
 
 async function freezeRun(runId) {
-  const items = await pool.query(
-    'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion FROM ops.feedback_release_items WHERE run_id=$1',
-    [runId]
-  );
-  if (!items.rowCount) throw createError(400, '该发布批次没有核对明细');
-  const manifestHash = computeManifestHash(items.rows);
-  const { rows } = await pool.query(
-    `UPDATE ops.feedback_release_runs
-        SET manifest_hash=$1, prepare_status='frozen', updated_at=now()
-      WHERE id=$2 RETURNING id::text AS id`,
-    [manifestHash, runId]
-  );
-  if (!rows[0]) throw createError(404, '发布批次不存在');
-  return { runId: String(runId), manifestHash: manifestHash };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await acquireReleaseLock(client);
+    const items = await client.query(
+      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
+      [runId]
+    );
+    if (!items.rowCount) throw createError(400, '该发布批次没有核对明细');
+    const manifestHash = computeManifestHash(items.rows);
+    const { rows } = await client.query(
+      `UPDATE ops.feedback_release_runs
+          SET manifest_hash=$1, prepare_status='frozen',
+              verify_status = CASE WHEN verify_status='passed' THEN 'pending' ELSE verify_status END,
+              updated_at=now()
+        WHERE id=$2 RETURNING id::text AS id`,
+      [manifestHash, runId]
+    );
+    if (!rows[0]) throw createError(404, '发布批次不存在');
+    await client.query('COMMIT');
+    return { runId: String(runId), manifestHash: manifestHash };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(function () {});
+    throw e;
+  } finally {
+    await releaseLock(client);
+    client.release();
+  }
 }
 
 // 专项验收记录：只有验收通过的批次才允许把反馈写成已实施
@@ -184,32 +272,65 @@ async function verifyRun(runId, input) {
   const evidence = input && input.evidence ? input.evidence : {};
   const passed = input && input.passed === true;
   const sha = String((input && input.verifiedSha) || '').trim();
-  const { rows } = await pool.query(
-    'SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion" FROM ops.feedback_release_runs WHERE id=$1',
-    [runId]
-  );
-  if (!rows[0]) throw createError(404, '发布批次不存在');
-  if (passed && sha !== rows[0].releaseSha) {
-    throw createError(409, '验收提交与发布批次绑定的 SHA 不一致');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await acquireReleaseLock(client);
+    const { rows } = await client.query(
+      'SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion", owner, manifest_hash AS "manifestHash", prepare_status AS "prepareStatus" FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE',
+      [runId]
+    );
+    if (!rows[0]) throw createError(404, '发布批次不存在');
+    const run = rows[0];
+    // 验收人与发布负责人必须是真实有权账号，不能用任意名字
+    await assertContentManager(String(input && input.operator) || run.owner, '执行专项验收');
+    if (passed && sha !== run.releaseSha) {
+      throw createError(409, '验收提交与发布批次绑定的 SHA 不一致');
+    }
+    if (run.prepareStatus === 'draft') throw createError(409, '该发布批次清单尚未准备完成');
+    const items = await client.query(
+      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
+      [runId]
+    );
+    const manifestHash = computeManifestHash(items.rows);
+    if (run.manifestHash && manifestHash !== run.manifestHash) {
+      throw createError(409, '核对清单已被修改，请重新冻结后再次验收');
+    }
+    if (passed) {
+      // A-02：验收通过必须留下具体证据，空对象不算验收
+      const keys = Object.keys(evidence).filter(function (k) {
+        return evidence[k] !== null && evidence[k] !== undefined && String(evidence[k]).trim() !== '';
+      });
+      if (!keys.length) throw createError(400, '验收通过必须提交验收证据（不能为空）');
+    }
+    await client.query(
+      `UPDATE ops.feedback_release_runs
+          SET verify_status=$1, verify_evidence=$2, manifest_hash=$3, updated_at=now()
+        WHERE id=$4`,
+      [passed ? 'passed' : 'failed', JSON.stringify(evidence), manifestHash, runId]
+    );
+    await client.query('COMMIT');
+    return { runId: String(runId), verifyStatus: passed ? 'passed' : 'failed' };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(function () {});
+    throw e;
+  } finally {
+    await releaseLock(client);
+    client.release();
   }
-  await pool.query(
-    `UPDATE ops.feedback_release_runs
-        SET verify_status=$1, verify_evidence=$2, updated_at=now()
-      WHERE id=$3`,
-    [passed ? 'passed' : 'failed', JSON.stringify(evidence), runId]
-  );
-  return { runId: String(runId), verifyStatus: passed ? 'passed' : 'failed' };
 }
 
 // ---------- 应用回写 ----------
 // 每项独立事务：锁明细 → 锁反馈 → 校验 revision/状态 → 更新 → 同事务写事件 → 明细标已应用。
 // 幂等锚点是 (run_id, feedback_id) 唯一键 + apply_status，不依赖“先查事件不存在再插入”。
+// 整段受目标级发布锁保护（A-04）：同一时间只有一个发布批次做版本核验与回写。
 async function applyRun(runId, options) {
   const opts = options || {};
+  await assertContentManager(opts.operator, '执行反馈回写');
   const runQuery = await pool.query(
-    `SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion",
+    `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha", app_version AS "appVersion",
             verify_status AS "verifyStatus", apply_status AS "applyStatus",
-            manifest_hash AS "manifestHash", prepare_status AS "prepareStatus"
+            manifest_hash AS "manifestHash", prepare_status AS "prepareStatus", owner
        FROM ops.feedback_release_runs WHERE id=$1`,
     [runId]
   );
@@ -217,9 +338,20 @@ async function applyRun(runId, options) {
   if (!run) throw createError(404, '发布批次不存在');
   if (run.verifyStatus !== 'passed') throw createError(409, '该发布批次未通过专项验收，不能回写已实施');
   if (run.prepareStatus === 'draft') throw createError(409, '该发布批次清单尚未准备完成');
+  // 旧批次不能交给新部署：批次与目标环境/部署批次必须对应
+  if (opts.deploymentId && String(opts.deploymentId) !== String(run.deploymentId)) {
+    throw createError(409, '发布批次不属于本次部署（deployment_id 不一致）');
+  }
+  // 回写时的运行版本必须与批次一致，避免把旧清单套到新代码上（A-04）
+  if (opts.currentSha && String(opts.currentSha).toLowerCase() !== String(run.releaseSha).toLowerCase()) {
+    throw createError(409, '当前运行提交与发布批次不一致，拒绝回写');
+  }
+  if (opts.currentVersion && String(opts.currentVersion) !== String(run.appVersion)) {
+    throw createError(409, '当前运行版本与发布批次不一致，拒绝回写');
+  }
 
   const checked = await pool.query(
-    'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion FROM ops.feedback_release_items WHERE run_id=$1',
+    'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
     [runId]
   );
   const manifestHash = computeManifestHash(checked.rows);
@@ -237,17 +369,28 @@ async function applyRun(runId, options) {
     [runId]
   );
 
-  const results = [];
-  for (let i = 0; i < targets.rows.length; i++) {
-    const item = targets.rows[i];
-    results.push(await applyOne(runId, run, item, opts));
+  const lockClient = await pool.connect();
+  try {
+    await lockClient.query('BEGIN');
+    await acquireReleaseLock(lockClient);
+    const results = [];
+    for (let i = 0; i < targets.rows.length; i++) {
+      const item = targets.rows[i];
+      results.push(await applyOne(runId, run, item, opts));
+    }
+    const applied = results.filter(function (r) { return r.applyStatus === 'applied'; }).length;
+    const failed = results.filter(function (r) { return r.applyStatus !== 'applied' && r.applyStatus !== 'skipped'; }).length;
+    const overall = failed === 0 ? 'applied' : (applied > 0 ? 'partial' : 'failed');
+    await pool.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
+    await lockClient.query('COMMIT');
+    return { runId: String(runId), applyStatus: overall, applied: applied, failed: failed, items: results };
+  } catch (e) {
+    await lockClient.query('ROLLBACK').catch(function () {});
+    throw e;
+  } finally {
+    await releaseLock(lockClient);
+    lockClient.release();
   }
-
-  const applied = results.filter(function (r) { return r.applyStatus === 'applied'; }).length;
-  const failed = results.filter(function (r) { return r.applyStatus !== 'applied' && r.applyStatus !== 'skipped'; }).length;
-  const overall = failed === 0 ? 'applied' : (applied > 0 ? 'partial' : 'failed');
-  await pool.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
-  return { runId: String(runId), applyStatus: overall, applied: applied, failed: failed, items: results };
 }
 
 async function applyOne(runId, run, item, opts) {
@@ -289,15 +432,15 @@ async function applyOne(runId, run, item, opts) {
     let fields;
     let summary;
     if (item.conclusion === 'solved') {
+      // 版本与发布提交取自本批次（A-02），不接受外部填写
       const validated = await feedbackService.validateStatusChange(client, fb, { status: 'implemented' }, {
         reason: '随版本 ' + run.appVersion + ' 发布并验收',
-        implementedVersion: run.appVersion,
-        implementedReleaseSha: run.releaseSha,
+        releaseRunId: runId,
+        internalRelease: true,
       });
       fields = validated.fields;
       summary = '随版本 ' + run.appVersion + ' 发布，专项验收通过';
     } else {
-      // 部分解决：只记录进度并转为进行中，不自动关闭、也不改成重复或不采纳
       fields = { status: 'in_progress' };
       summary = '随版本 ' + run.appVersion + ' 部分解决，仍需后续处理';
     }
@@ -321,6 +464,107 @@ async function applyOne(runId, run, item, opts) {
     await client.query('ROLLBACK').catch(function () {});
     await markItem(item.feedbackId, runId, 'failed', String(e.message || e).slice(0, 300)).catch(function () {});
     return { feedbackId: item.feedbackId, applyStatus: 'failed', error: e.message };
+  } finally {
+    client.release();
+  }
+}
+
+// ---------- 回滚恢复（A-04） ----------
+// 只恢复「由本批次关闭、且之后没有被任何人再修改」的反馈；已被后续修改的一律保留现状。
+async function rollbackRun(runId, options) {
+  const opts = options || {};
+  await assertContentManager(opts.operator, '执行回滚恢复');
+  const runQuery = await pool.query(
+    `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha",
+            app_version AS "appVersion", verify_status AS "verifyStatus", apply_status AS "applyStatus"
+       FROM ops.feedback_release_runs WHERE id=$1`,
+    [runId]
+  );
+  const run = runQuery.rows[0];
+  if (!run) throw createError(404, '发布批次不存在');
+  if (run.applyStatus === 'pending' || run.applyStatus === 'rolled_back') {
+    throw createError(409, '该发布批次没有可回滚的已应用项');
+  }
+  if (opts.currentSha && String(opts.currentSha).toLowerCase() !== String(run.releaseSha).toLowerCase()) {
+    throw createError(409, '当前运行提交与发布批次不一致，拒绝回滚');
+  }
+  const lockClient = await pool.connect();
+  try {
+    await lockClient.query('BEGIN');
+    await acquireReleaseLock(lockClient);
+    const items = await pool.query(
+      `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
+              expected_status AS "expectedStatus", revision_after::text AS "revisionAfter", apply_status AS "applyStatus"
+         FROM ops.feedback_release_items
+        WHERE run_id=$1 AND conclusion='solved' AND apply_status='applied'
+        ORDER BY feedback_id ASC`,
+      [runId]
+    );
+    const results = [];
+    for (let i = 0; i < items.rows.length; i++) {
+      results.push(await rollbackOne(runId, run, items.rows[i], opts));
+    }
+    const restored = results.filter(function (r) { return r.result === 'restored'; }).length;
+    const kept = results.filter(function (r) { return r.result === 'kept_after_modification'; }).length;
+    const overall = restored === 0 ? 'applied' : (kept > 0 ? 'partial' : 'rolled_back');
+    await pool.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
+    await lockClient.query('COMMIT');
+    return { runId: String(runId), applyStatus: overall, restored: restored, kept: kept, items: results };
+  } catch (e) {
+    await lockClient.query('ROLLBACK').catch(function () {});
+    throw e;
+  } finally {
+    await releaseLock(lockClient);
+    lockClient.release();
+  }
+}
+
+async function rollbackOne(runId, run, item, opts) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query(
+      'SELECT id, apply_status AS "applyStatus" FROM ops.feedback_release_items WHERE run_id=$1 AND feedback_id=$2 FOR UPDATE',
+      [runId, item.feedbackId]
+    );
+    if (!locked.rows[0] || locked.rows[0].applyStatus !== 'applied') {
+      await client.query('ROLLBACK');
+      return { feedbackId: item.feedbackId, result: 'kept_after_modification' };
+    }
+    const fb = await store.lockFeedback(client, item.feedbackId);
+    if (!fb) {
+      await client.query('ROLLBACK');
+      return { feedbackId: item.feedbackId, result: 'kept_after_modification', error: '反馈不存在' };
+    }
+    const unchanged = fb.status === 'implemented'
+      && String(fb.implementedReleaseSha || '') === String(run.releaseSha)
+      && String(fb.revision) === String(item.revisionAfter);
+    if (!unchanged) {
+      await client.query('ROLLBACK');
+      return { feedbackId: item.feedbackId, result: 'kept_after_modification' };
+    }
+    const revision = await store.updateFeedbackFields(client, item.feedbackId, {
+      status: item.expectedStatus,
+      implementedVersion: null,
+      implementedReleaseSha: null,
+    });
+    await store.insertEvent(client, {
+      feedbackId: item.feedbackId, actorUsername: opts.operator || null, actorSource: 'release',
+      eventType: 'release_rollback',
+      statusFrom: 'implemented', statusTo: item.expectedStatus,
+      summary: '版本 ' + run.appVersion + ' 回滚，恢复为核对前状态',
+      note: '', revision: revision, releaseRunId: runId,
+    });
+    await client.query(
+      `UPDATE ops.feedback_release_items SET apply_status='rolled_back', updated_at=now()
+        WHERE run_id=$1 AND feedback_id=$2`,
+      [runId, item.feedbackId]
+    );
+    await client.query('COMMIT');
+    return { feedbackId: item.feedbackId, result: 'restored', revisionAfter: revision };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(function () {});
+    return { feedbackId: item.feedbackId, result: 'kept_after_modification', error: e.message };
   } finally {
     client.release();
   }
@@ -411,5 +655,5 @@ async function status(runId) {
 module.exports = {
   REVIEW_POLICY_VERSION, OPEN_STATUSES,
   readCandidates, readDetail, prepareRun, setItemConclusion, freezeRun, verifyRun,
-  applyRun, readBack, listRuns, getRun, listItems, status, computeManifestHash,
+  applyRun, rollbackRun, readBack, listRuns, getRun, listItems, status, computeManifestHash,
 };

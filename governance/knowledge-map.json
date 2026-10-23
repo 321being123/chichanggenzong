@@ -775,7 +775,11 @@
         "server/db/migrations/feedback*.js",
         "server/db/migrations/era07Feedback.js",
         "server/scripts/reconcileFeedbackRelease.js",
-        "server/test/feedback*.test.js"
+        "server/test/feedback*.test.js",
+        "scripts/backup_db.sh",
+        "scripts/sync_encrypted_backups.sh",
+        "scripts/restore_backup_drill.sh",
+        "deploy/deploy_password.py"
       ],
       "keywords": [
         "意见反馈",

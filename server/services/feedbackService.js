@@ -33,6 +33,62 @@ const TARGET_FILE_BYTES = 1024 * 1024;       // 最终单张上限
 const COMPRESSION_VERSION = 'webp-v1';
 const ALLOWED_INPUT_FORMATS = ['jpeg', 'png', 'webp'];
 
+// 服务端可信运行版本（A-07）：提交版本只取自当前运行代码，忽略客户端传值。
+let cachedRuntimeVersion = null;
+function runtimeVersion() {
+  if (cachedRuntimeVersion !== null) return cachedRuntimeVersion;
+  try {
+    const pkg = require('../../package.json');
+    cachedRuntimeVersion = String(pkg.appVersion || pkg.version || '').slice(0, 40);
+  } catch (e) {
+    cachedRuntimeVersion = '';
+  }
+  return cachedRuntimeVersion;
+}
+
+// ---------- 响应字段白名单（A-03） ----------
+// 公开响应一律只输出这里列出的字段；作者额外可见自己的可见性/隐藏状态；管理员才看内部证据字段。
+const PUBLIC_FIELDS = [
+  'id', 'type', 'typeLabel', 'title', 'description', 'pagePath', 'submittedVersion',
+  'status', 'statusLabel', 'implementedVersion', 'revision', 'createdAt', 'updatedAt',
+  'withdrawnAt', 'commentCount', 'latestSummary', 'lastEventAt', 'nickname', 'attachments',
+];
+const AUTHOR_FIELDS = ['visibility', 'moderation', 'moderationReason'];
+const ADMIN_FIELDS = ['authorUsername', 'duplicateOf', 'implementedReleaseSha'];
+
+function pickFields(row, fields) {
+  const out = {};
+  fields.forEach(function (k) { if (row[k] !== undefined) out[k] = row[k]; });
+  return out;
+}
+
+// scope: public（游客/他人）| author（本人）| admin（内容管理员）
+function projectFeedback(row, scope) {
+  if (!row) return row;
+  const out = pickFields(row, PUBLIC_FIELDS);
+  if (scope === 'author' || scope === 'admin') {
+    Object.assign(out, pickFields(row, AUTHOR_FIELDS));
+  }
+  if (scope === 'admin') {
+    Object.assign(out, pickFields(row, ADMIN_FIELDS));
+  }
+  out.typeLabel = TYPE_LABELS[out.type] || out.type;
+  out.statusLabel = STATUS_LABELS[out.status] || out.status;
+  if (out.latestSummary == null) out.latestSummary = '';
+  out.isMine = scope === 'author' || scope === 'admin';
+  return out;
+}
+
+function projectComment(c, actor, authorUsername) {
+  const mine = !!(actor && actor.username && actor.username === authorUsername);
+  const out = {
+    id: c.id, nickname: c.nickname, content: c.deleted || c.hidden ? '' : c.content,
+    isOfficial: !!c.isOfficial, deleted: !!c.deleted, hidden: !!c.hidden, createdAt: c.createdAt,
+    canDelete: mine && !c.deleted,
+  };
+  return out;
+}
+
 // ---------- 错误 ----------
 function createError(status, message, extra) {
   const err = new Error(message);
@@ -231,7 +287,8 @@ async function createFeedback(actor, input, files) {
   if (!description.length) throw createError(400, '请填写描述（1—5000 字）');
   const visibility = input.visibility === 'private' ? 'private' : 'public';
   const pagePath = normalizePagePath(input.pagePath);
-  const submittedVersion = cleanText(input.submittedVersion, 40);
+  // A-07：问题版本由服务端运行元数据写入，客户端传值一律忽略
+  const submittedVersion = runtimeVersion();
   const clientRequestId = cleanText(input.clientRequestId, 80) || null;
 
   const encoded = await encodeImages(files);
@@ -285,22 +342,14 @@ async function createFeedback(actor, input, files) {
 }
 
 // ---------- 读取 ----------
-function decodeBigIntRow(row) {
-  if (!row) return row;
-  const out = Object.assign({}, row);
-  out.typeLabel = TYPE_LABELS[out.type] || out.type;
-  out.statusLabel = STATUS_LABELS[out.status] || out.status;
-  if (out.latestNote == null) out.latestNote = '';
-  return out;
-}
-
 async function listPublic(query) {
   const pageSize = Math.min(Math.max(parseInt(query.pageSize, 10) || 20, 1), 100);
   const page = Math.max(parseInt(query.page, 10) || 1, 1);
   const filter = buildFilter(query, 'public');
   const result = await store.listFeedbacks(pool, filter, pageSize, (page - 1) * pageSize);
   return {
-    items: result.items.map(decodeBigIntRow), total: result.total, page: page, pageSize: pageSize,
+    items: result.items.map(function (r) { return projectFeedback(r, 'public'); }),
+    total: result.total, page: page, pageSize: pageSize,
   };
 }
 
@@ -311,7 +360,10 @@ async function listMine(actor, query) {
   const filter = buildFilter(query, 'mine');
   filter.authorUsername = actor.username;
   const result = await store.listMine(pool, filter, pageSize, (page - 1) * pageSize);
-  return { items: result.items.map(decodeBigIntRow), total: result.total, page: page, pageSize: pageSize };
+  return {
+    items: result.items.map(function (r) { return projectFeedback(r, 'author'); }),
+    total: result.total, page: page, pageSize: pageSize,
+  };
 }
 
 function buildFilter(query, scope) {
@@ -377,14 +429,17 @@ async function detail(id, actor) {
     completeInfo: !!(actor.username && actor.username === fb.authorUsername && fb.status === 'needs_info'),
     moderate: !!actor.canModerate,
   };
+  // A-03：按访问者身份裁剪字段，公开响应不出现登录名、内部证据或私密目标编号
+  const scope = actor.canModerate ? 'admin' : (actor.username && actor.username === fb.authorUsername ? 'author' : 'public');
+  const projected = projectFeedback(Object.assign({}, fb, {
+    attachments: attachments.map(function (a) {
+      return { id: a.id, width: a.width, height: a.height, sortOrder: a.sortOrder };
+    }),
+  }), scope);
   return {
-    feedback: decodeBigIntRow(Object.assign({}, fb, {
-      attachments: attachments.map(function (a) {
-        return { id: a.id, width: a.width, height: a.height, sortOrder: a.sortOrder };
-      }),
-    })),
+    feedback: projected,
     duplicateOf: duplicatePublic,
-    comments: comments,
+    comments: comments.map(function (c) { return projectComment(c, actor, c.authorUsername); }),
     events: events,
     permissions: allowed,
   };
@@ -752,7 +807,10 @@ async function adminList(actor, query) {
   const filter = buildFilter(query, 'admin');
   filter.authorUsernameExact = cleanText(query.author, 64) || null;
   const result = await store.listFeedbacks(pool, filter, pageSize, (page - 1) * pageSize);
-  return { items: result.items.map(decodeBigIntRow), total: result.total, page: page, pageSize: pageSize };
+  return {
+    items: result.items.map(function (r) { return projectFeedback(r, 'admin'); }),
+    total: result.total, page: page, pageSize: pageSize,
+  };
 }
 
 async function adminDetail(id, actor) {
@@ -765,10 +823,49 @@ async function adminDetail(id, actor) {
     store.listEvents(pool, id, true),
   ]);
   return {
-    feedback: decodeBigIntRow(Object.assign({}, fb, { attachments: attachments })),
-    comments: comments, events: events,
+    feedback: projectFeedback(Object.assign({}, fb, { attachments: attachments }), 'admin'),
+    comments: comments.map(function (c) { return projectComment(c, actor, c.authorUsername); }),
+    events: events,
     permissions: { moderate: true },
   };
+}
+
+// 已实施的唯一来源：一条已验收、且清单里把本条核对为「完整解决」的发布批次。
+// internalRelease=true 仅供 applyRun 在自己事务内构造字段时使用（此时明细尚未标 applied）。
+async function resolveImplementedFields(client, fb, options) {
+  const opts = options || {};
+  const runId = cleanText(opts.releaseRunId, 20);
+  if (!runId) throw createError(400, '标记已实施必须指定已通过专项验收的发布批次');
+  const runQuery = await client.query(
+    `SELECT id::text AS id, release_sha AS "releaseSha", app_version AS "appVersion",
+            verify_status AS "verifyStatus", verify_evidence AS "verifyEvidence",
+            environment, owner
+       FROM ops.feedback_release_runs WHERE id=$1`,
+    [runId]
+  );
+  const run = runQuery.rows[0];
+  if (!run) throw createError(400, '指定的发布批次不存在');
+  if (run.environment !== 'production') throw createError(409, '发布批次不是生产环境记录');
+  if (run.verifyStatus !== 'passed') throw createError(409, '该发布批次未通过专项验收，不能标记已实施');
+  if (!run.releaseSha || !run.appVersion) throw createError(409, '发布批次缺少发布提交或版本号');
+  const evidence = run.verifyEvidence && typeof run.verifyEvidence === 'object' ? run.verifyEvidence : {};
+  if (!Object.keys(evidence).length) throw createError(409, '该发布批次没有验收证据，不能标记已实施');
+
+  const itemQuery = await client.query(
+    `SELECT conclusion, apply_status AS "applyStatus", expected_revision::text AS "expectedRevision"
+       FROM ops.feedback_release_items WHERE run_id=$1 AND feedback_id=$2`,
+    [runId, fb.id]
+  );
+  const item = itemQuery.rows[0];
+  if (!item) throw createError(400, '该发布批次清单不包含这条反馈');
+  if (item.conclusion !== 'solved') throw createError(400, '该发布批次未把这条反馈核对为完整解决');
+  if (!opts.internalRelease) {
+    if (item.applyStatus !== 'applied') throw createError(400, '该发布批次尚未成功应用这条反馈');
+    if (String(item.expectedRevision) !== String(fb.revision)) {
+      throw createError(409, '核对之后这条反馈已被修改，需要重新核对并验收');
+    }
+  }
+  return { implementedVersion: run.appVersion, implementedReleaseSha: run.releaseSha, runId: run.id };
 }
 
 // 状态流转校验：所有人工状态变更都走这里（后台 PATCH 与发布回写共用）
@@ -783,11 +880,11 @@ async function validateStatusChange(client, fb, next, options) {
   if (reopening && !reason) throw createError(400, '重新打开必须说明原因');
   const fields = { status: next.status };
   if (next.status === 'implemented') {
-    const version = cleanText(opts.implementedVersion, 40);
-    const sha = cleanText(opts.implementedReleaseSha, 64);
-    if (!version || !sha) throw createError(400, '标记已实施必须提供版本号与发布提交');
-    fields.implementedVersion = version;
-    fields.implementedReleaseSha = sha;
+    // A-02：版本与发布提交只能来自已通过专项验收、且清单包含本条反馈的发布批次，
+    // 不再接受调用方自由填写；客户端传 version/sha 一律忽略。
+    const resolved = await resolveImplementedFields(client, fb, opts);
+    fields.implementedVersion = resolved.implementedVersion;
+    fields.implementedReleaseSha = resolved.implementedReleaseSha;
   } else {
     fields.implementedVersion = null;
     fields.implementedReleaseSha = null;
@@ -836,8 +933,7 @@ async function adminUpdate(id, actor, patch) {
     if (patch.status != null && patch.status !== fb.status) {
       const validated = await validateStatusChange(client, fb, { status: patch.status }, {
         reason: patch.reason,
-        implementedVersion: patch.implementedVersion,
-        implementedReleaseSha: patch.implementedReleaseSha,
+        releaseRunId: patch.releaseRunId,
         duplicateOf: patch.duplicateOf,
       });
       Object.assign(fields, validated.fields);

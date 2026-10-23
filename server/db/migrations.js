@@ -187,6 +187,7 @@ const MIGRATIONS = [
   { version: '168_call_event_kind_semantics', up: M.migration168CallEventKindSemantics },
   { version: '169_instrument_name_cleanup', up: M.migration169InstrumentNameCleanup },
   { version: '170_feedback_module', up: M.migration170FeedbackModule },
+  { version: '171_feedback_release_rollback', up: M.migration171FeedbackReleaseRollback },
 ];
 
 async function ensureMigrationsTable() {

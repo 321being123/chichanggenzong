@@ -167,7 +167,7 @@
       + '<div class="fb-card-meta"><span>' + esc(item.nickname || '匿名用户') + '</span>'
       + '<span>' + esc(fmtTime(item.createdAt)) + '</span>'
       + '<span>回复 ' + (item.commentCount || 0) + '</span>' + version + '</div>'
-      + (item.latestNote ? '<div class="fb-card-note">处理说明：' + esc(item.latestNote) + '</div>' : '')
+      + (item.latestSummary ? '<div class="fb-card-note">处理说明：' + esc(item.latestSummary) + '</div>' : '')
       + '</article>';
   }
 
@@ -266,11 +266,24 @@
         + '</div>';
     }
 
-    if (fb.attachments && fb.attachments.length) {
-      html += '<div class="fb-detail-shots">' + fb.attachments.map(function (a) {
-        return '<a href="' + esc(api('/api/feedback/attachments/' + a.id)) + '" target="_blank" rel="noopener">'
+    var shotList = fb.attachments || [];
+    if (shotList.length) {
+      html += '<div class="fb-detail-shots">' + shotList.map(function (a) {
+        var shot = '<a href="' + esc(api('/api/feedback/attachments/' + a.id)) + '" target="_blank" rel="noopener">'
           + '<img src="' + esc(api('/api/feedback/attachments/' + a.id)) + '" alt="反馈截图" loading="lazy"></a>';
+        if (perms.edit) {
+          shot += '<button type="button" class="fb-shot-remove" data-fb-act="del-shot" data-aid="' + esc(a.id)
+            + '" aria-label="移除截图">&times;</button>';
+        }
+        return '<div class="fb-shot">' + shot + '</div>';
       }).join('') + '</div>';
+    }
+    // A-06：作者在可编辑阶段可以从详情直接追加/移除截图
+    if (perms.edit) {
+      html += '<div class="fb-toolbar u-mb-12" data-style="margin-top:12px">'
+        + '<input type="file" id="fb-detail-files" accept="image/png,image/jpeg,image/webp" multiple>'
+        + '<button type="button" class="btn btn-primary btn-sm" data-fb-act="add-shots">追加截图</button>'
+        + '<span class="fb-upload-tip">最多共 3 张，选择后自动压缩为 WebP</span></div>';
     }
 
     // 作者操作区
@@ -295,7 +308,7 @@
         + (c.isOfficial ? '<span class="fb-badge fb-badge--accepted">管理员</span>' : '')
         + '<span>' + esc(fmtTime(c.createdAt)) + '</span>'
         + (c.deleted ? '<span>已删除</span>' : (c.hidden ? '<span>已隐藏</span>' : ''))
-        + (!hidden && perms.comment && c.authorUsername && currentUser() && c.authorUsername === currentUser()
+        + (!hidden && perms.comment && c.canDelete
           ? '<button type="button" class="btn btn-outline btn-sm" data-fb-act="del-comment" data-cid="' + esc(c.id) + '">删除</button>' : '')
         + '</div>'
         + (hidden ? '' : '<div class="fb-reply-body">' + esc(c.content) + '</div>')
@@ -715,6 +728,37 @@
       await requestJson('/api/feedback/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(cid), { method: 'DELETE' });
       toast('已删除');
       await loadDetail();
+      return;
+    }
+    if (action === 'del-shot') {
+      var aid = el.getAttribute('data-aid');
+      if (window.projectConfirm && !await window.projectConfirm('移除这张截图？移除后只有你和管理员还能看到。')) return;
+      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(aid)
+        + '?expectedRevision=' + encodeURIComponent(revision), { method: 'DELETE' });
+      toast('截图已移除');
+      await loadDetail();
+      return;
+    }
+    if (action === 'add-shots') {
+      var pick = byId('fb-detail-files');
+      var chosen = pick ? Array.prototype.slice.call(pick.files || []) : [];
+      if (!chosen.length) { toast('请先选择图片'); return; }
+      if (pick) pick.value = '';
+      var form = new FormData();
+      form.append('expectedRevision', revision);
+      form.append('clientRequestId', (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID() : ('att-' + Date.now() + '-' + Math.random().toString(16).slice(2)));
+      for (var i = 0; i < chosen.length; i++) {
+        try {
+          form.append('images', await compressImage(chosen[i]));
+        } catch (err) {
+          toast(err.message || '图片处理失败，未上传任何图片');
+          return;
+        }
+      }
+      await requestJson('/api/feedback/' + encodeURIComponent(id) + '/attachments', { method: 'POST', body: form });
+      toast('截图已追加');
+      await loadDetail();
     }
   }
 
@@ -778,7 +822,7 @@
         switchFeedbackSub('versions');
         return;
       }
-      if (['withdraw', 'visibility', 'complete-info', 'edit', 'reply', 'del-comment'].indexOf(act) >= 0) {
+      if (['withdraw', 'visibility', 'complete-info', 'edit', 'reply', 'del-comment', 'del-shot', 'add-shots'].indexOf(act) >= 0) {
         detailAction(act, el).catch(function (err) { toast(err.message || '操作失败'); });
       }
     });

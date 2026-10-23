@@ -153,6 +153,16 @@ for table in "${KEY_TABLES[@]}"; do
 done
 
 # ---------- 反馈截图：解密到隔离目录，按恢复库引用逐项核对 ----------
+# A-05：不论清单是否声明归档，都必须先核对恢复库实际引用；
+# 引用非零却没有归档即备份组不完整，必须失败，不能“跳过检查就算通过”。
+att_rows="$("${PG_LOCAL[@]}" psql -X -At --dbname="$TARGET_DB" -c   "SELECT CASE WHEN to_regclass('public.feedback_attachments') IS NULL THEN 0 ELSE (SELECT count(*) FROM public.feedback_attachments) END;")"
+case "$att_rows" in ''|*[!0-9]*) echo "错误：恢复后反馈附件行数无法读取" >&2; exit 1;; esac
+
+if [ "$att_rows" -gt 0 ] && [ -z "$attachments" ]; then
+  echo "错误：恢复库引用 $att_rows 条反馈截图，但备份组没有截图归档（$manifest 声明 attachments=none），备份不完整" >&2
+  exit 1
+fi
+
 if [ -n "$attachments" ]; then
   command -v tar >/dev/null 2>&1 || { echo "错误：缺少 tar" >&2; exit 1; }
   DRILL_ATTACH_DIR="$(mktemp -d /tmp/portfolio-restore-attach.XXXXXX)"
@@ -168,9 +178,6 @@ if [ -n "$attachments" ]; then
   tar -xzf "$att_plain" -C "$DRILL_ATTACH_DIR"
   rm -f "$att_plain"
 
-  att_rows="$("${PG_LOCAL[@]}" psql -X -At --dbname="$TARGET_DB" -c \
-    "SELECT CASE WHEN to_regclass('public.feedback_attachments') IS NULL THEN 0 ELSE (SELECT count(*) FROM public.feedback_attachments) END;")"
-  case "$att_rows" in ''|*[!0-9]*) echo "错误：恢复后反馈附件行数无法读取" >&2; exit 1;; esac
   if [ "$att_rows" -gt 0 ]; then
     missing=0
     mismatch=0
@@ -183,18 +190,17 @@ if [ -n "$attachments" ]; then
       if [ "$actual_size" != "$size" ] || [ "$actual_hash" != "$hash" ]; then
         mismatch=$((mismatch + 1)); echo "附件校验不符：$key" >&2
       fi
-    done <<< "$("${PG_LOCAL[@]}" psql -X -At -F'|' --dbname="$TARGET_DB" -c \
-      "SELECT storage_key, sha256, size_bytes FROM public.feedback_attachments ORDER BY id;")"
+    done <<< "$("${PG_LOCAL[@]}" psql -X -At -F'|' --dbname="$TARGET_DB" -c       "SELECT storage_key, sha256, size_bytes FROM public.feedback_attachments ORDER BY id;")"
     if [ "$missing" -ne 0 ] || [ "$mismatch" -ne 0 ]; then
       echo "错误：附件恢复核对失败（缺失 $missing，校验不符 $mismatch）" >&2
       exit 1
     fi
     echo "反馈附件恢复核对通过：$att_rows 条引用全部存在且哈希一致"
   else
-    echo "反馈附件：恢复库无引用记录，解包目录为空属正常"
+    echo "反馈附件：备份组含截图归档，但恢复库当前无引用记录（允许包含快照之后新增的文件）"
   fi
 else
-  echo "反馈附件：本备份组未包含截图归档（清单 attachments=none）"
+  echo "反馈附件：恢复库无引用记录，本组未包含截图归档，核对通过"
 fi
 
 echo "恢复演练通过：用户对象 $table_count 个，schema_migrations $migration_count 条"

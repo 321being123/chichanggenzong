@@ -12,13 +12,19 @@
 //   node server/scripts/reconcileFeedbackRelease.js --mode conclusions --run-id 3 < conclusions.json
 //   node server/scripts/reconcileFeedbackRelease.js --mode freeze --run-id 3
 //   node server/scripts/reconcileFeedbackRelease.js --mode verify --run-id 3 --pass < evidence.json
-//   node server/scripts/reconcileFeedbackRelease.js --mode apply --run-id 3 --operator <名>
+//   node server/scripts/reconcileFeedbackRelease.js --mode apply --run-id 3 --operator <内容管理员账号> \
+//        [--deployment-id <uuid>] [--current-sha <sha>] [--current-version <版本>]
+//   node server/scripts/reconcileFeedbackRelease.js --mode rollback --run-id 3 --operator <内容管理员账号>
 //   node server/scripts/reconcileFeedbackRelease.js --mode status --run-id 3
 //
 // 连接规则：先固定加载 .env（优先 /opt/portfolio/.env），沿用应用角色连接；
 // 不使用 MIGRATION_DATABASE_URL，也不设置 MIGRATION_ROLE。日志不输出连接串与私密正文。
+//
+// 运行身份（A-02/A-04）：prepare/verify/apply/rollback 都要求 --operator 指向真实的内容管理员账号；
+// apply/rollback 默认按当前代码版本自校验（git HEAD 与 package.json.appVersion 必须与批次一致）。
 const path = require('path');
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 
 function loadEnvFile() {
   const candidates = [
@@ -61,6 +67,25 @@ function readStdin() {
 
 function output(payload) {
   process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+}
+
+// 当前运行版本：以仓库 HEAD 与 package.json 为准，不接受外部传值伪造
+function currentRuntime() {
+  let sha = '';
+  try {
+    sha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: path.join(__dirname, '..', '..'), encoding: 'utf8',
+    }).trim();
+  } catch (e) {
+    sha = '';
+  }
+  let version = '';
+  try {
+    version = String(require('../../package.json').appVersion || '');
+  } catch (e) {
+    version = '';
+  }
+  return { sha: sha, version: version };
 }
 
 async function main() {
@@ -124,6 +149,7 @@ async function main() {
       ...(await release.verifyRun(args['run-id'], {
         passed: args.pass === true || args.pass === 'true',
         verifiedSha: args.sha || args['release-sha'],
+        operator: operator,
         evidence: evidence,
       })),
     });
@@ -131,9 +157,28 @@ async function main() {
   }
   if (mode === 'apply') {
     if (!args['run-id']) throw new Error('缺少 --run-id');
-    if (!operator) throw new Error('缺少运行身份（--operator 或系统账号）');
-    const result = await release.applyRun(args['run-id'], { operator: operator });
+    if (!operator) throw new Error('缺少 --operator（必须是真实的内容管理员账号）');
+    const runtime = currentRuntime();
+    const result = await release.applyRun(args['run-id'], {
+      operator: operator,
+      deploymentId: args['deployment-id'] || null,
+      currentSha: args['current-sha'] || runtime.sha,
+      currentVersion: args['current-version'] || runtime.version,
+    });
     output({ mode: 'apply', ...result, readBack: await release.readBack(args['run-id']) });
+    return;
+  }
+  if (mode === 'rollback') {
+    if (!args['run-id']) throw new Error('缺少 --run-id');
+    if (!operator) throw new Error('缺少 --operator（必须是真实的内容管理员账号）');
+    const runtime = currentRuntime();
+    output({
+      mode: 'rollback',
+      ...(await release.rollbackRun(args['run-id'], {
+        operator: operator,
+        currentSha: args['current-sha'] || runtime.sha,
+      })),
+    });
     return;
   }
   if (mode === 'status') {
@@ -141,7 +186,7 @@ async function main() {
     output({ mode: 'status', envFile: envFile ? '已加载' : '未找到', ...(await release.status(args['run-id'])) });
     return;
   }
-  throw new Error('未知模式：' + (mode || '(空)') + '，支持 read/detail/prepare/conclusions/freeze/verify/apply/status');
+  throw new Error('未知模式：' + (mode || '(空)') + '，支持 read/detail/prepare/conclusions/freeze/verify/apply/rollback/status');
 }
 
 main()

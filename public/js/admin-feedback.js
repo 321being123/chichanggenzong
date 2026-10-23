@@ -156,9 +156,10 @@
       + STATUS_ORDER.map(function (s) {
         return '<option value="' + esc(s) + '"' + (fb.status === s ? ' selected' : '') + '>' + esc(STATUS_LABELS[s]) + '</option>';
       }).join('') + '</select></label>'
-      + '<label class="fb-field"><span>实施版本 / 发布提交（标记已实施时必填）</span>'
-      + '<input type="text" id="fba-form-version" value="' + esc(fb.implementedVersion || '') + '" placeholder="如 0.8.4.12">'
-      + '<input type="text" id="fba-form-sha" value="' + esc(fb.implementedReleaseSha || '') + '" placeholder="发布提交 SHA"></label>'
+      + '<label class="fb-field"><span>发布批次编号（标记「已实施」时必填）</span>'
+      + '<input type="text" id="fba-form-run" value="" placeholder="如 3">'
+      + '<small>版本与发布提交由批次自动带出；没有通过专项验收的批次不能关闭反馈。'
+      + (fb.implementedVersion ? '当前记录已随 ' + esc(fb.implementedVersion) + ' 关闭。' : '') + '</small></label>'
       + '<label class="fb-field"><span>重复关联主反馈编号（标记重复时必填）</span>'
       + '<input type="text" id="fba-form-duplicate" value="' + esc(fb.duplicateOf || '') + '" placeholder="如 12"></label>'
       + '<label class="fb-field"><span>可见/隐藏</span><select id="fba-form-moderation">'
@@ -189,8 +190,7 @@
       type: (byId('fba-form-type') || {}).value,
       moderation: (byId('fba-form-moderation') || {}).value,
       reason: (byId('fba-form-reason') || {}).value,
-      implementedVersion: (byId('fba-form-version') || {}).value,
-      implementedReleaseSha: (byId('fba-form-sha') || {}).value,
+      releaseRunId: (byId('fba-form-run') || {}).value || null,
       duplicateOf: (byId('fba-form-duplicate') || {}).value,
     };
     var statusEl = byId('fba-form-status');

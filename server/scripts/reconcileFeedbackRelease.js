@@ -215,21 +215,28 @@ async function main() {
     if (!token) throw new Error('hold-lock 必须提供 --token（release 与第二段回写据此证明同一次部署）');
     const client = await pool.connect();
     let released = false;
+    // D-01：只删除自己创建且令牌仍属于自己的凭证文件；等待者/后来者绝不碰别人的文件
+    const cleanupReadyFile = function () {
+      if (!readyFile) return;
+      try {
+        const info = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
+        if (!info || String(info.token) !== token) return; // 不是本批次的文件，不动
+        fs.unlinkSync(readyFile);
+      } catch (e) { /* 文件不存在或已不属于自己 */ }
+    };
     const releaseAll = async function () {
       if (released) return;
       released = true;
       // 持锁进程自己持锁自己解锁（此时没有 external 凭证，走正常 unlock）
       await release.releaseLock(client).catch(function () {});
       client.release();
-      if (readyFile) { try { fs.unlinkSync(readyFile); } catch (e) { /* 已被外部清理 */ } }
+      cleanupReadyFile();
     };
     // 被部署流程 kill 时优雅收尾：解锁并清 ready 文件
     process.once('SIGTERM', function () { releaseAll().then(function () { process.exit(0); }); });
     process.once('SIGINT', function () { releaseAll().then(function () { process.exit(0); }); });
-    // 同步兜底：任何退出路径都删 ready 文件，避免残留给下一次部署误判（C-01）
-    process.on('exit', function () {
-      if (readyFile) { try { fs.unlinkSync(readyFile); } catch (e) { /* 已清理 */ } }
-    });
+    // 同步兜底：任何退出路径都删【本批次】ready 文件（C-01），令牌不符不删（D-01）
+    process.on('exit', cleanupReadyFile);
     try {
       await release.acquireReleaseLock(client);
       const acquiredAt = Date.now();
@@ -276,10 +283,12 @@ async function main() {
         await new Promise(function (r) { setTimeout(r, 200); });
       }
     }
+    // D-01：只删自己批次的凭证；若文件已被换给别的批次则不碰
     if (fs.existsSync(readyFile)) {
-      if (String((JSON.parse(fs.readFileSync(readyFile, 'utf8')) || {}).token) === token) {
-        fs.unlinkSync(readyFile);
-      }
+      try {
+        const now = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
+        if (now && String(now.token) === token) fs.unlinkSync(readyFile);
+      } catch (e) { /* 文件不存在或损坏，不动 */ }
     }
     output({ mode: 'release-lock', released: true, holderAlive: holderAlive });
     return;

@@ -141,8 +141,12 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
     if current_version:
         extra += f" --current-version {shlex.quote(str(current_version))}"
     # C-03：部署持锁凭证（ready 文件由第一段 setsid 的 hold-lock 进程持有）
+    # D-01：凭证路径按部署批次隔离，等待中的第二发布者删不到本批凭证
     if lock_token:
-        extra += f" --held-lock-token {shlex.quote(str(lock_token))} --held-lock-ready-file /tmp/portfolio-release-lock.ready"
+        extra += (
+            f" --held-lock-token {shlex.quote(str(lock_token))}"
+            f" --held-lock-ready-file {shlex.quote(lock_ready_path(lock_token))}"
+        )
     command = (
         "cd /opt/portfolio && "
         "sudo -u portfolio-app env FEEDBACK_ENV_FILE=/opt/portfolio/.env "
@@ -179,13 +183,23 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
     }
 
 
+def lock_ready_path(lock_token):
+    """D-01：每个部署批次独立的凭证文件路径。
+
+    共享 /tmp/portfolio-release-lock.ready 时，第二发布者启动前的 rm -f 会删掉
+    第一发布者仍在使用的凭证，导致其反馈回写报“发布锁已丢失”。改为按令牌
+    隔离后，等待者只清理自己的文件，永远碰不到持有者的凭证。
+    """
+    return f"/tmp/portfolio-release-lock.{lock_token}.ready"
+
+
 def release_deploy_lock(client, lock_token):
     """部署收尾：释放第一段持有的发布锁（幂等）。必须在反馈第二段之后调用。"""
     if not lock_token:
         return
     command = (
         "cd /opt/portfolio && /usr/bin/node "
-        f"{FEEDBACK_SCRIPT} --mode release-lock --ready-file /tmp/portfolio-release-lock.ready "
+        f"{FEEDBACK_SCRIPT} --mode release-lock --ready-file {shlex.quote(lock_ready_path(lock_token))} "
         f"--token {shlex.quote(str(lock_token))}"
     )
     try:
@@ -283,15 +297,16 @@ def main():
             # 当前服务器代码尚未含该脚本（首次发布）时降级提示，不阻断部署。
             "release_lock_pid=''; "
             "if [ -f /opt/portfolio/server/scripts/reconcileFeedbackRelease.js ]; then "
-            "rm -f /tmp/portfolio-release-lock.ready; "
+            # D-01：只清理【本批次】凭证文件；共享路径会让等待者删掉持有者的凭证
+            f"rm -f {shlex.quote(lock_ready_path(lock_token))}; "
             # C-02：持有时间单位是秒（5400 秒 = 90 分钟，覆盖 3600 秒部署上限 + 600 秒反馈回写）；
             # setsid 让持锁进程脱离 SSH 会话存活到 Python 第二段结束（C-03）。
             "setsid /usr/bin/node /opt/portfolio/server/scripts/reconcileFeedbackRelease.js --mode hold-lock --hold-seconds 5400 "
-            f"--ready-file /tmp/portfolio-release-lock.ready --token {shlex.quote(lock_token)} "
-            ">> /tmp/portfolio-release-lock.log 2>&1 < /dev/null & "
+            f"--ready-file {shlex.quote(lock_ready_path(lock_token))} --token {shlex.quote(lock_token)} "
+            f">> /tmp/portfolio-release-lock.{lock_token}.log 2>&1 < /dev/null & "
             "release_lock_pid=$!; "
-            "for i in $(seq 1 90); do test -f /tmp/portfolio-release-lock.ready && break; sleep 1; done; "
-            "test -f /tmp/portfolio-release-lock.ready || { echo '无法获取发布锁，中止部署' >&2; exit 11; }; "
+            f"for i in $(seq 1 90); do test -f {shlex.quote(lock_ready_path(lock_token))} && break; sleep 1; done; "
+            f"test -f {shlex.quote(lock_ready_path(lock_token))} || {{ echo '无法获取发布锁，中止部署' >&2; exit 11; }}; "
             "else echo '提示：当前服务器代码尚不含发布锁，本次代码部署未参与串行边界'; fi "
             "&& git fetch origin "
             "&& git show origin/master:deploy/portfolio-worker.service | tee /etc/systemd/system/portfolio-worker.service >/dev/null "

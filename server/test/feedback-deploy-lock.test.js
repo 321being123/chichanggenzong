@@ -307,6 +307,132 @@ function spawnHoldLock(dbName, readyFile, token, holdSeconds) {
       }
     });
 
+    // ---------- D-01：双发布并发，等待者不得破坏持有者的凭证 ----------
+    await test('D-01 B 启动/等待期间，A 的凭证不被清理且 A 仍可回写', async function () {
+      const depA = '12121212-3434-5656-7878-909090909090';
+      const ctx = await prepareVerifiedRun(depA, 'solved');
+      const readyA = path.join(tmpDir, 'd1-a.ready');
+      const readyB = path.join(tmpDir, 'd1-b.ready');
+      const holderA = spawnHoldLock(tmpDb, readyA, 'token-A', 120);
+      try {
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline && !fs.existsSync(readyA)) await sleep(200);
+        assert.ok(fs.existsSync(readyA), 'A 的 ready 文件未生成：' + holderA.getErr().slice(0, 300));
+
+        // B 启动（与部署脚本同款顺序）：只清理【本批次】路径，再启动持锁进程等待
+        fs.rmSync(readyB, { force: true });
+        const holderB = spawnHoldLock(tmpDb, readyB, 'token-B', 120);
+        try {
+          // 等待 B 进入等待态（B 的 ready 不应出现，因为锁被 A 持有）
+          await sleep(2500);
+          assert.ok(!fs.existsSync(readyB), 'B 未取得锁时不得生成 ready 文件');
+          assert.ok(fs.existsSync(readyA), 'B 启动/等待期间不得删除 A 的凭证文件（D-01 根因）');
+          const infoA = JSON.parse(fs.readFileSync(readyA, 'utf8'));
+          assert.strictEqual(infoA.token, 'token-A', 'A 的凭证内容不得被篡改');
+          assert.ok(await lockBusy(pool, LOCK_ID), 'B 等待期间锁仍由 A 持有');
+
+          // A 在 B 等待期间执行反馈回写——旧缺陷此步报“发布锁已丢失”
+          const rApply = spawnSync(process.execPath, [
+            CLI, '--mode', 'apply', '--run-id', String(ctx.runId), '--operator', 'admin1',
+            '--deployment-id', depA,
+            '--current-sha', runtime.sha, '--current-version', runtime.version,
+            '--held-lock-token', 'token-A', '--held-lock-ready-file', readyA,
+          ], { cwd: ROOT, env: Object.assign({}, process.env, { PGDATABASE: tmpDb }), encoding: 'utf8', timeout: 60000 });
+          assert.strictEqual(rApply.status, 0, 'A 在 B 等待期间回写应成功：' + (rApply.stderr || rApply.stdout || '').slice(0, 300));
+          const fb = await store.getFeedback(pool, ctx.id);
+          assert.strictEqual(fb.status, 'implemented', 'A 的反馈应被正常关闭');
+        } finally {
+          // B 超时/放弃退出（部署脚本拿不到 ready 会中止并杀掉等待者）
+          if (holderB.child.exitCode === null && holderB.child.signalCode === null) holderB.child.kill('SIGTERM');
+          await Promise.race([holderB.done, sleep(8000)]);
+        }
+        assert.ok(fs.existsSync(readyA), 'B 退出也不得删除 A 的凭证文件');
+      } finally {
+        if (holderA.child.exitCode === null && holderA.child.signalCode === null) holderA.child.kill('SIGTERM');
+        await Promise.race([holderA.done, sleep(8000)]);
+      }
+    });
+
+    await test('D-01 A 释放后 B 才能进入；B 的退出只清自己的凭证', async function () {
+      const readyA = path.join(tmpDir, 'd1c-a.ready');
+      const readyB = path.join(tmpDir, 'd1c-b.ready');
+      const holderA = spawnHoldLock(tmpDb, readyA, 'token-A2', 120);
+      let holderB = null;
+      try {
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline && !fs.existsSync(readyA)) await sleep(200);
+        assert.ok(fs.existsSync(readyA), 'A 的 ready 文件未生成');
+
+        holderB = spawnHoldLock(tmpDb, readyB, 'token-B2', 60);
+        await sleep(2000);
+        assert.ok(!fs.existsSync(readyB), 'A 持锁期间 B 不得进入');
+
+        // A 释放
+        const rRel = spawnSync(process.execPath, [
+          CLI, '--mode', 'release-lock', '--ready-file', readyA, '--token', 'token-A2',
+        ], { cwd: ROOT, env: Object.assign({}, process.env, { PGDATABASE: tmpDb }), encoding: 'utf8', timeout: 30000 });
+        assert.strictEqual(rRel.status, 0, 'A 释放应成功');
+        assert.ok(!fs.existsSync(readyA), 'A 的凭证应被清理');
+
+        // B 随后进入
+        const deadline2 = Date.now() + 15000;
+        while (Date.now() < deadline2 && !fs.existsSync(readyB)) await sleep(200);
+        assert.ok(fs.existsSync(readyB), 'A 释放后 B 应能进入并生成自己的凭证');
+        const infoB = JSON.parse(fs.readFileSync(readyB, 'utf8'));
+        assert.strictEqual(infoB.token, 'token-B2', 'B 的凭证应是自己的令牌');
+        assert.ok(await lockBusy(pool, LOCK_ID), 'B 进入后应持锁');
+
+        // B 收尾走生产同款 release-lock（Windows 下 SIGTERM 是强杀不走 handler）
+        const rRelB = spawnSync(process.execPath, [
+          CLI, '--mode', 'release-lock', '--ready-file', readyB, '--token', 'token-B2',
+        ], { cwd: ROOT, env: Object.assign({}, process.env, { PGDATABASE: tmpDb }), encoding: 'utf8', timeout: 30000 });
+        assert.strictEqual(rRelB.status, 0, 'B 释放应成功');
+        assert.ok(!fs.existsSync(readyB), 'B 释放后应清理自己的凭证（只删自己的批次文件）');
+        assert.ok(!(await lockBusy(pool, LOCK_ID)), 'B 释放后锁应回到空闲');
+      } finally {
+        if (holderB && holderB.child.exitCode === null && holderB.child.signalCode === null) holderB.child.kill('SIGTERM');
+        if (holderB) await Promise.race([holderB.done, sleep(8000)]);
+        if (holderA.child.exitCode === null && holderA.child.signalCode === null) holderA.child.kill('SIGTERM');
+        await Promise.race([holderA.done, sleep(8000)]);
+      }
+    });
+
+    await test('D-01 release-lock 令牌不符不得删除他人凭证（按批次隔离）', async function () {
+      const readyA = path.join(tmpDir, 'd1d.ready');
+      const holderA = spawnHoldLock(tmpDb, readyA, 'token-keep', 60);
+      try {
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline && !fs.existsSync(readyA)) await sleep(200);
+        assert.ok(fs.existsSync(readyA), 'ready 文件未生成');
+        const rBad = spawnSync(process.execPath, [
+          CLI, '--mode', 'release-lock', '--ready-file', readyA, '--token', 'token-thief',
+        ], { cwd: ROOT, env: Object.assign({}, process.env, { PGDATABASE: tmpDb }), encoding: 'utf8', timeout: 30000 });
+        assert.strictEqual(rBad.status, 1, '令牌不符应退出非 0');
+        assert.ok(/令牌不匹配/.test(rBad.stderr + rBad.stdout), '应报令牌不匹配');
+        assert.ok(fs.existsSync(readyA), '他人凭证不得被删除');
+        const info = JSON.parse(fs.readFileSync(readyA, 'utf8'));
+        assert.strictEqual(info.token, 'token-keep', '凭证内容不得被改动');
+      } finally {
+        if (holderA.child.exitCode === null && holderA.child.signalCode === null) holderA.child.kill('SIGTERM');
+        await Promise.race([holderA.done, sleep(8000)]);
+      }
+    });
+
+    await test('D-01 部署脚本：凭证路径按批次隔离，等待者只清理自己的文件', async function () {
+      const py = fs.readFileSync(path.join(ROOT, 'deploy', 'deploy_password.py'), 'utf8');
+      assert.ok(py.indexOf('lock_ready_path(') > 0, '必须有按批次取凭证路径的函数');
+      // 共享路径的 rm -f 必须绝迹（历史根因：第二发布者启动时删掉持有者的凭证）
+      assert.ok(py.indexOf('rm -f /tmp/portfolio-release-lock.ready') < 0, '不得清理共享 ready 路径');
+      assert.ok(py.indexOf('--held-lock-ready-file /tmp/portfolio-release-lock.ready') < 0, '回写不得引用共享 ready 路径');
+      assert.ok(py.indexOf('--ready-file /tmp/portfolio-release-lock.ready') < 0, '释放不得引用共享 ready 路径');
+      // 启动/等待/回写/释放四处全部走 lock_ready_path(lock_token)
+      const m = py.match(/lock_ready_path\(lock_token\)/g);
+      assert.ok(m && m.length >= 4, '启动/等待/回写/释放必须全部使用批次路径（实际 ' + (m ? m.length : 0) + ' 处）');
+      // 函数体必须按令牌隔离：返回常量共享路径的写法要被抓住（破坏性验证已确认此断言真红）
+      const fnBody = py.slice(py.indexOf('def lock_ready_path('), py.indexOf('def release_deploy_lock('));
+      assert.ok(/\{lock_token\}/.test(fnBody), 'lock_ready_path 的返回值必须包含令牌（按批次隔离）');
+    });
+
     await test('C-03 部署脚本：回滚期间不释放锁，反馈回写之后才统一释放', async function () {
       const py = fs.readFileSync(path.join(ROOT, 'deploy', 'deploy_password.py'), 'utf8');
       // rollback_deploy 里杀锁必须在恢复 git 之后（最后释放）

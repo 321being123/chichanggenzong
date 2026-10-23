@@ -4,10 +4,20 @@
 // 本文件只建表、约束与索引；执行顺序以 ../migrations.js 的 MIGRATIONS 注册表为准，禁止在本文件内重排。
 const { pool } = require('../connection');
 
-async function migration170FeedbackModule() {
-  await pool.query(`
-    CREATE SCHEMA IF NOT EXISTS ops;
+// 2026-10-23 生产部署实录：PostgreSQL 的 CREATE SCHEMA IF NOT EXISTS 会先检查
+// 【库级】CREATE 权限再看模式是否存在——生产迁移账号只有模式内建表权限、没有
+// 库级 CREATE，于是 ops 已存在仍报 "permission denied for database portfolio"。
+// 因此模式缺失时才建（本地/测试为超级用户可建；生产模式早已存在则完全不发这条语句）。
+async function ensureSchema(name) {
+  const { rows } = await pool.query(
+    'SELECT 1 FROM information_schema.schemata WHERE schema_name = $1', [name]
+  );
+  if (!rows[0]) await pool.query('CREATE SCHEMA ' + name);
+}
 
+async function migration170FeedbackModule() {
+  await ensureSchema('ops');
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS public.feedbacks (
       id BIGSERIAL PRIMARY KEY,
       author_username TEXT REFERENCES public.users(username) ON DELETE SET NULL,

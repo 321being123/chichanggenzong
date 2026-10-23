@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""通过 SSH 密钥部署生产环境（服务器已关闭密码登录，2026-07-31 起用密钥+免密 sudo）。"""
+"""通过 SSH 密钥部署生产环境（服务器已关闭密码登录，2026-07-31 起用密钥+免密 sudo）。
+
+反馈闭环接入（2026-10-23）：代码部署成功后，可传入已准备好的反馈发布批次
+（--feedback-run-id）执行专项验收后的回写；回写与代码部署分开报告、互不牵连：
+代码部署失败仍按原非零规则退出，回写失败不影响已成功的代码部署，但会明确报告未闭环。
+"""
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -21,6 +27,36 @@ except ImportError as exc:
 ROOT = Path(__file__).resolve().parents[1]
 HOST = "82.156.125.47"
 USER = "ubuntu"
+FEEDBACK_SCRIPT = "server/scripts/reconcileFeedbackRelease.js"
+
+
+def parse_deploy_args(argv):
+    """解析反馈发布相关参数；不改变既有 --confirm-production 的必需性。"""
+    opts = {"feedback_run_id": None, "deployment_id": None, "operator": os.environ.get("DEPLOY_OPERATOR")}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        value = argv[index + 1] if index + 1 < len(argv) else None
+        if token == "--feedback-run-id" and value:
+            opts["feedback_run_id"] = value
+            index += 2
+            continue
+        if token == "--deployment-id" and value:
+            opts["deployment_id"] = value
+            index += 2
+            continue
+        if token == "--deploy-operator" and value:
+            opts["operator"] = value
+            index += 2
+            continue
+        index += 1
+    if opts["feedback_run_id"] is not None and not re.fullmatch(r"\d{1,18}", str(opts["feedback_run_id"])):
+        raise SystemExit("参数错误：--feedback-run-id 必须是数字编号")
+    if opts["deployment_id"] is not None and not re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", str(opts["deployment_id"])
+    ):
+        raise SystemExit("参数错误：--deployment-id 必须是 UUID")
+    return opts
 
 
 def load_key():
@@ -73,7 +109,51 @@ def verify_release_ready():
     return local_commit
 
 
+def apply_feedback_release(client, run_id, operator):
+    """代码部署成功之后的第二段：专项验收后的反馈回写。
+
+    单独捕获错误：失败不触发第一段的代码回滚，也不重跑迁移；
+    返回结构化结果供最终输出区分 code_deployed / feedback_applied。
+    """
+    operator_arg = shlex.quote(operator or "release-owner")
+    command = (
+        "cd /opt/portfolio && "
+        "sudo -u portfolio-app env FEEDBACK_ENV_FILE=/opt/portfolio/.env "
+        f"/usr/bin/node {FEEDBACK_SCRIPT} --mode apply --run-id {int(run_id)} --operator {operator_arg}"
+    )
+    try:
+        wrapped = "sudo bash -c " + shlex.quote(command)
+        stdin, stdout, stderr = client.exec_command(wrapped, timeout=600)
+        output = stdout.read().decode("utf-8", "replace")
+        error = stderr.read().decode("utf-8", "replace")
+        exit_code = stdout.channel.recv_exit_status()
+    except Exception as exc:  # 通道异常也要如实报告未闭环
+        return {"feedback_applied": False, "reason": f"反馈回写调用失败：{exc}", "items": []}
+    payload = None
+    try:
+        payload = json.loads(output)
+    except Exception:
+        payload = None
+    if exit_code != 0 or not payload:
+        reason = (error or output or "未返回结果").strip()[:500]
+        return {"feedback_applied": False, "reason": f"反馈回写失败（退出码 {exit_code}）：{reason}", "items": []}
+    pending = [
+        item.get("feedbackId")
+        for item in payload.get("items", [])
+        if item.get("applyStatus") not in ("applied", "skipped")
+    ]
+    return {
+        "feedback_applied": payload.get("applyStatus") == "applied" and not pending,
+        "apply_status": payload.get("applyStatus"),
+        "applied": payload.get("applied", 0),
+        "failed": payload.get("failed", 0),
+        "pending": pending,
+        "items": payload.get("items", []),
+    }
+
+
 def main():
+    opts = parse_deploy_args(sys.argv[1:])
     local_commit = verify_release_ready()
     local_version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["appVersion"]
     client = paramiko.SSHClient()
@@ -207,6 +287,24 @@ def main():
         if f'"version":"{local_version}"' not in result:
             raise SystemExit(f"部署后版本校验失败，期望 {local_version}。")
         print("部署完成。")
+        # 第二段：反馈回写。必须在代码部署成功边界之后独立执行与独立报告。
+        feedback_result = {"feedback_applied": False, "reason": "未提供发布核对记录，反馈闭环未执行", "items": []}
+        if opts["feedback_run_id"]:
+            print(f"开始反馈回写：发布批次 {opts['feedback_run_id']}")
+            feedback_result = apply_feedback_release(client, opts["feedback_run_id"], opts["operator"])
+        summary = {
+            "code_deployed": True,
+            "commit": local_commit[:8],
+            "app_version": local_version,
+            "deployment_id": opts["deployment_id"],
+            "feedback_run_id": opts["feedback_run_id"],
+            "feedback_applied": bool(feedback_result.get("feedback_applied")),
+            "feedback_reason": feedback_result.get("reason"),
+            "feedback_pending": feedback_result.get("pending", []),
+        }
+        print("DEPLOY_RESULT=" + json.dumps(summary, ensure_ascii=False))
+        if not summary["feedback_applied"]:
+            print("注意：代码已部署成功，但反馈闭环未完成（不触发代码回滚），请按上述待续办编号继续处理。", file=sys.stderr)
     finally:
         client.close()
 

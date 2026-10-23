@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 将本机加密备份及校验文件同步到 S3 兼容对象存储。
-# 只接受 .gpg 与对应 .sha256，禁止上传明文 SQL。
+# 将本机加密备份组（数据库密文 + 反馈截图密文 + 组清单）同步到 S3 兼容对象存储。
+# 只接受 .gpg 与清单/校验文件，禁止上传明文 SQL 或明文附件归档。
+# 2026-10-23：按"备份组"整体同步；缺组内必需产物视为组不完整，拒绝上传部分组。
 
 set -euo pipefail
 
@@ -46,49 +47,67 @@ fi
 
 latest="${1:-}"
 if [ -z "$latest" ]; then
-  latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.gpg' -printf '%T@ %p\n' 2>/dev/null | sort -nr | sed -n '1s/^[^ ]* //p')"
+  latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.sql.gz.gpg' -printf '%T@ %p\n' 2>/dev/null | sort -nr | sed -n '1s/^[^ ]* //p')"
 fi
-[ -n "$latest" ] || { echo "错误：没有可同步的 .gpg 备份" >&2; exit 1; }
+[ -n "$latest" ] || { echo "错误：没有可同步的数据库 .gpg 备份组" >&2; exit 1; }
 [ -f "$latest" ] || { echo "错误：备份文件不存在：$latest" >&2; exit 1; }
 case "$latest" in
-  *.gpg) ;;
-  *) echo "错误：只允许同步 .gpg 加密备份" >&2; exit 1;;
+  *.sql.gz.gpg) ;;
+  *.attachments.tar.gz.gpg) echo "错误：请传入数据库密文（*.sql.gz.gpg），脚本按整组同步" >&2; exit 1;;
+  *) echo "错误：只允许同步加密备份组（*.sql.gz.gpg）" >&2; exit 1;;
 esac
+
+group="${latest%.sql.gz.gpg}"
 checksum="$latest.sha256"
+manifest="${group}.manifest.sha256"
 [ -f "$checksum" ] || { echo "错误：缺少校验文件：$checksum" >&2; exit 1; }
+[ -f "$manifest" ] || { echo "错误：备份组缺少清单 ${manifest}，视为组不完整，拒绝同步" >&2; exit 1; }
+
+# 清单声明存在附件归档时必须找到附件密文，否则整组视为不完整
+attachments=""
+att_checksum=""
+att_value="$(grep -E '^attachments=' "$manifest" | head -1 | cut -d= -f2-)"
+if [ -n "$att_value" ] && [ "$att_value" != "none" ]; then
+  attachments="${group}.attachments.tar.gz.gpg"
+  att_checksum="${attachments}.sha256"
+  [ -f "$attachments" ] || { echo "错误：清单声明有反馈截图归档，但缺少 ${attachments}，拒绝同步" >&2; exit 1; }
+  [ -f "$att_checksum" ] || { echo "错误：缺少附件归档校验文件 ${att_checksum}" >&2; exit 1; }
+fi
+
 (
   cd "$(dirname "$latest")"
   sha256sum -c "$(basename "$checksum")"
+  [ -z "$attachments" ] || sha256sum -c "$(basename "$att_checksum")"
 )
 
-base="$(basename "$latest")"
-checksum_base="$(basename "$checksum")"
 remote_base="${STORAGE_URI%/}"
+upload_list=("$latest" "$checksum" "$manifest")
+[ -z "$attachments" ] || upload_list+=("$attachments" "$att_checksum")
 
 if command -v aws >/dev/null 2>&1; then
   endpoint_args=()
   if [ -n "${BACKUP_STORAGE_ENDPOINT:-}" ]; then
     endpoint_args+=(--endpoint-url "$BACKUP_STORAGE_ENDPOINT")
   fi
-  aws s3 cp "$latest" "$remote_base/$base" --only-show-errors "${endpoint_args[@]}"
-  aws s3 cp "$checksum" "$remote_base/$checksum_base" --only-show-errors "${endpoint_args[@]}"
   bucket_key="${STORAGE_URI#s3://}"
   bucket="${bucket_key%%/*}"
   prefix=""
   [[ "$bucket_key" == */* ]] && prefix="${bucket_key#*/}"
-  key="$base"
-  [ -z "$prefix" ] || key="${prefix%/}/$base"
-  aws s3api head-object --bucket "$bucket" --key "$key" "${endpoint_args[@]}" >/dev/null
-  key="$checksum_base"
-  [ -z "$prefix" ] || key="${prefix%/}/$checksum_base"
-  aws s3api head-object --bucket "$bucket" --key "$key" "${endpoint_args[@]}" >/dev/null
-  echo "异地同步完成（aws）：$base、$checksum_base"
+  for f in "${upload_list[@]}"; do
+    name="$(basename "$f")"
+    aws s3 cp "$f" "$remote_base/$name" --only-show-errors "${endpoint_args[@]}"
+    key="$name"
+    [ -z "$prefix" ] || key="${prefix%/}/$name"
+    aws s3api head-object --bucket "$bucket" --key "$key" "${endpoint_args[@]}" >/dev/null
+  done
+  echo "异地同步完成（aws）：组 $(basename "$group")，共 ${#upload_list[@]} 个文件"
 elif command -v rclone >/dev/null 2>&1; then
-  rclone copyto "$latest" "$remote_base/$base" --immutable --no-checksum
-  rclone copyto "$checksum" "$remote_base/$checksum_base" --immutable --no-checksum
-  rclone size "$remote_base/$base" --json >/dev/null
-  rclone size "$remote_base/$checksum_base" --json >/dev/null
-  echo "异地同步完成（rclone）：$base、$checksum_base"
+  for f in "${upload_list[@]}"; do
+    name="$(basename "$f")"
+    rclone copyto "$f" "$remote_base/$name" --immutable --no-checksum
+    rclone size "$remote_base/$name" --json >/dev/null
+  done
+  echo "异地同步完成（rclone）：组 $(basename "$group")，共 ${#upload_list[@]} 个文件"
 else
   echo "错误：未安装 aws 或 rclone，无法执行对象存储同步" >&2
   exit 1

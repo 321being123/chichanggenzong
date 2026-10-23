@@ -11,7 +11,8 @@
     'market-volatility',// 市场周期
     'ipo',              // 打新日历
     'arbitrage',        // 套利机会
-    'changelog'         // 版本记录
+    'feedback',         // 反馈中心（全部反馈 / 反馈排名 / 版本更新）
+    'changelog'         // 旧「版本记录」公开别名，前端归一化到 feedback/sub=versions
   ];
 
   // 需要登录的页面（本人资产 / 个人中心 / 仓位对比）

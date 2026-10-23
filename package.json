@@ -1,7 +1,7 @@
 {
   "name": "portfolio-server",
-  "version": "0.8.4.11",
-  "appVersion": "0.8.4.11",
+  "version": "0.8.4.12",
+  "appVersion": "0.8.4.12",
   "description": "存在小站 - 后端服务",
   "main": "server.js",
   "scripts": {
@@ -39,6 +39,7 @@
     "pg": "^8.13.0",
     "qrcode": "^1.5.4",
     "redis": "^4.7.1",
+    "sharp": "0.35.5",
     "turndown": "7.2.4",
     "undici": "8.11.2",
     "vditor": "3.11.2"

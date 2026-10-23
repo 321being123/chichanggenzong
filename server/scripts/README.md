@@ -7,7 +7,7 @@
 
 | 类别 | 说明 |
 |---|---|
-| 发布/常驻入口 | `runMigrations.js`（发布时执行迁移）、`sendBackupFailureAlert.js`（systemd OnFailure 告警），部署流程引用，不得随手改名 |
+| 发布/常驻入口 | `runMigrations.js`（发布时执行迁移）、`sendBackupFailureAlert.js`（systemd OnFailure 告警）、`reconcileFeedbackRelease.js`（反馈发布核对与回写，2026-10-23），部署流程引用，不得随手改名 |
 | npm 脚本入口 | `package.json` 的 audit:bonds / backfill:terms-hash / backtest:motive / audit:instrument-merges / probe:tushare-permissions / check:data-architecture 指向的工具 |
 | Python 解析器 | 由后台任务/Runner 以子进程调用（extract*.py、convertibleBond*.py 等），随任务契约演进 |
 | 审计/回补/修复/探针 | 运维与数据治理一次性工具；默认只读预览，写入需显式 `--apply`；执行完在下表标注状态 |
@@ -59,6 +59,7 @@
 | `reparseArbitrageTerms.js` | ========== 套利条款一次性回补脚本 ========== | |
 | `runMigrations.js` | 发布维护阶段使用迁移账号执行数据库升级；Web/Worker 只做版本检查。 | |
 | `sendBackupFailureAlert.js` | systemd OnFailure 入口：复用统一的 ops.alert_notifications + SMTP 告警 | |
+| `reconcileFeedbackRelease.js` | 反馈发布受控命令：read/detail/prepare/conclusions/freeze/verify/apply/status；规则复用 feedbackService，清单走标准输入，不执行用户 SQL | 随 0.8.4.12 新增 |
 | `syncCashIncomeFacts.js` | （缺首行说明，补充后更新本表） | |
 | `syncConvertibleBondSuspensions.js` | （缺首行说明，补充后更新本表） | |
 | `syncHkexAllotmentFacts.js` | 从港交所披露易官方配发结果英文 PDF 增量补齐港股 IPO 初始发售结构。 | |

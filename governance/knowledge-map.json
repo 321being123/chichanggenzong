@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-14",
+  "lastReviewed": "2026-10-23",
   "requiredFiles": [
     "docs/知识索引.md",
     "docs/技术架构.md",
@@ -761,9 +761,59 @@
       ]
     },
     {
+      "id": "feedback",
+      "risk": "high",
+      "paths": [
+        "docs/意见反馈与版本发布闭环研发方案_*.md",
+        "public/js/feedback.js",
+        "public/js/admin-feedback.js",
+        "public/css/feedback.css",
+        "server/routes/feedback.js",
+        "server/routes/adminFeedback.js",
+        "server/services/feedback*.js",
+        "server/db/feedback.js",
+        "server/db/migrations/feedback*.js",
+        "server/db/migrations/era07Feedback.js",
+        "server/scripts/reconcileFeedbackRelease.js",
+        "server/test/feedback*.test.js"
+      ],
+      "keywords": [
+        "意见反馈",
+        "反馈中心",
+        "我的反馈",
+        "反馈排名",
+        "反馈管理",
+        "反馈发布闭环",
+        "反馈核对"
+      ],
+      "read": [
+        "docs/意见反馈与版本发布闭环研发方案_20261023.md",
+        "docs/技术架构.md",
+        "docs/生产部署流程.md"
+      ],
+      "update": [
+        "docs/意见反馈与版本发布闭环研发方案_20261023.md",
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/生产部署流程.md"
+      ],
+      "checks": [
+        "npm.cmd run check:knowledge"
+      ],
+      "expandOn": [
+        "私密反馈与附件权限",
+        "排名口径",
+        "状态与修订事务",
+        "发布范围与专项验收",
+        "多人并发与重复回写",
+        "回滚恢复"
+      ]
+    },
+    {
       "id": "deployment",
       "risk": "high",
       "paths": [
+        "docs/生产部署流程.md",
         "deploy/**",
         ".github/workflows/**",
         "server.js",
@@ -776,7 +826,10 @@
         "环境变量",
         "服务",
         "依赖",
-        "CI"
+        "CI",
+        "反馈发布闭环",
+        "反馈核对",
+        "多 Agent 发布交接"
       ],
       "read": [
         "docs/技术架构.md",

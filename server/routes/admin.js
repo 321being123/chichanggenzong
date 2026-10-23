@@ -45,6 +45,7 @@ function adminCapabilityForPath(p) {
   const normalized = String(p || '').toLowerCase().replace(/\/+$/, '') || '/';
   if (normalized.indexOf('/users') === 0) return 'user_manage';
   if (normalized.indexOf('/knowledge') === 0) return 'content_manage';
+  if (normalized.indexOf('/feedback') === 0) return 'content_manage';
   if (normalized.indexOf('/brokers') === 0 || normalized.indexOf('/jobs') === 0 || normalized.indexOf('/holidays') === 0 ||
       normalized.indexOf('/models') === 0 || normalized.indexOf('/settings') === 0 || normalized.indexOf('/arbitrage') === 0 ||
       normalized.indexOf('/analytics') === 0) return 'ops_manage';
@@ -803,6 +804,9 @@ router.post('/arbitrage/sync', asyncHandler(async (req, res) => {
     res.status(503).json({ ok: false, error: safeError });
   }
 }));
+
+// 反馈管理：挂在既有员工/能力中间件之后，路由内再次校验 content_manage
+router.use('/feedback', require('./adminFeedback'));
 
 module.exports = router;
 // 供测试核验能力派发矩阵（2026-10-21 审查 R-2：未登记路径默认拒绝）

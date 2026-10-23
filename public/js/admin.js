@@ -18,6 +18,7 @@ const VIEW_TITLES = {
   audit: '操作审计',
   ops: '数据运维',
   knowledge: '投资笔记管理',
+  feedback: '反馈管理',
   arbitrage: '套利审核'
 };
 
@@ -29,6 +30,7 @@ const VIEW_CAPABILITY = {
   settings: 'ops_manage',
   ops: 'ops_manage',
   knowledge: 'content_manage',
+  feedback: 'content_manage',
   arbitrage: 'ops_manage'
 };
 
@@ -121,6 +123,7 @@ function switchView(view) {
   else if (view === 'audit') renderAudit();
   else if (view === 'ops') renderOps();
   else if (view === 'knowledge') renderKnowledge();
+  else if (view === 'feedback') renderAdminFeedback();
   else if (view === 'arbitrage') renderArbitrage();
   else renderPlaceholder(view);
 }

@@ -589,7 +589,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
 /* ===== 一级导航（首页/持仓管理/个人中心）===== */
 .main-page { display: none; }
 .main-page.active { display: block; }
-#main-home, #main-profile, #main-changelog { max-width: 1240px; margin: 0 auto; padding: 20px; }
+#main-home, #main-profile, #main-feedback { max-width: 1240px; margin: 0 auto; padding: 20px; }
 .main-nav { display: flex; align-items: center; gap: 2px; margin-left: 16px; }
 .main-tab {
   padding: 0 14px; border: none; background: transparent; color: rgba(255,255,255,.65);
@@ -1604,7 +1604,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC'
   body { font-size: 15px; }
   .main-page, .page, .feature-page-shell, .home-dashboard-shell, .table-wrap,
   .stock-analysis-section, .stock-analysis-chart, .admin-view, .ks-shell, .ks-read-layout { min-width: 0; max-width: 100%; }
-  .feature-page-shell, .page, #main-home, #main-profile, #main-changelog, .pc-page { padding: 14px 12px; }
+  .feature-page-shell, .page, #main-home, #main-profile, #main-feedback, .pc-page { padding: 14px 12px; }
   .page > *, .feature-page-shell > *, .home-section > *, .chart-grid > *, .stats > * { min-width: 0; }
   #page-positions, #page-earnings, #main-ipo > .feature-page-shell, #main-arbitrage > .feature-page-shell { padding-left: 12px; padding-right: 12px; }
   #page-earnings #earnings-table { margin-left: 0; margin-right: 0; }

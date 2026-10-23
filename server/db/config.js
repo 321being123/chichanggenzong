@@ -27,6 +27,7 @@ const AUDIT_MODULES = {
   model: 'model_',
   settings: 'settings_',
   knowledge: 'ks_',
+  feedback: 'feedback_',
   bond: 'bond_',
   market: 'market_',
   benchmark: 'benchmark_',

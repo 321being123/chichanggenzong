@@ -26,7 +26,7 @@ const PAGE_KEYS = new Set([
   'holdings.trades', 'holdings.nav', 'ipo.calendar', 'ipo.report', 'bond.safety', 'bond.cycle',
   'bond.valuation', 'bond.list', 'bond.redemption', 'bond.revision', 'bond.analysis',
   'stock.analysis', 'market.volatility', 'knowledge.list', 'knowledge.detail', 'knowledge.share',
-  'arbitrage.list', 'arbitrage.detail'
+  'arbitrage.list', 'arbitrage.detail', 'feedback.list'
 ]);
 const SAFE_VALUE_RE = /^[a-zA-Z0-9._:-]{1,64}$/;
 

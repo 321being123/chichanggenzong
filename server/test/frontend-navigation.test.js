@@ -30,7 +30,8 @@ const protectedPages = arrayItems('protectedPages');
 const allowedPages = publicPages.concat(protectedPages);
 
 // 1) 访问矩阵口径与整改报告 ACCESS-01 一致
-const expectedPublic = ['home', 'knowledge', 'stock-analysis', 'bond-safety', 'market-volatility', 'ipo', 'arbitrage', 'changelog'];
+// 2026-10-23：原「版本记录」一级页并入「反馈」，feedback 成为公开页；changelog 保留为旧址公开别名
+const expectedPublic = ['home', 'knowledge', 'stock-analysis', 'bond-safety', 'market-volatility', 'ipo', 'arbitrage', 'feedback', 'changelog'];
 ok(JSON.stringify(publicPages) === JSON.stringify(expectedPublic),
   '公开页面应为 ' + expectedPublic.join(',') + '，实际为 ' + publicPages.join(','));
 
@@ -74,7 +75,10 @@ while ((pm = pageRe.exec(html))) pageIds.push(pm[1]);
 pageIds.forEach(p => ok(allowedPages.includes(p), '页面容器 main-' + p + ' 未在 allowedPages 中登记'));
 
 // 5) 策略里登记的可作为 main 的页面，HTML 都应有对应容器（无孤儿配置）
-allowedPages.forEach(p => ok(pageIds.includes(p) || navMains.includes(p),
+// 例外：changelog 是 2026-10-23 保留的旧址公开别名，启动段与 switchMain 会归一化为 feedback/sub=versions，
+// 因此不再有独立容器，但必须仍有归一化逻辑（由 feedback-static.test.js 覆盖）。
+const PUBLIC_ALIASES = ['changelog'];
+allowedPages.forEach(p => ok(pageIds.includes(p) || navMains.includes(p) || PUBLIC_ALIASES.includes(p),
   'allowedPages 中的 ' + p + ' 在 index.html 找不到对应 data-main 或 #main- 容器'));
 
 // ===== UI-01：清理无效入口并补齐管理员入口 =====
@@ -85,10 +89,10 @@ ok(!/function clearTrades\(/.test(coreTrade), 'core-trade.js 不应再保留无�
 // 头像改为下拉菜单，固定含 个人中心 / 版本记录 / 退出登录
 // 注：FRONT-01 拆分后头像菜单由 js/session.js 的 renderTopUser 渲染，断言跟随代码位置
 ok(html.includes('个人中心') || sess.includes('个人中心'), '头像菜单缺少“个人中心”');
-ok(html.includes('版本记录') || sess.includes('版本记录'), '头像菜单缺少“版本记录”');
+ok(html.includes('反馈与版本') || sess.includes('反馈与版本'), '头像菜单缺少“反馈与版本”');
 ok(html.includes('退出登录') || sess.includes('退出登录'), '头像菜单缺少“退出登录”');
 ok(html.includes("switchMain('profile')") || sess.includes("switchMain('profile')"), '个人中心菜单项未接入个人中心页');
-ok(html.includes("switchMain('changelog')") || sess.includes("switchMain('changelog')"), '版本记录菜单项未接入版本记录页');
+ok(html.includes("switchMain('feedback')") || sess.includes("switchMain('feedback')"), '反馈菜单项未接入反馈页');
 ok(html.includes('logout()') || sess.includes('logout()'), '退出登录菜单项未接入退出逻辑');
 // 管理后台入口仅管理员可见（role === 'admin' 时挂 /admin.html）
 ok((html.includes('isAdmin') || sess.includes('isAdmin')) && (html.includes("'/admin.html'") || sess.includes("'/admin.html'")),
@@ -98,7 +102,7 @@ ok(!/^\s*<a [^>]*admin\.html/.test(html), '管理后台入口不应在 HTML 中�
 ok(css.includes('.nav-user-menu') && css.includes('.nav-user-item'), '缺少头像下拉菜单样式');
 
 // ===== UI-02：一级导航按用户任务重排（平铺）=====
-// 一级入口：首页、投资笔记、持仓管理、打新日历、可转债、证券分析、市场周期、版本记录
+// 一级入口：首页、投资笔记、持仓管理、打新日历、可转债、证券分析、市场周期、反馈（原「版本记录」，2026-10-23 并入反馈）
 const EXPECTED_MAIN_TABS = [
   { main: 'home', label: '首页' },
   { main: 'knowledge', label: '投资笔记' },
@@ -107,7 +111,7 @@ const EXPECTED_MAIN_TABS = [
   { main: 'bond-safety', label: '可转债' },
   { main: 'stock-analysis', label: '证券分析' },
   { main: 'market-volatility', label: '市场周期' },
-  { main: 'changelog', label: '版本记录' }
+  { main: 'feedback', label: '反馈' }
 ];
 EXPECTED_MAIN_TABS.forEach(function (t) {
   ok(html.includes('data-main="' + t.main + '"') && html.includes('>' + t.label + '<'),

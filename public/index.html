@@ -18,6 +18,7 @@
 <link rel="stylesheet" href="css/market-volatility.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css?v=20260904">
 <link rel="stylesheet" href="css/knowledge.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/feedback.css?v=__APP_VERSION__">
 <script src="shared/autofill-guard.js?v=__APP_VERSION__"></script>
 <script src="shared/ui-actions.js?v=__APP_VERSION__"></script>
 <script src="shared/mobile-ui.js?v=__APP_VERSION__" defer></script>
@@ -38,7 +39,7 @@
         <button class="main-tab" data-main="stock-analysis">证券分析</button>
         <button class="main-tab" data-main="market-volatility">市场周期</button>
         <button class="main-tab" data-main="arbitrage">套利机会<span id="arb-unread-count" class="arb-nav-badge" aria-live="polite" hidden></span></button>
-        <button class="main-tab" data-main="changelog">版本记录</button>
+        <button class="main-tab" data-main="feedback">反馈</button>
       </nav>
     </div>
     <div class="nav-right">
@@ -312,10 +313,26 @@
   </div>
 </div>
 
-<!-- 版本记录（一级页） -->
-<div class="main-page" id="main-changelog">
-  <div class="chart-box u-changelog-body" id="changelog-main-content" >
-    <p class="u-muted-center">加载中...</p>
+<!-- 反馈（一级页：全部反馈 / 我的反馈 / 反馈排名 / 版本更新） -->
+<div class="main-page" id="main-feedback">
+  <div class="fb-page">
+    <header class="fb-hero">
+      <div>
+        <span class="fb-eyebrow">FEEDBACK</span>
+        <h2>反馈</h2>
+        <p>提交错误、改进建议和需求，随时查看处理进度；已解决的问题会关联到发布版本。</p>
+      </div>
+      <button type="button" class="btn btn-primary" data-fb-act="open-form">提交反馈</button>
+    </header>
+    <nav class="fb-tabs" aria-label="反馈子栏目">
+      <button type="button" class="fb-tab active" data-fb-sub="all" data-fb-act="sub" data-sub="all">全部反馈</button>
+      <button type="button" class="fb-tab" data-fb-sub="mine" data-fb-act="sub" data-sub="mine">我的反馈</button>
+      <button type="button" class="fb-tab" data-fb-sub="ranking" data-fb-act="sub" data-sub="ranking">反馈排名</button>
+      <button type="button" class="fb-tab" data-fb-sub="versions" data-fb-act="sub" data-sub="versions">版本更新</button>
+    </nav>
+    <div class="fb-body" id="fb-body">
+      <div class="fb-panel"><p class="fb-empty">加载中…</p></div>
+    </div>
   </div>
 </div>
 
@@ -1199,6 +1216,7 @@
 <script type="text/lazy" data-lazy-section="knowledge" src="vendor/vditor/dist/index.min.js?v=20260904"></script>
 <script type="text/lazy" data-lazy-section="knowledge" src="shared/md-safe.js?v=__APP_VERSION__"></script>
 <script type="text/lazy" data-lazy-section="knowledge" src="js/knowledge.js?v=__APP_VERSION__"></script>
+<script type="text/lazy" data-lazy-section="feedback" src="js/feedback.js?v=__APP_VERSION__"></script>
 <script src="js/access-policy.js?v=__APP_VERSION__" defer></script>
 <script src="js/session.js?v=__APP_VERSION__" defer></script>
 <script src="js/arbitrage.js?v=__APP_VERSION__" defer></script>
@@ -1249,28 +1267,7 @@ function mergeChangelogByDate(list) {
   return merged;
 }
 
-// 加载版本记录页
-async function loadChangelogPage() {
-  const el = document.getElementById('changelog-main-content');
-  if (!el) return;
-  try {
-    const r = await fetch('/changelog.json');
-    const data = await r.json();
-    let html = '';
-    mergeChangelogByDate(data).forEach(function(item) {
-      var title = (item.date || '') + (item.version ? '（' + item.version + '）' : '');
-      html += '<div class="u-mb-18"><div class="u-changelog-title">' + escapeHtml(title) + '</div><ul class="u-changelog-list">';
-      (item.items || []).forEach(function(it) {
-        html += '<li class="u-changelog-li">' + escapeHtml(it) + '</li>';
-      });
-      html += '</ul></div>';
-    });
-    el.innerHTML = html || '<p class="u-c-muted">暂无记录</p>';
-  } catch(e) {
-    console.error('changelog load failed', e);
-    el.innerHTML = '<p class="u-c-muted">加载失败：' + escapeHtml(String(e.message || e)) + '</p>';
-  }
-}
+// 版本记录正文读取已迁至 js/feedback.js（反馈 → 版本更新）；本文件保留 mergeChangelogByDate 供其复用。
 
 // 修改密码折叠/展开
 function togglePwdCard() {
@@ -1612,6 +1609,16 @@ document.addEventListener('DOMContentLoaded', function () { (async function init
   var requestedMain = startParams.get('main');
   var requestedMetric = startParams.get('metric');
   var requestedSub = startParams.get('sub');
+  // 旧链接兼容（2026-10-23）：原「版本记录」一级页并入「反馈 → 版本更新」。
+  // 在白名单判断之前归一化地址，这样详情、刷新、前进后退都能定位到同一子页。
+  if (requestedMain === 'changelog') {
+    requestedMain = 'feedback';
+    requestedSub = 'versions';
+    var compatParams = new URLSearchParams(window.location.search);
+    compatParams.set('main', 'feedback');
+    compatParams.set('sub', 'versions');
+    history.replaceState(null, '', '/?' + compatParams.toString());
+  }
   // 旧转债分析深链（main=stock-analysis&code=转债）自动映射到可转债个券分析子页
   if (requestedMain === 'stock-analysis') {
     var maybeCode = startParams.get('code');

@@ -60,7 +60,7 @@ function renderTopUser(p) {
   menu.className = 'nav-user-menu';
   const items = [
     { label: '个人中心', fn: function () { switchMain('profile'); } },
-    { label: '版本记录', fn: function () { switchMain('changelog'); } }
+    { label: '反馈与版本', fn: function () { switchMain('feedback'); } }
   ];
   if (canStaff) items.push({ label: '管理后台', href: '/admin.html' });
   items.push({ label: '退出登录', fn: function () { logout(); } });

@@ -13,6 +13,7 @@ const M = Object.assign({},
   require('./migrations/era04ConvertibleBondRevision'),
   require('./migrations/era05DataIdentity'),
   require('./migrations/era06ChannelsAnalytics'),
+  require('./migrations/era07Feedback'),
 );
 
 const MIGRATIONS = [
@@ -185,6 +186,7 @@ const MIGRATIONS = [
     { version: '167_cash_income_sources', up: () => require('./cashIncomeMigration').migrateCashIncomeSources(pool) },
   { version: '168_call_event_kind_semantics', up: M.migration168CallEventKindSemantics },
   { version: '169_instrument_name_cleanup', up: M.migration169InstrumentNameCleanup },
+  { version: '170_feedback_module', up: M.migration170FeedbackModule },
 ];
 
 async function ensureMigrationsTable() {

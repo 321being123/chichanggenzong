@@ -9,6 +9,7 @@ var ANALYTICS_EVENT_LABELS = {
 };
 var ANALYTICS_PAGE_LABELS = {
   home: '首页', login: '登录页', register: '注册页', profile: '个人资料', changelog: '版本记录',
+  'feedback.list': '反馈中心',
   'holdings.dashboard': '持仓总览', 'holdings.positions': '持仓明细', 'holdings.trades': '交易记录', 'holdings.nav': '净值管理',
   'ipo.calendar': '打新日历', 'ipo.report': '打新报告', 'bond.safety': '可转债安全性', 'bond.cycle': '可转债周期',
   'bond.valuation': '可转债估值', 'bond.list': '可转债列表', 'bond.redemption': '强赎管理', 'bond.revision': '下修管理',

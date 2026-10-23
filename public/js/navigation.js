@@ -7,18 +7,21 @@
 // 一级页面切换（首页 / 持仓管理 / 个人中心 / 版本记录）
 // U-5：栏目脚本按栏目懒加载——分发页面入口前先确保该栏目脚本就绪；返回 Promise 供启动段深链后置动作使用。
 function switchMain(main, noPushState, bondSub) {
+  // 旧键兼容：原「版本记录」一级页已并入「反馈 → 版本更新」
+  if (main === 'changelog') { main = 'feedback'; bondSub = 'versions'; }
   if (!username && ACCESS_POLICY.requiresLogin(main)) {
     window.location.href = api('/login.html?redirect=' + encodeURIComponent('/?main=' + main));
     return Promise.resolve();
   }
-  // 同步地址栏：首页清掉参数，其他页面带上 ?main=，可转债保留 sub
+  // 同步地址栏：首页清掉参数，其他页面带上 ?main=，可转债保留 sub，反馈保留 sub 与详情编号
   if (!noPushState) {
     var params = new URLSearchParams(window.location.search);
     if (main === 'home') { while (params.toString()) { params.delete(params.keys().next().value); } }
     else {
       params.set('main', main);
-      if (main !== 'bond-safety') params.delete('sub');
+      if (main !== 'bond-safety' && main !== 'feedback') params.delete('sub');
       else if (bondSub) params.set('sub', bondSub);
+      if (main !== 'feedback') params.delete('feedback');
     }
     if (main !== 'arbitrage') { params.delete('case'); params.delete('arb_type'); }
     var newUrl = params.toString() ? '/?' + params.toString() : '/';
@@ -33,7 +36,7 @@ function switchMain(main, noPushState, bondSub) {
   if (window.MobileUI) { window.MobileUI.closeMenus(); window.MobileUI.syncNavigation(); }
   if (window.SiteTelemetry && main !== 'bond-safety') {
     var telemetryPageMap = {
-      home: 'home', profile: 'profile', changelog: 'changelog', ipo: 'ipo.calendar',
+      home: 'home', profile: 'profile', feedback: 'feedback.list', ipo: 'ipo.calendar',
       'stock-analysis': 'stock.analysis', 'market-volatility': 'market.volatility',
       arbitrage: new URLSearchParams(window.location.search).get('case') ? 'arbitrage.detail' : 'arbitrage.list', knowledge: 'knowledge.list'
     };
@@ -44,11 +47,11 @@ function switchMain(main, noPushState, bondSub) {
   }
   var lazySection = { 'bond-safety': 'bond-safety', 'stock-analysis': 'stock-analysis',
     'market-volatility': 'market-volatility', knowledge: 'knowledge', ipo: 'ipo',
-    'position-compare': 'position-compare' }[main];
+    feedback: 'feedback', 'position-compare': 'position-compare' }[main];
   var ready = (lazySection && window.LazySections) ? LazySections.ensureSection(lazySection) : Promise.resolve();
   return ready.then(function () {
     if (main === 'profile') loadProfile();
-    if (main === 'changelog') loadChangelogPage();
+    if (main === 'feedback' && typeof loadFeedbackPage === 'function') loadFeedbackPage();
     if (main === 'ipo') loadIpo();
     if (main === 'bond-safety') {
       // initBondCycleSub 会按 URL 子页只加载当前内容，避免进入上市列表时额外加载整张安全性表。

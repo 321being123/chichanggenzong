@@ -61,6 +61,26 @@ async function assertContentManager(username, action) {
   return user;
 }
 
+// B-01（2026-10-23 二次复验）：可信运行版本只由本进程在锁内读取，
+// 调用方传入的 currentSha/currentVersion 只能用于交叉核对，永远不能覆盖实际值。
+function readTrustedRuntime() {
+  let sha = '';
+  try {
+    sha = String(require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: require('path').join(__dirname, '..', '..'), encoding: 'utf8',
+    })).trim();
+  } catch (e) {
+    sha = '';
+  }
+  let version = '';
+  try {
+    version = String(require('../../package.json').appVersion || require('../../package.json').version || '');
+  } catch (e) {
+    version = '';
+  }
+  return { sha: sha, version: version };
+}
+
 // 目标级发布锁：同一时间只允许一个发布批次做版本核验与回写
 async function acquireReleaseLock(client) {
   await client.query('SELECT pg_advisory_lock($1)', [RELEASE_LOCK_ID]);
@@ -327,61 +347,76 @@ async function verifyRun(runId, input) {
 async function applyRun(runId, options) {
   const opts = options || {};
   await assertContentManager(opts.operator, '执行反馈回写');
-  const runQuery = await pool.query(
-    `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha", app_version AS "appVersion",
-            verify_status AS "verifyStatus", apply_status AS "applyStatus",
-            manifest_hash AS "manifestHash", prepare_status AS "prepareStatus", owner
-       FROM ops.feedback_release_runs WHERE id=$1`,
-    [runId]
-  );
-  const run = runQuery.rows[0];
-  if (!run) throw createError(404, '发布批次不存在');
-  if (run.verifyStatus !== 'passed') throw createError(409, '该发布批次未通过专项验收，不能回写已实施');
-  if (run.prepareStatus === 'draft') throw createError(409, '该发布批次清单尚未准备完成');
-  // 旧批次不能交给新部署：批次与目标环境/部署批次必须对应
-  if (opts.deploymentId && String(opts.deploymentId) !== String(run.deploymentId)) {
-    throw createError(409, '发布批次不属于本次部署（deployment_id 不一致）');
+  if (!opts.deploymentId) {
+    throw createError(400, '必须提供 deployment_id（发布批次要与本次部署一一对应）');
   }
-  // 回写时的运行版本必须与批次一致，避免把旧清单套到新代码上（A-04）
-  if (opts.currentSha && String(opts.currentSha).toLowerCase() !== String(run.releaseSha).toLowerCase()) {
-    throw createError(409, '当前运行提交与发布批次不一致，拒绝回写');
-  }
-  if (opts.currentVersion && String(opts.currentVersion) !== String(run.appVersion)) {
-    throw createError(409, '当前运行版本与发布批次不一致，拒绝回写');
-  }
-
-  const checked = await pool.query(
-    'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
-    [runId]
-  );
-  const manifestHash = computeManifestHash(checked.rows);
-  if (run.manifestHash && manifestHash !== run.manifestHash) {
-    throw createError(409, '核对清单已被修改，请重新冻结后再次验收');
-  }
-
-  const targets = await pool.query(
-    `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
-            expected_status AS "expectedStatus", conclusion, implementation_commit AS "implementationCommit",
-            evidence_summary AS "evidenceSummary", apply_status AS "applyStatus"
-       FROM ops.feedback_release_items
-      WHERE run_id=$1 AND conclusion IN ('solved','partial')
-      ORDER BY feedback_id ASC`,
-    [runId]
-  );
-
   const lockClient = await pool.connect();
   try {
+    // B-03：从读取验收/哈希/明细到写入，全部在发布锁内完成。
+    // 排队期间清单被改、验收失效，拿到锁后会看到最新状态并拒绝，不再按旧结论更新。
     await lockClient.query('BEGIN');
     await acquireReleaseLock(lockClient);
+    const runQuery = await lockClient.query(
+      `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha", app_version AS "appVersion",
+              verify_status AS "verifyStatus", apply_status AS "applyStatus",
+              manifest_hash AS "manifestHash", prepare_status AS "prepareStatus", owner
+         FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE`,
+      [runId]
+    );
+    const run = runQuery.rows[0];
+    if (!run) throw createError(404, '发布批次不存在');
+    if (run.verifyStatus !== 'passed') throw createError(409, '该发布批次未通过专项验收，不能回写已实施');
+    if (run.prepareStatus === 'draft') throw createError(409, '该发布批次清单尚未准备完成');
+
+    // B-01：实际运行提交与版本只由锁内可信读取决定
+    const runtime = readTrustedRuntime();
+    if (!runtime.sha || !runtime.version) {
+      throw createError(500, '无法确认当前运行版本，拒绝回写');
+    }
+    if (String(opts.deploymentId) !== String(run.deploymentId)) {
+      throw createError(409, '发布批次不属于本次部署（deployment_id 不一致）');
+    }
+    // 调用方传值只用于交叉核对，不能替代实际值
+    if (opts.expectedSha && String(opts.expectedSha).toLowerCase() !== runtime.sha.toLowerCase()) {
+      throw createError(409, '调用方声明的提交与实际运行提交不一致');
+    }
+    if (opts.expectedVersion && String(opts.expectedVersion) !== runtime.version) {
+      throw createError(409, '调用方声明的版本与实际运行版本不一致');
+    }
+    if (runtime.sha.toLowerCase() !== String(run.releaseSha).toLowerCase()) {
+      throw createError(409, '当前运行提交与发布批次不一致，拒绝回写');
+    }
+    if (runtime.version !== String(run.appVersion)) {
+      throw createError(409, '当前运行版本与发布批次不一致，拒绝回写');
+    }
+
+    const checked = await lockClient.query(
+      'SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision", conclusion, implementation_commit AS "implementationCommit", evidence_summary AS "evidenceSummary" FROM ops.feedback_release_items WHERE run_id=$1',
+      [runId]
+    );
+    const manifestHash = computeManifestHash(checked.rows);
+    if (run.manifestHash && manifestHash !== run.manifestHash) {
+      throw createError(409, '核对清单已被修改，请重新冻结后再次验收');
+    }
+
+    const targets = await lockClient.query(
+      `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
+              expected_status AS "expectedStatus", conclusion, implementation_commit AS "implementationCommit",
+              evidence_summary AS "evidenceSummary", apply_status AS "applyStatus"
+         FROM ops.feedback_release_items
+        WHERE run_id=$1 AND conclusion IN ('solved','partial')
+        ORDER BY feedback_id ASC`,
+      [runId]
+    );
+
     const results = [];
     for (let i = 0; i < targets.rows.length; i++) {
-      const item = targets.rows[i];
-      results.push(await applyOne(runId, run, item, opts));
+      results.push(await applyOne(runId, run, targets.rows[i], opts));
     }
     const applied = results.filter(function (r) { return r.applyStatus === 'applied'; }).length;
     const failed = results.filter(function (r) { return r.applyStatus !== 'applied' && r.applyStatus !== 'skipped'; }).length;
     const overall = failed === 0 ? 'applied' : (applied > 0 ? 'partial' : 'failed');
-    await pool.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
+    await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
     await lockClient.query('COMMIT');
     return { runId: String(runId), applyStatus: overall, applied: applied, failed: failed, items: results };
   } catch (e) {
@@ -474,25 +509,30 @@ async function applyOne(runId, run, item, opts) {
 async function rollbackRun(runId, options) {
   const opts = options || {};
   await assertContentManager(opts.operator, '执行回滚恢复');
-  const runQuery = await pool.query(
-    `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha",
-            app_version AS "appVersion", verify_status AS "verifyStatus", apply_status AS "applyStatus"
-       FROM ops.feedback_release_runs WHERE id=$1`,
-    [runId]
-  );
-  const run = runQuery.rows[0];
-  if (!run) throw createError(404, '发布批次不存在');
-  if (run.applyStatus === 'pending' || run.applyStatus === 'rolled_back') {
-    throw createError(409, '该发布批次没有可回滚的已应用项');
-  }
-  if (opts.currentSha && String(opts.currentSha).toLowerCase() !== String(run.releaseSha).toLowerCase()) {
-    throw createError(409, '当前运行提交与发布批次不一致，拒绝回滚');
-  }
   const lockClient = await pool.connect();
   try {
     await lockClient.query('BEGIN');
     await acquireReleaseLock(lockClient);
-    const items = await pool.query(
+    const runQuery = await lockClient.query(
+      `SELECT id::text AS id, deployment_id::text AS "deploymentId", release_sha AS "releaseSha",
+              app_version AS "appVersion", verify_status AS "verifyStatus", apply_status AS "applyStatus"
+         FROM ops.feedback_release_runs WHERE id=$1 FOR UPDATE`,
+      [runId]
+    );
+    const run = runQuery.rows[0];
+    if (!run) throw createError(404, '发布批次不存在');
+    if (run.applyStatus === 'pending' || run.applyStatus === 'rolled_back') {
+      throw createError(409, '该发布批次没有可回滚的已应用项');
+    }
+    const runtime = readTrustedRuntime();
+    if (!runtime.sha) throw createError(500, '无法确认当前运行提交，拒绝回滚');
+    if (opts.expectedSha && String(opts.expectedSha).toLowerCase() !== runtime.sha.toLowerCase()) {
+      throw createError(409, '调用方声明的提交与实际运行提交不一致');
+    }
+    if (runtime.sha.toLowerCase() !== String(run.releaseSha).toLowerCase()) {
+      throw createError(409, '当前运行提交与发布批次不一致，拒绝回滚');
+    }
+    const items = await lockClient.query(
       `SELECT feedback_id::text AS "feedbackId", expected_revision::text AS "expectedRevision",
               expected_status AS "expectedStatus", revision_after::text AS "revisionAfter", apply_status AS "applyStatus"
          FROM ops.feedback_release_items
@@ -507,7 +547,7 @@ async function rollbackRun(runId, options) {
     const restored = results.filter(function (r) { return r.result === 'restored'; }).length;
     const kept = results.filter(function (r) { return r.result === 'kept_after_modification'; }).length;
     const overall = restored === 0 ? 'applied' : (kept > 0 ? 'partial' : 'rolled_back');
-    await pool.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
+    await lockClient.query('UPDATE ops.feedback_release_runs SET apply_status=$1, updated_at=now() WHERE id=$2', [overall, runId]);
     await lockClient.query('COMMIT');
     return { runId: String(runId), applyStatus: overall, restored: restored, kept: kept, items: results };
   } catch (e) {
@@ -656,4 +696,5 @@ module.exports = {
   REVIEW_POLICY_VERSION, OPEN_STATUSES,
   readCandidates, readDetail, prepareRun, setItemConclusion, freezeRun, verifyRun,
   applyRun, rollbackRun, readBack, listRuns, getRun, listItems, status, computeManifestHash,
+  RELEASE_LOCK_ID, acquireReleaseLock, releaseLock, readTrustedRuntime,
 };

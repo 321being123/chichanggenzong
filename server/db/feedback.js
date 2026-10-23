@@ -60,11 +60,14 @@ async function getFeedback(db, id) {
 }
 
 // 加行锁读取：用于状态变更 / 附件追加 / 发布回写，必须在事务内调用
+// B-02（2026-10-23 二次复验）：必须带出 implemented_release_sha，
+// 回滚恢复要靠它判断「是否仍是本批次关闭且未被后续修改」，缺这个字段会把正常项误判为已修改。
 async function lockFeedback(db, id) {
   const { rows } = await db.query(
     `SELECT id::text AS id, author_username AS "authorUsername", status, visibility, moderation,
             withdrawn_at AS "withdrawnAt", duplicate_of::text AS "duplicateOf",
-            implemented_version AS "implementedVersion", revision::text AS revision,
+            implemented_version AS "implementedVersion", implemented_release_sha AS "implementedReleaseSha",
+            revision::text AS revision,
             client_request_id AS "clientRequestId", request_hash AS "requestHash"
        FROM public.feedbacks WHERE id = $1 FOR UPDATE`,
     [id]

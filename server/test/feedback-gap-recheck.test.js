@@ -59,6 +59,14 @@ function baseConfig() {
     const adminActor = service.loadActor('admin1', 'admin', {});
     const aliceActor = service.loadActor('alice', 'user', {});
 
+    // 真实运行版本：回写门禁（B-01）要求批次与当前运行一致
+    const RT = {
+      sha: require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: require('path').join(__dirname, '..', '..'), encoding: 'utf8',
+      }).trim(),
+      version: String(require('../../package.json').appVersion),
+    };
+
     async function createFeedback(author, title, extra) {
       const created = await service.createFeedback(service.loadActor(author, 'user', {}), Object.assign({
         type: 'bug', title: title, description: '描述内容用于测试', pagePath: '/?main=home', visibility: 'public',
@@ -216,19 +224,20 @@ function baseConfig() {
       const runRow = await pool.query('SELECT verify_status FROM ops.feedback_release_runs WHERE id=$1', [run.runId]);
       assert.strictEqual(runRow.rows[0].verify_status, 'pending', '验收状态应回到 pending');
       await assert.rejects(function () {
-        return release.applyRun(run.runId, { operator: 'admin1' });
+        return release.applyRun(run.runId, { operator: 'admin1', deploymentId: '33333333-4444-5555-6666-777777777777' });
       }, /未通过专项验收/);
     });
 
     // ---------- A-04：批次与运行版本绑定、回滚恢复 ----------
-    await test('A-04 部署批次/当前版本不一致拒绝回写', async function () {
+    await test('A-04/B-01 部署批次、运行提交与调用方声明三方一致才允许回写', async function () {
       await pool.query('DELETE FROM public.feedbacks');
       await pool.query('DELETE FROM ops.feedback_release_items');
       await pool.query('DELETE FROM ops.feedback_release_runs');
       const id = await createFeedback('alice', '批次绑定');
+      // 故意用假的发布提交，用于验证“运行提交与批次不一致”这一路
       const run = await release.prepareRun({
         deploymentId: '44444444-5555-6666-7777-888888888888',
-        releaseSha: 'aaaabbbbcccc1', appVersion: '0.8.4.15', owner: 'admin1',
+        releaseSha: 'aaaabbbbcccc1', appVersion: RT.version, owner: 'admin1',
       });
       await release.setItemConclusion(run.runId, id, {
         conclusion: 'solved', implementationCommit: 'aaaabbb', evidenceSummary: 'ok',
@@ -243,24 +252,55 @@ function baseConfig() {
         });
       }, /deployment_id 不一致/);
       await assert.rejects(function () {
-        return release.applyRun(run.runId, { operator: 'admin1', currentSha: '0000000000000' });
+        return release.applyRun(run.runId, {
+          operator: 'admin1', deploymentId: '44444444-5555-6666-7777-888888888888',
+          expectedSha: '0000000000000',
+        });
+      }, /调用方声明的提交与实际运行提交不一致/);
+      await assert.rejects(function () {
+        return release.applyRun(run.runId, {
+          operator: 'admin1', deploymentId: '44444444-5555-6666-7777-888888888888',
+          expectedSha: RT.sha, expectedVersion: RT.version,
+        });
       }, /当前运行提交与发布批次不一致/);
-      const applied = await release.applyRun(run.runId, {
-        operator: 'admin1', deploymentId: '44444444-5555-6666-7777-888888888888',
-        currentSha: 'aaaabbbbcccc1', currentVersion: '0.8.4.15',
-      });
-      assert.strictEqual(applied.applyStatus, 'applied', '参数一致时应正常回写');
+      const fb = await store.getFeedback(pool, id);
+      assert.notStrictEqual(fb.status, 'implemented', '上述任一不一致都不能关闭反馈');
     });
 
-    await test('A-04 回滚只恢复本批次关闭且未被后续修改的记录', async function () {
-      const runId = (await pool.query("SELECT id::text AS id FROM ops.feedback_release_runs WHERE app_version='0.8.4.15'")).rows[0].id;
+    await test('A-04/B-01 三方一致时正常回写，版本取自真实运行', async function () {
+      await pool.query('DELETE FROM public.feedbacks');
+      await pool.query('DELETE FROM ops.feedback_release_items');
+      await pool.query('DELETE FROM ops.feedback_release_runs');
+      const id = await createFeedback('alice', '三方一致');
+      const run = await release.prepareRun({
+        deploymentId: '88888888-9999-aaaa-bbbb-cccccccccccc',
+        releaseSha: RT.sha, appVersion: RT.version, owner: 'admin1',
+      });
+      await release.setItemConclusion(run.runId, id, {
+        conclusion: 'solved', implementationCommit: 'abcdef1', evidenceSummary: 'ok',
+      });
+      await release.freezeRun(run.runId);
+      await release.verifyRun(run.runId, {
+        passed: true, verifiedSha: RT.sha, operator: 'admin1', evidence: { manual: 'checked' },
+      });
+      const applied = await release.applyRun(run.runId, {
+        operator: 'admin1', deploymentId: '88888888-9999-aaaa-bbbb-cccccccccccc',
+        expectedSha: RT.sha, expectedVersion: RT.version,
+      });
+      assert.strictEqual(applied.applyStatus, 'applied');
+      const fb = await store.getFeedback(pool, id);
+      assert.strictEqual(fb.implementedVersion, RT.version);
+    });
+
+    await test('A-04/B-02 回滚只恢复本批次关闭且未被后续修改的记录', async function () {
+      const runId = (await pool.query("SELECT id::text AS id FROM ops.feedback_release_runs WHERE deployment_id='88888888-9999-aaaa-bbbb-cccccccccccc'")).rows[0].id;
       const { rows } = await pool.query(
         "SELECT feedback_id::text AS id FROM ops.feedback_release_items WHERE run_id=$1 AND conclusion='solved'", [runId]
       );
       const closedId = rows[0].id;
       // 造一条“被后续修改”的：revision 与回写后不一致
       await pool.query('UPDATE public.feedbacks SET revision = revision + 5 WHERE id=$1', [closedId]);
-      const result = await release.rollbackRun(runId, { operator: 'admin1', currentSha: 'aaaabbbbcccc1' });
+      const result = await release.rollbackRun(runId, { operator: 'admin1' });
       assert.strictEqual(result.kept, 1, '被后续修改的记录不应被回滚');
       assert.strictEqual(result.restored, 0);
       const fb = await store.getFeedback(pool, closedId);

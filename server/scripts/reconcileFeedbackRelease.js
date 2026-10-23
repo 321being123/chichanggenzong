@@ -13,7 +13,8 @@
 //   node server/scripts/reconcileFeedbackRelease.js --mode freeze --run-id 3
 //   node server/scripts/reconcileFeedbackRelease.js --mode verify --run-id 3 --pass < evidence.json
 //   node server/scripts/reconcileFeedbackRelease.js --mode apply --run-id 3 --operator <内容管理员账号> \
-//        [--deployment-id <uuid>] [--current-sha <sha>] [--current-version <版本>]
+//        --deployment-id <uuid> [--current-sha <sha>] [--current-version <版本>]
+//     说明：--current-sha/--current-version 只做交叉核对；实际运行提交/版本由服务端锁内读取。
 //   node server/scripts/reconcileFeedbackRelease.js --mode rollback --run-id 3 --operator <内容管理员账号>
 //   node server/scripts/reconcileFeedbackRelease.js --mode status --run-id 3
 //
@@ -157,13 +158,15 @@ async function main() {
   }
   if (mode === 'apply') {
     if (!args['run-id']) throw new Error('缺少 --run-id');
+    if (!args['deployment-id']) throw new Error('缺少 --deployment-id（必须与发布批次一一对应）');
     if (!operator) throw new Error('缺少 --operator（必须是真实的内容管理员账号）');
-    const runtime = currentRuntime();
+    // B-01：这里只把调用方声明值交给服务端做交叉核对，
+    // 实际运行提交/版本由服务端在锁内自行读取，参数永远不能覆盖真实值。
     const result = await release.applyRun(args['run-id'], {
       operator: operator,
-      deploymentId: args['deployment-id'] || null,
-      currentSha: args['current-sha'] || runtime.sha,
-      currentVersion: args['current-version'] || runtime.version,
+      deploymentId: args['deployment-id'],
+      expectedSha: args['current-sha'] || null,
+      expectedVersion: args['current-version'] || null,
     });
     output({ mode: 'apply', ...result, readBack: await release.readBack(args['run-id']) });
     return;
@@ -171,12 +174,11 @@ async function main() {
   if (mode === 'rollback') {
     if (!args['run-id']) throw new Error('缺少 --run-id');
     if (!operator) throw new Error('缺少 --operator（必须是真实的内容管理员账号）');
-    const runtime = currentRuntime();
     output({
       mode: 'rollback',
       ...(await release.rollbackRun(args['run-id'], {
         operator: operator,
-        currentSha: args['current-sha'] || runtime.sha,
+        expectedSha: args['current-sha'] || null,
       })),
     });
     return;
@@ -186,7 +188,25 @@ async function main() {
     output({ mode: 'status', envFile: envFile ? '已加载' : '未找到', ...(await release.status(args['run-id'])) });
     return;
   }
-  throw new Error('未知模式：' + (mode || '(空)') + '，支持 read/detail/prepare/conclusions/freeze/verify/apply/rollback/status');
+  if (mode === 'hold-lock') {
+    // B-03 / A-04：给代码部署用的目标级发布锁，与回写共用同一把 advisory lock。
+    // 获取成功后写 ready 文件并保持持有，直到超时或被终止。
+    const holdMs = Math.min(Math.max(parseInt(args['hold-ms'], 10) || 3600000, 1000), 6 * 3600 * 1000);
+    const readyFile = args['ready-file'] || null;
+    const client = await pool.connect();
+    try {
+      await release.acquireReleaseLock(client);
+      if (readyFile) fs.writeFileSync(readyFile, String(Date.now()));
+      output({ mode: 'hold-lock', held: true, holdMs: holdMs });
+      await new Promise(function (resolve) { setTimeout(resolve, holdMs); });
+    } finally {
+      await release.releaseLock(client);
+      client.release();
+      if (readyFile) { try { fs.unlinkSync(readyFile); } catch (e) { /* 已被外部清理 */ } }
+    }
+    return;
+  }
+  throw new Error('未知模式：' + (mode || '(空)') + '，支持 read/detail/prepare/conclusions/freeze/verify/apply/rollback/hold-lock/status');
 }
 
 main()

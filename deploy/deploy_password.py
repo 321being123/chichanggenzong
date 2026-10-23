@@ -123,10 +123,16 @@ def apply_feedback_release(client, run_id, operator, deployment_id, current_sha,
             "reason": "缺少 --deploy-operator（必须是网站上的内容管理员账号），反馈闭环未执行",
             "items": [],
         }
+    if not deployment_id:
+        return {
+            "feedback_applied": False,
+            "reason": "缺少 --deployment-id（发布批次必须与本次部署一一对应），反馈闭环未执行",
+            "items": [],
+        }
     operator_arg = shlex.quote(str(operator))
-    extra = ""
-    if deployment_id:
-        extra += f" --deployment-id {shlex.quote(str(deployment_id))}"
+    # B-01：--current-sha / --current-version 只做交叉核对；
+    # 服务端会在锁内自行读取真实运行提交与版本，参数无法覆盖。
+    extra = f" --deployment-id {shlex.quote(str(deployment_id))}"
     if current_sha:
         extra += f" --current-sha {shlex.quote(str(current_sha))}"
     if current_version:
@@ -206,6 +212,7 @@ def main():
             "systemctl is-active --quiet portfolio-worker-health.timer && health_timer_active=1 || true; fi; "
             "stop_unit_if_present() { systemctl cat \"$1\" >/dev/null 2>&1 || return 0; systemctl stop \"$1\"; }; "
             "rollback_deploy() { rc=$?; "
+            "if [ -n \"${release_lock_pid:-}\" ]; then kill $release_lock_pid 2>/dev/null || true; fi; "
             "rollback_failed=0; "
             "if [ $deploy_complete -ne 1 ]; then "
             "echo '部署失败，正在恢复部署前版本和服务' >&2; "
@@ -243,7 +250,17 @@ def main():
             "if [ $rollback_failed -ne 0 ]; then echo '严重：部署回滚未能恢复服务，请立即人工介入' >&2; exit 90; fi; "
             "exit $rc; }; "
             "trap rollback_deploy EXIT; "
-            "git fetch origin "
+            # 目标级发布锁：与反馈回写共用 advisory lock，代码部署/回写/回滚在同一串行边界内。
+            # 当前服务器代码尚未含该脚本（首次发布）时降级提示，不阻断部署。
+            "release_lock_pid=''; "
+            "if [ -f /opt/portfolio/server/scripts/reconcileFeedbackRelease.js ]; then "
+            "rm -f /tmp/portfolio-release-lock.ready; "
+            "/usr/bin/node /opt/portfolio/server/scripts/reconcileFeedbackRelease.js --mode hold-lock --hold-ms 5400 --ready-file /tmp/portfolio-release-lock.ready >> /tmp/portfolio-release-lock.log 2>&1 & "
+            "release_lock_pid=$!; "
+            "for i in $(seq 1 90); do test -f /tmp/portfolio-release-lock.ready && break; sleep 1; done; "
+            "test -f /tmp/portfolio-release-lock.ready || { echo '无法获取发布锁，中止部署' >&2; exit 11; }; "
+            "else echo '提示：当前服务器代码尚不含发布锁，本次代码部署未参与串行边界'; fi "
+            "&& git fetch origin "
             "&& git show origin/master:deploy/portfolio-worker.service | tee /etc/systemd/system/portfolio-worker.service >/dev/null "
             "&& git show origin/master:deploy/portfolio-server.service | tee /etc/systemd/system/portfolio-server.service >/dev/null "
             "&& systemctl daemon-reload "

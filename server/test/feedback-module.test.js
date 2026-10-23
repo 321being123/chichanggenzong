@@ -65,6 +65,14 @@ function baseConfig() {
 
     await pool.query("INSERT INTO public.users (username, password, nickname, role, permissions) VALUES ('admin1','x','管理员','admin','{}'),('alice','x','Alice','user','{}'),('bob','x','Bob','user','{}'),('carol','x','Carol','user','{}') ON CONFLICT (username) DO NOTHING");
 
+    // 真实运行版本：回写门禁要求批次与当前运行一致（B-01）
+    const RT = {
+      sha: require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: require('path').join(__dirname, '..', '..'), encoding: 'utf8',
+      }).trim(),
+      version: String(require('../../package.json').appVersion),
+    };
+
     async function createFor(author, title, opts) {
       const o = opts || {};
       const row = await store.insertFeedback(pool, {
@@ -244,14 +252,14 @@ function baseConfig() {
 
       const run = await release.prepareRun({
         deploymentId: '11111111-2222-3333-4444-555555555555',
-        releaseSha: 'abcdef1234567', appVersion: '0.8.4.12',
+        releaseSha: RT.sha, appVersion: RT.version,
         baseDeployedSha: '0000000', owner: 'admin1',
       });
       assert.ok(run.runId);
       assert.strictEqual(run.snapshotCount, 2, '两条待处理项应进入快照');
 
       // 未验收前不允许回写
-      await assert.rejects(function () { return release.applyRun(run.runId, { operator: 'admin1' }); }, /未通过专项验收/);
+      await assert.rejects(function () { return release.applyRun(run.runId, { operator: 'admin1', deploymentId: '11111111-2222-3333-4444-555555555555' }); }, /未通过专项验收/);
 
       await release.setItemConclusion(run.runId, id1, {
         conclusion: 'solved', implementationCommit: 'abcdef1', evidenceSummary: '页面实测通过',
@@ -260,18 +268,18 @@ function baseConfig() {
         conclusion: 'partial', implementationCommit: 'abcdef1', evidenceSummary: '只修了一半',
       });
       await release.freezeRun(run.runId);
-      await release.verifyRun(run.runId, { passed: true, verifiedSha: 'abcdef1234567', operator: 'admin1', evidence: { manual: 'checked' } });
+      await release.verifyRun(run.runId, { passed: true, verifiedSha: RT.sha, operator: 'admin1', evidence: { manual: 'checked' } });
 
-      const applied = await release.applyRun(run.runId, { operator: 'admin1' });
+      const applied = await release.applyRun(run.runId, { operator: 'admin1', deploymentId: '11111111-2222-3333-4444-555555555555' });
       assert.strictEqual(applied.applyStatus, 'applied');
       const solved = await store.getFeedback(pool, id1);
       assert.strictEqual(solved.status, 'implemented');
-      assert.strictEqual(solved.implementedVersion, '0.8.4.12');
+      assert.strictEqual(solved.implementedVersion, RT.version);
       const partial = await store.getFeedback(pool, id2);
       assert.strictEqual(partial.status, 'in_progress', '部分解决只记录进度');
 
       const eventsBefore = await pool.query('SELECT count(*)::int AS c FROM public.feedback_events WHERE release_run_id=$1', [run.runId]);
-      const again = await release.applyRun(run.runId, { operator: 'admin1' });
+      const again = await release.applyRun(run.runId, { operator: 'admin1', deploymentId: '11111111-2222-3333-4444-555555555555' });
       assert.strictEqual(again.applied, 2, '重复应用应复用原结果');
       const eventsAfter = await pool.query('SELECT count(*)::int AS c FROM public.feedback_events WHERE release_run_id=$1', [run.runId]);
       assert.strictEqual(eventsAfter.rows[0].c, eventsBefore.rows[0].c, '重复应用不得新增处理事件');
@@ -288,14 +296,14 @@ function baseConfig() {
       const id = await createFor('alice', '并发冲突');
       const run = await release.prepareRun({
         deploymentId: '99999999-8888-7777-6666-555555555555',
-        releaseSha: 'fedcba9876543', appVersion: '0.8.4.13', owner: 'admin1',
+        releaseSha: RT.sha, appVersion: RT.version, owner: 'admin1',
       });
       await release.setItemConclusion(run.runId, id, { conclusion: 'solved', evidenceSummary: 'ok' });
       await release.freezeRun(run.runId);
-      await release.verifyRun(run.runId, { passed: true, verifiedSha: 'fedcba9876543', operator: 'admin1', evidence: { manual: 'checked' } });
+      await release.verifyRun(run.runId, { passed: true, verifiedSha: RT.sha, operator: 'admin1', evidence: { manual: 'checked' } });
       // 核对之后作者又改了内容
       await pool.query('UPDATE public.feedbacks SET revision = revision + 1, title = $2 WHERE id=$1', [id, '核对后改名']);
-      const result = await release.applyRun(run.runId, { operator: 'admin1' });
+      const result = await release.applyRun(run.runId, { operator: 'admin1', deploymentId: '99999999-8888-7777-6666-555555555555' });
       assert.strictEqual(result.applyStatus, 'failed');
       assert.strictEqual(result.items[0].applyStatus, 'conflict');
       const fb = await store.getFeedback(pool, id);
@@ -309,13 +317,13 @@ function baseConfig() {
       const id = await createFor('alice', '清单冻结');
       const run = await release.prepareRun({
         deploymentId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-        releaseSha: '1111111222222', appVersion: '0.8.4.14', owner: 'admin1',
+        releaseSha: RT.sha, appVersion: RT.version, owner: 'admin1',
       });
       await release.setItemConclusion(run.runId, id, { conclusion: 'solved', evidenceSummary: 'ok' });
       await release.freezeRun(run.runId);
-      await release.verifyRun(run.runId, { passed: true, verifiedSha: '1111111222222', operator: 'admin1', evidence: { manual: 'checked' } });
+      await release.verifyRun(run.runId, { passed: true, verifiedSha: RT.sha, operator: 'admin1', evidence: { manual: 'checked' } });
       await pool.query("UPDATE ops.feedback_release_items SET conclusion='partial' WHERE run_id=$1", [run.runId]);
-      await assert.rejects(function () { return release.applyRun(run.runId, { operator: 'admin1' }); }, /核对清单已被修改/);
+      await assert.rejects(function () { return release.applyRun(run.runId, { operator: 'admin1', deploymentId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }); }, /核对清单已被修改/);
     });
   } catch (e) {
     fail++;

@@ -31,6 +31,11 @@ with tempfile.TemporaryDirectory() as directory:
     reader.read_document(url,'002091.SZ','TestBond')
     assert len(calls)==1
 rating=importlib.import_module('extractConvertibleBondRating')
+outlook_text='评级展望\n中诚信国际认为，瑞鹄汽车模具股份有限公司信用水平在未来12~18个月内将保持稳定。'
+assert rating.parse_rating_pages([outlook_text], '瑞鹄转02', '2026-09-15', '瑞鹄汽车模具股份有限公司')['rating_outlook']=='稳定'
+assert rating.parse_rating_pages([outlook_text], '其他转债', '2026-09-15', '其他股份有限公司')['rating_outlook'] is None
+assert rating.parse_rating_pages(['前次'+outlook_text], '瑞鹄转02', '2026-09-15', '瑞鹄汽车模具股份有限公司')['rating_outlook'] is None
+assert rating.parse_rating_pages([outlook_text+outlook_text.replace('稳定','负面')], '瑞鹄转02', '2026-09-15', '瑞鹄汽车模具股份有限公司')['rating_outlook'] is None
 # BOND-RATING-RESULT-NOTICE-025: 直接代码身份、本次/前次日期和债项分离，不用主体或前次值补本次。
 notice='''证券代码：603058 转债代码：113646 转债简称：永吉转债
 贵州永吉印务股份有限公司关于“永吉转债”2024年跟踪评级结果的公告

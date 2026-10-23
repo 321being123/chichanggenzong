@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "lastReviewed": "2026-10-22",
+  "lastReviewed": "2026-10-23",
   "rules": [
     {
       "id": "STOCK-ANALYSIS-REFRESH-001",
@@ -3431,6 +3431,86 @@
         {
           "file": "server/test/bond-safety.test.js",
           "pattern": "财务增量同步目标范围含待上市新债正股"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "CASH-INTEREST-IDENTITY-016",
+      "title": "付息原文完整债码、兑息措辞和其他债券排除；换行不拼接章节序号",
+      "implementation": {
+        "file": "server/services/cashDividendFacts.js",
+        "symbol": "parseBondInterest"
+      },
+      "tests": [
+        {
+          "file": "server/test/cash-income-bond-interest.test.js",
+          "pattern": "excluded_other_bond_interest"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "NAV-DEPENDENCY-RECOVERY-003",
+      "title": "现金收益依赖恢复须对应事实、scope和日期；保留次数，仅额外一次核验，失败保留恢复证据",
+      "implementation": {
+        "file": "server/services/jobScheduleSlots.js",
+        "symbol": "recoverNavDependencies"
+      },
+      "tests": [
+        {
+          "file": "server/test/nav-dependency-recovery.test.js",
+          "pattern": "空证据不得恢复"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "IPO-ENRICHMENT-COOLDOWN-001",
+      "title": "未实际尝试且全部缺项有未来复查证据才允许冷却续批，缺口不作成功",
+      "implementation": {
+        "file": "ipo-report/ipo_history_sync.py",
+        "symbol": "enrichment_cooldown"
+      },
+      "tests": [
+        {
+          "file": "ipo-report/test_ipo_unit.py",
+          "pattern": "IPO冷却等待保留上海复查时间"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-SAFETY-PUBLIC-SCOPE-002",
+      "title": "按目标日保留公开待上市债、排除非公开债、上市当日去重并保留数据日",
+      "implementation": {
+        "file": "server/services/bondSafetyTushare.js",
+        "symbol": "fetchBondSafetySourceFromDatabase"
+      },
+      "tests": [
+        {
+          "file": "server/test/bond-safety-public-scope.test.js",
+          "pattern": "公开待上市保留"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
+    },
+    {
+      "id": "BOND-RATING-OUTLOOK-NARRATIVE-046",
+      "title": "展望叙述仅绑定精确发行人，拒绝其他公司、前次及冲突结论",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "parse_rating_pages"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "outlook_text"
         }
       ],
       "owner": "运维治理",

@@ -118,7 +118,7 @@ def official_rating_date(pages):
     return None, None
 
 
-def parse_rating_pages(pages, bond_name, announcement_date):
+def parse_rating_pages(pages, bond_name, announcement_date, issuer_name=None):
     text = normalize_rating_text("\n".join(pages))
     compact = re.sub(r"\s+", "", text)
     summary = re.sub(r'\s+', '', normalize_rating_text('\n'.join(pages[:3])))
@@ -128,6 +128,12 @@ def parse_rating_pages(pages, bond_name, announcement_date):
     outlook_match = find_current(r'评级展望\s*(?:调整|维持)?为?\s*[：:]?\s*[“"]?(稳定|正面|负面|发展中|观察)', text)
     if not outlook_match:
         outlook_match = find_current(r"给予公司(稳定|正面|负面|发展中|观察)的(?:信用)?评级展望", compact)
+    if not outlook_match and issuer_name:
+        issuer = re.escape(re.sub(r'\s+', '', normalize_rating_text(issuer_name)))
+        pattern = r'评级展望(?:中诚信国际认为[,，])?' + issuer + r'信用水平在未来[0-9~～—至-]+个月内将保持(稳定|正面|负面|发展中|观察)'
+        matches = [m for m in re.finditer(pattern, compact) if not previous_rating_context(compact, m.start())]
+        if len({m.group(1) for m in matches}) == 1:
+            outlook_match = matches[0]
     rating_match = find_current(
         r"主体信用等级由[A-D]{1,3}[+-]?(?:调整至|调降至|上调至)[“\"]?([A-D]{1,3}[+-]?)",
         compact,
@@ -375,7 +381,7 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
         notice = parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date)
         if notice is not None:
             return notice
-        result = parse_rating_pages(pages, bond_name, announcement_date)
+        result = parse_rating_pages(pages, bond_name, announcement_date, issuer_name)
         if not result['rating'] and not result['rating_conflicts'] and initial_binding(pages):
             normalized = re.sub(r'\s+', '', normalize_rating_text('\n'.join(pages)))
             matches = list(re.finditer(r'(?:(?:债券|债项)信用等级[：:]?|(?:可转换公司债券|债券\(以下简称[“"]本期债券[”"]\)|本期(?:公司)?债券)(?:的)?信用等级(?:为|[：:])?)([A-D]{1,3}[+-]?)(?=[^A-D+-]|$)', normalized))

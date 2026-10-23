@@ -402,6 +402,12 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()), fromDate = n
       ...(repoRates?.ok===false?{error:'目标日回购利率未通过质量核验',errorType:'data_quality',pendingStages:['repoDailyRates']}:{}),
       ...(failedAccounts.length ? { error: '部分账户净值快照未完成', errorType: 'data_quality' } : {}),
     };
+    if(!result.ok&&isCashIncomeDependencyWait(failedAccounts,repoRates)){
+      result.continuationRequired=true;
+      result.nextAttemptInMinutes=60;
+      result.pendingStages=['cashIncomeDependencies'];
+      result.waitReason='cash_income_dependencies_incomplete';
+    }
     await finishJobRun(runId, result.ok, result.ok ? ('补' + total + '条 / ' + accountCount + '账户') : JSON.stringify(result));
     return result;
   } catch (e) {
@@ -413,4 +419,11 @@ async function runNavSnapshotJob({ targetDate = cnDate(new Date()), fromDate = n
   }
 }
 
-module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate };
+function isCashIncomeDependencyWait(failedAccounts,repoRates){
+  const waits=failedAccounts.flatMap(account=>(account.diagnostics||[]).flatMap(d=>d.pending||[]));
+  return failedAccounts.length>0&&waits.length>0&&failedAccounts.every(account=>!account.error&&(account.diagnostics||[]).length>0)
+    &&failedAccounts.every(account=>account.diagnostics.every(d=>d.reason==='cash_income_recalculation_incomplete'&&d.pending?.length))
+    &&waits.every(p=>['missing_repo_daily_rate','bond_interest_window_not_verified','dividend_window_not_verified','missing_hk_dividend_facts'].includes(p.reason))
+    &&(repoRates?.ok!==false||repoRates?.failures?.length>0&&repoRates.failures.every(f=>f.code==='EMPTY_DATA'));
+}
+module.exports = { recordNavSnapshots, runNavSnapshotJob, cnDate, buildFxByDate, isCashIncomeDependencyWait };

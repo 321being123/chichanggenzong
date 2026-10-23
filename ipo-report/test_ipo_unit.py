@@ -87,6 +87,11 @@ def check(name, cond, detail=""):
 
 
 fixed_instant = datetime(2026, 9, 27, 16, 30, tzinfo=timezone.utc)
+cooldown_fixture = {"attempted": 0, "failed": 0, "remaining": 1, "diagnostic_summary": {"by_field_and_reason": {"industry_pe": {"parse_miss": {"count": 1, "earliest_retry_after": "2026-10-30"}}}}}
+check("IPO冷却等待保留上海复查时间", history_sync.enrichment_cooldown(cooldown_fixture, date(2026, 10, 23)) == "2026-10-30T00:00:00+08:00")
+check("IPO实际尝试不能假装未执行等待", history_sync.enrichment_cooldown({**cooldown_fixture, "attempted": 1}, date(2026, 10, 23)) is None)
+check("IPO到期必须重新核验", history_sync.enrichment_cooldown(cooldown_fixture, date(2026, 10, 30)) is None)
+check("IPO无复查证据不能等待", history_sync.enrichment_cooldown({"remaining": 1}, date(2026, 10, 23)) is None)
 check("日历业务日期固定按上海时区", calendar_core._today_shanghai(fixed_instant) == date(2026, 9, 28))
 check("IPO同步子阶段时刻固定按上海时区",
       history_sync._now_shanghai(fixed_instant).isoformat() == "2026-09-28T00:30:00+08:00")

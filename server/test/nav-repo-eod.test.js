@@ -2,6 +2,14 @@ const assert=require('assert');
 const {completedRepoTarget,ensureNavRepoRate}=require('../services/repoDailyRates');
 const {loadCandidates}=require('../services/hkDailyCoverage');
 (async()=>{
+  const {isCashIncomeDependencyWait}=require('../jobs/navSnapshot');
+  const wait=[{diagnostics:[{reason:'cash_income_recalculation_incomplete',pending:[{reason:'missing_repo_daily_rate'}]}]}];
+  assert.strictEqual(isCashIncomeDependencyWait(wait,{ok:false,failures:[{code:'EMPTY_DATA'}]}),true);
+  assert.strictEqual(isCashIncomeDependencyWait(wait,{ok:false,failures:[{code:'PERMISSION_DENIED'}]}),false);
+  assert.strictEqual(isCashIncomeDependencyWait([{error:'坏数据'}],null),false);
+  assert.strictEqual(isCashIncomeDependencyWait([{diagnostics:[{reason:'missing_prices',pending:[{reason:'missing_repo_daily_rate'}]}]}],null),false);
+  assert.strictEqual(isCashIncomeDependencyWait([{diagnostics:[{reason:'cash_income_recalculation_incomplete',pending:[{reason:'missing_acquisition_date'}]}]}],null),false);
+  assert.strictEqual(isCashIncomeDependencyWait([],null),false);
   // NAV-REPO-EOD-001: 上海收盘边界与缺口定点补采。
   const options={allowCompletedToday:true,now:new Date('2026-10-13T07:29:59Z')};
   assert.strictEqual(completedRepoTarget('2026-10-13',options),false);

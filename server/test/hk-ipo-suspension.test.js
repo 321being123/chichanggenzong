@@ -22,6 +22,10 @@ const { runJobByCode } = require('../services/jobRunners');
       queries = 0;
     }
     pool.query = async (sql, params) => {
+      if(!params&&sql.includes("job_code='nav_snapshot'")){
+        assert(sql.includes("status='blocked'"),'依赖恢复只检查阻塞净值任务');
+        return {rows:[]};
+      }
       assert(!JSON.parse(params[1]).some(row => row.job_code.startsWith('hk_ipo_')),
         '暂停任务不得占到期队列名额');
       return { rows: [] };

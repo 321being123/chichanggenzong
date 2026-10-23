@@ -61,7 +61,7 @@ const complete = response([{ ts_code: '000001.SZ', trade_date: '20260824', close
   );
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
   assert.ok(source.includes('dm.trade_date::text AS trade_date'), '安全评分读取 PostgreSQL DATE 必须先转为日历日期文本');
-  assert.ok(source.includes('const tradeDate = normalizeTradeDate(rows[0] && rows[0].trade_date)'), '安全评分不得把 PostgreSQL DATE 直接转成 ISO 日期');
+  assert.ok(source.includes('const tradeDate = date || normalizeTradeDate(rows.find(row=>row.trade_date)?.trade_date)'), '安全评分须优先原目标日，再读取非空日历日期文本');
 
   // 待上市新债：日报在上市前一交易日就要用转股价生成首日建议，判定必须覆盖到。
   assert.strictEqual(isPendingListingBond({ ts_code: '123286.SZ', list_date: '20261019' }, '2026-10-18'), true, '下一交易日上市的新债必须进入主档补全');

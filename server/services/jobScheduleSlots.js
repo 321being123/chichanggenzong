@@ -4,7 +4,7 @@ const { JOB_DEFINITIONS, getJobDefinition, getRegisteredJobDefinition, PARTITION
 const { getMarketState, isCnTradingDate, prefetchMarketFacts, parseClock } = require('./marketState');
 const { sanitizeJobError, sanitizeJobResult } = require('./jobErrorSanitizer');
 const { ACTIVE_ALERT_WHERE } = require('./jobAlertMailer');
-const { sameTargetScope } = require('./jobRecoveryEvidence');
+const { sameTargetScope, businessDateText } = require('./jobRecoveryEvidence');
 const classifyCode = require('../../public/js/code-classify');
 const { appVersion } = require('../../package.json');
 
@@ -267,6 +267,7 @@ async function reconcileSlot(slot) {
   // 人工补跑刚重置为 pending 时，旧的失败 job_runs 仍然存在；此时不能被旧记录立即回滚为 failed，
   // 必须先让统一执行器领取并生成新的 manual_retry 运行记录。
   if (slot.status === 'pending' && slot.trigger_type === 'manual_retry') return slot;
+  if (slot.status === 'pending' && slot.result_summary?.dependencyRecovery) return slot;
   // 外部来源等待期间保留等待状态，不能被旧的失败运行记录在调度扫描时覆盖；
   // 到达 next_attempt_at 后由统一执行器重新领取并继续执行。
   if (slot.status === 'waiting_external') return slot;
@@ -520,7 +521,7 @@ async function claimSlot(slotId, workerId = WORKER_ID, triggerType = 'scheduled'
             lease_until=now()+($5::integer * interval '1 minute'), heartbeat_at=now(),
             next_attempt_at=NULL, trigger_type=$3, updated_at=now()
       WHERE slot_id=$1 AND status IN ('pending','failed','waiting_external')
-        AND attempt_count < $4
+        AND attempt_count < $4 + CASE WHEN job_code='nav_snapshot' AND result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
         AND (next_attempt_at IS NULL OR next_attempt_at<=now())
       RETURNING *, business_date::text AS business_date`,
     [slotId, workerId, triggerType, definition.maxAttempts || 3, definition.timeoutMinutes || 30]
@@ -571,7 +572,52 @@ async function recoverExpiredSlots() {
   return rows.length;
 }
 
+function attemptLimit(slot,definition){
+  return (definition.maxAttempts||3)+(slot.job_code==='nav_snapshot'&&slot.result_summary?.dependencyRecovery?1:0);
+}
+
+async function recoverNavDependencies(query=(sql,params)=>pool.query(sql,params)){
+  const {rows}=await query("SELECT *,business_date::text AS business_date FROM ops.job_schedule_slots WHERE job_code='nav_snapshot' AND status='blocked' AND acknowledged_at IS NULL AND NOT (result_summary ? 'dependencyRecovery') AND last_error LIKE '数据集 %连续%'");
+  for(const slot of rows){
+    const summary=slot.result_summary||{};
+    if((slot.request_payload?.mode||'core')!=='core'||summary.continuationStopReason||summary.continuationBlocked)continue;
+    if(!require('../jobs/navSnapshot').isCashIncomeDependencyWait(summary.failedAccounts||[],summary.repoRates))continue;
+    const date=businessDateText(slot.business_date),evidence=[];
+    let ready=true;
+    for(const account of summary.failedAccounts){
+      for(const diagnostic of account.diagnostics){
+        if(diagnostic.date&&diagnostic.date!==date){ready=false;break;}
+        for(const pending of diagnostic.pending){
+          if(pending.date&&pending.date!==date){ready=false;break;}
+          let result;
+          if(pending.reason==='missing_repo_daily_rate'){
+            result=await query(`SELECT p.updated_at AS evidence_at,p.partition_id::text AS evidence_id
+              FROM ops.dataset_partitions p WHERE dataset_code='repo_daily_rates' AND scope_key='CN'
+              AND partition_key=$1::date AND status='published' AND NOT is_stale AND diagnostics->>'quality_status'='passed'
+              AND EXISTS(SELECT 1 FROM market.repo_daily_rates r JOIN core.instruments i USING(instrument_id)
+                WHERE i.canonical_code='204001.SH' AND r.trade_date=$1::date AND r.quality_status='passed')`,[date]);
+          }else{
+            result=await query(`SELECT c.updated_at AS evidence_at,c.cursor_id::text AS evidence_id FROM ops.sync_cursors c
+              JOIN core.instruments i ON c.scope_key='cash_dividend:'||i.instrument_id::text
+              WHERE c.dataset_code='stock_cash_dividend_facts' AND (i.canonical_code=$1 OR split_part(i.canonical_code,'.',1)=$1)
+              AND c.last_success_date >= $2::date AND c.cursor_payload->>'complete'='true'
+              AND c.cursor_payload->>'parserVersion'=$3`,[pending.code,date,require('./cashDividendFacts').PARSER]);
+          }
+          if(result.rows.length!==1){ready=false;break;}
+          evidence.push({reason:pending.reason,code:pending.code,...result.rows[0]});
+        }
+      }
+    }
+    if(!ready||!evidence.some(e=>new Date(e.evidence_at)>new Date(slot.updated_at)))continue;
+    await query(`UPDATE ops.job_schedule_slots SET status='pending',next_attempt_at=now(),trigger_type='auto_retry',
+      result_summary=result_summary||jsonb_build_object('dependencyRecovery',$2::jsonb),updated_at=now()
+      WHERE slot_id=$1 AND status='blocked' AND acknowledged_at IS NULL AND NOT(result_summary ? 'dependencyRecovery')`,
+      [slot.slot_id,JSON.stringify({evidence,businessDate:date,previousAttempts:slot.attempt_count})]);
+  }
+}
+
 async function listDueSlots(limit = 20) {
+  await recoverNavDependencies();
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
   const retryPolicies = JOB_DEFINITIONS.filter(definition => !definition.disabled).map(definition => ({
     job_code: definition.jobCode, max_attempts: definition.maxAttempts || 3,
@@ -583,13 +629,13 @@ async function listDueSlots(limit = 20) {
       WHERE (status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= now())
         OR (status IN ('failed','waiting_external') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()))
         AND scheduled_for <= now()
-        AND s.attempt_count < policy.max_attempts
+        AND s.attempt_count < policy.max_attempts + CASE WHEN s.job_code='nav_snapshot' AND s.result_summary ? 'dependencyRecovery' THEN 1 ELSE 0 END
       ORDER BY scheduled_for ASC, slot_id ASC LIMIT $1`, [safeLimit, JSON.stringify(retryPolicies)]
   );
   const due = [];
   for (const slot of rows) {
     const definition = getJobDefinition(slot.job_code);
-    if (Number(slot.attempt_count || 0) >= (definition.maxAttempts || 3)) continue;
+    if (Number(slot.attempt_count || 0) >= attemptLimit(slot,definition)) continue;
     const dependencies = definition.dependencyCodes || [];
     if (dependencies.length) {
       const states = await taskDependencyStates(slot, dependencies);
@@ -878,6 +924,7 @@ async function mergeSlotExternalCallSummary(slotId, resultSummary = {}) {
   const stored = rows[0] && rows[0].result_summary || {};
   const storedLimit = Number(stored.slotExternalCallsLimit || 0);
   return { ...(resultSummary || {}), attemptExternalCalls, externalCalls: attemptExternalCalls,
+    ...(stored.dependencyRecovery?{dependencyRecovery:stored.dependencyRecovery}:{}),
     slotExternalCallsTotal: Number(stored.slotExternalCallsTotal || 0),
     slotExternalCallsLimit: Number(resultSummary.slotExternalCallsLimit || storedLimit) || null };
 }
@@ -1135,5 +1182,5 @@ module.exports = {
   claimSlot, completeSlot, deferSlot, waitForExternalSlot, continueSlot, mergeSlotExternalCallSummary, touchSlot, recoverExpiredSlots, listDueSlots, retryJobSlot, acknowledgeSlot,
   listJobSlots, getJobSlot, validateJobSlot, heartbeat, getJobOverview, queryDataAsOf, isDataAsOfFresh, resolveDataAsOf, expectedDataDate,
   isSlotDayAllowed, isWeekday, previousDate, resolveScheduleForDate,
-  resolveDatasetPartitionDate, datasetDependencyState,
+  resolveDatasetPartitionDate, datasetDependencyState, recoverNavDependencies, attemptLimit,
 };

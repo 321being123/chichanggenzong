@@ -232,7 +232,7 @@ check('安全性完整列表缓存版本覆盖强赎状态，静态响应只保�
 check('安全性快照源覆盖待上市新债，上市前即可按正股财务评级', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'bondSafetyTushare.js'), 'utf8');
   assert.ok(source.includes('UNION ALL'), '快照源查询缺少待上市新债分支');
-  assert.ok(/i\.list_date IS NULL OR i\.list_date>=CURRENT_DATE/.test(source),
+  assert.ok(source.includes('i.list_date IS NULL OR i.list_date>=COALESCE($1::date,CURRENT_DATE)'),
     '待上市分支必须以上市日界定目标范围');
   assert.ok(source.includes("NOT IN ('cancelled','canceled')"), '待上市分支必须排除终止发行');
   assert.ok(/p\.stock_instrument_id IS NOT NULL/.test(source),

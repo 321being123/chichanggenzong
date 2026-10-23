@@ -246,6 +246,11 @@ async function refreshBondSafety(reason = 'manual', options = {}) {
     assertStableIdentity(source);
     const result = evaluateBondSafety(source.companyRows, source.bondRows, source.sourceUpdatedAt);
     const previous = await getPreviousPublishedSnapshot();
+    if(previous?.data?.length){
+      const {filterPublicBonds}=require('./bondSafetyTushare');
+      previous.data=await filterPublicBonds(previous.data.map(row=>({...row,ts_code:row.bond_code})));
+      previous.row_count=previous.total_bonds_count=previous.data.length;
+    }
     const companyPeriods = [...new Set((source.companyRows || []).map(row => row.financial_report_end_date).filter(Boolean))];
     result.diagnostics = Object.assign({}, result.diagnostics, {
       expected_bond_count: source.expectedBondCount || source.bondRows.length,

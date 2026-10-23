@@ -1289,6 +1289,28 @@ def update_quality(cur, today, include_enrichment=True, only_codes=None):
     return {"missing_records": missing_records, "missing_fields": missing_fields}
 
 
+def enrichment_cooldown(result, today):
+    """只在本轮未尝试且全部剩余字段都有未来复查时间时继续等待。"""
+    if result.get('attempted') or result.get('failed') or result.get('stopped'):
+        return None
+    groups = (result.get('diagnostic_summary') or {}).get('by_field_and_reason') or {}
+    dates, count = [], 0
+    for reasons in groups.values():
+        for item in reasons.values():
+            retry = item.get('earliest_retry_after')
+            try:
+                retry_day = date.fromisoformat(str(retry))
+            except (ValueError, TypeError):
+                return None
+            if retry_day <= today:
+                return None
+            dates.append(retry_day.isoformat())
+            count += int(item.get('count', 0))
+    if count <= 0 or count != int(result.get('remaining', 0)):
+        return None
+    return min(dates) + 'T00:00:00+08:00'
+
+
 def _targeted_stage_complete(result, target_codes, target_fields=None):
     expected = len({str(code or '').split('.')[0] for code in target_codes if code})
     taxonomy = result.get("industry_taxonomy") if isinstance(result.get("industry_taxonomy"), dict) else {}
@@ -1578,8 +1600,11 @@ def run(today=None, mode="core"):
                 f"{int((enrichment.get('industry_taxonomy') or {}).get('missing', 0)) + int((enrichment.get('industry_taxonomy') or {}).get('failed', 0))} 项，"
                 f"首日表现待补 {int(first_day.get('pending', 0))} 项"
             )
+            cooldown = enrichment_cooldown(enrichment, today) if mode == 'enrichment' and not stage_complete and not first_day.get('pending') and not first_day.get('stopped') and not (enrichment.get('industry_taxonomy') or {}).get('missing') and not (enrichment.get('industry_taxonomy') or {}).get('failed') and not (enrichment.get('industry_taxonomy') or {}).get('stopped') else None
             return {
                 "ok": stage_complete, "mode": mode, "dataAsOf": today.isoformat(),
+                **({'continuationRequired': True, 'nextAttemptAt': cooldown,
+                    'pendingStages': ['enrichment'], 'waitReason': 'field_recheck_cooldown'} if cooldown else {}),
                 "stageComplete": stage_complete,
                 "status": "succeeded" if stage_complete else "partial",
                 "error": stage_error,

@@ -484,7 +484,10 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
            ORDER BY x.trade_date DESC, x.source_id DESC LIMIT 1
         ) v ON true
        WHERE i.asset_class='convertible_bond'
-         AND (i.list_date IS NULL OR i.list_date>=CURRENT_DATE)
+         AND (i.list_date IS NULL OR i.list_date>=COALESCE($1::date,CURRENT_DATE))
+         AND NOT EXISTS (SELECT 1 FROM market.convertible_bond_daily_metrics existing
+           WHERE existing.instrument_id=i.instrument_id
+             AND existing.trade_date=(SELECT trade_date FROM market_day))
          AND COALESCE(i.status,'') NOT IN ('cancelled','canceled')
          AND p.stock_instrument_id IS NOT NULL
     )
@@ -508,6 +511,8 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
       LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='balance' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) bal ON true
       LEFT JOIN LATERAL (SELECT r.raw_payload,r.period_end FROM fundamental.financial_reports r WHERE r.company_id=ci.company_id AND r.report_kind='income' AND r.report_type='1' AND r.is_current_version AND r.period_end=fp.period_end ORDER BY r.announced_at DESC NULLS LAST LIMIT 1) inc ON true
       LEFT JOIN LATERAL (SELECT n.industry_name FROM core.company_industry_memberships m JOIN core.industry_nodes n ON n.industry_node_id=m.industry_node_id WHERE m.company_id=ci.company_id AND m.is_current ORDER BY m.announced_at DESC NULLS LAST LIMIT 1) n ON true
+    WHERE NOT EXISTS (SELECT 1 FROM fundamental.convertible_bond_issuance issuance
+      WHERE issuance.instrument_id=b.instrument_id AND issuance.issue_type IN ('定向','私募'))
   `, [date || null]);
   if (!rows.length) throw new Error('标准层暂无可转债行情，安全评分暂不覆盖');
   const pick = (row, key, fallback) => row && row[key] != null ? row[key] : fallback;
@@ -538,7 +543,7 @@ async function fetchBondSafetySourceFromDatabase(targetTradeDate = null) {
   });
   // PostgreSQL DATE 可能由 pg 按本地时区解析为 Date；不能直接 toISOString，
   // 否则上海时区的交易日会被回退一天。统一按日历日期文本读取。
-  const tradeDate = normalizeTradeDate(rows[0] && rows[0].trade_date);
+  const tradeDate = date || normalizeTradeDate(rows.find(row=>row.trade_date)?.trade_date);
   return { companyRows, bondRows, sourceUpdatedAt: tradeDate ? `${tradeDate}T15:00:00+08:00` : null, dataAsOf: tradeDate };
 }
 

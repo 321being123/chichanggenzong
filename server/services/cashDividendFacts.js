@@ -4,6 +4,7 @@ const CoreDate=require('../../public/shared/core-date');
 const {resolveInstrument}=require('./securityIdentity');
 const crypto=require('crypto');
 const PARSER='cash-dividend-v6';
+const BOND_INTEREST_PARSER='bond-interest-v2';
 function normalizeChineseDates(text){
   const digits={'零':0,'〇':0,'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
   const n=s=>s.includes('十')?Number(s.split('十')[0]?digits[s.split('十')[0]]:1)*10+Number(s.split('十')[1]?digits[s.split('十')[1]]:0):Number([...s].map(c=>digits[c]).join(''));
@@ -90,15 +91,22 @@ function parseDividend(text,identity) {
 function parseBondInterest(text,identity) {
   const compact=normalizeChineseDates(text);
   const bare=String(identity.canonical_code||identity.code).split('.')[0];
-  const codes=[...compact.matchAll(/(?:债券代码|转债代码)[：:]?(\d{6})/g)].map(m=>m[1]);
+  const codeText=String(text||'').normalize('NFKC').replace(/[^\S\n]+/g,'');
+  const codes=[...codeText.matchAll(/(?:债券代码|转债代码)[：:]?(\d{6,9})(?!\d)/g)].map(m=>m[1]);
+  const body=codeText.split(/(?:一[、.]|1[、.])本期债券基本情况/)[1];
+  if(body){
+    const bodyCodes=[...body.split(/二[、.]/)[0].matchAll(/债券代码[：:]?(\d{6,9})(?!\d)/g)].map(m=>m[1]);
+    if(codes.includes(bare)&&bodyCodes.length&&new Set(bodyCodes).size===1&&bodyCodes[0]!==bare)
+      return {classification:'excluded_other_bond_interest',targetBondCode:bare,actualBondCode:bodyCodes[0],identityBasis:'explicit_current_bond_basic_section',parserVersion:PARSER,bondParserVersion:BOND_INTEREST_PARSER};
+  }
   if(!codes.includes(bare)||new Set(codes).size!==1) return {reason:'document_security_not_verified'};
   const recordDate=labeledDate(compact,'(?:付息)?债权登记日(?:期)?');
-  const payDate=labeledDate(compact,'(?:本次)?付息日(?:期)?');
+  const payDate=labeledDate(compact,'(?:本次)?(?:付息|兑息)日(?:期)?');
   // 只取明确含税的每张/每10张利息，不把本金、票面利率列表或税后金额当作毛息。
-  const amounts=[...compact.matchAll(/每(?:(\d+))?张[^。；;]{0,90}?(?:派发利息(?:为)?|利息为|利息)[：:]?(?:人民币)?([\d.]+)元[（(]含税[）)]/g)]
+  const amounts=[...compact.matchAll(/每(?:(\d+))?张[^。；;]{0,90}?(?:派发利息(?:为)?|派息金额(?:为)?|利息为|利息)[：:]?(?:人民币)?([\d.]+)元[（(]含税[）)]/g)]
     .map(m=>Number(m[2])/Number(m[1]||1));
   const unique=[...new Set(amounts)];
-  const terms={incomeKind:'bond_interest',recordDate,payDate,exDate:payDate,currency:'CNY',amount:unique[0],taxRate:0.2,quantityUnit:'bond',parserVersion:PARSER};
+  const terms={incomeKind:'bond_interest',recordDate,payDate,exDate:payDate,currency:'CNY',amount:unique[0],taxRate:0.2,quantityUnit:'bond',parserVersion:PARSER,bondParserVersion:BOND_INTEREST_PARSER};
   if(!recordDate||!payDate||unique.length!==1||!Number.isFinite(terms.amount)||terms.amount<0) return {reason:'incomplete_bond_interest_terms',...terms};
   if(payDate<=recordDate) return {reason:'invalid_dividend_timeline',...terms};
   return terms;
@@ -115,7 +123,8 @@ async function storeDocument(identity,ann,sourceId) {
   const {runPythonExtraction}=require('./arbitrageParser');
   const url=ann.fileLink||ann.url,sourceKey=ann.sourceKey||ann.source_number||url;
   const cached=(await pool.query(`SELECT document_id,raw_payload FROM event.documents WHERE source_id=$1 AND url=$2 ORDER BY document_id DESC LIMIT 1`,[sourceId,url])).rows[0];
-  if(cached?.raw_payload?.cashDividend?.parserVersion===PARSER && cached.raw_payload.cashDividend.quality==='passed') return {ok:true,cached:true,fact:cached.raw_payload.cashDividend,url,code:identity.code};
+  if(cached?.raw_payload?.cashDividend?.parserVersion===PARSER && cached.raw_payload.cashDividend.quality==='passed'
+    &&(identity.asset_class!=='convertible_bond'||cached.raw_payload.cashDividend.bondParserVersion===BOND_INTEREST_PARSER)) return {ok:true,cached:true,fact:cached.raw_payload.cashDividend,url,code:identity.code};
   const body=cached?.raw_payload?.text?{text:cached.raw_payload.text}:await runPythonExtraction(url,String(identity.canonical_code).split('.')[0],{rawText:true});
   let fact=parseDividend(body.text,identity);
   if(identity.market==='HK'&&fact.reason){

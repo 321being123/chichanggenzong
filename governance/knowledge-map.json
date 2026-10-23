@@ -716,6 +716,51 @@
       ]
     },
     {
+      "id": "security-share",
+      "risk": "medium",
+      "paths": [
+        "server/routes/share.js",
+        "server/services/shareRegistry.js",
+        "server/services/wechatShare.js",
+        "server/views/share.html",
+        "public/shared/share.js",
+        "public/js/share-page.js",
+        "public/css/share.css",
+        "public/share-cover.png",
+        "docs/证券分析与通用分享开发方案_*.md"
+      ],
+      "keywords": [
+        "分享",
+        "分享面板",
+        "公开分享页",
+        "微信分享",
+        "朋友圈",
+        "二维码",
+        "canonical",
+        "Open Graph",
+        "签名"
+      ],
+      "read": [
+        "docs/证券分析与通用分享开发方案_20261022.md",
+        "docs/技术架构.md"
+      ],
+      "update": [
+        "docs/技术架构.md",
+        "docs/知识索引.md",
+        "docs/证券分析与通用分享开发方案_20261022.md"
+      ],
+      "checks": [
+        "npm.cmd run test:all"
+      ],
+      "expandOn": [
+        "权限",
+        "Cookie 与跨站",
+        "共享组件",
+        "移动端兼容",
+        "外部请求保护"
+      ]
+    },
+    {
       "id": "deployment",
       "risk": "high",
       "paths": [

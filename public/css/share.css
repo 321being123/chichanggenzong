@@ -1,0 +1,334 @@
+/* 通用分享：公开分享页外壳 + 分享面板
+   规范沿用 docs/技术架构.md 第 5 节：正文 760px 单列、操作区至少 44px、输入字号 16px。
+   面板复用 shared/style.css 的 .modal-overlay / .modal 基础，只在手机端改为底部弹出。 */
+
+/* ============ 公开分享页 ============ */
+/* 背景与文字沿用全站 body 默认（#f0f2f5 / #333），这里不重复声明，避免与主站观感不一致。 */
+.share-body {
+  margin: 0;
+  padding: 0;
+}
+
+.share-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+.share-brand {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  text-decoration: none;
+}
+
+.share-open-btn {
+  min-height: 36px;
+}
+
+.share-main {
+  padding-bottom: 24px;
+}
+
+/* 标题在深色 hero 背景上，必须用浅色；不能沿用正文的 #333。 */
+.stock-analysis-hero h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  line-height: 1.35;
+  color: #fff;
+}
+
+.share-footer {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 16px 20px 28px;
+  font-size: 13px;
+  color: #6e6e6e;
+}
+
+.share-footer a {
+  color: inherit;
+}
+
+.stock-analysis-message-error {
+  color: #c62828;
+}
+
+/* ============ 分享面板 ============ */
+.share-overlay .share-modal {
+  width: min(420px, calc(100vw - 32px));
+  max-width: 100%;
+  padding: 18px 18px 14px;
+}
+
+/* mobile-ui 会给弹窗自动插入 header，分享面板没有标题栏，空 header 不占高度 */
+.share-modal .mobile-dialog-header:empty {
+  display: none;
+}
+
+/* iOS 风格预览行：站点标识 + 证券名称 + 内容类型与域名 */
+.share-preview {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-bottom: 14px;
+  border-bottom: 0.5px solid var(--home-border, #e4e7ee);
+}
+
+.share-preview-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  background: #182848;
+}
+
+.share-preview-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.share-preview-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-preview-sub {
+  display: block;
+  font-size: 12px;
+  line-height: 1.3;
+  color: #6e6e6e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-channels {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 16px 0 14px;
+}
+
+.share-channel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  min-height: 72px;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.share-channel-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 16px;
+  transition: transform .15s ease;
+}
+
+/* 品牌色只用于渠道图标底色，图形本身在 SVG 内统一白色 */
+.share-channel-icon--wechat-friend { background: #07c160; }
+.share-channel-icon--wechat-timeline { background: #3eaf5c; }
+.share-channel-icon--qq { background: #12b7f5; }
+.share-channel-icon--copy { background: #e9ebef; }
+
+.share-channel-label {
+  font-size: 12px;
+  line-height: 1.2;
+  color: #333;
+}
+
+.share-channel:hover .share-channel-icon,
+.share-channel:focus-visible .share-channel-icon {
+  transform: scale(1.05);
+}
+
+/* 焦点环只圈住图标本身，避免把整个按钮框成方块 */
+.share-channel:focus-visible {
+  outline: none;
+}
+
+.share-channel:focus-visible .share-channel-icon {
+  outline: 2px solid var(--home-primary, #1a237e);
+  outline-offset: 3px;
+}
+
+.share-cancel {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 4px;
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 0.5px solid var(--home-border, #e4e7ee);
+  background: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: #6e6e6e;
+  cursor: pointer;
+}
+
+.share-cancel:hover,
+.share-cancel:focus-visible {
+  color: #333;
+}
+
+.share-detail {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4a5058;
+}
+
+.share-detail:empty {
+  display: none;
+}
+
+.share-hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4a5058;
+}
+
+.share-hint-error {
+  color: #c62828;
+}
+
+.share-qr {
+  display: block;
+  margin: 0 auto;
+  width: 200px;
+  height: 200px;
+  background: #fff;
+  border: 1px solid var(--home-border, #e3e6eb);
+  border-radius: 8px;
+}
+
+.share-manual {
+  margin-top: 12px;
+}
+
+.share-manual-hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4a5058;
+}
+
+.share-manual-text {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #333;
+  background: #fff;
+  border: 1px solid var(--home-border, #e3e6eb);
+  border-radius: 10px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+/* 聚焦时用全站主色描边，不用浏览器默认的黑框 */
+.share-manual-text:focus {
+  outline: none;
+  border-color: var(--home-primary, #1a237e);
+}
+
+/* ============ 手机端 ============ */
+@media (max-width: 760px) {
+  .share-topbar {
+    padding: 10px 12px;
+  }
+
+  .share-footer {
+    padding: 14px 12px 24px;
+  }
+
+  .stock-analysis-hero h1 {
+    font-size: 19px;
+  }
+
+  /* 面板改为底部弹出：内容贴底，圆角只在顶部。 */
+  .share-overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .share-overlay .share-modal {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    border-radius: 16px 16px 0 0;
+    padding: 18px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    max-height: calc(var(--mobile-viewport-height, 100vh) - 48px);
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 48px);
+    overflow-y: auto;
+  }
+
+  .share-channel {
+    min-height: 48px;
+  }
+}
+
+/* ============ 主站证券分析标题区的分享入口 ============ */
+.stock-analysis-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.btn-hero-share {
+  height: auto;
+  min-height: 36px;
+  padding: 0 14px;
+  color: #fff;
+  background: rgba(255, 255, 255, .12);
+  border: 1px solid rgba(255, 255, 255, .42);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.btn-hero-share:hover,
+.btn-hero-share:focus-visible {
+  background: rgba(255, 255, 255, .24);
+  border-color: #fff;
+  outline: none;
+}
+
+@media (max-width: 760px) {
+  .stock-analysis-hero-actions {
+    justify-content: flex-start;
+    margin-top: 12px;
+  }
+
+  .btn-hero-share {
+    min-height: 44px;
+  }
+}

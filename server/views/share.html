@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>__SHARE_TITLE__</title>
+<meta name="description" content="__SHARE_DESCRIPTION__">
+<link rel="canonical" href="__SHARE_CANONICAL__">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="存在小站">
+<meta property="og:title" content="__SHARE_TITLE__">
+<meta property="og:description" content="__SHARE_DESCRIPTION__">
+<meta property="og:url" content="__SHARE_CANONICAL__">
+__SHARE_OG_IMAGE__
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="__SHARE_TITLE__">
+<meta name="twitter:description" content="__SHARE_DESCRIPTION__">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/shared/style.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="/css/stock-analysis.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="/css/share.css?v=__APP_VERSION__">
+<script src="/vendor/chart.umd.min.js?v=20260904" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous" defer></script>
+</head>
+<body class="share-body" data-share-kind="__SHARE_KIND__" data-share-code="__SHARE_CODE__" data-share-name="__SHARE_NAME__" data-share-path="__SHARE_PATH__">
+
+<header class="share-topbar">
+  <a class="share-brand" href="/">存在小站</a>
+  <button class="btn btn-outline btn-sm share-open-btn" type="button" data-act="Share.open" data-arg="security-analysis">分享</button>
+</header>
+
+<main class="share-main" id="main-share">
+  <div class="stock-analysis-shell feature-page-shell">
+    <div class="stock-analysis-hero">
+      <div>
+        <h1 id="share-security-title">__SHARE_NAME__</h1>
+        <p>公开分析数据，仅供研究参考，不构成投资建议。</p>
+      </div>
+    </div>
+    <!-- 分析脚本按 ctx 分别写入 stock-analysis-message / bond-analysis-message，
+         两个容器都要存在，否则消息不会被清空、加载提示会一直残留。 -->
+    <div id="stock-analysis-message" class="stock-analysis-message js-hidden"></div>
+    <div id="bond-analysis-message" class="stock-analysis-message js-hidden"></div>
+
+    <div class="js-hidden" id="stock-analysis-content">
+      <div class="stock-analysis-summary" id="stock-analysis-summary"></div>
+      <div class="stock-analysis-view-tabs" role="tablist" aria-label="个股数据视图">
+        <button class="selected" id="stock-analysis-view-analysis" role="tab" aria-selected="true" data-act="stockAnalysisSwitchView" data-arg="analysis">个股分析</button>
+        <button data-statement-view="balance" role="tab" aria-selected="false" data-act="stockAnalysisSwitchView" data-arg="balance">资产负债表</button>
+        <button data-statement-view="income" role="tab" aria-selected="false" data-act="stockAnalysisSwitchView" data-arg="income">利润表</button>
+        <button data-statement-view="cashflow" role="tab" aria-selected="false" data-act="stockAnalysisSwitchView" data-arg="cashflow">现金流量表</button>
+      </div>
+      <div id="stock-analysis-analysis-pane">
+        <section class="stock-analysis-section"><h3>股票基本信息</h3><div id="stock-analysis-valuation"></div></section>
+        <section class="stock-analysis-section"><h3>盈利与分红稳定性</h3><div id="stock-analysis-stability"></div></section>
+        <section class="stock-analysis-section"><h3>股价及估值分位</h3><div class="stock-analysis-note" id="stock-analysis-percentile-note"></div><div class="stock-analysis-grid" id="stock-analysis-percentiles"></div></section>
+        <section class="stock-analysis-section"><h3>盈利增长</h3><div id="stock-analysis-growth"></div></section>
+        <section class="stock-analysis-section"><h3>财务安全性</h3><div class="stock-analysis-grid" id="stock-analysis-safety"></div></section>
+        <section class="stock-analysis-section"><h3>经营现金流与自由现金流</h3><div class="stock-analysis-grid" id="stock-analysis-cashflow"></div></section>
+        <section class="stock-analysis-section"><h3>公司公告</h3><div id="stock-analysis-events"></div></section>
+        <div class="stock-analysis-foot" id="stock-analysis-quality"></div>
+      </div>
+      <div class="js-hidden" id="stock-analysis-statements-pane">
+        <section class="stock-analysis-section">
+          <div class="stock-analysis-statements-head">
+            <h3 id="stock-analysis-statements-title">资产负债表</h3>
+          </div>
+          <div id="stock-analysis-statements-message" class="stock-analysis-chart-empty">请选择三表查看。</div>
+          <div class="js-hidden stock-analysis-statements-wrap" id="stock-analysis-statements-wrap"></div>
+        </section>
+      </div>
+    </div>
+
+    <div id="bond-analysis-content" class="js-hidden bond-analysis-content">
+      <div class="bond-analysis-summary" id="bond-analysis-summary"></div>
+      <section class="bond-analysis-section"><h3>可转债基本信息</h3><div id="bond-analysis-basic"></div></section>
+      <section class="bond-analysis-section"><h3>触发价格与计数</h3><div id="bond-analysis-triggers"></div></section>
+      <section class="bond-analysis-section"><h3>募集用途与条款</h3><div id="bond-analysis-terms"></div></section>
+      <section class="bond-analysis-section"><h3>转股价调整历史</h3><div id="bond-analysis-price-history"></div></section>
+      <section class="bond-analysis-section"><h3>转股价不下修历史</h3><div id="bond-analysis-no-revision"></div></section>
+      <section class="bond-analysis-section"><h3>可转债安全性</h3><div id="bond-analysis-safety"></div></section>
+      <section class="bond-analysis-section"><h3>债券基本信息</h3><div id="bond-analysis-bond"></div></section>
+      <section class="bond-analysis-section"><h3>债券利息明细</h3><div id="bond-analysis-coupons"></div></section>
+      <section class="bond-analysis-section"><h3>期权价值</h3><small class="bond-analysis-method" id="bond-analysis-option-method"></small><div id="bond-analysis-option"></div></section>
+      <section class="bond-analysis-section"><h3>正股相关</h3><div id="bond-analysis-stock"></div></section>
+      <section class="bond-analysis-section"><h3>评级历史</h3><div id="bond-analysis-ratings"></div></section>
+      <div class="bond-analysis-status" id="bond-analysis-status"></div>
+    </div>
+  </div>
+</main>
+
+<footer class="share-footer">
+  <a href="/">存在小站</a> · 公开分析页 · 数据以站内实际更新为准
+</footer>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="/shared/ui-actions.js?v=__APP_VERSION__"></script>
+<script src="/shared/mobile-ui.js?v=__APP_VERSION__"></script>
+<script src="/shared/chart-interaction.js?v=__APP_VERSION__"></script>
+<script src="/js/code-classify.js?v=__APP_VERSION__"></script>
+<script src="/shared/core-date.js?v=__APP_VERSION__"></script>
+<script src="/js/utils.js?v=__APP_VERSION__"></script>
+<script src="/shared/dialog.js?v=__APP_VERSION__"></script>
+<script src="/shared/business-table.js?v=__APP_VERSION__"></script>
+<script src="/shared/share.js?v=__APP_VERSION__"></script>
+<script src="/js/stock-analysis.js?v=__APP_VERSION__"></script>
+<script src="/js/bond-analysis.js?v=__APP_VERSION__"></script>
+<script src="/js/stock-analysis-statements.js?v=__APP_VERSION__"></script>
+<script src="/js/stock-analysis-chart.js?v=__APP_VERSION__"></script>
+<script src="/js/stock-analysis-valuation-chart.js?v=__APP_VERSION__"></script>
+<script src="/js/share-page.js?v=__APP_VERSION__"></script>
+</body>
+</html>

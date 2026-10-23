@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="css/bond-redemption.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/bond-revision.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/stock-analysis.css?v=__APP_VERSION__">
+<link rel="stylesheet" href="css/share.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="css/market-volatility.css?v=__APP_VERSION__">
 <link rel="stylesheet" href="vendor/vditor/dist/index.css?v=20260904">
 <link rel="stylesheet" href="css/knowledge.css?v=__APP_VERSION__">
@@ -465,8 +466,11 @@
   <div class="stock-analysis-shell feature-page-shell">
     <div class="stock-analysis-hero">
       <div><h2>证券分析</h2><p>输入股票、可转债名称或代码，读取已入库数据并生成分析结果。数据仅供研究参考。</p></div>
-      <span id="stock-analysis-updated">请输入名称或代码</span>
-      <span id="bond-analysis-updated" class="hidden"></span>
+      <div class="stock-analysis-hero-actions">
+        <span id="stock-analysis-updated">请输入名称或代码</span>
+        <span id="bond-analysis-updated" class="hidden"></span>
+        <button class="btn btn-hero-share btn-sm" type="button" data-act="Share.open" data-arg="security-analysis">分享</button>
+      </div>
     </div>
     <div class="stock-analysis-toolbar table-wrap">
       <select id="security-analysis-select" aria-label="选择持仓或自选" data-act="securityAnalysisSelect" data-use-value><option value="">选择持仓或自选</option></select>
@@ -1163,6 +1167,7 @@
 <script src="js/utils.js?v=__APP_VERSION__" defer></script>
 <script src="shared/dialog.js?v=__APP_VERSION__" defer></script>
 <script src="shared/business-table.js?v=__APP_VERSION__" defer></script>
+<script src="shared/share.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-quote.js?v=__APP_VERSION__" defer></script>
 <script src="shared/core-tables.js?v=__APP_VERSION__" defer></script>
 <script src="shared/cash-income-panel.js?v=__APP_VERSION__" defer></script>

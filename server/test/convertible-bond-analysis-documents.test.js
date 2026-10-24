@@ -388,6 +388,38 @@ assert len(prospectus.coupon_rates('第一年：0.2％，第二年利率为0.4%�
 # BOND-COUPON-HEADING-010: 明确章节利率表不因缺少票面/债券前缀而跳过。
 prospectus.read_document=lambda *a: (['（三）利率\n第一年0.30%、第二年0.50%、第三年1.00%、第四年1.50%、第五年1.80%、第六年2.00%'],{'document_hash':'a'*64})
 assert len(prospectus.extract('url')['coupon_rates'])==6
+# BOND-RATING-ADJUST-NOTICE-050：调整前/调整后型公告取调整后结论，日期取出具公告实际日而非前次评级时间。
+adjust='''证券代码：600745 证券简称：*ST闻泰 转债代码：110081 转债简称：闻泰转债
+闻泰科技股份有限公司关于“闻泰转债”不定期跟踪评级结果的公告
+重要内容提示：
+调整前闻泰转债评级：主体信用等级为“BBB+”，评级展望为“稳定”；债项信用等级为“BBB+”。
+调整后闻泰转债评级：主体信用等级为“BBB-”，评级展望为“负面”；债项信用等级为“BBB-”。
+公司前次主体信用评级结果为“BBB+”，评级展望为“稳定”；“闻泰转债”前次债项信用评级结果为“BBB+”，评级机构为中诚信，评级时间为2026年5月26日。
+评级机构中诚信于2026年9月15日出具了《中诚信国际关于调降闻泰科技股份有限公司主体及相关债项信用等级的公告》，评级结果如下：调整公司主体信用等级为“BBB-”，评级展望为负面；同时调整“闻泰转债”信用等级至“BBB-”。'''
+adjust_result=rating.parse_rating_result_notice([adjust],'闻泰转债','110081.SH','闻泰科技股份有限公司','2026-09-17','600745.SH')
+assert (adjust_result['rating'],adjust_result['rating_outlook'],adjust_result['rating_date'])==('BBB-','负面','2026-09-15'),adjust_result
+# BOND-RATING-NOTICE-STOCK-CODE-051：只写证券代码不写转债代码的正式公告，按 简称+证券代码+发行人 绑定。
+no_code='''证券代码：603759 证券简称：海天股份 公告编号：2026-055
+海天水务集团股份公司关于“海天转债”2026年跟踪评级结果的公告
+前次评级结果：公司主体信用等级为“AA”；评级展望为“稳定”；“海天转债”信用等级为“AA”
+本次评级结果：公司主体信用等级为“AA”；评级展望为“稳定”；“海天转债”信用等级为“AA”'''
+assert rating.parse_rating_result_notice([no_code],'海天转债','113700.SH','海天水务集团股份公司','2026-06-01','603759.SH')['rating']=='AA'
+for issuer,stock in [('其他股份有限公司','603759.SH'),('海天水务集团股份公司',None),('海天水务集团股份公司','600000.SH')]:
+    try: rating.parse_rating_result_notice([no_code],'海天转债','113700.SH',issuer,'2026-06-01',stock); assert False
+    except ValueError: pass
+# BOND-RATING-NAME-HEADER-052：债名后接公司名不是更长债名；数字扩展仍拒绝。
+own='''证券代码：603477 证券简称：巨星农牧 债券代码：113648 债券简称：巨星转债
+乐山巨星农牧股份有限公司关于收到可转债评级机构跟踪评级结果的公告
+前次评级结果：主体信用等级为“AA-”，评级展望为“稳定”；“巨星转债”信用等级为“AA-”
+本次评级结果：主体信用等级为“AA-”，评级展望为“稳定”；“巨星转债”信用等级为“AA-”'''
+assert rating.parse_rating_result_notice([own],'巨星转债','113648.SH','乐山巨星农牧股份有限公司','2026-07-25','603477.SH')['rating']=='AA-'
+try: rating.parse_rating_result_notice([own.replace('债券简称：巨星转债','债券简称：巨星转债2\n债券代码：113648')],'巨星转债','113648.SH','乐山巨星农牧股份有限公司','2026-07-25','603477.SH'); assert False
+except ValueError: pass
+# BOND-RATING-OBSERVE-ROW-053：首次评级表头与观察名单状态词不妨碍取本债行。
+observe='评级结果\n评级日期2026年06月25日\n本次评级\n首次评级\n主体信用等级\nA+\nA+\n评级展望\n--\n稳定\n侨银转债\nA+\n列入观察名单\nA+'
+parsed=rating.parse_rating_pages([observe],'侨银转债','2026-06-27')
+assert parsed['rating']=='A+' and parsed['rating_date_source']=='official_document'
+assert rating.issuer_forms('海天水务集团股份公司')=={'海天水务集团股份公司','海天水务'}
 print('BOND-ANALYSIS-004: official identity, PDF cache, corruption, complete holder table and rating date passed')
 `;
 if(path.isAbsolute(py))assert.ok(fs.existsSync(py),'venv python 不存在: '+py);

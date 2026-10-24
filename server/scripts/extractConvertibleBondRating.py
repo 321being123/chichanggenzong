@@ -38,6 +38,39 @@ def find_current(pattern, text):
     return next((match for match in re.finditer(pattern, text) if not previous_rating_context(text, match.start())), None)
 
 
+def issuer_forms(issuer_name):
+    # 公告正文可能带或不带“集团”，也可能把“股份有限公司”写成“股份公司”，
+    # 只按去掉后缀的法人核心名做等价；核心名不足4字不参与匹配，避免泛化。
+    issuer = re.sub(r'\s+', '', normalize_rating_text(issuer_name or ''))
+    if not issuer:
+        return set()
+    core = re.sub(r'(?:集团)?(?:股份有限公司|有限责任公司|有限公司|股份公司)$', '', issuer)
+    return {form for form in {issuer, core} if len(form) >= 4}
+
+
+def bond_name_header(head, bond_name):
+    name = re.sub(r'\s+', '', normalize_rating_text(bond_name or ''))
+    if not name:
+        return None
+    # 抬头明示了“转债简称”就按该字段判定；写明别的债名时，标题提到本债也不算身份。
+    declared = re.findall(r'(?:转债|债券)简称[:：]?([^\s，。；、]{2,12})', head)
+    if declared and not declared[0].startswith(name):
+        return None
+    # 正式公告也可能只写“证券代码/证券简称”，把转债名写在标题里：关于“XX转债”…公告。
+    return (re.search(r'(?:转债|债券)简称[:：]?' + re.escape(name), head)
+            or re.search(r'关于[“"]?' + re.escape(name) + r'[”"]?', head))
+
+
+def outlook_from_blocks(blocks):
+    pattern = r'评级展望(?:为|维持|[:：])?[“"]?(稳定|正面|负面|发展中|观察)'
+    for block in blocks:
+        matches = list(re.finditer(pattern, block))
+        values = {match.group(1) for match in matches}
+        if len(values) == 1:
+            return next(iter(values)), matches[0].group(0)
+    return None, None
+
+
 def normalize_rating_text(text):
     # NFKC alone leaves U+2212 intact; do not truncate AA− to AA.
     return unicodedata.normalize('NFKC', text).translate(str.maketrans({'−': '-', '–': '-', '‐': '-', '‑': '-'}))
@@ -165,7 +198,7 @@ def parse_rating_pages(pages, bond_name, announcement_date, issuer_name=None):
             if not re.search(r'评级结果', page) or re.search(r'历史评级|评级历史|附录', page):
                 continue
             current_header = re.search(r'本次(?:跟踪)?评级|(?m:^\s*本次\s*$)', page)
-            previous_header = re.search(r'上次评级|(?m:^\s*首次\s*$)', page)
+            previous_header = re.search(r'上次评级|首次评级|(?m:^\s*首次\s*$)', page)
             name_pattern = r'\s*'.join(re.escape(ch) for ch in bond_name)
             if re.search(r'本次评级结果', page) and '债券简称' in page and '债券信用等级' in page and not previous_header:
                 summary_page = re.split(r'评级观点|评级模型|历史评级信息', page, maxsplit=1)[0]
@@ -177,7 +210,13 @@ def parse_rating_pages(pages, bond_name, announcement_date, issuer_name=None):
             if not current_header or not previous_header:
                 continue
             # Issuance amount/tenor can precede the two grade columns.
-            match = re.search(name_pattern + r'[”"]?(?:\s+[\d,.]+)*\s+([A-D]{1,3}[+-]?)\s+([A-D]{1,3}[+-]?)(?=\s|$)', page)
+            # 观察名单等状态词常夹在本次/上次两列级别之间，不能因此丢掉本债行。
+            filler = r'(?:列入|移出|继续列入|信用评级)?(?:观察名单|-{1,3})'
+            match = re.search(name_pattern + r'[”"]?(?:\s+[\d,.]+)*(?:\s*' + filler + r')?\s+([A-D]{1,3}[+-]?)(?:\s*' + filler + r')?\s+([A-D]{1,3}[+-]?)(?=\s|$)', page)
+            if not match:
+                # 少数PDF把整行压成一段（无空白），仅在带观察名单等状态词时才按紧凑行兜底，
+                # 避免普通正文被误当评级表行。
+                match = re.search(name_pattern + r'[”"]?(?:\s+[\d,.]+)*\s*([A-D]{1,3}[+-]?)\s*' + filler + r'\s*([A-D]{1,3}[+-]?)(?![A-D+-])', page)
             # A generic bond row is usable only with a single explicit bond
             # short name on the same page. Never borrow the issuer grade.
             short_names = re.findall(r'债券简称\s*[：:]\s*([^\s，。；]+)', page)
@@ -258,19 +297,30 @@ def initial_issue_amount(text):
     return value, match.group(0)
 
 
-def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date):
+def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date, security_code=None):
     """A named issuer notice is its own fact source, never a successful report OCR."""
     text = re.sub(r'\s+', '', normalize_rating_text('\n'.join(pages)))
     head = text[:800]
     if not re.search(r'关于[^。]{0,100}评级结果(?:的)?公告', head):
         return None
     codes = re.findall(r'(?:转债|债券)代码[:：]?(\d{6})(?!\d)', head)
-    if not bond_code or codes != [bond_code.split('.')[0]] or not issuer_name or issuer_name not in head or not bond_name:
+    target = (bond_code or '').split('.')[0]
+    stock = (security_code or '').split('.')[0]
+    issuer_ok = any(form in head for form in issuer_forms(issuer_name))
+    # 少数正式公告只写证券代码不写转债代码，此时要求股票代码在公告抬头同现。
+    if not target or not issuer_ok or not bond_name_header(head, bond_name):
         raise ValueError('评级结果公告未唯一匹配目标发行人及转债代码')
-    name_header = re.search(r'(?:转债|债券)简称[:：]?' + re.escape(bond_name), head)
+    if codes and set(codes) != {target}:
+        raise ValueError('评级结果公告未唯一匹配目标发行人及转债代码')
+    if not codes and not (stock and stock in head):
+        raise ValueError('评级结果公告未唯一匹配目标发行人及转债代码')
+    name_header = bond_name_header(head, bond_name)
     following = head[name_header.end():] if name_header else ''
     next_code_field = bool(re.match(r'(?:转债|债券)代码[:：]?\d{6}(?!\d)', following))
-    if not name_header or (not next_code_field and re.match(r'[A-Za-z0-9]|[\u4e00-\u9fff]*转债', following)):
+    # 只把“紧接数字/字母/代码字段”视为更长债名（如 柳工转2）；
+    # 债名后面接公司名或正文（如 巨星转债乐山巨星农牧…）不是更长的债名。
+    extended_name = bool(re.match(r'[A-Za-z]|[0-9]{1,2}(?=$|(?:转债|债券)?代码|(?:转债|债券)?简称|[，。;；、)）】])', following))
+    if not name_header or (not next_code_field and extended_name):
         raise ValueError('评级结果公告未匹配目标转债简称')
     agencies = list(re.finditer(r'委托(?:(?:信用)?评级机构)?([^，。；;()]{2,60}?(?:股份有限公司|有限责任公司|有限公司))(?:\(以下简称[“"]?([^”"()]+)[”"]?\))?', text))
     agencies = [match for match in agencies if re.search(r'信用(?:评级|评估)|资信(?:评级|评估)', match.group(1))]
@@ -292,8 +342,11 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
     conclusions.extend((m.group(1), m.group(0)) for m in summary_grades)
     conflicts = [{'rating': value, 'evidence': quote} for value, quote in conclusions] if len({v for v, _ in conclusions}) > 1 else []
     references = []
-    for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日出具(?:了)?《([^》]+评级报告(?:\(20\d{2}\))?)》(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?', text):
-        if previous_rating_context(text, m.start()) or issuer_name not in m.group(4):
+    # 出具文书的标题不只有“评级报告”：评级调整/评级结果公告同样是本次评级的原文来源。
+    for m in re.finditer(r'于(20\d{2})年(\d{1,2})月(\d{1,2})日出具(?:了)?《([^》]+)》(?:\(([^()]*(?:\([^()]*\)[^()]*)*)\))?', text):
+        if previous_rating_context(text, m.start()) or not any(form in m.group(4) for form in issuer_forms(issuer_name)):
+            continue
+        if not re.search(r'评级报告|信用等级|评级结果|跟踪评级|评级公告', m.group(4)):
             continue
         actual = date(*(int(m.group(i)) for i in (1, 2, 3))).isoformat()
         references.append({'title': m.group(4), 'number': m.group(5), 'issued_at': actual, 'evidence': m.group(0)})
@@ -306,7 +359,21 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
                               if reference['evidence'] in sentence
                               and any(m.group(0) in sentence for m in named + named_debt)), '')
     outlooks = list(re.finditer(r'评级展望(?:为|维持|[:：])?[“"]?(稳定|正面|负面|发展中|观察)', current_block))
-    outlook = outlooks[0] if len({m.group(1) for m in outlooks}) == 1 else None
+    outlook_value = outlooks[0].group(1) if len({m.group(1) for m in outlooks}) == 1 else None
+    outlook_evidence = outlooks[0].group(0) if outlook_value else None
+    if not outlook_value:
+        # “调整前/调整后”或只写“本次债券评级：”的公告没有“本次债项评级”标签，
+        # 本期结论就在这几个标签后面的同一段里；只看明确本期/调整后的段落。
+        labelled = [text[m.end():m.end() + 240] for m in
+                    re.finditer(r'(?:调整后|本次(?:跟踪)?(?:债券|债项)?评级(?:结果)?)[:：]', text)]
+        outlook_value, outlook_evidence = outlook_from_blocks([current_block] + labelled)
+    if not outlook_value:
+        # 最后才回看全文，且必须排除前次/历史段落，仍要求全篇本期写法唯一。
+        pattern = r'评级展望(?:为|维持|[:：])?[“"]?(稳定|正面|负面|发展中|观察)'
+        hits = [m for m in re.finditer(pattern, text) if not previous_rating_context(text, m.start())]
+        values = {m.group(1) for m in hits}
+        if len(values) == 1:
+            outlook_value, outlook_evidence = next(iter(values)), hits[0].group(0)
     if reference and announcement_date and reference['issued_at'] > announcement_date:
         raise ValueError('评级原文日期晚于公告日期，保留原事实')
     previous = []
@@ -325,10 +392,10 @@ def parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announc
                                  'rating_com_name': agency,
                                  'rating_date_source': 'official_document', 'rating_date_context': 'explicit_previous_named_bond',
                                  'rating_evidence': quote, 'date_evidence': quote, 'outlook_evidence': prior_outlook.group(0)})
-    return {'rating': None if conflicts or not conclusions else conclusions[0][0], 'rating_outlook': outlook.group(1) if outlook else None, 'rating_com_name': agency,
+    return {'rating': None if conflicts or not conclusions else conclusions[0][0], 'rating_outlook': outlook_value, 'rating_com_name': agency,
             'rating_date': reference['issued_at'] if reference else None, 'rating_date_source': 'official_document' if reference else 'missing',
             'rating_evidence': conclusions[0][1] if conclusions else None, 'rating_conflicts': conflicts,
-            'outlook_evidence': outlook.group(0) if outlook else None, 'date_evidence': reference['evidence'] if reference else None,
+            'outlook_evidence': outlook_evidence, 'date_evidence': reference['evidence'] if reference else None,
             'rating_date_context': 'current_report_issuance', 'rating_context_version': 'current-narrative-v2',
             'rating_grade_context_version': 'current-grade-v1', 'rating_result_notice': {'version': 'named-result-v1', 'bond_code': bond_code,
                 'bond_name': bond_name, 'issuer_name': issuer_name, 'rating_company': agency, 'report_reference': reference, 'previous_ratings': previous}}
@@ -378,7 +445,7 @@ def extract_rating(url, announcement_date=None, security_code=None, bond_name=No
         title = next((match.group(0) for cover in covers for match in re.finditer(r'(?:向不特定对象发行|公开发行)(?:A股)?可转换公司债券(?:信用评级报告|信用等级通知书)', cover) if issuer and issuer in cover and '跟踪评级' not in cover),None)
         return title if initial_window and title and amount is not None and tenor and amount==Decimal(str(initial_issue_size_yuan)) and chinese_number(tenor.group(1))==int(initial_tenor_years) else None
     def parse(pages):
-        notice = parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date)
+        notice = parse_rating_result_notice(pages, bond_name, bond_code, issuer_name, announcement_date, security_code)
         if notice is not None:
             return notice
         result = parse_rating_pages(pages, bond_name, announcement_date, issuer_name)

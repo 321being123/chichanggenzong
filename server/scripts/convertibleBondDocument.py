@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import unicodedata
@@ -90,7 +91,10 @@ def read_document(url, security_code=None, bond_name=None, issuer_name=None, ocr
     if not compact:
         raise ValueError('PDF 无文本层，需要OCR，不能作为解析完成')
     issuer = ''.join(unicodedata.normalize('NFKC', issuer_name or '').split())
-    if security_code and security_code.split('.')[0] not in compact and not (issuer and issuer in compact):
+    # 发行人可能更名或全称带/不带“集团”，正文仍须出现同一法人主体；
+    # 只放宽带后缀的写法，核心名不足4字时不参与匹配，避免泛化到其他主体。
+    issuer_forms = {form for form in {issuer, re.sub(r'(?:集团)?(?:股份有限公司|有限责任公司|有限公司)$', '', issuer)} if len(form) >= 4}
+    if security_code and security_code.split('.')[0] not in compact and not any(form in compact for form in issuer_forms):
         raise ValueError('PDF 未匹配目标发行人证券代码')
     if bond_name and ''.join(bond_name.split()) not in compact:
         raise ValueError('PDF 未匹配目标可转债简称')

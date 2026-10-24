@@ -3563,6 +3563,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-PARSE-VARIANTS-051",
+      "title": "评级公告的调整前后对照式展望、只写证券代码的身份绑定、出具公告标题、首次评级列名与观察名单行、发行人核心名比对必须按原文取值，不得借用前次等级或前次日期",
+      "implementation": {
+        "file": "server/scripts/extractConvertibleBondRating.py",
+        "symbol": "parse_rating_result_notice"
+      },
+      "tests": [
+        {
+          "file": "server/test/convertible-bond-analysis-documents.test.js",
+          "pattern": "BOND-RATING-ADJUST-NOTICE-050"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

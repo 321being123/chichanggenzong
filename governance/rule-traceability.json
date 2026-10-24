@@ -3627,6 +3627,22 @@
       ],
       "owner": "运维治理",
       "status": "implemented"
+    },
+    {
+      "id": "RATING-COVERAGE-CAPABILITY-054",
+      "title": "评级文档的覆盖结论必须按解析能力版本失效：能力版本不一致时不得复用旧覆盖而跳过重算；发行人全称须支持股份有限公司/有限责任公司/股份公司三种写法",
+      "implementation": {
+        "file": "server/services/convertibleBondAnalysisInputs.js",
+        "symbol": "ratingCoverageForReport"
+      },
+      "tests": [
+        {
+          "file": "server/test/rating-issuer-name.test.js",
+          "pattern": "三种发行人写法"
+        }
+      ],
+      "owner": "运维治理",
+      "status": "implemented"
     }
   ]
 }

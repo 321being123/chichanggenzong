@@ -13,7 +13,7 @@ const INPUT_VERSION='analysis-input-v4';
 const RATING_REQUIREMENT_VERSION='latest-complete-history-present-v1';
 // 评级解析能力版本：只用于让历史 failed 文档在解析器/执行环境改进后重试一次，
 // 不影响 complete 文档（它们仍按 INPUT_VERSION 跳过），避免全量重算。
-const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24d';
+const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24e';
 function shouldRetryRatingFailure(kind,prior) {
   return kind==='rating'&&prior?.status==='failed'&&prior?.ratingCapability!==RATING_RETRY_CAPABILITY;
 }
@@ -326,6 +326,15 @@ function ratingCoverageForReport(event,notices,documents,bond,reports=[]) {
   return candidates.length?{status:'covered_by_official_result_notice',...candidates[0]}:null;
 }
 
+// 主体（发行人）信用评级报告不含本债债项结论，不能当债项评级来源；
+// 债项报告标题必须提到可转债/可转换公司债券/转债，或本身就是评级结果公告。
+function isBondRatingDocument(event) {
+  const title=String(event?.title||'');
+  if(isRatingResultNotice(event)||/评级调整|信用等级.*调整|调整.*信用等级/.test(title))return true;
+  if(/可转债|可转换公司债券|转债/.test(title))return true;
+  return !/主体|发行人|公司信用评级报告|年度.{0,12}信用评级报告/.test(title);
+}
+
 function inputDocuments(events,bond={}) {
   const selected=[];
   const issueDate=isoDate(bond.value_date);
@@ -338,7 +347,7 @@ function inputDocuments(events,bond={}) {
     if(issuance)selected.push({kind:'issuance_terms',event:issuance});
   }
   if(report)selected.push({kind:'holders',event:report},{kind:'price_history',event:report});
-  for(const event of events.filter(e=>!isRatingPublicationDelay(e)&&(/评级报告|评级调整/.test(e.title)||
+  for(const event of events.filter(e=>!isRatingPublicationDelay(e)&&isBondRatingDocument(e)&&(/评级报告|评级调整/.test(e.title)||
     isRatingResultNotice(e)&&bond.bond_short_name)&&(!issueDate||
     isoDate(e.event_date)>=issueDate||isoDate(e.event_date)>=`${Number(issueDate.slice(0,4))-1}${issueDate.slice(4)}`&&/可转债|可转换公司债券/.test(e.title))))selected.push({kind:'rating',event});
   return [...selected.filter(d=>d.kind==='rating'&&isRatingResultNotice(d.event)).sort((a,b)=>String(a.event.event_date).localeCompare(String(b.event.event_date))),
@@ -530,4 +539,4 @@ async function syncConvertibleBondAnalysisInputs({businessDate,targetCodes=[],ma
     nextRunAt:ok?null:nextRunAt,error:ok?null:'可转债详细分析资料尚未全部完成',errorType:ok?null:'data_quality',
     ...(sourceFailure?{errorCode:sourceFailure.errorCode,errorType:sourceFailure.errorType,source:sourceFailure.source,apiName:sourceFailure.apiName,recoverAt:sourceFailure.recoverAt}:{}),};
 }
-module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,issuerNameOf,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,needRatingResultNotices,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};
+module.exports={syncConvertibleBondAnalysisInputs,inputDocuments,projectDocument,requiredReportPeriod,initialRatingBindingArguments,isRatingPublicationDelay,isRatingResultNotice,validateRatingResultNotice,ratingCoverageForReport,suspectRatingUrls,validateTrackingRatingYear,validateRatingGrade,validateHolderExemption,issuerNameOf,isBondRatingDocument,ratingRequirement,markTerminalGap,terminalGap,TERMINAL_GAP_STATUSES,shouldRetryRatingFailure,needRatingResultNotices,RATING_RETRY_CAPABILITY,INPUT_VERSION,RATING_REQUIREMENT_VERSION};

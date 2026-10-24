@@ -13,7 +13,7 @@ const INPUT_VERSION='analysis-input-v4';
 const RATING_REQUIREMENT_VERSION='latest-complete-history-present-v1';
 // 评级解析能力版本：只用于让历史 failed 文档在解析器/执行环境改进后重试一次，
 // 不影响 complete 文档（它们仍按 INPUT_VERSION 跳过），避免全量重算。
-const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24';
+const RATING_RETRY_CAPABILITY='rating-retry-2026-10-24b';
 function shouldRetryRatingFailure(kind,prior) {
   return kind==='rating'&&prior?.status==='failed'&&prior?.ratingCapability!==RATING_RETRY_CAPABILITY;
 }
